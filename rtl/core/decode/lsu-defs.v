@@ -1,0 +1,24 @@
+`ifndef OPENRV64_DECODE_LSU_DEFS_V
+`define OPENRV64_DECODE_LSU_DEFS_V
+
+`define RV64_LSU_SIZE_WIDTH 2
+`define RV64_LSU_SIZE_BYTE 2'd0
+`define RV64_LSU_SIZE_HALF 2'd1
+`define RV64_LSU_SIZE_WORD 2'd2
+`define RV64_LSU_SIZE_DWORD 2'd3
+
+`define RV64_LSU_OP_WIDTH 4
+`define RV64_LSU_OP_INVALID 4'd0
+`define RV64_LSU_OP_LB 4'd1
+`define RV64_LSU_OP_LH 4'd2
+`define RV64_LSU_OP_LW 4'd3
+`define RV64_LSU_OP_LD 4'd4
+`define RV64_LSU_OP_LBU 4'd5
+`define RV64_LSU_OP_LHU 4'd6
+`define RV64_LSU_OP_LWU 4'd7
+`define RV64_LSU_OP_SB 4'd8
+`define RV64_LSU_OP_SH 4'd9
+`define RV64_LSU_OP_SW 4'd10
+`define RV64_LSU_OP_SD 4'd11
+
+`endif

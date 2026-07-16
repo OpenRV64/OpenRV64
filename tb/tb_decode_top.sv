@@ -1,0 +1,217 @@
+`timescale 1ns/1ps
+`include "core/decode/decode_top.v"
+`timescale 1ns/1ps
+
+module tb_decode_top;
+
+    logic [`RV64_INSTR_WIDTH-1:0] instr;
+    logic valid;
+    logic illegal;
+    logic [`RV64_OPCODE_WIDTH-1:0] opcode;
+    logic [`RV64_FUNCT3_WIDTH-1:0] funct3;
+    logic [`RV64_FUNCT7_WIDTH-1:0] funct7;
+    logic [`RV64_FUNCT12_WIDTH-1:0] funct12;
+    logic [`RV64_EARLY_CLASS_WIDTH-1:0] class_sel;
+    logic [`RV64_EARLY_FORMAT_WIDTH-1:0] format_sel;
+    logic uses_rs1;
+    logic uses_rs2;
+    logic uses_rd;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] rs1_addr;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] rs2_addr;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] rd_addr;
+    logic reg_write;
+    logic imm_valid;
+    logic has_imm;
+    logic [`RV64_XLEN-1:0] imm;
+    logic mem_read;
+    logic mem_write;
+    logic branch;
+    logic jump;
+    logic word_op;
+    logic system_instr;
+    logic fence_instr;
+    logic [`RV64_ALU_EXT_WIDTH-1:0] alu_ext;
+    logic [`RV64_ALU_OP_WIDTH-1:0] alu_op;
+    logic [`RV64_LSU_OP_WIDTH-1:0] lsu_op;
+    logic [`RV64_LSU_SIZE_WIDTH-1:0] lsu_size;
+    logic lsu_unsigned;
+    logic [`RV64_BR_OP_WIDTH-1:0] br_op;
+    logic br_link;
+    logic br_indirect;
+    logic subdecode_needed;
+    logic extension_decode_possible;
+
+    openrv64_decode_top dut (
+        .instr_i(instr),
+        .valid_o(valid),
+        .illegal_o(illegal),
+        .opcode_o(opcode),
+        .funct3_o(funct3),
+        .funct7_o(funct7),
+        .funct12_o(funct12),
+        .class_sel_o(class_sel),
+        .format_sel_o(format_sel),
+        .uses_rs1_o(uses_rs1),
+        .uses_rs2_o(uses_rs2),
+        .uses_rd_o(uses_rd),
+        .rs1_addr_o(rs1_addr),
+        .rs2_addr_o(rs2_addr),
+        .rd_addr_o(rd_addr),
+        .reg_write_o(reg_write),
+        .imm_valid_o(imm_valid),
+        .has_imm_o(has_imm),
+        .imm_o(imm),
+        .mem_read_o(mem_read),
+        .mem_write_o(mem_write),
+        .branch_o(branch),
+        .jump_o(jump),
+        .word_op_o(word_op),
+        .system_o(system_instr),
+        .fence_o(fence_instr),
+        .alu_ext_sel_o(alu_ext),
+        .alu_op_sel_o(alu_op),
+        .lsu_op_sel_o(lsu_op),
+        .lsu_size_sel_o(lsu_size),
+        .lsu_unsigned_o(lsu_unsigned),
+        .br_op_sel_o(br_op),
+        .br_link_o(br_link),
+        .br_indirect_o(br_indirect),
+        .subdecode_needed_o(subdecode_needed),
+        .extension_decode_possible_o(extension_decode_possible)
+    );
+
+    task automatic check_common;
+        input exp_valid;
+        input exp_illegal;
+        input [`RV64_EARLY_CLASS_WIDTH-1:0] exp_class;
+        input [`RV64_EARLY_FORMAT_WIDTH-1:0] exp_format;
+        input exp_uses_rs1;
+        input exp_uses_rs2;
+        input exp_uses_rd;
+        input [`RV64_REG_ADDR_WIDTH-1:0] exp_rs1_addr;
+        input [`RV64_REG_ADDR_WIDTH-1:0] exp_rs2_addr;
+        input [`RV64_REG_ADDR_WIDTH-1:0] exp_rd_addr;
+        input exp_reg_write;
+        input exp_has_imm;
+        input [`RV64_XLEN-1:0] exp_imm;
+        input exp_mem_read;
+        input exp_mem_write;
+        input exp_branch;
+        input exp_jump;
+        input [`RV64_ALU_OP_WIDTH-1:0] exp_alu_op;
+        input [`RV64_LSU_OP_WIDTH-1:0] exp_lsu_op;
+        input [`RV64_BR_OP_WIDTH-1:0] exp_br_op;
+        input [8*40-1:0] label;
+        begin
+            #1;
+
+            if (valid !== exp_valid ||
+                illegal !== exp_illegal ||
+                class_sel !== exp_class ||
+                format_sel !== exp_format ||
+                uses_rs1 !== exp_uses_rs1 ||
+                uses_rs2 !== exp_uses_rs2 ||
+                uses_rd !== exp_uses_rd ||
+                rs1_addr !== exp_rs1_addr ||
+                rs2_addr !== exp_rs2_addr ||
+                rd_addr !== exp_rd_addr ||
+                reg_write !== exp_reg_write ||
+                has_imm !== exp_has_imm ||
+                imm !== exp_imm ||
+                mem_read !== exp_mem_read ||
+                mem_write !== exp_mem_write ||
+                branch !== exp_branch ||
+                jump !== exp_jump ||
+                alu_op !== exp_alu_op ||
+                lsu_op !== exp_lsu_op ||
+                br_op !== exp_br_op) begin
+                $fatal(1,
+                    "%0s: valid=%0b/%0b illegal=%0b/%0b class=%0d/%0d fmt=%0d/%0d rs1=%0b:%0d/%0b:%0d rs2=%0b:%0d/%0b:%0d rd=%0b:%0d/%0b:%0d regw=%0b/%0b has_imm=%0b/%0b imm=%016x/%016x memr=%0b/%0b memw=%0b/%0b br=%0b/%0b jump=%0b/%0b alu=%0d/%0d lsu=%0d/%0d br_op=%0d/%0d",
+                    label,
+                    valid, exp_valid,
+                    illegal, exp_illegal,
+                    class_sel, exp_class,
+                    format_sel, exp_format,
+                    uses_rs1, rs1_addr, exp_uses_rs1, exp_rs1_addr,
+                    uses_rs2, rs2_addr, exp_uses_rs2, exp_rs2_addr,
+                    uses_rd, rd_addr, exp_uses_rd, exp_rd_addr,
+                    reg_write, exp_reg_write,
+                    has_imm, exp_has_imm,
+                    imm, exp_imm,
+                    mem_read, exp_mem_read,
+                    mem_write, exp_mem_write,
+                    branch, exp_branch,
+                    jump, exp_jump,
+                    alu_op, exp_alu_op,
+                    lsu_op, exp_lsu_op,
+                    br_op, exp_br_op);
+            end
+        end
+    endtask
+
+    initial begin
+        instr = {`RV64_FUNCT7_ADD, 5'd2, 5'd1, `RV64_FUNCT3_ADD_SUB, 5'd3, `RV64_OPCODE_OP};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_ALU, `RV64_EARLY_FORMAT_R,
+                     1'b1, 1'b1, 1'b1, 5'd1, 5'd2, 5'd3, 1'b1,
+                     1'b0, 64'h0, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_ADD, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "add");
+
+        instr = {12'hfff, 5'd6, `RV64_FUNCT3_ADD_SUB, 5'd5, `RV64_OPCODE_OP_IMM};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_ALU, `RV64_EARLY_FORMAT_I,
+                     1'b1, 1'b0, 1'b1, 5'd6, `RV64_REG_X0, 5'd5, 1'b1,
+                     1'b1, 64'hffff_ffff_ffff_ffff, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_ADD, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "addi");
+
+        instr = {12'd16, 5'd6, `RV64_FUNCT3_LD, 5'd5, `RV64_OPCODE_LOAD};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_MEM, `RV64_EARLY_FORMAT_I,
+                     1'b1, 1'b0, 1'b1, 5'd6, `RV64_REG_X0, 5'd5, 1'b1,
+                     1'b1, 64'h10, 1'b1, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_LD, `RV64_BR_OP_INVALID,
+                     "ld");
+
+        instr = {7'd1, 5'd8, 5'd7, `RV64_FUNCT3_SD, 5'd0, `RV64_OPCODE_STORE};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_MEM, `RV64_EARLY_FORMAT_S,
+                     1'b1, 1'b1, 1'b0, 5'd7, 5'd8, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h20, 1'b0, 1'b1, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_SD, `RV64_BR_OP_INVALID,
+                     "sd");
+
+        instr = {1'b0, 6'b000000, 5'd2, 5'd1, `RV64_FUNCT3_BEQ, 4'b1000, 1'b0, `RV64_OPCODE_BRANCH};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_BRANCH, `RV64_EARLY_FORMAT_B,
+                     1'b1, 1'b1, 1'b0, 5'd1, 5'd2, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h10, 1'b0, 1'b0, 1'b1, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_BEQ,
+                     "beq");
+
+        instr = {1'b0, 10'b0000000000, 1'b1, 8'h00, 5'd1, `RV64_OPCODE_JAL};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_JUMP, `RV64_EARLY_FORMAT_J,
+                     1'b0, 1'b0, 1'b1, `RV64_REG_X0, `RV64_REG_X0, 5'd1, 1'b1,
+                     1'b1, 64'h800, 1'b0, 1'b0, 1'b0, 1'b1,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_JAL,
+                     "jal");
+
+        if (!br_link) begin
+            $fatal(1, "jal did not assert branch link output");
+        end
+
+        instr = {12'h000, 5'd1, 3'b001, 5'd2, `RV64_OPCODE_JALR};
+        check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_JUMP, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h0, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "invalid jalr funct3");
+
+        instr = 32'h0000_0000;
+        check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_INVALID,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b0, 64'h0, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "invalid opcode");
+
+        $display("PASS: decode top routing");
+        $finish;
+    end
+
+endmodule
