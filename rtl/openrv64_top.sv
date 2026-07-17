@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 
 module openrv64_top #(
-    parameter logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0000
+    parameter logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0000,
+    parameter bit ENABLE_RV64M = 1'b0
 ) (
     input  logic        clk,
     input  logic        rst_n,
@@ -22,7 +23,8 @@ module openrv64_top #(
 );
 
     openrv64_rv64_top #(
-        .RESET_VECTOR(RESET_VECTOR)
+        .RESET_VECTOR(RESET_VECTOR),
+        .ENABLE_RV64M(ENABLE_RV64M)
     ) u_core (
         .clk(clk),
         .rst_n(rst_n),

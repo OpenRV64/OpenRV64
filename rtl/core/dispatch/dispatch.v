@@ -23,6 +23,7 @@ module openrv64_dispatch #(
     input  wire [`RV64_REG_ADDR_WIDTH-1:0] decode_rs1_addr_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0] decode_rs2_addr_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0] decode_rd_addr_i,
+    input  wire [`RV64_ALU_EXT_WIDTH-1:0] decode_alu_ext_i,
     input  wire [`RV64_ALU_OP_WIDTH-1:0] decode_alu_op_i,
     input  wire [`RV64_LSU_OP_WIDTH-1:0] decode_lsu_op_i,
     input  wire [`RV64_BR_OP_WIDTH-1:0]  decode_br_op_i,
@@ -50,6 +51,7 @@ module openrv64_dispatch #(
     output wire [`RV64_XLEN-1:0]        exec_rs2_data_o,
     output wire [`RV64_XLEN-1:0]        exec_imm_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] exec_rd_addr_o,
+    output wire [`RV64_ALU_EXT_WIDTH-1:0] exec_alu_ext_o,
     output wire [`RV64_ALU_OP_WIDTH-1:0] exec_alu_op_o,
     output wire [`RV64_LSU_OP_WIDTH-1:0] exec_lsu_op_o,
     output wire [`RV64_BR_OP_WIDTH-1:0]  exec_br_op_o,
@@ -74,7 +76,7 @@ module openrv64_dispatch #(
     output wire                         scoreboard_stall_o
 );
 
-    localparam DISPATCH_WIDTH = 317;
+    localparam DISPATCH_WIDTH = 320;
 
     wire decode_writes_rd = decode_reg_write_i &&
                             !decode_illegal_i &&
@@ -104,6 +106,7 @@ module openrv64_dispatch #(
         decode_rs2_data_i,
         decode_imm_i,
         decode_rd_addr_i,
+        decode_alu_ext_i,
         decode_alu_op_i,
         decode_lsu_op_i,
         decode_br_op_i,
@@ -129,6 +132,7 @@ module openrv64_dispatch #(
         exec_rs2_data_o,
         exec_imm_o,
         exec_rd_addr_o,
+        exec_alu_ext_o,
         exec_alu_op_o,
         exec_lsu_op_o,
         exec_br_op_o,

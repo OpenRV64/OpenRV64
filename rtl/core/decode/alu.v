@@ -108,18 +108,30 @@ module openrv64_decode_alu #(
                     ext_sel_o = `RV64_ALU_EXT_M;
 
                     if (ENABLE_RV64M) begin
-                        case (funct3_i)
-                            `RV64_M_FUNCT3_MUL:    accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MUL);
-                            `RV64_M_FUNCT3_MULH:   accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MULH);
-                            `RV64_M_FUNCT3_MULHSU: accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MULHSU);
-                            `RV64_M_FUNCT3_MULHU:  accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MULHU);
-                            `RV64_M_FUNCT3_DIV:    accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_DIV);
-                            `RV64_M_FUNCT3_DIVU:   accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_DIVU);
-                            `RV64_M_FUNCT3_REM:    accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_REM);
-                            `RV64_M_FUNCT3_REMU:   accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_REMU);
-                            default: begin
-                            end
-                        endcase
+                        if (opcode_i == `RV64_OPCODE_OP_32) begin
+                            case (funct3_i)
+                                `RV64_M_FUNCT3_MUL:  accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MUL);
+                                `RV64_M_FUNCT3_DIV:  accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_DIV);
+                                `RV64_M_FUNCT3_DIVU: accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_DIVU);
+                                `RV64_M_FUNCT3_REM:  accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_REM);
+                                `RV64_M_FUNCT3_REMU: accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_REMU);
+                                default: begin
+                                end
+                            endcase
+                        end else begin
+                            case (funct3_i)
+                                `RV64_M_FUNCT3_MUL:    accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MUL);
+                                `RV64_M_FUNCT3_MULH:   accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MULH);
+                                `RV64_M_FUNCT3_MULHSU: accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MULHSU);
+                                `RV64_M_FUNCT3_MULHU:  accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_MULHU);
+                                `RV64_M_FUNCT3_DIV:    accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_DIV);
+                                `RV64_M_FUNCT3_DIVU:   accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_DIVU);
+                                `RV64_M_FUNCT3_REM:    accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_REM);
+                                `RV64_M_FUNCT3_REMU:   accept(`RV64_ALU_EXT_M, `RV64_ALU_OP_REMU);
+                                default: begin
+                                end
+                            endcase
+                        end
                     end
                 end else begin
                     ext_sel_o = `RV64_ALU_EXT_BASE;

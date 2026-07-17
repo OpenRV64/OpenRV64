@@ -87,7 +87,7 @@ module openrv64_rv64_top #(
     wire [`RV64_FUNCT3_WIDTH-1:0] unused_decode_funct3;
     wire [`RV64_FUNCT7_WIDTH-1:0] unused_decode_funct7;
     wire [`RV64_FUNCT12_WIDTH-1:0] unused_decode_funct12;
-    wire [`RV64_ALU_EXT_WIDTH-1:0] unused_decode_alu_ext;
+    wire [`RV64_ALU_EXT_WIDTH-1:0] decode_alu_ext;
     wire [`RV64_LSU_SIZE_WIDTH-1:0] unused_decode_lsu_size;
     wire unused_decode_lsu_unsigned;
     wire unused_decode_br_link;
@@ -106,7 +106,6 @@ module openrv64_rv64_top #(
         unused_decode_funct3,
         unused_decode_funct7,
         unused_decode_funct12,
-        unused_decode_alu_ext,
         unused_decode_lsu_size,
         unused_decode_lsu_unsigned,
         unused_decode_br_link,
@@ -129,6 +128,7 @@ module openrv64_rv64_top #(
     wire [`RV64_XLEN-1:0] dispatch_exec_rs2_data;
     wire [`RV64_XLEN-1:0] dispatch_exec_imm;
     wire [`RV64_REG_ADDR_WIDTH-1:0] dispatch_exec_rd_addr;
+    wire [`RV64_ALU_EXT_WIDTH-1:0] dispatch_exec_alu_ext;
     wire [`RV64_ALU_OP_WIDTH-1:0] dispatch_exec_alu_op;
     wire [`RV64_LSU_OP_WIDTH-1:0] dispatch_exec_lsu_op;
     wire [`RV64_BR_OP_WIDTH-1:0] dispatch_exec_br_op;
@@ -288,7 +288,7 @@ module openrv64_rv64_top #(
         .word_op_o(decode_word_op),
         .system_o(decode_system),
         .fence_o(decode_fence),
-        .alu_ext_sel_o(unused_decode_alu_ext),
+        .alu_ext_sel_o(decode_alu_ext),
         .alu_op_sel_o(decode_alu_op),
         .lsu_op_sel_o(decode_lsu_op),
         .lsu_size_sel_o(unused_decode_lsu_size),
@@ -330,6 +330,7 @@ module openrv64_rv64_top #(
         .decode_rs1_addr_i(decode_rs1_addr),
         .decode_rs2_addr_i(decode_rs2_addr),
         .decode_rd_addr_i(decode_rd_addr),
+        .decode_alu_ext_i(decode_alu_ext),
         .decode_alu_op_i(decode_alu_op),
         .decode_lsu_op_i(decode_lsu_op),
         .decode_br_op_i(decode_br_op),
@@ -356,6 +357,7 @@ module openrv64_rv64_top #(
         .exec_rs2_data_o(dispatch_exec_rs2_data),
         .exec_imm_o(dispatch_exec_imm),
         .exec_rd_addr_o(dispatch_exec_rd_addr),
+        .exec_alu_ext_o(dispatch_exec_alu_ext),
         .exec_alu_op_o(dispatch_exec_alu_op),
         .exec_lsu_op_o(dispatch_exec_lsu_op),
         .exec_br_op_o(dispatch_exec_br_op),
@@ -380,7 +382,8 @@ module openrv64_rv64_top #(
 
     openrv64_exec_top #(
         .PIPE_EX_MEM(PIPE_EX_MEM),
-        .PIPE_MEM_WB(PIPE_MEM_WB)
+        .PIPE_MEM_WB(PIPE_MEM_WB),
+        .ENABLE_RV64M(ENABLE_RV64M)
     ) u_exec (
         .clk(clk),
         .rst_n(rst_n),
@@ -398,6 +401,7 @@ module openrv64_rv64_top #(
         .rs2_data_i(dispatch_exec_rs2_data),
         .imm_i(dispatch_exec_imm),
         .rd_addr_i(dispatch_exec_rd_addr),
+        .alu_ext_i(dispatch_exec_alu_ext),
         .alu_op_i(dispatch_exec_alu_op),
         .lsu_op_i(dispatch_exec_lsu_op),
         .br_op_i(dispatch_exec_br_op),

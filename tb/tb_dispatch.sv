@@ -20,6 +20,7 @@ module tb_dispatch;
     logic [`RV64_REG_ADDR_WIDTH-1:0] decode_rs1_addr;
     logic [`RV64_REG_ADDR_WIDTH-1:0] decode_rs2_addr;
     logic [`RV64_REG_ADDR_WIDTH-1:0] decode_rd_addr;
+    logic [`RV64_ALU_EXT_WIDTH-1:0] decode_alu_ext;
     logic [`RV64_ALU_OP_WIDTH-1:0] decode_alu_op;
     logic [`RV64_LSU_OP_WIDTH-1:0] decode_lsu_op;
     logic [`RV64_BR_OP_WIDTH-1:0] decode_br_op;
@@ -47,6 +48,7 @@ module tb_dispatch;
     logic [`RV64_XLEN-1:0] exec_rs2_data;
     logic [`RV64_XLEN-1:0] exec_imm;
     logic [`RV64_REG_ADDR_WIDTH-1:0] exec_rd_addr;
+    logic [`RV64_ALU_EXT_WIDTH-1:0] exec_alu_ext;
     logic [`RV64_ALU_OP_WIDTH-1:0] exec_alu_op;
     logic [`RV64_LSU_OP_WIDTH-1:0] exec_lsu_op;
     logic [`RV64_BR_OP_WIDTH-1:0] exec_br_op;
@@ -85,6 +87,7 @@ module tb_dispatch;
         .decode_rs1_addr_i(decode_rs1_addr),
         .decode_rs2_addr_i(decode_rs2_addr),
         .decode_rd_addr_i(decode_rd_addr),
+        .decode_alu_ext_i(decode_alu_ext),
         .decode_alu_op_i(decode_alu_op),
         .decode_lsu_op_i(decode_lsu_op),
         .decode_br_op_i(decode_br_op),
@@ -111,6 +114,7 @@ module tb_dispatch;
         .exec_rs2_data_o(exec_rs2_data),
         .exec_imm_o(exec_imm),
         .exec_rd_addr_o(exec_rd_addr),
+        .exec_alu_ext_o(exec_alu_ext),
         .exec_alu_op_o(exec_alu_op),
         .exec_lsu_op_o(exec_lsu_op),
         .exec_br_op_o(exec_br_op),
@@ -151,6 +155,7 @@ module tb_dispatch;
             decode_rs1_addr = `RV64_REG_X0;
             decode_rs2_addr = `RV64_REG_X0;
             decode_rd_addr = `RV64_REG_X0;
+            decode_alu_ext = `RV64_ALU_EXT_INVALID;
             decode_alu_op = `RV64_ALU_OP_ADD;
             decode_lsu_op = `RV64_LSU_OP_INVALID;
             decode_br_op = `RV64_BR_OP_INVALID;
@@ -177,6 +182,7 @@ module tb_dispatch;
             decode_instr = {27'h0, rd};
             decode_rd_addr = rd;
             decode_reg_write = 1'b1;
+            decode_alu_ext = `RV64_ALU_EXT_BASE;
             decode_alu_op = `RV64_ALU_OP_ADD;
         end
     endtask
@@ -190,6 +196,7 @@ module tb_dispatch;
             decode_instr = 32'h0000_0013;
             decode_uses_rs1 = 1'b1;
             decode_rs1_addr = rs1;
+            decode_alu_ext = `RV64_ALU_EXT_BASE;
             decode_alu_op = `RV64_ALU_OP_ADD;
         end
     endtask
@@ -203,7 +210,7 @@ module tb_dispatch;
         end
     endtask
 
-    task automatic expect;
+    task automatic check_dispatch;
         input exp_decode_clear;
         input exp_exec_valid;
         input exp_raw;
@@ -245,61 +252,69 @@ module tb_dispatch;
         rst_n = 1'b1;
 
         drive_alu_write(5'd1);
-        expect(1'b1, 1'b0, 1'b0, 1'b0, "accept producer x1");
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "accept producer x1");
         @(posedge clk);
+        @(negedge clk);
 
         drive_alu_read(5'd1);
-        expect(1'b0, 1'b1, 1'b1, 1'b0, "stall RAW x1");
+        check_dispatch(1'b0, 1'b1, 1'b1, 1'b0, "stall RAW x1");
 
         wb_valid = 1'b1;
         wb_reg_write = 1'b1;
         wb_rd_addr = 5'd1;
-        expect(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle WB clears RAW");
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle WB clears RAW");
         @(posedge clk);
+        @(negedge clk);
         wb_valid = 1'b0;
         wb_reg_write = 1'b0;
         wb_rd_addr = `RV64_REG_X0;
 
         drive_alu_write(5'd2);
-        expect(1'b1, 1'b1, 1'b0, 1'b0, "accept producer x2");
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "accept producer x2");
         @(posedge clk);
+        @(negedge clk);
 
         drive_alu_write(5'd2);
-        expect(1'b0, 1'b1, 1'b0, 1'b1, "stall WAW x2");
+        check_dispatch(1'b0, 1'b1, 1'b0, 1'b1, "stall WAW x2");
 
         wb_valid = 1'b1;
         wb_reg_write = 1'b1;
         wb_rd_addr = 5'd2;
-        expect(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle WB clears WAW");
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle WB clears WAW");
         @(posedge clk);
+        @(negedge clk);
         wb_valid = 1'b0;
         wb_reg_write = 1'b0;
         wb_rd_addr = `RV64_REG_X0;
 
         exec_lsu_ready = 1'b0;
         drive_lsu_op();
-        expect(1'b0, 1'b0, 1'b0, 1'b0, "stall LSU unit not ready");
+        check_dispatch(1'b0, 1'b1, 1'b0, 1'b0, "stall LSU unit not ready");
         exec_lsu_ready = 1'b1;
-        expect(1'b1, 1'b0, 1'b0, 1'b0, "accept LSU when ready");
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "accept LSU when ready");
         @(posedge clk);
+        @(negedge clk);
 
         drive_alu_write(5'd3);
-        exec_clear = 1'b0;
-        expect(1'b1, 1'b1, 1'b0, 1'b0, "accept held producer x3");
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "accept held producer x3");
         @(posedge clk);
+        @(negedge clk);
+        exec_clear = 1'b0;
 
         drive_alu_read(5'd3);
-        expect(1'b0, 1'b1, 1'b1, 1'b0, "held x3 blocks consumer");
+        check_dispatch(1'b0, 1'b1, 1'b1, 1'b0, "held x3 blocks consumer");
 
         flush = 1'b1;
-        expect(1'b1, 1'b0, 1'b0, 1'b0, "flush clears active dispatch");
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "flush clears active dispatch");
         @(posedge clk);
+        @(negedge clk);
         flush = 1'b0;
         exec_clear = 1'b1;
 
         drive_alu_read(5'd3);
-        expect(1'b1, 1'b0, 1'b0, 1'b0, "x3 clear after flush");
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "x3 clear after flush");
         @(posedge clk);
+        @(negedge clk);
 
         $display("PASS: dispatch scoreboard and unit readiness");
         $finish;

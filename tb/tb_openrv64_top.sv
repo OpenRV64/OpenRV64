@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-m.v"
 
 module tb_openrv64_top;
 
@@ -22,6 +23,7 @@ module tb_openrv64_top;
     logic [63:0] memory [0:MEM_WORDS-1];
     logic        saw_jal_link_store;
     logic        saw_jalr_link_store;
+    logic        saw_mul_store;
     logic        mem_addr_in_range;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
@@ -31,7 +33,8 @@ module tb_openrv64_top;
                        64'h0000_0000_0000_0000;
 
     openrv64_top #(
-        .RESET_VECTOR(RESET_VECTOR)
+        .RESET_VECTOR(RESET_VECTOR),
+        .ENABLE_RV64M(1'b1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -99,6 +102,15 @@ module tb_openrv64_top;
         end
     endfunction
 
+    function automatic logic [31:0] enc_mul;
+        input logic [4:0] rd;
+        input logic [4:0] rs1;
+        input logic [4:0] rs2;
+        begin
+            enc_mul = {`RV64_M_FUNCT7, rs2, rs1, `RV64_M_FUNCT3_MUL, rd, `RV64_OPCODE_OP};
+        end
+    endfunction
+
     initial begin
         int i;
 
@@ -120,7 +132,11 @@ module tb_openrv64_top;
         put_instr(11, `RV64_INSTR_NOP);
         put_instr(12, enc_sd(5'd4, `RV64_REG_X0, 12'h080)); // sd x4, 0x80(x0)
         put_instr(13, enc_sd(5'd6, `RV64_REG_X0, 12'h088)); // sd x6, 0x88(x0)
-        put_instr(14, `RV64_INSTR_EBREAK);
+        put_instr(14, enc_addi(5'd7, `RV64_REG_X0, 12'd6)); // addi x7, x0, 6
+        put_instr(15, enc_addi(5'd8, `RV64_REG_X0, 12'd7)); // addi x8, x0, 7
+        put_instr(16, enc_mul(5'd9, 5'd7, 5'd8));           // mul x9, x7, x8
+        put_instr(17, enc_sd(5'd9, `RV64_REG_X0, 12'h090)); // sd x9, 0x90(x0)
+        put_instr(18, `RV64_INSTR_EBREAK);
 
         rst_n = 1'b0;
         repeat (4) @(posedge clk);
@@ -132,6 +148,7 @@ module tb_openrv64_top;
         if (!rst_n) begin
             saw_jal_link_store <= 1'b0;
             saw_jalr_link_store <= 1'b0;
+            saw_mul_store <= 1'b0;
         end else if (mem_valid && mem_write) begin
             int lane;
 
@@ -139,6 +156,8 @@ module tb_openrv64_top;
                 saw_jal_link_store <= 1'b1;
             end else if (mem_addr == 64'h0000_0000_0000_0088) begin
                 saw_jalr_link_store <= 1'b1;
+            end else if (mem_addr == 64'h0000_0000_0000_0090) begin
+                saw_mul_store <= 1'b1;
             end
 
             for (lane = 0; lane < 8; lane++) begin
@@ -174,6 +193,12 @@ module tb_openrv64_top;
                         end
                     end
 
+                    64'h0000_0000_0000_0090: begin
+                        if (mem_wdata != 64'h0000_0000_0000_002a) begin
+                            $fatal(1, "unexpected MUL data: %016x", mem_wdata);
+                        end
+                    end
+
                     default: begin
                         $fatal(1, "unexpected write address: %016x", mem_addr);
                     end
@@ -190,7 +215,7 @@ module tb_openrv64_top;
         end
 
         if (rst_n && dbg_halted) begin
-            if (dbg_pc != 64'h0000_0000_0000_0038) begin
+            if (dbg_pc != 64'h0000_0000_0000_0048) begin
                 $fatal(1, "halt pc mismatch: %016x", dbg_pc);
             end
 
@@ -208,6 +233,10 @@ module tb_openrv64_top;
                 $fatal(1, "JALR link store never reached memory bus");
             end
 
+            if (!saw_mul_store) begin
+                $fatal(1, "MUL result store never reached memory bus");
+            end
+
             if (memory[16] != 64'h0000_0000_0000_0004) begin
                 $fatal(1, "JAL link store mismatch: %016x", memory[16]);
             end
@@ -216,8 +245,12 @@ module tb_openrv64_top;
                 $fatal(1, "JALR link store mismatch: %016x", memory[17]);
             end
 
-            $display("PASS: halted at pc=%016x instr=%08x jal_link=%016x jalr_link=%016x",
-                     dbg_pc, dbg_instr, memory[16], memory[17]);
+            if (memory[18] != 64'h0000_0000_0000_002a) begin
+                $fatal(1, "MUL result store mismatch: %016x", memory[18]);
+            end
+
+            $display("PASS: halted at pc=%016x instr=%08x jal_link=%016x jalr_link=%016x mul=%016x",
+                     dbg_pc, dbg_instr, memory[16], memory[17], memory[18]);
             $finish;
         end
     end

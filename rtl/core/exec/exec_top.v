@@ -6,7 +6,8 @@
 
 module openrv64_exec_top #(
     parameter PIPE_EX_MEM = 1,
-    parameter PIPE_MEM_WB = 1
+    parameter PIPE_MEM_WB = 1,
+    parameter ENABLE_RV64M = 0
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -25,6 +26,7 @@ module openrv64_exec_top #(
     input  wire [`RV64_XLEN-1:0]        rs2_data_i,
     input  wire [`RV64_XLEN-1:0]        imm_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0] rd_addr_i,
+    input  wire [`RV64_ALU_EXT_WIDTH-1:0] alu_ext_i,
     input  wire [`RV64_ALU_OP_WIDTH-1:0] alu_op_i,
     input  wire [`RV64_LSU_OP_WIDTH-1:0] lsu_op_i,
     input  wire [`RV64_BR_OP_WIDTH-1:0] br_op_i,
@@ -76,9 +78,23 @@ module openrv64_exec_top #(
                                      rs1_data_i;
     wire [`RV64_XLEN-1:0] alu_src2 = alu_uses_imm ? imm_i : rs2_data_i;
 
-    wire alu_valid;
-    wire alu_illegal;
-    wire [`RV64_XLEN-1:0] alu_result;
+    wire alu_base_valid;
+    wire alu_base_illegal;
+    wire [`RV64_XLEN-1:0] alu_base_result;
+    wire alu_m_valid;
+    wire alu_m_illegal;
+    wire [`RV64_XLEN-1:0] alu_m_result;
+    wire alu_ext_is_base = (alu_ext_i == `RV64_ALU_EXT_BASE);
+    wire alu_ext_is_m = (alu_ext_i == `RV64_ALU_EXT_M);
+    wire alu_valid = alu_ext_is_base ? alu_base_valid :
+                     (alu_ext_is_m && ENABLE_RV64M) ? alu_m_valid :
+                     1'b0;
+    wire alu_illegal = alu_ext_is_base ? alu_base_illegal :
+                       alu_ext_is_m ? (!ENABLE_RV64M || alu_m_illegal) :
+                       1'b1;
+    wire [`RV64_XLEN-1:0] alu_result = alu_ext_is_base ? alu_base_result :
+                                       alu_ext_is_m ? alu_m_result :
+                                       {`RV64_XLEN{1'b0}};
     wire br_valid;
     wire br_illegal;
     wire br_taken;
@@ -141,15 +157,25 @@ module openrv64_exec_top #(
     wire [MEM_WB_WIDTH-1:0] mem_wb_in_data;
     wire [MEM_WB_WIDTH-1:0] mem_wb_out_data;
 
-    openrv64_exec_alu_rv64i u_alu_exec (
+    openrv64_exec_alu_rv64i u_alu_base_exec (
         .op_sel_i(alu_op_i),
         .word_op_i(word_op_i),
         .src1_i(alu_src1),
         .src2_i(alu_src2),
         .pc_i(pc_i),
-        .valid_o(alu_valid),
-        .illegal_o(alu_illegal),
-        .result_o(alu_result)
+        .valid_o(alu_base_valid),
+        .illegal_o(alu_base_illegal),
+        .result_o(alu_base_result)
+    );
+
+    openrv64_exec_rv64m u_rv64m_exec (
+        .op_sel_i(alu_op_i),
+        .word_op_i(word_op_i),
+        .src1_i(rs1_data_i),
+        .src2_i(rs2_data_i),
+        .valid_o(alu_m_valid),
+        .illegal_o(alu_m_illegal),
+        .result_o(alu_m_result)
     );
 
     openrv64_exec_br u_br_exec (

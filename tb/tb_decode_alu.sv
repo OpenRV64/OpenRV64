@@ -157,6 +157,10 @@ module tb_decode_alu;
               1'b1, 1'b0, `RV64_ALU_EXT_M, `RV64_ALU_OP_DIVU, 1'b1,
               1'b0, 1'b1, `RV64_ALU_EXT_M, `RV64_ALU_OP_INVALID, 1'b1);
 
+        check(`RV64_OPCODE_OP_32, `RV64_M_FUNCT3_MULH, `RV64_M_FUNCT7,
+              1'b0, 1'b1, `RV64_ALU_EXT_M, `RV64_ALU_OP_INVALID, 1'b1,
+              1'b0, 1'b1, `RV64_ALU_EXT_M, `RV64_ALU_OP_INVALID, 1'b1);
+
         check(`RV64_OPCODE_LOAD, 3'b000, 7'b0000000,
               1'b0, 1'b1, `RV64_ALU_EXT_INVALID, `RV64_ALU_OP_INVALID, 1'b0,
               1'b0, 1'b1, `RV64_ALU_EXT_INVALID, `RV64_ALU_OP_INVALID, 1'b0);
