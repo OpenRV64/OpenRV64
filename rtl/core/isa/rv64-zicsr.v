@@ -1,0 +1,14 @@
+`ifndef OPENRV64_RV64_ZICSR_V
+`define OPENRV64_RV64_ZICSR_V
+
+`include "core/isa/rv64-i.v"
+
+// Zicsr SYSTEM funct3 encodings.
+`define RV64_ZICSR_FUNCT3_CSRRW  3'b001
+`define RV64_ZICSR_FUNCT3_CSRRS  3'b010
+`define RV64_ZICSR_FUNCT3_CSRRC  3'b011
+`define RV64_ZICSR_FUNCT3_CSRRWI 3'b101
+`define RV64_ZICSR_FUNCT3_CSRRSI 3'b110
+`define RV64_ZICSR_FUNCT3_CSRRCI 3'b111
+
+`endif

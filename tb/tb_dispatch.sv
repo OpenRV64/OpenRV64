@@ -1,5 +1,9 @@
 `timescale 1ns/1ps
-`include "core/dispatch/dispatch.v"
+`include "core/isa/rv64-i.v"
+`include "core/isa/rv64-zicsr.v"
+`include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/lsu-defs.v"
+`include "core/decode/defs/br-defs.v"
 `timescale 1ns/1ps
 
 module tb_dispatch;
@@ -12,8 +16,6 @@ module tb_dispatch;
     logic decode_clear;
     logic [`RV64_XLEN-1:0] decode_pc;
     logic [`RV64_INSTR_WIDTH-1:0] decode_instr;
-    logic [`RV64_XLEN-1:0] decode_rs1_data;
-    logic [`RV64_XLEN-1:0] decode_rs2_data;
     logic [`RV64_XLEN-1:0] decode_imm;
     logic decode_uses_rs1;
     logic decode_uses_rs2;
@@ -35,6 +37,8 @@ module tb_dispatch;
     logic decode_illegal;
     logic decode_ebreak;
     logic decode_ecall;
+    logic decode_instr_fault;
+    logic decode_instr_page_fault;
 
     logic exec_valid;
     logic exec_clear;
@@ -44,8 +48,9 @@ module tb_dispatch;
     logic exec_system_ready;
     logic [`RV64_XLEN-1:0] exec_pc;
     logic [`RV64_INSTR_WIDTH-1:0] exec_instr;
-    logic [`RV64_XLEN-1:0] exec_rs1_data;
-    logic [`RV64_XLEN-1:0] exec_rs2_data;
+    logic [63:0] exec_trace_id;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] exec_rs1_addr;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] exec_rs2_addr;
     logic [`RV64_XLEN-1:0] exec_imm;
     logic [`RV64_REG_ADDR_WIDTH-1:0] exec_rd_addr;
     logic [`RV64_ALU_EXT_WIDTH-1:0] exec_alu_ext;
@@ -63,10 +68,18 @@ module tb_dispatch;
     logic exec_illegal;
     logic exec_ebreak;
     logic exec_ecall;
+    logic exec_instr_fault;
+    logic exec_instr_page_fault;
 
-    logic wb_valid;
-    logic wb_reg_write;
-    logic [`RV64_REG_ADDR_WIDTH-1:0] wb_rd_addr;
+    logic retire_valid;
+    logic retire_csr;
+    logic retire_fence;
+    logic retire_uses_rs1;
+    logic retire_uses_rs2;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] retire_rs1_addr;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] retire_rs2_addr;
+    logic retire_reg_write;
+    logic [`RV64_REG_ADDR_WIDTH-1:0] retire_rd_addr;
     logic raw_hazard;
     logic waw_hazard;
     logic scoreboard_stall;
@@ -79,8 +92,7 @@ module tb_dispatch;
         .decode_clear_o(decode_clear),
         .decode_pc_i(decode_pc),
         .decode_instr_i(decode_instr),
-        .decode_rs1_data_i(decode_rs1_data),
-        .decode_rs2_data_i(decode_rs2_data),
+        .decode_trace_id_i(64'h1234_5678_9abc_def0),
         .decode_imm_i(decode_imm),
         .decode_uses_rs1_i(decode_uses_rs1),
         .decode_uses_rs2_i(decode_uses_rs2),
@@ -102,6 +114,8 @@ module tb_dispatch;
         .decode_illegal_i(decode_illegal),
         .decode_ebreak_i(decode_ebreak),
         .decode_ecall_i(decode_ecall),
+        .decode_instr_fault_i(decode_instr_fault),
+        .decode_instr_page_fault_i(decode_instr_page_fault),
         .exec_valid_o(exec_valid),
         .exec_clear_i(exec_clear),
         .exec_alu_ready_i(exec_alu_ready),
@@ -110,8 +124,9 @@ module tb_dispatch;
         .exec_system_ready_i(exec_system_ready),
         .exec_pc_o(exec_pc),
         .exec_instr_o(exec_instr),
-        .exec_rs1_data_o(exec_rs1_data),
-        .exec_rs2_data_o(exec_rs2_data),
+        .exec_trace_id_o(exec_trace_id),
+        .exec_rs1_addr_o(exec_rs1_addr),
+        .exec_rs2_addr_o(exec_rs2_addr),
         .exec_imm_o(exec_imm),
         .exec_rd_addr_o(exec_rd_addr),
         .exec_alu_ext_o(exec_alu_ext),
@@ -129,9 +144,17 @@ module tb_dispatch;
         .exec_illegal_o(exec_illegal),
         .exec_ebreak_o(exec_ebreak),
         .exec_ecall_o(exec_ecall),
-        .wb_valid_i(wb_valid),
-        .wb_reg_write_i(wb_reg_write),
-        .wb_rd_addr_i(wb_rd_addr),
+        .exec_instr_fault_o(exec_instr_fault),
+        .exec_instr_page_fault_o(exec_instr_page_fault),
+        .retire_valid_i(retire_valid),
+        .retire_csr_i(retire_csr),
+        .retire_fence_i(retire_fence),
+        .retire_uses_rs1_i(retire_uses_rs1),
+        .retire_uses_rs2_i(retire_uses_rs2),
+        .retire_rs1_addr_i(retire_rs1_addr),
+        .retire_rs2_addr_i(retire_rs2_addr),
+        .retire_reg_write_i(retire_reg_write),
+        .retire_rd_addr_i(retire_rd_addr),
         .raw_hazard_o(raw_hazard),
         .waw_hazard_o(waw_hazard),
         .scoreboard_stall_o(scoreboard_stall)
@@ -147,8 +170,6 @@ module tb_dispatch;
             decode_valid = 1'b0;
             decode_pc = 64'h0;
             decode_instr = `RV64_INSTR_NOP;
-            decode_rs1_data = 64'h0;
-            decode_rs2_data = 64'h0;
             decode_imm = 64'h0;
             decode_uses_rs1 = 1'b0;
             decode_uses_rs2 = 1'b0;
@@ -170,6 +191,30 @@ module tb_dispatch;
             decode_illegal = 1'b0;
             decode_ebreak = 1'b0;
             decode_ecall = 1'b0;
+            decode_instr_fault = 1'b0;
+            decode_instr_page_fault = 1'b0;
+        end
+    endtask
+
+    task automatic check_exec_selectors;
+        input [`RV64_REG_ADDR_WIDTH-1:0] exp_rs1;
+        input [`RV64_REG_ADDR_WIDTH-1:0] exp_rs2;
+        input [`RV64_REG_ADDR_WIDTH-1:0] exp_rd;
+        input [8*48-1:0]                 label;
+        begin
+            #1;
+
+            if (exec_rs1_addr !== exp_rs1 ||
+                exec_rs2_addr !== exp_rs2 ||
+                exec_rd_addr !== exp_rd ||
+                exec_trace_id !== 64'h1234_5678_9abc_def0) begin
+                $fatal(1,
+                    "%0s: exec selectors rs1=%0d/%0d rs2=%0d/%0d rd=%0d/%0d",
+                    label,
+                    exec_rs1_addr, exp_rs1,
+                    exec_rs2_addr, exp_rs2,
+                    exec_rd_addr, exp_rd);
+            end
         end
     endtask
 
@@ -201,12 +246,86 @@ module tb_dispatch;
         end
     endtask
 
+    task automatic drive_alu_read2;
+        input [`RV64_REG_ADDR_WIDTH-1:0] rs1;
+        input [`RV64_REG_ADDR_WIDTH-1:0] rs2;
+        begin
+            clear_decode();
+            decode_valid = 1'b1;
+            decode_pc = 64'h104;
+            decode_instr = 32'h0000_0033;
+            decode_uses_rs1 = 1'b1;
+            decode_uses_rs2 = 1'b1;
+            decode_rs1_addr = rs1;
+            decode_rs2_addr = rs2;
+            decode_alu_ext = `RV64_ALU_EXT_BASE;
+            decode_alu_op = `RV64_ALU_OP_ADD;
+        end
+    endtask
+
+    task automatic clear_retire;
+        begin
+            retire_valid = 1'b0;
+            retire_csr = 1'b0;
+            retire_fence = 1'b0;
+            retire_uses_rs1 = 1'b0;
+            retire_uses_rs2 = 1'b0;
+            retire_rs1_addr = `RV64_REG_X0;
+            retire_rs2_addr = `RV64_REG_X0;
+            retire_reg_write = 1'b0;
+            retire_rd_addr = `RV64_REG_X0;
+        end
+    endtask
+
+    task automatic retire_write;
+        input [`RV64_REG_ADDR_WIDTH-1:0] rd;
+        begin
+            clear_retire();
+            retire_valid = 1'b1;
+            retire_reg_write = 1'b1;
+            retire_rd_addr = rd;
+        end
+    endtask
+
+    task automatic retire_read;
+        input [`RV64_REG_ADDR_WIDTH-1:0] rs1;
+        input [`RV64_REG_ADDR_WIDTH-1:0] rs2;
+        begin
+            clear_retire();
+            retire_valid = 1'b1;
+            retire_uses_rs1 = (rs1 != `RV64_REG_X0);
+            retire_uses_rs2 = (rs2 != `RV64_REG_X0);
+            retire_rs1_addr = rs1;
+            retire_rs2_addr = rs2;
+        end
+    endtask
+
     task automatic drive_lsu_op;
         begin
             clear_decode();
             decode_valid = 1'b1;
             decode_mem_read = 1'b1;
             decode_lsu_op = `RV64_LSU_OP_LD;
+        end
+    endtask
+
+    task automatic drive_csr;
+        begin
+            clear_decode();
+            decode_valid = 1'b1;
+            decode_instr = {12'h300, 5'd0,
+                            `RV64_ZICSR_FUNCT3_CSRRS, 5'd0,
+                            `RV64_OPCODE_SYSTEM};
+            decode_system = 1'b1;
+        end
+    endtask
+
+    task automatic drive_fence;
+        begin
+            clear_decode();
+            decode_valid = 1'b1;
+            decode_instr = 32'h0000_000f;
+            decode_fence = 1'b1;
         end
     endtask
 
@@ -241,9 +360,7 @@ module tb_dispatch;
         exec_lsu_ready = 1'b1;
         exec_br_ready = 1'b1;
         exec_system_ready = 1'b1;
-        wb_valid = 1'b0;
-        wb_reg_write = 1'b0;
-        wb_rd_addr = `RV64_REG_X0;
+        clear_retire();
         clear_decode();
 
         rst_n = 1'b0;
@@ -255,19 +372,24 @@ module tb_dispatch;
         check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "accept producer x1");
         @(posedge clk);
         @(negedge clk);
+        check_exec_selectors(`RV64_REG_X0, `RV64_REG_X0, 5'd1, "producer x1 selectors");
 
         drive_alu_read(5'd1);
         check_dispatch(1'b0, 1'b1, 1'b1, 1'b0, "stall RAW x1");
 
-        wb_valid = 1'b1;
-        wb_reg_write = 1'b1;
-        wb_rd_addr = 5'd1;
-        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle WB clears RAW");
+        retire_write(5'd1);
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle retire clears RAW");
         @(posedge clk);
         @(negedge clk);
-        wb_valid = 1'b0;
-        wb_reg_write = 1'b0;
-        wb_rd_addr = `RV64_REG_X0;
+        clear_retire();
+
+        drive_alu_write(5'd1);
+        check_dispatch(1'b0, 1'b1, 1'b0, 1'b0, "active read x1 blocks writer");
+        retire_read(5'd1, `RV64_REG_X0);
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "retire read x1 clears writer");
+        @(posedge clk);
+        @(negedge clk);
+        clear_retire();
 
         drive_alu_write(5'd2);
         check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "accept producer x2");
@@ -277,15 +399,35 @@ module tb_dispatch;
         drive_alu_write(5'd2);
         check_dispatch(1'b0, 1'b1, 1'b0, 1'b1, "stall WAW x2");
 
-        wb_valid = 1'b1;
-        wb_reg_write = 1'b1;
-        wb_rd_addr = 5'd2;
-        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle WB clears WAW");
+        retire_write(5'd2);
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "same-cycle retire clears WAW");
         @(posedge clk);
         @(negedge clk);
-        wb_valid = 1'b0;
-        wb_reg_write = 1'b0;
-        wb_rd_addr = `RV64_REG_X0;
+        clear_retire();
+
+        drive_alu_read2(5'd4, 5'd4);
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "accept double read x4");
+        @(posedge clk);
+        @(negedge clk);
+
+        drive_alu_read(5'd4);
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0, "accept parallel read x4");
+        @(posedge clk);
+        @(negedge clk);
+
+        drive_alu_write(5'd4);
+        check_dispatch(1'b0, 1'b1, 1'b0, 1'b0, "read count blocks write x4");
+        retire_read(5'd4, 5'd4);
+        check_dispatch(1'b0, 1'b1, 1'b0, 1'b0, "partial read retire still blocks x4");
+        @(posedge clk);
+        @(negedge clk);
+        clear_retire();
+
+        retire_read(5'd4, `RV64_REG_X0);
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "all reads retired clears x4 write");
+        @(posedge clk);
+        @(negedge clk);
+        clear_retire();
 
         exec_lsu_ready = 1'b0;
         drive_lsu_op();
@@ -316,7 +458,53 @@ module tb_dispatch;
         @(posedge clk);
         @(negedge clk);
 
-        $display("PASS: dispatch scoreboard and unit readiness");
+        flush = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        flush = 1'b0;
+
+        drive_csr();
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "accept csr");
+        @(posedge clk);
+        @(negedge clk);
+
+        drive_alu_read(5'd6);
+        check_dispatch(1'b0, 1'b1, 1'b0, 1'b0, "csr active blocks dispatch");
+        @(posedge clk);
+        @(negedge clk);
+        check_dispatch(1'b0, 1'b0, 1'b0, 1'b0, "csr retired slot remains blocked");
+
+        clear_retire();
+        retire_valid = 1'b1;
+        retire_csr = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        clear_retire();
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "csr retire unblocks dispatch");
+
+        drive_fence();
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "accept fence");
+        @(posedge clk);
+        @(negedge clk);
+
+        drive_alu_read(5'd7);
+        check_dispatch(1'b0, 1'b1, 1'b0, 1'b0, "fence active blocks dispatch");
+        if (!exec_fence) begin
+            $fatal(1, "accepted fence was not routed to execution");
+        end
+        @(posedge clk);
+        @(negedge clk);
+        check_dispatch(1'b0, 1'b0, 1'b0, 1'b0, "fence remains active after issue");
+
+        clear_retire();
+        retire_valid = 1'b1;
+        retire_fence = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        clear_retire();
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "fence retire unblocks dispatch");
+
+        $display("PASS: dispatch scoreboard and serializing interlocks");
         $finish;
     end
 

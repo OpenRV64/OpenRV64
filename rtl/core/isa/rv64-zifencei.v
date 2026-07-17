@@ -1,0 +1,9 @@
+`ifndef OPENRV64_RV64_ZIFENCEI_V
+`define OPENRV64_RV64_ZIFENCEI_V
+
+`include "core/isa/rv64-i.v"
+
+`define RV64_ZIFENCEI_FUNCT3_FENCE_I 3'b001
+`define RV64_INSTR_FENCE_I 32'h0000_100f
+
+`endif

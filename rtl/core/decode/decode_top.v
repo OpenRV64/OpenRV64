@@ -103,6 +103,17 @@ module openrv64_decode_top #(
     wire br_link;
     wire br_indirect;
 
+    wire system_valid;
+    wire system_illegal;
+    wire system_csr;
+    wire system_ecall;
+    wire system_ebreak;
+    wire system_sret;
+    wire system_mret;
+
+    wire fence_valid;
+    wire fence_illegal;
+
     wire reg_alu_valid;
     wire reg_alu_uses_rs1;
     wire reg_alu_uses_rs2;
@@ -118,6 +129,21 @@ module openrv64_decode_top #(
     wire [`RV64_REG_ADDR_WIDTH-1:0] reg_lsu_rs1_addr;
     wire [`RV64_REG_ADDR_WIDTH-1:0] reg_lsu_rs2_addr;
     wire [`RV64_REG_ADDR_WIDTH-1:0] reg_lsu_rd_addr;
+
+    wire reg_system_valid;
+    wire reg_system_uses_rs1;
+    wire reg_system_uses_rs2;
+    wire reg_system_uses_rd;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] reg_system_rs1_addr;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] reg_system_rs2_addr;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] reg_system_rd_addr;
+    wire unused_system_decode = |{
+        system_csr,
+        system_ecall,
+        system_ebreak,
+        system_sret,
+        system_mret
+    };
 
     wire class_is_alu = (early_class_sel == `RV64_EARLY_CLASS_ALU);
     wire class_is_mem = (early_class_sel == `RV64_EARLY_CLASS_MEM);
@@ -205,6 +231,24 @@ module openrv64_decode_top #(
         .indirect_o(br_indirect)
     );
 
+    openrv64_decode_system u_system (
+        .instr_i(instr_i),
+        .valid_o(system_valid),
+        .illegal_o(system_illegal),
+        .csr_o(system_csr),
+        .ecall_o(system_ecall),
+        .ebreak_o(system_ebreak),
+        .sret_o(system_sret),
+        .mret_o(system_mret)
+    );
+
+    openrv64_decode_fence u_fence (
+        .opcode_i(opcode),
+        .funct3_i(funct3),
+        .valid_o(fence_valid),
+        .illegal_o(fence_illegal)
+    );
+
     openrv64_decode_reg_alu u_reg_alu (
         .instr_i(instr_i),
         .valid_o(reg_alu_valid),
@@ -225,6 +269,17 @@ module openrv64_decode_top #(
         .rs1_addr_o(reg_lsu_rs1_addr),
         .rs2_addr_o(reg_lsu_rs2_addr),
         .rd_addr_o(reg_lsu_rd_addr)
+    );
+
+    openrv64_decode_reg_system u_reg_system (
+        .instr_i(instr_i),
+        .valid_o(reg_system_valid),
+        .uses_rs1_o(reg_system_uses_rs1),
+        .uses_rs2_o(reg_system_uses_rs2),
+        .uses_rd_o(reg_system_uses_rd),
+        .rs1_addr_o(reg_system_rs1_addr),
+        .rs2_addr_o(reg_system_rs2_addr),
+        .rd_addr_o(reg_system_rd_addr)
     );
 
     always @* begin
@@ -261,6 +316,19 @@ module openrv64_decode_top #(
         end else if (class_is_brjump) begin
             selected_decode_valid   = br_valid;
             selected_decode_illegal = br_illegal;
+        end else if (class_is_system) begin
+            selected_decode_valid   = system_valid;
+            selected_decode_illegal = system_illegal;
+            selected_reg_valid      = reg_system_valid;
+            selected_uses_rs1       = reg_system_uses_rs1;
+            selected_uses_rs2       = reg_system_uses_rs2;
+            selected_uses_rd        = reg_system_uses_rd;
+            selected_rs1_addr       = reg_system_rs1_addr;
+            selected_rs2_addr       = reg_system_rs2_addr;
+            selected_rd_addr        = reg_system_rd_addr;
+        end else if (class_is_fence) begin
+            selected_decode_valid   = fence_valid;
+            selected_decode_illegal = fence_illegal;
         end
     end
 
@@ -285,7 +353,8 @@ module openrv64_decode_top #(
     assign rs1_addr_o = uses_rs1_o ? selected_rs1_addr : `RV64_REG_X0;
     assign rs2_addr_o = uses_rs2_o ? selected_rs2_addr : `RV64_REG_X0;
     assign rd_addr_o  = uses_rd_o ? selected_rd_addr : `RV64_REG_X0;
-    assign reg_write_o = valid_o && early_reg_write;
+    assign reg_write_o = valid_o &&
+                         (class_is_system ? reg_system_uses_rd : early_reg_write);
 
     assign has_imm_o = imm_valid_o && imm_decode_has_imm;
     assign imm_o = imm_valid_o ? imm_decode_value : {`RV64_XLEN{1'b0}};

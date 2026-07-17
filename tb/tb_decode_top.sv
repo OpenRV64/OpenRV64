@@ -1,5 +1,8 @@
 `timescale 1ns/1ps
 `include "core/decode/decode_top.v"
+`include "core/isa/rv64-zicsr.v"
+`include "core/isa/rv64-priv.v"
+`include "core/isa/rv64-zifencei.v"
 `timescale 1ns/1ps
 
 module tb_decode_top;
@@ -206,6 +209,87 @@ module tb_decode_top;
         if (!br_link || !br_indirect) begin
             $fatal(1, "jalr did not assert link/indirect outputs");
         end
+
+        instr = 32'h0ff0_000f;
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_FENCE, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h0ff, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "fence");
+        if (!fence_instr) begin
+            $fatal(1, "fence did not assert fence output");
+        end
+
+        instr = `RV64_INSTR_FENCE_I;
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_FENCE, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h0, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "fence.i");
+        if (!fence_instr) begin
+            $fatal(1, "fence.i did not assert fence output");
+        end
+
+        instr = 32'h0000_200f;
+        check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_FENCE, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h0, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "invalid misc-mem funct3");
+
+        instr = {`RV64_CSR_MTVEC, 5'd4,
+                 `RV64_ZICSR_FUNCT3_CSRRW, 5'd5,
+                 `RV64_OPCODE_SYSTEM};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
+                     1'b1, 1'b0, 1'b1, 5'd4, `RV64_REG_X0, 5'd5, 1'b1,
+                     1'b1, 64'h305, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "csrrw");
+
+        if (!system_instr) begin
+            $fatal(1, "csrrw did not assert system output");
+        end
+
+        instr = {`RV64_CSR_MSTATUS, 5'd7,
+                 `RV64_ZICSR_FUNCT3_CSRRWI, 5'd6,
+                 `RV64_OPCODE_SYSTEM};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b1, `RV64_REG_X0, `RV64_REG_X0, 5'd6, 1'b1,
+                     1'b1, 64'h300, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "csrrwi");
+
+        instr = `RV64_INSTR_MRET;
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h302, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "mret");
+
+        instr = `RV64_INSTR_SRET;
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h102, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "sret");
+
+        instr = {`RV64_PRIV_FUNCT7_SFENCE_VMA, 5'd2, 5'd1,
+                 `RV64_FUNCT3_SYSTEM_PRIV, 5'd0, `RV64_OPCODE_SYSTEM};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h122, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "sfence.vma full-flush decode");
+        if (!system_instr) begin
+            $fatal(1, "sfence.vma did not assert system output");
+        end
+
+        instr = {12'h300, 5'd0, 3'b100, 5'd0, `RV64_OPCODE_SYSTEM};
+        check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
+                     1'b1, 64'h300, 1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
+                     "invalid system funct3");
 
         instr = {12'h000, 5'd1, 3'b001, 5'd2, `RV64_OPCODE_JALR};
         check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_JUMP, `RV64_EARLY_FORMAT_I,

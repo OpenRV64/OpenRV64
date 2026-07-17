@@ -1,10 +1,15 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-m.v"
+`include "core/isa/rv64-zifencei.v"
+`include "core/isa/rv64-zicsr.v"
+`include "core/isa/rv64-priv.v"
+`include "core/except/except-defs.v"
 
 module tb_openrv64_top;
 
-    localparam logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0000;
+    localparam logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0100;
+    localparam int unsigned RESET_INSTR_INDEX = RESET_VECTOR >> 2;
     localparam int unsigned MEM_WORDS = 64;
 
     logic        clk;
@@ -19,12 +24,34 @@ module tb_openrv64_top;
     logic [63:0] dbg_pc;
     logic [31:0] dbg_instr;
     logic        dbg_halted;
+    logic [63:0]  trace_cycle;
+    logic [4:0]   trace_valid;
+    logic [4:0]   trace_stall;
+    logic [4:0]   trace_flush;
+    logic [4:0]   trace_advance;
+    logic [319:0] trace_ids;
+    logic [319:0] trace_pcs;
+    logic [159:0] trace_instrs;
+    logic [7:0]   trace_events;
+    logic [7:0]   trace_stall_causes;
+    logic         trace_retire_valid;
+    logic         trace_retire_arch;
+    logic         trace_retire_exception;
+    logic [4:0]   trace_retire_cause;
+    logic [63:0]  trace_retire_next_pc;
+    logic         trace_retire_rd_write;
+    logic [4:0]   trace_retire_rd;
+    logic [63:0]  trace_retire_wdata;
 
     logic [63:0] memory [0:MEM_WORDS-1];
     logic        saw_jal_link_store;
     logic        saw_jalr_link_store;
     logic        saw_mul_store;
+    logic        saw_fence_i_restart;
+    logic        saw_pmp_trap;
     logic        mem_addr_in_range;
+    integer      trace_arch_count;
+    integer      trace_exception_count;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
     assign mem_ready = mem_valid;
@@ -34,7 +61,8 @@ module tb_openrv64_top;
 
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
-        .ENABLE_RV64M(1'b1)
+        .ENABLE_RV64M(1'b1),
+        .ENABLE_TRACE(1'b1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -45,9 +73,57 @@ module tb_openrv64_top;
         .mem_wdata(mem_wdata),
         .mem_wstrb(mem_wstrb),
         .mem_rdata(mem_rdata),
+        .mem_error(1'b0),
+        .irq_m_software(1'b0),
+        .irq_m_timer(1'b0),
+        .irq_m_external(1'b0),
+        .irq_s_software(1'b0),
+        .irq_s_timer(1'b0),
+        .irq_s_external(1'b0),
         .dbg_pc(dbg_pc),
         .dbg_instr(dbg_instr),
-        .dbg_halted(dbg_halted)
+        .dbg_halted(dbg_halted),
+        .trace_cycle(trace_cycle),
+        .trace_valid(trace_valid),
+        .trace_stall(trace_stall),
+        .trace_flush(trace_flush),
+        .trace_advance(trace_advance),
+        .trace_ids(trace_ids),
+        .trace_pcs(trace_pcs),
+        .trace_instrs(trace_instrs),
+        .trace_events(trace_events),
+        .trace_stall_causes(trace_stall_causes),
+        .trace_retire_valid(trace_retire_valid),
+        .trace_retire_arch(trace_retire_arch),
+        .trace_retire_exception(trace_retire_exception),
+        .trace_retire_cause(trace_retire_cause),
+        .trace_retire_next_pc(trace_retire_next_pc),
+        .trace_retire_rd_write(trace_retire_rd_write),
+        .trace_retire_rd(trace_retire_rd),
+        .trace_retire_wdata(trace_retire_wdata)
+    );
+
+    openrv64_cycle_trace u_cycle_trace (
+        .clk(clk),
+        .rst_n(rst_n),
+        .trace_cycle(trace_cycle),
+        .trace_valid(trace_valid),
+        .trace_stall(trace_stall),
+        .trace_flush(trace_flush),
+        .trace_advance(trace_advance),
+        .trace_ids(trace_ids),
+        .trace_pcs(trace_pcs),
+        .trace_instrs(trace_instrs),
+        .trace_events(trace_events),
+        .trace_stall_causes(trace_stall_causes),
+        .trace_retire_valid(trace_retire_valid),
+        .trace_retire_arch(trace_retire_arch),
+        .trace_retire_exception(trace_retire_exception),
+        .trace_retire_cause(trace_retire_cause),
+        .trace_retire_next_pc(trace_retire_next_pc),
+        .trace_retire_rd_write(trace_retire_rd_write),
+        .trace_retire_rd(trace_retire_rd),
+        .trace_retire_wdata(trace_retire_wdata)
     );
 
     initial begin
@@ -111,6 +187,16 @@ module tb_openrv64_top;
         end
     endfunction
 
+    function automatic logic [31:0] enc_csrrw;
+        input logic [4:0] rd;
+        input logic [`RV64_FUNCT12_WIDTH-1:0] csr;
+        input logic [4:0] rs1;
+        begin
+            enc_csrrw = {csr, rs1, `RV64_ZICSR_FUNCT3_CSRRW,
+                         rd, `RV64_OPCODE_SYSTEM};
+        end
+    endfunction
+
     initial begin
         int i;
 
@@ -118,25 +204,51 @@ module tb_openrv64_top;
             memory[i] = 64'h0000_0000_0000_0000;
         end
 
-        put_instr(0,  enc_jal(5'd4, 21'h00010));           // jal  x4, +0x10
-        put_instr(1,  `RV64_INSTR_EBREAK);                 // skipped by JAL
-        put_instr(2,  `RV64_INSTR_NOP);
-        put_instr(3,  `RV64_INSTR_NOP);
-        put_instr(4,  enc_addi(5'd5, `RV64_REG_X0, 12'h030)); // addi x5, x0, 0x30
-        put_instr(5,  enc_jalr(5'd6, 5'd5, 12'h000));      // jalr x6, 0(x5)
-        put_instr(6,  `RV64_INSTR_EBREAK);                 // skipped by JALR
-        put_instr(7,  `RV64_INSTR_NOP);
-        put_instr(8,  `RV64_INSTR_NOP);
-        put_instr(9,  `RV64_INSTR_NOP);
-        put_instr(10, `RV64_INSTR_NOP);
-        put_instr(11, `RV64_INSTR_NOP);
-        put_instr(12, enc_sd(5'd4, `RV64_REG_X0, 12'h080)); // sd x4, 0x80(x0)
-        put_instr(13, enc_sd(5'd6, `RV64_REG_X0, 12'h088)); // sd x6, 0x88(x0)
-        put_instr(14, enc_addi(5'd7, `RV64_REG_X0, 12'd6)); // addi x7, x0, 6
-        put_instr(15, enc_addi(5'd8, `RV64_REG_X0, 12'd7)); // addi x8, x0, 7
-        put_instr(16, enc_mul(5'd9, 5'd7, 5'd8));           // mul x9, x7, x8
-        put_instr(17, enc_sd(5'd9, `RV64_REG_X0, 12'h090)); // sd x9, 0x90(x0)
-        put_instr(18, `RV64_INSTR_EBREAK);
+        put_instr(RESET_INSTR_INDEX + 0,  enc_jal(5'd4, 21'h00010));
+        put_instr(RESET_INSTR_INDEX + 1,  `RV64_INSTR_EBREAK);
+        put_instr(RESET_INSTR_INDEX + 2,  `RV64_INSTR_NOP);
+        put_instr(RESET_INSTR_INDEX + 3,  `RV64_INSTR_NOP);
+        put_instr(RESET_INSTR_INDEX + 4,
+                  enc_addi(5'd5, `RV64_REG_X0, 12'h130));
+        put_instr(RESET_INSTR_INDEX + 5,
+                  enc_jalr(5'd6, 5'd5, 12'h000));
+        put_instr(RESET_INSTR_INDEX + 6,  `RV64_INSTR_EBREAK);
+        put_instr(RESET_INSTR_INDEX + 7,  `RV64_INSTR_NOP);
+        put_instr(RESET_INSTR_INDEX + 8,  `RV64_INSTR_NOP);
+        put_instr(RESET_INSTR_INDEX + 9,  `RV64_INSTR_NOP);
+        put_instr(RESET_INSTR_INDEX + 10, `RV64_INSTR_NOP);
+        put_instr(RESET_INSTR_INDEX + 11, `RV64_INSTR_NOP);
+        put_instr(RESET_INSTR_INDEX + 12, 32'h0ff0_000f);
+        put_instr(RESET_INSTR_INDEX + 13, `RV64_INSTR_FENCE_I);
+        put_instr(RESET_INSTR_INDEX + 14,
+                  enc_sd(5'd4, `RV64_REG_X0, 12'h080));
+        put_instr(RESET_INSTR_INDEX + 15,
+                  enc_sd(5'd6, `RV64_REG_X0, 12'h088));
+        put_instr(RESET_INSTR_INDEX + 16,
+                  enc_addi(5'd7, `RV64_REG_X0, 12'd6));
+        put_instr(RESET_INSTR_INDEX + 17,
+                  enc_addi(5'd8, `RV64_REG_X0, 12'd7));
+        put_instr(RESET_INSTR_INDEX + 18,
+                  enc_mul(5'd9, 5'd7, 5'd8));
+        put_instr(RESET_INSTR_INDEX + 19,
+                  enc_sd(5'd9, `RV64_REG_X0, 12'h090));
+        put_instr(RESET_INSTR_INDEX + 20,
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h180));
+        put_instr(RESET_INSTR_INDEX + 21,
+                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_MTVEC, 5'd10));
+        put_instr(RESET_INSTR_INDEX + 22,
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h080));
+        put_instr(RESET_INSTR_INDEX + 23,
+                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPADDR0, 5'd10));
+        put_instr(RESET_INSTR_INDEX + 24,
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h08d));
+        put_instr(RESET_INSTR_INDEX + 25,
+                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPCFG0, 5'd10));
+        put_instr(RESET_INSTR_INDEX + 26,
+                  enc_sd(5'd9, `RV64_REG_X0, 12'h098));
+        put_instr(RESET_INSTR_INDEX + 27, `RV64_INSTR_EBREAK);
+        put_instr(RESET_INSTR_INDEX + 32,
+                  enc_jal(`RV64_REG_X0, 21'h000000));
 
         rst_n = 1'b0;
         repeat (4) @(posedge clk);
@@ -149,6 +261,16 @@ module tb_openrv64_top;
             saw_jal_link_store <= 1'b0;
             saw_jalr_link_store <= 1'b0;
             saw_mul_store <= 1'b0;
+            saw_fence_i_restart <= 1'b0;
+            saw_pmp_trap <= 1'b0;
+            trace_arch_count <= 0;
+            trace_exception_count <= 0;
+        end else if (dut.u_core.hard_flush_trap_req &&
+                     dut.u_core.exec_wb_cause ==
+                     `RV64_EXCEPT_CAUSE_STORE_ACCESS_FAULT) begin
+            saw_pmp_trap <= 1'b1;
+        end else if (dut.u_core.hard_flush_restart_req) begin
+            saw_fence_i_restart <= 1'b1;
         end else if (mem_valid && mem_write) begin
             int lane;
 
@@ -167,6 +289,34 @@ module tb_openrv64_top;
                 end
             end
         end
+
+        if (rst_n) begin
+            if (trace_retire_arch) begin
+                trace_arch_count <= trace_arch_count + 1;
+            end
+
+            if (trace_retire_exception) begin
+                trace_exception_count <= trace_exception_count + 1;
+            end
+        end
+    end
+
+    always @(negedge clk) begin
+        integer trace_stage;
+
+        if (rst_n) begin
+            for (trace_stage = 0; trace_stage < 5; trace_stage++) begin
+                if (trace_valid[trace_stage] &&
+                    trace_ids[trace_stage*64 +: 64] == 64'd0) begin
+                    $fatal(1, "valid trace stage %0d has UID zero", trace_stage);
+                end
+            end
+
+            if (trace_retire_valid &&
+                (!trace_valid[4] || trace_ids[4*64 +: 64] == 64'd0)) begin
+                $fatal(1, "trace retirement lacks a valid WB UID");
+            end
+        end
     end
 
     always @(posedge clk) begin
@@ -182,13 +332,13 @@ module tb_openrv64_top;
 
                 case (mem_addr)
                     64'h0000_0000_0000_0080: begin
-                        if (mem_wdata != 64'h0000_0000_0000_0004) begin
+                        if (mem_wdata != 64'h0000_0000_0000_0104) begin
                             $fatal(1, "unexpected JAL link data: %016x", mem_wdata);
                         end
                     end
 
                     64'h0000_0000_0000_0088: begin
-                        if (mem_wdata != 64'h0000_0000_0000_0018) begin
+                        if (mem_wdata != 64'h0000_0000_0000_0118) begin
                             $fatal(1, "unexpected JALR link data: %016x", mem_wdata);
                         end
                     end
@@ -214,15 +364,11 @@ module tb_openrv64_top;
             end
         end
 
-        if (rst_n && dbg_halted) begin
-            if (dbg_pc != 64'h0000_0000_0000_0048) begin
-                $fatal(1, "halt pc mismatch: %016x", dbg_pc);
-            end
+        if (rst_n && dbg_halted && !saw_pmp_trap) begin
+            $fatal(1, "unexpected halt before PMP trap: pc=%016x", dbg_pc);
+        end
 
-            if (dbg_instr != `RV64_INSTR_EBREAK) begin
-                $fatal(1, "halt instruction mismatch: %08x", dbg_instr);
-            end
-
+        if (rst_n && saw_pmp_trap) begin
             #1;
 
             if (!saw_jal_link_store) begin
@@ -237,11 +383,51 @@ module tb_openrv64_top;
                 $fatal(1, "MUL result store never reached memory bus");
             end
 
-            if (memory[16] != 64'h0000_0000_0000_0004) begin
+            if (!saw_fence_i_restart) begin
+                $fatal(1, "FENCE.I did not issue a frontend restart");
+            end
+
+            if (dut.u_core.u_csrs.minstret_q != 64'd17) begin
+                $fatal(1, "minstret mismatch: %0d",
+                       dut.u_core.u_csrs.minstret_q);
+            end
+
+            if (trace_arch_count != 17 || trace_exception_count != 1) begin
+                $fatal(1, "trace retire counts mismatch: arch=%0d exception=%0d",
+                       trace_arch_count, trace_exception_count);
+            end
+
+            if (dut.u_core.u_csrs.mcycle_q <=
+                dut.u_core.u_csrs.minstret_q) begin
+                $fatal(1, "mcycle did not advance independently");
+            end
+
+            if (dut.u_core.u_csrs.mcause_q !=
+                `RV64_EXCEPT_CAUSE_STORE_ACCESS_FAULT) begin
+                $fatal(1,
+                       "PMP trap mcause mismatch: %016x cfg=%016x addr0=%016x",
+                       dut.u_core.u_csrs.mcause_q,
+                       dut.u_core.u_csrs.u_pmp.pmpcfg0_q,
+                       dut.u_core.u_csrs.u_pmp.pmpaddr_q[0]);
+            end
+
+            if (dut.u_core.u_csrs.mepc_q != 64'h168 ||
+                dut.u_core.u_csrs.mtval_q != 64'h98) begin
+                $fatal(1, "PMP trap context mismatch: mepc=%016x mtval=%016x",
+                       dut.u_core.u_csrs.mepc_q,
+                       dut.u_core.u_csrs.mtval_q);
+            end
+
+            if (memory[19] != 64'h0) begin
+                $fatal(1, "PMP-denied store reached memory: %016x",
+                       memory[19]);
+            end
+
+            if (memory[16] != 64'h0000_0000_0000_0104) begin
                 $fatal(1, "JAL link store mismatch: %016x", memory[16]);
             end
 
-            if (memory[17] != 64'h0000_0000_0000_0018) begin
+            if (memory[17] != 64'h0000_0000_0000_0118) begin
                 $fatal(1, "JALR link store mismatch: %016x", memory[17]);
             end
 
@@ -249,14 +435,14 @@ module tb_openrv64_top;
                 $fatal(1, "MUL result store mismatch: %016x", memory[18]);
             end
 
-            $display("PASS: halted at pc=%016x instr=%08x jal_link=%016x jalr_link=%016x mul=%016x",
-                     dbg_pc, dbg_instr, memory[16], memory[17], memory[18]);
+            $display("PASS: FENCE.I restart and PMP trap context; jal_link=%016x jalr_link=%016x mul=%016x",
+                     memory[16], memory[17], memory[18]);
             $finish;
         end
     end
 
     initial begin
-        repeat (256) @(posedge clk);
+        repeat (480) @(posedge clk);
         $fatal(1, "timeout waiting for halt");
     end
 

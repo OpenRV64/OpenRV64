@@ -57,7 +57,7 @@ module openrv64_exec_lsu_rv64i (
             load_data_o   = load_data;
             mem_valid_o   = !misaligned_o;
             mem_write_o   = 1'b0;
-            mem_addr_o    = {effective_addr[`RV64_XLEN-1:3], 3'b000};
+            mem_addr_o    = effective_addr;
             mem_wdata_o   = {`RV64_XLEN{1'b0}};
             mem_wstrb_o   = 8'h00;
         end
@@ -74,7 +74,7 @@ module openrv64_exec_lsu_rv64i (
             load_data_o   = {`RV64_XLEN{1'b0}};
             mem_valid_o   = !misaligned_o;
             mem_write_o   = !misaligned_o;
-            mem_addr_o    = {effective_addr[`RV64_XLEN-1:3], 3'b000};
+            mem_addr_o    = effective_addr;
             mem_wdata_o   = misaligned_o ? {`RV64_XLEN{1'b0}} : write_data;
             mem_wstrb_o   = misaligned_o ? 8'h00 : write_strobe;
         end
@@ -101,7 +101,7 @@ module openrv64_exec_lsu_rv64i (
         load_data_o  = {`RV64_XLEN{1'b0}};
         mem_valid_o  = 1'b0;
         mem_write_o  = 1'b0;
-        mem_addr_o   = {effective_addr[`RV64_XLEN-1:3], 3'b000};
+        mem_addr_o   = effective_addr;
         mem_wdata_o  = {`RV64_XLEN{1'b0}};
         mem_wstrb_o  = 8'h00;
 

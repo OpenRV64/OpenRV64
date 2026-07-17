@@ -1,0 +1,80 @@
+OpenRV64 core, CLINT, and PLIC integration
+==========================================
+
+Scope
+-----
+
+The core does not instantiate platform interrupt controllers. The SoC owns
+the CLINT, PLIC, address decoder, peripheral source routing, and any clock
+domain crossings. The core only exposes architectural interrupt inputs.
+
+Core interrupt inputs
+---------------------
+
+All interrupt inputs are active-high levels:
+
+    irq_m_software    machine software interrupt (MSIP, cause 3)
+    irq_m_timer       machine timer interrupt    (MTIP, cause 7)
+    irq_m_external    machine external interrupt (MEIP, cause 11)
+    irq_s_software    supervisor software interrupt (SSIP, cause 1)
+    irq_s_timer       supervisor timer interrupt    (STIP, cause 5)
+    irq_s_external    supervisor external interrupt (SEIP, cause 9)
+
+There is no interrupt-acknowledge signal from the core. The source remains
+asserted until software clears the corresponding device state through MMIO.
+Synchronize a level in the SoC before presenting it to the core if the source
+is in another clock domain. Tie unused inputs low.
+
+Current CLINT and PLIC wiring
+-----------------------------
+
+For hart H, connect:
+
+    clint.msip_o[H] -> core.irq_m_software
+    clint.mtip_o[H] -> core.irq_m_timer
+    plic.meip_o[H]  -> core.irq_m_external
+
+The current PLIC implements machine contexts only. It does not produce SEIP.
+Do not connect meip_o to irq_s_external: MEIP and SEIP are different
+architectural interrupt causes, and machine interrupt causes are not converted
+to supervisor causes by mideleg.
+
+The core already accepts SSIP, STIP, and SEIP levels. A future supervisor
+PLIC context, supervisor software-interrupt block, or supervisor timer source
+should drive the corresponding irq_s_* input. The current SoC should tie all
+three irq_s_* inputs low.
+
+PLIC source bit zero represents architectural source ID 1. Route UART, GPIO,
+general-purpose timer, and other platform interrupt outputs into selected bits
+of plic.irq_sources_i and keep that source-ID assignment stable in the SoC
+memory-map documentation.
+
+MMIO bus integration
+--------------------
+
+The core is the single initiator on the blocking 64-bit memory bus. Connect its
+mem_* request to openrv64_soc_bus_decode. The decoder selects at most one target
+and returns that target's mem_ready and mem_rdata to the core. Connect
+mem_error_o to the core's mem_error input; decode failures then become the
+appropriate instruction, load, or store access-fault exception.
+
+The global windows are defined in rtl/soc/bus/mem_map.v:
+
+    ROM:   0x0000000000001000, size 0x00010000
+    RAM:   0x0000000080000000, size 0x00010000
+    CLINT: 0x0000000002000000, size 0x00010000
+    PLIC:  0x000000000c000000, size 0x04000000
+
+openrv64_soc_bus_decode subtracts these global bases. Therefore the CLINT and
+PLIC mem_addr_i ports receive target-local byte offsets, not global physical
+addresses. Forward mem_write, mem_wdata, and mem_wstrb unchanged. Hold the
+selected request stable until the selected target raises mem_ready.
+
+Software enable path
+--------------------
+
+An asserted device level is only pending state. Software must also enable the
+corresponding mie bit and global interrupt-enable state. Supervisor interrupt
+inputs additionally use mideleg and the supervisor enable state. Trap entry,
+cause selection, privilege transition, context save, and pipeline flush are
+handled inside the core.
