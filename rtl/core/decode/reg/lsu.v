@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-a.v"
 
 module openrv64_decode_reg_lsu (
     input  wire [`RV64_INSTR_WIDTH-1:0] instr_i,
@@ -39,6 +40,18 @@ module openrv64_decode_reg_lsu (
                 uses_rs2_o = 1'b1;
                 rs1_addr_o = `RV64_RS1(instr_i);
                 rs2_addr_o = `RV64_RS2(instr_i);
+            end
+
+            `RV64_OPCODE_AMO: begin
+                valid_o    = 1'b1;
+                uses_rs1_o = 1'b1;
+                uses_rs2_o = (`RV64_AMO_FUNCT5(instr_i) !=
+                              `RV64_AMO_FUNCT5_LR);
+                uses_rd_o  = 1'b1;
+                rs1_addr_o = `RV64_RS1(instr_i);
+                rs2_addr_o = uses_rs2_o ? `RV64_RS2(instr_i) :
+                                          `RV64_REG_X0;
+                rd_addr_o  = `RV64_RD(instr_i);
             end
 
             default: begin

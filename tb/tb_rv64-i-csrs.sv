@@ -232,7 +232,7 @@ module tb_rv64i_csrs;
         check_csr(`RV64_CSR_MSTATUS, 1'b1, 1'b1,
                   64'h0000_000a_0000_1800, "mstatus reset");
         check_csr(`RV64_CSR_MISA, 1'b1, 1'b0,
-                  64'h8000_0000_0014_1100, "misa rv64imsu");
+                  64'h8000_0000_0014_1101, "misa rv64aimsu");
         check_csr(`RV64_CSR_MHARTID, 1'b1, 1'b0, 64'd3, "mhartid");
         check_csr(`RV64_CSR_PMPCFG0, 1'b1, 1'b1, 64'h0, "pmpcfg0 reset");
         check_csr(12'hfff, 1'b0, 1'b0, 64'h0, "unimplemented csr");
@@ -264,8 +264,10 @@ module tb_rv64i_csrs;
         write_csr(`RV64_CSR_MCYCLE, 64'd100);
         check_csr(`RV64_CSR_MCYCLE, 1'b1, 1'b1, 64'd100,
                   "mcycle write");
+        check_csr(`RV64_CSR_TIME, 1'b1, 1'b0, 64'd100,
+                  "limited time alias");
         write_csr(`RV64_CSR_MCOUNTEREN, 64'hffff_ffff_ffff_ffff);
-        check_csr(`RV64_CSR_MCOUNTEREN, 1'b1, 1'b1, 64'd5,
+        check_csr(`RV64_CSR_MCOUNTEREN, 1'b1, 1'b1, 64'd7,
                   "mcounteren WARL mask");
 
         write_csr(`RV64_CSR_MINSTRET, 64'd20);
@@ -327,9 +329,11 @@ module tb_rv64i_csrs;
         write_csr(`RV64_CSR_STVEC, 64'h0000_0000_0000_0201);
         write_csr(`RV64_CSR_MCOUNTEREN,
                   (64'd1 << `RV64_MCOUNTER_CY_BIT) |
+                  (64'd1 << `RV64_MCOUNTER_TM_BIT) |
                   (64'd1 << `RV64_MCOUNTER_IR_BIT));
         write_csr(`RV64_CSR_SCOUNTEREN,
                   (64'd1 << `RV64_MCOUNTER_CY_BIT) |
+                  (64'd1 << `RV64_MCOUNTER_TM_BIT) |
                   (64'd1 << `RV64_MCOUNTER_IR_BIT));
         write_csr(`RV64_CSR_MEPC, 64'h0000_0000_0000_0400);
         write_csr(`RV64_CSR_MSTATUS,
@@ -345,6 +349,8 @@ module tb_rv64i_csrs;
                   "U-mode supervisor CSR denied");
         check_csr(`RV64_CSR_CYCLE, 1'b1, 1'b0, 64'd100,
                   "U-mode cycle access");
+        check_csr(`RV64_CSR_TIME, 1'b1, 1'b0, 64'd100,
+                  "U-mode time access");
         check_csr(`RV64_CSR_SATP, 1'b0, 1'b0, 64'h0,
                   "U-mode satp denied");
 

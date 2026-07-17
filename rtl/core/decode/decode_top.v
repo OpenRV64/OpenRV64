@@ -6,7 +6,8 @@
 `include "core/decode/defs/br-defs.v"
 
 module openrv64_decode_top #(
-    parameter ENABLE_RV64M = 1
+    parameter ENABLE_RV64M = 1,
+    parameter ENABLE_RV64A = 1
 ) (
     input  wire [`RV64_INSTR_WIDTH-1:0] instr_i,
 
@@ -207,9 +208,10 @@ module openrv64_decode_top #(
         .word_op_o(alu_word_op)
     );
 
-    openrv64_decode_lsu u_lsu (
-        .opcode_i(opcode),
-        .funct3_i(funct3),
+    openrv64_decode_lsu #(
+        .ENABLE_RV64A(ENABLE_RV64A)
+    ) u_lsu (
+        .instr_i(instr_i),
         .valid_o(lsu_valid),
         .illegal_o(lsu_illegal),
         .op_sel_o(lsu_op_sel),

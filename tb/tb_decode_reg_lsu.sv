@@ -62,6 +62,16 @@ module tb_decode_reg_lsu;
         check({7'b0000000, 5'd8, 5'd7, `RV64_FUNCT3_SD, 5'b00000, `RV64_OPCODE_STORE},
               1'b1, 1'b1, 1'b1, 1'b0, 5'd7, 5'd8, `RV64_REG_X0, "store regs");
 
+        check({`RV64_AMO_FUNCT5_LR, 2'b00, 5'd0, 5'd7,
+               `RV64_AMO_FUNCT3_W, 5'd9, `RV64_OPCODE_AMO},
+              1'b1, 1'b1, 1'b0, 1'b1, 5'd7, `RV64_REG_X0, 5'd9,
+              "lr regs");
+
+        check({`RV64_AMO_FUNCT5_ADD, 2'b00, 5'd8, 5'd7,
+               `RV64_AMO_FUNCT3_D, 5'd9, `RV64_OPCODE_AMO},
+              1'b1, 1'b1, 1'b1, 1'b1, 5'd7, 5'd8, 5'd9,
+              "amo regs");
+
         check({`RV64_FUNCT7_ADD, 5'd2, 5'd1, `RV64_FUNCT3_ADD_SUB, 5'd3, `RV64_OPCODE_OP},
               1'b0, 1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, "non lsu");
 

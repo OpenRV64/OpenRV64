@@ -6,8 +6,10 @@
 // Privileged trap-return instructions.
 `define RV64_PRIV_FUNCT12_SRET 12'h102
 `define RV64_PRIV_FUNCT12_MRET 12'h302
+`define RV64_PRIV_FUNCT12_WFI  12'h105
 `define RV64_INSTR_SRET 32'h1020_0073
 `define RV64_INSTR_MRET 32'h3020_0073
+`define RV64_INSTR_WFI  32'h1050_0073
 `define RV64_PRIV_FUNCT7_SFENCE_VMA 7'b0001001
 `define RV64_INSTR_SFENCE_VMA_MASK 32'hfe00_7fff
 `define RV64_INSTR_SFENCE_VMA_MATCH 32'h1200_0073
@@ -54,6 +56,7 @@
 `define RV64_CSR_MCYCLE     12'hb00
 `define RV64_CSR_MINSTRET   12'hb02
 `define RV64_CSR_CYCLE      12'hc00
+`define RV64_CSR_TIME       12'hc01
 `define RV64_CSR_INSTRET    12'hc02
 
 // Current privilege encoding.
@@ -85,6 +88,7 @@
 
 // Machine counter control bits.
 `define RV64_MCOUNTER_CY_BIT 0
+`define RV64_MCOUNTER_TM_BIT 1
 `define RV64_MCOUNTER_IR_BIT 2
 
 // Physical memory protection configuration byte fields.

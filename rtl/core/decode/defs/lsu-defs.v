@@ -7,18 +7,29 @@
 `define RV64_LSU_SIZE_WORD 2'd2
 `define RV64_LSU_SIZE_DWORD 2'd3
 
-`define RV64_LSU_OP_WIDTH 4
-`define RV64_LSU_OP_INVALID 4'd0
-`define RV64_LSU_OP_LB 4'd1
-`define RV64_LSU_OP_LH 4'd2
-`define RV64_LSU_OP_LW 4'd3
-`define RV64_LSU_OP_LD 4'd4
-`define RV64_LSU_OP_LBU 4'd5
-`define RV64_LSU_OP_LHU 4'd6
-`define RV64_LSU_OP_LWU 4'd7
-`define RV64_LSU_OP_SB 4'd8
-`define RV64_LSU_OP_SH 4'd9
-`define RV64_LSU_OP_SW 4'd10
-`define RV64_LSU_OP_SD 4'd11
+`define RV64_LSU_OP_WIDTH 5
+`define RV64_LSU_OP_INVALID 5'd0
+`define RV64_LSU_OP_LB 5'd1
+`define RV64_LSU_OP_LH 5'd2
+`define RV64_LSU_OP_LW 5'd3
+`define RV64_LSU_OP_LD 5'd4
+`define RV64_LSU_OP_LBU 5'd5
+`define RV64_LSU_OP_LHU 5'd6
+`define RV64_LSU_OP_LWU 5'd7
+`define RV64_LSU_OP_SB 5'd8
+`define RV64_LSU_OP_SH 5'd9
+`define RV64_LSU_OP_SW 5'd10
+`define RV64_LSU_OP_SD 5'd11
+`define RV64_LSU_OP_LR 5'd12
+`define RV64_LSU_OP_SC 5'd13
+`define RV64_LSU_OP_AMOSWAP 5'd14
+`define RV64_LSU_OP_AMOADD 5'd15
+`define RV64_LSU_OP_AMOXOR 5'd16
+`define RV64_LSU_OP_AMOAND 5'd17
+`define RV64_LSU_OP_AMOOR 5'd18
+`define RV64_LSU_OP_AMOMIN 5'd19
+`define RV64_LSU_OP_AMOMAX 5'd20
+`define RV64_LSU_OP_AMOMINU 5'd21
+`define RV64_LSU_OP_AMOMAXU 5'd22
 
 `endif

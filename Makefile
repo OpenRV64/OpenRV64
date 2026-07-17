@@ -40,6 +40,8 @@ PREFIX_ADDSUB_SIM_BUILD := sim/prefix_addsub_tb.vvp
 EXEC_ALU_RV64I_SIM_BUILD := sim/exec_alu_rv64-i_tb.vvp
 EXEC_ALU_RV64M_SIM_BUILD := sim/exec_alu_rv64-m_tb.vvp
 EXEC_LSU_RV64I_SIM_BUILD := sim/exec_lsu_rv64-i_tb.vvp
+EXEC_LSU_RV64A_SIM_BUILD := sim/exec_lsu_rv64-a_tb.vvp
+ATOMIC_CONTEXT_SIM_BUILD := sim/atomic_context_tb.vvp
 EXEC_BR_SIM_BUILD := sim/exec_br_tb.vvp
 EXEC_BP_SIM_BUILD := sim/exec_bp_tb.vvp
 BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD := sim/bp_context_always_branch_tb.vvp
@@ -51,7 +53,7 @@ TRAP_CONTEXT_SIM_BUILD := sim/trap_context_tb.vvp
 PRIV_CONTEXT_SIM_BUILD := sim/priv_context_tb.vvp
 IRQ_CONTEXT_SIM_BUILD := sim/irq_context_tb.vvp
 DISPATCH_SIM_BUILD := sim/dispatch_tb.vvp
-ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-m.v \
+ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zicsr.v rtl/core/isa/rv64-priv.v rtl/core/isa/rv64-zifencei.v \
 	rtl/core/isa/rv64-zba.v rtl/core/isa/rv64-zbb.v \
 	rtl/core/isa/rv64-zbc.v rtl/core/isa/rv64-zbs.v rtl/core/isa/rv64-b.v
@@ -70,7 +72,7 @@ BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
 	rtl/core/exec/bp/always_branch.v rtl/core/exec/bp/always_decline.v \
 	rtl/core/exec/bp/repeat_last.v
 EXEC_SRCS := rtl/core/exec/exec_top.v rtl/core/exec/alu/rv64-i.v rtl/core/exec/alu/rv64-m.v \
-	rtl/core/exec/lsu/rv64-i.v \
+	rtl/core/exec/lsu/rv64-i.v rtl/core/exec/lsu/rv64-a.v \
 	rtl/core/exec/br.v $(BP_SRC) rtl/core/exec/system/csr.v
 EXCEPT_SRCS := rtl/core/except/except-defs.v rtl/core/except/except.v \
 	rtl/core/except/vector.v
@@ -120,6 +122,8 @@ PREFIX_ADDSUB_SIM_SRCS := tb/tb_prefix_addsub.sv
 EXEC_ALU_RV64I_SIM_SRCS := tb/tb_exec_alu_rv64-i.sv
 EXEC_ALU_RV64M_SIM_SRCS := tb/tb_exec_alu_rv64-m.sv
 EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
+EXEC_LSU_RV64A_SIM_SRCS := tb/tb_exec_lsu_rv64-a.sv
+ATOMIC_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_atomic_context.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
 EXEC_BP_SIM_SRCS := tb/tb_exec_bp.sv
 BP_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_bp_context.sv
@@ -141,11 +145,11 @@ SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: FORCE sim sim-top sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+.PHONY: FORCE sim sim-top sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 
 FORCE:
 
-sim: sim-top sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context
+sim: sim-top sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context
 
 sim-top: $(TOP_SIM_BUILD)
 	vvp $(TOP_SIM_BUILD)
@@ -261,6 +265,12 @@ sim-exec-alu-rv64-m: $(EXEC_ALU_RV64M_SIM_BUILD)
 
 sim-exec-lsu-rv64-i: $(EXEC_LSU_RV64I_SIM_BUILD)
 	vvp $(EXEC_LSU_RV64I_SIM_BUILD)
+
+sim-exec-lsu-rv64-a: $(EXEC_LSU_RV64A_SIM_BUILD)
+	vvp $(EXEC_LSU_RV64A_SIM_BUILD)
+
+sim-atomic-context: $(ATOMIC_CONTEXT_SIM_BUILD)
+	vvp $(ATOMIC_CONTEXT_SIM_BUILD)
 
 sim-exec-br: $(EXEC_BR_SIM_BUILD)
 	vvp $(EXEC_BR_SIM_BUILD)
@@ -456,6 +466,14 @@ $(EXEC_ALU_RV64M_SIM_BUILD): $(EXEC_ALU_RV64M_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SR
 $(EXEC_LSU_RV64I_SIM_BUILD): $(EXEC_LSU_RV64I_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_LSU_RV64I_SIM_BUILD) $(EXEC_LSU_RV64I_SIM_SRCS)
+
+$(EXEC_LSU_RV64A_SIM_BUILD): $(EXEC_LSU_RV64A_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_LSU_RV64A_SIM_BUILD) $(EXEC_LSU_RV64A_SIM_SRCS)
+
+$(ATOMIC_CONTEXT_SIM_BUILD): $(ATOMIC_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(ATOMIC_CONTEXT_SIM_BUILD) $(ATOMIC_CONTEXT_SIM_SRCS) $(CORE_SRCS)
 
 $(EXEC_BR_SIM_BUILD): $(EXEC_BR_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim

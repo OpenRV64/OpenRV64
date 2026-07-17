@@ -5,6 +5,7 @@
 
 module openrv64_rv64i_csrs #(
     parameter ENABLE_RV64M = 0,
+    parameter ENABLE_RV64A = 1,
     parameter [`RV64_XLEN-1:0] HART_ID = {`RV64_XLEN{1'b0}}
 ) (
     input  wire                             clk,
@@ -74,7 +75,11 @@ module openrv64_rv64i_csrs #(
     localparam [`RV64_XLEN-1:0] MIP_M_MASK = BIT_MSIP | BIT_MTIP | BIT_MEIP;
     localparam [`RV64_XLEN-1:0] MIP_MASK = MIP_S_MASK | MIP_M_MASK;
     localparam [`RV64_XLEN-1:0] MIP_SW_WRITABLE_MASK = BIT_SSIP | BIT_MSIP;
-    localparam [`RV64_XLEN-1:0] COUNTER_MASK =
+    localparam [`RV64_XLEN-1:0] COUNTER_ENABLE_MASK =
+        (64'd1 << `RV64_MCOUNTER_CY_BIT) |
+        (64'd1 << `RV64_MCOUNTER_TM_BIT) |
+        (64'd1 << `RV64_MCOUNTER_IR_BIT);
+    localparam [`RV64_XLEN-1:0] COUNTINHIBIT_MASK =
         (64'd1 << `RV64_MCOUNTER_CY_BIT) |
         (64'd1 << `RV64_MCOUNTER_IR_BIT);
     localparam [`RV64_XLEN-1:0] MEDELEG_MASK =
@@ -102,6 +107,7 @@ module openrv64_rv64i_csrs #(
         SSTATUS_RW_MASK | (64'd3 << 32);
     localparam [`RV64_XLEN-1:0] MISA_VALUE =
         (64'd2 << 62) |
+        (ENABLE_RV64A ? (64'd1 << 0) : 64'd0) |
         (64'd1 << 8) |
         (ENABLE_RV64M ? (64'd1 << 12) : 64'd0) |
         (64'd1 << 18) |
@@ -164,14 +170,19 @@ module openrv64_rv64i_csrs #(
         (priv_mode_q >= csr_addr_i[9:8]);
     wire csr_is_counter_alias =
         (csr_addr_i == `RV64_CSR_CYCLE) ||
+        (csr_addr_i == `RV64_CSR_TIME) ||
         (csr_addr_i == `RV64_CSR_INSTRET);
     wire selected_counter_enabled =
         (csr_addr_i == `RV64_CSR_CYCLE) ?
         mcounteren_q[`RV64_MCOUNTER_CY_BIT] :
+        (csr_addr_i == `RV64_CSR_TIME) ?
+        mcounteren_q[`RV64_MCOUNTER_TM_BIT] :
         mcounteren_q[`RV64_MCOUNTER_IR_BIT];
     wire selected_scounter_enabled =
         (csr_addr_i == `RV64_CSR_CYCLE) ?
         scounteren_q[`RV64_MCOUNTER_CY_BIT] :
+        (csr_addr_i == `RV64_CSR_TIME) ?
+        scounteren_q[`RV64_MCOUNTER_TM_BIT] :
         scounteren_q[`RV64_MCOUNTER_IR_BIT];
     wire counter_access_ok =
         (priv_mode_q == `RV64_PRIV_M) ||
@@ -316,6 +327,12 @@ module openrv64_rv64i_csrs #(
                 csr_rdata_o = mcycle_q;
                 csr_writable_o = 1'b0;
             end
+            `RV64_CSR_TIME: begin
+                // Limited platform timebase: one tick per core clock.  A
+                // future SoC integration should supply mtime directly.
+                csr_rdata_o = mcycle_q;
+                csr_writable_o = 1'b0;
+            end
             `RV64_CSR_INSTRET: begin
                 csr_rdata_o = minstret_q;
                 csr_writable_o = 1'b0;
@@ -436,7 +453,8 @@ module openrv64_rv64i_csrs #(
                     stvec_q <= {csr_wdata_i[`RV64_XLEN-1:2],
                         (csr_wdata_i[1:0] == 2'b01) ? 2'b01 : 2'b00};
                 end
-                `RV64_CSR_SCOUNTEREN: scounteren_q <= csr_wdata_i & COUNTER_MASK;
+                `RV64_CSR_SCOUNTEREN:
+                    scounteren_q <= csr_wdata_i & COUNTER_ENABLE_MASK;
                 `RV64_CSR_SSCRATCH: sscratch_q <= csr_wdata_i;
                 `RV64_CSR_SEPC: sepc_q <= {csr_wdata_i[`RV64_XLEN-1:2], 2'b00};
                 `RV64_CSR_SCAUSE: scause_q <= csr_wdata_i;
@@ -496,9 +514,10 @@ module openrv64_rv64i_csrs #(
                     mtvec_q <= {csr_wdata_i[`RV64_XLEN-1:2],
                         (csr_wdata_i[1:0] == 2'b01) ? 2'b01 : 2'b00};
                 end
-                `RV64_CSR_MCOUNTEREN: mcounteren_q <= csr_wdata_i & COUNTER_MASK;
+                `RV64_CSR_MCOUNTEREN:
+                    mcounteren_q <= csr_wdata_i & COUNTER_ENABLE_MASK;
                 `RV64_CSR_MCOUNTINHIBIT: mcountinhibit_q <=
-                    csr_wdata_i & COUNTER_MASK;
+                    csr_wdata_i & COUNTINHIBIT_MASK;
                 `RV64_CSR_MSCRATCH: mscratch_q <= csr_wdata_i;
                 `RV64_CSR_MEPC: mepc_q <= {csr_wdata_i[`RV64_XLEN-1:2], 2'b00};
                 `RV64_CSR_MCAUSE: mcause_q <= csr_wdata_i;

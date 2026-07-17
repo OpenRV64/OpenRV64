@@ -181,6 +181,22 @@ module tb_decode_top;
                      `RV64_ALU_OP_INVALID, `RV64_LSU_OP_SD, `RV64_BR_OP_INVALID,
                      "sd");
 
+        instr = {`RV64_AMO_FUNCT5_LR, 2'b11, 5'd0, 5'd7,
+                 `RV64_AMO_FUNCT3_W, 5'd9, `RV64_OPCODE_AMO};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_MEM, `RV64_EARLY_FORMAT_R,
+                     1'b1, 1'b0, 1'b1, 5'd7, `RV64_REG_X0, 5'd9, 1'b1,
+                     1'b0, 64'h0, 1'b1, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_LR, `RV64_BR_OP_INVALID,
+                     "lr.w aqrl");
+
+        instr = {`RV64_AMO_FUNCT5_ADD, 2'b00, 5'd8, 5'd7,
+                 `RV64_AMO_FUNCT3_D, 5'd9, `RV64_OPCODE_AMO};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_MEM, `RV64_EARLY_FORMAT_R,
+                     1'b1, 1'b1, 1'b1, 5'd7, 5'd8, 5'd9, 1'b1,
+                     1'b0, 64'h0, 1'b1, 1'b1, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_AMOADD,
+                     `RV64_BR_OP_INVALID, "amoadd.d");
+
         instr = {1'b0, 6'b000000, 5'd2, 5'd1, `RV64_FUNCT3_BEQ, 4'b1000, 1'b0, `RV64_OPCODE_BRANCH};
         check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_BRANCH, `RV64_EARLY_FORMAT_B,
                      1'b1, 1'b1, 1'b0, 5'd1, 5'd2, `RV64_REG_X0, 1'b0,
@@ -272,6 +288,14 @@ module tb_decode_top;
                      1'b1, 64'h102, 1'b0, 1'b0, 1'b0, 1'b0,
                      `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
                      "sret");
+
+        instr = `RV64_INSTR_WFI;
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0,
+                     `RV64_REG_X0, 1'b0, 1'b1, 64'h105,
+                     1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID,
+                     `RV64_BR_OP_INVALID, "wfi hint");
 
         instr = {`RV64_PRIV_FUNCT7_SFENCE_VMA, 5'd2, 5'd1,
                  `RV64_FUNCT3_SYSTEM_PRIV, 5'd0, `RV64_OPCODE_SYSTEM};

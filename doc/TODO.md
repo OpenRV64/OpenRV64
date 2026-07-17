@@ -10,7 +10,9 @@ existing architectural bugs much harder to isolate.
 The repository currently has:
 
 - a single-hart, single-issue, in-order IF/ID/EX/MEM/WB core;
-- RV64I, Zicsr, Zifencei, optional RV64M, and bit-manipulation execution;
+- RV64I, RV64A, Zicsr, Zifencei, optional RV64M, and bit-manipulation
+  execution.  RV64A is currently a deliberately serialized single-hart
+  implementation without a coherent reservation point;
 - U, S, and M privilege modes, including MRET/SRET and trap delegation;
 - Sv39, a small unified TLB, a page-table walker, and PMP;
 - CLINT, machine-context PLIC, UART, GPIO, timer, boot ROM, and small RAM
@@ -18,8 +20,11 @@ The repository currently has:
 - a one-request-at-a-time blocking core/SoC memory bus;
 - stall, always-taken, always-not-taken, and one-bit global-history branch
   policies, without a BTB or return-address stack;
-- `mcycle`/`minstret` and the optional `openrv64-cycle-v1` pipeline/retirement
-  trace described in [cycle_trace.md](cycle_trace.md).
+- `mcycle`/`minstret`, a temporary `time` alias to the core clock counter, and
+  the optional `openrv64-cycle-v1` pipeline/retirement trace described in
+  [cycle_trace.md](cycle_trace.md);
+- WFI decode as a serializing hint that resumes immediately.  It does not yet
+  stop the frontend or implement interrupt wakeup and `mstatus.TW` behavior.
 
 Two terminology corrections matter:
 
@@ -60,7 +65,9 @@ This phase comes before caches, superscalar issue, or H.
   entry, and interrupt arrival at every pipeline boundary.
 - [ ] Allow an eligible interrupt to be taken at an architectural boundary
   even when no ordinary instruction is retiring, including WFI wakeup.
-- [ ] Implement WFI and its `mstatus.TW` behavior.
+- [ ] Turn the accepted WFI hint into real wait/wakeup behavior and implement
+  its privilege and `mstatus.TW` rules.  Do this only after interrupts can be
+  taken precisely when no ordinary instruction is retiring.
 - [ ] Make supervisor timer delivery real: implement a correct SBI timer path
   that can inject STIP, or implement Sstc and `stimecmp`.
 - [ ] Audit all CSR privilege checks, read-only behavior, WARL/WPRI fields,
@@ -104,10 +111,12 @@ simple memory path first.
 - [ ] Make the Linux target `rv64ima_zicsr_zifencei`.  RV64M already exists but
   is optional and disabled by default at the public top; enable and advertise
   it for this target.
-- [ ] Implement the RV64A extension: LR.W/D, SC.W/D, AMOs, reservation
-  invalidation, `aq`/`rl`, and the architectural forward-progress rules.
-- [ ] Add the `time` counter CSR and connect it to the platform timebase with
-  correct `mcounteren`/`scounteren` access control.
+- [x] Implement the first single-hart RV64A path: LR.W/D, SC.W/D, all base
+  AMOs, conservative reservation invalidation, and strict ordering for
+  `aq`/`rl` on the blocking bus.  Replace this implementation at the coherent
+  cache/interconnect point before enabling multiple harts or DMA.
+- [ ] Replace the temporary core-clock `time` CSR alias with the platform
+  timebase.  `mcounteren`/`scounteren` TM access control is already present.
 - [ ] Finish WFI, supervisor interrupt delivery, Sv39, PMP, and fault behavior
   from Phase 0.
 - [ ] Keep C and F/D optional for the first kernel.  Add them later for a normal
@@ -131,6 +140,14 @@ simple memory path first.
 - [ ] Provide a working UART console and timer interrupt path.  Add a
   supervisor PLIC context only if the chosen firmware/platform routing needs
   SEIP directly; an M-mode-only path must still be complete and documented.
+- [ ] Validate CLINT/PLIC delivery through the complete platform, not only
+  peripheral unit tests: simultaneous sources, priority/threshold, claim and
+  completion, level reassertion, delegation/routing, masking, and arrival at
+  every pipeline boundary.
+- [ ] For the first firmware, implement only the SBI surface the pinned kernel
+  actually exercises (base/probing, timer, console or debug console, reset,
+  and the required single-hart context transition).  Unsupported extensions
+  must return the specified error rather than silently succeeding.
 
 ### Linux exit tests
 
@@ -344,4 +361,3 @@ and gives a measured performance win after Fmax and cache effects are included.
 - [RISC-V Debug Specification 1.0](https://docs.riscv.org/reference/debug/)
 - [OpenSBI](https://github.com/riscv-software-src/opensbi)
 - [RISC-V architectural tests](https://github.com/riscv-non-isa/riscv-arch-test)
-

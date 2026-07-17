@@ -19,6 +19,7 @@ module openrv64_rv64_top #(
     parameter PIPE_EX_MEM = 1,
     parameter PIPE_MEM_WB = 1,
     parameter ENABLE_RV64M = 0,
+    parameter ENABLE_RV64A = 1,
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter ENABLE_TRACE = 0,
@@ -500,7 +501,8 @@ module openrv64_rv64_top #(
     } = if_id_out_data;
 
     openrv64_decode_top #(
-        .ENABLE_RV64M(ENABLE_RV64M)
+        .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_RV64A(ENABLE_RV64A)
     ) u_decode (
         .instr_i(if_id_instr),
         .valid_o(decode_valid),
@@ -600,7 +602,8 @@ module openrv64_rv64_top #(
     );
 
     openrv64_rv64i_csrs #(
-        .ENABLE_RV64M(ENABLE_RV64M)
+        .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_RV64A(ENABLE_RV64A)
     ) u_csrs (
         .clk(clk),
         .rst_n(rst_n),

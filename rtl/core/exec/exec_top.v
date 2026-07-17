@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-a.v"
 `include "core/isa/rv64-zicsr.v"
 `include "core/isa/rv64-priv.v"
 `include "core/decode/defs/alu-defs.v"
@@ -117,7 +118,7 @@ module openrv64_exec_top #(
     output wire                         trace_serializing_o
 );
 
-    localparam EX_MEM_WIDTH = 580;
+    localparam EX_MEM_WIDTH = 581;
     localparam MEM_WB_WIDTH = 380;
 
     wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(instr_i);
@@ -261,8 +262,11 @@ module openrv64_exec_top #(
     wire [7:0] lsu_mem_wstrb;
     wire [`RV64_XLEN-1:0] lsu_badaddr = ex_mem_lsu_base + ex_mem_lsu_offset;
     wire [2:0] lsu_access_size = {1'b0, ex_mem_instr[13:12]};
+    wire ex_mem_is_atomic =
+        (`RV64_OPCODE(ex_mem_instr) == `RV64_OPCODE_AMO);
     wire lsu_mem_access = ex_mem_out_valid &&
                           (ex_mem_mem_read || ex_mem_mem_write) &&
+                          !ex_mem_is_atomic &&
                           !ex_mem_illegal;
     wire lsu_pmp_denied = lsu_mem_access &&
                           lsu_valid &&
@@ -274,6 +278,25 @@ module openrv64_exec_top #(
                          mem_access_allowed_i;
     wire lsu_bus_error = lsu_mem_valid && mem_ready_i && mem_error_i;
     wire lsu_page_fault = lsu_mem_valid && mem_ready_i && mem_page_fault_i;
+    wire atomic_mem_access = ex_mem_out_valid &&
+                             ex_mem_is_atomic &&
+                             (ex_mem_mem_read || ex_mem_mem_write) &&
+                             !ex_mem_illegal;
+    wire atomic_is_lr = (ex_mem_lsu_op == `RV64_LSU_OP_LR);
+    wire atomic_complete;
+    wire atomic_illegal;
+    wire atomic_misaligned;
+    wire atomic_access_fault;
+    wire atomic_page_fault;
+    wire [`RV64_XLEN-1:0] atomic_result;
+    wire atomic_mem_valid;
+    wire atomic_mem_write;
+    wire [`RV64_XLEN-1:0] atomic_mem_addr;
+    wire [`RV64_XLEN-1:0] atomic_mem_wdata;
+    wire [7:0] atomic_mem_wstrb;
+    wire clear_atomic_reservation = ex_mem_out_valid &&
+                                    !ex_mem_is_atomic &&
+                                    ex_mem_mem_write;
     wire exception_valid;
     wire exception_halt;
     wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] exception_cause;
@@ -289,6 +312,7 @@ module openrv64_exec_top #(
     // path from mem_rdata_i through load alignment into the next EX operation.
     wire mem_forward_valid = ENABLE_FORWARDING &&
                              ex_mem_out_valid &&
+                             !ex_mem_is_atomic &&
                              ex_mem_reg_write &&
                              !ex_mem_mem_write &&
                              lsu_complete &&
@@ -315,24 +339,38 @@ module openrv64_exec_top #(
     wire mem_wb_in_clear;
     wire [MEM_WB_WIDTH-1:0] mem_wb_in_data;
     wire [MEM_WB_WIDTH-1:0] mem_wb_out_data;
-    wire load_misaligned = ex_mem_out_valid &&
-                           ex_mem_mem_read &&
-                           lsu_misaligned;
-    wire store_misaligned = ex_mem_out_valid &&
-                            ex_mem_mem_write &&
-                            lsu_misaligned;
+    wire load_misaligned = (ex_mem_out_valid &&
+                            !ex_mem_is_atomic &&
+                            ex_mem_mem_read &&
+                            lsu_misaligned) ||
+                           (atomic_mem_access && atomic_is_lr &&
+                            atomic_misaligned);
+    wire store_misaligned = (ex_mem_out_valid &&
+                             !ex_mem_is_atomic &&
+                             ex_mem_mem_write &&
+                             lsu_misaligned) ||
+                            (atomic_mem_access && !atomic_is_lr &&
+                             atomic_misaligned);
     wire load_access_fault = ex_mem_out_valid &&
-                             ex_mem_mem_read &&
-                             (lsu_pmp_denied || lsu_bus_error);
+                             ((!ex_mem_is_atomic && ex_mem_mem_read &&
+                               (lsu_pmp_denied || lsu_bus_error)) ||
+                              (ex_mem_is_atomic && atomic_is_lr &&
+                               atomic_access_fault));
     wire store_access_fault = ex_mem_out_valid &&
-                              ex_mem_mem_write &&
-                              (lsu_pmp_denied || lsu_bus_error);
+                              ((!ex_mem_is_atomic && ex_mem_mem_write &&
+                                (lsu_pmp_denied || lsu_bus_error)) ||
+                               (ex_mem_is_atomic && !atomic_is_lr &&
+                                atomic_access_fault));
     wire load_page_fault = ex_mem_out_valid &&
-                           ex_mem_mem_read &&
-                           lsu_page_fault;
+                           ((!ex_mem_is_atomic && ex_mem_mem_read &&
+                             lsu_page_fault) ||
+                            (ex_mem_is_atomic && atomic_is_lr &&
+                             atomic_page_fault));
     wire store_page_fault = ex_mem_out_valid &&
-                            ex_mem_mem_write &&
-                            lsu_page_fault;
+                            ((!ex_mem_is_atomic && ex_mem_mem_write &&
+                              lsu_page_fault) ||
+                             (ex_mem_is_atomic && !atomic_is_lr &&
+                              atomic_page_fault));
     reg serializing_q;
     wire ex_serializing = valid_i &&
                            ((system_i && !ex_csr_selected) ||
@@ -578,6 +616,35 @@ module openrv64_exec_top #(
         .mem_wstrb_o(lsu_mem_wstrb)
     );
 
+    openrv64_exec_lsu_rv64a u_lsu_atomic_exec (
+        .clk(clk),
+        .rst_n(rst_n),
+        .flush_i(flush_ex_mem_i),
+        .valid_i(atomic_mem_access),
+        .consume_i(ex_mem_out_clear && ex_mem_is_atomic),
+        .clear_reservation_i(clear_atomic_reservation),
+        .op_sel_i(ex_mem_lsu_op),
+        .size_sel_i(lsu_access_size[`RV64_LSU_SIZE_WIDTH-1:0]),
+        .addr_i(lsu_badaddr),
+        .store_data_i(ex_mem_lsu_store_data),
+        .mem_ready_i(mem_ready_i),
+        .mem_error_i(mem_error_i),
+        .mem_page_fault_i(mem_page_fault_i),
+        .mem_access_allowed_i(mem_access_allowed_i),
+        .mem_rdata_i(mem_rdata_i),
+        .complete_o(atomic_complete),
+        .illegal_o(atomic_illegal),
+        .misaligned_o(atomic_misaligned),
+        .access_fault_o(atomic_access_fault),
+        .page_fault_o(atomic_page_fault),
+        .result_o(atomic_result),
+        .mem_valid_o(atomic_mem_valid),
+        .mem_write_o(atomic_mem_write),
+        .mem_addr_o(atomic_mem_addr),
+        .mem_wdata_o(atomic_mem_wdata),
+        .mem_wstrb_o(atomic_mem_wstrb)
+    );
+
     openrv64_except u_except (
         .illegal_instr_i(ex_mem_illegal),
         .instr_misaligned_i(ex_mem_instr_misaligned),
@@ -601,28 +668,35 @@ module openrv64_exec_top #(
         .tval_o(exception_tval)
     );
 
-    assign mem_valid_o = lsu_mem_valid;
-    assign mem_write_o = lsu_mem_write;
-    assign mem_addr_o = lsu_mem_addr;
-    assign mem_wdata_o = lsu_mem_wdata;
-    assign mem_wstrb_o = lsu_mem_wstrb;
-    assign mem_access_o = lsu_mem_access && lsu_valid && !lsu_misaligned;
+    assign mem_valid_o = ex_mem_is_atomic ? atomic_mem_valid : lsu_mem_valid;
+    assign mem_write_o = ex_mem_is_atomic ? atomic_mem_write : lsu_mem_write;
+    assign mem_addr_o = ex_mem_is_atomic ? atomic_mem_addr : lsu_mem_addr;
+    assign mem_wdata_o = ex_mem_is_atomic ? atomic_mem_wdata : lsu_mem_wdata;
+    assign mem_wstrb_o = ex_mem_is_atomic ? atomic_mem_wstrb : lsu_mem_wstrb;
+    assign mem_access_o = ex_mem_is_atomic ? atomic_mem_valid :
+        (lsu_mem_access && lsu_valid && !lsu_misaligned);
     assign mem_effective_addr_o = lsu_badaddr;
     assign mem_size_o = lsu_access_size;
 
-    assign ex_mem_out_clear = mem_wb_in_clear && lsu_complete;
-    assign mem_wb_in_valid = ex_mem_out_valid && lsu_complete;
+    wire memory_complete = ex_mem_is_atomic ? atomic_complete : lsu_complete;
+    wire [`RV64_XLEN-1:0] memory_result = ex_mem_is_atomic ? atomic_result :
+        (ex_mem_mem_read ? lsu_load_data : ex_mem_wb_data);
+
+    assign ex_mem_out_clear = mem_wb_in_clear && memory_complete;
+    assign mem_wb_in_valid = ex_mem_out_valid && memory_complete;
     assign mem_wb_in_data = {
         ex_mem_trace_id,
         ex_mem_pc,
         ex_mem_next_pc,
         ex_mem_instr,
-        ex_mem_mem_read ? lsu_load_data : ex_mem_wb_data,
+        memory_result,
         ex_mem_rs1_addr,
         ex_mem_rs2_addr,
         ex_mem_rd_addr,
-        ex_mem_reg_write && !ex_mem_mem_write,
-        ex_mem_illegal || (lsu_mem_access && lsu_illegal),
+        ex_mem_reg_write && (!ex_mem_mem_write || ex_mem_is_atomic),
+        ex_mem_illegal ||
+            (lsu_mem_access && lsu_illegal) ||
+            (atomic_mem_access && atomic_illegal),
         ex_mem_ebreak,
         ex_mem_ecall,
         exception_valid,

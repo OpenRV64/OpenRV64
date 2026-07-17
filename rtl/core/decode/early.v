@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-a.v"
 `include "core/decode/defs/early-defs.v"
 
 module openrv64_decode_early (
@@ -97,6 +98,19 @@ module openrv64_decode_early (
                 format_sel_o       = `RV64_EARLY_FORMAT_S;
                 uses_rs1_o         = 1'b1;
                 uses_rs2_o         = 1'b1;
+                mem_write_o        = 1'b1;
+                subdecode_needed_o = 1'b1;
+            end
+
+            `RV64_OPCODE_AMO: begin
+                valid_o            = 1'b1;
+                class_sel_o        = `RV64_EARLY_CLASS_MEM;
+                format_sel_o       = `RV64_EARLY_FORMAT_R;
+                uses_rs1_o         = 1'b1;
+                uses_rs2_o         = 1'b1;
+                uses_rd_o          = 1'b1;
+                reg_write_o        = 1'b1;
+                mem_read_o         = 1'b1;
                 mem_write_o        = 1'b1;
                 subdecode_needed_o = 1'b1;
             end

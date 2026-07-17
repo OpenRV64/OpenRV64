@@ -46,6 +46,12 @@ module openrv64_decode_system (
                         valid_o   = 1'b1;
                         illegal_o = 1'b0;
                         mret_o    = 1'b1;
+                    end else if (instr_i == `RV64_INSTR_WFI) begin
+                        // Minimal legal implementation: WFI is a serializing
+                        // hint and may resume immediately.  Actual clock/state
+                        // suspension waits for precise interrupt wakeup.
+                        valid_o   = 1'b1;
+                        illegal_o = 1'b0;
                     end else if (`RV64_IS_SFENCE_VMA(instr_i)) begin
                         valid_o   = 1'b1;
                         illegal_o = 1'b0;
