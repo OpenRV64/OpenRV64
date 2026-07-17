@@ -1,9 +1,9 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
-`include "core/decode/early-defs.v"
-`include "core/decode/alu-defs.v"
-`include "core/decode/lsu-defs.v"
-`include "core/decode/br-defs.v"
+`include "core/decode/defs/early-defs.v"
+`include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/lsu-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 module openrv64_decode_top #(
     parameter ENABLE_RV64M = 1

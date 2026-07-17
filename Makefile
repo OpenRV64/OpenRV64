@@ -16,20 +16,23 @@ EXEC_LSU_RV64I_SIM_BUILD := sim/exec_lsu_rv64-i_tb.vvp
 EXEC_BR_SIM_BUILD := sim/exec_br_tb.vvp
 EXCEPT_SIM_BUILD := sim/except_tb.vvp
 EXEC_SYSTEM_CSR_SIM_BUILD := sim/exec_system_csr_tb.vvp
+DISPATCH_SIM_BUILD := sim/dispatch_tb.vvp
 ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zba.v rtl/core/isa/rv64-zbb.v \
 	rtl/core/isa/rv64-zbc.v rtl/core/isa/rv64-zbs.v rtl/core/isa/rv64-b.v
-DECODE_SRCS := rtl/core/decode/early-defs.v rtl/core/decode/alu-defs.v \
-	rtl/core/decode/lsu-defs.v rtl/core/decode/br-defs.v \
+DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
+	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
 	rtl/core/decode/early.v rtl/core/decode/decode_top.v rtl/core/decode/imm.v rtl/core/decode/alu.v \
 	rtl/core/decode/lsu.v rtl/core/decode/br.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v
 REG_SRCS := rtl/core/regs/rv64-i-gpr.v
-FETCH_SRCS := rtl/core/fetch/fetch.v
-EXEC_SRCS := rtl/core/exec/alu/rv64-i.v rtl/core/exec/lsu/rv64-i.v \
+FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v
+DISPATCH_SRCS := rtl/core/dispatch/dispatch.v
+EXEC_SRCS := rtl/core/exec/exec_top.v rtl/core/exec/alu/rv64-i.v rtl/core/exec/lsu/rv64-i.v \
 	rtl/core/exec/br.v rtl/core/exec/system/csr.v
 EXCEPT_SRCS := rtl/core/except/except.v
 STAGE_SRCS := rtl/core/stage/stage.v
+CORE_SRCS := rtl/core/rv64_top.v $(STAGE_SRCS) $(FETCH_SRCS) $(DECODE_SRCS) $(REG_SRCS) $(DISPATCH_SRCS) $(EXEC_SRCS) $(EXCEPT_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/tb_openrv64_top.sv
 DECODE_EARLY_SIM_SRCS := tb/tb_decode_early.sv
 DECODE_TOP_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
@@ -50,10 +53,11 @@ EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
 EXCEPT_SIM_SRCS := tb/tb_except.sv
 EXEC_SYSTEM_CSR_SIM_SRCS := tb/tb_exec_system_csr.sv
+DISPATCH_SIM_SRCS := tb/tb_dispatch.sv
 
-.PHONY: sim sim-top sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-fetch sim-exec-alu-rv64-i sim-exec-lsu-rv64-i sim-exec-br sim-except sim-exec-system-csr clean
+.PHONY: sim sim-top sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-lsu-rv64-i sim-exec-br sim-except sim-exec-system-csr clean
 
-sim: sim-top sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-fetch sim-exec-alu-rv64-i sim-exec-lsu-rv64-i sim-exec-br sim-except sim-exec-system-csr
+sim: sim-top sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-lsu-rv64-i sim-exec-br sim-except sim-exec-system-csr
 
 sim-top: $(TOP_SIM_BUILD)
 	vvp $(TOP_SIM_BUILD)
@@ -94,6 +98,9 @@ sim-rv64-i-gpr: $(RV64I_GPR_SIM_BUILD)
 sim-fetch: $(FETCH_SIM_BUILD)
 	vvp $(FETCH_SIM_BUILD)
 
+sim-dispatch: $(DISPATCH_SIM_BUILD)
+	vvp $(DISPATCH_SIM_BUILD)
+
 sim-exec-alu-rv64-i: $(EXEC_ALU_RV64I_SIM_BUILD)
 	vvp $(EXEC_ALU_RV64I_SIM_BUILD)
 
@@ -109,9 +116,9 @@ sim-except: $(EXCEPT_SIM_BUILD)
 sim-exec-system-csr: $(EXEC_SYSTEM_CSR_SIM_BUILD)
 	vvp $(EXEC_SYSTEM_CSR_SIM_BUILD)
 
-$(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS)
+$(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $(TOP_SIM_BUILD) $(TOP_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -o $(TOP_SIM_BUILD) $(CORE_SRCS) $(TOP_SIM_SRCS)
 
 $(DECODE_EARLY_SIM_BUILD): $(DECODE_EARLY_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
@@ -160,6 +167,10 @@ $(RV64I_GPR_SIM_BUILD): $(RV64I_GPR_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 $(FETCH_SIM_BUILD): $(FETCH_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_SIM_BUILD) $(FETCH_SIM_SRCS)
+
+$(DISPATCH_SIM_BUILD): $(DISPATCH_SIM_SRCS) $(DISPATCH_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(DISPATCH_SIM_BUILD) $(DISPATCH_SIM_SRCS)
 
 $(EXEC_ALU_RV64I_SIM_BUILD): $(EXEC_ALU_RV64I_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim

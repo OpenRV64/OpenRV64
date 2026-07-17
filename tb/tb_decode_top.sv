@@ -196,6 +196,17 @@ module tb_decode_top;
             $fatal(1, "jal did not assert branch link output");
         end
 
+        instr = {12'h010, 5'd3, `RV64_FUNCT3_JALR, 5'd4, `RV64_OPCODE_JALR};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_JUMP, `RV64_EARLY_FORMAT_I,
+                     1'b1, 1'b0, 1'b1, 5'd3, `RV64_REG_X0, 5'd4, 1'b1,
+                     1'b1, 64'h10, 1'b0, 1'b0, 1'b0, 1'b1,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_JALR,
+                     "jalr");
+
+        if (!br_link || !br_indirect) begin
+            $fatal(1, "jalr did not assert link/indirect outputs");
+        end
+
         instr = {12'h000, 5'd1, 3'b001, 5'd2, `RV64_OPCODE_JALR};
         check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_JUMP, `RV64_EARLY_FORMAT_I,
                      1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,

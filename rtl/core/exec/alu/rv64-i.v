@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
-`include "core/decode/alu-defs.v"
+`include "core/decode/defs/alu-defs.v"
 
 module openrv64_exec_alu_rv64i (
     input  wire [`RV64_ALU_OP_WIDTH-1:0] op_sel_i,

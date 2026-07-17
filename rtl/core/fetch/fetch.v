@@ -1,14 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
-
-`ifndef OPENRV64_FETCH_DEFS_V
-`define OPENRV64_FETCH_DEFS_V
-
-`define RV64_FETCH_DECODE_BUS_WIDTH 96
-`define RV64_FETCH_DECODE_BUS_INSTR_BITS 31:0
-`define RV64_FETCH_DECODE_BUS_PC_BITS 95:32
-
-`endif
+`include "core/fetch/fetch-defs.v"
 
 module openrv64_fetch (
     input  wire                             clk,

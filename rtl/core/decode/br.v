@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
-`include "core/decode/br-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 module openrv64_decode_br (
     input  wire [`RV64_OPCODE_WIDTH-1:0] opcode_i,

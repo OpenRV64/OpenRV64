@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
-`include "core/decode/lsu-defs.v"
+`include "core/decode/defs/lsu-defs.v"
 
 module openrv64_exec_lsu_rv64i (
     input  wire [`RV64_LSU_OP_WIDTH-1:0]  op_sel_i,

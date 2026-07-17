@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-m.v"
-`include "core/decode/alu-defs.v"
+`include "core/decode/defs/alu-defs.v"
 
 module openrv64_decode_alu #(
     parameter ENABLE_RV64M = 1

@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
-`include "core/decode/early-defs.v"
+`include "core/decode/defs/early-defs.v"
 
 module openrv64_decode_imm (
     input  wire [`RV64_INSTR_WIDTH-1:0]        instr_i,
