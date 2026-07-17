@@ -1,0 +1,10 @@
+`ifndef OPENRV64_EXEC_BP_DEFS_V
+`define OPENRV64_EXEC_BP_DEFS_V
+
+`define OPENRV64_BP_TYPE_WIDTH       2
+`define OPENRV64_BP_STALL            2'd0
+`define OPENRV64_BP_ALWAYS_BRANCH    2'd1
+`define OPENRV64_BP_ALWAYS_DECLINE   2'd2
+`define OPENRV64_BP_REPEAT_LAST      2'd3
+
+`endif

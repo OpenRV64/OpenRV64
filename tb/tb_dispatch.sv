@@ -31,6 +31,7 @@ module tb_dispatch;
     logic decode_mem_write;
     logic decode_branch;
     logic decode_jump;
+    logic decode_predicted_taken;
     logic decode_word_op;
     logic decode_system;
     logic decode_fence;
@@ -62,6 +63,7 @@ module tb_dispatch;
     logic exec_mem_write;
     logic exec_branch;
     logic exec_jump;
+    logic exec_predicted_taken;
     logic exec_word_op;
     logic exec_system;
     logic exec_fence;
@@ -108,6 +110,7 @@ module tb_dispatch;
         .decode_mem_write_i(decode_mem_write),
         .decode_branch_i(decode_branch),
         .decode_jump_i(decode_jump),
+        .decode_predicted_taken_i(decode_predicted_taken),
         .decode_word_op_i(decode_word_op),
         .decode_system_i(decode_system),
         .decode_fence_i(decode_fence),
@@ -138,6 +141,7 @@ module tb_dispatch;
         .exec_mem_write_o(exec_mem_write),
         .exec_branch_o(exec_branch),
         .exec_jump_o(exec_jump),
+        .exec_predicted_taken_o(exec_predicted_taken),
         .exec_word_op_o(exec_word_op),
         .exec_system_o(exec_system),
         .exec_fence_o(exec_fence),
@@ -185,6 +189,7 @@ module tb_dispatch;
             decode_mem_write = 1'b0;
             decode_branch = 1'b0;
             decode_jump = 1'b0;
+            decode_predicted_taken = 1'b0;
             decode_word_op = 1'b0;
             decode_system = 1'b0;
             decode_fence = 1'b0;

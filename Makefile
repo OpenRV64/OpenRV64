@@ -32,6 +32,10 @@ EXEC_ALU_RV64I_SIM_BUILD := sim/exec_alu_rv64-i_tb.vvp
 EXEC_ALU_RV64M_SIM_BUILD := sim/exec_alu_rv64-m_tb.vvp
 EXEC_LSU_RV64I_SIM_BUILD := sim/exec_lsu_rv64-i_tb.vvp
 EXEC_BR_SIM_BUILD := sim/exec_br_tb.vvp
+EXEC_BP_SIM_BUILD := sim/exec_bp_tb.vvp
+BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD := sim/bp_context_always_branch_tb.vvp
+BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD := sim/bp_context_always_decline_tb.vvp
+BP_CONTEXT_REPEAT_LAST_SIM_BUILD := sim/bp_context_repeat_last_tb.vvp
 EXCEPT_SIM_BUILD := sim/except_tb.vvp
 EXEC_SYSTEM_CSR_SIM_BUILD := sim/exec_system_csr_tb.vvp
 TRAP_CONTEXT_SIM_BUILD := sim/trap_context_tb.vvp
@@ -51,9 +55,13 @@ REG_SRCS := rtl/core/regs/rv64-i-gpr.v rtl/core/regs/rv64-i-pmp.v rtl/core/regs/
 FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v
 BUS_SRCS := rtl/core/bus/tlb.v rtl/core/bus/ptw.v rtl/core/bus/bus.v
 DISPATCH_SRCS := rtl/core/dispatch/reg_map.v rtl/core/dispatch/dispatch.v
+BP_SRC := rtl/core/exec/bp/bp.v
+BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
+	rtl/core/exec/bp/always_branch.v rtl/core/exec/bp/always_decline.v \
+	rtl/core/exec/bp/repeat_last.v
 EXEC_SRCS := rtl/core/exec/exec_top.v rtl/core/exec/alu/rv64-i.v rtl/core/exec/alu/rv64-m.v \
 	rtl/core/exec/lsu/rv64-i.v \
-	rtl/core/exec/br.v rtl/core/exec/system/csr.v
+	rtl/core/exec/br.v $(BP_SRC) rtl/core/exec/system/csr.v
 EXCEPT_SRCS := rtl/core/except/except-defs.v rtl/core/except/except.v \
 	rtl/core/except/vector.v
 STAGE_SRCS := rtl/core/stage/stage.v
@@ -101,6 +109,8 @@ EXEC_ALU_RV64I_SIM_SRCS := tb/tb_exec_alu_rv64-i.sv
 EXEC_ALU_RV64M_SIM_SRCS := tb/tb_exec_alu_rv64-m.sv
 EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
+EXEC_BP_SIM_SRCS := tb/tb_exec_bp.sv
+BP_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_bp_context.sv
 EXCEPT_SIM_SRCS := tb/tb_except.sv
 EXEC_SYSTEM_CSR_SIM_SRCS := tb/tb_exec_system_csr.sv
 TRAP_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_trap_context.sv
@@ -113,9 +123,9 @@ LIBERTY ?=
 ABC_CONSTR ?=
 ABC_DELAY_PS ?=
 
-.PHONY: sim sim-top sim-top-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m clean
+.PHONY: sim sim-top sim-top-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m clean
 
-sim: sim-top sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context
+sim: sim-top sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context
 
 sim-top: $(TOP_SIM_BUILD)
 	vvp $(TOP_SIM_BUILD)
@@ -224,6 +234,20 @@ sim-exec-lsu-rv64-i: $(EXEC_LSU_RV64I_SIM_BUILD)
 sim-exec-br: $(EXEC_BR_SIM_BUILD)
 	vvp $(EXEC_BR_SIM_BUILD)
 
+sim-exec-bp: $(EXEC_BP_SIM_BUILD)
+	vvp $(EXEC_BP_SIM_BUILD)
+
+sim-bp-context: sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last
+
+sim-bp-context-always-branch: $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
+	vvp $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
+
+sim-bp-context-always-decline: $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD)
+	vvp $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD)
+
+sim-bp-context-repeat-last: $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD)
+	vvp $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD)
+
 sim-except: $(EXCEPT_SIM_BUILD)
 	vvp $(EXCEPT_SIM_BUILD)
 
@@ -248,7 +272,7 @@ yosys-timing-alu-rv64i:
 yosys-timing-alu-rv64m:
 	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_ALU_REPORT_DIR)" LIBERTY="$(LIBERTY)" ABC_CONSTR="$(ABC_CONSTR)" ABC_DELAY_PS="$(ABC_DELAY_PS)" bash synth/alu/report.sh rv64m
 
-$(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS)
+$(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TOP_SIM_BUILD) $(CORE_SRCS) $(TOP_SIM_SRCS)
 
@@ -296,7 +320,7 @@ $(PTW_SIM_BUILD): $(PTW_SIM_SRCS) rtl/core/bus/ptw.v $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PTW_SIM_BUILD) rtl/core/bus/ptw.v $(PTW_SIM_SRCS)
 
-$(PTW_CONTEXT_SIM_BUILD): $(PTW_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS)
+$(PTW_CONTEXT_SIM_BUILD): $(PTW_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PTW_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(PTW_CONTEXT_SIM_SRCS)
 
@@ -376,6 +400,22 @@ $(EXEC_BR_SIM_BUILD): $(EXEC_BR_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_BR_SIM_BUILD) $(EXEC_BR_SIM_SRCS)
 
+$(EXEC_BP_SIM_BUILD): $(EXEC_BP_SIM_SRCS) $(BP_SRC) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_BP_SIM_BUILD) rtl/core/exec/bp/bp.v $(EXEC_BP_SIM_SRCS)
+
+$(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=1 -o $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
+
+$(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=2 -o $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
+
+$(BP_CONTEXT_REPEAT_LAST_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=3 -o $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
+
 $(EXCEPT_SIM_BUILD): $(EXCEPT_SIM_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXCEPT_SIM_BUILD) $(EXCEPT_SIM_SRCS)
@@ -384,15 +424,15 @@ $(EXEC_SYSTEM_CSR_SIM_BUILD): $(EXEC_SYSTEM_CSR_SIM_SRCS) $(EXEC_SRCS) $(ISA_SRC
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_SYSTEM_CSR_SIM_BUILD) $(EXEC_SYSTEM_CSR_SIM_SRCS)
 
-$(TRAP_CONTEXT_SIM_BUILD): $(TRAP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS)
+$(TRAP_CONTEXT_SIM_BUILD): $(TRAP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TRAP_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(TRAP_CONTEXT_SIM_SRCS)
 
-$(PRIV_CONTEXT_SIM_BUILD): $(PRIV_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS)
+$(PRIV_CONTEXT_SIM_BUILD): $(PRIV_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PRIV_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(PRIV_CONTEXT_SIM_SRCS)
 
-$(IRQ_CONTEXT_SIM_BUILD): $(IRQ_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS)
+$(IRQ_CONTEXT_SIM_BUILD): $(IRQ_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(IRQ_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(IRQ_CONTEXT_SIM_SRCS)
 

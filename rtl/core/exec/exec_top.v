@@ -40,6 +40,7 @@ module openrv64_exec_top #(
     input  wire                         mem_write_i,
     input  wire                         branch_i,
     input  wire                         jump_i,
+    input  wire                         predicted_taken_i,
     input  wire                         word_op_i,
     input  wire                         system_i,
     input  wire                         fence_i,
@@ -54,6 +55,8 @@ module openrv64_exec_top #(
 
     output wire                         redirect_valid_o,
     output wire [`RV64_XLEN-1:0]        redirect_target_o,
+    output wire                         branch_resolved_o,
+    output wire                         branch_taken_o,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -377,14 +380,17 @@ module openrv64_exec_top #(
         .rd_data_o(csr_rd_data)
     );
 
-    assign redirect_valid_o = valid_i &&
-                              ex_ready &&
-                              !illegal_i &&
-                              (branch_i || jump_i) &&
-                              br_valid &&
-                              br_taken &&
-                              !ex_instr_misaligned;
-    assign redirect_target_o = br_target;
+    assign branch_resolved_o = ex_mem_in_valid &&
+                               (branch_i || jump_i);
+    assign branch_taken_o = branch_resolved_o &&
+                            ex_control_transfer_taken;
+    assign redirect_valid_o = branch_resolved_o &&
+                              !ex_instr_misaligned &&
+                              !ex_illegal &&
+                              (predicted_taken_i !=
+                               ex_control_transfer_taken);
+    assign redirect_target_o = ex_control_transfer_taken ?
+                               br_target : (pc_i + 64'd4);
 
     assign csr_addr_o = csr_unit_addr;
     assign csr_write_o = ex_mem_in_valid &&

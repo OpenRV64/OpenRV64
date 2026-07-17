@@ -49,6 +49,8 @@ module tb_openrv64_top;
     logic        saw_mul_store;
     logic        saw_fence_i_restart;
     logic        saw_pmp_trap;
+    logic        saw_bp_stall;
+    logic        saw_bp_branch_stall;
     logic        mem_addr_in_range;
     integer      trace_arch_count;
     integer      trace_exception_count;
@@ -178,6 +180,16 @@ module tb_openrv64_top;
         end
     endfunction
 
+    function automatic logic [31:0] enc_bne;
+        input logic [4:0] rs1;
+        input logic [4:0] rs2;
+        input logic [12:0] imm;
+        begin
+            enc_bne = {imm[12], imm[10:5], rs2, rs1, `RV64_FUNCT3_BNE,
+                       imm[4:1], imm[11], `RV64_OPCODE_BRANCH};
+        end
+    endfunction
+
     function automatic logic [31:0] enc_mul;
         input logic [4:0] rd;
         input logic [4:0] rs1;
@@ -218,35 +230,39 @@ module tb_openrv64_top;
         put_instr(RESET_INSTR_INDEX + 9,  `RV64_INSTR_NOP);
         put_instr(RESET_INSTR_INDEX + 10, `RV64_INSTR_NOP);
         put_instr(RESET_INSTR_INDEX + 11, `RV64_INSTR_NOP);
-        put_instr(RESET_INSTR_INDEX + 12, 32'h0ff0_000f);
-        put_instr(RESET_INSTR_INDEX + 13, `RV64_INSTR_FENCE_I);
-        put_instr(RESET_INSTR_INDEX + 14,
-                  enc_sd(5'd4, `RV64_REG_X0, 12'h080));
+        // Deliberately not taken.  The predictor stub must hold younger work
+        // until execute resolves the condition, then resume without redirect.
+        put_instr(RESET_INSTR_INDEX + 12,
+                  enc_bne(`RV64_REG_X0, `RV64_REG_X0, 13'h008));
+        put_instr(RESET_INSTR_INDEX + 13, 32'h0ff0_000f);
+        put_instr(RESET_INSTR_INDEX + 14, `RV64_INSTR_FENCE_I);
         put_instr(RESET_INSTR_INDEX + 15,
-                  enc_sd(5'd6, `RV64_REG_X0, 12'h088));
+                  enc_sd(5'd4, `RV64_REG_X0, 12'h080));
         put_instr(RESET_INSTR_INDEX + 16,
-                  enc_addi(5'd7, `RV64_REG_X0, 12'd6));
+                  enc_sd(5'd6, `RV64_REG_X0, 12'h088));
         put_instr(RESET_INSTR_INDEX + 17,
-                  enc_addi(5'd8, `RV64_REG_X0, 12'd7));
+                  enc_addi(5'd7, `RV64_REG_X0, 12'd6));
         put_instr(RESET_INSTR_INDEX + 18,
-                  enc_mul(5'd9, 5'd7, 5'd8));
+                  enc_addi(5'd8, `RV64_REG_X0, 12'd7));
         put_instr(RESET_INSTR_INDEX + 19,
-                  enc_sd(5'd9, `RV64_REG_X0, 12'h090));
+                  enc_mul(5'd9, 5'd7, 5'd8));
         put_instr(RESET_INSTR_INDEX + 20,
-                  enc_addi(5'd10, `RV64_REG_X0, 12'h180));
+                  enc_sd(5'd9, `RV64_REG_X0, 12'h090));
         put_instr(RESET_INSTR_INDEX + 21,
-                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_MTVEC, 5'd10));
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h180));
         put_instr(RESET_INSTR_INDEX + 22,
-                  enc_addi(5'd10, `RV64_REG_X0, 12'h080));
+                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_MTVEC, 5'd10));
         put_instr(RESET_INSTR_INDEX + 23,
-                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPADDR0, 5'd10));
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h080));
         put_instr(RESET_INSTR_INDEX + 24,
-                  enc_addi(5'd10, `RV64_REG_X0, 12'h08d));
+                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPADDR0, 5'd10));
         put_instr(RESET_INSTR_INDEX + 25,
-                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPCFG0, 5'd10));
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h08d));
         put_instr(RESET_INSTR_INDEX + 26,
+                  enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPCFG0, 5'd10));
+        put_instr(RESET_INSTR_INDEX + 27,
                   enc_sd(5'd9, `RV64_REG_X0, 12'h098));
-        put_instr(RESET_INSTR_INDEX + 27, `RV64_INSTR_EBREAK);
+        put_instr(RESET_INSTR_INDEX + 28, `RV64_INSTR_EBREAK);
         put_instr(RESET_INSTR_INDEX + 32,
                   enc_jal(`RV64_REG_X0, 21'h000000));
 
@@ -256,13 +272,15 @@ module tb_openrv64_top;
         rst_n = 1'b1;
     end
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             saw_jal_link_store <= 1'b0;
             saw_jalr_link_store <= 1'b0;
             saw_mul_store <= 1'b0;
             saw_fence_i_restart <= 1'b0;
             saw_pmp_trap <= 1'b0;
+            saw_bp_stall <= 1'b0;
+            saw_bp_branch_stall <= 1'b0;
             trace_arch_count <= 0;
             trace_exception_count <= 0;
         end else if (dut.u_core.hard_flush_trap_req &&
@@ -291,6 +309,21 @@ module tb_openrv64_top;
         end
 
         if (rst_n) begin
+            if (dut.u_core.bp_decode_stall) begin
+                saw_bp_stall <= 1'b1;
+            end
+
+            if (dut.u_core.bp_decode_stall &&
+                dut.u_core.dispatch_exec_valid &&
+                dut.u_core.dispatch_exec_branch &&
+                (dut.u_core.dispatch_exec_pc == 64'h130)) begin
+                saw_bp_branch_stall <= 1'b1;
+
+                if (dut.u_core.hard_flush_redirect_req) begin
+                    $fatal(1, "not-taken branch incorrectly redirected");
+                end
+            end
+
             if (trace_retire_arch) begin
                 trace_arch_count <= trace_arch_count + 1;
             end
@@ -315,6 +348,14 @@ module tb_openrv64_top;
             if (trace_retire_valid &&
                 (!trace_valid[4] || trace_ids[4*64 +: 64] == 64'd0)) begin
                 $fatal(1, "trace retirement lacks a valid WB UID");
+            end
+
+            if (dut.u_core.bp_decode_stall &&
+                !dut.u_core.hard_flush_req &&
+                (dut.u_core.fetch_pc_valid ||
+                 dut.u_core.if_id_out_clear ||
+                 dut.u_core.dispatch_decode_valid)) begin
+                $fatal(1, "branch predictor stall did not hold the frontend");
             end
         end
     end
@@ -387,12 +428,20 @@ module tb_openrv64_top;
                 $fatal(1, "FENCE.I did not issue a frontend restart");
             end
 
-            if (dut.u_core.u_csrs.minstret_q != 64'd17) begin
+            if (!saw_bp_stall) begin
+                $fatal(1, "branch predictor stall was never observed");
+            end
+
+            if (!saw_bp_branch_stall) begin
+                $fatal(1, "conditional-branch predictor stall was never observed");
+            end
+
+            if (dut.u_core.u_csrs.minstret_q != 64'd18) begin
                 $fatal(1, "minstret mismatch: %0d",
                        dut.u_core.u_csrs.minstret_q);
             end
 
-            if (trace_arch_count != 17 || trace_exception_count != 1) begin
+            if (trace_arch_count != 18 || trace_exception_count != 1) begin
                 $fatal(1, "trace retire counts mismatch: arch=%0d exception=%0d",
                        trace_arch_count, trace_exception_count);
             end
@@ -411,7 +460,7 @@ module tb_openrv64_top;
                        dut.u_core.u_csrs.u_pmp.pmpaddr_q[0]);
             end
 
-            if (dut.u_core.u_csrs.mepc_q != 64'h168 ||
+            if (dut.u_core.u_csrs.mepc_q != 64'h16c ||
                 dut.u_core.u_csrs.mtval_q != 64'h98) begin
                 $fatal(1, "PMP trap context mismatch: mepc=%016x mtval=%016x",
                        dut.u_core.u_csrs.mepc_q,

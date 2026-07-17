@@ -30,6 +30,7 @@ module openrv64_dispatch #(
     input  wire                         decode_mem_write_i,
     input  wire                         decode_branch_i,
     input  wire                         decode_jump_i,
+    input  wire                         decode_predicted_taken_i,
     input  wire                         decode_word_op_i,
     input  wire                         decode_system_i,
     input  wire                         decode_fence_i,
@@ -60,6 +61,7 @@ module openrv64_dispatch #(
     output wire                         exec_mem_write_o,
     output wire                         exec_branch_o,
     output wire                         exec_jump_o,
+    output wire                         exec_predicted_taken_o,
     output wire                         exec_word_op_o,
     output wire                         exec_system_o,
     output wire                         exec_fence_o,
@@ -87,7 +89,7 @@ module openrv64_dispatch #(
     output wire [63:0]                  exec_trace_id_o
 );
 
-    localparam DISPATCH_WIDTH = 268;
+    localparam DISPATCH_WIDTH = 269;
 
     wire decode_writes_rd = decode_reg_write_i &&
                             !decode_illegal_i &&
@@ -124,6 +126,7 @@ module openrv64_dispatch #(
         decode_mem_write_i,
         decode_branch_i,
         decode_jump_i,
+        decode_predicted_taken_i,
         decode_word_op_i,
         decode_system_i,
         decode_fence_i,
@@ -189,6 +192,7 @@ module openrv64_dispatch #(
         exec_mem_write_o,
         exec_branch_o,
         exec_jump_o,
+        exec_predicted_taken_o,
         exec_word_op_o,
         exec_system_o,
         exec_fence_o,

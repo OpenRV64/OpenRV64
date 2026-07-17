@@ -7,6 +7,7 @@
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
+`include "core/exec/bp/defs.v"
 `include "core/except/except-defs.v"
 `include "core/trace/trace-defs.v"
 
@@ -17,7 +18,8 @@ module openrv64_rv64_top #(
     parameter PIPE_EX_MEM = 1,
     parameter PIPE_MEM_WB = 1,
     parameter ENABLE_RV64M = 0,
-    parameter ENABLE_TRACE = 0
+    parameter ENABLE_TRACE = 0,
+    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -141,7 +143,7 @@ module openrv64_rv64_top #(
     wire [`RV64_LSU_SIZE_WIDTH-1:0] unused_decode_lsu_size;
     wire unused_decode_lsu_unsigned;
     wire unused_decode_br_link;
-    wire unused_decode_br_indirect;
+    wire decode_br_indirect;
     wire unused_decode_subdecode_needed;
     wire unused_decode_extension_possible;
     wire unused_decode_summary = |{
@@ -159,7 +161,6 @@ module openrv64_rv64_top #(
         unused_decode_lsu_size,
         unused_decode_lsu_unsigned,
         unused_decode_br_link,
-        unused_decode_br_indirect,
         unused_decode_subdecode_needed,
         unused_decode_extension_possible
     };
@@ -187,6 +188,7 @@ module openrv64_rv64_top #(
     wire dispatch_exec_mem_write;
     wire dispatch_exec_branch;
     wire dispatch_exec_jump;
+    wire dispatch_exec_predicted_taken;
     wire dispatch_exec_word_op;
     wire dispatch_exec_system;
     wire dispatch_exec_fence;
@@ -198,6 +200,7 @@ module openrv64_rv64_top #(
     wire dispatch_raw_hazard;
     wire dispatch_waw_hazard;
     wire dispatch_scoreboard_stall;
+    wire dispatch_decode_valid;
     wire [TRACE_ID_WIDTH-1:0] dispatch_exec_trace_id;
     wire unused_dispatch_hazards = |{
         dispatch_raw_hazard,
@@ -213,6 +216,8 @@ module openrv64_rv64_top #(
     wire exec_system_ready;
     wire exec_redirect_valid;
     wire [`RV64_XLEN-1:0] exec_redirect_target;
+    wire exec_branch_resolved;
+    wire exec_branch_taken;
     wire [`RV64_FUNCT12_WIDTH-1:0] exec_csr_addr;
     wire [`RV64_XLEN-1:0] exec_csr_rdata;
     wire exec_csr_valid;
@@ -259,6 +264,14 @@ module openrv64_rv64_top #(
     wire [`RV64_INSTR_WIDTH-1:0] exec_trace_mem_instr;
     wire [TRACE_ID_WIDTH-1:0] exec_trace_wb_id;
     wire exec_trace_serializing;
+    wire bp_branch_present;
+    wire bp_branch_allocate;
+    wire bp_branch_resolve;
+    wire bp_prediction_taken;
+    wire bp_predict_redirect;
+    wire [`RV64_XLEN-1:0] bp_predict_target;
+    wire bp_fetch_stall;
+    wire bp_decode_stall;
     wire unused_exec_wb_context = |{
         exec_wb_illegal,
         exec_wb_ebreak,
@@ -384,14 +397,17 @@ module openrv64_rv64_top #(
                           hard_flush_sret_req;
     assign flush_mem_wb = 1'b0;
     assign drain_fetch_req = decode_ebreak_accept || halted_q;
-    assign flush_fetch = hard_flush_req || drain_fetch_req;
+    assign flush_fetch = hard_flush_req ||
+                         drain_fetch_req ||
+                         bp_predict_redirect;
 
     assign fetch_pc_valid = fetch_pc_ready &&
                             !halted_q &&
                             !halt_pending_q &&
                             !decode_ebreak_accept &&
+                            !bp_fetch_stall &&
                             !hard_flush_req;
-    assign fetch_decode_clear = if_id_in_clear;
+    assign fetch_decode_clear = if_id_in_clear && !bp_fetch_stall;
 
     openrv64_fetch u_fetch (
         .clk(clk),
@@ -421,7 +437,7 @@ module openrv64_rv64_top #(
         .trace_id_o(fetch_trace_id)
     );
 
-    assign if_id_out_clear = dispatch_decode_clear;
+    assign if_id_out_clear = dispatch_decode_clear && !bp_decode_stall;
 
     openrv64_stage #(
         .WIDTH(IF_ID_WIDTH),
@@ -430,7 +446,7 @@ module openrv64_rv64_top #(
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush_if_id),
-        .in_valid_i(fetch_decode_valid),
+        .in_valid_i(fetch_decode_valid && !bp_fetch_stall),
         .in_clear_o(if_id_in_clear),
         .in_data_i({fetch_trace_id, fetch_decode_bus}),
         .out_valid_o(if_id_out_valid),
@@ -482,9 +498,37 @@ module openrv64_rv64_top #(
         .lsu_unsigned_o(unused_decode_lsu_unsigned),
         .br_op_sel_o(decode_br_op),
         .br_link_o(unused_decode_br_link),
-        .br_indirect_o(unused_decode_br_indirect),
+        .br_indirect_o(decode_br_indirect),
         .subdecode_needed_o(unused_decode_subdecode_needed),
         .extension_decode_possible_o(unused_decode_extension_possible)
+    );
+
+    assign bp_branch_present = if_id_out_valid &&
+                               !hard_flush_req &&
+                               (decode_branch || decode_jump);
+    assign bp_branch_allocate = bp_branch_present && if_id_out_clear;
+    assign bp_branch_resolve = exec_branch_resolved;
+    assign bp_predict_redirect = bp_branch_allocate &&
+                                 bp_prediction_taken;
+    assign bp_predict_target = if_id_pc + decode_imm;
+
+    openrv64_exec_bp #(
+        .BP_TYPE(BP_TYPE)
+    ) u_bp (
+        .clk(clk),
+        .rst_n(rst_n),
+        .flush_i(hard_flush_req),
+        .lookup_valid_i(bp_branch_present),
+        .lookup_branch_i(decode_branch),
+        .lookup_jump_i(decode_jump),
+        .lookup_indirect_i(decode_br_indirect),
+        .lookup_allocate_i(bp_branch_allocate),
+        .resolve_valid_i(bp_branch_resolve),
+        .resolve_branch_i(dispatch_exec_branch),
+        .resolve_taken_i(exec_branch_taken),
+        .prediction_taken_o(bp_prediction_taken),
+        .fetch_stall_o(bp_fetch_stall),
+        .decode_stall_o(bp_decode_stall)
     );
 
     openrv64_rv64i_gpr u_gpr (
@@ -574,13 +618,17 @@ module openrv64_rv64_top #(
         .vector_target_o(except_vector_target)
     );
 
+    assign dispatch_decode_valid = if_id_out_valid &&
+                                   !bp_decode_stall &&
+                                   !hard_flush_req;
+
     openrv64_dispatch #(
         .REGISTERED(PIPE_ID_EX)
     ) u_dispatch (
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush_id_ex),
-        .decode_valid_i(if_id_out_valid && !hard_flush_req),
+        .decode_valid_i(dispatch_decode_valid),
         .decode_clear_o(dispatch_decode_clear),
         .decode_pc_i(if_id_pc),
         .decode_instr_i(if_id_instr),
@@ -600,6 +648,7 @@ module openrv64_rv64_top #(
         .decode_mem_write_i(decode_mem_write),
         .decode_branch_i(decode_branch),
         .decode_jump_i(decode_jump),
+        .decode_predicted_taken_i(bp_prediction_taken),
         .decode_word_op_i(decode_word_op),
         .decode_system_i(decode_system),
         .decode_fence_i(decode_fence),
@@ -630,6 +679,7 @@ module openrv64_rv64_top #(
         .exec_mem_write_o(dispatch_exec_mem_write),
         .exec_branch_o(dispatch_exec_branch),
         .exec_jump_o(dispatch_exec_jump),
+        .exec_predicted_taken_o(dispatch_exec_predicted_taken),
         .exec_word_op_o(dispatch_exec_word_op),
         .exec_system_o(dispatch_exec_system),
         .exec_fence_o(dispatch_exec_fence),
@@ -685,6 +735,7 @@ module openrv64_rv64_top #(
         .mem_write_i(dispatch_exec_mem_write),
         .branch_i(dispatch_exec_branch),
         .jump_i(dispatch_exec_jump),
+        .predicted_taken_i(dispatch_exec_predicted_taken),
         .word_op_i(dispatch_exec_word_op),
         .system_i(dispatch_exec_system),
         .fence_i(dispatch_exec_fence),
@@ -698,6 +749,8 @@ module openrv64_rv64_top #(
         .sfence_vma_allowed_i(csr_sfence_vma_allowed),
         .redirect_valid_o(exec_redirect_valid),
         .redirect_target_o(exec_redirect_target),
+        .branch_resolved_o(exec_branch_resolved),
+        .branch_taken_o(exec_branch_taken),
         .csr_addr_o(exec_csr_addr),
         .csr_rdata_i(exec_csr_rdata),
         .csr_valid_i(exec_csr_valid),
@@ -879,7 +932,7 @@ module openrv64_rv64_top #(
     wire [7:0] trace_stall_causes_raw;
 
     assign trace_events_raw[`OPENRV64_TRACE_EVENT_REDIRECT] =
-        hard_flush_redirect_req;
+        hard_flush_redirect_req || bp_predict_redirect;
     assign trace_events_raw[`OPENRV64_TRACE_EVENT_TRAP] =
         hard_flush_trap_req;
     assign trace_events_raw[`OPENRV64_TRACE_EVENT_IRQ] =
@@ -995,6 +1048,8 @@ module openrv64_rv64_top #(
         end else begin
             if (except_vector_valid) begin
                 pc_q <= except_vector_target;
+            end else if (bp_predict_redirect) begin
+                pc_q <= bp_predict_target;
             end else if (fetch_pc_valid) begin
                 // A line-aligned request supplies two 32-bit instructions.  A
                 // redirect into the upper half consumes only that half before
