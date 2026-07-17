@@ -5,6 +5,8 @@
 module openrv64_top #(
     parameter logic [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
     parameter bit ENABLE_RV64M = 1'b0,
+    parameter bit ENABLE_FORWARDING = 1'b1,
+    parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_STALL
@@ -60,6 +62,8 @@ module openrv64_top #(
     openrv64_rv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
         .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_FORWARDING(ENABLE_FORWARDING),
+        .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .ENABLE_TRACE(ENABLE_TRACE),
         .BP_TYPE(BP_TYPE)
     ) u_core (

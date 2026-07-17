@@ -1,6 +1,14 @@
 TOP_SIM_BUILD := sim/openrv64_top_tb.vvp
 TRACE_CSV ?= sim/openrv64-cycle.csv
 TRACE_REPORT ?= sim/openrv64-pipeline.txt
+SW_TRACE_SIM_BUILD := sim/sw_trace_tb.vvp
+SW_BIN ?= sw/test.bin
+SW_MEMH ?= sim/sw-test.memh
+SW_TRACE_CSV ?= sim/sw-test-trace.csv
+SW_TRACE_REPORT ?= sim/sw-test-pipeline.txt
+SW_FORWARDING ?= 1
+SW_LOAD_FORWARDING ?= 0
+SW_BP_TYPE ?= 0
 PYTHON ?= python3
 CLINT_SIM_BUILD := sim/clint_tb.vvp
 PLIC_SIM_BUILD := sim/plic_tb.vvp
@@ -28,6 +36,7 @@ RV64I_GPR_SIM_BUILD := sim/rv64-i-gpr_tb.vvp
 RV64I_CSRS_SIM_BUILD := sim/rv64-i-csrs_tb.vvp
 RV64I_PMP_SIM_BUILD := sim/rv64-i-pmp_tb.vvp
 FETCH_SIM_BUILD := sim/fetch_tb.vvp
+PREFIX_ADDSUB_SIM_BUILD := sim/prefix_addsub_tb.vvp
 EXEC_ALU_RV64I_SIM_BUILD := sim/exec_alu_rv64-i_tb.vvp
 EXEC_ALU_RV64M_SIM_BUILD := sim/exec_alu_rv64-m_tb.vvp
 EXEC_LSU_RV64I_SIM_BUILD := sim/exec_lsu_rv64-i_tb.vvp
@@ -46,6 +55,7 @@ ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zicsr.v rtl/core/isa/rv64-priv.v rtl/core/isa/rv64-zifencei.v \
 	rtl/core/isa/rv64-zba.v rtl/core/isa/rv64-zbb.v \
 	rtl/core/isa/rv64-zbc.v rtl/core/isa/rv64-zbs.v rtl/core/isa/rv64-b.v
+ARITH_DEPS := rtl/core/arith/prefix-addsub.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
 	rtl/core/decode/early.v rtl/core/decode/decode_top.v rtl/core/decode/imm.v rtl/core/decode/alu.v \
@@ -77,6 +87,7 @@ ROM_SRCS := rtl/soc/bus/rom.v
 MEMORY_SRCS := rtl/soc/bus/memory.v
 SOC_BUS_SRCS := rtl/soc/bus/mem_map.v rtl/soc/bus/decode.v
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
+SW_TRACE_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_sw_trace.sv
 CLINT_SIM_SRCS := tb/tb_clint.sv
 PLIC_SIM_SRCS := tb/tb_plic.sv
 UART_SIM_SRCS := tb/tb_uart16550.sv
@@ -105,6 +116,7 @@ RV64I_GPR_SIM_SRCS := tb/tb_rv64-i-gpr.sv
 RV64I_CSRS_SIM_SRCS := tb/tb_rv64-i-csrs.sv
 RV64I_PMP_SIM_SRCS := tb/tb_rv64-i-pmp.sv
 FETCH_SIM_SRCS := tb/tb_fetch.sv
+PREFIX_ADDSUB_SIM_SRCS := tb/tb_prefix_addsub.sv
 EXEC_ALU_RV64I_SIM_SRCS := tb/tb_exec_alu_rv64-i.sv
 EXEC_ALU_RV64M_SIM_SRCS := tb/tb_exec_alu_rv64-m.sv
 EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
@@ -119,13 +131,21 @@ IRQ_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_irq_context.sv
 DISPATCH_SIM_SRCS := tb/tb_dispatch.sv
 YOSYS ?= yosys
 YOSYS_ALU_REPORT_DIR ?= sim/yosys/alu
+YOSYS_FRONTEND_REPORT_DIR ?= sim/yosys/frontend
 LIBERTY ?=
 ABC_CONSTR ?=
 ABC_DELAY_PS ?=
+CURL ?= curl
+SKY130_LIBERTY ?= sim/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
+SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
+SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: sim sim-top sim-top-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m clean
+.PHONY: FORCE sim sim-top sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 
-sim: sim-top sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context
+FORCE:
+
+sim: sim-top sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context
 
 sim-top: $(TOP_SIM_BUILD)
 	vvp $(TOP_SIM_BUILD)
@@ -136,6 +156,14 @@ sim-top-trace: $(TOP_SIM_BUILD)
 	$(PYTHON) tools/pipeline_trace.py $(TRACE_CSV) --output $(TRACE_REPORT)
 	@echo "raw trace: $(TRACE_CSV)"
 	@echo "pipeline report: $(TRACE_REPORT)"
+
+sim-sw-trace: $(SW_TRACE_SIM_BUILD) $(SW_BIN)
+	mkdir -p $(dir $(SW_TRACE_CSV)) $(dir $(SW_TRACE_REPORT))
+	$(PYTHON) tools/bin2mem.py $(SW_BIN) $(SW_MEMH) --size 0x10000
+	vvp $(SW_TRACE_SIM_BUILD) +memh=$(SW_MEMH) +cycle-trace=$(SW_TRACE_CSV)
+	$(PYTHON) tools/pipeline_trace.py $(SW_TRACE_CSV) --output $(SW_TRACE_REPORT)
+	@echo "raw trace: $(SW_TRACE_CSV)"
+	@echo "pipeline report: $(SW_TRACE_REPORT)"
 
 trace-report:
 	$(PYTHON) tools/pipeline_trace.py $(TRACE_CSV) --output $(TRACE_REPORT)
@@ -219,6 +247,9 @@ sim-rv64-i-pmp: $(RV64I_PMP_SIM_BUILD)
 sim-fetch: $(FETCH_SIM_BUILD)
 	vvp $(FETCH_SIM_BUILD)
 
+sim-prefix-addsub: $(PREFIX_ADDSUB_SIM_BUILD)
+	vvp $(PREFIX_ADDSUB_SIM_BUILD)
+
 sim-dispatch: $(DISPATCH_SIM_BUILD)
 	vvp $(DISPATCH_SIM_BUILD)
 
@@ -272,9 +303,35 @@ yosys-timing-alu-rv64i:
 yosys-timing-alu-rv64m:
 	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_ALU_REPORT_DIR)" LIBERTY="$(LIBERTY)" ABC_CONSTR="$(ABC_CONSTR)" ABC_DELAY_PS="$(ABC_DELAY_PS)" bash synth/alu/report.sh rv64m
 
-$(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+sky130-liberty: $(SKY130_LIBERTY)
+	printf '%s  %s\n' "$(SKY130_LIBERTY_SHA256)" "$(SKY130_LIBERTY)" | sha256sum -c -
+
+$(SKY130_LIBERTY):
+	mkdir -p $(dir $@)
+	$(CURL) -L --fail --silent --show-error -o $@.tmp $(SKY130_LIBERTY_URL)
+	printf '%s  %s\n' "$(SKY130_LIBERTY_SHA256)" "$@.tmp" | sha256sum -c -
+	mv $@.tmp $@
+
+yosys-timing-alu-rv64i-sky130: sky130-liberty
+	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_ALU_REPORT_DIR)" LIBERTY="$(abspath $(SKY130_LIBERTY))" ABC_CONSTR="$(abspath $(SKY130_ABC_CONSTR))" bash synth/alu/report.sh rv64i
+
+yosys-timing-frontend:
+	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_FRONTEND_REPORT_DIR)" LIBERTY="$(LIBERTY)" ABC_CONSTR="$(ABC_CONSTR)" ABC_DELAY_PS="$(ABC_DELAY_PS)" bash synth/frontend/report.sh
+
+yosys-timing-frontend-sky130: sky130-liberty
+	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_FRONTEND_REPORT_DIR)" LIBERTY="$(abspath $(SKY130_LIBERTY))" ABC_CONSTR="$(abspath $(SKY130_ABC_CONSTR))" bash synth/frontend/report.sh
+
+$(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TOP_SIM_BUILD) $(CORE_SRCS) $(TOP_SIM_SRCS)
+
+$(SW_TRACE_SIM_BUILD): FORCE $(SW_TRACE_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl \
+		-Ptb_sw_trace.ENABLE_FORWARDING=$(SW_FORWARDING) \
+		-Ptb_sw_trace.ENABLE_LOAD_FORWARDING=$(SW_LOAD_FORWARDING) \
+		-Ptb_sw_trace.BP_TYPE=$(SW_BP_TYPE) \
+		-o $(SW_TRACE_SIM_BUILD) $(CORE_SRCS) $(SW_TRACE_SIM_SRCS)
 
 $(CLINT_SIM_BUILD): $(CLINT_SIM_SRCS) $(CLINT_SRCS)
 	mkdir -p sim
@@ -320,7 +377,7 @@ $(PTW_SIM_BUILD): $(PTW_SIM_SRCS) rtl/core/bus/ptw.v $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PTW_SIM_BUILD) rtl/core/bus/ptw.v $(PTW_SIM_SRCS)
 
-$(PTW_CONTEXT_SIM_BUILD): $(PTW_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+$(PTW_CONTEXT_SIM_BUILD): $(PTW_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PTW_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(PTW_CONTEXT_SIM_SRCS)
 
@@ -376,27 +433,31 @@ $(RV64I_PMP_SIM_BUILD): $(RV64I_PMP_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_PMP_SIM_BUILD) $(RV64I_PMP_SIM_SRCS)
 
-$(FETCH_SIM_BUILD): $(FETCH_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS)
+$(FETCH_SIM_BUILD): $(FETCH_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_SIM_BUILD) $(FETCH_SIM_SRCS)
+
+$(PREFIX_ADDSUB_SIM_BUILD): $(PREFIX_ADDSUB_SIM_SRCS) rtl/core/arith/prefix-addsub.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(PREFIX_ADDSUB_SIM_BUILD) $(PREFIX_ADDSUB_SIM_SRCS)
 
 $(DISPATCH_SIM_BUILD): $(DISPATCH_SIM_SRCS) $(DISPATCH_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(DISPATCH_SIM_BUILD) $(DISPATCH_SRCS) $(DISPATCH_SIM_SRCS)
 
-$(EXEC_ALU_RV64I_SIM_BUILD): $(EXEC_ALU_RV64I_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
+$(EXEC_ALU_RV64I_SIM_BUILD): $(EXEC_ALU_RV64I_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_ALU_RV64I_SIM_BUILD) $(EXEC_ALU_RV64I_SIM_SRCS)
 
-$(EXEC_ALU_RV64M_SIM_BUILD): $(EXEC_ALU_RV64M_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
+$(EXEC_ALU_RV64M_SIM_BUILD): $(EXEC_ALU_RV64M_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_ALU_RV64M_SIM_BUILD) $(EXEC_ALU_RV64M_SIM_SRCS)
 
-$(EXEC_LSU_RV64I_SIM_BUILD): $(EXEC_LSU_RV64I_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
+$(EXEC_LSU_RV64I_SIM_BUILD): $(EXEC_LSU_RV64I_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_LSU_RV64I_SIM_BUILD) $(EXEC_LSU_RV64I_SIM_SRCS)
 
-$(EXEC_BR_SIM_BUILD): $(EXEC_BR_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
+$(EXEC_BR_SIM_BUILD): $(EXEC_BR_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_BR_SIM_BUILD) $(EXEC_BR_SIM_SRCS)
 
@@ -404,15 +465,15 @@ $(EXEC_BP_SIM_BUILD): $(EXEC_BP_SIM_SRCS) $(BP_SRC) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_BP_SIM_BUILD) rtl/core/exec/bp/bp.v $(EXEC_BP_SIM_SRCS)
 
-$(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+$(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=1 -o $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
 
-$(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+$(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=2 -o $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
 
-$(BP_CONTEXT_REPEAT_LAST_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+$(BP_CONTEXT_REPEAT_LAST_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=3 -o $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
 
@@ -420,19 +481,19 @@ $(EXCEPT_SIM_BUILD): $(EXCEPT_SIM_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXCEPT_SIM_BUILD) $(EXCEPT_SIM_SRCS)
 
-$(EXEC_SYSTEM_CSR_SIM_BUILD): $(EXEC_SYSTEM_CSR_SIM_SRCS) $(EXEC_SRCS) $(ISA_SRCS)
+$(EXEC_SYSTEM_CSR_SIM_BUILD): $(EXEC_SYSTEM_CSR_SIM_SRCS) $(EXEC_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_SYSTEM_CSR_SIM_BUILD) $(EXEC_SYSTEM_CSR_SIM_SRCS)
 
-$(TRAP_CONTEXT_SIM_BUILD): $(TRAP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+$(TRAP_CONTEXT_SIM_BUILD): $(TRAP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TRAP_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(TRAP_CONTEXT_SIM_SRCS)
 
-$(PRIV_CONTEXT_SIM_BUILD): $(PRIV_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+$(PRIV_CONTEXT_SIM_BUILD): $(PRIV_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PRIV_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(PRIV_CONTEXT_SIM_SRCS)
 
-$(IRQ_CONTEXT_SIM_BUILD): $(IRQ_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(BP_DEPS)
+$(IRQ_CONTEXT_SIM_BUILD): $(IRQ_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(IRQ_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(IRQ_CONTEXT_SIM_SRCS)
 

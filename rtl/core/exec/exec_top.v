@@ -10,7 +10,9 @@
 module openrv64_exec_top #(
     parameter PIPE_EX_MEM = 1,
     parameter PIPE_MEM_WB = 1,
-    parameter ENABLE_RV64M = 0
+    parameter ENABLE_RV64M = 0,
+    parameter ENABLE_FORWARDING = 0,
+    parameter ENABLE_LOAD_FORWARDING = 0
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -99,6 +101,11 @@ module openrv64_exec_top #(
     output wire                         wb_mret_o,
     output wire                         wb_sret_o,
 
+    output wire                         forward_ex_valid_o,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0] forward_ex_rd_addr_o,
+    output wire                         forward_mem_valid_o,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0] forward_mem_rd_addr_o,
+
     input  wire [63:0]                  trace_id_i,
     output wire                         trace_ex_advance_o,
     output wire                         trace_mem_valid_o,
@@ -114,14 +121,17 @@ module openrv64_exec_top #(
     localparam MEM_WB_WIDTH = 380;
 
     wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(instr_i);
+    wire [`RV64_XLEN-1:0] forwarded_rs1_data;
+    wire [`RV64_XLEN-1:0] forwarded_rs2_data;
     wire alu_uses_imm = (opcode == `RV64_OPCODE_LUI) ||
                         (opcode == `RV64_OPCODE_AUIPC) ||
                         (opcode == `RV64_OPCODE_OP_IMM) ||
                         (opcode == `RV64_OPCODE_OP_IMM_32);
     wire [`RV64_XLEN-1:0] alu_src1 = (opcode == `RV64_OPCODE_LUI) ?
                                      {`RV64_XLEN{1'b0}} :
-                                     rs1_data_i;
-    wire [`RV64_XLEN-1:0] alu_src2 = alu_uses_imm ? imm_i : rs2_data_i;
+                                     forwarded_rs1_data;
+    wire [`RV64_XLEN-1:0] alu_src2 = alu_uses_imm ?
+                                      imm_i : forwarded_rs2_data;
 
     wire alu_base_valid;
     wire alu_base_illegal;
@@ -264,20 +274,47 @@ module openrv64_exec_top #(
                          mem_access_allowed_i;
     wire lsu_bus_error = lsu_mem_valid && mem_ready_i && mem_error_i;
     wire lsu_page_fault = lsu_mem_valid && mem_ready_i && mem_page_fault_i;
+    wire exception_valid;
+    wire exception_halt;
+    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] exception_cause;
+    wire [`RV64_XLEN-1:0] exception_tval;
     wire lsu_complete = !lsu_mem_access ||
                         !lsu_valid ||
                         lsu_misaligned ||
                         lsu_pmp_denied ||
                         (lsu_mem_valid && mem_ready_i);
+    // EX/MEM is always the youngest older producer visible to the current EX
+    // instruction, so it has priority over the register file's WB bypass.
+    // Load-response bypass is optional because it extends the combinational
+    // path from mem_rdata_i through load alignment into the next EX operation.
+    wire mem_forward_valid = ENABLE_FORWARDING &&
+                             ex_mem_out_valid &&
+                             ex_mem_reg_write &&
+                             !ex_mem_mem_write &&
+                             lsu_complete &&
+                             !exception_valid;
+    wire mem_bypass_valid = mem_forward_valid &&
+                            (ENABLE_LOAD_FORWARDING ||
+                             !ex_mem_mem_read);
+    wire [`RV64_XLEN-1:0] mem_forward_data = ex_mem_mem_read ?
+                                                lsu_load_data :
+                                                ex_mem_wb_data;
+    wire rs1_mem_forward = mem_bypass_valid &&
+                           (rs1_addr_i != `RV64_REG_X0) &&
+                           (rs1_addr_i == ex_mem_rd_addr);
+    wire rs2_mem_forward = mem_bypass_valid &&
+                           (rs2_addr_i != `RV64_REG_X0) &&
+                           (rs2_addr_i == ex_mem_rd_addr);
+
+    assign forwarded_rs1_data = rs1_mem_forward ?
+                                mem_forward_data : rs1_data_i;
+    assign forwarded_rs2_data = rs2_mem_forward ?
+                                mem_forward_data : rs2_data_i;
 
     wire mem_wb_in_valid;
     wire mem_wb_in_clear;
     wire [MEM_WB_WIDTH-1:0] mem_wb_in_data;
     wire [MEM_WB_WIDTH-1:0] mem_wb_out_data;
-    wire exception_valid;
-    wire exception_halt;
-    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] exception_cause;
-    wire [`RV64_XLEN-1:0] exception_tval;
     wire load_misaligned = ex_mem_out_valid &&
                            ex_mem_mem_read &&
                            lsu_misaligned;
@@ -340,8 +377,8 @@ module openrv64_exec_top #(
         .busy_o(alu_m_busy),
         .op_sel_i(alu_op_i),
         .word_op_i(word_op_i),
-        .src1_i(rs1_data_i),
-        .src2_i(rs2_data_i),
+        .src1_i(forwarded_rs1_data),
+        .src2_i(forwarded_rs2_data),
         .result_valid_o(alu_m_result_valid),
         .result_ready_i(alu_m_result_ready),
         .illegal_o(alu_m_illegal),
@@ -351,8 +388,8 @@ module openrv64_exec_top #(
     openrv64_exec_br u_br_exec (
         .op_sel_i(br_op_i),
         .pc_i(pc_i),
-        .src1_i(rs1_data_i),
-        .src2_i(rs2_data_i),
+        .src1_i(forwarded_rs1_data),
+        .src2_i(forwarded_rs2_data),
         .imm_i(imm_i),
         .valid_o(br_valid),
         .illegal_o(br_illegal),
@@ -367,7 +404,7 @@ module openrv64_exec_top #(
         .funct3_i(system_funct3),
         .csr_addr_i(system_csr_addr),
         .rs1_addr_i(rs1_addr_i),
-        .rs1_data_i(rs1_data_i),
+        .rs1_data_i(forwarded_rs1_data),
         .zimm_i(`RV64_RS1(instr_i)),
         .csr_rdata_i(csr_rdata_i),
         .csr_valid_i(csr_valid_i),
@@ -410,15 +447,24 @@ module openrv64_exec_top #(
                                 ex_mem_in_clear &&
                                 !serializing_q;
     assign ex_mem_in_valid = valid_i && ex_ready;
+    assign forward_ex_valid_o = ENABLE_FORWARDING &&
+                                ex_mem_in_valid &&
+                                reg_write_i &&
+                                !mem_write_i &&
+                                (ENABLE_LOAD_FORWARDING || !mem_read_i) &&
+                                !ex_illegal;
+    assign forward_ex_rd_addr_o = rd_addr_i;
+    assign forward_mem_valid_o = mem_forward_valid;
+    assign forward_mem_rd_addr_o = ex_mem_rd_addr;
     assign ex_mem_in_data = {
         trace_id_i,
         pc_i,
         ex_next_pc,
         instr_i,
         ex_wb_data,
-        rs1_data_i,
+        forwarded_rs1_data,
         imm_i,
-        rs2_data_i,
+        forwarded_rs2_data,
         rs1_addr_i,
         rs2_addr_i,
         rd_addr_i,

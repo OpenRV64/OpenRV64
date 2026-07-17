@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/arith/prefix-addsub.v"
 
 module openrv64_exec_alu_rv64i (
     input  wire [`RV64_ALU_OP_WIDTH-1:0] op_sel_i,
@@ -13,6 +14,25 @@ module openrv64_exec_alu_rv64i (
     output reg                           illegal_o,
     output reg [`RV64_XLEN-1:0]          result_o
 );
+
+    wire [`RV64_XLEN-1:0] addsub_result;
+    wire [`RV64_XLEN-1:0] auipc_result;
+
+    // Two independent prefix networks avoid putting an operand-selection mux
+    // in front of normal ADD/SUB.  This is an explicit area-for-timing trade.
+    openrv64_prefix_addsub u_addsub (
+        .a_i(src1_i),
+        .b_i(src2_i),
+        .sub_i(op_sel_i == `RV64_ALU_OP_SUB),
+        .result_o(addsub_result)
+    );
+
+    openrv64_prefix_addsub u_auipc_add (
+        .a_i(pc_i),
+        .b_i(src2_i),
+        .sub_i(1'b0),
+        .result_o(auipc_result)
+    );
 
     function [`RV64_XLEN-1:0] sext_word;
         input [31:0] value;
@@ -45,17 +65,17 @@ module openrv64_exec_alu_rv64i (
         case (op_sel_i)
             `RV64_ALU_OP_ADD: begin
                 if (word_op_i) begin
-                    accept_word(src1_i[31:0] + src2_i[31:0]);
+                    accept_word(addsub_result[31:0]);
                 end else begin
-                    accept_xlen(src1_i + src2_i);
+                    accept_xlen(addsub_result);
                 end
             end
 
             `RV64_ALU_OP_SUB: begin
                 if (word_op_i) begin
-                    accept_word(src1_i[31:0] - src2_i[31:0]);
+                    accept_word(addsub_result[31:0]);
                 end else begin
-                    accept_xlen(src1_i - src2_i);
+                    accept_xlen(addsub_result);
                 end
             end
 
@@ -125,7 +145,7 @@ module openrv64_exec_alu_rv64i (
 
             `RV64_ALU_OP_AUIPC: begin
                 if (!word_op_i) begin
-                    accept_xlen(pc_i + src2_i);
+                    accept_xlen(auipc_result);
                 end
             end
 

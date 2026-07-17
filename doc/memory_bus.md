@@ -30,13 +30,13 @@ completion. LSU requests have priority when both requesters arrive together.
 An obsolete fetch can be cancelled, but any already-exported physical request
 is still drained before another request is issued.
 
-On a fetch completion, the fetch queue can present its already-accepted
-successor PC on an internal sideband. The core requester captures that
-successor on the completion edge and returns directly to translation rather
-than spending an intervening cycle in `IDLE`. A waiting LSU still takes
-priority; the fetch queue holds its successor until the LSU finishes. This is
+On a fetch completion, the fetch queue can present an accepted successor miss
+on an internal sideband. The core requester captures that successor on the
+completion edge and returns directly to translation rather than spending an
+intervening cycle in `IDLE`. A resident-line hit does not assert the sideband
+or launch an external request. A waiting LSU still takes priority. This is
 internal request chaining, not a burst on the top-level physical bus: each
-8-byte line remains a separate blocking transaction.
+missed 8-byte line remains a separate blocking transaction.
 
 Request ownership includes the virtual address, access payload, effective
 privilege, VM mode, ASID, and root page-table PPN. The bus captures that whole
@@ -82,11 +82,19 @@ read-modify-write operation. Sv48, Sv57, hardware A/D updates, and IOASIDs are
 not implemented.
 
 Memory targets return the aligned 64-bit word selected by `mem_addr[63:3]`.
-Fetch retains both 32-bit instructions from that word in one of four two-slot
-buffers. The four-line circular queue can hold up to eight instructions while
-decode drains from its head. A control-flow target in the upper half of a word
-uses only that half, then continues with two instructions per following aligned
-request.
+Fetch retains both 32-bit instructions from that word in one of eight tagged
+two-slot buffers. The eight lines are arranged as two sets selected by address
+bit 3, with four ways comparing tag bits `[63:4]`; the circular unread order
+still alternates naturally between sets. The window can hold up to sixteen
+unread instructions. Consuming an entry clears its unread state but preserves
+its resident line tag and data. A control-flow redirect discards the wrong-path
+unread stream and checks the resident set. A predicted direct target hit can
+replace the branch in IF/ID on the same edge; other resident hits can bypass an
+empty fetch queue. Both cases avoid an external request and receive fresh
+dynamic trace IDs. Traps, privilege/context returns, `FENCE.I`, and
+`SFENCE.VMA` invalidate the resident window. A target in the upper half of a
+word uses only that half, then continues with two instructions per following
+aligned request.
 For narrow data accesses, `mem_addr[2:0]` identifies the addressed byte lane;
 store data and `mem_wstrb` use that same lane placement. Preserving the low
 address bits is required for side-effecting 32-bit MMIO registers, such as the

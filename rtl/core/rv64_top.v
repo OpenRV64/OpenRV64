@@ -10,6 +10,7 @@
 `include "core/exec/bp/defs.v"
 `include "core/except/except-defs.v"
 `include "core/trace/trace-defs.v"
+`include "core/arith/prefix-addsub.v"
 
 module openrv64_rv64_top #(
     parameter [63:0] RESET_VECTOR = 64'h0000_0000_0000_0000,
@@ -18,6 +19,8 @@ module openrv64_rv64_top #(
     parameter PIPE_EX_MEM = 1,
     parameter PIPE_MEM_WB = 1,
     parameter ENABLE_RV64M = 0,
+    parameter ENABLE_FORWARDING = 1,
+    parameter ENABLE_LOAD_FORWARDING = 0,
     parameter ENABLE_TRACE = 0,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL
 ) (
@@ -79,7 +82,9 @@ module openrv64_rv64_top #(
 
     wire fetch_pc_ready;
     wire fetch_pc_valid;
+    wire fetch_redirect_replay;
     wire fetch_mem_valid;
+    wire fetch_mem_next_valid;
     wire fetch_mem_ready;
     wire fetch_mem_write;
     wire [`RV64_XLEN-1:0] fetch_mem_addr;
@@ -109,6 +114,9 @@ module openrv64_rv64_top #(
     wire [`RV64_INSTR_WIDTH-1:0] if_id_instr;
     wire if_id_instr_fault;
     wire if_id_instr_page_fault;
+    wire [`RV64_XLEN-1:0] if_id_predecode_target;
+    wire if_id_predecode_valid;
+    wire if_id_predecode_conditional;
     wire [TRACE_ID_WIDTH-1:0] if_id_trace_id;
 
     wire decode_valid;
@@ -214,6 +222,10 @@ module openrv64_rv64_top #(
     wire exec_lsu_ready;
     wire exec_br_ready;
     wire exec_system_ready;
+    wire exec_forward_ex_valid;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] exec_forward_ex_rd_addr;
+    wire exec_forward_mem_valid;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] exec_forward_mem_rd_addr;
     wire exec_redirect_valid;
     wire [`RV64_XLEN-1:0] exec_redirect_target;
     wire exec_branch_resolved;
@@ -269,7 +281,12 @@ module openrv64_rv64_top #(
     wire bp_branch_resolve;
     wire bp_prediction_taken;
     wire bp_predict_redirect;
+    wire bp_fast_predict_redirect;
     wire [`RV64_XLEN-1:0] bp_predict_target;
+    wire [`RV64_XLEN-1:0] bp_fallback_target;
+    wire bp_lookup_branch;
+    wire bp_lookup_jump;
+    wire bp_lookup_indirect;
     wire bp_fetch_stall;
     wire bp_decode_stall;
     wire unused_exec_wb_context = |{
@@ -329,6 +346,8 @@ module openrv64_rv64_top #(
     wire hard_flush_restart_req;
     wire hard_flush_req;
     wire flush_fetch;
+    wire invalidate_fetch;
+    wire redirect_fetch;
     wire flush_if_id;
     wire flush_id_ex;
     wire flush_ex_mem;
@@ -397,9 +416,19 @@ module openrv64_rv64_top #(
                           hard_flush_sret_req;
     assign flush_mem_wb = 1'b0;
     assign drain_fetch_req = decode_ebreak_accept || halted_q;
-    assign flush_fetch = hard_flush_req ||
-                         drain_fetch_req ||
-                         bp_predict_redirect;
+    // Control-flow redirects discard only the unread fetch stream.  Resident
+    // tagged lines survive for address-matched replay.  Context-changing
+    // events and FENCE.I/SFENCE.VMA still invalidate the complete window.
+    assign invalidate_fetch = reset_pending_q ||
+                              drain_fetch_req ||
+                              hard_flush_trap_req ||
+                              hard_flush_irq_req ||
+                              hard_flush_mret_req ||
+                              hard_flush_sret_req ||
+                              hard_flush_restart_req;
+    assign redirect_fetch = hard_flush_redirect_req ||
+                            bp_predict_redirect;
+    assign flush_fetch = invalidate_fetch || redirect_fetch;
 
     assign fetch_pc_valid = fetch_pc_ready &&
                             !halted_q &&
@@ -412,12 +441,17 @@ module openrv64_rv64_top #(
     openrv64_fetch u_fetch (
         .clk(clk),
         .rst_n(rst_n),
-        .flush_i(flush_fetch),
+        .flush_i(invalidate_fetch),
+        .redirect_i(redirect_fetch),
+        .redirect_replay_i(bp_fast_predict_redirect),
+        .redirect_pc_i(bp_predict_target),
+        .redirect_replay_o(fetch_redirect_replay),
         .pc_ready_o(fetch_pc_ready),
         .pc_valid_i(fetch_pc_valid),
         .pc_i(pc_q),
         .trace_id_i(ENABLE_TRACE ? trace_next_id_q : 64'd0),
         .mem_valid_o(fetch_mem_valid),
+        .mem_next_valid_o(fetch_mem_next_valid),
         .mem_ready_i(fetch_mem_ready),
         .mem_write_o(fetch_mem_write),
         .mem_addr_o(fetch_mem_addr),
@@ -456,6 +490,9 @@ module openrv64_rv64_top #(
 
     assign {
         if_id_trace_id,
+        if_id_predecode_conditional,
+        if_id_predecode_valid,
+        if_id_predecode_target,
         if_id_instr_page_fault,
         if_id_instr_fault,
         if_id_pc,
@@ -503,14 +540,33 @@ module openrv64_rv64_top #(
         .extension_decode_possible_o(unused_decode_extension_possible)
     );
 
+    assign bp_lookup_branch = if_id_predecode_valid ?
+                              if_id_predecode_conditional : decode_branch;
+    assign bp_lookup_jump = if_id_predecode_valid ?
+                            !if_id_predecode_conditional : decode_jump;
+    assign bp_lookup_indirect = if_id_predecode_valid ?
+                                1'b0 : decode_br_indirect;
     assign bp_branch_present = if_id_out_valid &&
                                !hard_flush_req &&
-                               (decode_branch || decode_jump);
+                               (if_id_predecode_valid ||
+                                decode_branch || decode_jump);
     assign bp_branch_allocate = bp_branch_present && if_id_out_clear;
     assign bp_branch_resolve = exec_branch_resolved;
     assign bp_predict_redirect = bp_branch_allocate &&
                                  bp_prediction_taken;
-    assign bp_predict_target = if_id_pc + decode_imm;
+    assign bp_fast_predict_redirect = bp_predict_redirect &&
+                                      if_id_predecode_valid;
+    assign bp_predict_target = if_id_predecode_valid ?
+                               if_id_predecode_target : bp_fallback_target;
+
+    // Cold direct controls and JALR still have a correct decode-time fallback.
+    // Resident direct controls bypass this adder entirely on later replays.
+    openrv64_prefix_addsub u_bp_fallback_target (
+        .a_i(if_id_pc),
+        .b_i(decode_imm),
+        .sub_i(1'b0),
+        .result_o(bp_fallback_target)
+    );
 
     openrv64_exec_bp #(
         .BP_TYPE(BP_TYPE)
@@ -519,9 +575,9 @@ module openrv64_rv64_top #(
         .rst_n(rst_n),
         .flush_i(hard_flush_req),
         .lookup_valid_i(bp_branch_present),
-        .lookup_branch_i(decode_branch),
-        .lookup_jump_i(decode_jump),
-        .lookup_indirect_i(decode_br_indirect),
+        .lookup_branch_i(bp_lookup_branch),
+        .lookup_jump_i(bp_lookup_jump),
+        .lookup_indirect_i(bp_lookup_indirect),
         .lookup_allocate_i(bp_branch_allocate),
         .resolve_valid_i(bp_branch_resolve),
         .resolve_branch_i(dispatch_exec_branch),
@@ -623,7 +679,8 @@ module openrv64_rv64_top #(
                                    !hard_flush_req;
 
     openrv64_dispatch #(
-        .REGISTERED(PIPE_ID_EX)
+        .REGISTERED(PIPE_ID_EX),
+        .ENABLE_FORWARDING(ENABLE_FORWARDING)
     ) u_dispatch (
         .clk(clk),
         .rst_n(rst_n),
@@ -663,6 +720,10 @@ module openrv64_rv64_top #(
         .exec_lsu_ready_i(exec_lsu_ready),
         .exec_br_ready_i(exec_br_ready),
         .exec_system_ready_i(exec_system_ready),
+        .forward_ex_valid_i(exec_forward_ex_valid),
+        .forward_ex_rd_addr_i(exec_forward_ex_rd_addr),
+        .forward_mem_valid_i(exec_forward_mem_valid),
+        .forward_mem_rd_addr_i(exec_forward_mem_rd_addr),
         .exec_pc_o(dispatch_exec_pc),
         .exec_instr_o(dispatch_exec_instr),
         .exec_trace_id_o(dispatch_exec_trace_id),
@@ -705,7 +766,9 @@ module openrv64_rv64_top #(
     openrv64_exec_top #(
         .PIPE_EX_MEM(PIPE_EX_MEM),
         .PIPE_MEM_WB(PIPE_MEM_WB),
-        .ENABLE_RV64M(ENABLE_RV64M)
+        .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_FORWARDING(ENABLE_FORWARDING),
+        .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING)
     ) u_exec (
         .clk(clk),
         .rst_n(rst_n),
@@ -789,6 +852,10 @@ module openrv64_rv64_top #(
         .wb_tval_o(exec_wb_tval),
         .wb_mret_o(exec_wb_mret),
         .wb_sret_o(exec_wb_sret),
+        .forward_ex_valid_o(exec_forward_ex_valid),
+        .forward_ex_rd_addr_o(exec_forward_ex_rd_addr),
+        .forward_mem_valid_o(exec_forward_mem_valid),
+        .forward_mem_rd_addr_o(exec_forward_mem_rd_addr),
         .trace_ex_advance_o(exec_trace_ex_advance),
         .trace_mem_valid_o(exec_trace_mem_valid),
         .trace_mem_clear_o(exec_trace_mem_clear),
@@ -884,7 +951,7 @@ module openrv64_rv64_top #(
         .req_wstrb_o(core_mem_wstrb),
         .req_rdata_i(mem_rdata),
         .req_error_i(core_mem_error),
-        .fetch_next_valid_i(fetch_pc_valid),
+        .fetch_next_valid_i(fetch_mem_next_valid),
         .fetch_next_addr_i(pc_q)
     );
 
@@ -923,7 +990,7 @@ module openrv64_rv64_top #(
         flush_ex_mem,
         flush_id_ex,
         flush_if_id,
-        flush_fetch
+        flush_fetch && !fetch_redirect_replay
     };
     wire [4:0] trace_stall_raw = trace_valid_raw &
                                   ~trace_advance_raw &
@@ -1033,6 +1100,9 @@ module openrv64_rv64_top #(
             if (fetch_pc_valid) begin
                 trace_next_id_q <= trace_next_id_q +
                                    (pc_q[2] ? 64'd1 : 64'd2);
+            end else if (fetch_redirect_replay) begin
+                trace_next_id_q <= trace_next_id_q +
+                                   (bp_predict_target[2] ? 64'd1 : 64'd2);
             end
         end
     end
@@ -1049,7 +1119,10 @@ module openrv64_rv64_top #(
             if (except_vector_valid) begin
                 pc_q <= except_vector_target;
             end else if (bp_predict_redirect) begin
-                pc_q <= bp_predict_target;
+                pc_q <= fetch_redirect_replay ?
+                        bp_predict_target +
+                        (bp_predict_target[2] ? 64'd4 : 64'd8) :
+                        bp_predict_target;
             end else if (fetch_pc_valid) begin
                 // A line-aligned request supplies two 32-bit instructions.  A
                 // redirect into the upper half consumes only that half before

@@ -94,7 +94,6 @@ run_report() {
     local report_path="$report_name.rpt"
     local report_display="$out_dir_display/$report_name.rpt"
     local verilog_sources=""
-    local read_cells=""
     local map_design=""
     local write_report=""
     local abc_options=""
@@ -107,7 +106,6 @@ run_report() {
     fi
 
     if [[ -n "$liberty" ]]; then
-        read_cells="read_liberty -lib \"$liberty\";"
         if [[ -n "$abc_constr" ]]; then
             abc_options="$abc_options -constr \"$abc_constr\""
         fi
@@ -115,19 +113,31 @@ run_report() {
             abc_options="$abc_options -D $abc_delay_ps"
         fi
         map_design="dfflibmap -liberty \"$liberty\"; abc -liberty \"$liberty\"$abc_options; clean -purge;"
-        write_report="tee -o \"$report_path\" stat -liberty \"$liberty\"; tee -a \"$report_path\" sta; tee -a \"$report_path\" ltp -noff;"
+        write_report="stat -liberty \"$liberty\"; read_liberty -lib \"$liberty\"; check;"
     else
         map_design="abc -g simple; clean -purge;"
         write_report="tee -o \"$report_path\" stat; tee -a \"$report_path\" ltp -noff;"
     fi
 
-    flow="$read_cells read_verilog -sv -I$repo_root/rtl $verilog_sources; hierarchy -check -top $top_module; proc; flatten; opt; memory; opt; techmap; opt; $map_design $write_report"
-
-    "$yosys_bin" -Q -q -p "$flow"
+    flow="read_verilog -sv -I$repo_root/rtl $verilog_sources; hierarchy -check -top $top_module; proc; flatten; opt; memory; opt; techmap; opt; $map_design $write_report"
 
     if [[ -n "$liberty" ]]; then
-        printf '%-20s technology timing: %s\n' "$report_name" "$report_display"
+        "$yosys_bin" -Q -l "$report_path" -p "$flow" >/dev/null
+        local delay_ps
+        local area
+        delay_ps=$(sed -n 's/.*Delay = *\([0-9.][0-9.]*\) ps.*/\1/p' "$report_path" | tail -1)
+        area=$(sed -n "s/.*Chip area for module.*: *\([0-9.][0-9.]*\).*/\1/p" "$report_path" | tail -1)
+        if [[ -n "$delay_ps" ]]; then
+            local fmax_mhz
+            fmax_mhz=$(awk -v delay_ps="$delay_ps" 'BEGIN { printf "%.1f", 1000000.0 / delay_ps }')
+            printf '%-20s %8.2f ps  %7s MHz  area=%s (%s)\n' \
+                "$report_name" "$delay_ps" "$fmax_mhz" "${area:-unknown}" "$report_display"
+        else
+            printf '%-20s technology mapped, no combinational path reported (%s)\n' \
+                "$report_name" "$report_display"
+        fi
     else
+        "$yosys_bin" -Q -q -p "$flow"
         local depth
         depth=$(sed -n 's/.*Longest topological path.*length=\([0-9][0-9]*\).*/\1/p' "$report_path" | tail -1)
         printf '%-20s generic depth: %s gates (%s)\n' \

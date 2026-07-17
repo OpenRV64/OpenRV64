@@ -5,7 +5,8 @@
 `include "core/decode/defs/br-defs.v"
 
 module openrv64_dispatch #(
-    parameter REGISTERED = 1
+    parameter REGISTERED = 1,
+    parameter ENABLE_FORWARDING = 0
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -46,6 +47,10 @@ module openrv64_dispatch #(
     input  wire                         exec_lsu_ready_i,
     input  wire                         exec_br_ready_i,
     input  wire                         exec_system_ready_i,
+    input  wire                         forward_ex_valid_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] forward_ex_rd_addr_i,
+    input  wire                         forward_mem_valid_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] forward_mem_rd_addr_i,
     output wire [`RV64_XLEN-1:0]        exec_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] exec_instr_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] exec_rs1_addr_o,
@@ -232,6 +237,12 @@ module openrv64_dispatch #(
                                 decode_unit_ready &&
                                 reg_map_can_allocate;
             wire [31:0] unused_alloc_read_hot;
+            wire [31:0] forward_write_hot = ENABLE_FORWARDING ?
+                ((forward_ex_valid_i ?
+                  (32'h0000_0001 << forward_ex_rd_addr_i) : 32'h0) |
+                 (forward_mem_valid_i ?
+                  (32'h0000_0001 << forward_mem_rd_addr_i) : 32'h0)) :
+                32'h0;
             wire scoreboard_stall = decode_valid_i && !flush_i &&
                                     !reg_map_can_allocate;
             wire capture = decode_valid_i && decode_clear_o && !flush_i;
@@ -240,7 +251,9 @@ module openrv64_dispatch #(
                 reg_map_read_full_hazard
             };
 
-            openrv64_dispatch_reg_map u_reg_map (
+            openrv64_dispatch_reg_map #(
+                .ENABLE_FORWARDING(ENABLE_FORWARDING)
+            ) u_reg_map (
                 .clk(clk),
                 .rst_n(rst_n),
                 .clear_i(flush_i),
@@ -253,6 +266,7 @@ module openrv64_dispatch #(
                 .alloc_reg_write_i(decode_writes_rd),
                 .alloc_rd_addr_i(decode_rd_addr_i),
                 .alloc_read_hot_i(32'h0000_0000),
+                .forward_write_hot_i(forward_write_hot),
                 .alloc_read_hot_o(unused_alloc_read_hot),
                 .retire_valid_i(retire_valid_i),
                 .retire_uses_rs1_i(retire_uses_rs1_i),
@@ -348,6 +362,9 @@ module openrv64_dispatch #(
             wire reg_map_read_full_hazard;
             wire reg_map_can_allocate;
             wire [31:0] unused_alloc_read_hot;
+            wire [31:0] forward_write_hot =
+                (ENABLE_FORWARDING && forward_mem_valid_i) ?
+                (32'h0000_0001 << forward_mem_rd_addr_i) : 32'h0;
             wire scoreboard_stall = decode_valid_i && !flush_i &&
                                     !reg_map_can_allocate;
             wire issue_accept = decode_valid_i && decode_clear_o && !flush_i;
@@ -359,7 +376,9 @@ module openrv64_dispatch #(
                 reg_map_read_full_hazard
             };
 
-            openrv64_dispatch_reg_map u_reg_map (
+            openrv64_dispatch_reg_map #(
+                .ENABLE_FORWARDING(ENABLE_FORWARDING)
+            ) u_reg_map (
                 .clk(clk),
                 .rst_n(rst_n),
                 .clear_i(flush_i),
@@ -372,6 +391,7 @@ module openrv64_dispatch #(
                 .alloc_reg_write_i(decode_writes_rd),
                 .alloc_rd_addr_i(decode_rd_addr_i),
                 .alloc_read_hot_i(32'h0000_0000),
+                .forward_write_hot_i(forward_write_hot),
                 .alloc_read_hot_o(unused_alloc_read_hot),
                 .retire_valid_i(retire_valid_i),
                 .retire_uses_rs1_i(retire_uses_rs1_i),

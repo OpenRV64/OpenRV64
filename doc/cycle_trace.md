@@ -26,6 +26,17 @@ make sim-top-trace \
   TRACE_REPORT=/tmp/run.pipeline.txt
 ```
 
+To run a flat software binary at `0x80000000` in a 64 KiB RAM and trace it:
+
+```sh
+make sim-sw-trace SW_BIN=sw/test.bin
+```
+
+This writes `sim/sw-test-trace.csv` and `sim/sw-test-pipeline.txt`. The software
+bench fails on an exception or timeout and, for `sw/test.bin`, verifies that
+the return loop is reached with `a0=100`. Forwarding and predictor experiment
+controls are described in [forwarding.md](forwarding.md).
+
 An existing CSV can be rendered or filtered directly:
 
 ```sh
@@ -65,11 +76,13 @@ UID is `trace_ids[2*64 +: 64]`.
 Bit-number constants are in `rtl/core/trace/trace-defs.v` and form part of the
 trace ABI.
 
-The IF slot covers the complete blocking fetch transaction. It can assert
-`trace_advance[IF]` once when memory returns and again when the fetched word is
-accepted by ID. The UID remains unchanged across both steps. ID through WB use
-`advance` for the downstream handoff. A UID is allocated when a fetch PC is
-accepted; it is not reused if that fetch is later redirected or flushed.
+The IF slot covers the fetch transaction or resident-line replay. A miss can
+assert `trace_advance[IF]` once when memory returns and again when the fetched
+word is accepted by ID; a resident hit skips the memory-return phase. The UID
+remains unchanged across those steps. ID through WB use `advance` for the
+downstream handoff. A fresh UID is allocated whenever a fetch PC is accepted,
+including a resident replay; it is not reused if that dynamic fetch is later
+redirected or flushed.
 
 ## CSV and cosimulation contract
 

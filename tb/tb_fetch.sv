@@ -7,11 +7,16 @@ module tb_fetch;
     logic                             clk;
     logic                             rst_n;
     logic                             flush;
+    logic                             redirect;
+    logic                             redirect_replay;
+    logic [`RV64_XLEN-1:0]            redirect_pc;
+    logic                             redirect_replayed;
     logic                             pc_ready;
     logic                             pc_valid;
     logic [`RV64_XLEN-1:0]            pc;
     logic [63:0]                      trace_id_in;
     logic                             mem_valid;
+    logic                             mem_next_valid;
     logic                             mem_ready;
     logic                             mem_write;
     logic [`RV64_XLEN-1:0]            mem_addr;
@@ -30,7 +35,7 @@ module tb_fetch;
     logic                             decode_page_fault;
     logic [63:0]                      trace_id;
 
-    logic [`RV64_XLEN-1:0] memory [0:7];
+    logic [`RV64_XLEN-1:0] memory [0:15];
     logic [`RV64_XLEN-1:0] pending_addr_q;
     logic                  pending_q;
     integer                request_count_q;
@@ -39,11 +44,16 @@ module tb_fetch;
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush),
+        .redirect_i(redirect),
+        .redirect_replay_i(redirect_replay),
+        .redirect_pc_i(redirect_pc),
+        .redirect_replay_o(redirect_replayed),
         .pc_ready_o(pc_ready),
         .pc_valid_i(pc_valid),
         .pc_i(pc),
         .trace_id_i(trace_id_in),
         .mem_valid_o(mem_valid),
+        .mem_next_valid_o(mem_next_valid),
         .mem_ready_i(mem_ready),
         .mem_write_o(mem_write),
         .mem_addr_o(mem_addr),
@@ -149,9 +159,35 @@ module tb_fetch;
                 decode_bus[`RV64_FETCH_DECODE_BUS_PC_BITS] !== exp_pc ||
                 decode_bus[`RV64_FETCH_DECODE_BUS_INSTR_BITS] !== exp_instr) begin
                 $fatal(1,
-                    "%0s: decode pc=%016x instr=%08x trace=%016x bus=%025x expected pc=%016x instr=%08x trace=%016x",
+                    "%0s: decode pc=%016x instr=%08x trace=%016x bus=%041x expected pc=%016x instr=%08x trace=%016x",
                     label, decode_pc, decode_instr, trace_id, decode_bus,
                     exp_pc, exp_instr, exp_trace_id);
+            end
+        end
+    endtask
+
+    task automatic expect_predecode;
+        input exp_valid;
+        input exp_conditional;
+        input [`RV64_XLEN-1:0] exp_target;
+        input [8*40-1:0] label;
+        begin
+            wait (decode_valid);
+            #1;
+            if (decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_VALID_BIT] !==
+                    exp_valid ||
+                decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_CONDITIONAL_BIT] !==
+                    exp_conditional ||
+                (exp_valid &&
+                 decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_TARGET_BITS] !==
+                    exp_target)) begin
+                $fatal(1,
+                    "%0s: predecode valid=%0b conditional=%0b target=%016x expected valid=%0b conditional=%0b target=%016x",
+                    label,
+                    decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_VALID_BIT],
+                    decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_CONDITIONAL_BIT],
+                    decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_TARGET_BITS],
+                    exp_valid, exp_conditional, exp_target);
             end
         end
     endtask
@@ -176,19 +212,23 @@ module tb_fetch;
 
     initial begin
         integer i;
+        integer request_count_before;
 
-        for (i = 0; i < 8; i = i + 1) begin
-            memory[i] = {`RV64_XLEN{1'b0}};
+        for (i = 0; i < 16; i = i + 1) begin
+            memory[i] = {32'h1000_0000 + i, 32'h2000_0000 + i};
         end
-
-        memory[0] = {32'h1111_1111, 32'h2222_2222};
-        memory[1] = {32'h3333_3333, 32'h4444_4444};
-        memory[2] = {32'h5555_5555, 32'h6666_6666};
-        memory[3] = {32'h7777_7777, 32'h8888_8888};
-        memory[4] = {32'h9999_9999, 32'haaaa_aaaa};
+        // Direct controls exercise the stored sideband.  JAL +16 at PC 0
+        // and BEQ +12 at PC 4 both target 0x10.  The next line contains an
+        // illegal BRANCH funct3 and a targetless JALR; neither may claim
+        // direct-target metadata.
+        memory[0] = {32'h0000_0663, 32'h0100_006f};
+        memory[1] = {32'h0000_0067, 32'h0000_2063};
 
         rst_n = 1'b0;
         flush = 1'b0;
+        redirect = 1'b0;
+        redirect_replay = 1'b0;
+        redirect_pc = {`RV64_XLEN{1'b0}};
         pc_valid = 1'b0;
         pc = {`RV64_XLEN{1'b0}};
         trace_id_in = 64'd0;
@@ -200,10 +240,13 @@ module tb_fetch;
         @(negedge clk);
         rst_n = 1'b1;
 
-        // Fill all four line buffers while decode is held.  Four memory reads
-        // must supply all eight instructions.
-        issue_pc(64'h0000_0000_0000_0000, 64'd100);
-        expect_decode(64'h0000_0000_0000_0000, 32'h2222_2222, 64'd100,
+        // Fill all eight line buffers while decode is held.  Eight memory
+        // reads must supply all sixteen instructions.
+        for (i = 0; i < 8; i = i + 1) begin
+            issue_pc(i * 8, 64'd100 + (i * 2));
+        end
+
+        expect_decode(64'h0000_0000_0000_0000, memory[0][31:0], 64'd100,
                       1'b0, 1'b0, "first buffer lower slot");
 
         repeat (2) @(posedge clk);
@@ -212,62 +255,103 @@ module tb_fetch;
             $fatal(1, "decode output did not hold under backpressure");
         end
 
-        issue_pc(64'h0000_0000_0000_0008, 64'd102);
-        issue_pc(64'h0000_0000_0000_0010, 64'd104);
-        issue_pc(64'h0000_0000_0000_0018, 64'd106);
         wait (!mem_valid);
-        if (request_count_q != 4) begin
-            $fatal(1, "expected four line reads for eight instructions, got %0d",
+        if (request_count_q != 8) begin
+            $fatal(1, "expected eight line reads for sixteen instructions, got %0d",
                    request_count_q);
         end
         if (pc_ready) begin
-            $fatal(1, "fetch accepted a fifth line while all four were full");
+            $fatal(1, "fetch accepted a ninth line while all eight were full");
         end
 
-        consume_decode(64'h0000_0000_0000_0000, 32'h2222_2222, 64'd100,
-                       1'b0, 1'b0, "first buffer lower slot");
-        consume_decode(64'h0000_0000_0000_0004, 32'h1111_1111, 64'd101,
-                       1'b0, 1'b0, "first buffer upper slot");
-        consume_decode(64'h0000_0000_0000_0008, 32'h4444_4444, 64'd102,
-                       1'b0, 1'b0, "second buffer lower slot");
-        consume_decode(64'h0000_0000_0000_000c, 32'h3333_3333, 64'd103,
-                       1'b0, 1'b0, "second buffer upper slot");
-        consume_decode(64'h0000_0000_0000_0010, 32'h6666_6666, 64'd104,
-                       1'b0, 1'b0, "third buffer lower slot");
-        consume_decode(64'h0000_0000_0000_0014, 32'h5555_5555, 64'd105,
-                       1'b0, 1'b0, "third buffer upper slot");
-        consume_decode(64'h0000_0000_0000_0018, 32'h8888_8888, 64'd106,
-                       1'b0, 1'b0, "fourth buffer lower slot");
-        consume_decode(64'h0000_0000_0000_001c, 32'h7777_7777, 64'd107,
-                       1'b0, 1'b0, "fourth buffer upper slot");
+        for (i = 0; i < 8; i = i + 1) begin
+            if (i == 0) begin
+                expect_predecode(1'b1, 1'b0, 64'h10,
+                                 "resident JAL target");
+            end else if (i == 1) begin
+                expect_predecode(1'b0, 1'b0, 64'h0,
+                                 "illegal branch no target");
+            end
+            consume_decode(i * 8, memory[i][31:0], 64'd100 + (i * 2),
+                           1'b0, 1'b0, "sixteen-entry fill lower slot");
+            if (i == 0) begin
+                expect_predecode(1'b1, 1'b1, 64'h10,
+                                 "resident conditional target");
+            end else if (i == 1) begin
+                expect_predecode(1'b0, 1'b0, 64'h0,
+                                 "JALR has no direct target");
+            end
+            consume_decode((i * 8) + 4, memory[i][63:32],
+                           64'd101 + (i * 2), 1'b0, 1'b0,
+                           "sixteen-entry fill upper slot");
+        end
 
-        // A redirect into an upper slot emits only that instruction.  The next
-        // request begins at the following 8-byte line and again emits two.
+        // A soft redirect preserves resident lines.  Replaying an upper slot
+        // and the following line must perform no additional memory reads and
+        // must assign fresh dynamic trace IDs.
+        @(negedge clk);
+        redirect = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        redirect = 1'b0;
+        request_count_before = request_count_q;
+
         issue_pc(64'h0000_0000_0000_000c, 64'd200);
         issue_pc(64'h0000_0000_0000_0010, 64'd201);
-        consume_decode(64'h0000_0000_0000_000c, 32'h3333_3333, 64'd200,
+        if (request_count_q != request_count_before) begin
+            $fatal(1, "resident redirect replay unexpectedly read memory");
+        end
+        consume_decode(64'h0000_0000_0000_000c, memory[1][63:32], 64'd200,
                        1'b0, 1'b0, "upper-half redirect");
-        consume_decode(64'h0000_0000_0000_0010, 32'h6666_6666, 64'd201,
+        consume_decode(64'h0000_0000_0000_0010, memory[2][31:0], 64'd201,
                        1'b0, 1'b0, "post-redirect lower slot");
-        consume_decode(64'h0000_0000_0000_0014, 32'h5555_5555, 64'd202,
+        consume_decode(64'h0000_0000_0000_0014, memory[2][63:32], 64'd202,
                        1'b0, 1'b0, "post-redirect upper slot");
+
+        // A predicted redirect can drive a resident target directly into the
+        // clearing IF/ID stage on the redirect edge.
+        request_count_before = request_count_q;
+        @(negedge clk);
+        redirect = 1'b1;
+        redirect_replay = 1'b1;
+        redirect_pc = 64'h0000_0000_0000_0004;
+        trace_id_in = 64'd250;
+        decode_ready = 1'b1;
+        #1;
+        if (!redirect_replayed || !decode_valid ||
+            decode_pc !== 64'h0000_0000_0000_0004 ||
+            decode_instr !== memory[0][63:32] ||
+            trace_id !== 64'd250 ||
+            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_VALID_BIT] !== 1'b1 ||
+            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_CONDITIONAL_BIT] !== 1'b1 ||
+            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_TARGET_BITS] !== 64'h10) begin
+            $fatal(1, "same-edge predicted redirect replay failed");
+        end
+        @(posedge clk);
+        @(negedge clk);
+        redirect = 1'b0;
+        redirect_replay = 1'b0;
+        redirect_pc = {`RV64_XLEN{1'b0}};
+        trace_id_in = 64'd0;
+        decode_ready = 1'b0;
+        if (request_count_q != request_count_before) begin
+            $fatal(1, "same-edge predicted replay unexpectedly read memory");
+        end
 
         // A line failure marks both slots and substitutes NOPs for both.
         mem_fault = 1'b1;
-        issue_pc(64'h0000_0000_0000_0018, 64'd300);
-        consume_decode(64'h0000_0000_0000_0018, `RV64_INSTR_NOP, 64'd300,
-                       1'b1, 1'b0, "line access fault lower slot");
-        consume_decode(64'h0000_0000_0000_001c, `RV64_INSTR_NOP, 64'd301,
-                       1'b1, 1'b0, "line access fault upper slot");
+        issue_pc(64'h0000_0000_0000_0044, 64'd300);
+        consume_decode(64'h0000_0000_0000_0044, `RV64_INSTR_NOP, 64'd300,
+                       1'b1, 1'b0, "upper-slot access fault");
         mem_fault = 1'b0;
 
         mem_page_fault = 1'b1;
-        issue_pc(64'h0000_0000_0000_0024, 64'd400);
-        consume_decode(64'h0000_0000_0000_0024, `RV64_INSTR_NOP, 64'd400,
+        issue_pc(64'h0000_0000_0000_004c, 64'd400);
+        consume_decode(64'h0000_0000_0000_004c, `RV64_INSTR_NOP, 64'd400,
                        1'b0, 1'b1, "upper-slot page fault");
         mem_page_fault = 1'b0;
 
-        // Flush invalidates both buffered lines and cancels an active request.
+        // A hard flush invalidates resident lines, not just unread state.
         issue_pc(64'h0000_0000_0000_0000, 64'd500);
         @(negedge clk);
         flush = 1'b1;
@@ -279,7 +363,13 @@ module tb_fetch;
             $fatal(1, "flush did not clear fetch buffers and request state");
         end
 
-        $display("PASS: fetch four-line circular buffers");
+        request_count_before = request_count_q;
+        issue_pc(64'h0000_0000_0000_0000, 64'd600);
+        wait (request_count_q != request_count_before);
+        consume_decode(64'h0000_0000_0000_0000, memory[0][31:0], 64'd600,
+                       1'b0, 1'b0, "hard-flush invalidation refetch");
+
+        $display("PASS: fetch two-set four-way resident replay buffers");
         $finish;
     end
 
