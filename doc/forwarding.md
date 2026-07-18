@@ -18,9 +18,22 @@ design.
 Dispatch is forwarding-aware. Its per-register writer state is a count rather
 than a busy bit, because read-modify-write chains can have multiple writes to
 the same register in flight. RAW stalls are suppressed only when the producer
-is moving into, or is available from, EX/MEM. WAW and WAR do not require
-serialization in this single-issue, in-order pipeline; results still retire in
-program order.
+is moving into, or is available from, EX/MEM.
+
+EX and MEM publish separate one-hot architectural-register ownership marks.
+They are deliberately not ORed before the scoreboard checks them. A RAW stall
+may be suppressed only when the source register has exactly one outstanding
+writer and exactly one forwarding-stage mark names that register. If several
+in-flight instructions write the same register, a matching EX or MEM mark is
+only one of the owners and is not sufficient to forward. The consumer waits
+until retirement leaves a unique owner. This conservative rule prevents a
+younger read from selecting an older value in write-after-write chains.
+
+When `ENABLE_LOAD_FORWARDING=0`, a completing load is not published as a
+forwarding owner. Dependent ALU, branch, address, and store-data consumers
+therefore remain behind the scoreboard until the LSU write reaches the GPR.
+WAW and WAR do not otherwise require serialization in this single-issue,
+in-order pipeline; results still retire in program order.
 
 ## Measured software trace
 
@@ -44,6 +57,12 @@ The default run is:
 
 ```sh
 make sim-sw-trace SW_BIN=sw/test.bin
+```
+
+Ownership collision and compiled load-use coverage are available separately:
+
+```sh
+make sim-reg-owner sim-load-use-context sim-uart-firmware
 ```
 
 The main experiment controls are `SW_FORWARDING`, `SW_LOAD_FORWARDING`, and

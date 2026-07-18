@@ -17,7 +17,11 @@ module openrv64_dispatch_reg_map #(
     input  wire                             alloc_reg_write_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0] alloc_rd_addr_i,
     input  wire [31:0]                      alloc_read_hot_i,
-    input  wire [31:0]                      forward_write_hot_i,
+    // Separate one-hot stage ownership marks preserve producer identity.
+    // ORing these together would make "one of the owners is forwardable"
+    // indistinguishable from "the sole owner is forwardable."
+    input  wire [31:0]                      forward_ex_write_hot_i,
+    input  wire [31:0]                      forward_mem_write_hot_i,
     output wire [31:0]                      alloc_read_hot_o,
 
     input  wire                             retire_valid_i,
@@ -150,10 +154,22 @@ module openrv64_dispatch_reg_map #(
                                (32'h0000_0001 << alloc_rs2_addr_i) :
                                32'h0000_0000);
 
+    wire [1:0] rs1_forward_owner_marks = {
+        forward_mem_write_hot_i[alloc_rs1_addr_i],
+        forward_ex_write_hot_i[alloc_rs1_addr_i]
+    };
+    wire [1:0] rs2_forward_owner_marks = {
+        forward_mem_write_hot_i[alloc_rs2_addr_i],
+        forward_ex_write_hot_i[alloc_rs2_addr_i]
+    };
+    wire rs1_has_one_forward_owner = ^rs1_forward_owner_marks;
+    wire rs2_has_one_forward_owner = ^rs2_forward_owner_marks;
     wire rs1_forwardable = ENABLE_FORWARDING &&
-                           forward_write_hot_i[alloc_rs1_addr_i];
+                           (rs1_write_count_after_retire == 4'd1) &&
+                           rs1_has_one_forward_owner;
     wire rs2_forwardable = ENABLE_FORWARDING &&
-                           forward_write_hot_i[alloc_rs2_addr_i];
+                           (rs2_write_count_after_retire == 4'd1) &&
+                           rs2_has_one_forward_owner;
 
     assign raw_hazard_o = alloc_valid_i &&
                           ((alloc_reads_rs1 &&

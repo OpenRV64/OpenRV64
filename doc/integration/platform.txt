@@ -1,0 +1,110 @@
+OpenRV64 integrated platform and reset contract
+===============================================
+
+Scope
+-----
+
+rtl/soc/platform.sv is the complete single-hart SoC integration point. It
+instantiates:
+
+    openrv64_top              RV64 core wrapper
+    openrv64_soc_bus_decode   physical-address decode and response mux
+    openrv64_soc_rom          64 KiB boot ROM
+    openrv64_soc_memory       16 MiB simulation RAM
+    openrv64_clint            one machine software/timer context
+    openrv64_plic             one machine external-interrupt context
+    openrv64_uart16550        serial port
+    openrv64_gpio             synchronized GPIO
+    openrv64_timer            general-purpose down-counter
+
+The platform is board-independent and single-clock. Clock generation, pad
+cells, and a production RAM controller remain outside this boundary. The
+internal 16 MiB RAM is sufficient for firmware bring-up, including an OpenSBI
+smoke test, but is not a practical Linux memory system.
+
+Reset contract
+--------------
+
+rtl/soc/reset_sequencer.v accepts the active-low board reset rst_ni and emits
+separate active-low platform and core resets.
+
+Reset assertion is asynchronous: either generated reset goes low without
+waiting for clk_i. Reset release is synchronous and ordered:
+
+1. rst_ni passes through a two-flop deassertion synchronizer.
+2. soc_rst_no remains low for SOC_RESET_CYCLES additional rising edges.
+3. soc_rst_no rises, releasing CLINT, PLIC, UART, GPIO, timer, and external-IRQ
+   synchronizers.
+4. core_rst_no remains low for CORE_RESET_DELAY_CYCLES more rising edges.
+5. core_rst_no rises and the core may issue its first boot-ROM request.
+
+The default sequence is two synchronizer edges, four platform hold edges, and
+two additional core-delay edges. Both cycle parameters must be at least one.
+The bus gates core mem_valid with core_rst_no, so a reset core cannot select a
+target even if internal request state is unknown during assertion.
+
+ROM has no writable state. The demonstration RAM is intentionally not reset;
+its contents survive a warm reset. Simulation initializes it to zero at time
+zero. CLINT, PLIC, UART, GPIO, and timer state is cleared on every platform
+reset.
+
+Interrupt routing
+-----------------
+
+The single hart is wired as follows:
+
+    CLINT MSIP[0] -> core machine software interrupt, cause 3
+    CLINT MTIP[0] -> core machine timer interrupt, cause 7
+    PLIC MEIP[0]  -> core machine external interrupt, cause 11
+
+Supervisor interrupt inputs remain tied low. The PLIC source map is fixed:
+
+    PLIC source ID 1  UART
+    PLIC source ID 2  GPIO aggregate interrupt
+    PLIC source ID 3  general-purpose timer
+    PLIC source IDs 4 through 32  external_irq_i[0] through [28]
+
+External interrupt levels pass through two synchronizer flops before reaching
+the PLIC. An asynchronous pulse must be stretched until sampled; a one-cycle
+pulse in an unrelated clock domain is not guaranteed to survive. UART, GPIO,
+and timer are already in clk_i's domain.
+
+mtime_tick_i must be a one-cycle pulse synchronous to clk_i. The platform does
+not choose a timebase frequency; a board wrapper or clock divider owns that
+policy.
+
+Platform validation
+-------------------
+
+tb/tb_platform.sv installs a small RV64 program into the integrated RAM and
+runs it through the real core and bus. The test proves:
+
+* asynchronous reset assertion and platform-before-core release;
+* reset-vector fetch from ROM and the ROM jump to RAM at 0x80000000;
+* successful RAM, UART, GPIO, timer, CLINT, and PLIC transactions;
+* UART scratch-register byte-lane readback and GPIO output state;
+* simultaneous pending PLIC sources, threshold gating, priority selection,
+  claim, source clear, completion, and delivery of timer ID 3 before GPIO ID 2;
+* CLINT MSIP and MTIP delivery and source clearing;
+* architectural mcause values 3, 7, and 11 at the machine trap handler; and
+* quiescent interrupt-controller and device outputs after all four deliveries.
+
+tb/tb_reset_sequencer.sv separately checks exact reset hold timing, ordered
+release, asynchronous warm-reset assertion, and an aborted short release.
+
+Run the focused validation with:
+
+    make -B sim-reset-sequencer sim-platform
+
+The full regression includes both tests:
+
+    make -B sim
+
+Current limits
+--------------
+
+This is a bare-metal platform-validation start, not Linux boot validation. It
+does not yet supply ELF/Image loading, a device tree, OpenSBI, a supervisor
+PLIC context, a practical RAM capacity/controller, or a UART console test.
+PLIC unit tests cover level reassertion and wider multi-context cases; the
+integrated test covers the single machine context implemented by the platform.

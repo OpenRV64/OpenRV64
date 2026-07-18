@@ -6,7 +6,7 @@ peripheral contains or accepts a configurable global base address.
 | Target | Base | Size | Downstream address |
 | --- | ---: | ---: | --- |
 | Boot ROM | `0x0000_1000` | `0x0001_0000` | physical address minus ROM base |
-| Memory | `0x8000_0000` | `0x0001_0000` | physical address minus memory base |
+| Memory | `0x8000_0000` | `0x0100_0000` | physical address minus memory base |
 | CLINT | `0x0200_0000` | `0x0001_0000` | physical address minus CLINT base |
 | PLIC | `0x0C00_0000` | `0x0400_0000` | physical address minus PLIC base |
 | UART | `0x1000_0000` | `0x0000_0100` | physical address minus UART base |

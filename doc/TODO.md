@@ -125,9 +125,12 @@ simple memory path first.
 
 ### Platform and firmware requirements
 
-- [ ] Add an integrated SoC top that instantiates the core, decoder, ROM,
-  CLINT, PLIC, UART, and a configurable external RAM model/controller.
-- [ ] Replace the 64 KiB demonstration RAM as the Linux memory target with a
+- [x] Add an integrated SoC top that instantiates the core, decoder, boot ROM,
+  16 MiB simulation RAM, CLINT, PLIC, UART, GPIO, and timer, with ordered
+  platform/core reset release and a focused end-to-end test.
+- [ ] Replace the integrated demonstration RAM with a configurable simulation
+  model and board memory-controller boundary.
+- [ ] Replace the 16 MiB simulation RAM as the Linux memory target with a
   practical configurable capacity, initially at least 128 MiB.
 - [ ] Add deterministic ELF/Image, firmware, DTB, and initramfs loading to the
   simulator; do not bake a Linux image into synthesizable RAM RTL.
@@ -144,6 +147,10 @@ simple memory path first.
   peripheral unit tests: simultaneous sources, priority/threshold, claim and
   completion, level reassertion, delegation/routing, masking, and arrival at
   every pipeline boundary.
+  The initial platform test now covers simultaneous PLIC sources,
+  priority/threshold, claim/completion, device clearing, MSIP/MTIP/MEIP
+  routing, architectural causes, and trap-handler arrival. Delegation, masking
+  matrices, reassertion, and every pipeline boundary remain open.
 - [ ] For the first firmware, implement only the SBI surface the pinned kernel
   actually exercises (base/probing, timer, console or debug console, reset,
   and the required single-hart context transition).  Unsupported extensions

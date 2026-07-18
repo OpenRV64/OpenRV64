@@ -28,11 +28,11 @@ is in another clock domain. Tie unused inputs low.
 Current CLINT and PLIC wiring
 -----------------------------
 
-For hart H, connect:
+rtl/soc/platform.sv implements the single-hart instance of this wiring:
 
-    clint.msip_o[H] -> core.irq_m_software
-    clint.mtip_o[H] -> core.irq_m_timer
-    plic.meip_o[H]  -> core.irq_m_external
+    clint.msip_o[0] -> core.irq_m_software
+    clint.mtip_o[0] -> core.irq_m_timer
+    plic.meip_o[0]  -> core.irq_m_external
 
 The current PLIC implements machine contexts only. It does not produce SEIP.
 Do not connect meip_o to irq_s_external: MEIP and SEIP are different
@@ -44,10 +44,17 @@ PLIC context, supervisor software-interrupt block, or supervisor timer source
 should drive the corresponding irq_s_* input. The current SoC should tie all
 three irq_s_* inputs low.
 
-PLIC source bit zero represents architectural source ID 1. Route UART, GPIO,
-general-purpose timer, and other platform interrupt outputs into selected bits
-of plic.irq_sources_i and keep that source-ID assignment stable in the SoC
-memory-map documentation.
+PLIC source bit zero represents architectural source ID 1. The platform keeps
+this assignment stable:
+
+    source ID 1 = UART
+    source ID 2 = GPIO aggregate interrupt
+    source ID 3 = general-purpose timer
+    source IDs 4 through 32 = synchronized external_irq_i[0] through [28]
+
+The numeric definitions live beside the physical map in
+rtl/soc/bus/mem_map.v. See doc/integration/platform.txt for reset ordering and
+the external interrupt synchronization contract.
 
 MMIO bus integration
 --------------------

@@ -306,6 +306,11 @@ module tb_rv64i_csrs;
         if (priv_mode != `RV64_PRIV_M) begin
             $fatal(1, "trap did not enter M-mode");
         end
+        #1;
+        if (irq_pending) begin
+            $fatal(1,
+                   "active machine interrupt remained eligible after trap entry cleared MIE");
+        end
         trap_interrupt = 1'b0;
         irq_external = 1'b0;
         check_csr(`RV64_CSR_MEPC, 1'b1, 1'b1,

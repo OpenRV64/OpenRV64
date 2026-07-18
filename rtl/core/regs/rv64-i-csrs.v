@@ -243,16 +243,19 @@ module openrv64_rv64i_csrs #(
 
     function irq_eligible;
         input [`RV64_EXCEPT_CAUSE_WIDTH-1:0] cause;
+        input [`RV64_XLEN-1:0] interrupt_delegation;
+        input [`RV64_PRIV_WIDTH-1:0] current_privilege;
+        input [`RV64_XLEN-1:0] current_status;
         reg delegated;
         begin
-            delegated = mideleg_q[cause];
+            delegated = interrupt_delegation[cause];
             if (delegated) begin
-                irq_eligible = (priv_mode_q != `RV64_PRIV_M) &&
-                    ((priv_mode_q == `RV64_PRIV_U) ||
-                     mstatus_q[`RV64_MSTATUS_SIE_BIT]);
+                irq_eligible = (current_privilege != `RV64_PRIV_M) &&
+                    ((current_privilege == `RV64_PRIV_U) ||
+                     current_status[`RV64_MSTATUS_SIE_BIT]);
             end else begin
-                irq_eligible = (priv_mode_q != `RV64_PRIV_M) ||
-                    mstatus_q[`RV64_MSTATUS_MIE_BIT];
+                irq_eligible = (current_privilege != `RV64_PRIV_M) ||
+                    current_status[`RV64_MSTATUS_MIE_BIT];
             end
         end
     endfunction
@@ -262,27 +265,33 @@ module openrv64_rv64i_csrs #(
         irq_cause_o = `RV64_IRQ_CAUSE_MACHINE_TIMER;
 
         if (enabled_pending[`RV64_MIP_MEIP_BIT] &&
-            irq_eligible(`RV64_IRQ_CAUSE_MACHINE_EXTERNAL)) begin
+            irq_eligible(`RV64_IRQ_CAUSE_MACHINE_EXTERNAL,
+                         mideleg_q, priv_mode_q, mstatus_q)) begin
             irq_pending_o = 1'b1;
             irq_cause_o = `RV64_IRQ_CAUSE_MACHINE_EXTERNAL;
         end else if (enabled_pending[`RV64_MIP_MSIP_BIT] &&
-                     irq_eligible(`RV64_IRQ_CAUSE_MACHINE_SOFTWARE)) begin
+                     irq_eligible(`RV64_IRQ_CAUSE_MACHINE_SOFTWARE,
+                                  mideleg_q, priv_mode_q, mstatus_q)) begin
             irq_pending_o = 1'b1;
             irq_cause_o = `RV64_IRQ_CAUSE_MACHINE_SOFTWARE;
         end else if (enabled_pending[`RV64_MIP_MTIP_BIT] &&
-                     irq_eligible(`RV64_IRQ_CAUSE_MACHINE_TIMER)) begin
+                     irq_eligible(`RV64_IRQ_CAUSE_MACHINE_TIMER,
+                                  mideleg_q, priv_mode_q, mstatus_q)) begin
             irq_pending_o = 1'b1;
             irq_cause_o = `RV64_IRQ_CAUSE_MACHINE_TIMER;
         end else if (enabled_pending[`RV64_MIP_SEIP_BIT] &&
-                     irq_eligible(`RV64_IRQ_CAUSE_SUPERVISOR_EXTERNAL)) begin
+                     irq_eligible(`RV64_IRQ_CAUSE_SUPERVISOR_EXTERNAL,
+                                  mideleg_q, priv_mode_q, mstatus_q)) begin
             irq_pending_o = 1'b1;
             irq_cause_o = `RV64_IRQ_CAUSE_SUPERVISOR_EXTERNAL;
         end else if (enabled_pending[`RV64_MIP_SSIP_BIT] &&
-                     irq_eligible(`RV64_IRQ_CAUSE_SUPERVISOR_SOFTWARE)) begin
+                     irq_eligible(`RV64_IRQ_CAUSE_SUPERVISOR_SOFTWARE,
+                                  mideleg_q, priv_mode_q, mstatus_q)) begin
             irq_pending_o = 1'b1;
             irq_cause_o = `RV64_IRQ_CAUSE_SUPERVISOR_SOFTWARE;
         end else if (enabled_pending[`RV64_MIP_STIP_BIT] &&
-                     irq_eligible(`RV64_IRQ_CAUSE_SUPERVISOR_TIMER)) begin
+                     irq_eligible(`RV64_IRQ_CAUSE_SUPERVISOR_TIMER,
+                                  mideleg_q, priv_mode_q, mstatus_q)) begin
             irq_pending_o = 1'b1;
             irq_cause_o = `RV64_IRQ_CAUSE_SUPERVISOR_TIMER;
         end

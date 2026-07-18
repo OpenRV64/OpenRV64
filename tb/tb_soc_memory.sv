@@ -2,7 +2,7 @@
 
 module tb_soc_memory;
 
-    localparam integer MEM_BYTES = 64 * 1024;
+    localparam integer MEM_BYTES = 16 * 1024 * 1024;
 
     logic        clk;
     logic        mem_valid;

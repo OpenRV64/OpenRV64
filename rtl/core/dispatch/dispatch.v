@@ -237,12 +237,12 @@ module openrv64_dispatch #(
                                 decode_unit_ready &&
                                 reg_map_can_allocate;
             wire [31:0] unused_alloc_read_hot;
-            wire [31:0] forward_write_hot = ENABLE_FORWARDING ?
-                ((forward_ex_valid_i ?
-                  (32'h0000_0001 << forward_ex_rd_addr_i) : 32'h0) |
-                 (forward_mem_valid_i ?
-                  (32'h0000_0001 << forward_mem_rd_addr_i) : 32'h0)) :
-                32'h0;
+            wire [31:0] forward_ex_write_hot =
+                (ENABLE_FORWARDING && forward_ex_valid_i) ?
+                (32'h0000_0001 << forward_ex_rd_addr_i) : 32'h0;
+            wire [31:0] forward_mem_write_hot =
+                (ENABLE_FORWARDING && forward_mem_valid_i) ?
+                (32'h0000_0001 << forward_mem_rd_addr_i) : 32'h0;
             wire scoreboard_stall = decode_valid_i && !flush_i &&
                                     !reg_map_can_allocate;
             wire capture = decode_valid_i && decode_clear_o && !flush_i;
@@ -266,7 +266,8 @@ module openrv64_dispatch #(
                 .alloc_reg_write_i(decode_writes_rd),
                 .alloc_rd_addr_i(decode_rd_addr_i),
                 .alloc_read_hot_i(32'h0000_0000),
-                .forward_write_hot_i(forward_write_hot),
+                .forward_ex_write_hot_i(forward_ex_write_hot),
+                .forward_mem_write_hot_i(forward_mem_write_hot),
                 .alloc_read_hot_o(unused_alloc_read_hot),
                 .retire_valid_i(retire_valid_i),
                 .retire_uses_rs1_i(retire_uses_rs1_i),
@@ -362,7 +363,7 @@ module openrv64_dispatch #(
             wire reg_map_read_full_hazard;
             wire reg_map_can_allocate;
             wire [31:0] unused_alloc_read_hot;
-            wire [31:0] forward_write_hot =
+            wire [31:0] forward_mem_write_hot =
                 (ENABLE_FORWARDING && forward_mem_valid_i) ?
                 (32'h0000_0001 << forward_mem_rd_addr_i) : 32'h0;
             wire scoreboard_stall = decode_valid_i && !flush_i &&
@@ -391,7 +392,8 @@ module openrv64_dispatch #(
                 .alloc_reg_write_i(decode_writes_rd),
                 .alloc_rd_addr_i(decode_rd_addr_i),
                 .alloc_read_hot_i(32'h0000_0000),
-                .forward_write_hot_i(forward_write_hot),
+                .forward_ex_write_hot_i(32'h0000_0000),
+                .forward_mem_write_hot_i(forward_mem_write_hot),
                 .alloc_read_hot_o(unused_alloc_read_hot),
                 .retire_valid_i(retire_valid_i),
                 .retire_uses_rs1_i(retire_uses_rs1_i),

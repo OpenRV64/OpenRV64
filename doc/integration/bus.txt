@@ -65,7 +65,7 @@ GPIO and the general-purpose timer are OpenRV64-specific slots. The requested
     UART         0x0000000010000000  0x0000000000000100
     GPIO         0x0000000010010000  0x0000000000001000
     Timer        0x0000000010020000  0x0000000000001000
-    Memory       0x0000000080000000  0x0000000000010000
+    Memory       0x0000000080000000  0x0000000001000000
 
 The SoC reset vector is 0x0000000000001000, the first byte of boot ROM. The ROM
 constructs 0x0000000080000000 in x1 and jumps to it, matching the usual QEMU
@@ -113,11 +113,11 @@ transaction, its error response must be added to the selected response mux.
 Memory target
 -------------
 
-openrv64_soc_memory implements 64 KiB by default as 8192 64-bit words. It is
-initialized to zero. Reads are combinational, writes commit on the rising edge,
-and byte strobes update individual lanes. It acknowledges a valid local
+openrv64_soc_memory implements 16 MiB by default as 2,097,152 64-bit words. It
+is initialized to zero. Reads are combinational, writes commit on the rising
+edge, and byte strobes update individual lanes. It acknowledges a valid local
 request immediately. The decoder guarantees that routed addresses are within
-the 64 KiB memory window.
+the 16 MiB memory window.
 
 Boot ROM target
 ---------------

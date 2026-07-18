@@ -492,7 +492,9 @@ module openrv64_exec_top #(
                                 (ENABLE_LOAD_FORWARDING || !mem_read_i) &&
                                 !ex_illegal;
     assign forward_ex_rd_addr_o = rd_addr_i;
-    assign forward_mem_valid_o = mem_forward_valid;
+    // Advertise only values that the operand mux can actually select. A load
+    // with response bypass disabled remains an owner, but not a forwarder.
+    assign forward_mem_valid_o = mem_bypass_valid;
     assign forward_mem_rd_addr_o = ex_mem_rd_addr;
     assign ex_mem_in_data = {
         trace_id_i,

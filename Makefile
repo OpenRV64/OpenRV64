@@ -1,4 +1,20 @@
 TOP_SIM_BUILD := sim/openrv64_top_tb.vvp
+PLATFORM_SIM_BUILD := sim/platform_tb.vvp
+RESET_SEQUENCER_SIM_BUILD := sim/reset_sequencer_tb.vvp
+UART_FIRMWARE_SIM_BUILD := sim/uart_firmware_tb.vvp
+UART_FIRMWARE_ELF := sw/uart.elf
+UART_FIRMWARE_BIN := sw/uart.bin
+UART_FIRMWARE_MAP := sw/uart.map
+UART_FIRMWARE_MEMH := sim/uart.memh
+OPENSBI_BUILD_DIR ?= build/opensbi
+OPENSBI_ARTIFACT_DIR := $(OPENSBI_BUILD_DIR)/artifacts
+OPENSBI_SIM_BUILD := sim/opensbi_tb.vvp
+RISCV_CC ?= riscv64-elf-gcc
+RISCV_OBJCOPY ?= riscv64-elf-objcopy
+UART_FIRMWARE_CFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
+	-mno-relax -msmall-data-limit=0 -O2 -g -Wall -Wextra -Werror \
+	-ffreestanding -fno-builtin -fno-common -fno-pic \
+	-fno-stack-protector -fno-asynchronous-unwind-tables
 TRACE_CSV ?= sim/openrv64-cycle.csv
 TRACE_REPORT ?= sim/openrv64-pipeline.txt
 SW_TRACE_SIM_BUILD := sim/sw_trace_tb.vvp
@@ -52,6 +68,8 @@ EXEC_SYSTEM_CSR_SIM_BUILD := sim/exec_system_csr_tb.vvp
 TRAP_CONTEXT_SIM_BUILD := sim/trap_context_tb.vvp
 PRIV_CONTEXT_SIM_BUILD := sim/priv_context_tb.vvp
 IRQ_CONTEXT_SIM_BUILD := sim/irq_context_tb.vvp
+LOAD_USE_CONTEXT_SIM_BUILD := sim/load_use_context_tb.vvp
+REG_OWNER_SIM_BUILD := sim/reg_owner_tb.vvp
 DISPATCH_SIM_BUILD := sim/dispatch_tb.vvp
 ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zicsr.v rtl/core/isa/rv64-priv.v rtl/core/isa/rv64-zifencei.v \
@@ -88,7 +106,15 @@ TIMER_SRCS := rtl/periph/timer/timer.v
 ROM_SRCS := rtl/soc/bus/rom.v
 MEMORY_SRCS := rtl/soc/bus/memory.v
 SOC_BUS_SRCS := rtl/soc/bus/mem_map.v rtl/soc/bus/decode.v
+RESET_SEQUENCER_SRCS := rtl/soc/reset_sequencer.v
+PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
+	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
+	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
+PLATFORM_SIM_SRCS := tb/tb_platform.sv
+RESET_SEQUENCER_SIM_SRCS := tb/tb_reset_sequencer.sv
+UART_FIRMWARE_SIM_SRCS := tb/tb_uart_firmware.sv
+OPENSBI_SIM_SRCS := tb/tb_opensbi.sv
 SW_TRACE_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_sw_trace.sv
 CLINT_SIM_SRCS := tb/tb_clint.sv
 PLIC_SIM_SRCS := tb/tb_plic.sv
@@ -132,6 +158,8 @@ EXEC_SYSTEM_CSR_SIM_SRCS := tb/tb_exec_system_csr.sv
 TRAP_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_trap_context.sv
 PRIV_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_priv_context.sv
 IRQ_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_irq_context.sv
+LOAD_USE_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_load_use_context.sv
+REG_OWNER_SIM_SRCS := tb/tb_reg_owner.sv
 DISPATCH_SIM_SRCS := tb/tb_dispatch.sv
 YOSYS ?= yosys
 YOSYS_ALU_REPORT_DIR ?= sim/yosys/alu
@@ -145,14 +173,35 @@ SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: FORCE sim sim-top sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+.PHONY: FORCE sw-uart opensbi sim-opensbi sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 
 FORCE:
 
-sim: sim-top sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context
+sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner
+
+sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
+
+opensbi:
+	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_BUILD_DIR)) tools/build-opensbi.sh
+
+sim-opensbi: $(OPENSBI_SIM_BUILD) opensbi
+	vvp $(OPENSBI_SIM_BUILD) \
+		+trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(OPENSBI_ARTIFACT_DIR)/payload.memh \
+		+fdt_memh=$(OPENSBI_ARTIFACT_DIR)/openrv64-dtb.memh
 
 sim-top: $(TOP_SIM_BUILD)
 	vvp $(TOP_SIM_BUILD)
+
+sim-platform: $(PLATFORM_SIM_BUILD)
+	vvp $(PLATFORM_SIM_BUILD)
+
+sim-reset-sequencer: $(RESET_SEQUENCER_SIM_BUILD)
+	vvp $(RESET_SEQUENCER_SIM_BUILD)
+
+sim-uart-firmware: $(UART_FIRMWARE_SIM_BUILD) $(UART_FIRMWARE_MEMH)
+	vvp $(UART_FIRMWARE_SIM_BUILD) +memh=$(UART_FIRMWARE_MEMH)
 
 sim-top-trace: $(TOP_SIM_BUILD)
 	mkdir -p $(dir $(TRACE_CSV)) $(dir $(TRACE_REPORT))
@@ -304,6 +353,12 @@ sim-priv-context: $(PRIV_CONTEXT_SIM_BUILD)
 sim-irq-context: $(IRQ_CONTEXT_SIM_BUILD)
 	vvp $(IRQ_CONTEXT_SIM_BUILD)
 
+sim-load-use-context: $(LOAD_USE_CONTEXT_SIM_BUILD)
+	vvp $(LOAD_USE_CONTEXT_SIM_BUILD)
+
+sim-reg-owner: $(REG_OWNER_SIM_BUILD)
+	vvp $(REG_OWNER_SIM_BUILD)
+
 yosys-timing-alu:
 	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_ALU_REPORT_DIR)" LIBERTY="$(LIBERTY)" ABC_CONSTR="$(ABC_CONSTR)" ABC_DELAY_PS="$(ABC_DELAY_PS)" bash synth/alu/report.sh all
 
@@ -334,6 +389,34 @@ yosys-timing-frontend-sky130: sky130-liberty
 $(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TOP_SIM_BUILD) $(CORE_SRCS) $(TOP_SIM_SRCS)
+
+$(PLATFORM_SIM_BUILD): $(PLATFORM_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(PLATFORM_SIM_BUILD) $(CORE_SRCS) $(PLATFORM_SRCS) $(PLATFORM_SIM_SRCS)
+
+$(RESET_SEQUENCER_SIM_BUILD): $(RESET_SEQUENCER_SIM_SRCS) $(RESET_SEQUENCER_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(RESET_SEQUENCER_SIM_BUILD) $(RESET_SEQUENCER_SRCS) $(RESET_SEQUENCER_SIM_SRCS)
+
+$(UART_FIRMWARE_ELF): Makefile sw/start.S sw/uart.c sw/openrv64.ld
+	$(RISCV_CC) $(UART_FIRMWARE_CFLAGS) -nostdlib -nostartfiles \
+		-Wl,--build-id=none,-Map=$(UART_FIRMWARE_MAP) \
+		-T sw/openrv64.ld -o $@ sw/start.S sw/uart.c
+
+$(UART_FIRMWARE_BIN): $(UART_FIRMWARE_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(UART_FIRMWARE_MEMH): $(UART_FIRMWARE_BIN) tools/bin2mem.py
+	mkdir -p $(dir $@)
+	$(PYTHON) tools/bin2mem.py $< $@ --size 0x10000
+
+$(UART_FIRMWARE_SIM_BUILD): $(UART_FIRMWARE_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $@ $(CORE_SRCS) $(PLATFORM_SRCS) $(UART_FIRMWARE_SIM_SRCS)
+
+$(OPENSBI_SIM_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $@ $(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
 
 $(SW_TRACE_SIM_BUILD): FORCE $(SW_TRACE_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
@@ -514,6 +597,14 @@ $(PRIV_CONTEXT_SIM_BUILD): $(PRIV_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(A
 $(IRQ_CONTEXT_SIM_BUILD): $(IRQ_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(IRQ_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(IRQ_CONTEXT_SIM_SRCS)
+
+$(LOAD_USE_CONTEXT_SIM_BUILD): $(LOAD_USE_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(LOAD_USE_CONTEXT_SIM_BUILD) $(CORE_SRCS) $(LOAD_USE_CONTEXT_SIM_SRCS)
+
+$(REG_OWNER_SIM_BUILD): $(REG_OWNER_SIM_SRCS) rtl/core/dispatch/reg_map.v $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(REG_OWNER_SIM_BUILD) rtl/core/dispatch/reg_map.v $(REG_OWNER_SIM_SRCS)
 
 clean:
 	rm -rf sim
