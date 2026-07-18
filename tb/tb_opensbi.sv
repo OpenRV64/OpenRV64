@@ -4,14 +4,14 @@
 module tb_opensbi;
 
     localparam logic [63:0] RAM_BASE = 64'h8000_0000;
-    localparam logic [63:0] FIRMWARE_BASE = 64'h8001_0000;
+    localparam logic [63:0] FIRMWARE_BASE = 64'h8010_0000;
     localparam logic [63:0] PAYLOAD_BASE = 64'h8020_0000;
     localparam logic [63:0] MAGIC_ADDR = 64'h80e0_0000;
     localparam logic [63:0] FDT_BASE = 64'h80f0_0000;
     localparam logic [63:0] MAGIC_VALUE = 64'h5342_4950_4153_5301;
 
     localparam integer TRAMPOLINE_WORDS = 32'h0001_0000 / 8;
-    localparam integer FIRMWARE_WORDS = 32'h001f_0000 / 8;
+    localparam integer FIRMWARE_WORDS = 32'h0010_0000 / 8;
     localparam integer PAYLOAD_WORDS = 32'h0001_0000 / 8;
     localparam integer FDT_WORDS = 32'h0001_0000 / 8;
 
@@ -136,22 +136,39 @@ module tb_opensbi;
             saw_s_mode <= 1'b1;
         end
 
-        if (core_rst_n && dut.uart_valid && dut.uart_ready &&
-            dut.uart_write && (dut.uart_addr[7:0] == 8'h00) &&
-            dut.uart_wstrb[0]) begin
+        if (core_rst_n && dut.u_uart.write_thr) begin
             uart_byte_count <= uart_byte_count + 1;
+            $write("%c", dut.uart_wdata[7:0]);
             match_byte(dut.uart_wdata[7:0]);
         end
 
         if (core_rst_n) begin
             cycle_count <= cycle_count + 1;
-            if ((cycle_count != 0) && ((cycle_count % 250000) == 0)) begin
-                $display("OpenSBI progress cycles=%0d pc=%016x instr=%08x priv=%0d uart_bytes=%0d mcause=%016x mtval=%016x",
+            if (((cycle_count != 0) && (cycle_count <= 10000) &&
+                 ((cycle_count % 1000) == 0)) ||
+                ((cycle_count > 10000) && (cycle_count <= 250000) &&
+                 ((cycle_count % 10000) == 0)) ||
+                ((cycle_count != 0) && ((cycle_count % 250000) == 0))) begin
+                $display("OpenSBI progress cycles=%0d pc=%016x instr=%08x priv=%0d uart_bytes=%0d t0=%016x t1=%016x mcause=%016x mtval=%016x m={sel:%b start:%b issued:%b active:%b kind:%b bits:%0d result:%b ready:%b consume:%b flush:%b}",
                          cycle_count, dbg_pc, dbg_instr,
                          dut.u_core.u_core.u_csrs.priv_mode_q,
                          uart_byte_count,
+                         dut.u_core.u_core.u_gpr.regs[5],
+                         dut.u_core.u_core.u_gpr.regs[6],
                          dut.u_core.u_core.u_csrs.mcause_q,
-                         dut.u_core.u_core.u_csrs.mtval_q);
+                         dut.u_core.u_core.u_csrs.mtval_q,
+                         dut.u_core.u_core.u_exec.ex_m_selected,
+                         dut.u_core.u_core.u_exec.alu_m_start,
+                         dut.u_core.u_core.u_exec.alu_m_issued_q,
+                         dut.u_core.u_core.u_exec.u_rv64m_exec.active_q,
+                         dut.u_core.u_core.u_exec.u_rv64m_exec.work_kind_q,
+                         dut.u_core.u_core.u_exec.u_rv64m_exec.work_kind_q ?
+                             dut.u_core.u_core.u_exec.u_rv64m_exec.div_bits_left_q :
+                             dut.u_core.u_core.u_exec.u_rv64m_exec.mul_bits_left_q,
+                         dut.u_core.u_core.u_exec.alu_m_result_valid,
+                         dut.u_core.u_core.u_exec.alu_m_ready,
+                         dut.u_core.u_core.u_exec.alu_m_result_ready,
+                         dut.u_core.u_core.u_exec.flush_ex_mem_i);
             end
         end
 
@@ -189,18 +206,23 @@ module tb_opensbi;
         end
 
         #1;
+        $display("OpenSBI load: trampoline");
         $readmemh(trampoline_memh, dut.u_memory.memory_q,
                   (RAM_BASE - RAM_BASE) >> 3,
                   ((RAM_BASE - RAM_BASE) >> 3) + TRAMPOLINE_WORDS - 1);
+        $display("OpenSBI load: firmware");
         $readmemh(firmware_memh, dut.u_memory.memory_q,
                   (FIRMWARE_BASE - RAM_BASE) >> 3,
                   ((FIRMWARE_BASE - RAM_BASE) >> 3) + FIRMWARE_WORDS - 1);
+        $display("OpenSBI load: payload");
         $readmemh(payload_memh, dut.u_memory.memory_q,
                   (PAYLOAD_BASE - RAM_BASE) >> 3,
                   ((PAYLOAD_BASE - RAM_BASE) >> 3) + PAYLOAD_WORDS - 1);
+        $display("OpenSBI load: FDT");
         $readmemh(fdt_memh, dut.u_memory.memory_q,
                   (FDT_BASE - RAM_BASE) >> 3,
                   ((FDT_BASE - RAM_BASE) >> 3) + FDT_WORDS - 1);
+        $display("OpenSBI load: complete");
 
         repeat (4) @(posedge clk);
         @(negedge clk);
@@ -208,7 +230,7 @@ module tb_opensbi;
     end
 
     initial begin
-        repeat (5000000) @(posedge clk);
+        repeat (20000000) @(posedge clk);
         $fatal(1,
                "OpenSBI timeout pc=%016x instr=%08x priv=%0d banner=%b payload=%b magic=%016x mcause=%016x mtval=%016x",
                dbg_pc, dbg_instr, dut.u_core.u_core.u_csrs.priv_mode_q,

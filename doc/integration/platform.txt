@@ -10,7 +10,7 @@ instantiates:
     openrv64_top              RV64 core wrapper
     openrv64_soc_bus_decode   physical-address decode and response mux
     openrv64_soc_rom          64 KiB boot ROM
-    openrv64_soc_memory       16 MiB simulation RAM
+    openrv64_soc_memory       16 MiB synchronous inferred RAM
     openrv64_clint            one machine software/timer context
     openrv64_plic             one machine external-interrupt context
     openrv64_uart16550        serial port
@@ -18,9 +18,11 @@ instantiates:
     openrv64_timer            general-purpose down-counter
 
 The platform is board-independent and single-clock. Clock generation, pad
-cells, and a production RAM controller remain outside this boundary. The
-internal 16 MiB RAM is sufficient for firmware bring-up, including an OpenSBI
-smoke test, but is not a practical Linux memory system.
+cells, and any board-specific external-memory controller remain outside this
+boundary. The internal 16 MiB array uses synchronous reads and byte write
+enables so FPGA tools can infer memory resources. It is sufficient for firmware
+bring-up, including an OpenSBI smoke test, but its capacity exceeds the on-chip
+block RAM of small Artix-7 devices and is not a practical Linux memory system.
 
 Reset contract
 --------------
@@ -43,8 +45,9 @@ two additional core-delay edges. Both cycle parameters must be at least one.
 The bus gates core mem_valid with core_rst_no, so a reset core cannot select a
 target even if internal request state is unknown during assertion.
 
-ROM has no writable state. The demonstration RAM is intentionally not reset;
-its contents survive a warm reset. Simulation initializes it to zero at time
+ROM has no writable state. The RAM array is intentionally not reset, preserving
+memory inference and allowing its contents to survive a warm reset. Only the
+RAM response state is reset; simulation initializes the array to zero at time
 zero. CLINT, PLIC, UART, GPIO, and timer state is cleared on every platform
 reset.
 
@@ -92,19 +95,31 @@ runs it through the real core and bus. The test proves:
 tb/tb_reset_sequencer.sv separately checks exact reset hold timing, ordered
 release, asynchronous warm-reset assertion, and an aborted short release.
 
+tb/tb_opensbi.sv loads a RAM trampoline, pinned OpenSBI v1.9 fw_jump image,
+device tree, and S-mode payload into the 16 MiB RAM. It checks the OpenSBI UART
+banner, eight-entry PMP setup, M-to-S handoff, SBI base and debug-console
+ECALLs, and a payload completion word. Bus faults fail immediately and timeout
+diagnostics report PC, instruction, privilege, and trap state. The reset ROM
+still only jumps to RAM; the trampoline owns the OpenSBI entry contract.
+
 Run the focused validation with:
 
     make -B sim-reset-sequencer sim-platform
+    make sim-opensbi
 
-The full regression includes both tests:
+The normal regression includes the reset and platform tests:
 
     make -B sim
+
+The OpenSBI test remains a separate target because it first builds pinned
+external firmware artifacts.
 
 Current limits
 --------------
 
-This is a bare-metal platform-validation start, not Linux boot validation. It
-does not yet supply ELF/Image loading, a device tree, OpenSBI, a supervisor
-PLIC context, a practical RAM capacity/controller, or a UART console test.
-PLIC unit tests cover level reassertion and wider multi-context cases; the
-integrated test covers the single machine context implemented by the platform.
+This is firmware/platform validation, not Linux boot validation. It now has a
+device tree, OpenSBI boot, an S-mode SBI payload, and UART-console validation,
+but it does not yet supply a Linux Image/initramfs loader, supervisor PLIC
+context, practical RAM capacity/controller, or kernel boot. PLIC unit tests
+cover level reassertion and wider multi-context cases; the integrated test
+covers the single machine context implemented by the platform.

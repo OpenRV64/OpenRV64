@@ -4,14 +4,12 @@
 
 module tb_exec_rv64m;
 
-    localparam int unsigned MUL_BITS_PER_CYCLE = 11;
-    localparam int unsigned DIV_BITS_PER_CYCLE = 11;
-    localparam int unsigned MUL_PIPE_CYCLES =
+    localparam int unsigned MUL_BITS_PER_CYCLE = 8;
+    localparam int unsigned DIV_BITS_PER_CYCLE = 8;
+    localparam int unsigned MUL_ITER_CYCLES =
         (64 + MUL_BITS_PER_CYCLE - 1) / MUL_BITS_PER_CYCLE;
-    localparam int unsigned DIV_PIPE_CYCLES =
+    localparam int unsigned DIV_ITER_CYCLES =
         (64 + DIV_BITS_PER_CYCLE - 1) / DIV_BITS_PER_CYCLE;
-    localparam int unsigned M_PIPE_CYCLES =
-        (MUL_PIPE_CYCLES > DIV_PIPE_CYCLES) ? MUL_PIPE_CYCLES : DIV_PIPE_CYCLES;
 
     logic clk;
     logic rst_n;
@@ -84,14 +82,35 @@ module tb_exec_rv64m;
                 (in_op_sel == `RV64_ALU_OP_MULH) ||
                 (in_op_sel == `RV64_ALU_OP_MULHSU) ||
                 (in_op_sel == `RV64_ALU_OP_MULHU)) begin
-                exp_busy_cycles = M_PIPE_CYCLES;
+                exp_busy_cycles = (in_word_op &&
+                                   (in_op_sel != `RV64_ALU_OP_MUL)) ?
+                                  0 :
+                                  (in_word_op ?
+                                   ((32 + MUL_BITS_PER_CYCLE - 1) /
+                                    MUL_BITS_PER_CYCLE) :
+                                   MUL_ITER_CYCLES);
             end else if ((in_op_sel == `RV64_ALU_OP_DIV) ||
                          (in_op_sel == `RV64_ALU_OP_DIVU) ||
                          (in_op_sel == `RV64_ALU_OP_REM) ||
                          (in_op_sel == `RV64_ALU_OP_REMU)) begin
-                exp_busy_cycles = M_PIPE_CYCLES;
+                if ((in_word_op && (in_src2[31:0] == 32'd0)) ||
+                    (!in_word_op && (in_src2 == 64'd0)) ||
+                    (((in_op_sel == `RV64_ALU_OP_DIV) ||
+                      (in_op_sel == `RV64_ALU_OP_REM)) &&
+                     (in_word_op ?
+                      ((in_src1[31:0] == 32'h8000_0000) &&
+                       (in_src2[31:0] == 32'hffff_ffff)) :
+                      ((in_src1 == 64'h8000_0000_0000_0000) &&
+                       (in_src2 == 64'hffff_ffff_ffff_ffff))))) begin
+                    exp_busy_cycles = 0;
+                end else begin
+                    exp_busy_cycles = in_word_op ?
+                                      ((32 + DIV_BITS_PER_CYCLE - 1) /
+                                       DIV_BITS_PER_CYCLE) :
+                                      DIV_ITER_CYCLES;
+                end
             end else begin
-                exp_busy_cycles = M_PIPE_CYCLES;
+                exp_busy_cycles = 0;
             end
 
             if (!ready || busy || result_valid) begin
@@ -109,8 +128,8 @@ module tb_exec_rv64m;
             @(negedge clk);
             valid = 1'b0;
 
-            if (!ready) begin
-                $fatal(1, "%0s: non-interlocking pipeline dropped ready after issue", label);
+            if (!result_valid && ready) begin
+                $fatal(1, "%0s: iterative unit remained ready after issue", label);
             end
 
             timeout = 0;
@@ -167,54 +186,6 @@ module tb_exec_rv64m;
                     "%0s: unit did not return ready after result_ready ready=%0b busy=%0b result_valid=%0b",
                     label, ready, busy, result_valid);
             end
-        end
-    endtask
-
-    task automatic stream_issue;
-        input [`RV64_ALU_OP_WIDTH-1:0] in_op_sel;
-        input                          in_word_op;
-        input [`RV64_XLEN-1:0]         in_src1;
-        input [`RV64_XLEN-1:0]         in_src2;
-        begin
-            if (!ready) begin
-                $fatal(1, "stream issue: pipeline input not ready");
-            end
-
-            op_sel = in_op_sel;
-            word_op = in_word_op;
-            src1 = in_src1;
-            src2 = in_src2;
-            valid = 1'b1;
-            @(posedge clk);
-            @(negedge clk);
-        end
-    endtask
-
-    task automatic expect_stream_result;
-        input [`RV64_XLEN-1:0] exp_result;
-        input [8*48-1:0]       label;
-        integer timeout;
-        begin
-            timeout = 0;
-
-            while (!result_valid && timeout < 128) begin
-                @(posedge clk);
-                @(negedge clk);
-                timeout = timeout + 1;
-            end
-
-            if (!result_valid) begin
-                $fatal(1, "%0s: timeout waiting for stream result", label);
-            end
-
-            if (illegal || result !== exp_result) begin
-                $fatal(1,
-                    "%0s: stream result illegal=%0b result=%016x expected=%016x",
-                    label, illegal, result, exp_result);
-            end
-
-            @(posedge clk);
-            @(negedge clk);
         end
     endtask
 
@@ -326,19 +297,14 @@ module tb_exec_rv64m;
                 ready, busy, result_valid);
         end
 
-        result_ready = 1'b1;
-        @(negedge clk);
-        stream_issue(`RV64_ALU_OP_MUL, 1'b0, 64'd2, 64'd3);
-        stream_issue(`RV64_ALU_OP_MUL, 1'b0, 64'd4, 64'd5);
-        stream_issue(`RV64_ALU_OP_DIVU, 1'b0, 64'd84, 64'd2);
-        valid = 1'b0;
+        check(`RV64_ALU_OP_MUL, 1'b0,
+              64'd2, 64'd3,
+              1'b1, 1'b0, 64'd6, "post-flush mul");
+        check(`RV64_ALU_OP_DIVU, 1'b0,
+              64'd84, 64'd2,
+              1'b1, 1'b0, 64'd42, "serialized divu");
 
-        expect_stream_result(64'd6, "stream mul 0");
-        expect_stream_result(64'd20, "stream mul 1");
-        expect_stream_result(64'd42, "stream divu 2");
-        result_ready = 1'b0;
-
-        $display("PASS: RV64M execute busy/ready");
+        $display("PASS: iterative RV64M execute busy/ready");
         $finish;
     end
 

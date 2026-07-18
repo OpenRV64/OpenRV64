@@ -95,6 +95,16 @@ dynamic trace IDs. Traps, privilege/context returns, `FENCE.I`, and
 `SFENCE.VMA` invalidate the resident window. A target in the upper half of a
 word uses only that half, then continues with two instructions per following
 aligned request.
+
+`ENABLE_PREDECODE_TARGETS` controls the optional direct-target sidecar. When
+enabled, fetch stores each direct control's signed PC-relative displacement in
+a 20-bit field with the always-zero low bit omitted. The core sign-extends that
+encoding and reuses its normal target adder, so a predicted resident target can
+still replay on the redirect edge without storing sixteen absolute 64-bit
+addresses. When disabled, the displacement arrays, metadata, and predecode
+state are not elaborated. The instruction/tag loop buffer remains intact, and
+normal decode still supplies control-flow type and target information.
+
 For narrow data accesses, `mem_addr[2:0]` identifies the addressed byte lane;
 store data and `mem_wstrb` use that same lane placement. Preserving the low
 address bits is required for side-effecting 32-bit MMIO registers, such as the

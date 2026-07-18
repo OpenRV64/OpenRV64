@@ -23,6 +23,7 @@ module openrv64_rv64_top #(
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter ENABLE_TRACE = 0,
+    parameter ENABLE_PREDECODE_TARGETS = 1,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL
 ) (
     input  wire        clk,
@@ -115,7 +116,7 @@ module openrv64_rv64_top #(
     wire [`RV64_INSTR_WIDTH-1:0] if_id_instr;
     wire if_id_instr_fault;
     wire if_id_instr_page_fault;
-    wire [`RV64_XLEN-1:0] if_id_predecode_target;
+    wire [19:0] if_id_predecode_offset;
     wire if_id_predecode_valid;
     wire if_id_predecode_conditional;
     wire [TRACE_ID_WIDTH-1:0] if_id_trace_id;
@@ -285,6 +286,11 @@ module openrv64_rv64_top #(
     wire bp_fast_predict_redirect;
     wire [`RV64_XLEN-1:0] bp_predict_target;
     wire [`RV64_XLEN-1:0] bp_fallback_target;
+    wire [`RV64_XLEN-1:0] bp_predecode_imm = {
+        {43{if_id_predecode_offset[19]}},
+        if_id_predecode_offset,
+        1'b0
+    };
     wire bp_lookup_branch;
     wire bp_lookup_jump;
     wire bp_lookup_indirect;
@@ -439,7 +445,10 @@ module openrv64_rv64_top #(
                             !hard_flush_req;
     assign fetch_decode_clear = if_id_in_clear && !bp_fetch_stall;
 
-    openrv64_fetch u_fetch (
+    openrv64_fetch #(
+        .ENABLE_TRACE(ENABLE_TRACE),
+        .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS)
+    ) u_fetch (
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(invalidate_fetch),
@@ -493,7 +502,7 @@ module openrv64_rv64_top #(
         if_id_trace_id,
         if_id_predecode_conditional,
         if_id_predecode_valid,
-        if_id_predecode_target,
+        if_id_predecode_offset,
         if_id_instr_page_fault,
         if_id_instr_fault,
         if_id_pc,
@@ -558,14 +567,13 @@ module openrv64_rv64_top #(
                                  bp_prediction_taken;
     assign bp_fast_predict_redirect = bp_predict_redirect &&
                                       if_id_predecode_valid;
-    assign bp_predict_target = if_id_predecode_valid ?
-                               if_id_predecode_target : bp_fallback_target;
+    assign bp_predict_target = bp_fallback_target;
 
-    // Cold direct controls and JALR still have a correct decode-time fallback.
-    // Resident direct controls bypass this adder entirely on later replays.
+    // Predecoded direct controls carry a compact signed displacement and reuse
+    // the normal target adder. Cold controls and JALR use the decoder output.
     openrv64_prefix_addsub u_bp_fallback_target (
         .a_i(if_id_pc),
-        .b_i(decode_imm),
+        .b_i(if_id_predecode_valid ? bp_predecode_imm : decode_imm),
         .sub_i(1'b0),
         .result_o(bp_fallback_target)
     );

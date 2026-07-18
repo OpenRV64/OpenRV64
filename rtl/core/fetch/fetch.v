@@ -1,9 +1,11 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/fetch/fetch-defs.v"
-`include "core/arith/prefix-addsub.v"
 
-module openrv64_fetch (
+module openrv64_fetch #(
+    parameter ENABLE_TRACE = 0,
+    parameter ENABLE_PREDECODE_TARGETS = 1
+) (
     input  wire                             clk,
     input  wire                             rst_n,
     // flush_i invalidates resident lines (reset-like/fence/context change).
@@ -53,12 +55,6 @@ module openrv64_fetch (
     // fresh dynamic trace IDs.
     reg [`RV64_INSTR_WIDTH-1:0] buffer_instr0_q [0:BUFFER_COUNT-1];
     reg [`RV64_INSTR_WIDTH-1:0] buffer_instr1_q [0:BUFFER_COUNT-1];
-    reg [`RV64_XLEN-1:0]        buffer_target0_q [0:BUFFER_COUNT-1];
-    reg [`RV64_XLEN-1:0]        buffer_target1_q [0:BUFFER_COUNT-1];
-    reg                         buffer_target_valid0_q [0:BUFFER_COUNT-1];
-    reg                         buffer_target_valid1_q [0:BUFFER_COUNT-1];
-    reg                         buffer_target_conditional0_q [0:BUFFER_COUNT-1];
-    reg                         buffer_target_conditional1_q [0:BUFFER_COUNT-1];
     reg [`RV64_XLEN-1:4]        buffer_line_tag_q [0:BUFFER_COUNT-1];
     reg [63:0]                  buffer_trace0_q [0:BUFFER_COUNT-1];
     reg [63:0]                  buffer_trace1_q [0:BUFFER_COUNT-1];
@@ -76,12 +72,6 @@ module openrv64_fetch (
     reg [`RV64_XLEN-1:0]        req_pc_q;
     reg [`RV64_XLEN-1:0]        req_addr_q;
     reg [63:0]                  req_trace_id_q;
-
-    // Direct-control predecode is deliberately one cycle behind line fill.
-    // It is not on the memory response path and never blocks a cold decode;
-    // a cold first encounter falls back to the normal decoder in the core.
-    reg                         predecode_pending_q;
-    reg [BUFFER_INDEX_WIDTH-1:0] predecode_bank_q;
 
     function automatic direct_control_valid;
         input [`RV64_INSTR_WIDTH-1:0] instr;
@@ -110,46 +100,9 @@ module openrv64_fetch (
         end
     endfunction
 
-    wire [`RV64_INSTR_WIDTH-1:0] predecode_instr0 =
-        buffer_instr0_q[predecode_bank_q];
-    wire [`RV64_INSTR_WIDTH-1:0] predecode_instr1 =
-        buffer_instr1_q[predecode_bank_q];
-    wire [`RV64_XLEN-1:0] predecode_pc0 = {
-        buffer_line_tag_q[predecode_bank_q], predecode_bank_q[0], 3'b000
-    };
-    wire [`RV64_XLEN-1:0] predecode_pc1 = {
-        buffer_line_tag_q[predecode_bank_q], predecode_bank_q[0], 1'b1, 2'b00
-    };
-    wire predecode_valid0 = direct_control_valid(predecode_instr0);
-    wire predecode_valid1 = direct_control_valid(predecode_instr1);
-    wire predecode_conditional0 =
-        (`RV64_OPCODE(predecode_instr0) == `RV64_OPCODE_BRANCH);
-    wire predecode_conditional1 =
-        (`RV64_OPCODE(predecode_instr1) == `RV64_OPCODE_BRANCH);
-    wire [`RV64_XLEN-1:0] predecode_imm0 =
-        (`RV64_OPCODE(predecode_instr0) == `RV64_OPCODE_JAL) ?
-        `RV64_IMM_J(predecode_instr0) : `RV64_IMM_B(predecode_instr0);
-    wire [`RV64_XLEN-1:0] predecode_imm1 =
-        (`RV64_OPCODE(predecode_instr1) == `RV64_OPCODE_JAL) ?
-        `RV64_IMM_J(predecode_instr1) : `RV64_IMM_B(predecode_instr1);
-    wire [`RV64_XLEN-1:0] predecode_target0;
-    wire [`RV64_XLEN-1:0] predecode_target1;
-
-    // Separate target adders keep both slots out of a shared-input mux.  This
-    // work happens after fill and is stored for every resident replay.
-    openrv64_prefix_addsub u_predecode_target0 (
-        .a_i(predecode_pc0),
-        .b_i(predecode_imm0),
-        .sub_i(1'b0),
-        .result_o(predecode_target0)
-    );
-
-    openrv64_prefix_addsub u_predecode_target1 (
-        .a_i(predecode_pc1),
-        .b_i(predecode_imm1),
-        .sub_i(1'b0),
-        .result_o(predecode_target1)
-    );
+    wire [19:0] decode_predecode_offset;
+    wire decode_predecode_valid;
+    wire decode_predecode_conditional;
 
     reg                         lookup_hit_r;
     reg [BUFFER_INDEX_WIDTH-1:0] lookup_bank_r;
@@ -287,36 +240,16 @@ module openrv64_fetch (
                              buffer_instr0_q[lookup_bank_r]) :
                             (read_slot_q ? buffer_instr1_q[read_bank_q] :
                                            buffer_instr0_q[read_bank_q]);
-    wire [`RV64_XLEN-1:0] decode_predecode_target = replay_valid ?
-        (replay_slot ? buffer_target1_q[lookup_bank_r] :
-                       buffer_target0_q[lookup_bank_r]) :
-        (read_slot_q ? buffer_target1_q[read_bank_q] :
-                       buffer_target0_q[read_bank_q]);
-    wire decode_predecode_valid = replay_valid ?
-        (replay_slot ? buffer_target_valid1_q[lookup_bank_r] :
-                       buffer_target_valid0_q[lookup_bank_r]) :
-        (read_slot_q ? buffer_target_valid1_q[read_bank_q] :
-                       buffer_target_valid0_q[read_bank_q]);
-    wire decode_predecode_conditional = replay_valid ?
-        (replay_slot ? buffer_target_conditional1_q[lookup_bank_r] :
-                       buffer_target_conditional0_q[lookup_bank_r]) :
-        (read_slot_q ? buffer_target_conditional1_q[read_bank_q] :
-                       buffer_target_conditional0_q[read_bank_q]);
     assign decode_fault_o = replay_valid ?
                             buffer_fault_q[lookup_bank_r] :
                             buffer_fault_q[read_bank_q];
     assign decode_page_fault_o = replay_valid ?
                                  buffer_page_fault_q[lookup_bank_r] :
                                  buffer_page_fault_q[read_bank_q];
-    assign trace_id_o = replay_valid ? trace_id_i :
-                        buffered_decode_valid ?
-                        (read_slot_q ? buffer_trace1_q[read_bank_q] :
-                                       buffer_trace0_q[read_bank_q]) :
-                        req_trace_id_q;
     assign decode_bus_o = {
         decode_predecode_conditional,
         decode_predecode_valid,
-        decode_predecode_target,
+        decode_predecode_offset,
         decode_page_fault_o, decode_fault_o,
         decode_pc_o, decode_instr_o
     };
@@ -331,14 +264,11 @@ module openrv64_fetch (
             req_bank_q <= {BUFFER_INDEX_WIDTH{1'b0}};
             req_pc_q <= {`RV64_XLEN{1'b0}};
             req_addr_q <= {`RV64_XLEN{1'b0}};
-            req_trace_id_q <= 64'd0;
 
             for (i = 0; i < BUFFER_COUNT; i = i + 1) begin
                 buffer_instr0_q[i] <= `RV64_INSTR_NOP;
                 buffer_instr1_q[i] <= `RV64_INSTR_NOP;
                 buffer_line_tag_q[i] <= {(`RV64_XLEN-4){1'b0}};
-                buffer_trace0_q[i] <= 64'd0;
-                buffer_trace1_q[i] <= 64'd0;
                 buffer_fault_q[i] <= 1'b0;
                 buffer_page_fault_q[i] <= 1'b0;
                 buffer_resident_q[i] <= 1'b0;
@@ -352,14 +282,11 @@ module openrv64_fetch (
             req_bank_q <= {BUFFER_INDEX_WIDTH{1'b0}};
             req_pc_q <= {`RV64_XLEN{1'b0}};
             req_addr_q <= {`RV64_XLEN{1'b0}};
-            req_trace_id_q <= 64'd0;
 
             for (i = 0; i < BUFFER_COUNT; i = i + 1) begin
                 buffer_instr0_q[i] <= `RV64_INSTR_NOP;
                 buffer_instr1_q[i] <= `RV64_INSTR_NOP;
                 buffer_line_tag_q[i] <= {(`RV64_XLEN-4){1'b0}};
-                buffer_trace0_q[i] <= 64'd0;
-                buffer_trace1_q[i] <= 64'd0;
                 buffer_fault_q[i] <= 1'b0;
                 buffer_page_fault_q[i] <= 1'b0;
                 buffer_resident_q[i] <= 1'b0;
@@ -383,19 +310,12 @@ module openrv64_fetch (
             req_bank_q <= {BUFFER_INDEX_WIDTH{1'b0}};
             req_pc_q <= {`RV64_XLEN{1'b0}};
             req_addr_q <= {`RV64_XLEN{1'b0}};
-            req_trace_id_q <= 64'd0;
 
             for (i = 0; i < BUFFER_COUNT; i = i + 1) begin
                 buffer_count_q[i] <= 2'd0;
             end
 
             if (redirect_replay_valid) begin
-                buffer_trace0_q[lookup_bank_r] <= redirect_pc_i[2] ?
-                                                  64'd0 : trace_id_i;
-                buffer_trace1_q[lookup_bank_r] <= redirect_pc_i[2] ?
-                                                  trace_id_i :
-                                                  trace_id_i + 64'd1;
-
                 if (!redirect_replay_fire) begin
                     buffer_count_q[lookup_bank_r] <=
                         redirect_pc_i[2] ? 2'd1 : 2'd2;
@@ -427,11 +347,6 @@ module openrv64_fetch (
                     `RV64_INSTR_NOP : mem_rdata_i[63:32];
                 buffer_line_tag_q[req_bank_q] <=
                     req_addr_q[`RV64_XLEN-1:4];
-                buffer_trace0_q[req_bank_q] <= req_pc_q[2] ? 64'd0 :
-                                               req_trace_id_q;
-                buffer_trace1_q[req_bank_q] <= req_pc_q[2] ?
-                                               req_trace_id_q :
-                                               req_trace_id_q + 64'd1;
                 buffer_fault_q[req_bank_q] <= mem_fault_i;
                 buffer_page_fault_q[req_bank_q] <= mem_page_fault_i;
                 buffer_resident_q[req_bank_q] <= 1'b1;
@@ -443,7 +358,6 @@ module openrv64_fetch (
                     req_bank_q <= req_successor_bank;
                     req_pc_q <= pc_i;
                     req_addr_q <= pc_line_addr;
-                    req_trace_id_q <= trace_id_i;
                     buffer_resident_q[req_successor_bank] <= 1'b0;
                 end else begin
                     req_active_q <= 1'b0;
@@ -453,7 +367,6 @@ module openrv64_fetch (
                 req_bank_q <= miss_bank;
                 req_pc_q <= pc_i;
                 req_addr_q <= pc_line_addr;
-                req_trace_id_q <= trace_id_i;
                 buffer_resident_q[miss_bank] <= 1'b0;
 
                 if (queue_empty) begin
@@ -468,11 +381,6 @@ module openrv64_fetch (
                 end else begin
                     buffer_count_q[lookup_bank_r] <= pc_i[2] ? 2'd1 : 2'd2;
                 end
-                buffer_trace0_q[lookup_bank_r] <= pc_i[2] ? 64'd0 :
-                                                  trace_id_i;
-                buffer_trace1_q[lookup_bank_r] <= pc_i[2] ?
-                                                  trace_id_i :
-                                                  trace_id_i + 64'd1;
                 write_bank_q <= lookup_bank_r +
                                 {{(BUFFER_INDEX_WIDTH-1){1'b0}}, 1'b1};
 
@@ -484,64 +392,189 @@ module openrv64_fetch (
         end
     end
 
-    integer predecode_index;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            predecode_pending_q <= 1'b0;
-            predecode_bank_q <= {BUFFER_INDEX_WIDTH{1'b0}};
-            for (predecode_index = 0;
-                 predecode_index < BUFFER_COUNT;
-                 predecode_index = predecode_index + 1) begin
-                buffer_target0_q[predecode_index] <= {`RV64_XLEN{1'b0}};
-                buffer_target1_q[predecode_index] <= {`RV64_XLEN{1'b0}};
-                buffer_target_valid0_q[predecode_index] <= 1'b0;
-                buffer_target_valid1_q[predecode_index] <= 1'b0;
-                buffer_target_conditional0_q[predecode_index] <= 1'b0;
-                buffer_target_conditional1_q[predecode_index] <= 1'b0;
-            end
-        end else if (flush_i) begin
-            predecode_pending_q <= 1'b0;
-            predecode_bank_q <= {BUFFER_INDEX_WIDTH{1'b0}};
-            for (predecode_index = 0;
-                 predecode_index < BUFFER_COUNT;
-                 predecode_index = predecode_index + 1) begin
-                buffer_target0_q[predecode_index] <= {`RV64_XLEN{1'b0}};
-                buffer_target1_q[predecode_index] <= {`RV64_XLEN{1'b0}};
-                buffer_target_valid0_q[predecode_index] <= 1'b0;
-                buffer_target_valid1_q[predecode_index] <= 1'b0;
-                buffer_target_conditional0_q[predecode_index] <= 1'b0;
-                buffer_target_conditional1_q[predecode_index] <= 1'b0;
-            end
-        end else begin
-            if (predecode_pending_q) begin
-                buffer_target0_q[predecode_bank_q] <= predecode_target0;
-                buffer_target1_q[predecode_bank_q] <= predecode_target1;
-                buffer_target_valid0_q[predecode_bank_q] <=
-                    predecode_valid0;
-                buffer_target_valid1_q[predecode_bank_q] <=
-                    predecode_valid1;
-                buffer_target_conditional0_q[predecode_bank_q] <=
-                    predecode_valid0 && predecode_conditional0;
-                buffer_target_conditional1_q[predecode_bank_q] <=
-                    predecode_valid1 && predecode_conditional1;
-            end
+    generate
+        if (ENABLE_TRACE) begin : g_trace
+            integer trace_index;
 
-            if (req_complete) begin
-                // The bank has just been overwritten.  Clear stale metadata
-                // now, then generate the new metadata from its stored line on
-                // the following cycle.
-                buffer_target0_q[req_bank_q] <= {`RV64_XLEN{1'b0}};
-                buffer_target1_q[req_bank_q] <= {`RV64_XLEN{1'b0}};
-                buffer_target_valid0_q[req_bank_q] <= 1'b0;
-                buffer_target_valid1_q[req_bank_q] <= 1'b0;
-                buffer_target_conditional0_q[req_bank_q] <= 1'b0;
-                buffer_target_conditional1_q[req_bank_q] <= 1'b0;
-                predecode_pending_q <= !(mem_fault_i || mem_page_fault_i);
-                predecode_bank_q <= req_bank_q;
-            end else if (predecode_pending_q) begin
-                predecode_pending_q <= 1'b0;
+            assign trace_id_o = replay_valid ? trace_id_i :
+                                buffered_decode_valid ?
+                                (read_slot_q ?
+                                 buffer_trace1_q[read_bank_q] :
+                                 buffer_trace0_q[read_bank_q]) :
+                                req_trace_id_q;
+
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    req_trace_id_q <= 64'd0;
+                    for (trace_index = 0;
+                         trace_index < BUFFER_COUNT;
+                         trace_index = trace_index + 1) begin
+                        buffer_trace0_q[trace_index] <= 64'd0;
+                        buffer_trace1_q[trace_index] <= 64'd0;
+                    end
+                end else if (flush_i) begin
+                    req_trace_id_q <= 64'd0;
+                    for (trace_index = 0;
+                         trace_index < BUFFER_COUNT;
+                         trace_index = trace_index + 1) begin
+                        buffer_trace0_q[trace_index] <= 64'd0;
+                        buffer_trace1_q[trace_index] <= 64'd0;
+                    end
+                end else if (redirect_i) begin
+                    req_trace_id_q <= 64'd0;
+                    if (redirect_replay_valid) begin
+                        buffer_trace0_q[lookup_bank_r] <= redirect_pc_i[2] ?
+                                                          64'd0 : trace_id_i;
+                        buffer_trace1_q[lookup_bank_r] <= redirect_pc_i[2] ?
+                                                          trace_id_i :
+                                                          trace_id_i + 64'd1;
+                    end
+                end else begin
+                    if (req_complete) begin
+                        buffer_trace0_q[req_bank_q] <= req_pc_q[2] ?
+                                                       64'd0 : req_trace_id_q;
+                        buffer_trace1_q[req_bank_q] <= req_pc_q[2] ?
+                                                       req_trace_id_q :
+                                                       req_trace_id_q + 64'd1;
+
+                        if (pc_accept_miss) begin
+                            req_trace_id_q <= trace_id_i;
+                        end
+                    end else if (!req_active_q && pc_accept_miss) begin
+                        req_trace_id_q <= trace_id_i;
+                    end
+
+                    if (pc_accept_hit) begin
+                        buffer_trace0_q[lookup_bank_r] <= pc_i[2] ?
+                                                          64'd0 : trace_id_i;
+                        buffer_trace1_q[lookup_bank_r] <= pc_i[2] ?
+                                                          trace_id_i :
+                                                          trace_id_i + 64'd1;
+                    end
+                end
             end
+        end else begin : g_no_trace
+            assign trace_id_o = 64'd0;
         end
-    end
+    endgenerate
+
+    generate
+        if (ENABLE_PREDECODE_TARGETS) begin : g_predecode_targets
+            // Direct-control predecode is deliberately one cycle behind line
+            // fill. It is not on the memory response path and never blocks a
+            // cold decode; a cold first encounter falls back to normal decode.
+            reg [19:0] buffer_offset0_q [0:BUFFER_COUNT-1];
+            reg [19:0] buffer_offset1_q [0:BUFFER_COUNT-1];
+            reg buffer_target_valid0_q [0:BUFFER_COUNT-1];
+            reg buffer_target_valid1_q [0:BUFFER_COUNT-1];
+            reg buffer_target_conditional0_q [0:BUFFER_COUNT-1];
+            reg buffer_target_conditional1_q [0:BUFFER_COUNT-1];
+            reg predecode_pending_q;
+            reg [BUFFER_INDEX_WIDTH-1:0] predecode_bank_q;
+
+            wire [`RV64_INSTR_WIDTH-1:0] predecode_instr0 =
+                buffer_instr0_q[predecode_bank_q];
+            wire [`RV64_INSTR_WIDTH-1:0] predecode_instr1 =
+                buffer_instr1_q[predecode_bank_q];
+            wire predecode_valid0 = direct_control_valid(predecode_instr0);
+            wire predecode_valid1 = direct_control_valid(predecode_instr1);
+            wire predecode_conditional0 =
+                (`RV64_OPCODE(predecode_instr0) == `RV64_OPCODE_BRANCH);
+            wire predecode_conditional1 =
+                (`RV64_OPCODE(predecode_instr1) == `RV64_OPCODE_BRANCH);
+            wire [`RV64_XLEN-1:0] predecode_imm0 =
+                (`RV64_OPCODE(predecode_instr0) == `RV64_OPCODE_JAL) ?
+                `RV64_IMM_J(predecode_instr0) :
+                `RV64_IMM_B(predecode_instr0);
+            wire [`RV64_XLEN-1:0] predecode_imm1 =
+                (`RV64_OPCODE(predecode_instr1) == `RV64_OPCODE_JAL) ?
+                `RV64_IMM_J(predecode_instr1) :
+                `RV64_IMM_B(predecode_instr1);
+            assign decode_predecode_offset = replay_valid ?
+                (replay_slot ? buffer_offset1_q[lookup_bank_r] :
+                               buffer_offset0_q[lookup_bank_r]) :
+                (read_slot_q ? buffer_offset1_q[read_bank_q] :
+                               buffer_offset0_q[read_bank_q]);
+            assign decode_predecode_valid = replay_valid ?
+                (replay_slot ? buffer_target_valid1_q[lookup_bank_r] :
+                               buffer_target_valid0_q[lookup_bank_r]) :
+                (read_slot_q ? buffer_target_valid1_q[read_bank_q] :
+                               buffer_target_valid0_q[read_bank_q]);
+            assign decode_predecode_conditional = replay_valid ?
+                (replay_slot ?
+                 buffer_target_conditional1_q[lookup_bank_r] :
+                 buffer_target_conditional0_q[lookup_bank_r]) :
+                (read_slot_q ?
+                 buffer_target_conditional1_q[read_bank_q] :
+                 buffer_target_conditional0_q[read_bank_q]);
+
+            integer predecode_index;
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    predecode_pending_q <= 1'b0;
+                    predecode_bank_q <= {BUFFER_INDEX_WIDTH{1'b0}};
+                    for (predecode_index = 0;
+                         predecode_index < BUFFER_COUNT;
+                         predecode_index = predecode_index + 1) begin
+                        buffer_offset0_q[predecode_index] <= 20'd0;
+                        buffer_offset1_q[predecode_index] <= 20'd0;
+                        buffer_target_valid0_q[predecode_index] <= 1'b0;
+                        buffer_target_valid1_q[predecode_index] <= 1'b0;
+                        buffer_target_conditional0_q[predecode_index] <= 1'b0;
+                        buffer_target_conditional1_q[predecode_index] <= 1'b0;
+                    end
+                end else if (flush_i) begin
+                    predecode_pending_q <= 1'b0;
+                    predecode_bank_q <= {BUFFER_INDEX_WIDTH{1'b0}};
+                    for (predecode_index = 0;
+                         predecode_index < BUFFER_COUNT;
+                         predecode_index = predecode_index + 1) begin
+                        buffer_offset0_q[predecode_index] <= 20'd0;
+                        buffer_offset1_q[predecode_index] <= 20'd0;
+                        buffer_target_valid0_q[predecode_index] <= 1'b0;
+                        buffer_target_valid1_q[predecode_index] <= 1'b0;
+                        buffer_target_conditional0_q[predecode_index] <= 1'b0;
+                        buffer_target_conditional1_q[predecode_index] <= 1'b0;
+                    end
+                end else begin
+                    if (predecode_pending_q) begin
+                        buffer_offset0_q[predecode_bank_q] <=
+                            predecode_imm0[20:1];
+                        buffer_offset1_q[predecode_bank_q] <=
+                            predecode_imm1[20:1];
+                        buffer_target_valid0_q[predecode_bank_q] <=
+                            predecode_valid0;
+                        buffer_target_valid1_q[predecode_bank_q] <=
+                            predecode_valid1;
+                        buffer_target_conditional0_q[predecode_bank_q] <=
+                            predecode_valid0 && predecode_conditional0;
+                        buffer_target_conditional1_q[predecode_bank_q] <=
+                            predecode_valid1 && predecode_conditional1;
+                    end
+
+                    if (req_complete) begin
+                        // The bank has just been overwritten. Clear stale
+                        // metadata now, then regenerate it from the stored
+                        // line on the following cycle.
+                        buffer_offset0_q[req_bank_q] <= 20'd0;
+                        buffer_offset1_q[req_bank_q] <= 20'd0;
+                        buffer_target_valid0_q[req_bank_q] <= 1'b0;
+                        buffer_target_valid1_q[req_bank_q] <= 1'b0;
+                        buffer_target_conditional0_q[req_bank_q] <= 1'b0;
+                        buffer_target_conditional1_q[req_bank_q] <= 1'b0;
+                        predecode_pending_q <=
+                            !(mem_fault_i || mem_page_fault_i);
+                        predecode_bank_q <= req_bank_q;
+                    end else if (predecode_pending_q) begin
+                        predecode_pending_q <= 1'b0;
+                    end
+                end
+            end
+        end else begin : g_no_predecode_targets
+            assign decode_predecode_offset = 20'd0;
+            assign decode_predecode_valid = 1'b0;
+            assign decode_predecode_conditional = 1'b0;
+        end
+    endgenerate
 
 endmodule

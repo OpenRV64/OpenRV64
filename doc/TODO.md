@@ -11,8 +11,9 @@ The repository currently has:
 
 - a single-hart, single-issue, in-order IF/ID/EX/MEM/WB core;
 - RV64I, RV64A, Zicsr, Zifencei, optional RV64M, and bit-manipulation
-  execution.  RV64A is currently a deliberately serialized single-hart
-  implementation without a coherent reservation point;
+  execution.  RV64M uses one shared 8-bit iterative multiply/divide worker;
+  RV64A is currently a deliberately serialized single-hart implementation
+  without a coherent reservation point;
 - U, S, and M privilege modes, including MRET/SRET and trap delegation;
 - Sv39, a small unified TLB, a page-table walker, and PMP;
 - CLINT, machine-context PLIC, UART, GPIO, timer, boot ROM, and small RAM
@@ -126,18 +127,24 @@ simple memory path first.
 ### Platform and firmware requirements
 
 - [x] Add an integrated SoC top that instantiates the core, decoder, boot ROM,
-  16 MiB simulation RAM, CLINT, PLIC, UART, GPIO, and timer, with ordered
-  platform/core reset release and a focused end-to-end test.
-- [ ] Replace the integrated demonstration RAM with a configurable simulation
-  model and board memory-controller boundary.
-- [ ] Replace the 16 MiB simulation RAM as the Linux memory target with a
+  16 MiB synchronous inferred RAM, CLINT, PLIC, UART, GPIO, and timer, with
+  ordered platform/core reset release and a focused end-to-end test.
+- [ ] Add a configurable simulation model and explicit board
+  external-memory-controller boundary alongside the inferred RAM target.
+- [ ] Replace the 16 MiB inferred RAM as the Linux memory target with a
   practical configurable capacity, initially at least 128 MiB.
 - [ ] Add deterministic ELF/Image, firmware, DTB, and initramfs loading to the
   simulator; do not bake a Linux image into synthesizable RAM RTL.
+  The OpenSBI smoke test now has deterministic bounded firmware and DTB
+  fragments; Linux Image and initramfs loading remain open.
 - [ ] Boot through OpenSBI or a deliberately small compatible SBI
   implementation in M-mode, then enter Linux in S-mode.
+  Pinned OpenSBI v1.9 now reaches and validates an S-mode SBI payload; Linux
+  entry remains open.
 - [ ] Supply a device tree describing the hart ISA, timebase, RAM, reserved
   firmware memory, UART, CLINT/ACLINT, PLIC, and chosen boot arguments.
+  The smoke DT covers the hart, timebase, 16 MiB RAM, UART, CLINT, and PLIC;
+  Linux reserved-memory and chosen boot arguments remain open.
 - [ ] Meet the Linux entry contract: `a0=hartid`, `a1=DTB address`, `satp=0`,
   and the RV64 kernel image placed on a 2 MiB boundary.
 - [ ] Provide a working UART console and timer interrupt path.  Add a

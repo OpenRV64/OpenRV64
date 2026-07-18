@@ -4,7 +4,8 @@
 
 module tb_bp_context #(
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_ALWAYS_BRANCH
+        `OPENRV64_BP_ALWAYS_BRANCH,
+    parameter bit ENABLE_PREDECODE_TARGETS = 1'b1
 );
 
     localparam logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0100;
@@ -35,7 +36,8 @@ module tb_bp_context #(
 
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
-        .BP_TYPE(BP_TYPE)
+        .BP_TYPE(BP_TYPE),
+        .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -137,7 +139,7 @@ module tb_bp_context #(
                   enc_addi(5'd1, `RV64_REG_X0, 12'd1));
         // Outcomes are N, T, T, N.  Repeat-last should predict N, N, T, T.
         put_instr(RESET_INSTR_INDEX + 1,
-                  enc_branch(`RV64_FUNCT3_BNE, 5'd1, 5'd1, 13'h008));
+                  enc_branch(`RV64_FUNCT3_BNE, 5'd1, 5'd1, 13'h1ff8));
         put_instr(RESET_INSTR_INDEX + 2,
                   enc_addi(5'd2, `RV64_REG_X0, 12'd1));
         put_instr(RESET_INSTR_INDEX + 3,
@@ -169,6 +171,15 @@ module tb_bp_context #(
             correction_count <= 0;
         end else begin
             if (dut.u_core.bp_branch_allocate) begin
+                if (dut.u_core.if_id_pc == 64'h104 &&
+                    (dut.u_core.bp_predict_target !== 64'hfc ||
+                     (ENABLE_PREDECODE_TARGETS &&
+                      dut.u_core.if_id_predecode_offset !== 20'hffffc))) begin
+                    $fatal(1,
+                           "BP type %0d negative target mismatch: offset=%05x target=%016x",
+                           BP_TYPE, dut.u_core.if_id_predecode_offset,
+                           dut.u_core.bp_predict_target);
+                end
                 if (dut.u_core.bp_prediction_taken !==
                     expected_prediction(dut.u_core.if_id_pc)) begin
                     $fatal(1,

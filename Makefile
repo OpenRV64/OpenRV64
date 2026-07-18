@@ -9,6 +9,9 @@ UART_FIRMWARE_MEMH := sim/uart.memh
 OPENSBI_BUILD_DIR ?= build/opensbi
 OPENSBI_ARTIFACT_DIR := $(OPENSBI_BUILD_DIR)/artifacts
 OPENSBI_SIM_BUILD := sim/opensbi_tb.vvp
+OPENSBI_VERILATOR_DIR := build/verilator/opensbi
+OPENSBI_VERILATOR_BUILD := $(OPENSBI_VERILATOR_DIR)/opensbi_tb
+VERILATOR ?= verilator
 RISCV_CC ?= riscv64-elf-gcc
 RISCV_OBJCOPY ?= riscv64-elf-objcopy
 UART_FIRMWARE_CFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
@@ -52,6 +55,8 @@ RV64I_GPR_SIM_BUILD := sim/rv64-i-gpr_tb.vvp
 RV64I_CSRS_SIM_BUILD := sim/rv64-i-csrs_tb.vvp
 RV64I_PMP_SIM_BUILD := sim/rv64-i-pmp_tb.vvp
 FETCH_SIM_BUILD := sim/fetch_tb.vvp
+FETCH_NOTRACE_SIM_BUILD := sim/fetch_notrace_tb.vvp
+FETCH_NOPREDECODE_SIM_BUILD := sim/fetch_nopredecode_tb.vvp
 PREFIX_ADDSUB_SIM_BUILD := sim/prefix_addsub_tb.vvp
 EXEC_ALU_RV64I_SIM_BUILD := sim/exec_alu_rv64-i_tb.vvp
 EXEC_ALU_RV64M_SIM_BUILD := sim/exec_alu_rv64-m_tb.vvp
@@ -61,6 +66,7 @@ ATOMIC_CONTEXT_SIM_BUILD := sim/atomic_context_tb.vvp
 EXEC_BR_SIM_BUILD := sim/exec_br_tb.vvp
 EXEC_BP_SIM_BUILD := sim/exec_bp_tb.vvp
 BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD := sim/bp_context_always_branch_tb.vvp
+BP_CONTEXT_NOPREDECODE_SIM_BUILD := sim/bp_context_nopredecode_tb.vvp
 BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD := sim/bp_context_always_decline_tb.vvp
 BP_CONTEXT_REPEAT_LAST_SIM_BUILD := sim/bp_context_repeat_last_tb.vvp
 EXCEPT_SIM_BUILD := sim/except_tb.vvp
@@ -173,7 +179,7 @@ SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: FORCE sw-uart opensbi sim-opensbi sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+.PHONY: FORCE sw-uart opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-prefix-addsub sim-dispatch sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 
 FORCE:
 
@@ -184,7 +190,14 @@ sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
 opensbi:
 	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_BUILD_DIR)) tools/build-opensbi.sh
 
-sim-opensbi: $(OPENSBI_SIM_BUILD) opensbi
+sim-opensbi: $(OPENSBI_VERILATOR_BUILD) opensbi
+	$(OPENSBI_VERILATOR_BUILD) \
+		+trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(OPENSBI_ARTIFACT_DIR)/payload.memh \
+		+fdt_memh=$(OPENSBI_ARTIFACT_DIR)/openrv64-dtb.memh
+
+sim-opensbi-icarus: $(OPENSBI_SIM_BUILD) opensbi
 	vvp $(OPENSBI_SIM_BUILD) \
 		+trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline.memh \
 		+firmware_memh=$(OPENSBI_ARTIFACT_DIR)/fw_jump.memh \
@@ -297,8 +310,11 @@ sim-rv64-i-csrs: $(RV64I_CSRS_SIM_BUILD)
 sim-rv64-i-pmp: $(RV64I_PMP_SIM_BUILD)
 	vvp $(RV64I_PMP_SIM_BUILD)
 
-sim-fetch: $(FETCH_SIM_BUILD)
+sim-fetch: $(FETCH_SIM_BUILD) $(FETCH_NOTRACE_SIM_BUILD) \
+	$(FETCH_NOPREDECODE_SIM_BUILD)
 	vvp $(FETCH_SIM_BUILD)
+	vvp $(FETCH_NOTRACE_SIM_BUILD)
+	vvp $(FETCH_NOPREDECODE_SIM_BUILD)
 
 sim-prefix-addsub: $(PREFIX_ADDSUB_SIM_BUILD)
 	vvp $(PREFIX_ADDSUB_SIM_BUILD)
@@ -327,10 +343,13 @@ sim-exec-br: $(EXEC_BR_SIM_BUILD)
 sim-exec-bp: $(EXEC_BP_SIM_BUILD)
 	vvp $(EXEC_BP_SIM_BUILD)
 
-sim-bp-context: sim-bp-context-always-branch sim-bp-context-always-decline sim-bp-context-repeat-last
+sim-bp-context: sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last
 
 sim-bp-context-always-branch: $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
 	vvp $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
+
+sim-bp-context-no-predecode: $(BP_CONTEXT_NOPREDECODE_SIM_BUILD)
+	vvp $(BP_CONTEXT_NOPREDECODE_SIM_BUILD)
 
 sim-bp-context-always-decline: $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD)
 	vvp $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD)
@@ -417,6 +436,14 @@ $(UART_FIRMWARE_SIM_BUILD): $(UART_FIRMWARE_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SR
 $(OPENSBI_SIM_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $@ $(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
+
+$(OPENSBI_VERILATOR_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(OPENSBI_VERILATOR_DIR)
+	$(VERILATOR) --binary --timing -j 0 -Wall --Wno-fatal \
+		--Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-SYNCASYNCNET \
+		-Irtl --top-module tb_opensbi \
+		-Mdir $(OPENSBI_VERILATOR_DIR) -o opensbi_tb \
+		$(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
 
 $(SW_TRACE_SIM_BUILD): FORCE $(SW_TRACE_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
@@ -526,9 +553,21 @@ $(RV64I_PMP_SIM_BUILD): $(RV64I_PMP_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_PMP_SIM_BUILD) $(RV64I_PMP_SIM_SRCS)
 
-$(FETCH_SIM_BUILD): $(FETCH_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
+$(FETCH_SIM_BUILD): $(FETCH_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_SIM_BUILD) $(FETCH_SIM_SRCS)
+
+$(FETCH_NOTRACE_SIM_BUILD): $(FETCH_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -Ptb_fetch.ENABLE_TRACE=0 \
+		-o $(FETCH_NOTRACE_SIM_BUILD) $(FETCH_SIM_SRCS)
+
+$(FETCH_NOPREDECODE_SIM_BUILD): $(FETCH_SIM_SRCS) $(FETCH_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl \
+		-Ptb_fetch.ENABLE_TRACE=0 \
+		-Ptb_fetch.ENABLE_PREDECODE_TARGETS=0 \
+		-o $(FETCH_NOPREDECODE_SIM_BUILD) $(FETCH_SIM_SRCS)
 
 $(PREFIX_ADDSUB_SIM_BUILD): $(PREFIX_ADDSUB_SIM_SRCS) rtl/core/arith/prefix-addsub.v
 	mkdir -p sim
@@ -569,6 +608,14 @@ $(EXEC_BP_SIM_BUILD): $(EXEC_BP_SIM_SRCS) $(BP_SRC) $(BP_DEPS)
 $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=1 -o $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
+
+$(BP_CONTEXT_NOPREDECODE_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl \
+		-Ptb_bp_context.BP_TYPE=1 \
+		-Ptb_bp_context.ENABLE_PREDECODE_TARGETS=0 \
+		-o $(BP_CONTEXT_NOPREDECODE_SIM_BUILD) \
+		$(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
 
 $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim

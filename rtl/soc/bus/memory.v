@@ -1,14 +1,17 @@
 `timescale 1ns/1ps
 
-// Small target-local SoC RAM.
+// Target-local SoC RAM with an inference-friendly synchronous read port.
 //
-// Reads are combinational and writes commit on the rising clock edge. The
-// address decoder guarantees that valid requests are inside this target's
-// window and supplies a byte offset relative to the RAM base.
+// A request is captured on a rising edge and acknowledged for the following
+// cycle.  The response pulse is followed by an idle cycle so a requester that
+// holds mem_valid_i through completion cannot be accepted twice.  The address
+// decoder guarantees that valid requests are inside this target's window and
+// supplies a byte offset relative to the RAM base.
 module openrv64_soc_memory #(
     parameter integer MEM_BYTES = 16 * 1024 * 1024
 ) (
     input  wire        clk_i,
+    input  wire        rst_ni,
 
     input  wire        mem_valid_i,
     output wire        mem_ready_o,
@@ -23,6 +26,9 @@ module openrv64_soc_memory #(
     localparam integer WORD_INDEX_WIDTH = $clog2(WORD_COUNT);
 
     reg [63:0] memory_q [0:WORD_COUNT-1];
+    reg pending_q;
+    reg response_write_q;
+    reg [63:0] read_data_q;
 
     wire address_in_range = (mem_addr_i < MEM_BYTES);
     wire [WORD_INDEX_WIDTH-1:0] word_index =
@@ -38,13 +44,33 @@ module openrv64_soc_memory #(
         end
     end
 
-    assign mem_ready_o = mem_valid_i;
-    assign mem_rdata_o = (mem_valid_i && !mem_write_i && address_in_range) ?
-                         memory_q[word_index] :
-                         64'h0000_0000_0000_0000;
+    wire accept_request = mem_valid_i && !pending_q;
+
+    assign mem_ready_o = pending_q;
+    assign mem_rdata_o = (pending_q && !response_write_q) ?
+                         read_data_q : 64'h0000_0000_0000_0000;
+
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            pending_q <= 1'b0;
+            response_write_q <= 1'b0;
+        end else if (pending_q) begin
+            pending_q <= 1'b0;
+            response_write_q <= 1'b0;
+        end else if (mem_valid_i) begin
+            pending_q <= 1'b1;
+            response_write_q <= mem_write_i;
+        end
+    end
 
     always @(posedge clk_i) begin
-        if (mem_valid_i && mem_write_i && address_in_range) begin
+        if (accept_request && !mem_write_i) begin
+            read_data_q <= address_in_range ?
+                           memory_q[word_index] :
+                           64'h0000_0000_0000_0000;
+        end
+
+        if (accept_request && mem_write_i && address_in_range) begin
             for (byte_index = 0; byte_index < 8;
                  byte_index = byte_index + 1) begin
                 if (mem_wstrb_i[byte_index]) begin

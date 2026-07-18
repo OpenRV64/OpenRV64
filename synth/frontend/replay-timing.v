@@ -50,11 +50,11 @@ module openrv64_timing_fetch_replay_lookup (
 endmodule
 
 // Current resident same-edge prediction cone for the always-taken policy:
-// registered predecode metadata -> direction policy -> two-set/four-way
-// resident lookup -> replay instruction.  Target decode/add is intentionally
-// absent: it ran after the line was filled and its result is registered.
+// registered compact predecode metadata -> shared target adder ->
+// two-set/four-way resident lookup -> replay instruction.
 module openrv64_timing_frontend_replay (
-    input  wire [`RV64_XLEN-1:0]        predecode_target_i,
+    input  wire [`RV64_XLEN-1:0]        if_id_pc_i,
+    input  wire [19:0]                  predecode_offset_i,
     input  wire                         predecode_valid_i,
     input  wire                         predecode_conditional_i,
     input  wire                         if_id_valid_i,
@@ -76,11 +76,22 @@ module openrv64_timing_frontend_replay (
 
     wire redirect = if_id_valid_i && decode_accept_i &&
                     predecode_valid_i && prediction_taken;
+    wire [`RV64_XLEN-1:0] predecode_imm = {
+        {43{predecode_offset_i[19]}}, predecode_offset_i, 1'b0
+    };
+    wire [`RV64_XLEN-1:0] target_pc;
     wire lookup_hit;
     wire [`RV64_INSTR_WIDTH-1:0] lookup_instr;
 
+    openrv64_prefix_addsub u_target (
+        .a_i(if_id_pc_i),
+        .b_i(predecode_imm),
+        .sub_i(1'b0),
+        .result_o(target_pc)
+    );
+
     openrv64_timing_fetch_replay_lookup u_lookup (
-        .target_pc_i(predecode_target_i),
+        .target_pc_i(target_pc),
         .resident_i(resident_i),
         .line_tags_i(line_tags_i),
         .line_data_i(line_data_i),
@@ -94,15 +105,13 @@ module openrv64_timing_frontend_replay (
 
 endmodule
 
-// Post-fill target-generation cut.  This is allowed a complete cycle and its
-// output is registered with the resident line; it is not part of same-edge
-// replay.  Reporting it separately makes that distinction explicit.
-module openrv64_timing_fetch_predecode_target (
+// Post-fill classification and displacement-encoding cut. Its compact output
+// is registered with the resident line before it reaches same-edge replay.
+module openrv64_timing_fetch_predecode_offset (
     input  wire [`RV64_INSTR_WIDTH-1:0] instr_i,
-    input  wire [`RV64_XLEN-1:0]        pc_i,
     output wire                         direct_valid_o,
     output wire                         conditional_o,
-    output wire [`RV64_XLEN-1:0]        target_o
+    output wire [19:0]                  offset_o
 );
 
     wire is_branch = (`RV64_OPCODE(instr_i) == `RV64_OPCODE_BRANCH);
@@ -119,12 +128,6 @@ module openrv64_timing_fetch_predecode_target (
 
     assign direct_valid_o = is_jal || (is_branch && legal_branch_funct3);
     assign conditional_o = is_branch && legal_branch_funct3;
-
-    openrv64_prefix_addsub u_target (
-        .a_i(pc_i),
-        .b_i(immediate),
-        .sub_i(1'b0),
-        .result_o(target_o)
-    );
+    assign offset_o = immediate[20:1];
 
 endmodule

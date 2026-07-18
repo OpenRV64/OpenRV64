@@ -9,6 +9,7 @@ module openrv64_top #(
     parameter bit ENABLE_FORWARDING = 1'b1,
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
     parameter bit ENABLE_TRACE = 1'b0,
+    parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_STALL
 ) (
@@ -67,6 +68,7 @@ module openrv64_top #(
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .ENABLE_TRACE(ENABLE_TRACE),
+        .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
         .BP_TYPE(BP_TYPE)
     ) u_core (
         .clk(clk),

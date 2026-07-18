@@ -10,11 +10,11 @@ The reports under `sim/yosys/frontend/` are separate timing cuts:
 
 - `replay-lookup.rpt` measures only the two-set, four-way resident-line lookup.
 - `full-replay.rpt` measures the current same-edge path from registered direct-
-  control metadata, through the direction policy and resident lookup, to the
-  replay instruction.
-- `predecode-target.rpt` measures instruction classification, immediate
-  extraction, and prefix target addition after a line fill. Its result is
-  registered with the resident line, so this path is not in same-edge replay.
+  control metadata, through the shared target adder, direction policy, and
+  resident lookup, to the replay instruction.
+- `predecode-offset.rpt` measures instruction classification and compact
+  displacement extraction after a line fill. Its result is registered with
+  the resident line before same-edge replay.
 
 These are Liberty cell-delay reports, not routed timing. They omit placement,
 interconnect extraction, clock uncertainty, and setup/hold checks.

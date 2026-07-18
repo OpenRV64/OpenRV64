@@ -47,7 +47,8 @@ python3 tools/pipeline_trace.py sim/openrv64-cycle.csv \
 ## RTL interface
 
 Set `ENABLE_TRACE=1` on `openrv64_top`. When it is zero, all trace outputs are
-constant zero and synthesis can remove the trace ID path and counters.
+constant zero, and the fetch trace-ID sidecar is not elaborated; synthesis can
+remove the remaining trace ID path and counters.
 
 The five-bit stage vectors use bit `0=IF`, `1=ID`, `2=EX`, `3=MEM`, and
 `4=WB`. The same ordering is used by the 64-bit slices in `trace_ids` and

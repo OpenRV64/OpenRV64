@@ -32,7 +32,7 @@ module openrv64_rv64i_pmp (
     output wire                             bus_allow_o
 );
 
-    localparam PMP_ENTRIES = 4;
+    localparam PMP_ENTRIES = 8;
 
     reg [`RV64_XLEN-1:0] pmpcfg0_q;
     reg [`RV64_XLEN-3:0] pmpaddr_q [0:PMP_ENTRIES-1];
@@ -199,6 +199,14 @@ module openrv64_rv64i_pmp (
                 pmpaddr_state[(2 * (`RV64_XLEN-2)) +: (`RV64_XLEN-2)]};
             `RV64_CSR_PMPADDR3: csr_rdata_o = {{2{1'b0}},
                 pmpaddr_state[(3 * (`RV64_XLEN-2)) +: (`RV64_XLEN-2)]};
+            `RV64_CSR_PMPADDR4: csr_rdata_o = {{2{1'b0}},
+                pmpaddr_state[(4 * (`RV64_XLEN-2)) +: (`RV64_XLEN-2)]};
+            `RV64_CSR_PMPADDR5: csr_rdata_o = {{2{1'b0}},
+                pmpaddr_state[(5 * (`RV64_XLEN-2)) +: (`RV64_XLEN-2)]};
+            `RV64_CSR_PMPADDR6: csr_rdata_o = {{2{1'b0}},
+                pmpaddr_state[(6 * (`RV64_XLEN-2)) +: (`RV64_XLEN-2)]};
+            `RV64_CSR_PMPADDR7: csr_rdata_o = {{2{1'b0}},
+                pmpaddr_state[(7 * (`RV64_XLEN-2)) +: (`RV64_XLEN-2)]};
             default: begin
                 csr_match_o = 1'b0;
                 csr_writable_o = 1'b0;

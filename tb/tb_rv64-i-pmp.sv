@@ -153,6 +153,18 @@ module tb_rv64i_pmp;
         end
 
         priv_mode = `RV64_PRIV_M;
+        check_csr(`RV64_CSR_PMPADDR7, 64'h0, "pmpaddr7 reset");
+        write_csr(`RV64_CSR_PMPADDR7, 64'h12345);
+        check_csr(`RV64_CSR_PMPADDR7, 64'h12345, "pmpaddr7 write");
+        write_csr(`RV64_CSR_PMPCFG0, 64'h1b00_0000_0000_0000);
+        check_csr(`RV64_CSR_PMPCFG0, 64'h1b00_0000_0000_0000,
+                  "pmpcfg0 upper entries");
+        csr_addr = 12'h3b8;
+        #1;
+        if (csr_match || csr_writable) begin
+            $fatal(1, "ninth PMP entry was unexpectedly implemented");
+        end
+
         write_csr(`RV64_CSR_PMPADDR0, 64'h400);
         write_csr(`RV64_CSR_PMPCFG0, 64'h0d);
 

@@ -1,10 +1,12 @@
+// This code is not very readable and must be refactored
+
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/decode/defs/alu-defs.v"
 
 module openrv64_exec_rv64m #(
-    parameter MUL_BITS_PER_CYCLE = 11,
-    parameter DIV_BITS_PER_CYCLE = 11
+    parameter MUL_BITS_PER_CYCLE = 8,
+    parameter DIV_BITS_PER_CYCLE = 8
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -24,54 +26,43 @@ module openrv64_exec_rv64m #(
     output wire [`RV64_XLEN-1:0]        result_o
 );
 
-    localparam PIPE_KIND_RESULT = 2'd0;
-    localparam PIPE_KIND_MUL    = 2'd1;
-    localparam PIPE_KIND_DIV    = 2'd2;
+    localparam WORK_KIND_MUL = 1'b0;
+    localparam WORK_KIND_DIV = 1'b1;
     localparam integer MUL_CHUNK_WIDTH = (MUL_BITS_PER_CYCLE < 1) ? 1 :
                                          (MUL_BITS_PER_CYCLE > 16) ? 16 :
                                          MUL_BITS_PER_CYCLE;
     localparam integer DIV_CHUNK_WIDTH = (DIV_BITS_PER_CYCLE < 1) ? 1 :
                                          (DIV_BITS_PER_CYCLE > 16) ? 16 :
                                          DIV_BITS_PER_CYCLE;
-    localparam integer MUL_PIPE_STAGES = (64 + MUL_CHUNK_WIDTH - 1) /
-                                         MUL_CHUNK_WIDTH;
-    localparam integer DIV_PIPE_STAGES = (64 + DIV_CHUNK_WIDTH - 1) /
-                                         DIV_CHUNK_WIDTH;
-    localparam integer M_PIPE_STAGES = (MUL_PIPE_STAGES > DIV_PIPE_STAGES) ?
-                                       MUL_PIPE_STAGES :
-                                       DIV_PIPE_STAGES;
-    localparam integer PIPE_LAST = M_PIPE_STAGES - 1;
     localparam [7:0] MUL_CHUNK_WIDTH_VALUE = MUL_CHUNK_WIDTH;
     localparam [7:0] DIV_CHUNK_WIDTH_VALUE = DIV_CHUNK_WIDTH;
 
-    reg [M_PIPE_STAGES-1:0] pipe_active_q;
-    reg [1:0] pipe_kind_q [0:PIPE_LAST];
-    reg pipe_illegal_q [0:PIPE_LAST];
-    reg pipe_word_q [0:PIPE_LAST];
-    reg [`RV64_ALU_OP_WIDTH-1:0] pipe_op_q [0:PIPE_LAST];
-    reg [`RV64_XLEN-1:0] pipe_result_q [0:PIPE_LAST];
+    // A single iterative worker matches this single-issue core.  The previous
+    // implementation replicated the wide multiply/divide state and arithmetic
+    // in every pipeline stage to accept one M operation per cycle.  Sharing one
+    // chunk datapath trades that unused throughput for substantially less area.
+    reg active_q;
+    reg work_kind_q;
+    reg word_q;
+    reg [`RV64_ALU_OP_WIDTH-1:0] op_q;
 
-    reg [7:0] pipe_mul_bits_left_q [0:PIPE_LAST];
-    reg [127:0] pipe_mul_acc_q [0:PIPE_LAST];
-    reg [127:0] pipe_mul_multiplicand_q [0:PIPE_LAST];
-    reg [63:0] pipe_mul_multiplier_q [0:PIPE_LAST];
-    reg pipe_mul_negate_q [0:PIPE_LAST];
+    reg [7:0] mul_bits_left_q;
+    reg [127:0] mul_acc_q;
+    reg [127:0] mul_multiplicand_q;
+    reg [63:0] mul_multiplier_q;
+    reg mul_negate_q;
 
-    reg [7:0] pipe_div_bits_left_q [0:PIPE_LAST];
-    reg [63:0] pipe_div_dividend_q [0:PIPE_LAST];
-    reg [63:0] pipe_div_divisor_q [0:PIPE_LAST];
-    reg [64:0] pipe_div_remainder_q [0:PIPE_LAST];
-    reg [63:0] pipe_div_quotient_q [0:PIPE_LAST];
-    reg pipe_div_neg_quot_q [0:PIPE_LAST];
-    reg pipe_div_neg_rem_q [0:PIPE_LAST];
+    reg [7:0] div_bits_left_q;
+    reg [63:0] div_dividend_q;
+    reg [63:0] div_divisor_q;
+    reg [64:0] div_remainder_q;
+    reg [63:0] div_quotient_q;
+    reg div_neg_quot_q;
+    reg div_neg_rem_q;
 
     reg result_valid_q;
     reg illegal_q;
     reg [`RV64_XLEN-1:0] result_q;
-
-    integer stage_idx;
-    reg [327:0] mul_step_value;
-    reg [200:0] div_step_value;
 
     wire start = valid_i && ready_o;
     wire start_mul_op = (op_sel_i == `RV64_ALU_OP_MUL) ||
@@ -104,39 +95,37 @@ module openrv64_exec_rv64m #(
     reg [127:0] start_mul_multiplicand;
     reg [63:0] start_mul_multiplier;
     reg start_mul_negate;
-    wire [327:0] start_mul_step_value = mul_stage_step(
-        128'h0000_0000_0000_0000_0000_0000_0000_0000,
-        start_mul_multiplicand,
-        start_mul_multiplier,
-        word_op_i ? 8'd32 : 8'd64
+    wire [327:0] mul_step_value = mul_stage_step(
+        mul_acc_q,
+        mul_multiplicand_q,
+        mul_multiplier_q,
+        mul_bits_left_q
     );
-    wire [200:0] start_div_step_value = div_stage_step(
-        65'h0_0000_0000_0000_0000,
-        64'h0000_0000_0000_0000,
-        div_start_dividend(start_signed_div_op, word_op_i, src1_i),
-        div_start_divisor(start_signed_div_op, word_op_i, src2_i),
-        word_op_i ? 8'd32 : 8'd64
+    wire [127:0] mul_acc_next = mul_step_value[327:200];
+    wire [127:0] mul_multiplicand_next = mul_step_value[199:72];
+    wire [63:0] mul_multiplier_next = mul_step_value[71:8];
+    wire [7:0] mul_bits_left_next = mul_step_value[7:0];
+    wire [127:0] mul_product_next = mul_negate_q ?
+                                     (~mul_acc_next + 128'd1) :
+                                     mul_acc_next;
+
+    wire [200:0] div_step_value = div_stage_step(
+        div_remainder_q,
+        div_quotient_q,
+        div_dividend_q,
+        div_divisor_q,
+        div_bits_left_q
     );
+    wire [64:0] div_remainder_next = div_step_value[200:136];
+    wire [63:0] div_quotient_next = div_step_value[135:72];
+    wire [63:0] div_dividend_next = div_step_value[71:8];
+    wire [7:0] div_bits_left_next = div_step_value[7:0];
 
-    wire [1:0] final_pipe_kind = pipe_kind_q[PIPE_LAST];
-    wire final_pipe_illegal = pipe_illegal_q[PIPE_LAST];
-    wire final_pipe_word = pipe_word_q[PIPE_LAST];
-    wire [`RV64_ALU_OP_WIDTH-1:0] final_pipe_op = pipe_op_q[PIPE_LAST];
-    wire [`RV64_XLEN-1:0] final_pipe_result = pipe_result_q[PIPE_LAST];
-    wire [127:0] final_pipe_mul_acc = pipe_mul_acc_q[PIPE_LAST];
-    wire final_pipe_mul_negate = pipe_mul_negate_q[PIPE_LAST];
-    wire [63:0] final_pipe_div_quotient = pipe_div_quotient_q[PIPE_LAST];
-    wire [63:0] final_pipe_div_remainder = pipe_div_remainder_q[PIPE_LAST][63:0];
-    wire final_pipe_div_neg_quot = pipe_div_neg_quot_q[PIPE_LAST];
-    wire final_pipe_div_neg_rem = pipe_div_neg_rem_q[PIPE_LAST];
-    wire [127:0] final_mul_product = final_pipe_mul_negate ?
-                                     (~final_pipe_mul_acc + 128'd1) :
-                                     final_pipe_mul_acc;
-    reg final_illegal;
-    reg [`RV64_XLEN-1:0] final_result;
-
-    assign ready_o = !result_valid_q || result_ready_i;
-    assign busy_o = (|pipe_active_q) || result_valid_q;
+    // The execute wrapper uses ready during result consumption to release the
+    // held dispatch entry.  valid_i remains low in that cycle, so this does not
+    // permit a second operation to enter the iterative worker.
+    assign ready_o = !active_q && (!result_valid_q || result_ready_i);
+    assign busy_o = active_q || result_valid_q;
     assign result_valid_o = result_valid_q;
     assign illegal_o = result_valid_q && illegal_q;
     assign result_o = result_valid_q ? result_q : {`RV64_XLEN{1'b0}};
@@ -172,39 +161,6 @@ module openrv64_exec_rv64m #(
                 end
             end
         endcase
-    end
-
-    always @* begin
-        final_illegal = final_pipe_illegal;
-        final_result = final_pipe_result;
-
-        if (pipe_active_q[PIPE_LAST]) begin
-            case (final_pipe_kind)
-                PIPE_KIND_MUL: begin
-                    final_result = finish_mul_result(
-                        final_mul_product,
-                        final_pipe_op,
-                        final_pipe_word
-                    );
-                    final_illegal = 1'b0;
-                end
-
-                PIPE_KIND_DIV: begin
-                    final_result = finish_div_result(
-                        final_pipe_op,
-                        final_pipe_word,
-                        final_pipe_div_quotient,
-                        final_pipe_div_remainder,
-                        final_pipe_div_neg_quot,
-                        final_pipe_div_neg_rem
-                    );
-                    final_illegal = 1'b0;
-                end
-
-                default: begin
-                end
-            endcase
-        end
     end
 
     function [`RV64_XLEN-1:0] sext_word;
@@ -474,55 +430,45 @@ module openrv64_exec_rv64m #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            pipe_active_q <= {M_PIPE_STAGES{1'b0}};
+            active_q <= 1'b0;
+            work_kind_q <= WORK_KIND_MUL;
+            word_q <= 1'b0;
+            op_q <= `RV64_ALU_OP_INVALID;
+            mul_bits_left_q <= 8'd0;
+            mul_acc_q <= 128'd0;
+            mul_multiplicand_q <= 128'd0;
+            mul_multiplier_q <= 64'd0;
+            mul_negate_q <= 1'b0;
+            div_bits_left_q <= 8'd0;
+            div_dividend_q <= 64'd0;
+            div_divisor_q <= 64'd0;
+            div_remainder_q <= 65'd0;
+            div_quotient_q <= 64'd0;
+            div_neg_quot_q <= 1'b0;
+            div_neg_rem_q <= 1'b0;
             result_valid_q <= 1'b0;
             illegal_q <= 1'b0;
             result_q <= {`RV64_XLEN{1'b0}};
-
-            for (stage_idx = 0; stage_idx < M_PIPE_STAGES; stage_idx = stage_idx + 1) begin
-                pipe_kind_q[stage_idx] <= PIPE_KIND_RESULT;
-                pipe_illegal_q[stage_idx] <= 1'b0;
-                pipe_word_q[stage_idx] <= 1'b0;
-                pipe_op_q[stage_idx] <= `RV64_ALU_OP_INVALID;
-                pipe_result_q[stage_idx] <= {`RV64_XLEN{1'b0}};
-                pipe_mul_bits_left_q[stage_idx] <= 8'd0;
-                pipe_mul_acc_q[stage_idx] <= 128'h0000_0000_0000_0000_0000_0000_0000_0000;
-                pipe_mul_multiplicand_q[stage_idx] <= 128'h0000_0000_0000_0000_0000_0000_0000_0000;
-                pipe_mul_multiplier_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_mul_negate_q[stage_idx] <= 1'b0;
-                pipe_div_bits_left_q[stage_idx] <= 8'd0;
-                pipe_div_dividend_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_div_divisor_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_div_remainder_q[stage_idx] <= 65'h0_0000_0000_0000_0000;
-                pipe_div_quotient_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_div_neg_quot_q[stage_idx] <= 1'b0;
-                pipe_div_neg_rem_q[stage_idx] <= 1'b0;
-            end
         end else if (flush_i) begin
-            pipe_active_q <= {M_PIPE_STAGES{1'b0}};
+            active_q <= 1'b0;
+            work_kind_q <= WORK_KIND_MUL;
+            word_q <= 1'b0;
+            op_q <= `RV64_ALU_OP_INVALID;
+            mul_bits_left_q <= 8'd0;
+            mul_acc_q <= 128'd0;
+            mul_multiplicand_q <= 128'd0;
+            mul_multiplier_q <= 64'd0;
+            mul_negate_q <= 1'b0;
+            div_bits_left_q <= 8'd0;
+            div_dividend_q <= 64'd0;
+            div_divisor_q <= 64'd0;
+            div_remainder_q <= 65'd0;
+            div_quotient_q <= 64'd0;
+            div_neg_quot_q <= 1'b0;
+            div_neg_rem_q <= 1'b0;
             result_valid_q <= 1'b0;
             illegal_q <= 1'b0;
             result_q <= {`RV64_XLEN{1'b0}};
-
-            for (stage_idx = 0; stage_idx < M_PIPE_STAGES; stage_idx = stage_idx + 1) begin
-                pipe_kind_q[stage_idx] <= PIPE_KIND_RESULT;
-                pipe_illegal_q[stage_idx] <= 1'b0;
-                pipe_word_q[stage_idx] <= 1'b0;
-                pipe_op_q[stage_idx] <= `RV64_ALU_OP_INVALID;
-                pipe_result_q[stage_idx] <= {`RV64_XLEN{1'b0}};
-                pipe_mul_bits_left_q[stage_idx] <= 8'd0;
-                pipe_mul_acc_q[stage_idx] <= 128'h0000_0000_0000_0000_0000_0000_0000_0000;
-                pipe_mul_multiplicand_q[stage_idx] <= 128'h0000_0000_0000_0000_0000_0000_0000_0000;
-                pipe_mul_multiplier_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_mul_negate_q[stage_idx] <= 1'b0;
-                pipe_div_bits_left_q[stage_idx] <= 8'd0;
-                pipe_div_dividend_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_div_divisor_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_div_remainder_q[stage_idx] <= 65'h0_0000_0000_0000_0000;
-                pipe_div_quotient_q[stage_idx] <= 64'h0000_0000_0000_0000;
-                pipe_div_neg_quot_q[stage_idx] <= 1'b0;
-                pipe_div_neg_rem_q[stage_idx] <= 1'b0;
-            end
         end else begin
             if (result_valid_q && result_ready_i) begin
                 result_valid_q <= 1'b0;
@@ -530,121 +476,87 @@ module openrv64_exec_rv64m #(
                 result_q <= {`RV64_XLEN{1'b0}};
             end
 
-            if (pipe_active_q[PIPE_LAST]) begin
-                result_valid_q <= 1'b1;
-                illegal_q <= final_illegal;
-                result_q <= final_result;
-            end
+            if (active_q && (work_kind_q == WORK_KIND_MUL)) begin
+                mul_acc_q <= mul_acc_next;
+                mul_multiplicand_q <= mul_multiplicand_next;
+                mul_multiplier_q <= mul_multiplier_next;
+                mul_bits_left_q <= mul_bits_left_next;
 
-            for (stage_idx = PIPE_LAST; stage_idx > 0; stage_idx = stage_idx - 1) begin
-                pipe_active_q[stage_idx] <= pipe_active_q[stage_idx - 1];
-                pipe_kind_q[stage_idx] <= pipe_kind_q[stage_idx - 1];
-                pipe_illegal_q[stage_idx] <= pipe_illegal_q[stage_idx - 1];
-                pipe_word_q[stage_idx] <= pipe_word_q[stage_idx - 1];
-                pipe_op_q[stage_idx] <= pipe_op_q[stage_idx - 1];
-                pipe_result_q[stage_idx] <= pipe_result_q[stage_idx - 1];
-                pipe_mul_negate_q[stage_idx] <= pipe_mul_negate_q[stage_idx - 1];
-                pipe_div_neg_quot_q[stage_idx] <= pipe_div_neg_quot_q[stage_idx - 1];
-                pipe_div_neg_rem_q[stage_idx] <= pipe_div_neg_rem_q[stage_idx - 1];
-                pipe_div_divisor_q[stage_idx] <= pipe_div_divisor_q[stage_idx - 1];
-
-                if (pipe_kind_q[stage_idx - 1] == PIPE_KIND_MUL) begin
-                    mul_step_value = mul_stage_step(
-                        pipe_mul_acc_q[stage_idx - 1],
-                        pipe_mul_multiplicand_q[stage_idx - 1],
-                        pipe_mul_multiplier_q[stage_idx - 1],
-                        pipe_mul_bits_left_q[stage_idx - 1]
+                if (mul_bits_left_next == 8'd0) begin
+                    active_q <= 1'b0;
+                    result_valid_q <= 1'b1;
+                    illegal_q <= 1'b0;
+                    result_q <= finish_mul_result(
+                        mul_product_next,
+                        op_q,
+                        word_q
                     );
-                    pipe_mul_acc_q[stage_idx] <= mul_step_value[327:200];
-                    pipe_mul_multiplicand_q[stage_idx] <= mul_step_value[199:72];
-                    pipe_mul_multiplier_q[stage_idx] <= mul_step_value[71:8];
-                    pipe_mul_bits_left_q[stage_idx] <= mul_step_value[7:0];
-                    pipe_div_remainder_q[stage_idx] <= pipe_div_remainder_q[stage_idx - 1];
-                    pipe_div_quotient_q[stage_idx] <= pipe_div_quotient_q[stage_idx - 1];
-                    pipe_div_dividend_q[stage_idx] <= pipe_div_dividend_q[stage_idx - 1];
-                    pipe_div_bits_left_q[stage_idx] <= pipe_div_bits_left_q[stage_idx - 1];
-                end else if (pipe_kind_q[stage_idx - 1] == PIPE_KIND_DIV) begin
-                    div_step_value = div_stage_step(
-                        pipe_div_remainder_q[stage_idx - 1],
-                        pipe_div_quotient_q[stage_idx - 1],
-                        pipe_div_dividend_q[stage_idx - 1],
-                        pipe_div_divisor_q[stage_idx - 1],
-                        pipe_div_bits_left_q[stage_idx - 1]
-                    );
-                    pipe_div_remainder_q[stage_idx] <= div_step_value[200:136];
-                    pipe_div_quotient_q[stage_idx] <= div_step_value[135:72];
-                    pipe_div_dividend_q[stage_idx] <= div_step_value[71:8];
-                    pipe_div_bits_left_q[stage_idx] <= div_step_value[7:0];
-                    pipe_mul_acc_q[stage_idx] <= pipe_mul_acc_q[stage_idx - 1];
-                    pipe_mul_multiplicand_q[stage_idx] <= pipe_mul_multiplicand_q[stage_idx - 1];
-                    pipe_mul_multiplier_q[stage_idx] <= pipe_mul_multiplier_q[stage_idx - 1];
-                    pipe_mul_bits_left_q[stage_idx] <= pipe_mul_bits_left_q[stage_idx - 1];
-                end else begin
-                    pipe_mul_acc_q[stage_idx] <= pipe_mul_acc_q[stage_idx - 1];
-                    pipe_mul_multiplicand_q[stage_idx] <= pipe_mul_multiplicand_q[stage_idx - 1];
-                    pipe_mul_multiplier_q[stage_idx] <= pipe_mul_multiplier_q[stage_idx - 1];
-                    pipe_mul_bits_left_q[stage_idx] <= pipe_mul_bits_left_q[stage_idx - 1];
-                    pipe_div_remainder_q[stage_idx] <= pipe_div_remainder_q[stage_idx - 1];
-                    pipe_div_quotient_q[stage_idx] <= pipe_div_quotient_q[stage_idx - 1];
-                    pipe_div_dividend_q[stage_idx] <= pipe_div_dividend_q[stage_idx - 1];
-                    pipe_div_bits_left_q[stage_idx] <= pipe_div_bits_left_q[stage_idx - 1];
                 end
-            end
+            end else if (active_q && (work_kind_q == WORK_KIND_DIV)) begin
+                div_remainder_q <= div_remainder_next;
+                div_quotient_q <= div_quotient_next;
+                div_dividend_q <= div_dividend_next;
+                div_bits_left_q <= div_bits_left_next;
 
-            pipe_active_q[0] <= start;
-            pipe_word_q[0] <= word_op_i;
-            pipe_op_q[0] <= op_sel_i;
-            pipe_result_q[0] <= {`RV64_XLEN{1'b0}};
-            pipe_illegal_q[0] <= 1'b0;
-            pipe_mul_negate_q[0] <= 1'b0;
-            pipe_div_neg_quot_q[0] <= 1'b0;
-            pipe_div_neg_rem_q[0] <= 1'b0;
-            pipe_div_divisor_q[0] <= 64'h0000_0000_0000_0000;
-            pipe_mul_acc_q[0] <= 128'h0000_0000_0000_0000_0000_0000_0000_0000;
-            pipe_mul_multiplicand_q[0] <= 128'h0000_0000_0000_0000_0000_0000_0000_0000;
-            pipe_mul_multiplier_q[0] <= 64'h0000_0000_0000_0000;
-            pipe_mul_bits_left_q[0] <= 8'd0;
-            pipe_div_remainder_q[0] <= 65'h0_0000_0000_0000_0000;
-            pipe_div_quotient_q[0] <= 64'h0000_0000_0000_0000;
-            pipe_div_dividend_q[0] <= 64'h0000_0000_0000_0000;
-            pipe_div_bits_left_q[0] <= 8'd0;
+                if (div_bits_left_next == 8'd0) begin
+                    active_q <= 1'b0;
+                    result_valid_q <= 1'b1;
+                    illegal_q <= 1'b0;
+                    result_q <= finish_div_result(
+                        op_q,
+                        word_q,
+                        div_quotient_next,
+                        div_remainder_next[63:0],
+                        div_neg_quot_q,
+                        div_neg_rem_q
+                    );
+                end
+            end else if (start) begin
+                word_q <= word_op_i;
+                op_q <= op_sel_i;
 
-            if (start) begin
                 if (start_mul_valid) begin
-                    pipe_kind_q[0] <= PIPE_KIND_MUL;
-                    pipe_mul_acc_q[0] <= start_mul_step_value[327:200];
-                    pipe_mul_multiplicand_q[0] <= start_mul_step_value[199:72];
-                    pipe_mul_multiplier_q[0] <= start_mul_step_value[71:8];
-                    pipe_mul_bits_left_q[0] <= start_mul_step_value[7:0];
-                    pipe_mul_negate_q[0] <= start_mul_negate;
-                end else if (start_div_valid && !start_divisor_zero && !start_div_overflow) begin
-                    pipe_kind_q[0] <= PIPE_KIND_DIV;
-                    pipe_div_remainder_q[0] <= start_div_step_value[200:136];
-                    pipe_div_quotient_q[0] <= start_div_step_value[135:72];
-                    pipe_div_dividend_q[0] <= start_div_step_value[71:8];
-                    pipe_div_bits_left_q[0] <= start_div_step_value[7:0];
-                    pipe_div_divisor_q[0] <= div_start_divisor(
+                    active_q <= 1'b1;
+                    work_kind_q <= WORK_KIND_MUL;
+                    mul_bits_left_q <= word_op_i ? 8'd32 : 8'd64;
+                    mul_acc_q <= 128'd0;
+                    mul_multiplicand_q <= start_mul_multiplicand;
+                    mul_multiplier_q <= start_mul_multiplier;
+                    mul_negate_q <= start_mul_negate;
+                end else if (start_div_valid &&
+                             !start_divisor_zero &&
+                             !start_div_overflow) begin
+                    active_q <= 1'b1;
+                    work_kind_q <= WORK_KIND_DIV;
+                    div_bits_left_q <= word_op_i ? 8'd32 : 8'd64;
+                    div_dividend_q <= div_start_dividend(
+                        start_signed_div_op,
+                        word_op_i,
+                        src1_i
+                    );
+                    div_divisor_q <= div_start_divisor(
                         start_signed_div_op,
                         word_op_i,
                         src2_i
                     );
-                    pipe_div_neg_quot_q[0] <= start_signed_div_op &&
-                                               (word_op_i ?
-                                                (src1_i[31] ^ src2_i[31]) :
-                                                (src1_i[63] ^ src2_i[63]));
-                    pipe_div_neg_rem_q[0] <= start_signed_div_op &&
-                                              (word_op_i ? src1_i[31] : src1_i[63]);
+                    div_remainder_q <= 65'd0;
+                    div_quotient_q <= 64'd0;
+                    div_neg_quot_q <= start_signed_div_op &&
+                                      (word_op_i ?
+                                       (src1_i[31] ^ src2_i[31]) :
+                                       (src1_i[63] ^ src2_i[63]));
+                    div_neg_rem_q <= start_signed_div_op &&
+                                     (word_op_i ? src1_i[31] : src1_i[63]);
                 end else begin
-                    pipe_kind_q[0] <= PIPE_KIND_RESULT;
-                    pipe_illegal_q[0] <= !start_div_valid;
-                    pipe_result_q[0] <= start_divisor_zero ?
-                                        div_zero_result(op_sel_i, word_op_i, src1_i) :
-                                        start_div_overflow ?
-                                        div_overflow_result(op_sel_i, word_op_i) :
-                                        {`RV64_XLEN{1'b0}};
+                    active_q <= 1'b0;
+                    result_valid_q <= 1'b1;
+                    illegal_q <= !start_div_valid;
+                    result_q <= start_divisor_zero ?
+                                div_zero_result(op_sel_i, word_op_i, src1_i) :
+                                start_div_overflow ?
+                                div_overflow_result(op_sel_i, word_op_i) :
+                                {`RV64_XLEN{1'b0}};
                 end
-            end else begin
-                pipe_kind_q[0] <= PIPE_KIND_RESULT;
             end
         end
     end

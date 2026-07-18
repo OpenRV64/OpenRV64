@@ -114,10 +114,13 @@ Memory target
 -------------
 
 openrv64_soc_memory implements 16 MiB by default as 2,097,152 64-bit words. It
-is initialized to zero. Reads are combinational, writes commit on the rising
-edge, and byte strobes update individual lanes. It acknowledges a valid local
-request immediately. The decoder guarantees that routed addresses are within
-the 16 MiB memory window.
+is initialized to zero. Reads are synchronous, writes commit on the rising
+edge, and byte strobes update individual lanes. A request is captured on a
+rising edge and acknowledged during the following cycle; an idle cycle after
+the response prevents a held request from being accepted twice. The decoder
+guarantees that routed addresses are within the 16 MiB memory window. This
+registered interface is suitable for inferred FPGA RAM and exercises the same
+backpressure used by a board-specific external-memory controller.
 
 Boot ROM target
 ---------------

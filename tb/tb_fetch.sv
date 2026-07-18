@@ -2,7 +2,10 @@
 `include "core/fetch/fetch.v"
 `timescale 1ns/1ps
 
-module tb_fetch;
+module tb_fetch #(
+    parameter bit ENABLE_TRACE = 1'b1,
+    parameter bit ENABLE_PREDECODE_TARGETS = 1'b1
+);
 
     logic                             clk;
     logic                             rst_n;
@@ -40,7 +43,10 @@ module tb_fetch;
     logic                  pending_q;
     integer                request_count_q;
 
-    openrv64_fetch dut (
+    openrv64_fetch #(
+        .ENABLE_TRACE(ENABLE_TRACE),
+        .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS)
+    ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush),
@@ -149,7 +155,7 @@ module tb_fetch;
             #1;
             if (decode_pc !== exp_pc ||
                 decode_instr !== exp_instr ||
-                trace_id !== exp_trace_id ||
+                trace_id !== (ENABLE_TRACE ? exp_trace_id : 64'd0) ||
                 decode_fault !== exp_fault ||
                 decode_page_fault !== exp_page_fault ||
                 decode_bus[`RV64_FETCH_DECODE_BUS_ACCESS_FAULT_BIT] !==
@@ -169,25 +175,25 @@ module tb_fetch;
     task automatic expect_predecode;
         input exp_valid;
         input exp_conditional;
-        input [`RV64_XLEN-1:0] exp_target;
+        input [19:0] exp_offset;
         input [8*40-1:0] label;
         begin
             wait (decode_valid);
             #1;
             if (decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_VALID_BIT] !==
-                    exp_valid ||
+                    (ENABLE_PREDECODE_TARGETS ? exp_valid : 1'b0) ||
                 decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_CONDITIONAL_BIT] !==
-                    exp_conditional ||
-                (exp_valid &&
-                 decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_TARGET_BITS] !==
-                    exp_target)) begin
+                    (ENABLE_PREDECODE_TARGETS ? exp_conditional : 1'b0) ||
+                (ENABLE_PREDECODE_TARGETS && exp_valid &&
+                 decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_OFFSET_BITS] !==
+                    exp_offset)) begin
                 $fatal(1,
-                    "%0s: predecode valid=%0b conditional=%0b target=%016x expected valid=%0b conditional=%0b target=%016x",
+                    "%0s: predecode valid=%0b conditional=%0b offset=%05x expected valid=%0b conditional=%0b offset=%05x",
                     label,
                     decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_VALID_BIT],
                     decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_CONDITIONAL_BIT],
-                    decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_TARGET_BITS],
-                    exp_valid, exp_conditional, exp_target);
+                    decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_OFFSET_BITS],
+                    exp_valid, exp_conditional, exp_offset);
             end
         end
     endtask
@@ -223,6 +229,8 @@ module tb_fetch;
         // direct-target metadata.
         memory[0] = {32'h0000_0663, 32'h0100_006f};
         memory[1] = {32'h0000_0067, 32'h0000_2063};
+        // JAL -16 at PC 0x10 and BEQ -20 at PC 0x14 both target zero.
+        memory[2] = {32'hfe00_06e3, 32'hff1f_f06f};
 
         rst_n = 1'b0;
         flush = 1'b0;
@@ -266,20 +274,26 @@ module tb_fetch;
 
         for (i = 0; i < 8; i = i + 1) begin
             if (i == 0) begin
-                expect_predecode(1'b1, 1'b0, 64'h10,
-                                 "resident JAL target");
+                expect_predecode(1'b1, 1'b0, 20'h00008,
+                                 "resident JAL offset");
             end else if (i == 1) begin
-                expect_predecode(1'b0, 1'b0, 64'h0,
+                expect_predecode(1'b0, 1'b0, 20'h00000,
                                  "illegal branch no target");
+            end else if (i == 2) begin
+                expect_predecode(1'b1, 1'b0, 20'hffff8,
+                                 "negative JAL offset");
             end
             consume_decode(i * 8, memory[i][31:0], 64'd100 + (i * 2),
                            1'b0, 1'b0, "sixteen-entry fill lower slot");
             if (i == 0) begin
-                expect_predecode(1'b1, 1'b1, 64'h10,
-                                 "resident conditional target");
+                expect_predecode(1'b1, 1'b1, 20'h00006,
+                                 "resident conditional offset");
             end else if (i == 1) begin
-                expect_predecode(1'b0, 1'b0, 64'h0,
+                expect_predecode(1'b0, 1'b0, 20'h00000,
                                  "JALR has no direct target");
+            end else if (i == 2) begin
+                expect_predecode(1'b1, 1'b1, 20'hffff6,
+                                 "negative branch offset");
             end
             consume_decode((i * 8) + 4, memory[i][63:32],
                            64'd101 + (i * 2), 1'b0, 1'b0,
@@ -321,10 +335,14 @@ module tb_fetch;
         if (!redirect_replayed || !decode_valid ||
             decode_pc !== 64'h0000_0000_0000_0004 ||
             decode_instr !== memory[0][63:32] ||
-            trace_id !== 64'd250 ||
-            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_VALID_BIT] !== 1'b1 ||
-            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_CONDITIONAL_BIT] !== 1'b1 ||
-            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_TARGET_BITS] !== 64'h10) begin
+            trace_id !== (ENABLE_TRACE ? 64'd250 : 64'd0) ||
+            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_VALID_BIT] !==
+                (ENABLE_PREDECODE_TARGETS ? 1'b1 : 1'b0) ||
+            decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_CONDITIONAL_BIT] !==
+                (ENABLE_PREDECODE_TARGETS ? 1'b1 : 1'b0) ||
+            (ENABLE_PREDECODE_TARGETS &&
+             decode_bus[`RV64_FETCH_DECODE_BUS_PREDECODE_OFFSET_BITS] !==
+                20'h00006)) begin
             $fatal(1, "same-edge predicted redirect replay failed");
         end
         @(posedge clk);

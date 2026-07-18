@@ -94,7 +94,7 @@ module openrv64_dispatch #(
     output wire [63:0]                  exec_trace_id_o
 );
 
-    localparam DISPATCH_WIDTH = 269;
+    localparam DISPATCH_WIDTH = 270;
 
     wire decode_writes_rd = decode_reg_write_i &&
                             !decode_illegal_i &&

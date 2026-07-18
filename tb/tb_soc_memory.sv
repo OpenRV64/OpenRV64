@@ -5,6 +5,7 @@ module tb_soc_memory;
     localparam integer MEM_BYTES = 16 * 1024 * 1024;
 
     logic        clk;
+    logic        rst_n;
     logic        mem_valid;
     logic        mem_ready;
     logic        mem_write;
@@ -17,6 +18,7 @@ module tb_soc_memory;
         .MEM_BYTES(MEM_BYTES)
     ) dut (
         .clk_i(clk),
+        .rst_ni(rst_n),
         .mem_valid_i(mem_valid),
         .mem_ready_o(mem_ready),
         .mem_write_i(mem_write),
@@ -43,6 +45,13 @@ module tb_soc_memory;
             mem_wdata = data;
             mem_wstrb = strobe;
             #1;
+            if (mem_ready) begin
+                $fatal(1, "memory write completed combinationally at %016x",
+                       address);
+            end
+            @(posedge clk);
+            @(negedge clk);
+            #1;
             if (!mem_ready || mem_rdata !== 64'h0) begin
                 $fatal(1, "memory write response invalid at %016x", address);
             end
@@ -66,6 +75,12 @@ module tb_soc_memory;
             mem_write = 1'b0;
             mem_addr = address;
             #1;
+            if (mem_ready) begin
+                $fatal(1, "%0s: read completed combinationally", label);
+            end
+            @(posedge clk);
+            @(negedge clk);
+            #1;
             if (!mem_ready || mem_rdata !== expected) begin
                 $fatal(1, "%0s: read %016x, expected %016x",
                        label, mem_rdata, expected);
@@ -79,11 +94,15 @@ module tb_soc_memory;
 
     initial begin
         mem_valid = 1'b0;
+        rst_n = 1'b0;
         mem_write = 1'b0;
         mem_addr = 64'h0;
         mem_wdata = 64'h0;
         mem_wstrb = 8'h00;
 
+        repeat (2) @(posedge clk);
+        @(negedge clk);
+        rst_n = 1'b1;
         #1;
         if (mem_ready || mem_rdata !== 64'h0) begin
             $fatal(1, "idle memory produced a response");

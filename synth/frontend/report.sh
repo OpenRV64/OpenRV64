@@ -57,7 +57,7 @@ cd "$out_dir"
 reports=(
     "replay-lookup:openrv64_timing_fetch_replay_lookup"
     "full-replay:openrv64_timing_frontend_replay"
-    "predecode-target:openrv64_timing_fetch_predecode_target"
+    "predecode-offset:openrv64_timing_fetch_predecode_offset"
 )
 
 verilog_sources="\"$repo_root/rtl/core/exec/bp/always_branch.v\" \"$repo_root/synth/frontend/replay-timing.v\""
