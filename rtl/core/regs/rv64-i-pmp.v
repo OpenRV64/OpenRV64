@@ -36,6 +36,23 @@ module openrv64_rv64i_pmp (
 
     reg [`RV64_XLEN-1:0] pmpcfg0_q;
     reg [`RV64_XLEN-3:0] pmpaddr_q [0:PMP_ENTRIES-1];
+    wire [PMP_ENTRIES-1:0] pmpaddr_locked_by_next;
+
+    genvar lock_entry;
+    generate
+        for (lock_entry = 0; lock_entry < PMP_ENTRIES;
+             lock_entry = lock_entry + 1) begin : g_next_tor_lock
+            if ((lock_entry + 1) < PMP_ENTRIES) begin : g_has_next
+                assign pmpaddr_locked_by_next[lock_entry] =
+                    pmpcfg0_q[((lock_entry + 1) * 8) +
+                              `RV64_PMP_CFG_L_BIT] &&
+                    (pmpcfg0_q[((lock_entry + 1) * 8) + 4 -: 2] ==
+                     `RV64_PMP_A_TOR);
+            end else begin : g_no_next
+                assign pmpaddr_locked_by_next[lock_entry] = 1'b0;
+            end
+        end
+    endgenerate
     wire [(PMP_ENTRIES * (`RV64_XLEN-2))-1:0] pmpaddr_state;
     integer i;
 
@@ -240,10 +257,7 @@ module openrv64_rv64i_pmp (
             for (i = 0; i < PMP_ENTRIES; i = i + 1) begin
                 if ((csr_addr_i == (`RV64_CSR_PMPADDR0 + i)) &&
                     !pmpcfg0_q[(i * 8) + `RV64_PMP_CFG_L_BIT] &&
-                    !(((i + 1) < PMP_ENTRIES) &&
-                      pmpcfg0_q[((i + 1) * 8) + `RV64_PMP_CFG_L_BIT] &&
-                      (pmpcfg0_q[((i + 1) * 8) + 4 -: 2] ==
-                       `RV64_PMP_A_TOR))) begin
+                    !pmpaddr_locked_by_next[i]) begin
                     pmpaddr_q[i] <= csr_wdata_i[`RV64_XLEN-3:0];
                 end
             end

@@ -1,9 +1,15 @@
 `timescale 1ns/1ps
 `include "soc/bus/mem_map.v"
 `include "core/exec/bp/defs.v"
+`include "core/backend/backend-defs.v"
+`include "core/bus/bus-defs.v"
 
 module openrv64_top #(
     parameter logic [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
+    parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
+        `OPENRV64_BACKEND_1P,
+    parameter logic [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
+        `OPENRV64_BUS_GEN,
     parameter bit ENABLE_RV64M = 1'b0,
     parameter bit ENABLE_RV64A = 1'b1,
     parameter bit ENABLE_FORWARDING = 1'b1,
@@ -27,6 +33,48 @@ module openrv64_top #(
     output logic [7:0]  mem_wstrb,
     input  logic [63:0] mem_rdata,
     input  logic        mem_error,
+
+    // 256-bit AXI4 master.  This interface is active only for the 3-pipe
+    // backend with BUS_CONFIG=OPENRV64_BUS_AXI; the generic bus remains
+    // available above for the legacy configuration.
+    output logic [`OPENRV64_AXI_ID_WIDTH-1:0]   m_axi_arid,
+    output logic [`OPENRV64_AXI_ADDR_WIDTH-1:0] m_axi_araddr,
+    output logic [7:0]  m_axi_arlen,
+    output logic [2:0]  m_axi_arsize,
+    output logic [1:0]  m_axi_arburst,
+    output logic        m_axi_arlock,
+    output logic [3:0]  m_axi_arcache,
+    output logic [2:0]  m_axi_arprot,
+    output logic [3:0]  m_axi_arqos,
+    output logic        m_axi_arvalid,
+    input  logic        m_axi_arready,
+    input  logic [`OPENRV64_AXI_ID_WIDTH-1:0]   m_axi_rid,
+    input  logic [`OPENRV64_AXI_DATA_WIDTH-1:0] m_axi_rdata,
+    input  logic [1:0]  m_axi_rresp,
+    input  logic        m_axi_rlast,
+    input  logic        m_axi_rvalid,
+    output logic        m_axi_rready,
+
+    output logic [`OPENRV64_AXI_ID_WIDTH-1:0]   m_axi_awid,
+    output logic [`OPENRV64_AXI_ADDR_WIDTH-1:0] m_axi_awaddr,
+    output logic [7:0]  m_axi_awlen,
+    output logic [2:0]  m_axi_awsize,
+    output logic [1:0]  m_axi_awburst,
+    output logic        m_axi_awlock,
+    output logic [3:0]  m_axi_awcache,
+    output logic [2:0]  m_axi_awprot,
+    output logic [3:0]  m_axi_awqos,
+    output logic        m_axi_awvalid,
+    input  logic        m_axi_awready,
+    output logic [`OPENRV64_AXI_DATA_WIDTH-1:0] m_axi_wdata,
+    output logic [`OPENRV64_AXI_STRB_WIDTH-1:0] m_axi_wstrb,
+    output logic        m_axi_wlast,
+    output logic        m_axi_wvalid,
+    input  logic        m_axi_wready,
+    input  logic [`OPENRV64_AXI_ID_WIDTH-1:0]   m_axi_bid,
+    input  logic [1:0]  m_axi_bresp,
+    input  logic        m_axi_bvalid,
+    output logic        m_axi_bready,
 
     input  logic        irq_m_software,
     input  logic        irq_m_timer,
@@ -61,8 +109,91 @@ module openrv64_top #(
     output logic [63:0]  trace_retire_wdata
 );
 
+    wire use_3p = (BACKEND_CONFIG == `OPENRV64_BACKEND_3P);
+
+    wire legacy_mem_valid;
+    wire legacy_mem_write;
+    wire [63:0] legacy_mem_addr;
+    wire [63:0] legacy_mem_wdata;
+    wire [7:0] legacy_mem_wstrb;
+    wire [63:0] legacy_dbg_pc;
+    wire [31:0] legacy_dbg_instr;
+    wire legacy_dbg_halted;
+    wire [63:0] legacy_trace_cycle;
+    wire [4:0] legacy_trace_valid;
+    wire [4:0] legacy_trace_stall;
+    wire [4:0] legacy_trace_flush;
+    wire [4:0] legacy_trace_advance;
+    wire [319:0] legacy_trace_ids;
+    wire [319:0] legacy_trace_pcs;
+    wire [159:0] legacy_trace_instrs;
+    wire [7:0] legacy_trace_events;
+    wire [7:0] legacy_trace_stall_causes;
+    wire legacy_trace_retire_valid;
+    wire legacy_trace_retire_arch;
+    wire legacy_trace_retire_exception;
+    wire [4:0] legacy_trace_retire_cause;
+    wire [63:0] legacy_trace_retire_next_pc;
+    wire legacy_trace_retire_rd_write;
+    wire [4:0] legacy_trace_retire_rd;
+    wire [63:0] legacy_trace_retire_wdata;
+
+    wire three_mem_valid;
+    wire three_mem_write;
+    wire [63:0] three_mem_addr;
+    wire [63:0] three_mem_wdata;
+    wire [7:0] three_mem_wstrb;
+    wire [63:0] three_dbg_pc;
+    wire [31:0] three_dbg_instr;
+    wire three_dbg_halted;
+    wire [63:0] three_trace_cycle;
+    wire [4:0] three_trace_valid;
+    wire [4:0] three_trace_stall;
+    wire [4:0] three_trace_flush;
+    wire [4:0] three_trace_advance;
+    wire [319:0] three_trace_ids;
+    wire [319:0] three_trace_pcs;
+    wire [159:0] three_trace_instrs;
+    wire [7:0] three_trace_events;
+    wire [7:0] three_trace_stall_causes;
+    wire three_trace_retire_valid;
+    wire three_trace_retire_arch;
+    wire three_trace_retire_exception;
+    wire [4:0] three_trace_retire_cause;
+    wire [63:0] three_trace_retire_next_pc;
+    wire three_trace_retire_rd_write;
+    wire [4:0] three_trace_retire_rd;
+    wire [63:0] three_trace_retire_wdata;
+    wire [`OPENRV64_AXI_ID_WIDTH-1:0] three_axi_arid;
+    wire [`OPENRV64_AXI_ADDR_WIDTH-1:0] three_axi_araddr;
+    wire [7:0] three_axi_arlen;
+    wire [2:0] three_axi_arsize;
+    wire [1:0] three_axi_arburst;
+    wire three_axi_arlock;
+    wire [3:0] three_axi_arcache;
+    wire [2:0] three_axi_arprot;
+    wire [3:0] three_axi_arqos;
+    wire three_axi_arvalid;
+    wire three_axi_rready;
+    wire [`OPENRV64_AXI_ID_WIDTH-1:0] three_axi_awid;
+    wire [`OPENRV64_AXI_ADDR_WIDTH-1:0] three_axi_awaddr;
+    wire [7:0] three_axi_awlen;
+    wire [2:0] three_axi_awsize;
+    wire [1:0] three_axi_awburst;
+    wire three_axi_awlock;
+    wire [3:0] three_axi_awcache;
+    wire [2:0] three_axi_awprot;
+    wire [3:0] three_axi_awqos;
+    wire three_axi_awvalid;
+    wire [`OPENRV64_AXI_DATA_WIDTH-1:0] three_axi_wdata;
+    wire [`OPENRV64_AXI_STRB_WIDTH-1:0] three_axi_wstrb;
+    wire three_axi_wlast;
+    wire three_axi_wvalid;
+    wire three_axi_bready;
+
     openrv64_rv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
+        .BACKEND_CONFIG(`OPENRV64_BACKEND_1P),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(ENABLE_RV64A),
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
@@ -73,41 +204,237 @@ module openrv64_top #(
     ) u_core (
         .clk(clk),
         .rst_n(rst_n),
-        .mem_valid(mem_valid),
-        .mem_ready(mem_ready),
-        .mem_write(mem_write),
-        .mem_addr(mem_addr),
-        .mem_wdata(mem_wdata),
-        .mem_wstrb(mem_wstrb),
+        .mem_valid(legacy_mem_valid),
+        .mem_ready(use_3p ? 1'b0 : mem_ready),
+        .mem_write(legacy_mem_write),
+        .mem_addr(legacy_mem_addr),
+        .mem_wdata(legacy_mem_wdata),
+        .mem_wstrb(legacy_mem_wstrb),
         .mem_rdata(mem_rdata),
         .mem_error(mem_error),
-        .irq_m_software(irq_m_software),
-        .irq_m_timer(irq_m_timer),
-        .irq_m_external(irq_m_external),
-        .irq_s_software(irq_s_software),
-        .irq_s_timer(irq_s_timer),
-        .irq_s_external(irq_s_external),
-        .dbg_pc(dbg_pc),
-        .dbg_instr(dbg_instr),
-        .dbg_halted(dbg_halted),
-        .trace_cycle(trace_cycle),
-        .trace_valid(trace_valid),
-        .trace_stall(trace_stall),
-        .trace_flush(trace_flush),
-        .trace_advance(trace_advance),
-        .trace_ids(trace_ids),
-        .trace_pcs(trace_pcs),
-        .trace_instrs(trace_instrs),
-        .trace_events(trace_events),
-        .trace_stall_causes(trace_stall_causes),
-        .trace_retire_valid(trace_retire_valid),
-        .trace_retire_arch(trace_retire_arch),
-        .trace_retire_exception(trace_retire_exception),
-        .trace_retire_cause(trace_retire_cause),
-        .trace_retire_next_pc(trace_retire_next_pc),
-        .trace_retire_rd_write(trace_retire_rd_write),
-        .trace_retire_rd(trace_retire_rd),
-        .trace_retire_wdata(trace_retire_wdata)
+        .irq_m_software(use_3p ? 1'b0 : irq_m_software),
+        .irq_m_timer(use_3p ? 1'b0 : irq_m_timer),
+        .irq_m_external(use_3p ? 1'b0 : irq_m_external),
+        .irq_s_software(use_3p ? 1'b0 : irq_s_software),
+        .irq_s_timer(use_3p ? 1'b0 : irq_s_timer),
+        .irq_s_external(use_3p ? 1'b0 : irq_s_external),
+        .dbg_pc(legacy_dbg_pc), .dbg_instr(legacy_dbg_instr),
+        .dbg_halted(legacy_dbg_halted),
+        .trace_cycle(legacy_trace_cycle), .trace_valid(legacy_trace_valid),
+        .trace_stall(legacy_trace_stall), .trace_flush(legacy_trace_flush),
+        .trace_advance(legacy_trace_advance), .trace_ids(legacy_trace_ids),
+        .trace_pcs(legacy_trace_pcs), .trace_instrs(legacy_trace_instrs),
+        .trace_events(legacy_trace_events),
+        .trace_stall_causes(legacy_trace_stall_causes),
+        .trace_retire_valid(legacy_trace_retire_valid),
+        .trace_retire_arch(legacy_trace_retire_arch),
+        .trace_retire_exception(legacy_trace_retire_exception),
+        .trace_retire_cause(legacy_trace_retire_cause),
+        .trace_retire_next_pc(legacy_trace_retire_next_pc),
+        .trace_retire_rd_write(legacy_trace_retire_rd_write),
+        .trace_retire_rd(legacy_trace_retire_rd),
+        .trace_retire_wdata(legacy_trace_retire_wdata)
     );
+
+    generate
+        if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_backend_3p
+            openrv64_rv64_top_3p #(
+                .RESET_VECTOR(RESET_VECTOR), .ENABLE_RV64M(ENABLE_RV64M),
+                .BUS_CONFIG(BUS_CONFIG),
+                .ENABLE_RV64A(ENABLE_RV64A), .ENABLE_TRACE(ENABLE_TRACE),
+                .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
+                .BP_TYPE(BP_TYPE)
+            ) u_core_3p (
+                .clk(clk), .rst_n(rst_n), .mem_valid(three_mem_valid),
+                .mem_ready(mem_ready), .mem_write(three_mem_write),
+                .mem_addr(three_mem_addr), .mem_wdata(three_mem_wdata),
+                .mem_wstrb(three_mem_wstrb), .mem_rdata(mem_rdata),
+                .mem_error(mem_error),
+                .m_axi_arid(three_axi_arid),
+                .m_axi_araddr(three_axi_araddr),
+                .m_axi_arlen(three_axi_arlen),
+                .m_axi_arsize(three_axi_arsize),
+                .m_axi_arburst(three_axi_arburst),
+                .m_axi_arlock(three_axi_arlock),
+                .m_axi_arcache(three_axi_arcache),
+                .m_axi_arprot(three_axi_arprot),
+                .m_axi_arqos(three_axi_arqos),
+                .m_axi_arvalid(three_axi_arvalid),
+                .m_axi_arready(m_axi_arready),
+                .m_axi_rid(m_axi_rid), .m_axi_rdata(m_axi_rdata),
+                .m_axi_rresp(m_axi_rresp), .m_axi_rlast(m_axi_rlast),
+                .m_axi_rvalid(m_axi_rvalid),
+                .m_axi_rready(three_axi_rready),
+                .m_axi_awid(three_axi_awid),
+                .m_axi_awaddr(three_axi_awaddr),
+                .m_axi_awlen(three_axi_awlen),
+                .m_axi_awsize(three_axi_awsize),
+                .m_axi_awburst(three_axi_awburst),
+                .m_axi_awlock(three_axi_awlock),
+                .m_axi_awcache(three_axi_awcache),
+                .m_axi_awprot(three_axi_awprot),
+                .m_axi_awqos(three_axi_awqos),
+                .m_axi_awvalid(three_axi_awvalid),
+                .m_axi_awready(m_axi_awready),
+                .m_axi_wdata(three_axi_wdata),
+                .m_axi_wstrb_axi(three_axi_wstrb),
+                .m_axi_wlast(three_axi_wlast),
+                .m_axi_wvalid(three_axi_wvalid),
+                .m_axi_wready(m_axi_wready), .m_axi_bid(m_axi_bid),
+                .m_axi_bresp(m_axi_bresp), .m_axi_bvalid(m_axi_bvalid),
+                .m_axi_bready(three_axi_bready),
+                .irq_m_software(irq_m_software),
+                .irq_m_timer(irq_m_timer),
+                .irq_m_external(irq_m_external),
+                .irq_s_software(irq_s_software),
+                .irq_s_timer(irq_s_timer),
+                .irq_s_external(irq_s_external), .dbg_pc(three_dbg_pc),
+                .dbg_instr(three_dbg_instr), .dbg_halted(three_dbg_halted),
+                .trace_cycle(three_trace_cycle),
+                .trace_valid(three_trace_valid),
+                .trace_stall(three_trace_stall),
+                .trace_flush(three_trace_flush),
+                .trace_advance(three_trace_advance),
+                .trace_ids(three_trace_ids), .trace_pcs(three_trace_pcs),
+                .trace_instrs(three_trace_instrs),
+                .trace_events(three_trace_events),
+                .trace_stall_causes(three_trace_stall_causes),
+                .trace_retire_valid(three_trace_retire_valid),
+                .trace_retire_arch(three_trace_retire_arch),
+                .trace_retire_exception(three_trace_retire_exception),
+                .trace_retire_cause(three_trace_retire_cause),
+                .trace_retire_next_pc(three_trace_retire_next_pc),
+                .trace_retire_rd_write(three_trace_retire_rd_write),
+                .trace_retire_rd(three_trace_retire_rd),
+                .trace_retire_wdata(three_trace_retire_wdata)
+            );
+        end else begin : g_no_backend_3p
+            assign three_mem_valid = 1'b0;
+            assign three_mem_write = 1'b0;
+            assign three_mem_addr = 64'd0;
+            assign three_mem_wdata = 64'd0;
+            assign three_mem_wstrb = 8'd0;
+            assign three_dbg_pc = 64'd0;
+            assign three_dbg_instr = 32'd0;
+            assign three_dbg_halted = 1'b0;
+            assign three_trace_cycle = 64'd0;
+            assign three_trace_valid = 5'd0;
+            assign three_trace_stall = 5'd0;
+            assign three_trace_flush = 5'd0;
+            assign three_trace_advance = 5'd0;
+            assign three_trace_ids = 320'd0;
+            assign three_trace_pcs = 320'd0;
+            assign three_trace_instrs = 160'd0;
+            assign three_trace_events = 8'd0;
+            assign three_trace_stall_causes = 8'd0;
+            assign three_trace_retire_valid = 1'b0;
+            assign three_trace_retire_arch = 1'b0;
+            assign three_trace_retire_exception = 1'b0;
+            assign three_trace_retire_cause = 5'd0;
+            assign three_trace_retire_next_pc = 64'd0;
+            assign three_trace_retire_rd_write = 1'b0;
+            assign three_trace_retire_rd = 5'd0;
+            assign three_trace_retire_wdata = 64'd0;
+            assign three_axi_arid = '0;
+            assign three_axi_araddr = '0;
+            assign three_axi_arlen = '0;
+            assign three_axi_arsize = '0;
+            assign three_axi_arburst = '0;
+            assign three_axi_arlock = 1'b0;
+            assign three_axi_arcache = '0;
+            assign three_axi_arprot = '0;
+            assign three_axi_arqos = '0;
+            assign three_axi_arvalid = 1'b0;
+            assign three_axi_rready = 1'b0;
+            assign three_axi_awid = '0;
+            assign three_axi_awaddr = '0;
+            assign three_axi_awlen = '0;
+            assign three_axi_awsize = '0;
+            assign three_axi_awburst = '0;
+            assign three_axi_awlock = 1'b0;
+            assign three_axi_awcache = '0;
+            assign three_axi_awprot = '0;
+            assign three_axi_awqos = '0;
+            assign three_axi_awvalid = 1'b0;
+            assign three_axi_wdata = '0;
+            assign three_axi_wstrb = '0;
+            assign three_axi_wlast = 1'b0;
+            assign three_axi_wvalid = 1'b0;
+            assign three_axi_bready = 1'b0;
+        end
+    endgenerate
+
+    assign mem_valid = use_3p ? three_mem_valid : legacy_mem_valid;
+    assign mem_write = use_3p ? three_mem_write : legacy_mem_write;
+    assign mem_addr = use_3p ? three_mem_addr : legacy_mem_addr;
+    assign mem_wdata = use_3p ? three_mem_wdata : legacy_mem_wdata;
+    assign mem_wstrb = use_3p ? three_mem_wstrb : legacy_mem_wstrb;
+    assign m_axi_arid = three_axi_arid;
+    assign m_axi_araddr = three_axi_araddr;
+    assign m_axi_arlen = three_axi_arlen;
+    assign m_axi_arsize = three_axi_arsize;
+    assign m_axi_arburst = three_axi_arburst;
+    assign m_axi_arlock = three_axi_arlock;
+    assign m_axi_arcache = three_axi_arcache;
+    assign m_axi_arprot = three_axi_arprot;
+    assign m_axi_arqos = three_axi_arqos;
+    assign m_axi_arvalid = three_axi_arvalid;
+    assign m_axi_rready = three_axi_rready;
+    assign m_axi_awid = three_axi_awid;
+    assign m_axi_awaddr = three_axi_awaddr;
+    assign m_axi_awlen = three_axi_awlen;
+    assign m_axi_awsize = three_axi_awsize;
+    assign m_axi_awburst = three_axi_awburst;
+    assign m_axi_awlock = three_axi_awlock;
+    assign m_axi_awcache = three_axi_awcache;
+    assign m_axi_awprot = three_axi_awprot;
+    assign m_axi_awqos = three_axi_awqos;
+    assign m_axi_awvalid = three_axi_awvalid;
+    assign m_axi_wdata = three_axi_wdata;
+    assign m_axi_wstrb = three_axi_wstrb;
+    assign m_axi_wlast = three_axi_wlast;
+    assign m_axi_wvalid = three_axi_wvalid;
+    assign m_axi_bready = three_axi_bready;
+    assign dbg_pc = use_3p ? three_dbg_pc : legacy_dbg_pc;
+    assign dbg_instr = use_3p ? three_dbg_instr : legacy_dbg_instr;
+    assign dbg_halted = use_3p ? three_dbg_halted : legacy_dbg_halted;
+    assign trace_cycle = use_3p ? three_trace_cycle : legacy_trace_cycle;
+    assign trace_valid = use_3p ? three_trace_valid : legacy_trace_valid;
+    assign trace_stall = use_3p ? three_trace_stall : legacy_trace_stall;
+    assign trace_flush = use_3p ? three_trace_flush : legacy_trace_flush;
+    assign trace_advance = use_3p ? three_trace_advance : legacy_trace_advance;
+    assign trace_ids = use_3p ? three_trace_ids : legacy_trace_ids;
+    assign trace_pcs = use_3p ? three_trace_pcs : legacy_trace_pcs;
+    assign trace_instrs = use_3p ? three_trace_instrs : legacy_trace_instrs;
+    assign trace_events = use_3p ? three_trace_events : legacy_trace_events;
+    assign trace_stall_causes = use_3p ? three_trace_stall_causes :
+                                        legacy_trace_stall_causes;
+    assign trace_retire_valid = use_3p ? three_trace_retire_valid :
+                                        legacy_trace_retire_valid;
+    assign trace_retire_arch = use_3p ? three_trace_retire_arch :
+                                       legacy_trace_retire_arch;
+    assign trace_retire_exception = use_3p ? three_trace_retire_exception :
+                                            legacy_trace_retire_exception;
+    assign trace_retire_cause = use_3p ? three_trace_retire_cause :
+                                        legacy_trace_retire_cause;
+    assign trace_retire_next_pc = use_3p ? three_trace_retire_next_pc :
+                                          legacy_trace_retire_next_pc;
+    assign trace_retire_rd_write = use_3p ? three_trace_retire_rd_write :
+                                           legacy_trace_retire_rd_write;
+    assign trace_retire_rd = use_3p ? three_trace_retire_rd :
+                                     legacy_trace_retire_rd;
+    assign trace_retire_wdata = use_3p ? three_trace_retire_wdata :
+                                        legacy_trace_retire_wdata;
+
+`ifndef SYNTHESIS
+    initial begin
+        if ((BACKEND_CONFIG != `OPENRV64_BACKEND_1P) &&
+            (BACKEND_CONFIG != `OPENRV64_BACKEND_3P))
+            $fatal(1, "openrv64_top: selected backend is not implemented");
+        if ((BUS_CONFIG == `OPENRV64_BUS_AXI) &&
+            (BACKEND_CONFIG != `OPENRV64_BACKEND_3P))
+            $fatal(1, "openrv64_top: AXI bus requires the 3-pipe backend");
+    end
+`endif
 
 endmodule

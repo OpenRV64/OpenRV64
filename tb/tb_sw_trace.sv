@@ -9,8 +9,10 @@ module tb_sw_trace #(
     localparam logic [63:0] MEM_BASE = 64'h0000_0000_8000_0000;
     localparam int unsigned MEM_BYTES = 64 * 1024;
     localparam int unsigned MEM_WORDS = MEM_BYTES / 8;
-    localparam logic [63:0] DONE_PC = 64'h0000_0000_8000_0010;
-    localparam int unsigned MAX_CYCLES = 20_000;
+    localparam logic [63:0] DEFAULT_DONE_PC =
+        64'h0000_0000_8000_0010;
+    localparam logic [63:0] DEFAULT_EXPECTED_A0 = 64'd100;
+    localparam int unsigned DEFAULT_MAX_CYCLES = 20_000;
 
     logic         clk;
     logic         rst_n;
@@ -55,6 +57,12 @@ module tb_sw_trace #(
     integer      frontend_request_gap_count;
     integer      frontend_backpressure_count;
     integer      frontend_bp_hold_count;
+    integer      max_cycles;
+    logic        done_pc_valid;
+    logic        expect_a0_valid;
+    logic        halt_ok;
+    logic [63:0] done_pc;
+    logic [63:0] expected_a0;
     string       memh_path;
 
     assign mem_addr_in_range =
@@ -143,6 +151,21 @@ module tb_sw_trace #(
         if (!$value$plusargs("memh=%s", memh_path)) begin
             $fatal(1, "missing +memh=<path>");
         end
+
+        done_pc = DEFAULT_DONE_PC;
+        expected_a0 = DEFAULT_EXPECTED_A0;
+        max_cycles = DEFAULT_MAX_CYCLES;
+        done_pc_valid = !$test$plusargs("halt_only");
+        expect_a0_valid = !$test$plusargs("no_expect_a0");
+        halt_ok = $test$plusargs("halt_ok") ||
+                  $test$plusargs("halt_only");
+        if ($value$plusargs("done_pc=%h", done_pc))
+            done_pc_valid = 1'b1;
+        if ($value$plusargs("expect_a0=%h", expected_a0))
+            expect_a0_valid = 1'b1;
+        if (!$value$plusargs("max_cycles=%d", max_cycles))
+            max_cycles = DEFAULT_MAX_CYCLES;
+
         $readmemh(memh_path, memory);
 
         rst_n = 1'b0;
@@ -214,22 +237,28 @@ module tb_sw_trace #(
                 a0_value <= trace_retire_wdata;
             end
 
-            if (trace_retire_exception) begin
+            if (trace_retire_exception &&
+                !(halt_ok && (trace_retire_cause == 5'd3))) begin
                 $fatal(1,
                     "unexpected exception at cycle %0d pc=%016x cause=%0d",
                     trace_cycle, trace_pcs[4*64 +: 64], trace_retire_cause);
             end
 
-            if (trace_retire_arch &&
-                trace_pcs[4*64 +: 64] == DONE_PC) begin
-                if (a0_value != 64'd100) begin
+            if (done_pc_valid && trace_retire_arch &&
+                trace_pcs[4*64 +: 64] == done_pc) begin
+                if (expect_a0_valid && (a0_value != expected_a0)) begin
                     $fatal(1,
-                        "program returned wrong a0=%0d at cycle %0d",
-                        a0_value, trace_cycle);
+                        "program returned wrong a0=%016x expected=%016x at cycle %0d",
+                        a0_value, expected_a0, trace_cycle);
                 end
                 $display(
                     "PASS sw trace: cycles=%0d retired=%0d a0=%0d pc=%016x",
-                    trace_cycle + 1, retired_count + 1, a0_value, DONE_PC);
+                    trace_cycle + 1, retired_count + 1, a0_value, done_pc);
+                $display(
+                    "PERF_1P cycles=%0d retired=%0d IPC=%0.4f a0=%016x halted=%b",
+                    trace_cycle + 1, retired_count + 1,
+                    $itor(retired_count + 1) / $itor(trace_cycle + 1),
+                    a0_value, dbg_halted);
                 $display(
                     "FRONTEND starved=%0d fetch_wait=%0d refill=%0d request_gap=%0d backpressure=%0d bp_hold=%0d",
                     frontend_starved_count, frontend_fetch_wait_count,
@@ -238,7 +267,31 @@ module tb_sw_trace #(
                 $finish;
             end
 
-            if (cycle_count >= MAX_CYCLES) begin
+            if (halt_ok && trace_retire_exception &&
+                (trace_retire_cause == 5'd3)) begin
+                if (expect_a0_valid && (a0_value != expected_a0)) begin
+                    $fatal(1,
+                        "halted image returned wrong a0=%016x expected=%016x at cycle %0d",
+                        a0_value, expected_a0, trace_cycle);
+                end
+                $display(
+                    "PASS sw trace halt: cycles=%0d retired=%0d a0=%016x pc=%016x",
+                    trace_cycle + 1, retired_count, a0_value,
+                    trace_pcs[4*64 +: 64]);
+                $display(
+                    "PERF_1P cycles=%0d retired=%0d IPC=%0.4f a0=%016x halted=%b",
+                    trace_cycle + 1, retired_count,
+                    $itor(retired_count) / $itor(trace_cycle + 1),
+                    a0_value, dbg_halted);
+                $display(
+                    "FRONTEND starved=%0d fetch_wait=%0d refill=%0d request_gap=%0d backpressure=%0d bp_hold=%0d",
+                    frontend_starved_count, frontend_fetch_wait_count,
+                    frontend_refill_count, frontend_request_gap_count,
+                    frontend_backpressure_count, frontend_bp_hold_count);
+                $finish;
+            end
+
+            if (cycle_count >= max_cycles) begin
                 $fatal(1,
                     "software trace timed out: cycles=%0d retired=%0d pc=%016x",
                     cycle_count, retired_count, dbg_pc);

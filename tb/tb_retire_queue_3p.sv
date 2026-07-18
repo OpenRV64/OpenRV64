@@ -1,0 +1,220 @@
+`timescale 1ns/1ps
+
+module tb_retire_queue_3p;
+
+    localparam ID_WIDTH = 8;
+    localparam META_WIDTH = 8;
+    localparam RESULT_WIDTH = 16;
+    localparam INDEX_WIDTH = 3;
+
+    logic clk;
+    logic rst_n;
+    logic flush;
+    logic [2:0] alloc_valid;
+    wire alloc_ready;
+    logic [3*META_WIDTH-1:0] alloc_meta;
+    wire [3*ID_WIDTH-1:0] alloc_id;
+    wire [3*INDEX_WIDTH-1:0] alloc_slot;
+    logic [2:0] complete_valid;
+    logic [3*ID_WIDTH-1:0] complete_id;
+    logic [3*INDEX_WIDTH-1:0] complete_slot;
+    logic [3*RESULT_WIDTH-1:0] complete_result;
+    wire [2:0] retire_valid;
+    logic [2:0] retire_accept;
+    wire [3*ID_WIDTH-1:0] retire_id;
+    wire [3*META_WIDTH-1:0] retire_meta;
+    wire [3*RESULT_WIDTH-1:0] retire_result;
+    wire [3:0] occupancy;
+    wire [ID_WIDTH-1:0] next_retire_id;
+
+    logic [ID_WIDTH-1:0] saved_id [0:2];
+    logic [INDEX_WIDTH-1:0] saved_slot [0:2];
+    logic [ID_WIDTH-1:0] stale_id;
+    logic [INDEX_WIDTH-1:0] stale_slot;
+
+    openrv64_retire_queue_3p #(
+        .DEPTH(8),
+        .ID_WIDTH(ID_WIDTH),
+        .META_WIDTH(META_WIDTH),
+        .RESULT_WIDTH(RESULT_WIDTH)
+    ) dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .flush_i(flush),
+        .alloc_valid_i(alloc_valid),
+        .alloc_ready_o(alloc_ready),
+        .alloc_meta_i(alloc_meta),
+        .alloc_id_o(alloc_id),
+        .alloc_slot_o(alloc_slot),
+        .complete_valid_i(complete_valid),
+        .complete_id_i(complete_id),
+        .complete_slot_i(complete_slot),
+        .complete_result_i(complete_result),
+        .retire_valid_o(retire_valid),
+        .retire_accept_i(retire_accept),
+        .retire_id_o(retire_id),
+        .retire_meta_o(retire_meta),
+        .retire_result_o(retire_result),
+        .occupancy_o(occupancy),
+        .next_retire_id_o(next_retire_id)
+    );
+
+    always #5 clk = ~clk;
+
+    task automatic clear_inputs;
+        begin
+            flush = 1'b0;
+            alloc_valid = 3'b000;
+            alloc_meta = 24'd0;
+            complete_valid = 3'b000;
+            complete_id = 24'd0;
+            complete_slot = 9'd0;
+            complete_result = 48'd0;
+            retire_accept = 3'b000;
+        end
+    endtask
+
+    task automatic allocate_three;
+        input [7:0] meta0;
+        input [7:0] meta1;
+        input [7:0] meta2;
+        begin
+            @(negedge clk);
+            alloc_valid = 3'b111;
+            alloc_meta = {meta2, meta1, meta0};
+            #1;
+            if (!alloc_ready) begin
+                $fatal(1, "three-entry allocation was not ready");
+            end
+            saved_id[0] = alloc_id[0 +: ID_WIDTH];
+            saved_id[1] = alloc_id[ID_WIDTH +: ID_WIDTH];
+            saved_id[2] = alloc_id[2*ID_WIDTH +: ID_WIDTH];
+            saved_slot[0] = alloc_slot[0 +: INDEX_WIDTH];
+            saved_slot[1] = alloc_slot[INDEX_WIDTH +: INDEX_WIDTH];
+            saved_slot[2] = alloc_slot[2*INDEX_WIDTH +: INDEX_WIDTH];
+            @(posedge clk);
+            #1;
+            alloc_valid = 3'b000;
+            alloc_meta = 24'd0;
+        end
+    endtask
+
+    task automatic complete_one;
+        input [ID_WIDTH-1:0] id;
+        input [INDEX_WIDTH-1:0] slot;
+        input [RESULT_WIDTH-1:0] result_value;
+        begin
+            @(negedge clk);
+            complete_valid = 3'b001;
+            complete_id[0 +: ID_WIDTH] = id;
+            complete_slot[0 +: INDEX_WIDTH] = slot;
+            complete_result[0 +: RESULT_WIDTH] = result_value;
+            @(posedge clk);
+            #1;
+            complete_valid = 3'b000;
+            complete_id = 24'd0;
+            complete_slot = 9'd0;
+            complete_result = 48'd0;
+        end
+    endtask
+
+    initial begin
+        clk = 1'b0;
+        rst_n = 1'b0;
+        clear_inputs();
+
+        repeat (2) @(posedge clk);
+        @(negedge clk);
+        rst_n = 1'b1;
+
+        allocate_three(8'ha0, 8'ha1, 8'ha2);
+        if (occupancy !== 4'd3 || next_retire_id !== saved_id[0]) begin
+            $fatal(1, "allocation state mismatch");
+        end
+
+        // Younger completions cannot bypass an incomplete queue head.
+        @(negedge clk);
+        complete_valid = 3'b011;
+        complete_id = {8'd0, saved_id[1], saved_id[2]};
+        complete_slot = {3'd0, saved_slot[1], saved_slot[2]};
+        complete_result = {16'd0, 16'h1111, 16'h2222};
+        @(posedge clk);
+        #1;
+        complete_valid = 3'b000;
+        if (retire_valid !== 3'b000) begin
+            $fatal(1, "younger completions retired around an incomplete head");
+        end
+
+        complete_one(saved_id[0], saved_slot[0], 16'h0000);
+        if (retire_valid !== 3'b111) begin
+            $fatal(1, "three completed head entries were not exposed together");
+        end
+        if (retire_meta !== {8'ha2, 8'ha1, 8'ha0} ||
+            retire_result !== {16'h2222, 16'h1111, 16'h0000}) begin
+            $fatal(1, "retirement payload order mismatch");
+        end
+
+        // Retirement may consume any contiguous prefix of the offered prefix.
+        @(negedge clk);
+        retire_accept = 3'b011;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        if (retire_valid !== 3'b001 ||
+            retire_id[0 +: ID_WIDTH] !== saved_id[2] ||
+            occupancy !== 4'd1) begin
+            $fatal(1, "partial prefix retirement did not preserve the third entry");
+        end
+
+        @(negedge clk);
+        retire_accept = 3'b001;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        if (occupancy !== 4'd0 || retire_valid !== 3'b000) begin
+            $fatal(1, "queue did not drain");
+        end
+
+        // Flushed work must not match a new occupant of the same slot.
+        @(negedge clk);
+        alloc_valid = 3'b001;
+        alloc_meta[0 +: META_WIDTH] = 8'hb0;
+        #1;
+        stale_id = alloc_id[0 +: ID_WIDTH];
+        stale_slot = alloc_slot[0 +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+
+        @(negedge clk);
+        flush = 1'b1;
+        @(posedge clk);
+        #1;
+        flush = 1'b0;
+
+        @(negedge clk);
+        alloc_valid = 3'b001;
+        alloc_meta[0 +: META_WIDTH] = 8'hc0;
+        #1;
+        saved_id[0] = alloc_id[0 +: ID_WIDTH];
+        saved_slot[0] = alloc_slot[0 +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+
+        complete_one(stale_id, stale_slot, 16'hdead);
+        if (retire_valid !== 3'b000) begin
+            $fatal(1, "stale completion matched a post-flush queue entry");
+        end
+
+        complete_one(saved_id[0], saved_slot[0], 16'hcafe);
+        if (retire_valid !== 3'b001 ||
+            retire_result[0 +: RESULT_WIDTH] !== 16'hcafe) begin
+            $fatal(1, "post-flush completion did not retire");
+        end
+
+        $display("PASS: three-port completion queue and contiguous retirement");
+        $finish;
+    end
+
+endmodule

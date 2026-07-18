@@ -176,16 +176,35 @@ def collect_instructions(rows: Iterable[Row]) -> dict[int, Instruction]:
                 raise ValueError(
                     f"cycle {row.cycle}: valid {STAGES[index]} stage has UID zero"
                 )
-            record = instructions.setdefault(stage.uid, Instruction(stage.uid))
-            if record.pc is not None and record.pc != stage.pc:
+            instruction_available = index != 0 or stage.instr != 0
+            record_key = stage.uid
+            record = instructions.setdefault(record_key,
+                                             Instruction(stage.uid))
+            pc_changed = record.pc is not None and record.pc != stage.pc
+            instr_changed = (instruction_available and
+                             record.instr is not None and
+                             record.instr != stage.instr)
+
+            # A context-changing flush can expose an in-flight fetch request
+            # in the IF trace slot that was hidden behind a buffered decode in
+            # the preceding cycle.  The legacy 1P trace pin can carry the
+            # buffered candidate's UID on that single flushed row.  Preserve
+            # the flushed request as a separate record instead of merging it
+            # with the older candidate or rejecting the complete trace.
+            if (pc_changed or instr_changed) and (row.flush & (1 << index)):
+                record_key = ((row.cycle + 1) << 68) | (index << 64) | stage.uid
+                record = Instruction(stage.uid)
+                instructions[record_key] = record
+                pc_changed = False
+                instr_changed = False
+
+            if pc_changed:
                 raise ValueError(
                     f"cycle {row.cycle}: UID {stage.uid:x} changed PC from "
                     f"{record.pc:x} to {stage.pc:x}"
                 )
             record.pc = stage.pc
-            instruction_available = index != 0 or stage.instr != 0
-            if (instruction_available and record.instr is not None and
-                    record.instr != stage.instr):
+            if instr_changed:
                 raise ValueError(
                     f"cycle {row.cycle}: UID {stage.uid:x} changed instruction "
                     f"from {record.instr:08x} to {stage.instr:08x}"

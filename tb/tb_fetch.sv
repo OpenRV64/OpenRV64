@@ -76,6 +76,7 @@ module tb_fetch #(
         .decode_instr_o(decode_instr),
         .decode_fault_o(decode_fault),
         .decode_page_fault_o(decode_page_fault),
+        .decode_ready1_i(1'b0),
         .trace_id_o(trace_id)
     );
 

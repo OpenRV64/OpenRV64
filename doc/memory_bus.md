@@ -1,8 +1,16 @@
-# OpenRV64 Initial Memory Bus
+# OpenRV64 Memory Buses
 
-The first top-level interface is a single 64-bit blocking memory bus. It is
-deliberately smaller than AXI/Wishbone so the first core milestones can focus
-on fetch, decode, and execute behavior before interconnect details.
+`rtl/core/bus/bus.v` is the core-bus geometry selector. `BUS_CONFIG` chooses
+the original 64-bit generic requester in `rtl/core/bus/gen_bus.v` or the
+256-bit AXI4 requester in `rtl/core/bus/axi_bus.v`. The generic path remains
+the default and is the interface used by `openrv64_platform`.
+`rtl/openrv64_top_3p.v` is the fixed three-pipe AXI boundary: it exposes no
+generic memory pins and elaborates the AXI bus and three-wide frontend
+unconditionally.
+
+## Generic blocking interface
+
+The generic top-level interface is a single 64-bit blocking memory bus.
 
 ## Signals
 
@@ -17,14 +25,15 @@ on fetch, decode, and execute behavior before interconnect details.
 | `mem_rdata[63:0]` | memory to core | Read data valid when `mem_ready` is high for a read. |
 | `mem_error` | memory to core | Completion failed; valid only with `mem_valid && mem_ready`. |
 
-There is no burst, transaction ID, or separate instruction/data channel yet.
+There is no burst, transaction ID, or separate instruction/data channel on
+the generic interface.
 Access size and privilege are carried inside the core through translation and
 PMP, but are not exported on this initial physical bus.
 
 ## Core requester
 
-`rtl/core/bus/bus.v` is the only core module that drives the top-level memory
-requester. It accepts separate blocking requests from fetch and the LSU,
+`rtl/core/bus/gen_bus.v` implements this requester behind the selector. It
+accepts separate blocking requests from fetch and the LSU,
 latches the selected request, and holds the exported request stable through
 completion. LSU requests have priority when both requesters arrive together.
 An obsolete fetch can be cancelled, but any already-exported physical request
@@ -80,6 +89,47 @@ modes, shootdown is global rather than address/ASID selective, and A/D bits use
 Svade-style fault-on-clear behavior because the memory bus has no atomic PTE
 read-modify-write operation. Sv48, Sv57, hardware A/D updates, and IOASIDs are
 not implemented.
+
+## AXI interface
+
+The AXI configuration has 64-bit addresses, 256-bit data, 32 byte strobes, and
+3-bit transaction IDs. Every transfer is currently a single-beat INCR
+transaction (`AxLEN=0`); the 256-bit beat is one 32-byte fetch line, not a
+four-beat burst. Fetch uses IDs 0 through 3 for four independent outstanding
+line reads. Responses may return out of order by ID, while the bus presents
+them to `fetch_3w.v` in request order.
+
+`fetch_3w.v` uses the same four 256-bit data entries as a direct-mapped
+128-byte resident window indexed by virtual address bits `[6:5]`; it is not a
+four-way associative structure. It emits a strict prefix of up to three
+instructions per cycle, can assemble a bundle across a 32-byte boundary, and
+advances only by the accepted decode prefix. Pending request tags are separate
+from resident tags. Predicted and execute-time redirects cancel the sequential
+AXI stream but preserve resident lines for loop replay. Reset, traps, returns,
+`FENCE.I`, `SFENCE.VMA`, and other context-changing restarts invalidate the
+resident window. Cancelled AXI reads are drained and dropped before their bus
+slots are reused.
+
+The three-pipe frontend shares one scalar branch predictor across the oldest
+control instruction in its current bundle. The accepted prefix ends at that
+control lane, its prediction bit travels in that lane's backend packet, and a
+predicted-taken direct target redirects the resident window without clearing
+it. JALR and the no-speculation policy retain the predictor's unresolved-control
+stall behavior.
+
+The LSU and page-table walker share one blocking physical transaction slot and
+use the reserved all-ones AXI ID. Narrow 64-bit-or-smaller accesses select the
+appropriate lane of the 256-bit beat; writes shift both data and byte strobes
+to that lane. AW and W handshakes are tracked independently. Translation and
+PMP checks happen before an AXI request is launched, and fault classes remain
+the same as on the generic bus.
+
+The present AXI scope is intentionally limited: there are no multi-beat
+bursts, caches, multiple outstanding LSU operations, exclusive accesses, or
+AXI connection in `openrv64_platform`. RV64A still uses the backend's ordered
+blocking memory contract rather than AXI exclusives.
+
+## Generic fetch buffering and lane rules
 
 Memory targets return the aligned 64-bit word selected by `mem_addr[63:3]`.
 Fetch retains both 32-bit instructions from that word in one of eight tagged

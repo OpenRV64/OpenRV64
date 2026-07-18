@@ -25,7 +25,7 @@ module openrv64_rv64i_csrs #(
     input  wire [`RV64_XLEN-1:0]           trap_tval_i,
     input  wire                             mret_i,
     input  wire                             sret_i,
-    input  wire                             retire_i,
+    input  wire [1:0]                       retire_count_i,
 
     input  wire                             irq_software_i,
     input  wire                             irq_timer_i,
@@ -548,8 +548,9 @@ module openrv64_rv64i_csrs #(
             if (!mcountinhibit_q[`RV64_MCOUNTER_CY_BIT]) begin
                 mcycle_q <= mcycle_q + 64'd1;
             end
-            if (retire_i && !mcountinhibit_q[`RV64_MCOUNTER_IR_BIT]) begin
-                minstret_q <= minstret_q + 64'd1;
+            if ((retire_count_i != 2'd0) &&
+                !mcountinhibit_q[`RV64_MCOUNTER_IR_BIT]) begin
+                minstret_q <= minstret_q + {{62{1'b0}}, retire_count_i};
             end
             if (csr_write_i && csr_valid_o && csr_writable_o) begin
                 case (csr_addr_i)

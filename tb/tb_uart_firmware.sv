@@ -1,6 +1,8 @@
 `timescale 1ns/1ps
 
-module tb_uart_firmware;
+module tb_uart_firmware #(
+    parameter integer BP_TYPE = 0
+);
 
     localparam integer FIRMWARE_IMAGE_WORDS = (64 * 1024) / 8;
 
@@ -42,13 +44,17 @@ module tb_uart_firmware;
     integer timeout_timer_irqs;
     integer timeout_claims;
     integer load_owner_stalls;
+    integer phase_cycles;
+    integer phase_retired;
+    logic timeout_only;
     string memh_path;
 
     openrv64_platform #(
         .SOC_RESET_CYCLES(3),
         .CORE_RESET_DELAY_CYCLES(2),
         .GPIO_WIDTH(32),
-        .ENABLE_TRACE(1'b0)
+        .ENABLE_TRACE(1'b1),
+        .BP_TYPE(BP_TYPE)
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -63,6 +69,29 @@ module tb_uart_firmware;
         .dbg_pc(dbg_pc),
         .dbg_instr(dbg_instr),
         .dbg_halted(dbg_halted),
+        .trace_cycle(trace_cycle),
+        .trace_valid(trace_valid),
+        .trace_stall(trace_stall),
+        .trace_flush(trace_flush),
+        .trace_advance(trace_advance),
+        .trace_ids(trace_ids),
+        .trace_pcs(trace_pcs),
+        .trace_instrs(trace_instrs),
+        .trace_events(trace_events),
+        .trace_stall_causes(trace_stall_causes),
+        .trace_retire_valid(trace_retire_valid),
+        .trace_retire_arch(trace_retire_arch),
+        .trace_retire_exception(trace_retire_exception),
+        .trace_retire_cause(trace_retire_cause),
+        .trace_retire_next_pc(trace_retire_next_pc),
+        .trace_retire_rd_write(trace_retire_rd_write),
+        .trace_retire_rd(trace_retire_rd),
+        .trace_retire_wdata(trace_retire_wdata)
+    );
+
+    openrv64_cycle_trace u_cycle_trace (
+        .clk(clk),
+        .rst_n(core_rst_n),
         .trace_cycle(trace_cycle),
         .trace_valid(trace_valid),
         .trace_stall(trace_stall),
@@ -174,6 +203,15 @@ module tb_uart_firmware;
     endtask
 
     always @(posedge clk) begin
+        if (!core_rst_n) begin
+            phase_cycles <= 0;
+            phase_retired <= 0;
+        end else begin
+            phase_cycles <= phase_cycles + 1;
+            if (trace_retire_arch)
+                phase_retired <= phase_retired + 1;
+        end
+
         if (core_rst_n && dut.core_mem_valid && dut.core_mem_ready &&
             dut.core_mem_error) begin
             $display("bus fault addr=%016x write=%b wdata=%016x wstrb=%02x",
@@ -243,6 +281,11 @@ module tb_uart_firmware;
         timeout_timer_irqs = 0;
         timeout_claims = 0;
         load_owner_stalls = 0;
+        phase_cycles = 0;
+        phase_retired = 0;
+        timeout_only = $test$plusargs("timeout_only");
+        if (timeout_only)
+            phase = 1;
 
         if (!$value$plusargs("memh=%s", memh_path)) begin
             $fatal(1, "missing +memh=<UART firmware image>");
@@ -256,6 +299,37 @@ module tb_uart_firmware;
         repeat (4) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        if (timeout_only) begin
+            wait_for_software_ready();
+            expect_transmitted_byte("t");
+            expect_transmitted_byte("i");
+            expect_transmitted_byte("m");
+            expect_transmitted_byte("e");
+            expect_transmitted_byte("o");
+            expect_transmitted_byte("u");
+            expect_transmitted_byte("t");
+            expect_transmitted_byte(8'h0a);
+            wait_for_halt("UART timeout-only run");
+            $display(
+                "PERF_UART_1P_TIMEOUT cycles=%0d retired=%0d IPC=%0.4f",
+                phase_cycles, phase_retired,
+                $itor(phase_retired) / $itor(phase_cycles));
+            if (timeout_timer_irqs == 0)
+                $fatal(1,
+                       "timeout-only path did not take a CLINT machine-timer IRQ");
+            if ((timeout_external_irqs == 0) || (timeout_claims == 0))
+                $fatal(1,
+                       "timeout-only response was not transmitted through UART IRQs");
+            if (load_owner_stalls == 0)
+                $fatal(1,
+                       "compiled firmware did not exercise ownership stalls");
+            $display(
+                "PASS: timeout-only UART run with %0d ownership stalls",
+                load_owner_stalls);
+            $finish;
+        end
+
         wait_for_software_ready();
 
         fork
@@ -284,6 +358,9 @@ module tb_uart_firmware;
         join
 
         wait_for_halt("successful UART run");
+        $display("PERF_UART_1P_SUCCESS cycles=%0d retired=%0d IPC=%0.4f",
+                 phase_cycles, phase_retired,
+                 $itor(phase_retired) / $itor(phase_cycles));
         if ((success_external_irqs == 0) || (success_claims == 0)) begin
             $fatal(1, "success path did not use PLIC/UART interrupts");
         end
@@ -314,6 +391,9 @@ module tb_uart_firmware;
         expect_transmitted_byte("t");
         expect_transmitted_byte(8'h0a);
         wait_for_halt("UART timeout run");
+        $display("PERF_UART_1P_TIMEOUT cycles=%0d retired=%0d IPC=%0.4f",
+                 phase_cycles, phase_retired,
+                 $itor(phase_retired) / $itor(phase_cycles));
 
         if (timeout_timer_irqs == 0) begin
             $fatal(1, "timeout path did not take a CLINT machine-timer IRQ");

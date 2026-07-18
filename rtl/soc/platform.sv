@@ -1,6 +1,8 @@
 `timescale 1ns/1ps
 `include "soc/bus/mem_map.v"
 `include "core/exec/bp/defs.v"
+`include "core/backend/backend-defs.v"
+`include "core/bus/bus-defs.v"
 
 // Complete single-hart OpenRV64 platform integration.
 //
@@ -12,6 +14,8 @@ module openrv64_platform #(
     parameter integer SOC_RESET_CYCLES = 4,
     parameter integer CORE_RESET_DELAY_CYCLES = 2,
     parameter integer GPIO_WIDTH = 32,
+    parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
+        `OPENRV64_BACKEND_1P,
     parameter bit ENABLE_RV64M = 1'b0,
     parameter bit ENABLE_RV64A = 1'b1,
     parameter bit ENABLE_FORWARDING = 1'b1,
@@ -182,6 +186,8 @@ module openrv64_platform #(
 
     openrv64_top #(
         .RESET_VECTOR(`OPENRV64_SOC_RESET_VECTOR),
+        .BACKEND_CONFIG(BACKEND_CONFIG),
+        .BUS_CONFIG(`OPENRV64_BUS_GEN),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(ENABLE_RV64A),
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
@@ -200,6 +206,14 @@ module openrv64_platform #(
         .mem_wstrb(core_mem_wstrb),
         .mem_rdata(core_mem_rdata),
         .mem_error(core_mem_error),
+        .m_axi_arready(1'b0),
+        .m_axi_rid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
+        .m_axi_rdata({`OPENRV64_AXI_DATA_WIDTH{1'b0}}),
+        .m_axi_rresp(2'b00), .m_axi_rlast(1'b0),
+        .m_axi_rvalid(1'b0), .m_axi_awready(1'b0),
+        .m_axi_wready(1'b0),
+        .m_axi_bid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
+        .m_axi_bresp(2'b00), .m_axi_bvalid(1'b0),
         .irq_m_software(clint_msip[0]),
         .irq_m_timer(clint_mtip[0]),
         .irq_m_external(plic_meip[0]),

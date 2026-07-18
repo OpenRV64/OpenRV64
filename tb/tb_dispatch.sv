@@ -165,7 +165,27 @@ module tb_dispatch;
         .retire_rd_addr_i(retire_rd_addr),
         .raw_hazard_o(raw_hazard),
         .waw_hazard_o(waw_hazard),
-        .scoreboard_stall_o(scoreboard_stall)
+        .scoreboard_stall_o(scoreboard_stall),
+        .squash_frontend_3p_i(1'b0),
+        .decode_valid_3p_i(3'b000),
+        .decode_payload_3p_i({3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
+        .decode_uses_rs1_3p_i(3'b000),
+        .decode_uses_rs2_3p_i(3'b000),
+        .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
+        .allocation_ready_3p_i(1'b0),
+        .allocation_id_3p_i({3*64{1'b0}}),
+        .allocation_slot_3p_i(9'd0),
+        .pipe_ready_3p_i(3'b000),
+        .forward_valid_3p_i(2'b00),
+        .forward_rd_addr_3p_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_valid_3p_i(3'b000),
+        .retire_uses_rs1_3p_i(3'b000),
+        .retire_uses_rs2_3p_i(3'b000),
+        .retire_rs1_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_rs2_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_reg_write_3p_i(3'b000),
+        .retire_rd_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_hard_3p_i(3'b000)
     );
 
     initial begin

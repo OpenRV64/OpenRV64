@@ -24,6 +24,9 @@ The repository currently has:
 - `mcycle`/`minstret`, a temporary `time` alias to the core clock counter, and
   the optional `openrv64-cycle-v1` pipeline/retirement trace described in
   [cycle_trace.md](cycle_trace.md);
+- a saved, reproducible Cortex-A53-class HPI comparison for the
+  CoreMark-derived loop in
+  [performance/a53_proxy_reference.md](performance/a53_proxy_reference.md);
 - WFI decode as a serializing hint that resumes immediately.  It does not yet
   stop the frontend or implement interrupt wakeup and `mstatus.TW` behavior.
 

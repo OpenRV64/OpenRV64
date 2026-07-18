@@ -4,7 +4,8 @@
 
 module openrv64_fetch #(
     parameter ENABLE_TRACE = 0,
-    parameter ENABLE_PREDECODE_TARGETS = 1
+    parameter ENABLE_PREDECODE_TARGETS = 1,
+    parameter DECODE_WIDTH = 1
 ) (
     input  wire                             clk,
     input  wire                             rst_n,
@@ -41,7 +42,19 @@ module openrv64_fetch #(
     output wire                             decode_fault_o,
     output wire                             decode_page_fault_o,
     input  wire [63:0]                      trace_id_i,
-    output wire [63:0]                      trace_id_o
+    output wire [63:0]                      trace_id_o,
+
+    // Optional second decode lane.  It is valid only for the upper word of a
+    // resident 64-bit line when lane 0 presents the lower word.  Existing
+    // one-wide users leave these ports unconnected with DECODE_WIDTH=1.
+    output wire                             decode_valid1_o,
+    input  wire                             decode_ready1_i,
+    output wire [`RV64_FETCH_DECODE_BUS_WIDTH-1:0] decode_bus1_o,
+    output wire [`RV64_XLEN-1:0]            decode_pc1_o,
+    output wire [`RV64_INSTR_WIDTH-1:0]     decode_instr1_o,
+    output wire                             decode_fault1_o,
+    output wire                             decode_page_fault1_o,
+    output wire [63:0]                      trace_id1_o
 );
 
     localparam integer BUFFER_COUNT = 8;
@@ -103,6 +116,9 @@ module openrv64_fetch #(
     wire [19:0] decode_predecode_offset;
     wire decode_predecode_valid;
     wire decode_predecode_conditional;
+    wire [19:0] decode_predecode_offset1;
+    wire decode_predecode_valid1;
+    wire decode_predecode_conditional1;
 
     reg                         lookup_hit_r;
     reg [BUFFER_INDEX_WIDTH-1:0] lookup_bank_r;
@@ -162,8 +178,16 @@ module openrv64_fetch #(
     wire buffered_decode_valid = !redirect_i &&
                                  (buffer_count_q[read_bank_q] != 2'd0);
     wire buffered_decode_fire = buffered_decode_valid && decode_ready_i;
+    wire buffered_decode_valid1 = (DECODE_WIDTH > 1) &&
+                                  buffered_decode_valid &&
+                                  !read_slot_q &&
+                                  (buffer_count_q[read_bank_q] == 2'd2);
+    wire buffered_decode_fire1 = buffered_decode_valid1 &&
+                                 buffered_decode_fire && decode_ready1_i;
+    wire [1:0] buffered_decode_count =
+        {1'b0, buffered_decode_fire} + {1'b0, buffered_decode_fire1};
     wire read_bank_will_empty = buffered_decode_fire &&
-                                (buffer_count_q[read_bank_q] == 2'd1);
+        (buffered_decode_count >= buffer_count_q[read_bank_q]);
 
     // A completed request advances the write side around the eight-bank ring.
     // Permit the next PC to be accepted on that same edge when the next bank
@@ -253,6 +277,20 @@ module openrv64_fetch #(
         decode_page_fault_o, decode_fault_o,
         decode_pc_o, decode_instr_o
     };
+    assign decode_valid1_o = !flush_i && buffered_decode_valid1;
+    assign decode_pc1_o = read_line_addr + 64'd4;
+    assign decode_instr1_o = buffer_instr1_q[read_bank_q];
+    assign decode_fault1_o = buffer_fault_q[read_bank_q];
+    assign decode_page_fault1_o = buffer_page_fault_q[read_bank_q];
+    assign decode_bus1_o = {
+        decode_predecode_conditional1,
+        decode_predecode_valid1,
+        decode_predecode_offset1,
+        decode_page_fault1_o,
+        decode_fault1_o,
+        decode_pc1_o,
+        decode_instr1_o
+    };
 
     integer i;
     always @(posedge clk or negedge rst_n) begin
@@ -325,14 +363,15 @@ module openrv64_fetch #(
             end
         end else begin
             if (buffered_decode_fire) begin
-                if (buffer_count_q[read_bank_q] == 2'd1) begin
+                if (buffered_decode_count >=
+                    buffer_count_q[read_bank_q]) begin
                     buffer_count_q[read_bank_q] <= 2'd0;
                     read_slot_q <= 1'b0;
                     read_bank_q <= read_bank_q +
                                    {{(BUFFER_INDEX_WIDTH-1){1'b0}}, 1'b1};
                 end else begin
                     buffer_count_q[read_bank_q] <=
-                        buffer_count_q[read_bank_q] - 2'd1;
+                        buffer_count_q[read_bank_q] - buffered_decode_count;
                     read_slot_q <= 1'b1;
                 end
             end
@@ -402,6 +441,8 @@ module openrv64_fetch #(
                                  buffer_trace1_q[read_bank_q] :
                                  buffer_trace0_q[read_bank_q]) :
                                 req_trace_id_q;
+            assign trace_id1_o = buffered_decode_valid1 ?
+                                 buffer_trace1_q[read_bank_q] : 64'd0;
 
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
@@ -455,6 +496,7 @@ module openrv64_fetch #(
             end
         end else begin : g_no_trace
             assign trace_id_o = 64'd0;
+            assign trace_id1_o = 64'd0;
         end
     endgenerate
 
@@ -507,6 +549,12 @@ module openrv64_fetch #(
                 (read_slot_q ?
                  buffer_target_conditional1_q[read_bank_q] :
                  buffer_target_conditional0_q[read_bank_q]);
+            assign decode_predecode_offset1 =
+                buffer_offset1_q[read_bank_q];
+            assign decode_predecode_valid1 =
+                buffer_target_valid1_q[read_bank_q];
+            assign decode_predecode_conditional1 =
+                buffer_target_conditional1_q[read_bank_q];
 
             integer predecode_index;
             always @(posedge clk or negedge rst_n) begin
@@ -574,6 +622,9 @@ module openrv64_fetch #(
             assign decode_predecode_offset = 20'd0;
             assign decode_predecode_valid = 1'b0;
             assign decode_predecode_conditional = 1'b0;
+            assign decode_predecode_offset1 = 20'd0;
+            assign decode_predecode_valid1 = 1'b0;
+            assign decode_predecode_conditional1 = 1'b0;
         end
     endgenerate
 

@@ -19,7 +19,7 @@ module tb_rv64i_csrs;
     logic [`RV64_XLEN-1:0] trap_tval;
     logic mret;
     logic sret;
-    logic retire;
+    logic [1:0] retire_count;
     logic irq_software;
     logic irq_timer;
     logic irq_external;
@@ -76,7 +76,7 @@ module tb_rv64i_csrs;
         .trap_tval_i(trap_tval),
         .mret_i(mret),
         .sret_i(sret),
-        .retire_i(retire),
+        .retire_count_i(retire_count),
         .irq_software_i(irq_software),
         .irq_timer_i(irq_timer),
         .irq_external_i(irq_external),
@@ -187,10 +187,21 @@ module tb_rv64i_csrs;
     task automatic pulse_retire;
         begin
             @(negedge clk);
-            retire = 1'b1;
+            retire_count = 2'd1;
             @(posedge clk);
             @(negedge clk);
-            retire = 1'b0;
+            retire_count = 2'd0;
+        end
+    endtask
+
+    task automatic pulse_retire_count;
+        input [1:0] count;
+        begin
+            @(negedge clk);
+            retire_count = count;
+            @(posedge clk);
+            @(negedge clk);
+            retire_count = 2'd0;
         end
     endtask
 
@@ -205,7 +216,7 @@ module tb_rv64i_csrs;
         trap_tval = 64'h0;
         mret = 1'b0;
         sret = 1'b0;
-        retire = 1'b0;
+        retire_count = 2'd0;
         irq_software = 1'b0;
         irq_timer = 1'b0;
         irq_external = 1'b0;
@@ -274,11 +285,14 @@ module tb_rv64i_csrs;
         pulse_retire();
         check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd21,
                   "minstret retirement increment");
+        pulse_retire_count(2'd3);
+        check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd24,
+                  "minstret three-wide retirement increment");
         write_csr(`RV64_CSR_MCOUNTINHIBIT,
                   (64'd1 << `RV64_MCOUNTER_CY_BIT) |
                   (64'd1 << `RV64_MCOUNTER_IR_BIT));
         pulse_retire();
-        check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd21,
+        check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd24,
                   "minstret inhibit");
 
         write_csr(`RV64_CSR_MTVEC, 64'h0000_0000_0000_0105);

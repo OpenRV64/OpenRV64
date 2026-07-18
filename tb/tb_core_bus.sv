@@ -101,7 +101,21 @@ module tb_core_bus;
         .req_rdata_i(req_rdata),
         .req_error_i(req_error),
         .fetch_next_valid_i(fetch_next_valid),
-        .fetch_next_addr_i(fetch_next_addr)
+        .fetch_next_addr_i(fetch_next_addr),
+        .pmp_allow_i(1'b1),
+        .fetch_pipe_req_valid_i(1'b0),
+        .fetch_pipe_req_addr_i(64'd0),
+        .fetch_pipe_req_priv_i(`RV64_PRIV_M),
+        .fetch_pipe_req_vm_mode_i(`RV64_SATP_MODE_BARE),
+        .fetch_pipe_req_asid_i(16'd0),
+        .fetch_pipe_req_root_ppn_i(44'd0),
+        .fetch_pipe_req_sum_i(1'b0), .fetch_pipe_req_mxr_i(1'b0),
+        .fetch_pipe_resp_ready_i(1'b0), .m_axi_arready_i(1'b0),
+        .m_axi_rid_i(3'd0), .m_axi_rdata_i(256'd0),
+        .m_axi_rresp_i(2'd0), .m_axi_rlast_i(1'b0),
+        .m_axi_rvalid_i(1'b0), .m_axi_awready_i(1'b0),
+        .m_axi_wready_i(1'b0), .m_axi_bid_i(3'd0),
+        .m_axi_bresp_i(2'd0), .m_axi_bvalid_i(1'b0)
     );
 
     initial begin
@@ -238,7 +252,8 @@ module tb_core_bus;
         fetch_next_valid = 1'b0;
         fetch_addr = 64'h0000_0000_0000_3008;
 
-        if (dut.state_q != 2'd1 || dut.vaddr_q != 64'h3008) begin
+        if (dut.g_gen.u_bus.state_q != 2'd1 ||
+            dut.g_gen.u_bus.vaddr_q != 64'h3008) begin
             $fatal(1, "fetch successor did not bypass IDLE");
         end
 
@@ -274,8 +289,9 @@ module tb_core_bus;
         fetch_next_valid = 1'b0;
         fetch_addr = 64'h0000_0000_0000_5008;
 
-        if (dut.state_q != 2'd1 || dut.owner_q != 1'b1 ||
-            dut.vaddr_q != 64'h6008) begin
+        if (dut.g_gen.u_bus.state_q != 2'd1 ||
+            dut.g_gen.u_bus.owner_q != 1'b1 ||
+            dut.g_gen.u_bus.vaddr_q != 64'h6008) begin
             $fatal(1, "LSU did not preempt fetch successor");
         end
 

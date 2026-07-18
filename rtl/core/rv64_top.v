@@ -11,9 +11,13 @@
 `include "core/except/except-defs.v"
 `include "core/trace/trace-defs.v"
 `include "core/arith/prefix-addsub.v"
+`include "core/backend/backend-defs.v"
+`include "core/bus/bus-defs.v"
 
 module openrv64_rv64_top #(
     parameter [63:0] RESET_VECTOR = 64'h0000_0000_0000_0000,
+    parameter [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
+        `OPENRV64_BACKEND_1P,
     parameter PIPE_IF_ID = 1,
     parameter PIPE_ID_EX = 1,
     parameter PIPE_EX_MEM = 1,
@@ -333,7 +337,12 @@ module openrv64_rv64_top #(
     wire [2:0] core_mem_size;
     wire core_mem_exec;
     wire core_mem_error;
-    wire core_mem_pmp_denied = core_mem_valid && !csr_pmp_bus_allow;
+    wire core_pmp_valid;
+    wire [`RV64_XLEN-1:0] core_pmp_addr;
+    wire [`RV64_PRIV_WIDTH-1:0] core_pmp_priv;
+    wire [2:0] core_pmp_size;
+    wire core_pmp_write;
+    wire core_pmp_exec;
     wire except_vector_valid;
     wire [`RV64_XLEN-1:0] except_vector_target;
 
@@ -478,6 +487,7 @@ module openrv64_rv64_top #(
         .decode_instr_o(unused_fetch_decode_instr),
         .decode_fault_o(unused_fetch_decode_fault),
         .decode_page_fault_o(unused_fetch_decode_page_fault),
+        .decode_ready1_i(1'b0),
         .trace_id_o(fetch_trace_id)
     );
 
@@ -628,7 +638,7 @@ module openrv64_rv64_top #(
         .trap_tval_i(trap_tval),
         .mret_i(retire_mret),
         .sret_i(retire_sret),
-        .retire_i(retire_arch),
+        .retire_count_i({1'b0, retire_arch}),
         .irq_software_i(irq_m_software),
         .irq_timer_i(irq_m_timer),
         .irq_external_i(irq_m_external),
@@ -657,12 +667,12 @@ module openrv64_rv64_top #(
         .pmp_data_size_i(exec_mem_size),
         .pmp_data_write_i(exec_mem_write),
         .pmp_data_allow_o(csr_pmp_data_allow),
-        .pmp_bus_valid_i(core_mem_valid),
-        .pmp_bus_addr_i(core_mem_pmp_addr),
-        .pmp_bus_size_i(core_mem_size),
-        .pmp_bus_write_i(core_mem_write),
-        .pmp_bus_exec_i(core_mem_exec),
-        .pmp_bus_priv_mode_i(core_mem_priv),
+        .pmp_bus_valid_i(core_pmp_valid),
+        .pmp_bus_addr_i(core_pmp_addr),
+        .pmp_bus_size_i(core_pmp_size),
+        .pmp_bus_write_i(core_pmp_write),
+        .pmp_bus_exec_i(core_pmp_exec),
+        .pmp_bus_priv_mode_i(core_pmp_priv),
         .pmp_bus_allow_o(csr_pmp_bus_allow)
     );
 
@@ -690,6 +700,7 @@ module openrv64_rv64_top #(
                                    !hard_flush_req;
 
     openrv64_dispatch #(
+        .BACKEND_CONFIG(BACKEND_CONFIG),
         .REGISTERED(PIPE_ID_EX),
         .ENABLE_FORWARDING(ENABLE_FORWARDING)
     ) u_dispatch (
@@ -771,10 +782,31 @@ module openrv64_rv64_top #(
         .retire_rd_addr_i(retire_release_rd_addr),
         .raw_hazard_o(dispatch_raw_hazard),
         .waw_hazard_o(dispatch_waw_hazard),
-        .scoreboard_stall_o(dispatch_scoreboard_stall)
+        .scoreboard_stall_o(dispatch_scoreboard_stall),
+        .squash_frontend_3p_i(1'b0),
+        .decode_valid_3p_i(3'b000),
+        .decode_payload_3p_i({3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
+        .decode_uses_rs1_3p_i(3'b000),
+        .decode_uses_rs2_3p_i(3'b000),
+        .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
+        .allocation_ready_3p_i(1'b0),
+        .allocation_id_3p_i({3*64{1'b0}}),
+        .allocation_slot_3p_i(9'd0),
+        .pipe_ready_3p_i(3'b000),
+        .forward_valid_3p_i(2'b00),
+        .forward_rd_addr_3p_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_valid_3p_i(3'b000),
+        .retire_uses_rs1_3p_i(3'b000),
+        .retire_uses_rs2_3p_i(3'b000),
+        .retire_rs1_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_rs2_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_reg_write_3p_i(3'b000),
+        .retire_rd_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .retire_hard_3p_i(3'b000)
     );
 
     openrv64_exec_top #(
+        .BACKEND_CONFIG(BACKEND_CONFIG),
         .PIPE_EX_MEM(PIPE_EX_MEM),
         .PIPE_MEM_WB(PIPE_MEM_WB),
         .ENABLE_RV64M(ENABLE_RV64M),
@@ -874,7 +906,17 @@ module openrv64_rv64_top #(
         .trace_mem_pc_o(exec_trace_mem_pc),
         .trace_mem_instr_o(exec_trace_mem_instr),
         .trace_wb_id_o(exec_trace_wb_id),
-        .trace_serializing_o(exec_trace_serializing)
+        .trace_serializing_o(exec_trace_serializing),
+        .flush_3p_i(1'b0),
+        .issue_valid_3p_i(3'b000),
+        .issue_id_3p_i({3*64{1'b0}}),
+        .issue_slot_3p_i(9'd0),
+        .issue_payload_3p_i(
+            {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
+        .ordered_head_valid_3p_i(1'b0),
+        .ordered_head_id_3p_i(64'd0),
+        .ordered_head_slot_3p_i(3'd0),
+        .complete_ready_3p_i(3'b000)
     );
 
     assign exec_wb_clear = 1'b1;
@@ -907,9 +949,9 @@ module openrv64_rv64_top #(
     assign fetch_mem_page_fault = fetch_bus_page_fault;
     assign exec_mem_error = exec_mem_access_fault;
 
-    assign core_mem_ready = core_mem_pmp_denied || mem_ready;
-    assign core_mem_error = core_mem_pmp_denied || mem_error;
-    assign mem_valid = core_mem_valid && csr_pmp_bus_allow;
+    assign core_mem_ready = mem_ready;
+    assign core_mem_error = mem_error;
+    assign mem_valid = core_mem_valid;
     assign mem_write = core_mem_write;
     assign mem_addr = core_mem_addr;
     assign mem_wdata = core_mem_wdata;
@@ -932,6 +974,14 @@ module openrv64_rv64_top #(
         .fetch_rdata_o(fetch_mem_rdata),
         .fetch_access_fault_o(fetch_bus_access_fault),
         .fetch_page_fault_o(fetch_bus_page_fault),
+        .fetch_pipe_req_valid_i(1'b0),
+        .fetch_pipe_req_addr_i(64'd0),
+        .fetch_pipe_req_priv_i(`RV64_PRIV_M),
+        .fetch_pipe_req_vm_mode_i(`RV64_SATP_MODE_BARE),
+        .fetch_pipe_req_asid_i({`RV64_SATP_ASID_WIDTH{1'b0}}),
+        .fetch_pipe_req_root_ppn_i({`RV64_SATP_PPN_WIDTH{1'b0}}),
+        .fetch_pipe_req_sum_i(1'b0), .fetch_pipe_req_mxr_i(1'b0),
+        .fetch_pipe_resp_ready_i(1'b0),
         .lsu_valid_i(exec_mem_valid),
         .lsu_write_i(exec_mem_write),
         .lsu_addr_i(exec_mem_addr),
@@ -949,6 +999,17 @@ module openrv64_rv64_top #(
         .lsu_rdata_o(exec_mem_rdata),
         .lsu_access_fault_o(exec_mem_access_fault),
         .lsu_page_fault_o(exec_mem_page_fault),
+        .lsu_pipe_req_valid_i(1'b0),
+        .lsu_pipe_req_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .lsu_pipe_req_write_i(1'b0), .lsu_pipe_req_addr_i(64'd0),
+        .lsu_pipe_req_wdata_i(64'd0), .lsu_pipe_req_wstrb_i(8'd0),
+        .lsu_pipe_req_size_i(3'd0),
+        .lsu_pipe_req_priv_i(`RV64_PRIV_M),
+        .lsu_pipe_req_vm_mode_i(`RV64_SATP_MODE_BARE),
+        .lsu_pipe_req_asid_i({`RV64_SATP_ASID_WIDTH{1'b0}}),
+        .lsu_pipe_req_root_ppn_i({`RV64_SATP_PPN_WIDTH{1'b0}}),
+        .lsu_pipe_req_sum_i(1'b0), .lsu_pipe_req_mxr_i(1'b0),
+        .lsu_pipe_cancel_i(1'b0), .lsu_pipe_resp_ready_i(1'b0),
         .tlbi_i(retire_sfence_vma),
         .req_valid_o(core_mem_valid),
         .req_ready_i(core_mem_ready),
@@ -963,7 +1024,19 @@ module openrv64_rv64_top #(
         .req_rdata_i(mem_rdata),
         .req_error_i(core_mem_error),
         .fetch_next_valid_i(fetch_mem_next_valid),
-        .fetch_next_addr_i(pc_q)
+        .fetch_next_addr_i(pc_q),
+        .pmp_valid_o(core_pmp_valid), .pmp_addr_o(core_pmp_addr),
+        .pmp_priv_o(core_pmp_priv), .pmp_size_o(core_pmp_size),
+        .pmp_write_o(core_pmp_write), .pmp_exec_o(core_pmp_exec),
+        .pmp_allow_i(csr_pmp_bus_allow),
+        .m_axi_arready_i(1'b0),
+        .m_axi_rid_i({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
+        .m_axi_rdata_i({`OPENRV64_AXI_DATA_WIDTH{1'b0}}),
+        .m_axi_rresp_i(2'd0), .m_axi_rlast_i(1'b0),
+        .m_axi_rvalid_i(1'b0), .m_axi_awready_i(1'b0),
+        .m_axi_wready_i(1'b0),
+        .m_axi_bid_i({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
+        .m_axi_bresp_i(2'd0), .m_axi_bvalid_i(1'b0)
     );
 
     assign dbg_pc = dbg_pc_q;
