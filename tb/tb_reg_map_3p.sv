@@ -2,12 +2,15 @@
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 
-module tb_reg_map_3p;
+module tb_reg_map_3p #(
+    parameter integer RELAX_WAW = 0
+);
 
     reg clk;
     reg rst_n;
     reg clear;
     reg [2:0] candidate_valid;
+    reg [2:0] candidate_branch;
     reg [2:0] uses_rs1;
     reg [2:0] uses_rs2;
     reg [14:0] rs1_addr;
@@ -17,6 +20,10 @@ module tb_reg_map_3p;
     reg [5:0] candidate_pipe;
     reg [1:0] forward_valid;
     reg [9:0] forward_rd_addr;
+    reg [2:0] completion_forward_valid;
+    reg [14:0] completion_forward_rd_addr;
+    reg [2:0] branch_completion_forward_valid;
+    reg [31:0] forward_map_valid;
     wire [2:0] hazard_free;
     wire [2:0] raw_hazard;
     wire [2:0] waw_hazard;
@@ -28,12 +35,14 @@ module tb_reg_map_3p;
     wire [31:0] write_busy;
 
     openrv64_dispatch_reg_map_3p #(
-        .MAX_READS_PER_REG(2)
+        .MAX_READS_PER_REG(2),
+        .RELAX_WAW(RELAX_WAW)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .clear_i(clear),
         .candidate_valid_i(candidate_valid),
+        .candidate_branch_i(candidate_branch),
         .candidate_uses_rs1_i(uses_rs1),
         .candidate_uses_rs2_i(uses_rs2),
         .candidate_rs1_addr_i(rs1_addr),
@@ -43,6 +52,11 @@ module tb_reg_map_3p;
         .candidate_pipe_i(candidate_pipe),
         .forward_valid_i(forward_valid),
         .forward_rd_addr_i(forward_rd_addr),
+        .completion_forward_valid_i(completion_forward_valid),
+        .completion_forward_rd_addr_i(completion_forward_rd_addr),
+        .branch_completion_forward_valid_i(
+            branch_completion_forward_valid),
+        .forward_map_valid_i(forward_map_valid),
         .candidate_hazard_free_o(hazard_free),
         .raw_hazard_o(raw_hazard),
         .waw_hazard_o(waw_hazard),
@@ -66,6 +80,7 @@ module tb_reg_map_3p;
     task automatic clear_inputs;
         begin
             candidate_valid = 3'b000;
+            candidate_branch = 3'b000;
             uses_rs1 = 3'b000;
             uses_rs2 = 3'b000;
             rs1_addr = 15'd0;
@@ -79,6 +94,10 @@ module tb_reg_map_3p;
             };
             forward_valid = 2'b00;
             forward_rd_addr = 10'd0;
+            completion_forward_valid = 3'b000;
+            completion_forward_rd_addr = 15'd0;
+            branch_completion_forward_valid = 3'b000;
+            forward_map_valid = 32'd0;
             allocation_fire = 3'b000;
             retire_valid = 3'b000;
             retire_reg_write = 3'b000;
@@ -128,6 +147,18 @@ module tb_reg_map_3p;
         #1;
         if (!raw_hazard[0] || hazard_free[0])
             fail("cross-pipe completion incorrectly released RAW");
+        completion_forward_valid = 3'b100;
+        completion_forward_rd_addr[2*5 +: 5] = 5'd5;
+        #1;
+        if (raw_hazard[0] || !hazard_free[0])
+            fail("live completion entry did not release cross-pipe RAW");
+        completion_forward_valid = 3'b000;
+        completion_forward_rd_addr = 15'd0;
+        forward_map_valid[5] = 1'b1;
+        #1;
+        if (raw_hazard[0] || !hazard_free[0])
+            fail("general completion map did not release cross-pipe RAW");
+        forward_map_valid = 32'd0;
         candidate_pipe[0 +: 2] = `OPENRV64_EXEC_PIPE_EX0;
         #1;
         if (raw_hazard[0] || !hazard_free[0])
@@ -165,8 +196,49 @@ module tb_reg_map_3p;
         rd_addr[0 +: 5] = 5'd8;
         rd_addr[1*5 +: 5] = 5'd8;
         #1;
-        if ((hazard_free != 3'b001) || !waw_hazard[1])
-            fail("same-bundle WAW was not rejected");
+        if (RELAX_WAW == 0) begin
+            if ((hazard_free != 3'b001) || !waw_hazard[1])
+                fail("same-bundle WAW was not rejected");
+        end else begin
+            if (((hazard_free & candidate_valid) != 3'b011) ||
+                (waw_hazard != 3'b000))
+                fail("relaxed same-bundle WAW did not issue");
+            allocation_fire = 3'b011;
+            tick();
+            clear_inputs();
+            if (!write_busy[8])
+                fail("relaxed WAW writers did not retain ownership");
+
+            // An rd-only forwarding map cannot distinguish the younger of
+            // two writers.  Keep its consumer blocked until one remains.
+            candidate_valid = 3'b001;
+            uses_rs1 = 3'b001;
+            rs1_addr[0 +: 5] = 5'd8;
+            forward_map_valid[8] = 1'b1;
+            #1;
+            if (!raw_hazard[0] || hazard_free[0])
+                fail("ambiguous relaxed-WAW consumer incorrectly forwarded");
+
+            retire_valid = 3'b001;
+            retire_reg_write = 3'b001;
+            retire_rd_addr[0 +: 5] = 5'd8;
+            tick();
+            retire_valid = 3'b000;
+            retire_reg_write = 3'b000;
+            retire_rd_addr = 15'd0;
+            #1;
+            if (raw_hazard[0] || !hazard_free[0])
+                fail("single remaining writer did not regain forwarding");
+
+            clear_inputs();
+            retire_valid = 3'b001;
+            retire_reg_write = 3'b001;
+            retire_rd_addr[0 +: 5] = 5'd8;
+            tick();
+            clear_inputs();
+            if (write_busy[8])
+                fail("last relaxed WAW writer did not release ownership");
+        end
 
         // Two selectors may read one physical register; a third selector in
         // the same issue bundle stalls at its candidate.
@@ -195,7 +267,8 @@ module tb_reg_map_3p;
         if (!write_busy[11] || !write_busy[12] || !write_busy[13])
             fail("three ownership bits were not allocated together");
 
-        $display("PASS: 3p busy ownership, bundle hazards, and two-read limit");
+        $display("PASS: 3p busy ownership, WAW mode %0d, bundle hazards, and two-read limit",
+                 RELAX_WAW);
         $finish;
     end
 

@@ -1,0 +1,353 @@
+`timescale 1ns/1ps
+`include "core/backend/backend-defs.v"
+`include "core/isa/rv64-i.v"
+`include "core/decode/defs/alu-defs.v"
+
+module tb_dispatch_window_3p;
+    localparam integer DEPTH = 16;
+    localparam integer SW = 4;
+    localparam integer CW = 5;
+    localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
+    localparam integer OW = `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH;
+    localparam integer MW = `OPENRV64_RETIRE_META_WIDTH;
+
+    localparam integer I_REG_WRITE = 17;
+    localparam integer I_ALU_OP = 27;
+    localparam integer I_ALU_EXT = 32;
+    localparam integer I_RD = 35;
+    localparam integer I_IMM = 40;
+    localparam integer I_RS2_DATA = 104;
+    localparam integer I_RS1_DATA = 168;
+    localparam integer I_RS2 = 232;
+    localparam integer I_RS1 = 237;
+    localparam integer I_INSTR = 242;
+    localparam integer I_PC = 274;
+    localparam integer I_TRACE = 338;
+    localparam integer I_MEM_READ = 16;
+    localparam integer I_BRANCH = 14;
+
+    reg clk;
+    reg rst_n;
+    reg flush;
+    reg squash;
+    reg [63:0] squash_id;
+    reg [2:0] decode_valid;
+    wire [2:0] decode_ready;
+    reg [3*IW-1:0] decode_payload;
+    reg [2:0] decode_uses_rs1;
+    reg [2:0] decode_uses_rs2;
+    wire [6*5-1:0] gpr_read_addr;
+    reg [6*64-1:0] gpr_read_data;
+    reg allocation_ready;
+    reg [3*64-1:0] allocation_id;
+    reg [3*SW-1:0] allocation_slot;
+    wire [2:0] allocation_valid;
+    wire [3*MW-1:0] allocation_meta;
+    reg [2:0] pipe_ready;
+    wire [2:0] pipe_valid;
+    wire [3*64-1:0] pipe_id;
+    wire [3*SW-1:0] pipe_slot;
+    wire [3*IW-1:0] pipe_payload;
+    reg [2:0] completion_valid;
+    reg [3*64-1:0] completion_id;
+    reg [3*OW-1:0] completion_payload;
+    reg [2:0] retire_valid;
+    reg [3*64-1:0] retire_id;
+    reg [3*SW-1:0] retire_slot;
+    reg [2:0] retire_hard;
+    reg [63:0] next_retire_id;
+    reg [SW-1:0] next_retire_slot;
+    wire barrier_active;
+    wire [2:0] raw_hazard;
+    wire [2:0] waw_hazard;
+    wire [2:0] read_port_hazard;
+    wire [31:0] write_busy;
+    wire [CW-1:0] queue_count;
+
+    openrv64_dispatch_window_3p #(
+        .ENABLE_SPECULATION(1), .DEPTH(DEPTH),
+        .SPEC_LOAD_BASE(64'h0000_0000_8000_0000),
+        .SPEC_LOAD_SIZE(64'h0000_0000_0100_0000),
+        .RETIRE_SLOT_WIDTH(SW), .COUNT_WIDTH(CW)
+    ) dut (
+        .clk(clk), .rst_n(rst_n), .flush_i(flush),
+        .squash_frontend_i(squash),
+        .squash_id_i(squash_id),
+        .decode_valid_i(decode_valid), .decode_ready_o(decode_ready),
+        .decode_payload_i(decode_payload),
+        .decode_uses_rs1_i(decode_uses_rs1),
+        .decode_uses_rs2_i(decode_uses_rs2),
+        .gpr_read_addr_o(gpr_read_addr), .gpr_read_data_i(gpr_read_data),
+        .allocation_ready_i(allocation_ready),
+        .allocation_id_i(allocation_id),
+        .allocation_slot_i(allocation_slot),
+        .allocation_valid_o(allocation_valid),
+        .allocation_meta_o(allocation_meta),
+        .pipe_ready_i(pipe_ready), .pipe_valid_o(pipe_valid),
+        .pipe_id_o(pipe_id), .pipe_slot_o(pipe_slot),
+        .pipe_payload_o(pipe_payload),
+        .completion_valid_i(completion_valid),
+        .completion_id_i(completion_id),
+        .completion_payload_i(completion_payload),
+        .retire_valid_i(retire_valid), .retire_id_i(retire_id),
+        .retire_slot_i(retire_slot), .retire_hard_i(retire_hard),
+        .next_retire_id_i(next_retire_id),
+        .next_retire_slot_i(next_retire_slot),
+        .barrier_active_o(barrier_active), .raw_hazard_o(raw_hazard),
+        .waw_hazard_o(waw_hazard),
+        .read_port_hazard_o(read_port_hazard),
+        .write_busy_o(write_busy), .queue_count_o(queue_count)
+    );
+
+    always #5 clk = ~clk;
+
+    function automatic [IW-1:0] alu_packet;
+        input [63:0] trace_id;
+        input [4:0] rs1;
+        input [4:0] rs2;
+        input [4:0] rd;
+        reg [IW-1:0] packet;
+        begin
+            packet = {IW{1'b0}};
+            packet[I_TRACE +: 64] = trace_id;
+            packet[I_PC +: 64] = 64'h8000_0000 + (trace_id << 2);
+            packet[I_INSTR +: 32] = 32'h0000_0033;
+            packet[I_RS1 +: 5] = rs1;
+            packet[I_RS2 +: 5] = rs2;
+            packet[I_RD +: 5] = rd;
+            packet[I_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
+            packet[I_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
+            packet[I_REG_WRITE] = (rd != 0);
+            alu_packet = packet;
+        end
+    endfunction
+
+    function automatic [OW-1:0] reg_completion;
+        input [4:0] rd;
+        input [63:0] data;
+        reg [OW-1:0] packet;
+        begin
+            packet = {OW{1'b0}};
+            packet[`OPENRV64_COMPLETE_REG_WRITE_BIT] = (rd != 0);
+            packet[`OPENRV64_COMPLETE_RD_LSB +: 5] = rd;
+            packet[`OPENRV64_COMPLETE_DATA_LSB +: 64] = data;
+            reg_completion = packet;
+        end
+    endfunction
+
+    task automatic tick;
+        begin
+            @(posedge clk);
+            #1;
+        end
+    endtask
+
+    task automatic fail;
+        input [8*120-1:0] message;
+        begin
+            $display("FAIL: %0s", message);
+            $fatal(1);
+        end
+    endtask
+
+    task automatic clear_inputs;
+        begin
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+            decode_uses_rs2 = 3'b000;
+            completion_valid = 3'b000;
+            completion_id = {3*64{1'b0}};
+            completion_payload = {3*OW{1'b0}};
+            retire_valid = 3'b000;
+            retire_id = {3*64{1'b0}};
+            retire_slot = {3*SW{1'b0}};
+            retire_hard = 3'b000;
+        end
+    endtask
+
+    reg [IW-1:0] p0;
+    reg [IW-1:0] p1;
+    reg [IW-1:0] p2;
+
+    initial begin
+        clk = 1'b0;
+        rst_n = 1'b0;
+        flush = 1'b0;
+        squash = 1'b0;
+        squash_id = 64'd0;
+        allocation_ready = 1'b1;
+        allocation_id = {64'd3, 64'd2, 64'd1};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        pipe_ready = 3'b111;
+        gpr_read_data = {6*64{1'b0}};
+        next_retire_id = 64'd1;
+        next_retire_slot = 4'd0;
+        clear_inputs();
+
+        repeat (3) tick();
+        rst_n = 1'b1;
+        tick();
+
+        // The dependent middle entry must not head-of-line block a younger,
+        // independent ALU.  Both ready entries issue from the registered
+        // post-decode window one cycle after admission.
+        p0 = alu_packet(64'd1, 5'd1, 5'd0, 5'd5);
+        p1 = alu_packet(64'd2, 5'd5, 5'd0, 5'd6);
+        p2 = alu_packet(64'd3, 5'd2, 5'd0, 5'd7);
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b111;
+        decode_valid = 3'b111;
+        #1;
+        if (allocation_valid != 3'b111)
+            fail("window did not allocate all three decode lanes");
+        tick();
+        clear_inputs();
+        #1;
+        if (pipe_valid[1:0] != 2'b11 ||
+            pipe_id[0*64 +: 64] != 64'd1 ||
+            pipe_id[1*64 +: 64] != 64'd3)
+            fail("oldest-ready scan did not issue around blocked entry");
+        tick();
+        if (queue_count != 5'd3 || !write_busy[5] ||
+            !write_busy[6] || !write_busy[7])
+            fail("issued entries did not remain owned until retirement");
+
+        completion_valid = 3'b001;
+        completion_id[0*64 +: 64] = 64'd1;
+        completion_payload[0*OW +: OW] = reg_completion(5'd5, 64'h2a);
+        #1;
+        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd2 ||
+            pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'h2a)
+            fail("matching completion did not wake dependent entry");
+        tick();
+        clear_inputs();
+
+        // A flush starts a fresh WAW test.  The consumer must follow the
+        // youngest writer, not whichever writer happens to complete first.
+        squash = 1'b1;
+        tick();
+        squash = 1'b0;
+        allocation_id = {64'd12, 64'd11, 64'd10};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        next_retire_id = 64'd10;
+        p0 = alu_packet(64'd10, 5'd1, 5'd0, 5'd10);
+        p1 = alu_packet(64'd11, 5'd2, 5'd0, 5'd10);
+        p2 = alu_packet(64'd12, 5'd10, 5'd0, 5'd11);
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b111;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        if (pipe_valid[1:0] != 2'b11)
+            fail("two WAW producers did not issue independently");
+        tick();
+
+        completion_valid = 3'b001;
+        completion_id[0*64 +: 64] = 64'd10;
+        completion_payload[0*OW +: OW] = reg_completion(5'd10, 64'h10);
+        #1;
+        if (|pipe_valid)
+            fail("consumer woke from stale older WAW completion");
+        tick();
+        completion_id[0*64 +: 64] = 64'd11;
+        completion_payload[0*OW +: OW] = reg_completion(5'd10, 64'h11);
+        #1;
+        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd12 ||
+            pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'h11)
+            fail("consumer did not select youngest WAW producer value");
+        tick();
+        clear_inputs();
+
+        retire_valid = 3'b111;
+        retire_id = {64'd12, 64'd11, 64'd10};
+        retire_slot = {4'd2, 4'd1, 4'd0};
+        tick();
+        clear_inputs();
+        if (queue_count != 0 || write_busy[10] || write_busy[11])
+            fail("retirement did not release entries and current owners");
+
+        // Selective recovery must reveal an older surviving WAW producer and
+        // retain its completed value for instructions decoded after redirect.
+        pipe_ready = 3'b000;
+        allocation_id = {64'd22, 64'd21, 64'd20};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        next_retire_id = 64'd20;
+        p0 = alu_packet(64'd20, 5'd1, 5'd0, 5'd10);
+        p1 = alu_packet(64'd21, 5'd2, 5'd0, 5'd10);
+        p2 = alu_packet(64'd22, 5'd3, 5'd0, 5'd12);
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b111;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        squash_id = 64'd20;
+        squash = 1'b1;
+        tick();
+        squash = 1'b0;
+        if (queue_count != 1 || !write_busy[10] || write_busy[12])
+            fail("selective squash did not rebuild surviving WAW owner");
+
+        completion_valid = 3'b001;
+        completion_id[0 +: 64] = 64'd20;
+        completion_payload[0 +: OW] = reg_completion(5'd10, 64'h55);
+        tick();
+        clear_inputs();
+        allocation_id = {64'd32, 64'd31, 64'd30};
+        allocation_slot = {4'd3, 4'd2, 4'd1};
+        p0 = alu_packet(64'd30, 5'd10, 5'd0, 5'd11);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
+        #1;
+        if (!allocation_valid[0] ||
+            allocation_meta[I_RS1_DATA +: 64] != 64'h55)
+            fail("post-recovery decode lost surviving producer value");
+        tick();
+        clear_inputs();
+
+        // A load whose base is supplied by a producer completion must use
+        // that awakened value for the speculative RAM-aperture check.  The
+        // decode-captured placeholder is zero and would incorrectly hold this
+        // safe load behind the already-issued branch.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 3'b111;
+        allocation_id = {64'd42, 64'd41, 64'd40};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        next_retire_id = 64'd40;
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd40, 5'd0, 5'd0, 5'd5);
+        p1 = alu_packet(64'd41, 5'd0, 5'd0, 5'd0);
+        p1[I_BRANCH] = 1'b1;
+        p2 = alu_packet(64'd42, 5'd5, 5'd0, 5'd6);
+        p2[I_MEM_READ] = 1'b1;
+        p2[I_IMM +: 64] = 64'h20;
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b100;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        if ((pipe_valid[1:0] != 2'b11) || pipe_valid[2] ||
+            (pipe_id[0 +: 64] != 64'd41) ||
+            (pipe_id[64 +: 64] != 64'd40))
+            fail("branch/producer setup for speculative load failed");
+        tick();
+
+        completion_valid = 3'b001;
+        completion_id[0 +: 64] = 64'd40;
+        completion_payload[0 +: OW] =
+            reg_completion(5'd5, 64'h0000_0000_8000_0100);
+        #1;
+        if (!pipe_valid[2] || (pipe_id[2*64 +: 64] != 64'd42) ||
+            (pipe_payload[2*IW + I_RS1_DATA +: 64] !=
+             64'h0000_0000_8000_0100))
+            fail("awakened RAM load did not pass live branch safely");
+        tick();
+        clear_inputs();
+
+        $display("PASS: dispatch window issue, producer tags, and selective recovery");
+        $finish;
+    end
+endmodule

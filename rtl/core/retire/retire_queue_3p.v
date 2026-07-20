@@ -11,10 +11,15 @@ module openrv64_retire_queue_3p #(
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         flush_i,
+    input  wire                         squash_younger_i,
+    input  wire [ID_WIDTH-1:0]          squash_id_i,
+    input  wire [INDEX_WIDTH-1:0]       squash_slot_i,
 
     input  wire [2:0]                   alloc_valid_i,
     output wire                         alloc_ready_o,
     input  wire [3*META_WIDTH-1:0]      alloc_meta_i,
+    input  wire [2:0]                   alloc_complete_i,
+    input  wire [3*RESULT_WIDTH-1:0]    alloc_result_i,
     output wire [3*ID_WIDTH-1:0]        alloc_id_o,
     output wire [3*INDEX_WIDTH-1:0]     alloc_slot_o,
 
@@ -29,9 +34,17 @@ module openrv64_retire_queue_3p #(
     output wire [3*META_WIDTH-1:0]      retire_meta_o,
     output wire [3*RESULT_WIDTH-1:0]    retire_result_o,
 
+    // All completed, still-live entries.  Consumers may use this as a
+    // completion CAM; interpretation of RESULT_WIDTH remains in the backend.
+    output wire [DEPTH-1:0]            completed_entry_valid_o,
+    output wire [DEPTH*RESULT_WIDTH-1:0] completed_entry_result_o,
+
     output wire [COUNT_WIDTH-1:0]       occupancy_o,
     output wire [ID_WIDTH-1:0]          next_retire_id_o,
-    output wire [INDEX_WIDTH-1:0]       next_retire_slot_o
+    output wire [INDEX_WIDTH-1:0]       next_retire_slot_o,
+    output wire                         post_retire_valid_o,
+    output wire [ID_WIDTH-1:0]          post_retire_id_o,
+    output wire [INDEX_WIDTH-1:0]       post_retire_slot_o
 );
 
     reg                                 valid_q [0:DEPTH-1];
@@ -73,18 +86,13 @@ module openrv64_retire_queue_3p #(
     wire [INDEX_WIDTH-1:0] retire_slot2 = index_add(head_q, 2'd2);
 
     wire retire_valid0 = valid_q[retire_slot0] &&
-                         complete_q[retire_slot0] &&
-                         (id_q[retire_slot0] == next_retire_id_q);
+                         complete_q[retire_slot0];
     wire retire_valid1 = retire_valid0 &&
                          valid_q[retire_slot1] &&
-                         complete_q[retire_slot1] &&
-                         (id_q[retire_slot1] ==
-                          (next_retire_id_q + {{(ID_WIDTH-1){1'b0}}, 1'b1}));
+                         complete_q[retire_slot1];
     wire retire_valid2 = retire_valid1 &&
                          valid_q[retire_slot2] &&
-                         complete_q[retire_slot2] &&
-                         (id_q[retire_slot2] ==
-                          (next_retire_id_q + {{(ID_WIDTH-2){1'b0}}, 2'd2}));
+                         complete_q[retire_slot2];
     wire [2:0] retire_fire = retire_valid_o & retire_accept_i;
     wire [2:0] retire_count =
         {2'd0, retire_fire[0]} +
@@ -108,8 +116,31 @@ module openrv64_retire_queue_3p #(
         retire_valid0 ? result_q[retire_slot0] : {RESULT_WIDTH{1'b0}}
     };
     assign occupancy_o = count_q;
-    assign next_retire_id_o = next_retire_id_q;
+    // Ring position, rather than consecutive numeric IDs, defines retirement
+    // order.  A selective branch recovery deliberately leaves a gap in the
+    // monotonically increasing ID stream so stale wrong-path completions can
+    // never alias newly allocated work.
+    assign next_retire_id_o = valid_q[head_q] ? id_q[head_q] : next_alloc_id_q;
     assign next_retire_slot_o = head_q;
+    wire [INDEX_WIDTH-1:0] post_retire_slot =
+        index_add(head_q, retire_count[1:0]);
+    assign post_retire_valid_o = count_q > retire_count;
+    assign post_retire_id_o = post_retire_valid_o ?
+                              id_q[post_retire_slot] : next_alloc_id_q;
+    assign post_retire_slot_o = post_retire_slot;
+
+    genvar completed_entry;
+    generate
+        for (completed_entry = 0; completed_entry < DEPTH;
+             completed_entry = completed_entry + 1) begin : g_completed_entry
+            assign completed_entry_valid_o[completed_entry] =
+                !flush_i && valid_q[completed_entry] &&
+                complete_q[completed_entry];
+            assign completed_entry_result_o[
+                completed_entry*RESULT_WIDTH +: RESULT_WIDTH] =
+                result_q[completed_entry];
+        end
+    endgenerate
 
     function [INDEX_WIDTH-1:0] index_add;
         input [INDEX_WIDTH-1:0] base;
@@ -128,6 +159,18 @@ module openrv64_retire_queue_3p #(
     integer port_idx;
     reg [INDEX_WIDTH-1:0] completion_slot;
     reg [ID_WIDTH-1:0] completion_id;
+    reg [COUNT_WIDTH-1:0] squash_keep_count;
+    integer squash_idx;
+
+    always @* begin
+        squash_keep_count = {COUNT_WIDTH{1'b0}};
+        for (squash_idx = 0; squash_idx < DEPTH;
+             squash_idx = squash_idx + 1) begin
+            if (valid_q[squash_idx] &&
+                (id_q[squash_idx] <= squash_id_i))
+                squash_keep_count = squash_keep_count + 1'b1;
+        end
+    end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -160,12 +203,17 @@ module openrv64_retire_queue_3p #(
                 next_retire_id_q <= next_retire_id_q + retire_count;
             end
 
-            if (alloc_fire_count != 3'd0) begin
+            if (!squash_younger_i && (alloc_fire_count != 3'd0)) begin
                 tail_q <= index_add(tail_q, alloc_fire_count[1:0]);
                 next_alloc_id_q <= next_alloc_id_q + alloc_fire_count;
             end
 
-            count_q <= count_q + alloc_fire_count - retire_count;
+            if (squash_younger_i) begin
+                tail_q <= index_add(squash_slot_i, 2'd1);
+                count_q <= squash_keep_count - retire_count;
+            end else begin
+                count_q <= count_q + alloc_fire_count - retire_count;
+            end
 
             if (retire_fire[0]) begin
                 valid_q[retire_slot0] <= 1'b0;
@@ -185,6 +233,8 @@ module openrv64_retire_queue_3p #(
                 completion_id = complete_id_i[port_idx*ID_WIDTH +: ID_WIDTH];
 
                 if (complete_valid_i[port_idx] &&
+                    (!squash_younger_i ||
+                     (completion_id <= squash_id_i)) &&
                     valid_q[completion_slot] &&
                     (id_q[completion_slot] == completion_id)) begin
                     complete_q[completion_slot] <= 1'b1;
@@ -193,26 +243,43 @@ module openrv64_retire_queue_3p #(
                 end
             end
 
-            if (alloc_fire[0]) begin
+            if (!squash_younger_i && alloc_fire[0]) begin
                 valid_q[alloc_slot0] <= 1'b1;
-                complete_q[alloc_slot0] <= 1'b0;
+                complete_q[alloc_slot0] <= alloc_complete_i[0];
                 id_q[alloc_slot0] <= alloc_id0;
                 meta_q[alloc_slot0] <= alloc_meta_i[0 +: META_WIDTH];
-                result_q[alloc_slot0] <= {RESULT_WIDTH{1'b0}};
+                result_q[alloc_slot0] <= alloc_complete_i[0] ?
+                    alloc_result_i[0 +: RESULT_WIDTH] :
+                    {RESULT_WIDTH{1'b0}};
             end
-            if (alloc_fire[1]) begin
+            if (!squash_younger_i && alloc_fire[1]) begin
                 valid_q[alloc_slot1] <= 1'b1;
-                complete_q[alloc_slot1] <= 1'b0;
+                complete_q[alloc_slot1] <= alloc_complete_i[1];
                 id_q[alloc_slot1] <= alloc_id1;
                 meta_q[alloc_slot1] <= alloc_meta_i[META_WIDTH +: META_WIDTH];
-                result_q[alloc_slot1] <= {RESULT_WIDTH{1'b0}};
+                result_q[alloc_slot1] <= alloc_complete_i[1] ?
+                    alloc_result_i[RESULT_WIDTH +: RESULT_WIDTH] :
+                    {RESULT_WIDTH{1'b0}};
             end
-            if (alloc_fire[2]) begin
+            if (!squash_younger_i && alloc_fire[2]) begin
                 valid_q[alloc_slot2] <= 1'b1;
-                complete_q[alloc_slot2] <= 1'b0;
+                complete_q[alloc_slot2] <= alloc_complete_i[2];
                 id_q[alloc_slot2] <= alloc_id2;
                 meta_q[alloc_slot2] <= alloc_meta_i[2*META_WIDTH +: META_WIDTH];
-                result_q[alloc_slot2] <= {RESULT_WIDTH{1'b0}};
+                result_q[alloc_slot2] <= alloc_complete_i[2] ?
+                    alloc_result_i[2*RESULT_WIDTH +: RESULT_WIDTH] :
+                    {RESULT_WIDTH{1'b0}};
+            end
+
+            if (squash_younger_i) begin
+                for (entry_idx = 0; entry_idx < DEPTH;
+                     entry_idx = entry_idx + 1) begin
+                    if (valid_q[entry_idx] &&
+                        (id_q[entry_idx] > squash_id_i)) begin
+                        valid_q[entry_idx] <= 1'b0;
+                        complete_q[entry_idx] <= 1'b0;
+                    end
+                end
             end
         end
     end
@@ -235,6 +302,9 @@ module openrv64_retire_queue_3p #(
                 (retire_accept_i[2] && !retire_accept_i[1])) begin
                 $fatal(1, "retire queue acceptance must form a contiguous prefix");
             end
+
+            if (squash_younger_i && (alloc_fire != 3'b000))
+                $fatal(1, "selective squash collided with retirement allocation");
         end
     end
 `endif

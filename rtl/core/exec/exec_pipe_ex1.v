@@ -12,7 +12,8 @@
 // the completion register directly on issue.
 module openrv64_exec_pipe_ex1 #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
-    parameter integer ENABLE_RV64M = 1
+    parameter integer ENABLE_RV64M = 1,
+    parameter integer ENABLE_LOCAL_FORWARDING = 1
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -102,7 +103,8 @@ module openrv64_exec_pipe_ex1 #(
 
     // EX1 has the same deliberately local previous-completion bypass as EX0.
     // Dispatch is responsible for routing a qualified consumer back here.
-    wire local_forward_valid = complete_valid_q &&
+    wire local_forward_valid = (ENABLE_LOCAL_FORWARDING != 0) &&
+        complete_valid_q &&
         complete_payload_q[`OPENRV64_COMPLETE_REG_WRITE_BIT] &&
         !complete_payload_q[`OPENRV64_COMPLETE_ILLEGAL_BIT] &&
         !complete_payload_q[`OPENRV64_COMPLETE_EXCEPTION_BIT] &&

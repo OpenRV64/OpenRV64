@@ -3,7 +3,9 @@
 module tb_sw_trace #(
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
-    parameter BP_TYPE = 0
+    parameter BP_TYPE = 0,
+    parameter BP_RAS_ENABLE = 1,
+    parameter integer BP_RAS_DEPTH = 8
 );
 
     localparam logic [63:0] MEM_BASE = 64'h0000_0000_8000_0000;
@@ -78,7 +80,9 @@ module tb_sw_trace #(
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .ENABLE_TRACE(1'b1),
-        .BP_TYPE(BP_TYPE)
+        .BP_TYPE(BP_TYPE),
+        .BP_RAS_ENABLE(BP_RAS_ENABLE),
+        .BP_RAS_DEPTH(BP_RAS_DEPTH)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

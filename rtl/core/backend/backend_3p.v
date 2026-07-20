@@ -17,9 +17,25 @@ module openrv64_backend_3p #(
     parameter integer DISPATCH_DEPTH = 6,
     parameter integer MAX_READS_PER_REG = 2,
     parameter integer ENABLE_RV64M = 1,
+    parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
+    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b111,
+    parameter integer ENABLE_FULL_FORWARDING = 0,
+    parameter integer RELAX_WAW = 1,
+    parameter integer RELAX_HAZARDS = 0,
+    parameter integer FREE_BRANCHES = 0,
+    parameter integer ENABLE_EQ_BRANCH_PAIRING = 1,
+    parameter integer ENABLE_ISSUE_WINDOW = 0,
+    parameter integer ENABLE_SPECULATION_WINDOW = 0,
+    parameter integer ISSUE_WINDOW_DEPTH = 16,
+    parameter integer ENABLE_POSTED_STORES = 1,
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE = {`RV64_XLEN{1'b0}},
     parameter integer SLOT_WIDTH = $clog2(RETIRE_DEPTH),
     parameter integer RETIRE_COUNT_WIDTH = $clog2(RETIRE_DEPTH + 1),
-    parameter integer DISPATCH_COUNT_WIDTH = $clog2(DISPATCH_DEPTH + 1)
+    parameter integer DISPATCH_COUNT_WIDTH = $clog2(
+        ((ENABLE_ISSUE_WINDOW != 0) ? ISSUE_WINDOW_DEPTH : DISPATCH_DEPTH) + 1)
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -32,6 +48,8 @@ module openrv64_backend_3p #(
                                         decode_payload_i,
     input  wire [2:0]                   decode_uses_rs1_i,
     input  wire [2:0]                   decode_uses_rs2_i,
+    output wire [3*64-1:0]              decode_allocation_id_o,
+    output wire [3*SLOT_WIDTH-1:0]      decode_allocation_slot_o,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -68,6 +86,14 @@ module openrv64_backend_3p #(
     output wire                         branch_resolved_o,
     output wire                         branch_conditional_o,
     output wire                         branch_taken_o,
+    output wire [`RV64_XLEN-1:0]        branch_pc_o,
+    output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
+    output wire [63:0]                  branch_id_o,
+    output wire [SLOT_WIDTH-1:0]        branch_slot_o,
+    output wire [2:0]                   branch_train_valid_o,
+    output wire [2:0]                   branch_train_conditional_o,
+    output wire [2:0]                   branch_train_taken_o,
+    output wire [3*`RV64_XLEN-1:0]      branch_train_pc_o,
 
     output wire [2:0]                   retire_arch_o,
     output wire [1:0]                   retire_count_o,
@@ -107,6 +133,13 @@ module openrv64_backend_3p #(
     wire [3*64-1:0] allocation_id;
     wire [3*SLOT_WIDTH-1:0] allocation_slot;
     wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta;
+    wire [2:0] allocation_complete;
+    wire [2:0] allocation_mispredict;
+    wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        allocation_result;
+
+    assign decode_allocation_id_o = allocation_id;
+    assign decode_allocation_slot_o = allocation_slot;
 
     wire [2:0] pipe_ready;
     wire [2:0] pipe_valid;
@@ -120,6 +153,112 @@ module openrv64_backend_3p #(
     wire [3*SLOT_WIDTH-1:0] complete_slot;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         complete_payload;
+    wire exec_redirect_valid;
+    wire [63:0] exec_redirect_id;
+    wire [SLOT_WIDTH-1:0] exec_redirect_slot;
+    wire [`RV64_XLEN-1:0] exec_redirect_target;
+    wire exec_branch_resolved;
+    wire exec_branch_conditional;
+    wire exec_branch_taken;
+    wire [`RV64_XLEN-1:0] exec_branch_pc;
+    wire [`RV64_INSTR_WIDTH-1:0] exec_branch_instr;
+    wire async_store_fault;
+    wire async_store_page_fault;
+    wire [`RV64_XLEN-1:0] async_store_fault_pc;
+    wire [`RV64_XLEN-1:0] async_store_fault_addr;
+    wire [63:0] async_store_fault_trace;
+    wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr;
+    reg async_store_fault_pending_q;
+    reg [`RV64_EXCEPT_CAUSE_WIDTH-1:0] async_store_fault_cause_q;
+    reg [`RV64_XLEN-1:0] async_store_fault_addr_q;
+    reg [`RV64_XLEN-1:0] async_store_fault_pc_q;
+    reg [63:0] async_store_fault_trace_q;
+    reg [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr_q;
+    reg [`RV64_XLEN-1:0] last_arch_next_pc_q;
+
+    function automatic free_branch_taken;
+        input [`RV64_BR_OP_WIDTH-1:0] branch_op;
+        input [`RV64_XLEN-1:0] src1;
+        input [`RV64_XLEN-1:0] src2;
+        begin
+            case (branch_op)
+                `RV64_BR_OP_BEQ:  free_branch_taken = (src1 == src2);
+                `RV64_BR_OP_BNE:  free_branch_taken = (src1 != src2);
+                `RV64_BR_OP_BLT:  free_branch_taken =
+                    ($signed(src1) < $signed(src2));
+                `RV64_BR_OP_BGE:  free_branch_taken =
+                    ($signed(src1) >= $signed(src2));
+                `RV64_BR_OP_BLTU: free_branch_taken = (src1 < src2);
+                `RV64_BR_OP_BGEU: free_branch_taken = (src1 >= src2);
+                default:          free_branch_taken = 1'b0;
+            endcase
+        end
+    endfunction
+
+    // Free conditional branches retain their real operands and prediction,
+    // but become completed retirement entries without occupying EX0.
+    // JAL/JALR remain on the normal path so this experiment isolates branches.
+    genvar free_lane;
+    generate
+        for (free_lane = 0; free_lane < 3;
+             free_lane = free_lane + 1) begin : g_free_branch
+            wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] alloc_payload =
+                allocation_meta[
+                    free_lane*`OPENRV64_RETIRE_META_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+            wire alloc_branch = alloc_payload[14];
+            wire alloc_fault = alloc_payload[8] || alloc_payload[5] ||
+                               alloc_payload[4];
+            wire [`RV64_XLEN-1:0] alloc_pc = alloc_payload[274 +: 64];
+            wire [`RV64_INSTR_WIDTH-1:0] alloc_instr =
+                alloc_payload[242 +: 32];
+            wire [`RV64_XLEN-1:0] alloc_rs1_data =
+                alloc_payload[168 +: 64];
+            wire [`RV64_XLEN-1:0] alloc_rs2_data =
+                alloc_payload[104 +: 64];
+            wire [`RV64_XLEN-1:0] alloc_imm = alloc_payload[40 +: 64];
+            wire [`RV64_BR_OP_WIDTH-1:0] alloc_br_op =
+                alloc_payload[18 +: `RV64_BR_OP_WIDTH];
+            wire alloc_taken = free_branch_taken(
+                alloc_br_op, alloc_rs1_data, alloc_rs2_data);
+            wire [`RV64_XLEN-1:0] alloc_target = alloc_pc + alloc_imm;
+            wire [`RV64_XLEN-1:0] alloc_next_pc = alloc_taken ?
+                alloc_target : (alloc_pc + 64'd4);
+
+            assign allocation_complete[free_lane] =
+                (FREE_BRANCHES != 0) &&
+                (ENABLE_ISSUE_WINDOW == 0) &&
+                allocation_valid[free_lane] && alloc_branch && !alloc_fault;
+            assign allocation_mispredict[free_lane] =
+                allocation_complete[free_lane] &&
+                (alloc_payload[12] != alloc_taken);
+            assign allocation_result[
+                free_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH] = {
+                alloc_payload[338 +: 64], // trace ID
+                alloc_pc,
+                alloc_next_pc,
+                alloc_instr,
+                64'd0,
+                alloc_payload[237 +: 5], // rs1
+                alloc_payload[232 +: 5], // rs2
+                alloc_payload[35 +: 5],  // rd
+                alloc_payload[17],       // architectural register write
+                1'b0,                    // illegal
+                1'b0,                    // ebreak
+                1'b0,                    // ecall
+                1'b0,                    // exception
+                1'b0,                    // halt
+                5'd0,                    // cause
+                64'd0,                   // tval
+                1'b0,                    // mret
+                1'b0,                    // sret
+                1'b0,                    // csr write
+                12'd0,                   // csr address
+                64'd0                    // csr data
+            };
+        end
+    endgenerate
 
     wire [2:0] queue_retire_valid;
     wire [2:0] queue_retire_accept;
@@ -129,6 +268,24 @@ module openrv64_backend_3p #(
         queue_retire_result;
     wire [63:0] next_retire_id;
     wire [SLOT_WIDTH-1:0] next_retire_slot;
+    wire queue_post_retire_valid;
+    wire [63:0] queue_post_retire_id;
+    wire [SLOT_WIDTH-1:0] queue_post_retire_slot;
+    wire [3*SLOT_WIDTH-1:0] window_retire_slot;
+
+    wire retire_exception;
+    wire retire_halt;
+    wire retire_irq;
+    wire retire_mret;
+    wire retire_sret;
+    wire retire_fence_i;
+    wire retire_sfence_vma;
+    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] retire_cause;
+    wire [`RV64_XLEN-1:0] retire_pc;
+    wire [`RV64_XLEN-1:0] retire_next_pc;
+    wire [`RV64_XLEN-1:0] retire_tval;
+    wire [63:0] retire_trace_id;
+    wire [`RV64_INSTR_WIDTH-1:0] retire_instr;
 
     wire [2:0] release_valid;
     wire [2:0] release_uses_rs1;
@@ -141,6 +298,321 @@ module openrv64_backend_3p #(
     wire [2:0] raw_hazard;
     wire [2:0] waw_hazard;
     wire [2:0] read_port_hazard;
+
+    // The window may execute conditional branches before the retirement head,
+    // but publishes resolution only when the branch retires.  At that point a
+    // redirect can discard every remaining entry without an owner-map
+    // checkpoint: every live entry is younger than the retiring branch.
+    localparam integer WINDOW_META_BRANCH = 14;
+    localparam integer WINDOW_META_JUMP = 13;
+    localparam integer WINDOW_META_PREDICTED_TAKEN = 12;
+    localparam integer WINDOW_RESULT_EXCEPTION = 149;
+    localparam integer WINDOW_RESULT_INSTR = 233;
+    localparam integer WINDOW_RESULT_NEXT_PC = 265;
+    localparam integer WINDOW_RESULT_PC = 329;
+    wire window_resolve0 = release_valid[0] &&
+        !queue_retire_result[
+            0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            WINDOW_RESULT_EXCEPTION] &&
+        (queue_retire_meta[
+             0*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
+         queue_retire_meta[
+             0*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+    wire window_resolve1 = release_valid[1] &&
+        !queue_retire_result[
+            1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            WINDOW_RESULT_EXCEPTION] &&
+        (queue_retire_meta[
+             1*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
+         queue_retire_meta[
+             1*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+    wire window_resolve2 = release_valid[2] &&
+        !queue_retire_result[
+            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            WINDOW_RESULT_EXCEPTION] &&
+        (queue_retire_meta[
+             2*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
+         queue_retire_meta[
+             2*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+    wire window_branch_resolved = window_resolve0 || window_resolve1 ||
+                                  window_resolve2;
+    wire [1:0] window_resolve_lane = window_resolve0 ? 2'd0 :
+                                     window_resolve1 ? 2'd1 : 2'd2;
+    wire [`OPENRV64_RETIRE_META_WIDTH-1:0] window_resolve_meta =
+        queue_retire_meta[
+            window_resolve_lane*`OPENRV64_RETIRE_META_WIDTH +:
+            `OPENRV64_RETIRE_META_WIDTH];
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        window_resolve_result = queue_retire_result[
+            window_resolve_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+    wire [`RV64_XLEN-1:0] window_branch_pc = window_resolve_result[
+        WINDOW_RESULT_PC +: `RV64_XLEN];
+    wire [`RV64_XLEN-1:0] window_branch_next_pc = window_resolve_result[
+        WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
+    wire window_branch_taken =
+        window_branch_next_pc != (window_branch_pc + 64'd4);
+    wire window_branch_predicted_taken =
+        window_resolve_meta[WINDOW_META_PREDICTED_TAKEN];
+    wire window_direction_mispredict = window_branch_resolved &&
+        (window_branch_predicted_taken != window_branch_taken);
+
+    wire free_branch_resolved = |allocation_complete;
+    // Architectural completions may be multi-wide.  The existing predictor
+    // update port observes the oldest branch; BTFNT itself is stateless.
+    wire [1:0] free_branch_lane = allocation_complete[0] ? 2'd0 :
+                                  allocation_complete[1] ? 2'd1 : 2'd2;
+    wire [`OPENRV64_RETIRE_META_WIDTH-1:0] free_branch_meta =
+        allocation_meta[
+            free_branch_lane*`OPENRV64_RETIRE_META_WIDTH +:
+            `OPENRV64_RETIRE_META_WIDTH];
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] free_branch_result =
+        allocation_result[
+            free_branch_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+    wire [`RV64_XLEN-1:0] free_branch_pc =
+        free_branch_result[WINDOW_RESULT_PC +: `RV64_XLEN];
+    wire [`RV64_XLEN-1:0] free_branch_next_pc =
+        free_branch_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
+    wire free_branch_mispredict = |allocation_mispredict;
+    wire [1:0] free_mispredict_lane = allocation_mispredict[0] ? 2'd0 :
+                                      allocation_mispredict[1] ? 2'd1 : 2'd2;
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        free_mispredict_result = allocation_result[
+            free_mispredict_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+
+    wire speculative_window = (ENABLE_ISSUE_WINDOW != 0) &&
+                              (ENABLE_SPECULATION_WINDOW != 0);
+    assign redirect_valid_o = free_branch_mispredict ? 1'b1 :
+        speculative_window ? exec_redirect_valid :
+        (ENABLE_ISSUE_WINDOW != 0) ? window_direction_mispredict :
+                                     exec_redirect_valid;
+    assign redirect_id_o = free_branch_mispredict ?
+        allocation_id[free_mispredict_lane*64 +: 64] :
+        speculative_window ? exec_redirect_id :
+        (ENABLE_ISSUE_WINDOW != 0) ?
+            queue_retire_id[window_resolve_lane*64 +: 64] : exec_redirect_id;
+    assign redirect_target_o = free_branch_mispredict ?
+        free_mispredict_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN] :
+        speculative_window ? exec_redirect_target :
+        (ENABLE_ISSUE_WINDOW != 0) ? window_branch_next_pc :
+                                     exec_redirect_target;
+    assign branch_resolved_o = free_branch_resolved ? 1'b1 :
+        speculative_window ? exec_branch_resolved :
+        (ENABLE_ISSUE_WINDOW != 0) ? window_branch_resolved :
+                                     exec_branch_resolved;
+    assign branch_conditional_o = free_branch_resolved ?
+        free_branch_meta[WINDOW_META_BRANCH] :
+        speculative_window ? exec_branch_conditional :
+        (ENABLE_ISSUE_WINDOW != 0) ?
+            window_resolve_meta[WINDOW_META_BRANCH] : exec_branch_conditional;
+    assign branch_taken_o = free_branch_resolved ?
+        (free_branch_next_pc != (free_branch_pc + 64'd4)) :
+        speculative_window ? exec_branch_taken :
+        (ENABLE_ISSUE_WINDOW != 0) ? window_branch_taken : exec_branch_taken;
+    assign branch_pc_o = free_branch_resolved ? free_branch_pc :
+        speculative_window ? exec_branch_pc :
+        (ENABLE_ISSUE_WINDOW != 0) ? window_branch_pc : exec_branch_pc;
+    assign branch_instr_o = free_branch_resolved ?
+        free_branch_result[WINDOW_RESULT_INSTR +: `RV64_INSTR_WIDTH] :
+        speculative_window ? exec_branch_instr :
+        (ENABLE_ISSUE_WINDOW != 0) ?
+            window_resolve_result[WINDOW_RESULT_INSTR +:
+                                  `RV64_INSTR_WIDTH] : exec_branch_instr;
+    assign branch_id_o = free_branch_resolved ?
+        allocation_id[free_branch_lane*64 +: 64] :
+        speculative_window ? exec_redirect_id :
+        (ENABLE_ISSUE_WINDOW != 0) ?
+            queue_retire_id[window_resolve_lane*64 +: 64] : exec_redirect_id;
+    assign branch_slot_o = free_branch_resolved ?
+        allocation_slot[free_branch_lane*SLOT_WIDTH +: SLOT_WIDTH] :
+        speculative_window ? exec_redirect_slot :
+        (ENABLE_ISSUE_WINDOW != 0) ?
+            window_retire_slot[window_resolve_lane*SLOT_WIDTH +: SLOT_WIDTH] :
+            exec_redirect_slot;
+
+    // Predictor training is independent of the scalar redirect/diagnostic
+    // resolution above.  Free branches and retirement-window controls can
+    // resolve three-wide; the selected policy serializes these updates before
+    // writing its direction table.
+    wire [2:0] window_train_valid = {
+        window_resolve2, window_resolve1, window_resolve0};
+    genvar train_lane;
+    generate
+        for (train_lane = 0; train_lane < 3;
+             train_lane = train_lane + 1) begin : g_branch_train
+            wire [`OPENRV64_RETIRE_META_WIDTH-1:0] train_alloc_meta =
+                allocation_meta[
+                    train_lane*`OPENRV64_RETIRE_META_WIDTH +:
+                    `OPENRV64_RETIRE_META_WIDTH];
+            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+                train_alloc_result = allocation_result[
+                    train_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+            wire [`OPENRV64_RETIRE_META_WIDTH-1:0] train_window_meta =
+                queue_retire_meta[
+                    train_lane*`OPENRV64_RETIRE_META_WIDTH +:
+                    `OPENRV64_RETIRE_META_WIDTH];
+            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+                train_window_result = queue_retire_result[
+                    train_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+            wire [`RV64_XLEN-1:0] train_alloc_pc = train_alloc_result[
+                WINDOW_RESULT_PC +: `RV64_XLEN];
+            wire [`RV64_XLEN-1:0] train_alloc_next_pc =
+                train_alloc_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
+            wire [`RV64_XLEN-1:0] train_window_pc = train_window_result[
+                WINDOW_RESULT_PC +: `RV64_XLEN];
+            wire [`RV64_XLEN-1:0] train_window_next_pc =
+                train_window_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
+
+            assign branch_train_valid_o[train_lane] = free_branch_resolved ?
+                allocation_complete[train_lane] :
+                speculative_window ?
+                    ((train_lane == 0) ? exec_branch_resolved : 1'b0) :
+                (ENABLE_ISSUE_WINDOW != 0) ?
+                    window_train_valid[train_lane] :
+                    ((train_lane == 0) ? exec_branch_resolved : 1'b0);
+            assign branch_train_conditional_o[train_lane] =
+                free_branch_resolved ?
+                    train_alloc_meta[WINDOW_META_BRANCH] :
+                speculative_window ?
+                    ((train_lane == 0) ? exec_branch_conditional : 1'b0) :
+                (ENABLE_ISSUE_WINDOW != 0) ?
+                    train_window_meta[WINDOW_META_BRANCH] :
+                    ((train_lane == 0) ? exec_branch_conditional : 1'b0);
+            assign branch_train_taken_o[train_lane] = free_branch_resolved ?
+                (train_alloc_next_pc != (train_alloc_pc + 64'd4)) :
+                speculative_window ?
+                    ((train_lane == 0) ? exec_branch_taken : 1'b0) :
+                (ENABLE_ISSUE_WINDOW != 0) ?
+                    (train_window_next_pc != (train_window_pc + 64'd4)) :
+                    ((train_lane == 0) ? exec_branch_taken : 1'b0);
+            assign branch_train_pc_o[train_lane*`RV64_XLEN +: `RV64_XLEN] =
+                free_branch_resolved ? train_alloc_pc :
+                speculative_window ?
+                    ((train_lane == 0) ? exec_branch_pc :
+                                         {`RV64_XLEN{1'b0}}) :
+                (ENABLE_ISSUE_WINDOW != 0) ? train_window_pc :
+                    ((train_lane == 0) ? exec_branch_pc :
+                                         {`RV64_XLEN{1'b0}});
+        end
+    endgenerate
+
+    wire [RETIRE_DEPTH-1:0] completed_entry_valid;
+    wire [RETIRE_DEPTH*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        completed_entry_result;
+
+    // Remember the youngest allocated producer of each architectural
+    // register.  The compact retirement-slot tag qualifies the branch-only
+    // live bypass.  RELAX_HAZARDS additionally uses the instruction ID,
+    // ready bit, and retained data as its broad producer-result table.  This
+    // is deliberately not a physical-register rename file: retirement is
+    // still in order and the architectural GPR remains committed state.
+    reg [31:0] youngest_owner_valid_q;
+    reg [31:0] youngest_owner_ready_q;
+    reg [32*64-1:0] youngest_owner_id_q;
+    reg [32*SLOT_WIDTH-1:0] youngest_owner_slot_q;
+    reg [32*`RV64_XLEN-1:0] youngest_owner_data_q;
+    integer youngest_owner_lane;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] youngest_owner_rd;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            youngest_owner_valid_q <= 32'd0;
+            youngest_owner_ready_q <= 32'd0;
+            youngest_owner_id_q <= {32*64{1'b0}};
+            youngest_owner_slot_q <= {32*SLOT_WIDTH{1'b0}};
+            youngest_owner_data_q <= {32*`RV64_XLEN{1'b0}};
+        end else if (flush_i ||
+                     ((ENABLE_ISSUE_WINDOW != 0) && squash_frontend_i)) begin
+            youngest_owner_valid_q <= 32'd0;
+            youngest_owner_ready_q <= 32'd0;
+        end else begin
+            // Retirement clears ownership only when the retiring instruction's
+            // live queue slot is still the youngest writer.  An older WAW
+            // retirement leaves a younger live producer untouched.
+            for (youngest_owner_lane = 0; youngest_owner_lane < 3;
+                 youngest_owner_lane = youngest_owner_lane + 1) begin
+                youngest_owner_rd = release_rd_addr[
+                    youngest_owner_lane*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH];
+                if (release_valid[youngest_owner_lane] &&
+                    release_reg_write[youngest_owner_lane] &&
+                    (youngest_owner_rd != `RV64_REG_X0) &&
+                    youngest_owner_valid_q[youngest_owner_rd] &&
+                    (youngest_owner_slot_q[
+                         youngest_owner_rd*SLOT_WIDTH +: SLOT_WIDTH] ==
+                     window_retire_slot[
+                         youngest_owner_lane*SLOT_WIDTH +: SLOT_WIDTH])) begin
+                    youngest_owner_valid_q[youngest_owner_rd] <= 1'b0;
+                    youngest_owner_ready_q[youngest_owner_rd] <= 1'b0;
+                end
+            end
+
+            // A completion publishes only if it belongs to the youngest live
+            // producer.  Stale completions from older WAW writers are ignored.
+            for (youngest_owner_lane = 0; youngest_owner_lane < 3;
+                 youngest_owner_lane = youngest_owner_lane + 1) begin
+                youngest_owner_rd = complete_payload[
+                    youngest_owner_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH];
+                if (complete_valid[youngest_owner_lane] &&
+                    complete_payload[
+                        youngest_owner_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        `OPENRV64_COMPLETE_REG_WRITE_BIT] &&
+                    !complete_payload[
+                        youngest_owner_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        `OPENRV64_COMPLETE_ILLEGAL_BIT] &&
+                    !complete_payload[
+                        youngest_owner_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        `OPENRV64_COMPLETE_EXCEPTION_BIT] &&
+                    (youngest_owner_rd != `RV64_REG_X0) &&
+                    youngest_owner_valid_q[youngest_owner_rd] &&
+                    (youngest_owner_id_q[
+                         youngest_owner_rd*64 +: 64] ==
+                     complete_id[youngest_owner_lane*64 +: 64])) begin
+                    youngest_owner_ready_q[youngest_owner_rd] <= 1'b1;
+                    youngest_owner_data_q[
+                        youngest_owner_rd*`RV64_XLEN +: `RV64_XLEN] <=
+                        complete_payload[
+                            youngest_owner_lane*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+                end
+            end
+
+            // Allocation is ordered youngest-last, so later lanes naturally
+            // win if several instructions in one issue group write the same rd.
+            for (youngest_owner_lane = 0; youngest_owner_lane < 3;
+                 youngest_owner_lane = youngest_owner_lane + 1) begin
+                youngest_owner_rd = allocation_meta[
+                    youngest_owner_lane*`OPENRV64_RETIRE_META_WIDTH +
+                    35 +: `RV64_REG_ADDR_WIDTH];
+                if (allocation_valid[youngest_owner_lane] &&
+                    allocation_meta[
+                        youngest_owner_lane*`OPENRV64_RETIRE_META_WIDTH + 17] &&
+                    (youngest_owner_rd != `RV64_REG_X0)) begin
+                    youngest_owner_valid_q[youngest_owner_rd] <= 1'b1;
+                    youngest_owner_ready_q[youngest_owner_rd] <= 1'b0;
+                    youngest_owner_id_q[
+                        youngest_owner_rd*64 +: 64] <=
+                        allocation_id[youngest_owner_lane*64 +: 64];
+                    youngest_owner_slot_q[
+                        youngest_owner_rd*SLOT_WIDTH +: SLOT_WIDTH] <=
+                        allocation_slot[
+                            youngest_owner_lane*SLOT_WIDTH +: SLOT_WIDTH];
+                    youngest_owner_data_q[
+                        youngest_owner_rd*`RV64_XLEN +: `RV64_XLEN] <=
+                        {`RV64_XLEN{1'b0}};
+                end
+            end
+
+            youngest_owner_valid_q[`RV64_REG_X0] <= 1'b0;
+            youngest_owner_ready_q[`RV64_REG_X0] <= 1'b0;
+        end
+    end
 
     // Dispatch receives only enough metadata to route a dependent instruction
     // back to the completing ALU pipe.  The 64-bit values stay local to EX0 and
@@ -178,17 +650,225 @@ module openrv64_backend_3p #(
                          `OPENRV64_COMPLETE_RD_LSB +:
                          `RV64_REG_ADDR_WIDTH];
 
+    // Limited forwarding option: only values physically present on this
+    // cycle's registered completion ports may bypass.  The source mask makes
+    // MEM-only (3'b100), ALU-only (3'b011), and all-live-port (3'b111)
+    // experiments possible without retaining any retirement-queue result.
+    // This is three tagged 64-bit sources, not the 32-register completion map
+    // used by the full-forwarding upper bound below.
+    wire [2:0] completion_forward_valid_raw;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] completion_forward_rd_addr;
+    wire [3*`RV64_XLEN-1:0] completion_forward_data;
+    genvar completion_forward_lane;
+    generate
+        for (completion_forward_lane = 0; completion_forward_lane < 3;
+             completion_forward_lane = completion_forward_lane + 1) begin :
+                g_completion_forward
+            assign completion_forward_valid_raw[completion_forward_lane] =
+                complete_valid[completion_forward_lane] &&
+                complete_payload[
+                    completion_forward_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_REG_WRITE_BIT] &&
+                !complete_payload[
+                    completion_forward_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_ILLEGAL_BIT] &&
+                !complete_payload[
+                    completion_forward_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_EXCEPTION_BIT] &&
+                (complete_payload[
+                    completion_forward_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH] !=
+                 `RV64_REG_X0);
+            assign completion_forward_rd_addr[
+                completion_forward_lane*`RV64_REG_ADDR_WIDTH +:
+                `RV64_REG_ADDR_WIDTH] = complete_payload[
+                    completion_forward_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH];
+            assign completion_forward_data[
+                completion_forward_lane*`RV64_XLEN +: `RV64_XLEN] =
+                complete_payload[
+                    completion_forward_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+        end
+    endgenerate
+    wire [2:0] completion_forward_valid = !flush_i ?
+        (completion_forward_valid_raw & COMPLETION_FORWARD_MASK) : 3'b000;
+
+    // Cheap branch-only bypass.  A live EX0/EX1/MEM completion may satisfy a
+    // conditional-branch source only when its retirement slot still owns the
+    // architectural destination.  Live retirement slots are unique, while
+    // costing only SLOT_WIDTH bits per architectural register rather than a
+    // 64-bit instruction ID.  This qualification is required under relaxed
+    // WAW: an older completion with the same rd must never feed a branch
+    // waiting for a younger writer.
+    wire [2:0] branch_completion_forward_valid;
+    genvar branch_forward_lane;
+    generate
+        for (branch_forward_lane = 0; branch_forward_lane < 3;
+             branch_forward_lane = branch_forward_lane + 1) begin :
+                g_branch_completion_forward
+            wire [`RV64_REG_ADDR_WIDTH-1:0] branch_forward_rd =
+                completion_forward_rd_addr[
+                    branch_forward_lane*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH];
+            assign branch_completion_forward_valid[branch_forward_lane] =
+                !flush_i &&
+                BRANCH_COMPLETION_FORWARD_MASK[branch_forward_lane] &&
+                completion_forward_valid_raw[branch_forward_lane] &&
+                youngest_owner_valid_q[branch_forward_rd] &&
+                (youngest_owner_slot_q[
+                     branch_forward_rd*SLOT_WIDTH +: SLOT_WIDTH] ==
+                 complete_slot[
+                     branch_forward_lane*SLOT_WIDTH +: SLOT_WIDTH]);
+        end
+    endgenerate
+
+    // Experimental full completion network.  The default WAW exclusion gives
+    // this rd-indexed map one live producer per architectural register.  In
+    // relaxed-WAW mode normally permits reads only after counted ownership has
+    // fallen back to one writer.  RELAX_HAZARDS replaces this untagged map with
+    // the producer-ID map below.  Queue-resident completions cover arbitrary
+    // completion-to-retirement distance; the live ports remove the extra cycle
+    // that would otherwise be introduced while writing the queue.
+    reg [31:0] full_forward_valid_raw;
+    reg [32*`RV64_XLEN-1:0] full_forward_data_raw;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] full_forward_rd;
+    integer full_forward_entry;
+    integer full_forward_port;
+    always @* begin
+        full_forward_valid_raw = 32'd0;
+        full_forward_data_raw = {32*`RV64_XLEN{1'b0}};
+        full_forward_rd = `RV64_REG_X0;
+
+        for (full_forward_entry = 0;
+             full_forward_entry < RETIRE_DEPTH;
+             full_forward_entry = full_forward_entry + 1) begin
+            full_forward_rd = completed_entry_result[
+                full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH];
+            if (completed_entry_valid[full_forward_entry] &&
+                completed_entry_result[
+                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_REG_WRITE_BIT] &&
+                !completed_entry_result[
+                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_ILLEGAL_BIT] &&
+                !completed_entry_result[
+                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_EXCEPTION_BIT] &&
+                (full_forward_rd != `RV64_REG_X0)) begin
+                full_forward_valid_raw[full_forward_rd] = 1'b1;
+                full_forward_data_raw[full_forward_rd*`RV64_XLEN +:
+                                      `RV64_XLEN] = completed_entry_result[
+                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+            end
+        end
+
+        for (full_forward_port = 0; full_forward_port < 3;
+             full_forward_port = full_forward_port + 1) begin
+            full_forward_rd = complete_payload[
+                full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH];
+            if (complete_valid[full_forward_port] &&
+                complete_payload[
+                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_REG_WRITE_BIT] &&
+                !complete_payload[
+                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_ILLEGAL_BIT] &&
+                !complete_payload[
+                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_EXCEPTION_BIT] &&
+                (full_forward_rd != `RV64_REG_X0)) begin
+                full_forward_valid_raw[full_forward_rd] = 1'b1;
+                full_forward_data_raw[full_forward_rd*`RV64_XLEN +:
+                                      `RV64_XLEN] = complete_payload[
+                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+            end
+        end
+    end
+
+    // Producer-tagged map used only by RELAX_HAZARDS.  The registered state
+    // retains completed values, and the completion overlay removes the one
+    // cycle state-update bubble.  Matching the 64-bit allocation ID is what
+    // makes multiple outstanding writers to one architectural rd unambiguous.
+    reg [31:0] youngest_forward_valid_raw;
+    reg [32*`RV64_XLEN-1:0] youngest_forward_data_raw;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] youngest_forward_rd;
+    integer youngest_forward_port;
+    always @* begin
+        youngest_forward_valid_raw =
+            youngest_owner_valid_q & youngest_owner_ready_q;
+        youngest_forward_data_raw = youngest_owner_data_q;
+        youngest_forward_rd = `RV64_REG_X0;
+
+        for (youngest_forward_port = 0; youngest_forward_port < 3;
+             youngest_forward_port = youngest_forward_port + 1) begin
+            youngest_forward_rd = complete_payload[
+                youngest_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH];
+            if (complete_valid[youngest_forward_port] &&
+                complete_payload[
+                    youngest_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_REG_WRITE_BIT] &&
+                !complete_payload[
+                    youngest_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_ILLEGAL_BIT] &&
+                !complete_payload[
+                    youngest_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    `OPENRV64_COMPLETE_EXCEPTION_BIT] &&
+                (youngest_forward_rd != `RV64_REG_X0) &&
+                youngest_owner_valid_q[youngest_forward_rd] &&
+                (youngest_owner_id_q[
+                     youngest_forward_rd*64 +: 64] ==
+                 complete_id[youngest_forward_port*64 +: 64])) begin
+                youngest_forward_valid_raw[youngest_forward_rd] = 1'b1;
+                youngest_forward_data_raw[
+                    youngest_forward_rd*`RV64_XLEN +: `RV64_XLEN] =
+                    complete_payload[
+                        youngest_forward_port*
+                        `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+            end
+        end
+        youngest_forward_valid_raw[`RV64_REG_X0] = 1'b0;
+    end
+
+    wire [31:0] full_forward_valid =
+        (ENABLE_FULL_FORWARDING != 0) && !flush_i ?
+        ((RELAX_HAZARDS != 0) ? youngest_forward_valid_raw :
+                                full_forward_valid_raw) : 32'd0;
+    wire [32*`RV64_XLEN-1:0] full_forward_data =
+        (ENABLE_FULL_FORWARDING != 0) && !flush_i ?
+        ((RELAX_HAZARDS != 0) ? youngest_forward_data_raw :
+                                full_forward_data_raw) :
+        {32*`RV64_XLEN{1'b0}};
+
     // Deliberately conservative capacity gate: issue resumes with room for a
     // complete three-entry group.  This breaks the alloc-valid/ready loop and
     // leaves exact-width admission as a later timing optimization.
-    assign allocation_ready = queue_allocation_ready &&
-                              (retire_occupancy_o <= RETIRE_DEPTH - 3);
+    // Occupancy <= DEPTH-3 proves room for the largest possible group, so
+    // consulting the queue's alloc-count-dependent ready here is redundant
+    // and would recreate an alloc_valid <-> alloc_ready combinational loop.
+    assign allocation_ready = (retire_occupancy_o <= RETIRE_DEPTH - 3);
 
     openrv64_dispatch #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
         .QUEUE_DEPTH_3P(DISPATCH_DEPTH),
         .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH),
-        .MAX_READS_PER_REG_3P(MAX_READS_PER_REG)
+        .MAX_READS_PER_REG_3P(MAX_READS_PER_REG),
+        .RELAX_WAW_3P(RELAX_WAW),
+        .RELAX_HAZARDS_3P(RELAX_HAZARDS),
+        .FREE_BRANCHES_3P(FREE_BRANCHES),
+        .ENABLE_EQ_BRANCH_PAIRING_3P(ENABLE_EQ_BRANCH_PAIRING),
+        .ENABLE_ISSUE_WINDOW_3P(ENABLE_ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW_3P(ENABLE_SPECULATION_WINDOW),
+        .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
+        .SPEC_LOAD_BASE_3P(SPEC_LOAD_BASE),
+        .SPEC_LOAD_SIZE_3P(SPEC_LOAD_SIZE),
+        .COUNT_WIDTH_3P(DISPATCH_COUNT_WIDTH)
     ) u_dispatch (
         .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
         .decode_valid_i(1'b0), .decode_pc_i(64'd0),
@@ -219,6 +899,7 @@ module openrv64_backend_3p #(
         .retire_rs2_addr_i(5'd0), .retire_reg_write_i(1'b0),
         .retire_rd_addr_i(5'd0), .decode_trace_id_i(64'd0),
         .squash_frontend_3p_i(squash_frontend_i),
+        .squash_id_3p_i(exec_redirect_id),
         .decode_valid_3p_i(decode_valid_i),
         .decode_ready_3p_o(decode_ready_o),
         .decode_payload_3p_i(decode_payload_i),
@@ -234,10 +915,22 @@ module openrv64_backend_3p #(
         .pipe_ready_3p_i(pipe_ready),
         .forward_valid_3p_i(local_forward_valid),
         .forward_rd_addr_3p_i(local_forward_rd_addr),
+        .completion_forward_valid_3p_i(completion_forward_valid),
+        .completion_forward_rd_addr_3p_i(completion_forward_rd_addr),
+        .completion_forward_data_3p_i(completion_forward_data),
+        .branch_completion_forward_valid_3p_i(
+            branch_completion_forward_valid),
+        .forward_map_valid_3p_i(full_forward_valid),
+        .forward_map_data_3p_i(full_forward_data),
+        .completion_valid_3p_i(complete_valid),
+        .completion_id_3p_i(complete_id),
+        .completion_payload_3p_i(complete_payload),
         .pipe_valid_3p_o(pipe_valid),
         .pipe_id_3p_o(pipe_id), .pipe_slot_3p_o(pipe_slot),
         .pipe_payload_3p_o(pipe_payload),
         .retire_valid_3p_i(release_valid),
+        .retire_id_3p_i(queue_retire_id),
+        .retire_slot_3p_i(window_retire_slot),
         .retire_uses_rs1_3p_i(release_uses_rs1),
         .retire_uses_rs2_3p_i(release_uses_rs2),
         .retire_rs1_addr_3p_i(release_rs1_addr),
@@ -245,6 +938,8 @@ module openrv64_backend_3p #(
         .retire_reg_write_3p_i(release_reg_write),
         .retire_rd_addr_3p_i(release_rd_addr),
         .retire_hard_3p_i(retire_hard),
+        .next_retire_id_3p_i(next_retire_id),
+        .next_retire_slot_3p_i(next_retire_slot),
         .barrier_active_3p_o(barrier_active_o),
         .raw_hazard_3p_o(raw_hazard), .waw_hazard_3p_o(waw_hazard),
         .read_port_hazard_3p_o(read_port_hazard),
@@ -252,7 +947,9 @@ module openrv64_backend_3p #(
         .queue_count_3p_o(dispatch_occupancy_o)
     );
 
-    openrv64_rv64i_gpr_3p u_gpr (
+    openrv64_rv64i_gpr_3p #(
+        .ALLOW_DUPLICATE_WRITES(RELAX_WAW)
+    ) u_gpr (
         .clk(clk), .rst_n(rst_n),
         .read_addr_i(gpr_read_addr), .read_data_o(gpr_read_data),
         .write_valid_i(gpr_write), .write_addr_i(gpr_write_addr),
@@ -264,31 +961,45 @@ module openrv64_backend_3p #(
     // store sees the committed operand while issuing beside the older prefix.
     // If retirement drains the queue, the oldest dispatch candidate is the
     // prospective head, just as it is for an initially empty backend.
-    wire [1:0] release_count =
-        {1'b0, release_valid[0]} +
-        {1'b0, release_valid[1]} +
-        {1'b0, release_valid[2]};
-    wire retire_entries_remain =
-        retire_occupancy_o > {{(RETIRE_COUNT_WIDTH-2){1'b0}}, release_count};
-    wire [63:0] post_retire_id = next_retire_id + release_count;
-    wire [SLOT_WIDTH:0] post_retire_slot_sum =
-        {1'b0, next_retire_slot} + release_count;
-    wire [SLOT_WIDTH-1:0] post_retire_slot =
-        (post_retire_slot_sum >= RETIRE_DEPTH) ?
-        post_retire_slot_sum - RETIRE_DEPTH :
-        post_retire_slot_sum[SLOT_WIDTH-1:0];
+    wire [SLOT_WIDTH:0] window_retire_slot1_sum =
+        {1'b0, next_retire_slot} + {{SLOT_WIDTH{1'b0}}, 1'b1};
+    wire [SLOT_WIDTH:0] window_retire_slot2_sum =
+        {1'b0, next_retire_slot} + {{(SLOT_WIDTH-1){1'b0}}, 2'd2};
+    wire [SLOT_WIDTH-1:0] window_retire_slot1 =
+        (window_retire_slot1_sum >= RETIRE_DEPTH) ?
+        window_retire_slot1_sum - RETIRE_DEPTH :
+        window_retire_slot1_sum[SLOT_WIDTH-1:0];
+    wire [SLOT_WIDTH-1:0] window_retire_slot2 =
+        (window_retire_slot2_sum >= RETIRE_DEPTH) ?
+        window_retire_slot2_sum - RETIRE_DEPTH :
+        window_retire_slot2_sum[SLOT_WIDTH-1:0];
+    assign window_retire_slot = {
+        window_retire_slot2, window_retire_slot1, next_retire_slot
+    };
     wire ordered_head_valid = !flush_i &&
-        (retire_entries_remain || (dispatch_occupancy_o != 0));
-    wire [63:0] ordered_head_id = retire_entries_remain ?
-        post_retire_id : allocation_id[0 +: 64];
-    wire [SLOT_WIDTH-1:0] ordered_head_slot = retire_entries_remain ?
-        post_retire_slot : allocation_slot[0 +: SLOT_WIDTH];
+        (queue_post_retire_valid || (dispatch_occupancy_o != 0));
+    wire [63:0] ordered_head_id = queue_post_retire_valid ?
+        queue_post_retire_id : allocation_id[0 +: 64];
+    wire [SLOT_WIDTH-1:0] ordered_head_slot = queue_post_retire_valid ?
+        queue_post_retire_slot : allocation_slot[0 +: SLOT_WIDTH];
 
     openrv64_exec_top #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
-        .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH), .ENABLE_RV64M(ENABLE_RV64M)
+        .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH), .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_LOCAL_FORWARDING_3P(ENABLE_ISSUE_WINDOW == 0),
+        .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
+        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
     ) u_exec (
-        .clk(clk), .rst_n(rst_n), .flush_3p_i(flush_i),
+        .clk(clk), .rst_n(rst_n),
+        // Selective speculation recovery leaves already-issued operations in
+        // flight.  Their monotonic IDs cannot match reallocated retirement
+        // entries, while the resolving EX0 branch must still publish its own
+        // completion on the following cycle.
+        .flush_3p_i(flush_i ||
+                    ((ENABLE_ISSUE_WINDOW != 0) &&
+                     (ENABLE_SPECULATION_WINDOW == 0) &&
+                     squash_frontend_i)),
         .valid_i(1'b0), .flush_ex_mem_i(1'b0),
         .flush_mem_wb_i(1'b0), .pc_i(64'd0), .instr_i(32'd0),
         .rs1_addr_i(5'd0), .rs2_addr_i(5'd0), .rs1_data_i(64'd0),
@@ -317,12 +1028,21 @@ module openrv64_backend_3p #(
         .complete_id_3p_o(complete_id),
         .complete_slot_3p_o(complete_slot),
         .complete_payload_3p_o(complete_payload),
-        .redirect_valid_o(redirect_valid_o),
-        .redirect_id_3p_o(redirect_id_o),
-        .redirect_target_o(redirect_target_o),
-        .branch_resolved_o(branch_resolved_o),
-        .branch_conditional_o(branch_conditional_o),
-        .branch_taken_o(branch_taken_o),
+        .async_store_fault_3p_o(async_store_fault),
+        .async_store_page_fault_3p_o(async_store_page_fault),
+        .async_store_fault_pc_3p_o(async_store_fault_pc),
+        .async_store_fault_addr_3p_o(async_store_fault_addr),
+        .async_store_fault_trace_3p_o(async_store_fault_trace),
+        .async_store_fault_instr_3p_o(async_store_fault_instr),
+        .redirect_valid_o(exec_redirect_valid),
+        .redirect_id_3p_o(exec_redirect_id),
+        .redirect_slot_3p_o(exec_redirect_slot),
+        .redirect_target_o(exec_redirect_target),
+        .branch_resolved_o(exec_branch_resolved),
+        .branch_conditional_o(exec_branch_conditional),
+        .branch_taken_o(exec_branch_taken),
+        .branch_pc_o(exec_branch_pc),
+        .branch_instr_o(exec_branch_instr),
         .csr_addr_o(csr_addr_o), .csr_rdata_i(csr_rdata_i),
         .csr_valid_i(csr_valid_i), .csr_writable_i(csr_writable_i),
         .mem_valid_o(mem_valid_o), .mem_ready_i(mem_ready_i),
@@ -343,10 +1063,20 @@ module openrv64_backend_3p #(
         .META_WIDTH(`OPENRV64_RETIRE_META_WIDTH),
         .RESULT_WIDTH(`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH)
     ) u_retire_queue (
-        .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+        .clk(clk), .rst_n(rst_n),
+        .flush_i(flush_i ||
+                 ((ENABLE_ISSUE_WINDOW != 0) &&
+                  (ENABLE_SPECULATION_WINDOW == 0) &&
+                  squash_frontend_i)),
+        .squash_younger_i(speculative_window && squash_frontend_i),
+        .squash_id_i(exec_redirect_id),
+        .squash_slot_i(exec_redirect_slot),
         .alloc_valid_i(allocation_valid),
         .alloc_ready_o(queue_allocation_ready),
-        .alloc_meta_i(allocation_meta), .alloc_id_o(allocation_id),
+        .alloc_meta_i(allocation_meta),
+        .alloc_complete_i(allocation_complete),
+        .alloc_result_i(allocation_result),
+        .alloc_id_o(allocation_id),
         .alloc_slot_o(allocation_slot),
         .complete_valid_i(complete_valid), .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
@@ -355,13 +1085,24 @@ module openrv64_backend_3p #(
         .retire_accept_i(queue_retire_accept),
         .retire_id_o(queue_retire_id), .retire_meta_o(queue_retire_meta),
         .retire_result_o(queue_retire_result),
+        .completed_entry_valid_o(completed_entry_valid),
+        .completed_entry_result_o(completed_entry_result),
         .occupancy_o(retire_occupancy_o),
         .next_retire_id_o(next_retire_id),
-        .next_retire_slot_o(next_retire_slot)
+        .next_retire_slot_o(next_retire_slot),
+        .post_retire_valid_o(queue_post_retire_valid),
+        .post_retire_id_o(queue_post_retire_id),
+        .post_retire_slot_o(queue_post_retire_slot)
     );
 
+    // A delayed store failure is delivered alone at an architectural
+    // boundary.  Holding the normal retirement inputs for this cycle avoids
+    // consuming a precise exception or hard-order operation underneath the
+    // imprecise abort.
+    wire [2:0] retire_queue_valid = async_store_fault_pending_q ?
+                                    3'b000 : queue_retire_valid;
     openrv64_retire_3p u_retire (
-        .queue_valid_i(queue_retire_valid),
+        .queue_valid_i(retire_queue_valid),
         .queue_meta_i(queue_retire_meta),
         .queue_result_i(queue_retire_result),
         .queue_accept_o(queue_retire_accept),
@@ -379,14 +1120,73 @@ module openrv64_backend_3p #(
         .gpr_rd_data_o(gpr_write_data),
         .csr_write_o(csr_write_o), .csr_addr_o(csr_write_addr_o),
         .csr_wdata_o(csr_wdata_o),
-        .exception_o(exception_o), .halt_o(halt_o), .irq_o(irq_o),
-        .mret_o(mret_o), .sret_o(sret_o), .fence_i_o(fence_i_o),
-        .sfence_vma_o(sfence_vma_o), .cause_o(cause_o),
-        .pc_o(retire_pc_o), .next_pc_o(retire_next_pc_o),
-        .tval_o(retire_tval_o), .trace_id_o(retire_trace_id_o),
-        .instr_o(retire_instr_o), .trace_rd_o(retire_rd_o),
+        .exception_o(retire_exception), .halt_o(retire_halt),
+        .irq_o(retire_irq), .mret_o(retire_mret), .sret_o(retire_sret),
+        .fence_i_o(retire_fence_i), .sfence_vma_o(retire_sfence_vma),
+        .cause_o(retire_cause), .pc_o(retire_pc),
+        .next_pc_o(retire_next_pc), .tval_o(retire_tval),
+        .trace_id_o(retire_trace_id), .instr_o(retire_instr),
+        .trace_rd_o(retire_rd_o),
         .trace_wdata_o(retire_wdata_o)
     );
+
+    // The store has already retired, so this is deliberately not a precise
+    // replay point.  Trap at the next unretired architectural PC, retain the
+    // original store address in tval, and retain its trace metadata for
+    // diagnostics.
+    wire [`RV64_XLEN-1:0] async_abort_pc =
+        (last_arch_next_pc_q != {`RV64_XLEN{1'b0}}) ?
+        last_arch_next_pc_q : (async_store_fault_pc_q + 64'd4);
+    assign exception_o = async_store_fault_pending_q || retire_exception;
+    assign halt_o = !async_store_fault_pending_q && retire_halt;
+    assign irq_o = !async_store_fault_pending_q && retire_irq;
+    assign mret_o = !async_store_fault_pending_q && retire_mret;
+    assign sret_o = !async_store_fault_pending_q && retire_sret;
+    assign fence_i_o = !async_store_fault_pending_q && retire_fence_i;
+    assign sfence_vma_o = !async_store_fault_pending_q && retire_sfence_vma;
+    assign cause_o = async_store_fault_pending_q ?
+                     async_store_fault_cause_q : retire_cause;
+    assign retire_pc_o = async_store_fault_pending_q ?
+                         async_abort_pc : retire_pc;
+    assign retire_next_pc_o = async_store_fault_pending_q ?
+                              async_abort_pc : retire_next_pc;
+    assign retire_tval_o = async_store_fault_pending_q ?
+                           async_store_fault_addr_q : retire_tval;
+    assign retire_trace_id_o = async_store_fault_pending_q ?
+                               async_store_fault_trace_q : retire_trace_id;
+    assign retire_instr_o = async_store_fault_pending_q ?
+                            async_store_fault_instr_q : retire_instr;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            async_store_fault_pending_q <= 1'b0;
+            async_store_fault_cause_q <=
+                `RV64_EXCEPT_CAUSE_STORE_ACCESS_FAULT;
+            async_store_fault_addr_q <= {`RV64_XLEN{1'b0}};
+            async_store_fault_pc_q <= {`RV64_XLEN{1'b0}};
+            async_store_fault_trace_q <= 64'd0;
+            async_store_fault_instr_q <= {`RV64_INSTR_WIDTH{1'b0}};
+            last_arch_next_pc_q <= {`RV64_XLEN{1'b0}};
+        end else begin
+            if (|retire_arch_o)
+                last_arch_next_pc_q <= retire_next_pc;
+
+            // Capture wins over a simultaneous flush: the bus response is a
+            // one-cycle event and must not disappear behind another redirect.
+            if (async_store_fault) begin
+                async_store_fault_pending_q <= 1'b1;
+                async_store_fault_cause_q <= async_store_page_fault ?
+                    `RV64_EXCEPT_CAUSE_STORE_PAGE_FAULT :
+                    `RV64_EXCEPT_CAUSE_STORE_ACCESS_FAULT;
+                async_store_fault_addr_q <= async_store_fault_addr;
+                async_store_fault_pc_q <= async_store_fault_pc;
+                async_store_fault_trace_q <= async_store_fault_trace;
+                async_store_fault_instr_q <= async_store_fault_instr;
+            end else if (flush_i || async_store_fault_pending_q) begin
+                async_store_fault_pending_q <= 1'b0;
+            end
+        end
+    end
 
     assign issue_valid_o = pipe_valid;
     assign complete_valid_o = complete_valid;
@@ -395,5 +1195,25 @@ module openrv64_backend_3p #(
         queue_retire_id, pipe_unsupported, raw_hazard, waw_hazard,
         read_port_hazard
     };
+
+`ifndef SYNTHESIS
+    initial begin
+        if ((FREE_BRANCHES != 0) &&
+            (ENABLE_ISSUE_WINDOW != 0))
+            $fatal(1, "free branches require strict dispatch path");
+        if ((ENABLE_ISSUE_WINDOW != 0) &&
+            (ISSUE_WINDOW_DEPTH != RETIRE_DEPTH))
+            $fatal(1, "issue-window depth must equal retirement depth");
+        if ((ENABLE_SPECULATION_WINDOW != 0) &&
+            (ENABLE_ISSUE_WINDOW == 0))
+            $fatal(1, "speculation window requires issue window");
+    end
+
+    always @(posedge clk) begin
+        if (rst_n && !flush_i && free_branch_resolved &&
+            exec_branch_resolved)
+            $fatal(1, "free and EX0 branch resolutions collided");
+    end
+`endif
 
 endmodule

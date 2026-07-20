@@ -9,6 +9,8 @@ module tb_dispatch_barrier_3p;
     reg rst_n;
     reg flush;
     reg [2:0] candidate_valid;
+    reg [2:0] candidate_free;
+    reg [2:0] candidate_barrier_free;
     reg [3*PAYLOAD_WIDTH-1:0] candidate_payload;
     wire [2:0] candidate_hard;
     wire [2:0] allocation_allow;
@@ -22,6 +24,8 @@ module tb_dispatch_barrier_3p;
         .rst_n(rst_n),
         .flush_i(flush),
         .candidate_valid_i(candidate_valid),
+        .candidate_free_i(candidate_free),
+        .candidate_barrier_free_i(candidate_barrier_free),
         .candidate_payload_i(candidate_payload),
         .candidate_hard_o(candidate_hard),
         .allocation_allow_o(allocation_allow),
@@ -51,6 +55,8 @@ module tb_dispatch_barrier_3p;
     task automatic clear_inputs;
         begin
             candidate_valid = 3'b000;
+            candidate_free = 3'b000;
+            candidate_barrier_free = 3'b000;
             candidate_payload = {3*PAYLOAD_WIDTH{1'b0}};
             allocation_fire = 3'b000;
             retire_valid = 3'b000;
@@ -137,6 +143,30 @@ module tb_dispatch_barrier_3p;
         #1;
         if (barrier_active)
             fail("flush did not clear barrier");
+
+        // A free branch is neither an issue-group terminator nor a
+        // retirement barrier.  The instruction still allocates separately.
+        candidate_valid = 3'b111;
+        candidate_free = 3'b010;
+        candidate_payload[1*PAYLOAD_WIDTH + 14] = 1'b1;
+        #1;
+        if ((candidate_hard != 3'b000) ||
+            (allocation_allow != 3'b111)) begin
+            fail("free branch still acted as a hard-order barrier");
+        end
+        clear_inputs();
+
+        // A proved-correct equality branch remains hard retirement metadata,
+        // but no longer terminates this issue group.
+        candidate_valid = 3'b111;
+        candidate_barrier_free = 3'b010;
+        candidate_payload[1*PAYLOAD_WIDTH + 14] = 1'b1;
+        #1;
+        if ((candidate_hard != 3'b010) ||
+            (allocation_allow != 3'b111)) begin
+            fail("paired equality branch lost hard metadata or blocked issue");
+        end
+        clear_inputs();
 
         // A trap in the first position excludes both younger candidates.
         candidate_valid = 3'b111;

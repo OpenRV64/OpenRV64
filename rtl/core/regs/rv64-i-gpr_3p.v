@@ -1,12 +1,14 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 
-// Six combinational read selectors and three retirement write ports.  Dispatch
-// guarantees distinct nonzero write addresses; the assertion below makes that
-// architectural ownership rule visible at the physical register bank.
+// Six combinational read selectors and three ordered retirement write ports.
+// Duplicate destinations are optional; when enabled, ascending nonblocking
+// assignments and youngest-first bypass priority make the youngest retirement
+// lane the final architectural value.
 module openrv64_rv64i_gpr_3p #(
     parameter RESET_REGS = 1,
-    parameter READ_WRITE_BYPASS = 1
+    parameter READ_WRITE_BYPASS = 1,
+    parameter ALLOW_DUPLICATE_WRITES = 0
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -46,9 +48,9 @@ module openrv64_rv64i_gpr_3p #(
 
             assign read_data_o[read_idx*`RV64_XLEN +: `RV64_XLEN] =
                 (read_addr == `RV64_REG_X0) ? {`RV64_XLEN{1'b0}} :
-                bypass0 ? write_data_i[0*`RV64_XLEN +: `RV64_XLEN] :
-                bypass1 ? write_data_i[1*`RV64_XLEN +: `RV64_XLEN] :
                 bypass2 ? write_data_i[2*`RV64_XLEN +: `RV64_XLEN] :
+                bypass1 ? write_data_i[1*`RV64_XLEN +: `RV64_XLEN] :
+                bypass0 ? write_data_i[0*`RV64_XLEN +: `RV64_XLEN] :
                 regs[read_addr];
         end
     endgenerate
@@ -80,9 +82,10 @@ module openrv64_rv64i_gpr_3p #(
 `ifndef SYNTHESIS
     always @(posedge clk) begin
         if (rst_n) begin
-            if ((write0 && write1 && (write_addr0 == write_addr1)) ||
+            if ((ALLOW_DUPLICATE_WRITES == 0) &&
+                ((write0 && write1 && (write_addr0 == write_addr1)) ||
                 (write0 && write2 && (write_addr0 == write_addr2)) ||
-                (write1 && write2 && (write_addr1 == write_addr2))) begin
+                 (write1 && write2 && (write_addr1 == write_addr2)))) begin
                 $fatal(1, "3p retirement attempted duplicate GPR writes");
             end
         end

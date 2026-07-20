@@ -2,6 +2,7 @@
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 module tb_dispatch_3p;
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
@@ -9,11 +10,15 @@ module tb_dispatch_3p;
     localparam integer SW = 3;
 
     localparam integer I_SYSTEM = 10;
+    localparam integer I_PREDICTED_TAKEN = 12;
+    localparam integer I_BRANCH = 14;
     localparam integer I_MEM_READ = 16;
     localparam integer I_REG_WRITE = 17;
+    localparam integer I_BR_OP = 18;
     localparam integer I_ALU_OP = 27;
     localparam integer I_ALU_EXT = 32;
     localparam integer I_RD = 35;
+    localparam integer I_IMM = 40;
     localparam integer I_RS2_DATA = 104;
     localparam integer I_RS1_DATA = 168;
     localparam integer I_RS2 = 232;
@@ -41,6 +46,12 @@ module tb_dispatch_3p;
     reg [2:0] pipe_ready;
     reg [1:0] forward_valid;
     reg [2*5-1:0] forward_rd_addr;
+    reg [2:0] completion_forward_valid;
+    reg [3*5-1:0] completion_forward_rd_addr;
+    reg [3*64-1:0] completion_forward_data;
+    reg [2:0] branch_completion_forward_valid;
+    reg [31:0] forward_map_valid;
+    reg [32*64-1:0] forward_map_data;
     wire [2:0] pipe_valid;
     wire [3*64-1:0] pipe_id;
     wire [3*SW-1:0] pipe_slot;
@@ -76,6 +87,13 @@ module tb_dispatch_3p;
         .pipe_ready_i(pipe_ready),
         .forward_valid_i(forward_valid),
         .forward_rd_addr_i(forward_rd_addr),
+        .completion_forward_valid_i(completion_forward_valid),
+        .completion_forward_rd_addr_i(completion_forward_rd_addr),
+        .completion_forward_data_i(completion_forward_data),
+        .branch_completion_forward_valid_i(
+            branch_completion_forward_valid),
+        .forward_map_valid_i(forward_map_valid),
+        .forward_map_data_i(forward_map_data),
         .pipe_valid_o(pipe_valid),
         .pipe_id_o(pipe_id), .pipe_slot_o(pipe_slot),
         .pipe_payload_o(pipe_payload),
@@ -113,6 +131,25 @@ module tb_dispatch_3p;
             p[I_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
             p[I_REG_WRITE] = (rd != 0);
             alu_packet = p;
+        end
+    endfunction
+
+    function automatic [IW-1:0] branch_packet;
+        input [63:0] id;
+        input [`RV64_BR_OP_WIDTH-1:0] branch_op;
+        input predicted_taken;
+        input [4:0] rs1;
+        input [4:0] rs2;
+        reg [IW-1:0] p;
+        begin
+            p = alu_packet(id, rs1, rs2, 5'd0);
+            p[I_INSTR +: 32] = 32'h0000_0063;
+            p[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+            p[I_BRANCH] = 1'b1;
+            p[I_PREDICTED_TAKEN] = predicted_taken;
+            p[I_BR_OP +: `RV64_BR_OP_WIDTH] = branch_op;
+            p[I_IMM +: 64] = 64'd8;
+            branch_packet = p;
         end
     endfunction
 
@@ -165,6 +202,12 @@ module tb_dispatch_3p;
         pipe_ready = 3'b111;
         forward_valid = 2'b00;
         forward_rd_addr = 10'd0;
+        completion_forward_valid = 3'b000;
+        completion_forward_rd_addr = 15'd0;
+        completion_forward_data = {3*64{1'b0}};
+        branch_completion_forward_valid = 3'b000;
+        forward_map_valid = 32'd0;
+        forward_map_data = {32*64{1'b0}};
         retire_valid = 0;
         retire_uses_rs1 = 0;
         retire_uses_rs2 = 0;
@@ -245,6 +288,47 @@ module tb_dispatch_3p;
         retire_valid = 0;
         retire_reg_write = 0;
 
+        // A live completion entry may release a cross-pipe dependency and
+        // supplies its 64-bit value during dispatch operand capture.  It is
+        // deliberately valid for this cycle only; no queue history is used.
+        p0 = alu_packet(64'd22, 5'd1, 5'd2, 5'd20);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        tick();
+        p0 = alu_packet(64'd23, 5'd20, 5'd0, 5'd21);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_uses_rs2 = 3'b000;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        #1;
+        if (allocation_valid != 0 || !raw_hazard[0])
+            fail("cross-pipe consumer was not initially RAW blocked");
+        completion_forward_valid = 3'b100;
+        completion_forward_rd_addr[2*5 +: 5] = 5'd20;
+        completion_forward_data[2*64 +: 64] =
+            64'hcafe_f00d_dead_beef;
+        #1;
+        if (allocation_valid != 3'b001)
+            fail("live completion did not release cross-pipe consumer");
+        if (pipe_payload[0*IW + I_RS1_DATA +: 64] !=
+            64'hcafe_f00d_dead_beef)
+            fail("live completion data was not captured by consumer");
+        tick();
+        completion_forward_valid = 3'b000;
+        completion_forward_rd_addr = 15'd0;
+        completion_forward_data = {3*64{1'b0}};
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+
         // A full older MEM pipe blocks the complete prefix; the younger ALU
         // cannot bypass it even though EX0 and EX1 are idle.
         p0 = alu_packet(64'd14, 0, 0, 0);
@@ -308,7 +392,162 @@ module tb_dispatch_3p;
         if (allocation_valid != 3'b111 || pipe_valid != 3'b111)
             fail("MEM/M/EX0 candidates did not issue three-wide");
 
-        $display("PASS: queued 3p dispatch routing, hazards, and ordering");
+        // Equality-branch pairing is not the free-branch experiment: BEQ
+        // still claims EX0 and remains hard retirement metadata.  A matching
+        // prediction lets an independent ALU claim EX1 on the same edge.
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = branch_packet(64'd30, `RV64_BR_OP_BEQ, 1'b1, 5'd1, 5'd2);
+        p1 = alu_packet(64'd31, 5'd3, 5'd4, 5'd22);
+        enqueue2(p0, p1, 2'b11, 2'b11);
+        gpr_read_data[0*64 +: 64] = 64'h55;
+        gpr_read_data[1*64 +: 64] = 64'h55;
+        gpr_read_data[2*64 +: 64] = 64'h11;
+        gpr_read_data[3*64 +: 64] = 64'h22;
+        #1;
+        if ((allocation_valid != 3'b011) || (pipe_valid != 3'b011))
+            fail("correctly predicted BEQ did not pair with younger ALU");
+        if (!allocation_meta[MW-1])
+            fail("paired BEQ lost hard retirement classification");
+
+        // BNE uses the same contained comparator path.
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = branch_packet(64'd32, `RV64_BR_OP_BNE, 1'b1, 5'd1, 5'd2);
+        p1 = alu_packet(64'd33, 5'd3, 5'd4, 5'd23);
+        enqueue2(p0, p1, 2'b11, 2'b11);
+        gpr_read_data[0*64 +: 64] = 64'h55;
+        gpr_read_data[1*64 +: 64] = 64'h66;
+        #1;
+        if ((allocation_valid != 3'b011) || (pipe_valid != 3'b011))
+            fail("correctly predicted BNE did not pair with younger ALU");
+
+        // A direction mismatch retains the normal barrier.  No younger
+        // wrong-path instruction is allocated or issued.
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = branch_packet(64'd34, `RV64_BR_OP_BEQ, 1'b0, 5'd1, 5'd2);
+        p1 = alu_packet(64'd35, 5'd3, 5'd4, 5'd24);
+        enqueue2(p0, p1, 2'b11, 2'b11);
+        gpr_read_data[0*64 +: 64] = 64'h77;
+        gpr_read_data[1*64 +: 64] = 64'h77;
+        #1;
+        if ((allocation_valid != 3'b001) || (pipe_valid != 3'b001))
+            fail("mispredicted BEQ allowed younger wrong-path issue");
+
+        // The exemption does not weaken RAW enforcement.  A BNE waiting on an
+        // older writer blocks itself and the complete younger prefix until a
+        // producer-ID-qualified branch completion arrives.  The MEM result is
+        // deliberately nonzero while the stale GPR value is zero, proving the
+        // pairing comparator consumes the forwarded operand.
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = alu_packet(64'd36, 5'd0, 5'd0, 5'd25);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b000;
+        decode_uses_rs2 = 3'b000;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        tick();
+        p0 = branch_packet(64'd37, `RV64_BR_OP_BNE, 1'b1, 5'd25, 5'd0);
+        p1 = alu_packet(64'd38, 5'd3, 5'd4, 5'd26);
+        enqueue2(p0, p1, 2'b01, 2'b00);
+        gpr_read_data[0*64 +: 64] = 64'd0;
+        gpr_read_data[1*64 +: 64] = 64'd0;
+        #1;
+        if ((allocation_valid != 3'b000) || !raw_hazard[0])
+            fail("RAW-blocked BNE leaked younger issue through pairing");
+        branch_completion_forward_valid = 3'b100;
+        completion_forward_rd_addr[2*5 +: 5] = 5'd25;
+        completion_forward_data[2*64 +: 64] =
+            64'hfeed_face_cafe_beef;
+        // Model a stale untagged value from an older same-rd writer.  The
+        // producer-qualified branch result must have final mux priority.
+        forward_map_valid[25] = 1'b1;
+        forward_map_data[25*64 +: 64] = 64'd0;
+        #1;
+        if ((allocation_valid != 3'b011) || (pipe_valid != 3'b011))
+            fail("MEM-to-branch forwarding did not release and pair BNE");
+        if (pipe_payload[0*IW + I_RS1_DATA +: 64] !=
+            64'hfeed_face_cafe_beef)
+            fail("MEM-to-branch value did not reach branch comparator");
+        tick();
+        branch_completion_forward_valid = 3'b000;
+        completion_forward_rd_addr = 15'd0;
+        completion_forward_data = {3*64{1'b0}};
+        forward_map_valid = 32'd0;
+        forward_map_data = {32*64{1'b0}};
+
+        // Branch-only validity is contained: the same live source cannot
+        // release an ordinary ALU consumer.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = alu_packet(64'd39, 5'd0, 5'd0, 5'd27);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b000;
+        decode_uses_rs2 = 3'b000;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        tick();
+        p0 = alu_packet(64'd40, 5'd27, 5'd0, 5'd28);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_uses_rs2 = 3'b000;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        branch_completion_forward_valid = 3'b010;
+        completion_forward_rd_addr[1*5 +: 5] = 5'd27;
+        completion_forward_data[1*64 +: 64] = 64'h1234;
+        #1;
+        if ((allocation_valid != 3'b000) || !raw_hazard[0])
+            fail("branch-only bypass incorrectly released ALU consumer");
+
+        // The EX1 source does release a conditional branch and supplies the
+        // value used by its direction check.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        branch_completion_forward_valid = 3'b000;
+        completion_forward_rd_addr = 15'd0;
+        completion_forward_data = {3*64{1'b0}};
+        p0 = alu_packet(64'd41, 5'd0, 5'd0, 5'd29);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b000;
+        decode_uses_rs2 = 3'b000;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        tick();
+        p0 = branch_packet(64'd42, `RV64_BR_OP_BEQ, 1'b1, 5'd29, 5'd0);
+        p1 = alu_packet(64'd43, 5'd3, 5'd4, 5'd30);
+        enqueue2(p0, p1, 2'b01, 2'b00);
+        gpr_read_data[0*64 +: 64] = 64'hdead;
+        branch_completion_forward_valid = 3'b010;
+        completion_forward_rd_addr[1*5 +: 5] = 5'd29;
+        completion_forward_data[1*64 +: 64] = 64'd0;
+        #1;
+        if ((allocation_valid != 3'b011) || (pipe_valid != 3'b011))
+            fail("EX1-to-branch forwarding did not release and pair BEQ");
+        if (pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'd0)
+            fail("EX1-to-branch value did not reach branch comparator");
+
+        $display("PASS: queued 3p dispatch routing, hazards, branch forwarding, pairing, and ordering");
         $finish;
     end
 endmodule

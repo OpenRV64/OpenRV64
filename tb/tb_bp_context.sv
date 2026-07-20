@@ -5,7 +5,9 @@
 module tb_bp_context #(
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_ALWAYS_BRANCH,
-    parameter bit ENABLE_PREDECODE_TARGETS = 1'b1
+    parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
+    parameter bit BP_RAS_ENABLE = 1'b1,
+    parameter int unsigned BP_RAS_DEPTH = 8
 );
 
     localparam logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0100;
@@ -37,6 +39,8 @@ module tb_bp_context #(
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
         .BP_TYPE(BP_TYPE),
+        .BP_RAS_ENABLE(BP_RAS_ENABLE),
+        .BP_RAS_DEPTH(BP_RAS_DEPTH),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS)
     ) dut (
         .clk(clk),
@@ -119,6 +123,29 @@ module tb_bp_context #(
                         64'h104: expected_prediction = 1'b0;
                         64'h10c: expected_prediction = 1'b0;
                         64'h114: expected_prediction = 1'b1;
+                        64'h11c: expected_prediction = 1'b1;
+                        default: expected_prediction = 1'bx;
+                    endcase
+                end
+                `OPENRV64_BP_BTFNT,
+                `OPENRV64_BP_BIMODAL: begin
+                    case (pc)
+                        64'h104: expected_prediction = 1'b1;
+                        64'h10c,
+                        64'h114,
+                        64'h11c: expected_prediction = 1'b0;
+                        default: expected_prediction = 1'bx;
+                    endcase
+                end
+                `OPENRV64_BP_GSHARE_BTB: begin
+                    // At 0x11c, PC[9:2] XOR GHR aliases the weak-taken
+                    // entry trained by 0x114.  This is intentional gshare
+                    // behavior and makes the tiny context test exercise an
+                    // actual history collision.
+                    case (pc)
+                        64'h104: expected_prediction = 1'b1;
+                        64'h10c,
+                        64'h114: expected_prediction = 1'b0;
                         64'h11c: expected_prediction = 1'b1;
                         default: expected_prediction = 1'bx;
                     endcase
@@ -221,7 +248,10 @@ module tb_bp_context #(
 
             if (dbg_halted) begin
                 if (!saw_result_store || prediction_count != 4 ||
-                    correction_count != 2) begin
+                    correction_count !=
+                        ((BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ? 4 :
+                         (((BP_TYPE == `OPENRV64_BP_BTFNT) ||
+                           (BP_TYPE == `OPENRV64_BP_BIMODAL)) ? 3 : 2))) begin
                     $fatal(1,
                            "BP type %0d summary mismatch: store=%0b predictions=%0d corrections=%0d",
                            BP_TYPE, saw_result_store,

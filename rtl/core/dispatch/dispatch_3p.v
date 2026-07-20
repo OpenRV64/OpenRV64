@@ -2,6 +2,7 @@
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 // Three-pipe dispatch with a small decoded-instruction queue.  Frontend input
 // is three-wide; the queue can present the oldest three entries to issue.  All
@@ -10,6 +11,10 @@ module openrv64_dispatch_3p #(
     parameter integer QUEUE_DEPTH = 6,
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer MAX_READS_PER_REG = 2,
+    parameter integer RELAX_WAW = 1,
+    parameter integer RELAX_HAZARDS = 0,
+    parameter integer FREE_BRANCHES = 0,
+    parameter integer ENABLE_EQ_BRANCH_PAIRING = 1,
     parameter integer COUNT_WIDTH = $clog2(QUEUE_DEPTH + 1)
 ) (
     input  wire                         clk,
@@ -36,6 +41,13 @@ module openrv64_dispatch_3p #(
     input  wire [2:0]                   pipe_ready_i,
     input  wire [1:0]                   forward_valid_i,
     input  wire [2*`RV64_REG_ADDR_WIDTH-1:0] forward_rd_addr_i,
+    input  wire [2:0]                   completion_forward_valid_i,
+    input  wire [3*`RV64_REG_ADDR_WIDTH-1:0]
+                                        completion_forward_rd_addr_i,
+    input  wire [3*`RV64_XLEN-1:0]      completion_forward_data_i,
+    input  wire [2:0]                   branch_completion_forward_valid_i,
+    input  wire [31:0]                  forward_map_valid_i,
+    input  wire [32*`RV64_XLEN-1:0]     forward_map_data_i,
     output wire [2:0]                   pipe_valid_o,
     output wire [3*64-1:0]              pipe_id_o,
     output wire [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
@@ -83,21 +95,147 @@ module openrv64_dispatch_3p #(
 
     reg [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] candidate_payload;
     integer payload_idx;
+    integer completion_forward_idx;
+    reg [`RV64_XLEN-1:0] forwarded_rs1_data;
+    reg [`RV64_XLEN-1:0] forwarded_rs2_data;
+    reg branch_forwarded_rs1;
+    reg branch_forwarded_rs2;
+    function automatic retiring_write_match;
+        input [`RV64_REG_ADDR_WIDTH-1:0] source_addr;
+        integer retire_lane;
+        begin
+            retiring_write_match = 1'b0;
+            for (retire_lane = 0; retire_lane < 3;
+                 retire_lane = retire_lane + 1) begin
+                if (retire_valid_i[retire_lane] &&
+                    retire_reg_write_i[retire_lane] &&
+                    (retire_rd_addr_i[
+                        retire_lane*`RV64_REG_ADDR_WIDTH +:
+                        `RV64_REG_ADDR_WIDTH] == source_addr) &&
+                    (source_addr != `RV64_REG_X0))
+                    retiring_write_match = 1'b1;
+            end
+        end
+    endfunction
+
     always_comb begin
         candidate_payload =
             {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+        forwarded_rs1_data = {`RV64_XLEN{1'b0}};
+        forwarded_rs2_data = {`RV64_XLEN{1'b0}};
+        branch_forwarded_rs1 = 1'b0;
+        branch_forwarded_rs2 = 1'b0;
+        completion_forward_idx = 0;
         for (payload_idx = 0; payload_idx < 3; payload_idx = payload_idx + 1) begin
             if (count_q > payload_idx) begin
                 candidate_payload[
                     payload_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = payload_q[payload_idx];
+                forwarded_rs1_data = gpr_read_data_i[
+                    (payload_idx*2+0)*`RV64_XLEN +: `RV64_XLEN];
+                forwarded_rs2_data = gpr_read_data_i[
+                    (payload_idx*2+1)*`RV64_XLEN +: `RV64_XLEN];
+                branch_forwarded_rs1 = 1'b0;
+                branch_forwarded_rs2 = 1'b0;
+                for (completion_forward_idx = 0;
+                     completion_forward_idx < 3;
+                     completion_forward_idx = completion_forward_idx + 1) begin
+                    if (completion_forward_valid_i[completion_forward_idx] &&
+                        (completion_forward_rd_addr_i[
+                            completion_forward_idx*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] ==
+                         payload_q[payload_idx][237 +:
+                            `RV64_REG_ADDR_WIDTH]))
+                        forwarded_rs1_data = completion_forward_data_i[
+                            completion_forward_idx*`RV64_XLEN +:
+                            `RV64_XLEN];
+                    if (completion_forward_valid_i[completion_forward_idx] &&
+                        (completion_forward_rd_addr_i[
+                            completion_forward_idx*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] ==
+                         payload_q[payload_idx][232 +:
+                            `RV64_REG_ADDR_WIDTH]))
+                        forwarded_rs2_data = completion_forward_data_i[
+                            completion_forward_idx*`RV64_XLEN +:
+                            `RV64_XLEN];
+                end
                 // Six selectors are packed rs1,rs2 for candidate 0, then 1,2.
+                if (forward_map_valid_i[
+                        payload_q[payload_idx][237 +: `RV64_REG_ADDR_WIDTH]])
+                    forwarded_rs1_data = forward_map_data_i[
+                        payload_q[payload_idx][237 +: `RV64_REG_ADDR_WIDTH] *
+                        `RV64_XLEN +: `RV64_XLEN];
+                if (forward_map_valid_i[
+                        payload_q[payload_idx][232 +: `RV64_REG_ADDR_WIDTH]])
+                    forwarded_rs2_data = forward_map_data_i[
+                        payload_q[payload_idx][232 +: `RV64_REG_ADDR_WIDTH] *
+                        `RV64_XLEN +: `RV64_XLEN];
+                // The producer-slot-qualified branch path has final forwarding
+                // priority.  An untagged general completion/map entry for an
+                // older WAW producer must not overwrite the proven youngest
+                // value.  In legal operation at most one qualified port can
+                // match a given architectural source.
+                for (completion_forward_idx = 0;
+                     completion_forward_idx < 3;
+                     completion_forward_idx = completion_forward_idx + 1) begin
+                    if (payload_q[payload_idx][14] &&
+                        branch_completion_forward_valid_i[
+                            completion_forward_idx] &&
+                        (completion_forward_rd_addr_i[
+                            completion_forward_idx*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] ==
+                         payload_q[payload_idx][237 +:
+                            `RV64_REG_ADDR_WIDTH])) begin
+                        forwarded_rs1_data = completion_forward_data_i[
+                            completion_forward_idx*`RV64_XLEN +:
+                            `RV64_XLEN];
+                        branch_forwarded_rs1 = 1'b1;
+                    end
+                    if (payload_q[payload_idx][14] &&
+                        branch_completion_forward_valid_i[
+                            completion_forward_idx] &&
+                        (completion_forward_rd_addr_i[
+                            completion_forward_idx*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] ==
+                         payload_q[payload_idx][232 +:
+                            `RV64_REG_ADDR_WIDTH])) begin
+                        forwarded_rs2_data = completion_forward_data_i[
+                            completion_forward_idx*`RV64_XLEN +:
+                            `RV64_XLEN];
+                        branch_forwarded_rs2 = 1'b1;
+                    end
+                end
+                // In the conservative mode, ordered same-cycle retirement is
+                // the newest source the untagged rd map can prove.  Restore the
+                // GPR's youngest-lane retirement bypass there.  In aggressive
+                // mode a valid tagged map may describe an even younger live
+                // producer, so that result correctly retains priority.
+                if (retiring_write_match(
+                        payload_q[payload_idx][237 +:
+                            `RV64_REG_ADDR_WIDTH]) &&
+                    ((RELAX_HAZARDS == 0) ||
+                     !forward_map_valid_i[
+                        payload_q[payload_idx][237 +:
+                            `RV64_REG_ADDR_WIDTH]]) &&
+                    !branch_forwarded_rs1)
+                    forwarded_rs1_data = gpr_read_data_i[
+                        (payload_idx*2+0)*`RV64_XLEN +: `RV64_XLEN];
+                if (retiring_write_match(
+                        payload_q[payload_idx][232 +:
+                            `RV64_REG_ADDR_WIDTH]) &&
+                    ((RELAX_HAZARDS == 0) ||
+                     !forward_map_valid_i[
+                        payload_q[payload_idx][232 +:
+                            `RV64_REG_ADDR_WIDTH]]) &&
+                    !branch_forwarded_rs2)
+                    forwarded_rs2_data = gpr_read_data_i[
+                        (payload_idx*2+1)*`RV64_XLEN +: `RV64_XLEN];
                 candidate_payload[
-                    payload_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 168 +: 64] =
-                    gpr_read_data_i[(payload_idx*2+0)*`RV64_XLEN +: `RV64_XLEN];
+                    payload_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                    168 +: 64] = forwarded_rs1_data;
                 candidate_payload[
-                    payload_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 104 +: 64] =
-                    gpr_read_data_i[(payload_idx*2+1)*`RV64_XLEN +: `RV64_XLEN];
+                    payload_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                    104 +: 64] = forwarded_rs2_data;
             end
         end
     end
@@ -132,6 +270,11 @@ module openrv64_dispatch_3p #(
         candidate_payload[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 35 +: 5],
         candidate_payload[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 35 +: 5],
         candidate_payload[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 35 +: 5]
+    };
+    wire [2:0] candidate_branch = {
+        candidate_payload[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14],
+        candidate_payload[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14],
+        candidate_payload[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14]
     };
     wire [2:0] candidate_reg_write = {
         candidate_payload[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 17],
@@ -218,9 +361,94 @@ module openrv64_dispatch_3p #(
     wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload2 =
         candidate_payload[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                           `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+    function automatic is_free_branch;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            is_free_branch = (FREE_BRANCHES != 0) &&
+                payload[14] &&                  // conditional branch only
+                !payload[8] &&                  // illegal
+                !payload[5] &&                  // instruction access fault
+                !payload[4];                    // instruction page fault
+        end
+    endfunction
+
+    function automatic is_pairable_eq_branch;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_BR_OP_WIDTH-1:0] branch_op;
+        begin
+            branch_op = payload[18 +: `RV64_BR_OP_WIDTH];
+            is_pairable_eq_branch =
+                (ENABLE_EQ_BRANCH_PAIRING != 0) &&
+                payload[14] &&                  // conditional branch only
+                !payload[8] &&                  // illegal
+                !payload[5] &&                  // instruction access fault
+                !payload[4] &&                  // instruction page fault
+                !payload[41] &&                 // direct target is aligned
+                ((branch_op == `RV64_BR_OP_BEQ) ||
+                 (branch_op == `RV64_BR_OP_BNE));
+        end
+    endfunction
+
+    function automatic branch_taken;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_BR_OP_WIDTH-1:0] branch_op;
+        reg [`RV64_XLEN-1:0] src1;
+        reg [`RV64_XLEN-1:0] src2;
+        begin
+            branch_op = payload[18 +: `RV64_BR_OP_WIDTH];
+            src1 = payload[168 +: `RV64_XLEN];
+            src2 = payload[104 +: `RV64_XLEN];
+            case (branch_op)
+                `RV64_BR_OP_BEQ:  branch_taken = (src1 == src2);
+                `RV64_BR_OP_BNE:  branch_taken = (src1 != src2);
+                `RV64_BR_OP_BLT:  branch_taken =
+                    ($signed(src1) < $signed(src2));
+                `RV64_BR_OP_BGE:  branch_taken =
+                    ($signed(src1) >= $signed(src2));
+                `RV64_BR_OP_BLTU: branch_taken = (src1 < src2);
+                `RV64_BR_OP_BGEU: branch_taken = (src1 >= src2);
+                default:          branch_taken = 1'b0;
+            endcase
+        end
+    endfunction
+
+    // Free branches retain real operand hazards and real prediction.  A
+    // correctly predicted branch does not claim a pipe or terminate the
+    // group; a known misprediction suppresses its younger wrong-path lanes.
+    wire free0 = candidate_valid[0] && is_free_branch(payload0);
+    wire free1 = candidate_valid[1] && is_free_branch(payload1);
+    wire free2 = candidate_valid[2] && is_free_branch(payload2);
+    wire [2:0] candidate_free = {free2, free1, free0};
+    wire free_mispredict0 = free0 &&
+        (branch_taken(payload0) != payload0[12]);
+    wire free_mispredict1 = free1 &&
+        (branch_taken(payload1) != payload1[12]);
+    // Equality branches are cheap enough to resolve once in dispatch.  When
+    // that result proves the frontend prediction correct, waive only their
+    // same-cycle barrier so predicted-path work may share the bundle.  The
+    // branch itself remains a normal EX0 instruction and retirement entry.
+    // A wrong prediction, non-equality branch, fault, or unresolved operand
+    // retains the ordinary prefix barrier; strict candidate-fire chaining
+    // prevents younger issue when this branch cannot itself issue.
+    wire pair_eq0 = candidate_valid[0] && !free0 &&
+        is_pairable_eq_branch(payload0) &&
+        (branch_taken(payload0) == payload0[12]);
+    wire pair_eq1 = candidate_valid[1] && !free1 &&
+        is_pairable_eq_branch(payload1) &&
+        (branch_taken(payload1) == payload1[12]);
+    wire pair_eq2 = candidate_valid[2] && !free2 &&
+        is_pairable_eq_branch(payload2) &&
+        (branch_taken(payload2) == payload2[12]);
+    wire [2:0] candidate_barrier_free = {pair_eq2, pair_eq1, pair_eq0};
+    wire [2:0] reg_map_uses_rs1 = candidate_uses_rs1;
+    wire [2:0] reg_map_uses_rs2 = candidate_uses_rs2;
+
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed0 = fixed_pipe(payload0);
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed1 = fixed_pipe(payload1);
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed2 = fixed_pipe(payload2);
+    wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] routing_fixed0 = free0 ? 2'd3 : fixed0;
+    wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] routing_fixed1 = free1 ? 2'd3 : fixed1;
+    wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] routing_fixed2 = free2 ? 2'd3 : fixed2;
     wire [1:0] forward_match0 = forward_match(
         candidate_uses_rs1[0],
         candidate_rs1_addr[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH],
@@ -255,36 +483,39 @@ module openrv64_dispatch_3p #(
         forward_match2[1] ? `OPENRV64_EXEC_PIPE_EX1 :
                             `OPENRV64_EXEC_PIPE_EX0;
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected0 =
-        (fixed0 != 2'd3) ? fixed0 :
-        choose_base_pipe(3'b000, fixed1,
+        (routing_fixed0 != 2'd3) ? routing_fixed0 :
+        choose_base_pipe(3'b000, routing_fixed1,
                          forward_preferred0, forward_pipe0);
-    wire [2:0] used0 = candidate_valid[0] ?
+    wire [2:0] used0 = candidate_valid[0] && !free0 ?
         (3'b001 << selected0) : 3'b000;
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected1 =
-        (fixed1 != 2'd3) ? fixed1 :
-        choose_base_pipe(used0, fixed2,
+        (routing_fixed1 != 2'd3) ? routing_fixed1 :
+        choose_base_pipe(used0, routing_fixed2,
                          forward_preferred1, forward_pipe1);
-    wire [2:0] used1 = used0 | (candidate_valid[1] ?
+    wire [2:0] used1 = used0 | (candidate_valid[1] && !free1 ?
         (3'b001 << selected1) : 3'b000);
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected2 =
-        (fixed2 != 2'd3) ? fixed2 :
+        (routing_fixed2 != 2'd3) ? routing_fixed2 :
         choose_base_pipe(used1, 2'd3,
                          forward_preferred2, forward_pipe2);
     wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe = {
-        selected2,
-        selected1,
-        selected0
+        free2 ? 2'd3 : selected2,
+        free1 ? 2'd3 : selected1,
+        free0 ? 2'd3 : selected0
     };
 
     openrv64_dispatch_reg_map_3p #(
-        .MAX_READS_PER_REG(MAX_READS_PER_REG)
+        .MAX_READS_PER_REG(MAX_READS_PER_REG),
+        .RELAX_WAW(RELAX_WAW),
+        .RELAX_HAZARDS(RELAX_HAZARDS)
     ) u_reg_map (
         .clk(clk),
         .rst_n(rst_n),
         .clear_i(flush_i),
         .candidate_valid_i(candidate_valid),
-        .candidate_uses_rs1_i(candidate_uses_rs1),
-        .candidate_uses_rs2_i(candidate_uses_rs2),
+        .candidate_branch_i(candidate_branch),
+        .candidate_uses_rs1_i(reg_map_uses_rs1),
+        .candidate_uses_rs2_i(reg_map_uses_rs2),
         .candidate_rs1_addr_i(candidate_rs1_addr),
         .candidate_rs2_addr_i(candidate_rs2_addr),
         .candidate_reg_write_i(candidate_reg_write),
@@ -292,6 +523,11 @@ module openrv64_dispatch_3p #(
         .candidate_pipe_i(candidate_pipe),
         .forward_valid_i(forward_valid_i),
         .forward_rd_addr_i(forward_rd_addr_i),
+        .completion_forward_valid_i(completion_forward_valid_i),
+        .completion_forward_rd_addr_i(completion_forward_rd_addr_i),
+        .branch_completion_forward_valid_i(
+            branch_completion_forward_valid_i),
+        .forward_map_valid_i(forward_map_valid_i),
         .candidate_hazard_free_o(candidate_hazard_free),
         .raw_hazard_o(raw_hazard_o),
         .waw_hazard_o(waw_hazard_o),
@@ -304,6 +540,12 @@ module openrv64_dispatch_3p #(
     );
 
     wire [2:0] candidate_hard;
+    wire [2:0] candidate_hazard_free_effective = {
+        candidate_hazard_free[2] &&
+            !free_mispredict0 && !free_mispredict1,
+        candidate_hazard_free[1] && !free_mispredict0,
+        candidate_hazard_free[0]
+    };
     openrv64_dispatch_control_3p #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH)
     ) u_control (
@@ -311,7 +553,9 @@ module openrv64_dispatch_3p #(
         .rst_n(rst_n),
         .flush_i(flush_i),
         .candidate_valid_i(candidate_valid),
-        .candidate_hazard_free_i(candidate_hazard_free),
+        .candidate_free_i(candidate_free),
+        .candidate_barrier_free_i(candidate_barrier_free),
+        .candidate_hazard_free_i(candidate_hazard_free_effective),
         .candidate_pipe_i(candidate_pipe),
         .candidate_id_i(allocation_id_i),
         .candidate_slot_i(allocation_slot_i),
@@ -336,8 +580,8 @@ module openrv64_dispatch_3p #(
                 read_lane*`OPENRV64_RETIRE_META_WIDTH +:
                 `OPENRV64_RETIRE_META_WIDTH] = {
                 candidate_hard[read_lane],
-                candidate_uses_rs2[read_lane],
-                candidate_uses_rs1[read_lane],
+                reg_map_uses_rs2[read_lane],
+                reg_map_uses_rs1[read_lane],
                 candidate_payload[
                     read_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]

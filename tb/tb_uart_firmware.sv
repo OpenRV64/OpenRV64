@@ -1,7 +1,9 @@
 `timescale 1ns/1ps
 
 module tb_uart_firmware #(
-    parameter integer BP_TYPE = 0
+    parameter integer BP_TYPE = 0,
+    parameter integer BP_RAS_ENABLE = 1,
+    parameter integer BP_RAS_DEPTH = 8
 );
 
     localparam integer FIRMWARE_IMAGE_WORDS = (64 * 1024) / 8;
@@ -54,7 +56,9 @@ module tb_uart_firmware #(
         .CORE_RESET_DELAY_CYCLES(2),
         .GPIO_WIDTH(32),
         .ENABLE_TRACE(1'b1),
-        .BP_TYPE(BP_TYPE)
+        .BP_TYPE(BP_TYPE),
+        .BP_RAS_ENABLE(BP_RAS_ENABLE),
+        .BP_RAS_DEPTH(BP_RAS_DEPTH)
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),

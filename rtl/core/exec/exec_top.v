@@ -16,6 +16,10 @@ module openrv64_exec_top #(
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_FORWARDING = 0,
     parameter ENABLE_LOAD_FORWARDING = 0,
+    parameter integer ENABLE_LOCAL_FORWARDING_3P = 1,
+    parameter integer ENABLE_POSTED_STORES = 1,
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter integer RETIRE_SLOT_WIDTH_3P = 3
 ) (
     input  wire                         clk,
@@ -64,6 +68,8 @@ module openrv64_exec_top #(
     output wire                         branch_resolved_o,
     output wire                         branch_conditional_o,
     output wire                         branch_taken_o,
+    output wire [`RV64_XLEN-1:0]        branch_pc_o,
+    output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -142,7 +148,14 @@ module openrv64_exec_top #(
     output wire [3*RETIRE_SLOT_WIDTH_3P-1:0] complete_slot_3p_o,
     output wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         complete_payload_3p_o,
-    output wire [63:0]                  redirect_id_3p_o
+    output wire                         async_store_fault_3p_o,
+    output wire                         async_store_page_fault_3p_o,
+    output wire [`RV64_XLEN-1:0]        async_store_fault_pc_3p_o,
+    output wire [`RV64_XLEN-1:0]        async_store_fault_addr_3p_o,
+    output wire [63:0]                  async_store_fault_trace_3p_o,
+    output wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr_3p_o,
+    output wire [63:0]                  redirect_id_3p_o,
+    output wire [RETIRE_SLOT_WIDTH_3P-1:0] redirect_slot_3p_o
 );
 
     generate
@@ -162,13 +175,27 @@ module openrv64_exec_top #(
             assign complete_payload_3p_o =
                 {3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
             assign redirect_id_3p_o = 64'd0;
+            assign redirect_slot_3p_o = {RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign branch_conditional_o = 1'b0;
+            assign branch_pc_o = pc_i;
+            assign branch_instr_o = instr_i;
             assign mem_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign mem_resp_ready_o = 1'b0;
+            assign async_store_fault_3p_o = 1'b0;
+            assign async_store_page_fault_3p_o = 1'b0;
+            assign async_store_fault_pc_3p_o = {`RV64_XLEN{1'b0}};
+            assign async_store_fault_addr_3p_o = {`RV64_XLEN{1'b0}};
+            assign async_store_fault_trace_3p_o = 64'd0;
+            assign async_store_fault_instr_3p_o =
+                {`RV64_INSTR_WIDTH{1'b0}};
         end else if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_3p
             openrv64_exec_top_3p #(
                 .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH_3P),
-                .ENABLE_RV64M(ENABLE_RV64M)
+                .ENABLE_RV64M(ENABLE_RV64M),
+                .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING_3P),
+                .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+                .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
+                .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
             ) u_exec (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_3p_i),
                 .issue_valid_i(issue_valid_3p_i),
@@ -185,12 +212,21 @@ module openrv64_exec_top #(
                 .complete_id_o(complete_id_3p_o),
                 .complete_slot_o(complete_slot_3p_o),
                 .complete_payload_o(complete_payload_3p_o),
+                .async_store_fault_o(async_store_fault_3p_o),
+                .async_store_page_fault_o(async_store_page_fault_3p_o),
+                .async_store_fault_pc_o(async_store_fault_pc_3p_o),
+                .async_store_fault_addr_o(async_store_fault_addr_3p_o),
+                .async_store_fault_trace_o(async_store_fault_trace_3p_o),
+                .async_store_fault_instr_o(async_store_fault_instr_3p_o),
                 .redirect_valid_o(redirect_valid_o),
                 .redirect_id_o(redirect_id_3p_o),
+                .redirect_slot_o(redirect_slot_3p_o),
                 .redirect_target_o(redirect_target_o),
                 .branch_resolved_o(branch_resolved_o),
                 .branch_conditional_o(branch_conditional_o),
                 .branch_taken_o(branch_taken_o),
+                .branch_pc_o(branch_pc_o),
+                .branch_instr_o(branch_instr_o),
                 .csr_addr_o(csr_addr_o), .csr_rdata_i(csr_rdata_i),
                 .csr_valid_i(csr_valid_i), .csr_writable_i(csr_writable_i),
                 .mem_valid_o(mem_valid_o), .mem_ready_i(mem_ready_i),
@@ -260,6 +296,8 @@ module openrv64_exec_top #(
             assign branch_resolved_o = 1'b0;
             assign branch_conditional_o = 1'b0;
             assign branch_taken_o = 1'b0;
+            assign branch_pc_o = {`RV64_XLEN{1'b0}};
+            assign branch_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
             assign csr_addr_o = {`RV64_FUNCT12_WIDTH{1'b0}};
             assign csr_write_o = 1'b0;
             assign csr_wdata_o = {`RV64_XLEN{1'b0}};

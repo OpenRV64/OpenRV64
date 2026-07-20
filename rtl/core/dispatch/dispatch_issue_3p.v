@@ -10,6 +10,7 @@ module openrv64_dispatch_issue_3p #(
 ) (
     input  wire [2:0]                   candidate_valid_i,
     input  wire [2:0]                   candidate_allow_i,
+    input  wire [2:0]                   candidate_free_i,
     input  wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe_i,
     input  wire [3*64-1:0]              candidate_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0] candidate_slot_i,
@@ -67,25 +68,33 @@ module openrv64_dispatch_issue_3p #(
     wire candidate0_fire = candidate_valid_i[0] &&
                            candidate_allow_i[0] &&
                            allocation_ready_i &&
-                           pipe_select_valid(candidate_pipe0) &&
-                           selected_pipe_ready(candidate_pipe0, pipe_ready_i);
-    wire candidate1_pipe_free = !candidate0_fire ||
+                           (candidate_free_i[0] ||
+                            (pipe_select_valid(candidate_pipe0) &&
+                             selected_pipe_ready(candidate_pipe0,
+                                                 pipe_ready_i)));
+    wire candidate1_pipe_free = !candidate0_fire || candidate_free_i[0] ||
                                 (candidate_pipe1 != candidate_pipe0);
     wire candidate1_fire = candidate_valid_i[1] &&
                            candidate0_fire &&
                            candidate_allow_i[1] &&
                            candidate1_pipe_free &&
-                           pipe_select_valid(candidate_pipe1) &&
-                           selected_pipe_ready(candidate_pipe1, pipe_ready_i);
+                           (candidate_free_i[1] ||
+                            (pipe_select_valid(candidate_pipe1) &&
+                             selected_pipe_ready(candidate_pipe1,
+                                                 pipe_ready_i)));
     wire candidate2_pipe_free =
-        (!candidate0_fire || (candidate_pipe2 != candidate_pipe0)) &&
-        (!candidate1_fire || (candidate_pipe2 != candidate_pipe1));
+        (!candidate0_fire || candidate_free_i[0] ||
+         (candidate_pipe2 != candidate_pipe0)) &&
+        (!candidate1_fire || candidate_free_i[1] ||
+         (candidate_pipe2 != candidate_pipe1));
     wire candidate2_fire = candidate_valid_i[2] &&
                            candidate1_fire &&
                            candidate_allow_i[2] &&
                            candidate2_pipe_free &&
-                           pipe_select_valid(candidate_pipe2) &&
-                           selected_pipe_ready(candidate_pipe2, pipe_ready_i);
+                           (candidate_free_i[2] ||
+                            (pipe_select_valid(candidate_pipe2) &&
+                             selected_pipe_ready(candidate_pipe2,
+                                                 pipe_ready_i)));
 
     assign candidate_fire_o = {
         candidate2_fire,
@@ -116,6 +125,7 @@ module openrv64_dispatch_issue_3p #(
             // ready->fire->payload combinational loop.  pipe_valid_o remains
             // the only acceptance qualifier.
             if (candidate_valid_i[candidate_idx] &&
+                !candidate_free_i[candidate_idx] &&
                 pipe_select_valid(selected_pipe) &&
                 !route_claimed[selected_pipe]) begin
                 route_claimed[selected_pipe] = 1'b1;

@@ -178,6 +178,8 @@ module tb_dispatch;
         .pipe_ready_3p_i(3'b000),
         .forward_valid_3p_i(2'b00),
         .forward_rd_addr_3p_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .forward_map_valid_3p_i(32'd0),
+        .forward_map_data_3p_i({32*`RV64_XLEN{1'b0}}),
         .retire_valid_3p_i(3'b000),
         .retire_uses_rs1_3p_i(3'b000),
         .retire_uses_rs2_3p_i(3'b000),

@@ -12,7 +12,8 @@
 // Its completion register decouples single-cycle execution from a stalled
 // retire queue completion port.
 module openrv64_exec_pipe_ex0 #(
-    parameter integer RETIRE_SLOT_WIDTH = 3
+    parameter integer RETIRE_SLOT_WIDTH = 3,
+    parameter integer ENABLE_LOCAL_FORWARDING = 1
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -38,8 +39,11 @@ module openrv64_exec_pipe_ex0 #(
     output wire                         branch_resolved_o,
     output wire                         branch_conditional_o,
     output wire                         branch_taken_o,
+    output wire [`RV64_XLEN-1:0]        branch_pc_o,
+    output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
     output wire                         redirect_valid_o,
     output wire [63:0]                  redirect_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0] redirect_slot_o,
     output wire [`RV64_XLEN-1:0]        redirect_target_o
 );
 
@@ -115,7 +119,8 @@ module openrv64_exec_pipe_ex0 #(
     // The only result bypass in this first 3P implementation is local: an
     // instruction entering EX0 may consume EX0's completion from the previous
     // cycle.  No 64-bit result leaves the pipe or crosses to another pipe.
-    wire local_forward_valid = complete_valid_q &&
+    wire local_forward_valid = (ENABLE_LOCAL_FORWARDING != 0) &&
+        complete_valid_q &&
         complete_payload_q[`OPENRV64_COMPLETE_REG_WRITE_BIT] &&
         !complete_payload_q[`OPENRV64_COMPLETE_ILLEGAL_BIT] &&
         !complete_payload_q[`OPENRV64_COMPLETE_EXCEPTION_BIT] &&
@@ -318,11 +323,14 @@ module openrv64_exec_pipe_ex0 #(
     assign branch_resolved_o = issue_fire && br_selected;
     assign branch_conditional_o = branch_resolved_o && branch;
     assign branch_taken_o = branch_resolved_o && control_transfer_taken;
+    assign branch_pc_o = pc;
+    assign branch_instr_o = instr;
     assign redirect_valid_o = branch_resolved_o &&
                               !instr_misaligned &&
                               !result_illegal &&
                               (predicted_taken != control_transfer_taken);
     assign redirect_id_o = issue_id_i;
+    assign redirect_slot_o = issue_slot_i;
     assign redirect_target_o = control_transfer_taken ?
                                br_target : (pc + 64'd4);
 

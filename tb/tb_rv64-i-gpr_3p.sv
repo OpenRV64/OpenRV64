@@ -1,7 +1,9 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 
-module tb_rv64i_gpr_3p;
+module tb_rv64i_gpr_3p #(
+    parameter integer ALLOW_DUPLICATE_WRITES = 0
+);
 
     reg clk;
     reg rst_n;
@@ -11,7 +13,9 @@ module tb_rv64i_gpr_3p;
     reg [3*`RV64_REG_ADDR_WIDTH-1:0] write_addr;
     reg [3*`RV64_XLEN-1:0] write_data;
 
-    openrv64_rv64i_gpr_3p dut (
+    openrv64_rv64i_gpr_3p #(
+        .ALLOW_DUPLICATE_WRITES(ALLOW_DUPLICATE_WRITES)
+    ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .read_addr_i(read_addr),
@@ -71,6 +75,22 @@ module tb_rv64i_gpr_3p;
             (read_data[1*64 +: 64] != 64'h77) ||
             (read_data[2*64 +: 64] != 64'h99)) begin
             fail("three retirement writes were not stored");
+        end
+
+        if (ALLOW_DUPLICATE_WRITES != 0) begin
+            write_valid = 3'b111;
+            write_addr = {5'd10, 5'd10, 5'd10};
+            write_data = {64'h30, 64'h20, 64'h10};
+            read_addr = {5'd10, 5'd10, 5'd10,
+                         5'd10, 5'd10, 5'd10};
+            #1;
+            if (read_data[0*64 +: 64] != 64'h30)
+                fail("duplicate-write bypass did not select youngest lane");
+            tick();
+            write_valid = 3'b000;
+            #1;
+            if (read_data[0*64 +: 64] != 64'h30)
+                fail("duplicate retirement writes did not commit in order");
         end
 
         read_addr[0*5 +: 5] = 5'd0;

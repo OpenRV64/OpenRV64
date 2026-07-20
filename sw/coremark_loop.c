@@ -59,9 +59,12 @@ is_digit(uint8_t value)
 /* Adapted directly from CoreMark's core_state_transition(). */
 static __attribute__((noinline)) enum core_state
 state_transition(const volatile uint8_t **input,
-                 uint32_t *transition_count)
+                 uint32_t *restrict transition_count)
 {
-    const volatile uint8_t *cursor = *input;
+    // The parser input and transition counters are disjoint.  Stating that
+    // contract lets GCC place the next volatile byte load and pointer update
+    // between a counter load and its dependent increment/store.
+    const volatile uint8_t *restrict cursor = *input;
     enum core_state state = CORE_START;
 
     for (; (*cursor != 0u) && (state != CORE_INVALID); cursor++) {

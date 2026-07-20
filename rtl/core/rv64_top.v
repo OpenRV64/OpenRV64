@@ -28,7 +28,17 @@ module openrv64_rv64_top #(
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
-    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL
+    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
+    parameter BP_RAS_ENABLE = 1,
+    parameter integer BP_RAS_DEPTH = 8,
+    parameter integer BP_BIMODAL_ENTRIES = 32,
+    parameter integer BP_BIMODAL_COUNTER_BITS = 3,
+    parameter integer BP_BIMODAL_UPDATE_DEPTH = 4,
+    parameter integer BP_GSHARE_ENTRIES = 256,
+    parameter integer BP_GSHARE_COUNTER_BITS = 3,
+    parameter integer BP_BTB_ENTRIES = 256,
+    parameter integer BP_BTB_TAG_BITS = 16,
+    parameter integer BP_INFLIGHT_DEPTH = 16
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -286,6 +296,10 @@ module openrv64_rv64_top #(
     wire bp_branch_allocate;
     wire bp_branch_resolve;
     wire bp_prediction_taken;
+    wire bp_prediction_target_valid;
+    wire [`RV64_XLEN-1:0] bp_prediction_target;
+    wire bp_target_mispredict;
+    wire bp_update_overflow;
     wire bp_predict_redirect;
     wire bp_fast_predict_redirect;
     wire [`RV64_XLEN-1:0] bp_predict_target;
@@ -411,7 +425,8 @@ module openrv64_rv64_top #(
     wire [`RV64_XLEN-1:0] trap_tval =
         irq_take ? 64'd0 : exec_wb_tval;
 
-    assign hard_flush_redirect_req = exec_redirect_valid;
+    assign hard_flush_redirect_req = exec_redirect_valid ||
+                                     bp_target_mispredict;
     assign hard_flush_trap_req = retire_exception && !exec_wb_halt;
     assign hard_flush_irq_req = irq_take;
     assign hard_flush_mret_req = retire_mret;
@@ -577,7 +592,8 @@ module openrv64_rv64_top #(
                                  bp_prediction_taken;
     assign bp_fast_predict_redirect = bp_predict_redirect &&
                                       if_id_predecode_valid;
-    assign bp_predict_target = bp_fallback_target;
+    assign bp_predict_target = bp_prediction_target_valid ?
+                               bp_prediction_target : bp_fallback_target;
 
     // Predecoded direct controls carry a compact signed displacement and reuse
     // the normal target adder. Cold controls and JALR use the decoder output.
@@ -589,20 +605,48 @@ module openrv64_rv64_top #(
     );
 
     openrv64_exec_bp #(
-        .BP_TYPE(BP_TYPE)
+        .BP_TYPE(BP_TYPE),
+        .ENABLE_RAS(BP_RAS_ENABLE),
+        .RAS_DEPTH(BP_RAS_DEPTH),
+        .BIMODAL_ENTRIES(BP_BIMODAL_ENTRIES),
+        .BIMODAL_COUNTER_BITS(BP_BIMODAL_COUNTER_BITS),
+        .BIMODAL_UPDATE_DEPTH(BP_BIMODAL_UPDATE_DEPTH),
+        .GSHARE_ENTRIES(BP_GSHARE_ENTRIES),
+        .GSHARE_COUNTER_BITS(BP_GSHARE_COUNTER_BITS),
+        .BTB_ENTRIES(BP_BTB_ENTRIES),
+        .BTB_TAG_BITS(BP_BTB_TAG_BITS),
+        .INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH)
     ) u_bp (
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(hard_flush_req),
+        .squash_i(1'b0),
         .lookup_valid_i(bp_branch_present),
         .lookup_branch_i(bp_lookup_branch),
         .lookup_jump_i(bp_lookup_jump),
         .lookup_indirect_i(bp_lookup_indirect),
+        .lookup_backward_i(
+            if_id_predecode_valid ? bp_predecode_imm[63] : decode_imm[63]),
+        .lookup_instr_i(if_id_instr),
+        .lookup_pc_i(if_id_pc),
+        .lookup_id_i(64'd0),
         .lookup_allocate_i(bp_branch_allocate),
         .resolve_valid_i(bp_branch_resolve),
         .resolve_branch_i(dispatch_exec_branch),
         .resolve_taken_i(exec_branch_taken),
+        .resolve_instr_i(dispatch_exec_instr),
+        .resolve_pc_i(dispatch_exec_pc),
+        .resolve_target_i(exec_redirect_target),
+        .resolve_id_i(64'd0),
+        .train_valid_i({2'b00, bp_branch_resolve}),
+        .train_branch_i({2'b00, dispatch_exec_branch}),
+        .train_taken_i({2'b00, exec_branch_taken}),
+        .train_pc_i({128'd0, dispatch_exec_pc}),
         .prediction_taken_o(bp_prediction_taken),
+        .prediction_target_valid_o(bp_prediction_target_valid),
+        .prediction_target_o(bp_prediction_target),
+        .target_mispredict_o(bp_target_mispredict),
+        .update_overflow_o(bp_update_overflow),
         .fetch_stall_o(bp_fetch_stall),
         .decode_stall_o(bp_decode_stall)
     );
@@ -795,6 +839,13 @@ module openrv64_rv64_top #(
         .pipe_ready_3p_i(3'b000),
         .forward_valid_3p_i(2'b00),
         .forward_rd_addr_3p_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .completion_forward_valid_3p_i(3'b000),
+        .branch_completion_forward_valid_3p_i(3'b000),
+        .completion_forward_rd_addr_3p_i(
+            {3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .completion_forward_data_3p_i({3*`RV64_XLEN{1'b0}}),
+        .forward_map_valid_3p_i(32'd0),
+        .forward_map_data_3p_i({32*`RV64_XLEN{1'b0}}),
         .retire_valid_3p_i(3'b000),
         .retire_uses_rs1_3p_i(3'b000),
         .retire_uses_rs2_3p_i(3'b000),
@@ -865,6 +916,10 @@ module openrv64_rv64_top #(
         .csr_wdata_o(exec_csr_wdata),
         .mem_valid_o(exec_mem_valid),
         .mem_ready_i(exec_mem_ready),
+        .mem_tag_o(),
+        .mem_resp_valid_i(1'b0),
+        .mem_resp_ready_o(),
+        .mem_resp_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
         .mem_error_i(exec_mem_error),
         .mem_page_fault_i(exec_mem_page_fault),
         .mem_access_allowed_i(1'b1),

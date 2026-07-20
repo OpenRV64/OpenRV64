@@ -13,6 +13,8 @@ module openrv64_dispatch_control_3p #(
     input  wire                         flush_i,
 
     input  wire [2:0]                   candidate_valid_i,
+    input  wire [2:0]                   candidate_free_i,
+    input  wire [2:0]                   candidate_barrier_free_i,
     input  wire [2:0]                   candidate_hazard_free_i,
     input  wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe_i,
     input  wire [3*64-1:0]              candidate_id_i,
@@ -44,6 +46,8 @@ module openrv64_dispatch_control_3p #(
         .rst_n(rst_n),
         .flush_i(flush_i),
         .candidate_valid_i(candidate_valid_i),
+        .candidate_free_i(candidate_free_i),
+        .candidate_barrier_free_i(candidate_barrier_free_i),
         .candidate_payload_i(candidate_payload_i),
         .candidate_hard_o(candidate_hard_o),
         .allocation_allow_o(barrier_allow),
@@ -58,6 +62,7 @@ module openrv64_dispatch_control_3p #(
     ) u_issue (
         .candidate_valid_i(candidate_valid_i),
         .candidate_allow_i(candidate_allow),
+        .candidate_free_i(candidate_free_i),
         .candidate_pipe_i(candidate_pipe_i),
         .candidate_id_i(candidate_id_i),
         .candidate_slot_i(candidate_slot_i),

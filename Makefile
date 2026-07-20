@@ -25,6 +25,8 @@ A53_QEMU_TRACE := sim/a53/coremark-loop-a53-qemu-trace.log
 A53_QEMU_REPORT := sim/a53/coremark-loop-a53-qemu-report.txt
 UART_FIRMWARE_MEMH := sim/uart.memh
 UART_PERF_BP_TYPE ?= 3
+UART_PERF_BP_RAS_ENABLE ?= 1
+UART_PERF_BP_RAS_DEPTH ?= 8
 UART_PERF_TRACE_CSV ?= sim/uart-1p-bp3-trace.csv
 UART_PERF_TRACE_REPORT ?= sim/uart-1p-bp3-pipeline.txt
 OPENSBI_BUILD_DIR ?= build/opensbi
@@ -65,9 +67,44 @@ SW_TRACE_REPORT ?= sim/sw-test-pipeline.txt
 SW_FORWARDING ?= 1
 SW_LOAD_FORWARDING ?= 0
 SW_BP_TYPE ?= 0
+SW_BP_RAS_ENABLE ?= 1
+SW_BP_RAS_DEPTH ?= 8
 SW_RUN_ARGS ?=
 AXI_3P_BP_TYPE ?= 0
+AXI_3P_BP_RAS_ENABLE ?= 1
+AXI_3P_BP_RAS_DEPTH ?= 8
+AXI_3P_BP_BIMODAL_ENTRIES ?= 32
+AXI_3P_BP_BIMODAL_COUNTER_BITS ?= 3
+AXI_3P_BP_BIMODAL_UPDATE_DEPTH ?= 4
+AXI_3P_BP_GSHARE_ENTRIES ?= 256
+AXI_3P_BP_GSHARE_COUNTER_BITS ?= 3
+AXI_3P_BP_BTB_ENTRIES ?= 256
+AXI_3P_BP_BTB_TAG_BITS ?= 16
+AXI_3P_BP_INFLIGHT_DEPTH ?= 16
+AXI_3P_RETIRE_DEPTH ?= 8
+AXI_3P_COMPLETION_FORWARD_MASK ?= 0
+AXI_3P_BRANCH_FORWARD_MASK ?= 7
+AXI_3P_FULL_FORWARDING ?= 0
+AXI_3P_RELAX_WAW ?= 1
+AXI_3P_RELAX_HAZARDS ?= 0
+AXI_3P_ISSUE_WINDOW ?= 0
+AXI_3P_SPECULATION_WINDOW ?= 0
+AXI_3P_POSTED_STORES ?= 1
+AXI_3P_FREE_BRANCHES ?= 0
+AXI_3P_EQ_BRANCH_PAIRING ?= 1
+AXI_3P_ORACLE_BRANCHES ?= 0
+BACKEND_3P_RELAX_HAZARDS ?= 0
 AXI_3P_PERF_BP_TYPE ?= 3
+AXI_3P_PERF_BP_RAS_ENABLE ?= 1
+AXI_3P_PERF_BP_RAS_DEPTH ?= 8
+AXI_3P_PERF_BP_BIMODAL_ENTRIES ?= 32
+AXI_3P_PERF_BP_BIMODAL_COUNTER_BITS ?= 3
+AXI_3P_PERF_BP_BIMODAL_UPDATE_DEPTH ?= 4
+AXI_3P_PERF_BP_GSHARE_ENTRIES ?= 256
+AXI_3P_PERF_BP_GSHARE_COUNTER_BITS ?= 3
+AXI_3P_PERF_BP_BTB_ENTRIES ?= 256
+AXI_3P_PERF_BP_BTB_TAG_BITS ?= 16
+AXI_3P_PERF_BP_INFLIGHT_DEPTH ?= 16
 AXI_3P_PERF_ELF ?= sw/test.elf
 AXI_3P_PERF_BIN ?= sim/top-axi-3p-perf.bin
 AXI_3P_PERF_MEMH ?= sim/top-axi-3p-perf.memh
@@ -75,7 +112,10 @@ AXI_3P_PERF_MAX_CYCLES ?= 20000
 AXI_3P_PERF_ARGS ?= +done_pc=80000010 +expect_a0=64
 AXI_3P_TRACE_CSV ?= sim/top-axi-3p-perf-trace.csv
 AXI_3P_TRACE_REPORT ?= sim/top-axi-3p-perf-pipeline.txt
-AXI_3P_TRACE_RENDER_ARGS ?= --around-pc 8000001c
+# Empty renders the beginning of whatever workload was supplied.  Callers may
+# still request a focused window, for example `--around-pc 80000500`, without
+# making the generic performance target depend on one benchmark's old layout.
+AXI_3P_TRACE_RENDER_ARGS ?=
 PYTHON ?= python3
 CLINT_SIM_BUILD := sim/clint_tb.vvp
 PLIC_SIM_BUILD := sim/plic_tb.vvp
@@ -117,10 +157,15 @@ EXEC_LSU_RV64A_SIM_BUILD := sim/exec_lsu_rv64-a_tb.vvp
 ATOMIC_CONTEXT_SIM_BUILD := sim/atomic_context_tb.vvp
 EXEC_BR_SIM_BUILD := sim/exec_br_tb.vvp
 EXEC_BP_SIM_BUILD := sim/exec_bp_tb.vvp
+EXEC_BP_GSHARE_BTB_SIM_BUILD := sim/exec_bp_gshare_btb_tb.vvp
+EXEC_BP_TAGGED_SPEC_SIM_BUILD := sim/exec_bp_tagged_speculation_tb.vvp
 BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD := sim/bp_context_always_branch_tb.vvp
 BP_CONTEXT_NOPREDECODE_SIM_BUILD := sim/bp_context_nopredecode_tb.vvp
 BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD := sim/bp_context_always_decline_tb.vvp
 BP_CONTEXT_REPEAT_LAST_SIM_BUILD := sim/bp_context_repeat_last_tb.vvp
+BP_CONTEXT_BTFNT_SIM_BUILD := sim/bp_context_btfnt_tb.vvp
+BP_CONTEXT_BIMODAL_SIM_BUILD := sim/bp_context_bimodal_tb.vvp
+BP_CONTEXT_GSHARE_BTB_SIM_BUILD := sim/bp_context_gshare_btb_tb.vvp
 EXCEPT_SIM_BUILD := sim/except_tb.vvp
 EXEC_SYSTEM_CSR_SIM_BUILD := sim/exec_system_csr_tb.vvp
 TRAP_CONTEXT_SIM_BUILD := sim/trap_context_tb.vvp
@@ -131,6 +176,7 @@ REG_OWNER_SIM_BUILD := sim/reg_owner_tb.vvp
 DISPATCH_SIM_BUILD := sim/dispatch_tb.vvp
 DISPATCH_BARRIER_3P_SIM_BUILD := sim/dispatch_barrier_3p_tb.vvp
 DISPATCH_ISSUE_3P_SIM_BUILD := sim/dispatch_issue_3p_tb.vvp
+DISPATCH_WINDOW_3P_SIM_BUILD := sim/dispatch_window_3p_tb.vvp
 RETIRE_QUEUE_3P_SIM_BUILD := sim/retire_queue_3p_tb.vvp
 RV64I_GPR_3P_SIM_BUILD := sim/rv64-i-gpr_3p_tb.vvp
 REG_MAP_3P_SIM_BUILD := sim/reg_map_3p_tb.vvp
@@ -139,10 +185,14 @@ RETIRE_3P_SIM_BUILD := sim/retire_3p_tb.vvp
 BACKEND_3P_SIM_BUILD := sim/backend_3p_tb.vvp
 TOP_3P_SIM_BUILD := sim/top_3p_tb.vvp
 TOP_AXI_3P_SIM_BUILD := sim/top_axi_3p_tb.vvp
+ISA_FP_SIM_BUILD := sim/isa_fp_tb.vvp
+EXEC_FPU_RV64FD_SIM_BUILD := sim/exec_fpu_rv64-fd_tb.vvp
 ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zicsr.v rtl/core/isa/rv64-priv.v rtl/core/isa/rv64-zifencei.v \
 	rtl/core/isa/rv64-zba.v rtl/core/isa/rv64-zbb.v \
 	rtl/core/isa/rv64-zbc.v rtl/core/isa/rv64-zbs.v rtl/core/isa/rv64-b.v
+FP_ISA_SRCS := rtl/core/isa/rv64-f.v rtl/core/isa/rv64-d.v
+FPU_SRCS := rtl/core/exec/fpu/defs.v rtl/core/exec/fpu/rv64-fd.v
 ARITH_DEPS := rtl/core/arith/prefix-addsub.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
@@ -157,6 +207,7 @@ BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/ptw.v \
 	rtl/core/bus/gen_bus.v rtl/core/bus/axi_bus.v rtl/core/bus/bus.v
 DISPATCH_SRCS := rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_3p.v \
+	rtl/core/dispatch/dispatch_window_3p.v \
 	rtl/core/dispatch/dispatch_barrier_3p.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v \
@@ -164,7 +215,9 @@ DISPATCH_SRCS := rtl/core/dispatch/reg_map.v \
 BP_SRC := rtl/core/exec/bp/bp.v
 BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
 	rtl/core/exec/bp/always_branch.v rtl/core/exec/bp/always_decline.v \
-	rtl/core/exec/bp/repeat_last.v
+	rtl/core/exec/bp/repeat_last.v rtl/core/exec/bp/btfnt.v \
+	rtl/core/exec/bp/bimodal.v rtl/core/exec/bp/gshare_btb.v \
+	rtl/core/exec/bp/ras.v
 EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top_1p.v rtl/core/exec/exec_top.v \
@@ -224,6 +277,7 @@ DECODE_REG_ALU_SIM_SRCS := tb/tb_decode_reg_alu.sv
 DECODE_REG_LSU_SIM_SRCS := tb/tb_decode_reg_lsu.sv
 DECODE_BR_SIM_SRCS := tb/tb_decode_br.sv
 ISA_BITMANIP_SIM_SRCS := tb/tb_isa_bitmanip.sv
+ISA_FP_SIM_SRCS := tb/tb_isa_fp.sv
 STAGE_SIM_SRCS := tb/tb_stage.sv
 RV64I_GPR_SIM_SRCS := tb/tb_rv64-i-gpr.sv
 RV64I_CSRS_SIM_SRCS := tb/tb_rv64-i-csrs.sv
@@ -238,6 +292,7 @@ EXEC_LSU_RV64A_SIM_SRCS := tb/tb_exec_lsu_rv64-a.sv
 ATOMIC_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_atomic_context.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
 EXEC_BP_SIM_SRCS := tb/tb_exec_bp.sv
+EXEC_FPU_RV64FD_SIM_SRCS := tb/tb_exec_fpu_rv64-fd.sv
 BP_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_bp_context.sv
 EXCEPT_SIM_SRCS := tb/tb_except.sv
 EXEC_SYSTEM_CSR_SIM_SRCS := tb/tb_exec_system_csr.sv
@@ -250,6 +305,7 @@ DISPATCH_SIM_SRCS := tb/tb_dispatch.sv
 YOSYS ?= yosys
 YOSYS_ALU_REPORT_DIR ?= sim/yosys/alu
 YOSYS_FRONTEND_REPORT_DIR ?= sim/yosys/frontend
+YOSYS_CORE_RESOURCE_DIR ?= sim/yosys/core-sky130
 LIBERTY ?=
 ABC_CONSTR ?=
 ABC_DELAY_PS ?=
@@ -259,11 +315,15 @@ SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+.PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+.PHONY: sim-isa-fp sim-exec-fpu-rv64-fd
+.PHONY: sim-bp-context-gshare-btb
+.PHONY: yosys-resources-core-sky130
 
 FORCE:
 
 sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
+sim: sim-isa-fp sim-exec-fpu-rv64-fd
 
 sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
 
@@ -334,7 +394,9 @@ sim-uart-firmware: $(UART_FIRMWARE_SIM_BUILD) $(UART_FIRMWARE_MEMH)
 
 sim-uart-firmware-perf: $(UART_FIRMWARE_MEMH)
 	$(MAKE) -B $(UART_FIRMWARE_PERF_SIM_BUILD) \
-		UART_PERF_BP_TYPE=$(UART_PERF_BP_TYPE)
+		UART_PERF_BP_TYPE=$(UART_PERF_BP_TYPE) \
+		UART_PERF_BP_RAS_ENABLE=$(UART_PERF_BP_RAS_ENABLE) \
+		UART_PERF_BP_RAS_DEPTH=$(UART_PERF_BP_RAS_DEPTH)
 	mkdir -p $(dir $(UART_PERF_TRACE_CSV)) \
 		$(dir $(UART_PERF_TRACE_REPORT))
 	vvp $(UART_FIRMWARE_PERF_SIM_BUILD) +memh=$(UART_FIRMWARE_MEMH) \
@@ -430,6 +492,9 @@ sim-decode-br: $(DECODE_BR_SIM_BUILD)
 sim-isa-bitmanip: $(ISA_BITMANIP_SIM_BUILD)
 	vvp $(ISA_BITMANIP_SIM_BUILD)
 
+sim-isa-fp: $(ISA_FP_SIM_BUILD)
+	vvp $(ISA_FP_SIM_BUILD)
+
 sim-stage: $(STAGE_SIM_BUILD)
 	vvp $(STAGE_SIM_BUILD)
 
@@ -469,6 +534,9 @@ sim-dispatch-barrier-3p: $(DISPATCH_BARRIER_3P_SIM_BUILD)
 sim-dispatch-issue-3p: $(DISPATCH_ISSUE_3P_SIM_BUILD)
 	vvp $(DISPATCH_ISSUE_3P_SIM_BUILD)
 
+sim-dispatch-window-3p: $(DISPATCH_WINDOW_3P_SIM_BUILD)
+	vvp $(DISPATCH_WINDOW_3P_SIM_BUILD)
+
 sim-dispatch-3p: $(DISPATCH_3P_SIM_BUILD)
 	vvp $(DISPATCH_3P_SIM_BUILD)
 
@@ -496,10 +564,15 @@ sim-atomic-context: $(ATOMIC_CONTEXT_SIM_BUILD)
 sim-exec-br: $(EXEC_BR_SIM_BUILD)
 	vvp $(EXEC_BR_SIM_BUILD)
 
-sim-exec-bp: $(EXEC_BP_SIM_BUILD)
+sim-exec-bp: $(EXEC_BP_SIM_BUILD) $(EXEC_BP_GSHARE_BTB_SIM_BUILD) $(EXEC_BP_TAGGED_SPEC_SIM_BUILD)
 	vvp $(EXEC_BP_SIM_BUILD)
+	vvp $(EXEC_BP_GSHARE_BTB_SIM_BUILD)
+	vvp $(EXEC_BP_TAGGED_SPEC_SIM_BUILD)
 
-sim-bp-context: sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last
+sim-exec-fpu-rv64-fd: $(EXEC_FPU_RV64FD_SIM_BUILD)
+	vvp $(EXEC_FPU_RV64FD_SIM_BUILD)
+
+sim-bp-context: sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-bp-context-gshare-btb
 
 sim-bp-context-always-branch: $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
 	vvp $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
@@ -512,6 +585,15 @@ sim-bp-context-always-decline: $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD)
 
 sim-bp-context-repeat-last: $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD)
 	vvp $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD)
+
+sim-bp-context-btfnt: $(BP_CONTEXT_BTFNT_SIM_BUILD)
+	vvp $(BP_CONTEXT_BTFNT_SIM_BUILD)
+
+sim-bp-context-bimodal: $(BP_CONTEXT_BIMODAL_SIM_BUILD)
+	vvp $(BP_CONTEXT_BIMODAL_SIM_BUILD)
+
+sim-bp-context-gshare-btb: $(BP_CONTEXT_GSHARE_BTB_SIM_BUILD)
+	vvp $(BP_CONTEXT_GSHARE_BTB_SIM_BUILD)
 
 sim-except: $(EXCEPT_SIM_BUILD)
 	vvp $(EXCEPT_SIM_BUILD)
@@ -554,9 +636,35 @@ sim-top-axi-3p-bp:
 	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=1
 	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=2
 	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=3
+	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=4
+	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=5
+	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=6
 
 sim-top-axi-3p-perf: $(AXI_3P_PERF_MEMH)
-	$(MAKE) -B $(TOP_AXI_3P_SIM_BUILD) AXI_3P_BP_TYPE=$(AXI_3P_PERF_BP_TYPE)
+	$(MAKE) -B $(TOP_AXI_3P_SIM_BUILD) \
+		AXI_3P_BP_TYPE=$(AXI_3P_PERF_BP_TYPE) \
+		AXI_3P_BP_RAS_ENABLE=$(AXI_3P_PERF_BP_RAS_ENABLE) \
+		AXI_3P_BP_RAS_DEPTH=$(AXI_3P_PERF_BP_RAS_DEPTH) \
+		AXI_3P_BP_BIMODAL_ENTRIES=$(AXI_3P_PERF_BP_BIMODAL_ENTRIES) \
+		AXI_3P_BP_BIMODAL_COUNTER_BITS=$(AXI_3P_PERF_BP_BIMODAL_COUNTER_BITS) \
+		AXI_3P_BP_BIMODAL_UPDATE_DEPTH=$(AXI_3P_PERF_BP_BIMODAL_UPDATE_DEPTH) \
+		AXI_3P_BP_GSHARE_ENTRIES=$(AXI_3P_PERF_BP_GSHARE_ENTRIES) \
+		AXI_3P_BP_GSHARE_COUNTER_BITS=$(AXI_3P_PERF_BP_GSHARE_COUNTER_BITS) \
+		AXI_3P_BP_BTB_ENTRIES=$(AXI_3P_PERF_BP_BTB_ENTRIES) \
+		AXI_3P_BP_BTB_TAG_BITS=$(AXI_3P_PERF_BP_BTB_TAG_BITS) \
+		AXI_3P_BP_INFLIGHT_DEPTH=$(AXI_3P_PERF_BP_INFLIGHT_DEPTH) \
+		AXI_3P_RETIRE_DEPTH=$(AXI_3P_RETIRE_DEPTH) \
+		AXI_3P_COMPLETION_FORWARD_MASK=$(AXI_3P_COMPLETION_FORWARD_MASK) \
+		AXI_3P_BRANCH_FORWARD_MASK=$(AXI_3P_BRANCH_FORWARD_MASK) \
+		AXI_3P_FULL_FORWARDING=$(AXI_3P_FULL_FORWARDING) \
+		AXI_3P_RELAX_WAW=$(AXI_3P_RELAX_WAW) \
+		AXI_3P_RELAX_HAZARDS=$(AXI_3P_RELAX_HAZARDS) \
+		AXI_3P_ISSUE_WINDOW=$(AXI_3P_ISSUE_WINDOW) \
+		AXI_3P_SPECULATION_WINDOW=$(AXI_3P_SPECULATION_WINDOW) \
+		AXI_3P_POSTED_STORES=$(AXI_3P_POSTED_STORES) \
+		AXI_3P_FREE_BRANCHES=$(AXI_3P_FREE_BRANCHES) \
+		AXI_3P_EQ_BRANCH_PAIRING=$(AXI_3P_EQ_BRANCH_PAIRING) \
+		AXI_3P_ORACLE_BRANCHES=$(AXI_3P_ORACLE_BRANCHES)
 	mkdir -p $(dir $(AXI_3P_TRACE_CSV)) $(dir $(AXI_3P_TRACE_REPORT))
 	vvp $(TOP_AXI_3P_SIM_BUILD) +memh=$(AXI_3P_PERF_MEMH) \
 		+max_cycles=$(AXI_3P_PERF_MAX_CYCLES) $(AXI_3P_PERF_ARGS) \
@@ -592,6 +700,9 @@ yosys-timing-frontend:
 
 yosys-timing-frontend-sky130: sky130-liberty
 	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_FRONTEND_REPORT_DIR)" LIBERTY="$(abspath $(SKY130_LIBERTY))" ABC_CONSTR="$(abspath $(SKY130_ABC_CONSTR))" bash synth/frontend/report.sh
+
+yosys-resources-core-sky130: sky130-liberty
+	YOSYS="$(YOSYS)" OUT_DIR="$(YOSYS_CORE_RESOURCE_DIR)" LIBERTY="$(abspath $(SKY130_LIBERTY))" ABC_CONSTR="$(abspath $(SKY130_ABC_CONSTR))" bash synth/core/resources.sh
 
 $(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
@@ -671,6 +782,8 @@ $(UART_FIRMWARE_PERF_SIM_BUILD): FORCE $(UART_FIRMWARE_SIM_SRCS) $(PLATFORM_SRCS
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl \
 		-Ptb_uart_firmware.BP_TYPE=$(UART_PERF_BP_TYPE) \
+		-Ptb_uart_firmware.BP_RAS_ENABLE=$(UART_PERF_BP_RAS_ENABLE) \
+		-Ptb_uart_firmware.BP_RAS_DEPTH=$(UART_PERF_BP_RAS_DEPTH) \
 		-o $@ $(CORE_SRCS) $(PLATFORM_SRCS) $(UART_FIRMWARE_SIM_SRCS)
 
 $(OPENSBI_SIM_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
@@ -691,6 +804,8 @@ $(SW_TRACE_SIM_BUILD): FORCE $(SW_TRACE_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARI
 		-Ptb_sw_trace.ENABLE_FORWARDING=$(SW_FORWARDING) \
 		-Ptb_sw_trace.ENABLE_LOAD_FORWARDING=$(SW_LOAD_FORWARDING) \
 		-Ptb_sw_trace.BP_TYPE=$(SW_BP_TYPE) \
+		-Ptb_sw_trace.BP_RAS_ENABLE=$(SW_BP_RAS_ENABLE) \
+		-Ptb_sw_trace.BP_RAS_DEPTH=$(SW_BP_RAS_DEPTH) \
 		-o $(SW_TRACE_SIM_BUILD) $(CORE_SRCS) $(SW_TRACE_SIM_SRCS)
 
 $(CLINT_SIM_BUILD): $(CLINT_SIM_SRCS) $(CLINT_SRCS)
@@ -781,6 +896,10 @@ $(ISA_BITMANIP_SIM_BUILD): $(ISA_BITMANIP_SIM_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(ISA_BITMANIP_SIM_BUILD) $(ISA_BITMANIP_SIM_SRCS)
 
+$(ISA_FP_SIM_BUILD): $(ISA_FP_SIM_SRCS) $(FP_ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(ISA_FP_SIM_BUILD) $(ISA_FP_SIM_SRCS)
+
 $(STAGE_SIM_BUILD): $(STAGE_SIM_SRCS) $(STAGE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(STAGE_SIM_BUILD) $(STAGE_SIM_SRCS)
@@ -845,6 +964,11 @@ $(DISPATCH_ISSUE_3P_SIM_BUILD): rtl/core/dispatch/dispatch_issue_3p.v tb/tb_disp
 	iverilog -g2012 -Wall -Irtl -o $(DISPATCH_ISSUE_3P_SIM_BUILD) \
 		rtl/core/dispatch/dispatch_issue_3p.v tb/tb_dispatch_issue_3p.sv
 
+$(DISPATCH_WINDOW_3P_SIM_BUILD): rtl/core/dispatch/dispatch_window_3p.v tb/tb_dispatch_window_3p.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(DISPATCH_WINDOW_3P_SIM_BUILD) \
+		rtl/core/dispatch/dispatch_window_3p.v tb/tb_dispatch_window_3p.sv
+
 $(DISPATCH_3P_SIM_BUILD): rtl/core/dispatch/dispatch_3p.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_barrier_3p.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
@@ -895,6 +1019,22 @@ $(EXEC_BP_SIM_BUILD): $(EXEC_BP_SIM_SRCS) $(BP_SRC) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_BP_SIM_BUILD) rtl/core/exec/bp/bp.v $(EXEC_BP_SIM_SRCS)
 
+$(EXEC_BP_GSHARE_BTB_SIM_BUILD): tb/tb_exec_bp_gshare_btb.sv $(BP_SRC) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_BP_GSHARE_BTB_SIM_BUILD) \
+		rtl/core/exec/bp/bp.v tb/tb_exec_bp_gshare_btb.sv
+
+$(EXEC_BP_TAGGED_SPEC_SIM_BUILD): tb/tb_exec_bp_tagged_speculation.sv $(BP_SRC) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_BP_TAGGED_SPEC_SIM_BUILD) \
+		rtl/core/exec/bp/bp.v tb/tb_exec_bp_tagged_speculation.sv
+
+$(EXEC_FPU_RV64FD_SIM_BUILD): $(EXEC_FPU_RV64FD_SIM_SRCS) $(FPU_SRCS) \
+		$(FP_ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_FPU_RV64FD_SIM_BUILD) \
+		$(EXEC_FPU_RV64FD_SIM_SRCS)
+
 $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=1 -o $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
@@ -914,6 +1054,18 @@ $(BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(IS
 $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=3 -o $(BP_CONTEXT_REPEAT_LAST_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
+
+$(BP_CONTEXT_BTFNT_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=4 -o $(BP_CONTEXT_BTFNT_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
+
+$(BP_CONTEXT_BIMODAL_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=5 -o $(BP_CONTEXT_BIMODAL_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
+
+$(BP_CONTEXT_GSHARE_BTB_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=6 -o $(BP_CONTEXT_GSHARE_BTB_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
 
 $(EXCEPT_SIM_BUILD): $(EXCEPT_SIM_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS)
 	mkdir -p sim
@@ -957,6 +1109,7 @@ $(BACKEND_3P_SIM_BUILD): tb/tb_backend_3p.sv $(BACKEND_SRCS) \
 	$(EXCEPT_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_backend_3p -o $(BACKEND_3P_SIM_BUILD) \
+		-Ptb_backend_3p.RELAX_HAZARDS=$(BACKEND_3P_RELAX_HAZARDS) \
 		$(BACKEND_SRCS) $(DISPATCH_SRCS) $(REG_SRCS) $(EXEC_SRCS) \
 		$(RETIRE_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) tb/tb_backend_3p.sv
 
@@ -973,6 +1126,28 @@ $(TOP_AXI_3P_SIM_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_top_axi_3p \
 		-Ptb_top_axi_3p.BP_TYPE=$(AXI_3P_BP_TYPE) \
+		-Ptb_top_axi_3p.BP_RAS_ENABLE=$(AXI_3P_BP_RAS_ENABLE) \
+		-Ptb_top_axi_3p.BP_RAS_DEPTH=$(AXI_3P_BP_RAS_DEPTH) \
+		-Ptb_top_axi_3p.BP_BIMODAL_ENTRIES=$(AXI_3P_BP_BIMODAL_ENTRIES) \
+		-Ptb_top_axi_3p.BP_BIMODAL_COUNTER_BITS=$(AXI_3P_BP_BIMODAL_COUNTER_BITS) \
+		-Ptb_top_axi_3p.BP_BIMODAL_UPDATE_DEPTH=$(AXI_3P_BP_BIMODAL_UPDATE_DEPTH) \
+		-Ptb_top_axi_3p.BP_GSHARE_ENTRIES=$(AXI_3P_BP_GSHARE_ENTRIES) \
+		-Ptb_top_axi_3p.BP_GSHARE_COUNTER_BITS=$(AXI_3P_BP_GSHARE_COUNTER_BITS) \
+		-Ptb_top_axi_3p.BP_BTB_ENTRIES=$(AXI_3P_BP_BTB_ENTRIES) \
+		-Ptb_top_axi_3p.BP_BTB_TAG_BITS=$(AXI_3P_BP_BTB_TAG_BITS) \
+		-Ptb_top_axi_3p.BP_INFLIGHT_DEPTH=$(AXI_3P_BP_INFLIGHT_DEPTH) \
+		-Ptb_top_axi_3p.RETIRE_DEPTH=$(AXI_3P_RETIRE_DEPTH) \
+		-Ptb_top_axi_3p.COMPLETION_FORWARD_MASK=$(AXI_3P_COMPLETION_FORWARD_MASK) \
+		-Ptb_top_axi_3p.BRANCH_FORWARD_MASK=$(AXI_3P_BRANCH_FORWARD_MASK) \
+		-Ptb_top_axi_3p.FULL_FORWARDING=$(AXI_3P_FULL_FORWARDING) \
+		-Ptb_top_axi_3p.RELAX_WAW=$(AXI_3P_RELAX_WAW) \
+		-Ptb_top_axi_3p.RELAX_HAZARDS=$(AXI_3P_RELAX_HAZARDS) \
+		-Ptb_top_axi_3p.ISSUE_WINDOW=$(AXI_3P_ISSUE_WINDOW) \
+		-Ptb_top_axi_3p.SPECULATION_WINDOW=$(AXI_3P_SPECULATION_WINDOW) \
+		-Ptb_top_axi_3p.POSTED_STORES=$(AXI_3P_POSTED_STORES) \
+		-Ptb_top_axi_3p.FREE_BRANCHES=$(AXI_3P_FREE_BRANCHES) \
+		-Ptb_top_axi_3p.EQ_BRANCH_PAIRING=$(AXI_3P_EQ_BRANCH_PAIRING) \
+		-Ptb_top_axi_3p.ORACLE_BRANCHES=$(AXI_3P_ORACLE_BRANCHES) \
 		-o $(TOP_AXI_3P_SIM_BUILD) rtl/openrv64_top_3p.v $(CORE_SRCS) \
 		$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
 		$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \

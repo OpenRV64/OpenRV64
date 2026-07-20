@@ -277,7 +277,29 @@ endmodule
 
 module tb_top_axi_3p #(
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_STALL
+        `OPENRV64_BP_STALL,
+    parameter integer BP_RAS_ENABLE = 1,
+    parameter integer BP_RAS_DEPTH = 8,
+    parameter integer BP_BIMODAL_ENTRIES = 32,
+    parameter integer BP_BIMODAL_COUNTER_BITS = 3,
+    parameter integer BP_BIMODAL_UPDATE_DEPTH = 4,
+    parameter integer BP_GSHARE_ENTRIES = 256,
+    parameter integer BP_GSHARE_COUNTER_BITS = 3,
+    parameter integer BP_BTB_ENTRIES = 256,
+    parameter integer BP_BTB_TAG_BITS = 16,
+    parameter integer BP_INFLIGHT_DEPTH = 16,
+    parameter integer RETIRE_DEPTH = 8,
+    parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
+    parameter [2:0] BRANCH_FORWARD_MASK = 3'b111,
+    parameter integer FULL_FORWARDING = 0,
+    parameter integer RELAX_WAW = 1,
+    parameter integer RELAX_HAZARDS = 0,
+    parameter integer ISSUE_WINDOW = 0,
+    parameter integer SPECULATION_WINDOW = 0,
+    parameter integer POSTED_STORES = 1,
+    parameter integer FREE_BRANCHES = 0,
+    parameter integer EQ_BRANCH_PAIRING = 1,
+    parameter integer ORACLE_BRANCHES = 0
 );
     reg clk;
     reg rst_n;
@@ -450,7 +472,67 @@ module tb_top_axi_3p #(
     integer bp_taken_predictions;
     integer bp_resolutions;
     integer bp_corrections;
+    integer eq_branch_pairings;
+    integer branch_forward_issues;
+    integer branch_forward_operands;
     integer loop_line_fetches;
+    integer perf_block_none;
+    integer perf_block_raw_pending;
+    integer perf_block_raw_bundle;
+    integer perf_block_raw_completed;
+    integer perf_block_waw_pending;
+    integer perf_block_waw_bundle;
+    integer perf_block_waw_completed;
+    integer perf_block_read_port;
+    integer perf_block_barrier;
+    integer perf_block_retire_capacity;
+    integer perf_block_pipe_conflict;
+    integer perf_block_pipe_busy;
+    integer perf_block_invalid_pipe;
+    integer perf_block_branch_redirect;
+    integer perf_block_unknown;
+    integer perf_retire_head_incomplete;
+    integer perf_retire_completed_behind_head;
+    integer perf_retire_control_block;
+    integer perf_frontend_empty;
+    integer perf_frontend_held;
+    integer perf_frontend_request_wait;
+    integer perf_frontend_redirect;
+    integer perf_frontend_refill_wait;
+    integer perf_frontend_no_line;
+    integer perf_frontend_bp_stall;
+    integer perf_frontend_control;
+    integer perf_frontend_other_empty;
+    integer perf_lsu_pipe_block;
+    integer perf_lsu_request_wait;
+    integer perf_lsu_outstanding;
+    integer perf_lsu_order_block;
+    localparam integer BLOCK_NONE = 0;
+    localparam integer BLOCK_RAW_PENDING = 1;
+    localparam integer BLOCK_RAW_BUNDLE = 2;
+    localparam integer BLOCK_RAW_COMPLETED = 3;
+    localparam integer BLOCK_WAW_PENDING = 4;
+    localparam integer BLOCK_WAW_BUNDLE = 5;
+    localparam integer BLOCK_WAW_COMPLETED = 6;
+    localparam integer BLOCK_READ_PORT = 7;
+    localparam integer BLOCK_BARRIER = 8;
+    localparam integer BLOCK_RETIRE_CAPACITY = 9;
+    localparam integer BLOCK_PIPE_CONFLICT = 10;
+    localparam integer BLOCK_PIPE_BUSY = 11;
+    localparam integer BLOCK_INVALID_PIPE = 12;
+    localparam integer BLOCK_BRANCH_REDIRECT = 13;
+    localparam integer BLOCK_UNKNOWN = 14;
+    localparam integer BRANCH_ORACLE_DEPTH = 65536;
+    reg [64:0] branch_oracle [0:BRANCH_ORACLE_DEPTH-1];
+    reg branch_oracle_taken;
+    reg [63:0] branch_oracle_target;
+    integer branch_oracle_dump_fd;
+    integer branch_oracle_dump_count;
+    integer branch_oracle_consumed;
+    integer branch_oracle_expected;
+    integer branch_oracle_extra_allocations;
+    string branch_oracle_dump_path;
+    string branch_oracle_load_path;
     integer pipeline_trace_fd;
     integer pipeline_trace_cycle;
     string memh_path;
@@ -459,8 +541,29 @@ module tb_top_axi_3p #(
     openrv64_top_3p #(
         .RESET_VECTOR(`OPENRV64_SOC_MEMORY_BASE),
         .ENABLE_RV64M(1'b1),
+        .RETIRE_DEPTH(RETIRE_DEPTH),
+        .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
+        .BRANCH_COMPLETION_FORWARD_MASK(BRANCH_FORWARD_MASK),
+        .ENABLE_FULL_FORWARDING(FULL_FORWARDING),
+        .RELAX_WAW(RELAX_WAW),
+        .RELAX_HAZARDS(RELAX_HAZARDS),
+        .FREE_BRANCHES(FREE_BRANCHES),
+        .ENABLE_EQ_BRANCH_PAIRING(EQ_BRANCH_PAIRING),
+        .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .ENABLE_POSTED_STORES(POSTED_STORES),
         .ENABLE_TRACE(1'b1),
-        .BP_TYPE(BP_TYPE)
+        .BP_TYPE(BP_TYPE),
+        .BP_RAS_ENABLE(BP_RAS_ENABLE),
+        .BP_RAS_DEPTH(BP_RAS_DEPTH),
+        .BP_BIMODAL_ENTRIES(BP_BIMODAL_ENTRIES),
+        .BP_BIMODAL_COUNTER_BITS(BP_BIMODAL_COUNTER_BITS),
+        .BP_BIMODAL_UPDATE_DEPTH(BP_BIMODAL_UPDATE_DEPTH),
+        .BP_GSHARE_ENTRIES(BP_GSHARE_ENTRIES),
+        .BP_GSHARE_COUNTER_BITS(BP_GSHARE_COUNTER_BITS),
+        .BP_BTB_ENTRIES(BP_BTB_ENTRIES),
+        .BP_BTB_TAG_BITS(BP_BTB_TAG_BITS),
+        .BP_INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -529,6 +632,333 @@ module tb_top_axi_3p #(
         .trace_retire_rd(core_trace_retire_rd),
         .trace_retire_wdata(core_trace_retire_wdata)
     );
+
+    // Testbench-only visibility into the program-ordered dispatch window.
+    // These names deliberately do not become RTL ports: the CSV is a
+    // simulation ABI, while the synthesizable trace interface remains small.
+    wire [2:0] strict_trace_candidate_valid =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_valid;
+    wire [2:0] strict_trace_candidate_fire =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_fire;
+    wire [2:0] strict_trace_candidate_hazard_free =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_hazard_free_effective;
+    wire [2:0] strict_trace_candidate_free =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_free;
+    wire [2:0] trace_free_branch_complete =
+        dut.u_core.u_backend.allocation_complete;
+    wire trace_exec_branch_resolved =
+        dut.u_core.u_backend.exec_branch_resolved;
+    wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] strict_trace_candidate_pipe =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_pipe;
+    wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        strict_trace_candidate_payload =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_payload;
+    wire [2:0] strict_trace_candidate_uses_rs1 =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.reg_map_uses_rs1;
+    wire [2:0] strict_trace_candidate_uses_rs2 =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.reg_map_uses_rs2;
+    wire [2:0] strict_trace_candidate_reg_write =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_reg_write;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] strict_trace_candidate_rs1 =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_rs1_addr;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] strict_trace_candidate_rs2 =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_rs2_addr;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] strict_trace_candidate_rd =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_rd_addr;
+    wire [2:0] trace_pipe_ready = dut.u_core.u_backend.pipe_ready;
+    wire [2:0] trace_candidate_valid = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.pipe_valid : strict_trace_candidate_valid;
+    wire [2:0] trace_candidate_fire = (ISSUE_WINDOW != 0) ?
+        (dut.u_core.u_backend.pipe_valid & trace_pipe_ready) :
+        strict_trace_candidate_fire;
+    wire [2:0] trace_candidate_hazard_free = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.pipe_valid : strict_trace_candidate_hazard_free;
+    wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] trace_candidate_pipe =
+        (ISSUE_WINDOW != 0) ?
+        {`OPENRV64_EXEC_PIPE_MEM, `OPENRV64_EXEC_PIPE_EX1,
+         `OPENRV64_EXEC_PIPE_EX0} : strict_trace_candidate_pipe;
+    wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        trace_candidate_payload = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.pipe_payload : strict_trace_candidate_payload;
+    wire [2:0] trace_candidate_uses_rs1 = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_pipe_uses_rs1 :
+        strict_trace_candidate_uses_rs1;
+    wire [2:0] trace_candidate_uses_rs2 = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_pipe_uses_rs2 :
+        strict_trace_candidate_uses_rs2;
+    wire [2:0] trace_candidate_reg_write = {
+        trace_candidate_payload[
+            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 17],
+        trace_candidate_payload[
+            1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 17],
+        trace_candidate_payload[
+            0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 17]
+    };
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] trace_candidate_rs1 =
+        (ISSUE_WINDOW != 0) ? {
+            trace_candidate_payload[
+                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 237 +: 5],
+            trace_candidate_payload[
+                1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 237 +: 5],
+            trace_candidate_payload[
+                0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 237 +: 5]
+        } : strict_trace_candidate_rs1;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] trace_candidate_rs2 =
+        (ISSUE_WINDOW != 0) ? {
+            trace_candidate_payload[
+                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 232 +: 5],
+            trace_candidate_payload[
+                1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 232 +: 5],
+            trace_candidate_payload[
+                0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 232 +: 5]
+        } : strict_trace_candidate_rs2;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] trace_candidate_rd =
+        (ISSUE_WINDOW != 0) ? {
+            trace_candidate_payload[
+                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 35 +: 5],
+            trace_candidate_payload[
+                1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 35 +: 5],
+            trace_candidate_payload[
+                0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 35 +: 5]
+        } : strict_trace_candidate_rd;
+    wire trace_allocation_ready = dut.u_core.u_backend.allocation_ready;
+    wire [2:0] trace_barrier_allow =
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_control.barrier_allow;
+    wire [2:0] trace_raw_existing = {
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.raw_existing2,
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.raw_existing1,
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.raw0
+    };
+    wire [2:0] trace_raw_bundle = {
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.raw_bundle2,
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.raw_bundle1,
+        1'b0
+    };
+    wire [2:0] trace_raw_rs1 = {
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.reads_rs12 &&
+            ((dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.busy_after_retire[
+                trace_candidate_rs1[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] &&
+              !dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.forward_rs12) ||
+             dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot0[
+                trace_candidate_rs1[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] ||
+             dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot1[
+                trace_candidate_rs1[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]),
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.reads_rs11 &&
+            ((dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.busy_after_retire[
+                trace_candidate_rs1[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] &&
+              !dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.forward_rs11) ||
+             dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot0[
+                trace_candidate_rs1[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]),
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.reads_rs10 &&
+            dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.busy_after_retire[
+                trace_candidate_rs1[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] &&
+            !dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.forward_rs10
+    };
+    wire [2:0] trace_raw_rs2 = {
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.reads_rs22 &&
+            ((dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.busy_after_retire[
+                trace_candidate_rs2[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] &&
+              !dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.forward_rs22) ||
+             dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot0[
+                trace_candidate_rs2[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] ||
+             dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot1[
+                trace_candidate_rs2[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]),
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.reads_rs21 &&
+            ((dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.busy_after_retire[
+                trace_candidate_rs2[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] &&
+              !dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.forward_rs21) ||
+             dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot0[
+                trace_candidate_rs2[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]),
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.reads_rs20 &&
+            dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.busy_after_retire[
+                trace_candidate_rs2[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] &&
+            !dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.forward_rs20
+    };
+    wire [2:0] trace_raw_completed = {
+        dut.u_core.u_backend.raw_hazard[2] && !trace_raw_bundle[2] &&
+            (!trace_raw_rs1[2] || dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rs1[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]) &&
+            (!trace_raw_rs2[2] || dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rs2[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]),
+        dut.u_core.u_backend.raw_hazard[1] && !trace_raw_bundle[1] &&
+            (!trace_raw_rs1[1] || dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rs1[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]) &&
+            (!trace_raw_rs2[1] || dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rs2[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]),
+        dut.u_core.u_backend.raw_hazard[0] &&
+            (!trace_raw_rs1[0] || dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rs1[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]) &&
+            (!trace_raw_rs2[0] || dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rs2[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]])
+    };
+    wire [2:0] trace_waw_completed = {
+        dut.u_core.u_backend.waw_hazard[2] && trace_candidate_reg_write[2] &&
+            dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rd[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]],
+        dut.u_core.u_backend.waw_hazard[1] && trace_candidate_reg_write[1] &&
+            dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rd[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]],
+        dut.u_core.u_backend.waw_hazard[0] && trace_candidate_reg_write[0] &&
+            dut.u_core.u_backend.full_forward_valid[
+                trace_candidate_rd[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]
+    };
+    wire [2:0] trace_waw_bundle = {
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.writes2 &&
+            (dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot0[
+                trace_candidate_rd[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]] ||
+             dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot1[
+                trace_candidate_rd[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]]),
+        dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.writes1 &&
+            dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.u_reg_map.write_hot0[
+                trace_candidate_rd[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH]],
+        1'b0
+    };
+    wire [2:0] trace_queue_retire_valid =
+        dut.u_core.u_backend.queue_retire_valid;
+    wire [RETIRE_DEPTH-1:0] trace_completed_entries =
+        dut.u_core.u_backend.completed_entry_valid;
+    wire [2:0] trace_lsu_slots = {
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[2],
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[1],
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[0]
+    };
+    wire [2:0] trace_lsu_sent = {
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[2],
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[1],
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[0]
+    };
+    wire trace_lsu_store_inflight =
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.store_inflight_q;
+    wire trace_lsu_order_block =
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_slot_valid &&
+        (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.pending_store_order_block ||
+         (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_mem_write &&
+          !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_order_match));
+    wire [3:0] trace_fetch_lines = {
+        dut.u_core.g_fetch_axi.u_fetch.line_valid_q[3],
+        dut.u_core.g_fetch_axi.u_fetch.line_valid_q[2],
+        dut.u_core.g_fetch_axi.u_fetch.line_valid_q[1],
+        dut.u_core.g_fetch_axi.u_fetch.line_valid_q[0]
+    };
+    wire [3:0] trace_fetch_pending = {
+        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[3],
+        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[2],
+        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[1],
+        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[0]
+    };
+    wire [2:0] trace_fetch_bus_count =
+        dut.u_core.u_bus.g_axi.u_bus.fetch_count_q;
+    wire trace_fetch_consume_hit =
+        dut.u_core.g_fetch_axi.u_fetch.consume_line_hit;
+    wire trace_fetch_follow_hit =
+        dut.u_core.g_fetch_axi.u_fetch.following_line_hit;
+    wire trace_fetch_active = dut.u_core.g_fetch_axi.u_fetch.active_q;
+
+    // The legacy candidate fields above describe the strict-prefix queue.
+    // The selectable issue-window path has more than three candidates, so
+    // aggregate its actual scan state explicitly instead of pretending that
+    // the old three-lane hazard classification still applies.
+    wire [4:0] trace_window_unissued = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_unissued_count :
+        5'd0;
+    wire [4:0] trace_window_operand_ready = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_operand_ready_count :
+        5'd0;
+    wire [4:0] trace_window_eligible = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_eligible_count :
+        5'd0;
+    wire [4:0] trace_window_raw_block = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_raw_block_count :
+        5'd0;
+    wire [4:0] trace_window_hard_block = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_hard_block_count :
+        5'd0;
+    wire [4:0] trace_window_mem_order_block = (ISSUE_WINDOW != 0) ?
+        dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_mem_order_block_count :
+        5'd0;
+    wire [1:0] trace_window_selected =
+        {1'b0, dut.u_core.u_backend.pipe_valid[0]} +
+        {1'b0, dut.u_core.u_backend.pipe_valid[1]} +
+        {1'b0, dut.u_core.u_backend.pipe_valid[2]};
+    wire [1:0] trace_window_issued =
+        {1'b0, (dut.u_core.u_backend.pipe_valid[0] && trace_pipe_ready[0])} +
+        {1'b0, (dut.u_core.u_backend.pipe_valid[1] && trace_pipe_ready[1])} +
+        {1'b0, (dut.u_core.u_backend.pipe_valid[2] && trace_pipe_ready[2])};
+
+    integer trace_block_lane;
+    integer trace_block_reason;
+    reg [`OPENRV64_EXEC_PIPE_WIDTH-1:0] trace_block_pipe;
+    always @* begin
+        trace_block_lane = 3;
+        trace_block_reason = BLOCK_NONE;
+        trace_block_pipe = {`OPENRV64_EXEC_PIPE_WIDTH{1'b0}};
+        if (trace_candidate_valid[0] && !trace_candidate_fire[0]) begin
+            trace_block_lane = 0;
+        end else if (trace_candidate_valid[1] && trace_candidate_fire[0] &&
+                     !trace_candidate_fire[1]) begin
+            trace_block_lane = 1;
+        end else if (trace_candidate_valid[2] && trace_candidate_fire[1] &&
+                     !trace_candidate_fire[2]) begin
+            trace_block_lane = 2;
+        end
+
+        if (trace_block_lane != 3) begin
+            trace_block_pipe = trace_candidate_pipe[
+                trace_block_lane*`OPENRV64_EXEC_PIPE_WIDTH +:
+                `OPENRV64_EXEC_PIPE_WIDTH];
+            if (dut.u_core.u_backend.raw_hazard[trace_block_lane]) begin
+                if (trace_raw_bundle[trace_block_lane])
+                    trace_block_reason = BLOCK_RAW_BUNDLE;
+                else if (trace_raw_completed[trace_block_lane])
+                    trace_block_reason = BLOCK_RAW_COMPLETED;
+                else
+                    trace_block_reason = BLOCK_RAW_PENDING;
+            end else if (dut.u_core.u_backend.waw_hazard[trace_block_lane]) begin
+                if (trace_waw_bundle[trace_block_lane])
+                    trace_block_reason = BLOCK_WAW_BUNDLE;
+                else if (trace_waw_completed[trace_block_lane])
+                    trace_block_reason = BLOCK_WAW_COMPLETED;
+                else
+                    trace_block_reason = BLOCK_WAW_PENDING;
+            end else if (dut.u_core.u_backend.read_port_hazard[trace_block_lane]) begin
+                trace_block_reason = BLOCK_READ_PORT;
+            end else if (!trace_barrier_allow[trace_block_lane]) begin
+                trace_block_reason = BLOCK_BARRIER;
+            end else if (!trace_allocation_ready) begin
+                trace_block_reason = BLOCK_RETIRE_CAPACITY;
+            end else if ((FREE_BRANCHES != 0) &&
+                         dut.u_core.backend_redirect &&
+                         (((trace_block_lane == 1) &&
+                           strict_trace_candidate_free[0]) ||
+                          ((trace_block_lane == 2) &&
+                           (strict_trace_candidate_free[0] ||
+                            strict_trace_candidate_free[1])))) begin
+                // The free branch resolved as mispredicted while allocating;
+                // younger wrong-path candidates are deliberately suppressed.
+                trace_block_reason = BLOCK_BRANCH_REDIRECT;
+            end else if ((trace_block_lane >= 1) &&
+                         trace_candidate_fire[0] &&
+                         !strict_trace_candidate_free[0] &&
+                         (trace_block_pipe == trace_candidate_pipe[
+                            0*`OPENRV64_EXEC_PIPE_WIDTH +:
+                            `OPENRV64_EXEC_PIPE_WIDTH])) begin
+                trace_block_reason = BLOCK_PIPE_CONFLICT;
+            end else if ((trace_block_lane == 2) &&
+                         trace_candidate_fire[1] &&
+                         !strict_trace_candidate_free[1] &&
+                         (trace_block_pipe == trace_candidate_pipe[
+                            1*`OPENRV64_EXEC_PIPE_WIDTH +:
+                            `OPENRV64_EXEC_PIPE_WIDTH])) begin
+                trace_block_reason = BLOCK_PIPE_CONFLICT;
+            end else if (trace_block_pipe > `OPENRV64_EXEC_PIPE_MEM) begin
+                trace_block_reason = BLOCK_INVALID_PIPE;
+            end else if (!trace_pipe_ready[trace_block_pipe]) begin
+                trace_block_reason = BLOCK_PIPE_BUSY;
+            end else begin
+                trace_block_reason = BLOCK_UNKNOWN;
+            end
+        end
+    end
 
     tb_axi256_soc_fabric #(
         .RAM_BYTES(16 * 1024 * 1024)
@@ -813,6 +1243,25 @@ module tb_top_axi_3p #(
         end
     endfunction
 
+    function automatic branch_completion_match;
+        input [4:0] source_addr;
+        integer completion_lane;
+        begin
+            branch_completion_match = 1'b0;
+            if (source_addr != `RV64_REG_X0) begin
+                for (completion_lane = 0; completion_lane < 3;
+                     completion_lane = completion_lane + 1) begin
+                    if (dut.u_core.u_backend.
+                            branch_completion_forward_valid[completion_lane] &&
+                        (dut.u_core.u_backend.completion_forward_rd_addr[
+                            completion_lane*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] == source_addr))
+                        branch_completion_match = 1'b1;
+                end
+            end
+        end
+    endfunction
+
     task automatic put_instr;
         input integer byte_offset;
         input [31:0] instruction;
@@ -827,12 +1276,41 @@ module tb_top_axi_3p #(
 
     task automatic sample_performance;
         integer issued_this_cycle;
+        integer branch_candidate_lane;
+        reg branch_rs1_forwarded;
+        reg branch_rs2_forwarded;
         begin
             perf_retired = perf_retired + dut.u_core.backend_retire_count;
             issued_this_cycle = dut.u_core.backend_issue_valid[0] +
                                 dut.u_core.backend_issue_valid[1] +
                                 dut.u_core.backend_issue_valid[2];
             perf_issued = perf_issued + issued_this_cycle;
+
+            if (ISSUE_WINDOW == 0) begin
+                for (branch_candidate_lane = 0;
+                     branch_candidate_lane < 3;
+                     branch_candidate_lane = branch_candidate_lane + 1) begin
+                    branch_rs1_forwarded =
+                        trace_candidate_uses_rs1[branch_candidate_lane] &&
+                        branch_completion_match(trace_candidate_rs1[
+                            branch_candidate_lane*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH]);
+                    branch_rs2_forwarded =
+                        trace_candidate_uses_rs2[branch_candidate_lane] &&
+                        branch_completion_match(trace_candidate_rs2[
+                            branch_candidate_lane*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH]);
+                    if (trace_candidate_fire[branch_candidate_lane] &&
+                        trace_candidate_payload[
+                            branch_candidate_lane*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14] &&
+                        (branch_rs1_forwarded || branch_rs2_forwarded)) begin
+                        branch_forward_issues = branch_forward_issues + 1;
+                        branch_forward_operands = branch_forward_operands +
+                            branch_rs1_forwarded + branch_rs2_forwarded;
+                    end
+                end
+            end
 
             case (dut.u_core.backend_retire_count)
                 0: retire_width_0 = retire_width_0 + 1;
@@ -846,6 +1324,92 @@ module tb_top_axi_3p #(
                 2: issue_width_2 = issue_width_2 + 1;
                 3: issue_width_3 = issue_width_3 + 1;
             endcase
+
+            case (trace_block_reason)
+                BLOCK_NONE:
+                    perf_block_none = perf_block_none + 1;
+                BLOCK_RAW_PENDING:
+                    perf_block_raw_pending = perf_block_raw_pending + 1;
+                BLOCK_RAW_BUNDLE:
+                    perf_block_raw_bundle = perf_block_raw_bundle + 1;
+                BLOCK_RAW_COMPLETED:
+                    perf_block_raw_completed = perf_block_raw_completed + 1;
+                BLOCK_WAW_PENDING:
+                    perf_block_waw_pending = perf_block_waw_pending + 1;
+                BLOCK_WAW_BUNDLE:
+                    perf_block_waw_bundle = perf_block_waw_bundle + 1;
+                BLOCK_WAW_COMPLETED:
+                    perf_block_waw_completed = perf_block_waw_completed + 1;
+                BLOCK_READ_PORT:
+                    perf_block_read_port = perf_block_read_port + 1;
+                BLOCK_BARRIER:
+                    perf_block_barrier = perf_block_barrier + 1;
+                BLOCK_RETIRE_CAPACITY:
+                    perf_block_retire_capacity =
+                        perf_block_retire_capacity + 1;
+                BLOCK_PIPE_CONFLICT:
+                    perf_block_pipe_conflict = perf_block_pipe_conflict + 1;
+                BLOCK_PIPE_BUSY:
+                    perf_block_pipe_busy = perf_block_pipe_busy + 1;
+                BLOCK_INVALID_PIPE:
+                    perf_block_invalid_pipe = perf_block_invalid_pipe + 1;
+                BLOCK_BRANCH_REDIRECT:
+                    perf_block_branch_redirect =
+                        perf_block_branch_redirect + 1;
+                default:
+                    perf_block_unknown = perf_block_unknown + 1;
+            endcase
+
+            if ((dut.u_core.backend_retire_occupancy != 0) &&
+                !trace_queue_retire_valid[0]) begin
+                perf_retire_head_incomplete =
+                    perf_retire_head_incomplete + 1;
+                if (trace_completed_entries != 0)
+                    perf_retire_completed_behind_head =
+                        perf_retire_completed_behind_head + 1;
+            end
+            if (trace_queue_retire_valid[0] &&
+                !dut.u_core.u_backend.release_valid[0])
+                perf_retire_control_block = perf_retire_control_block + 1;
+
+            if (dut.u_core.fetch_decode_valid == 0)
+                perf_frontend_empty = perf_frontend_empty + 1;
+            if ((dut.u_core.fetch_decode_valid != 0) &&
+                (dut.u_core.frontend_decode_fire == 0))
+                perf_frontend_held = perf_frontend_held + 1;
+            if (dut.u_core.fetch_pipe_req_valid &&
+                !dut.u_core.fetch_pipe_req_ready)
+                perf_frontend_request_wait =
+                    perf_frontend_request_wait + 1;
+            if (dut.u_core.control_redirect)
+                perf_frontend_redirect = perf_frontend_redirect + 1;
+            if (dut.u_core.fetch_decode_valid == 0) begin
+                if (dut.u_core.control_flush || dut.u_core.control_redirect)
+                    perf_frontend_control = perf_frontend_control + 1;
+                else if (dut.u_core.bp_fetch_stall)
+                    perf_frontend_bp_stall = perf_frontend_bp_stall + 1;
+                else if (!trace_fetch_consume_hit &&
+                         ((trace_fetch_pending != 0) ||
+                          (trace_fetch_bus_count != 0)))
+                    perf_frontend_refill_wait =
+                        perf_frontend_refill_wait + 1;
+                else if (!trace_fetch_consume_hit)
+                    perf_frontend_no_line = perf_frontend_no_line + 1;
+                else
+                    perf_frontend_other_empty =
+                        perf_frontend_other_empty + 1;
+            end
+
+            if ((trace_block_reason == BLOCK_PIPE_BUSY) &&
+                (trace_block_pipe == `OPENRV64_EXEC_PIPE_MEM))
+                perf_lsu_pipe_block = perf_lsu_pipe_block + 1;
+            if (dut.u_core.backend_mem_valid &&
+                !dut.u_core.backend_mem_ready)
+                perf_lsu_request_wait = perf_lsu_request_wait + 1;
+            if (trace_lsu_sent != 0)
+                perf_lsu_outstanding = perf_lsu_outstanding + 1;
+            if (trace_lsu_order_block)
+                perf_lsu_order_block = perf_lsu_order_block + 1;
 
             if (arvalid && arready) begin
                 if (arid[`OPENRV64_AXI_ID_WIDTH-1])
@@ -877,13 +1441,8 @@ module tb_top_axi_3p #(
     task automatic sample_pipeline_trace;
         begin
         if (rst_n && external_image && (pipeline_trace_fd != 0)) begin
-            $fdisplay(pipeline_trace_fd,
-                {"openrv64-3p-cycle-v1,%0d,%x,%x,%x,%x,%x,%x,%x,%x,%x,%0d,%0d,%0d,%x,%x,%x,%08x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%02x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x"},
+            $fwrite(pipeline_trace_fd,
+                "openrv64-3p-cycle-v2,%0d,%x,%x,%x,%x,%x,%x,%x,%x,%x,%0d,%0d,%0d,%x,%x,%x,%08x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%02x,",
                 pipeline_trace_cycle,
                 dut.u_core.fetch_decode_valid,
                 dut.u_core.fetch_decode_ready,
@@ -913,7 +1472,81 @@ module tb_top_axi_3p #(
                 dut.u_core.fetch_pipe_resp_valid,
                 arvalid,
                 arready,
-                core_trace_stall_causes,
+                core_trace_stall_causes);
+            $fwrite(pipeline_trace_fd,
+                {"%x,%x,%x,%02x,%x,%x,%0d,%0d,%0d,",
+                 "%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%04x,%04x,%04x,",
+                 "%x,%02x,%0d,%0d,%0d,%x,%x,%0d,%0d,%0d,",
+                 "%0d,%0d,%0d,%0d,%0d,",
+                 {"%x,%x,%0d,%0d,%x,%04x,%048x,",
+                  "%x,%016x,%016x,%02x,%x,%016x,"}},
+                trace_candidate_valid,
+                trace_candidate_fire,
+                trace_candidate_hazard_free,
+                trace_candidate_pipe,
+                trace_pipe_ready,
+                trace_barrier_allow,
+                trace_allocation_ready,
+                trace_block_lane,
+                trace_block_reason,
+                trace_raw_existing,
+                trace_raw_bundle,
+                trace_raw_completed,
+                trace_raw_rs1,
+                trace_raw_rs2,
+                trace_waw_bundle,
+                trace_waw_completed,
+                trace_candidate_uses_rs1,
+                trace_candidate_uses_rs2,
+                trace_candidate_reg_write,
+                trace_candidate_rs1,
+                trace_candidate_rs2,
+                trace_candidate_rd,
+                trace_queue_retire_valid,
+                trace_completed_entries,
+                dut.u_core.control_flush,
+                dut.u_core.control_redirect,
+                trace_fetch_bus_count,
+                trace_fetch_lines,
+                trace_fetch_pending,
+                trace_fetch_consume_hit,
+                trace_fetch_follow_hit,
+                trace_fetch_active,
+                dut.u_core.backend_mem_valid,
+                dut.u_core.backend_mem_ready,
+                dut.u_core.backend_mem_resp_valid,
+                dut.u_core.backend_mem_resp_ready,
+                dut.u_core.backend_mem_write,
+                trace_lsu_slots,
+                trace_lsu_sent,
+                trace_lsu_store_inflight,
+                trace_lsu_order_block,
+                dut.u_core.u_backend.gpr_write,
+                dut.u_core.u_backend.gpr_write_addr,
+                dut.u_core.u_backend.gpr_write_data,
+                dut.u_core.backend_mem_tag,
+                dut.u_core.backend_mem_addr,
+                dut.u_core.backend_mem_wdata,
+                dut.u_core.backend_mem_wstrb,
+                dut.u_core.backend_mem_resp_tag,
+                dut.u_core.backend_mem_rdata);
+            $fwrite(pipeline_trace_fd,
+                "%0d,%0d,%0d,%0d,%0d,%0d,%0d,%0d,",
+                trace_window_unissued,
+                trace_window_operand_ready,
+                trace_window_eligible,
+                trace_window_raw_block,
+                trace_window_hard_block,
+                trace_window_mem_order_block,
+                trace_window_selected,
+                trace_window_issued);
+            $fdisplay(pipeline_trace_fd,
+                {"%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
+                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
+                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
+                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
+                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
+                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x"},
                 dut.u_core.fetch_decode_trace[0*64 +: 64],
                 dut.u_core.decode_pc0, dut.u_core.instr0,
                 dut.u_core.fetch_decode_trace[1*64 +: 64],
@@ -926,6 +1559,24 @@ module tb_top_axi_3p #(
                 dut.u_core.decode_pc1, dut.u_core.instr1,
                 dut.u_core.fetch_decode_trace[2*64 +: 64],
                 dut.u_core.decode_pc2, dut.u_core.instr2,
+                trace_candidate_payload[
+                    0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 338 +: 64],
+                trace_candidate_payload[
+                    0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64],
+                trace_candidate_payload[
+                    0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +: 32],
+                trace_candidate_payload[
+                    1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 338 +: 64],
+                trace_candidate_payload[
+                    1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64],
+                trace_candidate_payload[
+                    1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +: 32],
+                trace_candidate_payload[
+                    2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 338 +: 64],
+                trace_candidate_payload[
+                    2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64],
+                trace_candidate_payload[
+                    2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +: 32],
                 dut.u_core.u_backend.pipe_payload[
                     0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 338 +: 64],
                 dut.u_core.u_backend.pipe_payload[
@@ -1027,10 +1678,47 @@ module tb_top_axi_3p #(
                 if (dut.u_core.bp_prediction_taken)
                     bp_taken_predictions <= bp_taken_predictions + 1;
             end
-            if (dut.u_core.branch_resolved)
+            if (FREE_BRANCHES != 0)
+                bp_resolutions <= bp_resolutions +
+                    {2'd0, trace_free_branch_complete[0]} +
+                    {2'd0, trace_free_branch_complete[1]} +
+                    {2'd0, trace_free_branch_complete[2]} +
+                    trace_exec_branch_resolved;
+            else if (dut.u_core.branch_resolved)
                 bp_resolutions <= bp_resolutions + 1;
             if (dut.u_core.backend_redirect)
                 bp_corrections <= bp_corrections + 1;
+            if (ISSUE_WINDOW == 0)
+                eq_branch_pairings <= eq_branch_pairings +
+                    (dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.pair_eq0 &&
+                     dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_fire[1]) +
+                    (dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.pair_eq1 &&
+                     dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_fire[2]);
+            if ((branch_oracle_dump_fd != 0) &&
+                dut.u_core.branch_resolved) begin
+                $fwrite(branch_oracle_dump_fd, "%017h\n",
+                        {dut.u_core.branch_taken,
+                         dut.u_core.backend_redirect_target});
+                branch_oracle_dump_count = branch_oracle_dump_count + 1;
+            end
+            if ((ORACLE_BRANCHES != 0) &&
+                dut.u_core.bp_branch_allocate) begin
+                if (branch_oracle_consumed < branch_oracle_expected) begin
+                    branch_oracle_consumed = branch_oracle_consumed + 1;
+                    if (branch_oracle_consumed < branch_oracle_expected) begin
+                        branch_oracle_taken =
+                            branch_oracle[branch_oracle_consumed][64];
+                        branch_oracle_target =
+                            branch_oracle[branch_oracle_consumed][63:0];
+                    end
+                end else begin
+                    // The frontend can allocate controls younger than the
+                    // terminating EBREAK. They never resolve and therefore
+                    // correctly have no record in the oracle stream.
+                    branch_oracle_extra_allocations =
+                        branch_oracle_extra_allocations + 1;
+                end
+            end
             if (memory_valid)
                 $fatal(1, "native AXI RAM request leaked into the 64-bit SoC bus");
         end
@@ -1072,7 +1760,48 @@ module tb_top_axi_3p #(
         bp_taken_predictions = 0;
         bp_resolutions = 0;
         bp_corrections = 0;
+        eq_branch_pairings = 0;
+        branch_forward_issues = 0;
+        branch_forward_operands = 0;
         loop_line_fetches = 0;
+        perf_block_none = 0;
+        perf_block_raw_pending = 0;
+        perf_block_raw_bundle = 0;
+        perf_block_raw_completed = 0;
+        perf_block_waw_pending = 0;
+        perf_block_waw_bundle = 0;
+        perf_block_waw_completed = 0;
+        perf_block_read_port = 0;
+        perf_block_barrier = 0;
+        perf_block_retire_capacity = 0;
+        perf_block_pipe_conflict = 0;
+        perf_block_pipe_busy = 0;
+        perf_block_invalid_pipe = 0;
+        perf_block_branch_redirect = 0;
+        perf_block_unknown = 0;
+        perf_retire_head_incomplete = 0;
+        perf_retire_completed_behind_head = 0;
+        perf_retire_control_block = 0;
+        perf_frontend_empty = 0;
+        perf_frontend_held = 0;
+        perf_frontend_request_wait = 0;
+        perf_frontend_redirect = 0;
+        perf_frontend_refill_wait = 0;
+        perf_frontend_no_line = 0;
+        perf_frontend_bp_stall = 0;
+        perf_frontend_control = 0;
+        perf_frontend_other_empty = 0;
+        perf_lsu_pipe_block = 0;
+        perf_lsu_request_wait = 0;
+        perf_lsu_outstanding = 0;
+        perf_lsu_order_block = 0;
+        branch_oracle_taken = 1'b0;
+        branch_oracle_target = 64'd0;
+        branch_oracle_dump_fd = 0;
+        branch_oracle_dump_count = 0;
+        branch_oracle_consumed = 0;
+        branch_oracle_expected = 0;
+        branch_oracle_extra_allocations = 0;
         pipeline_trace_fd = 0;
         pipeline_trace_cycle = 0;
         pipeline_trace_path = "sim/top-axi-3p-trace.csv";
@@ -1085,7 +1814,38 @@ module tb_top_axi_3p #(
         expect_a0_valid = $value$plusargs("expect_a0=%h", expected_a0);
         if (!$value$plusargs("max_cycles=%d", max_cycles))
             max_cycles = 20000;
-
+        if ($value$plusargs("branch_oracle_dump=%s",
+                            branch_oracle_dump_path)) begin
+            branch_oracle_dump_fd = $fopen(branch_oracle_dump_path, "w");
+            if (branch_oracle_dump_fd == 0)
+                $fatal(1, "could not open branch oracle dump %0s",
+                       branch_oracle_dump_path);
+        end
+        if (ORACLE_BRANCHES != 0) begin
+            if (!$value$plusargs("branch_oracle_load=%s",
+                                 branch_oracle_load_path))
+                $fatal(1, "oracle run requires +branch_oracle_load=<path>");
+            if (!$value$plusargs("branch_oracle_count=%d",
+                                 branch_oracle_expected) ||
+                (branch_oracle_expected <= 0) ||
+                (branch_oracle_expected > BRANCH_ORACLE_DEPTH))
+                $fatal(1, "oracle run requires a valid +branch_oracle_count");
+            $readmemh(branch_oracle_load_path, branch_oracle,
+                      0, branch_oracle_expected - 1);
+            branch_oracle_taken = branch_oracle[0][64];
+            branch_oracle_target = branch_oracle[0][63:0];
+            force dut.u_core.bp_prediction_taken = branch_oracle_taken;
+            force dut.u_core.bp_predict_target = branch_oracle_target;
+            // The oracle replaces both direction and target prediction.  A
+            // live RAS may otherwise compare its own outstanding target at
+            // resolution and inject a target-mispredict redirect even though
+            // the forced oracle target was correct.
+            force dut.u_core.bp_target_mispredict = 1'b0;
+            force dut.u_core.bp_fetch_stall = 1'b0;
+            force dut.u_core.bp_decode_stall = 1'b0;
+            $display("BRANCH_ORACLE load=%0s records=%0d",
+                     branch_oracle_load_path, branch_oracle_expected);
+        end
         if (external_image) begin
             if (!$value$plusargs("pipeline_trace=%s", pipeline_trace_path))
                 pipeline_trace_path = "sim/top-axi-3p-trace.csv";
@@ -1095,8 +1855,11 @@ module tb_top_axi_3p #(
                        pipeline_trace_path);
             $fdisplay(pipeline_trace_fd,
                 {"schema,cycle,fetch_valid,fetch_ready,fetch_fire,decode_valid,decode_ready,decode_fire,issue_valid,complete_valid,retire_valid,retire_count,dispatch_q,retire_q,raw,waw,read_port,write_busy,barrier,bp_present,bp_allocate,bp_taken,bp_fetch_stall,bp_decode_stall,redirect,fetch_req_valid,fetch_req_ready,fetch_resp_valid,axi_arvalid,axi_arready,stall_causes,",
+                 "queue_valid,candidate_fire,candidate_hazard_free,candidate_pipe,pipe_ready,barrier_allow,allocation_ready,block_lane,block_reason,raw_existing,raw_bundle,raw_completed,raw_rs1,raw_rs2,waw_bundle,waw_completed,candidate_uses_rs1,candidate_uses_rs2,candidate_reg_write,candidate_rs1,candidate_rs2,candidate_rd,queue_retire_valid,completed_entries,control_flush,control_redirect,fetch_bus_q,fetch_line_valid,fetch_pending,fetch_consume_hit,fetch_follow_hit,fetch_active,mem_req_valid,mem_req_ready,mem_resp_valid,mem_resp_ready,mem_write,lsu_slots,lsu_sent,lsu_store_inflight,lsu_order_block,retire_gpr_write,retire_gpr_rd,retire_gpr_data,mem_req_tag,mem_req_addr,mem_req_wdata,mem_req_wstrb,mem_resp_tag,mem_resp_rdata,",
+                 "window_unissued,window_operand_ready,window_eligible,window_raw_block,window_hard_block,window_mem_order_block,window_selected,window_issued,",
                  "f0_uid,f0_pc,f0_instr,f1_uid,f1_pc,f1_instr,f2_uid,f2_pc,f2_instr,",
                  "d0_uid,d0_pc,d0_instr,d1_uid,d1_pc,d1_instr,d2_uid,d2_pc,d2_instr,",
+                 "q0_uid,q0_pc,q0_instr,q1_uid,q1_pc,q1_instr,q2_uid,q2_pc,q2_instr,",
                  "i0_uid,i0_pc,i0_instr,i1_uid,i1_pc,i1_instr,i2_uid,i2_pc,i2_instr,",
                  "c0_uid,c0_pc,c0_instr,c1_uid,c1_pc,c1_instr,c2_uid,c2_pc,c2_instr,",
                  "r0_uid,r0_pc,r0_instr,r1_uid,r1_pc,r1_instr,r2_uid,r2_pc,r2_instr"});
@@ -1171,9 +1934,86 @@ module tb_top_axi_3p #(
             $display("PERF_AXI fetch_reads=%0d data_reads=%0d ram_reads=%0d mmio_reads=%0d ram_writes=%0d mmio_writes=%0d",
                      axi_fetch_reads, axi_data_reads, axi_ram_reads,
                      axi_mmio_reads, axi_ram_writes, axi_mmio_writes);
-            $display("PERF_BP allocations=%0d taken_predictions=%0d resolutions=%0d corrections=%0d",
+            $display("PERF_BP allocations=%0d taken_predictions=%0d resolutions=%0d corrections=%0d update_overflow=%0d",
                      bp_allocations, bp_taken_predictions,
-                     bp_resolutions, bp_corrections);
+                     bp_resolutions, bp_corrections,
+                     dut.u_core.bp_update_overflow);
+            $display("PERF_BRANCH_PAIR useful=%0d", eq_branch_pairings);
+            $display("PERF_BRANCH_FORWARD issues=%0d operands=%0d",
+                     branch_forward_issues, branch_forward_operands);
+            if (((BP_TYPE == `OPENRV64_BP_BIMODAL) ||
+                 (BP_TYPE == `OPENRV64_BP_GSHARE_BTB)) &&
+                dut.u_core.bp_update_overflow)
+                $fatal(1, "branch predictor update/record queue overflowed");
+            $display({"PERF_CONFIG retire_depth=%0d completion_mask=%03b ",
+                      "branch_forward_mask=%03b ",
+                      "full=%0d relax_waw=%0d relax_hazards=%0d ",
+                      "issue_window=%0d speculation_window=%0d ",
+                      "free_branches=%0d eq_pair=%0d"},
+                     RETIRE_DEPTH, COMPLETION_FORWARD_MASK,
+                     BRANCH_FORWARD_MASK,
+                     FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
+                     ISSUE_WINDOW, SPECULATION_WINDOW,
+                     FREE_BRANCHES, EQ_BRANCH_PAIRING);
+            $display({"PERF_BLOCK none=%0d raw_pending=%0d raw_bundle=%0d ",
+                      "raw_completed=%0d waw_pending=%0d waw_bundle=%0d ",
+                      "waw_completed=%0d ",
+                      "read_port=%0d barrier=%0d retire_capacity=%0d ",
+                      "pipe_conflict=%0d pipe_busy=%0d invalid_pipe=%0d ",
+                      "branch_redirect=%0d unknown=%0d"},
+                     perf_block_none,
+                     perf_block_raw_pending,
+                     perf_block_raw_bundle,
+                     perf_block_raw_completed,
+                     perf_block_waw_pending,
+                     perf_block_waw_bundle,
+                     perf_block_waw_completed,
+                     perf_block_read_port,
+                     perf_block_barrier,
+                     perf_block_retire_capacity,
+                     perf_block_pipe_conflict,
+                     perf_block_pipe_busy,
+                     perf_block_invalid_pipe,
+                     perf_block_branch_redirect,
+                     perf_block_unknown);
+            $display("PERF_RETIRE_BLOCK head_incomplete=%0d completed_behind_head=%0d control_block=%0d",
+                     perf_retire_head_incomplete,
+                     perf_retire_completed_behind_head,
+                     perf_retire_control_block);
+            $display({"PERF_FRONTEND empty=%0d held=%0d request_wait=%0d ",
+                      "redirect=%0d refill_wait=%0d no_line=%0d ",
+                      "bp_stall=%0d control=%0d other_empty=%0d"},
+                     perf_frontend_empty, perf_frontend_held,
+                     perf_frontend_request_wait, perf_frontend_redirect,
+                     perf_frontend_refill_wait, perf_frontend_no_line,
+                     perf_frontend_bp_stall, perf_frontend_control,
+                     perf_frontend_other_empty);
+            $display("PERF_LSU pipe_block=%0d request_wait=%0d outstanding=%0d order_block=%0d",
+                     perf_lsu_pipe_block, perf_lsu_request_wait,
+                     perf_lsu_outstanding, perf_lsu_order_block);
+            if (branch_oracle_dump_fd != 0) begin
+                $fclose(branch_oracle_dump_fd);
+                branch_oracle_dump_fd = 0;
+                $display("PERF_BRANCH_ORACLE_DUMP path=%0s records=%0d",
+                         branch_oracle_dump_path,
+                         branch_oracle_dump_count);
+            end
+            if (ORACLE_BRANCHES != 0) begin
+                if (branch_oracle_consumed != branch_oracle_expected)
+                    $fatal(1,
+                           "branch oracle consumed=%0d expected=%0d",
+                           branch_oracle_consumed,
+                           branch_oracle_expected);
+                if ((bp_resolutions != branch_oracle_expected) ||
+                    (bp_corrections != 0))
+                    $fatal(1,
+                           "branch oracle resolutions=%0d expected=%0d corrections=%0d",
+                           bp_resolutions, branch_oracle_expected,
+                           bp_corrections);
+                $display("PERF_BRANCH_ORACLE consumed=%0d extra_unresolved_allocations=%0d",
+                         branch_oracle_consumed,
+                         branch_oracle_extra_allocations);
+            end
             $fclose(pipeline_trace_fd);
             pipeline_trace_fd = 0;
             $display("PERF_TRACE pipeline=%0s", pipeline_trace_path);
@@ -1222,6 +2062,14 @@ module tb_top_axi_3p #(
                 if ((bp_taken_predictions != bp_allocations) ||
                     (bp_corrections != 1))
                     $fatal(1, "always-taken 3P BP mismatch p=%0d c=%0d",
+                           bp_taken_predictions, bp_corrections);
+            end
+            `OPENRV64_BP_BTFNT,
+            `OPENRV64_BP_BIMODAL,
+            `OPENRV64_BP_GSHARE_BTB: begin
+                if ((bp_taken_predictions != bp_allocations) ||
+                    (bp_corrections != 1))
+                    $fatal(1, "BTFNT/bimodal 3P BP mismatch p=%0d c=%0d",
                            bp_taken_predictions, bp_corrections);
             end
             `OPENRV64_BP_REPEAT_LAST: begin

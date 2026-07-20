@@ -269,7 +269,8 @@ module tb_exec_top_3p;
         tick();
         complete_ready = 3'b000;
 
-        // A branch is hard ordered and cannot issue under the wrong token.
+        // A valid aligned conditional branch resolves before retirement and
+        // therefore does not require the ordered-head token.
         packet = packet_base(64'd101, 64'h2000, 32'h0020_8463);
         packet[ISSUE_RS1_DATA +: 64] = 64'h55;
         packet[ISSUE_RS2_DATA +: 64] = 64'h55;
@@ -284,10 +285,11 @@ module tb_exec_top_3p;
         ordered_head_id = 64'd99;
         ordered_head_slot = 3'd1;
         #1;
-        if (issue_ready[0]) fail("EX0 issued branch under wrong order token");
+        if (!issue_ready[0]) fail("EX0 early branch waited for order token");
+        if (!branch_resolved || !branch_taken || !redirect_valid)
+            fail("EX0 early branch did not resolve without head token");
         ordered_head_id = 64'd1;
         #1;
-        if (!issue_ready[0]) fail("EX0 branch did not accept head token");
         if (!branch_resolved || !branch_taken || !redirect_valid)
             fail("EX0 branch resolution was not produced on issue");
         if ((redirect_id != 64'd1) || (redirect_target != 64'h2008))

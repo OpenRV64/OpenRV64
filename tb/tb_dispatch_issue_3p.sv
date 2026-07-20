@@ -8,6 +8,7 @@ module tb_dispatch_issue_3p;
 
     reg [2:0] candidate_valid;
     reg [2:0] candidate_allow;
+    reg [2:0] candidate_free;
     reg [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe;
     reg [3*64-1:0] candidate_id;
     reg [3*SLOT_WIDTH-1:0] candidate_slot;
@@ -25,6 +26,7 @@ module tb_dispatch_issue_3p;
     ) dut (
         .candidate_valid_i(candidate_valid),
         .candidate_allow_i(candidate_allow),
+        .candidate_free_i(candidate_free),
         .candidate_pipe_i(candidate_pipe),
         .candidate_id_i(candidate_id),
         .candidate_slot_i(candidate_slot),
@@ -49,6 +51,7 @@ module tb_dispatch_issue_3p;
     initial begin
         candidate_valid = 3'b111;
         candidate_allow = 3'b111;
+        candidate_free = 3'b000;
         candidate_pipe = {
             `OPENRV64_EXEC_PIPE_EX1,
             `OPENRV64_EXEC_PIPE_EX0,
@@ -118,6 +121,39 @@ module tb_dispatch_issue_3p;
         if ((candidate_fire != 3'b011) || (pipe_valid != 3'b101))
             fail("hard-order allowance did not terminate issue after candidate one");
 
+        // Candidate zero is an allocation-completed branch.  It must allocate
+        // without claiming EX0, allowing the younger EX0 and MEM operations
+        // to issue in the same architectural group.
+        candidate_pipe = {
+            `OPENRV64_EXEC_PIPE_MEM,
+            `OPENRV64_EXEC_PIPE_EX0,
+            `OPENRV64_EXEC_PIPE_EX0
+        };
+        candidate_allow = 3'b111;
+        candidate_free = 3'b001;
+        #1;
+        if ((candidate_fire != 3'b111) || (pipe_valid != 3'b101))
+            fail("free branch consumed EX0 or terminated issue");
+        if ((pipe_id[0*64 +: 64] != 64'd11) ||
+            (pipe_id[2*64 +: 64] != 64'd12)) begin
+            fail("younger operations were misrouted around free control");
+        end
+
+        // Adjacent free branches are handled as well.  Neither may consume
+        // the sole EX0 route needed by the ordinary third candidate.
+        candidate_pipe = {
+            `OPENRV64_EXEC_PIPE_EX0,
+            `OPENRV64_EXEC_PIPE_EX0,
+            `OPENRV64_EXEC_PIPE_EX0
+        };
+        candidate_free = 3'b011;
+        #1;
+        if ((candidate_fire != 3'b111) || (pipe_valid != 3'b001) ||
+            (pipe_id[0*64 +: 64] != 64'd12)) begin
+            fail("adjacent free branches serialized the issue group");
+        end
+
+        candidate_free = 3'b000;
         candidate_allow = 3'b111;
         allocation_ready = 1'b0;
         #1;

@@ -28,6 +28,25 @@ module tb_axi_bus;
     wire lsu_access_fault;
     wire lsu_page_fault;
 
+    logic pipe_req_valid;
+    wire pipe_req_ready;
+    logic [1:0] pipe_req_tag;
+    logic pipe_req_write;
+    logic [63:0] pipe_req_addr;
+    logic [63:0] pipe_req_wdata;
+    logic [7:0] pipe_req_wstrb;
+    logic [2:0] pipe_req_size;
+    logic [1:0] pipe_req_priv;
+    logic [3:0] pipe_req_vm_mode;
+    logic [43:0] pipe_req_root_ppn;
+    logic pipe_cancel;
+    wire pipe_resp_valid;
+    logic pipe_resp_ready;
+    wire [1:0] pipe_resp_tag;
+    wire [63:0] pipe_resp_rdata;
+    wire pipe_resp_access_fault;
+    wire pipe_resp_page_fault;
+
     wire pmp_valid;
     wire [63:0] pmp_addr;
     wire [1:0] pmp_priv;
@@ -65,6 +84,7 @@ module tb_axi_bus;
     wire bready;
 
     integer ar_count;
+    integer wait_count;
     reg [2:0] seen_id [0:15];
     reg [63:0] seen_addr [0:15];
 
@@ -94,14 +114,26 @@ module tb_axi_bus;
         .lsu_ready_o(lsu_ready), .lsu_rdata_o(lsu_rdata),
         .lsu_access_fault_o(lsu_access_fault),
         .lsu_page_fault_o(lsu_page_fault), .tlbi_i(1'b0),
-        .lsu_pipe_req_valid_i(1'b0), .lsu_pipe_req_tag_i(2'd0),
-        .lsu_pipe_req_write_i(1'b0), .lsu_pipe_req_addr_i(64'd0),
-        .lsu_pipe_req_wdata_i(64'd0), .lsu_pipe_req_wstrb_i(8'd0),
-        .lsu_pipe_req_size_i(3'd0), .lsu_pipe_req_priv_i(`RV64_PRIV_M),
-        .lsu_pipe_req_vm_mode_i(`RV64_SATP_MODE_BARE),
-        .lsu_pipe_req_asid_i(16'd0), .lsu_pipe_req_root_ppn_i(44'd0),
+        .lsu_pipe_req_valid_i(pipe_req_valid),
+        .lsu_pipe_req_ready_o(pipe_req_ready),
+        .lsu_pipe_req_tag_i(pipe_req_tag),
+        .lsu_pipe_req_write_i(pipe_req_write),
+        .lsu_pipe_req_addr_i(pipe_req_addr),
+        .lsu_pipe_req_wdata_i(pipe_req_wdata),
+        .lsu_pipe_req_wstrb_i(pipe_req_wstrb),
+        .lsu_pipe_req_size_i(pipe_req_size),
+        .lsu_pipe_req_priv_i(pipe_req_priv),
+        .lsu_pipe_req_vm_mode_i(pipe_req_vm_mode),
+        .lsu_pipe_req_asid_i(16'd0),
+        .lsu_pipe_req_root_ppn_i(pipe_req_root_ppn),
         .lsu_pipe_req_sum_i(1'b0), .lsu_pipe_req_mxr_i(1'b0),
-        .lsu_pipe_cancel_i(1'b0), .lsu_pipe_resp_ready_i(1'b0),
+        .lsu_pipe_cancel_i(pipe_cancel),
+        .lsu_pipe_resp_valid_o(pipe_resp_valid),
+        .lsu_pipe_resp_ready_i(pipe_resp_ready),
+        .lsu_pipe_resp_tag_o(pipe_resp_tag),
+        .lsu_pipe_resp_rdata_o(pipe_resp_rdata),
+        .lsu_pipe_resp_access_fault_o(pipe_resp_access_fault),
+        .lsu_pipe_resp_page_fault_o(pipe_resp_page_fault),
         .pmp_valid_o(pmp_valid), .pmp_addr_o(pmp_addr),
         .pmp_priv_o(pmp_priv), .pmp_size_o(pmp_size),
         .pmp_write_o(pmp_write), .pmp_exec_o(pmp_exec),
@@ -149,6 +181,64 @@ module tb_axi_bus;
             while (!fetch_req_ready) tick();
             tick();
             fetch_req_valid = 1'b0;
+        end
+    endtask
+
+    task automatic push_pipe_request(
+        input [1:0] tag,
+        input write,
+        input [63:0] addr,
+        input [63:0] write_data,
+        input [7:0] write_strobe
+    );
+        integer wait_cycles;
+        reg completed;
+        begin
+            pipe_req_tag = tag;
+            pipe_req_write = write;
+            pipe_req_addr = addr;
+            pipe_req_wdata = write_data;
+            pipe_req_wstrb = write_strobe;
+            pipe_req_valid = 1'b1;
+            wait_cycles = 0;
+            completed = 1'b0;
+            while (!completed && wait_cycles < 30) begin
+                @(posedge clk);
+                if (pipe_req_ready)
+                    completed = 1'b1;
+                #1;
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!completed)
+                $fatal(1,
+                    "tagged LSU request timeout tag=%0d fast=%b busy=%b local=%b pmp=%b ar=%b/%b",
+                    tag, dut.pipe_fast_candidate, dut.pipe_req_tag_busy,
+                    dut.pipe_local_resp_valid_q, pmp_allow,
+                    arvalid, arready);
+            pipe_req_valid = 1'b0;
+        end
+    endtask
+
+    task automatic send_pipe_read_response(
+        input [1:0] tag,
+        input [255:0] response_data,
+        input [63:0] expected_data
+    );
+        begin
+            rid = {1'b1, tag};
+            rdata = response_data;
+            rresp = 2'b00;
+            rlast = 1'b1;
+            rvalid = 1'b1;
+            #1;
+            if (!rready || !pipe_resp_valid || pipe_resp_tag != tag ||
+                pipe_resp_rdata != expected_data ||
+                pipe_resp_access_fault || pipe_resp_page_fault)
+                $fatal(1,
+                    "tagged response mismatch tag=%0d got_tag=%0d data=%h ready=%b",
+                    tag, pipe_resp_tag, pipe_resp_rdata, rready);
+            tick();
+            rvalid = 1'b0;
         end
     endtask
 
@@ -223,6 +313,18 @@ module tb_axi_bus;
         lsu_wdata = 0;
         lsu_wstrb = 0;
         lsu_size = 3;
+        pipe_req_valid = 0;
+        pipe_req_tag = 0;
+        pipe_req_write = 0;
+        pipe_req_addr = 0;
+        pipe_req_wdata = 0;
+        pipe_req_wstrb = 0;
+        pipe_req_size = 3;
+        pipe_req_priv = `RV64_PRIV_M;
+        pipe_req_vm_mode = `RV64_SATP_MODE_BARE;
+        pipe_req_root_ppn = 0;
+        pipe_cancel = 0;
+        pipe_resp_ready = 1;
         pmp_allow = 1;
         arready = 1;
         rid = 0;
@@ -282,6 +384,102 @@ module tb_axi_bus;
         fetch_resp_ready = 1;
         pmp_allow = 1;
 
+        // Three independent LSU reads launch before any response and use AXI
+        // IDs 4-6.  Responses may return out of order and retain their tags.
+        push_pipe_request(2'd0, 1'b0, 64'h100, 64'd0, 8'd0);
+        push_pipe_request(2'd1, 1'b0, 64'h108, 64'd0, 8'd0);
+        push_pipe_request(2'd2, 1'b0, 64'h110, 64'd0, 8'd0);
+        if (ar_count != 7 || seen_id[4] != 3'd4 ||
+            seen_id[5] != 3'd5 || seen_id[6] != 3'd6 ||
+            seen_addr[4] != 64'h100 || seen_addr[5] != 64'h108 ||
+            seen_addr[6] != 64'h110)
+            $fatal(1, "tagged LSU AR address/ID sequence mismatch");
+        send_pipe_read_response(2'd2,
+            {64'd0, 64'h3333_3333_3333_3333, 128'd0},
+            64'h3333_3333_3333_3333);
+        send_pipe_read_response(2'd0,
+            {192'd0, 64'h1111_1111_1111_1111},
+            64'h1111_1111_1111_1111);
+        send_pipe_read_response(2'd1,
+            {128'd0, 64'h2222_2222_2222_2222, 64'd0},
+            64'h2222_2222_2222_2222);
+
+        // A tagged store is accepted into the write holding register before
+        // either AXI address or data channel is ready.  A younger redirect
+        // cannot cancel the irrevocable write or hide its B error.  The two
+        // AXI channels then handshake independently.
+        awready = 0;
+        wready = 0;
+        pipe_resp_ready = 0;
+        push_pipe_request(2'd1, 1'b1, 64'h114,
+            64'haabb_ccdd_0000_0000, 8'hf0);
+        pipe_cancel = 1'b1;
+        tick();
+        pipe_cancel = 1'b0;
+        if (!awvalid || !wvalid || awid != 3'd5 || awaddr != 64'h114 ||
+            awsize != 3 || wstrb != 32'h00f0_0000 ||
+            wdata[191:128] != 64'haabb_ccdd_0000_0000)
+            $fatal(1, "tagged store buffer/lane steering mismatch");
+        awready = 1;
+        tick();
+        if (awvalid || !wvalid)
+            $fatal(1, "tagged store AW/W handshakes were not independent");
+        wready = 1;
+        tick();
+        bid = 3'd5;
+        bresp = 2'b10;
+        bvalid = 1;
+        #1;
+        if (bready || !pipe_resp_valid || pipe_resp_tag != 2'd1)
+            $fatal(1, "tagged store response did not hold while stalled");
+        pipe_resp_ready = 1;
+        #1;
+        if (!bready || !pipe_resp_valid || pipe_resp_tag != 2'd1 ||
+            !pipe_resp_access_fault || pipe_resp_page_fault)
+            $fatal(1, "tagged store B error was lost across cancel");
+        tick();
+        bvalid = 0;
+        bresp = 0;
+        bid = 3'b111;
+
+        // Translated tagged traffic falls back to the precise PTW path and
+        // returns the page fault under the original request tag.  An invalid
+        // root PTE is sufficient to exercise the fallback without a full map.
+        pipe_req_vm_mode = `RV64_SATP_MODE_SV39;
+        pipe_req_priv = `RV64_PRIV_S;
+        pipe_resp_ready = 0;
+        push_pipe_request(2'd2, 1'b0, 64'h1000, 64'd0, 8'd0);
+        wait_count = 0;
+        while (!(arvalid && arready && arid == 3'b111) &&
+               wait_count < 50) begin
+            tick();
+            wait_count = wait_count + 1;
+        end
+        if (wait_count == 50)
+            $fatal(1,
+                "translated PTW AR timeout lsu=%0d miss=%b phys=%0d fallback=%b",
+                dut.lsu_state_q, dut.miss_active_q, dut.phys_state_q,
+                dut.pipe_fallback_active_q);
+        tick();
+        send_read_response(3'b111, 256'd0, 2'b00);
+        wait_count = 0;
+        while (!pipe_resp_valid && wait_count < 50) begin
+            tick();
+            wait_count = wait_count + 1;
+        end
+        if (wait_count == 50)
+            $fatal(1,
+                "translated response timeout lsu=%0d miss=%b phys=%0d fallback=%b",
+                dut.lsu_state_q, dut.miss_active_q, dut.phys_state_q,
+                dut.pipe_fallback_active_q);
+        if (pipe_resp_tag != 2'd2 || !pipe_resp_page_fault ||
+            pipe_resp_access_fault)
+            $fatal(1, "translated tagged LSU fallback mismatch");
+        pipe_resp_ready = 1;
+        tick();
+        pipe_req_vm_mode = `RV64_SATP_MODE_BARE;
+        pipe_req_priv = `RV64_PRIV_M;
+
         // Narrow LSU read: returned word is selected from its 64-bit lane in
         // the 256-bit AXI beat.
         lsu_addr = 64'h48;
@@ -325,7 +523,7 @@ module tb_axi_bus;
         tick();
         lsu_valid = 0;
 
-        $display("PASS: pipelined 256-bit AXI fetch, ordering, PMP, and LSU lanes");
+        $display("PASS: 256-bit AXI fetch plus tagged LSU reads, writes, and VM fallback");
         $finish;
     end
 endmodule

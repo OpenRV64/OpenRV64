@@ -123,3 +123,85 @@ stall counts with high completed occupancy identify latency rather than wrong
 path. The per-instruction table gives exact cycle ranges, so a multi-cycle EX or
 MEM residency is directly visible rather than reconstructed from writeback
 timestamps.
+
+## Three-pipe causal trace
+
+`sim-top-axi-3p-perf` always enables the 3P pipeline trace and writes the path
+selected by `AXI_3P_TRACE_CSV`. Its current schema is
+`openrv64-3p-cycle-v2`; `tools/pipeline_trace_3p.py` continues to read saved
+`openrv64-3p-cycle-v1` files.
+
+Unlike v1, v2 includes the program-ordered dispatch queue as an explicit `Q`
+stage. The stage order is therefore `F`, `D`, `Q`, physical-pipe `I`, `C`,
+and `R`. A queued UID, PC, and instruction can now be followed directly to
+the first issue gate that stopped it. `I` remains physical pipe order
+(`EX0`, `EX1`, `MEM`), while `Q` and `candidate_fire` remain program order.
+
+The current v2 writer also includes packed retirement GPR write-valid, rd, and
+data fields plus LSU request/response tag, address, write-data, strobe, and
+read-data fields.  These make silent data corruption diagnosable even when the
+retired PC/instruction stream is identical.  Packed lane 0 occupies the least
+significant slice, matching the RTL buses.  Older saved v2 files without these
+diagnostic suffix columns remain readable because the report uses the stable
+causal/stage subset.
+
+When the suffix columns are present, the readable pipeline window appends
+`MEMR`, `MEMW`, `MEMRESP`, and `WB<lane>` events with their tags and data.  It
+therefore shows the request that corrupted memory and the later load response
+without requiring a separate CSV script.
+
+The raw hazard masks remain in the CSV because simultaneous hazards are useful
+diagnostics, but they are not cycle attribution. `block_lane` names the first
+program-ordered candidate which did not issue and `block_reason` gives one
+exclusive cause. The numeric reason ABI is:
+
+| Value | Name | Meaning |
+| ---: | --- | --- |
+| 0 | `none` | Every presented candidate issued, or the queue was empty. |
+| 1 | `raw_pending` | A source producer exists but has not completed. |
+| 2 | `raw_bundle` | The source is produced by an older candidate issuing in the same bundle. |
+| 3 | `raw_completed` | The producer completed, but the general forwarding map is disabled or did not release this source. |
+| 4 | `waw_pending` | An unfinished older instruction owns the destination. |
+| 5 | `waw_bundle` | An older candidate in the same issue bundle claims the destination. |
+| 6 | `waw_completed` | A completed, unretired instruction still owns the destination. |
+| 7 | `read_port` | The per-register read-port limit rejected the candidate. |
+| 8 | `barrier` | A hard-order instruction prevented allocation. |
+| 9 | `retire_capacity` | The retirement queue capacity gate prevented allocation. |
+| 10 | `pipe_conflict` | An older same-cycle candidate already claimed the selected pipe. |
+| 11 | `pipe_busy` | The selected execution pipe was not ready. |
+| 12 | `invalid_pipe` | Dispatch selected no implemented execution pipe. |
+| 13 | `unknown` | The candidate failed despite all instrumented gates passing. This should remain zero. |
+
+When multiple hazard bits apply to the same candidate, the exclusive reason
+uses the table order: RAW, WAW, read-port, barrier, retirement capacity, pipe
+conflict, then pipe readiness. The original masks remain beside it so the
+secondary conditions are not lost.
+
+Additional v2 fields expose:
+
+- candidate source/destination registers, source-use bits, pipe selections,
+  hazard-free and fire masks;
+- existing-producer versus same-bundle RAW masks, completed-producer RAW/WAW
+  masks, and which source operand caused RAW;
+- retirement head readiness and the bitmap of completed live entries, making
+  completion behind an unfinished head directly countable;
+- control flush/redirect state;
+- frontend resident and pending line masks, bus request occupancy, and the
+  current/following-line hit state;
+- LSU request/response handshakes, occupied and sent tag slots, posted-store
+  state, and store/order interlock state.
+
+The simulation also prints `PERF_BLOCK`, `PERF_RETIRE_BLOCK`, `PERF_FRONTEND`,
+and `PERF_LSU`. `PERF_BLOCK` is the exclusive first-nonissued-candidate
+distribution. The renderer labels the old counts as overlapping observations
+and reports the exclusive distribution separately.
+
+Useful anchors include a retired PC, a dynamic UID, an absolute cycle, or the
+first occurrence of a block reason:
+
+```sh
+python3 tools/pipeline_trace_3p.py sim/run.csv --around-uid 12ab
+python3 tools/pipeline_trace_3p.py sim/run.csv --start-cycle 50000
+python3 tools/pipeline_trace_3p.py sim/run.csv \
+  --block-reason raw_completed --before 4 --rows 20
+```

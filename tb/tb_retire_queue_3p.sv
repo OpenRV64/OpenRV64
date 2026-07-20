@@ -1,18 +1,26 @@
 `timescale 1ns/1ps
 
-module tb_retire_queue_3p;
+module tb_retire_queue_3p #(
+    parameter integer DEPTH = 8
+);
 
     localparam ID_WIDTH = 8;
     localparam META_WIDTH = 8;
     localparam RESULT_WIDTH = 16;
-    localparam INDEX_WIDTH = 3;
+    localparam INDEX_WIDTH = $clog2(DEPTH);
+    localparam COUNT_WIDTH = $clog2(DEPTH + 1);
 
     logic clk;
     logic rst_n;
     logic flush;
+    logic squash_younger;
+    logic [ID_WIDTH-1:0] squash_id;
+    logic [INDEX_WIDTH-1:0] squash_slot;
     logic [2:0] alloc_valid;
     wire alloc_ready;
     logic [3*META_WIDTH-1:0] alloc_meta;
+    logic [2:0] alloc_complete;
+    logic [3*RESULT_WIDTH-1:0] alloc_result;
     wire [3*ID_WIDTH-1:0] alloc_id;
     wire [3*INDEX_WIDTH-1:0] alloc_slot;
     logic [2:0] complete_valid;
@@ -24,16 +32,18 @@ module tb_retire_queue_3p;
     wire [3*ID_WIDTH-1:0] retire_id;
     wire [3*META_WIDTH-1:0] retire_meta;
     wire [3*RESULT_WIDTH-1:0] retire_result;
-    wire [3:0] occupancy;
+    wire [COUNT_WIDTH-1:0] occupancy;
     wire [ID_WIDTH-1:0] next_retire_id;
 
     logic [ID_WIDTH-1:0] saved_id [0:2];
     logic [INDEX_WIDTH-1:0] saved_slot [0:2];
     logic [ID_WIDTH-1:0] stale_id;
     logic [INDEX_WIDTH-1:0] stale_slot;
+    logic [ID_WIDTH-1:0] recovered_id;
+    logic [INDEX_WIDTH-1:0] recovered_slot;
 
     openrv64_retire_queue_3p #(
-        .DEPTH(8),
+        .DEPTH(DEPTH),
         .ID_WIDTH(ID_WIDTH),
         .META_WIDTH(META_WIDTH),
         .RESULT_WIDTH(RESULT_WIDTH)
@@ -41,9 +51,14 @@ module tb_retire_queue_3p;
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush),
+        .squash_younger_i(squash_younger),
+        .squash_id_i(squash_id),
+        .squash_slot_i(squash_slot),
         .alloc_valid_i(alloc_valid),
         .alloc_ready_o(alloc_ready),
         .alloc_meta_i(alloc_meta),
+        .alloc_complete_i(alloc_complete),
+        .alloc_result_i(alloc_result),
         .alloc_id_o(alloc_id),
         .alloc_slot_o(alloc_slot),
         .complete_valid_i(complete_valid),
@@ -66,9 +81,11 @@ module tb_retire_queue_3p;
             flush = 1'b0;
             alloc_valid = 3'b000;
             alloc_meta = 24'd0;
+            alloc_complete = 3'b000;
+            alloc_result = 48'd0;
             complete_valid = 3'b000;
             complete_id = 24'd0;
-            complete_slot = 9'd0;
+            complete_slot = {3*INDEX_WIDTH{1'b0}};
             complete_result = 48'd0;
             retire_accept = 3'b000;
         end
@@ -113,11 +130,12 @@ module tb_retire_queue_3p;
             #1;
             complete_valid = 3'b000;
             complete_id = 24'd0;
-            complete_slot = 9'd0;
+            complete_slot = {3*INDEX_WIDTH{1'b0}};
             complete_result = 48'd0;
         end
     endtask
 
+    integer fill_idx;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -126,6 +144,65 @@ module tb_retire_queue_3p;
         repeat (2) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        // Prove that the selected depth is usable, not just wide enough to
+        // elaborate.  Hold completion/retirement off and fill every slot.
+        for (fill_idx = 0; fill_idx < DEPTH; fill_idx = fill_idx + 1) begin
+            @(negedge clk);
+            alloc_valid = 3'b001;
+            alloc_meta[0 +: META_WIDTH] = fill_idx;
+            #1;
+            if (!alloc_ready)
+                $fatal(1, "queue stopped accepting at entry %0d of %0d",
+                       fill_idx, DEPTH);
+            @(posedge clk);
+            #1;
+            alloc_valid = 3'b000;
+        end
+        if (occupancy != DEPTH)
+            $fatal(1, "queue occupancy=%0d expected depth=%0d",
+                   occupancy, DEPTH);
+        @(negedge clk);
+        alloc_valid = 3'b001;
+        #1;
+        if (alloc_ready)
+            $fatal(1, "full queue accepted an additional entry");
+        alloc_valid = 3'b000;
+        flush = 1'b1;
+        @(posedge clk);
+        #1;
+        flush = 1'b0;
+        squash_younger = 1'b0;
+        squash_id = {ID_WIDTH{1'b0}};
+        squash_slot = {INDEX_WIDTH{1'b0}};
+        if (occupancy != 0)
+            $fatal(1, "flush did not drain full queue");
+
+        // Allocation-time completion is used by experimental zero-execute
+        // operations.  It must preserve normal in-order visibility and its
+        // supplied result without consuming a completion port.
+        @(negedge clk);
+        alloc_valid = 3'b011;
+        alloc_meta = {8'd0, 8'h92, 8'h91};
+        alloc_complete = 3'b011;
+        alloc_result = {16'd0, 16'h9292, 16'h9191};
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+        alloc_complete = 3'b000;
+        if ((retire_valid !== 3'b011) ||
+            (retire_result[0 +: RESULT_WIDTH] !== 16'h9191) ||
+            (retire_result[RESULT_WIDTH +: RESULT_WIDTH] !== 16'h9292)) begin
+            $fatal(1, "allocation-time completion was not immediately visible");
+        end
+        @(negedge clk);
+        retire_accept = 3'b011;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        alloc_result = 48'd0;
+        if (occupancy != 0)
+            $fatal(1, "allocation-time completed entries did not drain");
 
         allocate_three(8'ha0, 8'ha1, 8'ha2);
         if (occupancy !== 4'd3 || next_retire_id !== saved_id[0]) begin
@@ -136,7 +213,9 @@ module tb_retire_queue_3p;
         @(negedge clk);
         complete_valid = 3'b011;
         complete_id = {8'd0, saved_id[1], saved_id[2]};
-        complete_slot = {3'd0, saved_slot[1], saved_slot[2]};
+        complete_slot = {
+            {INDEX_WIDTH{1'b0}}, saved_slot[1], saved_slot[2]
+        };
         complete_result = {16'd0, 16'h1111, 16'h2222};
         @(posedge clk);
         #1;
@@ -213,7 +292,76 @@ module tb_retire_queue_3p;
             $fatal(1, "post-flush completion did not retire");
         end
 
-        $display("PASS: three-port completion queue and contiguous retirement");
+        // A branch recovery retains the branch and its older prefix, drops
+        // only younger entries, and does not rewind IDs.  The gap prevents a
+        // late completion from a squashed operation from matching new work in
+        // the same physical slot.
+        @(negedge clk);
+        retire_accept = 3'b001;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        allocate_three(8'hd0, 8'hd1, 8'hd2);
+        @(negedge clk);
+        alloc_valid = 3'b011;
+        alloc_meta[0 +: META_WIDTH] = 8'hd3;
+        alloc_meta[META_WIDTH +: META_WIDTH] = 8'hd4;
+        #1;
+        stale_id = alloc_id[0 +: ID_WIDTH];
+        stale_slot = alloc_slot[0 +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+        if (occupancy != 5)
+            $fatal(1, "five-entry speculation setup failed");
+
+        @(negedge clk);
+        squash_younger = 1'b1;
+        squash_id = saved_id[2];
+        squash_slot = saved_slot[2];
+        @(posedge clk);
+        #1;
+        squash_younger = 1'b0;
+        if (occupancy != 3)
+            $fatal(1, "selective recovery did not retain branch prefix");
+
+        @(negedge clk);
+        alloc_valid = 3'b001;
+        alloc_meta[0 +: META_WIDTH] = 8'he0;
+        #1;
+        if (alloc_id[0 +: ID_WIDTH] <= stale_id)
+            $fatal(1, "selective recovery rewound instruction IDs");
+        recovered_id = alloc_id[0 +: ID_WIDTH];
+        recovered_slot = alloc_slot[0 +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+        complete_one(stale_id, stale_slot, 16'hdead);
+        if (occupancy != 4)
+            $fatal(1, "stale wrong-path completion changed occupancy");
+
+        // Complete the retained prefix and then the new post-recovery entry.
+        @(negedge clk);
+        complete_valid = 3'b111;
+        complete_id = {saved_id[2], saved_id[1], saved_id[0]};
+        complete_slot = {saved_slot[2], saved_slot[1], saved_slot[0]};
+        complete_result = {16'hd2d2, 16'hd1d1, 16'hd0d0};
+        @(posedge clk);
+        #1;
+        complete_valid = 3'b000;
+        if (retire_valid != 3'b111)
+            $fatal(1, "retained prefix did not complete in order");
+        @(negedge clk);
+        retire_accept = 3'b111;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        complete_one(recovered_id, recovered_slot, 16'he0e0);
+        if (retire_valid != 3'b001)
+            $fatal(1, "post-recovery ID gap blocked retirement");
+
+        $display("PASS: depth-%0d completion queue, retirement, and selective recovery",
+                 DEPTH);
         $finish;
     end
 

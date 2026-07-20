@@ -17,10 +17,35 @@ module openrv64_rv64_top_3p #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
     parameter ENABLE_RV64M = 0,
+    parameter integer RETIRE_DEPTH = 8,
+    parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
+    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b111,
+    parameter ENABLE_FULL_FORWARDING = 0,
+    parameter RELAX_WAW = 1,
+    parameter RELAX_HAZARDS = 0,
+    parameter FREE_BRANCHES = 0,
+    parameter ENABLE_EQ_BRANCH_PAIRING = 1,
+    parameter ENABLE_ISSUE_WINDOW = 0,
+    parameter ENABLE_SPECULATION_WINDOW = 0,
+    parameter ENABLE_POSTED_STORES = 1,
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE = {`RV64_XLEN{1'b0}},
     parameter ENABLE_RV64A = 1,
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
-    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL
+    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
+    parameter BP_RAS_ENABLE = 1,
+    parameter integer BP_RAS_DEPTH = 8,
+    parameter integer BP_BIMODAL_ENTRIES = 32,
+    parameter integer BP_BIMODAL_COUNTER_BITS = 3,
+    parameter integer BP_BIMODAL_UPDATE_DEPTH = 4,
+    parameter integer BP_GSHARE_ENTRIES = 256,
+    parameter integer BP_GSHARE_COUNTER_BITS = 3,
+    parameter integer BP_BTB_ENTRIES = 256,
+    parameter integer BP_BTB_TAG_BITS = 16,
+    parameter integer BP_INFLIGHT_DEPTH = 16
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -142,6 +167,17 @@ module openrv64_rv64_top_3p #(
     wire branch_resolved;
     wire branch_conditional;
     wire branch_taken;
+    wire [63:0] branch_pc;
+    wire [31:0] branch_instr;
+    wire [63:0] branch_id;
+    wire [$clog2(RETIRE_DEPTH)-1:0] branch_slot;
+    wire [2:0] branch_train_valid;
+    wire [2:0] branch_train_conditional;
+    wire [2:0] branch_train_taken;
+    wire [3*`RV64_XLEN-1:0] branch_train_pc;
+    wire [3*64-1:0] backend_decode_allocation_id;
+    wire [3*$clog2(RETIRE_DEPTH)-1:0]
+        backend_decode_allocation_slot;
     wire backend_exception;
     wire backend_halt;
     wire backend_irq;
@@ -187,15 +223,21 @@ module openrv64_rv64_top_3p #(
     wire bp_branch_present;
     wire bp_branch_allocate;
     wire bp_prediction_taken;
+    wire bp_prediction_target_valid;
+    wire [63:0] bp_prediction_target;
+    wire bp_target_mispredict;
+    wire bp_update_overflow;
     wire bp_predict_redirect;
     wire [63:0] bp_predict_target;
+    wire [63:0] bp_direct_target;
     wire bp_fetch_stall;
     wire bp_decode_stall;
+    wire control_redirect = backend_redirect || bp_target_mispredict;
 
     wire fetch3_restart = reset_pending_q || except_vector_valid ||
-                          backend_redirect || bp_predict_redirect;
+                          control_redirect || bp_predict_redirect;
     wire [63:0] fetch3_restart_pc = except_vector_valid ?
-        except_vector_target : backend_redirect ? backend_redirect_target :
+        except_vector_target : control_redirect ? backend_redirect_target :
         bp_predict_redirect ? bp_predict_target : RESET_VECTOR;
     wire fetch3_invalidate = reset_pending_q || except_vector_valid;
 
@@ -207,7 +249,7 @@ module openrv64_rv64_top_3p #(
                 .DECODE_WIDTH(2)
             ) u_fetch (
                 .clk(clk), .rst_n(rst_n), .flush_i(fetch_invalidate),
-                .redirect_i(backend_redirect), .redirect_replay_i(1'b0),
+                .redirect_i(control_redirect), .redirect_replay_i(1'b0),
                 .redirect_pc_i(backend_redirect_target),
                 .redirect_replay_o(fetch_redirect_replay),
                 .pc_ready_o(fetch_pc_ready), .pc_valid_i(fetch_pc_valid),
@@ -424,6 +466,10 @@ module openrv64_rv64_top_3p #(
         predecode_offset[bp_lane*20 +: 20];
     wire [63:0] bp_selected_pc = (bp_lane == 2'd0) ? decode_pc0 :
                                  (bp_lane == 2'd1) ? decode_pc1 : decode_pc2;
+    wire [31:0] bp_selected_instr = (bp_lane == 2'd0) ? instr0 :
+                                    (bp_lane == 2'd1) ? instr1 : instr2;
+    wire [63:0] bp_selected_id = backend_decode_allocation_id[
+        bp_lane*64 +: 64];
     wire [63:0] bp_selected_decode_imm =
         decode_imm[bp_lane*64 +: 64];
     wire [63:0] bp_selected_imm = bp_selected_predecode ?
@@ -438,28 +484,62 @@ module openrv64_rv64_top_3p #(
 
     assign bp_branch_present = use_axi_bus &&
                                (|frontend_control_select) &&
-                               !control_flush && !backend_redirect &&
+                               !control_flush && !control_redirect &&
                                !halted_q;
     assign bp_predict_redirect = bp_branch_allocate &&
                                  bp_prediction_taken;
 
     openrv64_prefix_addsub u_bp_target (
         .a_i(bp_selected_pc), .b_i(bp_selected_imm), .sub_i(1'b0),
-        .result_o(bp_predict_target)
+        .result_o(bp_direct_target)
     );
+    assign bp_predict_target = bp_prediction_target_valid ?
+                               bp_prediction_target : bp_direct_target;
 
-    openrv64_exec_bp #(.BP_TYPE(BP_TYPE)) u_bp (
+    openrv64_exec_bp #(
+        .BP_TYPE(BP_TYPE),
+        .ENABLE_RAS(BP_RAS_ENABLE),
+        .RAS_DEPTH(BP_RAS_DEPTH),
+        .BIMODAL_ENTRIES(BP_BIMODAL_ENTRIES),
+        .BIMODAL_COUNTER_BITS(BP_BIMODAL_COUNTER_BITS),
+        .BIMODAL_UPDATE_DEPTH(BP_BIMODAL_UPDATE_DEPTH),
+        .GSHARE_ENTRIES(BP_GSHARE_ENTRIES),
+        .GSHARE_COUNTER_BITS(BP_GSHARE_COUNTER_BITS),
+        .BTB_ENTRIES(BP_BTB_ENTRIES),
+        .BTB_TAG_BITS(BP_BTB_TAG_BITS),
+        .INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH),
+        .ENABLE_TAGGED_RESOLUTION(ENABLE_SPECULATION_WINDOW)
+    ) u_bp (
         .clk(clk), .rst_n(rst_n),
-        .flush_i(control_flush || backend_redirect),
+        .flush_i(control_flush ||
+                 (control_redirect &&
+                  (ENABLE_SPECULATION_WINDOW == 0))),
+        .squash_i(control_redirect &&
+                  (ENABLE_SPECULATION_WINDOW != 0)),
         .lookup_valid_i(bp_branch_present),
         .lookup_branch_i(bp_lookup_branch),
         .lookup_jump_i(bp_lookup_jump),
         .lookup_indirect_i(bp_lookup_indirect),
+        .lookup_backward_i(bp_selected_imm[63]),
+        .lookup_instr_i(bp_selected_instr),
+        .lookup_pc_i(bp_selected_pc),
+        .lookup_id_i(bp_selected_id),
         .lookup_allocate_i(bp_branch_allocate),
         .resolve_valid_i(branch_resolved),
         .resolve_branch_i(branch_conditional),
         .resolve_taken_i(branch_taken),
+        .resolve_instr_i(branch_instr), .resolve_pc_i(branch_pc),
+        .resolve_target_i(backend_redirect_target),
+        .resolve_id_i(branch_id),
+        .train_valid_i(branch_train_valid),
+        .train_branch_i(branch_train_conditional),
+        .train_taken_i(branch_train_taken),
+        .train_pc_i(branch_train_pc),
         .prediction_taken_o(bp_prediction_taken),
+        .prediction_target_valid_o(bp_prediction_target_valid),
+        .prediction_target_o(bp_prediction_target),
+        .target_mispredict_o(bp_target_mispredict),
+        .update_overflow_o(bp_update_overflow),
         .fetch_stall_o(bp_fetch_stall),
         .decode_stall_o(bp_decode_stall)
     );
@@ -529,7 +609,7 @@ module openrv64_rv64_top_3p #(
     endgenerate
 
     wire [2:0] backend_decode_ready;
-    wire frontend_decode_enable = !control_flush && !backend_redirect &&
+    wire frontend_decode_enable = !control_flush && !control_redirect &&
                                   !halted_q && !bp_decode_stall;
     wire [2:0] backend_decode_valid = fetch_decode_valid &
         frontend_prefix_allow & {3{frontend_decode_enable}};
@@ -582,17 +662,40 @@ module openrv64_rv64_top_3p #(
     wire [2:0] backend_complete_valid;
     wire [31:0] backend_write_busy;
     wire backend_barrier;
-    wire [3:0] backend_retire_occupancy;
-    wire [2:0] backend_dispatch_occupancy;
+    localparam integer RETIRE_COUNT_WIDTH = $clog2(RETIRE_DEPTH + 1);
+    localparam integer DISPATCH_COUNT_WIDTH = $clog2(
+        ((ENABLE_ISSUE_WINDOW != 0) ? RETIRE_DEPTH : 6) + 1);
+    wire [RETIRE_COUNT_WIDTH-1:0] backend_retire_occupancy;
+    wire [DISPATCH_COUNT_WIDTH-1:0] backend_dispatch_occupancy;
 
-    openrv64_backend_3p #(.ENABLE_RV64M(ENABLE_RV64M)) u_backend (
+    openrv64_backend_3p #(
+        .RETIRE_DEPTH(RETIRE_DEPTH),
+        .ENABLE_RV64M(ENABLE_RV64M),
+        .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
+        .BRANCH_COMPLETION_FORWARD_MASK(BRANCH_COMPLETION_FORWARD_MASK),
+        .ENABLE_FULL_FORWARDING(ENABLE_FULL_FORWARDING),
+        .RELAX_WAW(RELAX_WAW),
+        .RELAX_HAZARDS(RELAX_HAZARDS),
+        .FREE_BRANCHES(FREE_BRANCHES),
+        .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING),
+        .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
+        .ISSUE_WINDOW_DEPTH(RETIRE_DEPTH),
+        .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
+        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
+        .SPEC_LOAD_BASE(SPEC_LOAD_BASE),
+        .SPEC_LOAD_SIZE(SPEC_LOAD_SIZE)
+    ) u_backend (
         .clk(clk), .rst_n(rst_n), .flush_i(control_flush),
-        .squash_frontend_i(backend_redirect),
+        .squash_frontend_i(control_redirect),
         .decode_valid_i(backend_decode_valid),
         .decode_ready_o(backend_decode_ready),
         .decode_payload_i(backend_decode_payload),
         .decode_uses_rs1_i(decode_uses_rs1),
         .decode_uses_rs2_i(decode_uses_rs2),
+        .decode_allocation_id_o(backend_decode_allocation_id),
+        .decode_allocation_slot_o(backend_decode_allocation_slot),
         .csr_addr_o(backend_csr_addr), .csr_rdata_i(csr_rdata),
         .csr_valid_i(csr_valid), .csr_writable_i(csr_writable),
         .csr_write_o(backend_csr_write),
@@ -617,6 +720,12 @@ module openrv64_rv64_top_3p #(
         .redirect_target_o(backend_redirect_target),
         .branch_resolved_o(branch_resolved), .branch_taken_o(branch_taken),
         .branch_conditional_o(branch_conditional),
+        .branch_id_o(branch_id), .branch_slot_o(branch_slot),
+        .branch_pc_o(branch_pc), .branch_instr_o(branch_instr),
+        .branch_train_valid_o(branch_train_valid),
+        .branch_train_conditional_o(branch_train_conditional),
+        .branch_train_taken_o(branch_train_taken),
+        .branch_train_pc_o(branch_train_pc),
         .retire_arch_o(backend_retire_arch),
         .retire_count_o(backend_retire_count),
         .exception_o(backend_exception), .halt_o(backend_halt),
@@ -733,7 +842,7 @@ module openrv64_rv64_top_3p #(
     openrv64_core_bus #(.BUS_CONFIG(BUS_CONFIG)) u_bus (
         .clk(clk), .rst_n(rst_n), .fetch_valid_i(fetch_mem_valid),
         .fetch_cancel_i(use_axi_bus ? fetch3_cancel :
-                        (fetch_invalidate || backend_redirect)),
+                        (fetch_invalidate || control_redirect)),
         .fetch_addr_i(fetch_mem_exec_addr), .fetch_priv_i(csr_priv_mode),
         .fetch_vm_mode_i((csr_priv_mode == `RV64_PRIV_M) ?
                          `RV64_SATP_MODE_BARE : csr_satp_mode),
@@ -842,7 +951,7 @@ module openrv64_rv64_top_3p #(
         |(fetch_decode_valid & fetch_decode_ready)};
     wire [4:0] trace_flush_raw = {control_flush, control_flush,
                                   control_flush, control_flush,
-                                  fetch_invalidate || backend_redirect};
+                                  fetch_invalidate || control_redirect};
     wire [7:0] trace_events_raw = {
         reset_pending_q,
         backend_halt,
@@ -851,7 +960,7 @@ module openrv64_rv64_top_3p #(
         backend_mret,
         backend_irq,
         control_trap,
-        backend_redirect
+        control_redirect
     };
     wire [7:0] trace_stall_causes_raw;
     assign trace_stall_causes_raw = {
@@ -912,7 +1021,7 @@ module openrv64_rv64_top_3p #(
             reset_pending_q <= 1'b0;
             if (except_vector_valid)
                 pc_q <= except_vector_target;
-            else if (backend_redirect)
+            else if (control_redirect)
                 pc_q <= backend_redirect_target;
             else if (bp_predict_redirect)
                 pc_q <= bp_predict_target;

@@ -7,8 +7,9 @@
 // Fetch requests are translated one per cycle on Bare/TLB-hit paths and may
 // have multiple 256-bit reads outstanding.  The request slot is carried as
 // the AXI ID, allowing responses to complete out of order while the frontend
-// observes them in request order.  LSU and page-table accesses remain
-// blocking and share one independent data transaction slot.
+// observes them in request order.  Bare-mode three-pipe LSU requests use
+// three independent AXI IDs.  Translated LSU and page-table accesses fall
+// back to the precise blocking translation slot.
 module openrv64_core_axi_bus #(
     parameter integer TLB_ENTRIES = 16,
     parameter integer FETCH_OUTSTANDING = 4,
@@ -242,6 +243,9 @@ module openrv64_core_axi_bus #(
     reg [`RV64_XLEN-1:0] lsu_rdata_q;
     reg lsu_access_fault_q;
     reg lsu_page_fault_q;
+    reg pipe_fallback_active_q;
+    reg pipe_fallback_cancelled_q;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_fallback_tag_q;
 
     // Bare/TLB-independent fast path for the tagged three-pipe LSU.  Three
     // tags map directly to AXI IDs 4, 5, and 6; ID 7 remains owned by the
@@ -274,7 +278,9 @@ module openrv64_core_axi_bus #(
     wire pipe_fast_candidate = lsu_pipe_req_valid_i && pipe_req_bare &&
         pipe_req_tag_valid && !pipe_req_tag_busy &&
         (!lsu_pipe_req_write_i || !pipe_store_valid_q) &&
-        !pipe_local_resp_valid_q;
+        !pipe_local_resp_valid_q && !lsu_pipe_cancel_i;
+    wire pipe_any_inflight = pipe_inflight_q[0] || pipe_inflight_q[1] ||
+                             pipe_inflight_q[2];
     wire [1:0] pipe_req_word =
         lsu_pipe_req_addr_i[AXI_BYTE_BITS-1:3];
     wire [AXI_DATA_WIDTH-1:0] pipe_req_axi_wdata =
@@ -290,7 +296,8 @@ module openrv64_core_axi_bus #(
     wire lsu_xlate_bare = (lsu_state_q == LSU_TRANSLATE) &&
                           (lsu_vm_mode_q == `RV64_SATP_MODE_BARE);
 
-    assign lsu_ready_o = (lsu_state_q == LSU_RESP);
+    assign lsu_ready_o = (lsu_state_q == LSU_RESP) &&
+                         !pipe_fallback_active_q;
     assign lsu_rdata_o = lsu_rdata_q;
     assign lsu_access_fault_o = lsu_ready_o && lsu_access_fault_q;
     assign lsu_page_fault_o = lsu_ready_o && lsu_page_fault_q;
@@ -445,6 +452,17 @@ module openrv64_core_axi_bus #(
     reg phys_aw_sent_q;
     reg phys_w_sent_q;
 
+    // The tagged interface must remain correct when translation is enabled.
+    // Until the DTLB itself is multiported/tagged, serialize a translated
+    // request through the legacy translation/PTW state machine and return its
+    // result under the original tag.
+    wire pipe_fallback_candidate = lsu_pipe_req_valid_i && !pipe_req_bare &&
+        pipe_req_tag_valid && !pipe_req_tag_busy && !lsu_pipe_cancel_i &&
+        !pipe_any_inflight && !pipe_store_valid_q &&
+        !pipe_local_resp_valid_q && !pipe_fallback_active_q &&
+        !lsu_valid_i && (lsu_state_q == LSU_IDLE) &&
+        (phys_state_q == PHYS_IDLE) && !miss_active_q;
+
     wire phys_candidate_valid = (phys_state_q == PHYS_IDLE) &&
                                 !pipe_store_valid_q &&
                                 (ptw_mem_valid ||
@@ -541,9 +559,11 @@ module openrv64_core_axi_bus #(
 
     wire pipe_write_accept = select_pipe_probe && lsu_pipe_req_write_i &&
                              pmp_allow_i && !pipe_store_valid_q;
-    assign lsu_pipe_req_ready_o = pipe_fast_candidate &&
-        (pipe_pmp_denied || (lsu_pipe_req_write_i ? pipe_write_accept :
-                                                       pipe_ar_fire));
+    assign lsu_pipe_req_ready_o =
+        (pipe_fast_candidate &&
+         (pipe_pmp_denied || (lsu_pipe_req_write_i ? pipe_write_accept :
+                                                        pipe_ar_fire))) ||
+        pipe_fallback_candidate;
     wire pipe_req_fire = lsu_pipe_req_valid_i && lsu_pipe_req_ready_o;
 
     wire select_pipe_write = pipe_store_valid_q;
@@ -630,17 +650,23 @@ module openrv64_core_axi_bus #(
                           pipe_inflight_q[pipe_store_tag_q] &&
                           !pipe_cancelled_q[pipe_store_tag_q] &&
                           !pipe_local_resp_valid_q;
+    wire pipe_fallback_visible = pipe_fallback_active_q &&
+        !pipe_fallback_cancelled_q && (lsu_state_q == LSU_RESP) &&
+        !pipe_local_resp_valid_q;
     assign lsu_pipe_resp_valid_o = pipe_local_resp_valid_q ||
-                                   pipe_r_visible || pipe_b_visible;
+                                   pipe_r_visible || pipe_b_visible ||
+                                   pipe_fallback_visible;
     assign lsu_pipe_resp_tag_o = pipe_local_resp_valid_q ?
         pipe_local_resp_tag_q : pipe_r_visible ? r_pipe_tag :
-        pipe_store_tag_q;
+        pipe_b_visible ? pipe_store_tag_q : pipe_fallback_tag_q;
     assign lsu_pipe_resp_rdata_o = pipe_r_visible ? pipe_rdata :
-                                    {`RV64_XLEN{1'b0}};
+        pipe_fallback_visible ? lsu_rdata_q : {`RV64_XLEN{1'b0}};
     assign lsu_pipe_resp_access_fault_o = pipe_local_resp_valid_q ?
         pipe_local_resp_fault_q : pipe_r_visible ? axi_r_error :
-        pipe_b_visible && m_axi_bresp_i[1];
-    assign lsu_pipe_resp_page_fault_o = 1'b0;
+        pipe_b_visible ? m_axi_bresp_i[1] :
+        pipe_fallback_visible && lsu_access_fault_q;
+    assign lsu_pipe_resp_page_fault_o =
+        pipe_fallback_visible && lsu_page_fault_q;
 
     assign ptw_mem_ready = phys_pmp_denied &&
                            (phys_candidate_owner == PHYS_OWNER_PTW) ||
@@ -684,7 +710,13 @@ module openrv64_core_axi_bus #(
                 for (pipe_index = 0;
                      pipe_index < `OPENRV64_LSU_OUTSTANDING;
                      pipe_index = pipe_index + 1) begin
-                    if (pipe_inflight_q[pipe_index])
+                    // Reads are speculative and are drained invisibly after
+                    // a redirect.  An accepted write is irrevocable and its
+                    // B response must remain visible for posted-store error
+                    // reporting.
+                    if (pipe_inflight_q[pipe_index] &&
+                        !(pipe_store_valid_q &&
+                          (pipe_store_tag_q == pipe_index)))
                         pipe_cancelled_q[pipe_index] <= 1'b1;
                 end
             end
@@ -861,24 +893,49 @@ module openrv64_core_axi_bus #(
             lsu_rdata_q <= {`RV64_XLEN{1'b0}};
             lsu_access_fault_q <= 1'b0;
             lsu_page_fault_q <= 1'b0;
+            pipe_fallback_active_q <= 1'b0;
+            pipe_fallback_cancelled_q <= 1'b0;
+            pipe_fallback_tag_q <=
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
         end else begin
+            // A translated posted store is equally irrevocable once the
+            // tagged request has been accepted.  Preserve its translation,
+            // physical write, and eventual error response across redirects.
+            if (lsu_pipe_cancel_i && pipe_fallback_active_q && !lsu_write_q)
+                pipe_fallback_cancelled_q <= 1'b1;
             case (lsu_state_q)
                 LSU_IDLE: begin
-                    if (lsu_valid_i) begin
-                        lsu_write_q <= lsu_write_i;
-                        lsu_vaddr_q <= lsu_addr_i;
-                        lsu_wdata_q <= lsu_wdata_i;
-                        lsu_wstrb_q <= lsu_wstrb_i;
-                        lsu_size_q <= lsu_size_i;
-                        lsu_priv_q <= lsu_priv_i;
-                        lsu_vm_mode_q <= lsu_vm_mode_i;
-                        lsu_asid_q <= lsu_asid_i;
-                        lsu_root_ppn_q <= lsu_root_ppn_i;
-                        lsu_sum_q <= lsu_sum_i;
-                        lsu_mxr_q <= lsu_mxr_i;
+                    if (lsu_valid_i || pipe_fallback_candidate) begin
+                        lsu_write_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_write_i : lsu_write_i;
+                        lsu_vaddr_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_addr_i : lsu_addr_i;
+                        lsu_wdata_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_wdata_i : lsu_wdata_i;
+                        lsu_wstrb_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_wstrb_i : lsu_wstrb_i;
+                        lsu_size_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_size_i : lsu_size_i;
+                        lsu_priv_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_priv_i : lsu_priv_i;
+                        lsu_vm_mode_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_vm_mode_i : lsu_vm_mode_i;
+                        lsu_asid_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_asid_i : lsu_asid_i;
+                        lsu_root_ppn_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_root_ppn_i : lsu_root_ppn_i;
+                        lsu_sum_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_sum_i : lsu_sum_i;
+                        lsu_mxr_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_mxr_i : lsu_mxr_i;
                         lsu_rdata_q <= {`RV64_XLEN{1'b0}};
                         lsu_access_fault_q <= 1'b0;
                         lsu_page_fault_q <= 1'b0;
+                        if (pipe_fallback_candidate) begin
+                            pipe_fallback_active_q <= 1'b1;
+                            pipe_fallback_cancelled_q <= 1'b0;
+                            pipe_fallback_tag_q <= lsu_pipe_req_tag_i;
+                        end
                         lsu_state_q <= LSU_TRANSLATE;
                     end
                 end
@@ -945,7 +1002,13 @@ module openrv64_core_axi_bus #(
                 end
 
                 LSU_RESP: begin
-                    lsu_state_q <= LSU_IDLE;
+                    if (!pipe_fallback_active_q ||
+                        pipe_fallback_cancelled_q ||
+                        lsu_pipe_resp_ready_i) begin
+                        lsu_state_q <= LSU_IDLE;
+                        pipe_fallback_active_q <= 1'b0;
+                        pipe_fallback_cancelled_q <= 1'b0;
+                    end
                 end
 
                 default: lsu_state_q <= LSU_IDLE;

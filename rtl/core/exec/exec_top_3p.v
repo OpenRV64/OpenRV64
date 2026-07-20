@@ -12,11 +12,21 @@
 //
 // The issue payload already contains captured operand values.  Each lane has
 // an independent held completion port, so M and memory latency do not block
-// EX0.  ordered_head_* authorizes hard-ordered EX0 instructions and is also
-// matched inside MEM before any store or atomic side effect is emitted.
+// EX0.  Valid aligned conditional branches resolve as soon as their operands
+// are ready.  They still complete into the in-order retirement queue, and the
+// dispatch normally prevents younger issue beside a resolving branch.  The
+// strict path may waive that barrier for BEQ/BNE only after its own operand
+// comparison proves the prediction correct, so a redirect still never has
+// issued younger work to squash.  ordered_head_* continues to authorize every
+// other hard-ordered EX0 instruction and is also matched inside MEM before any
+// store or atomic side effect is emitted.
 module openrv64_exec_top_3p #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
-    parameter integer ENABLE_RV64M = 1
+    parameter integer ENABLE_RV64M = 1,
+    parameter integer ENABLE_LOCAL_FORWARDING = 1,
+    parameter integer ENABLE_POSTED_STORES = 1,
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}}
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -39,12 +49,22 @@ module openrv64_exec_top_3p #(
     output wire [3*RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
     output wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o,
 
+    output wire                         async_store_fault_o,
+    output wire                         async_store_page_fault_o,
+    output wire [`RV64_XLEN-1:0]        async_store_fault_pc_o,
+    output wire [`RV64_XLEN-1:0]        async_store_fault_addr_o,
+    output wire [63:0]                  async_store_fault_trace_o,
+    output wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr_o,
+
     output wire                         redirect_valid_o,
     output wire [63:0]                  redirect_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0] redirect_slot_o,
     output wire [`RV64_XLEN-1:0]        redirect_target_o,
     output wire                         branch_resolved_o,
     output wire                         branch_conditional_o,
     output wire                         branch_taken_o,
+    output wire [`RV64_XLEN-1:0]        branch_pc_o,
+    output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -153,7 +173,17 @@ module openrv64_exec_top_3p #(
                        ex0_instr_access_fault || ex0_instr_page_fault;
     wire ex0_supported = !ex0_mem_read && !ex0_mem_write &&
                          (ex0_base || ex0_control);
-    wire ex0_requires_order = ex0_control;
+    // A direct conditional branch with an aligned target cannot create an
+    // architectural side effect or synchronous exception at issue.  Resolve
+    // it before retirement so the predictor can be corrected immediately.
+    // Payload bit 41 is imm[1]; with 32-bit instruction alignment, zero proves
+    // the direct target is aligned.  Faulting/illegal packets remain ordered.
+    wire ex0_early_branch = ex0_branch && !ex0_illegal &&
+                            !ex0_instr_access_fault &&
+                            !ex0_instr_page_fault &&
+                            !issue_payload_i[
+                                0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
+    wire ex0_requires_order = ex0_control && !ex0_early_branch;
     wire ex0_order_match = ordered_head_valid_i &&
         (ordered_head_id_i == issue_id_i[0*64 +: 64]) &&
         (ordered_head_slot_i ==
@@ -191,7 +221,8 @@ module openrv64_exec_top_3p #(
     };
 
     openrv64_exec_pipe_ex0 #(
-        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH)
+        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING)
     ) u_ex0 (
         .clk(clk),
         .rst_n(rst_n),
@@ -219,14 +250,18 @@ module openrv64_exec_top_3p #(
         .branch_resolved_o(branch_resolved_o),
         .branch_conditional_o(branch_conditional_o),
         .branch_taken_o(branch_taken_o),
+        .branch_pc_o(branch_pc_o),
+        .branch_instr_o(branch_instr_o),
         .redirect_valid_o(redirect_valid_o),
         .redirect_id_o(redirect_id_o),
+        .redirect_slot_o(redirect_slot_o),
         .redirect_target_o(redirect_target_o)
     );
 
     openrv64_exec_pipe_ex1 #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .ENABLE_RV64M(ENABLE_RV64M)
+        .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING)
     ) u_ex1 (
         .clk(clk),
         .rst_n(rst_n),
@@ -250,7 +285,10 @@ module openrv64_exec_top_3p #(
     );
 
     openrv64_exec_pipe_mem #(
-        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH)
+        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
+        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
     ) u_mem (
         .clk(clk),
         .rst_n(rst_n),
@@ -274,6 +312,12 @@ module openrv64_exec_top_3p #(
         .complete_payload_o(complete_payload_o[
             2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH]),
+        .async_store_fault_o(async_store_fault_o),
+        .async_store_page_fault_o(async_store_page_fault_o),
+        .async_store_fault_pc_o(async_store_fault_pc_o),
+        .async_store_fault_addr_o(async_store_fault_addr_o),
+        .async_store_fault_trace_o(async_store_fault_trace_o),
+        .async_store_fault_instr_o(async_store_fault_instr_o),
         .mem_valid_o(mem_valid_o),
         .mem_ready_i(mem_ready_i),
         .mem_tag_o(mem_tag_o),

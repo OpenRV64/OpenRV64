@@ -273,7 +273,8 @@ module openrv64_core_bus #(
             assign lsu_access_fault_o = gen_lsu_access_fault &&
                                         !pipe_active_q;
             assign lsu_page_fault_o = gen_lsu_page_fault && !pipe_active_q;
-            assign lsu_pipe_req_ready_o = !pipe_active_q &&
+            assign lsu_pipe_req_ready_o = !lsu_pipe_cancel_i &&
+                                          !pipe_active_q &&
                                           !pipe_resp_valid_q &&
                                           !lsu_valid_i;
             assign lsu_pipe_resp_valid_o = pipe_resp_valid_q;
@@ -303,34 +304,43 @@ module openrv64_core_bus #(
                     pipe_resp_access_fault_q <= 1'b0;
                     pipe_resp_page_fault_q <= 1'b0;
                 end else begin
-                    if (lsu_pipe_cancel_i) begin
+                    // A tagged load may be discarded on redirect.  A tagged
+                    // store accepted at ordered head is already irrevocable;
+                    // keep driving it and preserve its eventual fault
+                    // response for the backend's imprecise abort path.
+                    if (lsu_pipe_cancel_i &&
+                        !(pipe_write_q &&
+                          (pipe_active_q || pipe_resp_valid_q))) begin
                         pipe_active_q <= 1'b0;
                         pipe_resp_valid_q <= 1'b0;
+                    end else begin
+                        if (lsu_pipe_req_valid_i &&
+                            lsu_pipe_req_ready_o) begin
+                            pipe_active_q <= 1'b1;
+                            pipe_tag_q <= lsu_pipe_req_tag_i;
+                            pipe_write_q <= lsu_pipe_req_write_i;
+                            pipe_addr_q <= lsu_pipe_req_addr_i;
+                            pipe_wdata_q <= lsu_pipe_req_wdata_i;
+                            pipe_wstrb_q <= lsu_pipe_req_wstrb_i;
+                            pipe_size_q <= lsu_pipe_req_size_i;
+                            pipe_priv_q <= lsu_pipe_req_priv_i;
+                            pipe_vm_mode_q <= lsu_pipe_req_vm_mode_i;
+                            pipe_asid_q <= lsu_pipe_req_asid_i;
+                            pipe_root_ppn_q <= lsu_pipe_req_root_ppn_i;
+                            pipe_sum_q <= lsu_pipe_req_sum_i;
+                            pipe_mxr_q <= lsu_pipe_req_mxr_i;
+                        end
+                        if (pipe_active_q && gen_lsu_ready) begin
+                            pipe_active_q <= 1'b0;
+                            pipe_resp_valid_q <= 1'b1;
+                            pipe_resp_rdata_q <= gen_lsu_rdata;
+                            pipe_resp_access_fault_q <=
+                                gen_lsu_access_fault;
+                            pipe_resp_page_fault_q <= gen_lsu_page_fault;
+                        end
+                        if (pipe_resp_valid_q && lsu_pipe_resp_ready_i)
+                            pipe_resp_valid_q <= 1'b0;
                     end
-                    if (lsu_pipe_req_valid_i && lsu_pipe_req_ready_o) begin
-                        pipe_active_q <= 1'b1;
-                        pipe_tag_q <= lsu_pipe_req_tag_i;
-                        pipe_write_q <= lsu_pipe_req_write_i;
-                        pipe_addr_q <= lsu_pipe_req_addr_i;
-                        pipe_wdata_q <= lsu_pipe_req_wdata_i;
-                        pipe_wstrb_q <= lsu_pipe_req_wstrb_i;
-                        pipe_size_q <= lsu_pipe_req_size_i;
-                        pipe_priv_q <= lsu_pipe_req_priv_i;
-                        pipe_vm_mode_q <= lsu_pipe_req_vm_mode_i;
-                        pipe_asid_q <= lsu_pipe_req_asid_i;
-                        pipe_root_ppn_q <= lsu_pipe_req_root_ppn_i;
-                        pipe_sum_q <= lsu_pipe_req_sum_i;
-                        pipe_mxr_q <= lsu_pipe_req_mxr_i;
-                    end
-                    if (pipe_active_q && gen_lsu_ready) begin
-                        pipe_active_q <= 1'b0;
-                        pipe_resp_valid_q <= 1'b1;
-                        pipe_resp_rdata_q <= gen_lsu_rdata;
-                        pipe_resp_access_fault_q <= gen_lsu_access_fault;
-                        pipe_resp_page_fault_q <= gen_lsu_page_fault;
-                    end
-                    if (pipe_resp_valid_q && lsu_pipe_resp_ready_i)
-                        pipe_resp_valid_q <= 1'b0;
                 end
             end
             assign m_axi_arid_o = {`OPENRV64_AXI_ID_WIDTH{1'b0}};

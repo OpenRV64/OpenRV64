@@ -23,7 +23,17 @@ module openrv64_platform #(
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_STALL
+        `OPENRV64_BP_STALL,
+    parameter bit BP_RAS_ENABLE = 1'b1,
+    parameter int unsigned BP_RAS_DEPTH = 8,
+    parameter int unsigned BP_BIMODAL_ENTRIES = 32,
+    parameter int unsigned BP_BIMODAL_COUNTER_BITS = 3,
+    parameter int unsigned BP_BIMODAL_UPDATE_DEPTH = 4,
+    parameter int unsigned BP_GSHARE_ENTRIES = 256,
+    parameter int unsigned BP_GSHARE_COUNTER_BITS = 3,
+    parameter int unsigned BP_BTB_ENTRIES = 256,
+    parameter int unsigned BP_BTB_TAG_BITS = 16,
+    parameter int unsigned BP_INFLIGHT_DEPTH = 16
 ) (
     input  logic                  clk_i,
     input  logic                  rst_ni,
@@ -194,7 +204,17 @@ module openrv64_platform #(
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
-        .BP_TYPE(BP_TYPE)
+        .BP_TYPE(BP_TYPE),
+        .BP_RAS_ENABLE(BP_RAS_ENABLE),
+        .BP_RAS_DEPTH(BP_RAS_DEPTH),
+        .BP_BIMODAL_ENTRIES(BP_BIMODAL_ENTRIES),
+        .BP_BIMODAL_COUNTER_BITS(BP_BIMODAL_COUNTER_BITS),
+        .BP_BIMODAL_UPDATE_DEPTH(BP_BIMODAL_UPDATE_DEPTH),
+        .BP_GSHARE_ENTRIES(BP_GSHARE_ENTRIES),
+        .BP_GSHARE_COUNTER_BITS(BP_GSHARE_COUNTER_BITS),
+        .BP_BTB_ENTRIES(BP_BTB_ENTRIES),
+        .BP_BTB_TAG_BITS(BP_BTB_TAG_BITS),
+        .BP_INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH)
     ) u_core (
         .clk(clk_i),
         .rst_n(core_rst_no),

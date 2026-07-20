@@ -1,0 +1,648 @@
+# OpenRV64 architecture
+
+This document describes the RTL that exists in this repository. It separates
+the default architecture from selectable experiments; it is not a roadmap or
+a statement of intended peak performance. The primary performance target is
+the three-pipe core behind `openrv64_top_3p`. The scalar core remains supported
+and is summarized separately.
+
+## Architectural invariants
+
+The current design is built around a few deliberate rules:
+
+1. Architectural state changes in program order. Integer register and CSR
+   writes occur at retirement, and the three-pipe backend retires only a
+   contiguous ready prefix.
+2. The default three-pipe dispatcher is not an out-of-order scheduler. It may
+   send as many as three oldest queued instructions to independent units, but
+   it cannot step around a blocked older candidate.
+3. There is no register renaming or physical register file. Outstanding
+   architectural-register writers are tracked explicitly, and optional
+   forwarding is an exception to the resulting RAW interlock.
+4. Ordinary aligned conditional branches may execute before reaching the
+   retirement head. In the default strict backend, a correctly predicted BEQ
+   or BNE may share its issue group with younger predicted-path work; every
+   other branch terminates the group. A mispredicted branch therefore cannot
+   have a younger instruction already issued beside it.
+5. Stores are ordered at the retirement head. Posted-store mode, enabled by
+   default in the 3P wrapper, makes a store architecturally complete when its
+   request is accepted and reports a later failure as an imprecise asynchronous
+   abort.
+6. There is currently no instruction cache, data cache, multi-entry store
+   buffer, or coherent memory hierarchy.
+
+These rules are more important than the informal names of the pipeline stages:
+they define which optimizations can be added locally and which require a real
+speculative recovery mechanism.
+
+## Configurations and top-levels
+
+| Boundary | Backend | Memory boundary | Purpose |
+| --- | --- | --- | --- |
+| `openrv64_top` | Selectable 1P or 3P | 64-bit blocking bus; 256-bit AXI is legal only with 3P | General integration wrapper |
+| `openrv64_top_3p` | Fixed 3P | 256-bit AXI4 master only | Primary 3P performance and AXI boundary |
+| `openrv64_platform` | Currently the general wrapper and blocking SoC bus | Integrated ROM, 16 MiB RAM, CLINT, PLIC, UART, GPIO, and timer | Firmware and OpenSBI platform validation |
+
+`OPENRV64_BACKEND_1P` and `OPENRV64_BACKEND_3P` are implemented. The encoded
+2P selection is reserved but not implemented. The specialized 3P top exposes
+the retirement, forwarding, hazard, branch, and issue-window experiment
+parameters that the general wrapper leaves at their 3P defaults.
+
+The 3P core can still be elaborated behind the generic bus for compatibility,
+but that geometry uses the legacy fetch path and presents at most two decode
+lanes. `openrv64_top_3p` fixes both parts of the throughput configuration: the
+three-wide fetcher and the 256-bit AXI requester.
+
+The 3P AXI testbench is a separate integration artifact. It attaches a native
+256-bit, 16 MiB RAM to the AXI fabric and converts non-RAM AXI accesses to the
+existing 64-bit SoC peripheral bus. That fabric currently lives in
+`tb/tb_top_axi_3p.sv`; it is not yet the synthesizable `openrv64_platform`
+interconnect.
+
+## Implemented ISA and privilege architecture
+
+The integrated cores execute fixed-width 32-bit RV64 instructions. The
+advertised `misa` base is RV64I with S and U privilege support, plus A and M
+when their parameters are enabled.
+
+- RV64I integer, control-flow, load/store, and word operations are integrated.
+- Zicsr and Zifencei behavior is integrated.
+- RV64A is implemented and enabled by default. Atomics are serialized through
+  the MEM lane; the AXI requester does not use AXI exclusive transactions.
+- RV64M is implemented by the EX1 lane but disabled by default at the public
+  tops.
+- Machine, supervisor, and user privilege modes, delegated traps and
+  interrupts, MRET/SRET, and the main machine/supervisor CSR state are
+  implemented.
+- Eight PMP entries support OFF, TOR, NA4, and NAPOT matching and lock bits.
+- Bare translation and Sv39 are implemented.
+
+The core does not implement the compressed C extension, so all instruction PCs
+and direct branch targets must be four-byte aligned. F and D encodings and a
+standalone elastic execution pipeline exist, but floating-point decode,
+register state, CSR state, LSU routing, and retirement are not integrated; see
+[rv64-fd.md](rv64-fd.md). RVV is not implemented.
+
+## Three-pipe organization
+
+The default 3P dataflow is:
+
+```text
+       direction predictor + BTB + RAS
+                 |       ^ training/correction
+                 v       |
+AXI -> 4 x 32-byte fetch window -> 3 decoders -> 6-entry decoded FIFO
+                                                   |
+                         oldest contiguous prefix, up to three
+                                                   |
+                         retirement allocation + pipe routing
+                            /              |              \
+                           v               v               v
+                    EX0: ALU/control  EX1: ALU/M    MEM: LSU/A, 3 tags
+                           \               |               /
+                            independent tagged completions
+                                         |
+                              8-entry retirement queue
+                                         |
+                        contiguous in-order retire, up to three
+                              |                       |
+                          integer GPRs            CSRs/traps
+```
+
+The readable 3P trace calls these logical regions `F`, `D`, `Q`, `I`, `C`, and
+`R`. They are not all single-cycle pipeline registers. For example, `Q` may
+hold an instruction for many cycles, RV64M and memory have variable latency,
+and completion may wait behind an older unfinished retirement entry.
+
+### Fetch and instruction supply
+
+`fetch_3w.v` contains four direct-mapped 256-bit entries. Each entry holds one
+32-byte line, giving a 128-byte resident instruction window. Resident tags and
+pending-request tags are distinct, allowing four instruction-line reads to be
+outstanding on AXI IDs 0 through 3.
+
+The frontend:
+
+- emits a contiguous prefix of zero to three 32-bit instructions per cycle;
+- can assemble that prefix across a 32-byte line boundary;
+- advances only by the prefix accepted by decode;
+- preserves resident lines across ordinary predicted and execute-time
+  redirects, which makes small loops replay locally;
+- cancels and drains obsolete outstanding AXI requests on redirects; and
+- invalidates the resident window on reset, traps, privilege returns,
+  `FENCE.I`, `SFENCE.VMA`, and other context-changing restarts.
+
+This window is a fetch buffer/loop window, not a coherent instruction cache.
+There are no cache tags, replacement policy, coherence operations, or data
+cache beneath it.
+
+Optional predecode stores the signed PC-relative displacement for JAL and
+conditional branches. Direct targets therefore come from the instruction plus
+the normal target adder and never consume BTB entries. The selectable advanced
+predictor has a BTB only for indirect JALR targets. Disabling predecode removes
+the direct-target sidecar but not the resident instruction lines.
+
+Three decoders operate in parallel, but the accepted frontend prefix ends at
+the oldest control instruction in the bundle. Only that control instruction
+consults the scalar predictor. A predicted-taken redirect therefore never
+admits sequential instructions after the same branch on that edge.
+
+### Branch prediction and control flow
+
+The direction predictor is selected with `BP_TYPE`:
+
+| Value | Policy | Behavior |
+| ---: | --- | --- |
+| 0 | stall | Do not speculate; hold fetch/decode until the control resolves |
+| 1 | always taken | Predict conditional branches taken |
+| 2 | always not taken | Predict conditional branches not taken; direct jumps remain taken |
+| 3 | repeat last | Reuse the most recently resolved conditional direction |
+| 4 | BTFNT | Backward taken, forward not taken |
+| 5 | bimodal | PC-indexed saturating-counter table with BTFNT cold behavior |
+| 6 | gshare + BTB | 256-entry global-history direction table, 256-entry tagged JALR target table, speculative history recovery, and RAS |
+
+The public default is the conservative stall policy. The implemented bimodal
+defaults are 32 entries, three counter bits, and a four-entry update FIFO. The
+table is direct-indexed and untagged, so unrelated PCs can alias. Up to three
+retiring/resolving branches can enqueue training updates, while the table
+retains a single write port.
+
+The optional return-address stack defaults to eight entries and recognizes the
+RISC-V x1/x5 call and return hints. It updates on resolution rather than
+speculative lookup. A return is predicted only when a valid stack top exists;
+other indirect JALRs stall until their target resolves. Direct JAL and
+conditional targets do not need a BTB because their displacement is available
+from predecode/decode.
+
+Mode 6 adds an eight-bit speculative global history XORed with PC bits to
+index a 256-entry, three-bit direction table. It checkpoints the prediction
+index, pre-branch history, and any predicted indirect target in a 16-entry
+ordered control queue. Resolution trains the original entry; a redirect rolls
+history back to the checkpoint plus the actual outcome. With the speculation
+window enabled, the checkpoint also carries the decode-time instruction ID:
+resolution finds it associatively, correctly resolved younger branches may
+wait in the queue, and committed history advances only when resolved records
+reach the queue head. Selective recovery retains the resolving record and all
+older records while dropping younger checkpoints. Its separate
+256-entry direct-mapped BTB has a 16-bit tag and 64-bit target and is used only
+for non-return JALRs. The RAS has priority for architectural return hints.
+Invalid direction entries retain BTFNT behavior, and a cold indirect still
+uses the existing resolve-time interlock. See
+[performance/bp-results.md](performance/bp-results.md) for measured results
+and implementation limits.
+
+In the normal strict 3P path, an aligned conditional branch issues as soon as
+its operands and EX0 are ready; it does not wait for retirement. It resolves in
+EX0 and redirects immediately on a direction error. The branch still occupies
+EX0, allocates a retirement entry, and cannot retire ahead of older work.
+
+A conditional branch normally terminates its backend issue group. Older
+candidates may issue beside a following branch. With
+`ENABLE_EQ_BRANCH_PAIRING=1`, dispatch also compares the ready operands of BEQ
+and BNE. If that equality result proves the predicted direction correct, the
+branch keeps its EX0 claim and hard retirement classification but waives the
+same-cycle issue barrier. Younger predicted-path candidates may then claim the
+other pipes subject to normal RAW, WAW, capacity, and structural checks:
+
+```text
+queue candidates       prediction/result       available issue
+--------------------   ----------------------  ------------------------------
+ADD, BEQ, LW           BEQ proved correct      ADD -> EX1, BEQ -> EX0, LW -> MEM
+BEQ, ADD, LW           BEQ proved correct      BEQ -> EX0, ADD -> EX1, LW -> MEM
+BEQ, ADD, LW           direction mismatch      BEQ -> EX0; ADD and LW wait
+BLT, ADD, LW           any                     BLT -> EX0; ADD and LW wait
+```
+
+The comparator does not speculate past an unresolved result. A RAW-blocked
+BEQ/BNE cannot issue, and strict-prefix issue prevents its younger candidates
+from issuing even if stale operand bits happen to match the prediction. A
+direction mismatch retains the normal barrier. Correction therefore still
+needs to squash only the fetch stream and decoded FIFO, not age-selectively
+roll back execution or retirement state.
+
+The default branch-only completion bypass can make that operand ready from a
+registered EX0, EX1, or MEM completion in the same cycle. Each architectural
+destination remembers the retirement slot of its youngest live writer. A
+completion is eligible only when its slot matches that owner, so an older WAW
+completion with the same `rd` cannot satisfy or corrupt the branch. The
+selected 64-bit value feeds the BEQ/BNE pairing comparator and the EX0 issue
+payload; it does not enable forwarding for an ordinary ALU or memory consumer.
+
+This is intentionally limited to equality branches. Adding signed/unsigned
+magnitude comparators would lengthen the dispatch operand-to-issue path for
+less coverage. Even the equality-only path is a real timing tradeoff and needs
+placed-and-routed timing validation; RTL IPC alone does not prove closure.
+
+`FREE_BRANCHES` is an implemented diagnostic mode, not the baseline. It
+recomputes a conditional branch in dispatch, marks it complete at retirement
+allocation, removes its EX0 claim, and permits correctly predicted younger
+candidates to remain in the issue group. This is a useful performance upper
+bound, but it puts branch comparison on dispatch timing and must not be quoted
+as normal-core performance.
+
+### Decode queue, issue, and structural routing
+
+The strict dispatch path has a six-entry FIFO of decoded instruction payloads.
+The payload carries PC, instruction, immediate, source and destination
+registers, decoded unit operations, predicted direction, privilege context,
+fault state, and an optional trace ID. Source values are captured from the GPR
+and forwarding paths when the instruction issues; execution units do not read
+the architectural GPR directly.
+
+Up to the oldest three FIFO entries become issue candidates. Allocation into
+the retirement queue and issue to an execution pipe occur together and must
+form a strict program-order prefix:
+
+- candidate 1 cannot issue unless candidate 0 issues;
+- candidate 2 cannot issue unless candidates 0 and 1 issue;
+- one instruction may claim each physical pipe per cycle; and
+- the retirement queue conservatively resumes allocation only when it has room
+  for a complete three-entry group.
+
+Capability routing is fixed where required and flexible for base integer ALU
+operations:
+
+| Instruction class | Pipe |
+| --- | --- |
+| Branch, jump, system/CSR, fence, decoded fault | EX0 |
+| RV64M | EX1 |
+| Load, store, RV64A | MEM |
+| Base integer ALU | EX0 or EX1 |
+
+The router tries to preserve a fixed-capability lane for a following candidate
+and, for the local ALU bypass, prefers the pipe that owns the producer.
+
+Hard-order operations constrain issue more strongly. Aligned conditional
+branches are not persistent after they issue; proved-correct BEQ/BNE may also
+waive the same-group barrier.
+Jumps, system/CSR operations, fences, decoded exceptions, and other hard
+operations remain ordered at the architectural head as required by their
+side effects.
+
+Strict prefix issue is the main head-of-line rule. If the oldest candidate is
+waiting for a true dependency or a busy unit, independent younger candidates
+do not pass it even when another pipe is idle.
+
+### Register ownership and forwarding
+
+The 3P integer register file has six combinational read selectors and three
+ordered retirement write ports. x0 is hardwired to zero. Same-cycle retirement
+bypass gives a reader the youngest matching retiring lane, and multiple
+same-destination retirement writes leave the youngest program-order value in
+the architectural register.
+
+`RELAX_WAW=1`, the default, allows several live instructions to write the same
+architectural register. A per-register writer count is incremented on
+allocation and decremented on ordered retirement. This removes false WAW
+serialization without introducing physical registers. A consumer behind
+multiple live writers still waits unless a producer-tagged experimental mode
+can identify the youngest value unambiguously.
+
+The forwarding tiers are distinct:
+
+1. **Local ALU completion forwarding**, enabled in the strict path, publishes
+   the current EX0 and EX1 destination tags. Dispatch routes a matching
+   consumer back to that ALU pipe, whose local operand mux supplies the value.
+2. **Branch-only live completion forwarding**, selected by
+   `BRANCH_COMPLETION_FORWARD_MASK`, exposes current registered EX0, EX1,
+   and/or MEM completion values only to conditional-branch operands. The
+   default mask is `111`. Eligibility is qualified by the youngest writer's
+   retirement slot, not merely by matching `rd`; at the default eight-entry
+   retirement depth that owner tag is three bits per architectural register.
+3. **General live completion forwarding**, selected by
+   `COMPLETION_FORWARD_MASK`, can expose the current registered EX0, EX1,
+   and/or MEM completion values to every candidate operand. The default mask
+   is `000`; useful masks are `011` for ALU completions, `100` for MEM, and
+   `111` for all three.
+4. **Full forwarding**, selected by `ENABLE_FULL_FORWARDING`, constructs an
+   architectural-register value map from current completions and completed
+   but unretired retirement entries. It is an upper-bound experiment and is
+   disabled by default.
+5. **Aggressive producer ownership**, selected by `RELAX_HAZARDS`, retains the
+   youngest live producer ID, ready bit, and result for every architectural
+   register. It makes relaxed WAW plus broad forwarding unambiguous, but it is
+   materially closer to a result/rename table than a small bypass network and
+   is disabled by default.
+
+No mode cascades an ALU result combinationally into a younger instruction in
+the same issue group. Same-bundle RAW dependencies wait at least until a later
+cycle. A result that has not completed, especially a load response, cannot be
+forwarded by any of these networks.
+
+### Execution lanes
+
+Each physical lane has independent input readiness and a held tagged
+completion port. A long M operation or memory request does not inherently stop
+EX0 from accepting unrelated work.
+
+- **EX0** implements a base integer ALU plus branch/jump, system/CSR, fence,
+  exception, and trap-producing operations. Valid aligned conditional
+  branches produce their direction and redirect as they execute.
+- **EX1** implements a second base integer ALU and the single RV64M worker.
+  M operations are iterative/variable-latency and fixed to this pipe.
+- **MEM** implements RV64I loads/stores and serialized RV64A operations. Its
+  simple-operation queue has three tags and can accept independent loads on
+  consecutive cycles.
+
+Completions carry the dynamic instruction ID and retirement slot. This allows
+the execution lanes and AXI read responses to complete out of order without
+making architectural state out of order.
+
+### Retirement and precise state
+
+The default retirement queue has eight entries. Strict dispatch assigns a
+monotonically increasing 64-bit ID and circular slot when an instruction
+issues. Each execution lane may complete its own slot independently.
+
+The queue presents only the maximal completed prefix beginning at its head.
+Up to three ordinary instructions may retire in one cycle. An exception, halt,
+or hard-order entry ends that retirement group. Faulting entries are consumed
+to release ownership but do not write a GPR or increment the architectural
+retired-instruction count.
+
+Architectural GPR writes and CSR write intents are applied at retirement.
+Interrupts are recognized at a retirement boundary and are deferred across a
+same-cycle CSR write or another control event. MRET, SRET, `FENCE.I`, and
+`SFENCE.VMA` restart the frontend and flush younger state.
+
+This provides precise integer, CSR, branch, load, synchronous store, and trap
+behavior, with one deliberate exception: a posted store may retire before its
+AXI B response. A late store error is delivered alone at the next
+architectural boundary with the original effective address in `tval`; its PC
+is the next unretired architectural frontier. The core cannot roll back the
+already-retired store or younger committed instructions, so this is an
+imprecise asynchronous abort rather than a precise exception.
+
+## Load/store and memory ordering
+
+The MEM lane has three simple-operation slots. Requests launch from the head of
+that local memory sequence, so the LSU does not reorder memory operations
+around one another. Once launched, independent tagged loads may remain
+outstanding and their responses may return out of order.
+
+For the Bare AXI path:
+
+- LSU tags 0 through 2 map to AXI IDs 4 through 6;
+- three independent reads may be outstanding;
+- the response ID selects the original LSU slot and the addressed 64-bit lane
+  of the 256-bit AXI beat; and
+- a redirect cancels speculative loads, drains their responses, and does not
+  reuse their tags early.
+
+Stores issue from the LSU queue only when their instruction is the ordered
+retirement head. With posted stores enabled, core-bus request acceptance
+produces the architectural completion while the bus retains one physical
+write until its B response arrives.
+
+While that write is pending:
+
+- another store remains blocked;
+- a younger load to a non-overlapping byte range may issue;
+- a load fully covered by the retained store bytes completes locally from the
+  stored word, including normal sign/zero extension; and
+- a partially overlapping load waits because memory data and store bytes are
+  not merged.
+
+Store-to-load forwarding is restricted to `STORE_FORWARD_BASE` through
+`STORE_FORWARD_SIZE`; the 3P wrapper defaults this to the 16 MiB RAM window so
+ROM and MMIO are excluded. The comparison uses effective addresses. That is
+adequate for the Bare, identity-mapped benchmark configuration but is not
+correct for virtual aliases in a general translated system.
+
+RV64A drains simple MEM work and runs as a serialized ordered operation. It
+uses the core request/response contract rather than AXI exclusives. There is no
+multi-entry store buffer, speculative store queue, physical-address store
+forwarding CAM, PMA model, or cache-coherence protocol.
+
+## Translation, protection, and physical bus
+
+The core bus owns instruction/data translation and the shared physical
+requester. Bare mode is identity translated. In the AXI configuration, S/U
+accesses under Sv39 consult separate 16-entry, fully associative instruction
+and data TLBs. The generic blocking requester instead uses one shared 16-entry
+TLB. Entries retain ASID, global, page-size, permission, A, and D state.
+
+One blocking three-level page-table walker handles 4 KiB, 2 MiB, and 1 GiB
+leaves. It checks canonical addresses, invalid/reserved PTE encodings,
+superpage alignment, privilege, SUM, MXR, and access type. A/D bits use
+Svade-style fault-on-clear behavior because the physical interface has no
+atomic PTE update mechanism. `SFENCE.VMA` currently invalidates the entire TLB;
+address- and ASID-selective invalidation are not implemented.
+
+PMP is checked after translation at the physical requester boundary. Page
+faults and physical access faults remain distinct through completion and
+retirement.
+
+The fast three-tag LSU path is currently a Bare-mode path. A translated tagged
+request falls back to the precise blocking DTLB/PTW path and retains its
+original LSU tag until that operation completes. Consequently, translation is
+functionally supported but the D-side translated path is not pipelined across
+multiple requests.
+
+### AXI geometry
+
+The 3P AXI interface has:
+
+- 64-bit addresses;
+- 256-bit read/write data and 32 byte strobes;
+- 3-bit transaction IDs; and
+- independent AXI read-address, read-data, write-address, write-data, and
+  write-response channels.
+
+Every current transfer is a single-beat INCR transaction with `AxLEN=0`.
+Instruction reads use a 32-byte transfer. Data accesses use their natural size
+and occupy the selected byte lanes of the 256-bit beat. The ID partition is:
+
+| AXI ID | Owner |
+| ---: | --- |
+| 0-3 | Instruction-line reads |
+| 4-6 | Tagged LSU operations |
+| 7 | Blocking translated/legacy data operation and page-table walker |
+
+There are no multi-beat bursts, cache refills, AXI exclusive accesses, or
+coherence transactions.
+
+### SoC address map and test integration
+
+The common physical map is:
+
+| Target | Base | Size |
+| --- | ---: | ---: |
+| Boot ROM | `0x0000_1000` | 64 KiB |
+| CLINT | `0x0200_0000` | 64 KiB |
+| PLIC | `0x0c00_0000` | 64 MiB |
+| UART | `0x1000_0000` | 256 B |
+| GPIO | `0x1001_0000` | 4 KiB |
+| Timer | `0x1002_0000` | 4 KiB |
+| RAM | `0x8000_0000` | 16 MiB |
+
+The integrated generic-bus platform resets at ROM, whose three-instruction
+stub jumps to RAM at `0x8000_0000`. The AXI performance testbench normally
+overrides reset to RAM and loads the benchmark image directly. Its native AXI
+RAM consumes the RAM aperture; non-RAM accesses are lane-adapted into the
+existing blocking SoC decoder and peripherals.
+
+See [memory_bus.md](memory_bus.md), [integration/bus.txt](integration/bus.txt),
+and [integration/platform.txt](integration/platform.txt) for the signal-level
+bus, reset, interrupt, and platform contracts.
+
+## Optional tagged issue window
+
+`ENABLE_ISSUE_WINDOW` selects a separate dispatch implementation while leaving
+the strict FIFO path instantiated and recoverable. The window depth must equal
+the retirement depth; the 16-entry experiment therefore uses a 16-entry
+retirement queue as well.
+
+Unlike strict dispatch, the window allocates an ID and retirement slot at
+decode time. Each source records either committed GPR data or the ID of its
+youngest producer. Completion broadcasts wake waiting operands, and the
+scheduler selects the oldest eligible instruction for each compatible physical
+pipe. Independent younger ALU work can therefore issue around an unresolved
+older dependency while architectural retirement remains ordered.
+
+With `ENABLE_SPECULATION_WINDOW=0`, this is real out-of-order issue but it is
+deliberately limited:
+
+- hard-order operations constrain younger issue;
+- memory operations remain program ordered;
+- memory cannot pass an older live branch;
+- a branch may execute before retirement, but prediction correction is held
+  until that branch reaches the retirement head;
+- no rename checkpoints or general age-selective rollback exist; and
+- `FREE_BRANCHES` and the issue window cannot be enabled together.
+
+`ENABLE_SPECULATION_WINDOW=1` merges selective speculation into the same
+window; it requires `ENABLE_ISSUE_WINDOW=1`. Decode-time instruction IDs become
+both producer tags and speculation-age tags. A ready branch resolves in EX0
+and redirects immediately rather than waiting at the retirement head. The
+issue window, retirement queue, and tagged gshare checkpoint queue retain the
+resolving branch and every older instruction while discarding only younger
+state. IDs remain monotonic across recovery, so a late completion from a
+squashed instruction cannot alias newly allocated work even if its physical
+retirement slot is reused. The register-owner map is rebuilt from surviving
+entries, including an older WAW producer whose value completed before the
+recovery.
+
+Loads may pass an unresolved older branch only when their effective address is
+inside the explicit `SPEC_LOAD_BASE`/`SPEC_LOAD_SIZE` aperture. The fixed 3P
+wrapper defaults that aperture to its 16 MiB RAM. Stores, atomics, MMIO reads,
+and memory-to-memory reordering remain conservative. Wrong-path RAM responses
+may return after recovery but are discarded by the non-reused instruction
+tag. This is enough for the current uncached test fabric; it is not a substitute
+for cache request cancellation, memory-dependence speculation, or an ordered
+load/store queue.
+
+The implementation is selectable and checksum-tested, but it is not the
+current baseline. It has no physical-register renaming, retains in-order
+retirement, and the current associative wakeup/owner-rebuild logic has not
+been timing-closed. The RAS is conservatively cleared on selective recovery
+rather than checkpointed. See
+[experiments/issue-window-16.md](experiments/issue-window-16.md).
+
+## Scalar 1P core
+
+The 1P core is the original conventional scalar pipeline. Its logical stages
+are IF, ID, EX, MEM, and WB, with individually parameterized stage registers.
+It has one instruction in issue, a scalar scoreboard, EX/MEM forwarding, an
+optional direct load-use bypass, and the same decode, CSR, privilege, PMP,
+Sv39, branch-predictor, and exception blocks where applicable.
+
+The scalar core normally uses the 64-bit blocking physical bus. Its generic
+fetcher retains eight tagged 64-bit words arranged as two sets by four ways,
+for as many as sixteen unread 32-bit instructions. It is preserved for simple
+integration, regression, and performance comparison; the fixed 3P AXI top is
+the current throughput-development target.
+
+The 1P forwarding controls are independent of the 3P controls:
+`ENABLE_FORWARDING` enables normal arithmetic-result bypass and
+`ENABLE_LOAD_FORWARDING` enables the timing-expensive memory-response-to-EX
+load bypass. See [forwarding.md](forwarding.md).
+
+## Default 3P parameter profile
+
+The defaults on `openrv64_top_3p` are intentionally conservative except for
+ordered WAW relaxation and posted stores:
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `RETIRE_DEPTH` | 8 | Retirement/completion entries |
+| `ENABLE_RV64M` | 0 | Iterative M execution disabled |
+| `ENABLE_RV64A` | 1 | Serialized atomics enabled |
+| `RELAX_WAW` | 1 | Multiple ordered writers to one architectural rd allowed |
+| `RELAX_HAZARDS` | 0 | Youngest-producer result table disabled |
+| `BRANCH_COMPLETION_FORWARD_MASK` | `111` | Producer-slot-qualified EX0/EX1/MEM bypass to conditional branches |
+| `COMPLETION_FORWARD_MASK` | `000` | Cross-pipe live completion bypass disabled |
+| `ENABLE_FULL_FORWARDING` | 0 | Completed retirement-entry map disabled |
+| `ENABLE_ISSUE_WINDOW` | 0 | Six-entry strict-prefix dispatch selected |
+| `ENABLE_POSTED_STORES` | 1 | Store completes at accepted request; late error is asynchronous |
+| `ENABLE_EQ_BRANCH_PAIRING` | 1 | Proved-correct BEQ/BNE may retain younger predicted-path issue |
+| `FREE_BRANCHES` | 0 | Diagnostic branch completion at dispatch disabled |
+| `BP_TYPE` | 0 | No-speculation stall policy |
+| `BP_RAS_ENABLE` | 1 | RAS hardware elaborated; stall policy still suppresses speculation |
+| `BP_RAS_DEPTH` | 8 | Return stack entries |
+| `BP_BIMODAL_ENTRIES` | 32 | Bimodal direction entries when selected |
+| `BP_BIMODAL_COUNTER_BITS` | 3 | Saturating counter width |
+| `BP_BIMODAL_UPDATE_DEPTH` | 4 | Serialized predictor update FIFO |
+| `BP_GSHARE_ENTRIES` | 256 | Gshare PHT entries when mode 6 is selected |
+| `BP_GSHARE_COUNTER_BITS` | 3 | Gshare saturating counter width |
+| `BP_BTB_ENTRIES` | 256 | Tagged indirect-target entries |
+| `BP_BTB_TAG_BITS` | 16 | Indirect-target tag width |
+| `BP_INFLIGHT_DEPTH` | 16 | Ordered prediction/checkpoint records |
+| `ENABLE_PREDECODE_TARGETS` | 1 | Direct PC-relative target sidecar enabled |
+
+Performance experiments commonly select BTFNT, bimodal, or gshare/BTB
+prediction, live or full forwarding, and aggressive hazards. Those are valid RTL configurations,
+but results from them must name the parameters rather than being presented as
+the default core.
+
+## Trace and validation
+
+The scalar trace exports the stable `openrv64-cycle-v1` IF/ID/EX/MEM/WB ABI.
+The 3P performance harness emits `openrv64-3p-cycle-v2`, including fetch,
+decode, decoded queue, physical issue pipes, completion, retirement, first
+blocking cause, completed-entry state, frontend line state, and tagged LSU
+request/response details. See [cycle_trace.md](cycle_trace.md).
+
+Useful checks include:
+
+```sh
+make -B sim
+make -B sim-top-axi-3p-bp
+make -B sim-top-axi-3p-perf \
+    AXI_3P_PERF_BIN=sw/test.bin \
+    AXI_3P_PERF_MEMH=sim/test-256.memh
+```
+
+`sim-top-axi-3p-perf` enables the detailed 3P trace. Functional Sky130
+partition reports are available through `make yosys-resources-core-sky130`,
+but they are pre-layout logical-area results, not placed-and-routed timing or
+die-size claims.
+
+## Current architectural limitations
+
+- No instruction cache, data cache, L2, coherence, prefetcher, or cacheable
+  memory attributes.
+- Only one retained posted store; no real store buffer, store merging, or
+  physical-address store queue.
+- Only predictor mode 6 has a BTB. It is direct-mapped and handles non-return
+  JALRs; the default stall policy and modes 1 through 5 still limit indirect
+  prediction to the RAS.
+- The frontend ends decode admission at the first control instruction. The
+  strict backend pairs younger work only past proved-correct BEQ/BNE; other
+  branches still terminate the issue group.
+- Default strict-prefix issue cannot walk around a blocked head instruction.
+- Same-bundle dependent execution is not cascaded.
+- Translated tagged LSU traffic is serialized through one DTLB/PTW path.
+- `SFENCE.VMA` is global; Sv48/Sv57 and hardware A/D updates are absent.
+- Posted-store errors are imprecise and unrecoverable.
+- RV64F/D, RVV, and compressed instructions are not integrated.
+- Single hart only. The integrated platform has one machine CLINT context and
+  one machine PLIC context.
+- The synthesizable integrated platform still uses the blocking bus; the
+  native 256-bit RAM plus MMIO AXI fabric is currently testbench-only.
+- Performance test RAM is not a model of a physically closed cache/memory
+  hierarchy. Fixed-clock IPC results do not establish achievable frequency.
+
+The near-term architectural work is tracked in [TODO.md](TODO.md). Detailed
+performance counterfactuals remain under [experiments/](experiments/) and
+should not silently redefine the baseline described here.

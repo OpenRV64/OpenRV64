@@ -117,17 +117,78 @@ predicted-taken direct target redirects the resident window without clearing
 it. JALR and the no-speculation policy retain the predictor's unresolved-control
 stall behavior.
 
-The LSU and page-table walker share one blocking physical transaction slot and
-use the reserved all-ones AXI ID. Narrow 64-bit-or-smaller accesses select the
-appropriate lane of the 256-bit beat; writes shift both data and byte strobes
-to that lane. AW and W handshakes are tracked independently. Translation and
-PMP checks happen before an AXI request is launched, and fault classes remain
-the same as on the generic bus.
+The three-pipe LSU has three tagged request slots. In Bare mode, load tags map
+directly to AXI IDs 4 through 6, so three independent reads can be in flight
+and may return out of order. The response ID selects both the original LSU
+slot and the appropriate 64-bit lane of the 256-bit beat; the retirement queue
+still exposes architectural results in order. A flush marks launched requests
+cancelled, drains their AXI responses, and does not reuse their tags early.
 
-The present AXI scope is intentionally limited: there are no multi-beat
-bursts, caches, multiple outstanding LSU operations, exclusive accesses, or
-AXI connection in `openrv64_platform`. RV64A still uses the backend's ordered
-blocking memory contract rather than AXI exclusives.
+Translated tagged requests currently fall back to the precise blocking
+DTLB/PTW path. That path, the page-table walker, and the legacy LSU interface
+use the reserved all-ones AXI ID. The original LSU tag is retained across the
+fallback and is returned with its data or page/access fault. This is correct
+but deliberately not yet a multi-request translated LSU: making translation
+pipelined requires tagged DTLB lookup/miss state and multiple walk ownership
+records, not merely more AXI IDs.
+
+Stores launch only when they are the ordered retirement head. The current 3P
+baseline treats acceptance of that request by the core memory bus as
+architectural completion; it does not wait for the eventual AXI B response.
+A one-entry AXI write holding register shifts data and byte strobes into the
+selected 64-bit lane and tracks AW and W handshakes independently. The
+execution LSU retains the original store tag, PC, instruction, trace ID, and
+effective address until the response arrives. While that response is pending,
+another store remains blocked, as does a younger load whose byte mask overlaps
+the pending store without being fully covered by its byte strobes. A
+non-overlapping younger load may issue on the tagged AXI path and return
+independently. A fully covered load completes locally from the retained store
+word, including the normal load shift and signed/unsigned extension, without
+issuing an AXI read. A partial overlap still waits because it requires merging
+store bytes with memory data. This is posted architectural completion with a
+one-entry address/data bypass, not a multi-entry store buffer.
+
+The overlap check currently compares effective addresses before translation.
+That is sufficient for this Bare-mode, identity-mapped benchmark rig. It is not
+a complete virtual-memory solution because distinct virtual addresses can
+alias the same physical line. The existing translated path remains serialized;
+a future cacheable LSU/store buffer must compare translated addresses and apply
+PMA/MMIO ordering rules.
+
+The local forwarding path is qualified by a configurable physical-memory
+window. `openrv64_top_3p` defaults that window to the platform's 16 MiB RAM
+aperture, so ROM and side-effecting MMIO cannot be forwarded. This is sufficient
+for the current Bare-mode rig, but it is still only a range check. A production
+LSU must use translated physical addresses and real PMA/cacheability attributes
+when deciding whether store-to-load forwarding is legal.
+
+A successful late response only releases the retained tag. A late AXI/access
+error raises a store-access-fault exception; a late translation page error
+raises a store-page-fault exception. Both are deliberately **imprecise async
+aborts**: the store and possibly younger instructions have already retired, so
+the core cannot roll them back. Trap `tval` is the original effective store
+address. The exception PC is the next unretired architectural frontier, not
+the original store PC, so a handler return does not blindly replay an already
+issued store. The original store instruction and trace ID remain attached for
+diagnostics. These use the normal exception cause encodings even though the
+failure is delivered later than the faulting instruction.
+
+An ordered posted store survives a younger redirect until its response is
+drained. EBREAK or another architectural stop may therefore become visible
+before the physical write response; a simulator or platform must keep clocking
+the bus long enough to drain already-committed stores.
+
+A real store buffer still needs an explicit PMA distinction between cacheable,
+idempotent RAM and ordered side-effecting MMIO; multiple queued committed
+stores; store-to-load address comparison and byte forwarding; FENCE/atomic
+drain rules; and a stronger deferred machine-check/recovery policy. The
+current imprecise exception makes late failure visible, but it does not make
+the store precise or recoverable.
+
+The remaining AXI limits are no multi-beat bursts, caches, pipelined translated
+LSU accesses, exclusive accesses, or AXI connection in `openrv64_platform`.
+RV64A remains serialized and uses the backend's ordered request/response
+contract rather than AXI exclusives.
 
 ## Generic fetch buffering and lane rules
 

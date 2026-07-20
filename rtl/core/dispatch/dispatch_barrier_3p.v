@@ -5,8 +5,9 @@
 //
 // A hard instruction may be the last instruction allocated in a cycle.  Most
 // hard instructions block every later instruction until retirement or flush.
-// An aligned conditional branch resolves as it issues: it still terminates
-// its issue group, but does not need a persistent barrier after that edge.
+// An aligned conditional branch resolves as it issues and does not need a
+// persistent barrier after that edge.  Dispatch may also prove a BEQ/BNE
+// prediction correct and waive its same-cycle issue-group barrier.
 // The in-order issue gate may hold it at the front of dispatch while older
 // work retires; exec_top_3p requires the same ordered-head match.
 module openrv64_dispatch_barrier_3p (
@@ -15,6 +16,8 @@ module openrv64_dispatch_barrier_3p (
     input  wire                         flush_i,
 
     input  wire [2:0]                   candidate_valid_i,
+    input  wire [2:0]                   candidate_free_i,
+    input  wire [2:0]                   candidate_barrier_free_i,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         candidate_payload_i,
     output wire [2:0]                   candidate_hard_o,
@@ -59,22 +62,25 @@ module openrv64_dispatch_barrier_3p (
         end
     endfunction
 
-    wire hard0 = candidate_valid_i[0] && is_hard_order(
+    wire hard0 = candidate_valid_i[0] && !candidate_free_i[0] && is_hard_order(
         candidate_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
-    wire hard1 = candidate_valid_i[1] && is_hard_order(
+    wire hard1 = candidate_valid_i[1] && !candidate_free_i[1] && is_hard_order(
         candidate_payload_i[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
-    wire hard2 = candidate_valid_i[2] && is_hard_order(
+    wire hard2 = candidate_valid_i[2] && !candidate_free_i[2] && is_hard_order(
         candidate_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
-    wire persistent0 = candidate_valid_i[0] && is_persistent_order(
+    wire persistent0 = candidate_valid_i[0] && !candidate_free_i[0] &&
+        is_persistent_order(
         candidate_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
-    wire persistent1 = candidate_valid_i[1] && is_persistent_order(
+    wire persistent1 = candidate_valid_i[1] && !candidate_free_i[1] &&
+        is_persistent_order(
         candidate_payload_i[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
-    wire persistent2 = candidate_valid_i[2] && is_persistent_order(
+    wire persistent2 = candidate_valid_i[2] && !candidate_free_i[2] &&
+        is_persistent_order(
         candidate_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
 
@@ -87,11 +93,18 @@ module openrv64_dispatch_barrier_3p (
 
     assign candidate_hard_o = {hard2, hard1, hard0};
     assign allocation_allow_o[0] = !barrier_active_q;
+    // A proved-correct BEQ/BNE may waive only the same-cycle issue-group
+    // barrier.  It remains hard in retirement metadata and still executes in
+    // EX0; this is deliberately distinct from the diagnostic free-branch
+    // path, which removes the branch's pipe claim and hard classification.
     assign allocation_allow_o[1] = !barrier_active_q &&
-                                    !(candidate_valid_i[0] && hard0);
+                                    !(candidate_valid_i[0] && hard0 &&
+                                      !candidate_barrier_free_i[0]);
     assign allocation_allow_o[2] = !barrier_active_q &&
-                                    !(candidate_valid_i[0] && hard0) &&
-                                    !(candidate_valid_i[1] && hard1);
+                                    !(candidate_valid_i[0] && hard0 &&
+                                      !candidate_barrier_free_i[0]) &&
+                                    !(candidate_valid_i[1] && hard1 &&
+                                      !candidate_barrier_free_i[1]);
     assign barrier_active_o = barrier_active_q;
 
     always @(posedge clk or negedge rst_n) begin

@@ -17,7 +17,17 @@ module openrv64_top #(
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_STALL
+        `OPENRV64_BP_STALL,
+    parameter bit BP_RAS_ENABLE = 1'b1,
+    parameter int unsigned BP_RAS_DEPTH = 8,
+    parameter int unsigned BP_BIMODAL_ENTRIES = 32,
+    parameter int unsigned BP_BIMODAL_COUNTER_BITS = 3,
+    parameter int unsigned BP_BIMODAL_UPDATE_DEPTH = 4,
+    parameter int unsigned BP_GSHARE_ENTRIES = 256,
+    parameter int unsigned BP_GSHARE_COUNTER_BITS = 3,
+    parameter int unsigned BP_BTB_ENTRIES = 256,
+    parameter int unsigned BP_BTB_TAG_BITS = 16,
+    parameter int unsigned BP_INFLIGHT_DEPTH = 16
 ) (
     input  logic        clk,
     input  logic        rst_n,
@@ -200,7 +210,17 @@ module openrv64_top #(
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
-        .BP_TYPE(BP_TYPE)
+        .BP_TYPE(BP_TYPE),
+        .BP_RAS_ENABLE(BP_RAS_ENABLE),
+        .BP_RAS_DEPTH(BP_RAS_DEPTH),
+        .BP_BIMODAL_ENTRIES(BP_BIMODAL_ENTRIES),
+        .BP_BIMODAL_COUNTER_BITS(BP_BIMODAL_COUNTER_BITS),
+        .BP_BIMODAL_UPDATE_DEPTH(BP_BIMODAL_UPDATE_DEPTH),
+        .BP_GSHARE_ENTRIES(BP_GSHARE_ENTRIES),
+        .BP_GSHARE_COUNTER_BITS(BP_GSHARE_COUNTER_BITS),
+        .BP_BTB_ENTRIES(BP_BTB_ENTRIES),
+        .BP_BTB_TAG_BITS(BP_BTB_TAG_BITS),
+        .BP_INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH)
     ) u_core (
         .clk(clk),
         .rst_n(rst_n),
@@ -241,9 +261,21 @@ module openrv64_top #(
             openrv64_rv64_top_3p #(
                 .RESET_VECTOR(RESET_VECTOR), .ENABLE_RV64M(ENABLE_RV64M),
                 .BUS_CONFIG(BUS_CONFIG),
+                .STORE_FORWARD_BASE(`OPENRV64_SOC_MEMORY_BASE),
+                .STORE_FORWARD_SIZE(`OPENRV64_SOC_MEMORY_SIZE),
                 .ENABLE_RV64A(ENABLE_RV64A), .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
-                .BP_TYPE(BP_TYPE)
+                .BP_TYPE(BP_TYPE),
+                .BP_RAS_ENABLE(BP_RAS_ENABLE),
+                .BP_RAS_DEPTH(BP_RAS_DEPTH),
+                .BP_BIMODAL_ENTRIES(BP_BIMODAL_ENTRIES),
+                .BP_BIMODAL_COUNTER_BITS(BP_BIMODAL_COUNTER_BITS),
+                .BP_BIMODAL_UPDATE_DEPTH(BP_BIMODAL_UPDATE_DEPTH),
+                .BP_GSHARE_ENTRIES(BP_GSHARE_ENTRIES),
+                .BP_GSHARE_COUNTER_BITS(BP_GSHARE_COUNTER_BITS),
+                .BP_BTB_ENTRIES(BP_BTB_ENTRIES),
+                .BP_BTB_TAG_BITS(BP_BTB_TAG_BITS),
+                .BP_INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH)
             ) u_core_3p (
                 .clk(clk), .rst_n(rst_n), .mem_valid(three_mem_valid),
                 .mem_ready(mem_ready), .mem_write(three_mem_write),

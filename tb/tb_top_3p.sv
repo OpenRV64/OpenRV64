@@ -147,6 +147,14 @@ module tb_top_3p;
                      dut.g_backend_3p.u_core_3p.fetch_decode_ready);
             $fatal(1, "3P core did not halt");
         end
+        // Posted stores may retire before the physical bus response.  EBREAK
+        // stops architectural execution, but the committed write must still
+        // be allowed to drain through the generic-bus adapter.
+        for (cycles = 0; cycles < 20 && memory[16] != 64'd33;
+             cycles = cycles + 1) begin
+            @(posedge clk);
+            #1;
+        end
         if (!saw_two_retire) $fatal(1, "3P core never retired two-wide");
         if (memory[16] != 64'd33)
             $fatal(1, "3P ordered store mismatch: %016x", memory[16]);
