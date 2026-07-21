@@ -1,0 +1,196 @@
+`timescale 1ns/1ps
+`include "complex/protocol/defs.v"
+
+// Round-robin N-to-one CCX request arbiter with one-to-N response routing.
+//
+// The current external bridge accepts one global transaction at a time.  The
+// selected source index is therefore retained until that transaction's
+// response is consumed.  Request arbitration advances after every accepted
+// request so a continuously requesting low-numbered hart cannot starve its
+// peers.
+module openrv64_ccx_crossbar #(
+    parameter integer NUM_HARTS = 2,
+    parameter integer HART_INDEX_WIDTH =
+        (NUM_HARTS > 1) ? $clog2(NUM_HARTS) : 1
+) (
+    input  wire clk_i,
+    input  wire rst_ni,
+
+    input  wire [NUM_HARTS-1:0] hart_req_valid_i,
+    output reg  [NUM_HARTS-1:0] hart_req_ready_o,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                         hart_req_hart_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                         hart_req_txn_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_OP_WIDTH-1:0]
+                                         hart_req_op_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_ORDER_WIDTH-1:0]
+                                         hart_req_order_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_KIND_WIDTH-1:0]
+                                         hart_req_kind_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_ATTR_WIDTH-1:0]
+                                         hart_req_attr_i,
+    input  wire [NUM_HARTS*3-1:0]       hart_req_size_i,
+    input  wire [NUM_HARTS*64-1:0]      hart_req_addr_i,
+    input  wire [NUM_HARTS*64-1:0]      hart_req_wdata_i,
+    input  wire [NUM_HARTS*8-1:0]       hart_req_wstrb_i,
+
+    output reg                          mem_req_valid_o,
+    input  wire                         mem_req_ready_i,
+    output reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] mem_req_hart_id_o,
+    output reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]  mem_req_txn_id_o,
+    output reg [`OPENRV64_CCX_OP_WIDTH-1:0]      mem_req_op_o,
+    output reg [`OPENRV64_CCX_ORDER_WIDTH-1:0]   mem_req_order_o,
+    output reg [`OPENRV64_CCX_KIND_WIDTH-1:0]    mem_req_kind_o,
+    output reg [`OPENRV64_CCX_ATTR_WIDTH-1:0]    mem_req_attr_o,
+    output reg [2:0]                    mem_req_size_o,
+    output reg [63:0]                   mem_req_addr_o,
+    output reg [63:0]                   mem_req_wdata_o,
+    output reg [7:0]                    mem_req_wstrb_o,
+
+    input  wire                         mem_resp_valid_i,
+    output reg                          mem_resp_ready_o,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] mem_resp_hart_id_i,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]  mem_resp_txn_id_i,
+    input  wire [63:0]                  mem_resp_rdata_i,
+    input  wire                         mem_resp_error_i,
+    input  wire                         mem_resp_sc_success_i,
+
+    output reg  [NUM_HARTS-1:0]        hart_resp_valid_o,
+    input  wire [NUM_HARTS-1:0]        hart_resp_ready_i,
+    output reg  [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                         hart_resp_hart_id_o,
+    output reg  [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                         hart_resp_txn_id_o,
+    output reg  [NUM_HARTS*64-1:0]     hart_resp_rdata_o,
+    output reg  [NUM_HARTS-1:0]        hart_resp_error_o,
+    output reg  [NUM_HARTS-1:0]        hart_resp_sc_success_o
+);
+
+    reg [HART_INDEX_WIDTH-1:0] round_robin_q;
+    reg [HART_INDEX_WIDTH-1:0] active_hart_q;
+    reg active_valid_q;
+
+    reg grant_valid;
+    reg [HART_INDEX_WIDTH-1:0] grant_hart;
+    localparam [HART_INDEX_WIDTH-1:0] LAST_HART =
+        HART_INDEX_WIDTH'(NUM_HARTS - 1);
+    integer scan_index;
+    integer candidate_index;
+
+    wire mem_request_fire = mem_req_valid_o && mem_req_ready_i;
+    wire mem_response_fire = mem_resp_valid_i && mem_resp_ready_o;
+
+    generate
+        if ((NUM_HARTS < 1) || (NUM_HARTS > 16)) begin : g_bad_hart_count
+            initial
+            $fatal(1, "CCX crossbar NUM_HARTS must be from 1 through 16");
+        end
+    endgenerate
+
+    always @* begin
+        grant_valid = 1'b0;
+        grant_hart = round_robin_q;
+        candidate_index = 0;
+
+        for (scan_index = 0; scan_index < NUM_HARTS;
+             scan_index = scan_index + 1) begin
+            candidate_index = 32'(round_robin_q);
+            candidate_index = candidate_index + scan_index;
+            if (candidate_index >= NUM_HARTS)
+                candidate_index = candidate_index - NUM_HARTS;
+            if (!grant_valid && hart_req_valid_i[candidate_index]) begin
+                grant_valid = 1'b1;
+                grant_hart = candidate_index[HART_INDEX_WIDTH-1:0];
+            end
+        end
+
+        hart_req_ready_o = {NUM_HARTS{1'b0}};
+        mem_req_valid_o = 1'b0;
+        mem_req_hart_id_o = {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+        mem_req_txn_id_o = {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+        mem_req_op_o = `OPENRV64_CCX_OP_READ;
+        mem_req_order_o = `OPENRV64_CCX_ORDER_NONE;
+        mem_req_kind_o = `OPENRV64_CCX_KIND_LEGACY;
+        mem_req_attr_o = `OPENRV64_CCX_ATTR_NONE;
+        mem_req_size_o = 3'd0;
+        mem_req_addr_o = 64'd0;
+        mem_req_wdata_o = 64'd0;
+        mem_req_wstrb_o = 8'd0;
+
+        if (!active_valid_q && grant_valid) begin
+            mem_req_valid_o = 1'b1;
+            hart_req_ready_o[grant_hart] = mem_req_ready_i;
+            mem_req_hart_id_o = hart_req_hart_id_i[
+                grant_hart*`OPENRV64_CCX_HART_ID_WIDTH +:
+                `OPENRV64_CCX_HART_ID_WIDTH];
+            mem_req_txn_id_o = hart_req_txn_id_i[
+                grant_hart*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                `OPENRV64_CCX_TXN_ID_WIDTH];
+            mem_req_op_o = hart_req_op_i[
+                grant_hart*`OPENRV64_CCX_OP_WIDTH +:
+                `OPENRV64_CCX_OP_WIDTH];
+            mem_req_order_o = hart_req_order_i[
+                grant_hart*`OPENRV64_CCX_ORDER_WIDTH +:
+                `OPENRV64_CCX_ORDER_WIDTH];
+            mem_req_kind_o = hart_req_kind_i[
+                grant_hart*`OPENRV64_CCX_KIND_WIDTH +:
+                `OPENRV64_CCX_KIND_WIDTH];
+            mem_req_attr_o = hart_req_attr_i[
+                grant_hart*`OPENRV64_CCX_ATTR_WIDTH +:
+                `OPENRV64_CCX_ATTR_WIDTH];
+            mem_req_size_o = hart_req_size_i[grant_hart*3 +: 3];
+            mem_req_addr_o = hart_req_addr_i[grant_hart*64 +: 64];
+            mem_req_wdata_o = hart_req_wdata_i[grant_hart*64 +: 64];
+            mem_req_wstrb_o = hart_req_wstrb_i[grant_hart*8 +: 8];
+        end
+    end
+
+    always @* begin
+        hart_resp_valid_o = {NUM_HARTS{1'b0}};
+        hart_resp_hart_id_o =
+            {NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+        hart_resp_txn_id_o =
+            {NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+        hart_resp_rdata_o = {NUM_HARTS*64{1'b0}};
+        hart_resp_error_o = {NUM_HARTS{1'b0}};
+        hart_resp_sc_success_o = {NUM_HARTS{1'b0}};
+        mem_resp_ready_o = 1'b0;
+
+        if (active_valid_q) begin
+            hart_resp_valid_o[active_hart_q] = mem_resp_valid_i;
+            hart_resp_hart_id_o[
+                active_hart_q*`OPENRV64_CCX_HART_ID_WIDTH +:
+                `OPENRV64_CCX_HART_ID_WIDTH] = mem_resp_hart_id_i;
+            hart_resp_txn_id_o[
+                active_hart_q*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                `OPENRV64_CCX_TXN_ID_WIDTH] = mem_resp_txn_id_i;
+            hart_resp_rdata_o[active_hart_q*64 +: 64] =
+                mem_resp_rdata_i;
+            hart_resp_error_o[active_hart_q] = mem_resp_error_i;
+            hart_resp_sc_success_o[active_hart_q] =
+                mem_resp_sc_success_i;
+            mem_resp_ready_o = hart_resp_ready_i[active_hart_q];
+        end
+    end
+
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            round_robin_q <= {HART_INDEX_WIDTH{1'b0}};
+            active_hart_q <= {HART_INDEX_WIDTH{1'b0}};
+            active_valid_q <= 1'b0;
+        end else begin
+            if (mem_request_fire) begin
+                active_hart_q <= grant_hart;
+                active_valid_q <= 1'b1;
+                if (grant_hart == LAST_HART)
+                    round_robin_q <= {HART_INDEX_WIDTH{1'b0}};
+                else
+                    round_robin_q <= grant_hart + 1'b1;
+            end
+            if (mem_response_fire)
+                active_valid_q <= 1'b0;
+        end
+    end
+
+endmodule

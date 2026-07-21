@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "core/bus/bus-defs.v"
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-priv.v"
 `include "soc/bus/mem_map.v"
 
 // Testbench-only 256-bit AXI fabric.  RAM is a native 256-bit AXI target: one
@@ -9,7 +10,8 @@
 // existing 64-bit SoC peripheral bus; LSU-sized MMIO is lane-adapted there.
 module tb_axi256_soc_fabric #(
     parameter integer READ_QUEUE_DEPTH = 8,
-    parameter integer RAM_BYTES = 16 * 1024 * 1024
+    parameter integer RAM_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
+    parameter integer ZERO_INIT_LINES = RAM_BYTES / 32
 ) (
     input  wire        clk_i,
     input  wire        rst_ni,
@@ -75,7 +77,13 @@ module tb_axi256_soc_fabric #(
 
     reg [`OPENRV64_AXI_ID_WIDTH-1:0] current_read_id_q;
     reg [`OPENRV64_AXI_ADDR_WIDTH-1:0] current_read_addr_q;
+`ifdef VERILATOR
+    // A sparse associative array avoids lowering the complete RAM aperture
+    // into the generated model. Missing lines read as zero at time zero.
+    reg [`OPENRV64_AXI_DATA_WIDTH-1:0] ram_q [longint unsigned];
+`else
     reg [`OPENRV64_AXI_DATA_WIDTH-1:0] ram_q [0:RAM_LINE_COUNT-1];
+`endif
 
     reg aw_pending_q;
     reg [`OPENRV64_AXI_ID_WIDTH-1:0] aw_id_q;
@@ -126,11 +134,13 @@ module tb_axi256_soc_fabric #(
     wire [RAM_LINE_INDEX_WIDTH-1:0] current_write_ram_index =
         aw_addr_q[RAM_LINE_INDEX_WIDTH+4:5];
 
+`ifndef VERILATOR
     initial begin
-        for (ram_init_index = 0; ram_init_index < RAM_LINE_COUNT;
+        for (ram_init_index = 0; ram_init_index < ZERO_INIT_LINES;
              ram_init_index = ram_init_index + 1)
             ram_q[ram_init_index] = {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
     end
+`endif
 
     assign s_axi_arready_o = rst_ni &&
         (read_count_q < READ_QUEUE_DEPTH);
@@ -276,6 +286,8 @@ module tb_axi256_soc_fabric #(
 endmodule
 
 module tb_top_axi_3p #(
+    parameter integer RAM_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
+    parameter integer RAM_ZERO_INIT_LINES = RAM_BYTES / 32,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_STALL,
     parameter integer BP_RAS_ENABLE = 1,
@@ -446,6 +458,7 @@ module tb_top_axi_3p #(
     reg saw_gpio_axi_write;
     reg saw_three_retire;
     reg external_image;
+    reg opensbi_image;
     reg external_done;
     reg done_pc_valid;
     reg expect_a0_valid;
@@ -537,6 +550,26 @@ module tb_top_axi_3p #(
     integer pipeline_trace_cycle;
     string memh_path;
     string pipeline_trace_path;
+    string opensbi_trampoline_memh;
+    string opensbi_firmware_memh;
+    string opensbi_payload_memh;
+    string opensbi_fdt_memh;
+    string opensbi_banner = "OpenSBI v1.9";
+    string opensbi_payload_text = "OPENRV64 SBI TIMER PAYLOAD";
+    integer opensbi_banner_index;
+    integer opensbi_payload_index;
+    integer opensbi_uart_bytes;
+    integer opensbi_fragment_count;
+    reg opensbi_saw_banner;
+    reg opensbi_saw_payload_text;
+    reg opensbi_saw_s_mode;
+
+    localparam integer OPENSBI_TRAMPOLINE_LINE = 0;
+    localparam integer OPENSBI_FIRMWARE_LINE = 32'h0010_0000 / 32;
+    localparam integer OPENSBI_PAYLOAD_LINE = 32'h0020_0000 / 32;
+    localparam integer OPENSBI_MAGIC_LINE = 32'h00e0_0000 / 32;
+    localparam integer OPENSBI_FDT_LINE = 32'h00f0_0000 / 32;
+    localparam [63:0] OPENSBI_MAGIC_VALUE = 64'h5342_4950_4153_5301;
 
     openrv64_top_3p #(
         .RESET_VECTOR(`OPENRV64_SOC_MEMORY_BASE),
@@ -961,7 +994,8 @@ module tb_top_axi_3p #(
     end
 
     tb_axi256_soc_fabric #(
-        .RAM_BYTES(16 * 1024 * 1024)
+        .RAM_BYTES(RAM_BYTES),
+        .ZERO_INIT_LINES(RAM_ZERO_INIT_LINES)
     ) u_axi_fabric (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -1004,7 +1038,9 @@ module tb_top_axi_3p #(
         .mem_error_i(bus_error)
     );
 
-    openrv64_soc_bus_decode u_bus (
+    openrv64_soc_bus_decode #(
+        .MEMORY_SIZE(RAM_BYTES)
+    ) u_bus (
         .mem_valid_i(bus_valid),
         .mem_ready_o(bus_ready),
         .mem_write_i(bus_write),
@@ -1074,7 +1110,7 @@ module tb_top_axi_3p #(
         .mem_rdata_o(rom_rdata)
     );
 
-    // The AXI fabric consumes the 16 MiB RAM aperture before the peripheral
+    // The AXI fabric consumes the configured RAM aperture before the peripheral
     // bus.  These defensive values make any accidental second decode visible
     // without placing a second RAM behind the same address window.
     assign memory_ready = 1'b1;
@@ -1274,6 +1310,35 @@ module tb_top_axi_3p #(
         end
     endtask
 
+    task automatic match_opensbi_byte;
+        input [7:0] value;
+        begin
+            if (!opensbi_saw_banner) begin
+                if (value == opensbi_banner[opensbi_banner_index]) begin
+                    opensbi_banner_index = opensbi_banner_index + 1;
+                    if (opensbi_banner_index == opensbi_banner.len())
+                        opensbi_saw_banner = 1'b1;
+                end else begin
+                    opensbi_banner_index =
+                        (value == opensbi_banner[0]) ? 1 : 0;
+                end
+            end
+
+            if (!opensbi_saw_payload_text) begin
+                if (value ==
+                    opensbi_payload_text[opensbi_payload_index]) begin
+                    opensbi_payload_index = opensbi_payload_index + 1;
+                    if (opensbi_payload_index ==
+                        opensbi_payload_text.len())
+                        opensbi_saw_payload_text = 1'b1;
+                end else begin
+                    opensbi_payload_index =
+                        (value == opensbi_payload_text[0]) ? 1 : 0;
+                end
+            end
+        end
+    endtask
+
     task automatic sample_performance;
         integer issued_this_cycle;
         integer branch_candidate_lane;
@@ -1418,7 +1483,7 @@ module tb_top_axi_3p #(
                     axi_fetch_reads = axi_fetch_reads + 1;
                 if ((araddr >= `OPENRV64_SOC_MEMORY_BASE) &&
                     (araddr < (`OPENRV64_SOC_MEMORY_BASE +
-                               `OPENRV64_SOC_MEMORY_SIZE)))
+                               RAM_BYTES)))
                     axi_ram_reads = axi_ram_reads + 1;
                 else
                     axi_mmio_reads = axi_mmio_reads + 1;
@@ -1427,7 +1492,7 @@ module tb_top_axi_3p #(
             if (awvalid && awready) begin
                 if ((awaddr >= `OPENRV64_SOC_MEMORY_BASE) &&
                     (awaddr < (`OPENRV64_SOC_MEMORY_BASE +
-                               `OPENRV64_SOC_MEMORY_SIZE)))
+                               RAM_BYTES)))
                     axi_ram_writes = axi_ram_writes + 1;
                 else
                     axi_mmio_writes = axi_mmio_writes + 1;
@@ -1638,6 +1703,14 @@ module tb_top_axi_3p #(
 
     always @(posedge clk) begin
         if (rst_n) begin
+            if (opensbi_image &&
+                (dut.u_core.u_csrs.priv_mode_q == `RV64_PRIV_S))
+                opensbi_saw_s_mode <= 1'b1;
+            if (opensbi_image && u_uart.write_thr) begin
+                opensbi_uart_bytes <= opensbi_uart_bytes + 1;
+                $write("%c", uart_wdata[7:0]);
+                match_opensbi_byte(uart_wdata[7:0]);
+            end
             if (arvalid && arready) begin
                 if (!first_r_seen &&
                     !arid[`OPENRV64_AXI_ID_WIDTH-1]) begin
@@ -1646,7 +1719,7 @@ module tb_top_axi_3p #(
                 end
                 if ((araddr >= `OPENRV64_SOC_MEMORY_BASE) &&
                     (araddr < (`OPENRV64_SOC_MEMORY_BASE +
-                               `OPENRV64_SOC_MEMORY_SIZE))) begin
+                               RAM_BYTES))) begin
                     if (!arid[`OPENRV64_AXI_ID_WIDTH-1] &&
                         ((arsize != 3'd5) || (araddr[4:0] != 5'd0))) begin
                         $fatal(1,
@@ -1734,6 +1807,7 @@ module tb_top_axi_3p #(
         saw_gpio_axi_write = 1'b0;
         saw_three_retire = 1'b0;
         external_image = 1'b0;
+        opensbi_image = 1'b0;
         external_done = 1'b0;
         done_pc_valid = 1'b0;
         expect_a0_valid = 1'b0;
@@ -1805,11 +1879,32 @@ module tb_top_axi_3p #(
         pipeline_trace_fd = 0;
         pipeline_trace_cycle = 0;
         pipeline_trace_path = "sim/top-axi-3p-trace.csv";
+        opensbi_banner_index = 0;
+        opensbi_payload_index = 0;
+        opensbi_uart_bytes = 0;
+        opensbi_fragment_count = 0;
+        opensbi_saw_banner = 1'b0;
+        opensbi_saw_payload_text = 1'b0;
+        opensbi_saw_s_mode = 1'b0;
 
-        // Let the native 256-bit, 16 MiB AXI RAM finish zero initialization,
+        // Let the native 256-bit AXI RAM finish zero initialization,
         // then load an external 256-bit image or install the directed test.
         #1;
         external_image = $value$plusargs("memh=%s", memh_path);
+        opensbi_fragment_count =
+            $value$plusargs("opensbi_trampoline_memh=%s",
+                            opensbi_trampoline_memh) +
+            $value$plusargs("opensbi_firmware_memh=%s",
+                            opensbi_firmware_memh) +
+            $value$plusargs("opensbi_payload_memh=%s",
+                            opensbi_payload_memh) +
+            $value$plusargs("opensbi_fdt_memh=%s", opensbi_fdt_memh);
+        opensbi_image = (opensbi_fragment_count != 0);
+        if ((opensbi_fragment_count != 0) &&
+            (opensbi_fragment_count != 4))
+            $fatal(1, "OpenSBI AXI boot requires all four memory fragments");
+        if (external_image && opensbi_image)
+            $fatal(1, "select either +memh or OpenSBI fragments, not both");
         done_pc_valid = $value$plusargs("done_pc=%h", done_pc);
         expect_a0_valid = $value$plusargs("expect_a0=%h", expected_a0);
         if (!$value$plusargs("max_cycles=%d", max_cycles))
@@ -1865,6 +1960,24 @@ module tb_top_axi_3p #(
                  "r0_uid,r0_pc,r0_instr,r1_uid,r1_pc,r1_instr,r2_uid,r2_pc,r2_instr"});
             $display("TRACE pipeline=%0s", pipeline_trace_path);
             $readmemh(memh_path, u_axi_fabric.ram_q, 0, 2047);
+        end else if (opensbi_image) begin
+            $display("OpenSBI 3P AXI load: trampoline");
+            $readmemh(opensbi_trampoline_memh, u_axi_fabric.ram_q,
+                      OPENSBI_TRAMPOLINE_LINE,
+                      OPENSBI_TRAMPOLINE_LINE + (32'h0001_0000 / 32) - 1);
+            $display("OpenSBI 3P AXI load: firmware");
+            $readmemh(opensbi_firmware_memh, u_axi_fabric.ram_q,
+                      OPENSBI_FIRMWARE_LINE,
+                      OPENSBI_FIRMWARE_LINE + (32'h0010_0000 / 32) - 1);
+            $display("OpenSBI 3P AXI load: payload");
+            $readmemh(opensbi_payload_memh, u_axi_fabric.ram_q,
+                      OPENSBI_PAYLOAD_LINE,
+                      OPENSBI_PAYLOAD_LINE + (32'h0001_0000 / 32) - 1);
+            $display("OpenSBI 3P AXI load: FDT");
+            $readmemh(opensbi_fdt_memh, u_axi_fabric.ram_q,
+                      OPENSBI_FDT_LINE,
+                      OPENSBI_FDT_LINE + (32'h0001_0000 / 32) - 1);
+            $display("OpenSBI 3P AXI load: complete");
         end else begin
             put_instr('h00, enc_auipc(5'd1, 20'h00000));
             put_instr('h04, enc_addi(5'd13, 5'd0, 12'd0));
@@ -1896,7 +2009,7 @@ module tb_top_axi_3p #(
         repeat (5) @(posedge clk);
         rst_n = 1'b1;
 
-        if (external_image) begin
+        if (external_image || opensbi_image) begin
             for (cycles = 0; cycles < max_cycles && !external_done;
                  cycles = cycles + 1) begin
                 @(posedge clk);
@@ -1909,6 +2022,11 @@ module tb_top_axi_3p #(
                     (|dut.u_core.backend_retire_arch) &&
                     (dut.u_core.backend_retire_pc == done_pc))
                     external_done = 1'b1;
+                if (opensbi_image && opensbi_saw_banner &&
+                    opensbi_saw_payload_text && opensbi_saw_s_mode &&
+                    (u_axi_fabric.ram_q[OPENSBI_MAGIC_LINE][63:0] ==
+                     OPENSBI_MAGIC_VALUE))
+                    external_done = 1'b1;
             end
 
             if (!external_done)
@@ -1919,6 +2037,11 @@ module tb_top_axi_3p #(
                 (dut.u_core.u_backend.u_gpr.regs[10] != expected_a0))
                 $fatal(1, "external image a0=%016x expected=%016x",
                        dut.u_core.u_backend.u_gpr.regs[10], expected_a0);
+            if (opensbi_image) begin
+                if (!saw_three_retire)
+                    $fatal(1, "OpenSBI boot never exercised three-wide retirement");
+                $display("PASS: 3P AXI OpenSBI v1.9 banner, three-wide retirement, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion");
+            end
 
             $display("PERF cycles=%0d retired=%0d IPC=%0.4f issued=%0d issue_per_cycle=%0.4f a0=%016x halted=%b",
                      cycles, perf_retired,
@@ -2014,9 +2137,11 @@ module tb_top_axi_3p #(
                          branch_oracle_consumed,
                          branch_oracle_extra_allocations);
             end
-            $fclose(pipeline_trace_fd);
-            pipeline_trace_fd = 0;
-            $display("PERF_TRACE pipeline=%0s", pipeline_trace_path);
+            if (pipeline_trace_fd != 0) begin
+                $fclose(pipeline_trace_fd);
+                pipeline_trace_fd = 0;
+                $display("PERF_TRACE pipeline=%0s", pipeline_trace_path);
+            end
             $finish;
         end
 
@@ -2031,7 +2156,7 @@ module tb_top_axi_3p #(
         if (fetch_ar_before_first_r < 2)
             $fatal(1, "frontend did not pipeline AXI reads");
         if (!saw_ram_axi)
-            $fatal(1, "core did not fetch from native 16 MiB AXI RAM");
+            $fatal(1, "core did not fetch from native AXI RAM");
         if (!saw_gpio_axi_write || !saw_gpio_axi_read)
             $fatal(1, "firmware did not traverse the AXI-to-SoC MMIO path");
         if (!saw_three_retire)
@@ -2040,7 +2165,7 @@ module tb_top_axi_3p #(
             $fatal(1, "GPIO AXI write/readback mismatch: %08x", gpio_out);
         if (u_axi_fabric.ram_q[8][127:64] !=
             64'h0000_0000_0000_005a)
-            $fatal(1, "16 MiB RAM AXI store mismatch: %016x",
+            $fatal(1, "RAM AXI store mismatch: %016x",
                    u_axi_fabric.ram_q[8][127:64]);
         if (dut.u_core.u_backend.u_gpr.regs[5] != 64'd11 ||
             dut.u_core.u_backend.u_gpr.regs[6] != 64'd22 ||

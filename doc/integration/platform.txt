@@ -10,7 +10,7 @@ instantiates:
     openrv64_top              RV64 core wrapper
     openrv64_soc_bus_decode   physical-address decode and response mux
     openrv64_soc_rom          64 KiB boot ROM
-    openrv64_soc_memory       16 MiB synchronous inferred RAM
+    openrv64_soc_memory       256 MiB synchronous simulation RAM
     openrv64_clint            one machine software/timer context
     openrv64_plic             one machine external-interrupt context
     openrv64_uart16550        serial port
@@ -19,10 +19,12 @@ instantiates:
 
 The platform is board-independent and single-clock. Clock generation, pad
 cells, and any board-specific external-memory controller remain outside this
-boundary. The internal 16 MiB array uses synchronous reads and byte write
-enables so FPGA tools can infer memory resources. It is sufficient for firmware
-bring-up, including an OpenSBI smoke test, but its capacity exceeds the on-chip
-block RAM of small Artix-7 devices and is not a practical Linux memory system.
+boundary. The internal 256 MiB array uses synchronous reads and byte write
+enables and provides enough capacity for firmware and Linux simulation. It is
+far larger than practical FPGA block RAM and is not a hardware memory system;
+a board implementation should replace it with an external-memory controller.
+The platform parameter keeps the decoder aperture and backing array coherent
+when focused tests use a smaller capacity.
 
 Reset contract
 --------------
@@ -96,11 +98,14 @@ tb/tb_reset_sequencer.sv separately checks exact reset hold timing, ordered
 release, asynchronous warm-reset assertion, and an aborted short release.
 
 tb/tb_opensbi.sv loads a RAM trampoline, pinned OpenSBI v1.9 fw_jump image,
-device tree, and S-mode payload into the 16 MiB RAM. It checks the OpenSBI UART
-banner, eight-entry PMP setup, M-to-S handoff, SBI base and debug-console
-ECALLs, and a payload completion word. Bus faults fail immediately and timeout
-diagnostics report PC, instruction, privilege, and trap state. The reset ROM
-still only jumps to RAM; the trampoline owns the OpenSBI entry contract.
+device tree, and S-mode payload into the 256 MiB RAM. It checks the OpenSBI UART
+banner, eight-entry PMP setup, M-to-S handoff, SBI base/debug-console ECALLs,
+and the complete SBI TIME path from MTIME/MTIP through OpenSBI's machine-written
+STIP to a delegated S-mode timer trap. The completion word is written only
+after that timer trap. Bus faults fail immediately and timeout diagnostics
+report PC, instruction, privilege, and trap state. The reset ROM still only
+jumps to RAM; the trampoline owns the OpenSBI entry contract. The device tree
+advertises the core's Svade fault-on-clear A/D-bit behavior.
 
 Run the focused validation with:
 
@@ -120,6 +125,6 @@ Current limits
 This is firmware/platform validation, not Linux boot validation. It now has a
 device tree, OpenSBI boot, an S-mode SBI payload, and UART-console validation,
 but it does not yet supply a Linux Image/initramfs loader, supervisor PLIC
-context, practical RAM capacity/controller, or kernel boot. PLIC unit tests
+context, external RAM controller, or kernel boot. PLIC unit tests
 cover level reassertion and wider multi-context cases; the integrated test
 covers the single machine context implemented by the platform.

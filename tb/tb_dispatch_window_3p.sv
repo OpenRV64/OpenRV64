@@ -25,6 +25,9 @@ module tb_dispatch_window_3p;
     localparam integer I_TRACE = 338;
     localparam integer I_MEM_READ = 16;
     localparam integer I_BRANCH = 14;
+    localparam integer I_JUMP = 13;
+    localparam integer I_PREDICTED = 12;
+    localparam integer I_BR_OP = 18;
 
     reg clk;
     reg rst_n;
@@ -344,6 +347,105 @@ module tb_dispatch_window_3p;
             (pipe_payload[2*IW + I_RS1_DATA +: 64] !=
              64'h0000_0000_8000_0100))
             fail("awakened RAM load did not pass live branch safely");
+        tick();
+        clear_inputs();
+
+        // A legal aligned direct JAL has a deterministic target and must not
+        // wait for the retirement head or prevent younger replayable ALU work
+        // from issuing.  ID 49 represents older work outside this window; the
+        // old persistent-hard policy would issue only ID 50 and deadlock 51/52.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {64'd52, 64'd51, 64'd50};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        next_retire_id = 64'd49;
+        next_retire_slot = 4'd15;
+        p0 = alu_packet(64'd50, 5'd1, 5'd0, 5'd5);
+        p1 = alu_packet(64'd51, 5'd0, 5'd0, 5'd1);
+        p1[I_INSTR +: 32] = 32'h0080_00ef;
+        p1[I_IMM +: 64] = 64'd8;
+        p1[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_JAL;
+        p1[I_JUMP] = 1'b1;
+        p1[I_PREDICTED] = 1'b1;
+        p2 = alu_packet(64'd52, 5'd2, 5'd0, 5'd6);
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b101;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        #1;
+        if (pipe_valid[1:0] != 2'b11 ||
+            pipe_id[0*64 +: 64] != 64'd51 ||
+            pipe_id[1*64 +: 64] != 64'd50)
+            fail("direct JAL did not issue before retirement head");
+        tick();
+        #1;
+        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd52)
+            fail("direct JAL blocked younger replayable ALU");
+        tick();
+        clear_inputs();
+
+        // A conditional branch waiting for a compare operand must not form a
+        // data-execution frontier in speculation mode.  A younger conditional
+        // branch must nevertheless wait, preventing nested wrong-path branch
+        // resolution/training, while independent ALU work continues around it.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 3'b000;
+        allocation_id = {64'd0, 64'd0, 64'd60};
+        allocation_slot = {4'd0, 4'd0, 4'd0};
+        next_retire_id = 64'd60;
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd60, 5'd1, 5'd0, 5'd5);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+
+        allocation_id = {64'd63, 64'd62, 64'd61};
+        allocation_slot = {4'd3, 4'd2, 4'd1};
+        p0 = alu_packet(64'd61, 5'd5, 5'd0, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0002_8463;
+        p0[I_IMM +: 64] = 64'd8;
+        p0[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_BEQ;
+        p0[I_BRANCH] = 1'b1;
+        p1 = alu_packet(64'd62, 5'd0, 5'd0, 5'd0);
+        p1[I_INSTR +: 32] = 32'h0000_0463;
+        p1[I_IMM +: 64] = 64'd8;
+        p1[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_BEQ;
+        p1[I_BRANCH] = 1'b1;
+        p2 = alu_packet(64'd63, 5'd2, 5'd0, 5'd6);
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b111;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        pipe_ready = 3'b111;
+        #1;
+        if (pipe_valid[1:0] != 2'b11 ||
+            pipe_id[0*64 +: 64] != 64'd60 ||
+            pipe_id[1*64 +: 64] != 64'd63)
+            fail("unready conditional branch blocked younger ALU");
+        if ((pipe_valid[0] && (pipe_id[0*64 +: 64] == 64'd62)) ||
+            (pipe_valid[1] && (pipe_id[1*64 +: 64] == 64'd62)))
+            fail("younger conditional branch passed unresolved older branch");
+        tick();
+
+        completion_valid = 3'b001;
+        completion_id[0 +: 64] = 64'd60;
+        completion_payload[0 +: OW] = reg_completion(5'd5, 64'h1234);
+        #1;
+        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd61 ||
+            pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'h1234)
+            fail("released conditional branch did not wake and issue");
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd62)
+            fail("younger conditional branch did not issue after older resolve");
         tick();
         clear_inputs();
 

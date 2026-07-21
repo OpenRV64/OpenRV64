@@ -6,7 +6,7 @@ peripheral contains or accepts a configurable global base address.
 | Target | Base | Size | Downstream address |
 | --- | ---: | ---: | --- |
 | Boot ROM | `0x0000_1000` | `0x0001_0000` | physical address minus ROM base |
-| Memory | `0x8000_0000` | `0x0100_0000` | physical address minus memory base |
+| Memory | `0x8000_0000` | `0x1000_0000` | physical address minus memory base |
 | CLINT | `0x0200_0000` | `0x0001_0000` | physical address minus CLINT base |
 | PLIC | `0x0C00_0000` | `0x0400_0000` | physical address minus PLIC base |
 | UART | `0x1000_0000` | `0x0000_0100` | physical address minus UART base |
@@ -18,6 +18,10 @@ blocking request bus, asserts at most one target valid, and returns only the
 selected target's ready/data response. A target that holds ready low applies
 backpressure unchanged to the upstream core. An address outside every window
 is not routed; it completes immediately with `mem_error_o` asserted.
+
+The decoder's memory-window size is parameterized so reduced-capacity unit
+tests can keep the decoder and backing RAM consistent. The platform default is
+the 256 MiB aperture declared by `mem_map.v`.
 
 The fixed devices follow the conventional QEMU RISC-V `virt` addresses. GPIO
 and the general-purpose timer are board-specific and occupy separate 4 KiB

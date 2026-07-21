@@ -302,6 +302,39 @@ module tb_exec_top_3p;
         tick();
         complete_ready = 3'b000;
 
+        // Direct JAL has a known aligned target, so EX0 may resolve and buffer
+        // its link result without waiting for architectural retirement.
+        packet = packet_base(64'd107, 64'h2800, 32'h0080_00ef);
+        packet[ISSUE_IMM +: 64] = 64'd8;
+        packet[ISSUE_RD +: 5] = 5'd1;
+        packet[ISSUE_BR_OP +: 4] = `RV64_BR_OP_JAL;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        packet[ISSUE_JUMP] = 1'b1;
+        packet[ISSUE_PREDICTED] = 1'b1;
+        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[0*64 +: 64] = 64'd7;
+        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
+        issue_valid = 3'b001;
+        ordered_head_valid = 1'b1;
+        ordered_head_id = 64'd99;
+        ordered_head_slot = 3'd1;
+        #1;
+        if (!issue_ready[0]) fail("EX0 direct JAL waited for order token");
+        if (!branch_resolved || !branch_taken || redirect_valid)
+            fail("EX0 direct JAL prediction/resolve mismatch");
+        if ((redirect_id != 64'd7) || (redirect_target != 64'h2808))
+            fail("EX0 direct JAL resolution metadata mismatch");
+        tick();
+        issue_valid = 3'b000;
+        #1;
+        if (!complete_valid[0] ||
+            (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'h2804))
+            fail("EX0 direct JAL link completion mismatch");
+        complete_ready = 3'b001;
+        tick();
+        complete_ready = 3'b000;
+
         // A store may occupy MEM and compute its address, but the request is
         // invisible until the exact instruction reaches ordered head.
         packet = packet_base(64'd102, 64'h3000, 32'h0020_b023);

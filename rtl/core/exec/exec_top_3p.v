@@ -3,6 +3,7 @@
 `include "core/bus/bus-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 // Three fixed-capability execution lanes:
 //
@@ -19,7 +20,9 @@
 // comparison proves the prediction correct, so a redirect still never has
 // issued younger work to squash.  ordered_head_* continues to authorize every
 // other hard-ordered EX0 instruction and is also matched inside MEM before any
-// store or atomic side effect is emitted.
+// store or atomic side effect is emitted.  A legal aligned direct JAL is also
+// safe before the head: its target is deterministic and its link write is
+// buffered until retirement.
 module openrv64_exec_top_3p #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer ENABLE_RV64M = 1,
@@ -107,6 +110,9 @@ module openrv64_exec_top_3p #(
         issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14];
     wire ex0_jump =
         issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 13];
+    wire [`RV64_BR_OP_WIDTH-1:0] ex0_br_op =
+        issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 18 +:
+                        `RV64_BR_OP_WIDTH];
     wire ex0_system =
         issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 10];
     wire ex0_fence =
@@ -183,7 +189,14 @@ module openrv64_exec_top_3p #(
                             !ex0_instr_page_fault &&
                             !issue_payload_i[
                                 0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
-    wire ex0_requires_order = ex0_control && !ex0_early_branch;
+    wire ex0_early_jal = ex0_jump &&
+                         (ex0_br_op == `RV64_BR_OP_JAL) &&
+                         !ex0_illegal && !ex0_instr_access_fault &&
+                         !ex0_instr_page_fault &&
+                         !issue_payload_i[
+                             0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
+    wire ex0_requires_order = ex0_control && !ex0_early_branch &&
+                              !ex0_early_jal;
     wire ex0_order_match = ordered_head_valid_i &&
         (ordered_head_id_i == issue_id_i[0*64 +: 64]) &&
         (ordered_head_slot_i ==

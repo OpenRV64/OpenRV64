@@ -20,9 +20,9 @@
             reg = <0>;
             status = "okay";
             compatible = "riscv";
-            riscv,isa = "rv64ima_zicsr_zifencei";
+            riscv,isa = "rv64ima_svade_zicsr_zifencei";
             riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
             mmu-type = "riscv,sv39";
 
             cpu0_intc: interrupt-controller {
@@ -35,7 +35,7 @@
 
     memory@80000000 {
         device_type = "memory";
-        reg = <0x0 0x80000000 0x0 0x01000000>;
+        reg = <0x0 0x80000000 0x0 0x10000000>;
     };
 
     soc {

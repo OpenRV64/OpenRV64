@@ -1,6 +1,6 @@
 # Bare-metal software
 
-`uart.c` is a freestanding RV64I/Zicsr platform test linked into the 16 MiB
+`uart.c` is a freestanding RV64I/Zicsr platform test linked into the 256 MiB
 RAM window at `0x8000_0000`. The boot ROM transfers control there after reset.
 
 The firmware configures the 16550-compatible UART for divisor 1, routes UART
@@ -55,7 +55,7 @@ The RAM image layout is:
 0x8010_0000  OpenSBI fw_jump
 0x8020_0000  S-mode SBI smoke payload
 0x80e0_0000  testbench completion word
-0x80f0_0000  flattened device tree
+0x8ff0_0000  flattened device tree
 ```
 
 The ROM remains a policy-free jump to `0x8000_0000`; the trampoline supplies
@@ -75,8 +75,17 @@ Run the integrated platform test with:
 make sim-opensbi
 ```
 
+Run the same boot contract on the fixed three-pipe baseline, including its
+three-wide frontend and native 256-bit AXI RAM path, with:
+
+```sh
+make sim-opensbi-3p
+```
+
 The test uses Verilator by default and proves the OpenSBI banner, eight-entry
-PMP isolation setup, M-to-S transition, SBI base ECALL, debug-console output,
-and payload completion. `make sim-opensbi-icarus` provides a much slower
+PMP isolation setup, M-to-S transition, SBI base and TIME ECALLs, machine-mode
+STIP injection, a delegated S-mode timer trap, debug-console output, and payload
+completion. The device tree advertises Svade and 256 MiB of RAM.
+`make sim-opensbi-icarus` provides a much slower
 Icarus path. Set `OPENSBI_DEBUG=1` only when an unoptimized OpenSBI build is
 intentional; the script ignores an unrelated ambient `DEBUG` variable.

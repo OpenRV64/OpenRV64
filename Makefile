@@ -9,6 +9,17 @@ UART_FIRMWARE_MAP := sw/uart.map
 COREMARK_LOOP_ELF := sw/coremark-loop.elf
 COREMARK_LOOP_BIN := sw/coremark-loop.bin
 COREMARK_LOOP_MAP := sw/coremark-loop.map
+VEC_MATMUL_BUILD_DIR := sim/vector
+VEC_MATMUL_ELF := $(VEC_MATMUL_BUILD_DIR)/matmul.elf
+VEC_MATMUL_BIN := $(VEC_MATMUL_BUILD_DIR)/matmul.bin
+VEC_MATMUL_MAP := $(VEC_MATMUL_BUILD_DIR)/matmul.map
+VEC_MATMUL_DISASM := $(VEC_MATMUL_BUILD_DIR)/matmul.disasm
+VEC_MATMUL_MEMH := $(VEC_MATMUL_BUILD_DIR)/matmul.memh
+VEC_MATMUL_BF16_ELF := $(VEC_MATMUL_BUILD_DIR)/matmul_bf16.elf
+VEC_MATMUL_BF16_BIN := $(VEC_MATMUL_BUILD_DIR)/matmul_bf16.bin
+VEC_MATMUL_BF16_MAP := $(VEC_MATMUL_BUILD_DIR)/matmul_bf16.map
+VEC_MATMUL_BF16_DISASM := $(VEC_MATMUL_BUILD_DIR)/matmul_bf16.disasm
+VEC_MATMUL_BF16_MEMH := $(VEC_MATMUL_BUILD_DIR)/matmul_bf16.memh
 A53_COREMARK_ELF := sim/a53/coremark-loop-a53.elf
 A53_COREMARK_BIN := sim/a53/coremark-loop-a53.bin
 A53_COREMARK_MAP := sim/a53/coremark-loop-a53.map
@@ -34,9 +45,14 @@ OPENSBI_ARTIFACT_DIR := $(OPENSBI_BUILD_DIR)/artifacts
 OPENSBI_SIM_BUILD := sim/opensbi_tb.vvp
 OPENSBI_VERILATOR_DIR := build/verilator/opensbi
 OPENSBI_VERILATOR_BUILD := $(OPENSBI_VERILATOR_DIR)/opensbi_tb
+OPENSBI_3P_PLATFORM_VERILATOR_DIR := build/verilator/opensbi-3p-platform
+OPENSBI_3P_PLATFORM_VERILATOR_BUILD := $(OPENSBI_3P_PLATFORM_VERILATOR_DIR)/opensbi_3p_platform_tb
+OPENSBI_3P_VERILATOR_DIR := build/verilator/opensbi-3p-axi
+OPENSBI_3P_VERILATOR_BUILD := $(OPENSBI_3P_VERILATOR_DIR)/opensbi_3p_axi_tb
 VERILATOR ?= verilator
 RISCV_CC ?= riscv64-elf-gcc
 RISCV_OBJCOPY ?= riscv64-elf-objcopy
+RISCV_OBJDUMP ?= riscv64-elf-objdump
 AARCH64_CC ?= aarch64-linux-gnu-gcc
 AARCH64_OBJCOPY ?= aarch64-linux-gnu-objcopy
 AARCH64_OBJDUMP ?= aarch64-linux-gnu-objdump
@@ -126,6 +142,10 @@ ROM_SIM_BUILD := sim/soc_rom_tb.vvp
 MEMORY_SIM_BUILD := sim/soc_memory_tb.vvp
 SOC_BUS_SIM_BUILD := sim/soc_bus_decode_tb.vvp
 CORE_BUS_SIM_BUILD := sim/core_bus_tb.vvp
+CCX_PROTOCOL_1H_SIM_BUILD := sim/ccx_protocol_1h_tb.vvp
+CCX_PROTOCOL_2H_SIM_BUILD := sim/ccx_protocol_2h_tb.vvp
+CCX_PROTOCOL_4H_SIM_BUILD := sim/ccx_protocol_4h_tb.vvp
+L1_CACHE_SIM_BUILD := sim/l1_cache_tb.vvp
 AXI_BUS_SIM_BUILD := sim/axi_bus_tb.vvp
 TLB_SIM_BUILD := sim/tlb_tb.vvp
 PTW_SIM_BUILD := sim/ptw_tb.vvp
@@ -187,12 +207,22 @@ TOP_3P_SIM_BUILD := sim/top_3p_tb.vvp
 TOP_AXI_3P_SIM_BUILD := sim/top_axi_3p_tb.vvp
 ISA_FP_SIM_BUILD := sim/isa_fp_tb.vvp
 EXEC_FPU_RV64FD_SIM_BUILD := sim/exec_fpu_rv64-fd_tb.vvp
+RV64I_VEC_SIM_BUILD := sim/rv64-i-vec_tb.vvp
+EXEC_VEC_SIM_BUILD := sim/exec_vec_tb.vvp
+EXEC_VEC_LSU_SIM_BUILD := sim/exec_vec_lsu_tb.vvp
+VEC_TEST_TOP_SIM_BUILD := sim/openrv64_vec_test_top_tb.vvp
+VEC_MATMUL_SIM_BUILD := sim/openrv64_vec_matmul_tb.vvp
+VEC_MATMUL_BF16_SIM_BUILD := sim/openrv64_vec_matmul_bf16_tb.vvp
 ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zicsr.v rtl/core/isa/rv64-priv.v rtl/core/isa/rv64-zifencei.v \
 	rtl/core/isa/rv64-zba.v rtl/core/isa/rv64-zbb.v \
 	rtl/core/isa/rv64-zbc.v rtl/core/isa/rv64-zbs.v rtl/core/isa/rv64-b.v
 FP_ISA_SRCS := rtl/core/isa/rv64-f.v rtl/core/isa/rv64-d.v
 FPU_SRCS := rtl/core/exec/fpu/defs.v rtl/core/exec/fpu/rv64-fd.v
+VEC_DEFS := rtl/core/exec/vec/defs.v
+VEC_REG_SRCS := rtl/core/regs/rv64-i-vec.v
+VEC_EXEC_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec.v
+VEC_LSU_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec-lsu.v
 ARITH_DEPS := rtl/core/arith/prefix-addsub.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
@@ -205,6 +235,13 @@ FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
 BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/ptw.v \
 	rtl/core/bus/gen_bus.v rtl/core/bus/axi_bus.v rtl/core/bus/bus.v
+CCX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
+	rtl/complex/protocol/hart_legacy_adapter.v \
+	rtl/complex/protocol/axi_master.v rtl/complex/protocol/crossbar.v \
+	rtl/complex/protocol/wrapper_nh.v rtl/complex/protocol/wrapper_1h.v \
+	rtl/complex/protocol/wrapper_2h.v rtl/complex/protocol/wrapper_4h.v
+L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
+	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1d/l1d.v
 DISPATCH_SRCS := rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_3p.v \
 	rtl/core/dispatch/dispatch_window_3p.v \
@@ -234,6 +271,23 @@ BACKEND_SRCS := rtl/core/backend/backend_3p.v
 CORE_SRCS := rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) $(FETCH_SRCS) $(BUS_SRCS) $(DECODE_SRCS) $(REG_SRCS) \
 	$(DISPATCH_SRCS) $(EXEC_SRCS) $(RETIRE_SRCS) $(EXCEPT_SRCS) $(TRACE_SRCS)
+CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
+	$(STAGE_SRCS) rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
+	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/ptw.v \
+	rtl/core/bus/axi_bus.v rtl/core/bus/bus.v $(DECODE_SRCS) \
+	rtl/core/regs/rv64-i-gpr_3p.v rtl/core/regs/rv64-i-pmp.v \
+	rtl/core/regs/rv64-i-csrs.v rtl/core/dispatch/reg_map_3p.v \
+	rtl/core/dispatch/dispatch_3p.v rtl/core/dispatch/dispatch_window_3p.v \
+	rtl/core/dispatch/dispatch_barrier_3p.v \
+	rtl/core/dispatch/dispatch_issue_3p.v \
+	rtl/core/dispatch/dispatch_control_3p.v rtl/core/dispatch/dispatch.v \
+	rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
+	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
+	rtl/core/exec/exec_top.v rtl/core/exec/alu/rv64-i.v \
+	rtl/core/exec/alu/rv64-m.v rtl/core/exec/lsu/rv64-i.v \
+	rtl/core/exec/lsu/rv64-a.v rtl/core/exec/br.v $(BP_SRC) \
+	rtl/core/exec/system/csr.v rtl/core/retire/retire_queue_3p.v \
+	rtl/core/retire/retire_3p.v $(EXCEPT_SRCS) $(TRACE_SRCS)
 CLINT_SRCS := rtl/clint/clint.v
 PLIC_SRCS := rtl/plic/plic.v
 UART_SRCS := rtl/periph/uart/uart.v
@@ -262,6 +316,9 @@ ROM_SIM_SRCS := tb/tb_soc_rom.sv
 MEMORY_SIM_SRCS := tb/tb_soc_memory.sv
 SOC_BUS_SIM_SRCS := tb/tb_soc_bus_decode.sv
 CORE_BUS_SIM_SRCS := tb/tb_core_bus.sv
+CCX_PROTOCOL_1H_SIM_SRCS := tb/tb_ccx_protocol_1h.sv
+CCX_PROTOCOL_NH_SIM_SRCS := tb/tb_ccx_protocol_nh.sv
+L1_CACHE_SIM_SRCS := tb/tb_l1_cache.sv
 AXI_BUS_SIM_SRCS := tb/tb_axi_bus.sv
 TLB_SIM_SRCS := tb/tb_tlb.sv
 PTW_SIM_SRCS := tb/tb_ptw.sv
@@ -293,6 +350,20 @@ ATOMIC_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_atomic_context.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
 EXEC_BP_SIM_SRCS := tb/tb_exec_bp.sv
 EXEC_FPU_RV64FD_SIM_SRCS := tb/tb_exec_fpu_rv64-fd.sv
+RV64I_VEC_SIM_SRCS := tb/tb_rv64-i-vec.sv
+EXEC_VEC_SIM_SRCS := tb/tb_exec_vec.sv
+EXEC_VEC_LSU_SIM_SRCS := tb/tb_exec_vec_lsu.sv
+VEC_TEST_TOP_SIM_SRCS := rtl/openrv64_vec_test_top.sv \
+	tb/tb_openrv64_vec_test_top.sv
+VEC_MATMUL_SIM_SRCS := rtl/openrv64_vec_test_top.sv \
+	tb/tb_openrv64_vec_matmul.sv
+VEC_MATMUL_BF16_SIM_SRCS := rtl/openrv64_vec_test_top.sv \
+	tb/tb_openrv64_vec_matmul_bf16.sv
+VEC_TEST_TOP_DEPS := rtl/core/exec/vec/instr-defs.v $(VEC_DEFS) \
+	rtl/core/exec/vec/rv64-vec.v rtl/core/exec/vec/rv64-vec-lsu.v \
+	$(VEC_REG_SRCS) rtl/core/regs/rv64-i-gpr.v \
+	rtl/core/exec/alu/rv64-i.v rtl/core/exec/br.v $(ARITH_DEPS) \
+	$(DECODE_SRCS)
 BP_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_bp_context.sv
 EXCEPT_SIM_SRCS := tb/tb_except.sv
 EXEC_SYSTEM_CSR_SIM_SRCS := tb/tb_exec_system_csr.sv
@@ -315,19 +386,33 @@ SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+.PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-exec-fpu-rv64-fd
+.PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
+	sim-vec-test-top sim-vec-matmul sim-vec-matmul-bf16
 .PHONY: sim-bp-context-gshare-btb
 .PHONY: yosys-resources-core-sky130
+.PHONY: sim-opensbi-3p sim-opensbi-3p-platform
+.PHONY: sim-l1-cache sim-ccx-protocol-1h sim-ccx-protocol-2h sim-ccx-protocol-4h
 
 FORCE:
 
 sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
 sim: sim-isa-fp sim-exec-fpu-rv64-fd
+sim: sim-vec
+sim: sim-l1-cache
+sim: sim-ccx-protocol-1h
+sim: sim-ccx-protocol-2h sim-ccx-protocol-4h
 
 sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
 
 sw-coremark-loop: $(COREMARK_LOOP_ELF) $(COREMARK_LOOP_BIN)
+
+sw-vector-matmul: $(VEC_MATMUL_ELF) $(VEC_MATMUL_BIN) \
+		$(VEC_MATMUL_DISASM)
+
+sw-matmul-bf16: $(VEC_MATMUL_BF16_ELF) $(VEC_MATMUL_BF16_BIN) \
+		$(VEC_MATMUL_BF16_DISASM)
 
 sw-coremark-loop-a53: $(A53_COREMARK_ELF) $(A53_COREMARK_BIN) \
 		$(A53_COREMARK_DISASM)
@@ -368,6 +453,21 @@ opensbi:
 
 sim-opensbi: $(OPENSBI_VERILATOR_BUILD) opensbi
 	$(OPENSBI_VERILATOR_BUILD) \
+		+trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(OPENSBI_ARTIFACT_DIR)/payload.memh \
+		+fdt_memh=$(OPENSBI_ARTIFACT_DIR)/openrv64-dtb.memh
+
+sim-opensbi-3p: $(OPENSBI_3P_VERILATOR_BUILD) opensbi
+	$(OPENSBI_3P_VERILATOR_BUILD) \
+		+opensbi_trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline-axi.memh \
+		+opensbi_firmware_memh=$(OPENSBI_ARTIFACT_DIR)/fw_jump-axi.memh \
+		+opensbi_payload_memh=$(OPENSBI_ARTIFACT_DIR)/payload-axi.memh \
+		+opensbi_fdt_memh=$(OPENSBI_ARTIFACT_DIR)/openrv64-dtb-axi.memh \
+		+max_cycles=20000000
+
+sim-opensbi-3p-platform: $(OPENSBI_3P_PLATFORM_VERILATOR_BUILD) opensbi
+	$(OPENSBI_3P_PLATFORM_VERILATOR_BUILD) \
 		+trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline.memh \
 		+firmware_memh=$(OPENSBI_ARTIFACT_DIR)/fw_jump.memh \
 		+payload_memh=$(OPENSBI_ARTIFACT_DIR)/payload.memh \
@@ -452,6 +552,18 @@ sim-soc-bus: $(SOC_BUS_SIM_BUILD)
 
 sim-core-bus: $(CORE_BUS_SIM_BUILD)
 	vvp $(CORE_BUS_SIM_BUILD)
+
+sim-ccx-protocol-1h: $(CCX_PROTOCOL_1H_SIM_BUILD)
+	vvp $(CCX_PROTOCOL_1H_SIM_BUILD)
+
+sim-ccx-protocol-2h: $(CCX_PROTOCOL_2H_SIM_BUILD)
+	vvp $(CCX_PROTOCOL_2H_SIM_BUILD)
+
+sim-ccx-protocol-4h: $(CCX_PROTOCOL_4H_SIM_BUILD)
+	vvp $(CCX_PROTOCOL_4H_SIM_BUILD)
+
+sim-l1-cache: $(L1_CACHE_SIM_BUILD)
+	vvp $(L1_CACHE_SIM_BUILD)
 
 sim-axi-bus: $(AXI_BUS_SIM_BUILD)
 	vvp $(AXI_BUS_SIM_BUILD)
@@ -571,6 +683,28 @@ sim-exec-bp: $(EXEC_BP_SIM_BUILD) $(EXEC_BP_GSHARE_BTB_SIM_BUILD) $(EXEC_BP_TAGG
 
 sim-exec-fpu-rv64-fd: $(EXEC_FPU_RV64FD_SIM_BUILD)
 	vvp $(EXEC_FPU_RV64FD_SIM_BUILD)
+
+sim-vec: sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu sim-vec-test-top \
+	sim-vec-matmul sim-vec-matmul-bf16
+
+sim-rv64-i-vec: $(RV64I_VEC_SIM_BUILD)
+	vvp $(RV64I_VEC_SIM_BUILD)
+
+sim-exec-vec: $(EXEC_VEC_SIM_BUILD)
+	vvp $(EXEC_VEC_SIM_BUILD)
+
+sim-exec-vec-lsu: $(EXEC_VEC_LSU_SIM_BUILD)
+	vvp $(EXEC_VEC_LSU_SIM_BUILD)
+
+sim-vec-test-top: $(VEC_TEST_TOP_SIM_BUILD)
+	vvp $(VEC_TEST_TOP_SIM_BUILD)
+
+sim-vec-matmul: $(VEC_MATMUL_SIM_BUILD) $(VEC_MATMUL_MEMH)
+	vvp $(VEC_MATMUL_SIM_BUILD) +memh=$(VEC_MATMUL_MEMH)
+
+sim-vec-matmul-bf16: $(VEC_MATMUL_BF16_SIM_BUILD) \
+		$(VEC_MATMUL_BF16_MEMH)
+	vvp $(VEC_MATMUL_BF16_SIM_BUILD) +memh=$(VEC_MATMUL_BF16_MEMH)
 
 sim-bp-context: sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-bp-context-gshare-btb
 
@@ -734,6 +868,37 @@ $(COREMARK_LOOP_ELF): Makefile sw/coremark_loop_start.S \
 $(COREMARK_LOOP_BIN): $(COREMARK_LOOP_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
+$(VEC_MATMUL_ELF): Makefile sw/vector/matmul.S sw/vector/matmul.ld
+	mkdir -p $(VEC_MATMUL_BUILD_DIR)
+	$(RISCV_CC) -march=rv64i -mabi=lp64 -mcmodel=medany -mno-relax \
+		-nostdlib -nostartfiles -Wl,--build-id=none,-Map,$(VEC_MATMUL_MAP) \
+		-T sw/vector/matmul.ld -o $@ sw/vector/matmul.S
+
+$(VEC_MATMUL_BIN): $(VEC_MATMUL_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(VEC_MATMUL_DISASM): $(VEC_MATMUL_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(VEC_MATMUL_MEMH): $(VEC_MATMUL_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ --size 0x700 --word-bytes 8
+
+$(VEC_MATMUL_BF16_ELF): Makefile sw/matmul_bf16.S sw/matmul_bf16.ld
+	mkdir -p $(VEC_MATMUL_BUILD_DIR)
+	$(RISCV_CC) -march=rv64i -mabi=lp64 -mcmodel=medany -mno-relax \
+		-nostdlib -nostartfiles \
+		-Wl,--build-id=none,-Map,$(VEC_MATMUL_BF16_MAP) \
+		-T sw/matmul_bf16.ld -o $@ sw/matmul_bf16.S
+
+$(VEC_MATMUL_BF16_BIN): $(VEC_MATMUL_BF16_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(VEC_MATMUL_BF16_DISASM): $(VEC_MATMUL_BF16_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(VEC_MATMUL_BF16_MEMH): $(VEC_MATMUL_BF16_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ --size 0xf00 --word-bytes 8
+
 $(A53_COREMARK_ELF): Makefile sw/arm_a53/coremark_loop_start.S \
 		sw/coremark_loop.c sw/arm_a53/coremark_loop.ld
 	mkdir -p $(dir $@)
@@ -798,6 +963,34 @@ $(OPENSBI_VERILATOR_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(
 		-Mdir $(OPENSBI_VERILATOR_DIR) -o opensbi_tb \
 		$(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
 
+$(OPENSBI_3P_PLATFORM_VERILATOR_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(OPENSBI_3P_PLATFORM_VERILATOR_DIR)
+	$(VERILATOR) --binary --timing -j 0 -Wall --Wno-fatal \
+		--Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-SYNCASYNCNET \
+		-GBACKEND_CONFIG=2 \
+		-Irtl --top-module tb_opensbi \
+		-Mdir $(OPENSBI_3P_PLATFORM_VERILATOR_DIR) \
+		-o opensbi_3p_platform_tb \
+		$(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
+
+$(OPENSBI_3P_VERILATOR_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
+		$(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS) \
+		$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
+		$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
+	mkdir -p $(OPENSBI_3P_VERILATOR_DIR)
+	$(VERILATOR) --binary --timing \
+		--verilate-jobs 0 --build-jobs 0 \
+		--output-split 20000 --output-split-cfuncs 2000 \
+		-Wall --Wno-fatal \
+		--Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-SYNCASYNCNET \
+		-GRAM_ZERO_INIT_LINES=0 \
+		-Irtl --top-module tb_top_axi_3p \
+		-Mdir $(OPENSBI_3P_VERILATOR_DIR) -o opensbi_3p_axi_tb \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
+		$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \
+		tb/tb_top_axi_3p.sv
+
 $(SW_TRACE_SIM_BUILD): FORCE $(SW_TRACE_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl \
@@ -843,6 +1036,31 @@ $(SOC_BUS_SIM_BUILD): $(SOC_BUS_SIM_SRCS) $(SOC_BUS_SRCS)
 $(CORE_BUS_SIM_BUILD): $(CORE_BUS_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(CORE_BUS_SIM_BUILD) $(BUS_SRCS) $(CORE_BUS_SIM_SRCS)
+
+$(CCX_PROTOCOL_1H_SIM_BUILD): $(CCX_PROTOCOL_1H_SIM_SRCS) $(CCX_PROTOCOL_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_protocol_1h \
+		-o $(CCX_PROTOCOL_1H_SIM_BUILD) $(CCX_PROTOCOL_SRCS) \
+		$(CCX_PROTOCOL_1H_SIM_SRCS)
+
+$(CCX_PROTOCOL_2H_SIM_BUILD): $(CCX_PROTOCOL_NH_SIM_SRCS) $(CCX_PROTOCOL_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_protocol_nh \
+		-Ptb_ccx_protocol_nh.NUM_HARTS=2 \
+		-o $(CCX_PROTOCOL_2H_SIM_BUILD) $(CCX_PROTOCOL_SRCS) \
+		$(CCX_PROTOCOL_NH_SIM_SRCS)
+
+$(CCX_PROTOCOL_4H_SIM_BUILD): $(CCX_PROTOCOL_NH_SIM_SRCS) $(CCX_PROTOCOL_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_protocol_nh \
+		-Ptb_ccx_protocol_nh.NUM_HARTS=4 \
+		-o $(CCX_PROTOCOL_4H_SIM_BUILD) $(CCX_PROTOCOL_SRCS) \
+		$(CCX_PROTOCOL_NH_SIM_SRCS)
+
+$(L1_CACHE_SIM_BUILD): $(L1_CACHE_SIM_SRCS) $(L1_CACHE_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_l1_cache \
+		-o $(L1_CACHE_SIM_BUILD) $(L1_CACHE_SRCS) $(L1_CACHE_SIM_SRCS)
 
 $(AXI_BUS_SIM_BUILD): $(AXI_BUS_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
 	mkdir -p sim
@@ -1035,6 +1253,43 @@ $(EXEC_FPU_RV64FD_SIM_BUILD): $(EXEC_FPU_RV64FD_SIM_SRCS) $(FPU_SRCS) \
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_FPU_RV64FD_SIM_BUILD) \
 		$(EXEC_FPU_RV64FD_SIM_SRCS)
 
+$(RV64I_VEC_SIM_BUILD): $(RV64I_VEC_SIM_SRCS) $(VEC_REG_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_rv64i_vec \
+		-o $(RV64I_VEC_SIM_BUILD) $(VEC_REG_SRCS) $(RV64I_VEC_SIM_SRCS)
+
+$(EXEC_VEC_SIM_BUILD): $(EXEC_VEC_SIM_SRCS) $(VEC_EXEC_SRCS) $(VEC_REG_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_exec_vec \
+		-o $(EXEC_VEC_SIM_BUILD) $(VEC_EXEC_SRCS) $(VEC_REG_SRCS) \
+		$(EXEC_VEC_SIM_SRCS)
+
+$(EXEC_VEC_LSU_SIM_BUILD): $(EXEC_VEC_LSU_SIM_SRCS) $(VEC_LSU_SRCS) \
+		$(VEC_REG_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_exec_vec_lsu \
+		-o $(EXEC_VEC_LSU_SIM_BUILD) $(VEC_LSU_SRCS) $(VEC_REG_SRCS) \
+		$(EXEC_VEC_LSU_SIM_SRCS)
+
+$(VEC_TEST_TOP_SIM_BUILD): $(VEC_TEST_TOP_SIM_SRCS) $(VEC_TEST_TOP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_openrv64_vec_test_top \
+		-o $(VEC_TEST_TOP_SIM_BUILD) $(VEC_TEST_TOP_DEPS) \
+		$(VEC_TEST_TOP_SIM_SRCS)
+
+$(VEC_MATMUL_SIM_BUILD): $(VEC_MATMUL_SIM_SRCS) $(VEC_TEST_TOP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_openrv64_vec_matmul \
+		-o $(VEC_MATMUL_SIM_BUILD) $(VEC_TEST_TOP_DEPS) \
+		$(VEC_MATMUL_SIM_SRCS)
+
+$(VEC_MATMUL_BF16_SIM_BUILD): $(VEC_MATMUL_BF16_SIM_SRCS) \
+		$(VEC_TEST_TOP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_openrv64_vec_matmul_bf16 \
+		-o $(VEC_MATMUL_BF16_SIM_BUILD) $(VEC_TEST_TOP_DEPS) \
+		$(VEC_MATMUL_BF16_SIM_SRCS)
+
 $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD): $(BP_CONTEXT_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -Ptb_bp_context.BP_TYPE=1 -o $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD) $(CORE_SRCS) $(BP_CONTEXT_SIM_SRCS)
@@ -1125,6 +1380,7 @@ $(TOP_AXI_3P_SIM_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
 	$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_top_axi_3p \
+		-Ptb_top_axi_3p.RAM_BYTES=16777216 \
 		-Ptb_top_axi_3p.BP_TYPE=$(AXI_3P_BP_TYPE) \
 		-Ptb_top_axi_3p.BP_RAS_ENABLE=$(AXI_3P_BP_RAS_ENABLE) \
 		-Ptb_top_axi_3p.BP_RAS_DEPTH=$(AXI_3P_BP_RAS_DEPTH) \

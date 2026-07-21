@@ -20,7 +20,7 @@ jobs=${OPENSBI_JOBS:-$(nproc)}
 trampoline_addr=0x80000000
 firmware_addr=0x80100000
 payload_addr=0x80200000
-fdt_addr=0x80f00000
+fdt_addr=0x8ff00000
 
 for tool in git make dtc python3 awk \
             "${opensbi_cross}gcc" "${opensbi_cross}objcopy" \
@@ -106,7 +106,7 @@ if [[ "${linked_entry}" != "${firmware_addr}" ]]; then
 fi
 
 # Fixed-size fragments keep readmemh loads bounded without generating a full
-# 16 MiB textual image. bin2mem also rejects an artifact that outgrows its slot.
+# 256 MiB textual image. bin2mem also rejects an artifact that outgrows its slot.
 python3 "${repo_root}/tools/bin2mem.py" \
     "${artifact_dir}/trampoline.bin" "${artifact_dir}/trampoline.memh" \
     --size 0x10000
@@ -119,6 +119,23 @@ python3 "${repo_root}/tools/bin2mem.py" \
 python3 "${repo_root}/tools/bin2mem.py" \
     "${artifact_dir}/openrv64.dtb" "${artifact_dir}/openrv64-dtb.memh" \
     --size 0x10000
+
+# The fixed 3P baseline attaches a native 256-bit AXI RAM.  Emit matching
+# 32-byte lines as separate bounded fragments so its testbench can place each
+# stage at the same addresses without constructing a sparse 256 MiB image.
+python3 "${repo_root}/tools/bin2mem.py" \
+    "${artifact_dir}/trampoline.bin" "${artifact_dir}/trampoline-axi.memh" \
+    --size 0x10000 --word-bytes 32
+python3 "${repo_root}/tools/bin2mem.py" \
+    "${artifact_dir}/fw_jump.bin" "${artifact_dir}/fw_jump-axi.memh" \
+    --size 0x100000 --word-bytes 32
+python3 "${repo_root}/tools/bin2mem.py" \
+    "${artifact_dir}/payload.bin" "${artifact_dir}/payload-axi.memh" \
+    --size 0x10000 --word-bytes 32
+python3 "${repo_root}/tools/bin2mem.py" \
+    "${artifact_dir}/openrv64.dtb" \
+    "${artifact_dir}/openrv64-dtb-axi.memh" \
+    --size 0x10000 --word-bytes 32
 
 echo "OpenSBI ${opensbi_ref} (${actual_commit})"
 echo "  trampoline ${trampoline_addr} -> firmware ${firmware_addr}"

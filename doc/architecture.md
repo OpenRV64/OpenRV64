@@ -41,7 +41,7 @@ speculative recovery mechanism.
 | --- | --- | --- | --- |
 | `openrv64_top` | Selectable 1P or 3P | 64-bit blocking bus; 256-bit AXI is legal only with 3P | General integration wrapper |
 | `openrv64_top_3p` | Fixed 3P | 256-bit AXI4 master only | Primary 3P performance and AXI boundary |
-| `openrv64_platform` | Currently the general wrapper and blocking SoC bus | Integrated ROM, 16 MiB RAM, CLINT, PLIC, UART, GPIO, and timer | Firmware and OpenSBI platform validation |
+| `openrv64_platform` | Currently the general wrapper and blocking SoC bus | Integrated ROM, 256 MiB simulation RAM, CLINT, PLIC, UART, GPIO, and timer | Firmware and OpenSBI platform validation |
 
 `OPENRV64_BACKEND_1P` and `OPENRV64_BACKEND_3P` are implemented. The encoded
 2P selection is reserved but not implemented. The specialized 3P top exposes
@@ -54,7 +54,7 @@ lanes. `openrv64_top_3p` fixes both parts of the throughput configuration: the
 three-wide fetcher and the 256-bit AXI requester.
 
 The 3P AXI testbench is a separate integration artifact. It attaches a native
-256-bit, 16 MiB RAM to the AXI fabric and converts non-RAM AXI accesses to the
+256-bit, 256 MiB RAM to the AXI fabric and converts non-RAM AXI accesses to the
 existing 64-bit SoC peripheral bus. That fabric currently lives in
 `tb/tb_top_axi_3p.sv`; it is not yet the synthesizable `openrv64_platform`
 interconnect.
@@ -404,7 +404,7 @@ While that write is pending:
   not merged.
 
 Store-to-load forwarding is restricted to `STORE_FORWARD_BASE` through
-`STORE_FORWARD_SIZE`; the 3P wrapper defaults this to the 16 MiB RAM window so
+`STORE_FORWARD_SIZE`; the 3P wrapper defaults this to the 256 MiB RAM window so
 ROM and MMIO are excluded. The comparison uses effective addresses. That is
 adequate for the Bare, identity-mapped benchmark configuration but is not
 correct for virtual aliases in a general translated system.
@@ -474,7 +474,7 @@ The common physical map is:
 | UART | `0x1000_0000` | 256 B |
 | GPIO | `0x1001_0000` | 4 KiB |
 | Timer | `0x1002_0000` | 4 KiB |
-| RAM | `0x8000_0000` | 16 MiB |
+| RAM | `0x8000_0000` | 256 MiB |
 
 The integrated generic-bus platform resets at ROM, whose three-instruction
 stub jumps to RAM at `0x8000_0000`. The AXI performance testbench normally
@@ -523,14 +523,34 @@ retirement slot is reused. The register-owner map is rebuilt from surviving
 entries, including an older WAW producer whose value completed before the
 recovery.
 
-Loads may pass an unresolved older branch only when their effective address is
-inside the explicit `SPEC_LOAD_BASE`/`SPEC_LOAD_SIZE` aperture. The fixed 3P
-wrapper defaults that aperture to its 16 MiB RAM. Stores, atomics, MMIO reads,
-and memory-to-memory reordering remain conservative. Wrong-path RAM responses
-may return after recovery but are discarded by the non-reused instruction
-tag. This is enough for the current uncached test fabric; it is not a substitute
-for cache request cancellation, memory-dependence speculation, or an ordered
-load/store queue.
+A legal aligned direct JAL is deterministic once decoded. It may therefore
+issue before the retirement head and does not prevent younger replayable ALU
+work from issuing; its link-register result remains buffered until ordered
+retirement. JALR remains ordered unless and until the window explicitly
+consumes a valid BTB/RAS target as speculation metadata.
+
+With the speculation window enabled, a legal aligned conditional branch also
+does not establish an issue frontier merely because its compare operands are
+not ready. Younger replayable instructions may execute while the branch waits
+in the window. Conditional controls themselves resolve in program order: a
+younger conditional cannot issue until every older conditional has issued and
+resolved. This prevents nested wrong-path redirects and predictor updates while
+still allowing non-control work through the unresolved branch. When the older
+branch's operands arrive, EX0 resolves it immediately. A correct prediction
+retains the speculative work; a correction removes retirement and dispatch
+entries with a younger monotonic instruction ID and rebuilds the surviving
+register-owner map. This is speculative execution, not a free branch: the
+wrong-path work still consumes issue capacity and the redirect still refills
+the frontend.
+
+Loads may pass an unresolved older branch or early direct JAL only when their
+effective address is inside the explicit `SPEC_LOAD_BASE`/`SPEC_LOAD_SIZE`
+aperture. The fixed 3P wrapper defaults that aperture to its 256 MiB RAM.
+Stores, atomics, MMIO reads, and memory-to-memory reordering remain
+conservative. Wrong-path RAM responses may return after recovery but are
+discarded by the non-reused instruction tag. This is enough for the current
+uncached test fabric; it is not a substitute for cache request cancellation,
+memory-dependence speculation, or an ordered load/store queue.
 
 The implementation is selectable and checksum-tested, but it is not the
 current baseline. It has no physical-register renaming, retains in-order

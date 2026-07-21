@@ -55,6 +55,7 @@ module tb_uart_firmware #(
         .SOC_RESET_CYCLES(3),
         .CORE_RESET_DELAY_CYCLES(2),
         .GPIO_WIDTH(32),
+        .MEMORY_BYTES(16 * 1024 * 1024),
         .ENABLE_TRACE(1'b1),
         .BP_TYPE(BP_TYPE),
         .BP_RAS_ENABLE(BP_RAS_ENABLE),

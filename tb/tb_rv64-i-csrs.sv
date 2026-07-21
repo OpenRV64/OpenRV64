@@ -281,6 +281,14 @@ module tb_rv64i_csrs;
         check_csr(`RV64_CSR_MCOUNTEREN, 1'b1, 1'b1, 64'd7,
                   "mcounteren WARL mask");
 
+        write_csr(`RV64_CSR_MIP, 64'hffff_ffff_ffff_ffff);
+        check_csr(`RV64_CSR_MIP, 1'b1, 1'b1,
+                  (64'd1 << `RV64_MIP_SSIP_BIT) |
+                  (64'd1 << `RV64_MIP_MSIP_BIT) |
+                  (64'd1 << `RV64_MIP_STIP_BIT),
+                  "M-mode software-writable MIP bits");
+        write_csr(`RV64_CSR_MIP, 64'd0);
+
         write_csr(`RV64_CSR_MINSTRET, 64'd20);
         pulse_retire();
         check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd21,
@@ -506,7 +514,7 @@ module tb_rv64i_csrs;
                   64'h8000_0000_0000_0009,
                   "delegated interrupt scause");
 
-        $display("PASS: RV64 M/S/U CSR state and context updates");
+        $display("PASS: RV64 M/S/U CSR state, STIP injection, and context updates");
         $finish;
     end
 

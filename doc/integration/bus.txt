@@ -65,7 +65,7 @@ GPIO and the general-purpose timer are OpenRV64-specific slots. The requested
     UART         0x0000000010000000  0x0000000000000100
     GPIO         0x0000000010010000  0x0000000000001000
     Timer        0x0000000010020000  0x0000000000001000
-    Memory       0x0000000080000000  0x0000000001000000
+    Memory       0x0000000080000000  0x0000000010000000
 
 The SoC reset vector is 0x0000000000001000, the first byte of boot ROM. The ROM
 constructs 0x0000000080000000 in x1 and jumps to it, matching the usual QEMU
@@ -113,14 +113,17 @@ transaction, its error response must be added to the selected response mux.
 Memory target
 -------------
 
-openrv64_soc_memory implements 16 MiB by default as 2,097,152 64-bit words. It
-is initialized to zero. Reads are synchronous, writes commit on the rising
+openrv64_soc_memory implements 256 MiB by default as 33,554,432 64-bit words.
+It is initialized to zero. Reads are synchronous, writes commit on the rising
 edge, and byte strobes update individual lanes. A request is captured on a
 rising edge and acknowledged during the following cycle; an idle cycle after
-the response prevents a held request from being accepted twice. The decoder
-guarantees that routed addresses are within the 16 MiB memory window. This
-registered interface is suitable for inferred FPGA RAM and exercises the same
-backpressure used by a board-specific external-memory controller.
+the response prevents a held request from being accepted twice. The decoder's
+memory-window parameter is driven from the same platform capacity as the RAM,
+so routed addresses stay within the backing memory. Reduced-capacity unit tests
+may override both through the platform parameter. This registered interface
+exercises the same backpressure used by a board-specific external-memory
+controller; the 256 MiB behavioral array is intended for simulation, not as a
+realistic on-chip RAM implementation.
 
 Boot ROM target
 ---------------

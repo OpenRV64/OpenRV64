@@ -1,0 +1,77 @@
+`timescale 1ns/1ps
+
+// Data-side specialization.  Stores are write-through and no-write-allocate;
+// reads use the shared eight-way L1 implementation.
+module openrv64_l1d #(
+    parameter integer ENABLE = 1,
+    parameter integer ADDR_WIDTH = 64,
+    parameter integer DATA_WIDTH = 64,
+    parameter integer CACHE_BYTES = 8 * 1024,
+    parameter integer LINE_BYTES = 64,
+    parameter integer WAYS = 8,
+    parameter integer WRITEBACK_TIMEOUT_CYCLES = 128,
+    parameter integer DIRTY_TIMESTAMP_WIDTH =
+        (WRITEBACK_TIMEOUT_CYCLES < 2) ? 1 :
+        $clog2(WRITEBACK_TIMEOUT_CYCLES + 1)
+) (
+    input  wire                      clk_i,
+    input  wire                      rst_ni,
+    input  wire                      req_valid_i,
+    output wire                      req_ready_o,
+    input  wire                      req_write_i,
+    input  wire                      req_cacheable_i,
+    input  wire [ADDR_WIDTH-1:0]     req_addr_i,
+    input  wire [DATA_WIDTH-1:0]     req_wdata_i,
+    input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
+    output wire [DATA_WIDTH-1:0]     req_rdata_o,
+    output wire                      req_error_o,
+    input  wire                      invalidate_valid_i,
+    output wire                      invalidate_ready_o,
+    input  wire                      invalidate_all_i,
+    input  wire [ADDR_WIDTH-1:0]     invalidate_addr_i,
+    output wire                      mem_valid_o,
+    input  wire                      mem_ready_i,
+    output wire                      mem_write_o,
+    output wire [ADDR_WIDTH-1:0]     mem_addr_o,
+    output wire [DATA_WIDTH-1:0]     mem_wdata_o,
+    output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
+    input  wire [DATA_WIDTH-1:0]     mem_rdata_i,
+    input  wire                      mem_error_i
+);
+
+    openrv64_l1 #(
+        .ENABLE(ENABLE),
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH),
+        .CACHE_BYTES(CACHE_BYTES),
+        .LINE_BYTES(LINE_BYTES),
+        .WAYS(WAYS),
+        .WRITEBACK_TIMEOUT_CYCLES(WRITEBACK_TIMEOUT_CYCLES),
+        .DIRTY_TIMESTAMP_WIDTH(DIRTY_TIMESTAMP_WIDTH)
+    ) u_l1 (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .req_valid_i(req_valid_i),
+        .req_ready_o(req_ready_o),
+        .req_write_i(req_write_i),
+        .req_cacheable_i(req_cacheable_i),
+        .req_addr_i(req_addr_i),
+        .req_wdata_i(req_wdata_i),
+        .req_wstrb_i(req_wstrb_i),
+        .req_rdata_o(req_rdata_o),
+        .req_error_o(req_error_o),
+        .invalidate_valid_i(invalidate_valid_i),
+        .invalidate_ready_o(invalidate_ready_o),
+        .invalidate_all_i(invalidate_all_i),
+        .invalidate_addr_i(invalidate_addr_i),
+        .mem_valid_o(mem_valid_o),
+        .mem_ready_i(mem_ready_i),
+        .mem_write_o(mem_write_o),
+        .mem_addr_o(mem_addr_o),
+        .mem_wdata_o(mem_wdata_o),
+        .mem_wstrb_o(mem_wstrb_o),
+        .mem_rdata_i(mem_rdata_i),
+        .mem_error_i(mem_error_i)
+    );
+
+endmodule

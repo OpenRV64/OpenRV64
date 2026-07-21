@@ -5,7 +5,9 @@
 //
 // Targets receive target-local byte offsets. Requests outside every defined
 // window complete with mem_error_o asserted and are not sent downstream.
-module openrv64_soc_bus_decode (
+module openrv64_soc_bus_decode #(
+    parameter [63:0] MEMORY_SIZE = `OPENRV64_SOC_MEMORY_SIZE
+) (
     // Upstream core/initiator bus.
     input  wire        mem_valid_i,
     output reg         mem_ready_o,
@@ -87,7 +89,7 @@ module openrv64_soc_bus_decode (
     wire memory_selected =
         (mem_addr_i >= `OPENRV64_SOC_MEMORY_BASE) &&
         (mem_addr_i < (`OPENRV64_SOC_MEMORY_BASE +
-                       `OPENRV64_SOC_MEMORY_SIZE));
+                       MEMORY_SIZE));
     wire clint_selected =
         (mem_addr_i >= `OPENRV64_SOC_CLINT_BASE) &&
         (mem_addr_i < (`OPENRV64_SOC_CLINT_BASE +

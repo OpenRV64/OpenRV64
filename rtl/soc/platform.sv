@@ -14,6 +14,7 @@ module openrv64_platform #(
     parameter integer SOC_RESET_CYCLES = 4,
     parameter integer CORE_RESET_DELAY_CYCLES = 2,
     parameter integer GPIO_WIDTH = 32,
+    parameter integer MEMORY_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
     parameter bit ENABLE_RV64M = 1'b0,
@@ -263,7 +264,9 @@ module openrv64_platform #(
         .trace_retire_wdata(trace_retire_wdata)
     );
 
-    openrv64_soc_bus_decode u_bus (
+    openrv64_soc_bus_decode #(
+        .MEMORY_SIZE(MEMORY_BYTES)
+    ) u_bus (
         .mem_valid_i(core_mem_valid && core_rst_no),
         .mem_ready_o(core_mem_ready),
         .mem_write_i(core_mem_write),
@@ -333,7 +336,9 @@ module openrv64_platform #(
         .mem_rdata_o(rom_rdata)
     );
 
-    openrv64_soc_memory u_memory (
+    openrv64_soc_memory #(
+        .MEM_BYTES(MEMORY_BYTES)
+    ) u_memory (
         .clk_i(clk_i),
         .rst_ni(soc_rst_no),
         .mem_valid_i(memory_valid),

@@ -2,6 +2,7 @@
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 // Optional producer-tagged three-pipe issue window.
 //
@@ -16,8 +17,13 @@
 // architectural GPR, the youngest completed producer, or a matching tagged
 // completion.  Up to one instruction per physical pipe is then selected from
 // the ready entries.  Memory issue remains program ordered.  The optional
-// speculation mode lets ordinary loads in an explicit RAM/cacheable aperture
-// pass an older branch; stores, atomics, and MMIO remain protected.
+// speculation mode lets replayable work pass an older conditional branch that
+// is still waiting for operands, and lets ordinary loads in an explicit
+// RAM/cacheable aperture pass unresolved control.  Stores, atomics, and MMIO
+// remain protected.  Legal aligned direct JALs are deterministic controls, so
+// they do not form an issue barrier even before reaching the retirement head.
+// Conditional branches themselves resolve in program order so a younger
+// wrong-path branch cannot redirect or train before an older branch resolves.
 module openrv64_dispatch_window_3p #(
     parameter integer ENABLE = 1,
     parameter integer ENABLE_SPECULATION = 0,
@@ -84,6 +90,7 @@ module openrv64_dispatch_window_3p #(
     localparam integer PAYLOAD_RD = 35;
     localparam integer PAYLOAD_ALU_EXT = 32;
     localparam integer PAYLOAD_REG_WRITE = 17;
+    localparam integer PAYLOAD_BR_OP = 18;
     localparam integer PAYLOAD_MEM_READ = 16;
     localparam integer PAYLOAD_MEM_WRITE = 15;
     localparam integer PAYLOAD_BRANCH = 14;
@@ -133,16 +140,57 @@ module openrv64_dispatch_window_3p #(
         end
     endfunction
 
+    function automatic is_replayable_direct_jal;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            // PC is 32-bit aligned and JAL's immediate is PC-relative, so
+            // imm[1]==0 proves the target cannot raise an alignment exception.
+            // Its target is known at decode and its link write remains in the
+            // retirement queue, making younger side-effect-free work safe.
+            is_replayable_direct_jal = payload[PAYLOAD_JUMP] &&
+                (payload[PAYLOAD_BR_OP +: `RV64_BR_OP_WIDTH] ==
+                 `RV64_BR_OP_JAL) &&
+                !payload[PAYLOAD_ILLEGAL] &&
+                !payload[PAYLOAD_INSTR_FAULT] &&
+                !payload[PAYLOAD_INSTR_PAGE_FAULT] &&
+                !payload[PAYLOAD_IMM + 1];
+        end
+    endfunction
+
+    function automatic is_early_conditional_branch;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            is_early_conditional_branch = payload[PAYLOAD_BRANCH] &&
+                !payload[PAYLOAD_ILLEGAL] &&
+                !payload[PAYLOAD_INSTR_FAULT] &&
+                !payload[PAYLOAD_INSTR_PAGE_FAULT] &&
+                !payload[PAYLOAD_IMM + 1];
+        end
+    endfunction
+
+    function automatic may_speculate_past_unissued_control;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            // Direct JAL is deterministic.  Conditional branches require the
+            // selective recovery machinery because their compare operands may
+            // arrive after younger replayable instructions have executed.
+            may_speculate_past_unissued_control =
+                is_replayable_direct_jal(payload) ||
+                ((ENABLE_SPECULATION != 0) &&
+                 is_early_conditional_branch(payload));
+        end
+    endfunction
+
     function automatic is_persistent_hard;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
-            // Aligned, decoded conditional branches may execute before the
-            // retirement head.  The optional speculation window also handles
-            // their redirect and selective younger-state recovery in EX0.
+            // Aligned decoded conditional branches and deterministic direct
+            // JALs may execute before the retirement head.  The optional
+            // speculation window handles conditional redirect recovery; JAL
+            // has no direction or target uncertainty once decoded.
             is_persistent_hard = is_hard(payload) &&
-                !(payload[PAYLOAD_BRANCH] && !payload[PAYLOAD_ILLEGAL] &&
-                  !payload[PAYLOAD_INSTR_FAULT] &&
-                  !payload[PAYLOAD_INSTR_PAGE_FAULT] && !payload[41]);
+                !is_early_conditional_branch(payload) &&
+                !is_replayable_direct_jal(payload);
         end
     endfunction
 
@@ -439,7 +487,8 @@ module openrv64_dispatch_window_3p #(
     reg older_unissued_hard;
     reg older_persistent_hard;
     reg older_unissued_mem;
-    reg older_live_branch;
+    reg older_live_control;
+    reg older_unresolved_conditional;
 
     always_comb begin
         barrier_active_o = 1'b0;
@@ -455,20 +504,27 @@ module openrv64_dispatch_window_3p #(
             older_unissued_hard = 1'b0;
             older_persistent_hard = 1'b0;
             older_unissued_mem = 1'b0;
-            older_live_branch = 1'b0;
+            older_live_control = 1'b0;
+            older_unresolved_conditional = 1'b0;
             for (older_idx = 0; older_idx < DEPTH;
                  older_idx = older_idx + 1) begin
                 if (valid_q[older_idx] &&
                     (id_q[older_idx] < id_q[eligible_idx])) begin
                     if (!issued_q[older_idx] &&
-                        is_hard(payload_q[older_idx]))
+                        is_hard(payload_q[older_idx]) &&
+                        !may_speculate_past_unissued_control(
+                            payload_q[older_idx]))
                         older_unissued_hard = 1'b1;
                     if (is_persistent_hard(payload_q[older_idx]))
                         older_persistent_hard = 1'b1;
                     if (!issued_q[older_idx] && is_mem(payload_q[older_idx]))
                         older_unissued_mem = 1'b1;
-                    if (payload_q[older_idx][PAYLOAD_BRANCH])
-                        older_live_branch = 1'b1;
+                    if (!issued_q[older_idx] &&
+                        is_early_conditional_branch(payload_q[older_idx]))
+                        older_unresolved_conditional = 1'b1;
+                    if (payload_q[older_idx][PAYLOAD_BRANCH] ||
+                        is_replayable_direct_jal(payload_q[older_idx]))
+                        older_live_control = 1'b1;
                 end
             end
 
@@ -483,9 +539,17 @@ module openrv64_dispatch_window_3p #(
             if (is_persistent_hard(payload_q[eligible_idx]) &&
                 (id_q[eligible_idx] != next_retire_id_i))
                 eligible[eligible_idx] = 1'b0;
+            // Data work may cross several predicted branches, but conditional
+            // branches themselves resolve in program order.  This prevents a
+            // younger wrong-path branch from redirecting or training the
+            // predictor before an older unresolved branch is known correct.
+            if ((ENABLE_SPECULATION != 0) &&
+                is_early_conditional_branch(payload_q[eligible_idx]) &&
+                older_unresolved_conditional)
+                eligible[eligible_idx] = 1'b0;
             if (is_mem(payload_q[eligible_idx]) &&
                 (older_unissued_mem ||
-                 (older_live_branch &&
+                 (older_live_control &&
                   !is_speculative_load_safe(
                       payload_q[eligible_idx],
                       src1_data_now[eligible_idx]))))
@@ -510,13 +574,17 @@ module openrv64_dispatch_window_3p #(
                          src2_ready_now[eligible_idx]) begin
                     if ((is_mem(payload_q[eligible_idx]) &&
                          (older_unissued_mem ||
-                          (older_live_branch &&
+                         (older_live_control &&
                            !is_speculative_load_safe(
                                payload_q[eligible_idx],
                                src1_data_now[eligible_idx])))))
                         trace_mem_order_block_count =
                             trace_mem_order_block_count + 1'b1;
                     else if (older_unissued_hard || older_persistent_hard ||
+                             ((ENABLE_SPECULATION != 0) &&
+                              is_early_conditional_branch(
+                                  payload_q[eligible_idx]) &&
+                              older_unresolved_conditional) ||
                              (is_persistent_hard(payload_q[eligible_idx]) &&
                               (id_q[eligible_idx] != next_retire_id_i)))
                         trace_hard_block_count =

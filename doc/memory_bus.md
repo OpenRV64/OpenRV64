@@ -156,7 +156,7 @@ a future cacheable LSU/store buffer must compare translated addresses and apply
 PMA/MMIO ordering rules.
 
 The local forwarding path is qualified by a configurable physical-memory
-window. `openrv64_top_3p` defaults that window to the platform's 16 MiB RAM
+window. `openrv64_top_3p` defaults that window to the platform's 256 MiB RAM
 aperture, so ROM and side-effecting MMIO cannot be forwarded. This is sufficient
 for the current Bare-mode rig, but it is still only a range check. A production
 LSU must use translated physical addresses and real PMA/cacheability attributes

@@ -1,13 +1,17 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-priv.v"
+`include "core/backend/backend-defs.v"
 
-module tb_opensbi;
+module tb_opensbi #(
+    parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
+        `OPENRV64_BACKEND_1P
+);
 
     localparam logic [63:0] RAM_BASE = 64'h8000_0000;
     localparam logic [63:0] FIRMWARE_BASE = 64'h8010_0000;
     localparam logic [63:0] PAYLOAD_BASE = 64'h8020_0000;
     localparam logic [63:0] MAGIC_ADDR = 64'h80e0_0000;
-    localparam logic [63:0] FDT_BASE = 64'h80f0_0000;
+    localparam logic [63:0] FDT_BASE = 64'h8ff0_0000;
     localparam logic [63:0] MAGIC_VALUE = 64'h5342_4950_4153_5301;
 
     localparam integer TRAMPOLINE_WORDS = 32'h0001_0000 / 8;
@@ -48,7 +52,7 @@ module tb_opensbi;
     string payload_memh;
     string fdt_memh;
     string banner = "OpenSBI v1.9";
-    string payload_text = "OPENRV64 SBI PAYLOAD";
+    string payload_text = "OPENRV64 SBI TIMER PAYLOAD";
     integer banner_index;
     integer payload_index;
     integer cycle_count;
@@ -56,11 +60,17 @@ module tb_opensbi;
     logic saw_banner;
     logic saw_payload_text;
     logic saw_s_mode;
+    wire [`RV64_PRIV_WIDTH-1:0] observed_priv_mode;
+    wire [63:0] observed_t0;
+    wire [63:0] observed_t1;
+    wire [63:0] observed_mcause;
+    wire [63:0] observed_mtval;
 
     openrv64_platform #(
         .SOC_RESET_CYCLES(3),
         .CORE_RESET_DELAY_CYCLES(2),
         .GPIO_WIDTH(32),
+        .BACKEND_CONFIG(BACKEND_CONFIG),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64A(1'b1),
         .ENABLE_TRACE(1'b0)
@@ -98,6 +108,27 @@ module tb_opensbi;
         .trace_retire_wdata(trace_retire_wdata)
     );
 
+    generate
+        if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_observe_3p
+            assign observed_priv_mode =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.priv_mode_q;
+            assign observed_t0 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[5];
+            assign observed_t1 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[6];
+            assign observed_mcause =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcause_q;
+            assign observed_mtval =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.mtval_q;
+        end else begin : g_observe_1p
+            assign observed_priv_mode = dut.u_core.u_core.u_csrs.priv_mode_q;
+            assign observed_t0 = dut.u_core.u_core.u_gpr.regs[5];
+            assign observed_t1 = dut.u_core.u_core.u_gpr.regs[6];
+            assign observed_mcause = dut.u_core.u_core.u_csrs.mcause_q;
+            assign observed_mtval = dut.u_core.u_core.u_csrs.mtval_q;
+        end
+    endgenerate
+
     initial begin
         clk = 1'b0;
         forever #5 clk = ~clk;
@@ -132,7 +163,7 @@ module tb_opensbi;
 
     always @(posedge clk) begin
         if (core_rst_n &&
-            (dut.u_core.u_core.u_csrs.priv_mode_q == `RV64_PRIV_S)) begin
+            (observed_priv_mode == `RV64_PRIV_S)) begin
             saw_s_mode <= 1'b1;
         end
 
@@ -149,26 +180,12 @@ module tb_opensbi;
                 ((cycle_count > 10000) && (cycle_count <= 250000) &&
                  ((cycle_count % 10000) == 0)) ||
                 ((cycle_count != 0) && ((cycle_count % 250000) == 0))) begin
-                $display("OpenSBI progress cycles=%0d pc=%016x instr=%08x priv=%0d uart_bytes=%0d t0=%016x t1=%016x mcause=%016x mtval=%016x m={sel:%b start:%b issued:%b active:%b kind:%b bits:%0d result:%b ready:%b consume:%b flush:%b}",
+                $display("OpenSBI progress cycles=%0d pc=%016x instr=%08x priv=%0d uart_bytes=%0d t0=%016x t1=%016x mcause=%016x mtval=%016x",
                          cycle_count, dbg_pc, dbg_instr,
-                         dut.u_core.u_core.u_csrs.priv_mode_q,
+                         observed_priv_mode,
                          uart_byte_count,
-                         dut.u_core.u_core.u_gpr.regs[5],
-                         dut.u_core.u_core.u_gpr.regs[6],
-                         dut.u_core.u_core.u_csrs.mcause_q,
-                         dut.u_core.u_core.u_csrs.mtval_q,
-                         dut.u_core.u_core.u_exec.ex_m_selected,
-                         dut.u_core.u_core.u_exec.alu_m_start,
-                         dut.u_core.u_core.u_exec.alu_m_issued_q,
-                         dut.u_core.u_core.u_exec.u_rv64m_exec.active_q,
-                         dut.u_core.u_core.u_exec.u_rv64m_exec.work_kind_q,
-                         dut.u_core.u_core.u_exec.u_rv64m_exec.work_kind_q ?
-                             dut.u_core.u_core.u_exec.u_rv64m_exec.div_bits_left_q :
-                             dut.u_core.u_core.u_exec.u_rv64m_exec.mul_bits_left_q,
-                         dut.u_core.u_core.u_exec.alu_m_result_valid,
-                         dut.u_core.u_core.u_exec.alu_m_ready,
-                         dut.u_core.u_core.u_exec.alu_m_result_ready,
-                         dut.u_core.u_core.u_exec.flush_ex_mem_i);
+                         observed_t0, observed_t1,
+                         observed_mcause, observed_mtval);
             end
         end
 
@@ -177,13 +194,16 @@ module tb_opensbi;
             $fatal(1,
                    "OpenSBI bus fault pc=%016x addr=%016x write=%b instr=%08x priv=%0d",
                    dbg_pc, dut.core_mem_addr, dut.core_mem_write, dbg_instr,
-                   dut.u_core.u_core.u_csrs.priv_mode_q);
+                   observed_priv_mode);
         end
 
         if (saw_banner && saw_payload_text && saw_s_mode &&
             (dut.u_memory.memory_q[(MAGIC_ADDR - RAM_BASE) >> 3] ==
              MAGIC_VALUE)) begin
-            $display("PASS: OpenSBI v1.9 banner, M-to-S handoff, SBI ECALL, DBCN, and payload completion");
+            if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P)
+                $display("PASS: 3P OpenSBI v1.9 banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion");
+            else
+                $display("PASS: 1P OpenSBI v1.9 banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion");
             $finish;
         end
     end
@@ -233,11 +253,10 @@ module tb_opensbi;
         repeat (20000000) @(posedge clk);
         $fatal(1,
                "OpenSBI timeout pc=%016x instr=%08x priv=%0d banner=%b payload=%b magic=%016x mcause=%016x mtval=%016x",
-               dbg_pc, dbg_instr, dut.u_core.u_core.u_csrs.priv_mode_q,
+               dbg_pc, dbg_instr, observed_priv_mode,
                saw_banner, saw_payload_text,
                dut.u_memory.memory_q[(MAGIC_ADDR - RAM_BASE) >> 3],
-               dut.u_core.u_core.u_csrs.mcause_q,
-               dut.u_core.u_core.u_csrs.mtval_q);
+               observed_mcause, observed_mtval);
     end
 
 endmodule

@@ -74,7 +74,9 @@ module openrv64_rv64i_csrs #(
     localparam [`RV64_XLEN-1:0] MIP_S_MASK = BIT_SSIP | BIT_STIP | BIT_SEIP;
     localparam [`RV64_XLEN-1:0] MIP_M_MASK = BIT_MSIP | BIT_MTIP | BIT_MEIP;
     localparam [`RV64_XLEN-1:0] MIP_MASK = MIP_S_MASK | MIP_M_MASK;
-    localparam [`RV64_XLEN-1:0] MIP_SW_WRITABLE_MASK = BIT_SSIP | BIT_MSIP;
+    // M-mode firmware uses mip.STIP to inject an SBI timer event into S-mode.
+    localparam [`RV64_XLEN-1:0] MIP_SW_WRITABLE_MASK =
+        BIT_SSIP | BIT_MSIP | BIT_STIP;
     localparam [`RV64_XLEN-1:0] COUNTER_ENABLE_MASK =
         (64'd1 << `RV64_MCOUNTER_CY_BIT) |
         (64'd1 << `RV64_MCOUNTER_TM_BIT) |

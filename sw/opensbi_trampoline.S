@@ -9,7 +9,7 @@
  */
 _start:
     li      a0, 0
-    li      a1, 0x80f00000
+    li      a1, 0x8ff00000
     li      a2, 0
     li      t0, 0x80100000
     jr      t0

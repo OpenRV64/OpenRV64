@@ -1,6 +1,6 @@
 # Sixteen-entry issue window
 
-Updated: 2026-07-20
+Updated: 2026-07-21
 
 ## Merged selective-speculation RTL result
 
@@ -18,13 +18,18 @@ The checksum-running CoreMark-derived comparison is:
 | 3P strict-prefix, 256x3, full forwarding | 52,547 | 80,449 | 0.6532 | -12,137 (-13.11%) |
 | 3P issue window, retirement-held correction | 52,547 | 92,586 | 0.5675 | reference |
 | **3P merged 16-entry speculation window** | **52,547** | **79,313** | **0.6625** | **-13,273 (-14.34%)** |
+| **Merged window + early direct JAL** | **52,547** | **78,838** | **0.6665** | **-13,748 (-14.85%)** |
+| Repeat-last (RTL type 3) + released conditional control | 52,547 | 96,357 | 0.5453 | +3,771 (+4.07%) |
+| **32x3 bimodal (RTL type 5) + serialized conditional control** | **52,547** | **74,113** | **0.7090** | **-18,473 (-19.95%)** |
+| BP6 merged window + released conditional control | 52,547 | 71,078 | 0.7393 | -21,508 (-23.23%) |
 | 3P strict-prefix, direction/target oracle, full forwarding | 52,547 | 73,934 | 0.7107 | -18,652 (-20.15%) |
 | **3P merged window, direction/target oracle** | **52,547** | **71,123** | **0.7388** | **-21,463 (-23.18%)** |
 | gem5 HPI A53-class proxy | 58,695 | 72,146 | 0.8136 | cross-ISA reference |
 
-Both window rows use the same 256-entry, three-bit gshare predictor, 256-entry
-tagged indirect-target table, RAS8, posted stores, 16-entry retirement queue,
-native 256-bit AXI fabric, and 16 MiB RAM. Both halted with
+Except for the explicitly labeled repeat-last and 32x3 rows, the non-oracle 3P
+speculation-window rows use the same 256-entry, three-bit gshare predictor,
+256-entry tagged indirect-target table, RAS8, posted stores, 16-entry
+retirement queue, native 256-bit AXI fabric, and 16 MiB RAM. All halted with
 `a0=0x000000000a277880`. The window itself always uses exact producer-tag
 wakeup and captured values; the command-line full-forwarding and relaxed-hazard
 switches are retained to match the strict 3P comparison, but the window does
@@ -39,12 +44,70 @@ fall from 47,202 to 20,859 cycles. These counters overlap and are not an
 additive attribution, but they show that retirement-held correction and the
 blanket load-behind-branch rule were the concrete regressions.
 
-The important negative result is that this is **not** a dramatic gain over the
-existing strict 3P path. It beats the matched realistic strict core by only
-1,136 cycles (1.41%). Most of the 13,273-cycle improvement merely repairs the
-original issue window's deliberately bad retirement-held correction model.
-The merged path is still 7,167 cycles (9.93%) behind the cross-ISA HPI timing
-reference and 5,379 cycles (7.28%) behind the strict-path branch oracle.
+The important negative result for the original merged path was that it was
+**not** a dramatic gain over the existing strict 3P path. It beat the matched
+realistic strict core by only 1,136 cycles (1.41%). Most of that 13,273-cycle
+improvement merely repaired the original issue window's deliberately bad
+retirement-held correction model. It still left a conditional branch waiting
+for operands as a hard frontier; the released-control row below removes that
+restriction.
+
+Treating legal aligned direct JAL as deterministic, rather than holding it at
+the retirement head as a persistent barrier, removes another 475 cycles
+(0.60%) and raises IPC from 0.6625 to 0.6665. The workload retires 449 JALs, so
+the aggregate gain is about 1.06 cycles per JAL. Zero-issue cycles fall by 535,
+no-eligible cycles by 1,242, and no-issue cycles involving a hard-order blocker
+by 1,264. The correction count remains 1,658. This row is 6,692 cycles (9.28%)
+behind HPI at equal clock. The existing oracle row predates this direct-JAL
+relaxation and has not been re-run as a matched comparison.
+
+Releasing an operand-blocked conditional branch as an issue frontier is the
+material change. Under BP6, younger replayable work now issues while that
+branch waits; stores, atomics, MMIO, and loads outside the explicit RAM
+aperture remain held. This removes 7,760 cycles (9.84%) relative to the
+direct-JAL row and 8,235 cycles (10.38%) relative to the original merged
+window. Accepted zero-issue cycles fall from 41,491 to 33,420; window cycles
+with no eligible instruction fall from 30,886 to 18,197; and cycles containing
+a hard blocker fall from 52,796 to 14,368. These counters overlap and are not
+an additive attribution.
+
+The released-control run records 1,657 corrections and 57,450 accepted issues,
+4,901 more than the direct-JAL run. That is predominantly real wrong-path
+execution, not oracle behavior. Nevertheless it finishes 45 cycles (0.06%)
+ahead of the older oracle run and 1,068 cycles (1.48%) ahead of the HPI
+equal-clock cycle count. The HPI comparison remains cross-ISA: HPI retires
+58,695 instructions at 0.8136 IPC, while OpenRV64 retires 52,547 at 0.7393 IPC.
+
+The earlier 96,357-cycle row was mislabeled. `BP_TYPE=3` selects the
+repeat-last predictor; the number 3 is the selector value, not the counter
+width. The actual 32-entry, three-bit bimodal predictor is `BP_TYPE=5`. The
+repeat-last run records 6,489 corrections over 13,444 resolutions, which
+explains its poor result but says nothing about the 32x3 table.
+
+The corrected 32x3 run also uses serious branch resolution: replayable data
+work may pass an operand-blocked conditional branch, but a younger conditional
+branch cannot issue until every older conditional branch has issued and
+resolved. This prevents wrong-path branches from redirecting or training the
+predictor ahead of an older unresolved branch without turning the older branch
+back into a frontier for independent ALU work.
+
+With that rule, the actual 32x3 configuration takes 74,113 cycles at 0.7090
+IPC and records 2,878 corrections over 12,742 resolutions. It is 10,345 cycles
+(12.25%) faster than the older strict-prefix 32x3/full-forwarding run, only
+1,967 cycles (2.73%) behind the HPI equal-clock cycle count, and 3,035 cycles
+(4.27%) behind the existing BP6 released-control run. The 2,878 corrections
+exactly match the old strict 32x3 run, so the serialized-control path does not
+show the previous apparent correction cascade.
+
+This is not an isolated measurement of serialization itself. There is no valid
+pre-serialization, released-control BP5 run: the run that was supposed to fill
+that role used repeat-last. The 10,345-cycle comparison therefore combines the
+merged speculation window, early JAL/control behavior, and serialization. The
+BP6 comparison also combines predictor differences with control policy because
+that older BP6 trace allowed multiple unresolved conditionals. The corrected
+trace and rendered pipeline report are
+`sim/issue-window/coremark-bp5-bimodal32x3-serialized-control-trace.csv` and
+`sim/issue-window/coremark-bp5-bimodal32x3-serialized-control-pipeline.txt`.
 
 With direction and target prediction made oracular in the merged window,
 cycles fall by another 8,190 (10.33%) from 79,313 to 71,123 and IPC rises from

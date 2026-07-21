@@ -8,7 +8,7 @@
 // decoder guarantees that valid requests are inside this target's window and
 // supplies a byte offset relative to the RAM base.
 module openrv64_soc_memory #(
-    parameter integer MEM_BYTES = 16 * 1024 * 1024
+    parameter integer MEM_BYTES = 256 * 1024 * 1024
 ) (
     input  wire        clk_i,
     input  wire        rst_ni,

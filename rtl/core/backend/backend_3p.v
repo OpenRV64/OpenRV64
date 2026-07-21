@@ -299,10 +299,11 @@ module openrv64_backend_3p #(
     wire [2:0] waw_hazard;
     wire [2:0] read_port_hazard;
 
-    // The window may execute conditional branches before the retirement head,
-    // but publishes resolution only when the branch retires.  At that point a
-    // redirect can discard every remaining entry without an owner-map
-    // checkpoint: every live entry is younger than the retiring branch.
+    // The non-speculative issue window may execute conditional branches before
+    // the retirement head, but publishes resolution only when the branch
+    // retires.  The speculation-window path instead consumes EX0 resolution
+    // immediately and selectively discards younger IDs below.  This retire-time
+    // resolver remains the recovery path for the non-speculative window.
     localparam integer WINDOW_META_BRANCH = 14;
     localparam integer WINDOW_META_JUMP = 13;
     localparam integer WINDOW_META_PREDICTED_TAKEN = 12;
