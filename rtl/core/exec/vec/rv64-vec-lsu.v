@@ -18,6 +18,9 @@ module openrv64_exec_vec_lsu #(
     parameter integer REG_ADDR_WIDTH = 5,
     parameter integer TAG_WIDTH = 8,
     parameter integer MEM_TAG_WIDTH = 8,
+    // The vector register file remains sliced at DATAPATH_WIDTH. A wider
+    // cache-side port packs/unpacks several slices per tagged request.
+    parameter integer MEM_DATA_WIDTH = DATAPATH_WIDTH,
     parameter integer QUEUE_DEPTH = 4,
     // The secondary LSU is a load pipe. Store dispatch remains well-defined
     // but completes as unsupported when this parameter is set.
@@ -82,13 +85,13 @@ module openrv64_exec_vec_lsu #(
     output wire [MEM_TAG_WIDTH-1:0]     mem_req_tag_o,
     output wire                         mem_req_write_o,
     output wire [ADDR_WIDTH-1:0]        mem_req_addr_o,
-    output wire [DATAPATH_WIDTH-1:0]    mem_req_wdata_o,
-    output wire [(DATAPATH_WIDTH/8)-1:0] mem_req_wstrb_o,
+    output wire [MEM_DATA_WIDTH-1:0]    mem_req_wdata_o,
+    output wire [(MEM_DATA_WIDTH/8)-1:0] mem_req_wstrb_o,
 
     input  wire                         mem_resp_valid_i,
     output wire                         mem_resp_ready_o,
     input  wire [MEM_TAG_WIDTH-1:0]     mem_resp_tag_i,
-    input  wire [DATAPATH_WIDTH-1:0]    mem_resp_rdata_i,
+    input  wire [MEM_DATA_WIDTH-1:0]    mem_resp_rdata_i,
     input  wire                         mem_resp_error_i,
     input  wire                         mem_resp_retry_i,
 
@@ -96,12 +99,13 @@ module openrv64_exec_vec_lsu #(
     output wire                         busy_o
 );
 
-    localparam integer MEM_BYTES = DATAPATH_WIDTH / 8;
+    localparam integer MEM_BYTES = MEM_DATA_WIDTH / 8;
     localparam integer GROUP_WIDTH = VLEN * MAX_LMUL;
-    localparam integer MAX_BEATS = GROUP_WIDTH / DATAPATH_WIDTH;
+    localparam integer MAX_BEATS = GROUP_WIDTH / MEM_DATA_WIDTH;
     localparam integer BASE_SLICES = VLEN / DATAPATH_WIDTH;
     localparam integer MAX_SLICES = GROUP_WIDTH / DATAPATH_WIDTH;
-    localparam integer RF_SLICES_PER_BEAT = 1;
+    localparam integer RF_SLICES_PER_BEAT =
+        MEM_DATA_WIDTH / DATAPATH_WIDTH;
     localparam integer SLICE_INDEX_WIDTH =
         (MAX_SLICES <= 1) ? 1 : $clog2(MAX_SLICES);
     localparam integer SLOT_INDEX_WIDTH =
@@ -275,13 +279,13 @@ module openrv64_exec_vec_lsu #(
         (slot_op_q[request_slot] == `OPENRV64_VEC_LSU_STORE);
     assign mem_req_addr_o = slot_addr_q[request_slot] +
                             request_beat * MEM_BYTES;
-    reg [DATAPATH_WIDTH-1:0] request_wdata;
-    reg [(DATAPATH_WIDTH/8)-1:0] request_wstrb;
+    reg [MEM_DATA_WIDTH-1:0] request_wdata;
+    reg [(MEM_DATA_WIDTH/8)-1:0] request_wstrb;
     integer request_strobe_scan;
     integer request_slice_scan;
     always @* begin
-        request_wdata = {DATAPATH_WIDTH{1'b0}};
-        request_wstrb = {(DATAPATH_WIDTH/8){1'b0}};
+        request_wdata = {MEM_DATA_WIDTH{1'b0}};
+        request_wstrb = {(MEM_DATA_WIDTH/8){1'b0}};
         for (request_slice_scan = 0;
              request_slice_scan < RF_SLICES_PER_BEAT;
              request_slice_scan = request_slice_scan + 1) begin
@@ -290,7 +294,7 @@ module openrv64_exec_vec_lsu #(
                 [request_beat*RF_SLICES_PER_BEAT + request_slice_scan];
         end
         for (request_strobe_scan = 0;
-             request_strobe_scan < (DATAPATH_WIDTH/8);
+             request_strobe_scan < (MEM_DATA_WIDTH/8);
              request_strobe_scan = request_strobe_scan + 1) begin
             if (((request_beat * MEM_BYTES) + request_strobe_scan) <
                 ((VLEN / 8) << slot_lmul_q[request_slot]))
@@ -299,7 +303,7 @@ module openrv64_exec_vec_lsu #(
     end
     assign mem_req_wdata_o = request_wdata;
     assign mem_req_wstrb_o = mem_req_write_o ? request_wstrb :
-                             {(DATAPATH_WIDTH/8){1'b0}};
+                             {(MEM_DATA_WIDTH/8){1'b0}};
     wire mem_req_fire = mem_req_valid_o && mem_req_ready_i;
 
     assign mem_resp_ready_o = 1'b1;
@@ -473,8 +477,8 @@ module openrv64_exec_vec_lsu #(
                     slot_beat_done_q[allocate_tail_q][beat_index] <=
                         pending_misaligned || pending_unsupported ||
                         (beat_index >=
-                         (((VLEN << pending_lmul) + DATAPATH_WIDTH - 1) /
-                          DATAPATH_WIDTH));
+                         (((VLEN << pending_lmul) + MEM_DATA_WIDTH - 1) /
+                          MEM_DATA_WIDTH));
                 end
                 allocate_tail_q <= next_slot(allocate_tail_q);
                 pending_valid_q <= 1'b0;
@@ -588,16 +592,20 @@ module openrv64_exec_vec_lsu #(
     initial begin
         tag_bits_required = (QUEUE_DEPTH * MAX_BEATS <= 1) ? 1 :
                             $clog2(QUEUE_DEPTH * MAX_BEATS);
-        if ((DATAPATH_WIDTH < 8) || ((DATAPATH_WIDTH % 8) != 0))
+        if ((MEM_DATA_WIDTH < 8) || ((MEM_DATA_WIDTH % 8) != 0))
             $fatal(1, "vector LSU memory width must be byte granular");
         if (DATAPATH_WIDTH != 64)
             $fatal(1, "initial vector LSU datapath must be 64 bits");
+        if ((MEM_DATA_WIDTH < DATAPATH_WIDTH) ||
+            ((MEM_DATA_WIDTH % DATAPATH_WIDTH) != 0))
+            $fatal(1,
+                "vector LSU cache width must contain whole RF slices");
         if ((MEM_BYTES & (MEM_BYTES - 1)) != 0)
             $fatal(1, "vector LSU memory width must be a power of two bytes");
-        if ((GROUP_WIDTH < DATAPATH_WIDTH) ||
-            ((GROUP_WIDTH % DATAPATH_WIDTH) != 0))
+        if ((GROUP_WIDTH < MEM_DATA_WIDTH) ||
+            ((GROUP_WIDTH % MEM_DATA_WIDTH) != 0))
             $fatal(1,
-                "maximum vector group must be a multiple of DATAPATH_WIDTH");
+                "maximum vector group must be a multiple of MEM_DATA_WIDTH");
         if (MEM_TAG_WIDTH < tag_bits_required)
             $fatal(1, "vector LSU memory tag is too narrow");
         if (QUEUE_DEPTH < 1)

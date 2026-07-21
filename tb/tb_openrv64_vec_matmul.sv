@@ -184,8 +184,8 @@ module tb_openrv64_vec_matmul;
                    dbg_halted, dbg_error, dbg_pc, dbg_instr);
         if (dbg_pc != 64'h128 || dbg_instr != 32'h0010_0073)
             $fatal(1, "matmul halted at unexpected instruction");
-        if (dbg_retired != 64'd181)
-            $fatal(1, "matmul retired %0d instructions, expected 181",
+        if (dbg_retired != 64'd147)
+            $fatal(1, "matmul retired %0d instructions, expected 147",
                    dbg_retired);
 
         /* C row zero, forward and reversed eight-column blocks. */
@@ -212,8 +212,8 @@ module tb_openrv64_vec_matmul;
 
         if (!retry_used_q || (vec_replay_count_q == 0))
             $fatal(1, "matmul LSU did not replay the injected retry");
-        if (vec_request_count_q != 89)
-            $fatal(1, "matmul issued %0d vector beats, expected 89",
+        if (vec_request_count_q != 65)
+            $fatal(1, "matmul issued %0d vector beats, expected 65",
                    vec_request_count_q);
         if (dbg_vec_busy)
             $fatal(1, "vector unit remained busy after matmul halt");

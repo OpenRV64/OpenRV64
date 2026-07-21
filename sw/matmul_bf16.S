@@ -22,6 +22,8 @@
 
     .equ VEC_OPCODE_ALU, 0x0b
     .equ VEC_OPCODE_LSU, 0x2b
+    .equ VEC_OPCODE_ACC, 0x5b
+    .equ VEC_OPCODE_PREFETCH, 0x7b
 
     .macro VSET rs1
     .word ((\rs1 << 15) | (0 << 12) | (0 << 7) | VEC_OPCODE_ALU)
@@ -42,8 +44,9 @@
            (\vd << 7) | VEC_OPCODE_ALU)
     .endm
 
-    .macro VSYNC vreg
-    .word ((\vreg << 15) | (7 << 12) | VEC_OPCODE_ALU)
+    .macro VSYNC vreg1, vreg2
+    .word ((\vreg2 << 20) | (\vreg1 << 15) | (7 << 12) | \
+           VEC_OPCODE_ALU)
     .endm
 
     .macro VLOAD vd, base
@@ -53,6 +56,26 @@
     .macro VSTORE vs3, base
     .word ((\vs3 << 20) | (\base << 15) | (1 << 12) | \
            VEC_OPCODE_LSU)
+    .endm
+
+    /* stream=0 inserts normally; stream=1 is discard-next after consumption. */
+    .macro VPRFM base, lines, stream=0
+    .word (((\lines & 15) << 20) | (\base << 15) | \
+           ((\stream & 1) << 12) | VEC_OPCODE_PREFETCH)
+    .endm
+
+    /* Bit 25 selects one of the two private accumulator contexts. */
+    .macro VLDA acc, vs
+    .word ((\acc << 25) | (\vs << 15) | (0 << 12) | VEC_OPCODE_ACC)
+    .endm
+
+    .macro VSTA acc, vd
+    .word ((\acc << 25) | (1 << 12) | (\vd << 7) | VEC_OPCODE_ACC)
+    .endm
+
+    .macro VMAC acc, vs1, vs2
+    .word ((\acc << 25) | (\vs2 << 20) | (\vs1 << 15) | \
+           (2 << 12) | VEC_OPCODE_ACC)
     .endm
 
     .macro BF16_SPLAT bits
@@ -99,13 +122,14 @@ matmul_bf16:
     beqz    t2, .Lmatmul_bf16_single_block
 
     /*
-     * Two-column-block unroll. Both outputs traverse K in source order, so
-     * BF16 rounding is unchanged. v2 supplies A to the two independent
-     * product/accumulator chains, with product parity crossed for the banked
-     * vector register file.
+     * Two-column-block unroll. acc0 and acc1 retain the outputs and traverse K
+     * in source order. v2 supplies A while v3/v7 hold the two B vectors.
      */
     VXOR    8, 8, 8
     VXOR    9, 9, 9
+    VSYNC   8, 9
+    VLDA    0, 8
+    VLDA    1, 9
     mv      t0, a0
     mv      t1, t4
     slli    t5, a4, 5
@@ -122,25 +146,18 @@ matmul_bf16:
     addi    t5, t5, 32
     addi    t2, t2, -1
 
-    VSYNC   2
-    VSYNC   3
-    VSYNC   8
-    VFMUL   5, 2, 3
-    VSYNC   7
-    VSYNC   9
-    VFMUL   4, 2, 7
-
-    VSYNC   5
-    VFADD   8, 8, 5
-    VSYNC   4
-    VFADD   9, 9, 4
+    VSYNC   2, 3
+    VMAC    0, 2, 3
+    VSYNC   2, 7
+    VMAC    1, 2, 7
     bnez    t2, .Lmatmul_bf16_pair_k
 
 .Lmatmul_bf16_pair_store:
-    VSYNC   8
+    VSTA    0, 8
+    VSTA    1, 9
+    VSYNC   8, 9
     VSTORE  8, 12
     addi    a2, a2, 32
-    VSYNC   9
     VSTORE  9, 12
     addi    a2, a2, 32
     mv      t4, t5
@@ -151,6 +168,8 @@ matmul_bf16:
 
 .Lmatmul_bf16_single_block:
     VXOR    8, 8, 8
+    VSYNC   8, 8
+    VLDA    0, 8
     mv      t0, a0
     mv      t1, t4
     mv      t2, a4
@@ -162,16 +181,13 @@ matmul_bf16:
     VLOAD   3, 6
     addi    t1, t1, 32
     addi    t2, t2, -1
-    VSYNC   2
-    VSYNC   3
-    VSYNC   8
-    VFMUL   5, 2, 3
-    VSYNC   5
-    VFADD   8, 8, 5
+    VSYNC   2, 3
+    VMAC    0, 2, 3
     bnez    t2, .Lmatmul_bf16_single_k
 
 .Lmatmul_bf16_single_store:
-    VSYNC   8
+    VSTA    0, 8
+    VSYNC   8, 8
     VSTORE  8, 12                  /* C through a2=x12 */
     mv      t4, t1
     mv      t5, t0

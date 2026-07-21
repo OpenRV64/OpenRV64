@@ -57,6 +57,7 @@ module tb_openrv64_vec_test_top;
     logic vsync_stall_seen_q;
     logic alu_command_overlap_q;
     logic vsync_alu_stall_seen_q;
+    logic vprfm_seen_q;
 
     wire ifetch_in_range = ifetch_addr[63:11] == 0;
     assign ifetch_ready = ifetch_valid;
@@ -147,11 +148,40 @@ module tb_openrv64_vec_test_top;
     endfunction
 
     function automatic logic [31:0] enc_vsync;
-        input logic [4:0] vreg;
+        input logic [4:0] vreg1;
+        input logic [4:0] vreg2;
         begin
-            enc_vsync = {7'd0, 5'd0, vreg,
+            enc_vsync = {7'd0, vreg2, vreg1,
                          `OPENRV64_VEC_INSTR_FUNCT3_VSYNC, 5'd0,
                          `OPENRV64_VEC_INSTR_OPCODE_ALU};
+        end
+    endfunction
+
+    function automatic logic [31:0] enc_vlda;
+        input logic [4:0] vs;
+        begin
+            enc_vlda = {7'd0, 5'd0, vs,
+                        `OPENRV64_VEC_INSTR_FUNCT3_VLDA, 5'd0,
+                        `OPENRV64_VEC_INSTR_OPCODE_ACC};
+        end
+    endfunction
+
+    function automatic logic [31:0] enc_vsta;
+        input logic [4:0] vd;
+        begin
+            enc_vsta = {7'd0, 5'd0, 5'd0,
+                        `OPENRV64_VEC_INSTR_FUNCT3_VSTA, vd,
+                        `OPENRV64_VEC_INSTR_OPCODE_ACC};
+        end
+    endfunction
+
+    function automatic logic [31:0] enc_vmac;
+        input logic [4:0] vs1;
+        input logic [4:0] vs2;
+        begin
+            enc_vmac = {7'd0, vs2, vs1,
+                        `OPENRV64_VEC_INSTR_FUNCT3_VMAC, 5'd0,
+                        `OPENRV64_VEC_INSTR_OPCODE_ACC};
         end
     endfunction
 
@@ -172,6 +202,19 @@ module tb_openrv64_vec_test_top;
             enc_vstore = {7'd0, vs3, scalar_rs1,
                           `OPENRV64_VEC_INSTR_FUNCT3_STORE, 5'd0,
                           `OPENRV64_VEC_INSTR_OPCODE_LSU};
+        end
+    endfunction
+
+    function automatic logic [31:0] enc_vprfm;
+        input logic [4:0] scalar_rs1;
+        input logic [3:0] line_count;
+        input logic streaming;
+        begin
+            enc_vprfm = {8'd0, line_count, scalar_rs1,
+                         streaming ?
+                         `OPENRV64_VEC_INSTR_FUNCT3_VPRFM_STREAM :
+                         `OPENRV64_VEC_INSTR_FUNCT3_VPRFM_AGED,
+                         5'd0, `OPENRV64_VEC_INSTR_OPCODE_PREFETCH};
         end
     endfunction
 
@@ -203,6 +246,7 @@ module tb_openrv64_vec_test_top;
             vsync_stall_seen_q <= 1'b0;
             alu_command_overlap_q <= 1'b0;
             vsync_alu_stall_seen_q <= 1'b0;
+            vprfm_seen_q <= 1'b0;
         end else begin
             if (ifetch_valid && ifetch_ready)
                 fetch_count_q <= fetch_count_q + 1;
@@ -216,21 +260,26 @@ module tb_openrv64_vec_test_top;
                 alu_command_overlap_q <= 1'b1;
             if (dut.instr_is_vsync && dut.vsync_wait &&
                 ((dut.instr_rs1 == 5'd11) ||
-                 (dut.instr_rs1 == 5'd12)))
+                 (dut.instr_rs1 == 5'd12) ||
+                 (dut.instr_rs2 == 5'd11) ||
+                 (dut.instr_rs2 == 5'd12)))
                 vsync_alu_stall_seen_q <= 1'b1;
+            if (dut.vec_cache_prefetch_valid &&
+                dut.vec_cache_prefetch_ready)
+                vprfm_seen_q <= 1'b1;
+
+            if (dut.vec_lsu_mem_req_valid &&
+                dut.vec_lsu_mem_req_ready)
+                primary_request_count_q <= primary_request_count_q + 1;
+            if (dut.vec_read_mem_req_valid &&
+                dut.vec_read_mem_req_ready)
+                read_request_count_q <= read_request_count_q + 1;
 
             if (response_valid_q && vec_mem_resp_ready)
                 response_valid_q <= 1'b0;
 
             if (vec_mem_req_valid && vec_mem_req_ready) begin
                 vec_request_count_q <= vec_request_count_q + 1;
-                if (vec_mem_req_tag[MEM_TAG_WIDTH-1]) begin
-                    read_request_count_q <= read_request_count_q + 1;
-                    if (vec_mem_req_write)
-                        $fatal(1, "read-only vector LSU emitted a write");
-                end else begin
-                    primary_request_count_q <= primary_request_count_q + 1;
-                end
                 response_valid_q <= 1'b1;
                 response_tag_q <= vec_mem_req_tag;
                 response_data_q <= (vec_mem_req_addr[63:11] == 0) ?
@@ -282,72 +331,90 @@ module tb_openrv64_vec_test_top;
         put_instr(RESET_INSTR_INDEX + 3,
                   enc_addi(5'd1, 5'd0, 12'h220));
         put_instr(RESET_INSTR_INDEX + 4, enc_vload(5'd3, 5'd1));
-        put_instr(RESET_INSTR_INDEX + 5, enc_vsync(5'd2));
-        put_instr(RESET_INSTR_INDEX + 6, enc_vsync(5'd3));
-        put_instr(RESET_INSTR_INDEX + 7,
+        put_instr(RESET_INSTR_INDEX + 5, enc_vsync(5'd2, 5'd3));
+        put_instr(RESET_INSTR_INDEX + 6,
                   enc_vec_alu(`OPENRV64_VEC_INSTR_FUNCT3_XOR,
                               5'd4, 5'd2, 5'd3));
-        put_instr(RESET_INSTR_INDEX + 8,
+        put_instr(RESET_INSTR_INDEX + 7,
                   enc_addi(5'd1, 5'd0, 12'h240));
-        put_instr(RESET_INSTR_INDEX + 9, enc_vsync(5'd4));
-        put_instr(RESET_INSTR_INDEX + 10, enc_vstore(5'd4, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 8, enc_vsync(5'd4, 5'd4));
+        put_instr(RESET_INSTR_INDEX + 9, enc_vstore(5'd4, 5'd1));
 
         // FP32 stream: load two vectors, add them into v8, and store v8.
-        put_instr(RESET_INSTR_INDEX + 11,
+        put_instr(RESET_INSTR_INDEX + 10,
                   enc_addi(5'd3, 5'd0, 12'h010));
-        put_instr(RESET_INSTR_INDEX + 12, enc_vset(5'd3));
-        put_instr(RESET_INSTR_INDEX + 13,
+        put_instr(RESET_INSTR_INDEX + 11, enc_vset(5'd3));
+        put_instr(RESET_INSTR_INDEX + 12,
                   enc_addi(5'd1, 5'd0, 12'h260));
-        put_instr(RESET_INSTR_INDEX + 14, enc_vload(5'd6, 5'd1));
-        put_instr(RESET_INSTR_INDEX + 15,
+        put_instr(RESET_INSTR_INDEX + 13, enc_vload(5'd6, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 14,
                   enc_addi(5'd1, 5'd0, 12'h280));
-        put_instr(RESET_INSTR_INDEX + 16, enc_vload(5'd7, 5'd1));
-        put_instr(RESET_INSTR_INDEX + 17, enc_vsync(5'd6));
-        put_instr(RESET_INSTR_INDEX + 18, enc_vsync(5'd7));
-        put_instr(RESET_INSTR_INDEX + 19,
+        put_instr(RESET_INSTR_INDEX + 15, enc_vload(5'd7, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 16, enc_vsync(5'd6, 5'd7));
+        put_instr(RESET_INSTR_INDEX + 17,
                   enc_vec_alu(`OPENRV64_VEC_INSTR_FUNCT3_FADD,
                               5'd8, 5'd6, 5'd7));
-        put_instr(RESET_INSTR_INDEX + 20,
+        put_instr(RESET_INSTR_INDEX + 18,
                   enc_addi(5'd1, 5'd0, 12'h2a0));
-        put_instr(RESET_INSTR_INDEX + 21, enc_vsync(5'd8));
-        put_instr(RESET_INSTR_INDEX + 22, enc_vstore(5'd8, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 19, enc_vsync(5'd8, 5'd8));
+        put_instr(RESET_INSTR_INDEX + 20, enc_vstore(5'd8, 5'd1));
 
-        // A lone preferred-path load proves that VSYNC itself waits rather
-        // than relying on the blocking primary LSU to cover the dependency.
-        put_instr(RESET_INSTR_INDEX + 23,
+        // A lone preferred-path load in the second VSYNC operand proves that
+        // both encoded registers participate in the wait.
+        put_instr(RESET_INSTR_INDEX + 21,
                   enc_addi(5'd1, 5'd0, 12'h2c0));
-        put_instr(RESET_INSTR_INDEX + 24, enc_vload(5'd10, 5'd1));
-        put_instr(RESET_INSTR_INDEX + 25, enc_vsync(5'd10));
-        put_instr(RESET_INSTR_INDEX + 26,
+        put_instr(RESET_INSTR_INDEX + 22, enc_vload(5'd10, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 23, enc_vsync(5'd0, 5'd10));
+        put_instr(RESET_INSTR_INDEX + 24,
                   enc_addi(5'd1, 5'd0, 12'h2e0));
-        put_instr(RESET_INSTR_INDEX + 27, enc_vstore(5'd10, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 25, enc_vstore(5'd10, 5'd1));
 
         // Back-to-back independent arithmetic commands must coexist in the
         // tagged execution queue. VSYNC then observes both ALU destinations,
         // rather than only the read-only LSU destination.
-        put_instr(RESET_INSTR_INDEX + 28,
+        put_instr(RESET_INSTR_INDEX + 26,
                   enc_vec_alu(`OPENRV64_VEC_INSTR_FUNCT3_FADD,
                               5'd11, 5'd6, 5'd7));
-        put_instr(RESET_INSTR_INDEX + 29,
+        put_instr(RESET_INSTR_INDEX + 27,
                   enc_vec_alu(`OPENRV64_VEC_INSTR_FUNCT3_FMUL,
                               5'd12, 5'd6, 5'd7));
-        put_instr(RESET_INSTR_INDEX + 30, enc_vsync(5'd11));
-        put_instr(RESET_INSTR_INDEX + 31, enc_vsync(5'd12));
-        put_instr(RESET_INSTR_INDEX + 32,
+        put_instr(RESET_INSTR_INDEX + 28, enc_vsync(5'd11, 5'd12));
+        put_instr(RESET_INSTR_INDEX + 29,
                   enc_addi(5'd1, 5'd0, 12'h300));
-        put_instr(RESET_INSTR_INDEX + 33, enc_vstore(5'd11, 5'd1));
-        put_instr(RESET_INSTR_INDEX + 34,
+        put_instr(RESET_INSTR_INDEX + 30, enc_vstore(5'd11, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 31,
                   enc_addi(5'd1, 5'd0, 12'h320));
-        put_instr(RESET_INSTR_INDEX + 35, enc_vstore(5'd12, 5'd1));
+        put_instr(RESET_INSTR_INDEX + 32, enc_vstore(5'd12, 5'd1));
+
+        // Private accumulator: 1.0 + 1.0*2.0 + 2.0*2.0 = 7.0. Only VSTA
+        // creates an architectural vector destination for VSYNC to observe.
+        put_instr(RESET_INSTR_INDEX + 33,
+                  enc_vlda(5'd6));
+        put_instr(RESET_INSTR_INDEX + 34,
+                  enc_vmac(5'd6, 5'd7));
+        put_instr(RESET_INSTR_INDEX + 35,
+                  enc_vmac(5'd7, 5'd7));
+        put_instr(RESET_INSTR_INDEX + 36,
+                  enc_vsta(5'd13));
+        put_instr(RESET_INSTR_INDEX + 37, enc_vsync(5'd13, 5'd13));
+        put_instr(RESET_INSTR_INDEX + 38,
+                  enc_addi(5'd1, 5'd0, 12'h340));
+        put_instr(RESET_INSTR_INDEX + 39, enc_vstore(5'd13, 5'd1));
 
         // Exercise the real scalar branch unit with a three-iteration loop.
-        put_instr(RESET_INSTR_INDEX + 36,
+        put_instr(RESET_INSTR_INDEX + 40,
                   enc_addi(5'd2, 5'd0, 12'd3));
-        put_instr(RESET_INSTR_INDEX + 37,
+        put_instr(RESET_INSTR_INDEX + 41,
                   enc_addi(5'd2, 5'd2, 12'hfff));
-        put_instr(RESET_INSTR_INDEX + 38,
+        put_instr(RESET_INSTR_INDEX + 42,
                   enc_bne(5'd2, 5'd0, 13'h1ffc));
-        put_instr(RESET_INSTR_INDEX + 39, `RV64_INSTR_EBREAK);
+        // A nonblocking streaming prefetch remains active behind the retired
+        // hint; EBREAK waits for cache quiescence in this test harness.
+        put_instr(RESET_INSTR_INDEX + 43,
+                  enc_addi(5'd1, 5'd0, 12'h380));
+        put_instr(RESET_INSTR_INDEX + 44,
+                  enc_vprfm(5'd1, 4'd2, 1'b1));
+        put_instr(RESET_INSTR_INDEX + 45, `RV64_INSTR_EBREAK);
 
         memory[64] = 64'h0123_4567_89ab_cdef;
         memory[65] = 64'h1111_2222_3333_4444;
@@ -386,10 +453,10 @@ module tb_openrv64_vec_test_top;
         if (!dbg_halted || dbg_error)
             $fatal(1, "vector test top failed halt=%0b error=%0b pc=%x instr=%x",
                    dbg_halted, dbg_error, dbg_pc, dbg_instr);
-        if (dbg_pc != 64'h19c || dbg_instr != `RV64_INSTR_EBREAK)
+        if (dbg_pc != 64'h1b4 || dbg_instr != `RV64_INSTR_EBREAK)
             $fatal(1, "vector test top halted at unexpected instruction");
-        if (dbg_retired != 64'd43)
-            $fatal(1, "vector test top retired %0d instructions, expected 43",
+        if (dbg_retired != 64'd49)
+            $fatal(1, "vector test top retired %0d instructions, expected 49",
                    dbg_retired);
 
         if (memory[72] !== (memory[64] ^ memory[68]) ||
@@ -420,6 +487,11 @@ module tb_openrv64_vec_test_top;
             (memory[102] !== 64'h4000_0000_4000_0000) ||
             (memory[103] !== 64'h4000_0000_4000_0000))
             $fatal(1, "overlapped FP32 multiply result mismatch");
+        if ((memory[104] !== 64'h40e0_0000_40e0_0000) ||
+            (memory[105] !== 64'h40e0_0000_40e0_0000) ||
+            (memory[106] !== 64'h40e0_0000_40e0_0000) ||
+            (memory[107] !== 64'h40e0_0000_40e0_0000))
+            $fatal(1, "instruction-stream private MAC result mismatch");
 
         if (!retry_used_q || (vec_replay_count_q == 0))
             $fatal(1, "instruction-stream LSU did not replay internally");
@@ -435,10 +507,12 @@ module tb_openrv64_vec_test_top;
             $fatal(1, "independent vector arithmetic commands did not overlap");
         if (!vsync_alu_stall_seen_q)
             $fatal(1, "VSYNC did not block on an arithmetic destination");
+        if (!vprfm_seen_q)
+            $fatal(1, "VPRFM descriptor was not accepted");
         if (dbg_vec_busy)
             $fatal(1, "vector unit remained busy after architectural halt");
 
-        $display("PASS: dual-LSU scalar/vector instruction-stream test top");
+        $display("PASS: dual-LSU scalar/vector stream with private MAC");
         $display("      fetched=%0d retired=%0d vec_requests=%0d replays=%0d",
                  fetch_count_q, dbg_retired, vec_request_count_q,
                  vec_replay_count_q);

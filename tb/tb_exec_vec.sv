@@ -25,6 +25,7 @@ module tb_exec_vec;
     wire dispatch_ready;
     reg [TAG_WIDTH-1:0] dispatch_tag;
     reg [`OPENRV64_VEC_OP_WIDTH-1:0] dispatch_op;
+    reg dispatch_acc;
     reg [63:0] dispatch_vtype;
     reg [REG_ADDR_WIDTH-1:0] dispatch_vs1;
     reg [REG_ADDR_WIDTH-1:0] dispatch_vs2;
@@ -100,6 +101,7 @@ module tb_exec_vec;
         .dispatch_valid_i(dispatch_valid),
         .dispatch_ready_o(dispatch_ready),
         .dispatch_tag_i(dispatch_tag), .dispatch_op_i(dispatch_op),
+        .dispatch_acc_i(dispatch_acc),
         .dispatch_vtype_i(dispatch_vtype), .dispatch_vs1_i(dispatch_vs1),
         .dispatch_vs2_i(dispatch_vs2), .dispatch_vd_i(dispatch_vd),
         .rf_read_valid_o(alu_read_valid),
@@ -199,6 +201,37 @@ module tb_exec_vec;
         end
     endtask
 
+    task automatic send_acc;
+        input [TAG_WIDTH-1:0] tag;
+        input [`OPENRV64_VEC_OP_WIDTH-1:0] op;
+        input [63:0] vtype;
+        input [REG_ADDR_WIDTH-1:0] vs1;
+        input [REG_ADDR_WIDTH-1:0] vs2;
+        input [REG_ADDR_WIDTH-1:0] vd;
+        input acc;
+        reg accepted;
+        begin
+            // Operation is part of the ready calculation: accumulator
+            // commands may be blocked while an ordinary command is accepted.
+            // Drive the complete request before waiting for ready.
+            dispatch_tag = tag;
+            dispatch_op = op;
+            dispatch_acc = acc;
+            dispatch_vtype = vtype;
+            dispatch_vs1 = vs1;
+            dispatch_vs2 = vs2;
+            dispatch_vd = vd;
+            dispatch_valid = 1'b1;
+            accepted = 1'b0;
+            while (!accepted) begin
+                @(posedge clk);
+                accepted = dispatch_ready;
+                @(negedge clk);
+            end
+            dispatch_valid = 1'b0;
+        end
+    endtask
+
     task automatic send;
         input [TAG_WIDTH-1:0] tag;
         input [`OPENRV64_VEC_OP_WIDTH-1:0] op;
@@ -207,20 +240,7 @@ module tb_exec_vec;
         input [REG_ADDR_WIDTH-1:0] vs2;
         input [REG_ADDR_WIDTH-1:0] vd;
         begin
-            while (!dispatch_ready) begin
-                @(posedge clk);
-                @(negedge clk);
-            end
-            dispatch_tag = tag;
-            dispatch_op = op;
-            dispatch_vtype = vtype;
-            dispatch_vs1 = vs1;
-            dispatch_vs2 = vs2;
-            dispatch_vd = vd;
-            dispatch_valid = 1'b1;
-            @(posedge clk);
-            @(negedge clk);
-            dispatch_valid = 1'b0;
+            send_acc(tag, op, vtype, vs1, vs2, vd, 1'b0);
         end
     endtask
 
@@ -276,6 +296,7 @@ module tb_exec_vec;
         dispatch_valid = 1'b0;
         dispatch_tag = 8'd0;
         dispatch_op = `OPENRV64_VEC_OP_INVALID;
+        dispatch_acc = 1'b0;
         dispatch_vtype = VTYPE_BIT_M1;
         dispatch_vs1 = 5'd0;
         dispatch_vs2 = 5'd0;
@@ -457,7 +478,141 @@ module tb_exec_vec;
         check_vec(5'd18, {8{32'h4040_0000}}, "overlapped fp32 add");
         check_vec(5'd19, {8{32'h4000_0000}}, "overlapped fp32 multiply");
 
-        $display("PASS: overlapping vtype/LMUL 64-bit/cycle vector arithmetic");
+        // A private accumulator is loaded and exported explicitly, but a
+        // MAC names only its two multiplicands. 1.0 + 1.0*2.0 = 3.0.
+        send(8'd15, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,
+             5'd4, 5'd0, 5'd0);
+        finish_command(8'd15, 1'b0);
+        send(8'd16, `OPENRV64_VEC_OP_VMAC, VTYPE_FP32_M1,
+             5'd4, 5'd5, 5'd0);
+        // The accumulator recurrence blocks another accumulator command, not
+        // independent vector work. This FADD feeds while the 22-cycle VMAC is
+        // still live and completes into its own tagged result context.
+        send(8'd17, `OPENRV64_VEC_OP_FADD, VTYPE_FP32_M1,
+             5'd4, 5'd5, 5'd23);
+        finish_command(8'd16, 1'b0);
+        finish_command(8'd17, 1'b0);
+        check_vec(5'd23, {8{32'h4040_0000}}, "MAC overlap add");
+        send(8'd18, `OPENRV64_VEC_OP_VSTA, VTYPE_FP32_M1,
+             5'd0, 5'd0, 5'd20);
+        finish_command(8'd18, 1'b0);
+        check_vec(5'd20, {8{32'h4040_0000}}, "fp32 private MAC");
+
+        // Narrow products remain FP32 through the addition and round once on
+        // the way back into the native-format accumulator.
+        send(8'd19, `OPENRV64_VEC_OP_VLDA, VTYPE_BF16_M1,
+             5'd7, 5'd0, 5'd0);
+        finish_command(8'd19, 1'b0);
+        send(8'd20, `OPENRV64_VEC_OP_VMAC, VTYPE_BF16_M1,
+             5'd7, 5'd8, 5'd0);
+        finish_command(8'd20, 1'b0);
+        send(8'd21, `OPENRV64_VEC_OP_VSTA, VTYPE_BF16_M1,
+             5'd0, 5'd0, 5'd21);
+        finish_command(8'd21, 1'b0);
+        check_vec(5'd21, {16{16'h4090}}, "bf16 private MAC");
+
+        // A completed but killed VMAC must not leak into private state. Reload
+        // 1.0, kill the pending +2.0 update, then export and observe 1.0.
+        send(8'd22, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,
+             5'd4, 5'd0, 5'd0);
+        finish_command(8'd22, 1'b0);
+        send(8'd23, `OPENRV64_VEC_OP_VMAC, VTYPE_FP32_M1,
+             5'd4, 5'd5, 5'd0);
+        overlap_timeout = 0;
+        while (!complete_valid && (overlap_timeout < 200)) begin
+            @(posedge clk);
+            @(negedge clk);
+            overlap_timeout = overlap_timeout + 1;
+        end
+        if (!complete_valid || (complete_tag != 8'd23))
+            $fatal(1, "killed VMAC did not reach tagged completion");
+        retire_tag = 8'd23;
+        retire_kill = 1'b1;
+        retire_valid = 1'b1;
+        #1;
+        if (!retire_ready)
+            $fatal(1, "completed VMAC kill was not accepted");
+        @(posedge clk);
+        @(negedge clk);
+        retire_valid = 1'b0;
+        retire_kill = 1'b0;
+        send(8'd24, `OPENRV64_VEC_OP_VSTA, VTYPE_FP32_M1,
+             5'd0, 5'd0, 5'd22);
+        finish_command(8'd24, 1'b0);
+        check_vec(5'd22, {8{32'h3f80_0000}}, "killed private MAC");
+
+        send(8'd25, `OPENRV64_VEC_OP_VLDA, VTYPE_FP8_M1,
+             5'd10, 5'd0, 5'd0);
+        finish_command(8'd25, 1'b0);
+        send(8'd26, `OPENRV64_VEC_OP_VMAC, VTYPE_FP8_M1,
+             5'd10, 5'd11, 5'd0);
+        finish_command(8'd26, 1'b0);
+        send(8'd27, `OPENRV64_VEC_OP_VSTA, VTYPE_FP8_M1,
+             5'd0, 5'd0, 5'd24);
+        finish_command(8'd27, 1'b0);
+        check_vec(5'd24, {32{8'h44}}, "fp8 private MAC");
+
+        send(8'd28, `OPENRV64_VEC_OP_VLDA, VTYPE_FP4_M1,
+             5'd13, 5'd0, 5'd0);
+        finish_command(8'd28, 1'b0);
+        send(8'd29, `OPENRV64_VEC_OP_VMAC, VTYPE_FP4_M1,
+             5'd13, 5'd14, 5'd0);
+        finish_command(8'd29, 1'b0);
+        send(8'd30, `OPENRV64_VEC_OP_VSTA, VTYPE_FP4_M1,
+             5'd0, 5'd0, 5'd25);
+        finish_command(8'd30, 1'b0);
+        check_vec(5'd25, {64{4'h5}}, "fp4 private MAC");
+
+        // Different accumulator contexts are independent recurrences. Their
+        // VMAC commands must both feed before the first 22-cycle result exits.
+        send_acc(8'd31, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,
+                 5'd4, 5'd0, 5'd0, 1'b0);
+        send_acc(8'd32, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,
+                 5'd5, 5'd0, 5'd0, 1'b1);
+        finish_command(8'd31, 1'b0);
+        finish_command(8'd32, 1'b0);
+        send_acc(8'd33, `OPENRV64_VEC_OP_VMAC, VTYPE_FP32_M1,
+                 5'd4, 5'd5, 5'd0, 1'b0);
+        send_acc(8'd34, `OPENRV64_VEC_OP_VMAC, VTYPE_FP32_M1,
+                 5'd5, 5'd5, 5'd0, 1'b1);
+        overlap_timeout = 0;
+        overlap_first_fed = 1'b0;
+        overlap_second_fed = 1'b0;
+        while (!(overlap_first_fed && overlap_second_fed) &&
+               (overlap_timeout < 40)) begin
+            @(posedge clk);
+            @(negedge clk);
+            overlap_first_fed = 1'b0;
+            overlap_second_fed = 1'b0;
+            for (overlap_scan = 0; overlap_scan < 8;
+                 overlap_scan = overlap_scan + 1) begin
+                if (dut.slot_valid_q[overlap_scan] &&
+                    (dut.slot_tag_q[overlap_scan] == 8'd33) &&
+                    dut.slot_feed_done_q[overlap_scan])
+                    overlap_first_fed = 1'b1;
+                if (dut.slot_valid_q[overlap_scan] &&
+                    (dut.slot_tag_q[overlap_scan] == 8'd34) &&
+                    dut.slot_feed_done_q[overlap_scan])
+                    overlap_second_fed = 1'b1;
+            end
+            overlap_timeout = overlap_timeout + 1;
+        end
+        if (!(overlap_first_fed && overlap_second_fed))
+            $fatal(1, "dual accumulator VMACs did not overlap");
+        if (complete_valid)
+            $fatal(1, "dual accumulator VMAC completed before both fed");
+        finish_command(8'd33, 1'b0);
+        finish_command(8'd34, 1'b0);
+        send_acc(8'd35, `OPENRV64_VEC_OP_VSTA, VTYPE_FP32_M1,
+                 5'd0, 5'd0, 5'd26, 1'b0);
+        send_acc(8'd36, `OPENRV64_VEC_OP_VSTA, VTYPE_FP32_M1,
+                 5'd0, 5'd0, 5'd27, 1'b1);
+        finish_command(8'd35, 1'b0);
+        finish_command(8'd36, 1'b0);
+        check_vec(5'd26, {8{32'h4040_0000}}, "dual MAC acc0");
+        check_vec(5'd27, {8{32'h40c0_0000}}, "dual MAC acc1");
+
+        $display("PASS: overlapping vector arithmetic and dual private MAC");
         $finish;
     end
 

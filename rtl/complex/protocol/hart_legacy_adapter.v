@@ -60,7 +60,7 @@ module openrv64_ccx_hart_legacy_adapter #(
     reg [7:0] request_wstrb_q;
 
     wire request_fire = req_valid_o && req_ready_i;
-    wire response_match = resp_valid_i &&
+    wire response_identity_match =
         (resp_hart_id_i == HART_ID) &&
         (resp_txn_id_i == request_txn_id_q);
     wire response_fire = resp_ready_o && resp_valid_i;
@@ -84,7 +84,8 @@ module openrv64_ccx_hart_legacy_adapter #(
 
     // A response with the wrong source or transaction identity is not
     // consumed.  A later fabric must route it to its actual endpoint.
-    assign resp_ready_o = (state_q == STATE_WAIT) && response_match;
+    assign resp_ready_o = (state_q == STATE_WAIT) &&
+                          response_identity_match;
     assign core_ready_o = core_valid_i && response_fire;
     assign core_rdata_o = resp_rdata_i;
     assign core_error_o = core_valid_i && response_fire && resp_error_i;

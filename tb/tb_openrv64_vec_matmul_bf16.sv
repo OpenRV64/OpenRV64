@@ -164,16 +164,59 @@ module tb_openrv64_vec_matmul_bf16;
         end
     endfunction
 
-    function automatic integer a_row_sum;
+    function automatic integer a_row_element;
         input integer row;
+        input integer reduction;
         begin
             case (row)
-                0: a_row_sum = 8;
-                1: a_row_sum = 16;
-                2: a_row_sum = 32;
-                3: a_row_sum = 64;
-                default: a_row_sum = 0;
+                0: a_row_element = 1;
+                1: a_row_element = (reduction < 4) ? 1 : 3;
+                2: begin
+                    case (reduction)
+                        0: a_row_element = 1;
+                        1: a_row_element = 2;
+                        2: a_row_element = 3;
+                        3: a_row_element = 4;
+                        4, 5: a_row_element = 5;
+                        default: a_row_element = 6;
+                    endcase
+                end
+                3: a_row_element = 1 + 2 * reduction;
+                default: a_row_element = 0;
             endcase
+        end
+    endfunction
+
+    // VMAC retains its product through the add, then rounds the updated
+    // accumulator to BF16. All test operands are positive integers, so this
+    // integer reference implements the same round-to-nearest-even step.
+    function automatic integer round_uint_to_bf16;
+        input integer value;
+        integer exponent;
+        integer shift;
+        integer significand;
+        integer remainder;
+        integer halfway;
+        begin
+            if (value == 0) begin
+                round_uint_to_bf16 = 0;
+            end else begin
+                exponent = 0;
+                while ((1 << (exponent + 1)) <= value)
+                    exponent = exponent + 1;
+                if (exponent <= 7) begin
+                    round_uint_to_bf16 = value;
+                end else begin
+                    shift = exponent - 7;
+                    significand = value >> shift;
+                    remainder = value & ((1 << shift) - 1);
+                    halfway = 1 << (shift - 1);
+                    if ((remainder > halfway) ||
+                        ((remainder == halfway) && significand[0]))
+                        significand = significand + 1;
+                    round_uint_to_bf16 = significand << shift;
+                end
+            end
         end
     endfunction
 
@@ -197,7 +240,9 @@ module tb_openrv64_vec_matmul_bf16;
     integer timeout;
     integer row;
     integer column;
+    integer reduction;
     integer element_index;
+    integer expected_sum;
     reg [15:0] actual_bf16;
     reg [15:0] expected_bf16;
     initial begin
@@ -227,8 +272,8 @@ module tb_openrv64_vec_matmul_bf16;
                 dbg_halted, dbg_error, dbg_pc, dbg_instr);
         if (dbg_pc != 64'h128 || dbg_instr != 32'h0010_0073)
             $fatal(1, "BF16 matmul halted at unexpected instruction");
-        if (dbg_retired != 64'd727)
-            $fatal(1, "BF16 matmul retired %0d instructions, expected 727",
+        if (dbg_retired != 64'd519)
+            $fatal(1, "BF16 matmul retired %0d instructions, expected 519",
                    dbg_retired);
 
         for (row = 0; row < 4; row = row + 1) begin
@@ -236,8 +281,13 @@ module tb_openrv64_vec_matmul_bf16;
                 element_index = row * 32 + column;
                 actual_bf16 = memory[C_BASE_WORD + (element_index / 4)] >>
                               ((element_index % 4) * 16);
-                expected_bf16 = exact_uint_to_bf16(
-                    a_row_sum(row) * (column + 1));
+                expected_sum = 0;
+                for (reduction = 0; reduction < 8;
+                     reduction = reduction + 1)
+                    expected_sum = round_uint_to_bf16(
+                        expected_sum + a_row_element(row, reduction) *
+                        (column + 1));
+                expected_bf16 = exact_uint_to_bf16(expected_sum);
                 if (actual_bf16 !== expected_bf16)
                     $fatal(1,
                         "BF16 C[%0d][%0d] got=%h expected=%h",
@@ -247,9 +297,9 @@ module tb_openrv64_vec_matmul_bf16;
 
         if (!retry_used_q || (vec_replay_count_q == 0))
             $fatal(1, "BF16 matmul LSU did not replay injected retry");
-        if (vec_request_count_q != 417)
+        if (vec_request_count_q != 225)
             $fatal(1,
-                "BF16 matmul issued %0d vector beats, expected 417",
+                "BF16 matmul issued %0d vector beats, expected 225",
                 vec_request_count_q);
         if (dbg_vec_busy)
             $fatal(1, "vector unit remained busy after BF16 matmul halt");

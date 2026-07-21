@@ -1,13 +1,11 @@
 `timescale 1ns/1ps
 `include "complex/protocol/defs.v"
 
-// Round-robin N-to-one CCX request arbiter with one-to-N response routing.
-//
-// The current external bridge accepts one global transaction at a time.  The
-// selected source index is therefore retained until that transaction's
-// response is consumed.  Request arbitration advances after every accepted
-// request so a continuously requesting low-numbered hart cannot starve its
-// peers.
+// Round-robin N-to-one CCX request arbiter with identity-based response
+// routing.  The crossbar does not impose an outstanding limit: downstream
+// logic applies backpressure at its actual capacity, and responses route by
+// the explicit hart ID carried by CCX.  This permits an L2 to accept a second
+// hart's request while the first hart's line fill is active.
 module openrv64_ccx_crossbar #(
     parameter integer NUM_HARTS = 2,
     parameter integer HART_INDEX_WIDTH =
@@ -68,19 +66,17 @@ module openrv64_ccx_crossbar #(
 );
 
     reg [HART_INDEX_WIDTH-1:0] round_robin_q;
-    reg [HART_INDEX_WIDTH-1:0] active_hart_q;
-    reg active_valid_q;
-
     reg grant_valid;
     reg [HART_INDEX_WIDTH-1:0] grant_hart;
+    reg response_match;
+    reg [HART_INDEX_WIDTH-1:0] response_hart;
     localparam [HART_INDEX_WIDTH-1:0] LAST_HART =
         HART_INDEX_WIDTH'(NUM_HARTS - 1);
     integer scan_index;
     integer candidate_index;
+    integer response_index;
 
     wire mem_request_fire = mem_req_valid_o && mem_req_ready_i;
-    wire mem_response_fire = mem_resp_valid_i && mem_resp_ready_o;
-
     generate
         if ((NUM_HARTS < 1) || (NUM_HARTS > 16)) begin : g_bad_hart_count
             initial
@@ -105,7 +101,6 @@ module openrv64_ccx_crossbar #(
             end
         end
 
-        hart_req_ready_o = {NUM_HARTS{1'b0}};
         mem_req_valid_o = 1'b0;
         mem_req_hart_id_o = {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
         mem_req_txn_id_o = {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
@@ -118,9 +113,8 @@ module openrv64_ccx_crossbar #(
         mem_req_wdata_o = 64'd0;
         mem_req_wstrb_o = 8'd0;
 
-        if (!active_valid_q && grant_valid) begin
+        if (grant_valid) begin
             mem_req_valid_o = 1'b1;
-            hart_req_ready_o[grant_hart] = mem_req_ready_i;
             mem_req_hart_id_o = hart_req_hart_id_i[
                 grant_hart*`OPENRV64_CCX_HART_ID_WIDTH +:
                 `OPENRV64_CCX_HART_ID_WIDTH];
@@ -147,6 +141,12 @@ module openrv64_ccx_crossbar #(
     end
 
     always @* begin
+        hart_req_ready_o = {NUM_HARTS{1'b0}};
+        if (grant_valid)
+            hart_req_ready_o[grant_hart] = mem_req_ready_i;
+    end
+
+    always @* begin
         hart_resp_valid_o = {NUM_HARTS{1'b0}};
         hart_resp_hart_id_o =
             {NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
@@ -155,41 +155,51 @@ module openrv64_ccx_crossbar #(
         hart_resp_rdata_o = {NUM_HARTS*64{1'b0}};
         hart_resp_error_o = {NUM_HARTS{1'b0}};
         hart_resp_sc_success_o = {NUM_HARTS{1'b0}};
-        mem_resp_ready_o = 1'b0;
+        response_match = 1'b0;
+        response_hart = {HART_INDEX_WIDTH{1'b0}};
+        for (response_index = 0; response_index < NUM_HARTS;
+             response_index = response_index + 1) begin
+            if (!response_match &&
+                (mem_resp_hart_id_i == hart_req_hart_id_i[
+                    response_index*`OPENRV64_CCX_HART_ID_WIDTH +:
+                    `OPENRV64_CCX_HART_ID_WIDTH])) begin
+                response_match = 1'b1;
+                response_hart = response_index[HART_INDEX_WIDTH-1:0];
+            end
+        end
 
-        if (active_valid_q) begin
-            hart_resp_valid_o[active_hart_q] = mem_resp_valid_i;
+        if (response_match) begin
+            hart_resp_valid_o[response_hart] = mem_resp_valid_i;
             hart_resp_hart_id_o[
-                active_hart_q*`OPENRV64_CCX_HART_ID_WIDTH +:
+                response_hart*`OPENRV64_CCX_HART_ID_WIDTH +:
                 `OPENRV64_CCX_HART_ID_WIDTH] = mem_resp_hart_id_i;
             hart_resp_txn_id_o[
-                active_hart_q*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                response_hart*`OPENRV64_CCX_TXN_ID_WIDTH +:
                 `OPENRV64_CCX_TXN_ID_WIDTH] = mem_resp_txn_id_i;
-            hart_resp_rdata_o[active_hart_q*64 +: 64] =
+            hart_resp_rdata_o[response_hart*64 +: 64] =
                 mem_resp_rdata_i;
-            hart_resp_error_o[active_hart_q] = mem_resp_error_i;
-            hart_resp_sc_success_o[active_hart_q] =
+            hart_resp_error_o[response_hart] = mem_resp_error_i;
+            hart_resp_sc_success_o[response_hart] =
                 mem_resp_sc_success_i;
-            mem_resp_ready_o = hart_resp_ready_i[active_hart_q];
         end
+    end
+
+    always @* begin
+        mem_resp_ready_o = 1'b0;
+        if (response_match)
+            mem_resp_ready_o = hart_resp_ready_i[response_hart];
     end
 
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             round_robin_q <= {HART_INDEX_WIDTH{1'b0}};
-            active_hart_q <= {HART_INDEX_WIDTH{1'b0}};
-            active_valid_q <= 1'b0;
         end else begin
             if (mem_request_fire) begin
-                active_hart_q <= grant_hart;
-                active_valid_q <= 1'b1;
                 if (grant_hart == LAST_HART)
                     round_robin_q <= {HART_INDEX_WIDTH{1'b0}};
                 else
                     round_robin_q <= grant_hart + 1'b1;
             end
-            if (mem_response_fire)
-                active_valid_q <= 1'b0;
         end
     end
 

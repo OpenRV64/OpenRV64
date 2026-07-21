@@ -5,14 +5,17 @@
 // encoding.  Decode may translate any future custom instruction encoding into
 // these operations without exposing the vector register contents to the scalar
 // core.
-`define OPENRV64_VEC_OP_WIDTH 3
-`define OPENRV64_VEC_OP_INVALID 3'd0
-`define OPENRV64_VEC_OP_AND     3'd1
-`define OPENRV64_VEC_OP_OR      3'd2
-`define OPENRV64_VEC_OP_XOR     3'd3
-`define OPENRV64_VEC_OP_NOT     3'd4
-`define OPENRV64_VEC_OP_FADD    3'd5
-`define OPENRV64_VEC_OP_FMUL    3'd6
+`define OPENRV64_VEC_OP_WIDTH 4
+`define OPENRV64_VEC_OP_INVALID 4'd0
+`define OPENRV64_VEC_OP_AND     4'd1
+`define OPENRV64_VEC_OP_OR      4'd2
+`define OPENRV64_VEC_OP_XOR     4'd3
+`define OPENRV64_VEC_OP_NOT     4'd4
+`define OPENRV64_VEC_OP_FADD    4'd5
+`define OPENRV64_VEC_OP_FMUL    4'd6
+`define OPENRV64_VEC_OP_VLDA    4'd7
+`define OPENRV64_VEC_OP_VSTA    4'd8
+`define OPENRV64_VEC_OP_VMAC    4'd9
 
 // vtype command layout.  Bits 7:0 and vill match architectural RVV vtype:
 //   [2:0] vlmul, [5:3] vsew, [6] vta, [7] vma, [63] vill.

@@ -30,12 +30,13 @@ The next generated implementation is `openrv64_ccx_protocol_wrapper_nh`.
 harts. Slice zero of each packed core port belongs to hart zero. Each generated
 hart endpoint is strapped to `HART_ID_BASE + hart_index`.
 
-The multi-hart wrappers use a round-robin N-to-one request crossbar and retain
-the winning source index until its response completes. The arbitration pointer
-advances on request acceptance. A hart that continuously requests therefore
-cannot hold fixed priority over another requesting hart. The current AXI
-bridge still permits only one transaction globally, so this is arbitration and
-response routing, not yet a multi-outstanding interconnect.
+The multi-hart wrappers use a round-robin N-to-one request crossbar. The
+arbitration pointer advances on request acceptance, so a hart that continuously
+requests cannot hold fixed priority over another requesting hart. Responses
+route by their explicit hart ID rather than by a retained grant. Downstream
+logic therefore sets the real outstanding limit: the cacheless AXI protocol
+wrapper still permits one transaction globally, while the shared L2 can accept
+same-line merge requests from other harts during a fill.
 
 ## Request identity and payload
 
@@ -92,10 +93,9 @@ AXI error responses become CCX errors and then ordinary core bus errors.
 Only CCX READ and WRITE are translated today. Reserved operations complete
 with an error rather than silently degrading into non-atomic AXI traffic.
 
-## Growth path
+## Shared-cache implementation
 
-The next protocol layer should retain the hart endpoints and crossbar-facing
-fields while inserting address-owned home agents before the external bridge.
-Those agents can add shared-cache miss merging, coherence probes, per-line
-serialization, reservation invalidation, and atomic execution without changing
-the external AXI role.
+`openrv64_core_complex_nh` retains these hart endpoints and CCX fields while
+inserting a shared L2 and an AXI/WISHBONE-independent external beat interface.
+See `doc/core_complex.md` for geometry, merge ordering, bus selection, and the
+remaining L1-coherence and atomic limitations.

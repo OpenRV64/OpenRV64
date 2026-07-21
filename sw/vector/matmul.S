@@ -22,6 +22,8 @@
 
     .equ VEC_OPCODE_ALU, 0x0b
     .equ VEC_OPCODE_LSU, 0x2b
+    .equ VEC_OPCODE_ACC, 0x5b
+    .equ VEC_OPCODE_PREFETCH, 0x7b
 
     .macro VSET rs1
     .word ((\rs1 << 15) | (0 << 12) | (0 << 7) | VEC_OPCODE_ALU)
@@ -42,8 +44,9 @@
            (\vd << 7) | VEC_OPCODE_ALU)
     .endm
 
-    .macro VSYNC vreg
-    .word ((\vreg << 15) | (7 << 12) | VEC_OPCODE_ALU)
+    .macro VSYNC vreg1, vreg2
+    .word ((\vreg2 << 20) | (\vreg1 << 15) | (7 << 12) | \
+           VEC_OPCODE_ALU)
     .endm
 
     .macro VLOAD vd, base
@@ -53,6 +56,26 @@
     .macro VSTORE vs3, base
     .word ((\vs3 << 20) | (\base << 15) | (1 << 12) | \
            VEC_OPCODE_LSU)
+    .endm
+
+    /* stream=0 inserts normally; stream=1 is discard-next after consumption. */
+    .macro VPRFM base, lines, stream=0
+    .word (((\lines & 15) << 20) | (\base << 15) | \
+           ((\stream & 1) << 12) | VEC_OPCODE_PREFETCH)
+    .endm
+
+    /* Bit 25 selects one of the two private accumulator contexts. */
+    .macro VLDA acc, vs
+    .word ((\acc << 25) | (\vs << 15) | (0 << 12) | VEC_OPCODE_ACC)
+    .endm
+
+    .macro VSTA acc, vd
+    .word ((\acc << 25) | (1 << 12) | (\vd << 7) | VEC_OPCODE_ACC)
+    .endm
+
+    .macro VMAC acc, vs1, vs2
+    .word ((\acc << 25) | (\vs2 << 20) | (\vs1 << 15) | \
+           (2 << 12) | VEC_OPCODE_ACC)
     .endm
 
     .section .text.startup, "ax", @progbits
@@ -93,13 +116,15 @@ matmul:
     beqz    t2, .Lmatmul_single_block
 
     /*
-     * Two-column-block unroll. The blocks keep independent products and
-     * accumulators, but each accumulator still traverses K in source order.
-     * v2 broadcasts A into both multiplies; v3/v7 hold the two B vectors.
-     * Product/accumulator parity is crossed to suit the split register banks.
+     * Two-column-block unroll. acc0 and acc1 retain the two output vectors;
+     * v2 broadcasts A and v3/v7 hold the two B vectors. Each accumulator
+     * traverses K in source order while the independent recurrences overlap.
      */
     VXOR    8, 8, 8
     VXOR    9, 9, 9
+    VSYNC   8, 9
+    VLDA    0, 8
+    VLDA    1, 9
     mv      t0, a0                 /* packed A row cursor */
     mv      t1, t4                 /* first B column-block cursor */
     slli    t5, a4, 5
@@ -116,25 +141,18 @@ matmul:
     addi    t5, t5, 32
     addi    t2, t2, -1
 
-    VSYNC   2
-    VSYNC   3
-    VSYNC   8
-    VFMUL   5, 2, 3
-    VSYNC   7
-    VSYNC   9
-    VFMUL   4, 2, 7
-
-    VSYNC   5
-    VFADD   8, 8, 5
-    VSYNC   4
-    VFADD   9, 9, 4
+    VSYNC   2, 3
+    VMAC    0, 2, 3
+    VSYNC   2, 7
+    VMAC    1, 2, 7
     bnez    t2, .Lmatmul_pair_k
 
 .Lmatmul_pair_store:
-    VSYNC   8
+    VSTA    0, 8
+    VSTA    1, 9
+    VSYNC   8, 9
     VSTORE  8, 12
     addi    a2, a2, 32
-    VSYNC   9
     VSTORE  9, 12
     addi    a2, a2, 32
     mv      t4, t5                 /* B start after both blocks */
@@ -145,6 +163,8 @@ matmul:
 
 .Lmatmul_single_block:
     VXOR    8, 8, 8
+    VSYNC   8, 8
+    VLDA    0, 8
     mv      t0, a0
     mv      t1, t4
     mv      t2, a4
@@ -156,16 +176,13 @@ matmul:
     VLOAD   3, 6
     addi    t1, t1, 32
     addi    t2, t2, -1
-    VSYNC   2
-    VSYNC   3
-    VSYNC   8
-    VFMUL   5, 2, 3
-    VSYNC   5
-    VFADD   8, 8, 5
+    VSYNC   2, 3
+    VMAC    0, 2, 3
     bnez    t2, .Lmatmul_single_k
 
 .Lmatmul_single_store:
-    VSYNC   8
+    VSTA    0, 8
+    VSYNC   8, 8
     VSTORE  8, 12                  /* C[i][0:8], a2=x12 */
     mv      t4, t1                 /* next B eight-column block */
     mv      t5, t0                 /* packed A start for next row */

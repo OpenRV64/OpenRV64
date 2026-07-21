@@ -4,8 +4,10 @@
 // FP32 execution lane used by the narrow vector formats.  FP4, FP8 and BF16
 // operands are expanded exactly to FP32, operated on here, and then rounded
 // to their destination format.  This is faithful for the implemented BF16
-// add and multiply operations; a future fused multiply-add must instead avoid
-// an intermediate FP32 rounding.  There is no FP64 datapath in this module.
+// add and multiply operations. The MAC mode keeps narrow products in FP32
+// through the add, then rounds once to the accumulator format. FP32 MAC still
+// rounds its product before addition and is not an IEEE fused FMA. There is no
+// FP64 datapath in this module.
 module openrv64_exec_vec_fp32_lane #(
     parameter integer TAG_WIDTH = 2,
     parameter integer PIPELINE_STAGES = 11
@@ -17,8 +19,10 @@ module openrv64_exec_vec_fp32_lane #(
     output wire                     ready_o,
     input  wire [TAG_WIDTH-1:0]     tag_i,
     input  wire                     multiply_i,
+    input  wire                     mac_i,
     input  wire [31:0]              src1_i,
     input  wire [31:0]              src2_i,
+    input  wire [31:0]              src3_i,
     output wire                     result_valid_o,
     input  wire                     result_ready_i,
     output wire [TAG_WIDTH-1:0]     result_tag_o,
@@ -323,12 +327,17 @@ module openrv64_exec_vec_fp32_lane #(
     endfunction
 
     reg [PIPELINE_STAGES-1:0] valid_q;
+    reg [PIPELINE_STAGES-1:0] mac_mode_q;
     reg [TAG_WIDTH-1:0] tag_q [0:PIPELINE_STAGES-1];
     reg [31:0] result_q [0:PIPELINE_STAGES-1];
+    reg [31:0] acc_q [0:PIPELINE_STAGES-1];
+    localparam integer MAC_ADD_STAGE = PIPELINE_STAGES / 2;
 
     // A globally stalled token pipeline preserves one-slice-per-cycle
-    // throughput while keeping tags aligned.  PIPELINE_STAGES is a timing
-    // implementation parameter, not architectural state.
+    // throughput while keeping tags aligned. MAC tokens compute and register
+    // their product at stage zero, then cross a second registered add boundary
+    // halfway through the pipe. PIPELINE_STAGES is a timing implementation
+    // parameter, not architectural state.
     wire pipeline_advance = !valid_q[PIPELINE_STAGES-1] || result_ready_i;
     assign ready_o = pipeline_advance;
     assign result_valid_o = valid_q[PIPELINE_STAGES-1];
@@ -339,27 +348,41 @@ module openrv64_exec_vec_fp32_lane #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             valid_q <= {PIPELINE_STAGES{1'b0}};
+            mac_mode_q <= {PIPELINE_STAGES{1'b0}};
             for (pipeline_index = 0; pipeline_index < PIPELINE_STAGES;
                  pipeline_index = pipeline_index + 1) begin
                 tag_q[pipeline_index] <= {TAG_WIDTH{1'b0}};
                 result_q[pipeline_index] <= 32'd0;
+                acc_q[pipeline_index] <= 32'd0;
             end
         end else if (flush_i) begin
             valid_q <= {PIPELINE_STAGES{1'b0}};
+            mac_mode_q <= {PIPELINE_STAGES{1'b0}};
         end else if (pipeline_advance) begin
             for (pipeline_index = PIPELINE_STAGES - 1;
                  pipeline_index > 0;
                  pipeline_index = pipeline_index - 1) begin
                 valid_q[pipeline_index] <= valid_q[pipeline_index-1];
+                mac_mode_q[pipeline_index] <=
+                    mac_mode_q[pipeline_index-1];
                 tag_q[pipeline_index] <= tag_q[pipeline_index-1];
                 result_q[pipeline_index] <= result_q[pipeline_index-1];
+                acc_q[pipeline_index] <= acc_q[pipeline_index-1];
             end
             valid_q[0] <= valid_i;
+            mac_mode_q[0] <= valid_i && mac_i;
             tag_q[0] <= tag_i;
-            if (valid_i)
-                result_q[0] <= multiply_i ?
+            if (valid_i) begin
+                result_q[0] <= (mac_i || multiply_i) ?
                     multiply_fp32(src1_i, src2_i) :
                     add_fp32(src1_i, src2_i);
+                acc_q[0] <= src3_i;
+            end
+            if (valid_q[MAC_ADD_STAGE-1] &&
+                mac_mode_q[MAC_ADD_STAGE-1])
+                result_q[MAC_ADD_STAGE] <= add_fp32(
+                    acc_q[MAC_ADD_STAGE-1],
+                    result_q[MAC_ADD_STAGE-1]);
         end
     end
 
@@ -386,6 +409,7 @@ module openrv64_exec_vec #(
     parameter integer MAX_LMUL = 8,
     parameter integer LMUL_WIDTH = 2,
     parameter integer FP_PIPELINE_STAGES = 11,
+    parameter integer MAC_PIPELINE_STAGES = 22,
     parameter integer INFLIGHT_DEPTH = 8,
     parameter integer SLICE_ADDR_WIDTH =
         ((VLEN / DATAPATH_WIDTH) <= 1) ? 1 :
@@ -398,6 +422,7 @@ module openrv64_exec_vec #(
     output wire                         dispatch_ready_o,
     input  wire [TAG_WIDTH-1:0]         dispatch_tag_i,
     input  wire [`OPENRV64_VEC_OP_WIDTH-1:0] dispatch_op_i,
+    input  wire                         dispatch_acc_i,
     input  wire [`OPENRV64_VEC_VTYPE_WIDTH-1:0] dispatch_vtype_i,
     input  wire [REG_ADDR_WIDTH-1:0]    dispatch_vs1_i,
     input  wire [REG_ADDR_WIDTH-1:0]    dispatch_vs2_i,
@@ -855,7 +880,8 @@ module openrv64_exec_vec #(
                 .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
                 .valid_i(fp_feed_valid), .ready_o(lane_ready[lane_index]),
                 .tag_i(feed_index_q), .multiply_i(fp_multiply),
-                .src1_i(lane_src1), .src2_i(lane_src2),
+                .mac_i(1'b0), .src1_i(lane_src1), .src2_i(lane_src2),
+                .src3_i(32'd0),
                 .result_valid_o(lane_result_valid[lane_index]),
                 .result_ready_i(lane_result_ready),
                 .result_tag_o(lane_result_tag[lane_index]),
@@ -1126,6 +1152,7 @@ module openrv64_exec_vec #(
     reg [`OPENRV64_VEC_FMT_WIDTH-1:0]
         slot_fmt_q [0:INFLIGHT_DEPTH-1];
     reg [LMUL_WIDTH-1:0] slot_lmul_q [0:INFLIGHT_DEPTH-1];
+    reg slot_acc_q [0:INFLIGHT_DEPTH-1];
     reg [REG_ADDR_WIDTH-1:0] slot_vs1_q [0:INFLIGHT_DEPTH-1];
     reg [REG_ADDR_WIDTH-1:0] slot_vs2_q [0:INFLIGHT_DEPTH-1];
     reg [REG_ADDR_WIDTH-1:0] slot_vd_q [0:INFLIGHT_DEPTH-1];
@@ -1136,6 +1163,13 @@ module openrv64_exec_vec #(
         slot_result_count_q [0:INFLIGHT_DEPTH-1];
     reg [DATAPATH_WIDTH-1:0]
         result_slice_q [0:INFLIGHT_DEPTH-1][0:CHUNKS-1];
+
+    // Two private accumulator groups. They are deliberately absent from the
+    // architectural vector register namespace and change only at retirement.
+    reg acc_valid_q [0:1];
+    reg [`OPENRV64_VEC_FMT_WIDTH-1:0] acc_fmt_q [0:1];
+    reg [LMUL_WIDTH-1:0] acc_lmul_q [0:1];
+    reg [DATAPATH_WIDTH-1:0] acc_slice_q [0:1][0:CHUNKS-1];
 
     reg [SLOT_WIDTH-1:0] alloc_tail_q;
     reg [SLOT_WIDTH-1:0] retire_head_q;
@@ -1155,6 +1189,10 @@ module openrv64_exec_vec #(
     wire dispatch_fp_op =
         (dispatch_op_i == `OPENRV64_VEC_OP_FADD) ||
         (dispatch_op_i == `OPENRV64_VEC_OP_FMUL);
+    wire dispatch_vlda = dispatch_op_i == `OPENRV64_VEC_OP_VLDA;
+    wire dispatch_vsta = dispatch_op_i == `OPENRV64_VEC_OP_VSTA;
+    wire dispatch_vmac = dispatch_op_i == `OPENRV64_VEC_OP_VMAC;
+    wire dispatch_acc_op = dispatch_vlda || dispatch_vsta || dispatch_vmac;
     wire [2:0] dispatch_vsew = dispatch_vtype_i[
         `OPENRV64_VEC_VTYPE_VSEW_LSB +: 3];
     wire [`OPENRV64_VEC_VTYPE_XFMT_WIDTH-1:0] dispatch_xfmt =
@@ -1207,11 +1245,38 @@ module openrv64_exec_vec #(
     wire dispatch_vtype_common_valid =
         !dispatch_vtype_i[`OPENRV64_VEC_VTYPE_VILL_BIT] &&
         (dispatch_vtype_i[62:11] == 0) && dispatch_lmul_supported;
+    wire dispatch_regs_valid = dispatch_vlda ? dispatch_vs1_valid :
+        dispatch_vsta ? dispatch_vd_valid :
+        dispatch_vmac ? (dispatch_vs1_valid && dispatch_vs2_valid) :
+        (dispatch_vs1_valid && dispatch_vs2_valid && dispatch_vd_valid);
+    wire dispatch_acc_state_valid = (!dispatch_vsta && !dispatch_vmac) ||
+        (acc_valid_q[dispatch_acc_i] &&
+         (acc_fmt_q[dispatch_acc_i] == dispatch_fmt) &&
+         (acc_lmul_q[dispatch_acc_i] == dispatch_lmul));
     wire dispatch_unsupported = !dispatch_vtype_common_valid ||
-        !dispatch_vs1_valid || !dispatch_vs2_valid || !dispatch_vd_valid ||
-        (!dispatch_bit_op && !(dispatch_fp_op && dispatch_fmt_supported));
+        !dispatch_regs_valid ||
+        (!dispatch_bit_op &&
+         !((dispatch_fp_op || dispatch_acc_op) &&
+           dispatch_fmt_supported)) ||
+        (dispatch_acc_op && !dispatch_acc_state_valid);
 
-    assign dispatch_ready_o = used_count_q < INFLIGHT_DEPTH;
+    reg [1:0] acc_op_live;
+    integer acc_live_scan;
+    always @* begin
+        acc_op_live = 2'b00;
+        for (acc_live_scan = 0; acc_live_scan < INFLIGHT_DEPTH;
+             acc_live_scan = acc_live_scan + 1)
+            if (slot_valid_q[acc_live_scan] &&
+                ((slot_op_q[acc_live_scan] == `OPENRV64_VEC_OP_VLDA) ||
+                 (slot_op_q[acc_live_scan] == `OPENRV64_VEC_OP_VSTA) ||
+                 (slot_op_q[acc_live_scan] == `OPENRV64_VEC_OP_VMAC)))
+                acc_op_live[slot_acc_q[acc_live_scan]] = 1'b1;
+    end
+
+    // Commands serialize only against the same accumulator recurrence. The
+    // other accumulator and ordinary vector commands remain independent.
+    assign dispatch_ready_o = (used_count_q < INFLIGHT_DEPTH) &&
+        (!dispatch_acc_op || !acc_op_live[dispatch_acc_i]);
     wire dispatch_fire = dispatch_valid_i && dispatch_ready_o;
 
     // Oldest not-yet-fed context owns the shared RF read and lane input.
@@ -1252,8 +1317,15 @@ module openrv64_exec_vec #(
     wire feed_fp_op =
         (slot_op_q[feed_slot] == `OPENRV64_VEC_OP_FADD) ||
         (slot_op_q[feed_slot] == `OPENRV64_VEC_OP_FMUL);
+    wire feed_vlda = slot_op_q[feed_slot] == `OPENRV64_VEC_OP_VLDA;
+    wire feed_vsta = slot_op_q[feed_slot] == `OPENRV64_VEC_OP_VSTA;
+    wire feed_vmac = slot_op_q[feed_slot] == `OPENRV64_VEC_OP_VMAC;
+    wire feed_needs_src1 = !feed_vsta;
     wire feed_needs_src2 =
-        slot_op_q[feed_slot] != `OPENRV64_VEC_OP_NOT;
+        (slot_op_q[feed_slot] == `OPENRV64_VEC_OP_AND) ||
+        (slot_op_q[feed_slot] == `OPENRV64_VEC_OP_OR) ||
+        (slot_op_q[feed_slot] == `OPENRV64_VEC_OP_XOR) ||
+        feed_fp_op || feed_vmac;
     wire feed_killed_now = retire_valid_i && retire_kill_i &&
         slot_valid_q[feed_slot] &&
         (retire_tag_i == slot_tag_q[feed_slot]);
@@ -1262,20 +1334,25 @@ module openrv64_exec_vec #(
 
     wire [FP_LANES-1:0] lane_ready;
     wire all_lane_ready = &lane_ready;
+    wire [FP_LANES-1:0] mac_lane_ready;
+    wire all_mac_lane_ready = &mac_lane_ready;
     wire [DATAPATH_WIDTH-1:0] src1_chunk =
         rf_read_data_i[0*DATAPATH_WIDTH +: DATAPATH_WIDTH];
     wire [DATAPATH_WIDTH-1:0] src2_chunk =
         rf_read_data_i[1*DATAPATH_WIDTH +: DATAPATH_WIDTH];
     wire fp_zero_early = feed_fp_op &&
                          (src1_chunk == 0) && (src2_chunk == 0);
-    assign rf_read_valid_o[0] = execution_reads &&
-        (feed_bit_op || fp_zero_early || all_lane_ready);
+    wire feed_engine_ready = feed_bit_op || feed_vlda || feed_vsta ||
+        fp_zero_early || (feed_fp_op && all_lane_ready) ||
+        (feed_vmac && all_mac_lane_ready);
+    assign rf_read_valid_o[0] = execution_reads && feed_needs_src1 &&
+                                feed_engine_ready;
     assign rf_read_valid_o[1] = rf_read_valid_o[0] && feed_needs_src2;
     assign rf_read_addr_o = {
         slot_vs2_q[feed_slot] + feed_reg_offset,
         slot_vs1_q[feed_slot] + feed_reg_offset};
     assign rf_read_slice_o = {2{feed_slice}};
-    wire rf_reads_ready = rf_read_ready_i[0] &&
+    wire rf_reads_ready = (!rf_read_valid_o[0] || rf_read_ready_i[0]) &&
         (!rf_read_valid_o[1] || rf_read_ready_i[1]);
 
     wire [DATAPATH_WIDTH-1:0] bit_src1_chunk = src1_chunk;
@@ -1298,13 +1375,24 @@ module openrv64_exec_vec #(
 
     wire bit_exec_fire = execution_reads && feed_bit_op &&
                          rf_read_valid_o[0] && rf_reads_ready;
+    wire acc_copy_exec_fire = execution_reads && (feed_vlda || feed_vsta) &&
+        feed_engine_ready && rf_reads_ready &&
+        (!feed_needs_src1 || rf_read_valid_o[0]);
+    wire [DATAPATH_WIDTH-1:0] acc_copy_result_chunk =
+        feed_vlda ? src1_chunk :
+        acc_slice_q[slot_acc_q[feed_slot]][feed_index];
     wire fp_feed_valid = execution_reads && feed_fp_op &&
                          rf_reads_ready && !fp_zero_early;
+    wire mac_feed_valid = execution_reads && feed_vmac &&
+                          rf_reads_ready;
     wire fp_multiply = slot_op_q[feed_slot] == `OPENRV64_VEC_OP_FMUL;
     wire fp_lane_feed_fire = fp_feed_valid && all_lane_ready;
+    wire mac_lane_feed_fire = mac_feed_valid && all_mac_lane_ready;
     wire fp_early_fire = execution_reads && feed_fp_op &&
                          rf_reads_ready && fp_zero_early;
-    wire feed_fire = bit_exec_fire || fp_lane_feed_fire || fp_early_fire;
+    wire feed_fire = bit_exec_fire || acc_copy_exec_fire ||
+                     fp_lane_feed_fire || mac_lane_feed_fire ||
+                     fp_early_fire;
     wire feed_last = feed_fire && (feed_index == feed_chunk_count - 1'b1);
     wire [TOKEN_TAG_WIDTH-1:0] feed_token_tag =
         {feed_slot, feed_index};
@@ -1319,6 +1407,16 @@ module openrv64_exec_vec #(
         lane_result_tag[0][CHUNK_INDEX_WIDTH-1:0];
     wire fp_lane_flush = 1'b0;
 
+    wire [FP_LANES-1:0] mac_lane_result_valid;
+    wire [TOKEN_TAG_WIDTH-1:0]
+        mac_lane_result_tag [0:FP_LANES-1];
+    wire [31:0] mac_lane_result [0:FP_LANES-1];
+    wire mac_result_fire = mac_lane_result_valid[0];
+    wire [SLOT_WIDTH-1:0] mac_result_slot =
+        mac_lane_result_tag[0][TOKEN_TAG_WIDTH-1 -: SLOT_WIDTH];
+    wire [CHUNK_INDEX_WIDTH-1:0] mac_result_index =
+        mac_lane_result_tag[0][CHUNK_INDEX_WIDTH-1:0];
+
     genvar lane_index;
     generate
         for (lane_index = 0; lane_index < FP_LANES;
@@ -1327,6 +1425,10 @@ module openrv64_exec_vec #(
                 src1_chunk, slot_fmt_q[feed_slot], lane_index);
             wire [31:0] lane_src2 = lane_to_fp32(
                 src2_chunk, slot_fmt_q[feed_slot], lane_index);
+            wire [31:0] lane_acc = lane_to_fp32(
+                acc_slice_q[slot_acc_q[feed_slot]][feed_index],
+                slot_fmt_q[feed_slot],
+                lane_index);
             openrv64_exec_vec_fp32_lane #(
                 .TAG_WIDTH(TOKEN_TAG_WIDTH),
                 .PIPELINE_STAGES(FP_PIPELINE_STAGES)
@@ -1334,11 +1436,27 @@ module openrv64_exec_vec #(
                 .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
                 .valid_i(fp_feed_valid), .ready_o(lane_ready[lane_index]),
                 .tag_i(feed_token_tag), .multiply_i(fp_multiply),
-                .src1_i(lane_src1), .src2_i(lane_src2),
+                .mac_i(1'b0), .src1_i(lane_src1), .src2_i(lane_src2),
+                .src3_i(32'd0),
                 .result_valid_o(lane_result_valid[lane_index]),
                 .result_ready_i(1'b1),
                 .result_tag_o(lane_result_tag[lane_index]),
                 .result_o(lane_result[lane_index])
+            );
+            openrv64_exec_vec_fp32_lane #(
+                .TAG_WIDTH(TOKEN_TAG_WIDTH),
+                .PIPELINE_STAGES(MAC_PIPELINE_STAGES)
+            ) u_mac_lane (
+                .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
+                .valid_i(mac_feed_valid),
+                .ready_o(mac_lane_ready[lane_index]),
+                .tag_i(feed_token_tag), .multiply_i(1'b0), .mac_i(1'b1),
+                .src1_i(lane_src1), .src2_i(lane_src2),
+                .src3_i(lane_acc),
+                .result_valid_o(mac_lane_result_valid[lane_index]),
+                .result_ready_i(1'b1),
+                .result_tag_o(mac_lane_result_tag[lane_index]),
+                .result_o(mac_lane_result[lane_index])
             );
         end
     endgenerate
@@ -1374,6 +1492,40 @@ module openrv64_exec_vec #(
             end
             default:
                 fp_result_chunk = {DATAPATH_WIDTH{1'b0}};
+        endcase
+    end
+
+    reg [DATAPATH_WIDTH-1:0] mac_result_chunk;
+    integer mac_pack_index;
+    always @* begin
+        mac_result_chunk = {DATAPATH_WIDTH{1'b0}};
+        case (slot_fmt_q[mac_result_slot])
+            `OPENRV64_VEC_FMT_FP4_E2M1: begin
+                for (mac_pack_index = 0; mac_pack_index < 16;
+                     mac_pack_index = mac_pack_index + 1)
+                    mac_result_chunk[mac_pack_index*4 +: 4] =
+                        fp32_to_fp4(mac_lane_result[mac_pack_index]);
+            end
+            `OPENRV64_VEC_FMT_FP8_E4M3: begin
+                for (mac_pack_index = 0; mac_pack_index < 8;
+                     mac_pack_index = mac_pack_index + 1)
+                    mac_result_chunk[mac_pack_index*8 +: 8] =
+                        fp32_to_fp8(mac_lane_result[mac_pack_index]);
+            end
+            `OPENRV64_VEC_FMT_BF16: begin
+                for (mac_pack_index = 0; mac_pack_index < 4;
+                     mac_pack_index = mac_pack_index + 1)
+                    mac_result_chunk[mac_pack_index*16 +: 16] =
+                        fp32_to_bf16(mac_lane_result[mac_pack_index]);
+            end
+            `OPENRV64_VEC_FMT_FP32: begin
+                for (mac_pack_index = 0; mac_pack_index < 2;
+                     mac_pack_index = mac_pack_index + 1)
+                    mac_result_chunk[mac_pack_index*32 +: 32] =
+                        mac_lane_result[mac_pack_index];
+            end
+            default:
+                mac_result_chunk = {DATAPATH_WIDTH{1'b0}};
         endcase
     end
 
@@ -1417,11 +1569,17 @@ module openrv64_exec_vec #(
     assign rf_write_slice_o = write_index_q % BASE_CHUNKS;
     assign rf_write_data_o =
         result_slice_q[retire_head_q][write_index_q];
-    assign rf_write_valid_o = commit_request &&
+    wire head_acc_write =
+        (slot_op_q[retire_head_q] == `OPENRV64_VEC_OP_VLDA) ||
+        (slot_op_q[retire_head_q] == `OPENRV64_VEC_OP_VMAC);
+    assign rf_write_valid_o = commit_request && !head_acc_write &&
                               !slot_unsupported_q[retire_head_q];
     wire rf_write_fire = rf_write_valid_o && rf_write_ready_i;
+    wire acc_write_fire = commit_request && head_acc_write &&
+                          !slot_unsupported_q[retire_head_q];
     wire write_last = write_index_q == head_chunk_count - 1'b1;
-    wire final_write_commit = rf_write_fire && write_last;
+    wire final_write_commit = (rf_write_fire || acc_write_fire) &&
+                              write_last;
     wire unsupported_commit = commit_request &&
                               slot_unsupported_q[retire_head_q];
     wire kill_ready = retire_valid_i && retire_kill_i &&
@@ -1444,6 +1602,7 @@ module openrv64_exec_vec #(
 
     integer slot_index;
     integer result_index;
+    integer acc_index;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             alloc_tail_q <= {SLOT_WIDTH{1'b0}};
@@ -1451,6 +1610,15 @@ module openrv64_exec_vec #(
             used_count_q <= {USED_WIDTH{1'b0}};
             write_index_q <= {CHUNK_INDEX_WIDTH{1'b0}};
             write_started_q <= 1'b0;
+            for (acc_index = 0; acc_index < 2; acc_index = acc_index + 1) begin
+                acc_valid_q[acc_index] <= 1'b0;
+                acc_fmt_q[acc_index] <= `OPENRV64_VEC_FMT_FP4_E2M1;
+                acc_lmul_q[acc_index] <= {LMUL_WIDTH{1'b0}};
+                for (result_index = 0; result_index < CHUNKS;
+                     result_index = result_index + 1)
+                    acc_slice_q[acc_index][result_index] <=
+                        {DATAPATH_WIDTH{1'b0}};
+            end
             for (slot_index = 0; slot_index < INFLIGHT_DEPTH;
                  slot_index = slot_index + 1) begin
                 slot_valid_q[slot_index] <= 1'b0;
@@ -1461,6 +1629,7 @@ module openrv64_exec_vec #(
                 slot_op_q[slot_index] <= `OPENRV64_VEC_OP_INVALID;
                 slot_fmt_q[slot_index] <= `OPENRV64_VEC_FMT_FP4_E2M1;
                 slot_lmul_q[slot_index] <= {LMUL_WIDTH{1'b0}};
+                slot_acc_q[slot_index] <= 1'b0;
                 slot_vs1_q[slot_index] <= {REG_ADDR_WIDTH{1'b0}};
                 slot_vs2_q[slot_index] <= {REG_ADDR_WIDTH{1'b0}};
                 slot_vd_q[slot_index] <= {REG_ADDR_WIDTH{1'b0}};
@@ -1484,6 +1653,7 @@ module openrv64_exec_vec #(
                 slot_op_q[alloc_tail_q] <= dispatch_op_i;
                 slot_fmt_q[alloc_tail_q] <= dispatch_fmt;
                 slot_lmul_q[alloc_tail_q] <= dispatch_lmul;
+                slot_acc_q[alloc_tail_q] <= dispatch_acc_i;
                 slot_vs1_q[alloc_tail_q] <= dispatch_vs1_i;
                 slot_vs2_q[alloc_tail_q] <= dispatch_vs2_i;
                 slot_vd_q[alloc_tail_q] <= dispatch_vd_i;
@@ -1503,28 +1673,45 @@ module openrv64_exec_vec #(
             end
             if (bit_exec_fire)
                 result_slice_q[feed_slot][feed_index] <= bit_result_chunk;
+            if (acc_copy_exec_fire)
+                result_slice_q[feed_slot][feed_index] <=
+                    acc_copy_result_chunk;
             if (fp_early_fire)
                 result_slice_q[feed_slot][feed_index] <=
                     {DATAPATH_WIDTH{1'b0}};
             if (fp_result_fire)
                 result_slice_q[fp_result_slot][fp_result_index] <=
                     fp_result_chunk;
+            if (mac_result_fire)
+                result_slice_q[mac_result_slot][mac_result_index] <=
+                    mac_result_chunk;
 
             for (slot_index = 0; slot_index < INFLIGHT_DEPTH;
                  slot_index = slot_index + 1) begin
-                if ((fp_result_fire &&
-                     (fp_result_slot == slot_index)) &&
-                    ((fp_early_fire || bit_exec_fire) &&
-                     (feed_slot == slot_index))) begin
-                    slot_result_count_q[slot_index] <=
-                        slot_result_count_q[slot_index] + 2'd2;
-                end else if ((fp_result_fire &&
-                              (fp_result_slot == slot_index)) ||
-                             ((fp_early_fire || bit_exec_fire) &&
-                              (feed_slot == slot_index))) begin
-                    slot_result_count_q[slot_index] <=
-                        slot_result_count_q[slot_index] + 1'b1;
-                end
+                case ({
+                    fp_result_fire &&
+                        (fp_result_slot ==
+                         slot_index[SLOT_WIDTH-1:0]),
+                    mac_result_fire &&
+                        (mac_result_slot ==
+                         slot_index[SLOT_WIDTH-1:0]),
+                    (fp_early_fire || bit_exec_fire ||
+                     acc_copy_exec_fire) &&
+                        (feed_slot == slot_index[SLOT_WIDTH-1:0])})
+                    3'b001, 3'b010, 3'b100:
+                        slot_result_count_q[slot_index] <=
+                            slot_result_count_q[slot_index] + 1'b1;
+                    3'b011, 3'b101, 3'b110:
+                        slot_result_count_q[slot_index] <=
+                            slot_result_count_q[slot_index] +
+                            {{(CHUNK_INDEX_WIDTH-1){1'b0}}, 2'd2};
+                    3'b111:
+                        slot_result_count_q[slot_index] <=
+                            slot_result_count_q[slot_index] +
+                            {{(CHUNK_INDEX_WIDTH-1){1'b0}}, 2'd3};
+                    default: begin
+                    end
+                endcase
             end
 
             if (complete_fire) begin
@@ -1532,7 +1719,18 @@ module openrv64_exec_vec #(
                 write_index_q <= {CHUNK_INDEX_WIDTH{1'b0}};
                 write_started_q <= 1'b0;
             end
-            if (rf_write_fire) begin
+            if (acc_write_fire) begin
+                acc_slice_q[slot_acc_q[retire_head_q]][write_index_q] <=
+                    result_slice_q[retire_head_q][write_index_q];
+                if (write_last) begin
+                    acc_valid_q[slot_acc_q[retire_head_q]] <= 1'b1;
+                    acc_fmt_q[slot_acc_q[retire_head_q]] <=
+                        slot_fmt_q[retire_head_q];
+                    acc_lmul_q[slot_acc_q[retire_head_q]] <=
+                        slot_lmul_q[retire_head_q];
+                end
+            end
+            if (rf_write_fire || acc_write_fire) begin
                 write_started_q <= 1'b1;
                 if (!write_last)
                     write_index_q <= write_index_q + 1'b1;
@@ -1574,6 +1772,8 @@ module openrv64_exec_vec #(
         if ((INFLIGHT_DEPTH < 2) ||
             ((INFLIGHT_DEPTH & (INFLIGHT_DEPTH - 1)) != 0))
             $fatal(1, "vector in-flight depth must be a power of two >= 2");
+        if (MAC_PIPELINE_STAGES < 2)
+            $fatal(1, "vector MAC pipeline requires at least two stages");
     end
 
     always @(posedge clk) begin
@@ -1586,6 +1786,19 @@ module openrv64_exec_vec #(
                     if (!lane_result_valid[check_lane] ||
                         (lane_result_tag[check_lane] != lane_result_tag[0]))
                         $fatal(1, "vector FP lanes lost pipeline lockstep");
+                end
+            end
+            if (mac_result_fire) begin
+                if (!slot_valid_q[mac_result_slot])
+                    $fatal(1, "vector MAC result targeted a free context");
+                if (slot_op_q[mac_result_slot] != `OPENRV64_VEC_OP_VMAC)
+                    $fatal(1, "vector MAC result targeted a non-MAC context");
+                for (check_lane = 1; check_lane < FP_LANES;
+                     check_lane = check_lane + 1) begin
+                    if (!mac_lane_result_valid[check_lane] ||
+                        (mac_lane_result_tag[check_lane] !=
+                         mac_lane_result_tag[0]))
+                        $fatal(1, "vector MAC lanes lost pipeline lockstep");
                 end
             end
             if (dispatch_fire) begin

@@ -17,6 +17,11 @@ module openrv64_vec_test_top #(
     parameter logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0100,
     parameter integer VLEN = 256,
     parameter integer DATAPATH_WIDTH = 64,
+    parameter integer VEC_CACHE_DATA_WIDTH = 256,
+    parameter integer VEC_CACHE_BYTES = 256 * 1024,
+    parameter integer VEC_CACHE_LINE_BYTES = 64,
+    parameter integer VEC_CACHE_WAYS = 4,
+    parameter integer VEC_CACHE_MSHRS = 8,
     parameter integer TAG_WIDTH = 8,
     parameter integer MEM_TAG_WIDTH = 8,
     parameter integer VEC_INFLIGHT_DEPTH = 8
@@ -57,7 +62,7 @@ module openrv64_vec_test_top #(
     localparam integer REG_ADDR_WIDTH = 5;
     localparam integer MAX_LMUL = 8;
     localparam integer LMUL_WIDTH = 2;
-    localparam integer LSU_MEM_TAG_WIDTH = MEM_TAG_WIDTH - 1;
+    localparam integer LSU_MEM_TAG_WIDTH = TAG_WIDTH;
     localparam integer NUM_VEC_REGS = 32;
     localparam integer VEC_QUEUE_PTR_WIDTH =
         (VEC_INFLIGHT_DEPTH <= 1) ? 1 : $clog2(VEC_INFLIGHT_DEPTH);
@@ -135,9 +140,13 @@ module openrv64_vec_test_top #(
     wire [REG_ADDR_WIDTH-1:0] instr_rd = `RV64_RD(instr_q);
     wire [REG_ADDR_WIDTH-1:0] instr_rs1 = `RV64_RS1(instr_q);
     wire [REG_ADDR_WIDTH-1:0] instr_rs2 = `RV64_RS2(instr_q);
+    wire instr_acc_select =
+        instr_q[`OPENRV64_VEC_INSTR_ACC_SELECT_BIT];
 
     wire instr_is_vec_alu =
         instr_opcode == `OPENRV64_VEC_INSTR_OPCODE_ALU;
+    wire instr_is_vec_acc =
+        instr_opcode == `OPENRV64_VEC_INSTR_OPCODE_ACC;
     wire instr_is_vec_lsu =
         instr_opcode == `OPENRV64_VEC_INSTR_OPCODE_LSU;
     wire instr_is_vset = instr_is_vec_alu &&
@@ -145,36 +154,63 @@ module openrv64_vec_test_top #(
         (instr_rd == 0) && (instr_rs2 == 0) && (instr_q[31:25] == 0);
     wire instr_is_vsync = instr_is_vec_alu &&
         (instr_funct3 == `OPENRV64_VEC_INSTR_FUNCT3_VSYNC) &&
-        (instr_rd == 0) && (instr_rs2 == 0) && (instr_q[31:25] == 0);
+        (instr_rd == 0) && (instr_q[31:25] == 0);
+    wire instr_is_vprfm =
+        (instr_opcode == `OPENRV64_VEC_INSTR_OPCODE_PREFETCH) &&
+        ((instr_funct3 == `OPENRV64_VEC_INSTR_FUNCT3_VPRFM_AGED) ||
+         (instr_funct3 == `OPENRV64_VEC_INSTR_FUNCT3_VPRFM_STREAM)) &&
+        (instr_rd == 0) && (instr_q[31:24] == 0);
 
     logic [`OPENRV64_VEC_OP_WIDTH-1:0] decoded_vec_op;
     logic decoded_vec_alu_valid;
     always_comb begin
         decoded_vec_op = `OPENRV64_VEC_OP_INVALID;
         decoded_vec_alu_valid = 1'b1;
-        case (instr_funct3)
-            `OPENRV64_VEC_INSTR_FUNCT3_AND:
-                decoded_vec_op = `OPENRV64_VEC_OP_AND;
-            `OPENRV64_VEC_INSTR_FUNCT3_OR:
-                decoded_vec_op = `OPENRV64_VEC_OP_OR;
-            `OPENRV64_VEC_INSTR_FUNCT3_XOR:
-                decoded_vec_op = `OPENRV64_VEC_OP_XOR;
-            `OPENRV64_VEC_INSTR_FUNCT3_NOT:
-                decoded_vec_op = `OPENRV64_VEC_OP_NOT;
-            `OPENRV64_VEC_INSTR_FUNCT3_FADD:
-                decoded_vec_op = `OPENRV64_VEC_OP_FADD;
-            `OPENRV64_VEC_INSTR_FUNCT3_FMUL:
-                decoded_vec_op = `OPENRV64_VEC_OP_FMUL;
-            default: begin
-                decoded_vec_alu_valid = 1'b0;
-            end
-        endcase
+        if (instr_is_vec_alu) begin
+            case (instr_funct3)
+                `OPENRV64_VEC_INSTR_FUNCT3_AND:
+                    decoded_vec_op = `OPENRV64_VEC_OP_AND;
+                `OPENRV64_VEC_INSTR_FUNCT3_OR:
+                    decoded_vec_op = `OPENRV64_VEC_OP_OR;
+                `OPENRV64_VEC_INSTR_FUNCT3_XOR:
+                    decoded_vec_op = `OPENRV64_VEC_OP_XOR;
+                `OPENRV64_VEC_INSTR_FUNCT3_NOT:
+                    decoded_vec_op = `OPENRV64_VEC_OP_NOT;
+                `OPENRV64_VEC_INSTR_FUNCT3_FADD:
+                    decoded_vec_op = `OPENRV64_VEC_OP_FADD;
+                `OPENRV64_VEC_INSTR_FUNCT3_FMUL:
+                    decoded_vec_op = `OPENRV64_VEC_OP_FMUL;
+                default: decoded_vec_alu_valid = 1'b0;
+            endcase
+        end else if (instr_is_vec_acc) begin
+            case (instr_funct3)
+                `OPENRV64_VEC_INSTR_FUNCT3_VLDA:
+                    decoded_vec_op = `OPENRV64_VEC_OP_VLDA;
+                `OPENRV64_VEC_INSTR_FUNCT3_VSTA:
+                    decoded_vec_op = `OPENRV64_VEC_OP_VSTA;
+                `OPENRV64_VEC_INSTR_FUNCT3_VMAC:
+                    decoded_vec_op = `OPENRV64_VEC_OP_VMAC;
+                default: decoded_vec_alu_valid = 1'b0;
+            endcase
+        end else begin
+            decoded_vec_alu_valid = 1'b0;
+        end
     end
-    wire instr_is_vec_arith = instr_is_vec_alu &&
-                              !instr_is_vset &&
-                              !instr_is_vsync &&
-                              decoded_vec_alu_valid &&
-                              (instr_q[31:25] == 0);
+    wire instr_vec_acc_fields_valid =
+        ((decoded_vec_op == `OPENRV64_VEC_OP_VLDA) &&
+         (instr_rd == 0) && (instr_rs2 == 0)) ||
+        ((decoded_vec_op == `OPENRV64_VEC_OP_VSTA) &&
+         (instr_rs1 == 0) && (instr_rs2 == 0)) ||
+        ((decoded_vec_op == `OPENRV64_VEC_OP_VMAC) &&
+         (instr_rd == 0));
+    wire instr_is_vec_arith = decoded_vec_alu_valid &&
+        ((instr_is_vec_alu && (instr_q[31:25] == 0) &&
+          !instr_is_vset && !instr_is_vsync) ||
+         (instr_is_vec_acc && (instr_q[31:26] == 0) &&
+          instr_vec_acc_fields_valid));
+    wire decoded_vec_writes_vreg =
+        (decoded_vec_op != `OPENRV64_VEC_OP_VLDA) &&
+        (decoded_vec_op != `OPENRV64_VEC_OP_VMAC);
     wire instr_is_vec_load = instr_is_vec_lsu &&
         (instr_funct3 == `OPENRV64_VEC_INSTR_FUNCT3_LOAD) &&
         (instr_rs2 == 0) && (instr_q[31:25] == 0);
@@ -252,7 +288,8 @@ module openrv64_vec_test_top #(
         .extension_decode_possible_o(scalar_extension_decode)
     );
 
-    wire custom_reads_scalar_rs1 = instr_is_vset || instr_is_vec_lsu;
+    wire custom_reads_scalar_rs1 = instr_is_vset || instr_is_vec_lsu ||
+                                   instr_is_vprfm;
     wire vec_lsu_gpr_read_valid;
     wire vec_lsu_gpr_read_ready;
     wire [REG_ADDR_WIDTH-1:0] vec_lsu_gpr_read_addr;
@@ -387,6 +424,7 @@ module openrv64_vec_test_top #(
         .dispatch_valid_i(vec_alu_dispatch_valid),
         .dispatch_ready_o(vec_alu_dispatch_ready),
         .dispatch_tag_i(next_tag_q), .dispatch_op_i(decoded_vec_op),
+        .dispatch_acc_i(instr_acc_select),
         .dispatch_vtype_i(vtype_q), .dispatch_vs1_i(instr_rs1),
         .dispatch_vs2_i(instr_rs2), .dispatch_vd_i(instr_rd),
         .rf_read_valid_o(vec_alu_rf_read_valid),
@@ -456,20 +494,28 @@ module openrv64_vec_test_top #(
     wire [LSU_MEM_TAG_WIDTH-1:0] vec_read_mem_req_tag;
     wire vec_read_mem_req_write;
     wire [63:0] vec_read_mem_req_addr;
-    wire [DATAPATH_WIDTH-1:0] vec_read_mem_req_wdata;
-    wire [(DATAPATH_WIDTH/8)-1:0] vec_read_mem_req_wstrb;
+    wire [VEC_CACHE_DATA_WIDTH-1:0] vec_read_mem_req_wdata;
+    wire [(VEC_CACHE_DATA_WIDTH/8)-1:0] vec_read_mem_req_wstrb;
     wire vec_read_mem_resp_valid;
     wire vec_read_mem_resp_ready;
+    wire [LSU_MEM_TAG_WIDTH-1:0] vec_read_mem_resp_tag;
+    wire [VEC_CACHE_DATA_WIDTH-1:0] vec_read_mem_resp_rdata;
+    wire vec_read_mem_resp_error;
+    wire vec_read_mem_resp_retry;
 
     wire vec_lsu_mem_req_valid;
     wire vec_lsu_mem_req_ready;
     wire [LSU_MEM_TAG_WIDTH-1:0] vec_lsu_mem_req_tag;
     wire vec_lsu_mem_req_write;
     wire [63:0] vec_lsu_mem_req_addr;
-    wire [DATAPATH_WIDTH-1:0] vec_lsu_mem_req_wdata;
-    wire [(DATAPATH_WIDTH/8)-1:0] vec_lsu_mem_req_wstrb;
+    wire [VEC_CACHE_DATA_WIDTH-1:0] vec_lsu_mem_req_wdata;
+    wire [(VEC_CACHE_DATA_WIDTH/8)-1:0] vec_lsu_mem_req_wstrb;
     wire vec_lsu_mem_resp_valid;
     wire vec_lsu_mem_resp_ready;
+    wire [LSU_MEM_TAG_WIDTH-1:0] vec_lsu_mem_resp_tag;
+    wire [VEC_CACHE_DATA_WIDTH-1:0] vec_lsu_mem_resp_rdata;
+    wire vec_lsu_mem_resp_error;
+    wire vec_lsu_mem_resp_retry;
 
     wire vec_read_available = !vec_read_active_q &&
                               vec_read_dispatch_ready;
@@ -496,6 +542,7 @@ module openrv64_vec_test_top #(
     openrv64_exec_vec_lsu #(
         .VLEN(VLEN), .DATAPATH_WIDTH(DATAPATH_WIDTH),
         .TAG_WIDTH(TAG_WIDTH), .MEM_TAG_WIDTH(LSU_MEM_TAG_WIDTH),
+        .MEM_DATA_WIDTH(VEC_CACHE_DATA_WIDTH),
         .QUEUE_DEPTH(1),
         .MAX_LMUL(MAX_LMUL), .LMUL_WIDTH(LMUL_WIDTH)
     ) u_vec_lsu (
@@ -542,10 +589,10 @@ module openrv64_vec_test_top #(
         .mem_req_wstrb_o(vec_lsu_mem_req_wstrb),
         .mem_resp_valid_i(vec_lsu_mem_resp_valid),
         .mem_resp_ready_o(vec_lsu_mem_resp_ready),
-        .mem_resp_tag_i(vec_mem_resp_tag_i[LSU_MEM_TAG_WIDTH-1:0]),
-        .mem_resp_rdata_i(vec_mem_resp_rdata_i),
-        .mem_resp_error_i(vec_mem_resp_error_i),
-        .mem_resp_retry_i(vec_mem_resp_retry_i),
+        .mem_resp_tag_i(vec_lsu_mem_resp_tag),
+        .mem_resp_rdata_i(vec_lsu_mem_resp_rdata),
+        .mem_resp_error_i(vec_lsu_mem_resp_error),
+        .mem_resp_retry_i(vec_lsu_mem_resp_retry),
         .replay_o(vec_lsu_replay), .busy_o(vec_lsu_busy)
     );
 
@@ -558,6 +605,7 @@ module openrv64_vec_test_top #(
     openrv64_exec_vec_lsu #(
         .VLEN(VLEN), .DATAPATH_WIDTH(DATAPATH_WIDTH),
         .TAG_WIDTH(TAG_WIDTH), .MEM_TAG_WIDTH(LSU_MEM_TAG_WIDTH),
+        .MEM_DATA_WIDTH(VEC_CACHE_DATA_WIDTH),
         .QUEUE_DEPTH(1), .READ_ONLY(1),
         .MAX_LMUL(MAX_LMUL), .LMUL_WIDTH(LMUL_WIDTH)
     ) u_vec_read_lsu (
@@ -602,52 +650,110 @@ module openrv64_vec_test_top #(
         .mem_req_wstrb_o(vec_read_mem_req_wstrb),
         .mem_resp_valid_i(vec_read_mem_resp_valid),
         .mem_resp_ready_o(vec_read_mem_resp_ready),
-        .mem_resp_tag_i(vec_mem_resp_tag_i[LSU_MEM_TAG_WIDTH-1:0]),
-        .mem_resp_rdata_i(vec_mem_resp_rdata_i),
-        .mem_resp_error_i(vec_mem_resp_error_i),
-        .mem_resp_retry_i(vec_mem_resp_retry_i),
+        .mem_resp_tag_i(vec_read_mem_resp_tag),
+        .mem_resp_rdata_i(vec_read_mem_resp_rdata),
+        .mem_resp_error_i(vec_read_mem_resp_error),
+        .mem_resp_retry_i(vec_read_mem_resp_retry),
         .replay_o(vec_read_replay), .busy_o(vec_read_busy)
     );
 
-    // Both LSUs share the exclusive 64-bit stream. The top tag bit selects
-    // the LSU on response; the remaining bits retain each LSU's local beat
-    // tag. Round-robin arbitration lets either stream consume each available
-    // beat without starving a primary store.
-    logic mem_prefer_read_q;
-    wire mem_grant_read = vec_read_mem_req_valid &&
-        (!vec_lsu_mem_req_valid || mem_prefer_read_q);
-    wire mem_grant_lsu = vec_lsu_mem_req_valid && !mem_grant_read;
-    assign vec_mem_req_valid_o = mem_grant_read || mem_grant_lsu;
-    assign vec_mem_req_tag_o = mem_grant_read ?
-        {1'b1, vec_read_mem_req_tag} : {1'b0, vec_lsu_mem_req_tag};
-    assign vec_mem_req_write_o = mem_grant_lsu && vec_lsu_mem_req_write;
-    assign vec_mem_req_addr_o = mem_grant_read ? vec_read_mem_req_addr :
-                                vec_lsu_mem_req_addr;
-    assign vec_mem_req_wdata_o = mem_grant_read ? vec_read_mem_req_wdata :
-                                 vec_lsu_mem_req_wdata;
-    assign vec_mem_req_wstrb_o = mem_grant_read ? vec_read_mem_req_wstrb :
-                                 vec_lsu_mem_req_wstrb;
-    assign vec_read_mem_req_ready = vec_mem_req_ready_i && mem_grant_read;
-    assign vec_lsu_mem_req_ready = vec_mem_req_ready_i && mem_grant_lsu;
+    // The two VLSUs use 256-bit cache-side beats while the exclusive external
+    // stream remains DATAPATH_WIDTH wide. The cache owns line-fill tags,
+    // external retries, and source routing; adding another VLSU only widens
+    // these packed client vectors.
+    wire [1:0] vec_cache_client_req_valid =
+        {vec_read_mem_req_valid, vec_lsu_mem_req_valid};
+    wire [1:0] vec_cache_client_req_ready;
+    wire [2*LSU_MEM_TAG_WIDTH-1:0] vec_cache_client_req_tag =
+        {vec_read_mem_req_tag, vec_lsu_mem_req_tag};
+    wire [1:0] vec_cache_client_req_write =
+        {vec_read_mem_req_write, vec_lsu_mem_req_write};
+    wire [2*64-1:0] vec_cache_client_req_addr =
+        {vec_read_mem_req_addr, vec_lsu_mem_req_addr};
+    wire [2*VEC_CACHE_DATA_WIDTH-1:0] vec_cache_client_req_wdata =
+        {vec_read_mem_req_wdata, vec_lsu_mem_req_wdata};
+    wire [2*(VEC_CACHE_DATA_WIDTH/8)-1:0] vec_cache_client_req_wstrb =
+        {vec_read_mem_req_wstrb, vec_lsu_mem_req_wstrb};
+    wire [1:0] vec_cache_client_resp_valid;
+    wire [1:0] vec_cache_client_resp_ready =
+        {vec_read_mem_resp_ready, vec_lsu_mem_resp_ready};
+    wire [2*LSU_MEM_TAG_WIDTH-1:0] vec_cache_client_resp_tag;
+    wire [2*VEC_CACHE_DATA_WIDTH-1:0] vec_cache_client_resp_rdata;
+    wire [1:0] vec_cache_client_resp_error;
+    wire [1:0] vec_cache_client_resp_retry;
+    wire vec_cache_prefetch_ready;
+    wire vec_cache_prefetch_busy;
+    wire vec_cache_replay;
+    wire vec_cache_busy;
 
-    assign vec_read_mem_resp_valid = vec_mem_resp_valid_i &&
-                                     vec_mem_resp_tag_i[MEM_TAG_WIDTH-1];
-    assign vec_lsu_mem_resp_valid = vec_mem_resp_valid_i &&
-                                    !vec_mem_resp_tag_i[MEM_TAG_WIDTH-1];
-    assign vec_mem_resp_ready_o = vec_mem_resp_tag_i[MEM_TAG_WIDTH-1] ?
-                                  vec_read_mem_resp_ready :
-                                  vec_lsu_mem_resp_ready;
+    assign vec_lsu_mem_req_ready = vec_cache_client_req_ready[0];
+    assign vec_read_mem_req_ready = vec_cache_client_req_ready[1];
+    assign vec_lsu_mem_resp_valid = vec_cache_client_resp_valid[0];
+    assign vec_read_mem_resp_valid = vec_cache_client_resp_valid[1];
+    assign vec_lsu_mem_resp_tag = vec_cache_client_resp_tag[
+        0 +: LSU_MEM_TAG_WIDTH];
+    assign vec_read_mem_resp_tag = vec_cache_client_resp_tag[
+        LSU_MEM_TAG_WIDTH +: LSU_MEM_TAG_WIDTH];
+    assign vec_lsu_mem_resp_rdata = vec_cache_client_resp_rdata[
+        0 +: VEC_CACHE_DATA_WIDTH];
+    assign vec_read_mem_resp_rdata = vec_cache_client_resp_rdata[
+        VEC_CACHE_DATA_WIDTH +: VEC_CACHE_DATA_WIDTH];
+    assign vec_lsu_mem_resp_error = vec_cache_client_resp_error[0];
+    assign vec_read_mem_resp_error = vec_cache_client_resp_error[1];
+    assign vec_lsu_mem_resp_retry = vec_cache_client_resp_retry[0];
+    assign vec_read_mem_resp_retry = vec_cache_client_resp_retry[1];
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            mem_prefer_read_q <= 1'b1;
-        end else if (vec_mem_req_valid_o && vec_mem_req_ready_i) begin
-            if (mem_grant_read)
-                mem_prefer_read_q <= 1'b0;
-            else
-                mem_prefer_read_q <= 1'b1;
-        end
-    end
+    wire vec_cache_prefetch_valid = (state_q == STATE_EXEC) &&
+        instr_is_vprfm && !vec_read_gpr_read_valid &&
+        !vec_lsu_gpr_read_valid;
+
+    openrv64_vec_sram_cache #(
+        .ADDR_WIDTH(64),
+        .CLIENT_DATA_WIDTH(VEC_CACHE_DATA_WIDTH),
+        .MEM_DATA_WIDTH(DATAPATH_WIDTH),
+        .CLIENTS(2), .CLIENT_TAG_WIDTH(LSU_MEM_TAG_WIDTH),
+        .MEM_TAG_WIDTH(MEM_TAG_WIDTH),
+        .CACHE_BYTES(VEC_CACHE_BYTES),
+        .LINE_BYTES(VEC_CACHE_LINE_BYTES),
+        .WAYS(VEC_CACHE_WAYS), .MSHRS(VEC_CACHE_MSHRS)
+    ) u_vec_cache (
+        .clk(clk), .rst_n(rst_n),
+        .client_req_valid_i(vec_cache_client_req_valid),
+        .client_req_ready_o(vec_cache_client_req_ready),
+        .client_req_tag_i(vec_cache_client_req_tag),
+        .client_req_write_i(vec_cache_client_req_write),
+        .client_req_addr_i(vec_cache_client_req_addr),
+        .client_req_wdata_i(vec_cache_client_req_wdata),
+        .client_req_wstrb_i(vec_cache_client_req_wstrb),
+        .client_resp_valid_o(vec_cache_client_resp_valid),
+        .client_resp_ready_i(vec_cache_client_resp_ready),
+        .client_resp_tag_o(vec_cache_client_resp_tag),
+        .client_resp_rdata_o(vec_cache_client_resp_rdata),
+        .client_resp_error_o(vec_cache_client_resp_error),
+        .client_resp_retry_o(vec_cache_client_resp_retry),
+        .prefetch_valid_i(vec_cache_prefetch_valid),
+        .prefetch_ready_o(vec_cache_prefetch_ready),
+        .prefetch_addr_i(gpr_rs1_data),
+        .prefetch_count_i(instr_q[23:20]),
+        .prefetch_streaming_i(
+            instr_funct3 ==
+            `OPENRV64_VEC_INSTR_FUNCT3_VPRFM_STREAM),
+        .prefetch_busy_o(vec_cache_prefetch_busy),
+        .mem_req_valid_o(vec_mem_req_valid_o),
+        .mem_req_ready_i(vec_mem_req_ready_i),
+        .mem_req_tag_o(vec_mem_req_tag_o),
+        .mem_req_write_o(vec_mem_req_write_o),
+        .mem_req_addr_o(vec_mem_req_addr_o),
+        .mem_req_wdata_o(vec_mem_req_wdata_o),
+        .mem_req_wstrb_o(vec_mem_req_wstrb_o),
+        .mem_resp_valid_i(vec_mem_resp_valid_i),
+        .mem_resp_ready_o(vec_mem_resp_ready_o),
+        .mem_resp_tag_i(vec_mem_resp_tag_i),
+        .mem_resp_rdata_i(vec_mem_resp_rdata_i),
+        .mem_resp_error_i(vec_mem_resp_error_i),
+        .mem_resp_retry_i(vec_mem_resp_retry_i),
+        .replay_o(vec_cache_replay), .busy_o(vec_cache_busy)
+    );
 
     wire [3:0] vec_rf_read_valid =
         {vec_read_rf_read_valid, vec_lsu_rf_read_valid,
@@ -716,9 +822,10 @@ module openrv64_vec_test_top #(
         .write_data_i(vec_rf_write_data)
     );
 
-    assign dbg_vec_busy_o = vec_alu_busy || vec_lsu_busy || vec_read_busy;
+    assign dbg_vec_busy_o = vec_alu_busy || vec_lsu_busy || vec_read_busy ||
+                            vec_cache_busy;
     assign dbg_vec_replay_o = vec_alu_replay || vec_lsu_replay ||
-                              vec_read_replay;
+                              vec_read_replay || vec_cache_replay;
 
     // Only the primary LSU uses the blocking complete/retire frontend states.
     // Arithmetic completion and writeback proceed independently below.
@@ -750,7 +857,8 @@ module openrv64_vec_test_top #(
                 pending_vec_write_mask = pending_vec_write_mask |
                     vec_alu_write_mask_q[pending_writer_index];
     end
-    wire vsync_wait = pending_vec_write_mask[instr_rs1];
+    wire vsync_wait = pending_vec_write_mask[instr_rs1] ||
+                      pending_vec_write_mask[instr_rs2];
 
     integer vec_writer_reset_index;
     always_ff @(posedge clk or negedge rst_n) begin
@@ -774,8 +882,10 @@ module openrv64_vec_test_top #(
             if (vec_alu_dispatch_fire) begin
                 vec_alu_write_valid_q[vec_alu_write_tail_q] <= 1'b1;
                 vec_alu_write_mask_q[vec_alu_write_tail_q] <=
+                    decoded_vec_writes_vreg ?
                     vec_group_mask(instr_rd, vtype_q[
-                        `OPENRV64_VEC_VTYPE_VLMUL_LSB +: LMUL_WIDTH]);
+                        `OPENRV64_VEC_VTYPE_VLMUL_LSB +: LMUL_WIDTH]) :
+                    {NUM_VEC_REGS{1'b0}};
                 vec_alu_write_tag_q[vec_alu_write_tail_q] <= next_tag_q;
                 vec_alu_write_tail_q <= vec_alu_write_tail_q + 1'b1;
             end
@@ -876,6 +986,13 @@ module openrv64_vec_test_top #(
                         state_q <= STATE_FETCH;
                     end else if (instr_is_vsync) begin
                         if (!vsync_wait) begin
+                            pc_q <= pc_q + 64'd4;
+                            retired_q <= retired_q + 64'd1;
+                            state_q <= STATE_FETCH;
+                        end
+                    end else if (instr_is_vprfm) begin
+                        if (vec_cache_prefetch_valid &&
+                            vec_cache_prefetch_ready) begin
                             pc_q <= pc_q + 64'd4;
                             retired_q <= retired_q + 64'd1;
                             state_q <= STATE_FETCH;
@@ -984,8 +1101,12 @@ module openrv64_vec_test_top #(
         if ((VLEN < DATAPATH_WIDTH) ||
             ((VLEN % DATAPATH_WIDTH) != 0))
             $fatal(1, "VLEN must be a multiple of DATAPATH_WIDTH");
-        if (MEM_TAG_WIDTH < 2)
-            $fatal(1, "dual vector LSUs require a source bit in memory tags");
+        if (VEC_CACHE_DATA_WIDTH < DATAPATH_WIDTH ||
+            ((VEC_CACHE_DATA_WIDTH % DATAPATH_WIDTH) != 0))
+            $fatal(1, "vector-cache width must contain whole RF slices");
+        if (MEM_TAG_WIDTH < ((VEC_CACHE_MSHRS <= 1) ? 1 :
+                            $clog2(VEC_CACHE_MSHRS)))
+            $fatal(1, "external tag width is too narrow for cache MSHRs");
         if ((VEC_INFLIGHT_DEPTH < 2) ||
             ((VEC_INFLIGHT_DEPTH & (VEC_INFLIGHT_DEPTH - 1)) != 0))
             $fatal(1, "vector in-flight depth must be a power of two >= 2");
