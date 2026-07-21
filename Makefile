@@ -140,6 +140,7 @@ GPIO_SIM_BUILD := sim/gpio_tb.vvp
 TIMER_SIM_BUILD := sim/timer_tb.vvp
 ROM_SIM_BUILD := sim/soc_rom_tb.vvp
 MEMORY_SIM_BUILD := sim/soc_memory_tb.vvp
+MEM_CHANNEL_SIM_BUILD := sim/mem_channel_tb.vvp
 SOC_BUS_SIM_BUILD := sim/soc_bus_decode_tb.vvp
 CORE_BUS_SIM_BUILD := sim/core_bus_tb.vvp
 CCX_PROTOCOL_1H_SIM_BUILD := sim/ccx_protocol_1h_tb.vvp
@@ -154,6 +155,10 @@ COMPLEX_BUS_AXI_SIM_BUILD := sim/complex_bus_axi_tb.vvp
 COMPLEX_BUS_WB_SIM_BUILD := sim/complex_bus_wb_tb.vvp
 GENBUS_AXI_SIM_BUILD := sim/genbus_axi_tb.vvp
 GENBUS_WB_SIM_BUILD := sim/genbus_wb_tb.vvp
+GENBUS_WB_32_SIM_BUILD := sim/genbus_wb_32_tb.vvp
+GENBUS_WB_128_SIM_BUILD := sim/genbus_wb_128_tb.vvp
+GENBUS_WB_256_SIM_BUILD := sim/genbus_wb_256_tb.vvp
+GENBUS_WB_512_SIM_BUILD := sim/genbus_wb_512_tb.vvp
 CORE_COMPLEX_2H_AXI_SIM_BUILD := sim/core_complex_2h_axi_tb.vvp
 CORE_COMPLEX_4H_WB_SIM_BUILD := sim/core_complex_4h_wb_tb.vvp
 AXI_BUS_SIM_BUILD := sim/axi_bus_tb.vvp
@@ -224,6 +229,7 @@ VEC_TEST_TOP_SIM_BUILD := sim/openrv64_vec_test_top_tb.vvp
 VEC_CACHE_SIM_BUILD := sim/vec_sram_cache_tb.vvp
 VEC_CACHE_AXI_SIM_BUILD := sim/vec_cache_axi_tb.vvp
 VEC_CACHE_WB_SIM_BUILD := sim/vec_cache_wb_tb.vvp
+VEC_CACHE_WB_512_SIM_BUILD := sim/vec_cache_wb_512_tb.vvp
 VEC_MATMUL_SIM_BUILD := sim/openrv64_vec_matmul_tb.vvp
 VEC_MATMUL_BF16_SIM_BUILD := sim/openrv64_vec_matmul_bf16_tb.vvp
 ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
@@ -316,6 +322,9 @@ GPIO_SRCS := rtl/periph/gpio/gpio.v
 TIMER_SRCS := rtl/periph/timer/timer.v
 ROM_SRCS := rtl/soc/bus/rom.v
 MEMORY_SRCS := rtl/soc/bus/memory.v
+MEM_CHANNEL_SRCS := rtl/soc/memory/timing_dram.v \
+	rtl/soc/memory/timing_ddr4.v rtl/soc/memory/timing_gddr6.v \
+	rtl/soc/memory/timing_hbm2.v rtl/soc/memory/mem_channel.v
 SOC_BUS_SRCS := rtl/soc/bus/mem_map.v rtl/soc/bus/decode.v
 RESET_SEQUENCER_SRCS := rtl/soc/reset_sequencer.v
 PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
@@ -335,6 +344,7 @@ GPIO_SIM_SRCS := tb/tb_gpio.sv
 TIMER_SIM_SRCS := tb/tb_timer.sv
 ROM_SIM_SRCS := tb/tb_soc_rom.sv
 MEMORY_SIM_SRCS := tb/tb_soc_memory.sv
+MEM_CHANNEL_SIM_SRCS := tb/tb_mem_channel.sv
 SOC_BUS_SIM_SRCS := tb/tb_soc_bus_decode.sv
 CORE_BUS_SIM_SRCS := tb/tb_core_bus.sv
 CCX_PROTOCOL_1H_SIM_SRCS := tb/tb_ccx_protocol_1h.sv
@@ -419,15 +429,17 @@ SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/Ope
 .PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-exec-fpu-rv64-fd
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
-	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb sim-vec-test-top \
+	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
+	sim-vec-cache-wb-512 sim-vec-test-top \
 	sim-vec-matmul sim-vec-matmul-bf16
 .PHONY: sim-bp-context-gshare-btb
 .PHONY: yosys-resources-core-sky130
 .PHONY: sim-opensbi-3p sim-opensbi-3p-platform
 .PHONY: sim-l1-cache sim-ccx-protocol-1h sim-ccx-protocol-2h sim-ccx-protocol-4h
 .PHONY: sim-ccx-l2 sim-ccx-l2-widths sim-complex-bus-axi sim-complex-bus-wb
-.PHONY: sim-genbus-axi sim-genbus-wb
+.PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths
 .PHONY: sim-core-complex-2h-axi sim-core-complex-4h-wb
+.PHONY: sim-mem-channel
 
 FORCE:
 
@@ -438,7 +450,7 @@ sim: sim-l1-cache
 sim: sim-ccx-protocol-1h
 sim: sim-ccx-protocol-2h sim-ccx-protocol-4h
 sim: sim-ccx-l2 sim-ccx-l2-widths sim-complex-bus-axi sim-complex-bus-wb
-sim: sim-genbus-axi sim-genbus-wb
+sim: sim-genbus-axi sim-genbus-wb-widths
 sim: sim-core-complex-2h-axi sim-core-complex-4h-wb
 
 sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
@@ -584,6 +596,9 @@ sim-rom: $(ROM_SIM_BUILD)
 sim-memory: $(MEMORY_SIM_BUILD)
 	vvp $(MEMORY_SIM_BUILD)
 
+sim-mem-channel: $(MEM_CHANNEL_SIM_BUILD)
+	vvp $(MEM_CHANNEL_SIM_BUILD)
+
 sim-soc-bus: $(SOC_BUS_SIM_BUILD)
 	vvp $(SOC_BUS_SIM_BUILD)
 
@@ -622,6 +637,15 @@ sim-genbus-axi: $(GENBUS_AXI_SIM_BUILD)
 
 sim-genbus-wb: $(GENBUS_WB_SIM_BUILD)
 	vvp $(GENBUS_WB_SIM_BUILD)
+
+sim-genbus-wb-widths: $(GENBUS_WB_32_SIM_BUILD) \
+		$(GENBUS_WB_SIM_BUILD) $(GENBUS_WB_128_SIM_BUILD) \
+		$(GENBUS_WB_256_SIM_BUILD) $(GENBUS_WB_512_SIM_BUILD)
+	vvp $(GENBUS_WB_32_SIM_BUILD)
+	vvp $(GENBUS_WB_SIM_BUILD)
+	vvp $(GENBUS_WB_128_SIM_BUILD)
+	vvp $(GENBUS_WB_256_SIM_BUILD)
+	vvp $(GENBUS_WB_512_SIM_BUILD)
 
 sim-core-complex-2h-axi: $(CORE_COMPLEX_2H_AXI_SIM_BUILD)
 	vvp $(CORE_COMPLEX_2H_AXI_SIM_BUILD)
@@ -749,7 +773,8 @@ sim-exec-fpu-rv64-fd: $(EXEC_FPU_RV64FD_SIM_BUILD)
 	vvp $(EXEC_FPU_RV64FD_SIM_BUILD)
 
 sim-vec: sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu sim-vec-cache \
-	sim-vec-cache-axi sim-vec-cache-wb sim-vec-test-top \
+	sim-vec-cache-axi sim-vec-cache-wb sim-vec-cache-wb-512 \
+	sim-vec-test-top \
 	sim-vec-matmul sim-vec-matmul-bf16
 
 sim-rv64-i-vec: $(RV64I_VEC_SIM_BUILD)
@@ -769,6 +794,9 @@ sim-vec-cache-axi: $(VEC_CACHE_AXI_SIM_BUILD)
 
 sim-vec-cache-wb: $(VEC_CACHE_WB_SIM_BUILD)
 	vvp $(VEC_CACHE_WB_SIM_BUILD)
+
+sim-vec-cache-wb-512: $(VEC_CACHE_WB_512_SIM_BUILD)
+	vvp $(VEC_CACHE_WB_512_SIM_BUILD)
 
 sim-vec-test-top: $(VEC_TEST_TOP_SIM_BUILD)
 	vvp $(VEC_TEST_TOP_SIM_BUILD)
@@ -1103,6 +1131,12 @@ $(MEMORY_SIM_BUILD): $(MEMORY_SIM_SRCS) $(MEMORY_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(MEMORY_SIM_BUILD) $(MEMORY_SRCS) $(MEMORY_SIM_SRCS)
 
+$(MEM_CHANNEL_SIM_BUILD): $(MEM_CHANNEL_SIM_SRCS) $(MEM_CHANNEL_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_mem_channel \
+		-o $(MEM_CHANNEL_SIM_BUILD) $(MEM_CHANNEL_SRCS) \
+		$(MEM_CHANNEL_SIM_SRCS)
+
 $(SOC_BUS_SIM_BUILD): $(SOC_BUS_SIM_SRCS) $(SOC_BUS_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(SOC_BUS_SIM_BUILD) rtl/soc/bus/decode.v $(SOC_BUS_SIM_SRCS)
@@ -1185,7 +1219,41 @@ $(GENBUS_AXI_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
 $(GENBUS_WB_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_genbus_interface \
-		-Ptb_genbus_interface.BUS_TYPE=1 -o $(GENBUS_WB_SIM_BUILD) \
+		-Ptb_genbus_interface.BUS_TYPE=1 \
+		-Ptb_genbus_interface.DOWN_WIDTH=64 \
+		-o $(GENBUS_WB_SIM_BUILD) \
+		$(COMPLEX_BUS_SRCS) $(GENBUS_SIM_SRCS)
+
+$(GENBUS_WB_32_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_genbus_interface \
+		-Ptb_genbus_interface.BUS_TYPE=1 \
+		-Ptb_genbus_interface.DOWN_WIDTH=32 \
+		-o $(GENBUS_WB_32_SIM_BUILD) \
+		$(COMPLEX_BUS_SRCS) $(GENBUS_SIM_SRCS)
+
+$(GENBUS_WB_128_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_genbus_interface \
+		-Ptb_genbus_interface.BUS_TYPE=1 \
+		-Ptb_genbus_interface.DOWN_WIDTH=128 \
+		-o $(GENBUS_WB_128_SIM_BUILD) \
+		$(COMPLEX_BUS_SRCS) $(GENBUS_SIM_SRCS)
+
+$(GENBUS_WB_256_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_genbus_interface \
+		-Ptb_genbus_interface.BUS_TYPE=1 \
+		-Ptb_genbus_interface.DOWN_WIDTH=256 \
+		-o $(GENBUS_WB_256_SIM_BUILD) \
+		$(COMPLEX_BUS_SRCS) $(GENBUS_SIM_SRCS)
+
+$(GENBUS_WB_512_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_genbus_interface \
+		-Ptb_genbus_interface.BUS_TYPE=1 \
+		-Ptb_genbus_interface.DOWN_WIDTH=512 \
+		-o $(GENBUS_WB_512_SIM_BUILD) \
 		$(COMPLEX_BUS_SRCS) $(GENBUS_SIM_SRCS)
 
 $(CORE_COMPLEX_2H_AXI_SIM_BUILD): $(CORE_COMPLEX_SIM_SRCS) \
@@ -1433,6 +1501,15 @@ $(VEC_CACHE_WB_SIM_BUILD): $(VEC_CACHE_BUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
 		-Ptb_vec_cache_bus.BUS_TYPE=1 \
 		-Ptb_vec_cache_bus.BUS_DATA_WIDTH=64 \
 		-o $(VEC_CACHE_WB_SIM_BUILD) $(COMPLEX_BUS_SRCS) \
+		$(VEC_CACHE_BUS_SIM_SRCS)
+
+$(VEC_CACHE_WB_512_SIM_BUILD): $(VEC_CACHE_BUS_SIM_SRCS) \
+		$(COMPLEX_BUS_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_vec_cache_bus \
+		-Ptb_vec_cache_bus.BUS_TYPE=1 \
+		-Ptb_vec_cache_bus.BUS_DATA_WIDTH=512 \
+		-o $(VEC_CACHE_WB_512_SIM_BUILD) $(COMPLEX_BUS_SRCS) \
 		$(VEC_CACHE_BUS_SIM_SRCS)
 
 $(VEC_TEST_TOP_SIM_BUILD): $(VEC_TEST_TOP_SIM_SRCS) $(VEC_TEST_TOP_DEPS)

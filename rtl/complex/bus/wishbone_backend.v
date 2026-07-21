@@ -1,8 +1,9 @@
 `timescale 1ns/1ps
 
-// WISHBONE Revision B.4 master.  It emits one Classic cycle at a time while
-// honoring the B.4 pipelined STALL acceptance rule.  RTY terminates the
-// attempt and is automatically reissued after a one-cycle bus-idle gap.
+// WISHBONE Revision B.4 Classic-cycle master with an OpenRV64 wide-data
+// extension.  B.4 defines ports only through 64 bits; DATA_WIDTH values above
+// 64 retain the same DAT/SEL/ADR handshake but are intentionally nonstandard.
+// RTY terminates an attempt and is reissued after a one-cycle bus-idle gap.
 module openrv64_complex_wishbone_backend #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
@@ -84,9 +85,10 @@ module openrv64_complex_wishbone_backend #(
     initial begin
         if ((ADDR_WIDTH < 1) || (ADDR_WIDTH > 64))
             $fatal(1, "WISHBONE address width must be from 1 through 64");
-        if ((DATA_WIDTH < 32) || (DATA_WIDTH > 64) ||
+        if ((DATA_WIDTH < 32) || (DATA_WIDTH > 512) ||
             ((DATA_WIDTH & (DATA_WIDTH - 1)) != 0))
-            $fatal(1, "WISHBONE B.4 data width must be 32 or 64 bits");
+            $fatal(1,
+                "OpenRV64 WISHBONE data width must be a power of two from 32 through 512 bits");
         if ((ADDR_SHIFT < 0) || (ADDR_SHIFT > 63))
             $fatal(1, "WISHBONE address shift must be from 0 through 63");
         if (MAX_RETRIES < 0)

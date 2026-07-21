@@ -2,11 +2,16 @@
 `include "complex/bus/defs.v"
 
 module tb_genbus_interface #(
-    parameter integer BUS_TYPE = `OPENRV64_COMPLEX_BUS_AXI
+    parameter integer BUS_TYPE = `OPENRV64_COMPLEX_BUS_AXI,
+    parameter integer DOWN_WIDTH = 64
 );
 
     localparam integer UP_WIDTH = 256;
-    localparam integer DOWN_WIDTH = 64;
+    localparam integer UP_BYTES = UP_WIDTH / 8;
+    localparam integer DOWN_BYTES = DOWN_WIDTH / 8;
+    localparam integer WB_ADDR_SHIFT = $clog2(DOWN_BYTES);
+    localparam integer WB_BEATS_PER_REQUEST =
+        (UP_BYTES > DOWN_BYTES) ? (UP_BYTES / DOWN_BYTES) : 1;
     localparam integer AXI_ID_WIDTH = 3;
     localparam [AXI_ID_WIDTH-1:0] AXI_ID = 3'd6;
     localparam integer ARQ_DEPTH = 16;
@@ -83,7 +88,7 @@ module tb_genbus_interface #(
     wire wb_rty;
     wire [DOWN_WIDTH-1:0] wb_dat_i;
 
-    reg [63:0] memory [0:2047];
+    reg [7:0] memory [0:16383];
     reg [63:0] arq_addr [0:ARQ_DEPTH-1];
     reg [7:0] arq_len [0:ARQ_DEPTH-1];
     reg [2:0] arq_size [0:ARQ_DEPTH-1];
@@ -106,10 +111,12 @@ module tb_genbus_interface #(
 
     integer memory_index;
     integer strobe_index;
+    integer absolute_byte;
     integer wb_accept_count_q;
     reg wb_retry_pending_q;
     reg wb_retry_used_q;
     reg cutthrough_seen_q;
+    reg memory_epoch_q;
 
     wire axi_ar_fire = arvalid && arready;
     wire axi_r_fire = rvalid && rready;
@@ -124,7 +131,9 @@ module tb_genbus_interface #(
     assign rid = AXI_ID;
     assign rvalid = (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) &&
                     allow_axi_reads_q && (arq_count_q != 0);
-    assign rdata = memory[(arq_addr[arq_head_q] >> 3) + ar_beat_q];
+    assign rdata = memory_beat(arq_addr[arq_head_q] +
+                              (ar_beat_q << arq_size[arq_head_q]),
+                              memory_epoch_q);
     assign rresp = 2'b00;
     assign rlast = (ar_beat_q == arq_len[arq_head_q]);
 
@@ -143,7 +152,7 @@ module tb_genbus_interface #(
     assign wb_err = 1'b0;
     assign wb_rty = (BUS_TYPE == `OPENRV64_COMPLEX_BUS_WISHBONE) &&
                     wb_cyc && wb_stb && wb_retry_pending_q;
-    assign wb_dat_i = memory[wb_adr];
+    assign wb_dat_i = memory_beat(wb_adr << WB_ADDR_SHIFT, memory_epoch_q);
 
     genbus_interface #(
         .BUS_TYPE(BUS_TYPE),
@@ -154,7 +163,7 @@ module tb_genbus_interface #(
         .WRITE_BUFFER_DEPTH(4),
         .AXI_ID_WIDTH(AXI_ID_WIDTH),
         .AXI_ID(AXI_ID),
-        .WB_ADDR_SHIFT(3),
+        .WB_ADDR_SHIFT(WB_ADDR_SHIFT),
         .WB_MAX_RETRIES(4)
     ) dut (
         .clk_i(clk), .rst_ni(rst_n),
@@ -204,13 +213,30 @@ module tb_genbus_interface #(
 
     function automatic [255:0] expected_line;
         input [63:0] address;
+        integer byte_index;
         begin
-            expected_line = {
-                memory[(address >> 3) + 3],
-                memory[(address >> 3) + 2],
-                memory[(address >> 3) + 1],
-                memory[(address >> 3)]
-            };
+            expected_line = 0;
+            for (byte_index = 0; byte_index < UP_BYTES;
+                 byte_index = byte_index + 1)
+                expected_line[8*byte_index +: 8] =
+                    memory[address + byte_index];
+        end
+    endfunction
+
+    function automatic [DOWN_WIDTH-1:0] memory_beat;
+        input [63:0] address;
+        input memory_epoch;
+        integer byte_index;
+        integer byte_address;
+        begin
+            // memory_epoch is an explicit simulator sensitivity token. Some
+            // simulators do not infer array reads hidden inside a function.
+            memory_beat = {DOWN_WIDTH{1'b0}};
+            for (byte_index = 0; byte_index < DOWN_BYTES;
+                 byte_index = byte_index + 1) begin
+                byte_address = address + byte_index;
+                memory_beat[8*byte_index +: 8] = memory[byte_address];
+            end
         end
     endfunction
 
@@ -230,6 +256,7 @@ module tb_genbus_interface #(
             wb_accept_count_q <= 0;
             wb_retry_used_q <= 1'b0;
             cutthrough_seen_q <= 1'b0;
+            memory_epoch_q <= 1'b0;
         end else begin
             if (axi_ar_fire) begin
                 if ((arid != AXI_ID) || (arburst != 2'b01) || arlock ||
@@ -268,12 +295,14 @@ module tb_genbus_interface #(
             if (axi_w_fire) begin
                 if (wlast != (aw_beat_q == awq_len[awq_head_q]))
                     $fatal(1, "genbus AXI WLAST is misplaced");
-                for (strobe_index = 0; strobe_index < 8;
+                for (strobe_index = 0; strobe_index < DOWN_BYTES;
                      strobe_index = strobe_index + 1) begin
-                    if (wstrb[strobe_index])
-                        memory[(awq_addr[awq_head_q] >> 3) + aw_beat_q]
-                              [8*strobe_index +: 8] <=
+                    absolute_byte = awq_addr[awq_head_q] +
+                        (aw_beat_q << awq_size[awq_head_q]) + strobe_index;
+                    if (wstrb[strobe_index]) begin
+                        memory[absolute_byte] <=
                             wdata[8*strobe_index +: 8];
+                    end
                 end
                 if (wlast) begin
                     awq_head_q <= (awq_head_q + 1) % AWQ_DEPTH;
@@ -281,6 +310,7 @@ module tb_genbus_interface #(
                 end else begin
                     aw_beat_q <= aw_beat_q + 1;
                 end
+                memory_epoch_q <= ~memory_epoch_q;
             end
             case ({axi_aw_fire, axi_w_last_fire})
                 2'b10: awq_count_q <= awq_count_q + 1;
@@ -301,12 +331,16 @@ module tb_genbus_interface #(
                 if (wb_ack) begin
                     wb_accept_count_q <= wb_accept_count_q + 1;
                     if (wb_we) begin
-                        for (strobe_index = 0; strobe_index < 8;
+                        for (strobe_index = 0; strobe_index < DOWN_BYTES;
                              strobe_index = strobe_index + 1) begin
-                            if (wb_sel[strobe_index])
-                                memory[wb_adr][8*strobe_index +: 8] <=
+                            absolute_byte = (wb_adr << WB_ADDR_SHIFT) +
+                                            strobe_index;
+                            if (wb_sel[strobe_index]) begin
+                                memory[absolute_byte] <=
                                     wb_dat_o[8*strobe_index +: 8];
+                            end
                         end
+                        memory_epoch_q <= ~memory_epoch_q;
                     end
                 end
             end
@@ -371,10 +405,11 @@ module tb_genbus_interface #(
     integer ar_before;
     integer wb_before;
     initial begin
-        for (memory_index = 0; memory_index < 2048;
+        for (memory_index = 0; memory_index < 16384;
              memory_index = memory_index + 1)
-            memory[memory_index] = 64'h9000_0000_0000_0000 |
-                                   memory_index;
+            memory[memory_index] =
+                (64'h9000_0000_0000_0000 | (memory_index >> 3)) >>
+                (8 * (memory_index & 7));
 
         req_valid = 1'b0;
         req_write = 1'b0;
@@ -469,8 +504,12 @@ module tb_genbus_interface #(
             if ((aw_accepted_q != 2) || (awq_len[0] != 8'd3) ||
                 (awq_len[1] != 8'd3))
                 $fatal(1, "AXI write buffering or width burst is wrong");
-        end else if ((wb_accept_count_q - wb_before) != 8) begin
-            $fatal(1, "WISHBONE did not drain two wide writes as eight beats");
+        end else if ((wb_accept_count_q - wb_before) !=
+                     (2 * WB_BEATS_PER_REQUEST)) begin
+            $fatal(1,
+                "WISHBONE width %0d drained two writes in %0d beats, expected %0d",
+                DOWN_WIDTH, wb_accept_count_q - wb_before,
+                2 * WB_BEATS_PER_REQUEST);
         end
 
         send_request(1'b0, 64'h300, 3'd5, 8'd0, 0, 0);
@@ -487,7 +526,7 @@ module tb_genbus_interface #(
 
         $display("PASS: genbus %s buffered reads/writes, width bursts%s",
             (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ? "AXI4" :
-                                                     "WISHBONE B4",
+                                                     "WISHBONE-wide",
             (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ?
                 ", declared coalescing, and read cut-through" : "");
         $finish;

@@ -31,8 +31,9 @@ instruction decode, or element-precise trap restart.
   `rtl/bus/genbus_interface.v`, the same generic width/protocol boundary used
   below the core-complex L2. `CACHE_BUS_DATA_WIDTH` selects the cache producer
   width independently of external `BUS_DATA_WIDTH` and defaults to one complete
-  cache line (512 bits at the default geometry). AXI accepts power-of-two widths
-  from 32 through 512 bits; WISHBONE B.4 remains limited to 32 or 64 bits.
+  cache line (512 bits at the default geometry). Both backends accept
+  power-of-two widths from 32 through 512 bits. WISHBONE widths above 64 bits
+  use the explicitly nonstandard OpenRV64 wide-data extension.
   `GENBUS_READ_BUFFER_DEPTH` and `GENBUS_WRITE_BUFFER_DEPTH` independently size
   the shared boundary queues; the read depth defaults to the cache MSHR count.
 
@@ -292,9 +293,10 @@ descriptor is emitted in batches bounded by the MSHR count, genbus read-buffer
 depth, and AXI's 256-beat limit. Genbus also splits at 4 KiB boundaries. CCX
 does not use this hint and drives its genbus burst count to zero.
 
-The AXI wrapper supports 32, 64, 128, 256, and 512-bit buses. With the default
+The bus wrapper supports 32, 64, 128, 256, and 512-bit buses. With the default
 512-bit cache-side beat, one 64-byte fill becomes one 16-, 8-, 4-, 2-, or
-1-beat AXI burst respectively. WISHBONE supports only 32 and 64 bits. For a
+1-beat AXI burst respectively. WISHBONE uses the same width range, although
+128 bits and above are an OpenRV64 experiment rather than B.4-compliant. For a
 downstream bus wider than the producer transfer, the request is emitted as a
 narrow, correctly lane-positioned transfer; for a narrower bus one neutral
 request becomes consecutive full-width beats in one AXI burst.

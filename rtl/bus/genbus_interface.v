@@ -1049,10 +1049,6 @@ module genbus_interface #(
             $fatal(1, "genbus read buffer depth must be 1 through 32");
         if ((WRITE_BUFFER_DEPTH < 1) || (WRITE_BUFFER_DEPTH > 32))
             $fatal(1, "genbus write buffer depth must be 1 through 32");
-        if ((BUS_TYPE == `OPENRV64_COMPLEX_BUS_WISHBONE) &&
-            (DOWNSTREAM_DATA_WIDTH > 64))
-            $fatal(1,
-                "genbus WISHBONE B.4 downstream width is limited to 32 or 64 bits");
     end
 
     always @(posedge clk_i) begin

@@ -105,9 +105,11 @@ necessary and use addressed byte lanes on wider buses.
 
 `BUS_TYPE` selects `OPENRV64_COMPLEX_BUS_AXI` or
 `OPENRV64_COMPLEX_BUS_WISHBONE` at elaboration. `BUS_DATA_WIDTH` accepts 32,
-64, 128, 256, or 512 bits for AXI. The official WISHBONE B.4 specification
-caps a data port at 64 bits, so that backend accepts 32 or 64 bits; wider
-Wishbone would be a nonstandard extension and is rejected.
+64, 128, 256, or 512 bits for either backend. The official WISHBONE B.4
+specification caps a data port at 64 bits. OpenRV64 deliberately extends the
+same DAT/SEL/ADR and Classic-cycle handshake to 128-, 256-, and 512-bit ports
+for experiments; those widths are nonstandard and are not expected to be
+portable to arbitrary WISHBONE interconnects or peripherals.
 
 ### AXI4
 
@@ -129,7 +131,7 @@ coalescing and speculative detection of unrelated adjacent requests are not
 implemented. Genbus automatically splits a declared group at the 256-beat AXI
 limit and at every 4 KiB boundary.
 
-### WISHBONE B.4
+### WISHBONE B.4 and wide-data extension
 
 The WISHBONE path uses the same admission buffers, then drains the globally
 oldest request. It emits one Classic transfer per genbus beat (`CTI=000`,
@@ -137,6 +139,10 @@ oldest request. It emits one Classic transfer per genbus beat (`CTI=000`,
 accepted under the B.4 `STALL` rule, and then waits for exactly one of `ACK`,
 `ERR`, or `RTY`.  `RTY` inserts an idle cycle and reissues the request;
 `WB_MAX_RETRIES` limits retries, with zero meaning no limit.
+
+Widths above 64 bits are an OpenRV64 extension, not WISHBONE B.4 compliance.
+They change only the widths of `DAT` and byte-select `SEL`; transfer ordering,
+termination, retry behavior, and address-shift semantics remain identical.
 
 The WISHBONE specification defines the lower `ADR` boundary from port size and
 granularity rather than requiring one universal flat-vector convention.

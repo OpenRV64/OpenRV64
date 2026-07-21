@@ -12,7 +12,13 @@ module tb_vec_cache_bus #(
     localparam integer AXI_ID_WIDTH = 3;
     localparam [AXI_ID_WIDTH-1:0] AXI_ID = 3'd5;
     localparam integer BUS_BYTES = BUS_DATA_WIDTH / 8;
+    localparam integer CACHE_BUS_BYTES = CACHE_BUS_DATA_WIDTH / 8;
+    localparam integer CLIENT_BYTES = CLIENT_DATA_WIDTH / 8;
     localparam integer WB_ADDR_SHIFT = $clog2(BUS_BYTES);
+    localparam integer WB_LINE_BEATS =
+        64 / ((BUS_BYTES < CACHE_BUS_BYTES) ? BUS_BYTES : CACHE_BUS_BYTES);
+    localparam integer WB_STORE_BEATS =
+        (CLIENT_BYTES > BUS_BYTES) ? (CLIENT_BYTES / BUS_BYTES) : 1;
 
     reg clk;
     reg rst_n;
@@ -114,15 +120,35 @@ module tb_vec_cache_bus #(
 
     function automatic [BUS_DATA_WIDTH-1:0] bus_pattern;
         input [63:0] address;
-        integer pattern_word;
+        integer pattern_byte;
+        reg [63:0] byte_address;
         reg [63:0] aligned_address;
         begin
             aligned_address = address & ~(BUS_BYTES - 1);
             bus_pattern = {BUS_DATA_WIDTH{1'b0}};
-            for (pattern_word = 0; pattern_word < BUS_BYTES / 8;
-                 pattern_word = pattern_word + 1)
-                bus_pattern[pattern_word*64 +: 64] =
-                    word_pattern(aligned_address + pattern_word * 8);
+            for (pattern_byte = 0; pattern_byte < BUS_BYTES;
+                 pattern_byte = pattern_byte + 1) begin
+                byte_address = aligned_address + pattern_byte;
+                bus_pattern[pattern_byte*8 +: 8] =
+                    word_pattern(byte_address & ~64'd7) >>
+                    (8 * (byte_address & 7));
+            end
+        end
+    endfunction
+
+    function automatic [BUS_BYTES-1:0] expected_store_select;
+        input [63:0] bus_address;
+        integer select_byte;
+        reg [63:0] byte_address;
+        begin
+            expected_store_select = {BUS_BYTES{1'b0}};
+            for (select_byte = 0; select_byte < BUS_BYTES;
+                 select_byte = select_byte + 1) begin
+                byte_address = bus_address + select_byte;
+                if ((byte_address >= 64'h120) &&
+                    (byte_address < (64'h120 + CLIENT_BYTES)))
+                    expected_store_select[select_byte] = 1'b1;
+            end
         end
     endfunction
 
@@ -290,8 +316,11 @@ module tb_vec_cache_bus #(
                     wb_retry_used_q <= 1'b1;
                 if (wb_ack) begin
                     if (wb_we) begin
-                        if (wb_sel != {BUS_BYTES{1'b1}})
-                            $fatal(1, "WISHBONE store did not fill its beat");
+                        if (wb_sel != expected_store_select(
+                                wb_adr << WB_ADDR_SHIFT))
+                            $fatal(1,
+                                "WISHBONE store byte select is wrong for width %0d",
+                                BUS_DATA_WIDTH);
                         bus_write_count_q <= bus_write_count_q + 1;
                     end else begin
                         bus_read_count_q <= bus_read_count_q + 1;
@@ -429,7 +458,8 @@ module tb_vec_cache_bus #(
         prefetch_streaming = 1'b0;
         wb_retry_enable_q =
             BUS_TYPE == `OPENRV64_COMPLEX_BUS_WISHBONE;
-        wb_retry_addr_q = 64'h108;
+        wb_retry_addr_q = 64'h100 +
+            ((BUS_BYTES < CACHE_BUS_BYTES) ? BUS_BYTES : 0);
 
         rst_n = 1'b0;
         repeat (4) @(posedge clk);
@@ -454,9 +484,11 @@ module tb_vec_cache_bus #(
             if (wb_cyc || wb_stb)
                 $fatal(1, "inactive WISHBONE pins were driven");
         end else begin
-            if ((BUS_DATA_WIDTH != 64) || (bus_read_count_q != 8) ||
+            if ((bus_read_count_q != WB_LINE_BEATS) ||
                 !wb_retry_used_q)
-                $fatal(1, "64-bit WISHBONE refill/retry count is wrong");
+                $fatal(1,
+                    "%0d-bit WISHBONE refill/retry count is wrong: beats=%0d expected=%0d",
+                    BUS_DATA_WIDTH, bus_read_count_q, WB_LINE_BEATS);
             if (arvalid || awvalid || wvalid)
                 $fatal(1, "inactive AXI pins were driven");
         end
@@ -502,14 +534,16 @@ module tb_vec_cache_bus #(
             (bus_write_count_q != 1))
             $fatal(1, "256-to-512 genbus store was not one narrow transfer");
         if ((BUS_TYPE == `OPENRV64_COMPLEX_BUS_WISHBONE) &&
-            (bus_write_count_q != 4))
-            $fatal(1, "64-bit WISHBONE store was not four beats");
+            (bus_write_count_q != WB_STORE_BEATS))
+            $fatal(1,
+                "%0d-bit WISHBONE store beat count is wrong: beats=%0d expected=%0d",
+                BUS_DATA_WIDTH, bus_write_count_q, WB_STORE_BEATS);
         if (busy || prefetch_busy)
             $fatal(1, "bus-facing vector cache remained busy");
 
         $display("PASS: vector cache %s bus width=%0d client width=256",
             (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ? "AXI4" :
-                                                     "WISHBONE B4",
+                                                     "WISHBONE-wide",
             BUS_DATA_WIDTH);
         $finish;
     end

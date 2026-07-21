@@ -310,10 +310,7 @@ module openrv64_vec_sram_cache_bus #(
             $fatal(1, "vector genbus buffers must be nonzero");
         if ((BUS_DATA_WIDTH < 32) || (BUS_DATA_WIDTH > 512) ||
             ((BUS_DATA_WIDTH & (BUS_DATA_WIDTH - 1)) != 0))
-            $fatal(1, "vector AXI bus width must be 32 through 512 bits");
-        if ((BUS_TYPE == `OPENRV64_COMPLEX_BUS_WISHBONE) &&
-            (BUS_DATA_WIDTH > 64))
-            $fatal(1, "WISHBONE B.4 vector bus is limited to 32 or 64 bits");
+            $fatal(1, "vector external bus width must be 32 through 512 bits");
     end
 `endif
 
