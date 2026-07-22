@@ -2,6 +2,7 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 `include "core/bus/bus-defs.v"
+`include "complex/protocol/defs.v"
 
 // Core-bus geometry selector.  The generic path preserves the original
 // blocking 64-bit requester.  The AXI path exposes a decoupled 256-bit fetch
@@ -10,7 +11,14 @@ module openrv64_core_bus #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
     parameter integer TLB_ENTRIES = 16,
-    parameter integer FETCH_OUTSTANDING = 4
+    parameter integer ENABLE_L1I = 1,
+    parameter integer ENABLE_L1D = 1,
+    parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_BASE =
+        {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
+        {`RV64_XLEN{1'b1}},
+    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -89,6 +97,12 @@ module openrv64_core_bus #(
     output wire                         lsu_pipe_resp_page_fault_o,
 
     input  wire                         tlbi_i,
+    input  wire                         icache_invalidate_i,
+    input  wire                         icache_prefetch_valid_i,
+    input  wire [`RV64_XLEN-1:0]        icache_prefetch_taken_addr_i,
+    input  wire [`RV64_XLEN-1:0]        icache_prefetch_fallthrough_addr_i,
+    input  wire [2:0]                   icache_age_valid_i,
+    input  wire [3*`RV64_XLEN-1:0]      icache_age_addr_i,
 
     // Generic physical request port.  It is active only in BUS_GEN mode.
     output wire                         req_valid_o,
@@ -114,6 +128,53 @@ module openrv64_core_bus #(
     output wire                         pmp_write_o,
     output wire                         pmp_exec_o,
     input  wire                         pmp_allow_i,
+
+    output wire                         ccx_req_valid_o,
+    input  wire                         ccx_req_ready_i,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                        ccx_req_hart_id_o,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                        ccx_req_txn_id_o,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                        ccx_req_source_id_o,
+    output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_o,
+    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_o,
+    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_o,
+    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_o,
+    output wire [2:0]                   ccx_req_size_o,
+    output wire [63:0]                  ccx_req_addr_o,
+    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+                                        ccx_req_burst_len_o,
+    output wire                         ccx_wdata_valid_o,
+    input  wire                         ccx_wdata_ready_i,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                        ccx_wdata_hart_id_o,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                        ccx_wdata_txn_id_o,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                        ccx_wdata_source_id_o,
+    output wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                        ccx_wdata_beat_index_o,
+    output wire                         ccx_wdata_last_o,
+    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                        ccx_wdata_o,
+    output wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+                                        ccx_wstrb_o,
+    input  wire                         ccx_resp_valid_i,
+    output wire                         ccx_resp_ready_o,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                        ccx_resp_hart_id_i,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                        ccx_resp_txn_id_i,
+    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                        ccx_resp_source_id_i,
+    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                        ccx_resp_beat_index_i,
+    input  wire                         ccx_resp_last_i,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                        ccx_resp_rdata_i,
+    input  wire                         ccx_resp_error_i,
+    input  wire                         ccx_resp_sc_success_i,
 
     output wire [`OPENRV64_AXI_ID_WIDTH-1:0] m_axi_arid_o,
     output wire [`OPENRV64_AXI_ADDR_WIDTH-1:0] m_axi_araddr_o,
@@ -369,10 +430,40 @@ module openrv64_core_bus #(
             assign m_axi_wlast_o = 1'b0;
             assign m_axi_wvalid_o = 1'b0;
             assign m_axi_bready_o = 1'b0;
+            assign ccx_req_valid_o = 1'b0;
+            assign ccx_req_hart_id_o = HART_ID;
+            assign ccx_req_txn_id_o =
+                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+            assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_LEGACY;
+            assign ccx_req_op_o = `OPENRV64_CCX_OP_READ;
+            assign ccx_req_order_o = `OPENRV64_CCX_ORDER_NONE;
+            assign ccx_req_kind_o = `OPENRV64_CCX_KIND_DATA;
+            assign ccx_req_attr_o = `OPENRV64_CCX_ATTR_NONE;
+            assign ccx_req_size_o = 3'd0;
+            assign ccx_req_addr_o = 64'd0;
+            assign ccx_req_burst_len_o =
+                {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
+            assign ccx_wdata_valid_o = 1'b0;
+            assign ccx_wdata_hart_id_o = HART_ID;
+            assign ccx_wdata_txn_id_o =
+                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+            assign ccx_wdata_source_id_o = `OPENRV64_CCX_SOURCE_LEGACY;
+            assign ccx_wdata_beat_index_o =
+                {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+            assign ccx_wdata_last_o = 1'b1;
+            assign ccx_wdata_o =
+                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            assign ccx_wstrb_o =
+                {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+            assign ccx_resp_ready_o = 1'b0;
         end else begin : g_axi
             openrv64_core_axi_bus #(
                 .TLB_ENTRIES(TLB_ENTRIES),
-                .FETCH_OUTSTANDING(FETCH_OUTSTANDING)
+                .ENABLE_L1I(ENABLE_L1I),
+                .ENABLE_L1D(ENABLE_L1D),
+                .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
+                .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+                .HART_ID(HART_ID)
             ) u_bus (
                 .clk(clk), .rst_n(rst_n),
                 .fetch_req_valid_i(fetch_pipe_req_valid_i),
@@ -402,6 +493,14 @@ module openrv64_core_bus #(
                 .lsu_rdata_o(lsu_rdata_o),
                 .lsu_access_fault_o(lsu_access_fault_o),
                 .lsu_page_fault_o(lsu_page_fault_o), .tlbi_i(tlbi_i),
+                .icache_invalidate_i(icache_invalidate_i),
+                .icache_prefetch_valid_i(icache_prefetch_valid_i),
+                .icache_prefetch_taken_addr_i(
+                    icache_prefetch_taken_addr_i),
+                .icache_prefetch_fallthrough_addr_i(
+                    icache_prefetch_fallthrough_addr_i),
+                .icache_age_valid_i(icache_age_valid_i),
+                .icache_age_addr_i(icache_age_addr_i),
                 .lsu_pipe_req_valid_i(lsu_pipe_req_valid_i),
                 .lsu_pipe_req_ready_o(lsu_pipe_req_ready_o),
                 .lsu_pipe_req_tag_i(lsu_pipe_req_tag_i),
@@ -428,6 +527,37 @@ module openrv64_core_bus #(
                 .pmp_priv_o(pmp_priv_o), .pmp_size_o(pmp_size_o),
                 .pmp_write_o(pmp_write_o), .pmp_exec_o(pmp_exec_o),
                 .pmp_allow_i(pmp_allow_i),
+                .ccx_req_valid_o(ccx_req_valid_o),
+                .ccx_req_ready_i(ccx_req_ready_i),
+                .ccx_req_hart_id_o(ccx_req_hart_id_o),
+                .ccx_req_txn_id_o(ccx_req_txn_id_o),
+                .ccx_req_source_id_o(ccx_req_source_id_o),
+                .ccx_req_op_o(ccx_req_op_o),
+                .ccx_req_order_o(ccx_req_order_o),
+                .ccx_req_kind_o(ccx_req_kind_o),
+                .ccx_req_attr_o(ccx_req_attr_o),
+                .ccx_req_size_o(ccx_req_size_o),
+                .ccx_req_addr_o(ccx_req_addr_o),
+                .ccx_req_burst_len_o(ccx_req_burst_len_o),
+                .ccx_wdata_valid_o(ccx_wdata_valid_o),
+                .ccx_wdata_ready_i(ccx_wdata_ready_i),
+                .ccx_wdata_hart_id_o(ccx_wdata_hart_id_o),
+                .ccx_wdata_txn_id_o(ccx_wdata_txn_id_o),
+                .ccx_wdata_source_id_o(ccx_wdata_source_id_o),
+                .ccx_wdata_beat_index_o(ccx_wdata_beat_index_o),
+                .ccx_wdata_last_o(ccx_wdata_last_o),
+                .ccx_wdata_o(ccx_wdata_o),
+                .ccx_wstrb_o(ccx_wstrb_o),
+                .ccx_resp_valid_i(ccx_resp_valid_i),
+                .ccx_resp_ready_o(ccx_resp_ready_o),
+                .ccx_resp_hart_id_i(ccx_resp_hart_id_i),
+                .ccx_resp_txn_id_i(ccx_resp_txn_id_i),
+                .ccx_resp_source_id_i(ccx_resp_source_id_i),
+                .ccx_resp_beat_index_i(ccx_resp_beat_index_i),
+                .ccx_resp_last_i(ccx_resp_last_i),
+                .ccx_resp_rdata_i(ccx_resp_rdata_i),
+                .ccx_resp_error_i(ccx_resp_error_i),
+                .ccx_resp_sc_success_i(ccx_resp_sc_success_i),
                 .m_axi_arid_o(m_axi_arid_o),
                 .m_axi_araddr_o(m_axi_araddr_o),
                 .m_axi_arlen_o(m_axi_arlen_o),

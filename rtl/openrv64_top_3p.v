@@ -2,13 +2,15 @@
 `include "soc/bus/mem_map.v"
 `include "core/bus/bus-defs.v"
 `include "core/exec/bp/defs.v"
+`include "complex/protocol/defs.v"
 
-// Fixed three-pipe, 256-bit AXI core boundary.
+// Fixed three-pipe core boundary with a 256-bit AXI port and native CCX port.
 //
 // Unlike openrv64_top, this module has no backend or bus selector at its
 // external boundary.  Elaboration always selects fetch_3w, the EX0/EX1/MEM
-// backend, and the 256-bit AXI bus.  The legacy blocking requester is tied off
-// inside this wrapper and is not part of the module interface.
+// backend, and the AXI-configured core bus.  L1I/L1D traffic uses native CCX;
+// AXI remains available for PTW traffic and explicit cacheless-L1I mode.  The
+// legacy blocking requester is tied off and is not part of this interface.
 module openrv64_top_3p #(
     parameter [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
     parameter ENABLE_RV64M = 0,
@@ -28,6 +30,12 @@ module openrv64_top_3p #(
     parameter [63:0] SPEC_LOAD_BASE = `OPENRV64_SOC_MEMORY_BASE,
     parameter [63:0] SPEC_LOAD_SIZE = `OPENRV64_SOC_MEMORY_SIZE,
     parameter ENABLE_RV64A = 1,
+    parameter ENABLE_L1I = 1,
+    parameter ENABLE_L1D = 1,
+    parameter [63:0] L1D_CACHEABLE_BASE = `OPENRV64_SOC_MEMORY_BASE,
+    parameter [63:0] L1D_CACHEABLE_SIZE = `OPENRV64_SOC_MEMORY_SIZE,
+    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
@@ -83,6 +91,38 @@ module openrv64_top_3p #(
     input  wire [1:0]  m_axi_bresp,
     input  wire        m_axi_bvalid,
     output wire        m_axi_bready,
+
+    output wire        ccx_req_valid,
+    input  wire        ccx_req_ready,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id,
+    output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op,
+    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order,
+    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind,
+    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr,
+    output wire [2:0]  ccx_req_size,
+    output wire [63:0] ccx_req_addr,
+    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len,
+    output wire        ccx_wdata_valid,
+    input  wire        ccx_wdata_ready,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id,
+    output wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index,
+    output wire        ccx_wdata_last,
+    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata,
+    output wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb,
+    input  wire        ccx_resp_valid,
+    output wire        ccx_resp_ready,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id,
+    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id,
+    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index,
+    input  wire        ccx_resp_last,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata,
+    input  wire        ccx_resp_error,
+    input  wire        ccx_resp_sc_success,
 
     input  wire        irq_m_software,
     input  wire        irq_m_timer,
@@ -141,6 +181,11 @@ module openrv64_top_3p #(
         .SPEC_LOAD_BASE(SPEC_LOAD_BASE),
         .SPEC_LOAD_SIZE(SPEC_LOAD_SIZE),
         .ENABLE_RV64A(ENABLE_RV64A),
+        .ENABLE_L1I(ENABLE_L1I),
+        .ENABLE_L1D(ENABLE_L1D),
+        .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
+        .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+        .HART_ID(HART_ID),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
         .BP_TYPE(BP_TYPE),
@@ -179,6 +224,37 @@ module openrv64_top_3p #(
         .m_axi_wvalid(m_axi_wvalid), .m_axi_wready(m_axi_wready),
         .m_axi_bid(m_axi_bid), .m_axi_bresp(m_axi_bresp),
         .m_axi_bvalid(m_axi_bvalid), .m_axi_bready(m_axi_bready),
+        .ccx_req_valid(ccx_req_valid),
+        .ccx_req_ready(ccx_req_ready),
+        .ccx_req_hart_id(ccx_req_hart_id),
+        .ccx_req_txn_id(ccx_req_txn_id),
+        .ccx_req_source_id(ccx_req_source_id),
+        .ccx_req_op(ccx_req_op),
+        .ccx_req_order(ccx_req_order),
+        .ccx_req_kind(ccx_req_kind),
+        .ccx_req_attr(ccx_req_attr),
+        .ccx_req_size(ccx_req_size),
+        .ccx_req_addr(ccx_req_addr),
+        .ccx_req_burst_len(ccx_req_burst_len),
+        .ccx_wdata_valid(ccx_wdata_valid),
+        .ccx_wdata_ready(ccx_wdata_ready),
+        .ccx_wdata_hart_id(ccx_wdata_hart_id),
+        .ccx_wdata_txn_id(ccx_wdata_txn_id),
+        .ccx_wdata_source_id(ccx_wdata_source_id),
+        .ccx_wdata_beat_index(ccx_wdata_beat_index),
+        .ccx_wdata_last(ccx_wdata_last),
+        .ccx_wdata(ccx_wdata),
+        .ccx_wstrb(ccx_wstrb),
+        .ccx_resp_valid(ccx_resp_valid),
+        .ccx_resp_ready(ccx_resp_ready),
+        .ccx_resp_hart_id(ccx_resp_hart_id),
+        .ccx_resp_txn_id(ccx_resp_txn_id),
+        .ccx_resp_source_id(ccx_resp_source_id),
+        .ccx_resp_beat_index(ccx_resp_beat_index),
+        .ccx_resp_last(ccx_resp_last),
+        .ccx_resp_rdata(ccx_resp_rdata),
+        .ccx_resp_error(ccx_resp_error),
+        .ccx_resp_sc_success(ccx_resp_sc_success),
         .irq_m_software(irq_m_software), .irq_m_timer(irq_m_timer),
         .irq_m_external(irq_m_external),
         .irq_s_software(irq_s_software), .irq_s_timer(irq_s_timer),

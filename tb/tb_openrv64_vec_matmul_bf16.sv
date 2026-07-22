@@ -305,8 +305,8 @@ module tb_openrv64_vec_matmul_bf16;
             $fatal(1, "vector unit remained busy after BF16 matmul halt");
 
         $display("PASS: assembled private-vector BF16 matmul 4x8 by 8x32");
-        $display("      fetched=%0d retired=%0d vec_requests=%0d replays=%0d",
-                 fetch_count_q, dbg_retired, vec_request_count_q,
+        $display("      cycles=%0d fetched=%0d retired=%0d vec_requests=%0d replays=%0d",
+                 timeout, fetch_count_q, dbg_retired, vec_request_count_q,
                  vec_replay_count_q);
         $finish;
     end

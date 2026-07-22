@@ -5,14 +5,13 @@
 
 // Three-wide frontend for the 256-bit AXI fetch path.
 //
-// The four data entries form a direct-mapped 128-byte resident window.  The
-// PC line index selects exactly one entry; there is no associative data/tag
-// search.  Pending request state is separate from resident state so an
-// ordinary redirect can cancel the sequential stream without destroying a
-// warm loop.  Context-changing invalidations clear the resident valid bits.
-// A bundle may cross a line boundary when both direct-mapped lines are warm.
+// Fetch consumes one 256-bit line at a time and keeps only the immediately
+// following line requested.  There is exactly one request in flight; cache
+// residency, refill concurrency, and future prefetch policy belong to L1I.
+// Two small line registers only bridge a three-instruction bundle across a
+// line boundary.  Redirects discard them and re-read through L1I.
 module openrv64_fetch_3w #(
-    parameter integer LINE_DEPTH = 4,
+    parameter integer LINE_DEPTH = 2,
     parameter integer ENABLE_TRACE = 0,
     parameter integer ENABLE_PREDECODE_TARGETS = 1,
     parameter integer LINE_INDEX_WIDTH = $clog2(LINE_DEPTH),
@@ -52,16 +51,15 @@ module openrv64_fetch_3w #(
 
     reg active_q;
     reg [`RV64_XLEN-1:0] consume_pc_q;
-    reg [`RV64_XLEN-1:0] next_req_addr_q;
     reg line_valid_q [0:LINE_DEPTH-1];
     reg [`RV64_XLEN-1:0] line_addr_q [0:LINE_DEPTH-1];
     reg [`OPENRV64_AXI_DATA_WIDTH-1:0] line_data_q [0:LINE_DEPTH-1];
     reg line_access_fault_q [0:LINE_DEPTH-1];
     reg line_page_fault_q [0:LINE_DEPTH-1];
-    reg pending_valid_q [0:LINE_DEPTH-1];
-    reg [`RV64_XLEN-1:0] pending_addr_q [0:LINE_DEPTH-1];
+    reg pending_valid_q;
+    reg [`RV64_XLEN-1:0] pending_addr_q;
 
-    assign cancel_o = restart_i || flush_i;
+    assign cancel_o = restart_i || invalidate_i || flush_i;
     assign resp_ready_o = 1'b1;
     assign stream_pc_o = consume_pc_q;
 
@@ -72,48 +70,6 @@ module openrv64_fetch_3w #(
         consume_pc_q[`RV64_XLEN-1:LINE_BYTE_BITS],
         {LINE_BYTE_BITS{1'b0}}
     };
-    wire [`RV64_XLEN-1:0] prefetch_last_addr = consume_line_addr +
-        ((LINE_DEPTH - 1) * LINE_BYTES);
-    wire [LINE_INDEX_WIDTH-1:0] prefetch_slot =
-        next_req_addr_q[LINE_INDEX_MSB:LINE_INDEX_LSB];
-    wire prefetch_resident = line_valid_q[prefetch_slot] &&
-        (line_addr_q[prefetch_slot][`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         next_req_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire prefetch_pending = pending_valid_q[prefetch_slot] &&
-        (pending_addr_q[prefetch_slot][`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         next_req_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire prefetch_in_window = next_req_addr_q <= prefetch_last_addr;
-    wire prefetch_covered = prefetch_resident || prefetch_pending;
-
-    // One direct-mapped lookup advances the prefetch cursor.  A request may
-    // replace the resident line only when its response arrives, leaving the
-    // old loop line usable if a redirect cancels the pending replacement.
-    assign req_valid_o = active_q && !restart_i && !flush_i && !stall_i &&
-                         prefetch_in_window && !prefetch_covered &&
-                         !pending_valid_q[prefetch_slot];
-    assign req_addr_o = next_req_addr_q;
-    wire req_fire = req_valid_o && req_ready_i;
-    wire prefetch_advance = active_q && !restart_i && !flush_i && !stall_i &&
-                            prefetch_in_window &&
-                            (prefetch_covered || req_fire);
-
-    reg [LINE_COUNT_WIDTH-1:0] line_count_r;
-    integer count_index;
-    always @* begin
-        line_count_r = {LINE_COUNT_WIDTH{1'b0}};
-        for (count_index = 0; count_index < LINE_DEPTH;
-             count_index = count_index + 1)
-            if (line_valid_q[count_index] || pending_valid_q[count_index])
-                line_count_r = line_count_r + 1'b1;
-    end
-    assign line_count_o = line_count_r;
-
-    reg [2:0] lane_found_r;
-    reg [3*`RV64_INSTR_WIDTH-1:0] lane_instr_r;
-    reg [2:0] lane_access_fault_r;
-    reg [2:0] lane_page_fault_r;
-    reg [`RV64_XLEN-1:0] lane_pc_r [0:2];
-    integer lane_index;
     wire [LINE_INDEX_WIDTH-1:0] consume_slot =
         consume_line_addr[LINE_INDEX_MSB:LINE_INDEX_LSB];
     wire [`RV64_XLEN-1:0] following_line_addr =
@@ -126,6 +82,32 @@ module openrv64_fetch_3w #(
     wire following_line_hit = line_valid_q[following_slot] &&
         (line_addr_q[following_slot][`RV64_XLEN-1:LINE_BYTE_BITS] ==
          following_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
+
+    // Demand the current line first.  Once it is resident, request exactly
+    // the following line and stop there until consumption crosses the line.
+    // L1I may satisfy either request as a hit and later owns any deeper
+    // prefetching or multiple-refill policy.
+    wire request_current_line = !consume_line_hit;
+    wire [`RV64_XLEN-1:0] request_line_addr = request_current_line ?
+        consume_line_addr : following_line_addr;
+    wire request_line_hit = request_current_line ? consume_line_hit :
+                                                   following_line_hit;
+    assign req_valid_o = active_q && !restart_i && !invalidate_i &&
+                         !flush_i && !stall_i && !pending_valid_q &&
+                         !request_line_hit;
+    assign req_addr_o = request_line_addr;
+    wire req_fire = req_valid_o && req_ready_i;
+    assign line_count_o =
+        {{(LINE_COUNT_WIDTH-1){1'b0}}, consume_line_hit} +
+        {{(LINE_COUNT_WIDTH-1){1'b0}}, following_line_hit} +
+        {{(LINE_COUNT_WIDTH-1){1'b0}}, pending_valid_q};
+
+    reg [2:0] lane_found_r;
+    reg [3*`RV64_INSTR_WIDTH-1:0] lane_instr_r;
+    reg [2:0] lane_access_fault_r;
+    reg [2:0] lane_page_fault_r;
+    reg [`RV64_XLEN-1:0] lane_pc_r [0:2];
+    integer lane_index;
     wire [`OPENRV64_AXI_DATA_WIDTH-1:0] consume_line_data =
         line_data_q[consume_slot];
     wire [`OPENRV64_AXI_DATA_WIDTH-1:0] following_line_data =
@@ -249,8 +231,8 @@ module openrv64_fetch_3w #(
 
     wire [LINE_INDEX_WIDTH-1:0] resp_slot =
         resp_addr_i[LINE_INDEX_MSB:LINE_INDEX_LSB];
-    wire resp_match = pending_valid_q[resp_slot] &&
-        (pending_addr_q[resp_slot][`RV64_XLEN-1:LINE_BYTE_BITS] ==
+    wire resp_match = pending_valid_q &&
+        (pending_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
          resp_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS]);
 
     integer reset_index;
@@ -258,7 +240,8 @@ module openrv64_fetch_3w #(
         if (!rst_n) begin
             active_q <= 1'b0;
             consume_pc_q <= {`RV64_XLEN{1'b0}};
-            next_req_addr_q <= {`RV64_XLEN{1'b0}};
+            pending_valid_q <= 1'b0;
+            pending_addr_q <= {`RV64_XLEN{1'b0}};
             for (reset_index = 0; reset_index < LINE_DEPTH;
                  reset_index = reset_index + 1) begin
                 line_valid_q[reset_index] <= 1'b0;
@@ -267,36 +250,28 @@ module openrv64_fetch_3w #(
                     {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
                 line_access_fault_q[reset_index] <= 1'b0;
                 line_page_fault_q[reset_index] <= 1'b0;
-                pending_valid_q[reset_index] <= 1'b0;
-                pending_addr_q[reset_index] <= {`RV64_XLEN{1'b0}};
             end
         end else if (restart_i) begin
             active_q <= 1'b1;
             consume_pc_q <= restart_pc_i;
-            next_req_addr_q <= {
-                restart_pc_i[`RV64_XLEN-1:LINE_BYTE_BITS],
-                {LINE_BYTE_BITS{1'b0}}
-            };
-            for (reset_index = 0; reset_index < LINE_DEPTH;
-                 reset_index = reset_index + 1) begin
-                if (invalidate_i)
-                    line_valid_q[reset_index] <= 1'b0;
-                pending_valid_q[reset_index] <= 1'b0;
-            end
-        end else if (flush_i) begin
-            active_q <= 1'b0;
+            pending_valid_q <= 1'b0;
             for (reset_index = 0; reset_index < LINE_DEPTH;
                  reset_index = reset_index + 1)
-                pending_valid_q[reset_index] <= 1'b0;
+                line_valid_q[reset_index] <= 1'b0;
+        end else if (flush_i || invalidate_i) begin
+            if (flush_i)
+                active_q <= 1'b0;
+            pending_valid_q <= 1'b0;
+            for (reset_index = 0; reset_index < LINE_DEPTH;
+                 reset_index = reset_index + 1)
+                line_valid_q[reset_index] <= 1'b0;
         end else begin
             if (req_fire) begin
-                pending_valid_q[prefetch_slot] <= 1'b1;
-                pending_addr_q[prefetch_slot] <= next_req_addr_q;
+                pending_valid_q <= 1'b1;
+                pending_addr_q <= request_line_addr;
             end
-            if (prefetch_advance)
-                next_req_addr_q <= next_req_addr_q + LINE_BYTES;
             if (resp_valid_i && resp_match) begin
-                pending_valid_q[resp_slot] <= 1'b0;
+                pending_valid_q <= 1'b0;
                 line_valid_q[resp_slot] <= 1'b1;
                 line_addr_q[resp_slot] <= {
                     resp_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS],
@@ -315,14 +290,14 @@ module openrv64_fetch_3w #(
 
 `ifndef SYNTHESIS
     initial begin
-        if ((LINE_DEPTH < 2) ||
-            ((1 << LINE_INDEX_WIDTH) != LINE_DEPTH))
-            $fatal(1, "fetch_3w LINE_DEPTH must be a power of two >= 2");
+        if (LINE_DEPTH != 2)
+            $fatal(1, "fetch_3w LINE_DEPTH is fixed at current plus next");
     end
 
     always @(posedge clk) begin
-        if (rst_n && resp_valid_i && !restart_i && !flush_i && !resp_match)
-            $fatal(1, "fetch_3w response does not match a pending direct-mapped line");
+        if (rst_n && resp_valid_i && !restart_i && !invalidate_i &&
+            !flush_i && !resp_match)
+            $fatal(1, "fetch_3w response does not match its pending line");
         if (rst_n && (decode_valid_o != 3'b000) &&
             (decode_valid_o != 3'b001) &&
             (decode_valid_o != 3'b011) &&

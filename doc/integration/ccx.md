@@ -5,6 +5,13 @@ to integrate with the shared core complex.  It covers the northbound coherent
 boundary.  AXI4 and WISHBONE remain external transports below the complex and
 are not hart-facing protocols.
 
+The native northbound CCX data interface is fixed at 512 bits: one transfer
+beat is exactly one 64-byte cache line.  A requester may issue a burst covering
+multiple consecutive cache lines.  Such a burst remains a sequence of 512-bit
+line beats; CCX never packs multiple cache lines into one beat.  Consequently,
+the native CCX line size is fixed at 64 bytes rather than parameterized
+independently from the interface width.
+
 The current generated core complex is correct for direct, uncached hart
 requests.  It is not yet coherent with multiple enabled private L1 caches.
 Adding an invalidation wire alone is not sufficient: coherent integration also
@@ -26,7 +33,8 @@ Consequently, `rtl/complex/protocol/hart_legacy_adapter.v` can emit only:
 - an eight-byte transfer.
 
 That adapter is a compatibility and bring-up seam, not the final coherent hart
-endpoint.
+endpoint.  Its 64-bit scalar channel does not implement the native 512-bit
+cache-line contract.
 
 Other current restrictions are:
 
@@ -35,9 +43,10 @@ Other current restrictions are:
   only safe for a single hart with no independent memory agent.
 - The decoder accepts RV64A `aq` and `rl` bits, but the core currently discards
   them because the legacy memory path is blocking and strictly ordered.
-- `rtl/cache/l1/l1.v` is physically addressed, blocking, write-through, and
-  no-write-allocate.  It has a back-invalidation input but accepts an
-  invalidation only while idle.
+- `rtl/cache/l1/l1.v` is physically tagged, blocking, write-through, and
+  no-write-allocate.  Its separate lookup/physical address inputs allow VIPT
+  L1I operation; L1D ties them together.  It has a back-invalidation input but
+  accepts an invalidation only while idle.
 - The shared L2 currently accepts `READ`, `WRITE`, and a conservatively
   serialized `FENCE`.  LR, SC, and AMO requests fail explicitly.  The L2 does
   not track private-cache sharers or emit probes.
@@ -59,19 +68,64 @@ PMP checking, and private-cache lookup:
 | `op` | Read, write, LR, SC, AMO function, or fence. |
 | `order` | None, acquire, release, or acquire-release. |
 | `attr` | Per-request cacheable, device, idempotent, and executable attributes. |
-| `size` | Base-two logarithm of the scalar transfer size in bytes. |
-| `addr` | Final physical byte address. |
-| `wdata/wstrb` | Scalar write data and byte enables. |
+| `size` | Sub-line access size for atomics and uncached operations; cache-line transfers imply 64 bytes. |
+| `addr` | Physical start address.  Cache-line operations are 64-byte aligned. |
+| `burst_len` | Number of additional consecutive cache lines; zero requests one line. |
+| `wdata/wstrb` | One 512-bit cache-line beat and 64 byte enables. |
 
 The response must return `hart_id`, `source_id` or an equivalent uniquely
-routed identity, `txn_id`, read data, error, and SC success.
+routed identity, `txn_id`, one 512-bit cache-line data beat, `beat_index`,
+`last`, error, and SC success.
 
 The existing CCX response contains only `hart_id` and `txn_id`.  That is
 sufficient only if all I-cache, D-cache, and PTW requests within one hart share
 one transaction-ID allocator.  If those endpoints allocate tags independently,
 CCX must add `source_id` to both requests and responses.
 
-One outstanding transaction per hart is an acceptable first implementation.
+## Cache-line transport and bursts
+
+The interface above CCX is cache-line based.  Scalar execution loads and stores
+terminate at the private-cache or hart-endpoint boundary; they are not expanded
+into a 64-bit CCX datapath.  A cacheable miss, refill, eviction, intervention,
+or prefetch moves one complete 64-byte line on each accepted CCX beat.
+
+The native burst contract is:
+
+- `burst_len=0` requests one cache line;
+- `burst_len=N` requests `N+1` consecutive cache lines beginning at `addr`;
+- line `i` has address `addr + 64*i`;
+- each request-data or response-data beat carries exactly one line;
+- response beats for one transaction are returned in increasing line-address
+  order and identify the final beat with `last`;
+- backpressure applies independently to every line beat; and
+- different tagged bursts may be interleaved, but beats remain identifiable by
+  `hart_id`, `source_id`, and `txn_id`.
+
+A burst is not an atomic multi-line operation and does not reserve or lock all
+of its lines.  The L2 expands it into individual home operations so each line
+is independently looked up, merged, probed, ordered, and faulted.  Arbitration
+may occur between its line operations so a long burst cannot monopolize CCX.
+
+All lines declared by one burst must be physically contiguous and use the same
+operation, ordering mode, and PMA attributes.  The requester splits a burst
+where translation is not physically contiguous or attributes change.  CCX is
+not constrained by AXI's 4 KiB rule; the southbound adapter splits an external
+AXI burst as necessary.
+
+Read, refill, and prefetch operations consume no request-data beats and return
+one 512-bit response beat per line.  Line writeback or other line writes supply
+one 512-bit request-data beat per line with a corresponding 64-bit byte mask.
+Atomics, fences, and side-effecting device operations require `burst_len=0`.
+For a sub-line atomic or uncached access, `addr` and `size` select bytes within
+the 512-bit beat and only those data lanes are meaningful.
+
+The command and line-data channels must be independently backpressured.  An
+implementation may accept a burst descriptor only when it has reserved enough
+tracking state, but it must not require buffering the entire burst's data before
+the first line can progress.
+
+One outstanding transaction per hart is an acceptable first implementation;
+that transaction may contain multiple cache-line beats when it is a burst.
 When concurrency is enabled, the endpoint must additionally ensure that:
 
 - canceled speculative reads are drained and their tags are not reused early;
@@ -86,6 +140,10 @@ When concurrency is enabled, the endpoint must additionally ensure that:
 Cacheability cannot be a constant property of a hart port.  The endpoint must
 derive PMA attributes from the final physical address and attach them to every
 request.
+
+Every line in a burst must have the same attributes.  The endpoint must split
+the request before a PMA boundary rather than applying the first line's
+attributes to the rest of the burst.
 
 Device and non-cacheable operations must:
 
@@ -125,6 +183,10 @@ all private copies, including a possibly stale copy in the requesting hart,
 then performs the operation and returns its result.  A later ownership-based
 L1 protocol may execute atomics while holding a line exclusively, but that is
 not required for the first coherent version.
+
+The atomic still uses the 512-bit CCX data path.  Its physical address and size
+select the 32- or 64-bit operand lane, the returned old value occupies that
+lane, and the remaining response-line bits have no architectural meaning.
 
 ## Private-cache probe protocol
 
@@ -244,15 +306,19 @@ is implemented.
 
 The required sequence is:
 
-1. A cacheable L1 read miss/refill records the requesting endpoint as a sharer.
-2. A write-through store invalidates every conflicting private copy and waits
+1. A cacheable L1 miss requests a 512-bit line beat, or a multi-line burst when
+   the endpoint has a valid contiguous prefetch/refill request.
+2. Every returned line independently records the requesting endpoint as a
+   sharer.
+3. A write-through store invalidates every conflicting private copy and waits
    for all acknowledgements.
-3. The L2 updates its byte-selected data and returns completion to the source.
-4. An inclusive L2 replacement invalidates all recorded private copies before
+4. The L2 updates its byte-selected data and returns completion to the source.
+5. An inclusive L2 replacement invalidates all recorded private copies before
    reusing the line.
-5. LR, SC, and AMO requests bypass private allocation and execute at L2 after
+6. LR, SC, and AMO requests bypass private allocation and execute at L2 after
    the required probes.
-6. Device and non-cacheable requests bypass allocation and merging.
+7. Device and non-cacheable requests bypass allocation and merging and never
+   form multi-line bursts.
 
 This requires only clean invalidation acknowledgements.  It does not require
 cache-to-cache data transfer, dirty interventions, upgrades, or ownership
@@ -305,6 +371,11 @@ Coherence must be verified with integrated harts and enabled L1s, not only with
 direct CCX or L2 testbench transactions.  At minimum, tests must cover:
 
 - one hart reading a line after another hart writes it;
+- one-line requests and multi-line bursts under request and response
+  backpressure;
+- partial-hit bursts in which some lines hit L2 and others require refill;
+- burst splitting at physical-attribute changes and at the southbound AXI
+  4 KiB boundary;
 - simultaneous writes to the same word and to different words in one line;
 - a store or L2 eviction probing an L1 with a matching refill in progress;
 - false or stale directory sharer bits;

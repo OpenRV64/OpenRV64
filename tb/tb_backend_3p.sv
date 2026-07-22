@@ -4,6 +4,7 @@
 `include "core/isa/rv64-priv.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 module tb_backend_3p #(
     parameter integer RELAX_HAZARDS = 0
@@ -14,6 +15,7 @@ module tb_backend_3p #(
     localparam integer I_MEM_WRITE = 15;
     localparam integer I_MEM_READ = 16;
     localparam integer I_REG_WRITE = 17;
+    localparam integer I_BR_OP = 18;
     localparam integer I_LSU_OP = 22;
     localparam integer I_ALU_OP = 27;
     localparam integer I_ALU_EXT = 32;
@@ -65,6 +67,8 @@ module tb_backend_3p #(
     wire [63:0] redirect_target;
     wire branch_resolved;
     wire branch_taken;
+    wire [2:0] branch_retire_age_valid;
+    wire [191:0] branch_retire_age_addr;
     wire [2:0] retire_arch;
     wire [1:0] retire_count;
     wire exception;
@@ -119,6 +123,8 @@ module tb_backend_3p #(
         .irq_cause_i(irq_cause), .redirect_valid_o(redirect_valid),
         .redirect_id_o(redirect_id), .redirect_target_o(redirect_target),
         .branch_resolved_o(branch_resolved), .branch_taken_o(branch_taken),
+        .branch_retire_age_valid_o(branch_retire_age_valid),
+        .branch_retire_age_addr_o(branch_retire_age_addr),
         .retire_arch_o(retire_arch), .retire_count_o(retire_count),
         .exception_o(exception), .halt_o(halt), .irq_o(irq),
         .mret_o(mret), .sret_o(sret), .fence_i_o(fence_i),
@@ -682,7 +688,25 @@ module tb_backend_3p #(
              cycles = cycles + 1) tick();
         if (retire_occupancy != 0) fail("store did not complete and retire");
 
-        $display("PASS: integrated 3p forwarding, posted-store load bypass/data forwarding, async abort, issue, and retirement");
+        // A taken conditional branch ages its fallthrough only when the
+        // branch becomes part of the architectural retirement prefix.
+        while (!decode_ready[0]) tick();
+        p0 = base_packet(64'd20, 64'h3000, 32'h0800_0063);
+        p0[14] = 1'b1;
+        p0[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_BEQ;
+        p0[I_IMM +: 64] = 64'h80;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = 0;
+        for (cycles = 0; cycles < 30 && !branch_retire_age_valid[0];
+             cycles = cycles + 1) tick();
+        if (!branch_retire_age_valid[0] ||
+            branch_retire_age_addr[63:0] != 64'h3004)
+            fail("retired taken branch did not age its fallthrough");
+
+        $display("PASS: integrated 3p forwarding, posted-store bypass, branch aging, async abort, issue, and retirement");
         $finish;
     end
 endmodule

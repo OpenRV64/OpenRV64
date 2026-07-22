@@ -4,9 +4,12 @@
 the original 64-bit generic requester in `rtl/core/bus/gen_bus.v` or the
 256-bit AXI4 requester in `rtl/core/bus/axi_bus.v`. The generic path remains
 the default and is the interface used by `openrv64_platform`.
-`rtl/openrv64_top_3p.v` is the fixed three-pipe AXI boundary: it exposes no
-generic memory pins and elaborates the AXI bus and three-wide frontend
-unconditionally.
+`rtl/openrv64_top_3p.v` is the fixed three-pipe boundary: it exposes native
+512-bit CCX command/write-data/response channels plus residual 256-bit AXI,
+and elaborates the AXI-configured bus and three-wide frontend unconditionally.
+With L1I enabled, instruction misses are exactly one 64-byte CCX transaction;
+they do not use AXI.  AXI remains for page-table walks and explicit
+cacheless-L1I operation.
 
 ## Generic blocking interface
 
@@ -92,23 +95,27 @@ not implemented.
 
 ## AXI interface
 
-The AXI configuration has 64-bit addresses, 256-bit data, 32 byte strobes, and
-3-bit transaction IDs. Every transfer is currently a single-beat INCR
-transaction (`AxLEN=0`); the 256-bit beat is one 32-byte fetch line, not a
-four-beat burst. Fetch uses IDs 0 through 3 for four independent outstanding
-line reads. Responses may return out of order by ID, while the bus presents
-them to `fetch_3w.v` in request order.
+The residual AXI configuration has 64-bit addresses, 256-bit data, 32-byte
+strobes, and 3-bit transaction IDs. Every transfer is a single-beat INCR
+transaction (`AxLEN=0`). AXI is used only by the page-table walker and by the
+structural `ENABLE_L1I=0` cacheless-fetch path. Native L1I and L1D traffic does
+not use it.
 
-`fetch_3w.v` uses the same four 256-bit data entries as a direct-mapped
-128-byte resident window indexed by virtual address bits `[6:5]`; it is not a
-four-way associative structure. It emits a strict prefix of up to three
-instructions per cycle, can assemble a bundle across a 32-byte boundary, and
-advances only by the accepted decode prefix. Pending request tags are separate
-from resident tags. Predicted and execute-time redirects cancel the sequential
-AXI stream but preserve resident lines for loop replay. Reset, traps, returns,
-`FENCE.I`, `SFENCE.VMA`, and other context-changing restarts invalidate the
-resident window. Cancelled AXI reads are drained and dropped before their bus
-slots are reused.
+With L1I enabled, `fetch_3w.v` requests one 256-bit frontend half-line by
+virtual address. `openrv64_l1i_ccx` is VIPT: page-offset virtual bits select
+the set/half while the ITLB supplies the physical tag and CCX address. Bare and
+ITLB-hit demands launch without a separate translation state. The cache stores
+the containing 512-bit line and turns a miss into one aligned native CCX read.
+Predicted and
+execute-time redirects may preserve resident frontend data for replay, while
+reset, context-changing restarts, and `FENCE.I` invalidate the required state.
+
+An accepted conditional branch queues both its direct target and fallthrough
+inside L1I. Demand traffic has priority over their translation and fill work;
+speculative translation/PMP faults are consumed locally. At architectural
+retirement the losing virtual path is translated, if necessary, and its
+resident physical line is made a preferred replacement victim rather than
+invalidated.
 
 The three-pipe frontend shares one scalar branch predictor across the oldest
 control instruction in its current bundle. The accepted prefix ends at that
@@ -117,36 +124,24 @@ predicted-taken direct target redirects the resident window without clearing
 it. JALR and the no-speculation policy retain the predictor's unresolved-control
 stall behavior.
 
-The three-pipe LSU has three tagged request slots. In Bare mode, load tags map
-directly to AXI IDs 4 through 6, so three independent reads can be in flight
-and may return out of order. The response ID selects both the original LSU
-slot and the appropriate 64-bit lane of the 256-bit beat; the retirement queue
-still exposes architectural results in order. A flush marks launched requests
-cancelled, drains their AXI responses, and does not reuse their tags early.
-
-Translated tagged requests currently fall back to the precise blocking
-DTLB/PTW path. That path, the page-table walker, and the legacy LSU interface
-use the reserved all-ones AXI ID. The original LSU tag is retained across the
-fallback and is returned with its data or page/access fault. This is correct
-but deliberately not yet a multi-request translated LSU: making translation
-pipelined requires tagged DTLB lookup/miss state and multiple walk ownership
-records, not merely more AXI IDs.
+The three-pipe LSU retains three tagged execution slots, but the core bus
+serializes their physical memory operations through one precise DTLB/PTW/PMP
+slot and one blocking L1D request port. The original LSU tag is retained and
+returned with the data or page/access fault. A cacheable miss emits one aligned
+512-bit native CCX read and returns the addressed 64-bit word. Write-through
+stores and uncached operations use sub-line address, size, data, and strobes on
+the same 512-bit CCX channels. A flush hides a canceled speculative load
+response; an accepted store remains irrevocable and is drained.
 
 Stores launch only when they are the ordered retirement head. The current 3P
-baseline treats acceptance of that request by the core memory bus as
-architectural completion; it does not wait for the eventual AXI B response.
-A one-entry AXI write holding register shifts data and byte strobes into the
-selected 64-bit lane and tracks AW and W handshakes independently. The
-execution LSU retains the original store tag, PC, instruction, trace ID, and
-effective address until the response arrives. While that response is pending,
-another store remains blocked, as does a younger load whose byte mask overlaps
-the pending store without being fully covered by its byte strobes. A
-non-overlapping younger load may issue on the tagged AXI path and return
-independently. A fully covered load completes locally from the retained store
-word, including the normal load shift and signed/unsigned extension, without
-issuing an AXI read. A partial overlap still waits because it requires merging
-store bytes with memory data. This is posted architectural completion with a
-one-entry address/data bypass, not a multi-entry store buffer.
+baseline treats acceptance by the core bus as architectural completion; it
+does not wait for the eventual CCX response. The execution LSU retains the
+original store tag, PC, instruction, trace ID, and effective address until that
+response arrives. While it is pending, another scalar request requiring L1D
+remains blocked. A fully covered load may still complete locally from the
+retained store word, including normal load shift and signed/unsigned extension.
+Partial or non-forwarded loads wait. This is posted architectural completion
+with a one-entry address/data bypass, not a multi-entry store buffer.
 
 The overlap check currently compares effective addresses before translation.
 That is sufficient for this Bare-mode, identity-mapped benchmark rig. It is not

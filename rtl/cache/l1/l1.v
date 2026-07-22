@@ -1,6 +1,9 @@
 `timescale 1ns/1ps
 
-// Blocking, physically addressed, write-through L1 cache.
+// Blocking, physically tagged, write-through L1 cache.  req_addr_i supplies
+// the lookup set/beat while req_phys_addr_i supplies the tag and lower-memory
+// address.  Supplying the same address on both ports gives an ordinary PIPT
+// cache; L1I uses a page-offset virtual index with a physical tag (VIPT).
 //
 // The requester and memory sides use the OpenRV64 generic memory handshake:
 // request fields remain stable while valid is asserted and ready completes the
@@ -26,6 +29,9 @@ module openrv64_l1_cache #(
     input  wire                      req_write_i,
     input  wire                      req_cacheable_i,
     input  wire [ADDR_WIDTH-1:0]     req_addr_i,
+    input  wire [ADDR_WIDTH-1:0]     req_phys_addr_i,
+    input  wire                      req_prefetch_i,
+    input  wire                      req_aged_i,
     input  wire [DATA_WIDTH-1:0]     req_wdata_i,
     input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
@@ -38,6 +44,11 @@ module openrv64_l1_cache #(
     output wire                      invalidate_ready_o,
     input  wire                      invalidate_all_i,
     input  wire [ADDR_WIDTH-1:0]     invalidate_addr_i,
+
+    // Physical line addresses which should become preferred replacement
+    // victims.  Aging never invalidates a line.
+    input  wire [3:0]                age_valid_i,
+    input  wire [4*ADDR_WIDTH-1:0]   age_addr_i,
 
     output wire                      mem_valid_o,
     input  wire                      mem_ready_i,
@@ -93,11 +104,15 @@ module openrv64_l1_cache #(
     reg [1:0]                mesi_q [0:TOTAL_LINES-1];
     reg [DIRTY_TIMESTAMP_WIDTH-1:0]
                                dirty_timestamp_q [0:TOTAL_LINES-1];
+    reg                      aged_q [0:TOTAL_LINES-1];
     reg [WAY_INDEX_WIDTH-1:0] replace_q [0:SETS-1];
 
     reg                      request_write_q;
     reg                      request_cacheable_q;
+    reg                      request_prefetch_q;
+    reg                      request_aged_q;
     reg [ADDR_WIDTH-1:0]     request_addr_q;
+    reg [ADDR_WIDTH-1:0]     request_phys_addr_q;
     reg [DATA_WIDTH-1:0]     request_wdata_q;
     reg [DATA_BYTES-1:0]     request_wstrb_q;
 
@@ -127,6 +142,7 @@ module openrv64_l1_cache #(
     reg [WAY_INDEX_WIDTH-1:0] lookup_way;
     reg [WAY_INDEX_WIDTH-1:0] victim_way;
     reg invalid_way_found;
+    reg aged_way_found;
     reg [SET_INDEX_WIDTH-1:0] invalidate_set;
     reg [TAG_BITS-1:0] invalidate_tag;
     reg [LINE_INDEX_WIDTH-1:0] lookup_line;
@@ -137,11 +153,13 @@ module openrv64_l1_cache #(
     integer line_index;
     integer way_index;
     integer lookup_way_index;
+    integer age_port;
+    integer age_way;
     wire [DATA_WIDTH-1:0] lookup_data;
 
     wire refill_last_beat = (refill_beat_q == LAST_BEAT);
     wire [ADDR_WIDTH-1:0] refill_line_addr =
-        {request_addr_q[ADDR_WIDTH-1:LINE_OFFSET_BITS],
+        {request_phys_addr_q[ADDR_WIDTH-1:LINE_OFFSET_BITS],
          {LINE_OFFSET_BITS{1'b0}}};
 
     function [LINE_INDEX_WIDTH-1:0] line_index_of;
@@ -151,6 +169,17 @@ module openrv64_l1_cache #(
             line_index_of = LINE_INDEX_WIDTH'(set_value) *
                             LINE_INDEX_WIDTH'(WAYS) +
                             LINE_INDEX_WIDTH'(way_value);
+        end
+    endfunction
+
+    function [SET_INDEX_WIDTH-1:0] set_index_of;
+        input [ADDR_WIDTH-1:0] address;
+        begin
+            if (SETS == 1)
+                set_index_of = {SET_INDEX_WIDTH{1'b0}};
+            else
+                set_index_of =
+                    address[LINE_OFFSET_BITS +: SET_INDEX_WIDTH];
         end
     endfunction
 
@@ -186,16 +215,13 @@ module openrv64_l1_cache #(
     end
 
     always @* begin
-        lookup_set = request_addr_q[LINE_OFFSET_BITS +:
-                                    SET_INDEX_WIDTH];
-        if (SETS == 1)
-            lookup_set = 0;
+        lookup_set = set_index_of(request_addr_q);
         lookup_beat = request_addr_q[$clog2(DATA_BYTES) +:
                                      BEAT_INDEX_WIDTH];
         if (WORDS_PER_LINE == 1)
             lookup_beat = 0;
-        lookup_tag = request_addr_q[ADDR_WIDTH-1:
-                                    LINE_OFFSET_BITS + SET_BITS];
+        lookup_tag = request_phys_addr_q[ADDR_WIDTH-1:
+                                         LINE_OFFSET_BITS + SET_BITS];
         lookup_hit = 1'b0;
         lookup_way = {WAY_INDEX_WIDTH{1'b0}};
         for (lookup_way_index = 0; lookup_way_index < WAYS;
@@ -211,6 +237,18 @@ module openrv64_l1_cache #(
         end
 
         victim_way = replace_q[lookup_set];
+        aged_way_found = 1'b0;
+        for (lookup_way_index = 0; lookup_way_index < WAYS;
+             lookup_way_index = lookup_way_index + 1) begin
+            lookup_line = line_index_of(
+                lookup_set,
+                lookup_way_index[WAY_INDEX_WIDTH-1:0]);
+            if (!aged_way_found && valid_q[lookup_line] &&
+                aged_q[lookup_line]) begin
+                victim_way = lookup_way_index[WAY_INDEX_WIDTH-1:0];
+                aged_way_found = 1'b1;
+            end
+        end
         invalid_way_found = 1'b0;
         for (lookup_way_index = 0; lookup_way_index < WAYS;
              lookup_way_index = lookup_way_index + 1) begin
@@ -225,10 +263,7 @@ module openrv64_l1_cache #(
         lookup_line = line_index_of(lookup_set, lookup_way);
         lookup_word = word_index_of(lookup_line, lookup_beat);
 
-        invalidate_set = invalidate_addr_i[LINE_OFFSET_BITS +:
-                                           SET_INDEX_WIDTH];
-        if (SETS == 1)
-            invalidate_set = 0;
+        invalidate_set = set_index_of(invalidate_addr_i);
         invalidate_tag = invalidate_addr_i[ADDR_WIDTH-1:
                                            LINE_OFFSET_BITS + SET_BITS];
         refill_word = word_index_of(refill_line_q, refill_beat_q);
@@ -247,7 +282,8 @@ module openrv64_l1_cache #(
                          (state_q == STATE_ACCESS);
     assign mem_write_o = (state_q == STATE_ACCESS) && request_write_q;
     assign mem_addr_o = (state_q == STATE_REFILL) ?
-        refill_line_addr + (refill_beat_q * DATA_BYTES) : request_addr_q;
+        refill_line_addr + (refill_beat_q * DATA_BYTES) :
+        request_phys_addr_q;
     assign mem_wdata_o = (state_q == STATE_ACCESS) ?
                          request_wdata_q : {DATA_WIDTH{1'b0}};
     assign mem_wstrb_o = ((state_q == STATE_ACCESS) && request_write_q) ?
@@ -285,7 +321,10 @@ module openrv64_l1_cache #(
             state_q <= STATE_IDLE;
             request_write_q <= 1'b0;
             request_cacheable_q <= 1'b0;
+            request_prefetch_q <= 1'b0;
+            request_aged_q <= 1'b0;
             request_addr_q <= {ADDR_WIDTH{1'b0}};
+            request_phys_addr_q <= {ADDR_WIDTH{1'b0}};
             request_wdata_q <= {DATA_WIDTH{1'b0}};
             request_wstrb_q <= {DATA_BYTES{1'b0}};
             refill_set_q <= 0;
@@ -305,11 +344,35 @@ module openrv64_l1_cache #(
             for (line_index = 0; line_index < TOTAL_LINES;
                  line_index = line_index + 1) begin
                 valid_q[line_index] <= 1'b0;
+                aged_q[line_index] <= 1'b0;
                 mesi_q[line_index] <= MESI_INVALID;
                 dirty_timestamp_q[line_index] <=
                     {DIRTY_TIMESTAMP_WIDTH{1'b0}};
             end
         end else begin
+            for (age_port = 0; age_port < 4;
+                 age_port = age_port + 1) begin
+                if (age_valid_i[age_port]) begin
+                    for (age_way = 0; age_way < WAYS;
+                         age_way = age_way + 1) begin
+                        if (valid_q[line_index_of(
+                                set_index_of(age_addr_i[
+                                    age_port*ADDR_WIDTH +: ADDR_WIDTH]),
+                                age_way[WAY_INDEX_WIDTH-1:0])] &&
+                            tag_q[line_index_of(
+                                set_index_of(age_addr_i[
+                                    age_port*ADDR_WIDTH +: ADDR_WIDTH]),
+                                age_way[WAY_INDEX_WIDTH-1:0])] ==
+                            age_addr_i[age_port*ADDR_WIDTH +
+                                       LINE_OFFSET_BITS + SET_BITS +:
+                                       TAG_BITS])
+                            aged_q[line_index_of(
+                                set_index_of(age_addr_i[
+                                    age_port*ADDR_WIDTH +: ADDR_WIDTH]),
+                                age_way[WAY_INDEX_WIDTH-1:0])] <= 1'b1;
+                    end
+                end
+            end
             case (state_q)
                 STATE_IDLE: begin
                     response_error_q <= 1'b0;
@@ -321,6 +384,7 @@ module openrv64_l1_cache #(
                             for (line_index = 0; line_index < TOTAL_LINES;
                                  line_index = line_index + 1) begin
                                 valid_q[line_index] <= 1'b0;
+                                aged_q[line_index] <= 1'b0;
                                 mesi_q[line_index] <= MESI_INVALID;
                                 dirty_timestamp_q[line_index] <=
                                     {DIRTY_TIMESTAMP_WIDTH{1'b0}};
@@ -339,6 +403,10 @@ module openrv64_l1_cache #(
                                         invalidate_set,
                                         way_index[WAY_INDEX_WIDTH-1:0])] <=
                                         1'b0;
+                                    aged_q[line_index_of(
+                                        invalidate_set,
+                                        way_index[WAY_INDEX_WIDTH-1:0])] <=
+                                        1'b0;
                                     mesi_q[line_index_of(
                                         invalidate_set,
                                         way_index[WAY_INDEX_WIDTH-1:0])] <=
@@ -353,7 +421,10 @@ module openrv64_l1_cache #(
                     end else if (req_valid_i) begin
                         request_write_q <= req_write_i;
                         request_cacheable_q <= req_cacheable_i;
+                        request_prefetch_q <= req_prefetch_i;
+                        request_aged_q <= req_aged_i;
                         request_addr_q <= req_addr_i;
+                        request_phys_addr_q <= req_phys_addr_i;
                         request_wdata_q <= req_wdata_i;
                         request_wstrb_q <= req_wstrb_i;
                         state_q <= STATE_LOOKUP;
@@ -373,11 +444,20 @@ module openrv64_l1_cache #(
                             replace_q[lookup_set] <=
                                 (lookup_way == LAST_WAY) ? 0 :
                                 lookup_way + 1'b1;
+                        if (lookup_hit)
+                            aged_q[line_index_of(lookup_set,
+                                                  lookup_way)] <= 1'b0;
                         state_q <= STATE_ACCESS;
                     end else if (lookup_hit) begin
                         replace_q[lookup_set] <=
                             (lookup_way == LAST_WAY) ? 0 :
                             lookup_way + 1'b1;
+                        if (!request_prefetch_q)
+                            aged_q[line_index_of(lookup_set,
+                                                  lookup_way)] <= 1'b0;
+                        else if (request_aged_q)
+                            aged_q[line_index_of(lookup_set,
+                                                  lookup_way)] <= 1'b1;
                         state_q <= STATE_HIT_RESPONSE;
                     end else begin
                         refill_set_q <= lookup_set;
@@ -388,6 +468,8 @@ module openrv64_l1_cache #(
                         refill_beat_q <= 0;
                         request_beat_q <= lookup_beat;
                         valid_q[line_index_of(lookup_set, victim_way)] <=
+                            1'b0;
+                        aged_q[line_index_of(lookup_set, victim_way)] <=
                             1'b0;
                         mesi_q[line_index_of(lookup_set, victim_way)] <=
                             MESI_INVALID;
@@ -410,6 +492,7 @@ module openrv64_l1_cache #(
                             if (refill_last_beat) begin
                                 tag_q[refill_line_q] <= refill_tag_q;
                                 valid_q[refill_line_q] <= 1'b1;
+                                aged_q[refill_line_q] <= request_aged_q;
                                 mesi_q[refill_line_q] <= MESI_EXCLUSIVE;
                                 dirty_timestamp_q[refill_line_q] <=
                                     {DIRTY_TIMESTAMP_WIDTH{1'b0}};

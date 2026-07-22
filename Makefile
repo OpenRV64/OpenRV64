@@ -9,6 +9,10 @@ UART_FIRMWARE_MAP := sw/uart.map
 COREMARK_LOOP_ELF := sw/coremark-loop.elf
 COREMARK_LOOP_BIN := sw/coremark-loop.bin
 COREMARK_LOOP_MAP := sw/coremark-loop.map
+L1I_COREMARK_MEMH := sim/coremark-l1i-512.memh
+L1I_TOP_CACHE_BYTES ?= 8192
+L1I_TOP_WAYS ?= 4
+L1I_TOP_PREFETCH_SLOTS ?= 8
 VEC_MATMUL_BUILD_DIR := sim/vector
 VEC_MATMUL_ELF := $(VEC_MATMUL_BUILD_DIR)/matmul.elf
 VEC_MATMUL_BIN := $(VEC_MATMUL_BUILD_DIR)/matmul.bin
@@ -53,6 +57,7 @@ VERILATOR ?= verilator
 RISCV_CC ?= riscv64-elf-gcc
 RISCV_OBJCOPY ?= riscv64-elf-objcopy
 RISCV_OBJDUMP ?= riscv64-elf-objdump
+RISCV_NM ?= riscv64-elf-nm
 AARCH64_CC ?= aarch64-linux-gnu-gcc
 AARCH64_OBJCOPY ?= aarch64-linux-gnu-objcopy
 AARCH64_OBJDUMP ?= aarch64-linux-gnu-objdump
@@ -162,6 +167,8 @@ GENBUS_WB_512_SIM_BUILD := sim/genbus_wb_512_tb.vvp
 CORE_COMPLEX_2H_AXI_SIM_BUILD := sim/core_complex_2h_axi_tb.vvp
 CORE_COMPLEX_4H_WB_SIM_BUILD := sim/core_complex_4h_wb_tb.vvp
 AXI_BUS_SIM_BUILD := sim/axi_bus_tb.vvp
+AXI_L1I_SIM_BUILD := sim/axi_l1i_tb.vvp
+L1I_TOP_SIM_BUILD := sim/openrv64_l1i_top_tb.vvp
 TLB_SIM_BUILD := sim/tlb_tb.vvp
 PTW_SIM_BUILD := sim/ptw_tb.vvp
 PTW_CONTEXT_SIM_BUILD := sim/ptw_context_tb.vvp
@@ -175,6 +182,7 @@ DECODE_REG_LSU_SIM_BUILD := sim/decode_reg_lsu_tb.vvp
 DECODE_BR_SIM_BUILD := sim/decode_br_tb.vvp
 ISA_BITMANIP_SIM_BUILD := sim/isa_bitmanip_tb.vvp
 STAGE_SIM_BUILD := sim/stage_tb.vvp
+PRF_SIM_BUILD := sim/prf_tb.vvp
 RV64I_GPR_SIM_BUILD := sim/rv64-i-gpr_tb.vvp
 RV64I_CSRS_SIM_BUILD := sim/rv64-i-csrs_tb.vvp
 RV64I_PMP_SIM_BUILD := sim/rv64-i-pmp_tb.vvp
@@ -220,6 +228,41 @@ RETIRE_3P_SIM_BUILD := sim/retire_3p_tb.vvp
 BACKEND_3P_SIM_BUILD := sim/backend_3p_tb.vvp
 TOP_3P_SIM_BUILD := sim/top_3p_tb.vvp
 TOP_AXI_3P_SIM_BUILD := sim/top_axi_3p_tb.vvp
+COMPLIANCE_BUILD_DIR ?= build/compliance
+COMPLIANCE_SIM_DIR := $(COMPLIANCE_BUILD_DIR)/sim
+COMPLIANCE_SMOKE_DIR := $(COMPLIANCE_BUILD_DIR)/smoke
+COMPLIANCE_1P_M_BUILD := $(COMPLIANCE_SIM_DIR)/compliance_1p_m.vvp
+COMPLIANCE_1P_I_BUILD := $(COMPLIANCE_SIM_DIR)/compliance_1p_i.vvp
+COMPLIANCE_3P_M_BUILD := $(COMPLIANCE_SIM_DIR)/compliance_3p_m.vvp
+COMPLIANCE_3P_I_BUILD := $(COMPLIANCE_SIM_DIR)/compliance_3p_i.vvp
+COMPLIANCE_PLATFORM_M_BUILD := $(COMPLIANCE_SIM_DIR)/compliance_platform_m.vvp
+COMPLIANCE_PLATFORM_I_BUILD := $(COMPLIANCE_SIM_DIR)/compliance_platform_i.vvp
+COMPLIANCE_1P_M_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/1p_m/Vtb_compliance_1p
+COMPLIANCE_1P_I_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/1p_i/Vtb_compliance_1p
+COMPLIANCE_3P_M_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/3p_m/Vtb_compliance_3p
+COMPLIANCE_3P_I_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/3p_i/Vtb_compliance_3p
+COMPLIANCE_PLATFORM_M_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/platform_m/Vtb_compliance_platform
+COMPLIANCE_PLATFORM_I_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/platform_i/Vtb_compliance_platform
+COMPLIANCE_SMOKE_ELF := $(COMPLIANCE_SMOKE_DIR)/smoke.elf
+COMPLIANCE_SMOKE_MEMH64 := $(COMPLIANCE_SMOKE_DIR)/smoke-64.memh
+COMPLIANCE_SMOKE_MEMH256 := $(COMPLIANCE_SMOKE_DIR)/smoke-256.memh
+COMPLIANCE_SMOKE_TOHOST := 80000080
+ACT4_ROOT ?=
+SAIL_RISCV ?=
+COMPLIANCE_EXTENSIONS ?= I,M,Zaamo,Zalrsc,Zicsr,Zifencei
+COMPLIANCE_PRIV_EXTENSIONS ?= Svbare
+COMPLIANCE_ENGINE ?= auto
+COMPLIANCE_ACT4_WORK ?= $(COMPLIANCE_BUILD_DIR)/act4-work
+COMPLIANCE_ACT4_ELFS := $(COMPLIANCE_ACT4_WORK)/openrv64-rv64ima/elfs
+COMPLIANCE_ACT4_PRIV_ELFS := \
+	$(COMPLIANCE_ACT4_WORK)/openrv64-rv64ima/elfs/priv
+COMPLIANCE_XFAIL := verification/compliance/expected_failures.tsv
 ISA_FP_SIM_BUILD := sim/isa_fp_tb.vvp
 EXEC_FPU_RV64FD_SIM_BUILD := sim/exec_fpu_rv64-fd_tb.vvp
 RV64I_VEC_SIM_BUILD := sim/rv64-i-vec_tb.vvp
@@ -239,7 +282,7 @@ ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
 FP_ISA_SRCS := rtl/core/isa/rv64-f.v rtl/core/isa/rv64-d.v
 FPU_SRCS := rtl/core/exec/fpu/defs.v rtl/core/exec/fpu/rv64-fd.v
 VEC_DEFS := rtl/core/exec/vec/defs.v
-VEC_REG_SRCS := rtl/core/regs/rv64-i-vec.v
+VEC_REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-vec.v
 VEC_EXEC_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec.v
 VEC_LSU_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec-lsu.v
 ARITH_DEPS := rtl/core/arith/prefix-addsub.v
@@ -248,19 +291,22 @@ DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v
 	rtl/core/decode/early.v rtl/core/decode/decode_top.v rtl/core/decode/imm.v rtl/core/decode/alu.v \
 	rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v rtl/core/decode/fence.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v
-REG_SRCS := rtl/core/regs/rv64-i-gpr.v rtl/core/regs/rv64-i-gpr_3p.v \
+REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr.v \
+	rtl/core/regs/rv64-i-gpr_3p.v \
 	rtl/core/regs/rv64-i-pmp.v rtl/core/regs/rv64-i-csrs.v
 FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
+L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
+	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1i/ccx.v \
+	rtl/cache/l1/l1d/l1d.v
 BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/ptw.v \
-	rtl/core/bus/gen_bus.v rtl/core/bus/axi_bus.v rtl/core/bus/bus.v
+	rtl/core/bus/gen_bus.v rtl/core/bus/axi_bus.v rtl/core/bus/bus.v \
+	$(L1_CACHE_SRCS)
 CCX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
 	rtl/complex/protocol/hart_legacy_adapter.v \
 	rtl/complex/protocol/axi_master.v rtl/complex/protocol/crossbar.v \
 	rtl/complex/protocol/wrapper_nh.v rtl/complex/protocol/wrapper_1h.v \
 	rtl/complex/protocol/wrapper_2h.v rtl/complex/protocol/wrapper_4h.v
-L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
-	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1d/l1d.v
 COMPLEX_BUS_SRCS := rtl/complex/bus/defs.v \
 	rtl/complex/bus/axi_backend.v rtl/complex/bus/wishbone_backend.v \
 	rtl/complex/bus/external_bus.v rtl/bus/genbus_interface.v
@@ -301,8 +347,10 @@ CORE_SRCS := rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
 	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/ptw.v \
-	rtl/core/bus/axi_bus.v rtl/core/bus/bus.v $(DECODE_SRCS) \
-	rtl/core/regs/rv64-i-gpr_3p.v rtl/core/regs/rv64-i-pmp.v \
+	rtl/core/bus/axi_bus.v rtl/core/bus/bus.v $(L1_CACHE_SRCS) \
+	$(DECODE_SRCS) \
+	rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr_3p.v \
+	rtl/core/regs/rv64-i-pmp.v \
 	rtl/core/regs/rv64-i-csrs.v rtl/core/dispatch/reg_map_3p.v \
 	rtl/core/dispatch/dispatch_3p.v rtl/core/dispatch/dispatch_window_3p.v \
 	rtl/core/dispatch/dispatch_barrier_3p.v \
@@ -355,6 +403,11 @@ COMPLEX_BUS_SIM_SRCS := tb/tb_complex_bus.sv
 GENBUS_SIM_SRCS := tb/tb_genbus_interface.sv
 CORE_COMPLEX_SIM_SRCS := tb/tb_core_complex.sv
 AXI_BUS_SIM_SRCS := tb/tb_axi_bus.sv
+AXI_L1I_SIM_SRCS := tb/tb_axi_l1i.sv
+L1I_TOP_SIM_SRCS := rtl/openrv64_l1i_top.v \
+	rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
+	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1i/ccx.v \
+	tb/tb_openrv64_l1i_top.sv
 TLB_SIM_SRCS := tb/tb_tlb.sv
 PTW_SIM_SRCS := tb/tb_ptw.sv
 PTW_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_ptw_context.sv
@@ -435,17 +488,122 @@ SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/Ope
 .PHONY: sim-bp-context-gshare-btb
 .PHONY: yosys-resources-core-sky130
 .PHONY: sim-opensbi-3p sim-opensbi-3p-platform
-.PHONY: sim-l1-cache sim-ccx-protocol-1h sim-ccx-protocol-2h sim-ccx-protocol-4h
+.PHONY: sim-l1-cache sim-l1i-top sim-ccx-protocol-1h sim-ccx-protocol-2h sim-ccx-protocol-4h
 .PHONY: sim-ccx-l2 sim-ccx-l2-widths sim-complex-bus-axi sim-complex-bus-wb
 .PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths
 .PHONY: sim-core-complex-2h-axi sim-core-complex-4h-wb
 .PHONY: sim-mem-channel
+.PHONY: sim-prf
+.PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
+	compliance-smoke-local-3p compliance-smoke-local-platform \
+	compliance-act4-generate compliance-act4-priv-generate compliance-isa \
+	compliance-isa-3p compliance-priv compliance-diff \
+	compliance-trace-contract compliance-quick compliance-full
 
 FORCE:
+
+compliance-doctor:
+	$(PYTHON) tools/compliance.py doctor
+
+compliance-smoke-local: compliance-smoke-local-1p compliance-smoke-local-3p \
+	compliance-smoke-local-platform
+
+compliance-smoke-local-1p: $(COMPLIANCE_1P_M_BUILD) \
+		$(COMPLIANCE_SMOKE_MEMH64)
+	vvp $(COMPLIANCE_1P_M_BUILD) \
+		+memh=$(COMPLIANCE_SMOKE_MEMH64) \
+		+tohost=$(COMPLIANCE_SMOKE_TOHOST) +test=local-smoke-1p
+
+compliance-smoke-local-3p: $(COMPLIANCE_3P_M_BUILD) \
+		$(COMPLIANCE_SMOKE_MEMH256)
+	vvp $(COMPLIANCE_3P_M_BUILD) \
+		+memh=$(COMPLIANCE_SMOKE_MEMH256) \
+		+tohost=$(COMPLIANCE_SMOKE_TOHOST) +test=local-smoke-3p
+
+compliance-smoke-local-platform: $(COMPLIANCE_PLATFORM_M_BUILD) \
+		$(COMPLIANCE_SMOKE_MEMH64)
+	vvp $(COMPLIANCE_PLATFORM_M_BUILD) \
+		+memh=$(COMPLIANCE_SMOKE_MEMH64) \
+		+tohost=$(COMPLIANCE_SMOKE_TOHOST) +test=local-smoke-platform
+
+compliance-act4-generate:
+	@test -n "$(ACT4_ROOT)" || \
+		{ echo "ACT4_ROOT must name an ACT4 checkout" >&2; exit 2; }
+	@test -n "$(SAIL_RISCV)" || \
+		{ echo "SAIL_RISCV must name sail_riscv_sim" >&2; exit 2; }
+	$(PYTHON) tools/compliance.py act4 --act4-root "$(ACT4_ROOT)" \
+		--sail "$(SAIL_RISCV)" --workdir "$(COMPLIANCE_ACT4_WORK)" \
+		--extensions "$(COMPLIANCE_EXTENSIONS)"
+
+compliance-act4-priv-generate:
+	@test -n "$(ACT4_ROOT)" || \
+		{ echo "ACT4_ROOT must name an ACT4 checkout" >&2; exit 2; }
+	@test -n "$(SAIL_RISCV)" || \
+		{ echo "SAIL_RISCV must name sail_riscv_sim" >&2; exit 2; }
+	$(PYTHON) tools/compliance.py act4 --act4-root "$(ACT4_ROOT)" \
+		--sail "$(SAIL_RISCV)" --workdir "$(COMPLIANCE_ACT4_WORK)" \
+		--extensions "$(COMPLIANCE_PRIV_EXTENSIONS)"
+
+# ACT4's common prologue touches CLINT state even for unprivileged tests, so
+# the platform backend is the canonical architectural-certification target.
+compliance-isa: compliance-act4-generate
+	$(PYTHON) tools/compliance.py suite "$(COMPLIANCE_ACT4_ELFS)/rv64i" \
+		--extensions "$(COMPLIANCE_EXTENSIONS)" \
+		--backend platform --engine "$(COMPLIANCE_ENGINE)" \
+		--xfail "$(COMPLIANCE_XFAIL)" \
+		--results-dir "$(COMPLIANCE_BUILD_DIR)/results-platform"
+
+# The 3p target validates the native AXI/CCX path with inert setup MMIO. Use
+# compliance-priv for tests that require functional CLINT/PLIC behavior.
+compliance-isa-3p: compliance-act4-generate
+	$(PYTHON) tools/compliance.py suite "$(COMPLIANCE_ACT4_ELFS)/rv64i" \
+		--extensions "$(COMPLIANCE_EXTENSIONS)" \
+		--backend 3p --engine "$(COMPLIANCE_ENGINE)" \
+		--xfail "$(COMPLIANCE_XFAIL)" \
+		--results-dir "$(COMPLIANCE_BUILD_DIR)/results-3p"
+
+compliance-priv: compliance-act4-priv-generate
+	$(PYTHON) tools/compliance.py suite "$(COMPLIANCE_ACT4_PRIV_ELFS)" \
+		--extensions "$(COMPLIANCE_PRIV_EXTENSIONS)" \
+		--backend platform --engine "$(COMPLIANCE_ENGINE)" \
+		--xfail "$(COMPLIANCE_XFAIL)" \
+		--results-dir "$(COMPLIANCE_BUILD_DIR)/results-priv"
+
+compliance-diff: $(COMPLIANCE_SMOKE_ELF)
+	@test -n "$(SAIL_RISCV)" || \
+		{ echo "SAIL_RISCV must name sail_riscv_sim" >&2; exit 2; }
+	$(PYTHON) tools/compliance.py diff $(COMPLIANCE_SMOKE_ELF) \
+		--backend 1p --engine "$(COMPLIANCE_ENGINE)" \
+		--sail "$(SAIL_RISCV)" \
+		--sail-config verification/compliance/act4/openrv64-rv64ima/sail.json
+	$(PYTHON) tools/compliance.py diff $(COMPLIANCE_SMOKE_ELF) \
+		--backend 3p --engine "$(COMPLIANCE_ENGINE)" \
+		--sail "$(SAIL_RISCV)" \
+		--sail-config verification/compliance/act4/openrv64-rv64ima/sail.json
+
+compliance-trace-contract: $(COMPLIANCE_SMOKE_ELF)
+	$(PYTHON) tools/compliance.py run $(COMPLIANCE_SMOKE_ELF) \
+		--backend 1p --engine "$(COMPLIANCE_ENGINE)" --trace \
+		--results-dir "$(COMPLIANCE_BUILD_DIR)/trace-contract"
+	$(PYTHON) tools/compliance.py run $(COMPLIANCE_SMOKE_ELF) \
+		--backend 3p --engine "$(COMPLIANCE_ENGINE)" --trace \
+		--results-dir "$(COMPLIANCE_BUILD_DIR)/trace-contract"
+	$(PYTHON) tools/compliance.py run $(COMPLIANCE_SMOKE_ELF) \
+		--backend platform --engine "$(COMPLIANCE_ENGINE)" --trace \
+		--results-dir "$(COMPLIANCE_BUILD_DIR)/trace-contract"
+	$(PYTHON) tools/check_arch_trace.py \
+		"$(COMPLIANCE_BUILD_DIR)/trace-contract"
+
+compliance-quick: compliance-smoke-local compliance-diff \
+	compliance-trace-contract
+
+compliance-full: compliance-smoke-local compliance-isa compliance-isa-3p \
+	compliance-priv compliance-diff compliance-trace-contract
 
 sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
 sim: sim-isa-fp sim-exec-fpu-rv64-fd
 sim: sim-vec
+sim: sim-prf
 sim: sim-l1-cache
 sim: sim-ccx-protocol-1h
 sim: sim-ccx-protocol-2h sim-ccx-protocol-4h
@@ -653,8 +811,12 @@ sim-core-complex-2h-axi: $(CORE_COMPLEX_2H_AXI_SIM_BUILD)
 sim-core-complex-4h-wb: $(CORE_COMPLEX_4H_WB_SIM_BUILD)
 	vvp $(CORE_COMPLEX_4H_WB_SIM_BUILD)
 
-sim-axi-bus: $(AXI_BUS_SIM_BUILD)
+sim-axi-bus: $(AXI_BUS_SIM_BUILD) $(AXI_L1I_SIM_BUILD)
 	vvp $(AXI_BUS_SIM_BUILD)
+	vvp $(AXI_L1I_SIM_BUILD)
+
+sim-l1i-top: $(L1I_TOP_SIM_BUILD) $(L1I_COREMARK_MEMH)
+	vvp $(L1I_TOP_SIM_BUILD) +memh=$(L1I_COREMARK_MEMH)
 
 sim-tlb: $(TLB_SIM_BUILD)
 	vvp $(TLB_SIM_BUILD)
@@ -697,6 +859,9 @@ sim-isa-fp: $(ISA_FP_SIM_BUILD)
 
 sim-stage: $(STAGE_SIM_BUILD)
 	vvp $(STAGE_SIM_BUILD)
+
+sim-prf: $(PRF_SIM_BUILD)
+	vvp $(PRF_SIM_BUILD)
 
 sim-rv64-i-gpr: $(RV64I_GPR_SIM_BUILD)
 	vvp $(RV64I_GPR_SIM_BUILD)
@@ -969,6 +1134,9 @@ $(COREMARK_LOOP_ELF): Makefile sw/coremark_loop_start.S \
 
 $(COREMARK_LOOP_BIN): $(COREMARK_LOOP_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(L1I_COREMARK_MEMH): $(COREMARK_LOOP_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ --size 0x800 --word-bytes 64
 
 $(VEC_MATMUL_ELF): Makefile sw/vector/matmul.S sw/vector/matmul.ld
 	mkdir -p $(VEC_MATMUL_BUILD_DIR)
@@ -1276,6 +1444,19 @@ $(AXI_BUS_SIM_BUILD): $(AXI_BUS_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(AXI_BUS_SIM_BUILD) $(BUS_SRCS) $(AXI_BUS_SIM_SRCS)
 
+$(AXI_L1I_SIM_BUILD): $(AXI_L1I_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_axi_l1i \
+		-o $(AXI_L1I_SIM_BUILD) $(BUS_SRCS) $(AXI_L1I_SIM_SRCS)
+
+$(L1I_TOP_SIM_BUILD): FORCE $(L1I_TOP_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_openrv64_l1i_top \
+		-Ptb_openrv64_l1i_top.CACHE_BYTES=$(L1I_TOP_CACHE_BYTES) \
+		-Ptb_openrv64_l1i_top.WAYS=$(L1I_TOP_WAYS) \
+		-Ptb_openrv64_l1i_top.PREFETCH_SLOTS=$(L1I_TOP_PREFETCH_SLOTS) \
+		-o $(L1I_TOP_SIM_BUILD) $(L1I_TOP_SIM_SRCS)
+
 $(TLB_SIM_BUILD): $(TLB_SIM_SRCS) rtl/core/bus/tlb.v $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TLB_SIM_BUILD) rtl/core/bus/tlb.v $(TLB_SIM_SRCS)
@@ -1332,11 +1513,17 @@ $(STAGE_SIM_BUILD): $(STAGE_SIM_SRCS) $(STAGE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(STAGE_SIM_BUILD) $(STAGE_SIM_SRCS)
 
+$(PRF_SIM_BUILD): rtl/core/regs/prf.v tb/tb_prf.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_prf -o $(PRF_SIM_BUILD) \
+		rtl/core/regs/prf.v tb/tb_prf.sv
+
 $(RV64I_GPR_SIM_BUILD): $(RV64I_GPR_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_GPR_SIM_BUILD) $(RV64I_GPR_SIM_SRCS)
 
-$(RV64I_GPR_3P_SIM_BUILD): rtl/core/regs/rv64-i-gpr_3p.v tb/tb_rv64-i-gpr_3p.sv
+$(RV64I_GPR_3P_SIM_BUILD): rtl/core/regs/prf.v \
+		rtl/core/regs/rv64-i-gpr_3p.v tb/tb_rv64-i-gpr_3p.sv
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_GPR_3P_SIM_BUILD) \
 		rtl/core/regs/rv64-i-gpr_3p.v tb/tb_rv64-i-gpr_3p.sv
@@ -1649,6 +1836,120 @@ $(TOP_AXI_3P_SIM_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
 		$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
 		$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \
 		tb/tb_top_axi_3p.sv
+
+$(COMPLIANCE_1P_M_BUILD): tb/tb_compliance_1p.sv rtl/openrv64_top.sv \
+		$(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_1p \
+		-Ptb_compliance_1p.ENABLE_RV64M=1 -o $@ \
+		rtl/openrv64_top.sv $(CORE_SRCS) tb/tb_compliance_1p.sv
+
+$(COMPLIANCE_1P_I_BUILD): tb/tb_compliance_1p.sv rtl/openrv64_top.sv \
+		$(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_1p \
+		-Ptb_compliance_1p.ENABLE_RV64M=0 -o $@ \
+		rtl/openrv64_top.sv $(CORE_SRCS) tb/tb_compliance_1p.sv
+
+$(COMPLIANCE_3P_M_BUILD): tb/tb_compliance_3p.sv tb/tb_top_axi_3p.sv \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) $(ISA_SRCS) \
+		$(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_3p \
+		-Ptb_compliance_3p.ENABLE_RV64M=1 -o $@ \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
+$(COMPLIANCE_3P_I_BUILD): tb/tb_compliance_3p.sv tb/tb_top_axi_3p.sv \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) $(ISA_SRCS) \
+		$(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_3p \
+		-Ptb_compliance_3p.ENABLE_RV64M=0 -o $@ \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
+$(COMPLIANCE_PLATFORM_M_BUILD): tb/tb_compliance_platform.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_platform \
+		-Ptb_compliance_platform.ENABLE_RV64M=1 -o $@ \
+		$(CORE_SRCS) $(PLATFORM_SRCS) tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_PLATFORM_I_BUILD): tb/tb_compliance_platform.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_platform \
+		-Ptb_compliance_platform.ENABLE_RV64M=0 -o $@ \
+		$(CORE_SRCS) $(PLATFORM_SRCS) tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_1P_M_VLT_BUILD): tb/tb_compliance_1p.sv rtl/openrv64_top.sv \
+		$(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_1p -GENABLE_RV64M=1 \
+		--Mdir $(dir $@) rtl/openrv64_top.sv $(CORE_SRCS) \
+		tb/tb_compliance_1p.sv
+
+$(COMPLIANCE_1P_I_VLT_BUILD): tb/tb_compliance_1p.sv rtl/openrv64_top.sv \
+		$(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_1p -GENABLE_RV64M=0 \
+		--Mdir $(dir $@) rtl/openrv64_top.sv $(CORE_SRCS) \
+		tb/tb_compliance_1p.sv
+
+$(COMPLIANCE_3P_M_VLT_BUILD): tb/tb_compliance_3p.sv tb/tb_top_axi_3p.sv \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) $(ISA_SRCS) \
+		$(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_3p -GENABLE_RV64M=1 \
+		--Mdir $(dir $@) rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
+$(COMPLIANCE_3P_I_VLT_BUILD): tb/tb_compliance_3p.sv tb/tb_top_axi_3p.sv \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) $(ISA_SRCS) \
+		$(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_3p -GENABLE_RV64M=0 \
+		--Mdir $(dir $@) rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
+$(COMPLIANCE_PLATFORM_M_VLT_BUILD): tb/tb_compliance_platform.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_platform -GENABLE_RV64M=1 \
+		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
+		tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_PLATFORM_I_VLT_BUILD): tb/tb_compliance_platform.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_platform -GENABLE_RV64M=0 \
+		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
+		tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_SMOKE_ELF): verification/compliance/smoke/smoke.S \
+		verification/compliance/smoke/link.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mcmodel=medany -mno-relax -nostdlib -nostartfiles -static \
+		-Wl,--build-id=none -T verification/compliance/smoke/link.ld \
+		-o $@ verification/compliance/smoke/smoke.S
+
+$(COMPLIANCE_SMOKE_MEMH64): $(COMPLIANCE_SMOKE_ELF) tools/elf2mem.py
+	$(PYTHON) tools/elf2mem.py $< $@ --base 0x80000000 \
+		--size 0x100000 --word-bytes 8 \
+		--manifest $(COMPLIANCE_SMOKE_DIR)/smoke-64.json
+
+$(COMPLIANCE_SMOKE_MEMH256): $(COMPLIANCE_SMOKE_ELF) tools/elf2mem.py
+	$(PYTHON) tools/elf2mem.py $< $@ --base 0x80000000 \
+		--size 0x100000 --word-bytes 32 \
+		--manifest $(COMPLIANCE_SMOKE_DIR)/smoke-256.json
 
 clean:
 	rm -rf sim

@@ -290,6 +290,16 @@ module tb_rv64i_csrs;
         write_csr(`RV64_CSR_MIP, 64'd0);
 
         write_csr(`RV64_CSR_MINSTRET, 64'd20);
+        @(negedge clk);
+        retire_count = 2'd3;
+        check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd23,
+                  "minstret same-cycle retirement forwarding");
+        @(posedge clk);
+        @(negedge clk);
+        retire_count = 2'd0;
+        check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd23,
+                  "minstret forwarded retirement committed");
+        write_csr(`RV64_CSR_MINSTRET, 64'd20);
         pulse_retire();
         check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd21,
                   "minstret retirement increment");

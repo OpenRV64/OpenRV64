@@ -3,6 +3,7 @@
 `include "core/exec/bp/defs.v"
 `include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
+`include "complex/protocol/defs.v"
 
 module openrv64_top #(
     parameter logic [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
@@ -14,6 +15,13 @@ module openrv64_top #(
     parameter bit ENABLE_RV64A = 1'b1,
     parameter bit ENABLE_FORWARDING = 1'b1,
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
+    parameter bit ENABLE_L1I = 1'b1,
+    parameter bit ENABLE_L1D = 1'b1,
+    parameter logic [63:0] L1D_CACHEABLE_BASE =
+        `OPENRV64_SOC_MEMORY_BASE,
+    parameter logic [63:0] L1D_CACHEABLE_SIZE =
+        `OPENRV64_SOC_MEMORY_SIZE,
+    parameter logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID = '0,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
@@ -85,6 +93,38 @@ module openrv64_top #(
     input  logic [1:0]  m_axi_bresp,
     input  logic        m_axi_bvalid,
     output logic        m_axi_bready,
+
+    output logic        ccx_req_valid,
+    input  logic        ccx_req_ready,
+    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id,
+    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id,
+    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id,
+    output logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op,
+    output logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order,
+    output logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind,
+    output logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr,
+    output logic [2:0]  ccx_req_size,
+    output logic [63:0] ccx_req_addr,
+    output logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len,
+    output logic        ccx_wdata_valid,
+    input  logic        ccx_wdata_ready,
+    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id,
+    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id,
+    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id,
+    output logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index,
+    output logic        ccx_wdata_last,
+    output logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata,
+    output logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb,
+    input  logic        ccx_resp_valid,
+    output logic        ccx_resp_ready,
+    input  logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id,
+    input  logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id,
+    input  logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id,
+    input  logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index,
+    input  logic        ccx_resp_last,
+    input  logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata,
+    input  logic        ccx_resp_error,
+    input  logic        ccx_resp_sc_success,
 
     input  logic        irq_m_software,
     input  logic        irq_m_timer,
@@ -200,6 +240,26 @@ module openrv64_top #(
     wire three_axi_wlast;
     wire three_axi_wvalid;
     wire three_axi_bready;
+    wire three_ccx_req_valid;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] three_ccx_req_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] three_ccx_req_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] three_ccx_req_source_id;
+    wire [`OPENRV64_CCX_OP_WIDTH-1:0] three_ccx_req_op;
+    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] three_ccx_req_order;
+    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] three_ccx_req_kind;
+    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] three_ccx_req_attr;
+    wire [2:0] three_ccx_req_size;
+    wire [63:0] three_ccx_req_addr;
+    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] three_ccx_req_burst_len;
+    wire three_ccx_wdata_valid;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] three_ccx_wdata_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] three_ccx_wdata_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] three_ccx_wdata_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] three_ccx_wdata_beat_index;
+    wire three_ccx_wdata_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] three_ccx_wdata;
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] three_ccx_wstrb;
+    wire three_ccx_resp_ready;
 
     openrv64_rv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
@@ -263,7 +323,12 @@ module openrv64_top #(
                 .BUS_CONFIG(BUS_CONFIG),
                 .STORE_FORWARD_BASE(`OPENRV64_SOC_MEMORY_BASE),
                 .STORE_FORWARD_SIZE(`OPENRV64_SOC_MEMORY_SIZE),
-                .ENABLE_RV64A(ENABLE_RV64A), .ENABLE_TRACE(ENABLE_TRACE),
+                .ENABLE_RV64A(ENABLE_RV64A), .ENABLE_L1I(ENABLE_L1I),
+                .ENABLE_L1D(ENABLE_L1D),
+                .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
+                .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+                .HART_ID(HART_ID),
+                .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
                 .BP_TYPE(BP_TYPE),
                 .BP_RAS_ENABLE(BP_RAS_ENABLE),
@@ -315,6 +380,37 @@ module openrv64_top #(
                 .m_axi_wready(m_axi_wready), .m_axi_bid(m_axi_bid),
                 .m_axi_bresp(m_axi_bresp), .m_axi_bvalid(m_axi_bvalid),
                 .m_axi_bready(three_axi_bready),
+                .ccx_req_valid(three_ccx_req_valid),
+                .ccx_req_ready(ccx_req_ready),
+                .ccx_req_hart_id(three_ccx_req_hart_id),
+                .ccx_req_txn_id(three_ccx_req_txn_id),
+                .ccx_req_source_id(three_ccx_req_source_id),
+                .ccx_req_op(three_ccx_req_op),
+                .ccx_req_order(three_ccx_req_order),
+                .ccx_req_kind(three_ccx_req_kind),
+                .ccx_req_attr(three_ccx_req_attr),
+                .ccx_req_size(three_ccx_req_size),
+                .ccx_req_addr(three_ccx_req_addr),
+                .ccx_req_burst_len(three_ccx_req_burst_len),
+                .ccx_wdata_valid(three_ccx_wdata_valid),
+                .ccx_wdata_ready(ccx_wdata_ready),
+                .ccx_wdata_hart_id(three_ccx_wdata_hart_id),
+                .ccx_wdata_txn_id(three_ccx_wdata_txn_id),
+                .ccx_wdata_source_id(three_ccx_wdata_source_id),
+                .ccx_wdata_beat_index(three_ccx_wdata_beat_index),
+                .ccx_wdata_last(three_ccx_wdata_last),
+                .ccx_wdata(three_ccx_wdata),
+                .ccx_wstrb(three_ccx_wstrb),
+                .ccx_resp_valid(ccx_resp_valid),
+                .ccx_resp_ready(three_ccx_resp_ready),
+                .ccx_resp_hart_id(ccx_resp_hart_id),
+                .ccx_resp_txn_id(ccx_resp_txn_id),
+                .ccx_resp_source_id(ccx_resp_source_id),
+                .ccx_resp_beat_index(ccx_resp_beat_index),
+                .ccx_resp_last(ccx_resp_last),
+                .ccx_resp_rdata(ccx_resp_rdata),
+                .ccx_resp_error(ccx_resp_error),
+                .ccx_resp_sc_success(ccx_resp_sc_success),
                 .irq_m_software(irq_m_software),
                 .irq_m_timer(irq_m_timer),
                 .irq_m_external(irq_m_external),
@@ -393,6 +489,26 @@ module openrv64_top #(
             assign three_axi_wlast = 1'b0;
             assign three_axi_wvalid = 1'b0;
             assign three_axi_bready = 1'b0;
+            assign three_ccx_req_valid = 1'b0;
+            assign three_ccx_req_hart_id = '0;
+            assign three_ccx_req_txn_id = '0;
+            assign three_ccx_req_source_id = '0;
+            assign three_ccx_req_op = '0;
+            assign three_ccx_req_order = '0;
+            assign three_ccx_req_kind = '0;
+            assign three_ccx_req_attr = '0;
+            assign three_ccx_req_size = '0;
+            assign three_ccx_req_addr = '0;
+            assign three_ccx_req_burst_len = '0;
+            assign three_ccx_wdata_valid = 1'b0;
+            assign three_ccx_wdata_hart_id = '0;
+            assign three_ccx_wdata_txn_id = '0;
+            assign three_ccx_wdata_source_id = '0;
+            assign three_ccx_wdata_beat_index = '0;
+            assign three_ccx_wdata_last = 1'b0;
+            assign three_ccx_wdata = '0;
+            assign three_ccx_wstrb = '0;
+            assign three_ccx_resp_ready = 1'b0;
         end
     endgenerate
 
@@ -427,6 +543,26 @@ module openrv64_top #(
     assign m_axi_wlast = three_axi_wlast;
     assign m_axi_wvalid = three_axi_wvalid;
     assign m_axi_bready = three_axi_bready;
+    assign ccx_req_valid = three_ccx_req_valid;
+    assign ccx_req_hart_id = three_ccx_req_hart_id;
+    assign ccx_req_txn_id = three_ccx_req_txn_id;
+    assign ccx_req_source_id = three_ccx_req_source_id;
+    assign ccx_req_op = three_ccx_req_op;
+    assign ccx_req_order = three_ccx_req_order;
+    assign ccx_req_kind = three_ccx_req_kind;
+    assign ccx_req_attr = three_ccx_req_attr;
+    assign ccx_req_size = three_ccx_req_size;
+    assign ccx_req_addr = three_ccx_req_addr;
+    assign ccx_req_burst_len = three_ccx_req_burst_len;
+    assign ccx_wdata_valid = three_ccx_wdata_valid;
+    assign ccx_wdata_hart_id = three_ccx_wdata_hart_id;
+    assign ccx_wdata_txn_id = three_ccx_wdata_txn_id;
+    assign ccx_wdata_source_id = three_ccx_wdata_source_id;
+    assign ccx_wdata_beat_index = three_ccx_wdata_beat_index;
+    assign ccx_wdata_last = three_ccx_wdata_last;
+    assign ccx_wdata = three_ccx_wdata;
+    assign ccx_wstrb = three_ccx_wstrb;
+    assign ccx_resp_ready = three_ccx_resp_ready;
     assign dbg_pc = use_3p ? three_dbg_pc : legacy_dbg_pc;
     assign dbg_instr = use_3p ? three_dbg_instr : legacy_dbg_instr;
     assign dbg_halted = use_3p ? three_dbg_halted : legacy_dbg_halted;

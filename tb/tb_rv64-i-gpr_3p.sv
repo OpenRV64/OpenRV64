@@ -77,6 +77,13 @@ module tb_rv64i_gpr_3p #(
             fail("three retirement writes were not stored");
         end
 
+        // Suppressed x0 writes are not duplicate physical destinations.
+        write_valid = 3'b111;
+        write_addr = {5'd0, 5'd0, 5'd0};
+        write_data = {64'h30, 64'h20, 64'h10};
+        tick();
+        write_valid = 3'b000;
+
         if (ALLOW_DUPLICATE_WRITES != 0) begin
             write_valid = 3'b111;
             write_addr = {5'd10, 5'd10, 5'd10};

@@ -3,11 +3,12 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 `include "soc/bus/mem_map.v"
+`include "complex/protocol/defs.v"
 
-// Testbench-only 256-bit AXI fabric.  RAM is a native 256-bit AXI target: one
-// AR/R transfer fetches a complete 32-byte line and WSTRB directly controls
-// all 32 RAM bytes.  Non-RAM addresses take the second fabric branch into the
-// existing 64-bit SoC peripheral bus; LSU-sized MMIO is lane-adapted there.
+// Testbench memory/SoC fabric for the residual 256-bit AXI port and native
+// 512-bit CCX cache port.  AXI serves PTW/cacheless-fetch traffic.  Native CCX
+// reads and writes access two adjacent 256-bit RAM words as one 64-byte line;
+// sub-line MMIO is lane-adapted onto the existing 64-bit SoC peripheral bus.
 module tb_axi256_soc_fabric #(
     parameter integer READ_QUEUE_DEPTH = 8,
     parameter integer RAM_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
@@ -50,6 +51,41 @@ module tb_axi256_soc_fabric #(
     output wire        s_axi_bvalid_o,
     input  wire        s_axi_bready_i,
 
+    input  wire        ccx_req_valid_i,
+    output wire        ccx_req_ready_o,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id_i,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id_i,
+    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id_i,
+    input  wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_i,
+    input  wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_i,
+    input  wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_i,
+    input  wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_i,
+    input  wire [2:0] ccx_req_size_i,
+    input  wire [63:0] ccx_req_addr_i,
+    input  wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+                       ccx_req_burst_len_i,
+    input  wire        ccx_wdata_valid_i,
+    output wire        ccx_wdata_ready_o,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id_i,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id_i,
+    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id_i,
+    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                       ccx_wdata_beat_index_i,
+    input  wire        ccx_wdata_last_i,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata_i,
+    input  wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb_i,
+    output wire        ccx_resp_valid_o,
+    input  wire        ccx_resp_ready_i,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id_o,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id_o,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id_o,
+    output wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                       ccx_resp_beat_index_o,
+    output wire        ccx_resp_last_o,
+    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata_o,
+    output wire        ccx_resp_error_o,
+    output wire        ccx_resp_sc_success_o,
+
     output wire        mem_valid_o,
     input  wire        mem_ready_i,
     output wire        mem_write_o,
@@ -66,6 +102,7 @@ module tb_axi256_soc_fabric #(
     localparam [1:0] BUS_IDLE  = 2'd0;
     localparam [1:0] BUS_READ  = 2'd1;
     localparam [1:0] BUS_WRITE = 2'd2;
+    localparam [1:0] BUS_CCX   = 2'd3;
 
     reg [`OPENRV64_AXI_ID_WIDTH-1:0] read_id_q
         [0:READ_QUEUE_DEPTH-1];
@@ -92,6 +129,26 @@ module tb_axi256_soc_fabric #(
     reg [`OPENRV64_AXI_DATA_WIDTH-1:0] w_data_q;
     reg [`OPENRV64_AXI_STRB_WIDTH-1:0] w_strb_q;
 
+    reg ccx_cmd_pending_q;
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_cmd_hart_id_q;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_cmd_txn_id_q;
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_cmd_source_id_q;
+    reg [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_cmd_op_q;
+    reg [2:0] ccx_cmd_size_q;
+    reg [63:0] ccx_cmd_addr_q;
+    reg ccx_data_pending_q;
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_data_hart_id_q;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_data_txn_id_q;
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_data_source_id_q;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_data_q;
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_strb_q;
+    reg ccx_resp_valid_q;
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id_q;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id_q;
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id_q;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata_q;
+    reg ccx_resp_error_q;
+
     reg [1:0] bus_state_q;
     reg [`OPENRV64_AXI_ID_WIDTH-1:0] r_id_q;
     reg [`OPENRV64_AXI_DATA_WIDTH-1:0] r_data_q;
@@ -102,17 +159,16 @@ module tb_axi256_soc_fabric #(
     reg b_valid_q;
     integer ram_init_index;
     integer write_byte;
+    integer ccx_write_byte;
 
     wire ar_fire = s_axi_arvalid_i && s_axi_arready_o;
     wire aw_fire = s_axi_awvalid_i && s_axi_awready_o;
     wire w_fire = s_axi_wvalid_i && s_axi_wready_o;
     wire r_fire = s_axi_rvalid_o && s_axi_rready_i;
     wire b_fire = s_axi_bvalid_o && s_axi_bready_i;
-
-    wire start_write = (bus_state_q == BUS_IDLE) && !b_valid_q &&
-                       aw_pending_q && w_pending_q;
-    wire start_read = (bus_state_q == BUS_IDLE) && !start_write &&
-                      (!r_valid_q || r_fire) && (read_count_q != 0);
+    wire ccx_req_fire = ccx_req_valid_i && ccx_req_ready_o;
+    wire ccx_wdata_fire = ccx_wdata_valid_i && ccx_wdata_ready_o;
+    wire ccx_resp_fire = ccx_resp_valid_o && ccx_resp_ready_i;
 
     wire [1:0] write_lane = aw_addr_q[4:3];
     wire [`OPENRV64_AXI_DATA_WIDTH-1:0] shifted_write_data =
@@ -133,6 +189,27 @@ module tb_axi256_soc_fabric #(
         read_addr_q[read_head_q][RAM_LINE_INDEX_WIDTH+4:5];
     wire [RAM_LINE_INDEX_WIDTH-1:0] current_write_ram_index =
         aw_addr_q[RAM_LINE_INDEX_WIDTH+4:5];
+    wire ccx_cmd_is_ram =
+        (ccx_cmd_addr_q >= `OPENRV64_SOC_MEMORY_BASE) &&
+        (ccx_cmd_addr_q < (`OPENRV64_SOC_MEMORY_BASE + RAM_BYTES));
+    wire [RAM_LINE_INDEX_WIDTH-1:0] ccx_ram_index = {
+        ccx_cmd_addr_q[RAM_LINE_INDEX_WIDTH+4:6], 1'b0
+    };
+    wire [2:0] ccx_scalar_word = ccx_cmd_addr_q[5:3];
+    wire [63:0] ccx_bus_wdata =
+        ccx_data_q >> (ccx_scalar_word * 64);
+    wire [7:0] ccx_bus_wstrb =
+        ccx_strb_q >> (ccx_scalar_word * 8);
+    wire ccx_command_has_data =
+        (ccx_cmd_op_q != `OPENRV64_CCX_OP_WRITE) || ccx_data_pending_q;
+    wire start_ccx = (bus_state_q == BUS_IDLE) &&
+                     ccx_cmd_pending_q && ccx_command_has_data &&
+                     !ccx_resp_valid_q;
+    wire start_write = (bus_state_q == BUS_IDLE) && !start_ccx &&
+                       !b_valid_q && aw_pending_q && w_pending_q;
+    wire start_read = (bus_state_q == BUS_IDLE) && !start_ccx &&
+                      !start_write && (!r_valid_q || r_fire) &&
+                      (read_count_q != 0);
 
 `ifndef VERILATOR
     initial begin
@@ -156,15 +233,37 @@ module tb_axi256_soc_fabric #(
     assign s_axi_bresp_o = b_resp_q;
     assign s_axi_bvalid_o = b_valid_q;
 
+    assign ccx_req_ready_o = rst_ni && !ccx_cmd_pending_q &&
+                             !ccx_resp_valid_q;
+    assign ccx_wdata_ready_o = rst_ni && !ccx_data_pending_q &&
+                               !ccx_resp_valid_q;
+    assign ccx_resp_valid_o = ccx_resp_valid_q;
+    assign ccx_resp_hart_id_o = ccx_resp_hart_id_q;
+    assign ccx_resp_txn_id_o = ccx_resp_txn_id_q;
+    assign ccx_resp_source_id_o = ccx_resp_source_id_q;
+    assign ccx_resp_beat_index_o =
+        {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+    assign ccx_resp_last_o = 1'b1;
+    assign ccx_resp_rdata_o = ccx_resp_rdata_q;
+    assign ccx_resp_error_o = ccx_resp_error_q;
+    assign ccx_resp_sc_success_o = 1'b0;
+
     assign mem_valid_o = ((bus_state_q == BUS_READ) &&
                           !current_read_is_ram) ||
                          ((bus_state_q == BUS_WRITE) &&
-                          !current_write_is_ram);
-    assign mem_write_o = (bus_state_q == BUS_WRITE);
+                          !current_write_is_ram) ||
+                         (bus_state_q == BUS_CCX);
+    assign mem_write_o = (bus_state_q == BUS_WRITE) ||
+        ((bus_state_q == BUS_CCX) &&
+         (ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE));
     assign mem_addr_o = (bus_state_q == BUS_READ) ?
-                        current_read_addr_q : aw_addr_q;
-    assign mem_wdata_o = shifted_write_data[63:0];
-    assign mem_wstrb_o = shifted_write_strb[7:0];
+                        current_read_addr_q :
+                        (bus_state_q == BUS_CCX) ?
+                        ccx_cmd_addr_q : aw_addr_q;
+    assign mem_wdata_o = (bus_state_q == BUS_CCX) ?
+                         ccx_bus_wdata : shifted_write_data[63:0];
+    assign mem_wstrb_o = (bus_state_q == BUS_CCX) ?
+                         ccx_bus_wstrb : shifted_write_strb[7:0];
 
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -179,6 +278,25 @@ module tb_axi256_soc_fabric #(
             w_pending_q <= 1'b0;
             w_data_q <= {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
             w_strb_q <= {`OPENRV64_AXI_STRB_WIDTH{1'b0}};
+            ccx_cmd_pending_q <= 1'b0;
+            ccx_cmd_hart_id_q <= 0;
+            ccx_cmd_txn_id_q <= 0;
+            ccx_cmd_source_id_q <= 0;
+            ccx_cmd_op_q <= 0;
+            ccx_cmd_size_q <= 0;
+            ccx_cmd_addr_q <= 0;
+            ccx_data_pending_q <= 1'b0;
+            ccx_data_hart_id_q <= 0;
+            ccx_data_txn_id_q <= 0;
+            ccx_data_source_id_q <= 0;
+            ccx_data_q <= 0;
+            ccx_strb_q <= 0;
+            ccx_resp_valid_q <= 1'b0;
+            ccx_resp_hart_id_q <= 0;
+            ccx_resp_txn_id_q <= 0;
+            ccx_resp_source_id_q <= 0;
+            ccx_resp_rdata_q <= 0;
+            ccx_resp_error_q <= 1'b0;
             bus_state_q <= BUS_IDLE;
             r_id_q <= {`OPENRV64_AXI_ID_WIDTH{1'b0}};
             r_data_q <= {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
@@ -225,12 +343,74 @@ module tb_axi256_soc_fabric #(
                 w_strb_q <= s_axi_wstrb_i;
             end
 
+            if (ccx_req_fire) begin
+                if ((ccx_req_burst_len_i != 0) ||
+                    ((ccx_req_op_i != `OPENRV64_CCX_OP_READ) &&
+                     (ccx_req_op_i != `OPENRV64_CCX_OP_WRITE)))
+                    $fatal(1, "unsupported native CCX command");
+                if ((ccx_req_size_i == 3'd6) &&
+                    (ccx_req_addr_i[5:0] != 0))
+                    $fatal(1, "native CCX line request is not aligned");
+                ccx_cmd_pending_q <= 1'b1;
+                ccx_cmd_hart_id_q <= ccx_req_hart_id_i;
+                ccx_cmd_txn_id_q <= ccx_req_txn_id_i;
+                ccx_cmd_source_id_q <= ccx_req_source_id_i;
+                ccx_cmd_op_q <= ccx_req_op_i;
+                ccx_cmd_size_q <= ccx_req_size_i;
+                ccx_cmd_addr_q <= ccx_req_addr_i;
+            end
+
+            if (ccx_wdata_fire) begin
+                if ((ccx_wdata_beat_index_i != 0) ||
+                    !ccx_wdata_last_i)
+                    $fatal(1, "unsupported native CCX write-data beat");
+                ccx_data_pending_q <= 1'b1;
+                ccx_data_hart_id_q <= ccx_wdata_hart_id_i;
+                ccx_data_txn_id_q <= ccx_wdata_txn_id_i;
+                ccx_data_source_id_q <= ccx_wdata_source_id_i;
+                ccx_data_q <= ccx_wdata_i;
+                ccx_strb_q <= ccx_wstrb_i;
+            end
+
             if (r_fire)
                 r_valid_q <= 1'b0;
             if (b_fire)
                 b_valid_q <= 1'b0;
+            if (ccx_resp_fire)
+                ccx_resp_valid_q <= 1'b0;
 
-            if (start_write) begin
+            if (start_ccx) begin
+                if ((ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE) &&
+                    ((ccx_data_hart_id_q != ccx_cmd_hart_id_q) ||
+                     (ccx_data_txn_id_q != ccx_cmd_txn_id_q) ||
+                     (ccx_data_source_id_q != ccx_cmd_source_id_q)))
+                    $fatal(1, "native CCX command/data identity mismatch");
+                if (ccx_cmd_is_ram) begin
+                    ccx_resp_hart_id_q <= ccx_cmd_hart_id_q;
+                    ccx_resp_txn_id_q <= ccx_cmd_txn_id_q;
+                    ccx_resp_source_id_q <= ccx_cmd_source_id_q;
+                    ccx_resp_rdata_q <= {
+                        ram_q[ccx_ram_index + 1'b1],
+                        ram_q[ccx_ram_index]
+                    };
+                    ccx_resp_error_q <= 1'b0;
+                    ccx_resp_valid_q <= 1'b1;
+                    if (ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE) begin
+                        for (ccx_write_byte = 0; ccx_write_byte < 64;
+                             ccx_write_byte = ccx_write_byte + 1) begin
+                            if (ccx_strb_q[ccx_write_byte])
+                                ram_q[ccx_ram_index +
+                                      (ccx_write_byte >= 32)]
+                                     [(ccx_write_byte % 32)*8 +: 8] <=
+                                    ccx_data_q[ccx_write_byte*8 +: 8];
+                        end
+                        ccx_data_pending_q <= 1'b0;
+                    end
+                    ccx_cmd_pending_q <= 1'b0;
+                end else begin
+                    bus_state_q <= BUS_CCX;
+                end
+            end else if (start_write) begin
                 bus_state_q <= BUS_WRITE;
             end else if (start_read) begin
                 read_head_q <= read_head_q + 1'b1;
@@ -277,6 +457,21 @@ module tb_axi256_soc_fabric #(
                     b_valid_q <= 1'b1;
                     aw_pending_q <= 1'b0;
                     w_pending_q <= 1'b0;
+                    bus_state_q <= BUS_IDLE;
+                end
+            end else if (bus_state_q == BUS_CCX) begin
+                if (mem_ready_i) begin
+                    ccx_resp_hart_id_q <= ccx_cmd_hart_id_q;
+                    ccx_resp_txn_id_q <= ccx_cmd_txn_id_q;
+                    ccx_resp_source_id_q <= ccx_cmd_source_id_q;
+                    ccx_resp_rdata_q <=
+                        {{(`OPENRV64_CCX_LINE_DATA_WIDTH-64){1'b0}},
+                          mem_rdata_i} << (ccx_scalar_word * 64);
+                    ccx_resp_error_q <= mem_error_i;
+                    ccx_resp_valid_q <= 1'b1;
+                    ccx_cmd_pending_q <= 1'b0;
+                    if (ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE)
+                        ccx_data_pending_q <= 1'b0;
                     bus_state_q <= BUS_IDLE;
                 end
             end
@@ -347,6 +542,37 @@ module tb_top_axi_3p #(
     wire bvalid;
     wire bready;
 
+    wire ccx_req_valid;
+    wire ccx_req_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
+    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
+    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
+    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
+    wire [2:0] ccx_req_size;
+    wire [63:0] ccx_req_addr;
+    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    wire ccx_wdata_valid;
+    wire ccx_wdata_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
+    wire ccx_wdata_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
+    wire ccx_resp_valid;
+    wire ccx_resp_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index;
+    wire ccx_resp_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    wire ccx_resp_error;
+
     wire bus_valid;
     wire bus_ready;
     wire bus_write;
@@ -355,7 +581,6 @@ module tb_top_axi_3p #(
     wire [7:0] bus_wstrb;
     wire [63:0] bus_rdata;
     wire bus_error;
-
     wire rom_valid;
     wire rom_ready;
     wire rom_write;
@@ -451,11 +676,11 @@ module tb_top_axi_3p #(
     wire [63:0] core_trace_retire_wdata;
 
     integer cycles;
-    integer fetch_ar_before_first_r;
-    reg first_r_seen;
-    reg saw_ram_axi;
-    reg saw_gpio_axi_read;
-    reg saw_gpio_axi_write;
+    integer ccx_i_before_first_resp;
+    reg first_ccx_i_resp_seen;
+    reg saw_ram_ccx;
+    reg saw_gpio_ccx_read;
+    reg saw_gpio_ccx_write;
     reg saw_three_retire;
     reg external_image;
     reg opensbi_image;
@@ -481,6 +706,9 @@ module tb_top_axi_3p #(
     integer axi_mmio_reads;
     integer axi_ram_writes;
     integer axi_mmio_writes;
+    integer ccx_fetch_reads;
+    integer ccx_data_reads;
+    integer ccx_data_writes;
     integer bp_allocations;
     integer bp_taken_predictions;
     integer bp_resolutions;
@@ -637,6 +865,37 @@ module tb_top_axi_3p #(
         .m_axi_bresp(bresp),
         .m_axi_bvalid(bvalid),
         .m_axi_bready(bready),
+        .ccx_req_valid(ccx_req_valid),
+        .ccx_req_ready(ccx_req_ready),
+        .ccx_req_hart_id(ccx_req_hart_id),
+        .ccx_req_txn_id(ccx_req_txn_id),
+        .ccx_req_source_id(ccx_req_source_id),
+        .ccx_req_op(ccx_req_op),
+        .ccx_req_order(ccx_req_order),
+        .ccx_req_kind(ccx_req_kind),
+        .ccx_req_attr(ccx_req_attr),
+        .ccx_req_size(ccx_req_size),
+        .ccx_req_addr(ccx_req_addr),
+        .ccx_req_burst_len(ccx_req_burst_len),
+        .ccx_wdata_valid(ccx_wdata_valid),
+        .ccx_wdata_ready(ccx_wdata_ready),
+        .ccx_wdata_hart_id(ccx_wdata_hart_id),
+        .ccx_wdata_txn_id(ccx_wdata_txn_id),
+        .ccx_wdata_source_id(ccx_wdata_source_id),
+        .ccx_wdata_beat_index(ccx_wdata_beat_index),
+        .ccx_wdata_last(ccx_wdata_last),
+        .ccx_wdata(ccx_wdata),
+        .ccx_wstrb(ccx_wstrb),
+        .ccx_resp_valid(ccx_resp_valid),
+        .ccx_resp_ready(ccx_resp_ready),
+        .ccx_resp_hart_id(ccx_resp_hart_id),
+        .ccx_resp_txn_id(ccx_resp_txn_id),
+        .ccx_resp_source_id(ccx_resp_source_id),
+        .ccx_resp_beat_index(ccx_resp_beat_index),
+        .ccx_resp_last(ccx_resp_last),
+        .ccx_resp_rdata(ccx_resp_rdata),
+        .ccx_resp_error(ccx_resp_error),
+        .ccx_resp_sc_success(1'b0),
         .irq_m_software(clint_msip[0]),
         .irq_m_timer(clint_mtip[0]),
         .irq_m_external(plic_meip[0]),
@@ -868,19 +1127,17 @@ module tb_top_axi_3p #(
          (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_mem_write &&
           !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_order_match));
     wire [3:0] trace_fetch_lines = {
-        dut.u_core.g_fetch_axi.u_fetch.line_valid_q[3],
-        dut.u_core.g_fetch_axi.u_fetch.line_valid_q[2],
+        2'b00,
         dut.u_core.g_fetch_axi.u_fetch.line_valid_q[1],
         dut.u_core.g_fetch_axi.u_fetch.line_valid_q[0]
     };
     wire [3:0] trace_fetch_pending = {
-        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[3],
-        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[2],
-        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[1],
-        dut.u_core.g_fetch_axi.u_fetch.pending_valid_q[0]
+        3'b000, dut.u_core.g_fetch_axi.u_fetch.pending_valid_q
     };
-    wire [2:0] trace_fetch_bus_count =
-        dut.u_core.u_bus.g_axi.u_bus.fetch_count_q;
+    wire [2:0] trace_fetch_bus_count = {
+        2'b00,
+        dut.u_core.u_bus.g_axi.u_bus.fetch_state_q != 3'd0
+    };
     wire trace_fetch_consume_hit =
         dut.u_core.g_fetch_axi.u_fetch.consume_line_hit;
     wire trace_fetch_follow_hit =
@@ -1028,6 +1285,37 @@ module tb_top_axi_3p #(
         .s_axi_bresp_o(bresp),
         .s_axi_bvalid_o(bvalid),
         .s_axi_bready_i(bready),
+        .ccx_req_valid_i(ccx_req_valid),
+        .ccx_req_ready_o(ccx_req_ready),
+        .ccx_req_hart_id_i(ccx_req_hart_id),
+        .ccx_req_txn_id_i(ccx_req_txn_id),
+        .ccx_req_source_id_i(ccx_req_source_id),
+        .ccx_req_op_i(ccx_req_op),
+        .ccx_req_order_i(ccx_req_order),
+        .ccx_req_kind_i(ccx_req_kind),
+        .ccx_req_attr_i(ccx_req_attr),
+        .ccx_req_size_i(ccx_req_size),
+        .ccx_req_addr_i(ccx_req_addr),
+        .ccx_req_burst_len_i(ccx_req_burst_len),
+        .ccx_wdata_valid_i(ccx_wdata_valid),
+        .ccx_wdata_ready_o(ccx_wdata_ready),
+        .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
+        .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
+        .ccx_wdata_source_id_i(ccx_wdata_source_id),
+        .ccx_wdata_beat_index_i(ccx_wdata_beat_index),
+        .ccx_wdata_last_i(ccx_wdata_last),
+        .ccx_wdata_i(ccx_wdata),
+        .ccx_wstrb_i(ccx_wstrb),
+        .ccx_resp_valid_o(ccx_resp_valid),
+        .ccx_resp_ready_i(ccx_resp_ready),
+        .ccx_resp_hart_id_o(ccx_resp_hart_id),
+        .ccx_resp_txn_id_o(ccx_resp_txn_id),
+        .ccx_resp_source_id_o(ccx_resp_source_id),
+        .ccx_resp_beat_index_o(ccx_resp_beat_index),
+        .ccx_resp_last_o(ccx_resp_last),
+        .ccx_resp_rdata_o(ccx_resp_rdata),
+        .ccx_resp_error_o(ccx_resp_error),
+        .ccx_resp_sc_success_o(),
         .mem_valid_o(bus_valid),
         .mem_ready_i(bus_ready),
         .mem_write_o(bus_write),
@@ -1497,6 +1785,14 @@ module tb_top_axi_3p #(
                 else
                     axi_mmio_writes = axi_mmio_writes + 1;
             end
+            if (ccx_req_valid && ccx_req_ready) begin
+                if (ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE)
+                    ccx_fetch_reads = ccx_fetch_reads + 1;
+                else if (ccx_req_op == `OPENRV64_CCX_OP_READ)
+                    ccx_data_reads = ccx_data_reads + 1;
+                else if (ccx_req_op == `OPENRV64_CCX_OP_WRITE)
+                    ccx_data_writes = ccx_data_writes + 1;
+            end
         end
     endtask
 
@@ -1712,11 +2008,6 @@ module tb_top_axi_3p #(
                 match_opensbi_byte(uart_wdata[7:0]);
             end
             if (arvalid && arready) begin
-                if (!first_r_seen &&
-                    !arid[`OPENRV64_AXI_ID_WIDTH-1]) begin
-                    fetch_ar_before_first_r <=
-                        fetch_ar_before_first_r + 1;
-                end
                 if ((araddr >= `OPENRV64_SOC_MEMORY_BASE) &&
                     (araddr < (`OPENRV64_SOC_MEMORY_BASE +
                                RAM_BYTES))) begin
@@ -1725,25 +2016,34 @@ module tb_top_axi_3p #(
                         $fatal(1,
                                "frontend RAM access was not one aligned 256-bit AXI beat");
                     end
-                    saw_ram_axi <= 1'b1;
+                    // AXI is retained for PTW only; ordinary fetch/data RAM
+                    // traffic is observed on the native CCX port below.
                 end
-                if ((araddr >= `OPENRV64_SOC_GPIO_BASE) &&
-                    (araddr < (`OPENRV64_SOC_GPIO_BASE +
-                               `OPENRV64_SOC_GPIO_SIZE))) begin
-                    saw_gpio_axi_read <= 1'b1;
+            end
+            if (ccx_req_valid && ccx_req_ready) begin
+                if ((ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE) &&
+                    !first_ccx_i_resp_seen)
+                    ccx_i_before_first_resp <=
+                        ccx_i_before_first_resp + 1;
+                if ((ccx_req_addr >= `OPENRV64_SOC_MEMORY_BASE) &&
+                    (ccx_req_addr < (`OPENRV64_SOC_MEMORY_BASE +
+                                     RAM_BYTES)))
+                    saw_ram_ccx <= 1'b1;
+                if ((ccx_req_addr >= `OPENRV64_SOC_GPIO_BASE) &&
+                    (ccx_req_addr < (`OPENRV64_SOC_GPIO_BASE +
+                                     `OPENRV64_SOC_GPIO_SIZE))) begin
+                    if (ccx_req_op == `OPENRV64_CCX_OP_READ)
+                        saw_gpio_ccx_read <= 1'b1;
+                    if (ccx_req_op == `OPENRV64_CCX_OP_WRITE)
+                        saw_gpio_ccx_write <= 1'b1;
                 end
-                if (!arid[`OPENRV64_AXI_ID_WIDTH-1] &&
-                    (araddr == (`OPENRV64_SOC_MEMORY_BASE + 64'h20)))
+                if ((ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE) &&
+                    (ccx_req_addr == `OPENRV64_SOC_MEMORY_BASE))
                     loop_line_fetches <= loop_line_fetches + 1;
             end
-            if (rvalid && rready)
-                first_r_seen <= 1'b1;
-            if (awvalid && awready &&
-                (awaddr >= `OPENRV64_SOC_GPIO_BASE) &&
-                (awaddr < (`OPENRV64_SOC_GPIO_BASE +
-                           `OPENRV64_SOC_GPIO_SIZE))) begin
-                saw_gpio_axi_write <= 1'b1;
-            end
+            if (ccx_resp_valid && ccx_resp_ready &&
+                (ccx_resp_source_id == `OPENRV64_CCX_SOURCE_ICACHE))
+                first_ccx_i_resp_seen <= 1'b1;
             if (dut.u_core.backend_retire_count == 3)
                 saw_three_retire <= 1'b1;
             if (dut.u_core.bp_branch_allocate) begin
@@ -1800,11 +2100,11 @@ module tb_top_axi_3p #(
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
-        fetch_ar_before_first_r = 0;
-        first_r_seen = 1'b0;
-        saw_ram_axi = 1'b0;
-        saw_gpio_axi_read = 1'b0;
-        saw_gpio_axi_write = 1'b0;
+        ccx_i_before_first_resp = 0;
+        first_ccx_i_resp_seen = 1'b0;
+        saw_ram_ccx = 1'b0;
+        saw_gpio_ccx_read = 1'b0;
+        saw_gpio_ccx_write = 1'b0;
         saw_three_retire = 1'b0;
         external_image = 1'b0;
         opensbi_image = 1'b0;
@@ -1830,6 +2130,9 @@ module tb_top_axi_3p #(
         axi_mmio_reads = 0;
         axi_ram_writes = 0;
         axi_mmio_writes = 0;
+        ccx_fetch_reads = 0;
+        ccx_data_reads = 0;
+        ccx_data_writes = 0;
         bp_allocations = 0;
         bp_taken_predictions = 0;
         bp_resolutions = 0;
@@ -2057,6 +2360,8 @@ module tb_top_axi_3p #(
             $display("PERF_AXI fetch_reads=%0d data_reads=%0d ram_reads=%0d mmio_reads=%0d ram_writes=%0d mmio_writes=%0d",
                      axi_fetch_reads, axi_data_reads, axi_ram_reads,
                      axi_mmio_reads, axi_ram_writes, axi_mmio_writes);
+            $display("PERF_CCX fetch_reads=%0d data_reads=%0d data_writes=%0d",
+                     ccx_fetch_reads, ccx_data_reads, ccx_data_writes);
             $display("PERF_BP allocations=%0d taken_predictions=%0d resolutions=%0d corrections=%0d update_overflow=%0d",
                      bp_allocations, bp_taken_predictions,
                      bp_resolutions, bp_corrections,
@@ -2153,19 +2458,37 @@ module tb_top_axi_3p #(
 
         if (!dbg_halted)
             $fatal(1, "AXI/SoC 3P core did not halt, pc=%016x", dbg_pc);
-        if (fetch_ar_before_first_r < 2)
-            $fatal(1, "frontend did not pipeline AXI reads");
-        if (!saw_ram_axi)
-            $fatal(1, "core did not fetch from native AXI RAM");
-        if (!saw_gpio_axi_write || !saw_gpio_axi_read)
-            $fatal(1, "firmware did not traverse the AXI-to-SoC MMIO path");
+        // EBREAK may become visible one cycle before the final posted store's
+        // registered command grant.  Drain the native endpoint before
+        // checking memory-side effects.
+        for (cycles = 0;
+             cycles < 100 &&
+             (ccx_req_valid || ccx_wdata_valid || ccx_resp_valid ||
+              u_axi_fabric.ccx_cmd_pending_q ||
+              u_axi_fabric.ccx_data_pending_q);
+             cycles = cycles + 1) begin
+            @(posedge clk);
+            #1;
+        end
+        if (ccx_req_valid || ccx_wdata_valid || ccx_resp_valid ||
+            u_axi_fabric.ccx_cmd_pending_q ||
+            u_axi_fabric.ccx_data_pending_q)
+            $fatal(1, "native CCX did not drain after architectural halt");
+        if (ccx_i_before_first_resp != 1)
+            $fatal(1,
+                   "blocking L1I issued %0d CCX lines before its first response",
+                   ccx_i_before_first_resp);
+        if (!saw_ram_ccx)
+            $fatal(1, "core did not fetch from native CCX RAM");
+        if (!saw_gpio_ccx_write || !saw_gpio_ccx_read)
+            $fatal(1, "firmware did not traverse the CCX-to-SoC MMIO path");
         if (!saw_three_retire)
             $fatal(1, "AXI/SoC 3P core never retired three instructions");
         if (gpio_out != 32'h0000_005a)
-            $fatal(1, "GPIO AXI write/readback mismatch: %08x", gpio_out);
+            $fatal(1, "GPIO CCX write/readback mismatch: %08x", gpio_out);
         if (u_axi_fabric.ram_q[8][127:64] !=
             64'h0000_0000_0000_005a)
-            $fatal(1, "RAM AXI store mismatch: %016x",
+            $fatal(1, "RAM CCX store mismatch: %016x",
                    u_axi_fabric.ram_q[8][127:64]);
         if (dut.u_core.u_backend.u_gpr.regs[5] != 64'd11 ||
             dut.u_core.u_backend.u_gpr.regs[6] != 64'd22 ||
@@ -2210,10 +2533,10 @@ module tb_top_axi_3p #(
             end
         endcase
         if (loop_line_fetches != 1)
-            $fatal(1, "resident 32-byte loop line was fetched %0d times",
+            $fatal(1, "resident 64-byte loop line was fetched %0d times",
                    loop_line_fetches);
 
-        $display("PASS: AXI 3P BP type %0d used resident loop line once and completed SoC MMIO flow",
+        $display("PASS: 3P native CCX L1I/L1D type %0d used resident loop line once and completed SoC MMIO flow",
                  BP_TYPE);
         $finish;
     end

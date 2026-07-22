@@ -1,10 +1,10 @@
-`timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
+`include "core/regs/prf.v"
+`timescale 1ns/1ps
 
-// Six combinational read selectors and three ordered retirement write ports.
-// Duplicate destinations are optional; when enabled, ascending nonblocking
-// assignments and youngest-first bypass priority make the youngest retirement
-// lane the final architectural value.
+// Six-read, three-write architectural GPR compatibility wrapper for the 3P
+// backend.  Higher-numbered retirement ports retain the previous duplicate
+// write and bypass priority.
 module openrv64_rv64i_gpr_3p #(
     parameter RESET_REGS = 1,
     parameter READ_WRITE_BYPASS = 1,
@@ -21,75 +21,51 @@ module openrv64_rv64i_gpr_3p #(
     input  wire [3*`RV64_XLEN-1:0]      write_data_i
 );
 
-    reg [`RV64_XLEN-1:0] regs [1:31];
+    wire [5:0] read_ready_unused;
+    wire [2:0] write_ready_unused;
+    wire [32*`RV64_XLEN-1:0] prf_debug_regs;
 
-    wire [`RV64_REG_ADDR_WIDTH-1:0] write_addr0 =
-        write_addr_i[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH];
-    wire [`RV64_REG_ADDR_WIDTH-1:0] write_addr1 =
-        write_addr_i[1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH];
-    wire [`RV64_REG_ADDR_WIDTH-1:0] write_addr2 =
-        write_addr_i[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH];
-    wire write0 = write_valid_i[0] && (write_addr0 != `RV64_REG_X0);
-    wire write1 = write_valid_i[1] && (write_addr1 != `RV64_REG_X0);
-    wire write2 = write_valid_i[2] && (write_addr2 != `RV64_REG_X0);
+    openrv64_prf #(
+        .DATA_WIDTH(`RV64_XLEN),
+        .NUM_REGS(32),
+        .REG_ADDR_WIDTH(`RV64_REG_ADDR_WIDTH),
+        .NUM_SLICES(1),
+        .SLICE_ADDR_WIDTH(1),
+        .NUM_BANKS(1),
+        .READ_PORTS(6),
+        .WRITE_PORTS(3),
+        .READ_PORTS_PER_BANK(6),
+        .WRITE_PORTS_PER_BANK(3),
+        .ZERO_REG_ENABLE(1),
+        .ZERO_REG_INDEX(`RV64_REG_X0),
+        .RESET_REGS(RESET_REGS),
+        .READ_WRITE_BYPASS(READ_WRITE_BYPASS),
+        .ALLOW_DUPLICATE_WRITES(ALLOW_DUPLICATE_WRITES)
+    ) u_prf (
+        .clk(clk),
+        .rst_n(rst_n),
+        .read_valid_i(6'b11_1111),
+        .read_ready_o(read_ready_unused),
+        .read_addr_i(read_addr_i),
+        .read_slice_i(6'b00_0000),
+        .read_data_o(read_data_o),
+        .write_valid_i(write_valid_i),
+        .write_ready_o(write_ready_unused),
+        .write_addr_i(write_addr_i),
+        .write_slice_i(3'b000),
+        .write_data_i(write_data_i),
+        .debug_regs_o(prf_debug_regs)
+    );
 
-    genvar read_idx;
+    // Stable hierarchy-visible architectural view used by existing tests.
+    wire [`RV64_XLEN-1:0] regs [1:31];
+    genvar reg_alias;
     generate
-        for (read_idx = 0; read_idx < 6; read_idx = read_idx + 1) begin : g_read
-            wire [`RV64_REG_ADDR_WIDTH-1:0] read_addr =
-                read_addr_i[read_idx*`RV64_REG_ADDR_WIDTH +:
-                            `RV64_REG_ADDR_WIDTH];
-            wire bypass0 = READ_WRITE_BYPASS && write0 &&
-                           (read_addr == write_addr0);
-            wire bypass1 = READ_WRITE_BYPASS && write1 &&
-                           (read_addr == write_addr1);
-            wire bypass2 = READ_WRITE_BYPASS && write2 &&
-                           (read_addr == write_addr2);
-
-            assign read_data_o[read_idx*`RV64_XLEN +: `RV64_XLEN] =
-                (read_addr == `RV64_REG_X0) ? {`RV64_XLEN{1'b0}} :
-                bypass2 ? write_data_i[2*`RV64_XLEN +: `RV64_XLEN] :
-                bypass1 ? write_data_i[1*`RV64_XLEN +: `RV64_XLEN] :
-                bypass0 ? write_data_i[0*`RV64_XLEN +: `RV64_XLEN] :
-                regs[read_addr];
+        for (reg_alias = 1; reg_alias < 32;
+             reg_alias = reg_alias + 1) begin : g_reg_alias
+            assign regs[reg_alias] = prf_debug_regs[
+                reg_alias*`RV64_XLEN +: `RV64_XLEN];
         end
     endgenerate
-
-    integer reg_idx;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            if (RESET_REGS) begin
-                for (reg_idx = 1; reg_idx < 32; reg_idx = reg_idx + 1) begin
-                    regs[reg_idx] <= {`RV64_XLEN{1'b0}};
-                end
-            end
-        end else begin
-            if (write0) begin
-                regs[write_addr0] <=
-                    write_data_i[0*`RV64_XLEN +: `RV64_XLEN];
-            end
-            if (write1) begin
-                regs[write_addr1] <=
-                    write_data_i[1*`RV64_XLEN +: `RV64_XLEN];
-            end
-            if (write2) begin
-                regs[write_addr2] <=
-                    write_data_i[2*`RV64_XLEN +: `RV64_XLEN];
-            end
-        end
-    end
-
-`ifndef SYNTHESIS
-    always @(posedge clk) begin
-        if (rst_n) begin
-            if ((ALLOW_DUPLICATE_WRITES == 0) &&
-                ((write0 && write1 && (write_addr0 == write_addr1)) ||
-                (write0 && write2 && (write_addr0 == write_addr2)) ||
-                 (write1 && write2 && (write_addr1 == write_addr2)))) begin
-                $fatal(1, "3p retirement attempted duplicate GPR writes");
-            end
-        end
-    end
-`endif
 
 endmodule

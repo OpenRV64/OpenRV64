@@ -129,6 +129,13 @@ module openrv64_rv64i_csrs #(
     reg [`RV64_XLEN-1:0] mcountinhibit_q;
     reg [`RV64_XLEN-1:0] mcycle_q;
     reg [`RV64_XLEN-1:0] minstret_q;
+    // A wide backend may execute an ordered CSR read in the same cycle that
+    // older instructions retire. Present those architecturally prior
+    // retirements to instret immediately; minstret_q receives the same count
+    // on the active edge below.
+    wire [`RV64_XLEN-1:0] minstret_read_value = minstret_q +
+        (mcountinhibit_q[`RV64_MCOUNTER_IR_BIT] ? {`RV64_XLEN{1'b0}} :
+         {{(`RV64_XLEN-2){1'b0}}, retire_count_i});
 
     reg [`RV64_XLEN-1:0] stvec_q;
     reg [`RV64_XLEN-1:0] scounteren_q;
@@ -333,7 +340,7 @@ module openrv64_rv64i_csrs #(
             `RV64_CSR_MTVAL: csr_rdata_o = mtval_q;
             `RV64_CSR_MIP: csr_rdata_o = mip_value;
             `RV64_CSR_MCYCLE: csr_rdata_o = mcycle_q;
-            `RV64_CSR_MINSTRET: csr_rdata_o = minstret_q;
+            `RV64_CSR_MINSTRET: csr_rdata_o = minstret_read_value;
             `RV64_CSR_CYCLE: begin
                 csr_rdata_o = mcycle_q;
                 csr_writable_o = 1'b0;
@@ -345,7 +352,7 @@ module openrv64_rv64i_csrs #(
                 csr_writable_o = 1'b0;
             end
             `RV64_CSR_INSTRET: begin
-                csr_rdata_o = minstret_q;
+                csr_rdata_o = minstret_read_value;
                 csr_writable_o = 1'b0;
             end
 

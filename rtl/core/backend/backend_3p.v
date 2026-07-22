@@ -94,6 +94,8 @@ module openrv64_backend_3p #(
     output wire [2:0]                   branch_train_conditional_o,
     output wire [2:0]                   branch_train_taken_o,
     output wire [3*`RV64_XLEN-1:0]      branch_train_pc_o,
+    output wire [2:0]                   branch_retire_age_valid_o,
+    output wire [3*`RV64_XLEN-1:0]      branch_retire_age_addr_o,
 
     output wire [2:0]                   retire_arch_o,
     output wire [1:0]                   retire_count_o,
@@ -357,6 +359,46 @@ module openrv64_backend_3p #(
         window_resolve_meta[WINDOW_META_PREDICTED_TAKEN];
     wire window_direction_mispredict = window_branch_resolved &&
         (window_branch_predicted_taken != window_branch_taken);
+
+    // The losing side of a conditional branch becomes cold only when that
+    // branch retires.  Resolution can happen much earlier, so this sideband
+    // is derived directly from the retirement prefix rather than from the
+    // predictor-training or redirect paths.
+    genvar retire_age_lane;
+    generate
+        for (retire_age_lane = 0; retire_age_lane < 3;
+             retire_age_lane = retire_age_lane + 1) begin : g_retire_age
+            wire [`OPENRV64_RETIRE_META_WIDTH-1:0] age_meta =
+                queue_retire_meta[
+                    retire_age_lane*`OPENRV64_RETIRE_META_WIDTH +:
+                    `OPENRV64_RETIRE_META_WIDTH];
+            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] age_result =
+                queue_retire_result[
+                    retire_age_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+            wire [`RV64_XLEN-1:0] age_pc =
+                age_result[WINDOW_RESULT_PC +: `RV64_XLEN];
+            wire [`RV64_XLEN-1:0] age_next_pc =
+                age_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
+            wire [`RV64_INSTR_WIDTH-1:0] age_instr =
+                age_result[WINDOW_RESULT_INSTR +: `RV64_INSTR_WIDTH];
+            wire [`RV64_XLEN-1:0] age_fallthrough = age_pc + 64'd4;
+            wire [`RV64_XLEN-1:0] age_target =
+                age_pc + `RV64_IMM_B(age_instr);
+            wire age_taken = age_next_pc != age_fallthrough;
+            wire [`RV64_XLEN-1:0] age_loser =
+                age_taken ? age_fallthrough : age_target;
+
+            assign branch_retire_age_valid_o[retire_age_lane] =
+                release_valid[retire_age_lane] &&
+                age_meta[WINDOW_META_BRANCH] &&
+                !age_result[WINDOW_RESULT_EXCEPTION] &&
+                (age_target[`RV64_XLEN-1:6] !=
+                 age_fallthrough[`RV64_XLEN-1:6]);
+            assign branch_retire_age_addr_o[
+                retire_age_lane*`RV64_XLEN +: `RV64_XLEN] = age_loser;
+        end
+    endgenerate
 
     wire free_branch_resolved = |allocation_complete;
     // Architectural completions may be multi-wide.  The existing predictor

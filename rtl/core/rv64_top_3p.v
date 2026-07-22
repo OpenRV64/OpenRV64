@@ -10,6 +10,7 @@
 `include "core/exec/bp/defs.v"
 `include "core/except/except-defs.v"
 `include "core/trace/trace-defs.v"
+`include "complex/protocol/defs.v"
 
 // Selectable two-wide generic or three-wide AXI frontend plus EX0/EX1/MEM.
 module openrv64_rv64_top_3p #(
@@ -33,6 +34,14 @@ module openrv64_rv64_top_3p #(
     parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE = {`RV64_XLEN{1'b0}},
     parameter ENABLE_RV64A = 1,
+    parameter ENABLE_L1I = 1,
+    parameter ENABLE_L1D = 1,
+    parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_BASE =
+        {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
+        {`RV64_XLEN{1'b1}},
+    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
@@ -94,6 +103,38 @@ module openrv64_rv64_top_3p #(
     input  wire [1:0]  m_axi_bresp,
     input  wire        m_axi_bvalid,
     output wire        m_axi_bready,
+
+    output wire        ccx_req_valid,
+    input  wire        ccx_req_ready,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id,
+    output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op,
+    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order,
+    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind,
+    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr,
+    output wire [2:0]  ccx_req_size,
+    output wire [63:0] ccx_req_addr,
+    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len,
+    output wire        ccx_wdata_valid,
+    input  wire        ccx_wdata_ready,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id,
+    output wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index,
+    output wire        ccx_wdata_last,
+    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata,
+    output wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb,
+    input  wire        ccx_resp_valid,
+    output wire        ccx_resp_ready,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id,
+    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id,
+    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index,
+    input  wire        ccx_resp_last,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata,
+    input  wire        ccx_resp_error,
+    input  wire        ccx_resp_sc_success,
 
     input  wire        irq_m_software,
     input  wire        irq_m_timer,
@@ -175,6 +216,8 @@ module openrv64_rv64_top_3p #(
     wire [2:0] branch_train_conditional;
     wire [2:0] branch_train_taken;
     wire [3*`RV64_XLEN-1:0] branch_train_pc;
+    wire [2:0] branch_retire_age_valid;
+    wire [3*`RV64_XLEN-1:0] branch_retire_age_addr;
     wire [3*64-1:0] backend_decode_allocation_id;
     wire [3*$clog2(RETIRE_DEPTH)-1:0]
         backend_decode_allocation_slot;
@@ -235,11 +278,14 @@ module openrv64_rv64_top_3p #(
     wire control_redirect = backend_redirect || bp_target_mispredict;
 
     wire fetch3_restart = reset_pending_q || except_vector_valid ||
-                          control_redirect || bp_predict_redirect;
+                          control_restart || control_redirect ||
+                          bp_predict_redirect;
     wire [63:0] fetch3_restart_pc = except_vector_valid ?
-        except_vector_target : control_redirect ? backend_redirect_target :
+        except_vector_target : control_restart ? backend_retire_next_pc :
+        control_redirect ? backend_redirect_target :
         bp_predict_redirect ? bp_predict_target : RESET_VECTOR;
-    wire fetch3_invalidate = reset_pending_q || except_vector_valid;
+    wire fetch3_invalidate = reset_pending_q || except_vector_valid ||
+                             control_restart;
 
     generate
         if (BUS_CONFIG == `OPENRV64_BUS_GEN) begin : g_fetch_gen
@@ -621,6 +667,10 @@ module openrv64_rv64_top_3p #(
         {1'b0, frontend_decode_fire[2]};
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
+    wire icache_prefetch_valid = use_axi_bus && bp_branch_allocate &&
+                                 bp_lookup_branch;
+    wire [63:0] icache_prefetch_taken_addr = bp_direct_target;
+    wire [63:0] icache_prefetch_fallthrough_addr = bp_selected_pc + 64'd4;
     assign fetch_decode_ready[0] = backend_decode_ready[0] &&
                                    frontend_prefix_allow[0] &&
                                    frontend_decode_enable;
@@ -726,6 +776,8 @@ module openrv64_rv64_top_3p #(
         .branch_train_conditional_o(branch_train_conditional),
         .branch_train_taken_o(branch_train_taken),
         .branch_train_pc_o(branch_train_pc),
+        .branch_retire_age_valid_o(branch_retire_age_valid),
+        .branch_retire_age_addr_o(branch_retire_age_addr),
         .retire_arch_o(backend_retire_arch),
         .retire_count_o(backend_retire_count),
         .exception_o(backend_exception), .halt_o(backend_halt),
@@ -839,7 +891,14 @@ module openrv64_rv64_top_3p #(
     assign mem_wdata = core_mem_wdata;
     assign mem_wstrb = core_mem_wstrb;
 
-    openrv64_core_bus #(.BUS_CONFIG(BUS_CONFIG)) u_bus (
+    openrv64_core_bus #(
+        .BUS_CONFIG(BUS_CONFIG),
+        .ENABLE_L1I(ENABLE_L1I),
+        .ENABLE_L1D(ENABLE_L1D),
+        .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
+        .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+        .HART_ID(HART_ID)
+    ) u_bus (
         .clk(clk), .rst_n(rst_n), .fetch_valid_i(fetch_mem_valid),
         .fetch_cancel_i(use_axi_bus ? fetch3_cancel :
                         (fetch_invalidate || control_redirect)),
@@ -901,7 +960,15 @@ module openrv64_rv64_top_3p #(
         .lsu_pipe_resp_rdata_o(backend_mem_rdata),
         .lsu_pipe_resp_access_fault_o(backend_mem_access_fault),
         .lsu_pipe_resp_page_fault_o(backend_mem_page_fault),
-        .tlbi_i(backend_sfence_vma), .req_valid_o(core_mem_valid),
+        .tlbi_i(backend_sfence_vma),
+        .icache_invalidate_i(backend_fence_i),
+        .icache_prefetch_valid_i(icache_prefetch_valid),
+        .icache_prefetch_taken_addr_i(icache_prefetch_taken_addr),
+        .icache_prefetch_fallthrough_addr_i(
+            icache_prefetch_fallthrough_addr),
+        .icache_age_valid_i(branch_retire_age_valid),
+        .icache_age_addr_i(branch_retire_age_addr),
+        .req_valid_o(core_mem_valid),
         .req_ready_i(core_mem_ready), .req_write_o(core_mem_write),
         .req_addr_o(core_mem_addr), .req_pmp_addr_o(core_mem_pmp_addr),
         .req_priv_o(core_mem_priv), .req_size_o(core_mem_size),
@@ -914,6 +981,37 @@ module openrv64_rv64_top_3p #(
         .pmp_priv_o(core_pmp_priv), .pmp_size_o(core_pmp_size),
         .pmp_write_o(core_pmp_write), .pmp_exec_o(core_pmp_exec),
         .pmp_allow_i(csr_pmp_bus_allow),
+        .ccx_req_valid_o(ccx_req_valid),
+        .ccx_req_ready_i(ccx_req_ready),
+        .ccx_req_hart_id_o(ccx_req_hart_id),
+        .ccx_req_txn_id_o(ccx_req_txn_id),
+        .ccx_req_source_id_o(ccx_req_source_id),
+        .ccx_req_op_o(ccx_req_op),
+        .ccx_req_order_o(ccx_req_order),
+        .ccx_req_kind_o(ccx_req_kind),
+        .ccx_req_attr_o(ccx_req_attr),
+        .ccx_req_size_o(ccx_req_size),
+        .ccx_req_addr_o(ccx_req_addr),
+        .ccx_req_burst_len_o(ccx_req_burst_len),
+        .ccx_wdata_valid_o(ccx_wdata_valid),
+        .ccx_wdata_ready_i(ccx_wdata_ready),
+        .ccx_wdata_hart_id_o(ccx_wdata_hart_id),
+        .ccx_wdata_txn_id_o(ccx_wdata_txn_id),
+        .ccx_wdata_source_id_o(ccx_wdata_source_id),
+        .ccx_wdata_beat_index_o(ccx_wdata_beat_index),
+        .ccx_wdata_last_o(ccx_wdata_last),
+        .ccx_wdata_o(ccx_wdata),
+        .ccx_wstrb_o(ccx_wstrb),
+        .ccx_resp_valid_i(ccx_resp_valid),
+        .ccx_resp_ready_o(ccx_resp_ready),
+        .ccx_resp_hart_id_i(ccx_resp_hart_id),
+        .ccx_resp_txn_id_i(ccx_resp_txn_id),
+        .ccx_resp_source_id_i(ccx_resp_source_id),
+        .ccx_resp_beat_index_i(ccx_resp_beat_index),
+        .ccx_resp_last_i(ccx_resp_last),
+        .ccx_resp_rdata_i(ccx_resp_rdata),
+        .ccx_resp_error_i(ccx_resp_error),
+        .ccx_resp_sc_success_i(ccx_resp_sc_success),
         .m_axi_arid_o(m_axi_arid), .m_axi_araddr_o(m_axi_araddr),
         .m_axi_arlen_o(m_axi_arlen), .m_axi_arsize_o(m_axi_arsize),
         .m_axi_arburst_o(m_axi_arburst), .m_axi_arlock_o(m_axi_arlock),

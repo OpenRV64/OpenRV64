@@ -22,6 +22,9 @@ module openrv64_l1 #(
     input  wire                      req_write_i,
     input  wire                      req_cacheable_i,
     input  wire [ADDR_WIDTH-1:0]     req_addr_i,
+    input  wire [ADDR_WIDTH-1:0]     req_phys_addr_i,
+    input  wire                      req_prefetch_i,
+    input  wire                      req_aged_i,
     input  wire [DATA_WIDTH-1:0]     req_wdata_i,
     input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
@@ -30,6 +33,8 @@ module openrv64_l1 #(
     output wire                      invalidate_ready_o,
     input  wire                      invalidate_all_i,
     input  wire [ADDR_WIDTH-1:0]     invalidate_addr_i,
+    input  wire [3:0]                age_valid_i,
+    input  wire [4*ADDR_WIDTH-1:0]   age_addr_i,
     output wire                      mem_valid_o,
     input  wire                      mem_ready_i,
     output wire                      mem_write_o,
@@ -58,6 +63,9 @@ module openrv64_l1 #(
                 .req_write_i(req_write_i),
                 .req_cacheable_i(req_cacheable_i),
                 .req_addr_i(req_addr_i),
+                .req_phys_addr_i(req_phys_addr_i),
+                .req_prefetch_i(req_prefetch_i),
+                .req_aged_i(req_aged_i),
                 .req_wdata_i(req_wdata_i),
                 .req_wstrb_i(req_wstrb_i),
                 .req_rdata_o(req_rdata_o),
@@ -66,6 +74,8 @@ module openrv64_l1 #(
                 .invalidate_ready_o(invalidate_ready_o),
                 .invalidate_all_i(invalidate_all_i),
                 .invalidate_addr_i(invalidate_addr_i),
+                .age_valid_i(age_valid_i),
+                .age_addr_i(age_addr_i),
                 .mem_valid_o(mem_valid_o),
                 .mem_ready_i(mem_ready_i),
                 .mem_write_o(mem_write_o),
@@ -82,7 +92,7 @@ module openrv64_l1 #(
             assign invalidate_ready_o = 1'b1;
             assign mem_valid_o = req_valid_i;
             assign mem_write_o = req_write_i;
-            assign mem_addr_o = req_addr_i;
+            assign mem_addr_o = req_phys_addr_i;
             assign mem_wdata_o = req_wdata_i;
             assign mem_wstrb_o = req_wstrb_i;
         end

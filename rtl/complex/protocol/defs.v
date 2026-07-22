@@ -11,6 +11,21 @@
 `define OPENRV64_CCX_KIND_WIDTH    2
 `define OPENRV64_CCX_ATTR_WIDTH    4
 
+// Native cache-facing geometry.  The compatibility modules below this file
+// still use their explicit 64-bit payloads; these constants define the
+// separate northbound line protocol used by private cache endpoints.
+`define OPENRV64_CCX_SOURCE_ID_WIDTH 2
+`define OPENRV64_CCX_BURST_LEN_WIDTH 8
+`define OPENRV64_CCX_BEAT_INDEX_WIDTH 8
+`define OPENRV64_CCX_LINE_BYTES      64
+`define OPENRV64_CCX_LINE_DATA_WIDTH 512
+`define OPENRV64_CCX_LINE_STRB_WIDTH 64
+
+`define OPENRV64_CCX_SOURCE_ICACHE 2'd0
+`define OPENRV64_CCX_SOURCE_DCACHE 2'd1
+`define OPENRV64_CCX_SOURCE_PTW    2'd2
+`define OPENRV64_CCX_SOURCE_LEGACY 2'd3
+
 // Stable request operations.  The one-hart compatibility adapter currently
 // emits READ and WRITE.  The remaining encodings are reserved now so later
 // coherent logic receives atomic intent explicitly rather than attempting to

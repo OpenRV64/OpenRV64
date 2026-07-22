@@ -19,6 +19,8 @@ module tb_l1_cache;
     wire invalidate_ready;
     logic invalidate_all;
     logic [63:0] invalidate_addr;
+    logic [3:0] age_valid;
+    logic [255:0] age_addr;
 
     wire mem_valid;
     logic mem_stall;
@@ -77,6 +79,8 @@ module tb_l1_cache;
         .invalidate_ready_o(invalidate_ready),
         .invalidate_all_i(invalidate_all),
         .invalidate_addr_i(invalidate_addr),
+        .age_valid_i(age_valid),
+        .age_addr_i(age_addr),
         .mem_valid_o(mem_valid),
         .mem_ready_i(mem_ready),
         .mem_write_o(mem_write),
@@ -107,6 +111,8 @@ module tb_l1_cache;
         .invalidate_ready_o(bypass_invalidate_ready),
         .invalidate_all_i(1'b0),
         .invalidate_addr_i(64'd0),
+        .age_valid_i(4'b0000),
+        .age_addr_i(256'd0),
         .mem_valid_o(bypass_mem_valid),
         .mem_ready_i(bypass_mem_valid),
         .mem_write_o(bypass_mem_write),
@@ -232,6 +238,8 @@ module tb_l1_cache;
         invalidate_valid = 1'b0;
         invalidate_all = 1'b0;
         invalidate_addr = 64'd0;
+        age_valid = 4'b0000;
+        age_addr = 256'd0;
         mem_stall = 1'b0;
         fail_enable = 1'b0;
         fail_addr = 64'd0;
@@ -375,6 +383,39 @@ module tb_l1_cache;
                       memory[64'h400 >> 3], 1'b0,
                       "round-robin victim");
         expect_request_delta(before_count, 8, "ninth line evicted first way");
+
+        // Retirement aging is replacement priority, not invalidation.  Fill
+        // one set, age way 3, and prove the next allocation selects it even
+        // though round-robin currently points at way 0.
+        invalidate(1'b1, 64'd0);
+        for (index = 0; index < 8; index = index + 1) begin
+            issue_request(1'b0, 1'b1, 64'h400 + index * 64'h80,
+                          64'd0, 8'd0,
+                          memory[(64'h400 + index * 64'h80) >> 3],
+                          1'b0, "age set fill");
+        end
+        @(negedge clk);
+        age_valid = 4'b0001;
+        age_addr[63:0] = 64'h580;
+        @(posedge clk);
+        @(negedge clk);
+        age_valid = 4'b0000;
+        age_addr = 256'd0;
+        if (!dut.u_l1.g_cache.u_cache.aged_q[3])
+            $fatal(1, "age hint did not mark the resident line");
+        issue_request(1'b0, 1'b1, 64'h800, 64'd0, 8'd0,
+                      memory[64'h800 >> 3], 1'b0,
+                      "aged victim replacement");
+        before_count = memory_requests;
+        issue_request(1'b0, 1'b1, 64'h400, 64'd0, 8'd0,
+                      memory[64'h400 >> 3], 1'b0,
+                      "non-aged line survives");
+        expect_request_delta(before_count, 0, "non-aged survivor hit");
+        before_count = memory_requests;
+        issue_request(1'b0, 1'b1, 64'h580, 64'd0, 8'd0,
+                      memory[64'h580 >> 3], 1'b0,
+                      "aged line evicted first");
+        expect_request_delta(before_count, 8, "aged victim refill");
 
         // Cacheless mode preserves every request field and response.
         @(negedge clk);

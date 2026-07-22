@@ -25,7 +25,8 @@ The defaults are:
 
 - 256 KiB, configurable to 512 KiB or 1 MiB with `L2_BYTES`;
 - eight ways, configurable with `L2_WAYS`;
-- 64-byte lines, matching the current L1 line size;
+- 64-byte lines, matching the current L1 line size and the native 512-bit CCX
+  beat;
 - write-back and write-allocate; and
 - invalid-first, round-robin replacement.
 
@@ -64,6 +65,19 @@ rather than an asynchronous 256 KiB mux. The tag/status arrays remain
 behavioral and still need banking or explicit macros before physical
 implementation; inference alone is not a frequency or area result.
 
+The native northbound CCX interface is independently fixed at 512 bits, one
+64-byte cache line per accepted data beat. Native cache endpoints may request
+bursts of multiple consecutive cache lines; each line remains a separate
+512-bit beat and a separate home/coherence operation. The current RTL still has
+a 64-bit scalar compatibility CCX path, so the 512-bit native request, response,
+crossbar, and L2 termination are an integration requirement rather than a claim
+about the present implementation. The 256-bit internal SRAM port may remain
+two-cycle per line and does not determine the CCX width.
+
+`L2_LINE_BYTES` must be 64 when the native CCX endpoint is selected. Its current
+parameterization is retained for legacy-controller experiments; it is not a
+license for a native CCX beat to represent less or more than one cache line.
+
 ## Shared generic bus boundary
 
 The L2 does not contain AXI or WISHBONE state. Its southbound neutral request
@@ -90,9 +104,12 @@ Untagged upstream responses are restored to request-acceptance order. AXI
 reads and writes may execute concurrently, but a younger request is not issued
 past an older opposite-direction request whose byte range overlaps.
 
-The CCX/L2 instance explicitly drives `burst=0`. This disables cross-request
-coalescing at that client boundary; it does not disable the AXI burst needed to
-split one wide L2 request over a narrower external port.
+The current CCX/L2 instance explicitly drives the southbound genbus `burst=0`.
+This is independent of the native northbound CCX burst, whose unit is a
+cache line. A future native L2 expands a CCX burst into independently coherent
+line operations, satisfies any hits locally, and may describe runs of
+contiguous misses to genbus for external coalescing. The southbound adapter
+still splits at AXI limits and 4 KiB boundaries.
 
 In the core complex, `L2_BUS_DATA_WIDTH` selects the upstream producer width
 (32 through 256 bits) and `BUS_DATA_WIDTH` independently selects the external

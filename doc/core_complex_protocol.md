@@ -38,9 +38,9 @@ logic therefore sets the real outstanding limit: the cacheless AXI protocol
 wrapper still permits one transaction globally, while the shared L2 can accept
 same-line merge requests from other harts during a fill.
 
-## Request identity and payload
+## Implemented compatibility request
 
-Every CCX request carries:
+The currently implemented scalar compatibility CCX request carries:
 
 | Field | Width | Meaning |
 | --- | ---: | --- |
@@ -61,9 +61,42 @@ success. A hart endpoint accepts only a response matching both identities.
 The compatibility endpoint can recover only READ versus WRITE from the
 current core pins. It therefore emits `kind=LEGACY`, `order=NONE`, an
 integration-selected default attribute, and an eight-byte physical transfer.
-The richer encodings are reserved for a native core endpoint. In particular,
-the fabric must eventually receive LR, SC, and AMO intent directly; it must not
-infer an atomic sequence from adjacent reads and writes.
+This channel is a bring-up seam and is not the native cache-facing CCX
+datapath.
+
+## Native 512-bit cache-line request
+
+The required native interface above CCX is 512 bits wide. One accepted data
+beat carries exactly one 64-byte cache line. Cacheable refills, evictions,
+interventions, and prefetches therefore cross CCX one complete line at a time
+rather than as eight scalar requests.
+
+In addition to the identity, operation, ordering, requester-kind, attributes,
+and physical address above, a native request carries:
+
+| Field | Width | Meaning |
+| --- | ---: | --- |
+| `source_id` | implementation-defined | I-cache, D-cache, PTW, or another endpoint within the hart. |
+| `burst_len` | 8 | Additional consecutive cache lines; zero means one line and 255 means 256 lines. |
+| `wdata` | 512 | One cache-line write-data beat. |
+| `wstrb` | 64 | One byte enable per cache-line byte. |
+
+A request for `burst_len=N` covers `N+1` lines beginning at the aligned start
+address. Each line remains a separate 512-bit data beat and a separate
+coherence/home operation. The burst is a transport and scheduling declaration,
+not a multi-line atomic region. Responses return one line per beat in increasing
+address order and include transaction identity plus a final-beat indication.
+Different tagged bursts may interleave.
+
+All lines in one burst must be physically contiguous and have identical PMA
+attributes and ordering. The requester splits at translation or attribute
+boundaries. CCX itself does not inherit AXI's 4 KiB burst restriction; the
+southbound transport splits there when required.
+
+Sub-line atomics and uncached operations still travel on this 512-bit datapath.
+Their address and size select the meaningful byte lanes, and they must use
+`burst_len=0`. The fabric receives LR, SC, and AMO intent explicitly and never
+infers an atomic sequence from adjacent operations.
 
 ## Memory ordering
 
@@ -84,7 +117,7 @@ This is per-address memory ordering, not cross-hart register scoreboarding.
 
 ## AXI mapping
 
-The initial bridge accepts only eight-byte protocol transfers and emits them
+The initial compatibility bridge accepts only eight-byte protocol transfers and emits them
 as single-beat AXI transactions on the existing 256-bit external data bus.
 Address bits `[4:3]` select the 64-bit data and strobe lane. AW and W are
 tracked independently, and R/B responses must match the configured AXI ID.
@@ -92,6 +125,8 @@ AXI error responses become CCX errors and then ordinary core bus errors.
 
 Only CCX READ and WRITE are translated today. Reserved operations complete
 with an error rather than silently degrading into non-atomic AXI traffic.
+This mapping describes the implemented legacy wrapper, not the native 512-bit
+cache-line and multi-line burst contract.
 
 ## Shared-cache implementation
 

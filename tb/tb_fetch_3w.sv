@@ -24,7 +24,7 @@ module tb_fetch_3w;
     wire [3*`RV64_FETCH_DECODE_BUS_WIDTH-1:0] decode_bus;
     wire [191:0] trace_id;
     wire [63:0] stream_pc;
-    wire [2:0] line_count;
+    wire [1:0] line_count;
 
     integer request_count;
     integer restart_request_base;
@@ -149,18 +149,23 @@ module tb_fetch_3w;
         restart = 0;
         invalidate = 0;
 
-        // Four 32-byte requests launch without waiting for a response.
-        while (request_count < 4) tick();
-        if (request_addr[0] != 64'h0 || request_addr[1] != 64'h20 ||
-            request_addr[2] != 64'h40 || request_addr[3] != 64'h60 ||
-            line_count != 4)
-            $fatal(1, "fetch_3w prefetch window mismatch");
-
-        // The next line can return first, but decode remains ordered at PC 18.
-        return_line(64'h20, 32'h108);
-        if (decode_valid != 3'b000)
-            $fatal(1, "younger line bypassed missing stream head");
+        // Fetch issues only the current line and cannot launch another until
+        // that response returns.  Once current is present it asks for exactly
+        // one following line so a three-wide bundle can cross the boundary.
+        while (request_count < 1) tick();
+        if (request_addr[0] != 64'h0 || line_count != 1)
+            $fatal(1, "fetch_3w current-line request mismatch");
+        repeat (3) tick();
+        if (request_count != 1)
+            $fatal(1, "fetch_3w issued more than one request at a time");
         return_line(64'h0, 32'h100);
+        while (request_count < 2) tick();
+        if (request_addr[1] != 64'h20 || line_count != 2)
+            $fatal(1, "fetch_3w did not request exactly one line ahead");
+        repeat (3) tick();
+        if (request_count != 2)
+            $fatal(1, "fetch_3w requested beyond its one-line lookahead");
+        return_line(64'h20, 32'h108);
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
         if (trace_id[63:0] != 100 || trace_id[127:64] != 101 ||
             trace_id[191:128] != 102)
@@ -177,10 +182,9 @@ module tb_fetch_3w;
             $fatal(1, "partial decode acceptance advanced by more than one");
         expect_bundle(64'h28, 32'h10a, 32'h10b, 32'h10c);
 
-        // An ordinary redirect preserves the direct-mapped resident lines.
-        // Even if line 0 has a speculative replacement pending, the response
-        // has not overwritten it, so the backward target replays without a
-        // target-line AXI request.
+        // Redirects discard the fetch-side bridge registers.  The target is
+        // requested again and is expected to hit in L1I in the integrated
+        // design; fetch itself owns no loop-residency policy.
         decode_ready = 0;
         replay_request_base = request_count;
         restart_pc = 64'h18;
@@ -189,12 +193,17 @@ module tb_fetch_3w;
         restart = 0;
         if (stream_pc != 64'h18)
             $fatal(1, "resident redirect did not restore target PC");
+        while (request_count < replay_request_base + 1) tick();
+        if (request_addr[replay_request_base] != 64'h0)
+            $fatal(1, "redirect did not request its target line");
+        return_line(64'h0, 32'h100);
+        while (request_count < replay_request_base + 2) tick();
+        if (request_addr[replay_request_base + 1] != 64'h20)
+            $fatal(1, "redirect did not restore one-line lookahead");
+        return_line(64'h20, 32'h108);
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
-        if (request_count != replay_request_base)
-            $fatal(1, "resident loop redirect refetched target line");
 
-        // A context-changing restart invalidates the resident window and
-        // begins a new direct-mapped four-line fill.
+        // A context-changing restart follows the same one-at-a-time contract.
         restart_request_base = request_count;
         restart_pc = 64'h84;
         invalidate = 1;
@@ -203,13 +212,18 @@ module tb_fetch_3w;
         restart = 0;
         invalidate = 0;
         if (stream_pc != 64'h84 || line_count != 0)
-            $fatal(1, "invalidating restart did not reset resident window");
-        while (request_count < restart_request_base + 4) tick();
-        if (request_addr[restart_request_base] != 64'h80 ||
-            request_addr[restart_request_base + 1] != 64'ha0)
+            $fatal(1, "invalidating restart did not reset fetch bridge lines");
+        while (request_count < restart_request_base + 1) tick();
+        repeat (3) tick();
+        if (request_count != restart_request_base + 1 ||
+            request_addr[restart_request_base] != 64'h80)
             $fatal(1, "restart request alignment mismatch");
+        return_line(64'h80, 32'h120);
+        while (request_count < restart_request_base + 2) tick();
+        if (request_addr[restart_request_base + 1] != 64'ha0)
+            $fatal(1, "restart lookahead alignment mismatch");
 
-        $display("PASS: direct-mapped 3-wide prefetch, resident replay, and invalidation");
+        $display("PASS: 3-wide current-line fetch with one-line lookahead");
         $finish;
     end
 endmodule

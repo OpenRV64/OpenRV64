@@ -10,8 +10,9 @@
 `define OPENRV64_AXI_STRB_WIDTH 32
 `define OPENRV64_AXI_ID_WIDTH 3
 
-// AXI IDs 0-3 are instruction-line requests.  IDs 4-6 are independent LSU
-// transactions; ID 7 remains reserved for the blocking PTW/legacy data path.
+// In cacheless-L1I mode AXI ID 0 is the instruction-line request.  IDs 4-6
+// are reserved LSU pipeline slots and ID 7 is the serialized PTW path.  With
+// L1I enabled, instruction lines use native CCX rather than AXI IDs.
 `define OPENRV64_LSU_TAG_WIDTH 2
 `define OPENRV64_LSU_OUTSTANDING 3
 

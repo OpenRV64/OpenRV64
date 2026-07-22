@@ -28,8 +28,8 @@ The current design is built around a few deliberate rules:
    default in the 3P wrapper, makes a store architecturally complete when its
    request is accepted and reports a later failure as an imprecise asynchronous
    abort.
-6. There is currently no instruction cache, data cache, multi-entry store
-   buffer, or coherent memory hierarchy.
+6. The 256-bit 3P path has private blocking L1I/L1D caches on native CCX.
+   There is still no multi-entry store buffer or coherent memory hierarchy.
 
 These rules are more important than the informal names of the pipeline stages:
 they define which optimizations can be added locally and which require a real
@@ -39,8 +39,9 @@ speculative recovery mechanism.
 
 | Boundary | Backend | Memory boundary | Purpose |
 | --- | --- | --- | --- |
+| `openrv64_l1i_top` | Standalone 256-bit fetch client | Native 512-bit CCX plus external translation service | VIPT L1I integration, synthesis, and trace-replay validation |
 | `openrv64_top` | Selectable 1P or 3P | 64-bit blocking bus; 256-bit AXI is legal only with 3P | General integration wrapper |
-| `openrv64_top_3p` | Fixed 3P | 256-bit AXI4 master only | Primary 3P performance and AXI boundary |
+| `openrv64_top_3p` | Fixed 3P | Native 512-bit CCX plus residual 256-bit AXI4 | Primary 3P performance and cache/CCX boundary |
 | `openrv64_platform` | Currently the general wrapper and blocking SoC bus | Integrated ROM, 256 MiB simulation RAM, CLINT, PLIC, UART, GPIO, and timer | Firmware and OpenSBI platform validation |
 
 `OPENRV64_BACKEND_1P` and `OPENRV64_BACKEND_3P` are implemented. The encoded
@@ -51,11 +52,13 @@ parameters that the general wrapper leaves at their 3P defaults.
 The 3P core can still be elaborated behind the generic bus for compatibility,
 but that geometry uses the legacy fetch path and presents at most two decode
 lanes. `openrv64_top_3p` fixes both parts of the throughput configuration: the
-three-wide fetcher and the 256-bit AXI requester.
+three-wide fetcher and the native-CCX cache path.
 
-The 3P AXI testbench is a separate integration artifact. It attaches a native
-256-bit, 256 MiB RAM to the AXI fabric and converts non-RAM AXI accesses to the
-existing 64-bit SoC peripheral bus. That fabric currently lives in
+The 3P integration testbench is a separate artifact. It terminates 512-bit
+native CCX cache-line traffic against a 256-bit, 256 MiB RAM model, and routes
+non-RAM CCX accesses to the existing 64-bit SoC peripheral bus. Its residual
+AXI path services PTW traffic and explicit cacheless instruction fetch. The
+fabric currently lives in
 `tb/tb_top_axi_3p.sv`; it is not yet the synthesizable `openrv64_platform`
 interconnect.
 
@@ -116,10 +119,9 @@ and completion may wait behind an older unfinished retirement entry.
 
 ### Fetch and instruction supply
 
-`fetch_3w.v` contains four direct-mapped 256-bit entries. Each entry holds one
-32-byte line, giving a 128-byte resident instruction window. Resident tags and
-pending-request tags are distinct, allowing four instruction-line reads to be
-outstanding on AXI IDs 0 through 3.
+`fetch_3w.v` retains the current and immediately following 256-bit bridge
+lines.  It issues only one line request at a time; cache residency, speculative
+translation, and branch-path prefetching are owned by the VIPT L1I below it.
 
 The frontend:
 
@@ -128,13 +130,15 @@ The frontend:
 - advances only by the prefix accepted by decode;
 - preserves resident lines across ordinary predicted and execute-time
   redirects, which makes small loops replay locally;
-- cancels and drains obsolete outstanding AXI requests on redirects; and
+- cancels an obsolete frontend request on redirects while lower cache/CCX work
+  is drained by L1I; and
 - invalidates the resident window on reset, traps, privilege returns,
   `FENCE.I`, `SFENCE.VMA`, and other context-changing restarts.
 
-This window is a fetch buffer/loop window, not a coherent instruction cache.
-There are no cache tags, replacement policy, coherence operations, or data
-cache beneath it.
+This two-line window is a fetch bridge, not the instruction cache.  The L1I
+beneath it is virtually indexed and physically tagged, uses 64-byte native CCX
+fills, and queues both paths of accepted conditional branches.  The path not
+taken is aged for replacement only after the branch retires.
 
 Optional predecode stores the signed PC-relative displacement for JAL and
 conditional branches. Direct targets therefore come from the instruction plus
@@ -367,7 +371,7 @@ same-cycle CSR write or another control event. MRET, SRET, `FENCE.I`, and
 
 This provides precise integer, CSR, branch, load, synchronous store, and trap
 behavior, with one deliberate exception: a posted store may retire before its
-AXI B response. A late store error is delivered alone at the next
+native CCX response. A late store error is delivered alone at the next
 architectural boundary with the original effective address in `tval`; its PC
 is the next unretired architectural frontier. The core cannot roll back the
 already-retired store or younger committed instructions, so this is an
@@ -377,31 +381,28 @@ imprecise asynchronous abort rather than a precise exception.
 
 The MEM lane has three simple-operation slots. Requests launch from the head of
 that local memory sequence, so the LSU does not reorder memory operations
-around one another. Once launched, independent tagged loads may remain
-outstanding and their responses may return out of order.
+around one another. The core bus currently serializes tagged scalar requests
+through one translation/PTW slot and one blocking L1D port. The backend tag is
+retained across that operation and restored on the response.
 
-For the Bare AXI path:
-
-- LSU tags 0 through 2 map to AXI IDs 4 through 6;
-- three independent reads may be outstanding;
-- the response ID selects the original LSU slot and the addressed 64-bit lane
-  of the 256-bit AXI beat; and
-- a redirect cancels speculative loads, drains their responses, and does not
-  reuse their tags early.
+Cacheable load misses issue one aligned 512-bit native CCX line read; the L1D
+returns the addressed 64-bit word and retains the other words in the cache.
+Write-through stores and uncached scalar accesses use sub-line address, size,
+data, and strobes on the same 512-bit CCX channels. No scalar LSU request uses
+an AXI ID or drives AXI directly. A redirect hides a canceled speculative load
+response, while an accepted store remains irrevocable and is drained.
 
 Stores issue from the LSU queue only when their instruction is the ordered
 retirement head. With posted stores enabled, core-bus request acceptance
-produces the architectural completion while the bus retains one physical
-write until its B response arrives.
+produces the architectural completion while the bus retains one native L1D
+operation until its CCX response arrives.
 
 While that write is pending:
 
-- another store remains blocked;
-- a younger load to a non-overlapping byte range may issue;
+- another scalar request requiring L1D remains blocked;
 - a load fully covered by the retained store bytes completes locally from the
   stored word, including normal sign/zero extension; and
-- a partially overlapping load waits because memory data and store bytes are
-  not merged.
+- a partially covered or non-forwarded load waits.
 
 Store-to-load forwarding is restricted to `STORE_FORWARD_BASE` through
 `STORE_FORWARD_SIZE`; the 3P wrapper defaults this to the 256 MiB RAM window so
@@ -640,8 +641,9 @@ die-size claims.
 
 ## Current architectural limitations
 
-- No instruction cache, data cache, L2, coherence, prefetcher, or cacheable
-  memory attributes.
+- Private L1I/L1D and branch-path L1I prefetching exist, but there is no
+  complete coherent multi-hart hierarchy or final cacheable-memory attribute
+  policy.
 - Only one retained posted store; no real store buffer, store merging, or
   physical-address store queue.
 - Only predictor mode 6 has a BTB. It is direct-mapped and handles non-return
