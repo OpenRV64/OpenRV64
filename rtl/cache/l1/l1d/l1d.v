@@ -8,6 +8,7 @@ module openrv64_l1d #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
+    parameter integer REFILL_DATA_WIDTH = DATA_WIDTH,
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
@@ -41,7 +42,7 @@ module openrv64_l1d #(
     output wire [ADDR_WIDTH-1:0]     mem_addr_o,
     output wire [DATA_WIDTH-1:0]     mem_wdata_o,
     output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
-    input  wire [DATA_WIDTH-1:0]     mem_rdata_i,
+    input  wire [REFILL_DATA_WIDTH-1:0] mem_rdata_i,
     input  wire                      mem_error_i
 );
 
@@ -49,6 +50,7 @@ module openrv64_l1d #(
         .ENABLE(ENABLE),
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
+        .REFILL_DATA_WIDTH(REFILL_DATA_WIDTH),
         .CACHE_BYTES(CACHE_BYTES),
         .LINE_BYTES(LINE_BYTES),
         .WAYS(WAYS),
@@ -104,6 +106,9 @@ module openrv64_l1d_ccx #(
     parameter integer WAYS = 8,
     parameter integer FILL_BUFFER_LINES = 8,
     parameter integer STORE_BUFFER_LINES = 8,
+    parameter integer STORE_BUFFER_DRAIN_WATERMARK =
+        (STORE_BUFFER_LINES < 4) ? STORE_BUFFER_LINES : 4,
+    parameter integer STORE_BUFFER_TIMEOUT_CYCLES = 1024,
     parameter integer PREFETCH_ENABLE = 1,
     parameter [ADDR_WIDTH-1:0] PREFETCH_CACHEABLE_BASE =
         {ADDR_WIDTH{1'b0}},
@@ -117,6 +122,8 @@ module openrv64_l1d_ccx #(
     parameter integer PREFETCH_QUEUE_LINES = 4,
     parameter integer PREFETCH_OUTSTANDING = 4,
     parameter integer PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer ATOMIC_HOT_LINES = 16,
+    parameter integer SPECULATION_EPOCH_WIDTH = 8,
     // Simulation-only upper-bound mode. Cacheable, unlocked demand loads
     // complete from the testbench RAM oracle at a fixed MEM-issue-to-result
     // latency. The surrounding MEM lane contributes two registered crossings,
@@ -165,6 +172,11 @@ module openrv64_l1d_ccx #(
     output wire                      prefetch_dropped_o,
     output wire                      prefetch_useless_o,
     output wire [4:0]                prefetch_depth_o,
+
+    // A translation or other architectural speculation barrier advances the
+    // read epoch. Speculative reads from an older epoch are consumed and
+    // discarded; an architectural read miss is consumed and reissued.
+    input  wire                      speculation_barrier_i,
 
     input  wire                      invalidate_valid_i,
     output wire                      invalidate_ready_o,
@@ -231,6 +243,12 @@ module openrv64_l1d_ccx #(
         (STORE_BUFFER_LINES > 1) ? $clog2(STORE_BUFFER_LINES) : 1;
     localparam integer STORE_BUFFER_COUNT_WIDTH =
         $clog2(STORE_BUFFER_LINES + 1);
+    localparam integer STORE_BUFFER_AGE_WIDTH =
+        (STORE_BUFFER_TIMEOUT_CYCLES > 1) ?
+        $clog2(STORE_BUFFER_TIMEOUT_CYCLES) : 1;
+    localparam [STORE_BUFFER_AGE_WIDTH-1:0]
+        STORE_BUFFER_TIMEOUT_LAST =
+            STORE_BUFFER_AGE_WIDTH'(STORE_BUFFER_TIMEOUT_CYCLES - 1);
     localparam integer PREFETCH_QUEUE_INDEX_WIDTH =
         (PREFETCH_QUEUE_LINES > 1) ? $clog2(PREFETCH_QUEUE_LINES) : 1;
     localparam integer PREFETCH_STREAM_INDEX_WIDTH =
@@ -240,6 +258,8 @@ module openrv64_l1d_ccx #(
     localparam integer PREFETCH_WINDOW_INDEX_WIDTH =
         (PREFETCH_MAX_DISTANCE > 1) ?
         $clog2(PREFETCH_MAX_DISTANCE) : 1;
+    localparam integer ATOMIC_HOT_INDEX_WIDTH =
+        (ATOMIC_HOT_LINES > 1) ? $clog2(ATOMIC_HOT_LINES) : 1;
     localparam [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] PREFETCH_TXN_BASE =
         1 << (`OPENRV64_CCX_TXN_ID_WIDTH - 1);
     localparam [4:0] PREFETCH_INITIAL_DEPTH = 5'(PREFETCH_DISTANCE);
@@ -259,7 +279,7 @@ module openrv64_l1d_ccx #(
     wire [ADDR_WIDTH-1:0] l1_mem_addr;
     wire [63:0] l1_mem_wdata;
     wire [7:0] l1_mem_wstrb;
-    wire [63:0] l1_mem_rdata;
+    wire [511:0] l1_mem_rdata;
     wire l1_mem_error;
 
     reg [1:0] backend_state_q;
@@ -271,35 +291,45 @@ module openrv64_l1d_ccx #(
     reg request_line_read_q;
     reg [2:0] request_size_q;
     reg [63:0] request_addr_q;
-    reg [63:0] request_l1_addr_q;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] request_wdata_q;
     reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] request_wstrb_q;
     reg request_buffered_store_q;
+    reg request_reissue_q;
+    reg [SPECULATION_EPOCH_WIDTH-1:0] request_epoch_q;
     reg command_sent_q;
     reg wdata_sent_q;
+    reg [SPECULATION_EPOCH_WIDTH-1:0] speculation_epoch_q;
 
-    // Native line buffers retain complete CCX responses while the shared
-    // 64-bit SRAM controller consumes the line one word at a time.
+    // Native line buffers retain complete speculative CCX responses until
+    // the banked SRAM can install the full line in one cycle.
     reg fill_buffer_valid_q [0:FILL_BUFFER_LINES-1];
     reg [63:0] fill_buffer_addr_q [0:FILL_BUFFER_LINES-1];
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         fill_buffer_data_q [0:FILL_BUFFER_LINES-1];
     reg fill_buffer_prefetch_q [0:FILL_BUFFER_LINES-1];
+    reg [SPECULATION_EPOCH_WIDTH-1:0]
+        fill_buffer_epoch_q [0:FILL_BUFFER_LINES-1];
 
-    // Posted stores are cacheline records with per-byte validity.  Scalar
-    // stores occupy the addressed 64-bit lane; L2 or the memory controller may
-    // merge the masked line write later.  FIFO order is retained locally.
+    // Posted stores are cacheline records with per-byte validity. Consecutive
+    // stores to the newest undrained line merge here; limiting combination to
+    // the FIFO tail prevents a younger store from moving ahead of an
+    // intervening store to another line. Draining begins at the high
+    // watermark or oldest-entry timeout and continues until the FIFO empties.
     reg store_buffer_valid_q [0:STORE_BUFFER_LINES-1];
     reg [63:0] store_buffer_addr_q [0:STORE_BUFFER_LINES-1];
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         store_buffer_data_q [0:STORE_BUFFER_LINES-1];
     reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
         store_buffer_strb_q [0:STORE_BUFFER_LINES-1];
+    reg [STORE_BUFFER_AGE_WIDTH-1:0]
+        store_buffer_age_q [0:STORE_BUFFER_LINES-1];
     reg [STORE_BUFFER_INDEX_WIDTH-1:0] store_buffer_head_q;
     reg [STORE_BUFFER_INDEX_WIDTH-1:0] store_buffer_tail_q;
     reg [STORE_BUFFER_COUNT_WIDTH-1:0] store_buffer_count_q;
+    reg store_buffer_drain_active_q;
     reg store_completion_valid_q;
     reg store_completion_error_q;
+    integer store_buffer_merge_byte;
 
     reg freeloader_valid_q [0:FREELOADER_STAGES-1];
     reg [REQ_TAG_WIDTH-1:0]
@@ -330,7 +360,22 @@ module openrv64_l1d_ccx #(
     integer fill_buffer_prefetch_candidate_r;
     integer buffer_reset_index;
     reg locked_line_invalidated_q;
+    reg lock_barrier_seen_q;
     reg active_req_lock_q;
+    // atomic_active_q is correctness state: a future snoop must retry or wait
+    // while the local RMW owns this line.  atomic_hot_* is only evictable
+    // prefetch history and must never be used to prove atomicity.
+    reg atomic_active_q;
+    reg [63:0] atomic_active_line_q;
+    reg atomic_hot_valid_q [0:ATOMIC_HOT_LINES-1];
+    reg [63:0] atomic_hot_line_q [0:ATOMIC_HOT_LINES-1];
+    reg [ATOMIC_HOT_INDEX_WIDTH-1:0] atomic_hot_replace_q;
+    reg atomic_hot_match_found_r;
+    reg [ATOMIC_HOT_INDEX_WIDTH-1:0] atomic_hot_match_index_r;
+    reg atomic_hot_invalid_found_r;
+    reg [ATOMIC_HOT_INDEX_WIDTH-1:0] atomic_hot_invalid_index_r;
+    integer atomic_hot_scan;
+    integer atomic_hot_reset_index;
     reg active_req_posted_q;
     reg active_req_cacheable_q;
     reg [2:0] active_req_size_q;
@@ -365,6 +410,8 @@ module openrv64_l1d_ccx #(
     reg prefetch_mshr_valid_q [0:PREFETCH_OUTSTANDING-1];
     reg [63:0] prefetch_mshr_addr_q [0:PREFETCH_OUTSTANDING-1];
     reg prefetch_mshr_discard_q [0:PREFETCH_OUTSTANDING-1];
+    reg [SPECULATION_EPOCH_WIDTH-1:0]
+        prefetch_mshr_epoch_q [0:PREFETCH_OUTSTANDING-1];
     reg prefetch_mshr_late_reported_q [0:PREFETCH_OUTSTANDING-1];
     reg [PREFETCH_MSHR_INDEX_WIDTH-1:0] request_prefetch_mshr_q;
     reg request_prefetch_q;
@@ -392,6 +439,7 @@ module openrv64_l1d_ccx #(
     reg prefetch_mshr_demand_wait_r;
     reg prefetch_generate_duplicate_r;
     reg prefetch_launch_store_conflict_r;
+    reg demand_load_store_conflict_r;
     reg signed [63:0] prefetch_generate_window_advance_r;
     reg [63:0] prefetch_generate_window_addr_r;
     reg signed [63:0] prefetch_launch_window_advance_r;
@@ -424,8 +472,23 @@ module openrv64_l1d_ccx #(
     integer prefetch_launch_depth_scan;
     integer prefetch_launch_queue_scan;
     integer prefetch_launch_store_scan;
+    integer demand_load_store_scan;
     integer prefetch_reset_index;
     integer prefetch_mshr_scan;
+
+    function automatic atomic_hot_match;
+        input [63:0] address;
+        integer match_index;
+        begin
+            atomic_hot_match = 1'b0;
+            for (match_index = 0; match_index < ATOMIC_HOT_LINES;
+                 match_index = match_index + 1)
+                if (atomic_hot_valid_q[match_index] &&
+                    (atomic_hot_line_q[match_index] ==
+                     {address[63:6], 6'b0}))
+                    atomic_hot_match = 1'b1;
+        end
+    endfunction
 
     wire l1_req_ready;
     wire l1_resp_valid;
@@ -453,6 +516,10 @@ module openrv64_l1d_ccx #(
         !locked_line_invalidated_q;
     wire lock_invalidate_fire = lock_invalidate_request &&
         !invalidate_valid_i && l1_invalidate_ready;
+    wire lock_barrier_request = req_valid_i && req_lock_i &&
+                                !lock_barrier_seen_q;
+    wire speculation_barrier_event =
+        speculation_barrier_i || lock_barrier_request;
     wire l1_invalidate_valid = invalidate_valid_i ||
         lock_invalidate_request;
     wire l1_invalidate_all = invalidate_valid_i && invalidate_all_i;
@@ -460,7 +527,16 @@ module openrv64_l1d_ccx #(
         invalidate_addr_i : req_addr_i;
     wire response_tag_full =
         response_tag_count_q == REQ_COUNT_WIDTH'(REQ_DEPTH);
-    wire lock_request_ready = !req_lock_i || locked_line_invalidated_q;
+    // The single-hart atomic marker remains a strong local serialization
+    // point even though it no longer acquires a CCX/L2 home lock.  Invalidate
+    // early and admit the marked request only after all older stores and the
+    // current backend command have drained.
+    wire lock_backend_quiescent =
+        (store_buffer_count_q == 0) &&
+        !store_completion_valid_q &&
+        (backend_state_q == BACKEND_IDLE);
+    wire lock_request_ready = !req_lock_i ||
+        (locked_line_invalidated_q && lock_backend_quiescent);
     wire freeloader_response_valid =
         freeloader_valid_q[FREELOADER_STAGES-1];
     wire normal_response_valid = l1_resp_valid &&
@@ -476,11 +552,13 @@ module openrv64_l1d_ccx #(
         !req_write_i && !req_lock_i && req_cacheable_i &&
         freeloader_oracle_valid;
     wire freeloader_request_ready =
-        freeloader_pipe_advance && freeloader_order_safe;
+        freeloader_pipe_advance && freeloader_order_safe &&
+        !demand_load_store_conflict_r;
     wire freeloader_request_fire =
         freeloader_request && freeloader_request_ready;
     wire l1_req_valid = req_valid_i && !freeloader_request &&
-        !response_tag_full && lock_request_ready;
+        !response_tag_full && lock_request_ready &&
+        !demand_load_store_conflict_r;
     wire l1_req_cacheable = req_cacheable_i && !req_lock_i;
     wire l1_request_fire = l1_req_valid && l1_req_ready;
     wire l1_resp_ready = resp_ready_i && (response_tag_count_q != 0);
@@ -488,9 +566,36 @@ module openrv64_l1d_ccx #(
     wire demand_request_fire =
         l1_request_fire || freeloader_request_fire;
     wire [63:0] demand_line_addr = {req_addr_i[63:6], 6'b0};
+    wire atomic_hot_demand_match = atomic_hot_match(demand_line_addr);
     wire prefetch_train_access = (PREFETCH_ENABLE != 0) &&
         (ENABLE != 0) && demand_request_fire && !req_write_i &&
-        l1_req_cacheable && !req_lock_i;
+        l1_req_cacheable && !req_lock_i && !atomic_hot_demand_match;
+
+    always @* begin
+        atomic_hot_match_found_r = 1'b0;
+        atomic_hot_match_index_r =
+            {ATOMIC_HOT_INDEX_WIDTH{1'b0}};
+        atomic_hot_invalid_found_r = 1'b0;
+        atomic_hot_invalid_index_r =
+            {ATOMIC_HOT_INDEX_WIDTH{1'b0}};
+        for (atomic_hot_scan = 0; atomic_hot_scan < ATOMIC_HOT_LINES;
+             atomic_hot_scan = atomic_hot_scan + 1) begin
+            if (!atomic_hot_match_found_r &&
+                atomic_hot_valid_q[atomic_hot_scan] &&
+                (atomic_hot_line_q[atomic_hot_scan] ==
+                 {req_addr_i[63:6], 6'b0})) begin
+                atomic_hot_match_found_r = 1'b1;
+                atomic_hot_match_index_r =
+                    atomic_hot_scan[ATOMIC_HOT_INDEX_WIDTH-1:0];
+            end
+            if (!atomic_hot_invalid_found_r &&
+                !atomic_hot_valid_q[atomic_hot_scan]) begin
+                atomic_hot_invalid_found_r = 1'b1;
+                atomic_hot_invalid_index_r =
+                    atomic_hot_scan[ATOMIC_HOT_INDEX_WIDTH-1:0];
+            end
+        end
+    end
     localparam signed [63:0] PREFETCH_MAX_STRIDE_BYTES =
         PREFETCH_MAX_STRIDE_LINES * LINE_BYTES;
     always @* begin
@@ -594,13 +699,35 @@ module openrv64_l1d_ccx #(
          (prefetch_train_valid_q[prefetch_train_index_r] &&
           !prefetch_stride_match));
 
+    // A posted store is architecturally complete northbound before it reaches
+    // CCX.  A later load to the same line must therefore hold at the L1 input
+    // until every older matching FIFO entry has completed below the cache.
+    // The backend already drains the FIFO in order; this conflict turns that
+    // ordinary draining into a forced write without globally serializing
+    // unrelated loads behind the store buffer.
+    always @* begin
+        demand_load_store_conflict_r = 1'b0;
+        if (req_valid_i && !req_write_i) begin
+            for (demand_load_store_scan = 0;
+                 demand_load_store_scan < STORE_BUFFER_LINES;
+                 demand_load_store_scan =
+                     demand_load_store_scan + 1) begin
+                if (store_buffer_valid_q[demand_load_store_scan] &&
+                    (store_buffer_addr_q[demand_load_store_scan] ==
+                     {req_addr_i[63:6], 6'b0}))
+                    demand_load_store_conflict_r = 1'b1;
+            end
+        end
+    end
+
     // The normal L1 and the simulation-only load pipeline share one tagged
     // response port. Normal responses win arbitration so a continuous ideal
     // load stream cannot prevent posted-store tags from being released.
     assign req_ready_o = freeloader_request ?
                          freeloader_request_ready :
                          (l1_req_ready && !response_tag_full &&
-                          lock_request_ready);
+                          lock_request_ready &&
+                          !demand_load_store_conflict_r);
     assign resp_valid_o = normal_response_valid ||
                           freeloader_response_valid;
     assign resp_tag_o = normal_response_valid ?
@@ -664,8 +791,6 @@ module openrv64_l1d_ccx #(
         end
     end
 
-    wire [2:0] l1_mem_word = l1_mem_addr[5:3];
-    wire [2:0] response_word = request_l1_addr_q[5:3];
     wire prefetch_command_inflight = request_prefetch_q &&
         (backend_state_q != BACKEND_IDLE);
     wire prefetch_invalidate_fire = l1_invalidate_valid &&
@@ -797,6 +922,7 @@ module openrv64_l1d_ccx #(
             end
             if (prefetch_candidate_valid_q[prefetch_queue_scan] &&
                 demand_request_fire && !req_write_i && l1_req_cacheable &&
+                !req_lock_i &&
                 (prefetch_candidate_addr_q[prefetch_queue_scan] ==
                  demand_line_addr))
                 prefetch_queued_demand_match_r = 1'b1;
@@ -876,6 +1002,9 @@ module openrv64_l1d_ccx #(
                 end
                 if (!prefetch_generate_valid_r &&
                     (PREFETCH_ENABLE != 0) && (ENABLE != 0) &&
+                    !speculation_barrier_event &&
+                    !atomic_active_q &&
+                    !(req_valid_i && req_lock_i) &&
                     prefetch_train_valid_q[
                         prefetch_generate_stream_scan] &&
                     prefetch_generation_active_q[
@@ -893,6 +1022,7 @@ module openrv64_l1d_ccx #(
                     ((prefetch_generate_window_addr_r -
                       PREFETCH_CACHEABLE_BASE) <
                      PREFETCH_CACHEABLE_SIZE) &&
+                    !atomic_hot_match(prefetch_generate_window_addr_r) &&
                     !prefetch_generate_duplicate_r) begin
                     prefetch_generate_valid_r = 1'b1;
                     prefetch_generate_addr_r =
@@ -973,20 +1103,27 @@ module openrv64_l1d_ccx #(
         end
     end
 
+    // Atomic phases never consume speculative data.  They bypass both the
+    // resident L1 and the prefetch fill buffers and obtain the current value
+    // from the L2/CCX path.
     wire refill_buffer_hit = fill_buffer_hit_r && l1_mem_valid &&
-        !l1_mem_write && active_req_cacheable_q;
-    wire [63:0] refill_buffer_word =
-        fill_buffer_data_q[fill_buffer_hit_index_r]
-            [l1_mem_word*64 +: 64];
-    wire [63:0] response_word_data =
-        ccx_resp_rdata_i[response_word*64 +: 64];
+        !l1_mem_write && active_req_cacheable_q && !active_req_lock_q &&
+        !speculation_barrier_event &&
+        (fill_buffer_epoch_q[fill_buffer_hit_index_r] ==
+         speculation_epoch_q);
+    wire [511:0] refill_buffer_data =
+        fill_buffer_data_q[fill_buffer_hit_index_r];
+    wire [511:0] response_refill_data = ccx_resp_rdata_i;
+    wire [63:0] response_access_data =
+        ccx_resp_rdata_i[request_addr_q[5:3]*64 +: 64];
+    wire [511:0] response_mem_data = request_line_read_q ?
+        response_refill_data : {{448{1'b0}}, response_access_data};
 
     wire store_buffer_full =
         (store_buffer_count_q ==
          STORE_BUFFER_COUNT_WIDTH'(STORE_BUFFER_LINES));
     wire postable_store = l1_mem_valid && l1_mem_write &&
                           active_req_cacheable_q && active_req_posted_q;
-    wire store_buffer_enqueue = postable_store && !store_buffer_full;
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         posted_store_line_data =
             {{(`OPENRV64_CCX_LINE_DATA_WIDTH-64){1'b0}}, l1_mem_wdata}
@@ -995,6 +1132,59 @@ module openrv64_l1d_ccx #(
         posted_store_line_strb =
             {{(`OPENRV64_CCX_LINE_STRB_WIDTH-8){1'b0}}, l1_mem_wstrb}
             << (l1_mem_addr[5:3] * 8);
+    wire store_completion_fire = store_completion_valid_q &&
+                                 store_resp_ready_i;
+    wire [STORE_BUFFER_INDEX_WIDTH-1:0] store_buffer_newest_index =
+        (store_buffer_tail_q == 0) ?
+        STORE_BUFFER_INDEX_WIDTH'(STORE_BUFFER_LINES - 1) :
+        store_buffer_tail_q - 1'b1;
+    wire store_buffer_newest_is_head =
+        store_buffer_newest_index == store_buffer_head_q;
+    wire store_buffer_head_reserved =
+        store_buffer_newest_is_head && request_buffered_store_q &&
+        ((backend_state_q != BACKEND_IDLE) ||
+         store_completion_valid_q);
+    wire store_buffer_merge = postable_store &&
+        (store_buffer_count_q != 0) &&
+        store_buffer_valid_q[store_buffer_newest_index] &&
+        !store_buffer_head_reserved &&
+        (store_buffer_addr_q[store_buffer_newest_index] ==
+         {l1_mem_addr[63:6], 6'b0});
+    wire store_buffer_allocate = postable_store && !store_buffer_merge &&
+        (!store_buffer_full || store_completion_fire);
+    wire store_buffer_accept =
+        store_buffer_merge || store_buffer_allocate;
+    wire store_buffer_watermark =
+        store_buffer_count_q >=
+        STORE_BUFFER_COUNT_WIDTH'(STORE_BUFFER_DRAIN_WATERMARK);
+    wire store_buffer_watermark_on_allocate = store_buffer_allocate &&
+        (store_buffer_count_q ==
+         STORE_BUFFER_COUNT_WIDTH'(STORE_BUFFER_DRAIN_WATERMARK - 1));
+    wire store_buffer_head_timeout =
+        (store_buffer_count_q != 0) &&
+        store_buffer_valid_q[store_buffer_head_q] &&
+        (store_buffer_age_q[store_buffer_head_q] ==
+         STORE_BUFFER_TIMEOUT_LAST);
+    wire store_buffer_force_drain =
+        demand_load_store_conflict_r || invalidate_valid_i ||
+        (req_valid_i && req_lock_i);
+    // When draining catches the FIFO tail, leave a partial newest line open
+    // for adjacent stores to finish it. A different-line allocation makes
+    // this entry no longer newest and therefore immediately drainable.
+    // Timeout and correctness-forced drains override the hold.
+    wire store_buffer_hold_partial_newest =
+        store_buffer_newest_is_head &&
+        (store_buffer_strb_q[store_buffer_head_q] !=
+         {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}}) &&
+        !store_buffer_head_timeout && !store_buffer_force_drain;
+    wire store_buffer_drain_request =
+        (store_buffer_count_q != 0) &&
+        store_buffer_valid_q[store_buffer_head_q] &&
+        !store_completion_valid_q &&
+        (store_buffer_drain_active_q || store_buffer_watermark ||
+         store_buffer_head_timeout || store_buffer_force_drain) &&
+        !(store_buffer_merge && store_buffer_newest_is_head) &&
+        !store_buffer_hold_partial_newest;
 
     wire response_identity_match =
         (ccx_resp_hart_id_i == HART_ID) &&
@@ -1011,14 +1201,10 @@ module openrv64_l1d_ccx #(
         prefetch_mshr_response_match_r;
     wire buffered_store_response = main_response_fire &&
                                    request_buffered_store_q;
-    wire store_completion_fire = store_completion_valid_q &&
-                                 store_resp_ready_i;
     wire response_protocol_error =
         (ccx_resp_beat_index_i != 0) || !ccx_resp_last_i;
     wire command_fire = ccx_req_valid_o && ccx_req_ready_i;
     wire wdata_fire = ccx_wdata_valid_o && ccx_wdata_ready_i;
-    wire line_response_slot_available = fill_buffer_free_found_r ||
-                                        fill_buffer_prefetch_found_r;
     wire prefetch_slot_available =
         (fill_buffer_free_count_r > PREFETCH_DEMAND_RESERVE) ||
         fill_buffer_prefetch_found_r;
@@ -1032,7 +1218,12 @@ module openrv64_l1d_ccx #(
             fill_buffer_prefetch_index_r + 1'b1;
     wire prefetch_launch = (PREFETCH_ENABLE != 0) &&
         (ENABLE != 0) && (backend_state_q == BACKEND_IDLE) &&
+        !speculation_barrier_event &&
+        !(req_valid_i && req_lock_i) &&
+        !atomic_active_q &&
+        !demand_load_store_conflict_r &&
         !(l1_mem_valid && !refill_buffer_hit && !postable_store) &&
+        !atomic_hot_match(prefetch_launch_addr_r) &&
         prefetch_launch_found_r && prefetch_slot_available &&
         prefetch_mshr_free_found_r;
     wire prefetch_candidate_queue = prefetch_generate_valid_r &&
@@ -1063,6 +1254,9 @@ module openrv64_l1d_ccx #(
          prefetch_mshr_addr_q[prefetch_mshr_response_index_r]);
     wire prefetch_response_discard =
         prefetch_mshr_discard_q[prefetch_mshr_response_index_r] ||
+        speculation_barrier_event ||
+        (prefetch_mshr_epoch_q[prefetch_mshr_response_index_r] !=
+         speculation_epoch_q) ||
         prefetch_mshr_response_invalidated ||
         prefetch_mshr_response_stored;
     wire prefetch_useless_replace = prefetch_response_fire &&
@@ -1070,14 +1264,23 @@ module openrv64_l1d_ccx #(
         !ccx_resp_error_i && !response_protocol_error &&
         !prefetch_response_uses_free && fill_buffer_prefetch_found_r;
 
+    // A read which has not crossed CCX at the barrier is simply held and
+    // relabelled with the new epoch. An accepted old read is handled by the
+    // read-miss replay path below.
     assign ccx_req_valid_o = (backend_state_q == BACKEND_SEND) &&
-                             !command_sent_q;
+                             !command_sent_q &&
+                             !(!request_write_q &&
+                               speculation_barrier_event);
     assign ccx_req_hart_id_o = HART_ID;
     assign ccx_req_txn_id_o = request_txn_id_q;
     assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_DCACHE;
     assign ccx_req_op_o = request_write_q ? `OPENRV64_CCX_OP_WRITE :
                                              `OPENRV64_CCX_OP_READ;
-    assign ccx_req_lock_o = request_lock_q;
+    // Single-hart mode keeps the atomic phase marker local.  It still
+    // serializes translation and forces the operation around L1D, but it does
+    // not acquire the shared L2/home lock.  Multi-hart atomics require a
+    // coherence-aware protocol rather than this temporary read/write lock.
+    assign ccx_req_lock_o = 1'b0;
     assign ccx_req_order_o = `OPENRV64_CCX_ORDER_NONE;
     assign ccx_req_kind_o = `OPENRV64_CCX_KIND_DATA;
     assign ccx_req_attr_o = request_cacheable_q ?
@@ -1102,38 +1305,42 @@ module openrv64_l1d_ccx #(
     assign store_resp_error_o = store_completion_error_q;
     assign prefetch_issued_o = command_fire && request_prefetch_q;
     assign prefetch_useful_o = refill_buffer_hit && l1_mem_valid &&
-        !l1_mem_write && fill_buffer_prefetch_q[fill_buffer_hit_index_r] &&
-        (l1_mem_word == 3'd0);
+        !l1_mem_write && fill_buffer_prefetch_q[fill_buffer_hit_index_r];
     assign prefetch_late_o = prefetch_late_match;
     assign prefetch_dropped_o = prefetch_candidate_drop;
     assign prefetch_useless_o = prefetch_useless_replace;
     assign prefetch_depth_o = prefetch_depth_q;
 
-    wire main_response_buffer_available = !request_line_read_q ||
-        ccx_resp_error_i ||
-        response_protocol_error || line_response_slot_available;
+    wire main_response_reissue = main_response_fire &&
+        !request_write_q &&
+        (request_reissue_q ||
+         (request_epoch_q != speculation_epoch_q) ||
+         speculation_barrier_event);
     wire prefetch_response_buffer_available =
         prefetch_response_discard || ccx_resp_error_i ||
         response_protocol_error || prefetch_slot_available;
     assign ccx_resp_ready_o =
         ((backend_state_q == BACKEND_WAIT) &&
-         response_identity_match && main_response_buffer_available) ||
+         response_identity_match) ||
         (prefetch_mshr_response_match_r &&
          prefetch_response_buffer_available);
-    assign l1_mem_ready = store_buffer_enqueue || refill_buffer_hit ||
+    assign l1_mem_ready = store_buffer_accept || refill_buffer_hit ||
                           (l1_mem_valid && main_response_fire &&
-                           !request_buffered_store_q);
-    assign l1_mem_rdata = store_buffer_enqueue ? 64'd0 :
-                           refill_buffer_hit ? refill_buffer_word :
-                           response_word_data;
+                           !request_buffered_store_q &&
+                           !main_response_reissue);
+    assign l1_mem_rdata = store_buffer_accept ? 512'd0 :
+                           refill_buffer_hit ? refill_buffer_data :
+                           response_mem_data;
     assign l1_mem_error = l1_mem_valid && main_response_fire &&
                           !request_buffered_store_q &&
+                          !main_response_reissue &&
                           (ccx_resp_error_i || response_protocol_error);
 
     openrv64_l1d #(
         .ENABLE(ENABLE),
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(64),
+        .REFILL_DATA_WIDTH(512),
         .CACHE_BYTES(CACHE_BYTES),
         .LINE_BYTES(LINE_BYTES),
         .WAYS(WAYS),
@@ -1180,12 +1387,14 @@ module openrv64_l1d_ccx #(
             request_line_read_q <= 1'b0;
             request_size_q <= 3'd0;
             request_addr_q <= 64'd0;
-            request_l1_addr_q <= 64'd0;
             request_wdata_q <=
                 {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
             request_wstrb_q <=
                 {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
             request_buffered_store_q <= 1'b0;
+            request_reissue_q <= 1'b0;
+            request_epoch_q <=
+                {SPECULATION_EPOCH_WIDTH{1'b0}};
             request_prefetch_q <= 1'b0;
             request_prefetch_mshr_q <=
                 {PREFETCH_MSHR_INDEX_WIDTH{1'b0}};
@@ -1193,12 +1402,15 @@ module openrv64_l1d_ccx #(
             prefetch_late_reported_q <= 1'b0;
             command_sent_q <= 1'b0;
             wdata_sent_q <= 1'b0;
+            speculation_epoch_q <=
+                {SPECULATION_EPOCH_WIDTH{1'b0}};
             store_buffer_head_q <=
                 {STORE_BUFFER_INDEX_WIDTH{1'b0}};
             store_buffer_tail_q <=
                 {STORE_BUFFER_INDEX_WIDTH{1'b0}};
             store_buffer_count_q <=
                 {STORE_BUFFER_COUNT_WIDTH{1'b0}};
+            store_buffer_drain_active_q <= 1'b0;
             store_completion_valid_q <= 1'b0;
             store_completion_error_q <= 1'b0;
             freeloader_pending_store_valid_q <= 1'b0;
@@ -1216,7 +1428,19 @@ module openrv64_l1d_ccx #(
                 freeloader_data_q[freeloader_stage_index] <= 64'd0;
             end
             locked_line_invalidated_q <= 1'b0;
+            lock_barrier_seen_q <= 1'b0;
             active_req_lock_q <= 1'b0;
+            atomic_active_q <= 1'b0;
+            atomic_active_line_q <= 64'd0;
+            atomic_hot_replace_q <=
+                {ATOMIC_HOT_INDEX_WIDTH{1'b0}};
+            for (atomic_hot_reset_index = 0;
+                 atomic_hot_reset_index < ATOMIC_HOT_LINES;
+                 atomic_hot_reset_index =
+                     atomic_hot_reset_index + 1) begin
+                atomic_hot_valid_q[atomic_hot_reset_index] <= 1'b0;
+                atomic_hot_line_q[atomic_hot_reset_index] <= 64'd0;
+            end
             active_req_posted_q <= 1'b0;
             active_req_cacheable_q <= 1'b0;
             active_req_size_q <= 3'd0;
@@ -1271,6 +1495,8 @@ module openrv64_l1d_ccx #(
                 prefetch_mshr_valid_q[prefetch_reset_index] <= 1'b0;
                 prefetch_mshr_addr_q[prefetch_reset_index] <= 64'd0;
                 prefetch_mshr_discard_q[prefetch_reset_index] <= 1'b0;
+                prefetch_mshr_epoch_q[prefetch_reset_index] <=
+                    {SPECULATION_EPOCH_WIDTH{1'b0}};
                 prefetch_mshr_late_reported_q[
                     prefetch_reset_index] <= 1'b0;
             end
@@ -1282,6 +1508,8 @@ module openrv64_l1d_ccx #(
                 fill_buffer_data_q[buffer_reset_index] <=
                     {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
                 fill_buffer_prefetch_q[buffer_reset_index] <= 1'b0;
+                fill_buffer_epoch_q[buffer_reset_index] <=
+                    {SPECULATION_EPOCH_WIDTH{1'b0}};
             end
             for (buffer_reset_index = 0;
                  buffer_reset_index < STORE_BUFFER_LINES;
@@ -1292,6 +1520,8 @@ module openrv64_l1d_ccx #(
                     {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
                 store_buffer_strb_q[buffer_reset_index] <=
                     {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+                store_buffer_age_q[buffer_reset_index] <=
+                    {STORE_BUFFER_AGE_WIDTH{1'b0}};
             end
             for (response_tag_reset_index = 0;
                  response_tag_reset_index < REQ_DEPTH;
@@ -1300,6 +1530,11 @@ module openrv64_l1d_ccx #(
                 response_tag_q[response_tag_reset_index] <=
                     {REQ_TAG_WIDTH{1'b0}};
         end else begin
+            if (!req_valid_i || !req_lock_i)
+                lock_barrier_seen_q <= 1'b0;
+            else if (lock_barrier_request)
+                lock_barrier_seen_q <= 1'b1;
+
             if (freeloader_pipe_advance) begin
                 for (freeloader_stage_index = FREELOADER_STAGES - 1;
                      freeloader_stage_index > 0;
@@ -1319,7 +1554,7 @@ module openrv64_l1d_ccx #(
                 end
             end
 
-            if (store_buffer_enqueue ||
+            if (store_buffer_accept ||
                 (l1_response_fire &&
                  freeloader_pending_store_valid_q &&
                  !freeloader_pending_store_posted_q)) begin
@@ -1498,7 +1733,12 @@ module openrv64_l1d_ccx #(
             if (l1_request_fire) begin
                 active_req_lock_q <= req_lock_i;
                 active_req_posted_q <= req_posted_i;
-                active_req_cacheable_q <= l1_req_cacheable;
+                // A locked operation bypasses this L1 after invalidating its
+                // resident copy, but it remains cacheable at the coherent
+                // home.  Marking it uncacheable here would let the L2 bypass
+                // a newer dirty line and perform the RMW on stale backing
+                // memory.
+                active_req_cacheable_q <= req_cacheable_i;
                 active_req_size_q <= req_size_i;
                 response_tag_q[response_tag_tail_q] <= req_tag_i;
                 response_tag_tail_q <=
@@ -1506,6 +1746,64 @@ module openrv64_l1d_ccx #(
                      REQ_INDEX_WIDTH'(REQ_DEPTH - 1)) ?
                     {REQ_INDEX_WIDTH{1'b0}} :
                     response_tag_tail_q + 1'b1;
+                if (req_lock_i && !req_write_i)
+                    begin
+                        atomic_active_q <= 1'b1;
+                        atomic_active_line_q <=
+                            {req_addr_i[63:6], 6'b0};
+                    end
+            end
+
+            // A marked read begins the local AMO interval.  Preserve learned
+            // stream state and queued unrelated candidates, but do not issue
+            // or generate speculative traffic until the marked write has
+            // completed.  A failed read has no write phase.
+            if (main_response_fire && request_lock_q &&
+                ((request_write_q) || ccx_resp_error_i ||
+                 response_protocol_error))
+                atomic_active_q <= 1'b0;
+
+            if (lock_invalidate_fire) begin
+                if (!atomic_hot_match_found_r) begin
+                    atomic_hot_valid_q[
+                        atomic_hot_invalid_found_r ?
+                        atomic_hot_invalid_index_r :
+                        atomic_hot_replace_q] <= 1'b1;
+                    atomic_hot_line_q[
+                        atomic_hot_invalid_found_r ?
+                        atomic_hot_invalid_index_r :
+                        atomic_hot_replace_q] <=
+                        {req_addr_i[63:6], 6'b0};
+                    atomic_hot_replace_q <=
+                        ((atomic_hot_invalid_found_r ?
+                          atomic_hot_invalid_index_r :
+                          atomic_hot_replace_q) ==
+                         ATOMIC_HOT_INDEX_WIDTH'(
+                             ATOMIC_HOT_LINES - 1)) ?
+                        {ATOMIC_HOT_INDEX_WIDTH{1'b0}} :
+                        (atomic_hot_invalid_found_r ?
+                         atomic_hot_invalid_index_r :
+                         atomic_hot_replace_q) + 1'b1;
+                end
+                for (prefetch_reset_stream_index = 0;
+                     prefetch_reset_stream_index < PREFETCH_STREAMS;
+                     prefetch_reset_stream_index =
+                         prefetch_reset_stream_index + 1) begin
+                    if (prefetch_train_valid_q[
+                            prefetch_reset_stream_index] &&
+                        (prefetch_last_line_q[
+                             prefetch_reset_stream_index] ==
+                         {req_addr_i[63:6], 6'b0})) begin
+                        prefetch_train_valid_q[
+                            prefetch_reset_stream_index] <= 1'b0;
+                        prefetch_stride_valid_q[
+                            prefetch_reset_stream_index] <= 1'b0;
+                        prefetch_confidence_q[
+                            prefetch_reset_stream_index] <= 2'd0;
+                        prefetch_generation_active_q[
+                            prefetch_reset_stream_index] <= 1'b0;
+                    end
+                end
             end
 
             if (l1_response_fire)
@@ -1523,12 +1821,50 @@ module openrv64_l1d_ccx #(
                 default: response_tag_count_q <= response_tag_count_q;
             endcase
 
-            if (refill_buffer_hit && (l1_mem_word == 3'd7)) begin
+            if (refill_buffer_hit) begin
                 fill_buffer_valid_q[fill_buffer_hit_index_r] <= 1'b0;
                 fill_buffer_prefetch_q[fill_buffer_hit_index_r] <= 1'b0;
             end
 
-            if (store_buffer_enqueue) begin
+            for (buffer_reset_index = 0;
+                 buffer_reset_index < STORE_BUFFER_LINES;
+                 buffer_reset_index = buffer_reset_index + 1) begin
+                if (store_buffer_valid_q[buffer_reset_index] &&
+                    (store_buffer_age_q[buffer_reset_index] !=
+                     STORE_BUFFER_TIMEOUT_LAST))
+                    store_buffer_age_q[buffer_reset_index] <=
+                        store_buffer_age_q[buffer_reset_index] + 1'b1;
+            end
+
+            if (store_completion_fire) begin
+                store_completion_valid_q <= 1'b0;
+                store_completion_error_q <= 1'b0;
+                store_buffer_valid_q[store_buffer_head_q] <= 1'b0;
+                store_buffer_age_q[store_buffer_head_q] <=
+                    {STORE_BUFFER_AGE_WIDTH{1'b0}};
+                store_buffer_head_q <=
+                    (store_buffer_head_q ==
+                     STORE_BUFFER_INDEX_WIDTH'(STORE_BUFFER_LINES - 1)) ?
+                    {STORE_BUFFER_INDEX_WIDTH{1'b0}} :
+                    store_buffer_head_q + 1'b1;
+            end
+
+            if (store_buffer_merge) begin
+                for (store_buffer_merge_byte = 0;
+                     store_buffer_merge_byte <
+                         `OPENRV64_CCX_LINE_STRB_WIDTH;
+                     store_buffer_merge_byte =
+                         store_buffer_merge_byte + 1) begin
+                    if (posted_store_line_strb[store_buffer_merge_byte])
+                        store_buffer_data_q[store_buffer_newest_index][
+                            store_buffer_merge_byte*8 +: 8] <=
+                            posted_store_line_data[
+                                store_buffer_merge_byte*8 +: 8];
+                end
+                store_buffer_strb_q[store_buffer_newest_index] <=
+                    store_buffer_strb_q[store_buffer_newest_index] |
+                    posted_store_line_strb;
+            end else if (store_buffer_allocate) begin
                 store_buffer_valid_q[store_buffer_tail_q] <= 1'b1;
                 store_buffer_addr_q[store_buffer_tail_q] <=
                     {l1_mem_addr[63:6], 6'b0};
@@ -1536,6 +1872,8 @@ module openrv64_l1d_ccx #(
                     posted_store_line_data;
                 store_buffer_strb_q[store_buffer_tail_q] <=
                     posted_store_line_strb;
+                store_buffer_age_q[store_buffer_tail_q] <=
+                    {STORE_BUFFER_AGE_WIDTH{1'b0}};
                 store_buffer_tail_q <=
                     (store_buffer_tail_q ==
                      STORE_BUFFER_INDEX_WIDTH'(STORE_BUFFER_LINES - 1)) ?
@@ -1549,18 +1887,7 @@ module openrv64_l1d_ccx #(
                                             response_protocol_error;
             end
 
-            if (store_completion_fire) begin
-                store_completion_valid_q <= 1'b0;
-                store_completion_error_q <= 1'b0;
-                store_buffer_valid_q[store_buffer_head_q] <= 1'b0;
-                store_buffer_head_q <=
-                    (store_buffer_head_q ==
-                     STORE_BUFFER_INDEX_WIDTH'(STORE_BUFFER_LINES - 1)) ?
-                    {STORE_BUFFER_INDEX_WIDTH{1'b0}} :
-                    store_buffer_head_q + 1'b1;
-            end
-
-            case ({store_buffer_enqueue, store_completion_fire})
+            case ({store_buffer_allocate, store_completion_fire})
                 2'b10: store_buffer_count_q <=
                     store_buffer_count_q + 1'b1;
                 2'b01: store_buffer_count_q <=
@@ -1568,9 +1895,47 @@ module openrv64_l1d_ccx #(
                 default: store_buffer_count_q <= store_buffer_count_q;
             endcase
 
+            if (store_buffer_watermark ||
+                store_buffer_watermark_on_allocate ||
+                store_buffer_head_timeout ||
+                store_buffer_force_drain)
+                store_buffer_drain_active_q <=
+                    (store_buffer_count_q != 0) ||
+                    store_buffer_allocate;
+            if (store_completion_fire &&
+                (store_buffer_count_q == 1) &&
+                !store_buffer_allocate)
+                store_buffer_drain_active_q <= 1'b0;
+            if ((store_buffer_count_q == 0) &&
+                !store_buffer_allocate)
+                store_buffer_drain_active_q <= 1'b0;
+
             case (backend_state_q)
                 BACKEND_IDLE: begin
-                    if (prefetch_launch) begin
+                    if (store_buffer_drain_request) begin
+                        request_txn_id_q <= next_txn_id_q;
+                        next_txn_id_q <= next_main_txn_id;
+                        request_write_q <= 1'b1;
+                        request_lock_q <= 1'b0;
+                        request_cacheable_q <= 1'b1;
+                        request_line_read_q <= 1'b0;
+                        request_size_q <= 3'd6;
+                        request_addr_q <=
+                            store_buffer_addr_q[store_buffer_head_q];
+                        request_wdata_q <=
+                            store_buffer_data_q[store_buffer_head_q];
+                        request_wstrb_q <=
+                            store_buffer_strb_q[store_buffer_head_q];
+                        request_buffered_store_q <= 1'b1;
+                        request_reissue_q <= 1'b0;
+                        request_epoch_q <= speculation_epoch_q;
+                        request_prefetch_q <= 1'b0;
+                        request_discard_q <= 1'b0;
+                        prefetch_late_reported_q <= 1'b0;
+                        command_sent_q <= 1'b0;
+                        wdata_sent_q <= 1'b0;
+                        backend_state_q <= BACKEND_SEND;
+                    end else if (prefetch_launch) begin
                         request_txn_id_q <= PREFETCH_TXN_BASE +
                             `OPENRV64_CCX_TXN_ID_WIDTH'(
                                 prefetch_mshr_free_index_r);
@@ -1582,38 +1947,14 @@ module openrv64_l1d_ccx #(
                         request_line_read_q <= 1'b1;
                         request_size_q <= 3'd6;
                         request_addr_q <= prefetch_launch_addr_r;
-                        request_l1_addr_q <= prefetch_launch_addr_r;
                         request_wdata_q <=
                             {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
                         request_wstrb_q <=
                             {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
                         request_buffered_store_q <= 1'b0;
+                        request_reissue_q <= 1'b0;
+                        request_epoch_q <= speculation_epoch_q;
                         request_prefetch_q <= 1'b1;
-                        request_discard_q <= 1'b0;
-                        prefetch_late_reported_q <= 1'b0;
-                        command_sent_q <= 1'b0;
-                        wdata_sent_q <= 1'b0;
-                        backend_state_q <= BACKEND_SEND;
-                    end else if ((store_buffer_count_q != 0) &&
-                        store_buffer_valid_q[store_buffer_head_q] &&
-                        !store_completion_valid_q) begin
-                        request_txn_id_q <= next_txn_id_q;
-                        next_txn_id_q <= next_main_txn_id;
-                        request_write_q <= 1'b1;
-                        request_lock_q <= 1'b0;
-                        request_cacheable_q <= 1'b1;
-                        request_line_read_q <= 1'b0;
-                        request_size_q <= 3'd6;
-                        request_addr_q <=
-                            store_buffer_addr_q[store_buffer_head_q];
-                        request_l1_addr_q <=
-                            store_buffer_addr_q[store_buffer_head_q];
-                        request_wdata_q <=
-                            store_buffer_data_q[store_buffer_head_q];
-                        request_wstrb_q <=
-                            store_buffer_strb_q[store_buffer_head_q];
-                        request_buffered_store_q <= 1'b1;
-                        request_prefetch_q <= 1'b0;
                         request_discard_q <= 1'b0;
                         prefetch_late_reported_q <= 1'b0;
                         command_sent_q <= 1'b0;
@@ -1621,6 +1962,7 @@ module openrv64_l1d_ccx #(
                         backend_state_q <= BACKEND_SEND;
                     end else if (l1_mem_valid && !refill_buffer_hit &&
                                  !postable_store &&
+                                 !speculation_barrier_event &&
                                  !prefetch_mshr_demand_wait_r) begin
                         request_txn_id_q <= next_txn_id_q;
                         next_txn_id_q <= next_main_txn_id;
@@ -1636,7 +1978,6 @@ module openrv64_l1d_ccx #(
                         request_addr_q <=
                             (active_req_cacheable_q && !active_req_lock_q) ?
                             {l1_mem_addr[63:6], 6'b0} : l1_mem_addr;
-                        request_l1_addr_q <= l1_mem_addr;
                         request_wdata_q <=
                             {{(`OPENRV64_CCX_LINE_DATA_WIDTH-64){1'b0}},
                               l1_mem_wdata} << (l1_mem_addr[5:3] * 64);
@@ -1644,6 +1985,8 @@ module openrv64_l1d_ccx #(
                             {{(`OPENRV64_CCX_LINE_STRB_WIDTH-8){1'b0}},
                               l1_mem_wstrb} << (l1_mem_addr[5:3] * 8);
                         request_buffered_store_q <= 1'b0;
+                        request_reissue_q <= 1'b0;
+                        request_epoch_q <= speculation_epoch_q;
                         request_prefetch_q <= 1'b0;
                         request_discard_q <= 1'b0;
                         prefetch_late_reported_q <= 1'b0;
@@ -1664,6 +2007,8 @@ module openrv64_l1d_ccx #(
                             request_discard_q ||
                             prefetch_current_invalidated ||
                             prefetch_current_stored;
+                        prefetch_mshr_epoch_q[
+                            request_prefetch_mshr_q] <= request_epoch_q;
                         prefetch_mshr_late_reported_q[
                             request_prefetch_mshr_q] <=
                             prefetch_late_reported_q;
@@ -1683,33 +2028,21 @@ module openrv64_l1d_ccx #(
 
                 BACKEND_WAIT: begin
                     if (main_response_fire) begin
-                        if (request_line_read_q && (ENABLE != 0) &&
-                            !ccx_resp_error_i &&
-                            !response_protocol_error) begin
-                            fill_buffer_valid_q[
-                                fill_buffer_free_found_r ?
-                                fill_buffer_free_index_r :
-                                fill_buffer_prefetch_index_r] <= 1'b1;
-                            fill_buffer_addr_q[
-                                fill_buffer_free_found_r ?
-                                fill_buffer_free_index_r :
-                                fill_buffer_prefetch_index_r] <=
-                                request_addr_q;
-                            fill_buffer_data_q[
-                                fill_buffer_free_found_r ?
-                                fill_buffer_free_index_r :
-                                fill_buffer_prefetch_index_r] <=
-                                ccx_resp_rdata_i;
-                            fill_buffer_prefetch_q[
-                                fill_buffer_free_found_r ?
-                                fill_buffer_free_index_r :
-                                fill_buffer_prefetch_index_r] <=
-                                1'b0;
-                            if (!fill_buffer_free_found_r)
-                                fill_buffer_prefetch_replace_q <=
-                                    next_fill_buffer_prefetch_replace;
+                        if (main_response_reissue) begin
+                            request_txn_id_q <= next_txn_id_q;
+                            next_txn_id_q <= next_main_txn_id;
+                            request_reissue_q <= 1'b0;
+                            request_epoch_q <=
+                                speculation_barrier_event ?
+                                speculation_epoch_q + 1'b1 :
+                                speculation_epoch_q;
+                            command_sent_q <= 1'b0;
+                            wdata_sent_q <= 1'b0;
+                            backend_state_q <= BACKEND_SEND;
+                        end else begin
+                            request_reissue_q <= 1'b0;
+                            backend_state_q <= BACKEND_IDLE;
                         end
-                        backend_state_q <= BACKEND_IDLE;
                     end
                 end
 
@@ -1745,19 +2078,77 @@ module openrv64_l1d_ccx #(
                         prefetch_response_uses_free ?
                         fill_buffer_free_index_r :
                         fill_buffer_prefetch_index_r] <= 1'b1;
+                    fill_buffer_epoch_q[
+                        prefetch_response_uses_free ?
+                        fill_buffer_free_index_r :
+                        fill_buffer_prefetch_index_r] <=
+                        prefetch_mshr_epoch_q[
+                            prefetch_mshr_response_index_r];
                     if (!prefetch_response_uses_free)
                         fill_buffer_prefetch_replace_q <=
                             next_fill_buffer_prefetch_replace;
                 end
             end
 
-            if (prefetch_invalidate_fire) begin
+            // Translation changes and atomic admission are speculation
+            // cut-points. Queued work has not escaped and is canceled. Issued
+            // prefetches must still consume their CCX responses, but cannot
+            // create a fill. The architectural read-miss buffer is retained
+            // and reissued after its old response is consumed.
+            if (speculation_barrier_event) begin
+                speculation_epoch_q <= speculation_epoch_q + 1'b1;
+                if ((backend_state_q == BACKEND_WAIT) &&
+                    !request_write_q && !main_response_fire)
+                    request_reissue_q <= 1'b1;
+                if ((backend_state_q == BACKEND_SEND) &&
+                    !request_write_q)
+                    request_epoch_q <= speculation_epoch_q + 1'b1;
+                if ((backend_state_q == BACKEND_SEND) &&
+                    request_prefetch_q) begin
+                    request_prefetch_q <= 1'b0;
+                    request_discard_q <= 1'b0;
+                    command_sent_q <= 1'b0;
+                    backend_state_q <= BACKEND_IDLE;
+                end
                 for (prefetch_reset_stream_index = 0;
                      prefetch_reset_stream_index < PREFETCH_STREAMS;
                      prefetch_reset_stream_index =
                          prefetch_reset_stream_index + 1)
                     prefetch_generation_active_q[
                         prefetch_reset_stream_index] <= 1'b0;
+                for (prefetch_reset_index = 0;
+                     prefetch_reset_index < PREFETCH_QUEUE_LINES;
+                     prefetch_reset_index =
+                         prefetch_reset_index + 1)
+                    prefetch_candidate_valid_q[
+                        prefetch_reset_index] <= 1'b0;
+                for (prefetch_reset_index = 0;
+                     prefetch_reset_index < PREFETCH_OUTSTANDING;
+                     prefetch_reset_index =
+                         prefetch_reset_index + 1)
+                    if (prefetch_mshr_valid_q[prefetch_reset_index])
+                        prefetch_mshr_discard_q[
+                            prefetch_reset_index] <= 1'b1;
+                for (buffer_reset_index = 0;
+                     buffer_reset_index < FILL_BUFFER_LINES;
+                     buffer_reset_index = buffer_reset_index + 1) begin
+                    if (fill_buffer_prefetch_q[buffer_reset_index]) begin
+                        fill_buffer_valid_q[buffer_reset_index] <= 1'b0;
+                        fill_buffer_prefetch_q[buffer_reset_index] <=
+                            1'b0;
+                    end
+                end
+            end
+
+            if (prefetch_invalidate_fire) begin
+                if (!lock_invalidate_fire) begin
+                    for (prefetch_reset_stream_index = 0;
+                         prefetch_reset_stream_index < PREFETCH_STREAMS;
+                         prefetch_reset_stream_index =
+                             prefetch_reset_stream_index + 1)
+                        prefetch_generation_active_q[
+                            prefetch_reset_stream_index] <= 1'b0;
+                end
                 if (l1_invalidate_all) begin
                     for (prefetch_reset_stream_index = 0;
                          prefetch_reset_stream_index < PREFETCH_STREAMS;
@@ -1772,6 +2163,24 @@ module openrv64_l1d_ccx #(
                     end
                     prefetch_depth_q <= PREFETCH_INITIAL_DEPTH;
                     prefetch_waste_q <= 2'd0;
+                    for (atomic_hot_reset_index = 0;
+                         atomic_hot_reset_index < ATOMIC_HOT_LINES;
+                         atomic_hot_reset_index =
+                             atomic_hot_reset_index + 1)
+                        atomic_hot_valid_q[
+                            atomic_hot_reset_index] <= 1'b0;
+                end else if (!lock_invalidate_fire) begin
+                    for (atomic_hot_reset_index = 0;
+                         atomic_hot_reset_index < ATOMIC_HOT_LINES;
+                         atomic_hot_reset_index =
+                             atomic_hot_reset_index + 1)
+                        if (atomic_hot_valid_q[
+                                atomic_hot_reset_index] &&
+                            (atomic_hot_line_q[
+                                 atomic_hot_reset_index] ==
+                             {l1_invalidate_addr[63:6], 6'b0}))
+                            atomic_hot_valid_q[
+                                atomic_hot_reset_index] <= 1'b0;
                 end
                 for (prefetch_reset_index = 0;
                      prefetch_reset_index < PREFETCH_QUEUE_LINES;
@@ -1866,6 +2275,15 @@ module openrv64_l1d_ccx #(
             $fatal(1, "L1D fill buffers must contain 1 through 16 cachelines");
         if ((STORE_BUFFER_LINES < 1) || (STORE_BUFFER_LINES > 16))
             $fatal(1, "L1D store buffers must contain 1 through 16 cachelines");
+        if ((SPECULATION_EPOCH_WIDTH < 2) ||
+            (SPECULATION_EPOCH_WIDTH > 16))
+            $fatal(1,
+                "L1D speculation epoch width must be 2 through 16 bits");
+        if ((STORE_BUFFER_DRAIN_WATERMARK < 1) ||
+            (STORE_BUFFER_DRAIN_WATERMARK > STORE_BUFFER_LINES))
+            $fatal(1, "L1D store-buffer drain watermark must fit the FIFO");
+        if (STORE_BUFFER_TIMEOUT_CYCLES < 1)
+            $fatal(1, "L1D store-buffer timeout must be at least one cycle");
         if ((REQ_DEPTH < 1) || (REQ_DEPTH > (1 << REQ_TAG_WIDTH)))
             $fatal(1, "L1D request depth must fit its tag width");
         if ((FREELOADER != 0) && (FREELOADER != 1))
@@ -1896,6 +2314,8 @@ module openrv64_l1d_ccx #(
         if ((PREFETCH_OUTSTANDING < 1) ||
             (PREFETCH_OUTSTANDING > PREFETCH_TXN_BASE))
             $fatal(1, "L1D prefetch outstanding count exceeds reserved transaction IDs");
+        if ((ATOMIC_HOT_LINES < 1) || (ATOMIC_HOT_LINES > 64))
+            $fatal(1, "L1D atomic-hot directory must contain 1 through 64 lines");
         if ((PREFETCH_DEMAND_RESERVE < 0) ||
             (PREFETCH_DEMAND_RESERVE >= FILL_BUFFER_LINES))
             $fatal(1, "L1D prefetch demand reserve must leave at least one speculative slot");

@@ -5,9 +5,9 @@
 `include "core/decode/defs/alu-defs.v"
 
 module openrv64_exec_rv64m #(
-    // Four shift/add bits per cycle gives 16 RV64 or 8 RV64W cycles. This is
-    // an area/latency compromise; the unrolled add chain still needs a Booth
-    // or carry-save rewrite for actual timing closure.
+    // Two radix-4 Booth digits consume four multiplier bits per cycle, giving
+    // 16 RV64 or 8 RV64W cycles. Carry-save accumulation or staged
+    // finalization is still required for actual timing closure.
     parameter MUL_BITS_PER_CYCLE = 4,
     // Two restoring steps per cycle gives 32 full-width iteration cycles,
     // followed by one result-format cycle. Keep division latency-heavy rather
@@ -57,6 +57,7 @@ module openrv64_exec_rv64m #(
     reg [127:0] mul_multiplicand_q;
     reg [63:0] mul_multiplier_q;
     reg mul_negate_q;
+    reg mul_booth_prev_q;
 
     reg [7:0] div_bits_left_q;
     reg [63:0] div_dividend_q;
@@ -102,19 +103,28 @@ module openrv64_exec_rv64m #(
     reg [127:0] start_mul_multiplicand;
     reg [63:0] start_mul_multiplier;
     reg start_mul_negate;
-    wire [327:0] mul_step_value = mul_stage_step(
+    wire [328:0] mul_step_value = mul_stage_step(
         mul_acc_q,
         mul_multiplicand_q,
         mul_multiplier_q,
-        mul_bits_left_q
+        mul_bits_left_q,
+        mul_booth_prev_q
     );
-    wire [127:0] mul_acc_next = mul_step_value[327:200];
-    wire [127:0] mul_multiplicand_next = mul_step_value[199:72];
-    wire [63:0] mul_multiplier_next = mul_step_value[71:8];
-    wire [7:0] mul_bits_left_next = mul_step_value[7:0];
+    wire [127:0] mul_acc_next = mul_step_value[328:201];
+    wire [127:0] mul_multiplicand_next = mul_step_value[200:73];
+    wire [63:0] mul_multiplier_next = mul_step_value[72:9];
+    wire [7:0] mul_bits_left_next = mul_step_value[8:1];
+    wire mul_booth_prev_next = mul_step_value[0];
     wire [127:0] mul_product_next = mul_negate_q ?
                                      (~mul_acc_next + 128'd1) :
                                      mul_acc_next;
+    wire [127:0] start_mul_booth_correction =
+        (MUL_CHUNK_WIDTH != 4) ? 128'd0 :
+        word_op_i ?
+            (start_mul_multiplier[31] ?
+             (start_mul_multiplicand << 32) : 128'd0) :
+            (start_mul_multiplier[63] ?
+             (start_mul_multiplicand << 64) : 128'd0);
 
     wire [200:0] div_step_value = div_stage_step(
         div_remainder_q,
@@ -191,7 +201,7 @@ module openrv64_exec_rv64m #(
         end
     endfunction
 
-    function [127:0] mul_chunk_addend;
+    function [127:0] mul_shift_add_chunk;
         input [127:0] multiplicand;
         input [63:0] multiplier;
         integer bit_idx;
@@ -205,27 +215,84 @@ module openrv64_exec_rv64m #(
                 end
             end
 
-            mul_chunk_addend = addend;
+            mul_shift_add_chunk = addend;
         end
     endfunction
 
-    function [327:0] mul_stage_step;
+    // Modified radix-4 Booth digit for {y[2i+1], y[2i], y[2i-1]}.
+    // The result is a signed 128-bit partial product in two's complement.
+    function [127:0] mul_booth_partial;
+        input [127:0] multiplicand;
+        input [2:0] booth_bits;
+        reg [127:0] doubled;
+        begin
+            doubled = multiplicand << 1;
+
+            case (booth_bits)
+                3'b001,
+                3'b010: mul_booth_partial = multiplicand;
+                3'b011: mul_booth_partial = doubled;
+                3'b100: mul_booth_partial = ~doubled + 128'd1;
+                3'b101,
+                3'b110: mul_booth_partial = ~multiplicand + 128'd1;
+                default: mul_booth_partial = 128'd0;
+            endcase
+        end
+    endfunction
+
+    // Four multiplier bits contain two overlapping radix-4 Booth digits.
+    // y[-1] is carried from the preceding four-bit chunk.
+    function [127:0] mul_booth_chunk;
+        input [127:0] multiplicand;
+        input [63:0] multiplier;
+        input booth_prev;
+        reg [127:0] booth_low;
+        reg [127:0] booth_high;
+        begin
+            booth_low = mul_booth_partial(
+                multiplicand,
+                {multiplier[1:0], booth_prev}
+            );
+            booth_high = mul_booth_partial(
+                multiplicand,
+                multiplier[3:1]
+            );
+            mul_booth_chunk = booth_low + (booth_high << 2);
+        end
+    endfunction
+
+    function [328:0] mul_stage_step;
         input [127:0] acc;
         input [127:0] multiplicand;
         input [63:0] multiplier;
         input [7:0] bits_left;
+        input booth_prev;
         reg [127:0] acc_next;
         reg [127:0] multiplicand_next;
         reg [63:0] multiplier_next;
         reg [7:0] bits_left_next;
+        reg booth_prev_next;
         begin
             acc_next = acc;
             multiplicand_next = multiplicand;
             multiplier_next = multiplier;
             bits_left_next = bits_left;
+            booth_prev_next = booth_prev;
 
             if (bits_left != 8'd0) begin
-                acc_next = acc + mul_chunk_addend(multiplicand, multiplier);
+                if (MUL_CHUNK_WIDTH == 4) begin
+                    acc_next = acc + mul_booth_chunk(
+                        multiplicand,
+                        multiplier,
+                        booth_prev
+                    );
+                    booth_prev_next = multiplier[3];
+                end else begin
+                    acc_next = acc + mul_shift_add_chunk(
+                        multiplicand,
+                        multiplier
+                    );
+                end
                 multiplicand_next = multiplicand << MUL_CHUNK_WIDTH;
                 multiplier_next = multiplier >> MUL_CHUNK_WIDTH;
                 bits_left_next = (bits_left > MUL_CHUNK_WIDTH_VALUE) ?
@@ -237,7 +304,8 @@ module openrv64_exec_rv64m #(
                 acc_next,
                 multiplicand_next,
                 multiplier_next,
-                bits_left_next
+                bits_left_next,
+                booth_prev_next
             };
         end
     endfunction
@@ -446,6 +514,7 @@ module openrv64_exec_rv64m #(
             mul_multiplicand_q <= 128'd0;
             mul_multiplier_q <= 64'd0;
             mul_negate_q <= 1'b0;
+            mul_booth_prev_q <= 1'b0;
             div_bits_left_q <= 8'd0;
             div_dividend_q <= 64'd0;
             div_divisor_q <= 64'd0;
@@ -467,6 +536,7 @@ module openrv64_exec_rv64m #(
             mul_multiplicand_q <= 128'd0;
             mul_multiplier_q <= 64'd0;
             mul_negate_q <= 1'b0;
+            mul_booth_prev_q <= 1'b0;
             div_bits_left_q <= 8'd0;
             div_dividend_q <= 64'd0;
             div_divisor_q <= 64'd0;
@@ -490,6 +560,7 @@ module openrv64_exec_rv64m #(
                 mul_multiplicand_q <= mul_multiplicand_next;
                 mul_multiplier_q <= mul_multiplier_next;
                 mul_bits_left_q <= mul_bits_left_next;
+                mul_booth_prev_q <= mul_booth_prev_next;
 
                 if (mul_bits_left_next == 8'd0) begin
                     active_q <= 1'b0;
@@ -532,10 +603,11 @@ module openrv64_exec_rv64m #(
                     active_q <= 1'b1;
                     work_kind_q <= WORK_KIND_MUL;
                     mul_bits_left_q <= word_op_i ? 8'd32 : 8'd64;
-                    mul_acc_q <= 128'd0;
+                    mul_acc_q <= start_mul_booth_correction;
                     mul_multiplicand_q <= start_mul_multiplicand;
                     mul_multiplier_q <= start_mul_multiplier;
                     mul_negate_q <= start_mul_negate;
+                    mul_booth_prev_q <= 1'b0;
                 end else if (start_div_valid &&
                              !start_divisor_zero &&
                              !start_div_overflow) begin

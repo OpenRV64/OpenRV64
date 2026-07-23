@@ -3,6 +3,7 @@
 `include "core/exec/bp/defs.v"
 `include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
+`include "complex/protocol/defs.v"
 
 // Complete single-hart OpenRV64 platform integration.
 //
@@ -17,10 +18,15 @@ module openrv64_platform #(
     parameter integer MEMORY_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
+    parameter bit ENABLE_ISSUE_WINDOW = 1'b0,
+    parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
     parameter bit ENABLE_RV64M = 1'b0,
     parameter bit ENABLE_RV64A = 1'b1,
     parameter bit ENABLE_FORWARDING = 1'b1,
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
+    parameter int unsigned L2_BYTES = 256 * 1024,
+    parameter int unsigned L2_WAYS = 8,
+    parameter bit L1D_PREFETCH_ENABLE = 1'b1,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
@@ -90,6 +96,15 @@ module openrv64_platform #(
     logic [63:0] core_mem_rdata;
     logic core_mem_error;
 
+    logic platform_mem_valid;
+    logic platform_mem_ready;
+    logic platform_mem_write;
+    logic [63:0] platform_mem_addr;
+    logic [63:0] platform_mem_wdata;
+    logic [7:0] platform_mem_wstrb;
+    logic [63:0] platform_mem_rdata;
+    logic platform_mem_error;
+
     logic ccx_req_valid;
     logic ccx_req_ready;
     logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
@@ -122,6 +137,51 @@ module openrv64_platform #(
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
     logic ccx_resp_error;
     logic ccx_resp_sc_success;
+
+    logic memory_ccx_req_valid;
+    logic memory_ccx_req_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        memory_ccx_req_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        memory_ccx_req_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        memory_ccx_req_source_id;
+    logic [`OPENRV64_CCX_OP_WIDTH-1:0] memory_ccx_req_op;
+    logic memory_ccx_req_lock;
+    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] memory_ccx_req_order;
+    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] memory_ccx_req_kind;
+    logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] memory_ccx_req_attr;
+    logic [2:0] memory_ccx_req_size;
+    logic [63:0] memory_ccx_req_addr;
+    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+        memory_ccx_req_burst_len;
+    logic memory_ccx_wdata_valid;
+    logic memory_ccx_wdata_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        memory_ccx_wdata_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        memory_ccx_wdata_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        memory_ccx_wdata_source_id;
+    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+        memory_ccx_wdata_beat_index;
+    logic memory_ccx_wdata_last;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] memory_ccx_wdata;
+    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] memory_ccx_wstrb;
+    logic memory_ccx_resp_valid;
+    logic memory_ccx_resp_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        memory_ccx_resp_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        memory_ccx_resp_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        memory_ccx_resp_source_id;
+    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+        memory_ccx_resp_beat_index;
+    logic memory_ccx_resp_last;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] memory_ccx_resp_rdata;
+    logic memory_ccx_resp_error;
+    logic memory_ccx_resp_sc_success;
 
     logic rom_valid;
     logic rom_ready;
@@ -231,9 +291,15 @@ module openrv64_platform #(
     openrv64_top #(
         .RESET_VECTOR(`OPENRV64_SOC_RESET_VECTOR),
         .BACKEND_CONFIG(BACKEND_CONFIG),
-        .BUS_CONFIG(`OPENRV64_BUS_GEN),
+        .BUS_CONFIG((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) ?
+                    `OPENRV64_BUS_AXI : `OPENRV64_BUS_GEN),
+        .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(ENABLE_RV64A),
+        .L1D_CACHEABLE_BASE(`OPENRV64_SOC_MEMORY_BASE),
+        .L1D_CACHEABLE_SIZE(MEMORY_BYTES),
+        .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .ENABLE_TRACE(ENABLE_TRACE),
@@ -329,17 +395,138 @@ module openrv64_platform #(
         .trace_retire_wdata(trace_retire_wdata)
     );
 
+    generate
+        if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin :
+                g_ccx_l2_platform
+            openrv64_soc_ccx_l2_bridge #(
+                .L2_BYTES(L2_BYTES),
+                .L2_WAYS(L2_WAYS)
+            ) u_ccx_l2 (
+                .clk_i(clk_i),
+                .rst_ni(core_rst_no),
+                .ccx_req_valid_i(ccx_req_valid),
+                .ccx_req_ready_o(ccx_req_ready),
+                .ccx_req_hart_id_i(ccx_req_hart_id),
+                .ccx_req_txn_id_i(ccx_req_txn_id),
+                .ccx_req_source_id_i(ccx_req_source_id),
+                .ccx_req_op_i(ccx_req_op),
+                .ccx_req_lock_i(ccx_req_lock),
+                .ccx_req_order_i(ccx_req_order),
+                .ccx_req_kind_i(ccx_req_kind),
+                .ccx_req_attr_i(ccx_req_attr),
+                .ccx_req_size_i(ccx_req_size),
+                .ccx_req_addr_i(ccx_req_addr),
+                .ccx_req_burst_len_i(ccx_req_burst_len),
+                .ccx_wdata_valid_i(ccx_wdata_valid),
+                .ccx_wdata_ready_o(ccx_wdata_ready),
+                .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
+                .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
+                .ccx_wdata_source_id_i(ccx_wdata_source_id),
+                .ccx_wdata_beat_index_i(ccx_wdata_beat_index),
+                .ccx_wdata_last_i(ccx_wdata_last),
+                .ccx_wdata_i(ccx_wdata),
+                .ccx_wstrb_i(ccx_wstrb),
+                .ccx_resp_valid_o(ccx_resp_valid),
+                .ccx_resp_ready_i(ccx_resp_ready),
+                .ccx_resp_hart_id_o(ccx_resp_hart_id),
+                .ccx_resp_txn_id_o(ccx_resp_txn_id),
+                .ccx_resp_source_id_o(ccx_resp_source_id),
+                .ccx_resp_beat_index_o(ccx_resp_beat_index),
+                .ccx_resp_last_o(ccx_resp_last),
+                .ccx_resp_rdata_o(ccx_resp_rdata),
+                .ccx_resp_error_o(ccx_resp_error),
+                .ccx_resp_sc_success_o(ccx_resp_sc_success),
+                .mem_valid_o(platform_mem_valid),
+                .mem_ready_i(platform_mem_ready),
+                .mem_write_o(platform_mem_write),
+                .mem_addr_o(platform_mem_addr),
+                .mem_wdata_o(platform_mem_wdata),
+                .mem_wstrb_o(platform_mem_wstrb),
+                .mem_rdata_i(platform_mem_rdata),
+                .mem_error_i(platform_mem_error)
+            );
+
+            assign core_mem_ready = 1'b0;
+            assign core_mem_rdata = 64'd0;
+            assign core_mem_error = 1'b0;
+
+            assign memory_ccx_req_valid = 1'b0;
+            assign memory_ccx_req_hart_id = 0;
+            assign memory_ccx_req_txn_id = 0;
+            assign memory_ccx_req_source_id = 0;
+            assign memory_ccx_req_op = `OPENRV64_CCX_OP_READ;
+            assign memory_ccx_req_lock = 1'b0;
+            assign memory_ccx_req_order = `OPENRV64_CCX_ORDER_NONE;
+            assign memory_ccx_req_kind = `OPENRV64_CCX_KIND_LEGACY;
+            assign memory_ccx_req_attr = `OPENRV64_CCX_ATTR_NONE;
+            assign memory_ccx_req_size = 3'd0;
+            assign memory_ccx_req_addr = 64'd0;
+            assign memory_ccx_req_burst_len = 0;
+            assign memory_ccx_wdata_valid = 1'b0;
+            assign memory_ccx_wdata_hart_id = 0;
+            assign memory_ccx_wdata_txn_id = 0;
+            assign memory_ccx_wdata_source_id = 0;
+            assign memory_ccx_wdata_beat_index = 0;
+            assign memory_ccx_wdata_last = 1'b0;
+            assign memory_ccx_wdata = 0;
+            assign memory_ccx_wstrb = 0;
+            assign memory_ccx_resp_ready = 1'b0;
+        end else begin : g_scalar_platform
+            assign platform_mem_valid = core_mem_valid && core_rst_no;
+            assign platform_mem_write = core_mem_write;
+            assign platform_mem_addr = core_mem_addr;
+            assign platform_mem_wdata = core_mem_wdata;
+            assign platform_mem_wstrb = core_mem_wstrb;
+            assign core_mem_ready = platform_mem_ready;
+            assign core_mem_rdata = platform_mem_rdata;
+            assign core_mem_error = platform_mem_error;
+
+            assign memory_ccx_req_valid = ccx_req_valid;
+            assign ccx_req_ready = memory_ccx_req_ready;
+            assign memory_ccx_req_hart_id = ccx_req_hart_id;
+            assign memory_ccx_req_txn_id = ccx_req_txn_id;
+            assign memory_ccx_req_source_id = ccx_req_source_id;
+            assign memory_ccx_req_op = ccx_req_op;
+            assign memory_ccx_req_lock = ccx_req_lock;
+            assign memory_ccx_req_order = ccx_req_order;
+            assign memory_ccx_req_kind = ccx_req_kind;
+            assign memory_ccx_req_attr = ccx_req_attr;
+            assign memory_ccx_req_size = ccx_req_size;
+            assign memory_ccx_req_addr = ccx_req_addr;
+            assign memory_ccx_req_burst_len = ccx_req_burst_len;
+            assign memory_ccx_wdata_valid = ccx_wdata_valid;
+            assign ccx_wdata_ready = memory_ccx_wdata_ready;
+            assign memory_ccx_wdata_hart_id = ccx_wdata_hart_id;
+            assign memory_ccx_wdata_txn_id = ccx_wdata_txn_id;
+            assign memory_ccx_wdata_source_id = ccx_wdata_source_id;
+            assign memory_ccx_wdata_beat_index = ccx_wdata_beat_index;
+            assign memory_ccx_wdata_last = ccx_wdata_last;
+            assign memory_ccx_wdata = ccx_wdata;
+            assign memory_ccx_wstrb = ccx_wstrb;
+            assign ccx_resp_valid = memory_ccx_resp_valid;
+            assign memory_ccx_resp_ready = ccx_resp_ready;
+            assign ccx_resp_hart_id = memory_ccx_resp_hart_id;
+            assign ccx_resp_txn_id = memory_ccx_resp_txn_id;
+            assign ccx_resp_source_id = memory_ccx_resp_source_id;
+            assign ccx_resp_beat_index = memory_ccx_resp_beat_index;
+            assign ccx_resp_last = memory_ccx_resp_last;
+            assign ccx_resp_rdata = memory_ccx_resp_rdata;
+            assign ccx_resp_error = memory_ccx_resp_error;
+            assign ccx_resp_sc_success = memory_ccx_resp_sc_success;
+        end
+    endgenerate
+
     openrv64_soc_bus_decode #(
         .MEMORY_SIZE(MEMORY_BYTES)
     ) u_bus (
-        .mem_valid_i(core_mem_valid && core_rst_no),
-        .mem_ready_o(core_mem_ready),
-        .mem_write_i(core_mem_write),
-        .mem_addr_i(core_mem_addr),
-        .mem_wdata_i(core_mem_wdata),
-        .mem_wstrb_i(core_mem_wstrb),
-        .mem_rdata_o(core_mem_rdata),
-        .mem_error_o(core_mem_error),
+        .mem_valid_i(platform_mem_valid),
+        .mem_ready_o(platform_mem_ready),
+        .mem_write_i(platform_mem_write),
+        .mem_addr_i(platform_mem_addr),
+        .mem_wdata_i(platform_mem_wdata),
+        .mem_wstrb_i(platform_mem_wstrb),
+        .mem_rdata_o(platform_mem_rdata),
+        .mem_error_o(platform_mem_error),
         .rom_valid_o(rom_valid),
         .rom_ready_i(rom_ready),
         .rom_write_o(rom_write),
@@ -413,38 +600,38 @@ module openrv64_platform #(
         .mem_wdata_i(memory_wdata),
         .mem_wstrb_i(memory_wstrb),
         .mem_rdata_o(memory_rdata),
-        .ccx_req_valid_i(ccx_req_valid),
-        .ccx_req_ready_o(ccx_req_ready),
-        .ccx_req_hart_id_i(ccx_req_hart_id),
-        .ccx_req_txn_id_i(ccx_req_txn_id),
-        .ccx_req_source_id_i(ccx_req_source_id),
-        .ccx_req_op_i(ccx_req_op),
-        .ccx_req_lock_i(ccx_req_lock),
-        .ccx_req_order_i(ccx_req_order),
-        .ccx_req_kind_i(ccx_req_kind),
-        .ccx_req_attr_i(ccx_req_attr),
-        .ccx_req_size_i(ccx_req_size),
-        .ccx_req_addr_i(ccx_req_addr),
-        .ccx_req_burst_len_i(ccx_req_burst_len),
-        .ccx_wdata_valid_i(ccx_wdata_valid),
-        .ccx_wdata_ready_o(ccx_wdata_ready),
-        .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
-        .ccx_wdata_source_id_i(ccx_wdata_source_id),
-        .ccx_wdata_beat_index_i(ccx_wdata_beat_index),
-        .ccx_wdata_last_i(ccx_wdata_last),
-        .ccx_wdata_i(ccx_wdata),
-        .ccx_wstrb_i(ccx_wstrb),
-        .ccx_resp_valid_o(ccx_resp_valid),
-        .ccx_resp_ready_i(ccx_resp_ready),
-        .ccx_resp_hart_id_o(ccx_resp_hart_id),
-        .ccx_resp_txn_id_o(ccx_resp_txn_id),
-        .ccx_resp_source_id_o(ccx_resp_source_id),
-        .ccx_resp_beat_index_o(ccx_resp_beat_index),
-        .ccx_resp_last_o(ccx_resp_last),
-        .ccx_resp_rdata_o(ccx_resp_rdata),
-        .ccx_resp_error_o(ccx_resp_error),
-        .ccx_resp_sc_success_o(ccx_resp_sc_success)
+        .ccx_req_valid_i(memory_ccx_req_valid),
+        .ccx_req_ready_o(memory_ccx_req_ready),
+        .ccx_req_hart_id_i(memory_ccx_req_hart_id),
+        .ccx_req_txn_id_i(memory_ccx_req_txn_id),
+        .ccx_req_source_id_i(memory_ccx_req_source_id),
+        .ccx_req_op_i(memory_ccx_req_op),
+        .ccx_req_lock_i(memory_ccx_req_lock),
+        .ccx_req_order_i(memory_ccx_req_order),
+        .ccx_req_kind_i(memory_ccx_req_kind),
+        .ccx_req_attr_i(memory_ccx_req_attr),
+        .ccx_req_size_i(memory_ccx_req_size),
+        .ccx_req_addr_i(memory_ccx_req_addr),
+        .ccx_req_burst_len_i(memory_ccx_req_burst_len),
+        .ccx_wdata_valid_i(memory_ccx_wdata_valid),
+        .ccx_wdata_ready_o(memory_ccx_wdata_ready),
+        .ccx_wdata_hart_id_i(memory_ccx_wdata_hart_id),
+        .ccx_wdata_txn_id_i(memory_ccx_wdata_txn_id),
+        .ccx_wdata_source_id_i(memory_ccx_wdata_source_id),
+        .ccx_wdata_beat_index_i(memory_ccx_wdata_beat_index),
+        .ccx_wdata_last_i(memory_ccx_wdata_last),
+        .ccx_wdata_i(memory_ccx_wdata),
+        .ccx_wstrb_i(memory_ccx_wstrb),
+        .ccx_resp_valid_o(memory_ccx_resp_valid),
+        .ccx_resp_ready_i(memory_ccx_resp_ready),
+        .ccx_resp_hart_id_o(memory_ccx_resp_hart_id),
+        .ccx_resp_txn_id_o(memory_ccx_resp_txn_id),
+        .ccx_resp_source_id_o(memory_ccx_resp_source_id),
+        .ccx_resp_beat_index_o(memory_ccx_resp_beat_index),
+        .ccx_resp_last_o(memory_ccx_resp_last),
+        .ccx_resp_rdata_o(memory_ccx_resp_rdata),
+        .ccx_resp_error_o(memory_ccx_resp_error),
+        .ccx_resp_sc_success_o(memory_ccx_resp_sc_success)
     );
 
     openrv64_clint #(

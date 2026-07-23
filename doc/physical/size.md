@@ -54,10 +54,11 @@ inferred SRAM.
 
 After these whole-core area runs, the divider was changed from eight to two
 restoring steps per cycle and given a separate finalization cycle, then the
-multiplier was reduced from eight to four shift/add bits per cycle. The isolated
-full RV64M map fell from 0.119550 to 0.092983 and then **0.070867 mm²**. The
+multiplier was reduced from eight to four shift/add bits per cycle and finally
+changed to two radix-4 Booth digits per cycle. The isolated full RV64M map fell
+from 0.119550 to 0.092983, then 0.070867, and now **0.065420 mm²**. The
 whole-core area has not been rerun, so the tables below intentionally retain
-the measured 12:55 snapshot rather than subtracting an unmeasured 0.048683 mm²
+the measured 12:55 snapshot rather than subtracting an unmeasured 0.054130 mm²
 from EX0.
 
 ## Detailed block area

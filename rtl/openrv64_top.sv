@@ -11,6 +11,8 @@ module openrv64_top #(
         `OPENRV64_BACKEND_1P,
     parameter logic [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
+    parameter bit ENABLE_ISSUE_WINDOW = 1'b0,
+    parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
     parameter bit ENABLE_RV64M = 1'b0,
     parameter bit ENABLE_RV64A = 1'b1,
     parameter bit ENABLE_FORWARDING = 1'b1,
@@ -407,6 +409,8 @@ module openrv64_top #(
                 .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
                 .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
                 .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+                .SPEC_LOAD_BASE(L1D_CACHEABLE_BASE),
+                .SPEC_LOAD_SIZE(L1D_CACHEABLE_SIZE),
                 .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
                 .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
                 .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
@@ -428,6 +432,9 @@ module openrv64_top #(
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID),
+                .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
+                .ENABLE_SPECULATION_WINDOW(
+                    ENABLE_SPECULATION_WINDOW),
                 .ENABLE_MAGIC_MEMORY(ENABLE_MAGIC_MEMORY),
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),

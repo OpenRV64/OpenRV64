@@ -40,6 +40,7 @@ module tb_fetch_3w_pair1024;
     wire [1:0] line_count;
     wire alt_restart_hit;
     integer ordinary_stash_requests;
+    integer ordinary_demand_requests;
 
     openrv64_fetch_3w #(
         .ENABLE_TRACE(0),
@@ -98,6 +99,8 @@ module tb_fetch_3w_pair1024;
     always @(posedge clk) begin
         if (rst_n && req_valid && req_ready && req_stash)
             ordinary_stash_requests <= ordinary_stash_requests + 1;
+        if (rst_n && req_valid && req_ready && req_demand)
+            ordinary_demand_requests <= ordinary_demand_requests + 1;
     end
 
     function automatic [511:0] make_cache_line(input integer base);
@@ -174,10 +177,15 @@ module tb_fetch_3w_pair1024;
         pair1024_resp_unpredicted_data = 512'd0;
         decode_ready = 3'b000;
         ordinary_stash_requests = 0;
+        ordinary_demand_requests = 0;
 
         repeat (3) tick();
         rst_n = 1'b1;
 
+        // The predicted side is the active fetch selection.  Allocate both
+        // paths while redirecting to it, as the integrated predictor does.
+        restart_pc = 64'h201c;
+        restart = 1'b1;
         branch_pair_valid = 1'b1;
         #1;
         if (!pair1024_req_valid ||
@@ -185,6 +193,7 @@ module tb_fetch_3w_pair1024;
             pair1024_req_unpredicted_addr != 64'h30c0)
             $fatal(1, "pair1024 request did not carry both line addresses");
         tick();
+        restart = 1'b0;
         branch_pair_valid = 1'b0;
 
         pair1024_resp_predicted_addr = 64'h2000;
@@ -192,10 +201,24 @@ module tb_fetch_3w_pair1024;
         pair1024_resp_unpredicted_addr = 64'h30c0;
         pair1024_resp_unpredicted_data = make_cache_line(32'h300);
         pair1024_resp_valid = 1'b1;
+        #1;
+        if (req_valid)
+            $fatal(1,
+                   "incoming selected pair line launched duplicate demand");
         tick();
         pair1024_resp_valid = 1'b0;
 
-        // The first redirect crosses the internal 256-bit fetch-block boundary.
+        // The selector feeds the active predicted line directly to decode,
+        // including a bundle crossing the internal 256-bit block boundary.
+        if (decode_valid != 3'b111 ||
+            lane_instr(0) != 32'h207 ||
+            lane_instr(1) != 32'h208 ||
+            lane_instr(2) != 32'h209)
+            $fatal(1, "predicted pair line did not feed active decode");
+        if (ordinary_demand_requests != 0)
+            $fatal(1, "selected pair line was redundantly demanded");
+
+        // Replay changes the selector to the other resident path.
         check_redirect(64'h201c, 32'h207, 32'h208, 32'h209);
         check_redirect(64'h30e8, 32'h30a, 32'h30b, 32'h30c);
 

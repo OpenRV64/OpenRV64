@@ -1,11 +1,18 @@
 `timescale 1ns/1ps
 `include "core/backend/backend-defs.v"
+`include "complex/protocol/defs.v"
 
 // Platform-backed ACT4 harness. Unlike the direct 1p/3p harnesses, this
 // instance includes the boot ROM, CLINT, PLIC, and MMIO peripherals required
 // by privileged architectural tests.
 module tb_compliance_platform #(
     parameter bit ENABLE_RV64M = 1'b1,
+    parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
+        `OPENRV64_BACKEND_1P,
+    parameter integer ISSUE_WINDOW = 0,
+    parameter integer SPECULATION_WINDOW = 0,
+    parameter integer L2_BYTES = 256 * 1024,
+    parameter integer L2_WAYS = 8,
     parameter integer RAM_BYTES = 1 * 1024 * 1024,
     parameter integer DEFAULT_MAX_CYCLES = 2_000_000
 );
@@ -39,6 +46,7 @@ module tb_compliance_platform #(
     logic trace_retire_rd_write;
     logic [4:0] trace_retire_rd;
     logic [63:0] trace_retire_wdata;
+    wire [1:0] observed_priv_mode;
 
     integer cycle_count;
     integer retired_count;
@@ -50,13 +58,29 @@ module tb_compliance_platform #(
     string test_name;
     string trace_path;
 
-    wire [63:0] tohost_value = dut.u_memory.memory_q[tohost_index];
+    logic tohost_ccx_pending_q;
+    logic tohost_ccx_wdata_seen_q;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] tohost_ccx_hart_q;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] tohost_ccx_txn_q;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] tohost_ccx_source_q;
+    logic [63:0] tohost_ccx_wdata_q;
+    logic [7:0] tohost_ccx_wstrb_q;
+    logic [63:0] tohost_ccx_value_q;
+    integer tohost_byte;
+
+    wire [63:0] tohost_value =
+        (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) ?
+        tohost_ccx_value_q : dut.u_memory.memory_q[tohost_index];
 
     openrv64_platform #(
         .SOC_RESET_CYCLES(3),
         .CORE_RESET_DELAY_CYCLES(2),
         .MEMORY_BYTES(RAM_BYTES),
-        .BACKEND_CONFIG(`OPENRV64_BACKEND_1P),
+        .BACKEND_CONFIG(BACKEND_CONFIG),
+        .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .L2_BYTES(L2_BYTES),
+        .L2_WAYS(L2_WAYS),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(1'b1),
         .ENABLE_TRACE(1'b1)
@@ -93,6 +117,16 @@ module tb_compliance_platform #(
         .trace_retire_rd(trace_retire_rd),
         .trace_retire_wdata(trace_retire_wdata)
     );
+
+    generate
+        if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_observe_3p
+            assign observed_priv_mode =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.priv_mode_q;
+        end else begin : g_observe_1p
+            assign observed_priv_mode =
+                dut.u_core.u_core.u_csrs.priv_mode_q;
+        end
+    endgenerate
 
     initial begin
         clk = 1'b0;
@@ -131,6 +165,14 @@ module tb_compliance_platform #(
         end
         cycle_count = 0;
         retired_count = 0;
+        tohost_ccx_pending_q = 1'b0;
+        tohost_ccx_wdata_seen_q = 1'b0;
+        tohost_ccx_hart_q = 0;
+        tohost_ccx_txn_q = 0;
+        tohost_ccx_source_q = 0;
+        tohost_ccx_wdata_q = 0;
+        tohost_ccx_wstrb_q = 0;
+        tohost_ccx_value_q = 0;
         repeat (6) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
@@ -138,6 +180,52 @@ module tb_compliance_platform #(
 
     always @(posedge clk) begin
         if (rst_n) begin
+            // The integrated L2 is write-back, so polling the backing RAM
+            // cannot observe a cached ACT4 tohost store.  Track only the
+            // requested tohost word and commit it when the matching CCX write
+            // response completes.
+            if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&
+                dut.ccx_req_valid && dut.ccx_req_ready &&
+                (dut.ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
+                (dut.ccx_req_addr[63:6] == tohost_addr[63:6])) begin
+                tohost_ccx_pending_q <= 1'b1;
+                tohost_ccx_wdata_seen_q <= 1'b0;
+                tohost_ccx_hart_q <= dut.ccx_req_hart_id;
+                tohost_ccx_txn_q <= dut.ccx_req_txn_id;
+                tohost_ccx_source_q <= dut.ccx_req_source_id;
+                tohost_ccx_wdata_q <= 0;
+                tohost_ccx_wstrb_q <= 0;
+            end
+            if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&
+                tohost_ccx_pending_q &&
+                dut.ccx_wdata_valid && dut.ccx_wdata_ready &&
+                (dut.ccx_wdata_hart_id == tohost_ccx_hart_q) &&
+                (dut.ccx_wdata_txn_id == tohost_ccx_txn_q) &&
+                (dut.ccx_wdata_source_id == tohost_ccx_source_q)) begin
+                for (tohost_byte = 0; tohost_byte < 8;
+                     tohost_byte = tohost_byte + 1) begin
+                    tohost_ccx_wdata_q[tohost_byte*8 +: 8] <=
+                        dut.ccx_wdata[
+                            (tohost_addr[5:0] + tohost_byte)*8 +: 8];
+                    tohost_ccx_wstrb_q[tohost_byte] <=
+                        dut.ccx_wstrb[tohost_addr[5:0] + tohost_byte];
+                end
+                tohost_ccx_wdata_seen_q <= 1'b1;
+            end
+            if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&
+                tohost_ccx_pending_q && tohost_ccx_wdata_seen_q &&
+                dut.ccx_resp_valid && dut.ccx_resp_ready &&
+                (dut.ccx_resp_hart_id == tohost_ccx_hart_q) &&
+                (dut.ccx_resp_txn_id == tohost_ccx_txn_q) &&
+                (dut.ccx_resp_source_id == tohost_ccx_source_q)) begin
+                for (tohost_byte = 0; tohost_byte < 8;
+                     tohost_byte = tohost_byte + 1)
+                    if (tohost_ccx_wstrb_q[tohost_byte])
+                        tohost_ccx_value_q[tohost_byte*8 +: 8] <=
+                            tohost_ccx_wdata_q[tohost_byte*8 +: 8];
+                tohost_ccx_pending_q <= 1'b0;
+            end
+
             cycle_count <= cycle_count + 1;
             if (trace_retire_valid) begin
                 if (trace_fd != 0)
@@ -149,22 +237,26 @@ module tb_compliance_platform #(
                             trace_retire_rd_write, trace_retire_rd,
                             trace_retire_wdata, trace_retire_exception,
                             trace_retire_cause,
-                            dut.u_core.u_core.u_csrs.priv_mode_q);
+                            observed_priv_mode);
                 retired_count <= retired_count + 1;
             end
 
             if (core_rst_n && tohost_value != 64'h0) begin
                 if (tohost_value == 64'h1) begin
-                    $display("COMPLIANCE PASS test=%s backend=platform cycles=%0d retired=%0d",
-                             test_name, cycle_count, retired_count);
+                    $display("COMPLIANCE PASS test=%s backend=platform-%s cycles=%0d retired=%0d",
+                             test_name,
+                             (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) ?
+                             "3p" : "1p",
+                             cycle_count, retired_count);
                     if (trace_fd != 0)
                         $fclose(trace_fd);
                     $finish;
+                end else begin
+                    $fatal(1,
+                           "COMPLIANCE FAIL test=%s backend=platform tohost=0x%016x cycles=%0d pc=0x%016x instr=0x%08x",
+                           test_name, tohost_value, cycle_count,
+                           dbg_pc, dbg_instr);
                 end
-                $fatal(1,
-                       "COMPLIANCE FAIL test=%s backend=platform tohost=0x%016x cycles=%0d pc=0x%016x instr=0x%08x",
-                       test_name, tohost_value, cycle_count,
-                       dbg_pc, dbg_instr);
             end
             if (cycle_count >= max_cycles)
                 $fatal(1,

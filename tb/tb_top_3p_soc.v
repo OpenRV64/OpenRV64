@@ -377,6 +377,7 @@ module tb_top_3p_soc #(
     integer issue_width_1;
     integer issue_width_2;
     integer issue_width_3;
+    integer issue_width_4;
     integer decode_width_0;
     integer decode_width_1;
     integer decode_width_2;
@@ -777,9 +778,15 @@ module tb_top_3p_soc #(
         for (trace_lsu_index = 0;
              trace_lsu_index < `OPENRV64_LSU_OUTSTANDING;
              trace_lsu_index = trace_lsu_index + 1) begin : g_trace_lsu
-            assign trace_lsu_sent[trace_lsu_index] =
-                dut.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[
-                    trace_lsu_index];
+            if (trace_lsu_index < 4) begin : g_mem0
+                assign trace_lsu_sent[trace_lsu_index] =
+                    dut.u_backend.u_exec.g_3p.u_exec.u_mem0.slot_sent_q[
+                        trace_lsu_index];
+            end else begin : g_mem1
+                assign trace_lsu_sent[trace_lsu_index] =
+                    dut.u_backend.u_exec.g_3p.u_exec.u_mem1.slot_sent_q[
+                        trace_lsu_index - 4];
+            end
         end
     endgenerate
 
@@ -1315,6 +1322,7 @@ module tb_top_3p_soc #(
         issue_width_1 = 0;
         issue_width_2 = 0;
         issue_width_3 = 0;
+        issue_width_4 = 0;
         decode_width_0 = 0;
         decode_width_1 = 0;
         decode_width_2 = 0;
@@ -1414,7 +1422,8 @@ module tb_top_3p_soc #(
             issued_this_cycle =
                 dut.backend_issue_valid[0] +
                 dut.backend_issue_valid[1] +
-                dut.backend_issue_valid[2];
+                dut.backend_issue_valid[2] +
+                dut.backend_issue_valid[3];
             decoded_this_cycle =
                 dut.frontend_decode_fire[0] +
                 dut.frontend_decode_fire[1] +
@@ -1426,6 +1435,7 @@ module tb_top_3p_soc #(
                 1: issue_width_1 = issue_width_1 + 1;
                 2: issue_width_2 = issue_width_2 + 1;
                 3: issue_width_3 = issue_width_3 + 1;
+                4: issue_width_4 = issue_width_4 + 1;
             endcase
             case (decoded_this_cycle)
                 0: decode_width_0 = decode_width_0 + 1;
@@ -1622,6 +1632,8 @@ module tb_top_3p_soc #(
                     `OPENRV64_EXEC_PIPE_EX1:
                         pipe_conflicts_ex1 = pipe_conflicts_ex1 + 1;
                     `OPENRV64_EXEC_PIPE_MEM:
+                        pipe_conflicts_mem = pipe_conflicts_mem + 1;
+                    `OPENRV64_EXEC_PIPE_MEM1:
                         pipe_conflicts_mem = pipe_conflicts_mem + 1;
                 endcase
                 case (trace_conflict_blocked_op)
@@ -1877,9 +1889,10 @@ module tb_top_3p_soc #(
             l1d_prefetch_useful, l1d_prefetch_late,
             l1d_prefetch_dropped, l1d_prefetch_useless);
         $display(
-            "PERF_CCX_L2_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
+            "PERF_CCX_L2_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
             issued, decoded,
             issue_width_0, issue_width_1, issue_width_2, issue_width_3,
+            issue_width_4,
             decode_width_0, decode_width_1, decode_width_2, decode_width_3,
             retire_width_0, retire_width_1, retire_width_2, retire_width_3);
         $display(

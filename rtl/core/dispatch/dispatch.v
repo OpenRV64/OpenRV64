@@ -127,7 +127,7 @@ module openrv64_dispatch #(
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] allocation_slot_3p_i,
     output wire [2:0]                   allocation_valid_3p_o,
     output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_3p_o,
-    input  wire [2:0]                   pipe_ready_3p_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_3p_i,
     input  wire [1:0]                   forward_valid_3p_i,
     input  wire [2*`RV64_REG_ADDR_WIDTH-1:0] forward_rd_addr_3p_i,
     input  wire [2:0]                   completion_forward_valid_3p_i,
@@ -141,10 +141,13 @@ module openrv64_dispatch #(
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] completion_id_3p_i,
     input  wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         completion_payload_3p_i,
-    output wire [2:0]                   pipe_valid_3p_o,
-    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_3p_o,
-    output wire [3*RETIRE_SLOT_WIDTH_3P-1:0] pipe_slot_3p_o,
-    output wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH_3P-1:0]
+                                        pipe_slot_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_3p_o,
     input  wire [2:0]                   retire_valid_3p_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] retire_id_3p_i,
@@ -177,12 +180,16 @@ module openrv64_dispatch #(
             assign allocation_valid_3p_o = 3'b000;
             assign allocation_meta_3p_o =
                 {3*`OPENRV64_RETIRE_META_WIDTH{1'b0}};
-            assign pipe_valid_3p_o = 3'b000;
+            assign pipe_valid_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_id_3p_o =
-                {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
-            assign pipe_slot_3p_o = {3*RETIRE_SLOT_WIDTH_3P{1'b0}};
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign pipe_slot_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign pipe_payload_3p_o =
-                {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
             assign barrier_active_3p_o = 1'b0;
             assign raw_hazard_3p_o = 3'b000;
             assign waw_hazard_3p_o = 3'b000;
@@ -195,10 +202,13 @@ module openrv64_dispatch #(
             wire [2:0] strict_allocation_valid;
             wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0]
                 strict_allocation_meta;
-            wire [2:0] strict_pipe_valid;
-            wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] strict_pipe_id;
-            wire [3*RETIRE_SLOT_WIDTH_3P-1:0] strict_pipe_slot;
-            wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] strict_pipe_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_INSTR_ID_WIDTH-1:0] strict_pipe_id;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH_3P-1:0]
+                strict_pipe_slot;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                 strict_pipe_payload;
             wire strict_barrier;
             wire [2:0] strict_raw_hazard;
@@ -272,10 +282,13 @@ module openrv64_dispatch #(
             wire [2:0] window_allocation_valid;
             wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0]
                 window_allocation_meta;
-            wire [2:0] window_pipe_valid;
-            wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] window_pipe_id;
-            wire [3*RETIRE_SLOT_WIDTH_3P-1:0] window_pipe_slot;
-            wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] window_pipe_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_INSTR_ID_WIDTH-1:0] window_pipe_id;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH_3P-1:0]
+                window_pipe_slot;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                 window_pipe_payload;
             wire window_barrier;
             wire [2:0] window_raw_hazard;

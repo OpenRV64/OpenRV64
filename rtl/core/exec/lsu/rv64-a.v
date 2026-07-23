@@ -175,12 +175,10 @@ module openrv64_exec_lsu_rv64a (
     assign mem_valid_o = valid_i &&
                          ((state_q == STATE_READ) ||
                           (state_q == STATE_WRITE));
-    // The first native atomic contract keeps the existing local AMO ALU but
-    // marks both halves of its read/modify/write sequence.  The coherent home
-    // retains the addressed line lock from the marked read through the marked
-    // write, so no other home request may observe the intermediate value.
-    // LR/SC deliberately do not use this signal: a lock held across arbitrary
-    // instructions is not a reservation and can deadlock.
+    // Mark both halves of the local AMO read/modify/write sequence.  In the
+    // current single-hart implementation this is a local L1D bypass and
+    // serialization marker only; it is deliberately not forwarded as a
+    // CCX/L2 lock.  LR/SC do not use this marker.
     assign mem_lock_o = mem_valid_o && op_is_amo(op_q);
     assign mem_write_o = valid_i && (state_q == STATE_WRITE);
     assign mem_addr_o = addr_q;

@@ -78,6 +78,17 @@ module openrv64_backend_3p #(
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
+    output wire                         mem1_valid_o,
+    input  wire                         mem1_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag_o,
+    output wire                         mem1_lock_o,
+    output wire                         mem1_write_o,
+    output wire [`RV64_XLEN-1:0]        mem1_addr_o,
+    output wire [`RV64_XLEN-1:0]        mem1_wdata_o,
+    output wire [7:0]                   mem1_wstrb_o,
+    output wire                         mem1_access_o,
+    output wire [`RV64_XLEN-1:0]        mem1_effective_addr_o,
+    output wire [2:0]                   mem1_size_o,
 
     input  wire                         irq_pending_i,
     input  wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause_i,
@@ -117,7 +128,7 @@ module openrv64_backend_3p #(
     output wire [`RV64_REG_ADDR_WIDTH-1:0] retire_rd_o,
     output wire [`RV64_XLEN-1:0]        retire_wdata_o,
 
-    output wire [2:0]                   issue_valid_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_o,
     output wire [2:0]                   complete_valid_o,
     output wire [31:0]                  write_busy_o,
     output wire                         barrier_active_o,
@@ -145,12 +156,14 @@ module openrv64_backend_3p #(
     assign decode_allocation_id_o = allocation_id;
     assign decode_allocation_slot_o = allocation_slot;
 
-    wire [2:0] pipe_ready;
-    wire [2:0] pipe_valid;
-    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id;
-    wire [3*SLOT_WIDTH-1:0] pipe_slot;
-    wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] pipe_payload;
-    wire [2:0] pipe_unsupported;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0] pipe_slot;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] pipe_payload;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_unsupported;
 
     wire [2:0] complete_valid;
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id;
@@ -1126,7 +1139,14 @@ module openrv64_backend_3p #(
         .mem_wdata_o(mem_wdata_o), .mem_wstrb_o(mem_wstrb_o),
         .mem_access_o(mem_access_o),
         .mem_effective_addr_o(mem_effective_addr_o),
-        .mem_size_o(mem_size_o), .mem_rdata_i(mem_rdata_i)
+        .mem_size_o(mem_size_o), .mem_rdata_i(mem_rdata_i),
+        .mem1_valid_o(mem1_valid_o), .mem1_ready_i(mem1_ready_i),
+        .mem1_tag_o(mem1_tag_o), .mem1_lock_o(mem1_lock_o),
+        .mem1_write_o(mem1_write_o), .mem1_addr_o(mem1_addr_o),
+        .mem1_wdata_o(mem1_wdata_o), .mem1_wstrb_o(mem1_wstrb_o),
+        .mem1_access_o(mem1_access_o),
+        .mem1_effective_addr_o(mem1_effective_addr_o),
+        .mem1_size_o(mem1_size_o)
     );
 
     openrv64_retire_queue_3p #(

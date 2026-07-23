@@ -33,6 +33,7 @@ module tb_l1d_prefetch;
     reg invalidate_valid;
     reg invalidate_all;
     reg [63:0] invalidate_addr;
+    reg speculation_barrier;
 
     wire ccx_req_valid;
     wire ccx_req_ready;
@@ -102,6 +103,9 @@ module tb_l1d_prefetch;
     integer useless_prefetches;
     integer out_of_order_responses;
     integer max_prefetch_outstanding;
+    integer prefetch_wait_cycles;
+    integer demand_before_barrier;
+    integer useful_before_barrier;
     reg [63:0] last_prefetch_addr;
     reg [63:0] prefetch_command_addr [0:63];
     integer cycles;
@@ -213,6 +217,7 @@ module tb_l1d_prefetch;
         .prefetch_dropped_o(prefetch_dropped),
         .prefetch_useless_o(prefetch_useless),
         .prefetch_depth_o(prefetch_depth),
+        .speculation_barrier_i(speculation_barrier),
         .invalidate_valid_i(invalidate_valid),
         .invalidate_ready_o(invalidate_ready),
         .invalidate_all_i(invalidate_all),
@@ -346,10 +351,14 @@ module tb_l1d_prefetch;
                     prefetch_outstanding_count;
 
             if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_op != `OPENRV64_CCX_OP_READ)
-                    $fatal(1, "unexpected CCX write in prefetch test");
-                if (ccx_req_size != 3'd6 || ccx_req_addr[5:0] != 0)
-                    $fatal(1, "CCX read is not one aligned cacheline");
+                if (ccx_req_op != `OPENRV64_CCX_OP_READ &&
+                    ccx_req_op != `OPENRV64_CCX_OP_WRITE)
+                    $fatal(1, "unexpected CCX operation in prefetch test");
+                if (dut.request_prefetch_q &&
+                    (ccx_req_size != 3'd6 || ccx_req_addr[5:0] != 0))
+                    $fatal(1, "CCX prefetch is not one aligned cacheline");
+                if (ccx_req_lock)
+                    $fatal(1, "L1D leaked its local atomic marker to CCX");
                 if (ccx_req_source_id != `OPENRV64_CCX_SOURCE_DCACHE)
                     $fatal(1, "CCX read has wrong source");
                 total_commands <= total_commands + 1;
@@ -432,12 +441,109 @@ module tb_l1d_prefetch;
             invalidate_valid = 1'b0;
             invalidate_all = 1'b0;
             invalidate_addr = 64'd0;
+            speculation_barrier = 1'b0;
             response_latency_cycles = 4;
             response_delay_mode = 0;
             repeat (4) @(posedge clk);
             @(negedge clk);
             rst_n = 1'b1;
             test_epoch = test_epoch + 1;
+        end
+    endtask
+
+    task automatic issue_locked_store;
+        input [63:0] address;
+        integer wait_cycles;
+        begin
+            @(negedge clk);
+            resp_ready = 1'b0;
+            req_valid = 1'b1;
+            req_lock = 1'b1;
+            req_write = 1'b1;
+            req_cacheable = 1'b1;
+            req_addr = address;
+            req_wdata = 64'h0123_4567_89ab_cdef;
+            req_wstrb = 8'hff;
+            req_tag = test_epoch[`OPENRV64_LSU_TAG_WIDTH-1:0];
+            wait_cycles = 0;
+            #1;
+            while (!req_ready && wait_cycles < 400) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!req_ready)
+                $fatal(1, "atomic store acceptance timed out addr=%016x",
+                       address);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            req_lock = 1'b0;
+            req_write = 1'b0;
+            req_cacheable = 1'b0;
+            req_addr = 64'd0;
+            req_wdata = 64'd0;
+            req_wstrb = 8'd0;
+            wait_cycles = 0;
+            while (!resp_valid && wait_cycles < 400) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            #1;
+            if (!resp_valid || req_error)
+                $fatal(1, "atomic store response failed addr=%016x",
+                       address);
+            resp_ready = 1'b1;
+            @(posedge clk);
+        end
+    endtask
+
+    task automatic issue_locked_load;
+        input [63:0] address;
+        integer wait_cycles;
+        begin
+            @(negedge clk);
+            resp_ready = 1'b0;
+            req_valid = 1'b1;
+            req_lock = 1'b1;
+            req_write = 1'b0;
+            req_cacheable = 1'b1;
+            req_addr = address;
+            req_tag = test_epoch[`OPENRV64_LSU_TAG_WIDTH-1:0];
+            wait_cycles = 0;
+            #1;
+            while (!req_ready && wait_cycles < 400) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!req_ready)
+                $fatal(1, "atomic load acceptance timed out addr=%016x",
+                       address);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            req_lock = 1'b0;
+            req_cacheable = 1'b0;
+            req_addr = 64'd0;
+            wait_cycles = 0;
+            while (!resp_valid && wait_cycles < 400) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            #1;
+            if (!resp_valid)
+                $fatal(1,
+                    "atomic load response timed out addr=%016x backend=%0d l1mem=%0d ccxresp=%0d pending=%0d commands=%0d demand=%0d prefetch=%0d tags=%0d l1resp=%0d active=%0d invalidated=%0d",
+                    address, dut.backend_state_q, dut.l1_mem_valid,
+                    ccx_resp_valid, response_pending_r, total_commands,
+                    demand_commands, prefetch_commands,
+                    dut.response_tag_count_q, dut.l1_resp_valid,
+                    dut.atomic_active_q, dut.locked_line_invalidated_q);
+            if (req_error || req_rdata !== memory_word(address))
+                $fatal(1,
+                    "atomic load data=%016x expected=%016x error=%0d",
+                    req_rdata, memory_word(address), req_error);
+            resp_ready = 1'b1;
+            @(posedge clk);
         end
     endtask
 
@@ -593,6 +699,47 @@ module tb_l1d_prefetch;
         if (demand_commands != 2 || useful_prefetches != 0)
             $fatal(1, "invalidation did not discard prefetched line");
 
+        // A translation/speculation barrier cuts the read epoch. An
+        // architectural read-miss buffer which already crossed CCX must
+        // consume its old response without completing L1 and then reissue.
+        reset_dut();
+        response_latency_cycles = 24;
+        fork
+            issue_load(MEMORY_BASE + 64'h2400);
+            begin
+                while (demand_commands < 1)
+                    @(negedge clk);
+                repeat (2) @(negedge clk);
+                speculation_barrier = 1'b1;
+                @(posedge clk);
+                @(negedge clk);
+                speculation_barrier = 1'b0;
+            end
+        join
+        if ((demand_commands != 2) ||
+            (dut.speculation_epoch_q != 1))
+            $fatal(1,
+                "barrier did not reissue old RMB commands=%0d epoch=%0d",
+                demand_commands, dut.speculation_epoch_q);
+
+        // An old speculative MSHR still consumes its response, but the
+        // response cannot populate a fill buffer or satisfy a later demand.
+        reset_dut();
+        response_latency_cycles = 32;
+        issue_load(MEMORY_BASE + 64'h2800);
+        while (prefetch_commands < 1)
+            @(negedge clk);
+        speculation_barrier = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        speculation_barrier = 1'b0;
+        wait_for_prefetch_quiescence();
+        issue_load(MEMORY_BASE + 64'h2840);
+        if ((demand_commands != 2) || (useful_prefetches != 0))
+            $fatal(1,
+                "old-epoch prefetch survived barrier d=%0d useful=%0d",
+                demand_commands, useful_prefetches);
+
         // The address aperture prevents next-line speculation into MMIO or an
         // adjacent physical region.
         reset_dut();
@@ -600,6 +747,46 @@ module tb_l1d_prefetch;
         repeat (40) @(posedge clk);
         if (prefetch_commands != 0)
             $fatal(1, "prefetch escaped configured cacheable aperture");
+
+        // AMO admission is the same epoch barrier as a translation
+        // shootdown. It must discard unrelated speculative reads which were
+        // already accepted by CCX before the marked read arrived.
+        reset_dut();
+        response_latency_cycles = 32;
+        issue_load(MEMORY_BASE + 64'h7000);
+        while (prefetch_commands < 1)
+            @(negedge clk);
+        issue_locked_load(MEMORY_BASE + 64'h6008);
+        issue_locked_store(MEMORY_BASE + 64'h6008);
+        wait_for_prefetch_quiescence();
+        demand_before_barrier = demand_commands;
+        useful_before_barrier = useful_prefetches;
+        issue_load(MEMORY_BASE + 64'h7040);
+        if ((demand_commands != demand_before_barrier + 1) ||
+            (useful_prefetches != useful_before_barrier))
+            $fatal(1,
+                "AMO barrier retained old speculative fill d=%0d/%0d useful=%0d/%0d",
+                demand_commands, demand_before_barrier,
+                useful_prefetches, useful_before_barrier);
+
+        // A synchronization access pauses prefetch issue through its complete
+        // read/write interval and marks its line as atomic-hot.  A later
+        // ordinary stream must not train or speculate into that line.
+        reset_dut();
+        issue_locked_load(MEMORY_BASE + 64'h6008);
+        repeat (40) @(posedge clk);
+        if (prefetch_commands != 0 || !dut.atomic_active_q ||
+            (dut.atomic_active_line_q != MEMORY_BASE + 64'h6000))
+            $fatal(1, "prefetch did not remain paused between AMO phases");
+        if (!dut.atomic_hot_match(MEMORY_BASE + 64'h6000))
+            $fatal(1, "atomic line was not entered in hot-line metadata");
+        issue_locked_store(MEMORY_BASE + 64'h6008);
+        if (dut.atomic_active_q)
+            $fatal(1, "prefetch remained paused after AMO write completion");
+        issue_load(MEMORY_BASE + 64'h5fc0);
+        repeat (40) @(posedge clk);
+        if (prefetch_commands != 0)
+            $fatal(1, "prefetch speculated into an atomic-hot line");
 
         // Alternate two disjoint +4-line read streams.  A single global
         // history observes large cross-array deltas here and cannot train
@@ -659,16 +846,28 @@ module tb_l1d_prefetch;
                 prefetch_depth, late_prefetches);
         if (max_prefetch_outstanding < 2)
             $fatal(1, "prefetch CCX path never had multiple requests live");
+        prefetch_wait_cycles = 0;
+        while ((prefetch_commands < 4) &&
+               (prefetch_wait_cycles < 100)) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+        end
         if (prefetch_commands < 4 ||
             prefetch_command_addr[0] != MEMORY_BASE + 64'h3040 ||
             prefetch_command_addr[1] != MEMORY_BASE + 64'h3080 ||
             prefetch_command_addr[2] != MEMORY_BASE + 64'h30c0 ||
             prefetch_command_addr[3] != MEMORY_BASE + 64'h3100)
             $fatal(1,
-                "adaptive window skipped/reordered a near line p=%0d %x %x %x %x",
+                "adaptive window skipped/reordered a near line p=%0d %x %x %x %x depth=%0d active=%0d candidates=%b%b%b%b outstanding=%0d backend=%0d",
                 prefetch_commands, prefetch_command_addr[0],
                 prefetch_command_addr[1], prefetch_command_addr[2],
-                prefetch_command_addr[3]);
+                prefetch_command_addr[3], prefetch_depth,
+                dut.atomic_active_q,
+                dut.prefetch_candidate_valid_q[3],
+                dut.prefetch_candidate_valid_q[2],
+                dut.prefetch_candidate_valid_q[1],
+                dut.prefetch_candidate_valid_q[0],
+                prefetch_outstanding_count, dut.backend_state_q);
         wait_for_prefetch_quiescence();
         $display("adaptive stats p=%0d useful=%0d late=%0d useless=%0d depth=%0d ooo=%0d",
                  prefetch_commands, useful_prefetches, late_prefetches,

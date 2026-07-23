@@ -426,15 +426,182 @@ module openrv64_fetch_3w #(
     wire following_line_tag_hit = line_valid_q[following_slot] &&
         (line_addr_q[following_slot][`RV64_XLEN-1:LINE_BYTE_BITS] ==
          following_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire consume_line_hit = consume_line_tag_hit &&
-        line_sector_valid_q[consume_slot][
-            consume_pc_q[ALT_SECTOR_BYTE_BITS]];
-    wire following_line_hit = following_line_tag_hit &&
-        line_sector_valid_q[following_slot][0];
-    wire consume_line_full = consume_line_tag_hit &&
-                             (&line_sector_valid_q[consume_slot]);
-    wire following_line_full = following_line_tag_hit &&
-                               (&line_sector_valid_q[following_slot]);
+
+    // The live slots and alternate-path storage are one logical fetch buffer.
+    // Keep the arrays physically separate, then generate a per-sector selector
+    // from their tags.  Those selector bits are the mux controls feeding
+    // decode.  A redirect changes consume_pc_q and therefore the selected path;
+    // it does not copy alternate data into a live slot.
+    //
+    // Bits 257:256 are the alternate-resident sector mask and bits 255:0 are
+    // the alternate candidate block.
+    function automatic [257:0] overlay_alt_preview;
+        input [257:0] current;
+        input source_valid;
+        input [`RV64_XLEN-1:0] source_addr;
+        input [ALT_PREVIEW_BITS-1:0] source_data;
+        input [`RV64_XLEN-1:0] target_addr;
+        reg [1:0] sector_valid;
+        reg [`OPENRV64_AXI_DATA_WIDTH-1:0] block_data;
+        reg [`OPENRV64_AXI_DATA_WIDTH-1:0] selected_source_block;
+        reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] widened_source_data;
+        begin
+            sector_valid = current[257:256];
+            block_data = current[255:0];
+            widened_source_data =
+                {{(`OPENRV64_CCX_LINE_DATA_WIDTH-ALT_PREVIEW_BITS){1'b0}},
+                 source_data};
+            selected_source_block =
+                select_cache_line_block(widened_source_data, target_addr);
+
+            if (source_valid) begin
+                if ((ENABLE_ALT_LOOKASIDE == 3) &&
+                    (source_addr[`RV64_XLEN-1:LINE_BYTE_BITS] ==
+                     target_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                    if (!source_addr[ALT_SECTOR_BYTE_BITS] &&
+                        !sector_valid[0]) begin
+                        block_data[127:0] = source_data[127:0];
+                        sector_valid[0] = 1'b1;
+                    end
+                    if (source_addr[ALT_SECTOR_BYTE_BITS] &&
+                        !sector_valid[1]) begin
+                        block_data[255:128] = source_data[127:0];
+                        sector_valid[1] = 1'b1;
+                    end
+                end else if ((ENABLE_ALT_LOOKASIDE == 4) &&
+                             (source_addr[
+                                `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                              target_addr[
+                                `RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                    if (!sector_valid[0]) begin
+                        block_data[127:0] = source_data[127:0];
+                        sector_valid[0] = 1'b1;
+                    end
+                    if (!sector_valid[1]) begin
+                        block_data[255:128] = source_data[255:128];
+                        sector_valid[1] = 1'b1;
+                    end
+                end else if ((ENABLE_ALT_LOOKASIDE == 5) &&
+                             (source_addr[
+                                `RV64_XLEN-1:CACHE_LINE_BYTE_BITS] ==
+                              target_addr[
+                                `RV64_XLEN-1:CACHE_LINE_BYTE_BITS])) begin
+                    if (!sector_valid[0]) begin
+                        block_data[127:0] =
+                            selected_source_block[127:0];
+                        sector_valid[0] = 1'b1;
+                    end
+                    if (!sector_valid[1]) begin
+                        block_data[255:128] =
+                            selected_source_block[255:128];
+                        sector_valid[1] = 1'b1;
+                    end
+                end
+            end
+            overlay_alt_preview = {sector_valid, block_data};
+        end
+    endfunction
+
+    reg [257:0] fetch_alt_candidate_r [0:1];
+    reg [`RV64_XLEN-1:0] fetch_select_addr_r [0:1];
+    integer fetch_select_block;
+    integer fetch_select_context;
+    integer fetch_select_stash;
+    always @* begin
+        fetch_select_addr_r[0] = consume_line_addr;
+        fetch_select_addr_r[1] = following_line_addr;
+
+        for (fetch_select_block = 0; fetch_select_block < 2;
+             fetch_select_block = fetch_select_block + 1) begin
+            fetch_alt_candidate_r[fetch_select_block] = 258'd0;
+
+            if ((ENABLE_ALT_LOOKASIDE != 0) &&
+                (ENABLE_ALT_LOOKASIDE < 3)) begin
+                for (fetch_select_stash = 0;
+                     fetch_select_stash < ALT_LOOKASIDE_LINES;
+                     fetch_select_stash = fetch_select_stash + 1) begin
+                    if (alt_valid_q[fetch_select_stash] &&
+                        (alt_addr_q[fetch_select_stash][
+                            `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                         fetch_select_addr_r[fetch_select_block][
+                            `RV64_XLEN-1:LINE_BYTE_BITS]) &&
+                        (fetch_alt_candidate_r[
+                            fetch_select_block][257:256] !=
+                         2'b11)) begin
+                        fetch_alt_candidate_r[
+                            fetch_select_block][257:256] = 2'b11;
+                        fetch_alt_candidate_r[
+                            fetch_select_block][255:0] =
+                            alt_data_q[fetch_select_stash];
+                    end
+                end
+            end else if (ENABLE_ALT_LOOKASIDE >= 3) begin
+                for (fetch_select_context = 0;
+                     fetch_select_context < ALT_SECTOR_CONTEXTS;
+                     fetch_select_context = fetch_select_context + 1) begin
+                    if (alt_sector_context_valid_q[
+                            fetch_select_context]) begin
+                        fetch_alt_candidate_r[fetch_select_block] =
+                            overlay_alt_preview(
+                                fetch_alt_candidate_r[fetch_select_block],
+                                alt_sector_predicted_valid_q[
+                                    fetch_select_context],
+                                alt_sector_predicted_addr_q[
+                                    fetch_select_context],
+                                alt_sector_predicted_data_q[
+                                    fetch_select_context],
+                                fetch_select_addr_r[fetch_select_block]);
+                        fetch_alt_candidate_r[fetch_select_block] =
+                            overlay_alt_preview(
+                                fetch_alt_candidate_r[fetch_select_block],
+                                alt_sector_unpredicted_valid_q[
+                                    fetch_select_context],
+                                alt_sector_unpredicted_addr_q[
+                                    fetch_select_context],
+                                alt_sector_unpredicted_data_q[
+                                    fetch_select_context],
+                                fetch_select_addr_r[fetch_select_block]);
+                    end
+                end
+            end
+        end
+    end
+
+    wire [1:0] consume_live_sector_valid = consume_line_tag_hit ?
+        line_sector_valid_q[consume_slot] : 2'b00;
+    wire [1:0] following_live_sector_valid = following_line_tag_hit ?
+        line_sector_valid_q[following_slot] : 2'b00;
+    wire [1:0] consume_alt_sector_valid =
+        fetch_alt_candidate_r[0][257:256];
+    wire [1:0] following_alt_sector_valid =
+        fetch_alt_candidate_r[1][257:256];
+    wire [1:0] consume_fetch_select =
+        (~consume_live_sector_valid) & consume_alt_sector_valid;
+    wire [1:0] following_fetch_select =
+        (~following_live_sector_valid) & following_alt_sector_valid;
+    wire [`OPENRV64_AXI_DATA_WIDTH-1:0] consume_line_data =
+        {consume_fetch_select[1] ?
+            fetch_alt_candidate_r[0][255:128] :
+            line_data_q[consume_slot][255:128],
+         consume_fetch_select[0] ?
+            fetch_alt_candidate_r[0][127:0] :
+            line_data_q[consume_slot][127:0]};
+    wire [`OPENRV64_AXI_DATA_WIDTH-1:0] following_line_data =
+        {following_fetch_select[1] ?
+            fetch_alt_candidate_r[1][255:128] :
+            line_data_q[following_slot][255:128],
+         following_fetch_select[0] ?
+            fetch_alt_candidate_r[1][127:0] :
+            line_data_q[following_slot][127:0]};
+    wire [1:0] consume_sector_valid =
+        consume_live_sector_valid | consume_alt_sector_valid;
+    wire [1:0] following_sector_valid =
+        following_live_sector_valid | following_alt_sector_valid;
+    wire consume_line_hit =
+        consume_sector_valid[consume_pc_q[ALT_SECTOR_BYTE_BITS]];
+    wire following_line_hit = following_sector_valid[0];
+    wire consume_line_full = &consume_sector_valid;
+    wire following_line_full = &following_sector_valid;
 
     // Demand the current line first.  Once it is resident, request exactly
     // the following line and stop there until consumption crosses the line.
@@ -454,8 +621,24 @@ module openrv64_fetch_3w #(
         !pending_valid_q && !request_line_hit &&
         (pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS] ==
          request_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
+    wire incoming_pair_line_hit =
+        ((ENABLE_ALT_LOOKASIDE == 4) && pair512_resp_valid_i &&
+         ((pair512_resp_predicted_addr_i[
+            `RV64_XLEN-1:LINE_BYTE_BITS] ==
+           request_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]) ||
+          (pair512_resp_unpredicted_addr_i[
+            `RV64_XLEN-1:LINE_BYTE_BITS] ==
+           request_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]))) ||
+        ((ENABLE_ALT_LOOKASIDE == 5) && pair1024_resp_valid_i &&
+         ((pair1024_resp_predicted_addr_i[
+            `RV64_XLEN-1:CACHE_LINE_BYTE_BITS] ==
+           request_line_addr[`RV64_XLEN-1:CACHE_LINE_BYTE_BITS]) ||
+          (pair1024_resp_unpredicted_addr_i[
+            `RV64_XLEN-1:CACHE_LINE_BYTE_BITS] ==
+           request_line_addr[`RV64_XLEN-1:CACHE_LINE_BYTE_BITS])));
     wire demand_request_needed = !pending_valid_q &&
-                                 !request_line_hit;
+                                 !request_line_hit &&
+                                 !incoming_pair_line_hit;
     wire pair_request_select = pair_request_valid &&
         ((ENABLE_ALT_LOOKASIDE < 3) || !demand_request_needed ||
          pair_request_is_demand);
@@ -492,10 +675,6 @@ module openrv64_fetch_3w #(
     reg [2:0] lane_page_fault_r;
     reg [`RV64_XLEN-1:0] lane_pc_r [0:2];
     integer lane_index;
-    wire [`OPENRV64_AXI_DATA_WIDTH-1:0] consume_line_data =
-        line_data_q[consume_slot];
-    wire [`OPENRV64_AXI_DATA_WIDTH-1:0] following_line_data =
-        line_data_q[following_slot];
     always @* begin
         lane_found_r = 3'b000;
         lane_instr_r = {3*`RV64_INSTR_WIDTH{1'b0}};
@@ -506,40 +685,50 @@ module openrv64_fetch_3w #(
             lane_pc_r[lane_index] = consume_pc_q + (lane_index * 4);
             if ((lane_pc_r[lane_index][`RV64_XLEN-1:LINE_BYTE_BITS] ==
                  consume_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]) &&
-                consume_line_tag_hit &&
-                line_sector_valid_q[consume_slot][
+                consume_sector_valid[
                     lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]]) begin
                 lane_found_r[lane_index] = 1'b1;
                 lane_instr_r[lane_index*`RV64_INSTR_WIDTH +:
                              `RV64_INSTR_WIDTH] =
-                    (line_access_fault_q[consume_slot] ||
-                     line_page_fault_q[consume_slot]) ?
+                    (!consume_fetch_select[
+                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
+                     (line_access_fault_q[consume_slot] ||
+                      line_page_fault_q[consume_slot])) ?
                     `RV64_INSTR_NOP : consume_line_data[
                         lane_pc_r[lane_index][LINE_BYTE_BITS-1:2] *
                         `RV64_INSTR_WIDTH +: `RV64_INSTR_WIDTH];
                 lane_access_fault_r[lane_index] =
+                    !consume_fetch_select[
+                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                     line_access_fault_q[consume_slot];
                 lane_page_fault_r[lane_index] =
+                    !consume_fetch_select[
+                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                     line_page_fault_q[consume_slot];
             end else if ((lane_pc_r[lane_index][
                            `RV64_XLEN-1:LINE_BYTE_BITS] ==
                           following_line_addr[
                            `RV64_XLEN-1:LINE_BYTE_BITS]) &&
-                         following_line_tag_hit &&
-                         line_sector_valid_q[following_slot][
+                         following_sector_valid[
                             lane_pc_r[lane_index][
                                 ALT_SECTOR_BYTE_BITS]]) begin
                 lane_found_r[lane_index] = 1'b1;
                 lane_instr_r[lane_index*`RV64_INSTR_WIDTH +:
                              `RV64_INSTR_WIDTH] =
-                    (line_access_fault_q[following_slot] ||
-                     line_page_fault_q[following_slot]) ?
+                    (!following_fetch_select[
+                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
+                     (line_access_fault_q[following_slot] ||
+                      line_page_fault_q[following_slot])) ?
                     `RV64_INSTR_NOP : following_line_data[
                         lane_pc_r[lane_index][LINE_BYTE_BITS-1:2] *
                         `RV64_INSTR_WIDTH +: `RV64_INSTR_WIDTH];
                 lane_access_fault_r[lane_index] =
+                    !following_fetch_select[
+                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                     line_access_fault_q[following_slot];
                 lane_page_fault_r[lane_index] =
+                    !following_fetch_select[
+                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                     line_page_fault_q[following_slot];
             end
         end
@@ -625,11 +814,6 @@ module openrv64_fetch_3w #(
          resp_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS]);
 
     reg alt_restart_hit_r;
-    reg [`OPENRV64_AXI_DATA_WIDTH-1:0] alt_restart_data_r;
-    reg alt_restart_cache_line_valid_r;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        alt_restart_cache_line_data_r;
-    reg [1:0] alt_restart_sector_mask_r;
     reg alt_fill_match_r;
     reg alt_fill_slot_r;
     reg alt_free_found_r;
@@ -648,11 +832,6 @@ module openrv64_fetch_3w #(
         end
 
         alt_restart_hit_r = 1'b0;
-        alt_restart_data_r = {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
-        alt_restart_cache_line_valid_r = 1'b0;
-        alt_restart_cache_line_data_r =
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-        alt_restart_sector_mask_r = 2'b00;
         if ((ENABLE_ALT_LOOKASIDE != 0) && alt_restart_eligible_i &&
             !invalidate_i && !flush_i) begin
             if (ENABLE_ALT_LOOKASIDE >= 3) begin
@@ -664,66 +843,18 @@ module openrv64_fetch_3w #(
                         (alt_sector_predicted_addr_q[alt_index][
                             `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS] ==
                          restart_pc_i[
-                            `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS])) begin
+                            `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS]))
                         alt_restart_hit_r = 1'b1;
-                        if (ENABLE_ALT_LOOKASIDE == 5) begin
-                            alt_restart_sector_mask_r = 2'b11;
-                            alt_restart_cache_line_valid_r = 1'b1;
-                            alt_restart_cache_line_data_r =
-                                alt_sector_predicted_data_q[alt_index];
-                            alt_restart_data_r = select_cache_line_block(
-                                alt_sector_predicted_data_q[alt_index],
-                                restart_pc_i);
-                        end else if (ENABLE_ALT_LOOKASIDE == 4) begin
-                            alt_restart_sector_mask_r = 2'b11;
-                            alt_restart_data_r =
-                                alt_sector_predicted_data_q[alt_index];
-                        end else begin
-                            alt_restart_sector_mask_r =
-                                restart_pc_i[ALT_SECTOR_BYTE_BITS] ?
-                                2'b10 : 2'b01;
-                            if (restart_pc_i[ALT_SECTOR_BYTE_BITS])
-                                alt_restart_data_r[255:128] =
-                                    alt_sector_predicted_data_q[alt_index];
-                            else
-                                alt_restart_data_r[127:0] =
-                                    alt_sector_predicted_data_q[alt_index];
-                        end
-                    end
                     if (alt_sector_context_valid_q[alt_index] &&
                         alt_sector_unpredicted_valid_q[alt_index] &&
                         (alt_sector_unpredicted_addr_q[alt_index][
                             `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS] ==
                          restart_pc_i[
-                            `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS])) begin
+                            `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS]))
                         alt_restart_hit_r = 1'b1;
-                        if (ENABLE_ALT_LOOKASIDE == 5) begin
-                            alt_restart_sector_mask_r = 2'b11;
-                            alt_restart_cache_line_valid_r = 1'b1;
-                            alt_restart_cache_line_data_r =
-                                alt_sector_unpredicted_data_q[alt_index];
-                            alt_restart_data_r = select_cache_line_block(
-                                alt_sector_unpredicted_data_q[alt_index],
-                                restart_pc_i);
-                        end else if (ENABLE_ALT_LOOKASIDE == 4) begin
-                            alt_restart_sector_mask_r = 2'b11;
-                            alt_restart_data_r =
-                                alt_sector_unpredicted_data_q[alt_index];
-                        end else begin
-                            alt_restart_sector_mask_r =
-                                restart_pc_i[ALT_SECTOR_BYTE_BITS] ?
-                                2'b10 : 2'b01;
-                            if (restart_pc_i[ALT_SECTOR_BYTE_BITS])
-                                alt_restart_data_r[255:128] =
-                                    alt_sector_unpredicted_data_q[alt_index];
-                            else
-                                alt_restart_data_r[127:0] =
-                                    alt_sector_unpredicted_data_q[alt_index];
-                        end
-                    end
                 end
-                // A tracked sector arriving on the redirect edge bypasses
-                // the preview registers.
+                // A tracked sector arriving on the redirect edge is selected
+                // from alternate storage after this edge.
                 if ((ENABLE_ALT_LOOKASIDE != 5) &&
                     resp_valid_i && !resp_access_fault_i &&
                     !resp_page_fault_i &&
@@ -740,23 +871,8 @@ module openrv64_fetch_3w #(
                              (alt_sector_unpredicted_addr_q[alt_index][
                                 `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS] ==
                               restart_pc_i[
-                                `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS]))) begin
+                                `RV64_XLEN-1:ALT_PREVIEW_BYTE_BITS])))
                             alt_restart_hit_r = 1'b1;
-                            if (ENABLE_ALT_LOOKASIDE == 4) begin
-                                alt_restart_sector_mask_r = 2'b11;
-                                alt_restart_data_r = resp_data_i;
-                            end else begin
-                                alt_restart_sector_mask_r =
-                                    restart_pc_i[ALT_SECTOR_BYTE_BITS] ?
-                                    2'b10 : 2'b01;
-                                if (restart_pc_i[ALT_SECTOR_BYTE_BITS])
-                                    alt_restart_data_r[255:128] =
-                                        resp_data_i[255:128];
-                                else
-                                    alt_restart_data_r[127:0] =
-                                        resp_data_i[127:0];
-                            end
-                        end
                     end
                 end
                 if ((ENABLE_ALT_LOOKASIDE == 4) &&
@@ -764,53 +880,29 @@ module openrv64_fetch_3w #(
                     (pair512_resp_predicted_addr_i[
                         `RV64_XLEN-1:LINE_BYTE_BITS] ==
                      restart_pc_i[
-                        `RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                        `RV64_XLEN-1:LINE_BYTE_BITS]))
                     alt_restart_hit_r = 1'b1;
-                    alt_restart_sector_mask_r = 2'b11;
-                    alt_restart_data_r =
-                        pair512_resp_predicted_data_i;
-                end
                 if ((ENABLE_ALT_LOOKASIDE == 4) &&
                     pair512_resp_valid_i &&
                     (pair512_resp_unpredicted_addr_i[
                         `RV64_XLEN-1:LINE_BYTE_BITS] ==
                      restart_pc_i[
-                        `RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                        `RV64_XLEN-1:LINE_BYTE_BITS]))
                     alt_restart_hit_r = 1'b1;
-                    alt_restart_sector_mask_r = 2'b11;
-                    alt_restart_data_r =
-                        pair512_resp_unpredicted_data_i;
-                end
                 if ((ENABLE_ALT_LOOKASIDE == 5) &&
                     pair1024_resp_valid_i &&
                     (pair1024_resp_predicted_addr_i[
                         `RV64_XLEN-1:CACHE_LINE_BYTE_BITS] ==
                      restart_pc_i[
-                        `RV64_XLEN-1:CACHE_LINE_BYTE_BITS])) begin
+                        `RV64_XLEN-1:CACHE_LINE_BYTE_BITS]))
                     alt_restart_hit_r = 1'b1;
-                    alt_restart_sector_mask_r = 2'b11;
-                    alt_restart_cache_line_valid_r = 1'b1;
-                    alt_restart_cache_line_data_r =
-                        pair1024_resp_predicted_data_i;
-                    alt_restart_data_r = select_cache_line_block(
-                        pair1024_resp_predicted_data_i,
-                        restart_pc_i);
-                end
                 if ((ENABLE_ALT_LOOKASIDE == 5) &&
                     pair1024_resp_valid_i &&
                     (pair1024_resp_unpredicted_addr_i[
                         `RV64_XLEN-1:CACHE_LINE_BYTE_BITS] ==
                      restart_pc_i[
-                        `RV64_XLEN-1:CACHE_LINE_BYTE_BITS])) begin
+                        `RV64_XLEN-1:CACHE_LINE_BYTE_BITS]))
                     alt_restart_hit_r = 1'b1;
-                    alt_restart_sector_mask_r = 2'b11;
-                    alt_restart_cache_line_valid_r = 1'b1;
-                    alt_restart_cache_line_data_r =
-                        pair1024_resp_unpredicted_data_i;
-                    alt_restart_data_r = select_cache_line_block(
-                        pair1024_resp_unpredicted_data_i,
-                        restart_pc_i);
-                end
             end else begin
                 for (alt_index = 0; alt_index < ALT_LOOKASIDE_LINES;
                     alt_index = alt_index + 1) begin
@@ -818,23 +910,17 @@ module openrv64_fetch_3w #(
                         (alt_addr_q[alt_index][`RV64_XLEN-1:
                                                     LINE_BYTE_BITS] ==
                          restart_pc_i[
-                            `RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                            `RV64_XLEN-1:LINE_BYTE_BITS]))
                         alt_restart_hit_r = 1'b1;
-                        alt_restart_data_r = alt_data_q[alt_index];
-                        alt_restart_sector_mask_r = 2'b11;
-                    end
                 end
                 // A qualified standard response coincident with the redirect
-                // need not wait one extra cycle to enter the two-entry store.
+                // enters alternate storage on the redirect edge.
                 if (resp_valid_i && resp_stash_i &&
                     !resp_access_fault_i && !resp_page_fault_i &&
                     !alt_prefetch_aged_r &&
                     (resp_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-                     restart_pc_i[`RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                     restart_pc_i[`RV64_XLEN-1:LINE_BYTE_BITS]))
                     alt_restart_hit_r = 1'b1;
-                    alt_restart_data_r = resp_data_i;
-                    alt_restart_sector_mask_r = 2'b11;
-                end
             end
         end
 
@@ -1415,53 +1501,10 @@ module openrv64_fetch_3w #(
             active_q <= 1'b1;
             consume_pc_q <= restart_pc_i;
             pending_valid_q <= 1'b0;
-            if (alt_restart_hit_r) begin
-                for (reset_index = 0; reset_index < LINE_DEPTH;
-                     reset_index = reset_index + 1) begin
-                    line_valid_q[reset_index] <= 1'b0;
-                    line_sector_valid_q[reset_index] <= 2'b00;
-                end
-                if ((ENABLE_ALT_LOOKASIDE == 5) &&
-                    alt_restart_cache_line_valid_r) begin
-                    line_valid_q[0] <= 1'b1;
-                    line_addr_q[0] <= {
-                        restart_pc_i[
-                            `RV64_XLEN-1:CACHE_LINE_BYTE_BITS],
-                        {CACHE_LINE_BYTE_BITS{1'b0}}
-                    };
-                    line_data_q[0] <=
-                        alt_restart_cache_line_data_r[255:0];
-                    line_sector_valid_q[0] <= 2'b11;
-                    line_access_fault_q[0] <= 1'b0;
-                    line_page_fault_q[0] <= 1'b0;
-                    line_valid_q[1] <= 1'b1;
-                    line_addr_q[1] <= {
-                        restart_pc_i[
-                            `RV64_XLEN-1:CACHE_LINE_BYTE_BITS],
-                        {CACHE_LINE_BYTE_BITS{1'b0}}
-                    } + LINE_BYTES;
-                    line_data_q[1] <=
-                        alt_restart_cache_line_data_r[511:256];
-                    line_sector_valid_q[1] <= 2'b11;
-                    line_access_fault_q[1] <= 1'b0;
-                    line_page_fault_q[1] <= 1'b0;
-                end else begin
-                    line_valid_q[restart_pc_i[LINE_BYTE_BITS]] <= 1'b1;
-                    line_addr_q[restart_pc_i[LINE_BYTE_BITS]] <= {
-                        restart_pc_i[`RV64_XLEN-1:LINE_BYTE_BITS],
-                        {LINE_BYTE_BITS{1'b0}}
-                    };
-                    line_data_q[restart_pc_i[LINE_BYTE_BITS]] <=
-                        alt_restart_data_r;
-                    line_sector_valid_q[
-                        restart_pc_i[LINE_BYTE_BITS]] <=
-                            alt_restart_sector_mask_r;
-                    line_access_fault_q[
-                        restart_pc_i[LINE_BYTE_BITS]] <= 1'b0;
-                    line_page_fault_q[
-                        restart_pc_i[LINE_BYTE_BITS]] <= 1'b0;
-                end
-            end else begin
+            // Redirect only changes the logical fetch selection.  Tag lookup
+            // above chooses live or alternate storage for the new PC.  A
+            // context-changing restart still invalidates every resident path.
+            if (invalidate_i || flush_i) begin
                 for (reset_index = 0; reset_index < LINE_DEPTH;
                      reset_index = reset_index + 1) begin
                     line_valid_q[reset_index] <= 1'b0;

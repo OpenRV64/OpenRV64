@@ -25,6 +25,9 @@ module tb_exec_rv64m;
     logic                          result_ready;
     logic                          illegal;
     logic [`RV64_XLEN-1:0]         result;
+    integer                        random_idx;
+    logic [`RV64_XLEN-1:0]         random_src1;
+    logic [`RV64_XLEN-1:0]         random_src2;
 
     openrv64_exec_rv64m #(
         .MUL_BITS_PER_CYCLE(MUL_BITS_PER_CYCLE),
@@ -189,6 +192,60 @@ module tb_exec_rv64m;
         end
     endtask
 
+    task automatic check_mul_reference;
+        input [`RV64_ALU_OP_WIDTH-1:0] in_op_sel;
+        input                          in_word_op;
+        input [`RV64_XLEN-1:0]         in_src1;
+        input [`RV64_XLEN-1:0]         in_src2;
+        input [8*48-1:0]               label;
+        reg [127:0]                    src1_unsigned;
+        reg [127:0]                    src2_unsigned;
+        reg [127:0]                    product_unsigned;
+        reg signed [127:0]             src1_signed;
+        reg signed [127:0]             src2_signed;
+        reg signed [127:0]             src2_positive;
+        reg signed [127:0]             product_signed;
+        reg signed [127:0]             product_signed_unsigned;
+        reg [`RV64_XLEN-1:0]           expected;
+        begin
+            src1_unsigned = {64'd0, in_src1};
+            src2_unsigned = {64'd0, in_src2};
+            src1_signed = {{64{in_src1[63]}}, in_src1};
+            src2_signed = {{64{in_src2[63]}}, in_src2};
+            src2_positive = {64'd0, in_src2};
+            product_unsigned = src1_unsigned * src2_unsigned;
+            product_signed = src1_signed * src2_signed;
+            product_signed_unsigned = src1_signed * src2_positive;
+
+            if (in_word_op) begin
+                expected = {{32{product_unsigned[31]}},
+                            product_unsigned[31:0]};
+            end else begin
+                case (in_op_sel)
+                    `RV64_ALU_OP_MULH:
+                        expected = product_signed[127:64];
+                    `RV64_ALU_OP_MULHSU:
+                        expected = product_signed_unsigned[127:64];
+                    `RV64_ALU_OP_MULHU:
+                        expected = product_unsigned[127:64];
+                    default:
+                        expected = product_unsigned[63:0];
+                endcase
+            end
+
+            check(
+                in_op_sel,
+                in_word_op,
+                in_src1,
+                in_src2,
+                1'b1,
+                1'b0,
+                expected,
+                label
+            );
+        end
+    endtask
+
     initial begin
         clear_inputs();
 
@@ -216,6 +273,75 @@ module tb_exec_rv64m;
         check(`RV64_ALU_OP_MUL, 1'b1,
               64'h0000_0000_7fff_ffff, 64'd2,
               1'b1, 1'b0, 64'hffff_ffff_ffff_fffe, "mulw sign extend");
+
+        check(`RV64_ALU_OP_MUL, 1'b0,
+              64'hffff_ffff_ffff_ffff,
+              64'hffff_ffff_ffff_ffff,
+              1'b1, 1'b0, 64'd1, "mul unsigned msb correction");
+
+        check(`RV64_ALU_OP_MULHU, 1'b0,
+              64'hffff_ffff_ffff_ffff,
+              64'hffff_ffff_ffff_ffff,
+              1'b1, 1'b0, 64'hffff_ffff_ffff_fffe,
+              "mulhu unsigned msb correction");
+
+        check(`RV64_ALU_OP_MULH, 1'b0,
+              64'h8000_0000_0000_0000,
+              64'h8000_0000_0000_0000,
+              1'b1, 1'b0, 64'h4000_0000_0000_0000,
+              "mulh signed magnitude msb correction");
+
+        check(`RV64_ALU_OP_MULHSU, 1'b0,
+              64'hffff_ffff_ffff_fffe,
+              64'hffff_ffff_ffff_ffff,
+              1'b1, 1'b0, 64'hffff_ffff_ffff_fffe,
+              "mulhsu unsigned multiplier msb correction");
+
+        check(`RV64_ALU_OP_MUL, 1'b1,
+              64'h0000_0000_ffff_ffff,
+              64'h0000_0000_ffff_ffff,
+              1'b1, 1'b0, 64'd1, "mulw unsigned msb correction");
+
+        for (random_idx = 0; random_idx < 16;
+             random_idx = random_idx + 1) begin
+            random_src1 = {$urandom, $urandom};
+            random_src2 = {$urandom, $urandom};
+            check_mul_reference(
+                `RV64_ALU_OP_MUL,
+                1'b0,
+                random_src1,
+                random_src2,
+                "random mul"
+            );
+            check_mul_reference(
+                `RV64_ALU_OP_MULH,
+                1'b0,
+                random_src1,
+                random_src2,
+                "random mulh"
+            );
+            check_mul_reference(
+                `RV64_ALU_OP_MULHSU,
+                1'b0,
+                random_src1,
+                random_src2,
+                "random mulhsu"
+            );
+            check_mul_reference(
+                `RV64_ALU_OP_MULHU,
+                1'b0,
+                random_src1,
+                random_src2,
+                "random mulhu"
+            );
+            check_mul_reference(
+                `RV64_ALU_OP_MUL,
+                1'b1,
+                random_src1,
+                random_src2,
+                "random mulw"
+            );
+        end
 
         check(`RV64_ALU_OP_DIV, 1'b0,
               64'hffff_ffff_ffff_fff9, 64'd3,

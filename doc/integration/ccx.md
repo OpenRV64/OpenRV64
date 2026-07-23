@@ -42,9 +42,9 @@ Other current restrictions are:
 
 - `rtl/core/exec/lsu/rv64-a.v` still keeps LR/SC reservations inside the hart.
   AMOs retain the local read/compute/write implementation but now mark both
-  memory phases with `ccx_req_lock`.  The shared L2 can exclude other requests
-  from the marked read through the matching marked write.  This remains a
-  one-hart bring-up mechanism, not the final atomic protocol.
+  memory phases for private-L1 bypass and local serialization.  The marker is
+  not forwarded as `ccx_req_lock`, and the shared L2 performs no exclusion.
+  This is a one-hart-only bring-up mechanism, not an atomic protocol.
 - The decoder accepts RV64A `aq` and `rl` bits, but the core currently discards
   them because the legacy memory path is blocking and strictly ordered.
 - `rtl/cache/l1/l1.v` is physically tagged, hit-pipelined, write-through, and
@@ -59,9 +59,10 @@ Other current restrictions are:
   the private caches nonblocking: each demand backend still has one active CCX
   miss and lacks transaction-ID-indexed MSHRs.
 - The shared native L2 accepts `READ`, `WRITE`, and a drain-style `FENCE`.
-  It implements the temporary marked read/write exclusion, but LR, SC, and
-  explicit AMO operations still fail.  It does not track private-cache sharers
-  or emit probes.
+  Dormant compatibility logic can still consume a marked read/write pair, but
+  the native core path never emits that marker.  LR, SC, and explicit AMO
+  operations still fail.  It does not track private-cache sharers or emit
+  probes.
 - `openrv64_ccx_l2_native` consumes and produces native 512-bit cache-line
   beats.  Its command queue feeds a lookup/hit pipeline, and parameterized
   per-line MSHRs permit multiple outstanding misses, same-line request merging,
@@ -101,7 +102,7 @@ PMP checking, and private-cache lookup:
 | `source_id` | At least instruction cache, data cache, or PTW. |
 | `txn_id` | Requester transaction identity, not reused until its response is drained. |
 | `op` | Read, write, LR, SC, AMO function, or fence. |
-| `lock` | Transitional one-hart AMO exclusion marker; asserted on both decomposed phases. |
+| `lock` | Reserved compatibility field. The native one-hart core path drives zero; it is not an atomic contract. |
 | `order` | None, acquire, release, or acquire-release. |
 | `attr` | Per-request cacheable, device, idempotent, and executable attributes. |
 | `size` | Sub-line access size for atomics and uncached operations; cache-line transfers imply 64 bytes. |
@@ -223,7 +224,8 @@ L1 boundary:
 - a scalar CPU store occupies its addressed lane without forcing L1 to read or
   merge the other bytes;
 - FIFO order is retained and each drain is one CCX line write with `size=6`;
-- `#LOCK`, uncached, and device operations are not posted in this revision;
+- marked atomic, uncached, and device operations are not posted in this
+  revision; the single-hart atomic marker is not forwarded as a CCX/L2 lock;
 - an external invalidation is acknowledged only after the FIFO becomes empty;
   and
 - the separate ordered store-response channel carries the eventual CCX error.
@@ -276,33 +278,38 @@ lane, and the remaining response-line bits have no architectural meaning.
 
 The implemented temporary path is narrower than the required final contract:
 
-1. The hart retains its existing local AMO ALU and emits a `READ` with
-   `ccx_req_lock=1`.
-2. L1D invalidates its local copy, bypasses lookup/allocation, and forwards the
-   marked sub-line request on the 512-bit native interface.
-3. The home records the requesting hart and 64-byte line and excludes every
-   request except a marked request from that hart to that line.
-4. The hart computes the new value and emits the corresponding marked `WRITE`.
-5. The home updates the line and releases the lock.  A read, refill,
-   writeback, or bypass error also releases it.
+1. The hart retains its local AMO ALU and marks the decomposed `READ` and
+   `WRITE` phases only on the hart-to-L1D interface.
+2. Before the read, L1D drains older posted stores and invalidates its resident
+   copy. Both phases bypass L1 lookup/allocation and remain non-posted.
+3. L1D records one non-evictable `atomic_active` line from read admission
+   through write completion. Prefetch generation and issue pause during that
+   interval. Read error also terminates the interval.
+4. L1D records the line in a 16-entry, evictable `atomic_hot` directory.
+   Atomic-hot lines do not train the address-stream prefetcher and cannot be
+   generated or launched as prefetch candidates. A matching cache
+   invalidation removes the hint.
+5. The first presentation of each marked phase advances L1D's eight-bit
+   speculation epoch. Queued and completed speculative reads are removed;
+   already-issued prefetches drain as discarded responses. An architectural
+   read-miss buffer from the old epoch drains its stale response and reissues
+   with a new transaction ID rather than completing from it.
+6. The CCX request is still an ordinary unmarked read or write. No L2/home
+   ownership is acquired, so this sequence is atomic only under the explicit
+   assumption that there is one hart and no coherent DMA writer.
 
-The hart-local I/D command arbiter admits only D-cache commands while the
-sequence is active.  Without that rule, a backpressured I-cache request could
-hold the arbiter grant ahead of the only write capable of releasing the home
-lock.  A started AMO and its bus fallback slot are also irrevocable across a
-younger redirect, because cancellation after the marked read can strand the
-lock.
+`atomic_active` and `atomic_hot` are deliberately different states.
+`atomic_active` is future snoop correctness state: a probe for that line must
+retry, wait, or be NACKed until the RMW commits or aborts. `atomic_hot` is only
+prefetch history and may be evicted. Neither state is equivalent to MESI
+Exclusive, which describes clean ownership rather than an in-progress RMW.
+The current RTL has no probe/ACK channel, so the active state is not yet
+externally enforceable.
 
-LR and SC deliberately do not use `ccx_req_lock`.  Holding this lock from an
-LR until some later SC would turn a reservation into an unbounded critical
-section and can deadlock.  LR/SC therefore remain single-hart-local until the
-home implements real reservations.
-
-This scheme is acceptable only for current one-hart bring-up with one home,
-one controlled ingress, and guaranteed release/reset behavior.  It does not
-support coherent DMA or multi-hart operation, does not preserve `aq`/`rl`, and
-does not replace the explicit home-executed LR/SC/AMO protocol specified
-above.
+LR and SC do not use this local AMO marker. LR/SC remain single-hart-local
+until the home implements real reservations. The current AMO path also does
+not preserve `aq`/`rl` and does not replace the explicit home-executed
+LR/SC/AMO protocol specified above.
 
 ## Private-cache probe protocol
 
@@ -423,6 +430,13 @@ hit only a line carrying the current eight-bit PTE generation. Advancing the
 generation therefore invalidates stale PTE observations without scanning every
 L2 set. A stale matching dirty line is selected as the victim, written back,
 and refilled before the PTE read completes.
+
+The same `satp`/`SFENCE.VMA` initiating pulse advances the L1D speculation
+epoch. This is separate from the PTE generation: it prevents a data prefetch
+or read-miss response issued before the translation barrier from becoming
+post-barrier L1D state. Old prefetch responses are consumed and dropped. The
+single architectural L1D RMB is consumed and reissued; it is never silently
+lost or completed from the old response.
 
 The generation deliberately wraps after 256 shootdowns. A surviving line from
 an entire generation wrap can become falsely current; this is accepted for the

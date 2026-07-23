@@ -55,11 +55,14 @@ module openrv64_dispatch_window_3p #(
     output wire [2:0]                   allocation_valid_o,
     output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_o,
 
-    input  wire [2:0]                   pipe_ready_i,
-    output reg  [2:0]                   pipe_valid_o,
-    output reg  [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
-    output reg  [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
-    output reg  [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_i,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH-1:0]
+                                        pipe_slot_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o,
 
     input  wire [2:0]                   completion_valid_i,
@@ -689,11 +692,20 @@ module openrv64_dispatch_window_3p #(
             end
         end
 
-        pipe_valid_o = {select_mem_valid, select_ex1_valid, select_ex0_valid};
-        pipe_id_o = {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
-        pipe_slot_o = {3*RETIRE_SLOT_WIDTH{1'b0}};
+        // The issue-window experiment remains single-MEM for now.  Strict
+        // dispatch exercises MEM1; keeping this lane empty preserves the
+        // window's existing program-order memory selection.
+        pipe_valid_o = {
+            1'b0, select_mem_valid, select_ex1_valid, select_ex0_valid
+        };
+        pipe_id_o =
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        pipe_slot_o =
+            {`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH{1'b0}};
         pipe_payload_o =
-            {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
         trace_pipe_uses_rs1 = 3'b000;
         trace_pipe_uses_rs2 = 3'b000;
 

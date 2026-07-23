@@ -15,12 +15,12 @@ module tb_dispatch_issue_3p;
     reg [3*SLOT_WIDTH-1:0] candidate_slot;
     reg [3*PAYLOAD_WIDTH-1:0] candidate_payload;
     reg allocation_ready;
-    reg [2:0] pipe_ready;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready;
     wire [2:0] candidate_fire;
-    wire [2:0] pipe_valid;
-    wire [3*ID_WIDTH-1:0] pipe_id;
-    wire [3*SLOT_WIDTH-1:0] pipe_slot;
-    wire [3*PAYLOAD_WIDTH-1:0] pipe_payload;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*ID_WIDTH-1:0] pipe_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0] pipe_slot;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*PAYLOAD_WIDTH-1:0] pipe_payload;
 
     openrv64_dispatch_issue_3p #(
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH)
@@ -65,7 +65,7 @@ module tb_dispatch_issue_3p;
         candidate_payload[1*PAYLOAD_WIDTH +: 64] = 64'h11;
         candidate_payload[2*PAYLOAD_WIDTH +: 64] = 64'h12;
         allocation_ready = 1'b1;
-        pipe_ready = 3'b111;
+        pipe_ready = 4'b1111;
         #1;
 
         if ((candidate_fire != 3'b111) || (pipe_valid != 3'b111))
@@ -83,7 +83,7 @@ module tb_dispatch_issue_3p;
 
         // Candidate zero targets MEM.  When MEM is unavailable, neither idle
         // ALU may accept its younger candidate.
-        pipe_ready = 3'b011;
+        pipe_ready = 4'b0011;
         #1;
         if ((candidate_fire != 3'b000) || (pipe_valid != 3'b000))
             fail("younger ALU issued around older stalled MEM candidate");
@@ -95,7 +95,7 @@ module tb_dispatch_issue_3p;
             `OPENRV64_EXEC_PIPE_MEM,
             `OPENRV64_EXEC_PIPE_EX0
         };
-        pipe_ready = 3'b011;
+        pipe_ready = 4'b0011;
         #1;
         if ((candidate_fire != 3'b001) || (pipe_valid != 3'b001))
             fail("issue prefix continued past a stalled middle candidate");
@@ -107,7 +107,7 @@ module tb_dispatch_issue_3p;
             `OPENRV64_EXEC_PIPE_EX0,
             `OPENRV64_EXEC_PIPE_EX0
         };
-        pipe_ready = 3'b111;
+        pipe_ready = 4'b1111;
         #1;
         if ((candidate_fire != 3'b001) || (pipe_valid != 3'b001))
             fail("physical-pipe collision did not stop issue prefix");

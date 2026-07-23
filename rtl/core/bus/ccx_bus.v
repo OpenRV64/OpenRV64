@@ -904,6 +904,7 @@ module openrv64_core_ccx_bus #(
         .prefetch_dropped_o(),
         .prefetch_useless_o(),
         .prefetch_depth_o(),
+        .speculation_barrier_i(tlbi_i),
         .invalidate_valid_i(1'b0),
         .invalidate_ready_o(),
         .invalidate_all_i(1'b0),
@@ -1023,11 +1024,6 @@ module openrv64_core_ccx_bus #(
     reg [1:0] ccx_cmd_last_client_q;
     reg ccx_cmd_next_valid_r;
     reg [1:0] ccx_cmd_next_client_r;
-    // Once the marked AMO read reaches the home, instruction traffic must
-    // not take and hold the local command grant ahead of the marked write.
-    // Otherwise a backpressured I-cache command can prevent the only request
-    // capable of releasing the home lock from ever reaching it.
-    reg ccx_local_lock_q;
 
     always @* begin
         ccx_cmd_next_valid_r = 1'b0;
@@ -1361,31 +1357,14 @@ module openrv64_core_ccx_bus #(
             ccx_cmd_grant_valid_q <= 1'b0;
             ccx_cmd_grant_client_q <= CCX_CLIENT_ICACHE;
             ccx_cmd_last_client_q <= CCX_CLIENT_PTE;
-            ccx_local_lock_q <= 1'b0;
         end else begin
-            if (ccx_req_valid_o && ccx_req_ready_i &&
-                ccx_req_lock_o) begin
-                if (ccx_req_op_o == `OPENRV64_CCX_OP_READ)
-                    ccx_local_lock_q <= 1'b1;
-                else if (ccx_req_op_o == `OPENRV64_CCX_OP_WRITE)
-                    ccx_local_lock_q <= 1'b0;
-            end
-            if (ccx_local_lock_q && ccx_resp_valid_i &&
-                ccx_resp_ready_o && ccx_resp_error_i &&
-                (ccx_resp_source_id_i ==
-                 `OPENRV64_CCX_SOURCE_DCACHE))
-                ccx_local_lock_q <= 1'b0;
-
             if (ccx_cmd_grant_valid_q) begin
                 if (ccx_req_valid_o && ccx_req_ready_i) begin
                     ccx_cmd_grant_valid_q <= 1'b0;
                     ccx_cmd_last_client_q <=
                         ccx_cmd_grant_client_q;
                 end
-            end else if (ccx_local_lock_q && l1d_ccx_req_valid) begin
-                ccx_cmd_grant_valid_q <= 1'b1;
-                ccx_cmd_grant_client_q <= CCX_CLIENT_DCACHE;
-            end else if (!ccx_local_lock_q && ccx_cmd_next_valid_r) begin
+            end else if (ccx_cmd_next_valid_r) begin
                 ccx_cmd_grant_valid_q <= 1'b1;
                 ccx_cmd_grant_client_q <= ccx_cmd_next_client_r;
             end
@@ -1479,6 +1458,7 @@ module openrv64_core_ccx_bus #(
                          fetch_index = fetch_index + 1) begin
                         if ((fetch_state_q[fetch_index] != FETCH_EMPTY) &&
                             fetch_stash_q[fetch_index] &&
+                            !fetch_demand_q[fetch_index] &&
                             (fetch_vaddr_q[fetch_index][`RV64_XLEN-1:6] ==
                              icache_age_addr_i[
                                 fetch_age_port*`RV64_XLEN +
@@ -1581,7 +1561,7 @@ module openrv64_core_ccx_bus #(
             // physical write, and eventual error response across redirects.
             // A marked AMO phase is irrevocable after this slot accepts it.
             // Dropping its read response would prevent the MEM lane from
-            // issuing the marked write that releases the home lock.
+            // issuing the matching write phase.
             if (lsu_pipe_cancel_i && pipe_fallback_active_q &&
                 !lsu_write_q && !lsu_lock_q)
                 pipe_fallback_cancelled_q <= 1'b1;

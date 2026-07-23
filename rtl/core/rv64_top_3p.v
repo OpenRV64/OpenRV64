@@ -849,7 +849,17 @@ module openrv64_rv64_top_3p #(
     wire backend_mem_access;
     wire [63:0] backend_mem_effective_addr;
     wire [2:0] backend_mem_size;
-    wire [2:0] backend_issue_valid;
+    wire backend_mem1_valid;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem1_tag;
+    wire backend_mem1_lock;
+    wire backend_mem1_write;
+    wire [63:0] backend_mem1_addr;
+    wire [63:0] backend_mem1_wdata;
+    wire [7:0] backend_mem1_wstrb;
+    wire backend_mem1_access;
+    wire [63:0] backend_mem1_effective_addr;
+    wire [2:0] backend_mem1_size;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] backend_issue_valid;
     wire [2:0] backend_complete_valid;
     wire [31:0] backend_write_busy;
     wire backend_barrier;
@@ -906,6 +916,17 @@ module openrv64_rv64_top_3p #(
         .mem_access_o(backend_mem_access),
         .mem_effective_addr_o(backend_mem_effective_addr),
         .mem_size_o(backend_mem_size), .mem_rdata_i(backend_mem_rdata),
+        .mem1_valid_o(backend_mem1_valid),
+        .mem1_ready_i(1'b0),
+        .mem1_tag_o(backend_mem1_tag),
+        .mem1_lock_o(backend_mem1_lock),
+        .mem1_write_o(backend_mem1_write),
+        .mem1_addr_o(backend_mem1_addr),
+        .mem1_wdata_o(backend_mem1_wdata),
+        .mem1_wstrb_o(backend_mem1_wstrb),
+        .mem1_access_o(backend_mem1_access),
+        .mem1_effective_addr_o(backend_mem1_effective_addr),
+        .mem1_size_o(backend_mem1_size),
         .irq_pending_i(csr_irq_pending), .irq_cause_i(csr_irq_cause),
         .redirect_valid_o(backend_redirect),
         .redirect_id_o(backend_redirect_id),

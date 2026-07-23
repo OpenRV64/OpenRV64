@@ -62,12 +62,12 @@ module tb_exec_top_3p;
     reg clk;
     reg rst_n;
     reg flush;
-    reg [2:0] issue_valid;
-    wire [2:0] issue_ready;
-    wire [2:0] issue_unsupported;
-    reg [3*ID_WIDTH-1:0] issue_id;
-    reg [3*SLOT_WIDTH-1:0] issue_slot;
-    reg [3*ISSUE_WIDTH-1:0] issue_payload;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_unsupported;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*ID_WIDTH-1:0] issue_id;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0] issue_slot;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*ISSUE_WIDTH-1:0] issue_payload;
     reg branch_forward_valid;
     reg [`RV64_REG_ADDR_WIDTH-1:0] branch_forward_rd_addr;
     reg [`RV64_XLEN-1:0] branch_forward_data;
@@ -106,6 +106,16 @@ module tb_exec_top_3p;
     wire [`RV64_XLEN-1:0] mem_effective_addr;
     wire [2:0] mem_size;
     reg [`RV64_XLEN-1:0] mem_rdata;
+    wire mem1_valid;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag;
+    wire mem1_lock;
+    wire mem1_write;
+    wire [`RV64_XLEN-1:0] mem1_addr;
+    wire [`RV64_XLEN-1:0] mem1_wdata;
+    wire [7:0] mem1_wstrb;
+    wire mem1_access;
+    wire [`RV64_XLEN-1:0] mem1_effective_addr;
+    wire [2:0] mem1_size;
 
     openrv64_exec_top_3p #(
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH),
@@ -158,7 +168,18 @@ module tb_exec_top_3p;
         .mem_access_o(mem_access),
         .mem_effective_addr_o(mem_effective_addr),
         .mem_size_o(mem_size),
-        .mem_rdata_i(mem_rdata)
+        .mem_rdata_i(mem_rdata),
+        .mem1_valid_o(mem1_valid),
+        .mem1_ready_i(1'b0),
+        .mem1_tag_o(mem1_tag),
+        .mem1_lock_o(mem1_lock),
+        .mem1_write_o(mem1_write),
+        .mem1_addr_o(mem1_addr),
+        .mem1_wdata_o(mem1_wdata),
+        .mem1_wstrb_o(mem1_wstrb),
+        .mem1_access_o(mem1_access),
+        .mem1_effective_addr_o(mem1_effective_addr),
+        .mem1_size_o(mem1_size)
     );
 
     always #5 clk = ~clk;
@@ -203,10 +224,11 @@ module tb_exec_top_3p;
         clk = 1'b0;
         rst_n = 1'b0;
         flush = 1'b0;
-        issue_valid = 3'b000;
-        issue_id = 192'd0;
-        issue_slot = 9'd0;
-        issue_payload = {3*ISSUE_WIDTH{1'b0}};
+        issue_valid = 4'b0000;
+        issue_id = {`OPENRV64_EXEC_PIPE_COUNT*ID_WIDTH{1'b0}};
+        issue_slot = {`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH{1'b0}};
+        issue_payload =
+            {`OPENRV64_EXEC_PIPE_COUNT*ISSUE_WIDTH{1'b0}};
         branch_forward_valid = 1'b0;
         branch_forward_rd_addr = {`RV64_REG_ADDR_WIDTH{1'b0}};
         branch_forward_data = {`RV64_XLEN{1'b0}};
@@ -447,13 +469,51 @@ module tb_exec_top_3p;
         tick();
         complete_ready = 3'b000;
 
-        // Fill the entire default LSU tag ring while its native request port
-        // is stalled.  The ninth load must be rejected at the wrapped tail.
-        // Reset the empty ring first so this check explicitly covers 0-7.
+        // Fill both four-entry physical LSU queues while the native request
+        // port is stalled.  The ninth load must be rejected.
         flush = 1'b1;
         tick();
         flush = 1'b0;
         mem_ready = 1'b0;
+
+        // An atomic may share admission with a younger MEM1 operation.  MEM1
+        // must then remain behind the ordered atomic instead of creating a
+        // valid/ready dependency between the two issue lanes.
+        ordered_head_valid = 1'b0;
+        packet = packet_base(64'd118, 64'h4080,
+                             {5'b00000, 2'b00, 5'd2, 5'd1,
+                              3'b011, 5'd8, 7'b0101111});
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7800;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd1;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_AMOADD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_MEM_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(18);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
+        packet = packet_base(64'd119, 64'h4084, 32'h0000_b283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7880;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[3*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[3*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(19);
+        issue_slot[3*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
+        issue_valid = 4'b1100;
+        #1;
+        if (!issue_ready[2] || !issue_ready[3])
+            fail("atomic and younger MEM1 did not admit together");
+        tick();
+        issue_valid = 4'b0000;
+        #1;
+        if (mem_valid)
+            fail("younger MEM1 escaped ahead of unordered atomic");
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        ordered_head_valid = 1'b1;
+
         for (depth_index = 0;
              depth_index < `OPENRV64_LSU_OUTSTANDING;
              depth_index = depth_index + 1) begin
@@ -466,22 +526,28 @@ module tb_exec_top_3p;
             packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
             packet[ISSUE_MEM_READ] = 1'b1;
             packet[ISSUE_REG_WRITE] = 1'b1;
-            issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-            issue_id[2*ID_WIDTH +: ID_WIDTH] =
+            issue_payload[
+                ((depth_index & 1) ? 3 : 2)*ISSUE_WIDTH +:
+                ISSUE_WIDTH] = packet;
+            issue_id[
+                ((depth_index & 1) ? 3 : 2)*ID_WIDTH +:
+                ID_WIDTH] =
                 ID_WIDTH'(20 + depth_index);
-            issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = depth_index;
-            issue_valid = 3'b100;
+            issue_slot[
+                ((depth_index & 1) ? 3 : 2)*SLOT_WIDTH +:
+                SLOT_WIDTH] = depth_index;
+            issue_valid = (depth_index & 1) ? 4'b1000 : 4'b0100;
             #1;
-            if (!issue_ready[2])
-                fail("MEM did not accept all eight LSU tags");
+            if (!issue_ready[(depth_index & 1) ? 3 : 2])
+                fail("MEM0/MEM1 did not accept all eight LSU tags");
             tick();
-            issue_valid = 3'b000;
+            issue_valid = 4'b0000;
         end
-        issue_valid = 3'b100;
+        issue_valid = 4'b0100;
         #1;
         if (issue_ready[2])
             fail("MEM accepted a ninth LSU operation into eight tags");
-        issue_valid = 3'b000;
+        issue_valid = 4'b0000;
 
         // Drain tags 0-6, leaving only slot 7 occupied.  Atomic admission must
         // inspect the complete parameterized queue rather than slots 0-2.
@@ -492,14 +558,21 @@ module tb_exec_top_3p;
             mem_ready = 1'b1;
             #1;
             if (!mem_valid || mem_write ||
-                (mem_tag != depth_index[`OPENRV64_LSU_TAG_WIDTH-1:0])) begin
+                (mem_tag != ((depth_index & 1) ?
+                 (`OPENRV64_LSU_OUTSTANDING/2 + depth_index/2) :
+                 (depth_index/2)))) begin
                 $display("MEM ring expected tag=%0d got valid=%b write=%b tag=%0d",
-                         depth_index, mem_valid, mem_write, mem_tag);
+                         (depth_index & 1) ?
+                         (`OPENRV64_LSU_OUTSTANDING/2 + depth_index/2) :
+                         (depth_index/2),
+                         mem_valid, mem_write, mem_tag);
                 fail("MEM LSU tag ring request order mismatch");
             end
             tick();
             mem_ready = 1'b0;
-            mem_resp_tag = depth_index[`OPENRV64_LSU_TAG_WIDTH-1:0];
+            mem_resp_tag = (depth_index & 1) ?
+                (`OPENRV64_LSU_OUTSTANDING/2 + depth_index/2) :
+                (depth_index/2);
             mem_resp_valid = 1'b1;
             #1;
             if (!mem_resp_ready)
@@ -519,11 +592,13 @@ module tb_exec_top_3p;
         packet[ISSUE_MEM_READ] = 1'b1;
         packet[ISSUE_MEM_WRITE] = 1'b1;
         issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_valid = 3'b100;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(28);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
+        issue_valid = 4'b0100;
         #1;
         if (issue_ready[2])
             fail("MEM admitted atomic while LSU slot 7 remained occupied");
-        issue_valid = 3'b000;
+        issue_valid = 4'b0000;
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -612,8 +687,8 @@ module tb_exec_top_3p;
         flush = 1'b0;
 
         // Once an ordered AMO starts, a younger redirect cannot discard the
-        // read response: doing so would strand the home lock before the
-        // marked write phase.  The atomic therefore survives this flush.
+        // read response: the marked write phase still depends on that value.
+        // The atomic therefore survives this flush.
         packet = packet_base(64'd108, 64'h6000,
                              {5'b00000, 2'b00, 5'd2, 5'd1,
                               3'b011, 5'd8, 7'b0101111});
@@ -636,7 +711,7 @@ module tb_exec_top_3p;
         issue_valid = 3'b000;
         while (!mem_valid) tick();
         if (!mem_lock || mem_write || (mem_addr != 64'h7000))
-            fail("AMO read did not carry the home-lock marker");
+            fail("AMO read did not carry the internal phase marker");
         tick();
 
         flush = 1'b1;
@@ -661,7 +736,7 @@ module tb_exec_top_3p;
              64'd11))
             fail("AMO completion after flush mismatch");
 
-        $display("PASS: 3p local forwarding, eight-tag MEM ring, EX1 ordering, EX0 M context, and irrevocable AMO");
+        $display("PASS: 3p local forwarding, dual four-tag MEM queues, EX1 ordering, EX0 M context, and irrevocable AMO");
         $finish;
     end
 
@@ -678,6 +753,9 @@ module tb_exec_top_3p;
         complete_payload[COMPLETE_PC +: 64],
         complete_payload[COMPLETE_TRACE +: 64],
         issue_unsupported,
+        mem1_valid, mem1_tag, mem1_lock, mem1_write, mem1_addr,
+        mem1_wdata, mem1_wstrb, mem1_access, mem1_effective_addr,
+        mem1_size,
         csr_addr,
         mem_size
     };

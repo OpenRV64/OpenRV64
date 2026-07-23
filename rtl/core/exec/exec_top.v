@@ -96,6 +96,17 @@ module openrv64_exec_top #(
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
+    output wire                         mem1_valid_o,
+    input  wire                         mem1_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag_o,
+    output wire                         mem1_lock_o,
+    output wire                         mem1_write_o,
+    output wire [`RV64_XLEN-1:0]        mem1_addr_o,
+    output wire [`RV64_XLEN-1:0]        mem1_wdata_o,
+    output wire [7:0]                   mem1_wstrb_o,
+    output wire                         mem1_access_o,
+    output wire [`RV64_XLEN-1:0]        mem1_effective_addr_o,
+    output wire [2:0]                   mem1_size_o,
 
     output wire                         wb_valid_o,
     input  wire                         wb_clear_i,
@@ -133,12 +144,15 @@ module openrv64_exec_top #(
     output wire                         trace_serializing_o,
 
     input  wire                         flush_3p_i,
-    input  wire [2:0]                   issue_valid_3p_i,
-    output wire [2:0]                   issue_ready_3p_o,
-    output wire [2:0]                   issue_unsupported_3p_o,
-    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_3p_i,
-    input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] issue_slot_3p_i,
-    input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_3p_i,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_unsupported_3p_o,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_3p_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH_3P-1:0]
+                                        issue_slot_3p_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_3p_i,
     input  wire                         branch_forward_valid_3p_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
@@ -172,8 +186,10 @@ module openrv64_exec_top #(
                 .ENABLE_FORWARDING(ENABLE_FORWARDING),
                 .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING)
             ) u_exec (.*);
-            assign issue_ready_3p_o = 3'b000;
-            assign issue_unsupported_3p_o = 3'b000;
+            assign issue_ready_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign issue_unsupported_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign complete_valid_3p_o = 3'b000;
             assign complete_id_3p_o =
                 {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
@@ -188,6 +204,16 @@ module openrv64_exec_top #(
             assign branch_instr_o = instr_i;
             assign mem_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign mem_resp_ready_o = 1'b0;
+            assign mem1_valid_o = 1'b0;
+            assign mem1_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            assign mem1_lock_o = 1'b0;
+            assign mem1_write_o = 1'b0;
+            assign mem1_addr_o = {`RV64_XLEN{1'b0}};
+            assign mem1_wdata_o = {`RV64_XLEN{1'b0}};
+            assign mem1_wstrb_o = 8'd0;
+            assign mem1_access_o = 1'b0;
+            assign mem1_effective_addr_o = {`RV64_XLEN{1'b0}};
+            assign mem1_size_o = 3'd0;
             assign async_store_fault_3p_o = 1'b0;
             assign async_store_page_fault_3p_o = 1'b0;
             assign async_store_fault_pc_3p_o = {`RV64_XLEN{1'b0}};
@@ -253,7 +279,18 @@ module openrv64_exec_top #(
                 .mem_wdata_o(mem_wdata_o), .mem_wstrb_o(mem_wstrb_o),
                 .mem_access_o(mem_access_o),
                 .mem_effective_addr_o(mem_effective_addr_o),
-                .mem_size_o(mem_size_o), .mem_rdata_i(mem_rdata_i)
+                .mem_size_o(mem_size_o), .mem_rdata_i(mem_rdata_i),
+                .mem1_valid_o(mem1_valid_o),
+                .mem1_ready_i(mem1_ready_i),
+                .mem1_tag_o(mem1_tag_o),
+                .mem1_lock_o(mem1_lock_o),
+                .mem1_write_o(mem1_write_o),
+                .mem1_addr_o(mem1_addr_o),
+                .mem1_wdata_o(mem1_wdata_o),
+                .mem1_wstrb_o(mem1_wstrb_o),
+                .mem1_access_o(mem1_access_o),
+                .mem1_effective_addr_o(mem1_effective_addr_o),
+                .mem1_size_o(mem1_size_o)
             );
 
             assign clear_o = 1'b0;

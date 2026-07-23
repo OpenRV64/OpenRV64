@@ -3,7 +3,7 @@
 
 module tb_ccx_l2;
 
-    localparam integer MEMORY_LINES = 256;
+    localparam integer MEMORY_LINES = 8192;
     localparam [63:0] PTE_LINE_ADDR = 64'h0000_0000_0000_1000;
 
     logic clk;
@@ -65,6 +65,9 @@ module tb_ccx_l2;
     logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] pending_wstrb_q;
     integer bus_reads;
     integer bus_writes;
+    logic [63:0] last_bus_write_addr;
+    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        last_bus_write_strb;
     integer byte_index;
     integer memory_index;
     integer txn_counter;
@@ -156,6 +159,8 @@ module tb_ccx_l2;
             bus_resp_rdata <= 0;
             bus_reads <= 0;
             bus_writes <= 0;
+            last_bus_write_addr <= 0;
+            last_bus_write_strb <= 0;
         end else begin
             if (bus_resp_valid && bus_resp_ready)
                 bus_resp_valid <= 1'b0;
@@ -169,14 +174,16 @@ module tb_ccx_l2;
                 pending_addr_q <= bus_req_addr;
                 pending_wdata_q <= bus_req_wdata;
                 pending_wstrb_q <= bus_req_wstrb;
-                if (bus_req_write)
+                if (bus_req_write) begin
                     bus_writes <= bus_writes + 1;
-                else
+                    last_bus_write_addr <= bus_req_addr;
+                    last_bus_write_strb <= bus_req_wstrb;
+                end else
                     bus_reads <= bus_reads + 1;
             end
 
             if (bus_pending_q && !bus_resp_valid) begin
-                memory_index = pending_addr_q[13:6];
+                memory_index = pending_addr_q[18:6];
                 bus_resp_rdata <= memory[memory_index];
                 if (pending_write_q) begin
                     for (byte_index = 0;
@@ -195,6 +202,7 @@ module tb_ccx_l2;
     task automatic send_command;
         input [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] source;
         input [`OPENRV64_CCX_OP_WIDTH-1:0] operation;
+        input locked;
         input [`OPENRV64_CCX_KIND_WIDTH-1:0] kind;
         input [`OPENRV64_CCX_ATTR_WIDTH-1:0] attributes;
         input [2:0] size;
@@ -210,7 +218,7 @@ module tb_ccx_l2;
             req_txn_id = transaction;
             req_source_id = source;
             req_op = operation;
-            req_lock = 1'b0;
+            req_lock = locked;
             req_order = (operation == `OPENRV64_CCX_OP_FENCE) ?
                         `OPENRV64_CCX_ORDER_ACQ_REL :
                         `OPENRV64_CCX_ORDER_NONE;
@@ -233,9 +241,10 @@ module tb_ccx_l2;
         end
     endtask
 
-    task automatic send_write_data;
+    task automatic send_write_data_masked;
         input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
         input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
+        input [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] strobes;
         integer cycles;
         begin
             wdata_hart_id = 0;
@@ -244,7 +253,7 @@ module tb_ccx_l2;
             wdata_beat_index = 0;
             wdata_last = 1'b1;
             wdata = data;
-            wstrb = {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}};
+            wstrb = strobes;
             wdata_valid = 1'b1;
             cycles = 0;
             @(posedge clk);
@@ -267,6 +276,16 @@ module tb_ccx_l2;
         end
     endtask
 
+    task automatic send_write_data;
+        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
+        begin
+            send_write_data_masked(
+                transaction, data,
+                {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}});
+        end
+    endtask
+
     task automatic wait_response;
         input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
         input [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] source;
@@ -286,7 +305,9 @@ module tb_ccx_l2;
                 resp_sc_success)
                 $fatal(1, "native L2 response envelope mismatch");
             if (check_data && (resp_rdata !== expected_data))
-                $fatal(1, "native L2 response data mismatch");
+                $fatal(1,
+                       "native L2 response data mismatch txn=%0d actual=%0128x expected=%0128x",
+                       transaction, resp_rdata, expected_data);
             @(posedge clk);
             @(negedge clk);
         end
@@ -299,7 +320,7 @@ module tb_ccx_l2;
         input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] expected_data;
         reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
         begin
-            send_command(source, `OPENRV64_CCX_OP_READ, kind,
+            send_command(source, `OPENRV64_CCX_OP_READ, 1'b0, kind,
                          `OPENRV64_CCX_ATTR_CACHEABLE, 3'd6,
                          address, transaction);
             wait_response(transaction, source, expected_data, 1'b1);
@@ -313,6 +334,7 @@ module tb_ccx_l2;
         begin
             send_command(`OPENRV64_CCX_SOURCE_DCACHE,
                          `OPENRV64_CCX_OP_WRITE,
+                         1'b0,
                          `OPENRV64_CCX_KIND_DATA,
                          `OPENRV64_CCX_ATTR_CACHEABLE,
                          3'd6, address, transaction);
@@ -322,12 +344,28 @@ module tb_ccx_l2;
         end
     endtask
 
+    task automatic start_masked_write;
+        input [63:0] address;
+        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
+        input [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] strobes;
+        output [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        begin
+            send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                         `OPENRV64_CCX_OP_WRITE,
+                         1'b0,
+                         `OPENRV64_CCX_KIND_DATA,
+                         `OPENRV64_CCX_ATTR_CACHEABLE,
+                         3'd6, address, transaction);
+            send_write_data_masked(transaction, data, strobes);
+        end
+    endtask
+
     task automatic send_fence;
         input [`OPENRV64_CCX_KIND_WIDTH-1:0] kind;
         reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
         begin
             send_command(`OPENRV64_CCX_SOURCE_PTW,
-                         `OPENRV64_CCX_OP_FENCE, kind,
+                         `OPENRV64_CCX_OP_FENCE, 1'b0, kind,
                          `OPENRV64_CCX_ATTR_NONE,
                          3'd0, 64'd0, transaction);
             wait_response(transaction, `OPENRV64_CCX_SOURCE_PTW,
@@ -339,6 +377,20 @@ module tb_ccx_l2;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] new_line;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] dirty_line;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] newest_line;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] masked_line;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] masked_store_data;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] scalar_response;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_0;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_1;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] locked_read_txn;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] locked_write_txn;
+    integer masked_reads_before;
+    integer masked_writes_before;
+    integer congruent_index;
+    reg [63:0] congruent_addr;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] congruent_line;
+    localparam [63:0] MASKED_LINE_ADDR = 64'h0000_0000_0000_2000;
+    localparam [63:0] L2_SET_STRIDE = 64'h0000_0000_0000_8000;
 
     initial begin
         req_valid = 1'b0;
@@ -371,7 +423,12 @@ module tb_ccx_l2;
         new_line = line_pattern(64'h2000_0000_0000_0000);
         dirty_line = line_pattern(64'h3000_0000_0000_0000);
         newest_line = line_pattern(64'h4000_0000_0000_0000);
-        memory[PTE_LINE_ADDR[13:6]] = old_line;
+        masked_line = line_pattern(64'h5000_0000_0000_0000);
+        masked_line[319:256] = 64'h1122_3344_aabb_ccdd;
+        masked_store_data = 0;
+        scalar_response = 0;
+        memory[PTE_LINE_ADDR[18:6]] = old_line;
+        memory[MASKED_LINE_ADDR[18:6]] = masked_line;
 
         rst_n = 1'b0;
         repeat (3) @(posedge clk);
@@ -389,7 +446,7 @@ module tb_ccx_l2;
 
         // Model a page-table store which bypassed this L2.  Without a
         // shootdown, the cached PTE line is deliberately still visible.
-        memory[PTE_LINE_ADDR[13:6]] = new_line;
+        memory[PTE_LINE_ADDR[18:6]] = new_line;
         read_line(`OPENRV64_CCX_SOURCE_PTW,
                   `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, old_line);
         if (bus_reads != 1)
@@ -408,11 +465,11 @@ module tb_ccx_l2;
         read_line(`OPENRV64_CCX_SOURCE_PTW,
                   `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, dirty_line);
         if ((bus_reads != 3) || (bus_writes != 1) ||
-            (memory[PTE_LINE_ADDR[13:6]] !== dirty_line))
+            (memory[PTE_LINE_ADDR[18:6]] !== dirty_line))
             $fatal(1, "dirty stale-PTE replacement was not writeback/refill");
 
         // Ordinary fences do not advance the PTE generation.
-        memory[PTE_LINE_ADDR[13:6]] = newest_line;
+        memory[PTE_LINE_ADDR[18:6]] = newest_line;
         send_fence(`OPENRV64_CCX_KIND_DATA);
         read_line(`OPENRV64_CCX_SOURCE_PTW,
                   `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, dirty_line);
@@ -424,7 +481,118 @@ module tb_ccx_l2;
         if (bus_reads != 4)
             $fatal(1, "second PTE generation did not force refill");
 
-        $display("PASS: native 512-bit L2 hits, writes, and 8-bit PTE generations");
+        // Two adjacent scalar stack stores miss in L2.  They must write around
+        // as partial cachelines without first reading the old line.  The
+        // following demand read is the operation which allocates and fills it.
+        masked_reads_before = bus_reads;
+        masked_writes_before = bus_writes;
+        masked_store_data[63:0] = 64'h0123_4567_89ab_cdef;
+        start_masked_write(
+            MASKED_LINE_ADDR, masked_store_data,
+            64'h0000_0000_0000_00ff, masked_txn_0);
+        masked_store_data[127:64] = 64'hfedc_ba98_7654_3210;
+        start_masked_write(
+            MASKED_LINE_ADDR, masked_store_data,
+            64'h0000_0000_0000_ff00, masked_txn_1);
+        wait_response(masked_txn_0, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        wait_response(masked_txn_1, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        if ((bus_reads != masked_reads_before) ||
+            (bus_writes != masked_writes_before + 2))
+            $fatal(1,
+                "write misses fetched instead of writing around reads=%0d writes=%0d",
+                bus_reads - masked_reads_before,
+                bus_writes - masked_writes_before);
+        masked_line[63:0] = 64'h0123_4567_89ab_cdef;
+        masked_line[127:64] = 64'hfedc_ba98_7654_3210;
+        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                  `OPENRV64_CCX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
+        if (bus_reads != masked_reads_before + 1)
+            $fatal(1, "read after write-around did not fill the line");
+
+        // Locked scalar traffic bypasses L1 but must still operate on the
+        // current L2 copy.  Scalar reads return their addressed 64-bit lane
+        // in its natural position on the 512-bit response interface.
+        scalar_response = 0;
+        scalar_response[255:192] = masked_line[255:192];
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_READ, 1'b1,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd3, MASKED_LINE_ADDR + 24, locked_read_txn);
+        wait_response(locked_read_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+                      scalar_response, 1'b1);
+        masked_store_data = 0;
+        masked_store_data[255:192] = 64'hcafe_f00d_dead_beef;
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_WRITE, 1'b1,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd3, MASKED_LINE_ADDR + 24, locked_write_txn);
+        send_write_data_masked(
+            locked_write_txn, masked_store_data,
+            64'h0000_0000_ff00_0000);
+        wait_response(locked_write_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        masked_line[255:192] = 64'hcafe_f00d_dead_beef;
+        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                  `OPENRV64_CCX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
+
+        // A 32-bit atomic at address+4 consumes the high word of an aligned
+        // 64-bit memory beat.  Preserve that subword position in the scalar
+        // CCX response and in the masked write.
+        scalar_response = 0;
+        scalar_response[319:256] = masked_line[319:256];
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_READ, 1'b1,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd2, MASKED_LINE_ADDR + 36, locked_read_txn);
+        wait_response(locked_read_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+                      scalar_response, 1'b1);
+        masked_store_data = 0;
+        masked_store_data[319:288] = 32'hdead_beef;
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_WRITE, 1'b1,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd2, MASKED_LINE_ADDR + 36, locked_write_txn);
+        send_write_data_masked(
+            locked_write_txn, masked_store_data,
+            64'h0000_00f0_0000_0000);
+        wait_response(locked_write_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        masked_line[319:288] = 32'hdead_beef;
+        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                  `OPENRV64_CCX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
+
+        // The two resident scalar writes dirtied only bytes 24..31 and
+        // 36..39.  Fill the remaining ways in this set, then force way zero
+        // out.  Its writeback must retain that exact byte mask; the backing
+        // memory already contains every other byte from the earlier
+        // write-around and line fill.
+        for (congruent_index = 1; congruent_index <= 8;
+             congruent_index = congruent_index + 1) begin
+            congruent_addr =
+                MASKED_LINE_ADDR + congruent_index * L2_SET_STRIDE;
+            congruent_line =
+                line_pattern(64'h6000_0000_0000_0000 +
+                             congruent_index * 64'h100);
+            memory[congruent_addr[18:6]] = congruent_line;
+            read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                      `OPENRV64_CCX_KIND_DATA,
+                      congruent_addr, congruent_line);
+        end
+        if ((last_bus_write_addr != MASKED_LINE_ADDR) ||
+            (last_bus_write_strb != 64'h0000_00f0_ff00_0000))
+            $fatal(1,
+                "dirty eviction was not partial addr=%016x strb=%016x",
+                last_bus_write_addr, last_bus_write_strb);
+        if (memory[MASKED_LINE_ADDR[18:6]] !== masked_line)
+            $fatal(1, "partial dirty eviction corrupted backing line");
+
+        $display("PASS: native L2 write-around, partial dirty eviction, atomics, and PTE generations");
         $finish;
     end
 

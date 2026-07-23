@@ -2,19 +2,22 @@
 `include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-a.v"
 `include "core/isa/rv64-priv.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/br-defs.v"
 
-// Three fixed-capability execution lanes:
+// Four fixed-capability execution lanes:
 //
 //   lane 0 / EX0: base ALU and RV64M
 //   lane 1 / EX1: base ALU, branch/jump, system/CSR, traps and fences
-//   lane 2 / MEM: loads, stores and RV64A
+//   lane 2 / MEM0: loads, stores and RV64A
+//   lane 3 / MEM1: ordinary loads and stores
 //
-// The issue payload already contains captured operand values.  Each lane has
-// an independent held completion port, so M and memory latency do not block
-// the other ALU lane.  Valid aligned conditional branches resolve as soon as
+// The issue payload already contains captured operand values.  Each lane holds
+// its own completion; MEM0/MEM1 arbitrate onto the third backend completion
+// port, while EX0 and EX1 retain dedicated ports.  Valid aligned conditional
+// branches resolve as soon as
 // their operands are ready.  They still complete into the in-order retirement
 // queue, and dispatch normally prevents younger issue beside a resolving
 // branch.  The strict path may waive that barrier for BEQ/BNE only after its
@@ -37,12 +40,16 @@ module openrv64_exec_top_3p #(
     input  wire                         rst_n,
     input  wire                         flush_i,
 
-    input  wire [2:0]                   issue_valid_i,
-    output wire [2:0]                   issue_ready_o,
-    output wire [2:0]                   issue_unsupported_o,
-    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
-    input  wire [3*RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
-    input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_i,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_unsupported_o,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH-1:0]
+                                        issue_slot_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+                                        issue_payload_i,
     input  wire                         branch_forward_valid_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         branch_forward_rd_addr_i,
@@ -97,7 +104,19 @@ module openrv64_exec_top_3p #(
     output wire                         mem_access_o,
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
-    input  wire [`RV64_XLEN-1:0]        mem_rdata_i
+    input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
+
+    output wire                         mem1_valid_o,
+    input  wire                         mem1_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag_o,
+    output wire                         mem1_lock_o,
+    output wire                         mem1_write_o,
+    output wire [`RV64_XLEN-1:0]        mem1_addr_o,
+    output wire [`RV64_XLEN-1:0]        mem1_wdata_o,
+    output wire [7:0]                   mem1_wstrb_o,
+    output wire                         mem1_access_o,
+    output wire [`RV64_XLEN-1:0]        mem1_effective_addr_o,
+    output wire [2:0]                   mem1_size_o
 );
 
     // These low-order payload positions are fixed by backend-defs.v.  Keeping
@@ -161,20 +180,47 @@ module openrv64_exec_top_3p #(
     wire ex1_instr_page_fault =
         issue_payload_i[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 4];
 
-    wire mem_mem_read =
+    wire mem0_mem_read =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 16];
-    wire mem_mem_write =
+    wire mem0_mem_write =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15];
-    wire mem_branch =
+    wire mem0_branch =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14];
-    wire mem_jump =
+    wire mem0_jump =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 13];
-    wire mem_system =
+    wire mem0_system =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 10];
-    wire mem_fence =
+    wire mem0_fence =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 9];
-    wire mem_illegal =
+    wire mem0_illegal =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 8];
+    wire [`RV64_INSTR_WIDTH-1:0] mem0_instr =
+        issue_payload_i[
+            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +:
+            `RV64_INSTR_WIDTH];
+    wire mem0_atomic =
+        `RV64_OPCODE(mem0_instr) == `RV64_OPCODE_AMO;
+
+    wire mem1_mem_read =
+        issue_payload_i[3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 16];
+    wire mem1_mem_write =
+        issue_payload_i[3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15];
+    wire mem1_branch =
+        issue_payload_i[3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14];
+    wire mem1_jump =
+        issue_payload_i[3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 13];
+    wire mem1_system =
+        issue_payload_i[3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 10];
+    wire mem1_fence =
+        issue_payload_i[3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 9];
+    wire mem1_illegal =
+        issue_payload_i[3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 8];
+    wire [`RV64_INSTR_WIDTH-1:0] mem1_instr =
+        issue_payload_i[
+            3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +:
+            `RV64_INSTR_WIDTH];
+    wire mem1_atomic =
+        `RV64_OPCODE(mem1_instr) == `RV64_OPCODE_AMO;
 
     wire ex0_alu = ((ex0_alu_ext == `RV64_ALU_EXT_BASE) ||
                     ((ex0_alu_ext == `RV64_ALU_EXT_M) && ENABLE_RV64M)) &&
@@ -221,7 +267,10 @@ module openrv64_exec_top_3p #(
         (`RV64_CSR(ex1_instr) == `RV64_CSR_SATP);
     wire ex1_translation_barrier =
         ex1_satp_access || `RV64_IS_SFENCE_VMA(ex1_instr);
-    wire mem_posted_store_pending;
+    wire mem0_posted_store_pending;
+    wire mem1_posted_store_pending;
+    wire mem_posted_store_pending =
+        mem0_posted_store_pending || mem1_posted_store_pending;
     wire ex1_order_match = ordered_head_valid_i &&
         (ordered_head_id_i == issue_id_i[
             1*`OPENRV64_INSTR_ID_WIDTH +:
@@ -235,24 +284,34 @@ module openrv64_exec_top_3p #(
     wire ex1_order_ready =
         (!ex1_requires_order || ex1_order_match) &&
         (!ex1_translation_barrier || !mem_posted_store_pending);
-    wire mem_supported = (mem_mem_read || mem_mem_write) &&
-                         !mem_branch && !mem_jump && !mem_system &&
-                         !mem_fence && !mem_illegal;
+    wire mem0_supported = (mem0_mem_read || mem0_mem_write) &&
+                          !mem0_branch && !mem0_jump && !mem0_system &&
+                          !mem0_fence && !mem0_illegal;
+    wire mem1_supported = (mem1_mem_read || mem1_mem_write) &&
+                          !mem1_branch && !mem1_jump && !mem1_system &&
+                          !mem1_fence && !mem1_illegal && !mem1_atomic;
 
     wire ex0_issue_valid = issue_valid_i[0] && ex0_supported;
     wire ex1_issue_valid = issue_valid_i[1] && ex1_supported &&
                            ex1_order_ready;
-    wire mem_issue_valid = issue_valid_i[2] && mem_supported;
+    wire mem0_global_atomic_ready;
+    wire mem0_issue_valid = issue_valid_i[2] && mem0_supported &&
+        (!mem0_atomic || mem0_global_atomic_ready);
+    wire mem1_issue_valid = issue_valid_i[3] && mem1_supported;
     wire ex0_issue_ready;
     wire ex1_issue_ready;
-    wire mem_issue_ready;
+    wire mem0_issue_ready;
+    wire mem1_issue_ready;
 
     assign issue_ready_o[0] = ex0_issue_ready && ex0_supported;
     assign issue_ready_o[1] = ex1_issue_ready && ex1_supported &&
                               ex1_order_ready;
-    assign issue_ready_o[2] = mem_issue_ready && mem_supported;
+    assign issue_ready_o[2] = mem0_issue_ready && mem0_supported &&
+        (!mem0_atomic || mem0_global_atomic_ready);
+    assign issue_ready_o[3] = mem1_issue_ready && mem1_supported;
     assign issue_unsupported_o = {
-        issue_valid_i[2] && !mem_supported,
+        issue_valid_i[3] && !mem1_supported,
+        issue_valid_i[2] && !mem0_supported,
         issue_valid_i[1] && !ex1_supported,
         issue_valid_i[0] && !ex0_supported
     };
@@ -332,17 +391,88 @@ module openrv64_exec_top_3p #(
         .redirect_target_o(redirect_target_o)
     );
 
+    wire mem0_complete_valid;
+    wire mem1_complete_valid;
+    wire mem0_complete_ready;
+    wire mem1_complete_ready;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem0_complete_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem1_complete_id;
+    wire [RETIRE_SLOT_WIDTH-1:0] mem0_complete_slot;
+    wire [RETIRE_SLOT_WIDTH-1:0] mem1_complete_slot;
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        mem0_complete_payload;
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        mem1_complete_payload;
+
+    wire mem0_async_store_fault;
+    wire mem1_async_store_fault;
+    wire mem0_async_store_page_fault;
+    wire mem1_async_store_page_fault;
+    wire [`RV64_XLEN-1:0] mem0_async_store_fault_pc;
+    wire [`RV64_XLEN-1:0] mem1_async_store_fault_pc;
+    wire [`RV64_XLEN-1:0] mem0_async_store_fault_addr;
+    wire [`RV64_XLEN-1:0] mem1_async_store_fault_addr;
+    wire [63:0] mem0_async_store_fault_trace;
+    wire [63:0] mem1_async_store_fault_trace;
+    wire [`RV64_INSTR_WIDTH-1:0] mem0_async_store_fault_instr;
+    wire [`RV64_INSTR_WIDTH-1:0] mem1_async_store_fault_instr;
+
+    wire mem0_raw_valid;
+    wire mem1_raw_valid;
+    wire mem0_raw_ready;
+    wire mem1_raw_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem0_raw_tag;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_raw_tag;
+    wire mem0_raw_lock;
+    wire mem1_raw_lock;
+    wire mem0_raw_write;
+    wire mem1_raw_write;
+    wire [`RV64_XLEN-1:0] mem0_raw_addr;
+    wire [`RV64_XLEN-1:0] mem1_raw_addr;
+    wire [`RV64_XLEN-1:0] mem0_raw_wdata;
+    wire [`RV64_XLEN-1:0] mem1_raw_wdata;
+    wire [7:0] mem0_raw_wstrb;
+    wire [7:0] mem1_raw_wstrb;
+    wire mem0_raw_access;
+    wire mem1_raw_access;
+    wire [`RV64_XLEN-1:0] mem0_raw_effective_addr;
+    wire [`RV64_XLEN-1:0] mem1_raw_effective_addr;
+    wire [2:0] mem0_raw_size;
+    wire [2:0] mem1_raw_size;
+    wire mem0_head_valid;
+    wire mem1_head_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem0_head_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem1_head_id;
+    wire mem0_head_ordered;
+    wire mem1_head_ordered;
+    wire mem1_queue_busy;
+    wire mem0_raw_resp_ready;
+    wire mem1_raw_resp_ready;
+    wire mem0_raw_resp_valid = mem_resp_valid_i &&
+                               !mem_resp_tag_i[
+                                   `OPENRV64_LSU_TAG_WIDTH-1];
+    wire mem1_raw_resp_valid = mem_resp_valid_i &&
+                               mem_resp_tag_i[
+                                   `OPENRV64_LSU_TAG_WIDTH-1];
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] local_resp_tag = {
+        1'b0, mem_resp_tag_i[`OPENRV64_LSU_TAG_WIDTH-2:0]
+    };
+    assign mem_resp_ready_o = mem_resp_tag_i[
+        `OPENRV64_LSU_TAG_WIDTH-1] ? mem1_raw_resp_ready :
+                                     mem0_raw_resp_ready;
+
     openrv64_exec_pipe_mem #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .LSU_DEPTH(4),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
-    ) u_mem (
+    ) u_mem0 (
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush_i),
-        .issue_valid_i(mem_issue_valid),
-        .issue_ready_o(mem_issue_ready),
+        .issue_valid_i(mem0_issue_valid),
+        .issue_ready_o(mem0_issue_ready),
         .issue_id_i(issue_id_i[
             2*`OPENRV64_INSTR_ID_WIDTH +:
             `OPENRV64_INSTR_ID_WIDTH]),
@@ -354,42 +484,220 @@ module openrv64_exec_top_3p #(
         .ordered_head_valid_i(ordered_head_valid_i),
         .ordered_head_id_i(ordered_head_id_i),
         .ordered_head_slot_i(ordered_head_slot_i),
-        .complete_valid_o(complete_valid_o[2]),
-        .complete_ready_i(complete_ready_i[2]),
-        .complete_id_o(complete_id_o[
-            2*`OPENRV64_INSTR_ID_WIDTH +:
-            `OPENRV64_INSTR_ID_WIDTH]),
-        .complete_slot_o(complete_slot_o[2*RETIRE_SLOT_WIDTH +:
-                                        RETIRE_SLOT_WIDTH]),
-        .complete_payload_o(complete_payload_o[
-            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH]),
-        .async_store_fault_o(async_store_fault_o),
-        .async_store_page_fault_o(async_store_page_fault_o),
-        .async_store_fault_pc_o(async_store_fault_pc_o),
-        .async_store_fault_addr_o(async_store_fault_addr_o),
-        .async_store_fault_trace_o(async_store_fault_trace_o),
-        .async_store_fault_instr_o(async_store_fault_instr_o),
-        .posted_store_pending_o(mem_posted_store_pending),
-        .mem_valid_o(mem_valid_o),
-        .mem_ready_i(mem_ready_i),
-        .mem_tag_o(mem_tag_o),
-        .mem_resp_valid_i(mem_resp_valid_i),
-        .mem_resp_ready_o(mem_resp_ready_o),
-        .mem_resp_tag_i(mem_resp_tag_i),
+        .complete_valid_o(mem0_complete_valid),
+        .complete_ready_i(mem0_complete_ready),
+        .complete_id_o(mem0_complete_id),
+        .complete_slot_o(mem0_complete_slot),
+        .complete_payload_o(mem0_complete_payload),
+        .async_store_fault_o(mem0_async_store_fault),
+        .async_store_page_fault_o(mem0_async_store_page_fault),
+        .async_store_fault_pc_o(mem0_async_store_fault_pc),
+        .async_store_fault_addr_o(mem0_async_store_fault_addr),
+        .async_store_fault_trace_o(mem0_async_store_fault_trace),
+        .async_store_fault_instr_o(mem0_async_store_fault_instr),
+        .posted_store_pending_o(mem0_posted_store_pending),
+        .mem_valid_o(mem0_raw_valid),
+        .mem_ready_i(mem0_raw_ready),
+        .mem_tag_o(mem0_raw_tag),
+        .mem_resp_valid_i(mem0_raw_resp_valid),
+        .mem_resp_ready_o(mem0_raw_resp_ready),
+        .mem_resp_tag_i(local_resp_tag),
         .mem_error_i(mem_error_i),
         .mem_page_fault_i(mem_page_fault_i),
         .mem_access_allowed_i(mem_access_allowed_i),
-        .mem_lock_o(mem_lock_o),
-        .mem_write_o(mem_write_o),
-        .mem_addr_o(mem_addr_o),
-        .mem_wdata_o(mem_wdata_o),
-        .mem_wstrb_o(mem_wstrb_o),
-        .mem_access_o(mem_access_o),
-        .mem_effective_addr_o(mem_effective_addr_o),
-        .mem_size_o(mem_size_o),
+        .mem_lock_o(mem0_raw_lock),
+        .mem_write_o(mem0_raw_write),
+        .mem_addr_o(mem0_raw_addr),
+        .mem_wdata_o(mem0_raw_wdata),
+        .mem_wstrb_o(mem0_raw_wstrb),
+        .mem_access_o(mem0_raw_access),
+        .mem_effective_addr_o(mem0_raw_effective_addr),
+        .mem_size_o(mem0_raw_size),
+        .pending_head_valid_o(mem0_head_valid),
+        .pending_head_id_o(mem0_head_id),
+        .pending_head_ordered_o(mem0_head_ordered),
+        .queue_busy_o(),
         .mem_rdata_i(mem_rdata_i)
     );
+
+    openrv64_exec_pipe_mem #(
+        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .LSU_DEPTH(4),
+        .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
+        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
+    ) u_mem1 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .flush_i(flush_i),
+        .issue_valid_i(mem1_issue_valid),
+        .issue_ready_o(mem1_issue_ready),
+        .issue_id_i(issue_id_i[
+            3*`OPENRV64_INSTR_ID_WIDTH +:
+            `OPENRV64_INSTR_ID_WIDTH]),
+        .issue_slot_i(issue_slot_i[3*RETIRE_SLOT_WIDTH +:
+                                   RETIRE_SLOT_WIDTH]),
+        .issue_payload_i(issue_payload_i[
+            3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
+        .ordered_head_valid_i(ordered_head_valid_i),
+        .ordered_head_id_i(ordered_head_id_i),
+        .ordered_head_slot_i(ordered_head_slot_i),
+        .complete_valid_o(mem1_complete_valid),
+        .complete_ready_i(mem1_complete_ready),
+        .complete_id_o(mem1_complete_id),
+        .complete_slot_o(mem1_complete_slot),
+        .complete_payload_o(mem1_complete_payload),
+        .async_store_fault_o(mem1_async_store_fault),
+        .async_store_page_fault_o(mem1_async_store_page_fault),
+        .async_store_fault_pc_o(mem1_async_store_fault_pc),
+        .async_store_fault_addr_o(mem1_async_store_fault_addr),
+        .async_store_fault_trace_o(mem1_async_store_fault_trace),
+        .async_store_fault_instr_o(mem1_async_store_fault_instr),
+        .posted_store_pending_o(mem1_posted_store_pending),
+        .mem_valid_o(mem1_raw_valid),
+        .mem_ready_i(mem1_raw_ready),
+        .mem_tag_o(mem1_raw_tag),
+        .mem_resp_valid_i(mem1_raw_resp_valid),
+        .mem_resp_ready_o(mem1_raw_resp_ready),
+        .mem_resp_tag_i(local_resp_tag),
+        .mem_error_i(mem_error_i),
+        .mem_page_fault_i(mem_page_fault_i),
+        .mem_access_allowed_i(mem_access_allowed_i),
+        .mem_lock_o(mem1_raw_lock),
+        .mem_write_o(mem1_raw_write),
+        .mem_addr_o(mem1_raw_addr),
+        .mem_wdata_o(mem1_raw_wdata),
+        .mem_wstrb_o(mem1_raw_wstrb),
+        .mem_access_o(mem1_raw_access),
+        .mem_effective_addr_o(mem1_raw_effective_addr),
+        .mem_size_o(mem1_raw_size),
+        .pending_head_valid_o(mem1_head_valid),
+        .pending_head_id_o(mem1_head_id),
+        .pending_head_ordered_o(mem1_head_ordered),
+        .queue_busy_o(mem1_queue_busy),
+        .mem_rdata_i(mem_rdata_i)
+    );
+
+    // MEM0 is the only RV64A lane.  An atomic cannot be admitted behind an
+    // older MEM1 slot.  A younger MEM1 operation accepted in the same bundle
+    // is safe: the cross-queue ordered-head gate below holds it until the
+    // atomic completes.
+    assign mem0_global_atomic_ready = !mem1_queue_busy;
+
+    function automatic id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
+        end
+    endfunction
+
+    // A pending store or atomic in one physical queue blocks younger memory
+    // requests from the other queue until that ordered operation reaches L1D.
+    wire mem0_request_allowed = mem0_raw_valid &&
+        !(mem1_head_valid && mem1_head_ordered &&
+          id_is_younger(mem0_head_id, mem1_head_id));
+    wire mem1_request_allowed = mem1_raw_valid &&
+        !(mem0_head_valid && mem0_head_ordered &&
+          id_is_younger(mem1_head_id, mem0_head_id));
+    wire both_mem_requests = mem0_request_allowed && mem1_request_allowed;
+    wire port0_select_mem1 = mem1_request_allowed &&
+        (!mem0_request_allowed ||
+         id_is_younger(mem0_head_id, mem1_head_id));
+
+    assign mem_valid_o = mem0_request_allowed || mem1_request_allowed;
+    assign mem1_valid_o = both_mem_requests;
+    assign mem_tag_o = port0_select_mem1 ?
+        {1'b1, mem1_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]} :
+        {1'b0, mem0_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]};
+    assign mem1_tag_o = port0_select_mem1 ?
+        {1'b0, mem0_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]} :
+        {1'b1, mem1_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]};
+    assign mem_lock_o = port0_select_mem1 ? mem1_raw_lock : mem0_raw_lock;
+    assign mem1_lock_o = port0_select_mem1 ? mem0_raw_lock : mem1_raw_lock;
+    assign mem_write_o = port0_select_mem1 ? mem1_raw_write : mem0_raw_write;
+    assign mem1_write_o = port0_select_mem1 ? mem0_raw_write : mem1_raw_write;
+    assign mem_addr_o = port0_select_mem1 ? mem1_raw_addr : mem0_raw_addr;
+    assign mem1_addr_o = port0_select_mem1 ? mem0_raw_addr : mem1_raw_addr;
+    assign mem_wdata_o = port0_select_mem1 ? mem1_raw_wdata : mem0_raw_wdata;
+    assign mem1_wdata_o = port0_select_mem1 ?
+                          mem0_raw_wdata : mem1_raw_wdata;
+    assign mem_wstrb_o = port0_select_mem1 ? mem1_raw_wstrb : mem0_raw_wstrb;
+    assign mem1_wstrb_o = port0_select_mem1 ?
+                          mem0_raw_wstrb : mem1_raw_wstrb;
+    assign mem_access_o = port0_select_mem1 ?
+                          mem1_raw_access : mem0_raw_access;
+    assign mem1_access_o = port0_select_mem1 ?
+                           mem0_raw_access : mem1_raw_access;
+    assign mem_effective_addr_o = port0_select_mem1 ?
+                                  mem1_raw_effective_addr :
+                                  mem0_raw_effective_addr;
+    assign mem1_effective_addr_o = port0_select_mem1 ?
+                                   mem0_raw_effective_addr :
+                                   mem1_raw_effective_addr;
+    assign mem_size_o = port0_select_mem1 ? mem1_raw_size : mem0_raw_size;
+    assign mem1_size_o = port0_select_mem1 ? mem0_raw_size : mem1_raw_size;
+
+    assign mem0_raw_ready = mem0_request_allowed &&
+        (port0_select_mem1 ? (both_mem_requests && mem1_ready_i) :
+                             mem_ready_i);
+    assign mem1_raw_ready = mem1_request_allowed &&
+        (port0_select_mem1 ? mem_ready_i :
+         (both_mem_requests && mem1_ready_i));
+
+    // EX0 and EX1 retain dedicated completion ports.  MEM0 and MEM1 share the
+    // third retirement-queue completion port; each pipe already holds its
+    // completion under backpressure.
+    reg mem_complete_prefer1_q;
+    wire select_mem1_completion = mem1_complete_valid &&
+        (!mem0_complete_valid || mem_complete_prefer1_q);
+    wire mem_completion_fire = complete_valid_o[2] &&
+                               complete_ready_i[2];
+    assign complete_valid_o[2] =
+        select_mem1_completion ? mem1_complete_valid : mem0_complete_valid;
+    assign complete_id_o[
+        2*`OPENRV64_INSTR_ID_WIDTH +:
+        `OPENRV64_INSTR_ID_WIDTH] =
+        select_mem1_completion ? mem1_complete_id : mem0_complete_id;
+    assign complete_slot_o[
+        2*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH] =
+        select_mem1_completion ? mem1_complete_slot : mem0_complete_slot;
+    assign complete_payload_o[
+        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+        `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH] =
+        select_mem1_completion ?
+        mem1_complete_payload : mem0_complete_payload;
+    assign mem0_complete_ready = complete_ready_i[2] &&
+                                 !select_mem1_completion;
+    assign mem1_complete_ready = complete_ready_i[2] &&
+                                 select_mem1_completion;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            mem_complete_prefer1_q <= 1'b0;
+        else if (flush_i)
+            mem_complete_prefer1_q <= 1'b0;
+        else if (mem_completion_fire)
+            mem_complete_prefer1_q <= !select_mem1_completion;
+    end
+
+    assign async_store_fault_o =
+        mem0_async_store_fault || mem1_async_store_fault;
+    assign async_store_page_fault_o = mem0_async_store_fault ?
+        mem0_async_store_page_fault : mem1_async_store_page_fault;
+    assign async_store_fault_pc_o = mem0_async_store_fault ?
+        mem0_async_store_fault_pc : mem1_async_store_fault_pc;
+    assign async_store_fault_addr_o = mem0_async_store_fault ?
+        mem0_async_store_fault_addr : mem1_async_store_fault_addr;
+    assign async_store_fault_trace_o = mem0_async_store_fault ?
+        mem0_async_store_fault_trace : mem1_async_store_fault_trace;
+    assign async_store_fault_instr_o = mem0_async_store_fault ?
+        mem0_async_store_fault_instr : mem1_async_store_fault_instr;
 
 `ifndef SYNTHESIS
     always @(posedge clk) begin

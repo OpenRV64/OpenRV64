@@ -9,12 +9,13 @@
 // resp_valid_o returns its ordered response.  The hit pipeline accepts and
 // completes one resident read hit per cycle when the response is consumed.
 // Misses, writes, and uncached accesses serialize behind the blocking memory
-// side.  Reads refill one DATA_WIDTH beat at a time.  Writes are always
+// side.  Reads refill one REFILL_DATA_WIDTH beat at a time.  Writes are always
 // forwarded and use no-write-allocate; a successful write hit also updates the
 // resident copy.
 module openrv64_l1_cache #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
+    parameter integer REFILL_DATA_WIDTH = DATA_WIDTH,
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
@@ -66,7 +67,7 @@ module openrv64_l1_cache #(
     output wire [ADDR_WIDTH-1:0]     mem_addr_o,
     output wire [DATA_WIDTH-1:0]     mem_wdata_o,
     output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
-    input  wire [DATA_WIDTH-1:0]     mem_rdata_i,
+    input  wire [REFILL_DATA_WIDTH-1:0] mem_rdata_i,
     input  wire                      mem_error_i,
 
     input  wire                      ideal_refill_valid_i,
@@ -74,21 +75,29 @@ module openrv64_l1_cache #(
 );
 
     localparam integer DATA_BYTES = DATA_WIDTH / 8;
+    localparam integer REFILL_BYTES = REFILL_DATA_WIDTH / 8;
+    localparam integer WORDS_PER_REFILL =
+        REFILL_DATA_WIDTH / DATA_WIDTH;
     localparam integer WORDS_PER_LINE = LINE_BYTES / DATA_BYTES;
+    localparam integer REFILLS_PER_LINE = LINE_BYTES / REFILL_BYTES;
     localparam integer SETS = CACHE_BYTES / (LINE_BYTES * WAYS);
     localparam integer TOTAL_LINES = CACHE_BYTES / LINE_BYTES;
-    localparam integer WORDS_PER_WAY = SETS * WORDS_PER_LINE;
+    localparam integer REFILLS_PER_WAY = SETS * REFILLS_PER_LINE;
     localparam integer LINE_OFFSET_BITS = $clog2(LINE_BYTES);
     localparam integer SET_BITS = $clog2(SETS);
     localparam integer TAG_BITS = ADDR_WIDTH - LINE_OFFSET_BITS - SET_BITS;
     localparam integer SET_INDEX_WIDTH = (SETS > 1) ? $clog2(SETS) : 1;
     localparam integer LINE_INDEX_WIDTH =
         (TOTAL_LINES > 1) ? $clog2(TOTAL_LINES) : 1;
-    localparam integer WAY_WORD_INDEX_WIDTH =
-        (WORDS_PER_WAY > 1) ? $clog2(WORDS_PER_WAY) : 1;
+    localparam integer WAY_REFILL_INDEX_WIDTH =
+        (REFILLS_PER_WAY > 1) ? $clog2(REFILLS_PER_WAY) : 1;
     localparam integer WAY_INDEX_WIDTH = (WAYS > 1) ? $clog2(WAYS) : 1;
-    localparam integer BEAT_INDEX_WIDTH =
+    localparam integer WORD_INDEX_WIDTH =
         (WORDS_PER_LINE > 1) ? $clog2(WORDS_PER_LINE) : 1;
+    localparam integer REFILL_INDEX_WIDTH =
+        (REFILLS_PER_LINE > 1) ? $clog2(REFILLS_PER_LINE) : 1;
+    localparam integer REFILL_WORD_INDEX_WIDTH =
+        (WORDS_PER_REFILL > 1) ? $clog2(WORDS_PER_REFILL) : 1;
 
     localparam [1:0] STATE_RUN = 2'd0;
     localparam [1:0] STATE_REFILL = 2'd1;
@@ -105,11 +114,11 @@ module openrv64_l1_cache #(
 
     reg [1:0] state_q;
 
-    // Tags are laid out set-major, then way.  The data store is one
-    // synchronous RAM per way.  Keeping the way dimension outside the memory
-    // gives the lookup one read port per way without requiring a multi-read-
-    // port SRAM.  Store byte strobes are merged with the registered resident
-    // word before a full-width write.
+    // Tags are laid out set-major, then way.  Each way is split into one
+    // DATA_WIDTH bank per word in a refill beat.  A scalar lookup reads only
+    // its addressed bank from every way, while a refill writes all banks in
+    // parallel.  This permits a full-line refill width without turning every
+    // scalar hit into a full-line read.
     reg                      valid_q [0:TOTAL_LINES-1];
     reg [TAG_BITS-1:0]       tag_q [0:TOTAL_LINES-1];
     reg [1:0]                mesi_q [0:TOTAL_LINES-1];
@@ -129,20 +138,22 @@ module openrv64_l1_cache #(
 
     localparam [WAY_INDEX_WIDTH-1:0] LAST_WAY =
         WAY_INDEX_WIDTH'(WAYS - 1);
-    localparam [BEAT_INDEX_WIDTH-1:0] LAST_BEAT =
-        BEAT_INDEX_WIDTH'(WORDS_PER_LINE - 1);
+    localparam [REFILL_INDEX_WIDTH-1:0] LAST_REFILL =
+        REFILL_INDEX_WIDTH'(REFILLS_PER_LINE - 1);
 
     reg [SET_INDEX_WIDTH-1:0] refill_set_q;
     reg [WAY_INDEX_WIDTH-1:0] refill_way_q;
     reg [LINE_INDEX_WIDTH-1:0] refill_line_q;
     reg [TAG_BITS-1:0]       refill_tag_q;
-    reg [BEAT_INDEX_WIDTH-1:0] refill_beat_q;
-    reg [BEAT_INDEX_WIDTH-1:0] request_beat_q;
+    reg [REFILL_INDEX_WIDTH-1:0] refill_index_q;
+    reg [REFILL_INDEX_WIDTH-1:0] request_refill_index_q;
+    reg [REFILL_WORD_INDEX_WIDTH-1:0] request_refill_word_q;
 
     reg                      access_updates_line_q;
     reg [SET_INDEX_WIDTH-1:0] access_set_q;
     reg [WAY_INDEX_WIDTH-1:0] access_way_q;
-    reg [BEAT_INDEX_WIDTH-1:0] access_beat_q;
+    reg [REFILL_INDEX_WIDTH-1:0] access_refill_index_q;
+    reg [REFILL_WORD_INDEX_WIDTH-1:0] access_refill_word_q;
 
     reg                  response_valid_q;
     reg                  response_hit_q;
@@ -151,10 +162,14 @@ module openrv64_l1_cache #(
     reg                  response_error_q;
 
     reg [SET_INDEX_WIDTH-1:0] lookup_set;
-    reg [BEAT_INDEX_WIDTH-1:0] lookup_beat;
+    reg [WORD_INDEX_WIDTH-1:0] lookup_word;
+    reg [REFILL_INDEX_WIDTH-1:0] lookup_refill_index;
+    reg [REFILL_WORD_INDEX_WIDTH-1:0] lookup_refill_word;
     reg [TAG_BITS-1:0] lookup_tag;
     reg [SET_INDEX_WIDTH-1:0] accept_set;
-    reg [BEAT_INDEX_WIDTH-1:0] accept_beat;
+    reg [WORD_INDEX_WIDTH-1:0] accept_word;
+    reg [REFILL_INDEX_WIDTH-1:0] accept_refill_index;
+    reg [REFILL_WORD_INDEX_WIDTH-1:0] accept_refill_word;
     reg lookup_hit;
     reg [WAY_INDEX_WIDTH-1:0] lookup_way;
     reg [WAY_INDEX_WIDTH-1:0] victim_way;
@@ -169,15 +184,19 @@ module openrv64_l1_cache #(
     integer lookup_way_index;
     integer age_port;
     integer age_way;
-    wire [WAYS*DATA_WIDTH-1:0] lookup_way_data;
+    wire [WAYS*WORDS_PER_REFILL*DATA_WIDTH-1:0] lookup_bank_data;
     wire [DATA_WIDTH-1:0] response_hit_data =
-        lookup_way_data[response_way_q*DATA_WIDTH +: DATA_WIDTH];
+        lookup_bank_data[
+            (response_way_q*WORDS_PER_REFILL +
+             request_refill_word_q)*DATA_WIDTH +: DATA_WIDTH];
     wire [DATA_WIDTH-1:0] access_resident_data =
-        lookup_way_data[access_way_q*DATA_WIDTH +: DATA_WIDTH];
+        lookup_bank_data[
+            (access_way_q*WORDS_PER_REFILL +
+             access_refill_word_q)*DATA_WIDTH +: DATA_WIDTH];
     reg [DATA_WIDTH-1:0] access_write_value;
     integer access_write_byte;
 
-    wire refill_last_beat = (refill_beat_q == LAST_BEAT);
+    wire refill_last_beat = (refill_index_q == LAST_REFILL);
     wire [ADDR_WIDTH-1:0] refill_line_addr =
         {request_phys_addr_q[ADDR_WIDTH-1:LINE_OFFSET_BITS],
          {LINE_OFFSET_BITS{1'b0}}};
@@ -203,19 +222,25 @@ module openrv64_l1_cache #(
         end
     endfunction
 
-    function [WAY_WORD_INDEX_WIDTH-1:0] way_word_index_of;
+    function [WAY_REFILL_INDEX_WIDTH-1:0] way_refill_index_of;
         input [SET_INDEX_WIDTH-1:0] set_value;
-        input [BEAT_INDEX_WIDTH-1:0] beat_value;
+        input [REFILL_INDEX_WIDTH-1:0] refill_value;
         begin
-            way_word_index_of = WAY_WORD_INDEX_WIDTH'(set_value) *
-                                WAY_WORD_INDEX_WIDTH'(WORDS_PER_LINE) +
-                                WAY_WORD_INDEX_WIDTH'(beat_value);
+            way_refill_index_of =
+                WAY_REFILL_INDEX_WIDTH'(set_value) *
+                WAY_REFILL_INDEX_WIDTH'(REFILLS_PER_LINE) +
+                WAY_REFILL_INDEX_WIDTH'(refill_value);
         end
     endfunction
 
     initial begin
         if ((DATA_WIDTH < 8) || ((DATA_WIDTH & (DATA_WIDTH - 1)) != 0))
             $fatal(1, "L1 DATA_WIDTH must be a power of two and at least 8");
+        if ((REFILL_DATA_WIDTH < DATA_WIDTH) ||
+            ((REFILL_DATA_WIDTH & (REFILL_DATA_WIDTH - 1)) != 0) ||
+            ((REFILL_DATA_WIDTH % DATA_WIDTH) != 0) ||
+            ((LINE_BYTES * 8) % REFILL_DATA_WIDTH) != 0)
+            $fatal(1, "L1 refill width must be a power-of-two multiple of DATA_WIDTH which divides the line");
         if ((CACHE_BYTES < 1024) || (CACHE_BYTES > 32768) ||
             ((CACHE_BYTES & (CACHE_BYTES - 1)) != 0))
             $fatal(1, "L1 CACHE_BYTES must be a power of two from 1 KiB to 32 KiB");
@@ -239,13 +264,19 @@ module openrv64_l1_cache #(
         // parallel.  The selected way and data-array outputs are registered on
         // the accepting edge, permitting a new resident hit every cycle.
         accept_set = set_index_of(req_addr_i);
-        accept_beat = req_addr_i[$clog2(DATA_BYTES) +:
-                                 BEAT_INDEX_WIDTH];
+        accept_word = req_addr_i[$clog2(DATA_BYTES) +:
+                                 WORD_INDEX_WIDTH];
         if (WORDS_PER_LINE == 1)
-            accept_beat = 0;
+            accept_word = 0;
+        accept_refill_index =
+            REFILL_INDEX_WIDTH'(accept_word / WORDS_PER_REFILL);
+        accept_refill_word =
+            REFILL_WORD_INDEX_WIDTH'(accept_word % WORDS_PER_REFILL);
 
         lookup_set = accept_set;
-        lookup_beat = accept_beat;
+        lookup_word = accept_word;
+        lookup_refill_index = accept_refill_index;
+        lookup_refill_word = accept_refill_word;
         lookup_tag = req_phys_addr_i[ADDR_WIDTH-1:
                                      LINE_OFFSET_BITS + SET_BITS];
         lookup_hit = 1'b0;
@@ -311,7 +342,7 @@ module openrv64_l1_cache #(
                          (state_q == STATE_ACCESS);
     assign mem_write_o = (state_q == STATE_ACCESS) && request_write_q;
     assign mem_addr_o = (state_q == STATE_REFILL) ?
-        refill_line_addr + (refill_beat_q * DATA_BYTES) :
+        refill_line_addr + (refill_index_q * REFILL_BYTES) :
         request_phys_addr_q;
     assign mem_wdata_o = (state_q == STATE_ACCESS) ?
                          request_wdata_q : {DATA_WIDTH{1'b0}};
@@ -333,43 +364,57 @@ module openrv64_l1_cache #(
     end
 
     genvar data_way;
+    genvar data_bank;
     generate
         for (data_way = 0; data_way < WAYS;
              data_way = data_way + 1) begin : g_data_ways
-            // Both attributes are harmless to Yosys and cover the common
-            // FPGA synthesis spellings.  ASIC flows keep this as an inferred
-            // one-read/one-write memory until SRAM macro mapping.
-            (* ram_style = "block", syn_ramstyle = "block_ram" *)
-            reg [DATA_WIDTH-1:0] data_q [0:WORDS_PER_WAY-1];
-            reg [DATA_WIDTH-1:0] read_data_q;
+            for (data_bank = 0; data_bank < WORDS_PER_REFILL;
+                 data_bank = data_bank + 1) begin : g_refill_banks
+                // Each bank is one-read/one-write.  A full refill broadcasts
+                // its independently selected word to every bank.
+                (* ram_style = "block", syn_ramstyle = "block_ram" *)
+                reg [DATA_WIDTH-1:0] data_q [0:REFILLS_PER_WAY-1];
+                reg [DATA_WIDTH-1:0] read_data_q;
 
-            wire refill_write = (state_q == STATE_REFILL) &&
-                                mem_ready_i && !mem_error_i &&
-                                (refill_way_q ==
-                                 WAY_INDEX_WIDTH'(data_way));
-            wire access_write = (state_q == STATE_ACCESS) &&
-                                mem_ready_i && request_write_q &&
-                                !mem_error_i && access_updates_line_q &&
-                                (access_way_q ==
-                                 WAY_INDEX_WIDTH'(data_way));
-            wire data_write = refill_write || access_write;
-            wire [WAY_WORD_INDEX_WIDTH-1:0] data_write_addr =
-                refill_write ?
-                    way_word_index_of(refill_set_q, refill_beat_q) :
-                    way_word_index_of(access_set_q, access_beat_q);
-            wire [DATA_WIDTH-1:0] data_write_value =
-                refill_write ? mem_rdata_i : access_write_value;
+                wire refill_write = (state_q == STATE_REFILL) &&
+                                    mem_ready_i && !mem_error_i &&
+                                    (refill_way_q ==
+                                     WAY_INDEX_WIDTH'(data_way));
+                wire access_write = (state_q == STATE_ACCESS) &&
+                                    mem_ready_i && request_write_q &&
+                                    !mem_error_i &&
+                                    access_updates_line_q &&
+                                    (access_way_q ==
+                                     WAY_INDEX_WIDTH'(data_way)) &&
+                                    (access_refill_word_q ==
+                                     REFILL_WORD_INDEX_WIDTH'(data_bank));
+                wire data_write = refill_write || access_write;
+                wire [WAY_REFILL_INDEX_WIDTH-1:0] data_write_addr =
+                    refill_write ?
+                        way_refill_index_of(
+                            refill_set_q, refill_index_q) :
+                        way_refill_index_of(
+                            access_set_q, access_refill_index_q);
+                wire [DATA_WIDTH-1:0] data_write_value =
+                    refill_write ?
+                        mem_rdata_i[data_bank*DATA_WIDTH +: DATA_WIDTH] :
+                        access_write_value;
 
-            assign lookup_way_data[
-                data_way*DATA_WIDTH +: DATA_WIDTH] = read_data_q;
+                assign lookup_bank_data[
+                    (data_way*WORDS_PER_REFILL + data_bank)*DATA_WIDTH +:
+                    DATA_WIDTH] = read_data_q;
 
-            always @(posedge clk_i) begin
-                if (request_fire)
-                    read_data_q <= data_q[
-                        way_word_index_of(accept_set, accept_beat)];
+                always @(posedge clk_i) begin
+                    if (request_fire &&
+                        (accept_refill_word ==
+                         REFILL_WORD_INDEX_WIDTH'(data_bank)))
+                        read_data_q <= data_q[
+                            way_refill_index_of(
+                                accept_set, accept_refill_index)];
 
-                if (data_write)
-                    data_q[data_write_addr] <= data_write_value;
+                    if (data_write)
+                        data_q[data_write_addr] <= data_write_value;
+                end
             end
         end
     endgenerate
@@ -389,12 +434,14 @@ module openrv64_l1_cache #(
             refill_way_q <= 0;
             refill_line_q <= 0;
             refill_tag_q <= 0;
-            refill_beat_q <= 0;
-            request_beat_q <= 0;
+            refill_index_q <= 0;
+            request_refill_index_q <= 0;
+            request_refill_word_q <= 0;
             access_updates_line_q <= 1'b0;
             access_set_q <= 0;
             access_way_q <= 0;
-            access_beat_q <= 0;
+            access_refill_index_q <= 0;
+            access_refill_word_q <= 0;
             response_valid_q <= 1'b0;
             response_hit_q <= 1'b0;
             response_way_q <= 0;
@@ -493,6 +540,7 @@ module openrv64_l1_cache #(
                         request_phys_addr_q <= req_phys_addr_i;
                         request_wdata_q <= req_wdata_i;
                         request_wstrb_q <= req_wstrb_i;
+                        request_refill_word_q <= lookup_refill_word;
                         if (!req_cacheable_i) begin
                             access_updates_line_q <= 1'b0;
                             response_hit_q <= 1'b0;
@@ -501,7 +549,9 @@ module openrv64_l1_cache #(
                             access_updates_line_q <= lookup_hit;
                             access_set_q <= lookup_set;
                             access_way_q <= lookup_way;
-                            access_beat_q <= lookup_beat;
+                            access_refill_index_q <=
+                                lookup_refill_index;
+                            access_refill_word_q <= lookup_refill_word;
                             response_hit_q <= 1'b0;
                             if (lookup_hit)
                                 replace_q[lookup_set] <=
@@ -537,8 +587,9 @@ module openrv64_l1_cache #(
                             refill_line_q <= line_index_of(
                                 lookup_set, victim_way);
                             refill_tag_q <= lookup_tag;
-                            refill_beat_q <= 0;
-                            request_beat_q <= lookup_beat;
+                            refill_index_q <= 0;
+                            request_refill_index_q <=
+                                lookup_refill_index;
                             response_hit_q <= 1'b0;
                             valid_q[line_index_of(
                                 lookup_set, victim_way)] <= 1'b0;
@@ -562,8 +613,11 @@ module openrv64_l1_cache #(
                             response_valid_q <= 1'b1;
                             state_q <= STATE_RUN;
                         end else begin
-                            if (refill_beat_q == request_beat_q)
-                                response_data_q <= mem_rdata_i;
+                            if (refill_index_q ==
+                                request_refill_index_q)
+                                response_data_q <= mem_rdata_i[
+                                    request_refill_word_q*DATA_WIDTH +:
+                                    DATA_WIDTH];
                             if (refill_last_beat) begin
                                 tag_q[refill_line_q] <= refill_tag_q;
                                 valid_q[refill_line_q] <= 1'b1;
@@ -578,7 +632,7 @@ module openrv64_l1_cache #(
                                 response_valid_q <= 1'b1;
                                 state_q <= STATE_RUN;
                             end else begin
-                                refill_beat_q <= refill_beat_q + 1'b1;
+                                refill_index_q <= refill_index_q + 1'b1;
                             end
                         end
                     end
@@ -586,7 +640,8 @@ module openrv64_l1_cache #(
 
                 STATE_ACCESS: begin
                     if (mem_ready_i) begin
-                        response_data_q <= mem_rdata_i;
+                        response_data_q <= mem_rdata_i[
+                            DATA_WIDTH-1:0];
                         response_error_q <= mem_error_i;
                         response_valid_q <= 1'b1;
                         state_q <= STATE_RUN;

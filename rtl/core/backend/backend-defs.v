@@ -9,7 +9,10 @@
 `define OPENRV64_EXEC_PIPE_WIDTH 2
 `define OPENRV64_EXEC_PIPE_EX0 2'd0
 `define OPENRV64_EXEC_PIPE_EX1 2'd1
-`define OPENRV64_EXEC_PIPE_MEM 2'd2
+`define OPENRV64_EXEC_PIPE_MEM0 2'd2
+`define OPENRV64_EXEC_PIPE_MEM1 2'd3
+`define OPENRV64_EXEC_PIPE_MEM `OPENRV64_EXEC_PIPE_MEM0
+`define OPENRV64_EXEC_PIPE_COUNT 4
 
 // Internal instruction identity used to match issue, completion, redirect,
 // and retirement state.  This is deliberately separate from the 64-bit trace

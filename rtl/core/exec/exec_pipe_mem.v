@@ -75,6 +75,11 @@ module openrv64_exec_pipe_mem #(
     output wire                         mem_access_o,
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
+    output wire                         pending_head_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        pending_head_id_o,
+    output wire                         pending_head_ordered_o,
+    output wire                         queue_busy_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i
 );
 
@@ -374,6 +379,13 @@ module openrv64_exec_pipe_mem #(
                                   request_effective_addr;
     assign mem_size_o = atomic_active_q ? atomic_access_size :
                         request_access_size;
+    assign pending_head_valid_o = atomic_active_q || request_slot_valid;
+    assign pending_head_id_o = atomic_active_q ? atomic_id_q :
+                               slot_id_q[send_head_q];
+    assign pending_head_ordered_o = atomic_active_q ||
+                                    (request_slot_valid &&
+                                     request_mem_write);
+    assign queue_busy_o = atomic_active_q || simple_any_valid;
     wire mem_request_fire = mem_valid_o && mem_ready_i;
     wire simple_request_fire = mem_request_fire && !atomic_active_q;
     wire posted_store_fire = simple_request_fire && posted_store_candidate;

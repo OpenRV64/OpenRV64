@@ -7,6 +7,7 @@ module openrv64_l1 #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
+    parameter integer REFILL_DATA_WIDTH = DATA_WIDTH,
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
@@ -43,7 +44,7 @@ module openrv64_l1 #(
     output wire [ADDR_WIDTH-1:0]     mem_addr_o,
     output wire [DATA_WIDTH-1:0]     mem_wdata_o,
     output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
-    input  wire [DATA_WIDTH-1:0]     mem_rdata_i,
+    input  wire [REFILL_DATA_WIDTH-1:0] mem_rdata_i,
     input  wire                      mem_error_i
 );
 
@@ -52,6 +53,7 @@ module openrv64_l1 #(
             openrv64_l1_cache #(
                 .ADDR_WIDTH(ADDR_WIDTH),
                 .DATA_WIDTH(DATA_WIDTH),
+                .REFILL_DATA_WIDTH(REFILL_DATA_WIDTH),
                 .CACHE_BYTES(CACHE_BYTES),
                 .LINE_BYTES(LINE_BYTES),
                 .WAYS(WAYS),
@@ -135,7 +137,8 @@ module openrv64_l1 #(
                     if (request_valid_q && mem_ready_i) begin
                         request_valid_q <= 1'b0;
                         response_valid_q <= 1'b1;
-                        response_data_q <= mem_rdata_i;
+                        response_data_q <= mem_rdata_i[
+                            DATA_WIDTH-1:0];
                         response_error_q <= mem_error_i;
                     end
                 end

@@ -88,7 +88,7 @@ module tb_backend_3p #(
     wire [31:0] retire_instr;
     wire [4:0] retire_rd;
     wire [63:0] retire_wdata;
-    wire [2:0] issue_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid;
     wire [2:0] complete_valid;
     wire [31:0] write_busy;
     wire barrier_active;
@@ -122,6 +122,10 @@ module tb_backend_3p #(
         .mem_wdata_o(mem_wdata), .mem_wstrb_o(mem_wstrb),
         .mem_access_o(mem_access),
         .mem_effective_addr_o(mem_effective_addr), .mem_size_o(mem_size),
+        .mem1_valid_o(), .mem1_ready_i(1'b0), .mem1_tag_o(),
+        .mem1_lock_o(), .mem1_write_o(), .mem1_addr_o(),
+        .mem1_wdata_o(), .mem1_wstrb_o(), .mem1_access_o(),
+        .mem1_effective_addr_o(), .mem1_size_o(),
         .mem_rdata_i(mem_rdata), .irq_pending_i(irq_pending),
         .irq_cause_i(irq_cause), .redirect_valid_o(redirect_valid),
         .redirect_id_o(redirect_id), .redirect_target_o(redirect_target),

@@ -13,6 +13,8 @@ module tb_ccx_bus #(
     logic fetch_req_valid;
     wire fetch_req_ready;
     logic [63:0] fetch_req_addr;
+    logic fetch_req_stash;
+    logic fetch_req_demand;
     logic fetch_cancel;
     wire fetch_resp_valid;
     logic fetch_resp_ready;
@@ -20,6 +22,10 @@ module tb_ccx_bus #(
     wire [255:0] fetch_resp_data;
     wire fetch_resp_access_fault;
     wire fetch_resp_page_fault;
+    wire fetch_resp_stash;
+    wire fetch_resp_demand;
+    logic [2:0] icache_age_valid;
+    logic [3*64-1:0] icache_age_addr;
 
     logic lsu_valid;
     logic lsu_write;
@@ -149,6 +155,7 @@ module tb_ccx_bus #(
     integer wait_count;
     integer channel_wait;
     integer ptw_wait;
+    integer locked_reads_before;
     reg [63:0] locked_old_word;
     reg [2:0] seen_id [0:15];
     reg [63:0] seen_addr [0:15];
@@ -163,8 +170,8 @@ module tb_ccx_bus #(
         .fetch_req_valid_i(fetch_req_valid),
         .fetch_req_ready_o(fetch_req_ready),
         .fetch_req_addr_i(fetch_req_addr),
-        .fetch_req_stash_i(1'b0),
-        .fetch_req_demand_i(1'b1),
+        .fetch_req_stash_i(fetch_req_stash),
+        .fetch_req_demand_i(fetch_req_demand),
         .fetch_req_priv_i(`RV64_PRIV_M),
         .fetch_req_vm_mode_i(`RV64_SATP_MODE_BARE),
         .fetch_req_asid_i(16'd0), .fetch_req_root_ppn_i(44'd0),
@@ -177,6 +184,8 @@ module tb_ccx_bus #(
         .fetch_resp_data_o(fetch_resp_data),
         .fetch_resp_access_fault_o(fetch_resp_access_fault),
         .fetch_resp_page_fault_o(fetch_resp_page_fault),
+        .fetch_resp_stash_o(fetch_resp_stash),
+        .fetch_resp_demand_o(fetch_resp_demand),
         .lsu_valid_i(lsu_valid), .lsu_lock_i(1'b0),
         .lsu_write_i(lsu_write),
         .lsu_addr_i(lsu_addr), .lsu_wdata_i(lsu_wdata),
@@ -192,8 +201,8 @@ module tb_ccx_bus #(
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),
         .icache_prefetch_fallthrough_addr_i(64'd0),
-        .icache_age_valid_i(3'b000),
-        .icache_age_addr_i(192'd0),
+        .icache_age_valid_i(icache_age_valid),
+        .icache_age_addr_i(icache_age_addr),
         .lsu_pipe_req_valid_i(pipe_req_valid),
         .lsu_pipe_req_ready_o(pipe_req_ready),
         .lsu_pipe_req_tag_i(pipe_req_tag),
@@ -289,6 +298,22 @@ module tb_ccx_bus #(
         ccx_memory_word = ccx_memory[addr[13:6]][addr[5:3]*64 +: 64];
     endfunction
 
+    function automatic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        ccx_read_response(
+            input [63:0] addr,
+            input [2:0] size
+        );
+        begin
+            if (size == 3'd6) begin
+                ccx_read_response = ccx_memory[addr[13:6]];
+            end else begin
+                ccx_read_response = 0;
+                ccx_read_response[addr[5:3]*64 +: 64] =
+                    ccx_memory_word(addr);
+            end
+        end
+    endfunction
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ccx_cmd_pending <= 1'b0;
@@ -342,19 +367,22 @@ module tb_ccx_bus #(
                     if ((ccx_req_attr ==
                          `OPENRV64_CCX_ATTR_CACHEABLE) &&
                         (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
-                        !ccx_req_lock &&
                         ((ccx_req_size != 3'd6) ||
-                         (ccx_req_addr[5:0] != 0)))
+                         (ccx_req_addr[5:0] != 0)) &&
+                        !((ccx_req_size == 3'd3) &&
+                          (ccx_req_addr == 64'h108)))
                         $fatal(1,
-                               "L1D miss was not one aligned line read");
+                               "L1D read had invalid line/scalar geometry");
                     if ((ccx_req_attr ==
                          `OPENRV64_CCX_ATTR_CACHEABLE) &&
                         (ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
-                        !ccx_req_lock &&
                         ((ccx_req_size != 3'd6) ||
-                         (ccx_req_addr[5:0] != 0)))
+                         (ccx_req_addr[5:0] != 0)) &&
+                        !((ccx_req_size == 3'd3) &&
+                          ((ccx_req_addr == 64'h108) ||
+                           (ccx_req_addr == 64'h118))))
                         $fatal(1,
-                               "posted L1D store was not one aligned masked line write");
+                               "L1D write had invalid line/scalar geometry");
                 end
                 ccx_cmd_pending <= 1'b1;
                 ccx_cmd_hart_id <= ccx_req_hart_id;
@@ -403,7 +431,8 @@ module tb_ccx_bus #(
                 ccx_resp_source_id <= ccx_cmd_source_id;
                 ccx_resp_beat_index <= 0;
                 ccx_resp_last <= 1'b1;
-                ccx_resp_rdata <= ccx_memory[ccx_cmd_addr[13:6]];
+                ccx_resp_rdata <= ccx_read_response(
+                    ccx_cmd_addr, ccx_cmd_size);
                 ccx_resp_error <= ccx_fail_enable &&
                                   (ccx_cmd_addr == ccx_fail_addr);
                 ccx_cmd_pending <= 1'b0;
@@ -562,7 +591,9 @@ module tb_ccx_bus #(
     task automatic expect_fetch(
         input [63:0] addr,
         input [255:0] data,
-        input access_fault
+        input access_fault,
+        input stash,
+        input demand
     );
         integer wait_cycles;
         begin
@@ -576,10 +607,14 @@ module tb_ccx_bus #(
                     dut.fetch_count_q, dut.fetch_head_q);
             if (fetch_resp_addr != addr || fetch_resp_data != data ||
                 fetch_resp_access_fault != access_fault ||
-                fetch_resp_page_fault)
-                $fatal(1, "fetch response mismatch addr=%h data=%h fault=%b",
+                fetch_resp_page_fault ||
+                fetch_resp_stash != stash ||
+                fetch_resp_demand != demand)
+                $fatal(1,
+                       "fetch response mismatch addr=%h data=%h fault=%b stash=%b demand=%b",
                        fetch_resp_addr, fetch_resp_data,
-                       fetch_resp_access_fault);
+                       fetch_resp_access_fault, fetch_resp_stash,
+                       fetch_resp_demand);
             tick();
         end
     endtask
@@ -589,6 +624,8 @@ module tb_ccx_bus #(
         rst_n = 0;
         fetch_req_valid = 0;
         fetch_req_addr = 0;
+        fetch_req_stash = 0;
+        fetch_req_demand = 1;
         fetch_cancel = 0;
         fetch_resp_ready = 1;
         lsu_valid = 0;
@@ -634,6 +671,8 @@ module tb_ccx_bus #(
         ccx_fail_addr = 0;
         ccx_allow_cmd = 1;
         ccx_allow_wdata = 1;
+        icache_age_valid = 3'b000;
+        icache_age_addr = 192'd0;
         for (ccx_index = 0; ccx_index < 256;
              ccx_index = ccx_index + 1) begin
             for (ccx_word_index = 0; ccx_word_index < 8;
@@ -659,10 +698,10 @@ module tb_ccx_bus #(
         send_read_response(3'd3, 256'h4444, 2'b00);
         send_read_response(3'd1, 256'h2222, 2'b00);
         fetch_resp_ready = 1;
-        expect_fetch(64'h0, 256'h1111, 0);
-        expect_fetch(64'h20, 256'h2222, 0);
-        expect_fetch(64'h40, 256'h3333, 0);
-        expect_fetch(64'h60, 256'h4444, 0);
+        expect_fetch(64'h0, 256'h1111, 0, 0, 1);
+        expect_fetch(64'h20, 256'h2222, 0, 0, 1);
+        expect_fetch(64'h40, 256'h3333, 0, 0, 1);
+        expect_fetch(64'h60, 256'h4444, 0, 0, 1);
         if (ar_count != 4)
             $fatal(1, "expected four sequential AR requests, got %0d", ar_count);
         if (seen_addr[0] != 64'h0 || seen_addr[1] != 64'h20 ||
@@ -685,6 +724,25 @@ module tb_ccx_bus #(
         fetch_resp_ready = 1;
         pmp_allow = 1;
 
+        // A branch alternate can also be the next sequential line.  Such a
+        // request is both stash and architectural demand; retirement aging
+        // may discard a stash-only transaction but must preserve this one.
+        fetch_req_stash = 1;
+        fetch_req_demand = 1;
+        push_fetch(64'h00c0);
+        while (ar_count != 5) tick();
+        icache_age_addr[0*64 +: 64] = 64'h00c0;
+        icache_age_valid = 3'b001;
+        tick();
+        icache_age_valid = 3'b000;
+        send_read_response(seen_id[4], 256'h5555, 2'b00);
+        expect_fetch(64'h00c0, 256'h5555, 0, 1, 1);
+        fetch_req_stash = 0;
+        if ($test$plusargs("fetch_stash_aging_only")) begin
+            $display("PASS: CCX preserves aged stash+demand fetch");
+            $finish;
+        end
+
         // A miss is one native 512-bit CCX line read.  A second word in that
         // line is a local hit; scalar data must not leak onto AXI.
         wait_count = ccx_reads;
@@ -701,7 +759,7 @@ module tb_ccx_bus #(
         expect_pipe_response(2'd1, locked_old_word, 1'b0, 1'b0);
         if (ccx_reads != wait_count)
             $fatal(1, "L1D hit unexpectedly reached CCX");
-        if (ar_count != 4 || awvalid || wvalid)
+        if (ar_count != 5 || awvalid || wvalid)
             $fatal(1, "scalar LSU traffic leaked onto AXI");
 
         // A bring-up AMO phase must bypass and invalidate a resident L1D
@@ -716,12 +774,14 @@ module tb_ccx_bus #(
         pipe_cancel = 1'b1;
         tick();
         pipe_cancel = 1'b0;
-        if (!ccx_req_valid || !ccx_req_lock)
-            $fatal(1, "redirect cancelled an irrevocable locked read");
+        if (!ccx_req_valid || ccx_req_lock)
+            $fatal(1,
+                "redirect cancelled AMO read or leaked its marker to CCX");
         ccx_allow_cmd = 1'b1;
         expect_pipe_response(2'd2, locked_old_word, 1'b0, 1'b0);
-        if ((ccx_reads - wait_count) != 1 || ccx_locked_reads != 1)
-            $fatal(1, "locked L1D read hit or lost its CCX lock marker");
+        if ((ccx_reads - wait_count) != 1 || ccx_locked_reads != 0)
+            $fatal(1,
+                "atomic L1D read did not bypass L1 or leaked a CCX lock");
 
         wait_count = ccx_reads;
         locked_old_word = ccx_memory_word(64'h108);
@@ -737,8 +797,8 @@ module tb_ccx_bus #(
                           64'hcafe_babe_dead_beef, 8'hff);
         pipe_req_lock = 1'b0;
         expect_pipe_response(2'd2, locked_old_word, 1'b0, 1'b0);
-        if ((ccx_writes - wait_count) != 1 || ccx_locked_writes != 1)
-            $fatal(1, "locked L1D write lost its CCX lock marker");
+        if ((ccx_writes - wait_count) != 1 || ccx_locked_writes != 0)
+            $fatal(1, "atomic L1D write leaked a CCX lock");
 
         // A tagged store is irrevocable after L1 admission.  Architectural
         // completion reports that admission, not the later CCX drain result.
@@ -753,12 +813,24 @@ module tb_ccx_bus #(
         push_pipe_request(2'd1, 1'b1, 64'h114,
             64'haabb_ccdd_0000_0000, 8'hf0);
         channel_wait = 0;
-        while (!ccx_data_pending && channel_wait < 50) begin
+        // A lone posted store may remain coalescible until the default
+        // 1024-cycle L1D store-buffer timeout.  This test is about independent
+        // CCX command/data backpressure, so wait through that policy interval
+        // instead of assuming an immediate drain.
+        while (!ccx_data_pending && channel_wait < 1200) begin
             tick();
             channel_wait = channel_wait + 1;
         end
         if (!ccx_data_pending)
-            $fatal(1, "CCX write data did not advance independently");
+            $fatal(1,
+                "CCX write data did not advance independently lsu=%0d l1count=%0d valid=%b complete=%b l1backend=%0d l1mem=%b/%b ccx=%b/%b wdata=%b/%b",
+                dut.lsu_state_q, dut.u_l1d.store_buffer_count_q,
+                dut.u_l1d.store_buffer_valid_q[
+                    dut.u_l1d.store_buffer_head_q],
+                dut.u_l1d.store_completion_valid_q,
+                dut.u_l1d.backend_state_q, dut.u_l1d.l1_mem_valid,
+                dut.u_l1d.l1_mem_write, ccx_req_valid, ccx_req_ready,
+                ccx_wdata_valid, ccx_wdata_ready);
         if (!ccx_req_valid)
             $fatal(1, "CCX command was not held after write data accepted");
         pipe_cancel = 1'b1;
@@ -779,8 +851,8 @@ module tb_ccx_bus #(
         ccx_fail_enable = 0;
 
         // Stores complete architecturally at bus admission, then queue as
-        // aligned 64-byte records with byte enables.  A stalled CCX command
-        // must not prevent independent younger stores from reaching L1D.
+        // aligned 64-byte records with byte enables.  These eight writes
+        // cover one line and must coalesce into one stalled buffer entry.
         ccx_memory[6'h0c] = 512'd0;
         wait_count = ccx_writes;
         ccx_allow_cmd = 0;
@@ -810,18 +882,42 @@ module tb_ccx_bus #(
                           64'h99aa_bbcc_ddee_ff00, 8'haa);
         expect_pipe_response(3'd7, 64'd0, 1'b0, 1'b0);
         channel_wait = 0;
-        while ((dut.u_l1d.store_buffer_count_q != 8) &&
+        while ((dut.u_l1d.store_buffer_count_q != 1) &&
                channel_wait < 150) begin
             tick();
             channel_wait = channel_wait + 1;
         end
-        if (dut.u_l1d.store_buffer_count_q != 8)
-            $fatal(1, "L1D did not retain eight stalled stores data=%0d",
+        if (dut.u_l1d.store_buffer_count_q != 1)
+            $fatal(1, "L1D did not coalesce one line of stalled stores data=%0d",
                    dut.u_l1d.store_buffer_count_q);
+
+        // The marked read is the first half of the serialized single-hart AMO
+        // sequence.  It must remain outside L1D until every older posted store
+        // has reached CCX.  The marker is deliberately not forwarded as a
+        // shared-home lock.
+        locked_reads_before = ccx_reads;
+        pipe_req_lock = 1'b1;
+        push_pipe_request(3'd0, 1'b0, 64'h108, 64'd0, 8'd0);
+        pipe_req_lock = 1'b0;
+        if (ccx_reads != locked_reads_before)
+            $fatal(1, "atomic read reached CCX ahead of buffered stores");
         ccx_allow_cmd = 1;
-        while ((ccx_writes - wait_count) != 8)
+        channel_wait = 0;
+        while ((ccx_reads == locked_reads_before) &&
+               (channel_wait < 300)) begin
             tick();
-        if ((ccx_writes - wait_count) != 8 ||
+            channel_wait = channel_wait + 1;
+        end
+        if (ccx_reads == locked_reads_before)
+            $fatal(1, "atomic read did not force store-buffer drain");
+        if ((ccx_writes - wait_count) != 1)
+            $fatal(1, "atomic read admitted before coalesced store reached CCX");
+        locked_old_word = ccx_memory_word(64'h108);
+        expect_pipe_response(3'd0, locked_old_word, 1'b0, 1'b0);
+        if (ccx_reads != locked_reads_before + 1 ||
+            ccx_locked_reads != 0)
+            $fatal(1, "post-drain atomic read leaked a CCX lock");
+        if ((ccx_writes - wait_count) != 1 ||
             ccx_memory_word(64'h300) != 64'h0000_0000_5566_7788 ||
             ccx_memory_word(64'h308) != 64'haabb_ccdd_0000_0000 ||
             ccx_memory_word(64'h310) != 64'h0100_0000_0000_00ef ||
@@ -830,7 +926,18 @@ module tb_ccx_bus #(
             ccx_memory_word(64'h328) != 64'h0f1e_0000_4b5a_0000 ||
             ccx_memory_word(64'h330) != 64'h0077_0055_0033_0011 ||
             ccx_memory_word(64'h338) != 64'h9900_bb00_dd00_ff00)
-            $fatal(1, "L1D byte-masked store buffer drain mismatch");
+            $fatal(1, "L1D byte-masked store coalescing/drain mismatch");
+
+        // Complete the serialized atomic read/write pair before issuing
+        // unrelated traffic.  Single-hart mode intentionally does not acquire
+        // a CCX/L2 home lock.
+        wait_count = ccx_writes;
+        pipe_req_lock = 1'b1;
+        push_pipe_request(3'd1, 1'b1, 64'h108, locked_old_word, 8'hff);
+        pipe_req_lock = 1'b0;
+        expect_pipe_response(3'd1, locked_old_word, 1'b0, 1'b0);
+        if (ccx_writes != wait_count + 1 || ccx_locked_writes != 0)
+            $fatal(1, "post-drain atomic write leaked a CCX lock");
 
         // Translated tagged traffic uses a cacheable PTE line read on CCX and
         // returns the page fault under the original request tag.  An invalid

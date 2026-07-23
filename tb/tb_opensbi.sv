@@ -1,10 +1,22 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-priv.v"
 `include "core/backend/backend-defs.v"
+`include "core/bus/bus-defs.v"
 
 module tb_opensbi #(
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
-        `OPENRV64_BACKEND_1P
+        `OPENRV64_BACKEND_1P,
+    parameter integer ISSUE_WINDOW = 0,
+    parameter integer SPECULATION_WINDOW = 0,
+    parameter integer L2_BYTES = 256 * 1024,
+    parameter integer L2_WAYS = 8,
+    parameter bit L1D_PREFETCH_ENABLE = 1'b1
+) (
+    output wire [31:0] checkpoint_cycle_o
+`ifdef OPENRV64_VERILATOR_CHECKPOINT
+    ,
+    input  wire        checkpoint_clk_i
+`endif
 );
 
     localparam logic [63:0] RAM_BASE = 64'h8000_0000;
@@ -66,6 +78,13 @@ module tb_opensbi #(
     integer linux_trap_count;
     integer linux_same_trap_count;
     integer linux_ptw_trace_count;
+    integer instruction_trace_fd;
+    integer lsu_trace_fd;
+    integer ccx_trace_fd;
+    integer l1d_lock_trace_count;
+    string instruction_trace_path;
+    string lsu_trace_path;
+    string ccx_trace_path;
     logic saw_banner;
     logic saw_payload_text;
     logic saw_linux_panic;
@@ -106,6 +125,34 @@ module tb_opensbi #(
     wire [1:0] observed_ptw_level;
     wire [63:0] observed_ptw_pte_addr;
     wire [63:0] observed_ptw_pte_data;
+    wire observed_lsu_req_valid;
+    wire observed_lsu_req_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] observed_lsu_req_tag;
+    wire observed_lsu_req_lock;
+    wire observed_lsu_req_write;
+    wire [63:0] observed_lsu_req_addr;
+    wire [63:0] observed_lsu_req_wdata;
+    wire [7:0] observed_lsu_req_wstrb;
+    wire [2:0] observed_lsu_req_size;
+    wire observed_lsu_resp_valid;
+    wire observed_lsu_resp_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] observed_lsu_resp_tag;
+    wire [63:0] observed_lsu_resp_rdata;
+    wire observed_lsu_resp_access_fault;
+    wire observed_lsu_resp_page_fault;
+    wire observed_ccx_local_lock;
+    wire [1:0] observed_l1d_backend_state;
+    wire observed_l1d_input_valid;
+    wire observed_l1d_input_ready;
+    wire observed_l1d_lock_invalidate_request;
+    wire observed_l1d_lock_invalidated;
+    wire observed_l1d_l1_req_valid;
+    wire observed_l1d_l1_req_ready;
+    wire observed_l1d_mem_valid;
+    wire observed_l1d_mem_write;
+    wire observed_l1d_ccx_req_valid;
+
+    assign checkpoint_cycle_o = cycle_count;
     logic [4:0] previous_trap_cause;
     logic [63:0] previous_trap_tval;
     wire [63:0] observed_root_base =
@@ -124,6 +171,11 @@ module tb_opensbi #(
         .CORE_RESET_DELAY_CYCLES(2),
         .GPIO_WIDTH(32),
         .BACKEND_CONFIG(BACKEND_CONFIG),
+        .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .L2_BYTES(L2_BYTES),
+        .L2_WAYS(L2_WAYS),
+        .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64A(1'b1),
         .ENABLE_TRACE(1'b1)
@@ -211,6 +263,67 @@ module tb_opensbi #(
             assign observed_ptw_level = 2'd0;
             assign observed_ptw_pte_addr = 64'd0;
             assign observed_ptw_pte_data = 64'd0;
+            assign observed_lsu_req_valid =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_valid;
+            assign observed_lsu_req_ready =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_bus_ready;
+            assign observed_lsu_req_tag =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_tag;
+            assign observed_lsu_req_lock =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_lock;
+            assign observed_lsu_req_write =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_write;
+            assign observed_lsu_req_addr =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_addr;
+            assign observed_lsu_req_wdata =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_wdata;
+            assign observed_lsu_req_wstrb =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_wstrb;
+            assign observed_lsu_req_size =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_size;
+            assign observed_lsu_resp_valid =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_resp_valid;
+            assign observed_lsu_resp_ready =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_resp_ready;
+            assign observed_lsu_resp_tag =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_resp_tag;
+            assign observed_lsu_resp_rdata =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_rdata;
+            assign observed_lsu_resp_access_fault =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_access_fault;
+            assign observed_lsu_resp_page_fault =
+                dut.u_core.g_backend_3p.u_core_3p.backend_mem_page_fault;
+            assign observed_ccx_local_lock = 1'b0;
+            assign observed_l1d_backend_state =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.backend_state_q;
+            assign observed_l1d_input_valid =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .l1d_req_valid;
+            assign observed_l1d_input_ready =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .l1d_req_ready;
+            assign observed_l1d_lock_invalidate_request =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.lock_invalidate_request;
+            assign observed_l1d_lock_invalidated =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.locked_line_invalidated_q;
+            assign observed_l1d_l1_req_valid =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.l1_req_valid;
+            assign observed_l1d_l1_req_ready =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.l1_req_ready;
+            assign observed_l1d_mem_valid =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.l1_mem_valid;
+            assign observed_l1d_mem_write =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.l1_mem_write;
+            assign observed_l1d_ccx_req_valid =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .l1d_ccx_req_valid;
         end else begin : g_observe_1p
             assign observed_priv_mode = dut.u_core.u_core.u_csrs.priv_mode_q;
             assign observed_ra = dut.u_core.u_core.u_gpr.regs[1];
@@ -243,13 +356,43 @@ module tb_opensbi #(
                 dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.walk_pte_addr;
             assign observed_ptw_pte_data =
                 dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.ccx_pte_data;
+            assign observed_lsu_req_valid = 1'b0;
+            assign observed_lsu_req_ready = 1'b0;
+            assign observed_lsu_req_tag = 0;
+            assign observed_lsu_req_lock = 1'b0;
+            assign observed_lsu_req_write = 1'b0;
+            assign observed_lsu_req_addr = 64'd0;
+            assign observed_lsu_req_wdata = 64'd0;
+            assign observed_lsu_req_wstrb = 8'd0;
+            assign observed_lsu_req_size = 3'd0;
+            assign observed_lsu_resp_valid = 1'b0;
+            assign observed_lsu_resp_ready = 1'b0;
+            assign observed_lsu_resp_tag = 0;
+            assign observed_lsu_resp_rdata = 64'd0;
+            assign observed_lsu_resp_access_fault = 1'b0;
+            assign observed_lsu_resp_page_fault = 1'b0;
+            assign observed_ccx_local_lock = 1'b0;
+            assign observed_l1d_backend_state = 2'd0;
+            assign observed_l1d_input_valid = 1'b0;
+            assign observed_l1d_input_ready = 1'b0;
+            assign observed_l1d_lock_invalidate_request = 1'b0;
+            assign observed_l1d_lock_invalidated = 1'b0;
+            assign observed_l1d_l1_req_valid = 1'b0;
+            assign observed_l1d_l1_req_ready = 1'b0;
+            assign observed_l1d_mem_valid = 1'b0;
+            assign observed_l1d_mem_write = 1'b0;
+            assign observed_l1d_ccx_req_valid = 1'b0;
         end
     endgenerate
 
+`ifdef OPENRV64_VERILATOR_CHECKPOINT
+    always @* clk = checkpoint_clk_i;
+`else
     initial begin
         clk = 1'b0;
         forever #5 clk = ~clk;
     end
+`endif
 
     task automatic match_byte;
         input logic [7:0] value;
@@ -302,6 +445,52 @@ module tb_opensbi #(
         end
     endtask
 
+    task automatic load_images;
+        begin
+            $display("OpenSBI load: trampoline");
+            $readmemh(trampoline_memh, dut.u_memory.memory_q,
+                      (RAM_BASE - RAM_BASE) >> 3,
+                      ((RAM_BASE - RAM_BASE) >> 3)
+                          + TRAMPOLINE_WORDS - 1);
+            $display("OpenSBI load: firmware");
+            $readmemh(firmware_memh, dut.u_memory.memory_q,
+                      (FIRMWARE_BASE - RAM_BASE) >> 3,
+                      ((FIRMWARE_BASE - RAM_BASE) >> 3)
+                          + FIRMWARE_WORDS - 1);
+            $display("OpenSBI load: payload");
+            $readmemh(payload_memh, dut.u_memory.memory_q,
+                      (PAYLOAD_BASE - RAM_BASE) >> 3,
+                      ((PAYLOAD_BASE - RAM_BASE) >> 3)
+                          + payload_words - 1);
+            $display("OpenSBI load: FDT");
+            $readmemh(fdt_memh, dut.u_memory.memory_q,
+                      (FDT_BASE - RAM_BASE) >> 3,
+                      ((FDT_BASE - RAM_BASE) >> 3) + FDT_WORDS - 1);
+            $display("OpenSBI load: complete");
+        end
+    endtask
+
+    task automatic report_timeout;
+        begin
+            if (linux_mode) begin
+                $display("LINUX TIMEOUT cycles=%0d pc=%016x instr=%08x priv=%0d banner=%b linux_banner=%b uart_bytes=%0d mcause=%016x mtval=%016x scause=%016x stval=%016x",
+                         cycle_count, dbg_pc, dbg_instr,
+                         observed_priv_mode, saw_banner, saw_payload_text,
+                         uart_byte_count, observed_mcause, observed_mtval,
+                         observed_scause, observed_stval);
+                $finish;
+            end else begin
+                $fatal(1,
+                       "OpenSBI timeout pc=%016x instr=%08x priv=%0d banner=%b payload=%b magic=%016x mcause=%016x mtval=%016x",
+                       dbg_pc, dbg_instr, observed_priv_mode,
+                       saw_banner, saw_payload_text,
+                       dut.u_memory.memory_q[
+                           (MAGIC_ADDR - RAM_BASE) >> 3],
+                       observed_mcause, observed_mtval);
+            end
+        end
+    endtask
+
     always @(posedge clk) begin
         if (core_rst_n &&
             (observed_priv_mode == `RV64_PRIV_S)) begin
@@ -316,6 +505,72 @@ module tb_opensbi #(
 
         if (core_rst_n) begin
             cycle_count <= cycle_count + 1;
+            if ((instruction_trace_fd != 0) && trace_retire_valid)
+                $fdisplay(instruction_trace_fd,
+                    "cycle=%0d pc=%016x instr=%08x priv=%0d arch=%0d exception=%0d cause=%0d next=%016x rd_write=%0d rd=%0d wdata=%016x",
+                    cycle_count, trace_pcs[319:256],
+                    trace_instrs[159:128], observed_priv_mode,
+                    trace_retire_arch, trace_retire_exception,
+                    trace_retire_cause, trace_retire_next_pc,
+                    trace_retire_rd_write, trace_retire_rd,
+                    trace_retire_wdata);
+            if ((lsu_trace_fd != 0) &&
+                observed_lsu_req_valid && observed_lsu_req_ready)
+                $fdisplay(lsu_trace_fd,
+                    "REQ cycle=%0d pc=%016x tag=%0d lock=%0d write=%0d addr=%016x data=%016x strb=%02x size=%0d",
+                    cycle_count, dbg_pc, observed_lsu_req_tag,
+                    observed_lsu_req_lock, observed_lsu_req_write,
+                    observed_lsu_req_addr, observed_lsu_req_wdata,
+                    observed_lsu_req_wstrb, observed_lsu_req_size);
+            if ((lsu_trace_fd != 0) &&
+                observed_lsu_resp_valid && observed_lsu_resp_ready)
+                $fdisplay(lsu_trace_fd,
+                    "RESP cycle=%0d pc=%016x tag=%0d data=%016x access_fault=%0d page_fault=%0d",
+                    cycle_count, dbg_pc, observed_lsu_resp_tag,
+                    observed_lsu_resp_rdata,
+                    observed_lsu_resp_access_fault,
+                    observed_lsu_resp_page_fault);
+            if ((lsu_trace_fd != 0) && observed_ccx_local_lock &&
+                (l1d_lock_trace_count < 256)) begin
+                l1d_lock_trace_count <= l1d_lock_trace_count + 1;
+                $fdisplay(lsu_trace_fd,
+                    "LOCK cycle=%0d input=%0d/%0d invreq=%0d invalidated=%0d l1=%0d/%0d mem=%0d/%0d backend=%0d ccx=%0d",
+                    cycle_count, observed_l1d_input_valid,
+                    observed_l1d_input_ready,
+                    observed_l1d_lock_invalidate_request,
+                    observed_l1d_lock_invalidated,
+                    observed_l1d_l1_req_valid,
+                    observed_l1d_l1_req_ready,
+                    observed_l1d_mem_valid,
+                    observed_l1d_mem_write,
+                    observed_l1d_backend_state,
+                    observed_l1d_ccx_req_valid);
+            end
+            if ((ccx_trace_fd != 0) &&
+                dut.ccx_req_valid && dut.ccx_req_ready)
+                $fdisplay(ccx_trace_fd,
+                    "CMD cycle=%0d hart=%0d txn=%0d source=%0d op=%0d lock=%0d kind=%0d attr=%02x size=%0d addr=%016x burst=%0d",
+                    cycle_count, dut.ccx_req_hart_id,
+                    dut.ccx_req_txn_id, dut.ccx_req_source_id,
+                    dut.ccx_req_op, dut.ccx_req_lock, dut.ccx_req_kind,
+                    dut.ccx_req_attr, dut.ccx_req_size,
+                    dut.ccx_req_addr, dut.ccx_req_burst_len);
+            if ((ccx_trace_fd != 0) &&
+                dut.ccx_wdata_valid && dut.ccx_wdata_ready)
+                $fdisplay(ccx_trace_fd,
+                    "WDATA cycle=%0d hart=%0d txn=%0d source=%0d beat=%0d last=%0d data=%0128x strb=%016x",
+                    cycle_count, dut.ccx_wdata_hart_id,
+                    dut.ccx_wdata_txn_id, dut.ccx_wdata_source_id,
+                    dut.ccx_wdata_beat_index, dut.ccx_wdata_last,
+                    dut.ccx_wdata, dut.ccx_wstrb);
+            if ((ccx_trace_fd != 0) &&
+                dut.ccx_resp_valid && dut.ccx_resp_ready)
+                $fdisplay(ccx_trace_fd,
+                    "RESP cycle=%0d hart=%0d txn=%0d source=%0d beat=%0d last=%0d error=%0d data=%0128x",
+                    cycle_count, dut.ccx_resp_hart_id,
+                    dut.ccx_resp_txn_id, dut.ccx_resp_source_id,
+                    dut.ccx_resp_beat_index, dut.ccx_resp_last,
+                    dut.ccx_resp_error, dut.ccx_resp_rdata);
             if (linux_mode && saw_s_mode && observed_ptw_response &&
                 (linux_ptw_trace_count < 16)) begin
                 linux_ptw_trace_count <= linux_ptw_trace_count + 1;
@@ -570,6 +825,28 @@ module tb_opensbi #(
         dbcn_probe_fired = 1'b0;
         printk_probe_seen = 12'd0;
         payload_words = PAYLOAD_WORDS;
+        instruction_trace_fd = 0;
+        lsu_trace_fd = 0;
+        ccx_trace_fd = 0;
+        l1d_lock_trace_count = 0;
+
+        if ($value$plusargs("instruction_trace=%s",
+                            instruction_trace_path)) begin
+            instruction_trace_fd = $fopen(instruction_trace_path, "w");
+            if (instruction_trace_fd == 0)
+                $fatal(1, "failed to open instruction trace %s",
+                       instruction_trace_path);
+        end
+        if ($value$plusargs("lsu_trace=%s", lsu_trace_path)) begin
+            lsu_trace_fd = $fopen(lsu_trace_path, "w");
+            if (lsu_trace_fd == 0)
+                $fatal(1, "failed to open LSU trace %s", lsu_trace_path);
+        end
+        if ($value$plusargs("ccx_trace=%s", ccx_trace_path)) begin
+            ccx_trace_fd = $fopen(ccx_trace_path, "w");
+            if (ccx_trace_fd == 0)
+                $fatal(1, "failed to open CCX trace %s", ccx_trace_path);
+        end
 
         if (!$value$plusargs("payload_words=%d", payload_words))
             payload_words = PAYLOAD_WORDS;
@@ -581,30 +858,17 @@ module tb_opensbi #(
             $fatal(1, "missing OpenSBI memory-fragment plusargs");
         end
 
+`ifndef OPENRV64_VERILATOR_CHECKPOINT
         #1;
-        $display("OpenSBI load: trampoline");
-        $readmemh(trampoline_memh, dut.u_memory.memory_q,
-                  (RAM_BASE - RAM_BASE) >> 3,
-                  ((RAM_BASE - RAM_BASE) >> 3) + TRAMPOLINE_WORDS - 1);
-        $display("OpenSBI load: firmware");
-        $readmemh(firmware_memh, dut.u_memory.memory_q,
-                  (FIRMWARE_BASE - RAM_BASE) >> 3,
-                  ((FIRMWARE_BASE - RAM_BASE) >> 3) + FIRMWARE_WORDS - 1);
-        $display("OpenSBI load: payload");
-        $readmemh(payload_memh, dut.u_memory.memory_q,
-                  (PAYLOAD_BASE - RAM_BASE) >> 3,
-                  ((PAYLOAD_BASE - RAM_BASE) >> 3) + payload_words - 1);
-        $display("OpenSBI load: FDT");
-        $readmemh(fdt_memh, dut.u_memory.memory_q,
-                  (FDT_BASE - RAM_BASE) >> 3,
-                  ((FDT_BASE - RAM_BASE) >> 3) + FDT_WORDS - 1);
-        $display("OpenSBI load: complete");
+        load_images();
 
         repeat (4) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+`endif
     end
 
+`ifndef OPENRV64_VERILATOR_CHECKPOINT
     initial begin
         linux_mode = $test$plusargs("linux_mode");
         delay_probe = $test$plusargs("delay_probe");
@@ -617,21 +881,43 @@ module tb_opensbi #(
             max_cycles = 100000000;
 
         repeat (max_cycles) @(posedge clk);
-        if (linux_mode) begin
-            $display("LINUX TIMEOUT cycles=%0d pc=%016x instr=%08x priv=%0d banner=%b linux_banner=%b uart_bytes=%0d mcause=%016x mtval=%016x scause=%016x stval=%016x",
-                     cycle_count, dbg_pc, dbg_instr, observed_priv_mode,
-                     saw_banner, saw_payload_text, uart_byte_count,
-                     observed_mcause, observed_mtval,
-                     observed_scause, observed_stval);
-            $finish;
-        end else begin
-            $fatal(1,
-                   "OpenSBI timeout pc=%016x instr=%08x priv=%0d banner=%b payload=%b magic=%016x mcause=%016x mtval=%016x",
-                   dbg_pc, dbg_instr, observed_priv_mode,
-                   saw_banner, saw_payload_text,
-                   dut.u_memory.memory_q[(MAGIC_ADDR - RAM_BASE) >> 3],
-                   observed_mcause, observed_mtval);
-        end
+        report_timeout();
     end
+`else
+    reg verilator_images_loaded_q;
+    reg [2:0] verilator_reset_edges_q;
+
+    initial begin
+        verilator_images_loaded_q = 1'b0;
+        verilator_reset_edges_q = 3'd0;
+        linux_mode = $test$plusargs("linux_mode");
+        delay_probe = $test$plusargs("delay_probe");
+        panic_probe = $test$plusargs("panic_probe");
+        dbcn_probe = $test$plusargs("dbcn_probe");
+        printk_probe = $test$plusargs("printk_probe");
+        if (linux_mode)
+            payload_text = "Linux version";
+        if (!$value$plusargs("max_cycles=%d", max_cycles))
+            max_cycles = 100000000;
+    end
+
+    always @(posedge clk) begin
+        if (!verilator_images_loaded_q) begin
+            load_images();
+            verilator_images_loaded_q <= 1'b1;
+        end else if (!rst_n) begin
+            verilator_reset_edges_q <= verilator_reset_edges_q + 1'b1;
+        end
+
+        if (core_rst_n && (cycle_count >= max_cycles))
+            report_timeout();
+    end
+
+    always @(negedge clk) begin
+        if (verilator_images_loaded_q &&
+            (verilator_reset_edges_q >= 3'd4))
+            rst_n <= 1'b1;
+    end
+`endif
 
 endmodule

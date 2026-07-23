@@ -23,17 +23,20 @@ module openrv64_dispatch_control_3p #(
                                         candidate_payload_i,
 
     input  wire                         allocation_ready_i,
-    input  wire [2:0]                   pipe_ready_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_i,
     input  wire [2:0]                   retire_valid_i,
     input  wire [2:0]                   retire_hard_i,
 
     output wire [2:0]                   candidate_hard_o,
     output wire [2:0]                   candidate_fire_o,
     output wire                         barrier_active_o,
-    output wire [2:0]                   pipe_valid_o,
-    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
-    output wire [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
-    output wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH-1:0]
+                                        pipe_slot_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o
 );
 

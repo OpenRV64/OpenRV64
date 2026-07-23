@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-a.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/br-defs.v"
 
@@ -38,7 +39,7 @@ module openrv64_dispatch_3p #(
     output wire [2:0]                   allocation_valid_o,
     output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_o,
 
-    input  wire [2:0]                   pipe_ready_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_i,
     input  wire [1:0]                   forward_valid_i,
     input  wire [2*`RV64_REG_ADDR_WIDTH-1:0] forward_rd_addr_i,
     input  wire [2:0]                   completion_forward_valid_i,
@@ -48,10 +49,13 @@ module openrv64_dispatch_3p #(
     input  wire [2:0]                   branch_completion_forward_valid_i,
     input  wire [31:0]                  forward_map_valid_i,
     input  wire [32*`RV64_XLEN-1:0]     forward_map_data_i,
-    output wire [2:0]                   pipe_valid_o,
-    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
-    output wire [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
-    output wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH-1:0]
+                                        pipe_slot_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o,
 
     input  wire [2:0]                   retire_valid_i,
@@ -288,7 +292,7 @@ module openrv64_dispatch_3p #(
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
             if (payload[16] || payload[15]) begin
-                fixed_pipe = `OPENRV64_EXEC_PIPE_MEM;
+                fixed_pipe = `OPENRV64_EXEC_PIPE_MEM0;
             end else if (payload[10] || payload[9] || payload[8] ||
                          payload[7] || payload[6] || payload[5] ||
                          payload[4] || payload[14] || payload[13]) begin
@@ -296,13 +300,45 @@ module openrv64_dispatch_3p #(
             end else if (payload[34:32] == `RV64_ALU_EXT_M) begin
                 fixed_pipe = `OPENRV64_EXEC_PIPE_EX0;
             end else begin
-                fixed_pipe = 2'd3;
+                fixed_pipe = `OPENRV64_EXEC_PIPE_EX0;
             end
         end
     endfunction
 
+    function automatic fixed_pipe_valid;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            fixed_pipe_valid =
+                payload[16] || payload[15] ||
+                payload[10] || payload[9] || payload[8] ||
+                payload[7] || payload[6] || payload[5] ||
+                payload[4] || payload[14] || payload[13] ||
+                (payload[34:32] == `RV64_ALU_EXT_M);
+        end
+    endfunction
+
+    function automatic is_memory;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            is_memory = payload[16] || payload[15];
+        end
+    endfunction
+
+    function automatic is_atomic_memory;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_INSTR_WIDTH-1:0] payload_instr;
+        begin
+            payload_instr = payload[242 +: `RV64_INSTR_WIDTH];
+            is_atomic_memory =
+                is_memory(payload) &&
+                (`RV64_OPCODE(payload_instr) ==
+                 `RV64_OPCODE_AMO);
+        end
+    endfunction
+
     function automatic [`OPENRV64_EXEC_PIPE_WIDTH-1:0] choose_base_pipe;
-        input [2:0] used;
+        input [`OPENRV64_EXEC_PIPE_COUNT-1:0] used;
+        input next_fixed_valid;
         input [`OPENRV64_EXEC_PIPE_WIDTH-1:0] next_fixed;
         input preferred_valid;
         input [`OPENRV64_EXEC_PIPE_WIDTH-1:0] preferred_pipe;
@@ -310,9 +346,11 @@ module openrv64_dispatch_3p #(
             if (preferred_valid) begin
                 choose_base_pipe = preferred_pipe;
             end else if (!used[0] && !used[1]) begin
-                if (next_fixed == `OPENRV64_EXEC_PIPE_EX0)
+                if (next_fixed_valid &&
+                    (next_fixed == `OPENRV64_EXEC_PIPE_EX0))
                     choose_base_pipe = `OPENRV64_EXEC_PIPE_EX1;
-                else if (next_fixed == `OPENRV64_EXEC_PIPE_EX1)
+                else if (next_fixed_valid &&
+                         (next_fixed == `OPENRV64_EXEC_PIPE_EX1))
                     choose_base_pipe = `OPENRV64_EXEC_PIPE_EX0;
                 else
                     choose_base_pipe = `OPENRV64_EXEC_PIPE_EX0;
@@ -436,9 +474,13 @@ module openrv64_dispatch_3p #(
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed0 = fixed_pipe(payload0);
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed1 = fixed_pipe(payload1);
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed2 = fixed_pipe(payload2);
-    wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] routing_fixed0 = free0 ? 2'd3 : fixed0;
-    wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] routing_fixed1 = free1 ? 2'd3 : fixed1;
-    wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] routing_fixed2 = free2 ? 2'd3 : fixed2;
+    wire fixed_valid0 = fixed_pipe_valid(payload0);
+    wire fixed_valid1 = fixed_pipe_valid(payload1);
+    wire fixed_valid2 = fixed_pipe_valid(payload2);
+    wire memory1 = is_memory(payload1);
+    wire memory2 = is_memory(payload2);
+    wire atomic1 = is_atomic_memory(payload1);
+    wire atomic2 = is_atomic_memory(payload2);
     wire [1:0] forward_match0 = forward_match(
         candidate_uses_rs1[0],
         candidate_rs1_addr[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH],
@@ -491,25 +533,39 @@ module openrv64_dispatch_3p #(
         forward_match2[1] ? `OPENRV64_EXEC_PIPE_EX1 :
                             `OPENRV64_EXEC_PIPE_EX0;
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected0 =
-        (routing_fixed0 != 2'd3) ? routing_fixed0 :
-        choose_base_pipe(3'b000, routing_fixed1,
-                         forward_preferred0, forward_pipe0);
-    wire [2:0] used0 = candidate_valid[0] && !free0 ?
-        (3'b001 << selected0) : 3'b000;
+        fixed_valid0 ? fixed0 :
+        choose_base_pipe(
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}},
+            fixed_valid1 && !memory1, fixed1,
+            forward_preferred0, forward_pipe0);
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] used0 =
+        candidate_valid[0] && !free0 ?
+        ({{(`OPENRV64_EXEC_PIPE_COUNT-1){1'b0}}, 1'b1} << selected0) :
+        {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected1 =
-        (routing_fixed1 != 2'd3) ? routing_fixed1 :
-        choose_base_pipe(used0, routing_fixed2,
+        memory1 ?
+            ((atomic1 || !used0[`OPENRV64_EXEC_PIPE_MEM0]) ?
+             `OPENRV64_EXEC_PIPE_MEM0 : `OPENRV64_EXEC_PIPE_MEM1) :
+        fixed_valid1 ? fixed1 :
+        choose_base_pipe(used0, fixed_valid2 && !memory2, fixed2,
                          forward_preferred1, forward_pipe1);
-    wire [2:0] used1 = used0 | (candidate_valid[1] && !free1 ?
-        (3'b001 << selected1) : 3'b000);
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] used1 =
+        used0 | (candidate_valid[1] && !free1 ?
+        ({{(`OPENRV64_EXEC_PIPE_COUNT-1){1'b0}}, 1'b1} << selected1) :
+        {`OPENRV64_EXEC_PIPE_COUNT{1'b0}});
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected2 =
-        (routing_fixed2 != 2'd3) ? routing_fixed2 :
-        choose_base_pipe(used1, 2'd3,
+        memory2 ?
+            ((atomic2 || !used1[`OPENRV64_EXEC_PIPE_MEM0]) ?
+             `OPENRV64_EXEC_PIPE_MEM0 :
+             (!used1[`OPENRV64_EXEC_PIPE_MEM1] ?
+              `OPENRV64_EXEC_PIPE_MEM1 : `OPENRV64_EXEC_PIPE_MEM0)) :
+        fixed_valid2 ? fixed2 :
+        choose_base_pipe(used1, 1'b0, `OPENRV64_EXEC_PIPE_EX0,
                          forward_preferred2, forward_pipe2);
     wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe = {
-        free2 ? 2'd3 : selected2,
-        free1 ? 2'd3 : selected1,
-        free0 ? 2'd3 : selected0
+        free2 ? `OPENRV64_EXEC_PIPE_EX0 : selected2,
+        free1 ? `OPENRV64_EXEC_PIPE_EX0 : selected1,
+        free0 ? `OPENRV64_EXEC_PIPE_EX0 : selected0
     };
 
     openrv64_dispatch_reg_map_3p #(

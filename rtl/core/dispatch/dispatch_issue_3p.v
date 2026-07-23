@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "core/backend/backend-defs.v"
 
-// Converts three program-ordered candidates into three physical pipe inputs.
+// Converts three program-ordered candidates into four physical pipe inputs.
 // A candidate fires only if every older valid candidate fires in the same
 // cycle.  This is the central in-order issue rule: an idle ALU cannot accept a
 // younger instruction around an older dependency, full pipe, or MEM stall.
@@ -18,13 +18,16 @@ module openrv64_dispatch_issue_3p #(
                                         candidate_payload_i,
 
     input  wire                         allocation_ready_i,
-    input  wire [2:0]                   pipe_ready_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_i,
 
     output wire [2:0]                   candidate_fire_o,
-    output reg  [2:0]                   pipe_valid_o,
-    output reg  [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
-    output reg  [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
-    output reg  [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH-1:0]
+                                        pipe_slot_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o
 );
 
@@ -44,21 +47,24 @@ module openrv64_dispatch_issue_3p #(
             pipe_select_valid =
                 (pipe_select == `OPENRV64_EXEC_PIPE_EX0) ||
                 (pipe_select == `OPENRV64_EXEC_PIPE_EX1) ||
-                (pipe_select == `OPENRV64_EXEC_PIPE_MEM);
+                (pipe_select == `OPENRV64_EXEC_PIPE_MEM0) ||
+                (pipe_select == `OPENRV64_EXEC_PIPE_MEM1);
         end
     endfunction
 
     function automatic selected_pipe_ready;
         input [`OPENRV64_EXEC_PIPE_WIDTH-1:0] pipe_select;
-        input [2:0] ready_mask;
+        input [`OPENRV64_EXEC_PIPE_COUNT-1:0] ready_mask;
         begin
             case (pipe_select)
                 `OPENRV64_EXEC_PIPE_EX0:
                     selected_pipe_ready = ready_mask[0];
                 `OPENRV64_EXEC_PIPE_EX1:
                     selected_pipe_ready = ready_mask[1];
-                `OPENRV64_EXEC_PIPE_MEM:
+                `OPENRV64_EXEC_PIPE_MEM0:
                     selected_pipe_ready = ready_mask[2];
+                `OPENRV64_EXEC_PIPE_MEM1:
+                    selected_pipe_ready = ready_mask[3];
                 default:
                     selected_pipe_ready = 1'b0;
             endcase
@@ -102,100 +108,80 @@ module openrv64_dispatch_issue_3p #(
         candidate0_fire
     };
 
-    integer candidate_idx;
-    reg [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected_pipe;
-    reg [2:0] route_claimed;
+    integer payload_candidate_idx;
+    reg [`OPENRV64_EXEC_PIPE_WIDTH-1:0] payload_selected_pipe;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] payload_route_claimed;
     always @* begin
-        pipe_valid_o = 3'b000;
-        route_claimed = 3'b000;
-        pipe_id_o = {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
-        pipe_slot_o = {3*RETIRE_SLOT_WIDTH{1'b0}};
+        payload_route_claimed = {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        pipe_id_o =
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        pipe_slot_o =
+            {`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH{1'b0}};
         pipe_payload_o =
-            {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
 
-        for (candidate_idx = 0;
-             candidate_idx < 3;
-             candidate_idx = candidate_idx + 1) begin
-            selected_pipe = candidate_pipe_i[
-                candidate_idx*`OPENRV64_EXEC_PIPE_WIDTH +:
+        for (payload_candidate_idx = 0;
+             payload_candidate_idx < 3;
+             payload_candidate_idx = payload_candidate_idx + 1) begin
+            payload_selected_pipe = candidate_pipe_i[
+                payload_candidate_idx*`OPENRV64_EXEC_PIPE_WIDTH +:
                 `OPENRV64_EXEC_PIPE_WIDTH];
 
-            // Route the oldest candidate payload speculatively so each lane
-            // can compute capability/order-sensitive ready without a
-            // ready->fire->payload combinational loop.  pipe_valid_o remains
-            // the only acceptance qualifier.
-            if (candidate_valid_i[candidate_idx] &&
-                !candidate_free_i[candidate_idx] &&
-                pipe_select_valid(selected_pipe) &&
-                !route_claimed[selected_pipe]) begin
-                route_claimed[selected_pipe] = 1'b1;
-                case (selected_pipe)
-                    `OPENRV64_EXEC_PIPE_EX0: begin
-                        pipe_valid_o[0] = candidate_fire_o[candidate_idx];
-                        pipe_id_o[
-                            0*`OPENRV64_INSTR_ID_WIDTH +:
-                            `OPENRV64_INSTR_ID_WIDTH] =
-                            candidate_id_i[
-                                candidate_idx*`OPENRV64_INSTR_ID_WIDTH +:
-                                `OPENRV64_INSTR_ID_WIDTH];
-                        pipe_slot_o[0*RETIRE_SLOT_WIDTH +:
-                                    RETIRE_SLOT_WIDTH] =
-                            candidate_slot_i[
-                                candidate_idx*RETIRE_SLOT_WIDTH +:
-                                RETIRE_SLOT_WIDTH];
-                        pipe_payload_o[
-                            0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] =
-                            candidate_payload_i[
-                                candidate_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
-                    end
+            // Route payload and identity independently of candidate_fire_o.
+            // Execution-lane ready may depend on the routed operation, so
+            // combining this with the valid mux creates a process-level
+            // ready -> fire -> payload loop in synthesis and Verilator.
+            if (candidate_valid_i[payload_candidate_idx] &&
+                !candidate_free_i[payload_candidate_idx] &&
+                pipe_select_valid(payload_selected_pipe) &&
+                !payload_route_claimed[payload_selected_pipe]) begin
+                payload_route_claimed[payload_selected_pipe] = 1'b1;
+                pipe_id_o[
+                    payload_selected_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH] =
+                    candidate_id_i[
+                        payload_candidate_idx*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH];
+                pipe_slot_o[
+                    payload_selected_pipe*RETIRE_SLOT_WIDTH +:
+                    RETIRE_SLOT_WIDTH] =
+                    candidate_slot_i[
+                        payload_candidate_idx*RETIRE_SLOT_WIDTH +:
+                        RETIRE_SLOT_WIDTH];
+                pipe_payload_o[
+                    payload_selected_pipe*
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] =
+                    candidate_payload_i[
+                        payload_candidate_idx*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+            end
+        end
+    end
 
-                    `OPENRV64_EXEC_PIPE_EX1: begin
-                        pipe_valid_o[1] = candidate_fire_o[candidate_idx];
-                        pipe_id_o[
-                            1*`OPENRV64_INSTR_ID_WIDTH +:
-                            `OPENRV64_INSTR_ID_WIDTH] =
-                            candidate_id_i[
-                                candidate_idx*`OPENRV64_INSTR_ID_WIDTH +:
-                                `OPENRV64_INSTR_ID_WIDTH];
-                        pipe_slot_o[1*RETIRE_SLOT_WIDTH +:
-                                    RETIRE_SLOT_WIDTH] =
-                            candidate_slot_i[
-                                candidate_idx*RETIRE_SLOT_WIDTH +:
-                                RETIRE_SLOT_WIDTH];
-                        pipe_payload_o[
-                            1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] =
-                            candidate_payload_i[
-                                candidate_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
-                    end
+    integer valid_candidate_idx;
+    reg [`OPENRV64_EXEC_PIPE_WIDTH-1:0] valid_selected_pipe;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] valid_route_claimed;
+    always @* begin
+        pipe_valid_o = {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        valid_route_claimed = {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
 
-                    `OPENRV64_EXEC_PIPE_MEM: begin
-                        pipe_valid_o[2] = candidate_fire_o[candidate_idx];
-                        pipe_id_o[
-                            2*`OPENRV64_INSTR_ID_WIDTH +:
-                            `OPENRV64_INSTR_ID_WIDTH] =
-                            candidate_id_i[
-                                candidate_idx*`OPENRV64_INSTR_ID_WIDTH +:
-                                `OPENRV64_INSTR_ID_WIDTH];
-                        pipe_slot_o[2*RETIRE_SLOT_WIDTH +:
-                                    RETIRE_SLOT_WIDTH] =
-                            candidate_slot_i[
-                                candidate_idx*RETIRE_SLOT_WIDTH +:
-                                RETIRE_SLOT_WIDTH];
-                        pipe_payload_o[
-                            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] =
-                            candidate_payload_i[
-                                candidate_idx*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
-                    end
-
-                    default: begin
-                    end
-                endcase
+        for (valid_candidate_idx = 0;
+             valid_candidate_idx < 3;
+             valid_candidate_idx = valid_candidate_idx + 1) begin
+            valid_selected_pipe = candidate_pipe_i[
+                valid_candidate_idx*`OPENRV64_EXEC_PIPE_WIDTH +:
+                `OPENRV64_EXEC_PIPE_WIDTH];
+            if (candidate_valid_i[valid_candidate_idx] &&
+                !candidate_free_i[valid_candidate_idx] &&
+                pipe_select_valid(valid_selected_pipe) &&
+                !valid_route_claimed[valid_selected_pipe]) begin
+                valid_route_claimed[valid_selected_pipe] = 1'b1;
+                pipe_valid_o[valid_selected_pipe] =
+                    candidate_fire_o[valid_candidate_idx];
             end
         end
     end

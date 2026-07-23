@@ -10,6 +10,8 @@
 | Post-change RV64M and isolated-divider cuts | `make yosys-timing-alu-rv64m LIBERTY=sim/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib ABC_CONSTR=synth/sky130/abc.constr` | 2026-07-23 13:21:34 | 2026-07-23 13:21:47 | `sim/yosys/alu/rv64m-{pipeline,divide}.rpt` |
 | Four-bit multiplier RV64M cuts | `make yosys-timing-alu-rv64m LIBERTY=sim/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib ABC_CONSTR=synth/sky130/abc.constr` | 2026-07-23 13:37:23 | 2026-07-23 13:37:33 | `sim/yosys/alu/rv64m-{pipeline,divide}.rpt` |
 | PMP identical-flow before/after cuts | Direct Yosys Sky130 mapping of `openrv64_rv64i_pmp` | 2026-07-23 13:38:08 | 2026-07-23 13:43:21 | `sim/yosys/pmp/{old-8entry,new-16entry}.rpt` |
+| Four-bit Booth RV64M cuts | `make yosys-timing-alu-rv64m LIBERTY=sim/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib ABC_CONSTR=synth/sky130/abc.constr` | 2026-07-23 14:16:29 | 2026-07-23 14:16:39 | `sim/yosys/alu/rv64m-{pipeline,divide}.rpt` |
+| Booth generic-depth endpoints | Yosys generic mapping plus `ltp -noff` | 2026-07-23 14:16:58 | 2026-07-23 14:17:02 | `/tmp/openrv64-booth4-ltp.rpt` |
 
 All runs used Git `e282331ad333328b0c2b689ad13dd0a7014835a9`
 with a dirty working tree. They characterize the live snapshot, not the clean
@@ -31,12 +33,12 @@ There is no supportable core-frequency claim. The original unsanitized
 whole-core pre-layout screen found:
 
 - **118.694 ns** through the old PMP permission evaluation;
-- **29.704 ns** through the four-bit-per-cycle multiply chunk:
-  **33.7 MHz reciprocal**;
+- **27.807 ns** through the four-bit-per-cycle Booth multiplier:
+  **36.0 MHz reciprocal**;
 - **18.037 ns** in L1D control before SRAM access timing is even included:
   **55.4 MHz reciprocal**;
-- **17.751 ns** through the isolated post-change divider:
-  **56.3 MHz reciprocal**;
+- **17.143 ns** through the isolated post-change divider:
+  **58.3 MHz reciprocal**;
 - **11.427 ns** in the MEM queue/payload path: **87.5 MHz reciprocal**.
 
 The old PMP result is structurally superseded. Under an identical isolated
@@ -60,7 +62,7 @@ representative paths.
 | Retained block/module | Delay | Reciprocal | ABC start -> end |
 |---|---:|---:|---|
 | CSR/PMP, original and now superseded | **118.694 ns** | 8.4 MHz | `pmpaddr_q[0][4]` -> `pmp_bus_allow_o` |
-| EX0 integer/M, current dedicated cut | **29.704 ns** | 33.7 MHz | multiply iteration/control -> result state; see reachability caveat below |
+| EX0 integer/M, current dedicated cut | **27.807 ns** | 36.0 MHz | `mul_multiplier_q[1]` -> `result_q[63]` in the generic-depth endpoint check |
 | L1D control/tags | **18.037 ns** | 55.4 MHz | `req_addr_i[8]` -> internal mux |
 | LSU/MEM pipe | **11.427 ns** | 87.5 MHz | `send_head_q[1]` -> internal mux |
 | EX1 integer/branch | 9.487 ns | 105.4 MHz | `complete_payload_q[157]` -> internal mux |
@@ -83,7 +85,7 @@ representative paths.
 The `openrv64_core_bus` and `openrv64_top_3p` wrappers mapped to no local
 combinational path after their retained children were separated. The EX0 row
 uses the post-change dedicated RV64M cut; the 12:31 whole-core run's old
-72.469 ns divider row was superseded by the 13:21 rerun. The CSR/PMP row is
+72.469 ns divider row was superseded by the 14:16 rerun. The CSR/PMP row is
 also historical; the isolated PMP result below supersedes its logic but not
 the whole-core measurement.
 
@@ -118,7 +120,7 @@ That is a 93.3% path reduction and 16.5% cell-area reduction despite doubling
 the entry count. These are isolated pre-layout module numbers. A new
 whole-core partition run is still required to determine the integrated path.
 
-### RV64M: divider reduced to 17.751 ns; multiply now 29.704 ns
+### RV64M: divider reduced to 17.143 ns; Booth multiply now 27.807 ns
 
 The divider originally used `DIV_BITS_PER_CYCLE=8`, placing eight restoring
 compare/subtract steps in one cycle. It now uses two steps per cycle: 32
@@ -126,21 +128,25 @@ full-width iteration cycles followed by a separate finalization cycle. Result
 valid therefore arrives 33 cycles after acceptance for ordinary full-width
 division. Divide-by-zero and signed-overflow cases remain immediate.
 
-The isolated divider cut fell from 67.873 ns to **17.751 ns**, a 73.8%
-reduction. The multiplier now uses four shift/add bits per cycle: 16 cycles for
-RV64 and eight for RV64W. This reduced the full RV64M cut from 42.773 ns to
-**29.704 ns** and its isolated cell area from 0.092983 to 0.070867 mm². It did
-not fix the structure: four conditional 128-bit partial-product additions plus
-the accumulator carry chain remain in one cycle. Further divider work is not
-justified before the multiplier, PMP, and L1D paths.
+The isolated divider cut fell from 67.873 ns to **17.143 ns**, a 74.7%
+reduction. The multiplier consumes four multiplier bits per cycle as two
+overlapping radix-4 Booth digits: 16 cycles for RV64 and eight for RV64W. An
+initial correction converts Booth's signed interpretation of a top-set
+unsigned multiplier back to the required unsigned magnitude.
 
-A separate generic-depth check identifies its longest structural endpoints as
-`mul_bits_left_q[7]` to `result_q[63]`. Counter bit 7 is unreachable because
-the loaded count is at most 64. ABC does not perform sequential reachability
-analysis, and the technology-mapped log does not retain useful RTL endpoint
-names, so 29.704 ns is a pessimistic unsanitized screen rather than a proven
-sensitizable path. The partial-product adder chain remains real; a constrained
-STA or counter refactor is required to quantify the reachable path.
+Relative to the naive four-bit shift/add implementation, Booth reduced the
+full RV64M cut from 29.704 to **27.807 ns** (6.4%) and its isolated cell area
+from 0.070867 to **0.065420 mm²** (7.7%). This is an improvement, not timing
+closure. Negative Booth partial generation, partial-product combination,
+128-bit accumulation, and final signed correction still contain
+carry-propagating logic.
+
+The new generic-depth path runs from `mul_multiplier_q[1]` to `result_q[63]`;
+the previous longest path began at unreachable counter bit
+`mul_bits_left_q[7]`. The obvious unreachable-state artifact is therefore gone,
+although only constrained STA can establish sensitizability for the exact
+technology-mapped path. Further divider work is not justified before the
+multiplier and L1D.
 
 ### L1D: 18.037 ns
 
@@ -187,8 +193,9 @@ are not.
 
 | Cut | Delay | Reciprocal | Critical path |
 |---|---:|---:|---|
-| Full RV64M unit, four-bit multiply | **29.704 ns** | 33.7 MHz | multiply iteration/control -> result state; unsanitized |
-| Isolated divider, current | **17.751 ns** | 56.3 MHz | `div_dividend_q[63]` -> internal mux |
+| Full RV64M unit, four-bit Booth multiply | **27.807 ns** | 36.0 MHz | `mul_multiplier_q[1]` -> `result_q[63]` in generic-depth check |
+| Full RV64M unit, naive four-bit multiply | 29.704 ns | 33.7 MHz | iteration/control -> result state; unsanitized |
+| Isolated divider, current | **17.143 ns** | 58.3 MHz | `div_dividend_q[63]` -> internal mux |
 | Full RV64M unit, eight-bit multiply/two-bit divide | 42.773 ns | 23.4 MHz | `mul_bits_left_q[6]` -> `result_q[63]` |
 | Full RV64M unit, original eight-bit multiply/divide | 67.873 ns | 14.7 MHz | `div_divisor_q[0]` -> `result_q[62]` |
 
@@ -232,13 +239,13 @@ wiring in this harness.
 
 Full replay includes direct-target addition, resident tag lookup, line
 selection, and output selection. It is slower than lookup alone but still far
-behind PMP, divide, L1D, and MEM in the repair order.
+behind multiply, L1D, divide, and MEM in the repair order.
 
 ## Repair order
 
 | Priority | Cone | Required action | Reason |
 |---:|---|---|---|
-| 1 | RV64M multiply | Replace chained partial-product additions with Booth/CSA logic | 29.7 ns despite doubling latency |
+| 1 | RV64M multiply | Add carry-save accumulation and stage final correction | Booth is implemented, but the cut remains 27.8 ns |
 | 2 | L1D lookup/control | Stage lookup and response; define banking before a second LSU | 18.0 ns before SRAM timing |
 | 3 | MEM queue | Compact entries and register queue read | 11.4 ns; second LSU otherwise duplicates the problem |
 | 4 | EX1/PTW/dispatch/backend | Narrow feedback buses and add state boundaries | Four independent 8-9.5 ns cones |

@@ -905,7 +905,8 @@ module openrv64_rv64_top #(
         .allocation_id_3p_i(
             {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .allocation_slot_3p_i(9'd0),
-        .pipe_ready_3p_i(3'b000),
+        .pipe_ready_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
         .forward_valid_3p_i(2'b00),
         .forward_rd_addr_3p_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),
         .completion_forward_valid_3p_i(3'b000),
@@ -1001,6 +1002,10 @@ module openrv64_rv64_top #(
         .mem_effective_addr_o(exec_mem_effective_addr),
         .mem_size_o(exec_mem_size),
         .mem_rdata_i(exec_mem_rdata),
+        .mem1_valid_o(), .mem1_ready_i(1'b0), .mem1_tag_o(),
+        .mem1_lock_o(), .mem1_write_o(), .mem1_addr_o(),
+        .mem1_wdata_o(), .mem1_wstrb_o(), .mem1_access_o(),
+        .mem1_effective_addr_o(), .mem1_size_o(),
         .wb_valid_o(exec_wb_valid),
         .wb_clear_i(exec_wb_clear),
         .wb_pc_o(exec_wb_pc),
@@ -1033,11 +1038,16 @@ module openrv64_rv64_top #(
         .trace_wb_id_o(exec_trace_wb_id),
         .trace_serializing_o(exec_trace_serializing),
         .flush_3p_i(1'b0),
-        .issue_valid_3p_i(3'b000),
-        .issue_id_3p_i({3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
-        .issue_slot_3p_i(9'd0),
+        .issue_valid_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
+        .issue_id_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .issue_slot_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT*3{1'b0}}),
         .issue_payload_3p_i(
-            {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
         .branch_forward_valid_3p_i(1'b0),
         .branch_forward_rd_addr_3p_i(
             {`RV64_REG_ADDR_WIDTH{1'b0}}),

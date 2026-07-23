@@ -134,17 +134,24 @@ with `size=6` and `burst_len=0`.  It buffers that line and feeds its eight
 
 `FILL_BUFFER_LINES` and `STORE_BUFFER_LINES` both default to eight cachelines
 and accept values from one through sixteen.  Each L1D store entry contains an
-aligned 64-byte address, 512 data bits, and 64 byte enables.  It is deliberately
-not a scalar write queue: the addressed 64-bit CPU lane is placed in a native
-line record and downstream L2 or memory may perform the masked merge.
+aligned 64-byte address, 512 data bits, and 64 byte enables.  Consecutive stores
+to the newest undrained line merge bytewise into that record; later bytes
+overwrite earlier bytes and the enables are ORed.  Combination is deliberately
+limited to the FIFO tail so stores cannot move across an intervening store to
+another line.  Downstream L2 or memory performs the final masked merge.
 
-A tagged, cacheable, unlocked store completes to the shared L1 after reserving
-one FIFO entry.  The resident word is updated on a hit; a miss remains
-no-write-allocate.  FIFO order is preserved, and the backend drains each entry
-as one aligned CCX write with `size=6` and `burst_len=0`.  The independent
-`store_resp_*` channel reports drain completion and error in FIFO order.  The
-core bus retains the original LSU tags in a matching FIFO, so a store may retire
-at request admission without losing a later asynchronous access fault.
+A tagged, cacheable, unlocked store completes to the shared L1 after merging
+into or reserving a FIFO entry.  The resident word is updated on a hit; a miss
+remains no-write-allocate.  Draining starts when occupancy reaches
+`STORE_BUFFER_DRAIN_WATERMARK` (four by default), then continues in FIFO order.
+A partial newest entry stays open for further adjacent stores until it becomes
+full, ceases to be the tail, reaches `STORE_BUFFER_TIMEOUT_CYCLES` (1024 by
+default), or must drain for a same-line load, invalidation, or locked request.
+Each entry drains as one aligned CCX write with `size=6` and `burst_len=0`.
+The independent `store_resp_*` channel reports drain completion and error in
+FIFO order.  The core bus retains the original LSU tags in a matching FIFO, so
+a store may retire at request admission without losing a later asynchronous
+access fault.
 
 The L1D endpoint also contains a deliberately small address-stream prefetcher.
 It trains on accepted cacheable, unlocked loads after aligning them to
@@ -175,9 +182,33 @@ entries so an old slot cannot remain pinned while one lower-index slot absorbs
 every replacement.
 
 Demand misses take priority.  A speculative read may pass queued posted stores
-only when no buffered store aliases its line.  An aliasing store, invalidation,
-or lock transition cancels or discards queued and outstanding speculative
-copies.
+only when no buffered store aliases its line.  An aliasing store or
+invalidation cancels or discards queued and outstanding speculative copies.
+An AMO pauses prefetch generation and issue from its marked read through its
+marked write.
+
+L1D assigns accepted reads to an eight-bit speculation epoch. `satp` writes,
+`SFENCE.VMA`, and the first presentation of each marked AMO phase advance that
+epoch. The barrier cancels queued candidates, stops active generation, clears
+completed speculative fill-buffer entries, and marks already-issued prefetch
+MSHRs discard-on-response. CCX responses are still consumed; they simply
+cannot become cache or fill-buffer state after the cutoff.
+
+The blocking architectural read-miss buffer is not discarded. If its CCX read
+was issued in an older epoch, L1D consumes the old response without completing
+the cache refill, allocates a new lower-half transaction ID, and reissues the
+same read. A read still waiting in the CCX send state at the barrier is held
+and issued once in the new epoch. This is a deliberately small single-RMB
+implementation; a future nonblocking demand cache must carry the same replay
+bit or epoch independently in every RMB.
+
+L1D also retains two distinct forms of atomic metadata. `atomic_active_q` and
+its line address are non-evictable transient state for the one in-progress
+local RMW. A future snoop must retry, wait, or be NACKed on a match.
+`ATOMIC_HOT_LINES` defaults to a 16-entry evictable line directory used only
+as a prefetch hint. Marked accesses insert there, untrain a matching stream,
+and prevent later training, candidate generation, or issue for that line.
+The hot directory is not correctness state and may be replaced.
 
 `prefetch_issued_o`, `prefetch_useful_o`, `prefetch_late_o`, and
 `prefetch_dropped_o` are one-cycle event outputs for testbench counters.
@@ -191,16 +222,17 @@ The command and write-data channels remain independently backpressured and are
 correlated by hart, source, and transaction IDs.  A later blocking read cannot
 pass queued stores at the L1D backend, and external invalidation is not
 acknowledged until the store FIFO has drained.  `#LOCK` accesses bypass and
-invalidate L1D and remain non-posted.  Uncached/device writes also remain
-blocking in the current RTL; the intended later policy is ordinary posting
-with software responsible for an explicit pre-barrier.  A device write does
-not implicitly perform that pre-drain.  A future CSR may request automatic
-pre-barrier behavior.
+invalidate L1D and remain non-posted, but in the single-hart configuration the
+marker is local and is not forwarded as a CCX/L2 home lock.  Uncached/device
+writes also remain blocking in the current RTL; the intended later policy is
+ordinary posting with software responsible for an explicit pre-barrier.  A
+device write does not implicitly perform that pre-drain.  A future CSR may
+request automatic pre-barrier behavior.
 
 The fill capacities do not imply eight simultaneous architectural misses.  The
 shared cache controller and each CCX demand backend still allow one active
-demand miss.  L1D separately supports `PREFETCH_OUTSTANDING` speculative MSHRs
-with transaction-ID-indexed response matching; the default is four.
+demand miss/RMB.  L1D separately supports `PREFETCH_OUTSTANDING` speculative
+MSHRs with transaction-ID-indexed response matching; the default is four.
 
 `L1I_FILL_BUFFER_LINES`, `L1D_FILL_BUFFER_LINES`, and
 `L1D_STORE_BUFFER_LINES` are propagated through the AXI core-bus, three-pipe
@@ -210,18 +242,20 @@ hold eight unacknowledged stores.  Configurations with a deeper store FIFO
 still require a larger tag namespace or a separate deferred-fault metadata
 queue to use every entry from one hart.
 
-The current one-hart AMO bring-up path adds `req_lock_i`/`ccx_req_lock_o` to
-the native L1D endpoint.  Before either marked phase proceeds, L1D invalidates
-its resident copy of the addressed line.  The phase then bypasses L1 lookup
-and allocation but retains the original cacheable PMA attribute at CCX.  Both
-the read and write phases carry the marker.  This prevents a stale L1 hit and
-prevents the result from being installed privately while the temporary home
-lock is active.
+The current one-hart AMO bring-up path uses `req_lock_i` as a local phase
+marker. Before either marked phase proceeds, L1D invalidates its resident copy
+of the addressed line. The phase then bypasses L1 lookup, speculative fill
+buffers, and allocation while retaining the original cacheable PMA attribute
+at CCX. `ccx_req_lock_o` is tied low: there is no shared-home lock or
+exclusion.
 
 This is self-invalidation for a one-hart serialized AMO, not a snoop protocol.
 External invalidation drains the lookup/response pipeline before modifying
-tags.  There is still no probe queue, transient-refill poison, directory, or
-probe acknowledgement path.
+tags. The local `atomic_active` line is the intended future snoop-visible
+transient, but there is still no probe queue, retry/NACK response, directory,
+or probe acknowledgement path. MESI Exclusive is not reused for this purpose:
+ordinary clean demand fills are already Exclusive, while an active RMW needs
+a distinct transient state.
 
 The core bus arbitrates independent I-cache and D-cache command sources and
 routes responses by `source_id`; only L1D drives write data.  The L1 arrays are

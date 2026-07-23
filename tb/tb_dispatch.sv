@@ -176,7 +176,8 @@ module tb_dispatch;
         .allocation_id_3p_i(
             {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .allocation_slot_3p_i(9'd0),
-        .pipe_ready_3p_i(3'b000),
+        .pipe_ready_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
         .forward_valid_3p_i(2'b00),
         .forward_rd_addr_3p_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),
         .forward_map_valid_3p_i(32'd0),

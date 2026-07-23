@@ -57,6 +57,15 @@ CORE_3P_CCX_L2_VERILATOR_DIR := \
 	build/verilator/core-3p-ccx-l2-bp$(CORE_3P_CCX_L2_BP_TYPE)-mode$(CORE_3P_CCX_L2_MODE)-confidence$(CORE_3P_CCX_L2_CONFIDENCE_GATE)-ps$(CORE_3P_CCX_L2_PAIR_STACK_DEPTH)-cf$(CORE_3P_CCX_L2_COMPLETION_FORWARD_MASK)-bf$(CORE_3P_CCX_L2_BRANCH_FORWARD_MASK)-ff$(CORE_3P_CCX_L2_FULL_FORWARDING)-rw$(CORE_3P_CCX_L2_RELAX_WAW)-rh$(CORE_3P_CCX_L2_RELAX_HAZARDS)-iw$(CORE_3P_CCX_L2_ISSUE_WINDOW)-sw$(CORE_3P_CCX_L2_SPECULATION_WINDOW)-ram$(CORE_3P_CCX_L2_RAM_BYTES)-l1i$(CORE_3P_CCX_L2_L1I_BYTES)-l1d$(CORE_3P_CCX_L2_L1D_BYTES)-l2$(CORE_3P_CCX_L2_L2_BYTES)x$(CORE_3P_CCX_L2_L2_WAYS)-pf$(CORE_3P_CCX_L2_L1D_PREFETCH_ENABLE)x$(CORE_3P_CCX_L2_L1D_PREFETCH_STREAMS)x$(CORE_3P_CCX_L2_L1D_PREFETCH_ADAPTIVE_ENABLE)x$(CORE_3P_CCX_L2_L1D_PREFETCH_MAX_DISTANCE)x$(CORE_3P_CCX_L2_L1D_PREFETCH_QUEUE_LINES)x$(CORE_3P_CCX_L2_L1D_PREFETCH_OUTSTANDING)x$(CORE_3P_CCX_L2_L1D_PREFETCH_DEMAND_RESERVE)
 CORE_3P_CCX_L2_VERILATOR_BUILD := \
 	$(CORE_3P_CCX_L2_VERILATOR_DIR)/core_3p_ccx_l2_tb
+ATOMIC_SOC_ELF := sw/atomic/atomic.elf
+ATOMIC_SOC_BIN := sw/atomic/atomic.bin
+ATOMIC_SOC_MAP := sw/atomic/atomic.map
+ATOMIC_SOC_DISASM := sw/atomic/atomic.disasm
+ATOMIC_SOC_MEMH := sim/atomic-soc.memh
+ATOMIC_SOC_PASS := 41544f4d49434f4b
+ATOMIC_SOC_MEMH_BYTES := 0x10000
+ATOMIC_SOC_MEMH_WORDS := 2048
+ATOMIC_SOC_MAX_CYCLES ?= 250000
 MEMCPY_4K_ELF := sw/memcpy/memcpy-4k.elf
 MEMCPY_4K_BIN := sw/memcpy/memcpy-4k.bin
 MEMCPY_4K_MAP := sw/memcpy/memcpy-4k.map
@@ -110,8 +119,17 @@ OPENSBI_ARTIFACT_DIR := $(OPENSBI_BUILD_DIR)/artifacts
 OPENSBI_SIM_BUILD := sim/opensbi_tb.vvp
 OPENSBI_VERILATOR_DIR := build/verilator/opensbi
 OPENSBI_VERILATOR_BUILD := $(OPENSBI_VERILATOR_DIR)/opensbi_tb
-OPENSBI_3P_PLATFORM_VERILATOR_DIR := build/verilator/opensbi-3p-platform
+OPENSBI_3P_PLATFORM_ISSUE_WINDOW ?= 1
+OPENSBI_3P_PLATFORM_SPECULATION_WINDOW ?= 1
+OPENSBI_3P_PLATFORM_L2_BYTES ?= 262144
+OPENSBI_3P_PLATFORM_L2_WAYS ?= 8
+OPENSBI_3P_PLATFORM_L1D_PREFETCH_ENABLE ?= 1
+OPENSBI_3P_PLATFORM_VERILATOR_DIR := \
+	build/verilator/opensbi-3p-platform-iw$(OPENSBI_3P_PLATFORM_ISSUE_WINDOW)-sw$(OPENSBI_3P_PLATFORM_SPECULATION_WINDOW)-l2$(OPENSBI_3P_PLATFORM_L2_BYTES)x$(OPENSBI_3P_PLATFORM_L2_WAYS)-pf$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_ENABLE)
 OPENSBI_3P_PLATFORM_VERILATOR_BUILD := $(OPENSBI_3P_PLATFORM_VERILATOR_DIR)/opensbi_3p_platform_tb
+OPENSBI_3P_PLATFORM_CHECKPOINT ?= \
+	build/checkpoints/opensbi-3p-platform-linux-7500000.vls
+OPENSBI_3P_PLATFORM_CHECKPOINT_CYCLES ?= 7500000
 OPENSBI_3P_ISSUE_WINDOW ?= 1
 OPENSBI_3P_SPECULATION_WINDOW ?= 1
 OPENSBI_3P_INSTRUCTION_TRACE ?= sim/opensbi-3p-pcs.trace
@@ -148,6 +166,8 @@ COREMARK_LOOP_CFLAGS := -march=rv64i -mabi=lp64 -mcmodel=medany \
 	-fno-stack-protector -fno-asynchronous-unwind-tables \
 	-ffunction-sections -fdata-sections
 MEMCPY_ASFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
+	-mno-relax -nostdlib -nostartfiles
+ATOMIC_SOC_ASFLAGS := -march=rv64ima_zicsr -mabi=lp64 -mcmodel=medany \
 	-mno-relax -nostdlib -nostartfiles
 A53_COREMARK_CFLAGS := -mcpu=cortex-a53 -mabi=lp64 -mno-outline-atomics -O2 -g \
 	-Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-common \
@@ -263,6 +283,8 @@ CCX_PROTOCOL_2H_SIM_BUILD := sim/ccx_protocol_2h_tb.vvp
 CCX_PROTOCOL_4H_SIM_BUILD := sim/ccx_protocol_4h_tb.vvp
 L1_CACHE_SIM_BUILD := sim/l1_cache_tb.vvp
 L1D_PREFETCH_SIM_BUILD := sim/l1d_prefetch_tb.vvp
+L1D_STORE_ORDER_SIM_BUILD := sim/l1d_store_order_tb.vvp
+L1D_STORE_BUFFER_SIM_BUILD := sim/l1d_store_buffer_tb.vvp
 CCX_L2_SIM_BUILD := sim/ccx_l2_tb.vvp
 GENBUS_AXI_SIM_BUILD := sim/genbus_axi_tb.vvp
 GENBUS_WB_SIM_BUILD := sim/genbus_wb_tb.vvp
@@ -281,6 +303,7 @@ PTW_SIM_BUILD := sim/ptw_tb.vvp
 PTW_CONTEXT_SIM_BUILD := sim/ptw_context_tb.vvp
 DECODE_EARLY_SIM_BUILD := sim/decode_early_tb.vvp
 DECODE_TOP_SIM_BUILD := sim/decode_top_tb.vvp
+DECODE_RV64C_SIM_BUILD := sim/decode_rv64c_tb.vvp
 DECODE_IMM_SIM_BUILD := sim/decode_imm_tb.vvp
 DECODE_ALU_SIM_BUILD := sim/decode_alu_tb.vvp
 DECODE_LSU_SIM_BUILD := sim/decode_lsu_tb.vvp
@@ -359,6 +382,10 @@ COMPLIANCE_PLATFORM_M_VLT_BUILD := \
 	$(COMPLIANCE_SIM_DIR)/verilator/platform_m/Vtb_compliance_platform
 COMPLIANCE_PLATFORM_I_VLT_BUILD := \
 	$(COMPLIANCE_SIM_DIR)/verilator/platform_i/Vtb_compliance_platform
+COMPLIANCE_PLATFORM_3P_M_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/platform-3p_m/Vtb_compliance_platform
+COMPLIANCE_PLATFORM_3P_I_VLT_BUILD := \
+	$(COMPLIANCE_SIM_DIR)/verilator/platform-3p_i/Vtb_compliance_platform
 COMPLIANCE_SMOKE_ELF := $(COMPLIANCE_SMOKE_DIR)/smoke.elf
 COMPLIANCE_SMOKE_MEMH64 := $(COMPLIANCE_SMOKE_DIR)/smoke-64.memh
 COMPLIANCE_SMOKE_MEMH256 := $(COMPLIANCE_SMOKE_DIR)/smoke-256.memh
@@ -398,7 +425,8 @@ VEC_LSU_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec-lsu.v
 ARITH_DEPS := rtl/core/arith/prefix-addsub.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
-	rtl/core/decode/early.v rtl/core/decode/decode_top.v rtl/core/decode/imm.v rtl/core/decode/alu.v \
+	rtl/core/decode/early.v rtl/core/decode/decode_top.v rtl/core/decode/rv64-c.v \
+	rtl/core/decode/imm.v rtl/core/decode/alu.v \
 	rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v rtl/core/decode/fence.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v
 REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr.v \
@@ -487,6 +515,7 @@ MESH_ROUTER_SRCS := rtl/mesh/router_tile.v
 SOC_BUS_SRCS := rtl/soc/bus/mem_map.v rtl/soc/bus/decode.v
 RESET_SEQUENCER_SRCS := rtl/soc/reset_sequencer.v
 PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
+	rtl/soc/bus/ccx_l2_bridge.v $(CORE_COMPLEX_SRCS) \
 	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
 	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
@@ -526,6 +555,12 @@ DECODE_EARLY_SIM_SRCS := tb/tb_decode_early.sv
 DECODE_TOP_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
 	rtl/core/decode/alu.v rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v rtl/core/decode/fence.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v tb/tb_decode_top.sv
+DECODE_RV64C_SIM_SRCS := rtl/core/decode/rv64-c.v \
+	rtl/core/decode/early.v rtl/core/decode/imm.v rtl/core/decode/alu.v \
+	rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v \
+	rtl/core/decode/fence.v rtl/core/decode/reg/alu.v \
+	rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v \
+	rtl/core/decode/decode_top.v tb/tb_decode_rv64c.sv
 DECODE_IMM_SIM_SRCS := tb/tb_decode_imm.sv
 DECODE_ALU_SIM_SRCS := tb/tb_decode_alu.sv
 DECODE_LSU_SIM_SRCS := tb/tb_decode_lsu.sv
@@ -593,20 +628,25 @@ SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: FORCE sw-uart sw-coremark-loop sw-memcpy sw-memcpy-4k \
+.PHONY: FORCE sw-uart sw-coremark-loop sw-atomic sim-atomic-soc \
+	sw-memcpy sw-memcpy-4k \
 	sw-memcpy-64k sim-memcpy sim-memcpy-4k sim-memcpy-64k \
 	bench-memcpy bench-memcpy-4k bench-memcpy-64k \
 	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-exec-fpu-rv64-fd
+.PHONY: sim-decode-rv64c
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
 	sim-vec-cache-wb-512 sim-vec-test-top \
 	sim-vec-matmul sim-vec-matmul-bf16
 .PHONY: sim-bp-context-gshare-btb
 .PHONY: yosys-resources-core-sky130
-.PHONY: sim-opensbi-3p sim-opensbi-3p-platform
+.PHONY: sim-opensbi-3p sim-opensbi-3p-platform \
+	sim-linux-3p-platform-checkpoint sim-linux-3p-platform-restore
 .PHONY: sim-linux
-.PHONY: sim-l1-cache sim-l1d-prefetch sim-l1i-top sim-ccx-protocol-1h sim-ccx-protocol-2h sim-ccx-protocol-4h
+.PHONY: sim-l1-cache sim-l1d-prefetch sim-l1d-store-order \
+	sim-l1d-store-buffer sim-l1i-top sim-ccx-protocol-1h \
+	sim-ccx-protocol-2h sim-ccx-protocol-4h
 .PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-ccx-l2
 .PHONY: sim-ccx-l2
 .PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths
@@ -616,8 +656,9 @@ SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/Ope
 .PHONY: sim-prf
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
 	compliance-smoke-local-3p compliance-smoke-local-platform \
+	compliance-smoke-local-platform-3p \
 	compliance-act4-generate compliance-act4-priv-generate compliance-isa \
-	compliance-isa-3p compliance-priv compliance-diff \
+	compliance-isa-3p compliance-isa-platform-3p compliance-priv compliance-diff \
 	compliance-trace-contract compliance-quick compliance-full
 
 FORCE:
@@ -626,7 +667,7 @@ compliance-doctor:
 	$(PYTHON) tools/compliance.py doctor
 
 compliance-smoke-local: compliance-smoke-local-1p compliance-smoke-local-3p \
-	compliance-smoke-local-platform
+	compliance-smoke-local-platform compliance-smoke-local-platform-3p
 
 compliance-smoke-local-1p: $(COMPLIANCE_1P_M_BUILD) \
 		$(COMPLIANCE_SMOKE_MEMH64)
@@ -645,6 +686,13 @@ compliance-smoke-local-platform: $(COMPLIANCE_PLATFORM_M_BUILD) \
 	vvp $(COMPLIANCE_PLATFORM_M_BUILD) \
 		+memh=$(COMPLIANCE_SMOKE_MEMH64) \
 		+tohost=$(COMPLIANCE_SMOKE_TOHOST) +test=local-smoke-platform
+
+compliance-smoke-local-platform-3p: $(COMPLIANCE_PLATFORM_3P_M_VLT_BUILD) \
+		$(COMPLIANCE_SMOKE_MEMH64)
+	$(COMPLIANCE_PLATFORM_3P_M_VLT_BUILD) \
+		+memh=$(abspath $(COMPLIANCE_SMOKE_MEMH64)) \
+		+tohost=$(COMPLIANCE_SMOKE_TOHOST) \
+		+test=local-smoke-platform-3p
 
 compliance-act4-generate:
 	@test -n "$(ACT4_ROOT)" || \
@@ -682,6 +730,15 @@ compliance-isa-3p: compliance-act4-generate
 		--xfail "$(COMPLIANCE_XFAIL)" \
 		--results-dir "$(COMPLIANCE_BUILD_DIR)/results-3p"
 
+# Exact integrated hierarchy: 3p core, L1I/L1D, native CCX, shared L2, then
+# the platform decoder and peripherals.  Verilator is mandatory for this path.
+compliance-isa-platform-3p: compliance-act4-generate
+	$(PYTHON) tools/compliance.py suite "$(COMPLIANCE_ACT4_ELFS)/rv64i" \
+		--extensions "$(COMPLIANCE_EXTENSIONS)" \
+		--backend platform-3p --engine verilator \
+		--xfail "$(COMPLIANCE_XFAIL)" \
+		--results-dir "$(COMPLIANCE_BUILD_DIR)/results-platform-3p"
+
 compliance-priv: compliance-act4-priv-generate
 	$(PYTHON) tools/compliance.py suite "$(COMPLIANCE_ACT4_PRIV_ELFS)" \
 		--extensions "$(COMPLIANCE_PRIV_EXTENSIONS)" \
@@ -718,14 +775,18 @@ compliance-quick: compliance-smoke-local compliance-diff \
 	compliance-trace-contract
 
 compliance-full: compliance-smoke-local compliance-isa compliance-isa-3p \
+	compliance-isa-platform-3p \
 	compliance-priv compliance-diff compliance-trace-contract
 
 sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
 sim: sim-isa-fp sim-exec-fpu-rv64-fd
+sim: sim-decode-rv64c
+sim: sim-atomic-soc
 sim: sim-vec
 sim: sim-prf
 sim: sim-l1-cache
 sim: sim-l1d-prefetch
+sim: sim-l1d-store-order sim-l1d-store-buffer
 sim: sim-ccx-protocol-1h
 sim: sim-ccx-protocol-2h sim-ccx-protocol-4h
 sim: sim-ccx-l2
@@ -736,6 +797,8 @@ sim: sim-core-complex-1h-axi sim-core-complex-2h-axi \
 sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
 
 sw-coremark-loop: $(COREMARK_LOOP_ELF) $(COREMARK_LOOP_BIN)
+
+sw-atomic: $(ATOMIC_SOC_ELF) $(ATOMIC_SOC_BIN) $(ATOMIC_SOC_DISASM)
 
 sim-core-3p-magic: $(CORE_3P_MAGIC_VERILATOR_BUILD) \
 		$(CORE_3P_MAGIC_MEMH)
@@ -756,6 +819,13 @@ sim-core-3p-ccx-l2: $(CORE_3P_CCX_L2_VERILATOR_BUILD) \
 		+memh_words=$(shell expr $(CORE_3P_MAGIC_SRAM_BYTES) / 32) \
 		+max_cycles=$(CORE_3P_CCX_L2_MAX_CYCLES) \
 		+expect_a0=$(CORE_3P_CCX_L2_EXPECT_A0)
+
+sim-atomic-soc: $(CORE_3P_CCX_L2_VERILATOR_BUILD) $(ATOMIC_SOC_MEMH)
+	$(CORE_3P_CCX_L2_VERILATOR_BUILD) \
+		+memh=$(abspath $(ATOMIC_SOC_MEMH)) \
+		+memh_words=$(ATOMIC_SOC_MEMH_WORDS) \
+		+max_cycles=$(ATOMIC_SOC_MAX_CYCLES) \
+		+expect_a0=$(ATOMIC_SOC_PASS)
 
 sw-memcpy: sw-memcpy-4k sw-memcpy-64k
 
@@ -895,6 +965,25 @@ sim-opensbi-3p-platform: $(OPENSBI_3P_PLATFORM_VERILATOR_BUILD) opensbi
 		+payload_memh=$(OPENSBI_ARTIFACT_DIR)/payload.memh \
 		+fdt_memh=$(OPENSBI_ARTIFACT_DIR)/openrv64-dtb.memh
 
+sim-linux-3p-platform-checkpoint: \
+		$(OPENSBI_3P_PLATFORM_VERILATOR_BUILD) opensbi \
+		$(LINUX_IMAGE_MEMH)
+	mkdir -p $(dir $(OPENSBI_3P_PLATFORM_CHECKPOINT))
+	$(OPENSBI_3P_PLATFORM_VERILATOR_BUILD) \
+		+trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(LINUX_IMAGE_MEMH) \
+		+payload_words=$(LINUX_IMAGE_WORDS) \
+		+fdt_memh=$(OPENSBI_ARTIFACT_DIR)/openrv64-dtb.memh \
+		+linux_mode +max_cycles=$(LINUX_MAX_CYCLES) \
+		+checkpoint=$(OPENSBI_3P_PLATFORM_CHECKPOINT) \
+		+checkpoint_cycles=$(OPENSBI_3P_PLATFORM_CHECKPOINT_CYCLES) \
+		+checkpoint_exit
+
+sim-linux-3p-platform-restore: $(OPENSBI_3P_PLATFORM_VERILATOR_BUILD)
+	$(OPENSBI_3P_PLATFORM_VERILATOR_BUILD) \
+		+restore=$(OPENSBI_3P_PLATFORM_CHECKPOINT)
+
 sim-opensbi-icarus: $(OPENSBI_SIM_BUILD) opensbi
 	vvp $(OPENSBI_SIM_BUILD) \
 		+trampoline_memh=$(OPENSBI_ARTIFACT_DIR)/trampoline.memh \
@@ -1000,6 +1089,12 @@ sim-l1-cache: $(L1_CACHE_SIM_BUILD)
 sim-l1d-prefetch: $(L1D_PREFETCH_SIM_BUILD)
 	vvp $(L1D_PREFETCH_SIM_BUILD)
 
+sim-l1d-store-order: $(L1D_STORE_ORDER_SIM_BUILD)
+	vvp $(L1D_STORE_ORDER_SIM_BUILD)
+
+sim-l1d-store-buffer: $(L1D_STORE_BUFFER_SIM_BUILD)
+	vvp $(L1D_STORE_BUFFER_SIM_BUILD)
+
 sim-ccx-l2: $(CCX_L2_SIM_BUILD)
 	vvp $(CCX_L2_SIM_BUILD)
 
@@ -1048,6 +1143,9 @@ sim-decode-early: $(DECODE_EARLY_SIM_BUILD)
 
 sim-decode-top: $(DECODE_TOP_SIM_BUILD)
 	vvp $(DECODE_TOP_SIM_BUILD)
+
+sim-decode-rv64c: $(DECODE_RV64C_SIM_BUILD)
+	vvp $(DECODE_RV64C_SIM_BUILD)
 
 sim-decode-imm: $(DECODE_IMM_SIM_BUILD)
 	vvp $(DECODE_IMM_SIM_BUILD)
@@ -1392,6 +1490,23 @@ $(CORE_3P_MAGIC_MEMH): $(CORE_3P_MAGIC_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(CORE_3P_MAGIC_SRAM_BYTES) --word-bytes 32
 
+$(ATOMIC_SOC_ELF): Makefile sw/atomic/atomic.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(ATOMIC_SOC_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(ATOMIC_SOC_MAP) \
+		-T sw/openrv64.ld -o $@ sw/atomic/atomic.S
+
+$(ATOMIC_SOC_BIN): $(ATOMIC_SOC_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(ATOMIC_SOC_DISASM): $(ATOMIC_SOC_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(ATOMIC_SOC_MEMH): $(ATOMIC_SOC_BIN) tools/bin2mem.py
+	mkdir -p $(dir $@)
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(ATOMIC_SOC_MEMH_BYTES) --word-bytes 32
+
 $(MEMCPY_4K_ELF): Makefile sw/memcpy/memcpy.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
@@ -1516,14 +1631,25 @@ $(OPENSBI_VERILATOR_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(
 		-Mdir $(OPENSBI_VERILATOR_DIR) -o opensbi_tb \
 		$(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
 
-$(OPENSBI_3P_PLATFORM_VERILATOR_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+$(OPENSBI_3P_PLATFORM_VERILATOR_BUILD): \
+		tb/verilator_checkpoint_main.cpp $(OPENSBI_SIM_SRCS) \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) \
+		$(BP_DEPS)
 	mkdir -p $(OPENSBI_3P_PLATFORM_VERILATOR_DIR)
-	$(VERILATOR) --binary --timing -j 0 -Wall --Wno-fatal \
+	$(VERILATOR) --cc --exe --build --no-timing --savable -j 0 \
+		-Wall --Wno-fatal \
 		--Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-SYNCASYNCNET \
+		-DOPENRV64_VERILATOR_CHECKPOINT \
 		-GBACKEND_CONFIG=2 \
+		-GISSUE_WINDOW=$(OPENSBI_3P_PLATFORM_ISSUE_WINDOW) \
+		-GSPECULATION_WINDOW=$(OPENSBI_3P_PLATFORM_SPECULATION_WINDOW) \
+		-GL2_BYTES=$(OPENSBI_3P_PLATFORM_L2_BYTES) \
+		-GL2_WAYS=$(OPENSBI_3P_PLATFORM_L2_WAYS) \
+		-GL1D_PREFETCH_ENABLE=$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_ENABLE) \
 		-Irtl --top-module tb_opensbi \
 		-Mdir $(OPENSBI_3P_PLATFORM_VERILATOR_DIR) \
 		-o opensbi_3p_platform_tb \
+		$(abspath tb/verilator_checkpoint_main.cpp) \
 		$(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
 
 $(OPENSBI_3P_VERILATOR_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
@@ -1634,6 +1760,18 @@ $(L1D_PREFETCH_SIM_BUILD): tb/tb_l1d_prefetch.sv $(L1_CACHE_SRCS)
 	iverilog -g2012 -Wall -Irtl -s tb_l1d_prefetch \
 		-o $(L1D_PREFETCH_SIM_BUILD) $(L1_CACHE_SRCS) \
 		tb/tb_l1d_prefetch.sv
+
+$(L1D_STORE_ORDER_SIM_BUILD): tb/tb_l1d_store_order.sv $(L1_CACHE_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_l1d_store_order \
+		-o $(L1D_STORE_ORDER_SIM_BUILD) $(L1_CACHE_SRCS) \
+		tb/tb_l1d_store_order.sv
+
+$(L1D_STORE_BUFFER_SIM_BUILD): tb/tb_l1d_store_buffer.sv $(L1_CACHE_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_l1d_store_buffer \
+		-o $(L1D_STORE_BUFFER_SIM_BUILD) $(L1_CACHE_SRCS) \
+		tb/tb_l1d_store_buffer.sv
 
 $(CCX_L2_SIM_BUILD): $(CCX_L2_SIM_SRCS) $(CCX_L2_SRCS) \
 		rtl/complex/protocol/defs.v
@@ -1748,6 +1886,10 @@ $(DECODE_EARLY_SIM_BUILD): $(DECODE_EARLY_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 $(DECODE_TOP_SIM_BUILD): $(DECODE_TOP_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(DECODE_TOP_SIM_BUILD) $(DECODE_TOP_SIM_SRCS)
+
+$(DECODE_RV64C_SIM_BUILD): $(DECODE_RV64C_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(DECODE_RV64C_SIM_BUILD) $(DECODE_RV64C_SIM_SRCS)
 
 $(DECODE_IMM_SIM_BUILD): $(DECODE_IMM_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
@@ -2287,6 +2429,26 @@ $(COMPLIANCE_PLATFORM_I_VLT_BUILD): tb/tb_compliance_platform.sv \
 	mkdir -p $(dir $@)
 	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
 		--top-module tb_compliance_platform -GENABLE_RV64M=0 \
+		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
+		tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_PLATFORM_3P_M_VLT_BUILD): tb/tb_compliance_platform.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_platform -GENABLE_RV64M=1 \
+		-GBACKEND_CONFIG=2 -GISSUE_WINDOW=1 -GSPECULATION_WINDOW=1 \
+		-GL2_BYTES=262144 -GL2_WAYS=8 \
+		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
+		tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_PLATFORM_3P_I_VLT_BUILD): tb/tb_compliance_platform.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_platform -GENABLE_RV64M=0 \
+		-GBACKEND_CONFIG=2 -GISSUE_WINDOW=1 -GSPECULATION_WINDOW=1 \
+		-GL2_BYTES=262144 -GL2_WAYS=8 \
 		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
 		tb/tb_compliance_platform.sv
 

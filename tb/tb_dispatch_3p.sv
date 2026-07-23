@@ -44,7 +44,7 @@ module tb_dispatch_3p;
     reg [3*SW-1:0] allocation_slot;
     wire [2:0] allocation_valid;
     wire [3*MW-1:0] allocation_meta;
-    reg [2:0] pipe_ready;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready;
     reg [1:0] forward_valid;
     reg [2*5-1:0] forward_rd_addr;
     reg [2:0] completion_forward_valid;
@@ -53,10 +53,10 @@ module tb_dispatch_3p;
     reg [2:0] branch_completion_forward_valid;
     reg [31:0] forward_map_valid;
     reg [32*64-1:0] forward_map_data;
-    wire [2:0] pipe_valid;
-    wire [3*IDW-1:0] pipe_id;
-    wire [3*SW-1:0] pipe_slot;
-    wire [3*IW-1:0] pipe_payload;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*IDW-1:0] pipe_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*SW-1:0] pipe_slot;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*IW-1:0] pipe_payload;
     reg [2:0] retire_valid;
     reg [2:0] retire_uses_rs1;
     reg [2:0] retire_uses_rs2;
@@ -200,7 +200,7 @@ module tb_dispatch_3p;
         allocation_ready = 1;
         allocation_id = {IDW'(2), IDW'(1), IDW'(0)};
         allocation_slot = {3'd2, 3'd1, 3'd0};
-        pipe_ready = 3'b111;
+        pipe_ready = 4'b1111;
         forward_valid = 2'b00;
         forward_rd_addr = 10'd0;
         completion_forward_valid = 3'b000;
@@ -337,11 +337,11 @@ module tb_dispatch_3p;
         p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
         p1 = alu_packet(64'd15, 0, 0, 5'd12);
         enqueue2(p0, p1, 2'b00, 2'b00);
-        pipe_ready = 3'b011;
+        pipe_ready = 4'b1011;
         #1;
         if (allocation_valid != 0 || pipe_valid != 0)
             fail("younger ALU bypassed a stalled older memory operation");
-        pipe_ready = 3'b111;
+        pipe_ready = 4'b1111;
         #1;
         if (allocation_valid != 3'b011)
             fail("prefix did not resume when MEM became ready");
@@ -583,7 +583,25 @@ module tb_dispatch_3p;
         if ((allocation_valid != 3'b001) || (pipe_valid != 3'b010))
             fail("local-forward-dependent branch admitted younger pairing");
 
-        $display("PASS: queued 3p dispatch routing, hazards, branch forwarding, pairing, and ordering");
+        // Two ordinary memory operations in the same prefix occupy distinct
+        // physical queues.  This is the strict-dispatch case STREAM relies on.
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = alu_packet(64'd48, 5'd0, 5'd0, 5'd1);
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p1 = alu_packet(64'd49, 5'd0, 5'd0, 5'd2);
+        p1[I_MEM_READ] = 1'b1;
+        p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        enqueue2(p0, p1, 2'b00, 2'b00);
+        #1;
+        if ((allocation_valid != 3'b011) ||
+            (pipe_valid != 4'b1100))
+            fail("dual memory prefix did not route to MEM0 and MEM1");
+
+        $display("PASS: queued 3p dispatch routing, dual MEM issue, hazards, branch forwarding, pairing, and ordering");
         $finish;
     end
 endmodule

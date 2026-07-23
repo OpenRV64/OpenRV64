@@ -41,6 +41,32 @@ make sim-uart-firmware
 The toolchain prefix can be overridden with `RISCV_CC` and
 `RISCV_OBJCOPY`. The default is Arch Linux's `riscv64-elf-*` toolchain.
 
+## Atomic SoC tests
+
+`atomic/atomic.S` is a self-checking RV64A test that runs on the production
+three-pipe hierarchy: L1I/L1D, native CCX, shared L2, and the AXI SRAM model.
+It covers successful and failed LR/SC sequences, reservation consumption and
+local-store invalidation, and every integer AMO in both 64-bit and upper-lane
+32-bit forms. The word cases also check sign extension and preservation of the
+adjacent word.
+
+Build the ELF, flat image, and disassembly with:
+
+```sh
+make sw-atomic
+```
+
+Run it through `tb_top_3p_soc` with:
+
+```sh
+make sim-atomic-soc
+```
+
+Success returns `ATOMICOK` in `a0`. A failure returns `ATOMFA` followed by a
+16-bit case number. These are single-hart architectural tests: reservation
+state currently lives in the LSU and AMOs are locally serialized read/write
+pairs. They do not establish multicore atomicity at the L2/home agent.
+
 ## memcpy prefetch benchmark
 
 `memcpy/memcpy.S` supplies 4 KiB and 64 KiB page-copy workloads for the

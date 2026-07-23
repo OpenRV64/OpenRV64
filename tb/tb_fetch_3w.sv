@@ -245,9 +245,9 @@ module tb_fetch_3w;
             $fatal(1, "partial decode acceptance advanced by more than one");
         expect_bundle(64'h28, 32'h10a, 32'h10b, 32'h10c);
 
-        // Redirects discard the fetch-side bridge registers.  The target is
-        // requested again and is expected to hit in L1I in the integrated
-        // design; fetch itself owns no loop-residency policy.
+        // Redirect changes the selected resident path without copying or
+        // invalidating the fetch slots.  A resident target must immediately
+        // return to decode and must not launch a duplicate L1I request.
         decode_ready = 0;
         replay_request_base = request_count;
         restart_pc = 64'h18;
@@ -256,14 +256,9 @@ module tb_fetch_3w;
         restart = 0;
         if (stream_pc != 64'h18)
             $fatal(1, "resident redirect did not restore target PC");
-        while (request_count < replay_request_base + 1) tick();
-        if (request_addr[replay_request_base] != 64'h0)
-            $fatal(1, "redirect did not request its target line");
-        return_line(64'h0, 32'h100, 1'b0, 1'b1);
-        while (request_count < replay_request_base + 2) tick();
-        if (request_addr[replay_request_base + 1] != 64'h20)
-            $fatal(1, "redirect did not restore one-line lookahead");
-        return_line(64'h20, 32'h108, 1'b0, 1'b1);
+        repeat (2) tick();
+        if (request_count != replay_request_base)
+            $fatal(1, "resident redirect launched a duplicate fetch");
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
 
         // A branch launches ordinary 256-bit requests in predicted then

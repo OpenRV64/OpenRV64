@@ -768,10 +768,12 @@ module tb_top_axi_3p #(
     integer issue_width_3;
     integer dispatch_ex0;
     integer dispatch_ex1;
-    integer dispatch_mem;
+    integer dispatch_mem0;
+    integer dispatch_mem1;
     integer dispatch_pipe_busy_ex0;
     integer dispatch_pipe_busy_ex1;
-    integer dispatch_pipe_busy_mem;
+    integer dispatch_pipe_busy_mem0;
+    integer dispatch_pipe_busy_mem1;
     integer branch_pipe_full;
     integer axi_fetch_reads;
     integer axi_data_reads;
@@ -1117,8 +1119,9 @@ module tb_top_axi_3p #(
         dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_rs2_addr;
     wire [3*`RV64_REG_ADDR_WIDTH-1:0] strict_trace_candidate_rd =
         dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_rd_addr;
-    wire [2:0] trace_pipe_ready = dut.u_core.u_backend.pipe_ready;
-    wire [2:0] trace_dispatch_fire =
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_pipe_ready =
+        dut.u_core.u_backend.pipe_ready;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_dispatch_fire =
         dut.u_core.backend_issue_valid & trace_pipe_ready;
     wire [2:0] trace_candidate_valid = (ISSUE_WINDOW != 0) ?
         dut.u_core.u_backend.pipe_valid : strict_trace_candidate_valid;
@@ -1278,21 +1281,39 @@ module tb_top_axi_3p #(
         for (trace_lsu_index = 0;
              trace_lsu_index < `OPENRV64_LSU_OUTSTANDING;
              trace_lsu_index = trace_lsu_index + 1) begin : g_trace_lsu
-            assign trace_lsu_slots[trace_lsu_index] =
-                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[
-                    trace_lsu_index];
-            assign trace_lsu_sent[trace_lsu_index] =
-                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[
-                    trace_lsu_index];
+            if (trace_lsu_index < 4) begin : g_mem0
+                assign trace_lsu_slots[trace_lsu_index] =
+                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
+                        .slot_valid_q[trace_lsu_index];
+                assign trace_lsu_sent[trace_lsu_index] =
+                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
+                        .slot_sent_q[trace_lsu_index];
+            end else begin : g_mem1
+                assign trace_lsu_slots[trace_lsu_index] =
+                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
+                        .slot_valid_q[trace_lsu_index - 4];
+                assign trace_lsu_sent[trace_lsu_index] =
+                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
+                        .slot_sent_q[trace_lsu_index - 4];
+            end
         end
     endgenerate
     wire trace_lsu_store_inflight =
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.store_inflight_q;
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0.store_inflight_q ||
+        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1.store_inflight_q;
     wire trace_lsu_order_block =
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_slot_valid &&
-        (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.pending_store_order_block ||
-         (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_mem_write &&
-          !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.request_order_match));
+        (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0.request_slot_valid &&
+         (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
+              .pending_store_order_block ||
+          (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0.request_mem_write &&
+           !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
+                .request_order_match))) ||
+        (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1.request_slot_valid &&
+         (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
+              .pending_store_order_block ||
+          (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1.request_mem_write &&
+           !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
+                .request_order_match)));
     wire [3:0] trace_fetch_lines = {
         2'b00,
         dut.u_core.g_fetch_axi.u_fetch.line_valid_q[1],
@@ -1356,14 +1377,20 @@ module tb_top_axi_3p #(
     wire [4:0] trace_window_mem_order_block = (ISSUE_WINDOW != 0) ?
         dut.u_core.u_backend.u_dispatch.g_3p.u_window.trace_mem_order_block_count :
         5'd0;
-    wire [1:0] trace_window_selected =
-        {1'b0, dut.u_core.u_backend.pipe_valid[0]} +
-        {1'b0, dut.u_core.u_backend.pipe_valid[1]} +
-        {1'b0, dut.u_core.u_backend.pipe_valid[2]};
-    wire [1:0] trace_window_issued =
-        {1'b0, (dut.u_core.u_backend.pipe_valid[0] && trace_pipe_ready[0])} +
-        {1'b0, (dut.u_core.u_backend.pipe_valid[1] && trace_pipe_ready[1])} +
-        {1'b0, (dut.u_core.u_backend.pipe_valid[2] && trace_pipe_ready[2])};
+    wire [2:0] trace_window_selected =
+        {2'b00, dut.u_core.u_backend.pipe_valid[0]} +
+        {2'b00, dut.u_core.u_backend.pipe_valid[1]} +
+        {2'b00, dut.u_core.u_backend.pipe_valid[2]} +
+        {2'b00, dut.u_core.u_backend.pipe_valid[3]};
+    wire [2:0] trace_window_issued =
+        {2'b00, (dut.u_core.u_backend.pipe_valid[0] &&
+                 trace_pipe_ready[0])} +
+        {2'b00, (dut.u_core.u_backend.pipe_valid[1] &&
+                 trace_pipe_ready[1])} +
+        {2'b00, (dut.u_core.u_backend.pipe_valid[2] &&
+                 trace_pipe_ready[2])} +
+        {2'b00, (dut.u_core.u_backend.pipe_valid[3] &&
+                 trace_pipe_ready[3])};
 
     integer trace_block_lane;
     integer trace_block_reason;
@@ -1430,7 +1457,7 @@ module tb_top_axi_3p #(
                             1*`OPENRV64_EXEC_PIPE_WIDTH +:
                             `OPENRV64_EXEC_PIPE_WIDTH])) begin
                 trace_block_reason = BLOCK_PIPE_CONFLICT;
-            end else if (trace_block_pipe > `OPENRV64_EXEC_PIPE_MEM) begin
+            end else if (trace_block_pipe > `OPENRV64_EXEC_PIPE_MEM1) begin
                 trace_block_reason = BLOCK_INVALID_PIPE;
             end else if (!trace_pipe_ready[trace_block_pipe]) begin
                 trace_block_reason = BLOCK_PIPE_BUSY;
@@ -1452,15 +1479,17 @@ module tb_top_axi_3p #(
                 trace_block_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14];
     end
 
-    reg [2:0] strict_dispatch_pipe_busy;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] strict_dispatch_pipe_busy;
     always @* begin
-        strict_dispatch_pipe_busy = 3'b000;
+        strict_dispatch_pipe_busy =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
         if ((trace_block_reason == BLOCK_PIPE_BUSY) &&
-            (trace_block_pipe <= `OPENRV64_EXEC_PIPE_MEM))
+            (trace_block_pipe <= `OPENRV64_EXEC_PIPE_MEM1))
             strict_dispatch_pipe_busy[trace_block_pipe] = 1'b1;
     end
 
-    wire [2:0] trace_dispatch_pipe_busy = (ISSUE_WINDOW != 0) ?
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_dispatch_pipe_busy =
+        (ISSUE_WINDOW != 0) ?
         (dut.u_core.u_backend.pipe_valid & ~trace_pipe_ready) :
         strict_dispatch_pipe_busy;
 
@@ -1869,20 +1898,25 @@ module tb_top_axi_3p #(
             perf_retired = perf_retired + dut.u_core.backend_retire_count;
             issued_this_cycle = dut.u_core.backend_issue_valid[0] +
                                 dut.u_core.backend_issue_valid[1] +
-                                dut.u_core.backend_issue_valid[2];
+                                dut.u_core.backend_issue_valid[2] +
+                                dut.u_core.backend_issue_valid[3];
             perf_issued = perf_issued + issued_this_cycle;
             dispatch_ex0 = dispatch_ex0 +
                 trace_dispatch_fire[`OPENRV64_EXEC_PIPE_EX0];
             dispatch_ex1 = dispatch_ex1 +
                 trace_dispatch_fire[`OPENRV64_EXEC_PIPE_EX1];
-            dispatch_mem = dispatch_mem +
-                trace_dispatch_fire[`OPENRV64_EXEC_PIPE_MEM];
+            dispatch_mem0 = dispatch_mem0 +
+                trace_dispatch_fire[`OPENRV64_EXEC_PIPE_MEM0];
+            dispatch_mem1 = dispatch_mem1 +
+                trace_dispatch_fire[`OPENRV64_EXEC_PIPE_MEM1];
             dispatch_pipe_busy_ex0 = dispatch_pipe_busy_ex0 +
                 trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_EX0];
             dispatch_pipe_busy_ex1 = dispatch_pipe_busy_ex1 +
                 trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_EX1];
-            dispatch_pipe_busy_mem = dispatch_pipe_busy_mem +
-                trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_MEM];
+            dispatch_pipe_busy_mem0 = dispatch_pipe_busy_mem0 +
+                trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_MEM0];
+            dispatch_pipe_busy_mem1 = dispatch_pipe_busy_mem1 +
+                trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_MEM1];
             if (trace_branch_pipe_full)
                 branch_pipe_full = branch_pipe_full + 1;
 
@@ -2001,7 +2035,8 @@ module tb_top_axi_3p #(
             end
 
             if ((trace_block_reason == BLOCK_PIPE_BUSY) &&
-                (trace_block_pipe == `OPENRV64_EXEC_PIPE_MEM))
+                ((trace_block_pipe == `OPENRV64_EXEC_PIPE_MEM0) ||
+                 (trace_block_pipe == `OPENRV64_EXEC_PIPE_MEM1)))
                 perf_lsu_pipe_block = perf_lsu_pipe_block + 1;
             if (dut.u_core.backend_mem_valid &&
                 !dut.u_core.backend_mem_ready)
@@ -2062,7 +2097,8 @@ module tb_top_axi_3p #(
     // stays fixed-width and cheap to generate.
     task automatic sample_pipeline_trace;
         begin
-        if (rst_n && external_image && (pipeline_trace_fd != 0)) begin
+        if (rst_n && (external_image || opensbi_image) &&
+            (pipeline_trace_fd != 0)) begin
             $fwrite(pipeline_trace_fd,
                 "openrv64-3p-cycle-v2,%0d,%x,%x,%x,%x,%x,%x,%x,%x,%x,%0d,%0d,%0d,%x,%x,%x,%08x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%02x,",
                 pipeline_trace_cycle,
@@ -2387,10 +2423,12 @@ module tb_top_axi_3p #(
         issue_width_3 = 0;
         dispatch_ex0 = 0;
         dispatch_ex1 = 0;
-        dispatch_mem = 0;
+        dispatch_mem0 = 0;
+        dispatch_mem1 = 0;
         dispatch_pipe_busy_ex0 = 0;
         dispatch_pipe_busy_ex1 = 0;
-        dispatch_pipe_busy_mem = 0;
+        dispatch_pipe_busy_mem0 = 0;
+        dispatch_pipe_busy_mem1 = 0;
         branch_pipe_full = 0;
         axi_fetch_reads = 0;
         axi_data_reads = 0;
@@ -2555,6 +2593,16 @@ module tb_top_axi_3p #(
             $readmemh(memh_path, u_axi_fabric.ram_q, 0,
                       external_memh_words - 1);
         end else if (opensbi_image) begin
+            if ($value$plusargs("pipeline_trace=%s",
+                                pipeline_trace_path)) begin
+                pipeline_trace_fd = $fopen(pipeline_trace_path, "w");
+                if (pipeline_trace_fd == 0)
+                    $fatal(1, "could not open 3P pipeline trace %0s",
+                           pipeline_trace_path);
+                $fdisplay(pipeline_trace_fd,
+                "schema,cycle,fetch_valid,fetch_ready,fetch_fire,decode_valid,decode_ready,decode_fire,issue_valid,complete_valid,retire_valid,retire_count,dispatch_q,retire_q,raw,waw,read_port,write_busy,barrier,bp_present,bp_allocate,bp_taken,bp_fetch_stall,bp_decode_stall,redirect,fetch_req_valid,fetch_req_ready,fetch_resp_valid,axi_arvalid,axi_arready,stall_causes,queue_valid,candidate_fire,candidate_hazard_free,candidate_pipe,pipe_ready,barrier_allow,allocation_ready,block_lane,block_reason,raw_existing,raw_bundle,raw_completed,raw_rs1,raw_rs2,waw_bundle,waw_completed,candidate_uses_rs1,candidate_uses_rs2,candidate_reg_write,candidate_rs1,candidate_rs2,candidate_rd,queue_retire_valid,completed_entries,control_flush,control_redirect,fetch_bus_q,fetch_line_valid,fetch_pending,fetch_consume_hit,fetch_follow_hit,fetch_active,mem_req_valid,mem_req_ready,mem_resp_valid,mem_resp_ready,mem_write,lsu_slots,lsu_sent,lsu_store_inflight,lsu_order_block,retire_gpr_write,retire_gpr_rd,retire_gpr_data,mem_req_tag,mem_req_addr,mem_req_wdata,mem_req_wstrb,mem_resp_tag,mem_resp_rdata,window_unissued,window_operand_ready,window_eligible,window_raw_block,window_hard_block,window_mem_order_block,window_selected,window_issued,f0_uid,f0_pc,f0_instr,f1_uid,f1_pc,f1_instr,f2_uid,f2_pc,f2_instr,d0_uid,d0_pc,d0_instr,d1_uid,d1_pc,d1_instr,d2_uid,d2_pc,d2_instr,q0_uid,q0_pc,q0_instr,q1_uid,q1_pc,q1_instr,q2_uid,q2_pc,q2_instr,i0_uid,i0_pc,i0_instr,i1_uid,i1_pc,i1_instr,i2_uid,i2_pc,i2_instr,c0_uid,c0_pc,c0_instr,c1_uid,c1_pc,c1_instr,c2_uid,c2_pc,c2_instr,r0_uid,r0_pc,r0_instr,r1_uid,r1_pc,r1_instr,r2_uid,r2_pc,r2_instr");
+                $display("TRACE pipeline=%0s", pipeline_trace_path);
+            end
             $display("OpenSBI 3P AXI load: trampoline");
             $readmemh(opensbi_trampoline_memh, u_axi_fabric.ram_q,
                       OPENSBI_TRAMPOLINE_LINE,
@@ -2651,13 +2699,15 @@ module tb_top_axi_3p #(
             $display("PERF_ISSUE_WIDTH w0=%0d w1=%0d w2=%0d w3=%0d",
                      issue_width_0, issue_width_1,
                      issue_width_2, issue_width_3);
-            $display("PERF_DISPATCH ex0=%0d ex1=%0d mem=%0d total=%0d",
-                     dispatch_ex0, dispatch_ex1, dispatch_mem,
-                     dispatch_ex0 + dispatch_ex1 + dispatch_mem);
-            $display("PERF_DISPATCH_BLOCK pipe_busy_ex0=%0d pipe_busy_ex1=%0d pipe_busy_mem=%0d",
+            $display("PERF_DISPATCH ex0=%0d ex1=%0d mem0=%0d mem1=%0d total=%0d",
+                     dispatch_ex0, dispatch_ex1, dispatch_mem0, dispatch_mem1,
+                     dispatch_ex0 + dispatch_ex1 +
+                     dispatch_mem0 + dispatch_mem1);
+            $display("PERF_DISPATCH_BLOCK pipe_busy_ex0=%0d pipe_busy_ex1=%0d pipe_busy_mem0=%0d pipe_busy_mem1=%0d",
                      dispatch_pipe_busy_ex0,
                      dispatch_pipe_busy_ex1,
-                     dispatch_pipe_busy_mem);
+                     dispatch_pipe_busy_mem0,
+                     dispatch_pipe_busy_mem1);
             $display("PERF_BRANCH_BLOCK pipe_full=%0d",
                      branch_pipe_full);
             $display("PERF_AXI fetch_reads=%0d data_reads=%0d ram_reads=%0d mmio_reads=%0d ram_writes=%0d mmio_writes=%0d",
@@ -2772,19 +2822,25 @@ module tb_top_axi_3p #(
 
         if (!dbg_halted)
             $fatal(1, "AXI/SoC 3P core did not halt, pc=%016x", dbg_pc);
-        // EBREAK may become visible one cycle before the final posted store's
-        // registered command grant.  Drain the native endpoint before
-        // checking memory-side effects.
+        // EBREAK may become visible before a final posted store crosses the
+        // registered core/L1D boundary.  Allow that crossing, then cover the
+        // configured coalescing timeout while draining the native endpoint.
+        for (cycles = 0; cycles < 4; cycles = cycles + 1) begin
+            @(posedge clk);
+            #1;
+        end
         for (cycles = 0;
-             cycles < 100 &&
-             (ccx_req_valid || ccx_wdata_valid || ccx_resp_valid ||
+             cycles < 1200 &&
+             ((dut.u_core.u_bus.g_ccx.u_bus.u_l1d.store_buffer_count_q != 0) ||
+              ccx_req_valid || ccx_wdata_valid || ccx_resp_valid ||
               u_axi_fabric.ccx_cmd_pending_q ||
               u_axi_fabric.ccx_data_pending_q);
              cycles = cycles + 1) begin
             @(posedge clk);
             #1;
         end
-        if (ccx_req_valid || ccx_wdata_valid || ccx_resp_valid ||
+        if ((dut.u_core.u_bus.g_ccx.u_bus.u_l1d.store_buffer_count_q != 0) ||
+            ccx_req_valid || ccx_wdata_valid || ccx_resp_valid ||
             u_axi_fabric.ccx_cmd_pending_q ||
             u_axi_fabric.ccx_data_pending_q)
             $fatal(1, "native CCX did not drain after architectural halt");
@@ -2805,9 +2861,9 @@ module tb_top_axi_3p #(
             $fatal(1, "RAM CCX store mismatch: %016x",
                    u_axi_fabric.ram_q[8][127:64]);
         if ((u_axi_fabric.ram_q[8][63:0] != 64'd13) ||
-            (ccx_locked_reads != 1) || (ccx_locked_writes != 1))
+            (ccx_locked_reads != 0) || (ccx_locked_writes != 0))
             $fatal(1,
-                   "AMO home-lock path mismatch data=%0d lock_reads=%0d lock_writes=%0d",
+                   "single-hart AMO leaked CCX lock data=%0d lock_reads=%0d lock_writes=%0d",
                    u_axi_fabric.ram_q[8][63:0], ccx_locked_reads,
                    ccx_locked_writes);
         if (dut.u_core.u_backend.u_gpr.regs[5] != 64'd11 ||
