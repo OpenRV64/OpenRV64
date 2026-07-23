@@ -275,6 +275,7 @@ module openrv64_core_gen_bus #(
         .rst_n(rst_n),
         .invalidate_i(tlbi_i),
         .invalidate_busy_o(tlbi_busy_o),
+        .shootdown_ready_i(1'b1),
         .req_valid_i(ptw_req_valid),
         .req_ready_o(ptw_req_ready),
         .req_vaddr_i(vaddr_q),

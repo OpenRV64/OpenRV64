@@ -17,6 +17,7 @@ module tb_exec_fpu_rv64fd;
     reg [1:0] fmt;
     reg [2:0] rm;
     reg [2:0] frm;
+    reg [4:0] conversion_type;
     reg [63:0] src1;
     reg [63:0] src2;
     reg [63:0] src3;
@@ -42,6 +43,7 @@ module tb_exec_fpu_rv64fd;
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
         .valid_i(valid), .ready_o(ready), .tag_i(tag), .op_i(op),
         .fmt_i(fmt), .rm_i(rm), .frm_i(frm),
+        .type_i(conversion_type),
         .src1_i(src1), .src2_i(src2), .src3_i(src3),
         .result_valid_o(result_valid), .result_ready_i(result_ready),
         .result_tag_o(result_tag), .result_is_int_o(result_is_int),
@@ -71,6 +73,43 @@ module tb_exec_fpu_rv64fd;
             expected_flags[expected_tail] = exp_flags;
             expected_unsupported[expected_tail] = exp_unsupported;
             expected_tail = expected_tail + 1;
+        end
+    endtask
+
+    task automatic send_typed;
+        input [TAG_WIDTH-1:0] in_tag;
+        input [`OPENRV64_FP_OP_WIDTH-1:0] in_op;
+        input [1:0] in_fmt;
+        input [2:0] in_rm;
+        input [2:0] in_frm;
+        input [4:0] in_type;
+        input [63:0] in_src1;
+        input [63:0] in_src2;
+        input [63:0] in_src3;
+        begin
+            conversion_type = in_type;
+            send(in_tag, in_op, in_fmt, in_rm, in_frm,
+                 in_src1, in_src2, in_src3);
+            conversion_type = `RV64_FP_RS2_W;
+        end
+    endtask
+
+    task automatic send_unstalled;
+        input [TAG_WIDTH-1:0] in_tag;
+        input [`OPENRV64_FP_OP_WIDTH-1:0] in_op;
+        input [1:0] in_fmt;
+        input [2:0] in_rm;
+        input [2:0] in_frm;
+        input [63:0] in_src1;
+        input [63:0] in_src2;
+        input [63:0] in_src3;
+        begin
+            if (!ready)
+                $fatal(1,
+                    "pipelined FPU backpressured request tag=%0d without output stall",
+                    in_tag);
+            send(in_tag, in_op, in_fmt, in_rm, in_frm,
+                 in_src1, in_src2, in_src3);
         end
     endtask
 
@@ -149,6 +188,7 @@ module tb_exec_fpu_rv64fd;
         fmt = `RV64_FP_FMT_D;
         rm = `RV64_FP_RM_RNE;
         frm = `RV64_FP_RM_RNE;
+        conversion_type = `RV64_FP_RS2_W;
         src1 = 64'd0;
         src2 = 64'd0;
         src3 = 64'd0;
@@ -246,10 +286,153 @@ module tb_exec_fpu_rv64fd;
         send(8'd16, `OPENRV64_FP_OP_MV_F_X, `RV64_FP_FMT_S,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'hdead_beef_1234_5678, 64'd0, 64'd0);
-        queue_expected(8'd17, 1'b0, 64'd0, 64'd0, 5'd0, 1'b1);
+        queue_expected(8'd17, 1'b0, 64'h3fe0_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
         send(8'd17, `OPENRV64_FP_OP_DIV, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff0_0000_0000_0000, 64'h4000_0000_0000_0000, 64'd0);
+        wait_empty();
+
+        // Different long operations enter on consecutive cycles and retain
+        // request order through the fixed-latency elastic pipeline.
+        queue_expected(8'd20, 1'b0, 64'h3ff6_a09e_667f_3bcd,
+                       64'd0, `RV64_FP_FFLAG_NX, 1'b0);
+        send_unstalled(8'd20, `OPENRV64_FP_OP_SQRT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h4000_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd21, 1'b0, 64'hffff_ffff_3fb5_04f3,
+                       64'd0, `RV64_FP_FFLAG_NX, 1'b0);
+        send_unstalled(8'd21, `OPENRV64_FP_OP_SQRT, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'hffff_ffff_4000_0000, 64'd0, 64'd0);
+        queue_expected(8'd22, 1'b0, 64'h400a_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_unstalled(8'd22, `OPENRV64_FP_OP_MADD, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
+             64'h3fd0_0000_0000_0000);
+        queue_expected(8'd23, 1'b0, 64'h4006_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_unstalled(8'd23, `OPENRV64_FP_OP_MSUB, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
+             64'h3fd0_0000_0000_0000);
+        queue_expected(8'd24, 1'b0, 64'hc006_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_unstalled(8'd24, `OPENRV64_FP_OP_NMSUB, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
+             64'h3fd0_0000_0000_0000);
+        queue_expected(8'd25, 1'b0, 64'hc00a_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_unstalled(8'd25, `OPENRV64_FP_OP_NMADD, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
+             64'h3fd0_0000_0000_0000);
+        queue_expected(8'd26, 1'b0, 64'h3c9f_ffff_ffff_fffe,
+                       64'd0, 5'd0, 1'b0);
+        send_unstalled(8'd26, `OPENRV64_FP_OP_MADD, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff0_0000_0000_0001, 64'h3fef_ffff_ffff_ffff,
+             64'hbff0_0000_0000_0000);
+        queue_expected(8'd27, 1'b0, 64'h7ff0_0000_0000_0000,
+                       64'd0, `RV64_FP_FFLAG_DZ, 1'b0);
+        send_unstalled(8'd27, `OPENRV64_FP_OP_DIV, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff0_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd28, 1'b0, `RV64_FP_CANONICAL_NAN_D,
+                       64'd0, `RV64_FP_FFLAG_NV, 1'b0);
+        send_unstalled(8'd28, `OPENRV64_FP_OP_SQRT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'hbff0_0000_0000_0000, 64'd0, 64'd0);
+
+        queue_expected(8'd29, 1'b1, 64'd0, 64'd4,
+                       `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd29, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'h400e_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd30, 1'b1, 64'd0, 64'd3,
+                       `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd30, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RTZ, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'h400e_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd31, 1'b1, 64'd0,
+                       64'h7fff_ffff_ffff_ffff,
+                       `RV64_FP_FFLAG_NV, 1'b0);
+        send_typed(8'd31, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             `RV64_FP_CANONICAL_NAN_D, 64'd0, 64'd0);
+        queue_expected(8'd32, 1'b1, 64'd0, 64'd0,
+                       `RV64_FP_FFLAG_NV, 1'b0);
+        send_typed(8'd32, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_LU,
+             64'hbff0_0000_0000_0000, 64'd0, 64'd0);
+
+        queue_expected(8'd33, 1'b0, 64'h43e0_0000_0000_0000,
+                       64'd0, `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd33, `OPENRV64_FP_OP_CVT_FROM_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'h7fff_ffff_ffff_ffff, 64'd0, 64'd0);
+        queue_expected(8'd34, 1'b0, 64'h43f0_0000_0000_0000,
+                       64'd0, `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd34, `OPENRV64_FP_OP_CVT_FROM_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_LU,
+             64'hffff_ffff_ffff_ffff, 64'd0, 64'd0);
+        queue_expected(8'd35, 1'b0, 64'hffff_ffff_cf00_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_typed(8'd35, `OPENRV64_FP_OP_CVT_FROM_INT, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_W,
+             64'h0000_0000_8000_0000, 64'd0, 64'd0);
+
+        queue_expected(8'd36, 1'b0, 64'hffff_ffff_3f80_0000,
+                       64'd0, `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd36, `OPENRV64_FP_OP_CVT_FORMAT, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_D,
+             64'h3ff0_0000_1000_0000, 64'd0, 64'd0);
+        queue_expected(8'd37, 1'b0, 64'h3ff8_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_typed(8'd37, `OPENRV64_FP_OP_CVT_FORMAT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_S,
+             64'hffff_ffff_3fc0_0000, 64'd0, 64'd0);
+        queue_expected(8'd38, 1'b1, 64'd0, 64'd3,
+                       `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd38, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_DYN, `RV64_FP_RM_RDN, `RV64_FP_RS2_L,
+             64'h400e_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd39, 1'b1, 64'd0, 64'd0, 5'd0, 1'b1);
+        send_typed(8'd39, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, 5'd7,
+             64'h3ff0_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd40, 1'b0, 64'd0, 64'd0, 5'd0, 1'b1);
+        send_typed(8'd40, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             3'b101, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'h3ff0_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd41, 1'b1, 64'd0, 64'd0,
+                       `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd41, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'h0000_0000_0000_0001, 64'd0, 64'd0);
+        queue_expected(8'd42, 1'b1, 64'd0, 64'hffff_ffff_ffff_ffff,
+                       `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd42, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RDN, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'h8000_0000_0000_0001, 64'd0, 64'd0);
+        queue_expected(8'd43, 1'b1, 64'd0,
+                       64'h7fff_ffff_ffff_ffff,
+                       `RV64_FP_FFLAG_NV, 1'b0);
+        send_typed(8'd43, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'h43e0_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd44, 1'b1, 64'd0,
+                       64'h8000_0000_0000_0000, 5'd0, 1'b0);
+        send_typed(8'd44, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE, `RV64_FP_RS2_L,
+             64'hc3e0_0000_0000_0000, 64'd0, 64'd0);
+        queue_expected(8'd45, 1'b1, 64'd0, 64'd0,
+                       `RV64_FP_FFLAG_NX, 1'b0);
+        send_typed(8'd45, `OPENRV64_FP_OP_CVT_TO_INT, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RTZ, `RV64_FP_RM_RNE, `RV64_FP_RS2_LU,
+             64'h8000_0000_0000_0001, 64'd0, 64'd0);
         wait_empty();
 
         // Output state must remain stable under backpressure.

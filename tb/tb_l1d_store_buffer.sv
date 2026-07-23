@@ -17,6 +17,8 @@ module tb_l1d_store_buffer;
     reg [63:0] req_addr;
     reg [63:0] req_wdata;
     reg [7:0] req_wstrb;
+    reg speculation_barrier;
+    wire store_barrier_busy;
     wire [63:0] req_rdata;
     wire req_error;
     wire resp_valid;
@@ -91,7 +93,8 @@ module tb_l1d_store_buffer;
         .prefetch_dropped_o(),
         .prefetch_useless_o(),
         .prefetch_depth_o(),
-        .speculation_barrier_i(1'b0),
+        .speculation_barrier_i(speculation_barrier),
+        .store_barrier_busy_o(store_barrier_busy),
         .invalidate_valid_i(1'b0),
         .invalidate_ready_o(),
         .invalidate_all_i(1'b0),
@@ -190,6 +193,7 @@ module tb_l1d_store_buffer;
             req_addr = 0;
             req_wdata = 0;
             req_wstrb = 0;
+            speculation_barrier = 1'b0;
             repeat (5) @(posedge clk);
             @(negedge clk);
             rst_n = 1'b1;
@@ -311,7 +315,38 @@ module tb_l1d_store_buffer;
                    write_addr[0], write_addr[1],
                    write_addr[2], write_addr[3]);
 
-        $display("PASS: eight-entry L1D store combining, watermark drain, timeout, and FIFO order");
+        // A translation barrier must force even one partial line to CCX and
+        // remain busy until the downstream write response is consumed.
+        reset_dut();
+        issue_store(BASE, 64'hfeed_face_0123_4567);
+        if ((dut.store_buffer_count_q != 1) || (write_count != 0))
+            $fatal(1, "barrier setup store was not held for combining");
+        timeout_start_cycle = cycle_count;
+        @(negedge clk);
+        speculation_barrier = 1'b1;
+        #1;
+        if (!store_barrier_busy)
+            $fatal(1, "translation barrier did not assert busy immediately");
+        @(posedge clk);
+        @(negedge clk);
+        speculation_barrier = 1'b0;
+        wait_for_writes(1);
+        if ((cycle_count - timeout_start_cycle) >=
+            (TIMEOUT_CYCLES - 8))
+            $fatal(1, "translation barrier waited for store timeout");
+        if (!store_barrier_busy)
+            $fatal(1, "translation barrier completed before write response");
+        wait_cycles = 0;
+        while (store_barrier_busy && (wait_cycles < 100)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (store_barrier_busy || (dut.store_buffer_count_q != 0) ||
+            dut.store_completion_valid_q ||
+            (dut.backend_state_q != 0))
+            $fatal(1, "translation barrier released with store outstanding");
+
+        $display("PASS: eight-entry L1D store combining, watermark drain, timeout, FIFO order, and translation-barrier drain");
         $finish;
     end
 

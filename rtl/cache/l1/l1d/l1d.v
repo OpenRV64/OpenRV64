@@ -177,6 +177,10 @@ module openrv64_l1d_ccx #(
     // read epoch. Speculative reads from an older epoch are consumed and
     // discarded; an architectural read miss is consumed and reissued.
     input  wire                      speculation_barrier_i,
+    // The same barrier forces every older posted store through its CCX
+    // response. Busy covers the initiating cycle and remains asserted until
+    // no buffered or in-flight store remains.
+    output wire                      store_barrier_busy_o,
 
     input  wire                      invalidate_valid_i,
     output wire                      invalidate_ready_o,
@@ -327,6 +331,7 @@ module openrv64_l1d_ccx #(
     reg [STORE_BUFFER_INDEX_WIDTH-1:0] store_buffer_tail_q;
     reg [STORE_BUFFER_COUNT_WIDTH-1:0] store_buffer_count_q;
     reg store_buffer_drain_active_q;
+    reg store_barrier_active_q;
     reg store_completion_valid_q;
     reg store_completion_error_q;
     integer store_buffer_merge_byte;
@@ -1167,7 +1172,10 @@ module openrv64_l1d_ccx #(
          STORE_BUFFER_TIMEOUT_LAST);
     wire store_buffer_force_drain =
         demand_load_store_conflict_r || invalidate_valid_i ||
+        speculation_barrier_i || store_barrier_active_q ||
         (req_valid_i && req_lock_i);
+    assign store_barrier_busy_o =
+        speculation_barrier_i || store_barrier_active_q;
     // When draining catches the FIFO tail, leave a partial newest line open
     // for adjacent stores to finish it. A different-line allocation makes
     // this entry no longer newest and therefore immediately drainable.
@@ -1411,6 +1419,7 @@ module openrv64_l1d_ccx #(
             store_buffer_count_q <=
                 {STORE_BUFFER_COUNT_WIDTH{1'b0}};
             store_buffer_drain_active_q <= 1'b0;
+            store_barrier_active_q <= 1'b0;
             store_completion_valid_q <= 1'b0;
             store_completion_error_q <= 1'b0;
             freeloader_pending_store_valid_q <= 1'b0;
@@ -1909,6 +1918,15 @@ module openrv64_l1d_ccx #(
             if ((store_buffer_count_q == 0) &&
                 !store_buffer_allocate)
                 store_buffer_drain_active_q <= 1'b0;
+
+            if (speculation_barrier_i)
+                store_barrier_active_q <= 1'b1;
+            else if (store_barrier_active_q &&
+                     (store_buffer_count_q == 0) &&
+                     !store_buffer_allocate &&
+                     !store_completion_valid_q &&
+                     (backend_state_q == BACKEND_IDLE))
+                store_barrier_active_q <= 1'b0;
 
             case (backend_state_q)
                 BACKEND_IDLE: begin

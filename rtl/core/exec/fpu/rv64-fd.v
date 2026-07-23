@@ -6,13 +6,15 @@
 
 // Standalone, fully backpressured RV64F/RV64D execution unit.
 //
-// This implementation deliberately favors small, serialized machinery over
-// individual stage complexity.  The elastic pipeline accepts one request per
-// cycle when unstalled.  Four significand bits advance per stage for multiply,
-// fused multiply-add, divide, and square root; simple operations and conversions
-// travel through the same fixed-latency pipe.  The response remains stable
-// under backpressure.  This module is deliberately not wired to decode, an F
-// register file, fcsr, retirement, or the LSU yet.
+// This implementation deliberately favors low combinational complexity per
+// stage.  The elastic pipeline accepts one request per cycle when unstalled.
+// Four significand bits advance per stage for multiply, fused multiply-add,
+// divide, and square root; simple operations and conversions travel through the
+// same fixed-latency pipe.  The response remains stable under backpressure.
+// Sustaining that throughput replicates arithmetic state and iteration logic
+// across the deep pipeline; this is not a small shared iterative unit.  This
+// module is deliberately not wired to decode, an F register file, fcsr,
+// retirement, or the LSU yet.
 //
 // type_i carries the instruction rs2 type selector for conversions:
 // W/WU/L/LU for integer conversions and S/D for format conversions.  It is
@@ -394,134 +396,6 @@ module openrv64_exec_fpu_rv64fd #(
         end
     endfunction
 
-    function automatic [68:0] multiply;
-        input is_double;
-        input [63:0] source1;
-        input [63:0] source2;
-        input [2:0] rounding_mode;
-        integer p;
-        integer fraction_bits;
-        integer bias;
-        integer exp_a;
-        integer exp_b;
-        integer exponent;
-        integer shift_distance;
-        integer normalize_index;
-        reg [63:0] a;
-        reg [63:0] b;
-        reg sign_result;
-        reg [10:0] field_a;
-        reg [10:0] field_b;
-        reg [63:0] fraction_a;
-        reg [63:0] fraction_b;
-        reg [63:0] sig_a;
-        reg [63:0] sig_b;
-        reg [127:0] product;
-        reg [127:0] ext_result;
-        reg nan_a;
-        reg nan_b;
-        reg snan_a;
-        reg snan_b;
-        reg inf_a;
-        reg inf_b;
-        reg zero_a;
-        reg zero_b;
-        reg [63:0] special_result;
-        reg [4:0] special_flags;
-        begin
-            p = is_double ? 53 : 24;
-            fraction_bits = is_double ? 52 : 23;
-            bias = is_double ? 1023 : 127;
-            a = is_double ? source1 : {32'd0, sanitize_single(source1)};
-            b = is_double ? source2 : {32'd0, sanitize_single(source2)};
-            sign_result = a[is_double ? 63 : 31] ^
-                          b[is_double ? 63 : 31];
-            field_a = is_double ? a[62:52] : {3'd0, a[30:23]};
-            field_b = is_double ? b[62:52] : {3'd0, b[30:23]};
-            fraction_a = is_double ? {12'd0, a[51:0]} :
-                                     {41'd0, a[22:0]};
-            fraction_b = is_double ? {12'd0, b[51:0]} :
-                                     {41'd0, b[22:0]};
-            nan_a = (is_double ? (&field_a[10:0]) :
-                       (&field_a[7:0])) && (fraction_a != 0);
-            nan_b = (is_double ? (&field_b[10:0]) :
-                       (&field_b[7:0])) && (fraction_b != 0);
-            snan_a = nan_a && !fraction_a[fraction_bits-1];
-            snan_b = nan_b && !fraction_b[fraction_bits-1];
-            inf_a = (is_double ? (&field_a[10:0]) :
-                       (&field_a[7:0])) && (fraction_a == 0);
-            inf_b = (is_double ? (&field_b[10:0]) :
-                       (&field_b[7:0])) && (fraction_b == 0);
-            zero_a = (field_a == 0) && (fraction_a == 0);
-            zero_b = (field_b == 0) && (fraction_b == 0);
-            special_result = is_double ? `RV64_FP_CANONICAL_NAN_D :
-                             `RV64_FP_NANBOX_S(`RV64_FP_CANONICAL_NAN_S);
-            special_flags = 5'd0;
-
-            if (nan_a || nan_b) begin
-                if (snan_a || snan_b)
-                    special_flags = `RV64_FP_FFLAG_NV;
-                multiply = {special_flags, special_result};
-            end else if ((inf_a && zero_b) || (inf_b && zero_a)) begin
-                multiply = {`RV64_FP_FFLAG_NV, special_result};
-            end else if (inf_a || inf_b) begin
-                special_result = is_double ?
-                    {sign_result, 11'h7ff, 52'd0} :
-                    {32'hffff_ffff, sign_result, 8'hff, 23'd0};
-                multiply = {5'd0, special_result};
-            end else if (zero_a || zero_b) begin
-                special_result = is_double ? {sign_result, 63'd0} :
-                    {32'hffff_ffff, sign_result, 31'd0};
-                multiply = {5'd0, special_result};
-            end else begin
-                if (field_a == 0) begin
-                    exp_a = 1 - bias;
-                    sig_a = fraction_a;
-                    for (normalize_index = 0;
-                         normalize_index < 64;
-                         normalize_index = normalize_index + 1) begin
-                        if (!sig_a[p-1]) begin
-                            sig_a = sig_a << 1;
-                            exp_a = exp_a - 1;
-                        end
-                    end
-                end else begin
-                    exp_a = field_a;
-                    exp_a = exp_a - bias;
-                    sig_a = (64'd1 << (p-1)) | fraction_a;
-                end
-                if (field_b == 0) begin
-                    exp_b = 1 - bias;
-                    sig_b = fraction_b;
-                    for (normalize_index = 0;
-                         normalize_index < 64;
-                         normalize_index = normalize_index + 1) begin
-                        if (!sig_b[p-1]) begin
-                            sig_b = sig_b << 1;
-                            exp_b = exp_b - 1;
-                        end
-                    end
-                end else begin
-                    exp_b = field_b;
-                    exp_b = exp_b - bias;
-                    sig_b = (64'd1 << (p-1)) | fraction_b;
-                end
-
-                product = sig_a * sig_b;
-                if (product[2*p-1]) begin
-                    exponent = exp_a + exp_b + 1;
-                    shift_distance = p - 3;
-                end else begin
-                    exponent = exp_a + exp_b;
-                    shift_distance = p - 4;
-                end
-                ext_result = shift_right_jam(product, shift_distance);
-                multiply = round_pack(is_double, sign_result, exponent,
-                                      ext_result, rounding_mode);
-            end
-        end
-    endfunction
-
     // Normalized finite operands have sig[p-1]=1 and an unbiased exponent.
     // Specials retain their sign/classification and leave exponent/sig zero.
     function automatic [UNPACK_WIDTH-1:0] unpack_fp;
@@ -636,7 +510,7 @@ module openrv64_exec_fpu_rv64fd #(
         reg [127:0] ext_result;
         begin
             p = is_double ? 53 : 24;
-            if (product[2*p-1]) begin
+            if (is_double ? product[105] : product[47]) begin
                 result_exponent = exponent_sum + 1;
                 shift_distance = p - 3;
             end else begin
@@ -692,11 +566,11 @@ module openrv64_exec_fpu_rv64fd #(
                 c_info[UNPACK_EXP_LO +: 16]
             );
 
-            if (product[2*p-1]) begin
-                product_top = 2*p - 1;
+            if (is_double ? product[105] : product[47]) begin
+                product_top = is_double ? 105 : 47;
                 exponent_product = exponent_sum + 1;
             end else begin
-                product_top = 2*p - 2;
+                product_top = is_double ? 104 : 46;
                 exponent_product = exponent_sum;
             end
             product_shift = ANCHOR - product_top;
@@ -861,13 +735,16 @@ module openrv64_exec_fpu_rv64fd #(
                     inexact = remainder != 0;
                     case (rounding_mode)
                         `RV64_FP_RM_RNE:
-                            increment = (remainder > halfway) ||
-                                ((remainder == halfway) && magnitude[0]);
+                            increment = (halfway != 0) &&
+                                ((remainder > halfway) ||
+                                 ((remainder == halfway) &&
+                                  magnitude[0]));
                         `RV64_FP_RM_RTZ: increment = 1'b0;
                         `RV64_FP_RM_RDN: increment = sign && inexact;
                         `RV64_FP_RM_RUP: increment = !sign && inexact;
                         `RV64_FP_RM_RMM:
-                            increment = remainder >= halfway;
+                            increment = (halfway != 0) &&
+                                        (remainder >= halfway);
                         default: increment = 1'b0;
                     endcase
                 end
@@ -1090,7 +967,6 @@ module openrv64_exec_fpu_rv64fd #(
         input [4:0] conversion_type;
         input [63:0] source1;
         input [63:0] source2;
-        input [63:0] source3;
         reg is_double;
         reg [2:0] effective_rm;
         reg [63:0] a;
@@ -1153,15 +1029,9 @@ module openrv64_exec_fpu_rv64fd #(
 
             case (operation)
                 `OPENRV64_FP_OP_ADD,
-                `OPENRV64_FP_OP_SUB,
-                `OPENRV64_FP_OP_MUL: begin
+                `OPENRV64_FP_OP_SUB: begin
                     if (effective_rm > `RV64_FP_RM_RMM) begin
                         unsupported = 1'b1;
-                    end else if (operation == `OPENRV64_FP_OP_MUL) begin
-                        arithmetic = multiply(is_double, source1, source2,
-                                              effective_rm);
-                        flags = arithmetic[68:64];
-                        fp_result = arithmetic[63:0];
                     end else begin
                         arithmetic = add_sub(
                             is_double,
@@ -1171,6 +1041,9 @@ module openrv64_exec_fpu_rv64fd #(
                         fp_result = arithmetic[63:0];
                     end
                 end
+
+                `OPENRV64_FP_OP_MUL:
+                    unsupported = 1'b1;
 
                 `OPENRV64_FP_OP_SGNJ,
                 `OPENRV64_FP_OP_SGNJN,
@@ -1408,11 +1281,9 @@ module openrv64_exec_fpu_rv64fd #(
         reg nan_c;
         reg signed [15:0] exp_a;
         reg signed [15:0] exp_b;
-        reg signed [15:0] exp_c;
         reg signed [15:0] work_exp;
         reg [63:0] sig_a;
         reg [63:0] sig_b;
-        reg [63:0] sig_c;
         reg product_sign;
         reg c_sign_invert;
         reg effective_c_sign;
@@ -1448,10 +1319,8 @@ module openrv64_exec_fpu_rv64fd #(
             nan_c = c_info[UNPACK_NAN_BIT];
             exp_a = $signed(a_info[UNPACK_EXP_LO +: 16]);
             exp_b = $signed(b_info[UNPACK_EXP_LO +: 16]);
-            exp_c = $signed(c_info[UNPACK_EXP_LO +: 16]);
             sig_a = a_info[UNPACK_SIG_LO +: 64];
             sig_b = b_info[UNPACK_SIG_LO +: 64];
-            sig_c = c_info[UNPACK_SIG_LO +: 64];
             product_sign = sign_a ^ sign_b;
             c_sign_invert = 1'b0;
             effective_c_sign = sign_c;
@@ -1463,16 +1332,13 @@ module openrv64_exec_fpu_rv64fd #(
             sanitized_c = sanitize_single(source3);
             work_exp = 16'sd0;
 
-            simple_exec = execute_request(
-                operation,
-                format,
-                instruction_rm,
-                dynamic_rm,
-                conversion_type,
-                source1,
-                source2,
-                source3
-            );
+            simple_exec = {
+                1'b1,
+                `OPENRV64_FP_RESULT_FP,
+                5'd0,
+                64'd0,
+                64'd0
+            };
             payload = {PAYLOAD_WIDTH{1'b0}};
             payload[PAY_EXEC_LO +: EXEC_WIDTH] = simple_exec;
             payload[PAY_SRC3_LO +: 64] = source3;
@@ -1750,7 +1616,7 @@ module openrv64_exec_fpu_rv64fd #(
                             payload[PAY_LONG_BIT] = 1'b1;
                             payload[PAY_SIGN_BIT] = 1'b0;
                             payload[PAY_EXP_LO +: 16] =
-                                $signed(work_exp) / 2;
+                                $signed(work_exp) >>> 1;
                             payload[PAY_STATE1_LO +: 128] =
                                 {64'd0, adjusted_sig} <<
                                 radicand_shift;
@@ -1759,6 +1625,17 @@ module openrv64_exec_fpu_rv64fd #(
                     end
 
                     default: begin
+                        simple_exec = execute_request(
+                            operation,
+                            format,
+                            instruction_rm,
+                            dynamic_rm,
+                            conversion_type,
+                            source1,
+                            source2
+                        );
+                        payload[PAY_EXEC_LO +: EXEC_WIDTH] =
+                            simple_exec;
                     end
                 endcase
             end

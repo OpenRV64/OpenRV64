@@ -11,6 +11,8 @@ module tb_ptw;
     logic clk;
     logic rst_n;
     logic invalidate;
+    logic shootdown_ready;
+    wire invalidate_busy;
 
     logic req_valid;
     wire req_ready;
@@ -91,6 +93,8 @@ module tb_ptw;
         .clk(clk),
         .rst_n(rst_n),
         .invalidate_i(invalidate),
+        .invalidate_busy_o(invalidate_busy),
+        .shootdown_ready_i(shootdown_ready),
         .req_valid_i(req_valid),
         .req_ready_o(req_ready),
         .req_vaddr_i(req_vaddr),
@@ -343,6 +347,7 @@ module tb_ptw;
     initial begin
         rst_n = 1'b0;
         invalidate = 1'b0;
+        shootdown_ready = 1'b1;
         req_valid = 1'b0;
         req_vaddr = 64'd0;
         req_access = ACCESS_READ;
@@ -369,6 +374,30 @@ module tb_ptw;
         repeat (2) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        // Invalidation is immediate, but integration may hold the downstream
+        // ordered shootdown behind an L1D posted-store drain.
+        shootdown_ready = 1'b0;
+        @(negedge clk);
+        invalidate = 1'b1;
+        #1;
+        if (!invalidate_busy)
+            $fatal(1, "PTW invalidation barrier was not immediate");
+        @(posedge clk);
+        @(negedge clk);
+        invalidate = 1'b0;
+        repeat (4) @(negedge clk);
+        if ((shootdowns != 0) || !invalidate_busy || req_ready)
+            $fatal(1, "PTW shootdown escaped its ordering gate");
+        shootdown_ready = 1'b1;
+        memory_index = 0;
+        while ((invalidate_busy || (shootdowns != 1)) &&
+               (memory_index < 32)) begin
+            @(negedge clk);
+            memory_index = memory_index + 1;
+        end
+        if (invalidate_busy || (shootdowns != 1))
+            $fatal(1, "PTW gated shootdown did not complete");
 
         // Shootdown wins over admission.  A request held beside invalidate
         // must not observe a false handshake and may be retried afterward.

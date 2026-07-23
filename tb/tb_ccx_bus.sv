@@ -51,6 +51,8 @@ module tb_ccx_bus #(
     logic [3:0] pipe_req_vm_mode;
     logic [43:0] pipe_req_root_ppn;
     logic pipe_cancel;
+    logic tlbi;
+    wire tlbi_busy;
     wire pipe_resp_valid;
     logic pipe_resp_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_resp_tag;
@@ -145,6 +147,7 @@ module tb_ccx_bus #(
     logic ccx_allow_wdata;
     integer ccx_reads;
     integer ccx_writes;
+    integer ccx_fences;
     integer ccx_locked_reads;
     integer ccx_locked_writes;
     integer ccx_byte;
@@ -156,6 +159,7 @@ module tb_ccx_bus #(
     integer channel_wait;
     integer ptw_wait;
     integer locked_reads_before;
+    integer fences_before;
     reg [63:0] locked_old_word;
     reg [2:0] seen_id [0:15];
     reg [63:0] seen_addr [0:15];
@@ -196,7 +200,8 @@ module tb_ccx_bus #(
         .lsu_sum_i(1'b0), .lsu_mxr_i(1'b0),
         .lsu_ready_o(lsu_ready), .lsu_rdata_o(lsu_rdata),
         .lsu_access_fault_o(lsu_access_fault),
-        .lsu_page_fault_o(lsu_page_fault), .tlbi_i(1'b0),
+        .lsu_page_fault_o(lsu_page_fault), .tlbi_i(tlbi),
+        .tlbi_busy_o(tlbi_busy),
         .icache_invalidate_i(1'b0),
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),
@@ -339,6 +344,7 @@ module tb_ccx_bus #(
             ccx_resp_error <= 1'b0;
             ccx_reads <= 0;
             ccx_writes <= 0;
+            ccx_fences <= 0;
             ccx_locked_reads <= 0;
             ccx_locked_writes <= 0;
         end else begin
@@ -346,23 +352,40 @@ module tb_ccx_bus #(
                 ccx_resp_valid <= 1'b0;
 
             if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_hart_id != 0 ||
-                    ccx_req_order != `OPENRV64_CCX_ORDER_NONE ||
-                    ccx_req_burst_len != 0)
+                if (ccx_req_hart_id != 0 || ccx_req_burst_len != 0)
                     $fatal(1, "hart emitted malformed CCX command");
                 if (ccx_req_source_id == `OPENRV64_CCX_SOURCE_PTW) begin
-                    if (ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
+                    if (ccx_req_op == `OPENRV64_CCX_OP_FENCE) begin
+                        if (ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
+                            ccx_req_order !=
+                                `OPENRV64_CCX_ORDER_ACQ_REL ||
+                            ccx_req_lock || (ccx_req_size != 0) ||
+                            (ccx_req_addr != 0) ||
+                            (ccx_req_attr !=
+                             `OPENRV64_CCX_ATTR_NONE))
+                            $fatal(1,
+                                   "PTW emitted malformed shootdown fence");
+                        if ((dut.u_l1d.store_buffer_count_q != 0) ||
+                            dut.u_l1d.store_completion_valid_q ||
+                            (dut.u_l1d.backend_state_q != 0))
+                            $fatal(1,
+                                   "PTW shootdown passed an older L1D store");
+                    end else if (
+                        ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
                         ccx_req_op != `OPENRV64_CCX_OP_READ ||
+                        ccx_req_order != `OPENRV64_CCX_ORDER_NONE ||
                         ccx_req_lock || ccx_req_size != 3'd6 ||
                         ccx_req_addr[5:0] != 0 ||
                         ccx_req_attr !=
                             (`OPENRV64_CCX_ATTR_CACHEABLE |
-                             `OPENRV64_CCX_ATTR_IDEMPOTENT))
+                             `OPENRV64_CCX_ATTR_IDEMPOTENT)) begin
                         $fatal(1, "PTW emitted malformed PTE CCX command");
+                    end
                 end else begin
                     if (ccx_req_source_id !=
                             `OPENRV64_CCX_SOURCE_DCACHE ||
-                        ccx_req_kind != `OPENRV64_CCX_KIND_DATA)
+                        ccx_req_kind != `OPENRV64_CCX_KIND_DATA ||
+                        ccx_req_order != `OPENRV64_CCX_ORDER_NONE)
                         $fatal(1, "L1D emitted malformed CCX command");
                     if ((ccx_req_attr ==
                          `OPENRV64_CCX_ATTR_CACHEABLE) &&
@@ -418,6 +441,7 @@ module tb_ccx_bus #(
 
             if (ccx_cmd_pending && !ccx_resp_valid &&
                 ((ccx_cmd_op == `OPENRV64_CCX_OP_READ) ||
+                 (ccx_cmd_op == `OPENRV64_CCX_OP_FENCE) ||
                  ((ccx_cmd_op == `OPENRV64_CCX_OP_WRITE) &&
                   ccx_data_pending))) begin
                 if ((ccx_cmd_op == `OPENRV64_CCX_OP_WRITE) &&
@@ -438,7 +462,8 @@ module tb_ccx_bus #(
                 ccx_cmd_pending <= 1'b0;
                 if (ccx_cmd_op == `OPENRV64_CCX_OP_READ) begin
                     ccx_reads <= ccx_reads + 1;
-                end else begin
+                end else if (ccx_cmd_op ==
+                             `OPENRV64_CCX_OP_WRITE) begin
                     ccx_writes <= ccx_writes + 1;
                     ccx_data_pending <= 1'b0;
                     if (!(ccx_fail_enable &&
@@ -449,8 +474,13 @@ module tb_ccx_bus #(
                                 ccx_memory[ccx_cmd_addr[13:6]]
                                     [8*ccx_byte +: 8] <=
                                     ccx_data[8*ccx_byte +: 8];
-                        end
+                            end
                     end
+                end else if (ccx_cmd_op ==
+                             `OPENRV64_CCX_OP_FENCE) begin
+                    ccx_fences <= ccx_fences + 1;
+                end else begin
+                    $fatal(1, "unsupported CCX command in test memory");
                 end
             end
         end
@@ -646,6 +676,7 @@ module tb_ccx_bus #(
         pipe_req_vm_mode = `RV64_SATP_MODE_BARE;
         pipe_req_root_ppn = 0;
         pipe_cancel = 0;
+        tlbi = 0;
         pipe_resp_ready = 1;
         pmp_allow = 1;
         arready = 1;
@@ -938,6 +969,39 @@ module tb_ccx_bus #(
         expect_pipe_response(3'd1, locked_old_word, 1'b0, 1'b0);
         if (ccx_writes != wait_count + 1 || ccx_locked_writes != 0)
             $fatal(1, "post-drain atomic write leaked a CCX lock");
+
+        // SFENCE.VMA/SATP share a full translation barrier. A partial posted
+        // PTE store must reach CCX and receive its write response before the
+        // PTW may issue the ordered shootdown fence.
+        wait_count = ccx_writes;
+        fences_before = ccx_fences;
+        ccx_allow_cmd = 1'b0;
+        push_pipe_request(3'd2, 1'b1, 64'h388,
+                          64'h0000_0000_23ff_fce7, 8'hff);
+        expect_pipe_response(3'd2, 64'd0, 1'b0, 1'b0);
+        if (dut.u_l1d.store_buffer_count_q != 1)
+            $fatal(1, "translation-barrier setup store was not buffered");
+        tlbi = 1'b1;
+        #1;
+        if (!tlbi_busy)
+            $fatal(1, "translation barrier was not immediate");
+        tick();
+        tlbi = 1'b0;
+        repeat (3) tick();
+        if ((ccx_writes != wait_count) ||
+            (ccx_fences != fences_before) || !tlbi_busy)
+            $fatal(1, "translation barrier escaped blocked PTE store");
+        ccx_allow_cmd = 1'b1;
+        channel_wait = 0;
+        while (tlbi_busy && (channel_wait < 300)) begin
+            tick();
+            channel_wait = channel_wait + 1;
+        end
+        if (tlbi_busy || (ccx_writes != wait_count + 1) ||
+            (ccx_fences != fences_before + 1) ||
+            (ccx_memory_word(64'h388) != 64'h0000_0000_23ff_fce7))
+            $fatal(1,
+                   "translation barrier did not order store then shootdown");
 
         // Translated tagged traffic uses a cacheable PTE line read on CCX and
         // returns the page fault under the original request tag.  An invalid

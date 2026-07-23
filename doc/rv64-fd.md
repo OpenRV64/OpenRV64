@@ -66,41 +66,54 @@ selectors include RV64's signed and unsigned 64-bit `L`/`LU` forms.
 ## Standalone execution pipeline
 
 `openrv64_exec_fpu_rv64fd` in `rtl/core/exec/fpu/rv64-fd.v` is an elastic
-three-register-stage block:
+fixed-latency pipeline:
 
-1. Stage 0 captures operation, format, rounding controls, operands, and tag.
-2. Stage 1 computes and rounds the result.
-3. Stage 2 holds the tagged response until the consumer accepts it.
+1. The input stage classifies operands, handles architectural special cases,
+   and initializes the arithmetic state.
+2. Fourteen iteration stages advance four significand bits per stage for
+   multiply, fused multiply-add, divide, and square root.  Multiply consumes a
+   radix-16 digit; divide and square root unroll four radix-2 steps in each
+   stage.  Simple operations and conversions traverse the same stages to
+   preserve request order.
+3. The final stage rounds and formats the result.  Its state remains stable
+   until the consumer accepts it.
 
-When the response path is not stalled, it accepts one request per cycle and a
-request becomes visible at the output two rising edges after acceptance.  A
-blocked output backpressures all earlier stages without overwriting state.
-`flush_i` discards every in-flight request.
+With no stalls, response valid appears 14 cycles after request acceptance and
+the unit accepts one request per cycle.  A blocked output backpressures all
+earlier stages without overwriting state, and `flush_i` discards every
+in-flight request.  This is intentionally a deep,
+low-combinational-complexity-per-stage implementation, not a short
+combinational divide/square-root path.  The throughput is not free: arithmetic
+state and iteration logic are replicated across all fourteen stages rather
+than shared by one blocking engine.
 
 The interface reports floating and integer results separately, the five
 per-instruction exception flags, and an explicit `unsupported_o` bit.  The tag
 is opaque and is intended to become a retirement or producer tag during later
-integration.
+integration.  `type_i` carries the instruction `rs2` selector for conversions:
+W/WU/L/LU for integer conversions and S/D for format conversions.
 
 ### Implemented now
 
-- `FADD.S/D`, `FSUB.S/D`, and `FMUL.S/D`.
+- `FADD.S/D`, `FSUB.S/D`, `FMUL.S/D`, `FDIV.S/D`, and `FSQRT.S/D`.
+- `FMADD.S/D`, `FMSUB.S/D`, `FNMSUB.S/D`, and `FNMADD.S/D`, with one final
+  rounding rather than a rounded multiply followed by an add.
 - All five rounding modes, including dynamic selection through `frm`.
 - Normal, subnormal, zero, infinity, quiet-NaN, and signaling-NaN handling.
 - Canonical NaN production and binary32 NaN boxing.
 - `FSGNJ*`, `FMIN/FMAX`, `FEQ/FLT/FLE`, and `FCLASS` for S and D.
 - `FMV.X.W`, `FMV.W.X`, `FMV.X.D`, and `FMV.D.X` datapath behavior.
+- `FCVT.W/WU/L/LU.S/D`, `FCVT.S/D.W/WU/L/LU`, `FCVT.S.D`, and `FCVT.D.S`,
+  including saturation, accrued per-instruction flags, and RV64 sign
+  extension for 32-bit integer conversion results.
 - Full valid/ready backpressure, response tags, and flush.
 
-### Explicitly unsupported now
+### Rejected requests
 
-- Divide and square root.
-- Fused multiply-add/subtract operations.
-- FP-to-integer, integer-to-FP, and S/D format conversion execution.
-
-Those operations return `unsupported_o=1`; they do not silently return an
-architecturally plausible value.  They remain represented in the operation
-enum so that their later implementations do not change the pipeline contract.
+`unsupported_o` is reserved for an invalid operation enum, a format other than
+S or D, a reserved static or dynamic rounding mode, or an invalid conversion
+type selector.  Architecturally defined F/D computational operations do not
+return an unsupported placeholder.
 
 ## Deliberately not integrated
 
@@ -113,7 +126,8 @@ The following core work is still required before F/D can be advertised:
 - dispatch hazards, producer ownership, forwarding, and writeback selection;
 - precise retirement and exception behavior;
 - context/debug exposure and architectural compliance tests;
-- implementations for every operation currently marked unsupported.
+- an instruction decoder that maps encoded operation and conversion selectors
+  onto the standalone unit interface.
 
 The standalone block is intentionally absent from `CORE_SRCS` and `EXEC_SRCS`.
 Its focused checks are `make sim-isa-fp` and

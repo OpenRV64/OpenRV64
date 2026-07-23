@@ -23,6 +23,10 @@ module openrv64_bus_ptw #(
     input  wire                         rst_n,
     input  wire                         invalidate_i,
     output wire                         invalidate_busy_o,
+    // Invalidation and active-walk cancellation happen immediately. This
+    // gate delays only the downstream ACQ_REL shootdown transaction so an
+    // integration boundary can first expose older posted PTE stores.
+    input  wire                         shootdown_ready_i,
 
     input  wire                         req_valid_i,
     output wire                         req_ready_o,
@@ -279,7 +283,7 @@ module openrv64_bus_ptw #(
         (backend_state_q == BACKEND_SEND);
     wire shootdown_ccx_req_valid =
         (state_q == STATE_IDLE) && shootdown_pending_q &&
-        !shootdown_inflight_q;
+        !shootdown_inflight_q && shootdown_ready_i;
     wire ccx_req_fire = ccx_req_valid_o && ccx_req_ready_i;
     wire shootdown_req_fire = shootdown_ccx_req_valid && ccx_req_ready_i;
     wire ccx_resp_owned =

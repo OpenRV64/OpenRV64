@@ -452,6 +452,8 @@ module openrv64_core_ccx_bus #(
     wire ptw_resp_user;
     wire ptw_resp_accessed;
     wire ptw_resp_dirty;
+    wire ptw_invalidate_busy;
+    wire l1d_store_barrier_busy;
     wire ptw_pmp_valid;
     wire ptw_pmp_ready;
     wire [`RV64_XLEN-1:0] ptw_pmp_addr;
@@ -618,7 +620,8 @@ module openrv64_core_ccx_bus #(
         .TXN_ID(PTE_TXN_ID)
     ) u_ptw (
         .clk(clk), .rst_n(rst_n), .invalidate_i(tlbi_i),
-        .invalidate_busy_o(tlbi_busy_o),
+        .invalidate_busy_o(ptw_invalidate_busy),
+        .shootdown_ready_i(!l1d_store_barrier_busy),
         .req_valid_i(ptw_req_valid),
         .req_ready_o(ptw_req_ready), .req_vaddr_i(ptw_req_vaddr),
         .req_access_i(ptw_req_access), .req_priv_i(ptw_req_priv),
@@ -905,6 +908,7 @@ module openrv64_core_ccx_bus #(
         .prefetch_useless_o(),
         .prefetch_depth_o(),
         .speculation_barrier_i(tlbi_i),
+        .store_barrier_busy_o(l1d_store_barrier_busy),
         .invalidate_valid_i(1'b0),
         .invalidate_ready_o(),
         .invalidate_all_i(1'b0),
@@ -942,6 +946,11 @@ module openrv64_core_ccx_bus #(
         .ccx_resp_error_i(ccx_resp_error_i),
         .ccx_resp_sc_success_i(ccx_resp_sc_success_i)
     );
+
+    // SATP writes and SFENCE.VMA use the same conservative global barrier.
+    // The PTW is invalidated immediately, but its ordered shootdown cannot
+    // issue until all older posted L1D stores have completed downstream.
+    assign tlbi_busy_o = l1d_store_barrier_busy || ptw_invalidate_busy;
 
     openrv64_l1i_ccx #(
         .ENABLE(ENABLE_L1I),
