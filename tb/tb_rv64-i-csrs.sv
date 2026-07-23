@@ -246,6 +246,9 @@ module tb_rv64i_csrs;
                   64'h8000_0000_0014_1101, "misa rv64aimsu");
         check_csr(`RV64_CSR_MHARTID, 1'b1, 1'b0, 64'd3, "mhartid");
         check_csr(`RV64_CSR_PMPCFG0, 1'b1, 1'b1, 64'h0, "pmpcfg0 reset");
+        check_csr(`RV64_CSR_PMPCFG2, 1'b1, 1'b1, 64'h0, "pmpcfg2 reset");
+        check_csr(`RV64_CSR_PMPADDR15, 1'b1, 1'b1, 64'h0,
+                  "pmpaddr15 reset");
         check_csr(12'hfff, 1'b0, 1'b0, 64'h0, "unimplemented csr");
 
         if (priv_mode != `RV64_PRIV_M || !pmp_instr_allow) begin

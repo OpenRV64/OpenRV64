@@ -56,7 +56,7 @@
             #interrupt-cells = <1>;
             interrupt-controller;
             riscv,ndev = <32>;
-            interrupts-extended = <&cpu0_intc 11>;
+            interrupts-extended = <&cpu0_intc 9>;
         };
 
         serial@10000000 {

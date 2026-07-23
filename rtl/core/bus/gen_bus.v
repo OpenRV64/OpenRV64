@@ -6,6 +6,7 @@
 module openrv64_core_gen_bus #(
     parameter TLB_ENTRIES = 16,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
+    parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}
 ) (
@@ -44,6 +45,7 @@ module openrv64_core_gen_bus #(
     output wire                         lsu_page_fault_o,
 
     input  wire                         tlbi_i,
+    output wire                         tlbi_busy_o,
 
     output wire                         req_valid_o,
     input  wire                         req_ready_i,
@@ -266,11 +268,13 @@ module openrv64_core_gen_bus #(
 
     openrv64_bus_ptw #(
         .PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID)
     ) u_ptw (
         .clk(clk),
         .rst_n(rst_n),
         .invalidate_i(tlbi_i),
+        .invalidate_busy_o(tlbi_busy_o),
         .req_valid_i(ptw_req_valid),
         .req_ready_o(ptw_req_ready),
         .req_vaddr_i(vaddr_q),

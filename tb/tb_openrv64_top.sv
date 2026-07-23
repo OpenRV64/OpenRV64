@@ -253,11 +253,11 @@ module tb_openrv64_top;
         put_instr(RESET_INSTR_INDEX + 22,
                   enc_csrrw(`RV64_REG_X0, `RV64_CSR_MTVEC, 5'd10));
         put_instr(RESET_INSTR_INDEX + 23,
-                  enc_addi(5'd10, `RV64_REG_X0, 12'h080));
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h1ff));
         put_instr(RESET_INSTR_INDEX + 24,
                   enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPADDR0, 5'd10));
         put_instr(RESET_INSTR_INDEX + 25,
-                  enc_addi(5'd10, `RV64_REG_X0, 12'h08d));
+                  enc_addi(5'd10, `RV64_REG_X0, 12'h09d));
         put_instr(RESET_INSTR_INDEX + 26,
                   enc_csrrw(`RV64_REG_X0, `RV64_CSR_PMPCFG0, 5'd10));
         put_instr(RESET_INSTR_INDEX + 27,
@@ -456,7 +456,7 @@ module tb_openrv64_top;
                 $fatal(1,
                        "PMP trap mcause mismatch: %016x cfg=%016x addr0=%016x",
                        dut.u_core.u_csrs.mcause_q,
-                       dut.u_core.u_csrs.u_pmp.pmpcfg0_q,
+                       dut.u_core.u_csrs.u_pmp.pmpcfg_q[63:0],
                        dut.u_core.u_csrs.u_pmp.pmpaddr_q[0]);
             end
 

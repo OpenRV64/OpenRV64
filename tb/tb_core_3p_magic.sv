@@ -10,10 +10,15 @@
 // return the corresponding read/ack one cycle later.  No cache, translation,
 // AXI fabric, CCX home, peripheral, or DRAM timing is modeled.
 module tb_core_3p_magic #(
-    parameter integer FETCH_ALT_LOOKASIDE = 1,
+    parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_GSHARE_BTB,
+    parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
+    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
+    parameter integer ENABLE_FULL_FORWARDING = 0,
+    parameter integer RELAX_WAW = 1,
+    parameter integer RELAX_HAZARDS = 0,
     parameter integer SRAM_BYTES = 64 * 1024
 );
     localparam integer SRAM_WORDS = SRAM_BYTES / 32;
@@ -60,8 +65,29 @@ module tb_core_3p_magic #(
     wire [31:0] dbg_instr;
     wire dbg_halted;
 
+    wire pair512_req_valid;
+    wire pair512_req_ready = rst_n;
+    wire [63:0] pair512_req_predicted_addr;
+    wire [63:0] pair512_req_unpredicted_addr;
+    reg pair512_resp_valid_q;
+    reg [63:0] pair512_resp_predicted_addr_q;
+    reg [255:0] pair512_resp_predicted_data_q;
+    reg [63:0] pair512_resp_unpredicted_addr_q;
+    reg [255:0] pair512_resp_unpredicted_data_q;
+    wire pair1024_req_valid;
+    wire pair1024_req_ready = rst_n;
+    wire [63:0] pair1024_req_predicted_addr;
+    wire [63:0] pair1024_req_unpredicted_addr;
+    reg pair1024_resp_valid_q;
+    reg [63:0] pair1024_resp_predicted_addr_q;
+    reg [511:0] pair1024_resp_predicted_data_q;
+    reg [63:0] pair1024_resp_unpredicted_addr_q;
+    reg [511:0] pair1024_resp_unpredicted_data_q;
+
     reg [`OPENRV64_AXI_DATA_WIDTH-1:0] sram_q [0:SRAM_WORDS-1];
     string memh_path;
+    string underflow_trace_path;
+    integer underflow_trace_fd;
     integer init_index;
     integer write_byte;
     integer cycles;
@@ -76,6 +102,12 @@ module tb_core_3p_magic #(
     integer stashed_pair_halves_suppressed;
     integer fetch_requests;
     integer pair_fetch_requests;
+    integer pair512_requests;
+    integer pair1024_requests;
+    integer frontend_empty_cycles;
+    integer frontend_underflow_cycles;
+    integer frontend_underflow_refill_wait;
+    integer frontend_underflow_no_request;
     reg [63:0] expected_a0;
     reg expected_a0_valid;
     real ipc;
@@ -100,11 +132,39 @@ module tb_core_3p_magic #(
     assign ccx_req_ready = ccx_slot_ready;
     assign ccx_wdata_ready = ccx_slot_ready;
     wire ccx_fire = ccx_req_valid && ccx_req_ready;
+    wire pair512_predicted_in_range =
+        (pair512_req_predicted_addr >= SRAM_BASE) &&
+        (pair512_req_predicted_addr < (SRAM_BASE + SRAM_BYTES));
+    wire pair512_unpredicted_in_range =
+        (pair512_req_unpredicted_addr >= SRAM_BASE) &&
+        (pair512_req_unpredicted_addr < (SRAM_BASE + SRAM_BYTES));
+    wire [SRAM_INDEX_WIDTH-1:0] pair512_predicted_index =
+        pair512_req_predicted_addr[SRAM_INDEX_WIDTH+4:5];
+    wire [SRAM_INDEX_WIDTH-1:0] pair512_unpredicted_index =
+        pair512_req_unpredicted_addr[SRAM_INDEX_WIDTH+4:5];
+    wire pair1024_predicted_in_range =
+        (pair1024_req_predicted_addr >= SRAM_BASE) &&
+        ((pair1024_req_predicted_addr + 64) <=
+         (SRAM_BASE + SRAM_BYTES));
+    wire pair1024_unpredicted_in_range =
+        (pair1024_req_unpredicted_addr >= SRAM_BASE) &&
+        ((pair1024_req_unpredicted_addr + 64) <=
+         (SRAM_BASE + SRAM_BYTES));
+    wire [SRAM_INDEX_WIDTH-1:0] pair1024_predicted_index =
+        pair1024_req_predicted_addr[SRAM_INDEX_WIDTH+4:5];
+    wire [SRAM_INDEX_WIDTH-1:0] pair1024_unpredicted_index =
+        pair1024_req_unpredicted_addr[SRAM_INDEX_WIDTH+4:5];
 
     openrv64_rv64_top_3p #(
         .RESET_VECTOR(SRAM_BASE),
         .BUS_CONFIG(`OPENRV64_BUS_AXI),
         .ENABLE_RV64M(1'b1),
+        .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
+        .BRANCH_COMPLETION_FORWARD_MASK(
+            BRANCH_COMPLETION_FORWARD_MASK),
+        .ENABLE_FULL_FORWARDING(ENABLE_FULL_FORWARDING),
+        .RELAX_WAW(RELAX_WAW),
+        .RELAX_HAZARDS(RELAX_HAZARDS),
         .ENABLE_MAGIC_MEMORY(1'b1),
         .ENABLE_TRACE(1'b0),
         .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
@@ -127,6 +187,32 @@ module tb_core_3p_magic #(
         .mem_ready(1'b0),
         .mem_rdata(64'd0),
         .mem_error(1'b0),
+        .pair512_req_valid(pair512_req_valid),
+        .pair512_req_ready(pair512_req_ready),
+        .pair512_req_predicted_addr(pair512_req_predicted_addr),
+        .pair512_req_unpredicted_addr(pair512_req_unpredicted_addr),
+        .pair512_resp_valid(pair512_resp_valid_q),
+        .pair512_resp_predicted_addr(
+            pair512_resp_predicted_addr_q),
+        .pair512_resp_predicted_data(
+            pair512_resp_predicted_data_q),
+        .pair512_resp_unpredicted_addr(
+            pair512_resp_unpredicted_addr_q),
+        .pair512_resp_unpredicted_data(
+            pair512_resp_unpredicted_data_q),
+        .pair1024_req_valid(pair1024_req_valid),
+        .pair1024_req_ready(pair1024_req_ready),
+        .pair1024_req_predicted_addr(pair1024_req_predicted_addr),
+        .pair1024_req_unpredicted_addr(pair1024_req_unpredicted_addr),
+        .pair1024_resp_valid(pair1024_resp_valid_q),
+        .pair1024_resp_predicted_addr(
+            pair1024_resp_predicted_addr_q),
+        .pair1024_resp_predicted_data(
+            pair1024_resp_predicted_data_q),
+        .pair1024_resp_unpredicted_addr(
+            pair1024_resp_unpredicted_addr_q),
+        .pair1024_resp_unpredicted_data(
+            pair1024_resp_unpredicted_data_q),
         .m_axi_arid(arid),
         .m_axi_araddr(araddr),
         .m_axi_arvalid(arvalid),
@@ -210,6 +296,62 @@ module tb_core_3p_magic #(
         end
     end
 
+    // Experimental two-address, one-cycle full-line model.  Each side reads
+    // two adjacent 256-bit SRAM words and returns a complete 512-bit line.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pair1024_resp_valid_q <= 1'b0;
+            pair1024_resp_predicted_addr_q <= 64'd0;
+            pair1024_resp_predicted_data_q <= 512'd0;
+            pair1024_resp_unpredicted_addr_q <= 64'd0;
+            pair1024_resp_unpredicted_data_q <= 512'd0;
+        end else begin
+            pair1024_resp_valid_q <= 1'b0;
+            if (pair1024_req_valid && pair1024_req_ready) begin
+                pair1024_resp_valid_q <= 1'b1;
+                pair1024_resp_predicted_addr_q <=
+                    pair1024_req_predicted_addr;
+                pair1024_resp_predicted_data_q <=
+                    pair1024_predicted_in_range ?
+                    {sram_q[pair1024_predicted_index + 1'b1],
+                     sram_q[pair1024_predicted_index]} : 512'd0;
+                pair1024_resp_unpredicted_addr_q <=
+                    pair1024_req_unpredicted_addr;
+                pair1024_resp_unpredicted_data_q <=
+                    pair1024_unpredicted_in_range ?
+                    {sram_q[pair1024_unpredicted_index + 1'b1],
+                     sram_q[pair1024_unpredicted_index]} : 512'd0;
+            end
+        end
+    end
+
+    // Experimental two-address, one-cycle L1I model.  A request samples two
+    // independent 256-bit SRAM words and returns them together as 512 bits.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pair512_resp_valid_q <= 1'b0;
+            pair512_resp_predicted_addr_q <= 64'd0;
+            pair512_resp_predicted_data_q <= 256'd0;
+            pair512_resp_unpredicted_addr_q <= 64'd0;
+            pair512_resp_unpredicted_data_q <= 256'd0;
+        end else begin
+            pair512_resp_valid_q <= 1'b0;
+            if (pair512_req_valid && pair512_req_ready) begin
+                pair512_resp_valid_q <= 1'b1;
+                pair512_resp_predicted_addr_q <=
+                    pair512_req_predicted_addr;
+                pair512_resp_predicted_data_q <=
+                    pair512_predicted_in_range ?
+                    sram_q[pair512_predicted_index] : 256'd0;
+                pair512_resp_unpredicted_addr_q <=
+                    pair512_req_unpredicted_addr;
+                pair512_resp_unpredicted_data_q <=
+                    pair512_unpredicted_in_range ?
+                    sram_q[pair512_unpredicted_index] : 256'd0;
+            end
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ccx_resp_valid_q <= 1'b0;
@@ -268,6 +410,22 @@ module tb_core_3p_magic #(
         stashed_pair_halves_suppressed = 0;
         fetch_requests = 0;
         pair_fetch_requests = 0;
+        pair512_requests = 0;
+        pair1024_requests = 0;
+        frontend_empty_cycles = 0;
+        frontend_underflow_cycles = 0;
+        frontend_underflow_refill_wait = 0;
+        frontend_underflow_no_request = 0;
+        underflow_trace_fd = 0;
+        if ($value$plusargs("underflow_trace=%s",
+                            underflow_trace_path)) begin
+            underflow_trace_fd = $fopen(underflow_trace_path, "w");
+            if (underflow_trace_fd == 0)
+                $fatal(1, "cannot open underflow trace %s",
+                       underflow_trace_path);
+            $fwrite(underflow_trace_fd,
+                "cycle,consume_pc,debug_pc,pending,fetch_count,req_valid,req_ready,req_addr,resp_valid,resp_addr,refill_wait,pair1024_resp,pair_predicted_addr,pair_unpredicted_addr,pair_match,alt_restart_hit\n");
+        end
         if (!$value$plusargs("max_cycles=%d", max_cycles))
             max_cycles = 250000;
         if ($value$plusargs("expect_a0=%h", expected_a0))
@@ -310,6 +468,54 @@ module tb_core_3p_magic #(
                 if (dut.fetch_pipe_req_stash)
                     pair_fetch_requests = pair_fetch_requests + 1;
             end
+            if (pair512_req_valid && pair512_req_ready)
+                pair512_requests = pair512_requests + 1;
+            if (pair1024_req_valid && pair1024_req_ready)
+                pair1024_requests = pair1024_requests + 1;
+            if (dut.fetch_decode_valid == 0)
+                frontend_empty_cycles = frontend_empty_cycles + 1;
+            if ((dut.fetch_decode_valid == 0) &&
+                dut.backend_decode_ready[0] &&
+                dut.frontend_decode_enable &&
+                dut.g_fetch_axi.u_fetch.active_q &&
+                !dut.fetch3_restart &&
+                !dut.fetch3_invalidate &&
+                !dut.g_fetch_axi.u_fetch.stall_i) begin
+                frontend_underflow_cycles =
+                    frontend_underflow_cycles + 1;
+                if (!dut.g_fetch_axi.u_fetch.consume_line_hit &&
+                    (dut.g_fetch_axi.u_fetch.pending_valid_q ||
+                     (dut.u_bus.g_magic.magic_fetch_count_q != 0)))
+                    frontend_underflow_refill_wait =
+                        frontend_underflow_refill_wait + 1;
+                else if (!dut.g_fetch_axi.u_fetch.consume_line_hit)
+                    frontend_underflow_no_request =
+                        frontend_underflow_no_request + 1;
+                if (underflow_trace_fd != 0)
+                    $fwrite(underflow_trace_fd,
+                        "%0d,%016h,%016h,%0d,%0d,%0d,%0d,%016h,%0d,%016h,%0d,%0d,%016h,%016h,%0d,%0d\n",
+                        cycles,
+                        dut.g_fetch_axi.u_fetch.consume_pc_q,
+                        dbg_pc,
+                        dut.g_fetch_axi.u_fetch.pending_valid_q,
+                        dut.u_bus.g_magic.magic_fetch_count_q,
+                        dut.fetch_pipe_req_valid,
+                        dut.fetch_pipe_req_ready,
+                        dut.fetch_pipe_req_addr,
+                        dut.fetch_pipe_resp_valid,
+                        dut.fetch_pipe_resp_addr,
+                        dut.g_fetch_axi.u_fetch.pending_valid_q ||
+                            (dut.u_bus.g_magic.magic_fetch_count_q != 0),
+                        pair1024_resp_valid_q,
+                        pair1024_resp_predicted_addr_q,
+                        pair1024_resp_unpredicted_addr_q,
+                        pair1024_resp_valid_q &&
+                            ((pair1024_resp_predicted_addr_q[63:6] ==
+                              dut.g_fetch_axi.u_fetch.consume_pc_q[63:6]) ||
+                             (pair1024_resp_unpredicted_addr_q[63:6] ==
+                              dut.g_fetch_axi.u_fetch.consume_pc_q[63:6])),
+                        dut.fetch_alt_restart_hit);
+            end
         end
 
         if (!dbg_halted) begin
@@ -344,7 +550,7 @@ module tb_core_3p_magic #(
                 expected_a0);
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_MAGIC mode=%0d confidence_gate=%0d bp=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h branches=%0d conditional_branches=%0d direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d weak_branch_pairs=%0d stashed_pair_halves_suppressed=%0d fetch_requests=%0d pair_fetch_requests=%0d",
+            "PERF_MAGIC mode=%0d confidence_gate=%0d bp=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h branches=%0d conditional_branches=%0d direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d weak_branch_pairs=%0d stashed_pair_halves_suppressed=%0d fetch_requests=%0d pair_fetch_requests=%0d pair512_requests=%0d pair1024_requests=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             cycles, retired, ipc,
             dut.u_backend.u_gpr.regs[10],
@@ -352,7 +558,15 @@ module tb_core_3p_magic #(
             direction_corrections, target_corrections,
             lookaside_restart_hits, weak_branch_pairs,
             stashed_pair_halves_suppressed,
-            fetch_requests, pair_fetch_requests);
+            fetch_requests, pair_fetch_requests, pair512_requests,
+            pair1024_requests);
+        $display(
+            "PERF_MAGIC_FETCH_EMPTY empty_cycles=%0d underflow_cycles=%0d refill_wait=%0d no_request=%0d",
+            frontend_empty_cycles, frontend_underflow_cycles,
+            frontend_underflow_refill_wait,
+            frontend_underflow_no_request);
+        if (underflow_trace_fd != 0)
+            $fclose(underflow_trace_fd);
         $display("PASS: core-only one-cycle fetch/LSU SRAM");
         $finish;
     end

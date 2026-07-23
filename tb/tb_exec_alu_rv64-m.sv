@@ -4,8 +4,8 @@
 
 module tb_exec_rv64m;
 
-    localparam int unsigned MUL_BITS_PER_CYCLE = 8;
-    localparam int unsigned DIV_BITS_PER_CYCLE = 8;
+    localparam int unsigned MUL_BITS_PER_CYCLE = 4;
+    localparam int unsigned DIV_BITS_PER_CYCLE = 2;
     localparam int unsigned MUL_ITER_CYCLES =
         (64 + MUL_BITS_PER_CYCLE - 1) / MUL_BITS_PER_CYCLE;
     localparam int unsigned DIV_ITER_CYCLES =
@@ -106,8 +106,8 @@ module tb_exec_rv64m;
                 end else begin
                     exp_busy_cycles = in_word_op ?
                                       ((32 + DIV_BITS_PER_CYCLE - 1) /
-                                       DIV_BITS_PER_CYCLE) :
-                                      DIV_ITER_CYCLES;
+                                       DIV_BITS_PER_CYCLE) + 1 :
+                                      DIV_ITER_CYCLES + 1;
                 end
             end else begin
                 exp_busy_cycles = 0;
@@ -149,9 +149,9 @@ module tb_exec_rv64m;
                 $fatal(1, "%0s: timeout waiting for result", label);
             end
 
-            if (busy_cycles < exp_busy_cycles) begin
+            if (busy_cycles != exp_busy_cycles) begin
                 $fatal(1,
-                    "%0s: completed too early busy_cycles=%0d expected_at_least=%0d",
+                    "%0s: unexpected latency busy_cycles=%0d expected=%0d",
                     label, busy_cycles, exp_busy_cycles);
             end
 

@@ -331,8 +331,9 @@ module tb_platform;
         put_instr(pc, enc_branch(5'd20, 5'd21, `RV64_FUNCT3_BNE,
                                  poll_pc - pc)); pc = pc + 4;
 
-        // Arm CLINT timer and software interrupts, then enable all three
-        // machine interrupt classes together.
+        // Arm CLINT timer and software interrupts, then enable MSIP, MTIP, and
+        // the PLIC's supervisor-external interrupt together.  SEIP remains
+        // undelegated in this M-mode test program, so it traps through mtvec.
         put_instr(pc, enc_load(5'd20, 5'd17, 12'h000,
                                `RV64_FUNCT3_LD)); pc = pc + 4;
         put_instr(pc, enc_addi(5'd20, 5'd20, 12'h0c8)); pc = pc + 4;
@@ -341,8 +342,7 @@ module tb_platform;
         put_instr(pc, enc_addi(5'd20, 5'd0, 12'h001)); pc = pc + 4;
         put_instr(pc, enc_store(5'd20, 5'd10, 12'h000,
                                 `RV64_FUNCT3_SW)); pc = pc + 4;
-        put_instr(pc, enc_lui(5'd15, 20'h00001)); pc = pc + 4;
-        put_instr(pc, enc_addi(5'd15, 5'd15, 12'h888)); pc = pc + 4;
+        put_instr(pc, enc_addi(5'd15, 5'd0, 12'h288)); pc = pc + 4;
         put_instr(pc, enc_csr(5'd0, `RV64_CSR_MIE, 5'd15,
                               `RV64_ZICSR_FUNCT3_CSRRW)); pc = pc + 4;
         put_instr(pc, enc_addi(5'd15, 5'd0, 12'h008)); pc = pc + 4;
@@ -368,7 +368,7 @@ module tb_platform;
         put_instr(pc, enc_addi(5'd22, 5'd0, 12'h007)); pc = pc + 4;
         branch_timer_pc = pc;
         put_instr(pc, 32'h0); pc = pc + 4;
-        put_instr(pc, enc_addi(5'd22, 5'd0, 12'h00b)); pc = pc + 4;
+        put_instr(pc, enc_addi(5'd22, 5'd0, 12'h009)); pc = pc + 4;
         branch_external_pc = pc;
         put_instr(pc, 32'h0); pc = pc + 4;
         put_instr(pc, `RV64_INSTR_EBREAK); pc = pc + 4;
@@ -586,8 +586,8 @@ module tb_platform;
             if (ram_word('h308) !== (INTERRUPT_BIT | 64'd7)) begin
                 $fatal(1, "MTIP cause mismatch: %016x", ram_word('h308));
             end
-            if (ram_word('h310) !== (INTERRUPT_BIT | 64'd11)) begin
-                $fatal(1, "MEIP cause mismatch: %016x", ram_word('h310));
+            if (ram_word('h310) !== (INTERRUPT_BIT | 64'd9)) begin
+                $fatal(1, "SEIP cause mismatch: %016x", ram_word('h310));
             end
             if (ram_word('h318) !== 64'd3 || ram_word('h320) !== 64'd2) begin
                 $fatal(1, "PLIC claim order mismatch: first=%0d second=%0d",
@@ -602,11 +602,11 @@ module tb_platform;
                        ram_word('h330));
             end
             if (dut.clint_msip !== 1'b0 || dut.clint_mtip !== 1'b0 ||
-                dut.plic_meip !== 1'b0 || dut.gpio_irq !== 1'b0 ||
+                dut.plic_seip !== 1'b0 || dut.gpio_irq !== 1'b0 ||
                 dut.timer_irq !== 1'b0) begin
                 $fatal(1,
-                    "interrupt source not quiescent msip=%b mtip=%b meip=%b gpio=%b timer=%b",
-                    dut.clint_msip, dut.clint_mtip, dut.plic_meip,
+                    "interrupt source not quiescent msip=%b mtip=%b seip=%b gpio=%b timer=%b",
+                    dut.clint_msip, dut.clint_mtip, dut.plic_seip,
                     dut.gpio_irq, dut.timer_irq);
             end
 
@@ -618,9 +618,9 @@ module tb_platform;
     initial begin
         repeat (12000) @(posedge clk);
         $fatal(1,
-            "platform timeout pc=%016x halted=%b count=%0d msip=%b mtip=%b meip=%b ifvalid=%b idvalid=%b exvalid=%b wbvalid=%b mstatus=%016x mie=%016x",
+            "platform timeout pc=%016x halted=%b count=%0d msip=%b mtip=%b seip=%b ifvalid=%b idvalid=%b exvalid=%b wbvalid=%b mstatus=%016x mie=%016x",
             dbg_pc, dbg_halted, ram_word('h330),
-            dut.clint_msip, dut.clint_mtip, dut.plic_meip,
+            dut.clint_msip, dut.clint_mtip, dut.plic_seip,
             dut.u_core.u_core.fetch_decode_valid,
             dut.u_core.u_core.if_id_out_valid,
             dut.u_core.u_core.dispatch_exec_valid,

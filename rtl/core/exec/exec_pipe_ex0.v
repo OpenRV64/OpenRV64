@@ -21,13 +21,13 @@ module openrv64_exec_pipe_ex0 #(
 
     input  wire                         issue_valid_i,
     output wire                         issue_ready_o,
-    input  wire [63:0]                  issue_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
 
     output wire                         complete_valid_o,
     input  wire                         complete_ready_i,
-    output wire [63:0]                  complete_id_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_o,
     output wire [RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
     output wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o
 );
@@ -64,7 +64,7 @@ module openrv64_exec_pipe_ex0 #(
     wire sfence_vma_allowed;
 
     reg complete_valid_q;
-    reg [63:0] complete_id_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] complete_slot_q;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_q;
 
@@ -204,7 +204,7 @@ module openrv64_exec_pipe_ex0 #(
     };
 
     reg m_pending_q;
-    reg [63:0] m_id_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] m_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] m_slot_q;
     reg [63:0] m_trace_id_q;
     reg [`RV64_XLEN-1:0] m_pc_q;
@@ -261,7 +261,7 @@ module openrv64_exec_pipe_ex0 #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             m_pending_q <= 1'b0;
-            m_id_q <= 64'd0;
+            m_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             m_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             m_trace_id_q <= 64'd0;
             m_pc_q <= {`RV64_XLEN{1'b0}};
@@ -271,7 +271,7 @@ module openrv64_exec_pipe_ex0 #(
             m_rd_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
             m_reg_write_q <= 1'b0;
             complete_valid_q <= 1'b0;
-            complete_id_q <= 64'd0;
+            complete_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
                 {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};

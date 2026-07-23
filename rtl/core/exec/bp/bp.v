@@ -1,3 +1,4 @@
+`include "core/backend/backend-defs.v"
 `include "core/exec/bp/defs.v"
 `include "core/exec/bp/stall.v"
 `include "core/exec/bp/always_branch.v"
@@ -38,7 +39,7 @@ module openrv64_exec_bp #(
     input  wire lookup_backward_i,
     input  wire [`RV64_INSTR_WIDTH-1:0] lookup_instr_i,
     input  wire [`RV64_XLEN-1:0]        lookup_pc_i,
-    input  wire [63:0]                  lookup_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id_i,
     input  wire lookup_allocate_i,
 
     input  wire resolve_valid_i,
@@ -47,7 +48,7 @@ module openrv64_exec_bp #(
     input  wire [`RV64_INSTR_WIDTH-1:0] resolve_instr_i,
     input  wire [`RV64_XLEN-1:0]        resolve_pc_i,
     input  wire [`RV64_XLEN-1:0]        resolve_target_i,
-    input  wire [63:0]                  resolve_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] resolve_id_i,
 
     input  wire [2:0]                   train_valid_i,
     input  wire [2:0]                   train_branch_i,

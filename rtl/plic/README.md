@@ -5,8 +5,8 @@
 It is intended to sit beside `openrv64_clint` under the SoC-level
 `rtl/rv_top.v` memory interconnect, not inside `rtl/core`.
 
-The block implements one machine-mode interrupt context per hart. Context
-index N therefore drives `meip_o[N]`; supervisor contexts are intentionally
+The block implements one supervisor-mode interrupt context per hart. Context
+index N therefore drives `seip_o[N]`. Machine contexts are intentionally
 outside this basic implementation.
 
 ## Parameters and signals
@@ -14,7 +14,7 @@ outside this basic implementation.
 - The bus address presented to the PLIC is a target-local offset. The physical
   PLIC window is defined in `rtl/soc/bus/mem_map.v` and translated by
   `openrv64_soc_bus_decode`.
-- `NUM_HARTS` sets the number of machine-mode target contexts, from 1 through
+- `NUM_HARTS` sets the number of supervisor-mode target contexts, from 1 through
   the architectural maximum of 15872.
 - `NUM_SOURCES` sets the number of real external sources, from 1 through 1023.
 - `PRIORITY_WIDTH` sets the implemented WARL priority width and must not exceed

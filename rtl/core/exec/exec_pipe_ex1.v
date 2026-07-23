@@ -21,13 +21,17 @@ module openrv64_exec_pipe_ex1 #(
 
     input  wire                         issue_valid_i,
     output wire                         issue_ready_o,
-    input  wire [63:0]                  issue_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
+    input  wire                         branch_forward_valid_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0]
+                                        branch_forward_rd_addr_i,
+    input  wire [`RV64_XLEN-1:0]        branch_forward_data_i,
 
     output wire                         complete_valid_o,
     input  wire                         complete_ready_i,
-    output wire [63:0]                  complete_id_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_o,
     output wire [RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
     output wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o,
 
@@ -42,7 +46,7 @@ module openrv64_exec_pipe_ex1 #(
     output wire [`RV64_XLEN-1:0]        branch_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
     output wire                         redirect_valid_o,
-    output wire [63:0]                  redirect_id_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_o,
     output wire [RETIRE_SLOT_WIDTH-1:0] redirect_slot_o,
     output wire [`RV64_XLEN-1:0]        redirect_target_o
 );
@@ -79,7 +83,7 @@ module openrv64_exec_pipe_ex1 #(
     wire sfence_vma_allowed;
 
     reg complete_valid_q;
-    reg [63:0] complete_id_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] complete_slot_q;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_q;
 
@@ -131,12 +135,21 @@ module openrv64_exec_pipe_ex1 #(
                            `RV64_REG_ADDR_WIDTH];
     wire [`RV64_XLEN-1:0] local_forward_data =
         complete_payload_q[`OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
-    wire [`RV64_XLEN-1:0] operand_rs1 =
-        local_forward_valid && (rs1_addr == local_forward_rd) ?
-        local_forward_data : rs1_data;
-    wire [`RV64_XLEN-1:0] operand_rs2 =
-        local_forward_valid && (rs2_addr == local_forward_rd) ?
-        local_forward_data : rs2_data;
+    // The cross-pipe branch source is youngest-owner qualified in the
+    // backend.  EX1's local path is only an rd match, so the qualified source
+    // must win if both paths name the same operand.
+    wire branch_forward_rs1 = branch && branch_forward_valid_i &&
+        (rs1_addr == branch_forward_rd_addr_i);
+    wire branch_forward_rs2 = branch && branch_forward_valid_i &&
+        (rs2_addr == branch_forward_rd_addr_i);
+    wire [`RV64_XLEN-1:0] operand_rs1 = branch_forward_rs1 ?
+        branch_forward_data_i :
+        (local_forward_valid && (rs1_addr == local_forward_rd) ?
+         local_forward_data : rs1_data);
+    wire [`RV64_XLEN-1:0] operand_rs2 = branch_forward_rs2 ?
+        branch_forward_data_i :
+        (local_forward_valid && (rs2_addr == local_forward_rd) ?
+         local_forward_data : rs2_data);
 
     wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(instr);
     wire alu_uses_imm = (opcode == `RV64_OPCODE_LUI) ||
@@ -299,7 +312,7 @@ module openrv64_exec_pipe_ex1 #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             complete_valid_q <= 1'b0;
-            complete_id_q <= 64'd0;
+            complete_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
                 {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};

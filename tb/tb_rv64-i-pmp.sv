@@ -60,6 +60,16 @@ module tb_rv64i_pmp;
         forever #5 clk = ~clk;
     end
 
+    task automatic apply_reset;
+        begin
+            rst_n = 1'b0;
+            repeat (2) @(posedge clk);
+            @(negedge clk);
+            rst_n = 1'b1;
+            #1;
+        end
+    endtask
+
     task automatic write_csr;
         input [`RV64_FUNCT12_WIDTH-1:0] addr;
         input [`RV64_XLEN-1:0] data;
@@ -77,7 +87,7 @@ module tb_rv64i_pmp;
     task automatic check_csr;
         input [`RV64_FUNCT12_WIDTH-1:0] addr;
         input [`RV64_XLEN-1:0] expected;
-        input [8*32-1:0] label;
+        input [8*48-1:0] label;
         begin
             csr_addr = addr;
             #1;
@@ -88,12 +98,39 @@ module tb_rv64i_pmp;
         end
     endtask
 
+    task automatic check_unimplemented_csr;
+        input [`RV64_FUNCT12_WIDTH-1:0] addr;
+        input [8*48-1:0] label;
+        begin
+            csr_addr = addr;
+            #1;
+            if (csr_match || csr_writable) begin
+                $fatal(1, "%0s: match=%0b writable=%0b",
+                       label, csr_match, csr_writable);
+            end
+        end
+    endtask
+
+    task automatic check_instr;
+        input [`RV64_XLEN-1:0] addr;
+        input expected;
+        input [8*48-1:0] label;
+        begin
+            instr_addr = addr;
+            #1;
+            if (instr_allow !== expected) begin
+                $fatal(1, "%0s: instruction allow=%0b/%0b",
+                       label, instr_allow, expected);
+            end
+        end
+    endtask
+
     task automatic check_data;
         input [`RV64_XLEN-1:0] addr;
         input [2:0] size;
         input is_write;
         input expected;
-        input [8*32-1:0] label;
+        input [8*48-1:0] label;
         begin
             data_valid = 1'b1;
             data_addr = addr;
@@ -101,8 +138,31 @@ module tb_rv64i_pmp;
             data_write = is_write;
             #1;
             if (data_allow !== expected) begin
-                $fatal(1, "%0s: data allow=%0b/%0b", label,
-                       data_allow, expected);
+                $fatal(1, "%0s: data allow=%0b/%0b",
+                       label, data_allow, expected);
+            end
+        end
+    endtask
+
+    task automatic check_bus;
+        input [`RV64_XLEN-1:0] addr;
+        input [2:0] size;
+        input is_write;
+        input is_exec;
+        input [`RV64_PRIV_WIDTH-1:0] access_priv;
+        input expected;
+        input [8*48-1:0] label;
+        begin
+            bus_valid = 1'b1;
+            bus_addr = addr;
+            bus_size = size;
+            bus_write = is_write;
+            bus_exec = is_exec;
+            bus_priv_mode = access_priv;
+            #1;
+            if (bus_allow !== expected) begin
+                $fatal(1, "%0s: bus allow=%0b/%0b",
+                       label, bus_allow, expected);
             end
         end
     endtask
@@ -123,96 +183,145 @@ module tb_rv64i_pmp;
         bus_write = 1'b0;
         bus_exec = 1'b0;
         bus_priv_mode = `RV64_PRIV_M;
-
         rst_n = 1'b0;
-        repeat (2) @(posedge clk);
-        @(negedge clk);
-        rst_n = 1'b1;
-        #1;
 
-        if (!instr_allow || !data_allow) begin
-            $fatal(1, "M-mode default PMP policy denied access");
-        end
-        bus_valid = 1'b1;
-        bus_addr = 64'h800;
-        bus_size = 3'd3;
-        #1;
-        if (!bus_allow) begin
-            $fatal(1, "M-mode physical requester was denied");
-        end
+        apply_reset();
+
+        check_instr(64'h800, 1'b1, "M-mode default instruction");
+        check_data(64'h800, 3'd3, 1'b0, 1'b1,
+                   "M-mode default data");
+        check_bus(64'h800, 3'd3, 1'b0, 1'b0, `RV64_PRIV_M, 1'b1,
+                  "M-mode default physical request");
 
         priv_mode = `RV64_PRIV_U;
-        #1;
-        if (instr_allow || data_allow) begin
-            $fatal(1, "U-mode no-match PMP policy allowed access");
-        end
-        bus_priv_mode = `RV64_PRIV_U;
-        #1;
-        if (bus_allow) begin
-            $fatal(1, "U-mode physical requester bypassed PMP");
-        end
+        check_instr(64'h800, 1'b0, "U-mode no-match instruction");
+        check_data(64'h800, 3'd3, 1'b0, 1'b0,
+                   "U-mode no-match data");
+        check_bus(64'h800, 3'd3, 1'b0, 1'b0, `RV64_PRIV_U, 1'b0,
+                  "U-mode no-match physical request");
 
+        // The implemented CSR surface is exactly 16 entries: pmpcfg0,
+        // pmpcfg2, and pmpaddr0 through pmpaddr15.
         priv_mode = `RV64_PRIV_M;
-        check_csr(`RV64_CSR_PMPADDR7, 64'h0, "pmpaddr7 reset");
-        write_csr(`RV64_CSR_PMPADDR7, 64'h12345);
-        check_csr(`RV64_CSR_PMPADDR7, 64'h12345, "pmpaddr7 write");
-        write_csr(`RV64_CSR_PMPCFG0, 64'h1b00_0000_0000_0000);
-        check_csr(`RV64_CSR_PMPCFG0, 64'h1b00_0000_0000_0000,
-                  "pmpcfg0 upper entries");
-        csr_addr = 12'h3b8;
-        #1;
-        if (csr_match || csr_writable) begin
-            $fatal(1, "ninth PMP entry was unexpectedly implemented");
-        end
+        check_csr(`RV64_CSR_PMPCFG0, 64'h0, "pmpcfg0 reset");
+        check_csr(`RV64_CSR_PMPCFG2, 64'h0, "pmpcfg2 reset");
+        check_csr(`RV64_CSR_PMPADDR15, 64'h0, "pmpaddr15 reset");
+        check_unimplemented_csr(12'h3a1, "RV64 odd pmpcfg1");
+        check_unimplemented_csr(12'h3c0, "seventeenth PMP entry");
 
-        write_csr(`RV64_CSR_PMPADDR0, 64'h400);
-        write_csr(`RV64_CSR_PMPCFG0, 64'h0d);
-
+        // OFF-mode address reads expose 4 KiB grain by forcing pmpaddr[9:0]
+        // to zero. Entry 15 is then enabled as a 4 KiB RX NAPOT region.
+        write_csr(`RV64_CSR_PMPADDR15, 64'h11ff);
+        check_csr(`RV64_CSR_PMPADDR15, 64'h1000,
+                  "pmpaddr15 OFF grain readback");
+        write_csr(`RV64_CSR_PMPCFG2, 64'h1d00_0000_0000_0000);
+        check_csr(`RV64_CSR_PMPCFG2, 64'h1d00_0000_0000_0000,
+                  "pmpcfg2 entry 15");
+        check_csr(`RV64_CSR_PMPADDR15, 64'h11ff,
+                  "pmpaddr15 NAPOT readback");
         priv_mode = `RV64_PRIV_U;
-        instr_addr = 64'h800;
-        #1;
-        if (!instr_allow) begin
-            $fatal(1, "TOR execute permission was not applied");
-        end
-        check_data(64'h800, 3'd3, 1'b0, 1'b1, "TOR read");
-        check_data(64'h800, 3'd3, 1'b1, 1'b0, "TOR write denied");
-        check_data(64'hffc, 3'd3, 1'b0, 1'b0, "TOR partial overlap denied");
+        check_instr(64'h4000, 1'b1, "entry 15 execute");
+        check_data(64'h4000, 3'd3, 1'b0, 1'b1,
+                   "entry 15 read");
+        check_data(64'h4000, 3'd3, 1'b1, 1'b0,
+                   "entry 15 write denied");
+        check_data(64'h5000, 3'd3, 1'b0, 1'b0,
+                   "entry 15 outside");
 
-        priv_mode = `RV64_PRIV_M;
-        check_data(64'h800, 3'd3, 1'b1, 1'b1, "unlocked M bypass");
-        write_csr(`RV64_CSR_PMPCFG0, 64'h8d);
-        check_data(64'h800, 3'd3, 1'b1, 1'b0, "locked M permission");
+        // OpenSBI probes granularity with A=OFF and an all-ones pmpaddr.
+        apply_reset();
+        write_csr(`RV64_CSR_PMPADDR0, 64'hffff_ffff_ffff_ffff);
+        check_csr(`RV64_CSR_PMPADDR0, 64'h003f_ffff_ffff_fc00,
+                  "OpenSBI 56-bit address and 4 KiB grain probe");
 
-        write_csr(`RV64_CSR_PMPADDR0, 64'h800);
-        check_csr(`RV64_CSR_PMPADDR0, 64'h400, "locked pmpaddr0");
+        // Unsupported TOR and NA4 encodings deterministically coerce A to
+        // OFF. R/W/X remain WARL-visible; no region becomes active.
         write_csr(`RV64_CSR_PMPCFG0, 64'h0f);
-        check_csr(`RV64_CSR_PMPCFG0, 64'h8d, "locked pmpcfg0");
-
-        write_csr(`RV64_CSR_PMPADDR1, 64'h800);
-        write_csr(`RV64_CSR_PMPADDR2, 64'hc01);
-        write_csr(`RV64_CSR_PMPCFG0, 64'h001b_118d);
-        check_csr(`RV64_CSR_PMPCFG0, 64'h001b_118d,
-                  "NA4 and NAPOT config");
-
+        check_csr(`RV64_CSR_PMPCFG0, 64'h07,
+                  "TOR coerced to OFF");
+        write_csr(`RV64_CSR_PMPCFG0, 64'h17);
+        check_csr(`RV64_CSR_PMPCFG0, 64'h07,
+                  "NA4 coerced to OFF");
         priv_mode = `RV64_PRIV_U;
-        check_data(64'h2000, 3'd2, 1'b0, 1'b1, "NA4 read");
-        check_data(64'h2004, 3'd0, 1'b0, 1'b0, "NA4 outside");
-        check_data(64'h3008, 3'd3, 1'b0, 1'b1, "NAPOT read");
-        check_data(64'h3008, 3'd3, 1'b1, 1'b1, "NAPOT write");
-        instr_addr = 64'h3008;
-        #1;
-        if (instr_allow) begin
-            $fatal(1, "NAPOT execute permission was incorrectly granted");
-        end
+        check_data(64'h0, 3'd0, 1'b0, 1'b0,
+                   "unsupported mode remains inactive");
 
+        // Minimum-grain NAPOT region: 0x2000-0x2fff, read/write but not
+        // execute. A partially overlapping access fails even in M-mode.
+        apply_reset();
+        write_csr(`RV64_CSR_PMPADDR0, 64'h9ff);
+        write_csr(`RV64_CSR_PMPCFG0, 64'h1b);
+        check_csr(`RV64_CSR_PMPADDR0, 64'h9ff,
+                  "minimum-grain NAPOT readback");
+        priv_mode = `RV64_PRIV_U;
+        check_data(64'h2000, 3'd3, 1'b0, 1'b1,
+                   "NAPOT first word read");
+        check_data(64'h2ff8, 3'd3, 1'b1, 1'b1,
+                   "NAPOT last word write");
+        check_data(64'h2ffc, 3'd3, 1'b0, 1'b0,
+                   "NAPOT partial overlap");
+        check_data(64'h3000, 3'd0, 1'b0, 1'b0,
+                   "NAPOT outside");
+        check_instr(64'h2000, 1'b0, "NAPOT execute denied");
         priv_mode = `RV64_PRIV_M;
-        write_csr(`RV64_CSR_PMPADDR3, 64'hffff_ffff_ffff_ffff);
-        write_csr(`RV64_CSR_PMPCFG0, 64'h1b1b_118d);
-        priv_mode = `RV64_PRIV_U;
-        check_data(64'hffff_ffff_ffff_fff8, 3'd3, 1'b1, 1'b1,
-                   "full-range NAPOT");
+        check_instr(64'h2000, 1'b1, "unlocked M execute bypass");
+        check_data(64'h2ffc, 3'd3, 1'b0, 1'b0,
+                   "unlocked M partial overlap denied");
 
-        $display("PASS: RV64 PMP modes, priorities, and lock behavior");
+        // Lowest-numbered overlap wins. Entry 0 denies its 4 KiB region;
+        // entry 1 grants the complete implemented 56-bit physical space.
+        apply_reset();
+        write_csr(`RV64_CSR_PMPADDR0, 64'h9ff);
+        write_csr(`RV64_CSR_PMPADDR1, 64'hffff_ffff_ffff_ffff);
+        write_csr(`RV64_CSR_PMPCFG0, 64'h1f18);
+        priv_mode = `RV64_PRIV_U;
+        check_data(64'h2000, 3'd3, 1'b0, 1'b0,
+                   "lower entry deny priority");
+        check_data(64'h4000, 3'd3, 1'b1, 1'b1,
+                   "full-range fallback allow");
+        check_data(64'h00ff_ffff_ffff_fff8, 3'd3, 1'b0, 1'b1,
+                   "full-range top word");
+        check_data(64'h0100_0000_0000_0000, 3'd0, 1'b0, 1'b0,
+                   "outside implemented physical address");
+        check_bus(64'h0100_0000_0000_0000, 3'd0, 1'b0, 1'b0,
+                  `RV64_PRIV_M, 1'b1, "M-mode no-match above PA width");
+
+        // Locked NAPOT entries apply permissions to M-mode and reject both
+        // configuration and address writes until reset.
+        apply_reset();
+        write_csr(`RV64_CSR_PMPADDR0, 64'h9ff);
+        write_csr(`RV64_CSR_PMPCFG0, 64'h99);
+        priv_mode = `RV64_PRIV_U;
+        check_data(64'h2000, 3'd3, 1'b0, 1'b1,
+                   "locked U read");
+        check_data(64'h2000, 3'd3, 1'b1, 1'b0,
+                   "locked U write denied");
+        priv_mode = `RV64_PRIV_M;
+        check_data(64'h2000, 3'd3, 1'b1, 1'b0,
+                   "locked M write denied");
+        write_csr(`RV64_CSR_PMPADDR0, 64'h11ff);
+        check_csr(`RV64_CSR_PMPADDR0, 64'h9ff,
+                  "locked pmpaddr");
+        write_csr(`RV64_CSR_PMPCFG0, 64'h1f);
+        check_csr(`RV64_CSR_PMPCFG0, 64'h99,
+                  "locked pmpcfg");
+
+        // An unlocked address write atomically moves the normalized bounds.
+        apply_reset();
+        write_csr(`RV64_CSR_PMPADDR0, 64'h9ff);
+        write_csr(`RV64_CSR_PMPCFG0, 64'h1b);
+        priv_mode = `RV64_PRIV_U;
+        check_data(64'h2000, 3'd3, 1'b0, 1'b1,
+                   "pre-normalization-write region");
+        priv_mode = `RV64_PRIV_M;
+        write_csr(`RV64_CSR_PMPADDR0, 64'h11ff);
+        priv_mode = `RV64_PRIV_U;
+        check_data(64'h2000, 3'd3, 1'b0, 1'b0,
+                   "old normalized region removed");
+        check_data(64'h4000, 3'd3, 1'b0, 1'b1,
+                   "new normalized region active");
+
+        $display("PASS: 16-entry 4 KiB OFF/NAPOT PMP, WARL modes, priorities, bounds, and locks");
         $finish;
     end
 

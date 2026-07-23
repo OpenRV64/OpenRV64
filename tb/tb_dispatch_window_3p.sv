@@ -10,6 +10,7 @@ module tb_dispatch_window_3p;
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer OW = `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH;
     localparam integer MW = `OPENRV64_RETIRE_META_WIDTH;
+    localparam integer IDW = `OPENRV64_INSTR_ID_WIDTH;
 
     localparam integer I_REG_WRITE = 17;
     localparam integer I_ALU_OP = 27;
@@ -33,7 +34,7 @@ module tb_dispatch_window_3p;
     reg rst_n;
     reg flush;
     reg squash;
-    reg [63:0] squash_id;
+    reg [IDW-1:0] squash_id;
     reg [2:0] decode_valid;
     wire [2:0] decode_ready;
     reg [3*IW-1:0] decode_payload;
@@ -42,23 +43,23 @@ module tb_dispatch_window_3p;
     wire [6*5-1:0] gpr_read_addr;
     reg [6*64-1:0] gpr_read_data;
     reg allocation_ready;
-    reg [3*64-1:0] allocation_id;
+    reg [3*IDW-1:0] allocation_id;
     reg [3*SW-1:0] allocation_slot;
     wire [2:0] allocation_valid;
     wire [3*MW-1:0] allocation_meta;
     reg [2:0] pipe_ready;
     wire [2:0] pipe_valid;
-    wire [3*64-1:0] pipe_id;
+    wire [3*IDW-1:0] pipe_id;
     wire [3*SW-1:0] pipe_slot;
     wire [3*IW-1:0] pipe_payload;
     reg [2:0] completion_valid;
-    reg [3*64-1:0] completion_id;
+    reg [3*IDW-1:0] completion_id;
     reg [3*OW-1:0] completion_payload;
     reg [2:0] retire_valid;
-    reg [3*64-1:0] retire_id;
+    reg [3*IDW-1:0] retire_id;
     reg [3*SW-1:0] retire_slot;
     reg [2:0] retire_hard;
-    reg [63:0] next_retire_id;
+    reg [IDW-1:0] next_retire_id;
     reg [SW-1:0] next_retire_slot;
     wire barrier_active;
     wire [2:0] raw_hazard;
@@ -160,10 +161,10 @@ module tb_dispatch_window_3p;
             decode_uses_rs1 = 3'b000;
             decode_uses_rs2 = 3'b000;
             completion_valid = 3'b000;
-            completion_id = {3*64{1'b0}};
+            completion_id = {3*IDW{1'b0}};
             completion_payload = {3*OW{1'b0}};
             retire_valid = 3'b000;
-            retire_id = {3*64{1'b0}};
+            retire_id = {3*IDW{1'b0}};
             retire_slot = {3*SW{1'b0}};
             retire_hard = 3'b000;
         end
@@ -178,13 +179,13 @@ module tb_dispatch_window_3p;
         rst_n = 1'b0;
         flush = 1'b0;
         squash = 1'b0;
-        squash_id = 64'd0;
+        squash_id = IDW'(0);
         allocation_ready = 1'b1;
-        allocation_id = {64'd3, 64'd2, 64'd1};
+        allocation_id = {IDW'(3), IDW'(2), IDW'(1)};
         allocation_slot = {4'd2, 4'd1, 4'd0};
         pipe_ready = 3'b111;
         gpr_read_data = {6*64{1'b0}};
-        next_retire_id = 64'd1;
+        next_retire_id = IDW'(1);
         next_retire_slot = 4'd0;
         clear_inputs();
 
@@ -208,8 +209,8 @@ module tb_dispatch_window_3p;
         clear_inputs();
         #1;
         if (pipe_valid[1:0] != 2'b11 ||
-            pipe_id[0*64 +: 64] != 64'd1 ||
-            pipe_id[1*64 +: 64] != 64'd3)
+            pipe_id[0*IDW +: IDW] != IDW'(1) ||
+            pipe_id[1*IDW +: IDW] != IDW'(3))
             fail("oldest-ready scan did not issue around blocked entry");
         tick();
         if (queue_count != 5'd3 || !write_busy[5] ||
@@ -217,10 +218,10 @@ module tb_dispatch_window_3p;
             fail("issued entries did not remain owned until retirement");
 
         completion_valid = 3'b001;
-        completion_id[0*64 +: 64] = 64'd1;
+        completion_id[0*IDW +: IDW] = IDW'(1);
         completion_payload[0*OW +: OW] = reg_completion(5'd5, 64'h2a);
         #1;
-        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd2 ||
+        if (!pipe_valid[0] || pipe_id[0*IDW +: IDW] != IDW'(2) ||
             pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'h2a)
             fail("matching completion did not wake dependent entry");
         tick();
@@ -231,9 +232,9 @@ module tb_dispatch_window_3p;
         squash = 1'b1;
         tick();
         squash = 1'b0;
-        allocation_id = {64'd12, 64'd11, 64'd10};
+        allocation_id = {IDW'(12), IDW'(11), IDW'(10)};
         allocation_slot = {4'd2, 4'd1, 4'd0};
-        next_retire_id = 64'd10;
+        next_retire_id = IDW'(10);
         p0 = alu_packet(64'd10, 5'd1, 5'd0, 5'd10);
         p1 = alu_packet(64'd11, 5'd2, 5'd0, 5'd10);
         p2 = alu_packet(64'd12, 5'd10, 5'd0, 5'd11);
@@ -247,23 +248,23 @@ module tb_dispatch_window_3p;
         tick();
 
         completion_valid = 3'b001;
-        completion_id[0*64 +: 64] = 64'd10;
+        completion_id[0*IDW +: IDW] = IDW'(10);
         completion_payload[0*OW +: OW] = reg_completion(5'd10, 64'h10);
         #1;
         if (|pipe_valid)
             fail("consumer woke from stale older WAW completion");
         tick();
-        completion_id[0*64 +: 64] = 64'd11;
+        completion_id[0*IDW +: IDW] = IDW'(11);
         completion_payload[0*OW +: OW] = reg_completion(5'd10, 64'h11);
         #1;
-        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd12 ||
+        if (!pipe_valid[0] || pipe_id[0*IDW +: IDW] != IDW'(12) ||
             pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'h11)
             fail("consumer did not select youngest WAW producer value");
         tick();
         clear_inputs();
 
         retire_valid = 3'b111;
-        retire_id = {64'd12, 64'd11, 64'd10};
+        retire_id = {IDW'(12), IDW'(11), IDW'(10)};
         retire_slot = {4'd2, 4'd1, 4'd0};
         tick();
         clear_inputs();
@@ -273,9 +274,9 @@ module tb_dispatch_window_3p;
         // Selective recovery must reveal an older surviving WAW producer and
         // retain its completed value for instructions decoded after redirect.
         pipe_ready = 3'b000;
-        allocation_id = {64'd22, 64'd21, 64'd20};
+        allocation_id = {IDW'(22), IDW'(21), IDW'(20)};
         allocation_slot = {4'd2, 4'd1, 4'd0};
-        next_retire_id = 64'd20;
+        next_retire_id = IDW'(20);
         p0 = alu_packet(64'd20, 5'd1, 5'd0, 5'd10);
         p1 = alu_packet(64'd21, 5'd2, 5'd0, 5'd10);
         p2 = alu_packet(64'd22, 5'd3, 5'd0, 5'd12);
@@ -284,7 +285,7 @@ module tb_dispatch_window_3p;
         decode_valid = 3'b111;
         tick();
         clear_inputs();
-        squash_id = 64'd20;
+        squash_id = IDW'(20);
         squash = 1'b1;
         tick();
         squash = 1'b0;
@@ -292,11 +293,11 @@ module tb_dispatch_window_3p;
             fail("selective squash did not rebuild surviving WAW owner");
 
         completion_valid = 3'b001;
-        completion_id[0 +: 64] = 64'd20;
+        completion_id[0 +: IDW] = IDW'(20);
         completion_payload[0 +: OW] = reg_completion(5'd10, 64'h55);
         tick();
         clear_inputs();
-        allocation_id = {64'd32, 64'd31, 64'd30};
+        allocation_id = {IDW'(32), IDW'(31), IDW'(30)};
         allocation_slot = {4'd3, 4'd2, 4'd1};
         p0 = alu_packet(64'd30, 5'd10, 5'd0, 5'd11);
         decode_payload = {{2*IW{1'b0}}, p0};
@@ -317,9 +318,9 @@ module tb_dispatch_window_3p;
         tick();
         flush = 1'b0;
         pipe_ready = 3'b111;
-        allocation_id = {64'd42, 64'd41, 64'd40};
+        allocation_id = {IDW'(42), IDW'(41), IDW'(40)};
         allocation_slot = {4'd2, 4'd1, 4'd0};
-        next_retire_id = 64'd40;
+        next_retire_id = IDW'(40);
         next_retire_slot = 4'd0;
         p0 = alu_packet(64'd40, 5'd0, 5'd0, 5'd5);
         p1 = alu_packet(64'd41, 5'd0, 5'd0, 5'd0);
@@ -333,17 +334,18 @@ module tb_dispatch_window_3p;
         tick();
         clear_inputs();
         if ((pipe_valid[1:0] != 2'b11) || pipe_valid[2] ||
-            (pipe_id[0 +: 64] != 64'd41) ||
-            (pipe_id[64 +: 64] != 64'd40))
+            (pipe_id[0 +: IDW] != IDW'(40)) ||
+            (pipe_id[IDW +: IDW] != IDW'(41)))
             fail("branch/producer setup for speculative load failed");
         tick();
 
         completion_valid = 3'b001;
-        completion_id[0 +: 64] = 64'd40;
+        completion_id[0 +: IDW] = IDW'(40);
         completion_payload[0 +: OW] =
             reg_completion(5'd5, 64'h0000_0000_8000_0100);
         #1;
-        if (!pipe_valid[2] || (pipe_id[2*64 +: 64] != 64'd42) ||
+        if (!pipe_valid[2] ||
+            (pipe_id[2*IDW +: IDW] != IDW'(42)) ||
             (pipe_payload[2*IW + I_RS1_DATA +: 64] !=
              64'h0000_0000_8000_0100))
             fail("awakened RAM load did not pass live branch safely");
@@ -357,9 +359,9 @@ module tb_dispatch_window_3p;
         flush = 1'b1;
         tick();
         flush = 1'b0;
-        allocation_id = {64'd52, 64'd51, 64'd50};
+        allocation_id = {IDW'(52), IDW'(51), IDW'(50)};
         allocation_slot = {4'd2, 4'd1, 4'd0};
-        next_retire_id = 64'd49;
+        next_retire_id = IDW'(49);
         next_retire_slot = 4'd15;
         p0 = alu_packet(64'd50, 5'd1, 5'd0, 5'd5);
         p1 = alu_packet(64'd51, 5'd0, 5'd0, 5'd1);
@@ -376,12 +378,13 @@ module tb_dispatch_window_3p;
         clear_inputs();
         #1;
         if (pipe_valid[1:0] != 2'b11 ||
-            pipe_id[0*64 +: 64] != 64'd51 ||
-            pipe_id[1*64 +: 64] != 64'd50)
+            pipe_id[0*IDW +: IDW] != IDW'(50) ||
+            pipe_id[1*IDW +: IDW] != IDW'(51))
             fail("direct JAL did not issue before retirement head");
         tick();
         #1;
-        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd52)
+        if (!pipe_valid[0] ||
+            pipe_id[0*IDW +: IDW] != IDW'(52))
             fail("direct JAL blocked younger replayable ALU");
         tick();
         clear_inputs();
@@ -394,9 +397,9 @@ module tb_dispatch_window_3p;
         tick();
         flush = 1'b0;
         pipe_ready = 3'b000;
-        allocation_id = {64'd0, 64'd0, 64'd60};
+        allocation_id = {IDW'(0), IDW'(0), IDW'(60)};
         allocation_slot = {4'd0, 4'd0, 4'd0};
-        next_retire_id = 64'd60;
+        next_retire_id = IDW'(60);
         next_retire_slot = 4'd0;
         p0 = alu_packet(64'd60, 5'd1, 5'd0, 5'd5);
         decode_payload = {{2*IW{1'b0}}, p0};
@@ -405,7 +408,7 @@ module tb_dispatch_window_3p;
         tick();
         clear_inputs();
 
-        allocation_id = {64'd63, 64'd62, 64'd61};
+        allocation_id = {IDW'(63), IDW'(62), IDW'(61)};
         allocation_slot = {4'd3, 4'd2, 4'd1};
         p0 = alu_packet(64'd61, 5'd5, 5'd0, 5'd0);
         p0[I_INSTR +: 32] = 32'h0002_8463;
@@ -426,28 +429,56 @@ module tb_dispatch_window_3p;
         pipe_ready = 3'b111;
         #1;
         if (pipe_valid[1:0] != 2'b11 ||
-            pipe_id[0*64 +: 64] != 64'd60 ||
-            pipe_id[1*64 +: 64] != 64'd63)
+            pipe_id[0*IDW +: IDW] != IDW'(60) ||
+            pipe_id[1*IDW +: IDW] != IDW'(63))
             fail("unready conditional branch blocked younger ALU");
-        if ((pipe_valid[0] && (pipe_id[0*64 +: 64] == 64'd62)) ||
-            (pipe_valid[1] && (pipe_id[1*64 +: 64] == 64'd62)))
+        if ((pipe_valid[0] &&
+             (pipe_id[0*IDW +: IDW] == IDW'(62))) ||
+            (pipe_valid[1] &&
+             (pipe_id[1*IDW +: IDW] == IDW'(62))))
             fail("younger conditional branch passed unresolved older branch");
         tick();
 
         completion_valid = 3'b001;
-        completion_id[0 +: 64] = 64'd60;
+        completion_id[0 +: IDW] = IDW'(60);
         completion_payload[0 +: OW] = reg_completion(5'd5, 64'h1234);
         #1;
-        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd61 ||
-            pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'h1234)
+        if (!pipe_valid[1] ||
+            pipe_id[1*IDW +: IDW] != IDW'(61) ||
+            pipe_payload[1*IW + I_RS1_DATA +: 64] != 64'h1234)
             fail("released conditional branch did not wake and issue");
         tick();
         clear_inputs();
         #1;
-        if (!pipe_valid[0] || pipe_id[0*64 +: 64] != 64'd62)
+        if (!pipe_valid[1] ||
+            pipe_id[1*IDW +: IDW] != IDW'(62))
             fail("younger conditional branch did not issue after older resolve");
         tick();
         clear_inputs();
+
+        // Modular age ordering must treat ID 0 as younger than 1023.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 3'b000;
+        allocation_id = {IDW'(0), IDW'(1023), IDW'(1022)};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        next_retire_id = IDW'(1022);
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd1022, 5'd1, 5'd0, 5'd5);
+        p1 = alu_packet(64'd1023, 5'd2, 5'd0, 5'd6);
+        p2 = alu_packet(64'd1024, 5'd3, 5'd0, 5'd7);
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b111;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        squash_id = IDW'(1023);
+        squash = 1'b1;
+        tick();
+        squash = 1'b0;
+        if (queue_count != 2 || write_busy[7])
+            fail("dispatch window misordered modular IDs at wrap");
 
         $display("PASS: dispatch window issue, producer tags, and selective recovery");
         $finish;

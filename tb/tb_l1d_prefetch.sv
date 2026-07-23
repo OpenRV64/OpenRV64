@@ -152,6 +152,19 @@ module tb_l1d_prefetch;
         end
     endfunction
 
+    function automatic prefetch_command_seen;
+        input [63:0] address;
+        integer command_index;
+        begin
+            prefetch_command_seen = 1'b0;
+            for (command_index = 0;
+                 command_index < prefetch_commands;
+                 command_index = command_index + 1)
+                if (prefetch_command_addr[command_index] == address)
+                    prefetch_command_seen = 1'b1;
+        end
+    endfunction
+
     openrv64_l1d_ccx #(
         .ENABLE(1),
         .CACHE_BYTES(1024),
@@ -163,6 +176,7 @@ module tb_l1d_prefetch;
         .PREFETCH_CACHEABLE_BASE(MEMORY_BASE),
         .PREFETCH_CACHEABLE_SIZE(MEMORY_SIZE),
         .PREFETCH_MAX_STRIDE_LINES(64),
+        .PREFETCH_STREAMS(2),
         .PREFETCH_DISTANCE(1),
         .PREFETCH_ADAPTIVE_ENABLE(1),
         .PREFETCH_MAX_DISTANCE(4),
@@ -557,7 +571,7 @@ module tb_l1d_prefetch;
         if (demand_commands != 1 || useful_prefetches != 1)
             $fatal(1, "demand-promoted prefetch did not become an L1 hit");
 
-        // Two equal non-unit deltas train the global stride.  Earlier
+        // Two equal non-unit deltas train one history entry.  Earlier
         // observations use the conservative next-line fallback.
         reset_dut();
         issue_load(MEMORY_BASE + 64'h1000);
@@ -586,6 +600,44 @@ module tb_l1d_prefetch;
         repeat (40) @(posedge clk);
         if (prefetch_commands != 0)
             $fatal(1, "prefetch escaped configured cacheable aperture");
+
+        // Alternate two disjoint +4-line read streams.  A single global
+        // history observes large cross-array deltas here and cannot train
+        // either stride.  The two-entry table must preserve both histories
+        // and issue the next address from each.
+        reset_dut();
+        issue_load(MEMORY_BASE + 64'h4000);
+        issue_load(MEMORY_BASE + 64'h8000);
+        issue_load(MEMORY_BASE + 64'h4100);
+        issue_load(MEMORY_BASE + 64'h8100);
+        issue_load(MEMORY_BASE + 64'h4200);
+        issue_load(MEMORY_BASE + 64'h8200);
+        wait_for_prefetch_quiescence();
+        if (!(dut.prefetch_train_valid_q[0] &&
+              dut.prefetch_train_valid_q[1] &&
+              dut.prefetch_stride_valid_q[0] &&
+              dut.prefetch_stride_valid_q[1] &&
+              (dut.prefetch_stride_q[0] == 64'sh100) &&
+              (dut.prefetch_stride_q[1] == 64'sh100) &&
+              (((dut.prefetch_last_line_q[0] ==
+                  MEMORY_BASE + 64'h4200) &&
+                (dut.prefetch_last_line_q[1] ==
+                  MEMORY_BASE + 64'h8200)) ||
+               ((dut.prefetch_last_line_q[1] ==
+                  MEMORY_BASE + 64'h4200) &&
+                (dut.prefetch_last_line_q[0] ==
+                  MEMORY_BASE + 64'h8200)))))
+            $fatal(1, "interleaved loads did not retain two stride histories");
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h4300) ||
+            !prefetch_command_seen(MEMORY_BASE + 64'h8300))
+            $fatal(1,
+                "interleaved streams did not prefetch both next addresses");
+        issue_load(MEMORY_BASE + 64'h4300);
+        issue_load(MEMORY_BASE + 64'h8300);
+        if (useful_prefetches != 2)
+            $fatal(1,
+                "interleaved stream prefetches were not both useful count=%0d",
+                useful_prefetches);
 
         // Staggered responses make a one-line lead late twice.  The first late
         // demand raises depth 1->2; the second raises it 2->4.  The candidate
@@ -629,7 +681,7 @@ module tb_l1d_prefetch;
                 "unused speculative replacements did not reduce depth useless=%0d depth=%0d",
                 useless_prefetches, prefetch_depth);
 
-        $display("PASS: L1D adaptive stride prefetch, CCX MSHRs, and decay");
+        $display("PASS: L1D two-stream adaptive prefetch, CCX MSHRs, and decay");
         $finish;
     end
 

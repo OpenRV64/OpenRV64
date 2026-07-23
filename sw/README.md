@@ -5,8 +5,10 @@ RAM window at `0x8000_0000`. The boot ROM transfers control there after reset.
 
 The firmware configures the 16550-compatible UART for divisor 1, routes UART
 source ID 1 through the PLIC, and arms a CLINT machine-timer deadline. UART RX
-and TX are serviced only from machine external interrupts. A newline ends the
-input line; carriage return immediately before it is stripped.
+and TX are serviced from the PLIC's supervisor-external interrupt. This
+bare-metal firmware leaves SEIP undelegated and handles cause 9 through its
+machine trap vector. A newline ends the input line; carriage return immediately
+before it is stripped.
 
 Given:
 
@@ -75,6 +77,25 @@ to establish separate ideal-refill bounds. Its backing RAM is still a
 functional fixed-latency model, not a DRAM timing model; prefetch distance and
 bandwidth tuning require the memory-channel timing model in the measured path.
 
+`AXI_3P_FREELOADER=1` is a stronger simulation-only backend bound. Cacheable,
+unlocked RAM loads bypass L1D/CCX demand timing and return through a tagged,
+pipelined oracle. `AXI_3P_FREELOADER_LATENCY` is MEM issue to registered
+result and defaults to 3, the minimum supported by the current MEM/L1D
+crossings. Posted stores still enter and drain the real L1D store buffer;
+pending store bytes are forwarded into oracle load data. MMIO, translated
+accesses, atomics, and stores remain on the real path. For a three-cycle
+load-to-dependent-use experiment, also set
+`AXI_3P_COMPLETION_FORWARD_MASK=4`; without that bypass, the value is ready in
+three cycles but a dependent instruction can still wait for ordered
+retirement. The mode removes demand-miss timeliness from the prefetch
+experiment, so it is an upper bound rather than a prefetch score:
+
+```sh
+make bench-stream AXI_3P_FREELOADER=1 \
+    AXI_3P_FREELOADER_LATENCY=3 \
+    AXI_3P_COMPLETION_FORWARD_MASK=4
+```
+
 ## Prefetch characterization suite
 
 The remaining prefetch workloads use the same native three-pipe L1/CCX
@@ -123,6 +144,19 @@ make bench-stream STREAM_KERNEL=triad STREAM_BYTES=65536
 make sim-stream-suite STREAM_BYTES=4096
 ```
 
+The matched AArch64 scalar kernel can be run on the repository-pinned gem5
+HPI model with:
+
+```sh
+make sim-stream-a53-gem5 STREAM_KERNEL=triad STREAM_BYTES=65536
+```
+
+The HPI image uses gem5 reset/dump pseudo-instructions around the same kernel
+boundary and verifies the entire result afterward.  HPI is an A53-class model,
+not an exact Cortex-A53, and its default 32 KiB L1D includes a degree-four
+stride prefetcher.  Its cache and DDR timing therefore must not be conflated
+with the functional OpenRV64 backing-memory timing.
+
 `icache/icache.S` creates exact 4, 16, 64, or 256 KiB executable tapes. The
 `fallthrough` pattern is straight-line code. `branch` visits each four-line
 group in physical order 0, 2, 1, 3 with a taken direct jump on every line, so
@@ -153,11 +187,13 @@ make bench-stride STRIDE_BYTES=64 PREFETCH_L1D_ENABLE=0
 make bench-stride STRIDE_BYTES=64 PREFETCH_L1D_ENABLE=1
 ```
 
-`PREFETCH_L1D_MAX_STRIDE_LINES` defaults to 64,
+`PREFETCH_L1D_MAX_STRIDE_LINES` defaults to 64, and
+`PREFETCH_L1D_STREAMS` defaults to two independent address histories,
 `PREFETCH_L1D_DISTANCE` is the initial depth and defaults to 1, and adaptive
 read-ahead defaults to a maximum depth of 4. The default candidate queue and
 outstanding CCX-prefetch count are both four; two fill-buffer entries are
-reserved for demand. `PREFETCH_L1D_ADAPTIVE_ENABLE`,
+reserved for demand. `PREFETCH_L1D_STREAMS` accepts one through four;
+`PREFETCH_L1D_ADAPTIVE_ENABLE`,
 `PREFETCH_L1D_MAX_DISTANCE`, `PREFETCH_L1D_QUEUE_LINES`,
 `PREFETCH_L1D_OUTSTANDING`, and `PREFETCH_L1D_DEMAND_RESERVE` expose those
 controls. Changing any value selects a separate Verilator build.

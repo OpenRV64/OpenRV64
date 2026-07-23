@@ -12,6 +12,7 @@ module tb_backend_3p #(
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer SW = 3;
     localparam integer I_PRIV = 2;
+    localparam integer I_SYSTEM = 10;
     localparam integer I_MEM_WRITE = 15;
     localparam integer I_MEM_READ = 16;
     localparam integer I_REG_WRITE = 17;
@@ -23,6 +24,7 @@ module tb_backend_3p #(
     localparam integer I_IMM = 40;
     localparam integer I_RS2 = 232;
     localparam integer I_RS1 = 237;
+    localparam integer I_RS1_DATA = 168;
     localparam integer I_INSTR = 242;
     localparam integer I_PC = 274;
     localparam integer I_TRACE = 338;
@@ -63,7 +65,7 @@ module tb_backend_3p #(
     reg irq_pending;
     reg [4:0] irq_cause;
     wire redirect_valid;
-    wire [63:0] redirect_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id;
     wire [63:0] redirect_target;
     wire branch_resolved;
     wire branch_taken;
@@ -94,6 +96,7 @@ module tb_backend_3p #(
     wire [2:0] dispatch_occupancy;
 
     openrv64_backend_3p #(
+        .BRANCH_COMPLETION_FORWARD_MASK(3'b111),
         .ENABLE_FULL_FORWARDING(1),
         .RELAX_HAZARDS(RELAX_HAZARDS),
         .ENABLE_POSTED_STORES(1),
@@ -252,6 +255,7 @@ module tb_backend_3p #(
     reg saw_aggressive_waw_issue;
     reg saw_branch_owner_accept;
     reg saw_branch_stale_reject;
+    reg saw_satp_after_store_drain;
     integer branch_monitor_lane;
     reg [4:0] branch_monitor_rd;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] old_load_tag;
@@ -324,6 +328,7 @@ module tb_backend_3p #(
         saw_aggressive_waw_issue = 0;
         saw_branch_owner_accept = 0;
         saw_branch_stale_reject = 0;
+        saw_satp_after_store_drain = 0;
 
         repeat (3) tick();
         rst_n = 1;
@@ -688,6 +693,65 @@ module tb_backend_3p #(
              cycles = cycles + 1) tick();
         if (retire_occupancy != 0) fail("store did not complete and retire");
 
+        // SATP is a conservative global barrier.  It may reach ordered head
+        // after a posted store has retired architecturally, but it cannot
+        // execute until that store receives its lower-level completion.
+        while (!decode_ready[0]) tick();
+        p0 = base_packet(64'd15, 64'h2800, 32'h0000_3023);
+        p0[I_RS2 +: 5] = 5'd1;
+        p0[I_RS1 +: 5] = 5'd0;
+        p0[I_IMM +: 64] = 64'h88;
+        p0[I_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+        p0[I_MEM_WRITE] = 1'b1;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = 0;
+        decode_uses_rs2 = 0;
+        mem_ready = 1'b1;
+        while (!(mem_valid && mem_write && (mem_addr == 64'h88))) tick();
+        posted_store_tag = mem_tag;
+        tick();
+        mem_ready = 1'b0;
+        while (retire_occupancy != 0) tick();
+
+        while (!decode_ready[0]) tick();
+        p0 = base_packet(
+            64'd16, 64'h2804,
+            {`RV64_CSR_SATP, 5'd0, 3'b001, 5'd0, `RV64_OPCODE_SYSTEM});
+        p0[I_SYSTEM] = 1'b1;
+        p0[I_RS1_DATA +: 64] = 64'h8000_0000_0000_0001;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = 0;
+        for (cycles = 0; cycles < 6; cycles = cycles + 1) begin
+            if (csr_write || (retire_arch != 0))
+                fail("SATP passed an uncompleted posted store");
+            tick();
+        end
+
+        mem_resp_tag = posted_store_tag;
+        mem_resp_valid = 1'b1;
+        tick();
+        mem_resp_valid = 1'b0;
+        for (cycles = 0; cycles < 20 && !saw_satp_after_store_drain;
+             cycles = cycles + 1) begin
+            #1;
+            if (csr_write && (csr_write_addr == `RV64_CSR_SATP))
+                saw_satp_after_store_drain = 1'b1;
+            tick();
+        end
+        if (!saw_satp_after_store_drain)
+            fail("SATP did not execute after posted-store completion");
+        for (cycles = 0; cycles < 20 && retire_occupancy != 0;
+             cycles = cycles + 1) tick();
+        if (retire_occupancy != 0)
+            fail("SATP pre-barrier sequence leaked retirement state");
+
         // A taken conditional branch ages its fallthrough only when the
         // branch becomes part of the architectural retirement prefix.
         while (!decode_ready[0]) tick();
@@ -706,7 +770,7 @@ module tb_backend_3p #(
             branch_retire_age_addr[63:0] != 64'h3004)
             fail("retired taken branch did not age its fallthrough");
 
-        $display("PASS: integrated 3p forwarding, posted-store bypass, branch aging, async abort, issue, and retirement");
+        $display("PASS: integrated 3p forwarding, SATP store drain, posted-store bypass, branch aging, async abort, issue, and retirement");
         $finish;
     end
 endmodule

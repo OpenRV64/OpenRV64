@@ -90,6 +90,39 @@ module openrv64_platform #(
     logic [63:0] core_mem_rdata;
     logic core_mem_error;
 
+    logic ccx_req_valid;
+    logic ccx_req_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
+    logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    logic ccx_req_lock;
+    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
+    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
+    logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
+    logic [2:0] ccx_req_size;
+    logic [63:0] ccx_req_addr;
+    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    logic ccx_wdata_valid;
+    logic ccx_wdata_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
+    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
+    logic ccx_wdata_last;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
+    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
+    logic ccx_resp_valid;
+    logic ccx_resp_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
+    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index;
+    logic ccx_resp_last;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    logic ccx_resp_error;
+    logic ccx_resp_sc_success;
+
     logic rom_valid;
     logic rom_ready;
     logic rom_write;
@@ -149,7 +182,7 @@ module openrv64_platform #(
     logic [0:0] clint_msip;
     logic [0:0] clint_mtip;
     logic [63:0] clint_mtime;
-    logic [0:0] plic_meip;
+    logic [0:0] plic_seip;
     logic uart_irq;
     logic gpio_irq;
     logic timer_irq;
@@ -235,23 +268,44 @@ module openrv64_platform #(
         .m_axi_wready(1'b0),
         .m_axi_bid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
         .m_axi_bresp(2'b00), .m_axi_bvalid(1'b0),
-        .ccx_req_ready(1'b0),
-        .ccx_wdata_ready(1'b0),
-        .ccx_resp_valid(1'b0),
-        .ccx_resp_hart_id('0),
-        .ccx_resp_txn_id('0),
-        .ccx_resp_source_id('0),
-        .ccx_resp_beat_index('0),
-        .ccx_resp_last(1'b0),
-        .ccx_resp_rdata('0),
-        .ccx_resp_error(1'b0),
-        .ccx_resp_sc_success(1'b0),
+        .ccx_req_valid(ccx_req_valid),
+        .ccx_req_ready(ccx_req_ready),
+        .ccx_req_hart_id(ccx_req_hart_id),
+        .ccx_req_txn_id(ccx_req_txn_id),
+        .ccx_req_source_id(ccx_req_source_id),
+        .ccx_req_op(ccx_req_op),
+        .ccx_req_lock(ccx_req_lock),
+        .ccx_req_order(ccx_req_order),
+        .ccx_req_kind(ccx_req_kind),
+        .ccx_req_attr(ccx_req_attr),
+        .ccx_req_size(ccx_req_size),
+        .ccx_req_addr(ccx_req_addr),
+        .ccx_req_burst_len(ccx_req_burst_len),
+        .ccx_wdata_valid(ccx_wdata_valid),
+        .ccx_wdata_ready(ccx_wdata_ready),
+        .ccx_wdata_hart_id(ccx_wdata_hart_id),
+        .ccx_wdata_txn_id(ccx_wdata_txn_id),
+        .ccx_wdata_source_id(ccx_wdata_source_id),
+        .ccx_wdata_beat_index(ccx_wdata_beat_index),
+        .ccx_wdata_last(ccx_wdata_last),
+        .ccx_wdata(ccx_wdata),
+        .ccx_wstrb(ccx_wstrb),
+        .ccx_resp_valid(ccx_resp_valid),
+        .ccx_resp_ready(ccx_resp_ready),
+        .ccx_resp_hart_id(ccx_resp_hart_id),
+        .ccx_resp_txn_id(ccx_resp_txn_id),
+        .ccx_resp_source_id(ccx_resp_source_id),
+        .ccx_resp_beat_index(ccx_resp_beat_index),
+        .ccx_resp_last(ccx_resp_last),
+        .ccx_resp_rdata(ccx_resp_rdata),
+        .ccx_resp_error(ccx_resp_error),
+        .ccx_resp_sc_success(ccx_resp_sc_success),
         .irq_m_software(clint_msip[0]),
         .irq_m_timer(clint_mtip[0]),
-        .irq_m_external(plic_meip[0]),
+        .irq_m_external(1'b0),
         .irq_s_software(1'b0),
         .irq_s_timer(1'b0),
-        .irq_s_external(1'b0),
+        .irq_s_external(plic_seip[0]),
         .dbg_pc(dbg_pc),
         .dbg_instr(dbg_instr),
         .dbg_halted(dbg_halted),
@@ -358,7 +412,39 @@ module openrv64_platform #(
         .mem_addr_i(memory_addr),
         .mem_wdata_i(memory_wdata),
         .mem_wstrb_i(memory_wstrb),
-        .mem_rdata_o(memory_rdata)
+        .mem_rdata_o(memory_rdata),
+        .ccx_req_valid_i(ccx_req_valid),
+        .ccx_req_ready_o(ccx_req_ready),
+        .ccx_req_hart_id_i(ccx_req_hart_id),
+        .ccx_req_txn_id_i(ccx_req_txn_id),
+        .ccx_req_source_id_i(ccx_req_source_id),
+        .ccx_req_op_i(ccx_req_op),
+        .ccx_req_lock_i(ccx_req_lock),
+        .ccx_req_order_i(ccx_req_order),
+        .ccx_req_kind_i(ccx_req_kind),
+        .ccx_req_attr_i(ccx_req_attr),
+        .ccx_req_size_i(ccx_req_size),
+        .ccx_req_addr_i(ccx_req_addr),
+        .ccx_req_burst_len_i(ccx_req_burst_len),
+        .ccx_wdata_valid_i(ccx_wdata_valid),
+        .ccx_wdata_ready_o(ccx_wdata_ready),
+        .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
+        .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
+        .ccx_wdata_source_id_i(ccx_wdata_source_id),
+        .ccx_wdata_beat_index_i(ccx_wdata_beat_index),
+        .ccx_wdata_last_i(ccx_wdata_last),
+        .ccx_wdata_i(ccx_wdata),
+        .ccx_wstrb_i(ccx_wstrb),
+        .ccx_resp_valid_o(ccx_resp_valid),
+        .ccx_resp_ready_i(ccx_resp_ready),
+        .ccx_resp_hart_id_o(ccx_resp_hart_id),
+        .ccx_resp_txn_id_o(ccx_resp_txn_id),
+        .ccx_resp_source_id_o(ccx_resp_source_id),
+        .ccx_resp_beat_index_o(ccx_resp_beat_index),
+        .ccx_resp_last_o(ccx_resp_last),
+        .ccx_resp_rdata_o(ccx_resp_rdata),
+        .ccx_resp_error_o(ccx_resp_error),
+        .ccx_resp_sc_success_o(ccx_resp_sc_success)
     );
 
     openrv64_clint #(
@@ -394,7 +480,7 @@ module openrv64_platform #(
         .mem_wdata_i(plic_wdata),
         .mem_wstrb_i(plic_wstrb),
         .mem_rdata_o(plic_rdata),
-        .meip_o(plic_meip)
+        .seip_o(plic_seip)
     );
 
     openrv64_uart16550 u_uart (

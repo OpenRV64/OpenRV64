@@ -18,7 +18,7 @@ module openrv64_backend_3p #(
     parameter integer MAX_READS_PER_REG = 2,
     parameter integer ENABLE_RV64M = 1,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
-    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b111,
+    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter integer ENABLE_FULL_FORWARDING = 0,
     parameter integer RELAX_WAW = 1,
     parameter integer RELAX_HAZARDS = 0,
@@ -48,7 +48,8 @@ module openrv64_backend_3p #(
                                         decode_payload_i,
     input  wire [2:0]                   decode_uses_rs1_i,
     input  wire [2:0]                   decode_uses_rs2_i,
-    output wire [3*64-1:0]              decode_allocation_id_o,
+    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        decode_allocation_id_o,
     output wire [3*SLOT_WIDTH-1:0]      decode_allocation_slot_o,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
@@ -82,14 +83,14 @@ module openrv64_backend_3p #(
     input  wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause_i,
 
     output wire                         redirect_valid_o,
-    output wire [63:0]                  redirect_id_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_o,
     output wire [`RV64_XLEN-1:0]        redirect_target_o,
     output wire                         branch_resolved_o,
     output wire                         branch_conditional_o,
     output wire                         branch_taken_o,
     output wire [`RV64_XLEN-1:0]        branch_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
-    output wire [63:0]                  branch_id_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] branch_id_o,
     output wire [SLOT_WIDTH-1:0]        branch_slot_o,
     output wire [2:0]                   branch_train_valid_o,
     output wire [2:0]                   branch_train_conditional_o,
@@ -133,7 +134,7 @@ module openrv64_backend_3p #(
     wire allocation_ready;
     wire queue_allocation_ready;
     wire [2:0] allocation_valid;
-    wire [3*64-1:0] allocation_id;
+    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id;
     wire [3*SLOT_WIDTH-1:0] allocation_slot;
     wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta;
     wire [2:0] allocation_complete;
@@ -146,18 +147,18 @@ module openrv64_backend_3p #(
 
     wire [2:0] pipe_ready;
     wire [2:0] pipe_valid;
-    wire [3*64-1:0] pipe_id;
+    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id;
     wire [3*SLOT_WIDTH-1:0] pipe_slot;
     wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] pipe_payload;
     wire [2:0] pipe_unsupported;
 
     wire [2:0] complete_valid;
-    wire [3*64-1:0] complete_id;
+    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id;
     wire [3*SLOT_WIDTH-1:0] complete_slot;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         complete_payload;
     wire exec_redirect_valid;
-    wire [63:0] exec_redirect_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] exec_redirect_id;
     wire [SLOT_WIDTH-1:0] exec_redirect_slot;
     wire [`RV64_XLEN-1:0] exec_redirect_target;
     wire exec_branch_resolved;
@@ -265,14 +266,14 @@ module openrv64_backend_3p #(
 
     wire [2:0] queue_retire_valid;
     wire [2:0] queue_retire_accept;
-    wire [3*64-1:0] queue_retire_id;
+    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] queue_retire_id;
     wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] queue_retire_meta;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         queue_retire_result;
-    wire [63:0] next_retire_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] next_retire_id;
     wire [SLOT_WIDTH-1:0] next_retire_slot;
     wire queue_post_retire_valid;
-    wire [63:0] queue_post_retire_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] queue_post_retire_id;
     wire [SLOT_WIDTH-1:0] queue_post_retire_slot;
     wire [3*SLOT_WIDTH-1:0] window_retire_slot;
 
@@ -433,10 +434,14 @@ module openrv64_backend_3p #(
         (ENABLE_ISSUE_WINDOW != 0) ? window_direction_mispredict :
                                      exec_redirect_valid;
     assign redirect_id_o = free_branch_mispredict ?
-        allocation_id[free_mispredict_lane*64 +: 64] :
+        allocation_id[
+            free_mispredict_lane*`OPENRV64_INSTR_ID_WIDTH +:
+            `OPENRV64_INSTR_ID_WIDTH] :
         speculative_window ? exec_redirect_id :
         (ENABLE_ISSUE_WINDOW != 0) ?
-            queue_retire_id[window_resolve_lane*64 +: 64] : exec_redirect_id;
+            queue_retire_id[
+                window_resolve_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] : exec_redirect_id;
     assign redirect_target_o = free_branch_mispredict ?
         free_mispredict_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN] :
         speculative_window ? exec_redirect_target :
@@ -465,10 +470,14 @@ module openrv64_backend_3p #(
             window_resolve_result[WINDOW_RESULT_INSTR +:
                                   `RV64_INSTR_WIDTH] : exec_branch_instr;
     assign branch_id_o = free_branch_resolved ?
-        allocation_id[free_branch_lane*64 +: 64] :
+        allocation_id[
+            free_branch_lane*`OPENRV64_INSTR_ID_WIDTH +:
+            `OPENRV64_INSTR_ID_WIDTH] :
         speculative_window ? exec_redirect_id :
         (ENABLE_ISSUE_WINDOW != 0) ?
-            queue_retire_id[window_resolve_lane*64 +: 64] : exec_redirect_id;
+            queue_retire_id[
+                window_resolve_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] : exec_redirect_id;
     assign branch_slot_o = free_branch_resolved ?
         allocation_slot[free_branch_lane*SLOT_WIDTH +: SLOT_WIDTH] :
         speculative_window ? exec_redirect_slot :
@@ -556,7 +565,7 @@ module openrv64_backend_3p #(
     // still in order and the architectural GPR remains committed state.
     reg [31:0] youngest_owner_valid_q;
     reg [31:0] youngest_owner_ready_q;
-    reg [32*64-1:0] youngest_owner_id_q;
+    reg [32*`OPENRV64_INSTR_ID_WIDTH-1:0] youngest_owner_id_q;
     reg [32*SLOT_WIDTH-1:0] youngest_owner_slot_q;
     reg [32*`RV64_XLEN-1:0] youngest_owner_data_q;
     integer youngest_owner_lane;
@@ -566,7 +575,8 @@ module openrv64_backend_3p #(
         if (!rst_n) begin
             youngest_owner_valid_q <= 32'd0;
             youngest_owner_ready_q <= 32'd0;
-            youngest_owner_id_q <= {32*64{1'b0}};
+            youngest_owner_id_q <=
+                {32*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             youngest_owner_slot_q <= {32*SLOT_WIDTH{1'b0}};
             youngest_owner_data_q <= {32*`RV64_XLEN{1'b0}};
         end else if (flush_i ||
@@ -615,8 +625,11 @@ module openrv64_backend_3p #(
                     (youngest_owner_rd != `RV64_REG_X0) &&
                     youngest_owner_valid_q[youngest_owner_rd] &&
                     (youngest_owner_id_q[
-                         youngest_owner_rd*64 +: 64] ==
-                     complete_id[youngest_owner_lane*64 +: 64])) begin
+                         youngest_owner_rd*`OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH] ==
+                     complete_id[
+                         youngest_owner_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH])) begin
                     youngest_owner_ready_q[youngest_owner_rd] <= 1'b1;
                     youngest_owner_data_q[
                         youngest_owner_rd*`RV64_XLEN +: `RV64_XLEN] <=
@@ -641,8 +654,11 @@ module openrv64_backend_3p #(
                     youngest_owner_valid_q[youngest_owner_rd] <= 1'b1;
                     youngest_owner_ready_q[youngest_owner_rd] <= 1'b0;
                     youngest_owner_id_q[
-                        youngest_owner_rd*64 +: 64] <=
-                        allocation_id[youngest_owner_lane*64 +: 64];
+                        youngest_owner_rd*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] <= allocation_id[
+                            youngest_owner_lane*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
                     youngest_owner_slot_q[
                         youngest_owner_rd*SLOT_WIDTH +: SLOT_WIDTH] <=
                         allocation_slot[
@@ -866,8 +882,11 @@ module openrv64_backend_3p #(
                 (youngest_forward_rd != `RV64_REG_X0) &&
                 youngest_owner_valid_q[youngest_forward_rd] &&
                 (youngest_owner_id_q[
-                     youngest_forward_rd*64 +: 64] ==
-                 complete_id[youngest_forward_port*64 +: 64])) begin
+                     youngest_forward_rd*`OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 complete_id[
+                     youngest_forward_port*`OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH])) begin
                 youngest_forward_valid_raw[youngest_forward_rd] = 1'b1;
                 youngest_forward_data_raw[
                     youngest_forward_rd*`RV64_XLEN +: `RV64_XLEN] =
@@ -1022,8 +1041,9 @@ module openrv64_backend_3p #(
     };
     wire ordered_head_valid = !flush_i &&
         (queue_post_retire_valid || (dispatch_occupancy_o != 0));
-    wire [63:0] ordered_head_id = queue_post_retire_valid ?
-        queue_post_retire_id : allocation_id[0 +: 64];
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id =
+        queue_post_retire_valid ? queue_post_retire_id :
+        allocation_id[0 +: `OPENRV64_INSTR_ID_WIDTH];
     wire [SLOT_WIDTH-1:0] ordered_head_slot = queue_post_retire_valid ?
         queue_post_retire_slot : allocation_slot[0 +: SLOT_WIDTH];
 
@@ -1037,9 +1057,9 @@ module openrv64_backend_3p #(
     ) u_exec (
         .clk(clk), .rst_n(rst_n),
         // Selective speculation recovery leaves already-issued operations in
-        // flight.  Their monotonic IDs cannot match reallocated retirement
-        // entries, while the resolving EX1 branch must still publish its own
-        // completion on the following cycle.
+        // flight.  Their bounded-lifetime modular IDs cannot match reallocated
+        // retirement entries, while the resolving EX1 branch must still
+        // publish its own completion on the following cycle.
         .flush_3p_i(flush_i ||
                     ((ENABLE_ISSUE_WINDOW != 0) &&
                      (ENABLE_SPECULATION_WINDOW == 0) &&
@@ -1064,6 +1084,12 @@ module openrv64_backend_3p #(
         .issue_unsupported_3p_o(pipe_unsupported),
         .issue_id_3p_i(pipe_id), .issue_slot_3p_i(pipe_slot),
         .issue_payload_3p_i(pipe_payload),
+        .branch_forward_valid_3p_i(
+            branch_completion_forward_valid[0]),
+        .branch_forward_rd_addr_3p_i(
+            completion_forward_rd_addr[0 +: `RV64_REG_ADDR_WIDTH]),
+        .branch_forward_data_3p_i(
+            completion_forward_data[0 +: `RV64_XLEN]),
         .ordered_head_valid_3p_i(ordered_head_valid),
         .ordered_head_id_3p_i(ordered_head_id),
         .ordered_head_slot_3p_i(ordered_head_slot),
@@ -1104,7 +1130,8 @@ module openrv64_backend_3p #(
     );
 
     openrv64_retire_queue_3p #(
-        .DEPTH(RETIRE_DEPTH), .ID_WIDTH(64),
+        .DEPTH(RETIRE_DEPTH),
+        .ID_WIDTH(`OPENRV64_INSTR_ID_WIDTH),
         .META_WIDTH(`OPENRV64_RETIRE_META_WIDTH),
         .RESULT_WIDTH(`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH)
     ) u_retire_queue (

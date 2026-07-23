@@ -5,19 +5,20 @@ module tb_dispatch_issue_3p;
 
     localparam integer SLOT_WIDTH = 3;
     localparam integer PAYLOAD_WIDTH = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
+    localparam integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH;
 
     reg [2:0] candidate_valid;
     reg [2:0] candidate_allow;
     reg [2:0] candidate_free;
     reg [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe;
-    reg [3*64-1:0] candidate_id;
+    reg [3*ID_WIDTH-1:0] candidate_id;
     reg [3*SLOT_WIDTH-1:0] candidate_slot;
     reg [3*PAYLOAD_WIDTH-1:0] candidate_payload;
     reg allocation_ready;
     reg [2:0] pipe_ready;
     wire [2:0] candidate_fire;
     wire [2:0] pipe_valid;
-    wire [3*64-1:0] pipe_id;
+    wire [3*ID_WIDTH-1:0] pipe_id;
     wire [3*SLOT_WIDTH-1:0] pipe_slot;
     wire [3*PAYLOAD_WIDTH-1:0] pipe_payload;
 
@@ -57,7 +58,7 @@ module tb_dispatch_issue_3p;
             `OPENRV64_EXEC_PIPE_EX0,
             `OPENRV64_EXEC_PIPE_MEM
         };
-        candidate_id = {64'd12, 64'd11, 64'd10};
+        candidate_id = {ID_WIDTH'(12), ID_WIDTH'(11), ID_WIDTH'(10)};
         candidate_slot = {3'd2, 3'd1, 3'd0};
         candidate_payload = {3*PAYLOAD_WIDTH{1'b0}};
         candidate_payload[0*PAYLOAD_WIDTH +: 64] = 64'h10;
@@ -69,9 +70,9 @@ module tb_dispatch_issue_3p;
 
         if ((candidate_fire != 3'b111) || (pipe_valid != 3'b111))
             fail("three distinct ready pipes did not issue together");
-        if ((pipe_id[0*64 +: 64] != 64'd11) ||
-            (pipe_id[1*64 +: 64] != 64'd12) ||
-            (pipe_id[2*64 +: 64] != 64'd10)) begin
+        if ((pipe_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(11)) ||
+            (pipe_id[1*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(12)) ||
+            (pipe_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(10))) begin
             fail("program-order candidates were routed to wrong physical pipes");
         end
         if ((pipe_slot[0*SLOT_WIDTH +: SLOT_WIDTH] != 3'd1) ||
@@ -134,8 +135,8 @@ module tb_dispatch_issue_3p;
         #1;
         if ((candidate_fire != 3'b111) || (pipe_valid != 3'b101))
             fail("free branch consumed EX0 or terminated issue");
-        if ((pipe_id[0*64 +: 64] != 64'd11) ||
-            (pipe_id[2*64 +: 64] != 64'd12)) begin
+        if ((pipe_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(11)) ||
+            (pipe_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(12))) begin
             fail("younger operations were misrouted around free control");
         end
 
@@ -149,7 +150,7 @@ module tb_dispatch_issue_3p;
         candidate_free = 3'b011;
         #1;
         if ((candidate_fire != 3'b111) || (pipe_valid != 3'b001) ||
-            (pipe_id[0*64 +: 64] != 64'd12)) begin
+            (pipe_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(12))) begin
             fail("adjacent free branches serialized the issue group");
         end
 

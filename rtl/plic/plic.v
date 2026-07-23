@@ -22,8 +22,8 @@ module openrv64_plic #(
     input  wire [7:0]                   mem_wstrb_i,
     output reg  [63:0]                  mem_rdata_o,
 
-    // One machine-mode interrupt context is implemented for each hart.
-    output wire [NUM_HARTS-1:0]         meip_o
+    // One supervisor-mode interrupt context is implemented for each hart.
+    output wire [NUM_HARTS-1:0]         seip_o
 );
 
     localparam [63:0] PRIORITY_OFFSET     = 64'h0000_0000_0000_0000;
@@ -99,7 +99,7 @@ module openrv64_plic #(
                     priority_q,
                     threshold_q[PRIORITY_WIDTH*target_index +:
                                 PRIORITY_WIDTH]);
-            assign meip_o[target_index] =
+            assign seip_o[target_index] =
                 |selected_id[32*target_index +: 32];
         end
     endgenerate

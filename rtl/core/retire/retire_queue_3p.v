@@ -1,8 +1,9 @@
 `timescale 1ns/1ps
+`include "core/backend/backend-defs.v"
 
 module openrv64_retire_queue_3p #(
     parameter integer DEPTH = 8,
-    parameter integer ID_WIDTH = 64,
+    parameter integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer META_WIDTH = 1,
     parameter integer RESULT_WIDTH = 1,
     parameter integer INDEX_WIDTH = $clog2(DEPTH),
@@ -155,6 +156,20 @@ module openrv64_retire_queue_3p #(
         end
     endfunction
 
+    // True when candidate is later than reference in the modular ID space.
+    // The live backend window is far smaller than half the 10-bit namespace,
+    // so the sign bit of candidate-reference disambiguates wraparound.
+    function id_is_younger;
+        input [ID_WIDTH-1:0] candidate;
+        input [ID_WIDTH-1:0] reference;
+        reg [ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            id_is_younger =
+                (distance != {ID_WIDTH{1'b0}}) && !distance[ID_WIDTH-1];
+        end
+    endfunction
+
     integer entry_idx;
     integer port_idx;
     reg [INDEX_WIDTH-1:0] completion_slot;
@@ -167,7 +182,7 @@ module openrv64_retire_queue_3p #(
         for (squash_idx = 0; squash_idx < DEPTH;
              squash_idx = squash_idx + 1) begin
             if (valid_q[squash_idx] &&
-                (id_q[squash_idx] <= squash_id_i))
+                !id_is_younger(id_q[squash_idx], squash_id_i))
                 squash_keep_count = squash_keep_count + 1'b1;
         end
     end
@@ -234,7 +249,7 @@ module openrv64_retire_queue_3p #(
 
                 if (complete_valid_i[port_idx] &&
                     (!squash_younger_i ||
-                     (completion_id <= squash_id_i)) &&
+                     !id_is_younger(completion_id, squash_id_i)) &&
                     valid_q[completion_slot] &&
                     (id_q[completion_slot] == completion_id)) begin
                     complete_q[completion_slot] <= 1'b1;
@@ -275,7 +290,7 @@ module openrv64_retire_queue_3p #(
                 for (entry_idx = 0; entry_idx < DEPTH;
                      entry_idx = entry_idx + 1) begin
                     if (valid_q[entry_idx] &&
-                        (id_q[entry_idx] > squash_id_i)) begin
+                        id_is_younger(id_q[entry_idx], squash_id_i)) begin
                         valid_q[entry_idx] <= 1'b0;
                         complete_q[entry_idx] <= 1'b0;
                     end
@@ -285,6 +300,12 @@ module openrv64_retire_queue_3p #(
     end
 
 `ifndef SYNTHESIS
+    initial begin
+        if (DEPTH >= (1 << (ID_WIDTH - 1)))
+            $fatal(1,
+                   "retire depth must fit the modular ID half-range");
+    end
+
     always @(posedge clk) begin
         if (rst_n && !flush_i) begin
             if ((alloc_valid_i != 3'b000) &&

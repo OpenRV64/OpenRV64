@@ -65,6 +65,7 @@ module tb_ptw;
     logic inject_mem_error;
     logic [63:0] mem_error_addr;
     logic mem_allow;
+    logic suppress_response;
     integer memory_index;
     integer memory_reads;
     integer shootdowns;
@@ -73,7 +74,7 @@ module tb_ptw;
     integer middle_a_reads;
 
     assign ccx_req_ready = mem_allow && !ccx_resp_pending_q;
-    assign ccx_resp_valid = ccx_resp_pending_q;
+    assign ccx_resp_valid = ccx_resp_pending_q && !suppress_response;
     integer response_word;
     always @* begin
         ccx_resp_rdata = {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
@@ -84,7 +85,8 @@ module tb_ptw;
     end
 
     openrv64_bus_ptw #(
-        .PTE_CACHE_ENTRIES(4)
+        .PTE_CACHE_ENTRIES(4),
+        .CCX_TIMEOUT_CYCLES(8)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -291,7 +293,7 @@ module tb_ptw;
             req_valid = 1'b0;
 
             cycles = 0;
-            while (!resp_valid && cycles < 12) begin
+            while (!resp_valid && cycles < 64) begin
                 @(negedge clk);
                 cycles = cycles + 1;
             end
@@ -354,6 +356,7 @@ module tb_ptw;
         inject_mem_error = 1'b0;
         mem_error_addr = 64'd0;
         mem_allow = 1'b1;
+        suppress_response = 1'b0;
         root_a_reads = 0;
         middle_a_reads = 0;
 
@@ -635,6 +638,39 @@ module tb_ptw;
                       "PTE physical access fault");
         inject_mem_error = 1'b0;
 
+        // A CCX endpoint which never accepts a PTE request must become a
+        // precise access fault instead of wedging translation forever.
+        flush_translation_caches();
+        mem_allow = 1'b0;
+        issue_request(64'h0000_0000_1234_5678,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
+                      64'd0, 1'b0, 1'b1,
+                      `RV64_PAGE_LEVEL_4K, 1'b0,
+                      "PTE CCX request timeout");
+        mem_allow = 1'b1;
+
+        // Once a request has been accepted, timeout reports the fault but
+        // retains a tombstone until the late response has been drained.
+        flush_translation_caches();
+        suppress_response = 1'b1;
+        issue_request(64'h0000_0000_1234_5678,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
+                      64'd0, 1'b0, 1'b1,
+                      `RV64_PAGE_LEVEL_4K, 1'b0,
+                      "PTE CCX response timeout");
+        if (req_ready)
+            $fatal(1, "PTW reused a timed-out transaction before drain");
+        suppress_response = 1'b0;
+        memory_index = 0;
+        while (!req_ready && memory_index < 32) begin
+            @(negedge clk);
+            memory_index = memory_index + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "PTW did not recover after late-response drain");
+
         issue_request(64'hdead_beef_cafe_0123,
                       ACCESS_READ, `RV64_PRIV_M,
                       `RV64_SATP_MODE_BARE, 44'd0, 1'b0, 1'b0,
@@ -642,7 +678,7 @@ module tb_ptw;
                       1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b1,
                       "Bare identity translation");
 
-        $display("PASS: Sv39 PTW, weighted non-leaf cache, shootdown, and faults");
+        $display("PASS: Sv39 PTW, weighted non-leaf cache, shootdown, faults, and CCX timeouts");
         $finish;
     end
 

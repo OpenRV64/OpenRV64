@@ -27,16 +27,26 @@ module tb_ptw_context;
     logic mem_addr_in_range;
     logic saw_ptw_read;
     logic saw_ptw_shootdown;
+    logic saw_satp_restart;
+    logic saw_satp_shootdown;
+    logic saw_satp_barrier_busy;
+    logic saw_satp_barrier_release;
+    logic satp_barrier_active;
+    integer satp_barrier_cycles;
     logic saw_translated_fetch;
     logic saw_sfence;
     logic saw_load_page_fault;
     logic [63:0] load_page_fault_tval;
+    logic block_ptw;
+    logic saw_instr_access_fault;
+    logic [63:0] instr_access_fault_tval;
     logic ccx_req_valid;
     logic ccx_req_ready;
     logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
     logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
     logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
     logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
     logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
     logic [2:0] ccx_req_size;
     logic [63:0] ccx_req_addr;
@@ -47,6 +57,7 @@ module tb_ptw_context;
     logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
     logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    logic [2:0] fence_response_delay;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
     assign mem_ready = mem_valid;
@@ -56,7 +67,8 @@ module tb_ptw_context;
 
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
-        .ENABLE_RV64M(1'b0)
+        .ENABLE_RV64M(1'b0),
+        .PTW_CCX_TIMEOUT_CYCLES(8)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -85,6 +97,7 @@ module tb_ptw_context;
         .ccx_req_txn_id(ccx_req_txn_id),
         .ccx_req_source_id(ccx_req_source_id),
         .ccx_req_op(ccx_req_op),
+        .ccx_req_order(ccx_req_order),
         .ccx_req_kind(ccx_req_kind),
         .ccx_req_size(ccx_req_size),
         .ccx_req_addr(ccx_req_addr),
@@ -176,7 +189,11 @@ module tb_ptw_context;
     endfunction
 
     integer lane;
-    assign ccx_req_ready = !ccx_resp_valid;
+    // The timeout phase blocks page-table reads, not maintenance traffic.
+    // SATP retirement now issues a CCX fence before the first translated
+    // fetch, and that fence must remain serviceable.
+    assign ccx_req_ready = !ccx_resp_valid && (fence_response_delay == 0) &&
+        (!block_ptw || (ccx_req_op == `OPENRV64_CCX_OP_FENCE));
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -185,9 +202,17 @@ module tb_ptw_context;
             ccx_resp_txn_id <= '0;
             ccx_resp_source_id <= '0;
             ccx_resp_rdata <= '0;
+            fence_response_delay <= 3'd0;
+            satp_barrier_active <= 1'b0;
+            satp_barrier_cycles <= 0;
         end else begin
             if (ccx_resp_valid && ccx_resp_ready)
                 ccx_resp_valid <= 1'b0;
+            if (fence_response_delay != 0) begin
+                fence_response_delay <= fence_response_delay - 1'b1;
+                if (fence_response_delay == 1)
+                    ccx_resp_valid <= 1'b1;
+            end
             if (ccx_req_valid && ccx_req_ready) begin
                 if (ccx_req_source_id != `OPENRV64_CCX_SOURCE_PTW ||
                     ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
@@ -199,20 +224,28 @@ module tb_ptw_context;
                 if ((ccx_req_op == `OPENRV64_CCX_OP_FENCE) &&
                     (ccx_req_size != 3'd0))
                     $fatal(1, "invalid PTW shootdown request");
+                if ((ccx_req_op == `OPENRV64_CCX_OP_FENCE) &&
+                    (ccx_req_order != `OPENRV64_CCX_ORDER_ACQ_REL))
+                    $fatal(1, "PTW shootdown is not an ACQ_REL fence");
                 if ((ccx_req_op != `OPENRV64_CCX_OP_READ) &&
                     (ccx_req_op != `OPENRV64_CCX_OP_FENCE))
                     $fatal(1, "unexpected PTW operation");
-                ccx_resp_valid <= 1'b1;
                 ccx_resp_hart_id <= ccx_req_hart_id;
                 ccx_resp_txn_id <= ccx_req_txn_id;
                 ccx_resp_source_id <= ccx_req_source_id;
                 if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
+                    ccx_resp_valid <= 1'b1;
                     for (lane = 0; lane < 8; lane = lane + 1)
                         ccx_resp_rdata[lane * 64 +: 64] <=
                             memory[ccx_req_addr[13:3] + lane];
                 end else begin
                     ccx_resp_rdata <= '0;
+                    // Hold the fence response long enough to prove that a
+                    // Bare-mode fetch cannot escape after the SATP write.
+                    fence_response_delay <= 3'd4;
                     saw_ptw_shootdown <= 1'b1;
+                    if (!saw_sfence)
+                        saw_satp_shootdown <= 1'b1;
                 end
             end
         end
@@ -241,12 +274,40 @@ module tb_ptw_context;
         if (rst_n && dut.u_core.retire_sfence_vma) begin
             saw_sfence <= 1'b1;
         end
+        if (rst_n && dut.u_core.retire_satp_write) begin
+            if (!dut.u_core.hard_flush_restart_req)
+                $fatal(1, "retiring satp write did not restart frontend");
+            if (!dut.u_core.translation_barrier_busy)
+                $fatal(1, "satp retirement did not start translation barrier");
+            saw_satp_restart <= 1'b1;
+            satp_barrier_active <= 1'b1;
+        end
+        if (rst_n && satp_barrier_active) begin
+            if (dut.u_core.translation_barrier_busy) begin
+                saw_satp_barrier_busy <= 1'b1;
+                satp_barrier_cycles <= satp_barrier_cycles + 1;
+                if (dut.u_core.fetch_pc_valid)
+                    $fatal(1, "fetch escaped before SATP fence completion");
+                if (dut.u_core.exec_mem_valid && dut.u_core.exec_mem_ready)
+                    $fatal(1, "LSU escaped before SATP fence completion");
+            end else begin
+                saw_satp_barrier_release <= 1'b1;
+                satp_barrier_active <= 1'b0;
+            end
+        end
         if (rst_n && dut.u_core.trap_enter &&
             !dut.u_core.trap_interrupt &&
             (dut.u_core.trap_cause ==
              `RV64_EXCEPT_CAUSE_LOAD_PAGE_FAULT)) begin
             saw_load_page_fault <= 1'b1;
             load_page_fault_tval <= dut.u_core.trap_tval;
+        end
+        if (rst_n && dut.u_core.trap_enter &&
+            !dut.u_core.trap_interrupt &&
+            (dut.u_core.trap_cause ==
+             `RV64_EXCEPT_CAUSE_INSTR_ACCESS_FAULT)) begin
+            saw_instr_access_fault <= 1'b1;
+            instr_access_fault_tval <= dut.u_core.trap_tval;
         end
     end
 
@@ -262,7 +323,7 @@ module tb_ptw_context;
         // S-mode at virtual 0x40002000.
         put_instr(64'h0000, enc_ld(5'd1, `RV64_REG_X0, 12'h100));
         put_instr(64'h0004, enc_csrrw(`RV64_CSR_PMPADDR0, 5'd1));
-        put_instr(64'h0008, enc_addi(5'd2, `RV64_REG_X0, 12'h00f));
+        put_instr(64'h0008, enc_addi(5'd2, `RV64_REG_X0, 12'h01f));
         put_instr(64'h000c, enc_csrrw(`RV64_CSR_PMPCFG0, 5'd2));
         put_instr(64'h0010, enc_ld(5'd3, `RV64_REG_X0, 12'h108));
         put_instr(64'h0014, enc_csrrw(`RV64_CSR_SATP, 5'd3));
@@ -291,16 +352,26 @@ module tb_ptw_context;
         put_instr(64'h2010, enc_ld(5'd9, `RV64_REG_X0, 12'd0));
         put_instr(64'h2014, `RV64_INSTR_EBREAK);
 
-        memory[64'h100 >> 3] = 64'h0000_0000_0000_1000;
+        // A 16 KiB NAPOT region covers physical 0x0000-0x3fff.
+        memory[64'h100 >> 3] = 64'h0000_0000_0000_07ff;
         memory[64'h108 >> 3] = 64'h8000_0000_0000_0001;
         memory[64'h110 >> 3] = 64'h0000_0000_0000_0800;
 
         saw_ptw_read = 1'b0;
         saw_ptw_shootdown = 1'b0;
+        saw_satp_restart = 1'b0;
+        saw_satp_shootdown = 1'b0;
+        saw_satp_barrier_busy = 1'b0;
+        saw_satp_barrier_release = 1'b0;
+        satp_barrier_active = 1'b0;
+        satp_barrier_cycles = 0;
         saw_translated_fetch = 1'b0;
         saw_sfence = 1'b0;
         saw_load_page_fault = 1'b0;
         load_page_fault_tval = 64'hffff_ffff_ffff_ffff;
+        block_ptw = 1'b0;
+        saw_instr_access_fault = 1'b0;
+        instr_access_fault_tval = 64'hffff_ffff_ffff_ffff;
         rst_n = 1'b0;
         repeat (4) @(posedge clk);
         @(negedge clk);
@@ -318,12 +389,18 @@ module tb_ptw_context;
                    dbg_pc, dbg_instr);
         end
         if (!saw_ptw_read || !saw_ptw_shootdown ||
+            !saw_satp_restart || !saw_satp_shootdown ||
+            !saw_satp_barrier_busy || !saw_satp_barrier_release ||
             !saw_translated_fetch || !saw_sfence) begin
             $fatal(1,
-                   "missing PTW/shootdown/fetch/SFENCE observations: %0b/%0b/%0b/%0b",
+                   "missing PTW/shootdown/satp-restart/satp-shootdown/barrier-busy/barrier-release/fetch/SFENCE observations: %0b/%0b/%0b/%0b/%0b/%0b/%0b/%0b",
                    saw_ptw_read, saw_ptw_shootdown,
+                   saw_satp_restart, saw_satp_shootdown,
+                   saw_satp_barrier_busy, saw_satp_barrier_release,
                    saw_translated_fetch, saw_sfence);
         end
+        if (satp_barrier_cycles < 4)
+            $fatal(1, "SATP barrier released before delayed fence response");
         if (memory[64'h3000 >> 3] != 64'd42) begin
             $fatal(1, "translated supervisor store mismatch: %016x",
                    memory[64'h3000 >> 3]);
@@ -333,7 +410,34 @@ module tb_ptw_context;
                    saw_load_page_fault, load_page_fault_tval);
         end
 
-        $display("PASS: satp, Sv39 PTW, physical PMP, SFENCE.VMA, and page-fault context");
+        // Repeat the handoff with a CCX endpoint that never accepts the first
+        // PTE request.  The watchdog must turn the blocked instruction walk
+        // into a precise instruction access fault at the original virtual PC.
+        @(negedge clk);
+        rst_n = 1'b0;
+        block_ptw = 1'b1;
+        saw_instr_access_fault = 1'b0;
+        instr_access_fault_tval = 64'hffff_ffff_ffff_ffff;
+        repeat (4) @(posedge clk);
+        @(negedge clk);
+        rst_n = 1'b1;
+
+        cycles = 0;
+        while (!dbg_halted && cycles < 200) begin
+            @(posedge clk);
+            cycles = cycles + 1;
+        end
+        #1;
+        if (!dbg_halted)
+            $fatal(1, "PTW timeout context did not reach trap handler");
+        if (!saw_instr_access_fault ||
+            instr_access_fault_tval != 64'h0000_0000_4000_2000) begin
+            $fatal(1,
+                   "instruction access-fault context mismatch: seen=%0b tval=%016x",
+                   saw_instr_access_fault, instr_access_fault_tval);
+        end
+
+        $display("PASS: satp, Sv39 PTW, physical PMP, SFENCE.VMA, page-fault, and timeout access-fault context");
         $finish;
     end
 

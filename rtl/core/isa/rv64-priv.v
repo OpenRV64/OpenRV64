@@ -49,6 +49,7 @@
 `define RV64_CSR_MTVAL      12'h343
 `define RV64_CSR_MIP        12'h344
 `define RV64_CSR_PMPCFG0    12'h3a0
+`define RV64_CSR_PMPCFG2    12'h3a2
 `define RV64_CSR_PMPADDR0   12'h3b0
 `define RV64_CSR_PMPADDR1   12'h3b1
 `define RV64_CSR_PMPADDR2   12'h3b2
@@ -57,6 +58,14 @@
 `define RV64_CSR_PMPADDR5   12'h3b5
 `define RV64_CSR_PMPADDR6   12'h3b6
 `define RV64_CSR_PMPADDR7   12'h3b7
+`define RV64_CSR_PMPADDR8   12'h3b8
+`define RV64_CSR_PMPADDR9   12'h3b9
+`define RV64_CSR_PMPADDR10  12'h3ba
+`define RV64_CSR_PMPADDR11  12'h3bb
+`define RV64_CSR_PMPADDR12  12'h3bc
+`define RV64_CSR_PMPADDR13  12'h3bd
+`define RV64_CSR_PMPADDR14  12'h3be
+`define RV64_CSR_PMPADDR15  12'h3bf
 `define RV64_CSR_MCYCLE     12'hb00
 `define RV64_CSR_MINSTRET   12'hb02
 `define RV64_CSR_CYCLE      12'hc00

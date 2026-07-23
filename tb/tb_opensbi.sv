@@ -54,23 +54,70 @@ module tb_opensbi #(
     string banner = "OpenSBI v1.9";
     string payload_text = "OPENRV64 SBI TIMER PAYLOAD";
     string linux_panic_text = "Kernel panic";
+    string linux_prompt_text = "openrv64# ";
     integer banner_index;
     integer payload_index;
     integer linux_panic_index;
+    integer linux_prompt_index;
     integer cycle_count;
     integer uart_byte_count;
     integer payload_words;
     integer max_cycles;
+    integer linux_trap_count;
+    integer linux_same_trap_count;
+    integer linux_ptw_trace_count;
     logic saw_banner;
     logic saw_payload_text;
     logic saw_linux_panic;
+    logic saw_linux_prompt;
     logic saw_s_mode;
     logic linux_mode;
+    logic delay_probe;
+    logic delay_probe_fired;
+    logic panic_probe;
+    logic panic_probe_fired;
+    logic dbcn_probe;
+    logic dbcn_probe_fired;
+    logic printk_probe;
+    logic [11:0] printk_probe_seen;
     wire [`RV64_PRIV_WIDTH-1:0] observed_priv_mode;
+    wire [63:0] observed_ra;
+    wire [63:0] observed_sp;
+    wire [63:0] observed_s0;
+    wire [63:0] observed_a0;
+    wire [63:0] observed_a1;
+    wire [63:0] observed_a2;
+    wire [63:0] observed_a6;
+    wire [63:0] observed_a7;
     wire [63:0] observed_t0;
     wire [63:0] observed_t1;
+    wire [63:0] observed_mcycle;
+    wire [63:0] observed_mcountinhibit;
     wire [63:0] observed_mcause;
     wire [63:0] observed_mtval;
+    wire [63:0] observed_scause;
+    wire [63:0] observed_stval;
+    wire [63:0] observed_satp;
+    wire [63:0] observed_stvec;
+    wire observed_trap_enter;
+    wire [4:0] observed_trap_cause;
+    wire [63:0] observed_trap_tval;
+    wire observed_ptw_response;
+    wire [1:0] observed_ptw_level;
+    wire [63:0] observed_ptw_pte_addr;
+    wire [63:0] observed_ptw_pte_data;
+    logic [4:0] previous_trap_cause;
+    logic [63:0] previous_trap_tval;
+    wire [63:0] observed_root_base =
+        {8'd0, observed_satp[43:0], 12'd0};
+    wire [63:0] observed_root_pte_addr =
+        observed_root_base + {52'd0, observed_trap_tval[38:30], 3'b000};
+    wire [31:0] observed_root_word_index =
+        (observed_root_pte_addr - RAM_BASE) >> 3;
+    wire [63:0] observed_trampoline_pte_addr =
+        observed_root_base + 64'h0000_0000_0000_0ff0;
+    wire [31:0] observed_trampoline_word_index =
+        (observed_trampoline_pte_addr - RAM_BASE) >> 3;
 
     openrv64_platform #(
         .SOC_RESET_CYCLES(3),
@@ -118,20 +165,84 @@ module tb_opensbi #(
         if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_observe_3p
             assign observed_priv_mode =
                 dut.u_core.g_backend_3p.u_core_3p.u_csrs.priv_mode_q;
+            assign observed_ra =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[1];
+            assign observed_sp =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[2];
+            assign observed_s0 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[8];
+            assign observed_a0 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[10];
+            assign observed_a1 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[11];
+            assign observed_a2 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[12];
+            assign observed_a6 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[16];
+            assign observed_a7 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[17];
             assign observed_t0 =
                 dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[5];
             assign observed_t1 =
                 dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[6];
+            assign observed_mcycle =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcycle_q;
+            assign observed_mcountinhibit =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcountinhibit_q;
             assign observed_mcause =
                 dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcause_q;
             assign observed_mtval =
                 dut.u_core.g_backend_3p.u_core_3p.u_csrs.mtval_q;
+            assign observed_scause =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.scause_q;
+            assign observed_stval =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.stval_q;
+            assign observed_satp =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.satp_q;
+            assign observed_stvec =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.stvec_q;
+            assign observed_trap_enter =
+                dut.u_core.g_backend_3p.u_core_3p.trap_enter;
+            assign observed_trap_cause =
+                dut.u_core.g_backend_3p.u_core_3p.backend_cause;
+            assign observed_trap_tval =
+                dut.u_core.g_backend_3p.u_core_3p.trap_tval;
+            assign observed_ptw_response = 1'b0;
+            assign observed_ptw_level = 2'd0;
+            assign observed_ptw_pte_addr = 64'd0;
+            assign observed_ptw_pte_data = 64'd0;
         end else begin : g_observe_1p
             assign observed_priv_mode = dut.u_core.u_core.u_csrs.priv_mode_q;
+            assign observed_ra = dut.u_core.u_core.u_gpr.regs[1];
+            assign observed_sp = dut.u_core.u_core.u_gpr.regs[2];
+            assign observed_s0 = dut.u_core.u_core.u_gpr.regs[8];
+            assign observed_a0 = dut.u_core.u_core.u_gpr.regs[10];
+            assign observed_a1 = dut.u_core.u_core.u_gpr.regs[11];
+            assign observed_a2 = dut.u_core.u_core.u_gpr.regs[12];
+            assign observed_a6 = dut.u_core.u_core.u_gpr.regs[16];
+            assign observed_a7 = dut.u_core.u_core.u_gpr.regs[17];
             assign observed_t0 = dut.u_core.u_core.u_gpr.regs[5];
             assign observed_t1 = dut.u_core.u_core.u_gpr.regs[6];
+            assign observed_mcycle = dut.u_core.u_core.u_csrs.mcycle_q;
+            assign observed_mcountinhibit =
+                dut.u_core.u_core.u_csrs.mcountinhibit_q;
             assign observed_mcause = dut.u_core.u_core.u_csrs.mcause_q;
             assign observed_mtval = dut.u_core.u_core.u_csrs.mtval_q;
+            assign observed_scause = dut.u_core.u_core.u_csrs.scause_q;
+            assign observed_stval = dut.u_core.u_core.u_csrs.stval_q;
+            assign observed_satp = dut.u_core.u_core.u_csrs.satp_q;
+            assign observed_stvec = dut.u_core.u_core.u_csrs.stvec_q;
+            assign observed_trap_enter = dut.u_core.u_core.trap_enter;
+            assign observed_trap_cause = dut.u_core.u_core.trap_cause;
+            assign observed_trap_tval = dut.u_core.u_core.trap_tval;
+            assign observed_ptw_response =
+                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.ccx_resp_fire;
+            assign observed_ptw_level =
+                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.level_q;
+            assign observed_ptw_pte_addr =
+                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.walk_pte_addr;
+            assign observed_ptw_pte_data =
+                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.ccx_pte_data;
         end
     endgenerate
 
@@ -176,6 +287,18 @@ module tb_opensbi #(
                         (value == linux_panic_text[0]) ? 1 : 0;
                 end
             end
+
+            if (linux_mode && !saw_linux_prompt) begin
+                if (value == linux_prompt_text[linux_prompt_index]) begin
+                    linux_prompt_index = linux_prompt_index + 1;
+                    if (linux_prompt_index == linux_prompt_text.len()) begin
+                        saw_linux_prompt = 1'b1;
+                    end
+                end else begin
+                    linux_prompt_index =
+                        (value == linux_prompt_text[0]) ? 1 : 0;
+                end
+            end
         end
     endtask
 
@@ -193,6 +316,47 @@ module tb_opensbi #(
 
         if (core_rst_n) begin
             cycle_count <= cycle_count + 1;
+            if (linux_mode && saw_s_mode && observed_ptw_response &&
+                (linux_ptw_trace_count < 16)) begin
+                linux_ptw_trace_count <= linux_ptw_trace_count + 1;
+                $display("Linux PTW cycles=%0d level=%0d pte_addr=%016x pte=%016x",
+                         cycle_count, observed_ptw_level,
+                         observed_ptw_pte_addr, observed_ptw_pte_data);
+            end
+            if (linux_mode && saw_s_mode && observed_trap_enter) begin
+                linux_trap_count <= linux_trap_count + 1;
+                if ((observed_trap_cause == previous_trap_cause) &&
+                    (observed_trap_tval == previous_trap_tval))
+                    linux_same_trap_count <= linux_same_trap_count + 1;
+                else
+                    linux_same_trap_count <= 0;
+                previous_trap_cause <= observed_trap_cause;
+                previous_trap_tval <= observed_trap_tval;
+                if (linux_trap_count < 16)
+                    $display("Linux trap cycles=%0d cause=%0d tval=%016x priv=%0d satp=%016x stvec=%016x mcause=%016x mtval=%016x scause=%016x stval=%016x",
+                         cycle_count, observed_trap_cause,
+                         observed_trap_tval, observed_priv_mode,
+                         observed_satp, observed_stvec,
+                         observed_mcause, observed_mtval,
+                         observed_scause, observed_stval);
+                if (linux_trap_count == 0) begin
+                    $display("Linux faulting root PTE addr=%016x value=%016x",
+                             observed_root_pte_addr,
+                             dut.u_memory.memory_q[
+                                 observed_root_word_index]);
+                    $display("Linux trampoline root PTE addr=%016x value=%016x",
+                             observed_trampoline_pte_addr,
+                             dut.u_memory.memory_q[
+                                 observed_trampoline_word_index]);
+                end
+                if (linux_same_trap_count == 255) begin
+                    $display("LINUX TRAP LOOP cycles=%0d cause=%0d tval=%016x satp=%016x stvec=%016x",
+                             cycle_count, observed_trap_cause,
+                             observed_trap_tval,
+                             observed_satp, observed_stvec);
+                    $finish;
+                end
+            end
             if (((cycle_count != 0) && (cycle_count <= 10000) &&
                  ((cycle_count % 1000) == 0)) ||
                 ((cycle_count > 10000) && (cycle_count <= 250000) &&
@@ -214,6 +378,143 @@ module tb_opensbi #(
                              trace_instrs[31:0], trace_instrs[63:32],
                              trace_instrs[95:64], trace_instrs[127:96],
                              trace_instrs[159:128]);
+            end
+            if (linux_mode && delay_probe && !delay_probe_fired &&
+                (dbg_pc >= 64'hffff_ffff_801d_4d48) &&
+                (dbg_pc <= 64'hffff_ffff_801d_4d58)) begin
+                delay_probe_fired <= 1'b1;
+                $display("LINUX DELAY ENTRY cycles=%0d pc=%016x instr=%08x ra=%016x caller_pc=%016x sp=%016x s0=%016x a0=%016x mcycle=%016x mcountinhibit=%016x",
+                         cycle_count, dbg_pc, dbg_instr,
+                         observed_ra, observed_ra - 64'd4,
+                         observed_sp, observed_s0, observed_a0,
+                         observed_mcycle, observed_mcountinhibit);
+                $display("Linux delay trace valid=%05b stall=%05b flush=%05b advance=%05b causes=%08b pc={if:%016x id:%016x ex:%016x mem:%016x wb:%016x} instr={if:%08x id:%08x ex:%08x mem:%08x wb:%08x}",
+                         trace_valid, trace_stall, trace_flush,
+                         trace_advance, trace_stall_causes,
+                         trace_pcs[63:0], trace_pcs[127:64],
+                         trace_pcs[191:128], trace_pcs[255:192],
+                         trace_pcs[319:256],
+                         trace_instrs[31:0], trace_instrs[63:32],
+                         trace_instrs[95:64], trace_instrs[127:96],
+                         trace_instrs[159:128]);
+                $finish;
+            end
+            if (linux_mode && panic_probe && !panic_probe_fired &&
+                (dbg_pc == 64'hffff_ffff_8000_13b4)) begin
+                panic_probe_fired <= 1'b1;
+                $display("LINUX PANIC ENTRY cycles=%0d pc=%016x instr=%08x ra=%016x caller_pc=%016x sp=%016x a0=%016x a1=%016x a2=%016x",
+                         cycle_count, dbg_pc, dbg_instr,
+                         observed_ra, observed_ra - 64'd4,
+                         observed_sp, observed_a0, observed_a1, observed_a2);
+                $display("Linux panic trace valid=%05b stall=%05b flush=%05b advance=%05b causes=%08b pc={if:%016x id:%016x ex:%016x mem:%016x wb:%016x} instr={if:%08x id:%08x ex:%08x mem:%08x wb:%08x}",
+                         trace_valid, trace_stall, trace_flush,
+                         trace_advance, trace_stall_causes,
+                         trace_pcs[63:0], trace_pcs[127:64],
+                         trace_pcs[191:128], trace_pcs[255:192],
+                         trace_pcs[319:256],
+                         trace_instrs[31:0], trace_instrs[63:32],
+                         trace_instrs[95:64], trace_instrs[127:96],
+                         trace_instrs[159:128]);
+                $finish;
+            end
+            if (linux_mode && dbcn_probe && !dbcn_probe_fired &&
+                observed_trap_enter && (observed_trap_cause == 5'd9) &&
+                (observed_a7 == 64'h0000_0000_4442_434e)) begin
+                dbcn_probe_fired <= 1'b1;
+                $display("LINUX DBCN ECALL cycles=%0d func=%0d count=%0d phys=%016x phys_hi=%016x pc=%016x",
+                         cycle_count, observed_a6, observed_a0,
+                         observed_a1, observed_a2, dbg_pc);
+                if ((observed_a1 >= RAM_BASE) &&
+                    (observed_a1 < FDT_BASE)) begin
+                    $display("Linux DBCN buffer qwords=%016x %016x %016x %016x",
+                             dut.u_memory.memory_q[
+                                 (observed_a1 - RAM_BASE) >> 3],
+                             dut.u_memory.memory_q[
+                                 ((observed_a1 - RAM_BASE) >> 3) + 1],
+                             dut.u_memory.memory_q[
+                                 ((observed_a1 - RAM_BASE) >> 3) + 2],
+                             dut.u_memory.memory_q[
+                                 ((observed_a1 - RAM_BASE) >> 3) + 3]);
+                end
+                $finish;
+            end
+            if (linux_mode && printk_probe) begin
+                if (!printk_probe_seen[0] &&
+                    (dbg_pc == 64'hffff_ffff_801e_c71c)) begin
+                    printk_probe_seen[0] <= 1'b1;
+                    $display("LINUX PRINTK PC start_kernel cycles=%0d pc=%016x",
+                             cycle_count, dbg_pc);
+                end
+                if (!printk_probe_seen[1] &&
+                    (dbg_pc == 64'hffff_ffff_801e_f7a4)) begin
+                    printk_probe_seen[1] <= 1'b1;
+                    $display("LINUX PRINTK PC sbi_init cycles=%0d pc=%016x",
+                             cycle_count, dbg_pc);
+                end
+                if (!printk_probe_seen[2] &&
+                    (dbg_pc == 64'hffff_ffff_801e_f7bc)) begin
+                    printk_probe_seen[2] <= 1'b1;
+                    $display("LINUX PRINTK PC sbi_spec_result cycles=%0d pc=%016x a0=%016x",
+                             cycle_count, dbg_pc, observed_a0);
+                end
+                if (!printk_probe_seen[3] &&
+                    (dbg_pc == 64'hffff_ffff_801e_f970)) begin
+                    printk_probe_seen[3] <= 1'b1;
+                    $display("LINUX PRINTK PC dbcn_probe_result cycles=%0d pc=%016x a0=%016x",
+                             cycle_count, dbg_pc, observed_a0);
+                end
+                if (!printk_probe_seen[4] &&
+                    (dbg_pc == 64'hffff_ffff_801e_f988)) begin
+                    printk_probe_seen[4] <= 1'b1;
+                    $display("LINUX PRINTK PC dbcn_available_store cycles=%0d pc=%016x",
+                             cycle_count, dbg_pc);
+                end
+                if (!printk_probe_seen[5] &&
+                    (dbg_pc == 64'hffff_ffff_801e_c69c)) begin
+                    printk_probe_seen[5] <= 1'b1;
+                    $display("LINUX PRINTK PC parse_early_param cycles=%0d pc=%016x",
+                             cycle_count, dbg_pc);
+                end
+                if (!printk_probe_seen[6] &&
+                    (dbg_pc == 64'hffff_ffff_8020_0684)) begin
+                    printk_probe_seen[6] <= 1'b1;
+                    $display("LINUX PRINTK PC param_setup_earlycon cycles=%0d pc=%016x a0=%016x",
+                             cycle_count, dbg_pc, observed_a0);
+                end
+                if (!printk_probe_seen[7] &&
+                    (dbg_pc == 64'hffff_ffff_8020_03c8)) begin
+                    printk_probe_seen[7] <= 1'b1;
+                    $display("LINUX PRINTK PC setup_earlycon cycles=%0d pc=%016x a0=%016x",
+                             cycle_count, dbg_pc, observed_a0);
+                end
+                if (!printk_probe_seen[8] &&
+                    (dbg_pc == 64'hffff_ffff_8020_09dc)) begin
+                    printk_probe_seen[8] <= 1'b1;
+                    $display("LINUX PRINTK PC early_sbi_setup cycles=%0d pc=%016x available_qword=%016x",
+                             cycle_count, dbg_pc,
+                             dut.u_memory.memory_q[
+                                 (64'h804e_10d8 - RAM_BASE) >> 3]);
+                end
+                if (!printk_probe_seen[9] &&
+                    (dbg_pc == 64'hffff_ffff_8005_80cc)) begin
+                    printk_probe_seen[9] <= 1'b1;
+                    $display("LINUX PRINTK PC register_console cycles=%0d pc=%016x a0=%016x",
+                             cycle_count, dbg_pc, observed_a0);
+                end
+                if (!printk_probe_seen[10] &&
+                    (dbg_pc == 64'hffff_ffff_8017_3c80)) begin
+                    printk_probe_seen[10] <= 1'b1;
+                    $display("LINUX PRINTK PC sbi_dbcn_console_write cycles=%0d pc=%016x buf=%016x count=%0d",
+                             cycle_count, dbg_pc, observed_a1, observed_a2);
+                end
+                if (!printk_probe_seen[11] &&
+                    (dbg_pc == 64'hffff_ffff_8000_a8d8)) begin
+                    printk_probe_seen[11] <= 1'b1;
+                    $display("LINUX PRINTK PC sbi_debug_console_write cycles=%0d pc=%016x buf=%016x count=%0d available_qword=%016x",
+                             cycle_count, dbg_pc, observed_a0, observed_a1,
+                             dut.u_memory.memory_q[
+                                 (64'h804e_10d8 - RAM_BASE) >> 3]);
+                end
             end
         end
 
@@ -239,6 +540,11 @@ module tb_opensbi #(
             $display("PASS: Linux reached a kernel panic after OpenSBI handoff");
             $finish;
         end
+
+        if (linux_mode && saw_linux_prompt) begin
+            $display("\nPASS: Linux reached interactive static Bash prompt as PID 1");
+            $finish;
+        end
     end
 
     initial begin
@@ -246,12 +552,23 @@ module tb_opensbi #(
         banner_index = 0;
         payload_index = 0;
         linux_panic_index = 0;
+        linux_prompt_index = 0;
         cycle_count = 0;
         uart_byte_count = 0;
+        linux_trap_count = 0;
+        linux_same_trap_count = 0;
+        linux_ptw_trace_count = 0;
+        previous_trap_cause = 0;
+        previous_trap_tval = 0;
         saw_banner = 1'b0;
         saw_payload_text = 1'b0;
         saw_linux_panic = 1'b0;
+        saw_linux_prompt = 1'b0;
         saw_s_mode = 1'b0;
+        delay_probe_fired = 1'b0;
+        panic_probe_fired = 1'b0;
+        dbcn_probe_fired = 1'b0;
+        printk_probe_seen = 12'd0;
         payload_words = PAYLOAD_WORDS;
 
         if (!$value$plusargs("payload_words=%d", payload_words))
@@ -290,17 +607,22 @@ module tb_opensbi #(
 
     initial begin
         linux_mode = $test$plusargs("linux_mode");
+        delay_probe = $test$plusargs("delay_probe");
+        panic_probe = $test$plusargs("panic_probe");
+        dbcn_probe = $test$plusargs("dbcn_probe");
+        printk_probe = $test$plusargs("printk_probe");
         if (linux_mode)
             payload_text = "Linux version";
         if (!$value$plusargs("max_cycles=%d", max_cycles))
-            max_cycles = 20000000;
+            max_cycles = 100000000;
 
         repeat (max_cycles) @(posedge clk);
         if (linux_mode) begin
-            $display("LINUX TIMEOUT cycles=%0d pc=%016x instr=%08x priv=%0d banner=%b linux_banner=%b uart_bytes=%0d mcause=%016x mtval=%016x",
+            $display("LINUX TIMEOUT cycles=%0d pc=%016x instr=%08x priv=%0d banner=%b linux_banner=%b uart_bytes=%0d mcause=%016x mtval=%016x scause=%016x stval=%016x",
                      cycle_count, dbg_pc, dbg_instr, observed_priv_mode,
                      saw_banner, saw_payload_text, uart_byte_count,
-                     observed_mcause, observed_mtval);
+                     observed_mcause, observed_mtval,
+                     observed_scause, observed_stval);
             $finish;
         end else begin
             $fatal(1,

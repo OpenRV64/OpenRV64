@@ -1,0 +1,753 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="2880" height="2040" viewBox="0 0 2880 2040"
+     role="img" aria-labelledby="diagram-title diagram-desc">
+  <title id="diagram-title">OpenRV64 three-pipe core detailed block diagram</title>
+  <desc id="diagram-desc">
+    Detailed block and connection diagram for the live openrv64_top_3p RTL.
+    It covers the three-wide frontend, dispatch and forwarding fabric,
+    EX0, EX1 and MEM execution pipes, retirement, CSRs and PMP, the MMU,
+    private L1 instruction and data caches, and native 512-bit CCX channels.
+  </desc>
+
+  <defs>
+    <linearGradient id="page-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef2f7"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4"
+                    flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+
+    <marker id="arrow-packet" markerWidth="12" markerHeight="12"
+            refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#d97706"/>
+    </marker>
+    <marker id="arrow-data" markerWidth="12" markerHeight="12"
+            refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-control" markerWidth="12" markerHeight="12"
+            refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrow-commit" markerWidth="12" markerHeight="12"
+            refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-feedback" markerWidth="12" markerHeight="12"
+            refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#dc2626"/>
+    </marker>
+    <marker id="arrow-optional" markerWidth="12" markerHeight="12"
+            refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#64748b"/>
+    </marker>
+
+    <style>
+      text {
+        font-family: Inter, "DejaVu Sans", Arial, sans-serif;
+        fill: #172033;
+      }
+      .title { font-size: 38px; font-weight: 750; letter-spacing: -0.6px; }
+      .subtitle { font-size: 17px; fill: #475569; }
+      .section-title { font-size: 20px; font-weight: 750; fill: #1e293b; }
+      .block-title { font-size: 19px; font-weight: 750; }
+      .block-subtitle { font-size: 13px; font-weight: 650; fill: #475569; }
+      .body { font-size: 14px; }
+      .small { font-size: 12px; fill: #475569; }
+      .tiny { font-size: 11px; fill: #64748b; }
+      .mono {
+        font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+      .strong { font-weight: 700; }
+      .cluster {
+        fill: #ffffff;
+        stroke: #cbd5e1;
+        stroke-width: 2;
+        rx: 18;
+      }
+      .cluster-front { fill: #f0f9ff; stroke: #7dd3fc; }
+      .cluster-back { fill: #fffaf0; stroke: #fdba74; }
+      .cluster-control { fill: #faf5ff; stroke: #c4b5fd; }
+      .cluster-memory { fill: #f0fdf4; stroke: #86efac; }
+      .block {
+        fill: #ffffff;
+        stroke: #94a3b8;
+        stroke-width: 1.6;
+        rx: 12;
+        filter: url(#shadow);
+      }
+      .block-front { fill: #e0f2fe; stroke: #38bdf8; }
+      .block-decode { fill: #ecfeff; stroke: #22d3ee; }
+      .block-back { fill: #fffbeb; stroke: #f59e0b; }
+      .block-exec { fill: #fff7ed; stroke: #fb923c; }
+      .block-retire { fill: #fff1f2; stroke: #fb7185; }
+      .block-control { fill: #f5f3ff; stroke: #a78bfa; }
+      .block-memory { fill: #ecfdf5; stroke: #34d399; }
+      .block-cache { fill: #f0fdf4; stroke: #22c55e; }
+      .block-external { fill: #f8fafc; stroke: #64748b; }
+      .block-disabled {
+        fill: #f8fafc;
+        stroke: #94a3b8;
+        stroke-width: 1.5;
+        stroke-dasharray: 8 6;
+        rx: 12;
+      }
+      .divider { stroke: #cbd5e1; stroke-width: 1; }
+      .packet {
+        fill: none;
+        stroke: #d97706;
+        stroke-width: 5;
+        marker-end: url(#arrow-packet);
+      }
+      .data {
+        fill: none;
+        stroke: #2563eb;
+        stroke-width: 4;
+        marker-end: url(#arrow-data);
+      }
+      .control {
+        fill: none;
+        stroke: #7c3aed;
+        stroke-width: 3;
+        marker-end: url(#arrow-control);
+      }
+      .commit {
+        fill: none;
+        stroke: #059669;
+        stroke-width: 4;
+        marker-end: url(#arrow-commit);
+      }
+      .feedback {
+        fill: none;
+        stroke: #dc2626;
+        stroke-width: 3.5;
+        marker-end: url(#arrow-feedback);
+      }
+      .optional {
+        fill: none;
+        stroke: #64748b;
+        stroke-width: 2.5;
+        stroke-dasharray: 9 7;
+        marker-end: url(#arrow-optional);
+      }
+      .clock {
+        fill: none;
+        stroke: #64748b;
+        stroke-width: 1.8;
+        stroke-dasharray: 3 5;
+      }
+      .label-bg {
+        fill: #ffffff;
+        stroke: #e2e8f0;
+        stroke-width: 1;
+        rx: 5;
+        opacity: 0.96;
+      }
+      .badge-blue { fill: #dbeafe; stroke: #60a5fa; }
+      .badge-amber { fill: #fef3c7; stroke: #f59e0b; }
+      .badge-red { fill: #fee2e2; stroke: #ef4444; }
+      .badge {
+        stroke-width: 1;
+        rx: 9;
+      }
+      .badge-text { font-size: 12px; font-weight: 700; }
+      .warning-text { fill: #991b1b; font-size: 13px; font-weight: 700; }
+      .port { fill: #334155; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="2880" height="2040" fill="url(#page-bg)"/>
+
+  <!-- Header -->
+  <text x="48" y="55" class="title">OpenRV64 3P core — detailed implemented topology</text>
+  <text x="50" y="86" class="subtitle">
+    RTL boundary: openrv64_top_3p · inspected 2026-07-23 10:02 UTC · Git 091bc5ab03b0 + dirty working tree
+  </text>
+  <rect x="48" y="105" width="550" height="28" class="badge badge-blue"/>
+  <text x="62" y="124" class="badge-text">
+    LIVE RTL DEFAULTS: M=0 · A=1 · BP=STALL · L1I 16 KiB/4-way · L1D 16 KiB/8-way
+  </text>
+  <rect x="615" y="105" width="600" height="28" class="badge badge-amber"/>
+  <text x="629" y="124" class="badge-text">
+    LAST AREA PROFILE: RV64IM+A · BIMODAL · 8 KiB/4-way L1I + 8 KiB/4-way L1D
+  </text>
+  <rect x="1232" y="105" width="656" height="28" class="badge badge-blue"/>
+  <text x="1246" y="124" class="badge-text">
+    INTERNAL DYNAMIC ID = 10 BITS · separate architectural trace UID remains 64 bits
+  </text>
+  <text x="2820" y="124" text-anchor="end" class="small">Block sizes are not drawn to physical-area scale.</text>
+
+  <!-- Major clusters -->
+  <rect x="35" y="155" width="720" height="825" class="cluster cluster-front"/>
+  <text x="58" y="187" class="section-title">FRONTEND · up to 3 instructions/cycle</text>
+
+  <rect x="785" y="155" width="1360" height="825" class="cluster cluster-back"/>
+  <text x="808" y="187" class="section-title">BACKEND · in-order admission, independent completion, in-order retirement</text>
+
+  <rect x="2175" y="155" width="670" height="825" class="cluster cluster-control"/>
+  <text x="2198" y="187" class="section-title">ARCHITECTURAL CONTROL</text>
+
+  <!-- Frontend blocks -->
+  <g id="fetch-3w">
+    <rect x="65" y="215" width="315" height="258" class="block block-front"/>
+    <text x="84" y="244" class="block-title">Fetch / predecode</text>
+    <text x="84" y="265" class="block-subtitle">openrv64_fetch_3w</text>
+    <line x1="80" y1="278" x2="365" y2="278" class="divider"/>
+    <text x="84" y="302" class="body">• 3 × 32-bit instruction extraction</text>
+    <text x="84" y="324" class="body">• 2 × 256-bit demand-line slots</text>
+    <text x="84" y="346" class="body">• 2 × 256-bit alternate-path stash</text>
+    <text x="84" y="368" class="body">• PC / faults / direct-target predecode</text>
+    <text x="84" y="390" class="body">• request lookahead + redirect replay</text>
+    <text x="84" y="418" class="mono">I$ req: VA[63:0] + stash,demand</text>
+    <text x="84" y="438" class="mono">I$ rsp: PA[63:0] + data[255:0]</text>
+    <text x="84" y="458" class="small">valid/ready on both directions</text>
+  </g>
+
+  <g id="branch-predictor">
+    <rect x="415" y="215" width="310" height="258" class="block block-front"/>
+    <text x="434" y="244" class="block-title">Branch predictor</text>
+    <text x="434" y="265" class="block-subtitle">openrv64_exec_bp + target adder</text>
+    <line x1="430" y1="278" x2="710" y2="278" class="divider"/>
+    <text x="434" y="302" class="body">Physical profile: bimodal</text>
+    <text x="434" y="324" class="body">• 32 × 3-bit direction counters</text>
+    <text x="434" y="346" class="body">• 4-entry update queue</text>
+    <text x="434" y="368" class="body">• 8-entry return-address stack</text>
+    <text x="434" y="390" class="body">• oldest control op in 3-wide bundle</text>
+    <text x="434" y="418" class="mono">lookup: PC64,instr32,ID10,class</text>
+    <text x="434" y="438" class="mono">resolve: PC64,target64,ID10,taken</text>
+    <text x="434" y="458" class="small">Top-level RTL default BP policy is STALL.</text>
+  </g>
+
+  <g id="decode">
+    <rect x="65" y="520" width="315" height="250" class="block block-decode"/>
+    <text x="84" y="549" class="block-title">3 × full decode lanes</text>
+    <text x="84" y="570" class="block-subtitle">openrv64_decode_top[0:2]</text>
+    <line x1="80" y1="583" x2="365" y2="583" class="divider"/>
+    <text x="84" y="607" class="body">RV64I + M + A classification</text>
+    <text x="84" y="629" class="body">rs1/rs2/rd, immediate, ALU/LSU/BR op</text>
+    <text x="84" y="651" class="body">system, fence, illegal and fault flags</text>
+    <text x="84" y="680" class="mono">fetch → decode: 3 × 120 bits</text>
+    <text x="84" y="700" class="small">per lane: instr32 + PC64 + faults2</text>
+    <text x="84" y="718" class="small">+ target offset20 + valid/conditional2</text>
+    <text x="84" y="744" class="mono">packet build: 3 × 402-bit payload</text>
+  </g>
+
+  <g id="frontend-control">
+    <rect x="415" y="520" width="310" height="250" class="block block-control"/>
+    <text x="434" y="549" class="block-title">PC / redirect control</text>
+    <text x="434" y="570" class="block-subtitle">rv64_top_3p frontend glue</text>
+    <line x1="430" y1="583" x2="710" y2="583" class="divider"/>
+    <text x="434" y="607" class="body">Priority:</text>
+    <text x="448" y="629" class="body">trap/IRQ/return → fence restart</text>
+    <text x="448" y="651" class="body">→ resolved redirect → predicted target</text>
+    <text x="434" y="679" class="body">Cancels fetch slots; optionally keeps stash</text>
+    <text x="434" y="707" class="mono">restart target[63:0]</text>
+    <text x="434" y="727" class="mono">flush / invalidate / cancel</text>
+    <text x="434" y="751" class="small">FENCE.I invalidates I$; SFENCE.VMA flushes TLBs.</text>
+  </g>
+
+  <g id="unintegrated-units">
+    <rect x="65" y="817" width="660" height="120" class="block-disabled"/>
+    <text x="84" y="846" class="block-title" fill="#64748b">Present in repository, not instantiated here</text>
+    <text x="84" y="872" class="body">Scalar RV64F/D module · experimental custom vector unit/cache/LSU</text>
+    <text x="84" y="897" class="body">No active FP/SIMD register-file, issue, completion, retirement, or memory connection.</text>
+    <text x="84" y="920" class="small">Excluded from the current 3P synthesis source/profile.</text>
+  </g>
+
+  <!-- Backend blocks -->
+  <g id="dispatch">
+    <rect x="815" y="215" width="395" height="355" class="block block-back"/>
+    <text x="834" y="244" class="block-title">Dispatch + dependency fabric</text>
+    <text x="834" y="265" class="block-subtitle">openrv64_dispatch_3p · depth 6</text>
+    <line x1="830" y1="278" x2="1195" y2="278" class="divider"/>
+    <text x="834" y="302" class="body">• six 402-bit decoded-packet entries</text>
+    <text x="834" y="324" class="body">• strict in-order prefix admission/issue</text>
+    <text x="834" y="346" class="body">• lane capability selection: EX0/EX1/MEM</text>
+    <text x="834" y="368" class="body">• RAW/WAW/read-port/barrier checks</text>
+    <text x="834" y="390" class="body">• operand capture at issue</text>
+    <text x="834" y="418" class="mono">GPR: 6×(addr5 → data64)</text>
+    <text x="834" y="438" class="mono">write_busy map: 32 bits</text>
+    <text x="834" y="458" class="mono">full fwd map: 32 valid + 32×64</text>
+    <text x="834" y="478" class="mono">= 2,080 high-fanout bits</text>
+    <text x="834" y="506" class="mono">issue/lane: payload402 + ID10</text>
+    <text x="834" y="526" class="mono">+ retire-slot3 + valid/ready</text>
+    <text x="834" y="550" class="small">Issue-window experiment is disabled.</text>
+  </g>
+
+  <g id="gpr">
+    <rect x="815" y="625" width="395" height="245" class="block block-back"/>
+    <text x="834" y="654" class="block-title">Integer GPR</text>
+    <text x="834" y="675" class="block-subtitle">openrv64_rv64i_gpr_3p</text>
+    <line x1="830" y1="688" x2="1195" y2="688" class="divider"/>
+    <text x="834" y="712" class="body">32 × 64 architectural registers</text>
+    <text x="834" y="734" class="body">6 combinational read ports</text>
+    <text x="834" y="756" class="body">3 retirement write ports</text>
+    <text x="834" y="778" class="body">same-edge retire bypass</text>
+    <text x="834" y="806" class="mono">read: addr[6×5] / data[6×64]</text>
+    <text x="834" y="826" class="mono">write: valid3 + addr[3×5] + data[3×64]</text>
+    <text x="834" y="850" class="small">Mapped as logic/registers; no RF macro selected.</text>
+  </g>
+
+  <g id="ex0">
+    <rect x="1260" y="215" width="365" height="205" class="block block-exec"/>
+    <text x="1279" y="244" class="block-title">EX0 · integer / RV64M</text>
+    <text x="1279" y="265" class="block-subtitle">openrv64_exec_pipe_ex0</text>
+    <line x1="1275" y1="278" x2="1610" y2="278" class="divider"/>
+    <text x="1279" y="302" class="body">base RV64I ALU</text>
+    <text x="1279" y="324" class="body">iterative multiply/divide extension</text>
+    <text x="1279" y="346" class="body">independent variable-latency completion</text>
+    <text x="1279" y="374" class="mono">completion: ID10 + slot3 + result457</text>
+    <text x="1279" y="398" class="small">RV64M is parameterized; physical profile enabled it.</text>
+  </g>
+
+  <g id="ex1">
+    <rect x="1260" y="458" width="365" height="190" class="block block-exec"/>
+    <text x="1279" y="487" class="block-title">EX1 · integer / control</text>
+    <text x="1279" y="508" class="block-subtitle">openrv64_exec_pipe_ex1</text>
+    <line x1="1275" y1="521" x2="1610" y2="521" class="divider"/>
+    <text x="1279" y="545" class="body">RV64I ALU · branch/JAL/JALR</text>
+    <text x="1279" y="567" class="body">CSR operation · traps · fences</text>
+    <text x="1279" y="595" class="mono">completion: ID10 + slot3 + result457</text>
+    <text x="1279" y="622" class="small">Early aligned branch resolution; held completion.</text>
+  </g>
+
+  <g id="mem-pipe">
+    <rect x="1260" y="685" width="365" height="235" class="block block-exec"/>
+    <text x="1279" y="714" class="block-title">MEM · scalar LSU / RV64A</text>
+    <text x="1279" y="735" class="block-subtitle">openrv64_exec_pipe_mem</text>
+    <line x1="1275" y1="748" x2="1610" y2="748" class="divider"/>
+    <text x="1279" y="772" class="body">load/store address + alignment</text>
+    <text x="1279" y="794" class="body">LR/SC + AMO sequencing</text>
+    <text x="1279" y="816" class="body">posted stores + load/store forwarding</text>
+    <text x="1279" y="844" class="mono">LSU req: tag3, addr64, data64,</text>
+    <text x="1279" y="864" class="mono">strb8, size3, lock/write</text>
+    <text x="1279" y="884" class="mono">rsp: tag3, data64, access/page fault</text>
+    <text x="1279" y="907" class="small">Eight-tag namespace; ordered side effects.</text>
+  </g>
+
+  <g id="retire-queue">
+    <rect x="1675" y="215" width="430" height="355" class="block block-retire"/>
+    <text x="1694" y="244" class="block-title">Completion / retirement queue</text>
+    <text x="1694" y="265" class="block-subtitle">openrv64_retire_queue_3p · depth 8</text>
+    <line x1="1690" y1="278" x2="2090" y2="278" class="divider"/>
+    <text x="1694" y="302" class="body">3 allocations + 3 completions + 3 head reads</text>
+    <text x="1694" y="324" class="body">out-of-order completion; contiguous in-order head</text>
+    <text x="1694" y="346" class="body">selective younger squash by ID/slot</text>
+    <text x="1694" y="374" class="mono">per entry:</text>
+    <text x="1710" y="395" class="mono">valid1 + complete1 + dynamic ID10</text>
+    <text x="1710" y="416" class="mono">+ retirement meta405 + result457</text>
+    <text x="1710" y="437" class="mono strong">= 874 bits/entry · 6,992 bits total</text>
+    <text x="1694" y="466" class="mono">completed-result CAM export:</text>
+    <text x="1710" y="487" class="mono strong">8 valid + 8×457 = 3,664 bits</text>
+    <rect x="1692" y="507" width="394" height="43" class="badge badge-blue"/>
+    <text x="1704" y="526" class="badge-text">ID width is 10; age comparison is modular.</text>
+    <text x="1704" y="543" class="tiny">Correct while fewer than 512 dynamic IDs remain live.</text>
+  </g>
+
+  <g id="retire-commit">
+    <rect x="1675" y="625" width="430" height="295" class="block block-retire"/>
+    <text x="1694" y="654" class="block-title">Retire / architectural commit</text>
+    <text x="1694" y="675" class="block-subtitle">openrv64_retire_3p</text>
+    <line x1="1690" y1="688" x2="2090" y2="688" class="divider"/>
+    <text x="1694" y="712" class="body">retire maximal ordered prefix, up to 3/cycle</text>
+    <text x="1694" y="734" class="body">GPR writes · CSR writes · branch training</text>
+    <text x="1694" y="756" class="body">exceptions/IRQ · MRET/SRET · FENCE.I/SFENCE</text>
+    <text x="1694" y="784" class="mono">head input/lane: meta405 + result457</text>
+    <text x="1694" y="804" class="mono">release deps: rs1/rs2/rd 5b + flags</text>
+    <text x="1694" y="824" class="mono">architectural writes: 3 × (rd5,data64)</text>
+    <text x="1694" y="852" class="body">Asynchronous posted-store faults are delivered</text>
+    <text x="1694" y="874" class="body">alone at an architectural boundary.</text>
+    <text x="1694" y="900" class="small">Retirement controls visible architectural side effects.</text>
+  </g>
+
+  <!-- Architectural control blocks -->
+  <g id="csr-pmp">
+    <rect x="2205" y="215" width="600" height="315" class="block block-control"/>
+    <text x="2224" y="244" class="block-title">Privileged CSRs + PMP</text>
+    <text x="2224" y="265" class="block-subtitle">openrv64_rv64i_csrs</text>
+    <line x1="2220" y1="278" x2="2790" y2="278" class="divider"/>
+    <text x="2224" y="302" class="body">M/S privilege state · trap CSRs · SATP/Sv39 context</text>
+    <text x="2224" y="324" class="body">interrupt pending/cause · counters · 8 PMP entries</text>
+    <text x="2224" y="352" class="mono">EX0 read: csr_addr12 → rdata64 + valid,writable</text>
+    <text x="2224" y="374" class="mono">retire write: addr12 + data64 + write</text>
+    <text x="2224" y="396" class="mono">MMU context: priv2, satp mode4, ASID16, root PPN44</text>
+    <text x="2224" y="418" class="mono">PMP probe: addr64,size3,priv2,write,exec → allow</text>
+    <text x="2224" y="446" class="body">Instruction, LSU and PTW protection checks share</text>
+    <text x="2224" y="468" class="body">the architectural PMP state.</text>
+    <text x="2224" y="502" class="small">Six external IRQ inputs: M/S software, timer, external.</text>
+  </g>
+
+  <g id="exception-vector">
+    <rect x="2205" y="585" width="285" height="205" class="block block-control"/>
+    <text x="2224" y="614" class="block-title">Trap / restart vector</text>
+    <text x="2224" y="635" class="block-subtitle">openrv64_except_vector</text>
+    <line x1="2220" y1="648" x2="2475" y2="648" class="divider"/>
+    <text x="2224" y="672" class="body">reset · trap · IRQ</text>
+    <text x="2224" y="694" class="body">MRET/SRET · fence restart</text>
+    <text x="2224" y="722" class="mono">target[63:0] + valid</text>
+    <text x="2224" y="748" class="small">Feeds frontend redirect priority.</text>
+    <text x="2224" y="770" class="small">No separate clock domain.</text>
+  </g>
+
+  <g id="trace-debug">
+    <rect x="2520" y="585" width="285" height="205" class="block block-control"/>
+    <text x="2539" y="614" class="block-title">Debug / trace sideband</text>
+    <text x="2539" y="635" class="block-subtitle">optional ENABLE_TRACE</text>
+    <line x1="2535" y1="648" x2="2790" y2="648" class="divider"/>
+    <text x="2539" y="672" class="body">debug PC64 / instruction32 / halt</text>
+    <text x="2539" y="694" class="body">5-stage valid/stall/flush/advance</text>
+    <text x="2539" y="716" class="body">IDs320 · PCs320 · instructions160</text>
+    <text x="2539" y="744" class="small">Trace-only counters disabled in physical profile.</text>
+    <text x="2539" y="770" class="small">Outputs tie to zero when disabled.</text>
+  </g>
+
+  <g id="clock-reset">
+    <rect x="2205" y="833" width="600" height="105" class="block block-external"/>
+    <text x="2224" y="862" class="block-title">Single synchronous core domain</text>
+    <text x="2224" y="886" class="mono">clk · active-low asynchronous reset rst_n</text>
+    <text x="2224" y="912" class="small">No CDC is instantiated inside openrv64_top_3p.</text>
+  </g>
+
+  <!-- Pipeline connections -->
+  <path d="M380 328 H415" class="control"/>
+  <rect x="379" y="293" width="116" height="24" class="label-bg"/>
+  <text x="387" y="310" class="tiny">PC/instr/control</text>
+
+  <path d="M222 473 V520" class="packet"/>
+  <rect x="232" y="480" width="134" height="25" class="label-bg"/>
+  <text x="240" y="497" class="mono">3 × 120b</text>
+
+  <path d="M380 645 H815" class="packet"/>
+  <rect x="477" y="612" width="241" height="28" class="label-bg"/>
+  <text x="489" y="631" class="mono strong">3 × (valid + 402b + uses2)</text>
+
+  <path d="M1210 300 H1260" class="packet"/>
+  <path d="M1210 390 H1232 V553 H1260" class="packet"/>
+  <path d="M1210 500 H1232 V802 H1260" class="packet"/>
+  <rect x="1193" y="267" width="186" height="25" class="label-bg"/>
+  <text x="1202" y="284" class="mono">EX0: 416b + ready</text>
+  <rect x="1208" y="524" width="182" height="25" class="label-bg"/>
+  <text x="1217" y="541" class="mono">EX1: 416b + ready</text>
+  <rect x="1208" y="773" width="184" height="25" class="label-bg"/>
+  <text x="1217" y="790" class="mono">MEM: 416b + ready</text>
+
+  <path d="M1625 320 H1675" class="packet"/>
+  <path d="M1625 553 H1650 V398 H1675" class="packet"/>
+  <path d="M1625 802 H1650 V476 H1675" class="packet"/>
+  <rect x="1539" y="286" width="207" height="25" class="label-bg"/>
+  <text x="1548" y="303" class="mono">3 × 471b completion</text>
+
+  <path d="M1890 570 V625" class="commit"/>
+  <rect x="1904" y="579" width="172" height="26" class="label-bg"/>
+  <text x="1913" y="597" class="mono">3 × 863b to retire</text>
+
+  <path d="M1675 736 H1545 V945 H1010 V870" class="commit"/>
+  <rect x="1240" y="914" width="278" height="27" class="label-bg"/>
+  <text x="1251" y="933" class="mono">3 GPR writes: valid3 + addr15 + data192</text>
+
+  <path d="M1010 625 V570" class="data"/>
+  <rect x="1024" y="585" width="171" height="25" class="label-bg"/>
+  <text x="1033" y="602" class="mono">6×5 addr / 6×64 data</text>
+
+  <path d="M1675 450 H1588 V592 H1210" class="feedback"/>
+  <rect x="1312" y="560" width="331" height="26" class="label-bg"/>
+  <text x="1322" y="578" class="mono strong">completion/CAM → 2,080b full-forward map</text>
+
+  <path d="M1675 520 H1570 V615 H1210" class="feedback"/>
+  <rect x="1328" y="617" width="275" height="25" class="label-bg"/>
+  <text x="1338" y="634" class="mono">dependency release / write_busy[31:0]</text>
+
+  <path d="M1442 458 V176 H570 V215" class="control"/>
+  <rect x="808" y="163" width="325" height="25" class="label-bg"/>
+  <text x="818" y="180" class="mono">branch resolve: PC64,target64,ID10,taken</text>
+
+  <path d="M1675 862 H640 V770" class="control"/>
+  <rect x="905" y="829" width="365" height="25" class="label-bg"/>
+  <text x="915" y="846" class="mono">retire training 3×(valid,conditional,taken,PC64)</text>
+
+  <path d="M570 473 V520" class="control"/>
+  <rect x="584" y="481" width="129" height="25" class="label-bg"/>
+  <text x="593" y="498" class="mono">predict / redirect</text>
+
+  <path d="M2205 340 H2145 V310 H1625" class="data"/>
+  <rect x="1870" y="291" width="269" height="25" class="label-bg"/>
+  <text x="1879" y="308" class="mono">CSR read: addr12 ↔ data64 + status</text>
+
+  <path d="M2105 705 H2205" class="commit"/>
+  <rect x="2067" y="671" width="218" height="25" class="label-bg"/>
+  <text x="2076" y="688" class="mono">retire CSR write 12+64</text>
+
+  <path d="M2347 585 V555 H2105 V805" class="control"/>
+  <rect x="2163" y="538" width="257" height="25" class="label-bg"/>
+  <text x="2173" y="555" class="mono">trap/IRQ/return/restart state</text>
+
+  <path d="M2205 730 H2118 V950 H570 V770" class="control"/>
+  <rect x="751" y="917" width="320" height="25" class="label-bg"/>
+  <text x="761" y="934" class="mono">vector target64 + valid → frontend restart</text>
+
+  <!-- Memory subsystem -->
+  <rect x="35" y="1020" width="2810" height="765" class="cluster cluster-memory"/>
+  <text x="58" y="1054" class="section-title">
+    CORE MEMORY SUBSYSTEM · openrv64_core_ccx_bus · translated private-cache clients + native CCX
+  </text>
+
+  <g id="fetch-tracker">
+    <rect x="70" y="1100" width="300" height="245" class="block block-memory"/>
+    <text x="89" y="1129" class="block-title">Fetch request tracker</text>
+    <text x="89" y="1150" class="block-subtitle">4 outstanding frontend slots</text>
+    <line x1="85" y1="1163" x2="355" y2="1163" class="divider"/>
+    <text x="89" y="1187" class="body">VA + privilege/Sv39 context</text>
+    <text x="89" y="1209" class="body">translation + PMP scheduling</text>
+    <text x="89" y="1231" class="body">stash/demand/cancel bookkeeping</text>
+    <text x="89" y="1259" class="mono">req: valid, VA64, flags2</text>
+    <text x="89" y="1279" class="mono">rsp: valid, PA64, data256,</text>
+    <text x="89" y="1299" class="mono">faults2, flags2</text>
+    <text x="89" y="1325" class="small">AXI IDs 0–3 are only used if L1I is disabled.</text>
+  </g>
+
+  <g id="itlb">
+    <rect x="415" y="1100" width="270" height="245" class="block block-memory"/>
+    <text x="434" y="1129" class="block-title">Instruction TLB</text>
+    <text x="434" y="1150" class="block-subtitle">16 fully searched entries</text>
+    <line x1="430" y1="1163" x2="670" y2="1163" class="divider"/>
+    <text x="434" y="1187" class="body">Sv39 4 KiB / 2 MiB / 1 GiB</text>
+    <text x="434" y="1209" class="body">VPN/PPN, ASID16/global, permissions</text>
+    <text x="434" y="1231" class="body">A/D/U/R/W/X checks</text>
+    <text x="434" y="1259" class="mono">lookup: VA64 + context</text>
+    <text x="434" y="1279" class="mono">hit: PA64 + page_fault</text>
+    <text x="434" y="1307" class="small">SFENCE.VMA invalidates all entries.</text>
+  </g>
+
+  <g id="l1i">
+    <rect x="730" y="1100" width="500" height="245" class="block block-cache"/>
+    <text x="749" y="1129" class="block-title">Private VIPT L1 instruction cache</text>
+    <text x="749" y="1150" class="block-subtitle">openrv64_l1i_ccx · live default 16 KiB, 4-way, 64-byte line</text>
+    <line x1="745" y1="1163" x2="1215" y2="1163" class="divider"/>
+    <text x="749" y="1187" class="body">64 sets · physical tag / virtual page-offset index</text>
+    <text x="749" y="1209" class="body">8 demand entries · 8 fill/prefetch slots</text>
+    <text x="749" y="1231" class="body">two-path branch prefetch + retirement aging</text>
+    <text x="749" y="1259" class="mono">frontend: req VA64+PA64 → rsp256</text>
+    <text x="749" y="1279" class="mono">data RAM: 4 × (64 × 512) 1R/1W = 16 KiB</text>
+    <text x="749" y="1299" class="mono">miss: one CCX READ size=6 → one 512b beat</text>
+    <text x="749" y="1325" class="small">Read-allocate; pipelined resident hits; full-line storage.</text>
+  </g>
+
+  <g id="lsu-tracker">
+    <rect x="70" y="1400" width="300" height="315" class="block block-memory"/>
+    <text x="89" y="1429" class="block-title">LSU translation / tag tracker</text>
+    <text x="89" y="1450" class="block-subtitle">8 core tags + local/fallback state</text>
+    <line x1="85" y1="1463" x2="355" y2="1463" class="divider"/>
+    <text x="89" y="1487" class="body">precise VA translation and PMP</text>
+    <text x="89" y="1509" class="body">loads, stores, LR/SC and AMO intent</text>
+    <text x="89" y="1531" class="body">cancelled speculative-load suppression</text>
+    <text x="89" y="1559" class="mono">north req: tag3 + addr64 + data64</text>
+    <text x="89" y="1579" class="mono">+ strb8 + size3 + lock/write</text>
+    <text x="89" y="1599" class="mono">north rsp: tag3 + data64 + faults2</text>
+    <text x="89" y="1627" class="body">Posted stores complete northbound at</text>
+    <text x="89" y="1649" class="body">store-buffer admission; lower fault deferred.</text>
+    <text x="89" y="1681" class="small">No LSU request enters AXI.</text>
+  </g>
+
+  <g id="dtlb">
+    <rect x="415" y="1400" width="270" height="315" class="block block-memory"/>
+    <text x="434" y="1429" class="block-title">Data TLB</text>
+    <text x="434" y="1450" class="block-subtitle">16 fully searched entries</text>
+    <line x1="430" y1="1463" x2="670" y2="1463" class="divider"/>
+    <text x="434" y="1487" class="body">Same Sv39 entry geometry as I-TLB</text>
+    <text x="434" y="1509" class="body">read/write permission + SUM/MXR</text>
+    <text x="434" y="1537" class="mono">lookup: VA64 + access2 + context</text>
+    <text x="434" y="1557" class="mono">hit: PA64 + page_fault</text>
+    <text x="434" y="1585" class="body">Misses arbitrate onto shared PTW.</text>
+    <text x="434" y="1613" class="body">TLBI invalidates I-TLB and D-TLB.</text>
+    <text x="434" y="1681" class="small">Replacement is round-robin.</text>
+  </g>
+
+  <g id="l1d">
+    <rect x="730" y="1400" width="500" height="315" class="block block-cache"/>
+    <text x="749" y="1429" class="block-title">Private PIPT L1 data cache</text>
+    <text x="749" y="1450" class="block-subtitle">openrv64_l1d_ccx · live default 16 KiB, 8-way, 64-byte line</text>
+    <line x1="745" y1="1463" x2="1215" y2="1463" class="divider"/>
+    <text x="749" y="1487" class="body">32 sets · read-allocate · write-through</text>
+    <text x="749" y="1509" class="body">no-write-allocate · one resident hit/cycle</text>
+    <text x="749" y="1531" class="body">8 fill lines · 8 posted-store lines</text>
+    <text x="749" y="1553" class="body">stride prefetch: queue4 / up to4 outstanding</text>
+    <text x="749" y="1581" class="mono">data RAM: 8 × (256 × 64) 1R/1W = 16 KiB</text>
+    <text x="749" y="1601" class="mono">load miss: CCX READ line512; refill as 8×64</text>
+    <text x="749" y="1621" class="mono">store/MMIO: lane-positioned data512 + strb64</text>
+    <text x="749" y="1649" class="body">CCX transaction ID4; core request tag3.</text>
+    <text x="749" y="1681" class="small">MESI/timestamps are reserved metadata, not coherence.</text>
+  </g>
+
+  <g id="ptw">
+    <rect x="1280" y="1100" width="420" height="615" class="block block-memory"/>
+    <text x="1299" y="1129" class="block-title">Shared Sv39 page-table walker</text>
+    <text x="1299" y="1150" class="block-subtitle">openrv64_bus_ptw · I-TLB / D-TLB / speculative I$ xlate</text>
+    <line x1="1295" y1="1163" x2="1685" y2="1163" class="divider"/>
+    <text x="1299" y="1187" class="body">3-level walk · one active walk state machine</text>
+    <text x="1299" y="1209" class="body">PMP-checks each 8-byte implicit PTE read</text>
+    <text x="1299" y="1231" class="body">extracts selected PTE from a 512-bit CCX line</text>
+    <text x="1299" y="1259" class="mono">request: VA64, access2, priv2, mode4,</text>
+    <text x="1299" y="1279" class="mono">ASID16, root PPN44, SUM, MXR</text>
+    <text x="1299" y="1307" class="mono">response: PA64 + faults + page level/permissions</text>
+    <rect x="1300" y="1340" width="380" height="160" class="block block-cache"/>
+    <text x="1318" y="1369" class="block-title">PTE cache</text>
+    <text x="1318" y="1392" class="body">64 entries · 4-way · 16 sets</text>
+    <text x="1318" y="1414" class="body">tag53 + PTE64 + level/age/valid</text>
+    <text x="1318" y="1436" class="mono">≈ 7,808 state bits before decode/mux</text>
+    <text x="1318" y="1462" class="small">Not mapped to an SRAM macro in current flow.</text>
+    <text x="1299" y="1537" class="body">CCX source = PTW (2)</text>
+    <text x="1299" y="1559" class="body">kind = PTE · cacheable · ordered identity check</text>
+    <text x="1299" y="1587" class="mono">CCX cmd: READ, size=6, addr64, burst=0</text>
+    <text x="1299" y="1607" class="mono">CCX rsp: txn4/source2 + data512 + error</text>
+    <text x="1299" y="1641" class="body">SFENCE aborts or invalidates in-flight state.</text>
+    <text x="1299" y="1681" class="small">PTW traffic is native CCX; it does not use AXI.</text>
+  </g>
+
+  <g id="ccx-arbiter">
+    <rect x="1750" y="1100" width="500" height="615" class="block block-memory"/>
+    <text x="1769" y="1129" class="block-title">Native CCX client arbiter / response demux</text>
+    <text x="1769" y="1150" class="block-subtitle">three clients: L1I source0 · L1D source1 · PTW source2</text>
+    <line x1="1765" y1="1163" x2="2235" y2="1163" class="divider"/>
+    <text x="1769" y="1187" class="body">held-grant command arbitration with source/txn routing</text>
+    <text x="1769" y="1209" class="body">independent command, write-data and response channels</text>
+    <text x="1769" y="1237" class="mono strong">COMMAND · ready/valid · 98 payload bits</text>
+    <text x="1785" y="1259" class="mono">hart4 txn4 source2 op4 lock1 order2</text>
+    <text x="1785" y="1279" class="mono">kind2 attr4 size3 addr64 burst_len8</text>
+    <text x="1769" y="1313" class="mono strong">WRITE DATA · ready/valid · 595 payload bits</text>
+    <text x="1785" y="1335" class="mono">hart4 txn4 source2 beat8 last1</text>
+    <text x="1785" y="1355" class="mono">data512 + byte_strobe64</text>
+    <text x="1769" y="1389" class="mono strong">RESPONSE · ready/valid · 533 payload bits</text>
+    <text x="1785" y="1411" class="mono">hart4 txn4 source2 beat8 last1</text>
+    <text x="1785" y="1431" class="mono">rdata512 + error1 + sc_success1</text>
+    <text x="1769" y="1471" class="body">L1D is the only active write-data producer.</text>
+    <text x="1769" y="1493" class="body">Responses are accepted only by matching source/txn.</text>
+    <rect x="1770" y="1530" width="460" height="150" class="badge badge-amber"/>
+    <text x="1788" y="1558" class="block-title">Protocol limit</text>
+    <text x="1788" y="1582" class="body">This is a native cache-facing transport, not AXI.</text>
+    <text x="1788" y="1604" class="body">It carries LR/SC/AMO intent, but the present private</text>
+    <text x="1788" y="1626" class="body">L1 metadata does not implement a coherent protocol.</text>
+    <text x="1788" y="1652" class="small">No probe/snoop/ack channel exists at this boundary.</text>
+  </g>
+
+  <g id="external-ports">
+    <rect x="2300" y="1100" width="510" height="615" class="block block-external"/>
+    <text x="2319" y="1129" class="block-title">openrv64_top_3p external memory ports</text>
+    <text x="2319" y="1150" class="block-subtitle">single clock domain; external fabric supplies backpressure</text>
+    <line x1="2315" y1="1163" x2="2795" y2="1163" class="divider"/>
+    <rect x="2325" y="1190" width="460" height="225" class="block block-memory"/>
+    <text x="2344" y="1219" class="block-title">ACTIVE: native 512-bit CCX</text>
+    <text x="2344" y="1245" class="body">command + write-data + response channels</text>
+    <text x="2344" y="1267" class="body">64-byte line geometry; independent backpressure</text>
+    <text x="2344" y="1295" class="mono">request address64 · line data512 · strobe64</text>
+    <text x="2344" y="1315" class="mono">hart4 · txn4 · source2 · beat/burst8</text>
+    <text x="2344" y="1343" class="body">Carries all enabled L1I, L1D and PTW traffic.</text>
+    <text x="2344" y="1383" class="small">External cache/L2/fabric is outside this diagram.</text>
+
+    <rect x="2325" y="1450" width="460" height="215" class="block-disabled"/>
+    <text x="2344" y="1479" class="block-title" fill="#64748b">DORMANT: 256-bit AXI4 master</text>
+    <text x="2344" y="1505" class="body">Used only when L1I is explicitly disabled.</text>
+    <text x="2344" y="1533" class="mono">AR/AW: ID3 + addr64 + len8 + attributes</text>
+    <text x="2344" y="1553" class="mono">R/W: data256 · WSTRB32 · RESP2</text>
+    <text x="2344" y="1581" class="body">No scalar LSU or PTW request uses this path.</text>
+    <text x="2344" y="1609" class="small">With enabled caches, AXI outputs optimize to tie-offs.</text>
+    <text x="2344" y="1642" class="small">Legacy generic 64-bit blocking bus is also tied off.</text>
+  </g>
+
+  <!-- Memory connections -->
+  <path d="M222 473 V1000 H220 V1100" class="data"/>
+  <rect x="78" y="992" width="292" height="27" class="label-bg"/>
+  <text x="88" y="1011" class="mono">fetch req64 / rsp addr64+data256</text>
+
+  <path d="M1442 920 V1000 H220 V1400" class="data"/>
+  <rect x="709" y="978" width="350" height="27" class="label-bg"/>
+  <text x="719" y="997" class="mono">LSU ready/valid: tag3 + addr64/data64/strb8</text>
+
+  <path d="M370 1222 H415" class="data"/>
+  <path d="M685 1222 H730" class="data"/>
+  <rect x="361" y="1188" width="125" height="24" class="label-bg"/>
+  <text x="369" y="1205" class="mono">VA64/context</text>
+  <rect x="669" y="1188" width="130" height="24" class="label-bg"/>
+  <text x="677" y="1205" class="mono">PA64/fault</text>
+
+  <path d="M370 1555 H415" class="data"/>
+  <path d="M685 1555 H730" class="data"/>
+  <rect x="361" y="1521" width="125" height="24" class="label-bg"/>
+  <text x="369" y="1538" class="mono">VA64/access</text>
+  <rect x="669" y="1521" width="130" height="24" class="label-bg"/>
+  <text x="677" y="1538" class="mono">PA64/fault</text>
+
+  <path d="M550 1345 V1370 H1280 V1230" class="control"/>
+  <path d="M550 1400 V1370" class="control"/>
+  <rect x="812" y="1352" width="246" height="25" class="label-bg"/>
+  <text x="821" y="1369" class="mono">TLB miss → shared PTW request</text>
+
+  <path d="M2205 470 V1040 H1490 V1100" class="control"/>
+  <rect x="1715" y="1027" width="293" height="25" class="label-bg"/>
+  <text x="1725" y="1044" class="mono">PMP probe/allow + SATP/priv context</text>
+
+  <path d="M1230 1222 H1750" class="data"/>
+  <rect x="1320" y="1188" width="298" height="25" class="label-bg"/>
+  <text x="1330" y="1205" class="mono">L1I CCX READ cmd / 512b response</text>
+
+  <path d="M1230 1555 H1750" class="data"/>
+  <rect x="1308" y="1521" width="327" height="25" class="label-bg"/>
+  <text x="1318" y="1538" class="mono">L1D CCX cmd + 512b data / response</text>
+
+  <path d="M1700 1385 H1750" class="data"/>
+  <rect x="1626" y="1352" width="208" height="25" class="label-bg"/>
+  <text x="1636" y="1369" class="mono">PTW line read / rsp512</text>
+
+  <path d="M2250 1295 H2325" class="data"/>
+  <rect x="2206" y="1260" width="166" height="25" class="label-bg"/>
+  <text x="2215" y="1277" class="mono">native CCX channels</text>
+
+  <path d="M2250 1565 H2325" class="optional"/>
+  <rect x="2202" y="1578" width="176" height="25" class="label-bg"/>
+  <text x="2211" y="1595" class="mono">cacheless I-fetch only</text>
+
+  <!-- Clock/reset indication -->
+  <path d="M2205 885 H2100 V197 H65" class="clock"/>
+  <path d="M2100 885 V1000 H70" class="clock"/>
+  <text x="2112" y="969" class="tiny">clk / rst_n fanout (not individually drawn)</text>
+
+  <!-- Snapshot note -->
+  <rect x="50" y="1810" width="1840" height="182" class="cluster"/>
+  <text x="70" y="1841" class="section-title">Parameter/synthesis snapshot warning</text>
+  <text x="70" y="1869" class="body">
+    The live RTL defaults shown above are 16 KiB 4-way L1I and 16 KiB 8-way L1D.
+  </text>
+  <text x="70" y="1893" class="body">
+    The last corrected physical-size run used 8 KiB 4-way caches and inferred 4 × 32×512 L1I plus 4 × 256×64 L1D RAMs.
+  </text>
+  <text x="70" y="1917" class="body">
+    Its 4.202 mm² standard-cell total and 16 KiB aggregate SRAM therefore do not describe the current wrapper defaults without a rerun.
+  </text>
+  <text x="70" y="1947" class="body strong">
+    Internal dynamic IDs are 10 bits; the independent 64-bit trace UID remains embedded in issue and completion payloads.
+  </text>
+  <text x="70" y="1974" class="small">
+    Sources: rtl/openrv64_top_3p.v, rtl/core/rv64_top_3p.v, rtl/core/backend/backend_3p.v,
+    rtl/core/bus/ccx_bus.v, rtl/cache/l1/l1i/ccx.v, rtl/cache/l1/l1d/l1d.v.
+  </text>
+
+  <!-- Legend -->
+  <rect x="1920" y="1810" width="925" height="182" class="cluster"/>
+  <text x="1940" y="1841" class="section-title">Connection legend</text>
+  <line x1="1945" y1="1870" x2="2040" y2="1870" class="packet"/>
+  <text x="2055" y="1875" class="body">wide instruction / completion packet</text>
+  <line x1="1945" y1="1902" x2="2040" y2="1902" class="data"/>
+  <text x="2055" y="1907" class="body">memory/register data path</text>
+  <line x1="1945" y1="1934" x2="2040" y2="1934" class="control"/>
+  <text x="2055" y="1939" class="body">control / redirect / permission</text>
+  <line x1="2390" y1="1870" x2="2485" y2="1870" class="commit"/>
+  <text x="2500" y="1875" class="body">architectural commit</text>
+  <line x1="2390" y1="1902" x2="2485" y2="1902" class="feedback"/>
+  <text x="2500" y="1907" class="body">dependency / forwarding feedback</text>
+  <line x1="2390" y1="1934" x2="2485" y2="1934" class="optional"/>
+  <text x="2500" y="1939" class="body">disabled / parameter-optional path</text>
+  <text x="1945" y="1972" class="small">ready/valid handshakes are stated in labels; reverse ready wires are not drawn separately.</text>
+</svg>

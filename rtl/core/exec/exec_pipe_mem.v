@@ -36,17 +36,17 @@ module openrv64_exec_pipe_mem #(
 
     input  wire                         issue_valid_i,
     output wire                         issue_ready_o,
-    input  wire [63:0]                  issue_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
 
     input  wire                         ordered_head_valid_i,
-    input  wire [63:0]                  ordered_head_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] ordered_head_slot_i,
 
     output wire                         complete_valid_o,
     input  wire                         complete_ready_i,
-    output wire [63:0]                  complete_id_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_o,
     output wire [RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
     output wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o,
 
@@ -56,6 +56,7 @@ module openrv64_exec_pipe_mem #(
     output wire [`RV64_XLEN-1:0]        async_store_fault_addr_o,
     output wire [63:0]                  async_store_fault_trace_o,
     output wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr_o,
+    output wire                         posted_store_pending_o,
 
     output wire                         mem_valid_o,
     input  wire                         mem_ready_i,
@@ -144,7 +145,7 @@ module openrv64_exec_pipe_mem #(
     reg slot_valid_q [0:LSU_DEPTH-1];
     reg slot_sent_q [0:LSU_DEPTH-1];
     reg slot_posted_store_q [0:LSU_DEPTH-1];
-    reg [63:0] slot_id_q [0:LSU_DEPTH-1];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] slot_id_q [0:LSU_DEPTH-1];
     reg [RETIRE_SLOT_WIDTH-1:0] slot_retire_q [0:LSU_DEPTH-1];
     reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
         slot_payload_q [0:LSU_DEPTH-1];
@@ -154,7 +155,7 @@ module openrv64_exec_pipe_mem #(
     reg atomic_active_q;
     reg atomic_started_q;
     reg atomic_req_inflight_q;
-    reg [63:0] atomic_id_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] atomic_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] atomic_slot_q;
     reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] atomic_payload_q;
 
@@ -165,13 +166,14 @@ module openrv64_exec_pipe_mem #(
     reg [7:0] store_wstrb_q;
 
     reg complete_valid_q;
-    reg [63:0] complete_id_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] complete_slot_q;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_q;
     wire output_available = !complete_valid_q || complete_ready_i;
 
     wire issue_is_atomic = payload_is_atomic(issue_payload_i);
     wire [LSU_DEPTH-1:0] simple_valid_vector;
+    wire [LSU_DEPTH-1:0] posted_store_pending_vector;
     genvar simple_valid_index;
     generate
         for (simple_valid_index = 0;
@@ -179,9 +181,13 @@ module openrv64_exec_pipe_mem #(
              simple_valid_index = simple_valid_index + 1) begin : g_simple_valid
             assign simple_valid_vector[simple_valid_index] =
                 slot_valid_q[simple_valid_index];
+            assign posted_store_pending_vector[simple_valid_index] =
+                slot_valid_q[simple_valid_index] &&
+                slot_posted_store_q[simple_valid_index];
         end
     endgenerate
     wire simple_any_valid = |simple_valid_vector;
+    assign posted_store_pending_o = |posted_store_pending_vector;
     assign issue_ready_o = issue_is_atomic ?
         (!atomic_active_q && !simple_any_valid && output_available) :
         (!atomic_active_q && !slot_valid_q[issue_tail_q]);
@@ -536,7 +542,7 @@ module openrv64_exec_pipe_mem #(
             atomic_active_q <= 1'b0;
             atomic_started_q <= 1'b0;
             atomic_req_inflight_q <= 1'b0;
-            atomic_id_q <= 64'd0;
+            atomic_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             atomic_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             atomic_payload_q <= {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
             store_inflight_q <= 1'b0;
@@ -545,7 +551,7 @@ module openrv64_exec_pipe_mem #(
             store_wdata_q <= {`RV64_XLEN{1'b0}};
             store_wstrb_q <= 8'h00;
             complete_valid_q <= 1'b0;
-            complete_id_q <= 64'd0;
+            complete_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
                 {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
@@ -554,7 +560,8 @@ module openrv64_exec_pipe_mem #(
                 slot_valid_q[slot_index] <= 1'b0;
                 slot_sent_q[slot_index] <= 1'b0;
                 slot_posted_store_q[slot_index] <= 1'b0;
-                slot_id_q[slot_index] <= 64'd0;
+                slot_id_q[slot_index] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
                 slot_retire_q[slot_index] <= {RETIRE_SLOT_WIDTH{1'b0}};
                 slot_payload_q[slot_index] <=
                     {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};

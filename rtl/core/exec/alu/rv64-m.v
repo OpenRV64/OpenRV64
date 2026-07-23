@@ -5,8 +5,14 @@
 `include "core/decode/defs/alu-defs.v"
 
 module openrv64_exec_rv64m #(
-    parameter MUL_BITS_PER_CYCLE = 8,
-    parameter DIV_BITS_PER_CYCLE = 8
+    // Four shift/add bits per cycle gives 16 RV64 or 8 RV64W cycles. This is
+    // an area/latency compromise; the unrolled add chain still needs a Booth
+    // or carry-save rewrite for actual timing closure.
+    parameter MUL_BITS_PER_CYCLE = 4,
+    // Two restoring steps per cycle gives 32 full-width iteration cycles,
+    // followed by one result-format cycle. Keep division latency-heavy rather
+    // than putting eight serial compare/subtract steps on the core clock path.
+    parameter DIV_BITS_PER_CYCLE = 2
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -59,6 +65,7 @@ module openrv64_exec_rv64m #(
     reg [63:0] div_quotient_q;
     reg div_neg_quot_q;
     reg div_neg_rem_q;
+    reg div_finalize_q;
 
     reg result_valid_q;
     reg illegal_q;
@@ -446,6 +453,7 @@ module openrv64_exec_rv64m #(
             div_quotient_q <= 64'd0;
             div_neg_quot_q <= 1'b0;
             div_neg_rem_q <= 1'b0;
+            div_finalize_q <= 1'b0;
             result_valid_q <= 1'b0;
             illegal_q <= 1'b0;
             result_q <= {`RV64_XLEN{1'b0}};
@@ -466,6 +474,7 @@ module openrv64_exec_rv64m #(
             div_quotient_q <= 64'd0;
             div_neg_quot_q <= 1'b0;
             div_neg_rem_q <= 1'b0;
+            div_finalize_q <= 1'b0;
             result_valid_q <= 1'b0;
             illegal_q <= 1'b0;
             result_q <= {`RV64_XLEN{1'b0}};
@@ -493,23 +502,27 @@ module openrv64_exec_rv64m #(
                     );
                 end
             end else if (active_q && (work_kind_q == WORK_KIND_DIV)) begin
-                div_remainder_q <= div_remainder_next;
-                div_quotient_q <= div_quotient_next;
-                div_dividend_q <= div_dividend_next;
-                div_bits_left_q <= div_bits_left_next;
-
-                if (div_bits_left_next == 8'd0) begin
+                if (div_finalize_q) begin
                     active_q <= 1'b0;
+                    div_finalize_q <= 1'b0;
                     result_valid_q <= 1'b1;
                     illegal_q <= 1'b0;
                     result_q <= finish_div_result(
                         op_q,
                         word_q,
-                        div_quotient_next,
-                        div_remainder_next[63:0],
+                        div_quotient_q,
+                        div_remainder_q[63:0],
                         div_neg_quot_q,
                         div_neg_rem_q
                     );
+                end else begin
+                    div_remainder_q <= div_remainder_next;
+                    div_quotient_q <= div_quotient_next;
+                    div_dividend_q <= div_dividend_next;
+                    div_bits_left_q <= div_bits_left_next;
+
+                    if (div_bits_left_next == 8'd0)
+                        div_finalize_q <= 1'b1;
                 end
             end else if (start) begin
                 word_q <= word_op_i;
@@ -547,8 +560,10 @@ module openrv64_exec_rv64m #(
                                        (src1_i[63] ^ src2_i[63]));
                     div_neg_rem_q <= start_signed_div_op &&
                                      (word_op_i ? src1_i[31] : src1_i[63]);
+                    div_finalize_q <= 1'b0;
                 end else begin
                     active_q <= 1'b0;
+                    div_finalize_q <= 1'b0;
                     result_valid_q <= 1'b1;
                     illegal_q <= !start_div_valid;
                     result_q <= start_divisor_zero ?

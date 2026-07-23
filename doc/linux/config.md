@@ -178,13 +178,18 @@ Check the resolved configuration before simulation:
 
 ```sh
 grep -E \
-  'CONFIG_(NONPORTABLE|RISCV_ISA_C|FPU|RISCV_ISA_V|SMP|MMU|RISCV_SBI|RISCV_TIMER|SERIAL_8250|SERIAL_OF_PLATFORM|SERIAL_EARLYCON_RISCV_SBI|CMDLINE)' \
+  'CONFIG_(PRINTK|NONPORTABLE|RISCV_ISA_C|FPU|RISCV_ISA_V|SMP|MMU|RISCV_SBI|RISCV_TIMER|SERIAL_8250|SERIAL_OF_PLATFORM|SERIAL_EARLYCON_RISCV_SBI|CMDLINE)' \
   "$out/.config"
 ```
 
-In particular, reject the build if any of these appear:
+Require `CONFIG_PRINTK=y`; `earlycon` and the UART console can register with
+`CONFIG_PRINTK=n`, but there is no kernel log buffer to replay and their write
+callbacks will never receive normal kernel messages.
+
+Reject the build if any of these appear:
 
 ```text
+# CONFIG_PRINTK is not set
 CONFIG_RISCV_ISA_C=y
 CONFIG_FPU=y
 CONFIG_RISCV_ISA_V=y
@@ -235,24 +240,9 @@ Embedding it avoids that additional loader and DT work.
 
 ## Platform issues Kconfig cannot fix
 
-### Supervisor PLIC context
-
-The current DT describes the sole PLIC context as CPU interrupt 11, machine
-external interrupt. Linux runs in S-mode and the PLIC driver looks for CPU
-interrupt 9, supervisor external interrupt. The RTL likewise drives only
-`MEIP`; it does not drive `SEIP`.
-
-This does not prevent the first `dmesg` milestone:
-
-- SBI DBCN output does not use the PLIC.
-- 8250 console writes are polled.
-- Timer interrupts use the independently verified SBI TIME/STIP path.
-
-It does prevent a correct interrupt-driven UART and other PLIC devices.
-Changing only the DT from 11 to 9 would be false advertising. The RTL must
-first provide an S-mode PLIC context that drives `SEIP`. For a one-hart
-minimum, the existing sole context can be repurposed for S-mode because
-OpenSBI does not currently use PLIC devices.
+The sole PLIC context is supervisor external interrupt 9 and drives `SEIP`,
+matching the device tree. The minimal platform does not provide a separate
+machine PLIC context.
 
 ### Zicntr DT declaration
 

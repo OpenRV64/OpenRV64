@@ -28,6 +28,7 @@ module openrv64_core_bus #(
     parameter integer L1D_STORE_BUFFER_LINES = 8,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_STREAMS = 2,
     parameter integer L1D_PREFETCH_DISTANCE = 1,
     parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
@@ -36,6 +37,7 @@ module openrv64_core_bus #(
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
+    parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}
 ) (
@@ -123,6 +125,7 @@ module openrv64_core_bus #(
     output wire                         lsu_pipe_resp_page_fault_o,
 
     input  wire                         tlbi_i,
+    output wire                         tlbi_busy_o,
     input  wire                         icache_invalidate_i,
     input  wire                         icache_prefetch_valid_i,
     input  wire [`RV64_XLEN-1:0]        icache_prefetch_taken_addr_i,
@@ -303,6 +306,7 @@ module openrv64_core_bus #(
             openrv64_core_gen_bus #(
                 .TLB_ENTRIES(TLB_ENTRIES),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+                .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID)
             ) u_bus (
                 .clk(clk), .rst_n(rst_n), .fetch_valid_i(fetch_valid_i),
@@ -326,6 +330,7 @@ module openrv64_core_bus #(
                 .lsu_ready_o(gen_lsu_ready), .lsu_rdata_o(gen_lsu_rdata),
                 .lsu_access_fault_o(gen_lsu_access_fault),
                 .lsu_page_fault_o(gen_lsu_page_fault), .tlbi_i(tlbi_i),
+                .tlbi_busy_o(tlbi_busy_o),
                 .req_valid_o(raw_req_valid), .req_ready_i(raw_req_ready),
                 .req_write_o(raw_req_write), .req_addr_o(raw_req_addr),
                 .req_pmp_addr_o(raw_req_pmp_addr),
@@ -498,6 +503,10 @@ module openrv64_core_bus #(
             assign ccx_wstrb_o =
                 {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
         end else if (ENABLE_MAGIC_MEMORY != 0) begin : g_magic
+            // Magic memory deliberately has no translation/cache hierarchy.
+            // Preserve the serialization contract for one cycle so core-side
+            // restart logic still observes the initiating barrier.
+            assign tlbi_busy_o = tlbi_i;
             localparam integer MAGIC_FETCH_DEPTH = 4;
             localparam integer MAGIC_FETCH_PTR_WIDTH =
                 $clog2(MAGIC_FETCH_DEPTH);
@@ -806,6 +815,7 @@ module openrv64_core_bus #(
                 .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
                 .L1D_PREFETCH_MAX_STRIDE_LINES(
                     L1D_PREFETCH_MAX_STRIDE_LINES),
+                .L1D_PREFETCH_STREAMS(L1D_PREFETCH_STREAMS),
                 .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
                 .L1D_PREFETCH_ADAPTIVE_ENABLE(
                     L1D_PREFETCH_ADAPTIVE_ENABLE),
@@ -819,6 +829,7 @@ module openrv64_core_bus #(
                     L1D_PREFETCH_DEMAND_RESERVE),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+                .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID)
             ) u_bus (
                 .clk(clk), .rst_n(rst_n),
@@ -855,6 +866,7 @@ module openrv64_core_bus #(
                 .lsu_rdata_o(lsu_rdata_o),
                 .lsu_access_fault_o(lsu_access_fault_o),
                 .lsu_page_fault_o(lsu_page_fault_o), .tlbi_i(tlbi_i),
+                .tlbi_busy_o(tlbi_busy_o),
                 .icache_invalidate_i(icache_invalidate_i),
                 .icache_prefetch_valid_i(icache_prefetch_valid_i),
                 .icache_prefetch_taken_addr_i(

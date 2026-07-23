@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "core/backend/backend-defs.v"
 `include "core/exec/bp/defs.v"
 
 module tb_exec_bp_tagged_speculation;
@@ -11,14 +12,14 @@ module tb_exec_bp_tagged_speculation;
     reg lookup_backward;
     reg [31:0] lookup_instr;
     reg [63:0] lookup_pc;
-    reg [63:0] lookup_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id;
     reg lookup_allocate;
     reg resolve_valid;
     reg resolve_taken;
     reg [31:0] resolve_instr;
     reg [63:0] resolve_pc;
     reg [63:0] resolve_target;
-    reg [63:0] resolve_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] resolve_id;
     wire prediction_taken;
     wire overflow;
 
@@ -56,7 +57,7 @@ module tb_exec_bp_tagged_speculation;
     endtask
 
     task automatic allocate_branch;
-        input [63:0] id;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] id;
         input [63:0] pc;
         begin
             lookup_valid = 1'b1;
@@ -74,7 +75,7 @@ module tb_exec_bp_tagged_speculation;
     endtask
 
     task automatic resolve_branch;
-        input [63:0] id;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] id;
         input [63:0] pc;
         input taken;
         input do_squash;
@@ -102,14 +103,14 @@ module tb_exec_bp_tagged_speculation;
         lookup_backward = 1'b0;
         lookup_instr = 32'd0;
         lookup_pc = 64'd0;
-        lookup_id = 64'd0;
+        lookup_id = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         lookup_allocate = 1'b0;
         resolve_valid = 1'b0;
         resolve_taken = 1'b0;
         resolve_instr = 32'd0;
         resolve_pc = 64'd0;
         resolve_target = 64'd0;
-        resolve_id = 64'd0;
+        resolve_id = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
 
         repeat (3) tick();
         rst_n = 1'b1;
@@ -140,6 +141,15 @@ module tb_exec_bp_tagged_speculation;
         tick();
         if (dut.g_advanced.u_advanced.inflight_count_q != 0 || overflow)
             $fatal(1, "post-recovery checkpoint did not drain cleanly");
+
+        // IDs remain age-ordered across 1023 -> 0.  Resolving 1023 must retain
+        // 1022 and 1023 while discarding the younger ID 0 checkpoint.
+        allocate_branch(10'd1022, 64'h400);
+        allocate_branch(10'd1023, 64'h500);
+        allocate_branch(10'd0, 64'h600);
+        resolve_branch(10'd1023, 64'h500, 1'b0, 1'b1);
+        if (dut.g_advanced.u_advanced.inflight_count_q != 2)
+            $fatal(1, "tagged predictor misordered modular IDs at wrap");
 
         $display("PASS: tagged predictor out-of-order resolve and selective rollback");
         $finish;

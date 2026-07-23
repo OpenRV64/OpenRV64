@@ -33,7 +33,7 @@ module openrv64_dispatch_3p #(
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_i,
 
     input  wire                         allocation_ready_i,
-    input  wire [3*64-1:0]              allocation_id_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0] allocation_slot_i,
     output wire [2:0]                   allocation_valid_o,
     output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_o,
@@ -49,7 +49,7 @@ module openrv64_dispatch_3p #(
     input  wire [31:0]                  forward_map_valid_i,
     input  wire [32*`RV64_XLEN-1:0]     forward_map_data_i,
     output wire [2:0]                   pipe_valid_o,
-    output wire [3*64-1:0]              pipe_id_o,
+    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
     output wire [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
     output wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o,
@@ -430,16 +430,6 @@ module openrv64_dispatch_3p #(
     // A wrong prediction, non-equality branch, fault, or unresolved operand
     // retains the ordinary prefix barrier; strict candidate-fire chaining
     // prevents younger issue when this branch cannot itself issue.
-    wire pair_eq0 = candidate_valid[0] && !free0 &&
-        is_pairable_eq_branch(payload0) &&
-        (branch_taken(payload0) == payload0[12]);
-    wire pair_eq1 = candidate_valid[1] && !free1 &&
-        is_pairable_eq_branch(payload1) &&
-        (branch_taken(payload1) == payload1[12]);
-    wire pair_eq2 = candidate_valid[2] && !free2 &&
-        is_pairable_eq_branch(payload2) &&
-        (branch_taken(payload2) == payload2[12]);
-    wire [2:0] candidate_barrier_free = {pair_eq2, pair_eq1, pair_eq0};
     wire [2:0] reg_map_uses_rs1 = candidate_uses_rs1;
     wire [2:0] reg_map_uses_rs2 = candidate_uses_rs2;
 
@@ -467,6 +457,24 @@ module openrv64_dispatch_3p #(
         candidate_uses_rs2[2],
         candidate_rs2_addr[2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH],
         forward_valid_i, forward_rd_addr_i);
+    // Dispatch can prove an equality-branch prediction only from operand
+    // values visible here.  A source relying on EX0/EX1's local completion
+    // bypass is ready to issue, but its value is applied inside that pipe and
+    // is not represented in candidate_payload.  Keep the ordinary branch
+    // barrier in that case so stale GPR data cannot admit younger work.
+    wire pair_eq0 = candidate_valid[0] && !free0 &&
+        (forward_match0 == 2'b00) &&
+        is_pairable_eq_branch(payload0) &&
+        (branch_taken(payload0) == payload0[12]);
+    wire pair_eq1 = candidate_valid[1] && !free1 &&
+        (forward_match1 == 2'b00) &&
+        is_pairable_eq_branch(payload1) &&
+        (branch_taken(payload1) == payload1[12]);
+    wire pair_eq2 = candidate_valid[2] && !free2 &&
+        (forward_match2 == 2'b00) &&
+        is_pairable_eq_branch(payload2) &&
+        (branch_taken(payload2) == payload2[12]);
+    wire [2:0] candidate_barrier_free = {pair_eq2, pair_eq1, pair_eq0};
     wire forward_preferred0 = (forward_match0 == 2'b01) ||
                               (forward_match0 == 2'b10);
     wire forward_preferred1 = (forward_match1 == 2'b01) ||

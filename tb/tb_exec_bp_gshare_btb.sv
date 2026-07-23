@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/exec/bp/defs.v"
 
@@ -46,13 +47,14 @@ module tb_exec_bp_gshare_btb;
         .lookup_indirect_i(lookup_indirect),
         .lookup_backward_i(lookup_backward),
         .lookup_instr_i(lookup_instr), .lookup_pc_i(lookup_pc),
-        .lookup_id_i(64'd0),
+        .lookup_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .lookup_allocate_i(lookup_allocate),
         .resolve_valid_i(resolve_valid),
         .resolve_branch_i(resolve_branch),
         .resolve_taken_i(resolve_taken),
         .resolve_instr_i(resolve_instr), .resolve_pc_i(resolve_pc),
-        .resolve_target_i(resolve_target), .resolve_id_i(64'd0),
+        .resolve_target_i(resolve_target),
+        .resolve_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .train_valid_i(3'b000), .train_branch_i(3'b000),
         .train_taken_i(3'b000), .train_pc_i(192'd0),
         .prediction_taken_o(prediction_taken),

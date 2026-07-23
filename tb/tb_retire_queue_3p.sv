@@ -1,10 +1,11 @@
 `timescale 1ns/1ps
+`include "core/backend/backend-defs.v"
 
 module tb_retire_queue_3p #(
     parameter integer DEPTH = 8
 );
 
-    localparam ID_WIDTH = 8;
+    localparam ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH;
     localparam META_WIDTH = 8;
     localparam RESULT_WIDTH = 16;
     localparam INDEX_WIDTH = $clog2(DEPTH);
@@ -84,7 +85,7 @@ module tb_retire_queue_3p #(
             alloc_complete = 3'b000;
             alloc_result = 48'd0;
             complete_valid = 3'b000;
-            complete_id = 24'd0;
+            complete_id = {3*ID_WIDTH{1'b0}};
             complete_slot = {3*INDEX_WIDTH{1'b0}};
             complete_result = 48'd0;
             retire_accept = 3'b000;
@@ -129,7 +130,7 @@ module tb_retire_queue_3p #(
             @(posedge clk);
             #1;
             complete_valid = 3'b000;
-            complete_id = 24'd0;
+            complete_id = {3*ID_WIDTH{1'b0}};
             complete_slot = {3*INDEX_WIDTH{1'b0}};
             complete_result = 48'd0;
         end
@@ -212,7 +213,7 @@ module tb_retire_queue_3p #(
         // Younger completions cannot bypass an incomplete queue head.
         @(negedge clk);
         complete_valid = 3'b011;
-        complete_id = {8'd0, saved_id[1], saved_id[2]};
+        complete_id = {{ID_WIDTH{1'b0}}, saved_id[1], saved_id[2]};
         complete_slot = {
             {INDEX_WIDTH{1'b0}}, saved_slot[1], saved_slot[2]
         };
@@ -359,6 +360,35 @@ module tb_retire_queue_3p #(
         complete_one(recovered_id, recovered_slot, 16'he0e0);
         if (retire_valid != 3'b001)
             $fatal(1, "post-recovery ID gap blocked retirement");
+
+        // Exercise the actual modular boundary.  IDs 1022, 1023, and 0 are
+        // consecutive in a 10-bit namespace; squashing at 1023 must retain
+        // the first two and discard only ID 0.
+        @(negedge clk);
+        retire_accept = 3'b001;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        if (occupancy != 0)
+            $fatal(1, "queue did not drain before modular wrap test");
+
+        @(negedge clk);
+        dut.next_alloc_id_q = {ID_WIDTH{1'b1}} - 1'b1;
+        allocate_three(8'hf0, 8'hf1, 8'hf2);
+        if ((saved_id[0] != ({ID_WIDTH{1'b1}} - 1'b1)) ||
+            (saved_id[1] != {ID_WIDTH{1'b1}}) ||
+            (saved_id[2] != {ID_WIDTH{1'b0}}))
+            $fatal(1, "allocation IDs did not wrap modulo ID width");
+
+        @(negedge clk);
+        squash_younger = 1'b1;
+        squash_id = saved_id[1];
+        squash_slot = saved_slot[1];
+        @(posedge clk);
+        #1;
+        squash_younger = 1'b0;
+        if (occupancy != 2)
+            $fatal(1, "modular squash misclassified entries across ID wrap");
 
         $display("PASS: depth-%0d completion queue, retirement, and selective recovery",
                  DEPTH);

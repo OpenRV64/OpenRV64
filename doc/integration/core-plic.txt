@@ -32,17 +32,13 @@ rtl/soc/platform.sv implements the single-hart instance of this wiring:
 
     clint.msip_o[0] -> core.irq_m_software
     clint.mtip_o[0] -> core.irq_m_timer
-    plic.meip_o[0]  -> core.irq_m_external
+    plic.seip_o[0]  -> core.irq_s_external
 
-The current PLIC implements machine contexts only. It does not produce SEIP.
-Do not connect meip_o to irq_s_external: MEIP and SEIP are different
-architectural interrupt causes, and machine interrupt causes are not converted
-to supervisor causes by mideleg.
-
-The core already accepts SSIP, STIP, and SEIP levels. A future supervisor
-PLIC context, supervisor software-interrupt block, or supervisor timer source
-should drive the corresponding irq_s_* input. The current SoC should tie all
-three irq_s_* inputs low.
+The current PLIC implements supervisor contexts only. MEIP and SEIP are
+different architectural interrupt causes, so the PLIC output is not also
+connected to irq_m_external. Supervisor software and timer inputs remain tied
+low; their current paths are provided through OpenSBI using the machine CLINT
+sources.
 
 PLIC source bit zero represents architectural source ID 1. The platform keeps
 this assignment stable:

@@ -37,7 +37,7 @@ module openrv64_dispatch_window_3p #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_frontend_i,
-    input  wire [63:0]                  squash_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
 
     input  wire [2:0]                   decode_valid_i,
     output wire [2:0]                   decode_ready_o,
@@ -50,28 +50,28 @@ module openrv64_dispatch_window_3p #(
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_i,
 
     input  wire                         allocation_ready_i,
-    input  wire [3*64-1:0]              allocation_id_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0] allocation_slot_i,
     output wire [2:0]                   allocation_valid_o,
     output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_o,
 
     input  wire [2:0]                   pipe_ready_i,
     output reg  [2:0]                   pipe_valid_o,
-    output reg  [3*64-1:0]              pipe_id_o,
+    output reg  [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
     output reg  [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
     output reg  [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o,
 
     input  wire [2:0]                   completion_valid_i,
-    input  wire [3*64-1:0]              completion_id_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] completion_id_i,
     input  wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         completion_payload_i,
 
     input  wire [2:0]                   retire_valid_i,
-    input  wire [3*64-1:0]              retire_id_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] retire_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0] retire_slot_i,
     input  wire [2:0]                   retire_hard_i,
-    input  wire [63:0]                  next_retire_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] next_retire_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] next_retire_slot_i,
 
     output reg                          barrier_active_o,
@@ -105,15 +105,15 @@ module openrv64_dispatch_window_3p #(
 
     reg                                 valid_q [0:DEPTH-1];
     reg                                 issued_q [0:DEPTH-1];
-    reg [63:0]                          id_q [0:DEPTH-1];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] id_q [0:DEPTH-1];
     reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         payload_q [0:DEPTH-1];
     reg                                 uses_rs1_q [0:DEPTH-1];
     reg                                 uses_rs2_q [0:DEPTH-1];
     reg                                 src1_ready_q [0:DEPTH-1];
     reg                                 src2_ready_q [0:DEPTH-1];
-    reg [63:0]                          src1_tag_q [0:DEPTH-1];
-    reg [63:0]                          src2_tag_q [0:DEPTH-1];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] src1_tag_q [0:DEPTH-1];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] src2_tag_q [0:DEPTH-1];
     reg                                 result_ready_q [0:DEPTH-1];
     reg [`RV64_XLEN-1:0]                result_data_q [0:DEPTH-1];
     reg [COUNT_WIDTH-1:0]               count_q;
@@ -122,7 +122,7 @@ module openrv64_dispatch_window_3p #(
     // retained after completion so a later decode does not wait for retire.
     reg [31:0]                          owner_valid_q;
     reg [31:0]                          owner_ready_q;
-    reg [63:0]                          owner_id_q [0:31];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] owner_id_q [0:31];
     reg [`RV64_XLEN-1:0]                owner_data_q [0:31];
 
     function automatic is_hard;
@@ -257,6 +257,18 @@ module openrv64_dispatch_window_3p #(
         end
     endfunction
 
+    function automatic id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
+        end
+    endfunction
+
     // GPR values are sampled at decode admission.  Three same-cycle decode
     // lanes still see one another through the temporary owner view below.
     genvar read_lane;
@@ -295,12 +307,12 @@ module openrv64_dispatch_window_3p #(
 
     reg [31:0] owner_valid_view;
     reg [31:0] owner_ready_view;
-    reg [63:0] owner_id_view [0:31];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] owner_id_view [0:31];
     reg [`RV64_XLEN-1:0] owner_data_view [0:31];
     reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
         admit_payload [0:2];
-    reg [63:0] admit_src1_tag [0:2];
-    reg [63:0] admit_src2_tag [0:2];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] admit_src1_tag [0:2];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] admit_src2_tag [0:2];
     reg admit_src1_ready [0:2];
     reg admit_src2_ready [0:2];
     reg [`RV64_XLEN-1:0] admit_src1_data [0:2];
@@ -311,7 +323,7 @@ module openrv64_dispatch_window_3p #(
     reg [`RV64_REG_ADDR_WIDTH-1:0] view_rs1;
     reg [`RV64_REG_ADDR_WIDTH-1:0] view_rs2;
     reg [`RV64_REG_ADDR_WIDTH-1:0] view_rd;
-    reg [63:0] view_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] view_id;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] view_completion;
 
     always_comb begin
@@ -324,7 +336,9 @@ module openrv64_dispatch_window_3p #(
 
         // Completion precedes retirement in the architectural age order.
         for (view_port = 0; view_port < 3; view_port = view_port + 1) begin
-            view_id = completion_id_i[view_port*64 +: 64];
+            view_id = completion_id_i[
+                view_port*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH];
             view_completion = completion_payload_i[
                 view_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
                 `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
@@ -341,7 +355,9 @@ module openrv64_dispatch_window_3p #(
         end
 
         for (view_lane = 0; view_lane < 3; view_lane = view_lane + 1) begin
-            view_id = retire_id_i[view_lane*64 +: 64];
+            view_id = retire_id_i[
+                view_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH];
             for (owner_idx = 1; owner_idx < 32;
                  owner_idx = owner_idx + 1) begin
                 if (retire_valid_i[view_lane] &&
@@ -364,8 +380,10 @@ module openrv64_dispatch_window_3p #(
             view_rd = admit_payload[view_lane][
                 PAYLOAD_RD +: `RV64_REG_ADDR_WIDTH];
 
-            admit_src1_tag[view_lane] = 64'd0;
-            admit_src2_tag[view_lane] = 64'd0;
+            admit_src1_tag[view_lane] =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            admit_src2_tag[view_lane] =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             admit_src1_ready[view_lane] = 1'b1;
             admit_src2_ready[view_lane] = 1'b1;
             admit_src1_data[view_lane] = {`RV64_XLEN{1'b0}};
@@ -407,7 +425,8 @@ module openrv64_dispatch_window_3p #(
                 owner_valid_view[view_rd] = 1'b1;
                 owner_ready_view[view_rd] = 1'b0;
                 owner_id_view[view_rd] = allocation_id_i[
-                    view_lane*64 +: 64];
+                    view_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
                 owner_data_view[view_rd] = {`RV64_XLEN{1'b0}};
             end
         end
@@ -434,7 +453,7 @@ module openrv64_dispatch_window_3p #(
     reg [`RV64_XLEN-1:0] src2_data_now [0:DEPTH-1];
     integer ready_idx;
     integer ready_port;
-    reg [63:0] ready_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] ready_id;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] ready_completion;
 
     always_comb begin
@@ -447,7 +466,9 @@ module openrv64_dispatch_window_3p #(
                 PAYLOAD_RS2_DATA +: `RV64_XLEN];
             for (ready_port = 0; ready_port < 3;
                  ready_port = ready_port + 1) begin
-                ready_id = completion_id_i[ready_port*64 +: 64];
+                ready_id = completion_id_i[
+                    ready_port*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
                 ready_completion = completion_payload_i[
                     ready_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
@@ -509,7 +530,8 @@ module openrv64_dispatch_window_3p #(
             for (older_idx = 0; older_idx < DEPTH;
                  older_idx = older_idx + 1) begin
                 if (valid_q[older_idx] &&
-                    (id_q[older_idx] < id_q[eligible_idx])) begin
+                    id_is_younger(id_q[eligible_idx],
+                                  id_q[older_idx])) begin
                     if (!issued_q[older_idx] &&
                         is_hard(payload_q[older_idx]) &&
                         !may_speculate_past_unissued_control(
@@ -668,7 +690,7 @@ module openrv64_dispatch_window_3p #(
         end
 
         pipe_valid_o = {select_mem_valid, select_ex1_valid, select_ex0_valid};
-        pipe_id_o = {3*64{1'b0}};
+        pipe_id_o = {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         pipe_slot_o = {3*RETIRE_SLOT_WIDTH{1'b0}};
         pipe_payload_o =
             {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
@@ -677,7 +699,9 @@ module openrv64_dispatch_window_3p #(
 
         if (select_ex0_valid) begin
             selected_idx = select_ex0;
-            pipe_id_o[0*64 +: 64] = id_q[selected_idx];
+            pipe_id_o[
+                0*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = id_q[selected_idx];
             pipe_slot_o[0*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH] =
                 select_ex0;
             pipe_payload_o[
@@ -694,7 +718,9 @@ module openrv64_dispatch_window_3p #(
         end
         if (select_ex1_valid) begin
             selected_idx = select_ex1;
-            pipe_id_o[1*64 +: 64] = id_q[selected_idx];
+            pipe_id_o[
+                1*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = id_q[selected_idx];
             pipe_slot_o[1*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH] =
                 select_ex1;
             pipe_payload_o[
@@ -711,7 +737,9 @@ module openrv64_dispatch_window_3p #(
         end
         if (select_mem_valid) begin
             selected_idx = select_mem;
-            pipe_id_o[2*64 +: 64] = id_q[selected_idx];
+            pipe_id_o[
+                2*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = id_q[selected_idx];
             pipe_slot_o[2*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH] =
                 select_mem;
             pipe_payload_o[
@@ -737,11 +765,11 @@ module openrv64_dispatch_window_3p #(
     integer retire_lane;
     integer allocation_lane;
     reg [RETIRE_SLOT_WIDTH-1:0] update_slot;
-    reg [63:0] update_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] update_id;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] update_completion;
     reg [31:0] survivor_owner_valid;
     reg [31:0] survivor_owner_ready;
-    reg [63:0] survivor_owner_id [0:31];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] survivor_owner_id [0:31];
     reg [`RV64_XLEN-1:0] survivor_owner_data [0:31];
     reg [COUNT_WIDTH-1:0] survivor_count;
     reg survivor_retiring;
@@ -767,7 +795,8 @@ module openrv64_dispatch_window_3p #(
         survivor_owner_ready = 32'd0;
         survivor_count = {COUNT_WIDTH{1'b0}};
         for (owner_idx = 0; owner_idx < 32; owner_idx = owner_idx + 1) begin
-            survivor_owner_id[owner_idx] = 64'd0;
+            survivor_owner_id[owner_idx] =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             survivor_owner_data[owner_idx] = {`RV64_XLEN{1'b0}};
         end
         for (survivor_idx = 0; survivor_idx < DEPTH;
@@ -776,12 +805,14 @@ module openrv64_dispatch_window_3p #(
             for (survivor_lane = 0; survivor_lane < 3;
                  survivor_lane = survivor_lane + 1) begin
                 if (retire_valid_i[survivor_lane] &&
-                    (retire_id_i[survivor_lane*64 +: 64] ==
+                    (retire_id_i[
+                        survivor_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] ==
                      id_q[survivor_idx]))
                     survivor_retiring = 1'b1;
             end
             if (valid_q[survivor_idx] && !survivor_retiring &&
-                (id_q[survivor_idx] <= squash_id_i)) begin
+                !id_is_younger(id_q[survivor_idx], squash_id_i)) begin
                 survivor_count = survivor_count + 1'b1;
                 survivor_rd = payload_q[survivor_idx][
                     PAYLOAD_RD +: `RV64_REG_ADDR_WIDTH];
@@ -794,7 +825,9 @@ module openrv64_dispatch_window_3p #(
                         `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
                     if (completion_valid_i[survivor_port] &&
                         completion_safe(survivor_completion) &&
-                        (completion_id_i[survivor_port*64 +: 64] ==
+                        (completion_id_i[
+                            survivor_port*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH] ==
                          id_q[survivor_idx])) begin
                         survivor_result_ready = 1'b1;
                         survivor_result_data = survivor_completion[
@@ -804,8 +837,9 @@ module openrv64_dispatch_window_3p #(
                 if (payload_q[survivor_idx][PAYLOAD_REG_WRITE] &&
                     (survivor_rd != `RV64_REG_X0) &&
                     (!survivor_owner_valid[survivor_rd] ||
-                     (id_q[survivor_idx] >
-                      survivor_owner_id[survivor_rd]))) begin
+                     id_is_younger(
+                         id_q[survivor_idx],
+                         survivor_owner_id[survivor_rd]))) begin
                     survivor_owner_valid[survivor_rd] = 1'b1;
                     survivor_owner_ready[survivor_rd] =
                         survivor_result_ready;
@@ -825,22 +859,26 @@ module openrv64_dispatch_window_3p #(
             owner_valid_q <= 32'd0;
             owner_ready_q <= 32'd0;
             for (owner_idx = 0; owner_idx < 32; owner_idx = owner_idx + 1) begin
-                owner_id_q[owner_idx] <= 64'd0;
+                owner_id_q[owner_idx] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
                 owner_data_q[owner_idx] <= {`RV64_XLEN{1'b0}};
             end
             for (entry_idx = 0; entry_idx < DEPTH;
                  entry_idx = entry_idx + 1) begin
                 valid_q[entry_idx] <= 1'b0;
                 issued_q[entry_idx] <= 1'b0;
-                id_q[entry_idx] <= 64'd0;
+                id_q[entry_idx] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
                 payload_q[entry_idx] <=
                     {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
                 uses_rs1_q[entry_idx] <= 1'b0;
                 uses_rs2_q[entry_idx] <= 1'b0;
                 src1_ready_q[entry_idx] <= 1'b0;
                 src2_ready_q[entry_idx] <= 1'b0;
-                src1_tag_q[entry_idx] <= 64'd0;
-                src2_tag_q[entry_idx] <= 64'd0;
+                src1_tag_q[entry_idx] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+                src2_tag_q[entry_idx] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
                 result_ready_q[entry_idx] <= 1'b0;
                 result_data_q[entry_idx] <= {`RV64_XLEN{1'b0}};
             end
@@ -874,12 +912,14 @@ module openrv64_dispatch_window_3p #(
                 for (retire_lane = 0; retire_lane < 3;
                      retire_lane = retire_lane + 1) begin
                     if (retire_valid_i[retire_lane] &&
-                        (retire_id_i[retire_lane*64 +: 64] ==
+                        (retire_id_i[
+                            retire_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH] ==
                          id_q[entry_idx]))
                         recover_retiring = 1'b1;
                 end
                 if (!valid_q[entry_idx] || recover_retiring ||
-                    (id_q[entry_idx] > squash_id_i)) begin
+                    id_is_younger(id_q[entry_idx], squash_id_i)) begin
                     valid_q[entry_idx] <= 1'b0;
                     issued_q[entry_idx] <= 1'b0;
                     result_ready_q[entry_idx] <= 1'b0;
@@ -887,7 +927,8 @@ module openrv64_dispatch_window_3p #(
                     for (completion_port = 0; completion_port < 3;
                          completion_port = completion_port + 1) begin
                         update_id = completion_id_i[
-                            completion_port*64 +: 64];
+                            completion_port*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
                         update_completion = completion_payload_i[
                             completion_port*
                             `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
@@ -926,13 +967,13 @@ module openrv64_dispatch_window_3p #(
             end
 
             if (issue_ex0 &&
-                (id_q[select_ex0] <= squash_id_i))
+                !id_is_younger(id_q[select_ex0], squash_id_i))
                 issued_q[select_ex0] <= 1'b1;
             if (issue_ex1 &&
-                (id_q[select_ex1] <= squash_id_i))
+                !id_is_younger(id_q[select_ex1], squash_id_i))
                 issued_q[select_ex1] <= 1'b1;
             if (issue_mem &&
-                (id_q[select_mem] <= squash_id_i))
+                !id_is_younger(id_q[select_mem], squash_id_i))
                 issued_q[select_mem] <= 1'b1;
         end else begin
             count_q <= count_q + decode_count - retire_count;
@@ -951,7 +992,8 @@ module openrv64_dispatch_window_3p #(
                     for (completion_port = 0; completion_port < 3;
                          completion_port = completion_port + 1) begin
                         update_id = completion_id_i[
-                            completion_port*64 +: 64];
+                            completion_port*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
                         update_completion = completion_payload_i[
                             completion_port*
                             `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
@@ -1016,7 +1058,8 @@ module openrv64_dispatch_window_3p #(
                     valid_q[update_slot] <= 1'b1;
                     issued_q[update_slot] <= 1'b0;
                     id_q[update_slot] <= allocation_id_i[
-                        allocation_lane*64 +: 64];
+                        allocation_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH];
                     payload_q[update_slot] <= admit_payload[allocation_lane];
                     uses_rs1_q[update_slot] <=
                         decode_uses_rs1_i[allocation_lane];
@@ -1056,6 +1099,10 @@ module openrv64_dispatch_window_3p #(
     initial begin
         if ((ENABLE != 0) && (DEPTH != (1 << RETIRE_SLOT_WIDTH)))
             $fatal(1, "issue-window depth must be a power of two");
+        if ((ENABLE != 0) &&
+            (DEPTH >= (1 << (`OPENRV64_INSTR_ID_WIDTH - 1))))
+            $fatal(1,
+                   "issue-window depth must fit the modular ID half-range");
     end
 
     always @(posedge clk) begin
@@ -1082,7 +1129,9 @@ module openrv64_dispatch_window_3p #(
                               "s1_ready=%0d s1_tag=%016x s1_data=%016x ",
                               "s2_ready=%0d s2_tag=%016x s2_data=%016x"},
                              debug_pc,
-                             allocation_id_i[debug_lane*64 +: 64],
+                             allocation_id_i[
+                                 debug_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                                 `OPENRV64_INSTR_ID_WIDTH],
                              debug_slot,
                              admit_src1_ready[debug_lane],
                              admit_src1_tag[debug_lane],

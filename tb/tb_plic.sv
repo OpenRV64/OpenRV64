@@ -27,7 +27,7 @@ module tb_plic;
     logic [63:0] mem_wdata;
     logic [7:0]  mem_wstrb;
     logic [63:0] mem_rdata;
-    logic [1:0]  meip;
+    logic [1:0]  seip;
 
     openrv64_plic #(
         .NUM_HARTS(2),
@@ -44,7 +44,7 @@ module tb_plic;
         .mem_wdata_i(mem_wdata),
         .mem_wstrb_i(mem_wstrb),
         .mem_rdata_o(mem_rdata),
-        .meip_o(meip)
+        .seip_o(seip)
     );
 
     initial begin
@@ -120,15 +120,15 @@ module tb_plic;
         end
     endtask
 
-    task automatic expect_meip;
+    task automatic expect_seip;
         input logic [1:0] expected;
         input [8*48-1:0] label;
         begin
             #1;
-            if (meip !== expected) begin
+            if (seip !== expected) begin
                 $fatal(1,
-                       "%0s: meip=%02b/%02b pending=%02x priorities=%06x enables=%04x thresholds=%02x selected=%016x",
-                       label, meip, expected, dut.pending_q, dut.priority_q,
+                       "%0s: seip=%02b/%02b pending=%02x priorities=%06x enables=%04x thresholds=%02x selected=%016x",
+                       label, seip, expected, dut.pending_q, dut.priority_q,
                        dut.enable_q, dut.threshold_q, dut.selected_id);
             end
         end
@@ -161,7 +161,7 @@ module tb_plic;
         @(negedge clk);
         rst_n = 1'b1;
 
-        expect_meip(2'b00, "reset interrupt outputs");
+        expect_seip(2'b00, "reset interrupt outputs");
         expect_read32(PRIORITY0_ADDR, 32'h0, "reserved source zero priority");
         expect_read32(PRIORITY1_ADDR, 32'h0, "reset source priority");
         expect_read32(PENDING_ADDR, 32'h0, "reset pending bits");
@@ -197,7 +197,7 @@ module tb_plic;
         @(negedge clk);
         irq_sources = 40'h0000_0000_07;
         idle_cycle();
-        expect_meip(2'b01, "threshold blocks context one");
+        expect_seip(2'b01, "threshold blocks context one");
         expect_read32(PENDING_ADDR, 32'h0000_000e,
                       "level inputs become pending");
 
@@ -212,14 +212,14 @@ module tb_plic;
         expect_claim(CLAIM0_ADDR, 32'd2, "priority tie uses lowest ID");
         expect_read32(PENDING_ADDR, 32'h0000_000a,
                       "claim atomically clears source two");
-        expect_meip(2'b01, "next source remains visible");
+        expect_seip(2'b01, "next source remains visible");
 
         bus_write32(THRESHOLD1_ADDR, 32'd4);
-        expect_meip(2'b11, "lower threshold enables context one");
+        expect_seip(2'b11, "lower threshold enables context one");
         expect_claim(CLAIM1_ADDR, 32'd3, "context one claims source three");
         expect_read32(PENDING_ADDR, 32'h0000_0002,
                       "independent context claim clears source three");
-        expect_meip(2'b01, "only source one remains eligible");
+        expect_seip(2'b01, "only source one remains eligible");
 
         // Remove sources 2 and 3, complete them, then claim source 1 while its
         // level remains asserted. It must not re-pend before completion.
@@ -238,12 +238,12 @@ module tb_plic;
         idle_cycle();
         expect_read32(PENDING_ADDR, 32'h0000_0002,
                       "active level re-pends after completion");
-        expect_meip(2'b01, "re-pended source notifies context zero");
+        expect_seip(2'b01, "re-pended source notifies context zero");
 
         irq_sources = 40'h0;
         expect_claim(CLAIM0_ADDR, 32'd1, "claim re-pended source one");
         bus_write32(CLAIM0_ADDR, 32'd1);
-        expect_meip(2'b00, "deasserted completed source stays idle");
+        expect_seip(2'b00, "deasserted completed source stays idle");
 
         // Priority equal to threshold is blocked. The same pending source can
         // still notify a context with a lower threshold.
@@ -252,7 +252,7 @@ module tb_plic;
         idle_cycle();
         expect_read32(PENDING_ADDR, 32'h0000_0004,
                       "source two pending for threshold test");
-        expect_meip(2'b10, "per-context threshold comparison");
+        expect_seip(2'b10, "per-context threshold comparison");
 
         // Pending registers are read-only.
         bus_write32(PENDING_ADDR, 32'h0);
@@ -260,9 +260,9 @@ module tb_plic;
                       "pending write is ignored");
 
         bus_write32(PRIORITY2_ADDR, 32'd6);
-        expect_meip(2'b11, "priority above both thresholds");
+        expect_seip(2'b11, "priority above both thresholds");
         expect_claim(CLAIM0_ADDR, 32'd2, "claim reprioritized source");
-        expect_meip(2'b00, "one claim removes global pending request");
+        expect_seip(2'b00, "one claim removes global pending request");
         irq_sources = 40'h0;
         bus_write32(CLAIM0_ADDR, 32'd2);
         expect_claim(CLAIM0_ADDR, 32'd0, "claim with no eligible source");
@@ -277,7 +277,7 @@ module tb_plic;
                       "source 32 pending word placement");
         expect_read32(ENABLE0_WORD1_ADDR, 32'h0000_0001,
                       "source 32 enable word placement");
-        expect_meip(2'b01, "source 32 notifies context zero");
+        expect_seip(2'b01, "source 32 notifies context zero");
         expect_claim(CLAIM0_ADDR, 32'd32, "claim source 32");
         irq_sources[31] = 1'b0;
         bus_write32(CLAIM0_ADDR, 32'd32);
@@ -285,7 +285,7 @@ module tb_plic;
         @(negedge clk);
         rst_n = 1'b0;
         #1;
-        expect_meip(2'b00, "asynchronous reset clears notifications");
+        expect_seip(2'b00, "asynchronous reset clears notifications");
         rst_n = 1'b1;
         expect_read32(PRIORITY2_ADDR, 32'h0, "reset clears priorities");
         expect_read32(ENABLE0_ADDR, 32'h0, "reset clears enables");

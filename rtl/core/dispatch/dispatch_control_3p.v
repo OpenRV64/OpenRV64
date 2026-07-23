@@ -17,7 +17,7 @@ module openrv64_dispatch_control_3p #(
     input  wire [2:0]                   candidate_barrier_free_i,
     input  wire [2:0]                   candidate_hazard_free_i,
     input  wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe_i,
-    input  wire [3*64-1:0]              candidate_id_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] candidate_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0] candidate_slot_i,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         candidate_payload_i,
@@ -31,7 +31,7 @@ module openrv64_dispatch_control_3p #(
     output wire [2:0]                   candidate_fire_o,
     output wire                         barrier_active_o,
     output wire [2:0]                   pipe_valid_o,
-    output wire [3*64-1:0]              pipe_id_o,
+    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
     output wire [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
     output wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o

@@ -113,7 +113,7 @@ module openrv64_dispatch #(
     // of the 1P and 3P contracts because operand capture, queue allocation,
     // and completion identity do not fit the old scalar port list.
     input  wire                         squash_frontend_3p_i,
-    input  wire [63:0]                  squash_id_3p_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_3p_i,
     input  wire [2:0]                   decode_valid_3p_i,
     output wire [2:0]                   decode_ready_3p_o,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
@@ -123,7 +123,7 @@ module openrv64_dispatch #(
     output wire [6*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr_3p_o,
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_3p_i,
     input  wire                         allocation_ready_3p_i,
-    input  wire [3*64-1:0]              allocation_id_3p_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] allocation_slot_3p_i,
     output wire [2:0]                   allocation_valid_3p_o,
     output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_3p_o,
@@ -138,16 +138,16 @@ module openrv64_dispatch #(
     input  wire [31:0]                  forward_map_valid_3p_i,
     input  wire [32*`RV64_XLEN-1:0]     forward_map_data_3p_i,
     input  wire [2:0]                   completion_valid_3p_i,
-    input  wire [3*64-1:0]              completion_id_3p_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] completion_id_3p_i,
     input  wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         completion_payload_3p_i,
     output wire [2:0]                   pipe_valid_3p_o,
-    output wire [3*64-1:0]              pipe_id_3p_o,
+    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_3p_o,
     output wire [3*RETIRE_SLOT_WIDTH_3P-1:0] pipe_slot_3p_o,
     output wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_3p_o,
     input  wire [2:0]                   retire_valid_3p_i,
-    input  wire [3*64-1:0]              retire_id_3p_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] retire_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] retire_slot_3p_i,
     input  wire [2:0]                   retire_uses_rs1_3p_i,
     input  wire [2:0]                   retire_uses_rs2_3p_i,
@@ -156,7 +156,7 @@ module openrv64_dispatch #(
     input  wire [2:0]                   retire_reg_write_3p_i,
     input  wire [3*`RV64_REG_ADDR_WIDTH-1:0] retire_rd_addr_3p_i,
     input  wire [2:0]                   retire_hard_3p_i,
-    input  wire [63:0]                  next_retire_id_3p_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] next_retire_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] next_retire_slot_3p_i,
     output wire                         barrier_active_3p_o,
     output wire [2:0]                   raw_hazard_3p_o,
@@ -178,7 +178,8 @@ module openrv64_dispatch #(
             assign allocation_meta_3p_o =
                 {3*`OPENRV64_RETIRE_META_WIDTH{1'b0}};
             assign pipe_valid_3p_o = 3'b000;
-            assign pipe_id_3p_o = {3*64{1'b0}};
+            assign pipe_id_3p_o =
+                {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign pipe_slot_3p_o = {3*RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign pipe_payload_3p_o =
                 {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
@@ -195,7 +196,7 @@ module openrv64_dispatch #(
             wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0]
                 strict_allocation_meta;
             wire [2:0] strict_pipe_valid;
-            wire [3*64-1:0] strict_pipe_id;
+            wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] strict_pipe_id;
             wire [3*RETIRE_SLOT_WIDTH_3P-1:0] strict_pipe_slot;
             wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                 strict_pipe_payload;
@@ -272,7 +273,7 @@ module openrv64_dispatch #(
             wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0]
                 window_allocation_meta;
             wire [2:0] window_pipe_valid;
-            wire [3*64-1:0] window_pipe_id;
+            wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] window_pipe_id;
             wire [3*RETIRE_SLOT_WIDTH_3P-1:0] window_pipe_slot;
             wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                 window_pipe_payload;

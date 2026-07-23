@@ -12,7 +12,7 @@ instantiates:
     openrv64_soc_rom          64 KiB boot ROM
     openrv64_soc_memory       256 MiB synchronous simulation RAM
     openrv64_clint            one machine software/timer context
-    openrv64_plic             one machine external-interrupt context
+    openrv64_plic             one supervisor external-interrupt context
     openrv64_uart16550        serial port
     openrv64_gpio             synchronized GPIO
     openrv64_timer            general-purpose down-counter
@@ -60,9 +60,10 @@ The single hart is wired as follows:
 
     CLINT MSIP[0] -> core machine software interrupt, cause 3
     CLINT MTIP[0] -> core machine timer interrupt, cause 7
-    PLIC MEIP[0]  -> core machine external interrupt, cause 11
+    PLIC SEIP[0]  -> core supervisor external interrupt, cause 9
 
-Supervisor interrupt inputs remain tied low. The PLIC source map is fixed:
+The unused machine-external, supervisor-software, and supervisor-timer inputs
+remain tied low. The PLIC source map is fixed:
 
     PLIC source ID 1  UART
     PLIC source ID 2  GPIO aggregate interrupt
@@ -91,7 +92,7 @@ runs it through the real core and bus. The test proves:
 * simultaneous pending PLIC sources, threshold gating, priority selection,
   claim, source clear, completion, and delivery of timer ID 3 before GPIO ID 2;
 * CLINT MSIP and MTIP delivery and source clearing;
-* architectural mcause values 3, 7, and 11 at the machine trap handler; and
+* architectural mcause values 3, 7, and 9 at the machine trap handler; and
 * quiescent interrupt-controller and device outputs after all four deliveries.
 
 tb/tb_reset_sequencer.sv separately checks exact reset hold timing, ordered

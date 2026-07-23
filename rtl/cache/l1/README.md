@@ -148,25 +148,31 @@ at request admission without losing a later asynchronous access fault.
 
 The L1D endpoint also contains a deliberately small address-stream prefetcher.
 It trains on accepted cacheable, unlocked loads after aligning them to
-64-byte lines.  The first observation predicts the next line.  Two matching
-nonzero deltas establish a global signed stride.  `PREFETCH_DISTANCE` is the
-initial contiguous read-ahead depth; it does not select one farther line and
-leave holes.  Demand catching a queued or outstanding prefetch doubles the
-depth, bounded by `PREFETCH_MAX_DISTANCE`.  Two unused speculative
-replacements halve it.  `PREFETCH_MAX_STRIDE_LINES` limits eligible deltas and
-defaults to 64 lines (4096 bytes).
+64-byte lines.  `PREFETCH_STREAMS` defaults to two independent histories.
+An exact trained-stride match selects a history first; otherwise the nearest
+eligible previous line is selected, followed by an invalid or round-robin
+replacement entry.  The first observation predicts the next line, while two
+matching nonzero deltas establish a signed stride in that history.
+`PREFETCH_DISTANCE` is the initial contiguous read-ahead depth; it does not
+select one farther line and leave holes.  Demand catching a queued or
+outstanding prefetch doubles the depth, bounded by `PREFETCH_MAX_DISTANCE`.
+Two unused speculative replacements halve it. `PREFETCH_MAX_STRIDE_LINES`
+limits eligible deltas and defaults to 64 lines (4096 bytes).
 `PREFETCH_ENABLE=0` removes prefetch issue while retaining the same demand
 path.
 
-There is no PC input, table, or LSU predictor state.  The default four-entry
-candidate window feeds four prefetch MSHRs.  Prefetch transaction IDs occupy
-the upper half of the four-bit L1D ID space, so their responses may return out
-of order while the blocking architectural demand/store backend uses the lower
-half.  A completed speculative line resides in the existing fill buffers until
-demanded; it does not install in the L1 tag or data arrays, so unused prefetches
-cannot evict resident cache lines.  `PREFETCH_DEMAND_RESERVE` entries cannot be
-consumed by speculative responses.  Demand traffic may use those entries or
-replace an unused speculative line.
+There is no PC input or LSU predictor state.  The address-only history table
+accepts one through four entries.  The default four-entry candidate window
+feeds four prefetch MSHRs.  Prefetch transaction IDs occupy the upper half of
+the four-bit L1D ID space, so their responses may return out of order while the
+blocking architectural demand/store backend uses the lower half.  A completed
+speculative line resides in the existing fill buffers until demanded; it does
+not install in the L1 tag or data arrays, so unused prefetches cannot evict
+resident cache lines. `PREFETCH_DEMAND_RESERVE` entries cannot be consumed by
+speculative responses. Demand traffic may use those entries or replace an
+unused speculative line. Speculative replacement rotates across eligible
+entries so an old slot cannot remain pinned while one lower-index slot absorbs
+every replacement.
 
 Demand misses take priority.  A speculative read may pass queued posted stores
 only when no buffered store aliases its line.  An aliasing store, invalidation,

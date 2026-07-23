@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
+`include "core/isa/rv64-zicsr.v"
 `include "core/isa/rv64-zifencei.v"
 `include "core/fetch/fetch-defs.v"
 `include "core/decode/defs/early-defs.v"
@@ -28,6 +29,7 @@ module openrv64_rv64_top #(
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
+    parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_TRACE = 0,
@@ -138,6 +140,7 @@ module openrv64_rv64_top #(
 
     wire fetch_pc_ready;
     wire fetch_pc_valid;
+    wire translation_barrier_busy;
     wire fetch_redirect_replay;
     wire fetch_mem_valid;
     wire fetch_mem_next_valid;
@@ -294,6 +297,7 @@ module openrv64_rv64_top #(
     wire [`RV64_XLEN-1:0] exec_csr_wdata;
     wire exec_mem_valid;
     wire exec_mem_ready;
+    wire exec_mem_bus_ready;
     wire exec_mem_error;
     wire exec_mem_lock;
     wire exec_mem_write;
@@ -452,6 +456,25 @@ module openrv64_rv64_top #(
     wire retire_sfence_vma = retire_accept &&
                              !exec_wb_exception &&
                              `RV64_IS_SFENCE_VMA(exec_wb_instr);
+    wire retire_csr_write_required =
+        (`RV64_FUNCT3(exec_wb_instr) == `RV64_ZICSR_FUNCT3_CSRRW) ||
+        (`RV64_FUNCT3(exec_wb_instr) == `RV64_ZICSR_FUNCT3_CSRRWI) ||
+        (((`RV64_FUNCT3(exec_wb_instr) ==
+           `RV64_ZICSR_FUNCT3_CSRRS) ||
+          (`RV64_FUNCT3(exec_wb_instr) ==
+           `RV64_ZICSR_FUNCT3_CSRRC) ||
+          (`RV64_FUNCT3(exec_wb_instr) ==
+           `RV64_ZICSR_FUNCT3_CSRRSI) ||
+          (`RV64_FUNCT3(exec_wb_instr) ==
+           `RV64_ZICSR_FUNCT3_CSRRCI)) &&
+         (`RV64_RS1(exec_wb_instr) != `RV64_REG_X0));
+    wire retire_satp_write = retire_csr &&
+                             !exec_wb_exception &&
+                             retire_csr_write_required &&
+                             (`RV64_CSR(exec_wb_instr) ==
+                              `RV64_CSR_SATP);
+    wire retire_translation_fence =
+        retire_sfence_vma || retire_satp_write;
     wire irq_take = csr_irq_pending &&
                     retire_accept &&
                     !retire_exception &&
@@ -473,7 +496,8 @@ module openrv64_rv64_top #(
     assign hard_flush_irq_req = irq_take;
     assign hard_flush_mret_req = retire_mret;
     assign hard_flush_sret_req = retire_sret;
-    assign hard_flush_restart_req = retire_fence_i || retire_sfence_vma;
+    assign hard_flush_restart_req =
+        retire_fence_i || retire_translation_fence;
     assign hard_flush_req = except_vector_valid;
 
     assign flush_if_id = hard_flush_req;
@@ -508,7 +532,8 @@ module openrv64_rv64_top #(
                             !halt_pending_q &&
                             !decode_ebreak_accept &&
                             !bp_fetch_stall &&
-                            !hard_flush_req;
+                            !hard_flush_req &&
+                            !translation_barrier_busy;
     assign fetch_decode_clear = if_id_in_clear && !bp_fetch_stall;
 
     openrv64_fetch #(
@@ -671,7 +696,7 @@ module openrv64_rv64_top #(
             if_id_predecode_valid ? bp_predecode_imm[63] : decode_imm[63]),
         .lookup_instr_i(if_id_instr),
         .lookup_pc_i(if_id_pc),
-        .lookup_id_i(64'd0),
+        .lookup_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .lookup_allocate_i(bp_branch_allocate),
         .resolve_valid_i(bp_branch_resolve),
         .resolve_branch_i(dispatch_exec_branch),
@@ -679,7 +704,7 @@ module openrv64_rv64_top #(
         .resolve_instr_i(dispatch_exec_instr),
         .resolve_pc_i(dispatch_exec_pc),
         .resolve_target_i(exec_redirect_target),
-        .resolve_id_i(64'd0),
+        .resolve_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .train_valid_i({2'b00, bp_branch_resolve}),
         .train_branch_i({2'b00, dispatch_exec_branch}),
         .train_taken_i({2'b00, exec_branch_taken}),
@@ -877,7 +902,8 @@ module openrv64_rv64_top #(
         .decode_uses_rs2_3p_i(3'b000),
         .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
         .allocation_ready_3p_i(1'b0),
-        .allocation_id_3p_i({3*64{1'b0}}),
+        .allocation_id_3p_i(
+            {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .allocation_slot_3p_i(9'd0),
         .pipe_ready_3p_i(3'b000),
         .forward_valid_3p_i(2'b00),
@@ -1008,12 +1034,17 @@ module openrv64_rv64_top #(
         .trace_serializing_o(exec_trace_serializing),
         .flush_3p_i(1'b0),
         .issue_valid_3p_i(3'b000),
-        .issue_id_3p_i({3*64{1'b0}}),
+        .issue_id_3p_i({3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .issue_slot_3p_i(9'd0),
         .issue_payload_3p_i(
             {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
+        .branch_forward_valid_3p_i(1'b0),
+        .branch_forward_rd_addr_3p_i(
+            {`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .branch_forward_data_3p_i({`RV64_XLEN{1'b0}}),
         .ordered_head_valid_3p_i(1'b0),
-        .ordered_head_id_3p_i(64'd0),
+        .ordered_head_id_3p_i(
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ordered_head_slot_3p_i(3'd0),
         .complete_ready_3p_i(3'b000)
     );
@@ -1058,6 +1089,7 @@ module openrv64_rv64_top #(
 
     openrv64_core_bus #(
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID)
     ) u_core_bus (
         .clk(clk),
@@ -1087,7 +1119,7 @@ module openrv64_rv64_top #(
         .fetch_pipe_req_sum_i(1'b0), .fetch_pipe_req_mxr_i(1'b0),
         .fetch_pipe_resp_ready_i(1'b0),
         .fetch_pipe_cancel_stash_i(1'b1),
-        .lsu_valid_i(exec_mem_valid),
+        .lsu_valid_i(exec_mem_valid && !translation_barrier_busy),
         .lsu_lock_i(exec_mem_lock),
         .lsu_write_i(exec_mem_write),
         .lsu_addr_i(exec_mem_addr),
@@ -1101,7 +1133,7 @@ module openrv64_rv64_top #(
         .lsu_root_ppn_i(csr_satp_root_ppn),
         .lsu_sum_i(csr_status_sum),
         .lsu_mxr_i(csr_status_mxr),
-        .lsu_ready_o(exec_mem_ready),
+        .lsu_ready_o(exec_mem_bus_ready),
         .lsu_rdata_o(exec_mem_rdata),
         .lsu_access_fault_o(exec_mem_access_fault),
         .lsu_page_fault_o(exec_mem_page_fault),
@@ -1117,7 +1149,8 @@ module openrv64_rv64_top #(
         .lsu_pipe_req_root_ppn_i({`RV64_SATP_PPN_WIDTH{1'b0}}),
         .lsu_pipe_req_sum_i(1'b0), .lsu_pipe_req_mxr_i(1'b0),
         .lsu_pipe_cancel_i(1'b0), .lsu_pipe_resp_ready_i(1'b0),
-        .tlbi_i(retire_sfence_vma),
+        .tlbi_i(retire_translation_fence),
+        .tlbi_busy_o(translation_barrier_busy),
         .icache_invalidate_i(retire_fence_i),
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),
@@ -1183,6 +1216,9 @@ module openrv64_rv64_top #(
         .m_axi_bid_i({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
         .m_axi_bresp_i(2'd0), .m_axi_bvalid_i(1'b0)
     );
+
+    assign exec_mem_ready =
+        exec_mem_bus_ready && !translation_barrier_busy;
 
     assign dbg_pc = dbg_pc_q;
     assign dbg_instr = dbg_instr_q;

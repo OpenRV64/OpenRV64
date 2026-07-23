@@ -9,6 +9,7 @@
 module tb_exec_top_3p;
 
     localparam integer SLOT_WIDTH = 3;
+    localparam integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH;
     localparam integer ISSUE_WIDTH = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer COMPLETE_WIDTH = `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH;
 
@@ -64,19 +65,22 @@ module tb_exec_top_3p;
     reg [2:0] issue_valid;
     wire [2:0] issue_ready;
     wire [2:0] issue_unsupported;
-    reg [3*64-1:0] issue_id;
+    reg [3*ID_WIDTH-1:0] issue_id;
     reg [3*SLOT_WIDTH-1:0] issue_slot;
     reg [3*ISSUE_WIDTH-1:0] issue_payload;
+    reg branch_forward_valid;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] branch_forward_rd_addr;
+    reg [`RV64_XLEN-1:0] branch_forward_data;
     reg ordered_head_valid;
-    reg [63:0] ordered_head_id;
+    reg [ID_WIDTH-1:0] ordered_head_id;
     reg [SLOT_WIDTH-1:0] ordered_head_slot;
     wire [2:0] complete_valid;
     reg [2:0] complete_ready;
-    wire [3*64-1:0] complete_id;
+    wire [3*ID_WIDTH-1:0] complete_id;
     wire [3*SLOT_WIDTH-1:0] complete_slot;
     wire [3*COMPLETE_WIDTH-1:0] complete_payload;
     wire redirect_valid;
-    wire [63:0] redirect_id;
+    wire [ID_WIDTH-1:0] redirect_id;
     wire [`RV64_XLEN-1:0] redirect_target;
     wire branch_resolved;
     wire branch_taken;
@@ -117,6 +121,9 @@ module tb_exec_top_3p;
         .issue_id_i(issue_id),
         .issue_slot_i(issue_slot),
         .issue_payload_i(issue_payload),
+        .branch_forward_valid_i(branch_forward_valid),
+        .branch_forward_rd_addr_i(branch_forward_rd_addr),
+        .branch_forward_data_i(branch_forward_data),
         .ordered_head_valid_i(ordered_head_valid),
         .ordered_head_id_i(ordered_head_id),
         .ordered_head_slot_i(ordered_head_slot),
@@ -200,8 +207,11 @@ module tb_exec_top_3p;
         issue_id = 192'd0;
         issue_slot = 9'd0;
         issue_payload = {3*ISSUE_WIDTH{1'b0}};
+        branch_forward_valid = 1'b0;
+        branch_forward_rd_addr = {`RV64_REG_ADDR_WIDTH{1'b0}};
+        branch_forward_data = {`RV64_XLEN{1'b0}};
         ordered_head_valid = 1'b0;
-        ordered_head_id = 64'd0;
+        ordered_head_id = ID_WIDTH'(0);
         ordered_head_slot = {SLOT_WIDTH{1'b0}};
         complete_ready = 3'b000;
         csr_rdata = 64'd0;
@@ -229,7 +239,7 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
         packet[ISSUE_REG_WRITE] = 1'b1;
         issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[0*64 +: 64] = 64'd0;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(0);
         issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
         issue_valid = 3'b001;
         #1;
@@ -238,7 +248,7 @@ module tb_exec_top_3p;
         issue_valid = 3'b000;
         #1;
         if (!complete_valid[0]) fail("EX0 did not complete ADDI");
-        if (complete_id[0*64 +: 64] != 64'd0)
+        if (complete_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(0))
             fail("EX0 completion ID mismatch");
         if (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd12)
             fail("EX0 ADDI result mismatch");
@@ -256,7 +266,7 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
         packet[ISSUE_REG_WRITE] = 1'b1;
         issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[0*64 +: 64] = 64'd5;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(5);
         issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd5;
         complete_ready = 3'b001;
         issue_valid = 3'b001;
@@ -273,6 +283,60 @@ module tb_exec_top_3p;
         tick();
         complete_ready = 3'b000;
 
+        // If EX0 and EX1's local completion both name a branch source, EX0's
+        // youngest-owner-qualified value wins.  The packet and local result
+        // deliberately disagree with the foreign value.
+        packet = packet_base(64'd109, 64'h1800, 32'h0000_02b3);
+        packet[ISSUE_RS1_DATA +: 64] = 64'd11;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd0;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(9);
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
+        issue_valid = 3'b010;
+        #1;
+        if (!issue_ready[1])
+            fail("EX1 did not accept local-forward producer");
+        tick();
+        issue_valid = 3'b000;
+        #1;
+        if (!complete_valid[1] ||
+            (complete_payload[
+                1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd11))
+            fail("EX1 local-forward producer result mismatch");
+
+        packet = packet_base(64'd110, 64'h1900, 32'h0022_8463);
+        packet[ISSUE_RS1 +: 5] = 5'd5;
+        packet[ISSUE_RS1_DATA +: 64] = 64'd0;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd22;
+        packet[ISSUE_IMM +: 64] = 64'd8;
+        packet[ISSUE_BR_OP +: 4] = `RV64_BR_OP_BEQ;
+        packet[ISSUE_BRANCH] = 1'b1;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(10);
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd2;
+        branch_forward_valid = 1'b1;
+        branch_forward_rd_addr = 5'd5;
+        branch_forward_data = 64'd22;
+        complete_ready = 3'b010;
+        issue_valid = 3'b010;
+        #1;
+        if (!issue_ready[1] || !branch_resolved || !branch_taken)
+            fail("qualified EX0 branch value lost to EX1 local forwarding");
+        tick();
+        issue_valid = 3'b000;
+        branch_forward_valid = 1'b0;
+        complete_ready = 3'b000;
+        #1;
+        if (!complete_valid[1])
+            fail("foreign-priority EX1 branch did not complete");
+        complete_ready = 3'b010;
+        tick();
+        complete_ready = 3'b000;
+
         // A valid aligned conditional branch resolves on EX1 before
         // retirement and therefore does not require the ordered-head token.
         packet = packet_base(64'd101, 64'h2000, 32'h0020_8463);
@@ -282,21 +346,22 @@ module tb_exec_top_3p;
         packet[ISSUE_BR_OP +: 4] = `RV64_BR_OP_BEQ;
         packet[ISSUE_BRANCH] = 1'b1;
         issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[1*64 +: 64] = 64'd1;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(1);
         issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
         issue_valid = 3'b010;
         ordered_head_valid = 1'b1;
-        ordered_head_id = 64'd99;
+        ordered_head_id = ID_WIDTH'(99);
         ordered_head_slot = 3'd1;
         #1;
         if (!issue_ready[1]) fail("EX1 early branch waited for order token");
         if (!branch_resolved || !branch_taken || !redirect_valid)
             fail("EX1 early branch did not resolve without head token");
-        ordered_head_id = 64'd1;
+        ordered_head_id = ID_WIDTH'(1);
         #1;
         if (!branch_resolved || !branch_taken || !redirect_valid)
             fail("EX1 branch resolution was not produced on issue");
-        if ((redirect_id != 64'd1) || (redirect_target != 64'h2008))
+        if ((redirect_id != ID_WIDTH'(1)) ||
+            (redirect_target != 64'h2008))
             fail("EX1 branch redirect metadata mismatch");
         tick();
         issue_valid = 3'b000;
@@ -316,17 +381,18 @@ module tb_exec_top_3p;
         packet[ISSUE_JUMP] = 1'b1;
         packet[ISSUE_PREDICTED] = 1'b1;
         issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[1*64 +: 64] = 64'd7;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(7);
         issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
         issue_valid = 3'b010;
         ordered_head_valid = 1'b1;
-        ordered_head_id = 64'd99;
+        ordered_head_id = ID_WIDTH'(99);
         ordered_head_slot = 3'd1;
         #1;
         if (!issue_ready[1]) fail("EX1 direct JAL waited for order token");
         if (!branch_resolved || !branch_taken || redirect_valid)
             fail("EX1 direct JAL prediction/resolve mismatch");
-        if ((redirect_id != 64'd7) || (redirect_target != 64'h2808))
+        if ((redirect_id != ID_WIDTH'(7)) ||
+            (redirect_target != 64'h2808))
             fail("EX1 direct JAL resolution metadata mismatch");
         tick();
         issue_valid = 3'b000;
@@ -349,9 +415,9 @@ module tb_exec_top_3p;
         packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_SD;
         packet[ISSUE_MEM_WRITE] = 1'b1;
         issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[2*64 +: 64] = 64'd2;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(2);
         issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd2;
-        ordered_head_id = 64'd1;
+        ordered_head_id = ID_WIDTH'(1);
         ordered_head_slot = 3'd1;
         issue_valid = 3'b100;
         #1;
@@ -362,7 +428,7 @@ module tb_exec_top_3p;
         if (mem_valid) fail("store escaped before ordered-head permission");
         if (!mem_access || (mem_effective_addr != 64'h4000))
             fail("MEM did not expose store address for protection checks");
-        ordered_head_id = 64'd2;
+        ordered_head_id = ID_WIDTH'(2);
         ordered_head_slot = 3'd2;
         #1;
         if (!mem_valid || !mem_write || (mem_addr != 64'h4000) ||
@@ -401,7 +467,8 @@ module tb_exec_top_3p;
             packet[ISSUE_MEM_READ] = 1'b1;
             packet[ISSUE_REG_WRITE] = 1'b1;
             issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-            issue_id[2*64 +: 64] = 64'd20 + depth_index;
+            issue_id[2*ID_WIDTH +: ID_WIDTH] =
+                ID_WIDTH'(20 + depth_index);
             issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = depth_index;
             issue_valid = 3'b100;
             #1;
@@ -471,7 +538,7 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_MUL;
         packet[ISSUE_REG_WRITE] = 1'b1;
         issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[0*64 +: 64] = 64'd3;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(3);
         issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd3;
         issue_valid = 3'b001;
         #1;
@@ -487,7 +554,7 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
         packet[ISSUE_REG_WRITE] = 1'b1;
         issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[1*64 +: 64] = 64'd4;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(4);
         issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd4;
         issue_valid = 3'b010;
         #1;
@@ -508,7 +575,7 @@ module tb_exec_top_3p;
             wait_cycles = wait_cycles + 1;
         end
         if (!complete_valid[0]) fail("EX0 MUL timed out");
-        if (complete_id[0*64 +: 64] != 64'd3)
+        if (complete_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(3))
             fail("EX0 MUL completion ID mismatch");
         if (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd42)
             fail("EX0 MUL result mismatch");
@@ -524,7 +591,7 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
         packet[ISSUE_REG_WRITE] = 1'b1;
         issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[0*64 +: 64] = 64'd6;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(6);
         issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd6;
         complete_ready = 3'b001;
         issue_valid = 3'b001;
@@ -558,9 +625,9 @@ module tb_exec_top_3p;
         packet[ISSUE_MEM_WRITE] = 1'b1;
         packet[ISSUE_REG_WRITE] = 1'b1;
         issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[2*64 +: 64] = 64'd8;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(8);
         issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
-        ordered_head_id = 64'd8;
+        ordered_head_id = ID_WIDTH'(8);
         ordered_head_slot = 3'd0;
         issue_valid = 3'b100;
         #1;

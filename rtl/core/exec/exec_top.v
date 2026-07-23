@@ -136,16 +136,20 @@ module openrv64_exec_top #(
     input  wire [2:0]                   issue_valid_3p_i,
     output wire [2:0]                   issue_ready_3p_o,
     output wire [2:0]                   issue_unsupported_3p_o,
-    input  wire [3*64-1:0]              issue_id_3p_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] issue_slot_3p_i,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_3p_i,
+    input  wire                         branch_forward_valid_3p_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0]
+                                        branch_forward_rd_addr_3p_i,
+    input  wire [`RV64_XLEN-1:0]        branch_forward_data_3p_i,
     input  wire                         ordered_head_valid_3p_i,
-    input  wire [63:0]                  ordered_head_id_3p_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] ordered_head_slot_3p_i,
     output wire [2:0]                   complete_valid_3p_o,
     input  wire [2:0]                   complete_ready_3p_i,
-    output wire [3*64-1:0]              complete_id_3p_o,
+    output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_3p_o,
     output wire [3*RETIRE_SLOT_WIDTH_3P-1:0] complete_slot_3p_o,
     output wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         complete_payload_3p_o,
@@ -155,7 +159,7 @@ module openrv64_exec_top #(
     output wire [`RV64_XLEN-1:0]        async_store_fault_addr_3p_o,
     output wire [63:0]                  async_store_fault_trace_3p_o,
     output wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr_3p_o,
-    output wire [63:0]                  redirect_id_3p_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_3p_o,
     output wire [RETIRE_SLOT_WIDTH_3P-1:0] redirect_slot_3p_o
 );
 
@@ -171,11 +175,13 @@ module openrv64_exec_top #(
             assign issue_ready_3p_o = 3'b000;
             assign issue_unsupported_3p_o = 3'b000;
             assign complete_valid_3p_o = 3'b000;
-            assign complete_id_3p_o = {3*64{1'b0}};
+            assign complete_id_3p_o =
+                {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign complete_slot_3p_o = {3*RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign complete_payload_3p_o =
                 {3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
-            assign redirect_id_3p_o = 64'd0;
+            assign redirect_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign redirect_slot_3p_o = {RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign branch_conditional_o = 1'b0;
             assign branch_pc_o = pc_i;
@@ -205,6 +211,10 @@ module openrv64_exec_top #(
                 .issue_id_i(issue_id_3p_i),
                 .issue_slot_i(issue_slot_3p_i),
                 .issue_payload_i(issue_payload_3p_i),
+                .branch_forward_valid_i(branch_forward_valid_3p_i),
+                .branch_forward_rd_addr_i(
+                    branch_forward_rd_addr_3p_i),
+                .branch_forward_data_i(branch_forward_data_3p_i),
                 .ordered_head_valid_i(ordered_head_valid_3p_i),
                 .ordered_head_id_i(ordered_head_id_3p_i),
                 .ordered_head_slot_i(ordered_head_slot_3p_i),

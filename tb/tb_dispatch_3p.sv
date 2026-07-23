@@ -8,6 +8,7 @@ module tb_dispatch_3p;
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer MW = `OPENRV64_RETIRE_META_WIDTH;
     localparam integer SW = 3;
+    localparam integer IDW = `OPENRV64_INSTR_ID_WIDTH;
 
     localparam integer I_SYSTEM = 10;
     localparam integer I_PREDICTED_TAKEN = 12;
@@ -39,7 +40,7 @@ module tb_dispatch_3p;
     wire [6*5-1:0] gpr_read_addr;
     reg [6*64-1:0] gpr_read_data;
     reg allocation_ready;
-    reg [3*64-1:0] allocation_id;
+    reg [3*IDW-1:0] allocation_id;
     reg [3*SW-1:0] allocation_slot;
     wire [2:0] allocation_valid;
     wire [3*MW-1:0] allocation_meta;
@@ -53,7 +54,7 @@ module tb_dispatch_3p;
     reg [31:0] forward_map_valid;
     reg [32*64-1:0] forward_map_data;
     wire [2:0] pipe_valid;
-    wire [3*64-1:0] pipe_id;
+    wire [3*IDW-1:0] pipe_id;
     wire [3*SW-1:0] pipe_slot;
     wire [3*IW-1:0] pipe_payload;
     reg [2:0] retire_valid;
@@ -197,7 +198,7 @@ module tb_dispatch_3p;
         decode_uses_rs2 = 0;
         gpr_read_data = 0;
         allocation_ready = 1;
-        allocation_id = {64'd2, 64'd1, 64'd0};
+        allocation_id = {IDW'(2), IDW'(1), IDW'(0)};
         allocation_slot = {3'd2, 3'd1, 3'd0};
         pipe_ready = 3'b111;
         forward_valid = 2'b00;
@@ -409,6 +410,9 @@ module tb_dispatch_3p;
         #1;
         if ((allocation_valid != 3'b011) || (pipe_valid != 3'b011))
             fail("correctly predicted BEQ did not pair with younger ALU");
+        if ((pipe_payload[0*IW + I_TRACE +: 64] != 64'd31) ||
+            (pipe_payload[1*IW + I_TRACE +: 64] != 64'd30))
+            fail("branch pair did not allocate non-branch to EX0 first");
         if (!allocation_meta[MW-1])
             fail("paired BEQ lost hard retirement classification");
 
@@ -438,7 +442,7 @@ module tb_dispatch_3p;
         gpr_read_data[0*64 +: 64] = 64'h77;
         gpr_read_data[1*64 +: 64] = 64'h77;
         #1;
-        if ((allocation_valid != 3'b001) || (pipe_valid != 3'b001))
+        if ((allocation_valid != 3'b001) || (pipe_valid != 3'b010))
             fail("mispredicted BEQ allowed younger wrong-path issue");
 
         // The exemption does not weaken RAW enforcement.  A BNE waiting on an
@@ -546,6 +550,38 @@ module tb_dispatch_3p;
             fail("EX0-to-EX1 branch forwarding did not release and pair BEQ");
         if (pipe_payload[1*IW + I_RS1_DATA +: 64] != 64'd0)
             fail("EX0-to-EX1 branch value did not reach branch comparator");
+
+        // A branch may also consume EX1's local previous-cycle result.  That
+        // value is applied inside EX1 and is not visible to dispatch's
+        // equality-pairing comparator.  Even when stale GPR data happens to
+        // agree with the prediction, the younger candidate must stay behind
+        // the branch.
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        branch_completion_forward_valid = 3'b000;
+        completion_forward_rd_addr = 15'd0;
+        completion_forward_data = {3*64{1'b0}};
+        forward_valid = 2'b00;
+        forward_rd_addr = 10'd0;
+        p0 = alu_packet(64'd44, 5'd0, 5'd0, 5'd29);
+        p1 = alu_packet(64'd45, 5'd0, 5'd0, 5'd30);
+        enqueue2(p0, p1, 2'b00, 2'b00);
+        tick();
+        p0 = branch_packet(64'd46, `RV64_BR_OP_BNE, 1'b1, 5'd29, 5'd30);
+        p1 = alu_packet(64'd47, 5'd3, 5'd4, 5'd31);
+        enqueue2(p0, p1, 2'b11, 2'b01);
+        gpr_read_data[0*64 +: 64] = 64'd0;
+        gpr_read_data[1*64 +: 64] = 64'd44;
+        branch_completion_forward_valid = 3'b001;
+        completion_forward_rd_addr[0*5 +: 5] = 5'd29;
+        completion_forward_data[0*64 +: 64] = 64'd45;
+        forward_valid = 2'b10;
+        forward_rd_addr[1*5 +: 5] = 5'd30;
+        #1;
+        if ((allocation_valid != 3'b001) || (pipe_valid != 3'b010))
+            fail("local-forward-dependent branch admitted younger pairing");
 
         $display("PASS: queued 3p dispatch routing, hazards, branch forwarding, pairing, and ordering");
         $finish;

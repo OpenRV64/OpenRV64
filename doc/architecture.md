@@ -73,12 +73,14 @@ when their parameters are enabled.
 - Zicsr and Zifencei behavior is integrated.
 - RV64A is implemented and enabled by default. Atomics are serialized through
   the MEM lane; the AXI requester does not use AXI exclusive transactions.
-- RV64M is implemented by the EX1 lane but disabled by default at the public
+- RV64M is implemented by the EX0 lane but disabled by default at the public
   tops.
 - Machine, supervisor, and user privilege modes, delegated traps and
   interrupts, MRET/SRET, and the main machine/supervisor CSR state are
   implemented.
-- Eight PMP entries support OFF, TOR, NA4, and NAPOT matching and lock bits.
+- Sixteen PMP entries use 4 KiB grain and support OFF/NAPOT matching plus
+  lock bits. TOR and NA4 writes are WARL-coerced to OFF. NAPOT bounds are
+  normalized when `pmpaddr` is written rather than decoded on every access.
 - Bare translation and Sv39 are implemented.
 
 The core does not implement the compressed C extension, so all instruction PCs
@@ -102,7 +104,7 @@ AXI -> 4 x 32-byte fetch window -> 3 decoders -> 6-entry decoded FIFO
                          retirement allocation + pipe routing
                             /              |              \
                            v               v               v
-                    EX0: ALU/control  EX1: ALU/M    MEM: LSU/A, 3 tags
+                    EX0: ALU/M    EX1: ALU/control  MEM: LSU/A, 3 tags
                            \               |               /
                             independent tagged completions
                                          |
@@ -197,22 +199,22 @@ uses the existing resolve-time interlock. See
 and implementation limits.
 
 In the normal strict 3P path, an aligned conditional branch issues as soon as
-its operands and EX0 are ready; it does not wait for retirement. It resolves in
-EX0 and redirects immediately on a direction error. The branch still occupies
-EX0, allocates a retirement entry, and cannot retire ahead of older work.
+its operands and EX1 are ready; it does not wait for retirement. It resolves in
+EX1 and redirects immediately on a direction error. The branch still occupies
+EX1, allocates a retirement entry, and cannot retire ahead of older work.
 
 A conditional branch normally terminates its backend issue group. Older
 candidates may issue beside a following branch. With
 `ENABLE_EQ_BRANCH_PAIRING=1`, dispatch also compares the ready operands of BEQ
 and BNE. If that equality result proves the predicted direction correct, the
-branch keeps its EX0 claim and hard retirement classification but waives the
+branch keeps its EX1 claim and hard retirement classification but waives the
 same-cycle issue barrier. Younger predicted-path candidates may then claim the
 other pipes subject to normal RAW, WAW, capacity, and structural checks:
 
 ```text
 queue candidates       prediction/result       available issue
 --------------------   ----------------------  ------------------------------
-ADD, BEQ, LW           BEQ proved correct      ADD -> EX1, BEQ -> EX0, LW -> MEM
+ADD, BEQ, LW           BEQ proved correct      ADD -> EX0, BEQ -> EX1, LW -> MEM
 BEQ, ADD, LW           BEQ proved correct      BEQ -> EX0, ADD -> EX1, LW -> MEM
 BEQ, ADD, LW           direction mismatch      BEQ -> EX0; ADD and LW wait
 BLT, ADD, LW           any                     BLT -> EX0; ADD and LW wait
@@ -269,8 +271,8 @@ operations:
 
 | Instruction class | Pipe |
 | --- | --- |
-| Branch, jump, system/CSR, fence, decoded fault | EX0 |
-| RV64M | EX1 |
+| Branch, jump, system/CSR, fence, decoded fault | EX1 |
+| RV64M | EX0 |
 | Load, store, RV64A | MEM |
 | Base integer ALU | EX0 or EX1 |
 
@@ -338,13 +340,13 @@ forwarded by any of these networks.
 
 Each physical lane has independent input readiness and a held tagged
 completion port. A long M operation or memory request does not inherently stop
-EX0 from accepting unrelated work.
+the other execution lanes from accepting unrelated work.
 
-- **EX0** implements a base integer ALU plus branch/jump, system/CSR, fence,
-  exception, and trap-producing operations. Valid aligned conditional
+- **EX0** implements a base integer ALU and the single RV64M worker. M
+  operations are iterative/variable-latency and fixed to this pipe.
+- **EX1** implements a second base integer ALU plus branch/jump, system/CSR,
+  fence, exception, and trap-producing operations. Valid aligned conditional
   branches produce their direction and redirect as they execute.
-- **EX1** implements a second base integer ALU and the single RV64M worker.
-  M operations are iterative/variable-latency and fixed to this pipe.
 - **MEM** implements RV64I loads/stores and serialized RV64A operations. Its
   simple-operation queue has eight tags and can accept independent loads on
   consecutive cycles.
@@ -428,8 +430,12 @@ One blocking three-level page-table walker handles 4 KiB, 2 MiB, and 1 GiB
 leaves. It checks canonical addresses, invalid/reserved PTE encodings,
 superpage alignment, privilege, SUM, MXR, and access type. A/D bits use
 Svade-style fault-on-clear behavior because the physical interface has no
-atomic PTE update mechanism. `SFENCE.VMA` currently invalidates the entire TLB;
-address- and ASID-selective invalidation are not implemented.
+atomic PTE update mechanism. `SFENCE.VMA` and a successful writable `satp` CSR
+access currently perform the same conservative global translation barrier:
+older memory completes first, all local TLB/PTW and frontend context is
+invalidated, a CCX `ACQ_REL` PTE fence completes, and only then may fetch or
+LSU traffic restart. Address- and ASID-selective invalidation are not
+implemented.
 
 PMP is checked after translation at the physical requester boundary. Page
 faults and physical access faults remain distinct through completion and
@@ -513,7 +519,7 @@ deliberately limited:
 
 `ENABLE_SPECULATION_WINDOW=1` merges selective speculation into the same
 window; it requires `ENABLE_ISSUE_WINDOW=1`. Decode-time instruction IDs become
-both producer tags and speculation-age tags. A ready branch resolves in EX0
+both producer tags and speculation-age tags. A ready branch resolves in EX1
 and redirects immediately rather than waiting at the retirement head. The
 issue window, retirement queue, and tagged gshare checkpoint queue retain the
 resolving branch and every older instruction while discarding only younger
@@ -536,7 +542,7 @@ in the window. Conditional controls themselves resolve in program order: a
 younger conditional cannot issue until every older conditional has issued and
 resolved. This prevents nested wrong-path redirects and predictor updates while
 still allowing non-control work through the unresolved branch. When the older
-branch's operands arrive, EX0 resolves it immediately. A correct prediction
+branch's operands arrive, EX1 resolves it immediately. A correct prediction
 retains the speculative work; a correction removes retirement and dispatch
 entries with a younger monotonic instruction ID and rebuilds the surviving
 register-owner map. This is speculative execution, not a free branch: the
@@ -658,7 +664,7 @@ die-size claims.
 - Posted-store errors are imprecise and unrecoverable.
 - RV64F/D, RVV, and compressed instructions are not integrated.
 - Single hart only. The integrated platform has one machine CLINT context and
-  one machine PLIC context.
+  one supervisor PLIC context.
 - The synthesizable integrated platform still uses the blocking bus; the
   native 256-bit RAM plus MMIO AXI fabric is currently testbench-only.
 - Performance test RAM is not a model of a physically closed cache/memory

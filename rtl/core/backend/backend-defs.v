@@ -11,6 +11,12 @@
 `define OPENRV64_EXEC_PIPE_EX1 2'd1
 `define OPENRV64_EXEC_PIPE_MEM 2'd2
 
+// Internal instruction identity used to match issue, completion, redirect,
+// and retirement state.  This is deliberately separate from the 64-bit trace
+// ID embedded in the payload.  Age comparisons are modulo this width and are
+// valid while fewer than half the namespace (512 IDs) can remain live.
+`define OPENRV64_INSTR_ID_WIDTH 10
+
 // Fixed-width portion of a three-pipe issue packet.  Instruction identity and
 // retire-queue slot are carried separately because slot width follows queue
 // depth.  The payload is packed, most-significant field first, as:

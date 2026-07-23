@@ -39,10 +39,10 @@
 
 #define MSTATUS_MIE        (UINT64_C(1) << 3)
 #define MIE_MTIE           (UINT64_C(1) << 7)
-#define MIE_MEIE           (UINT64_C(1) << 11)
+#define MIE_SEIE           (UINT64_C(1) << 9)
 #define MCAUSE_INTERRUPT   (UINT64_C(1) << 63)
 #define MCAUSE_MTIMER      7u
-#define MCAUSE_MEXTERNAL   11u
+#define MCAUSE_SEXTERNAL   9u
 
 #ifndef UART_TIMEOUT_TICKS
 #define UART_TIMEOUT_TICKS UINT64_C(4096)
@@ -226,7 +226,7 @@ void uart_trap_handler(uint64_t mcause)
         return;
     }
 
-    if (cause == MCAUSE_MEXTERNAL) {
+    if (cause == MCAUSE_SEXTERNAL) {
         uint32_t claim = mmio_read32(PLIC_CLAIM);
 
         if (claim == PLIC_UART_ID) {
@@ -297,7 +297,7 @@ int main(void)
     write_mtvec((uintptr_t)trap_entry);
     uart_init();
     plic_init();
-    write_mie(MIE_MTIE | MIE_MEIE);
+    write_mie(MIE_MTIE | MIE_SEIE);
     timer_arm();
     mmio_write8(UART_BASE + UART_IER, UART_IER_RX | UART_IER_LINE);
     enable_global_interrupts();

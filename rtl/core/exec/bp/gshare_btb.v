@@ -1,6 +1,7 @@
 `ifndef OPENRV64_EXEC_BP_GSHARE_BTB_V
 `define OPENRV64_EXEC_BP_GSHARE_BTB_V
 `timescale 1ns/1ps
+`include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 
 // Speculative global-history direction predictor plus an indirect-target
@@ -37,7 +38,7 @@ module openrv64_exec_bp_gshare_btb #(
     input  wire                         lookup_backward_i,
     input  wire [`RV64_INSTR_WIDTH-1:0] lookup_instr_i,
     input  wire [`RV64_XLEN-1:0]        lookup_pc_i,
-    input  wire [63:0]                  lookup_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id_i,
     input  wire                         lookup_allocate_i,
     input  wire                         ras_prediction_valid_i,
     input  wire [`RV64_XLEN-1:0]        ras_prediction_target_i,
@@ -48,7 +49,7 @@ module openrv64_exec_bp_gshare_btb #(
     input  wire [`RV64_INSTR_WIDTH-1:0] resolve_instr_i,
     input  wire [`RV64_XLEN-1:0]        resolve_pc_i,
     input  wire [`RV64_XLEN-1:0]        resolve_target_i,
-    input  wire [63:0]                  resolve_id_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] resolve_id_i,
 
     output wire                         prediction_taken_o,
     output wire                         prediction_weak_o,
@@ -77,7 +78,8 @@ module openrv64_exec_bp_gshare_btb #(
     reg inflight_valid_q [0:INFLIGHT_DEPTH-1];
     reg inflight_resolved_q [0:INFLIGHT_DEPTH-1];
     reg inflight_actual_taken_q [0:INFLIGHT_DEPTH-1];
-    reg [63:0] inflight_id_q [0:INFLIGHT_DEPTH-1];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        inflight_id_q [0:INFLIGHT_DEPTH-1];
     reg inflight_predicted_taken_q [0:INFLIGHT_DEPTH-1];
     reg inflight_target_valid_q [0:INFLIGHT_DEPTH-1];
     reg [`RV64_XLEN-1:0] inflight_target_q [0:INFLIGHT_DEPTH-1];
@@ -95,6 +97,18 @@ module openrv64_exec_bp_gshare_btb #(
         input [`RV64_REG_ADDR_WIDTH-1:0] reg_addr;
         begin
             is_link_reg = (reg_addr == 5'd1) || (reg_addr == 5'd5);
+        end
+    endfunction
+
+    function automatic id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
         end
     endfunction
 
@@ -153,7 +167,7 @@ module openrv64_exec_bp_gshare_btb #(
                 resolve_tag_index = search_index[INFLIGHT_PTR_WIDTH-1:0];
             end
             if (inflight_valid_q[search_index] &&
-                (inflight_id_q[search_index] <= resolve_id_i))
+                !id_is_younger(inflight_id_q[search_index], resolve_id_i))
                 squash_keep_count = squash_keep_count + 1'b1;
         end
     end
@@ -229,7 +243,8 @@ module openrv64_exec_bp_gshare_btb #(
                 inflight_valid_q[reset_index] <= 1'b0;
                 inflight_resolved_q[reset_index] <= 1'b0;
                 inflight_actual_taken_q[reset_index] <= 1'b0;
-                inflight_id_q[reset_index] <= 64'd0;
+                inflight_id_q[reset_index] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             end
         end else begin
             if (lookup_allocate_i && queue_full)
@@ -292,8 +307,8 @@ module openrv64_exec_bp_gshare_btb #(
             end else if (squash_i && resolve_has_record &&
                          (ENABLE_TAGGED_RESOLUTION != 0)) begin
                 // Keep the resolving branch and every older checkpoint.  New
-                // correct-path predictions append immediately after it; IDs
-                // remain monotonic, so late wrong-path resolutions cannot hit.
+                // correct-path predictions append immediately after it.  The
+                // bounded live set makes modular ID ordering unambiguous.
                 inflight_tail_q <= resolve_index + 1'b1;
                 inflight_count_q <= squash_keep_count -
                     {{(INFLIGHT_COUNT_WIDTH-1){1'b0}}, head_commit};
@@ -303,9 +318,10 @@ module openrv64_exec_bp_gshare_btb #(
                     inflight_head_q <= inflight_head_q + 1'b1;
                 end
                 for (reset_index = 0; reset_index < INFLIGHT_DEPTH;
-                     reset_index = reset_index + 1) begin
+                    reset_index = reset_index + 1) begin
                     if (inflight_valid_q[reset_index] &&
-                        (inflight_id_q[reset_index] > resolve_id_i)) begin
+                        id_is_younger(inflight_id_q[reset_index],
+                                      resolve_id_i)) begin
                         inflight_valid_q[reset_index] <= 1'b0;
                         inflight_resolved_q[reset_index] <= 1'b0;
                     end
@@ -381,6 +397,10 @@ module openrv64_exec_bp_gshare_btb #(
             ((1 << INFLIGHT_PTR_WIDTH) != INFLIGHT_DEPTH))
             $fatal(1,
                    "gshare INFLIGHT_DEPTH must be a power of two >= 2");
+        if (INFLIGHT_DEPTH >=
+            (1 << (`OPENRV64_INSTR_ID_WIDTH - 1)))
+            $fatal(1,
+                   "gshare INFLIGHT_DEPTH must fit the modular ID half-range");
     end
 
     always @(posedge clk) begin

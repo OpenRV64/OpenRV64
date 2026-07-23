@@ -110,12 +110,20 @@ module openrv64_l1d_ccx #(
     parameter [ADDR_WIDTH-1:0] PREFETCH_CACHEABLE_SIZE =
         {ADDR_WIDTH{1'b1}},
     parameter integer PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer PREFETCH_STREAMS = 2,
     parameter integer PREFETCH_DISTANCE = 1,
     parameter integer PREFETCH_ADAPTIVE_ENABLE = 1,
     parameter integer PREFETCH_MAX_DISTANCE = 4,
     parameter integer PREFETCH_QUEUE_LINES = 4,
     parameter integer PREFETCH_OUTSTANDING = 4,
     parameter integer PREFETCH_DEMAND_RESERVE = 2,
+    // Simulation-only upper-bound mode. Cacheable, unlocked demand loads
+    // complete from the testbench RAM oracle at a fixed MEM-issue-to-result
+    // latency. The surrounding MEM lane contributes two registered crossings,
+    // so three cycles selects the L1D's one-cycle response path.
+    // Stores and all architecturally sensitive traffic retain the real path.
+    parameter integer FREELOADER = 0,
+    parameter integer FREELOADER_LATENCY = 3,
     parameter integer REQ_TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
     parameter integer REQ_DEPTH = `OPENRV64_LSU_OUTSTANDING,
     parameter integer WRITEBACK_TIMEOUT_CYCLES = 128,
@@ -225,6 +233,8 @@ module openrv64_l1d_ccx #(
         $clog2(STORE_BUFFER_LINES + 1);
     localparam integer PREFETCH_QUEUE_INDEX_WIDTH =
         (PREFETCH_QUEUE_LINES > 1) ? $clog2(PREFETCH_QUEUE_LINES) : 1;
+    localparam integer PREFETCH_STREAM_INDEX_WIDTH =
+        (PREFETCH_STREAMS > 1) ? $clog2(PREFETCH_STREAMS) : 1;
     localparam integer PREFETCH_MSHR_INDEX_WIDTH =
         (PREFETCH_OUTSTANDING > 1) ? $clog2(PREFETCH_OUTSTANDING) : 1;
     localparam integer PREFETCH_WINDOW_INDEX_WIDTH =
@@ -240,6 +250,8 @@ module openrv64_l1d_ccx #(
     localparam integer REQ_INDEX_WIDTH =
         (REQ_DEPTH > 1) ? $clog2(REQ_DEPTH) : 1;
     localparam integer REQ_COUNT_WIDTH = $clog2(REQ_DEPTH + 1);
+    localparam integer FREELOADER_STAGES =
+        (FREELOADER_LATENCY > 2) ? FREELOADER_LATENCY - 2 : 1;
 
     wire l1_mem_valid;
     wire l1_mem_ready;
@@ -289,14 +301,33 @@ module openrv64_l1d_ccx #(
     reg store_completion_valid_q;
     reg store_completion_error_q;
 
+    reg freeloader_valid_q [0:FREELOADER_STAGES-1];
+    reg [REQ_TAG_WIDTH-1:0]
+        freeloader_tag_q [0:FREELOADER_STAGES-1];
+    reg [63:0] freeloader_data_q [0:FREELOADER_STAGES-1];
+    reg freeloader_pending_store_valid_q;
+    reg freeloader_pending_store_posted_q;
+    reg [63:0] freeloader_pending_store_addr_q;
+    reg [63:0] freeloader_pending_store_data_q;
+    reg [7:0] freeloader_pending_store_strb_q;
+    reg [63:0] freeloader_merged_data_r;
+    integer freeloader_stage_index;
+    integer freeloader_store_age;
+    integer freeloader_store_index;
+    integer freeloader_store_byte;
+
     reg fill_buffer_hit_r;
     reg [FILL_BUFFER_INDEX_WIDTH-1:0] fill_buffer_hit_index_r;
     reg fill_buffer_free_found_r;
     reg [FILL_BUFFER_INDEX_WIDTH-1:0] fill_buffer_free_index_r;
     reg fill_buffer_prefetch_found_r;
     reg [FILL_BUFFER_INDEX_WIDTH-1:0] fill_buffer_prefetch_index_r;
+    reg [FILL_BUFFER_INDEX_WIDTH-1:0]
+        fill_buffer_prefetch_replace_q;
     integer fill_buffer_free_count_r;
     integer fill_buffer_scan;
+    integer fill_buffer_prefetch_scan;
+    integer fill_buffer_prefetch_candidate_r;
     integer buffer_reset_index;
     reg locked_line_invalidated_q;
     reg active_req_lock_q;
@@ -309,21 +340,28 @@ module openrv64_l1d_ccx #(
     reg [REQ_COUNT_WIDTH-1:0] response_tag_count_q;
     integer response_tag_reset_index;
 
-    // A deliberately small address-trained predictor.  Repeated accesses to
-    // the same line are ignored, so an ordinary scalar word loop appears as a
-    // stable +1 line stream rather than seven zero deltas followed by +1.
-    reg prefetch_train_valid_q;
-    reg [63:0] prefetch_last_line_q;
-    reg prefetch_stride_valid_q;
-    reg signed [63:0] prefetch_stride_q;
-    reg [1:0] prefetch_confidence_q;
-    reg signed [63:0] prefetch_generate_stride_q;
-    reg prefetch_generation_active_q;
+    // A small address-trained stream table.  Repeated accesses to a line are
+    // ignored, so an ordinary scalar word loop appears as a +1-line stream.
+    // Exact stride matches win; otherwise the nearest eligible prior line is
+    // selected.  This lets interleaved array loads retain separate histories
+    // without bringing the load PC into the cache interface.
+    reg prefetch_train_valid_q [0:PREFETCH_STREAMS-1];
+    reg [63:0] prefetch_last_line_q [0:PREFETCH_STREAMS-1];
+    reg prefetch_stride_valid_q [0:PREFETCH_STREAMS-1];
+    reg signed [63:0] prefetch_stride_q [0:PREFETCH_STREAMS-1];
+    reg [1:0] prefetch_confidence_q [0:PREFETCH_STREAMS-1];
+    reg signed [63:0]
+        prefetch_generate_stride_q [0:PREFETCH_STREAMS-1];
+    reg prefetch_generation_active_q [0:PREFETCH_STREAMS-1];
+    reg [PREFETCH_STREAM_INDEX_WIDTH-1:0] prefetch_replace_q;
     reg [4:0] prefetch_depth_q;
     reg [1:0] prefetch_waste_q;
     reg prefetch_candidate_valid_q [0:PREFETCH_QUEUE_LINES-1];
     reg [63:0] prefetch_candidate_addr_q [0:PREFETCH_QUEUE_LINES-1];
-    reg prefetch_window_issued_q [0:PREFETCH_MAX_DISTANCE-1];
+    reg [PREFETCH_STREAM_INDEX_WIDTH-1:0]
+        prefetch_candidate_stream_q [0:PREFETCH_QUEUE_LINES-1];
+    reg prefetch_window_issued_q
+        [0:PREFETCH_STREAMS-1][0:PREFETCH_MAX_DISTANCE-1];
     reg prefetch_mshr_valid_q [0:PREFETCH_OUTSTANDING-1];
     reg [63:0] prefetch_mshr_addr_q [0:PREFETCH_OUTSTANDING-1];
     reg prefetch_mshr_discard_q [0:PREFETCH_OUTSTANDING-1];
@@ -339,6 +377,8 @@ module openrv64_l1d_ccx #(
     reg [63:0] prefetch_generate_addr_r;
     reg [PREFETCH_WINDOW_INDEX_WIDTH-1:0]
         prefetch_generate_index_r;
+    reg [PREFETCH_STREAM_INDEX_WIDTH-1:0]
+        prefetch_generate_stream_r;
     reg prefetch_launch_found_r;
     reg [PREFETCH_QUEUE_INDEX_WIDTH-1:0] prefetch_launch_index_r;
     reg [63:0] prefetch_launch_addr_r;
@@ -356,7 +396,27 @@ module openrv64_l1d_ccx #(
     reg [63:0] prefetch_generate_window_addr_r;
     reg signed [63:0] prefetch_launch_window_advance_r;
     reg [63:0] prefetch_launch_window_addr_r;
+    reg prefetch_train_same_line_found_r;
+    reg prefetch_train_exact_found_r;
+    reg [PREFETCH_STREAM_INDEX_WIDTH-1:0]
+        prefetch_train_exact_index_r;
+    reg prefetch_train_eligible_found_r;
+    reg [PREFETCH_STREAM_INDEX_WIDTH-1:0]
+        prefetch_train_eligible_index_r;
+    reg [63:0] prefetch_train_eligible_abs_r;
+    reg prefetch_train_invalid_found_r;
+    reg [PREFETCH_STREAM_INDEX_WIDTH-1:0]
+        prefetch_train_invalid_index_r;
+    reg [PREFETCH_STREAM_INDEX_WIDTH-1:0]
+        prefetch_train_index_r;
+    reg prefetch_train_replacement_r;
+    reg signed [63:0] prefetch_train_scan_delta_r;
+    reg [63:0] prefetch_train_scan_abs_r;
     integer prefetch_queue_scan;
+    integer prefetch_train_stream_scan;
+    integer prefetch_generate_stream_scan;
+    integer prefetch_launch_stream_scan;
+    integer prefetch_reset_stream_index;
     integer prefetch_depth_scan;
     integer prefetch_duplicate_scan;
     integer prefetch_duplicate_fill_scan;
@@ -369,7 +429,26 @@ module openrv64_l1d_ccx #(
 
     wire l1_req_ready;
     wire l1_resp_valid;
+    wire [63:0] l1_req_rdata;
+    wire l1_req_error;
     wire l1_invalidate_ready;
+    wire freeloader_oracle_valid;
+    wire [63:0] freeloader_oracle_data;
+    generate
+        if (FREELOADER != 0) begin : g_freeloader_oracle
+            // The performance testbench drives the existing ideal-refill
+            // input with its backing-RAM word. Keeping the oracle connection
+            // hierarchical avoids adding a simulation port to production
+            // cache and core interfaces.
+            assign freeloader_oracle_valid =
+                u_l1d.u_l1.g_cache.u_cache.ideal_refill_valid_i;
+            assign freeloader_oracle_data =
+                u_l1d.u_l1.g_cache.u_cache.ideal_refill_data_i;
+        end else begin : g_no_freeloader_oracle
+            assign freeloader_oracle_valid = 1'b0;
+            assign freeloader_oracle_data = 64'd0;
+        end
+    endgenerate
     wire lock_invalidate_request = req_valid_i && req_lock_i &&
         !locked_line_invalidated_q;
     wire lock_invalidate_fire = lock_invalidate_request &&
@@ -382,41 +461,208 @@ module openrv64_l1d_ccx #(
     wire response_tag_full =
         response_tag_count_q == REQ_COUNT_WIDTH'(REQ_DEPTH);
     wire lock_request_ready = !req_lock_i || locked_line_invalidated_q;
-    wire l1_req_valid = req_valid_i && !response_tag_full &&
-        lock_request_ready;
+    wire freeloader_response_valid =
+        freeloader_valid_q[FREELOADER_STAGES-1];
+    wire normal_response_valid = l1_resp_valid &&
+        (response_tag_count_q != 0);
+    wire freeloader_response_ready =
+        resp_ready_i && !normal_response_valid;
+    wire freeloader_pipe_advance =
+        !freeloader_response_valid || freeloader_response_ready;
+    wire freeloader_order_safe =
+        !freeloader_pending_store_valid_q ||
+        freeloader_pending_store_posted_q;
+    wire freeloader_request = (FREELOADER != 0) && req_valid_i &&
+        !req_write_i && !req_lock_i && req_cacheable_i &&
+        freeloader_oracle_valid;
+    wire freeloader_request_ready =
+        freeloader_pipe_advance && freeloader_order_safe;
+    wire freeloader_request_fire =
+        freeloader_request && freeloader_request_ready;
+    wire l1_req_valid = req_valid_i && !freeloader_request &&
+        !response_tag_full && lock_request_ready;
     wire l1_req_cacheable = req_cacheable_i && !req_lock_i;
     wire l1_request_fire = l1_req_valid && l1_req_ready;
     wire l1_resp_ready = resp_ready_i && (response_tag_count_q != 0);
     wire l1_response_fire = l1_resp_valid && l1_resp_ready;
+    wire demand_request_fire =
+        l1_request_fire || freeloader_request_fire;
     wire [63:0] demand_line_addr = {req_addr_i[63:6], 6'b0};
-    wire prefetch_train_event = (PREFETCH_ENABLE != 0) &&
-        (ENABLE != 0) && l1_request_fire && !req_write_i &&
-        l1_req_cacheable && !req_lock_i &&
-        (!prefetch_train_valid_q ||
-         (demand_line_addr != prefetch_last_line_q));
-    wire signed [63:0] prefetch_observed_delta =
-        $signed(demand_line_addr) - $signed(prefetch_last_line_q);
+    wire prefetch_train_access = (PREFETCH_ENABLE != 0) &&
+        (ENABLE != 0) && demand_request_fire && !req_write_i &&
+        l1_req_cacheable && !req_lock_i;
     localparam signed [63:0] PREFETCH_MAX_STRIDE_BYTES =
         PREFETCH_MAX_STRIDE_LINES * LINE_BYTES;
+    always @* begin
+        prefetch_train_same_line_found_r = 1'b0;
+        prefetch_train_exact_found_r = 1'b0;
+        prefetch_train_exact_index_r =
+            {PREFETCH_STREAM_INDEX_WIDTH{1'b0}};
+        prefetch_train_eligible_found_r = 1'b0;
+        prefetch_train_eligible_index_r =
+            {PREFETCH_STREAM_INDEX_WIDTH{1'b0}};
+        prefetch_train_eligible_abs_r = {64{1'b1}};
+        prefetch_train_invalid_found_r = 1'b0;
+        prefetch_train_invalid_index_r =
+            {PREFETCH_STREAM_INDEX_WIDTH{1'b0}};
+        prefetch_train_scan_delta_r = 64'sd0;
+        prefetch_train_scan_abs_r = 64'd0;
+        for (prefetch_train_stream_scan = 0;
+             prefetch_train_stream_scan < PREFETCH_STREAMS;
+             prefetch_train_stream_scan =
+                 prefetch_train_stream_scan + 1) begin
+            prefetch_train_scan_delta_r =
+                $signed(demand_line_addr) -
+                $signed(prefetch_last_line_q[
+                    prefetch_train_stream_scan]);
+            prefetch_train_scan_abs_r =
+                prefetch_train_scan_delta_r < 0 ?
+                $unsigned(-prefetch_train_scan_delta_r) :
+                $unsigned(prefetch_train_scan_delta_r);
+            if (prefetch_train_valid_q[prefetch_train_stream_scan] &&
+                (demand_line_addr ==
+                 prefetch_last_line_q[prefetch_train_stream_scan]))
+                prefetch_train_same_line_found_r = 1'b1;
+            if (!prefetch_train_exact_found_r &&
+                prefetch_train_valid_q[prefetch_train_stream_scan] &&
+                prefetch_stride_valid_q[prefetch_train_stream_scan] &&
+                (prefetch_train_scan_delta_r != 0) &&
+                (prefetch_train_scan_delta_r <=
+                 PREFETCH_MAX_STRIDE_BYTES) &&
+                (prefetch_train_scan_delta_r >=
+                 -PREFETCH_MAX_STRIDE_BYTES) &&
+                (prefetch_train_scan_delta_r ==
+                 prefetch_stride_q[prefetch_train_stream_scan])) begin
+                prefetch_train_exact_found_r = 1'b1;
+                prefetch_train_exact_index_r =
+                    PREFETCH_STREAM_INDEX_WIDTH'(
+                        prefetch_train_stream_scan);
+            end
+            if (prefetch_train_valid_q[prefetch_train_stream_scan] &&
+                (prefetch_train_scan_delta_r != 0) &&
+                (prefetch_train_scan_delta_r <=
+                 PREFETCH_MAX_STRIDE_BYTES) &&
+                (prefetch_train_scan_delta_r >=
+                 -PREFETCH_MAX_STRIDE_BYTES) &&
+                (!prefetch_train_eligible_found_r ||
+                 (prefetch_train_scan_abs_r <
+                  prefetch_train_eligible_abs_r))) begin
+                prefetch_train_eligible_found_r = 1'b1;
+                prefetch_train_eligible_index_r =
+                    PREFETCH_STREAM_INDEX_WIDTH'(
+                        prefetch_train_stream_scan);
+                prefetch_train_eligible_abs_r =
+                    prefetch_train_scan_abs_r;
+            end
+            if (!prefetch_train_invalid_found_r &&
+                !prefetch_train_valid_q[prefetch_train_stream_scan]) begin
+                prefetch_train_invalid_found_r = 1'b1;
+                prefetch_train_invalid_index_r =
+                    PREFETCH_STREAM_INDEX_WIDTH'(
+                        prefetch_train_stream_scan);
+            end
+        end
+        prefetch_train_replacement_r = 1'b0;
+        if (prefetch_train_exact_found_r)
+            prefetch_train_index_r = prefetch_train_exact_index_r;
+        else if (prefetch_train_eligible_found_r)
+            prefetch_train_index_r = prefetch_train_eligible_index_r;
+        else if (prefetch_train_invalid_found_r)
+            prefetch_train_index_r = prefetch_train_invalid_index_r;
+        else begin
+            prefetch_train_index_r = prefetch_replace_q;
+            prefetch_train_replacement_r = 1'b1;
+        end
+    end
+    wire prefetch_train_event = prefetch_train_access &&
+        !prefetch_train_same_line_found_r;
+    wire signed [63:0] prefetch_observed_delta =
+        $signed(demand_line_addr) -
+        $signed(prefetch_last_line_q[prefetch_train_index_r]);
     wire prefetch_delta_eligible =
         (prefetch_observed_delta != 0) &&
         (prefetch_observed_delta <= PREFETCH_MAX_STRIDE_BYTES) &&
         (prefetch_observed_delta >= -PREFETCH_MAX_STRIDE_BYTES);
-    wire prefetch_stride_match = prefetch_train_valid_q &&
-        prefetch_stride_valid_q && prefetch_delta_eligible &&
-        (prefetch_observed_delta == prefetch_stride_q);
+    wire prefetch_stride_match =
+        prefetch_train_valid_q[prefetch_train_index_r] &&
+        prefetch_stride_valid_q[prefetch_train_index_r] &&
+        prefetch_delta_eligible &&
+        (prefetch_observed_delta ==
+         prefetch_stride_q[prefetch_train_index_r]);
     wire prefetch_stream_change = prefetch_train_event &&
-        prefetch_train_valid_q && !prefetch_stride_match;
+        (prefetch_train_replacement_r ||
+         (prefetch_train_valid_q[prefetch_train_index_r] &&
+          !prefetch_stride_match));
 
-    // Preserve the LSU tag at acceptance.  Misses can block the lower side,
-    // but resident hits retain the shared L1's one-request-per-cycle contract.
-    assign req_ready_o = l1_req_ready && !response_tag_full &&
-                         lock_request_ready;
-    assign resp_valid_o = l1_resp_valid &&
-                          (response_tag_count_q != 0);
-    assign resp_tag_o = response_tag_q[response_tag_head_q];
+    // The normal L1 and the simulation-only load pipeline share one tagged
+    // response port. Normal responses win arbitration so a continuous ideal
+    // load stream cannot prevent posted-store tags from being released.
+    assign req_ready_o = freeloader_request ?
+                         freeloader_request_ready :
+                         (l1_req_ready && !response_tag_full &&
+                          lock_request_ready);
+    assign resp_valid_o = normal_response_valid ||
+                          freeloader_response_valid;
+    assign resp_tag_o = normal_response_valid ?
+        response_tag_q[response_tag_head_q] :
+        freeloader_tag_q[FREELOADER_STAGES-1];
+    assign req_rdata_o = normal_response_valid ? l1_req_rdata :
+        freeloader_data_q[FREELOADER_STAGES-1];
+    assign req_error_o = normal_response_valid ? l1_req_error : 1'b0;
     assign invalidate_ready_o = l1_invalidate_ready &&
         !lock_invalidate_request && (store_buffer_count_q == 0);
+
+    // The RAM oracle is older than stores which have completed northbound but
+    // are still queued for CCX. Overlay those bytes in FIFO order, then the
+    // store currently crossing the shared L1. This preserves load-after-store
+    // semantics even though the freeloader bypasses the cache lookup.
+    always @* begin
+        freeloader_merged_data_r = freeloader_oracle_data;
+        freeloader_store_index = 0;
+        for (freeloader_store_age = 0;
+             freeloader_store_age < STORE_BUFFER_LINES;
+             freeloader_store_age = freeloader_store_age + 1) begin
+            freeloader_store_index =
+                32'(store_buffer_head_q) + freeloader_store_age;
+            if (freeloader_store_index >= STORE_BUFFER_LINES)
+                freeloader_store_index =
+                    freeloader_store_index - STORE_BUFFER_LINES;
+            if ((freeloader_store_age < store_buffer_count_q) &&
+                store_buffer_valid_q[freeloader_store_index] &&
+                (store_buffer_addr_q[freeloader_store_index] ==
+                 {req_addr_i[63:6], 6'b0})) begin
+                for (freeloader_store_byte = 0;
+                     freeloader_store_byte < 8;
+                     freeloader_store_byte =
+                         freeloader_store_byte + 1) begin
+                    if (store_buffer_strb_q[freeloader_store_index][
+                            (req_addr_i[5:3] * 8) +
+                            freeloader_store_byte])
+                        freeloader_merged_data_r[
+                            freeloader_store_byte*8 +: 8] =
+                            store_buffer_data_q[
+                                freeloader_store_index][
+                                ((req_addr_i[5:3] * 8) +
+                                 freeloader_store_byte)*8 +: 8];
+                end
+            end
+        end
+        if (freeloader_pending_store_valid_q &&
+            freeloader_pending_store_posted_q &&
+            (freeloader_pending_store_addr_q[63:3] ==
+             req_addr_i[63:3])) begin
+            for (freeloader_store_byte = 0;
+                 freeloader_store_byte < 8;
+                 freeloader_store_byte = freeloader_store_byte + 1) begin
+                if (freeloader_pending_store_strb_q[
+                        freeloader_store_byte])
+                    freeloader_merged_data_r[
+                        freeloader_store_byte*8 +: 8] =
+                        freeloader_pending_store_data_q[
+                            freeloader_store_byte*8 +: 8];
+            end
+        end
+    end
 
     wire [2:0] l1_mem_word = l1_mem_addr[5:3];
     wire [2:0] response_word = request_l1_addr_q[5:3];
@@ -460,7 +706,7 @@ module openrv64_l1d_ccx #(
             if (!prefetch_mshr_late_match_r &&
                 prefetch_mshr_valid_q[prefetch_mshr_scan] &&
                 !prefetch_mshr_late_reported_q[prefetch_mshr_scan] &&
-                l1_request_fire && !req_write_i && l1_req_cacheable &&
+                demand_request_fire && !req_write_i && l1_req_cacheable &&
                 (prefetch_mshr_addr_q[prefetch_mshr_scan] ==
                  demand_line_addr)) begin
                 prefetch_mshr_late_match_r = 1'b1;
@@ -486,6 +732,7 @@ module openrv64_l1d_ccx #(
         fill_buffer_prefetch_found_r = 1'b0;
         fill_buffer_prefetch_index_r =
             {FILL_BUFFER_INDEX_WIDTH{1'b0}};
+        fill_buffer_prefetch_candidate_r = 0;
         fill_buffer_free_count_r = 0;
         for (fill_buffer_scan = 0;
              fill_buffer_scan < FILL_BUFFER_LINES;
@@ -506,12 +753,27 @@ module openrv64_l1d_ccx #(
             end
             if (!fill_buffer_valid_q[fill_buffer_scan])
                 fill_buffer_free_count_r = fill_buffer_free_count_r + 1;
+        end
+        for (fill_buffer_prefetch_scan = 0;
+             fill_buffer_prefetch_scan < FILL_BUFFER_LINES;
+             fill_buffer_prefetch_scan =
+                 fill_buffer_prefetch_scan + 1) begin
+            fill_buffer_prefetch_candidate_r =
+                32'(fill_buffer_prefetch_replace_q) +
+                fill_buffer_prefetch_scan;
+            if (fill_buffer_prefetch_candidate_r >= FILL_BUFFER_LINES)
+                fill_buffer_prefetch_candidate_r =
+                    fill_buffer_prefetch_candidate_r -
+                    FILL_BUFFER_LINES;
             if (!fill_buffer_prefetch_found_r &&
-                fill_buffer_valid_q[fill_buffer_scan] &&
-                fill_buffer_prefetch_q[fill_buffer_scan]) begin
+                fill_buffer_valid_q[
+                    fill_buffer_prefetch_candidate_r] &&
+                fill_buffer_prefetch_q[
+                    fill_buffer_prefetch_candidate_r]) begin
                 fill_buffer_prefetch_found_r = 1'b1;
                 fill_buffer_prefetch_index_r =
-                    fill_buffer_scan[FILL_BUFFER_INDEX_WIDTH-1:0];
+                    FILL_BUFFER_INDEX_WIDTH'(
+                        fill_buffer_prefetch_candidate_r);
             end
         end
     end
@@ -534,7 +796,7 @@ module openrv64_l1d_ccx #(
                     prefetch_queue_scan[PREFETCH_QUEUE_INDEX_WIDTH-1:0];
             end
             if (prefetch_candidate_valid_q[prefetch_queue_scan] &&
-                l1_request_fire && !req_write_i && l1_req_cacheable &&
+                demand_request_fire && !req_write_i && l1_req_cacheable &&
                 (prefetch_candidate_addr_q[prefetch_queue_scan] ==
                  demand_line_addr))
                 prefetch_queued_demand_match_r = 1'b1;
@@ -550,73 +812,98 @@ module openrv64_l1d_ccx #(
         prefetch_generate_addr_r = 64'd0;
         prefetch_generate_index_r =
             {PREFETCH_WINDOW_INDEX_WIDTH{1'b0}};
+        prefetch_generate_stream_r =
+            {PREFETCH_STREAM_INDEX_WIDTH{1'b0}};
         prefetch_generate_duplicate_r = 1'b0;
         prefetch_generate_window_advance_r = 64'sd0;
         prefetch_generate_window_addr_r = 64'd0;
         for (prefetch_depth_scan = 1;
              prefetch_depth_scan <= PREFETCH_MAX_DISTANCE;
              prefetch_depth_scan = prefetch_depth_scan + 1) begin
-            prefetch_generate_window_advance_r =
-                prefetch_generate_stride_q * prefetch_depth_scan;
-            prefetch_generate_window_addr_r =
-                $unsigned($signed(prefetch_last_line_q) +
-                          prefetch_generate_window_advance_r);
-            prefetch_generate_duplicate_r = 1'b0;
-            if (prefetch_command_inflight &&
-                (request_addr_q == prefetch_generate_window_addr_r))
-                prefetch_generate_duplicate_r = 1'b1;
-            for (prefetch_duplicate_mshr_scan = 0;
-                 prefetch_duplicate_mshr_scan < PREFETCH_OUTSTANDING;
-                 prefetch_duplicate_mshr_scan =
-                     prefetch_duplicate_mshr_scan + 1) begin
-                if (prefetch_mshr_valid_q[
-                        prefetch_duplicate_mshr_scan] &&
-                    (prefetch_mshr_addr_q[
-                         prefetch_duplicate_mshr_scan] ==
+            for (prefetch_generate_stream_scan = 0;
+                 prefetch_generate_stream_scan < PREFETCH_STREAMS;
+                 prefetch_generate_stream_scan =
+                     prefetch_generate_stream_scan + 1) begin
+                prefetch_generate_window_advance_r =
+                    prefetch_generate_stride_q[
+                        prefetch_generate_stream_scan] *
+                    prefetch_depth_scan;
+                prefetch_generate_window_addr_r =
+                    $unsigned($signed(prefetch_last_line_q[
+                        prefetch_generate_stream_scan]) +
+                        prefetch_generate_window_advance_r);
+                prefetch_generate_duplicate_r = 1'b0;
+                if (prefetch_command_inflight &&
+                    (request_addr_q == prefetch_generate_window_addr_r))
+                    prefetch_generate_duplicate_r = 1'b1;
+                for (prefetch_duplicate_mshr_scan = 0;
+                     prefetch_duplicate_mshr_scan < PREFETCH_OUTSTANDING;
+                     prefetch_duplicate_mshr_scan =
+                         prefetch_duplicate_mshr_scan + 1) begin
+                    if (prefetch_mshr_valid_q[
+                            prefetch_duplicate_mshr_scan] &&
+                        (prefetch_mshr_addr_q[
+                             prefetch_duplicate_mshr_scan] ==
+                         prefetch_generate_window_addr_r))
+                        prefetch_generate_duplicate_r = 1'b1;
+                end
+                if (l1_mem_valid && !l1_mem_write &&
+                    active_req_cacheable_q &&
+                    ({l1_mem_addr[63:6], 6'b0} ==
                      prefetch_generate_window_addr_r))
                     prefetch_generate_duplicate_r = 1'b1;
-            end
-            if (l1_mem_valid && !l1_mem_write &&
-                active_req_cacheable_q &&
-                ({l1_mem_addr[63:6], 6'b0} ==
-                 prefetch_generate_window_addr_r))
-                prefetch_generate_duplicate_r = 1'b1;
-            for (prefetch_duplicate_scan = 0;
-                 prefetch_duplicate_scan < PREFETCH_QUEUE_LINES;
-                 prefetch_duplicate_scan =
-                     prefetch_duplicate_scan + 1) begin
-                if (prefetch_candidate_valid_q[prefetch_duplicate_scan] &&
-                    (prefetch_candidate_addr_q[prefetch_duplicate_scan] ==
-                     prefetch_generate_window_addr_r))
-                    prefetch_generate_duplicate_r = 1'b1;
-            end
-            for (prefetch_duplicate_fill_scan = 0;
-                 prefetch_duplicate_fill_scan < FILL_BUFFER_LINES;
-                 prefetch_duplicate_fill_scan =
-                     prefetch_duplicate_fill_scan + 1) begin
-                if (fill_buffer_valid_q[prefetch_duplicate_fill_scan] &&
-                    (fill_buffer_addr_q[prefetch_duplicate_fill_scan] ==
-                     prefetch_generate_window_addr_r))
-                    prefetch_generate_duplicate_r = 1'b1;
-            end
-            if (!prefetch_generate_valid_r &&
-                (PREFETCH_ENABLE != 0) && (ENABLE != 0) &&
-                prefetch_train_valid_q && prefetch_generation_active_q &&
-                !prefetch_train_event &&
-                !prefetch_invalidate_fire &&
-                (prefetch_depth_scan <= prefetch_depth_q) &&
-                !prefetch_window_issued_q[prefetch_depth_scan - 1] &&
-                (PREFETCH_CACHEABLE_SIZE != 0) &&
-                ((prefetch_generate_window_addr_r -
-                  PREFETCH_CACHEABLE_BASE) <
-                 PREFETCH_CACHEABLE_SIZE) &&
-                !prefetch_generate_duplicate_r) begin
-                prefetch_generate_valid_r = 1'b1;
-                prefetch_generate_addr_r =
-                    prefetch_generate_window_addr_r;
-                prefetch_generate_index_r =
-                    PREFETCH_WINDOW_INDEX_WIDTH'(
-                        prefetch_depth_scan - 1);
+                for (prefetch_duplicate_scan = 0;
+                     prefetch_duplicate_scan < PREFETCH_QUEUE_LINES;
+                     prefetch_duplicate_scan =
+                         prefetch_duplicate_scan + 1) begin
+                    if (prefetch_candidate_valid_q[
+                            prefetch_duplicate_scan] &&
+                        (prefetch_candidate_addr_q[
+                             prefetch_duplicate_scan] ==
+                         prefetch_generate_window_addr_r))
+                        prefetch_generate_duplicate_r = 1'b1;
+                end
+                for (prefetch_duplicate_fill_scan = 0;
+                     prefetch_duplicate_fill_scan < FILL_BUFFER_LINES;
+                     prefetch_duplicate_fill_scan =
+                         prefetch_duplicate_fill_scan + 1) begin
+                    if (fill_buffer_valid_q[
+                            prefetch_duplicate_fill_scan] &&
+                        (fill_buffer_addr_q[
+                             prefetch_duplicate_fill_scan] ==
+                         prefetch_generate_window_addr_r))
+                        prefetch_generate_duplicate_r = 1'b1;
+                end
+                if (!prefetch_generate_valid_r &&
+                    (PREFETCH_ENABLE != 0) && (ENABLE != 0) &&
+                    prefetch_train_valid_q[
+                        prefetch_generate_stream_scan] &&
+                    prefetch_generation_active_q[
+                        prefetch_generate_stream_scan] &&
+                    !(prefetch_train_event &&
+                      (prefetch_train_index_r ==
+                       PREFETCH_STREAM_INDEX_WIDTH'(
+                           prefetch_generate_stream_scan))) &&
+                    !prefetch_invalidate_fire &&
+                    (prefetch_depth_scan <= prefetch_depth_q) &&
+                    !prefetch_window_issued_q[
+                        prefetch_generate_stream_scan][
+                            prefetch_depth_scan - 1] &&
+                    (PREFETCH_CACHEABLE_SIZE != 0) &&
+                    ((prefetch_generate_window_addr_r -
+                      PREFETCH_CACHEABLE_BASE) <
+                     PREFETCH_CACHEABLE_SIZE) &&
+                    !prefetch_generate_duplicate_r) begin
+                    prefetch_generate_valid_r = 1'b1;
+                    prefetch_generate_addr_r =
+                        prefetch_generate_window_addr_r;
+                    prefetch_generate_index_r =
+                        PREFETCH_WINDOW_INDEX_WIDTH'(
+                            prefetch_depth_scan - 1);
+                    prefetch_generate_stream_r =
+                        PREFETCH_STREAM_INDEX_WIDTH'(
+                            prefetch_generate_stream_scan);
+                end
             end
         end
     end
@@ -633,40 +920,54 @@ module openrv64_l1d_ccx #(
              prefetch_launch_depth_scan <= PREFETCH_MAX_DISTANCE;
              prefetch_launch_depth_scan =
                  prefetch_launch_depth_scan + 1) begin
-            prefetch_launch_window_advance_r =
-                prefetch_generate_stride_q * prefetch_launch_depth_scan;
-            prefetch_launch_window_addr_r =
-                $unsigned($signed(prefetch_last_line_q) +
-                          prefetch_launch_window_advance_r);
-            for (prefetch_launch_queue_scan = 0;
-                 prefetch_launch_queue_scan < PREFETCH_QUEUE_LINES;
-                 prefetch_launch_queue_scan =
-                     prefetch_launch_queue_scan + 1) begin
-                prefetch_launch_store_conflict_r = 1'b0;
-                for (prefetch_launch_store_scan = 0;
-                     prefetch_launch_store_scan < STORE_BUFFER_LINES;
-                     prefetch_launch_store_scan =
-                         prefetch_launch_store_scan + 1) begin
-                    if (store_buffer_valid_q[prefetch_launch_store_scan] &&
-                        (store_buffer_addr_q[prefetch_launch_store_scan] ==
-                         prefetch_candidate_addr_q[
-                             prefetch_launch_queue_scan]))
-                        prefetch_launch_store_conflict_r = 1'b1;
-                end
-                if (!prefetch_launch_found_r &&
-                    prefetch_candidate_valid_q[
-                        prefetch_launch_queue_scan] &&
-                    (prefetch_candidate_addr_q[
-                        prefetch_launch_queue_scan] ==
-                     prefetch_launch_window_addr_r) &&
-                    !prefetch_launch_store_conflict_r) begin
-                    prefetch_launch_found_r = 1'b1;
-                    prefetch_launch_index_r =
-                        prefetch_launch_queue_scan[
-                            PREFETCH_QUEUE_INDEX_WIDTH-1:0];
-                    prefetch_launch_addr_r =
-                        prefetch_candidate_addr_q[
-                            prefetch_launch_queue_scan];
+            for (prefetch_launch_stream_scan = 0;
+                 prefetch_launch_stream_scan < PREFETCH_STREAMS;
+                 prefetch_launch_stream_scan =
+                     prefetch_launch_stream_scan + 1) begin
+                prefetch_launch_window_advance_r =
+                    prefetch_generate_stride_q[
+                        prefetch_launch_stream_scan] *
+                    prefetch_launch_depth_scan;
+                prefetch_launch_window_addr_r =
+                    $unsigned($signed(prefetch_last_line_q[
+                        prefetch_launch_stream_scan]) +
+                        prefetch_launch_window_advance_r);
+                for (prefetch_launch_queue_scan = 0;
+                     prefetch_launch_queue_scan < PREFETCH_QUEUE_LINES;
+                     prefetch_launch_queue_scan =
+                         prefetch_launch_queue_scan + 1) begin
+                    prefetch_launch_store_conflict_r = 1'b0;
+                    for (prefetch_launch_store_scan = 0;
+                         prefetch_launch_store_scan < STORE_BUFFER_LINES;
+                         prefetch_launch_store_scan =
+                             prefetch_launch_store_scan + 1) begin
+                        if (store_buffer_valid_q[
+                                prefetch_launch_store_scan] &&
+                            (store_buffer_addr_q[
+                                 prefetch_launch_store_scan] ==
+                             prefetch_candidate_addr_q[
+                                 prefetch_launch_queue_scan]))
+                            prefetch_launch_store_conflict_r = 1'b1;
+                    end
+                    if (!prefetch_launch_found_r &&
+                        prefetch_candidate_valid_q[
+                            prefetch_launch_queue_scan] &&
+                        (prefetch_candidate_stream_q[
+                             prefetch_launch_queue_scan] ==
+                         PREFETCH_STREAM_INDEX_WIDTH'(
+                             prefetch_launch_stream_scan)) &&
+                        (prefetch_candidate_addr_q[
+                            prefetch_launch_queue_scan] ==
+                         prefetch_launch_window_addr_r) &&
+                        !prefetch_launch_store_conflict_r) begin
+                        prefetch_launch_found_r = 1'b1;
+                        prefetch_launch_index_r =
+                            prefetch_launch_queue_scan[
+                                PREFETCH_QUEUE_INDEX_WIDTH-1:0];
+                        prefetch_launch_addr_r =
+                            prefetch_candidate_addr_q[
+                                prefetch_launch_queue_scan];
+                    end
                 end
             end
         end
@@ -723,6 +1024,12 @@ module openrv64_l1d_ccx #(
         fill_buffer_prefetch_found_r;
     wire prefetch_response_uses_free =
         fill_buffer_free_count_r > PREFETCH_DEMAND_RESERVE;
+    wire [FILL_BUFFER_INDEX_WIDTH-1:0]
+        next_fill_buffer_prefetch_replace =
+            (fill_buffer_prefetch_index_r ==
+             FILL_BUFFER_INDEX_WIDTH'(FILL_BUFFER_LINES - 1)) ?
+            {FILL_BUFFER_INDEX_WIDTH{1'b0}} :
+            fill_buffer_prefetch_index_r + 1'b1;
     wire prefetch_launch = (PREFETCH_ENABLE != 0) &&
         (ENABLE != 0) && (backend_state_q == BACKEND_IDLE) &&
         !(l1_mem_valid && !refill_buffer_hit && !postable_store) &&
@@ -733,7 +1040,7 @@ module openrv64_l1d_ccx #(
     wire prefetch_candidate_drop = prefetch_generate_valid_r &&
         !prefetch_candidate_free_found_r;
     wire prefetch_inflight_late_match = prefetch_command_inflight &&
-        !prefetch_late_reported_q && l1_request_fire && !req_write_i &&
+        !prefetch_late_reported_q && demand_request_fire && !req_write_i &&
         l1_req_cacheable && (demand_line_addr == request_addr_q);
     wire prefetch_late_match = prefetch_inflight_late_match ||
                                prefetch_mshr_late_match_r ||
@@ -844,8 +1151,8 @@ module openrv64_l1d_ccx #(
         .req_wstrb_i(req_wstrb_i),
         .resp_valid_o(l1_resp_valid),
         .resp_ready_i(l1_resp_ready),
-        .req_rdata_o(req_rdata_o),
-        .req_error_o(req_error_o),
+        .req_rdata_o(l1_req_rdata),
+        .req_error_o(l1_req_error),
         .invalidate_valid_i(l1_invalidate_valid),
         .invalidate_ready_o(l1_invalidate_ready),
         .invalidate_all_i(l1_invalidate_all),
@@ -894,6 +1201,20 @@ module openrv64_l1d_ccx #(
                 {STORE_BUFFER_COUNT_WIDTH{1'b0}};
             store_completion_valid_q <= 1'b0;
             store_completion_error_q <= 1'b0;
+            freeloader_pending_store_valid_q <= 1'b0;
+            freeloader_pending_store_posted_q <= 1'b0;
+            freeloader_pending_store_addr_q <= 64'd0;
+            freeloader_pending_store_data_q <= 64'd0;
+            freeloader_pending_store_strb_q <= 8'd0;
+            for (freeloader_stage_index = 0;
+                 freeloader_stage_index < FREELOADER_STAGES;
+                 freeloader_stage_index =
+                     freeloader_stage_index + 1) begin
+                freeloader_valid_q[freeloader_stage_index] <= 1'b0;
+                freeloader_tag_q[freeloader_stage_index] <=
+                    {REQ_TAG_WIDTH{1'b0}};
+                freeloader_data_q[freeloader_stage_index] <= 64'd0;
+            end
             locked_line_invalidated_q <= 1'b0;
             active_req_lock_q <= 1'b0;
             active_req_posted_q <= 1'b0;
@@ -902,25 +1223,48 @@ module openrv64_l1d_ccx #(
             response_tag_head_q <= {REQ_INDEX_WIDTH{1'b0}};
             response_tag_tail_q <= {REQ_INDEX_WIDTH{1'b0}};
             response_tag_count_q <= {REQ_COUNT_WIDTH{1'b0}};
-            prefetch_train_valid_q <= 1'b0;
-            prefetch_last_line_q <= 64'd0;
-            prefetch_stride_valid_q <= 1'b0;
-            prefetch_stride_q <= 64'sd0;
-            prefetch_confidence_q <= 2'd0;
-            prefetch_generate_stride_q <= PREFETCH_NEXT_LINE_STRIDE;
-            prefetch_generation_active_q <= 1'b0;
+            fill_buffer_prefetch_replace_q <=
+                {FILL_BUFFER_INDEX_WIDTH{1'b0}};
+            prefetch_replace_q <=
+                {PREFETCH_STREAM_INDEX_WIDTH{1'b0}};
             prefetch_depth_q <= PREFETCH_INITIAL_DEPTH;
             prefetch_waste_q <= 2'd0;
+            for (prefetch_reset_stream_index = 0;
+                 prefetch_reset_stream_index < PREFETCH_STREAMS;
+                 prefetch_reset_stream_index =
+                     prefetch_reset_stream_index + 1) begin
+                prefetch_train_valid_q[
+                    prefetch_reset_stream_index] <= 1'b0;
+                prefetch_last_line_q[
+                    prefetch_reset_stream_index] <= 64'd0;
+                prefetch_stride_valid_q[
+                    prefetch_reset_stream_index] <= 1'b0;
+                prefetch_stride_q[
+                    prefetch_reset_stream_index] <= 64'sd0;
+                prefetch_confidence_q[
+                    prefetch_reset_stream_index] <= 2'd0;
+                prefetch_generate_stride_q[
+                    prefetch_reset_stream_index] <=
+                    PREFETCH_NEXT_LINE_STRIDE;
+                prefetch_generation_active_q[
+                    prefetch_reset_stream_index] <= 1'b0;
+                for (prefetch_reset_index = 0;
+                     prefetch_reset_index < PREFETCH_MAX_DISTANCE;
+                     prefetch_reset_index =
+                         prefetch_reset_index + 1)
+                    prefetch_window_issued_q[
+                        prefetch_reset_stream_index][
+                            prefetch_reset_index] <= 1'b0;
+            end
             for (prefetch_reset_index = 0;
                  prefetch_reset_index < PREFETCH_QUEUE_LINES;
                  prefetch_reset_index = prefetch_reset_index + 1) begin
                 prefetch_candidate_valid_q[prefetch_reset_index] <= 1'b0;
                 prefetch_candidate_addr_q[prefetch_reset_index] <= 64'd0;
+                prefetch_candidate_stream_q[
+                    prefetch_reset_index] <=
+                    {PREFETCH_STREAM_INDEX_WIDTH{1'b0}};
             end
-            for (prefetch_reset_index = 0;
-                 prefetch_reset_index < PREFETCH_MAX_DISTANCE;
-                 prefetch_reset_index = prefetch_reset_index + 1)
-                prefetch_window_issued_q[prefetch_reset_index] <= 1'b0;
             for (prefetch_reset_index = 0;
                  prefetch_reset_index < PREFETCH_OUTSTANDING;
                  prefetch_reset_index = prefetch_reset_index + 1) begin
@@ -956,38 +1300,109 @@ module openrv64_l1d_ccx #(
                 response_tag_q[response_tag_reset_index] <=
                     {REQ_TAG_WIDTH{1'b0}};
         end else begin
+            if (freeloader_pipe_advance) begin
+                for (freeloader_stage_index = FREELOADER_STAGES - 1;
+                     freeloader_stage_index > 0;
+                     freeloader_stage_index =
+                         freeloader_stage_index - 1) begin
+                    freeloader_valid_q[freeloader_stage_index] <=
+                        freeloader_valid_q[freeloader_stage_index - 1];
+                    freeloader_tag_q[freeloader_stage_index] <=
+                        freeloader_tag_q[freeloader_stage_index - 1];
+                    freeloader_data_q[freeloader_stage_index] <=
+                        freeloader_data_q[freeloader_stage_index - 1];
+                end
+                freeloader_valid_q[0] <= freeloader_request_fire;
+                if (freeloader_request_fire) begin
+                    freeloader_tag_q[0] <= req_tag_i;
+                    freeloader_data_q[0] <= freeloader_merged_data_r;
+                end
+            end
+
+            if (store_buffer_enqueue ||
+                (l1_response_fire &&
+                 freeloader_pending_store_valid_q &&
+                 !freeloader_pending_store_posted_q)) begin
+                freeloader_pending_store_valid_q <= 1'b0;
+                freeloader_pending_store_posted_q <= 1'b0;
+            end
+            if (l1_request_fire && req_write_i) begin
+                freeloader_pending_store_valid_q <= 1'b1;
+                freeloader_pending_store_posted_q <=
+                    req_posted_i && l1_req_cacheable;
+                freeloader_pending_store_addr_q <= req_addr_i;
+                freeloader_pending_store_data_q <= req_wdata_i;
+                freeloader_pending_store_strb_q <= req_wstrb_i;
+            end
+
             if (prefetch_train_event) begin
-                prefetch_train_valid_q <= 1'b1;
-                prefetch_last_line_q <= demand_line_addr;
-                prefetch_generation_active_q <= 1'b1;
-                prefetch_generate_stride_q <= prefetch_stride_match ?
-                    prefetch_observed_delta :
-                    PREFETCH_NEXT_LINE_STRIDE;
+                prefetch_train_valid_q[
+                    prefetch_train_index_r] <= 1'b1;
+                prefetch_last_line_q[
+                    prefetch_train_index_r] <= demand_line_addr;
+                prefetch_generation_active_q[
+                    prefetch_train_index_r] <= 1'b1;
+                prefetch_generate_stride_q[
+                    prefetch_train_index_r] <=
+                    prefetch_stride_match ?
+                        prefetch_observed_delta :
+                        PREFETCH_NEXT_LINE_STRIDE;
                 for (prefetch_reset_index = 0;
                      prefetch_reset_index < PREFETCH_MAX_DISTANCE;
                      prefetch_reset_index =
                          prefetch_reset_index + 1)
                     prefetch_window_issued_q[
-                        prefetch_reset_index] <= 1'b0;
-                if (prefetch_train_valid_q) begin
+                        prefetch_train_index_r][
+                            prefetch_reset_index] <= 1'b0;
+                if (!prefetch_train_valid_q[
+                        prefetch_train_index_r] ||
+                    prefetch_train_replacement_r) begin
+                    prefetch_stride_valid_q[
+                        prefetch_train_index_r] <= 1'b0;
+                    prefetch_confidence_q[
+                        prefetch_train_index_r] <= 2'd0;
+                    prefetch_replace_q <=
+                        (prefetch_train_index_r ==
+                         PREFETCH_STREAM_INDEX_WIDTH'(
+                             PREFETCH_STREAMS - 1)) ?
+                        {PREFETCH_STREAM_INDEX_WIDTH{1'b0}} :
+                        prefetch_train_index_r + 1'b1;
+                end else begin
                     if (!prefetch_delta_eligible) begin
-                        prefetch_stride_valid_q <= 1'b0;
-                        prefetch_confidence_q <= 2'd0;
-                    end else if (!prefetch_stride_valid_q) begin
-                        prefetch_stride_valid_q <= 1'b1;
-                        prefetch_stride_q <= prefetch_observed_delta;
-                        prefetch_confidence_q <= 2'd0;
+                        prefetch_stride_valid_q[
+                            prefetch_train_index_r] <= 1'b0;
+                        prefetch_confidence_q[
+                            prefetch_train_index_r] <= 2'd0;
+                    end else if (!prefetch_stride_valid_q[
+                                     prefetch_train_index_r]) begin
+                        prefetch_stride_valid_q[
+                            prefetch_train_index_r] <= 1'b1;
+                        prefetch_stride_q[
+                            prefetch_train_index_r] <=
+                            prefetch_observed_delta;
+                        prefetch_confidence_q[
+                            prefetch_train_index_r] <= 2'd0;
                     end else if (prefetch_observed_delta ==
-                                 prefetch_stride_q) begin
-                        if (prefetch_confidence_q != 2'b11)
-                            prefetch_confidence_q <=
-                                prefetch_confidence_q + 1'b1;
-                    end else if (prefetch_confidence_q != 0) begin
-                        prefetch_confidence_q <=
-                            prefetch_confidence_q - 1'b1;
+                                 prefetch_stride_q[
+                                     prefetch_train_index_r]) begin
+                        if (prefetch_confidence_q[
+                                prefetch_train_index_r] != 2'b11)
+                            prefetch_confidence_q[
+                                prefetch_train_index_r] <=
+                                prefetch_confidence_q[
+                                    prefetch_train_index_r] + 1'b1;
+                    end else if (prefetch_confidence_q[
+                                     prefetch_train_index_r] != 0) begin
+                        prefetch_confidence_q[
+                            prefetch_train_index_r] <=
+                            prefetch_confidence_q[
+                                prefetch_train_index_r] - 1'b1;
                     end else begin
-                        prefetch_stride_q <= prefetch_observed_delta;
-                        prefetch_confidence_q <= 2'd0;
+                        prefetch_stride_q[
+                            prefetch_train_index_r] <=
+                            prefetch_observed_delta;
+                        prefetch_confidence_q[
+                            prefetch_train_index_r] <= 2'd0;
                     end
                 end
             end
@@ -995,17 +1410,20 @@ module openrv64_l1d_ccx #(
             if (prefetch_launch)
                 prefetch_candidate_valid_q[
                     prefetch_launch_index_r] <= 1'b0;
-            if (l1_request_fire || prefetch_stream_change) begin
+            if (demand_request_fire) begin
                 for (prefetch_reset_index = 0;
                      prefetch_reset_index < PREFETCH_QUEUE_LINES;
                      prefetch_reset_index =
                          prefetch_reset_index + 1) begin
-                    if (prefetch_stream_change ||
-                        (prefetch_candidate_valid_q[
-                             prefetch_reset_index] &&
-                         (prefetch_candidate_addr_q[
+                    if (prefetch_candidate_valid_q[
+                            prefetch_reset_index] &&
+                        ((prefetch_candidate_addr_q[
                               prefetch_reset_index] ==
-                          demand_line_addr)))
+                          demand_line_addr) ||
+                         (prefetch_stream_change &&
+                          (prefetch_candidate_stream_q[
+                               prefetch_reset_index] ==
+                           prefetch_train_index_r))))
                         prefetch_candidate_valid_q[
                             prefetch_reset_index] <= 1'b0;
                 end
@@ -1016,12 +1434,17 @@ module openrv64_l1d_ccx #(
                 prefetch_candidate_addr_q[
                     prefetch_candidate_free_index_r] <=
                     prefetch_generate_addr_r;
+                prefetch_candidate_stream_q[
+                    prefetch_candidate_free_index_r] <=
+                    prefetch_generate_stream_r;
                 prefetch_window_issued_q[
-                    prefetch_generate_index_r] <= 1'b1;
+                    prefetch_generate_stream_r][
+                        prefetch_generate_index_r] <= 1'b1;
             end
             if (prefetch_candidate_drop)
                 prefetch_window_issued_q[
-                    prefetch_generate_index_r] <= 1'b1;
+                    prefetch_generate_stream_r][
+                        prefetch_generate_index_r] <= 1'b1;
             if (prefetch_inflight_late_match)
                 prefetch_late_reported_q <= 1'b1;
             if (prefetch_mshr_late_match_r)
@@ -1282,6 +1705,9 @@ module openrv64_l1d_ccx #(
                                 fill_buffer_free_index_r :
                                 fill_buffer_prefetch_index_r] <=
                                 1'b0;
+                            if (!fill_buffer_free_found_r)
+                                fill_buffer_prefetch_replace_q <=
+                                    next_fill_buffer_prefetch_replace;
                         end
                         backend_state_q <= BACKEND_IDLE;
                     end
@@ -1319,15 +1745,31 @@ module openrv64_l1d_ccx #(
                         prefetch_response_uses_free ?
                         fill_buffer_free_index_r :
                         fill_buffer_prefetch_index_r] <= 1'b1;
+                    if (!prefetch_response_uses_free)
+                        fill_buffer_prefetch_replace_q <=
+                            next_fill_buffer_prefetch_replace;
                 end
             end
 
             if (prefetch_invalidate_fire) begin
-                prefetch_generation_active_q <= 1'b0;
+                for (prefetch_reset_stream_index = 0;
+                     prefetch_reset_stream_index < PREFETCH_STREAMS;
+                     prefetch_reset_stream_index =
+                         prefetch_reset_stream_index + 1)
+                    prefetch_generation_active_q[
+                        prefetch_reset_stream_index] <= 1'b0;
                 if (l1_invalidate_all) begin
-                    prefetch_train_valid_q <= 1'b0;
-                    prefetch_stride_valid_q <= 1'b0;
-                    prefetch_confidence_q <= 2'd0;
+                    for (prefetch_reset_stream_index = 0;
+                         prefetch_reset_stream_index < PREFETCH_STREAMS;
+                         prefetch_reset_stream_index =
+                             prefetch_reset_stream_index + 1) begin
+                        prefetch_train_valid_q[
+                            prefetch_reset_stream_index] <= 1'b0;
+                        prefetch_stride_valid_q[
+                            prefetch_reset_stream_index] <= 1'b0;
+                        prefetch_confidence_q[
+                            prefetch_reset_stream_index] <= 2'd0;
+                    end
                     prefetch_depth_q <= PREFETCH_INITIAL_DEPTH;
                     prefetch_waste_q <= 2'd0;
                 end
@@ -1369,7 +1811,6 @@ module openrv64_l1d_ccx #(
             end
 
             if (l1_request_fire && req_write_i) begin
-                prefetch_generation_active_q <= 1'b0;
                 for (prefetch_reset_index = 0;
                      prefetch_reset_index < PREFETCH_QUEUE_LINES;
                      prefetch_reset_index =
@@ -1427,6 +1868,13 @@ module openrv64_l1d_ccx #(
             $fatal(1, "L1D store buffers must contain 1 through 16 cachelines");
         if ((REQ_DEPTH < 1) || (REQ_DEPTH > (1 << REQ_TAG_WIDTH)))
             $fatal(1, "L1D request depth must fit its tag width");
+        if ((FREELOADER != 0) && (FREELOADER != 1))
+            $fatal(1, "L1D freeloader must be zero or one");
+        if ((FREELOADER_LATENCY < 3) ||
+            (FREELOADER_LATENCY > (REQ_DEPTH + 2)))
+            $fatal(1, "L1D freeloader latency must be 3 through request depth plus two");
+        if ((FREELOADER != 0) && (ENABLE == 0))
+            $fatal(1, "L1D freeloader requires the native L1D wrapper");
         if ((PREFETCH_ENABLE != 0) && (PREFETCH_ENABLE != 1))
             $fatal(1, "L1D prefetch enable must be zero or one");
         if ((PREFETCH_ADAPTIVE_ENABLE != 0) &&
@@ -1435,6 +1883,8 @@ module openrv64_l1d_ccx #(
         if ((PREFETCH_MAX_STRIDE_LINES < 1) ||
             (PREFETCH_MAX_STRIDE_LINES > 1048576))
             $fatal(1, "L1D prefetch maximum stride must be 1 through 1048576 lines");
+        if ((PREFETCH_STREAMS < 1) || (PREFETCH_STREAMS > 4))
+            $fatal(1, "L1D prefetch stream count must be 1 through 4");
         if ((PREFETCH_DISTANCE < 1) || (PREFETCH_DISTANCE > 16))
             $fatal(1, "L1D prefetch distance must be 1 through 16");
         if ((PREFETCH_MAX_DISTANCE < PREFETCH_DISTANCE) ||

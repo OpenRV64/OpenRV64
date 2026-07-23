@@ -9,6 +9,11 @@ module openrv64_bus_ptw #(
     // Set entries to zero to disable.
     parameter integer PTE_CACHE_ENTRIES = 64,
     parameter integer PTE_CACHE_WAYS = 4,
+    // Bound a wedged CCX request or response.  Zero disables the watchdog.
+    // An unaccepted request can be discarded directly.  An accepted request
+    // leaves a response tombstone which must drain before the transaction ID
+    // can be reused.
+    parameter integer CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] TXN_ID =
@@ -17,6 +22,7 @@ module openrv64_bus_ptw #(
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         invalidate_i,
+    output wire                         invalidate_busy_o,
 
     input  wire                         req_valid_i,
     output wire                         req_ready_o,
@@ -117,6 +123,11 @@ module openrv64_bus_ptw #(
     localparam integer PTE_CACHE_AGE_WIDTH =
         (PTE_CACHE_ACTIVE_WAYS > 1) ?
         $clog2(PTE_CACHE_ACTIVE_WAYS) : 1;
+    localparam integer CCX_TIMEOUT_COUNT_WIDTH =
+        (CCX_TIMEOUT_CYCLES > 1) ? $clog2(CCX_TIMEOUT_CYCLES) : 1;
+    localparam [CCX_TIMEOUT_COUNT_WIDTH-1:0] CCX_TIMEOUT_LAST =
+        (CCX_TIMEOUT_CYCLES > 0) ? (CCX_TIMEOUT_CYCLES - 1) :
+        {CCX_TIMEOUT_COUNT_WIDTH{1'b0}};
     // Sv39 PTE PPNs form 56-bit physical addresses.  PTEs are 8-byte aligned,
     // so bits [55:3] uniquely identify the cached memory object.
     localparam integer PTE_CACHE_TAG_WIDTH = 53;
@@ -125,6 +136,8 @@ module openrv64_bus_ptw #(
     reg [1:0] backend_state_q;
     reg shootdown_pending_q;
     reg shootdown_inflight_q;
+    reg [CCX_TIMEOUT_COUNT_WIDTH-1:0] ccx_timeout_count_q;
+    reg ccx_timeout_drain_q;
     reg [`RV64_XLEN-1:0] vaddr_q;
     reg [1:0] access_q;
     reg [`RV64_PRIV_WIDTH-1:0] priv_q;
@@ -272,6 +285,17 @@ module openrv64_bus_ptw #(
     wire ccx_resp_owned =
         ccx_resp_source_id_i == `OPENRV64_CCX_SOURCE_PTW;
     wire ccx_resp_fire = ccx_resp_valid_i && ccx_resp_ready_o;
+    wire walk_backend_pending =
+        ((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
+        ((backend_state_q == BACKEND_SEND) ||
+         (backend_state_q == BACKEND_WAIT));
+    wire walk_backend_progress =
+        ((backend_state_q == BACKEND_SEND) && ccx_req_fire) ||
+        ((backend_state_q == BACKEND_WAIT) && ccx_resp_fire);
+    wire walk_backend_timeout =
+        (CCX_TIMEOUT_CYCLES != 0) && walk_backend_pending &&
+        !walk_backend_progress &&
+        (ccx_timeout_count_q == CCX_TIMEOUT_LAST);
     wire shootdown_resp_fire = ccx_resp_fire && shootdown_inflight_q;
     wire ccx_resp_identity_error =
         (ccx_resp_hart_id_i != HART_ID) ||
@@ -283,6 +307,16 @@ module openrv64_bus_ptw #(
         ccx_resp_rdata_i[walk_pte_addr[5:3]*`RV64_XLEN +: `RV64_XLEN];
     wire [`RV64_XLEN-1:0] walk_pte_data =
         pte_cache_hit_use ? pte_cache_hit_data_r : ccx_pte_data;
+
+    // Invalidation is a completion-tracked global translation barrier.  The
+    // initiating pulse is included so the core stops post-barrier traffic in
+    // the same cycle; pending/inflight retain the barrier until the CCX
+    // ACQ_REL fence response has been consumed.  An invalidated active walk
+    // also remains covered because shootdown_pending_q cannot issue until the
+    // walk has been aborted and drained back to IDLE.
+    assign invalidate_busy_o = invalidate_i ||
+                               shootdown_pending_q ||
+                               shootdown_inflight_q;
     wire walk_pte_ready = pmp_denied || pte_cache_hit_use ||
                           ccx_resp_fire;
     wire walk_pte_error = pmp_denied ||
@@ -353,7 +387,8 @@ module openrv64_bus_ptw #(
     // invalidate_i is asserted would let the requester count a walk that the
     // invalidation branch deliberately does not capture.
     assign req_ready_o = (state_q == STATE_IDLE) && !invalidate_i &&
-                         !shootdown_pending_q && !shootdown_inflight_q;
+                         !shootdown_pending_q && !shootdown_inflight_q &&
+                         !ccx_timeout_drain_q;
 
     // A stale response is not transferable in the shootdown cycle.  The
     // sequential invalidation path replaces it with an explicit invalidated
@@ -401,9 +436,26 @@ module openrv64_bus_ptw #(
 
     assign ccx_resp_ready_o =
         ccx_resp_owned &&
-        (shootdown_inflight_q ||
+        (ccx_timeout_drain_q || shootdown_inflight_q ||
          (((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
           (backend_state_q == BACKEND_WAIT)));
+
+    // This watchdog is deliberately local to an active walk.  A shootdown
+    // fence has no originating architectural access to fault and therefore
+    // remains governed by the fabric's forward-progress contract.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            ccx_timeout_count_q <=
+                {CCX_TIMEOUT_COUNT_WIDTH{1'b0}};
+        end else if ((CCX_TIMEOUT_CYCLES == 0) ||
+                     !walk_backend_pending || walk_backend_progress ||
+                     walk_backend_timeout) begin
+            ccx_timeout_count_q <=
+                {CCX_TIMEOUT_COUNT_WIDTH{1'b0}};
+        end else begin
+            ccx_timeout_count_q <= ccx_timeout_count_q + 1'b1;
+        end
+    end
 
     // SFENCE.VMA and the local shootdown input also invalidate PTE lines which
     // may have survived in the shared L2.  Multiple invalidations coalesce
@@ -548,6 +600,7 @@ module openrv64_bus_ptw #(
         if (!rst_n) begin
             state_q <= STATE_IDLE;
             backend_state_q <= BACKEND_PMP;
+            ccx_timeout_drain_q <= 1'b0;
             vaddr_q <= {`RV64_XLEN{1'b0}};
             access_q <= ACCESS_READ;
             priv_q <= `RV64_PRIV_M;
@@ -568,7 +621,13 @@ module openrv64_bus_ptw #(
             resp_user_q <= 1'b0;
             resp_accessed_q <= 1'b0;
             resp_dirty_q <= 1'b0;
-        end else if (invalidate_i) begin
+        end else begin
+            // A timed-out accepted request owns its transaction identity
+            // until a possible late response has been consumed.
+            if (ccx_timeout_drain_q && ccx_resp_fire)
+                ccx_timeout_drain_q <= 1'b0;
+
+            if (invalidate_i) begin
             case (state_q)
                 STATE_WALK: begin
                     case (backend_state_q)
@@ -605,7 +664,7 @@ module openrv64_bus_ptw #(
                 default: begin
                 end
             endcase
-        end else begin
+            end else begin
             case (state_q)
                 STATE_IDLE: begin
                     if (req_valid_i && req_ready_o) begin
@@ -654,7 +713,11 @@ module openrv64_bus_ptw #(
                              ccx_req_fire)
                         backend_state_q <= BACKEND_WAIT;
 
-                    if (walk_pte_ready) begin
+                    if (walk_backend_timeout) begin
+                        if (backend_state_q == BACKEND_WAIT)
+                            ccx_timeout_drain_q <= 1'b1;
+                        set_fault_response(1'b0, 1'b1);
+                    end else if (walk_pte_ready) begin
                         if (walk_pte_error) begin
                             set_fault_response(1'b0, 1'b1);
                         end else if (pte_encoding_invalid) begin
@@ -690,7 +753,11 @@ module openrv64_bus_ptw #(
                 end
 
                 STATE_ABORT: begin
-                    if ((backend_state_q == BACKEND_SEND) &&
+                    if (walk_backend_timeout) begin
+                        if (backend_state_q == BACKEND_WAIT)
+                            ccx_timeout_drain_q <= 1'b1;
+                        set_invalidated_response();
+                    end else if ((backend_state_q == BACKEND_SEND) &&
                         ccx_req_fire)
                         backend_state_q <= BACKEND_WAIT;
                     else if ((backend_state_q == BACKEND_WAIT) &&
@@ -709,6 +776,7 @@ module openrv64_bus_ptw #(
                     backend_state_q <= BACKEND_PMP;
                 end
             endcase
+            end
         end
     end
 
@@ -722,6 +790,8 @@ module openrv64_bus_ptw #(
     initial begin
         if ((PTE_CACHE_ENTRIES < 0) || (PTE_CACHE_WAYS < 1))
             $fatal(1, "invalid non-leaf PTE cache geometry");
+        if (CCX_TIMEOUT_CYCLES < 0)
+            $fatal(1, "PTW CCX timeout must be nonnegative");
         if ((PTE_CACHE_ENTRIES > 0) &&
             (((PTE_CACHE_WAYS & (PTE_CACHE_WAYS - 1)) != 0) ||
              ((PTE_CACHE_ENTRIES % PTE_CACHE_WAYS) != 0) ||

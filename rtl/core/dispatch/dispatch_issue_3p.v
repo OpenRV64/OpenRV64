@@ -12,7 +12,7 @@ module openrv64_dispatch_issue_3p #(
     input  wire [2:0]                   candidate_allow_i,
     input  wire [2:0]                   candidate_free_i,
     input  wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe_i,
-    input  wire [3*64-1:0]              candidate_id_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] candidate_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0] candidate_slot_i,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         candidate_payload_i,
@@ -22,7 +22,7 @@ module openrv64_dispatch_issue_3p #(
 
     output wire [2:0]                   candidate_fire_o,
     output reg  [2:0]                   pipe_valid_o,
-    output reg  [3*64-1:0]              pipe_id_o,
+    output reg  [3*`OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
     output reg  [3*RETIRE_SLOT_WIDTH-1:0] pipe_slot_o,
     output reg  [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o
@@ -108,7 +108,7 @@ module openrv64_dispatch_issue_3p #(
     always @* begin
         pipe_valid_o = 3'b000;
         route_claimed = 3'b000;
-        pipe_id_o = {3*64{1'b0}};
+        pipe_id_o = {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         pipe_slot_o = {3*RETIRE_SLOT_WIDTH{1'b0}};
         pipe_payload_o =
             {3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
@@ -132,8 +132,12 @@ module openrv64_dispatch_issue_3p #(
                 case (selected_pipe)
                     `OPENRV64_EXEC_PIPE_EX0: begin
                         pipe_valid_o[0] = candidate_fire_o[candidate_idx];
-                        pipe_id_o[0*64 +: 64] =
-                            candidate_id_i[candidate_idx*64 +: 64];
+                        pipe_id_o[
+                            0*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH] =
+                            candidate_id_i[
+                                candidate_idx*`OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH];
                         pipe_slot_o[0*RETIRE_SLOT_WIDTH +:
                                     RETIRE_SLOT_WIDTH] =
                             candidate_slot_i[
@@ -149,8 +153,12 @@ module openrv64_dispatch_issue_3p #(
 
                     `OPENRV64_EXEC_PIPE_EX1: begin
                         pipe_valid_o[1] = candidate_fire_o[candidate_idx];
-                        pipe_id_o[1*64 +: 64] =
-                            candidate_id_i[candidate_idx*64 +: 64];
+                        pipe_id_o[
+                            1*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH] =
+                            candidate_id_i[
+                                candidate_idx*`OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH];
                         pipe_slot_o[1*RETIRE_SLOT_WIDTH +:
                                     RETIRE_SLOT_WIDTH] =
                             candidate_slot_i[
@@ -166,8 +174,12 @@ module openrv64_dispatch_issue_3p #(
 
                     `OPENRV64_EXEC_PIPE_MEM: begin
                         pipe_valid_o[2] = candidate_fire_o[candidate_idx];
-                        pipe_id_o[2*64 +: 64] =
-                            candidate_id_i[candidate_idx*64 +: 64];
+                        pipe_id_o[
+                            2*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH] =
+                            candidate_id_i[
+                                candidate_idx*`OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH];
                         pipe_slot_o[2*RETIRE_SLOT_WIDTH +:
                                     RETIRE_SLOT_WIDTH] =
                             candidate_slot_i[

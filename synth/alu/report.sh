@@ -86,6 +86,7 @@ rv64i_reports=(
 
 rv64m_reports=(
     "rv64m-pipeline:openrv64_exec_rv64m"
+    "rv64m-divide:openrv64_timing_rv64m_divide"
 )
 
 run_report() {
@@ -100,7 +101,7 @@ run_report() {
     local flow=""
 
     if [[ "$report_name" == rv64m-* ]]; then
-        verilog_sources="\"$repo_root/rtl/core/exec/alu/rv64-m.v\""
+        verilog_sources="\"$repo_root/rtl/core/exec/alu/rv64-m.v\" \"$repo_root/synth/alu/rv64-m-timing.v\""
     else
         verilog_sources="\"$repo_root/rtl/core/exec/alu/rv64-i.v\" \"$repo_root/synth/alu/rv64-i-timing.v\""
     fi

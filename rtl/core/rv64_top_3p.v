@@ -20,7 +20,7 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_RV64M = 0,
     parameter integer RETIRE_DEPTH = 8,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
-    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b111,
+    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter ENABLE_FULL_FORWARDING = 0,
     parameter RELAX_WAW = 1,
     parameter RELAX_HAZARDS = 0,
@@ -46,6 +46,7 @@ module openrv64_rv64_top_3p #(
     parameter integer L1D_STORE_BUFFER_LINES = 8,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_STREAMS = 2,
     parameter integer L1D_PREFETCH_DISTANCE = 1,
     parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
@@ -54,15 +55,17 @@ module openrv64_rv64_top_3p #(
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
+    parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_MAGIC_MEMORY = 0,
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
-    parameter ENABLE_FETCH_ALT_LOOKASIDE = 1,
+    parameter ENABLE_FETCH_ALT_LOOKASIDE = 3,
     // Optional bandwidth policy.  The default stashes every eligible
     // alternate path; set this to one to restrict stashing to weak BP output.
     parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
+    parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,
@@ -85,6 +88,28 @@ module openrv64_rv64_top_3p #(
     output wire [7:0]  mem_wstrb,
     input  wire [63:0] mem_rdata,
     input  wire        mem_error,
+    output wire        pair512_req_valid,
+    input  wire        pair512_req_ready,
+    output wire [63:0] pair512_req_predicted_addr,
+    output wire [63:0] pair512_req_unpredicted_addr,
+    input  wire        pair512_resp_valid,
+    input  wire [63:0] pair512_resp_predicted_addr,
+    input  wire [`OPENRV64_AXI_DATA_WIDTH-1:0]
+                              pair512_resp_predicted_data,
+    input  wire [63:0] pair512_resp_unpredicted_addr,
+    input  wire [`OPENRV64_AXI_DATA_WIDTH-1:0]
+                              pair512_resp_unpredicted_data,
+    output wire        pair1024_req_valid,
+    input  wire        pair1024_req_ready,
+    output wire [63:0] pair1024_req_predicted_addr,
+    output wire [63:0] pair1024_req_unpredicted_addr,
+    input  wire        pair1024_resp_valid,
+    input  wire [63:0] pair1024_resp_predicted_addr,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                              pair1024_resp_predicted_data,
+    input  wire [63:0] pair1024_resp_unpredicted_addr,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                              pair1024_resp_unpredicted_data,
     output wire [`OPENRV64_AXI_ID_WIDTH-1:0] m_axi_arid,
     output wire [`OPENRV64_AXI_ADDR_WIDTH-1:0] m_axi_araddr,
     output wire [7:0]  m_axi_arlen,
@@ -194,8 +219,10 @@ module openrv64_rv64_top_3p #(
     reg reset_pending_q;
 
     wire fetch_pc_ready;
+    wire translation_barrier_busy;
     wire fetch_pc_valid = fetch_pc_ready && !halted_q &&
-                          !reset_pending_q;
+                          !reset_pending_q &&
+                          !translation_barrier_busy;
     wire fetch_mem_valid;
     wire fetch_mem_next_valid;
     wire fetch_mem_ready;
@@ -229,14 +256,14 @@ module openrv64_rv64_top_3p #(
     wire use_ccx_bus = (BUS_CONFIG == `OPENRV64_BUS_AXI);
 
     wire backend_redirect;
-    wire [63:0] backend_redirect_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] backend_redirect_id;
     wire [63:0] backend_redirect_target;
     wire branch_resolved;
     wire branch_conditional;
     wire branch_taken;
     wire [63:0] branch_pc;
     wire [31:0] branch_instr;
-    wire [63:0] branch_id;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] branch_id;
     wire [$clog2(RETIRE_DEPTH)-1:0] branch_slot;
     wire [2:0] branch_train_valid;
     wire [2:0] branch_train_conditional;
@@ -244,7 +271,8 @@ module openrv64_rv64_top_3p #(
     wire [3*`RV64_XLEN-1:0] branch_train_pc;
     wire [2:0] branch_retire_age_valid;
     wire [3*`RV64_XLEN-1:0] branch_retire_age_addr;
-    wire [3*64-1:0] backend_decode_allocation_id;
+    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        backend_decode_allocation_id;
     wire [3*$clog2(RETIRE_DEPTH)-1:0]
         backend_decode_allocation_slot;
     wire backend_exception;
@@ -254,6 +282,7 @@ module openrv64_rv64_top_3p #(
     wire backend_sret;
     wire backend_fence_i;
     wire backend_sfence_vma;
+    wire backend_satp_write;
     wire [4:0] backend_cause;
     wire [63:0] backend_retire_pc;
     wire [63:0] backend_retire_next_pc;
@@ -266,7 +295,8 @@ module openrv64_rv64_top_3p #(
     wire [1:0] backend_retire_count;
 
     wire control_trap = backend_exception && !backend_halt;
-    wire control_restart = backend_fence_i || backend_sfence_vma;
+    wire control_restart = backend_fence_i || backend_sfence_vma ||
+                           backend_satp_write;
     wire control_flush = control_trap || backend_irq || backend_mret ||
                          backend_sret || control_restart;
     wire fetch_invalidate = reset_pending_q || control_flush || backend_halt;
@@ -371,15 +401,23 @@ module openrv64_rv64_top_3p #(
             assign fetch3_cancel_stash = 1'b1;
             assign fetch3_stream_pc = 64'd0;
             assign fetch_alt_restart_hit = 1'b0;
+            assign pair512_req_valid = 1'b0;
+            assign pair512_req_predicted_addr = 64'd0;
+            assign pair512_req_unpredicted_addr = 64'd0;
+            assign pair1024_req_valid = 1'b0;
+            assign pair1024_req_predicted_addr = 64'd0;
+            assign pair1024_req_unpredicted_addr = 64'd0;
         end else begin : g_fetch_axi
             openrv64_fetch_3w #(
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
-                .ENABLE_ALT_LOOKASIDE(ENABLE_FETCH_ALT_LOOKASIDE)
+                .ENABLE_ALT_LOOKASIDE(ENABLE_FETCH_ALT_LOOKASIDE),
+                .BRANCH_PAIR_STACK_DEPTH(FETCH_ALT_PAIR_STACK_DEPTH)
             ) u_fetch (
                 .clk(clk), .rst_n(rst_n), .restart_i(fetch3_restart),
                 .restart_pc_i(fetch3_restart_pc),
-                .invalidate_i(fetch3_invalidate), .stall_i(bp_fetch_stall),
+                .invalidate_i(fetch3_invalidate),
+                .stall_i(bp_fetch_stall || translation_barrier_busy),
                 .flush_i(backend_halt), .cancel_o(fetch3_cancel),
                 .cancel_stash_o(fetch3_cancel_stash),
                 .req_valid_o(fetch_pipe_req_valid),
@@ -400,6 +438,36 @@ module openrv64_rv64_top_3p #(
                     icache_prefetch_predicted_addr),
                 .branch_unpredicted_addr_i(
                     icache_prefetch_unpredicted_addr),
+                .pair512_req_valid_o(pair512_req_valid),
+                .pair512_req_ready_i(pair512_req_ready),
+                .pair512_req_predicted_addr_o(
+                    pair512_req_predicted_addr),
+                .pair512_req_unpredicted_addr_o(
+                    pair512_req_unpredicted_addr),
+                .pair512_resp_valid_i(pair512_resp_valid),
+                .pair512_resp_predicted_addr_i(
+                    pair512_resp_predicted_addr),
+                .pair512_resp_predicted_data_i(
+                    pair512_resp_predicted_data),
+                .pair512_resp_unpredicted_addr_i(
+                    pair512_resp_unpredicted_addr),
+                .pair512_resp_unpredicted_data_i(
+                    pair512_resp_unpredicted_data),
+                .pair1024_req_valid_o(pair1024_req_valid),
+                .pair1024_req_ready_i(pair1024_req_ready),
+                .pair1024_req_predicted_addr_o(
+                    pair1024_req_predicted_addr),
+                .pair1024_req_unpredicted_addr_o(
+                    pair1024_req_unpredicted_addr),
+                .pair1024_resp_valid_i(pair1024_resp_valid),
+                .pair1024_resp_predicted_addr_i(
+                    pair1024_resp_predicted_addr),
+                .pair1024_resp_predicted_data_i(
+                    pair1024_resp_predicted_data),
+                .pair1024_resp_unpredicted_addr_i(
+                    pair1024_resp_unpredicted_addr),
+                .pair1024_resp_unpredicted_data_i(
+                    pair1024_resp_unpredicted_data),
                 .prefetch_age_valid_i(branch_retire_age_valid),
                 .prefetch_age_addr_i(branch_retire_age_addr),
                 // Mode 1 isolates unpredicted-side recovery.  Mode 2 also
@@ -570,8 +638,10 @@ module openrv64_rv64_top_3p #(
                                  (bp_lane == 2'd1) ? decode_pc1 : decode_pc2;
     wire [31:0] bp_selected_instr = (bp_lane == 2'd0) ? instr0 :
                                     (bp_lane == 2'd1) ? instr1 : instr2;
-    wire [63:0] bp_selected_id = backend_decode_allocation_id[
-        bp_lane*64 +: 64];
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_selected_id =
+        backend_decode_allocation_id[
+            bp_lane*`OPENRV64_INSTR_ID_WIDTH +:
+            `OPENRV64_INSTR_ID_WIDTH];
     wire [63:0] bp_selected_decode_imm =
         decode_imm[bp_lane*64 +: 64];
     wire [63:0] bp_selected_imm = bp_selected_predecode ?
@@ -713,7 +783,8 @@ module openrv64_rv64_top_3p #(
 
     wire [2:0] backend_decode_ready;
     wire frontend_decode_enable = !control_flush && !control_redirect &&
-                                  !halted_q && !bp_decode_stall;
+                                  !halted_q && !bp_decode_stall &&
+                                  !translation_barrier_busy;
     wire [2:0] backend_decode_valid = fetch_decode_valid &
         frontend_prefix_allow & {3{frontend_decode_enable}};
     wire [2:0] frontend_decode_fire = backend_decode_valid &
@@ -750,11 +821,15 @@ module openrv64_rv64_top_3p #(
     wire backend_csr_write;
     wire [11:0] backend_csr_write_addr;
     wire [63:0] backend_csr_wdata;
+    assign backend_satp_write =
+        backend_csr_write &&
+        (backend_csr_write_addr == `RV64_CSR_SATP);
     wire [63:0] csr_rdata;
     wire csr_valid;
     wire csr_writable;
     wire backend_mem_valid;
     wire backend_mem_ready;
+    wire backend_mem_bus_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_tag;
     wire backend_mem_resp_valid;
     wire backend_mem_resp_ready;
@@ -972,6 +1047,7 @@ module openrv64_rv64_top_3p #(
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_MAX_STRIDE_LINES(
             L1D_PREFETCH_MAX_STRIDE_LINES),
+        .L1D_PREFETCH_STREAMS(L1D_PREFETCH_STREAMS),
         .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
         .L1D_PREFETCH_ADAPTIVE_ENABLE(
             L1D_PREFETCH_ADAPTIVE_ENABLE),
@@ -982,6 +1058,7 @@ module openrv64_rv64_top_3p #(
             L1D_PREFETCH_DEMAND_RESERVE),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID)
     ) u_bus (
         .clk(clk), .rst_n(rst_n), .fetch_valid_i(fetch_mem_valid),
@@ -1028,8 +1105,9 @@ module openrv64_rv64_top_3p #(
         .lsu_rdata_o(unused_legacy_lsu_rdata),
         .lsu_access_fault_o(unused_legacy_lsu_access_fault),
         .lsu_page_fault_o(unused_legacy_lsu_page_fault),
-        .lsu_pipe_req_valid_i(backend_mem_valid),
-        .lsu_pipe_req_ready_o(backend_mem_ready),
+        .lsu_pipe_req_valid_i(backend_mem_valid &&
+                              !translation_barrier_busy),
+        .lsu_pipe_req_ready_o(backend_mem_bus_ready),
         .lsu_pipe_req_tag_i(backend_mem_tag),
         .lsu_pipe_req_lock_i(backend_mem_lock),
         .lsu_pipe_req_write_i(backend_mem_write),
@@ -1051,9 +1129,11 @@ module openrv64_rv64_top_3p #(
         .lsu_pipe_resp_rdata_o(backend_mem_rdata),
         .lsu_pipe_resp_access_fault_o(backend_mem_access_fault),
         .lsu_pipe_resp_page_fault_o(backend_mem_page_fault),
-        .tlbi_i(backend_sfence_vma),
+        .tlbi_i(backend_sfence_vma || backend_satp_write),
+        .tlbi_busy_o(translation_barrier_busy),
         .icache_invalidate_i(backend_fence_i),
         .icache_prefetch_valid_i(icache_prefetch_valid &&
+                                 !translation_barrier_busy &&
                                  (ENABLE_FETCH_ALT_LOOKASIDE == 0)),
         .icache_prefetch_taken_addr_i(icache_prefetch_taken_addr),
         .icache_prefetch_fallthrough_addr_i(
@@ -1125,6 +1205,9 @@ module openrv64_rv64_top_3p #(
         .m_axi_bresp_i(m_axi_bresp), .m_axi_bvalid_i(m_axi_bvalid),
         .m_axi_bready_o(m_axi_bready)
     );
+
+    assign backend_mem_ready =
+        backend_mem_bus_ready && !translation_barrier_busy;
 
     assign dbg_pc = dbg_pc_q;
     assign dbg_instr = dbg_instr_q;

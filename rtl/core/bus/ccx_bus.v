@@ -27,6 +27,7 @@ module openrv64_core_ccx_bus #(
     parameter integer L1D_STORE_BUFFER_LINES = 8,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_STREAMS = 2,
     parameter integer L1D_PREFETCH_DISTANCE = 1,
     parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
@@ -35,6 +36,7 @@ module openrv64_core_ccx_bus #(
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
+    parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter integer AXI_ADDR_WIDTH = `OPENRV64_AXI_ADDR_WIDTH,
@@ -108,6 +110,7 @@ module openrv64_core_ccx_bus #(
     output wire                         lsu_pipe_resp_page_fault_o,
 
     input  wire                         tlbi_i,
+    output wire                         tlbi_busy_o,
     input  wire                         icache_invalidate_i,
     input  wire                         icache_prefetch_valid_i,
     input  wire [`RV64_XLEN-1:0]        icache_prefetch_taken_addr_i,
@@ -610,10 +613,12 @@ module openrv64_core_ccx_bus #(
 
     openrv64_bus_ptw #(
         .PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID),
         .TXN_ID(PTE_TXN_ID)
     ) u_ptw (
         .clk(clk), .rst_n(rst_n), .invalidate_i(tlbi_i),
+        .invalidate_busy_o(tlbi_busy_o),
         .req_valid_i(ptw_req_valid),
         .req_ready_o(ptw_req_ready), .req_vaddr_i(ptw_req_vaddr),
         .req_access_i(ptw_req_access), .req_priv_i(ptw_req_priv),
@@ -861,6 +866,7 @@ module openrv64_core_ccx_bus #(
         .PREFETCH_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
         .PREFETCH_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
         .PREFETCH_MAX_STRIDE_LINES(L1D_PREFETCH_MAX_STRIDE_LINES),
+        .PREFETCH_STREAMS(L1D_PREFETCH_STREAMS),
         .PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
         .PREFETCH_ADAPTIVE_ENABLE(L1D_PREFETCH_ADAPTIVE_ENABLE),
         .PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),

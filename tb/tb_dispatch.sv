@@ -173,7 +173,8 @@ module tb_dispatch;
         .decode_uses_rs2_3p_i(3'b000),
         .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
         .allocation_ready_3p_i(1'b0),
-        .allocation_id_3p_i({3*64{1'b0}}),
+        .allocation_id_3p_i(
+            {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .allocation_slot_3p_i(9'd0),
         .pipe_ready_3p_i(3'b000),
         .forward_valid_3p_i(2'b00),

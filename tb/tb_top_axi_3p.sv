@@ -527,7 +527,7 @@ module tb_top_axi_3p #(
     parameter integer BP_INFLIGHT_DEPTH = 16,
     parameter integer RETIRE_DEPTH = 8,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
-    parameter [2:0] BRANCH_FORWARD_MASK = 3'b111,
+    parameter [2:0] BRANCH_FORWARD_MASK = 3'b001,
     parameter integer FULL_FORWARDING = 0,
     parameter integer RELAX_WAW = 1,
     parameter integer RELAX_HAZARDS = 0,
@@ -540,15 +540,18 @@ module tb_top_axi_3p #(
     parameter integer FREE_L1_REFILLS = 0,
     parameter integer FREE_L1I_REFILLS = 0,
     parameter integer FREE_L1D_REFILLS = 0,
+    parameter integer FREELOADER = 0,
+    parameter integer FREELOADER_LATENCY = 3,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_STREAMS = 2,
     parameter integer L1D_PREFETCH_DISTANCE = 1,
     parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
     parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
-    parameter integer FETCH_ALT_LOOKASIDE = 1,
+    parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0
 );
     localparam integer RETIRE_RESULT_PC_LSB = 329;
@@ -686,7 +689,7 @@ module tb_top_axi_3p #(
     wire [0:0] clint_msip;
     wire [0:0] clint_mtip;
     wire [63:0] clint_mtime;
-    wire [0:0] plic_meip;
+    wire [0:0] plic_seip;
     wire uart_irq;
     wire gpio_irq;
     wire timer_irq;
@@ -763,6 +766,13 @@ module tb_top_axi_3p #(
     integer issue_width_1;
     integer issue_width_2;
     integer issue_width_3;
+    integer dispatch_ex0;
+    integer dispatch_ex1;
+    integer dispatch_mem;
+    integer dispatch_pipe_busy_ex0;
+    integer dispatch_pipe_busy_ex1;
+    integer dispatch_pipe_busy_mem;
+    integer branch_pipe_full;
     integer axi_fetch_reads;
     integer axi_data_reads;
     integer axi_ram_reads;
@@ -846,6 +856,8 @@ module tb_top_axi_3p #(
     integer branch_oracle_extra_allocations;
     string branch_oracle_dump_path;
     string branch_oracle_load_path;
+    integer instruction_trace_fd;
+    string instruction_trace_path;
     integer pipeline_trace_fd;
     integer pipeline_trace_cycle;
     string memh_path;
@@ -888,6 +900,7 @@ module tb_top_axi_3p #(
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_MAX_STRIDE_LINES(
             L1D_PREFETCH_MAX_STRIDE_LINES),
+        .L1D_PREFETCH_STREAMS(L1D_PREFETCH_STREAMS),
         .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
         .L1D_PREFETCH_ADAPTIVE_ENABLE(
             L1D_PREFETCH_ADAPTIVE_ENABLE),
@@ -985,10 +998,10 @@ module tb_top_axi_3p #(
         .ccx_resp_sc_success(1'b0),
         .irq_m_software(clint_msip[0]),
         .irq_m_timer(clint_mtip[0]),
-        .irq_m_external(plic_meip[0]),
+        .irq_m_external(1'b0),
         .irq_s_software(1'b0),
         .irq_s_timer(1'b0),
-        .irq_s_external(1'b0),
+        .irq_s_external(plic_seip[0]),
         .dbg_pc(dbg_pc),
         .dbg_instr(dbg_instr),
         .dbg_halted(dbg_halted),
@@ -1052,18 +1065,23 @@ module tb_top_axi_3p #(
     wire perfect_l1d_enabled =
         (FREE_L1_REFILLS != 0) || (FREE_L1D_REFILLS != 0) ||
         $test$plusargs("perfect_l1d");
+    wire freeloader_enabled = FREELOADER != 0;
 
     defparam dut.u_core.u_bus.g_ccx.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.IDEAL_REFILLS =
         1;
     defparam dut.u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.IDEAL_REFILLS =
         1;
+    defparam dut.u_core.u_bus.g_ccx.u_bus.u_l1d.FREELOADER =
+        FREELOADER;
+    defparam dut.u_core.u_bus.g_ccx.u_bus.u_l1d.FREELOADER_LATENCY =
+        FREELOADER_LATENCY;
 
     assign dut.u_core.u_bus.g_ccx.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_valid_i =
         perfect_l1i_enabled && oracle_l1i_ram;
     assign dut.u_core.u_bus.g_ccx.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_data_i =
         oracle_l1i_data;
     assign dut.u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_valid_i =
-        perfect_l1d_enabled && oracle_l1d_ram;
+        (perfect_l1d_enabled || freeloader_enabled) && oracle_l1d_ram;
     assign dut.u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_data_i =
         oracle_l1d_data;
 
@@ -1100,6 +1118,8 @@ module tb_top_axi_3p #(
     wire [3*`RV64_REG_ADDR_WIDTH-1:0] strict_trace_candidate_rd =
         dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.candidate_rd_addr;
     wire [2:0] trace_pipe_ready = dut.u_core.u_backend.pipe_ready;
+    wire [2:0] trace_dispatch_fire =
+        dut.u_core.backend_issue_valid & trace_pipe_ready;
     wire [2:0] trace_candidate_valid = (ISSUE_WINDOW != 0) ?
         dut.u_core.u_backend.pipe_valid : strict_trace_candidate_valid;
     wire [2:0] trace_candidate_fire = (ISSUE_WINDOW != 0) ?
@@ -1289,6 +1309,31 @@ module tb_top_axi_3p #(
         dut.u_core.g_fetch_axi.u_fetch.following_line_hit;
     wire trace_fetch_active = dut.u_core.g_fetch_axi.u_fetch.active_q;
 
+    // Minimal architectural instruction trace.  Sample on the retirement
+    // edge, before the retire queue advances, and emit one PC per committed
+    // instruction in program order.
+    always @(posedge clk) begin
+        if (rst_n && (instruction_trace_fd != 0)) begin
+            if (dut.u_core.backend_retire_arch[0])
+                $fdisplay(instruction_trace_fd, "%016x",
+                    dut.u_core.u_backend.queue_retire_result[
+                        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        RETIRE_RESULT_PC_LSB +: 64]);
+            if (dut.u_core.backend_retire_arch[1])
+                $fdisplay(instruction_trace_fd, "%016x",
+                    dut.u_core.u_backend.queue_retire_result[
+                        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        RETIRE_RESULT_PC_LSB +: 64]);
+            if (dut.u_core.backend_retire_arch[2])
+                $fdisplay(instruction_trace_fd, "%016x",
+                    dut.u_core.u_backend.queue_retire_result[
+                        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        RETIRE_RESULT_PC_LSB +: 64]);
+            if (dut.u_core.backend_retire_arch != 3'b000)
+                $fflush(instruction_trace_fd);
+        end
+    end
+
     // The legacy candidate fields above describe the strict-prefix queue.
     // The selectable issue-window path has more than three candidates, so
     // aggregate its actual scan state explicitly instead of pretending that
@@ -1394,6 +1439,38 @@ module tb_top_axi_3p #(
             end
         end
     end
+
+    // Count a conditional branch only when EX0 backpressure is the direct
+    // reason it cannot transfer.  Same-bundle EX0 conflicts and dependency,
+    // barrier, or retirement-capacity stalls are deliberately separate.
+    reg strict_branch_pipe_full;
+    always @* begin
+        strict_branch_pipe_full = 1'b0;
+        if ((trace_block_lane < 3) &&
+            (trace_block_reason == BLOCK_PIPE_BUSY))
+            strict_branch_pipe_full = strict_trace_candidate_payload[
+                trace_block_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14];
+    end
+
+    reg [2:0] strict_dispatch_pipe_busy;
+    always @* begin
+        strict_dispatch_pipe_busy = 3'b000;
+        if ((trace_block_reason == BLOCK_PIPE_BUSY) &&
+            (trace_block_pipe <= `OPENRV64_EXEC_PIPE_MEM))
+            strict_dispatch_pipe_busy[trace_block_pipe] = 1'b1;
+    end
+
+    wire [2:0] trace_dispatch_pipe_busy = (ISSUE_WINDOW != 0) ?
+        (dut.u_core.u_backend.pipe_valid & ~trace_pipe_ready) :
+        strict_dispatch_pipe_busy;
+
+    wire trace_branch_pipe_full = (ISSUE_WINDOW != 0) ?
+        (dut.u_core.u_backend.pipe_valid[`OPENRV64_EXEC_PIPE_EX0] &&
+         dut.u_core.u_backend.pipe_payload[
+             `OPENRV64_EXEC_PIPE_EX0*
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14] &&
+         !trace_pipe_ready[`OPENRV64_EXEC_PIPE_EX0]) :
+        strict_branch_pipe_full;
 
     tb_axi256_soc_fabric #(
         .RAM_BYTES(RAM_BYTES),
@@ -1583,7 +1660,7 @@ module tb_top_axi_3p #(
         .mem_wdata_i(plic_wdata),
         .mem_wstrb_i(plic_wstrb),
         .mem_rdata_o(plic_rdata),
-        .meip_o(plic_meip)
+        .seip_o(plic_seip)
     );
 
     openrv64_uart16550 u_uart (
@@ -1794,6 +1871,20 @@ module tb_top_axi_3p #(
                                 dut.u_core.backend_issue_valid[1] +
                                 dut.u_core.backend_issue_valid[2];
             perf_issued = perf_issued + issued_this_cycle;
+            dispatch_ex0 = dispatch_ex0 +
+                trace_dispatch_fire[`OPENRV64_EXEC_PIPE_EX0];
+            dispatch_ex1 = dispatch_ex1 +
+                trace_dispatch_fire[`OPENRV64_EXEC_PIPE_EX1];
+            dispatch_mem = dispatch_mem +
+                trace_dispatch_fire[`OPENRV64_EXEC_PIPE_MEM];
+            dispatch_pipe_busy_ex0 = dispatch_pipe_busy_ex0 +
+                trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_EX0];
+            dispatch_pipe_busy_ex1 = dispatch_pipe_busy_ex1 +
+                trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_EX1];
+            dispatch_pipe_busy_mem = dispatch_pipe_busy_mem +
+                trace_dispatch_pipe_busy[`OPENRV64_EXEC_PIPE_MEM];
+            if (trace_branch_pipe_full)
+                branch_pipe_full = branch_pipe_full + 1;
 
             if (ISSUE_WINDOW == 0) begin
                 for (branch_candidate_lane = 0;
@@ -2294,6 +2385,13 @@ module tb_top_axi_3p #(
         issue_width_1 = 0;
         issue_width_2 = 0;
         issue_width_3 = 0;
+        dispatch_ex0 = 0;
+        dispatch_ex1 = 0;
+        dispatch_mem = 0;
+        dispatch_pipe_busy_ex0 = 0;
+        dispatch_pipe_busy_ex1 = 0;
+        dispatch_pipe_busy_mem = 0;
+        branch_pipe_full = 0;
         axi_fetch_reads = 0;
         axi_data_reads = 0;
         axi_ram_reads = 0;
@@ -2358,6 +2456,8 @@ module tb_top_axi_3p #(
         branch_oracle_consumed = 0;
         branch_oracle_expected = 0;
         branch_oracle_extra_allocations = 0;
+        instruction_trace_fd = 0;
+        instruction_trace_path = "sim/top-axi-3p-pcs.trace";
         pipeline_trace_fd = 0;
         pipeline_trace_cycle = 0;
         pipeline_trace_path = "sim/top-axi-3p-trace.csv";
@@ -2397,6 +2497,14 @@ module tb_top_axi_3p #(
             (external_memh_words > (RAM_BYTES / 32)))
             $fatal(1, "memh_words=%0d is outside the AXI RAM",
                    external_memh_words);
+        if ($value$plusargs("instruction_trace=%s",
+                            instruction_trace_path)) begin
+            instruction_trace_fd = $fopen(instruction_trace_path, "w");
+            if (instruction_trace_fd == 0)
+                $fatal(1, "could not open instruction trace %0s",
+                       instruction_trace_path);
+            $display("TRACE instructions=%0s", instruction_trace_path);
+        end
         if ($value$plusargs("branch_oracle_dump=%s",
                             branch_oracle_dump_path)) begin
             branch_oracle_dump_fd = $fopen(branch_oracle_dump_path, "w");
@@ -2543,13 +2651,23 @@ module tb_top_axi_3p #(
             $display("PERF_ISSUE_WIDTH w0=%0d w1=%0d w2=%0d w3=%0d",
                      issue_width_0, issue_width_1,
                      issue_width_2, issue_width_3);
+            $display("PERF_DISPATCH ex0=%0d ex1=%0d mem=%0d total=%0d",
+                     dispatch_ex0, dispatch_ex1, dispatch_mem,
+                     dispatch_ex0 + dispatch_ex1 + dispatch_mem);
+            $display("PERF_DISPATCH_BLOCK pipe_busy_ex0=%0d pipe_busy_ex1=%0d pipe_busy_mem=%0d",
+                     dispatch_pipe_busy_ex0,
+                     dispatch_pipe_busy_ex1,
+                     dispatch_pipe_busy_mem);
+            $display("PERF_BRANCH_BLOCK pipe_full=%0d",
+                     branch_pipe_full);
             $display("PERF_AXI fetch_reads=%0d data_reads=%0d ram_reads=%0d mmio_reads=%0d ram_writes=%0d mmio_writes=%0d",
                      axi_fetch_reads, axi_data_reads, axi_ram_reads,
                      axi_mmio_reads, axi_ram_writes, axi_mmio_writes);
             $display("PERF_CCX fetch_reads=%0d data_reads=%0d data_writes=%0d",
                      ccx_fetch_reads, ccx_data_reads, ccx_data_writes);
-            $display("PERF_L1D_PREFETCH enabled=%0d adaptive=%0d max_stride_lines=%0d initial_depth=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d late=%0d dropped=%0d useless=%0d",
+            $display("PERF_L1D_PREFETCH enabled=%0d streams=%0d adaptive=%0d max_stride_lines=%0d initial_depth=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d late=%0d dropped=%0d useless=%0d",
                      L1D_PREFETCH_ENABLE,
+                     L1D_PREFETCH_STREAMS,
                      L1D_PREFETCH_ADAPTIVE_ENABLE,
                      L1D_PREFETCH_MAX_STRIDE_LINES,
                      L1D_PREFETCH_DISTANCE,
@@ -2573,13 +2691,14 @@ module tb_top_axi_3p #(
                  (BP_TYPE == `OPENRV64_BP_GSHARE_BTB)) &&
                 dut.u_core.bp_update_overflow)
                 $fatal(1, "branch predictor update/record queue overflowed");
-            $display("PERF_CONFIG retire_depth=%0d completion_mask=%03b branch_forward_mask=%03b full=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d free_branches=%0d eq_pair=%0d perfect_l1i=%0d perfect_l1d=%0d",
+            $display("PERF_CONFIG retire_depth=%0d completion_mask=%03b branch_forward_mask=%03b full=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d free_branches=%0d eq_pair=%0d perfect_l1i=%0d perfect_l1d=%0d freeloader=%0d freeloader_latency=%0d",
                      RETIRE_DEPTH, COMPLETION_FORWARD_MASK,
                      BRANCH_FORWARD_MASK,
                      FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
                      ISSUE_WINDOW, SPECULATION_WINDOW,
                      FREE_BRANCHES, EQ_BRANCH_PAIRING,
-                     perfect_l1i_enabled, perfect_l1d_enabled);
+                     perfect_l1i_enabled, perfect_l1d_enabled,
+                     freeloader_enabled, FREELOADER_LATENCY);
             $display("PERF_BLOCK none=%0d raw_pending=%0d raw_bundle=%0d raw_completed=%0d waw_pending=%0d waw_bundle=%0d waw_completed=%0d read_port=%0d barrier=%0d retire_capacity=%0d pipe_conflict=%0d pipe_busy=%0d invalid_pipe=%0d branch_redirect=%0d unknown=%0d",
                      perf_block_none,
                      perf_block_raw_pending,
@@ -2636,6 +2755,12 @@ module tb_top_axi_3p #(
                 $fclose(pipeline_trace_fd);
                 pipeline_trace_fd = 0;
                 $display("PERF_TRACE pipeline=%0s", pipeline_trace_path);
+            end
+            if (instruction_trace_fd != 0) begin
+                $fclose(instruction_trace_fd);
+                instruction_trace_fd = 0;
+                $display("PERF_TRACE instructions=%0s",
+                         instruction_trace_path);
             end
             $finish;
         end else begin

@@ -179,12 +179,12 @@ module tb_uart_firmware #(
                 @(posedge clk);
                 #1;
                 if (core_rst_n && dut.u_uart.ier_q[0] &&
-                    dut.u_core.u_core.u_csrs.mie_q[11] &&
+                    dut.u_core.u_core.u_csrs.mie_q[9] &&
                     dut.u_core.u_core.u_csrs.mstatus_q[3]) begin
                     disable ready_loop;
                 end
             end
-            $fatal(1, "firmware did not enable UART and machine interrupts");
+            $fatal(1, "firmware did not enable UART, SEIP, and global interrupts");
         end
     endtask
 
@@ -246,7 +246,7 @@ module tb_uart_firmware #(
         end
 
         if (core_rst_n && dut.u_core.u_core.hard_flush_irq_req) begin
-            if (dut.u_core.u_core.csr_irq_cause == 5'd11) begin
+            if (dut.u_core.u_core.csr_irq_cause == 5'd9) begin
                 if (phase == 0) begin
                     success_external_irqs <= success_external_irqs + 1;
                 end else begin
@@ -419,9 +419,9 @@ module tb_uart_firmware #(
     initial begin
         repeat (120000) @(posedge clk);
         $fatal(1,
-               "UART firmware test timeout phase=%0d pc=%016x halted=%b mtime=%0d mtimecmp=%0d meip=%b",
+               "UART firmware test timeout phase=%0d pc=%016x halted=%b mtime=%0d mtimecmp=%0d seip=%b",
                phase, dbg_pc, dbg_halted, dut.clint_mtime,
-               dut.u_clint.mtimecmp_q[63:0], dut.plic_meip);
+               dut.u_clint.mtimecmp_q[63:0], dut.plic_seip);
     end
 
 endmodule

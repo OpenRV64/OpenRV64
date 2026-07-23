@@ -117,6 +117,14 @@ The native CCX response carries `hart_id`, `source_id`, and `txn_id`.
 The standalone legacy wrappers still lack `source_id` and therefore remain
 valid only for their single merged requester.
 
+The PTW bounds an active CCX request or response with
+`CCX_TIMEOUT_CYCLES` (65,536 cycles by default, zero to disable). A timeout
+completes the originating translation as a precise instruction, load, or
+store access fault. If the command was accepted before the timeout, the PTW
+retains a transaction tombstone and will not reuse its fixed transaction ID
+until a possible late response has been drained. The timeout does not turn a
+blocking PTE read into an imprecise or asynchronous abort.
+
 ## Cache-line transport and bursts
 
 The interface above CCX is cache-line based.  Scalar execution loads and stores
@@ -404,13 +412,17 @@ Both the generic 1P core and native 3P core expose this PTW CCX client. The
 residual AXI read path in the 3P core is only for structural cacheless
 instruction fetch.
 
-`SFENCE.VMA` also makes the PTW issue `FENCE + kind=PTE` on CCX. The walker
-terminates any active walk, drains an already accepted PTE response, and blocks
-new walks until the fence response returns. At L2, a PTE lookup may hit only a
-line carrying the current eight-bit PTE generation. Advancing the generation
-therefore invalidates stale PTE observations without scanning every L2 set.
-A stale matching dirty line is selected as the victim, written back, and
-refilled before the PTE read completes.
+`SFENCE.VMA` and a successful writable `satp` CSR access make the PTW issue
+`FENCE + kind=PTE + order=ACQ_REL` on CCX. Before either instruction executes,
+the 3P backend waits for every older posted store's lower-level completion.
+The walker then terminates any active walk, drains an already accepted PTE
+response, and blocks new walks until the fence response returns. Core fetch,
+prefetch admission, and LSU admission remain blocked for that entire interval,
+including when the selected translation mode is Bare. At L2, a PTE lookup may
+hit only a line carrying the current eight-bit PTE generation. Advancing the
+generation therefore invalidates stale PTE observations without scanning every
+L2 set. A stale matching dirty line is selected as the victim, written back,
+and refilled before the PTE read completes.
 
 The generation deliberately wraps after 256 shootdowns. A surviving line from
 an entire generation wrap can become falsely current; this is accepted for the

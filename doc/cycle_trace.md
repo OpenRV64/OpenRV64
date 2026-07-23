@@ -191,10 +191,21 @@ Additional v2 fields expose:
 - LSU request/response handshakes, occupied and sent tag slots, posted-store
   state, and store/order interlock state.
 
-The simulation also prints `PERF_BLOCK`, `PERF_RETIRE_BLOCK`, `PERF_FRONTEND`,
-and `PERF_LSU`. `PERF_BLOCK` is the exclusive first-nonissued-candidate
-distribution. The renderer labels the old counts as overlapping observations
-and reports the exclusive distribution separately.
+The simulation also prints `PERF_DISPATCH`, `PERF_BRANCH_BLOCK`, `PERF_BLOCK`,
+`PERF_RETIRE_BLOCK`, `PERF_FRONTEND`, and `PERF_LSU`. `PERF_DISPATCH` counts
+successful `valid && ready` transfers into the physical EX0, EX1, and MEM
+pipes; unlike the legacy `PERF issued` field, it does not count a valid held
+during pipe backpressure more than once. `PERF_DISPATCH_BLOCK` counts those
+backpressured cycles separately for EX0, EX1, and MEM. In issue-window mode the
+three pipes are independent and more than one may increment in a cycle; in
+strict mode only the exclusive first candidate blocked directly by pipe
+backpressure increments. Same-bundle pipe conflicts are not pipe-busy events.
+`PERF_BRANCH_BLOCK pipe_full` counts cycles in which an otherwise selectable
+conditional branch cannot transfer because EX0 is not ready. It excludes
+dependency, barrier, retirement-capacity, and same-bundle pipe-conflict stalls.
+`PERF_BLOCK` is the exclusive first-nonissued-candidate distribution. The
+renderer labels the old counts as overlapping observations and reports the
+exclusive distribution separately.
 
 Useful anchors include a retired PC, a dynamic UID, an absolute cycle, or the
 first occurrence of a block reason:
