@@ -1,9 +1,13 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
+`include "complex/protocol/defs.v"
 
 module openrv64_core_gen_bus #(
-    parameter TLB_ENTRIES = 16
+    parameter TLB_ENTRIES = 16,
+    parameter integer PTW_PTE_CACHE_ENTRIES = 64,
+    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -54,6 +58,46 @@ module openrv64_core_gen_bus #(
     input  wire [`RV64_XLEN-1:0]        req_rdata_i,
     input  wire                         req_error_i,
 
+    output wire                         pmp_valid_o,
+    output wire [`RV64_XLEN-1:0]        pmp_addr_o,
+    output wire [`RV64_PRIV_WIDTH-1:0]  pmp_priv_o,
+    output wire [2:0]                   pmp_size_o,
+    output wire                         pmp_write_o,
+    output wire                         pmp_exec_o,
+    input  wire                         pmp_allow_i,
+
+    output wire                         ccx_req_valid_o,
+    input  wire                         ccx_req_ready_i,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                        ccx_req_hart_id_o,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                        ccx_req_txn_id_o,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                        ccx_req_source_id_o,
+    output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_o,
+    output wire                         ccx_req_lock_o,
+    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_o,
+    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_o,
+    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_o,
+    output wire [2:0]                   ccx_req_size_o,
+    output wire [63:0]                  ccx_req_addr_o,
+    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+                                        ccx_req_burst_len_o,
+    input  wire                         ccx_resp_valid_i,
+    output wire                         ccx_resp_ready_o,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                        ccx_resp_hart_id_i,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                        ccx_resp_txn_id_i,
+    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                        ccx_resp_source_id_i,
+    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                        ccx_resp_beat_index_i,
+    input  wire                         ccx_resp_last_i,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                        ccx_resp_rdata_i,
+    input  wire                         ccx_resp_error_i,
+
     // Successor request accepted by the fetch queue on the same edge that
     // the current fetch completes.  This sideband avoids an otherwise
     // unavoidable trip through IDLE; fetch_valid_i still describes the
@@ -101,6 +145,7 @@ module openrv64_core_gen_bus #(
     wire [`RV64_XLEN-1:0] ptw_resp_paddr;
     wire ptw_resp_page_fault;
     wire ptw_resp_access_fault;
+    wire ptw_resp_invalidated;
     wire ptw_resp_global;
     wire [`RV64_PAGE_LEVEL_WIDTH-1:0] ptw_resp_level;
     wire ptw_resp_readable;
@@ -109,12 +154,8 @@ module openrv64_core_gen_bus #(
     wire ptw_resp_user;
     wire ptw_resp_accessed;
     wire ptw_resp_dirty;
-    wire ptw_mem_valid;
-    wire ptw_mem_write;
-    wire [`RV64_XLEN-1:0] ptw_mem_addr;
-    wire [`RV64_XLEN-1:0] ptw_mem_wdata;
-    wire [7:0] ptw_mem_wstrb;
-    wire ptw_mem_ready;
+    wire ptw_pmp_valid;
+    wire [`RV64_XLEN-1:0] ptw_pmp_addr;
 
     wire translation_bare = (vm_mode_q == `RV64_SATP_MODE_BARE);
 
@@ -132,7 +173,7 @@ module openrv64_core_gen_bus #(
                               tlb_lookup_page_fault;
     wire ptw_response_usable = ptw_translation_complete &&
                                !walk_invalidated_q &&
-                               !tlbi_i;
+                               !ptw_resp_invalidated && !tlbi_i;
     wire translation_page_fault = tlb_fault_complete ||
                                   (ptw_response_usable &&
                                    ptw_resp_page_fault);
@@ -145,30 +186,32 @@ module openrv64_core_gen_bus #(
     assign ptw_req_valid = (state_q == STATE_TRANSLATE) &&
                            !translation_bare &&
                            !tlb_lookup_hit;
-    assign ptw_mem_ready = (state_q == STATE_TRANSLATE) && req_ready_i;
     assign tlb_fill_valid = ptw_response_usable &&
                             !translation_fault &&
                             !fetch_cancelled;
 
-    assign req_valid_o = (state_q == STATE_TRANSLATE) ? ptw_mem_valid :
-                         (state_q == STATE_ACCESS);
-    assign req_write_o = (state_q == STATE_TRANSLATE) ? ptw_mem_write :
-                         write_q;
-    assign req_addr_o = (state_q == STATE_TRANSLATE) ? ptw_mem_addr :
-                        owner_is_fetch ?
+    // Final instruction/data accesses retain the legacy scalar port.  PTE
+    // traffic is structurally absent from this interface and leaves only on
+    // the PTW's native CCX client below.
+    assign req_valid_o = (state_q == STATE_ACCESS);
+    assign req_write_o = write_q;
+    assign req_addr_o = owner_is_fetch ?
                         {paddr_q[`RV64_XLEN-1:3], 3'b000} : paddr_q;
-    assign req_pmp_addr_o = (state_q == STATE_TRANSLATE) ?
-                            ptw_mem_addr : owner_is_fetch ?
+    assign req_pmp_addr_o = owner_is_fetch ?
                             {paddr_q[`RV64_XLEN-1:3], 3'b000} : paddr_q;
-    assign req_priv_o = (state_q == STATE_TRANSLATE) ?
-                        `RV64_PRIV_S : priv_q;
-    assign req_size_o = (state_q == STATE_TRANSLATE) ?
-                        3'd3 : owner_is_fetch ? 3'd3 : size_q;
-    assign req_exec_o = (state_q != STATE_TRANSLATE) && owner_is_fetch;
-    assign req_wdata_o = (state_q == STATE_TRANSLATE) ? ptw_mem_wdata :
-                         wdata_q;
-    assign req_wstrb_o = (state_q == STATE_TRANSLATE) ? ptw_mem_wstrb :
-                         wstrb_q;
+    assign req_priv_o = priv_q;
+    assign req_size_o = owner_is_fetch ? 3'd3 : size_q;
+    assign req_exec_o = owner_is_fetch;
+    assign req_wdata_o = wdata_q;
+    assign req_wstrb_o = wstrb_q;
+
+    assign pmp_valid_o = ptw_pmp_valid || (state_q == STATE_ACCESS);
+    assign pmp_addr_o = ptw_pmp_valid ? ptw_pmp_addr :
+                        req_pmp_addr_o;
+    assign pmp_priv_o = ptw_pmp_valid ? `RV64_PRIV_S : priv_q;
+    assign pmp_size_o = ptw_pmp_valid ? 3'd3 : req_size_o;
+    assign pmp_write_o = ptw_pmp_valid ? 1'b0 : write_q;
+    assign pmp_exec_o = !ptw_pmp_valid && owner_is_fetch;
 
     assign fetch_ready_o = owner_is_fetch &&
                            !fetch_cancelled &&
@@ -221,9 +264,13 @@ module openrv64_core_gen_bus #(
         .fill_dirty_i(ptw_resp_dirty)
     );
 
-    openrv64_bus_ptw u_ptw (
+    openrv64_bus_ptw #(
+        .PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .HART_ID(HART_ID)
+    ) u_ptw (
         .clk(clk),
         .rst_n(rst_n),
+        .invalidate_i(tlbi_i),
         .req_valid_i(ptw_req_valid),
         .req_ready_o(ptw_req_ready),
         .req_vaddr_i(vaddr_q),
@@ -239,6 +286,7 @@ module openrv64_core_gen_bus #(
         .resp_paddr_o(ptw_resp_paddr),
         .resp_page_fault_o(ptw_resp_page_fault),
         .resp_access_fault_o(ptw_resp_access_fault),
+        .resp_invalidated_o(ptw_resp_invalidated),
         .resp_global_o(ptw_resp_global),
         .resp_level_o(ptw_resp_level),
         .resp_readable_o(ptw_resp_readable),
@@ -247,14 +295,32 @@ module openrv64_core_gen_bus #(
         .resp_user_o(ptw_resp_user),
         .resp_accessed_o(ptw_resp_accessed),
         .resp_dirty_o(ptw_resp_dirty),
-        .mem_valid_o(ptw_mem_valid),
-        .mem_ready_i(ptw_mem_ready),
-        .mem_write_o(ptw_mem_write),
-        .mem_addr_o(ptw_mem_addr),
-        .mem_wdata_o(ptw_mem_wdata),
-        .mem_wstrb_o(ptw_mem_wstrb),
-        .mem_rdata_i(req_rdata_i),
-        .mem_error_i(req_error_i)
+        .pmp_valid_o(ptw_pmp_valid),
+        .pmp_ready_i(ptw_pmp_valid),
+        .pmp_addr_o(ptw_pmp_addr),
+        .pmp_allow_i(pmp_allow_i),
+        .ccx_req_valid_o(ccx_req_valid_o),
+        .ccx_req_ready_i(ccx_req_ready_i),
+        .ccx_req_hart_id_o(ccx_req_hart_id_o),
+        .ccx_req_txn_id_o(ccx_req_txn_id_o),
+        .ccx_req_source_id_o(ccx_req_source_id_o),
+        .ccx_req_op_o(ccx_req_op_o),
+        .ccx_req_lock_o(ccx_req_lock_o),
+        .ccx_req_order_o(ccx_req_order_o),
+        .ccx_req_kind_o(ccx_req_kind_o),
+        .ccx_req_attr_o(ccx_req_attr_o),
+        .ccx_req_size_o(ccx_req_size_o),
+        .ccx_req_addr_o(ccx_req_addr_o),
+        .ccx_req_burst_len_o(ccx_req_burst_len_o),
+        .ccx_resp_valid_i(ccx_resp_valid_i),
+        .ccx_resp_ready_o(ccx_resp_ready_o),
+        .ccx_resp_hart_id_i(ccx_resp_hart_id_i),
+        .ccx_resp_txn_id_i(ccx_resp_txn_id_i),
+        .ccx_resp_source_id_i(ccx_resp_source_id_i),
+        .ccx_resp_beat_index_i(ccx_resp_beat_index_i),
+        .ccx_resp_last_i(ccx_resp_last_i),
+        .ccx_resp_rdata_i(ccx_resp_rdata_i),
+        .ccx_resp_error_i(ccx_resp_error_i)
     );
 
     always @(posedge clk or negedge rst_n) begin
@@ -280,8 +346,13 @@ module openrv64_core_gen_bus #(
                 fetch_cancel_i) begin
                 cancelled_q <= 1'b1;
             end
-            if (tlbi_i && (state_q == STATE_TRANSLATE) &&
-                !ptw_req_ready) begin
+            // A post-shootdown request is a fresh walk.  This also covers the
+            // case where TLBI arrived while the PTW was idle: req_ready is
+            // suppressed during TLBI, then the first real handshake clears
+            // the marker.
+            if (ptw_req_valid && ptw_req_ready)
+                walk_invalidated_q <= 1'b0;
+            if (tlbi_i && (state_q == STATE_TRANSLATE)) begin
                 walk_invalidated_q <= 1'b1;
             end
 
@@ -338,7 +409,8 @@ module openrv64_core_gen_bus #(
                             state_q <= STATE_ACCESS;
                         end
                     end else if (ptw_resp_valid) begin
-                        if (walk_invalidated_q || tlbi_i) begin
+                        if (walk_invalidated_q || ptw_resp_invalidated ||
+                            tlbi_i) begin
                             walk_invalidated_q <= tlbi_i;
                         end else if (translation_fault || fetch_cancelled) begin
                             state_q <= STATE_IDLE;

@@ -292,9 +292,9 @@ module openrv64_dispatch_3p #(
             end else if (payload[10] || payload[9] || payload[8] ||
                          payload[7] || payload[6] || payload[5] ||
                          payload[4] || payload[14] || payload[13]) begin
-                fixed_pipe = `OPENRV64_EXEC_PIPE_EX0;
-            end else if (payload[34:32] == `RV64_ALU_EXT_M) begin
                 fixed_pipe = `OPENRV64_EXEC_PIPE_EX1;
+            end else if (payload[34:32] == `RV64_ALU_EXT_M) begin
+                fixed_pipe = `OPENRV64_EXEC_PIPE_EX0;
             end else begin
                 fixed_pipe = 2'd3;
             end
@@ -426,7 +426,7 @@ module openrv64_dispatch_3p #(
     // Equality branches are cheap enough to resolve once in dispatch.  When
     // that result proves the frontend prediction correct, waive only their
     // same-cycle barrier so predicted-path work may share the bundle.  The
-    // branch itself remains a normal EX0 instruction and retirement entry.
+    // branch itself remains a normal EX1 instruction and retirement entry.
     // A wrong prediction, non-equality branch, fault, or unresolved operand
     // retains the ordinary prefix barrier; strict candidate-fire chaining
     // prevents younger issue when this branch cannot itself issue.

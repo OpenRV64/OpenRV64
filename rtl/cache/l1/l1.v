@@ -15,7 +15,7 @@
 module openrv64_l1_cache #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
-    parameter integer CACHE_BYTES = 8 * 1024,
+    parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
     // Performance-study hook.  When enabled, a cacheable read miss may be

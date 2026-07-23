@@ -11,7 +11,7 @@
 module openrv64_l1i_ccx #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
-    parameter integer CACHE_BYTES = 8 * 1024,
+    parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer WAYS = 4,
     parameter integer FILL_BUFFER_LINES = 8,
     parameter integer PREFETCH_SLOTS = FILL_BUFFER_LINES,

@@ -10,9 +10,9 @@
 `define OPENRV64_AXI_STRB_WIDTH 32
 `define OPENRV64_AXI_ID_WIDTH 3
 
-// In cacheless-L1I mode AXI IDs 0-3 identify instruction-line slots.  ID 7 is
-// the serialized PTW/physical-data path.  The native L1D/CCX LSU tag namespace
-// is independent of AXI IDs and tracks up to eight outstanding operations.
+// In cacheless-L1I mode AXI IDs 0-3 identify instruction-line slots. Native
+// L1D and PTW traffic use CCX; the LSU tag namespace is independent of AXI IDs
+// and tracks up to eight outstanding operations.
 `define OPENRV64_LSU_TAG_WIDTH 3
 `define OPENRV64_LSU_OUTSTANDING 8
 

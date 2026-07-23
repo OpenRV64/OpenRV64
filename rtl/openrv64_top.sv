@@ -17,16 +17,30 @@ module openrv64_top #(
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
     parameter bit ENABLE_L1I = 1'b1,
     parameter bit ENABLE_L1D = 1'b1,
+    parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
+    parameter int unsigned L1D_CACHE_BYTES = 16 * 1024,
     parameter logic [63:0] L1D_CACHEABLE_BASE =
         `OPENRV64_SOC_MEMORY_BASE,
     parameter logic [63:0] L1D_CACHEABLE_SIZE =
         `OPENRV64_SOC_MEMORY_SIZE,
     parameter int unsigned L1D_FILL_BUFFER_LINES = 8,
     parameter int unsigned L1D_STORE_BUFFER_LINES = 8,
+    parameter bit L1D_PREFETCH_ENABLE = 1'b1,
+    parameter int unsigned L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter int unsigned L1D_PREFETCH_DISTANCE = 1,
+    parameter bit L1D_PREFETCH_ADAPTIVE_ENABLE = 1'b1,
+    parameter int unsigned L1D_PREFETCH_MAX_DISTANCE = 4,
+    parameter int unsigned L1D_PREFETCH_QUEUE_LINES = 4,
+    parameter int unsigned L1D_PREFETCH_OUTSTANDING = 4,
+    parameter int unsigned L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter int unsigned L1I_FILL_BUFFER_LINES = 8,
+    parameter int unsigned PTW_PTE_CACHE_ENTRIES = 64,
     parameter logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID = '0,
+    parameter bit ENABLE_MAGIC_MEMORY = 1'b0,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
+    parameter int unsigned ENABLE_FETCH_ALT_LOOKASIDE = 1,
+    parameter bit ENABLE_FETCH_ALT_CONFIDENCE_GATE = 1'b0,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_STALL,
     parameter bit BP_RAS_ENABLE = 1'b1,
@@ -170,6 +184,28 @@ module openrv64_top #(
     wire [63:0] legacy_mem_addr;
     wire [63:0] legacy_mem_wdata;
     wire [7:0] legacy_mem_wstrb;
+    wire legacy_ccx_req_valid;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] legacy_ccx_req_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] legacy_ccx_req_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] legacy_ccx_req_source_id;
+    wire [`OPENRV64_CCX_OP_WIDTH-1:0] legacy_ccx_req_op;
+    wire legacy_ccx_req_lock;
+    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] legacy_ccx_req_order;
+    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] legacy_ccx_req_kind;
+    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] legacy_ccx_req_attr;
+    wire [2:0] legacy_ccx_req_size;
+    wire [63:0] legacy_ccx_req_addr;
+    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] legacy_ccx_req_burst_len;
+    wire legacy_ccx_wdata_valid;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] legacy_ccx_wdata_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] legacy_ccx_wdata_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] legacy_ccx_wdata_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+        legacy_ccx_wdata_beat_index;
+    wire legacy_ccx_wdata_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] legacy_ccx_wdata;
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] legacy_ccx_wstrb;
+    wire legacy_ccx_resp_ready;
     wire [63:0] legacy_dbg_pc;
     wire [31:0] legacy_dbg_instr;
     wire legacy_dbg_halted;
@@ -273,6 +309,8 @@ module openrv64_top #(
         .ENABLE_RV64A(ENABLE_RV64A),
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
+        .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .HART_ID(HART_ID),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
         .BP_TYPE(BP_TYPE),
@@ -297,6 +335,38 @@ module openrv64_top #(
         .mem_wstrb(legacy_mem_wstrb),
         .mem_rdata(mem_rdata),
         .mem_error(mem_error),
+        .ccx_req_valid(legacy_ccx_req_valid),
+        .ccx_req_ready(!use_3p && ccx_req_ready),
+        .ccx_req_hart_id(legacy_ccx_req_hart_id),
+        .ccx_req_txn_id(legacy_ccx_req_txn_id),
+        .ccx_req_source_id(legacy_ccx_req_source_id),
+        .ccx_req_op(legacy_ccx_req_op),
+        .ccx_req_lock(legacy_ccx_req_lock),
+        .ccx_req_order(legacy_ccx_req_order),
+        .ccx_req_kind(legacy_ccx_req_kind),
+        .ccx_req_attr(legacy_ccx_req_attr),
+        .ccx_req_size(legacy_ccx_req_size),
+        .ccx_req_addr(legacy_ccx_req_addr),
+        .ccx_req_burst_len(legacy_ccx_req_burst_len),
+        .ccx_wdata_valid(legacy_ccx_wdata_valid),
+        .ccx_wdata_ready(!use_3p && ccx_wdata_ready),
+        .ccx_wdata_hart_id(legacy_ccx_wdata_hart_id),
+        .ccx_wdata_txn_id(legacy_ccx_wdata_txn_id),
+        .ccx_wdata_source_id(legacy_ccx_wdata_source_id),
+        .ccx_wdata_beat_index(legacy_ccx_wdata_beat_index),
+        .ccx_wdata_last(legacy_ccx_wdata_last),
+        .ccx_wdata(legacy_ccx_wdata),
+        .ccx_wstrb(legacy_ccx_wstrb),
+        .ccx_resp_valid(!use_3p && ccx_resp_valid),
+        .ccx_resp_ready(legacy_ccx_resp_ready),
+        .ccx_resp_hart_id(ccx_resp_hart_id),
+        .ccx_resp_txn_id(ccx_resp_txn_id),
+        .ccx_resp_source_id(ccx_resp_source_id),
+        .ccx_resp_beat_index(ccx_resp_beat_index),
+        .ccx_resp_last(ccx_resp_last),
+        .ccx_resp_rdata(ccx_resp_rdata),
+        .ccx_resp_error(ccx_resp_error),
+        .ccx_resp_sc_success(ccx_resp_sc_success),
         .irq_m_software(use_3p ? 1'b0 : irq_m_software),
         .irq_m_timer(use_3p ? 1'b0 : irq_m_timer),
         .irq_m_external(use_3p ? 1'b0 : irq_m_external),
@@ -330,14 +400,36 @@ module openrv64_top #(
                 .STORE_FORWARD_SIZE(`OPENRV64_SOC_MEMORY_SIZE),
                 .ENABLE_RV64A(ENABLE_RV64A), .ENABLE_L1I(ENABLE_L1I),
                 .ENABLE_L1D(ENABLE_L1D),
+                .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+                .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
                 .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
                 .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
                 .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
                 .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
+                .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+                .L1D_PREFETCH_MAX_STRIDE_LINES(
+                    L1D_PREFETCH_MAX_STRIDE_LINES),
+                .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
+                .L1D_PREFETCH_ADAPTIVE_ENABLE(
+                    L1D_PREFETCH_ADAPTIVE_ENABLE),
+                .L1D_PREFETCH_MAX_DISTANCE(
+                    L1D_PREFETCH_MAX_DISTANCE),
+                .L1D_PREFETCH_QUEUE_LINES(
+                    L1D_PREFETCH_QUEUE_LINES),
+                .L1D_PREFETCH_OUTSTANDING(
+                    L1D_PREFETCH_OUTSTANDING),
+                .L1D_PREFETCH_DEMAND_RESERVE(
+                    L1D_PREFETCH_DEMAND_RESERVE),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+                .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .HART_ID(HART_ID),
+                .ENABLE_MAGIC_MEMORY(ENABLE_MAGIC_MEMORY),
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
+                .ENABLE_FETCH_ALT_LOOKASIDE(
+                    ENABLE_FETCH_ALT_LOOKASIDE),
+                .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
+                    ENABLE_FETCH_ALT_CONFIDENCE_GATE),
                 .BP_TYPE(BP_TYPE),
                 .BP_RAS_ENABLE(BP_RAS_ENABLE),
                 .BP_RAS_DEPTH(BP_RAS_DEPTH),
@@ -553,27 +645,45 @@ module openrv64_top #(
     assign m_axi_wlast = three_axi_wlast;
     assign m_axi_wvalid = three_axi_wvalid;
     assign m_axi_bready = three_axi_bready;
-    assign ccx_req_valid = three_ccx_req_valid;
-    assign ccx_req_hart_id = three_ccx_req_hart_id;
-    assign ccx_req_txn_id = three_ccx_req_txn_id;
-    assign ccx_req_source_id = three_ccx_req_source_id;
-    assign ccx_req_op = three_ccx_req_op;
-    assign ccx_req_lock = three_ccx_req_lock;
-    assign ccx_req_order = three_ccx_req_order;
-    assign ccx_req_kind = three_ccx_req_kind;
-    assign ccx_req_attr = three_ccx_req_attr;
-    assign ccx_req_size = three_ccx_req_size;
-    assign ccx_req_addr = three_ccx_req_addr;
-    assign ccx_req_burst_len = three_ccx_req_burst_len;
-    assign ccx_wdata_valid = three_ccx_wdata_valid;
-    assign ccx_wdata_hart_id = three_ccx_wdata_hart_id;
-    assign ccx_wdata_txn_id = three_ccx_wdata_txn_id;
-    assign ccx_wdata_source_id = three_ccx_wdata_source_id;
-    assign ccx_wdata_beat_index = three_ccx_wdata_beat_index;
-    assign ccx_wdata_last = three_ccx_wdata_last;
-    assign ccx_wdata = three_ccx_wdata;
-    assign ccx_wstrb = three_ccx_wstrb;
-    assign ccx_resp_ready = three_ccx_resp_ready;
+    assign ccx_req_valid = use_3p ? three_ccx_req_valid :
+                                      legacy_ccx_req_valid;
+    assign ccx_req_hart_id = use_3p ? three_ccx_req_hart_id :
+                                        legacy_ccx_req_hart_id;
+    assign ccx_req_txn_id = use_3p ? three_ccx_req_txn_id :
+                                       legacy_ccx_req_txn_id;
+    assign ccx_req_source_id = use_3p ? three_ccx_req_source_id :
+                                          legacy_ccx_req_source_id;
+    assign ccx_req_op = use_3p ? three_ccx_req_op : legacy_ccx_req_op;
+    assign ccx_req_lock = use_3p ? three_ccx_req_lock :
+                                   legacy_ccx_req_lock;
+    assign ccx_req_order = use_3p ? three_ccx_req_order :
+                                    legacy_ccx_req_order;
+    assign ccx_req_kind = use_3p ? three_ccx_req_kind :
+                                   legacy_ccx_req_kind;
+    assign ccx_req_attr = use_3p ? three_ccx_req_attr :
+                                   legacy_ccx_req_attr;
+    assign ccx_req_size = use_3p ? three_ccx_req_size :
+                                   legacy_ccx_req_size;
+    assign ccx_req_addr = use_3p ? three_ccx_req_addr :
+                                   legacy_ccx_req_addr;
+    assign ccx_req_burst_len = use_3p ? three_ccx_req_burst_len :
+                                        legacy_ccx_req_burst_len;
+    assign ccx_wdata_valid = use_3p ? three_ccx_wdata_valid :
+                                       legacy_ccx_wdata_valid;
+    assign ccx_wdata_hart_id = use_3p ? three_ccx_wdata_hart_id :
+                                          legacy_ccx_wdata_hart_id;
+    assign ccx_wdata_txn_id = use_3p ? three_ccx_wdata_txn_id :
+                                         legacy_ccx_wdata_txn_id;
+    assign ccx_wdata_source_id = use_3p ? three_ccx_wdata_source_id :
+                                            legacy_ccx_wdata_source_id;
+    assign ccx_wdata_beat_index = use_3p ? three_ccx_wdata_beat_index :
+                                             legacy_ccx_wdata_beat_index;
+    assign ccx_wdata_last = use_3p ? three_ccx_wdata_last :
+                                     legacy_ccx_wdata_last;
+    assign ccx_wdata = use_3p ? three_ccx_wdata : legacy_ccx_wdata;
+    assign ccx_wstrb = use_3p ? three_ccx_wstrb : legacy_ccx_wstrb;
+    assign ccx_resp_ready = use_3p ? three_ccx_resp_ready :
+                                     legacy_ccx_resp_ready;
     assign dbg_pc = use_3p ? three_dbg_pc : legacy_dbg_pc;
     assign dbg_instr = use_3p ? three_dbg_instr : legacy_dbg_instr;
     assign dbg_halted = use_3p ? three_dbg_halted : legacy_dbg_halted;

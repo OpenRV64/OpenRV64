@@ -4,22 +4,38 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-// Core-bus geometry selector.  The generic path preserves the original
-// blocking 64-bit requester.  The AXI path exposes a decoupled 256-bit fetch
-// line interface plus the same blocking LSU contract.
+// Core-bus geometry selector. The generic path preserves the original
+// blocking 64-bit instruction/data requester while routing PTW PTE lines over
+// native CCX. The CCX path adds native L1I/L1D clients and retains AXI only
+// for the structural cacheless-instruction mode.
 module openrv64_core_bus #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
+    // Simulation-only core performance seam.  Fetch and tagged LSU traffic
+    // bypass translation/caches and use the external AXI-read and CCX ports as
+    // independent one-cycle testbench SRAM ports.
+    parameter integer ENABLE_MAGIC_MEMORY = 0,
     parameter integer TLB_ENTRIES = 16,
     parameter integer ENABLE_L1I = 1,
     parameter integer ENABLE_L1D = 1,
+    parameter integer L1I_CACHE_BYTES = 16 * 1024,
+    parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_BASE =
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
         {`RV64_XLEN{1'b1}},
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_STORE_BUFFER_LINES = 8,
+    parameter integer L1D_PREFETCH_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_DISTANCE = 1,
+    parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
+    parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
+    parameter integer L1D_PREFETCH_OUTSTANDING = 4,
+    parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}
 ) (
@@ -46,6 +62,7 @@ module openrv64_core_bus #(
     output wire                         fetch_pipe_req_ready_o,
     input  wire [`RV64_XLEN-1:0]        fetch_pipe_req_addr_i,
     input  wire                         fetch_pipe_req_stash_i,
+    input  wire                         fetch_pipe_req_demand_i,
     input  wire [`RV64_PRIV_WIDTH-1:0]  fetch_pipe_req_priv_i,
     input  wire [`RV64_SATP_MODE_WIDTH-1:0] fetch_pipe_req_vm_mode_i,
     input  wire [`RV64_SATP_ASID_WIDTH-1:0] fetch_pipe_req_asid_i,
@@ -60,6 +77,7 @@ module openrv64_core_bus #(
     output wire                         fetch_pipe_resp_access_fault_o,
     output wire                         fetch_pipe_resp_page_fault_o,
     output wire                         fetch_pipe_resp_stash_o,
+    output wire                         fetch_pipe_resp_demand_o,
     input  wire                         fetch_pipe_cancel_stash_i,
 
     input  wire                         lsu_valid_i,
@@ -282,7 +300,11 @@ module openrv64_core_bus #(
             wire gen_lsu_access_fault;
             wire gen_lsu_page_fault;
 
-            openrv64_core_gen_bus #(.TLB_ENTRIES(TLB_ENTRIES)) u_bus (
+            openrv64_core_gen_bus #(
+                .TLB_ENTRIES(TLB_ENTRIES),
+                .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+                .HART_ID(HART_ID)
+            ) u_bus (
                 .clk(clk), .rst_n(rst_n), .fetch_valid_i(fetch_valid_i),
                 .fetch_cancel_i(fetch_cancel_i),
                 .fetch_addr_i(fetch_addr_i), .fetch_priv_i(fetch_priv_i),
@@ -311,6 +333,35 @@ module openrv64_core_bus #(
                 .req_exec_o(raw_req_exec), .req_wdata_o(raw_req_wdata),
                 .req_wstrb_o(raw_req_wstrb), .req_rdata_i(req_rdata_i),
                 .req_error_i(raw_req_error),
+                .pmp_valid_o(pmp_valid_o),
+                .pmp_addr_o(pmp_addr_o),
+                .pmp_priv_o(pmp_priv_o),
+                .pmp_size_o(pmp_size_o),
+                .pmp_write_o(pmp_write_o),
+                .pmp_exec_o(pmp_exec_o),
+                .pmp_allow_i(pmp_allow_i),
+                .ccx_req_valid_o(ccx_req_valid_o),
+                .ccx_req_ready_i(ccx_req_ready_i),
+                .ccx_req_hart_id_o(ccx_req_hart_id_o),
+                .ccx_req_txn_id_o(ccx_req_txn_id_o),
+                .ccx_req_source_id_o(ccx_req_source_id_o),
+                .ccx_req_op_o(ccx_req_op_o),
+                .ccx_req_lock_o(ccx_req_lock_o),
+                .ccx_req_order_o(ccx_req_order_o),
+                .ccx_req_kind_o(ccx_req_kind_o),
+                .ccx_req_attr_o(ccx_req_attr_o),
+                .ccx_req_size_o(ccx_req_size_o),
+                .ccx_req_addr_o(ccx_req_addr_o),
+                .ccx_req_burst_len_o(ccx_req_burst_len_o),
+                .ccx_resp_valid_i(ccx_resp_valid_i),
+                .ccx_resp_ready_o(ccx_resp_ready_o),
+                .ccx_resp_hart_id_i(ccx_resp_hart_id_i),
+                .ccx_resp_txn_id_i(ccx_resp_txn_id_i),
+                .ccx_resp_source_id_i(ccx_resp_source_id_i),
+                .ccx_resp_beat_index_i(ccx_resp_beat_index_i),
+                .ccx_resp_last_i(ccx_resp_last_i),
+                .ccx_resp_rdata_i(ccx_resp_rdata_i),
+                .ccx_resp_error_i(ccx_resp_error_i),
                 .fetch_next_valid_i(fetch_next_valid_i),
                 .fetch_next_addr_i(fetch_next_addr_i)
             );
@@ -324,13 +375,6 @@ module openrv64_core_bus #(
             assign req_exec_o = raw_req_exec;
             assign req_wdata_o = raw_req_wdata;
             assign req_wstrb_o = raw_req_wstrb;
-            assign pmp_valid_o = raw_req_valid;
-            assign pmp_addr_o = raw_req_pmp_addr;
-            assign pmp_priv_o = raw_req_priv;
-            assign pmp_size_o = raw_req_size;
-            assign pmp_write_o = raw_req_write;
-            assign pmp_exec_o = raw_req_exec;
-
             assign fetch_pipe_req_ready_o = 1'b0;
             assign fetch_pipe_resp_valid_o = 1'b0;
             assign fetch_pipe_resp_addr_o = {`RV64_XLEN{1'b0}};
@@ -339,6 +383,7 @@ module openrv64_core_bus #(
             assign fetch_pipe_resp_access_fault_o = 1'b0;
             assign fetch_pipe_resp_page_fault_o = 1'b0;
             assign fetch_pipe_resp_stash_o = 1'b0;
+            assign fetch_pipe_resp_demand_o = 1'b0;
             assign lsu_ready_o = gen_lsu_ready && !pipe_active_q;
             assign lsu_rdata_o = gen_lsu_rdata;
             assign lsu_access_fault_o = gen_lsu_access_fault &&
@@ -440,20 +485,6 @@ module openrv64_core_bus #(
             assign m_axi_wlast_o = 1'b0;
             assign m_axi_wvalid_o = 1'b0;
             assign m_axi_bready_o = 1'b0;
-            assign ccx_req_valid_o = 1'b0;
-            assign ccx_req_hart_id_o = HART_ID;
-            assign ccx_req_txn_id_o =
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_LEGACY;
-            assign ccx_req_op_o = `OPENRV64_CCX_OP_READ;
-            assign ccx_req_lock_o = 1'b0;
-            assign ccx_req_order_o = `OPENRV64_CCX_ORDER_NONE;
-            assign ccx_req_kind_o = `OPENRV64_CCX_KIND_DATA;
-            assign ccx_req_attr_o = `OPENRV64_CCX_ATTR_NONE;
-            assign ccx_req_size_o = 3'd0;
-            assign ccx_req_addr_o = 64'd0;
-            assign ccx_req_burst_len_o =
-                {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
             assign ccx_wdata_valid_o = 1'b0;
             assign ccx_wdata_hart_id_o = HART_ID;
             assign ccx_wdata_txn_id_o =
@@ -466,17 +497,328 @@ module openrv64_core_bus #(
                 {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
             assign ccx_wstrb_o =
                 {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
-            assign ccx_resp_ready_o = 1'b0;
-        end else begin : g_axi
-            openrv64_core_axi_bus #(
+        end else if (ENABLE_MAGIC_MEMORY != 0) begin : g_magic
+            localparam integer MAGIC_FETCH_DEPTH = 4;
+            localparam integer MAGIC_FETCH_PTR_WIDTH =
+                $clog2(MAGIC_FETCH_DEPTH);
+
+            reg [MAGIC_FETCH_PTR_WIDTH-1:0] magic_fetch_head_q;
+            reg [MAGIC_FETCH_PTR_WIDTH-1:0] magic_fetch_tail_q;
+            reg [MAGIC_FETCH_PTR_WIDTH:0] magic_fetch_count_q;
+            reg [`RV64_XLEN-1:0] magic_fetch_addr_q
+                [0:MAGIC_FETCH_DEPTH-1];
+            reg magic_fetch_stash_q [0:MAGIC_FETCH_DEPTH-1];
+            reg magic_fetch_demand_q [0:MAGIC_FETCH_DEPTH-1];
+            reg magic_fetch_cancelled_q [0:MAGIC_FETCH_DEPTH-1];
+            reg magic_fetch_valid_q [0:MAGIC_FETCH_DEPTH-1];
+            integer magic_fetch_index;
+
+            wire magic_fetch_full =
+                magic_fetch_count_q == MAGIC_FETCH_DEPTH;
+            wire magic_fetch_empty = magic_fetch_count_q == 0;
+            wire magic_fetch_push = fetch_pipe_req_valid_i &&
+                                    fetch_pipe_req_ready_o;
+            wire magic_fetch_head_cancelled =
+                magic_fetch_cancelled_q[magic_fetch_head_q];
+            wire magic_fetch_pop = m_axi_rvalid_i && m_axi_rready_o &&
+                                   !magic_fetch_empty;
+
+            assign fetch_pipe_req_ready_o =
+                m_axi_arready_i && !magic_fetch_full;
+            assign fetch_pipe_resp_valid_o =
+                m_axi_rvalid_i && !magic_fetch_empty &&
+                !magic_fetch_head_cancelled;
+            assign fetch_pipe_resp_addr_o =
+                magic_fetch_addr_q[magic_fetch_head_q];
+            assign fetch_pipe_resp_data_o = m_axi_rdata_i;
+            assign fetch_pipe_resp_access_fault_o =
+                m_axi_rresp_i[1];
+            assign fetch_pipe_resp_page_fault_o = 1'b0;
+            assign fetch_pipe_resp_stash_o =
+                magic_fetch_stash_q[magic_fetch_head_q];
+            assign fetch_pipe_resp_demand_o =
+                magic_fetch_demand_q[magic_fetch_head_q];
+
+            assign m_axi_arid_o =
+                {{(`OPENRV64_AXI_ID_WIDTH-MAGIC_FETCH_PTR_WIDTH){1'b0}},
+                 magic_fetch_tail_q};
+            assign m_axi_araddr_o = fetch_pipe_req_addr_i;
+            assign m_axi_arlen_o = 8'd0;
+            assign m_axi_arsize_o = 3'd5;
+            assign m_axi_arburst_o = 2'b01;
+            assign m_axi_arlock_o = 1'b0;
+            assign m_axi_arcache_o = 4'b1110;
+            assign m_axi_arprot_o = 3'b100;
+            assign m_axi_arqos_o = 4'd0;
+            assign m_axi_arvalid_o =
+                fetch_pipe_req_valid_i && !magic_fetch_full;
+            assign m_axi_rready_o = !magic_fetch_empty &&
+                (magic_fetch_head_cancelled ||
+                 fetch_pipe_resp_ready_i);
+
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    magic_fetch_head_q <=
+                        {MAGIC_FETCH_PTR_WIDTH{1'b0}};
+                    magic_fetch_tail_q <=
+                        {MAGIC_FETCH_PTR_WIDTH{1'b0}};
+                    magic_fetch_count_q <=
+                        {(MAGIC_FETCH_PTR_WIDTH+1){1'b0}};
+                    for (magic_fetch_index = 0;
+                         magic_fetch_index < MAGIC_FETCH_DEPTH;
+                         magic_fetch_index = magic_fetch_index + 1) begin
+                        magic_fetch_addr_q[magic_fetch_index] <=
+                            {`RV64_XLEN{1'b0}};
+                        magic_fetch_stash_q[magic_fetch_index] <= 1'b0;
+                        magic_fetch_demand_q[magic_fetch_index] <= 1'b0;
+                        magic_fetch_cancelled_q[magic_fetch_index] <= 1'b0;
+                        magic_fetch_valid_q[magic_fetch_index] <= 1'b0;
+                    end
+                end else begin
+                    case ({magic_fetch_push, magic_fetch_pop})
+                        2'b10: magic_fetch_count_q <=
+                            magic_fetch_count_q + 1'b1;
+                        2'b01: magic_fetch_count_q <=
+                            magic_fetch_count_q - 1'b1;
+                        default: magic_fetch_count_q <= magic_fetch_count_q;
+                    endcase
+                    if (magic_fetch_push) begin
+                        magic_fetch_addr_q[magic_fetch_tail_q] <=
+                            fetch_pipe_req_addr_i;
+                        magic_fetch_stash_q[magic_fetch_tail_q] <=
+                            fetch_pipe_req_stash_i;
+                        magic_fetch_demand_q[magic_fetch_tail_q] <=
+                            fetch_pipe_req_demand_i;
+                        magic_fetch_cancelled_q[magic_fetch_tail_q] <= 1'b0;
+                        magic_fetch_valid_q[magic_fetch_tail_q] <= 1'b1;
+                        magic_fetch_tail_q <= magic_fetch_tail_q + 1'b1;
+                    end
+                    if (magic_fetch_pop) begin
+                        magic_fetch_cancelled_q[magic_fetch_head_q] <= 1'b0;
+                        magic_fetch_valid_q[magic_fetch_head_q] <= 1'b0;
+                        magic_fetch_head_q <= magic_fetch_head_q + 1'b1;
+                    end
+                    if (fetch_cancel_i) begin
+                        for (magic_fetch_index = 0;
+                             magic_fetch_index < MAGIC_FETCH_DEPTH;
+                             magic_fetch_index = magic_fetch_index + 1) begin
+                            if (magic_fetch_valid_q[magic_fetch_index] &&
+                                (!magic_fetch_stash_q[magic_fetch_index] ||
+                                 fetch_pipe_cancel_stash_i)) begin
+                                magic_fetch_cancelled_q[magic_fetch_index] <=
+                                    1'b1;
+                            end else if (magic_fetch_valid_q[
+                                             magic_fetch_index]) begin
+                                magic_fetch_demand_q[magic_fetch_index] <=
+                                    1'b0;
+                            end
+                        end
+                    end
+                end
+            end
+
+            reg magic_lsu_inflight_q
+                [0:`OPENRV64_LSU_OUTSTANDING-1];
+            reg magic_lsu_cancelled_q
+                [0:`OPENRV64_LSU_OUTSTANDING-1];
+            reg magic_lsu_write_q
+                [0:`OPENRV64_LSU_OUTSTANDING-1];
+            integer magic_lsu_index;
+            wire [`OPENRV64_LSU_TAG_WIDTH-1:0] magic_lsu_resp_tag =
+                ccx_resp_txn_id_i[`OPENRV64_LSU_TAG_WIDTH-1:0];
+            wire magic_lsu_resp =
+                ccx_resp_valid_i &&
+                (ccx_resp_source_id_i == `OPENRV64_CCX_SOURCE_DCACHE);
+            wire magic_lsu_resp_live =
+                magic_lsu_inflight_q[magic_lsu_resp_tag] &&
+                !magic_lsu_cancelled_q[magic_lsu_resp_tag];
+            wire magic_lsu_req_can_fire =
+                ccx_req_ready_i &&
+                (!lsu_pipe_req_write_i || ccx_wdata_ready_i) &&
+                !magic_lsu_inflight_q[lsu_pipe_req_tag_i];
+            wire magic_lsu_req_fire =
+                lsu_pipe_req_valid_i && lsu_pipe_req_ready_o;
+            wire magic_lsu_resp_fire =
+                magic_lsu_resp && ccx_resp_ready_o;
+
+            assign lsu_pipe_req_ready_o =
+                !lsu_pipe_cancel_i && magic_lsu_req_can_fire;
+            assign lsu_pipe_resp_valid_o =
+                magic_lsu_resp && magic_lsu_resp_live;
+            assign lsu_pipe_resp_tag_o = magic_lsu_resp_tag;
+            assign lsu_pipe_resp_rdata_o =
+                ccx_resp_rdata_i[`RV64_XLEN-1:0];
+            assign lsu_pipe_resp_access_fault_o =
+                ccx_resp_error_i;
+            assign lsu_pipe_resp_page_fault_o = 1'b0;
+
+            assign ccx_req_valid_o =
+                lsu_pipe_req_valid_i && !lsu_pipe_cancel_i &&
+                !magic_lsu_inflight_q[lsu_pipe_req_tag_i] &&
+                (!lsu_pipe_req_write_i || ccx_wdata_ready_i);
+            assign ccx_req_hart_id_o = HART_ID;
+            assign ccx_req_txn_id_o =
+                {{(`OPENRV64_CCX_TXN_ID_WIDTH-
+                    `OPENRV64_LSU_TAG_WIDTH){1'b0}},
+                 lsu_pipe_req_tag_i};
+            assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_DCACHE;
+            assign ccx_req_op_o = lsu_pipe_req_write_i ?
+                                  `OPENRV64_CCX_OP_WRITE :
+                                  `OPENRV64_CCX_OP_READ;
+            assign ccx_req_lock_o = lsu_pipe_req_lock_i;
+            assign ccx_req_order_o = `OPENRV64_CCX_ORDER_NONE;
+            assign ccx_req_kind_o = `OPENRV64_CCX_KIND_DATA;
+            assign ccx_req_attr_o =
+                `OPENRV64_CCX_ATTR_CACHEABLE |
+                `OPENRV64_CCX_ATTR_IDEMPOTENT;
+            assign ccx_req_size_o = lsu_pipe_req_size_i;
+            assign ccx_req_addr_o = lsu_pipe_req_addr_i;
+            assign ccx_req_burst_len_o =
+                {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
+            assign ccx_wdata_valid_o =
+                lsu_pipe_req_valid_i && lsu_pipe_req_write_i &&
+                !lsu_pipe_cancel_i &&
+                !magic_lsu_inflight_q[lsu_pipe_req_tag_i] &&
+                ccx_req_ready_i;
+            assign ccx_wdata_hart_id_o = HART_ID;
+            assign ccx_wdata_txn_id_o =
+                {{(`OPENRV64_CCX_TXN_ID_WIDTH-
+                    `OPENRV64_LSU_TAG_WIDTH){1'b0}},
+                 lsu_pipe_req_tag_i};
+            assign ccx_wdata_source_id_o = `OPENRV64_CCX_SOURCE_DCACHE;
+            assign ccx_wdata_beat_index_o =
+                {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+            assign ccx_wdata_last_o = 1'b1;
+            assign ccx_wdata_o = {
+                {(`OPENRV64_CCX_LINE_DATA_WIDTH-`RV64_XLEN){1'b0}},
+                lsu_pipe_req_wdata_i
+            };
+            assign ccx_wstrb_o = {
+                {(`OPENRV64_CCX_LINE_STRB_WIDTH-8){1'b0}},
+                lsu_pipe_req_wstrb_i
+            };
+            assign ccx_resp_ready_o =
+                !magic_lsu_resp ||
+                !magic_lsu_resp_live ||
+                lsu_pipe_resp_ready_i;
+
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    for (magic_lsu_index = 0;
+                         magic_lsu_index < `OPENRV64_LSU_OUTSTANDING;
+                         magic_lsu_index = magic_lsu_index + 1) begin
+                        magic_lsu_inflight_q[magic_lsu_index] <= 1'b0;
+                        magic_lsu_cancelled_q[magic_lsu_index] <= 1'b0;
+                        magic_lsu_write_q[magic_lsu_index] <= 1'b0;
+                    end
+                end else begin
+                    if (magic_lsu_req_fire) begin
+                        magic_lsu_inflight_q[lsu_pipe_req_tag_i] <= 1'b1;
+                        magic_lsu_cancelled_q[lsu_pipe_req_tag_i] <= 1'b0;
+                        magic_lsu_write_q[lsu_pipe_req_tag_i] <=
+                            lsu_pipe_req_write_i;
+                    end
+                    if (lsu_pipe_cancel_i) begin
+                        for (magic_lsu_index = 0;
+                             magic_lsu_index <
+                                `OPENRV64_LSU_OUTSTANDING;
+                             magic_lsu_index = magic_lsu_index + 1) begin
+                            if (magic_lsu_inflight_q[magic_lsu_index] &&
+                                !magic_lsu_write_q[magic_lsu_index])
+                                magic_lsu_cancelled_q[
+                                    magic_lsu_index] <= 1'b1;
+                        end
+                    end
+                    if (magic_lsu_resp_fire) begin
+                        magic_lsu_inflight_q[magic_lsu_resp_tag] <= 1'b0;
+                        magic_lsu_cancelled_q[magic_lsu_resp_tag] <= 1'b0;
+                        magic_lsu_write_q[magic_lsu_resp_tag] <= 1'b0;
+                    end
+                end
+            end
+
+            assign fetch_ready_o = 1'b0;
+            assign fetch_rdata_o = {`RV64_XLEN{1'b0}};
+            assign fetch_access_fault_o = 1'b0;
+            assign fetch_page_fault_o = 1'b0;
+            assign lsu_ready_o = 1'b0;
+            assign lsu_rdata_o = {`RV64_XLEN{1'b0}};
+            assign lsu_access_fault_o = 1'b0;
+            assign lsu_page_fault_o = 1'b0;
+            assign req_valid_o = 1'b0;
+            assign req_write_o = 1'b0;
+            assign req_addr_o = {`RV64_XLEN{1'b0}};
+            assign req_pmp_addr_o = {`RV64_XLEN{1'b0}};
+            assign req_priv_o = `RV64_PRIV_M;
+            assign req_size_o = 3'd0;
+            assign req_exec_o = 1'b0;
+            assign req_wdata_o = {`RV64_XLEN{1'b0}};
+            assign req_wstrb_o = 8'd0;
+            assign pmp_valid_o = 1'b0;
+            assign pmp_addr_o = {`RV64_XLEN{1'b0}};
+            assign pmp_priv_o = `RV64_PRIV_M;
+            assign pmp_size_o = 3'd0;
+            assign pmp_write_o = 1'b0;
+            assign pmp_exec_o = 1'b0;
+
+            assign m_axi_awid_o = {`OPENRV64_AXI_ID_WIDTH{1'b0}};
+            assign m_axi_awaddr_o = {`OPENRV64_AXI_ADDR_WIDTH{1'b0}};
+            assign m_axi_awlen_o = 8'd0;
+            assign m_axi_awsize_o = 3'd0;
+            assign m_axi_awburst_o = 2'd0;
+            assign m_axi_awlock_o = 1'b0;
+            assign m_axi_awcache_o = 4'd0;
+            assign m_axi_awprot_o = 3'd0;
+            assign m_axi_awqos_o = 4'd0;
+            assign m_axi_awvalid_o = 1'b0;
+            assign m_axi_wdata_o = {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
+            assign m_axi_wstrb_o = {`OPENRV64_AXI_STRB_WIDTH{1'b0}};
+            assign m_axi_wlast_o = 1'b0;
+            assign m_axi_wvalid_o = 1'b0;
+            assign m_axi_bready_o = 1'b0;
+
+`ifndef SYNTHESIS
+            always @(posedge clk) begin
+                if (rst_n && magic_fetch_push &&
+                    (fetch_pipe_req_vm_mode_i != `RV64_SATP_MODE_BARE))
+                    $fatal(1,
+                        "magic fetch memory supports Bare mode only");
+                if (rst_n && magic_lsu_req_fire &&
+                    (lsu_pipe_req_vm_mode_i != `RV64_SATP_MODE_BARE))
+                    $fatal(1,
+                        "magic LSU memory supports Bare mode only");
+                if (rst_n && magic_lsu_req_fire && lsu_pipe_req_lock_i)
+                    $fatal(1,
+                        "magic LSU memory does not model atomics");
+            end
+`endif
+        end else begin : g_ccx
+            openrv64_core_ccx_bus #(
                 .TLB_ENTRIES(TLB_ENTRIES),
                 .ENABLE_L1I(ENABLE_L1I),
                 .ENABLE_L1D(ENABLE_L1D),
+                .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+                .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
                 .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
                 .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
                 .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
                 .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
+                .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+                .L1D_PREFETCH_MAX_STRIDE_LINES(
+                    L1D_PREFETCH_MAX_STRIDE_LINES),
+                .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
+                .L1D_PREFETCH_ADAPTIVE_ENABLE(
+                    L1D_PREFETCH_ADAPTIVE_ENABLE),
+                .L1D_PREFETCH_MAX_DISTANCE(
+                    L1D_PREFETCH_MAX_DISTANCE),
+                .L1D_PREFETCH_QUEUE_LINES(
+                    L1D_PREFETCH_QUEUE_LINES),
+                .L1D_PREFETCH_OUTSTANDING(
+                    L1D_PREFETCH_OUTSTANDING),
+                .L1D_PREFETCH_DEMAND_RESERVE(
+                    L1D_PREFETCH_DEMAND_RESERVE),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+                .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .HART_ID(HART_ID)
             ) u_bus (
                 .clk(clk), .rst_n(rst_n),
@@ -484,6 +826,7 @@ module openrv64_core_bus #(
                 .fetch_req_ready_o(fetch_pipe_req_ready_o),
                 .fetch_req_addr_i(fetch_pipe_req_addr_i),
                 .fetch_req_stash_i(fetch_pipe_req_stash_i),
+                .fetch_req_demand_i(fetch_pipe_req_demand_i),
                 .fetch_req_priv_i(fetch_pipe_req_priv_i),
                 .fetch_req_vm_mode_i(fetch_pipe_req_vm_mode_i),
                 .fetch_req_asid_i(fetch_pipe_req_asid_i),
@@ -500,6 +843,7 @@ module openrv64_core_bus #(
                     fetch_pipe_resp_access_fault_o),
                 .fetch_resp_page_fault_o(fetch_pipe_resp_page_fault_o),
                 .fetch_resp_stash_o(fetch_pipe_resp_stash_o),
+                .fetch_resp_demand_o(fetch_pipe_resp_demand_o),
                 .lsu_valid_i(lsu_valid_i), .lsu_lock_i(lsu_lock_i),
                 .lsu_write_i(lsu_write_i),
                 .lsu_addr_i(lsu_addr_i), .lsu_wdata_i(lsu_wdata_i),

@@ -1,10 +1,22 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
+`include "complex/protocol/defs.v"
 
-module openrv64_bus_ptw (
+module openrv64_bus_ptw #(
+    // The default four-way, 64-entry cache stores 7,808 state bits: 53-bit
+    // physical PTE tag, 64-bit PTE, level, recency, and valid state.
+    // Set entries to zero to disable.
+    parameter integer PTE_CACHE_ENTRIES = 64,
+    parameter integer PTE_CACHE_WAYS = 4,
+    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
+    parameter [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] TXN_ID =
+        {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}}
+) (
     input  wire                         clk,
     input  wire                         rst_n,
+    input  wire                         invalidate_i,
 
     input  wire                         req_valid_i,
     output wire                         req_ready_o,
@@ -22,6 +34,7 @@ module openrv64_bus_ptw (
     output wire [`RV64_XLEN-1:0]        resp_paddr_o,
     output wire                         resp_page_fault_o,
     output wire                         resp_access_fault_o,
+    output wire                         resp_invalidated_o,
     output wire                         resp_global_o,
     output wire [`RV64_PAGE_LEVEL_WIDTH-1:0] resp_level_o,
     output wire                         resp_readable_o,
@@ -31,25 +44,87 @@ module openrv64_bus_ptw (
     output wire                         resp_accessed_o,
     output wire                         resp_dirty_o,
 
-    output wire                         mem_valid_o,
-    input  wire                         mem_ready_i,
-    output wire                         mem_write_o,
-    output wire [`RV64_XLEN-1:0]        mem_addr_o,
-    output wire [`RV64_XLEN-1:0]        mem_wdata_o,
-    output wire [7:0]                   mem_wstrb_o,
-    input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
-    input  wire                         mem_error_i
+    // Every implicit PTE access is checked as an S-mode 8-byte physical
+    // read before the cache lookup result or L2 response is consumed.
+    output wire                         pmp_valid_o,
+    input  wire                         pmp_ready_i,
+    output wire [`RV64_XLEN-1:0]        pmp_addr_o,
+    input  wire                         pmp_allow_i,
+
+    // Native CCX PTE client.  Requests are one aligned 64-byte cache line;
+    // the selected 8-byte PTE is extracted from the returned line.
+    output wire                         ccx_req_valid_o,
+    input  wire                         ccx_req_ready_i,
+    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                        ccx_req_hart_id_o,
+    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                        ccx_req_txn_id_o,
+    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                        ccx_req_source_id_o,
+    output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_o,
+    output wire                         ccx_req_lock_o,
+    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_o,
+    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_o,
+    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_o,
+    output wire [2:0]                   ccx_req_size_o,
+    output wire [63:0]                  ccx_req_addr_o,
+    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+                                        ccx_req_burst_len_o,
+
+    input  wire                         ccx_resp_valid_i,
+    output wire                         ccx_resp_ready_o,
+    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                        ccx_resp_hart_id_i,
+    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                        ccx_resp_txn_id_i,
+    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                        ccx_resp_source_id_i,
+    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                        ccx_resp_beat_index_i,
+    input  wire                         ccx_resp_last_i,
+    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                        ccx_resp_rdata_i,
+    input  wire                         ccx_resp_error_i
 );
 
     localparam [1:0] STATE_IDLE = 2'd0;
     localparam [1:0] STATE_WALK = 2'd1;
     localparam [1:0] STATE_RESP = 2'd2;
+    localparam [1:0] STATE_ABORT = 2'd3;
+
+    localparam [1:0] BACKEND_PMP  = 2'd0;
+    localparam [1:0] BACKEND_SEND = 2'd1;
+    localparam [1:0] BACKEND_WAIT = 2'd2;
 
     localparam [1:0] ACCESS_READ = 2'd0;
     localparam [1:0] ACCESS_WRITE = 2'd1;
     localparam [1:0] ACCESS_EXEC = 2'd2;
+    localparam integer PTE_CACHE_ACTIVE_WAYS =
+        (PTE_CACHE_ENTRIES > 0) ? PTE_CACHE_WAYS : 1;
+    localparam integer PTE_CACHE_SETS =
+        (PTE_CACHE_ENTRIES > 0) ?
+        (PTE_CACHE_ENTRIES / PTE_CACHE_ACTIVE_WAYS) : 1;
+    localparam integer PTE_CACHE_SET_BITS =
+        (PTE_CACHE_SETS > 1) ? $clog2(PTE_CACHE_SETS) : 0;
+    localparam integer PTE_CACHE_SET_INDEX_WIDTH =
+        (PTE_CACHE_SETS > 1) ? PTE_CACHE_SET_BITS : 1;
+    localparam integer PTE_CACHE_WAY_BITS =
+        (PTE_CACHE_ACTIVE_WAYS > 1) ?
+        $clog2(PTE_CACHE_ACTIVE_WAYS) : 0;
+    localparam integer PTE_CACHE_WAY_INDEX_WIDTH =
+        (PTE_CACHE_ACTIVE_WAYS > 1) ?
+        PTE_CACHE_WAY_BITS : 1;
+    localparam integer PTE_CACHE_AGE_WIDTH =
+        (PTE_CACHE_ACTIVE_WAYS > 1) ?
+        $clog2(PTE_CACHE_ACTIVE_WAYS) : 1;
+    // Sv39 PTE PPNs form 56-bit physical addresses.  PTEs are 8-byte aligned,
+    // so bits [55:3] uniquely identify the cached memory object.
+    localparam integer PTE_CACHE_TAG_WIDTH = 53;
 
     reg [1:0] state_q;
+    reg [1:0] backend_state_q;
+    reg shootdown_pending_q;
+    reg shootdown_inflight_q;
     reg [`RV64_XLEN-1:0] vaddr_q;
     reg [1:0] access_q;
     reg [`RV64_PRIV_WIDTH-1:0] priv_q;
@@ -62,6 +137,7 @@ module openrv64_bus_ptw (
     reg [`RV64_XLEN-1:0] resp_paddr_q;
     reg resp_page_fault_q;
     reg resp_access_fault_q;
+    reg resp_invalidated_q;
     reg resp_global_q;
     reg [`RV64_PAGE_LEVEL_WIDTH-1:0] resp_level_q;
     reg resp_readable_q;
@@ -76,18 +152,160 @@ module openrv64_bus_ptw (
     wire [8:0] vpn_2 = vaddr_q[38:30];
     wire [8:0] walk_vpn = (level_q == `RV64_PAGE_LEVEL_1G) ? vpn_2 :
                           (level_q == `RV64_PAGE_LEVEL_2M) ? vpn_1 : vpn_0;
+    wire [`RV64_XLEN-1:0] walk_pte_addr =
+        table_base_q + {{52{1'b0}}, walk_vpn, 3'b000};
 
-    wire pte_v = mem_rdata_i[`RV64_PTE_V_BIT];
-    wire pte_r = mem_rdata_i[`RV64_PTE_R_BIT];
-    wire pte_w = mem_rdata_i[`RV64_PTE_W_BIT];
-    wire pte_x = mem_rdata_i[`RV64_PTE_X_BIT];
-    wire pte_u = mem_rdata_i[`RV64_PTE_U_BIT];
-    wire pte_g = mem_rdata_i[`RV64_PTE_G_BIT];
-    wire pte_a = mem_rdata_i[`RV64_PTE_A_BIT];
-    wire pte_d = mem_rdata_i[`RV64_PTE_D_BIT];
+    reg pte_cache_valid_q
+        [0:PTE_CACHE_ACTIVE_WAYS-1][0:PTE_CACHE_SETS-1];
+    reg [PTE_CACHE_TAG_WIDTH-1:0]
+        pte_cache_tag_q
+        [0:PTE_CACHE_ACTIVE_WAYS-1][0:PTE_CACHE_SETS-1];
+    reg [`RV64_XLEN-1:0]
+        pte_cache_data_q
+        [0:PTE_CACHE_ACTIVE_WAYS-1][0:PTE_CACHE_SETS-1];
+    reg [`RV64_PAGE_LEVEL_WIDTH-1:0]
+        pte_cache_level_q
+        [0:PTE_CACHE_ACTIVE_WAYS-1][0:PTE_CACHE_SETS-1];
+    reg [PTE_CACHE_AGE_WIDTH-1:0]
+        pte_cache_age_q
+        [0:PTE_CACHE_ACTIVE_WAYS-1][0:PTE_CACHE_SETS-1];
+
+    reg pte_cache_hit_r;
+    reg [PTE_CACHE_WAY_INDEX_WIDTH-1:0] pte_cache_hit_way_r;
+    reg [`RV64_XLEN-1:0] pte_cache_hit_data_r;
+    reg [PTE_CACHE_WAY_INDEX_WIDTH-1:0] pte_cache_victim_way_r;
+    reg pte_cache_invalid_victim_r;
+    integer pte_cache_lookup_way;
+    integer pte_cache_victim_way;
+    wire [PTE_CACHE_SET_INDEX_WIDTH-1:0] pte_cache_address_set =
+        walk_pte_addr[3 +: PTE_CACHE_SET_INDEX_WIDTH];
+    wire [PTE_CACHE_SET_INDEX_WIDTH-1:0] pte_cache_set =
+        (PTE_CACHE_SETS > 1) ?
+        pte_cache_address_set :
+        {PTE_CACHE_SET_INDEX_WIDTH{1'b0}};
+
+    always @* begin
+        pte_cache_hit_r = 1'b0;
+        pte_cache_hit_way_r =
+            {PTE_CACHE_WAY_INDEX_WIDTH{1'b0}};
+        pte_cache_hit_data_r = {`RV64_XLEN{1'b0}};
+        if ((PTE_CACHE_ENTRIES > 0) && (state_q == STATE_WALK)) begin
+            for (pte_cache_lookup_way = 0;
+                 pte_cache_lookup_way < PTE_CACHE_ACTIVE_WAYS;
+                 pte_cache_lookup_way = pte_cache_lookup_way + 1) begin
+                if (!pte_cache_hit_r &&
+                    pte_cache_valid_q[
+                        pte_cache_lookup_way][pte_cache_set] &&
+                    (pte_cache_tag_q[
+                        pte_cache_lookup_way][pte_cache_set] ==
+                     walk_pte_addr[55:3])) begin
+                    pte_cache_hit_r = 1'b1;
+                    pte_cache_hit_way_r =
+                        pte_cache_lookup_way[
+                            PTE_CACHE_WAY_INDEX_WIDTH-1:0];
+                    pte_cache_hit_data_r =
+                        pte_cache_data_q[
+                            pte_cache_lookup_way][pte_cache_set];
+                end
+            end
+        end
+    end
+
+    // Prefer an invalid slot.  When full, lower-level non-leaf PTEs are less
+    // valuable than root-level PTEs; within one level, replace the entry whose
+    // last hit/fill is oldest.
+    always @* begin
+        pte_cache_victim_way_r =
+            {PTE_CACHE_WAY_INDEX_WIDTH{1'b0}};
+        pte_cache_invalid_victim_r = 1'b0;
+        for (pte_cache_victim_way = 0;
+             pte_cache_victim_way < PTE_CACHE_ACTIVE_WAYS;
+             pte_cache_victim_way = pte_cache_victim_way + 1) begin
+            if (!pte_cache_invalid_victim_r &&
+                !pte_cache_valid_q[
+                    pte_cache_victim_way][pte_cache_set]) begin
+                pte_cache_victim_way_r =
+                    pte_cache_victim_way[
+                        PTE_CACHE_WAY_INDEX_WIDTH-1:0];
+                pte_cache_invalid_victim_r = 1'b1;
+            end
+        end
+        if (!pte_cache_invalid_victim_r &&
+            (PTE_CACHE_ENTRIES > 0)) begin
+            pte_cache_victim_way_r =
+                {PTE_CACHE_WAY_INDEX_WIDTH{1'b0}};
+            for (pte_cache_victim_way = 1;
+                 pte_cache_victim_way < PTE_CACHE_ACTIVE_WAYS;
+                 pte_cache_victim_way = pte_cache_victim_way + 1) begin
+                if ((pte_cache_level_q[pte_cache_victim_way]
+                         [pte_cache_set] <
+                     pte_cache_level_q[pte_cache_victim_way_r]
+                         [pte_cache_set]) ||
+                    ((pte_cache_level_q[pte_cache_victim_way]
+                          [pte_cache_set] ==
+                      pte_cache_level_q[pte_cache_victim_way_r]
+                          [pte_cache_set]) &&
+                     (pte_cache_age_q[pte_cache_victim_way]
+                          [pte_cache_set] >
+                      pte_cache_age_q[pte_cache_victim_way_r]
+                          [pte_cache_set])))
+                    pte_cache_victim_way_r =
+                        pte_cache_victim_way[
+                            PTE_CACHE_WAY_INDEX_WIDTH-1:0];
+            end
+        end
+    end
+
+    wire pmp_fire = pmp_valid_o && pmp_ready_i;
+    wire pmp_denied = pmp_fire && !pmp_allow_i;
+    wire pte_cache_hit_use = pmp_fire && pmp_allow_i &&
+                             pte_cache_hit_r;
+
+    wire walk_ccx_req_valid =
+        ((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
+        (backend_state_q == BACKEND_SEND);
+    wire shootdown_ccx_req_valid =
+        (state_q == STATE_IDLE) && shootdown_pending_q &&
+        !shootdown_inflight_q;
+    wire ccx_req_fire = ccx_req_valid_o && ccx_req_ready_i;
+    wire shootdown_req_fire = shootdown_ccx_req_valid && ccx_req_ready_i;
+    wire ccx_resp_owned =
+        ccx_resp_source_id_i == `OPENRV64_CCX_SOURCE_PTW;
+    wire ccx_resp_fire = ccx_resp_valid_i && ccx_resp_ready_o;
+    wire shootdown_resp_fire = ccx_resp_fire && shootdown_inflight_q;
+    wire ccx_resp_identity_error =
+        (ccx_resp_hart_id_i != HART_ID) ||
+        (ccx_resp_txn_id_i != TXN_ID) ||
+        (ccx_resp_beat_index_i !=
+         {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
+        !ccx_resp_last_i;
+    wire [`RV64_XLEN-1:0] ccx_pte_data =
+        ccx_resp_rdata_i[walk_pte_addr[5:3]*`RV64_XLEN +: `RV64_XLEN];
+    wire [`RV64_XLEN-1:0] walk_pte_data =
+        pte_cache_hit_use ? pte_cache_hit_data_r : ccx_pte_data;
+    wire walk_pte_ready = pmp_denied || pte_cache_hit_use ||
+                          ccx_resp_fire;
+    wire walk_pte_error = pmp_denied ||
+        (ccx_resp_fire &&
+         (ccx_resp_error_i || ccx_resp_identity_error));
+    wire [PTE_CACHE_AGE_WIDTH-1:0] pte_cache_hit_age =
+        pte_cache_age_q[pte_cache_hit_way_r][pte_cache_set];
+    wire pte_cache_victim_valid =
+        pte_cache_valid_q[pte_cache_victim_way_r][pte_cache_set];
+    wire [PTE_CACHE_AGE_WIDTH-1:0] pte_cache_victim_age =
+        pte_cache_age_q[pte_cache_victim_way_r][pte_cache_set];
+
+    wire pte_v = walk_pte_data[`RV64_PTE_V_BIT];
+    wire pte_r = walk_pte_data[`RV64_PTE_R_BIT];
+    wire pte_w = walk_pte_data[`RV64_PTE_W_BIT];
+    wire pte_x = walk_pte_data[`RV64_PTE_X_BIT];
+    wire pte_u = walk_pte_data[`RV64_PTE_U_BIT];
+    wire pte_g = walk_pte_data[`RV64_PTE_G_BIT];
+    wire pte_a = walk_pte_data[`RV64_PTE_A_BIT];
+    wire pte_d = walk_pte_data[`RV64_PTE_D_BIT];
     wire [`RV64_SATP_PPN_WIDTH-1:0] pte_ppn =
-        mem_rdata_i[`RV64_PTE_PPN_BITS];
-    wire pte_reserved = |mem_rdata_i[`RV64_PTE_RESERVED_BITS];
+        walk_pte_data[`RV64_PTE_PPN_BITS];
+    wire pte_reserved = |walk_pte_data[`RV64_PTE_RESERVED_BITS];
     wire pte_encoding_invalid = !pte_v || (!pte_r && pte_w) ||
                                 pte_reserved;
     wire pte_leaf = pte_r || pte_x;
@@ -131,12 +349,20 @@ module openrv64_bus_ptw (
     wire [`RV64_XLEN-1:0] leaf_paddr =
         compose_paddr(pte_ppn, vaddr_q, level_q);
 
-    assign req_ready_o = (state_q == STATE_IDLE);
+    // Invalidation has priority over admission.  Advertising ready while
+    // invalidate_i is asserted would let the requester count a walk that the
+    // invalidation branch deliberately does not capture.
+    assign req_ready_o = (state_q == STATE_IDLE) && !invalidate_i &&
+                         !shootdown_pending_q && !shootdown_inflight_q;
 
-    assign resp_valid_o = (state_q == STATE_RESP);
+    // A stale response is not transferable in the shootdown cycle.  The
+    // sequential invalidation path replaces it with an explicit invalidated
+    // response after invalidate_i drops.
+    assign resp_valid_o = (state_q == STATE_RESP) && !invalidate_i;
     assign resp_paddr_o = resp_paddr_q;
     assign resp_page_fault_o = resp_page_fault_q;
     assign resp_access_fault_o = resp_access_fault_q;
+    assign resp_invalidated_o = resp_invalidated_q;
     assign resp_global_o = resp_global_q;
     assign resp_level_o = resp_level_q;
     assign resp_readable_o = resp_readable_q;
@@ -146,11 +372,58 @@ module openrv64_bus_ptw (
     assign resp_accessed_o = resp_accessed_q;
     assign resp_dirty_o = resp_dirty_q;
 
-    assign mem_valid_o = (state_q == STATE_WALK);
-    assign mem_write_o = 1'b0;
-    assign mem_addr_o = table_base_q + {{52{1'b0}}, walk_vpn, 3'b000};
-    assign mem_wdata_o = {`RV64_XLEN{1'b0}};
-    assign mem_wstrb_o = 8'h00;
+    assign pmp_valid_o = (state_q == STATE_WALK) &&
+                         (backend_state_q == BACKEND_PMP) &&
+                         !invalidate_i;
+    assign pmp_addr_o = walk_pte_addr;
+
+    assign ccx_req_valid_o = shootdown_ccx_req_valid || walk_ccx_req_valid;
+    assign ccx_req_hart_id_o = HART_ID;
+    assign ccx_req_txn_id_o = TXN_ID;
+    assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_PTW;
+    assign ccx_req_op_o = shootdown_ccx_req_valid ?
+                          `OPENRV64_CCX_OP_FENCE :
+                          `OPENRV64_CCX_OP_READ;
+    assign ccx_req_lock_o = 1'b0;
+    assign ccx_req_order_o = shootdown_ccx_req_valid ?
+                             `OPENRV64_CCX_ORDER_ACQ_REL :
+                             `OPENRV64_CCX_ORDER_NONE;
+    assign ccx_req_kind_o = `OPENRV64_CCX_KIND_PTE;
+    assign ccx_req_attr_o = shootdown_ccx_req_valid ?
+        `OPENRV64_CCX_ATTR_NONE :
+        (`OPENRV64_CCX_ATTR_CACHEABLE |
+         `OPENRV64_CCX_ATTR_IDEMPOTENT);
+    assign ccx_req_size_o = shootdown_ccx_req_valid ? 3'd0 : 3'd6;
+    assign ccx_req_addr_o = shootdown_ccx_req_valid ? 64'd0 :
+        {walk_pte_addr[`RV64_XLEN-1:6], 6'b0};
+    assign ccx_req_burst_len_o =
+        {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
+
+    assign ccx_resp_ready_o =
+        ccx_resp_owned &&
+        (shootdown_inflight_q ||
+         (((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
+          (backend_state_q == BACKEND_WAIT)));
+
+    // SFENCE.VMA and the local shootdown input also invalidate PTE lines which
+    // may have survived in the shared L2.  Multiple invalidations coalesce
+    // while no new walk is admitted.  An invalidation arriving while a prior
+    // shootdown is in flight leaves another transaction pending.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            shootdown_pending_q <= 1'b0;
+            shootdown_inflight_q <= 1'b0;
+        end else begin
+            if (shootdown_req_fire) begin
+                shootdown_pending_q <= 1'b0;
+                shootdown_inflight_q <= 1'b1;
+            end
+            if (shootdown_resp_fire)
+                shootdown_inflight_q <= 1'b0;
+            if (invalidate_i)
+                shootdown_pending_q <= 1'b1;
+        end
+    end
 
     task automatic set_fault_response;
         input page_fault;
@@ -159,6 +432,7 @@ module openrv64_bus_ptw (
             resp_paddr_q <= {`RV64_XLEN{1'b0}};
             resp_page_fault_q <= page_fault;
             resp_access_fault_q <= access_fault;
+            resp_invalidated_q <= 1'b0;
             resp_global_q <= 1'b0;
             resp_level_q <= `RV64_PAGE_LEVEL_4K;
             resp_readable_q <= 1'b0;
@@ -171,9 +445,109 @@ module openrv64_bus_ptw (
         end
     endtask
 
+    task automatic set_invalidated_response;
+        begin
+            resp_paddr_q <= {`RV64_XLEN{1'b0}};
+            resp_page_fault_q <= 1'b0;
+            resp_access_fault_q <= 1'b0;
+            resp_invalidated_q <= 1'b1;
+            resp_global_q <= 1'b0;
+            resp_level_q <= `RV64_PAGE_LEVEL_4K;
+            resp_readable_q <= 1'b0;
+            resp_writable_q <= 1'b0;
+            resp_executable_q <= 1'b0;
+            resp_user_q <= 1'b0;
+            resp_accessed_q <= 1'b0;
+            resp_dirty_q <= 1'b0;
+            state_q <= STATE_RESP;
+        end
+    endtask
+
+    wire pte_cache_fill = (PTE_CACHE_ENTRIES > 0) &&
+        (state_q == STATE_WALK) && !pte_cache_hit_r &&
+        ccx_resp_fire && !walk_pte_error && !pte_encoding_invalid &&
+        !pte_leaf && (level_q != `RV64_PAGE_LEVEL_4K) &&
+        !pte_nonleaf_reserved;
+    integer pte_cache_state_way;
+    integer pte_cache_state_set;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (pte_cache_state_way = 0;
+                 pte_cache_state_way < PTE_CACHE_ACTIVE_WAYS;
+                 pte_cache_state_way = pte_cache_state_way + 1)
+                for (pte_cache_state_set = 0;
+                     pte_cache_state_set < PTE_CACHE_SETS;
+                     pte_cache_state_set = pte_cache_state_set + 1)
+                    pte_cache_valid_q[
+                        pte_cache_state_way][pte_cache_state_set] <= 1'b0;
+        end else if (invalidate_i) begin
+            for (pte_cache_state_way = 0;
+                 pte_cache_state_way < PTE_CACHE_ACTIVE_WAYS;
+                 pte_cache_state_way = pte_cache_state_way + 1)
+                for (pte_cache_state_set = 0;
+                     pte_cache_state_set < PTE_CACHE_SETS;
+                     pte_cache_state_set = pte_cache_state_set + 1)
+                    pte_cache_valid_q[
+                        pte_cache_state_way][pte_cache_state_set] <= 1'b0;
+        end else if (pte_cache_hit_use) begin
+            for (pte_cache_state_way = 0;
+                 pte_cache_state_way < PTE_CACHE_ACTIVE_WAYS;
+                 pte_cache_state_way = pte_cache_state_way + 1) begin
+                if (pte_cache_state_way[
+                        PTE_CACHE_WAY_INDEX_WIDTH-1:0] ==
+                    pte_cache_hit_way_r) begin
+                    pte_cache_age_q[
+                        pte_cache_state_way][pte_cache_set] <=
+                        {PTE_CACHE_AGE_WIDTH{1'b0}};
+                end else if (pte_cache_valid_q[
+                                 pte_cache_state_way][pte_cache_set] &&
+                             (pte_cache_age_q[
+                                  pte_cache_state_way][pte_cache_set] <
+                              pte_cache_hit_age)) begin
+                    pte_cache_age_q[
+                        pte_cache_state_way][pte_cache_set] <=
+                        pte_cache_age_q[
+                            pte_cache_state_way][pte_cache_set] + 1'b1;
+                end
+            end
+        end else if (pte_cache_fill) begin
+            for (pte_cache_state_way = 0;
+                 pte_cache_state_way < PTE_CACHE_ACTIVE_WAYS;
+                 pte_cache_state_way = pte_cache_state_way + 1) begin
+                if (pte_cache_state_way[
+                        PTE_CACHE_WAY_INDEX_WIDTH-1:0] !=
+                    pte_cache_victim_way_r &&
+                    pte_cache_valid_q[
+                        pte_cache_state_way][pte_cache_set] &&
+                    (!pte_cache_victim_valid ||
+                     (pte_cache_age_q[
+                          pte_cache_state_way][pte_cache_set] <
+                      pte_cache_victim_age)))
+                    pte_cache_age_q[
+                        pte_cache_state_way][pte_cache_set] <=
+                        pte_cache_age_q[
+                            pte_cache_state_way][pte_cache_set] + 1'b1;
+            end
+            pte_cache_valid_q[
+                pte_cache_victim_way_r][pte_cache_set] <= 1'b1;
+            pte_cache_tag_q[
+                pte_cache_victim_way_r][pte_cache_set] <=
+                walk_pte_addr[55:3];
+            pte_cache_data_q[
+                pte_cache_victim_way_r][pte_cache_set] <=
+                walk_pte_data;
+            pte_cache_level_q[
+                pte_cache_victim_way_r][pte_cache_set] <= level_q;
+            pte_cache_age_q[
+                pte_cache_victim_way_r][pte_cache_set] <=
+                {PTE_CACHE_AGE_WIDTH{1'b0}};
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state_q <= STATE_IDLE;
+            backend_state_q <= BACKEND_PMP;
             vaddr_q <= {`RV64_XLEN{1'b0}};
             access_q <= ACCESS_READ;
             priv_q <= `RV64_PRIV_M;
@@ -185,6 +559,7 @@ module openrv64_bus_ptw (
             resp_paddr_q <= {`RV64_XLEN{1'b0}};
             resp_page_fault_q <= 1'b0;
             resp_access_fault_q <= 1'b0;
+            resp_invalidated_q <= 1'b0;
             resp_global_q <= 1'b0;
             resp_level_q <= `RV64_PAGE_LEVEL_4K;
             resp_readable_q <= 1'b0;
@@ -193,14 +568,52 @@ module openrv64_bus_ptw (
             resp_user_q <= 1'b0;
             resp_accessed_q <= 1'b0;
             resp_dirty_q <= 1'b0;
+        end else if (invalidate_i) begin
+            case (state_q)
+                STATE_WALK: begin
+                    case (backend_state_q)
+                        BACKEND_PMP: begin
+                            set_invalidated_response();
+                        end
+                        BACKEND_SEND: begin
+                            state_q <= STATE_ABORT;
+                            if (ccx_req_fire)
+                                backend_state_q <= BACKEND_WAIT;
+                        end
+                        BACKEND_WAIT: begin
+                            if (ccx_resp_fire)
+                                set_invalidated_response();
+                            else
+                                state_q <= STATE_ABORT;
+                        end
+                        default: begin
+                            set_invalidated_response();
+                        end
+                    endcase
+                end
+                STATE_ABORT: begin
+                    if ((backend_state_q == BACKEND_SEND) &&
+                        ccx_req_fire)
+                        backend_state_q <= BACKEND_WAIT;
+                    else if ((backend_state_q == BACKEND_WAIT) &&
+                             ccx_resp_fire)
+                        set_invalidated_response();
+                end
+                STATE_RESP: begin
+                    set_invalidated_response();
+                end
+                default: begin
+                end
+            endcase
         end else begin
             case (state_q)
                 STATE_IDLE: begin
-                    if (req_valid_i) begin
+                    if (req_valid_i && req_ready_o) begin
                         if (req_vm_mode_i == `RV64_SATP_MODE_BARE) begin
                             resp_paddr_q <= req_vaddr_i;
                             resp_page_fault_q <= 1'b0;
                             resp_access_fault_q <= 1'b0;
+                            resp_invalidated_q <= 1'b0;
                             resp_global_q <= 1'b1;
                             resp_level_q <= `RV64_PAGE_LEVEL_4K;
                             resp_readable_q <= 1'b1;
@@ -226,14 +639,23 @@ module openrv64_bus_ptw (
                                 8'd0, req_root_ppn_i, 12'd0
                             };
                             global_q <= 1'b0;
+                            resp_invalidated_q <= 1'b0;
+                            backend_state_q <= BACKEND_PMP;
                             state_q <= STATE_WALK;
                         end
                     end
                 end
 
                 STATE_WALK: begin
-                    if (mem_ready_i) begin
-                        if (mem_error_i) begin
+                    if ((backend_state_q == BACKEND_PMP) && pmp_fire &&
+                        pmp_allow_i && !pte_cache_hit_r)
+                        backend_state_q <= BACKEND_SEND;
+                    else if ((backend_state_q == BACKEND_SEND) &&
+                             ccx_req_fire)
+                        backend_state_q <= BACKEND_WAIT;
+
+                    if (walk_pte_ready) begin
+                        if (walk_pte_error) begin
                             set_fault_response(1'b0, 1'b1);
                         end else if (pte_encoding_invalid) begin
                             set_fault_response(1'b1, 1'b0);
@@ -244,6 +666,7 @@ module openrv64_bus_ptw (
                                 resp_paddr_q <= leaf_paddr;
                                 resp_page_fault_q <= 1'b0;
                                 resp_access_fault_q <= 1'b0;
+                                resp_invalidated_q <= 1'b0;
                                 resp_global_q <= global_q || pte_g;
                                 resp_level_q <= level_q;
                                 resp_readable_q <= pte_r;
@@ -261,8 +684,18 @@ module openrv64_bus_ptw (
                             table_base_q <= {8'd0, pte_ppn, 12'd0};
                             level_q <= level_q - 1'b1;
                             global_q <= global_q || pte_g;
+                            backend_state_q <= BACKEND_PMP;
                         end
                     end
+                end
+
+                STATE_ABORT: begin
+                    if ((backend_state_q == BACKEND_SEND) &&
+                        ccx_req_fire)
+                        backend_state_q <= BACKEND_WAIT;
+                    else if ((backend_state_q == BACKEND_WAIT) &&
+                             ccx_resp_fire)
+                        set_invalidated_response();
                 end
 
                 STATE_RESP: begin
@@ -273,10 +706,30 @@ module openrv64_bus_ptw (
 
                 default: begin
                     state_q <= STATE_IDLE;
+                    backend_state_q <= BACKEND_PMP;
                 end
             endcase
         end
     end
+
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (rst_n && shootdown_resp_fire &&
+            (ccx_resp_error_i || ccx_resp_identity_error))
+            $fatal(1, "PTW L2-generation shootdown response failed");
+    end
+
+    initial begin
+        if ((PTE_CACHE_ENTRIES < 0) || (PTE_CACHE_WAYS < 1))
+            $fatal(1, "invalid non-leaf PTE cache geometry");
+        if ((PTE_CACHE_ENTRIES > 0) &&
+            (((PTE_CACHE_WAYS & (PTE_CACHE_WAYS - 1)) != 0) ||
+             ((PTE_CACHE_ENTRIES % PTE_CACHE_WAYS) != 0) ||
+             ((PTE_CACHE_SETS & (PTE_CACHE_SETS - 1)) != 0)))
+            $fatal(1,
+                   "PTE cache entries must form power-of-two sets and ways");
+    end
+`endif
 
     wire unused_asid = |req_asid_i;
 

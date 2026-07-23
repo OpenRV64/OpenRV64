@@ -3,7 +3,7 @@
 `include "core/isa/rv64-priv.v"
 
 module tb_openrv64_l1i_top #(
-    parameter integer CACHE_BYTES = 8 * 1024,
+    parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer WAYS = 4,
     parameter integer PREFETCH_SLOTS = 8
 );

@@ -51,12 +51,18 @@ module openrv64_exec_bp_gshare_btb #(
     input  wire [63:0]                  resolve_id_i,
 
     output wire                         prediction_taken_o,
+    output wire                         prediction_weak_o,
     output wire                         prediction_target_valid_o,
     output wire [`RV64_XLEN-1:0]        prediction_target_o,
     output wire                         target_mispredict_o,
     output wire                         allocation_stall_o,
     output wire                         update_overflow_o
 );
+
+    localparam [COUNTER_BITS-1:0] WEAK_TAKEN =
+        {1'b1, {(COUNTER_BITS-1){1'b0}}};
+    localparam [COUNTER_BITS-1:0] WEAK_NOT_TAKEN =
+        {1'b0, {(COUNTER_BITS-1){1'b1}}};
 
     reg [PHT_ENTRIES-1:0] pht_valid_q;
     reg [COUNTER_BITS-1:0] pht_counter_q [0:PHT_ENTRIES-1];
@@ -109,6 +115,12 @@ module openrv64_exec_bp_gshare_btb #(
         pht_counter_q[lookup_pht_index][COUNTER_BITS-1];
     wire conditional_prediction = pht_valid_q[lookup_pht_index] ?
         learned_direction : lookup_backward_i;
+    // A counter is direction-confident only when its two most-significant
+    // bits agree.  This keeps the backup fetch active throughout the middle
+    // half of the hysteresis range, not just at the direction boundary.
+    wire learned_prediction_weak =
+        pht_counter_q[lookup_pht_index][COUNTER_BITS-1] !=
+        pht_counter_q[lookup_pht_index][COUNTER_BITS-2];
 
     wire [BTB_INDEX_WIDTH-1:0] lookup_btb_index =
         lookup_pc_i[BTB_INDEX_WIDTH+1:2];
@@ -157,6 +169,8 @@ module openrv64_exec_bp_gshare_btb #(
         ((lookup_branch_i && conditional_prediction) ||
          (lookup_jump_i && !lookup_indirect_i) ||
          (lookup_indirect_i && selected_target_valid));
+    assign prediction_weak_o = lookup_valid_i && lookup_branch_i &&
+        (!pht_valid_q[lookup_pht_index] || learned_prediction_weak);
     assign prediction_target_valid_o = lookup_valid_i &&
                                        selected_target_valid;
     assign prediction_target_o = selected_target;
@@ -167,10 +181,6 @@ module openrv64_exec_bp_gshare_btb #(
     assign update_overflow_o = update_overflow_q;
 
     wire [COUNTER_BITS-1:0] counter_max = {COUNTER_BITS{1'b1}};
-    wire [COUNTER_BITS-1:0] weak_taken =
-        {1'b1, {(COUNTER_BITS-1){1'b0}}};
-    wire [COUNTER_BITS-1:0] weak_not_taken =
-        {1'b0, {(COUNTER_BITS-1){1'b1}}};
     wire [PHT_INDEX_WIDTH-1:0] resolved_pht_index =
         inflight_pht_index_q[resolve_index];
     wire [PHT_INDEX_WIDTH-1:0] resolved_history =
@@ -234,7 +244,7 @@ module openrv64_exec_bp_gshare_btb #(
                 if (!pht_valid_q[resolved_pht_index]) begin
                     pht_valid_q[resolved_pht_index] <= 1'b1;
                     pht_counter_q[resolved_pht_index] <= resolve_taken_i ?
-                        weak_taken : weak_not_taken;
+                        WEAK_TAKEN : WEAK_NOT_TAKEN;
                 end else if (resolve_taken_i) begin
                     if (pht_counter_q[resolved_pht_index] != counter_max)
                         pht_counter_q[resolved_pht_index] <=

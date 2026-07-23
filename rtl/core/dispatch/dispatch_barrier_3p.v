@@ -95,7 +95,7 @@ module openrv64_dispatch_barrier_3p (
     assign allocation_allow_o[0] = !barrier_active_q;
     // A proved-correct BEQ/BNE may waive only the same-cycle issue-group
     // barrier.  It remains hard in retirement metadata and still executes in
-    // EX0; this is deliberately distinct from the diagnostic free-branch
+    // EX1; this is deliberately distinct from the diagnostic free-branch
     // path, which removes the branch's pipe claim and hard classification.
     assign allocation_allow_o[1] = !barrier_active_q &&
                                     !(candidate_valid_i[0] && hard0 &&

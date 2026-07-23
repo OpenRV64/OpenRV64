@@ -31,7 +31,7 @@
 .if ICACHE_PATTERN == 0
 .equ ICACHE_EXPECTED, (ICACHE_LINES * 16)
 .elseif ICACHE_PATTERN == 1
-.equ ICACHE_EXPECTED, (ICACHE_LINES * 15)
+.equ ICACHE_EXPECTED, (ICACHE_LINES * 8)
 .else
 .equ ICACHE_EXPECTED, (ICACHE_LINES * 13)
 .endif
@@ -64,12 +64,45 @@ icache_measure_begin:
         .endr
     .endr
 .elseif ICACHE_PATTERN == 1
-    .rept ICACHE_LINES
-        .rept 15
+    /*
+     * Visit each four-line group in physical order 0, 2, 1, 3.  A blind
+     * next-line prefetch is useful on only half the transitions.  Dead nops
+     * retain an exact 64-byte footprint per executed line.
+     */
+    .rept (ICACHE_LINES / 4)
+0:
+        .rept 8
             addi    s0, s0, 1
         .endr
-        j       1f
+        j       2f
+        .rept 7
+            nop
+        .endr
 1:
+        .rept 8
+            addi    s0, s0, 1
+        .endr
+        j       3f
+        .rept 7
+            nop
+        .endr
+2:
+        .rept 8
+            addi    s0, s0, 1
+        .endr
+        j       1b
+        .rept 7
+            nop
+        .endr
+3:
+        .rept 8
+            addi    s0, s0, 1
+        .endr
+        j       4f
+        .rept 7
+            nop
+        .endr
+4:
     .endr
 .else
     /*
@@ -91,6 +124,8 @@ icache_measure_begin:
     .endr
 .endif
 
+.globl icache_tape_end
+icache_tape_end:
     csrr    t0, mcycle
     sub     a0, t0, s1
     la      t1, icache_cycles

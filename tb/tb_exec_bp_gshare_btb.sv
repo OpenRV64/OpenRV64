@@ -21,6 +21,7 @@ module tb_exec_bp_gshare_btb;
     logic [63:0] resolve_pc;
     logic [63:0] resolve_target;
     logic prediction_taken;
+    logic prediction_weak;
     logic prediction_target_valid;
     logic [63:0] prediction_target;
     logic target_mispredict;
@@ -55,6 +56,7 @@ module tb_exec_bp_gshare_btb;
         .train_valid_i(3'b000), .train_branch_i(3'b000),
         .train_taken_i(3'b000), .train_pc_i(192'd0),
         .prediction_taken_o(prediction_taken),
+        .prediction_weak_o(prediction_weak),
         .prediction_target_valid_o(prediction_target_valid),
         .prediction_target_o(prediction_target),
         .target_mispredict_o(target_mispredict),
@@ -126,12 +128,61 @@ module tb_exec_bp_gshare_btb;
         lookup_pc = 64'h100;
         lookup_backward = 1'b0;
         #1;
-        if (prediction_taken || fetch_stall || decode_stall)
+        if (prediction_taken || !prediction_weak ||
+            fetch_stall || decode_stall)
             $fatal(1, "cold forward gshare prediction is not BTFNT");
         lookup_backward = 1'b1;
         #1;
-        if (!prediction_taken)
+        if (!prediction_taken || !prediction_weak)
             $fatal(1, "cold backward gshare prediction is not BTFNT");
+
+        // Three correct outcomes move a cold three-bit counter from weak
+        // not-taken through the low-confidence middle half to strong
+        // not-taken.  Confidence is direction-only.
+        lookup_pc = 64'h104;
+        lookup_backward = 1'b0;
+        allocate_control();
+        resolve_valid = 1'b1;
+        resolve_branch = 1'b1;
+        resolve_taken = 1'b0;
+        resolve_instr = 32'h0000_0063;
+        resolve_pc = 64'h104;
+        resolve_target = 64'h108;
+        resolve_control(1'b1);
+        lookup_valid = 1'b1;
+        lookup_branch = 1'b1;
+        lookup_pc = 64'h104;
+        #1;
+        if (prediction_taken || !prediction_weak)
+            $fatal(1, "new gshare entry did not report weak not-taken");
+        allocate_control();
+        resolve_valid = 1'b1;
+        resolve_branch = 1'b1;
+        resolve_taken = 1'b0;
+        resolve_instr = 32'h0000_0063;
+        resolve_pc = 64'h104;
+        resolve_target = 64'h108;
+        resolve_control(1'b1);
+        lookup_valid = 1'b1;
+        lookup_branch = 1'b1;
+        lookup_pc = 64'h104;
+        #1;
+        if (prediction_taken || !prediction_weak)
+            $fatal(1, "middle gshare state reported strong not-taken");
+        allocate_control();
+        resolve_valid = 1'b1;
+        resolve_branch = 1'b1;
+        resolve_taken = 1'b0;
+        resolve_instr = 32'h0000_0063;
+        resolve_pc = 64'h104;
+        resolve_target = 64'h108;
+        resolve_control(1'b1);
+        lookup_valid = 1'b1;
+        lookup_branch = 1'b1;
+        lookup_pc = 64'h104;
+        #1;
+        if (prediction_taken || prediction_weak)
+            $fatal(1, "trained gshare entry did not report strong not-taken");
 
         // A direction miss restores speculative history to checkpoint+actual.
         lookup_pc = 64'h120;

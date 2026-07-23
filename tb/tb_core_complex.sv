@@ -510,11 +510,16 @@ module tb_core_complex #(
                     index*`OPENRV64_CCX_KIND_WIDTH +:
                     `OPENRV64_CCX_KIND_WIDTH] =
                     (source == `OPENRV64_CCX_SOURCE_ICACHE) ?
-                    `OPENRV64_CCX_KIND_FETCH : `OPENRV64_CCX_KIND_DATA;
+                    `OPENRV64_CCX_KIND_FETCH :
+                    (source == `OPENRV64_CCX_SOURCE_PTW) ?
+                    `OPENRV64_CCX_KIND_PTE : `OPENRV64_CCX_KIND_DATA;
                 ccx_req_attr[
                     index*`OPENRV64_CCX_ATTR_WIDTH +:
                     `OPENRV64_CCX_ATTR_WIDTH] =
-                    `OPENRV64_CCX_ATTR_CACHEABLE;
+                    `OPENRV64_CCX_ATTR_CACHEABLE |
+                    ((source == `OPENRV64_CCX_SOURCE_PTW) ?
+                     `OPENRV64_CCX_ATTR_IDEMPOTENT :
+                     `OPENRV64_CCX_ATTR_NONE);
                 ccx_req_size[index*3 +: 3] = 3'd6;
                 ccx_req_addr[index*64 +: 64] = address;
                 ccx_req_burst_len[
@@ -603,6 +608,24 @@ module tb_core_complex #(
         wait (completions == target_completions);
         if (external_reads != reads_after_fill)
             $fatal(1, "N=%0d L2 hits escaped to external bus", NUM_HARTS);
+
+        // PTE traffic bypasses private L1D but remains cacheable at the shared
+        // L2.  The first request fills one line and the second must hit it.
+        reads_after_fill = external_reads;
+        target_completions = completions + NUM_HARTS;
+        launch_read_all(`OPENRV64_CCX_SOURCE_PTW, 4'd11,
+                        64'hc00, memory_line(64'hc00));
+        wait (completions == target_completions);
+        if (external_reads != reads_after_fill + 8)
+            $fatal(1, "N=%0d PTE fill used %0d external reads",
+                   NUM_HARTS, external_reads - reads_after_fill);
+        reads_after_fill = external_reads;
+        target_completions = completions + NUM_HARTS;
+        launch_read_all(`OPENRV64_CCX_SOURCE_PTW, 4'd12,
+                        64'hc00, memory_line(64'hc00));
+        wait (completions == target_completions);
+        if (external_reads != reads_after_fill)
+            $fatal(1, "N=%0d cached PTE line escaped L2", NUM_HARTS);
 
         modified_line = memory_line(64'h800);
         modified_line[15:0] = 16'h5aa5;
@@ -805,11 +828,11 @@ module tb_core_complex #(
                 "resident hit did not complete ahead of outstanding miss");
         nonblocking_check = 1'b0;
 
-        if (protocol_requests != (3*NUM_HARTS + 8))
+        if (protocol_requests != (5*NUM_HARTS + 8))
             $fatal(1, "N=%0d native command count=%0d",
                    NUM_HARTS, protocol_requests);
 
-        $display("PASS: %0d-hart native 512-bit pipelined/nonblocking L2, masked write, lock, burst, and %s backend",
+        $display("PASS: %0d-hart native 512-bit pipelined/nonblocking L2, cached PTE, masked write, lock, burst, and %s backend",
                  NUM_HARTS,
                  (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ? "AXI4" :
                                                           "WISHBONE B4");

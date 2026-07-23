@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
+`include "complex/protocol/defs.v"
 
 module tb_core_bus;
 
@@ -54,6 +55,30 @@ module tb_core_bus;
     wire [7:0] req_wstrb;
     logic [63:0] req_rdata;
     logic req_error;
+
+    wire pmp_valid;
+    wire [63:0] pmp_addr;
+    wire [1:0] pmp_priv;
+    wire [2:0] pmp_size;
+    wire pmp_write;
+    wire pmp_exec;
+
+    wire ccx_req_valid;
+    logic ccx_req_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
+    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    wire ccx_req_lock;
+    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
+    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
+    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
+    wire [2:0] ccx_req_size;
+    wire [63:0] ccx_req_addr;
+    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    logic ccx_resp_valid;
+    wire ccx_resp_ready;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
 
     openrv64_core_bus dut (
         .clk(clk),
@@ -109,10 +134,17 @@ module tb_core_bus;
         .req_error_i(req_error),
         .fetch_next_valid_i(fetch_next_valid),
         .fetch_next_addr_i(fetch_next_addr),
+        .pmp_valid_o(pmp_valid),
+        .pmp_addr_o(pmp_addr),
+        .pmp_priv_o(pmp_priv),
+        .pmp_size_o(pmp_size),
+        .pmp_write_o(pmp_write),
+        .pmp_exec_o(pmp_exec),
         .pmp_allow_i(1'b1),
         .fetch_pipe_req_valid_i(1'b0),
         .fetch_pipe_req_addr_i(64'd0),
         .fetch_pipe_req_stash_i(1'b0),
+        .fetch_pipe_req_demand_i(1'b0),
         .fetch_pipe_req_priv_i(`RV64_PRIV_M),
         .fetch_pipe_req_vm_mode_i(`RV64_SATP_MODE_BARE),
         .fetch_pipe_req_asid_i(16'd0),
@@ -136,15 +168,28 @@ module tb_core_bus;
         .lsu_pipe_req_mxr_i(1'b0),
         .lsu_pipe_cancel_i(1'b0),
         .lsu_pipe_resp_ready_i(1'b0),
-        .ccx_req_ready_i(1'b0),
+        .ccx_req_valid_o(ccx_req_valid),
+        .ccx_req_ready_i(ccx_req_ready),
+        .ccx_req_hart_id_o(ccx_req_hart_id),
+        .ccx_req_txn_id_o(ccx_req_txn_id),
+        .ccx_req_source_id_o(ccx_req_source_id),
+        .ccx_req_op_o(ccx_req_op),
+        .ccx_req_lock_o(ccx_req_lock),
+        .ccx_req_order_o(ccx_req_order),
+        .ccx_req_kind_o(ccx_req_kind),
+        .ccx_req_attr_o(ccx_req_attr),
+        .ccx_req_size_o(ccx_req_size),
+        .ccx_req_addr_o(ccx_req_addr),
+        .ccx_req_burst_len_o(ccx_req_burst_len),
         .ccx_wdata_ready_i(1'b0),
-        .ccx_resp_valid_i(1'b0),
-        .ccx_resp_hart_id_i('0),
-        .ccx_resp_txn_id_i('0),
-        .ccx_resp_source_id_i('0),
+        .ccx_resp_valid_i(ccx_resp_valid),
+        .ccx_resp_ready_o(ccx_resp_ready),
+        .ccx_resp_hart_id_i(ccx_req_hart_id),
+        .ccx_resp_txn_id_i(ccx_req_txn_id),
+        .ccx_resp_source_id_i(`OPENRV64_CCX_SOURCE_PTW),
         .ccx_resp_beat_index_i('0),
-        .ccx_resp_last_i(1'b0),
-        .ccx_resp_rdata_i('0),
+        .ccx_resp_last_i(1'b1),
+        .ccx_resp_rdata_i(ccx_resp_rdata),
         .ccx_resp_error_i(1'b0),
         .ccx_resp_sc_success_i(1'b0),
         .m_axi_arready_i(1'b0),
@@ -186,6 +231,99 @@ module tb_core_bus;
         end
     endtask
 
+    task automatic wait_for_ptw_request;
+        input [63:0] expected_line_addr;
+        input [63:0] expected_pte_addr;
+        input [8*40-1:0] label;
+        integer cycles;
+        reg saw_pmp;
+        begin
+            cycles = 0;
+            saw_pmp = 1'b0;
+            while (!ccx_req_valid && cycles < 20) begin
+                @(negedge clk);
+                if (pmp_valid) begin
+                    saw_pmp = 1'b1;
+                    if (pmp_addr !== expected_pte_addr ||
+                        pmp_priv !== `RV64_PRIV_S || pmp_size !== 3'd3 ||
+                        pmp_write || pmp_exec)
+                        $fatal(1, "%0s: PTW PMP probe mismatch", label);
+                end
+                if (req_valid)
+                    $fatal(1, "%0s: PTW leaked onto scalar bus", label);
+                cycles = cycles + 1;
+            end
+            #1;
+            if (!ccx_req_valid || !saw_pmp ||
+                ccx_req_addr !== expected_line_addr ||
+                ccx_req_source_id !== `OPENRV64_CCX_SOURCE_PTW ||
+                ccx_req_op !== `OPENRV64_CCX_OP_READ ||
+                ccx_req_kind !== `OPENRV64_CCX_KIND_PTE ||
+                ccx_req_size !== 3'd6 ||
+                ccx_req_burst_len !== '0 || ccx_req_lock) begin
+                $fatal(1,
+                    "%0s: invalid PTW CCX request valid/addr/source/op/kind/size=%b/%016x/%0d/%0d/%0d/%0d",
+                    label, ccx_req_valid, ccx_req_addr,
+                    ccx_req_source_id, ccx_req_op, ccx_req_kind,
+                    ccx_req_size);
+            end
+        end
+    endtask
+
+    task automatic respond_ptw_line;
+        input [63:0] pte_addr;
+        input [63:0] pte_data;
+        begin
+            ccx_req_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ccx_req_ready = 1'b0;
+            ccx_resp_rdata = '0;
+            ccx_resp_rdata[pte_addr[5:3]*64 +: 64] = pte_data;
+            ccx_resp_valid = 1'b1;
+            #1;
+            if (!ccx_resp_ready)
+                $fatal(1, "PTW did not accept its CCX response");
+            @(posedge clk);
+            @(negedge clk);
+            ccx_resp_valid = 1'b0;
+            ccx_resp_rdata = '0;
+        end
+    endtask
+
+    task automatic respond_ptw_shootdown;
+        integer cycles;
+        begin
+            cycles = 0;
+            while (!ccx_req_valid && cycles < 40) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            #1;
+            if (!ccx_req_valid ||
+                ccx_req_source_id !== `OPENRV64_CCX_SOURCE_PTW ||
+                ccx_req_op !== `OPENRV64_CCX_OP_FENCE ||
+                ccx_req_kind !== `OPENRV64_CCX_KIND_PTE ||
+                ccx_req_order !== `OPENRV64_CCX_ORDER_ACQ_REL ||
+                ccx_req_attr !== `OPENRV64_CCX_ATTR_NONE ||
+                ccx_req_size !== 3'd0 ||
+                ccx_req_burst_len !== '0 || ccx_req_lock)
+                $fatal(1, "invalid PTW generation shootdown request");
+            ccx_req_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            ccx_req_ready = 1'b0;
+            ccx_resp_rdata = '0;
+            ccx_resp_valid = 1'b1;
+            #1;
+            if (!ccx_resp_ready)
+                $fatal(1, "PTW did not accept shootdown response");
+            @(posedge clk);
+            @(negedge clk);
+            ccx_resp_valid = 1'b0;
+        end
+    endtask
+
     initial begin
         rst_n = 1'b0;
         fetch_valid = 1'b0;
@@ -215,6 +353,9 @@ module tb_core_bus;
         req_ready = 1'b0;
         req_rdata = 64'd0;
         req_error = 1'b0;
+        ccx_req_ready = 1'b0;
+        ccx_resp_valid = 1'b0;
+        ccx_resp_rdata = '0;
 
         repeat (2) @(posedge clk);
         @(negedge clk);
@@ -381,17 +522,9 @@ module tb_core_bus;
         lsu_vm_mode = `RV64_SATP_MODE_BARE;
         lsu_asid = 16'd0;
         lsu_root_ppn = 44'd0;
-        wait_for_request(1'b0, 64'h1008, 64'd0, 8'h00,
-                         "Sv39 root PTE read");
-        if (req_pmp_addr != 64'h1008 || req_priv != `RV64_PRIV_S ||
-            req_size != 3'd3 || req_exec) begin
-            $fatal(1, "PTW physical protection context mismatch");
-        end
-        req_rdata = 64'h0000_0000_4000_00c3;
-        req_ready = 1'b1;
-        @(posedge clk);
-        @(negedge clk);
-        req_ready = 1'b0;
+        wait_for_ptw_request(64'h1000, 64'h1008,
+                             "Sv39 root PTE read");
+        respond_ptw_line(64'h1008, 64'h0000_0000_4000_00c3);
 
         wait_for_request(1'b0, 64'h0000_0001_0000_1234,
                          64'd0, 8'h00, "translated data access");
@@ -428,25 +561,19 @@ module tb_core_bus;
         @(posedge clk);
         @(negedge clk);
         tlbi = 1'b0;
+        respond_ptw_shootdown();
 
         lsu_valid = 1'b1;
-        wait_for_request(1'b0, 64'h1008, 64'd0, 8'h00,
-                         "post-TLBI root PTE read");
+        wait_for_ptw_request(64'h1000, 64'h1008,
+                             "post-TLBI root PTE read");
         tlbi = 1'b1;
-        req_rdata = 64'h0000_0000_4000_00c3;
-        req_ready = 1'b1;
-        @(posedge clk);
-        @(negedge clk);
+        respond_ptw_line(64'h1008, 64'h0000_0000_4000_00c3);
         tlbi = 1'b0;
-        req_ready = 1'b0;
+        respond_ptw_shootdown();
 
-        wait_for_request(1'b0, 64'h1008, 64'd0, 8'h00,
-                         "TLBI restarts active walk");
-        req_rdata = 64'd0;
-        req_ready = 1'b1;
-        @(posedge clk);
-        @(negedge clk);
-        req_ready = 1'b0;
+        wait_for_ptw_request(64'h1000, 64'h1008,
+                             "TLBI restarts active walk");
+        respond_ptw_line(64'h1008, 64'd0);
         #1;
         if (!lsu_ready || !lsu_page_fault || lsu_access_fault) begin
             $fatal(1, "post-TLBI invalid PTE did not page fault");

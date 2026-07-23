@@ -6,8 +6,9 @@
 `include "complex/protocol/defs.v"
 
 // Testbench memory/SoC fabric for the residual 256-bit AXI port and native
-// 512-bit CCX cache port.  AXI serves PTW/cacheless-fetch traffic.  Native CCX
-// reads and writes access two adjacent 256-bit RAM words as one 64-byte line;
+// 512-bit CCX cache port. AXI serves cacheless fetch only; PTW and cache
+// traffic use CCX. Native CCX reads and writes access two adjacent 256-bit RAM
+// words as one 64-byte line;
 // sub-line MMIO is lane-adapted onto the existing 64-bit SoC peripheral bus.
 module tb_axi256_soc_fabric #(
     parameter integer READ_QUEUE_DEPTH = 8,
@@ -539,7 +540,16 @@ module tb_top_axi_3p #(
     parameter integer FREE_L1_REFILLS = 0,
     parameter integer FREE_L1I_REFILLS = 0,
     parameter integer FREE_L1D_REFILLS = 0,
-    parameter integer FETCH_ALT_LOOKASIDE = 0
+    parameter integer L1D_PREFETCH_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_DISTANCE = 1,
+    parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
+    parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
+    parameter integer L1D_PREFETCH_OUTSTANDING = 4,
+    parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer FETCH_ALT_LOOKASIDE = 1,
+    parameter integer FETCH_ALT_CONFIDENCE_GATE = 0
 );
     localparam integer RETIRE_RESULT_PC_LSB = 329;
 
@@ -762,6 +772,12 @@ module tb_top_axi_3p #(
     integer ccx_fetch_reads;
     integer ccx_data_reads;
     integer ccx_data_writes;
+    integer l1d_prefetch_issued;
+    integer l1d_prefetch_useful;
+    integer l1d_prefetch_late;
+    integer l1d_prefetch_dropped;
+    integer l1d_prefetch_useless;
+    integer l1d_prefetch_max_depth;
     integer ccx_locked_reads;
     integer ccx_locked_writes;
     integer bp_allocations;
@@ -869,8 +885,21 @@ module tb_top_axi_3p #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(POSTED_STORES),
+        .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+        .L1D_PREFETCH_MAX_STRIDE_LINES(
+            L1D_PREFETCH_MAX_STRIDE_LINES),
+        .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
+        .L1D_PREFETCH_ADAPTIVE_ENABLE(
+            L1D_PREFETCH_ADAPTIVE_ENABLE),
+        .L1D_PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),
+        .L1D_PREFETCH_QUEUE_LINES(L1D_PREFETCH_QUEUE_LINES),
+        .L1D_PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
+        .L1D_PREFETCH_DEMAND_RESERVE(
+            L1D_PREFETCH_DEMAND_RESERVE),
         .ENABLE_TRACE(1'b1),
         .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
+        .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
+            FETCH_ALT_CONFIDENCE_GATE),
         .BP_TYPE(BP_TYPE),
         .BP_RAS_ENABLE(BP_RAS_ENABLE),
         .BP_RAS_DEPTH(BP_RAS_DEPTH),
@@ -990,9 +1019,9 @@ module tb_top_axi_3p #(
     localparam integer ORACLE_RAM_WORDS = RAM_BYTES / 32;
     localparam integer ORACLE_RAM_INDEX_WIDTH = $clog2(ORACLE_RAM_WORDS);
     wire [63:0] oracle_l1i_addr =
-        dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.req_phys_addr_i;
+        dut.u_core.u_bus.g_ccx.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.req_phys_addr_i;
     wire [63:0] oracle_l1d_addr =
-        dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.req_phys_addr_i;
+        dut.u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.req_phys_addr_i;
     wire oracle_l1i_ram =
         (oracle_l1i_addr >= `OPENRV64_SOC_MEMORY_BASE) &&
         (oracle_l1i_addr < (`OPENRV64_SOC_MEMORY_BASE + RAM_BYTES));
@@ -1024,18 +1053,18 @@ module tb_top_axi_3p #(
         (FREE_L1_REFILLS != 0) || (FREE_L1D_REFILLS != 0) ||
         $test$plusargs("perfect_l1d");
 
-    defparam dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.IDEAL_REFILLS =
+    defparam dut.u_core.u_bus.g_ccx.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.IDEAL_REFILLS =
         1;
-    defparam dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.IDEAL_REFILLS =
+    defparam dut.u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.IDEAL_REFILLS =
         1;
 
-    assign dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_valid_i =
+    assign dut.u_core.u_bus.g_ccx.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_valid_i =
         perfect_l1i_enabled && oracle_l1i_ram;
-    assign dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_data_i =
+    assign dut.u_core.u_bus.g_ccx.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_data_i =
         oracle_l1i_data;
-    assign dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_valid_i =
+    assign dut.u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_valid_i =
         perfect_l1d_enabled && oracle_l1d_ram;
-    assign dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_data_i =
+    assign dut.u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_data_i =
         oracle_l1d_data;
 
     // Testbench-only visibility into the program-ordered dispatch window.
@@ -1253,7 +1282,7 @@ module tb_top_axi_3p #(
         3'b000, dut.u_core.g_fetch_axi.u_fetch.pending_valid_q
     };
     wire [2:0] trace_fetch_bus_count =
-        dut.u_core.u_bus.g_axi.u_bus.fetch_count_q;
+        dut.u_core.u_bus.g_ccx.u_bus.fetch_count_q;
     wire trace_fetch_consume_hit =
         dut.u_core.g_fetch_axi.u_fetch.consume_line_hit;
     wire trace_fetch_follow_hit =
@@ -1920,6 +1949,20 @@ module tb_top_axi_3p #(
                 else if (ccx_req_op == `OPENRV64_CCX_OP_WRITE)
                     ccx_data_writes = ccx_data_writes + 1;
             end
+            if (dut.u_core.u_bus.g_ccx.u_bus.u_l1d.prefetch_issued_o)
+                l1d_prefetch_issued = l1d_prefetch_issued + 1;
+            if (dut.u_core.u_bus.g_ccx.u_bus.u_l1d.prefetch_useful_o)
+                l1d_prefetch_useful = l1d_prefetch_useful + 1;
+            if (dut.u_core.u_bus.g_ccx.u_bus.u_l1d.prefetch_late_o)
+                l1d_prefetch_late = l1d_prefetch_late + 1;
+            if (dut.u_core.u_bus.g_ccx.u_bus.u_l1d.prefetch_dropped_o)
+                l1d_prefetch_dropped = l1d_prefetch_dropped + 1;
+            if (dut.u_core.u_bus.g_ccx.u_bus.u_l1d.prefetch_useless_o)
+                l1d_prefetch_useless = l1d_prefetch_useless + 1;
+            if (dut.u_core.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_o >
+                l1d_prefetch_max_depth)
+                l1d_prefetch_max_depth =
+                    dut.u_core.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_o;
         end
     endtask
 
@@ -2133,8 +2176,8 @@ module tb_top_axi_3p #(
                         $fatal(1,
                                "frontend RAM access was not one aligned 256-bit AXI beat");
                     end
-                    // AXI is retained for PTW only; ordinary fetch/data RAM
-                    // traffic is observed on the native CCX port below.
+                    // AXI is retained only for structural cacheless fetch;
+                    // ordinary cache and PTW traffic use native CCX below.
                 end
             end
             if (ccx_req_valid && ccx_req_ready) begin
@@ -2260,6 +2303,12 @@ module tb_top_axi_3p #(
         ccx_fetch_reads = 0;
         ccx_data_reads = 0;
         ccx_data_writes = 0;
+        l1d_prefetch_issued = 0;
+        l1d_prefetch_useful = 0;
+        l1d_prefetch_late = 0;
+        l1d_prefetch_dropped = 0;
+        l1d_prefetch_useless = 0;
+        l1d_prefetch_max_depth = 0;
         ccx_locked_reads = 0;
         ccx_locked_writes = 0;
         bp_allocations = 0;
@@ -2381,15 +2430,20 @@ module tb_top_axi_3p #(
                      branch_oracle_load_path, branch_oracle_expected);
         end
         if (external_image) begin
-            if (!$value$plusargs("pipeline_trace=%s", pipeline_trace_path))
-                pipeline_trace_path = "sim/top-axi-3p-trace.csv";
-            pipeline_trace_fd = $fopen(pipeline_trace_path, "w");
-            if (pipeline_trace_fd == 0)
-                $fatal(1, "could not open 3P pipeline trace %0s",
-                       pipeline_trace_path);
-            $fdisplay(pipeline_trace_fd,
+            if (!$test$plusargs("no_pipeline_trace")) begin
+                if (!$value$plusargs("pipeline_trace=%s",
+                                     pipeline_trace_path))
+                    pipeline_trace_path = "sim/top-axi-3p-trace.csv";
+                pipeline_trace_fd = $fopen(pipeline_trace_path, "w");
+                if (pipeline_trace_fd == 0)
+                    $fatal(1, "could not open 3P pipeline trace %0s",
+                           pipeline_trace_path);
+                $fdisplay(pipeline_trace_fd,
                 "schema,cycle,fetch_valid,fetch_ready,fetch_fire,decode_valid,decode_ready,decode_fire,issue_valid,complete_valid,retire_valid,retire_count,dispatch_q,retire_q,raw,waw,read_port,write_busy,barrier,bp_present,bp_allocate,bp_taken,bp_fetch_stall,bp_decode_stall,redirect,fetch_req_valid,fetch_req_ready,fetch_resp_valid,axi_arvalid,axi_arready,stall_causes,queue_valid,candidate_fire,candidate_hazard_free,candidate_pipe,pipe_ready,barrier_allow,allocation_ready,block_lane,block_reason,raw_existing,raw_bundle,raw_completed,raw_rs1,raw_rs2,waw_bundle,waw_completed,candidate_uses_rs1,candidate_uses_rs2,candidate_reg_write,candidate_rs1,candidate_rs2,candidate_rd,queue_retire_valid,completed_entries,control_flush,control_redirect,fetch_bus_q,fetch_line_valid,fetch_pending,fetch_consume_hit,fetch_follow_hit,fetch_active,mem_req_valid,mem_req_ready,mem_resp_valid,mem_resp_ready,mem_write,lsu_slots,lsu_sent,lsu_store_inflight,lsu_order_block,retire_gpr_write,retire_gpr_rd,retire_gpr_data,mem_req_tag,mem_req_addr,mem_req_wdata,mem_req_wstrb,mem_resp_tag,mem_resp_rdata,window_unissued,window_operand_ready,window_eligible,window_raw_block,window_hard_block,window_mem_order_block,window_selected,window_issued,f0_uid,f0_pc,f0_instr,f1_uid,f1_pc,f1_instr,f2_uid,f2_pc,f2_instr,d0_uid,d0_pc,d0_instr,d1_uid,d1_pc,d1_instr,d2_uid,d2_pc,d2_instr,q0_uid,q0_pc,q0_instr,q1_uid,q1_pc,q1_instr,q2_uid,q2_pc,q2_instr,i0_uid,i0_pc,i0_instr,i1_uid,i1_pc,i1_instr,i2_uid,i2_pc,i2_instr,c0_uid,c0_pc,c0_instr,c1_uid,c1_pc,c1_instr,c2_uid,c2_pc,c2_instr,r0_uid,r0_pc,r0_instr,r1_uid,r1_pc,r1_instr,r2_uid,r2_pc,r2_instr");
-            $display("TRACE pipeline=%0s", pipeline_trace_path);
+                $display("TRACE pipeline=%0s", pipeline_trace_path);
+            end else begin
+                $display("TRACE pipeline=disabled");
+            end
             $readmemh(memh_path, u_axi_fabric.ram_q, 0,
                       external_memh_words - 1);
         end else if (opensbi_image) begin
@@ -2494,6 +2548,18 @@ module tb_top_axi_3p #(
                      axi_mmio_reads, axi_ram_writes, axi_mmio_writes);
             $display("PERF_CCX fetch_reads=%0d data_reads=%0d data_writes=%0d",
                      ccx_fetch_reads, ccx_data_reads, ccx_data_writes);
+            $display("PERF_L1D_PREFETCH enabled=%0d adaptive=%0d max_stride_lines=%0d initial_depth=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d late=%0d dropped=%0d useless=%0d",
+                     L1D_PREFETCH_ENABLE,
+                     L1D_PREFETCH_ADAPTIVE_ENABLE,
+                     L1D_PREFETCH_MAX_STRIDE_LINES,
+                     L1D_PREFETCH_DISTANCE,
+                     L1D_PREFETCH_MAX_DISTANCE,
+                     l1d_prefetch_max_depth,
+                     L1D_PREFETCH_OUTSTANDING,
+                     L1D_PREFETCH_DEMAND_RESERVE,
+                     l1d_prefetch_issued, l1d_prefetch_useful,
+                     l1d_prefetch_late, l1d_prefetch_dropped,
+                     l1d_prefetch_useless);
             $display("PERF_BP allocations=%0d taken_predictions=%0d resolutions=%0d corrections=%0d update_overflow=%0d",
                      bp_allocations, bp_taken_predictions,
                      bp_resolutions, bp_corrections,

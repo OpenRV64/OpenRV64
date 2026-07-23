@@ -59,7 +59,10 @@
 `define OPENRV64_CCX_KIND_LEGACY    2'd0
 `define OPENRV64_CCX_KIND_FETCH     2'd1
 `define OPENRV64_CCX_KIND_DATA      2'd2
-`define OPENRV64_CCX_KIND_PTW       2'd3
+`define OPENRV64_CCX_KIND_PTE       2'd3
+// Compatibility spelling for users which identify the requester rather than
+// the memory object.  New requests use KIND_PTE.
+`define OPENRV64_CCX_KIND_PTW       `OPENRV64_CCX_KIND_PTE
 
 `define OPENRV64_CCX_ATTR_NONE       4'b0000
 `define OPENRV64_CCX_ATTR_CACHEABLE  4'b0001

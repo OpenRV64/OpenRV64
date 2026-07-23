@@ -26,18 +26,23 @@ module tb_exec_bp;
     logic [191:0] train_pc;
 
     logic stall_prediction;
+    logic stall_weak;
     logic stall_fetch;
     logic stall_decode;
     logic always_branch_prediction;
+    logic always_branch_weak;
     logic always_branch_fetch;
     logic always_branch_decode;
     logic always_decline_prediction;
+    logic always_decline_weak;
     logic always_decline_fetch;
     logic always_decline_decode;
     logic repeat_last_prediction;
+    logic repeat_last_weak;
     logic repeat_last_fetch;
     logic repeat_last_decode;
     logic btfnt_prediction;
+    logic btfnt_weak;
     logic btfnt_fetch;
     logic btfnt_decode;
     logic btfnt_target_valid;
@@ -53,6 +58,7 @@ module tb_exec_bp;
     logic ras4_target_valid;
     logic [63:0] ras4_target;
     logic bimodal_prediction;
+    logic bimodal_weak;
     logic bimodal_fetch;
     logic bimodal_decode;
 
@@ -82,6 +88,7 @@ module tb_exec_bp;
         .train_valid_i(train_valid), .train_branch_i(train_branch),
         .train_taken_i(train_taken), .train_pc_i(train_pc),
         .prediction_taken_o(stall_prediction),
+        .prediction_weak_o(stall_weak),
         .fetch_stall_o(stall_fetch),
         .decode_stall_o(stall_decode)
     );
@@ -112,6 +119,7 @@ module tb_exec_bp;
         .train_valid_i(train_valid), .train_branch_i(train_branch),
         .train_taken_i(train_taken), .train_pc_i(train_pc),
         .prediction_taken_o(always_branch_prediction),
+        .prediction_weak_o(always_branch_weak),
         .fetch_stall_o(always_branch_fetch),
         .decode_stall_o(always_branch_decode)
     );
@@ -142,6 +150,7 @@ module tb_exec_bp;
         .train_valid_i(train_valid), .train_branch_i(train_branch),
         .train_taken_i(train_taken), .train_pc_i(train_pc),
         .prediction_taken_o(always_decline_prediction),
+        .prediction_weak_o(always_decline_weak),
         .fetch_stall_o(always_decline_fetch),
         .decode_stall_o(always_decline_decode)
     );
@@ -172,6 +181,7 @@ module tb_exec_bp;
         .train_valid_i(train_valid), .train_branch_i(train_branch),
         .train_taken_i(train_taken), .train_pc_i(train_pc),
         .prediction_taken_o(repeat_last_prediction),
+        .prediction_weak_o(repeat_last_weak),
         .fetch_stall_o(repeat_last_fetch),
         .decode_stall_o(repeat_last_decode)
     );
@@ -202,6 +212,7 @@ module tb_exec_bp;
         .train_valid_i(train_valid), .train_branch_i(train_branch),
         .train_taken_i(train_taken), .train_pc_i(train_pc),
         .prediction_taken_o(btfnt_prediction),
+        .prediction_weak_o(btfnt_weak),
         .prediction_target_valid_o(btfnt_target_valid),
         .prediction_target_o(btfnt_target),
         .target_mispredict_o(btfnt_target_mispredict),
@@ -290,6 +301,7 @@ module tb_exec_bp;
         .train_valid_i(train_valid), .train_branch_i(train_branch),
         .train_taken_i(train_taken), .train_pc_i(train_pc),
         .prediction_taken_o(bimodal_prediction),
+        .prediction_weak_o(bimodal_weak),
         .prediction_target_valid_o(), .prediction_target_o(),
         .target_mispredict_o(), .fetch_stall_o(bimodal_fetch),
         .decode_stall_o(bimodal_decode)
@@ -382,6 +394,9 @@ module tb_exec_bp;
         lookup_branch = 1'b1;
         check_outputs(3'b010, 3'b100, 3'b000, 3'b000, 3'b000,
                       "initial conditional prediction");
+        if ({stall_weak, always_branch_weak, always_decline_weak,
+             repeat_last_weak, btfnt_weak, bimodal_weak} !== 6'b011111)
+            $fatal(1, "cold/static confidence classification mismatch");
 
         lookup_backward = 1'b1;
         check_outputs(3'b010, 3'b100, 3'b000, 3'b000, 3'b100,
@@ -422,6 +437,9 @@ module tb_exec_bp;
         lookup_jump = 1'b1;
         check_outputs(3'b010, 3'b100, 3'b100, 3'b100, 3'b100,
                       "direct jumps are known taken");
+        if (stall_weak || always_branch_weak || always_decline_weak ||
+            repeat_last_weak || btfnt_weak || bimodal_weak)
+            $fatal(1, "direct jump incorrectly reported weak direction");
 
         lookup_indirect = 1'b1;
         check_outputs(3'b010, 3'b010, 3'b010, 3'b010, 3'b010,
@@ -517,7 +535,8 @@ module tb_exec_bp;
         lookup_pc = 64'h80;
         lookup_backward = 1'b0;
         #1;
-        if (bimodal_prediction || bimodal_fetch || bimodal_decode)
+        if (bimodal_prediction || bimodal_fetch || bimodal_decode ||
+            !bimodal_weak)
             $fatal(1, "bimodal cold forward branch did not use BTFNT");
         lookup_pc = 64'h100;
         lookup_backward = 1'b1;
@@ -540,7 +559,7 @@ module tb_exec_bp;
         lookup_backward = 1'b0;
         lookup_pc = 64'h80;
         #1;
-        if (!bimodal_prediction)
+        if (!bimodal_prediction || !bimodal_weak)
             $fatal(1, "bimodal failed to learn lane 0 taken");
         lookup_pc = 64'h84;
         #1;
@@ -565,6 +584,13 @@ module tb_exec_bp;
         end
         repeat (2) @(posedge clk);
         @(negedge clk);
+        lookup_valid = 1'b1;
+        lookup_branch = 1'b1;
+        lookup_pc = 64'h80;
+        #1;
+        if (!bimodal_prediction || bimodal_weak)
+            $fatal(1, "saturated bimodal entry did not report strong taken");
+        clear_lookup();
         train_valid = 3'b111;
         train_branch = 3'b111;
         train_taken = 3'b000;
@@ -578,7 +604,7 @@ module tb_exec_bp;
         lookup_branch = 1'b1;
         lookup_pc = 64'h80;
         #1;
-        if (!bimodal_prediction)
+        if (!bimodal_prediction || !bimodal_weak)
             $fatal(1, "three-bit counter flipped before fourth miss");
 
         clear_lookup();
@@ -595,7 +621,7 @@ module tb_exec_bp;
         lookup_branch = 1'b1;
         lookup_pc = 64'h80;
         #1;
-        if (bimodal_prediction)
+        if (bimodal_prediction || !bimodal_weak)
             $fatal(1, "three-bit counter failed to flip on fourth miss");
         if (u_bimodal.g_bimodal.u_policy.update_overflow_o)
             $fatal(1, "bimodal update FIFO overflowed in directed test");

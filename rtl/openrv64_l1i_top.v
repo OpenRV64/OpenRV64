@@ -13,7 +13,7 @@
 module openrv64_l1i_top #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
-    parameter integer CACHE_BYTES = 8 * 1024,
+    parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer WAYS = 4,
     parameter integer PREFETCH_SLOTS = 8,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =

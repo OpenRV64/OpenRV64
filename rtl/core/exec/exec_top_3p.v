@@ -7,19 +7,20 @@
 
 // Three fixed-capability execution lanes:
 //
-//   lane 0 / EX0: base ALU, branch/jump, system/CSR, traps and fences
-//   lane 1 / EX1: base ALU and RV64M
+//   lane 0 / EX0: base ALU and RV64M
+//   lane 1 / EX1: base ALU, branch/jump, system/CSR, traps and fences
 //   lane 2 / MEM: loads, stores and RV64A
 //
 // The issue payload already contains captured operand values.  Each lane has
 // an independent held completion port, so M and memory latency do not block
-// EX0.  Valid aligned conditional branches resolve as soon as their operands
-// are ready.  They still complete into the in-order retirement queue, and the
-// dispatch normally prevents younger issue beside a resolving branch.  The
+// the other ALU lane.  Valid aligned conditional branches resolve as soon as
+// their operands are ready.  They still complete into the in-order retirement
+// queue, and dispatch normally prevents younger issue beside a resolving
+// branch.  The
 // strict path may waive that barrier for BEQ/BNE only after its own operand
 // comparison proves the prediction correct, so a redirect still never has
 // issued younger work to squash.  ordered_head_* continues to authorize every
-// other hard-ordered EX0 instruction and is also matched inside MEM before any
+// other hard-ordered EX1 instruction and is also matched inside MEM before any
 // store or atomic side effect is emitted.  A legal aligned direct JAL is also
 // safe before the head: its target is deterministic and its link write is
 // buffered until retirement.
@@ -111,9 +112,6 @@ module openrv64_exec_top_3p #(
         issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14];
     wire ex0_jump =
         issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 13];
-    wire [`RV64_BR_OP_WIDTH-1:0] ex0_br_op =
-        issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 18 +:
-                        `RV64_BR_OP_WIDTH];
     wire ex0_system =
         issue_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 10];
     wire ex0_fence =
@@ -173,60 +171,63 @@ module openrv64_exec_top_3p #(
     wire mem_illegal =
         issue_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 8];
 
-    wire ex0_base = (ex0_alu_ext == `RV64_ALU_EXT_BASE) &&
-                    (ex0_alu_op != `RV64_ALU_OP_INVALID);
+    wire ex0_alu = ((ex0_alu_ext == `RV64_ALU_EXT_BASE) ||
+                    ((ex0_alu_ext == `RV64_ALU_EXT_M) && ENABLE_RV64M)) &&
+                   (ex0_alu_op != `RV64_ALU_OP_INVALID);
     wire ex0_control = ex0_branch || ex0_jump || ex0_system || ex0_fence ||
                        ex0_illegal || ex0_ebreak || ex0_ecall ||
                        ex0_instr_access_fault || ex0_instr_page_fault;
-    wire ex0_supported = !ex0_mem_read && !ex0_mem_write &&
-                         (ex0_base || ex0_control);
+    wire ex0_supported = ex0_alu && !ex0_mem_read && !ex0_mem_write &&
+                         !ex0_control;
+
+    wire ex1_base = (ex1_alu_ext == `RV64_ALU_EXT_BASE) &&
+                    (ex1_alu_op != `RV64_ALU_OP_INVALID);
+    wire ex1_control = ex1_branch || ex1_jump || ex1_system || ex1_fence ||
+                       ex1_illegal || ex1_ebreak || ex1_ecall ||
+                       ex1_instr_access_fault || ex1_instr_page_fault;
+    wire ex1_supported = !ex1_mem_read && !ex1_mem_write &&
+                         (ex1_base || ex1_control);
     // A direct conditional branch with an aligned target cannot create an
     // architectural side effect or synchronous exception at issue.  Resolve
     // it before retirement so the predictor can be corrected immediately.
     // Payload bit 41 is imm[1]; with 32-bit instruction alignment, zero proves
     // the direct target is aligned.  Faulting/illegal packets remain ordered.
-    wire ex0_early_branch = ex0_branch && !ex0_illegal &&
-                            !ex0_instr_access_fault &&
-                            !ex0_instr_page_fault &&
+    wire ex1_early_branch = ex1_branch && !ex1_illegal &&
+                            !ex1_instr_access_fault &&
+                            !ex1_instr_page_fault &&
                             !issue_payload_i[
-                                0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
-    wire ex0_early_jal = ex0_jump &&
-                         (ex0_br_op == `RV64_BR_OP_JAL) &&
-                         !ex0_illegal && !ex0_instr_access_fault &&
-                         !ex0_instr_page_fault &&
+                                1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
+    wire [`RV64_BR_OP_WIDTH-1:0] ex1_br_op =
+        issue_payload_i[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 18 +:
+                        `RV64_BR_OP_WIDTH];
+    wire ex1_early_jal = ex1_jump &&
+                         (ex1_br_op == `RV64_BR_OP_JAL) &&
+                         !ex1_illegal && !ex1_instr_access_fault &&
+                         !ex1_instr_page_fault &&
                          !issue_payload_i[
-                             0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
-    wire ex0_requires_order = ex0_control && !ex0_early_branch &&
-                              !ex0_early_jal;
-    wire ex0_order_match = ordered_head_valid_i &&
-        (ordered_head_id_i == issue_id_i[0*64 +: 64]) &&
+                             1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
+    wire ex1_requires_order = ex1_control && !ex1_early_branch &&
+                              !ex1_early_jal;
+    wire ex1_order_match = ordered_head_valid_i &&
+        (ordered_head_id_i == issue_id_i[1*64 +: 64]) &&
         (ordered_head_slot_i ==
-         issue_slot_i[0*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH]);
-    wire ex0_order_ready = !ex0_requires_order || ex0_order_match;
-
-    wire ex1_alu = ((ex1_alu_ext == `RV64_ALU_EXT_BASE) ||
-                    ((ex1_alu_ext == `RV64_ALU_EXT_M) && ENABLE_RV64M)) &&
-                   (ex1_alu_op != `RV64_ALU_OP_INVALID);
-    wire ex1_control = ex1_branch || ex1_jump || ex1_system || ex1_fence ||
-                       ex1_illegal || ex1_ebreak || ex1_ecall ||
-                       ex1_instr_access_fault || ex1_instr_page_fault;
-    wire ex1_supported = ex1_alu && !ex1_mem_read && !ex1_mem_write &&
-                         !ex1_control;
+         issue_slot_i[1*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH]);
+    wire ex1_order_ready = !ex1_requires_order || ex1_order_match;
     wire mem_supported = (mem_mem_read || mem_mem_write) &&
                          !mem_branch && !mem_jump && !mem_system &&
                          !mem_fence && !mem_illegal;
 
-    wire ex0_issue_valid = issue_valid_i[0] && ex0_supported &&
-                           ex0_order_ready;
-    wire ex1_issue_valid = issue_valid_i[1] && ex1_supported;
+    wire ex0_issue_valid = issue_valid_i[0] && ex0_supported;
+    wire ex1_issue_valid = issue_valid_i[1] && ex1_supported &&
+                           ex1_order_ready;
     wire mem_issue_valid = issue_valid_i[2] && mem_supported;
     wire ex0_issue_ready;
     wire ex1_issue_ready;
     wire mem_issue_ready;
 
-    assign issue_ready_o[0] = ex0_issue_ready && ex0_supported &&
-                              ex0_order_ready;
-    assign issue_ready_o[1] = ex1_issue_ready && ex1_supported;
+    assign issue_ready_o[0] = ex0_issue_ready && ex0_supported;
+    assign issue_ready_o[1] = ex1_issue_ready && ex1_supported &&
+                              ex1_order_ready;
     assign issue_ready_o[2] = mem_issue_ready && mem_supported;
     assign issue_unsupported_o = {
         issue_valid_i[2] && !mem_supported,
@@ -236,6 +237,7 @@ module openrv64_exec_top_3p #(
 
     openrv64_exec_pipe_ex0 #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING)
     ) u_ex0 (
         .clk(clk),
@@ -256,25 +258,11 @@ module openrv64_exec_top_3p #(
                                         RETIRE_SLOT_WIDTH]),
         .complete_payload_o(complete_payload_o[
             0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH]),
-        .csr_addr_o(csr_addr_o),
-        .csr_rdata_i(csr_rdata_i),
-        .csr_valid_i(csr_valid_i),
-        .csr_writable_i(csr_writable_i),
-        .branch_resolved_o(branch_resolved_o),
-        .branch_conditional_o(branch_conditional_o),
-        .branch_taken_o(branch_taken_o),
-        .branch_pc_o(branch_pc_o),
-        .branch_instr_o(branch_instr_o),
-        .redirect_valid_o(redirect_valid_o),
-        .redirect_id_o(redirect_id_o),
-        .redirect_slot_o(redirect_slot_o),
-        .redirect_target_o(redirect_target_o)
+            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH])
     );
 
     openrv64_exec_pipe_ex1 #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING)
     ) u_ex1 (
         .clk(clk),
@@ -295,7 +283,20 @@ module openrv64_exec_top_3p #(
                                         RETIRE_SLOT_WIDTH]),
         .complete_payload_o(complete_payload_o[
             1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH])
+            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH]),
+        .csr_addr_o(csr_addr_o),
+        .csr_rdata_i(csr_rdata_i),
+        .csr_valid_i(csr_valid_i),
+        .csr_writable_i(csr_writable_i),
+        .branch_resolved_o(branch_resolved_o),
+        .branch_conditional_o(branch_conditional_o),
+        .branch_taken_o(branch_taken_o),
+        .branch_pc_o(branch_pc_o),
+        .branch_instr_o(branch_instr_o),
+        .redirect_valid_o(redirect_valid_o),
+        .redirect_id_o(redirect_id_o),
+        .redirect_slot_o(redirect_slot_o),
+        .redirect_target_o(redirect_target_o)
     );
 
     openrv64_exec_pipe_mem #(

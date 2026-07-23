@@ -1038,7 +1038,7 @@ module openrv64_backend_3p #(
         .clk(clk), .rst_n(rst_n),
         // Selective speculation recovery leaves already-issued operations in
         // flight.  Their monotonic IDs cannot match reallocated retirement
-        // entries, while the resolving EX0 branch must still publish its own
+        // entries, while the resolving EX1 branch must still publish its own
         // completion on the following cycle.
         .flush_3p_i(flush_i ||
                     ((ENABLE_ISSUE_WINDOW != 0) &&
@@ -1257,7 +1257,7 @@ module openrv64_backend_3p #(
     always @(posedge clk) begin
         if (rst_n && !flush_i && free_branch_resolved &&
             exec_branch_resolved)
-            $fatal(1, "free and EX0 branch resolutions collided");
+            $fatal(1, "free and EX1 branch resolutions collided");
     end
 `endif
 

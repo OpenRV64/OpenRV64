@@ -67,7 +67,9 @@ Other current restrictions are:
   per-line MSHRs permit multiple outstanding misses, same-line request merging,
   and resident hits while unrelated fills are outstanding.  The default
   configuration has eight MSHRs, eight waiters per MSHR, sixteen command
-  entries, and sixteen response entries.
+  entries, and sixteen response entries. PTE-visible cache lines additionally
+  carry an eight-bit generation. A `FENCE` request with `kind=PTE` advances the
+  current generation after draining older L2 work.
 - The L2-to-bus-abstraction boundary is also fixed at 512 bits.  A fill,
   writeback, or uncached bypass is one size-6 neutral-bus request; width
   conversion happens below that boundary in `genbus_interface`.  For example,
@@ -391,9 +393,29 @@ be globally serialized.
 
 ## PTW and TLB integration
 
-PTW memory requests must use the coherent physical path and carry `kind=PTW`
-or an equivalent source identity.  PTW reads normally do not allocate a
-private-cache line.
+The PTW is a native coherent client with `source=PTW` and `kind=PTE`; there is
+no scalar-memory or AXI backend on the walker. It PMP-checks the original
+8-byte PTE access, then directly emits one aligned 512-bit CCX line read with
+the `CACHEABLE|IDEMPOTENT` attributes. It retains `pte_addr[5:3]` and selects
+that 64-bit lane from the returned line. A PTW request therefore allocates in
+L2 but never allocates a private L1 line or becomes a private-cache sharer.
+
+Both the generic 1P core and native 3P core expose this PTW CCX client. The
+residual AXI read path in the 3P core is only for structural cacheless
+instruction fetch.
+
+`SFENCE.VMA` also makes the PTW issue `FENCE + kind=PTE` on CCX. The walker
+terminates any active walk, drains an already accepted PTE response, and blocks
+new walks until the fence response returns. At L2, a PTE lookup may hit only a
+line carrying the current eight-bit PTE generation. Advancing the generation
+therefore invalidates stale PTE observations without scanning every L2 set.
+A stale matching dirty line is selected as the victim, written back, and
+refilled before the PTE read completes.
+
+The generation deliberately wraps after 256 shootdowns. A surviving line from
+an entire generation wrap can become falsely current; this is accepted for the
+first implementation and must be replaced by a wider generation or a physical
+flush before shootdown-storm workloads are supported.
 
 This matters even though the page walker is logically inside a hart: a PTE may
 have been written through another hart's data cache.  A future write-back D$
@@ -403,6 +425,34 @@ cache, requiring normal coherent intervention.
 The present PTW uses Svade-style fault-on-clear Accessed and Dirty bits.
 Hardware A/D-bit updates, if added, must be atomic coherent read-modify-write
 operations at the same home agent as RV64A atomics.
+
+The walker is still blocking, but now contains a demand-filled non-leaf PTE
+cache.  The default is 64 entries arranged as 16 four-way sets.  Each entry
+holds a 53-bit physical PTE tag, the 64-bit PTE, its tree level, valid state,
+and per-set recency.  This is 7,808 state bits (976 bytes) before control
+registers.  `PTW_PTE_CACHE_ENTRIES` is propagated through the core and top
+wrappers; zero disables the cache.  Nonzero configurations use four ways and
+must provide a power-of-two number of sets.
+
+The current generic RTL maps these shallow associative arrays to flops and
+multiplexers under Yosys; it does not infer an SRAM.  Treat 976 bytes as the
+logical state budget, not the current physical area.  A physical
+implementation should replace each way with an explicit synchronous
+register-file or SRAM wrapper and pipeline the lookup as required by timing.
+
+Only a valid non-leaf PTE actually consumed by a walk is installed.  Hits
+bypass CCX for that tree level.  Replacement first selects an invalid way,
+then prefers to evict a lower-level non-leaf PTE, and finally selects the
+oldest hit/fill within that level.  Thus root-level entries receive explicit
+retention weight.  Misses remain ordinary `source=PTW`, `kind=PTE` L2
+requests; this cache stores individual PTEs rather than duplicating L2 lines.
+
+`SFENCE.VMA` clears every non-leaf PTE-cache valid bit and terminates an
+overlapping walk.  An already-issued physical PTE transaction may be drained,
+but its value is not consumed, no later level is requested, and the aborted
+walk cannot refill either the PTE cache or a TLB.  PTW fetch-ahead remains
+unimplemented.  `kind=PTE` identifies the L2 object class; `source=PTW`
+independently identifies the response destination.
 
 `SFENCE.VMA` invalidates the local TLB and prevents an overlapping stale walk
 from refilling it.  Remote TLB shootdown is not an L2 probe operation; software

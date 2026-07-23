@@ -6,10 +6,11 @@ while `resp_valid_o` returns the ordered result under independent response
 backpressure.  It accepts separate lookup and physical addresses: tying them
 together gives PIPT operation, while L1I uses virtual page-offset bits for its
 set/beat and the translated address for its tag and refill.  The L1I wrappers
-default to four ways, 8 KiB, and 64-byte lines; the shared cache and L1D retain
-their eight-way module defaults.  The integrated CCX core uses four ways for
-both L1I and L1D.  `CACHE_BYTES` accepts power-of-two capacities from 1 KiB
-through 32 KiB.
+default to four ways, 16 KiB, and 64-byte lines; the shared cache and L1D retain
+their eight-way module defaults.  The integrated CCX core uses 16 KiB and four
+ways for both L1I and L1D.  `L1I_CACHE_BYTES` and `L1D_CACHE_BYTES` expose
+those capacities at the core and production top levels.  `CACHE_BYTES`
+accepts power-of-two capacities from 1 KiB through 32 KiB.
 
 ## Policy
 
@@ -37,10 +38,10 @@ represented as Modified cache lines.
 Each way's data store is one synchronous, full-width, one-read/one-write
 inferred RAM.  Store byte enables are merged with the registered resident word
 before the full-width write, so synthesis does not split a way into eight
-byte-wide memories.  The integrated 8 KiB caches therefore infer:
+byte-wide memories.  The integrated 16 KiB caches therefore infer:
 
-- L1I: four 32x512-bit RAMs;
-- L1D: four 256x64-bit RAMs.
+- L1I: four 64x512-bit RAMs;
+- L1D: four 512x64-bit RAMs.
 
 The RAM contents are deliberately not reset; validity metadata suppresses
 uninitialized data.  Tags, validity, replacement, aging, and reserved
@@ -49,7 +50,7 @@ parallel tag lookup and bulk invalidation contract does not fit a simple
 synchronous SRAM without another lookup stage.
 
 The Sky130 resource flow preserves these eight data arrays as `$mem_v2` cells
-and reports their 131,072-bit capacity separately.  This repository has no
+and reports their 262,144-bit capacity separately.  This repository has no
 SRAM Liberty/LEF macro library, so their physical area and timing remain
 unknown until a macro generator/library and Yosys memory mapping are selected.
 Expanding them into flip-flops is not a valid cache-area estimate.
@@ -115,7 +116,7 @@ AXI top-level path for a direct, single-request cacheless fetch path.
 virtual and translated physical demand addresses, exposes the private
 speculative translation service, and presents the read-only native CCX command
 and response channels.  The standalone top and testbench parameterize cache
-capacity, associativity, and speculative slot count; their defaults are 8 KiB,
+capacity, associativity, and speculative slot count; their defaults are 16 KiB,
 four ways, and eight slots.  Override them with `L1I_TOP_CACHE_BYTES`,
 `L1I_TOP_WAYS`, and `L1I_TOP_PREFETCH_SLOTS` on `make sim-l1i-top`.  The target
 builds the current CoreMark-derived binary as 512-bit lines and replays a
@@ -145,6 +146,41 @@ as one aligned CCX write with `size=6` and `burst_len=0`.  The independent
 core bus retains the original LSU tags in a matching FIFO, so a store may retire
 at request admission without losing a later asynchronous access fault.
 
+The L1D endpoint also contains a deliberately small address-stream prefetcher.
+It trains on accepted cacheable, unlocked loads after aligning them to
+64-byte lines.  The first observation predicts the next line.  Two matching
+nonzero deltas establish a global signed stride.  `PREFETCH_DISTANCE` is the
+initial contiguous read-ahead depth; it does not select one farther line and
+leave holes.  Demand catching a queued or outstanding prefetch doubles the
+depth, bounded by `PREFETCH_MAX_DISTANCE`.  Two unused speculative
+replacements halve it.  `PREFETCH_MAX_STRIDE_LINES` limits eligible deltas and
+defaults to 64 lines (4096 bytes).
+`PREFETCH_ENABLE=0` removes prefetch issue while retaining the same demand
+path.
+
+There is no PC input, table, or LSU predictor state.  The default four-entry
+candidate window feeds four prefetch MSHRs.  Prefetch transaction IDs occupy
+the upper half of the four-bit L1D ID space, so their responses may return out
+of order while the blocking architectural demand/store backend uses the lower
+half.  A completed speculative line resides in the existing fill buffers until
+demanded; it does not install in the L1 tag or data arrays, so unused prefetches
+cannot evict resident cache lines.  `PREFETCH_DEMAND_RESERVE` entries cannot be
+consumed by speculative responses.  Demand traffic may use those entries or
+replace an unused speculative line.
+
+Demand misses take priority.  A speculative read may pass queued posted stores
+only when no buffered store aliases its line.  An aliasing store, invalidation,
+or lock transition cancels or discards queued and outstanding speculative
+copies.
+
+`prefetch_issued_o`, `prefetch_useful_o`, `prefetch_late_o`, and
+`prefetch_dropped_o` are one-cycle event outputs for testbench counters.
+`useful` means a completed speculative line supplied a later demand; `late`
+means demand reached a queued or outstanding speculative request; `dropped`
+means the candidate window was full.  `prefetch_useless_o` reports replacement
+of an unused speculative fill, and `prefetch_depth_o` exposes the current
+adaptive depth.  They are observability signals, not architectural counters.
+
 The command and write-data channels remain independently backpressured and are
 correlated by hart, source, and transaction IDs.  A later blocking read cannot
 pass queued stores at the L1D backend, and external invalidation is not
@@ -155,11 +191,10 @@ with software responsible for an explicit pre-barrier.  A device write does
 not implicitly perform that pre-drain.  A future CSR may request automatic
 pre-barrier behavior.
 
-The fill capacities do not yet imply eight simultaneous CCX misses.  The
+The fill capacities do not imply eight simultaneous architectural misses.  The
 shared cache controller and each CCX demand backend still allow one active
-demand miss; L1I can queue fill candidates and L1D can retain completed line
-data while the 64-bit refill engine consumes it.  Multiple-miss issue needs
-MSHRs and a transaction-ID-indexed response path.
+demand miss.  L1D separately supports `PREFETCH_OUTSTANDING` speculative MSHRs
+with transaction-ID-indexed response matching; the default is four.
 
 `L1I_FILL_BUFFER_LINES`, `L1D_FILL_BUFFER_LINES`, and
 `L1D_STORE_BUFFER_LINES` are propagated through the AXI core-bus, three-pipe
@@ -190,5 +225,5 @@ store-buffer capacity may wait behind the active CCX operation.  L1I may retain
 up to the configured number of untranslated, translated, or aging jobs behind
 its port.  It adds no probes or coherence behavior.  Scalar LSU traffic never
 uses AXI;
-AXI remains only for page-table walks and the `ENABLE_L1I=0` cacheless-fetch
-path.
+AXI remains only for the `ENABLE_L1I=0` cacheless-fetch path. Page-table walks
+use native CCX and identify their memory object with `kind=PTE`.

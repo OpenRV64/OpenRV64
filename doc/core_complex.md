@@ -1,18 +1,19 @@
 # OpenRV64 core complex and shared L2
 
-`openrv64_core_complex_nh` is the generated 1-16-hart complex.  It straps
-each legacy hart endpoint to `HART_ID_BASE + hart_index`, round-robin
-arbitrates requests onto CCX, and terminates them in a shared L2.
+`openrv64_core_complex_nh` is the generated 1-16-hart complex. It accepts one
+native 512-bit CCX port per hart, validates and straps each port to
+`HART_ID_BASE + hart_index`, round-robin arbitrates requests, and terminates
+them in a shared L2.
 `genbus_interface` then converts the L2 producer width to the independently
 selected AXI4 or WISHBONE Revision B.4 width and protocol.
 
 ```text
-hart 0 -- legacy adapter --+
-hart 1 -- legacy adapter --+-- CCX crossbar -- shared L2 -- genbus_interface
-...                        |                                      |
-hart N -- legacy adapter --+                         +------------+-----------+
-                                                       |                      |
-                                                  AXI4 master        WISHBONE B.4 master
+hart 0 -- native CCX --+
+hart 1 -- native CCX --+-- line crossbar -- shared L2 -- genbus_interface
+...                    |                                      |
+hart N -- native CCX --+                         +------------+-----------+
+                                                   |                      |
+                                              AXI4 master        WISHBONE B.4 master
 ```
 
 The older `openrv64_ccx_protocol_wrapper_{1h,2h,4h}` modules remain cacheless
@@ -37,13 +38,10 @@ workload measurements would be guesswork.  The parameter remains exposed so
 four-way and eight-way implementations can be compared with miss-rate and
 timing data.
 
-The behavioral controller accepts one active line miss.  While that line is
-being written back or refilled, up to `L2_MERGE_ENTRIES` requests for the same
-line may join it.  They replay in CCX acceptance order after refill, including
-writes, so read-after-write, write-after-read, and write-after-write cases on
-the line retain one explicit order.  Requests for other lines wait.  This is
-same-line miss merging; it is not a banked hit-under-miss cache or a general
-multi-MSHR implementation.
+The native controller has parameterized command and response queues plus
+multiple per-line MSHRs. Requests may hit under unrelated misses, and requests
+to an outstanding miss line merge into its waiter queue. The default is eight
+MSHRs with eight waiters each.
 
 Cacheable hits do not reach the external bus.  Stores update byte-selected L2
 data and mark the line dirty.  Dirty replacement writes a whole line before
@@ -52,31 +50,22 @@ request; a refill failure leaves the destination invalid and likewise fails
 the merged requests.  Device or non-cacheable requests bypass allocation but
 remain ordered through the same controller.
 
-`FENCE` currently completes only after reaching an otherwise idle controller,
-which drains all older traffic in this globally serialized implementation.
-LR, SC, and AMO encodings fail explicitly.  They are not degraded into plain
-reads and writes.
+`FENCE` completes only after older MSHRs, bus transactions, hits, and responses
+have drained. `FENCE + kind=PTE` also advances an eight-bit PTE generation.
+PTE reads reject matching lines from older generations, selecting a stale
+matching dirty line for writeback before refill. Generation wrap after 256
+shootdowns is a known first-implementation risk.
 
-The data store has one registered 256-bit read port and one byte-enabled
-256-bit write port. `L2_BUS_DATA_WIDTH` controls the L2 producer beat and
-defaults to that same 256-bit width. Extra controller states serialize SRAM
-reads before hits, replay, and writeback. This is a credible macro boundary
-rather than an asynchronous 256 KiB mux. The tag/status arrays remain
-behavioral and still need banking or explicit macros before physical
-implementation; inference alone is not a frequency or area result.
+The data and tag store is split into one synchronous, full-line SRAM-inference
+boundary per way. Fill, merged-store replay, and resident-store writes share
+each way's write port with fixed priority. The PTE generation is packed into
+the inferred tag SRAM; valid, dirty, reservation, and replacement state remain
+separate metadata.
 
-The native northbound CCX interface is independently fixed at 512 bits, one
-64-byte cache line per accepted data beat. Native cache endpoints may request
-bursts of multiple consecutive cache lines; each line remains a separate
-512-bit beat and a separate home/coherence operation. The current RTL still has
-a 64-bit scalar compatibility CCX path, so the 512-bit native request, response,
-crossbar, and L2 termination are an integration requirement rather than a claim
-about the present implementation. The 256-bit internal SRAM port may remain
-two-cycle per line and does not determine the CCX width.
-
-`L2_LINE_BYTES` must be 64 when the native CCX endpoint is selected. Its current
-parameterization is retained for legacy-controller experiments; it is not a
-license for a native CCX beat to represent less or more than one cache line.
+The northbound CCX and southbound L2 producer interfaces are fixed at 512 bits,
+one 64-byte cache line per accepted data beat. Native cache endpoints may
+request bursts of consecutive cache lines; each line remains a separate beat
+and home operation. Width conversion occurs only below L2.
 
 ## Shared generic bus boundary
 
@@ -104,21 +93,11 @@ Untagged upstream responses are restored to request-acceptance order. AXI
 reads and writes may execute concurrently, but a younger request is not issued
 past an older opposite-direction request whose byte range overlaps.
 
-The current CCX/L2 instance explicitly drives the southbound genbus `burst=0`.
-This is independent of the native northbound CCX burst, whose unit is a
-cache line. A future native L2 expands a CCX burst into independently coherent
-line operations, satisfies any hits locally, and may describe runs of
-contiguous misses to genbus for external coalescing. The southbound adapter
-still splits at AXI limits and 4 KiB boundaries.
-
-In the core complex, `L2_BUS_DATA_WIDTH` selects the upstream producer width
-(32 through 256 bits) and `BUS_DATA_WIDTH` independently selects the external
-width. With the default 256-bit L2 producer, a 64-byte line takes 16, 8, 4, 2,
-or 2 downstream beats on 32-, 64-, 128-, 256-, or 512-bit AXI. Because CCX
-drives the coalescing count to zero, those are two AXI transactions: each
-256-bit L2 request becomes an 8-, 4-, 2-, 1-, or 1-beat transaction. The
-512-bit case remains two legal narrow transfers. Scalar bypasses split when
-necessary and use addressed byte lanes on wider buses.
+The current CCX/L2 instance explicitly drives southbound genbus `burst=0`.
+`BUS_DATA_WIDTH` independently selects the external width. One 512-bit L2
+request therefore becomes 16, 8, 4, 2, or 1 downstream beats on 32-, 64-, 128-,
+256-, or 512-bit AXI. The southbound adapter splits at AXI limits and 4 KiB
+boundaries.
 
 `BUS_TYPE` selects `OPENRV64_COMPLEX_BUS_AXI` or
 `OPENRV64_COMPLEX_BUS_WISHBONE` at elaboration. `BUS_DATA_WIDTH` accepts 32,
@@ -189,22 +168,17 @@ least these rules:
 4. LR/SC reservations and AMOs must occupy the same per-line order as ordinary
    requests.
 
-The compatibility hart adapter also applies one constant `DEFAULT_ATTR` to a
-whole port.  The core-complex default marks that port cacheable so the top is
-useful for a DRAM-only memory aperture.  Do not route MMIO through that default:
-an integrated core/L1 endpoint must supply per-request PMA/CCX attributes, or
-the MMIO path must bypass the cached port.
+The standalone scalar compatibility wrappers still apply one constant
+`DEFAULT_ATTR` to a whole legacy port. They are not used by this complex and
+must not be substituted for a native endpoint carrying per-request PMA/CCX
+attributes.
 
 ## Verification
 
 Focused targets are:
 
-- `make sim-ccx-l2` for fills, hits, writeback, bypass, refill errors, ordered
-  same-line merge, and response identity;
-- `make sim-ccx-l2-widths` for 32-, 128-, and 256-bit cache paths (the default
-  `sim-ccx-l2` target covers 64 bits);
-- `make sim-complex-bus-axi` and `make sim-complex-bus-wb` for transport
-  backpressure, independent AXI channels, WISHBONE retry, and bus errors;
+- `make sim-ccx-l2` for the native 512-bit L2, including fills, hits, dirty
+  stale-PTE writeback/refill, and PTE-generation shootdown;
 - `make sim-genbus-axi sim-genbus-wb` for independent read/write buffering,
   wide-request bursts, declared read coalescing, response order, read
   cut-through, and the serialized WISHBONE fallback; and

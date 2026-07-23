@@ -370,7 +370,7 @@ module tb_dispatch_3p;
         tick();
 
         // Accumulate a three-entry window and prove that the physical geometry
-        // can issue MEM, M, and hard EX0 together as one ordered prefix.
+        // can issue MEM, M, and hard EX1 together as one ordered prefix.
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -390,11 +390,11 @@ module tb_dispatch_3p;
         allocation_ready = 1'b1;
         #1;
         if (allocation_valid != 3'b111 || pipe_valid != 3'b111)
-            fail("MEM/M/EX0 candidates did not issue three-wide");
+            fail("MEM/M/EX1 candidates did not issue three-wide");
 
         // Equality-branch pairing is not the free-branch experiment: BEQ
-        // still claims EX0 and remains hard retirement metadata.  A matching
-        // prediction lets an independent ALU claim EX1 on the same edge.
+        // still claims EX1 and remains hard retirement metadata.  A matching
+        // prediction lets an independent ALU claim EX0 on the same edge.
         tick();
         flush = 1'b1;
         tick();
@@ -478,7 +478,7 @@ module tb_dispatch_3p;
         #1;
         if ((allocation_valid != 3'b011) || (pipe_valid != 3'b011))
             fail("MEM-to-branch forwarding did not release and pair BNE");
-        if (pipe_payload[0*IW + I_RS1_DATA +: 64] !=
+        if (pipe_payload[1*IW + I_RS1_DATA +: 64] !=
             64'hfeed_face_cafe_beef)
             fail("MEM-to-branch value did not reach branch comparator");
         tick();
@@ -517,7 +517,7 @@ module tb_dispatch_3p;
         if ((allocation_valid != 3'b000) || !raw_hazard[0])
             fail("branch-only bypass incorrectly released ALU consumer");
 
-        // The EX1 source does release a conditional branch and supplies the
+        // The EX0 source does release a conditional branch and supplies the
         // value used by its direction check.
         flush = 1'b1;
         tick();
@@ -538,14 +538,14 @@ module tb_dispatch_3p;
         p1 = alu_packet(64'd43, 5'd3, 5'd4, 5'd30);
         enqueue2(p0, p1, 2'b01, 2'b00);
         gpr_read_data[0*64 +: 64] = 64'hdead;
-        branch_completion_forward_valid = 3'b010;
-        completion_forward_rd_addr[1*5 +: 5] = 5'd29;
-        completion_forward_data[1*64 +: 64] = 64'd0;
+        branch_completion_forward_valid = 3'b001;
+        completion_forward_rd_addr[0*5 +: 5] = 5'd29;
+        completion_forward_data[0*64 +: 64] = 64'd0;
         #1;
         if ((allocation_valid != 3'b011) || (pipe_valid != 3'b011))
-            fail("EX1-to-branch forwarding did not release and pair BEQ");
-        if (pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'd0)
-            fail("EX1-to-branch value did not reach branch comparator");
+            fail("EX0-to-EX1 branch forwarding did not release and pair BEQ");
+        if (pipe_payload[1*IW + I_RS1_DATA +: 64] != 64'd0)
+            fail("EX0-to-EX1 branch value did not reach branch comparator");
 
         $display("PASS: queued 3p dispatch routing, hazards, branch forwarding, pairing, and ordering");
         $finish;

@@ -2,7 +2,7 @@
  * Fixed-access-count stride sweep.
  *
  * The working set is initialized before timing and then displaced from the
- * 8 KiB L1D by a 32 KiB eviction walk.  Every timed variant performs exactly
+ * 16 KiB L1D by a 32 KiB eviction walk.  Every timed variant performs exactly
  * STRIDE_ACCESSES loads; only the address delta and footprint change.
  */
 

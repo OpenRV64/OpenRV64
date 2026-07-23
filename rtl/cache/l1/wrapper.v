@@ -7,7 +7,7 @@ module openrv64_l1 #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
-    parameter integer CACHE_BYTES = 8 * 1024,
+    parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
     parameter integer WRITEBACK_TIMEOUT_CYCLES = 128,

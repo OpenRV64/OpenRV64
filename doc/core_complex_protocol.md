@@ -130,7 +130,8 @@ cache-line and multi-line burst contract.
 
 ## Shared-cache implementation
 
-`openrv64_core_complex_nh` retains these hart endpoints and CCX fields while
-inserting a shared L2 and an AXI/WISHBONE-independent external beat interface.
+`openrv64_core_complex_nh` does not retain these scalar endpoints. It accepts
+the native 512-bit CCX channels directly, inserts a shared L2, and presents an
+AXI/WISHBONE-independent external beat interface.
 See `doc/core_complex.md` for geometry, merge ordering, bus selection, and the
 remaining L1-coherence and atomic limitations.

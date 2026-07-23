@@ -56,8 +56,9 @@ three-wide fetcher and the native-CCX cache path.
 
 The 3P integration testbench is a separate artifact. It terminates 512-bit
 native CCX cache-line traffic against a 256-bit, 256 MiB RAM model, and routes
-non-RAM CCX accesses to the existing 64-bit SoC peripheral bus. Its residual
-AXI path services PTW traffic and explicit cacheless instruction fetch. The
+non-RAM CCX accesses to the existing 64-bit SoC peripheral bus. PTW requests
+use CCX with `kind=PTE`; residual AXI services only explicit cacheless
+instruction fetch. The
 fabric currently lives in
 `tb/tb_top_axi_3p.sv`; it is not yet the synthesizable `openrv64_platform`
 interconnect.
@@ -451,17 +452,15 @@ The 3P AXI interface has:
   write-response channels.
 
 Every current transfer is a single-beat INCR transaction with `AxLEN=0`.
-Instruction reads use a 32-byte transfer. Data accesses use their natural size
-and occupy the selected byte lanes of the 256-bit beat. The ID partition is:
+Cacheless instruction reads use a 32-byte transfer. IDs 0-3 identify its four
+instruction-line slots. IDs 4-7 are currently unused; L1D and PTW requests use
+native CCX rather than AXI.
 
 | AXI ID | Owner |
 | ---: | --- |
 | 0-3 | Instruction-line reads |
-| 4-6 | Tagged LSU operations |
-| 7 | Blocking translated/legacy data operation and page-table walker |
-
-There are no multi-beat bursts, cache refills, AXI exclusive accesses, or
-coherence transactions.
+There are no AXI data operations, multi-beat bursts, cache refills, exclusive
+accesses, or coherence transactions.
 
 ### SoC address map and test integration
 

@@ -9,7 +9,7 @@
 // Unlike openrv64_top, this module has no backend or bus selector at its
 // external boundary.  Elaboration always selects fetch_3w, the EX0/EX1/MEM
 // backend, and the AXI-configured core bus.  L1I/L1D traffic uses native CCX;
-// AXI remains available for PTW traffic and explicit cacheless-L1I mode.  The
+// AXI remains available only for explicit cacheless-L1I mode.  The
 // legacy blocking requester is tied off and is not part of this interface.
 module openrv64_top_3p #(
     parameter [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
@@ -32,16 +32,28 @@ module openrv64_top_3p #(
     parameter ENABLE_RV64A = 1,
     parameter ENABLE_L1I = 1,
     parameter ENABLE_L1D = 1,
+    parameter integer L1I_CACHE_BYTES = 16 * 1024,
+    parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter [63:0] L1D_CACHEABLE_BASE = `OPENRV64_SOC_MEMORY_BASE,
     parameter [63:0] L1D_CACHEABLE_SIZE = `OPENRV64_SOC_MEMORY_SIZE,
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_STORE_BUFFER_LINES = 8,
+    parameter integer L1D_PREFETCH_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_DISTANCE = 1,
+    parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
+    parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
+    parameter integer L1D_PREFETCH_OUTSTANDING = 4,
+    parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
-    parameter ENABLE_FETCH_ALT_LOOKASIDE = 0,
+    parameter ENABLE_FETCH_ALT_LOOKASIDE = 1,
+    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,
@@ -188,15 +200,31 @@ module openrv64_top_3p #(
         .ENABLE_RV64A(ENABLE_RV64A),
         .ENABLE_L1I(ENABLE_L1I),
         .ENABLE_L1D(ENABLE_L1D),
+        .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+        .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
         .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
         .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
         .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
+        .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+        .L1D_PREFETCH_MAX_STRIDE_LINES(
+            L1D_PREFETCH_MAX_STRIDE_LINES),
+        .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
+        .L1D_PREFETCH_ADAPTIVE_ENABLE(
+            L1D_PREFETCH_ADAPTIVE_ENABLE),
+        .L1D_PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),
+        .L1D_PREFETCH_QUEUE_LINES(L1D_PREFETCH_QUEUE_LINES),
+        .L1D_PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
+        .L1D_PREFETCH_DEMAND_RESERVE(
+            L1D_PREFETCH_DEMAND_RESERVE),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+        .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
         .HART_ID(HART_ID),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
         .ENABLE_FETCH_ALT_LOOKASIDE(ENABLE_FETCH_ALT_LOOKASIDE),
+        .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
+            ENABLE_FETCH_ALT_CONFIDENCE_GATE),
         .BP_TYPE(BP_TYPE),
         .BP_RAS_ENABLE(BP_RAS_ENABLE),
         .BP_RAS_DEPTH(BP_RAS_DEPTH),

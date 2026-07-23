@@ -3,6 +3,7 @@
 `include "core/isa/rv64-zicsr.v"
 `include "core/isa/rv64-priv.v"
 `include "core/except/except-defs.v"
+`include "complex/protocol/defs.v"
 
 module tb_ptw_context;
 
@@ -25,10 +26,27 @@ module tb_ptw_context;
     logic [63:0] memory [0:MEM_WORDS-1];
     logic mem_addr_in_range;
     logic saw_ptw_read;
+    logic saw_ptw_shootdown;
     logic saw_translated_fetch;
     logic saw_sfence;
     logic saw_load_page_fault;
     logic [63:0] load_page_fault_tval;
+    logic ccx_req_valid;
+    logic ccx_req_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
+    logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
+    logic [2:0] ccx_req_size;
+    logic [63:0] ccx_req_addr;
+    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    logic ccx_resp_valid;
+    logic ccx_resp_ready;
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
     assign mem_ready = mem_valid;
@@ -50,6 +68,38 @@ module tb_ptw_context;
         .mem_wstrb(mem_wstrb),
         .mem_rdata(mem_rdata),
         .mem_error(mem_error),
+        .m_axi_arready(1'b0),
+        .m_axi_rid('0),
+        .m_axi_rdata('0),
+        .m_axi_rresp(2'b00),
+        .m_axi_rlast(1'b0),
+        .m_axi_rvalid(1'b0),
+        .m_axi_awready(1'b0),
+        .m_axi_wready(1'b0),
+        .m_axi_bid('0),
+        .m_axi_bresp(2'b00),
+        .m_axi_bvalid(1'b0),
+        .ccx_req_valid(ccx_req_valid),
+        .ccx_req_ready(ccx_req_ready),
+        .ccx_req_hart_id(ccx_req_hart_id),
+        .ccx_req_txn_id(ccx_req_txn_id),
+        .ccx_req_source_id(ccx_req_source_id),
+        .ccx_req_op(ccx_req_op),
+        .ccx_req_kind(ccx_req_kind),
+        .ccx_req_size(ccx_req_size),
+        .ccx_req_addr(ccx_req_addr),
+        .ccx_req_burst_len(ccx_req_burst_len),
+        .ccx_wdata_ready(1'b1),
+        .ccx_resp_valid(ccx_resp_valid),
+        .ccx_resp_ready(ccx_resp_ready),
+        .ccx_resp_hart_id(ccx_resp_hart_id),
+        .ccx_resp_txn_id(ccx_resp_txn_id),
+        .ccx_resp_source_id(ccx_resp_source_id),
+        .ccx_resp_beat_index('0),
+        .ccx_resp_last(1'b1),
+        .ccx_resp_rdata(ccx_resp_rdata),
+        .ccx_resp_error(1'b0),
+        .ccx_resp_sc_success(1'b0),
         .irq_m_software(1'b0),
         .irq_m_timer(1'b0),
         .irq_m_external(1'b0),
@@ -126,7 +176,47 @@ module tb_ptw_context;
     endfunction
 
     integer lane;
+    assign ccx_req_ready = !ccx_resp_valid;
+
     always @(posedge clk) begin
+        if (!rst_n) begin
+            ccx_resp_valid <= 1'b0;
+            ccx_resp_hart_id <= '0;
+            ccx_resp_txn_id <= '0;
+            ccx_resp_source_id <= '0;
+            ccx_resp_rdata <= '0;
+        end else begin
+            if (ccx_resp_valid && ccx_resp_ready)
+                ccx_resp_valid <= 1'b0;
+            if (ccx_req_valid && ccx_req_ready) begin
+                if (ccx_req_source_id != `OPENRV64_CCX_SOURCE_PTW ||
+                    ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
+                    ccx_req_burst_len != '0)
+                    $fatal(1, "invalid PTW CCX request");
+                if ((ccx_req_op == `OPENRV64_CCX_OP_READ) &&
+                    (ccx_req_size != 3'd6))
+                    $fatal(1, "invalid PTW line read");
+                if ((ccx_req_op == `OPENRV64_CCX_OP_FENCE) &&
+                    (ccx_req_size != 3'd0))
+                    $fatal(1, "invalid PTW shootdown request");
+                if ((ccx_req_op != `OPENRV64_CCX_OP_READ) &&
+                    (ccx_req_op != `OPENRV64_CCX_OP_FENCE))
+                    $fatal(1, "unexpected PTW operation");
+                ccx_resp_valid <= 1'b1;
+                ccx_resp_hart_id <= ccx_req_hart_id;
+                ccx_resp_txn_id <= ccx_req_txn_id;
+                ccx_resp_source_id <= ccx_req_source_id;
+                if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
+                    for (lane = 0; lane < 8; lane = lane + 1)
+                        ccx_resp_rdata[lane * 64 +: 64] <=
+                            memory[ccx_req_addr[13:3] + lane];
+                end else begin
+                    ccx_resp_rdata <= '0;
+                    saw_ptw_shootdown <= 1'b1;
+                end
+            end
+        end
+
         if (rst_n && mem_valid && mem_ready && mem_write &&
             mem_addr_in_range) begin
             for (lane = 0; lane < 8; lane = lane + 1) begin
@@ -137,10 +227,13 @@ module tb_ptw_context;
             end
         end
 
-        if (rst_n && mem_valid && !mem_write &&
-            (mem_addr == 64'h0000_0000_0000_1008)) begin
+        if (rst_n && ccx_req_valid && ccx_req_ready &&
+            (ccx_req_addr == 64'h0000_0000_0000_1000)) begin
             saw_ptw_read <= 1'b1;
         end
+        if (rst_n && mem_valid && !mem_write &&
+            (mem_addr == 64'h0000_0000_0000_1008))
+            $fatal(1, "PTW PTE read leaked onto scalar memory bus");
         if (rst_n && mem_valid && !mem_write &&
             (mem_addr == 64'h0000_0000_0000_2000)) begin
             saw_translated_fetch <= 1'b1;
@@ -203,6 +296,7 @@ module tb_ptw_context;
         memory[64'h110 >> 3] = 64'h0000_0000_0000_0800;
 
         saw_ptw_read = 1'b0;
+        saw_ptw_shootdown = 1'b0;
         saw_translated_fetch = 1'b0;
         saw_sfence = 1'b0;
         saw_load_page_fault = 1'b0;
@@ -223,9 +317,12 @@ module tb_ptw_context;
             $fatal(1, "Sv39 context program timed out at pc=%016x instr=%08x",
                    dbg_pc, dbg_instr);
         end
-        if (!saw_ptw_read || !saw_translated_fetch || !saw_sfence) begin
-            $fatal(1, "missing PTW/fetch/SFENCE observations: %0b/%0b/%0b",
-                   saw_ptw_read, saw_translated_fetch, saw_sfence);
+        if (!saw_ptw_read || !saw_ptw_shootdown ||
+            !saw_translated_fetch || !saw_sfence) begin
+            $fatal(1,
+                   "missing PTW/shootdown/fetch/SFENCE observations: %0b/%0b/%0b/%0b",
+                   saw_ptw_read, saw_ptw_shootdown,
+                   saw_translated_fetch, saw_sfence);
         end
         if (memory[64'h3000 >> 3] != 64'd42) begin
             $fatal(1, "translated supervisor store mismatch: %016x",

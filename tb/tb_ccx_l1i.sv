@@ -4,7 +4,7 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-module tb_axi_l1i;
+module tb_ccx_l1i;
     logic clk;
     logic rst_n;
     logic fetch_req_valid;
@@ -77,12 +77,14 @@ module tb_axi_l1i;
     logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] response_source_q;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] response_data_q;
     integer ccx_count_q;
+    integer pte_count_q;
     integer memory_index;
     integer word_index;
 
-    openrv64_core_axi_bus #(
+    openrv64_core_ccx_bus #(
         .ENABLE_L1I(1),
-        .ENABLE_L1D(1)
+        .ENABLE_L1D(1),
+        .L1D_PREFETCH_ENABLE(0)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -90,6 +92,7 @@ module tb_axi_l1i;
         .fetch_req_ready_o(fetch_req_ready),
         .fetch_req_addr_i(fetch_req_addr),
         .fetch_req_stash_i(1'b0),
+        .fetch_req_demand_i(1'b1),
         .fetch_req_priv_i(fetch_priv),
         .fetch_req_vm_mode_i(fetch_vm_mode),
         .fetch_req_asid_i(fetch_asid),
@@ -209,6 +212,7 @@ module tb_axi_l1i;
             ccx_resp_rdata <= '0;
             ccx_resp_error <= 1'b0;
             ccx_count_q <= 0;
+            pte_count_q <= 0;
             axi_resp_valid_q <= 1'b0;
             axi_resp_id_q <= 3'd0;
             axi_read_count_q <= 0;
@@ -230,35 +234,45 @@ module tb_axi_l1i;
 
             if (ccx_req_valid && ccx_req_ready) begin
                 if (response_pending_q || ccx_resp_valid)
-                    $fatal(1, "L1I issued a second request before response");
+                    $fatal(1, "hart issued a second request before response");
                 if (ccx_req_hart_id != 0 ||
-                    ccx_req_source_id != `OPENRV64_CCX_SOURCE_ICACHE ||
                     ccx_req_op != `OPENRV64_CCX_OP_READ ||
                     ccx_req_order != `OPENRV64_CCX_ORDER_NONE ||
-                    ccx_req_kind != `OPENRV64_CCX_KIND_FETCH ||
                     ccx_req_size != 3'd6 || ccx_req_addr[5:0] != 0 ||
-                    ccx_req_burst_len != 0 ||
-                    (ccx_req_attr & (`OPENRV64_CCX_ATTR_CACHEABLE |
-                                     `OPENRV64_CCX_ATTR_EXECUTABLE)) !=
-                    (`OPENRV64_CCX_ATTR_CACHEABLE |
-                     `OPENRV64_CCX_ATTR_EXECUTABLE))
-                    $fatal(1, "native L1I CCX command mismatch");
+                    ccx_req_burst_len != 0)
+                    $fatal(1, "native CCX read command mismatch");
+                if (ccx_req_source_id ==
+                    `OPENRV64_CCX_SOURCE_ICACHE) begin
+                    if (ccx_req_kind != `OPENRV64_CCX_KIND_FETCH ||
+                        (ccx_req_attr &
+                         (`OPENRV64_CCX_ATTR_CACHEABLE |
+                          `OPENRV64_CCX_ATTR_EXECUTABLE)) !=
+                         (`OPENRV64_CCX_ATTR_CACHEABLE |
+                          `OPENRV64_CCX_ATTR_EXECUTABLE))
+                        $fatal(1, "native L1I CCX command mismatch");
+                    ccx_count_q <= ccx_count_q + 1;
+                end else if (ccx_req_source_id ==
+                             `OPENRV64_CCX_SOURCE_PTW) begin
+                    if (ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
+                        ccx_req_attr !=
+                            (`OPENRV64_CCX_ATTR_CACHEABLE |
+                             `OPENRV64_CCX_ATTR_IDEMPOTENT))
+                        $fatal(1, "native PTE CCX command mismatch");
+                    pte_count_q <= pte_count_q + 1;
+                end else begin
+                    $fatal(1, "unexpected native CCX source");
+                end
                 response_pending_q <= 1'b1;
                 response_hart_q <= ccx_req_hart_id;
                 response_txn_q <= ccx_req_txn_id;
                 response_source_q <= ccx_req_source_id;
                 response_data_q <= memory[ccx_req_addr[8:6]];
-                ccx_count_q <= ccx_count_q + 1;
             end
 
             if (axi_resp_valid_q && m_axi_rready)
                 axi_resp_valid_q <= 1'b0;
             if (m_axi_arvalid) begin
-                if (m_axi_arid != 3'b111 || m_axi_araddr[2:0] != 3'b000)
-                    $fatal(1, "unexpected residual AXI read");
-                axi_resp_valid_q <= 1'b1;
-                axi_resp_id_q <= m_axi_arid;
-                axi_read_count_q <= axi_read_count_q + 1;
+                $fatal(1, "enabled L1I/PTW emitted residual AXI read");
             end
 
             if (ccx_wdata_valid)
@@ -504,23 +518,23 @@ module tb_axi_l1i;
         if (ccx_count_q != before_count + 1)
             $fatal(1, "same-line branch paths issued duplicate fills");
 
-        // Speculative Sv39 faults are consumed by L1I.  They may use the
-        // shared PTW AXI path, but they neither issue CCX nor create an
-        // architectural fetch response.
+        // Speculative Sv39 faults are consumed by L1I.  Their PTE lines use
+        // the shared CCX path, but they neither issue I-cache line fills nor
+        // create an architectural fetch response.
         pulse_invalidate();
         fetch_priv = `RV64_PRIV_S;
         fetch_vm_mode = `RV64_SATP_MODE_SV39;
         before_count = ccx_count_q;
-        memory_index = axi_read_count_q;
+        memory_index = pte_count_q;
         pulse_prefetch_pair(64'h1000, 64'h2000);
         word_index = 0;
-        while ((axi_read_count_q != memory_index + 2) &&
+        while ((pte_count_q != memory_index + 2) &&
                word_index < 400) begin
             @(negedge clk);
             word_index = word_index + 1;
         end
         repeat (20) @(negedge clk);
-        if (axi_read_count_q != memory_index + 2 ||
+        if (pte_count_q != memory_index + 2 ||
             ccx_count_q != before_count || fetch_resp_valid)
             $fatal(1, "speculative translation fault became architectural");
         fetch_priv = `RV64_PRIV_M;

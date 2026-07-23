@@ -55,6 +55,7 @@ module openrv64_exec_bp #(
     input  wire [3*`RV64_XLEN-1:0]      train_pc_i,
 
     output wire prediction_taken_o,
+    output wire prediction_weak_o,
     output wire prediction_target_valid_o,
     output wire [`RV64_XLEN-1:0] prediction_target_o,
     output wire target_mispredict_o,
@@ -101,8 +102,10 @@ module openrv64_exec_bp #(
     reg ras_outstanding_q;
     reg [`RV64_XLEN-1:0] ras_outstanding_target_q;
     wire policy_prediction_taken;
+    wire policy_prediction_weak;
     wire policy_update_overflow;
     wire advanced_prediction_taken;
+    wire advanced_prediction_weak;
     wire advanced_prediction_target_valid;
     wire [`RV64_XLEN-1:0] advanced_prediction_target;
     wire advanced_target_mispredict;
@@ -140,6 +143,7 @@ module openrv64_exec_bp #(
                 .resolve_target_i(resolve_target_i),
                 .resolve_id_i(resolve_id_i),
                 .prediction_taken_o(advanced_prediction_taken),
+                .prediction_weak_o(advanced_prediction_weak),
                 .prediction_target_valid_o(
                     advanced_prediction_target_valid),
                 .prediction_target_o(advanced_prediction_target),
@@ -149,6 +153,7 @@ module openrv64_exec_bp #(
             );
         end else begin : g_no_advanced
             assign advanced_prediction_taken = 1'b0;
+            assign advanced_prediction_weak = 1'b0;
             assign advanced_prediction_target_valid = 1'b0;
             assign advanced_prediction_target = {`RV64_XLEN{1'b0}};
             assign advanced_target_mispredict = 1'b0;
@@ -160,6 +165,7 @@ module openrv64_exec_bp #(
     generate
         if (BP_TYPE == `OPENRV64_BP_ALWAYS_BRANCH) begin : g_always_branch
             assign policy_update_overflow = 1'b0;
+            assign policy_prediction_weak = 1'b1;
             openrv64_exec_bp_always_branch u_policy (
                 .lookup_branch_i(lookup_branch_i),
                 .lookup_jump_i(lookup_jump_i),
@@ -168,6 +174,7 @@ module openrv64_exec_bp #(
             );
         end else if (BP_TYPE == `OPENRV64_BP_ALWAYS_DECLINE) begin : g_always_decline
             assign policy_update_overflow = 1'b0;
+            assign policy_prediction_weak = 1'b1;
             openrv64_exec_bp_always_decline u_policy (
                 .lookup_jump_i(lookup_jump_i),
                 .lookup_indirect_i(lookup_indirect_i),
@@ -175,6 +182,7 @@ module openrv64_exec_bp #(
             );
         end else if (BP_TYPE == `OPENRV64_BP_REPEAT_LAST) begin : g_repeat_last
             assign policy_update_overflow = 1'b0;
+            assign policy_prediction_weak = 1'b1;
             openrv64_exec_bp_repeat_last u_policy (
                 .clk(clk),
                 .rst_n(rst_n),
@@ -188,6 +196,7 @@ module openrv64_exec_bp #(
             );
         end else if (BP_TYPE == `OPENRV64_BP_BTFNT) begin : g_btfnt
             assign policy_update_overflow = 1'b0;
+            assign policy_prediction_weak = 1'b1;
             openrv64_exec_bp_btfnt u_policy (
                 .lookup_branch_i(lookup_branch_i),
                 .lookup_jump_i(lookup_jump_i),
@@ -212,10 +221,12 @@ module openrv64_exec_bp #(
                 .train_taken_i(train_taken_i),
                 .train_pc_i(train_pc_i),
                 .prediction_taken_o(policy_prediction_taken),
+                .prediction_weak_o(policy_prediction_weak),
                 .update_overflow_o(policy_update_overflow)
             );
         end else begin : g_stall
             assign policy_update_overflow = 1'b0;
+            assign policy_prediction_weak = 1'b0;
             openrv64_exec_bp_stall u_policy (
                 .prediction_taken_o(policy_prediction_taken)
             );
@@ -232,6 +243,9 @@ module openrv64_exec_bp #(
         (lookup_valid_i &&
          (ras_prediction_valid ||
           (!lookup_indirect_i && policy_prediction_taken)));
+    assign prediction_weak_o = lookup_valid_i && lookup_branch_i &&
+        (use_advanced ? advanced_prediction_weak :
+                        policy_prediction_weak);
     assign prediction_target_valid_o = use_advanced ?
         advanced_prediction_target_valid :
         (lookup_valid_i && ras_prediction_valid);

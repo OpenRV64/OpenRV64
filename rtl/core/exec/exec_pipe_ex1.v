@@ -1,18 +1,18 @@
 `timescale 1ns/1ps
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-zicsr.v"
 `include "core/isa/rv64-priv.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
 `include "core/except/except-defs.v"
 
-// EX1 owns a second base integer ALU and the single iterative RV64M worker.
-// Only the M worker needs instruction context storage; base operations write
-// the completion register directly on issue.
+// EX1 owns base integer ALU operations and all control/system operations.
+// Its completion register decouples single-cycle execution from a stalled
+// retire queue completion port.
 module openrv64_exec_pipe_ex1 #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
-    parameter integer ENABLE_RV64M = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1
 ) (
     input  wire                         clk,
@@ -29,7 +29,22 @@ module openrv64_exec_pipe_ex1 #(
     input  wire                         complete_ready_i,
     output wire [63:0]                  complete_id_o,
     output wire [RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
-    output wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o
+    output wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o,
+
+    output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
+    input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
+    input  wire                         csr_valid_i,
+    input  wire                         csr_writable_i,
+
+    output wire                         branch_resolved_o,
+    output wire                         branch_conditional_o,
+    output wire                         branch_taken_o,
+    output wire [`RV64_XLEN-1:0]        branch_pc_o,
+    output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
+    output wire                         redirect_valid_o,
+    output wire [63:0]                  redirect_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0] redirect_slot_o,
+    output wire [`RV64_XLEN-1:0]        redirect_target_o
 );
 
     wire [63:0] trace_id;
@@ -101,8 +116,9 @@ module openrv64_exec_pipe_ex1 #(
         sfence_vma_allowed
     } = issue_payload_i;
 
-    // EX1 has the same deliberately local previous-completion bypass as EX0.
-    // Dispatch is responsible for routing a qualified consumer back here.
+    // The only result bypass in this first 3P implementation is local: an
+    // instruction entering EX1 may consume EX1's completion from the previous
+    // cycle.  No 64-bit result leaves the pipe or crosses to another pipe.
     wire local_forward_valid = (ENABLE_LOCAL_FORWARDING != 0) &&
         complete_valid_q &&
         complete_payload_q[`OPENRV64_COMPLETE_REG_WRITE_BIT] &&
@@ -145,114 +161,136 @@ module openrv64_exec_pipe_ex1 #(
         .result_o(alu_result)
     );
 
-    wire m_ready;
-    wire m_busy;
-    wire m_result_valid;
-    wire m_result_ready;
-    wire m_illegal;
-    wire [`RV64_XLEN-1:0] m_result;
-    wire m_start;
-    openrv64_exec_rv64m u_rv64m (
-        .clk(clk),
-        .rst_n(rst_n),
-        .flush_i(flush_i),
-        .valid_i(m_start),
-        .ready_o(m_ready),
-        .busy_o(m_busy),
-        .op_sel_i(alu_op),
-        .word_op_i(word_op),
+    wire br_valid;
+    wire br_illegal;
+    wire br_taken;
+    wire [`RV64_XLEN-1:0] br_target;
+    wire br_link;
+    wire [`RV64_XLEN-1:0] br_link_data;
+    openrv64_exec_br u_branch (
+        .op_sel_i(br_op),
+        .pc_i(pc),
         .src1_i(operand_rs1),
         .src2_i(operand_rs2),
-        .result_valid_o(m_result_valid),
-        .result_ready_i(m_result_ready),
-        .illegal_o(m_illegal),
-        .result_o(m_result)
+        .imm_i(imm),
+        .valid_o(br_valid),
+        .illegal_o(br_illegal),
+        .taken_o(br_taken),
+        .target_o(br_target),
+        .link_o(br_link),
+        .link_data_o(br_link_data)
     );
 
-    wire base_selected = (alu_ext == `RV64_ALU_EXT_BASE) &&
-                          (alu_op != `RV64_ALU_OP_INVALID);
-    wire m_selected = (alu_ext == `RV64_ALU_EXT_M) &&
-                       (alu_op != `RV64_ALU_OP_INVALID);
-    wire base_result_illegal = illegal || !alu_valid || alu_illegal;
-    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] base_cause =
-        base_result_illegal ? `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR :
-                              {`RV64_EXCEPT_CAUSE_WIDTH{1'b0}};
-    wire [`RV64_XLEN-1:0] base_tval = base_result_illegal ?
-        {{32{1'b0}}, instr} : {`RV64_XLEN{1'b0}};
-    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] base_completion_data = {
+    wire [`RV64_FUNCT3_WIDTH-1:0] system_funct3 = `RV64_FUNCT3(instr);
+    wire [`RV64_FUNCT12_WIDTH-1:0] system_csr_addr = `RV64_CSR(instr);
+    wire csr_selected = system &&
+                        (system_funct3 != `RV64_FUNCT3_SYSTEM_PRIV) &&
+                        !illegal;
+    wire csr_ready;
+    wire csr_illegal;
+    wire csr_write;
+    wire [`RV64_FUNCT12_WIDTH-1:0] csr_unit_addr;
+    wire [`RV64_XLEN-1:0] csr_wdata;
+    wire [`RV64_XLEN-1:0] csr_rdata;
+    openrv64_exec_system_csr u_csr (
+        .valid_i(issue_valid_i && csr_selected),
+        .funct3_i(system_funct3),
+        .csr_addr_i(system_csr_addr),
+        .rs1_addr_i(rs1_addr),
+        .rs1_data_i(operand_rs1),
+        .zimm_i(`RV64_RS1(instr)),
+        .csr_rdata_i(csr_rdata_i),
+        .csr_valid_i(csr_valid_i),
+        .csr_writable_i(csr_writable_i),
+        .ready_o(csr_ready),
+        .illegal_o(csr_illegal),
+        .csr_write_o(csr_write),
+        .csr_addr_o(csr_unit_addr),
+        .csr_wdata_o(csr_wdata),
+        .rd_data_o(csr_rdata)
+    );
+
+    wire ex_mret = system && (instr == `RV64_INSTR_MRET);
+    wire ex_sret = system && (instr == `RV64_INSTR_SRET);
+    wire ex_sfence_vma = system && `RV64_IS_SFENCE_VMA(instr);
+    wire return_illegal =
+        (ex_mret && (priv_mode != `RV64_PRIV_M)) ||
+        (ex_sret && !sret_allowed) ||
+        (ex_sfence_vma && !sfence_vma_allowed);
+
+    wire alu_selected = (alu_ext == `RV64_ALU_EXT_BASE) &&
+                         (alu_op != `RV64_ALU_OP_INVALID);
+    wire br_selected = branch || jump;
+    wire target_misaligned = br_selected && br_valid && br_taken &&
+                             (|br_target[1:0]);
+    wire instr_misaligned = (|pc[1:0]) || target_misaligned;
+    wire [`RV64_XLEN-1:0] instr_badaddr = target_misaligned ? br_target : pc;
+    wire result_illegal = illegal ||
+                          (alu_selected && (!alu_valid || alu_illegal)) ||
+                          (br_selected && (!br_valid || br_illegal)) ||
+                          (csr_selected && (!csr_ready || csr_illegal)) ||
+                          return_illegal;
+
+    wire control_transfer_taken = br_selected && br_valid && br_taken &&
+                                  !instr_misaligned && !result_illegal;
+    wire [`RV64_XLEN-1:0] next_pc = control_transfer_taken ?
+                                     br_target : (pc + 64'd4);
+    wire [`RV64_XLEN-1:0] result_data = csr_selected ? csr_rdata :
+                                          br_link ? br_link_data : alu_result;
+
+    wire exception;
+    wire halt;
+    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] cause;
+    wire [`RV64_XLEN-1:0] tval;
+    openrv64_except u_except (
+        .illegal_instr_i(result_illegal),
+        .instr_misaligned_i(instr_misaligned),
+        .instr_access_fault_i(instr_access_fault),
+        .instr_page_fault_i(instr_page_fault),
+        .load_misaligned_i(1'b0),
+        .load_access_fault_i(1'b0),
+        .load_page_fault_i(1'b0),
+        .store_misaligned_i(1'b0),
+        .store_access_fault_i(1'b0),
+        .store_page_fault_i(1'b0),
+        .ecall_i(ecall),
+        .ebreak_i(ebreak),
+        .priv_mode_i(priv_mode),
+        .pc_i(instr_misaligned ? instr_badaddr : pc),
+        .instr_i(instr),
+        .badaddr_i({`RV64_XLEN{1'b0}}),
+        .exception_o(exception),
+        .halt_o(halt),
+        .cause_o(cause),
+        .tval_o(tval)
+    );
+
+    wire issue_fire = issue_valid_i && issue_ready_o;
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] completion_data = {
         trace_id,
         pc,
-        pc + 64'd4,
+        next_pc,
         instr,
-        alu_result,
+        result_data,
         rs1_addr,
         rs2_addr,
         rd_addr,
         reg_write,
-        base_result_illegal,
-        1'b0,
-        1'b0,
-        base_result_illegal,
-        1'b0,
-        base_cause,
-        base_tval,
-        1'b0,
-        1'b0,
-        1'b0,
-        {`RV64_FUNCT12_WIDTH{1'b0}},
-        {`RV64_XLEN{1'b0}}
+        result_illegal,
+        ebreak,
+        ecall,
+        exception,
+        halt,
+        cause,
+        tval,
+        ex_mret,
+        ex_sret,
+        csr_selected && csr_write && !exception,
+        csr_unit_addr,
+        csr_wdata
     };
 
-    reg m_pending_q;
-    reg [63:0] m_id_q;
-    reg [RETIRE_SLOT_WIDTH-1:0] m_slot_q;
-    reg [63:0] m_trace_id_q;
-    reg [`RV64_XLEN-1:0] m_pc_q;
-    reg [`RV64_INSTR_WIDTH-1:0] m_instr_q;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] m_rs1_addr_q;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] m_rs2_addr_q;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] m_rd_addr_q;
-    reg m_reg_write_q;
-
-    wire m_result_illegal = m_illegal;
-    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] m_cause =
-        m_result_illegal ? `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR :
-                           {`RV64_EXCEPT_CAUSE_WIDTH{1'b0}};
-    wire [`RV64_XLEN-1:0] m_tval = m_result_illegal ?
-        {{32{1'b0}}, m_instr_q} : {`RV64_XLEN{1'b0}};
-    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] m_completion_data = {
-        m_trace_id_q,
-        m_pc_q,
-        m_pc_q + 64'd4,
-        m_instr_q,
-        m_result,
-        m_rs1_addr_q,
-        m_rs2_addr_q,
-        m_rd_addr_q,
-        m_reg_write_q,
-        m_result_illegal,
-        1'b0,
-        1'b0,
-        m_result_illegal,
-        1'b0,
-        m_cause,
-        m_tval,
-        1'b0,
-        1'b0,
-        1'b0,
-        {`RV64_FUNCT12_WIDTH{1'b0}},
-        {`RV64_XLEN{1'b0}}
-    };
-
-    wire output_available = !complete_valid_q || complete_ready_i;
-    assign issue_ready_o = !m_pending_q && output_available &&
-                           (base_selected ||
-                            (m_selected && ENABLE_RV64M && m_ready));
-    wire issue_fire = issue_valid_i && issue_ready_o;
-    wire base_fire = issue_fire && base_selected;
-    assign m_start = issue_fire && m_selected && ENABLE_RV64M;
-    assign m_result_ready = m_pending_q && m_result_valid && output_available;
-
+    assign issue_ready_o = !complete_valid_q || complete_ready_i;
     assign complete_valid_o = complete_valid_q;
     assign complete_id_o = complete_id_q;
     assign complete_slot_o = complete_slot_q;
@@ -260,75 +298,42 @@ module openrv64_exec_pipe_ex1 #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            m_pending_q <= 1'b0;
-            m_id_q <= 64'd0;
-            m_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
-            m_trace_id_q <= 64'd0;
-            m_pc_q <= {`RV64_XLEN{1'b0}};
-            m_instr_q <= {`RV64_INSTR_WIDTH{1'b0}};
-            m_rs1_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
-            m_rs2_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
-            m_rd_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
-            m_reg_write_q <= 1'b0;
             complete_valid_q <= 1'b0;
             complete_id_q <= 64'd0;
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
                 {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
         end else if (flush_i) begin
-            m_pending_q <= 1'b0;
             complete_valid_q <= 1'b0;
         end else begin
             if (complete_valid_q && complete_ready_i) begin
                 complete_valid_q <= 1'b0;
             end
 
-            if (m_start) begin
-                m_pending_q <= 1'b1;
-                m_id_q <= issue_id_i;
-                m_slot_q <= issue_slot_i;
-                m_trace_id_q <= trace_id;
-                m_pc_q <= pc;
-                m_instr_q <= instr;
-                m_rs1_addr_q <= rs1_addr;
-                m_rs2_addr_q <= rs2_addr;
-                m_rd_addr_q <= rd_addr;
-                m_reg_write_q <= reg_write;
-            end
-
-            if (m_result_ready) begin
-                m_pending_q <= 1'b0;
-                complete_valid_q <= 1'b1;
-                complete_id_q <= m_id_q;
-                complete_slot_q <= m_slot_q;
-                complete_payload_q <= m_completion_data;
-            end else if (base_fire) begin
+            if (issue_fire) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= issue_id_i;
                 complete_slot_q <= issue_slot_i;
-                complete_payload_q <= base_completion_data;
+                complete_payload_q <= completion_data;
             end
         end
     end
 
-    wire unused_controls = |{
-        lsu_op,
-        br_op,
-        mem_read,
-        mem_write,
-        branch,
-        jump,
-        predicted_taken,
-        system,
-        fence,
-        ebreak,
-        ecall,
-        instr_access_fault,
-        instr_page_fault,
-        priv_mode,
-        sret_allowed,
-        sfence_vma_allowed,
-        m_busy
-    };
+    assign csr_addr_o = csr_unit_addr;
+    assign branch_resolved_o = issue_fire && br_selected;
+    assign branch_conditional_o = branch_resolved_o && branch;
+    assign branch_taken_o = branch_resolved_o && control_transfer_taken;
+    assign branch_pc_o = pc;
+    assign branch_instr_o = instr;
+    assign redirect_valid_o = branch_resolved_o &&
+                              !instr_misaligned &&
+                              !result_illegal &&
+                              (predicted_taken != control_transfer_taken);
+    assign redirect_id_o = issue_id_i;
+    assign redirect_slot_o = issue_slot_i;
+    assign redirect_target_o = control_transfer_taken ?
+                               br_target : (pc + 64'd4);
+
+    wire unused_controls = |{lsu_op, mem_read, mem_write, fence};
 
 endmodule

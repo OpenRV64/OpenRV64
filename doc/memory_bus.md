@@ -1,19 +1,22 @@
 # OpenRV64 Memory Buses
 
 `rtl/core/bus/bus.v` is the core-bus geometry selector. `BUS_CONFIG` chooses
-the original 64-bit generic requester in `rtl/core/bus/gen_bus.v` or the
-256-bit AXI4 requester in `rtl/core/bus/axi_bus.v`. The generic path remains
-the default and is the interface used by `openrv64_platform`.
+the original 64-bit instruction/data requester in `rtl/core/bus/gen_bus.v` or
+the native cache/CCX boundary in `rtl/core/bus/ccx_bus.v`. Both paths expose a
+separate native 512-bit CCX PTE client. The generic scalar path remains the
+default interface used by `openrv64_platform`.
 `rtl/openrv64_top_3p.v` is the fixed three-pipe boundary: it exposes native
 512-bit CCX command/write-data/response channels plus residual 256-bit AXI,
 and elaborates the AXI-configured bus and three-wide frontend unconditionally.
 With L1I enabled, instruction misses are exactly one 64-byte CCX transaction;
-they do not use AXI.  AXI remains for page-table walks and explicit
-cacheless-L1I operation.
+they do not use AXI. Page-table walks are also native CCX transactions. AXI
+remains only for explicit cacheless-L1I operation.
 
 ## Generic blocking interface
 
-The generic top-level interface is a single 64-bit blocking memory bus.
+The generic instruction/data interface is a single 64-bit blocking memory
+bus. PTW traffic is structurally absent from it and uses the parallel CCX
+interface.
 
 ## Signals
 
@@ -78,14 +81,14 @@ treats every `SFENCE.VMA`, including forms with nonzero `rs1` or `rs2`, as a
 global shootdown. Invalidation clears TLB validity; it does not manufacture a
 faulting entry. The next access misses and either obtains a fresh translation
 or receives the PTW's page/access fault. If a shootdown overlaps an active
-walk, the bus drains and discards the stale walk result, then restarts it so it
-cannot refill the TLB with pre-fence state.
+walk, the PTW terminates that walk and drains any already-accepted CCX response
+without consuming it, so pre-fence state cannot refill either the PTE cache or
+the TLB.
 
-PMP is enforced at the physical requester boundary after translation. Final
-instruction/data accesses use their effective privilege and access type;
-implicit PTE reads are checked as S-mode 8-byte reads. A PMP denial is returned
-through the same physical error path and becomes an access fault for the
-original operation.
+PMP is enforced after translation. Final instruction/data accesses use their
+effective privilege and access type. The PTW independently probes PMP as an
+S-mode 8-byte read before issuing its CCX line request. A PMP denial becomes
+an access fault for the original operation and no PTE request is emitted.
 
 Current VM limitations are deliberate: only Bare and Sv39 are WARL `satp`
 modes, shootdown is global rather than address/ASID selective, and A/D bits use
@@ -97,9 +100,8 @@ not implemented.
 
 The residual AXI configuration has 64-bit addresses, 256-bit data, 32-byte
 strobes, and 3-bit transaction IDs. Every transfer is a single-beat INCR
-transaction (`AxLEN=0`). AXI is used only by the page-table walker and by the
-structural `ENABLE_L1I=0` cacheless-fetch path. Native L1I and L1D traffic does
-not use it.
+transaction (`AxLEN=0`). AXI is used only by the structural `ENABLE_L1I=0`
+cacheless-fetch path. Native L1I, L1D, and PTW traffic does not use it.
 
 With L1I enabled, `fetch_3w.v` requests one 256-bit frontend half-line by
 virtual address. `openrv64_l1i_ccx` is VIPT: page-offset virtual bits select

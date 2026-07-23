@@ -75,6 +75,105 @@ to establish separate ideal-refill bounds. Its backing RAM is still a
 functional fixed-latency model, not a DRAM timing model; prefetch distance and
 bandwidth tuning require the memory-channel timing model in the measured path.
 
+## Prefetch characterization suite
+
+The remaining prefetch workloads use the same native three-pipe L1/CCX
+harness. Build every configuration-specific ELF, binary, map, and disassembly
+with:
+
+```sh
+make sw-prefetch-benchmarks
+make bench-prefetch-suite
+make sim-prefetch-checks
+```
+
+Each source exposes `*_measure_begin` and `*_measure_end` symbols. The
+`bench-*` targets stop when the end marker retires and report the workload's
+`mcycle` delta in `a0`; setup and result verification are outside that timed
+interval. The corresponding `sim-*` targets continue through full correctness
+checks and halt on a workload-specific pass signature.
+
+The data-side workloads are:
+
+- `stream/stream.S`: integer copy, scale, add, and triad over aligned arrays.
+  `STREAM_BYTES` is the size of each array and defaults to 64 KiB.
+- `stride/stride.S`: exactly 1024 loads after a separate 32 KiB L1D eviction
+  walk. `bench-stride-sweep` tests 64, 128, 256, 1024, and 4096-byte strides,
+  changing footprint without changing the measured access count.
+- `stride/stencil5.S`: a 64 KiB, five-neighbor integer stencil. Its sliding
+  window retains neighbor reuse while demanding one new source word and one
+  output store per result.
+- `lz4/lz4.c`: a bounds-checked raw LZ4 decoder. Its fixed 1584-byte,
+  64-sequence block expands to 64 KiB and exercises literal and dependent
+  match-copy streams; it is not a one-token copy-loop surrogate.
+
+Run them with:
+
+```sh
+make bench-stream-suite
+make bench-stride-sweep
+make bench-stencil5
+make bench-lz4
+```
+
+Select one STREAM case with, for example:
+
+```sh
+make bench-stream STREAM_KERNEL=triad STREAM_BYTES=65536
+make sim-stream-suite STREAM_BYTES=4096
+```
+
+`icache/icache.S` creates exact 4, 16, 64, or 256 KiB executable tapes. The
+`fallthrough` pattern is straight-line code. `branch` visits each four-line
+group in physical order 0, 2, 1, 3 with a taken direct jump on every line, so
+blind next-line prefetch has only partial coverage. `call` puts a call/return
+pair on every line. The measured tape performs no data accesses; a register
+checksum catches skipped or repeated instructions.
+
+```sh
+make bench-icache-footprints ICACHE_PATTERN=branch
+make bench-icache-patterns ICACHE_BYTES=65536
+make sim-icache-patterns ICACHE_BYTES=4096
+```
+
+Pipeline CSV generation is disabled for these runs because it dominates
+Icarus runtime and storage on the larger footprints. Set
+`PREFETCH_PIPELINE_TRACE=1` when a detailed pipeline trace is needed.
+Verilator is the default execution engine and its elaborated model is reused
+across workloads with the same core parameters. Set `PREFETCH_ENGINE=icarus`
+for the slower Icarus path. The suite pins the experimental frontend alternate
+lookaside off for a stable baseline; opt in with
+`PREFETCH_FETCH_ALT_LOOKASIDE=1`.
+
+The integrated L1D address-stream prefetcher is enabled by default for these
+targets. Run a matched off/on pair with:
+
+```sh
+make bench-stride STRIDE_BYTES=64 PREFETCH_L1D_ENABLE=0
+make bench-stride STRIDE_BYTES=64 PREFETCH_L1D_ENABLE=1
+```
+
+`PREFETCH_L1D_MAX_STRIDE_LINES` defaults to 64,
+`PREFETCH_L1D_DISTANCE` is the initial depth and defaults to 1, and adaptive
+read-ahead defaults to a maximum depth of 4. The default candidate queue and
+outstanding CCX-prefetch count are both four; two fill-buffer entries are
+reserved for demand. `PREFETCH_L1D_ADAPTIVE_ENABLE`,
+`PREFETCH_L1D_MAX_DISTANCE`, `PREFETCH_L1D_QUEUE_LINES`,
+`PREFETCH_L1D_OUTSTANDING`, and `PREFETCH_L1D_DEMAND_RESERVE` expose those
+controls. Changing any value selects a separate Verilator build.
+
+Each run prints issued, useful, late, dropped, and unused-replacement counts,
+plus maximum adaptive depth seen. It also prints total native `PERF_CCX` reads
+and writes; coverage without that traffic delta is not enough to judge a
+prefetcher.
+
+These tests can characterize cache-line coverage, pollution, and extra CCX
+traffic now. The functional backing RAM does not represent real memory timing.
+The L1D can keep multiple prefetch transaction IDs live, but meaningful depth,
+outstanding-count, and bandwidth-pressure tuning still requires routing the
+benchmark path through `mem_channel.v`. Functional-cycle deltas are not timing
+evidence.
+
 ## OpenSBI smoke boot
 
 `tools/build-opensbi.sh` clones the pinned OpenSBI v1.9 release, verifies its

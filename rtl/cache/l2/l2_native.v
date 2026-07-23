@@ -19,7 +19,8 @@ module openrv64_ccx_l2_native #(
     parameter integer WAITERS_PER_MSHR = 8,
     parameter integer COMMAND_ENTRIES = 16,
     parameter integer RESPONSE_ENTRIES = 16,
-    parameter integer BUS_TRACK_ENTRIES = MSHR_ENTRIES
+    parameter integer BUS_TRACK_ENTRIES = MSHR_ENTRIES,
+    parameter integer PTE_GENERATION_BITS = 8
 ) (
     input  wire clk_i,
     input  wire rst_ni,
@@ -77,6 +78,8 @@ module openrv64_ccx_l2_native #(
     localparam integer LINE_OFFSET_BITS = $clog2(LINE_BYTES);
     localparam integer SET_BITS = $clog2(SETS);
     localparam integer TAG_BITS = ADDR_WIDTH - LINE_OFFSET_BITS - SET_BITS;
+    localparam integer SRAM_TAG_BITS =
+        TAG_BITS + PTE_GENERATION_BITS;
     localparam integer SET_INDEX_WIDTH = (SETS > 1) ? $clog2(SETS) : 1;
     localparam integer WAY_INDEX_WIDTH = (WAYS > 1) ? $clog2(WAYS) : 1;
     localparam integer MSHR_INDEX_WIDTH =
@@ -124,14 +127,15 @@ module openrv64_ccx_l2_native #(
     reg [WAYS-1:0] dirty_q [0:SETS-1];
     reg [WAYS-1:0] reserved_q [0:SETS-1];
     reg [WAY_INDEX_WIDTH-1:0] replace_q [0:SETS-1];
+    reg [PTE_GENERATION_BITS-1:0] pte_generation_q;
     wire [WAYS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] sram_way_data;
-    wire [WAYS*TAG_BITS-1:0] sram_way_tag;
+    wire [WAYS*SRAM_TAG_BITS-1:0] sram_way_tag;
     reg sram_write_valid_r;
     reg [SET_INDEX_WIDTH-1:0] sram_write_set_r;
     reg [WAY_INDEX_WIDTH-1:0] sram_write_way_r;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] sram_write_data_r;
     reg sram_write_tag_r;
-    reg [TAG_BITS-1:0] sram_write_tag_data_r;
+    reg [SRAM_TAG_BITS-1:0] sram_write_tag_data_r;
     wire lookup_sram_write_blocked;
 
     reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
@@ -198,6 +202,8 @@ module openrv64_ccx_l2_native #(
     reg [SET_INDEX_WIDTH-1:0] mshr_set_q [0:MSHR_ENTRIES-1];
     reg [TAG_BITS-1:0] mshr_tag_q [0:MSHR_ENTRIES-1];
     reg [WAY_INDEX_WIDTH-1:0] mshr_way_q [0:MSHR_ENTRIES-1];
+    reg [PTE_GENERATION_BITS-1:0]
+        mshr_pte_generation_q [0:MSHR_ENTRIES-1];
     reg [63:0] mshr_victim_addr_q [0:MSHR_ENTRIES-1];
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         mshr_victim_data_q [0:MSHR_ENTRIES-1];
@@ -281,6 +287,8 @@ module openrv64_ccx_l2_native #(
 
     reg lookup_hit_r;
     reg [WAY_INDEX_WIDTH-1:0] lookup_hit_way_r;
+    reg lookup_stale_pte_r;
+    reg [WAY_INDEX_WIDTH-1:0] lookup_stale_pte_way_r;
     reg lookup_mshr_match_r;
     reg [MSHR_INDEX_WIDTH-1:0] lookup_mshr_index_r;
     reg lookup_mshr_mergeable_r;
@@ -364,7 +372,7 @@ module openrv64_ccx_l2_native #(
             victim_way_r*`OPENRV64_CCX_LINE_DATA_WIDTH +:
             `OPENRV64_CCX_LINE_DATA_WIDTH];
     wire [TAG_BITS-1:0] lookup_victim_tag =
-        sram_way_tag[victim_way_r*TAG_BITS +: TAG_BITS];
+        sram_way_tag[victim_way_r*SRAM_TAG_BITS +: TAG_BITS];
 
     reg [MSHR_COUNT_WIDTH-1:0] active_mshr_count_r;
     always @* begin
@@ -380,21 +388,36 @@ module openrv64_ccx_l2_native #(
         (bus_track_count_q == 0) &&
         (response_count_q == 0) &&
         !hit_valid_q;
+    wire lookup_is_pte =
+        lookup_kind_q == `OPENRV64_CCX_KIND_PTE;
 
     always @* begin
         lookup_hit_r = 1'b0;
         lookup_hit_way_r = 0;
+        lookup_stale_pte_r = 1'b0;
+        lookup_stale_pte_way_r = 0;
         lookup_candidate_index = 0;
         for (lookup_way_scan = 0; lookup_way_scan < WAYS;
              lookup_way_scan = lookup_way_scan + 1) begin
-            if (!lookup_hit_r &&
-                valid_q[lookup_set][lookup_way_scan] &&
+            if (valid_q[lookup_set][lookup_way_scan] &&
                 !reserved_q[lookup_set][lookup_way_scan] &&
-                (sram_way_tag[lookup_way_scan*TAG_BITS +:
+                (sram_way_tag[lookup_way_scan*SRAM_TAG_BITS +:
                               TAG_BITS] == lookup_tag)) begin
-                lookup_hit_r = 1'b1;
-                lookup_hit_way_r =
-                    lookup_way_scan[WAY_INDEX_WIDTH-1:0];
+                if (lookup_is_pte &&
+                    (sram_way_tag[
+                         lookup_way_scan*SRAM_TAG_BITS + TAG_BITS +:
+                         PTE_GENERATION_BITS] !=
+                     pte_generation_q)) begin
+                    if (!lookup_stale_pte_r) begin
+                        lookup_stale_pte_r = 1'b1;
+                        lookup_stale_pte_way_r =
+                            lookup_way_scan[WAY_INDEX_WIDTH-1:0];
+                    end
+                end else if (!lookup_hit_r) begin
+                    lookup_hit_r = 1'b1;
+                    lookup_hit_way_r =
+                        lookup_way_scan[WAY_INDEX_WIDTH-1:0];
+                end
             end
         end
 
@@ -430,6 +453,10 @@ module openrv64_ccx_l2_native #(
 
         victim_found_r = 1'b0;
         victim_way_r = 0;
+        if (lookup_stale_pte_r) begin
+            victim_found_r = 1'b1;
+            victim_way_r = lookup_stale_pte_way_r;
+        end
         for (lookup_way_scan = 0; lookup_way_scan < WAYS;
              lookup_way_scan = lookup_way_scan + 1) begin
             if (!victim_found_r &&
@@ -685,6 +712,12 @@ module openrv64_ccx_l2_native #(
 
     assign lookup_sram_write_blocked =
         fill_sram_write || replay_cache_write;
+    wire pte_generation_advance =
+        lookup_dispatch_r &&
+        (lookup_action_r == LOOKUP_IMMEDIATE) &&
+        !lookup_protocol_error_q &&
+        (lookup_op_q == `OPENRV64_CCX_OP_FENCE) &&
+        (lookup_kind_q == `OPENRV64_CCX_KIND_PTE);
 
     // The eight data and tag banks each have one synchronous read port and one
     // full-line write port.  Fill has priority over replay, which has priority
@@ -703,7 +736,10 @@ module openrv64_ccx_l2_native #(
             sram_write_way_r = mshr_way_q[bus_response_mshr];
             sram_write_data_r = bus_resp_rdata_i;
             sram_write_tag_r = 1'b1;
-            sram_write_tag_data_r = mshr_tag_q[bus_response_mshr];
+            sram_write_tag_data_r = {
+                mshr_pte_generation_q[bus_response_mshr],
+                mshr_tag_q[bus_response_mshr]
+            };
         end else if (replay_cache_write) begin
             sram_write_valid_r = 1'b1;
             sram_write_set_r = mshr_set_q[replay_mshr];
@@ -727,7 +763,7 @@ module openrv64_ccx_l2_native #(
                 .SETS(SETS),
                 .SET_INDEX_WIDTH(SET_INDEX_WIDTH),
                 .DATA_WIDTH(`OPENRV64_CCX_LINE_DATA_WIDTH),
-                .TAG_WIDTH(TAG_BITS)
+                .TAG_WIDTH(SRAM_TAG_BITS)
             ) u_sram (
                 .clk_i(clk_i),
                 .read_enable_i(lookup_sram_read),
@@ -736,7 +772,7 @@ module openrv64_ccx_l2_native #(
                     sram_way*`OPENRV64_CCX_LINE_DATA_WIDTH +:
                     `OPENRV64_CCX_LINE_DATA_WIDTH]),
                 .read_tag_o(sram_way_tag[
-                    sram_way*TAG_BITS +: TAG_BITS]),
+                    sram_way*SRAM_TAG_BITS +: SRAM_TAG_BITS]),
                 .write_enable_i(sram_write_valid_r &&
                     (sram_write_way_r == WAY_INDEX_WIDTH'(sram_way))),
                 .write_set_i(sram_write_set_r),
@@ -796,6 +832,7 @@ module openrv64_ccx_l2_native #(
             bus_track_count_q <= 0;
             bus_round_robin_q <= 0;
             replay_round_robin_q <= 0;
+            pte_generation_q <= 0;
             lock_active_q <= 1'b0;
             lock_hart_id_q <= 0;
             lock_line_addr_q <= 0;
@@ -814,8 +851,12 @@ module openrv64_ccx_l2_native #(
                 mshr_waiter_count_q[reset_index] <= 0;
                 mshr_replay_q[reset_index] <= 0;
                 mshr_error_q[reset_index] <= 1'b0;
+                mshr_pte_generation_q[reset_index] <= 0;
             end
         end else begin
+            if (pte_generation_advance)
+                pte_generation_q <= pte_generation_q + 1'b1;
+
             if (command_push) begin
                 cmd_hart_id_q[cmd_tail_q] <= req_hart_id_i;
                 cmd_txn_id_q[cmd_tail_q] <= req_txn_id_i;
@@ -960,6 +1001,8 @@ module openrv64_ccx_l2_native #(
                     mshr_set_q[mshr_free_index_r] <= lookup_set;
                     mshr_tag_q[mshr_free_index_r] <= lookup_tag;
                     mshr_way_q[mshr_free_index_r] <= victim_way_r;
+                    mshr_pte_generation_q[mshr_free_index_r] <=
+                        pte_generation_q;
                     mshr_victim_addr_q[mshr_free_index_r] <=
                         {lookup_victim_tag, lookup_set,
                          {LINE_OFFSET_BITS{1'b0}}};
@@ -1174,6 +1217,8 @@ module openrv64_ccx_l2_native #(
             $fatal(1, "native L2 command entries must be 2 through 32");
         if ((RESPONSE_ENTRIES < 2) || (RESPONSE_ENTRIES > 32))
             $fatal(1, "native L2 response entries must be 2 through 32");
+        if ((PTE_GENERATION_BITS < 1) || (PTE_GENERATION_BITS > 16))
+            $fatal(1, "native L2 PTE generation width must be 1 through 16");
         if ((BUS_TRACK_ENTRIES < 2) ||
             (BUS_TRACK_ENTRIES > MSHR_ENTRIES))
             $fatal(1,

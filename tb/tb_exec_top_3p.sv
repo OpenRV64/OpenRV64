@@ -273,40 +273,40 @@ module tb_exec_top_3p;
         tick();
         complete_ready = 3'b000;
 
-        // A valid aligned conditional branch resolves before retirement and
-        // therefore does not require the ordered-head token.
+        // A valid aligned conditional branch resolves on EX1 before
+        // retirement and therefore does not require the ordered-head token.
         packet = packet_base(64'd101, 64'h2000, 32'h0020_8463);
         packet[ISSUE_RS1_DATA +: 64] = 64'h55;
         packet[ISSUE_RS2_DATA +: 64] = 64'h55;
         packet[ISSUE_IMM +: 64] = 64'd8;
         packet[ISSUE_BR_OP +: 4] = `RV64_BR_OP_BEQ;
         packet[ISSUE_BRANCH] = 1'b1;
-        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[0*64 +: 64] = 64'd1;
-        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
-        issue_valid = 3'b001;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*64 +: 64] = 64'd1;
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
+        issue_valid = 3'b010;
         ordered_head_valid = 1'b1;
         ordered_head_id = 64'd99;
         ordered_head_slot = 3'd1;
         #1;
-        if (!issue_ready[0]) fail("EX0 early branch waited for order token");
+        if (!issue_ready[1]) fail("EX1 early branch waited for order token");
         if (!branch_resolved || !branch_taken || !redirect_valid)
-            fail("EX0 early branch did not resolve without head token");
+            fail("EX1 early branch did not resolve without head token");
         ordered_head_id = 64'd1;
         #1;
         if (!branch_resolved || !branch_taken || !redirect_valid)
-            fail("EX0 branch resolution was not produced on issue");
+            fail("EX1 branch resolution was not produced on issue");
         if ((redirect_id != 64'd1) || (redirect_target != 64'h2008))
-            fail("EX0 branch redirect metadata mismatch");
+            fail("EX1 branch redirect metadata mismatch");
         tick();
         issue_valid = 3'b000;
         #1;
-        if (!complete_valid[0]) fail("EX0 branch did not complete");
-        complete_ready = 3'b001;
+        if (!complete_valid[1]) fail("EX1 branch did not complete");
+        complete_ready = 3'b010;
         tick();
         complete_ready = 3'b000;
 
-        // Direct JAL has a known aligned target, so EX0 may resolve and buffer
+        // Direct JAL has a known aligned target, so EX1 may resolve and buffer
         // its link result without waiting for architectural retirement.
         packet = packet_base(64'd107, 64'h2800, 32'h0080_00ef);
         packet[ISSUE_IMM +: 64] = 64'd8;
@@ -315,27 +315,27 @@ module tb_exec_top_3p;
         packet[ISSUE_REG_WRITE] = 1'b1;
         packet[ISSUE_JUMP] = 1'b1;
         packet[ISSUE_PREDICTED] = 1'b1;
-        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[0*64 +: 64] = 64'd7;
-        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
-        issue_valid = 3'b001;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*64 +: 64] = 64'd7;
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
+        issue_valid = 3'b010;
         ordered_head_valid = 1'b1;
         ordered_head_id = 64'd99;
         ordered_head_slot = 3'd1;
         #1;
-        if (!issue_ready[0]) fail("EX0 direct JAL waited for order token");
+        if (!issue_ready[1]) fail("EX1 direct JAL waited for order token");
         if (!branch_resolved || !branch_taken || redirect_valid)
-            fail("EX0 direct JAL prediction/resolve mismatch");
+            fail("EX1 direct JAL prediction/resolve mismatch");
         if ((redirect_id != 64'd7) || (redirect_target != 64'h2808))
-            fail("EX0 direct JAL resolution metadata mismatch");
+            fail("EX1 direct JAL resolution metadata mismatch");
         tick();
         issue_valid = 3'b000;
         #1;
-        if (!complete_valid[0] ||
-            (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+        if (!complete_valid[1] ||
+            (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
              64'h2804))
-            fail("EX0 direct JAL link completion mismatch");
-        complete_ready = 3'b001;
+            fail("EX1 direct JAL link completion mismatch");
+        complete_ready = 3'b010;
         tick();
         complete_ready = 3'b000;
 
@@ -462,7 +462,7 @@ module tb_exec_top_3p;
         flush = 1'b0;
         mem_ready = 1'b1;
 
-        // EX1 M keeps its own context while EX0 remains independent.
+        // EX0 M keeps its own context while EX1 remains independent.
         packet = packet_base(64'd103, 64'h5000, 32'h0220_82b3);
         packet[ISSUE_RS1_DATA +: 64] = 64'd6;
         packet[ISSUE_RS2_DATA +: 64] = 64'd7;
@@ -470,12 +470,12 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_M;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_MUL;
         packet[ISSUE_REG_WRITE] = 1'b1;
-        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[1*64 +: 64] = 64'd3;
-        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd3;
-        issue_valid = 3'b010;
+        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[0*64 +: 64] = 64'd3;
+        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd3;
+        issue_valid = 3'b001;
         #1;
-        if (!issue_ready[1]) fail("EX1 did not accept MUL");
+        if (!issue_ready[0]) fail("EX0 did not accept MUL");
         tick();
         issue_valid = 3'b000;
 
@@ -486,34 +486,34 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
         packet[ISSUE_REG_WRITE] = 1'b1;
-        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[0*64 +: 64] = 64'd4;
-        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd4;
-        issue_valid = 3'b001;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*64 +: 64] = 64'd4;
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd4;
+        issue_valid = 3'b010;
         #1;
-        if (!issue_ready[0]) fail("EX0 was blocked by EX1 MUL");
+        if (!issue_ready[1]) fail("EX1 was blocked by EX0 MUL");
         tick();
         issue_valid = 3'b000;
         #1;
-        if (!complete_valid[0]) fail("EX0 did not complete while EX1 was busy");
-        if (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd33)
-            fail("concurrent EX0 ADD result mismatch");
-        complete_ready = 3'b001;
+        if (!complete_valid[1]) fail("EX1 did not complete while EX0 was busy");
+        if (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd33)
+            fail("concurrent EX1 ADD result mismatch");
+        complete_ready = 3'b010;
         tick();
         complete_ready = 3'b000;
 
         wait_cycles = 0;
-        while (!complete_valid[1] && (wait_cycles < 24)) begin
+        while (!complete_valid[0] && (wait_cycles < 24)) begin
             tick();
             wait_cycles = wait_cycles + 1;
         end
-        if (!complete_valid[1]) fail("EX1 MUL timed out");
-        if (complete_id[1*64 +: 64] != 64'd3)
-            fail("EX1 MUL completion ID mismatch");
-        if (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd42)
-            fail("EX1 MUL result mismatch");
+        if (!complete_valid[0]) fail("EX0 MUL timed out");
+        if (complete_id[0*64 +: 64] != 64'd3)
+            fail("EX0 MUL completion ID mismatch");
+        if (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd42)
+            fail("EX0 MUL result mismatch");
 
-        // EX1's result remains local as well.  A base-ALU consumer can accept
+        // EX0's result remains local as well.  A base-ALU consumer can accept
         // the completed M value without waiting for architectural retirement.
         packet = packet_base(64'd106, 64'h5008, 32'h0022_8393);
         packet[ISSUE_RS1 +: 5] = 5'd5;
@@ -523,21 +523,21 @@ module tb_exec_top_3p;
         packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
         packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
         packet[ISSUE_REG_WRITE] = 1'b1;
-        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
-        issue_id[1*64 +: 64] = 64'd6;
-        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd6;
-        complete_ready = 3'b010;
-        issue_valid = 3'b010;
+        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[0*64 +: 64] = 64'd6;
+        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd6;
+        complete_ready = 3'b001;
+        issue_valid = 3'b001;
         #1;
-        if (!issue_ready[1]) fail("EX1 local RAW consumer was not ready");
+        if (!issue_ready[0]) fail("EX0 local RAW consumer was not ready");
         tick();
         issue_valid = 3'b000;
         complete_ready = 3'b000;
         #1;
-        if (!complete_valid[1] ||
-            (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd44))
-            fail("EX1 local previous-result forwarding mismatch");
-        complete_ready = 3'b010;
+        if (!complete_valid[0] ||
+            (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd44))
+            fail("EX0 local previous-result forwarding mismatch");
+        complete_ready = 3'b001;
         tick();
         complete_ready = 3'b000;
         flush = 1'b1;
@@ -594,7 +594,7 @@ module tb_exec_top_3p;
              64'd11))
             fail("AMO completion after flush mismatch");
 
-        $display("PASS: 3p local forwarding, eight-tag MEM ring, EX0 ordering, EX1 M context, and irrevocable AMO");
+        $display("PASS: 3p local forwarding, eight-tag MEM ring, EX1 ordering, EX0 M context, and irrevocable AMO");
         $finish;
     end
 

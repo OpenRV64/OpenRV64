@@ -53,13 +53,19 @@ module tb_opensbi #(
     string fdt_memh;
     string banner = "OpenSBI v1.9";
     string payload_text = "OPENRV64 SBI TIMER PAYLOAD";
+    string linux_panic_text = "Kernel panic";
     integer banner_index;
     integer payload_index;
+    integer linux_panic_index;
     integer cycle_count;
     integer uart_byte_count;
+    integer payload_words;
+    integer max_cycles;
     logic saw_banner;
     logic saw_payload_text;
+    logic saw_linux_panic;
     logic saw_s_mode;
+    logic linux_mode;
     wire [`RV64_PRIV_WIDTH-1:0] observed_priv_mode;
     wire [63:0] observed_t0;
     wire [63:0] observed_t1;
@@ -73,7 +79,7 @@ module tb_opensbi #(
         .BACKEND_CONFIG(BACKEND_CONFIG),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64A(1'b1),
-        .ENABLE_TRACE(1'b0)
+        .ENABLE_TRACE(1'b1)
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -158,6 +164,18 @@ module tb_opensbi #(
                     payload_index = (value == payload_text[0]) ? 1 : 0;
                 end
             end
+
+            if (linux_mode && !saw_linux_panic) begin
+                if (value == linux_panic_text[linux_panic_index]) begin
+                    linux_panic_index = linux_panic_index + 1;
+                    if (linux_panic_index == linux_panic_text.len()) begin
+                        saw_linux_panic = 1'b1;
+                    end
+                end else begin
+                    linux_panic_index =
+                        (value == linux_panic_text[0]) ? 1 : 0;
+                end
+            end
         end
     endtask
 
@@ -186,6 +204,16 @@ module tb_opensbi #(
                          uart_byte_count,
                          observed_t0, observed_t1,
                          observed_mcause, observed_mtval);
+                if (linux_mode && (observed_priv_mode == `RV64_PRIV_S))
+                    $display("Linux trace valid=%05b stall=%05b flush=%05b advance=%05b causes=%08b pc={if:%016x id:%016x ex:%016x mem:%016x wb:%016x} instr={if:%08x id:%08x ex:%08x mem:%08x wb:%08x}",
+                             trace_valid, trace_stall, trace_flush,
+                             trace_advance, trace_stall_causes,
+                             trace_pcs[63:0], trace_pcs[127:64],
+                             trace_pcs[191:128], trace_pcs[255:192],
+                             trace_pcs[319:256],
+                             trace_instrs[31:0], trace_instrs[63:32],
+                             trace_instrs[95:64], trace_instrs[127:96],
+                             trace_instrs[159:128]);
             end
         end
 
@@ -197,7 +225,7 @@ module tb_opensbi #(
                    observed_priv_mode);
         end
 
-        if (saw_banner && saw_payload_text && saw_s_mode &&
+        if (!linux_mode && saw_banner && saw_payload_text && saw_s_mode &&
             (dut.u_memory.memory_q[(MAGIC_ADDR - RAM_BASE) >> 3] ==
              MAGIC_VALUE)) begin
             if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P)
@@ -206,17 +234,28 @@ module tb_opensbi #(
                 $display("PASS: 1P OpenSBI v1.9 banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion");
             $finish;
         end
+
+        if (linux_mode && saw_linux_panic) begin
+            $display("PASS: Linux reached a kernel panic after OpenSBI handoff");
+            $finish;
+        end
     end
 
     initial begin
         rst_n = 1'b0;
         banner_index = 0;
         payload_index = 0;
+        linux_panic_index = 0;
         cycle_count = 0;
         uart_byte_count = 0;
         saw_banner = 1'b0;
         saw_payload_text = 1'b0;
+        saw_linux_panic = 1'b0;
         saw_s_mode = 1'b0;
+        payload_words = PAYLOAD_WORDS;
+
+        if (!$value$plusargs("payload_words=%d", payload_words))
+            payload_words = PAYLOAD_WORDS;
 
         if (!$value$plusargs("trampoline_memh=%s", trampoline_memh) ||
             !$value$plusargs("firmware_memh=%s", firmware_memh) ||
@@ -237,7 +276,7 @@ module tb_opensbi #(
         $display("OpenSBI load: payload");
         $readmemh(payload_memh, dut.u_memory.memory_q,
                   (PAYLOAD_BASE - RAM_BASE) >> 3,
-                  ((PAYLOAD_BASE - RAM_BASE) >> 3) + PAYLOAD_WORDS - 1);
+                  ((PAYLOAD_BASE - RAM_BASE) >> 3) + payload_words - 1);
         $display("OpenSBI load: FDT");
         $readmemh(fdt_memh, dut.u_memory.memory_q,
                   (FDT_BASE - RAM_BASE) >> 3,
@@ -250,13 +289,27 @@ module tb_opensbi #(
     end
 
     initial begin
-        repeat (20000000) @(posedge clk);
-        $fatal(1,
-               "OpenSBI timeout pc=%016x instr=%08x priv=%0d banner=%b payload=%b magic=%016x mcause=%016x mtval=%016x",
-               dbg_pc, dbg_instr, observed_priv_mode,
-               saw_banner, saw_payload_text,
-               dut.u_memory.memory_q[(MAGIC_ADDR - RAM_BASE) >> 3],
-               observed_mcause, observed_mtval);
+        linux_mode = $test$plusargs("linux_mode");
+        if (linux_mode)
+            payload_text = "Linux version";
+        if (!$value$plusargs("max_cycles=%d", max_cycles))
+            max_cycles = 20000000;
+
+        repeat (max_cycles) @(posedge clk);
+        if (linux_mode) begin
+            $display("LINUX TIMEOUT cycles=%0d pc=%016x instr=%08x priv=%0d banner=%b linux_banner=%b uart_bytes=%0d mcause=%016x mtval=%016x",
+                     cycle_count, dbg_pc, dbg_instr, observed_priv_mode,
+                     saw_banner, saw_payload_text, uart_byte_count,
+                     observed_mcause, observed_mtval);
+            $finish;
+        end else begin
+            $fatal(1,
+                   "OpenSBI timeout pc=%016x instr=%08x priv=%0d banner=%b payload=%b magic=%016x mcause=%016x mtval=%016x",
+                   dbg_pc, dbg_instr, observed_priv_mode,
+                   saw_banner, saw_payload_text,
+                   dut.u_memory.memory_q[(MAGIC_ADDR - RAM_BASE) >> 3],
+                   observed_mcause, observed_mtval);
+        end
     end
 
 endmodule

@@ -32,6 +32,7 @@ module openrv64_fetch_3w #(
     input  wire                         req_ready_i,
     output wire [`RV64_XLEN-1:0]        req_addr_o,
     output wire                         req_stash_o,
+    output wire                         req_demand_o,
     input  wire                         resp_valid_i,
     output wire                         resp_ready_o,
     input  wire [`RV64_XLEN-1:0]        resp_addr_i,
@@ -39,6 +40,7 @@ module openrv64_fetch_3w #(
     input  wire                         resp_access_fault_i,
     input  wire                         resp_page_fault_i,
     input  wire                         resp_stash_i,
+    input  wire                         resp_demand_i,
 
     input  wire                         branch_pair_valid_i,
     input  wire [`RV64_XLEN-1:0]        branch_predicted_addr_i,
@@ -85,6 +87,30 @@ module openrv64_fetch_3w #(
     reg [`OPENRV64_AXI_DATA_WIDTH-1:0]
         alt_data_q [0:ALT_LOOKASIDE_LINES-1];
     reg alt_replace_q;
+    reg branch_predicted_stashed_r;
+    reg branch_unpredicted_stashed_r;
+    integer branch_stash_index;
+
+    always @* begin
+        branch_predicted_stashed_r = 1'b0;
+        branch_unpredicted_stashed_r = 1'b0;
+        for (branch_stash_index = 0;
+             branch_stash_index < ALT_LOOKASIDE_LINES;
+             branch_stash_index = branch_stash_index + 1) begin
+            if (alt_valid_q[branch_stash_index] &&
+                (alt_addr_q[branch_stash_index][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 branch_predicted_addr_i[
+                    `RV64_XLEN-1:LINE_BYTE_BITS]))
+                branch_predicted_stashed_r = 1'b1;
+            if (alt_valid_q[branch_stash_index] &&
+                (alt_addr_q[branch_stash_index][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 branch_unpredicted_addr_i[
+                    `RV64_XLEN-1:LINE_BYTE_BITS]))
+                branch_unpredicted_stashed_r = 1'b1;
+        end
+    end
 
     assign cancel_o = restart_i || invalidate_i || flush_i;
     assign cancel_stash_o = invalidate_i || flush_i;
@@ -138,6 +164,8 @@ module openrv64_fetch_3w #(
     assign req_addr_o = pair_request_valid ? pair_request_addr :
                                              request_line_addr;
     assign req_stash_o = pair_request_valid;
+    assign req_demand_o = !pair_request_valid ||
+                          pair_request_is_demand;
     wire req_fire = req_valid_o && req_ready_i;
     assign line_count_o =
         {{(LINE_COUNT_WIDTH-1){1'b0}}, consume_line_hit} +
@@ -273,7 +301,7 @@ module openrv64_fetch_3w #(
 
     wire [LINE_INDEX_WIDTH-1:0] resp_slot =
         resp_addr_i[LINE_INDEX_MSB:LINE_INDEX_LSB];
-    wire resp_match = pending_valid_q &&
+    wire resp_match = resp_demand_i && pending_valid_q &&
         (pending_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
          resp_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS]);
 
@@ -419,8 +447,10 @@ module openrv64_fetch_3w #(
                     pair_unpredicted_valid_q <= 1'b0;
             end
             if ((ENABLE_ALT_LOOKASIDE != 0) && branch_pair_valid_i) begin
-                pair_predicted_valid_q <= 1'b1;
+                pair_predicted_valid_q <=
+                    !branch_predicted_stashed_r;
                 pair_unpredicted_valid_q <=
+                    !branch_unpredicted_stashed_r &&
                     (branch_predicted_addr_i[
                         `RV64_XLEN-1:LINE_BYTE_BITS] !=
                      branch_unpredicted_addr_i[
@@ -485,8 +515,7 @@ module openrv64_fetch_3w #(
                  reset_index = reset_index + 1)
                 line_valid_q[reset_index] <= 1'b0;
         end else begin
-            if (req_fire &&
-                (!pair_request_valid || pair_request_is_demand)) begin
+            if (req_fire && req_demand_o) begin
                 pending_valid_q <= 1'b1;
                 pending_addr_q <= req_addr_o;
             end
@@ -515,10 +544,12 @@ module openrv64_fetch_3w #(
     end
 
     always @(posedge clk) begin
-        if (rst_n && resp_valid_i && !resp_stash_i &&
+        if (rst_n && resp_valid_i && resp_demand_i &&
             !restart_i && !invalidate_i &&
             !flush_i && !resp_match)
-            $fatal(1, "fetch_3w response does not match its pending line");
+            $fatal(1,
+                "fetch_3w response addr=%h does not match pending valid=%b addr=%h",
+                resp_addr_i, pending_valid_q, pending_addr_q);
         if (rst_n && (decode_valid_o != 3'b000) &&
             (decode_valid_o != 3'b001) &&
             (decode_valid_o != 3'b011) &&

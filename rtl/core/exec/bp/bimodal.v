@@ -30,8 +30,14 @@ module openrv64_exec_bp_bimodal #(
     input  wire [3*`RV64_XLEN-1:0]      train_pc_i,
 
     output wire                         prediction_taken_o,
+    output wire                         prediction_weak_o,
     output wire                         update_overflow_o
 );
+
+    localparam [COUNTER_BITS-1:0] WEAK_TAKEN =
+        {1'b1, {(COUNTER_BITS-1){1'b0}}};
+    localparam [COUNTER_BITS-1:0] WEAK_NOT_TAKEN =
+        {1'b0, {(COUNTER_BITS-1){1'b1}}};
 
     reg [ENTRIES-1:0] valid_q;
     reg [COUNTER_BITS-1:0] counter_q [0:ENTRIES-1];
@@ -48,21 +54,24 @@ module openrv64_exec_bp_bimodal #(
     wire learned_prediction = counter_q[lookup_index][COUNTER_BITS-1];
     wire conditional_prediction = valid_q[lookup_index] ?
         learned_prediction : lookup_backward_i;
+    // A counter is direction-confident only when its two most-significant
+    // bits agree.  For three bits, 000/001 and 110/111 are confident while
+    // the middle four states invoke the frontend backup plan.
+    wire learned_prediction_weak =
+        counter_q[lookup_index][COUNTER_BITS-1] !=
+        counter_q[lookup_index][COUNTER_BITS-2];
 
     assign prediction_taken_o =
         (lookup_branch_i && conditional_prediction) ||
         (lookup_jump_i && !lookup_indirect_i);
+    assign prediction_weak_o = lookup_branch_i &&
+        (!valid_q[lookup_index] || learned_prediction_weak);
     assign update_overflow_o = update_overflow_q;
 
     wire [INDEX_WIDTH-1:0] update_index =
         update_index_q[update_head_q];
     wire [COUNTER_BITS-1:0] counter_max =
         {COUNTER_BITS{1'b1}};
-    wire [COUNTER_BITS-1:0] weak_taken =
-        {1'b1, {(COUNTER_BITS-1){1'b0}}};
-    wire [COUNTER_BITS-1:0] weak_not_taken =
-        {1'b0, {(COUNTER_BITS-1){1'b1}}};
-
     integer reset_index;
     integer enqueue_lane;
     reg [UPDATE_PTR_WIDTH-1:0] tail_work;
@@ -85,7 +94,7 @@ module openrv64_exec_bp_bimodal #(
                 if (!valid_q[update_index]) begin
                     valid_q[update_index] <= 1'b1;
                     counter_q[update_index] <= update_taken_q[update_head_q] ?
-                        weak_taken : weak_not_taken;
+                        WEAK_TAKEN : WEAK_NOT_TAKEN;
                 end else if (update_taken_q[update_head_q]) begin
                     if (counter_q[update_index] != counter_max)
                         counter_q[update_index] <=

@@ -15,6 +15,7 @@ module tb_fetch_3w;
     logic req_ready;
     wire [63:0] req_addr;
     wire req_stash;
+    wire req_demand;
     logic resp_valid;
     wire resp_ready;
     logic [63:0] resp_addr;
@@ -22,6 +23,7 @@ module tb_fetch_3w;
     logic resp_access_fault;
     logic resp_page_fault;
     logic resp_stash;
+    logic resp_demand;
     logic branch_pair_valid;
     logic [63:0] branch_predicted_addr;
     logic [63:0] branch_unpredicted_addr;
@@ -41,6 +43,7 @@ module tb_fetch_3w;
     integer lookaside_request_base;
     reg [63:0] request_addr [0:15];
     reg request_stash [0:15];
+    reg request_demand [0:15];
 
     openrv64_fetch_3w #(
         .ENABLE_TRACE(1),
@@ -52,12 +55,14 @@ module tb_fetch_3w;
         .cancel_stash_o(cancel_stash),
         .req_valid_o(req_valid), .req_ready_i(req_ready),
         .req_addr_o(req_addr), .req_stash_o(req_stash),
+        .req_demand_o(req_demand),
         .resp_valid_i(resp_valid),
         .resp_ready_o(resp_ready), .resp_addr_i(resp_addr),
         .resp_data_i(resp_data),
         .resp_access_fault_i(resp_access_fault),
         .resp_page_fault_i(resp_page_fault),
         .resp_stash_i(resp_stash),
+        .resp_demand_i(resp_demand),
         .branch_pair_valid_i(branch_pair_valid),
         .branch_predicted_addr_i(branch_predicted_addr),
         .branch_unpredicted_addr_i(branch_unpredicted_addr),
@@ -76,6 +81,7 @@ module tb_fetch_3w;
         if (rst_n && req_valid && req_ready) begin
             request_addr[request_count] <= req_addr;
             request_stash[request_count] <= req_stash;
+            request_demand[request_count] <= req_demand;
             request_count <= request_count + 1;
         end
     end
@@ -118,16 +124,19 @@ module tb_fetch_3w;
     task automatic return_line(
         input [63:0] addr,
         input integer base,
-        input stash
+        input stash,
+        input demand
     );
         begin
             resp_addr = addr;
             resp_data = make_line(base);
             resp_stash = stash;
+            resp_demand = demand;
             resp_valid = 1;
             tick();
             resp_valid = 0;
             resp_stash = 0;
+            resp_demand = 0;
         end
     endtask
 
@@ -169,6 +178,7 @@ module tb_fetch_3w;
         resp_access_fault = 0;
         resp_page_fault = 0;
         resp_stash = 0;
+        resp_demand = 0;
         branch_pair_valid = 0;
         branch_predicted_addr = 0;
         branch_unpredicted_addr = 0;
@@ -195,14 +205,14 @@ module tb_fetch_3w;
         repeat (3) tick();
         if (request_count != 1)
             $fatal(1, "fetch_3w issued more than one request at a time");
-        return_line(64'h0, 32'h100, 1'b0);
+        return_line(64'h0, 32'h100, 1'b0, 1'b1);
         while (request_count < 2) tick();
         if (request_addr[1] != 64'h20 || line_count != 2)
             $fatal(1, "fetch_3w did not request exactly one line ahead");
         repeat (3) tick();
         if (request_count != 2)
             $fatal(1, "fetch_3w requested beyond its one-line lookahead");
-        return_line(64'h20, 32'h108, 1'b0);
+        return_line(64'h20, 32'h108, 1'b0, 1'b1);
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
         if (trace_id[63:0] != 100 || trace_id[127:64] != 101 ||
             trace_id[191:128] != 102)
@@ -233,11 +243,11 @@ module tb_fetch_3w;
         while (request_count < replay_request_base + 1) tick();
         if (request_addr[replay_request_base] != 64'h0)
             $fatal(1, "redirect did not request its target line");
-        return_line(64'h0, 32'h100, 1'b0);
+        return_line(64'h0, 32'h100, 1'b0, 1'b1);
         while (request_count < replay_request_base + 2) tick();
         if (request_addr[replay_request_base + 1] != 64'h20)
             $fatal(1, "redirect did not restore one-line lookahead");
-        return_line(64'h20, 32'h108, 1'b0);
+        return_line(64'h20, 32'h108, 1'b0, 1'b1);
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
 
         // A branch launches ordinary 256-bit requests in predicted then
@@ -255,13 +265,24 @@ module tb_fetch_3w;
         while (request_count < lookaside_request_base + 2) tick();
         if ((request_addr[lookaside_request_base] != 64'h100) ||
             !request_stash[lookaside_request_base] ||
+            !request_demand[lookaside_request_base] ||
             (request_addr[lookaside_request_base + 1] != 64'h180) ||
-            !request_stash[lookaside_request_base + 1])
+            !request_stash[lookaside_request_base + 1] ||
+            request_demand[lookaside_request_base + 1])
             $fatal(1,
                    "branch pair was not predicted-then-unpredicted");
-        return_line(64'h100, 32'h140, 1'b1);
+        return_line(64'h100, 32'h140, 1'b1, 1'b1);
         expect_bundle(64'h110, 32'h144, 32'h145, 32'h146);
-        return_line(64'h180, 32'h160, 1'b1);
+        return_line(64'h180, 32'h160, 1'b1, 1'b0);
+
+        // Repeated loop branches do not reissue a half-line while both
+        // aligned addresses remain present in the fetch-path stash.
+        branch_pair_valid = 1'b1;
+        tick();
+        branch_pair_valid = 1'b0;
+        if (dut.pair_predicted_valid_q ||
+            dut.pair_unpredicted_valid_q)
+            $fatal(1, "resident branch pair was redundantly queued");
 
         restart_pc = 64'h188;
         restart = 1'b1;
@@ -309,7 +330,8 @@ module tb_fetch_3w;
         repeat (2) tick();
         if ((request_count != lookaside_request_base + 1) ||
             (request_addr[lookaside_request_base] != 64'h240) ||
-            !request_stash[lookaside_request_base])
+            !request_stash[lookaside_request_base] ||
+            !request_demand[lookaside_request_base])
             $fatal(1, "same-block branch pair did not coalesce");
 
         // A context-changing restart follows the same one-at-a-time contract.
@@ -330,7 +352,7 @@ module tb_fetch_3w;
         if (request_count != restart_request_base + 1 ||
             request_addr[restart_request_base] != 64'h80)
             $fatal(1, "restart request alignment mismatch");
-        return_line(64'h80, 32'h120, 1'b0);
+        return_line(64'h80, 32'h120, 1'b0, 1'b1);
         while (request_count < restart_request_base + 2) tick();
         if (request_addr[restart_request_base + 1] != 64'ha0)
             $fatal(1, "restart lookahead alignment mismatch");

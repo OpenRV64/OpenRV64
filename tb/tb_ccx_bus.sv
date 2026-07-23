@@ -4,7 +4,7 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-module tb_axi_bus #(
+module tb_ccx_bus #(
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_STORE_BUFFER_LINES = 8
 );
@@ -119,7 +119,7 @@ module tb_axi_bus #(
     logic ccx_resp_last;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
     logic ccx_resp_error;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_memory [0:63];
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_memory [0:255];
     logic ccx_cmd_pending;
     logic [3:0] ccx_cmd_hart_id;
     logic [3:0] ccx_cmd_txn_id;
@@ -148,12 +148,14 @@ module tb_axi_bus #(
     integer ar_count;
     integer wait_count;
     integer channel_wait;
+    integer ptw_wait;
     reg [63:0] locked_old_word;
     reg [2:0] seen_id [0:15];
     reg [63:0] seen_addr [0:15];
 
-    openrv64_core_axi_bus #(
+    openrv64_core_ccx_bus #(
         .ENABLE_L1I(0),
+        .L1D_PREFETCH_ENABLE(0),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
         .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES)
     ) dut (
@@ -162,6 +164,7 @@ module tb_axi_bus #(
         .fetch_req_ready_o(fetch_req_ready),
         .fetch_req_addr_i(fetch_req_addr),
         .fetch_req_stash_i(1'b0),
+        .fetch_req_demand_i(1'b1),
         .fetch_req_priv_i(`RV64_PRIV_M),
         .fetch_req_vm_mode_i(`RV64_SATP_MODE_BARE),
         .fetch_req_asid_i(16'd0), .fetch_req_root_ppn_i(44'd0),
@@ -283,7 +286,7 @@ module tb_axi_bus #(
                               !ccx_data_pending && !ccx_resp_valid;
 
     function automatic [63:0] ccx_memory_word(input [63:0] addr);
-        ccx_memory_word = ccx_memory[addr[11:6]][addr[5:3]*64 +: 64];
+        ccx_memory_word = ccx_memory[addr[13:6]][addr[5:3]*64 +: 64];
     endfunction
 
     always @(posedge clk or negedge rst_n) begin
@@ -319,22 +322,40 @@ module tb_axi_bus #(
 
             if (ccx_req_valid && ccx_req_ready) begin
                 if (ccx_req_hart_id != 0 ||
-                    ccx_req_source_id != `OPENRV64_CCX_SOURCE_DCACHE ||
                     ccx_req_order != `OPENRV64_CCX_ORDER_NONE ||
-                    ccx_req_kind != `OPENRV64_CCX_KIND_DATA ||
                     ccx_req_burst_len != 0)
-                    $fatal(1, "L1D emitted malformed CCX command");
-                if ((ccx_req_attr == `OPENRV64_CCX_ATTR_CACHEABLE) &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
-                    !ccx_req_lock &&
-                    ((ccx_req_size != 3'd6) || (ccx_req_addr[5:0] != 0)))
-                    $fatal(1, "L1D miss was not one aligned line read");
-                if ((ccx_req_attr == `OPENRV64_CCX_ATTR_CACHEABLE) &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
-                    !ccx_req_lock &&
-                    ((ccx_req_size != 3'd6) || (ccx_req_addr[5:0] != 0)))
-                    $fatal(1,
-                           "posted L1D store was not one aligned masked line write");
+                    $fatal(1, "hart emitted malformed CCX command");
+                if (ccx_req_source_id == `OPENRV64_CCX_SOURCE_PTW) begin
+                    if (ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
+                        ccx_req_op != `OPENRV64_CCX_OP_READ ||
+                        ccx_req_lock || ccx_req_size != 3'd6 ||
+                        ccx_req_addr[5:0] != 0 ||
+                        ccx_req_attr !=
+                            (`OPENRV64_CCX_ATTR_CACHEABLE |
+                             `OPENRV64_CCX_ATTR_IDEMPOTENT))
+                        $fatal(1, "PTW emitted malformed PTE CCX command");
+                end else begin
+                    if (ccx_req_source_id !=
+                            `OPENRV64_CCX_SOURCE_DCACHE ||
+                        ccx_req_kind != `OPENRV64_CCX_KIND_DATA)
+                        $fatal(1, "L1D emitted malformed CCX command");
+                    if ((ccx_req_attr ==
+                         `OPENRV64_CCX_ATTR_CACHEABLE) &&
+                        (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
+                        !ccx_req_lock &&
+                        ((ccx_req_size != 3'd6) ||
+                         (ccx_req_addr[5:0] != 0)))
+                        $fatal(1,
+                               "L1D miss was not one aligned line read");
+                    if ((ccx_req_attr ==
+                         `OPENRV64_CCX_ATTR_CACHEABLE) &&
+                        (ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
+                        !ccx_req_lock &&
+                        ((ccx_req_size != 3'd6) ||
+                         (ccx_req_addr[5:0] != 0)))
+                        $fatal(1,
+                               "posted L1D store was not one aligned masked line write");
+                end
                 ccx_cmd_pending <= 1'b1;
                 ccx_cmd_hart_id <= ccx_req_hart_id;
                 ccx_cmd_txn_id <= ccx_req_txn_id;
@@ -382,7 +403,7 @@ module tb_axi_bus #(
                 ccx_resp_source_id <= ccx_cmd_source_id;
                 ccx_resp_beat_index <= 0;
                 ccx_resp_last <= 1'b1;
-                ccx_resp_rdata <= ccx_memory[ccx_cmd_addr[11:6]];
+                ccx_resp_rdata <= ccx_memory[ccx_cmd_addr[13:6]];
                 ccx_resp_error <= ccx_fail_enable &&
                                   (ccx_cmd_addr == ccx_fail_addr);
                 ccx_cmd_pending <= 1'b0;
@@ -396,7 +417,7 @@ module tb_axi_bus #(
                         for (ccx_byte = 0; ccx_byte < 64;
                              ccx_byte = ccx_byte + 1) begin
                             if (ccx_data_strb[ccx_byte])
-                                ccx_memory[ccx_cmd_addr[11:6]]
+                                ccx_memory[ccx_cmd_addr[13:6]]
                                     [8*ccx_byte +: 8] <=
                                     ccx_data[8*ccx_byte +: 8];
                         end
@@ -532,8 +553,8 @@ module tb_axi_bus #(
             end
             if (!completed)
                 $fatal(1,
-                    "R channel timeout id=%0d phys=%0d fetch_count=%0d",
-                    response_id, dut.phys_state_q, dut.fetch_count_q);
+                    "R channel timeout id=%0d fetch_count=%0d",
+                    response_id, dut.fetch_count_q);
             rvalid = 1'b0;
         end
     endtask
@@ -613,7 +634,7 @@ module tb_axi_bus #(
         ccx_fail_addr = 0;
         ccx_allow_cmd = 1;
         ccx_allow_wdata = 1;
-        for (ccx_index = 0; ccx_index < 64;
+        for (ccx_index = 0; ccx_index < 256;
              ccx_index = ccx_index + 1) begin
             for (ccx_word_index = 0; ccx_word_index < 8;
                  ccx_word_index = ccx_word_index + 1)
@@ -811,41 +832,55 @@ module tb_axi_bus #(
             ccx_memory_word(64'h338) != 64'h9900_bb00_dd00_ff00)
             $fatal(1, "L1D byte-masked store buffer drain mismatch");
 
-        // Translated tagged traffic falls back to the precise PTW path and
+        // Translated tagged traffic uses a cacheable PTE line read on CCX and
         // returns the page fault under the original request tag.  An invalid
         // root PTE is sufficient to exercise the fallback without a full map.
         pipe_req_vm_mode = `RV64_SATP_MODE_SV39;
         pipe_req_priv = `RV64_PRIV_S;
         pipe_resp_ready = 0;
+        wait_count = ccx_reads;
+        channel_wait = ar_count;
         push_pipe_request(2'd2, 1'b0, 64'h1000, 64'd0, 8'd0);
-        wait_count = 0;
-        while (!(arvalid && arready && arid == 3'b111) &&
-               wait_count < 50) begin
+        ptw_wait = 0;
+        while (!pipe_resp_valid && ptw_wait < 50) begin
             tick();
-            wait_count = wait_count + 1;
+            ptw_wait = ptw_wait + 1;
         end
-        if (wait_count == 50)
+        if (ptw_wait == 50)
             $fatal(1,
-                "translated PTW AR timeout lsu=%0d miss=%b phys=%0d fallback=%b",
-                dut.lsu_state_q, dut.miss_active_q, dut.phys_state_q,
-                dut.pipe_fallback_active_q);
-        tick();
-        send_read_response(3'b111, 256'd0, 2'b00);
-        wait_count = 0;
-        while (!pipe_resp_valid && wait_count < 50) begin
-            tick();
-            wait_count = wait_count + 1;
-        end
-        if (wait_count == 50)
-            $fatal(1,
-                "translated response timeout lsu=%0d miss=%b phys=%0d fallback=%b",
-                dut.lsu_state_q, dut.miss_active_q, dut.phys_state_q,
-                dut.pipe_fallback_active_q);
+                   "translated PTE CCX response timeout lsu=%0d miss=%b req=%b resp=%b",
+                   dut.lsu_state_q, dut.miss_active_q,
+                   dut.u_ptw.state_q,
+                   dut.u_ptw.backend_state_q);
         if (pipe_resp_tag != 2'd2 || !pipe_resp_page_fault ||
             pipe_resp_access_fault)
             $fatal(1, "translated tagged LSU fallback mismatch");
+        if ((ccx_reads - wait_count) != 1 ||
+            ar_count != channel_wait)
+            $fatal(1,
+                   "translated PTW did not use exactly one CCX PTE line");
         pipe_resp_ready = 1;
         tick();
+
+        // Walk a complete three-level mapping.  Each dependent PTE fetch is a
+        // line read on CCX, with the walker selecting its original 64-bit
+        // lane, followed by one data-cache line read at the translated PA.
+        ccx_memory[64'h0000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0401;
+        ccx_memory[64'h1000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0801;
+        ccx_memory[64'h2000 >> 6][4*64 +: 64] = 64'h0000_0000_0000_0ccf;
+        ccx_memory[64'h3000 >> 6][0*64 +: 64] = 64'h5a17_c0de_cafe_1234;
+        wait_count = ccx_reads;
+        channel_wait = ar_count;
+        push_pipe_request(3'd3, 1'b0, 64'h4000, 64'd0, 8'd0);
+        expect_pipe_response(3'd3, 64'h5a17_c0de_cafe_1234,
+                             1'b0, 1'b0);
+        if ((ccx_reads - wait_count) != 4)
+            $fatal(1,
+                   "three-level walk plus translated load used %0d CCX reads",
+                   ccx_reads - wait_count);
+        if (ar_count != channel_wait)
+            $fatal(1, "translated PTW or L1D request escaped onto AXI");
+
         pipe_req_vm_mode = `RV64_SATP_MODE_BARE;
         pipe_req_priv = `RV64_PRIV_M;
 
@@ -896,7 +931,7 @@ module tb_axi_bus #(
         tick();
         lsu_valid = 0;
 
-        $display("PASS: AXI fetch/PTW plus native 512-bit CCX L1D traffic");
+        $display("PASS: core CCX memory path and cacheless AXI fetch");
         $finish;
     end
 endmodule

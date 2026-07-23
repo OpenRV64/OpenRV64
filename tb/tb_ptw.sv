@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-priv.v"
+`include "complex/protocol/defs.v"
 
 module tb_ptw;
 
@@ -9,6 +10,7 @@ module tb_ptw;
 
     logic clk;
     logic rst_n;
+    logic invalidate;
 
     logic req_valid;
     wire req_ready;
@@ -26,6 +28,7 @@ module tb_ptw;
     wire [63:0] resp_paddr;
     wire resp_page_fault;
     wire resp_access_fault;
+    wire resp_invalidated;
     wire resp_global;
     wire [1:0] resp_level;
     wire resp_readable;
@@ -35,28 +38,57 @@ module tb_ptw;
     wire resp_accessed;
     wire resp_dirty;
 
-    wire mem_valid;
-    wire mem_ready;
-    wire mem_write;
-    wire [63:0] mem_addr;
-    wire [63:0] mem_wdata;
-    wire [7:0] mem_wstrb;
-    wire [63:0] mem_rdata;
-    wire mem_error;
+    wire pmp_valid;
+    wire [63:0] pmp_addr;
+
+    wire ccx_req_valid;
+    wire ccx_req_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
+    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    wire ccx_req_lock;
+    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
+    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
+    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
+    wire [2:0] ccx_req_size;
+    wire [63:0] ccx_req_addr;
+    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    wire ccx_resp_valid;
+    wire ccx_resp_ready;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    reg ccx_resp_pending_q;
+    reg [63:0] ccx_resp_line_addr_q;
+    reg ccx_resp_error_q;
 
     reg [63:0] page_memory [0:8191];
     logic inject_mem_error;
     logic [63:0] mem_error_addr;
+    logic mem_allow;
     integer memory_index;
+    integer memory_reads;
+    integer shootdowns;
+    integer reads_before;
+    integer root_a_reads;
+    integer middle_a_reads;
 
-    assign mem_ready = mem_valid;
-    assign mem_rdata = page_memory[mem_addr[15:3]];
-    assign mem_error = mem_valid && inject_mem_error &&
-                       (mem_addr == mem_error_addr);
+    assign ccx_req_ready = mem_allow && !ccx_resp_pending_q;
+    assign ccx_resp_valid = ccx_resp_pending_q;
+    integer response_word;
+    always @* begin
+        ccx_resp_rdata = {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+        for (response_word = 0; response_word < 8;
+             response_word = response_word + 1)
+            ccx_resp_rdata[response_word*64 +: 64] =
+                page_memory[(ccx_resp_line_addr_q >> 3) + response_word];
+    end
 
-    openrv64_bus_ptw dut (
+    openrv64_bus_ptw #(
+        .PTE_CACHE_ENTRIES(4)
+    ) dut (
         .clk(clk),
         .rst_n(rst_n),
+        .invalidate_i(invalidate),
         .req_valid_i(req_valid),
         .req_ready_o(req_ready),
         .req_vaddr_i(req_vaddr),
@@ -72,6 +104,7 @@ module tb_ptw;
         .resp_paddr_o(resp_paddr),
         .resp_page_fault_o(resp_page_fault),
         .resp_access_fault_o(resp_access_fault),
+        .resp_invalidated_o(resp_invalidated),
         .resp_global_o(resp_global),
         .resp_level_o(resp_level),
         .resp_readable_o(resp_readable),
@@ -80,15 +113,83 @@ module tb_ptw;
         .resp_user_o(resp_user),
         .resp_accessed_o(resp_accessed),
         .resp_dirty_o(resp_dirty),
-        .mem_valid_o(mem_valid),
-        .mem_ready_i(mem_ready),
-        .mem_write_o(mem_write),
-        .mem_addr_o(mem_addr),
-        .mem_wdata_o(mem_wdata),
-        .mem_wstrb_o(mem_wstrb),
-        .mem_rdata_i(mem_rdata),
-        .mem_error_i(mem_error)
+        .pmp_valid_o(pmp_valid),
+        .pmp_ready_i(pmp_valid),
+        .pmp_addr_o(pmp_addr),
+        .pmp_allow_i(1'b1),
+        .ccx_req_valid_o(ccx_req_valid),
+        .ccx_req_ready_i(ccx_req_ready),
+        .ccx_req_hart_id_o(ccx_req_hart_id),
+        .ccx_req_txn_id_o(ccx_req_txn_id),
+        .ccx_req_source_id_o(ccx_req_source_id),
+        .ccx_req_op_o(ccx_req_op),
+        .ccx_req_lock_o(ccx_req_lock),
+        .ccx_req_order_o(ccx_req_order),
+        .ccx_req_kind_o(ccx_req_kind),
+        .ccx_req_attr_o(ccx_req_attr),
+        .ccx_req_size_o(ccx_req_size),
+        .ccx_req_addr_o(ccx_req_addr),
+        .ccx_req_burst_len_o(ccx_req_burst_len),
+        .ccx_resp_valid_i(ccx_resp_valid),
+        .ccx_resp_ready_o(ccx_resp_ready),
+        .ccx_resp_hart_id_i('0),
+        .ccx_resp_txn_id_i('0),
+        .ccx_resp_source_id_i(`OPENRV64_CCX_SOURCE_PTW),
+        .ccx_resp_beat_index_i('0),
+        .ccx_resp_last_i(1'b1),
+        .ccx_resp_rdata_i(ccx_resp_rdata),
+        .ccx_resp_error_i(ccx_resp_error_q)
     );
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            memory_reads <= 0;
+            root_a_reads <= 0;
+            middle_a_reads <= 0;
+            ccx_resp_pending_q <= 1'b0;
+            ccx_resp_line_addr_q <= 64'd0;
+            ccx_resp_error_q <= 1'b0;
+            shootdowns <= 0;
+        end else begin
+            if (ccx_req_valid && ccx_req_ready) begin
+                if (ccx_req_source_id != `OPENRV64_CCX_SOURCE_PTW ||
+                    ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
+                    ccx_req_burst_len != 0 || ccx_req_lock)
+                    $fatal(1, "invalid PTW CCX request envelope");
+                if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
+                    if (ccx_req_size != 3'd6 ||
+                        ccx_req_attr !=
+                            (`OPENRV64_CCX_ATTR_CACHEABLE |
+                             `OPENRV64_CCX_ATTR_IDEMPOTENT))
+                        $fatal(1, "invalid PTW PTE-line read");
+                end else if (ccx_req_op == `OPENRV64_CCX_OP_FENCE) begin
+                    if (ccx_req_size != 3'd0 ||
+                        ccx_req_attr != `OPENRV64_CCX_ATTR_NONE ||
+                        ccx_req_order != `OPENRV64_CCX_ORDER_ACQ_REL)
+                        $fatal(1, "invalid PTW generation shootdown");
+                    shootdowns <= shootdowns + 1;
+                end else begin
+                    $fatal(1, "unexpected PTW CCX operation");
+                end
+                ccx_resp_pending_q <= 1'b1;
+                ccx_resp_line_addr_q <= ccx_req_addr;
+                ccx_resp_error_q <=
+                    (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
+                    inject_mem_error &&
+                    (mem_error_addr[63:6] == ccx_req_addr[63:6]);
+            end
+            if (ccx_resp_valid && ccx_resp_ready)
+                ccx_resp_pending_q <= 1'b0;
+        end
+        if (rst_n && ccx_req_valid && ccx_req_ready &&
+            (ccx_req_op == `OPENRV64_CCX_OP_READ)) begin
+            memory_reads <= memory_reads + 1;
+            if (ccx_req_addr == 64'h0000_0000_0000_8000)
+                root_a_reads <= root_a_reads + 1;
+            if (ccx_req_addr == 64'h0000_0000_0000_9000)
+                middle_a_reads <= middle_a_reads + 1;
+        end
+    end
 
     initial begin
         clk = 1'b0;
@@ -196,6 +297,7 @@ module tb_ptw;
             end
             #1;
             if (!resp_valid ||
+                resp_invalidated ||
                 resp_page_fault !== expected_page_fault ||
                 resp_access_fault !== expected_access_fault ||
                 (!expected_page_fault && !expected_access_fault &&
@@ -215,8 +317,30 @@ module tb_ptw;
         end
     endtask
 
+    task automatic flush_translation_caches;
+        integer expected_shootdowns;
+        integer cycles;
+        begin
+            expected_shootdowns = shootdowns + 1;
+            @(negedge clk);
+            invalidate = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            invalidate = 1'b0;
+            cycles = 0;
+            while (((shootdowns < expected_shootdowns) || !req_ready) &&
+                   (cycles < 32)) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            if ((shootdowns < expected_shootdowns) || !req_ready)
+                $fatal(1, "PTW shootdown did not complete");
+        end
+    endtask
+
     initial begin
         rst_n = 1'b0;
+        invalidate = 1'b0;
         req_valid = 1'b0;
         req_vaddr = 64'd0;
         req_access = ACCESS_READ;
@@ -229,6 +353,9 @@ module tb_ptw;
         resp_ready = 1'b0;
         inject_mem_error = 1'b0;
         mem_error_addr = 64'd0;
+        mem_allow = 1'b1;
+        root_a_reads = 0;
+        middle_a_reads = 0;
 
         for (memory_index = 0;
              memory_index < 8192;
@@ -240,6 +367,26 @@ module tb_ptw;
         @(negedge clk);
         rst_n = 1'b1;
 
+        // Shootdown wins over admission.  A request held beside invalidate
+        // must not observe a false handshake and may be retried afterward.
+        @(negedge clk);
+        req_valid = 1'b1;
+        invalidate = 1'b1;
+        #1;
+        if (req_ready)
+            $fatal(1, "PTW admitted a new walk during shootdown");
+        @(posedge clk);
+        @(negedge clk);
+        invalidate = 1'b0;
+        memory_index = 0;
+        while (!req_ready && memory_index < 32) begin
+            @(negedge clk);
+            memory_index = memory_index + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "PTW did not reopen admission after shootdown");
+        req_valid = 1'b0;
+
         map_4k(64'h0000_0000_1234_5678,
                44'd1, 44'd2, 44'd3, 44'h80000,
                1'b1, 1'b1, 1'b0, 1'b0, 1'b1, 1'b1, 1'b1);
@@ -249,6 +396,29 @@ module tb_ptw;
                       64'h0000_0000_8000_0678,
                       1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b1,
                       "4 KiB translation and inherited global");
+
+        reads_before = memory_reads;
+        issue_request(64'h0000_0000_1234_5678,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
+                      64'h0000_0000_8000_0678,
+                      1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b1,
+                      "non-leaf PTE cache hit");
+        if ((memory_reads - reads_before) != 1)
+            $fatal(1, "cached non-leaf path used %0d memory reads",
+                   memory_reads - reads_before);
+
+        flush_translation_caches();
+        reads_before = memory_reads;
+        issue_request(64'h0000_0000_1234_5678,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
+                      64'h0000_0000_8000_0678,
+                      1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b1,
+                      "shootdown flushes non-leaf PTE cache");
+        if ((memory_reads - reads_before) != 3)
+            $fatal(1, "post-shootdown walk used %0d memory reads",
+                   memory_reads - reads_before);
 
         write_pte(44'd2, 9'h100,
                   make_pte(44'h90000, 1'b1,
@@ -293,6 +463,7 @@ module tb_ptw;
         map_4k(64'h0000_0000_3000_0456,
                44'd1, 44'd2, 44'd3, 44'ha0000,
                1'b1, 1'b0, 1'b1, 1'b1, 1'b1, 1'b1, 1'b0);
+        flush_translation_caches();
         issue_request(64'h0000_0000_3000_0456,
                       ACCESS_READ, `RV64_PRIV_S,
                       `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
@@ -344,8 +515,118 @@ module tb_ptw;
                       1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b0,
                       "dirty-bit read succeeds");
 
+        // A shootdown terminates the walk.  If a PTE transaction has already
+        // escaped, the walker drains that one transaction but must not consume
+        // it, request another level, or repopulate the cache.
+        flush_translation_caches();
+        map_4k(64'h0000_0000_0100_0123,
+               44'd4, 44'd5, 44'd6, 44'hd0000,
+               1'b1, 1'b0, 1'b0, 1'b0, 1'b1, 1'b1, 1'b0);
+        reads_before = memory_reads;
+        mem_allow = 1'b0;
+        @(negedge clk);
+        req_vaddr = 64'h0000_0000_0100_0123;
+        req_access = ACCESS_READ;
+        req_priv = `RV64_PRIV_S;
+        req_vm_mode = `RV64_SATP_MODE_SV39;
+        req_root_ppn = 44'd4;
+        req_sum = 1'b0;
+        req_mxr = 1'b0;
+        req_valid = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        memory_index = 0;
+        while (!ccx_req_valid && memory_index < 4) begin
+            @(negedge clk);
+            memory_index = memory_index + 1;
+        end
+        if (!ccx_req_valid)
+            $fatal(1, "shootdown test did not start a CCX PTE request");
+        invalidate = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        invalidate = 1'b0;
+        if (!ccx_req_valid)
+            $fatal(1, "shootdown abandoned an outstanding CCX request");
+        mem_allow = 1'b1;
+        while (!resp_valid)
+            @(negedge clk);
+        #1;
+        if (!resp_invalidated || resp_page_fault || resp_access_fault)
+            $fatal(1, "shootdown did not return an invalidated walk");
+        if ((memory_reads - reads_before) != 1)
+            $fatal(1, "terminated walk consumed %0d PTE transactions",
+                   memory_reads - reads_before);
+        resp_ready = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        resp_ready = 1'b0;
+        memory_index = 0;
+        while (!req_ready && memory_index < 32) begin
+            @(negedge clk);
+            memory_index = memory_index + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "terminated-walk shootdown did not complete");
+
+        reads_before = memory_reads;
+        issue_request(64'h0000_0000_0100_0123,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd4, 1'b0, 1'b0,
+                      64'h0000_0000_d000_0123,
+                      1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b0,
+                      "terminated walk does not refill PTE cache");
+        if ((memory_reads - reads_before) != 3)
+            $fatal(1, "post-termination walk used %0d memory reads",
+                   memory_reads - reads_before);
+
+        // Four entries hold two paths.  Bringing in a third path must evict
+        // the oldest middle-level entries before an older root-level entry.
+        flush_translation_caches();
+        map_4k(64'h0000_0000_0000_0000,
+               44'd8, 44'd9, 44'd14, 44'h100,
+               1'b1, 1'b0, 1'b0, 1'b0, 1'b1, 1'b1, 1'b0);
+        issue_request(64'h0000_0000_0000_0000,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd8, 1'b0, 1'b0,
+                      64'h0000_0000_0010_0000,
+                      1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b0,
+                      "weighted PTE path A");
+        map_4k(64'h0000_0000_0000_0000,
+               44'd10, 44'd11, 44'd15, 44'h200,
+               1'b1, 1'b0, 1'b0, 1'b0, 1'b1, 1'b1, 1'b0);
+        issue_request(64'h0000_0000_0000_0000,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd10, 1'b0, 1'b0,
+                      64'h0000_0000_0020_0000,
+                      1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b0,
+                      "weighted PTE path B");
+        map_4k(64'h0000_0000_0000_0000,
+               44'd12, 44'd13, 44'd6, 44'h300,
+               1'b1, 1'b0, 1'b0, 1'b0, 1'b1, 1'b1, 1'b0);
+        issue_request(64'h0000_0000_0000_0000,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd12, 1'b0, 1'b0,
+                      64'h0000_0000_0030_0000,
+                      1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b0,
+                      "weighted PTE path C");
+        reads_before = root_a_reads;
+        memory_index = middle_a_reads;
+        issue_request(64'h0000_0000_0000_0000,
+                      ACCESS_READ, `RV64_PRIV_S,
+                      `RV64_SATP_MODE_SV39, 44'd8, 1'b0, 1'b0,
+                      64'h0000_0000_0010_0000,
+                      1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b0,
+                      "weighted replacement retains root PTE");
+        if (root_a_reads != reads_before)
+            $fatal(1, "weighted replacement evicted a root-level PTE");
+        if (middle_a_reads != (memory_index + 1))
+            $fatal(1, "weighted replacement retained lower-level PTE");
+
         mem_error_addr = 64'h0000_0000_0000_1000;
         inject_mem_error = 1'b1;
+        flush_translation_caches();
         issue_request(64'h0000_0000_1234_5678,
                       ACCESS_READ, `RV64_PRIV_S,
                       `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
@@ -361,11 +642,16 @@ module tb_ptw;
                       1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b1,
                       "Bare identity translation");
 
-        $display("PASS: Sv39 PTW walk, permissions, superpages, and faults");
+        $display("PASS: Sv39 PTW, weighted non-leaf cache, shootdown, and faults");
         $finish;
     end
 
-    wire unused_memory_request = |{mem_write, mem_wdata, mem_wstrb};
+    wire unused_ptw_sidebands = |{
+        pmp_addr, ccx_req_hart_id, ccx_req_txn_id,
+        ccx_req_source_id, ccx_req_op, ccx_req_lock,
+        ccx_req_order, ccx_req_kind, ccx_req_attr,
+        ccx_req_size, ccx_req_burst_len
+    };
     wire unused_leaf_attrs = |{
         resp_readable, resp_writable, resp_executable,
         resp_user, resp_accessed, resp_dirty

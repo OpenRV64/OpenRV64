@@ -36,18 +36,33 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_RV64A = 1,
     parameter ENABLE_L1I = 1,
     parameter ENABLE_L1D = 1,
+    parameter integer L1I_CACHE_BYTES = 16 * 1024,
+    parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_BASE =
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
         {`RV64_XLEN{1'b1}},
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_STORE_BUFFER_LINES = 8,
+    parameter integer L1D_PREFETCH_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
+    parameter integer L1D_PREFETCH_DISTANCE = 1,
+    parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
+    parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
+    parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
+    parameter integer L1D_PREFETCH_OUTSTANDING = 4,
+    parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
+    parameter ENABLE_MAGIC_MEMORY = 0,
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
-    parameter ENABLE_FETCH_ALT_LOOKASIDE = 0,
+    parameter ENABLE_FETCH_ALT_LOOKASIDE = 1,
+    // Optional bandwidth policy.  The default stashes every eligible
+    // alternate path; set this to one to restrict stashing to weak BP output.
+    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,
@@ -198,6 +213,7 @@ module openrv64_rv64_top_3p #(
     wire fetch_pipe_req_ready;
     wire [63:0] fetch_pipe_req_addr;
     wire fetch_pipe_req_stash;
+    wire fetch_pipe_req_demand;
     wire fetch_pipe_resp_valid;
     wire fetch_pipe_resp_ready;
     wire [63:0] fetch_pipe_resp_addr;
@@ -205,11 +221,12 @@ module openrv64_rv64_top_3p #(
     wire fetch_pipe_resp_access_fault;
     wire fetch_pipe_resp_page_fault;
     wire fetch_pipe_resp_stash;
+    wire fetch_pipe_resp_demand;
     wire fetch3_cancel;
     wire fetch3_cancel_stash;
     wire [63:0] fetch3_stream_pc;
     wire fetch_alt_restart_hit;
-    wire use_axi_bus = (BUS_CONFIG == `OPENRV64_BUS_AXI);
+    wire use_ccx_bus = (BUS_CONFIG == `OPENRV64_BUS_AXI);
 
     wire backend_redirect;
     wire [63:0] backend_redirect_id;
@@ -275,6 +292,7 @@ module openrv64_rv64_top_3p #(
     wire bp_branch_present;
     wire bp_branch_allocate;
     wire bp_prediction_taken;
+    wire bp_prediction_weak;
     wire bp_prediction_target_valid;
     wire [63:0] bp_prediction_target;
     wire bp_target_mispredict;
@@ -347,6 +365,7 @@ module openrv64_rv64_top_3p #(
             assign fetch_pipe_req_valid = 1'b0;
             assign fetch_pipe_req_addr = 64'd0;
             assign fetch_pipe_req_stash = 1'b0;
+            assign fetch_pipe_req_demand = 1'b0;
             assign fetch_pipe_resp_ready = 1'b0;
             assign fetch3_cancel = 1'b0;
             assign fetch3_cancel_stash = 1'b1;
@@ -367,6 +386,7 @@ module openrv64_rv64_top_3p #(
                 .req_ready_i(fetch_pipe_req_ready),
                 .req_addr_o(fetch_pipe_req_addr),
                 .req_stash_o(fetch_pipe_req_stash),
+                .req_demand_o(fetch_pipe_req_demand),
                 .resp_valid_i(fetch_pipe_resp_valid),
                 .resp_ready_o(fetch_pipe_resp_ready),
                 .resp_addr_i(fetch_pipe_resp_addr),
@@ -374,6 +394,7 @@ module openrv64_rv64_top_3p #(
                 .resp_access_fault_i(fetch_pipe_resp_access_fault),
                 .resp_page_fault_i(fetch_pipe_resp_page_fault),
                 .resp_stash_i(fetch_pipe_resp_stash),
+                .resp_demand_i(fetch_pipe_resp_demand),
                 .branch_pair_valid_i(icache_prefetch_valid),
                 .branch_predicted_addr_i(
                     icache_prefetch_predicted_addr),
@@ -563,7 +584,7 @@ module openrv64_rv64_top_3p #(
     wire bp_lookup_indirect = bp_selected_predecode ?
         1'b0 : decode_br_indirect[bp_lane];
 
-    assign bp_branch_present = use_axi_bus &&
+    assign bp_branch_present = use_ccx_bus &&
                                (|frontend_control_select) &&
                                !control_flush && !control_redirect &&
                                !halted_q;
@@ -617,6 +638,7 @@ module openrv64_rv64_top_3p #(
         .train_taken_i(branch_train_taken),
         .train_pc_i(branch_train_pc),
         .prediction_taken_o(bp_prediction_taken),
+        .prediction_weak_o(bp_prediction_weak),
         .prediction_target_valid_o(bp_prediction_target_valid),
         .prediction_target_o(bp_prediction_target),
         .target_mispredict_o(bp_target_mispredict),
@@ -702,8 +724,10 @@ module openrv64_rv64_top_3p #(
         {1'b0, frontend_decode_fire[2]};
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
-    assign icache_prefetch_valid = use_axi_bus && bp_branch_allocate &&
-                                   bp_lookup_branch;
+    assign icache_prefetch_valid = use_ccx_bus && bp_branch_allocate &&
+                                   bp_lookup_branch &&
+                                   (!ENABLE_FETCH_ALT_CONFIDENCE_GATE ||
+                                    bp_prediction_weak);
     assign icache_prefetch_taken_addr = bp_direct_target;
     assign icache_prefetch_fallthrough_addr = bp_selected_pc + 64'd4;
     assign icache_prefetch_predicted_addr =
@@ -894,7 +918,7 @@ module openrv64_rv64_top_3p #(
         .satp_mode_o(csr_satp_mode), .satp_asid_o(csr_satp_asid),
         .satp_root_ppn_o(csr_satp_root_ppn),
         .status_sum_o(csr_status_sum), .status_mxr_o(csr_status_mxr),
-        .pmp_instr_addr_i(use_axi_bus ? fetch3_stream_pc :
+        .pmp_instr_addr_i(use_ccx_bus ? fetch3_stream_pc :
                           fetch_mem_exec_addr),
         .pmp_instr_allow_o(csr_pmp_instr_allow),
         .pmp_data_valid_i(backend_mem_access),
@@ -936,17 +960,32 @@ module openrv64_rv64_top_3p #(
 
     openrv64_core_bus #(
         .BUS_CONFIG(BUS_CONFIG),
+        .ENABLE_MAGIC_MEMORY(ENABLE_MAGIC_MEMORY),
         .ENABLE_L1I(ENABLE_L1I),
         .ENABLE_L1D(ENABLE_L1D),
+        .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+        .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
         .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
         .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
         .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
+        .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+        .L1D_PREFETCH_MAX_STRIDE_LINES(
+            L1D_PREFETCH_MAX_STRIDE_LINES),
+        .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
+        .L1D_PREFETCH_ADAPTIVE_ENABLE(
+            L1D_PREFETCH_ADAPTIVE_ENABLE),
+        .L1D_PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),
+        .L1D_PREFETCH_QUEUE_LINES(L1D_PREFETCH_QUEUE_LINES),
+        .L1D_PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
+        .L1D_PREFETCH_DEMAND_RESERVE(
+            L1D_PREFETCH_DEMAND_RESERVE),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+        .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
         .HART_ID(HART_ID)
     ) u_bus (
         .clk(clk), .rst_n(rst_n), .fetch_valid_i(fetch_mem_valid),
-        .fetch_cancel_i(use_axi_bus ? fetch3_cancel :
+        .fetch_cancel_i(use_ccx_bus ? fetch3_cancel :
                         (fetch_invalidate || control_redirect)),
         .fetch_addr_i(fetch_mem_exec_addr), .fetch_priv_i(csr_priv_mode),
         .fetch_vm_mode_i((csr_priv_mode == `RV64_PRIV_M) ?
@@ -960,6 +999,7 @@ module openrv64_rv64_top_3p #(
         .fetch_pipe_req_ready_o(fetch_pipe_req_ready),
         .fetch_pipe_req_addr_i(fetch_pipe_req_addr),
         .fetch_pipe_req_stash_i(fetch_pipe_req_stash),
+        .fetch_pipe_req_demand_i(fetch_pipe_req_demand),
         .fetch_pipe_req_priv_i(csr_priv_mode),
         .fetch_pipe_req_vm_mode_i((csr_priv_mode == `RV64_PRIV_M) ?
                                   `RV64_SATP_MODE_BARE : csr_satp_mode),
@@ -974,6 +1014,7 @@ module openrv64_rv64_top_3p #(
         .fetch_pipe_resp_access_fault_o(fetch_pipe_resp_access_fault),
         .fetch_pipe_resp_page_fault_o(fetch_pipe_resp_page_fault),
         .fetch_pipe_resp_stash_o(fetch_pipe_resp_stash),
+        .fetch_pipe_resp_demand_o(fetch_pipe_resp_demand),
         .fetch_pipe_cancel_stash_i(fetch3_cancel_stash),
         .lsu_valid_i(1'b0), .lsu_lock_i(1'b0), .lsu_write_i(1'b0),
         .lsu_addr_i(64'd0), .lsu_wdata_i(64'd0),
@@ -1119,7 +1160,7 @@ module openrv64_rv64_top_3p #(
         (|backend_issue_valid) == 1'b0 &&
             (backend_dispatch_occupancy != 0),
         backend_mem_valid && !backend_mem_ready,
-        use_axi_bus ? (fetch_pipe_req_valid && !fetch_pipe_req_ready) :
+        use_ccx_bus ? (fetch_pipe_req_valid && !fetch_pipe_req_ready) :
                       (fetch_mem_valid && !fetch_mem_ready),
         (backend_dispatch_occupancy != 0) && (|backend_write_busy),
         (backend_dispatch_occupancy != 0) && (|backend_write_busy),
@@ -1175,18 +1216,18 @@ module openrv64_rv64_top_3p #(
                 pc_q <= backend_redirect_target;
             else if (bp_predict_redirect)
                 pc_q <= bp_predict_target;
-            else if (use_axi_bus && (frontend_decode_count != 0))
+            else if (use_ccx_bus && (frontend_decode_count != 0))
                 pc_q <= fetch3_stream_pc +
                         ({62'd0, frontend_decode_count} << 2);
-            else if (!use_axi_bus && fetch_pc_valid)
+            else if (!use_ccx_bus && fetch_pc_valid)
                 pc_q <= pc_q + (pc_q[2] ? 64'd4 : 64'd8);
 
             if (ENABLE_TRACE) begin
                 trace_cycle_q <= trace_cycle_q + 64'd1;
-                if (use_axi_bus && (frontend_decode_count != 0))
+                if (use_ccx_bus && (frontend_decode_count != 0))
                     trace_next_id_q <= trace_next_id_q +
                                        frontend_decode_count;
-                else if (!use_axi_bus && fetch_pc_valid)
+                else if (!use_ccx_bus && fetch_pc_valid)
                     trace_next_id_q <= trace_next_id_q +
                                        (pc_q[2] ? 64'd1 : 64'd2);
             end
