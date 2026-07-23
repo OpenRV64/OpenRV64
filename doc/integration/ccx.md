@@ -38,21 +38,36 @@ cache-line contract.
 
 Other current restrictions are:
 
-- `rtl/core/exec/lsu/rv64-a.v` keeps LR/SC reservations inside the hart and
-  implements AMOs as an ordinary read followed by an ordinary write.  This is
-  only safe for a single hart with no independent memory agent.
+- `rtl/core/exec/lsu/rv64-a.v` still keeps LR/SC reservations inside the hart.
+  AMOs retain the local read/compute/write implementation but now mark both
+  memory phases with `ccx_req_lock`.  The shared L2 can exclude other requests
+  from the marked read through the matching marked write.  This remains a
+  one-hart bring-up mechanism, not the final atomic protocol.
 - The decoder accepts RV64A `aq` and `rl` bits, but the core currently discards
   them because the legacy memory path is blocking and strictly ordered.
-- `rtl/cache/l1/l1.v` is physically tagged, blocking, write-through, and
+- `rtl/cache/l1/l1.v` is physically tagged, hit-pipelined, write-through, and
   no-write-allocate.  Its separate lookup/physical address inputs allow VIPT
-  L1I operation; L1D ties them together.  It has a back-invalidation input but
-  accepts an invalidation only while idle.
-- The shared L2 currently accepts `READ`, `WRITE`, and a conservatively
-  serialized `FENCE`.  LR, SC, and AMO requests fail explicitly.  The L2 does
-  not track private-cache sharers or emit probes.
-- The generated wrapper straps each transport endpoint to a distinct CCX hart
-  ID, but the core tops do not yet pass that ID into the `mhartid` CSR.  Without
-  a core `HART_ID` parameter, every instantiated core reports hart zero.
+  L1I operation; L1D ties them together.  Resident reads sustain one request
+  and response per cycle; misses and uncached accesses serialize the
+  lower-memory port.  Tagged cacheable L1D stores may instead enter an ordered
+  byte-masked line FIFO.  Back-invalidation drains accepted lookups, responses,
+  and that store FIFO before modifying tags.
+- L1I fill/prefetch slots and L1D fill/store buffers default to eight
+  cachelines.  Their depths are parameterized.  The fill slots do not yet make
+  the private caches nonblocking: each demand backend still has one active CCX
+  miss and lacks transaction-ID-indexed MSHRs.
+- The shared L2 accepts `READ`, `WRITE`, and a conservatively serialized
+  `FENCE`.  It implements the temporary marked read/write exclusion, but LR,
+  SC, and explicit AMO operations still fail.  It does not track private-cache
+  sharers or emit probes.
+- The three-pipe core and private caches expose the native 512-bit CCX
+  interface, while the current L2 northbound controller remains the legacy
+  64-bit command interface.  The production native-line-to-L2 adapter is not
+  yet present; current integrated native tests terminate CCX in a memory
+  model, and L2 lock behavior is tested separately.
+- `HART_ID` now reaches both native CCX identity and the `mhartid` CSR on the
+  three-pipe top.  The generated multi-hart complex still uses legacy scalar
+  transport endpoints rather than instantiated native core tops.
 
 ## Required hart request contract
 
@@ -66,6 +81,7 @@ PMP checking, and private-cache lookup:
 | `source_id` | At least instruction cache, data cache, or PTW. |
 | `txn_id` | Requester transaction identity, not reused until its response is drained. |
 | `op` | Read, write, LR, SC, AMO function, or fence. |
+| `lock` | Transitional one-hart AMO exclusion marker; asserted on both decomposed phases. |
 | `order` | None, acquire, release, or acquire-release. |
 | `attr` | Per-request cacheable, device, idempotent, and executable attributes. |
 | `size` | Sub-line access size for atomics and uncached operations; cache-line transfers imply 64 bytes. |
@@ -154,6 +170,41 @@ Device and non-cacheable operations must:
 - use the required stronger ordering; and
 - disable store-to-load forwarding unless the region explicitly permits it.
 
+A posted device write is not implicitly a pre-barrier.  Software which relies
+on all older writes reaching the device first must execute the required write
+barrier before issuing it.  A later implementation may provide a CSR policy
+which forces selected device writes to wait for the older-store drain, but that
+is an optional stronger mode rather than the base ordering rule.  The current
+RTL leaves device and non-cacheable writes blocking while this PMA and barrier
+policy is not yet wired.
+
+## Current posted-store contract
+
+`openrv64_l1d_ccx` implements the first cacheable store buffer at the private
+L1 boundary:
+
+- `STORE_BUFFER_LINES` defaults to eight entries and is configurable from one
+  through sixteen;
+- every entry is one aligned 64-byte address, 512 data bits, and 64 byte
+  enables;
+- a scalar CPU store occupies its addressed lane without forcing L1 to read or
+  merge the other bytes;
+- FIFO order is retained and each drain is one CCX line write with `size=6`;
+- `#LOCK`, uncached, and device operations are not posted in this revision;
+- an external invalidation is acknowledged only after the FIFO becomes empty;
+  and
+- the separate ordered store-response channel carries the eventual CCX error.
+
+The core bus has a matching tag FIFO.  The execution pipe may retire a posted
+store when the bus accepts it, but it retains the LSU slot until the drain
+response arrives.  A late CCX failure is therefore reported through the
+existing asynchronous-store-fault path rather than silently discarded.  This
+distinction is required: fast admission and precise synchronous fault delivery
+cannot both be claimed after architectural retirement.  The current core has
+eight LSU tags, matching the default eight-entry L1D FIFO, so one hart can hold
+eight unacknowledged stores.  A deeper FIFO requires a larger tag namespace or
+a separate deferred-fault metadata queue to exploit every entry from one hart.
+
 PMP remains an access-permission check.  PMA describes the behavior of an
 allowed physical target; one does not replace the other.
 
@@ -187,6 +238,38 @@ not required for the first coherent version.
 The atomic still uses the 512-bit CCX data path.  Its physical address and size
 select the 32- or 64-bit operand lane, the returned old value occupies that
 lane, and the remaining response-line bits have no architectural meaning.
+
+### Current one-hart AMO bring-up
+
+The implemented temporary path is narrower than the required final contract:
+
+1. The hart retains its existing local AMO ALU and emits a `READ` with
+   `ccx_req_lock=1`.
+2. L1D invalidates its local copy, bypasses lookup/allocation, and forwards the
+   marked sub-line request on the 512-bit native interface.
+3. The home records the requesting hart and 64-byte line and excludes every
+   request except a marked request from that hart to that line.
+4. The hart computes the new value and emits the corresponding marked `WRITE`.
+5. The home updates the line and releases the lock.  A read, refill,
+   writeback, or bypass error also releases it.
+
+The hart-local I/D command arbiter admits only D-cache commands while the
+sequence is active.  Without that rule, a backpressured I-cache request could
+hold the arbiter grant ahead of the only write capable of releasing the home
+lock.  A started AMO and its bus fallback slot are also irrevocable across a
+younger redirect, because cancellation after the marked read can strand the
+lock.
+
+LR and SC deliberately do not use `ccx_req_lock`.  Holding this lock from an
+LR until some later SC would turn a reservation into an unbounded critical
+section and can deadlock.  LR/SC therefore remain single-hart-local until the
+home implements real reservations.
+
+This scheme is acceptable only for current one-hart bring-up with one home,
+one controlled ingress, and guaranteed release/reset behavior.  It does not
+support coherent DMA or multi-hart operation, does not preserve `aq`/`rl`, and
+does not replace the explicit home-executed LR/SC/AMO protocol specified
+above.
 
 ## Private-cache probe protocol
 
@@ -268,6 +351,11 @@ The first implementation may conservatively order more strongly than RVWMO:
 - `FENCE` waits for all older reads, writes, and atomics, sends a CCX fence
   token, and prevents younger memory operations from passing it; and
 - `FENCE.I` performs the data-side drain before local instruction invalidation.
+
+For the implemented L1D FIFO, a data-side drain means both the byte-masked
+store FIFO and its core-bus tag FIFO are empty.  Merely enqueueing all older
+stores is not fence completion.  The current execution path does not yet wire
+architectural fences to this drain condition.
 
 The existing two-bit CCX `order` field is sufficient for `aq` and `rl`.
 Supporting selective `FENCE` predecessor and successor sets later will require

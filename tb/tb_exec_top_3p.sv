@@ -93,6 +93,7 @@ module tb_exec_top_3p;
     reg mem_error;
     reg mem_page_fault;
     reg mem_access_allowed;
+    wire mem_lock;
     wire mem_write;
     wire [`RV64_XLEN-1:0] mem_addr;
     wire [`RV64_XLEN-1:0] mem_wdata;
@@ -104,7 +105,8 @@ module tb_exec_top_3p;
 
     openrv64_exec_top_3p #(
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH),
-        .ENABLE_RV64M(1)
+        .ENABLE_RV64M(1),
+        .ENABLE_POSTED_STORES(0)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -141,6 +143,7 @@ module tb_exec_top_3p;
         .mem_error_i(mem_error),
         .mem_page_fault_i(mem_page_fault),
         .mem_access_allowed_i(mem_access_allowed),
+        .mem_lock_o(mem_lock),
         .mem_write_o(mem_write),
         .mem_addr_o(mem_addr),
         .mem_wdata_o(mem_wdata),
@@ -187,6 +190,7 @@ module tb_exec_top_3p;
 
     reg [ISSUE_WIDTH-1:0] packet;
     integer wait_cycles;
+    integer depth_index;
 
     initial begin
         clk = 1'b0;
@@ -366,7 +370,7 @@ module tb_exec_top_3p;
             fail("ordered store request mismatch");
         tick();
         mem_resp_valid = 1'b1;
-        mem_resp_tag = 2'd0;
+        mem_resp_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
         tick();
         mem_resp_valid = 1'b0;
         #1;
@@ -376,6 +380,87 @@ module tb_exec_top_3p;
         complete_ready = 3'b100;
         tick();
         complete_ready = 3'b000;
+
+        // Fill the entire default LSU tag ring while its native request port
+        // is stalled.  The ninth load must be rejected at the wrapped tail.
+        // Reset the empty ring first so this check explicitly covers 0-7.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        mem_ready = 1'b0;
+        for (depth_index = 0;
+             depth_index < `OPENRV64_LSU_OUTSTANDING;
+             depth_index = depth_index + 1) begin
+            packet = packet_base(64'd120 + depth_index,
+                                 64'h4100 + depth_index * 4,
+                                 32'h0000_b283);
+            packet[ISSUE_RS1_DATA +: 64] =
+                64'h8000 + depth_index * 8;
+            packet[ISSUE_RD +: 5] = 5'd5;
+            packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+            packet[ISSUE_MEM_READ] = 1'b1;
+            packet[ISSUE_REG_WRITE] = 1'b1;
+            issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+            issue_id[2*64 +: 64] = 64'd20 + depth_index;
+            issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = depth_index;
+            issue_valid = 3'b100;
+            #1;
+            if (!issue_ready[2])
+                fail("MEM did not accept all eight LSU tags");
+            tick();
+            issue_valid = 3'b000;
+        end
+        issue_valid = 3'b100;
+        #1;
+        if (issue_ready[2])
+            fail("MEM accepted a ninth LSU operation into eight tags");
+        issue_valid = 3'b000;
+
+        // Drain tags 0-6, leaving only slot 7 occupied.  Atomic admission must
+        // inspect the complete parameterized queue rather than slots 0-2.
+        complete_ready = 3'b100;
+        for (depth_index = 0;
+             depth_index < `OPENRV64_LSU_OUTSTANDING - 1;
+             depth_index = depth_index + 1) begin
+            mem_ready = 1'b1;
+            #1;
+            if (!mem_valid || mem_write ||
+                (mem_tag != depth_index[`OPENRV64_LSU_TAG_WIDTH-1:0])) begin
+                $display("MEM ring expected tag=%0d got valid=%b write=%b tag=%0d",
+                         depth_index, mem_valid, mem_write, mem_tag);
+                fail("MEM LSU tag ring request order mismatch");
+            end
+            tick();
+            mem_ready = 1'b0;
+            mem_resp_tag = depth_index[`OPENRV64_LSU_TAG_WIDTH-1:0];
+            mem_resp_valid = 1'b1;
+            #1;
+            if (!mem_resp_ready)
+                fail("MEM LSU response path was not ready");
+            tick();
+            mem_resp_valid = 1'b0;
+            tick();
+        end
+        complete_ready = 3'b000;
+
+        packet = packet_base(64'd140, 64'h4200,
+                             {5'b00000, 2'b00, 5'd2, 5'd1,
+                              3'b011, 5'd8, 7'b0101111});
+        packet[ISSUE_RS1_DATA +: 64] = 64'h9000;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd1;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_AMOADD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_MEM_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_valid = 3'b100;
+        #1;
+        if (issue_ready[2])
+            fail("MEM admitted atomic while LSU slot 7 remained occupied");
+        issue_valid = 3'b000;
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        mem_ready = 1'b1;
 
         // EX1 M keeps its own context while EX0 remains independent.
         packet = packet_base(64'd103, 64'h5000, 32'h0220_82b3);
@@ -452,8 +537,64 @@ module tb_exec_top_3p;
         if (!complete_valid[1] ||
             (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd44))
             fail("EX1 local previous-result forwarding mismatch");
+        complete_ready = 3'b010;
+        tick();
+        complete_ready = 3'b000;
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
 
-        $display("PASS: 3p local forwarding, EX0 ordering, EX1 M context, and MEM gating");
+        // Once an ordered AMO starts, a younger redirect cannot discard the
+        // read response: doing so would strand the home lock before the
+        // marked write phase.  The atomic therefore survives this flush.
+        packet = packet_base(64'd108, 64'h6000,
+                             {5'b00000, 2'b00, 5'd2, 5'd1,
+                              3'b011, 5'd8, 7'b0101111});
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7000;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd2;
+        packet[ISSUE_RD +: 5] = 5'd8;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_AMOADD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_MEM_WRITE] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*64 +: 64] = 64'd8;
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
+        ordered_head_id = 64'd8;
+        ordered_head_slot = 3'd0;
+        issue_valid = 3'b100;
+        #1;
+        if (!issue_ready[2]) fail("MEM did not accept AMO");
+        tick();
+        issue_valid = 3'b000;
+        while (!mem_valid) tick();
+        if (!mem_lock || mem_write || (mem_addr != 64'h7000))
+            fail("AMO read did not carry the home-lock marker");
+        tick();
+
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        mem_rdata = 64'd11;
+        mem_resp_valid = 1'b1;
+        mem_resp_tag = 0;
+        tick();
+        mem_resp_valid = 1'b0;
+        while (!mem_valid) tick();
+        if (!mem_lock || !mem_write || (mem_addr != 64'h7000) ||
+            (mem_wdata != 64'd13) || (mem_wstrb != 8'hff))
+            fail("flushed AMO did not reach its lock-releasing write");
+        tick();
+        mem_resp_valid = 1'b1;
+        tick();
+        mem_resp_valid = 1'b0;
+        while (!complete_valid[2]) tick();
+        if (!complete_valid[2] ||
+            (complete_payload[2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'd11))
+            fail("AMO completion after flush mismatch");
+
+        $display("PASS: 3p local forwarding, eight-tag MEM ring, EX0 ordering, EX1 M context, and irrevocable AMO");
         $finish;
     end
 

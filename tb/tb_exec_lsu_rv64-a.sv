@@ -10,7 +10,7 @@ module tb_exec_lsu_rv64a;
     logic [`RV64_XLEN-1:0] mem_rdata;
     logic complete, illegal, misaligned, access_fault, page_fault;
     logic [`RV64_XLEN-1:0] result;
-    logic mem_valid, mem_write;
+    logic mem_valid, mem_lock, mem_write;
     logic [`RV64_XLEN-1:0] mem_addr, mem_wdata;
     logic [7:0] mem_wstrb;
 
@@ -24,7 +24,8 @@ module tb_exec_lsu_rv64a;
         .complete_o(complete), .illegal_o(illegal),
         .misaligned_o(misaligned), .access_fault_o(access_fault),
         .page_fault_o(page_fault), .result_o(result),
-        .mem_valid_o(mem_valid), .mem_write_o(mem_write),
+        .mem_valid_o(mem_valid), .mem_lock_o(mem_lock),
+        .mem_write_o(mem_write),
         .mem_addr_o(mem_addr), .mem_wdata_o(mem_wdata),
         .mem_wstrb_o(mem_wstrb)
     );
@@ -48,6 +49,7 @@ module tb_exec_lsu_rv64a;
 
     task automatic wait_request;
         input exp_write;
+        input exp_lock;
         input [`RV64_XLEN-1:0] exp_addr, exp_wdata;
         input [7:0] exp_wstrb;
         input [8*36-1:0] label;
@@ -58,12 +60,14 @@ module tb_exec_lsu_rv64a;
                 @(negedge clk); cycles = cycles + 1;
             end
             if (!mem_valid) $fatal(1, "%0s: request timeout", label);
-            if (mem_write !== exp_write || mem_addr !== exp_addr ||
+            if (mem_write !== exp_write || mem_lock !== exp_lock ||
+                mem_addr !== exp_addr ||
                 (exp_write && ((mem_wdata !== exp_wdata) ||
                                (mem_wstrb !== exp_wstrb)))) begin
                 $fatal(1,
-                    "%0s: write=%0b/%0b addr=%016x/%016x data=%016x/%016x strb=%02x/%02x",
-                    label, mem_write, exp_write, mem_addr, exp_addr,
+                    "%0s: write=%0b/%0b lock=%0b/%0b addr=%016x/%016x data=%016x/%016x strb=%02x/%02x",
+                    label, mem_write, exp_write, mem_lock, exp_lock,
+                    mem_addr, exp_addr,
                     mem_wdata, exp_wdata, mem_wstrb, exp_wstrb);
             end
         end
@@ -117,9 +121,9 @@ module tb_exec_lsu_rv64a;
         input [8*36-1:0] label;
         begin
             issue(in_op, `RV64_LSU_SIZE_DWORD, 64'h200, operand);
-            wait_request(1'b0, 64'h200, 64'd0, 8'h00, label);
+            wait_request(1'b0, 1'b1, 64'h200, 64'd0, 8'h00, label);
             respond(old_value, 1'b0, 1'b0);
-            wait_request(1'b1, 64'h200, new_value, 8'hff, label);
+            wait_request(1'b1, 1'b1, 64'h200, new_value, 8'hff, label);
             respond(64'd0, 1'b0, 1'b0);
             expect_complete(old_value, 1'b0, 1'b0, 1'b0, 1'b0, label);
             consume_result();
@@ -136,7 +140,7 @@ module tb_exec_lsu_rv64a;
         rst_n = 1'b1;
 
         issue(`RV64_LSU_OP_LR, `RV64_LSU_SIZE_WORD, 64'h104, 64'd0);
-        wait_request(1'b0, 64'h104, 64'd0, 8'h00, "lr.w read");
+        wait_request(1'b0, 1'b0, 64'h104, 64'd0, 8'h00, "lr.w read");
         repeat (2) begin
             @(negedge clk);
             if (!mem_valid || mem_addr != 64'h104 || mem_write)
@@ -149,7 +153,7 @@ module tb_exec_lsu_rv64a;
 
         issue(`RV64_LSU_OP_SC, `RV64_LSU_SIZE_WORD, 64'h104,
               64'h1234_5678_aabb_ccdd);
-        wait_request(1'b1, 64'h104, 64'haabb_ccdd_0000_0000,
+        wait_request(1'b1, 1'b0, 64'h104, 64'haabb_ccdd_0000_0000,
                      8'hf0, "sc.w success write");
         respond(64'd0, 1'b0, 1'b0);
         expect_complete(64'd0, 1'b0, 1'b0, 1'b0, 1'b0, "sc.w success");
@@ -159,7 +163,7 @@ module tb_exec_lsu_rv64a;
         consume_result();
 
         issue(`RV64_LSU_OP_LR, `RV64_LSU_SIZE_DWORD, 64'h208, 64'd0);
-        wait_request(1'b0, 64'h208, 64'd0, 8'h00, "lr.d read");
+        wait_request(1'b0, 1'b0, 64'h208, 64'd0, 8'h00, "lr.d read");
         respond(64'h0123_4567_89ab_cdef, 1'b0, 1'b0);
         expect_complete(64'h0123_4567_89ab_cdef,
                         1'b0, 1'b0, 1'b0, 1'b0, "lr.d result");
@@ -185,9 +189,9 @@ module tb_exec_lsu_rv64a;
                   64'd3, 64'hffff_ffff_ffff_fffe, "amomaxu.d");
 
         issue(`RV64_LSU_OP_AMOADD, `RV64_LSU_SIZE_WORD, 64'h204, 64'd2);
-        wait_request(1'b0, 64'h204, 64'd0, 8'h00, "amoadd.w read");
+        wait_request(1'b0, 1'b1, 64'h204, 64'd0, 8'h00, "amoadd.w read");
         respond(64'hffff_ffff_1234_5678, 1'b0, 1'b0);
-        wait_request(1'b1, 64'h204, 64'h0000_0001_0000_0000,
+        wait_request(1'b1, 1'b1, 64'h204, 64'h0000_0001_0000_0000,
                      8'hf0, "amoadd.w write");
         respond(64'd0, 1'b0, 1'b0);
         expect_complete(64'hffff_ffff_ffff_ffff,
@@ -204,14 +208,14 @@ module tb_exec_lsu_rv64a;
         mem_access_allowed = 1'b1;
 
         issue(`RV64_LSU_OP_AMOADD, `RV64_LSU_SIZE_DWORD, 64'h200, 64'd1);
-        wait_request(1'b0, 64'h200, 64'd0, 8'h00, "amo read fault");
+        wait_request(1'b0, 1'b1, 64'h200, 64'd0, 8'h00, "amo read fault");
         respond(64'd0, 1'b1, 1'b0);
         expect_complete(64'd0, 1'b0, 1'b0, 1'b1, 1'b0, "amo read fault");
         consume_result();
         issue(`RV64_LSU_OP_AMOADD, `RV64_LSU_SIZE_DWORD, 64'h200, 64'd1);
-        wait_request(1'b0, 64'h200, 64'd0, 8'h00, "amo page read");
+        wait_request(1'b0, 1'b1, 64'h200, 64'd0, 8'h00, "amo page read");
         respond(64'd9, 1'b0, 1'b0);
-        wait_request(1'b1, 64'h200, 64'd10, 8'hff, "amo page write");
+        wait_request(1'b1, 1'b1, 64'h200, 64'd10, 8'hff, "amo page write");
         respond(64'd0, 1'b0, 1'b1);
         expect_complete(64'd9, 1'b0, 1'b0, 1'b0, 1'b1, "amo write page");
         consume_result();

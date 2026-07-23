@@ -40,6 +40,9 @@ module openrv64_rv64_top_3p #(
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
         {`RV64_XLEN{1'b1}},
+    parameter integer L1D_FILL_BUFFER_LINES = 8,
+    parameter integer L1D_STORE_BUFFER_LINES = 8,
+    parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_TRACE = 0,
@@ -110,6 +113,7 @@ module openrv64_rv64_top_3p #(
     output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id,
     output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id,
     output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op,
+    output wire        ccx_req_lock,
     output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order,
     output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind,
     output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr,
@@ -694,6 +698,7 @@ module openrv64_rv64_top_3p #(
     wire backend_mem_resp_valid;
     wire backend_mem_resp_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_resp_tag;
+    wire backend_mem_lock;
     wire backend_mem_write;
     wire [63:0] backend_mem_addr;
     wire [63:0] backend_mem_wdata;
@@ -759,6 +764,7 @@ module openrv64_rv64_top_3p #(
         .mem_error_i(backend_mem_access_fault),
         .mem_page_fault_i(backend_mem_page_fault),
         .mem_access_allowed_i(1'b1),
+        .mem_lock_o(backend_mem_lock),
         .mem_write_o(backend_mem_write), .mem_addr_o(backend_mem_addr),
         .mem_wdata_o(backend_mem_wdata), .mem_wstrb_o(backend_mem_wstrb),
         .mem_access_o(backend_mem_access),
@@ -897,6 +903,9 @@ module openrv64_rv64_top_3p #(
         .ENABLE_L1D(ENABLE_L1D),
         .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
         .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+        .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
+        .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
+        .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
         .HART_ID(HART_ID)
     ) u_bus (
         .clk(clk), .rst_n(rst_n), .fetch_valid_i(fetch_mem_valid),
@@ -926,7 +935,7 @@ module openrv64_rv64_top_3p #(
         .fetch_pipe_resp_data_o(fetch_pipe_resp_data),
         .fetch_pipe_resp_access_fault_o(fetch_pipe_resp_access_fault),
         .fetch_pipe_resp_page_fault_o(fetch_pipe_resp_page_fault),
-        .lsu_valid_i(1'b0), .lsu_write_i(1'b0),
+        .lsu_valid_i(1'b0), .lsu_lock_i(1'b0), .lsu_write_i(1'b0),
         .lsu_addr_i(64'd0), .lsu_wdata_i(64'd0),
         .lsu_wstrb_i(8'd0), .lsu_size_i(3'd0),
         .lsu_priv_i(csr_data_priv_mode),
@@ -941,6 +950,7 @@ module openrv64_rv64_top_3p #(
         .lsu_pipe_req_valid_i(backend_mem_valid),
         .lsu_pipe_req_ready_o(backend_mem_ready),
         .lsu_pipe_req_tag_i(backend_mem_tag),
+        .lsu_pipe_req_lock_i(backend_mem_lock),
         .lsu_pipe_req_write_i(backend_mem_write),
         .lsu_pipe_req_addr_i(backend_mem_addr),
         .lsu_pipe_req_wdata_i(backend_mem_wdata),
@@ -987,6 +997,7 @@ module openrv64_rv64_top_3p #(
         .ccx_req_txn_id_o(ccx_req_txn_id),
         .ccx_req_source_id_o(ccx_req_source_id),
         .ccx_req_op_o(ccx_req_op),
+        .ccx_req_lock_o(ccx_req_lock),
         .ccx_req_order_o(ccx_req_order),
         .ccx_req_kind_o(ccx_req_kind),
         .ccx_req_attr_o(ccx_req_attr),

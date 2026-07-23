@@ -255,6 +255,7 @@ module openrv64_rv64_top #(
     wire exec_mem_valid;
     wire exec_mem_ready;
     wire exec_mem_error;
+    wire exec_mem_lock;
     wire exec_mem_write;
     wire [`RV64_XLEN-1:0] exec_mem_addr;
     wire [`RV64_XLEN-1:0] exec_mem_wdata;
@@ -923,6 +924,7 @@ module openrv64_rv64_top #(
         .mem_error_i(exec_mem_error),
         .mem_page_fault_i(exec_mem_page_fault),
         .mem_access_allowed_i(1'b1),
+        .mem_lock_o(exec_mem_lock),
         .mem_write_o(exec_mem_write),
         .mem_addr_o(exec_mem_addr),
         .mem_wdata_o(exec_mem_wdata),
@@ -1038,6 +1040,7 @@ module openrv64_rv64_top #(
         .fetch_pipe_req_sum_i(1'b0), .fetch_pipe_req_mxr_i(1'b0),
         .fetch_pipe_resp_ready_i(1'b0),
         .lsu_valid_i(exec_mem_valid),
+        .lsu_lock_i(exec_mem_lock),
         .lsu_write_i(exec_mem_write),
         .lsu_addr_i(exec_mem_addr),
         .lsu_wdata_i(exec_mem_wdata),
@@ -1056,6 +1059,7 @@ module openrv64_rv64_top #(
         .lsu_page_fault_o(exec_mem_page_fault),
         .lsu_pipe_req_valid_i(1'b0),
         .lsu_pipe_req_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .lsu_pipe_req_lock_i(1'b0),
         .lsu_pipe_req_write_i(1'b0), .lsu_pipe_req_addr_i(64'd0),
         .lsu_pipe_req_wdata_i(64'd0), .lsu_pipe_req_wstrb_i(8'd0),
         .lsu_pipe_req_size_i(3'd0),

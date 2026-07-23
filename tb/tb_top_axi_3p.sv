@@ -57,6 +57,7 @@ module tb_axi256_soc_fabric #(
     input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id_i,
     input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id_i,
     input  wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_i,
+    input  wire        ccx_req_lock_i,
     input  wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_i,
     input  wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_i,
     input  wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_i,
@@ -134,6 +135,7 @@ module tb_axi256_soc_fabric #(
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_cmd_txn_id_q;
     reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_cmd_source_id_q;
     reg [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_cmd_op_q;
+    reg ccx_cmd_lock_q;
     reg [2:0] ccx_cmd_size_q;
     reg [63:0] ccx_cmd_addr_q;
     reg ccx_data_pending_q;
@@ -148,6 +150,9 @@ module tb_axi256_soc_fabric #(
     reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id_q;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata_q;
     reg ccx_resp_error_q;
+    reg ccx_home_lock_active_q;
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_home_lock_hart_q;
+    reg [63:0] ccx_home_lock_line_q;
 
     reg [1:0] bus_state_q;
     reg [`OPENRV64_AXI_ID_WIDTH-1:0] r_id_q;
@@ -233,8 +238,13 @@ module tb_axi256_soc_fabric #(
     assign s_axi_bresp_o = b_resp_q;
     assign s_axi_bvalid_o = b_valid_q;
 
+    wire ccx_lock_request_allowed = !ccx_home_lock_active_q ||
+        (ccx_req_lock_i &&
+         (ccx_req_hart_id_i == ccx_home_lock_hart_q) &&
+         ({ccx_req_addr_i[63:6], 6'b0} == ccx_home_lock_line_q));
     assign ccx_req_ready_o = rst_ni && !ccx_cmd_pending_q &&
-                             !ccx_resp_valid_q;
+                             !ccx_resp_valid_q &&
+                             ccx_lock_request_allowed;
     assign ccx_wdata_ready_o = rst_ni && !ccx_data_pending_q &&
                                !ccx_resp_valid_q;
     assign ccx_resp_valid_o = ccx_resp_valid_q;
@@ -283,6 +293,7 @@ module tb_axi256_soc_fabric #(
             ccx_cmd_txn_id_q <= 0;
             ccx_cmd_source_id_q <= 0;
             ccx_cmd_op_q <= 0;
+            ccx_cmd_lock_q <= 1'b0;
             ccx_cmd_size_q <= 0;
             ccx_cmd_addr_q <= 0;
             ccx_data_pending_q <= 1'b0;
@@ -297,6 +308,9 @@ module tb_axi256_soc_fabric #(
             ccx_resp_source_id_q <= 0;
             ccx_resp_rdata_q <= 0;
             ccx_resp_error_q <= 1'b0;
+            ccx_home_lock_active_q <= 1'b0;
+            ccx_home_lock_hart_q <= 0;
+            ccx_home_lock_line_q <= 0;
             bus_state_q <= BUS_IDLE;
             r_id_q <= {`OPENRV64_AXI_ID_WIDTH{1'b0}};
             r_data_q <= {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
@@ -356,8 +370,17 @@ module tb_axi256_soc_fabric #(
                 ccx_cmd_txn_id_q <= ccx_req_txn_id_i;
                 ccx_cmd_source_id_q <= ccx_req_source_id_i;
                 ccx_cmd_op_q <= ccx_req_op_i;
+                ccx_cmd_lock_q <= ccx_req_lock_i;
                 ccx_cmd_size_q <= ccx_req_size_i;
                 ccx_cmd_addr_q <= ccx_req_addr_i;
+                if (ccx_req_lock_i && !ccx_home_lock_active_q) begin
+                    if (ccx_req_op_i != `OPENRV64_CCX_OP_READ)
+                        $fatal(1, "home lock sequence did not begin with a read");
+                    ccx_home_lock_active_q <= 1'b1;
+                    ccx_home_lock_hart_q <= ccx_req_hart_id_i;
+                    ccx_home_lock_line_q <=
+                        {ccx_req_addr_i[63:6], 6'b0};
+                end
             end
 
             if (ccx_wdata_fire) begin
@@ -405,6 +428,8 @@ module tb_axi256_soc_fabric #(
                                     ccx_data_q[ccx_write_byte*8 +: 8];
                         end
                         ccx_data_pending_q <= 1'b0;
+                        if (ccx_cmd_lock_q)
+                            ccx_home_lock_active_q <= 1'b0;
                     end
                     ccx_cmd_pending_q <= 1'b0;
                 end else begin
@@ -472,6 +497,10 @@ module tb_axi256_soc_fabric #(
                     ccx_cmd_pending_q <= 1'b0;
                     if (ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE)
                         ccx_data_pending_q <= 1'b0;
+                    if (ccx_cmd_lock_q &&
+                        ((ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE) ||
+                         mem_error_i))
+                        ccx_home_lock_active_q <= 1'b0;
                     bus_state_q <= BUS_IDLE;
                 end
             end
@@ -506,7 +535,10 @@ module tb_top_axi_3p #(
     parameter integer POSTED_STORES = 1,
     parameter integer FREE_BRANCHES = 0,
     parameter integer EQ_BRANCH_PAIRING = 1,
-    parameter integer ORACLE_BRANCHES = 0
+    parameter integer ORACLE_BRANCHES = 0,
+    parameter integer FREE_L1_REFILLS = 0,
+    parameter integer FREE_L1I_REFILLS = 0,
+    parameter integer FREE_L1D_REFILLS = 0
 );
     reg clk;
     reg rst_n;
@@ -548,6 +580,7 @@ module tb_top_axi_3p #(
     wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
     wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
     wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    wire ccx_req_lock;
     wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
     wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
     wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
@@ -709,6 +742,8 @@ module tb_top_axi_3p #(
     integer ccx_fetch_reads;
     integer ccx_data_reads;
     integer ccx_data_writes;
+    integer ccx_locked_reads;
+    integer ccx_locked_writes;
     integer bp_allocations;
     integer bp_taken_predictions;
     integer bp_resolutions;
@@ -871,6 +906,7 @@ module tb_top_axi_3p #(
         .ccx_req_txn_id(ccx_req_txn_id),
         .ccx_req_source_id(ccx_req_source_id),
         .ccx_req_op(ccx_req_op),
+        .ccx_req_lock(ccx_req_lock),
         .ccx_req_order(ccx_req_order),
         .ccx_req_kind(ccx_req_kind),
         .ccx_req_attr(ccx_req_attr),
@@ -924,6 +960,61 @@ module tb_top_axi_3p #(
         .trace_retire_rd(core_trace_retire_rd),
         .trace_retire_wdata(core_trace_retire_wdata)
     );
+
+    // Counterfactual cache experiment.  The generic L1s retain their normal
+    // lookup/response pipelines, but a read miss obtains the requested RAM
+    // word or line from this testbench oracle instead of issuing a refill.
+    // Stores, uncached accesses, and all non-RAM accesses remain real.
+    localparam integer ORACLE_RAM_WORDS = RAM_BYTES / 32;
+    localparam integer ORACLE_RAM_INDEX_WIDTH = $clog2(ORACLE_RAM_WORDS);
+    wire [63:0] oracle_l1i_addr =
+        dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.req_phys_addr_i;
+    wire [63:0] oracle_l1d_addr =
+        dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.req_phys_addr_i;
+    wire oracle_l1i_ram =
+        (oracle_l1i_addr >= `OPENRV64_SOC_MEMORY_BASE) &&
+        (oracle_l1i_addr < (`OPENRV64_SOC_MEMORY_BASE + RAM_BYTES));
+    wire oracle_l1d_ram =
+        (oracle_l1d_addr >= `OPENRV64_SOC_MEMORY_BASE) &&
+        (oracle_l1d_addr < (`OPENRV64_SOC_MEMORY_BASE + RAM_BYTES));
+    wire [ORACLE_RAM_INDEX_WIDTH-1:0] oracle_l1i_index =
+        oracle_l1i_ram ?
+        {oracle_l1i_addr[ORACLE_RAM_INDEX_WIDTH+4:6], 1'b0} :
+        {ORACLE_RAM_INDEX_WIDTH{1'b0}};
+    wire [ORACLE_RAM_INDEX_WIDTH-1:0] oracle_l1d_index =
+        oracle_l1d_ram ?
+        oracle_l1d_addr[ORACLE_RAM_INDEX_WIDTH+4:5] :
+        {ORACLE_RAM_INDEX_WIDTH{1'b0}};
+    wire [511:0] oracle_l1i_data = {
+        u_axi_fabric.ram_q[oracle_l1i_index + 1'b1],
+        u_axi_fabric.ram_q[oracle_l1i_index]
+    };
+    wire [255:0] oracle_l1d_word =
+        u_axi_fabric.ram_q[oracle_l1d_index];
+    wire [63:0] oracle_l1d_data =
+        oracle_l1d_word >> {oracle_l1d_addr[4:3], 6'b000000};
+    // Compile-time controls support Makefile sweeps.  Runtime plusargs
+    // +perfect_l1i and +perfect_l1d permit matched A/B runs from one binary.
+    wire perfect_l1i_enabled =
+        (FREE_L1_REFILLS != 0) || (FREE_L1I_REFILLS != 0) ||
+        $test$plusargs("perfect_l1i");
+    wire perfect_l1d_enabled =
+        (FREE_L1_REFILLS != 0) || (FREE_L1D_REFILLS != 0) ||
+        $test$plusargs("perfect_l1d");
+
+    defparam dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.IDEAL_REFILLS =
+        1;
+    defparam dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.IDEAL_REFILLS =
+        1;
+
+    assign dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_valid_i =
+        perfect_l1i_enabled && oracle_l1i_ram;
+    assign dut.u_core.u_bus.g_axi.u_bus.u_l1i.u_l1i.u_l1.g_cache.u_cache.ideal_refill_data_i =
+        oracle_l1i_data;
+    assign dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_valid_i =
+        perfect_l1d_enabled && oracle_l1d_ram;
+    assign dut.u_core.u_bus.g_axi.u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.ideal_refill_data_i =
+        oracle_l1d_data;
 
     // Testbench-only visibility into the program-ordered dispatch window.
     // These names deliberately do not become RTL ports: the CSV is a
@@ -1109,16 +1200,21 @@ module tb_top_axi_3p #(
         dut.u_core.u_backend.queue_retire_valid;
     wire [RETIRE_DEPTH-1:0] trace_completed_entries =
         dut.u_core.u_backend.completed_entry_valid;
-    wire [2:0] trace_lsu_slots = {
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[2],
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[1],
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[0]
-    };
-    wire [2:0] trace_lsu_sent = {
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[2],
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[1],
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[0]
-    };
+    wire [`OPENRV64_LSU_OUTSTANDING-1:0] trace_lsu_slots;
+    wire [`OPENRV64_LSU_OUTSTANDING-1:0] trace_lsu_sent;
+    genvar trace_lsu_index;
+    generate
+        for (trace_lsu_index = 0;
+             trace_lsu_index < `OPENRV64_LSU_OUTSTANDING;
+             trace_lsu_index = trace_lsu_index + 1) begin : g_trace_lsu
+            assign trace_lsu_slots[trace_lsu_index] =
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_valid_q[
+                    trace_lsu_index];
+            assign trace_lsu_sent[trace_lsu_index] =
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.slot_sent_q[
+                    trace_lsu_index];
+        end
+    endgenerate
     wire trace_lsu_store_inflight =
         dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem.store_inflight_q;
     wire trace_lsu_order_block =
@@ -1134,10 +1230,8 @@ module tb_top_axi_3p #(
     wire [3:0] trace_fetch_pending = {
         3'b000, dut.u_core.g_fetch_axi.u_fetch.pending_valid_q
     };
-    wire [2:0] trace_fetch_bus_count = {
-        2'b00,
-        dut.u_core.u_bus.g_axi.u_bus.fetch_state_q != 3'd0
-    };
+    wire [2:0] trace_fetch_bus_count =
+        dut.u_core.u_bus.g_axi.u_bus.fetch_count_q;
     wire trace_fetch_consume_hit =
         dut.u_core.g_fetch_axi.u_fetch.consume_line_hit;
     wire trace_fetch_follow_hit =
@@ -1291,6 +1385,7 @@ module tb_top_axi_3p #(
         .ccx_req_txn_id_i(ccx_req_txn_id),
         .ccx_req_source_id_i(ccx_req_source_id),
         .ccx_req_op_i(ccx_req_op),
+        .ccx_req_lock_i(ccx_req_lock),
         .ccx_req_order_i(ccx_req_order),
         .ccx_req_kind_i(ccx_req_kind),
         .ccx_req_attr_i(ccx_req_attr),
@@ -1567,6 +1662,16 @@ module tb_top_axi_3p #(
         end
     endfunction
 
+    function automatic [31:0] enc_amoadd_d;
+        input [4:0] rd;
+        input [4:0] rs1;
+        input [4:0] rs2;
+        begin
+            enc_amoadd_d = {5'b00000, 2'b00, rs2, rs1, 3'b011,
+                            rd, 7'b0101111};
+        end
+    endfunction
+
     function automatic branch_completion_match;
         input [4:0] source_addr;
         integer completion_lane;
@@ -1835,12 +1940,7 @@ module tb_top_axi_3p #(
                 arready,
                 core_trace_stall_causes);
             $fwrite(pipeline_trace_fd,
-                {"%x,%x,%x,%02x,%x,%x,%0d,%0d,%0d,",
-                 "%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%04x,%04x,%04x,",
-                 "%x,%02x,%0d,%0d,%0d,%x,%x,%0d,%0d,%0d,",
-                 "%0d,%0d,%0d,%0d,%0d,",
-                 {"%x,%x,%0d,%0d,%x,%04x,%048x,",
-                  "%x,%016x,%016x,%02x,%x,%016x,"}},
+                "%x,%x,%x,%02x,%x,%x,%0d,%0d,%0d,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%04x,%04x,%04x,%x,%02x,%0d,%0d,%0d,%x,%x,%0d,%0d,%0d,%0d,%0d,%0d,%0d,%0d,%x,%x,%0d,%0d,%x,%04x,%048x,%x,%016x,%016x,%02x,%x,%016x,",
                 trace_candidate_valid,
                 trace_candidate_fire,
                 trace_candidate_hazard_free,
@@ -1902,12 +2002,7 @@ module tb_top_axi_3p #(
                 trace_window_selected,
                 trace_window_issued);
             $fdisplay(pipeline_trace_fd,
-                {"%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,",
-                 "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x"},
+                "%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x,%016x,%016x,%08x",
                 dut.u_core.fetch_decode_trace[0*64 +: 64],
                 dut.u_core.decode_pc0, dut.u_core.instr0,
                 dut.u_core.fetch_decode_trace[1*64 +: 64],
@@ -2021,6 +2116,12 @@ module tb_top_axi_3p #(
                 end
             end
             if (ccx_req_valid && ccx_req_ready) begin
+                if (ccx_req_lock &&
+                    (ccx_req_op == `OPENRV64_CCX_OP_READ))
+                    ccx_locked_reads <= ccx_locked_reads + 1;
+                if (ccx_req_lock &&
+                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE))
+                    ccx_locked_writes <= ccx_locked_writes + 1;
                 if ((ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE) &&
                     !first_ccx_i_resp_seen)
                     ccx_i_before_first_resp <=
@@ -2133,6 +2234,8 @@ module tb_top_axi_3p #(
         ccx_fetch_reads = 0;
         ccx_data_reads = 0;
         ccx_data_writes = 0;
+        ccx_locked_reads = 0;
+        ccx_locked_writes = 0;
         bp_allocations = 0;
         bp_taken_predictions = 0;
         bp_resolutions = 0;
@@ -2252,15 +2355,7 @@ module tb_top_axi_3p #(
                 $fatal(1, "could not open 3P pipeline trace %0s",
                        pipeline_trace_path);
             $fdisplay(pipeline_trace_fd,
-                {"schema,cycle,fetch_valid,fetch_ready,fetch_fire,decode_valid,decode_ready,decode_fire,issue_valid,complete_valid,retire_valid,retire_count,dispatch_q,retire_q,raw,waw,read_port,write_busy,barrier,bp_present,bp_allocate,bp_taken,bp_fetch_stall,bp_decode_stall,redirect,fetch_req_valid,fetch_req_ready,fetch_resp_valid,axi_arvalid,axi_arready,stall_causes,",
-                 "queue_valid,candidate_fire,candidate_hazard_free,candidate_pipe,pipe_ready,barrier_allow,allocation_ready,block_lane,block_reason,raw_existing,raw_bundle,raw_completed,raw_rs1,raw_rs2,waw_bundle,waw_completed,candidate_uses_rs1,candidate_uses_rs2,candidate_reg_write,candidate_rs1,candidate_rs2,candidate_rd,queue_retire_valid,completed_entries,control_flush,control_redirect,fetch_bus_q,fetch_line_valid,fetch_pending,fetch_consume_hit,fetch_follow_hit,fetch_active,mem_req_valid,mem_req_ready,mem_resp_valid,mem_resp_ready,mem_write,lsu_slots,lsu_sent,lsu_store_inflight,lsu_order_block,retire_gpr_write,retire_gpr_rd,retire_gpr_data,mem_req_tag,mem_req_addr,mem_req_wdata,mem_req_wstrb,mem_resp_tag,mem_resp_rdata,",
-                 "window_unissued,window_operand_ready,window_eligible,window_raw_block,window_hard_block,window_mem_order_block,window_selected,window_issued,",
-                 "f0_uid,f0_pc,f0_instr,f1_uid,f1_pc,f1_instr,f2_uid,f2_pc,f2_instr,",
-                 "d0_uid,d0_pc,d0_instr,d1_uid,d1_pc,d1_instr,d2_uid,d2_pc,d2_instr,",
-                 "q0_uid,q0_pc,q0_instr,q1_uid,q1_pc,q1_instr,q2_uid,q2_pc,q2_instr,",
-                 "i0_uid,i0_pc,i0_instr,i1_uid,i1_pc,i1_instr,i2_uid,i2_pc,i2_instr,",
-                 "c0_uid,c0_pc,c0_instr,c1_uid,c1_pc,c1_instr,c2_uid,c2_pc,c2_instr,",
-                 "r0_uid,r0_pc,r0_instr,r1_uid,r1_pc,r1_instr,r2_uid,r2_pc,r2_instr"});
+                "schema,cycle,fetch_valid,fetch_ready,fetch_fire,decode_valid,decode_ready,decode_fire,issue_valid,complete_valid,retire_valid,retire_count,dispatch_q,retire_q,raw,waw,read_port,write_busy,barrier,bp_present,bp_allocate,bp_taken,bp_fetch_stall,bp_decode_stall,redirect,fetch_req_valid,fetch_req_ready,fetch_resp_valid,axi_arvalid,axi_arready,stall_causes,queue_valid,candidate_fire,candidate_hazard_free,candidate_pipe,pipe_ready,barrier_allow,allocation_ready,block_lane,block_reason,raw_existing,raw_bundle,raw_completed,raw_rs1,raw_rs2,waw_bundle,waw_completed,candidate_uses_rs1,candidate_uses_rs2,candidate_reg_write,candidate_rs1,candidate_rs2,candidate_rd,queue_retire_valid,completed_entries,control_flush,control_redirect,fetch_bus_q,fetch_line_valid,fetch_pending,fetch_consume_hit,fetch_follow_hit,fetch_active,mem_req_valid,mem_req_ready,mem_resp_valid,mem_resp_ready,mem_write,lsu_slots,lsu_sent,lsu_store_inflight,lsu_order_block,retire_gpr_write,retire_gpr_rd,retire_gpr_data,mem_req_tag,mem_req_addr,mem_req_wdata,mem_req_wstrb,mem_resp_tag,mem_resp_rdata,window_unissued,window_operand_ready,window_eligible,window_raw_block,window_hard_block,window_mem_order_block,window_selected,window_issued,f0_uid,f0_pc,f0_instr,f1_uid,f1_pc,f1_instr,f2_uid,f2_pc,f2_instr,d0_uid,d0_pc,d0_instr,d1_uid,d1_pc,d1_instr,d2_uid,d2_pc,d2_instr,q0_uid,q0_pc,q0_instr,q1_uid,q1_pc,q1_instr,q2_uid,q2_pc,q2_instr,i0_uid,i0_pc,i0_instr,i1_uid,i1_pc,i1_instr,i2_uid,i2_pc,i2_instr,c0_uid,c0_pc,c0_instr,c1_uid,c1_pc,c1_instr,c2_uid,c2_pc,c2_instr,r0_uid,r0_pc,r0_instr,r1_uid,r1_pc,r1_instr,r2_uid,r2_pc,r2_instr");
             $display("TRACE pipeline=%0s", pipeline_trace_path);
             $readmemh(memh_path, u_axi_fabric.ram_q, 0, 2047);
         end else if (opensbi_image) begin
@@ -2305,7 +2400,12 @@ module tb_top_axi_3p #(
                                       `RV64_FUNCT3_SD));
             put_instr('h40, enc_load(5'd12, 5'd1, 12'h108,
                                      `RV64_FUNCT3_LD));
-            put_instr('h44, 32'h0010_0073); // EBREAK
+            put_instr('h44, enc_addi(5'd15, 5'd1, 12'h100));
+            put_instr('h48, enc_addi(5'd16, 5'd0, 12'd2));
+            put_instr('h4c, enc_amoadd_d(5'd17, 5'd15, 5'd16));
+            put_instr('h50, enc_load(5'd18, 5'd15, 12'd0,
+                                     `RV64_FUNCT3_LD));
+            put_instr('h54, 32'h0010_0073); // EBREAK
             u_axi_fabric.ram_q[8][63:0] = 64'd11;
         end
 
@@ -2373,22 +2473,14 @@ module tb_top_axi_3p #(
                  (BP_TYPE == `OPENRV64_BP_GSHARE_BTB)) &&
                 dut.u_core.bp_update_overflow)
                 $fatal(1, "branch predictor update/record queue overflowed");
-            $display({"PERF_CONFIG retire_depth=%0d completion_mask=%03b ",
-                      "branch_forward_mask=%03b ",
-                      "full=%0d relax_waw=%0d relax_hazards=%0d ",
-                      "issue_window=%0d speculation_window=%0d ",
-                      "free_branches=%0d eq_pair=%0d"},
+            $display("PERF_CONFIG retire_depth=%0d completion_mask=%03b branch_forward_mask=%03b full=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d free_branches=%0d eq_pair=%0d perfect_l1i=%0d perfect_l1d=%0d",
                      RETIRE_DEPTH, COMPLETION_FORWARD_MASK,
                      BRANCH_FORWARD_MASK,
                      FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
                      ISSUE_WINDOW, SPECULATION_WINDOW,
-                     FREE_BRANCHES, EQ_BRANCH_PAIRING);
-            $display({"PERF_BLOCK none=%0d raw_pending=%0d raw_bundle=%0d ",
-                      "raw_completed=%0d waw_pending=%0d waw_bundle=%0d ",
-                      "waw_completed=%0d ",
-                      "read_port=%0d barrier=%0d retire_capacity=%0d ",
-                      "pipe_conflict=%0d pipe_busy=%0d invalid_pipe=%0d ",
-                      "branch_redirect=%0d unknown=%0d"},
+                     FREE_BRANCHES, EQ_BRANCH_PAIRING,
+                     perfect_l1i_enabled, perfect_l1d_enabled);
+            $display("PERF_BLOCK none=%0d raw_pending=%0d raw_bundle=%0d raw_completed=%0d waw_pending=%0d waw_bundle=%0d waw_completed=%0d read_port=%0d barrier=%0d retire_capacity=%0d pipe_conflict=%0d pipe_busy=%0d invalid_pipe=%0d branch_redirect=%0d unknown=%0d",
                      perf_block_none,
                      perf_block_raw_pending,
                      perf_block_raw_bundle,
@@ -2408,9 +2500,7 @@ module tb_top_axi_3p #(
                      perf_retire_head_incomplete,
                      perf_retire_completed_behind_head,
                      perf_retire_control_block);
-            $display({"PERF_FRONTEND empty=%0d held=%0d request_wait=%0d ",
-                      "redirect=%0d refill_wait=%0d no_line=%0d ",
-                      "bp_stall=%0d control=%0d other_empty=%0d"},
+            $display("PERF_FRONTEND empty=%0d held=%0d request_wait=%0d redirect=%0d refill_wait=%0d no_line=%0d bp_stall=%0d control=%0d other_empty=%0d",
                      perf_frontend_empty, perf_frontend_held,
                      perf_frontend_request_wait, perf_frontend_redirect,
                      perf_frontend_refill_wait, perf_frontend_no_line,
@@ -2448,8 +2538,7 @@ module tb_top_axi_3p #(
                 $display("PERF_TRACE pipeline=%0s", pipeline_trace_path);
             end
             $finish;
-        end
-
+        end else begin
         for (cycles = 0; cycles < 3000 && !dbg_halted;
              cycles = cycles + 1) begin
             @(posedge clk);
@@ -2490,6 +2579,12 @@ module tb_top_axi_3p #(
             64'h0000_0000_0000_005a)
             $fatal(1, "RAM CCX store mismatch: %016x",
                    u_axi_fabric.ram_q[8][127:64]);
+        if ((u_axi_fabric.ram_q[8][63:0] != 64'd13) ||
+            (ccx_locked_reads != 1) || (ccx_locked_writes != 1))
+            $fatal(1,
+                   "AMO home-lock path mismatch data=%0d lock_reads=%0d lock_writes=%0d",
+                   u_axi_fabric.ram_q[8][63:0], ccx_locked_reads,
+                   ccx_locked_writes);
         if (dut.u_core.u_backend.u_gpr.regs[5] != 64'd11 ||
             dut.u_core.u_backend.u_gpr.regs[6] != 64'd22 ||
             dut.u_core.u_backend.u_gpr.regs[7] != 64'd33 ||
@@ -2497,7 +2592,9 @@ module tb_top_axi_3p #(
             dut.u_core.u_backend.u_gpr.regs[13] != 64'd0 ||
             dut.u_core.u_backend.u_gpr.regs[14] != 64'd3 ||
             dut.u_core.u_backend.u_gpr.regs[11] != 64'h5a ||
-            dut.u_core.u_backend.u_gpr.regs[12] != 64'h5a) begin
+            dut.u_core.u_backend.u_gpr.regs[12] != 64'h5a ||
+            dut.u_core.u_backend.u_gpr.regs[17] != 64'd11 ||
+            dut.u_core.u_backend.u_gpr.regs[18] != 64'd13) begin
             $fatal(1, "AXI/SoC architectural GPR results are wrong");
         end
 
@@ -2539,6 +2636,7 @@ module tb_top_axi_3p #(
         $display("PASS: 3P native CCX L1I/L1D type %0d used resident loop line once and completed SoC MMIO flow",
                  BP_TYPE);
         $finish;
+        end
     end
 
 endmodule

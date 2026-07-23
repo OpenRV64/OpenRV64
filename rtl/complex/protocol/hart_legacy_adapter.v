@@ -30,6 +30,7 @@ module openrv64_ccx_hart_legacy_adapter #(
     output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id_o,
     output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]  req_txn_id_o,
     output wire [`OPENRV64_CCX_OP_WIDTH-1:0]      req_op_o,
+    output wire                         req_lock_o,
     output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0]   req_order_o,
     output wire [`OPENRV64_CCX_KIND_WIDTH-1:0]    req_kind_o,
     output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0]    req_attr_o,
@@ -70,6 +71,7 @@ module openrv64_ccx_hart_legacy_adapter #(
     assign req_txn_id_o = request_txn_id_q;
     assign req_op_o = request_write_q ? `OPENRV64_CCX_OP_WRITE :
                                         `OPENRV64_CCX_OP_READ;
+    assign req_lock_o = 1'b0;
     assign req_order_o = `OPENRV64_CCX_ORDER_NONE;
     assign req_kind_o = `OPENRV64_CCX_KIND_LEGACY;
     assign req_attr_o = DEFAULT_ATTR;

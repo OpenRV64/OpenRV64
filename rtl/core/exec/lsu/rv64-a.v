@@ -32,6 +32,7 @@ module openrv64_exec_lsu_rv64a (
     output wire                         page_fault_o,
     output wire [`RV64_XLEN-1:0]        result_o,
     output wire                         mem_valid_o,
+    output wire                         mem_lock_o,
     output wire                         mem_write_o,
     output wire [`RV64_XLEN-1:0]        mem_addr_o,
     output wire [`RV64_XLEN-1:0]        mem_wdata_o,
@@ -88,6 +89,24 @@ module openrv64_exec_lsu_rv64a (
                 `RV64_LSU_OP_AMOMINU,
                 `RV64_LSU_OP_AMOMAXU: op_valid = 1'b1;
                 default: op_valid = 1'b0;
+            endcase
+        end
+    endfunction
+
+    function op_is_amo;
+        input [`RV64_LSU_OP_WIDTH-1:0] op;
+        begin
+            case (op)
+                `RV64_LSU_OP_AMOSWAP,
+                `RV64_LSU_OP_AMOADD,
+                `RV64_LSU_OP_AMOXOR,
+                `RV64_LSU_OP_AMOAND,
+                `RV64_LSU_OP_AMOOR,
+                `RV64_LSU_OP_AMOMIN,
+                `RV64_LSU_OP_AMOMAX,
+                `RV64_LSU_OP_AMOMINU,
+                `RV64_LSU_OP_AMOMAXU: op_is_amo = 1'b1;
+                default: op_is_amo = 1'b0;
             endcase
         end
     endfunction
@@ -156,6 +175,13 @@ module openrv64_exec_lsu_rv64a (
     assign mem_valid_o = valid_i &&
                          ((state_q == STATE_READ) ||
                           (state_q == STATE_WRITE));
+    // The first native atomic contract keeps the existing local AMO ALU but
+    // marks both halves of its read/modify/write sequence.  The coherent home
+    // retains the addressed line lock from the marked read through the marked
+    // write, so no other home request may observe the intermediate value.
+    // LR/SC deliberately do not use this signal: a lock held across arbitrary
+    // instructions is not a reservation and can deadlock.
+    assign mem_lock_o = mem_valid_o && op_is_amo(op_q);
     assign mem_write_o = valid_i && (state_q == STATE_WRITE);
     assign mem_addr_o = addr_q;
     assign mem_wdata_o = word_access_q ? word_write_data : write_data_q;

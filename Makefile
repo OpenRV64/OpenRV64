@@ -114,6 +114,9 @@ AXI_3P_POSTED_STORES ?= 1
 AXI_3P_FREE_BRANCHES ?= 0
 AXI_3P_EQ_BRANCH_PAIRING ?= 1
 AXI_3P_ORACLE_BRANCHES ?= 0
+AXI_3P_FREE_L1_REFILLS ?= 0
+AXI_3P_FREE_L1I_REFILLS ?= 0
+AXI_3P_FREE_L1D_REFILLS ?= 0
 BACKEND_3P_RELAX_HAZARDS ?= 0
 AXI_3P_PERF_BP_TYPE ?= 3
 AXI_3P_PERF_BP_RAS_ENABLE ?= 1
@@ -146,6 +149,7 @@ TIMER_SIM_BUILD := sim/timer_tb.vvp
 ROM_SIM_BUILD := sim/soc_rom_tb.vvp
 MEMORY_SIM_BUILD := sim/soc_memory_tb.vvp
 MEM_CHANNEL_SIM_BUILD := sim/mem_channel_tb.vvp
+MESH_ROUTER_SIM_BUILD := sim/mesh_router_tile_tb.vvp
 SOC_BUS_SIM_BUILD := sim/soc_bus_decode_tb.vvp
 CORE_BUS_SIM_BUILD := sim/core_bus_tb.vvp
 CCX_PROTOCOL_1H_SIM_BUILD := sim/ccx_protocol_1h_tb.vvp
@@ -373,6 +377,7 @@ MEMORY_SRCS := rtl/soc/bus/memory.v
 MEM_CHANNEL_SRCS := rtl/soc/memory/timing_dram.v \
 	rtl/soc/memory/timing_ddr4.v rtl/soc/memory/timing_gddr6.v \
 	rtl/soc/memory/timing_hbm2.v rtl/soc/memory/mem_channel.v
+MESH_ROUTER_SRCS := rtl/mesh/router_tile.v
 SOC_BUS_SRCS := rtl/soc/bus/mem_map.v rtl/soc/bus/decode.v
 RESET_SEQUENCER_SRCS := rtl/soc/reset_sequencer.v
 PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
@@ -393,6 +398,7 @@ TIMER_SIM_SRCS := tb/tb_timer.sv
 ROM_SIM_SRCS := tb/tb_soc_rom.sv
 MEMORY_SIM_SRCS := tb/tb_soc_memory.sv
 MEM_CHANNEL_SIM_SRCS := tb/tb_mem_channel.sv
+MESH_ROUTER_SIM_SRCS := tb/tb_mesh_router_tile.sv
 SOC_BUS_SIM_SRCS := tb/tb_soc_bus_decode.sv
 CORE_BUS_SIM_SRCS := tb/tb_core_bus.sv
 CCX_PROTOCOL_1H_SIM_SRCS := tb/tb_ccx_protocol_1h.sv
@@ -492,7 +498,7 @@ SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/Ope
 .PHONY: sim-ccx-l2 sim-ccx-l2-widths sim-complex-bus-axi sim-complex-bus-wb
 .PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths
 .PHONY: sim-core-complex-2h-axi sim-core-complex-4h-wb
-.PHONY: sim-mem-channel
+.PHONY: sim-mem-channel sim-mesh-router
 .PHONY: sim-prf
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
 	compliance-smoke-local-3p compliance-smoke-local-platform \
@@ -756,6 +762,9 @@ sim-memory: $(MEMORY_SIM_BUILD)
 
 sim-mem-channel: $(MEM_CHANNEL_SIM_BUILD)
 	vvp $(MEM_CHANNEL_SIM_BUILD)
+
+sim-mesh-router: $(MESH_ROUTER_SIM_BUILD)
+	vvp $(MESH_ROUTER_SIM_BUILD)
 
 sim-soc-bus: $(SOC_BUS_SIM_BUILD)
 	vvp $(SOC_BUS_SIM_BUILD)
@@ -1065,7 +1074,10 @@ sim-top-axi-3p-perf: $(AXI_3P_PERF_MEMH)
 		AXI_3P_POSTED_STORES=$(AXI_3P_POSTED_STORES) \
 		AXI_3P_FREE_BRANCHES=$(AXI_3P_FREE_BRANCHES) \
 		AXI_3P_EQ_BRANCH_PAIRING=$(AXI_3P_EQ_BRANCH_PAIRING) \
-		AXI_3P_ORACLE_BRANCHES=$(AXI_3P_ORACLE_BRANCHES)
+		AXI_3P_ORACLE_BRANCHES=$(AXI_3P_ORACLE_BRANCHES) \
+		AXI_3P_FREE_L1_REFILLS=$(AXI_3P_FREE_L1_REFILLS) \
+		AXI_3P_FREE_L1I_REFILLS=$(AXI_3P_FREE_L1I_REFILLS) \
+		AXI_3P_FREE_L1D_REFILLS=$(AXI_3P_FREE_L1D_REFILLS)
 	mkdir -p $(dir $(AXI_3P_TRACE_CSV)) $(dir $(AXI_3P_TRACE_REPORT))
 	vvp $(TOP_AXI_3P_SIM_BUILD) +memh=$(AXI_3P_PERF_MEMH) \
 		+max_cycles=$(AXI_3P_PERF_MAX_CYCLES) $(AXI_3P_PERF_ARGS) \
@@ -1304,6 +1316,12 @@ $(MEM_CHANNEL_SIM_BUILD): $(MEM_CHANNEL_SIM_SRCS) $(MEM_CHANNEL_SRCS)
 	iverilog -g2012 -Wall -Irtl -s tb_mem_channel \
 		-o $(MEM_CHANNEL_SIM_BUILD) $(MEM_CHANNEL_SRCS) \
 		$(MEM_CHANNEL_SIM_SRCS)
+
+$(MESH_ROUTER_SIM_BUILD): $(MESH_ROUTER_SIM_SRCS) $(MESH_ROUTER_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_mesh_router_tile \
+		-o $(MESH_ROUTER_SIM_BUILD) $(MESH_ROUTER_SRCS) \
+		$(MESH_ROUTER_SIM_SRCS)
 
 $(SOC_BUS_SIM_BUILD): $(SOC_BUS_SIM_SRCS) $(SOC_BUS_SRCS)
 	mkdir -p sim
@@ -1832,6 +1850,9 @@ $(TOP_AXI_3P_SIM_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
 		-Ptb_top_axi_3p.FREE_BRANCHES=$(AXI_3P_FREE_BRANCHES) \
 		-Ptb_top_axi_3p.EQ_BRANCH_PAIRING=$(AXI_3P_EQ_BRANCH_PAIRING) \
 		-Ptb_top_axi_3p.ORACLE_BRANCHES=$(AXI_3P_ORACLE_BRANCHES) \
+		-Ptb_top_axi_3p.FREE_L1_REFILLS=$(AXI_3P_FREE_L1_REFILLS) \
+		-Ptb_top_axi_3p.FREE_L1I_REFILLS=$(AXI_3P_FREE_L1I_REFILLS) \
+		-Ptb_top_axi_3p.FREE_L1D_REFILLS=$(AXI_3P_FREE_L1D_REFILLS) \
 		-o $(TOP_AXI_3P_SIM_BUILD) rtl/openrv64_top_3p.v $(CORE_SRCS) \
 		$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
 		$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \

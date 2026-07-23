@@ -1,8 +1,7 @@
 `timescale 1ns/1ps
 
-// Instruction-side specialization.  The memory pinout is intentionally the
-// same generic blocking channel as the data side, but this requester can only
-// issue reads.
+// Instruction-side specialization of the shared pipelined cache.  This
+// requester can only issue reads.
 module openrv64_l1i #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
@@ -24,6 +23,8 @@ module openrv64_l1i #(
     input  wire [ADDR_WIDTH-1:0]     req_phys_addr_i,
     input  wire                      req_prefetch_i,
     input  wire                      req_aged_i,
+    output wire                      resp_valid_o,
+    input  wire                      resp_ready_i,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
     output wire                      req_error_o,
     input  wire                      invalidate_valid_i,
@@ -64,6 +65,8 @@ module openrv64_l1i #(
         .req_aged_i(req_aged_i),
         .req_wdata_i({DATA_WIDTH{1'b0}}),
         .req_wstrb_i({DATA_WIDTH/8{1'b0}}),
+        .resp_valid_o(resp_valid_o),
+        .resp_ready_i(resp_ready_i),
         .req_rdata_o(req_rdata_o),
         .req_error_o(req_error_o),
         .invalidate_valid_i(invalidate_valid_i),

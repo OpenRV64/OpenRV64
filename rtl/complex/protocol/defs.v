@@ -30,6 +30,9 @@
 // emits READ and WRITE.  The remaining encodings are reserved now so later
 // coherent logic receives atomic intent explicitly rather than attempting to
 // infer an AMO or LR/SC sequence from ordinary memory traffic.
+// `ccx_req_lock` is a separate transitional signal used by the one-hart AMO
+// bring-up path.  It is deliberately not encoded as another operation and is
+// not the eventual coherent atomic contract.
 `define OPENRV64_CCX_OP_READ       4'd0
 `define OPENRV64_CCX_OP_WRITE      4'd1
 `define OPENRV64_CCX_OP_LR         4'd2

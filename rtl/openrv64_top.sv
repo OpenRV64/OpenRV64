@@ -21,6 +21,9 @@ module openrv64_top #(
         `OPENRV64_SOC_MEMORY_BASE,
     parameter logic [63:0] L1D_CACHEABLE_SIZE =
         `OPENRV64_SOC_MEMORY_SIZE,
+    parameter int unsigned L1D_FILL_BUFFER_LINES = 8,
+    parameter int unsigned L1D_STORE_BUFFER_LINES = 8,
+    parameter int unsigned L1I_FILL_BUFFER_LINES = 8,
     parameter logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID = '0,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
@@ -100,6 +103,7 @@ module openrv64_top #(
     output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id,
     output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id,
     output logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op,
+    output logic        ccx_req_lock,
     output logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order,
     output logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind,
     output logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr,
@@ -245,6 +249,7 @@ module openrv64_top #(
     wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] three_ccx_req_txn_id;
     wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] three_ccx_req_source_id;
     wire [`OPENRV64_CCX_OP_WIDTH-1:0] three_ccx_req_op;
+    wire three_ccx_req_lock;
     wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] three_ccx_req_order;
     wire [`OPENRV64_CCX_KIND_WIDTH-1:0] three_ccx_req_kind;
     wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] three_ccx_req_attr;
@@ -327,6 +332,9 @@ module openrv64_top #(
                 .ENABLE_L1D(ENABLE_L1D),
                 .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
                 .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+                .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
+                .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
+                .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
                 .HART_ID(HART_ID),
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
@@ -386,6 +394,7 @@ module openrv64_top #(
                 .ccx_req_txn_id(three_ccx_req_txn_id),
                 .ccx_req_source_id(three_ccx_req_source_id),
                 .ccx_req_op(three_ccx_req_op),
+                .ccx_req_lock(three_ccx_req_lock),
                 .ccx_req_order(three_ccx_req_order),
                 .ccx_req_kind(three_ccx_req_kind),
                 .ccx_req_attr(three_ccx_req_attr),
@@ -494,6 +503,7 @@ module openrv64_top #(
             assign three_ccx_req_txn_id = '0;
             assign three_ccx_req_source_id = '0;
             assign three_ccx_req_op = '0;
+            assign three_ccx_req_lock = 1'b0;
             assign three_ccx_req_order = '0;
             assign three_ccx_req_kind = '0;
             assign three_ccx_req_attr = '0;
@@ -548,6 +558,7 @@ module openrv64_top #(
     assign ccx_req_txn_id = three_ccx_req_txn_id;
     assign ccx_req_source_id = three_ccx_req_source_id;
     assign ccx_req_op = three_ccx_req_op;
+    assign ccx_req_lock = three_ccx_req_lock;
     assign ccx_req_order = three_ccx_req_order;
     assign ccx_req_kind = three_ccx_req_kind;
     assign ccx_req_attr = three_ccx_req_attr;

@@ -22,6 +22,7 @@ module openrv64_ccx_crossbar #(
                                          hart_req_txn_id_i,
     input  wire [NUM_HARTS*`OPENRV64_CCX_OP_WIDTH-1:0]
                                          hart_req_op_i,
+    input  wire [NUM_HARTS-1:0]         hart_req_lock_i,
     input  wire [NUM_HARTS*`OPENRV64_CCX_ORDER_WIDTH-1:0]
                                          hart_req_order_i,
     input  wire [NUM_HARTS*`OPENRV64_CCX_KIND_WIDTH-1:0]
@@ -38,6 +39,7 @@ module openrv64_ccx_crossbar #(
     output reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] mem_req_hart_id_o,
     output reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]  mem_req_txn_id_o,
     output reg [`OPENRV64_CCX_OP_WIDTH-1:0]      mem_req_op_o,
+    output reg                          mem_req_lock_o,
     output reg [`OPENRV64_CCX_ORDER_WIDTH-1:0]   mem_req_order_o,
     output reg [`OPENRV64_CCX_KIND_WIDTH-1:0]    mem_req_kind_o,
     output reg [`OPENRV64_CCX_ATTR_WIDTH-1:0]    mem_req_attr_o,
@@ -105,6 +107,7 @@ module openrv64_ccx_crossbar #(
         mem_req_hart_id_o = {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
         mem_req_txn_id_o = {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
         mem_req_op_o = `OPENRV64_CCX_OP_READ;
+        mem_req_lock_o = 1'b0;
         mem_req_order_o = `OPENRV64_CCX_ORDER_NONE;
         mem_req_kind_o = `OPENRV64_CCX_KIND_LEGACY;
         mem_req_attr_o = `OPENRV64_CCX_ATTR_NONE;
@@ -124,6 +127,7 @@ module openrv64_ccx_crossbar #(
             mem_req_op_o = hart_req_op_i[
                 grant_hart*`OPENRV64_CCX_OP_WIDTH +:
                 `OPENRV64_CCX_OP_WIDTH];
+            mem_req_lock_o = hart_req_lock_i[grant_hart];
             mem_req_order_o = hart_req_order_i[
                 grant_hart*`OPENRV64_CCX_ORDER_WIDTH +:
                 `OPENRV64_CCX_ORDER_WIDTH];

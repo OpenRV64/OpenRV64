@@ -27,6 +27,8 @@ module openrv64_l1 #(
     input  wire                      req_aged_i,
     input  wire [DATA_WIDTH-1:0]     req_wdata_i,
     input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
+    output wire                      resp_valid_o,
+    input  wire                      resp_ready_i,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
     output wire                      req_error_o,
     input  wire                      invalidate_valid_i,
@@ -68,6 +70,8 @@ module openrv64_l1 #(
                 .req_aged_i(req_aged_i),
                 .req_wdata_i(req_wdata_i),
                 .req_wstrb_i(req_wstrb_i),
+                .resp_valid_o(resp_valid_o),
+                .resp_ready_i(resp_ready_i),
                 .req_rdata_o(req_rdata_o),
                 .req_error_o(req_error_o),
                 .invalidate_valid_i(invalidate_valid_i),
@@ -86,15 +90,56 @@ module openrv64_l1 #(
                 .mem_error_i(mem_error_i)
             );
         end else begin : g_bypass
-            assign req_ready_o = req_valid_i && mem_ready_i;
-            assign req_rdata_o = mem_rdata_i;
-            assign req_error_o = req_valid_i && mem_ready_i && mem_error_i;
-            assign invalidate_ready_o = 1'b1;
-            assign mem_valid_o = req_valid_i;
-            assign mem_write_o = req_write_i;
-            assign mem_addr_o = req_phys_addr_i;
-            assign mem_wdata_o = req_wdata_i;
-            assign mem_wstrb_o = req_wstrb_i;
+            reg request_valid_q;
+            reg request_write_q;
+            reg [ADDR_WIDTH-1:0] request_addr_q;
+            reg [DATA_WIDTH-1:0] request_wdata_q;
+            reg [DATA_WIDTH/8-1:0] request_wstrb_q;
+            reg response_valid_q;
+            reg [DATA_WIDTH-1:0] response_data_q;
+            reg response_error_q;
+
+            assign req_ready_o = !request_valid_q &&
+                                 (!response_valid_q || resp_ready_i);
+            assign resp_valid_o = response_valid_q;
+            assign req_rdata_o = response_data_q;
+            assign req_error_o = response_error_q;
+            assign invalidate_ready_o = !request_valid_q &&
+                                        !response_valid_q;
+            assign mem_valid_o = request_valid_q;
+            assign mem_write_o = request_write_q;
+            assign mem_addr_o = request_addr_q;
+            assign mem_wdata_o = request_wdata_q;
+            assign mem_wstrb_o = request_wstrb_q;
+
+            always @(posedge clk_i or negedge rst_ni) begin
+                if (!rst_ni) begin
+                    request_valid_q <= 1'b0;
+                    request_write_q <= 1'b0;
+                    request_addr_q <= {ADDR_WIDTH{1'b0}};
+                    request_wdata_q <= {DATA_WIDTH{1'b0}};
+                    request_wstrb_q <= {DATA_WIDTH/8{1'b0}};
+                    response_valid_q <= 1'b0;
+                    response_data_q <= {DATA_WIDTH{1'b0}};
+                    response_error_q <= 1'b0;
+                end else begin
+                    if (response_valid_q && resp_ready_i)
+                        response_valid_q <= 1'b0;
+                    if (req_valid_i && req_ready_o) begin
+                        request_valid_q <= 1'b1;
+                        request_write_q <= req_write_i;
+                        request_addr_q <= req_phys_addr_i;
+                        request_wdata_q <= req_wdata_i;
+                        request_wstrb_q <= req_wstrb_i;
+                    end
+                    if (request_valid_q && mem_ready_i) begin
+                        request_valid_q <= 1'b0;
+                        response_valid_q <= 1'b1;
+                        response_data_q <= mem_rdata_i;
+                        response_error_q <= mem_error_i;
+                    end
+                end
+            end
         end
     endgenerate
 

@@ -7,6 +7,8 @@ module tb_l1_cache;
 
     logic req_valid;
     wire req_ready;
+    wire resp_valid;
+    logic resp_ready;
     logic req_write;
     logic req_cacheable;
     logic [63:0] req_addr;
@@ -36,6 +38,7 @@ module tb_l1_cache;
     logic [63:0] fail_addr;
     logic [63:0] memory [0:4095];
     integer memory_requests;
+    integer last_request_cycles;
     integer index;
     integer byte_index;
     logic [63:0] stalled_mem_addr;
@@ -45,6 +48,8 @@ module tb_l1_cache;
 
     logic bypass_req_valid;
     wire bypass_req_ready;
+    wire bypass_resp_valid;
+    logic bypass_resp_ready;
     logic bypass_req_write;
     logic [63:0] bypass_req_addr;
     logic [63:0] bypass_req_wdata;
@@ -73,6 +78,8 @@ module tb_l1_cache;
         .req_addr_i(req_addr),
         .req_wdata_i(req_wdata),
         .req_wstrb_i(req_wstrb),
+        .resp_valid_o(resp_valid),
+        .resp_ready_i(resp_ready),
         .req_rdata_o(req_rdata),
         .req_error_o(req_error),
         .invalidate_valid_i(invalidate_valid),
@@ -105,6 +112,8 @@ module tb_l1_cache;
         .req_addr_i(bypass_req_addr),
         .req_wdata_i(bypass_req_wdata),
         .req_wstrb_i(bypass_req_wstrb),
+        .resp_valid_o(bypass_resp_valid),
+        .resp_ready_i(bypass_resp_ready),
         .req_rdata_o(bypass_req_rdata),
         .req_error_o(bypass_req_error),
         .invalidate_valid_i(1'b0),
@@ -172,21 +181,125 @@ module tb_l1_cache;
                 @(negedge clk);
                 cycles = cycles + 1;
             end
-            #1;
             if (!req_ready)
-                $fatal(1, "%0s timed out", label);
-            if (req_error !== expected_error)
-                $fatal(1, "%0s error=%b expected=%b", label,
-                       req_error, expected_error);
-            if (!write && !expected_error && req_rdata !== expected_data)
-                $fatal(1, "%0s data=%016x expected=%016x", label,
-                       req_rdata, expected_data);
+                $fatal(1, "%0s acceptance timed out", label);
+            @(posedge clk);
+            @(negedge clk);
             req_valid = 1'b0;
             req_write = 1'b0;
             req_cacheable = 1'b0;
             req_addr = 64'd0;
             req_wdata = 64'd0;
             req_wstrb = 8'd0;
+            cycles = 0;
+            while (!resp_valid && cycles < 200) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            #1;
+            if (!resp_valid)
+                $fatal(1, "%0s response timed out", label);
+            if (req_error !== expected_error)
+                $fatal(1, "%0s error=%b expected=%b", label,
+                       req_error, expected_error);
+            if (!write && !expected_error && req_rdata !== expected_data)
+                $fatal(1, "%0s data=%016x expected=%016x", label,
+                       req_rdata, expected_data);
+            last_request_cycles = cycles;
+        end
+    endtask
+
+    task automatic issue_hit_stream;
+        integer sent;
+        integer received;
+        integer stream_cycle;
+        integer last_response_cycle;
+        reg [63:0] expected;
+        begin
+            sent = 0;
+            received = 0;
+            stream_cycle = 0;
+            last_response_cycle = -1;
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_write = 1'b0;
+            req_cacheable = 1'b1;
+            req_addr = 64'h100;
+            req_wdata = 64'd0;
+            req_wstrb = 8'd0;
+            while ((received < 4) && (stream_cycle < 20)) begin
+                @(posedge clk);
+                if (req_valid && req_ready)
+                    sent = sent + 1;
+                @(negedge clk);
+                stream_cycle = stream_cycle + 1;
+                if (resp_valid) begin
+                    expected = 64'h1000_0000_0000_0020 + received;
+                    if (req_rdata !== expected)
+                        $fatal(1,
+                            "pipelined hit %0d data=%016x expected=%016x",
+                            received, req_rdata, expected);
+                    if ((last_response_cycle >= 0) &&
+                        (stream_cycle != last_response_cycle + 1))
+                        $fatal(1, "pipelined hits did not respond consecutively");
+                    last_response_cycle = stream_cycle;
+                    received = received + 1;
+                end
+                if (sent < 4) begin
+                    req_valid = 1'b1;
+                    req_addr = 64'h100 + sent * 8;
+                    if (!req_ready)
+                        $fatal(1, "pipelined hit input stalled at request %0d",
+                               sent);
+                end else begin
+                    req_valid = 1'b0;
+                    req_addr = 64'd0;
+                end
+            end
+            req_valid = 1'b0;
+            req_cacheable = 1'b0;
+            req_addr = 64'd0;
+            if ((sent != 4) || (received != 4))
+                $fatal(1, "pipelined hit stream sent=%0d received=%0d",
+                       sent, received);
+        end
+    endtask
+
+    task automatic stall_hit_response;
+        reg [63:0] held_data;
+        integer stall_cycle;
+        begin
+            @(negedge clk);
+            resp_ready = 1'b0;
+            req_valid = 1'b1;
+            req_write = 1'b0;
+            req_cacheable = 1'b1;
+            req_addr = 64'h100;
+            req_wdata = 64'd0;
+            req_wstrb = 8'd0;
+            if (!req_ready)
+                $fatal(1, "hit was not accepted into an empty response slot");
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            req_cacheable = 1'b0;
+            req_addr = 64'd0;
+            if (!resp_valid ||
+                req_rdata !== 64'h1000_0000_0000_0020)
+                $fatal(1, "stalled hit response was not produced");
+            held_data = req_rdata;
+            for (stall_cycle = 0; stall_cycle < 3;
+                 stall_cycle = stall_cycle + 1) begin
+                @(posedge clk);
+                @(negedge clk);
+                if (!resp_valid || req_rdata !== held_data || req_ready)
+                    $fatal(1, "stalled hit response changed or accepted input");
+            end
+            resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            if (resp_valid)
+                $fatal(1, "stalled hit response did not retire");
         end
     endtask
 
@@ -235,6 +348,7 @@ module tb_l1_cache;
         req_addr = 64'd0;
         req_wdata = 64'd0;
         req_wstrb = 8'd0;
+        resp_ready = 1'b1;
         invalidate_valid = 1'b0;
         invalidate_all = 1'b0;
         invalidate_addr = 64'd0;
@@ -244,11 +358,13 @@ module tb_l1_cache;
         fail_enable = 1'b0;
         fail_addr = 64'd0;
         memory_requests = 0;
+        last_request_cycles = 0;
         bypass_req_valid = 1'b0;
         bypass_req_write = 1'b0;
         bypass_req_addr = 64'd0;
         bypass_req_wdata = 64'd0;
         bypass_req_wstrb = 8'd0;
+        bypass_resp_ready = 1'b1;
         bypass_mem_error = 1'b0;
         for (index = 0; index < 4096; index = index + 1)
             memory[index] = 64'h1000_0000_0000_0000 + index;
@@ -268,6 +384,7 @@ module tb_l1_cache;
                           "read miss");
             begin
                 wait (mem_valid);
+                #1;
                 stalled_mem_addr = mem_addr;
                 stalled_mem_write = mem_write;
                 stalled_mem_wdata = mem_wdata;
@@ -292,7 +409,12 @@ module tb_l1_cache;
         issue_request(1'b0, 1'b1, 64'h120, 64'd0, 8'd0,
                       64'h1000_0000_0000_0024, 1'b0,
                       "same-line read hit");
+        if (last_request_cycles != 0)
+            $fatal(1, "read hit retained %0d post-accept wait cycles",
+                   last_request_cycles);
         expect_request_delta(before_count, 0, "read hit");
+        issue_hit_stream();
+        stall_hit_response();
 
         before_count = memory_requests;
         issue_request(1'b1, 1'b1, 64'h11b,
@@ -417,31 +539,47 @@ module tb_l1_cache;
                       "aged line evicted first");
         expect_request_delta(before_count, 8, "aged victim refill");
 
-        // Cacheless mode preserves every request field and response.
+        // Cacheless mode preserves every request field and response while
+        // adapting the blocking memory side to the decoupled requester.
         @(negedge clk);
+        if (!bypass_invalidate_ready)
+            $fatal(1, "cacheless wrapper did not start quiescent");
         bypass_req_valid = 1'b1;
         bypass_req_write = 1'b1;
         bypass_req_addr = 64'h1234_5678_9abc_def3;
         bypass_req_wdata = 64'h1122_3344_5566_7788;
         bypass_req_wstrb = 8'h18;
         #1;
-        if (!bypass_req_ready || !bypass_mem_valid || !bypass_mem_write ||
+        if (!bypass_req_ready)
+            $fatal(1, "cacheless wrapper did not accept request");
+        @(posedge clk);
+        @(negedge clk);
+        bypass_req_valid = 1'b0;
+        if (!bypass_mem_valid || !bypass_mem_write ||
             bypass_mem_addr !== bypass_req_addr ||
             bypass_mem_wdata !== bypass_req_wdata ||
-            bypass_mem_wstrb !== bypass_req_wstrb ||
+            bypass_mem_wstrb !== bypass_req_wstrb)
+            $fatal(1, "cacheless wrapper changed request payload");
+        @(posedge clk);
+        @(negedge clk);
+        if (!bypass_resp_valid ||
             bypass_req_rdata !== 64'hdead_beef_cafe_f00d ||
-            bypass_req_error || !bypass_invalidate_ready)
-            $fatal(1, "cacheless wrapper is not transparent");
-        bypass_req_valid = 1'b0;
+            bypass_req_error)
+            $fatal(1, "cacheless wrapper changed response payload");
 
         @(negedge clk);
         bypass_mem_error = 1'b1;
         bypass_req_valid = 1'b1;
         bypass_req_write = 1'b0;
-        #1;
-        if (!bypass_req_ready || !bypass_req_error)
-            $fatal(1, "cacheless wrapper dropped a memory error");
+        while (!bypass_req_ready)
+            @(negedge clk);
+        @(posedge clk);
+        @(negedge clk);
         bypass_req_valid = 1'b0;
+        @(posedge clk);
+        @(negedge clk);
+        if (!bypass_resp_valid || !bypass_req_error)
+            $fatal(1, "cacheless wrapper dropped a memory error");
         bypass_mem_error = 1'b0;
 
         $display("L1 cache tests passed");

@@ -19,6 +19,7 @@ module tb_ccx_l2 #(
     logic [3:0] req_hart_id;
     logic [3:0] req_txn_id;
     logic [3:0] req_op;
+    logic req_lock;
     logic [1:0] req_order;
     logic [1:0] req_kind;
     logic [3:0] req_attr;
@@ -82,6 +83,7 @@ module tb_ccx_l2 #(
         .req_hart_id_i(req_hart_id),
         .req_txn_id_i(req_txn_id),
         .req_op_i(req_op),
+        .req_lock_i(req_lock),
         .req_order_i(req_order),
         .req_kind_i(req_kind),
         .req_attr_i(req_attr),
@@ -200,26 +202,68 @@ module tb_ccx_l2 #(
         input [63:0] write_data;
         input [7:0] write_strobes;
         integer cycles;
+        reg accepted;
         begin
             @(negedge clk);
             req_valid = 1'b1;
             req_hart_id = hart;
             req_txn_id = txn;
             req_op = operation;
+            req_lock = 1'b0;
             req_attr = attributes;
             req_addr = address;
             req_wdata = write_data;
             req_wstrb = write_strobes;
             cycles = 0;
-            while (!req_ready && cycles < 1000) begin
-                @(negedge clk);
+            accepted = 1'b0;
+            while (!accepted && cycles < 1000) begin
+                @(posedge clk);
+                if (req_ready)
+                    accepted = 1'b1;
                 cycles = cycles + 1;
             end
-            if (!req_ready)
+            if (!accepted)
                 $fatal(1, "request hart=%0d txn=%0d timed out", hart, txn);
-            @(posedge clk);
             @(negedge clk);
             req_valid = 1'b0;
+        end
+    endtask
+
+    task automatic send_locked_request;
+        input [3:0] hart;
+        input [3:0] txn;
+        input [3:0] operation;
+        input [3:0] attributes;
+        input [63:0] address;
+        input [63:0] write_data;
+        input [7:0] write_strobes;
+        integer cycles;
+        reg accepted;
+        begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_hart_id = hart;
+            req_txn_id = txn;
+            req_op = operation;
+            req_lock = 1'b1;
+            req_attr = attributes;
+            req_addr = address;
+            req_wdata = write_data;
+            req_wstrb = write_strobes;
+            cycles = 0;
+            accepted = 1'b0;
+            while (!accepted && cycles < 1000) begin
+                @(posedge clk);
+                if (req_ready)
+                    accepted = 1'b1;
+                cycles = cycles + 1;
+            end
+            if (!accepted)
+                $fatal(1, "locked request hart=%0d txn=%0d timed out",
+                       hart, txn);
+            @(negedge clk);
+            req_valid = 1'b0;
+            req_lock = 1'b0;
         end
     endtask
 
@@ -257,6 +301,8 @@ module tb_ccx_l2 #(
     integer before_writes;
     integer way;
     integer initialization_index;
+    integer lock_response_base;
+    integer lock_block_cycles;
     reg [63:0] expected_word;
     localparam [63:0] CONFLICT_BASE = 64'h0001_0000;
     localparam [63:0] SET_STRIDE = 64'd32768;
@@ -275,6 +321,7 @@ module tb_ccx_l2 #(
         req_hart_id = 0;
         req_txn_id = 0;
         req_op = `OPENRV64_CCX_OP_READ;
+        req_lock = 1'b0;
         req_order = `OPENRV64_CCX_ORDER_NONE;
         req_kind = `OPENRV64_CCX_KIND_DATA;
         req_attr = CACHEABLE;
@@ -388,6 +435,43 @@ module tb_ccx_l2 #(
             $fatal(1, "dirty eviction did not write exactly one line");
         if (memory_word(CONFLICT_BASE + 7*SET_STRIDE) !== DIRTY_WRITE)
             $fatal(1, "dirty writeback data did not reach memory");
+
+        // Bring-up AMO exclusion contract: the marked read acquires the
+        // home line.  No unrelated request may enter until the matching
+        // marked write completes and releases it.
+        lock_response_base = response_count;
+        expected_word = memory_word(64'h180);
+        send_locked_request(0, 9, `OPENRV64_CCX_OP_READ, CACHEABLE,
+                            64'h180, 0, 0);
+        expect_response(lock_response_base, 0, 9, expected_word,
+                        1'b0, 1'b1);
+
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_lock = 1'b0;
+        req_hart_id = 1;
+        req_txn_id = 4'd9;
+        req_op = `OPENRV64_CCX_OP_READ;
+        req_attr = CACHEABLE;
+        req_addr = 64'h280;
+        req_wdata = 0;
+        req_wstrb = 0;
+        for (lock_block_cycles = 0; lock_block_cycles < 5;
+             lock_block_cycles = lock_block_cycles + 1) begin
+            if (req_ready)
+                $fatal(1, "home lock admitted an unrelated request");
+            @(negedge clk);
+        end
+        req_valid = 1'b0;
+
+        send_locked_request(0, 10, `OPENRV64_CCX_OP_WRITE, CACHEABLE,
+                            64'h180, 64'h1020_3040_5060_7080, 8'hff);
+        expect_response(lock_response_base + 1, 0, 10, 0,
+                        1'b0, 1'b0);
+        send_request(1, 9, `OPENRV64_CCX_OP_READ, CACHEABLE,
+                     64'h180, 0, 0);
+        expect_response(lock_response_base + 2, 1, 9,
+                        64'h1020_3040_5060_7080, 1'b0, 1'b1);
 
         if (resp_sc_success !== 1'b0)
             $fatal(1, "non-atomic L2 response asserted SC success");

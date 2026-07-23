@@ -4,7 +4,10 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-module tb_axi_bus;
+module tb_axi_bus #(
+    parameter integer L1D_FILL_BUFFER_LINES = 8,
+    parameter integer L1D_STORE_BUFFER_LINES = 8
+);
     logic clk;
     logic rst_n;
     logic fetch_req_valid;
@@ -30,8 +33,9 @@ module tb_axi_bus;
     wire lsu_page_fault;
 
     logic pipe_req_valid;
+    logic pipe_req_lock;
     wire pipe_req_ready;
-    logic [1:0] pipe_req_tag;
+    logic [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_req_tag;
     logic pipe_req_write;
     logic [63:0] pipe_req_addr;
     logic [63:0] pipe_req_wdata;
@@ -43,7 +47,7 @@ module tb_axi_bus;
     logic pipe_cancel;
     wire pipe_resp_valid;
     logic pipe_resp_ready;
-    wire [1:0] pipe_resp_tag;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_resp_tag;
     wire [63:0] pipe_resp_rdata;
     wire pipe_resp_access_fault;
     wire pipe_resp_page_fault;
@@ -90,6 +94,7 @@ module tb_axi_bus;
     wire [3:0] ccx_req_txn_id;
     wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
     wire [3:0] ccx_req_op;
+    wire ccx_req_lock;
     wire [1:0] ccx_req_order;
     wire [1:0] ccx_req_kind;
     wire [3:0] ccx_req_attr;
@@ -134,6 +139,8 @@ module tb_axi_bus;
     logic ccx_allow_wdata;
     integer ccx_reads;
     integer ccx_writes;
+    integer ccx_locked_reads;
+    integer ccx_locked_writes;
     integer ccx_byte;
     integer ccx_index;
     integer ccx_word_index;
@@ -141,10 +148,15 @@ module tb_axi_bus;
     integer ar_count;
     integer wait_count;
     integer channel_wait;
+    reg [63:0] locked_old_word;
     reg [2:0] seen_id [0:15];
     reg [63:0] seen_addr [0:15];
 
-    openrv64_core_axi_bus #(.ENABLE_L1I(0)) dut (
+    openrv64_core_axi_bus #(
+        .ENABLE_L1I(0),
+        .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
+        .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES)
+    ) dut (
         .clk(clk), .rst_n(rst_n),
         .fetch_req_valid_i(fetch_req_valid),
         .fetch_req_ready_o(fetch_req_ready),
@@ -160,7 +172,8 @@ module tb_axi_bus;
         .fetch_resp_data_o(fetch_resp_data),
         .fetch_resp_access_fault_o(fetch_resp_access_fault),
         .fetch_resp_page_fault_o(fetch_resp_page_fault),
-        .lsu_valid_i(lsu_valid), .lsu_write_i(lsu_write),
+        .lsu_valid_i(lsu_valid), .lsu_lock_i(1'b0),
+        .lsu_write_i(lsu_write),
         .lsu_addr_i(lsu_addr), .lsu_wdata_i(lsu_wdata),
         .lsu_wstrb_i(lsu_wstrb), .lsu_size_i(lsu_size),
         .lsu_priv_i(`RV64_PRIV_M),
@@ -179,6 +192,7 @@ module tb_axi_bus;
         .lsu_pipe_req_valid_i(pipe_req_valid),
         .lsu_pipe_req_ready_o(pipe_req_ready),
         .lsu_pipe_req_tag_i(pipe_req_tag),
+        .lsu_pipe_req_lock_i(pipe_req_lock),
         .lsu_pipe_req_write_i(pipe_req_write),
         .lsu_pipe_req_addr_i(pipe_req_addr),
         .lsu_pipe_req_wdata_i(pipe_req_wdata),
@@ -206,6 +220,7 @@ module tb_axi_bus;
         .ccx_req_txn_id_o(ccx_req_txn_id),
         .ccx_req_source_id_o(ccx_req_source_id),
         .ccx_req_op_o(ccx_req_op),
+        .ccx_req_lock_o(ccx_req_lock),
         .ccx_req_order_o(ccx_req_order),
         .ccx_req_kind_o(ccx_req_kind),
         .ccx_req_attr_o(ccx_req_attr),
@@ -294,6 +309,8 @@ module tb_axi_bus;
             ccx_resp_error <= 1'b0;
             ccx_reads <= 0;
             ccx_writes <= 0;
+            ccx_locked_reads <= 0;
+            ccx_locked_writes <= 0;
         end else begin
             if (ccx_resp_valid && ccx_resp_ready)
                 ccx_resp_valid <= 1'b0;
@@ -307,8 +324,15 @@ module tb_axi_bus;
                     $fatal(1, "L1D emitted malformed CCX command");
                 if ((ccx_req_attr == `OPENRV64_CCX_ATTR_CACHEABLE) &&
                     (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
+                    !ccx_req_lock &&
                     ((ccx_req_size != 3'd6) || (ccx_req_addr[5:0] != 0)))
                     $fatal(1, "L1D miss was not one aligned line read");
+                if ((ccx_req_attr == `OPENRV64_CCX_ATTR_CACHEABLE) &&
+                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
+                    !ccx_req_lock &&
+                    ((ccx_req_size != 3'd6) || (ccx_req_addr[5:0] != 0)))
+                    $fatal(1,
+                           "posted L1D store was not one aligned masked line write");
                 ccx_cmd_pending <= 1'b1;
                 ccx_cmd_hart_id <= ccx_req_hart_id;
                 ccx_cmd_txn_id <= ccx_req_txn_id;
@@ -316,6 +340,18 @@ module tb_axi_bus;
                 ccx_cmd_op <= ccx_req_op;
                 ccx_cmd_size <= ccx_req_size;
                 ccx_cmd_addr <= ccx_req_addr;
+                if (ccx_req_lock &&
+                    (ccx_req_op == `OPENRV64_CCX_OP_READ)) begin
+                    if ((ccx_req_addr != 64'h108) ||
+                        (ccx_req_size != 3'd3))
+                        $fatal(1,
+                               "locked L1D read lost sub-line geometry addr=%h size=%0d",
+                               ccx_req_addr, ccx_req_size);
+                    ccx_locked_reads <= ccx_locked_reads + 1;
+                end
+                if (ccx_req_lock &&
+                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE))
+                    ccx_locked_writes <= ccx_locked_writes + 1;
             end
 
             if (ccx_wdata_valid && ccx_wdata_ready) begin
@@ -386,7 +422,7 @@ module tb_axi_bus;
     endtask
 
     task automatic push_pipe_request(
-        input [1:0] tag,
+        input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag,
         input write,
         input [63:0] addr,
         input [63:0] write_data,
@@ -403,7 +439,7 @@ module tb_axi_bus;
             pipe_req_valid = 1'b1;
             wait_cycles = 0;
             completed = 1'b0;
-            while (!completed && wait_cycles < 30) begin
+            while (!completed && wait_cycles < 100) begin
                 @(posedge clk);
                 if (pipe_req_ready)
                     completed = 1'b1;
@@ -420,12 +456,12 @@ module tb_axi_bus;
     endtask
 
     task automatic send_pipe_read_response(
-        input [1:0] tag,
+        input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag,
         input [255:0] response_data,
         input [63:0] expected_data
     );
         begin
-            rid = {1'b1, tag};
+            rid = {`OPENRV64_AXI_ID_WIDTH{1'b1}};
             rdata = response_data;
             rresp = 2'b00;
             rlast = 1'b1;
@@ -443,7 +479,7 @@ module tb_axi_bus;
     endtask
 
     task automatic expect_pipe_response(
-        input [1:0] tag,
+        input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag,
         input [63:0] expected_data,
         input expected_access_fault,
         input expected_page_fault
@@ -462,9 +498,10 @@ module tb_axi_bus;
                 pipe_resp_access_fault != expected_access_fault ||
                 pipe_resp_page_fault != expected_page_fault)
                 $fatal(1,
-                    "tagged L1D response mismatch tag=%0d got=%0d data=%h faults=%b/%b",
-                    tag, pipe_resp_tag, pipe_resp_rdata,
-                    pipe_resp_access_fault, pipe_resp_page_fault);
+                    "tagged L1D response mismatch tag=%0d got=%0d data=%h expected=%h faults=%b/%b expected=%b/%b",
+                    tag, pipe_resp_tag, pipe_resp_rdata, expected_data,
+                    pipe_resp_access_fault, pipe_resp_page_fault,
+                    expected_access_fault, expected_page_fault);
             tick();
         end
     endtask
@@ -492,8 +529,9 @@ module tb_axi_bus;
                 wait_cycles = wait_cycles + 1;
             end
             if (!completed)
-                $fatal(1, "R channel timeout id=%0d phys=%0d fetch=%0d",
-                    response_id, dut.phys_state_q, dut.fetch_state_q);
+                $fatal(1,
+                    "R channel timeout id=%0d phys=%0d fetch_count=%0d",
+                    response_id, dut.phys_state_q, dut.fetch_count_q);
             rvalid = 1'b0;
         end
     endtask
@@ -511,8 +549,8 @@ module tb_axi_bus;
                 wait_cycles = wait_cycles + 1;
             end
             if (!fetch_resp_valid)
-                $fatal(1, "fetch response timeout state=%0d",
-                    dut.fetch_state_q);
+                $fatal(1, "fetch response timeout count=%0d head=%0d",
+                    dut.fetch_count_q, dut.fetch_head_q);
             if (fetch_resp_addr != addr || fetch_resp_data != data ||
                 fetch_resp_access_fault != access_fault ||
                 fetch_resp_page_fault)
@@ -537,6 +575,7 @@ module tb_axi_bus;
         lsu_wstrb = 0;
         lsu_size = 3;
         pipe_req_valid = 0;
+        pipe_req_lock = 0;
         pipe_req_tag = 0;
         pipe_req_write = 0;
         pipe_req_addr = 0;
@@ -585,35 +624,28 @@ module tb_axi_bus;
         rst_n = 1;
         tick();
 
-        // The bus owns one translation/protection slot, so direct cacheless
-        // fetches complete sequentially.  Multiple outstanding refills are
-        // an L1I responsibility, not a fetch-bus feature.
+        // Four fetches enter before any response.  AXI may return them out of
+        // order, while the frontend must still observe request order.
         fetch_resp_ready = 0;
         push_fetch(64'h0000);
+        push_fetch(64'h0020);
+        push_fetch(64'h0040);
+        push_fetch(64'h0060);
+        send_read_response(3'd2, 256'h3333, 2'b00);
         send_read_response(3'd0, 256'h1111, 2'b00);
+        send_read_response(3'd3, 256'h4444, 2'b00);
+        send_read_response(3'd1, 256'h2222, 2'b00);
         fetch_resp_ready = 1;
         expect_fetch(64'h0, 256'h1111, 0);
-        fetch_resp_ready = 0;
-        push_fetch(64'h0020);
-        send_read_response(3'd0, 256'h2222, 2'b00);
-        fetch_resp_ready = 1;
         expect_fetch(64'h20, 256'h2222, 0);
-        fetch_resp_ready = 0;
-        push_fetch(64'h0040);
-        send_read_response(3'd0, 256'h3333, 2'b00);
-        fetch_resp_ready = 1;
         expect_fetch(64'h40, 256'h3333, 0);
-        fetch_resp_ready = 0;
-        push_fetch(64'h0060);
-        send_read_response(3'd0, 256'h4444, 2'b00);
-        fetch_resp_ready = 1;
         expect_fetch(64'h60, 256'h4444, 0);
         if (ar_count != 4)
             $fatal(1, "expected four sequential AR requests, got %0d", ar_count);
         if (seen_addr[0] != 64'h0 || seen_addr[1] != 64'h20 ||
             seen_addr[2] != 64'h40 || seen_addr[3] != 64'h60 ||
-            seen_id[0] != 0 || seen_id[1] != 0 ||
-            seen_id[2] != 0 || seen_id[3] != 0)
+            seen_id[0] != 0 || seen_id[1] != 1 ||
+            seen_id[2] != 2 || seen_id[3] != 3)
             $fatal(1, "fetch AR address/ID sequence mismatch");
         if (arlen != 0 || arburst != 2'b01)
             $fatal(1, "AXI read must be a one-beat INCR transaction");
@@ -633,26 +665,65 @@ module tb_axi_bus;
         // A miss is one native 512-bit CCX line read.  A second word in that
         // line is a local hit; scalar data must not leak onto AXI.
         wait_count = ccx_reads;
+        locked_old_word = ccx_memory_word(64'h100);
         push_pipe_request(2'd0, 1'b0, 64'h100, 64'd0, 8'd0);
-        expect_pipe_response(2'd0, ccx_memory_word(64'h100), 1'b0, 1'b0);
+        expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
         if ((ccx_reads - wait_count) != 1)
             $fatal(1, "L1D miss used %0d CCX reads instead of 1",
                    ccx_reads - wait_count);
 
         wait_count = ccx_reads;
+        locked_old_word = ccx_memory_word(64'h108);
         push_pipe_request(2'd1, 1'b0, 64'h108, 64'd0, 8'd0);
-        expect_pipe_response(2'd1, ccx_memory_word(64'h108), 1'b0, 1'b0);
+        expect_pipe_response(2'd1, locked_old_word, 1'b0, 1'b0);
         if (ccx_reads != wait_count)
             $fatal(1, "L1D hit unexpectedly reached CCX");
         if (ar_count != 4 || awvalid || wvalid)
             $fatal(1, "scalar LSU traffic leaked onto AXI");
 
-        // A tagged store is irrevocable after backend acceptance.  It writes
-        // through L1D as one CCX transaction, and its eventual error remains
-        // visible across a younger redirect.
+        // A bring-up AMO phase must bypass and invalidate a resident L1D
+        // line while retaining cacheable PMA attributes at CCX.
+        wait_count = ccx_reads;
+        ccx_allow_cmd = 1'b0;
+        pipe_req_lock = 1'b1;
+        locked_old_word = ccx_memory_word(64'h108);
+        push_pipe_request(2'd2, 1'b0, 64'h108, 64'd0, 8'd0);
+        pipe_req_lock = 1'b0;
+        while (!ccx_req_valid) tick();
+        pipe_cancel = 1'b1;
+        tick();
+        pipe_cancel = 1'b0;
+        if (!ccx_req_valid || !ccx_req_lock)
+            $fatal(1, "redirect cancelled an irrevocable locked read");
+        ccx_allow_cmd = 1'b1;
+        expect_pipe_response(2'd2, locked_old_word, 1'b0, 1'b0);
+        if ((ccx_reads - wait_count) != 1 || ccx_locked_reads != 1)
+            $fatal(1, "locked L1D read hit or lost its CCX lock marker");
+
+        wait_count = ccx_reads;
+        locked_old_word = ccx_memory_word(64'h108);
+        push_pipe_request(2'd0, 1'b0, 64'h108, 64'd0, 8'd0);
+        expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
+        if ((ccx_reads - wait_count) != 1)
+            $fatal(1, "locked L1D access did not invalidate resident line");
+
+        wait_count = ccx_writes;
+        locked_old_word = ccx_memory_word(64'h118);
+        pipe_req_lock = 1'b1;
+        push_pipe_request(2'd2, 1'b1, 64'h118,
+                          64'hcafe_babe_dead_beef, 8'hff);
+        pipe_req_lock = 1'b0;
+        expect_pipe_response(2'd2, locked_old_word, 1'b0, 1'b0);
+        if ((ccx_writes - wait_count) != 1 || ccx_locked_writes != 1)
+            $fatal(1, "locked L1D write lost its CCX lock marker");
+
+        // A tagged store is irrevocable after L1 admission.  Architectural
+        // completion reports that admission, not the later CCX drain result.
+        // Deferred write faults therefore cannot be attributed to the posted
+        // LSU tag and are intentionally not returned on this interface.
         pipe_resp_ready = 0;
         ccx_fail_enable = 1;
-        ccx_fail_addr = 64'h114;
+        ccx_fail_addr = 64'h100;
         ccx_allow_cmd = 0;
         ccx_allow_wdata = 1;
         wait_count = ccx_writes;
@@ -667,20 +738,76 @@ module tb_axi_bus;
             $fatal(1, "CCX write data did not advance independently");
         if (!ccx_req_valid)
             $fatal(1, "CCX command was not held after write data accepted");
-        ccx_allow_cmd = 1;
         pipe_cancel = 1'b1;
         tick();
         pipe_cancel = 1'b0;
         while (!pipe_resp_valid)
             tick();
-        if (pipe_resp_tag != 2'd1 || !pipe_resp_access_fault ||
+        if (pipe_resp_tag != 2'd1 || pipe_resp_access_fault ||
             pipe_resp_page_fault)
-            $fatal(1, "tagged CCX store error was lost across cancel");
-        if ((ccx_writes - wait_count) != 1 || awvalid || wvalid)
-            $fatal(1, "L1D store did not use exactly one CCX write");
+            $fatal(1, "posted store admission response changed across cancel");
         pipe_resp_ready = 1;
         tick();
+        ccx_allow_cmd = 1;
+        while ((ccx_writes - wait_count) != 1)
+            tick();
+        if ((ccx_writes - wait_count) != 1 || awvalid || wvalid)
+            $fatal(1, "L1D store did not use exactly one CCX write");
         ccx_fail_enable = 0;
+
+        // Stores complete architecturally at bus admission, then queue as
+        // aligned 64-byte records with byte enables.  A stalled CCX command
+        // must not prevent independent younger stores from reaching L1D.
+        ccx_memory[6'h0c] = 512'd0;
+        wait_count = ccx_writes;
+        ccx_allow_cmd = 0;
+        ccx_allow_wdata = 1;
+        push_pipe_request(2'd0, 1'b1, 64'h300,
+                          64'h1122_3344_5566_7788, 8'h0f);
+        expect_pipe_response(2'd0, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(2'd1, 1'b1, 64'h308,
+                          64'haabb_ccdd_eeff_0011, 8'hf0);
+        expect_pipe_response(2'd1, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(2'd2, 1'b1, 64'h310,
+                          64'h0123_4567_89ab_cdef, 8'h81);
+        expect_pipe_response(2'd2, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(3'd3, 1'b1, 64'h318,
+                          64'h1020_3040_5060_7080, 8'hff);
+        expect_pipe_response(3'd3, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(3'd4, 1'b1, 64'h320,
+                          64'hfedc_ba98_7654_3210, 8'h33);
+        expect_pipe_response(3'd4, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(3'd5, 1'b1, 64'h328,
+                          64'h0f1e_2d3c_4b5a_6978, 8'hcc);
+        expect_pipe_response(3'd5, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(3'd6, 1'b1, 64'h330,
+                          64'h8877_6655_4433_2211, 8'h55);
+        expect_pipe_response(3'd6, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(3'd7, 1'b1, 64'h338,
+                          64'h99aa_bbcc_ddee_ff00, 8'haa);
+        expect_pipe_response(3'd7, 64'd0, 1'b0, 1'b0);
+        channel_wait = 0;
+        while ((dut.u_l1d.store_buffer_count_q != 8) &&
+               channel_wait < 150) begin
+            tick();
+            channel_wait = channel_wait + 1;
+        end
+        if (dut.u_l1d.store_buffer_count_q != 8)
+            $fatal(1, "L1D did not retain eight stalled stores data=%0d",
+                   dut.u_l1d.store_buffer_count_q);
+        ccx_allow_cmd = 1;
+        while ((ccx_writes - wait_count) != 8)
+            tick();
+        if ((ccx_writes - wait_count) != 8 ||
+            ccx_memory_word(64'h300) != 64'h0000_0000_5566_7788 ||
+            ccx_memory_word(64'h308) != 64'haabb_ccdd_0000_0000 ||
+            ccx_memory_word(64'h310) != 64'h0100_0000_0000_00ef ||
+            ccx_memory_word(64'h318) != 64'h1020_3040_5060_7080 ||
+            ccx_memory_word(64'h320) != 64'h0000_ba98_0000_3210 ||
+            ccx_memory_word(64'h328) != 64'h0f1e_0000_4b5a_0000 ||
+            ccx_memory_word(64'h330) != 64'h0077_0055_0033_0011 ||
+            ccx_memory_word(64'h338) != 64'h9900_bb00_dd00_ff00)
+            $fatal(1, "L1D byte-masked store buffer drain mismatch");
 
         // Translated tagged traffic falls back to the precise PTW path and
         // returns the page fault under the original request tag.  An invalid

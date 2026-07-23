@@ -25,6 +25,7 @@ module openrv64_ccx_l2 #(
     input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id_i,
     input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]  req_txn_id_i,
     input  wire [`OPENRV64_CCX_OP_WIDTH-1:0]      req_op_i,
+    input  wire                         req_lock_i,
     input  wire [`OPENRV64_CCX_ORDER_WIDTH-1:0]   req_order_i,
     input  wire [`OPENRV64_CCX_KIND_WIDTH-1:0]    req_kind_i,
     input  wire [`OPENRV64_CCX_ATTR_WIDTH-1:0]    req_attr_i,
@@ -123,6 +124,7 @@ module openrv64_ccx_l2 #(
     reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] request_hart_id_q;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] request_txn_id_q;
     reg [`OPENRV64_CCX_OP_WIDTH-1:0] request_op_q;
+    reg request_lock_q;
     reg [`OPENRV64_CCX_ATTR_WIDTH-1:0] request_attr_q;
     reg [2:0] request_size_q;
     reg [63:0] request_addr_q;
@@ -135,6 +137,7 @@ module openrv64_ccx_l2 #(
         merge_txn_id_q [0:MERGE_ENTRIES-1];
     reg [`OPENRV64_CCX_OP_WIDTH-1:0]
         merge_op_q [0:MERGE_ENTRIES-1];
+    reg merge_lock_q [0:MERGE_ENTRIES-1];
     reg [63:0] merge_addr_q [0:MERGE_ENTRIES-1];
     reg [63:0] merge_wdata_q [0:MERGE_ENTRIES-1];
     reg [7:0] merge_wstrb_q [0:MERGE_ENTRIES-1];
@@ -157,6 +160,14 @@ module openrv64_ccx_l2 #(
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] response_txn_id_q;
     reg [63:0] response_data_q;
     reg response_error_q;
+
+    // One-hart bring-up lock.  This is intentionally not the eventual
+    // coherence protocol: a marked read acquires one line at the home and a
+    // marked write by the same hart releases it.  While held, no unmarked or
+    // different-line request is accepted.  Errors release the lock.
+    reg lock_active_q;
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] lock_hart_id_q;
+    reg [63:0] lock_line_addr_q;
 
     reg [SET_INDEX_WIDTH-1:0] lookup_set;
     reg [TAG_BITS-1:0] lookup_tag;
@@ -205,6 +216,9 @@ module openrv64_ccx_l2 #(
          (req_op_i == `OPENRV64_CCX_OP_WRITE)) && (req_size_i <= 3);
     wire [63:0] incoming_line_addr =
         {req_addr_i[63:LINE_OFFSET_BITS], {LINE_OFFSET_BITS{1'b0}}};
+    wire lock_request_allowed = !lock_active_q ||
+        (req_lock_i && (req_hart_id_i == lock_hart_id_q) &&
+         (incoming_line_addr == lock_line_addr_q));
     wire miss_accept_state =
         (state_q == STATE_WB_LOAD) || (state_q == STATE_WB_REQ) ||
         (state_q == STATE_WB_RESP) ||
@@ -215,7 +229,7 @@ module openrv64_ccx_l2 #(
     wire merge_request = miss_accept_state && incoming_cacheable &&
                          incoming_supported &&
                          (incoming_line_addr == miss_line_addr_q) &&
-                         merge_space;
+                         merge_space && lock_request_allowed;
     wire request_fire = req_valid_i && req_ready_o;
     wire bus_request_fire = bus_req_valid_o && bus_req_ready_i;
     wire bus_response_fire = bus_resp_valid_i && bus_resp_ready_o;
@@ -225,7 +239,8 @@ module openrv64_ccx_l2 #(
                         merge_count_q);
     wire bypass_last = (bypass_beat_q + 1'b1 >= bypass_total_beats_q);
 
-    assign req_ready_o = (state_q == STATE_IDLE) || merge_request;
+    assign req_ready_o = ((state_q == STATE_IDLE) &&
+                          lock_request_allowed) || merge_request;
     assign resp_valid_o = (state_q == STATE_RESPONSE) ||
                           (state_q == STATE_REPLAY_RESP) ||
                           (state_q == STATE_ERROR_RESP);
@@ -264,6 +279,20 @@ module openrv64_ccx_l2 #(
             $fatal(1, "L2 capacity must contain an integer number of sets");
         if ((MERGE_ENTRIES < 1) || (MERGE_ENTRIES > 16))
             $fatal(1, "L2 merge entries must be from 1 through 16");
+    end
+
+    always @(posedge clk_i) begin
+        if (rst_ni && request_fire && req_lock_i &&
+            (req_op_i != `OPENRV64_CCX_OP_READ) &&
+            (req_op_i != `OPENRV64_CCX_OP_WRITE))
+            $fatal(1, "L2 home lock marker is valid only on READ/WRITE");
+        if (rst_ni && request_fire && req_lock_i && !lock_active_q &&
+            (req_op_i != `OPENRV64_CCX_OP_READ))
+            $fatal(1, "L2 home lock sequence must begin with READ");
+        if (rst_ni && lock_active_q && request_fire &&
+            (!req_lock_i || (req_hart_id_i != lock_hart_id_q) ||
+             (incoming_line_addr != lock_line_addr_q)))
+            $fatal(1, "L2 admitted a request outside the active home lock");
     end
 
     always @* begin
@@ -467,6 +496,7 @@ module openrv64_ccx_l2 #(
             request_hart_id_q <= 0;
             request_txn_id_q <= 0;
             request_op_q <= `OPENRV64_CCX_OP_READ;
+            request_lock_q <= 1'b0;
             request_attr_q <= `OPENRV64_CCX_ATTR_NONE;
             request_size_q <= 0;
             request_addr_q <= 0;
@@ -488,6 +518,9 @@ module openrv64_ccx_l2 #(
             response_txn_id_q <= 0;
             response_data_q <= 0;
             response_error_q <= 0;
+            lock_active_q <= 1'b0;
+            lock_hart_id_q <= 0;
+            lock_line_addr_q <= 0;
             for (set_index = 0; set_index < SETS;
                  set_index = set_index + 1)
                 replace_q[set_index] <= 0;
@@ -506,6 +539,8 @@ module openrv64_ccx_l2 #(
                     merge_count_q[MERGE_INDEX_WIDTH-1:0]] <= req_txn_id_i;
                 merge_op_q[
                     merge_count_q[MERGE_INDEX_WIDTH-1:0]] <= req_op_i;
+                merge_lock_q[
+                    merge_count_q[MERGE_INDEX_WIDTH-1:0]] <= req_lock_i;
                 merge_addr_q[
                     merge_count_q[MERGE_INDEX_WIDTH-1:0]] <= req_addr_i;
                 merge_wdata_q[
@@ -522,11 +557,17 @@ module openrv64_ccx_l2 #(
                         request_hart_id_q <= req_hart_id_i;
                         request_txn_id_q <= req_txn_id_i;
                         request_op_q <= req_op_i;
+                        request_lock_q <= req_lock_i;
                         request_attr_q <= req_attr_i;
                         request_size_q <= req_size_i;
                         request_addr_q <= req_addr_i;
                         request_wdata_q <= req_wdata_i;
                         request_wstrb_q <= req_wstrb_i;
+                        if (req_lock_i && !lock_active_q) begin
+                            lock_active_q <= 1'b1;
+                            lock_hart_id_q <= req_hart_id_i;
+                            lock_line_addr_q <= incoming_line_addr;
+                        end
                         state_q <= STATE_LOOKUP;
                     end
                 end
@@ -538,11 +579,15 @@ module openrv64_ccx_l2 #(
                     response_error_q <= 1'b0;
 
                     if (request_op_q == `OPENRV64_CCX_OP_FENCE) begin
+                        if (request_lock_q)
+                            lock_active_q <= 1'b0;
                         state_q <= STATE_RESPONSE;
                     end else if (((request_op_q != `OPENRV64_CCX_OP_READ) &&
                                   (request_op_q != `OPENRV64_CCX_OP_WRITE)) ||
                                  (request_size_q > 3)) begin
                         response_error_q <= 1'b1;
+                        if (request_lock_q)
+                            lock_active_q <= 1'b0;
                         state_q <= STATE_RESPONSE;
                     end else if (!request_cacheable) begin
                         bypass_beat_q <= 0;
@@ -556,6 +601,8 @@ module openrv64_ccx_l2 #(
                             ((bypass_lane_bytes + bypass_transfer_bytes) >
                              BUS_BYTES)) begin
                             response_error_q <= 1'b1;
+                            if (request_lock_q)
+                                lock_active_q <= 1'b0;
                             state_q <= STATE_RESPONSE;
                         end else begin
                             state_q <= STATE_BYPASS_REQ;
@@ -565,6 +612,8 @@ module openrv64_ccx_l2 #(
                             (lookup_way == LAST_WAY) ? 0 : lookup_way + 1'b1;
                         if (request_op_q == `OPENRV64_CCX_OP_WRITE) begin
                             dirty_q[lookup_line] <= 1'b1;
+                            if (request_lock_q)
+                                lock_active_q <= 1'b0;
                             state_q <= STATE_RESPONSE;
                         end else begin
                             state_q <= STATE_HIT_READ;
@@ -573,6 +622,7 @@ module openrv64_ccx_l2 #(
                         merge_hart_id_q[0] <= request_hart_id_q;
                         merge_txn_id_q[0] <= request_txn_id_q;
                         merge_op_q[0] <= request_op_q;
+                        merge_lock_q[0] <= request_lock_q;
                         merge_addr_q[0] <= request_addr_q;
                         merge_wdata_q[0] <= request_wdata_q;
                         merge_wstrb_q[0] <= request_wstrb_q;
@@ -618,6 +668,8 @@ module openrv64_ccx_l2 #(
                 STATE_WB_RESP: begin
                     if (bus_response_fire) begin
                         if (bus_resp_error_i) begin
+                            if (lock_active_q)
+                                lock_active_q <= 1'b0;
                             replay_index_q <= 0;
                             state_q <= STATE_ERROR_REPLAY;
                         end else if (line_beat_last) begin
@@ -640,6 +692,8 @@ module openrv64_ccx_l2 #(
                 STATE_REFILL_RESP: begin
                     if (bus_response_fire) begin
                         if (bus_resp_error_i) begin
+                            if (lock_active_q)
+                                lock_active_q <= 1'b0;
                             valid_q[miss_line_index_q] <= 1'b0;
                             dirty_q[miss_line_index_q] <= 1'b0;
                             replay_index_q <= 0;
@@ -672,6 +726,8 @@ module openrv64_ccx_l2 #(
                     if (merge_op_q[replay_index_q] ==
                         `OPENRV64_CCX_OP_WRITE) begin
                         dirty_q[miss_line_index_q] <= 1'b1;
+                        if (merge_lock_q[replay_index_q])
+                            lock_active_q <= 1'b0;
                     end else begin
                         for (response_byte_index = 0;
                              response_byte_index < 8;
@@ -724,6 +780,8 @@ module openrv64_ccx_l2 #(
                 STATE_BYPASS_RESP: begin
                     if (bus_response_fire) begin
                         if (bus_resp_error_i) begin
+                            if (request_lock_q)
+                                lock_active_q <= 1'b0;
                             response_data_q <= 64'd0;
                             response_error_q <= 1'b1;
                             state_q <= STATE_RESPONSE;
@@ -735,6 +793,10 @@ module openrv64_ccx_l2 #(
                                     (request_op_q == `OPENRV64_CCX_OP_READ) ?
                                     bypass_combined_data : 64'd0;
                                 response_error_q <= 1'b0;
+                                if (request_lock_q &&
+                                    (request_op_q ==
+                                     `OPENRV64_CCX_OP_WRITE))
+                                    lock_active_q <= 1'b0;
                                 state_q <= STATE_RESPONSE;
                             end else begin
                                 bypass_beat_q <= bypass_beat_q + 1'b1;

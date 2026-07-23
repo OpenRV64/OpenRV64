@@ -11,12 +11,13 @@
 `include "core/decode/defs/br-defs.v"
 `include "core/except/except-defs.v"
 
-// Three-entry pipelined MEM lane.  Independent loads can be issued and
-// launched on consecutive cycles.  AXI responses carry the queue tag back to
-// the matching instruction, while the backend retire queue preserves
-// architectural order.  Stores launch only at ordered head.  While a posted
-// store awaits its response, younger non-overlapping loads may pass and loads
-// fully covered by its byte strobes forward from the retained store word.
+// Tagged pipelined MEM lane, with eight entries by default.  Independent loads
+// can be issued and launched on consecutive cycles.  Native L1D responses
+// carry the queue tag back to the matching instruction, while backend retire
+// preserves architectural order.  Stores launch only at ordered head.
+// While a posted store awaits its response, younger non-overlapping loads may
+// pass; loads fully covered by its byte strobes forward from the retained
+// store word.
 // Another store or a partially covered load remains interlocked.  By default
 // the request handshake completes the store architecturally; a later failed
 // response is retained as an imprecise async abort.  RV64A remains deliberately
@@ -65,6 +66,7 @@ module openrv64_exec_pipe_mem #(
     input  wire                         mem_error_i,
     input  wire                         mem_page_fault_i,
     input  wire                         mem_access_allowed_i,
+    output wire                         mem_lock_o,
     output wire                         mem_write_o,
     output wire [`RV64_XLEN-1:0]        mem_addr_o,
     output wire [`RV64_XLEN-1:0]        mem_wdata_o,
@@ -169,8 +171,17 @@ module openrv64_exec_pipe_mem #(
     wire output_available = !complete_valid_q || complete_ready_i;
 
     wire issue_is_atomic = payload_is_atomic(issue_payload_i);
-    wire simple_any_valid = slot_valid_q[0] || slot_valid_q[1] ||
-                            slot_valid_q[2];
+    wire [LSU_DEPTH-1:0] simple_valid_vector;
+    genvar simple_valid_index;
+    generate
+        for (simple_valid_index = 0;
+             simple_valid_index < LSU_DEPTH;
+             simple_valid_index = simple_valid_index + 1) begin : g_simple_valid
+            assign simple_valid_vector[simple_valid_index] =
+                slot_valid_q[simple_valid_index];
+        end
+    endgenerate
+    wire simple_any_valid = |simple_valid_vector;
     assign issue_ready_o = issue_is_atomic ?
         (!atomic_active_q && !simple_any_valid && output_available) :
         (!atomic_active_q && !slot_valid_q[issue_tail_q]);
@@ -267,8 +278,13 @@ module openrv64_exec_pipe_mem #(
     wire pending_store_load_covered = pending_store_load_overlap &&
         request_store_forwardable &&
         ((request_load_mask & store_wstrb_q) == request_load_mask);
+    // The core-to-bus request channel admits only one untranslated request at
+    // a time.  Once a store has reached the L1, its byte-masked line record
+    // preserves program order, so a younger store need not wait for the older
+    // store's eventual CCX drain response.  Loads which overlap the one store
+    // still awaiting L1 admission either forward below or remain blocked.
     wire pending_store_order_block = store_inflight_q &&
-        (request_mem_write || pending_store_load_overlap);
+        pending_store_load_overlap;
     wire simple_request_valid = request_slot_valid && !request_immediate &&
         request_bus_valid && !pending_store_order_block &&
         (!request_mem_write || request_order_match) &&
@@ -293,6 +309,10 @@ module openrv64_exec_pipe_mem #(
         (ordered_head_slot_i == atomic_slot_q);
     wire atomic_run = atomic_active_q &&
                       (atomic_started_q || atomic_order_match);
+    // Once an ordered AMO begins, its marked read may have acquired the home
+    // lock.  A younger redirect must not cancel the operation and strand that
+    // lock; the MEM lane is otherwise empty while an atomic is active.
+    wire atomic_irrevocable = atomic_active_q && atomic_started_q;
     wire atomic_complete;
     wire atomic_illegal;
     wire atomic_misaligned;
@@ -300,6 +320,7 @@ module openrv64_exec_pipe_mem #(
     wire atomic_page_fault;
     wire [`RV64_XLEN-1:0] atomic_result;
     wire atomic_mem_valid;
+    wire atomic_mem_lock;
     wire atomic_mem_write;
     wire [`RV64_XLEN-1:0] atomic_mem_addr;
     wire [`RV64_XLEN-1:0] atomic_mem_wdata;
@@ -311,7 +332,8 @@ module openrv64_exec_pipe_mem #(
     wire clear_atomic_reservation = normal_resp_fire &&
         slot_payload_q[mem_resp_tag_i][I_MEM_WRITE];
     openrv64_exec_lsu_rv64a u_atomic (
-        .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+        .clk(clk), .rst_n(rst_n),
+        .flush_i(flush_i && !atomic_irrevocable),
         .valid_i(atomic_run), .consume_i(atomic_finish),
         .clear_reservation_i(clear_atomic_reservation),
         .op_sel_i(atomic_lsu_op),
@@ -324,7 +346,8 @@ module openrv64_exec_pipe_mem #(
         .illegal_o(atomic_illegal), .misaligned_o(atomic_misaligned),
         .access_fault_o(atomic_access_fault),
         .page_fault_o(atomic_page_fault), .result_o(atomic_result),
-        .mem_valid_o(atomic_mem_valid), .mem_write_o(atomic_mem_write),
+        .mem_valid_o(atomic_mem_valid), .mem_lock_o(atomic_mem_lock),
+        .mem_write_o(atomic_mem_write),
         .mem_addr_o(atomic_mem_addr), .mem_wdata_o(atomic_mem_wdata),
         .mem_wstrb_o(atomic_mem_wstrb)
     );
@@ -334,6 +357,7 @@ module openrv64_exec_pipe_mem #(
     assign mem_valid_o = atomic_active_q ? atomic_request_valid :
                          simple_request_valid;
     assign mem_tag_o = atomic_active_q ? {LSU_TAG_WIDTH{1'b0}} : send_head_q;
+    assign mem_lock_o = atomic_active_q ? atomic_mem_lock : 1'b0;
     assign mem_write_o = atomic_active_q ? atomic_mem_write : request_bus_write;
     assign mem_addr_o = atomic_active_q ? atomic_mem_addr : request_bus_addr;
     assign mem_wdata_o = atomic_active_q ? atomic_mem_wdata : request_bus_wdata;
@@ -535,7 +559,7 @@ module openrv64_exec_pipe_mem #(
                 slot_payload_q[slot_index] <=
                     {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
             end
-        end else if (flush_i) begin
+        end else if (flush_i && !atomic_irrevocable) begin
             issue_tail_q <= {LSU_TAG_WIDTH{1'b0}};
             send_head_q <= {LSU_TAG_WIDTH{1'b0}};
             atomic_active_q <= 1'b0;
@@ -545,19 +569,31 @@ module openrv64_exec_pipe_mem #(
             complete_valid_q <= 1'b0;
             for (slot_index = 0; slot_index < LSU_DEPTH;
                  slot_index = slot_index + 1) begin
-                slot_valid_q[slot_index] <= 1'b0;
-                slot_sent_q[slot_index] <= 1'b0;
-                slot_posted_store_q[slot_index] <= 1'b0;
+                if (slot_valid_q[slot_index] &&
+                    slot_sent_q[slot_index] &&
+                    slot_posted_store_q[slot_index] &&
+                    !(normal_resp_fire &&
+                      (mem_resp_tag_i == LSU_TAG_WIDTH'(slot_index)))) begin
+                    // Every admitted posted store is irrevocable.  Preserve
+                    // all of them, not only the newest forwarding record.
+                    slot_valid_q[slot_index] <= 1'b1;
+                    slot_sent_q[slot_index] <= 1'b1;
+                    slot_posted_store_q[slot_index] <= 1'b1;
+                end else begin
+                    slot_valid_q[slot_index] <= 1'b0;
+                    slot_sent_q[slot_index] <= 1'b0;
+                    slot_posted_store_q[slot_index] <= 1'b0;
+                end
             end
 
-            // An ordered posted store is already architecturally committed
-            // and cannot be cancelled by a younger redirect.  Keep its tag
-            // and metadata live until the response arrives so a delayed bus
-            // error can become an imprecise abort.  Speculative younger loads
-            // are cancelled and drained by the bus; retain only the already
-            // committed store in this execution queue.
+            // Ordered posted stores are already architecturally committed and
+            // cannot be cancelled by a younger redirect.  The newest store
+            // tag defines the end of the retained contiguous tag range; the
+            // loop above keeps every still-outstanding posted store in it.
+            // Speculative younger loads are cancelled and drained by the bus.
             if (store_inflight_q && slot_posted_store_q[store_tag_q] &&
-                !normal_resp_fire) begin
+                !(normal_resp_fire &&
+                  (mem_resp_tag_i == store_tag_q))) begin
                 issue_tail_q <= next_tag(store_tag_q);
                 send_head_q <= next_tag(store_tag_q);
                 store_inflight_q <= 1'b1;
@@ -652,8 +688,10 @@ module openrv64_exec_pipe_mem #(
 
 `ifndef SYNTHESIS
     initial begin
-        if (LSU_DEPTH != 3)
-            $fatal(1, "pipelined LSU currently requires exactly three tags");
+        if (LSU_DEPTH < 1)
+            $fatal(1, "pipelined LSU requires at least one tag");
+        if (LSU_DEPTH > (1 << LSU_TAG_WIDTH))
+            $fatal(1, "LSU tag width cannot encode LSU depth");
     end
 
     always @(posedge clk) begin

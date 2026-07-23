@@ -103,6 +103,7 @@ module tb_axi_l1i;
         .fetch_resp_access_fault_o(fetch_resp_access_fault),
         .fetch_resp_page_fault_o(fetch_resp_page_fault),
         .lsu_valid_i(1'b0),
+        .lsu_lock_i(1'b0),
         .lsu_write_i(1'b0),
         .lsu_addr_i(64'd0),
         .lsu_wdata_i(64'd0),
@@ -115,7 +116,8 @@ module tb_axi_l1i;
         .lsu_sum_i(1'b0),
         .lsu_mxr_i(1'b0),
         .lsu_pipe_req_valid_i(1'b0),
-        .lsu_pipe_req_tag_i(2'd0),
+        .lsu_pipe_req_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .lsu_pipe_req_lock_i(1'b0),
         .lsu_pipe_req_write_i(1'b0),
         .lsu_pipe_req_addr_i(64'd0),
         .lsu_pipe_req_wdata_i(64'd0),
@@ -299,6 +301,43 @@ module tb_axi_l1i;
         end
     endtask
 
+    task automatic push_fetch_only(input [63:0] address);
+        begin
+            @(negedge clk);
+            while (!fetch_req_ready)
+                @(negedge clk);
+            fetch_req_addr = address;
+            fetch_req_valid = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            fetch_req_valid = 1'b0;
+            fetch_req_addr = 64'd0;
+        end
+    endtask
+
+    task automatic expect_fetch_only(
+        input [63:0] address,
+        input [255:0] expected_data,
+        input [8*40-1:0] label
+    );
+        integer cycles;
+        begin
+            cycles = 0;
+            while (!fetch_resp_valid && cycles < 200) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            if (!fetch_resp_valid)
+                $fatal(1, "%0s timed out", label);
+            if (fetch_resp_addr !== address ||
+                fetch_resp_access_fault || fetch_resp_page_fault ||
+                fetch_resp_data !== expected_data)
+                $fatal(1, "%0s response mismatch", label);
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
     task automatic pulse_invalidate;
         begin
             @(negedge clk);
@@ -384,6 +423,27 @@ module tb_axi_l1i;
                     "lower-half resident hit");
         if (ccx_count_q != before_count)
             $fatal(1, "same-line hit escaped onto CCX");
+
+        // Hold frontend responses while four resident requests enter.  The
+        // bus and L1I must accept all four, then preserve request order.
+        fetch_resp_ready = 1'b0;
+        push_fetch_only(64'h00);
+        push_fetch_only(64'h20);
+        push_fetch_only(64'h00);
+        push_fetch_only(64'h20);
+        if (dut.fetch_count_q != 4)
+            $fatal(1, "L1I did not retain four outstanding fetches");
+        fetch_resp_ready = 1'b1;
+        expect_fetch_only(64'h00, memory[0][255:0],
+                          "multi-hit response 0");
+        expect_fetch_only(64'h20, memory[0][511:256],
+                          "multi-hit response 1");
+        expect_fetch_only(64'h00, memory[0][255:0],
+                          "multi-hit response 2");
+        expect_fetch_only(64'h20, memory[0][511:256],
+                          "multi-hit response 3");
+        if (ccx_count_q != before_count)
+            $fatal(1, "resident multi-hit traffic escaped onto CCX");
 
         stale_lower = memory[0][255:0];
         memory[0][255:0] = 256'hface_cafe;

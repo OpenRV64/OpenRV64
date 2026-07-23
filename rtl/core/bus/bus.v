@@ -17,6 +17,9 @@ module openrv64_core_bus #(
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
         {`RV64_XLEN{1'b1}},
+    parameter integer L1D_FILL_BUFFER_LINES = 8,
+    parameter integer L1D_STORE_BUFFER_LINES = 8,
+    parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}
 ) (
@@ -57,6 +60,7 @@ module openrv64_core_bus #(
     output wire                         fetch_pipe_resp_page_fault_o,
 
     input  wire                         lsu_valid_i,
+    input  wire                         lsu_lock_i,
     input  wire                         lsu_write_i,
     input  wire [`RV64_XLEN-1:0]        lsu_addr_i,
     input  wire [`RV64_XLEN-1:0]        lsu_wdata_i,
@@ -77,6 +81,7 @@ module openrv64_core_bus #(
     input  wire                         lsu_pipe_req_valid_i,
     output wire                         lsu_pipe_req_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_pipe_req_tag_i,
+    input  wire                         lsu_pipe_req_lock_i,
     input  wire                         lsu_pipe_req_write_i,
     input  wire [`RV64_XLEN-1:0]        lsu_pipe_req_addr_i,
     input  wire [`RV64_XLEN-1:0]        lsu_pipe_req_wdata_i,
@@ -138,6 +143,7 @@ module openrv64_core_bus #(
     output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
                                         ccx_req_source_id_o,
     output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_o,
+    output wire                         ccx_req_lock_o,
     output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_o,
     output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_o,
     output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_o,
@@ -436,6 +442,7 @@ module openrv64_core_bus #(
                 {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
             assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_LEGACY;
             assign ccx_req_op_o = `OPENRV64_CCX_OP_READ;
+            assign ccx_req_lock_o = 1'b0;
             assign ccx_req_order_o = `OPENRV64_CCX_ORDER_NONE;
             assign ccx_req_kind_o = `OPENRV64_CCX_KIND_DATA;
             assign ccx_req_attr_o = `OPENRV64_CCX_ATTR_NONE;
@@ -463,6 +470,9 @@ module openrv64_core_bus #(
                 .ENABLE_L1D(ENABLE_L1D),
                 .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
                 .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
+                .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
+                .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
+                .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
                 .HART_ID(HART_ID)
             ) u_bus (
                 .clk(clk), .rst_n(rst_n),
@@ -483,7 +493,8 @@ module openrv64_core_bus #(
                 .fetch_resp_access_fault_o(
                     fetch_pipe_resp_access_fault_o),
                 .fetch_resp_page_fault_o(fetch_pipe_resp_page_fault_o),
-                .lsu_valid_i(lsu_valid_i), .lsu_write_i(lsu_write_i),
+                .lsu_valid_i(lsu_valid_i), .lsu_lock_i(lsu_lock_i),
+                .lsu_write_i(lsu_write_i),
                 .lsu_addr_i(lsu_addr_i), .lsu_wdata_i(lsu_wdata_i),
                 .lsu_wstrb_i(lsu_wstrb_i), .lsu_size_i(lsu_size_i),
                 .lsu_priv_i(lsu_priv_i), .lsu_vm_mode_i(lsu_vm_mode_i),
@@ -504,6 +515,7 @@ module openrv64_core_bus #(
                 .lsu_pipe_req_valid_i(lsu_pipe_req_valid_i),
                 .lsu_pipe_req_ready_o(lsu_pipe_req_ready_o),
                 .lsu_pipe_req_tag_i(lsu_pipe_req_tag_i),
+                .lsu_pipe_req_lock_i(lsu_pipe_req_lock_i),
                 .lsu_pipe_req_write_i(lsu_pipe_req_write_i),
                 .lsu_pipe_req_addr_i(lsu_pipe_req_addr_i),
                 .lsu_pipe_req_wdata_i(lsu_pipe_req_wdata_i),
@@ -533,6 +545,7 @@ module openrv64_core_bus #(
                 .ccx_req_txn_id_o(ccx_req_txn_id_o),
                 .ccx_req_source_id_o(ccx_req_source_id_o),
                 .ccx_req_op_o(ccx_req_op_o),
+                .ccx_req_lock_o(ccx_req_lock_o),
                 .ccx_req_order_o(ccx_req_order_o),
                 .ccx_req_kind_o(ccx_req_kind_o),
                 .ccx_req_attr_o(ccx_req_attr_o),

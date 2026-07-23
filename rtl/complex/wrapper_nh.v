@@ -97,6 +97,7 @@ module openrv64_core_complex_nh #(
     wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
     wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
     wire [NUM_HARTS*`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    wire [NUM_HARTS-1:0] ccx_req_lock;
     wire [NUM_HARTS*`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
     wire [NUM_HARTS*`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
     wire [NUM_HARTS*`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
@@ -118,6 +119,7 @@ module openrv64_core_complex_nh #(
     wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] shared_req_hart_id;
     wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] shared_req_txn_id;
     wire [`OPENRV64_CCX_OP_WIDTH-1:0] shared_req_op;
+    wire shared_req_lock;
     wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] shared_req_order;
     wire [`OPENRV64_CCX_KIND_WIDTH-1:0] shared_req_kind;
     wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] shared_req_attr;
@@ -178,6 +180,7 @@ module openrv64_core_complex_nh #(
                 .req_op_o(ccx_req_op[
                     hart_index*`OPENRV64_CCX_OP_WIDTH +:
                     `OPENRV64_CCX_OP_WIDTH]),
+                .req_lock_o(ccx_req_lock[hart_index]),
                 .req_order_o(ccx_req_order[
                     hart_index*`OPENRV64_CCX_ORDER_WIDTH +:
                     `OPENRV64_CCX_ORDER_WIDTH]),
@@ -216,6 +219,7 @@ module openrv64_core_complex_nh #(
         .hart_req_hart_id_i(ccx_req_hart_id),
         .hart_req_txn_id_i(ccx_req_txn_id),
         .hart_req_op_i(ccx_req_op),
+        .hart_req_lock_i(ccx_req_lock),
         .hart_req_order_i(ccx_req_order),
         .hart_req_kind_i(ccx_req_kind),
         .hart_req_attr_i(ccx_req_attr),
@@ -228,6 +232,7 @@ module openrv64_core_complex_nh #(
         .mem_req_hart_id_o(shared_req_hart_id),
         .mem_req_txn_id_o(shared_req_txn_id),
         .mem_req_op_o(shared_req_op),
+        .mem_req_lock_o(shared_req_lock),
         .mem_req_order_o(shared_req_order),
         .mem_req_kind_o(shared_req_kind),
         .mem_req_attr_o(shared_req_attr),
@@ -266,6 +271,7 @@ module openrv64_core_complex_nh #(
         .req_hart_id_i(shared_req_hart_id),
         .req_txn_id_i(shared_req_txn_id),
         .req_op_i(shared_req_op),
+        .req_lock_i(shared_req_lock),
         .req_order_i(shared_req_order),
         .req_kind_i(shared_req_kind),
         .req_attr_i(shared_req_attr),

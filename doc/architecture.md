@@ -345,12 +345,12 @@ EX0 from accepting unrelated work.
 - **EX1** implements a second base integer ALU and the single RV64M worker.
   M operations are iterative/variable-latency and fixed to this pipe.
 - **MEM** implements RV64I loads/stores and serialized RV64A operations. Its
-  simple-operation queue has three tags and can accept independent loads on
+  simple-operation queue has eight tags and can accept independent loads on
   consecutive cycles.
 
 Completions carry the dynamic instruction ID and retirement slot. This allows
-the execution lanes and AXI read responses to complete out of order without
-making architectural state out of order.
+the execution lanes and tagged memory responses to complete out of order
+without making architectural state out of order.
 
 ### Retirement and precise state
 

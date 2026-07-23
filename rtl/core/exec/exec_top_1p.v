@@ -73,6 +73,7 @@ module openrv64_exec_top_1p #(
     input  wire                         mem_error_i,
     input  wire                         mem_page_fault_i,
     input  wire                         mem_access_allowed_i,
+    output wire                         mem_lock_o,
     output wire                         mem_write_o,
     output wire [`RV64_XLEN-1:0]        mem_addr_o,
     output wire [`RV64_XLEN-1:0]        mem_wdata_o,
@@ -290,6 +291,7 @@ module openrv64_exec_top_1p #(
     wire atomic_page_fault;
     wire [`RV64_XLEN-1:0] atomic_result;
     wire atomic_mem_valid;
+    wire atomic_mem_lock;
     wire atomic_mem_write;
     wire [`RV64_XLEN-1:0] atomic_mem_addr;
     wire [`RV64_XLEN-1:0] atomic_mem_wdata;
@@ -641,6 +643,7 @@ module openrv64_exec_top_1p #(
         .page_fault_o(atomic_page_fault),
         .result_o(atomic_result),
         .mem_valid_o(atomic_mem_valid),
+        .mem_lock_o(atomic_mem_lock),
         .mem_write_o(atomic_mem_write),
         .mem_addr_o(atomic_mem_addr),
         .mem_wdata_o(atomic_mem_wdata),
@@ -671,6 +674,7 @@ module openrv64_exec_top_1p #(
     );
 
     assign mem_valid_o = ex_mem_is_atomic ? atomic_mem_valid : lsu_mem_valid;
+    assign mem_lock_o = ex_mem_is_atomic ? atomic_mem_lock : 1'b0;
     assign mem_write_o = ex_mem_is_atomic ? atomic_mem_write : lsu_mem_write;
     assign mem_addr_o = ex_mem_is_atomic ? atomic_mem_addr : lsu_mem_addr;
     assign mem_wdata_o = ex_mem_is_atomic ? atomic_mem_wdata : lsu_mem_wdata;
