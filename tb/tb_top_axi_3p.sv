@@ -538,8 +538,11 @@ module tb_top_axi_3p #(
     parameter integer ORACLE_BRANCHES = 0,
     parameter integer FREE_L1_REFILLS = 0,
     parameter integer FREE_L1I_REFILLS = 0,
-    parameter integer FREE_L1D_REFILLS = 0
+    parameter integer FREE_L1D_REFILLS = 0,
+    parameter integer FETCH_ALT_LOOKASIDE = 0
 );
+    localparam integer RETIRE_RESULT_PC_LSB = 329;
+
     reg clk;
     reg rst_n;
 
@@ -723,6 +726,23 @@ module tb_top_axi_3p #(
     reg [63:0] done_pc;
     reg [63:0] expected_a0;
     integer max_cycles;
+    integer external_memh_words;
+    wire done_pc_retired =
+        (dut.u_core.backend_retire_arch[0] &&
+         (dut.u_core.u_backend.queue_retire_result[
+              0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] ==
+          done_pc)) ||
+        (dut.u_core.backend_retire_arch[1] &&
+         (dut.u_core.u_backend.queue_retire_result[
+              1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] ==
+          done_pc)) ||
+        (dut.u_core.backend_retire_arch[2] &&
+         (dut.u_core.u_backend.queue_retire_result[
+              2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] ==
+          done_pc));
     integer perf_retired;
     integer perf_issued;
     integer retire_width_0;
@@ -748,6 +768,7 @@ module tb_top_axi_3p #(
     integer bp_taken_predictions;
     integer bp_resolutions;
     integer bp_corrections;
+    integer fetch_alt_redirect_hits;
     integer eq_branch_pairings;
     integer branch_forward_issues;
     integer branch_forward_operands;
@@ -849,6 +870,7 @@ module tb_top_axi_3p #(
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(POSTED_STORES),
         .ENABLE_TRACE(1'b1),
+        .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .BP_TYPE(BP_TYPE),
         .BP_RAS_ENABLE(BP_RAS_ENABLE),
         .BP_RAS_DEPTH(BP_RAS_DEPTH),
@@ -2162,6 +2184,9 @@ module tb_top_axi_3p #(
                 bp_resolutions <= bp_resolutions + 1;
             if (dut.u_core.backend_redirect)
                 bp_corrections <= bp_corrections + 1;
+            if (dut.u_core.backend_redirect &&
+                dut.u_core.fetch_alt_restart_hit)
+                fetch_alt_redirect_hits <= fetch_alt_redirect_hits + 1;
             if (ISSUE_WINDOW == 0)
                 eq_branch_pairings <= eq_branch_pairings +
                     (dut.u_core.u_backend.u_dispatch.g_3p.u_dispatch.pair_eq0 &&
@@ -2215,6 +2240,7 @@ module tb_top_axi_3p #(
         done_pc = 64'd0;
         expected_a0 = 64'd0;
         max_cycles = 20000;
+        external_memh_words = 2048;
         perf_retired = 0;
         perf_issued = 0;
         retire_width_0 = 0;
@@ -2240,6 +2266,7 @@ module tb_top_axi_3p #(
         bp_taken_predictions = 0;
         bp_resolutions = 0;
         bp_corrections = 0;
+        fetch_alt_redirect_hits = 0;
         eq_branch_pairings = 0;
         branch_forward_issues = 0;
         branch_forward_operands = 0;
@@ -2315,6 +2342,12 @@ module tb_top_axi_3p #(
         expect_a0_valid = $value$plusargs("expect_a0=%h", expected_a0);
         if (!$value$plusargs("max_cycles=%d", max_cycles))
             max_cycles = 20000;
+        if (!$value$plusargs("memh_words=%d", external_memh_words))
+            external_memh_words = 2048;
+        if ((external_memh_words < 1) ||
+            (external_memh_words > (RAM_BYTES / 32)))
+            $fatal(1, "memh_words=%0d is outside the AXI RAM",
+                   external_memh_words);
         if ($value$plusargs("branch_oracle_dump=%s",
                             branch_oracle_dump_path)) begin
             branch_oracle_dump_fd = $fopen(branch_oracle_dump_path, "w");
@@ -2357,7 +2390,8 @@ module tb_top_axi_3p #(
             $fdisplay(pipeline_trace_fd,
                 "schema,cycle,fetch_valid,fetch_ready,fetch_fire,decode_valid,decode_ready,decode_fire,issue_valid,complete_valid,retire_valid,retire_count,dispatch_q,retire_q,raw,waw,read_port,write_busy,barrier,bp_present,bp_allocate,bp_taken,bp_fetch_stall,bp_decode_stall,redirect,fetch_req_valid,fetch_req_ready,fetch_resp_valid,axi_arvalid,axi_arready,stall_causes,queue_valid,candidate_fire,candidate_hazard_free,candidate_pipe,pipe_ready,barrier_allow,allocation_ready,block_lane,block_reason,raw_existing,raw_bundle,raw_completed,raw_rs1,raw_rs2,waw_bundle,waw_completed,candidate_uses_rs1,candidate_uses_rs2,candidate_reg_write,candidate_rs1,candidate_rs2,candidate_rd,queue_retire_valid,completed_entries,control_flush,control_redirect,fetch_bus_q,fetch_line_valid,fetch_pending,fetch_consume_hit,fetch_follow_hit,fetch_active,mem_req_valid,mem_req_ready,mem_resp_valid,mem_resp_ready,mem_write,lsu_slots,lsu_sent,lsu_store_inflight,lsu_order_block,retire_gpr_write,retire_gpr_rd,retire_gpr_data,mem_req_tag,mem_req_addr,mem_req_wdata,mem_req_wstrb,mem_resp_tag,mem_resp_rdata,window_unissued,window_operand_ready,window_eligible,window_raw_block,window_hard_block,window_mem_order_block,window_selected,window_issued,f0_uid,f0_pc,f0_instr,f1_uid,f1_pc,f1_instr,f2_uid,f2_pc,f2_instr,d0_uid,d0_pc,d0_instr,d1_uid,d1_pc,d1_instr,d2_uid,d2_pc,d2_instr,q0_uid,q0_pc,q0_instr,q1_uid,q1_pc,q1_instr,q2_uid,q2_pc,q2_instr,i0_uid,i0_pc,i0_instr,i1_uid,i1_pc,i1_instr,i2_uid,i2_pc,i2_instr,c0_uid,c0_pc,c0_instr,c1_uid,c1_pc,c1_instr,c2_uid,c2_pc,c2_instr,r0_uid,r0_pc,r0_instr,r1_uid,r1_pc,r1_instr,r2_uid,r2_pc,r2_instr");
             $display("TRACE pipeline=%0s", pipeline_trace_path);
-            $readmemh(memh_path, u_axi_fabric.ram_q, 0, 2047);
+            $readmemh(memh_path, u_axi_fabric.ram_q, 0,
+                      external_memh_words - 1);
         end else if (opensbi_image) begin
             $display("OpenSBI 3P AXI load: trampoline");
             $readmemh(opensbi_trampoline_memh, u_axi_fabric.ram_q,
@@ -2421,9 +2455,7 @@ module tb_top_axi_3p #(
                 sample_pipeline_trace();
                 if (dbg_halted)
                     external_done = 1'b1;
-                if (done_pc_valid &&
-                    (|dut.u_core.backend_retire_arch) &&
-                    (dut.u_core.backend_retire_pc == done_pc))
+                if (done_pc_valid && done_pc_retired)
                     external_done = 1'b1;
                 if (opensbi_image && opensbi_saw_banner &&
                     opensbi_saw_payload_text && opensbi_saw_s_mode &&
@@ -2466,6 +2498,8 @@ module tb_top_axi_3p #(
                      bp_allocations, bp_taken_predictions,
                      bp_resolutions, bp_corrections,
                      dut.u_core.bp_update_overflow);
+            $display("PERF_FETCH_ALT mode=%0d correction_hits=%0d",
+                     FETCH_ALT_LOOKASIDE, fetch_alt_redirect_hits);
             $display("PERF_BRANCH_PAIR useful=%0d", eq_branch_pairings);
             $display("PERF_BRANCH_FORWARD issues=%0d operands=%0d",
                      branch_forward_issues, branch_forward_operands);

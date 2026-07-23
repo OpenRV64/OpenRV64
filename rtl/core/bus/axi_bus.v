@@ -35,6 +35,7 @@ module openrv64_core_axi_bus #(
     input  wire                         fetch_req_valid_i,
     output wire                         fetch_req_ready_o,
     input  wire [`RV64_XLEN-1:0]        fetch_req_addr_i,
+    input  wire                         fetch_req_stash_i,
     input  wire [`RV64_PRIV_WIDTH-1:0]  fetch_req_priv_i,
     input  wire [`RV64_SATP_MODE_WIDTH-1:0] fetch_req_vm_mode_i,
     input  wire [`RV64_SATP_ASID_WIDTH-1:0] fetch_req_asid_i,
@@ -42,12 +43,14 @@ module openrv64_core_axi_bus #(
     input  wire                         fetch_req_sum_i,
     input  wire                         fetch_req_mxr_i,
     input  wire                         fetch_cancel_i,
+    input  wire                         fetch_cancel_stash_i,
     output wire                         fetch_resp_valid_o,
     input  wire                         fetch_resp_ready_i,
     output wire [`RV64_XLEN-1:0]        fetch_resp_addr_o,
     output wire [AXI_DATA_WIDTH-1:0]    fetch_resp_data_o,
     output wire                         fetch_resp_access_fault_o,
     output wire                         fetch_resp_page_fault_o,
+    output wire                         fetch_resp_stash_o,
 
     input  wire                         lsu_valid_i,
     input  wire                         lsu_lock_i,
@@ -261,6 +264,7 @@ module openrv64_core_axi_bus #(
         fetch_root_ppn_q [0:FETCH_OUTSTANDING-1];
     reg fetch_sum_q [0:FETCH_OUTSTANDING-1];
     reg fetch_mxr_q [0:FETCH_OUTSTANDING-1];
+    reg fetch_stash_q [0:FETCH_OUTSTANDING-1];
     reg fetch_cancelled_q [0:FETCH_OUTSTANDING-1];
     reg [AXI_DATA_WIDTH-1:0]
         fetch_data_q [0:FETCH_OUTSTANDING-1];
@@ -305,6 +309,7 @@ module openrv64_core_axi_bus #(
         fetch_access_fault_q[fetch_head_q];
     assign fetch_resp_page_fault_o =
         fetch_page_fault_q[fetch_head_q];
+    assign fetch_resp_stash_o = fetch_stash_q[fetch_head_q];
 
     wire itlb_lookup_hit;
     wire [`RV64_XLEN-1:0] itlb_lookup_paddr;
@@ -1318,6 +1323,7 @@ module openrv64_core_axi_bus #(
     end
 
     integer fetch_index;
+    integer fetch_age_port;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             fetch_head_q <= {FETCH_SLOT_WIDTH{1'b0}};
@@ -1335,6 +1341,7 @@ module openrv64_core_axi_bus #(
                     {`RV64_SATP_PPN_WIDTH{1'b0}};
                 fetch_sum_q[fetch_index] <= 1'b0;
                 fetch_mxr_q[fetch_index] <= 1'b0;
+                fetch_stash_q[fetch_index] <= 1'b0;
                 fetch_cancelled_q[fetch_index] <= 1'b0;
                 fetch_data_q[fetch_index] <= {AXI_DATA_WIDTH{1'b0}};
                 fetch_access_fault_q[fetch_index] <= 1'b0;
@@ -1359,6 +1366,7 @@ module openrv64_core_axi_bus #(
                 fetch_root_ppn_q[fetch_tail_q] <= fetch_req_root_ppn_i;
                 fetch_sum_q[fetch_tail_q] <= fetch_req_sum_i;
                 fetch_mxr_q[fetch_tail_q] <= fetch_req_mxr_i;
+                fetch_stash_q[fetch_tail_q] <= fetch_req_stash_i;
                 fetch_cancelled_q[fetch_tail_q] <= 1'b0;
                 fetch_data_q[fetch_tail_q] <= {AXI_DATA_WIDTH{1'b0}};
                 fetch_access_fault_q[fetch_tail_q] <= 1'b0;
@@ -1367,6 +1375,7 @@ module openrv64_core_axi_bus #(
             end
             if (fetch_pop) begin
                 fetch_state_q[fetch_head_q] <= FETCH_EMPTY;
+                fetch_stash_q[fetch_head_q] <= 1'b0;
                 fetch_cancelled_q[fetch_head_q] <= 1'b0;
                 fetch_head_q <= fetch_head_q + 1'b1;
             end
@@ -1374,10 +1383,33 @@ module openrv64_core_axi_bus #(
             if (fetch_cancel_i) begin
                 for (fetch_index = 0; fetch_index < FETCH_OUTSTANDING;
                      fetch_index = fetch_index + 1) begin
-                    if (fetch_state_q[fetch_index] != FETCH_EMPTY) begin
+                    if ((fetch_state_q[fetch_index] != FETCH_EMPTY) &&
+                        (!fetch_stash_q[fetch_index] ||
+                         fetch_cancel_stash_i)) begin
                         fetch_cancelled_q[fetch_index] <= 1'b1;
                         if (fetch_state_q[fetch_index] == FETCH_TRANSLATE)
                             fetch_state_q[fetch_index] <= FETCH_COMPLETE;
+                    end
+                end
+            end
+            for (fetch_age_port = 0; fetch_age_port < 3;
+                 fetch_age_port = fetch_age_port + 1) begin
+                if (icache_age_valid_i[fetch_age_port]) begin
+                    for (fetch_index = 0;
+                         fetch_index < FETCH_OUTSTANDING;
+                         fetch_index = fetch_index + 1) begin
+                        if ((fetch_state_q[fetch_index] != FETCH_EMPTY) &&
+                            fetch_stash_q[fetch_index] &&
+                            (fetch_vaddr_q[fetch_index][`RV64_XLEN-1:6] ==
+                             icache_age_addr_i[
+                                fetch_age_port*`RV64_XLEN +
+                                6 +: `RV64_XLEN-6])) begin
+                            fetch_cancelled_q[fetch_index] <= 1'b1;
+                            if (fetch_state_q[fetch_index] ==
+                                FETCH_TRANSLATE)
+                                fetch_state_q[fetch_index] <=
+                                    FETCH_COMPLETE;
+                        end
                     end
                 end
             end

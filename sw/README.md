@@ -39,6 +39,42 @@ make sim-uart-firmware
 The toolchain prefix can be overridden with `RISCV_CC` and
 `RISCV_OBJCOPY`. The default is Arch Linux's `riscv64-elf-*` toolchain.
 
+## memcpy prefetch benchmark
+
+`memcpy/memcpy.S` supplies 4 KiB and 64 KiB page-copy workloads for the
+three-pipe native L1D/CCX path. Each loop iteration copies one aligned 64-byte
+cache line. The source is already present in the load image, so source
+generation does not warm the data cache before measurement.
+
+Build both images and their disassemblies with:
+
+```sh
+make sw-memcpy
+```
+
+Run only the timed copy regions with:
+
+```sh
+make bench-memcpy
+```
+
+The benchmark stops at `memcpy_measure_end`; `a0` in the `PERF` line is the
+copy's `mcycle` delta through the final ordering fence. It measures
+software-visible completion; a posted lower-level store tail can still drain
+afterward, as it can after a normal `memcpy` return. Run the
+post-copy full comparison and require the `MEMCPYOK` result with:
+
+```sh
+make sim-memcpy
+```
+
+The individual targets are `bench-memcpy-4k`, `bench-memcpy-64k`,
+`sim-memcpy-4k`, and `sim-memcpy-64k`. The AXI harness's
+`AXI_3P_FREE_L1I_REFILLS` and `AXI_3P_FREE_L1D_REFILLS` controls can be used
+to establish separate ideal-refill bounds. Its backing RAM is still a
+functional fixed-latency model, not a DRAM timing model; prefetch distance and
+bandwidth tuning require the memory-channel timing model in the measured path.
+
 ## OpenSBI smoke boot
 
 `tools/build-opensbi.sh` clones the pinned OpenSBI v1.9 release, verifies its

@@ -2,19 +2,20 @@
 `include "complex/protocol/defs.v"
 `include "complex/bus/defs.v"
 
-// Generated 1-16 hart core complex.  Each legacy northbound port receives a
-// fixed HART_ID_BASE + slice number, requests arbitrate onto CCX, and the
-// shared L2 terminates CCX before the selected external bus backend.
+// Generated 1-16 hart core complex.  Each native 512-bit private-cache port
+// is strapped to HART_ID_BASE + slice number, arbitrates onto CCX, and reaches
+// the shared L2 before the selected external bus backend.
 module openrv64_core_complex_nh #(
     parameter integer NUM_HARTS = 2,
     parameter integer HART_ID_BASE = 0,
-    parameter [`OPENRV64_CCX_ATTR_WIDTH-1:0] DEFAULT_ATTR =
-        `OPENRV64_CCX_ATTR_CACHEABLE,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_LINE_BYTES = 64,
     parameter integer L2_WAYS = 8,
-    parameter integer L2_MERGE_ENTRIES = 16,
-    parameter integer L2_BUS_DATA_WIDTH = 256,
+    parameter integer L2_MERGE_ENTRIES = 8,
+    parameter integer L2_WAITERS_PER_MSHR = 8,
+    parameter integer L2_COMMAND_ENTRIES = 16,
+    parameter integer L2_RESPONSE_ENTRIES = 16,
+    parameter integer L2_BUS_DATA_WIDTH = 512,
     parameter integer BUS_TYPE = `OPENRV64_COMPLEX_BUS_AXI,
     parameter integer BUS_ADDR_WIDTH = 64,
     parameter integer BUS_DATA_WIDTH = 256,
@@ -28,14 +29,59 @@ module openrv64_core_complex_nh #(
     input  wire clk_i,
     input  wire rst_ni,
 
-    input  wire [NUM_HARTS-1:0]    core_mem_valid_i,
-    output wire [NUM_HARTS-1:0]    core_mem_ready_o,
-    input  wire [NUM_HARTS-1:0]    core_mem_write_i,
-    input  wire [NUM_HARTS*64-1:0] core_mem_addr_i,
-    input  wire [NUM_HARTS*64-1:0] core_mem_wdata_i,
-    input  wire [NUM_HARTS*8-1:0]  core_mem_wstrb_i,
-    output wire [NUM_HARTS*64-1:0] core_mem_rdata_o,
-    output wire [NUM_HARTS-1:0]    core_mem_error_o,
+    input  wire [NUM_HARTS-1:0] ccx_req_valid_i,
+    output wire [NUM_HARTS-1:0] ccx_req_ready_o,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                      ccx_req_hart_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                      ccx_req_txn_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                      ccx_req_source_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_OP_WIDTH-1:0]
+                                      ccx_req_op_i,
+    input  wire [NUM_HARTS-1:0]    ccx_req_lock_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_ORDER_WIDTH-1:0]
+                                      ccx_req_order_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_KIND_WIDTH-1:0]
+                                      ccx_req_kind_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_ATTR_WIDTH-1:0]
+                                      ccx_req_attr_i,
+    input  wire [NUM_HARTS*3-1:0]  ccx_req_size_i,
+    input  wire [NUM_HARTS*64-1:0] ccx_req_addr_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+                                      ccx_req_burst_len_i,
+
+    input  wire [NUM_HARTS-1:0] ccx_wdata_valid_i,
+    output wire [NUM_HARTS-1:0] ccx_wdata_ready_o,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                      ccx_wdata_hart_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                      ccx_wdata_txn_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                      ccx_wdata_source_id_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                      ccx_wdata_beat_index_i,
+    input  wire [NUM_HARTS-1:0]    ccx_wdata_last_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                      ccx_wdata_i,
+    input  wire [NUM_HARTS*`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+                                      ccx_wstrb_i,
+
+    output wire [NUM_HARTS-1:0] ccx_resp_valid_o,
+    input  wire [NUM_HARTS-1:0] ccx_resp_ready_i,
+    output wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                      ccx_resp_hart_id_o,
+    output wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                      ccx_resp_txn_id_o,
+    output wire [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                      ccx_resp_source_id_o,
+    output wire [NUM_HARTS*`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                      ccx_resp_beat_index_o,
+    output wire [NUM_HARTS-1:0]    ccx_resp_last_o,
+    output wire [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                      ccx_resp_rdata_o,
+    output wire [NUM_HARTS-1:0]    ccx_resp_error_o,
+    output wire [NUM_HARTS-1:0]    ccx_resp_sc_success_o,
 
     output wire [AXI_ID_WIDTH-1:0]     m_axi_arid_o,
     output wire [BUS_ADDR_WIDTH-1:0]   m_axi_araddr_o,
@@ -92,48 +138,40 @@ module openrv64_core_complex_nh #(
     input  wire [BUS_DATA_WIDTH-1:0]   wb_dat_i
 );
 
-    wire [NUM_HARTS-1:0] ccx_req_valid;
-    wire [NUM_HARTS-1:0] ccx_req_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire [NUM_HARTS-1:0] ccx_req_lock;
-    wire [NUM_HARTS*`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [NUM_HARTS*`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [NUM_HARTS*`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [NUM_HARTS*3-1:0] ccx_req_size;
-    wire [NUM_HARTS*64-1:0] ccx_req_addr;
-    wire [NUM_HARTS*64-1:0] ccx_req_wdata;
-    wire [NUM_HARTS*8-1:0] ccx_req_wstrb;
+    wire line_req_valid;
+    wire line_req_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] line_req_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] line_req_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] line_req_source_id;
+    wire [`OPENRV64_CCX_OP_WIDTH-1:0] line_req_op;
+    wire line_req_lock;
+    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] line_req_order;
+    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] line_req_kind;
+    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] line_req_attr;
+    wire [2:0] line_req_size;
+    wire [63:0] line_req_addr;
+    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] line_req_burst_len;
 
-    wire [NUM_HARTS-1:0] ccx_resp_valid;
-    wire [NUM_HARTS-1:0] ccx_resp_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    wire [NUM_HARTS*64-1:0] ccx_resp_rdata;
-    wire [NUM_HARTS-1:0] ccx_resp_error;
-    wire [NUM_HARTS-1:0] ccx_resp_sc_success;
+    wire line_wdata_valid;
+    wire line_wdata_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] line_wdata_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] line_wdata_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] line_wdata_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] line_wdata_beat_index;
+    wire line_wdata_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] line_wdata;
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] line_wstrb;
 
-    wire shared_req_valid;
-    wire shared_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] shared_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] shared_req_txn_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] shared_req_op;
-    wire shared_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] shared_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] shared_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] shared_req_attr;
-    wire [2:0] shared_req_size;
-    wire [63:0] shared_req_addr;
-    wire [63:0] shared_req_wdata;
-    wire [7:0] shared_req_wstrb;
-    wire shared_resp_valid;
-    wire shared_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] shared_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] shared_resp_txn_id;
-    wire [63:0] shared_resp_rdata;
-    wire shared_resp_error;
-    wire shared_resp_sc_success;
+    wire line_resp_valid;
+    wire line_resp_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] line_resp_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] line_resp_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] line_resp_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] line_resp_beat_index;
+    wire line_resp_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] line_resp_rdata;
+    wire line_resp_error;
+    wire line_resp_sc_success;
 
     wire bus_req_valid;
     wire bus_req_ready;
@@ -148,144 +186,123 @@ module openrv64_core_complex_nh #(
     wire [L2_BUS_DATA_WIDTH-1:0] bus_resp_rdata;
     wire bus_resp_error;
 
-    genvar hart_index;
-    generate
-        for (hart_index = 0; hart_index < NUM_HARTS;
-             hart_index = hart_index + 1) begin : g_harts
-            localparam [`OPENRV64_CCX_HART_ID_WIDTH-1:0] THIS_HART_ID =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart_index);
-
-            openrv64_ccx_hart_legacy_adapter #(
-                .HART_ID(THIS_HART_ID),
-                .DEFAULT_ATTR(DEFAULT_ATTR)
-            ) u_hart_adapter (
-                .clk_i(clk_i),
-                .rst_ni(rst_ni),
-                .core_valid_i(core_mem_valid_i[hart_index]),
-                .core_ready_o(core_mem_ready_o[hart_index]),
-                .core_write_i(core_mem_write_i[hart_index]),
-                .core_addr_i(core_mem_addr_i[hart_index*64 +: 64]),
-                .core_wdata_i(core_mem_wdata_i[hart_index*64 +: 64]),
-                .core_wstrb_i(core_mem_wstrb_i[hart_index*8 +: 8]),
-                .core_rdata_o(core_mem_rdata_o[hart_index*64 +: 64]),
-                .core_error_o(core_mem_error_o[hart_index]),
-                .req_valid_o(ccx_req_valid[hart_index]),
-                .req_ready_i(ccx_req_ready[hart_index]),
-                .req_hart_id_o(ccx_req_hart_id[
-                    hart_index*`OPENRV64_CCX_HART_ID_WIDTH +:
-                    `OPENRV64_CCX_HART_ID_WIDTH]),
-                .req_txn_id_o(ccx_req_txn_id[
-                    hart_index*`OPENRV64_CCX_TXN_ID_WIDTH +:
-                    `OPENRV64_CCX_TXN_ID_WIDTH]),
-                .req_op_o(ccx_req_op[
-                    hart_index*`OPENRV64_CCX_OP_WIDTH +:
-                    `OPENRV64_CCX_OP_WIDTH]),
-                .req_lock_o(ccx_req_lock[hart_index]),
-                .req_order_o(ccx_req_order[
-                    hart_index*`OPENRV64_CCX_ORDER_WIDTH +:
-                    `OPENRV64_CCX_ORDER_WIDTH]),
-                .req_kind_o(ccx_req_kind[
-                    hart_index*`OPENRV64_CCX_KIND_WIDTH +:
-                    `OPENRV64_CCX_KIND_WIDTH]),
-                .req_attr_o(ccx_req_attr[
-                    hart_index*`OPENRV64_CCX_ATTR_WIDTH +:
-                    `OPENRV64_CCX_ATTR_WIDTH]),
-                .req_size_o(ccx_req_size[hart_index*3 +: 3]),
-                .req_addr_o(ccx_req_addr[hart_index*64 +: 64]),
-                .req_wdata_o(ccx_req_wdata[hart_index*64 +: 64]),
-                .req_wstrb_o(ccx_req_wstrb[hart_index*8 +: 8]),
-                .resp_valid_i(ccx_resp_valid[hart_index]),
-                .resp_ready_o(ccx_resp_ready[hart_index]),
-                .resp_hart_id_i(ccx_resp_hart_id[
-                    hart_index*`OPENRV64_CCX_HART_ID_WIDTH +:
-                    `OPENRV64_CCX_HART_ID_WIDTH]),
-                .resp_txn_id_i(ccx_resp_txn_id[
-                    hart_index*`OPENRV64_CCX_TXN_ID_WIDTH +:
-                    `OPENRV64_CCX_TXN_ID_WIDTH]),
-                .resp_rdata_i(ccx_resp_rdata[hart_index*64 +: 64]),
-                .resp_error_i(ccx_resp_error[hart_index]),
-                .resp_sc_success_i(ccx_resp_sc_success[hart_index])
-            );
-        end
-    endgenerate
-
-    openrv64_ccx_crossbar #(
-        .NUM_HARTS(NUM_HARTS)
+    openrv64_ccx_line_crossbar #(
+        .NUM_HARTS(NUM_HARTS),
+        .HART_ID_BASE(HART_ID_BASE)
     ) u_crossbar (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
-        .hart_req_valid_i(ccx_req_valid),
-        .hart_req_ready_o(ccx_req_ready),
-        .hart_req_hart_id_i(ccx_req_hart_id),
-        .hart_req_txn_id_i(ccx_req_txn_id),
-        .hart_req_op_i(ccx_req_op),
-        .hart_req_lock_i(ccx_req_lock),
-        .hart_req_order_i(ccx_req_order),
-        .hart_req_kind_i(ccx_req_kind),
-        .hart_req_attr_i(ccx_req_attr),
-        .hart_req_size_i(ccx_req_size),
-        .hart_req_addr_i(ccx_req_addr),
-        .hart_req_wdata_i(ccx_req_wdata),
-        .hart_req_wstrb_i(ccx_req_wstrb),
-        .mem_req_valid_o(shared_req_valid),
-        .mem_req_ready_i(shared_req_ready),
-        .mem_req_hart_id_o(shared_req_hart_id),
-        .mem_req_txn_id_o(shared_req_txn_id),
-        .mem_req_op_o(shared_req_op),
-        .mem_req_lock_o(shared_req_lock),
-        .mem_req_order_o(shared_req_order),
-        .mem_req_kind_o(shared_req_kind),
-        .mem_req_attr_o(shared_req_attr),
-        .mem_req_size_o(shared_req_size),
-        .mem_req_addr_o(shared_req_addr),
-        .mem_req_wdata_o(shared_req_wdata),
-        .mem_req_wstrb_o(shared_req_wstrb),
-        .mem_resp_valid_i(shared_resp_valid),
-        .mem_resp_ready_o(shared_resp_ready),
-        .mem_resp_hart_id_i(shared_resp_hart_id),
-        .mem_resp_txn_id_i(shared_resp_txn_id),
-        .mem_resp_rdata_i(shared_resp_rdata),
-        .mem_resp_error_i(shared_resp_error),
-        .mem_resp_sc_success_i(shared_resp_sc_success),
-        .hart_resp_valid_o(ccx_resp_valid),
-        .hart_resp_ready_i(ccx_resp_ready),
-        .hart_resp_hart_id_o(ccx_resp_hart_id),
-        .hart_resp_txn_id_o(ccx_resp_txn_id),
-        .hart_resp_rdata_o(ccx_resp_rdata),
-        .hart_resp_error_o(ccx_resp_error),
-        .hart_resp_sc_success_o(ccx_resp_sc_success)
+        .hart_req_valid_i(ccx_req_valid_i),
+        .hart_req_ready_o(ccx_req_ready_o),
+        .hart_req_hart_id_i(ccx_req_hart_id_i),
+        .hart_req_txn_id_i(ccx_req_txn_id_i),
+        .hart_req_source_id_i(ccx_req_source_id_i),
+        .hart_req_op_i(ccx_req_op_i),
+        .hart_req_lock_i(ccx_req_lock_i),
+        .hart_req_order_i(ccx_req_order_i),
+        .hart_req_kind_i(ccx_req_kind_i),
+        .hart_req_attr_i(ccx_req_attr_i),
+        .hart_req_size_i(ccx_req_size_i),
+        .hart_req_addr_i(ccx_req_addr_i),
+        .hart_req_burst_len_i(ccx_req_burst_len_i),
+        .mem_req_valid_o(line_req_valid),
+        .mem_req_ready_i(line_req_ready),
+        .mem_req_hart_id_o(line_req_hart_id),
+        .mem_req_txn_id_o(line_req_txn_id),
+        .mem_req_source_id_o(line_req_source_id),
+        .mem_req_op_o(line_req_op),
+        .mem_req_lock_o(line_req_lock),
+        .mem_req_order_o(line_req_order),
+        .mem_req_kind_o(line_req_kind),
+        .mem_req_attr_o(line_req_attr),
+        .mem_req_size_o(line_req_size),
+        .mem_req_addr_o(line_req_addr),
+        .mem_req_burst_len_o(line_req_burst_len),
+        .hart_wdata_valid_i(ccx_wdata_valid_i),
+        .hart_wdata_ready_o(ccx_wdata_ready_o),
+        .hart_wdata_hart_id_i(ccx_wdata_hart_id_i),
+        .hart_wdata_txn_id_i(ccx_wdata_txn_id_i),
+        .hart_wdata_source_id_i(ccx_wdata_source_id_i),
+        .hart_wdata_beat_index_i(ccx_wdata_beat_index_i),
+        .hart_wdata_last_i(ccx_wdata_last_i),
+        .hart_wdata_i(ccx_wdata_i),
+        .hart_wstrb_i(ccx_wstrb_i),
+        .mem_wdata_valid_o(line_wdata_valid),
+        .mem_wdata_ready_i(line_wdata_ready),
+        .mem_wdata_hart_id_o(line_wdata_hart_id),
+        .mem_wdata_txn_id_o(line_wdata_txn_id),
+        .mem_wdata_source_id_o(line_wdata_source_id),
+        .mem_wdata_beat_index_o(line_wdata_beat_index),
+        .mem_wdata_last_o(line_wdata_last),
+        .mem_wdata_o(line_wdata),
+        .mem_wstrb_o(line_wstrb),
+        .mem_resp_valid_i(line_resp_valid),
+        .mem_resp_ready_o(line_resp_ready),
+        .mem_resp_hart_id_i(line_resp_hart_id),
+        .mem_resp_txn_id_i(line_resp_txn_id),
+        .mem_resp_source_id_i(line_resp_source_id),
+        .mem_resp_beat_index_i(line_resp_beat_index),
+        .mem_resp_last_i(line_resp_last),
+        .mem_resp_rdata_i(line_resp_rdata),
+        .mem_resp_error_i(line_resp_error),
+        .mem_resp_sc_success_i(line_resp_sc_success),
+        .hart_resp_valid_o(ccx_resp_valid_o),
+        .hart_resp_ready_i(ccx_resp_ready_i),
+        .hart_resp_hart_id_o(ccx_resp_hart_id_o),
+        .hart_resp_txn_id_o(ccx_resp_txn_id_o),
+        .hart_resp_source_id_o(ccx_resp_source_id_o),
+        .hart_resp_beat_index_o(ccx_resp_beat_index_o),
+        .hart_resp_last_o(ccx_resp_last_o),
+        .hart_resp_rdata_o(ccx_resp_rdata_o),
+        .hart_resp_error_o(ccx_resp_error_o),
+        .hart_resp_sc_success_o(ccx_resp_sc_success_o)
     );
 
-    openrv64_ccx_l2 #(
+    openrv64_ccx_l2_native #(
         .ADDR_WIDTH(BUS_ADDR_WIDTH),
-        .BUS_DATA_WIDTH(L2_BUS_DATA_WIDTH),
         .CACHE_BYTES(L2_BYTES),
         .LINE_BYTES(L2_LINE_BYTES),
         .WAYS(L2_WAYS),
-        .MERGE_ENTRIES(L2_MERGE_ENTRIES)
+        .MSHR_ENTRIES(L2_MERGE_ENTRIES),
+        .WAITERS_PER_MSHR(L2_WAITERS_PER_MSHR),
+        .COMMAND_ENTRIES(L2_COMMAND_ENTRIES),
+        .RESPONSE_ENTRIES(L2_RESPONSE_ENTRIES),
+        .BUS_TRACK_ENTRIES(L2_MERGE_ENTRIES)
     ) u_l2 (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
-        .req_valid_i(shared_req_valid),
-        .req_ready_o(shared_req_ready),
-        .req_hart_id_i(shared_req_hart_id),
-        .req_txn_id_i(shared_req_txn_id),
-        .req_op_i(shared_req_op),
-        .req_lock_i(shared_req_lock),
-        .req_order_i(shared_req_order),
-        .req_kind_i(shared_req_kind),
-        .req_attr_i(shared_req_attr),
-        .req_size_i(shared_req_size),
-        .req_addr_i(shared_req_addr),
-        .req_wdata_i(shared_req_wdata),
-        .req_wstrb_i(shared_req_wstrb),
-        .resp_valid_o(shared_resp_valid),
-        .resp_ready_i(shared_resp_ready),
-        .resp_hart_id_o(shared_resp_hart_id),
-        .resp_txn_id_o(shared_resp_txn_id),
-        .resp_rdata_o(shared_resp_rdata),
-        .resp_error_o(shared_resp_error),
-        .resp_sc_success_o(shared_resp_sc_success),
+        .req_valid_i(line_req_valid),
+        .req_ready_o(line_req_ready),
+        .req_hart_id_i(line_req_hart_id),
+        .req_txn_id_i(line_req_txn_id),
+        .req_source_id_i(line_req_source_id),
+        .req_op_i(line_req_op),
+        .req_lock_i(line_req_lock),
+        .req_order_i(line_req_order),
+        .req_kind_i(line_req_kind),
+        .req_attr_i(line_req_attr),
+        .req_size_i(line_req_size),
+        .req_addr_i(line_req_addr),
+        .req_burst_len_i(line_req_burst_len),
+        .wdata_valid_i(line_wdata_valid),
+        .wdata_ready_o(line_wdata_ready),
+        .wdata_hart_id_i(line_wdata_hart_id),
+        .wdata_txn_id_i(line_wdata_txn_id),
+        .wdata_source_id_i(line_wdata_source_id),
+        .wdata_beat_index_i(line_wdata_beat_index),
+        .wdata_last_i(line_wdata_last),
+        .wdata_i(line_wdata),
+        .wstrb_i(line_wstrb),
+        .resp_valid_o(line_resp_valid),
+        .resp_ready_i(line_resp_ready),
+        .resp_hart_id_o(line_resp_hart_id),
+        .resp_txn_id_o(line_resp_txn_id),
+        .resp_source_id_o(line_resp_source_id),
+        .resp_beat_index_o(line_resp_beat_index),
+        .resp_last_o(line_resp_last),
+        .resp_rdata_o(line_resp_rdata),
+        .resp_error_o(line_resp_error),
+        .resp_sc_success_o(line_resp_sc_success),
         .bus_req_valid_o(bus_req_valid),
         .bus_req_ready_i(bus_req_ready),
         .bus_req_write_o(bus_req_write),
@@ -388,12 +405,16 @@ module openrv64_core_complex_nh #(
             ((HART_ID_BASE + NUM_HARTS) > 16)) begin : g_bad_ids
             initial $fatal(1, "core-complex hart IDs exceed four bits");
         end
-        if ((L2_BUS_DATA_WIDTH < 32) ||
-            (L2_BUS_DATA_WIDTH > 256) ||
-            ((L2_BUS_DATA_WIDTH & (L2_BUS_DATA_WIDTH - 1)) != 0)) begin :
+        if (L2_BUS_DATA_WIDTH !=
+            `OPENRV64_CCX_LINE_DATA_WIDTH) begin :
                 g_bad_l2_bus_width
             initial $fatal(1,
-                "core-complex L2 producer width must be 32 through 256 bits");
+                "core-complex L2 bus producer width must be 512 bits");
+        end
+        if (L2_LINE_BYTES != `OPENRV64_CCX_LINE_BYTES) begin :
+                g_bad_l2_line_bytes
+            initial $fatal(1,
+                "native core-complex L2 line size must be 64 bytes");
         end
     endgenerate
 

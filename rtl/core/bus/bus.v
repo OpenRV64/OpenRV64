@@ -45,6 +45,7 @@ module openrv64_core_bus #(
     input  wire                         fetch_pipe_req_valid_i,
     output wire                         fetch_pipe_req_ready_o,
     input  wire [`RV64_XLEN-1:0]        fetch_pipe_req_addr_i,
+    input  wire                         fetch_pipe_req_stash_i,
     input  wire [`RV64_PRIV_WIDTH-1:0]  fetch_pipe_req_priv_i,
     input  wire [`RV64_SATP_MODE_WIDTH-1:0] fetch_pipe_req_vm_mode_i,
     input  wire [`RV64_SATP_ASID_WIDTH-1:0] fetch_pipe_req_asid_i,
@@ -58,6 +59,8 @@ module openrv64_core_bus #(
                                         fetch_pipe_resp_data_o,
     output wire                         fetch_pipe_resp_access_fault_o,
     output wire                         fetch_pipe_resp_page_fault_o,
+    output wire                         fetch_pipe_resp_stash_o,
+    input  wire                         fetch_pipe_cancel_stash_i,
 
     input  wire                         lsu_valid_i,
     input  wire                         lsu_lock_i,
@@ -335,6 +338,7 @@ module openrv64_core_bus #(
                 {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
             assign fetch_pipe_resp_access_fault_o = 1'b0;
             assign fetch_pipe_resp_page_fault_o = 1'b0;
+            assign fetch_pipe_resp_stash_o = 1'b0;
             assign lsu_ready_o = gen_lsu_ready && !pipe_active_q;
             assign lsu_rdata_o = gen_lsu_rdata;
             assign lsu_access_fault_o = gen_lsu_access_fault &&
@@ -479,6 +483,7 @@ module openrv64_core_bus #(
                 .fetch_req_valid_i(fetch_pipe_req_valid_i),
                 .fetch_req_ready_o(fetch_pipe_req_ready_o),
                 .fetch_req_addr_i(fetch_pipe_req_addr_i),
+                .fetch_req_stash_i(fetch_pipe_req_stash_i),
                 .fetch_req_priv_i(fetch_pipe_req_priv_i),
                 .fetch_req_vm_mode_i(fetch_pipe_req_vm_mode_i),
                 .fetch_req_asid_i(fetch_pipe_req_asid_i),
@@ -486,6 +491,7 @@ module openrv64_core_bus #(
                 .fetch_req_sum_i(fetch_pipe_req_sum_i),
                 .fetch_req_mxr_i(fetch_pipe_req_mxr_i),
                 .fetch_cancel_i(fetch_cancel_i),
+                .fetch_cancel_stash_i(fetch_pipe_cancel_stash_i),
                 .fetch_resp_valid_o(fetch_pipe_resp_valid_o),
                 .fetch_resp_ready_i(fetch_pipe_resp_ready_i),
                 .fetch_resp_addr_o(fetch_pipe_resp_addr_o),
@@ -493,6 +499,7 @@ module openrv64_core_bus #(
                 .fetch_resp_access_fault_o(
                     fetch_pipe_resp_access_fault_o),
                 .fetch_resp_page_fault_o(fetch_pipe_resp_page_fault_o),
+                .fetch_resp_stash_o(fetch_pipe_resp_stash_o),
                 .lsu_valid_i(lsu_valid_i), .lsu_lock_i(lsu_lock_i),
                 .lsu_write_i(lsu_write_i),
                 .lsu_addr_i(lsu_addr_i), .lsu_wdata_i(lsu_wdata_i),

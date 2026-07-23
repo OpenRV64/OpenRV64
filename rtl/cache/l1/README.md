@@ -7,8 +7,9 @@ backpressure.  It accepts separate lookup and physical addresses: tying them
 together gives PIPT operation, while L1I uses virtual page-offset bits for its
 set/beat and the translated address for its tag and refill.  The L1I wrappers
 default to four ways, 8 KiB, and 64-byte lines; the shared cache and L1D retain
-their eight-way defaults.  `CACHE_BYTES` accepts power-of-two capacities from
-1 KiB through 32 KiB.
+their eight-way module defaults.  The integrated CCX core uses four ways for
+both L1I and L1D.  `CACHE_BYTES` accepts power-of-two capacities from 1 KiB
+through 32 KiB.
 
 ## Policy
 
@@ -30,6 +31,28 @@ their eight-way defaults.  `CACHE_BYTES` accepts power-of-two capacities from
 The line data arrays contain no dirty state.  With the CCX L1D endpoint, bytes
 which have not reached the lower level are owned by the store FIFO rather than
 represented as Modified cache lines.
+
+## Physical storage
+
+Each way's data store is one synchronous, full-width, one-read/one-write
+inferred RAM.  Store byte enables are merged with the registered resident word
+before the full-width write, so synthesis does not split a way into eight
+byte-wide memories.  The integrated 8 KiB caches therefore infer:
+
+- L1I: four 32x512-bit RAMs;
+- L1D: four 256x64-bit RAMs.
+
+The RAM contents are deliberately not reset; validity metadata suppresses
+uninitialized data.  Tags, validity, replacement, aging, and reserved
+coherence metadata remain standard-cell logic because the current same-cycle
+parallel tag lookup and bulk invalidation contract does not fit a simple
+synchronous SRAM without another lookup stage.
+
+The Sky130 resource flow preserves these eight data arrays as `$mem_v2` cells
+and reports their 131,072-bit capacity separately.  This repository has no
+SRAM Liberty/LEF macro library, so their physical area and timing remain
+unknown until a macro generator/library and Yosys memory mapping are selected.
+Expanding them into flip-flops is not a valid cache-area estimate.
 
 ## Reserved coherence metadata
 

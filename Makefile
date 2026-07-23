@@ -9,6 +9,19 @@ UART_FIRMWARE_MAP := sw/uart.map
 COREMARK_LOOP_ELF := sw/coremark-loop.elf
 COREMARK_LOOP_BIN := sw/coremark-loop.bin
 COREMARK_LOOP_MAP := sw/coremark-loop.map
+MEMCPY_4K_ELF := sw/memcpy/memcpy-4k.elf
+MEMCPY_4K_BIN := sw/memcpy/memcpy-4k.bin
+MEMCPY_4K_MAP := sw/memcpy/memcpy-4k.map
+MEMCPY_4K_DISASM := sw/memcpy/memcpy-4k.disasm
+MEMCPY_64K_ELF := sw/memcpy/memcpy-64k.elf
+MEMCPY_64K_BIN := sw/memcpy/memcpy-64k.bin
+MEMCPY_64K_MAP := sw/memcpy/memcpy-64k.map
+MEMCPY_64K_DISASM := sw/memcpy/memcpy-64k.disasm
+MEMCPY_PASS := 4d454d4350594f4b
+MEMCPY_MEMH_BYTES := 0x20000
+MEMCPY_MEMH_WORDS := 4096
+MEMCPY_4K_MAX_CYCLES ?= 500000
+MEMCPY_64K_MAX_CYCLES ?= 5000000
 L1I_COREMARK_MEMH := sim/coremark-l1i-512.memh
 L1I_TOP_CACHE_BYTES ?= 8192
 L1I_TOP_WAYS ?= 4
@@ -58,6 +71,10 @@ RISCV_CC ?= riscv64-elf-gcc
 RISCV_OBJCOPY ?= riscv64-elf-objcopy
 RISCV_OBJDUMP ?= riscv64-elf-objdump
 RISCV_NM ?= riscv64-elf-nm
+MEMCPY_4K_MEASURE_END = $(shell $(RISCV_NM) -n $(MEMCPY_4K_ELF) | \
+	awk '$$3 == "memcpy_measure_end" { print $$1 }')
+MEMCPY_64K_MEASURE_END = $(shell $(RISCV_NM) -n $(MEMCPY_64K_ELF) | \
+	awk '$$3 == "memcpy_measure_end" { print $$1 }')
 AARCH64_CC ?= aarch64-linux-gnu-gcc
 AARCH64_OBJCOPY ?= aarch64-linux-gnu-objcopy
 AARCH64_OBJDUMP ?= aarch64-linux-gnu-objdump
@@ -74,6 +91,8 @@ COREMARK_LOOP_CFLAGS := -march=rv64i -mabi=lp64 -mcmodel=medany \
 	-ffreestanding -fno-builtin -fno-common -fno-pic \
 	-fno-stack-protector -fno-asynchronous-unwind-tables \
 	-ffunction-sections -fdata-sections
+MEMCPY_ASFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
+	-mno-relax -nostdlib -nostartfiles
 A53_COREMARK_CFLAGS := -mcpu=cortex-a53 -mabi=lp64 -mno-outline-atomics -O2 -g \
 	-Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-common \
 	-fno-pic -fno-pie -fno-stack-protector -fno-unwind-tables \
@@ -117,6 +136,8 @@ AXI_3P_ORACLE_BRANCHES ?= 0
 AXI_3P_FREE_L1_REFILLS ?= 0
 AXI_3P_FREE_L1I_REFILLS ?= 0
 AXI_3P_FREE_L1D_REFILLS ?= 0
+# 0=off, 1=backend corrections only, 2=predicted targets plus corrections.
+AXI_3P_FETCH_ALT_LOOKASIDE ?= 0
 BACKEND_3P_RELAX_HAZARDS ?= 0
 AXI_3P_PERF_BP_TYPE ?= 3
 AXI_3P_PERF_BP_RAS_ENABLE ?= 1
@@ -132,6 +153,7 @@ AXI_3P_PERF_BP_INFLIGHT_DEPTH ?= 16
 AXI_3P_PERF_ELF ?= sw/test.elf
 AXI_3P_PERF_BIN ?= sim/top-axi-3p-perf.bin
 AXI_3P_PERF_MEMH ?= sim/top-axi-3p-perf.memh
+AXI_3P_PERF_MEMH_BYTES ?= 0x10000
 AXI_3P_PERF_MAX_CYCLES ?= 20000
 AXI_3P_PERF_ARGS ?= +done_pc=80000010 +expect_a0=64
 AXI_3P_TRACE_CSV ?= sim/top-axi-3p-perf-trace.csv
@@ -168,6 +190,7 @@ GENBUS_WB_32_SIM_BUILD := sim/genbus_wb_32_tb.vvp
 GENBUS_WB_128_SIM_BUILD := sim/genbus_wb_128_tb.vvp
 GENBUS_WB_256_SIM_BUILD := sim/genbus_wb_256_tb.vvp
 GENBUS_WB_512_SIM_BUILD := sim/genbus_wb_512_tb.vvp
+CORE_COMPLEX_1H_AXI_SIM_BUILD := sim/core_complex_1h_axi_tb.vvp
 CORE_COMPLEX_2H_AXI_SIM_BUILD := sim/core_complex_2h_axi_tb.vvp
 CORE_COMPLEX_4H_WB_SIM_BUILD := sim/core_complex_4h_wb_tb.vvp
 AXI_BUS_SIM_BUILD := sim/axi_bus_tb.vvp
@@ -316,8 +339,9 @@ COMPLEX_BUS_SRCS := rtl/complex/bus/defs.v \
 	rtl/complex/bus/external_bus.v rtl/bus/genbus_interface.v
 CCX_L2_SRCS := rtl/cache/l2/l2.v
 CORE_COMPLEX_SRCS := rtl/complex/protocol/defs.v \
-	rtl/complex/protocol/hart_legacy_adapter.v \
-	rtl/complex/protocol/crossbar.v $(CCX_L2_SRCS) $(COMPLEX_BUS_SRCS) \
+	rtl/complex/protocol/line_crossbar.v \
+	rtl/cache/l2/sram_way.v rtl/cache/l2/l2_native.v \
+	$(COMPLEX_BUS_SRCS) \
 	rtl/complex/wrapper_nh.v
 DISPATCH_SRCS := rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_3p.v \
@@ -485,7 +509,10 @@ SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 
-.PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+.PHONY: FORCE sw-uart sw-coremark-loop sw-memcpy sw-memcpy-4k \
+	sw-memcpy-64k sim-memcpy sim-memcpy-4k sim-memcpy-64k \
+	bench-memcpy bench-memcpy-4k bench-memcpy-64k \
+	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-axi-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-exec-fpu-rv64-fd
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
@@ -497,7 +524,8 @@ SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/Ope
 .PHONY: sim-l1-cache sim-l1i-top sim-ccx-protocol-1h sim-ccx-protocol-2h sim-ccx-protocol-4h
 .PHONY: sim-ccx-l2 sim-ccx-l2-widths sim-complex-bus-axi sim-complex-bus-wb
 .PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths
-.PHONY: sim-core-complex-2h-axi sim-core-complex-4h-wb
+.PHONY: sim-core-complex-1h-axi sim-core-complex-2h-axi \
+	sim-core-complex-4h-wb
 .PHONY: sim-mem-channel sim-mesh-router
 .PHONY: sim-prf
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
@@ -615,11 +643,70 @@ sim: sim-ccx-protocol-1h
 sim: sim-ccx-protocol-2h sim-ccx-protocol-4h
 sim: sim-ccx-l2 sim-ccx-l2-widths sim-complex-bus-axi sim-complex-bus-wb
 sim: sim-genbus-axi sim-genbus-wb-widths
-sim: sim-core-complex-2h-axi sim-core-complex-4h-wb
+sim: sim-core-complex-1h-axi sim-core-complex-2h-axi \
+	sim-core-complex-4h-wb
 
 sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
 
 sw-coremark-loop: $(COREMARK_LOOP_ELF) $(COREMARK_LOOP_BIN)
+
+sw-memcpy: sw-memcpy-4k sw-memcpy-64k
+
+sw-memcpy-4k: $(MEMCPY_4K_ELF) $(MEMCPY_4K_BIN) \
+	$(MEMCPY_4K_DISASM)
+
+sw-memcpy-64k: $(MEMCPY_64K_ELF) $(MEMCPY_64K_BIN) \
+	$(MEMCPY_64K_DISASM)
+
+sim-memcpy: sim-memcpy-4k sim-memcpy-64k
+
+sim-memcpy-4k: $(MEMCPY_4K_ELF)
+	$(MAKE) -B sim-top-axi-3p-perf \
+		AXI_3P_PERF_ELF=$(MEMCPY_4K_ELF) \
+		AXI_3P_PERF_BIN=sim/memcpy-4k-check.bin \
+		AXI_3P_PERF_MEMH=sim/memcpy-4k-check.memh \
+		AXI_3P_PERF_MEMH_BYTES=$(MEMCPY_MEMH_BYTES) \
+		AXI_3P_PERF_MAX_CYCLES=$(MEMCPY_4K_MAX_CYCLES) \
+		AXI_3P_PERF_ARGS="+memh_words=$(MEMCPY_MEMH_WORDS) +expect_a0=$(MEMCPY_PASS)" \
+		AXI_3P_TRACE_CSV=sim/memcpy-4k-check-trace.csv \
+		AXI_3P_TRACE_REPORT=sim/memcpy-4k-check-pipeline.txt
+
+sim-memcpy-64k: $(MEMCPY_64K_ELF)
+	$(MAKE) -B sim-top-axi-3p-perf \
+		AXI_3P_PERF_ELF=$(MEMCPY_64K_ELF) \
+		AXI_3P_PERF_BIN=sim/memcpy-64k-check.bin \
+		AXI_3P_PERF_MEMH=sim/memcpy-64k-check.memh \
+		AXI_3P_PERF_MEMH_BYTES=$(MEMCPY_MEMH_BYTES) \
+		AXI_3P_PERF_MAX_CYCLES=$(MEMCPY_64K_MAX_CYCLES) \
+		AXI_3P_PERF_ARGS="+memh_words=$(MEMCPY_MEMH_WORDS) +expect_a0=$(MEMCPY_PASS)" \
+		AXI_3P_TRACE_CSV=sim/memcpy-64k-check-trace.csv \
+		AXI_3P_TRACE_REPORT=sim/memcpy-64k-check-pipeline.txt
+
+bench-memcpy: bench-memcpy-4k bench-memcpy-64k
+
+bench-memcpy-4k: $(MEMCPY_4K_ELF)
+	test -n "$(MEMCPY_4K_MEASURE_END)"
+	$(MAKE) -B sim-top-axi-3p-perf \
+		AXI_3P_PERF_ELF=$(MEMCPY_4K_ELF) \
+		AXI_3P_PERF_BIN=sim/memcpy-4k-bench.bin \
+		AXI_3P_PERF_MEMH=sim/memcpy-4k-bench.memh \
+		AXI_3P_PERF_MEMH_BYTES=$(MEMCPY_MEMH_BYTES) \
+		AXI_3P_PERF_MAX_CYCLES=$(MEMCPY_4K_MAX_CYCLES) \
+		AXI_3P_PERF_ARGS="+memh_words=$(MEMCPY_MEMH_WORDS) +done_pc=$(MEMCPY_4K_MEASURE_END)" \
+		AXI_3P_TRACE_CSV=sim/memcpy-4k-bench-trace.csv \
+		AXI_3P_TRACE_REPORT=sim/memcpy-4k-bench-pipeline.txt
+
+bench-memcpy-64k: $(MEMCPY_64K_ELF)
+	test -n "$(MEMCPY_64K_MEASURE_END)"
+	$(MAKE) -B sim-top-axi-3p-perf \
+		AXI_3P_PERF_ELF=$(MEMCPY_64K_ELF) \
+		AXI_3P_PERF_BIN=sim/memcpy-64k-bench.bin \
+		AXI_3P_PERF_MEMH=sim/memcpy-64k-bench.memh \
+		AXI_3P_PERF_MEMH_BYTES=$(MEMCPY_MEMH_BYTES) \
+		AXI_3P_PERF_MAX_CYCLES=$(MEMCPY_64K_MAX_CYCLES) \
+		AXI_3P_PERF_ARGS="+memh_words=$(MEMCPY_MEMH_WORDS) +done_pc=$(MEMCPY_64K_MEASURE_END)" \
+		AXI_3P_TRACE_CSV=sim/memcpy-64k-bench-trace.csv \
+		AXI_3P_TRACE_REPORT=sim/memcpy-64k-bench-pipeline.txt
 
 sw-vector-matmul: $(VEC_MATMUL_ELF) $(VEC_MATMUL_BIN) \
 		$(VEC_MATMUL_DISASM)
@@ -813,6 +900,9 @@ sim-genbus-wb-widths: $(GENBUS_WB_32_SIM_BUILD) \
 	vvp $(GENBUS_WB_128_SIM_BUILD)
 	vvp $(GENBUS_WB_256_SIM_BUILD)
 	vvp $(GENBUS_WB_512_SIM_BUILD)
+
+sim-core-complex-1h-axi: $(CORE_COMPLEX_1H_AXI_SIM_BUILD)
+	vvp $(CORE_COMPLEX_1H_AXI_SIM_BUILD)
 
 sim-core-complex-2h-axi: $(CORE_COMPLEX_2H_AXI_SIM_BUILD)
 	vvp $(CORE_COMPLEX_2H_AXI_SIM_BUILD)
@@ -1077,7 +1167,8 @@ sim-top-axi-3p-perf: $(AXI_3P_PERF_MEMH)
 		AXI_3P_ORACLE_BRANCHES=$(AXI_3P_ORACLE_BRANCHES) \
 		AXI_3P_FREE_L1_REFILLS=$(AXI_3P_FREE_L1_REFILLS) \
 		AXI_3P_FREE_L1I_REFILLS=$(AXI_3P_FREE_L1I_REFILLS) \
-		AXI_3P_FREE_L1D_REFILLS=$(AXI_3P_FREE_L1D_REFILLS)
+		AXI_3P_FREE_L1D_REFILLS=$(AXI_3P_FREE_L1D_REFILLS) \
+		AXI_3P_FETCH_ALT_LOOKASIDE=$(AXI_3P_FETCH_ALT_LOOKASIDE)
 	mkdir -p $(dir $(AXI_3P_TRACE_CSV)) $(dir $(AXI_3P_TRACE_REPORT))
 	vvp $(TOP_AXI_3P_SIM_BUILD) +memh=$(AXI_3P_PERF_MEMH) \
 		+max_cycles=$(AXI_3P_PERF_MAX_CYCLES) $(AXI_3P_PERF_ARGS) \
@@ -1147,6 +1238,32 @@ $(COREMARK_LOOP_ELF): Makefile sw/coremark_loop_start.S \
 $(COREMARK_LOOP_BIN): $(COREMARK_LOOP_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
+$(MEMCPY_4K_ELF): Makefile sw/memcpy/memcpy.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
+		-Wa,--defsym,MEMCPY_BYTES=4096 \
+		-Wl,--build-id=none,-Map,$(MEMCPY_4K_MAP) \
+		-T sw/openrv64.ld -o $@ sw/memcpy/memcpy.S
+
+$(MEMCPY_4K_BIN): $(MEMCPY_4K_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(MEMCPY_4K_DISASM): $(MEMCPY_4K_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(MEMCPY_64K_ELF): Makefile sw/memcpy/memcpy.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
+		-Wa,--defsym,MEMCPY_BYTES=65536 \
+		-Wl,--build-id=none,-Map,$(MEMCPY_64K_MAP) \
+		-T sw/openrv64.ld -o $@ sw/memcpy/memcpy.S
+
+$(MEMCPY_64K_BIN): $(MEMCPY_64K_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(MEMCPY_64K_DISASM): $(MEMCPY_64K_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(L1I_COREMARK_MEMH): $(COREMARK_LOOP_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ --size 0x800 --word-bytes 64
 
@@ -1215,7 +1332,7 @@ $(AXI_3P_PERF_BIN): $(AXI_3P_PERF_ELF)
 $(AXI_3P_PERF_MEMH): $(AXI_3P_PERF_BIN) tools/bin2mem.py
 	mkdir -p $(dir $@)
 	$(PYTHON) tools/bin2mem.py $(AXI_3P_PERF_BIN) $@ \
-		--size 0x10000 --word-bytes 32
+		--size $(AXI_3P_PERF_MEMH_BYTES) --word-bytes 32
 
 $(UART_FIRMWARE_MEMH): $(UART_FIRMWARE_BIN) tools/bin2mem.py
 	mkdir -p $(dir $@)
@@ -1441,6 +1558,14 @@ $(GENBUS_WB_512_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
 		-Ptb_genbus_interface.DOWN_WIDTH=512 \
 		-o $(GENBUS_WB_512_SIM_BUILD) \
 		$(COMPLEX_BUS_SRCS) $(GENBUS_SIM_SRCS)
+
+$(CORE_COMPLEX_1H_AXI_SIM_BUILD): $(CORE_COMPLEX_SIM_SRCS) \
+		$(CORE_COMPLEX_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_core_complex \
+		-Ptb_core_complex.NUM_HARTS=1 -Ptb_core_complex.BUS_TYPE=0 \
+		-o $(CORE_COMPLEX_1H_AXI_SIM_BUILD) $(CORE_COMPLEX_SRCS) \
+		$(CORE_COMPLEX_SIM_SRCS)
 
 $(CORE_COMPLEX_2H_AXI_SIM_BUILD): $(CORE_COMPLEX_SIM_SRCS) \
 		$(CORE_COMPLEX_SRCS)
@@ -1853,6 +1978,7 @@ $(TOP_AXI_3P_SIM_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
 		-Ptb_top_axi_3p.FREE_L1_REFILLS=$(AXI_3P_FREE_L1_REFILLS) \
 		-Ptb_top_axi_3p.FREE_L1I_REFILLS=$(AXI_3P_FREE_L1I_REFILLS) \
 		-Ptb_top_axi_3p.FREE_L1D_REFILLS=$(AXI_3P_FREE_L1D_REFILLS) \
+		-Ptb_top_axi_3p.FETCH_ALT_LOOKASIDE=$(AXI_3P_FETCH_ALT_LOOKASIDE) \
 		-o $(TOP_AXI_3P_SIM_BUILD) rtl/openrv64_top_3p.v $(CORE_SRCS) \
 		$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
 		$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \
@@ -1971,6 +2097,8 @@ $(COMPLIANCE_SMOKE_MEMH256): $(COMPLIANCE_SMOKE_ELF) tools/elf2mem.py
 	$(PYTHON) tools/elf2mem.py $< $@ --base 0x80000000 \
 		--size 0x100000 --word-bytes 32 \
 		--manifest $(COMPLIANCE_SMOKE_DIR)/smoke-256.json
+
+include sw/prefetch.mk
 
 clean:
 	rm -rf sim

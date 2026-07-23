@@ -10,47 +10,72 @@ module tb_fetch_3w;
     logic stall;
     logic flush;
     wire cancel;
+    wire cancel_stash;
     wire req_valid;
     logic req_ready;
     wire [63:0] req_addr;
+    wire req_stash;
     logic resp_valid;
     wire resp_ready;
     logic [63:0] resp_addr;
     logic [255:0] resp_data;
     logic resp_access_fault;
     logic resp_page_fault;
+    logic resp_stash;
+    logic branch_pair_valid;
+    logic [63:0] branch_predicted_addr;
+    logic [63:0] branch_unpredicted_addr;
+    logic [2:0] prefetch_age_valid;
+    logic [191:0] prefetch_age_addr;
     wire [2:0] decode_valid;
     logic [2:0] decode_ready;
     wire [3*`RV64_FETCH_DECODE_BUS_WIDTH-1:0] decode_bus;
     wire [191:0] trace_id;
     wire [63:0] stream_pc;
     wire [1:0] line_count;
+    wire alt_restart_hit;
 
     integer request_count;
     integer restart_request_base;
     integer replay_request_base;
+    integer lookaside_request_base;
     reg [63:0] request_addr [0:15];
+    reg request_stash [0:15];
 
-    openrv64_fetch_3w #(.ENABLE_TRACE(1)) dut (
+    openrv64_fetch_3w #(
+        .ENABLE_TRACE(1),
+        .ENABLE_ALT_LOOKASIDE(1)
+    ) dut (
         .clk(clk), .rst_n(rst_n), .restart_i(restart),
         .restart_pc_i(restart_pc), .invalidate_i(invalidate),
         .stall_i(stall), .flush_i(flush), .cancel_o(cancel),
+        .cancel_stash_o(cancel_stash),
         .req_valid_o(req_valid), .req_ready_i(req_ready),
-        .req_addr_o(req_addr), .resp_valid_i(resp_valid),
+        .req_addr_o(req_addr), .req_stash_o(req_stash),
+        .resp_valid_i(resp_valid),
         .resp_ready_o(resp_ready), .resp_addr_i(resp_addr),
         .resp_data_i(resp_data),
         .resp_access_fault_i(resp_access_fault),
         .resp_page_fault_i(resp_page_fault),
+        .resp_stash_i(resp_stash),
+        .branch_pair_valid_i(branch_pair_valid),
+        .branch_predicted_addr_i(branch_predicted_addr),
+        .branch_unpredicted_addr_i(branch_unpredicted_addr),
+        .prefetch_age_valid_i(prefetch_age_valid),
+        .prefetch_age_addr_i(prefetch_age_addr),
+        .alt_restart_eligible_i(1'b1),
         .decode_valid_o(decode_valid), .decode_ready_i(decode_ready),
         .decode_bus_o(decode_bus), .trace_id_i(64'd100),
         .trace_id_o(trace_id), .stream_pc_o(stream_pc),
-        .line_count_o(line_count)
+        .line_count_o(line_count),
+        .alt_restart_hit_o(alt_restart_hit)
     );
 
     always #5 clk = ~clk;
     always @(posedge clk) begin
         if (rst_n && req_valid && req_ready) begin
             request_addr[request_count] <= req_addr;
+            request_stash[request_count] <= req_stash;
             request_count <= request_count + 1;
         end
     end
@@ -90,13 +115,19 @@ module tb_fetch_3w;
         end
     endtask
 
-    task automatic return_line(input [63:0] addr, input integer base);
+    task automatic return_line(
+        input [63:0] addr,
+        input integer base,
+        input stash
+    );
         begin
             resp_addr = addr;
             resp_data = make_line(base);
+            resp_stash = stash;
             resp_valid = 1;
             tick();
             resp_valid = 0;
+            resp_stash = 0;
         end
     endtask
 
@@ -137,6 +168,12 @@ module tb_fetch_3w;
         resp_data = 0;
         resp_access_fault = 0;
         resp_page_fault = 0;
+        resp_stash = 0;
+        branch_pair_valid = 0;
+        branch_predicted_addr = 0;
+        branch_unpredicted_addr = 0;
+        prefetch_age_valid = 0;
+        prefetch_age_addr = 0;
         decode_ready = 0;
         request_count = 0;
         repeat (3) tick();
@@ -158,14 +195,14 @@ module tb_fetch_3w;
         repeat (3) tick();
         if (request_count != 1)
             $fatal(1, "fetch_3w issued more than one request at a time");
-        return_line(64'h0, 32'h100);
+        return_line(64'h0, 32'h100, 1'b0);
         while (request_count < 2) tick();
         if (request_addr[1] != 64'h20 || line_count != 2)
             $fatal(1, "fetch_3w did not request exactly one line ahead");
         repeat (3) tick();
         if (request_count != 2)
             $fatal(1, "fetch_3w requested beyond its one-line lookahead");
-        return_line(64'h20, 32'h108);
+        return_line(64'h20, 32'h108, 1'b0);
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
         if (trace_id[63:0] != 100 || trace_id[127:64] != 101 ||
             trace_id[191:128] != 102)
@@ -196,18 +233,93 @@ module tb_fetch_3w;
         while (request_count < replay_request_base + 1) tick();
         if (request_addr[replay_request_base] != 64'h0)
             $fatal(1, "redirect did not request its target line");
-        return_line(64'h0, 32'h100);
+        return_line(64'h0, 32'h100, 1'b0);
         while (request_count < replay_request_base + 2) tick();
         if (request_addr[replay_request_base + 1] != 64'h20)
             $fatal(1, "redirect did not restore one-line lookahead");
-        return_line(64'h20, 32'h108);
+        return_line(64'h20, 32'h108, 1'b0);
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
+
+        // A branch launches ordinary 256-bit requests in predicted then
+        // unpredicted order.  The predicted response also satisfies the
+        // redirected architectural demand; both responses enter the stash.
+        lookaside_request_base = request_count;
+        branch_predicted_addr = 64'h110;
+        branch_unpredicted_addr = 64'h188;
+        branch_pair_valid = 1'b1;
+        restart_pc = 64'h110;
+        restart = 1'b1;
+        tick();
+        restart = 1'b0;
+        branch_pair_valid = 1'b0;
+        while (request_count < lookaside_request_base + 2) tick();
+        if ((request_addr[lookaside_request_base] != 64'h100) ||
+            !request_stash[lookaside_request_base] ||
+            (request_addr[lookaside_request_base + 1] != 64'h180) ||
+            !request_stash[lookaside_request_base + 1])
+            $fatal(1,
+                   "branch pair was not predicted-then-unpredicted");
+        return_line(64'h100, 32'h140, 1'b1);
+        expect_bundle(64'h110, 32'h144, 32'h145, 32'h146);
+        return_line(64'h180, 32'h160, 1'b1);
+
+        restart_pc = 64'h188;
+        restart = 1'b1;
+        #1;
+        if (!alt_restart_hit)
+            $fatal(1, "alternate-path redirect did not hit lookaside");
+        if (cancel_stash)
+            $fatal(1, "ordinary redirect canceled stash requests");
+        tick();
+        restart = 1'b0;
+        if (line_count != 1)
+            $fatal(1, "256-bit alternate path did not seed one block");
+        expect_bundle(64'h188, 32'h162, 32'h163, 32'h164);
+
+        // Retirement aging removes the unused path from the fetch lookaside,
+        // matching the L1I policy rather than leaving stale alternate data.
+        prefetch_age_valid = 3'b001;
+        prefetch_age_addr[63:0] = 64'h180;
+        tick();
+        prefetch_age_valid = 3'b000;
+        lookaside_request_base = request_count;
+        restart = 1'b1;
+        #1;
+        if (alt_restart_hit)
+            $fatal(1, "retirement aging retained alternate-path line");
+        tick();
+        restart = 1'b0;
+        while (request_count < lookaside_request_base + 1) tick();
+        if ((request_addr[lookaside_request_base] != 64'h180) ||
+            request_stash[lookaside_request_base])
+            $fatal(1, "aged alternate path did not fall back to L1I");
+
+        // Both branch sides in one 256-bit block coalesce to one qualified
+        // request rather than fetching the same block twice.
+        lookaside_request_base = request_count;
+        branch_predicted_addr = 64'h248;
+        branch_unpredicted_addr = 64'h25c;
+        branch_pair_valid = 1'b1;
+        restart_pc = 64'h248;
+        restart = 1'b1;
+        tick();
+        restart = 1'b0;
+        branch_pair_valid = 1'b0;
+        while (request_count < lookaside_request_base + 1) tick();
+        repeat (2) tick();
+        if ((request_count != lookaside_request_base + 1) ||
+            (request_addr[lookaside_request_base] != 64'h240) ||
+            !request_stash[lookaside_request_base])
+            $fatal(1, "same-block branch pair did not coalesce");
 
         // A context-changing restart follows the same one-at-a-time contract.
         restart_request_base = request_count;
         restart_pc = 64'h84;
         invalidate = 1;
         restart = 1;
+        #1;
+        if (!cancel_stash)
+            $fatal(1, "invalidating restart preserved stash requests");
         tick();
         restart = 0;
         invalidate = 0;
@@ -218,7 +330,7 @@ module tb_fetch_3w;
         if (request_count != restart_request_base + 1 ||
             request_addr[restart_request_base] != 64'h80)
             $fatal(1, "restart request alignment mismatch");
-        return_line(64'h80, 32'h120);
+        return_line(64'h80, 32'h120, 1'b0);
         while (request_count < restart_request_base + 2) tick();
         if (request_addr[restart_request_base + 1] != 64'ha0)
             $fatal(1, "restart lookahead alignment mismatch");

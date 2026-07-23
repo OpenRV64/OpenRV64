@@ -105,10 +105,11 @@ module openrv64_l1_cache #(
 
     reg [1:0] state_q;
 
-    // Flat arrays avoid turning the data RAM into a multi-dimensional bank of
-    // flip-flops in synthesis frontends.  Tags are laid out set-major, then
-    // way.  Data byte banks are declared separately below so byte write
-    // strobes remain compatible with ordinary byte-wide SRAM inference.
+    // Tags are laid out set-major, then way.  The data store is one
+    // synchronous RAM per way.  Keeping the way dimension outside the memory
+    // gives the lookup one read port per way without requiring a multi-read-
+    // port SRAM.  Store byte strobes are merged with the registered resident
+    // word before a full-width write.
     reg                      valid_q [0:TOTAL_LINES-1];
     reg [TAG_BITS-1:0]       tag_q [0:TOTAL_LINES-1];
     reg [1:0]                mesi_q [0:TOTAL_LINES-1];
@@ -171,6 +172,10 @@ module openrv64_l1_cache #(
     wire [WAYS*DATA_WIDTH-1:0] lookup_way_data;
     wire [DATA_WIDTH-1:0] response_hit_data =
         lookup_way_data[response_way_q*DATA_WIDTH +: DATA_WIDTH];
+    wire [DATA_WIDTH-1:0] access_resident_data =
+        lookup_way_data[access_way_q*DATA_WIDTH +: DATA_WIDTH];
+    reg [DATA_WIDTH-1:0] access_write_value;
+    integer access_write_byte;
 
     wire refill_last_beat = (refill_beat_q == LAST_BEAT);
     wire [ADDR_WIDTH-1:0] refill_line_addr =
@@ -313,41 +318,58 @@ module openrv64_l1_cache #(
     assign mem_wstrb_o = ((state_q == STATE_ACCESS) && request_write_q) ?
                          request_wstrb_q : {DATA_BYTES{1'b0}};
 
+    // A write hit is serialized behind its lower-memory access, so the
+    // selected way's read data still holds the resident word captured when
+    // the store was accepted.  Merge once, then present the same full-width
+    // write data to every way; only access_way_q receives a write enable.
+    always @* begin
+        access_write_value = access_resident_data;
+        for (access_write_byte = 0; access_write_byte < DATA_BYTES;
+             access_write_byte = access_write_byte + 1) begin
+            if (request_wstrb_q[access_write_byte])
+                access_write_value[8*access_write_byte +: 8] =
+                    request_wdata_q[8*access_write_byte +: 8];
+        end
+    end
+
     genvar data_way;
-    genvar data_byte;
     generate
         for (data_way = 0; data_way < WAYS;
              data_way = data_way + 1) begin : g_data_ways
-            for (data_byte = 0; data_byte < DATA_BYTES;
-                 data_byte = data_byte + 1) begin : g_data_bytes
-                reg [7:0] data_q [0:WORDS_PER_WAY-1];
-                reg [7:0] read_data_q;
+            // Both attributes are harmless to Yosys and cover the common
+            // FPGA synthesis spellings.  ASIC flows keep this as an inferred
+            // one-read/one-write memory until SRAM macro mapping.
+            (* ram_style = "block", syn_ramstyle = "block_ram" *)
+            reg [DATA_WIDTH-1:0] data_q [0:WORDS_PER_WAY-1];
+            reg [DATA_WIDTH-1:0] read_data_q;
 
-                assign lookup_way_data[
-                    data_way*DATA_WIDTH + 8*data_byte +: 8] = read_data_q;
+            wire refill_write = (state_q == STATE_REFILL) &&
+                                mem_ready_i && !mem_error_i &&
+                                (refill_way_q ==
+                                 WAY_INDEX_WIDTH'(data_way));
+            wire access_write = (state_q == STATE_ACCESS) &&
+                                mem_ready_i && request_write_q &&
+                                !mem_error_i && access_updates_line_q &&
+                                (access_way_q ==
+                                 WAY_INDEX_WIDTH'(data_way));
+            wire data_write = refill_write || access_write;
+            wire [WAY_WORD_INDEX_WIDTH-1:0] data_write_addr =
+                refill_write ?
+                    way_word_index_of(refill_set_q, refill_beat_q) :
+                    way_word_index_of(access_set_q, access_beat_q);
+            wire [DATA_WIDTH-1:0] data_write_value =
+                refill_write ? mem_rdata_i : access_write_value;
 
-                always @(posedge clk_i) begin
-                    if (request_fire)
-                        read_data_q <= data_q[
-                            way_word_index_of(accept_set, accept_beat)];
+            assign lookup_way_data[
+                data_way*DATA_WIDTH +: DATA_WIDTH] = read_data_q;
 
-                    if ((state_q == STATE_REFILL) && mem_ready_i &&
-                        !mem_error_i &&
-                        (refill_way_q == WAY_INDEX_WIDTH'(data_way))) begin
-                        data_q[way_word_index_of(refill_set_q,
-                                                refill_beat_q)] <=
-                            mem_rdata_i[8*data_byte +: 8];
-                    end else if ((state_q == STATE_ACCESS) && mem_ready_i &&
-                                 request_write_q && !mem_error_i &&
-                                 access_updates_line_q &&
-                                 (access_way_q ==
-                                  WAY_INDEX_WIDTH'(data_way)) &&
-                                 request_wstrb_q[data_byte]) begin
-                        data_q[way_word_index_of(access_set_q,
-                                                access_beat_q)] <=
-                            request_wdata_q[8*data_byte +: 8];
-                    end
-                end
+            always @(posedge clk_i) begin
+                if (request_fire)
+                    read_data_q <= data_q[
+                        way_word_index_of(accept_set, accept_beat)];
+
+                if (data_write)
+                    data_q[data_write_addr] <= data_write_value;
             end
         end
     endgenerate

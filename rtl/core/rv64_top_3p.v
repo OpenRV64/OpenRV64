@@ -47,6 +47,7 @@ module openrv64_rv64_top_3p #(
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
+    parameter ENABLE_FETCH_ALT_LOOKASIDE = 0,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,
@@ -196,14 +197,18 @@ module openrv64_rv64_top_3p #(
     wire fetch_pipe_req_valid;
     wire fetch_pipe_req_ready;
     wire [63:0] fetch_pipe_req_addr;
+    wire fetch_pipe_req_stash;
     wire fetch_pipe_resp_valid;
     wire fetch_pipe_resp_ready;
     wire [63:0] fetch_pipe_resp_addr;
     wire [`OPENRV64_AXI_DATA_WIDTH-1:0] fetch_pipe_resp_data;
     wire fetch_pipe_resp_access_fault;
     wire fetch_pipe_resp_page_fault;
+    wire fetch_pipe_resp_stash;
     wire fetch3_cancel;
+    wire fetch3_cancel_stash;
     wire [63:0] fetch3_stream_pc;
+    wire fetch_alt_restart_hit;
     wire use_axi_bus = (BUS_CONFIG == `OPENRV64_BUS_AXI);
 
     wire backend_redirect;
@@ -279,6 +284,11 @@ module openrv64_rv64_top_3p #(
     wire [63:0] bp_direct_target;
     wire bp_fetch_stall;
     wire bp_decode_stall;
+    wire icache_prefetch_valid;
+    wire [63:0] icache_prefetch_taken_addr;
+    wire [63:0] icache_prefetch_fallthrough_addr;
+    wire [63:0] icache_prefetch_predicted_addr;
+    wire [63:0] icache_prefetch_unpredicted_addr;
     wire control_redirect = backend_redirect || bp_target_mispredict;
 
     wire fetch3_restart = reset_pending_q || except_vector_valid ||
@@ -336,33 +346,54 @@ module openrv64_rv64_top_3p #(
             assign fetch_decode_trace[2*64 +: 64] = 64'd0;
             assign fetch_pipe_req_valid = 1'b0;
             assign fetch_pipe_req_addr = 64'd0;
+            assign fetch_pipe_req_stash = 1'b0;
             assign fetch_pipe_resp_ready = 1'b0;
             assign fetch3_cancel = 1'b0;
+            assign fetch3_cancel_stash = 1'b1;
             assign fetch3_stream_pc = 64'd0;
+            assign fetch_alt_restart_hit = 1'b0;
         end else begin : g_fetch_axi
             openrv64_fetch_3w #(
                 .ENABLE_TRACE(ENABLE_TRACE),
-                .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS)
+                .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
+                .ENABLE_ALT_LOOKASIDE(ENABLE_FETCH_ALT_LOOKASIDE)
             ) u_fetch (
                 .clk(clk), .rst_n(rst_n), .restart_i(fetch3_restart),
                 .restart_pc_i(fetch3_restart_pc),
                 .invalidate_i(fetch3_invalidate), .stall_i(bp_fetch_stall),
                 .flush_i(backend_halt), .cancel_o(fetch3_cancel),
+                .cancel_stash_o(fetch3_cancel_stash),
                 .req_valid_o(fetch_pipe_req_valid),
                 .req_ready_i(fetch_pipe_req_ready),
                 .req_addr_o(fetch_pipe_req_addr),
+                .req_stash_o(fetch_pipe_req_stash),
                 .resp_valid_i(fetch_pipe_resp_valid),
                 .resp_ready_o(fetch_pipe_resp_ready),
                 .resp_addr_i(fetch_pipe_resp_addr),
                 .resp_data_i(fetch_pipe_resp_data),
                 .resp_access_fault_i(fetch_pipe_resp_access_fault),
                 .resp_page_fault_i(fetch_pipe_resp_page_fault),
+                .resp_stash_i(fetch_pipe_resp_stash),
+                .branch_pair_valid_i(icache_prefetch_valid),
+                .branch_predicted_addr_i(
+                    icache_prefetch_predicted_addr),
+                .branch_unpredicted_addr_i(
+                    icache_prefetch_unpredicted_addr),
+                .prefetch_age_valid_i(branch_retire_age_valid),
+                .prefetch_age_addr_i(branch_retire_age_addr),
+                // Mode 1 isolates unpredicted-side recovery.  Mode 2 also
+                // serves the predicted target and exposes the current cost of
+                // discarding bridge lines on a predicted redirect.
+                .alt_restart_eligible_i(backend_redirect ||
+                    ((ENABLE_FETCH_ALT_LOOKASIDE > 1) &&
+                     (bp_predict_redirect || bp_target_mispredict))),
                 .decode_valid_o(fetch_decode_valid),
                 .decode_ready_i(fetch_decode_ready),
                 .decode_bus_o(fetch_decode_bus),
                 .trace_id_i(ENABLE_TRACE ? trace_next_id_q : 64'd0),
                 .trace_id_o(fetch_decode_trace),
-                .stream_pc_o(fetch3_stream_pc), .line_count_o()
+                .stream_pc_o(fetch3_stream_pc), .line_count_o(),
+                .alt_restart_hit_o(fetch_alt_restart_hit)
             );
             assign fetch_pc_ready = 1'b0;
             assign fetch_mem_valid = 1'b0;
@@ -671,10 +702,16 @@ module openrv64_rv64_top_3p #(
         {1'b0, frontend_decode_fire[2]};
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
-    wire icache_prefetch_valid = use_axi_bus && bp_branch_allocate &&
-                                 bp_lookup_branch;
-    wire [63:0] icache_prefetch_taken_addr = bp_direct_target;
-    wire [63:0] icache_prefetch_fallthrough_addr = bp_selected_pc + 64'd4;
+    assign icache_prefetch_valid = use_axi_bus && bp_branch_allocate &&
+                                   bp_lookup_branch;
+    assign icache_prefetch_taken_addr = bp_direct_target;
+    assign icache_prefetch_fallthrough_addr = bp_selected_pc + 64'd4;
+    assign icache_prefetch_predicted_addr =
+        bp_prediction_taken ? icache_prefetch_taken_addr :
+                              icache_prefetch_fallthrough_addr;
+    assign icache_prefetch_unpredicted_addr =
+        bp_prediction_taken ? icache_prefetch_fallthrough_addr :
+                              icache_prefetch_taken_addr;
     assign fetch_decode_ready[0] = backend_decode_ready[0] &&
                                    frontend_prefix_allow[0] &&
                                    frontend_decode_enable;
@@ -922,6 +959,7 @@ module openrv64_rv64_top_3p #(
         .fetch_pipe_req_valid_i(fetch_pipe_req_valid),
         .fetch_pipe_req_ready_o(fetch_pipe_req_ready),
         .fetch_pipe_req_addr_i(fetch_pipe_req_addr),
+        .fetch_pipe_req_stash_i(fetch_pipe_req_stash),
         .fetch_pipe_req_priv_i(csr_priv_mode),
         .fetch_pipe_req_vm_mode_i((csr_priv_mode == `RV64_PRIV_M) ?
                                   `RV64_SATP_MODE_BARE : csr_satp_mode),
@@ -935,6 +973,8 @@ module openrv64_rv64_top_3p #(
         .fetch_pipe_resp_data_o(fetch_pipe_resp_data),
         .fetch_pipe_resp_access_fault_o(fetch_pipe_resp_access_fault),
         .fetch_pipe_resp_page_fault_o(fetch_pipe_resp_page_fault),
+        .fetch_pipe_resp_stash_o(fetch_pipe_resp_stash),
+        .fetch_pipe_cancel_stash_i(fetch3_cancel_stash),
         .lsu_valid_i(1'b0), .lsu_lock_i(1'b0), .lsu_write_i(1'b0),
         .lsu_addr_i(64'd0), .lsu_wdata_i(64'd0),
         .lsu_wstrb_i(8'd0), .lsu_size_i(3'd0),
@@ -972,7 +1012,8 @@ module openrv64_rv64_top_3p #(
         .lsu_pipe_resp_page_fault_o(backend_mem_page_fault),
         .tlbi_i(backend_sfence_vma),
         .icache_invalidate_i(backend_fence_i),
-        .icache_prefetch_valid_i(icache_prefetch_valid),
+        .icache_prefetch_valid_i(icache_prefetch_valid &&
+                                 (ENABLE_FETCH_ALT_LOOKASIDE == 0)),
         .icache_prefetch_taken_addr_i(icache_prefetch_taken_addr),
         .icache_prefetch_fallthrough_addr_i(
             icache_prefetch_fallthrough_addr),

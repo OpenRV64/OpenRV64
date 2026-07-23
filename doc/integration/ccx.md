@@ -12,16 +12,18 @@ line beats; CCX never packs multiple cache lines into one beat.  Consequently,
 the native CCX line size is fixed at 64 bytes rather than parameterized
 independently from the interface width.
 
-The current generated core complex is correct for direct, uncached hart
-requests.  It is not yet coherent with multiple enabled private L1 caches.
-Adding an invalidation wire alone is not sufficient: coherent integration also
-requires explicit operation intent, probe acknowledgement, transient-state
-handling, atomic execution at the home agent, and real memory-barrier
-completion.
+The generated core complex now accepts the same native command, write-data,
+and response channels exposed by the private L1I/L1D endpoints.  It carries
+full cache lines and multi-line bursts into the shared L2 and straps each port
+to `HART_ID_BASE + port_index`.  It is not yet coherent with multiple enabled
+private L1 caches.  Adding an invalidation wire alone is not sufficient:
+coherent integration also requires explicit operation intent, probe
+acknowledgement, transient-state handling, atomic execution at the home agent,
+and real memory-barrier completion.
 
 ## Current limitations
 
-The existing generic core memory port exports only `valid`, `ready`, `write`,
+The compatibility core-memory port exports only `valid`, `ready`, `write`,
 address, write data, byte strobes, read data, and error.  It has no transaction
 ID, access size, requester type, memory attributes, or ordering information.
 Consequently, `rtl/complex/protocol/hart_legacy_adapter.v` can emit only:
@@ -32,9 +34,9 @@ Consequently, `rtl/complex/protocol/hart_legacy_adapter.v` can emit only:
 - a constant integration-selected attribute; and
 - an eight-byte transfer.
 
-That adapter is a compatibility and bring-up seam, not the final coherent hart
-endpoint.  Its 64-bit scalar channel does not implement the native 512-bit
-cache-line contract.
+That adapter remains in the standalone legacy protocol wrappers.  It is not
+used by `openrv64_core_complex_nh`; its 64-bit scalar channel does not implement
+the native 512-bit cache-line contract.
 
 Other current restrictions are:
 
@@ -56,18 +58,34 @@ Other current restrictions are:
   cachelines.  Their depths are parameterized.  The fill slots do not yet make
   the private caches nonblocking: each demand backend still has one active CCX
   miss and lacks transaction-ID-indexed MSHRs.
-- The shared L2 accepts `READ`, `WRITE`, and a conservatively serialized
-  `FENCE`.  It implements the temporary marked read/write exclusion, but LR,
-  SC, and explicit AMO operations still fail.  It does not track private-cache
-  sharers or emit probes.
-- The three-pipe core and private caches expose the native 512-bit CCX
-  interface, while the current L2 northbound controller remains the legacy
-  64-bit command interface.  The production native-line-to-L2 adapter is not
-  yet present; current integrated native tests terminate CCX in a memory
-  model, and L2 lock behavior is tested separately.
+- The shared native L2 accepts `READ`, `WRITE`, and a drain-style `FENCE`.
+  It implements the temporary marked read/write exclusion, but LR, SC, and
+  explicit AMO operations still fail.  It does not track private-cache sharers
+  or emit probes.
+- `openrv64_ccx_l2_native` consumes and produces native 512-bit cache-line
+  beats.  Its command queue feeds a lookup/hit pipeline, and parameterized
+  per-line MSHRs permit multiple outstanding misses, same-line request merging,
+  and resident hits while unrelated fills are outstanding.  The default
+  configuration has eight MSHRs, eight waiters per MSHR, sixteen command
+  entries, and sixteen response entries.
+- The L2-to-bus-abstraction boundary is also fixed at 512 bits.  A fill,
+  writeback, or uncached bypass is one size-6 neutral-bus request; width
+  conversion happens below that boundary in `genbus_interface`.  For example,
+  one L2 request becomes eight AXI beats on a 64-bit external AXI port.  It is
+  not broken into eight scalar requests above the bus abstraction.
+- The native L2 is split into one SRAM-inference boundary per way.  Each way
+  has a synchronous read port and one full-line write port for its data and tag
+  arrays; data and tags are not reset.  Valid bits remain separate metadata.
+  Fill, merged-store replay, and resident-store writes share the port with
+  fixed priority, and a blocked lower-priority pipeline stage is held.
+  Victim lines and refill data are captured in MSHRs rather than requiring
+  extra SRAM read ports.  Technology-specific SRAM macro selection and timing
+  remain physical-implementation work, but the RTL no longer assumes
+  combinational or arbitrarily multiported L2 storage.
 - `HART_ID` now reaches both native CCX identity and the `mhartid` CSR on the
-  three-pipe top.  The generated multi-hart complex still uses legacy scalar
-  transport endpoints rather than instantiated native core tops.
+  three-pipe top.  The generated complex has 1-16 native hart ports and checks
+  their strapped IDs, but it does not instantiate or coherently probe the
+  private caches.
 
 ## Required hart request contract
 
@@ -93,10 +111,9 @@ The response must return `hart_id`, `source_id` or an equivalent uniquely
 routed identity, `txn_id`, one 512-bit cache-line data beat, `beat_index`,
 `last`, error, and SC success.
 
-The existing CCX response contains only `hart_id` and `txn_id`.  That is
-sufficient only if all I-cache, D-cache, and PTW requests within one hart share
-one transaction-ID allocator.  If those endpoints allocate tags independently,
-CCX must add `source_id` to both requests and responses.
+The native CCX response carries `hart_id`, `source_id`, and `txn_id`.
+The standalone legacy wrappers still lack `source_id` and therefore remain
+valid only for their single merged requester.
 
 ## Cache-line transport and bursts
 
@@ -111,16 +128,20 @@ The native burst contract is:
 - `burst_len=N` requests `N+1` consecutive cache lines beginning at `addr`;
 - line `i` has address `addr + 64*i`;
 - each request-data or response-data beat carries exactly one line;
-- response beats for one transaction are returned in increasing line-address
-  order and identify the final beat with `last`;
+- response beats may return out of line-address order, so `beat_index` is
+  authoritative and the requester must track all `N+1` responses;
+- `last` identifies the highest-numbered line (`beat_index=burst_len`), not
+  necessarily the last response to arrive;
 - backpressure applies independently to every line beat; and
 - different tagged bursts may be interleaved, but beats remain identifiable by
   `hart_id`, `source_id`, and `txn_id`.
 
-A burst is not an atomic multi-line operation and does not reserve or lock all
-of its lines.  The L2 expands it into individual home operations so each line
-is independently looked up, merged, probed, ordered, and faulted.  Arbitration
-may occur between its line operations so a long burst cannot monopolize CCX.
+A burst is complete only after every declared response beat has been accepted;
+observing `last` alone is insufficient.  It is not an atomic multi-line
+operation and does not reserve or lock all of its lines.  The L2 expands it
+into individual home operations so each line is independently looked up,
+merged, probed, ordered, and faulted.  Arbitration may occur between its line
+operations so a long burst cannot monopolize CCX.
 
 All lines declared by one burst must be physically contiguous and use the same
 operation, ordering mode, and PMA attributes.  The requester splits a burst
@@ -140,9 +161,11 @@ implementation may accept a burst descriptor only when it has reserved enough
 tracking state, but it must not require buffering the entire burst's data before
 the first line can progress.
 
-One outstanding transaction per hart is an acceptable first implementation;
-that transaction may contain multiple cache-line beats when it is a burst.
-When concurrency is enabled, the endpoint must additionally ensure that:
+The current shared L2 is not limited to one outstanding transaction: distinct
+line misses occupy distinct MSHRs and requests to one outstanding line can
+merge into its waiter list.  Private endpoints may still begin with one
+outstanding demand transaction.  When endpoint concurrency is enabled, it must
+additionally ensure that:
 
 - canceled speculative reads are drained and their tags are not reused early;
 - stores and atomics cannot be canceled after becoming globally visible;

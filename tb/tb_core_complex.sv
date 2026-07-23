@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "complex/protocol/defs.v"
 `include "complex/bus/defs.v"
 
 module tb_core_complex #(
@@ -12,14 +13,53 @@ module tb_core_complex #(
 
     logic clk;
     logic rst_n;
-    logic [NUM_HARTS-1:0] core_valid;
-    wire [NUM_HARTS-1:0] core_ready;
-    logic [NUM_HARTS-1:0] core_write;
-    logic [NUM_HARTS*64-1:0] core_addr;
-    logic [NUM_HARTS*64-1:0] core_wdata;
-    logic [NUM_HARTS*8-1:0] core_wstrb;
-    wire [NUM_HARTS*64-1:0] core_rdata;
-    wire [NUM_HARTS-1:0] core_error;
+
+    logic [NUM_HARTS-1:0] ccx_req_valid;
+    wire [NUM_HARTS-1:0] ccx_req_ready;
+    logic [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        ccx_req_hart_id;
+    logic [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        ccx_req_txn_id;
+    logic [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        ccx_req_source_id;
+    logic [NUM_HARTS*`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
+    logic [NUM_HARTS-1:0] ccx_req_lock;
+    logic [NUM_HARTS*`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
+    logic [NUM_HARTS*`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
+    logic [NUM_HARTS*`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
+    logic [NUM_HARTS*3-1:0] ccx_req_size;
+    logic [NUM_HARTS*64-1:0] ccx_req_addr;
+    logic [NUM_HARTS*`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+        ccx_req_burst_len;
+
+    logic [NUM_HARTS-1:0] ccx_wdata_valid;
+    wire [NUM_HARTS-1:0] ccx_wdata_ready;
+    logic [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        ccx_wdata_hart_id;
+    logic [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        ccx_wdata_txn_id;
+    logic [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        ccx_wdata_source_id;
+    logic [NUM_HARTS*`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+        ccx_wdata_beat_index;
+    logic [NUM_HARTS-1:0] ccx_wdata_last;
+    logic [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
+    logic [NUM_HARTS*`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
+
+    wire [NUM_HARTS-1:0] ccx_resp_valid;
+    logic [NUM_HARTS-1:0] ccx_resp_ready;
+    wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        ccx_resp_hart_id;
+    wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        ccx_resp_txn_id;
+    wire [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        ccx_resp_source_id;
+    wire [NUM_HARTS*`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+        ccx_resp_beat_index;
+    wire [NUM_HARTS-1:0] ccx_resp_last;
+    wire [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    wire [NUM_HARTS-1:0] ccx_resp_error;
+    wire [NUM_HARTS-1:0] ccx_resp_sc_success;
 
     wire [ID_WIDTH-1:0] m_axi_arid;
     wire [63:0] m_axi_araddr;
@@ -74,12 +114,25 @@ module tb_core_complex #(
     logic wb_rty;
     logic [DATA_WIDTH-1:0] wb_dat_i;
 
+    logic [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        expected_txn;
+    logic [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        expected_source;
+    logic [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        expected_data;
+    logic burst_check;
+    logic [63:0] burst_base;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] burst_txn;
+    integer burst_responses;
+    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] burst_first_beat;
+    logic nonblocking_check;
+    integer nonblocking_responses;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] nonblocking_first_txn;
+    integer max_active_mshrs;
     integer external_reads;
     integer protocol_requests;
     integer completions;
     integer hart_index;
-    integer expected_hart;
-    logic axi_read_active;
     logic [63:0] axi_read_addr;
     logic [7:0] axi_read_len;
     integer axi_read_beat;
@@ -90,7 +143,7 @@ module tb_core_complex #(
         .L2_BYTES(256 * 1024),
         .L2_LINE_BYTES(64),
         .L2_WAYS(8),
-        .L2_MERGE_ENTRIES(NUM_HARTS),
+        .L2_MERGE_ENTRIES(8),
         .BUS_TYPE(BUS_TYPE),
         .BUS_ADDR_WIDTH(64),
         .BUS_DATA_WIDTH(DATA_WIDTH),
@@ -100,14 +153,38 @@ module tb_core_complex #(
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
-        .core_mem_valid_i(core_valid),
-        .core_mem_ready_o(core_ready),
-        .core_mem_write_i(core_write),
-        .core_mem_addr_i(core_addr),
-        .core_mem_wdata_i(core_wdata),
-        .core_mem_wstrb_i(core_wstrb),
-        .core_mem_rdata_o(core_rdata),
-        .core_mem_error_o(core_error),
+        .ccx_req_valid_i(ccx_req_valid),
+        .ccx_req_ready_o(ccx_req_ready),
+        .ccx_req_hart_id_i(ccx_req_hart_id),
+        .ccx_req_txn_id_i(ccx_req_txn_id),
+        .ccx_req_source_id_i(ccx_req_source_id),
+        .ccx_req_op_i(ccx_req_op),
+        .ccx_req_lock_i(ccx_req_lock),
+        .ccx_req_order_i(ccx_req_order),
+        .ccx_req_kind_i(ccx_req_kind),
+        .ccx_req_attr_i(ccx_req_attr),
+        .ccx_req_size_i(ccx_req_size),
+        .ccx_req_addr_i(ccx_req_addr),
+        .ccx_req_burst_len_i(ccx_req_burst_len),
+        .ccx_wdata_valid_i(ccx_wdata_valid),
+        .ccx_wdata_ready_o(ccx_wdata_ready),
+        .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
+        .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
+        .ccx_wdata_source_id_i(ccx_wdata_source_id),
+        .ccx_wdata_beat_index_i(ccx_wdata_beat_index),
+        .ccx_wdata_last_i(ccx_wdata_last),
+        .ccx_wdata_i(ccx_wdata),
+        .ccx_wstrb_i(ccx_wstrb),
+        .ccx_resp_valid_o(ccx_resp_valid),
+        .ccx_resp_ready_i(ccx_resp_ready),
+        .ccx_resp_hart_id_o(ccx_resp_hart_id),
+        .ccx_resp_txn_id_o(ccx_resp_txn_id),
+        .ccx_resp_source_id_o(ccx_resp_source_id),
+        .ccx_resp_beat_index_o(ccx_resp_beat_index),
+        .ccx_resp_last_o(ccx_resp_last),
+        .ccx_resp_rdata_o(ccx_resp_rdata),
+        .ccx_resp_error_o(ccx_resp_error),
+        .ccx_resp_sc_success_o(ccx_resp_sc_success),
         .m_axi_arid_o(m_axi_arid),
         .m_axi_araddr_o(m_axi_araddr),
         .m_axi_arlen_o(m_axi_arlen),
@@ -174,6 +251,17 @@ module tb_core_complex #(
         end
     endfunction
 
+    function automatic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] memory_line;
+        input [63:0] address;
+        integer word_index;
+        begin
+            for (word_index = 0; word_index < 8;
+                 word_index = word_index + 1)
+                memory_line[word_index*64 +: 64] =
+                    memory_data({address[63:6], 6'b0} + word_index*8);
+        end
+    endfunction
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             m_axi_rid <= 3'd7;
@@ -185,7 +273,6 @@ module tb_core_complex #(
             m_axi_bid <= 0;
             m_axi_bresp <= 0;
             m_axi_bvalid <= 1'b0;
-            axi_read_active <= 1'b0;
             axi_read_addr <= 0;
             axi_read_len <= 0;
             axi_read_beat <= 0;
@@ -195,7 +282,6 @@ module tb_core_complex #(
                 if (m_axi_rlast) begin
                     m_axi_rvalid <= 1'b0;
                     m_axi_arready <= 1'b1;
-                    axi_read_active <= 1'b0;
                     axi_read_beat <= 0;
                 end else begin
                     axi_read_beat <= axi_read_beat + 1;
@@ -206,7 +292,7 @@ module tb_core_complex #(
                 end
             end
             if (m_axi_arvalid && m_axi_arready) begin
-                if ((m_axi_arid !== 3'd7) || (m_axi_arlen !== 3) ||
+                if ((m_axi_arid !== 3'd7) || (m_axi_arlen !== 7) ||
                     (m_axi_arsize !== 3) ||
                     (m_axi_arburst !== 2'b01))
                     $fatal(1, "malformed integrated AXI fill burst");
@@ -216,7 +302,6 @@ module tb_core_complex #(
                 m_axi_rlast <= (m_axi_arlen == 0);
                 m_axi_rvalid <= 1'b1;
                 m_axi_arready <= 1'b0;
-                axi_read_active <= 1'b1;
                 axi_read_addr <= m_axi_araddr;
                 axi_read_len <= m_axi_arlen;
                 axi_read_beat <= 0;
@@ -246,61 +331,252 @@ module tb_core_complex #(
     end
 
     always @(posedge clk) begin
-        if (rst_n && dut.shared_req_valid && dut.shared_req_ready) begin
-            expected_hart = protocol_requests % NUM_HARTS;
-            if (dut.shared_req_hart_id !== HART_ID_BASE + expected_hart)
-                $fatal(1, "N=%0d core-complex hart strap/order mismatch",
+        if (rst_n && dut.line_req_valid && dut.line_req_ready) begin
+            if (dut.line_req_hart_id < HART_ID_BASE ||
+                dut.line_req_hart_id >= HART_ID_BASE + NUM_HARTS)
+                $fatal(1, "N=%0d core-complex hart strap out of range",
                        NUM_HARTS);
             protocol_requests <= protocol_requests + 1;
         end
 
         if (rst_n && dut.bus_req_valid && dut.bus_req_ready &&
             (dut.u_genbus.upstream_req_burst_i !== 8'd0))
-            $fatal(1, "CCX must tie the genbus burst counter to zero");
+            $fatal(1, "L2 must issue one neutral bus beat at a time");
+        if (rst_n && dut.bus_req_valid && dut.bus_req_ready &&
+            dut.bus_req_cacheable &&
+            ((dut.bus_req_size != 3'd6) ||
+             (dut.bus_req_addr[5:0] != 0)))
+            $fatal(1, "L2 cache traffic is not a 512-bit aligned line");
+        if (rst_n &&
+            (dut.u_l2.active_mshr_count_r > max_active_mshrs))
+            max_active_mshrs <= dut.u_l2.active_mshr_count_r;
 
         if (rst_n) begin
             for (hart_index = 0; hart_index < NUM_HARTS;
                  hart_index = hart_index + 1) begin
-                if (core_valid[hart_index] && core_ready[hart_index]) begin
-                    if (core_error[hart_index])
-                        $fatal(1, "N=%0d hart %0d received error",
+                if (ccx_req_valid[hart_index] &&
+                    ccx_req_ready[hart_index])
+                    ccx_req_valid[hart_index] <= 1'b0;
+                if (ccx_wdata_valid[hart_index] &&
+                    ccx_wdata_ready[hart_index])
+                    ccx_wdata_valid[hart_index] <= 1'b0;
+
+                if (ccx_resp_valid[hart_index] &&
+                    ccx_resp_ready[hart_index]) begin
+                    if (ccx_resp_error[hart_index] ||
+                        ccx_resp_sc_success[hart_index])
+                        $fatal(1, "N=%0d hart %0d received bad status",
                                NUM_HARTS, hart_index);
-                    if (core_rdata[hart_index*64 +: 64] !==
-                        memory_data(core_addr[hart_index*64 +: 64]))
+                    if (ccx_resp_hart_id[
+                            hart_index*`OPENRV64_CCX_HART_ID_WIDTH +:
+                            `OPENRV64_CCX_HART_ID_WIDTH] !==
+                        HART_ID_BASE + hart_index)
                         $fatal(1, "N=%0d hart %0d response misrouted",
                                NUM_HARTS, hart_index);
-                    core_valid[hart_index] <= 1'b0;
+                    if (nonblocking_check) begin
+                        if (hart_index != 0)
+                            $fatal(1,
+                                "nonblocking response routed to wrong hart");
+                        if (nonblocking_responses == 0)
+                            nonblocking_first_txn <=
+                                ccx_resp_txn_id[
+                                    0 +:
+                                    `OPENRV64_CCX_TXN_ID_WIDTH];
+                        if (ccx_resp_txn_id[
+                                0 +: `OPENRV64_CCX_TXN_ID_WIDTH] ==
+                            4'd7) begin
+                            if (ccx_resp_rdata[
+                                    0 +:
+                                    `OPENRV64_CCX_LINE_DATA_WIDTH] !==
+                                memory_line(64'h2000))
+                                $fatal(1,
+                                    "nonblocking miss data mismatch");
+                        end else if (ccx_resp_txn_id[
+                                0 +: `OPENRV64_CCX_TXN_ID_WIDTH] ==
+                                     4'd8) begin
+                            if (ccx_resp_rdata[
+                                    0 +:
+                                    `OPENRV64_CCX_LINE_DATA_WIDTH] !==
+                                memory_line(64'h1800))
+                                $fatal(1,
+                                    "hit-under-miss data mismatch");
+                        end else begin
+                            $fatal(1,
+                                "unexpected nonblocking response tag");
+                        end
+                        nonblocking_responses <=
+                            nonblocking_responses + 1;
+                    end else if (burst_check) begin
+                        if (hart_index != 0)
+                            $fatal(1, "burst response routed to wrong hart");
+                        if (ccx_resp_txn_id[
+                                0 +: `OPENRV64_CCX_TXN_ID_WIDTH] !=
+                            burst_txn ||
+                            ccx_resp_source_id[
+                                0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] !=
+                                `OPENRV64_CCX_SOURCE_ICACHE)
+                            $fatal(1, "burst response identity mismatch");
+                        if (burst_responses == 0)
+                            burst_first_beat <=
+                                ccx_resp_beat_index[
+                                    0 +:
+                                    `OPENRV64_CCX_BEAT_INDEX_WIDTH];
+                        burst_responses <= burst_responses + 1;
+                        if (ccx_resp_rdata[
+                                0 +: `OPENRV64_CCX_LINE_DATA_WIDTH] !==
+                            memory_line(burst_base +
+                                ccx_resp_beat_index[
+                                    0 +:
+                                    `OPENRV64_CCX_BEAT_INDEX_WIDTH]*64))
+                            $fatal(1, "burst response data mismatch");
+                        if (ccx_resp_last[0] !==
+                            (ccx_resp_beat_index[
+                                0 +:
+                                `OPENRV64_CCX_BEAT_INDEX_WIDTH] == 1))
+                            $fatal(1, "burst response last mismatch");
+                    end else begin
+                        if (ccx_resp_txn_id[
+                                hart_index*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                                `OPENRV64_CCX_TXN_ID_WIDTH] !==
+                            expected_txn[
+                                hart_index*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                                `OPENRV64_CCX_TXN_ID_WIDTH] ||
+                            ccx_resp_source_id[
+                                hart_index*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
+                                `OPENRV64_CCX_SOURCE_ID_WIDTH] !==
+                            expected_source[
+                                hart_index*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
+                                `OPENRV64_CCX_SOURCE_ID_WIDTH])
+                            $fatal(1, "N=%0d hart %0d identity mismatch",
+                                   NUM_HARTS, hart_index);
+                        if ((ccx_resp_beat_index[
+                                hart_index*
+                                `OPENRV64_CCX_BEAT_INDEX_WIDTH +:
+                                `OPENRV64_CCX_BEAT_INDEX_WIDTH] != 0) ||
+                            !ccx_resp_last[hart_index])
+                            $fatal(1, "single-line response geometry mismatch");
+                        if (ccx_resp_rdata[
+                                hart_index*
+                                `OPENRV64_CCX_LINE_DATA_WIDTH +:
+                                `OPENRV64_CCX_LINE_DATA_WIDTH] !==
+                            expected_data[
+                                hart_index*
+                                `OPENRV64_CCX_LINE_DATA_WIDTH +:
+                                `OPENRV64_CCX_LINE_DATA_WIDTH]) begin
+                            $display("actual   %h",
+                                ccx_resp_rdata[
+                                    hart_index*
+                                    `OPENRV64_CCX_LINE_DATA_WIDTH +:
+                                    `OPENRV64_CCX_LINE_DATA_WIDTH]);
+                            $display("expected %h",
+                                expected_data[
+                                    hart_index*
+                                    `OPENRV64_CCX_LINE_DATA_WIDTH +:
+                                    `OPENRV64_CCX_LINE_DATA_WIDTH]);
+                            $fatal(1, "N=%0d hart %0d line data mismatch",
+                                   NUM_HARTS, hart_index);
+                        end
+                    end
                     completions <= completions + 1;
                 end
             end
         end
     end
 
-    task automatic launch_round;
-        input integer round;
+    task automatic launch_read_all;
+        input [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] source;
+        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn;
+        input [63:0] address;
+        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
+        integer index;
         begin
             @(negedge clk);
-            for (hart_index = 0; hart_index < NUM_HARTS;
-                 hart_index = hart_index + 1) begin
-                core_valid[hart_index] = 1'b1;
-                core_addr[hart_index*64 +: 64] =
-                    64'h800 + hart_index*8;
+            for (index = 0; index < NUM_HARTS; index = index + 1) begin
+                ccx_req_valid[index] = 1'b1;
+                ccx_req_hart_id[
+                    index*`OPENRV64_CCX_HART_ID_WIDTH +:
+                    `OPENRV64_CCX_HART_ID_WIDTH] = HART_ID_BASE + index;
+                ccx_req_txn_id[
+                    index*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                    `OPENRV64_CCX_TXN_ID_WIDTH] = txn;
+                ccx_req_source_id[
+                    index*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
+                    `OPENRV64_CCX_SOURCE_ID_WIDTH] = source;
+                ccx_req_op[
+                    index*`OPENRV64_CCX_OP_WIDTH +:
+                    `OPENRV64_CCX_OP_WIDTH] = `OPENRV64_CCX_OP_READ;
+                ccx_req_lock[index] = 1'b0;
+                ccx_req_kind[
+                    index*`OPENRV64_CCX_KIND_WIDTH +:
+                    `OPENRV64_CCX_KIND_WIDTH] =
+                    (source == `OPENRV64_CCX_SOURCE_ICACHE) ?
+                    `OPENRV64_CCX_KIND_FETCH : `OPENRV64_CCX_KIND_DATA;
+                ccx_req_attr[
+                    index*`OPENRV64_CCX_ATTR_WIDTH +:
+                    `OPENRV64_CCX_ATTR_WIDTH] =
+                    `OPENRV64_CCX_ATTR_CACHEABLE;
+                ccx_req_size[index*3 +: 3] = 3'd6;
+                ccx_req_addr[index*64 +: 64] = address;
+                ccx_req_burst_len[
+                    index*`OPENRV64_CCX_BURST_LEN_WIDTH +:
+                    `OPENRV64_CCX_BURST_LEN_WIDTH] = 0;
+                expected_txn[
+                    index*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                    `OPENRV64_CCX_TXN_ID_WIDTH] = txn;
+                expected_source[
+                    index*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
+                    `OPENRV64_CCX_SOURCE_ID_WIDTH] = source;
+                expected_data[
+                    index*`OPENRV64_CCX_LINE_DATA_WIDTH +:
+                    `OPENRV64_CCX_LINE_DATA_WIDTH] = data;
             end
         end
     endtask
 
+    integer target_completions;
     integer reads_after_fill;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] modified_line;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] scalar_response_line;
+    logic [63:0] locked_scalar_data;
 
     initial begin
-        if ((NUM_HARTS != 2) && (NUM_HARTS != 4))
-            $fatal(1, "core-complex bench supports N=2 or N=4");
+        if ((NUM_HARTS != 1) && (NUM_HARTS != 2) && (NUM_HARTS != 4))
+            $fatal(1, "core-complex bench supports N=1, N=2, or N=4");
 
         rst_n = 1'b0;
-        core_valid = 0;
-        core_write = 0;
-        core_addr = 0;
-        core_wdata = 0;
-        core_wstrb = 0;
+        ccx_req_valid = 0;
+        ccx_req_hart_id = 0;
+        ccx_req_txn_id = 0;
+        ccx_req_source_id = 0;
+        ccx_req_op = 0;
+        ccx_req_lock = 0;
+        ccx_req_order = 0;
+        ccx_req_kind = 0;
+        ccx_req_attr = 0;
+        ccx_req_size = 0;
+        ccx_req_addr = 0;
+        ccx_req_burst_len = 0;
+        ccx_wdata_valid = 0;
+        ccx_wdata_hart_id = 0;
+        ccx_wdata_txn_id = 0;
+        ccx_wdata_source_id = 0;
+        ccx_wdata_beat_index = 0;
+        ccx_wdata_last = 0;
+        ccx_wdata = 0;
+        ccx_wstrb = 0;
+        ccx_resp_ready = {NUM_HARTS{1'b1}};
+        expected_txn = 0;
+        expected_source = 0;
+        expected_data = 0;
+        burst_check = 1'b0;
+        burst_base = 0;
+        burst_txn = 0;
+        burst_responses = 0;
+        burst_first_beat = 0;
+        nonblocking_check = 1'b0;
+        nonblocking_responses = 0;
+        nonblocking_first_txn = 0;
+        max_active_mshrs = 0;
         m_axi_awready = 1'b1;
         m_axi_wready = 1'b1;
         wb_stall = 1'b0;
@@ -312,22 +588,228 @@ module tb_core_complex #(
         @(negedge clk);
         rst_n = 1'b1;
 
-        launch_round(0);
-        wait (completions == NUM_HARTS);
+        target_completions = completions + NUM_HARTS;
+        launch_read_all(`OPENRV64_CCX_SOURCE_ICACHE, 4'd0,
+                        64'h800, memory_line(64'h800));
+        wait (completions == target_completions);
         if (external_reads != 8)
-            $fatal(1, "N=%0d merged fill used %0d external reads",
+            $fatal(1, "N=%0d first line fill used %0d external reads",
                    NUM_HARTS, external_reads);
 
         reads_after_fill = external_reads;
-        launch_round(1);
-        wait (completions == 2*NUM_HARTS);
+        target_completions = completions + NUM_HARTS;
+        launch_read_all(`OPENRV64_CCX_SOURCE_DCACHE, 4'd1,
+                        64'h800, memory_line(64'h800));
+        wait (completions == target_completions);
         if (external_reads != reads_after_fill)
             $fatal(1, "N=%0d L2 hits escaped to external bus", NUM_HARTS);
-        if (protocol_requests != 2*NUM_HARTS)
-            $fatal(1, "N=%0d protocol request count=%0d",
+
+        modified_line = memory_line(64'h800);
+        modified_line[15:0] = 16'h5aa5;
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_hart_id[0 +: `OPENRV64_CCX_HART_ID_WIDTH] =
+            HART_ID_BASE;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd2;
+        ccx_req_source_id[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        ccx_req_op[0 +: `OPENRV64_CCX_OP_WIDTH] =
+            `OPENRV64_CCX_OP_WRITE;
+        ccx_req_kind[0 +: `OPENRV64_CCX_KIND_WIDTH] =
+            `OPENRV64_CCX_KIND_DATA;
+        ccx_req_attr[0 +: `OPENRV64_CCX_ATTR_WIDTH] =
+            `OPENRV64_CCX_ATTR_CACHEABLE;
+        ccx_req_size[0 +: 3] = 3'd6;
+        ccx_req_addr[0 +: 64] = 64'h800;
+        ccx_wdata_valid[0] = 1'b1;
+        ccx_wdata_hart_id[0 +: `OPENRV64_CCX_HART_ID_WIDTH] =
+            HART_ID_BASE;
+        ccx_wdata_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd2;
+        ccx_wdata_source_id[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        ccx_wdata_last[0] = 1'b1;
+        ccx_wdata[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH] = modified_line;
+        ccx_wstrb[0 +: `OPENRV64_CCX_LINE_STRB_WIDTH] = 64'h3;
+        expected_txn[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd2;
+        expected_source[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        expected_data[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH] = 0;
+        target_completions = completions + 1;
+        wait (completions == target_completions);
+
+        // The temporary one-hart lock sequence must survive the native line
+        // wrapper even though its payload is a scalar lane.
+        scalar_response_line = modified_line;
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_hart_id[0 +: `OPENRV64_CCX_HART_ID_WIDTH] =
+            HART_ID_BASE;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd5;
+        ccx_req_source_id[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        ccx_req_op[0 +: `OPENRV64_CCX_OP_WIDTH] =
+            `OPENRV64_CCX_OP_READ;
+        ccx_req_lock[0] = 1'b1;
+        ccx_req_kind[0 +: `OPENRV64_CCX_KIND_WIDTH] =
+            `OPENRV64_CCX_KIND_DATA;
+        ccx_req_attr[0 +: `OPENRV64_CCX_ATTR_WIDTH] =
+            `OPENRV64_CCX_ATTR_CACHEABLE;
+        ccx_req_size[0 +: 3] = 3'd3;
+        ccx_req_addr[0 +: 64] = 64'h808;
+        ccx_req_burst_len[
+            0 +: `OPENRV64_CCX_BURST_LEN_WIDTH] = 0;
+        expected_txn[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd5;
+        expected_source[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        expected_data[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH] =
+            scalar_response_line;
+        target_completions = completions + 1;
+        wait (completions == target_completions);
+
+        locked_scalar_data = 64'h0123_4567_89ab_cdef;
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd6;
+        ccx_req_op[0 +: `OPENRV64_CCX_OP_WIDTH] =
+            `OPENRV64_CCX_OP_WRITE;
+        ccx_req_lock[0] = 1'b1;
+        ccx_req_size[0 +: 3] = 3'd3;
+        ccx_req_addr[0 +: 64] = 64'h808;
+        ccx_wdata_valid[0] = 1'b1;
+        ccx_wdata_hart_id[0 +: `OPENRV64_CCX_HART_ID_WIDTH] =
+            HART_ID_BASE;
+        ccx_wdata_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd6;
+        ccx_wdata_source_id[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        ccx_wdata_beat_index[
+            0 +: `OPENRV64_CCX_BEAT_INDEX_WIDTH] = 0;
+        ccx_wdata_last[0] = 1'b1;
+        ccx_wdata[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH] =
+            {{(`OPENRV64_CCX_LINE_DATA_WIDTH-64){1'b0}},
+              locked_scalar_data} << 64;
+        ccx_wstrb[0 +: `OPENRV64_CCX_LINE_STRB_WIDTH] =
+            64'hff << 8;
+        expected_txn[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd6;
+        expected_data[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH] = 0;
+        target_completions = completions + 1;
+        wait (completions == target_completions);
+        modified_line[64 +: 64] = locked_scalar_data;
+
+        target_completions = completions + NUM_HARTS;
+        launch_read_all(`OPENRV64_CCX_SOURCE_ICACHE, 4'd3,
+                        64'h800, modified_line);
+        wait (completions == target_completions);
+        if (external_reads != reads_after_fill)
+            $fatal(1, "resident masked line write escaped to external bus");
+
+        burst_check = 1'b1;
+        burst_base = 64'h1000;
+        burst_txn = 4'd4;
+        burst_responses = 0;
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_hart_id[0 +: `OPENRV64_CCX_HART_ID_WIDTH] =
+            HART_ID_BASE;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd4;
+        ccx_req_source_id[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_ICACHE;
+        ccx_req_op[0 +: `OPENRV64_CCX_OP_WIDTH] =
+            `OPENRV64_CCX_OP_READ;
+        ccx_req_lock[0] = 1'b0;
+        ccx_req_kind[0 +: `OPENRV64_CCX_KIND_WIDTH] =
+            `OPENRV64_CCX_KIND_FETCH;
+        ccx_req_attr[0 +: `OPENRV64_CCX_ATTR_WIDTH] =
+            `OPENRV64_CCX_ATTR_CACHEABLE;
+        ccx_req_size[0 +: 3] = 3'd6;
+        ccx_req_addr[0 +: 64] = burst_base;
+        ccx_req_burst_len[
+            0 +: `OPENRV64_CCX_BURST_LEN_WIDTH] = 8'd1;
+        target_completions = completions + 2;
+        wait (completions == target_completions);
+        if (external_reads != reads_after_fill + 16)
+            $fatal(1, "two-line burst used %0d new external reads",
+                   external_reads - reads_after_fill);
+
+        if (max_active_mshrs < 2)
+            $fatal(1, "native L2 never held multiple active MSHRs");
+
+        burst_check = 1'b0;
+        target_completions = completions + 1;
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_hart_id[0 +: `OPENRV64_CCX_HART_ID_WIDTH] =
+            HART_ID_BASE;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd9;
+        ccx_req_source_id[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        ccx_req_op[0 +: `OPENRV64_CCX_OP_WIDTH] =
+            `OPENRV64_CCX_OP_READ;
+        ccx_req_lock[0] = 1'b0;
+        ccx_req_kind[0 +: `OPENRV64_CCX_KIND_WIDTH] =
+            `OPENRV64_CCX_KIND_DATA;
+        ccx_req_attr[0 +: `OPENRV64_CCX_ATTR_WIDTH] =
+            `OPENRV64_CCX_ATTR_CACHEABLE;
+        ccx_req_size[0 +: 3] = 3'd6;
+        ccx_req_addr[0 +: 64] = 64'h1800;
+        ccx_req_burst_len[
+            0 +: `OPENRV64_CCX_BURST_LEN_WIDTH] = 0;
+        expected_txn[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd9;
+        expected_source[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_DCACHE;
+        expected_data[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH] =
+            memory_line(64'h1800);
+        wait (completions == target_completions);
+
+        // Beat 1 is resident and must be allowed to pass beat 0's miss.  The
+        // requester uses beat_index, not response arrival order.
+        burst_check = 1'b1;
+        burst_base = 64'h17c0;
+        burst_txn = 4'd10;
+        burst_responses = 0;
+        reads_after_fill = external_reads;
+        target_completions = completions + 2;
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = burst_txn;
+        ccx_req_source_id[0 +: `OPENRV64_CCX_SOURCE_ID_WIDTH] =
+            `OPENRV64_CCX_SOURCE_ICACHE;
+        ccx_req_kind[0 +: `OPENRV64_CCX_KIND_WIDTH] =
+            `OPENRV64_CCX_KIND_FETCH;
+        ccx_req_addr[0 +: 64] = burst_base;
+        ccx_req_burst_len[
+            0 +: `OPENRV64_CCX_BURST_LEN_WIDTH] = 8'd1;
+        wait (completions == target_completions);
+        if (burst_first_beat != 1)
+            $fatal(1,
+                "partial-hit burst did not complete resident beat first");
+        if (external_reads != reads_after_fill + 8)
+            $fatal(1, "partial-hit burst refilled %0d external beats",
+                   external_reads - reads_after_fill);
+        burst_check = 1'b0;
+
+        nonblocking_check = 1'b1;
+        nonblocking_responses = 0;
+        target_completions = completions + 2;
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd7;
+        ccx_req_addr[0 +: 64] = 64'h2000;
+        wait (!ccx_req_valid[0]);
+        @(negedge clk);
+        ccx_req_valid[0] = 1'b1;
+        ccx_req_txn_id[0 +: `OPENRV64_CCX_TXN_ID_WIDTH] = 4'd8;
+        ccx_req_addr[0 +: 64] = 64'h1800;
+        wait (completions == target_completions);
+        if (nonblocking_first_txn != 4'd8)
+            $fatal(1,
+                "resident hit did not complete ahead of outstanding miss");
+        nonblocking_check = 1'b0;
+
+        if (protocol_requests != (3*NUM_HARTS + 8))
+            $fatal(1, "N=%0d native command count=%0d",
                    NUM_HARTS, protocol_requests);
 
-        $display("PASS: %0d-hart core complex straps, L2 merging/hits, and %s backend",
+        $display("PASS: %0d-hart native 512-bit pipelined/nonblocking L2, masked write, lock, burst, and %s backend",
                  NUM_HARTS,
                  (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ? "AXI4" :
                                                           "WISHBONE B4");
@@ -335,8 +817,8 @@ module tb_core_complex #(
     end
 
     initial begin
-        repeat (10000) @(posedge clk);
-        $fatal(1, "N=%0d core-complex test timeout", NUM_HARTS);
+        repeat (50000) @(posedge clk);
+        $fatal(1, "N=%0d native core-complex test timeout", NUM_HARTS);
     end
 
 endmodule
