@@ -57,6 +57,16 @@ module openrv64_dispatch_3p #(
     output wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_src1_producer_valid_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        pipe_src1_producer_id_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_src2_producer_valid_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        pipe_src2_producer_id_o,
 
     input  wire [2:0]                   retire_valid_i,
     input  wire [2:0]                   retire_uses_rs1_i,
@@ -290,9 +300,18 @@ module openrv64_dispatch_3p #(
 
     function automatic [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed_pipe;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_INSTR_WIDTH-1:0] payload_instr;
         begin
+            payload_instr = payload[242 +: `RV64_INSTR_WIDTH];
             if (payload[16] || payload[15]) begin
-                fixed_pipe = `OPENRV64_EXEC_PIPE_MEM0;
+                // MEM0 is the ordinary-load lane.  MEM1 owns every
+                // side-effecting memory operation and all RV64A operations,
+                // including read-only LR.
+                if (payload[15] ||
+                    (`RV64_OPCODE(payload_instr) == `RV64_OPCODE_AMO))
+                    fixed_pipe = `OPENRV64_EXEC_PIPE_MEM1;
+                else
+                    fixed_pipe = `OPENRV64_EXEC_PIPE_MEM0;
             end else if (payload[10] || payload[9] || payload[8] ||
                          payload[7] || payload[6] || payload[5] ||
                          payload[4] || payload[14] || payload[13]) begin
@@ -321,18 +340,6 @@ module openrv64_dispatch_3p #(
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
             is_memory = payload[16] || payload[15];
-        end
-    endfunction
-
-    function automatic is_atomic_memory;
-        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
-        reg [`RV64_INSTR_WIDTH-1:0] payload_instr;
-        begin
-            payload_instr = payload[242 +: `RV64_INSTR_WIDTH];
-            is_atomic_memory =
-                is_memory(payload) &&
-                (`RV64_OPCODE(payload_instr) ==
-                 `RV64_OPCODE_AMO);
         end
     endfunction
 
@@ -479,8 +486,6 @@ module openrv64_dispatch_3p #(
     wire fixed_valid2 = fixed_pipe_valid(payload2);
     wire memory1 = is_memory(payload1);
     wire memory2 = is_memory(payload2);
-    wire atomic1 = is_atomic_memory(payload1);
-    wire atomic2 = is_atomic_memory(payload2);
     wire [1:0] forward_match0 = forward_match(
         candidate_uses_rs1[0],
         candidate_rs1_addr[0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH],
@@ -543,9 +548,6 @@ module openrv64_dispatch_3p #(
         ({{(`OPENRV64_EXEC_PIPE_COUNT-1){1'b0}}, 1'b1} << selected0) :
         {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected1 =
-        memory1 ?
-            ((atomic1 || !used0[`OPENRV64_EXEC_PIPE_MEM0]) ?
-             `OPENRV64_EXEC_PIPE_MEM0 : `OPENRV64_EXEC_PIPE_MEM1) :
         fixed_valid1 ? fixed1 :
         choose_base_pipe(used0, fixed_valid2 && !memory2, fixed2,
                          forward_preferred1, forward_pipe1);
@@ -554,11 +556,6 @@ module openrv64_dispatch_3p #(
         ({{(`OPENRV64_EXEC_PIPE_COUNT-1){1'b0}}, 1'b1} << selected1) :
         {`OPENRV64_EXEC_PIPE_COUNT{1'b0}});
     wire [`OPENRV64_EXEC_PIPE_WIDTH-1:0] selected2 =
-        memory2 ?
-            ((atomic2 || !used1[`OPENRV64_EXEC_PIPE_MEM0]) ?
-             `OPENRV64_EXEC_PIPE_MEM0 :
-             (!used1[`OPENRV64_EXEC_PIPE_MEM1] ?
-              `OPENRV64_EXEC_PIPE_MEM1 : `OPENRV64_EXEC_PIPE_MEM0)) :
         fixed_valid2 ? fixed2 :
         choose_base_pipe(used1, 1'b0, `OPENRV64_EXEC_PIPE_EX0,
                          forward_preferred2, forward_pipe2);
@@ -638,6 +635,17 @@ module openrv64_dispatch_3p #(
     );
 
     assign allocation_valid_o = candidate_fire;
+    // Strict prefix issue resolves any same-cycle branch forwarding while
+    // constructing candidate_payload.  It has no unresolved producer tags to
+    // expose at the execution boundary.
+    assign pipe_src1_producer_valid_o =
+        {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+    assign pipe_src1_producer_id_o =
+        {`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+    assign pipe_src2_producer_valid_o =
+        {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+    assign pipe_src2_producer_id_o =
+        {`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
     generate
         for (read_lane = 0; read_lane < 3; read_lane = read_lane + 1) begin : g_meta
             assign allocation_meta_o[

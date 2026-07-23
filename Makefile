@@ -115,17 +115,30 @@ UART_PERF_BP_RAS_DEPTH ?= 8
 UART_PERF_TRACE_CSV ?= sim/uart-1p-bp3-trace.csv
 UART_PERF_TRACE_REPORT ?= sim/uart-1p-bp3-pipeline.txt
 OPENSBI_BUILD_DIR ?= build/opensbi
+OPENSBI_SOURCE_DIR ?= $(OPENSBI_BUILD_DIR)/src
 OPENSBI_ARTIFACT_DIR := $(OPENSBI_BUILD_DIR)/artifacts
+OPENSBI_MEMORY_SIZE ?= 0x10000000
+OPENSBI_FDT_ADDR ?= 0x8ff00000
 OPENSBI_SIM_BUILD := sim/opensbi_tb.vvp
-OPENSBI_VERILATOR_DIR := build/verilator/opensbi
+OPENSBI_PLATFORM_MEMORY_BYTES ?= 268435456
+OPENSBI_PLATFORM_FDT_BASE ?= 2414870528
+OPENSBI_VERILATOR_DIR := \
+	build/verilator/opensbi-1p-platform-mem$(OPENSBI_PLATFORM_MEMORY_BYTES)-fdt$(OPENSBI_PLATFORM_FDT_BASE)
 OPENSBI_VERILATOR_BUILD := $(OPENSBI_VERILATOR_DIR)/opensbi_tb
 OPENSBI_3P_PLATFORM_ISSUE_WINDOW ?= 1
 OPENSBI_3P_PLATFORM_SPECULATION_WINDOW ?= 1
+OPENSBI_3P_PLATFORM_RETIRE_DEPTH ?= 16
+OPENSBI_3P_PLATFORM_STORE_QUEUE_DEPTH ?= 4
 OPENSBI_3P_PLATFORM_L2_BYTES ?= 262144
 OPENSBI_3P_PLATFORM_L2_WAYS ?= 8
 OPENSBI_3P_PLATFORM_L1D_PREFETCH_ENABLE ?= 1
+OPENSBI_3P_PLATFORM_BUS_TYPE ?= 0
+OPENSBI_3P_PLATFORM_BUS_DATA_WIDTH ?= 256
+OPENSBI_3P_PLATFORM_MEMORY_BYTES ?= 268435456
+OPENSBI_3P_PLATFORM_FDT_BASE ?= 2414870528
+OPENSBI_3P_PLATFORM_VERILATOR_THREADS ?= 1
 OPENSBI_3P_PLATFORM_VERILATOR_DIR := \
-	build/verilator/opensbi-3p-platform-iw$(OPENSBI_3P_PLATFORM_ISSUE_WINDOW)-sw$(OPENSBI_3P_PLATFORM_SPECULATION_WINDOW)-l2$(OPENSBI_3P_PLATFORM_L2_BYTES)x$(OPENSBI_3P_PLATFORM_L2_WAYS)-pf$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_ENABLE)
+	build/verilator/opensbi-3p-platform-iw$(OPENSBI_3P_PLATFORM_ISSUE_WINDOW)-sw$(OPENSBI_3P_PLATFORM_SPECULATION_WINDOW)-rw$(OPENSBI_3P_PLATFORM_RETIRE_DEPTH)-sq$(OPENSBI_3P_PLATFORM_STORE_QUEUE_DEPTH)-l2$(OPENSBI_3P_PLATFORM_L2_BYTES)x$(OPENSBI_3P_PLATFORM_L2_WAYS)-pf$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_ENABLE)-bus$(OPENSBI_3P_PLATFORM_BUS_TYPE)x$(OPENSBI_3P_PLATFORM_BUS_DATA_WIDTH)-mem$(OPENSBI_3P_PLATFORM_MEMORY_BYTES)-fdt$(OPENSBI_3P_PLATFORM_FDT_BASE)-vt$(OPENSBI_3P_PLATFORM_VERILATOR_THREADS)
 OPENSBI_3P_PLATFORM_VERILATOR_BUILD := $(OPENSBI_3P_PLATFORM_VERILATOR_DIR)/opensbi_3p_platform_tb
 OPENSBI_3P_PLATFORM_CHECKPOINT ?= \
 	build/checkpoints/opensbi-3p-platform-linux-7500000.vls
@@ -223,6 +236,7 @@ AXI_3P_L1D_PREFETCH_MAX_DISTANCE ?= 4
 AXI_3P_L1D_PREFETCH_QUEUE_LINES ?= 4
 AXI_3P_L1D_PREFETCH_OUTSTANDING ?= 4
 AXI_3P_L1D_PREFETCH_DEMAND_RESERVE ?= 2
+AXI_3P_CCX_DDR3_TIMING ?= 0
 # 0=off, 1=backend corrections only, 2=predicted targets plus corrections.
 AXI_3P_FETCH_ALT_LOOKASIDE ?= 3
 AXI_3P_FETCH_ALT_CONFIDENCE_GATE ?= 0
@@ -260,6 +274,7 @@ AXI_3P_PERF_L1D_PREFETCH_OUTSTANDING ?= \
 	$(AXI_3P_L1D_PREFETCH_OUTSTANDING)
 AXI_3P_PERF_L1D_PREFETCH_DEMAND_RESERVE ?= \
 	$(AXI_3P_L1D_PREFETCH_DEMAND_RESERVE)
+AXI_3P_PERF_CCX_DDR3_TIMING ?= $(AXI_3P_CCX_DDR3_TIMING)
 AXI_3P_TRACE_CSV ?= sim/top-axi-3p-perf-trace.csv
 AXI_3P_TRACE_REPORT ?= sim/top-axi-3p-perf-pipeline.txt
 # Empty renders the beginning of whatever workload was supplied.  Callers may
@@ -401,6 +416,7 @@ COMPLIANCE_ACT4_PRIV_ELFS := \
 	$(COMPLIANCE_ACT4_WORK)/openrv64-rv64ima/elfs/priv
 COMPLIANCE_XFAIL := verification/compliance/expected_failures.tsv
 ISA_FP_SIM_BUILD := sim/isa_fp_tb.vvp
+RV64FD_FPR_SIM_BUILD := sim/rv64-fd-fpr_tb.vvp
 EXEC_FPU_RV64FD_SIM_BUILD := sim/exec_fpu_rv64-fd_tb.vvp
 RV64I_VEC_SIM_BUILD := sim/rv64-i-vec_tb.vvp
 EXEC_VEC_SIM_BUILD := sim/exec_vec_tb.vvp
@@ -417,6 +433,7 @@ ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zba.v rtl/core/isa/rv64-zbb.v \
 	rtl/core/isa/rv64-zbc.v rtl/core/isa/rv64-zbs.v rtl/core/isa/rv64-b.v
 FP_ISA_SRCS := rtl/core/isa/rv64-f.v rtl/core/isa/rv64-d.v
+FPR_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-fd-fpr.v
 FPU_SRCS := rtl/core/exec/fpu/defs.v rtl/core/exec/fpu/rv64-fd.v
 VEC_DEFS := rtl/core/exec/vec/defs.v
 VEC_REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-vec.v
@@ -509,13 +526,19 @@ TIMER_SRCS := rtl/periph/timer/timer.v
 ROM_SRCS := rtl/soc/bus/rom.v
 MEMORY_SRCS := rtl/soc/bus/memory.v
 MEM_CHANNEL_SRCS := rtl/soc/memory/timing_dram.v \
-	rtl/soc/memory/timing_ddr4.v rtl/soc/memory/timing_gddr6.v \
+	rtl/soc/memory/timing_dram_banked.v \
+	rtl/soc/memory/timing_ddr3.v rtl/soc/memory/timing_ddr4.v \
+	rtl/soc/memory/timing_gddr6.v \
 	rtl/soc/memory/timing_hbm2.v rtl/soc/memory/mem_channel.v
+DDR3_TIMING_SRCS := rtl/soc/memory/timing_dram_banked.v \
+	rtl/soc/memory/timing_ddr3.v
 MESH_ROUTER_SRCS := rtl/mesh/router_tile.v
 SOC_BUS_SRCS := rtl/soc/bus/mem_map.v rtl/soc/bus/decode.v
 RESET_SEQUENCER_SRCS := rtl/soc/reset_sequencer.v
 PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
-	rtl/soc/bus/ccx_l2_bridge.v $(CORE_COMPLEX_SRCS) \
+	rtl/soc/bus/axi_to_scalar.v rtl/soc/bus/axi_to_wide.v \
+	rtl/soc/bus/ccx_l2_bridge.v \
+	$(CORE_COMPLEX_SRCS) \
 	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
 	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
@@ -586,6 +609,7 @@ EXEC_LSU_RV64A_SIM_SRCS := tb/tb_exec_lsu_rv64-a.sv
 ATOMIC_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_atomic_context.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
 EXEC_BP_SIM_SRCS := tb/tb_exec_bp.sv
+RV64FD_FPR_SIM_SRCS := tb/tb_rv64-fd-fpr.sv
 EXEC_FPU_RV64FD_SIM_SRCS := tb/tb_exec_fpu_rv64-fd.sv
 RV64I_VEC_SIM_SRCS := tb/tb_rv64-i-vec.sv
 EXEC_VEC_SIM_SRCS := tb/tb_exec_vec.sv
@@ -633,7 +657,7 @@ SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/Ope
 	sw-memcpy-64k sim-memcpy sim-memcpy-4k sim-memcpy-64k \
 	bench-memcpy bench-memcpy-4k bench-memcpy-64k \
 	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
-.PHONY: sim-isa-fp sim-exec-fpu-rv64-fd
+.PHONY: sim-isa-fp sim-rv64-fd-fpr sim-exec-fpu-rv64-fd
 .PHONY: sim-decode-rv64c
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
@@ -779,7 +803,7 @@ compliance-full: compliance-smoke-local compliance-isa compliance-isa-3p \
 	compliance-priv compliance-diff compliance-trace-contract
 
 sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
-sim: sim-isa-fp sim-exec-fpu-rv64-fd
+sim: sim-isa-fp sim-rv64-fd-fpr sim-exec-fpu-rv64-fd
 sim: sim-decode-rv64c
 sim: sim-atomic-soc
 sim: sim-vec
@@ -930,7 +954,11 @@ sim-coremark-loop-a53-gem5: sw-coremark-loop-a53-gem5
 		--trace $(A53_GEM5_TRACE) --output $(A53_GEM5_REPORT)
 
 opensbi:
-	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_BUILD_DIR)) tools/build-opensbi.sh
+	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_BUILD_DIR)) \
+		OPENSBI_SOURCE_DIR=$(abspath $(OPENSBI_SOURCE_DIR)) \
+		OPENSBI_MEMORY_SIZE=$(OPENSBI_MEMORY_SIZE) \
+		OPENSBI_FDT_ADDR=$(OPENSBI_FDT_ADDR) \
+		tools/build-opensbi.sh
 
 sim-opensbi: $(OPENSBI_VERILATOR_BUILD) opensbi
 	$(OPENSBI_VERILATOR_BUILD) \
@@ -1171,6 +1199,9 @@ sim-isa-bitmanip: $(ISA_BITMANIP_SIM_BUILD)
 sim-isa-fp: $(ISA_FP_SIM_BUILD)
 	vvp $(ISA_FP_SIM_BUILD)
 
+sim-rv64-fd-fpr: $(RV64FD_FPR_SIM_BUILD)
+	vvp $(RV64FD_FPR_SIM_BUILD)
+
 sim-stage: $(STAGE_SIM_BUILD)
 	vvp $(STAGE_SIM_BUILD)
 
@@ -1398,6 +1429,7 @@ sim-top-axi-3p-perf: $(AXI_3P_PERF_MEMH)
 		AXI_3P_L1D_PREFETCH_QUEUE_LINES=$(AXI_3P_PERF_L1D_PREFETCH_QUEUE_LINES) \
 		AXI_3P_L1D_PREFETCH_OUTSTANDING=$(AXI_3P_PERF_L1D_PREFETCH_OUTSTANDING) \
 		AXI_3P_L1D_PREFETCH_DEMAND_RESERVE=$(AXI_3P_PERF_L1D_PREFETCH_DEMAND_RESERVE) \
+		AXI_3P_CCX_DDR3_TIMING=$(AXI_3P_PERF_CCX_DDR3_TIMING) \
 		AXI_3P_FETCH_ALT_LOOKASIDE=$(AXI_3P_FETCH_ALT_LOOKASIDE) \
 		AXI_3P_FETCH_ALT_CONFIDENCE_GATE=$(AXI_3P_FETCH_ALT_CONFIDENCE_GATE)
 	mkdir -p $(dir $(AXI_3P_TRACE_CSV)) $(dir $(AXI_3P_TRACE_REPORT))
@@ -1627,6 +1659,8 @@ $(OPENSBI_VERILATOR_BUILD): $(OPENSBI_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(
 	mkdir -p $(OPENSBI_VERILATOR_DIR)
 	$(VERILATOR) --binary --timing -j 0 -Wall --Wno-fatal \
 		--Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-SYNCASYNCNET \
+		-GMEMORY_BYTES=$(OPENSBI_PLATFORM_MEMORY_BYTES) \
+		-GFDT_BASE_LO=$(OPENSBI_PLATFORM_FDT_BASE) \
 		-Irtl --top-module tb_opensbi \
 		-Mdir $(OPENSBI_VERILATOR_DIR) -o opensbi_tb \
 		$(CORE_SRCS) $(PLATFORM_SRCS) $(OPENSBI_SIM_SRCS)
@@ -1637,15 +1671,22 @@ $(OPENSBI_3P_PLATFORM_VERILATOR_BUILD): \
 		$(BP_DEPS)
 	mkdir -p $(OPENSBI_3P_PLATFORM_VERILATOR_DIR)
 	$(VERILATOR) --cc --exe --build --no-timing --savable -j 0 \
+		--threads $(OPENSBI_3P_PLATFORM_VERILATOR_THREADS) \
 		-Wall --Wno-fatal \
 		--Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-SYNCASYNCNET \
 		-DOPENRV64_VERILATOR_CHECKPOINT \
 		-GBACKEND_CONFIG=2 \
 		-GISSUE_WINDOW=$(OPENSBI_3P_PLATFORM_ISSUE_WINDOW) \
 		-GSPECULATION_WINDOW=$(OPENSBI_3P_PLATFORM_SPECULATION_WINDOW) \
+		-GRETIRE_DEPTH=$(OPENSBI_3P_PLATFORM_RETIRE_DEPTH) \
+		-GSTORE_QUEUE_DEPTH=$(OPENSBI_3P_PLATFORM_STORE_QUEUE_DEPTH) \
 		-GL2_BYTES=$(OPENSBI_3P_PLATFORM_L2_BYTES) \
 		-GL2_WAYS=$(OPENSBI_3P_PLATFORM_L2_WAYS) \
 		-GL1D_PREFETCH_ENABLE=$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_ENABLE) \
+		-GCCX_BUS_TYPE=$(OPENSBI_3P_PLATFORM_BUS_TYPE) \
+		-GCCX_BUS_DATA_WIDTH=$(OPENSBI_3P_PLATFORM_BUS_DATA_WIDTH) \
+		-GMEMORY_BYTES=$(OPENSBI_3P_PLATFORM_MEMORY_BYTES) \
+		-GFDT_BASE_LO=$(OPENSBI_3P_PLATFORM_FDT_BASE) \
 		-Irtl --top-module tb_opensbi \
 		-Mdir $(OPENSBI_3P_PLATFORM_VERILATOR_DIR) \
 		-o opensbi_3p_platform_tb \
@@ -1922,6 +1963,12 @@ $(ISA_BITMANIP_SIM_BUILD): $(ISA_BITMANIP_SIM_SRCS) $(ISA_SRCS)
 $(ISA_FP_SIM_BUILD): $(ISA_FP_SIM_SRCS) $(FP_ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(ISA_FP_SIM_BUILD) $(ISA_FP_SIM_SRCS)
+
+$(RV64FD_FPR_SIM_BUILD): $(RV64FD_FPR_SIM_SRCS) $(FPR_SRCS) \
+		$(FP_ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_rv64fd_fpr \
+		-o $(RV64FD_FPR_SIM_BUILD) $(RV64FD_FPR_SIM_SRCS)
 
 $(STAGE_SIM_BUILD): $(STAGE_SIM_SRCS) $(STAGE_SRCS)
 	mkdir -p sim
@@ -2287,6 +2334,7 @@ $(CORE_3P_CCX_L2_VERILATOR_BUILD): tb/tb_top_3p_soc.v \
 
 $(TOP_AXI_3P_SIM_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
 	$(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS) \
+	$(DDR3_TIMING_SRCS) \
 	$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
 	$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
 	mkdir -p sim
@@ -2329,9 +2377,11 @@ $(TOP_AXI_3P_SIM_BUILD): tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
 		-Ptb_top_axi_3p.L1D_PREFETCH_QUEUE_LINES=$(AXI_3P_L1D_PREFETCH_QUEUE_LINES) \
 		-Ptb_top_axi_3p.L1D_PREFETCH_OUTSTANDING=$(AXI_3P_L1D_PREFETCH_OUTSTANDING) \
 		-Ptb_top_axi_3p.L1D_PREFETCH_DEMAND_RESERVE=$(AXI_3P_L1D_PREFETCH_DEMAND_RESERVE) \
+		-Ptb_top_axi_3p.CCX_DDR3_TIMING=$(AXI_3P_CCX_DDR3_TIMING) \
 		-Ptb_top_axi_3p.FETCH_ALT_LOOKASIDE=$(AXI_3P_FETCH_ALT_LOOKASIDE) \
 		-Ptb_top_axi_3p.FETCH_ALT_CONFIDENCE_GATE=$(AXI_3P_FETCH_ALT_CONFIDENCE_GATE) \
 		-o $(TOP_AXI_3P_SIM_BUILD) rtl/openrv64_top_3p.v $(CORE_SRCS) \
+		$(DDR3_TIMING_SRCS) \
 		$(SOC_BUS_SRCS) $(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) \
 		$(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \
 		tb/tb_top_axi_3p.sv

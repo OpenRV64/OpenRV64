@@ -18,6 +18,7 @@ module openrv64_exec_top #(
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter integer ENABLE_LOCAL_FORWARDING_3P = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer STORE_QUEUE_DEPTH_3P = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter integer RETIRE_SLOT_WIDTH_3P = 3
@@ -155,9 +156,21 @@ module openrv64_exec_top #(
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_3p_i,
     input  wire                         branch_forward_valid_3p_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        branch_forward_id_3p_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         branch_forward_rd_addr_3p_i,
     input  wire [`RV64_XLEN-1:0]        branch_forward_data_3p_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        issue_src1_producer_valid_3p_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        issue_src1_producer_id_3p_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        issue_src2_producer_valid_3p_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        issue_src2_producer_id_3p_i,
     input  wire                         ordered_head_valid_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] ordered_head_slot_3p_i,
@@ -227,6 +240,7 @@ module openrv64_exec_top #(
                 .ENABLE_RV64M(ENABLE_RV64M),
                 .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING_3P),
                 .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+                .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH_3P),
                 .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
                 .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
             ) u_exec (
@@ -238,9 +252,16 @@ module openrv64_exec_top #(
                 .issue_slot_i(issue_slot_3p_i),
                 .issue_payload_i(issue_payload_3p_i),
                 .branch_forward_valid_i(branch_forward_valid_3p_i),
+                .branch_forward_id_i(branch_forward_id_3p_i),
                 .branch_forward_rd_addr_i(
                     branch_forward_rd_addr_3p_i),
                 .branch_forward_data_i(branch_forward_data_3p_i),
+                .issue_src1_producer_valid_i(
+                    issue_src1_producer_valid_3p_i),
+                .issue_src1_producer_id_i(issue_src1_producer_id_3p_i),
+                .issue_src2_producer_valid_i(
+                    issue_src2_producer_valid_3p_i),
+                .issue_src2_producer_id_i(issue_src2_producer_id_3p_i),
                 .ordered_head_valid_i(ordered_head_valid_3p_i),
                 .ordered_head_id_i(ordered_head_id_3p_i),
                 .ordered_head_slot_i(ordered_head_slot_3p_i),

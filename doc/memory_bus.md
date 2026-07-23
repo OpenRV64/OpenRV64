@@ -159,28 +159,22 @@ for the current Bare-mode rig, but it is still only a range check. A production
 LSU must use translated physical addresses and real PMA/cacheability attributes
 when deciding whether store-to-load forwarding is legal.
 
-A successful late response only releases the retained tag. A late AXI/access
-error raises a store-access-fault exception; a late translation page error
-raises a store-page-fault exception. Both are deliberately **imprecise async
-aborts**: the store and possibly younger instructions have already retired, so
-the core cannot roll them back. Trap `tval` is the original effective store
-address. The exception PC is the next unretired architectural frontier, not
-the original store PC, so a handler return does not blindly replay an already
-issued store. The original store instruction and trace ID remain attached for
-diagnostics. These use the normal exception cause encodings even though the
-failure is delivered later than the faulting instruction.
+A core-to-bus request handshake is only capture by the translation wrapper. A
+store remains in the pre-retire queue until its tagged response proves
+translation, PMP, and L1D store-buffer admission. A page or access fault is
+therefore reported at the original store PC with its effective address in
+`tval`; the store does not retire and may be replayed after trap return.
 
-An ordered posted store survives a younger redirect until its response is
-drained. EBREAK or another architectural stop may therefore become visible
-before the physical write response; a simulator or platform must keep clocking
-the bus long enough to drain already-committed stores.
+Once admitted by L1D, the physical cache-line write may remain posted across
+core retirement and a younger redirect. A simulator or platform must keep
+clocking the hierarchy long enough to drain committed stores. A failure during
+that later drain cannot be converted back into a precise store exception; it
+needs an asynchronous machine-check or fatal platform policy.
 
-A real store buffer still needs an explicit PMA distinction between cacheable,
-idempotent RAM and ordered side-effecting MMIO; multiple queued committed
-stores; store-to-load address comparison and byte forwarding; FENCE/atomic
-drain rules; and a stronger deferred machine-check/recovery policy. The
-current imprecise exception makes late failure visible, but it does not make
-the store precise or recoverable.
+The current four-entry pre-retire queue retains virtual-address operations and
+blocks younger memory behind an unresolved store. A full LSQ still needs PMA
+classification, translated physical addresses, load/store disambiguation,
+byte forwarding across multiple stores, and defined FENCE/atomic drain rules.
 
 The remaining AXI limits are no multi-beat bursts, caches, pipelined translated
 LSU accesses, exclusive accesses, or AXI connection in `openrv64_platform`.

@@ -230,15 +230,14 @@ L1 boundary:
   and
 - the separate ordered store-response channel carries the eventual CCX error.
 
-The core bus has a matching tag FIFO.  The execution pipe may retire a posted
-store when the bus accepts it, but it retains the LSU slot until the drain
-response arrives.  A late CCX failure is therefore reported through the
-existing asynchronous-store-fault path rather than silently discarded.  This
-distinction is required: fast admission and precise synchronous fault delivery
-cannot both be claimed after architectural retirement.  The current core has
-eight LSU tags, matching the default eight-entry L1D FIFO, so one hart can hold
-eight unacknowledged stores.  A deeper FIFO requires a larger tag namespace or
-a separate deferred-fault metadata queue to exploit every entry from one hart.
+The 3P backend has a four-entry pre-retire store queue. Core-bus request capture
+does not complete a store: the tagged response must first prove translation,
+PMP, and L1D FIFO admission. Page and PMP faults are therefore precise and
+replay the original store PC. Once admitted, L1D may drain the cache-line write
+after core retirement. A later physical-drain failure is beyond the precise
+store boundary and needs a separate machine-check policy. The default
+eight-entry L1D FIFO can absorb stores from the four-entry core queue while
+continuing to drain earlier committed lines.
 
 PMP remains an access-permission check.  PMA describes the behavior of an
 allowed physical target; one does not replace the other.
@@ -421,7 +420,8 @@ instruction fetch.
 
 `SFENCE.VMA` and a successful writable `satp` CSR access make the PTW issue
 `FENCE + kind=PTE + order=ACQ_REL` on CCX. Before either instruction executes,
-the 3P backend waits for every older posted store's lower-level completion.
+the 3P backend waits for every older store's translation/PMP/L1D-admission
+response.
 The walker then terminates any active walk, drains an already accepted PTE
 response, and blocks new walks until the fence response returns. Core fetch,
 prefetch admission, and LSU admission remain blocked for that entire interval,

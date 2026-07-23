@@ -25,9 +25,15 @@ module openrv64_exec_pipe_ex1 #(
     input  wire [RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
     input  wire                         branch_forward_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        branch_forward_id_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         branch_forward_rd_addr_i,
     input  wire [`RV64_XLEN-1:0]        branch_forward_data_i,
+    input  wire                         src1_producer_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] src1_producer_id_i,
+    input  wire                         src2_producer_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] src2_producer_id_i,
 
     output wire                         complete_valid_o,
     input  wire                         complete_ready_i,
@@ -135,12 +141,17 @@ module openrv64_exec_pipe_ex1 #(
                            `RV64_REG_ADDR_WIDTH];
     wire [`RV64_XLEN-1:0] local_forward_data =
         complete_payload_q[`OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
-    // The cross-pipe branch source is youngest-owner qualified in the
-    // backend.  EX1's local path is only an rd match, so the qualified source
-    // must win if both paths name the same operand.
+    // Architectural rd identifies a value's destination, not which dynamic
+    // producer a branch consumes.  A younger WAW may complete before an older
+    // branch in the issue-window backend, so cross-pipe forwarding must match
+    // the producer ID captured with that specific source operand.
     wire branch_forward_rs1 = branch && branch_forward_valid_i &&
+        src1_producer_valid_i &&
+        (src1_producer_id_i == branch_forward_id_i) &&
         (rs1_addr == branch_forward_rd_addr_i);
     wire branch_forward_rs2 = branch && branch_forward_valid_i &&
+        src2_producer_valid_i &&
+        (src2_producer_id_i == branch_forward_id_i) &&
         (rs2_addr == branch_forward_rd_addr_i);
     wire [`RV64_XLEN-1:0] operand_rs1 = branch_forward_rs1 ?
         branch_forward_data_i :

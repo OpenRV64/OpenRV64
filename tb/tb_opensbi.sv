@@ -8,9 +8,15 @@ module tb_opensbi #(
         `OPENRV64_BACKEND_1P,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
+    parameter integer RETIRE_DEPTH = 8,
+    parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
-    parameter bit L1D_PREFETCH_ENABLE = 1'b1
+    parameter integer CCX_BUS_TYPE = 0,
+    parameter integer CCX_BUS_DATA_WIDTH = 256,
+    parameter bit L1D_PREFETCH_ENABLE = 1'b1,
+    parameter integer MEMORY_BYTES = 256 * 1024 * 1024,
+    parameter logic [31:0] FDT_BASE_LO = 32'h8ff0_0000
 ) (
     output wire [31:0] checkpoint_cycle_o
 `ifdef OPENRV64_VERILATOR_CHECKPOINT
@@ -23,7 +29,7 @@ module tb_opensbi #(
     localparam logic [63:0] FIRMWARE_BASE = 64'h8010_0000;
     localparam logic [63:0] PAYLOAD_BASE = 64'h8020_0000;
     localparam logic [63:0] MAGIC_ADDR = 64'h80e0_0000;
-    localparam logic [63:0] FDT_BASE = 64'h8ff0_0000;
+    localparam logic [63:0] FDT_BASE = {32'd0, FDT_BASE_LO};
     localparam logic [63:0] MAGIC_VALUE = 64'h5342_4950_4153_5301;
 
     localparam integer TRAMPOLINE_WORDS = 32'h0001_0000 / 8;
@@ -67,10 +73,12 @@ module tb_opensbi #(
     string payload_text = "OPENRV64 SBI TIMER PAYLOAD";
     string linux_panic_text = "Kernel panic";
     string linux_prompt_text = "openrv64# ";
+    string linux_plic_text = "riscv-plic:";
     integer banner_index;
     integer payload_index;
     integer linux_panic_index;
     integer linux_prompt_index;
+    integer linux_plic_index;
     integer cycle_count;
     integer uart_byte_count;
     integer payload_words;
@@ -89,8 +97,10 @@ module tb_opensbi #(
     logic saw_payload_text;
     logic saw_linux_panic;
     logic saw_linux_prompt;
+    logic saw_linux_plic;
     logic saw_s_mode;
     logic linux_mode;
+    logic stop_at_linux_plic;
     logic delay_probe;
     logic delay_probe_fired;
     logic panic_probe;
@@ -111,6 +121,7 @@ module tb_opensbi #(
     wire [63:0] observed_t0;
     wire [63:0] observed_t1;
     wire [63:0] observed_mcycle;
+    wire [63:0] observed_minstret;
     wire [63:0] observed_mcountinhibit;
     wire [63:0] observed_mcause;
     wire [63:0] observed_mtval;
@@ -173,9 +184,14 @@ module tb_opensbi #(
         .BACKEND_CONFIG(BACKEND_CONFIG),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .RETIRE_DEPTH(RETIRE_DEPTH),
+        .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .L2_BYTES(L2_BYTES),
         .L2_WAYS(L2_WAYS),
+        .CCX_BUS_TYPE(CCX_BUS_TYPE),
+        .CCX_BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+        .MEMORY_BYTES(MEMORY_BYTES),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64A(1'b1),
         .ENABLE_TRACE(1'b1)
@@ -239,6 +255,8 @@ module tb_opensbi #(
                 dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[6];
             assign observed_mcycle =
                 dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcycle_q;
+            assign observed_minstret =
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.minstret_q;
             assign observed_mcountinhibit =
                 dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcountinhibit_q;
             assign observed_mcause =
@@ -337,6 +355,7 @@ module tb_opensbi #(
             assign observed_t0 = dut.u_core.u_core.u_gpr.regs[5];
             assign observed_t1 = dut.u_core.u_core.u_gpr.regs[6];
             assign observed_mcycle = dut.u_core.u_core.u_csrs.mcycle_q;
+            assign observed_minstret = dut.u_core.u_core.u_csrs.minstret_q;
             assign observed_mcountinhibit =
                 dut.u_core.u_core.u_csrs.mcountinhibit_q;
             assign observed_mcause = dut.u_core.u_core.u_csrs.mcause_q;
@@ -442,6 +461,17 @@ module tb_opensbi #(
                         (value == linux_prompt_text[0]) ? 1 : 0;
                 end
             end
+
+            if (linux_mode && !saw_linux_plic) begin
+                if (value == linux_plic_text[linux_plic_index]) begin
+                    linux_plic_index = linux_plic_index + 1;
+                    if (linux_plic_index == linux_plic_text.len())
+                        saw_linux_plic = 1'b1;
+                end else begin
+                    linux_plic_index =
+                        (value == linux_plic_text[0]) ? 1 : 0;
+                end
+            end
         end
     endtask
 
@@ -473,8 +503,8 @@ module tb_opensbi #(
     task automatic report_timeout;
         begin
             if (linux_mode) begin
-                $display("LINUX TIMEOUT cycles=%0d pc=%016x instr=%08x priv=%0d banner=%b linux_banner=%b uart_bytes=%0d mcause=%016x mtval=%016x scause=%016x stval=%016x",
-                         cycle_count, dbg_pc, dbg_instr,
+                $display("LINUX TIMEOUT cycles=%0d instret=%0d pc=%016x instr=%08x priv=%0d banner=%b linux_banner=%b uart_bytes=%0d mcause=%016x mtval=%016x scause=%016x stval=%016x",
+                         cycle_count, observed_minstret, dbg_pc, dbg_instr,
                          observed_priv_mode, saw_banner, saw_payload_text,
                          uart_byte_count, observed_mcause, observed_mtval,
                          observed_scause, observed_stval);
@@ -617,8 +647,8 @@ module tb_opensbi #(
                 ((cycle_count > 10000) && (cycle_count <= 250000) &&
                  ((cycle_count % 10000) == 0)) ||
                 ((cycle_count != 0) && ((cycle_count % 250000) == 0))) begin
-                $display("OpenSBI progress cycles=%0d pc=%016x instr=%08x priv=%0d uart_bytes=%0d t0=%016x t1=%016x mcause=%016x mtval=%016x",
-                         cycle_count, dbg_pc, dbg_instr,
+                $display("OpenSBI progress cycles=%0d instret=%0d pc=%016x instr=%08x priv=%0d uart_bytes=%0d t0=%016x t1=%016x mcause=%016x mtval=%016x",
+                         cycle_count, observed_minstret, dbg_pc, dbg_instr,
                          observed_priv_mode,
                          uart_byte_count,
                          observed_t0, observed_t1,
@@ -796,8 +826,15 @@ module tb_opensbi #(
             $finish;
         end
 
-        if (linux_mode && saw_linux_prompt) begin
+        if (linux_mode && saw_linux_prompt &&
+            !$test$plusargs("continue_after_linux_prompt")) begin
             $display("\nPASS: Linux reached interactive static Bash prompt as PID 1");
+            $finish;
+        end
+
+        if (linux_mode && stop_at_linux_plic && saw_linux_plic) begin
+            $display("\nPERF MILESTONE name=linux-plic cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
+                     cycle_count, observed_minstret, uart_byte_count, dbg_pc);
             $finish;
         end
     end
@@ -808,6 +845,7 @@ module tb_opensbi #(
         payload_index = 0;
         linux_panic_index = 0;
         linux_prompt_index = 0;
+        linux_plic_index = 0;
         cycle_count = 0;
         uart_byte_count = 0;
         linux_trap_count = 0;
@@ -819,7 +857,9 @@ module tb_opensbi #(
         saw_payload_text = 1'b0;
         saw_linux_panic = 1'b0;
         saw_linux_prompt = 1'b0;
+        saw_linux_plic = 1'b0;
         saw_s_mode = 1'b0;
+        stop_at_linux_plic = $test$plusargs("stop_at_linux_plic");
         delay_probe_fired = 1'b0;
         panic_probe_fired = 1'b0;
         dbcn_probe_fired = 1'b0;

@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 build_root=${OPENSBI_BUILD_DIR:-"${repo_root}/build/opensbi"}
-source_dir="${build_root}/src"
+source_dir=${OPENSBI_SOURCE_DIR:-"${build_root}/src"}
 output_dir="${build_root}/out"
 artifact_dir="${build_root}/artifacts"
 defconfig_name=openrv64_defconfig
@@ -20,7 +20,8 @@ jobs=${OPENSBI_JOBS:-$(nproc)}
 trampoline_addr=0x80000000
 firmware_addr=0x80100000
 payload_addr=0x80200000
-fdt_addr=0x8ff00000
+fdt_addr=${OPENSBI_FDT_ADDR:-0x8ff00000}
+memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
 
 for tool in git make dtc python3 awk \
             "${opensbi_cross}gcc" "${opensbi_cross}objcopy" \
@@ -56,11 +57,16 @@ if [[ "${opensbi_ref}" == v1.9 && \
     exit 2
 fi
 
-dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
+"${bare_cross}gcc" -E -P -x assembler-with-cpp \
+    -DOPENRV64_MEMORY_SIZE="${memory_size}" \
+    -o "${artifact_dir}/openrv64.dts" \
     "${repo_root}/sw/opensbi.dts"
+dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
+    "${artifact_dir}/openrv64.dts"
 
 "${bare_cross}gcc" -march=rv64ima_zicsr_zifencei -mabi=lp64 \
     -mcmodel=medany -mno-relax -nostdlib -nostartfiles \
+    -DOPENRV64_FDT_ADDR="${fdt_addr}" \
     -Wl,--build-id=none -T "${repo_root}/sw/opensbi_trampoline.ld" \
     -o "${artifact_dir}/trampoline.elf" \
     "${repo_root}/sw/opensbi_trampoline.S"
@@ -141,4 +147,5 @@ echo "OpenSBI ${opensbi_ref} (${actual_commit})"
 echo "  trampoline ${trampoline_addr} -> firmware ${firmware_addr}"
 echo "  payload    ${payload_addr}"
 echo "  FDT        ${fdt_addr}"
+echo "  memory     ${memory_size}"
 echo "  artifacts  ${artifact_dir}"

@@ -52,6 +52,14 @@ module tb_mem_channel;
     wire timing_resp_valid;
     wire timing_resp_ready;
 
+    logic ddr3_cmd_valid;
+    logic ddr3_cmd_write;
+    logic [ADDR_WIDTH-1:0] ddr3_cmd_addr;
+    logic [7:0] ddr3_cmd_bytes;
+    wire ddr3_cmd_ready;
+    wire ddr3_resp_valid;
+    logic ddr3_resp_ready;
+
     logic gddr_cmd_valid;
     logic gddr_cmd_write;
     logic [ADDR_WIDTH-1:0] gddr_cmd_addr;
@@ -124,6 +132,17 @@ module tb_mem_channel;
 
     // Standalone instances prove that the alternative profiles implement the
     // exact same timing contract used above.
+    openrv64_timing_ddr3 #(
+        .ADDR_WIDTH(ADDR_WIDTH), .CONTROLLER_TCK_PS(1000),
+        .REFRESH_INTERVAL(0)
+    ) u_ddr3 (
+        .clk_i(clk), .rst_ni(rst_n),
+        .cmd_valid_i(ddr3_cmd_valid), .cmd_ready_o(ddr3_cmd_ready),
+        .cmd_write_i(ddr3_cmd_write), .cmd_addr_i(ddr3_cmd_addr),
+        .cmd_bytes_i(ddr3_cmd_bytes),
+        .resp_valid_o(ddr3_resp_valid), .resp_ready_i(ddr3_resp_ready)
+    );
+
     openrv64_timing_gddr6 #(
         .ADDR_WIDTH(ADDR_WIDTH), .CONTROLLER_TCK_PS(1000),
         .REFRESH_INTERVAL(0)
@@ -301,6 +320,40 @@ module tb_mem_channel;
         end
     endtask
 
+    task automatic issue_ddr3_request(
+        input [ADDR_WIDTH-1:0] address,
+        input [7:0] byte_count,
+        output integer latency
+    );
+        integer guard;
+        begin
+            ddr3_cmd_addr = address;
+            ddr3_cmd_bytes = byte_count;
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_valid = 1'b1;
+            guard = 0;
+            while (!ddr3_cmd_ready && guard < 500) begin
+                tick();
+                guard = guard + 1;
+            end
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 command timeout");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+
+            latency = 0;
+            while (!ddr3_resp_valid && latency < 500) begin
+                tick();
+                latency = latency + 1;
+            end
+            if (!ddr3_resp_valid)
+                $fatal(1, "DDR3 response timeout");
+            ddr3_resp_ready = 1'b1;
+            tick();
+            ddr3_resp_ready = 1'b0;
+        end
+    endtask
+
     task automatic issue_gddr_request(
         input [ADDR_WIDTH-1:0] address,
         input [7:0] byte_count,
@@ -367,6 +420,9 @@ module tb_mem_channel;
         end
     endtask
 
+    integer ddr3_miss_latency;
+    integer ddr3_hit_latency;
+    integer ddr3_conflict_latency;
     integer gddr_miss_latency;
     integer gddr_hit_latency;
     integer gddr_two_burst_latency;
@@ -396,6 +452,11 @@ module tb_mem_channel;
         wlast = 1'b0;
         wvalid = 1'b0;
         bready = 1'b0;
+        ddr3_cmd_valid = 1'b0;
+        ddr3_cmd_write = 1'b0;
+        ddr3_cmd_addr = 0;
+        ddr3_cmd_bytes = 0;
+        ddr3_resp_ready = 1'b0;
         gddr_cmd_valid = 1'b0;
         gddr_cmd_write = 1'b0;
         gddr_cmd_addr = 0;
@@ -452,6 +513,21 @@ module tb_mem_channel;
         send_w(128'h55, 16'hffff, 1'b1);
         expect_b(4'hc, 2'b10);
 
+        // DDR3-1600 x64, BL8: 64-byte native burst.  At a 1 ns controller
+        // clock, a closed-row read is ceil((tRCD + tCL + BL/2) * 1.25 ns)
+        // = 33 ns; a row hit is 19 ns.  The third access selects a different
+        // row in the same bank and must also pay tRP, for 47 ns.
+        issue_ddr3_request(32'h0000_1000, 8'd64, ddr3_miss_latency);
+        issue_ddr3_request(32'h0000_1040, 8'd64, ddr3_hit_latency);
+        issue_ddr3_request(32'h0001_1000, 8'd64, ddr3_conflict_latency);
+        if ((ddr3_miss_latency != 33) ||
+            (ddr3_hit_latency != 19) ||
+            (ddr3_conflict_latency != 47))
+            $fatal(1,
+                "DDR3 latency mismatch: miss=%0d hit=%0d conflict=%0d",
+                ddr3_miss_latency, ddr3_hit_latency,
+                ddr3_conflict_latency);
+
         // GDDR6 x16, BL16: 32-byte native burst.  At a 1 ns controller
         // clock, these are exact ceil() conversions from the 0.66 ns DRAM
         // clock: closed-row read 33 ns, row-hit read 18 ns, and a 64-byte
@@ -482,7 +558,8 @@ module tb_mem_channel;
                 "HBM2 write recovery/row conflict was not charged: miss=%0d conflict=%0d",
                 hbm_write_miss_latency, hbm_write_conflict_latency);
 
-        $display("tb_mem_channel: PASS gddr6_ns=%0d/%0d/%0d hbm2_ns=%0d/%0d",
+        $display("tb_mem_channel: PASS ddr3_ns=%0d/%0d/%0d gddr6_ns=%0d/%0d/%0d hbm2_ns=%0d/%0d",
+            ddr3_miss_latency, ddr3_hit_latency, ddr3_conflict_latency,
             gddr_miss_latency, gddr_hit_latency,
             gddr_two_burst_latency, hbm_write_miss_latency,
             hbm_write_conflict_latency);

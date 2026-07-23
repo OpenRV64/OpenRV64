@@ -25,6 +25,7 @@ module tb_dispatch_window_3p;
     localparam integer I_PC = 274;
     localparam integer I_TRACE = 338;
     localparam integer I_MEM_READ = 16;
+    localparam integer I_MEM_WRITE = 15;
     localparam integer I_BRANCH = 14;
     localparam integer I_JUMP = 13;
     localparam integer I_PREDICTED = 12;
@@ -52,6 +53,10 @@ module tb_dispatch_window_3p;
     wire [`OPENRV64_EXEC_PIPE_COUNT*IDW-1:0] pipe_id;
     wire [`OPENRV64_EXEC_PIPE_COUNT*SW-1:0] pipe_slot;
     wire [`OPENRV64_EXEC_PIPE_COUNT*IW-1:0] pipe_payload;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_src1_producer_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*IDW-1:0] pipe_src1_producer_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_src2_producer_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*IDW-1:0] pipe_src2_producer_id;
     reg [2:0] completion_valid;
     reg [3*IDW-1:0] completion_id;
     reg [3*OW-1:0] completion_payload;
@@ -90,6 +95,10 @@ module tb_dispatch_window_3p;
         .pipe_ready_i(pipe_ready), .pipe_valid_o(pipe_valid),
         .pipe_id_o(pipe_id), .pipe_slot_o(pipe_slot),
         .pipe_payload_o(pipe_payload),
+        .pipe_src1_producer_valid_o(pipe_src1_producer_valid),
+        .pipe_src1_producer_id_o(pipe_src1_producer_id),
+        .pipe_src2_producer_valid_o(pipe_src2_producer_valid),
+        .pipe_src2_producer_id_o(pipe_src2_producer_id),
         .completion_valid_i(completion_valid),
         .completion_id_i(completion_id),
         .completion_payload_i(completion_payload),
@@ -260,6 +269,10 @@ module tb_dispatch_window_3p;
         if (!pipe_valid[0] || pipe_id[0*IDW +: IDW] != IDW'(12) ||
             pipe_payload[0*IW + I_RS1_DATA +: 64] != 64'h11)
             fail("consumer did not select youngest WAW producer value");
+        if (!pipe_src1_producer_valid[0] ||
+            pipe_src1_producer_id[0*IDW +: IDW] != IDW'(11) ||
+            pipe_src2_producer_valid[0])
+            fail("consumer issue lost its source producer tag");
         tick();
         clear_inputs();
 
@@ -480,7 +493,232 @@ module tb_dispatch_window_3p;
         if (queue_count != 2 || write_busy[7])
             fail("dispatch window misordered modular IDs at wrap");
 
-        $display("PASS: dispatch window issue, producer tags, and selective recovery");
+        // A single memory operation must obey the same fixed-lane contract as
+        // strict dispatch before testing paired admission below.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 4'b1111;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(70)};
+        allocation_slot = {4'd0, 4'd0, 4'd0};
+        next_retire_id = IDW'(70);
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd70, 5'd1, 5'd0, 5'd5);
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[2] || pipe_valid[3] ||
+            pipe_id[2*IDW +: IDW] != IDW'(70))
+            fail("issue-window load did not route exclusively to MEM0");
+
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(71)};
+        allocation_slot = {4'd0, 4'd0, 4'd0};
+        next_retire_id = IDW'(71);
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd71, 5'd1, 5'd2, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0020_b023;
+        p0[I_MEM_WRITE] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[3] || pipe_valid[2] ||
+            pipe_id[3*IDW +: IDW] != IDW'(71))
+            fail("issue-window store did not route exclusively to MEM1");
+
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(72)};
+        allocation_slot = {4'd0, 4'd0, 4'd0};
+        next_retire_id = IDW'(72);
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd72, 5'd1, 5'd0, 5'd5);
+        p0[I_INSTR +: 32] = 32'h1000_302f;
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[3] || pipe_valid[2] ||
+            pipe_id[3*IDW +: IDW] != IDW'(72))
+            fail("issue-window RV64A load did not route to MEM1");
+
+        // The oldest two memory operations may issue together when they use
+        // opposite fixed-role lanes.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 4'b1111;
+        allocation_id = {IDW'(0), IDW'(74), IDW'(73)};
+        allocation_slot = {4'd0, 4'd1, 4'd0};
+        next_retire_id = IDW'(73);
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd73, 5'd1, 5'd0, 5'd5);
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p1 = alu_packet(64'd74, 5'd2, 5'd3, 5'd0);
+        p1[I_INSTR +: 32] = 32'h0031_3023;
+        p1[I_MEM_WRITE] = 1'b1;
+        p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{IW{1'b0}}, p1, p0};
+        decode_uses_rs1 = 3'b011;
+        decode_uses_rs2 = 3'b010;
+        decode_valid = 3'b011;
+        tick();
+        clear_inputs();
+        #1;
+        if (pipe_valid[3:2] != 2'b11 ||
+            pipe_id[2*IDW +: IDW] != IDW'(73) ||
+            pipe_id[3*IDW +: IDW] != IDW'(74))
+            fail("oldest load/store pair did not dual issue");
+        tick();
+        #1;
+        if (|pipe_valid[3:2])
+            fail("dual-issued load/store pair was not marked issued");
+
+        // Reverse program order is also legal.  The execution queues retain
+        // the store-before-load ordering contract.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {IDW'(0), IDW'(76), IDW'(75)};
+        allocation_slot = {4'd0, 4'd1, 4'd0};
+        next_retire_id = IDW'(75);
+        p0 = alu_packet(64'd75, 5'd2, 5'd3, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0031_3023;
+        p0[I_MEM_WRITE] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p1 = alu_packet(64'd76, 5'd1, 5'd0, 5'd5);
+        p1[I_MEM_READ] = 1'b1;
+        p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{IW{1'b0}}, p1, p0};
+        decode_uses_rs1 = 3'b011;
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b011;
+        tick();
+        clear_inputs();
+        #1;
+        if (pipe_valid[3:2] != 2'b11 ||
+            pipe_id[3*IDW +: IDW] != IDW'(75) ||
+            pipe_id[2*IDW +: IDW] != IDW'(76))
+            fail("oldest store/load pair did not dual issue");
+        tick();
+
+        // A younger operation must not issue alone when the older operation's
+        // lane is blocked.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 4'b0100;
+        allocation_id = {IDW'(0), IDW'(78), IDW'(77)};
+        allocation_slot = {4'd0, 4'd1, 4'd0};
+        next_retire_id = IDW'(77);
+        p0 = alu_packet(64'd77, 5'd2, 5'd3, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0031_3023;
+        p0[I_MEM_WRITE] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p1 = alu_packet(64'd78, 5'd1, 5'd0, 5'd5);
+        p1[I_MEM_READ] = 1'b1;
+        p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{IW{1'b0}}, p1, p0};
+        decode_uses_rs1 = 3'b011;
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b011;
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[3] || pipe_valid[2])
+            fail("younger load escaped blocked older store");
+        tick();
+        pipe_ready = 4'b1100;
+        #1;
+        if (pipe_valid[3:2] != 2'b11)
+            fail("blocked store/load pair did not issue when both lanes freed");
+        tick();
+        #1;
+        if (|pipe_valid[3:2])
+            fail("released store/load pair was not marked issued");
+
+        // Do not skip a same-lane second memory operation to pair a younger
+        // opposite-lane operation.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 4'b1111;
+        allocation_id = {IDW'(81), IDW'(80), IDW'(79)};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        next_retire_id = IDW'(79);
+        p0 = alu_packet(64'd79, 5'd1, 5'd0, 5'd5);
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p1 = alu_packet(64'd80, 5'd2, 5'd0, 5'd6);
+        p1[I_MEM_READ] = 1'b1;
+        p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p2 = alu_packet(64'd81, 5'd3, 5'd4, 5'd0);
+        p2[I_INSTR +: 32] = 32'h0041_b023;
+        p2[I_MEM_WRITE] = 1'b1;
+        p2[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b111;
+        decode_uses_rs2 = 3'b100;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[2] || pipe_valid[3] ||
+            pipe_id[2*IDW +: IDW] != IDW'(79))
+            fail("memory selector skipped same-lane second load");
+        tick();
+        #1;
+        if (pipe_valid[3:2] != 2'b11 ||
+            pipe_id[2*IDW +: IDW] != IDW'(80) ||
+            pipe_id[3*IDW +: IDW] != IDW'(81))
+            fail("second load/store pair did not issue after oldest load");
+
+        // RV64A uses MEM1 even for a read-only LR and may be admitted beside
+        // a younger MEM0 load.  Execution still holds the younger request
+        // until the atomic reaches ordered retirement head.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {IDW'(0), IDW'(83), IDW'(82)};
+        allocation_slot = {4'd0, 4'd1, 4'd0};
+        next_retire_id = IDW'(82);
+        p0 = alu_packet(64'd82, 5'd1, 5'd0, 5'd5);
+        p0[I_INSTR +: 32] = 32'h1000_302f;
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p1 = alu_packet(64'd83, 5'd2, 5'd0, 5'd6);
+        p1[I_MEM_READ] = 1'b1;
+        p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{IW{1'b0}}, p1, p0};
+        decode_uses_rs1 = 3'b011;
+        decode_valid = 3'b011;
+        tick();
+        clear_inputs();
+        #1;
+        if (pipe_valid[3:2] != 2'b11 ||
+            pipe_id[3*IDW +: IDW] != IDW'(82) ||
+            pipe_id[2*IDW +: IDW] != IDW'(83))
+            fail("LR/load pair did not dual issue to MEM1/MEM0");
+
+        $display("PASS: dispatch window issue, dual ordered MEM roles, producer tags, and selective recovery");
         $finish;
     end
 endmodule

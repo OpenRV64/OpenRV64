@@ -18,6 +18,8 @@ module openrv64_platform #(
     parameter integer MEMORY_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
+    parameter int unsigned RETIRE_DEPTH = 8,
+    parameter int unsigned STORE_QUEUE_DEPTH = 4,
     parameter bit ENABLE_ISSUE_WINDOW = 1'b0,
     parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
     parameter bit ENABLE_RV64M = 1'b0,
@@ -26,6 +28,8 @@ module openrv64_platform #(
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
     parameter int unsigned L2_BYTES = 256 * 1024,
     parameter int unsigned L2_WAYS = 8,
+    parameter int unsigned CCX_BUS_TYPE = 0,
+    parameter int unsigned CCX_BUS_DATA_WIDTH = 256,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
@@ -198,6 +202,14 @@ module openrv64_platform #(
     logic [63:0] memory_wdata;
     logic [7:0] memory_wstrb;
     logic [63:0] memory_rdata;
+    logic memory_wide_valid;
+    logic memory_wide_ready;
+    logic memory_wide_write;
+    logic [63:0] memory_wide_addr;
+    logic [CCX_BUS_DATA_WIDTH-1:0] memory_wide_wdata;
+    logic [CCX_BUS_DATA_WIDTH/8-1:0] memory_wide_wstrb;
+    logic [CCX_BUS_DATA_WIDTH-1:0] memory_wide_rdata;
+    logic memory_wide_error;
 
     logic clint_valid;
     logic clint_ready;
@@ -295,6 +307,8 @@ module openrv64_platform #(
                     `OPENRV64_BUS_AXI : `OPENRV64_BUS_GEN),
         .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
+        .RETIRE_DEPTH(RETIRE_DEPTH),
+        .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(ENABLE_RV64A),
         .L1D_CACHEABLE_BASE(`OPENRV64_SOC_MEMORY_BASE),
@@ -400,7 +414,10 @@ module openrv64_platform #(
                 g_ccx_l2_platform
             openrv64_soc_ccx_l2_bridge #(
                 .L2_BYTES(L2_BYTES),
-                .L2_WAYS(L2_WAYS)
+                .L2_WAYS(L2_WAYS),
+                .BUS_TYPE(CCX_BUS_TYPE),
+                .BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
+                .MEMORY_BYTES(MEMORY_BYTES)
             ) u_ccx_l2 (
                 .clk_i(clk_i),
                 .rst_ni(core_rst_no),
@@ -443,7 +460,15 @@ module openrv64_platform #(
                 .mem_wdata_o(platform_mem_wdata),
                 .mem_wstrb_o(platform_mem_wstrb),
                 .mem_rdata_i(platform_mem_rdata),
-                .mem_error_i(platform_mem_error)
+                .mem_error_i(platform_mem_error),
+                .ram_valid_o(memory_wide_valid),
+                .ram_ready_i(memory_wide_ready),
+                .ram_write_o(memory_wide_write),
+                .ram_addr_o(memory_wide_addr),
+                .ram_wdata_o(memory_wide_wdata),
+                .ram_wstrb_o(memory_wide_wstrb),
+                .ram_rdata_i(memory_wide_rdata),
+                .ram_error_i(memory_wide_error)
             );
 
             assign core_mem_ready = 1'b0;
@@ -472,6 +497,12 @@ module openrv64_platform #(
             assign memory_ccx_wstrb = 0;
             assign memory_ccx_resp_ready = 1'b0;
         end else begin : g_scalar_platform
+            assign memory_wide_valid = 1'b0;
+            assign memory_wide_write = 1'b0;
+            assign memory_wide_addr = 64'd0;
+            assign memory_wide_wdata = 0;
+            assign memory_wide_wstrb = 0;
+
             assign platform_mem_valid = core_mem_valid && core_rst_no;
             assign platform_mem_write = core_mem_write;
             assign platform_mem_addr = core_mem_addr;
@@ -589,7 +620,8 @@ module openrv64_platform #(
     );
 
     openrv64_soc_memory #(
-        .MEM_BYTES(MEMORY_BYTES)
+        .MEM_BYTES(MEMORY_BYTES),
+        .WIDE_DATA_WIDTH(CCX_BUS_DATA_WIDTH)
     ) u_memory (
         .clk_i(clk_i),
         .rst_ni(soc_rst_no),
@@ -600,6 +632,14 @@ module openrv64_platform #(
         .mem_wdata_i(memory_wdata),
         .mem_wstrb_i(memory_wstrb),
         .mem_rdata_o(memory_rdata),
+        .wide_valid_i(memory_wide_valid),
+        .wide_ready_o(memory_wide_ready),
+        .wide_write_i(memory_wide_write),
+        .wide_addr_i(memory_wide_addr),
+        .wide_wdata_i(memory_wide_wdata),
+        .wide_wstrb_i(memory_wide_wstrb),
+        .wide_rdata_o(memory_wide_rdata),
+        .wide_error_o(memory_wide_error),
         .ccx_req_valid_i(memory_ccx_req_valid),
         .ccx_req_ready_o(memory_ccx_req_ready),
         .ccx_req_hart_id_i(memory_ccx_req_hart_id),

@@ -6,6 +6,7 @@ module tb_exec_fpu_rv64fd;
 
     localparam integer TAG_WIDTH = 8;
     localparam integer MAX_EXPECTED = 64;
+    localparam integer TAG_COUNT = 1 << TAG_WIDTH;
 
     reg clk;
     reg rst_n;
@@ -30,14 +31,20 @@ module tb_exec_fpu_rv64fd;
     wire [4:0] fflags;
     wire unsupported;
 
-    reg [TAG_WIDTH-1:0] expected_tag [0:MAX_EXPECTED-1];
-    reg expected_is_int [0:MAX_EXPECTED-1];
-    reg [63:0] expected_fp [0:MAX_EXPECTED-1];
-    reg [63:0] expected_int [0:MAX_EXPECTED-1];
-    reg [4:0] expected_flags [0:MAX_EXPECTED-1];
-    reg expected_unsupported [0:MAX_EXPECTED-1];
-    integer expected_head;
-    integer expected_tail;
+    reg expected_valid [0:TAG_COUNT-1];
+    reg expected_is_int [0:TAG_COUNT-1];
+    reg [63:0] expected_fp [0:TAG_COUNT-1];
+    reg [63:0] expected_int [0:TAG_COUNT-1];
+    reg [4:0] expected_flags [0:TAG_COUNT-1];
+    reg expected_unsupported [0:TAG_COUNT-1];
+    reg [TAG_WIDTH-1:0] completion_order [0:MAX_EXPECTED-1];
+    reg [31:0] acceptance_cycle [0:TAG_COUNT-1];
+    reg [31:0] completion_cycle [0:TAG_COUNT-1];
+    reg [31:0] cycle_count;
+    integer expected_count;
+    integer completion_order_tail;
+    integer expected_index;
+    integer completion_base;
 
     openrv64_exec_fpu_rv64fd #(.TAG_WIDTH(TAG_WIDTH)) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
@@ -56,6 +63,13 @@ module tb_exec_fpu_rv64fd;
         forever #5 clk = ~clk;
     end
 
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            cycle_count <= 32'd0;
+        else
+            cycle_count <= cycle_count + 32'd1;
+    end
+
     task automatic queue_expected;
         input [TAG_WIDTH-1:0] exp_tag;
         input exp_is_int;
@@ -64,15 +78,17 @@ module tb_exec_fpu_rv64fd;
         input [4:0] exp_flags;
         input exp_unsupported;
         begin
-            if (expected_tail >= MAX_EXPECTED)
-                $fatal(1, "expected queue overflow");
-            expected_tag[expected_tail] = exp_tag;
-            expected_is_int[expected_tail] = exp_is_int;
-            expected_fp[expected_tail] = exp_fp;
-            expected_int[expected_tail] = exp_int;
-            expected_flags[expected_tail] = exp_flags;
-            expected_unsupported[expected_tail] = exp_unsupported;
-            expected_tail = expected_tail + 1;
+            if (expected_count >= MAX_EXPECTED)
+                $fatal(1, "expected scoreboard overflow");
+            if (expected_valid[exp_tag])
+                $fatal(1, "duplicate live FPU tag=%0d", exp_tag);
+            expected_valid[exp_tag] = 1'b1;
+            expected_is_int[exp_tag] = exp_is_int;
+            expected_fp[exp_tag] = exp_fp;
+            expected_int[exp_tag] = exp_int;
+            expected_flags[exp_tag] = exp_flags;
+            expected_unsupported[exp_tag] = exp_unsupported;
+            expected_count = expected_count + 1;
         end
     endtask
 
@@ -104,12 +120,23 @@ module tb_exec_fpu_rv64fd;
         input [63:0] in_src2;
         input [63:0] in_src3;
         begin
+            tag = in_tag;
+            op = in_op;
+            fmt = in_fmt;
+            rm = in_rm;
+            frm = in_frm;
+            src1 = in_src1;
+            src2 = in_src2;
+            src3 = in_src3;
+            valid = 1'b1;
+            #0;
             if (!ready)
                 $fatal(1,
                     "pipelined FPU backpressured request tag=%0d without output stall",
                     in_tag);
-            send(in_tag, in_op, in_fmt, in_rm, in_frm,
-                 in_src1, in_src2, in_src3);
+            @(posedge clk);
+            @(negedge clk);
+            valid = 1'b0;
         end
     endtask
 
@@ -122,11 +149,9 @@ module tb_exec_fpu_rv64fd;
         input [63:0] in_src1;
         input [63:0] in_src2;
         input [63:0] in_src3;
+        integer timeout;
         begin
-            while (!ready) begin
-                @(posedge clk);
-                @(negedge clk);
-            end
+            timeout = 0;
             tag = in_tag;
             op = in_op;
             fmt = in_fmt;
@@ -136,6 +161,15 @@ module tb_exec_fpu_rv64fd;
             src2 = in_src2;
             src3 = in_src3;
             valid = 1'b1;
+            while (!ready) begin
+                @(posedge clk);
+                @(negedge clk);
+                timeout = timeout + 1;
+                if (timeout >= 500)
+                    $fatal(1,
+                        "timeout waiting for FPU input ready tag=%0d op=%0d",
+                        in_tag, in_op);
+            end
             @(posedge clk);
             @(negedge clk);
             valid = 1'b0;
@@ -146,37 +180,44 @@ module tb_exec_fpu_rv64fd;
         integer timeout;
         begin
             timeout = 0;
-            while ((expected_head != expected_tail) && timeout < 200) begin
+            while ((expected_count != 0) && timeout < 200) begin
                 @(posedge clk);
                 @(negedge clk);
                 timeout = timeout + 1;
             end
-            if (expected_head != expected_tail)
-                $fatal(1, "timeout draining expected queue head=%0d tail=%0d",
-                       expected_head, expected_tail);
+            if (expected_count != 0)
+                $fatal(1, "timeout draining expected scoreboard count=%0d",
+                       expected_count);
         end
     endtask
 
     always @(posedge clk) begin
-        if (rst_n && result_valid && result_ready) begin
-            if (expected_head >= expected_tail)
+        if (rst_n && !flush && valid && ready)
+            acceptance_cycle[tag] = cycle_count;
+        if (rst_n && !flush && result_valid && result_ready) begin
+            if (!expected_valid[result_tag])
                 $fatal(1, "unexpected FPU result tag=%0d", result_tag);
-            if (result_tag !== expected_tag[expected_head] ||
-                result_is_int !== expected_is_int[expected_head] ||
-                fp_result !== expected_fp[expected_head] ||
-                int_result !== expected_int[expected_head] ||
-                fflags !== expected_flags[expected_head] ||
-                unsupported !== expected_unsupported[expected_head]) begin
+            if (result_is_int !== expected_is_int[result_tag] ||
+                fp_result !== expected_fp[result_tag] ||
+                int_result !== expected_int[result_tag] ||
+                fflags !== expected_flags[result_tag] ||
+                unsupported !== expected_unsupported[result_tag]) begin
                 $fatal(1,
-                    "FPU result[%0d] tag=%0d/%0d intkind=%0b/%0b fp=%016x/%016x int=%016x/%016x flags=%02x/%02x unsup=%0b/%0b",
-                    expected_head, result_tag, expected_tag[expected_head],
-                    result_is_int, expected_is_int[expected_head],
-                    fp_result, expected_fp[expected_head],
-                    int_result, expected_int[expected_head],
-                    fflags, expected_flags[expected_head],
-                    unsupported, expected_unsupported[expected_head]);
+                    "FPU tag=%0d intkind=%0b/%0b fp=%016x/%016x int=%016x/%016x flags=%02x/%02x unsup=%0b/%0b",
+                    result_tag,
+                    result_is_int, expected_is_int[result_tag],
+                    fp_result, expected_fp[result_tag],
+                    int_result, expected_int[result_tag],
+                    fflags, expected_flags[result_tag],
+                    unsupported, expected_unsupported[result_tag]);
             end
-            expected_head = expected_head + 1;
+            if (completion_order_tail >= MAX_EXPECTED)
+                $fatal(1, "completion-order log overflow");
+            completion_order[completion_order_tail] = result_tag;
+            completion_order_tail = completion_order_tail + 1;
+            completion_cycle[result_tag] = cycle_count;
+            expected_valid[result_tag] = 1'b0;
+            expected_count = expected_count - 1;
         end
     end
 
@@ -193,15 +234,21 @@ module tb_exec_fpu_rv64fd;
         src2 = 64'd0;
         src3 = 64'd0;
         result_ready = 1'b1;
-        expected_head = 0;
-        expected_tail = 0;
+        expected_count = 0;
+        completion_order_tail = 0;
+        for (expected_index = 0;
+             expected_index < TAG_COUNT;
+             expected_index = expected_index + 1)
+            expected_valid[expected_index] = 1'b0;
 
         rst_n = 1'b0;
         repeat (3) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
 
-        // Three consecutive requests prove one-per-cycle pipeline acceptance.
+        // A fast result may overtake an older iterative operation.  Tags, not
+        // issue order, identify completion.
+        completion_base = completion_order_tail;
         queue_expected(8'd1, 1'b0, 64'h400e_0000_0000_0000,
                        64'd0, 5'd0, 1'b0);
         send(8'd1, `OPENRV64_FP_OP_ADD, `RV64_FP_FMT_D,
@@ -217,6 +264,58 @@ module tb_exec_fpu_rv64fd;
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'hbff0_0000_0000_0000, 64'd0, 64'd0);
         wait_empty();
+        if ((completion_order[completion_base] != 8'd1) ||
+            (completion_order[completion_base+1] != 8'd3) ||
+            (completion_order[completion_base+2] != 8'd2))
+            $fatal(1,
+                "fast completion did not overtake MUL.D: order=%0d,%0d,%0d",
+                completion_order[completion_base],
+                completion_order[completion_base+1],
+                completion_order[completion_base+2]);
+
+        // Isolated requests pin the no-contention latency of each exit.
+        queue_expected(8'd48, 1'b0, 64'hffff_ffff_4058_0000,
+                       64'd0, 5'd0, 1'b0);
+        send(8'd48, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'hffff_ffff_3fc0_0000, 64'hffff_ffff_4010_0000,
+             64'd0);
+        wait_empty();
+        if ((completion_cycle[8'd48] - acceptance_cycle[8'd48]) != 7)
+            $fatal(1, "FMUL.S handshake latency was %0d, expected 7",
+                completion_cycle[8'd48] - acceptance_cycle[8'd48]);
+
+        queue_expected(8'd49, 1'b0, 64'hffff_ffff_3fb5_04f3,
+                       64'd0, `RV64_FP_FFLAG_NX, 1'b0);
+        send(8'd49, `OPENRV64_FP_OP_SQRT, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'hffff_ffff_4000_0000, 64'd0, 64'd0);
+        wait_empty();
+        if ((completion_cycle[8'd49] - acceptance_cycle[8'd49]) != 8)
+            $fatal(1, "FSQRT.S handshake latency was %0d, expected 8",
+                completion_cycle[8'd49] - acceptance_cycle[8'd49]);
+
+        queue_expected(8'd50, 1'b0, 64'h4000_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send(8'd50, `OPENRV64_FP_OP_ADD, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff0_0000_0000_0000, 64'h3ff0_0000_0000_0000,
+             64'd0);
+        wait_empty();
+        if ((completion_cycle[8'd50] - acceptance_cycle[8'd50]) != 1)
+            $fatal(1, "fast-lane latency was %0d, expected 1",
+                completion_cycle[8'd50] - acceptance_cycle[8'd50]);
+
+        queue_expected(8'd51, 1'b0, 64'h4002_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send(8'd51, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h3ff8_0000_0000_0000,
+             64'd0);
+        wait_empty();
+        if ((completion_cycle[8'd51] - acceptance_cycle[8'd51]) != 15)
+            $fatal(1, "FMUL.D handshake latency was %0d, expected 15",
+                completion_cycle[8'd51] - acceptance_cycle[8'd51]);
 
         queue_expected(8'd4, 1'b0, 64'hffff_ffff_4070_0000,
                        64'd0, 5'd0, 1'b0);
@@ -293,8 +392,9 @@ module tb_exec_fpu_rv64fd;
              64'h3ff0_0000_0000_0000, 64'h4000_0000_0000_0000, 64'd0);
         wait_empty();
 
-        // Different long operations enter on consecutive cycles and retain
-        // request order through the fixed-latency elastic pipeline.
+        // Iterative operations enter on consecutive cycles.  Binary32
+        // multiply/square-root taps and resolved special cases may complete
+        // before older operations still travelling toward the final stage.
         queue_expected(8'd20, 1'b0, 64'h3ff6_a09e_667f_3bcd,
                        64'd0, `RV64_FP_FFLAG_NX, 1'b0);
         send_unstalled(8'd20, `OPENRV64_FP_OP_SQRT, `RV64_FP_FMT_D,
@@ -442,11 +542,17 @@ module tb_exec_fpu_rv64fd;
         send(8'd18, `OPENRV64_FP_OP_SUB, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff8_0000_0000_0000, 64'h4002_0000_0000_0000, 64'd0);
+        queue_expected(8'd46, 1'b0, 64'h3fe0_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send(8'd46, `OPENRV64_FP_OP_DIV, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff0_0000_0000_0000, 64'h4000_0000_0000_0000,
+             64'd0);
         while (!result_valid) begin
             @(posedge clk);
             @(negedge clk);
         end
-        repeat (3) begin
+        repeat (18) begin
             reg [63:0] held_fp;
             reg [TAG_WIDTH-1:0] held_tag;
             held_fp = fp_result;
@@ -459,15 +565,22 @@ module tb_exec_fpu_rv64fd;
         result_ready = 1'b1;
         wait_empty();
 
-        // Flush discards every in-flight stage.
-        send(8'd19, `OPENRV64_FP_OP_ADD, `RV64_FP_FMT_D,
+        // Flush discards both the iterative pipeline and fast lane.
+        result_ready = 1'b0;
+        send(8'd19, `OPENRV64_FP_OP_DIV, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
-             64'h3ff0_0000_0000_0000, 64'h3ff0_0000_0000_0000, 64'd0);
+             64'h3ff0_0000_0000_0000, 64'h4000_0000_0000_0000,
+             64'd0);
+        send(8'd47, `OPENRV64_FP_OP_ADD, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff0_0000_0000_0000, 64'h3ff0_0000_0000_0000,
+             64'd0);
         flush = 1'b1;
         @(posedge clk);
         @(negedge clk);
         flush = 1'b0;
-        repeat (5) begin
+        result_ready = 1'b1;
+        repeat (18) begin
             @(posedge clk);
             @(negedge clk);
             if (result_valid)

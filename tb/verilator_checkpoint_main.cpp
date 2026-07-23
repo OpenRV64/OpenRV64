@@ -106,8 +106,19 @@ void reopen_restored_traces(int argc, char** argv, Vtb_opensbi* top) {
 int main(int argc, char** argv, char**) {
     Verilated::debug(0);
     const std::unique_ptr<VerilatedContext> context{new VerilatedContext};
-    context->threads(1);
+    const char* const verilator_threads_text =
+        plusarg_value(argc, argv, "+verilator_threads=");
+    const uint32_t verilator_threads =
+        verilator_threads_text
+            ? parse_cycle(verilator_threads_text, "+verilator_threads")
+            : 1;
+    if (verilator_threads == 0) {
+        std::cerr << "+verilator_threads must be positive\n";
+        return EXIT_FAILURE;
+    }
+    context->threads(verilator_threads);
     context->commandArgs(argc, argv);
+    std::cout << "VERILATOR THREADS value=" << verilator_threads << '\n';
 
     const std::unique_ptr<Vtb_opensbi> top{
         new Vtb_opensbi{context.get(), ""}};
@@ -120,6 +131,8 @@ int main(int argc, char** argv, char**) {
         plusarg_value(argc, argv, "+checkpoint_cycles=");
     const char* const stop_cycles_text =
         plusarg_value(argc, argv, "+stop_cycles=");
+    const char* const max_cycles_override_text =
+        plusarg_value(argc, argv, "+max_cycles_override=");
     const bool checkpoint_exit =
         has_plusarg(argc, argv, "+checkpoint_exit");
     const uint32_t checkpoint_cycle =
@@ -131,6 +144,13 @@ int main(int argc, char** argv, char**) {
 
     if (restore_path) {
         restore_model(restore_path, context.get(), top.get());
+        if (max_cycles_override_text) {
+            top->rootp->tb_opensbi__DOT__max_cycles =
+                parse_cycle(max_cycles_override_text,
+                            "+max_cycles_override");
+            std::cout << "MAX CYCLES OVERRIDDEN value="
+                      << top->rootp->tb_opensbi__DOT__max_cycles << '\n';
+        }
         reopen_restored_traces(argc, argv, top.get());
         std::cout << "CHECKPOINT RESTORED path=" << restore_path
                   << " cycle=" << top->checkpoint_cycle_o

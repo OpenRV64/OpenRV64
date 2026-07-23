@@ -11,17 +11,23 @@
 `include "core/decode/defs/br-defs.v"
 `include "core/except/except-defs.v"
 
-// Tagged pipelined MEM lane, with eight entries by default.  Independent loads
+// Tagged pipelined MEM lane.  Independent loads
 // can be issued and launched on consecutive cycles.  Native L1D responses
 // carry the queue tag back to the matching instruction, while backend retire
 // preserves architectural order.  Stores launch only at ordered head.
-// While a posted store awaits its response, younger non-overlapping loads may
-// pass; loads fully covered by its byte strobes forward from the retained
-// store word.
-// Another store or a partially covered load remains interlocked.  By default
-// the request handshake completes the store architecturally; a later failed
-// response is retained as an imprecise async abort.  RV64A remains deliberately
-// serialized, but uses the same decoupled request/response port.
+// The store-side instance is the speculative pre-retire store queue: allocation
+// retains the complete store payload, but no store request may launch until its
+// instruction is the ordered retirement head.  Request acceptance means only
+// that translation accepted the tagged operation.  Architectural completion
+// waits for the response proving translation, PMP, and L1D store-buffer
+// admission.  The physical write remains posted below that committed boundary.
+// While an admitted store awaits its response, loads fully covered by its byte
+// strobes may forward from the retained store word.
+// A peer instance may export the same retained store record so split load and
+// store lanes preserve that forwarding/interlock behavior without separate
+// lane-specific LSU implementations.
+// Another store or a partially covered load remains interlocked.  RV64A remains
+// deliberately serialized, but uses the same decoupled request/response port.
 module openrv64_exec_pipe_mem #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer LSU_DEPTH = `OPENRV64_LSU_OUTSTANDING,
@@ -80,6 +86,14 @@ module openrv64_exec_pipe_mem #(
                                         pending_head_id_o,
     output wire                         pending_head_ordered_o,
     output wire                         queue_busy_o,
+    input  wire                         forward_store_valid_i,
+    input  wire [`RV64_XLEN-1:0]        forward_store_addr_i,
+    input  wire [`RV64_XLEN-1:0]        forward_store_wdata_i,
+    input  wire [7:0]                   forward_store_wstrb_i,
+    output wire                         forward_store_valid_o,
+    output wire [`RV64_XLEN-1:0]        forward_store_addr_o,
+    output wire [`RV64_XLEN-1:0]        forward_store_wdata_o,
+    output wire [7:0]                   forward_store_wstrb_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i
 );
 
@@ -149,7 +163,7 @@ module openrv64_exec_pipe_mem #(
 
     reg slot_valid_q [0:LSU_DEPTH-1];
     reg slot_sent_q [0:LSU_DEPTH-1];
-    reg slot_posted_store_q [0:LSU_DEPTH-1];
+    reg slot_ordered_store_q [0:LSU_DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] slot_id_q [0:LSU_DEPTH-1];
     reg [RETIRE_SLOT_WIDTH-1:0] slot_retire_q [0:LSU_DEPTH-1];
     reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
@@ -178,7 +192,6 @@ module openrv64_exec_pipe_mem #(
 
     wire issue_is_atomic = payload_is_atomic(issue_payload_i);
     wire [LSU_DEPTH-1:0] simple_valid_vector;
-    wire [LSU_DEPTH-1:0] posted_store_pending_vector;
     genvar simple_valid_index;
     generate
         for (simple_valid_index = 0;
@@ -186,13 +199,13 @@ module openrv64_exec_pipe_mem #(
              simple_valid_index = simple_valid_index + 1) begin : g_simple_valid
             assign simple_valid_vector[simple_valid_index] =
                 slot_valid_q[simple_valid_index];
-            assign posted_store_pending_vector[simple_valid_index] =
-                slot_valid_q[simple_valid_index] &&
-                slot_posted_store_q[simple_valid_index];
         end
     endgenerate
     wire simple_any_valid = |simple_valid_vector;
-    assign posted_store_pending_o = |posted_store_pending_vector;
+    // The old implementation exposed untranslated request capture as a posted
+    // architectural store.  Posting now begins only in L1D after the tagged
+    // response, so there is no pre-translation posted store to drain here.
+    assign posted_store_pending_o = 1'b0;
     assign issue_ready_o = issue_is_atomic ?
         (!atomic_active_q && !simple_any_valid && output_available) :
         (!atomic_active_q && !slot_valid_q[issue_tail_q]);
@@ -250,57 +263,57 @@ module openrv64_exec_pipe_mem #(
     wire normal_resp_fire = !atomic_active_q && mem_resp_valid_i &&
         mem_resp_ready_o && (mem_resp_tag_i < LSU_DEPTH) &&
         slot_valid_q[mem_resp_tag_i] && slot_sent_q[mem_resp_tag_i];
-    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
-        posted_response_payload = slot_payload_q[mem_resp_tag_i];
-    wire posted_response_fault = normal_resp_fire &&
-        slot_posted_store_q[mem_resp_tag_i] &&
-        (mem_error_i || mem_page_fault_i);
-    assign async_store_fault_o = posted_response_fault;
-    assign async_store_page_fault_o = posted_response_fault &&
-                                     mem_page_fault_i;
-    assign async_store_fault_pc_o = posted_response_payload[
-        I_PC +: `RV64_XLEN];
-    assign async_store_fault_addr_o =
-        posted_response_payload[I_RS1_DATA +: `RV64_XLEN] +
-        posted_response_payload[I_IMM +: `RV64_XLEN];
-    assign async_store_fault_trace_o = posted_response_payload[I_TRACE +: 64];
-    assign async_store_fault_instr_o = posted_response_payload[
-        I_INSTR +: `RV64_INSTR_WIDTH];
+    // Translation/PMP failures are precise store completions.  These legacy
+    // async outputs remain tied off for interface compatibility; lower-level
+    // post-commit write failures require a separate machine-check path.
+    assign async_store_fault_o = 1'b0;
+    assign async_store_page_fault_o = 1'b0;
+    assign async_store_fault_pc_o = {`RV64_XLEN{1'b0}};
+    assign async_store_fault_addr_o = {`RV64_XLEN{1'b0}};
+    assign async_store_fault_trace_o = 64'd0;
+    assign async_store_fault_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
     wire request_immediate = request_slot_valid &&
         (request_illegal || request_instr_access_fault ||
          request_instr_page_fault ||
          !(request_mem_read || request_mem_write) ||
          !request_lsu_valid || request_lsu_illegal ||
          request_lsu_misaligned || !mem_access_allowed_i);
-    wire posted_store_candidate = (ENABLE_POSTED_STORES != 0) &&
-                                  request_mem_write;
     wire [7:0] request_load_mask =
         access_byte_mask(request_access_size, request_bus_addr[2:0]);
     wire pending_store_same_word = store_inflight_q &&
         (request_bus_addr[`RV64_XLEN-1:3] ==
          store_addr_q[`RV64_XLEN-1:3]);
-    wire pending_store_load_overlap = store_inflight_q &&
+    wire local_store_load_overlap = store_inflight_q &&
         request_mem_read && pending_store_same_word &&
         (|(request_load_mask & store_wstrb_q));
+    wire forward_store_same_word = forward_store_valid_i &&
+        (request_bus_addr[`RV64_XLEN-1:3] ==
+         forward_store_addr_i[`RV64_XLEN-1:3]);
+    wire external_store_load_overlap = forward_store_valid_i &&
+        request_mem_read && forward_store_same_word &&
+        (|(request_load_mask & forward_store_wstrb_i));
+    wire pending_store_load_overlap =
+        external_store_load_overlap || local_store_load_overlap;
+    wire [`RV64_XLEN-1:0] pending_store_wdata =
+        external_store_load_overlap ? forward_store_wdata_i : store_wdata_q;
+    wire [7:0] pending_store_wstrb =
+        external_store_load_overlap ? forward_store_wstrb_i : store_wstrb_q;
     wire request_store_forwardable =
         (STORE_FORWARD_SIZE != {`RV64_XLEN{1'b0}}) &&
         (request_bus_addr >= STORE_FORWARD_BASE) &&
         (request_bus_addr < (STORE_FORWARD_BASE + STORE_FORWARD_SIZE));
     wire pending_store_load_covered = pending_store_load_overlap &&
         request_store_forwardable &&
-        ((request_load_mask & store_wstrb_q) == request_load_mask);
+        ((request_load_mask & pending_store_wstrb) == request_load_mask);
     // The core-to-bus request channel admits only one untranslated request at
     // a time.  Once a store has reached the L1, its byte-masked line record
     // preserves program order, so a younger store need not wait for the older
     // store's eventual CCX drain response.  Loads which overlap the one store
     // still awaiting L1 admission either forward below or remain blocked.
-    wire pending_store_order_block = store_inflight_q &&
-        pending_store_load_overlap;
+    wire pending_store_order_block = pending_store_load_overlap;
     wire simple_request_valid = request_slot_valid && !request_immediate &&
         request_bus_valid && !pending_store_order_block &&
-        (!request_mem_write || request_order_match) &&
-        (!posted_store_candidate ||
-         (output_available && !normal_resp_fire));
+        (!request_mem_write || request_order_match);
 
     wire [`RV64_INSTR_WIDTH-1:0] atomic_instr =
         atomic_payload_q[I_INSTR +: `RV64_INSTR_WIDTH];
@@ -379,16 +392,26 @@ module openrv64_exec_pipe_mem #(
                                   request_effective_addr;
     assign mem_size_o = atomic_active_q ? atomic_access_size :
                         request_access_size;
-    assign pending_head_valid_o = atomic_active_q || request_slot_valid;
+    // A store whose untranslated request has fired remains the oldest memory
+    // ordering point until its precise response arrives.  Expose that retained
+    // identity so the peer load lane cannot pass it merely because send_head
+    // advanced to the next speculative queue entry.
+    assign pending_head_valid_o = atomic_active_q || store_inflight_q ||
+                                  request_slot_valid;
     assign pending_head_id_o = atomic_active_q ? atomic_id_q :
+                               store_inflight_q ? slot_id_q[store_tag_q] :
                                slot_id_q[send_head_q];
     assign pending_head_ordered_o = atomic_active_q ||
+                                    store_inflight_q ||
                                     (request_slot_valid &&
                                      request_mem_write);
     assign queue_busy_o = atomic_active_q || simple_any_valid;
+    assign forward_store_valid_o = store_inflight_q;
+    assign forward_store_addr_o = store_addr_q;
+    assign forward_store_wdata_o = store_wdata_q;
+    assign forward_store_wstrb_o = store_wstrb_q;
     wire mem_request_fire = mem_valid_o && mem_ready_i;
     wire simple_request_fire = mem_request_fire && !atomic_active_q;
-    wire posted_store_fire = simple_request_fire && posted_store_candidate;
     wire atomic_request_fire = mem_request_fire && atomic_active_q;
     assign mem_resp_ready_o = atomic_active_q ? atomic_req_inflight_q :
                               output_available;
@@ -452,7 +475,8 @@ module openrv64_exec_pipe_mem #(
     openrv64_exec_lsu_rv64i u_completion_lsu (
         .op_sel_i(completion_lsu_op), .base_i(completion_rs1_data),
         .offset_i(completion_imm), .store_data_i(completion_rs2_data),
-        .mem_rdata_i(store_forward_completion ? store_wdata_q : mem_rdata_i),
+        .mem_rdata_i(store_forward_completion ?
+                     pending_store_wdata : mem_rdata_i),
         .valid_o(completion_lsu_valid),
         .illegal_o(completion_lsu_illegal),
         .misaligned_o(completion_lsu_misaligned),
@@ -571,7 +595,7 @@ module openrv64_exec_pipe_mem #(
                  slot_index = slot_index + 1) begin
                 slot_valid_q[slot_index] <= 1'b0;
                 slot_sent_q[slot_index] <= 1'b0;
-                slot_posted_store_q[slot_index] <= 1'b0;
+                slot_ordered_store_q[slot_index] <= 1'b0;
                 slot_id_q[slot_index] <=
                     {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
                 slot_retire_q[slot_index] <= {RETIRE_SLOT_WIDTH{1'b0}};
@@ -585,32 +609,43 @@ module openrv64_exec_pipe_mem #(
             atomic_started_q <= 1'b0;
             atomic_req_inflight_q <= 1'b0;
             store_inflight_q <= 1'b0;
-            complete_valid_q <= 1'b0;
+            // A sent store is older than any speculative redirect because it
+            // could launch only at ordered head. If its one-cycle response
+            // coincides with that redirect, retain the precise completion;
+            // otherwise the accepted response would be lost permanently.
+            if (normal_resp_fire &&
+                slot_ordered_store_q[mem_resp_tag_i]) begin
+                complete_valid_q <= 1'b1;
+                complete_id_q <= slot_id_q[mem_resp_tag_i];
+                complete_slot_q <= slot_retire_q[mem_resp_tag_i];
+                complete_payload_q <= completion_data;
+            end else begin
+                complete_valid_q <= 1'b0;
+            end
             for (slot_index = 0; slot_index < LSU_DEPTH;
                  slot_index = slot_index + 1) begin
                 if (slot_valid_q[slot_index] &&
                     slot_sent_q[slot_index] &&
-                    slot_posted_store_q[slot_index] &&
+                    slot_ordered_store_q[slot_index] &&
                     !(normal_resp_fire &&
                       (mem_resp_tag_i == LSU_TAG_WIDTH'(slot_index)))) begin
-                    // Every admitted posted store is irrevocable.  Preserve
-                    // all of them, not only the newest forwarding record.
+                    // A sent store was authorized only when it was the ordered
+                    // architectural head.  Preserve that older operation
+                    // across a younger redirect until its precise response.
                     slot_valid_q[slot_index] <= 1'b1;
                     slot_sent_q[slot_index] <= 1'b1;
-                    slot_posted_store_q[slot_index] <= 1'b1;
+                    slot_ordered_store_q[slot_index] <= 1'b1;
                 end else begin
                     slot_valid_q[slot_index] <= 1'b0;
                     slot_sent_q[slot_index] <= 1'b0;
-                    slot_posted_store_q[slot_index] <= 1'b0;
+                    slot_ordered_store_q[slot_index] <= 1'b0;
                 end
             end
 
-            // Ordered posted stores are already architecturally committed and
-            // cannot be cancelled by a younger redirect.  The newest store
-            // tag defines the end of the retained contiguous tag range; the
-            // loop above keeps every still-outstanding posted store in it.
-            // Speculative younger loads are cancelled and drained by the bus.
-            if (store_inflight_q && slot_posted_store_q[store_tag_q] &&
+            // The newest sent ordered store tag defines the end of the retained
+            // contiguous tag range. Speculative younger loads are cancelled
+            // and drained by the bus.
+            if (store_inflight_q && slot_ordered_store_q[store_tag_q] &&
                 !(normal_resp_fire &&
                   (mem_resp_tag_i == store_tag_q))) begin
                 issue_tail_q <= next_tag(store_tag_q);
@@ -618,7 +653,7 @@ module openrv64_exec_pipe_mem #(
                 store_inflight_q <= 1'b1;
                 slot_valid_q[store_tag_q] <= 1'b1;
                 slot_sent_q[store_tag_q] <= 1'b1;
-                slot_posted_store_q[store_tag_q] <= 1'b1;
+                slot_ordered_store_q[store_tag_q] <= 1'b1;
             end
         end else begin
             if (complete_valid_q && complete_ready_i)
@@ -627,7 +662,7 @@ module openrv64_exec_pipe_mem #(
             if (issue_simple_fire) begin
                 slot_valid_q[issue_tail_q] <= 1'b1;
                 slot_sent_q[issue_tail_q] <= 1'b0;
-                slot_posted_store_q[issue_tail_q] <= 1'b0;
+                slot_ordered_store_q[issue_tail_q] <= 1'b0;
                 slot_id_q[issue_tail_q] <= issue_id_i;
                 slot_retire_q[issue_tail_q] <= issue_slot_i;
                 slot_payload_q[issue_tail_q] <= issue_payload_i;
@@ -655,8 +690,7 @@ module openrv64_exec_pipe_mem #(
                     store_addr_q <= request_bus_addr;
                     store_wdata_q <= request_bus_wdata;
                     store_wstrb_q <= request_bus_wstrb;
-                    if (ENABLE_POSTED_STORES != 0)
-                        slot_posted_store_q[send_head_q] <= 1'b1;
+                    slot_ordered_store_q[send_head_q] <= 1'b1;
                 end
             end
 
@@ -668,22 +702,12 @@ module openrv64_exec_pipe_mem #(
             if (normal_resp_fire) begin
                 slot_valid_q[mem_resp_tag_i] <= 1'b0;
                 slot_sent_q[mem_resp_tag_i] <= 1'b0;
-                slot_posted_store_q[mem_resp_tag_i] <= 1'b0;
+                slot_ordered_store_q[mem_resp_tag_i] <= 1'b0;
                 if (store_inflight_q && (store_tag_q == mem_resp_tag_i))
                     store_inflight_q <= 1'b0;
-                if (!slot_posted_store_q[mem_resp_tag_i]) begin
-                    complete_valid_q <= 1'b1;
-                    complete_id_q <= slot_id_q[mem_resp_tag_i];
-                    complete_slot_q <= slot_retire_q[mem_resp_tag_i];
-                    complete_payload_q <= completion_data;
-                end
-            end else if (posted_store_fire) begin
-                // The ordered request handshake is architectural completion.
-                // The eventual response releases the LSU tag; a response
-                // fault is reported separately as an imprecise async abort.
                 complete_valid_q <= 1'b1;
-                complete_id_q <= slot_id_q[send_head_q];
-                complete_slot_q <= slot_retire_q[send_head_q];
+                complete_id_q <= slot_id_q[mem_resp_tag_i];
+                complete_slot_q <= slot_retire_q[mem_resp_tag_i];
                 complete_payload_q <= completion_data;
             end else if (local_completion) begin
                 slot_valid_q[send_head_q] <= 1'b0;

@@ -1,10 +1,10 @@
 # RV64F/RV64D ISA and standalone execution pipeline
 
-This document defines the floating-point ISA contract added to OpenRV64 and
-the deliberately unintegrated first execution pipeline.  The encoding headers
-cover the ratified F and D instruction spaces.  The execution block is a
-smaller, synthesizable implementation subset; the core does **not** advertise
-F or D yet.
+This document defines the floating-point ISA contract added to OpenRV64, the
+architectural floating-point register file, and the deliberately unintegrated
+first execution pipeline.  The encoding headers cover the ratified F and D
+instruction spaces.  The register file and execution block are synthesizable,
+but the core does **not** advertise F or D yet.
 
 ## Architectural contract
 
@@ -25,6 +25,13 @@ The intended architectural configuration is RV64 with `FLEN=64`:
 
 The Verilog encoding contract is in `rtl/core/isa/rv64-f.v` and
 `rtl/core/isa/rv64-d.v`.
+
+The architectural FPR is `openrv64_rv64fd_fpr` in
+`rtl/core/regs/rv64-fd-fpr.v`.  It is a 32-entry identity-mapped instance of
+the shared parameterized register file, configured for three combinational
+reads and one ordered write.  There is no hardwired-zero FPR: `f0` is ordinary
+writable state.  The file stores values bit-for-bit; binary32 producers remain
+responsible for NaN boxing before writeback.
 
 ### Major encodings
 
@@ -66,26 +73,54 @@ selectors include RV64's signed and unsigned 64-bit `L`/`LU` forms.
 ## Standalone execution pipeline
 
 `openrv64_exec_fpu_rv64fd` in `rtl/core/exec/fpu/rv64-fd.v` is an elastic
-fixed-latency pipeline:
+variable-latency pipeline:
 
 1. The input stage classifies operands, handles architectural special cases,
    and initializes the arithmetic state.
-2. Fourteen iteration stages advance four significand bits per stage for
+2. A one-entry fast lane accepts non-iterative operations and arithmetic
+   special cases that were completely resolved during classification.
+3. Fourteen iteration stages advance four significand bits per stage for
    multiply, fused multiply-add, divide, and square root.  Multiply consumes a
    radix-16 digit; divide and square root unroll four radix-2 steps in each
-   stage.  Simple operations and conversions traverse the same stages to
-   preserve request order.
-3. The final stage rounds and formats the result.  Its state remains stable
-   until the consumer accepts it.
+   stage.
+4. Binary32 multiply exits after six iteration stages and binary32 square root
+   after seven.  Fused operations, divide, and binary64 multiply/square root
+   continue to the final stage.
+5. A rotating arbiter selects among the fast lane, the two binary32 taps, and
+   the final iterative stage.
 
-With no stalls, response valid appears 14 cycles after request acceptance and
-the unit accepts one request per cycle.  A blocked output backpressures all
-earlier stages without overwriting state, and `flush_i` discards every
-in-flight request.  This is intentionally a deep,
-low-combinational-complexity-per-stage implementation, not a short
-combinational divide/square-root path.  The throughput is not free: arithmetic
-state and iteration logic are replicated across all fourteen stages rather
-than shared by one blocking engine.
+Without contention, the observable timing is:
+
+| Result class | `result_valid_o` appears | Earliest output handshake |
+| --- | ---: | ---: |
+| Fast lane | after acceptance | 1 cycle |
+| `FMUL.S` | after 6 iteration cycles | 7 cycles |
+| `FSQRT.S` | after 7 iteration cycles | 8 cycles |
+| Final iterative stage | after 14 iteration cycles | 15 cycles |
+
+The distinction exists because ready/valid transfers occur on rising edges:
+the consumer observes a newly asserted `result_valid_o` during the cycle and
+accepts it at the following edge.
+
+Tagged results may complete out of issue order.  This avoids placing a second
+reorder structure in the FPU; architectural retirement must use the tag and
+remain ordered.  The output arbiter is fair and locks its selected source while
+`result_ready_i` is low, so the visible tag, result, and flags cannot change
+under backpressure.
+
+Here, an output stall means exactly
+`result_valid_o && !result_ready_i`.  It does not intrinsically mean retirement
+is stalled.  A blocked result holds its source and backpressure propagates
+through that lane as its available slots fill.  The input `ready_o` is selected
+from the lane required by the presented request, so a blocked fast lane does
+not prevent an iterative request from entering if the iterative pipeline has
+space, and vice versa.  `flush_i` discards every in-flight request in both
+lanes.
+
+This is intentionally a deep, low-combinational-complexity-per-stage
+implementation, not a short combinational divide/square-root path.  The
+throughput is not free: arithmetic state and iteration logic are replicated
+across all fourteen stages rather than shared by one blocking engine.
 
 The interface reports floating and integer results separately, the five
 per-instruction exception flags, and an explicit `unsupported_o` bit.  The tag
@@ -106,7 +141,8 @@ W/WU/L/LU for integer conversions and S/D for format conversions.
 - `FCVT.W/WU/L/LU.S/D`, `FCVT.S/D.W/WU/L/LU`, `FCVT.S.D`, and `FCVT.D.S`,
   including saturation, accrued per-instruction flags, and RV64 sign
   extension for 32-bit integer conversion results.
-- Full valid/ready backpressure, response tags, and flush.
+- Tagged out-of-order completion, full valid/ready backpressure, stable
+  arbitration under output stalls, and flush.
 
 ### Rejected requests
 
@@ -120,7 +156,8 @@ return an unsupported placeholder.
 The following core work is still required before F/D can be advertised:
 
 - decode and illegal-instruction qualification;
-- the 32-entry, 64-bit floating-point register file and its read/write ports;
+- connection of the implemented architectural FPR to decode, dispatch, LSU,
+  execution, and retirement;
 - `mstatus.FS`, `fcsr`, accrued flag updates, and state-dirty tracking;
 - floating load/store routing, alignment, and fault behavior through the LSU;
 - dispatch hazards, producer ownership, forwarding, and writeback selection;
@@ -130,6 +167,6 @@ The following core work is still required before F/D can be advertised:
   onto the standalone unit interface.
 
 The standalone block is intentionally absent from `CORE_SRCS` and `EXEC_SRCS`.
-Its focused checks are `make sim-isa-fp` and
-`make sim-exec-fpu-rv64-fd`; the aggregate regression runs both without wiring
-the FPU into either core.
+Its focused checks are `make sim-isa-fp`, `make sim-rv64-fd-fpr`, and
+`make sim-exec-fpu-rv64-fd`; the aggregate regression runs all three without
+wiring the FPU or FPR into either core.

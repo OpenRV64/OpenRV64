@@ -11,8 +11,8 @@
 //
 // The southbound timing port is intentionally data-free.  A timing model
 // accepts one controller beat, its byte count, and acknowledges when the
-// backing-memory access may complete.  openrv64_timing_ddr4,
-// openrv64_timing_gddr6, and
+// backing-memory access may complete.  openrv64_timing_ddr3,
+// openrv64_timing_ddr4, openrv64_timing_gddr6, and
 // openrv64_timing_hbm2 implement this contract and can be swapped without
 // changing this module.
 //

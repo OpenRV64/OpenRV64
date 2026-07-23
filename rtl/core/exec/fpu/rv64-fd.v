@@ -7,10 +7,13 @@
 // Standalone, fully backpressured RV64F/RV64D execution unit.
 //
 // This implementation deliberately favors low combinational complexity per
-// stage.  The elastic pipeline accepts one request per cycle when unstalled.
+// stage.  The iterative pipeline accepts one request per cycle when unstalled.
 // Four significand bits advance per stage for multiply, fused multiply-add,
-// divide, and square root; simple operations and conversions travel through the
-// same fixed-latency pipe.  The response remains stable under backpressure.
+// divide, and square root.  Simple operations and resolved arithmetic special
+// cases use a one-entry fast lane, while binary32 multiply and square root tap
+// the iterative pipeline as soon as their arithmetic state is complete.
+// Tagged responses may complete out of issue order.  The selected response
+// remains stable under backpressure.
 // Sustaining that throughput replicates arithmetic state and iteration logic
 // across the deep pipeline; this is not a small shared iterative unit.  This
 // module is deliberately not wired to decode, an F register file, fcsr,
@@ -65,6 +68,12 @@ module openrv64_exec_fpu_rv64fd #(
 
     localparam integer PIPELINE_ITER_BITS = 4;
     localparam integer PIPELINE_ITER_STAGES = 14;
+    localparam integer MUL_S_RESULT_STAGE = 6;
+    localparam integer SQRT_S_RESULT_STAGE = 7;
+    localparam [1:0] RESULT_SOURCE_FAST = 2'd0;
+    localparam [1:0] RESULT_SOURCE_MUL_S = 2'd1;
+    localparam [1:0] RESULT_SOURCE_SQRT_S = 2'd2;
+    localparam [1:0] RESULT_SOURCE_FINAL = 2'd3;
     localparam integer PAY_EXEC_LO = 0;
     localparam integer PAY_STATE0_LO = PAY_EXEC_LO + EXEC_WIDTH;
     localparam integer PAY_STATE1_LO = PAY_STATE0_LO + 128;
@@ -1839,6 +1848,7 @@ module openrv64_exec_fpu_rv64fd #(
     reg [PAYLOAD_WIDTH-1:0] pipeline_payload_q
         [0:PIPELINE_ITER_STAGES];
     wire [PIPELINE_ITER_STAGES:0] pipeline_ready;
+    wire [PIPELINE_ITER_STAGES-1:0] pipeline_forward_valid;
     wire [PAYLOAD_WIDTH-1:0] advanced_payload
         [0:PIPELINE_ITER_STAGES-1];
     wire [PAYLOAD_WIDTH-1:0] input_payload = setup_request(
@@ -1851,35 +1861,285 @@ module openrv64_exec_fpu_rv64fd #(
         src2_i,
         src3_i
     );
-    wire [EXEC_WIDTH-1:0] output_exec = finalize_payload(
+    wire input_needs_iteration = input_payload[PAY_LONG_BIT];
+    wire [EXEC_WIDTH-1:0] input_exec =
+        input_payload[PAY_EXEC_LO +: EXEC_WIDTH];
+
+    wire [EXEC_WIDTH-1:0] final_exec = finalize_payload(
         pipeline_payload_q[PIPELINE_ITER_STAGES]
     );
 
+    wire mul_s_result_valid =
+        pipeline_valid_q[MUL_S_RESULT_STAGE] &&
+        (pipeline_payload_q[MUL_S_RESULT_STAGE][
+            PAY_OP_LO +: `OPENRV64_FP_OP_WIDTH] ==
+         `OPENRV64_FP_OP_MUL) &&
+        !pipeline_payload_q[MUL_S_RESULT_STAGE][PAY_IS_DOUBLE_BIT];
+    wire sqrt_s_result_valid =
+        pipeline_valid_q[SQRT_S_RESULT_STAGE] &&
+        (pipeline_payload_q[SQRT_S_RESULT_STAGE][
+            PAY_OP_LO +: `OPENRV64_FP_OP_WIDTH] ==
+         `OPENRV64_FP_OP_SQRT) &&
+        !pipeline_payload_q[SQRT_S_RESULT_STAGE][PAY_IS_DOUBLE_BIT];
+    wire [68:0] mul_s_rounded = round_product(
+        1'b0,
+        pipeline_payload_q[MUL_S_RESULT_STAGE][PAY_SIGN_BIT],
+        $signed(pipeline_payload_q[MUL_S_RESULT_STAGE][
+            PAY_EXP_LO +: 16]),
+        pipeline_payload_q[MUL_S_RESULT_STAGE][
+            PAY_STATE0_LO +: 128],
+        pipeline_payload_q[MUL_S_RESULT_STAGE][PAY_RM_LO +: 3]
+    );
+    wire [EXEC_WIDTH-1:0] mul_s_exec = {
+        1'b0,
+        `OPENRV64_FP_RESULT_FP,
+        mul_s_rounded[68:64],
+        mul_s_rounded[63:0],
+        64'd0
+    };
+    wire [127:0] sqrt_s_ext_shifted =
+        pipeline_payload_q[SQRT_S_RESULT_STAGE][
+            PAY_STATE2_LO +: 128] << 1;
+    wire [127:0] sqrt_s_ext = {
+        sqrt_s_ext_shifted[127:1],
+        sqrt_s_ext_shifted[0] |
+            (pipeline_payload_q[SQRT_S_RESULT_STAGE][
+                PAY_STATE0_LO +: 128] != 0)
+    };
+    wire [68:0] sqrt_s_rounded = round_pack(
+        1'b0,
+        pipeline_payload_q[SQRT_S_RESULT_STAGE][PAY_SIGN_BIT],
+        $signed(pipeline_payload_q[SQRT_S_RESULT_STAGE][
+            PAY_EXP_LO +: 16]),
+        sqrt_s_ext,
+        pipeline_payload_q[SQRT_S_RESULT_STAGE][PAY_RM_LO +: 3]
+    );
+    wire [EXEC_WIDTH-1:0] sqrt_s_exec = {
+        1'b0,
+        `OPENRV64_FP_RESULT_FP,
+        sqrt_s_rounded[68:64],
+        sqrt_s_rounded[63:0],
+        64'd0
+    };
+
+    reg fast_valid_q;
+    reg [TAG_WIDTH-1:0] fast_tag_q;
+    reg [EXEC_WIDTH-1:0] fast_exec_q;
+
+    wire [3:0] result_source_valid = {
+        pipeline_valid_q[PIPELINE_ITER_STAGES],
+        sqrt_s_result_valid,
+        mul_s_result_valid,
+        fast_valid_q
+    };
+    reg [1:0] result_prefer_q;
+    reg result_lock_q;
+    reg [1:0] result_lock_source_q;
+    reg result_unlocked_valid;
+    reg [1:0] result_unlocked_source;
+
+    always @* begin
+        result_unlocked_valid = 1'b0;
+        result_unlocked_source = RESULT_SOURCE_FAST;
+        case (result_prefer_q)
+            RESULT_SOURCE_FAST: begin
+                if (result_source_valid[RESULT_SOURCE_FAST]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FAST;
+                end else if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                end else if (result_source_valid[RESULT_SOURCE_SQRT_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_SQRT_S;
+                end else if (result_source_valid[RESULT_SOURCE_FINAL]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FINAL;
+                end
+            end
+
+            RESULT_SOURCE_MUL_S: begin
+                if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                end else if (result_source_valid[RESULT_SOURCE_SQRT_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_SQRT_S;
+                end else if (result_source_valid[RESULT_SOURCE_FINAL]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FINAL;
+                end else if (result_source_valid[RESULT_SOURCE_FAST]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FAST;
+                end
+            end
+
+            RESULT_SOURCE_SQRT_S: begin
+                if (result_source_valid[RESULT_SOURCE_SQRT_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_SQRT_S;
+                end else if (result_source_valid[RESULT_SOURCE_FINAL]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FINAL;
+                end else if (result_source_valid[RESULT_SOURCE_FAST]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FAST;
+                end else if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                end
+            end
+
+            default: begin
+                if (result_source_valid[RESULT_SOURCE_FINAL]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FINAL;
+                end else if (result_source_valid[RESULT_SOURCE_FAST]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_FAST;
+                end else if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                end else if (result_source_valid[RESULT_SOURCE_SQRT_S]) begin
+                    result_unlocked_valid = 1'b1;
+                    result_unlocked_source = RESULT_SOURCE_SQRT_S;
+                end
+            end
+        endcase
+    end
+
+    wire [1:0] result_source = result_lock_q ?
+        result_lock_source_q : result_unlocked_source;
+    wire result_valid = result_lock_q || result_unlocked_valid;
+    reg [TAG_WIDTH-1:0] selected_result_tag;
+    reg [EXEC_WIDTH-1:0] selected_result_exec;
+
+    always @* begin
+        selected_result_tag = {TAG_WIDTH{1'b0}};
+        selected_result_exec = {EXEC_WIDTH{1'b0}};
+        case (result_source)
+            RESULT_SOURCE_FAST: begin
+                selected_result_tag = fast_tag_q;
+                selected_result_exec = fast_exec_q;
+            end
+            RESULT_SOURCE_MUL_S: begin
+                selected_result_tag =
+                    pipeline_tag_q[MUL_S_RESULT_STAGE];
+                selected_result_exec = mul_s_exec;
+            end
+            RESULT_SOURCE_SQRT_S: begin
+                selected_result_tag =
+                    pipeline_tag_q[SQRT_S_RESULT_STAGE];
+                selected_result_exec = sqrt_s_exec;
+            end
+            default: begin
+                selected_result_tag =
+                    pipeline_tag_q[PIPELINE_ITER_STAGES];
+                selected_result_exec = final_exec;
+            end
+        endcase
+    end
+
+    wire result_fire = result_valid && result_ready_i && !flush_i;
+    wire fast_result_pop =
+        result_fire && (result_source == RESULT_SOURCE_FAST);
+    wire mul_s_result_pop =
+        result_fire && (result_source == RESULT_SOURCE_MUL_S);
+    wire sqrt_s_result_pop =
+        result_fire && (result_source == RESULT_SOURCE_SQRT_S);
+    wire final_result_pop =
+        result_fire && (result_source == RESULT_SOURCE_FINAL);
+    wire fast_ready = !fast_valid_q || fast_result_pop;
+
     assign pipeline_ready[PIPELINE_ITER_STAGES] =
-        !pipeline_valid_q[PIPELINE_ITER_STAGES] || result_ready_i;
+        !pipeline_valid_q[PIPELINE_ITER_STAGES] || final_result_pop;
 
     genvar pipeline_stage;
     generate
         for (pipeline_stage = 0;
              pipeline_stage < PIPELINE_ITER_STAGES;
              pipeline_stage = pipeline_stage + 1) begin : g_fpu_pipeline
-            assign pipeline_ready[pipeline_stage] =
-                !pipeline_valid_q[pipeline_stage] ||
-                pipeline_ready[pipeline_stage+1];
+            if (pipeline_stage == MUL_S_RESULT_STAGE) begin : g_mul_s_tap
+                assign pipeline_ready[pipeline_stage] =
+                    !pipeline_valid_q[pipeline_stage] ||
+                    (mul_s_result_valid ? mul_s_result_pop :
+                     pipeline_ready[pipeline_stage+1]);
+                assign pipeline_forward_valid[pipeline_stage] =
+                    pipeline_valid_q[pipeline_stage] &&
+                    !mul_s_result_valid;
+            end else if (pipeline_stage == SQRT_S_RESULT_STAGE) begin : g_sqrt_s_tap
+                assign pipeline_ready[pipeline_stage] =
+                    !pipeline_valid_q[pipeline_stage] ||
+                    (sqrt_s_result_valid ? sqrt_s_result_pop :
+                     pipeline_ready[pipeline_stage+1]);
+                assign pipeline_forward_valid[pipeline_stage] =
+                    pipeline_valid_q[pipeline_stage] &&
+                    !sqrt_s_result_valid;
+            end else begin : g_regular_stage
+                assign pipeline_ready[pipeline_stage] =
+                    !pipeline_valid_q[pipeline_stage] ||
+                    pipeline_ready[pipeline_stage+1];
+                assign pipeline_forward_valid[pipeline_stage] =
+                    pipeline_valid_q[pipeline_stage];
+            end
             assign advanced_payload[pipeline_stage] =
                 advance_iteration(pipeline_payload_q[pipeline_stage]);
         end
     endgenerate
 
-    assign ready_o = pipeline_ready[0];
-    assign result_valid_o =
-        pipeline_valid_q[PIPELINE_ITER_STAGES];
-    assign result_tag_o = pipeline_tag_q[PIPELINE_ITER_STAGES];
-    assign int_result_o = output_exec[EXEC_INT_LO +: 64];
-    assign fp_result_o = output_exec[EXEC_FP_LO +: 64];
-    assign fflags_o = output_exec[EXEC_FLAGS_LO +: 5];
-    assign result_is_int_o = output_exec[EXEC_IS_INT_BIT];
-    assign unsupported_o = output_exec[EXEC_UNSUPPORTED_BIT];
+    assign ready_o = !flush_i && (input_needs_iteration ?
+        pipeline_ready[0] : fast_ready);
+    wire iterative_input_fire =
+        valid_i && ready_o && input_needs_iteration;
+    wire fast_input_fire =
+        valid_i && ready_o && !input_needs_iteration;
+
+    assign result_valid_o = result_valid && !flush_i;
+    assign result_tag_o = selected_result_tag;
+    assign int_result_o = selected_result_exec[EXEC_INT_LO +: 64];
+    assign fp_result_o = selected_result_exec[EXEC_FP_LO +: 64];
+    assign fflags_o = selected_result_exec[EXEC_FLAGS_LO +: 5];
+    assign result_is_int_o = selected_result_exec[EXEC_IS_INT_BIT];
+    assign unsupported_o =
+        selected_result_exec[EXEC_UNSUPPORTED_BIT];
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fast_valid_q <= 1'b0;
+            fast_tag_q <= {TAG_WIDTH{1'b0}};
+            fast_exec_q <= {EXEC_WIDTH{1'b0}};
+        end else if (flush_i) begin
+            fast_valid_q <= 1'b0;
+        end else if (fast_ready) begin
+            fast_valid_q <= fast_input_fire;
+            if (fast_input_fire) begin
+                fast_tag_q <= tag_i;
+                fast_exec_q <= input_exec;
+            end
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            result_prefer_q <= RESULT_SOURCE_FAST;
+            result_lock_q <= 1'b0;
+            result_lock_source_q <= RESULT_SOURCE_FAST;
+        end else if (flush_i) begin
+            result_prefer_q <= RESULT_SOURCE_FAST;
+            result_lock_q <= 1'b0;
+        end else begin
+            if (result_lock_q) begin
+                if (result_fire)
+                    result_lock_q <= 1'b0;
+            end else if (result_valid && !result_ready_i) begin
+                result_lock_q <= 1'b1;
+                result_lock_source_q <= result_unlocked_source;
+            end
+
+            if (result_fire)
+                result_prefer_q <= result_source + 2'd1;
+        end
+    end
 
     integer pipeline_index;
     always @(posedge clk or negedge rst_n) begin
@@ -1903,8 +2163,8 @@ module openrv64_exec_fpu_rv64fd #(
                  pipeline_index = pipeline_index - 1) begin
                 if (pipeline_ready[pipeline_index]) begin
                     pipeline_valid_q[pipeline_index] <=
-                        pipeline_valid_q[pipeline_index-1];
-                    if (pipeline_valid_q[pipeline_index-1]) begin
+                        pipeline_forward_valid[pipeline_index-1];
+                    if (pipeline_forward_valid[pipeline_index-1]) begin
                         pipeline_tag_q[pipeline_index] <=
                             pipeline_tag_q[pipeline_index-1];
                         pipeline_payload_q[pipeline_index] <=
@@ -1914,8 +2174,8 @@ module openrv64_exec_fpu_rv64fd #(
             end
 
             if (pipeline_ready[0]) begin
-                pipeline_valid_q[0] <= valid_i;
-                if (valid_i) begin
+                pipeline_valid_q[0] <= iterative_input_fire;
+                if (iterative_input_fire) begin
                     pipeline_tag_q[0] <= tag_i;
                     pipeline_payload_q[0] <= input_payload;
                 end

@@ -8,12 +8,14 @@
 // Testbench memory/SoC fabric for the residual 256-bit AXI port and native
 // 512-bit CCX cache port. AXI serves cacheless fetch only; PTW and cache
 // traffic use CCX. Native CCX reads and writes access two adjacent 256-bit RAM
-// words as one 64-byte line;
+// words as one 64-byte line, optionally after DDR3 timing completion;
 // sub-line MMIO is lane-adapted onto the existing 64-bit SoC peripheral bus.
 module tb_axi256_soc_fabric #(
     parameter integer READ_QUEUE_DEPTH = 8,
     parameter integer RAM_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
-    parameter integer ZERO_INIT_LINES = RAM_BYTES / 32
+    parameter integer ZERO_INIT_LINES = RAM_BYTES / 32,
+    parameter integer CCX_DDR3_TIMING = 0,
+    parameter integer CONTROLLER_TCK_PS = 1000
 ) (
     input  wire        clk_i,
     input  wire        rst_ni,
@@ -216,6 +218,27 @@ module tb_axi256_soc_fabric #(
     wire start_read = (bus_state_q == BUS_IDLE) && !start_ccx &&
                       !start_write && (!r_valid_q || r_fire) &&
                       (read_count_q != 0);
+    wire ccx_ddr3_cmd_valid = (CCX_DDR3_TIMING != 0) &&
+                              start_ccx && ccx_cmd_is_ram;
+    wire ccx_ddr3_cmd_ready;
+    wire ccx_ddr3_resp_valid;
+    wire ccx_ddr3_resp_ready = (CCX_DDR3_TIMING != 0) &&
+                               start_ccx && ccx_cmd_is_ram;
+    wire [7:0] ccx_ddr3_cmd_bytes = 8'(1) << ccx_cmd_size_q;
+
+    openrv64_timing_ddr3 #(
+        .ADDR_WIDTH(64),
+        .CONTROLLER_TCK_PS(CONTROLLER_TCK_PS)
+    ) u_ccx_ddr3_timing (
+        .clk_i(clk_i), .rst_ni(rst_ni),
+        .cmd_valid_i(ccx_ddr3_cmd_valid),
+        .cmd_ready_o(ccx_ddr3_cmd_ready),
+        .cmd_write_i(ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE),
+        .cmd_addr_i(ccx_cmd_addr_q),
+        .cmd_bytes_i(ccx_ddr3_cmd_bytes),
+        .resp_valid_o(ccx_ddr3_resp_valid),
+        .resp_ready_i(ccx_ddr3_resp_ready)
+    );
 
 `ifndef VERILATOR
     initial begin
@@ -410,29 +433,32 @@ module tb_axi256_soc_fabric #(
                      (ccx_data_source_id_q != ccx_cmd_source_id_q)))
                     $fatal(1, "native CCX command/data identity mismatch");
                 if (ccx_cmd_is_ram) begin
-                    ccx_resp_hart_id_q <= ccx_cmd_hart_id_q;
-                    ccx_resp_txn_id_q <= ccx_cmd_txn_id_q;
-                    ccx_resp_source_id_q <= ccx_cmd_source_id_q;
-                    ccx_resp_rdata_q <= {
-                        ram_q[ccx_ram_index + 1'b1],
-                        ram_q[ccx_ram_index]
-                    };
-                    ccx_resp_error_q <= 1'b0;
-                    ccx_resp_valid_q <= 1'b1;
-                    if (ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE) begin
-                        for (ccx_write_byte = 0; ccx_write_byte < 64;
-                             ccx_write_byte = ccx_write_byte + 1) begin
-                            if (ccx_strb_q[ccx_write_byte])
-                                ram_q[ccx_ram_index +
-                                      (ccx_write_byte >= 32)]
-                                     [(ccx_write_byte % 32)*8 +: 8] <=
-                                    ccx_data_q[ccx_write_byte*8 +: 8];
+                    if ((CCX_DDR3_TIMING == 0) ||
+                        ccx_ddr3_resp_valid) begin
+                        ccx_resp_hart_id_q <= ccx_cmd_hart_id_q;
+                        ccx_resp_txn_id_q <= ccx_cmd_txn_id_q;
+                        ccx_resp_source_id_q <= ccx_cmd_source_id_q;
+                        ccx_resp_rdata_q <= {
+                            ram_q[ccx_ram_index + 1'b1],
+                            ram_q[ccx_ram_index]
+                        };
+                        ccx_resp_error_q <= 1'b0;
+                        ccx_resp_valid_q <= 1'b1;
+                        if (ccx_cmd_op_q == `OPENRV64_CCX_OP_WRITE) begin
+                            for (ccx_write_byte = 0; ccx_write_byte < 64;
+                                 ccx_write_byte = ccx_write_byte + 1) begin
+                                if (ccx_strb_q[ccx_write_byte])
+                                    ram_q[ccx_ram_index +
+                                          (ccx_write_byte >= 32)]
+                                         [(ccx_write_byte % 32)*8 +: 8] <=
+                                        ccx_data_q[ccx_write_byte*8 +: 8];
+                            end
+                            ccx_data_pending_q <= 1'b0;
+                            if (ccx_cmd_lock_q)
+                                ccx_home_lock_active_q <= 1'b0;
                         end
-                        ccx_data_pending_q <= 1'b0;
-                        if (ccx_cmd_lock_q)
-                            ccx_home_lock_active_q <= 1'b0;
+                        ccx_cmd_pending_q <= 1'b0;
                     end
-                    ccx_cmd_pending_q <= 1'b0;
                 end else begin
                     bus_state_q <= BUS_CCX;
                 end
@@ -551,6 +577,7 @@ module tb_top_axi_3p #(
     parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer CCX_DDR3_TIMING = 0,
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0
 );
@@ -1503,7 +1530,8 @@ module tb_top_axi_3p #(
 
     tb_axi256_soc_fabric #(
         .RAM_BYTES(RAM_BYTES),
-        .ZERO_INIT_LINES(RAM_ZERO_INIT_LINES)
+        .ZERO_INIT_LINES(RAM_ZERO_INIT_LINES),
+        .CCX_DDR3_TIMING(CCX_DDR3_TIMING)
     ) u_axi_fabric (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -2741,14 +2769,15 @@ module tb_top_axi_3p #(
                  (BP_TYPE == `OPENRV64_BP_GSHARE_BTB)) &&
                 dut.u_core.bp_update_overflow)
                 $fatal(1, "branch predictor update/record queue overflowed");
-            $display("PERF_CONFIG retire_depth=%0d completion_mask=%03b branch_forward_mask=%03b full=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d free_branches=%0d eq_pair=%0d perfect_l1i=%0d perfect_l1d=%0d freeloader=%0d freeloader_latency=%0d",
+            $display("PERF_CONFIG retire_depth=%0d completion_mask=%03b branch_forward_mask=%03b full=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d free_branches=%0d eq_pair=%0d perfect_l1i=%0d perfect_l1d=%0d freeloader=%0d freeloader_latency=%0d ccx_ddr3=%0d",
                      RETIRE_DEPTH, COMPLETION_FORWARD_MASK,
                      BRANCH_FORWARD_MASK,
                      FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
                      ISSUE_WINDOW, SPECULATION_WINDOW,
                      FREE_BRANCHES, EQ_BRANCH_PAIRING,
                      perfect_l1i_enabled, perfect_l1d_enabled,
-                     freeloader_enabled, FREELOADER_LATENCY);
+                     freeloader_enabled, FREELOADER_LATENCY,
+                     CCX_DDR3_TIMING);
             $display("PERF_BLOCK none=%0d raw_pending=%0d raw_bundle=%0d raw_completed=%0d waw_pending=%0d waw_bundle=%0d waw_completed=%0d read_port=%0d barrier=%0d retire_capacity=%0d pipe_conflict=%0d pipe_busy=%0d invalid_pipe=%0d branch_redirect=%0d unknown=%0d",
                      perf_block_none,
                      perf_block_raw_pending,

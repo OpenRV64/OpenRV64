@@ -13,6 +13,7 @@ module tb_dispatch_3p;
     localparam integer I_SYSTEM = 10;
     localparam integer I_PREDICTED_TAKEN = 12;
     localparam integer I_BRANCH = 14;
+    localparam integer I_MEM_WRITE = 15;
     localparam integer I_MEM_READ = 16;
     localparam integer I_REG_WRITE = 17;
     localparam integer I_BR_OP = 18;
@@ -583,8 +584,8 @@ module tb_dispatch_3p;
         if ((allocation_valid != 3'b001) || (pipe_valid != 3'b010))
             fail("local-forward-dependent branch admitted younger pairing");
 
-        // Two ordinary memory operations in the same prefix occupy distinct
-        // physical queues.  This is the strict-dispatch case STREAM relies on.
+        // The two memory pipes have fixed roles: ordinary loads use MEM0,
+        // while stores and RV64A use MEM1.
         tick();
         flush = 1'b1;
         tick();
@@ -593,15 +594,51 @@ module tb_dispatch_3p;
         p0[I_MEM_READ] = 1'b1;
         p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
         p1 = alu_packet(64'd49, 5'd0, 5'd0, 5'd2);
-        p1[I_MEM_READ] = 1'b1;
+        p1[I_MEM_WRITE] = 1'b1;
         p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
         enqueue2(p0, p1, 2'b00, 2'b00);
         #1;
         if ((allocation_valid != 3'b011) ||
             (pipe_valid != 4'b1100))
-            fail("dual memory prefix did not route to MEM0 and MEM1");
+            fail("load/store prefix did not route to MEM0/MEM1");
 
-        $display("PASS: queued 3p dispatch routing, dual MEM issue, hazards, branch forwarding, pairing, and ordering");
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = alu_packet(64'd50, 5'd0, 5'd0, 5'd1);
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        p1 = alu_packet(64'd51, 5'd0, 5'd0, 5'd2);
+        p1[I_MEM_READ] = 1'b1;
+        p1[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        enqueue2(p0, p1, 2'b00, 2'b00);
+        #1;
+        if ((allocation_valid != 3'b001) ||
+            (pipe_valid != 4'b0100))
+            fail("two loads incorrectly occupied both memory pipes");
+
+        tick();
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        p0 = alu_packet(64'd52, 5'd0, 5'd0, 5'd1);
+        p0[I_INSTR +: 32] = 32'h1000_302f;
+        p0[I_MEM_READ] = 1'b1;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_INVALID;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b000;
+        decode_uses_rs2 = 3'b000;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        #1;
+        if ((allocation_valid != 3'b001) ||
+            (pipe_valid != 4'b1000))
+            fail("read-only RV64A operation did not route to MEM1");
+
+        $display("PASS: queued 3p dispatch routing, split MEM roles, hazards, branch forwarding, pairing, and ordering");
         $finish;
     end
 endmodule

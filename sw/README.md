@@ -230,11 +230,13 @@ and writes; coverage without that traffic delta is not enough to judge a
 prefetcher.
 
 These tests can characterize cache-line coverage, pollution, and extra CCX
-traffic now. The functional backing RAM does not represent real memory timing.
-The L1D can keep multiple prefetch transaction IDs live, but meaningful depth,
-outstanding-count, and bandwidth-pressure tuning still requires routing the
-benchmark path through `mem_channel.v`. Functional-cycle deltas are not timing
-evidence.
+traffic now. By default, the functional backing RAM does not represent real
+memory timing. Set `AXI_3P_PERF_CCX_DDR3_TIMING=1` to delay native CCX RAM
+transactions with the `DDR3_1600_8x8` timing preset used by the HPI comparison.
+That preset models row hits, conflicts, recovery, transfer occupancy, and
+refresh, but the current CCX test fabric and common timing engine serialize
+commands. It is therefore a conservative latency fixture, not a bank-parallel
+DRAM controller or a physical-frequency result.
 
 ## OpenSBI smoke boot
 

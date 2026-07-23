@@ -11,6 +11,8 @@ module openrv64_top #(
         `OPENRV64_BACKEND_1P,
     parameter logic [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
+    parameter int unsigned RETIRE_DEPTH = 8,
+    parameter int unsigned STORE_QUEUE_DEPTH = 4,
     parameter bit ENABLE_ISSUE_WINDOW = 1'b0,
     parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
     parameter bit ENABLE_RV64M = 1'b0,
@@ -435,6 +437,8 @@ module openrv64_top #(
                 .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
                 .ENABLE_SPECULATION_WINDOW(
                     ENABLE_SPECULATION_WINDOW),
+                .RETIRE_DEPTH(RETIRE_DEPTH),
+                .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
                 .ENABLE_MAGIC_MEMORY(ENABLE_MAGIC_MEMORY),
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),

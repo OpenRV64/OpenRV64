@@ -28,6 +28,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_SPECULATION_WINDOW = 0,
     parameter integer ISSUE_WINDOW_DEPTH = 16,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer STORE_QUEUE_DEPTH = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE = {`RV64_XLEN{1'b0}},
@@ -163,6 +164,12 @@ module openrv64_backend_3p #(
     wire [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0] pipe_slot;
     wire [`OPENRV64_EXEC_PIPE_COUNT*
           `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] pipe_payload;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_src1_producer_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_src1_producer_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_src2_producer_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_src2_producer_id;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_unsupported;
 
     wire [2:0] complete_valid;
@@ -767,13 +774,11 @@ module openrv64_backend_3p #(
     wire [2:0] completion_forward_valid = !flush_i ?
         (completion_forward_valid_raw & COMPLETION_FORWARD_MASK) : 3'b000;
 
-    // Cheap branch-only bypass.  A live EX0/EX1/MEM completion may satisfy a
-    // conditional-branch source only when its retirement slot still owns the
-    // architectural destination.  Live retirement slots are unique, while
-    // costing only SLOT_WIDTH bits per architectural register rather than a
-    // 64-bit instruction ID.  This qualification is required under relaxed
-    // WAW: an older completion with the same rd must never feed a branch
-    // waiting for a younger writer.
+    // Cheap branch-only bypass.  Retain the youngest-owner check as the
+    // qualification used by strict dispatch, whose same-cycle forwarding is
+    // still architectural-register based.  The issue-window path additionally
+    // carries the exact source-producer ID to EX1; that identity check rejects
+    // a younger WAW completion even when this coarse owner check accepts it.
     wire [2:0] branch_completion_forward_valid;
     genvar branch_forward_lane;
     generate
@@ -1004,6 +1009,10 @@ module openrv64_backend_3p #(
         .pipe_valid_3p_o(pipe_valid),
         .pipe_id_3p_o(pipe_id), .pipe_slot_3p_o(pipe_slot),
         .pipe_payload_3p_o(pipe_payload),
+        .pipe_src1_producer_valid_3p_o(pipe_src1_producer_valid),
+        .pipe_src1_producer_id_3p_o(pipe_src1_producer_id),
+        .pipe_src2_producer_valid_3p_o(pipe_src2_producer_valid),
+        .pipe_src2_producer_id_3p_o(pipe_src2_producer_id),
         .retire_valid_3p_i(release_valid),
         .retire_id_3p_i(queue_retire_id),
         .retire_slot_3p_i(window_retire_slot),
@@ -1065,6 +1074,7 @@ module openrv64_backend_3p #(
         .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH), .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_LOCAL_FORWARDING_3P(ENABLE_ISSUE_WINDOW == 0),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
     ) u_exec (
@@ -1099,10 +1109,16 @@ module openrv64_backend_3p #(
         .issue_payload_3p_i(pipe_payload),
         .branch_forward_valid_3p_i(
             branch_completion_forward_valid[0]),
+        .branch_forward_id_3p_i(
+            complete_id[0 +: `OPENRV64_INSTR_ID_WIDTH]),
         .branch_forward_rd_addr_3p_i(
             completion_forward_rd_addr[0 +: `RV64_REG_ADDR_WIDTH]),
         .branch_forward_data_3p_i(
             completion_forward_data[0 +: `RV64_XLEN]),
+        .issue_src1_producer_valid_3p_i(pipe_src1_producer_valid),
+        .issue_src1_producer_id_3p_i(pipe_src1_producer_id),
+        .issue_src2_producer_valid_3p_i(pipe_src2_producer_valid),
+        .issue_src2_producer_id_3p_i(pipe_src2_producer_id),
         .ordered_head_valid_3p_i(ordered_head_valid),
         .ordered_head_id_3p_i(ordered_head_id),
         .ordered_head_slot_3p_i(ordered_head_slot),

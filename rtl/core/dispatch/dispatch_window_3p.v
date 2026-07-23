@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-a.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/br-defs.v"
 
@@ -16,7 +17,9 @@
 // until the following cycle.  Source values are captured either from the
 // architectural GPR, the youngest completed producer, or a matching tagged
 // completion.  Up to one instruction per physical pipe is then selected from
-// the ready entries.  Memory issue remains program ordered.  The optional
+// the ready entries.  Memory issue remains program ordered, but the oldest two
+// unissued memory operations may enter MEM0 and MEM1 together when they target
+// opposite lanes and both lanes accept the complete pair.  The optional
 // speculation mode lets replayable work pass an older conditional branch that
 // is still waiting for operands, and lets ordinary loads in an explicit
 // RAM/cacheable aperture pass unresolved control.  Stores, atomics, and MMIO
@@ -64,6 +67,16 @@ module openrv64_dispatch_window_3p #(
     output reg  [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_src1_producer_valid_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        pipe_src1_producer_id_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_src2_producer_valid_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        pipe_src2_producer_id_o,
 
     input  wire [2:0]                   completion_valid_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] completion_id_i,
@@ -89,6 +102,7 @@ module openrv64_dispatch_window_3p #(
     localparam integer PAYLOAD_RS2_ADDR = 232;
     localparam integer PAYLOAD_RS1_DATA = 168;
     localparam integer PAYLOAD_RS2_DATA = 104;
+    localparam integer PAYLOAD_INSTR = 242;
     localparam integer PAYLOAD_IMM = 40;
     localparam integer PAYLOAD_RD = 35;
     localparam integer PAYLOAD_ALU_EXT = 32;
@@ -115,6 +129,8 @@ module openrv64_dispatch_window_3p #(
     reg                                 uses_rs2_q [0:DEPTH-1];
     reg                                 src1_ready_q [0:DEPTH-1];
     reg                                 src2_ready_q [0:DEPTH-1];
+    reg                                 src1_producer_valid_q [0:DEPTH-1];
+    reg                                 src2_producer_valid_q [0:DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] src1_tag_q [0:DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] src2_tag_q [0:DEPTH-1];
     reg                                 result_ready_q [0:DEPTH-1];
@@ -202,6 +218,16 @@ module openrv64_dispatch_window_3p #(
         begin
             is_mem = payload[PAYLOAD_MEM_READ] ||
                      payload[PAYLOAD_MEM_WRITE];
+        end
+    endfunction
+
+    function automatic is_mem1_op;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_INSTR_WIDTH-1:0] payload_instr;
+        begin
+            payload_instr = payload[PAYLOAD_INSTR +: `RV64_INSTR_WIDTH];
+            is_mem1_op = payload[PAYLOAD_MEM_WRITE] ||
+                (`RV64_OPCODE(payload_instr) == `RV64_OPCODE_AMO);
         end
     endfunction
 
@@ -316,6 +342,8 @@ module openrv64_dispatch_window_3p #(
         admit_payload [0:2];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] admit_src1_tag [0:2];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] admit_src2_tag [0:2];
+    reg admit_src1_producer_valid [0:2];
+    reg admit_src2_producer_valid [0:2];
     reg admit_src1_ready [0:2];
     reg admit_src2_ready [0:2];
     reg [`RV64_XLEN-1:0] admit_src1_data [0:2];
@@ -387,6 +415,8 @@ module openrv64_dispatch_window_3p #(
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             admit_src2_tag[view_lane] =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            admit_src1_producer_valid[view_lane] = 1'b0;
+            admit_src2_producer_valid[view_lane] = 1'b0;
             admit_src1_ready[view_lane] = 1'b1;
             admit_src2_ready[view_lane] = 1'b1;
             admit_src1_data[view_lane] = {`RV64_XLEN{1'b0}};
@@ -395,6 +425,7 @@ module openrv64_dispatch_window_3p #(
             if (decode_uses_rs1_i[view_lane] &&
                 (view_rs1 != `RV64_REG_X0)) begin
                 if (owner_valid_view[view_rs1]) begin
+                    admit_src1_producer_valid[view_lane] = 1'b1;
                     admit_src1_tag[view_lane] = owner_id_view[view_rs1];
                     admit_src1_ready[view_lane] = owner_ready_view[view_rs1];
                     admit_src1_data[view_lane] = owner_data_view[view_rs1];
@@ -406,6 +437,7 @@ module openrv64_dispatch_window_3p #(
             if (decode_uses_rs2_i[view_lane] &&
                 (view_rs2 != `RV64_REG_X0)) begin
                 if (owner_valid_view[view_rs2]) begin
+                    admit_src2_producer_valid[view_lane] = 1'b1;
                     admit_src2_tag[view_lane] = owner_id_view[view_rs2];
                     admit_src2_ready[view_lane] = owner_ready_view[view_rs2];
                     admit_src2_data[view_lane] = owner_data_view[view_rs2];
@@ -496,6 +528,7 @@ module openrv64_dispatch_window_3p #(
     end
 
     reg eligible [0:DEPTH-1];
+    reg mem_pair_eligible [0:DEPTH-1];
     // Simulation-visible aggregate state.  These are deliberately kept as
     // named internal signals instead of architectural ports; the cycle trace
     // uses them to distinguish an empty window from RAW, ordering, and
@@ -572,12 +605,22 @@ module openrv64_dispatch_window_3p #(
                 is_early_conditional_branch(payload_q[eligible_idx]) &&
                 older_unresolved_conditional)
                 eligible[eligible_idx] = 1'b0;
+            // Preserve all non-memory ordering and control checks separately
+            // from the older-memory check.  The selector may use this view
+            // only for the memory operation immediately following the oldest
+            // selected memory operation in the same coupled issue bundle.
+            mem_pair_eligible[eligible_idx] =
+                eligible[eligible_idx] &&
+                is_mem(payload_q[eligible_idx]);
             if (is_mem(payload_q[eligible_idx]) &&
-                (older_unissued_mem ||
-                 (older_live_control &&
-                  !is_speculative_load_safe(
-                      payload_q[eligible_idx],
-                      src1_data_now[eligible_idx]))))
+                older_live_control &&
+                !is_speculative_load_safe(
+                    payload_q[eligible_idx],
+                    src1_data_now[eligible_idx])) begin
+                eligible[eligible_idx] = 1'b0;
+                mem_pair_eligible[eligible_idx] = 1'b0;
+            end
+            if (is_mem(payload_q[eligible_idx]) && older_unissued_mem)
                 eligible[eligible_idx] = 1'b0;
 
             if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
@@ -622,12 +665,18 @@ module openrv64_dispatch_window_3p #(
     reg select_ex0_valid;
     reg select_ex1_valid;
     reg select_mem_valid;
+    reg select_mem2_valid;
     reg [RETIRE_SLOT_WIDTH-1:0] select_ex0;
     reg [RETIRE_SLOT_WIDTH-1:0] select_ex1;
     reg [RETIRE_SLOT_WIDTH-1:0] select_mem;
+    reg [RETIRE_SLOT_WIDTH-1:0] select_mem2;
     integer select_offset;
     integer select_slot;
     integer selected_idx;
+    integer selected_mem_pipe;
+    integer selected_mem2_pipe;
+    reg past_selected_mem;
+    reg checked_next_mem;
     reg [2:0] trace_pipe_uses_rs1;
     reg [2:0] trace_pipe_uses_rs2;
 
@@ -635,10 +684,16 @@ module openrv64_dispatch_window_3p #(
         select_ex0_valid = 1'b0;
         select_ex1_valid = 1'b0;
         select_mem_valid = 1'b0;
+        select_mem2_valid = 1'b0;
         select_ex0 = {RETIRE_SLOT_WIDTH{1'b0}};
         select_ex1 = {RETIRE_SLOT_WIDTH{1'b0}};
         select_mem = {RETIRE_SLOT_WIDTH{1'b0}};
+        select_mem2 = {RETIRE_SLOT_WIDTH{1'b0}};
         selected_idx = 0;
+        selected_mem_pipe = `OPENRV64_EXEC_PIPE_MEM0;
+        selected_mem2_pipe = `OPENRV64_EXEC_PIPE_MEM0;
+        past_selected_mem = 1'b0;
+        checked_next_mem = 1'b0;
 
         // Reserve fixed-capability work first, in age order.
         for (select_offset = 0; select_offset < DEPTH;
@@ -692,12 +747,43 @@ module openrv64_dispatch_window_3p #(
             end
         end
 
-        // The issue-window experiment remains single-MEM for now.  Strict
-        // dispatch exercises MEM1; keeping this lane empty preserves the
-        // window's existing program-order memory selection.
-        pipe_valid_o = {
-            1'b0, select_mem_valid, select_ex1_valid, select_ex0_valid
-        };
+        // The first candidate is the oldest eligible memory operation.  Scan
+        // forward to exactly the next unissued memory operation; do not skip
+        // an unready or same-lane operation to manufacture a pair.
+        if (select_mem_valid) begin
+            for (select_offset = 0; select_offset < DEPTH;
+                 select_offset = select_offset + 1) begin
+                select_slot = next_retire_slot_i + select_offset;
+                if (select_slot >= DEPTH)
+                    select_slot = select_slot - DEPTH;
+                if (!past_selected_mem &&
+                    (select_slot[RETIRE_SLOT_WIDTH-1:0] == select_mem)) begin
+                    past_selected_mem = 1'b1;
+                end else if (past_selected_mem && !checked_next_mem &&
+                             valid_q[select_slot] &&
+                             !issued_q[select_slot] &&
+                             is_mem(payload_q[select_slot])) begin
+                    checked_next_mem = 1'b1;
+                    if (mem_pair_eligible[select_slot] &&
+                        (is_mem1_op(payload_q[select_slot]) !=
+                         is_mem1_op(payload_q[select_mem]))) begin
+                        select_mem2_valid = 1'b1;
+                        select_mem2 =
+                            select_slot[RETIRE_SLOT_WIDTH-1:0];
+                    end
+                end
+            end
+        end
+
+        // Ordinary loads route to MEM0; stores and every RV64A operation route
+        // to MEM1.  Route both payloads before consulting ready so execution
+        // capability checks cannot create a ready/fire/payload loop.
+        if (select_mem_valid &&
+            is_mem1_op(payload_q[select_mem]))
+            selected_mem_pipe = `OPENRV64_EXEC_PIPE_MEM1;
+        if (select_mem2_valid &&
+            is_mem1_op(payload_q[select_mem2]))
+            selected_mem2_pipe = `OPENRV64_EXEC_PIPE_MEM1;
         pipe_id_o =
             {`OPENRV64_EXEC_PIPE_COUNT*
              `OPENRV64_INSTR_ID_WIDTH{1'b0}};
@@ -706,6 +792,16 @@ module openrv64_dispatch_window_3p #(
         pipe_payload_o =
             {`OPENRV64_EXEC_PIPE_COUNT*
              `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+        pipe_src1_producer_valid_o =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        pipe_src1_producer_id_o =
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        pipe_src2_producer_valid_o =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        pipe_src2_producer_id_o =
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_INSTR_ID_WIDTH{1'b0}};
         trace_pipe_uses_rs1 = 3'b000;
         trace_pipe_uses_rs2 = 3'b000;
 
@@ -725,6 +821,16 @@ module openrv64_dispatch_window_3p #(
             pipe_payload_o[
                 0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_RS2_DATA +:
                 `RV64_XLEN] = src2_data_now[selected_idx];
+            pipe_src1_producer_valid_o[0] =
+                src1_producer_valid_q[selected_idx];
+            pipe_src1_producer_id_o[
+                0*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src1_tag_q[selected_idx];
+            pipe_src2_producer_valid_o[0] =
+                src2_producer_valid_q[selected_idx];
+            pipe_src2_producer_id_o[
+                0*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src2_tag_q[selected_idx];
             trace_pipe_uses_rs1[0] = uses_rs1_q[selected_idx];
             trace_pipe_uses_rs2[0] = uses_rs2_q[selected_idx];
         end
@@ -744,33 +850,114 @@ module openrv64_dispatch_window_3p #(
             pipe_payload_o[
                 1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_RS2_DATA +:
                 `RV64_XLEN] = src2_data_now[selected_idx];
+            pipe_src1_producer_valid_o[1] =
+                src1_producer_valid_q[selected_idx];
+            pipe_src1_producer_id_o[
+                1*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src1_tag_q[selected_idx];
+            pipe_src2_producer_valid_o[1] =
+                src2_producer_valid_q[selected_idx];
+            pipe_src2_producer_id_o[
+                1*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src2_tag_q[selected_idx];
             trace_pipe_uses_rs1[1] = uses_rs1_q[selected_idx];
             trace_pipe_uses_rs2[1] = uses_rs2_q[selected_idx];
         end
         if (select_mem_valid) begin
-            selected_idx = select_mem;
             pipe_id_o[
-                2*`OPENRV64_INSTR_ID_WIDTH +:
-                `OPENRV64_INSTR_ID_WIDTH] = id_q[selected_idx];
-            pipe_slot_o[2*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH] =
-                select_mem;
+                selected_mem_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = id_q[select_mem];
+            pipe_slot_o[
+                selected_mem_pipe*RETIRE_SLOT_WIDTH +:
+                RETIRE_SLOT_WIDTH] = select_mem;
             pipe_payload_o[
-                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = payload_q[selected_idx];
+                selected_mem_pipe*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = payload_q[select_mem];
             pipe_payload_o[
-                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_RS1_DATA +:
-                `RV64_XLEN] = src1_data_now[selected_idx];
+                selected_mem_pipe*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                PAYLOAD_RS1_DATA +: `RV64_XLEN] =
+                src1_data_now[select_mem];
             pipe_payload_o[
-                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_RS2_DATA +:
-                `RV64_XLEN] = src2_data_now[selected_idx];
-            trace_pipe_uses_rs1[2] = uses_rs1_q[selected_idx];
-            trace_pipe_uses_rs2[2] = uses_rs2_q[selected_idx];
+                selected_mem_pipe*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                PAYLOAD_RS2_DATA +: `RV64_XLEN] =
+                src2_data_now[select_mem];
+            pipe_src1_producer_valid_o[selected_mem_pipe] =
+                src1_producer_valid_q[select_mem];
+            pipe_src1_producer_id_o[
+                selected_mem_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src1_tag_q[select_mem];
+            pipe_src2_producer_valid_o[selected_mem_pipe] =
+                src2_producer_valid_q[select_mem];
+            pipe_src2_producer_id_o[
+                selected_mem_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src2_tag_q[select_mem];
+            trace_pipe_uses_rs1[2] = uses_rs1_q[select_mem];
+            trace_pipe_uses_rs2[2] = uses_rs2_q[select_mem];
         end
+        if (select_mem2_valid) begin
+            pipe_id_o[
+                selected_mem2_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = id_q[select_mem2];
+            pipe_slot_o[
+                selected_mem2_pipe*RETIRE_SLOT_WIDTH +:
+                RETIRE_SLOT_WIDTH] = select_mem2;
+            pipe_payload_o[
+                selected_mem2_pipe*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = payload_q[select_mem2];
+            pipe_payload_o[
+                selected_mem2_pipe*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                PAYLOAD_RS1_DATA +: `RV64_XLEN] =
+                src1_data_now[select_mem2];
+            pipe_payload_o[
+                selected_mem2_pipe*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                PAYLOAD_RS2_DATA +: `RV64_XLEN] =
+                src2_data_now[select_mem2];
+            pipe_src1_producer_valid_o[selected_mem2_pipe] =
+                src1_producer_valid_q[select_mem2];
+            pipe_src1_producer_id_o[
+                selected_mem2_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src1_tag_q[select_mem2];
+            pipe_src2_producer_valid_o[selected_mem2_pipe] =
+                src2_producer_valid_q[select_mem2];
+            pipe_src2_producer_id_o[
+                selected_mem2_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] = src2_tag_q[select_mem2];
+            trace_pipe_uses_rs1[2] =
+                uses_rs1_q[select_mem] | uses_rs1_q[select_mem2];
+            trace_pipe_uses_rs2[2] =
+                uses_rs2_q[select_mem] | uses_rs2_q[select_mem2];
+        end
+    end
+
+    // Keep valid generation in a separate process from payload routing.
+    // Execution readiness depends on the routed operation's capability; a
+    // combined ready -> valid -> payload process forms a false combinational
+    // loop in synthesis even though the payload selection itself is stable.
+    always @* begin
+        pipe_valid_o = {
+            2'b00,
+            select_ex1_valid,
+            select_ex0_valid
+        };
+        if (select_mem_valid)
+            pipe_valid_o[selected_mem_pipe] = 1'b1;
+        // Coupled acceptance is required: allowing the younger operation to
+        // enter its queue alone would hide the still-unissued older operation
+        // from the cross-queue memory-order gate.
+        if (select_mem2_valid &&
+            pipe_ready_i[selected_mem_pipe] &&
+            pipe_ready_i[selected_mem2_pipe])
+            pipe_valid_o[selected_mem2_pipe] = 1'b1;
     end
 
     wire issue_ex0 = pipe_valid_o[0] && pipe_ready_i[0];
     wire issue_ex1 = pipe_valid_o[1] && pipe_ready_i[1];
-    wire issue_mem = pipe_valid_o[2] && pipe_ready_i[2];
+    wire issue_mem0 = pipe_valid_o[2] && pipe_ready_i[2];
+    wire issue_mem1 = pipe_valid_o[3] && pipe_ready_i[3];
+    wire issue_mem_primary = select_mem_valid &&
+        (is_mem1_op(payload_q[select_mem]) ? issue_mem1 : issue_mem0);
+    wire issue_mem_secondary = select_mem2_valid &&
+        (is_mem1_op(payload_q[select_mem2]) ? issue_mem1 : issue_mem0);
 
     integer entry_idx;
     integer completion_port;
@@ -887,6 +1074,8 @@ module openrv64_dispatch_window_3p #(
                 uses_rs2_q[entry_idx] <= 1'b0;
                 src1_ready_q[entry_idx] <= 1'b0;
                 src2_ready_q[entry_idx] <= 1'b0;
+                src1_producer_valid_q[entry_idx] <= 1'b0;
+                src2_producer_valid_q[entry_idx] <= 1'b0;
                 src1_tag_q[entry_idx] <=
                     {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
                 src2_tag_q[entry_idx] <=
@@ -984,9 +1173,12 @@ module openrv64_dispatch_window_3p #(
             if (issue_ex1 &&
                 !id_is_younger(id_q[select_ex1], squash_id_i))
                 issued_q[select_ex1] <= 1'b1;
-            if (issue_mem &&
+            if (issue_mem_primary &&
                 !id_is_younger(id_q[select_mem], squash_id_i))
                 issued_q[select_mem] <= 1'b1;
+            if (issue_mem_secondary &&
+                !id_is_younger(id_q[select_mem2], squash_id_i))
+                issued_q[select_mem2] <= 1'b1;
         end else begin
             count_q <= count_q + decode_count - retire_count;
             owner_valid_q <= owner_valid_view;
@@ -1047,8 +1239,10 @@ module openrv64_dispatch_window_3p #(
                 issued_q[select_ex0] <= 1'b1;
             if (issue_ex1)
                 issued_q[select_ex1] <= 1'b1;
-            if (issue_mem)
+            if (issue_mem_primary)
                 issued_q[select_mem] <= 1'b1;
+            if (issue_mem_secondary)
+                issued_q[select_mem2] <= 1'b1;
 
             for (retire_lane = 0; retire_lane < 3;
                  retire_lane = retire_lane + 1) begin
@@ -1081,6 +1275,10 @@ module openrv64_dispatch_window_3p #(
                         admit_src1_ready[allocation_lane];
                     src2_ready_q[update_slot] <=
                         admit_src2_ready[allocation_lane];
+                    src1_producer_valid_q[update_slot] <=
+                        admit_src1_producer_valid[allocation_lane];
+                    src2_producer_valid_q[update_slot] <=
+                        admit_src2_producer_valid[allocation_lane];
                     src1_tag_q[update_slot] <=
                         admit_src1_tag[allocation_lane];
                     src2_tag_q[update_slot] <=
@@ -1159,7 +1357,10 @@ module openrv64_dispatch_window_3p #(
                     (payload_q[debug_slot][274 +: 64] == debug_pc) &&
                     ((issue_ex0 && (select_ex0 == debug_slot)) ||
                      (issue_ex1 && (select_ex1 == debug_slot)) ||
-                     (issue_mem && (select_mem == debug_slot)))) begin
+                     (issue_mem_primary &&
+                      (select_mem == debug_slot)) ||
+                     (issue_mem_secondary &&
+                      (select_mem2 == debug_slot)))) begin
                     $display({"WINDOW_DEBUG_ISSUE pc=%016x id=%016x slot=%0d ",
                               "s1_ready=%0d s1_tag=%016x s1_data=%016x ",
                               "s2_ready=%0d s2_tag=%016x s2_data=%016x"},

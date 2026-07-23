@@ -5,6 +5,7 @@
 module tb_soc_memory;
 
     localparam integer MEM_BYTES = 16 * 1024 * 1024;
+    localparam integer WIDE_DATA_WIDTH = 256;
 
     logic        clk;
     logic        rst_n;
@@ -15,6 +16,14 @@ module tb_soc_memory;
     logic [63:0] mem_wdata;
     logic [7:0]  mem_wstrb;
     logic [63:0] mem_rdata;
+    logic wide_valid;
+    logic wide_ready;
+    logic wide_write;
+    logic [63:0] wide_addr;
+    logic [WIDE_DATA_WIDTH-1:0] wide_wdata;
+    logic [WIDE_DATA_WIDTH/8-1:0] wide_wstrb;
+    logic [WIDE_DATA_WIDTH-1:0] wide_rdata;
+    logic wide_error;
 
     logic ccx_req_valid;
     logic ccx_req_ready;
@@ -50,7 +59,8 @@ module tb_soc_memory;
     logic ccx_resp_sc_success;
 
     openrv64_soc_memory #(
-        .MEM_BYTES(MEM_BYTES)
+        .MEM_BYTES(MEM_BYTES),
+        .WIDE_DATA_WIDTH(WIDE_DATA_WIDTH)
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -61,6 +71,14 @@ module tb_soc_memory;
         .mem_wdata_i(mem_wdata),
         .mem_wstrb_i(mem_wstrb),
         .mem_rdata_o(mem_rdata),
+        .wide_valid_i(wide_valid),
+        .wide_ready_o(wide_ready),
+        .wide_write_i(wide_write),
+        .wide_addr_i(wide_addr),
+        .wide_wdata_i(wide_wdata),
+        .wide_wstrb_i(wide_wstrb),
+        .wide_rdata_o(wide_rdata),
+        .wide_error_o(wide_error),
         .ccx_req_valid_i(ccx_req_valid),
         .ccx_req_ready_o(ccx_req_ready),
         .ccx_req_hart_id_i(ccx_req_hart_id),
@@ -129,6 +147,53 @@ module tb_soc_memory;
             mem_addr = 64'h0;
             mem_wdata = 64'h0;
             mem_wstrb = 8'h00;
+        end
+    endtask
+
+    task automatic wide_write_beat;
+        input logic [63:0] address;
+        input logic [WIDE_DATA_WIDTH-1:0] data;
+        input logic [WIDE_DATA_WIDTH/8-1:0] strobe;
+        begin
+            @(negedge clk);
+            wide_valid = 1'b1;
+            wide_write = 1'b1;
+            wide_addr = address;
+            wide_wdata = data;
+            wide_wstrb = strobe;
+            @(posedge clk);
+            @(negedge clk);
+            #1;
+            if (!wide_ready || wide_error)
+                $fatal(1, "wide memory write failed at %016x", address);
+            @(posedge clk);
+            @(negedge clk);
+            wide_valid = 1'b0;
+            wide_write = 1'b0;
+            wide_addr = 0;
+            wide_wdata = 0;
+            wide_wstrb = 0;
+        end
+    endtask
+
+    task automatic expect_wide_read;
+        input logic [63:0] address;
+        input logic [WIDE_DATA_WIDTH-1:0] expected;
+        input [8*56-1:0] label;
+        begin
+            @(negedge clk);
+            wide_valid = 1'b1;
+            wide_write = 1'b0;
+            wide_addr = address;
+            @(posedge clk);
+            @(negedge clk);
+            #1;
+            if (!wide_ready || wide_error || (wide_rdata !== expected))
+                $fatal(1, "%0s: wide read mismatch", label);
+            @(posedge clk);
+            @(negedge clk);
+            wide_valid = 1'b0;
+            wide_addr = 0;
         end
     endtask
 
@@ -210,6 +275,11 @@ module tb_soc_memory;
         mem_addr = 64'h0;
         mem_wdata = 64'h0;
         mem_wstrb = 8'h00;
+        wide_valid = 1'b0;
+        wide_write = 1'b0;
+        wide_addr = 0;
+        wide_wdata = 0;
+        wide_wstrb = 0;
         ccx_req_valid = 1'b0;
         ccx_req_hart_id = 0;
         ccx_req_txn_id = 0;
@@ -251,6 +321,25 @@ module tb_soc_memory;
         bus_write(64'h0008, 64'h1122_3344_5566_7788, 8'ha5);
         expect_read(64'h0008, 64'h1100_3300_0066_0088,
                     "byte-strobe write");
+
+        wide_write_beat(
+            `OPENRV64_SOC_MEMORY_BASE + 64'h20,
+            {64'hdddd_dddd_dddd_dddd, 64'hcccc_cccc_cccc_cccc,
+             64'hbbbb_bbbb_bbbb_bbbb, 64'haaaa_aaaa_aaaa_aaaa},
+            {WIDE_DATA_WIDTH/8{1'b1}});
+        expect_wide_read(
+            `OPENRV64_SOC_MEMORY_BASE + 64'h20,
+            {64'hdddd_dddd_dddd_dddd, 64'hcccc_cccc_cccc_cccc,
+             64'hbbbb_bbbb_bbbb_bbbb, 64'haaaa_aaaa_aaaa_aaaa},
+            "wide write/read");
+        expect_read(64'h0030, 64'hcccc_cccc_cccc_cccc,
+                    "scalar observes wide write");
+        bus_write(64'h0038, 64'heeee_eeee_eeee_eeee, 8'hff);
+        expect_wide_read(
+            `OPENRV64_SOC_MEMORY_BASE + 64'h20,
+            {64'heeee_eeee_eeee_eeee, 64'hcccc_cccc_cccc_cccc,
+             64'hbbbb_bbbb_bbbb_bbbb, 64'haaaa_aaaa_aaaa_aaaa},
+            "wide observes scalar write");
 
         // Low address bits select the containing 64-bit word. Lane placement
         // remains encoded in wdata/wstrb by the requester.

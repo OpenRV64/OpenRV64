@@ -11,8 +11,8 @@
 //
 //   lane 0 / EX0: base ALU and RV64M
 //   lane 1 / EX1: base ALU, branch/jump, system/CSR, traps and fences
-//   lane 2 / MEM0: loads, stores and RV64A
-//   lane 3 / MEM1: ordinary loads and stores
+//   lane 2 / MEM0: ordinary loads only
+//   lane 3 / MEM1: stores and all RV64A operations, including LR
 //
 // The issue payload already contains captured operand values.  Each lane holds
 // its own completion; MEM0/MEM1 arbitrate onto the third backend completion
@@ -33,6 +33,7 @@ module openrv64_exec_top_3p #(
     parameter integer ENABLE_RV64M = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer STORE_QUEUE_DEPTH = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}}
 ) (
@@ -51,9 +52,21 @@ module openrv64_exec_top_3p #(
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_i,
     input  wire                         branch_forward_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        branch_forward_id_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         branch_forward_rd_addr_i,
     input  wire [`RV64_XLEN-1:0]        branch_forward_data_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        issue_src1_producer_valid_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        issue_src1_producer_id_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        issue_src2_producer_valid_i,
+    input  wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        issue_src2_producer_id_i,
 
     input  wire                         ordered_head_valid_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_i,
@@ -277,26 +290,23 @@ module openrv64_exec_top_3p #(
             `OPENRV64_INSTR_ID_WIDTH]) &&
         (ordered_head_slot_i ==
          issue_slot_i[1*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH]);
-    // Big-hammer pre-translation barrier: once SATP or SFENCE.VMA reaches
-    // ordered head, do not let it execute until every older posted store has
-    // received its lower-level completion.  Younger stores cannot be posted
-    // before ordered head.
+    // SATP and SFENCE.VMA execute only at ordered head.  An unresolved store
+    // remains the MEM ordering head until translation/PMP/L1D admission
+    // completes, so it cannot be bypassed by either barrier.
     wire ex1_order_ready =
         (!ex1_requires_order || ex1_order_match) &&
         (!ex1_translation_barrier || !mem_posted_store_pending);
-    wire mem0_supported = (mem0_mem_read || mem0_mem_write) &&
+    wire mem0_supported = mem0_mem_read && !mem0_mem_write && !mem0_atomic &&
                           !mem0_branch && !mem0_jump && !mem0_system &&
                           !mem0_fence && !mem0_illegal;
-    wire mem1_supported = (mem1_mem_read || mem1_mem_write) &&
+    wire mem1_supported = (mem1_mem_write || mem1_atomic) &&
                           !mem1_branch && !mem1_jump && !mem1_system &&
-                          !mem1_fence && !mem1_illegal && !mem1_atomic;
+                          !mem1_fence && !mem1_illegal;
 
     wire ex0_issue_valid = issue_valid_i[0] && ex0_supported;
     wire ex1_issue_valid = issue_valid_i[1] && ex1_supported &&
                            ex1_order_ready;
-    wire mem0_global_atomic_ready;
-    wire mem0_issue_valid = issue_valid_i[2] && mem0_supported &&
-        (!mem0_atomic || mem0_global_atomic_ready);
+    wire mem0_issue_valid = issue_valid_i[2] && mem0_supported;
     wire mem1_issue_valid = issue_valid_i[3] && mem1_supported;
     wire ex0_issue_ready;
     wire ex1_issue_ready;
@@ -306,8 +316,7 @@ module openrv64_exec_top_3p #(
     assign issue_ready_o[0] = ex0_issue_ready && ex0_supported;
     assign issue_ready_o[1] = ex1_issue_ready && ex1_supported &&
                               ex1_order_ready;
-    assign issue_ready_o[2] = mem0_issue_ready && mem0_supported &&
-        (!mem0_atomic || mem0_global_atomic_ready);
+    assign issue_ready_o[2] = mem0_issue_ready && mem0_supported;
     assign issue_ready_o[3] = mem1_issue_ready && mem1_supported;
     assign issue_unsupported_o = {
         issue_valid_i[3] && !mem1_supported,
@@ -364,8 +373,17 @@ module openrv64_exec_top_3p #(
             1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
         .branch_forward_valid_i(branch_forward_valid_i),
+        .branch_forward_id_i(branch_forward_id_i),
         .branch_forward_rd_addr_i(branch_forward_rd_addr_i),
         .branch_forward_data_i(branch_forward_data_i),
+        .src1_producer_valid_i(issue_src1_producer_valid_i[1]),
+        .src1_producer_id_i(issue_src1_producer_id_i[
+            1*`OPENRV64_INSTR_ID_WIDTH +:
+            `OPENRV64_INSTR_ID_WIDTH]),
+        .src2_producer_valid_i(issue_src2_producer_valid_i[1]),
+        .src2_producer_id_i(issue_src2_producer_id_i[
+            1*`OPENRV64_INSTR_ID_WIDTH +:
+            `OPENRV64_INSTR_ID_WIDTH]),
         .complete_valid_o(complete_valid_o[1]),
         .complete_ready_i(complete_ready_i[1]),
         .complete_id_o(complete_id_o[
@@ -445,7 +463,14 @@ module openrv64_exec_top_3p #(
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem1_head_id;
     wire mem0_head_ordered;
     wire mem1_head_ordered;
-    wire mem1_queue_busy;
+    wire mem0_forward_store_valid;
+    wire [`RV64_XLEN-1:0] mem0_forward_store_addr;
+    wire [`RV64_XLEN-1:0] mem0_forward_store_wdata;
+    wire [7:0] mem0_forward_store_wstrb;
+    wire mem1_forward_store_valid;
+    wire [`RV64_XLEN-1:0] mem1_forward_store_addr;
+    wire [`RV64_XLEN-1:0] mem1_forward_store_wdata;
+    wire [7:0] mem1_forward_store_wstrb;
     wire mem0_raw_resp_ready;
     wire mem1_raw_resp_ready;
     wire mem0_raw_resp_valid = mem_resp_valid_i &&
@@ -517,12 +542,20 @@ module openrv64_exec_top_3p #(
         .pending_head_id_o(mem0_head_id),
         .pending_head_ordered_o(mem0_head_ordered),
         .queue_busy_o(),
+        .forward_store_valid_i(mem1_forward_store_valid),
+        .forward_store_addr_i(mem1_forward_store_addr),
+        .forward_store_wdata_i(mem1_forward_store_wdata),
+        .forward_store_wstrb_i(mem1_forward_store_wstrb),
+        .forward_store_valid_o(mem0_forward_store_valid),
+        .forward_store_addr_o(mem0_forward_store_addr),
+        .forward_store_wdata_o(mem0_forward_store_wdata),
+        .forward_store_wstrb_o(mem0_forward_store_wstrb),
         .mem_rdata_i(mem_rdata_i)
     );
 
     openrv64_exec_pipe_mem #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .LSU_DEPTH(4),
+        .LSU_DEPTH(STORE_QUEUE_DEPTH),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
@@ -575,15 +608,17 @@ module openrv64_exec_top_3p #(
         .pending_head_valid_o(mem1_head_valid),
         .pending_head_id_o(mem1_head_id),
         .pending_head_ordered_o(mem1_head_ordered),
-        .queue_busy_o(mem1_queue_busy),
+        .queue_busy_o(),
+        .forward_store_valid_i(mem0_forward_store_valid),
+        .forward_store_addr_i(mem0_forward_store_addr),
+        .forward_store_wdata_i(mem0_forward_store_wdata),
+        .forward_store_wstrb_i(mem0_forward_store_wstrb),
+        .forward_store_valid_o(mem1_forward_store_valid),
+        .forward_store_addr_o(mem1_forward_store_addr),
+        .forward_store_wdata_o(mem1_forward_store_wdata),
+        .forward_store_wstrb_o(mem1_forward_store_wstrb),
         .mem_rdata_i(mem_rdata_i)
     );
-
-    // MEM0 is the only RV64A lane.  An atomic cannot be admitted behind an
-    // older MEM1 slot.  A younger MEM1 operation accepted in the same bundle
-    // is safe: the cross-queue ordered-head gate below holds it until the
-    // atomic completes.
-    assign mem0_global_atomic_ready = !mem1_queue_busy;
 
     function automatic id_is_younger;
         input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
@@ -598,7 +633,8 @@ module openrv64_exec_top_3p #(
     endfunction
 
     // A pending store or atomic in one physical queue blocks younger memory
-    // requests from the other queue until that ordered operation reaches L1D.
+    // requests from the other queue until that ordered operation receives its
+    // tagged translation/PMP/L1D-admission response.
     wire mem0_request_allowed = mem0_raw_valid &&
         !(mem1_head_valid && mem1_head_ordered &&
           id_is_younger(mem0_head_id, mem1_head_id));
@@ -609,39 +645,55 @@ module openrv64_exec_top_3p #(
     wire port0_select_mem1 = mem1_request_allowed &&
         (!mem0_request_allowed ||
          id_is_younger(mem0_head_id, mem1_head_id));
+    // Address/protection metadata must describe the oldest pending head even
+    // when an ordered store is not yet allowed to assert mem_valid.  Request
+    // grant and metadata selection are therefore deliberately separate.
+    wire port0_payload_select_mem1 = mem1_head_valid &&
+        (!mem0_head_valid ||
+         id_is_younger(mem0_head_id, mem1_head_id));
 
     assign mem_valid_o = mem0_request_allowed || mem1_request_allowed;
     assign mem1_valid_o = both_mem_requests;
-    assign mem_tag_o = port0_select_mem1 ?
+    assign mem_tag_o = port0_payload_select_mem1 ?
         {1'b1, mem1_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]} :
         {1'b0, mem0_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]};
-    assign mem1_tag_o = port0_select_mem1 ?
+    assign mem1_tag_o = port0_payload_select_mem1 ?
         {1'b0, mem0_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]} :
         {1'b1, mem1_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]};
-    assign mem_lock_o = port0_select_mem1 ? mem1_raw_lock : mem0_raw_lock;
-    assign mem1_lock_o = port0_select_mem1 ? mem0_raw_lock : mem1_raw_lock;
-    assign mem_write_o = port0_select_mem1 ? mem1_raw_write : mem0_raw_write;
-    assign mem1_write_o = port0_select_mem1 ? mem0_raw_write : mem1_raw_write;
-    assign mem_addr_o = port0_select_mem1 ? mem1_raw_addr : mem0_raw_addr;
-    assign mem1_addr_o = port0_select_mem1 ? mem0_raw_addr : mem1_raw_addr;
-    assign mem_wdata_o = port0_select_mem1 ? mem1_raw_wdata : mem0_raw_wdata;
-    assign mem1_wdata_o = port0_select_mem1 ?
+    assign mem_lock_o = port0_payload_select_mem1 ?
+                        mem1_raw_lock : mem0_raw_lock;
+    assign mem1_lock_o = port0_payload_select_mem1 ?
+                         mem0_raw_lock : mem1_raw_lock;
+    assign mem_write_o = port0_payload_select_mem1 ?
+                         mem1_raw_write : mem0_raw_write;
+    assign mem1_write_o = port0_payload_select_mem1 ?
+                          mem0_raw_write : mem1_raw_write;
+    assign mem_addr_o = port0_payload_select_mem1 ?
+                        mem1_raw_addr : mem0_raw_addr;
+    assign mem1_addr_o = port0_payload_select_mem1 ?
+                         mem0_raw_addr : mem1_raw_addr;
+    assign mem_wdata_o = port0_payload_select_mem1 ?
+                         mem1_raw_wdata : mem0_raw_wdata;
+    assign mem1_wdata_o = port0_payload_select_mem1 ?
                           mem0_raw_wdata : mem1_raw_wdata;
-    assign mem_wstrb_o = port0_select_mem1 ? mem1_raw_wstrb : mem0_raw_wstrb;
-    assign mem1_wstrb_o = port0_select_mem1 ?
+    assign mem_wstrb_o = port0_payload_select_mem1 ?
+                         mem1_raw_wstrb : mem0_raw_wstrb;
+    assign mem1_wstrb_o = port0_payload_select_mem1 ?
                           mem0_raw_wstrb : mem1_raw_wstrb;
-    assign mem_access_o = port0_select_mem1 ?
+    assign mem_access_o = port0_payload_select_mem1 ?
                           mem1_raw_access : mem0_raw_access;
-    assign mem1_access_o = port0_select_mem1 ?
+    assign mem1_access_o = port0_payload_select_mem1 ?
                            mem0_raw_access : mem1_raw_access;
-    assign mem_effective_addr_o = port0_select_mem1 ?
+    assign mem_effective_addr_o = port0_payload_select_mem1 ?
                                   mem1_raw_effective_addr :
                                   mem0_raw_effective_addr;
-    assign mem1_effective_addr_o = port0_select_mem1 ?
+    assign mem1_effective_addr_o = port0_payload_select_mem1 ?
                                    mem0_raw_effective_addr :
                                    mem1_raw_effective_addr;
-    assign mem_size_o = port0_select_mem1 ? mem1_raw_size : mem0_raw_size;
-    assign mem1_size_o = port0_select_mem1 ? mem0_raw_size : mem1_raw_size;
+    assign mem_size_o = port0_payload_select_mem1 ?
+                        mem1_raw_size : mem0_raw_size;
+    assign mem1_size_o = port0_payload_select_mem1 ?
+                         mem0_raw_size : mem1_raw_size;
 
     assign mem0_raw_ready = mem0_request_allowed &&
         (port0_select_mem1 ? (both_mem_requests && mem1_ready_i) :
@@ -649,6 +701,14 @@ module openrv64_exec_top_3p #(
     assign mem1_raw_ready = mem1_request_allowed &&
         (port0_select_mem1 ? mem_ready_i :
          (both_mem_requests && mem1_ready_i));
+
+`ifndef SYNTHESIS
+    initial begin
+        if ((STORE_QUEUE_DEPTH < 1) || (STORE_QUEUE_DEPTH > 4))
+            $fatal(1,
+                "3p store queue must contain one through four entries");
+    end
+`endif
 
     // EX0 and EX1 retain dedicated completion ports.  MEM0 and MEM1 share the
     // third retirement-queue completion port; each pipe already holds its

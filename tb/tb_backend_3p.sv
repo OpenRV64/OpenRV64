@@ -7,10 +7,13 @@
 `include "core/decode/defs/br-defs.v"
 
 module tb_backend_3p #(
-    parameter integer RELAX_HAZARDS = 0
+    parameter integer RELAX_HAZARDS = 0,
+    parameter integer RETIRE_DEPTH = 16,
+    parameter integer STORE_QUEUE_DEPTH = 4
 );
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
-    localparam integer SW = 3;
+    localparam integer SW = $clog2(RETIRE_DEPTH);
+    localparam integer RCW = $clog2(RETIRE_DEPTH + 1);
     localparam integer I_PRIV = 2;
     localparam integer I_SYSTEM = 10;
     localparam integer I_MEM_WRITE = 15;
@@ -92,14 +95,16 @@ module tb_backend_3p #(
     wire [2:0] complete_valid;
     wire [31:0] write_busy;
     wire barrier_active;
-    wire [3:0] retire_occupancy;
+    wire [RCW-1:0] retire_occupancy;
     wire [2:0] dispatch_occupancy;
 
     openrv64_backend_3p #(
+        .RETIRE_DEPTH(RETIRE_DEPTH),
         .BRANCH_COMPLETION_FORWARD_MASK(3'b111),
         .ENABLE_FULL_FORWARDING(1),
         .RELAX_HAZARDS(RELAX_HAZARDS),
         .ENABLE_POSTED_STORES(1),
+        .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .STORE_FORWARD_BASE(64'h0),
         .STORE_FORWARD_SIZE(64'h1000)
     ) dut (
@@ -574,9 +579,9 @@ module tb_backend_3p #(
         if (write_busy != 0 || retire_occupancy != 0)
             fail("general forwarding sequence leaked backend state");
 
-        // An older ALU and younger store may allocate together, but the MEM
-        // lane must withhold the store request until the ALU retires and the
-        // store's ID/slot is the ordered head.
+        // An older ALU and younger store may allocate together, but the
+        // four-entry pre-retire store queue must withhold the store request
+        // until the ALU retires and the store's ID/slot is the ordered head.
         p0 = addi_packet(4, 0, 8, 1);
         p1 = base_packet(5, 64'h2004, 32'h0080_3023);
         p1[I_RS1 +: 5] = 0;
@@ -601,16 +606,14 @@ module tb_backend_3p #(
         tick();
         mem_ready = 0;
         for (cycles = 0; cycles < 10; cycles = cycles + 1) begin
-            if (retire_occupancy == 0)
-                saw_posted_store_retire = 1'b1;
+            if (retire_occupancy == 0 || retire_arch != 0)
+                fail("store retired before translation/admission response");
             tick();
         end
-        if (!saw_posted_store_retire)
-            fail("posted store did not retire before its response");
 
-        // The retained B response must not serialize an independent younger
-        // load.  This is the minimum useful posted-store interlock: only an
-        // overlapping load or a second store waits for the response.
+        // Until the store response proves translation, PMP, and L1D admission,
+        // it remains the oldest memory-ordering point. A younger load must not
+        // escape merely because the untranslated request was captured.
         while (!decode_ready[0]) tick();
         decode_payload = {{2*IW{1'b0}}, load_packet(11, 0, 13, 64'h100)};
         decode_uses_rs1 = 3'b000;
@@ -620,14 +623,36 @@ module tb_backend_3p #(
         decode_valid = 3'b000;
         decode_payload = 0;
         mem_ready = 1'b1;
+        for (cycles = 0; cycles < 8; cycles = cycles + 1) begin
+            if (mem_valid)
+                fail("younger load passed an unresolved store");
+            tick();
+        end
+        mem_ready = 1'b0;
+
+        // The successful response is the store's architectural completion
+        // point. The physical write may remain posted in L1D below this point.
+        mem_resp_valid = 1'b1;
+        mem_resp_tag = posted_store_tag;
+        tick();
+        mem_resp_valid = 1'b0;
+        mem_ready = 1'b0;
+        for (cycles = 0; cycles < 20 && !saw_posted_store_retire;
+             cycles = cycles + 1) begin
+            #1;
+            if (retire_arch != 0)
+                saw_posted_store_retire = 1'b1;
+            tick();
+        end
+        if (!saw_posted_store_retire)
+            fail("store did not retire after successful admission response");
+        mem_ready = 1'b1;
         for (cycles = 0; cycles < 20 &&
              !(mem_valid && !mem_write && mem_addr == 64'h100);
              cycles = cycles + 1) tick();
         if (!mem_valid || mem_write || mem_addr != 64'h100)
-            fail("non-overlapping load remained behind posted store");
+            fail("younger load did not issue after store admission");
         younger_load_tag = mem_tag;
-        if (younger_load_tag == posted_store_tag)
-            fail("younger load reused live posted-store tag");
         tick();
         mem_ready = 1'b0;
         mem_resp_valid = 1'b1;
@@ -643,63 +668,119 @@ module tb_backend_3p #(
             tick();
         end
         if (!saw_nonoverlap_load_retire)
-            fail("non-overlapping load did not complete before store response");
+            fail("younger load did not retire after store completion");
+        for (cycles = 0; cycles < 20 && retire_occupancy != 0;
+             cycles = cycles + 1) tick();
+        if (retire_occupancy != 0)
+            fail("precise store success sequence leaked retirement state");
 
-        // A fully covered same-address load completes locally from the
-        // retained store data and must not consume an AXI read request.
-        while (!decode_ready[0]) tick();
-        decode_payload = {{2*IW{1'b0}}, load_packet(12, 0, 14, 64'h80)};
-        decode_uses_rs1 = 3'b000;
-        decode_uses_rs2 = 3'b000;
+        // Reproduce the Linux failure: capture an Sv39-style store request,
+        // return its page fault later, and require the original store PC to
+        // trap precisely. The request handshake alone must not retire it.
+        p0 = base_packet(12, 64'h2f00, 32'h0080_3023);
+        p0[I_RS2 +: 5] = 5'd1;
+        p0[I_IMM +: 64] = 64'h180;
+        p0[I_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+        p0[I_MEM_WRITE] = 1'b1;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs2 = 3'b001;
         decode_valid = 3'b001;
         tick();
         decode_valid = 3'b000;
         decode_payload = 0;
+        decode_uses_rs2 = 0;
         mem_ready = 1'b1;
-        for (cycles = 0; cycles < 20; cycles = cycles + 1) begin
-            #1;
-            if (mem_valid)
-                fail("store-forwarded load issued an AXI request");
-            if (retire_arch[0] && retire_rd == 14 &&
-                retire_wdata == 64'd64)
-                saw_store_forward_retire = 1'b1;
+        while (!(mem_valid && mem_write && mem_addr == 64'h180)) tick();
+        posted_store_tag = mem_tag;
+        tick();
+        mem_ready = 1'b0;
+        for (cycles = 0; cycles < 6; cycles = cycles + 1) begin
+            if (retire_occupancy == 0 || exception)
+                fail("faulting store completed before its page-fault response");
             tick();
         end
-        mem_ready = 1'b0;
-        if (!saw_store_forward_retire)
-            fail("same-address load did not retire forwarded store data");
-
-        // A younger redirect must not discard the committed store's response
-        // tag or the metadata needed to report a delayed failure.
+        mem_resp_valid = 1'b1;
+        mem_resp_tag = posted_store_tag;
+        mem_page_fault = 1'b1;
+        tick();
+        mem_resp_valid = 1'b0;
+        mem_page_fault = 1'b0;
+        for (cycles = 0; cycles < 20 && !exception;
+             cycles = cycles + 1) tick();
+        if (!exception)
+            fail("store page fault did not reach precise retirement");
+        if (cause != `RV64_EXCEPT_CAUSE_STORE_PAGE_FAULT)
+            fail("precise store page fault reported the wrong cause");
+        if (retire_pc != 64'h2f00 || retire_tval != 64'h180)
+            fail("precise store page fault lost its PC or address");
+        if (retire_trace_id != 64'd12 || retire_instr != 32'h0080_3023)
+            fail("precise store page fault lost retirement metadata");
+        if (retire_arch != 0)
+            fail("faulting store performed architectural retirement");
         flush = 1'b1;
         tick();
         flush = 1'b0;
-        mem_resp_valid = 1;
+
+        // Model SRET retry after the handler installs the mapping. The same
+        // architectural store must issue again and retire only on success.
+        while (!decode_ready[0]) tick();
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = 0;
+        decode_uses_rs2 = 0;
+        mem_ready = 1'b1;
+        while (!(mem_valid && mem_write && mem_addr == 64'h180)) tick();
+        posted_store_tag = mem_tag;
+        tick();
+        mem_ready = 1'b0;
+        mem_resp_valid = 1'b1;
         mem_resp_tag = posted_store_tag;
-        mem_error = 1'b1;
         tick();
-        mem_resp_valid = 0;
-        mem_error = 1'b0;
-        if (!exception)
-            fail("posted store response fault did not raise async abort");
-        if (cause != `RV64_EXCEPT_CAUSE_STORE_ACCESS_FAULT)
-            fail("posted store async abort reported the wrong cause");
-        if (retire_tval != 64'h80)
-            fail("posted store async abort lost the store address");
-        if (retire_trace_id != 64'd5 || retire_instr != 32'h0080_3023)
-            fail("posted store async abort lost diagnostic metadata");
-        if (retire_arch != 0)
-            fail("normal retirement overlapped posted store async abort");
-        tick();
-        if (exception)
-            fail("posted store async abort was not a one-cycle event");
+        mem_resp_valid = 1'b0;
         for (cycles = 0; cycles < 20 && retire_occupancy != 0;
              cycles = cycles + 1) tick();
-        if (retire_occupancy != 0) fail("store did not complete and retire");
+        if (retire_occupancy != 0 || exception)
+            fail("retried store did not complete normally");
 
-        // SATP is a conservative global barrier.  It may reach ordered head
-        // after a posted store has retired architecturally, but it cannot
-        // execute until that store receives its lower-level completion.
+        // PMP denial is known before request launch. It must produce a precise
+        // store-access fault without emitting any memory transaction.
+        p0 = base_packet(13, 64'h2f40, 32'h0080_3023);
+        p0[I_RS2 +: 5] = 5'd1;
+        p0[I_IMM +: 64] = 64'h1c0;
+        p0[I_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+        p0[I_MEM_WRITE] = 1'b1;
+        mem_access_allowed = 1'b0;
+        while (!decode_ready[0]) tick();
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = 0;
+        decode_uses_rs2 = 0;
+        for (cycles = 0; cycles < 20 && !exception;
+             cycles = cycles + 1) begin
+            if (mem_valid)
+                fail("PMP-denied store emitted a memory request");
+            tick();
+        end
+        if (!exception ||
+            cause != `RV64_EXCEPT_CAUSE_STORE_ACCESS_FAULT)
+            fail("PMP-denied store did not raise store-access fault");
+        if (retire_pc != 64'h2f40 || retire_tval != 64'h1c0)
+            fail("PMP-denied store lost its original PC or address");
+        if (retire_arch != 0)
+            fail("PMP-denied store performed architectural retirement");
+        mem_access_allowed = 1'b1;
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+
+        // SATP remains a conservative global barrier behind an unresolved
+        // store. It cannot execute until that store completes precisely.
         while (!decode_ready[0]) tick();
         p0 = base_packet(64'd15, 64'h2800, 32'h0000_3023);
         p0[I_RS2 +: 5] = 5'd1;
@@ -719,7 +800,6 @@ module tb_backend_3p #(
         posted_store_tag = mem_tag;
         tick();
         mem_ready = 1'b0;
-        while (retire_occupancy != 0) tick();
 
         while (!decode_ready[0]) tick();
         p0 = base_packet(
@@ -734,7 +814,7 @@ module tb_backend_3p #(
         decode_payload = 0;
         for (cycles = 0; cycles < 6; cycles = cycles + 1) begin
             if (csr_write || (retire_arch != 0))
-                fail("SATP passed an uncompleted posted store");
+                fail("SATP passed an unresolved older store");
             tick();
         end
 
@@ -774,7 +854,7 @@ module tb_backend_3p #(
             branch_retire_age_addr[63:0] != 64'h3004)
             fail("retired taken branch did not age its fallthrough");
 
-        $display("PASS: integrated 3p forwarding, SATP store drain, posted-store bypass, branch aging, async abort, issue, and retirement");
+        $display("PASS: 16-entry 3p backend, four-entry precise store queue, page/PMP faults, retry, SATP ordering, and retirement");
         $finish;
     end
 endmodule

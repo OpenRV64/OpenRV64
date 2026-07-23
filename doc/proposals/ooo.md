@@ -495,9 +495,11 @@ halt, or serializing instruction terminates the group as required.
   authorized at the ROB head.
 - A faulting instruction cannot update RRAT or commit its destination.
 
-OOO mode defaults to precise, non-posted stores.  The current 3P posted-store
-mode remains supported by 3P, but its imprecise late-error contract is not the
-default for a core claiming generally precise OOO retirement.
+OOO mode defaults to precise retirement through store translation, protection,
+and L1D admission. The current 3P queue now enforces that boundary, but it is
+not a full LSQ: entries are not pretranslated and younger loads cannot pass an
+unresolved store. Physical writeback below L1D remains posted and needs a
+separate machine-check policy for unrecoverable downstream failures.
 
 ## Memory progression
 

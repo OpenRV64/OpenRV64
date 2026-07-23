@@ -1049,9 +1049,21 @@ module openrv64_rv64_top #(
             {`OPENRV64_EXEC_PIPE_COUNT*
              `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
         .branch_forward_valid_3p_i(1'b0),
+        .branch_forward_id_3p_i(
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .branch_forward_rd_addr_3p_i(
             {`RV64_REG_ADDR_WIDTH{1'b0}}),
         .branch_forward_data_3p_i({`RV64_XLEN{1'b0}}),
+        .issue_src1_producer_valid_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
+        .issue_src1_producer_id_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .issue_src2_producer_valid_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
+        .issue_src2_producer_id_3p_i(
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ordered_head_valid_3p_i(1'b0),
         .ordered_head_id_3p_i(
             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),

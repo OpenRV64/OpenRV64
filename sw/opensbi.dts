@@ -1,5 +1,9 @@
 /dts-v1/;
 
+#ifndef OPENRV64_MEMORY_SIZE
+#define OPENRV64_MEMORY_SIZE 0x10000000
+#endif
+
 / {
     #address-cells = <2>;
     #size-cells = <2>;
@@ -35,7 +39,7 @@
 
     memory@80000000 {
         device_type = "memory";
-        reg = <0x0 0x80000000 0x0 0x10000000>;
+        reg = <0x0 0x80000000 0x0 OPENRV64_MEMORY_SIZE>;
     };
 
     soc {

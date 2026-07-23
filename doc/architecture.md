@@ -24,12 +24,12 @@ The current design is built around a few deliberate rules:
    or BNE may share its issue group with younger predicted-path work; every
    other branch terminates the group. A mispredicted branch therefore cannot
    have a younger instruction already issued beside it.
-5. Stores are ordered at the retirement head. Posted-store mode, enabled by
-   default in the 3P wrapper, makes a store architecturally complete when its
-   request is accepted and reports a later failure as an imprecise asynchronous
-   abort.
-6. The 256-bit 3P path has private blocking L1I/L1D caches on native CCX.
-   There is still no multi-entry store buffer or coherent memory hierarchy.
+5. Stores are ordered at the retirement head. A core-to-bus request handshake
+   is only translation-wrapper capture; architectural completion waits for the
+   tagged translation, PMP, and L1D-admission response.
+6. The 3P path has private L1I/L1D clients on native 512-bit CCX. L1D has a
+   parameterized cache-line store buffer, but there is still no complete
+   coherent multi-hart hierarchy.
 
 These rules are more important than the informal names of the pipeline stages:
 they define which optimizations can be added locally and which require a real
@@ -373,20 +373,23 @@ same-cycle CSR write or another control event. MRET, SRET, `FENCE.I`, and
 `SFENCE.VMA` restart the frontend and flush younger state.
 
 This provides precise integer, CSR, branch, load, synchronous store, and trap
-behavior, with one deliberate exception: a posted store may retire before its
-native CCX response. A late store error is delivered alone at the next
-architectural boundary with the original effective address in `tval`; its PC
-is the next unretired architectural frontier. The core cannot roll back the
-already-retired store or younger committed instructions, so this is an
-imprecise asynchronous abort rather than a precise exception.
+behavior. A store does not complete merely because the core-to-bus request was
+captured. It remains in the pre-retire store queue until a tagged response
+proves translation, PMP, and L1D store-buffer admission. Translation and
+protection failures therefore trap at the original store PC without
+architecturally retiring the store. The physical cache-line drain may remain
+posted below L1D; a failure after that committed boundary requires a separate
+machine-check policy and is not a replayable page/PMP fault.
 
 ## Load/store and memory ordering
 
-The MEM lane has three simple-operation slots. Requests launch from the head of
-that local memory sequence, so the LSU does not reorder memory operations
-around one another. The core bus currently serializes tagged scalar requests
-through one translation/PTW slot and one blocking L1D port. The backend tag is
-retained across that operation and restored on the response.
+The 3P backend has a four-entry load queue and a parameterized pre-retire store
+queue, with four store entries by default. Requests launch from their local
+memory sequence. Stores may allocate speculatively, but a store request cannot
+launch until that instruction is the ordered retirement head. The core bus
+currently serializes tagged scalar requests through one translation/PTW slot.
+The backend tag is retained across translation, PMP checking, and the L1D
+operation, then restored on the response.
 
 Cacheable load misses issue one aligned 512-bit native CCX line read; the L1D
 returns the addressed 64-bit word and retains the other words in the cache.
@@ -395,28 +398,29 @@ data, and strobes on the same 512-bit CCX channels. No scalar LSU request uses
 an AXI ID or drives AXI directly. A redirect hides a canceled speculative load
 response, while an accepted store remains irrevocable and is drained.
 
-Stores issue from the LSU queue only when their instruction is the ordered
-retirement head. With posted stores enabled, core-bus request acceptance
-produces the architectural completion while the bus retains one native L1D
-operation until its CCX response arrives.
+Core-bus request acceptance is not architectural completion. The store remains
+at the memory-ordering head until its tagged response. On success that response
+means the translated and PMP-approved store was admitted by L1D; retirement may
+then proceed while L1D drains the physical cache-line write independently.
 
-While that write is pending:
+While the pre-retire store is unresolved:
 
-- another scalar request requiring L1D remains blocked;
-- a load fully covered by the retained store bytes completes locally from the
-  stored word, including normal sign/zero extension; and
-- a partially covered or non-forwarded load waits.
+- younger memory requests remain blocked;
+- SATP, `SFENCE.VMA`, fences, and atomics cannot pass it; and
+- younger non-memory execution may continue filling the retirement window.
 
-Store-to-load forwarding is restricted to `STORE_FORWARD_BASE` through
-`STORE_FORWARD_SIZE`; the 3P wrapper defaults this to the 256 MiB RAM window so
-ROM and MMIO are excluded. The comparison uses effective addresses. That is
-adequate for the Bare, identity-mapped benchmark configuration but is not
-correct for virtual aliases in a general translated system.
+The retained store-data forwarding hooks remain restricted to
+`STORE_FORWARD_BASE` through `STORE_FORWARD_SIZE`, but the safe translated
+configuration does not currently let younger loads reach them while a store is
+unresolved. Allowing that bypass requires physical-address disambiguation; an
+effective-address comparison is not sufficient in a general translated system.
 
 RV64A drains simple MEM work and runs as a serialized ordered operation. It
-uses the core request/response contract rather than AXI exclusives. There is no
-multi-entry store buffer, speculative store queue, physical-address store
-forwarding CAM, PMA model, or cache-coherence protocol.
+uses the core request/response contract rather than AXI exclusives. The current
+store queue retains speculative virtual-address operations but does not
+pretranslate them, compare translated physical addresses, or permit younger
+loads to bypass an unresolved store. There is no physical-address forwarding
+CAM, complete PMA model, or cache-coherence protocol.
 
 ## Translation, protection, and physical bus
 
@@ -587,7 +591,7 @@ load bypass. See [forwarding.md](forwarding.md).
 ## Default 3P parameter profile
 
 The defaults on `openrv64_top_3p` are intentionally conservative except for
-ordered WAW relaxation and posted stores:
+ordered WAW relaxation:
 
 | Parameter | Default | Meaning |
 | --- | ---: | --- |
@@ -600,7 +604,8 @@ ordered WAW relaxation and posted stores:
 | `COMPLETION_FORWARD_MASK` | `000` | Cross-pipe live completion bypass disabled |
 | `ENABLE_FULL_FORWARDING` | 0 | Completed retirement-entry map disabled |
 | `ENABLE_ISSUE_WINDOW` | 0 | Six-entry strict-prefix dispatch selected |
-| `ENABLE_POSTED_STORES` | 1 | Store completes at accepted request; late error is asynchronous |
+| `STORE_QUEUE_DEPTH` | 4 | Pre-retire speculative store entries |
+| `ENABLE_POSTED_STORES` | 1 | Compatibility parameter; 3P completion still waits for L1D admission |
 | `ENABLE_EQ_BRANCH_PAIRING` | 1 | Proved-correct BEQ/BNE may retain younger predicted-path issue |
 | `FREE_BRANCHES` | 0 | Diagnostic branch completion at dispatch disabled |
 | `BP_TYPE` | 0 | No-speculation stall policy |
@@ -649,8 +654,9 @@ die-size claims.
 - Private L1I/L1D and branch-path L1I prefetching exist, but there is no
   complete coherent multi-hart hierarchy or final cacheable-memory attribute
   policy.
-- Only one retained posted store; no real store buffer, store merging, or
-  physical-address store queue.
+- The four-entry store queue does not pretranslate entries or support
+  physical-address load disambiguation; an unresolved store blocks younger
+  memory.
 - Only predictor mode 6 has a BTB. It is direct-mapped and handles non-return
   JALRs; the default stall policy and modes 1 through 5 still limit indirect
   prediction to the RAS.
@@ -661,7 +667,8 @@ die-size claims.
 - Same-bundle dependent execution is not cascaded.
 - Translated tagged LSU traffic is serialized through one DTLB/PTW path.
 - `SFENCE.VMA` is global; Sv48/Sv57 and hardware A/D updates are absent.
-- Posted-store errors are imprecise and unrecoverable.
+- Errors after successful L1D admission still need a defined asynchronous
+  machine-check policy.
 - RV64F/D, RVV, and compressed instructions are not integrated.
 - Single hart only. The integrated platform has one machine CLINT context and
   one supervisor PLIC context.

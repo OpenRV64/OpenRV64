@@ -149,6 +149,16 @@ module openrv64_dispatch #(
     output wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_src1_producer_valid_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        pipe_src1_producer_id_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_src2_producer_valid_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        pipe_src2_producer_id_3p_o,
     input  wire [2:0]                   retire_valid_3p_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] retire_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] retire_slot_3p_i,
@@ -190,6 +200,16 @@ module openrv64_dispatch #(
             assign pipe_payload_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+            assign pipe_src1_producer_valid_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign pipe_src1_producer_id_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign pipe_src2_producer_valid_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign pipe_src2_producer_id_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign barrier_active_3p_o = 1'b0;
             assign raw_hazard_3p_o = 3'b000;
             assign waw_hazard_3p_o = 3'b000;
@@ -210,6 +230,16 @@ module openrv64_dispatch #(
             wire [`OPENRV64_EXEC_PIPE_COUNT*
                   `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                 strict_pipe_payload;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                strict_pipe_src1_producer_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_INSTR_ID_WIDTH-1:0]
+                strict_pipe_src1_producer_id;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                strict_pipe_src2_producer_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_INSTR_ID_WIDTH-1:0]
+                strict_pipe_src2_producer_id;
             wire strict_barrier;
             wire [2:0] strict_raw_hazard;
             wire [2:0] strict_waw_hazard;
@@ -260,6 +290,12 @@ module openrv64_dispatch #(
                 .pipe_id_o(strict_pipe_id),
                 .pipe_slot_o(strict_pipe_slot),
                 .pipe_payload_o(strict_pipe_payload),
+                .pipe_src1_producer_valid_o(
+                    strict_pipe_src1_producer_valid),
+                .pipe_src1_producer_id_o(strict_pipe_src1_producer_id),
+                .pipe_src2_producer_valid_o(
+                    strict_pipe_src2_producer_valid),
+                .pipe_src2_producer_id_o(strict_pipe_src2_producer_id),
                 .retire_valid_i((ENABLE_ISSUE_WINDOW_3P == 0) ?
                                 retire_valid_3p_i : 3'b000),
                 .retire_uses_rs1_i(retire_uses_rs1_3p_i),
@@ -290,6 +326,16 @@ module openrv64_dispatch #(
             wire [`OPENRV64_EXEC_PIPE_COUNT*
                   `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                 window_pipe_payload;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                window_pipe_src1_producer_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_INSTR_ID_WIDTH-1:0]
+                window_pipe_src1_producer_id;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                window_pipe_src2_producer_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*
+                  `OPENRV64_INSTR_ID_WIDTH-1:0]
+                window_pipe_src2_producer_id;
             wire window_barrier;
             wire [2:0] window_raw_hazard;
             wire [2:0] window_waw_hazard;
@@ -327,6 +373,12 @@ module openrv64_dispatch #(
                 .pipe_id_o(window_pipe_id),
                 .pipe_slot_o(window_pipe_slot),
                 .pipe_payload_o(window_pipe_payload),
+                .pipe_src1_producer_valid_o(
+                    window_pipe_src1_producer_valid),
+                .pipe_src1_producer_id_o(window_pipe_src1_producer_id),
+                .pipe_src2_producer_valid_o(
+                    window_pipe_src2_producer_valid),
+                .pipe_src2_producer_id_o(window_pipe_src2_producer_id),
                 .completion_valid_i(completion_valid_3p_i),
                 .completion_id_i(completion_id_3p_i),
                 .completion_payload_i(completion_payload_3p_i),
@@ -361,6 +413,22 @@ module openrv64_dispatch #(
                 window_pipe_slot : strict_pipe_slot;
             assign pipe_payload_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_pipe_payload : strict_pipe_payload;
+            assign pipe_src1_producer_valid_3p_o =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_src1_producer_valid :
+                strict_pipe_src1_producer_valid;
+            assign pipe_src1_producer_id_3p_o =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_src1_producer_id :
+                strict_pipe_src1_producer_id;
+            assign pipe_src2_producer_valid_3p_o =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_src2_producer_valid :
+                strict_pipe_src2_producer_valid;
+            assign pipe_src2_producer_id_3p_o =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_src2_producer_id :
+                strict_pipe_src2_producer_id;
             assign barrier_active_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_barrier : strict_barrier;
             assign raw_hazard_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
