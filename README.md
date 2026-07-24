@@ -19,3 +19,17 @@ Next steps:
 7. This is actually first, ordered an Artix-7 100t, need to validate under a full distribution like debian, might have to recompile due to lack of -C.
 
 Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
+
+Blatant self-promotion:
+
+   Metric          OpenRV64 D4    A53-class HPI GEM3
+  ──────────────  ─────────────  ───────────────
+   Cycles               63,661          118,286
+  ──────────────  ─────────────  ───────────────
+   Instructions         59,411           51,204
+  ──────────────  ─────────────  ───────────────
+   IPC                  0.9332           0.4329
+  ──────────────  ─────────────  ───────────────
+   Bytes/cycle           3.088            1.662
+
+That being said, timed ddr slowed down coremarks, need to open up the l1i fetch unit again.
