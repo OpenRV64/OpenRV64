@@ -33,6 +33,24 @@ $(CORE_3P_MAGIC_MEMH): $(CORE_3P_MAGIC_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(CORE_3P_MAGIC_SRAM_BYTES) --word-bytes 32
 
+$(CORE_3P_VM_ELF): $(OPENRV64_MAKEFILES) sw/coremark_loop_vm_start.S \
+		sw/coremark_loop.c sw/openrv64-vm.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(COREMARK_VM_CFLAGS) -nostdlib \
+		-Wl,--build-id=none,--gc-sections,-Map,$(CORE_3P_VM_MAP) \
+		-T sw/openrv64-vm.ld -o $@ sw/coremark_loop_vm_start.S \
+		sw/coremark_loop.c
+
+$(CORE_3P_VM_BIN): $(CORE_3P_VM_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(CORE_3P_VM_MEMH): $(CORE_3P_VM_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(CORE_3P_VM_MEMH_BYTES) --word-bytes 32
+
+$(CORE_3P_VM_DISASM): $(CORE_3P_VM_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(ATOMIC_SOC_ELF): $(OPENRV64_MAKEFILES) sw/atomic/atomic.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(ATOMIC_SOC_ASFLAGS) \

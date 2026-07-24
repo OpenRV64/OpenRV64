@@ -2,6 +2,7 @@
 `include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
 `include "core/exec/bp/defs.v"
+`include "core/isa/rv64-priv.v"
 `include "soc/bus/mem_map.v"
 `include "complex/protocol/defs.v"
 `include "complex/bus/defs.v"
@@ -252,6 +253,8 @@ module tb_top_3p_soc #(
     parameter integer RETIRE_DEPTH = 8,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer RAM_BYTES = 16 * 1024 * 1024,
+    parameter [63:0] SPEC_LOAD_BASE = `OPENRV64_SOC_MEMORY_BASE,
+    parameter [63:0] SPEC_LOAD_SIZE = RAM_BYTES,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L2_BYTES = 256 * 1024,
@@ -542,6 +545,14 @@ module tb_top_3p_soc #(
     integer ccx_fetch_reads;
     integer ccx_data_reads;
     integer ccx_data_writes;
+    integer ccx_ptw_reads;
+    integer dtlb_fast_loads;
+    integer dtlb_fast_stores;
+    reg require_sv39;
+    reg saw_sv39;
+    reg saw_supervisor;
+    reg saw_sv39_alias_fetch;
+    reg saw_sv39_alias_data;
     integer axi_read_transactions;
     integer axi_read_beats;
     integer axi_write_transactions;
@@ -700,6 +711,7 @@ module tb_top_3p_soc #(
     integer lsu_request_wait;
     integer lsu_load_request_wait;
     integer lsu_store_request_wait;
+    integer lsu_second_port_opportunities;
     integer l1d_request_wait;
     integer l1d_load_request_wait;
     integer l1d_store_request_wait;
@@ -1058,8 +1070,8 @@ module tb_top_3p_soc #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
-        .SPEC_LOAD_BASE(`OPENRV64_SOC_MEMORY_BASE),
-        .SPEC_LOAD_SIZE(RAM_BYTES),
+        .SPEC_LOAD_BASE(SPEC_LOAD_BASE),
+        .SPEC_LOAD_SIZE(SPEC_LOAD_SIZE),
         .ENABLE_L1I(1'b1),
         .ENABLE_L1D(1'b1),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
@@ -1928,6 +1940,14 @@ module tb_top_3p_soc #(
         ccx_fetch_reads = 0;
         ccx_data_reads = 0;
         ccx_data_writes = 0;
+        ccx_ptw_reads = 0;
+        dtlb_fast_loads = 0;
+        dtlb_fast_stores = 0;
+        require_sv39 = $test$plusargs("require_sv39");
+        saw_sv39 = 1'b0;
+        saw_supervisor = 1'b0;
+        saw_sv39_alias_fetch = 1'b0;
+        saw_sv39_alias_data = 1'b0;
         direction_corrections = 0;
         target_corrections = 0;
         lookaside_restart_hits = 0;
@@ -2031,6 +2051,7 @@ module tb_top_3p_soc #(
         lsu_request_wait = 0;
         lsu_load_request_wait = 0;
         lsu_store_request_wait = 0;
+        lsu_second_port_opportunities = 0;
         l1d_request_wait = 0;
         l1d_load_request_wait = 0;
         l1d_store_request_wait = 0;
@@ -2095,6 +2116,9 @@ module tb_top_3p_soc #(
                 dut.frontend_decode_fire[2];
             issued = issued + issued_this_cycle;
             decoded = decoded + decoded_this_cycle;
+            if (dut.backend_mem1_valid && dut.backend_mem_ready)
+                lsu_second_port_opportunities =
+                    lsu_second_port_opportunities + 1;
             case (issued_this_cycle)
                 0: issue_width_0 = issue_width_0 + 1;
                 1: issue_width_1 = issue_width_1 + 1;
@@ -2431,11 +2455,37 @@ module tb_top_3p_soc #(
                 ccx_requests = ccx_requests + 1;
                 if (ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE)
                     ccx_fetch_reads = ccx_fetch_reads + 1;
+                else if (ccx_req_source_id ==
+                         `OPENRV64_CCX_SOURCE_PTW)
+                    ccx_ptw_reads = ccx_ptw_reads + 1;
                 else if (ccx_req_op == `OPENRV64_CCX_OP_READ)
                     ccx_data_reads = ccx_data_reads + 1;
                 else if (ccx_req_op == `OPENRV64_CCX_OP_WRITE)
                     ccx_data_writes = ccx_data_writes + 1;
+                if ((ccx_req_source_id ==
+                     `OPENRV64_CCX_SOURCE_ICACHE) &&
+                    (dut.csr_priv_mode == `RV64_PRIV_S) &&
+                    (ccx_req_addr >= 64'h0000_0000_8000_1000) &&
+                    (ccx_req_addr < 64'h0000_0000_8000_2000))
+                    saw_sv39_alias_fetch = 1'b1;
+                if ((ccx_req_source_id ==
+                     `OPENRV64_CCX_SOURCE_DCACHE) &&
+                    (dut.csr_priv_mode == `RV64_PRIV_S) &&
+                    (ccx_req_addr >= 64'h0000_0000_8000_0000) &&
+                    (ccx_req_addr < 64'h0000_0000_8002_0000))
+                    saw_sv39_alias_data = 1'b1;
             end
+            if (dut.u_bus.g_ccx.u_bus.pipe_fast_request_fire &&
+                dut.u_bus.g_ccx.u_bus.pipe_translated_hit) begin
+                if (dut.u_bus.g_ccx.u_bus.l1d_req_write)
+                    dtlb_fast_stores = dtlb_fast_stores + 1;
+                else
+                    dtlb_fast_loads = dtlb_fast_loads + 1;
+            end
+            if (dut.csr_satp_mode == `RV64_SATP_MODE_SV39)
+                saw_sv39 = 1'b1;
+            if (dut.csr_priv_mode == `RV64_PRIV_S)
+                saw_supervisor = 1'b1;
             if (dut.backend_redirect)
                 direction_corrections = direction_corrections + 1;
             if (dut.bp_target_mispredict)
@@ -2539,6 +2589,15 @@ module tb_top_3p_soc #(
             (dut.u_backend.u_gpr.regs[10] != expected_a0))
             $fatal(1, "full-CCX a0=%h expected=%h",
                 dut.u_backend.u_gpr.regs[10], expected_a0);
+        if (require_sv39 &&
+            (!saw_sv39 || !saw_supervisor || !saw_sv39_alias_fetch ||
+             !saw_sv39_alias_data || (ccx_ptw_reads < 3) ||
+             (dtlb_fast_loads == 0) || (dtlb_fast_stores == 0)))
+            $fatal(1,
+                "Sv39 requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d",
+                saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
+                saw_sv39_alias_data, ccx_ptw_reads, dtlb_fast_loads,
+                dtlb_fast_stores);
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
             "PERF_CCX_L2 mode=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
@@ -2551,11 +2610,17 @@ module tb_top_3p_soc #(
             dut.u_backend.u_gpr.regs[10], L1I_CACHE_BYTES,
             L1D_CACHE_BYTES, L2_BYTES, L2_WAYS, RAM_BYTES);
         $display(
-            "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
+            "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
             ccx_requests, ccx_fetch_reads, ccx_data_reads,
-            ccx_data_writes, axi_read_transactions,
+            ccx_data_writes, ccx_ptw_reads, axi_read_transactions,
             axi_read_beats, axi_write_transactions,
             axi_write_beats);
+        $display(
+            "PERF_CCX_L2_VM required=%0b satp_sv39=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d spec_load_base=%016h spec_load_size=%016h",
+            require_sv39, saw_sv39, saw_supervisor,
+            saw_sv39_alias_fetch, saw_sv39_alias_data, ccx_ptw_reads,
+            dtlb_fast_loads, dtlb_fast_stores,
+            SPEC_LOAD_BASE, SPEC_LOAD_SIZE);
         $display(
             "PERF_CCX_MAGIC source_mask=%x l1i_line_reads=%0d l1d_line_reads=%0d",
             magic_ccx_source_mask_q, magic_ccx_l1i_reads,
@@ -2719,6 +2784,9 @@ module tb_top_3p_soc #(
             lsu_request_wait, lsu_load_request_wait,
             lsu_store_request_wait, lsu_outstanding_cycles,
             branch_resolutions, conditional_branch_resolutions);
+        $display(
+            "PERF_CCX_L2_MEM_PORTS second_port_opportunities=%0d",
+            lsu_second_port_opportunities);
         $display(
             "PERF_CCX_L2_BACKPRESSURE l1d_wait=%0d l1d_load_wait=%0d l1d_store_wait=%0d ccx_wait=%0d ccx_read_wait=%0d ccx_write_wait=%0d l2_bus_wait=%0d l2_command_full=%0d axi_ar_wait=%0d axi_aw_wait=%0d axi_w_wait=%0d",
             l1d_request_wait, l1d_load_request_wait,

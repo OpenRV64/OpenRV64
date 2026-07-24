@@ -164,9 +164,23 @@ module tb_ccx_bus #(
     integer cancel_fetch_slot;
     integer locked_reads_before;
     integer fences_before;
+    integer translated_fast_fires;
+    integer translated_fast_store_fires;
     reg [63:0] locked_old_word;
     reg [2:0] seen_id [0:15];
     reg [63:0] seen_addr [0:15];
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            translated_fast_fires <= 0;
+            translated_fast_store_fires <= 0;
+        end else if (dut.pipe_fast_request_fire && !dut.pipe_req_bare) begin
+            translated_fast_fires <= translated_fast_fires + 1;
+            if (dut.l1d_req_write)
+                translated_fast_store_fires <=
+                    translated_fast_store_fires + 1;
+        end
+    end
 
     openrv64_core_ccx_bus #(
         .ENABLE_L1I(0),
@@ -1048,6 +1062,7 @@ module tb_ccx_bus #(
         ccx_memory[64'h1000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0801;
         ccx_memory[64'h2000 >> 6][4*64 +: 64] = 64'h0000_0000_0000_0ccf;
         ccx_memory[64'h3000 >> 6][0*64 +: 64] = 64'h5a17_c0de_cafe_1234;
+        ccx_memory[64'h3000 >> 6][1*64 +: 64] = 64'h1357_9bdf_2468_ace0;
 
         // A redirect on the exact edge of a successful PTW response must win.
         // Otherwise the old cancelled bit lets the slot re-enter TRANSLATE,
@@ -1104,6 +1119,88 @@ module tb_ccx_bus #(
                    ccx_reads - wait_count);
         if (ar_count != channel_wait)
             $fatal(1, "translated PTW or L1D request escaped onto AXI");
+
+        // The completed walk populated DTLB and L1D state.  Hold an unrelated
+        // instruction walk at CCX, then require translated load and store hits
+        // to pass it through the native tagged path without consuming the
+        // serial LSU slot.  The following load also proves that dirty-store
+        // overlay remains visible before the posted store can drain.
+        ccx_memory[64'h2040 >> 6][0*64 +: 64] = 64'd0;
+        fetch_req_priv = `RV64_PRIV_S;
+        fetch_req_vm_mode = `RV64_SATP_MODE_SV39;
+        fetch_req_root_ppn = 0;
+        fetch_resp_ready = 0;
+        ccx_allow_cmd = 0;
+        push_fetch(64'h8000);
+        ptw_wait = 0;
+        while ((!dut.miss_active_q || (dut.miss_owner_q != 0)) &&
+               ptw_wait < 50) begin
+            tick();
+            ptw_wait = ptw_wait + 1;
+        end
+        if (!dut.miss_active_q || (dut.miss_owner_q != 0))
+            $fatal(1, "translated fast-hit test did not hold fetch PTW");
+
+        wait_count = translated_fast_fires;
+        channel_wait = translated_fast_store_fires;
+        push_pipe_request(3'd4, 1'b0, 64'h4008, 64'd0, 8'd0);
+        expect_pipe_response(3'd4, 64'h1357_9bdf_2468_ace0,
+                             1'b0, 1'b0);
+        push_pipe_request(3'd5, 1'b1, 64'h4010,
+                          64'hdeaf_beef_cafe_f00d, 8'hff);
+        expect_pipe_response(3'd5, 64'd0, 1'b0, 1'b0);
+        push_pipe_request(3'd6, 1'b0, 64'h4010, 64'd0, 8'd0);
+        expect_pipe_response(3'd6, 64'hdeaf_beef_cafe_f00d,
+                             1'b0, 1'b0);
+        if ((translated_fast_fires - wait_count) != 3 ||
+            (translated_fast_store_fires - channel_wait) != 1 ||
+            !dut.miss_active_q)
+            $fatal(1,
+                "DTLB hits did not pass active PTW fast=%0d stores=%0d miss=%b state=%0d",
+                translated_fast_fires - wait_count,
+                translated_fast_store_fires - channel_wait,
+                dut.miss_active_q, dut.lsu_state_q);
+
+        ccx_allow_cmd = 1;
+        ptw_wait = 0;
+        while (!fetch_resp_valid && ptw_wait < 100) begin
+            tick();
+            ptw_wait = ptw_wait + 1;
+        end
+        if (!fetch_resp_valid || !fetch_resp_page_fault ||
+            fetch_resp_access_fault || fetch_resp_addr != 64'h8000)
+            $fatal(1, "held fetch PTW did not complete as a page fault");
+        fetch_resp_ready = 1;
+        tick();
+        fetch_req_priv = `RV64_PRIV_M;
+        fetch_req_vm_mode = `RV64_SATP_MODE_BARE;
+
+        // A read-only leaf may populate DTLB through a load, but a subsequent
+        // store hit must use write permissions and return a precise page
+        // fault rather than entering the fast store path.
+        ccx_memory[64'h2000 >> 6][5*64 +: 64] =
+            64'h0000_0000_0000_0c43;
+        ptw_wait = 0;
+        while ((dut.u_l1d.store_buffer_count_q != 0) &&
+               (ptw_wait < 1400)) begin
+            tick();
+            ptw_wait = ptw_wait + 1;
+        end
+        if (dut.u_l1d.store_buffer_count_q != 0)
+            $fatal(1, "translated fast store did not drain");
+        push_pipe_request(3'd7, 1'b0, 64'h5000, 64'd0, 8'd0);
+        expect_pipe_response(3'd7, 64'h5a17_c0de_cafe_1234,
+                             1'b0, 1'b0);
+        wait_count = translated_fast_store_fires;
+        channel_wait = ccx_writes;
+        push_pipe_request(3'd0, 1'b1, 64'h5000,
+                          64'h1111_2222_3333_4444, 8'hff);
+        expect_pipe_response(3'd0, 64'd0, 1'b0, 1'b1);
+        if ((translated_fast_store_fires != wait_count) ||
+            (ccx_writes != channel_wait) ||
+            (ccx_memory_word(64'h3000) !=
+             64'h5a17_c0de_cafe_1234))
+            $fatal(1, "read-only DTLB store hit escaped precise fault path");
 
         pipe_req_vm_mode = `RV64_SATP_MODE_BARE;
         pipe_req_priv = `RV64_PRIV_M;

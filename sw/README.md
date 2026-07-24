@@ -41,6 +41,34 @@ make sim-uart-firmware
 The toolchain prefix can be overridden with `RISCV_CC` and
 `RISCV_OBJCOPY`. The default is Arch Linux's `riscv64-elf-*` toolchain.
 
+## Sv39 CoreMark-derived wrapper
+
+`coremark_loop_vm_start.S` runs the CoreMark-derived loop in supervisor mode
+through a non-identity Sv39 mapping. Machine-mode boot installs a 16 MiB PMP
+region, writes `satp`, executes `sfence.vma`, and enters S mode with `mret`.
+Three statically linked page-table pages map virtual
+`0x4000_0000-0x4001_ffff` to physical
+`0x8000_0000-0x8001_ffff`; the supervisor entry point is
+`0x4000_1000`. A/D bits are preset because the current PTW uses Svade
+semantics.
+
+Run the translated workload through the BP6, fetch-lookaside-mode-3,
+16-entry-retirement, issue/speculation-window, posted-store,
+L1D-prefetch, L2/AXI/banked-DDR3 configuration with:
+
+```sh
+make sim-core-3p-ccx-l2-vm
+```
+
+The test requires observation of Sv39 in `satp`, supervisor mode, translated
+instruction and data traffic in the physical alias, and at least three PTW
+reads. It also checks the same final `a0` signature as the Bare run. This is a
+functional VM test, not yet a fully matched VM performance result. Cacheable
+translated load and irrevocable store TLB hits use the tagged L1D fast path and
+may pass an active walk. Translation misses, atomics, permission faults, and
+non-cacheable accesses still use the serialized precise fallback in
+`ccx_bus.v`.
+
 ## Atomic SoC tests
 
 `atomic/atomic.S` is a self-checking RV64A test that runs on the production

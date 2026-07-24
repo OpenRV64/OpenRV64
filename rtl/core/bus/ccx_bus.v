@@ -8,10 +8,11 @@
 // residual AXI path is used only for cacheless instruction fetch.  With
 // ENABLE_L1I set, translated and PMP-approved fetches enter a pipelined
 // native-CCX L1I.
-// Scalar LSU requests always use the precise translation/PMP slot and then
-// L1D's native CCX backend.  Loads and exceptional accesses are blocking;
-// tagged cacheable stores may enter L1D's ordered line FIFO.  No LSU request
-// can enter AXI.
+// TLB-hit tagged cacheable loads/stores and Bare tagged cacheable traffic use
+// L1D's native tagged path.  Translation misses, faults, locked accesses, and
+// uncached/device requests use the precise translation/PMP slot.  The caller
+// must present stores only after they are architecturally irrevocable.  No LSU
+// request can enter AXI.
 module openrv64_core_ccx_bus #(
     parameter integer TLB_ENTRIES = 16,
     parameter integer FETCH_OUTSTANDING = 4,
@@ -422,8 +423,38 @@ module openrv64_core_ccx_bus #(
     wire dtlb_lookup_hit;
     wire [`RV64_XLEN-1:0] dtlb_lookup_paddr;
     wire dtlb_lookup_page_fault;
+    wire pipe_req_bare =
+        lsu_pipe_req_vm_mode_i == `RV64_SATP_MODE_BARE;
     wire lsu_xlate_bare = (lsu_state_q == LSU_TRANSLATE) &&
                           (lsu_vm_mode_q == `RV64_SATP_MODE_BARE);
+    wire pipe_fast_state_available =
+        ((lsu_state_q == LSU_IDLE) && !lsu_valid_i) ||
+        ((lsu_state_q == LSU_MISS) && pipe_fallback_active_q &&
+         !lsu_write_q && !lsu_lock_q && !lsu_valid_i);
+    wire pipe_dtlb_lookup = lsu_pipe_req_valid_i && !pipe_req_bare &&
+        !lsu_pipe_req_lock_i &&
+        pipe_fast_state_available && !tlbi_i;
+    wire serial_dtlb_lookup = (lsu_state_q == LSU_TRANSLATE) &&
+                              !lsu_xlate_bare;
+    wire dtlb_lookup_is_pipe = pipe_dtlb_lookup &&
+                               !serial_dtlb_lookup;
+    wire dtlb_lookup_valid = serial_dtlb_lookup ||
+                             dtlb_lookup_is_pipe;
+    wire [`RV64_XLEN-1:0] dtlb_lookup_vaddr =
+        dtlb_lookup_is_pipe ? lsu_pipe_req_addr_i : lsu_vaddr_q;
+    wire [`RV64_SATP_MODE_WIDTH-1:0] dtlb_lookup_vm_mode =
+        dtlb_lookup_is_pipe ? lsu_pipe_req_vm_mode_i : lsu_vm_mode_q;
+    wire [`RV64_SATP_ASID_WIDTH-1:0] dtlb_lookup_asid =
+        dtlb_lookup_is_pipe ? lsu_pipe_req_asid_i : lsu_asid_q;
+    wire [1:0] dtlb_lookup_access = dtlb_lookup_is_pipe ?
+        (lsu_pipe_req_write_i ? ACCESS_WRITE : ACCESS_READ) :
+        (lsu_write_q ? ACCESS_WRITE : ACCESS_READ);
+    wire [`RV64_PRIV_WIDTH-1:0] dtlb_lookup_priv =
+        dtlb_lookup_is_pipe ? lsu_pipe_req_priv_i : lsu_priv_q;
+    wire dtlb_lookup_sum = dtlb_lookup_is_pipe ?
+        lsu_pipe_req_sum_i : lsu_sum_q;
+    wire dtlb_lookup_mxr = dtlb_lookup_is_pipe ?
+        lsu_pipe_req_mxr_i : lsu_mxr_q;
 
     assign lsu_ready_o = (lsu_state_q == LSU_RESP) &&
                          !pipe_fallback_active_q;
@@ -619,13 +650,15 @@ module openrv64_core_ccx_bus #(
         .ENTRIES(TLB_ENTRIES), .ASID_WIDTH(`RV64_SATP_ASID_WIDTH)
     ) u_dtlb (
         .clk(clk), .rst_n(rst_n), .tlbi_i(tlbi_i),
-        .lookup_valid_i((lsu_state_q == LSU_TRANSLATE) &&
-                        !lsu_xlate_bare),
-        .lookup_vaddr_i(lsu_vaddr_q), .lookup_vm_mode_i(lsu_vm_mode_q),
-        .lookup_asid_i(lsu_asid_q),
-        .lookup_access_i(lsu_write_q ? ACCESS_WRITE : ACCESS_READ),
-        .lookup_priv_i(lsu_priv_q), .lookup_sum_i(lsu_sum_q),
-        .lookup_mxr_i(lsu_mxr_q), .lookup_hit_o(dtlb_lookup_hit),
+        .lookup_valid_i(dtlb_lookup_valid),
+        .lookup_vaddr_i(dtlb_lookup_vaddr),
+        .lookup_vm_mode_i(dtlb_lookup_vm_mode),
+        .lookup_asid_i(dtlb_lookup_asid),
+        .lookup_access_i(dtlb_lookup_access),
+        .lookup_priv_i(dtlb_lookup_priv),
+        .lookup_sum_i(dtlb_lookup_sum),
+        .lookup_mxr_i(dtlb_lookup_mxr),
+        .lookup_hit_o(dtlb_lookup_hit),
         .lookup_paddr_o(dtlb_lookup_paddr),
         .lookup_page_fault_o(dtlb_lookup_page_fault),
         .fill_valid_i(dtlb_fill_valid), .fill_vaddr_i(lsu_vaddr_q),
@@ -692,20 +725,26 @@ module openrv64_core_ccx_bus #(
         .ccx_resp_error_i(ccx_resp_error_i)
     );
 
-    // Bare cacheable traffic does not need the serialized DTLB/PTW slot.  It
-    // enters L1D under its native LSU tag; translated, locked, uncached, and
-    // device requests retain the precise fallback path.
-    wire pipe_req_bare =
-        lsu_pipe_req_vm_mode_i == `RV64_SATP_MODE_BARE;
+    // Bare cacheable traffic and translated cacheable load/store hits enter
+    // L1D under the native LSU tag.  A translated hit uses the physical TLB
+    // result for both PMA/PMP classification and the cache request.  The MEM
+    // lane presents stores only at ordered retirement head, so L1D admission
+    // is their irrevocable boundary.  Misses, permission faults, locked
+    // accesses, and device requests retain the precise fallback path.
+    wire pipe_translated_hit = dtlb_lookup_is_pipe && dtlb_lookup_hit &&
+                               !dtlb_lookup_page_fault;
+    wire [`RV64_XLEN-1:0] pipe_req_paddr = pipe_req_bare ?
+        lsu_pipe_req_addr_i : dtlb_lookup_paddr;
     wire pipe_req_cacheable = (L1D_CACHEABLE_SIZE != 0) &&
-        ((lsu_pipe_req_addr_i - L1D_CACHEABLE_BASE) <
+        ((pipe_req_paddr - L1D_CACHEABLE_BASE) <
          L1D_CACHEABLE_SIZE);
-    wire pipe_fast_class = pipe_req_bare && !lsu_pipe_req_lock_i &&
-                           pipe_req_cacheable;
+    wire pipe_fast_class =
+        (pipe_req_bare || pipe_translated_hit) &&
+        !lsu_pipe_req_lock_i && pipe_req_cacheable;
     wire pipe_fast_candidate = lsu_pipe_req_valid_i &&
         pipe_req_tag_valid && !pipe_req_tag_busy && !lsu_pipe_cancel_i &&
         pipe_fast_class && !pipe_local_resp_valid_q &&
-        !lsu_valid_i && (lsu_state_q == LSU_IDLE) && !miss_active_q;
+        pipe_fast_state_available && !ptw_pmp_valid;
     wire pipe_fallback_candidate = lsu_pipe_req_valid_i &&
         pipe_req_tag_valid && !pipe_req_tag_busy && !lsu_pipe_cancel_i &&
         !pipe_fast_class &&
@@ -751,8 +790,9 @@ module openrv64_core_ccx_bus #(
                           !l1i_invalidate_valid &&
                           (l1i_slot_count_q < FETCH_OUTSTANDING)));
 
-    // Tagged bare data gets the single PMP probe first.  Once a request enters
-    // L1D, the probe is free again while the ordered cache response is pending.
+    // Tagged fast-path data gets the single PMP probe first, except when the
+    // active walker needs it.  Once a request enters L1D, the probe is free
+    // again while the tagged cache response is pending.
     wire select_pipe_probe = pipe_fast_candidate;
     wire select_lsu_probe = !select_pipe_probe &&
                             (lsu_state_q == LSU_ACCESS);
@@ -766,7 +806,7 @@ module openrv64_core_ccx_bus #(
     assign pmp_valid_o = select_pipe_probe || select_lsu_probe ||
                          select_ptw_probe ||
                          select_fetch_probe || select_prefetch_probe;
-    assign pmp_addr_o = select_pipe_probe ? lsu_pipe_req_addr_i :
+    assign pmp_addr_o = select_pipe_probe ? pipe_req_paddr :
                         select_lsu_probe ? lsu_paddr_q :
                         select_ptw_probe ? ptw_pmp_addr :
                         select_fetch_probe ? fetch_axi_addr :
@@ -818,7 +858,7 @@ module openrv64_core_ccx_bus #(
     wire l1d_req_cacheable = l1d_pipe_request ?
         pipe_req_cacheable : l1d_serial_cacheable;
     wire [`RV64_XLEN-1:0] l1d_req_addr = l1d_pipe_request ?
-        lsu_pipe_req_addr_i : lsu_paddr_q;
+        pipe_req_paddr : lsu_paddr_q;
     wire [2:0] l1d_req_size = l1d_pipe_request ?
         lsu_pipe_req_size_i : lsu_size_q;
     wire [`RV64_XLEN-1:0] l1d_req_wdata = l1d_pipe_request ?

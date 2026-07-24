@@ -238,7 +238,9 @@ module openrv64_rv64_top_3p #(
     wire [3*`RV64_FETCH_DECODE_BUS_WIDTH-1:0] fetch_decode_bus;
     wire [3*64-1:0] fetch_decode_trace;
     wire fetch_pipe_req_valid;
-    wire fetch_pipe_req_ready;
+    // The checkpoint trace reads this handshake directly from the generated
+    // model.  Keep it materialized even when Verilator could fold it away.
+    wire fetch_pipe_req_ready /* verilator public_flat_rd */;
     wire [63:0] fetch_pipe_req_addr;
     wire fetch_pipe_req_stash;
     wire fetch_pipe_req_demand;
