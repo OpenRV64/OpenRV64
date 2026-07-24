@@ -32,14 +32,12 @@ Blatant self-promotion:
 
 Issue was in l1d stores blocking reads instead of letting you fill dirty:
 
-_  Metric                  OpenRV64 3P, prefetch on    gem5 HPI proxy
-  ──────────────────────  ──────────────────────────  ────────────────
-   Cycles                                    70,836            71,443
-  ──────────────────────  ──────────────────────────  ────────────────
-   Retired instructions                      52,547            58,695
-  ──────────────────────  ──────────────────────────  ────────────────
-   IPC                                       0.7418            0.8216
-  ──────────────────────  ──────────────────────────  ────────────────
-   ISA                                        RV64I           AArch64
-  ──────────────────────  ──────────────────────────  ────────────────
-   Result                                      PASS    PASS/reference
+| Metric               | OpenRV64 3P, prefetch on | gem5 HPI proxy |
+| -------------------- | -----------------------: | -------------: |
+| Cycles               |                   70,836 |         71,443 |
+| Retired instructions |                   52,547 |         58,695 |
+| IPC                  |                   0.7418 |         0.8216 |
+| ISA                  |                    RV64I |        AArch64 |
+| Result               |                     PASS | PASS/reference |
+
+This is on a ddr3 model which is hopefully accurate, feel free to take a look under rtl/soc/memory/timing_ddr3.v
