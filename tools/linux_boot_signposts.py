@@ -19,10 +19,12 @@ import sys
 
 PROGRESS_RE = re.compile(
     r"OpenSBI progress cycles=(?P<cycles>\d+) instret=(?P<instret>\d+)"
+    r".*? pc=(?P<pc>[0-9a-fA-F]+)"
 )
 EXACT_RE = re.compile(
     r"PERF (?:SIGNPOST|MILESTONE) name=(?P<name>[-a-z0-9]+)"
     r" cycles=(?P<cycles>\d+) instret=(?P<instret>\d+)"
+    r"(?:.*? pc=(?P<pc>[0-9a-fA-F]+))?"
 )
 
 
@@ -75,6 +77,7 @@ class Progress:
     line: int
     cycles: int
     instret: int
+    pc: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -84,6 +87,7 @@ class Signpost:
     line: int
     exact_cycles: int | None
     exact_instret: int | None
+    exact_pc: int | None
     lower: Progress | None
     upper: Progress | None
 
@@ -127,7 +131,7 @@ def format_cycles(cycles: int) -> str:
 def extract(path: pathlib.Path) -> list[Signpost]:
     lines = path.read_text(errors="replace").splitlines()
     progress: list[Progress] = []
-    exact: dict[str, tuple[int, int, int]] = {}
+    exact: dict[str, tuple[int, int, int, int | None]] = {}
 
     for line_number, line in enumerate(lines, start=1):
         for match in PROGRESS_RE.finditer(line):
@@ -136,6 +140,7 @@ def extract(path: pathlib.Path) -> list[Signpost]:
                     line=line_number,
                     cycles=int(match.group("cycles")),
                     instret=int(match.group("instret")),
+                    pc=int(match.group("pc"), 16),
                 )
             )
         for match in EXACT_RE.finditer(line):
@@ -145,6 +150,11 @@ def extract(path: pathlib.Path) -> list[Signpost]:
                     line_number,
                     int(match.group("cycles")),
                     int(match.group("instret")),
+                    (
+                        int(match.group("pc"), 16)
+                        if match.group("pc") is not None
+                        else None
+                    ),
                 ),
             )
 
@@ -165,11 +175,12 @@ def extract(path: pathlib.Path) -> list[Signpost]:
             continue
 
         if exact_entry is not None:
-            exact_line, exact_cycles, exact_instret = exact_entry
+            exact_line, exact_cycles, exact_instret, exact_pc = exact_entry
             marker_line = marker_line or exact_line
         else:
             exact_cycles = None
             exact_instret = None
+            exact_pc = None
 
         position = bisect.bisect_right(progress_lines, marker_line)
         lower = progress[position - 1] if position else None
@@ -181,6 +192,7 @@ def extract(path: pathlib.Path) -> list[Signpost]:
                 line=marker_line,
                 exact_cycles=exact_cycles,
                 exact_instret=exact_instret,
+                exact_pc=exact_pc,
                 lower=lower,
                 upper=upper,
             )
