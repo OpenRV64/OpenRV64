@@ -20,7 +20,7 @@ Next steps:
 
 Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
 
-Blatant self-promotion:
+Blatant self-promotion, STREAM triad (integer, no VA):
 
 | Metric       | OpenRV64 D4 | A53-class HPI GEM3 |
 | ------------ | ----------: | -----------------: |
