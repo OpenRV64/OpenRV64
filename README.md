@@ -1,8 +1,12 @@
-RiscV64 core and SoC supporting riscv64ima (no c).
+RiscV64 core and SoC supporting riscv64ima (no c). 16K 4-way L1I + 16K 8-way writethrough L1D, 256K 8-way SA shared L2.
 
 Boots to linux under verilator.
 
 3 wide, speculative issue, in-order retire.
+
+The main trick is that it's extremely parameterizable: You can pick your speculation windows, your branch predictor, different bus widths, etc.
+
+Backnds to AXI4 (64-512b) or WB (64-512 which isn't compliant, best to use this for periphs, doesn't burst or outstanding now).
 
 Next steps:
 
