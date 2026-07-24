@@ -30,4 +30,16 @@ Blatant self-promotion:
 | Bytes/cycle  |       3.088 |              1.662 |
 
 
-That being said, timed ddr slowed down coremarks, need to open up the l1i fetch unit again.
+Issue was in l1d stores blocking reads instead of letting you fill dirty:
+
+_  Metric                  OpenRV64 3P, prefetch on    gem5 HPI proxy
+  ──────────────────────  ──────────────────────────  ────────────────
+   Cycles                                    70,836            71,443
+  ──────────────────────  ──────────────────────────  ────────────────
+   Retired instructions                      52,547            58,695
+  ──────────────────────  ──────────────────────────  ────────────────
+   IPC                                       0.7418            0.8216
+  ──────────────────────  ──────────────────────────  ────────────────
+   ISA                                        RV64I           AArch64
+  ──────────────────────  ──────────────────────────  ────────────────
+   Result                                      PASS    PASS/reference
