@@ -238,6 +238,17 @@ module genbus_interface #(
     wire [DOWNSTREAM_DATA_WIDTH-1:0] wb_backend_resp_rdata;
     wire wb_backend_resp_error;
 
+`ifndef SYNTHESIS
+    // Exact AXI read-coalescing counters.  One accepted AR may represent
+    // several declared neutral read requests; the difference is the number
+    // eliminated by coalescing.  Writes currently issue one AW per request.
+    reg [63:0] perf_axi_read_bursts_q;
+    reg [63:0] perf_axi_read_source_requests_q;
+    reg [63:0] perf_axi_read_merged_requests_q;
+    reg [63:0] perf_axi_write_bursts_q;
+    reg [63:0] perf_axi_write_merged_requests_q;
+`endif
+
     wire order_head_is_write = order_is_write_q[order_head_q];
     wire [SLOT_INDEX_WIDTH-1:0] order_head_slot =
         order_slot_q[order_head_q];
@@ -700,6 +711,32 @@ module genbus_interface #(
             assign wb_backend_resp_error = 1'b1;
         end
     endgenerate
+
+`ifndef SYNTHESIS
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            perf_axi_read_bursts_q <= 64'd0;
+            perf_axi_read_source_requests_q <= 64'd0;
+            perf_axi_read_merged_requests_q <= 64'd0;
+            perf_axi_write_bursts_q <= 64'd0;
+            perf_axi_write_merged_requests_q <= 64'd0;
+        end else begin
+            if (axi_read_address_fire) begin
+                perf_axi_read_bursts_q <=
+                    perf_axi_read_bursts_q + 64'd1;
+                perf_axi_read_source_requests_q <=
+                    perf_axi_read_source_requests_q +
+                    64'(read_issue_requests);
+                perf_axi_read_merged_requests_q <=
+                    perf_axi_read_merged_requests_q +
+                    64'(read_issue_requests - 1);
+            end
+            if (axi_write_address_fire)
+                perf_axi_write_bursts_q <=
+                    perf_axi_write_bursts_q + 64'd1;
+        end
+    end
+`endif
 
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin

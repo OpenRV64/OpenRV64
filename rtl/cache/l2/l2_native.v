@@ -123,6 +123,7 @@ module openrv64_ccx_l2_native #(
     localparam [2:0] LOOKUP_ALLOC     = 3'd4;
     localparam [2:0] LOOKUP_BYPASS    = 3'd5;
     localparam [2:0] LOOKUP_WRITE_AROUND = 3'd6;
+    localparam [2:0] LOOKUP_VICTIM_HIT = 3'd7;
 
     reg [WAYS-1:0] valid_q [0:SETS-1];
     reg [WAYS-1:0] dirty_q [0:SETS-1];
@@ -301,6 +302,8 @@ module openrv64_ccx_l2_native #(
     reg lookup_mshr_match_r;
     reg [MSHR_INDEX_WIDTH-1:0] lookup_mshr_index_r;
     reg lookup_mshr_mergeable_r;
+    reg lookup_dirty_victim_match_r;
+    reg [MSHR_INDEX_WIDTH-1:0] lookup_dirty_victim_index_r;
     reg mshr_free_found_r;
     reg [MSHR_INDEX_WIDTH-1:0] mshr_free_index_r;
     reg victim_found_r;
@@ -382,6 +385,18 @@ module openrv64_ccx_l2_native #(
         (lookup_size_q == 3'd6) ? lookup_hit_data :
             ({{448{1'b0}}, lookup_shifted_data[63:0]} <<
              (lookup_addr_q[5:3] * 64));
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        lookup_dirty_victim_data =
+            mshr_victim_data_q[lookup_dirty_victim_index_r];
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        lookup_dirty_victim_shifted_data =
+            lookup_dirty_victim_data >> (lookup_addr_q[5:3] * 64);
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        lookup_dirty_victim_read_data =
+            (lookup_size_q == 3'd6) ? lookup_dirty_victim_data :
+            ({{448{1'b0}},
+              lookup_dirty_victim_shifted_data[63:0]} <<
+             (lookup_addr_q[5:3] * 64));
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] lookup_victim_data =
         sram_way_data[
             victim_way_r*`OPENRV64_CCX_LINE_DATA_WIDTH +:
@@ -439,6 +454,8 @@ module openrv64_ccx_l2_native #(
         lookup_mshr_match_r = 1'b0;
         lookup_mshr_index_r = 0;
         lookup_mshr_mergeable_r = 1'b0;
+        lookup_dirty_victim_match_r = 1'b0;
+        lookup_dirty_victim_index_r = 0;
         mshr_free_found_r = 1'b0;
         mshr_free_index_r = 0;
         for (lookup_mshr_scan = 0;
@@ -463,6 +480,22 @@ module openrv64_ccx_l2_native #(
                     (mshr_state_q[lookup_mshr_scan] != MSHR_ERROR) &&
                     (mshr_waiter_count_q[lookup_mshr_scan] <
                      WAITER_COUNT_WIDTH'(WAITERS_PER_MSHR));
+            end
+            // Reservation removes a victim way from ordinary SRAM hits, but
+            // its dirty snapshot remains authoritative until the writeback
+            // response.  Match that address explicitly so a later read
+            // cannot allocate a second miss and consume stale memory.
+            if (!lookup_dirty_victim_match_r &&
+                mshr_valid_q[lookup_mshr_scan] &&
+                !mshr_bypass_q[lookup_mshr_scan] &&
+                ((mshr_state_q[lookup_mshr_scan] == MSHR_NEED_WB) ||
+                 (mshr_state_q[lookup_mshr_scan] ==
+                  MSHR_WB_INFLIGHT)) &&
+                (mshr_victim_addr_q[lookup_mshr_scan] ==
+                 lookup_line_addr)) begin
+                lookup_dirty_victim_match_r = 1'b1;
+                lookup_dirty_victim_index_r =
+                    lookup_mshr_scan[MSHR_INDEX_WIDTH-1:0];
             end
         end
 
@@ -520,6 +553,15 @@ module openrv64_ccx_l2_native #(
             end else if (lookup_mshr_match_r) begin
                 if (lookup_mshr_mergeable_r) begin
                     lookup_action_r = LOOKUP_MERGE;
+                    lookup_dispatch_r = 1'b1;
+                end
+            end else if (lookup_dirty_victim_match_r) begin
+                // Reads consume the complete dirty victim snapshot.  A write
+                // waits for writeback completion because data already sent
+                // below this cache cannot be modified safely.
+                if ((lookup_op_q == `OPENRV64_CCX_OP_READ) &&
+                    hit_slot_ready) begin
+                    lookup_action_r = LOOKUP_VICTIM_HIT;
                     lookup_dispatch_r = 1'b1;
                 end
             end else if (lookup_hit_r) begin
@@ -970,7 +1012,8 @@ module openrv64_ccx_l2_native #(
 
             if (lookup_dispatch_r &&
                 ((lookup_action_r == LOOKUP_IMMEDIATE) ||
-                 (lookup_action_r == LOOKUP_HIT))) begin
+                 (lookup_action_r == LOOKUP_HIT) ||
+                 (lookup_action_r == LOOKUP_VICTIM_HIT))) begin
                 hit_valid_q <= 1'b1;
                 hit_hart_id_q <= lookup_hart_id_q;
                 hit_txn_id_q <= lookup_txn_id_q;
@@ -984,6 +1027,9 @@ module openrv64_ccx_l2_native #(
                 if ((lookup_action_r == LOOKUP_HIT) &&
                     (lookup_op_q == `OPENRV64_CCX_OP_READ))
                     hit_data_q <= lookup_read_data;
+                else if ((lookup_action_r == LOOKUP_VICTIM_HIT) &&
+                         (lookup_op_q == `OPENRV64_CCX_OP_READ))
+                    hit_data_q <= lookup_dirty_victim_read_data;
                 else
                     hit_data_q <= 0;
 

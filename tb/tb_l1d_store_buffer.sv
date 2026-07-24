@@ -40,17 +40,70 @@ module tb_l1d_store_buffer;
     reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
     reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    reg response_pending_q;
-    integer response_delay_q;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    localparam integer RESPONSE_SLOTS = 16;
+    reg response_slot_valid_q [0:RESPONSE_SLOTS-1];
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        response_hart_q [0:RESPONSE_SLOTS-1];
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        response_txn_q [0:RESPONSE_SLOTS-1];
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        response_source_q [0:RESPONSE_SLOTS-1];
+    reg response_write_q [0:RESPONSE_SLOTS-1];
+    reg [63:0] response_addr_q [0:RESPONSE_SLOTS-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        response_wdata_q [0:RESPONSE_SLOTS-1];
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        response_wstrb_q [0:RESPONSE_SLOTS-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        response_rdata_q [0:RESPONSE_SLOTS-1];
+    integer response_due_q [0:RESPONSE_SLOTS-1];
+    integer response_count_q;
+    integer max_response_count_q;
+    integer response_active_slot_q;
+    reg response_free_found_r;
+    integer response_free_slot_r;
+    reg response_select_found_r;
+    integer response_select_slot_r;
+    integer response_scan;
 
     integer cycle_count;
+    integer read_count;
     integer write_count;
     integer wait_cycles;
     integer word_index;
     integer timeout_start_cycle;
+    integer memory_byte;
+    integer memory_reset_line;
+    localparam integer MEMORY_LINES = 16;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        memory [0:MEMORY_LINES-1];
     reg [63:0] write_addr [0:15];
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] write_data [0:15];
     reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] write_strb [0:15];
+
+    always @* begin
+        response_free_found_r = 1'b0;
+        response_free_slot_r = 0;
+        response_select_found_r = 1'b0;
+        response_select_slot_r = 0;
+        for (response_scan = 0; response_scan < RESPONSE_SLOTS;
+             response_scan = response_scan + 1) begin
+            if (!response_free_found_r &&
+                !response_slot_valid_q[response_scan]) begin
+                response_free_found_r = 1'b1;
+                response_free_slot_r = response_scan;
+            end
+            // Prefer the youngest eligible response.  The intentionally
+            // decreasing delay makes a four-write drain complete in reverse
+            // order and exercises transaction-ID response matching.
+            if (response_slot_valid_q[response_scan] &&
+                (response_due_q[response_scan] <= cycle_count)) begin
+                response_select_found_r = 1'b1;
+                response_select_slot_r = response_scan;
+            end
+        end
+    end
 
     openrv64_l1d_ccx #(
         .ENABLE(1),
@@ -129,8 +182,7 @@ module tb_l1d_store_buffer;
         .ccx_resp_beat_index_i(
             {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}),
         .ccx_resp_last_i(1'b1),
-        .ccx_resp_rdata_i(
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+        .ccx_resp_rdata_i(ccx_resp_rdata),
         .ccx_resp_error_i(1'b0),
         .ccx_resp_sc_success_i(1'b0)
     );
@@ -148,39 +200,110 @@ module tb_l1d_store_buffer;
             ccx_resp_hart_id <= 0;
             ccx_resp_txn_id <= 0;
             ccx_resp_source_id <= 0;
-            response_pending_q <= 1'b0;
-            response_delay_q <= 0;
+            ccx_resp_rdata <= 0;
+            response_count_q <= 0;
+            max_response_count_q <= 0;
+            response_active_slot_q <= 0;
+            for (response_scan = 0; response_scan < RESPONSE_SLOTS;
+                 response_scan = response_scan + 1) begin
+                response_slot_valid_q[response_scan] <= 1'b0;
+                response_hart_q[response_scan] <= 0;
+                response_txn_q[response_scan] <= 0;
+                response_source_q[response_scan] <= 0;
+                response_write_q[response_scan] <= 1'b0;
+                response_addr_q[response_scan] <= 0;
+                response_wdata_q[response_scan] <= 0;
+                response_wstrb_q[response_scan] <= 0;
+                response_rdata_q[response_scan] <= 0;
+                response_due_q[response_scan] <= 0;
+            end
+            for (memory_reset_line = 0;
+                 memory_reset_line < MEMORY_LINES;
+                 memory_reset_line = memory_reset_line + 1)
+                memory[memory_reset_line] <= 0;
             cycle_count <= 0;
+            read_count <= 0;
             write_count <= 0;
         end else begin
             cycle_count <= cycle_count + 1;
             if (ccx_req_valid) begin
-                if (response_pending_q || ccx_resp_valid)
-                    $fatal(1, "store-buffer test accepted overlapping CCX requests");
-                if ((ccx_req_op != `OPENRV64_CCX_OP_WRITE) ||
-                    (ccx_req_size != 3'd6) || !ccx_wdata_valid)
-                    $fatal(1, "store-buffer drain was not a line write");
-                if (write_count >= 16)
-                    $fatal(1, "store-buffer test write log overflow");
-                write_addr[write_count] <= ccx_req_addr;
-                write_data[write_count] <= ccx_wdata;
-                write_strb[write_count] <= ccx_wstrb;
-                write_count <= write_count + 1;
-                response_pending_q <= 1'b1;
-                response_delay_q <= 2;
-                ccx_resp_hart_id <= ccx_req_hart_id;
-                ccx_resp_txn_id <= ccx_req_txn_id;
-                ccx_resp_source_id <= ccx_req_source_id;
+                if (!response_free_found_r)
+                    $fatal(1, "store-buffer response model overflow");
+                if (ccx_req_size != 3'd6)
+                    $fatal(1, "store-buffer request was not line-sized");
+                if (ccx_req_op == `OPENRV64_CCX_OP_WRITE) begin
+                    if (!ccx_wdata_valid)
+                        $fatal(1,
+                            "store-buffer line write lacked write data");
+                    if (write_count >= 16)
+                        $fatal(1,
+                            "store-buffer test write log overflow");
+                    write_addr[write_count] <= ccx_req_addr;
+                    write_data[write_count] <= ccx_wdata;
+                    write_strb[write_count] <= ccx_wstrb;
+                    write_count <= write_count + 1;
+                end else if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
+                    read_count <= read_count + 1;
+                end else begin
+                    $fatal(1, "unexpected CCX operation");
+                end
+                response_slot_valid_q[response_free_slot_r] <= 1'b1;
+                response_hart_q[response_free_slot_r] <=
+                    ccx_req_hart_id;
+                response_txn_q[response_free_slot_r] <=
+                    ccx_req_txn_id;
+                response_source_q[response_free_slot_r] <=
+                    ccx_req_source_id;
+                response_write_q[response_free_slot_r] <=
+                    ccx_req_op == `OPENRV64_CCX_OP_WRITE;
+                response_addr_q[response_free_slot_r] <= ccx_req_addr;
+                response_wdata_q[response_free_slot_r] <= ccx_wdata;
+                response_wstrb_q[response_free_slot_r] <= ccx_wstrb;
+                response_rdata_q[response_free_slot_r] <=
+                    memory[ccx_req_addr[9:6]];
+                response_due_q[response_free_slot_r] <=
+                    cycle_count + 20 - ((write_count % 4) * 4);
             end
-            if (response_pending_q && (response_delay_q != 0))
-                response_delay_q <= response_delay_q - 1;
-            if (response_pending_q && (response_delay_q == 0) &&
-                !ccx_resp_valid)
+            if (!ccx_resp_valid && response_select_found_r) begin
                 ccx_resp_valid <= 1'b1;
+                response_active_slot_q <= response_select_slot_r;
+                ccx_resp_hart_id <=
+                    response_hart_q[response_select_slot_r];
+                ccx_resp_txn_id <=
+                    response_txn_q[response_select_slot_r];
+                ccx_resp_source_id <=
+                    response_source_q[response_select_slot_r];
+                ccx_resp_rdata <=
+                    response_rdata_q[response_select_slot_r];
+            end
             if (ccx_resp_valid && ccx_resp_ready) begin
                 ccx_resp_valid <= 1'b0;
-                response_pending_q <= 1'b0;
+                if (response_write_q[response_active_slot_q]) begin
+                    for (memory_byte = 0;
+                         memory_byte <
+                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                         memory_byte = memory_byte + 1)
+                        if (response_wstrb_q[
+                                response_active_slot_q][memory_byte])
+                            memory[response_addr_q[
+                                response_active_slot_q][9:6]][
+                                    memory_byte*8 +: 8] <=
+                                response_wdata_q[
+                                    response_active_slot_q][
+                                        memory_byte*8 +: 8];
+                end
+                response_slot_valid_q[response_active_slot_q] <= 1'b0;
             end
+            case ({ccx_req_valid,
+                   ccx_resp_valid && ccx_resp_ready})
+                2'b10: response_count_q <= response_count_q + 1;
+                2'b01: response_count_q <= response_count_q - 1;
+                default: response_count_q <= response_count_q;
+            endcase
+            if (response_count_q > max_response_count_q)
+                max_response_count_q <= response_count_q;
+            if (response_count_q > RESPONSE_SLOTS)
+                $fatal(1, "store-buffer response count overflow");
         end
     end
 
@@ -236,6 +359,41 @@ module tb_l1d_store_buffer;
         end
     endtask
 
+    task automatic issue_load;
+        input [63:0] address;
+        input [63:0] expected;
+        begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_write = 1'b0;
+            req_addr = address;
+            req_wdata = 0;
+            req_wstrb = 0;
+            req_tag = req_tag + 1'b1;
+            wait_cycles = 0;
+            while (!req_ready && (wait_cycles < 200)) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!req_ready)
+                $fatal(1, "load acceptance timed out addr=%016x", address);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            req_addr = 0;
+            wait_cycles = 0;
+            while (!resp_valid && (wait_cycles < 200)) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!resp_valid || req_error || (req_rdata !== expected))
+                $fatal(1,
+                    "load response mismatch addr=%016x actual=%016x expected=%016x error=%0b",
+                    address, req_rdata, expected, req_error);
+            @(posedge clk);
+        end
+    endtask
+
     task automatic wait_for_writes;
         input integer expected;
         begin
@@ -268,6 +426,9 @@ module tb_l1d_store_buffer;
         issue_store(BASE + 64'h80, 64'h3333);
         issue_store(BASE + 64'hc0, 64'h4444);
         wait_for_writes(4);
+        if (max_response_count_q < 2)
+            $fatal(1,
+                "store-buffer drain never had multiple writes outstanding");
         wait_cycles = 0;
         while ((dut.store_buffer_count_q != 0) &&
                (wait_cycles < 100)) begin
@@ -346,7 +507,45 @@ module tb_l1d_store_buffer;
             (dut.backend_state_q != 0))
             $fatal(1, "translation barrier released with store outstanding");
 
-        $display("PASS: eight-entry L1D store combining, watermark drain, timeout, FIFO order, and translation-barrier drain");
+        // A store miss leaves authoritative dirty bytes in the posted FIFO.
+        // A younger same-line load miss may consume stale backing data for
+        // untouched bytes, but the complete cacheline installed in L1 must
+        // include the older dirty word.  After the store drains and its FIFO
+        // entry disappears, a resident hit proves that the merge affected the
+        // installed line rather than only the first load response.
+        reset_dut();
+        memory[BASE[9:6]][63:0] =
+            64'h0bad_f00d_dead_beef;
+        memory[BASE[9:6]][127:64] =
+            64'h1122_3344_5566_7788;
+        issue_store(BASE, 64'hfeed_face_0123_4567);
+        if ((dut.store_buffer_count_q != 1) ||
+            (write_count != 0) || (read_count != 0))
+            $fatal(1, "dirty-refill setup did not retain the store");
+        issue_load(BASE + 8, 64'h1122_3344_5566_7788);
+        if ((write_count != 0) || (read_count != 1) ||
+            (dut.store_buffer_count_q != 1))
+            $fatal(1,
+                "same-line load drained instead of snooping dirty bytes");
+
+        @(negedge clk);
+        speculation_barrier = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        speculation_barrier = 1'b0;
+        wait_cycles = 0;
+        while (store_barrier_busy && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (store_barrier_busy || (dut.store_buffer_count_q != 0))
+            $fatal(1, "dirty-refill store did not drain");
+        issue_load(BASE, 64'hfeed_face_0123_4567);
+        if (read_count != 1)
+            $fatal(1,
+                "dirty-refill verification missed instead of hitting L1");
+
+        $display("PASS: L1D store combining, independent drains, barriers, and dirty-line refill snooping");
         $finish;
     end
 

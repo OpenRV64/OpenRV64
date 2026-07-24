@@ -523,6 +523,19 @@ module tb_genbus_interface #(
         if ((BUS_TYPE == `OPENRV64_COMPLEX_BUS_WISHBONE) &&
             (arvalid || awvalid || wvalid))
             $fatal(1, "inactive AXI outputs toggled");
+        if ((BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) &&
+            ((dut.perf_axi_read_bursts_q != 8) ||
+             (dut.perf_axi_read_source_requests_q != 11) ||
+             (dut.perf_axi_read_merged_requests_q != 3) ||
+             (dut.perf_axi_write_bursts_q != 2) ||
+             (dut.perf_axi_write_merged_requests_q != 0)))
+            $fatal(1,
+                "AXI coalescing counters mismatch: read_bursts=%0d source_reads=%0d merged=%0d write_bursts=%0d write_merged=%0d",
+                dut.perf_axi_read_bursts_q,
+                dut.perf_axi_read_source_requests_q,
+                dut.perf_axi_read_merged_requests_q,
+                dut.perf_axi_write_bursts_q,
+                dut.perf_axi_write_merged_requests_q);
 
         $display("PASS: genbus %s buffered reads/writes, width bursts%s",
             (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ? "AXI4" :

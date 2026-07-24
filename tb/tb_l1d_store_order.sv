@@ -253,45 +253,22 @@ module tb_l1d_store_order;
 
         issue_store();
 
-        // Present the dependent load while the store is still buffered.  It
-        // must not enter L1, even after the CCX write response arrives, until
-        // the ordered store-completion handshake releases the FIFO entry.
+        // Present the dependent load while the store is still buffered.  The
+        // load may reach CCX for the clean base line, but its returned word
+        // must be overlaid from the older dirty store without forcing that
+        // partial line to drain.
         @(negedge clk);
         req_valid = 1'b1;
         req_tag = 1;
         req_write = 1'b0;
         req_addr = STORE_ADDR;
-        #1;
-        wait_cycles = 0;
-        while (!store_resp_valid && (wait_cycles < 100)) begin
-            if (req_ready)
-                $fatal(1,
-                    "dependent load overtook buffered store reqv=%b reqw=%b reqaddr=%016x count=%0d valid=%b addr=%016x conflict=%b",
-                    req_valid, req_write, req_addr,
-                    dut.store_buffer_count_q,
-                    dut.store_buffer_valid_q[dut.store_buffer_head_q],
-                    dut.store_buffer_addr_q[dut.store_buffer_head_q],
-                    dut.demand_load_store_conflict_r);
-            @(negedge clk);
-            wait_cycles = wait_cycles + 1;
-        end
-        if (!store_resp_valid || store_resp_error)
-            $fatal(1, "lower store completion did not arrive");
-        if (req_ready)
-            $fatal(1, "dependent load accepted before store release");
-        if ((write_commands != 1) || (read_commands != 0))
-            $fatal(1, "read reached CCX before forced write");
-
-        store_resp_ready = 1'b1;
-        @(posedge clk);
-        @(negedge clk);
         wait_cycles = 0;
         while (!req_ready && (wait_cycles < 20)) begin
             @(negedge clk);
             wait_cycles = wait_cycles + 1;
         end
         if (!req_ready)
-            $fatal(1, "dependent load remained blocked after write");
+            $fatal(1, "dependent load did not snoop buffered store");
         @(posedge clk);
         @(negedge clk);
         req_valid = 1'b0;
@@ -308,11 +285,12 @@ module tb_l1d_store_order;
         if (req_rdata !== STORE_DATA)
             $fatal(1, "dependent load data=%016x expected=%016x",
                    req_rdata, STORE_DATA);
-        if ((write_commands != 1) || (read_commands != 1))
+        if ((write_commands != 0) || (read_commands != 1) ||
+            (dut.store_buffer_count_q != 1))
             $fatal(1, "unexpected CCX command counts w=%0d r=%0d",
                    write_commands, read_commands);
 
-        $display("PASS: same-line load forces buffered partial-line write");
+        $display("PASS: same-line load forwards buffered dirty bytes without draining");
         $finish;
     end
 

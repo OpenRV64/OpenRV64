@@ -5,6 +5,7 @@ module tb_mem_channel;
     localparam integer ADDR_WIDTH = 32;
     localparam integer DATA_WIDTH = 128;
     localparam integer ID_WIDTH = 4;
+    localparam integer TIMING_TAG_WIDTH = 8;
     localparam [ADDR_WIDTH-1:0] MEM_BASE = 32'h0000_8000;
     localparam integer MEM_BYTES = 4096;
 
@@ -49,15 +50,27 @@ module tb_mem_channel;
     wire timing_cmd_write;
     wire [ADDR_WIDTH-1:0] timing_cmd_addr;
     wire [15:0] timing_cmd_bytes;
+    wire [TIMING_TAG_WIDTH-1:0] timing_cmd_tag;
     wire timing_resp_valid;
+    wire [TIMING_TAG_WIDTH-1:0] timing_resp_tag;
     wire timing_resp_ready;
+    logic timing_cmd_allow;
+    wire timing_backend_cmd_ready;
+    wire timing_backend_resp_valid;
+    wire [TIMING_TAG_WIDTH-1:0] timing_backend_resp_tag;
+    logic manual_timing_mode;
+    logic manual_timing_cmd_ready;
+    logic manual_timing_resp_valid;
+    logic [TIMING_TAG_WIDTH-1:0] manual_timing_resp_tag;
 
     logic ddr3_cmd_valid;
     logic ddr3_cmd_write;
     logic [ADDR_WIDTH-1:0] ddr3_cmd_addr;
     logic [15:0] ddr3_cmd_bytes;
+    logic [TIMING_TAG_WIDTH-1:0] ddr3_cmd_tag;
     wire ddr3_cmd_ready;
     wire ddr3_resp_valid;
+    wire [TIMING_TAG_WIDTH-1:0] ddr3_resp_tag;
     logic ddr3_resp_ready;
 
     logic gddr_cmd_valid;
@@ -76,6 +89,14 @@ module tb_mem_channel;
     wire hbm_resp_valid;
     logic hbm_resp_ready;
 
+    logic magic_cmd_valid;
+    logic magic_cmd_write;
+    logic [ADDR_WIDTH-1:0] magic_cmd_addr;
+    logic [15:0] magic_cmd_bytes;
+    wire magic_cmd_ready;
+    wire magic_resp_valid;
+    logic magic_resp_ready;
+
     openrv64_mem_channel #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
@@ -83,7 +104,8 @@ module tb_mem_channel;
         .MEM_BASE(MEM_BASE),
         .MEM_BYTES(MEM_BYTES),
         .READ_QUEUE_DEPTH(4),
-        .WRITE_QUEUE_DEPTH(4)
+        .WRITE_QUEUE_DEPTH(4),
+        .TIMING_TAG_WIDTH(TIMING_TAG_WIDTH)
     ) dut (
         .clk_i(clk), .rst_ni(rst_n),
         .s_axi_arid_i(arid), .s_axi_araddr_i(araddr),
@@ -111,58 +133,88 @@ module tb_mem_channel;
         .timing_cmd_write_o(timing_cmd_write),
         .timing_cmd_addr_o(timing_cmd_addr),
         .timing_cmd_bytes_o(timing_cmd_bytes),
+        .timing_cmd_tag_o(timing_cmd_tag),
         .timing_resp_valid_i(timing_resp_valid),
+        .timing_resp_tag_i(timing_resp_tag),
         .timing_resp_ready_o(timing_resp_ready)
     );
 
     openrv64_timing_ddr4 #(
         .ADDR_WIDTH(ADDR_WIDTH),
+        .TAG_WIDTH(TIMING_TAG_WIDTH),
         .CONTROLLER_TCK_PS(1000),
         .REFRESH_INTERVAL(0)
     ) u_ddr4 (
         .clk_i(clk), .rst_ni(rst_n),
-        .cmd_valid_i(timing_cmd_valid),
-        .cmd_ready_o(timing_cmd_ready),
+        .cmd_valid_i(timing_cmd_valid && timing_cmd_allow &&
+                     !manual_timing_mode),
+        .cmd_ready_o(timing_backend_cmd_ready),
         .cmd_write_i(timing_cmd_write),
         .cmd_addr_i(timing_cmd_addr),
         .cmd_bytes_i(timing_cmd_bytes),
-        .resp_valid_o(timing_resp_valid),
+        .cmd_tag_i(timing_cmd_tag),
+        .resp_valid_o(timing_backend_resp_valid),
+        .resp_tag_o(timing_backend_resp_tag),
         .resp_ready_i(timing_resp_ready)
     );
+    assign timing_cmd_ready = manual_timing_mode ?
+        manual_timing_cmd_ready :
+        (timing_cmd_allow && timing_backend_cmd_ready);
+    assign timing_resp_valid = manual_timing_mode ?
+        manual_timing_resp_valid : timing_backend_resp_valid;
+    assign timing_resp_tag = manual_timing_mode ?
+        manual_timing_resp_tag : timing_backend_resp_tag;
 
     // Standalone instances prove that the alternative profiles implement the
     // exact same timing contract used above.
     openrv64_timing_ddr3 #(
-        .ADDR_WIDTH(ADDR_WIDTH), .CONTROLLER_TCK_PS(1000),
+        .ADDR_WIDTH(ADDR_WIDTH), .TAG_WIDTH(TIMING_TAG_WIDTH),
+        .CONTROLLER_TCK_PS(1000),
         .REFRESH_INTERVAL(0)
     ) u_ddr3 (
         .clk_i(clk), .rst_ni(rst_n),
         .cmd_valid_i(ddr3_cmd_valid), .cmd_ready_o(ddr3_cmd_ready),
         .cmd_write_i(ddr3_cmd_write), .cmd_addr_i(ddr3_cmd_addr),
-        .cmd_bytes_i(ddr3_cmd_bytes),
-        .resp_valid_o(ddr3_resp_valid), .resp_ready_i(ddr3_resp_ready)
+        .cmd_bytes_i(ddr3_cmd_bytes), .cmd_tag_i(ddr3_cmd_tag),
+        .resp_valid_o(ddr3_resp_valid), .resp_tag_o(ddr3_resp_tag),
+        .resp_ready_i(ddr3_resp_ready)
     );
 
     openrv64_timing_gddr6 #(
-        .ADDR_WIDTH(ADDR_WIDTH), .CONTROLLER_TCK_PS(1000),
+        .ADDR_WIDTH(ADDR_WIDTH), .TAG_WIDTH(TIMING_TAG_WIDTH),
+        .CONTROLLER_TCK_PS(1000),
         .REFRESH_INTERVAL(0)
     ) u_gddr6 (
         .clk_i(clk), .rst_ni(rst_n),
         .cmd_valid_i(gddr_cmd_valid), .cmd_ready_o(gddr_cmd_ready),
         .cmd_write_i(gddr_cmd_write), .cmd_addr_i(gddr_cmd_addr),
-        .cmd_bytes_i(gddr_cmd_bytes),
-        .resp_valid_o(gddr_resp_valid), .resp_ready_i(gddr_resp_ready)
+        .cmd_bytes_i(gddr_cmd_bytes), .cmd_tag_i(8'd0),
+        .resp_valid_o(gddr_resp_valid), .resp_tag_o(),
+        .resp_ready_i(gddr_resp_ready)
     );
 
     openrv64_timing_hbm2 #(
-        .ADDR_WIDTH(ADDR_WIDTH), .CONTROLLER_TCK_PS(1000),
+        .ADDR_WIDTH(ADDR_WIDTH), .TAG_WIDTH(TIMING_TAG_WIDTH),
+        .CONTROLLER_TCK_PS(1000),
         .REFRESH_INTERVAL(0)
     ) u_hbm2 (
         .clk_i(clk), .rst_ni(rst_n),
         .cmd_valid_i(hbm_cmd_valid), .cmd_ready_o(hbm_cmd_ready),
         .cmd_write_i(hbm_cmd_write), .cmd_addr_i(hbm_cmd_addr),
-        .cmd_bytes_i(hbm_cmd_bytes),
-        .resp_valid_o(hbm_resp_valid), .resp_ready_i(hbm_resp_ready)
+        .cmd_bytes_i(hbm_cmd_bytes), .cmd_tag_i(8'd0),
+        .resp_valid_o(hbm_resp_valid), .resp_tag_o(),
+        .resp_ready_i(hbm_resp_ready)
+    );
+
+    openrv64_timing_magic #(
+        .ADDR_WIDTH(ADDR_WIDTH), .TAG_WIDTH(TIMING_TAG_WIDTH)
+    ) u_magic (
+        .clk_i(clk), .rst_ni(rst_n),
+        .cmd_valid_i(magic_cmd_valid), .cmd_ready_o(magic_cmd_ready),
+        .cmd_write_i(magic_cmd_write), .cmd_addr_i(magic_cmd_addr),
+        .cmd_bytes_i(magic_cmd_bytes), .cmd_tag_i(8'd0),
+        .resp_valid_o(magic_resp_valid), .resp_tag_o(),
+        .resp_ready_i(magic_resp_ready)
     );
 
     // The timing presets convert their DRAM clocks into this 1 GHz controller
@@ -329,6 +381,7 @@ module tb_mem_channel;
         begin
             ddr3_cmd_addr = address;
             ddr3_cmd_bytes = byte_count;
+            ddr3_cmd_tag = 8'h01;
             ddr3_cmd_write = 1'b0;
             ddr3_cmd_valid = 1'b1;
             guard = 0;
@@ -351,6 +404,237 @@ module tb_mem_channel;
             ddr3_resp_ready = 1'b1;
             tick();
             ddr3_resp_ready = 1'b0;
+        end
+    endtask
+
+    task automatic issue_ddr3_coalesced_pair(
+        output integer elapsed_cycles
+    );
+        integer guard;
+        integer responses;
+        reg [63:0] coalesced_before;
+        begin
+            coalesced_before =
+                u_ddr3.u_timing.perf_commands_coalesced_q;
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_bytes = 16'd64;
+            ddr3_cmd_tag = 8'h41;
+            ddr3_cmd_addr = 32'h0000_4000;
+            ddr3_cmd_valid = 1'b1;
+            guard = 0;
+            while (!ddr3_cmd_ready && guard < 500) begin
+                tick();
+                guard = guard + 1;
+            end
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 first coalescing command timeout");
+            tick();
+
+            ddr3_cmd_addr = 32'h0000_4040;
+            ddr3_cmd_tag = 8'h42;
+            guard = 0;
+            while (!ddr3_cmd_ready && guard < 500) begin
+                tick();
+                guard = guard + 1;
+            end
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 second coalescing command timeout");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+
+            ddr3_resp_ready = 1'b1;
+            responses = 0;
+            elapsed_cycles = 0;
+            while ((responses < 2) && (elapsed_cycles < 500)) begin
+                if (ddr3_resp_valid)
+                    responses = responses + 1;
+                tick();
+                elapsed_cycles = elapsed_cycles + 1;
+            end
+            ddr3_resp_ready = 1'b0;
+            if (responses != 2)
+                $fatal(1, "DDR3 coalesced response pair timeout");
+            if ((u_ddr3.u_timing.perf_commands_coalesced_q -
+                 coalesced_before) != 1)
+                $fatal(1,
+                    "DDR3 controller did not coalesce adjacent commands");
+        end
+    endtask
+
+    task automatic issue_ddr3_ordering_barrier;
+        integer responses;
+        integer elapsed_cycles;
+        reg [63:0] coalesced_before;
+        begin
+            coalesced_before =
+                u_ddr3.u_timing.perf_commands_coalesced_q;
+            ddr3_cmd_bytes = 16'd64;
+            ddr3_cmd_valid = 1'b1;
+
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_addr = 32'h0000_6000;
+            ddr3_cmd_tag = 8'h51;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 ordering command 0 not ready");
+            tick();
+
+            ddr3_cmd_write = 1'b1;
+            ddr3_cmd_addr = 32'h0000_6040;
+            ddr3_cmd_tag = 8'h52;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 ordering command 1 not ready");
+            tick();
+
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_addr = 32'h0000_6040;
+            ddr3_cmd_tag = 8'h53;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 ordering command 2 not ready");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+
+            ddr3_resp_ready = 1'b1;
+            responses = 0;
+            elapsed_cycles = 0;
+            while ((responses < 3) && (elapsed_cycles < 500)) begin
+                if (ddr3_resp_valid)
+                    responses = responses + 1;
+                tick();
+                elapsed_cycles = elapsed_cycles + 1;
+            end
+            ddr3_resp_ready = 1'b0;
+            if (responses != 3)
+                $fatal(1, "DDR3 ordering response timeout");
+            if (u_ddr3.u_timing.perf_commands_coalesced_q !=
+                coalesced_before)
+                $fatal(1,
+                    "DDR3 coalesced across an older same-bank command");
+        end
+    endtask
+
+    task automatic issue_ddr3_read_gather;
+        integer responses;
+        integer elapsed_cycles;
+        reg [63:0] coalesced_before;
+        reg [7:0] response_tags [0:3];
+        begin
+            coalesced_before =
+                u_ddr3.u_timing.perf_commands_coalesced_q;
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_bytes = 16'd64;
+            ddr3_cmd_valid = 1'b1;
+
+            ddr3_cmd_addr = 32'h0000_8000;
+            ddr3_cmd_tag = 8'h61;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 read gather command 0 not ready");
+            tick();
+            ddr3_cmd_addr = 32'h0000_8800;
+            ddr3_cmd_tag = 8'h62;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 read gather command 1 not ready");
+            tick();
+            ddr3_cmd_addr = 32'h0000_8040;
+            ddr3_cmd_tag = 8'h63;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 read gather command 2 not ready");
+            tick();
+            ddr3_cmd_addr = 32'h0000_8080;
+            ddr3_cmd_tag = 8'h64;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 read gather command 3 not ready");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+
+            ddr3_resp_ready = 1'b1;
+            responses = 0;
+            elapsed_cycles = 0;
+            while ((responses < 4) && (elapsed_cycles < 500)) begin
+                if (ddr3_resp_valid) begin
+                    response_tags[responses] = ddr3_resp_tag;
+                    responses = responses + 1;
+                end
+                tick();
+                elapsed_cycles = elapsed_cycles + 1;
+            end
+            ddr3_resp_ready = 1'b0;
+            if (responses != 4)
+                $fatal(1, "DDR3 read gather response timeout");
+            if ((response_tags[0] != 8'h61) ||
+                (response_tags[1] != 8'h63) ||
+                (response_tags[2] != 8'h64) ||
+                (response_tags[3] != 8'h62))
+                $fatal(1,
+                    "DDR3 read gather tags were not out of order: %h/%h/%h/%h",
+                    response_tags[0], response_tags[1],
+                    response_tags[2], response_tags[3]);
+            if ((u_ddr3.u_timing.perf_commands_coalesced_q -
+                 coalesced_before) != 2)
+                $fatal(1,
+                    "DDR3 did not gather queued read run across unrelated read");
+        end
+    endtask
+
+    task automatic issue_ddr3_write_gather;
+        integer responses;
+        integer elapsed_cycles;
+        reg [63:0] coalesced_before;
+        reg [7:0] response_tags [0:3];
+        begin
+            coalesced_before =
+                u_ddr3.u_timing.perf_commands_coalesced_q;
+            ddr3_cmd_write = 1'b1;
+            ddr3_cmd_bytes = 16'd64;
+            ddr3_cmd_valid = 1'b1;
+
+            ddr3_cmd_addr = 32'h0000_a000;
+            ddr3_cmd_tag = 8'h71;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 write gather command 0 not ready");
+            tick();
+            ddr3_cmd_addr = 32'h0000_a800;
+            ddr3_cmd_tag = 8'h72;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 write gather command 1 not ready");
+            tick();
+            ddr3_cmd_addr = 32'h0000_a040;
+            ddr3_cmd_tag = 8'h73;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 write gather command 2 not ready");
+            tick();
+            ddr3_cmd_addr = 32'h0000_a080;
+            ddr3_cmd_tag = 8'h74;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 write gather command 3 not ready");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+
+            ddr3_resp_ready = 1'b1;
+            responses = 0;
+            elapsed_cycles = 0;
+            while ((responses < 4) && (elapsed_cycles < 500)) begin
+                if (ddr3_resp_valid) begin
+                    response_tags[responses] = ddr3_resp_tag;
+                    responses = responses + 1;
+                end
+                tick();
+                elapsed_cycles = elapsed_cycles + 1;
+            end
+            ddr3_resp_ready = 1'b0;
+            if (responses != 4)
+                $fatal(1, "DDR3 write gather response timeout");
+            if ((response_tags[0] != 8'h71) ||
+                (response_tags[1] != 8'h73) ||
+                (response_tags[2] != 8'h74) ||
+                (response_tags[3] != 8'h72))
+                $fatal(1,
+                    "DDR3 write gather tags were not out of order: %h/%h/%h/%h",
+                    response_tags[0], response_tags[1],
+                    response_tags[2], response_tags[3]);
+            if ((u_ddr3.u_timing.perf_commands_coalesced_q -
+                 coalesced_before) != 2)
+                $fatal(1,
+                    "DDR3 did not gather queued write run across unrelated write");
         end
     endtask
 
@@ -420,15 +704,68 @@ module tb_mem_channel;
         end
     endtask
 
+    task automatic issue_magic_request(
+        output integer latency
+    );
+        begin
+            magic_cmd_addr = 32'h0000_1000;
+            magic_cmd_bytes = 16'd64;
+            magic_cmd_write = 1'b0;
+            magic_cmd_valid = 1'b1;
+            if (!magic_cmd_ready)
+                $fatal(1, "magic command was not immediately ready");
+            tick();
+            magic_cmd_valid = 1'b0;
+
+            latency = 1;
+            while (!magic_resp_valid && latency < 4) begin
+                tick();
+                latency = latency + 1;
+            end
+            if (!magic_resp_valid)
+                $fatal(1, "magic response timeout");
+            if (magic_cmd_ready)
+                $fatal(1,
+                    "magic backend accepted a command over a stalled response");
+            magic_resp_ready = 1'b1;
+            tick();
+            magic_resp_ready = 1'b0;
+        end
+    endtask
+
+    task automatic pulse_manual_timing_response(
+        input [TIMING_TAG_WIDTH-1:0] response_tag
+    );
+        begin
+            manual_timing_resp_tag = response_tag;
+            manual_timing_resp_valid = 1'b1;
+            if (!timing_resp_ready)
+                $fatal(1, "manual timing response had no outstanding owner");
+            tick();
+            manual_timing_resp_valid = 1'b0;
+        end
+    endtask
+
     integer ddr3_miss_latency;
     integer ddr3_hit_latency;
     integer ddr3_conflict_latency;
     integer ddr3_two_burst_latency;
+    integer ddr3_coalesced_pair_latency;
     integer gddr_miss_latency;
     integer gddr_hit_latency;
     integer gddr_two_burst_latency;
     integer hbm_write_miss_latency;
     integer hbm_write_conflict_latency;
+    integer magic_latency;
+    reg held_timing_write;
+    reg [ADDR_WIDTH-1:0] held_timing_addr;
+    reg [15:0] held_timing_bytes;
+    reg [TIMING_TAG_WIDTH-1:0] held_timing_tag;
+    reg [TIMING_TAG_WIDTH-1:0] manual_read_tag;
+    reg [TIMING_TAG_WIDTH-1:0] manual_write_tag;
+    integer manual_guard;
+    integer manual_slot;
+    integer hold_check_cycle;
 
     initial begin
         clk = 1'b0;
@@ -453,10 +790,16 @@ module tb_mem_channel;
         wlast = 1'b0;
         wvalid = 1'b0;
         bready = 1'b0;
+        timing_cmd_allow = 1'b1;
+        manual_timing_mode = 1'b0;
+        manual_timing_cmd_ready = 1'b0;
+        manual_timing_resp_valid = 1'b0;
+        manual_timing_resp_tag = 0;
         ddr3_cmd_valid = 1'b0;
         ddr3_cmd_write = 1'b0;
         ddr3_cmd_addr = 0;
         ddr3_cmd_bytes = 0;
+        ddr3_cmd_tag = 0;
         ddr3_resp_ready = 1'b0;
         gddr_cmd_valid = 1'b0;
         gddr_cmd_write = 1'b0;
@@ -468,13 +811,106 @@ module tb_mem_channel;
         hbm_cmd_addr = 0;
         hbm_cmd_bytes = 0;
         hbm_resp_ready = 1'b0;
+        magic_cmd_valid = 1'b0;
+        magic_cmd_write = 1'b0;
+        magic_cmd_addr = 0;
+        magic_cmd_bytes = 0;
+        magic_resp_ready = 1'b0;
 
         repeat (3) tick();
         rst_n = 1'b1;
         tick();
 
-        // AW is accepted independently.  W begins only after the descriptor
-        // reaches the active write slot, then proceeds as a four-beat burst.
+        // First make read the preferred direction.  Then block the timing
+        // backend with a read selected and make a write newly eligible.  The
+        // selected timing payload must not change while VALID is stalled.
+        send_ar(4'h0, 32'h0000_8200, 8'd0, 3'd4, 2'b01, 1'b0);
+        expect_r(4'h0, 128'd0, 2'b00, 1'b1, 0);
+        timing_cmd_allow = 1'b0;
+        send_ar(4'h3, 32'h0000_8210, 8'd0, 3'd4, 2'b01, 1'b0);
+        if (!timing_cmd_valid)
+            $fatal(1, "timing command did not stall as requested");
+        held_timing_write = timing_cmd_write;
+        held_timing_addr = timing_cmd_addr;
+        held_timing_bytes = timing_cmd_bytes;
+        held_timing_tag = timing_cmd_tag;
+        send_aw(4'h5, 32'h0000_8220, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_w(128'h5555_5555_5555_5555_5555_5555_5555_5555,
+               16'hffff, 1'b1);
+        for (hold_check_cycle = 0; hold_check_cycle < 3;
+             hold_check_cycle = hold_check_cycle + 1) begin
+            if (!timing_cmd_valid ||
+                (timing_cmd_write !== held_timing_write) ||
+                (timing_cmd_addr !== held_timing_addr) ||
+                (timing_cmd_bytes !== held_timing_bytes) ||
+                (timing_cmd_tag !== held_timing_tag))
+                $fatal(1,
+                    "timing command payload changed under backpressure");
+            tick();
+        end
+        timing_cmd_allow = 1'b1;
+        expect_r(4'h3, 128'd0, 2'b00, 1'b1, 0);
+        expect_b(4'h5, 2'b00);
+
+        // A read snapshots data when its tagged timing completion arrives,
+        // not when AXI eventually drains it.  Complete an older read, then a
+        // younger overlapping write, before accepting either AXI response.
+        // The read must retain the old value while a later read sees the new
+        // committed value.
+        send_aw(4'h6, 32'h0000_8180, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_w(128'haaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa,
+               16'hffff, 1'b1);
+        expect_b(4'h6, 2'b00);
+
+        manual_timing_mode = 1'b1;
+        manual_timing_cmd_ready = 1'b0;
+        send_ar(4'h7, 32'h0000_8180, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_aw(4'h8, 32'h0000_8180, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_w(128'hbbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb,
+               16'hffff, 1'b1);
+
+        manual_read_tag = 0;
+        manual_write_tag = 0;
+        manual_timing_cmd_ready = 1'b1;
+        manual_guard = 0;
+        while ((dut.timing_owner_count_q < 2) &&
+               (manual_guard < 100)) begin
+            tick();
+            manual_guard = manual_guard + 1;
+        end
+        if (dut.timing_owner_count_q != 2)
+            $fatal(1,
+                "manual timing command timeout valid=%0d write=%0d owners=%0d",
+                timing_cmd_valid, timing_cmd_write,
+                dut.timing_owner_count_q);
+        manual_timing_cmd_ready = 1'b0;
+        for (manual_slot = 0; manual_slot < 4;
+             manual_slot = manual_slot + 1) begin
+            if (dut.read_valid_q[manual_slot] &&
+                dut.read_timing_submitted_q[manual_slot])
+                manual_read_tag = {1'b0, 5'd0, 2'(manual_slot)};
+            if (dut.write_valid_q[manual_slot] &&
+                dut.write_timing_submitted_q[manual_slot])
+                manual_write_tag = {1'b1, 5'd0, 2'(manual_slot)};
+        end
+        if (manual_read_tag[TIMING_TAG_WIDTH-1] ||
+            !manual_write_tag[TIMING_TAG_WIDTH-1])
+            $fatal(1, "manual timing tags did not encode direction");
+
+        pulse_manual_timing_response(manual_read_tag);
+        pulse_manual_timing_response(manual_write_tag);
+        expect_r(4'h7,
+            128'haaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa,
+            2'b00, 1'b1, 0);
+        expect_b(4'h8, 2'b00);
+        manual_timing_mode = 1'b0;
+        send_ar(4'h9, 32'h0000_8180, 8'd0, 3'd4, 2'b01, 1'b0);
+        expect_r(4'h9,
+            128'hbbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb,
+            2'b00, 1'b1, 0);
+
+        // AW is accepted independently.  W follows the oldest AW descriptor,
+        // and the complete four-beat burst is buffered before timing issue.
         send_aw(4'h9, 32'h0000_8000, 8'd3, 3'd4, 2'b01, 1'b0);
         send_w(128'h0011_2233_4455_6677_8899_aabb_ccdd_eeff,
                16'hffff, 1'b0);
@@ -485,6 +921,34 @@ module tb_mem_channel;
         send_w(128'hdead_beef_cafe_f00d_0bad_f00d_1234_5678,
                16'hffff, 1'b1);
         expect_b(4'h9, 2'b00);
+
+        // AW and W are separately ordered in AXI.  Buffer three complete
+        // writes before accepting any B response, then prove that responses
+        // and committed data retain AW order.
+        send_aw(4'h1, 32'h0000_8100, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_aw(4'h2, 32'h0000_8120, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_aw(4'h4, 32'h0000_8140, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_w(128'h1111_1111_1111_1111_1111_1111_1111_1111,
+               16'hffff, 1'b1);
+        send_w(128'h2222_2222_2222_2222_2222_2222_2222_2222,
+               16'hffff, 1'b1);
+        send_w(128'h4444_4444_4444_4444_4444_4444_4444_4444,
+               16'hffff, 1'b1);
+        expect_b(4'h1, 2'b00);
+        expect_b(4'h2, 2'b00);
+        expect_b(4'h4, 2'b00);
+        send_ar(4'h1, 32'h0000_8100, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_ar(4'h2, 32'h0000_8120, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_ar(4'h4, 32'h0000_8140, 8'd0, 3'd4, 2'b01, 1'b0);
+        expect_r(4'h1,
+            128'h1111_1111_1111_1111_1111_1111_1111_1111,
+            2'b00, 1'b1, 0);
+        expect_r(4'h2,
+            128'h2222_2222_2222_2222_2222_2222_2222_2222,
+            2'b00, 1'b1, 0);
+        expect_r(4'h4,
+            128'h4444_4444_4444_4444_4444_4444_4444_4444,
+            2'b00, 1'b1, 0);
 
         // Two AR descriptors queue while the first burst is still active.
         send_ar(4'h3, 32'h0000_8000, 8'd1, 3'd4, 2'b01, 1'b0);
@@ -514,6 +978,12 @@ module tb_mem_channel;
         send_w(128'h55, 16'hffff, 1'b1);
         expect_b(4'hc, 2'b10);
 
+        issue_magic_request(magic_latency);
+        if (magic_latency != 1)
+            $fatal(1,
+                "magic response latency was not one cycle: %0d",
+                magic_latency);
+
         // DDR3-1600 x64, BL8: 64-byte native burst.  At a 1 ns controller
         // clock, a closed-row read is ceil((tRCD + tCL + BL/2) * 1.25 ns)
         // = 33 ns after dispatch; command acceptance adds one controller
@@ -537,6 +1007,10 @@ module tb_mem_channel;
             $fatal(1,
                 "DDR3 native-burst scheduling mismatch: got=%0d expected=26",
                 ddr3_two_burst_latency);
+        issue_ddr3_coalesced_pair(ddr3_coalesced_pair_latency);
+        issue_ddr3_ordering_barrier();
+        issue_ddr3_read_gather();
+        issue_ddr3_write_gather();
 
         // GDDR6 x16, BL16: 32-byte native burst.  At a 1 ns controller
         // clock, these are exact ceil() conversions from the 0.66 ns DRAM
@@ -568,9 +1042,34 @@ module tb_mem_channel;
                 "HBM2 write recovery/row conflict was not charged: miss=%0d conflict=%0d",
                 hbm_write_miss_latency, hbm_write_conflict_latency);
 
-        $display("tb_mem_channel: PASS ddr3_ns=%0d/%0d/%0d/%0d gddr6_ns=%0d/%0d/%0d hbm2_ns=%0d/%0d",
+        if ((dut.perf_read_bursts_q == 0) ||
+            (dut.perf_write_bursts_q == 0) ||
+            (dut.perf_read_beats_requested_q !=
+             dut.perf_read_beats_returned_q))
+            $fatal(1,
+                "memory-channel counters inconsistent: reads=%0d writes=%0d requested_rbeats=%0d returned_rbeats=%0d",
+                dut.perf_read_bursts_q,
+                dut.perf_write_bursts_q,
+                dut.perf_read_beats_requested_q,
+                dut.perf_read_beats_returned_q);
+        $display(
+            "tb_mem_channel_perf: reads=%0d writes=%0d rbeats=%0d/%0d wbeats=%0d/%0d waits=%0d/%0d/%0d timing=%0d/%0d/%0d",
+            dut.perf_read_bursts_q,
+            dut.perf_write_bursts_q,
+            dut.perf_read_beats_requested_q,
+            dut.perf_read_beats_returned_q,
+            dut.perf_write_beats_requested_q,
+            dut.perf_write_beats_received_q,
+            dut.perf_read_address_wait_cycles_q,
+            dut.perf_write_address_wait_cycles_q,
+            dut.perf_write_data_wait_cycles_q,
+            dut.perf_read_timing_wait_cycles_q,
+            dut.perf_write_timing_wait_cycles_q,
+            dut.perf_timing_backend_wait_cycles_q);
+        $display("tb_mem_channel: PASS magic_cycles=%0d ddr3_ns=%0d/%0d/%0d/%0d coalesced_pair=%0d gddr6_ns=%0d/%0d/%0d hbm2_ns=%0d/%0d",
+            magic_latency,
             ddr3_miss_latency, ddr3_hit_latency, ddr3_conflict_latency,
-            ddr3_two_burst_latency,
+            ddr3_two_burst_latency, ddr3_coalesced_pair_latency,
             gddr_miss_latency, gddr_hit_latency,
             gddr_two_burst_latency, hbm_write_miss_latency,
             hbm_write_conflict_latency);

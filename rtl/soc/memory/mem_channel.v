@@ -5,14 +5,14 @@
 // The northbound boundary is an AXI4 slave, not the OpenRV64 internal memory
 // handshake.  AR, R, AW, W, and B remain independent; address descriptors are
 // queued; IDs and bursts are preserved; and response payloads remain stable
-// under backpressure.  One active read burst and one active write burst may
-// both have complete-burst commands outstanding to the timing backend.
-// Queued transactions are returned in acceptance order, which is legal AXI
-// ordering for all IDs.
+// under backpressure.  Accepted reads and complete buffered writes may all
+// have complete-burst commands outstanding to the timing backend.  Read and
+// write responses are returned in their respective address-acceptance order,
+// which is legal AXI ordering for all IDs.
 //
-// The southbound timing port is intentionally data-free.  A timing model
-// accepts one complete AXI burst, its byte count, and acknowledges when the
-// backing-memory access may begin returning or committing data.
+// The southbound timing port is intentionally data-free and tagged.  A timing
+// model accepts one complete AXI burst and may complete commands out of
+// acceptance order.  AXI response ordering remains local to this module.
 // openrv64_timing_ddr3,
 // openrv64_timing_ddr4, openrv64_timing_gddr6, and
 // openrv64_timing_hbm2 implement this contract and can be swapped without
@@ -28,6 +28,7 @@ module openrv64_mem_channel #(
     parameter integer MEM_BYTES = 16 * 1024 * 1024,
     parameter integer READ_QUEUE_DEPTH = 8,
     parameter integer WRITE_QUEUE_DEPTH = 8,
+    parameter integer TIMING_TAG_WIDTH = 8,
     parameter integer ZERO_INIT_WORDS = MEM_BYTES / (DATA_WIDTH / 8),
     parameter INIT_FILE = ""
 ) (
@@ -81,7 +82,9 @@ module openrv64_mem_channel #(
     output wire                      timing_cmd_write_o,
     output wire [ADDR_WIDTH-1:0]     timing_cmd_addr_o,
     output wire [15:0]               timing_cmd_bytes_o,
+    output wire [TIMING_TAG_WIDTH-1:0] timing_cmd_tag_o,
     input  wire                      timing_resp_valid_i,
+    input  wire [TIMING_TAG_WIDTH-1:0] timing_resp_tag_i,
     output wire                      timing_resp_ready_o
 );
 
@@ -94,6 +97,13 @@ module openrv64_mem_channel #(
         (READ_QUEUE_DEPTH > 1) ? $clog2(READ_QUEUE_DEPTH) : 1;
     localparam integer WRITE_PTR_WIDTH =
         (WRITE_QUEUE_DEPTH > 1) ? $clog2(WRITE_QUEUE_DEPTH) : 1;
+    localparam integer TIMING_OWNER_DEPTH =
+        READ_QUEUE_DEPTH + WRITE_QUEUE_DEPTH;
+    localparam integer TIMING_OWNER_COUNT_WIDTH =
+        $clog2(TIMING_OWNER_DEPTH + 1);
+    localparam integer MAX_BURST_BEATS = 256;
+    localparam integer WRITE_DATA_ENTRIES =
+        WRITE_QUEUE_DEPTH * MAX_BURST_BEATS;
     localparam [2:0] AXI_MAX_SIZE = 3'(DATA_BYTE_BITS);
     localparam [READ_PTR_WIDTH:0] READ_QUEUE_CAPACITY =
         (READ_PTR_WIDTH + 1)'(READ_QUEUE_DEPTH);
@@ -103,6 +113,8 @@ module openrv64_mem_channel #(
         (WRITE_PTR_WIDTH + 1)'(WRITE_QUEUE_DEPTH);
     localparam [WRITE_PTR_WIDTH-1:0] WRITE_LAST_PTR =
         WRITE_PTR_WIDTH'(WRITE_QUEUE_DEPTH - 1);
+    localparam [TIMING_OWNER_COUNT_WIDTH-1:0] TIMING_OWNER_CAPACITY =
+        TIMING_OWNER_COUNT_WIDTH'(TIMING_OWNER_DEPTH);
 
     localparam [1:0] AXI_RESP_OKAY = 2'b00;
     localparam [1:0] AXI_RESP_SLVERR = 2'b10;
@@ -119,6 +131,10 @@ module openrv64_mem_channel #(
     reg [2:0] read_size_fifo_q [0:READ_QUEUE_DEPTH-1];
     reg [1:0] read_burst_fifo_q [0:READ_QUEUE_DEPTH-1];
     reg [1:0] read_resp_fifo_q [0:READ_QUEUE_DEPTH-1];
+    reg read_valid_q [0:READ_QUEUE_DEPTH-1];
+    reg read_timing_submitted_q [0:READ_QUEUE_DEPTH-1];
+    reg read_timing_done_q [0:READ_QUEUE_DEPTH-1];
+    reg [7:0] read_beat_q [0:READ_QUEUE_DEPTH-1];
     reg [READ_PTR_WIDTH-1:0] read_head_q;
     reg [READ_PTR_WIDTH-1:0] read_tail_q;
     reg [READ_PTR_WIDTH:0] read_count_q;
@@ -129,34 +145,20 @@ module openrv64_mem_channel #(
     reg [2:0] write_size_fifo_q [0:WRITE_QUEUE_DEPTH-1];
     reg [1:0] write_burst_fifo_q [0:WRITE_QUEUE_DEPTH-1];
     reg [1:0] write_resp_fifo_q [0:WRITE_QUEUE_DEPTH-1];
+    reg write_valid_q [0:WRITE_QUEUE_DEPTH-1];
+    reg write_data_complete_q [0:WRITE_QUEUE_DEPTH-1];
+    reg write_timing_submitted_q [0:WRITE_QUEUE_DEPTH-1];
+    reg write_timing_done_q [0:WRITE_QUEUE_DEPTH-1];
+    reg [7:0] write_beat_q [0:WRITE_QUEUE_DEPTH-1];
     reg [WRITE_PTR_WIDTH-1:0] write_head_q;
     reg [WRITE_PTR_WIDTH-1:0] write_tail_q;
+    reg [WRITE_PTR_WIDTH-1:0] write_data_head_q;
     reg [WRITE_PTR_WIDTH:0] write_count_q;
 
-    reg read_active_q;
-    reg [ID_WIDTH-1:0] read_id_q;
-    reg [ADDR_WIDTH-1:0] read_addr_q;
-    reg [7:0] read_len_q;
-    reg [2:0] read_size_q;
-    reg [1:0] read_burst_q;
-    reg [7:0] read_beat_q;
-    reg [1:0] read_request_resp_q;
-    reg read_timing_done_q;
-
-    reg write_active_q;
-    reg [ID_WIDTH-1:0] write_id_q;
-    reg [ADDR_WIDTH-1:0] write_addr_q;
-    reg [7:0] write_len_q;
-    reg [2:0] write_size_q;
-    reg [1:0] write_burst_q;
-    reg [7:0] write_beat_q;
-    reg [1:0] write_request_resp_q;
-    reg write_timing_done_q;
-
-    reg write_data_valid_q;
-    reg [DATA_WIDTH-1:0] write_data_q;
-    reg [DATA_BYTES-1:0] write_strb_q;
-    reg write_last_q;
+    reg [DATA_WIDTH-1:0] write_data_q [0:WRITE_DATA_ENTRIES-1];
+    reg [DATA_BYTES-1:0] write_strb_q [0:WRITE_DATA_ENTRIES-1];
+    reg [DATA_WIDTH-1:0]
+        read_data_q [0:READ_QUEUE_DEPTH*MAX_BURST_BEATS-1];
 
     reg [ID_WIDTH-1:0] read_response_id_q;
     reg [DATA_WIDTH-1:0] read_response_data_q;
@@ -164,20 +166,49 @@ module openrv64_mem_channel #(
     reg read_response_last_q;
     reg read_response_valid_q;
 
-    reg [ID_WIDTH-1:0] write_response_id_q;
-    reg [1:0] write_response_resp_q;
-    reg write_response_valid_q;
-
-    reg read_timing_submitted_q;
-    reg write_timing_submitted_q;
-    reg timing_owner_fifo_q [0:1];
-    reg timing_owner_head_q;
-    reg timing_owner_tail_q;
-    reg [1:0] timing_owner_count_q;
+    reg [TIMING_OWNER_COUNT_WIDTH-1:0] timing_owner_count_q;
     reg prefer_write_q;
+    reg timing_hold_valid_q;
+    reg timing_hold_write_q;
+    reg [READ_PTR_WIDTH-1:0] timing_hold_read_slot_q;
+    reg [WRITE_PTR_WIDTH-1:0] timing_hold_write_slot_q;
+
+`ifndef SYNTHESIS
+    // Simulation performance counters.  A burst is one accepted AXI address
+    // transaction; beats are counted separately so width conversion remains
+    // visible.  These counters observe the fixture and do not affect protocol
+    // state.
+    reg [63:0] perf_read_bursts_q;
+    reg [63:0] perf_write_bursts_q;
+    reg [63:0] perf_read_beats_requested_q;
+    reg [63:0] perf_write_beats_requested_q;
+    reg [63:0] perf_read_beats_returned_q;
+    reg [63:0] perf_write_beats_received_q;
+    reg [63:0] perf_read_address_wait_cycles_q;
+    reg [63:0] perf_write_address_wait_cycles_q;
+    reg [63:0] perf_write_data_wait_cycles_q;
+    reg [63:0] perf_read_response_wait_cycles_q;
+    reg [63:0] perf_write_response_wait_cycles_q;
+    reg [63:0] perf_timing_backend_wait_cycles_q;
+    reg [63:0] perf_timing_owner_full_cycles_q;
+    reg [63:0] perf_read_timing_wait_cycles_q;
+    reg [63:0] perf_write_timing_wait_cycles_q;
+    reg [63:0] perf_timing_read_commands_q;
+    reg [63:0] perf_timing_write_commands_q;
+    reg [63:0] perf_max_read_queue_q;
+    reg [63:0] perf_max_write_queue_q;
+    reg [63:0] perf_max_timing_owners_q;
+`endif
 
     integer init_index;
-    integer write_byte;
+    integer reset_read_slot;
+    integer reset_write_slot;
+    integer read_scan_offset;
+    integer read_scan_slot;
+    integer write_scan_offset;
+    integer write_scan_slot;
+    integer commit_beat;
+    integer commit_byte;
 
     function [ADDR_WIDTH:0] transfer_bytes_of;
         input [2:0] size_value;
@@ -186,31 +217,76 @@ module openrv64_mem_channel #(
         end
     endfunction
 
-    function [ADDR_WIDTH-1:0] next_burst_address;
-        input [ADDR_WIDTH-1:0] current_address;
+    function [ADDR_WIDTH-1:0] burst_address_at;
+        input [ADDR_WIDTH-1:0] base_address;
         input [7:0] burst_len;
         input [2:0] burst_size;
         input [1:0] burst_type;
+        input [7:0] beat_index;
         reg [ADDR_WIDTH:0] beat_bytes;
         reg [ADDR_WIDTH:0] burst_bytes;
-        reg [ADDR_WIDTH:0] next_address;
+        reg [ADDR_WIDTH:0] byte_offset;
         reg [ADDR_WIDTH:0] wrap_base;
+        reg [ADDR_WIDTH:0] selected_address;
         begin
             beat_bytes = transfer_bytes_of(burst_size);
-            next_address = {1'b0, current_address} + beat_bytes;
+            burst_bytes = beat_bytes *
+                ({{(ADDR_WIDTH-8){1'b0}}, 1'b0, burst_len} + 1'b1);
+            byte_offset = beat_bytes *
+                {{(ADDR_WIDTH-8){1'b0}}, 1'b0, beat_index};
+            selected_address = {1'b0, base_address};
             if (burst_type == AXI_BURST_FIXED) begin
-                next_burst_address = current_address;
+                selected_address = {1'b0, base_address};
             end else if (burst_type == AXI_BURST_WRAP) begin
-                burst_bytes = beat_bytes *
-                    ({{(ADDR_WIDTH-8){1'b0}}, 1'b0, burst_len} + 1'b1);
-                wrap_base = {1'b0, current_address} & ~(burst_bytes - 1'b1);
-                if (next_address >= (wrap_base + burst_bytes))
-                    next_burst_address = wrap_base[ADDR_WIDTH-1:0];
-                else
-                    next_burst_address = next_address[ADDR_WIDTH-1:0];
+                wrap_base = {1'b0, base_address} &
+                    ~(burst_bytes - 1'b1);
+                byte_offset =
+                    ({1'b0, base_address} - wrap_base + byte_offset) %
+                    burst_bytes;
+                selected_address = wrap_base + byte_offset;
             end else begin
-                next_burst_address = next_address[ADDR_WIDTH-1:0];
+                selected_address =
+                    {1'b0, base_address} + byte_offset;
             end
+            burst_address_at = selected_address[ADDR_WIDTH-1:0];
+        end
+    endfunction
+
+    function integer write_data_index_of;
+        input [WRITE_PTR_WIDTH-1:0] slot;
+        input [7:0] beat;
+        begin
+            write_data_index_of =
+                (32'(slot) * MAX_BURST_BEATS) + 32'(beat);
+        end
+    endfunction
+
+    function integer read_data_index_of;
+        input [READ_PTR_WIDTH-1:0] slot;
+        input [7:0] beat;
+        begin
+            read_data_index_of =
+                (32'(slot) * MAX_BURST_BEATS) + 32'(beat);
+        end
+    endfunction
+
+    function [READ_PTR_WIDTH-1:0] next_read_ptr;
+        input [READ_PTR_WIDTH-1:0] ptr;
+        begin
+            if (ptr == READ_LAST_PTR)
+                next_read_ptr = {READ_PTR_WIDTH{1'b0}};
+            else
+                next_read_ptr = ptr + 1'b1;
+        end
+    endfunction
+
+    function [WRITE_PTR_WIDTH-1:0] next_write_ptr;
+        input [WRITE_PTR_WIDTH-1:0] ptr;
+        begin
+            if (ptr == WRITE_LAST_PTR)
+                next_write_ptr = {WRITE_PTR_WIDTH{1'b0}};
+            else
+                next_write_ptr = ptr + 1'b1;
         end
     endfunction
 
@@ -311,42 +387,96 @@ module openrv64_mem_channel #(
         s_axi_awaddr_i, s_axi_awlen_i, s_axi_awsize_i,
         s_axi_awburst_i, s_axi_awlock_i);
 
+    reg read_candidate_valid;
+    reg [READ_PTR_WIDTH-1:0] read_candidate_slot;
+    reg write_candidate_valid;
+    reg [WRITE_PTR_WIDTH-1:0] write_candidate_slot;
+    always @* begin
+        read_candidate_valid = 1'b0;
+        read_candidate_slot = {READ_PTR_WIDTH{1'b0}};
+        for (read_scan_offset = 0;
+             read_scan_offset < READ_QUEUE_DEPTH;
+             read_scan_offset = read_scan_offset + 1) begin
+            read_scan_slot = 32'(read_head_q) + read_scan_offset;
+            if (read_scan_slot >= READ_QUEUE_DEPTH)
+                read_scan_slot = read_scan_slot - READ_QUEUE_DEPTH;
+            if (!read_candidate_valid &&
+                read_valid_q[read_scan_slot] &&
+                !read_timing_submitted_q[read_scan_slot] &&
+                !read_timing_done_q[read_scan_slot] &&
+                (read_resp_fifo_q[read_scan_slot] == AXI_RESP_OKAY)) begin
+                read_candidate_valid = 1'b1;
+                read_candidate_slot = READ_PTR_WIDTH'(read_scan_slot);
+            end
+        end
+
+        write_candidate_valid = 1'b0;
+        write_candidate_slot = {WRITE_PTR_WIDTH{1'b0}};
+        for (write_scan_offset = 0;
+             write_scan_offset < WRITE_QUEUE_DEPTH;
+             write_scan_offset = write_scan_offset + 1) begin
+            write_scan_slot = 32'(write_head_q) + write_scan_offset;
+            if (write_scan_slot >= WRITE_QUEUE_DEPTH)
+                write_scan_slot = write_scan_slot - WRITE_QUEUE_DEPTH;
+            if (!write_candidate_valid &&
+                write_valid_q[write_scan_slot] &&
+                write_data_complete_q[write_scan_slot] &&
+                !write_timing_submitted_q[write_scan_slot] &&
+                !write_timing_done_q[write_scan_slot] &&
+                (write_resp_fifo_q[write_scan_slot] ==
+                 AXI_RESP_OKAY)) begin
+                write_candidate_valid = 1'b1;
+                write_candidate_slot =
+                    WRITE_PTR_WIDTH'(write_scan_slot);
+            end
+        end
+    end
+
     wire read_address_fire = s_axi_arvalid_i && s_axi_arready_o;
     wire write_address_fire = s_axi_awvalid_i && s_axi_awready_o;
     wire write_data_fire = s_axi_wvalid_i && s_axi_wready_o;
     wire read_response_fire = s_axi_rvalid_o && s_axi_rready_i;
     wire write_response_fire = s_axi_bvalid_o && s_axi_bready_i;
 
-    wire activate_read = !read_active_q &&
-                         (read_count_q != 0);
-    wire activate_write = !write_active_q && !write_response_valid_q &&
-                          (write_count_q != 0);
-
-    wire read_command_pending = read_active_q &&
-        !read_response_valid_q &&
-        !read_timing_submitted_q &&
-        !read_timing_done_q &&
-        (read_request_resp_q == AXI_RESP_OKAY);
-    wire write_command_pending = write_active_q && write_data_valid_q &&
-        !write_timing_submitted_q &&
-        !write_timing_done_q &&
-        (write_request_resp_q == AXI_RESP_OKAY);
-    wire select_write_command = write_command_pending &&
-        (!read_command_pending || prefer_write_q);
+    wire arbitrate_write_command = write_candidate_valid &&
+        (!read_candidate_valid || prefer_write_q);
+    wire timing_selected_write = timing_hold_valid_q ?
+        timing_hold_write_q : arbitrate_write_command;
+    wire [READ_PTR_WIDTH-1:0] timing_selected_read_slot =
+        timing_hold_valid_q ?
+        timing_hold_read_slot_q : read_candidate_slot;
+    wire [WRITE_PTR_WIDTH-1:0] timing_selected_write_slot =
+        timing_hold_valid_q ?
+        timing_hold_write_slot_q : write_candidate_slot;
     wire timing_command_fire = timing_cmd_valid_o && timing_cmd_ready_i;
     wire timing_response_fire = timing_resp_valid_i &&
                                 timing_resp_ready_o;
     wire timing_response_owner_write =
-        timing_owner_fifo_q[timing_owner_head_q];
-    wire current_write_last = write_last_q ||
-                              (write_beat_q == write_len_q);
+        timing_resp_tag_i[TIMING_TAG_WIDTH-1];
+    wire [READ_PTR_WIDTH-1:0] timing_response_read_slot =
+        READ_PTR_WIDTH'(timing_resp_tag_i);
+    wire [WRITE_PTR_WIDTH-1:0] timing_response_write_slot =
+        WRITE_PTR_WIDTH'(timing_resp_tag_i);
+
+    wire [ADDR_WIDTH-1:0] write_data_address = burst_address_at(
+        write_addr_fifo_q[write_data_head_q],
+        write_len_fifo_q[write_data_head_q],
+        write_size_fifo_q[write_data_head_q],
+        write_burst_fifo_q[write_data_head_q],
+        write_beat_q[write_data_head_q]);
+    wire write_data_expected_last =
+        write_beat_q[write_data_head_q] ==
+        write_len_fifo_q[write_data_head_q];
+    wire write_data_finishes =
+        s_axi_wlast_i || write_data_expected_last;
 
     assign s_axi_arready_o = rst_ni &&
         (read_count_q < READ_QUEUE_CAPACITY);
     assign s_axi_awready_o = rst_ni &&
         (write_count_q < WRITE_QUEUE_CAPACITY);
-    assign s_axi_wready_o = rst_ni && write_active_q &&
-        !write_data_valid_q && !write_response_valid_q;
+    assign s_axi_wready_o = rst_ni && (write_count_q != 0) &&
+        write_valid_q[write_data_head_q] &&
+        !write_data_complete_q[write_data_head_q];
 
     assign s_axi_rid_o = read_response_id_q;
     assign s_axi_rdata_o = read_response_data_q;
@@ -354,21 +484,35 @@ module openrv64_mem_channel #(
     assign s_axi_rlast_o = read_response_last_q;
     assign s_axi_rvalid_o = read_response_valid_q;
 
-    assign s_axi_bid_o = write_response_id_q;
-    assign s_axi_bresp_o = write_response_resp_q;
-    assign s_axi_bvalid_o = write_response_valid_q;
+    assign s_axi_bid_o = write_id_fifo_q[write_head_q];
+    assign s_axi_bresp_o = write_resp_fifo_q[write_head_q];
+    assign s_axi_bvalid_o = rst_ni && (write_count_q != 0) &&
+        write_valid_q[write_head_q] &&
+        write_data_complete_q[write_head_q] &&
+        ((write_resp_fifo_q[write_head_q] != AXI_RESP_OKAY) ||
+         write_timing_done_q[write_head_q]);
 
-    assign timing_cmd_valid_o = rst_ni && (timing_owner_count_q < 2) &&
-        (read_command_pending || write_command_pending);
-    assign timing_cmd_write_o = select_write_command;
-    assign timing_cmd_addr_o = select_write_command ? write_addr_q :
-                                                      read_addr_q;
+    assign timing_cmd_valid_o = rst_ni &&
+        (timing_owner_count_q < TIMING_OWNER_CAPACITY) &&
+        (timing_hold_valid_q ||
+         read_candidate_valid || write_candidate_valid);
+    assign timing_cmd_write_o = timing_selected_write;
+    assign timing_cmd_addr_o = timing_selected_write ?
+        write_addr_fifo_q[timing_selected_write_slot] :
+        read_addr_fifo_q[timing_selected_read_slot];
     wire [15:0] read_burst_bytes =
-        ({8'd0, read_len_q} + 16'd1) << read_size_q;
+        ({8'd0, read_len_fifo_q[timing_selected_read_slot]} + 16'd1) <<
+        read_size_fifo_q[timing_selected_read_slot];
     wire [15:0] write_burst_bytes =
-        ({8'd0, write_len_q} + 16'd1) << write_size_q;
-    assign timing_cmd_bytes_o = select_write_command ?
+        ({8'd0, write_len_fifo_q[timing_selected_write_slot]} + 16'd1) <<
+        write_size_fifo_q[timing_selected_write_slot];
+    assign timing_cmd_bytes_o = timing_selected_write ?
         write_burst_bytes : read_burst_bytes;
+    assign timing_cmd_tag_o = timing_selected_write ?
+        {1'b1,
+         (TIMING_TAG_WIDTH-1)'(timing_selected_write_slot)} :
+        {1'b0,
+         (TIMING_TAG_WIDTH-1)'(timing_selected_read_slot)};
     assign timing_resp_ready_o = (timing_owner_count_q != 0);
 
     // These AXI attributes do not alter behavioral storage or timing yet.
@@ -389,6 +533,10 @@ module openrv64_mem_channel #(
             $fatal(1, "memory-channel base must be data-beat aligned");
         if ((READ_QUEUE_DEPTH < 1) || (WRITE_QUEUE_DEPTH < 1))
             $fatal(1, "memory-channel queue depths must be positive");
+        if ((TIMING_TAG_WIDTH < 2) ||
+            ((1 << (TIMING_TAG_WIDTH - 1)) < READ_QUEUE_DEPTH) ||
+            ((1 << (TIMING_TAG_WIDTH - 1)) < WRITE_QUEUE_DEPTH))
+            $fatal(1, "memory-channel timing tag cannot encode queue slots");
         if ((ZERO_INIT_WORDS < 0) || (ZERO_INIT_WORDS > WORD_COUNT))
             $fatal(1, "memory-channel zero-init count exceeds capacity");
 
@@ -399,6 +547,101 @@ module openrv64_mem_channel #(
             $readmemh(INIT_FILE, memory_q);
     end
 
+`ifndef SYNTHESIS
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            perf_read_bursts_q <= 64'd0;
+            perf_write_bursts_q <= 64'd0;
+            perf_read_beats_requested_q <= 64'd0;
+            perf_write_beats_requested_q <= 64'd0;
+            perf_read_beats_returned_q <= 64'd0;
+            perf_write_beats_received_q <= 64'd0;
+            perf_read_address_wait_cycles_q <= 64'd0;
+            perf_write_address_wait_cycles_q <= 64'd0;
+            perf_write_data_wait_cycles_q <= 64'd0;
+            perf_read_response_wait_cycles_q <= 64'd0;
+            perf_write_response_wait_cycles_q <= 64'd0;
+            perf_timing_backend_wait_cycles_q <= 64'd0;
+            perf_timing_owner_full_cycles_q <= 64'd0;
+            perf_read_timing_wait_cycles_q <= 64'd0;
+            perf_write_timing_wait_cycles_q <= 64'd0;
+            perf_timing_read_commands_q <= 64'd0;
+            perf_timing_write_commands_q <= 64'd0;
+            perf_max_read_queue_q <= 64'd0;
+            perf_max_write_queue_q <= 64'd0;
+            perf_max_timing_owners_q <= 64'd0;
+        end else begin
+            if (read_address_fire) begin
+                perf_read_bursts_q <= perf_read_bursts_q + 64'd1;
+                perf_read_beats_requested_q <=
+                    perf_read_beats_requested_q +
+                    {56'd0, s_axi_arlen_i} + 64'd1;
+            end
+            if (write_address_fire) begin
+                perf_write_bursts_q <= perf_write_bursts_q + 64'd1;
+                perf_write_beats_requested_q <=
+                    perf_write_beats_requested_q +
+                    {56'd0, s_axi_awlen_i} + 64'd1;
+            end
+            if (read_response_fire)
+                perf_read_beats_returned_q <=
+                    perf_read_beats_returned_q + 64'd1;
+            if (write_data_fire)
+                perf_write_beats_received_q <=
+                    perf_write_beats_received_q + 64'd1;
+
+            if (s_axi_arvalid_i && !s_axi_arready_o)
+                perf_read_address_wait_cycles_q <=
+                    perf_read_address_wait_cycles_q + 64'd1;
+            if (s_axi_awvalid_i && !s_axi_awready_o)
+                perf_write_address_wait_cycles_q <=
+                    perf_write_address_wait_cycles_q + 64'd1;
+            if (s_axi_wvalid_i && !s_axi_wready_o)
+                perf_write_data_wait_cycles_q <=
+                    perf_write_data_wait_cycles_q + 64'd1;
+            if (s_axi_rvalid_o && !s_axi_rready_i)
+                perf_read_response_wait_cycles_q <=
+                    perf_read_response_wait_cycles_q + 64'd1;
+            if (s_axi_bvalid_o && !s_axi_bready_i)
+                perf_write_response_wait_cycles_q <=
+                    perf_write_response_wait_cycles_q + 64'd1;
+
+            if (timing_cmd_valid_o && !timing_cmd_ready_i)
+                perf_timing_backend_wait_cycles_q <=
+                    perf_timing_backend_wait_cycles_q + 64'd1;
+            if ((timing_owner_count_q == TIMING_OWNER_CAPACITY) &&
+                (timing_hold_valid_q ||
+                 read_candidate_valid || write_candidate_valid))
+                perf_timing_owner_full_cycles_q <=
+                    perf_timing_owner_full_cycles_q + 64'd1;
+            if (read_candidate_valid &&
+                !(timing_command_fire && !timing_selected_write))
+                perf_read_timing_wait_cycles_q <=
+                    perf_read_timing_wait_cycles_q + 64'd1;
+            if (write_candidate_valid &&
+                !(timing_command_fire && timing_selected_write))
+                perf_write_timing_wait_cycles_q <=
+                    perf_write_timing_wait_cycles_q + 64'd1;
+
+            if (timing_command_fire) begin
+                if (timing_selected_write)
+                    perf_timing_write_commands_q <=
+                        perf_timing_write_commands_q + 64'd1;
+                else
+                    perf_timing_read_commands_q <=
+                        perf_timing_read_commands_q + 64'd1;
+            end
+
+            if (read_count_q > perf_max_read_queue_q)
+                perf_max_read_queue_q <= read_count_q;
+            if (write_count_q > perf_max_write_queue_q)
+                perf_max_write_queue_q <= write_count_q;
+            if (timing_owner_count_q > perf_max_timing_owners_q)
+                perf_max_timing_owners_q <= timing_owner_count_q;
+        end
+    end
+`endif
+
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             read_head_q <= {READ_PTR_WIDTH{1'b0}};
@@ -406,49 +649,39 @@ module openrv64_mem_channel #(
             read_count_q <= {(READ_PTR_WIDTH+1){1'b0}};
             write_head_q <= {WRITE_PTR_WIDTH{1'b0}};
             write_tail_q <= {WRITE_PTR_WIDTH{1'b0}};
+            write_data_head_q <= {WRITE_PTR_WIDTH{1'b0}};
             write_count_q <= {(WRITE_PTR_WIDTH+1){1'b0}};
-
-            read_active_q <= 1'b0;
-            read_id_q <= {ID_WIDTH{1'b0}};
-            read_addr_q <= {ADDR_WIDTH{1'b0}};
-            read_len_q <= 8'd0;
-            read_size_q <= 3'd0;
-            read_burst_q <= AXI_BURST_INCR;
-            read_beat_q <= 8'd0;
-            read_request_resp_q <= AXI_RESP_OKAY;
-            read_timing_done_q <= 1'b0;
-            read_timing_submitted_q <= 1'b0;
-
-            write_active_q <= 1'b0;
-            write_id_q <= {ID_WIDTH{1'b0}};
-            write_addr_q <= {ADDR_WIDTH{1'b0}};
-            write_len_q <= 8'd0;
-            write_size_q <= 3'd0;
-            write_burst_q <= AXI_BURST_INCR;
-            write_beat_q <= 8'd0;
-            write_request_resp_q <= AXI_RESP_OKAY;
-            write_timing_done_q <= 1'b0;
-            write_timing_submitted_q <= 1'b0;
-            write_data_valid_q <= 1'b0;
-            write_data_q <= {DATA_WIDTH{1'b0}};
-            write_strb_q <= {DATA_BYTES{1'b0}};
-            write_last_q <= 1'b0;
 
             read_response_id_q <= {ID_WIDTH{1'b0}};
             read_response_data_q <= {DATA_WIDTH{1'b0}};
             read_response_resp_q <= AXI_RESP_OKAY;
             read_response_last_q <= 1'b0;
             read_response_valid_q <= 1'b0;
-            write_response_id_q <= {ID_WIDTH{1'b0}};
-            write_response_resp_q <= AXI_RESP_OKAY;
-            write_response_valid_q <= 1'b0;
 
-            timing_owner_fifo_q[0] <= 1'b0;
-            timing_owner_fifo_q[1] <= 1'b0;
-            timing_owner_head_q <= 1'b0;
-            timing_owner_tail_q <= 1'b0;
-            timing_owner_count_q <= 2'd0;
+            for (reset_read_slot = 0;
+                 reset_read_slot < READ_QUEUE_DEPTH;
+                 reset_read_slot = reset_read_slot + 1) begin
+                read_valid_q[reset_read_slot] <= 1'b0;
+                read_timing_submitted_q[reset_read_slot] <= 1'b0;
+                read_timing_done_q[reset_read_slot] <= 1'b0;
+                read_beat_q[reset_read_slot] <= 8'd0;
+            end
+            for (reset_write_slot = 0;
+                 reset_write_slot < WRITE_QUEUE_DEPTH;
+                 reset_write_slot = reset_write_slot + 1) begin
+                write_valid_q[reset_write_slot] <= 1'b0;
+                write_data_complete_q[reset_write_slot] <= 1'b0;
+                write_timing_submitted_q[reset_write_slot] <= 1'b0;
+                write_timing_done_q[reset_write_slot] <= 1'b0;
+                write_beat_q[reset_write_slot] <= 8'd0;
+            end
+            timing_owner_count_q <=
+                {TIMING_OWNER_COUNT_WIDTH{1'b0}};
             prefer_write_q <= 1'b0;
+            timing_hold_valid_q <= 1'b0;
+            timing_hold_write_q <= 1'b0;
+            timing_hold_read_slot_q <= {READ_PTR_WIDTH{1'b0}};
+            timing_hold_write_slot_q <= {WRITE_PTR_WIDTH{1'b0}};
         end else begin
             if (read_address_fire) begin
                 read_id_fifo_q[read_tail_q] <= s_axi_arid_i;
@@ -457,30 +690,15 @@ module openrv64_mem_channel #(
                 read_size_fifo_q[read_tail_q] <= s_axi_arsize_i;
                 read_burst_fifo_q[read_tail_q] <= s_axi_arburst_i;
                 read_resp_fifo_q[read_tail_q] <= incoming_read_resp;
-                if (read_tail_q == READ_LAST_PTR)
-                    read_tail_q <= {READ_PTR_WIDTH{1'b0}};
-                else
-                    read_tail_q <= read_tail_q + 1'b1;
+                read_valid_q[read_tail_q] <= 1'b1;
+                read_timing_submitted_q[read_tail_q] <= 1'b0;
+                read_timing_done_q[read_tail_q] <= 1'b0;
+                read_beat_q[read_tail_q] <= 8'd0;
+                read_tail_q <= next_read_ptr(read_tail_q);
             end
 
-            if (activate_read) begin
-                read_active_q <= 1'b1;
-                read_id_q <= read_id_fifo_q[read_head_q];
-                read_addr_q <= read_addr_fifo_q[read_head_q];
-                read_len_q <= read_len_fifo_q[read_head_q];
-                read_size_q <= read_size_fifo_q[read_head_q];
-                read_burst_q <= read_burst_fifo_q[read_head_q];
-                read_beat_q <= 8'd0;
-                read_request_resp_q <= read_resp_fifo_q[read_head_q];
-                read_timing_done_q <= 1'b0;
-                read_timing_submitted_q <= 1'b0;
-                if (read_head_q == READ_LAST_PTR)
-                    read_head_q <= {READ_PTR_WIDTH{1'b0}};
-                else
-                    read_head_q <= read_head_q + 1'b1;
-            end
-
-            case ({read_address_fire, activate_read})
+            case ({read_address_fire,
+                   read_response_fire && read_response_last_q})
                 2'b10: read_count_q <= read_count_q + 1'b1;
                 2'b01: read_count_q <= read_count_q - 1'b1;
                 default: begin end
@@ -493,106 +711,171 @@ module openrv64_mem_channel #(
                 write_size_fifo_q[write_tail_q] <= s_axi_awsize_i;
                 write_burst_fifo_q[write_tail_q] <= s_axi_awburst_i;
                 write_resp_fifo_q[write_tail_q] <= incoming_write_resp;
-                if (write_tail_q == WRITE_LAST_PTR)
-                    write_tail_q <= {WRITE_PTR_WIDTH{1'b0}};
-                else
-                    write_tail_q <= write_tail_q + 1'b1;
+                write_valid_q[write_tail_q] <= 1'b1;
+                write_data_complete_q[write_tail_q] <= 1'b0;
+                write_timing_submitted_q[write_tail_q] <= 1'b0;
+                write_timing_done_q[write_tail_q] <= 1'b0;
+                write_beat_q[write_tail_q] <= 8'd0;
+                write_tail_q <= next_write_ptr(write_tail_q);
             end
 
-            if (activate_write) begin
-                write_active_q <= 1'b1;
-                write_id_q <= write_id_fifo_q[write_head_q];
-                write_addr_q <= write_addr_fifo_q[write_head_q];
-                write_len_q <= write_len_fifo_q[write_head_q];
-                write_size_q <= write_size_fifo_q[write_head_q];
-                write_burst_q <= write_burst_fifo_q[write_head_q];
-                write_beat_q <= 8'd0;
-                write_request_resp_q <= write_resp_fifo_q[write_head_q];
-                write_timing_done_q <= 1'b0;
-                write_timing_submitted_q <= 1'b0;
-                if (write_head_q == WRITE_LAST_PTR)
-                    write_head_q <= {WRITE_PTR_WIDTH{1'b0}};
-                else
-                    write_head_q <= write_head_q + 1'b1;
-            end
-
-            case ({write_address_fire, activate_write})
+            case ({write_address_fire, write_response_fire})
                 2'b10: write_count_q <= write_count_q + 1'b1;
                 2'b01: write_count_q <= write_count_q - 1'b1;
                 default: begin end
             endcase
 
             if (write_data_fire) begin
-                write_data_valid_q <= 1'b1;
-                write_data_q <= s_axi_wdata_i;
-                write_strb_q <= s_axi_wstrb_i;
-                write_last_q <= s_axi_wlast_i;
-                if ((s_axi_wlast_i != (write_beat_q == write_len_q)) ||
+                write_data_q[write_data_index_of(
+                    write_data_head_q,
+                    write_beat_q[write_data_head_q])] <= s_axi_wdata_i;
+                write_strb_q[write_data_index_of(
+                    write_data_head_q,
+                    write_beat_q[write_data_head_q])] <= s_axi_wstrb_i;
+                if (((s_axi_wlast_i != write_data_expected_last) ||
                     |(s_axi_wstrb_i &
-                      ~transfer_lane_mask(write_addr_q, write_size_q)))
-                    write_request_resp_q <= AXI_RESP_SLVERR;
+                      ~transfer_lane_mask(
+                          write_data_address,
+                          write_size_fifo_q[write_data_head_q]))) &&
+                    (write_resp_fifo_q[write_data_head_q] ==
+                     AXI_RESP_OKAY))
+                    write_resp_fifo_q[write_data_head_q] <=
+                        AXI_RESP_SLVERR;
+                if (write_data_finishes) begin
+                    write_data_complete_q[write_data_head_q] <= 1'b1;
+                    write_data_head_q <=
+                        next_write_ptr(write_data_head_q);
+                end else begin
+                    write_beat_q[write_data_head_q] <=
+                        write_beat_q[write_data_head_q] + 1'b1;
+                end
             end
 
             if (read_response_fire) begin
                 read_response_valid_q <= 1'b0;
                 if (read_response_last_q) begin
-                    read_active_q <= 1'b0;
+                    read_valid_q[read_head_q] <= 1'b0;
+                    read_timing_submitted_q[read_head_q] <= 1'b0;
+                    read_timing_done_q[read_head_q] <= 1'b0;
+                    read_head_q <= next_read_ptr(read_head_q);
                 end else begin
-                    read_beat_q <= read_beat_q + 1'b1;
-                    read_addr_q <= next_burst_address(
-                        read_addr_q, read_len_q, read_size_q,
-                        read_burst_q);
+                    read_beat_q[read_head_q] <=
+                        read_beat_q[read_head_q] + 1'b1;
                 end
             end
 
-            if (write_response_fire)
-                write_response_valid_q <= 1'b0;
+            if (write_response_fire) begin
+                write_valid_q[write_head_q] <= 1'b0;
+                write_data_complete_q[write_head_q] <= 1'b0;
+                write_timing_submitted_q[write_head_q] <= 1'b0;
+                write_timing_done_q[write_head_q] <= 1'b0;
+                write_head_q <= next_write_ptr(write_head_q);
+            end
+
+            // Lock the arbiter selection whenever the backend stalls.  The
+            // timing command is a ready/valid channel, so write/address/bytes
+            // must remain stable until the selected command is accepted.
+            if (!timing_hold_valid_q && timing_cmd_valid_o &&
+                !timing_cmd_ready_i) begin
+                timing_hold_valid_q <= 1'b1;
+                timing_hold_write_q <= arbitrate_write_command;
+                timing_hold_read_slot_q <= read_candidate_slot;
+                timing_hold_write_slot_q <= write_candidate_slot;
+            end
 
             if (timing_command_fire) begin
-                timing_owner_fifo_q[timing_owner_tail_q] <=
-                    select_write_command;
-                timing_owner_tail_q <= !timing_owner_tail_q;
-                if (select_write_command)
-                    write_timing_submitted_q <= 1'b1;
-                else
-                    read_timing_submitted_q <= 1'b1;
-                prefer_write_q <= !select_write_command;
+                if (timing_hold_valid_q)
+                    timing_hold_valid_q <= 1'b0;
+                if (timing_selected_write) begin
+                    write_timing_submitted_q[
+                        timing_selected_write_slot] <= 1'b1;
+                end else begin
+                    read_timing_submitted_q[
+                        timing_selected_read_slot] <= 1'b1;
+                end
+                prefer_write_q <= !timing_selected_write;
             end
 
             if (timing_response_fire) begin
-                timing_owner_head_q <= !timing_owner_head_q;
                 if (timing_response_owner_write) begin
-                    write_timing_submitted_q <= 1'b0;
-                    write_timing_done_q <= 1'b1;
-                    for (write_byte = 0; write_byte < DATA_BYTES;
-                         write_byte = write_byte + 1) begin
-                        if (write_strb_q[write_byte])
-                            memory_q[memory_index_of(write_addr_q)]
-                                    [8*write_byte +: 8] <=
-                                write_data_q[8*write_byte +: 8];
-                    end
-                    write_data_valid_q <= 1'b0;
-                    if (current_write_last) begin
-                        write_active_q <= 1'b0;
-                        write_timing_done_q <= 1'b0;
-                        write_response_id_q <= write_id_q;
-                        write_response_resp_q <= write_request_resp_q;
-                        write_response_valid_q <= 1'b1;
-                    end else begin
-                        write_beat_q <= write_beat_q + 1'b1;
-                        write_addr_q <= next_burst_address(
-                            write_addr_q, write_len_q, write_size_q,
-                            write_burst_q);
+                    if ((32'(timing_response_write_slot) >=
+                         WRITE_QUEUE_DEPTH) ||
+                        !write_valid_q[timing_response_write_slot] ||
+                        !write_timing_submitted_q[
+                            timing_response_write_slot])
+                        $fatal(1,
+                            "memory-channel invalid write timing tag %0d",
+                            timing_resp_tag_i);
+                    write_timing_submitted_q[
+                        timing_response_write_slot] <= 1'b0;
+                    write_timing_done_q[
+                        timing_response_write_slot] <= 1'b1;
+                    for (commit_beat = 0;
+                         commit_beat < MAX_BURST_BEATS;
+                        commit_beat = commit_beat + 1) begin
+                        if (commit_beat <= write_len_fifo_q[
+                            timing_response_write_slot]) begin
+                            for (commit_byte = 0;
+                                 commit_byte < DATA_BYTES;
+                                 commit_byte = commit_byte + 1) begin
+                                if (write_strb_q[write_data_index_of(
+                                        timing_response_write_slot,
+                                        8'(commit_beat))][commit_byte])
+                                    memory_q[memory_index_of(
+                                        burst_address_at(
+                                            write_addr_fifo_q[
+                                                timing_response_write_slot],
+                                            write_len_fifo_q[
+                                                timing_response_write_slot],
+                                            write_size_fifo_q[
+                                                timing_response_write_slot],
+                                            write_burst_fifo_q[
+                                                timing_response_write_slot],
+                                            8'(commit_beat)))]
+                                        [8*commit_byte +: 8] <=
+                                        write_data_q[write_data_index_of(
+                                            timing_response_write_slot,
+                                            8'(commit_beat))]
+                                                    [8*commit_byte +: 8];
+                            end
+                        end
                     end
                 end else begin
-                    read_timing_submitted_q <= 1'b0;
-                    read_timing_done_q <= 1'b1;
-                    read_response_id_q <= read_id_q;
-                    read_response_data_q <=
-                        memory_q[memory_index_of(read_addr_q)];
-                    read_response_resp_q <= AXI_RESP_OKAY;
-                    read_response_last_q <= (read_beat_q == read_len_q);
-                    read_response_valid_q <= 1'b1;
+                    if ((32'(timing_response_read_slot) >=
+                         READ_QUEUE_DEPTH) ||
+                        !read_valid_q[timing_response_read_slot] ||
+                        !read_timing_submitted_q[
+                            timing_response_read_slot])
+                        $fatal(1,
+                            "memory-channel invalid read timing tag %0d",
+                            timing_resp_tag_i);
+                    read_timing_submitted_q[
+                        timing_response_read_slot] <= 1'b0;
+                    read_timing_done_q[
+                        timing_response_read_slot] <= 1'b1;
+                    // Snapshot the completed read now.  AXI may drain this
+                    // slot much later, after younger nonconflicting writes
+                    // have committed.
+                    for (commit_beat = 0;
+                         commit_beat < MAX_BURST_BEATS;
+                         commit_beat = commit_beat + 1) begin
+                        if (commit_beat <= read_len_fifo_q[
+                            timing_response_read_slot])
+                            read_data_q[read_data_index_of(
+                                timing_response_read_slot,
+                                8'(commit_beat))] <=
+                                memory_q[memory_index_of(
+                                    burst_address_at(
+                                        read_addr_fifo_q[
+                                            timing_response_read_slot],
+                                        read_len_fifo_q[
+                                            timing_response_read_slot],
+                                        read_size_fifo_q[
+                                            timing_response_read_slot],
+                                        read_burst_fifo_q[
+                                            timing_response_read_slot],
+                                        8'(commit_beat)))];
+                    end
                 end
             end
 
@@ -604,70 +887,28 @@ module openrv64_mem_channel #(
                 default: begin end
             endcase
 
-            // DRAM schedules the complete burst once.  After that completion,
-            // AXI data beats drain at the controller interface rate without
-            // charging row/column timing again for each bus-width fragment.
-            if (read_active_q && read_timing_done_q &&
-                !read_response_valid_q &&
-                (read_request_resp_q == AXI_RESP_OKAY)) begin
-                read_response_id_q <= read_id_q;
-                read_response_data_q <=
-                    memory_q[memory_index_of(read_addr_q)];
-                read_response_resp_q <= AXI_RESP_OKAY;
-                read_response_last_q <= (read_beat_q == read_len_q);
+            // DRAM schedules each complete burst once.  A completed head read
+            // then drains AXI beats in address-acceptance order without
+            // charging row/column timing again for each controller beat.
+            // Decode errors use the same drain path but return zero data and
+            // do not consume a timing queue entry.
+            if (!read_response_valid_q && (read_count_q != 0) &&
+                read_valid_q[read_head_q] &&
+                ((read_resp_fifo_q[read_head_q] != AXI_RESP_OKAY) ||
+                 read_timing_done_q[read_head_q])) begin
+                read_response_id_q <= read_id_fifo_q[read_head_q];
+                if (read_resp_fifo_q[read_head_q] == AXI_RESP_OKAY)
+                    read_response_data_q <= read_data_q[
+                        read_data_index_of(
+                            read_head_q, read_beat_q[read_head_q])];
+                else
+                    read_response_data_q <= {DATA_WIDTH{1'b0}};
+                read_response_resp_q <=
+                    read_resp_fifo_q[read_head_q];
+                read_response_last_q <=
+                    read_beat_q[read_head_q] ==
+                    read_len_fifo_q[read_head_q];
                 read_response_valid_q <= 1'b1;
-            end
-
-            if (write_active_q && write_timing_done_q &&
-                write_data_valid_q &&
-                (write_request_resp_q == AXI_RESP_OKAY)) begin
-                for (write_byte = 0; write_byte < DATA_BYTES;
-                     write_byte = write_byte + 1) begin
-                    if (write_strb_q[write_byte])
-                        memory_q[memory_index_of(write_addr_q)]
-                                [8*write_byte +: 8] <=
-                            write_data_q[8*write_byte +: 8];
-                end
-                write_data_valid_q <= 1'b0;
-                if (current_write_last) begin
-                    write_active_q <= 1'b0;
-                    write_timing_done_q <= 1'b0;
-                    write_response_id_q <= write_id_q;
-                    write_response_resp_q <= write_request_resp_q;
-                    write_response_valid_q <= 1'b1;
-                end else begin
-                    write_beat_q <= write_beat_q + 1'b1;
-                    write_addr_q <= next_burst_address(
-                        write_addr_q, write_len_q, write_size_q,
-                        write_burst_q);
-                end
-            end
-
-            // Decode/protocol errors still obey AXI burst cardinality, but do
-            // not consume DRAM timing or touch the backing store.
-            if (read_active_q && !read_response_valid_q &&
-                (read_request_resp_q != AXI_RESP_OKAY)) begin
-                read_response_id_q <= read_id_q;
-                read_response_data_q <= {DATA_WIDTH{1'b0}};
-                read_response_resp_q <= read_request_resp_q;
-                read_response_last_q <= (read_beat_q == read_len_q);
-                read_response_valid_q <= 1'b1;
-            end
-
-            if (write_active_q && write_data_valid_q &&
-                (write_request_resp_q != AXI_RESP_OKAY)) begin
-                write_data_valid_q <= 1'b0;
-                if (current_write_last) begin
-                    write_active_q <= 1'b0;
-                    write_response_id_q <= write_id_q;
-                    write_response_resp_q <= write_request_resp_q;
-                    write_response_valid_q <= 1'b1;
-                end else begin
-                    write_beat_q <= write_beat_q + 1'b1;
-                    write_addr_q <= next_burst_address(
-                        write_addr_q, write_len_q, write_size_q,
-                        write_burst_q);
-                end
             end
 
             if (timing_resp_valid_i && (timing_owner_count_q == 0))

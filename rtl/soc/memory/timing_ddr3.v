@@ -6,10 +6,11 @@
 // 8 KiB aggregate page.  Timing defaults mirror gem5's DDR3_1600_8x8 preset
 // used by the saved Cortex-A53/HPI comparison: tCK=1.25 ns, 13.75 ns
 // tRCD/tRP/tCL/tCWL, 35 ns tRAS, 15 ns tWR, 260 ns tRFC, and 7.8 us tREFI.
-// The common timing engine is deliberately single-command-at-a-time, so this
-// wrapper describes one rank's bank/row timing rather than rank concurrency.
+// The common timing engine queues commands and overlaps independent-bank row
+// preparation while serializing native bursts on one shared rank data bus.
 module openrv64_timing_ddr3 #(
     parameter integer ADDR_WIDTH = 64,
+    parameter integer TAG_WIDTH = 8,
     parameter integer CONTROLLER_TCK_PS = 1000,
     parameter integer DQ_WIDTH = 64,
     parameter integer BURST_LENGTH = 8,
@@ -36,12 +37,15 @@ module openrv64_timing_ddr3 #(
     input  wire                  cmd_write_i,
     input  wire [ADDR_WIDTH-1:0] cmd_addr_i,
     input  wire [15:0]           cmd_bytes_i,
+    input  wire [TAG_WIDTH-1:0]  cmd_tag_i,
     output wire                  resp_valid_o,
+    output wire [TAG_WIDTH-1:0]  resp_tag_o,
     input  wire                  resp_ready_i
 );
 
     openrv64_timing_dram_banked #(
-        .ADDR_WIDTH(ADDR_WIDTH), .DQ_WIDTH(DQ_WIDTH),
+        .ADDR_WIDTH(ADDR_WIDTH), .TAG_WIDTH(TAG_WIDTH),
+        .DQ_WIDTH(DQ_WIDTH),
         .BURST_LENGTH(BURST_LENGTH), .BURST_CYCLES(BURST_CYCLES),
         .BANK_BITS(BANK_BITS), .ROW_BYTES(ROW_BYTES),
         .CONTROLLER_TCK_PS(CONTROLLER_TCK_PS),
@@ -55,8 +59,9 @@ module openrv64_timing_ddr3 #(
         .clk_i(clk_i), .rst_ni(rst_ni),
         .cmd_valid_i(cmd_valid_i), .cmd_ready_o(cmd_ready_o),
         .cmd_write_i(cmd_write_i), .cmd_addr_i(cmd_addr_i),
-        .cmd_bytes_i(cmd_bytes_i),
-        .resp_valid_o(resp_valid_o), .resp_ready_i(resp_ready_i)
+        .cmd_bytes_i(cmd_bytes_i), .cmd_tag_i(cmd_tag_i),
+        .resp_valid_o(resp_valid_o), .resp_tag_o(resp_tag_o),
+        .resp_ready_i(resp_ready_i)
     );
 
 endmodule

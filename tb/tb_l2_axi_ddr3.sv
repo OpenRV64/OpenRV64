@@ -299,10 +299,10 @@ module tb_l2_axi_ddr3;
                 max_active_mshrs)
                 max_active_mshrs =
                     u_complex.u_l2.active_mshr_count_r;
-            if (u_ddr3.u_timing.u_timing.command_count_q >
+            if (u_ddr3.g_ddr3.u_timing.u_timing.command_count_q >
                 max_ddr3_queued)
                 max_ddr3_queued =
-                    u_ddr3.u_timing.u_timing.command_count_q;
+                    u_ddr3.g_ddr3.u_timing.u_timing.command_count_q;
             if (u_ddr3.u_channel.timing_owner_count_q >
                 max_timing_owners)
                 max_timing_owners =
@@ -402,6 +402,9 @@ module tb_l2_axi_ddr3;
     localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_C = {
         8{64'hc3c3_c3c3_c3c3_c3c3}
     };
+    localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_D = {
+        8{64'hd4d4_d4d4_d4d4_d4d4}
+    };
     integer reads_before_hit;
     integer commands_before_hit;
 
@@ -476,23 +479,36 @@ module tb_l2_axi_ddr3;
         expect_response(4'd6, LINE_C);
         expect_response(4'd7, 512'd0);
 
-        // Launch cacheable misses to those different-bank lines without
-        // waiting between requests.  L2 must retain both misses even though
-        // the AXI and DDR3 response streams remain ordered.
+        // Seed a third bank without filling L2, then measure only the
+        // same-direction interval below.  This keeps mixed read/write
+        // overlap from satisfying the read-queue concurrency checks.
+        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+                 4'd10, MEM_BASE + 64'h6000, LINE_D, 512'd0);
+        max_active_mshrs = 0;
+        max_ddr3_queued = 0;
+        max_timing_owners = 0;
+
+        // Launch three cacheable misses to different-bank lines without
+        // waiting between requests.  L2 and the memory channel must retain
+        // all three even though AXI R responses remain in AR order.
         launch_request(`OPENRV64_CCX_OP_READ,
                        `OPENRV64_CCX_ATTR_CACHEABLE,
                        4'd8, MEM_BASE + 64'h4000, 512'd0);
         launch_request(`OPENRV64_CCX_OP_READ,
                        `OPENRV64_CCX_ATTR_CACHEABLE,
                        4'd9, MEM_BASE + 64'h2000, 512'd0);
+        launch_request(`OPENRV64_CCX_OP_READ,
+                       `OPENRV64_CCX_ATTR_CACHEABLE,
+                       4'd11, MEM_BASE + 64'h6000, 512'd0);
         expect_response(4'd8, LINE_C);
         expect_response(4'd9, LINE_B);
+        expect_response(4'd11, LINE_D);
 
-        if (max_active_mshrs < 2)
-            $fatal(1, "L2 never retained two outstanding misses");
-        if ((max_ddr3_queued < 2) || (max_timing_owners < 2))
+        if (max_active_mshrs < 3)
+            $fatal(1, "L2 never retained three outstanding misses");
+        if ((max_ddr3_queued < 3) || (max_timing_owners < 3))
             $fatal(1,
-                "independent AXI bursts never overlapped in DDR3 scheduler");
+                "three read bursts never overlapped in DDR3 scheduler");
         if (axi_read_beats != 2 * axi_read_transactions)
             $fatal(1, "AXI read burst beat count mismatch");
         if (axi_write_beats != 2 * axi_write_transactions)
@@ -503,10 +519,10 @@ module tb_l2_axi_ddr3;
                 "DDR3 command count does not match complete AXI bursts");
 
         $display(
-            "tb_l2_axi_ddr3: PASS reads=%0d writes=%0d rbeats=%0d wbeats=%0d ddr3_cmds=%0d max_mshrs=%0d max_ddr3_queued=%0d",
+            "tb_l2_axi_ddr3: PASS reads=%0d writes=%0d rbeats=%0d wbeats=%0d ddr3_cmds=%0d max_mshrs=%0d max_ddr3_queued=%0d max_timing_owners=%0d",
             axi_read_transactions, axi_write_transactions,
             axi_read_beats, axi_write_beats, ddr3_commands,
-            max_active_mshrs, max_ddr3_queued);
+            max_active_mshrs, max_ddr3_queued, max_timing_owners);
         $finish;
     end
 

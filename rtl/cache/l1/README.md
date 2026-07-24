@@ -146,12 +146,27 @@ remains no-write-allocate.  Draining starts when occupancy reaches
 `STORE_BUFFER_DRAIN_WATERMARK` (four by default), then continues in FIFO order.
 A partial newest entry stays open for further adjacent stores until it becomes
 full, ceases to be the tail, reaches `STORE_BUFFER_TIMEOUT_CYCLES` (1024 by
-default), or must drain for a same-line load, invalidation, or locked request.
+default), or must drain for invalidation, an uncached same-line access, or a
+locked request.
 Each entry drains as one aligned CCX write with `size=6` and `burst_len=0`.
 The independent `store_resp_*` channel reports drain completion and error in
 FIFO order.  The core bus retains the original LSU tags in a matching FIFO, so
 a store may retire at request admission without losing a later asynchronous
 access fault.
+
+Store draining is nonblocking with respect to earlier store responses. Each
+FIFO entry retains issued, completed, error, and CCX transaction-ID state.
+The drain selector may issue the oldest unissued entry while older entries
+remain in flight. Responses match by transaction ID and may arrive out of
+order, but entries are still reported and reclaimed from the FIFO head. An
+issued entry is no longer mergeable; later same-line stores allocate a younger
+entry and retain their order.  A cacheable load CAMs all retained same-line
+entries in FIFO age order and snapshots their complete 64-byte data/mask
+overlay when entering L1.  Newer bytes win.  The snapshot merges into both the
+scalar response and any refill line before installation, so draining and
+reclaiming the FIFO cannot expose a stale resident line.  Barriers, locked
+requests, invalidation, and uncached same-line aliases retain explicit drain
+behavior.
 
 The L1D endpoint also contains a deliberately small address-stream prefetcher.
 It trains on accepted cacheable, unlocked loads after aligning them to
@@ -172,7 +187,8 @@ There is no PC input or LSU predictor state.  The address-only history table
 accepts one through four entries.  The default four-entry candidate window
 feeds four prefetch MSHRs.  Prefetch transaction IDs occupy the upper half of
 the four-bit L1D ID space, so their responses may return out of order while the
-blocking architectural demand/store backend uses the lower half.  A completed
+single architectural demand request and multi-inflight store drain share the
+lower half through a free-ID bitmap. A completed
 speculative line resides in the existing fill buffers until demanded; it does
 not install in the L1 tag or data arrays, so unused prefetches cannot evict
 resident cache lines. `PREFETCH_DEMAND_RESERVE` entries cannot be consumed by
@@ -196,9 +212,10 @@ cannot become cache or fill-buffer state after the cutoff.
 
 The blocking architectural read-miss buffer is not discarded. If its CCX read
 was issued in an older epoch, L1D consumes the old response without completing
-the cache refill, allocates a new lower-half transaction ID, and reissues the
-same read. A read still waiting in the CCX send state at the barrier is held
-and issued once in the new epoch. This is a deliberately small single-RMB
+the cache refill and reissues the same read while retaining its lower-half
+transaction-ID credit. A read still waiting in the CCX send state at the
+barrier is held and issued once in the new epoch. This is a deliberately small
+single-RMB
 implementation; a future nonblocking demand cache must carry the same replay
 bit or epoch independently in every RMB.
 
@@ -219,9 +236,10 @@ of an unused speculative fill, and `prefetch_depth_o` exposes the current
 adaptive depth.  They are observability signals, not architectural counters.
 
 The command and write-data channels remain independently backpressured and are
-correlated by hart, source, and transaction IDs.  A later blocking read cannot
-pass queued stores at the L1D backend, and external invalidation is not
-acknowledged until the store FIFO has drained.  `#LOCK` accesses bypass and
+correlated by hart, source, and transaction IDs. A later cacheable read may
+consume retained same-line dirty bytes through the snapshotted line overlay;
+external invalidation is not acknowledged until the store FIFO has drained.
+`#LOCK` accesses bypass and
 invalidate L1D and remain non-posted, but in the single-hart configuration the
 marker is local and is not forwarded as a CCX/L2 home lock.  Uncached/device
 writes also remain blocking in the current RTL; the intended later policy is
@@ -231,8 +249,11 @@ request automatic pre-barrier behavior.
 
 The fill capacities do not imply eight simultaneous architectural misses.  The
 shared cache controller and each CCX demand backend still allow one active
-demand miss/RMB.  L1D separately supports `PREFETCH_OUTSTANDING` speculative
-MSHRs with transaction-ID-indexed response matching; the default is four.
+demand miss/RMB. L1D separately supports `PREFETCH_OUTSTANDING` speculative
+MSHRs and multiple issued store-buffer entries with transaction-ID-indexed
+response matching. The default prefetch count is four; demand and stores share
+the eight lower-half transaction IDs and backpressure locally when they are
+exhausted.
 
 `L1I_FILL_BUFFER_LINES`, `L1D_FILL_BUFFER_LINES`, and
 `L1D_STORE_BUFFER_LINES` are propagated through the AXI core-bus, three-pipe

@@ -170,6 +170,37 @@ make bench-stream STREAM_KERNEL=triad STREAM_BYTES=65536
 make sim-stream-suite STREAM_BYTES=4096
 ```
 
+Those targets use the direct functional CCX home. To run the same STREAM
+image through the production memory hierarchy, use:
+
+```sh
+make bench-stream-ddr3 STREAM_KERNEL=triad STREAM_BYTES=65536
+make sim-stream-ddr3 STREAM_KERNEL=triad STREAM_BYTES=65536
+make bench-stream-magic STREAM_KERNEL=triad STREAM_BYTES=65536
+make sim-stream-magic STREAM_KERNEL=triad STREAM_BYTES=65536
+```
+
+The DDR3 targets route private L1 traffic through the one-hart CCX complex,
+shared L2, 512-to-256-bit AXI adapter, multi-outstanding memory channel, and
+banked DDR3 scheduler. Their default core configuration is BP6, fetch
+lookaside mode 3, a 16-entry retirement queue, and enabled issue and
+speculation windows. The run prints maximum L2 MSHR, timing-owner, and banked
+command-queue occupancy. `PERF_MEMORY_CHANNEL*` reports accepted bursts and
+beats, queue and timing wait cycles, maximum queue occupancy, and exact
+declared AXI read coalescing. It also reports DDR commands joined to active
+same-bank, same-row, same-direction runs. Unrelated queued requests may be
+reordered so the controller can gather a contiguous read or write run.
+Completions carry tags back to the memory channel, which preserves AXI order;
+overlapping RAW, WAR, and WAW pairs remain age ordered, and completed read data
+is snapshotted before younger writes may commit. `+require_ddr3_overlap` makes
+lack of overlapping DDR commands a failure. The reported `mcycle` delta
+remains a cycle-model result, not a frequency or physical-bandwidth claim.
+
+The `*-stream-magic` variants retain that same L2, AXI adapter, memory-channel
+storage, and ordering path, but replace the banked DDR3 scheduler with a
+registered one-cycle timing backend. They are therefore a latency-control
+measurement, not the direct AXI SRAM configuration.
+
 The matched AArch64 scalar kernel can be run on the repository-pinned gem5
 HPI model with:
 

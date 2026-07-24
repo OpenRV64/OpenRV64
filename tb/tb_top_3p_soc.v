@@ -235,7 +235,7 @@ endmodule
 
 // Performance harness:
 //   3P core + private L1I/L1D -> native one-hart CCX -> shared L2
-//       -> 512-to-256-bit generic bus adapter -> 16 MiB AXI SRAM.
+//       -> 512-to-256-bit generic bus adapter -> AXI SRAM or banked DDR3.
 module tb_top_3p_soc #(
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
@@ -249,18 +249,29 @@ module tb_top_3p_soc #(
     parameter integer RELAX_HAZARDS = 0,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
+    parameter integer RETIRE_DEPTH = 8,
+    parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer RAM_BYTES = 16 * 1024 * 1024,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
+    parameter integer L2_MERGE_ENTRIES = 8,
+    parameter integer GENBUS_READ_BUFFER_DEPTH = 4,
+    parameter integer GENBUS_WRITE_BUFFER_DEPTH = 4,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_STREAMS = 2,
+    parameter integer L1D_PREFETCH_DISTANCE = 1,
     parameter integer L1D_PREFETCH_ADAPTIVE_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
     parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
-    parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2
+    parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer DDR3_ENABLE = 0,
+    parameter integer DDR3_READ_QUEUE_DEPTH = 8,
+    parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
+    parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter integer MEMORY_TIMING_MODEL = 0
 );
     reg clk;
     reg rst_n;
@@ -271,6 +282,8 @@ module tb_top_3p_soc #(
 
     wire ccx_req_valid;
     wire ccx_req_ready;
+    wire complex_ccx_req_valid;
+    wire complex_ccx_req_ready;
     wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
     wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
     wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
@@ -301,12 +314,169 @@ module tb_top_3p_soc #(
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
     wire ccx_resp_error;
     wire ccx_resp_sc_success;
+    wire complex_ccx_resp_valid;
+    wire complex_ccx_resp_ready;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] complex_ccx_resp_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] complex_ccx_resp_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        complex_ccx_resp_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+        complex_ccx_resp_beat_index;
+    wire complex_ccx_resp_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        complex_ccx_resp_rdata;
+    wire complex_ccx_resp_error;
+    wire complex_ccx_resp_sc_success;
+
+    // Simulation-only, initiator-keyed CCX latency bisection.  Selected
+    // private-cache line reads obtain their data directly from the testbench
+    // backing store; writes and narrower/uncached requests still traverse L2.
+    reg [3:0] magic_ccx_source_mask_q;
+    integer magic_ccx_source_mask_arg;
+    reg magic_ccx_resp_valid_q;
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        magic_ccx_resp_hart_id_q;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        magic_ccx_resp_txn_id_q;
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        magic_ccx_resp_source_id_q;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        magic_ccx_resp_rdata_q;
+    localparam integer MAGIC_CCX_SHADOW_DEPTH = 32;
+    localparam integer MAGIC_CCX_SHADOW_INDEX_WIDTH =
+        $clog2(MAGIC_CCX_SHADOW_DEPTH);
+    reg magic_ccx_shadow_valid_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        magic_ccx_shadow_hart_id_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        magic_ccx_shadow_txn_id_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        magic_ccx_shadow_source_id_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
+    reg magic_ccx_shadow_space_r;
+    reg [MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0]
+        magic_ccx_shadow_free_index_r;
+    reg magic_ccx_shadow_resp_match_r;
+    reg [MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0]
+        magic_ccx_shadow_resp_index_r;
+    integer magic_ccx_shadow_free_scan;
+    integer magic_ccx_shadow_resp_scan;
+    integer magic_ccx_shadow_reset_scan;
+    integer magic_ccx_l1i_reads;
+    integer magic_ccx_l1d_reads;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] magic_ccx_read_data;
+    localparam integer MAGIC_CCX_RAM_WORDS = RAM_BYTES / 32;
+    localparam integer MAGIC_CCX_RAM_INDEX_WIDTH =
+        $clog2(MAGIC_CCX_RAM_WORDS);
+    wire [63:0] magic_ccx_local_addr =
+        ccx_req_addr - `OPENRV64_SOC_MEMORY_BASE;
+    wire [MAGIC_CCX_RAM_INDEX_WIDTH-1:0] magic_ccx_word_index =
+        magic_ccx_local_addr[
+            5 +: MAGIC_CCX_RAM_INDEX_WIDTH];
+    wire magic_ccx_ram_line =
+        (ccx_req_addr >= `OPENRV64_SOC_MEMORY_BASE) &&
+        (ccx_req_addr <=
+         (`OPENRV64_SOC_MEMORY_BASE + RAM_BYTES - 64)) &&
+        (ccx_req_addr[5:0] == 6'd0);
+    wire magic_ccx_source_selected =
+        magic_ccx_source_mask_q[ccx_req_source_id];
+    wire magic_ccx_req_select =
+        magic_ccx_source_selected &&
+        (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
+        (ccx_req_size == 3'd6) &&
+        (ccx_req_burst_len == 0) &&
+        |(ccx_req_attr & `OPENRV64_CCX_ATTR_CACHEABLE) &&
+        magic_ccx_ram_line;
+    wire magic_ccx_resp_fire =
+        magic_ccx_resp_valid_q && ccx_resp_ready;
+    wire magic_ccx_resp_slot_ready =
+        !magic_ccx_resp_valid_q || magic_ccx_resp_fire;
+    wire magic_ccx_req_fire =
+        ccx_req_valid && ccx_req_ready && magic_ccx_req_select;
+    wire magic_ccx_shadow_resp_fire =
+        complex_ccx_resp_valid && complex_ccx_resp_ready &&
+        magic_ccx_shadow_resp_match_r;
+
+    // Selected requests are still accepted by L2.  Their eventual tagged L2
+    // responses are consumed below after L2 has performed its normal fill.
+    assign ccx_req_ready = complex_ccx_req_ready &&
+        (!magic_ccx_req_select ||
+         (magic_ccx_resp_slot_ready && magic_ccx_shadow_space_r));
+    assign complex_ccx_req_valid =
+        ccx_req_valid &&
+        (!magic_ccx_req_select ||
+         (magic_ccx_resp_slot_ready && magic_ccx_shadow_space_r));
+
+    assign ccx_resp_valid =
+        magic_ccx_resp_valid_q ||
+        (complex_ccx_resp_valid && !magic_ccx_shadow_resp_match_r);
+    assign ccx_resp_hart_id = magic_ccx_resp_valid_q ?
+        magic_ccx_resp_hart_id_q : complex_ccx_resp_hart_id;
+    assign ccx_resp_txn_id = magic_ccx_resp_valid_q ?
+        magic_ccx_resp_txn_id_q : complex_ccx_resp_txn_id;
+    assign ccx_resp_source_id = magic_ccx_resp_valid_q ?
+        magic_ccx_resp_source_id_q : complex_ccx_resp_source_id;
+    assign ccx_resp_beat_index = magic_ccx_resp_valid_q ?
+        {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}} :
+        complex_ccx_resp_beat_index;
+    assign ccx_resp_last = magic_ccx_resp_valid_q ?
+        1'b1 : complex_ccx_resp_last;
+    assign ccx_resp_rdata = magic_ccx_resp_valid_q ?
+        magic_ccx_resp_rdata_q : complex_ccx_resp_rdata;
+    assign ccx_resp_error = magic_ccx_resp_valid_q ?
+        1'b0 : complex_ccx_resp_error;
+    assign ccx_resp_sc_success = magic_ccx_resp_valid_q ?
+        1'b0 : complex_ccx_resp_sc_success;
+    assign complex_ccx_resp_ready =
+        magic_ccx_shadow_resp_match_r ||
+        (ccx_resp_ready && !magic_ccx_resp_valid_q);
+
+    always @* begin
+        magic_ccx_shadow_space_r = 1'b0;
+        magic_ccx_shadow_free_index_r =
+            {MAGIC_CCX_SHADOW_INDEX_WIDTH{1'b0}};
+        for (magic_ccx_shadow_free_scan = 0;
+             magic_ccx_shadow_free_scan < MAGIC_CCX_SHADOW_DEPTH;
+             magic_ccx_shadow_free_scan = magic_ccx_shadow_free_scan + 1)
+            if (!magic_ccx_shadow_space_r &&
+                !magic_ccx_shadow_valid_q[magic_ccx_shadow_free_scan]) begin
+                magic_ccx_shadow_space_r = 1'b1;
+                magic_ccx_shadow_free_index_r =
+                    magic_ccx_shadow_free_scan[
+                        MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0];
+            end
+    end
+
+    always @* begin
+        magic_ccx_shadow_resp_match_r = 1'b0;
+        magic_ccx_shadow_resp_index_r =
+            {MAGIC_CCX_SHADOW_INDEX_WIDTH{1'b0}};
+        for (magic_ccx_shadow_resp_scan = 0;
+             magic_ccx_shadow_resp_scan < MAGIC_CCX_SHADOW_DEPTH;
+             magic_ccx_shadow_resp_scan = magic_ccx_shadow_resp_scan + 1)
+            if (!magic_ccx_shadow_resp_match_r &&
+                magic_ccx_shadow_valid_q[magic_ccx_shadow_resp_scan] &&
+                (magic_ccx_shadow_hart_id_q[magic_ccx_shadow_resp_scan] ==
+                 complex_ccx_resp_hart_id) &&
+                (magic_ccx_shadow_txn_id_q[magic_ccx_shadow_resp_scan] ==
+                 complex_ccx_resp_txn_id) &&
+                (magic_ccx_shadow_source_id_q[magic_ccx_shadow_resp_scan] ==
+                 complex_ccx_resp_source_id)) begin
+                magic_ccx_shadow_resp_match_r = 1'b1;
+                magic_ccx_shadow_resp_index_r =
+                    magic_ccx_shadow_resp_scan[
+                        MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0];
+            end
+    end
 
     wire [`OPENRV64_AXI_ID_WIDTH-1:0] ram_arid;
     wire [`OPENRV64_AXI_ADDR_WIDTH-1:0] ram_araddr;
     wire [7:0] ram_arlen;
     wire [2:0] ram_arsize;
     wire [1:0] ram_arburst;
+    wire ram_arlock;
+    wire [3:0] ram_arcache;
+    wire [2:0] ram_arprot;
+    wire [3:0] ram_arqos;
     wire ram_arvalid;
     wire ram_arready;
     wire [`OPENRV64_AXI_ID_WIDTH-1:0] ram_rid;
@@ -320,6 +490,10 @@ module tb_top_3p_soc #(
     wire [7:0] ram_awlen;
     wire [2:0] ram_awsize;
     wire [1:0] ram_awburst;
+    wire ram_awlock;
+    wire [3:0] ram_awcache;
+    wire [2:0] ram_awprot;
+    wire [3:0] ram_awqos;
     wire ram_awvalid;
     wire ram_awready;
     wire [`OPENRV64_AXI_DATA_WIDTH-1:0] ram_wdata;
@@ -332,6 +506,31 @@ module tb_top_3p_soc #(
     wire ram_bvalid;
     wire ram_bready;
 
+    wire [63:0] memory_read_bursts;
+    wire [63:0] memory_write_bursts;
+    wire [63:0] memory_read_beats_requested;
+    wire [63:0] memory_write_beats_requested;
+    wire [63:0] memory_read_beats_returned;
+    wire [63:0] memory_write_beats_received;
+    wire [63:0] memory_read_address_wait;
+    wire [63:0] memory_write_address_wait;
+    wire [63:0] memory_write_data_wait;
+    wire [63:0] memory_read_response_wait;
+    wire [63:0] memory_write_response_wait;
+    wire [63:0] memory_timing_backend_wait;
+    wire [63:0] memory_timing_owner_full;
+    wire [63:0] memory_read_timing_wait;
+    wire [63:0] memory_write_timing_wait;
+    wire [63:0] memory_timing_read_commands;
+    wire [63:0] memory_timing_write_commands;
+    wire [63:0] memory_max_read_queue;
+    wire [63:0] memory_max_write_queue;
+    wire [63:0] memory_max_timing_owners;
+    wire [63:0] memory_ddr_commands_coalesced;
+    wire [63:0] memory_ddr_reads_coalesced;
+    wire [63:0] memory_ddr_writes_coalesced;
+    wire [63:0] memory_ddr_coalesced_groups;
+
     wire [63:0] dbg_pc;
     wire [31:0] dbg_instr;
     wire dbg_halted;
@@ -343,6 +542,14 @@ module tb_top_3p_soc #(
     integer ccx_fetch_reads;
     integer ccx_data_reads;
     integer ccx_data_writes;
+    integer axi_read_transactions;
+    integer axi_read_beats;
+    integer axi_write_transactions;
+    integer axi_write_beats;
+    integer max_l2_mshrs;
+    integer ddr3_commands;
+    integer max_ddr3_queued;
+    integer max_timing_owners;
     integer direction_corrections;
     integer target_corrections;
     integer lookaside_restart_hits;
@@ -441,6 +648,14 @@ module tb_top_3p_soc #(
     integer frontend_empty_dispatch_full;
     integer frontend_empty_l1i_external_miss;
     integer frontend_empty_pending_no_external_miss;
+    integer fetch_demand_trace_enabled;
+    integer fetch_demand_trace_cycle_q;
+    integer fetch_demand_trace_start_q;
+    integer fetch_demand_trace_external_q;
+    integer fetch_demand_trace_empty_q;
+    reg fetch_demand_trace_active_q;
+    reg [63:0] fetch_demand_trace_addr_q;
+    reg [63:0] fetch_demand_trace_pc_q;
     integer stash_trace_episodes;
     integer stash_trace_completed;
     integer stash_trace_interrupted;
@@ -483,6 +698,27 @@ module tb_top_3p_soc #(
     integer stash_trace_reset_index;
     integer stash_trace_delay;
     integer lsu_request_wait;
+    integer lsu_load_request_wait;
+    integer lsu_store_request_wait;
+    integer l1d_request_wait;
+    integer l1d_load_request_wait;
+    integer l1d_store_request_wait;
+    integer l1d_wait_store_block;
+    integer l1d_dirty_snoop_accepts;
+    integer l1d_wait_lock_barrier;
+    integer l1d_wait_response_tags;
+    integer l1d_wait_refill;
+    integer l1d_wait_access;
+    integer l1d_wait_run_response;
+    integer l1d_wait_unknown;
+    integer ccx_request_wait;
+    integer ccx_read_request_wait;
+    integer ccx_write_request_wait;
+    integer l2_bus_request_wait;
+    integer l2_command_full_cycles;
+    integer axi_read_address_wait;
+    integer axi_write_address_wait;
+    integer axi_write_data_wait;
     integer lsu_outstanding_cycles;
     integer branch_resolutions;
     integer conditional_branch_resolutions;
@@ -507,8 +743,11 @@ module tb_top_3p_soc #(
     string memh_path;
     reg [63:0] expected_a0;
     reg expected_a0_valid;
+    reg [63:0] done_pc;
+    reg done_pc_valid;
     real ipc;
 
+    localparam integer RETIRE_RESULT_PC_LSB = 329;
     localparam integer PERF_OP_ALU = 0;
     localparam integer PERF_OP_BRANCH = 1;
     localparam integer PERF_OP_JUMP = 2;
@@ -530,6 +769,21 @@ module tb_top_3p_soc #(
                 perf_op_class = PERF_OP_ALU;
         end
     endfunction
+
+    wire done_pc_retired =
+        (dut.backend_retire_arch[0] &&
+         (dut.u_backend.queue_retire_result[
+              0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] == done_pc)) ||
+        (dut.backend_retire_arch[1] &&
+         (dut.u_backend.queue_retire_result[
+              1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] == done_pc)) ||
+        (dut.backend_retire_arch[2] &&
+         (dut.u_backend.queue_retire_result[
+              2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] == done_pc));
+    wire run_done = dbg_halted || (done_pc_valid && done_pc_retired);
 
     wire [2:0] trace_candidate_valid =
         dut.u_backend.u_dispatch.g_3p.u_dispatch.candidate_valid;
@@ -800,8 +1054,10 @@ module tb_top_3p_soc #(
         .ENABLE_FULL_FORWARDING(ENABLE_FULL_FORWARDING),
         .RELAX_WAW(RELAX_WAW),
         .RELAX_HAZARDS(RELAX_HAZARDS),
+        .RETIRE_DEPTH(RETIRE_DEPTH),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .SPEC_LOAD_BASE(`OPENRV64_SOC_MEMORY_BASE),
         .SPEC_LOAD_SIZE(RAM_BYTES),
         .ENABLE_L1I(1'b1),
@@ -810,6 +1066,7 @@ module tb_top_3p_soc #(
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_STREAMS(L1D_PREFETCH_STREAMS),
+        .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
         .L1D_PREFETCH_ADAPTIVE_ENABLE(
             L1D_PREFETCH_ADAPTIVE_ENABLE),
         .L1D_PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),
@@ -925,7 +1182,7 @@ module tb_top_3p_soc #(
         .L2_BYTES(L2_BYTES),
         .L2_LINE_BYTES(64),
         .L2_WAYS(L2_WAYS),
-        .L2_MERGE_ENTRIES(8),
+        .L2_MERGE_ENTRIES(L2_MERGE_ENTRIES),
         .L2_WAITERS_PER_MSHR(8),
         .L2_COMMAND_ENTRIES(16),
         .L2_RESPONSE_ENTRIES(16),
@@ -933,13 +1190,15 @@ module tb_top_3p_soc #(
         .BUS_TYPE(`OPENRV64_COMPLEX_BUS_AXI),
         .BUS_ADDR_WIDTH(`OPENRV64_AXI_ADDR_WIDTH),
         .BUS_DATA_WIDTH(`OPENRV64_AXI_DATA_WIDTH),
+        .GENBUS_READ_BUFFER_DEPTH(GENBUS_READ_BUFFER_DEPTH),
+        .GENBUS_WRITE_BUFFER_DEPTH(GENBUS_WRITE_BUFFER_DEPTH),
         .AXI_ID_WIDTH(`OPENRV64_AXI_ID_WIDTH),
         .AXI_ID({`OPENRV64_AXI_ID_WIDTH{1'b1}})
     ) u_complex (
         .clk_i(clk),
         .rst_ni(rst_n),
-        .ccx_req_valid_i(ccx_req_valid),
-        .ccx_req_ready_o(ccx_req_ready),
+        .ccx_req_valid_i(complex_ccx_req_valid),
+        .ccx_req_ready_o(complex_ccx_req_ready),
         .ccx_req_hart_id_i(ccx_req_hart_id),
         .ccx_req_txn_id_i(ccx_req_txn_id),
         .ccx_req_source_id_i(ccx_req_source_id),
@@ -960,21 +1219,25 @@ module tb_top_3p_soc #(
         .ccx_wdata_last_i(ccx_wdata_last),
         .ccx_wdata_i(ccx_wdata),
         .ccx_wstrb_i(ccx_wstrb),
-        .ccx_resp_valid_o(ccx_resp_valid),
-        .ccx_resp_ready_i(ccx_resp_ready),
-        .ccx_resp_hart_id_o(ccx_resp_hart_id),
-        .ccx_resp_txn_id_o(ccx_resp_txn_id),
-        .ccx_resp_source_id_o(ccx_resp_source_id),
-        .ccx_resp_beat_index_o(ccx_resp_beat_index),
-        .ccx_resp_last_o(ccx_resp_last),
-        .ccx_resp_rdata_o(ccx_resp_rdata),
-        .ccx_resp_error_o(ccx_resp_error),
-        .ccx_resp_sc_success_o(ccx_resp_sc_success),
+        .ccx_resp_valid_o(complex_ccx_resp_valid),
+        .ccx_resp_ready_i(complex_ccx_resp_ready),
+        .ccx_resp_hart_id_o(complex_ccx_resp_hart_id),
+        .ccx_resp_txn_id_o(complex_ccx_resp_txn_id),
+        .ccx_resp_source_id_o(complex_ccx_resp_source_id),
+        .ccx_resp_beat_index_o(complex_ccx_resp_beat_index),
+        .ccx_resp_last_o(complex_ccx_resp_last),
+        .ccx_resp_rdata_o(complex_ccx_resp_rdata),
+        .ccx_resp_error_o(complex_ccx_resp_error),
+        .ccx_resp_sc_success_o(complex_ccx_resp_sc_success),
         .m_axi_arid_o(ram_arid),
         .m_axi_araddr_o(ram_araddr),
         .m_axi_arlen_o(ram_arlen),
         .m_axi_arsize_o(ram_arsize),
         .m_axi_arburst_o(ram_arburst),
+        .m_axi_arlock_o(ram_arlock),
+        .m_axi_arcache_o(ram_arcache),
+        .m_axi_arprot_o(ram_arprot),
+        .m_axi_arqos_o(ram_arqos),
         .m_axi_arvalid_o(ram_arvalid),
         .m_axi_arready_i(ram_arready),
         .m_axi_rid_i(ram_rid),
@@ -988,6 +1251,10 @@ module tb_top_3p_soc #(
         .m_axi_awlen_o(ram_awlen),
         .m_axi_awsize_o(ram_awsize),
         .m_axi_awburst_o(ram_awburst),
+        .m_axi_awlock_o(ram_awlock),
+        .m_axi_awcache_o(ram_awcache),
+        .m_axi_awprot_o(ram_awprot),
+        .m_axi_awqos_o(ram_awqos),
         .m_axi_awvalid_o(ram_awvalid),
         .m_axi_awready_i(ram_awready),
         .m_axi_wdata_o(ram_wdata),
@@ -1006,43 +1273,422 @@ module tb_top_3p_soc #(
         .wb_dat_i({`OPENRV64_AXI_DATA_WIDTH{1'b0}})
     );
 
-    tb_axi256_burst_sram #(
-        .RAM_BYTES(RAM_BYTES)
-    ) u_ram (
-        .clk_i(clk),
-        .rst_ni(rst_n),
-        .arid_i(ram_arid),
-        .araddr_i(ram_araddr),
-        .arlen_i(ram_arlen),
-        .arsize_i(ram_arsize),
-        .arburst_i(ram_arburst),
-        .arvalid_i(ram_arvalid),
-        .arready_o(ram_arready),
-        .rid_o(ram_rid),
-        .rdata_o(ram_rdata),
-        .rresp_o(ram_rresp),
-        .rlast_o(ram_rlast),
-        .rvalid_o(ram_rvalid),
-        .rready_i(ram_rready),
-        .awid_i(ram_awid),
-        .awaddr_i(ram_awaddr),
-        .awlen_i(ram_awlen),
-        .awsize_i(ram_awsize),
-        .awburst_i(ram_awburst),
-        .awvalid_i(ram_awvalid),
-        .awready_o(ram_awready),
-        .wdata_i(ram_wdata),
-        .wstrb_i(ram_wstrb),
-        .wlast_i(ram_wlast),
-        .wvalid_i(ram_wvalid),
-        .wready_o(ram_wready),
-        .bid_o(ram_bid),
-        .bresp_o(ram_bresp),
-        .bvalid_o(ram_bvalid),
-        .bready_i(ram_bready)
-    );
+    generate
+        if (DDR3_ENABLE != 0) begin : g_ddr3
+            openrv64_axi_ddr3 #(
+                .ADDR_WIDTH(`OPENRV64_AXI_ADDR_WIDTH),
+                .DATA_WIDTH(`OPENRV64_AXI_DATA_WIDTH),
+                .ID_WIDTH(`OPENRV64_AXI_ID_WIDTH),
+                .MEM_BASE(`OPENRV64_SOC_MEMORY_BASE),
+                .MEM_BYTES(RAM_BYTES),
+                .READ_QUEUE_DEPTH(DDR3_READ_QUEUE_DEPTH),
+                .WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
+                .ZERO_INIT_WORDS(0),
+                .COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+                .TIMING_MODEL(MEMORY_TIMING_MODEL)
+            ) u_ddr3 (
+                .clk_i(clk),
+                .rst_ni(rst_n),
+                .s_axi_arid_i(ram_arid),
+                .s_axi_araddr_i(ram_araddr),
+                .s_axi_arlen_i(ram_arlen),
+                .s_axi_arsize_i(ram_arsize),
+                .s_axi_arburst_i(ram_arburst),
+                .s_axi_arlock_i(ram_arlock),
+                .s_axi_arcache_i(ram_arcache),
+                .s_axi_arprot_i(ram_arprot),
+                .s_axi_arqos_i(ram_arqos),
+                .s_axi_arvalid_i(ram_arvalid),
+                .s_axi_arready_o(ram_arready),
+                .s_axi_rid_o(ram_rid),
+                .s_axi_rdata_o(ram_rdata),
+                .s_axi_rresp_o(ram_rresp),
+                .s_axi_rlast_o(ram_rlast),
+                .s_axi_rvalid_o(ram_rvalid),
+                .s_axi_rready_i(ram_rready),
+                .s_axi_awid_i(ram_awid),
+                .s_axi_awaddr_i(ram_awaddr),
+                .s_axi_awlen_i(ram_awlen),
+                .s_axi_awsize_i(ram_awsize),
+                .s_axi_awburst_i(ram_awburst),
+                .s_axi_awlock_i(ram_awlock),
+                .s_axi_awcache_i(ram_awcache),
+                .s_axi_awprot_i(ram_awprot),
+                .s_axi_awqos_i(ram_awqos),
+                .s_axi_awvalid_i(ram_awvalid),
+                .s_axi_awready_o(ram_awready),
+                .s_axi_wdata_i(ram_wdata),
+                .s_axi_wstrb_i(ram_wstrb),
+                .s_axi_wlast_i(ram_wlast),
+                .s_axi_wvalid_i(ram_wvalid),
+                .s_axi_wready_o(ram_wready),
+                .s_axi_bid_o(ram_bid),
+                .s_axi_bresp_o(ram_bresp),
+                .s_axi_bvalid_o(ram_bvalid),
+                .s_axi_bready_i(ram_bready)
+            );
+
+            assign magic_ccx_read_data = {
+                u_ddr3.u_channel.memory_q[
+                    magic_ccx_word_index + 1'b1],
+                u_ddr3.u_channel.memory_q[magic_ccx_word_index]
+            };
+
+            assign memory_read_bursts =
+                u_ddr3.u_channel.perf_read_bursts_q;
+            assign memory_write_bursts =
+                u_ddr3.u_channel.perf_write_bursts_q;
+            assign memory_read_beats_requested =
+                u_ddr3.u_channel.perf_read_beats_requested_q;
+            assign memory_write_beats_requested =
+                u_ddr3.u_channel.perf_write_beats_requested_q;
+            assign memory_read_beats_returned =
+                u_ddr3.u_channel.perf_read_beats_returned_q;
+            assign memory_write_beats_received =
+                u_ddr3.u_channel.perf_write_beats_received_q;
+            assign memory_read_address_wait =
+                u_ddr3.u_channel.perf_read_address_wait_cycles_q;
+            assign memory_write_address_wait =
+                u_ddr3.u_channel.perf_write_address_wait_cycles_q;
+            assign memory_write_data_wait =
+                u_ddr3.u_channel.perf_write_data_wait_cycles_q;
+            assign memory_read_response_wait =
+                u_ddr3.u_channel.perf_read_response_wait_cycles_q;
+            assign memory_write_response_wait =
+                u_ddr3.u_channel.perf_write_response_wait_cycles_q;
+            assign memory_timing_backend_wait =
+                u_ddr3.u_channel.perf_timing_backend_wait_cycles_q;
+            assign memory_timing_owner_full =
+                u_ddr3.u_channel.perf_timing_owner_full_cycles_q;
+            assign memory_read_timing_wait =
+                u_ddr3.u_channel.perf_read_timing_wait_cycles_q;
+            assign memory_write_timing_wait =
+                u_ddr3.u_channel.perf_write_timing_wait_cycles_q;
+            assign memory_timing_read_commands =
+                u_ddr3.u_channel.perf_timing_read_commands_q;
+            assign memory_timing_write_commands =
+                u_ddr3.u_channel.perf_timing_write_commands_q;
+            assign memory_max_read_queue =
+                u_ddr3.u_channel.perf_max_read_queue_q;
+            assign memory_max_write_queue =
+                u_ddr3.u_channel.perf_max_write_queue_q;
+            assign memory_max_timing_owners =
+                u_ddr3.u_channel.perf_max_timing_owners_q;
+
+            initial begin
+                if (!$value$plusargs("memh=%s", memh_path))
+                    $fatal(1,
+                        "full-CCX timed-memory test requires +memh=<256-bit image>");
+                if (!$value$plusargs("memh_words=%d", memh_words))
+                    $fatal(1,
+                        "full-CCX timed-memory test requires +memh_words=<count>");
+                if ((memh_words < 1) ||
+                    (memh_words > (RAM_BYTES / 32)))
+                    $fatal(1, "timed-memory memh_words=%0d exceeds RAM",
+                           memh_words);
+                $readmemh(memh_path, u_ddr3.u_channel.memory_q,
+                          0, memh_words - 1);
+            end
+
+            always @(posedge clk) begin
+                if (!rst_n) begin
+                    ddr3_commands = 0;
+                    max_timing_owners = 0;
+                end else begin
+                    if (u_ddr3.timing_cmd_valid &&
+                        u_ddr3.timing_cmd_ready)
+                        ddr3_commands = ddr3_commands + 1;
+                    if (u_ddr3.u_channel.timing_owner_count_q >
+                        max_timing_owners)
+                        max_timing_owners =
+                            u_ddr3.u_channel.timing_owner_count_q;
+                end
+            end
+
+            if (MEMORY_TIMING_MODEL == 0) begin : g_ddr3_stats
+                assign memory_ddr_commands_coalesced =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_commands_coalesced_q;
+                assign memory_ddr_reads_coalesced =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_read_commands_coalesced_q;
+                assign memory_ddr_writes_coalesced =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_write_commands_coalesced_q;
+                assign memory_ddr_coalesced_groups =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_coalesced_groups_q;
+                always @(posedge clk) begin
+                    if (!rst_n) begin
+                        max_ddr3_queued = 0;
+                    end else if
+                        (u_ddr3.g_ddr3.u_timing.u_timing.command_count_q >
+                         max_ddr3_queued) begin
+                        max_ddr3_queued =
+                            u_ddr3.g_ddr3.u_timing.u_timing.command_count_q;
+                    end
+                end
+            end else begin : g_magic_stats
+                assign memory_ddr_commands_coalesced = 64'd0;
+                assign memory_ddr_reads_coalesced = 64'd0;
+                assign memory_ddr_writes_coalesced = 64'd0;
+                assign memory_ddr_coalesced_groups = 64'd0;
+                always @(posedge clk) begin
+                    if (!rst_n)
+                        max_ddr3_queued = 0;
+                    else if (u_ddr3.g_magic.u_timing.resp_valid_o)
+                        max_ddr3_queued = 1;
+                end
+            end
+        end else begin : g_sram
+            assign memory_read_bursts = 64'd0;
+            assign memory_write_bursts = 64'd0;
+            assign memory_read_beats_requested = 64'd0;
+            assign memory_write_beats_requested = 64'd0;
+            assign memory_read_beats_returned = 64'd0;
+            assign memory_write_beats_received = 64'd0;
+            assign memory_read_address_wait = 64'd0;
+            assign memory_write_address_wait = 64'd0;
+            assign memory_write_data_wait = 64'd0;
+            assign memory_read_response_wait = 64'd0;
+            assign memory_write_response_wait = 64'd0;
+            assign memory_timing_backend_wait = 64'd0;
+            assign memory_timing_owner_full = 64'd0;
+            assign memory_read_timing_wait = 64'd0;
+            assign memory_write_timing_wait = 64'd0;
+            assign memory_timing_read_commands = 64'd0;
+            assign memory_timing_write_commands = 64'd0;
+            assign memory_max_read_queue = 64'd0;
+            assign memory_max_write_queue = 64'd0;
+            assign memory_max_timing_owners = 64'd0;
+            assign memory_ddr_commands_coalesced = 64'd0;
+            assign memory_ddr_reads_coalesced = 64'd0;
+            assign memory_ddr_writes_coalesced = 64'd0;
+            assign memory_ddr_coalesced_groups = 64'd0;
+
+            tb_axi256_burst_sram #(
+                .RAM_BYTES(RAM_BYTES)
+            ) u_ram (
+                .clk_i(clk),
+                .rst_ni(rst_n),
+                .arid_i(ram_arid),
+                .araddr_i(ram_araddr),
+                .arlen_i(ram_arlen),
+                .arsize_i(ram_arsize),
+                .arburst_i(ram_arburst),
+                .arvalid_i(ram_arvalid),
+                .arready_o(ram_arready),
+                .rid_o(ram_rid),
+                .rdata_o(ram_rdata),
+                .rresp_o(ram_rresp),
+                .rlast_o(ram_rlast),
+                .rvalid_o(ram_rvalid),
+                .rready_i(ram_rready),
+                .awid_i(ram_awid),
+                .awaddr_i(ram_awaddr),
+                .awlen_i(ram_awlen),
+                .awsize_i(ram_awsize),
+                .awburst_i(ram_awburst),
+                .awvalid_i(ram_awvalid),
+                .awready_o(ram_awready),
+                .wdata_i(ram_wdata),
+                .wstrb_i(ram_wstrb),
+                .wlast_i(ram_wlast),
+                .wvalid_i(ram_wvalid),
+                .wready_o(ram_wready),
+                .bid_o(ram_bid),
+                .bresp_o(ram_bresp),
+                .bvalid_o(ram_bvalid),
+                .bready_i(ram_bready)
+            );
+
+            assign magic_ccx_read_data = {
+                u_ram.ram_q[magic_ccx_word_index + 1'b1],
+                u_ram.ram_q[magic_ccx_word_index]
+            };
+
+            initial begin
+                ddr3_commands = 0;
+                max_ddr3_queued = 0;
+                max_timing_owners = 0;
+                if (!$value$plusargs("memh=%s", memh_path))
+                    $fatal(1,
+                        "full-CCX SRAM test requires +memh=<256-bit image>");
+                if (!$value$plusargs("memh_words=%d", memh_words))
+                    $fatal(1,
+                        "full-CCX SRAM test requires +memh_words=<count>");
+                if ((memh_words < 1) ||
+                    (memh_words > (RAM_BYTES / 32)))
+                    $fatal(1, "SRAM memh_words=%0d exceeds RAM",
+                           memh_words);
+                $readmemh(memh_path, u_ram.ram_q, 0, memh_words - 1);
+            end
+        end
+    endgenerate
+
+    initial begin
+        magic_ccx_source_mask_q = 4'b0000;
+        magic_ccx_source_mask_arg = 0;
+        if ($test$plusargs("magic_l1i"))
+            magic_ccx_source_mask_q[`OPENRV64_CCX_SOURCE_ICACHE] = 1'b1;
+        if ($test$plusargs("magic_l1d"))
+            magic_ccx_source_mask_q[`OPENRV64_CCX_SOURCE_DCACHE] = 1'b1;
+        if ($value$plusargs("magic_ccx_sources=%h",
+                            magic_ccx_source_mask_arg))
+            magic_ccx_source_mask_q = magic_ccx_source_mask_arg[3:0];
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            magic_ccx_resp_valid_q <= 1'b0;
+            magic_ccx_resp_hart_id_q <=
+                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+            magic_ccx_resp_txn_id_q <=
+                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+            magic_ccx_resp_source_id_q <=
+                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+            magic_ccx_resp_rdata_q <=
+                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            magic_ccx_l1i_reads <= 0;
+            magic_ccx_l1d_reads <= 0;
+            for (magic_ccx_shadow_reset_scan = 0;
+                 magic_ccx_shadow_reset_scan < MAGIC_CCX_SHADOW_DEPTH;
+                 magic_ccx_shadow_reset_scan =
+                    magic_ccx_shadow_reset_scan + 1) begin
+                magic_ccx_shadow_valid_q[
+                    magic_ccx_shadow_reset_scan] <= 1'b0;
+                magic_ccx_shadow_hart_id_q[
+                    magic_ccx_shadow_reset_scan] <=
+                    {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+                magic_ccx_shadow_txn_id_q[
+                    magic_ccx_shadow_reset_scan] <=
+                    {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                magic_ccx_shadow_source_id_q[
+                    magic_ccx_shadow_reset_scan] <=
+                    {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+            end
+        end else begin
+            if (magic_ccx_resp_fire && !magic_ccx_req_fire)
+                magic_ccx_resp_valid_q <= 1'b0;
+            if (magic_ccx_shadow_resp_fire)
+                magic_ccx_shadow_valid_q[
+                    magic_ccx_shadow_resp_index_r] <= 1'b0;
+            if (magic_ccx_req_fire) begin
+                magic_ccx_resp_valid_q <= 1'b1;
+                magic_ccx_resp_hart_id_q <= ccx_req_hart_id;
+                magic_ccx_resp_txn_id_q <= ccx_req_txn_id;
+                magic_ccx_resp_source_id_q <= ccx_req_source_id;
+                magic_ccx_resp_rdata_q <= magic_ccx_read_data;
+                magic_ccx_shadow_valid_q[
+                    magic_ccx_shadow_free_index_r] <= 1'b1;
+                magic_ccx_shadow_hart_id_q[
+                    magic_ccx_shadow_free_index_r] <= ccx_req_hart_id;
+                magic_ccx_shadow_txn_id_q[
+                    magic_ccx_shadow_free_index_r] <= ccx_req_txn_id;
+                magic_ccx_shadow_source_id_q[
+                    magic_ccx_shadow_free_index_r] <= ccx_req_source_id;
+                if (ccx_req_source_id ==
+                    `OPENRV64_CCX_SOURCE_ICACHE)
+                    magic_ccx_l1i_reads <= magic_ccx_l1i_reads + 1;
+                else if (ccx_req_source_id ==
+                         `OPENRV64_CCX_SOURCE_DCACHE)
+                    magic_ccx_l1d_reads <= magic_ccx_l1d_reads + 1;
+            end
+        end
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            axi_read_transactions = 0;
+            axi_read_beats = 0;
+            axi_write_transactions = 0;
+            axi_write_beats = 0;
+            max_l2_mshrs = 0;
+        end else begin
+            if (ram_arvalid && ram_arready)
+                axi_read_transactions = axi_read_transactions + 1;
+            if (ram_rvalid && ram_rready)
+                axi_read_beats = axi_read_beats + 1;
+            if (ram_awvalid && ram_awready)
+                axi_write_transactions = axi_write_transactions + 1;
+            if (ram_wvalid && ram_wready)
+                axi_write_beats = axi_write_beats + 1;
+            if (u_complex.u_l2.active_mshr_count_r > max_l2_mshrs)
+                max_l2_mshrs = u_complex.u_l2.active_mshr_count_r;
+        end
+    end
 
     always #5 clk = ~clk;
+
+    // Optional address-level timing for the single architectural fetch demand
+    // retained by fetch_3w.  This distinguishes lower-memory line fills from
+    // the much more common L1I-hit request/response turnaround.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fetch_demand_trace_cycle_q = 0;
+            fetch_demand_trace_start_q = 0;
+            fetch_demand_trace_external_q = 0;
+            fetch_demand_trace_empty_q = 0;
+            fetch_demand_trace_active_q = 1'b0;
+            fetch_demand_trace_addr_q = 64'd0;
+            fetch_demand_trace_pc_q = 64'd0;
+        end else begin
+            fetch_demand_trace_cycle_q = fetch_demand_trace_cycle_q + 1;
+
+            if (fetch_demand_trace_active_q) begin
+                if (dut.u_bus.g_ccx.u_bus.u_l1i.backend_state_q != 0)
+                    fetch_demand_trace_external_q =
+                        fetch_demand_trace_external_q + 1;
+                if ((dut.fetch_decode_valid == 0) &&
+                    dut.backend_decode_ready[0] &&
+                    dut.frontend_decode_enable)
+                    fetch_demand_trace_empty_q =
+                        fetch_demand_trace_empty_q + 1;
+
+                if (dut.fetch_pipe_resp_valid &&
+                    dut.fetch_pipe_resp_ready &&
+                    dut.fetch_pipe_resp_demand) begin
+                    if (fetch_demand_trace_enabled != 0)
+                        $display(
+                            "TRACE_FETCH_DEMAND kind=complete start_pc=%016h addr=%016h latency=%0d external=%0d empty=%0d",
+                            fetch_demand_trace_pc_q,
+                            fetch_demand_trace_addr_q,
+                            fetch_demand_trace_cycle_q -
+                                fetch_demand_trace_start_q,
+                            fetch_demand_trace_external_q,
+                            fetch_demand_trace_empty_q);
+                    fetch_demand_trace_active_q = 1'b0;
+                end else if (dut.fetch3_restart ||
+                             dut.fetch3_invalidate) begin
+                    if (fetch_demand_trace_enabled != 0)
+                        $display(
+                            "TRACE_FETCH_DEMAND kind=cancel start_pc=%016h addr=%016h latency=%0d external=%0d empty=%0d",
+                            fetch_demand_trace_pc_q,
+                            fetch_demand_trace_addr_q,
+                            fetch_demand_trace_cycle_q -
+                                fetch_demand_trace_start_q,
+                            fetch_demand_trace_external_q,
+                            fetch_demand_trace_empty_q);
+                    fetch_demand_trace_active_q = 1'b0;
+                end
+            end
+
+            if (dut.fetch_pipe_req_valid &&
+                dut.fetch_pipe_req_ready &&
+                dut.fetch_pipe_req_demand) begin
+                if (fetch_demand_trace_active_q)
+                    $fatal(1,
+                        "fetch demand trace observed overlapping demand requests");
+                fetch_demand_trace_active_q = 1'b1;
+                fetch_demand_trace_start_q = fetch_demand_trace_cycle_q;
+                fetch_demand_trace_external_q = 0;
+                fetch_demand_trace_empty_q = 0;
+                fetch_demand_trace_addr_q = dut.fetch_pipe_req_addr;
+                fetch_demand_trace_pc_q =
+                    dut.g_fetch_axi.u_fetch.consume_pc_q;
+            end
+        end
+    end
 
     // A sector lookaside hit is only useful until the completing 256-bit
     // demand returns.  Track that interval at the handshake edges so the
@@ -1270,19 +1916,13 @@ module tb_top_3p_soc #(
     end
 
     initial begin
-        if (!$value$plusargs("memh=%s", memh_path))
-            $fatal(1, "full-CCX test requires +memh=<256-bit image>");
-        if (!$value$plusargs("memh_words=%d", memh_words))
-            $fatal(1, "full-CCX test requires +memh_words=<count>");
-        $readmemh(memh_path, u_ram.ram_q, 0, memh_words - 1);
-    end
-
-    initial begin
         clk = 1'b0;
         rst_n = 1'b0;
         max_cycles = 250000;
         expected_a0 = 0;
         expected_a0_valid = 1'b0;
+        done_pc = 0;
+        done_pc_valid = 1'b0;
         retired = 0;
         ccx_requests = 0;
         ccx_fetch_reads = 0;
@@ -1386,7 +2026,30 @@ module tb_top_3p_soc #(
         frontend_empty_dispatch_full = 0;
         frontend_empty_l1i_external_miss = 0;
         frontend_empty_pending_no_external_miss = 0;
+        fetch_demand_trace_enabled =
+            $test$plusargs("fetch_demand_trace");
         lsu_request_wait = 0;
+        lsu_load_request_wait = 0;
+        lsu_store_request_wait = 0;
+        l1d_request_wait = 0;
+        l1d_load_request_wait = 0;
+        l1d_store_request_wait = 0;
+        l1d_wait_store_block = 0;
+        l1d_dirty_snoop_accepts = 0;
+        l1d_wait_lock_barrier = 0;
+        l1d_wait_response_tags = 0;
+        l1d_wait_refill = 0;
+        l1d_wait_access = 0;
+        l1d_wait_run_response = 0;
+        l1d_wait_unknown = 0;
+        ccx_request_wait = 0;
+        ccx_read_request_wait = 0;
+        ccx_write_request_wait = 0;
+        l2_bus_request_wait = 0;
+        l2_command_full_cycles = 0;
+        axi_read_address_wait = 0;
+        axi_write_address_wait = 0;
+        axi_write_data_wait = 0;
         lsu_outstanding_cycles = 0;
         branch_resolutions = 0;
         conditional_branch_resolutions = 0;
@@ -1411,10 +2074,12 @@ module tb_top_3p_soc #(
             max_cycles = 250000;
         if ($value$plusargs("expect_a0=%h", expected_a0))
             expected_a0_valid = 1'b1;
+        if ($value$plusargs("done_pc=%h", done_pc))
+            done_pc_valid = 1'b1;
 
         repeat (5) @(posedge clk);
         rst_n = 1'b1;
-        for (cycles = 0; (cycles < max_cycles) && !dbg_halted;
+        for (cycles = 0; (cycles < max_cycles) && !run_done;
              cycles = cycles + 1) begin
             @(posedge clk);
             #1;
@@ -1615,8 +2280,79 @@ module tb_top_3p_soc #(
                 else
                     frontend_other_empty = frontend_other_empty + 1;
             end
-            if (dut.backend_mem_valid && !dut.backend_mem_ready)
+            if (dut.backend_mem_valid && !dut.backend_mem_ready) begin
                 lsu_request_wait = lsu_request_wait + 1;
+                if (dut.backend_mem_write)
+                    lsu_store_request_wait =
+                        lsu_store_request_wait + 1;
+                else
+                    lsu_load_request_wait =
+                        lsu_load_request_wait + 1;
+            end
+            if (dut.u_bus.g_ccx.u_bus.l1d_req_valid &&
+                !dut.u_bus.g_ccx.u_bus.l1d_req_ready) begin
+                l1d_request_wait = l1d_request_wait + 1;
+                if (dut.u_bus.g_ccx.u_bus.l1d_req_write)
+                    l1d_store_request_wait =
+                        l1d_store_request_wait + 1;
+                else
+                    l1d_load_request_wait =
+                        l1d_load_request_wait + 1;
+                if (dut.u_bus.g_ccx.u_bus.u_l1d.
+                        demand_load_store_block)
+                    l1d_wait_store_block =
+                        l1d_wait_store_block + 1;
+                else if (!dut.u_bus.g_ccx.u_bus.u_l1d.
+                             lock_request_ready)
+                    l1d_wait_lock_barrier =
+                        l1d_wait_lock_barrier + 1;
+                else if (dut.u_bus.g_ccx.u_bus.u_l1d.
+                             response_tag_full)
+                    l1d_wait_response_tags =
+                        l1d_wait_response_tags + 1;
+                else if (!dut.u_bus.g_ccx.u_bus.u_l1d.l1_req_ready) begin
+                    case (dut.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.
+                              g_cache.u_cache.state_q)
+                        2'd1:
+                            l1d_wait_refill = l1d_wait_refill + 1;
+                        2'd2:
+                            l1d_wait_access = l1d_wait_access + 1;
+                        default:
+                            l1d_wait_run_response =
+                                l1d_wait_run_response + 1;
+                    endcase
+                end else
+                    l1d_wait_unknown = l1d_wait_unknown + 1;
+            end
+            if (dut.u_bus.g_ccx.u_bus.l1d_req_valid &&
+                dut.u_bus.g_ccx.u_bus.l1d_req_ready &&
+                !dut.u_bus.g_ccx.u_bus.l1d_req_write &&
+                dut.u_bus.g_ccx.u_bus.u_l1d.
+                    demand_load_store_conflict_r &&
+                !dut.u_bus.g_ccx.u_bus.u_l1d.
+                    demand_load_store_block)
+                l1d_dirty_snoop_accepts =
+                    l1d_dirty_snoop_accepts + 1;
+            if (ccx_req_valid && !ccx_req_ready) begin
+                ccx_request_wait = ccx_request_wait + 1;
+                if (ccx_req_op == `OPENRV64_CCX_OP_WRITE)
+                    ccx_write_request_wait =
+                        ccx_write_request_wait + 1;
+                else
+                    ccx_read_request_wait =
+                        ccx_read_request_wait + 1;
+            end
+            if (u_complex.u_l2.bus_req_valid_o &&
+                !u_complex.u_l2.bus_req_ready_i)
+                l2_bus_request_wait = l2_bus_request_wait + 1;
+            if (u_complex.u_l2.command_queue_full)
+                l2_command_full_cycles = l2_command_full_cycles + 1;
+            if (ram_arvalid && !ram_arready)
+                axi_read_address_wait = axi_read_address_wait + 1;
+            if (ram_awvalid && !ram_awready)
+                axi_write_address_wait = axi_write_address_wait + 1;
+            if (ram_wvalid && !ram_wready)
+                axi_write_data_wait = axi_write_data_wait + 1;
             if (trace_lsu_sent != 0)
                 lsu_outstanding_cycles = lsu_outstanding_cycles + 1;
             if (dut.branch_resolved)
@@ -1795,9 +2531,9 @@ module tb_top_3p_soc #(
                     dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_o;
         end
 
-        if (!dbg_halted)
+        if (!run_done)
             $fatal(1,
-                "full-CCX CoreMark timeout pc=%h instr=%h retired=%0d",
+                "full-CCX workload timeout pc=%h instr=%h retired=%0d",
                 dbg_pc, dbg_instr, retired);
         if (expected_a0_valid &&
             (dut.u_backend.u_gpr.regs[10] != expected_a0))
@@ -1805,20 +2541,60 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[10], expected_a0);
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_CCX_L2 mode=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_CCX_L2 mode=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
-            ISSUE_WINDOW, SPECULATION_WINDOW,
+            ISSUE_WINDOW, SPECULATION_WINDOW, RETIRE_DEPTH,
+            ENABLE_POSTED_STORES, DDR3_ENABLE, MEMORY_TIMING_MODEL,
             cycles, retired, ipc,
             dut.u_backend.u_gpr.regs[10], L1I_CACHE_BYTES,
             L1D_CACHE_BYTES, L2_BYTES, L2_WAYS, RAM_BYTES);
         $display(
             "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
             ccx_requests, ccx_fetch_reads, ccx_data_reads,
-            ccx_data_writes, u_ram.read_transactions,
-            u_ram.read_beats, u_ram.write_transactions,
-            u_ram.write_beats);
+            ccx_data_writes, axi_read_transactions,
+            axi_read_beats, axi_write_transactions,
+            axi_write_beats);
+        $display(
+            "PERF_CCX_MAGIC source_mask=%x l1i_line_reads=%0d l1d_line_reads=%0d",
+            magic_ccx_source_mask_q, magic_ccx_l1i_reads,
+            magic_ccx_l1d_reads);
+        if (DDR3_ENABLE != 0)
+            $display(
+                "PERF_MEMORY timing_model=%0d commands=%0d max_command_queue=%0d max_timing_owners=%0d max_l2_mshrs=%0d read_queue_depth=%0d write_queue_depth=%0d command_queue_depth=%0d",
+                MEMORY_TIMING_MODEL,
+                ddr3_commands, max_ddr3_queued, max_timing_owners,
+                max_l2_mshrs, DDR3_READ_QUEUE_DEPTH,
+                DDR3_WRITE_QUEUE_DEPTH, DDR3_COMMAND_QUEUE_DEPTH);
+        if (DDR3_ENABLE != 0) begin
+            $display(
+                "PERF_MEMORY_CHANNEL read_bursts=%0d write_bursts=%0d read_beats_requested=%0d read_beats_returned=%0d write_beats_requested=%0d write_beats_received=%0d timing_read_commands=%0d timing_write_commands=%0d",
+                memory_read_bursts, memory_write_bursts,
+                memory_read_beats_requested, memory_read_beats_returned,
+                memory_write_beats_requested, memory_write_beats_received,
+                memory_timing_read_commands,
+                memory_timing_write_commands);
+            $display(
+                "PERF_MEMORY_CHANNEL_WAIT ar_queue=%0d aw_queue=%0d w_queue=%0d r_backpressure=%0d b_backpressure=%0d read_timing=%0d write_timing=%0d timing_backend=%0d timing_owner_full=%0d max_read_queue=%0d max_write_queue=%0d max_timing_owners=%0d",
+                memory_read_address_wait, memory_write_address_wait,
+                memory_write_data_wait, memory_read_response_wait,
+                memory_write_response_wait, memory_read_timing_wait,
+                memory_write_timing_wait, memory_timing_backend_wait,
+                memory_timing_owner_full, memory_max_read_queue,
+                memory_max_write_queue, memory_max_timing_owners);
+            $display(
+                "PERF_MEMORY_CHANNEL_MERGE source_read_requests=%0d axi_read_bursts=%0d read_requests_merged=%0d axi_write_bursts=%0d write_requests_merged=%0d ddr_commands_coalesced=%0d ddr_reads_coalesced=%0d ddr_writes_coalesced=%0d ddr_coalesced_groups=%0d",
+                u_complex.u_genbus.perf_axi_read_source_requests_q,
+                u_complex.u_genbus.perf_axi_read_bursts_q,
+                u_complex.u_genbus.perf_axi_read_merged_requests_q,
+                u_complex.u_genbus.perf_axi_write_bursts_q,
+                u_complex.u_genbus.perf_axi_write_merged_requests_q,
+                memory_ddr_commands_coalesced,
+                memory_ddr_reads_coalesced,
+                memory_ddr_writes_coalesced,
+                memory_ddr_coalesced_groups);
+        end
         $display(
             "PERF_CCX_L2_FRONTEND direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d",
             direction_corrections, target_corrections,
@@ -1880,9 +2656,9 @@ module tb_top_3p_soc #(
             stash_trace_sector_stall_cycles[0],
             stash_trace_sector_stall_cycles[1]);
         $display(
-            "PERF_CCX_L2_PREFETCH enabled=%0d streams=%0d adaptive=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d late=%0d dropped=%0d useless=%0d",
+            "PERF_CCX_L2_PREFETCH enabled=%0d streams=%0d initial_depth=%0d adaptive=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d late=%0d dropped=%0d useless=%0d",
             L1D_PREFETCH_ENABLE, L1D_PREFETCH_STREAMS,
-            L1D_PREFETCH_ADAPTIVE_ENABLE,
+            L1D_PREFETCH_DISTANCE, L1D_PREFETCH_ADAPTIVE_ENABLE,
             L1D_PREFETCH_MAX_DISTANCE, l1d_prefetch_max_depth,
             L1D_PREFETCH_OUTSTANDING, L1D_PREFETCH_DEMAND_RESERVE,
             l1d_prefetch_issued,
@@ -1939,9 +2715,25 @@ module tb_top_3p_soc #(
             frontend_empty_l1i_external_miss,
             frontend_empty_pending_no_external_miss);
         $display(
-            "PERF_CCX_L2_LSU request_wait=%0d outstanding=%0d branch_resolutions=%0d conditional_branch_resolutions=%0d",
-            lsu_request_wait, lsu_outstanding_cycles,
+            "PERF_CCX_L2_LSU request_wait=%0d load_wait=%0d store_wait=%0d outstanding=%0d branch_resolutions=%0d conditional_branch_resolutions=%0d",
+            lsu_request_wait, lsu_load_request_wait,
+            lsu_store_request_wait, lsu_outstanding_cycles,
             branch_resolutions, conditional_branch_resolutions);
+        $display(
+            "PERF_CCX_L2_BACKPRESSURE l1d_wait=%0d l1d_load_wait=%0d l1d_store_wait=%0d ccx_wait=%0d ccx_read_wait=%0d ccx_write_wait=%0d l2_bus_wait=%0d l2_command_full=%0d axi_ar_wait=%0d axi_aw_wait=%0d axi_w_wait=%0d",
+            l1d_request_wait, l1d_load_request_wait,
+            l1d_store_request_wait, ccx_request_wait,
+            ccx_read_request_wait, ccx_write_request_wait,
+            l2_bus_request_wait, l2_command_full_cycles,
+            axi_read_address_wait, axi_write_address_wait,
+            axi_write_data_wait);
+        $display(
+            "PERF_CCX_L2_L1D_WAIT store_block=%0d dirty_snoops=%0d lock_barrier=%0d response_tags=%0d refill=%0d access=%0d run_response=%0d unknown=%0d",
+            l1d_wait_store_block, l1d_dirty_snoop_accepts,
+            l1d_wait_lock_barrier,
+            l1d_wait_response_tags, l1d_wait_refill,
+            l1d_wait_access, l1d_wait_run_response,
+            l1d_wait_unknown);
         $display(
             "PERF_CCX_L2_CONFLICT total=%0d ex0=%0d ex1=%0d mem=%0d blocked_alu=%0d blocked_branch=%0d blocked_jump=%0d blocked_load=%0d blocked_store=%0d",
             pipe_conflicts, pipe_conflicts_ex0, pipe_conflicts_ex1,
@@ -1954,7 +2746,26 @@ module tb_top_3p_soc #(
             conflict_pair_branch_branch, conflict_pair_alu_alu,
             conflict_pair_load_load, conflict_pair_store_load,
             conflict_pair_store_store, conflict_pair_other);
-        $display("PASS: 3P L1I/L1D -> CCX -> L2 -> 16 MiB AXI SRAM");
+        if ((DDR3_ENABLE != 0) && (MEMORY_TIMING_MODEL == 0) &&
+            $test$plusargs("require_ddr3_overlap") &&
+            ((max_ddr3_queued < 2) || (max_timing_owners < 2)))
+            $fatal(1,
+                "DDR3 path did not overlap requests: queued=%0d owners=%0d",
+                max_ddr3_queued, max_timing_owners);
+        if ((DDR3_ENABLE != 0) &&
+            $test$plusargs("require_timed_memory") &&
+            (ddr3_commands == 0))
+            $fatal(1, "timed-memory path accepted no commands");
+        if (DDR3_ENABLE != 0)
+            if (MEMORY_TIMING_MODEL == 1)
+                $display(
+                    "PASS: 3P L1I/L1D -> CCX -> L2 -> AXI -> magic memory");
+            else
+                $display(
+                    "PASS: 3P L1I/L1D -> CCX -> L2 -> AXI -> banked DDR3");
+        else
+            $display(
+                "PASS: 3P L1I/L1D -> CCX -> L2 -> 16 MiB AXI SRAM");
         $finish;
     end
 endmodule

@@ -59,6 +59,7 @@ module tb_ccx_l2;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_LINES-1];
     logic bus_pending_q;
+    logic bus_response_hold;
     logic pending_write_q;
     logic [63:0] pending_addr_q;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] pending_wdata_q;
@@ -182,7 +183,8 @@ module tb_ccx_l2;
                     bus_reads <= bus_reads + 1;
             end
 
-            if (bus_pending_q && !bus_resp_valid) begin
+            if (bus_pending_q && !bus_resp_valid &&
+                !bus_response_hold) begin
                 memory_index = pending_addr_q[18:6];
                 bus_resp_rdata <= memory[memory_index];
                 if (pending_write_q) begin
@@ -389,7 +391,15 @@ module tb_ccx_l2;
     integer congruent_index;
     reg [63:0] congruent_addr;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] congruent_line;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] snoop_line;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] snoop_dirty_line;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] snoop_evict_line;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] snoop_txn;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] snoop_evict_txn;
+    integer snoop_wait_cycles;
+    integer snoop_bus_reads_before;
     localparam [63:0] MASKED_LINE_ADDR = 64'h0000_0000_0000_2000;
+    localparam [63:0] SNOOP_LINE_ADDR = 64'h0000_0000_0000_3000;
     localparam [63:0] L2_SET_STRIDE = 64'h0000_0000_0000_8000;
 
     initial begin
@@ -414,6 +424,7 @@ module tb_ccx_l2;
         wdata = 0;
         wstrb = 0;
         resp_ready = 1'b1;
+        bus_response_hold = 1'b0;
         txn_counter = 0;
         for (memory_index = 0; memory_index < MEMORY_LINES;
              memory_index = memory_index + 1)
@@ -592,7 +603,72 @@ module tb_ccx_l2;
         if (memory[MASKED_LINE_ADDR[18:6]] !== masked_line)
             $fatal(1, "partial dirty eviction corrupted backing line");
 
-        $display("PASS: native L2 write-around, partial dirty eviction, atomics, and PTE generations");
+        // A reserved dirty victim is still the authoritative copy until its
+        // writeback response.  Hold that response, then request the victim
+        // line again.  The read must be served from the victim snapshot
+        // without issuing a stale backing-memory read.
+        snoop_line = line_pattern(64'h7000_0000_0000_0000);
+        snoop_dirty_line =
+            line_pattern(64'h7100_0000_0000_0000);
+        memory[SNOOP_LINE_ADDR[18:6]] = snoop_line;
+        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                  `OPENRV64_CCX_KIND_DATA,
+                  SNOOP_LINE_ADDR, snoop_line);
+        write_line(SNOOP_LINE_ADDR, snoop_dirty_line);
+        for (congruent_index = 1; congruent_index < 8;
+             congruent_index = congruent_index + 1) begin
+            congruent_addr =
+                SNOOP_LINE_ADDR + congruent_index * L2_SET_STRIDE;
+            congruent_line =
+                line_pattern(64'h7200_0000_0000_0000 +
+                             congruent_index * 64'h100);
+            memory[congruent_addr[18:6]] = congruent_line;
+            read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                      `OPENRV64_CCX_KIND_DATA,
+                      congruent_addr, congruent_line);
+        end
+
+        congruent_addr = SNOOP_LINE_ADDR + 8 * L2_SET_STRIDE;
+        snoop_evict_line =
+            line_pattern(64'h7300_0000_0000_0000);
+        memory[congruent_addr[18:6]] = snoop_evict_line;
+        bus_response_hold = 1'b1;
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_READ, 1'b0,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd6, congruent_addr, snoop_evict_txn);
+        snoop_wait_cycles = 0;
+        while ((!bus_pending_q || !pending_write_q ||
+                (pending_addr_q != SNOOP_LINE_ADDR)) &&
+               (snoop_wait_cycles < 100)) begin
+            @(negedge clk);
+            snoop_wait_cycles = snoop_wait_cycles + 1;
+        end
+        if (!bus_pending_q || !pending_write_q ||
+            (pending_addr_q != SNOOP_LINE_ADDR))
+            $fatal(1, "dirty victim writeback did not enter the bus");
+
+        snoop_bus_reads_before = bus_reads;
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_READ, 1'b0,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd6, SNOOP_LINE_ADDR, snoop_txn);
+        wait_response(snoop_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+                      snoop_dirty_line, 1'b1);
+        if (bus_reads != snoop_bus_reads_before)
+            $fatal(1,
+                "dirty victim snoop issued a backing-memory read");
+
+        bus_response_hold = 1'b0;
+        wait_response(snoop_evict_txn,
+                      `OPENRV64_CCX_SOURCE_DCACHE,
+                      snoop_evict_line, 1'b1);
+        if (memory[SNOOP_LINE_ADDR[18:6]] !== snoop_dirty_line)
+            $fatal(1, "dirty victim writeback lost snooped data");
+
+        $display("PASS: native L2 write-around, dirty-victim snooping, partial eviction, atomics, and PTE generations");
         $finish;
     end
 

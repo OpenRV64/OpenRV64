@@ -8,6 +8,7 @@
 // GDDR6_8Gb_x16 at tCK=0.66 ns.
 module openrv64_timing_gddr6 #(
     parameter integer ADDR_WIDTH = 64,
+    parameter integer TAG_WIDTH = 8,
     parameter integer CONTROLLER_TCK_PS = 1000,
     parameter integer DQ_WIDTH = 16,
     parameter integer BURST_LENGTH = 16,
@@ -33,12 +34,15 @@ module openrv64_timing_gddr6 #(
     input  wire                  cmd_write_i,
     input  wire [ADDR_WIDTH-1:0] cmd_addr_i,
     input  wire [15:0]           cmd_bytes_i,
+    input  wire [TAG_WIDTH-1:0]  cmd_tag_i,
     output wire                  resp_valid_o,
+    output wire [TAG_WIDTH-1:0]  resp_tag_o,
     input  wire                  resp_ready_i
 );
 
     openrv64_timing_dram #(
-        .ADDR_WIDTH(ADDR_WIDTH), .DQ_WIDTH(DQ_WIDTH),
+        .ADDR_WIDTH(ADDR_WIDTH), .TAG_WIDTH(TAG_WIDTH),
+        .DQ_WIDTH(DQ_WIDTH),
         .BURST_LENGTH(BURST_LENGTH), .BURST_CYCLES(BURST_CYCLES),
         .BANK_BITS(BANK_BITS), .ROW_BYTES(ROW_BYTES),
         .CONTROLLER_TCK_PS(CONTROLLER_TCK_PS),
@@ -51,8 +55,9 @@ module openrv64_timing_gddr6 #(
         .clk_i(clk_i), .rst_ni(rst_ni),
         .cmd_valid_i(cmd_valid_i), .cmd_ready_o(cmd_ready_o),
         .cmd_write_i(cmd_write_i), .cmd_addr_i(cmd_addr_i),
-        .cmd_bytes_i(cmd_bytes_i),
-        .resp_valid_o(resp_valid_o), .resp_ready_i(resp_ready_i)
+        .cmd_bytes_i(cmd_bytes_i), .cmd_tag_i(cmd_tag_i),
+        .resp_valid_o(resp_valid_o), .resp_tag_o(resp_tag_o),
+        .resp_ready_i(resp_ready_i)
     );
 
 endmodule

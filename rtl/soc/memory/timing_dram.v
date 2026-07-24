@@ -14,6 +14,7 @@
 // but this fixture does not claim bank-parallel throughput accuracy.
 module openrv64_timing_dram #(
     parameter integer ADDR_WIDTH = 64,
+    parameter integer TAG_WIDTH = 8,
     parameter integer DQ_WIDTH = 64,
     parameter integer BURST_LENGTH = 8,
     parameter integer BURST_CYCLES = 4,
@@ -41,8 +42,10 @@ module openrv64_timing_dram #(
     input  wire                  cmd_write_i,
     input  wire [ADDR_WIDTH-1:0] cmd_addr_i,
     input  wire [15:0]           cmd_bytes_i,
+    input  wire [TAG_WIDTH-1:0]  cmd_tag_i,
 
     output wire                  resp_valid_o,
+    output wire [TAG_WIDTH-1:0]  resp_tag_o,
     input  wire                  resp_ready_i
 );
 
@@ -67,6 +70,7 @@ module openrv64_timing_dram #(
 
     reg busy_q;
     reg response_valid_q;
+    reg [TAG_WIDTH-1:0] response_tag_q;
     reg [LATENCY_WIDTH-1:0] cycles_left_q;
     reg [31:0] refresh_age_q;
     reg [63:0] controller_cycle_q;
@@ -184,6 +188,7 @@ module openrv64_timing_dram #(
 
     assign cmd_ready_o = rst_ni && !busy_q && !response_valid_q;
     assign resp_valid_o = response_valid_q;
+    assign resp_tag_o = response_tag_q;
 
     initial begin
         if ((ADDR_WIDTH < 16) || (ADDR_WIDTH > 64))
@@ -218,6 +223,7 @@ module openrv64_timing_dram #(
         if (!rst_ni) begin
             busy_q <= 1'b0;
             response_valid_q <= 1'b0;
+            response_tag_q <= {TAG_WIDTH{1'b0}};
             cycles_left_q <= {LATENCY_WIDTH{1'b0}};
             refresh_age_q <= 32'd0;
             controller_cycle_q <= 64'd0;
@@ -238,6 +244,7 @@ module openrv64_timing_dram #(
 
             if (command_fire) begin
                 busy_q <= 1'b1;
+                response_tag_q <= cmd_tag_i;
                 cycles_left_q <= command_latency[LATENCY_WIDTH-1:0];
 
                 if (refresh_due) begin

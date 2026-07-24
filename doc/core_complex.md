@@ -45,10 +45,14 @@ MSHRs with eight waiters each.
 
 Cacheable hits do not reach the external bus.  Stores update byte-selected L2
 data and mark the line dirty.  Dirty replacement writes a whole line before
-refill.  A writeback failure preserves the dirty victim and fails every merged
-request; a refill failure leaves the destination invalid and likewise fails
-the merged requests.  Device or non-cacheable requests bypass allocation but
-remain ordered through the same controller.
+refill.  While that writeback is pending, the reserved victim snapshot remains
+an authoritative lookup source: matching reads are returned from it rather
+than allocating a second miss against stale backing memory.  Matching writes
+wait until the already-issued writeback completes.  A writeback failure
+preserves the dirty victim and fails every merged request; a refill failure
+leaves the destination invalid and likewise fails the merged requests. Device
+or non-cacheable requests bypass allocation but remain ordered through the
+same controller.
 
 `FENCE` completes only after older MSHRs, bus transactions, hits, and responses
 have drained. `FENCE + kind=PTE` also advances an eight-bit PTE generation.

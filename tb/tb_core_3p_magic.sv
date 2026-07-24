@@ -19,6 +19,9 @@ module tb_core_3p_magic #(
     parameter integer ENABLE_FULL_FORWARDING = 0,
     parameter integer RELAX_WAW = 1,
     parameter integer RELAX_HAZARDS = 0,
+    parameter integer RETIRE_DEPTH = 8,
+    parameter integer ISSUE_WINDOW = 0,
+    parameter integer SPECULATION_WINDOW = 0,
     parameter integer SRAM_BYTES = 64 * 1024
 );
     localparam integer SRAM_WORDS = SRAM_BYTES / 32;
@@ -165,6 +168,11 @@ module tb_core_3p_magic #(
         .ENABLE_FULL_FORWARDING(ENABLE_FULL_FORWARDING),
         .RELAX_WAW(RELAX_WAW),
         .RELAX_HAZARDS(RELAX_HAZARDS),
+        .RETIRE_DEPTH(RETIRE_DEPTH),
+        .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .SPEC_LOAD_BASE(SRAM_BASE),
+        .SPEC_LOAD_SIZE(SRAM_BYTES),
         .ENABLE_MAGIC_MEMORY(1'b1),
         .ENABLE_TRACE(1'b0),
         .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
@@ -549,6 +557,9 @@ module tb_core_3p_magic #(
                 dut.u_backend.u_gpr.regs[10],
                 expected_a0);
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
+        $display(
+            "PERF_MAGIC_CONFIG retire_depth=%0d issue_window=%0d speculation_window=%0d",
+            RETIRE_DEPTH, ISSUE_WINDOW, SPECULATION_WINDOW);
         $display(
             "PERF_MAGIC mode=%0d confidence_gate=%0d bp=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h branches=%0d conditional_branches=%0d direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d weak_branch_pairs=%0d stashed_pair_halves_suppressed=%0d fetch_requests=%0d pair_fetch_requests=%0d pair512_requests=%0d pair1024_requests=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,

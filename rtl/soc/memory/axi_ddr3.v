@@ -1,11 +1,11 @@
 `timescale 1ns/1ps
 
-// AXI4-attached DDR3 simulation endpoint.
+// AXI4-attached timed-memory simulation endpoint.
 //
 // This is the intended placement of the transaction-level DDR timing model:
 // downstream of the shared L2 and its generic-bus AXI adapter.  Storage and
-// AXI ordering live in openrv64_mem_channel; bank, row, refresh, and native
-// burst scheduling live in openrv64_timing_ddr3.
+// AXI ordering live in openrv64_mem_channel.  TIMING_MODEL selects DDR3
+// scheduling (0) or the idealized one-cycle magic backend (1).
 module openrv64_axi_ddr3 #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 256,
@@ -14,12 +14,14 @@ module openrv64_axi_ddr3 #(
     parameter integer MEM_BYTES = 16 * 1024 * 1024,
     parameter integer READ_QUEUE_DEPTH = 8,
     parameter integer WRITE_QUEUE_DEPTH = 8,
+    parameter integer TIMING_TAG_WIDTH = 8,
     parameter integer ZERO_INIT_WORDS =
         MEM_BYTES / (DATA_WIDTH / 8),
     parameter INIT_FILE = "",
     parameter integer CONTROLLER_TCK_PS = 1000,
     parameter integer REFRESH_INTERVAL = 6240,
-    parameter integer COMMAND_QUEUE_DEPTH = 16
+    parameter integer COMMAND_QUEUE_DEPTH = 16,
+    parameter integer TIMING_MODEL = 0
 ) (
     input  wire                      clk_i,
     input  wire                      rst_ni,
@@ -72,7 +74,9 @@ module openrv64_axi_ddr3 #(
     wire timing_cmd_write;
     wire [ADDR_WIDTH-1:0] timing_cmd_addr;
     wire [15:0] timing_cmd_bytes;
+    wire [TIMING_TAG_WIDTH-1:0] timing_cmd_tag;
     wire timing_resp_valid;
+    wire [TIMING_TAG_WIDTH-1:0] timing_resp_tag;
     wire timing_resp_ready;
 
     openrv64_mem_channel #(
@@ -83,6 +87,7 @@ module openrv64_axi_ddr3 #(
         .MEM_BYTES(MEM_BYTES),
         .READ_QUEUE_DEPTH(READ_QUEUE_DEPTH),
         .WRITE_QUEUE_DEPTH(WRITE_QUEUE_DEPTH),
+        .TIMING_TAG_WIDTH(TIMING_TAG_WIDTH),
         .ZERO_INIT_WORDS(ZERO_INIT_WORDS),
         .INIT_FILE(INIT_FILE)
     ) u_channel (
@@ -130,25 +135,58 @@ module openrv64_axi_ddr3 #(
         .timing_cmd_write_o(timing_cmd_write),
         .timing_cmd_addr_o(timing_cmd_addr),
         .timing_cmd_bytes_o(timing_cmd_bytes),
+        .timing_cmd_tag_o(timing_cmd_tag),
         .timing_resp_valid_i(timing_resp_valid),
+        .timing_resp_tag_i(timing_resp_tag),
         .timing_resp_ready_o(timing_resp_ready)
     );
 
-    openrv64_timing_ddr3 #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .CONTROLLER_TCK_PS(CONTROLLER_TCK_PS),
-        .REFRESH_INTERVAL(REFRESH_INTERVAL),
-        .COMMAND_QUEUE_DEPTH(COMMAND_QUEUE_DEPTH)
-    ) u_timing (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .cmd_valid_i(timing_cmd_valid),
-        .cmd_ready_o(timing_cmd_ready),
-        .cmd_write_i(timing_cmd_write),
-        .cmd_addr_i(timing_cmd_addr),
-        .cmd_bytes_i(timing_cmd_bytes),
-        .resp_valid_o(timing_resp_valid),
-        .resp_ready_i(timing_resp_ready)
-    );
+    generate
+        if (TIMING_MODEL == 1) begin : g_magic
+            openrv64_timing_magic #(
+                .ADDR_WIDTH(ADDR_WIDTH),
+                .TAG_WIDTH(TIMING_TAG_WIDTH)
+            ) u_timing (
+                .clk_i(clk_i),
+                .rst_ni(rst_ni),
+                .cmd_valid_i(timing_cmd_valid),
+                .cmd_ready_o(timing_cmd_ready),
+                .cmd_write_i(timing_cmd_write),
+                .cmd_addr_i(timing_cmd_addr),
+                .cmd_bytes_i(timing_cmd_bytes),
+                .cmd_tag_i(timing_cmd_tag),
+                .resp_valid_o(timing_resp_valid),
+                .resp_tag_o(timing_resp_tag),
+                .resp_ready_i(timing_resp_ready)
+            );
+        end else begin : g_ddr3
+            openrv64_timing_ddr3 #(
+                .ADDR_WIDTH(ADDR_WIDTH),
+                .TAG_WIDTH(TIMING_TAG_WIDTH),
+                .CONTROLLER_TCK_PS(CONTROLLER_TCK_PS),
+                .REFRESH_INTERVAL(REFRESH_INTERVAL),
+                .COMMAND_QUEUE_DEPTH(COMMAND_QUEUE_DEPTH)
+            ) u_timing (
+                .clk_i(clk_i),
+                .rst_ni(rst_ni),
+                .cmd_valid_i(timing_cmd_valid),
+                .cmd_ready_o(timing_cmd_ready),
+                .cmd_write_i(timing_cmd_write),
+                .cmd_addr_i(timing_cmd_addr),
+                .cmd_bytes_i(timing_cmd_bytes),
+                .cmd_tag_i(timing_cmd_tag),
+                .resp_valid_o(timing_resp_valid),
+                .resp_tag_o(timing_resp_tag),
+                .resp_ready_i(timing_resp_ready)
+            );
+        end
+    endgenerate
+
+`ifndef SYNTHESIS
+    initial begin
+        if ((TIMING_MODEL != 0) && (TIMING_MODEL != 1))
+            $fatal(1, "AXI timed-memory model must be DDR3 (0) or magic (1)");
+    end
+`endif
 
 endmodule
