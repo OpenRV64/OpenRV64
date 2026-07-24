@@ -6,3 +6,5 @@
 *.bin
 *.disasm
 
+__pycache__/
+*.pyc
