@@ -1,6 +1,6 @@
 RiscV64 core and SoC supporting riscv64ima (no c). 16K 4-way L1I + 16K 8-way writethrough L1D, 256K 8-way SA shared L2.
 
-Boots to linux under verilator.
+Boots to linux under verilator, passes act4 compliance for ima too.
 
 3 wide, speculative issue, in-order retire.
 
