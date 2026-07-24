@@ -230,13 +230,12 @@ and writes; coverage without that traffic delta is not enough to judge a
 prefetcher.
 
 These tests can characterize cache-line coverage, pollution, and extra CCX
-traffic now. By default, the functional backing RAM does not represent real
-memory timing. Set `AXI_3P_PERF_CCX_DDR3_TIMING=1` to delay native CCX RAM
-transactions with the `DDR3_1600_8x8` timing preset used by the HPI comparison.
-That preset models row hits, conflicts, recovery, transfer occupancy, and
-refresh, but the current CCX test fabric and common timing engine serialize
-commands. It is therefore a conservative latency fixture, not a bank-parallel
-DRAM controller or a physical-frequency result.
+traffic now. Their direct CCX backing RAM does not represent real memory
+timing. DDR timing is deliberately not attached to that CCX home: the modeled
+memory hierarchy is shared L2 to AXI to DDR3. Run `make sim-l2-axi-ddr3` for
+the focused hierarchy regression. It checks AXI burst conversion, banked DDR3
+scheduling, uncached reads and writes, an L2 fill and hit, and multiple active
+L2 misses.
 
 ## OpenSBI smoke boot
 

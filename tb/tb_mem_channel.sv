@@ -48,14 +48,14 @@ module tb_mem_channel;
     wire timing_cmd_ready;
     wire timing_cmd_write;
     wire [ADDR_WIDTH-1:0] timing_cmd_addr;
-    wire [7:0] timing_cmd_bytes;
+    wire [15:0] timing_cmd_bytes;
     wire timing_resp_valid;
     wire timing_resp_ready;
 
     logic ddr3_cmd_valid;
     logic ddr3_cmd_write;
     logic [ADDR_WIDTH-1:0] ddr3_cmd_addr;
-    logic [7:0] ddr3_cmd_bytes;
+    logic [15:0] ddr3_cmd_bytes;
     wire ddr3_cmd_ready;
     wire ddr3_resp_valid;
     logic ddr3_resp_ready;
@@ -63,7 +63,7 @@ module tb_mem_channel;
     logic gddr_cmd_valid;
     logic gddr_cmd_write;
     logic [ADDR_WIDTH-1:0] gddr_cmd_addr;
-    logic [7:0] gddr_cmd_bytes;
+    logic [15:0] gddr_cmd_bytes;
     wire gddr_cmd_ready;
     wire gddr_resp_valid;
     logic gddr_resp_ready;
@@ -71,7 +71,7 @@ module tb_mem_channel;
     logic hbm_cmd_valid;
     logic hbm_cmd_write;
     logic [ADDR_WIDTH-1:0] hbm_cmd_addr;
-    logic [7:0] hbm_cmd_bytes;
+    logic [15:0] hbm_cmd_bytes;
     wire hbm_cmd_ready;
     wire hbm_resp_valid;
     logic hbm_resp_ready;
@@ -322,7 +322,7 @@ module tb_mem_channel;
 
     task automatic issue_ddr3_request(
         input [ADDR_WIDTH-1:0] address,
-        input [7:0] byte_count,
+        input [15:0] byte_count,
         output integer latency
     );
         integer guard;
@@ -356,7 +356,7 @@ module tb_mem_channel;
 
     task automatic issue_gddr_request(
         input [ADDR_WIDTH-1:0] address,
-        input [7:0] byte_count,
+        input [15:0] byte_count,
         output integer latency
     );
         integer guard;
@@ -423,6 +423,7 @@ module tb_mem_channel;
     integer ddr3_miss_latency;
     integer ddr3_hit_latency;
     integer ddr3_conflict_latency;
+    integer ddr3_two_burst_latency;
     integer gddr_miss_latency;
     integer gddr_hit_latency;
     integer gddr_two_burst_latency;
@@ -515,18 +516,27 @@ module tb_mem_channel;
 
         // DDR3-1600 x64, BL8: 64-byte native burst.  At a 1 ns controller
         // clock, a closed-row read is ceil((tRCD + tCL + BL/2) * 1.25 ns)
-        // = 33 ns; a row hit is 19 ns.  The third access selects a different
-        // row in the same bank and must also pay tRP, for 47 ns.
+        // = 33 ns after dispatch; command acceptance adds one controller
+        // cycle, so observed response latencies are 34 ns, 20 ns, and 48 ns.
+        // The third access selects another row in the same bank and pays tRP.
         issue_ddr3_request(32'h0000_1000, 8'd64, ddr3_miss_latency);
         issue_ddr3_request(32'h0000_1040, 8'd64, ddr3_hit_latency);
         issue_ddr3_request(32'h0001_1000, 8'd64, ddr3_conflict_latency);
-        if ((ddr3_miss_latency != 33) ||
-            (ddr3_hit_latency != 19) ||
-            (ddr3_conflict_latency != 47))
+        if ((ddr3_miss_latency != 34) ||
+            (ddr3_hit_latency != 20) ||
+            (ddr3_conflict_latency != 48))
             $fatal(1,
                 "DDR3 latency mismatch: miss=%0d hit=%0d conflict=%0d",
                 ddr3_miss_latency, ddr3_hit_latency,
                 ddr3_conflict_latency);
+        issue_ddr3_request(32'h0001_1040, 16'd128,
+                           ddr3_two_burst_latency);
+        // A 128-byte row hit consumes two BL8 transfers separated by the
+        // shared-bus scheduler handoff; it cannot collapse to one delay.
+        if (ddr3_two_burst_latency != 26)
+            $fatal(1,
+                "DDR3 native-burst scheduling mismatch: got=%0d expected=26",
+                ddr3_two_burst_latency);
 
         // GDDR6 x16, BL16: 32-byte native burst.  At a 1 ns controller
         // clock, these are exact ceil() conversions from the 0.66 ns DRAM
@@ -558,8 +568,9 @@ module tb_mem_channel;
                 "HBM2 write recovery/row conflict was not charged: miss=%0d conflict=%0d",
                 hbm_write_miss_latency, hbm_write_conflict_latency);
 
-        $display("tb_mem_channel: PASS ddr3_ns=%0d/%0d/%0d gddr6_ns=%0d/%0d/%0d hbm2_ns=%0d/%0d",
+        $display("tb_mem_channel: PASS ddr3_ns=%0d/%0d/%0d/%0d gddr6_ns=%0d/%0d/%0d hbm2_ns=%0d/%0d",
             ddr3_miss_latency, ddr3_hit_latency, ddr3_conflict_latency,
+            ddr3_two_burst_latency,
             gddr_miss_latency, gddr_hit_latency,
             gddr_two_burst_latency, hbm_write_miss_latency,
             hbm_write_conflict_latency);

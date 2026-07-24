@@ -42,7 +42,7 @@ module openrv64_timing_dram_banked #(
     output wire                  cmd_ready_o,
     input  wire                  cmd_write_i,
     input  wire [ADDR_WIDTH-1:0] cmd_addr_i,
-    input  wire [7:0]            cmd_bytes_i,
+    input  wire [15:0]           cmd_bytes_i,
 
     output wire                  resp_valid_o,
     input  wire                  resp_ready_i
@@ -83,14 +83,14 @@ module openrv64_timing_dram_banked #(
     reg command_write_q [0:COMMAND_QUEUE_DEPTH-1];
     reg [BANK_BITS-1:0] command_bank_q [0:COMMAND_QUEUE_DEPTH-1];
     reg [ROW_TAG_WIDTH-1:0] command_row_q [0:COMMAND_QUEUE_DEPTH-1];
-    reg [8:0] command_bursts_q [0:COMMAND_QUEUE_DEPTH-1];
+    reg [15:0] command_bursts_q [0:COMMAND_QUEUE_DEPTH-1];
     reg [QUEUE_PTR_WIDTH-1:0] command_head_q;
     reg [QUEUE_PTR_WIDTH-1:0] command_tail_q;
     reg [QUEUE_COUNT_WIDTH-1:0] command_count_q;
 
     reg bank_busy_q [0:BANK_COUNT-1];
     reg [QUEUE_PTR_WIDTH-1:0] bank_slot_q [0:BANK_COUNT-1];
-    reg [8:0] bank_bursts_left_q [0:BANK_COUNT-1];
+    reg [15:0] bank_bursts_left_q [0:BANK_COUNT-1];
     reg [63:0] bank_burst_ready_cycle_q [0:BANK_COUNT-1];
     reg open_valid_q [0:BANK_COUNT-1];
     reg [ROW_TAG_WIDTH-1:0] open_row_q [0:BANK_COUNT-1];
@@ -160,6 +160,10 @@ module openrv64_timing_dram_banked #(
     reg dispatch_row_hit;
     always @* begin
         dispatch_valid = {BANK_COUNT{1'b0}};
+        dispatch_precharge_wait = 0;
+        dispatch_dram_cycles = 0;
+        dispatch_activation_delay = 0;
+        dispatch_row_hit = 1'b0;
         for (dispatch_bank = 0; dispatch_bank < BANK_COUNT;
              dispatch_bank = dispatch_bank + 1) begin
             dispatch_slot[dispatch_bank] = 0;
@@ -318,13 +322,13 @@ module openrv64_timing_dram_banked #(
                 command_write_q[reset_slot] <= 1'b0;
                 command_bank_q[reset_slot] <= {BANK_BITS{1'b0}};
                 command_row_q[reset_slot] <= {ROW_TAG_WIDTH{1'b0}};
-                command_bursts_q[reset_slot] <= 9'd0;
+                command_bursts_q[reset_slot] <= 16'd0;
             end
             for (bank_index = 0; bank_index < BANK_COUNT;
                  bank_index = bank_index + 1) begin
                 bank_busy_q[bank_index] <= 1'b0;
                 bank_slot_q[bank_index] <= {QUEUE_PTR_WIDTH{1'b0}};
-                bank_bursts_left_q[bank_index] <= 9'd0;
+                bank_bursts_left_q[bank_index] <= 16'd0;
                 bank_burst_ready_cycle_q[bank_index] <= 64'd0;
                 open_valid_q[bank_index] <= 1'b0;
                 open_row_q[bank_index] <= {ROW_TAG_WIDTH{1'b0}};
@@ -350,7 +354,7 @@ module openrv64_timing_dram_banked #(
                 command_bank_q[command_tail_q] <= incoming_bank;
                 command_row_q[command_tail_q] <= incoming_row;
                 command_bursts_q[command_tail_q] <=
-                    9'(incoming_native_bursts);
+                    16'(incoming_native_bursts);
                 command_tail_q <= next_queue_ptr(command_tail_q);
             end
 
@@ -418,7 +422,7 @@ module openrv64_timing_dram_banked #(
                         command_complete_q[
                             bank_slot_q[bus_bank_q]] <= 1'b1;
                         bank_busy_q[bus_bank_q] <= 1'b0;
-                        bank_bursts_left_q[bus_bank_q] <= 9'd0;
+                        bank_bursts_left_q[bus_bank_q] <= 16'd0;
                         if (command_write_q[
                             bank_slot_q[bus_bank_q]] &&
                             ((controller_cycle_q +

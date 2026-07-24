@@ -5,13 +5,15 @@
 // The northbound boundary is an AXI4 slave, not the OpenRV64 internal memory
 // handshake.  AR, R, AW, W, and B remain independent; address descriptors are
 // queued; IDs and bursts are preserved; and response payloads remain stable
-// under backpressure.  One active read burst and one active write burst share
-// the timing port at beat granularity.  Queued transactions are returned in
-// acceptance order, which is legal AXI ordering for all IDs.
+// under backpressure.  One active read burst and one active write burst may
+// both have complete-burst commands outstanding to the timing backend.
+// Queued transactions are returned in acceptance order, which is legal AXI
+// ordering for all IDs.
 //
 // The southbound timing port is intentionally data-free.  A timing model
-// accepts one controller beat, its byte count, and acknowledges when the
-// backing-memory access may complete.  openrv64_timing_ddr3,
+// accepts one complete AXI burst, its byte count, and acknowledges when the
+// backing-memory access may begin returning or committing data.
+// openrv64_timing_ddr3,
 // openrv64_timing_ddr4, openrv64_timing_gddr6, and
 // openrv64_timing_hbm2 implement this contract and can be swapped without
 // changing this module.
@@ -78,7 +80,7 @@ module openrv64_mem_channel #(
     input  wire                      timing_cmd_ready_i,
     output wire                      timing_cmd_write_o,
     output wire [ADDR_WIDTH-1:0]     timing_cmd_addr_o,
-    output wire [7:0]                timing_cmd_bytes_o,
+    output wire [15:0]               timing_cmd_bytes_o,
     input  wire                      timing_resp_valid_i,
     output wire                      timing_resp_ready_o
 );
@@ -139,6 +141,7 @@ module openrv64_mem_channel #(
     reg [1:0] read_burst_q;
     reg [7:0] read_beat_q;
     reg [1:0] read_request_resp_q;
+    reg read_timing_done_q;
 
     reg write_active_q;
     reg [ID_WIDTH-1:0] write_id_q;
@@ -148,6 +151,7 @@ module openrv64_mem_channel #(
     reg [1:0] write_burst_q;
     reg [7:0] write_beat_q;
     reg [1:0] write_request_resp_q;
+    reg write_timing_done_q;
 
     reg write_data_valid_q;
     reg [DATA_WIDTH-1:0] write_data_q;
@@ -164,8 +168,12 @@ module openrv64_mem_channel #(
     reg [1:0] write_response_resp_q;
     reg write_response_valid_q;
 
-    reg timing_inflight_q;
-    reg timing_owner_write_q;
+    reg read_timing_submitted_q;
+    reg write_timing_submitted_q;
+    reg timing_owner_fifo_q [0:1];
+    reg timing_owner_head_q;
+    reg timing_owner_tail_q;
+    reg [1:0] timing_owner_count_q;
     reg prefer_write_q;
 
     integer init_index;
@@ -316,14 +324,20 @@ module openrv64_mem_channel #(
 
     wire read_command_pending = read_active_q &&
         !read_response_valid_q &&
+        !read_timing_submitted_q &&
+        !read_timing_done_q &&
         (read_request_resp_q == AXI_RESP_OKAY);
     wire write_command_pending = write_active_q && write_data_valid_q &&
+        !write_timing_submitted_q &&
+        !write_timing_done_q &&
         (write_request_resp_q == AXI_RESP_OKAY);
     wire select_write_command = write_command_pending &&
         (!read_command_pending || prefer_write_q);
     wire timing_command_fire = timing_cmd_valid_o && timing_cmd_ready_i;
     wire timing_response_fire = timing_resp_valid_i &&
                                 timing_resp_ready_o;
+    wire timing_response_owner_write =
+        timing_owner_fifo_q[timing_owner_head_q];
     wire current_write_last = write_last_q ||
                               (write_beat_q == write_len_q);
 
@@ -344,14 +358,18 @@ module openrv64_mem_channel #(
     assign s_axi_bresp_o = write_response_resp_q;
     assign s_axi_bvalid_o = write_response_valid_q;
 
-    assign timing_cmd_valid_o = rst_ni && !timing_inflight_q &&
+    assign timing_cmd_valid_o = rst_ni && (timing_owner_count_q < 2) &&
         (read_command_pending || write_command_pending);
     assign timing_cmd_write_o = select_write_command;
     assign timing_cmd_addr_o = select_write_command ? write_addr_q :
                                                       read_addr_q;
-    assign timing_cmd_bytes_o = 8'd1 << (select_write_command ?
-                                         write_size_q : read_size_q);
-    assign timing_resp_ready_o = timing_inflight_q;
+    wire [15:0] read_burst_bytes =
+        ({8'd0, read_len_q} + 16'd1) << read_size_q;
+    wire [15:0] write_burst_bytes =
+        ({8'd0, write_len_q} + 16'd1) << write_size_q;
+    assign timing_cmd_bytes_o = select_write_command ?
+        write_burst_bytes : read_burst_bytes;
+    assign timing_resp_ready_o = (timing_owner_count_q != 0);
 
     // These AXI attributes do not alter behavioral storage or timing yet.
     wire unused_axi_attributes = ^{s_axi_arcache_i, s_axi_arprot_i,
@@ -398,6 +416,8 @@ module openrv64_mem_channel #(
             read_burst_q <= AXI_BURST_INCR;
             read_beat_q <= 8'd0;
             read_request_resp_q <= AXI_RESP_OKAY;
+            read_timing_done_q <= 1'b0;
+            read_timing_submitted_q <= 1'b0;
 
             write_active_q <= 1'b0;
             write_id_q <= {ID_WIDTH{1'b0}};
@@ -407,6 +427,8 @@ module openrv64_mem_channel #(
             write_burst_q <= AXI_BURST_INCR;
             write_beat_q <= 8'd0;
             write_request_resp_q <= AXI_RESP_OKAY;
+            write_timing_done_q <= 1'b0;
+            write_timing_submitted_q <= 1'b0;
             write_data_valid_q <= 1'b0;
             write_data_q <= {DATA_WIDTH{1'b0}};
             write_strb_q <= {DATA_BYTES{1'b0}};
@@ -421,8 +443,11 @@ module openrv64_mem_channel #(
             write_response_resp_q <= AXI_RESP_OKAY;
             write_response_valid_q <= 1'b0;
 
-            timing_inflight_q <= 1'b0;
-            timing_owner_write_q <= 1'b0;
+            timing_owner_fifo_q[0] <= 1'b0;
+            timing_owner_fifo_q[1] <= 1'b0;
+            timing_owner_head_q <= 1'b0;
+            timing_owner_tail_q <= 1'b0;
+            timing_owner_count_q <= 2'd0;
             prefer_write_q <= 1'b0;
         end else begin
             if (read_address_fire) begin
@@ -447,6 +472,8 @@ module openrv64_mem_channel #(
                 read_burst_q <= read_burst_fifo_q[read_head_q];
                 read_beat_q <= 8'd0;
                 read_request_resp_q <= read_resp_fifo_q[read_head_q];
+                read_timing_done_q <= 1'b0;
+                read_timing_submitted_q <= 1'b0;
                 if (read_head_q == READ_LAST_PTR)
                     read_head_q <= {READ_PTR_WIDTH{1'b0}};
                 else
@@ -481,6 +508,8 @@ module openrv64_mem_channel #(
                 write_burst_q <= write_burst_fifo_q[write_head_q];
                 write_beat_q <= 8'd0;
                 write_request_resp_q <= write_resp_fifo_q[write_head_q];
+                write_timing_done_q <= 1'b0;
+                write_timing_submitted_q <= 1'b0;
                 if (write_head_q == WRITE_LAST_PTR)
                     write_head_q <= {WRITE_PTR_WIDTH{1'b0}};
                 else
@@ -520,14 +549,21 @@ module openrv64_mem_channel #(
                 write_response_valid_q <= 1'b0;
 
             if (timing_command_fire) begin
-                timing_inflight_q <= 1'b1;
-                timing_owner_write_q <= select_write_command;
+                timing_owner_fifo_q[timing_owner_tail_q] <=
+                    select_write_command;
+                timing_owner_tail_q <= !timing_owner_tail_q;
+                if (select_write_command)
+                    write_timing_submitted_q <= 1'b1;
+                else
+                    read_timing_submitted_q <= 1'b1;
                 prefer_write_q <= !select_write_command;
             end
 
             if (timing_response_fire) begin
-                timing_inflight_q <= 1'b0;
-                if (timing_owner_write_q) begin
+                timing_owner_head_q <= !timing_owner_head_q;
+                if (timing_response_owner_write) begin
+                    write_timing_submitted_q <= 1'b0;
+                    write_timing_done_q <= 1'b1;
                     for (write_byte = 0; write_byte < DATA_BYTES;
                          write_byte = write_byte + 1) begin
                         if (write_strb_q[write_byte])
@@ -538,6 +574,7 @@ module openrv64_mem_channel #(
                     write_data_valid_q <= 1'b0;
                     if (current_write_last) begin
                         write_active_q <= 1'b0;
+                        write_timing_done_q <= 1'b0;
                         write_response_id_q <= write_id_q;
                         write_response_resp_q <= write_request_resp_q;
                         write_response_valid_q <= 1'b1;
@@ -548,12 +585,61 @@ module openrv64_mem_channel #(
                             write_burst_q);
                     end
                 end else begin
+                    read_timing_submitted_q <= 1'b0;
+                    read_timing_done_q <= 1'b1;
                     read_response_id_q <= read_id_q;
                     read_response_data_q <=
                         memory_q[memory_index_of(read_addr_q)];
                     read_response_resp_q <= AXI_RESP_OKAY;
                     read_response_last_q <= (read_beat_q == read_len_q);
                     read_response_valid_q <= 1'b1;
+                end
+            end
+
+            case ({timing_command_fire, timing_response_fire})
+                2'b10:
+                    timing_owner_count_q <= timing_owner_count_q + 1'b1;
+                2'b01:
+                    timing_owner_count_q <= timing_owner_count_q - 1'b1;
+                default: begin end
+            endcase
+
+            // DRAM schedules the complete burst once.  After that completion,
+            // AXI data beats drain at the controller interface rate without
+            // charging row/column timing again for each bus-width fragment.
+            if (read_active_q && read_timing_done_q &&
+                !read_response_valid_q &&
+                (read_request_resp_q == AXI_RESP_OKAY)) begin
+                read_response_id_q <= read_id_q;
+                read_response_data_q <=
+                    memory_q[memory_index_of(read_addr_q)];
+                read_response_resp_q <= AXI_RESP_OKAY;
+                read_response_last_q <= (read_beat_q == read_len_q);
+                read_response_valid_q <= 1'b1;
+            end
+
+            if (write_active_q && write_timing_done_q &&
+                write_data_valid_q &&
+                (write_request_resp_q == AXI_RESP_OKAY)) begin
+                for (write_byte = 0; write_byte < DATA_BYTES;
+                     write_byte = write_byte + 1) begin
+                    if (write_strb_q[write_byte])
+                        memory_q[memory_index_of(write_addr_q)]
+                                [8*write_byte +: 8] <=
+                            write_data_q[8*write_byte +: 8];
+                end
+                write_data_valid_q <= 1'b0;
+                if (current_write_last) begin
+                    write_active_q <= 1'b0;
+                    write_timing_done_q <= 1'b0;
+                    write_response_id_q <= write_id_q;
+                    write_response_resp_q <= write_request_resp_q;
+                    write_response_valid_q <= 1'b1;
+                end else begin
+                    write_beat_q <= write_beat_q + 1'b1;
+                    write_addr_q <= next_burst_address(
+                        write_addr_q, write_len_q, write_size_q,
+                        write_burst_q);
                 end
             end
 
@@ -584,7 +670,7 @@ module openrv64_mem_channel #(
                 end
             end
 
-            if (timing_resp_valid_i && !timing_inflight_q)
+            if (timing_resp_valid_i && (timing_owner_count_q == 0))
                 $fatal(1, "memory-channel timing backend produced an unsolicited response");
         end
     end

@@ -32,7 +32,7 @@ module openrv64_timing_hbm2 #(
     output wire                  cmd_ready_o,
     input  wire                  cmd_write_i,
     input  wire [ADDR_WIDTH-1:0] cmd_addr_i,
-    input  wire [7:0]            cmd_bytes_i,
+    input  wire [15:0]           cmd_bytes_i,
     output wire                  resp_valid_o,
     input  wire                  resp_ready_i
 );

@@ -2,10 +2,13 @@
 `include "core/isa/rv64-priv.v"
 `include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
+`include "core/exec/bp/defs.v"
 
 module tb_opensbi #(
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
+    parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
+        `OPENRV64_BP_STALL,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer RETIRE_DEPTH = 8,
@@ -182,6 +185,7 @@ module tb_opensbi #(
         .CORE_RESET_DELAY_CYCLES(2),
         .GPIO_WIDTH(32),
         .BACKEND_CONFIG(BACKEND_CONFIG),
+        .BP_TYPE(BP_TYPE),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .RETIRE_DEPTH(RETIRE_DEPTH),
