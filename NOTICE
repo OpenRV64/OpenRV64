@@ -1,0 +1,22 @@
+OpenRV64
+Copyright 2026 Ananth Jasty
+
+Except where a file states otherwise, the source and design materials in this
+repository are Covered Source licensed under the CERN Open Hardware Licence
+Version 2 - Permissive.
+
+SPDX-License-Identifier: CERN-OHL-P-2.0
+
+The complete licence text is in LICENSE.
+
+Third-party material
+--------------------
+
+sw/coremark_loop.c is:
+
+    Copyright 2018 Embedded Microprocessor Benchmark Consortium (EEMBC)
+    SPDX-License-Identifier: Apache-2.0
+
+That file remains licensed under Apache License 2.0. Its original notice
+controls, and the complete Apache License 2.0 text is in
+LICENSES/Apache-2.0.txt.
