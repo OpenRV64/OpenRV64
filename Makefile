@@ -343,6 +343,7 @@ PREFIX_ADDSUB_SIM_BUILD := sim/prefix_addsub_tb.vvp
 EXEC_ALU_RV64I_SIM_BUILD := sim/exec_alu_rv64-i_tb.vvp
 EXEC_ALU_RV64M_SIM_BUILD := sim/exec_alu_rv64-m_tb.vvp
 EXEC_TOP_3P_SIM_BUILD := sim/exec_top_3p_tb.vvp
+EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD := sim/exec_pipe_mem_timeout_tb.vvp
 EXEC_LSU_RV64I_SIM_BUILD := sim/exec_lsu_rv64-i_tb.vvp
 EXEC_LSU_RV64A_SIM_BUILD := sim/exec_lsu_rv64-a_tb.vvp
 ATOMIC_CONTEXT_SIM_BUILD := sim/atomic_context_tb.vvp
@@ -659,7 +660,7 @@ SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/Ope
 	sw-memcpy sw-memcpy-4k \
 	sw-memcpy-64k sim-memcpy sim-memcpy-4k sim-memcpy-64k \
 	bench-memcpy bench-memcpy-4k bench-memcpy-64k \
-	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-rv64-fd-fpr sim-exec-fpu-rv64-fd
 .PHONY: sim-decode-rv64c
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
@@ -805,7 +806,7 @@ compliance-full: compliance-smoke-local compliance-isa compliance-isa-3p \
 	compliance-isa-platform-3p \
 	compliance-priv compliance-diff compliance-trace-contract
 
-sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
+sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
 sim: sim-isa-fp sim-rv64-fd-fpr sim-exec-fpu-rv64-fd
 sim: sim-decode-rv64c
 sim: sim-atomic-soc
@@ -1271,6 +1272,22 @@ sim-exec-alu-rv64-m: $(EXEC_ALU_RV64M_SIM_BUILD)
 
 sim-exec-top-3p: $(EXEC_TOP_3P_SIM_BUILD)
 	vvp $(EXEC_TOP_3P_SIM_BUILD)
+
+sim-exec-pipe-mem-timeout: $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD)
+	@mkdir -p sim
+	@if vvp $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD) \
+		> sim/exec_pipe_mem_timeout.log 2>&1; then \
+		cat sim/exec_pipe_mem_timeout.log; \
+		echo "FAIL: LSU timeout assertion did not fire"; \
+		exit 1; \
+	elif grep -q "LSU operation timeout cycles=4" \
+		sim/exec_pipe_mem_timeout.log; then \
+		cat sim/exec_pipe_mem_timeout.log; \
+		echo "PASS: LSU operation timeout assertion"; \
+	else \
+		cat sim/exec_pipe_mem_timeout.log; \
+		exit 1; \
+	fi
 
 sim-exec-lsu-rv64-i: $(EXEC_LSU_RV64I_SIM_BUILD)
 	vvp $(EXEC_LSU_RV64I_SIM_BUILD)
@@ -2105,6 +2122,16 @@ $(EXEC_TOP_3P_SIM_BUILD): tb/tb_exec_top_3p.sv $(EXEC_SRCS) $(EXCEPT_SRCS) $(ISA
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_TOP_3P_SIM_BUILD) \
 		$(EXEC_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) $(STAGE_SRCS) tb/tb_exec_top_3p.sv
+
+$(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD): tb/tb_exec_pipe_mem_timeout.sv \
+	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/lsu/rv64-i.v \
+	rtl/core/exec/lsu/rv64-a.v rtl/core/except/except.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_exec_pipe_mem_timeout \
+		-o $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD) \
+		rtl/core/exec/exec_pipe_mem.v rtl/core/exec/lsu/rv64-i.v \
+		rtl/core/exec/lsu/rv64-a.v rtl/core/except/except.v \
+		tb/tb_exec_pipe_mem_timeout.sv
 
 $(EXEC_LSU_RV64I_SIM_BUILD): $(EXEC_LSU_RV64I_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
 	mkdir -p sim

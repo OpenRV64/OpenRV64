@@ -15,6 +15,9 @@ module tb_ccx_bus #(
     logic [63:0] fetch_req_addr;
     logic fetch_req_stash;
     logic fetch_req_demand;
+    logic [`RV64_PRIV_WIDTH-1:0] fetch_req_priv;
+    logic [`RV64_SATP_MODE_WIDTH-1:0] fetch_req_vm_mode;
+    logic [`RV64_SATP_PPN_WIDTH-1:0] fetch_req_root_ppn;
     logic fetch_cancel;
     wire fetch_resp_valid;
     logic fetch_resp_ready;
@@ -158,6 +161,7 @@ module tb_ccx_bus #(
     integer wait_count;
     integer channel_wait;
     integer ptw_wait;
+    integer cancel_fetch_slot;
     integer locked_reads_before;
     integer fences_before;
     reg [63:0] locked_old_word;
@@ -176,9 +180,10 @@ module tb_ccx_bus #(
         .fetch_req_addr_i(fetch_req_addr),
         .fetch_req_stash_i(fetch_req_stash),
         .fetch_req_demand_i(fetch_req_demand),
-        .fetch_req_priv_i(`RV64_PRIV_M),
-        .fetch_req_vm_mode_i(`RV64_SATP_MODE_BARE),
-        .fetch_req_asid_i(16'd0), .fetch_req_root_ppn_i(44'd0),
+        .fetch_req_priv_i(fetch_req_priv),
+        .fetch_req_vm_mode_i(fetch_req_vm_mode),
+        .fetch_req_asid_i(16'd0),
+        .fetch_req_root_ppn_i(fetch_req_root_ppn),
         .fetch_req_sum_i(1'b0), .fetch_req_mxr_i(1'b0),
         .fetch_cancel_i(fetch_cancel),
         .fetch_cancel_stash_i(1'b1),
@@ -656,6 +661,9 @@ module tb_ccx_bus #(
         fetch_req_addr = 0;
         fetch_req_stash = 0;
         fetch_req_demand = 1;
+        fetch_req_priv = `RV64_PRIV_M;
+        fetch_req_vm_mode = `RV64_SATP_MODE_BARE;
+        fetch_req_root_ppn = 0;
         fetch_cancel = 0;
         fetch_resp_ready = 1;
         lsu_valid = 0;
@@ -1040,6 +1048,51 @@ module tb_ccx_bus #(
         ccx_memory[64'h1000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0801;
         ccx_memory[64'h2000 >> 6][4*64 +: 64] = 64'h0000_0000_0000_0ccf;
         ccx_memory[64'h3000 >> 6][0*64 +: 64] = 64'h5a17_c0de_cafe_1234;
+
+        // A redirect on the exact edge of a successful PTW response must win.
+        // Otherwise the old cancelled bit lets the slot re-enter TRANSLATE,
+        // where the translation selector can never consume it.
+        fetch_req_priv = `RV64_PRIV_S;
+        fetch_req_vm_mode = `RV64_SATP_MODE_SV39;
+        fetch_req_root_ppn = 0;
+        fetch_req_stash = 0;
+        fetch_req_demand = 1;
+        channel_wait = ar_count;
+        push_fetch(64'h4000);
+        ptw_wait = 0;
+        while (!dut.ptw_resp_valid && ptw_wait < 100) begin
+            tick();
+            ptw_wait = ptw_wait + 1;
+        end
+        if (!dut.ptw_resp_valid || !dut.miss_active_q ||
+            (dut.miss_owner_q != 0))
+            $fatal(1, "fetch PTW/cancel race setup did not reach response");
+        cancel_fetch_slot = dut.miss_fetch_slot_q;
+        fetch_cancel = 1'b1;
+        tick();
+        fetch_cancel = 1'b0;
+        if (!dut.fetch_cancelled_q[cancel_fetch_slot] ||
+            (dut.fetch_state_q[cancel_fetch_slot] != 4))
+            $fatal(1,
+                "same-cycle cancellation lost to PTW completion state=%0d cancelled=%b",
+                dut.fetch_state_q[cancel_fetch_slot],
+                dut.fetch_cancelled_q[cancel_fetch_slot]);
+        tick();
+        if (dut.fetch_count_q != 0 || fetch_resp_valid ||
+            (ar_count != channel_wait))
+            $fatal(1,
+                "cancelled translated fetch was not dropped locally count=%0d response=%b ar_delta=%0d",
+                dut.fetch_count_q, fetch_resp_valid,
+                ar_count - channel_wait);
+        // Keep the following walk-count test independent of the non-leaf PTEs
+        // cached by this fetch walk.
+        tlbi = 1'b1;
+        tick();
+        tlbi = 1'b0;
+        while (tlbi_busy) tick();
+        fetch_req_priv = `RV64_PRIV_M;
+        fetch_req_vm_mode = `RV64_SATP_MODE_BARE;
+
         wait_count = ccx_reads;
         channel_wait = ar_count;
         push_pipe_request(3'd3, 1'b0, 64'h4000, 64'd0, 8'd0);

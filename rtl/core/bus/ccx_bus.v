@@ -438,6 +438,32 @@ module openrv64_core_ccx_bus #(
     reg [FETCH_SLOT_WIDTH-1:0] miss_fetch_slot_q;
     reg miss_invalidated_q;
 
+    // Cancellation and PTW response may arrive on the same edge.  The queued
+    // cancellation bit is one cycle too old to resolve that race, so derive
+    // the current cancellation decision for the active fetch walk explicitly.
+    wire fetch_miss_redirect_cancel_now = fetch_cancel_i &&
+        (fetch_state_q[miss_fetch_slot_q] != FETCH_EMPTY) &&
+        (!fetch_stash_q[miss_fetch_slot_q] || fetch_cancel_stash_i);
+    reg fetch_miss_age_cancel_now_r;
+    integer fetch_cancel_age_port;
+    always @* begin
+        fetch_miss_age_cancel_now_r = 1'b0;
+        for (fetch_cancel_age_port = 0; fetch_cancel_age_port < 3;
+             fetch_cancel_age_port = fetch_cancel_age_port + 1) begin
+            if (icache_age_valid_i[fetch_cancel_age_port] &&
+                (fetch_state_q[miss_fetch_slot_q] != FETCH_EMPTY) &&
+                fetch_stash_q[miss_fetch_slot_q] &&
+                !fetch_demand_q[miss_fetch_slot_q] &&
+                (fetch_vaddr_q[miss_fetch_slot_q][`RV64_XLEN-1:6] ==
+                 icache_age_addr_i[
+                    fetch_cancel_age_port*`RV64_XLEN + 6 +:
+                    `RV64_XLEN-6]))
+                fetch_miss_age_cancel_now_r = 1'b1;
+        end
+    end
+    wire fetch_miss_cancel_now = fetch_miss_redirect_cancel_now ||
+                                 fetch_miss_age_cancel_now_r;
+
     wire ptw_req_ready;
     wire ptw_resp_valid;
     wire [`RV64_XLEN-1:0] ptw_resp_paddr;
@@ -1499,7 +1525,8 @@ module openrv64_core_ccx_bus #(
                 fetch_state_q[fetch_xlate_slot_r] <= FETCH_MISS;
             if (ptw_resp_valid && miss_active_q &&
                 (miss_owner_q == OWNER_FETCH)) begin
-                if (fetch_cancelled_q[miss_fetch_slot_q]) begin
+                if (fetch_cancelled_q[miss_fetch_slot_q] ||
+                    fetch_miss_cancel_now) begin
                     fetch_state_q[miss_fetch_slot_q] <= FETCH_COMPLETE;
                 end else if (miss_invalidated_q ||
                              ptw_resp_invalidated || tlbi_i) begin
@@ -1739,6 +1766,7 @@ module openrv64_core_ccx_bus #(
     end
 
 `ifndef SYNTHESIS
+    integer fetch_assert_index;
     initial begin
         if (AXI_DATA_WIDTH != 256)
             $fatal(1, "openrv64_core_ccx_bus currently requires 256-bit AXI");
@@ -1750,6 +1778,19 @@ module openrv64_core_ccx_bus #(
     end
 
     always @(posedge clk) begin
+        if (rst_n) begin
+            for (fetch_assert_index = 0;
+                 fetch_assert_index < FETCH_OUTSTANDING;
+                 fetch_assert_index = fetch_assert_index + 1) begin
+                if (fetch_cancelled_q[fetch_assert_index] &&
+                    (fetch_state_q[fetch_assert_index] ==
+                     FETCH_TRANSLATE))
+                    $fatal(1,
+                        "cancelled fetch slot re-entered translation slot=%0d addr=%016x",
+                        fetch_assert_index,
+                        fetch_vaddr_q[fetch_assert_index]);
+            end
+        end
         if (rst_n && !l1i_enabled && axi_r_fire && r_is_fetch &&
             (fetch_state_q[r_fetch_slot] != FETCH_WAIT_R))
             $fatal(1, "AXI fetch response arrived without a pending request");

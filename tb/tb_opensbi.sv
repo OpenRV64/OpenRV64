@@ -77,11 +77,21 @@ module tb_opensbi #(
     string linux_panic_text = "Kernel panic";
     string linux_prompt_text = "openrv64# ";
     string linux_plic_text = "riscv-plic:";
+    string linux_memory_text = "Memory: ";
+    string linux_devtmpfs_text = "devtmpfs: initialized";
+    string linux_uart_text = "serial: ttyS0";
+    string linux_initmem_text = "Freeing unused kernel image";
+    string linux_init_text = "Run /init as init process";
     integer banner_index;
     integer payload_index;
     integer linux_panic_index;
     integer linux_prompt_index;
     integer linux_plic_index;
+    integer linux_memory_index;
+    integer linux_devtmpfs_index;
+    integer linux_uart_index;
+    integer linux_initmem_index;
+    integer linux_init_index;
     integer cycle_count;
     integer uart_byte_count;
     integer payload_words;
@@ -101,6 +111,11 @@ module tb_opensbi #(
     logic saw_linux_panic;
     logic saw_linux_prompt;
     logic saw_linux_plic;
+    logic saw_linux_memory;
+    logic saw_linux_devtmpfs;
+    logic saw_linux_uart;
+    logic saw_linux_initmem;
+    logic saw_linux_init;
     logic saw_s_mode;
     logic linux_mode;
     logic stop_at_linux_plic;
@@ -425,6 +440,10 @@ module tb_opensbi #(
                     banner_index = banner_index + 1;
                     if (banner_index == banner.len()) begin
                         saw_banner = 1'b1;
+                        if (linux_mode)
+                            $display("\nPERF SIGNPOST name=opensbi cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
+                                     cycle_count, observed_minstret,
+                                     uart_byte_count, dbg_pc);
                     end
                 end else begin
                     banner_index = (value == banner[0]) ? 1 : 0;
@@ -436,6 +455,10 @@ module tb_opensbi #(
                     payload_index = payload_index + 1;
                     if (payload_index == payload_text.len()) begin
                         saw_payload_text = 1'b1;
+                        if (linux_mode)
+                            $display("\nPERF SIGNPOST name=linux cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
+                                     cycle_count, observed_minstret,
+                                     uart_byte_count, dbg_pc);
                     end
                 end else begin
                     payload_index = (value == payload_text[0]) ? 1 : 0;
@@ -459,6 +482,9 @@ module tb_opensbi #(
                     linux_prompt_index = linux_prompt_index + 1;
                     if (linux_prompt_index == linux_prompt_text.len()) begin
                         saw_linux_prompt = 1'b1;
+                        $display("\nPERF SIGNPOST name=bash cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
+                                 cycle_count, observed_minstret,
+                                 uart_byte_count, dbg_pc);
                     end
                 end else begin
                     linux_prompt_index =
@@ -469,11 +495,54 @@ module tb_opensbi #(
             if (linux_mode && !saw_linux_plic) begin
                 if (value == linux_plic_text[linux_plic_index]) begin
                     linux_plic_index = linux_plic_index + 1;
-                    if (linux_plic_index == linux_plic_text.len())
+                    if (linux_plic_index == linux_plic_text.len()) begin
                         saw_linux_plic = 1'b1;
+                        $display("\nPERF SIGNPOST name=plic cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
+                                 cycle_count, observed_minstret,
+                                 uart_byte_count, dbg_pc);
+                    end
                 end else begin
                     linux_plic_index =
                         (value == linux_plic_text[0]) ? 1 : 0;
+                end
+            end
+
+            match_linux_signpost(
+                value, linux_memory_text, "memory",
+                linux_memory_index, saw_linux_memory);
+            match_linux_signpost(
+                value, linux_devtmpfs_text, "devtmpfs",
+                linux_devtmpfs_index, saw_linux_devtmpfs);
+            match_linux_signpost(
+                value, linux_uart_text, "uart",
+                linux_uart_index, saw_linux_uart);
+            match_linux_signpost(
+                value, linux_initmem_text, "initmem",
+                linux_initmem_index, saw_linux_initmem);
+            match_linux_signpost(
+                value, linux_init_text, "init",
+                linux_init_index, saw_linux_init);
+        end
+    endtask
+
+    task automatic match_linux_signpost;
+        input logic [7:0] value;
+        input string text;
+        input string name;
+        inout integer index;
+        inout logic seen;
+        begin
+            if (linux_mode && !seen) begin
+                if (value == text[index]) begin
+                    index = index + 1;
+                    if (index == text.len()) begin
+                        seen = 1'b1;
+                        $display("\nPERF SIGNPOST name=%0s cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
+                                 name, cycle_count, observed_minstret,
+                                 uart_byte_count, dbg_pc);
+                    end
+                end else begin
+                    index = (value == text[0]) ? 1 : 0;
                 end
             end
         end
@@ -850,6 +919,11 @@ module tb_opensbi #(
         linux_panic_index = 0;
         linux_prompt_index = 0;
         linux_plic_index = 0;
+        linux_memory_index = 0;
+        linux_devtmpfs_index = 0;
+        linux_uart_index = 0;
+        linux_initmem_index = 0;
+        linux_init_index = 0;
         cycle_count = 0;
         uart_byte_count = 0;
         linux_trap_count = 0;
@@ -862,6 +936,11 @@ module tb_opensbi #(
         saw_linux_panic = 1'b0;
         saw_linux_prompt = 1'b0;
         saw_linux_plic = 1'b0;
+        saw_linux_memory = 1'b0;
+        saw_linux_devtmpfs = 1'b0;
+        saw_linux_uart = 1'b0;
+        saw_linux_initmem = 1'b0;
+        saw_linux_init = 1'b0;
         saw_s_mode = 1'b0;
         stop_at_linux_plic = $test$plusargs("stop_at_linux_plic");
         delay_probe_fired = 1'b0;

@@ -32,6 +32,9 @@ module openrv64_exec_pipe_mem #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer LSU_DEPTH = `OPENRV64_LSU_OUTSTANDING,
     parameter integer LSU_TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
+    // Assertion-only lifetime bound from LSU allocation through completion.
+    // No timeout recovery is implied and no counter is synthesized.
+    parameter integer LSU_TIMEOUT_CYCLES = 10000,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}}
@@ -730,20 +733,84 @@ module openrv64_exec_pipe_mem #(
     end
 
 `ifndef SYNTHESIS
+    integer timeout_index;
+    integer slot_timeout_age_q [0:LSU_DEPTH-1];
+    integer atomic_timeout_age_q;
+
     initial begin
         if (LSU_DEPTH < 1)
             $fatal(1, "pipelined LSU requires at least one tag");
         if (LSU_DEPTH > (1 << LSU_TAG_WIDTH))
             $fatal(1, "LSU tag width cannot encode LSU depth");
+        if (LSU_TIMEOUT_CYCLES < 1)
+            $fatal(1, "LSU timeout must be at least one cycle");
     end
 
     always @(posedge clk) begin
-        if (rst_n && !flush_i && mem_resp_valid_i && mem_resp_ready_o &&
-            !atomic_active_q &&
-            ((mem_resp_tag_i >= LSU_DEPTH) ||
-             !slot_valid_q[mem_resp_tag_i] ||
-             !slot_sent_q[mem_resp_tag_i]))
-            $fatal(1, "MEM response tag does not name an outstanding request");
+        if (!rst_n) begin
+            for (timeout_index = 0; timeout_index < LSU_DEPTH;
+                 timeout_index = timeout_index + 1)
+                slot_timeout_age_q[timeout_index] <= 0;
+            atomic_timeout_age_q <= 0;
+        end else begin
+            for (timeout_index = 0; timeout_index < LSU_DEPTH;
+                 timeout_index = timeout_index + 1) begin
+                if ((normal_resp_fire &&
+                     (mem_resp_tag_i == LSU_TAG_WIDTH'(timeout_index))) ||
+                    (local_completion &&
+                     (send_head_q == LSU_TAG_WIDTH'(timeout_index))) ||
+                    (flush_i &&
+                     !(slot_sent_q[timeout_index] &&
+                       slot_ordered_store_q[timeout_index]))) begin
+                    slot_timeout_age_q[timeout_index] <= 0;
+                end else if (slot_valid_q[timeout_index]) begin
+                    if (slot_timeout_age_q[timeout_index] >=
+                        LSU_TIMEOUT_CYCLES - 1)
+                        $fatal(1,
+                            "LSU operation timeout cycles=%0d tag=%0d id=%0d pc=%016x sent=%b write=%b addr=%016x",
+                            LSU_TIMEOUT_CYCLES, timeout_index,
+                            slot_id_q[timeout_index],
+                            slot_payload_q[timeout_index][
+                                I_PC +: `RV64_XLEN],
+                            slot_sent_q[timeout_index],
+                            slot_payload_q[timeout_index][I_MEM_WRITE],
+                            slot_payload_q[timeout_index][
+                                I_RS1_DATA +: `RV64_XLEN] +
+                            slot_payload_q[timeout_index][
+                                I_IMM +: `RV64_XLEN]);
+                    else
+                        slot_timeout_age_q[timeout_index] <=
+                            slot_timeout_age_q[timeout_index] + 1;
+                end else begin
+                    slot_timeout_age_q[timeout_index] <= 0;
+                end
+            end
+
+            if (atomic_finish ||
+                (flush_i && !atomic_irrevocable)) begin
+                atomic_timeout_age_q <= 0;
+            end else if (atomic_active_q) begin
+                if (atomic_timeout_age_q >= LSU_TIMEOUT_CYCLES - 1)
+                    $fatal(1,
+                        "LSU atomic timeout cycles=%0d id=%0d pc=%016x started=%b inflight=%b write=%b addr=%016x",
+                        LSU_TIMEOUT_CYCLES, atomic_id_q,
+                        atomic_payload_q[I_PC +: `RV64_XLEN],
+                        atomic_started_q, atomic_req_inflight_q,
+                        atomic_mem_write, atomic_effective_addr);
+                else
+                    atomic_timeout_age_q <= atomic_timeout_age_q + 1;
+            end else begin
+                atomic_timeout_age_q <= 0;
+            end
+
+            if (!flush_i && mem_resp_valid_i && mem_resp_ready_o &&
+                !atomic_active_q &&
+                ((mem_resp_tag_i >= LSU_DEPTH) ||
+                 !slot_valid_q[mem_resp_tag_i] ||
+                 !slot_sent_q[mem_resp_tag_i]))
+                $fatal(1,
+                    "MEM response tag does not name an outstanding request");
+        end
     end
 `endif
 
