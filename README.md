@@ -29,6 +29,7 @@ Blatant self-promotion, STREAM triad (integer, no VA):
 | IPC          |      0.9332 |             0.4329 |
 | Bytes/cycle  |       3.088 |              1.662 |
 
+Feel free to be skeptical on that one, I'm semi-confident on the ddr3 model, but I don't know exactly what GEM3 is using, should verify. Mostly it's fairly aggressive on adaptive prefetching. Need to put that into a CSR knob.
 
 Issue was in l1d stores blocking reads instead of letting you fill dirty:
 
