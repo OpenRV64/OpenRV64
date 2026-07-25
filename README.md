@@ -20,24 +20,11 @@ Next steps:
 
 Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
 
-Blatant self-promotion, STREAM triad (integer, no VA):
-
-| Metric       | OpenRV64 D4 | A53-class HPI GEM3 |
-| ------------ | ----------: | -----------------: |
-| Cycles       |      63,661 |            118,286 |
-| Instructions |      59,411 |             51,204 |
-| IPC          |      0.9332 |             0.4329 |
-| Bytes/cycle  |       3.088 |              1.662 |
-
-Feel free to be skeptical on that one, I'm semi-confident on the ddr3 model, but I don't know exactly what GEM3 is using, should verify. Mostly it's fairly aggressive on adaptive prefetching. Need to put that into a CSR knob.
-
-Issue was in l1d stores blocking reads instead of letting you fill dirty:
-
 | Metric               | OpenRV64 3P, prefetch on | gem5 HPI proxy |
 | -------------------- | -----------------------: | -------------: |
-| Cycles               |                   70,836 |         71,443 |
+| Cycles               |                   65,572 |         71,443 |
 | Retired instructions |                   52,547 |         58,695 |
-| IPC                  |                   0.7418 |         0.8216 |
+| IPC                  |                   0.8014 |         0.8216 |
 | ISA                  |                    RV64I |        AArch64 |
 | Result               |                     PASS | PASS/reference |
 
