@@ -17,6 +17,9 @@ Next steps:
 5. PD is a concern, timing isn't terrible (though mul is still bad), but mostly there are CAM structures and the forwarding network is unpleasant, need a better design here.
 6. OOO, but this is a ways off.
 7. This is actually first, ordered an Artix-7 100t, need to validate under a full distribution like debian, might have to recompile due to lack of -C.
+8. We make it rain with prefetches, I have confidence gating in some branch predictors, but the whole algorithm needs tuning.
+9. satp is a massive hammer, as is sfence.vma, need to do a better job on pruning vs absolute desolation.
+10. l2 latency at 11 l2u is too aggressive, not viable in pd.
 
 Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
 
