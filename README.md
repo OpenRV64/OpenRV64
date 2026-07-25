@@ -20,7 +20,7 @@ Next steps:
 
 Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
 
-| Metric               | OpenRV64 3P, prefetch on | gem5 HPI proxy |
+| Coremarks: Metric    | OpenRV64 3P, prefetch on | gem5 HPI proxy |
 | -------------------- | -----------------------: | -------------: |
 | Cycles               |                   65,572 |         71,443 |
 | Retired instructions |                   52,547 |         58,695 |
