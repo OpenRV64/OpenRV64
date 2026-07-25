@@ -28,4 +28,11 @@ Why no -C: It really does muck up the frontend, variable length jumps, everythin
 | ISA                  |                    RV64I |        AArch64 |
 | Result               |                     PASS | PASS/reference |
 
+| Kernel | Logical bytes | OpenRV64 cycles | OpenRV64 instr. | OpenRV64 IPC | OpenRV64 B/cycle | HPI cycles | HPI instr. | HPI IPC | HPI B/cycle | Cycle ratio |
+| :----- | ------------: | --------------: | --------------: | -----------: | ---------------: | ---------: | ---------: | ------: | ----------: | ----------: |
+| Copy   |       131,072 |          44,223 |          20,497 |       0.4635 |            2.964 |     73,584 |     20,485 |  0.2784 |       1.781 |       1.664 |
+| Scale  |       131,072 |          49,484 |          40,977 |       0.8281 |            2.649 |     75,786 |     32,772 |  0.4324 |       1.730 |       1.532 |
+| Add    |       196,608 |          83,911 |          43,027 |       0.5128 |            2.343 |    117,784 |     43,012 |  0.3652 |       1.669 |       1.404 |
+| Triad  |       196,608 |          88,605 |          59,411 |       0.6705 |            2.219 |    118,286 |     51,204 |  0.4329 |       1.662 |       1.335 |
+
 This is on a ddr3 model which is hopefully accurate, feel free to take a look under rtl/soc/memory/timing_ddr3.v
