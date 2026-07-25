@@ -395,8 +395,30 @@ module tb_lsq;
         end
         head_valid = 1; head_id = IDW'(1); head_slot = 3'd1;
         take_req(1'b1, 64'h2000, st);
-        respond_result(st, 64'h2000, 0, IDW'(1), 1, 0);
+        // Cacheable stores complete architecturally from request acceptance,
+        // before the later L1D response.  Their tag remains occupied until
+        // that response returns.
+        take_result(IDW'(1), 1, 0, 0, 0);
+        if (!store_pending)
+            $fatal(1, "accepted posted store was released before response");
+        alloc_store(IDW'(2), 3'd2, 64'h1100, 3'd3,
+                    64'h1111_2222_3333_4444, 8'hff);
+        s_id = IDW'(3); s_slot = 3'd3; s_meta = IDW'(3);
+        s_vaddr = 64'h1200; s_size = 3'd3;
+        s_wdata = 64'h5555_6666_7777_8888; s_wstrb = 8'hff;
+        s_valid = 1'b1;
+        #1;
+        if (s_ready)
+            $fatal(1, "posted store tag was reused before response");
+        s_valid = 1'b0;
+        respond(st, 64'h2000, 0, 0, 0);
+        #1;
+        if (result_valid)
+            $fatal(1, "posted store response produced a second result");
+        alloc_store(IDW'(3), 3'd3, 64'h1200, 3'd3,
+                    64'h5555_6666_7777_8888, 8'hff);
         head_valid = 0;
+        flush = 1; tick(); flush = 0;
 
         reset_dut();
 

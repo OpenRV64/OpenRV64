@@ -428,6 +428,7 @@ module openrv64_exec_lsu #(
     wire atomic_request_fire = mem_request_fire && atomic_active_q;
 
     reg complete_valid_q;
+    reg complete_store_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] complete_slot_q;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_q;
@@ -589,6 +590,7 @@ module openrv64_exec_lsu #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             complete_valid_q <= 1'b0;
+            complete_store_q <= 1'b0;
             complete_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
@@ -603,7 +605,13 @@ module openrv64_exec_lsu #(
                 {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
             atomic_access_allowed_q <= 1'b1;
         end else if (flush_i) begin
-            complete_valid_q <= 1'b0;
+            // An accepted ordinary store (or completed atomic) is
+            // irrevocable. Keep an already-buffered completion across a
+            // younger redirect until the backend consumes it.
+            complete_valid_q <= complete_valid_q && complete_store_q &&
+                                !complete_ready_i;
+            complete_store_q <= complete_valid_q && complete_store_q &&
+                                !complete_ready_i;
             if (!atomic_irrevocable_q) begin
                 atomic_active_q <= 1'b0;
                 atomic_req_inflight_q <= 1'b0;
@@ -613,18 +621,22 @@ module openrv64_exec_lsu #(
                 complete_id_q <= lsq_result_id;
                 complete_slot_q <= lsq_result_slot;
                 complete_payload_q <= completion_data;
+                complete_store_q <= 1'b1;
             end else if (atomic_finish) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= atomic_id_q;
                 complete_slot_q <= atomic_slot_q;
                 complete_payload_q <= completion_data;
+                complete_store_q <= 1'b1;
                 atomic_active_q <= 1'b0;
                 atomic_irrevocable_q <= 1'b0;
                 atomic_req_inflight_q <= 1'b0;
             end
         end else begin
-            if (complete_valid_q && complete_ready_i)
+            if (complete_valid_q && complete_ready_i) begin
                 complete_valid_q <= 1'b0;
+                complete_store_q <= 1'b0;
+            end
 
             if (atomic_start_valid) begin
                 atomic_active_q <= 1'b1;
@@ -648,6 +660,7 @@ module openrv64_exec_lsu #(
                 complete_id_q <= atomic_id_q;
                 complete_slot_q <= atomic_slot_q;
                 complete_payload_q <= completion_data;
+                complete_store_q <= 1'b1;
                 atomic_active_q <= 1'b0;
                 atomic_irrevocable_q <= 1'b0;
                 atomic_req_inflight_q <= 1'b0;
@@ -656,6 +669,7 @@ module openrv64_exec_lsu #(
                 complete_id_q <= lsq_result_id;
                 complete_slot_q <= lsq_result_slot;
                 complete_payload_q <= completion_data;
+                complete_store_q <= lsq_result_store;
             end
         end
     end

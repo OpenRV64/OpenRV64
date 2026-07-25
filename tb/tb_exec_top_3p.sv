@@ -576,22 +576,30 @@ module tb_exec_top_3p;
             fail("ordered store request mismatch");
         saved_mem_tag = mem_tag;
         tick();
-        mem_resp_valid = 1'b1;
-        mem_resp_tag = saved_mem_tag;
-        // A younger redirect may coincide with the one-cycle admission
-        // response. The ordered store completion must survive that flush.
+        // Once L1D accepts the posted request, the store may complete before
+        // its later tagged response.  A coincident younger redirect must not
+        // discard that irrevocable store completion.
         flush = 1'b1;
         tick();
         flush = 1'b0;
-        mem_resp_valid = 1'b0;
         #1;
         if (!complete_valid[2])
-            fail("MEM store response was lost on simultaneous flush");
+            fail("accepted MEM store did not complete across flush");
         if (complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION])
             fail("MEM store raised an unexpected exception");
         complete_ready = 3'b100;
         tick();
         complete_ready = 3'b000;
+        mem_resp_valid = 1'b1;
+        mem_resp_tag = saved_mem_tag;
+        #1;
+        if (!mem_resp_ready)
+            fail("posted MEM store response was blocked");
+        tick();
+        mem_resp_valid = 1'b0;
+        #1;
+        if (complete_valid[2])
+            fail("posted MEM store response completed the store twice");
 
         // Fill the fixed-role physical LSU queues while the native request
         // port is stalled.

@@ -80,6 +80,7 @@ module tb_backend_3p #(
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_resp_tag_q;
     reg [63:0] xlate_resp_paddr_q;
     reg xlate_resp_access_fault_q;
+    reg xlate_resp_page_fault_q;
     wire xlate_resp_ready;
     reg irq_pending;
     reg [4:0] irq_cause;
@@ -156,7 +157,7 @@ module tb_backend_3p #(
         .mem_xlate_resp_tag_i(xlate_resp_tag_q),
         .mem_xlate_resp_paddr_i(xlate_resp_paddr_q),
         .mem_xlate_resp_access_fault_i(xlate_resp_access_fault_q),
-        .mem_xlate_resp_page_fault_i(1'b0),
+        .mem_xlate_resp_page_fault_i(xlate_resp_page_fault_q),
         .mem_error_i(mem_error), .mem_page_fault_i(mem_page_fault),
         .mem_access_allowed_i(mem_access_allowed),
         .mem_write_o(mem_write), .mem_addr_o(mem_addr),
@@ -269,6 +270,7 @@ module tb_backend_3p #(
             xlate_resp_tag_q <= 0;
             xlate_resp_paddr_q <= 0;
             xlate_resp_access_fault_q <= 1'b0;
+            xlate_resp_page_fault_q <= 1'b0;
         end else begin
             if (xlate_resp_valid_q && xlate_resp_ready)
                 xlate_resp_valid_q <= 1'b0;
@@ -280,6 +282,7 @@ module tb_backend_3p #(
                 xlate_resp_tag_q <= mem_xlate_tag;
                 xlate_resp_paddr_q <= mem_xlate_vaddr;
                 xlate_resp_access_fault_q <= 1'b0;
+                xlate_resp_page_fault_q <= 1'b0;
             end
         end
     end
@@ -670,16 +673,19 @@ module tb_backend_3p #(
         mem_ready = 1;
         tick();
         mem_ready = 0;
-        for (cycles = 0; cycles < 10; cycles = cycles + 1) begin
-            if (retire_occupancy == 0 || retire_arch != 0)
-                fail("store retired before translation/admission response");
+        for (cycles = 0; cycles < 20 && !saw_posted_store_retire;
+             cycles = cycles + 1) begin
+            #1;
+            if (retire_occupancy == 0)
+                saw_posted_store_retire = 1'b1;
             tick();
         end
+        if (!saw_posted_store_retire)
+            fail("store did not retire after L1D request acceptance");
 
-        // The store's physical address is known even though its admission
-        // response is delayed.  A younger cacheable load to another line may
-        // execute, but its completion remains behind the older store in the
-        // retirement queue.
+        // The tagged L1D response remains delayed after architectural store
+        // completion. A younger cacheable load to another line may execute and
+        // retire because the older write is already irrevocably posted.
         while (!decode_ready[0]) tick();
         decode_payload = {{2*IW{1'b0}}, load_packet(11, 0, 13, 64'h100)};
         decode_uses_rs1 = 3'b000;
@@ -700,39 +706,15 @@ module tb_backend_3p #(
         tick();
         mem_ready = 1'b0;
 
-        // Return the younger load first.  It may complete out of order but
-        // cannot retire before the older store.
+        // Return the younger load first. It can retire without waiting for the
+        // posted store's tag-release response.
         mem_resp_valid = 1'b1;
         mem_resp_tag = younger_load_tag;
         mem_rdata = 64'h1234;
         tick();
         mem_resp_valid = 1'b0;
-        repeat (2) begin
-            if (retire_arch[0] && retire_rd == 13)
-                fail("younger load retired before older store");
-            tick();
-        end
-
-        // The successful store response is its architectural completion point.
-        // The physical write may remain posted in L1D below this point.
-        mem_resp_valid = 1'b1;
-        mem_resp_tag = posted_store_tag;
-        tick();
-        mem_resp_valid = 1'b0;
-        mem_ready = 1'b0;
-        for (cycles = 0; cycles < 20 && !saw_posted_store_retire;
+        for (cycles = 0; cycles < 20 && !saw_nonoverlap_load_retire;
              cycles = cycles + 1) begin
-            #1;
-            if (retire_arch != 0)
-                saw_posted_store_retire = 1'b1;
-            if (retire_arch[0] && retire_rd == 13 &&
-                retire_wdata == 64'h1234)
-                saw_nonoverlap_load_retire = 1'b1;
-            tick();
-        end
-        if (!saw_posted_store_retire)
-            fail("store did not retire after successful admission response");
-        for (cycles = 0; cycles < 20; cycles = cycles + 1) begin
             #1;
             if (retire_arch[0] && retire_rd == 13 &&
                 retire_wdata == 64'h1234)
@@ -740,20 +722,30 @@ module tb_backend_3p #(
             tick();
         end
         if (!saw_nonoverlap_load_retire)
-            fail("younger load did not retire after store completion");
+            fail("younger load waited for posted-store tag release");
+
+        // The late response releases the retained LSQ tag and must not produce
+        // a second architectural completion.
+        mem_resp_valid = 1'b1;
+        mem_resp_tag = posted_store_tag;
+        tick();
+        mem_resp_valid = 1'b0;
+        mem_ready = 1'b0;
         for (cycles = 0; cycles < 20 && retire_occupancy != 0;
              cycles = cycles + 1) tick();
         if (retire_occupancy != 0)
             fail("precise store success sequence leaked retirement state");
 
-        // Reproduce the Linux failure: capture an Sv39-style store request,
-        // return its page fault later, and require the original store PC to
-        // trap precisely. The request handshake alone must not retire it.
+        // Store translation faults remain precise. A cacheable store can only
+        // become posted after translation and access checks succeed, so a page
+        // fault must be reported on the translation channel before any
+        // physical L1D request is accepted.
         p0 = base_packet(12, 64'h2f00, 32'h0080_3023);
         p0[I_RS2 +: 5] = 5'd1;
         p0[I_IMM +: 64] = 64'h180;
         p0[I_LSU_OP +: 5] = `RV64_LSU_OP_SD;
         p0[I_MEM_WRITE] = 1'b1;
+        auto_xlate_enable = 1'b0;
         decode_payload = {{2*IW{1'b0}}, p0};
         decode_uses_rs2 = 3'b001;
         decode_valid = 3'b001;
@@ -762,24 +754,23 @@ module tb_backend_3p #(
         decode_payload = 0;
         decode_uses_rs2 = 0;
         mem_ready = 1'b1;
-        while (!(mem_valid && mem_physical && mem_write &&
-                 mem_addr == 64'h180)) tick();
-        posted_store_tag = mem_tag;
+        while (!(mem_xlate_valid && mem_xlate_write &&
+                 mem_xlate_vaddr == 64'h180)) tick();
+        posted_store_tag = mem_xlate_tag;
         tick();
-        mem_ready = 1'b0;
-        for (cycles = 0; cycles < 6; cycles = cycles + 1) begin
-            if (retire_occupancy == 0 || exception)
-                fail("faulting store completed before its page-fault response");
+        xlate_resp_tag_q = posted_store_tag;
+        xlate_resp_paddr_q = 64'h180;
+        xlate_resp_page_fault_q = 1'b1;
+        xlate_resp_valid_q = 1'b1;
+        tick();
+        xlate_resp_valid_q = 1'b0;
+        xlate_resp_page_fault_q = 1'b0;
+        for (cycles = 0; cycles < 20 && !exception;
+             cycles = cycles + 1) begin
+            if (mem_valid && mem_physical)
+                fail("page-faulted store emitted a physical request");
             tick();
         end
-        mem_resp_valid = 1'b1;
-        mem_resp_tag = posted_store_tag;
-        mem_page_fault = 1'b1;
-        tick();
-        mem_resp_valid = 1'b0;
-        mem_page_fault = 1'b0;
-        for (cycles = 0; cycles < 20 && !exception;
-             cycles = cycles + 1) tick();
         if (!exception)
             fail("store page fault did not reach precise retirement");
         if (cause != `RV64_EXCEPT_CAUSE_STORE_PAGE_FAULT)
@@ -793,9 +784,10 @@ module tb_backend_3p #(
         flush = 1'b1;
         tick();
         flush = 1'b0;
+        auto_xlate_enable = 1'b1;
 
         // Model SRET retry after the handler installs the mapping. The same
-        // architectural store must issue again and retire only on success.
+        // architectural store issues again and retires when L1D accepts it.
         while (!decode_ready[0]) tick();
         decode_payload = {{2*IW{1'b0}}, p0};
         decode_uses_rs2 = 3'b001;
@@ -810,14 +802,14 @@ module tb_backend_3p #(
         posted_store_tag = mem_tag;
         tick();
         mem_ready = 1'b0;
+        for (cycles = 0; cycles < 20 && retire_occupancy != 0;
+             cycles = cycles + 1) tick();
+        if (retire_occupancy != 0 || exception)
+            fail("retried store did not retire after L1D acceptance");
         mem_resp_valid = 1'b1;
         mem_resp_tag = posted_store_tag;
         tick();
         mem_resp_valid = 1'b0;
-        for (cycles = 0; cycles < 20 && retire_occupancy != 0;
-             cycles = cycles + 1) tick();
-        if (retire_occupancy != 0 || exception)
-            fail("retried store did not complete normally");
 
         // A translation/PMP probe denial must produce a precise store-access
         // fault without issuing the subsequent physical memory transaction.
@@ -865,8 +857,9 @@ module tb_backend_3p #(
         tick();
         flush = 1'b0;
 
-        // SATP remains a conservative global barrier behind an unresolved
-        // store. It cannot execute until that store completes precisely.
+        // SATP remains a conservative global barrier behind a posted store.
+        // Architectural retirement may have advanced, but the barrier cannot
+        // execute until the retained store tag receives its L1D response.
         while (!decode_ready[0]) tick();
         p0 = base_packet(64'd15, 64'h2800, 32'h0000_3023);
         p0[I_RS2 +: 5] = 5'd1;
@@ -900,8 +893,8 @@ module tb_backend_3p #(
         decode_valid = 3'b000;
         decode_payload = 0;
         for (cycles = 0; cycles < 6; cycles = cycles + 1) begin
-            if (csr_write || (retire_arch != 0))
-                fail("SATP passed an unresolved older store");
+            if (csr_write)
+                fail("SATP passed a posted store awaiting tag release");
             tick();
         end
 

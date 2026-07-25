@@ -143,6 +143,8 @@ module openrv64_lsq #(
     reg slot_xlate_access_fault_q [0:DEPTH-1];
     reg slot_xlate_page_fault_q [0:DEPTH-1];
     reg slot_access_sent_q [0:DEPTH-1];
+    reg slot_store_result_sent_q [0:DEPTH-1];
+    reg slot_access_done_q [0:DEPTH-1];
     reg slot_killed_q [0:DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] slot_id_q [0:DEPTH-1];
     reg [RETIRE_SLOT_WIDTH-1:0] slot_retire_q [0:DEPTH-1];
@@ -432,8 +434,10 @@ module openrv64_lsq #(
     assign req_wstrb_o = slot_wstrb_q[request_index_r];
     wire req_fire = req_valid_o && req_ready_i;
 
-    // Local completions cover decode/address faults, translation faults, and
-    // loads whose bytes are fully supplied by older stores.
+    // Local completions cover decode/address faults, translation faults, loads
+    // whose bytes are fully supplied by older stores, and ordinary cacheable
+    // stores once L1D has irrevocably accepted the posted request.  The latter
+    // retain their LSQ entry until the later tagged L1D response arrives.
     reg local_found_r;
     reg [TAG_WIDTH-1:0] local_index_r;
     integer local_scan;
@@ -450,7 +454,14 @@ module openrv64_lsq #(
                 !slot_atomic_q[local_scan] &&
                 (slot_immediate_q[local_scan] ||
                  slot_xlate_fault[local_scan] ||
-                 load_forward_r[local_scan]);
+                 load_forward_r[local_scan] ||
+                 (slot_store_q[local_scan] &&
+                  slot_cacheable[local_scan] &&
+                  ((slot_access_sent_q[local_scan] &&
+                    !slot_store_result_sent_q[local_scan]) ||
+                   (req_fire &&
+                    (request_index_r ==
+                     local_scan[TAG_WIDTH-1:0])))));
             if (local_candidate_r &&
                 (!local_found_r ||
                  id_is_younger(slot_id_q[local_index_r],
@@ -482,8 +493,21 @@ module openrv64_lsq #(
     wire resp_slot_killed = resp_slot_valid && slot_killed_q[resp_tag_i];
     wire resp_is_access = resp_slot_valid &&
                           slot_access_sent_q[resp_tag_i];
-    assign resp_ready_o = resp_is_access ? result_ready_i : 1'b1;
+    wire resp_is_posted_store = resp_is_access &&
+                                slot_store_q[resp_tag_i] &&
+                                !slot_atomic_q[resp_tag_i] &&
+                                slot_cacheable[resp_tag_i];
+    // A posted-store response only releases its retained LSQ tag.  It does not
+    // consume architectural completion bandwidth and therefore cannot be
+    // backpressured by the completion port.
+    assign resp_ready_o = resp_is_access ?
+        ((resp_slot_killed || resp_is_posted_store) ?
+         1'b1 : result_ready_i) :
+        1'b1;
     wire resp_fire = resp_valid_i && resp_ready_o;
+    wire posted_store_resp_fire = resp_fire &&
+                                  resp_is_posted_store &&
+                                  !resp_slot_killed;
     wire access_resp_visible = resp_valid_i && resp_is_access;
     wire access_resp_squashed_now = access_resp_visible &&
         squash_younger_i &&
@@ -491,6 +515,7 @@ module openrv64_lsq #(
 
     wire access_resp_result = access_resp_visible &&
                               !resp_slot_killed &&
+                              !resp_is_posted_store &&
                               !access_resp_squashed_now;
     assign result_valid_o = access_resp_result || local_found_r;
     wire result_select_resp = access_resp_result;
@@ -512,6 +537,21 @@ module openrv64_lsq #(
         resp_page_fault_i :
         slot_xlate_page_fault_q[local_index_r];
     wire result_fire = result_valid_o && result_ready_i;
+    wire result_is_posted_store = !result_select_resp &&
+                                  local_found_r &&
+                                  slot_store_q[local_index_r] &&
+                                  slot_cacheable[local_index_r] &&
+                                  ((slot_access_sent_q[local_index_r] &&
+                                    !slot_store_result_sent_q[
+                                        local_index_r]) ||
+                                   (req_fire &&
+                                    (request_index_r == local_index_r)));
+    wire posted_store_result_fire = result_fire &&
+                                    result_is_posted_store;
+    wire posted_store_result_resp_same =
+        posted_store_result_fire &&
+        posted_store_resp_fire &&
+        (result_index == resp_tag_i);
 
     reg atomic_start_found_r;
     reg [TAG_WIDTH-1:0] atomic_start_index_r;
@@ -570,6 +610,8 @@ module openrv64_lsq #(
                 slot_xlate_access_fault_q[slot_index] <= 1'b0;
                 slot_xlate_page_fault_q[slot_index] <= 1'b0;
                 slot_access_sent_q[slot_index] <= 1'b0;
+                slot_store_result_sent_q[slot_index] <= 1'b0;
+                slot_access_done_q[slot_index] <= 1'b0;
                 slot_killed_q[slot_index] <= 1'b0;
                 slot_id_q[slot_index] <=
                     {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
@@ -589,7 +631,8 @@ module openrv64_lsq #(
                     slot_store_q[slot_index] &&
                     slot_access_sent_q[slot_index]) begin
                     // A store can enter this state only after ordered-head
-                    // authorization.  Preserve it until L1D admission responds.
+                    // authorization. Preserve it until both architectural
+                    // completion and the later L1D tag-release response.
                     slot_valid_q[slot_index] <= 1'b1;
                 end else if (atomic_irrevocable_i &&
                              (atomic_tag_i ==
@@ -599,13 +642,38 @@ module openrv64_lsq #(
                     slot_valid_q[slot_index] <= 1'b0;
                     slot_xlate_sent_q[slot_index] <= 1'b0;
                     slot_access_sent_q[slot_index] <= 1'b0;
+                    slot_store_result_sent_q[slot_index] <= 1'b0;
+                    slot_access_done_q[slot_index] <= 1'b0;
                     slot_killed_q[slot_index] <= 1'b0;
                 end
             end
             if (result_fire) begin
-                slot_valid_q[result_index] <= 1'b0;
-                slot_xlate_sent_q[result_index] <= 1'b0;
-                slot_access_sent_q[result_index] <= 1'b0;
+                if (result_is_posted_store) begin
+                    slot_store_result_sent_q[result_index] <= 1'b1;
+                    if (slot_access_done_q[result_index] ||
+                        posted_store_result_resp_same) begin
+                        slot_valid_q[result_index] <= 1'b0;
+                        slot_access_sent_q[result_index] <= 1'b0;
+                        slot_store_result_sent_q[result_index] <= 1'b0;
+                        slot_access_done_q[result_index] <= 1'b0;
+                    end
+                end else begin
+                    slot_valid_q[result_index] <= 1'b0;
+                    slot_xlate_sent_q[result_index] <= 1'b0;
+                    slot_access_sent_q[result_index] <= 1'b0;
+                    slot_store_result_sent_q[result_index] <= 1'b0;
+                    slot_access_done_q[result_index] <= 1'b0;
+                end
+            end
+            if (posted_store_resp_fire) begin
+                slot_access_done_q[resp_tag_i] <= 1'b1;
+                if (slot_store_result_sent_q[resp_tag_i] ||
+                    posted_store_result_resp_same) begin
+                    slot_valid_q[resp_tag_i] <= 1'b0;
+                    slot_access_sent_q[resp_tag_i] <= 1'b0;
+                    slot_store_result_sent_q[resp_tag_i] <= 1'b0;
+                    slot_access_done_q[resp_tag_i] <= 1'b0;
+                end
             end
             if (atomic_done_i)
                 slot_valid_q[atomic_tag_i] <= 1'b0;
@@ -624,6 +692,8 @@ module openrv64_lsq #(
                 slot_xlate_access_fault_q[load_free_index_r] <= 1'b0;
                 slot_xlate_page_fault_q[load_free_index_r] <= 1'b0;
                 slot_access_sent_q[load_free_index_r] <= 1'b0;
+                slot_store_result_sent_q[load_free_index_r] <= 1'b0;
+                slot_access_done_q[load_free_index_r] <= 1'b0;
                 slot_killed_q[load_free_index_r] <= 1'b0;
                 slot_id_q[load_free_index_r] <= load_alloc_id_i;
                 slot_retire_q[load_free_index_r] <= load_alloc_slot_i;
@@ -651,6 +721,8 @@ module openrv64_lsq #(
                 slot_xlate_access_fault_q[store_free_index_r] <= 1'b0;
                 slot_xlate_page_fault_q[store_free_index_r] <= 1'b0;
                 slot_access_sent_q[store_free_index_r] <= 1'b0;
+                slot_store_result_sent_q[store_free_index_r] <= 1'b0;
+                slot_access_done_q[store_free_index_r] <= 1'b0;
                 slot_killed_q[store_free_index_r] <= 1'b0;
                 slot_id_q[store_free_index_r] <= store_alloc_id_i;
                 slot_retire_q[store_free_index_r] <= store_alloc_slot_i;
@@ -691,12 +763,38 @@ module openrv64_lsq #(
                 slot_valid_q[resp_tag_i] <= 1'b0;
                 slot_killed_q[resp_tag_i] <= 1'b0;
                 slot_access_sent_q[resp_tag_i] <= 1'b0;
+                slot_store_result_sent_q[resp_tag_i] <= 1'b0;
+                slot_access_done_q[resp_tag_i] <= 1'b0;
             end
 
             if (result_fire) begin
-                slot_valid_q[result_index] <= 1'b0;
-                slot_xlate_sent_q[result_index] <= 1'b0;
-                slot_access_sent_q[result_index] <= 1'b0;
+                if (result_is_posted_store) begin
+                    slot_store_result_sent_q[result_index] <= 1'b1;
+                    if (slot_access_done_q[result_index] ||
+                        posted_store_result_resp_same) begin
+                        slot_valid_q[result_index] <= 1'b0;
+                        slot_access_sent_q[result_index] <= 1'b0;
+                        slot_store_result_sent_q[result_index] <= 1'b0;
+                        slot_access_done_q[result_index] <= 1'b0;
+                    end
+                end else begin
+                    slot_valid_q[result_index] <= 1'b0;
+                    slot_xlate_sent_q[result_index] <= 1'b0;
+                    slot_access_sent_q[result_index] <= 1'b0;
+                    slot_store_result_sent_q[result_index] <= 1'b0;
+                    slot_access_done_q[result_index] <= 1'b0;
+                end
+            end
+
+            if (posted_store_resp_fire) begin
+                slot_access_done_q[resp_tag_i] <= 1'b1;
+                if (slot_store_result_sent_q[resp_tag_i] ||
+                    posted_store_result_resp_same) begin
+                    slot_valid_q[resp_tag_i] <= 1'b0;
+                    slot_access_sent_q[resp_tag_i] <= 1'b0;
+                    slot_store_result_sent_q[resp_tag_i] <= 1'b0;
+                    slot_access_done_q[resp_tag_i] <= 1'b0;
+                end
             end
             if (atomic_done_i)
                 slot_valid_q[atomic_tag_i] <= 1'b0;
@@ -724,6 +822,8 @@ module openrv64_lsq #(
                             slot_killed_q[slot_index] <= 1'b0;
                             slot_xlate_sent_q[slot_index] <= 1'b0;
                             slot_access_sent_q[slot_index] <= 1'b0;
+                            slot_store_result_sent_q[slot_index] <= 1'b0;
+                            slot_access_done_q[slot_index] <= 1'b0;
                         end
                     end
                 end
@@ -746,6 +846,12 @@ module openrv64_lsq #(
     end
 
     always @(posedge clk) begin
+        if (rst_n && posted_store_resp_fire &&
+            (resp_access_fault_i || resp_page_fault_i))
+            $fatal(1,
+                "LSQ posted store received a late fault tag=%0d access=%b page=%b",
+                resp_tag_i, resp_access_fault_i, resp_page_fault_i);
+
         if (!rst_n || flush_i) begin
             for (timeout_index = 0; timeout_index < DEPTH;
                  timeout_index = timeout_index + 1)
