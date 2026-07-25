@@ -558,6 +558,7 @@ module tb_l1d_prefetch;
             req_addr = address;
             req_tag = test_epoch[`OPENRV64_LSU_TAG_WIDTH-1:0];
             wait_cycles = 0;
+            #1;
             while (!req_ready && wait_cycles < 200) begin
                 @(negedge clk);
                 wait_cycles = wait_cycles + 1;
@@ -826,10 +827,13 @@ module tb_l1d_prefetch;
                 "interleaved stream prefetches were not both useful count=%0d",
                 useful_prefetches);
 
-        // Staggered responses make a one-line lead late twice.  The first late
-        // demand raises depth 1->2; the second raises it 2->4.  The candidate
-        // window must retain every nearer line, and independent prefetch MSHRs
-        // must remain live together while responses return by transaction ID.
+        // The first late demand raises depth 1->2.  Detached demand misses
+        // then let the next two prefetches launch while that demand remains
+        // live.  With staggered response slots the younger 0x3080 prefetch
+        // returns before 0x3040, so the second access is useful rather than
+        // late.  This checks that an older demand no longer blocks independent
+        // prefetch MSHRs and that the depth-two rolling window retains every
+        // nearer line.
         reset_dut();
         response_latency_cycles = 16;
         response_delay_mode = 1;
@@ -840,10 +844,11 @@ module tb_l1d_prefetch;
                 "first late prefetch did not raise depth to two depth=%0d late=%0d",
                 prefetch_depth, late_prefetches);
         issue_load(MEMORY_BASE + 64'h3080);
-        if (prefetch_depth != 4 || late_prefetches != 2)
+        if (prefetch_depth != 2 || late_prefetches != 1 ||
+            useful_prefetches != 2)
             $fatal(1,
-                "second late prefetch did not raise depth to four depth=%0d late=%0d",
-                prefetch_depth, late_prefetches);
+                "independent prefetch did not get ahead depth=%0d late=%0d useful=%0d",
+                prefetch_depth, late_prefetches, useful_prefetches);
         if (max_prefetch_outstanding < 2)
             $fatal(1, "prefetch CCX path never had multiple requests live");
         prefetch_wait_cycles = 0;
@@ -868,6 +873,18 @@ module tb_l1d_prefetch;
                 dut.prefetch_candidate_valid_q[1],
                 dut.prefetch_candidate_valid_q[0],
                 prefetch_outstanding_count, dut.backend_state_q);
+        wait_for_prefetch_quiescence();
+        // Leave several unrelated next-line predictions unused so the
+        // bounded fill buffer must replace speculative lines and exercise
+        // adaptive-depth decay even though the deeper rolling window got
+        // ahead of the second demand above.
+        issue_load(MEMORY_BASE + 64'h9000);
+        wait_for_prefetch_quiescence();
+        issue_load(MEMORY_BASE + 64'ha000);
+        wait_for_prefetch_quiescence();
+        issue_load(MEMORY_BASE + 64'hb000);
+        wait_for_prefetch_quiescence();
+        issue_load(MEMORY_BASE + 64'hc000);
         wait_for_prefetch_quiescence();
         $display("adaptive stats p=%0d useful=%0d late=%0d useless=%0d depth=%0d ooo=%0d",
                  prefetch_commands, useful_prefetches, late_prefetches,

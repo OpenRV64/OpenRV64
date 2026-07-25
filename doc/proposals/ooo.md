@@ -530,9 +530,13 @@ use explicit memory attributes.  Effective-address aperture checks are not
 correct in the presence of virtual aliases.  Bare mode is therefore the first
 LSQ milestone; tagged DTLB ownership, PMA/MMIO classification, and Sv39 follow.
 
-The current blocking L1 may be used as a functional memory endpoint but does
-not by itself provide the concurrency expected by the completed OOO design.
-Cache integration and a nonblocking request path remain separate work.
+The shared L1 remains blocking by default, but the current CCX L1D selects its
+detached-miss interface and implements a parameterized demand MSHR array
+(default three). Different lines issue with independent transaction IDs,
+same-line requests merge as tagged waiters, and responses may return out of
+order. This is enough demand-side cache concurrency for early OOO integration;
+it is not an LSQ, memory-dependence predictor, replay machine, or precise
+speculative-memory recovery mechanism.
 
 ## Parameterization discipline
 

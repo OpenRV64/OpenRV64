@@ -2738,7 +2738,9 @@ module tb_top_axi_3p #(
             $display("PERF_BRANCH_FORWARD issues=%0d operands=%0d",
                      branch_forward_issues, branch_forward_operands);
             if (((BP_TYPE == `OPENRV64_BP_BIMODAL) ||
-                 (BP_TYPE == `OPENRV64_BP_GSHARE_BTB)) &&
+                 (BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
+                 (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ||
+                 (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB)) &&
                 dut.u_core.bp_update_overflow)
                 $fatal(1, "branch predictor update/record queue overflowed");
             $display("PERF_CONFIG retire_depth=%0d completion_mask=%03b branch_forward_mask=%03b full=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d free_branches=%0d eq_pair=%0d perfect_l1i=%0d perfect_l1d=%0d freeloader=%0d freeloader_latency=%0d",
@@ -2892,7 +2894,9 @@ module tb_top_axi_3p #(
             end
             `OPENRV64_BP_BTFNT,
             `OPENRV64_BP_BIMODAL,
-            `OPENRV64_BP_GSHARE_BTB: begin
+            `OPENRV64_BP_GSHARE_BTB,
+            `OPENRV64_BP_GSHARE_BTB_512,
+            `OPENRV64_BP_TOURNAMENT_BTB: begin
                 if ((bp_taken_predictions != bp_allocations) ||
                     (bp_corrections != 1))
                     $fatal(1, "BTFNT/bimodal 3P BP mismatch p=%0d c=%0d",

@@ -33,6 +33,12 @@ The line data arrays contain no dirty state.  With the CCX L1D endpoint, bytes
 which have not reached the lower level are owned by the store FIFO rather than
 represented as Modified cache lines.
 
+The shared cache defaults to its blocking refill state machine.  Setting
+`DETACH_READ_MISSES=1` instead exports tagged cacheable read misses and accepts
+independent full-line fills.  This leaves tag/data lookup and replacement in
+the shared module while an outer policy controller owns MSHRs and lower-level
+transaction IDs.  L1D uses this mode; L1I retains the blocking refill port.
+
 ## Physical storage
 
 Each way's data store is one synchronous, full-width, one-read/one-write
@@ -128,17 +134,27 @@ returned instruction is checked, and the warm replay must issue no CCX fills.
 The scalar LSU enters `openrv64_l1d_ccx` only after translation and PMP
 checking.  The cache retains its 64-bit internal SRAM/refill datapath, while
 the backend converts a cacheable miss into one aligned 512-bit native CCX read
-with `size=6` and `burst_len=0`.  It buffers that line and feeds its eight
-64-bit words into the shared refill controller; a CPU load returns the selected
-64-bit word.
+with `size=6` and `burst_len=0`.  The returned line enters the shared cache
+through its detached full-line fill port; a CPU load returns the selected
+64-bit word after that installation is complete.
 
-`FILL_BUFFER_LINES` and `STORE_BUFFER_LINES` both default to eight cachelines
-and accept values from one through sixteen.  Each L1D store entry contains an
-aligned 64-byte address, 512 data bits, and 64 byte enables.  Consecutive stores
-to the newest undrained line merge bytewise into that record; later bytes
-overwrite earlier bytes and the enables are ORed.  Combination is deliberately
-limited to the FIFO tail so stores cannot move across an intervening store to
-another line.  Downstream L2 or memory performs the final masked merge.
+`DEMAND_MSHRS` defaults to three. `FILL_BUFFER_LINES` and
+`STORE_BUFFER_LINES` both default to eight cachelines and accept values from
+one through sixteen. Each demand MSHR owns one unique aligned line, a lower-half
+CCX transaction ID, returned data, speculation epoch/replay state, and the
+aggregate older-store overlay used for installation. Same-line misses merge
+onto that entry while retaining independent requester tags, selected words,
+and per-request store snapshots. A younger same-line store updates only the
+aggregate installation overlay, not the already-captured response of an older
+load. Different-line responses may return out of order and match by transaction
+ID.
+
+Each L1D store entry contains an aligned 64-byte address, 512 data bits, and 64
+byte enables. Consecutive stores to the newest undrained line merge bytewise
+into that record; later bytes overwrite earlier bytes and the enables are
+ORed. Combination is deliberately limited to the FIFO tail so stores cannot
+move across an intervening store to another line. Downstream L2 or memory
+performs the final masked merge.
 
 A tagged, cacheable, unlocked store completes to the shared L1 after merging
 into or reserving a FIFO entry.  The resident word is updated on a hit; a miss
@@ -187,8 +203,8 @@ There is no PC input or LSU predictor state.  The address-only history table
 accepts one through four entries.  The default four-entry candidate window
 feeds four prefetch MSHRs.  Prefetch transaction IDs occupy the upper half of
 the four-bit L1D ID space, so their responses may return out of order while the
-single architectural demand request and multi-inflight store drain share the
-lower half through a free-ID bitmap. A completed
+parameterized demand MSHRs and multi-inflight store drain share the lower half
+through a free-ID bitmap. A completed
 speculative line resides in the existing fill buffers until demanded; it does
 not install in the L1 tag or data arrays, so unused prefetches cannot evict
 resident cache lines. `PREFETCH_DEMAND_RESERVE` entries cannot be consumed by
@@ -210,14 +226,17 @@ completed speculative fill-buffer entries, and marks already-issued prefetch
 MSHRs discard-on-response. CCX responses are still consumed; they simply
 cannot become cache or fill-buffer state after the cutoff.
 
-The blocking architectural read-miss buffer is not discarded. If its CCX read
-was issued in an older epoch, L1D consumes the old response without completing
-the cache refill and reissues the same read while retaining its lower-half
-transaction-ID credit. A read still waiting in the CCX send state at the
-barrier is held and issued once in the new epoch. This is a deliberately small
-single-RMB
-implementation; a future nonblocking demand cache must carry the same replay
-bit or epoch independently in every RMB.
+Architectural demand MSHRs are not discarded. If an MSHR's CCX read was issued
+in an older epoch, L1D consumes the old response without installing it, releases
+that transaction-ID credit, and reissues the same line in the new epoch. An
+unissued MSHR is relabeled directly. Replay and epoch state are therefore
+independent per demand MSHR.
+
+A demand which catches an issued same-line prefetch adopts that speculative
+transaction rather than launching a duplicate read. A valid response transfers
+the line into the demand MSHR. A discarded or failed speculative response only
+releases the dependency; the architectural demand then issues normally, so a
+prefetch fault cannot become a demand fault without a demand retry.
 
 L1D also retains two distinct forms of atomic metadata. `atomic_active_q` and
 its line address are non-evictable transient state for the one in-progress
@@ -247,21 +266,22 @@ ordinary posting with software responsible for an explicit pre-barrier.  A
 device write does not implicitly perform that pre-drain.  A future CSR may
 request automatic pre-barrier behavior.
 
-The fill capacities do not imply eight simultaneous architectural misses.  The
-shared cache controller and each CCX demand backend still allow one active
-demand miss/RMB. L1D separately supports `PREFETCH_OUTSTANDING` speculative
-MSHRs and multiple issued store-buffer entries with transaction-ID-indexed
-response matching. The default prefetch count is four; demand and stores share
-the eight lower-half transaction IDs and backpressure locally when they are
-exhausted.
+The fill capacity is distinct from demand concurrency. L1D supports
+`DEMAND_MSHRS` unique architectural miss lines, `PREFETCH_OUTSTANDING`
+speculative MSHRs, and multiple issued store-buffer entries, all with
+transaction-ID-indexed response matching. The defaults are three demand MSHRs
+and four prefetch MSHRs. Demand and stores share the eight lower-half
+transaction IDs and backpressure locally when either MSHRs or IDs are
+exhausted. A demand MSHR is not reclaimed until every same-line tagged waiter
+has consumed its response.
 
 `L1I_FILL_BUFFER_LINES`, `L1D_FILL_BUFFER_LINES`, and
-`L1D_STORE_BUFFER_LINES` are propagated through the AXI core-bus, three-pipe
-core, and production top-level parameters.  The execution pipe defaults to
-eight LSU tags, matching the default L1D store FIFO and allowing one hart to
-hold eight unacknowledged stores.  Configurations with a deeper store FIFO
-still require a larger tag namespace or a separate deferred-fault metadata
-queue to use every entry from one hart.
+`L1D_STORE_BUFFER_LINES`, along with `L1D_DEMAND_MSHRS`, are propagated through
+the AXI core-bus, three-pipe core, and production top-level parameters. The
+execution pipe defaults to eight LSU tags, matching the default L1D store FIFO
+and allowing one hart to hold eight unacknowledged stores. Configurations with
+a deeper store FIFO or more simultaneous same-line waiters still require a
+larger tag namespace or a separate deferred-fault metadata queue.
 
 The current one-hart AMO bring-up path uses `req_lock_i` as a local phase
 marker. Before either marked phase proceeds, L1D invalidates its resident copy
@@ -280,11 +300,10 @@ a distinct transient state.
 
 The core bus arbitrates independent I-cache and D-cache command sources and
 routes responses by `source_id`; only L1D drives write data.  The L1 arrays are
-pipelined, but the present CCX demand adapters still permit one active demand
-miss per cache.  Posted L1D writes are the exception: up to the configured
-store-buffer capacity may wait behind the active CCX operation.  L1I may retain
-up to the configured number of untranslated, translated, or aging jobs behind
-its port.  It adds no probes or coherence behavior.  Scalar LSU traffic never
-uses AXI;
+pipelined. L1I still permits one active architectural miss; L1D permits the
+configured number of demand MSHRs. Posted L1D writes may additionally occupy
+the configured store-buffer capacity. L1I may retain up to the configured
+number of untranslated, translated, or aging jobs behind its port. It adds no
+probes or coherence behavior. Scalar LSU traffic never uses AXI;
 AXI remains only for the `ENABLE_L1I=0` cacheless-fetch path. Page-table walks
 use native CCX and identify their memory object with `kind=PTE`.

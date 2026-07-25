@@ -128,10 +128,12 @@ sim-atomic-context: $(ATOMIC_CONTEXT_SIM_BUILD)
 sim-exec-br: $(EXEC_BR_SIM_BUILD)
 	vvp $(EXEC_BR_SIM_BUILD)
 
-sim-exec-bp: $(EXEC_BP_SIM_BUILD) $(EXEC_BP_GSHARE_BTB_SIM_BUILD) $(EXEC_BP_TAGGED_SPEC_SIM_BUILD)
+sim-exec-bp: $(EXEC_BP_SIM_BUILD) $(EXEC_BP_GSHARE_BTB_SIM_BUILD) \
+	$(EXEC_BP_TAGGED_SPEC_SIM_BUILD) $(EXEC_BP_MODES78_SIM_BUILD)
 	vvp $(EXEC_BP_SIM_BUILD)
 	vvp $(EXEC_BP_GSHARE_BTB_SIM_BUILD)
 	vvp $(EXEC_BP_TAGGED_SPEC_SIM_BUILD)
+	vvp $(EXEC_BP_MODES78_SIM_BUILD)
 
 sim-exec-fpu-rv64-fd: $(EXEC_FPU_RV64FD_SIM_BUILD)
 	vvp $(EXEC_FPU_RV64FD_SIM_BUILD)
@@ -172,7 +174,11 @@ sim-vec-matmul-bf16: $(VEC_MATMUL_BF16_SIM_BUILD) \
 		$(VEC_MATMUL_BF16_MEMH)
 	vvp $(VEC_MATMUL_BF16_SIM_BUILD) +memh=$(VEC_MATMUL_BF16_MEMH)
 
-sim-bp-context: sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-bp-context-gshare-btb
+sim-bp-context: sim-bp-context-always-branch sim-bp-context-no-predecode \
+	sim-bp-context-always-decline sim-bp-context-repeat-last \
+	sim-bp-context-btfnt sim-bp-context-bimodal \
+	sim-bp-context-gshare-btb sim-bp-context-gshare-btb-512 \
+	sim-bp-context-tournament-btb
 
 sim-bp-context-always-branch: $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
 	vvp $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
@@ -194,6 +200,12 @@ sim-bp-context-bimodal: $(BP_CONTEXT_BIMODAL_SIM_BUILD)
 
 sim-bp-context-gshare-btb: $(BP_CONTEXT_GSHARE_BTB_SIM_BUILD)
 	vvp $(BP_CONTEXT_GSHARE_BTB_SIM_BUILD)
+
+sim-bp-context-gshare-btb-512: $(BP_CONTEXT_GSHARE_BTB_512_SIM_BUILD)
+	vvp $(BP_CONTEXT_GSHARE_BTB_512_SIM_BUILD)
+
+sim-bp-context-tournament-btb: $(BP_CONTEXT_TOURNAMENT_BTB_SIM_BUILD)
+	vvp $(BP_CONTEXT_TOURNAMENT_BTB_SIM_BUILD)
 
 sim-except: $(EXCEPT_SIM_BUILD)
 	vvp $(EXCEPT_SIM_BUILD)

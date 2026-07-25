@@ -12,12 +12,14 @@
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
 	sim-vec-cache-wb-512 sim-vec-test-top \
 	sim-vec-matmul sim-vec-matmul-bf16
-.PHONY: sim-bp-context-gshare-btb
+.PHONY: sim-bp-context-gshare-btb sim-bp-context-gshare-btb-512 \
+	sim-bp-context-tournament-btb
 .PHONY: yosys-resources-core-sky130
 .PHONY: sim-opensbi-3p sim-opensbi-3p-platform \
 	sim-linux-3p-platform-checkpoint sim-linux-3p-platform-restore
 .PHONY: sim-linux
-.PHONY: sim-l1-cache sim-l1d-prefetch sim-l1d-store-order \
+.PHONY: sim-l1-cache sim-l1d-prefetch sim-l1d-demand-mshr \
+	sim-l1d-store-order \
 	sim-l1d-store-buffer sim-l1i-top sim-ccx-protocol-1h \
 	sim-ccx-protocol-2h sim-ccx-protocol-4h
 .PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-ccx-l2 \
@@ -45,6 +47,7 @@ sim: sim-vec
 sim: sim-prf
 sim: sim-l1-cache
 sim: sim-l1d-prefetch
+sim: sim-l1d-demand-mshr
 sim: sim-l1d-store-order sim-l1d-store-buffer
 sim: sim-ccx-protocol-1h
 sim: sim-ccx-protocol-2h sim-ccx-protocol-4h

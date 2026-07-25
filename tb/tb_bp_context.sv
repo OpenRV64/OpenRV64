@@ -137,7 +137,9 @@ module tb_bp_context #(
                         default: expected_prediction = 1'bx;
                     endcase
                 end
-                `OPENRV64_BP_GSHARE_BTB: begin
+                `OPENRV64_BP_GSHARE_BTB,
+                `OPENRV64_BP_GSHARE_BTB_512,
+                `OPENRV64_BP_TOURNAMENT_BTB: begin
                     // At 0x11c, PC[9:2] XOR GHR aliases the weak-taken
                     // entry trained by 0x114.  This is intentional gshare
                     // behavior and makes the tiny context test exercise an
@@ -249,7 +251,9 @@ module tb_bp_context #(
             if (dbg_halted) begin
                 if (!saw_result_store || prediction_count != 4 ||
                     correction_count !=
-                        ((BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ? 4 :
+                        (((BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
+                          (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ||
+                          (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB)) ? 4 :
                          (((BP_TYPE == `OPENRV64_BP_BTFNT) ||
                            (BP_TYPE == `OPENRV64_BP_BIMODAL)) ? 3 : 2))) begin
                     $fatal(1,

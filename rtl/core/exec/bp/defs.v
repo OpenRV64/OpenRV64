@@ -1,13 +1,15 @@
 `ifndef OPENRV64_EXEC_BP_DEFS_V
 `define OPENRV64_EXEC_BP_DEFS_V
 
-`define OPENRV64_BP_TYPE_WIDTH       3
-`define OPENRV64_BP_STALL            3'd0
-`define OPENRV64_BP_ALWAYS_BRANCH    3'd1
-`define OPENRV64_BP_ALWAYS_DECLINE   3'd2
-`define OPENRV64_BP_REPEAT_LAST      3'd3
-`define OPENRV64_BP_BTFNT            3'd4
-`define OPENRV64_BP_BIMODAL          3'd5
-`define OPENRV64_BP_GSHARE_BTB       3'd6
+`define OPENRV64_BP_TYPE_WIDTH       4
+`define OPENRV64_BP_STALL            4'd0
+`define OPENRV64_BP_ALWAYS_BRANCH    4'd1
+`define OPENRV64_BP_ALWAYS_DECLINE   4'd2
+`define OPENRV64_BP_REPEAT_LAST      4'd3
+`define OPENRV64_BP_BTFNT            4'd4
+`define OPENRV64_BP_BIMODAL          4'd5
+`define OPENRV64_BP_GSHARE_BTB       4'd6
+`define OPENRV64_BP_GSHARE_BTB_512   4'd7
+`define OPENRV64_BP_TOURNAMENT_BTB   4'd8
 
 `endif

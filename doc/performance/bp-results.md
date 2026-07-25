@@ -1,4 +1,69 @@
-# 256-entry branch-predictor results
+# Branch-predictor results
+
+## Modes 7 and 8 update
+
+Date: 2026-07-25
+
+Matched current-tree CoreMark runs validate the two larger predictors. All
+three rows retire 52,547 instructions, halt with
+`a0=0x000000000a277880`, and report no predictor-record overflow.
+
+| Mode | Direction predictor | Cycles | IPC | Corrections | Cycle delta from mode 6 |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 6 | 256x3 gshare, 8-bit history | 70,030 | 0.7503 | 1,658 | reference |
+| 7 | 512x3 gshare, 9-bit history | 68,194 | 0.7706 | 1,348 | -1,836 (-2.62%) |
+| 8 | 2048x3 global + 512x10 local history + 1024x3 local PHT + 512x2 chooser | **65,577** | **0.8013** | **732** | **-4,453 (-6.36%)** |
+
+Mode 7 removes 310 corrections (18.7%) relative to mode 6. Mode 8 removes
+926 (55.9%). Relative to mode 7, mode 8 saves another 2,617 cycles (3.84%)
+and 616 corrections (45.7%).
+
+The controlled configuration used `RETIRE_DEPTH=16`, issue and speculation
+windows enabled, fetch alternate lookaside mode 3, full forwarding disabled,
+and the current adaptive two-stream L1D prefetch configuration. These are
+cycle-model results on the current in-flux cache/backend tree. They do not
+establish clock frequency.
+
+Mode 7 fixes its gshare geometry at 512 three-bit entries and nine history
+bits. Mode 8 uses an 11-bit speculative global history, a 512-entry ten-bit
+local-history table, a 1024-entry three-bit local PHT, and a 512-entry two-bit
+chooser initialized weakly global. Its direction payload is 1.875 KiB;
+resettable valid vectors raise direction state to 2.375 KiB. BTB256 and RAS8
+are unchanged.
+
+Direct Yosys checks report zero structural problems and retain the large
+mode-7 and mode-8 arrays as three and six memory cells respectively; only the
+small checkpoint structures expand into registers. That is necessary but not
+sufficient for a physical implementation. The mode-8 local prediction path
+serializes a local-history read and local-PHT read before chooser selection,
+and the RTL's lookup/training accesses require a concrete macro-port plan.
+Post-layout timing may erase some or all of the simulated cycle gain.
+
+Directed tests cover fixed mode-7 geometry, cold BTFNT, tournament component
+disagreement and chooser training, tagged out-of-order resolution, selective
+rollback, and integrated scalar-core execution. `sim-exec-bp` and the complete
+`sim-bp-context` modes 0 through 8 pass.
+
+The matched performance command is:
+
+```sh
+make sim-prefetch-3p-perf \
+    PREFETCH_ENGINE=verilator \
+    PREFETCH_FETCH_ALT_LOOKASIDE=3 \
+    AXI_3P_PERF_ELF=sw/coremark-loop.elf \
+    AXI_3P_PERF_BIN=sim/coremark-predictor-sweep.bin \
+    AXI_3P_PERF_MEMH=sim/coremark-predictor-sweep.memh \
+    AXI_3P_PERF_MAX_CYCLES=250000 \
+    'AXI_3P_PERF_ARGS=+expect_a0=000000000a277880' \
+    AXI_3P_PERF_PIPELINE_TRACE=0 \
+    AXI_3P_PERF_BP_TYPE=8 \
+    AXI_3P_RETIRE_DEPTH=16 \
+    AXI_3P_ISSUE_WINDOW=1 \
+    AXI_3P_SPECULATION_WINDOW=1 \
+    AXI_3P_POSTED_STORES=1
+```
+
+## Original mode-6 result
 
 Date: 2026-07-20
 

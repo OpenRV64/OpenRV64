@@ -359,6 +359,10 @@ module openrv64_l1d_ccx #(
     reg demand_mshr_complete_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_fill_done_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_reissue_q [0:DEMAND_MSHRS-1];
+    // A late demand may adopt an already-issued prefetch rather than launch
+    // a duplicate CCX read.  Until that prefetch returns, the demand MSHR is
+    // valid but deliberately ineligible for the demand command selector.
+    reg demand_mshr_wait_prefetch_q [0:DEMAND_MSHRS-1];
     reg [63:0] demand_mshr_addr_q [0:DEMAND_MSHRS-1];
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
         demand_mshr_txn_id_q [0:DEMAND_MSHRS-1];
@@ -391,11 +395,15 @@ module openrv64_l1d_ccx #(
     reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_response_index_r;
     reg demand_mshr_fill_found_r;
     reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_fill_index_r;
+    reg demand_mshr_prefetch_response_match_r;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
+        demand_mshr_prefetch_response_index_r;
     reg demand_waiter_response_found_r;
     reg [REQ_TAG_WIDTH-1:0] demand_waiter_response_tag_r;
     reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
         demand_waiter_response_mshr_r;
     reg demand_waiter_other_found_r;
+    reg demand_fill_waiter_found_r;
     reg demand_mshr_any_valid_r;
     reg demand_prefetch_fill_hit_r;
     reg [FILL_BUFFER_INDEX_WIDTH-1:0]
@@ -408,10 +416,14 @@ module openrv64_l1d_ccx #(
     integer demand_mshr_scan;
     integer demand_waiter_scan;
     integer demand_waiter_other_scan;
+    integer demand_fill_waiter_scan;
     integer demand_prefetch_fill_scan;
     integer demand_prefetch_inflight_scan;
     integer demand_merge_byte;
     integer demand_fill_merge_byte;
+    integer demand_alloc_merge_byte;
+    integer demand_store_merge_mshr;
+    integer demand_store_merge_byte;
     integer demand_reset_index;
     integer demand_waiter_reset_index;
 
@@ -697,6 +709,8 @@ module openrv64_l1d_ccx #(
         (locked_line_invalidated_q && lock_backend_quiescent);
     wire freeloader_response_valid =
         freeloader_valid_q[FREELOADER_STAGES-1];
+    wire demand_response_valid;
+    wire demand_response_fire;
     wire normal_response_valid = l1_resp_valid &&
         (response_tag_count_q != 0);
     wire freeloader_response_ready =
@@ -1150,6 +1164,9 @@ module openrv64_l1d_ccx #(
         demand_mshr_fill_found_r = 1'b0;
         demand_mshr_fill_index_r =
             {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+        demand_mshr_prefetch_response_match_r = 1'b0;
+        demand_mshr_prefetch_response_index_r =
+            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
         demand_mshr_any_valid_r = 1'b0;
         for (demand_mshr_scan = 0;
              demand_mshr_scan < DEMAND_MSHRS;
@@ -1173,7 +1190,8 @@ module openrv64_l1d_ccx #(
             if (!demand_mshr_issue_found_r &&
                 demand_mshr_valid_q[demand_mshr_scan] &&
                 !demand_mshr_issued_q[demand_mshr_scan] &&
-                !demand_mshr_complete_q[demand_mshr_scan]) begin
+                !demand_mshr_complete_q[demand_mshr_scan] &&
+                !demand_mshr_wait_prefetch_q[demand_mshr_scan]) begin
                 demand_mshr_issue_found_r = 1'b1;
                 demand_mshr_issue_index_r =
                     DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
@@ -1200,6 +1218,17 @@ module openrv64_l1d_ccx #(
                  speculation_epoch_q)) begin
                 demand_mshr_fill_found_r = 1'b1;
                 demand_mshr_fill_index_r =
+                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
+            end
+            if (!demand_mshr_prefetch_response_match_r &&
+                prefetch_mshr_response_match_r &&
+                demand_mshr_valid_q[demand_mshr_scan] &&
+                demand_mshr_wait_prefetch_q[demand_mshr_scan] &&
+                (demand_mshr_addr_q[demand_mshr_scan] ==
+                 prefetch_mshr_addr_q[
+                     prefetch_mshr_response_index_r])) begin
+                demand_mshr_prefetch_response_match_r = 1'b1;
+                demand_mshr_prefetch_response_index_r =
                     DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
             end
         end
@@ -1251,7 +1280,14 @@ module openrv64_l1d_ccx #(
             if (!demand_waiter_response_found_r &&
                 demand_waiter_valid_q[demand_waiter_scan] &&
                 demand_mshr_complete_q[
-                    demand_waiter_mshr_q[demand_waiter_scan]]) begin
+                    demand_waiter_mshr_q[demand_waiter_scan]] &&
+                (demand_mshr_fill_done_q[
+                     demand_waiter_mshr_q[demand_waiter_scan]] ||
+                 demand_mshr_error_q[
+                     demand_waiter_mshr_q[demand_waiter_scan]]) &&
+                (demand_mshr_epoch_q[
+                    demand_waiter_mshr_q[demand_waiter_scan]] ==
+                 speculation_epoch_q)) begin
                 demand_waiter_response_found_r = 1'b1;
                 demand_waiter_response_tag_r =
                     REQ_TAG_WIDTH'(demand_waiter_scan);
@@ -1273,6 +1309,19 @@ module openrv64_l1d_ccx #(
                 (demand_waiter_mshr_q[demand_waiter_other_scan] ==
                  demand_waiter_response_mshr_r))
                 demand_waiter_other_found_r = 1'b1;
+        end
+    end
+
+    always @* begin
+        demand_fill_waiter_found_r = 1'b0;
+        for (demand_fill_waiter_scan = 0;
+             demand_fill_waiter_scan < DEMAND_WAITER_COUNT;
+             demand_fill_waiter_scan =
+                 demand_fill_waiter_scan + 1) begin
+            if (demand_waiter_valid_q[demand_fill_waiter_scan] &&
+                (demand_waiter_mshr_q[demand_fill_waiter_scan] ==
+                 demand_mshr_fill_index_r))
+                demand_fill_waiter_found_r = 1'b1;
         end
     end
 
@@ -1309,10 +1358,10 @@ module openrv64_l1d_ccx #(
     wire l1_miss_fire = l1_miss_valid && l1_miss_ready;
     assign l1_miss_ready =
         !demand_waiter_valid_q[l1_miss_tag] &&
-        !prefetch_inflight_demand_match_r &&
         (demand_mshr_match_found_r || demand_mshr_free_found_r);
-    wire demand_response_valid = demand_waiter_response_found_r;
-    wire demand_response_fire = demand_response_valid && resp_ready_i;
+    assign demand_response_valid =
+        demand_waiter_response_found_r && !speculation_barrier_event;
+    assign demand_response_fire = demand_response_valid && resp_ready_i;
     assign l1_fill_valid = demand_mshr_fill_found_r;
     assign l1_fill_addr =
         demand_mshr_addr_q[demand_mshr_fill_index_r];
@@ -1693,6 +1742,17 @@ module openrv64_l1d_ccx #(
     wire store_response_fire = response_fire && store_response_match_r;
     wire response_protocol_error =
         (ccx_resp_beat_index_i != 0) || !ccx_resp_last_i;
+    wire prefetch_response_claim_existing =
+        prefetch_response_fire &&
+        demand_mshr_prefetch_response_match_r;
+    wire prefetch_response_claim_new =
+        prefetch_response_fire && l1_miss_fire &&
+        !demand_mshr_match_found_r &&
+        (prefetch_mshr_addr_q[prefetch_mshr_response_index_r] ==
+         l1_miss_addr);
+    wire prefetch_response_claimed =
+        prefetch_response_claim_existing ||
+        prefetch_response_claim_new;
     wire command_fire = ccx_req_valid_o && ccx_req_ready_i;
     wire wdata_fire = ccx_wdata_valid_o && ccx_wdata_ready_i;
     wire prefetch_slot_available =
@@ -1751,6 +1811,7 @@ module openrv64_l1d_ccx #(
         prefetch_mshr_response_stored;
     wire prefetch_useless_replace = prefetch_response_fire &&
         !prefetch_response_discard &&
+        !prefetch_response_claimed &&
         !ccx_resp_error_i && !response_protocol_error &&
         !prefetch_response_uses_free && fill_buffer_prefetch_found_r;
 
@@ -1797,7 +1858,9 @@ module openrv64_l1d_ccx #(
     assign prefetch_useful_o =
         (refill_buffer_hit && l1_mem_valid && !l1_mem_write &&
          fill_buffer_prefetch_q[fill_buffer_hit_index_r]) ||
-        (l1_miss_fire && demand_prefetch_fill_hit_r);
+        (l1_miss_fire &&
+         (demand_prefetch_fill_hit_r ||
+          prefetch_inflight_demand_match_r));
     assign prefetch_late_o = prefetch_late_match;
     assign prefetch_dropped_o = prefetch_candidate_drop;
     assign prefetch_useless_o = prefetch_useless_replace;
@@ -1810,7 +1873,12 @@ module openrv64_l1d_ccx #(
          speculation_barrier_event);
     wire prefetch_response_buffer_available =
         prefetch_response_discard || ccx_resp_error_i ||
-        response_protocol_error || prefetch_slot_available;
+        response_protocol_error ||
+        demand_mshr_prefetch_response_match_r ||
+        (l1_miss_fire &&
+         (prefetch_mshr_addr_q[prefetch_mshr_response_index_r] ==
+          l1_miss_addr)) ||
+        prefetch_slot_available;
     assign ccx_resp_ready_o =
         ((backend_state_q == BACKEND_WAIT) &&
          main_response_identity_match) ||
@@ -1947,6 +2015,8 @@ module openrv64_l1d_ccx #(
                 demand_mshr_complete_q[demand_reset_index] <= 1'b0;
                 demand_mshr_fill_done_q[demand_reset_index] <= 1'b0;
                 demand_mshr_reissue_q[demand_reset_index] <= 1'b0;
+                demand_mshr_wait_prefetch_q[
+                    demand_reset_index] <= 1'b0;
                 demand_mshr_addr_q[demand_reset_index] <= 64'd0;
                 demand_mshr_txn_id_q[demand_reset_index] <=
                     {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
@@ -2313,30 +2383,156 @@ module openrv64_l1d_ccx #(
                 // memory.
                 active_req_cacheable_q <= req_cacheable_i;
                 active_req_size_q <= req_size_i;
-                response_tag_q[response_tag_tail_q] <= req_tag_i;
-                response_store_data_q[response_tag_tail_q] <=
-                    (!req_write_i && !req_lock_i &&
-                     req_cacheable_i) ?
-                        demand_store_data_r :
-                        {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-                response_store_strb_q[response_tag_tail_q] <=
-                    (!req_write_i && !req_lock_i &&
-                     req_cacheable_i) ?
-                        demand_store_strb_r :
-                        {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
-                response_store_word_q[response_tag_tail_q] <=
-                    req_addr_i[5:3];
-                response_tag_tail_q <=
-                    (response_tag_tail_q ==
-                     REQ_INDEX_WIDTH'(REQ_DEPTH - 1)) ?
-                    {REQ_INDEX_WIDTH{1'b0}} :
-                    response_tag_tail_q + 1'b1;
+                if (!l1_miss_fire) begin
+                    response_tag_q[response_tag_tail_q] <= req_tag_i;
+                    response_store_data_q[response_tag_tail_q] <=
+                        (!req_write_i && !req_lock_i &&
+                         req_cacheable_i) ?
+                            demand_store_data_r :
+                            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    response_store_strb_q[response_tag_tail_q] <=
+                        (!req_write_i && !req_lock_i &&
+                         req_cacheable_i) ?
+                            demand_store_strb_r :
+                            {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+                    response_store_word_q[response_tag_tail_q] <=
+                        req_addr_i[5:3];
+                    response_tag_tail_q <=
+                        (response_tag_tail_q ==
+                         REQ_INDEX_WIDTH'(REQ_DEPTH - 1)) ?
+                        {REQ_INDEX_WIDTH{1'b0}} :
+                        response_tag_tail_q + 1'b1;
+                end
                 if (req_lock_i && !req_write_i)
                     begin
                         atomic_active_q <= 1'b1;
                         atomic_active_line_q <=
                             {req_addr_i[63:6], 6'b0};
                     end
+            end
+
+            if (l1_miss_fire) begin
+                demand_waiter_valid_q[l1_miss_tag] <= 1'b1;
+                demand_waiter_mshr_q[l1_miss_tag] <=
+                    demand_mshr_match_found_r ?
+                    demand_mshr_match_index_r :
+                    demand_mshr_free_index_r;
+                demand_waiter_word_q[l1_miss_tag] <= req_addr_i[5:3];
+                demand_waiter_store_data_q[l1_miss_tag] <=
+                    demand_store_data_r;
+                demand_waiter_store_strb_q[l1_miss_tag] <=
+                    demand_store_strb_r;
+                if (demand_mshr_match_found_r) begin
+                    for (demand_alloc_merge_byte = 0;
+                         demand_alloc_merge_byte <
+                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                         demand_alloc_merge_byte =
+                             demand_alloc_merge_byte + 1) begin
+                        if (demand_store_strb_r[
+                                demand_alloc_merge_byte]) begin
+                            demand_mshr_store_data_q[
+                                demand_mshr_match_index_r][
+                                demand_alloc_merge_byte*8 +: 8] <=
+                                demand_store_data_r[
+                                    demand_alloc_merge_byte*8 +: 8];
+                            demand_mshr_store_strb_q[
+                                demand_mshr_match_index_r][
+                                demand_alloc_merge_byte] <= 1'b1;
+                        end
+                    end
+                end else begin
+                    demand_mshr_valid_q[
+                        demand_mshr_free_index_r] <= 1'b1;
+                    demand_mshr_issued_q[
+                        demand_mshr_free_index_r] <= 1'b0;
+                    demand_mshr_complete_q[
+                        demand_mshr_free_index_r] <=
+                        demand_prefetch_fill_hit_r ||
+                        (prefetch_response_claim_new &&
+                         !prefetch_response_discard &&
+                         !ccx_resp_error_i &&
+                         !response_protocol_error);
+                    demand_mshr_fill_done_q[
+                        demand_mshr_free_index_r] <= 1'b0;
+                    demand_mshr_reissue_q[
+                        demand_mshr_free_index_r] <= 1'b0;
+                    demand_mshr_wait_prefetch_q[
+                        demand_mshr_free_index_r] <=
+                        prefetch_inflight_demand_match_r &&
+                        !prefetch_response_claim_new;
+                    demand_mshr_addr_q[
+                        demand_mshr_free_index_r] <= l1_miss_addr;
+                    demand_mshr_txn_id_q[
+                        demand_mshr_free_index_r] <=
+                        {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                    demand_mshr_data_q[
+                        demand_mshr_free_index_r] <=
+                        demand_prefetch_fill_hit_r ?
+                        fill_buffer_data_q[
+                            demand_prefetch_fill_index_r] :
+                        prefetch_response_claim_new ?
+                        ccx_resp_rdata_i :
+                        {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    demand_mshr_error_q[
+                        demand_mshr_free_index_r] <= 1'b0;
+                    demand_mshr_epoch_q[
+                        demand_mshr_free_index_r] <=
+                        speculation_epoch_q;
+                    demand_mshr_store_data_q[
+                        demand_mshr_free_index_r] <=
+                        demand_store_data_r;
+                    demand_mshr_store_strb_q[
+                        demand_mshr_free_index_r] <=
+                        demand_store_strb_r;
+                    if (demand_prefetch_fill_hit_r) begin
+                        fill_buffer_valid_q[
+                            demand_prefetch_fill_index_r] <= 1'b0;
+                        fill_buffer_prefetch_q[
+                            demand_prefetch_fill_index_r] <= 1'b0;
+                    end
+                end
+            end
+
+            // A store admitted after an older same-line miss must not alter
+            // that older waiter's captured response, but it must be present
+            // in the line eventually installed by the MSHR. Merge only when
+            // the shared L1 completes the cacheable store against its lower
+            // memory path; before that point the store is not yet committed
+            // to this cache endpoint. Posted stores reach this point at FIFO
+            // admission, while non-posted stores reach it on their CCX reply.
+            if (l1_mem_valid && l1_mem_write && l1_mem_ready &&
+                !l1_mem_error && active_req_cacheable_q &&
+                !active_req_lock_q) begin
+                for (demand_store_merge_mshr = 0;
+                     demand_store_merge_mshr < DEMAND_MSHRS;
+                     demand_store_merge_mshr =
+                         demand_store_merge_mshr + 1) begin
+                    if (demand_mshr_valid_q[
+                            demand_store_merge_mshr] &&
+                        (demand_mshr_addr_q[
+                             demand_store_merge_mshr] ==
+                         {l1_mem_addr[63:6], 6'b0})) begin
+                        for (demand_store_merge_byte = 0;
+                             demand_store_merge_byte < 8;
+                             demand_store_merge_byte =
+                                 demand_store_merge_byte + 1) begin
+                            if (l1_mem_wstrb[
+                                    demand_store_merge_byte]) begin
+                                demand_mshr_store_data_q[
+                                    demand_store_merge_mshr][
+                                    (l1_mem_addr[5:3] * 64) +
+                                    (demand_store_merge_byte * 8) +:
+                                    8] <= l1_mem_wdata[
+                                        demand_store_merge_byte*8 +:
+                                        8];
+                                demand_mshr_store_strb_q[
+                                    demand_store_merge_mshr][
+                                    (l1_mem_addr[5:3] * 8) +
+                                    demand_store_merge_byte] <= 1'b1;
+                            end
+                        end
+                    end
+                end
             end
 
             // A marked read begins the local AMO interval.  Preserve learned
@@ -2398,7 +2594,8 @@ module openrv64_l1d_ccx #(
                     {REQ_INDEX_WIDTH{1'b0}} :
                     response_tag_head_q + 1'b1;
 
-            case ({l1_request_fire, l1_response_fire})
+            case ({l1_request_fire && !l1_miss_fire,
+                   l1_response_fire})
                 2'b10: response_tag_count_q <=
                     response_tag_count_q + 1'b1;
                 2'b01: response_tag_count_q <=
@@ -2409,6 +2606,83 @@ module openrv64_l1d_ccx #(
             if (refill_buffer_hit) begin
                 fill_buffer_valid_q[fill_buffer_hit_index_r] <= 1'b0;
                 fill_buffer_prefetch_q[fill_buffer_hit_index_r] <= 1'b0;
+            end
+
+            if (demand_mshr_response_fire) begin
+                main_txn_in_use_q[
+                    demand_mshr_txn_id_q[
+                        demand_mshr_response_index_r]] <= 1'b0;
+                if (demand_mshr_reissue_q[
+                        demand_mshr_response_index_r] ||
+                    (demand_mshr_epoch_q[
+                        demand_mshr_response_index_r] !=
+                     speculation_epoch_q) ||
+                    speculation_barrier_event) begin
+                    demand_mshr_issued_q[
+                        demand_mshr_response_index_r] <= 1'b0;
+                    demand_mshr_complete_q[
+                        demand_mshr_response_index_r] <= 1'b0;
+                    demand_mshr_fill_done_q[
+                        demand_mshr_response_index_r] <= 1'b0;
+                    demand_mshr_reissue_q[
+                        demand_mshr_response_index_r] <= 1'b0;
+                    demand_mshr_wait_prefetch_q[
+                        demand_mshr_response_index_r] <= 1'b0;
+                    demand_mshr_epoch_q[
+                        demand_mshr_response_index_r] <=
+                        speculation_barrier_event ?
+                        speculation_epoch_q + 1'b1 :
+                        speculation_epoch_q;
+                end else begin
+                    demand_mshr_complete_q[
+                        demand_mshr_response_index_r] <= 1'b1;
+                    demand_mshr_data_q[
+                        demand_mshr_response_index_r] <=
+                        ccx_resp_rdata_i;
+                    demand_mshr_error_q[
+                        demand_mshr_response_index_r] <=
+                        ccx_resp_error_i || response_protocol_error;
+                    if (ccx_resp_error_i || response_protocol_error)
+                        demand_mshr_fill_done_q[
+                            demand_mshr_response_index_r] <= 1'b1;
+                end
+            end
+
+            if (l1_fill_fire) begin
+                demand_mshr_fill_done_q[
+                    demand_mshr_fill_index_r] <= 1'b1;
+                if (!demand_fill_waiter_found_r) begin
+                    demand_mshr_valid_q[
+                        demand_mshr_fill_index_r] <= 1'b0;
+                    demand_mshr_complete_q[
+                        demand_mshr_fill_index_r] <= 1'b0;
+                    demand_mshr_wait_prefetch_q[
+                        demand_mshr_fill_index_r] <= 1'b0;
+                end
+            end
+
+            if (demand_response_fire) begin
+                demand_waiter_valid_q[
+                    demand_waiter_response_tag_r] <= 1'b0;
+                if (!demand_waiter_other_found_r &&
+                    (demand_mshr_fill_done_q[
+                         demand_waiter_response_mshr_r] ||
+                     (l1_fill_fire &&
+                      (demand_mshr_fill_index_r ==
+                       demand_waiter_response_mshr_r)))) begin
+                    demand_mshr_valid_q[
+                        demand_waiter_response_mshr_r] <= 1'b0;
+                    demand_mshr_issued_q[
+                        demand_waiter_response_mshr_r] <= 1'b0;
+                    demand_mshr_complete_q[
+                        demand_waiter_response_mshr_r] <= 1'b0;
+                    demand_mshr_fill_done_q[
+                        demand_waiter_response_mshr_r] <= 1'b0;
+                    demand_mshr_reissue_q[
+                        demand_waiter_response_mshr_r] <= 1'b0;
+                    demand_mshr_wait_prefetch_q[
+                        demand_waiter_response_mshr_r] <= 1'b0;
+                end
             end
 
             for (buffer_reset_index = 0;
@@ -2736,7 +3010,26 @@ module openrv64_l1d_ccx #(
                     prefetch_mshr_response_index_r] <= 1'b0;
                 prefetch_mshr_late_reported_q[
                     prefetch_mshr_response_index_r] <= 1'b0;
-                if (!prefetch_response_discard &&
+                if (prefetch_response_claim_existing) begin
+                    demand_mshr_wait_prefetch_q[
+                        demand_mshr_prefetch_response_index_r] <=
+                        1'b0;
+                    if (!prefetch_response_discard &&
+                        !ccx_resp_error_i &&
+                        !response_protocol_error) begin
+                        demand_mshr_complete_q[
+                            demand_mshr_prefetch_response_index_r] <=
+                            1'b1;
+                        demand_mshr_data_q[
+                            demand_mshr_prefetch_response_index_r] <=
+                            ccx_resp_rdata_i;
+                        demand_mshr_error_q[
+                            demand_mshr_prefetch_response_index_r] <=
+                            1'b0;
+                    end
+                end
+                if (!prefetch_response_claimed &&
+                    !prefetch_response_discard &&
                     !ccx_resp_error_i &&
                     !response_protocol_error) begin
                     fill_buffer_valid_q[
@@ -2783,6 +3076,47 @@ module openrv64_l1d_ccx #(
                 if ((backend_state_q == BACKEND_SEND) &&
                     !request_write_q)
                     request_epoch_q <= speculation_epoch_q + 1'b1;
+                for (demand_reset_index = 0;
+                     demand_reset_index < DEMAND_MSHRS;
+                     demand_reset_index =
+                         demand_reset_index + 1) begin
+                    if (demand_mshr_valid_q[demand_reset_index] &&
+                        demand_mshr_issued_q[demand_reset_index] &&
+                        !demand_mshr_complete_q[demand_reset_index] &&
+                        !(demand_mshr_response_fire &&
+                          (demand_mshr_response_index_r ==
+                           DEMAND_MSHR_INDEX_WIDTH'(
+                               demand_reset_index))))
+                        demand_mshr_reissue_q[
+                            demand_reset_index] <= 1'b1;
+                    if (demand_mshr_valid_q[demand_reset_index] &&
+                        !demand_mshr_issued_q[demand_reset_index] &&
+                        !demand_mshr_complete_q[demand_reset_index]) begin
+                        demand_mshr_epoch_q[
+                            demand_reset_index] <=
+                            speculation_epoch_q + 1'b1;
+                        demand_mshr_wait_prefetch_q[
+                            demand_reset_index] <= 1'b0;
+                    end
+                    if (demand_mshr_valid_q[demand_reset_index] &&
+                        demand_mshr_complete_q[demand_reset_index]) begin
+                        demand_mshr_issued_q[
+                            demand_reset_index] <= 1'b0;
+                        demand_mshr_complete_q[
+                            demand_reset_index] <= 1'b0;
+                        demand_mshr_fill_done_q[
+                            demand_reset_index] <= 1'b0;
+                        demand_mshr_reissue_q[
+                            demand_reset_index] <= 1'b0;
+                        demand_mshr_wait_prefetch_q[
+                            demand_reset_index] <= 1'b0;
+                        demand_mshr_error_q[
+                            demand_reset_index] <= 1'b0;
+                        demand_mshr_epoch_q[
+                            demand_reset_index] <=
+                            speculation_epoch_q + 1'b1;
+                    end
+                end
                 if ((backend_state_q == BACKEND_SEND) &&
                     request_prefetch_q) begin
                     request_prefetch_q <= 1'b0;
@@ -2942,6 +3276,9 @@ module openrv64_l1d_ccx #(
 `ifndef SYNTHESIS
     integer store_assert_first;
     integer store_assert_second;
+    integer demand_assert_first;
+    integer demand_assert_second;
+    integer demand_assert_waiter;
     always @(posedge clk_i) begin
         if (rst_ni && (store_buffer_count_q != 0) &&
             !store_buffer_valid_q[store_buffer_head_q])
@@ -2951,6 +3288,59 @@ module openrv64_l1d_ccx #(
             ((request_txn_id_q >= PREFETCH_TXN_BASE) ||
              !main_txn_in_use_q[request_txn_id_q]))
             $fatal(1, "L1D main request lacks a reserved transaction ID");
+        if (rst_ni && l1_resp_valid &&
+            (response_tag_count_q != 0) &&
+            (l1_resp_tag != response_tag_q[response_tag_head_q]))
+            $fatal(1, "L1D resident response tag/FIFO mismatch");
+        for (demand_assert_first = 0;
+             demand_assert_first < DEMAND_MSHRS;
+             demand_assert_first = demand_assert_first + 1) begin
+            if (rst_ni &&
+                demand_mshr_valid_q[demand_assert_first]) begin
+                if (demand_mshr_wait_prefetch_q[
+                        demand_assert_first] &&
+                    (demand_mshr_issued_q[demand_assert_first] ||
+                     demand_mshr_complete_q[demand_assert_first]))
+                    $fatal(1,
+                        "L1D prefetch-owned demand MSHR changed owner state");
+                if (demand_mshr_issued_q[demand_assert_first] &&
+                    !demand_mshr_complete_q[demand_assert_first] &&
+                    ((demand_mshr_txn_id_q[demand_assert_first] >=
+                      PREFETCH_TXN_BASE) ||
+                     !main_txn_in_use_q[
+                         demand_mshr_txn_id_q[
+                             demand_assert_first]]))
+                    $fatal(1,
+                        "L1D in-flight demand lacks a reserved transaction ID");
+                for (demand_assert_second = demand_assert_first + 1;
+                     demand_assert_second < DEMAND_MSHRS;
+                     demand_assert_second =
+                         demand_assert_second + 1) begin
+                    if (demand_mshr_valid_q[demand_assert_second] &&
+                        (demand_mshr_addr_q[demand_assert_first] ==
+                         demand_mshr_addr_q[demand_assert_second]))
+                        $fatal(1,
+                            "L1D allocated duplicate same-line demand MSHRs");
+                    if (demand_mshr_issued_q[demand_assert_first] &&
+                        !demand_mshr_complete_q[demand_assert_first] &&
+                        demand_mshr_valid_q[demand_assert_second] &&
+                        demand_mshr_issued_q[demand_assert_second] &&
+                        !demand_mshr_complete_q[demand_assert_second] &&
+                        (demand_mshr_txn_id_q[demand_assert_first] ==
+                         demand_mshr_txn_id_q[demand_assert_second]))
+                        $fatal(1,
+                            "L1D in-flight demands reused a transaction ID");
+                end
+            end
+        end
+        for (demand_assert_waiter = 0;
+             demand_assert_waiter < DEMAND_WAITER_COUNT;
+             demand_assert_waiter = demand_assert_waiter + 1)
+            if (rst_ni &&
+                demand_waiter_valid_q[demand_assert_waiter] &&
+                !demand_mshr_valid_q[
+                    demand_waiter_mshr_q[demand_assert_waiter]])
+                $fatal(1, "L1D demand waiter references a free MSHR");
         for (store_assert_first = 0;
              store_assert_first < STORE_BUFFER_LINES;
              store_assert_first = store_assert_first + 1) begin
@@ -2985,6 +3375,11 @@ module openrv64_l1d_ccx #(
             $fatal(1, "L1D CCX currently requires a 64-byte cache line");
         if ((FILL_BUFFER_LINES < 1) || (FILL_BUFFER_LINES > 16))
             $fatal(1, "L1D fill buffers must contain 1 through 16 cachelines");
+        if ((DEMAND_MSHRS < 1) ||
+            (DEMAND_MSHRS > MAIN_TXN_COUNT) ||
+            (DEMAND_MSHRS > DEMAND_WAITER_COUNT))
+            $fatal(1,
+                "L1D demand MSHRs must fit main transaction IDs and request tags");
         if ((STORE_BUFFER_LINES < 1) || (STORE_BUFFER_LINES > 16))
             $fatal(1, "L1D store buffers must contain 1 through 16 cachelines");
         if ((SPECULATION_EPOCH_WIDTH < 2) ||

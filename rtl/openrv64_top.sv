@@ -28,6 +28,7 @@ module openrv64_top #(
     parameter logic [63:0] L1D_CACHEABLE_SIZE =
         `OPENRV64_SOC_MEMORY_SIZE,
     parameter int unsigned L1D_FILL_BUFFER_LINES = 8,
+    parameter int unsigned L1D_DEMAND_MSHRS = 3,
     parameter int unsigned L1D_STORE_BUFFER_LINES = 8,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
     parameter int unsigned L1D_PREFETCH_MAX_STRIDE_LINES = 64,
@@ -414,6 +415,7 @@ module openrv64_top #(
                 .SPEC_LOAD_BASE(L1D_CACHEABLE_BASE),
                 .SPEC_LOAD_SIZE(L1D_CACHEABLE_SIZE),
                 .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
+                .L1D_DEMAND_MSHRS(L1D_DEMAND_MSHRS),
                 .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
                 .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
                 .L1D_PREFETCH_MAX_STRIDE_LINES(

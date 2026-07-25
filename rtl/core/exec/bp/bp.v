@@ -7,6 +7,7 @@
 `include "core/exec/bp/btfnt.v"
 `include "core/exec/bp/bimodal.v"
 `include "core/exec/bp/gshare_btb.v"
+`include "core/exec/bp/tournament_btb.v"
 `include "core/exec/bp/ras.v"
 `timescale 1ns/1ps
 
@@ -22,6 +23,15 @@ module openrv64_exec_bp #(
     parameter integer BIMODAL_UPDATE_DEPTH = 4,
     parameter integer GSHARE_ENTRIES = 256,
     parameter integer GSHARE_COUNTER_BITS = 3,
+    parameter integer TOURNAMENT_GLOBAL_ENTRIES = 2048,
+    parameter integer TOURNAMENT_GLOBAL_COUNTER_BITS = 3,
+    parameter integer TOURNAMENT_GLOBAL_HISTORY_BITS = 11,
+    parameter integer TOURNAMENT_LOCAL_HISTORY_ENTRIES = 512,
+    parameter integer TOURNAMENT_LOCAL_HISTORY_BITS = 10,
+    parameter integer TOURNAMENT_LOCAL_PHT_ENTRIES = 1024,
+    parameter integer TOURNAMENT_LOCAL_COUNTER_BITS = 3,
+    parameter integer TOURNAMENT_CHOOSER_ENTRIES = 512,
+    parameter integer TOURNAMENT_CHOOSER_COUNTER_BITS = 2,
     parameter integer BTB_ENTRIES = 256,
     parameter integer BTB_TAG_BITS = 16,
     parameter integer INFLIGHT_DEPTH = 16,
@@ -72,7 +82,9 @@ module openrv64_exec_bp #(
         (BP_TYPE == `OPENRV64_BP_REPEAT_LAST) ||
         (BP_TYPE == `OPENRV64_BP_BTFNT) ||
         (BP_TYPE == `OPENRV64_BP_BIMODAL) ||
-        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB);
+        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
+        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ||
+        (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB);
 
     wire policy_stalls_all = !BP_TYPE_VALID ||
                              (BP_TYPE == `OPENRV64_BP_STALL);
@@ -112,12 +124,31 @@ module openrv64_exec_bp #(
     wire advanced_target_mispredict;
     wire advanced_allocation_stall;
     wire advanced_update_overflow;
+    wire tournament_prediction_taken;
+    wire tournament_prediction_weak;
+    wire tournament_prediction_target_valid;
+    wire [`RV64_XLEN-1:0] tournament_prediction_target;
+    wire tournament_target_mispredict;
+    wire tournament_allocation_stall;
+    wire tournament_update_overflow;
+
+    localparam integer SELECTED_GSHARE_ENTRIES =
+        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ? 512 :
+                                                        GSHARE_ENTRIES;
+    localparam integer SELECTED_GSHARE_COUNTER_BITS =
+        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ? 3 :
+                                                        GSHARE_COUNTER_BITS;
+    localparam integer SELECTED_GSHARE_HISTORY_BITS =
+        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ? 9 :
+                                  $clog2(SELECTED_GSHARE_ENTRIES);
 
     generate
-        if (BP_TYPE == `OPENRV64_BP_GSHARE_BTB) begin : g_advanced
+        if ((BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
+            (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512)) begin : g_advanced
             openrv64_exec_bp_gshare_btb #(
-                .PHT_ENTRIES(GSHARE_ENTRIES),
-                .COUNTER_BITS(GSHARE_COUNTER_BITS),
+                .PHT_ENTRIES(SELECTED_GSHARE_ENTRIES),
+                .COUNTER_BITS(SELECTED_GSHARE_COUNTER_BITS),
+                .HISTORY_BITS(SELECTED_GSHARE_HISTORY_BITS),
                 .BTB_ENTRIES(BTB_ENTRIES),
                 .BTB_TAG_BITS(BTB_TAG_BITS),
                 .INFLIGHT_DEPTH(INFLIGHT_DEPTH),
@@ -160,6 +191,65 @@ module openrv64_exec_bp #(
             assign advanced_target_mispredict = 1'b0;
             assign advanced_allocation_stall = 1'b0;
             assign advanced_update_overflow = 1'b0;
+        end
+    endgenerate
+
+    generate
+        if (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB) begin : g_tournament
+            openrv64_exec_bp_tournament_btb #(
+                .GLOBAL_PHT_ENTRIES(TOURNAMENT_GLOBAL_ENTRIES),
+                .GLOBAL_COUNTER_BITS(TOURNAMENT_GLOBAL_COUNTER_BITS),
+                .GLOBAL_HISTORY_BITS(TOURNAMENT_GLOBAL_HISTORY_BITS),
+                .LOCAL_HISTORY_ENTRIES(
+                    TOURNAMENT_LOCAL_HISTORY_ENTRIES),
+                .LOCAL_HISTORY_BITS(TOURNAMENT_LOCAL_HISTORY_BITS),
+                .LOCAL_PHT_ENTRIES(TOURNAMENT_LOCAL_PHT_ENTRIES),
+                .LOCAL_COUNTER_BITS(TOURNAMENT_LOCAL_COUNTER_BITS),
+                .CHOOSER_ENTRIES(TOURNAMENT_CHOOSER_ENTRIES),
+                .CHOOSER_COUNTER_BITS(
+                    TOURNAMENT_CHOOSER_COUNTER_BITS),
+                .BTB_ENTRIES(BTB_ENTRIES),
+                .BTB_TAG_BITS(BTB_TAG_BITS),
+                .INFLIGHT_DEPTH(INFLIGHT_DEPTH),
+                .ENABLE_TAGGED_RESOLUTION(ENABLE_TAGGED_RESOLUTION)
+            ) u_tournament (
+                .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+                .squash_i(squash_i),
+                .lookup_valid_i(lookup_valid_i),
+                .lookup_branch_i(lookup_branch_i),
+                .lookup_jump_i(lookup_jump_i),
+                .lookup_indirect_i(lookup_indirect_i),
+                .lookup_backward_i(lookup_backward_i),
+                .lookup_instr_i(lookup_instr_i),
+                .lookup_pc_i(lookup_pc_i),
+                .lookup_id_i(lookup_id_i),
+                .lookup_allocate_i(lookup_allocate_i),
+                .ras_prediction_valid_i(ras_prediction_valid),
+                .ras_prediction_target_i(ras_prediction_target),
+                .resolve_valid_i(resolve_valid_i),
+                .resolve_branch_i(resolve_branch_i),
+                .resolve_taken_i(resolve_taken_i),
+                .resolve_instr_i(resolve_instr_i),
+                .resolve_pc_i(resolve_pc_i),
+                .resolve_target_i(resolve_target_i),
+                .resolve_id_i(resolve_id_i),
+                .prediction_taken_o(tournament_prediction_taken),
+                .prediction_weak_o(tournament_prediction_weak),
+                .prediction_target_valid_o(
+                    tournament_prediction_target_valid),
+                .prediction_target_o(tournament_prediction_target),
+                .target_mispredict_o(tournament_target_mispredict),
+                .allocation_stall_o(tournament_allocation_stall),
+                .update_overflow_o(tournament_update_overflow)
+            );
+        end else begin : g_no_tournament
+            assign tournament_prediction_taken = 1'b0;
+            assign tournament_prediction_weak = 1'b0;
+            assign tournament_prediction_target_valid = 1'b0;
+            assign tournament_prediction_target = {`RV64_XLEN{1'b0}};
+            assign tournament_target_mispredict = 1'b0;
+            assign tournament_allocation_stall = 1'b0;
+            assign tournament_update_overflow = 1'b0;
         end
     endgenerate
 
@@ -234,32 +324,48 @@ module openrv64_exec_bp #(
         end
     endgenerate
 
-    wire use_advanced = BP_TYPE == `OPENRV64_BP_GSHARE_BTB;
+    wire use_advanced =
+        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
+        (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512);
+    wire use_tournament = BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB;
+    wire use_table_predictor = use_advanced || use_tournament;
     wire selected_target_valid = use_advanced ?
-        advanced_prediction_target_valid : ras_prediction_valid;
+        advanced_prediction_target_valid :
+        (use_tournament ? tournament_prediction_target_valid :
+                          ras_prediction_valid);
+    wire selected_allocation_stall = use_advanced ?
+        advanced_allocation_stall :
+        (use_tournament ? tournament_allocation_stall : 1'b0);
     wire effective_lookup_requires_stall = lookup_valid_i &&
         (policy_stalls_all ||
          (lookup_indirect_i && !selected_target_valid));
     assign prediction_taken_o = use_advanced ? advanced_prediction_taken :
-        (lookup_valid_i &&
-         (ras_prediction_valid ||
-          (!lookup_indirect_i && policy_prediction_taken)));
+        (use_tournament ? tournament_prediction_taken :
+         (lookup_valid_i &&
+          (ras_prediction_valid ||
+           (!lookup_indirect_i && policy_prediction_taken))));
     assign prediction_weak_o = lookup_valid_i && lookup_branch_i &&
         (use_advanced ? advanced_prediction_weak :
-                        policy_prediction_weak);
+         (use_tournament ? tournament_prediction_weak :
+                           policy_prediction_weak));
     assign prediction_target_valid_o = use_advanced ?
         advanced_prediction_target_valid :
-        (lookup_valid_i && ras_prediction_valid);
+        (use_tournament ? tournament_prediction_target_valid :
+                          (lookup_valid_i && ras_prediction_valid));
     assign prediction_target_o = use_advanced ?
-        advanced_prediction_target : ras_prediction_target;
+        advanced_prediction_target :
+        (use_tournament ? tournament_prediction_target :
+                          ras_prediction_target);
     assign update_overflow_o = use_advanced ? advanced_update_overflow :
-                               policy_update_overflow;
+        (use_tournament ? tournament_update_overflow :
+                          policy_update_overflow);
     assign target_mispredict_o = use_advanced ? advanced_target_mispredict :
-        (resolve_valid_i && ras_outstanding_q && resolve_taken_i &&
-         (resolve_target_i != ras_outstanding_target_q));
+        (use_tournament ? tournament_target_mispredict :
+         (resolve_valid_i && ras_outstanding_q && resolve_taken_i &&
+          (resolve_target_i != ras_outstanding_target_q)));
     assign fetch_stall_o = effective_lookup_requires_stall || unresolved_q ||
-                           advanced_allocation_stall;
-    assign decode_stall_o = unresolved_q || advanced_allocation_stall;
+                           selected_allocation_stall;
+    assign decode_stall_o = unresolved_q || selected_allocation_stall;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -278,7 +384,8 @@ module openrv64_exec_bp #(
             end
             if (lookup_allocate_i && effective_lookup_requires_stall)
                 unresolved_q <= 1'b1;
-            if (!use_advanced && lookup_allocate_i && ras_prediction_valid) begin
+            if (!use_table_predictor &&
+                lookup_allocate_i && ras_prediction_valid) begin
                 ras_outstanding_q <= 1'b1;
                 ras_outstanding_target_q <= ras_prediction_target;
             end

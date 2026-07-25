@@ -54,7 +54,7 @@ BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
 	rtl/core/exec/bp/always_branch.v rtl/core/exec/bp/always_decline.v \
 	rtl/core/exec/bp/repeat_last.v rtl/core/exec/bp/btfnt.v \
 	rtl/core/exec/bp/bimodal.v rtl/core/exec/bp/gshare_btb.v \
-	rtl/core/exec/bp/ras.v
+	rtl/core/exec/bp/tournament_btb.v rtl/core/exec/bp/ras.v
 EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top_1p.v rtl/core/exec/exec_top.v \

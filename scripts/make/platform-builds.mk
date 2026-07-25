@@ -183,6 +183,12 @@ $(L1D_PREFETCH_SIM_BUILD): tb/tb_l1d_prefetch.sv $(L1_CACHE_SRCS)
 		-o $(L1D_PREFETCH_SIM_BUILD) $(L1_CACHE_SRCS) \
 		tb/tb_l1d_prefetch.sv
 
+$(L1D_DEMAND_MSHR_SIM_BUILD): tb/tb_l1d_demand_mshr.sv $(L1_CACHE_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_l1d_demand_mshr \
+		-o $(L1D_DEMAND_MSHR_SIM_BUILD) $(L1_CACHE_SRCS) \
+		tb/tb_l1d_demand_mshr.sv
+
 $(L1D_STORE_ORDER_SIM_BUILD): tb/tb_l1d_store_order.sv $(L1_CACHE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_l1d_store_order \

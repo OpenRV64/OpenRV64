@@ -27,9 +27,9 @@ The current design is built around a few deliberate rules:
 5. Stores are ordered at the retirement head. A core-to-bus request handshake
    is only translation-wrapper capture; architectural completion waits for the
    tagged translation, PMP, and L1D-admission response.
-6. The 3P path has private L1I/L1D clients on native 512-bit CCX. L1D has a
-   parameterized cache-line store buffer, but there is still no complete
-   coherent multi-hart hierarchy.
+6. The 3P path has private L1I/L1D clients on native 512-bit CCX. L1D has
+   parameterized demand MSHRs and a cache-line store buffer, but there is still
+   no complete coherent multi-hart hierarchy.
 
 These rules are more important than the informal names of the pipeline stages:
 they define which optimizations can be added locally and which require a real
@@ -167,6 +167,8 @@ The direction predictor is selected with `BP_TYPE`:
 | 4 | BTFNT | Backward taken, forward not taken |
 | 5 | bimodal | PC-indexed saturating-counter table with BTFNT cold behavior |
 | 6 | gshare + BTB | 256-entry global-history direction table, 256-entry tagged JALR target table, speculative history recovery, and RAS |
+| 7 | gshare-512 + BTB | Fixed 512-entry three-bit direction table with nine history bits; otherwise the mode-6 target and recovery machinery |
+| 8 | tournament + BTB | 2048-entry global PHT, 512-entry local-history table, 1024-entry local PHT, 512-entry chooser, mode-6 BTB/recovery, and RAS |
 
 The public default is the conservative stall policy. The implemented bimodal
 defaults are 32 entries, three counter bits, and a four-entry update FIFO. The
@@ -197,6 +199,28 @@ Invalid direction entries retain BTFNT behavior, and a cold indirect still
 uses the existing resolve-time interlock. See
 [performance/bp-results.md](performance/bp-results.md) for measured results
 and implementation limits.
+
+Mode 7 is the fixed low-cost step above mode 6: 512 three-bit counters and
+nine global-history bits. The existing `BP_GSHARE_ENTRIES` and counter-width
+parameters continue to configure mode 6; they deliberately do not alter mode
+7.
+
+Mode 8 is a conventional tournament predictor. Its global component uses
+2048 three-bit counters and 11 speculative history bits. Its local component
+uses 512 PC-indexed ten-bit histories and a shared 1024-entry three-bit PHT.
+A 512-entry two-bit PC-indexed chooser starts weakly global and changes only
+when the global and local components disagree. Global history uses the same
+tagged checkpoint and recovery rules as mode 6. Local history updates at
+conditional-branch resolution. The direction payload is 15,360 bits
+(1.875 KiB); resettable valid state adds 4,096 bits, for 2.375 KiB total
+direction state before checkpoint records, BTB, and RAS.
+
+The predictor data arrays are reset-free and guarded by resettable valid
+vectors, so synthesis retains the large tables as memories. This is not yet a
+physical timing result. Mode 8's local-history read, local-PHT read, and final
+chooser mux form a serial lookup path in the current combinational frontend.
+A macro implementation also needs an explicit solution for simultaneous
+lookup and training ports.
 
 In the normal strict 3P path, an aligned conditional branch issues as soon as
 its operands and EX1 are ready; it does not wait for retirement. It resolves in
@@ -391,8 +415,11 @@ currently serializes tagged scalar requests through one translation/PTW slot.
 The backend tag is retained across translation, PMP checking, and the L1D
 operation, then restored on the response.
 
-Cacheable load misses issue one aligned 512-bit native CCX line read; the L1D
-returns the addressed 64-bit word and retains the other words in the cache.
+Cacheable load misses allocate a parameterized demand MSHR (three by default)
+and issue one aligned 512-bit native CCX line read per unique line. Different
+lines use independent transaction IDs and may return out of order; same-line
+loads merge as tagged waiters. L1D returns each addressed 64-bit word and
+retains the full line in the cache.
 Write-through stores and uncached scalar accesses use sub-line address, size,
 data, and strobes on the same 512-bit CCX channels. No scalar LSU request uses
 an AXI ID or drives AXI directly. A redirect hides a canceled speculative load
@@ -614,7 +641,7 @@ ordered WAW relaxation:
 | `BP_BIMODAL_ENTRIES` | 32 | Bimodal direction entries when selected |
 | `BP_BIMODAL_COUNTER_BITS` | 3 | Saturating counter width |
 | `BP_BIMODAL_UPDATE_DEPTH` | 4 | Serialized predictor update FIFO |
-| `BP_GSHARE_ENTRIES` | 256 | Gshare PHT entries when mode 6 is selected |
+| `BP_GSHARE_ENTRIES` | 256 | Gshare PHT entries when mode 6 is selected; mode 7 is fixed at 512 |
 | `BP_GSHARE_COUNTER_BITS` | 3 | Gshare saturating counter width |
 | `BP_BTB_ENTRIES` | 256 | Tagged indirect-target entries |
 | `BP_BTB_TAG_BITS` | 16 | Indirect-target tag width |
@@ -657,8 +684,8 @@ die-size claims.
 - The four-entry store queue does not pretranslate entries or support
   physical-address load disambiguation; an unresolved store blocks younger
   memory.
-- Only predictor mode 6 has a BTB. It is direct-mapped and handles non-return
-  JALRs; the default stall policy and modes 1 through 5 still limit indirect
+- Predictor modes 6 through 8 have a direct-mapped BTB for non-return JALRs;
+  the default stall policy and modes 1 through 5 still limit indirect
   prediction to the RAS.
 - The frontend ends decode admission at the first control instruction. The
   strict backend pairs younger work only past proved-correct BEQ/BNE; other

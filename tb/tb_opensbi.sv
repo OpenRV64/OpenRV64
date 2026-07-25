@@ -103,9 +103,133 @@ module tb_opensbi #(
     integer lsu_trace_fd;
     integer ccx_trace_fd;
     integer l1d_lock_trace_count;
+    integer perf_init_index;
     string instruction_trace_path;
     string lsu_trace_path;
     string ccx_trace_path;
+    logic perf_summary_enabled;
+
+    logic [63:0] perf_cycles;
+    logic [63:0] perf_issued;
+    logic [63:0] perf_decoded;
+    logic [63:0] perf_retired;
+    logic [63:0] perf_issue_width [0:4];
+    logic [63:0] perf_decode_width [0:3];
+    logic [63:0] perf_retire_width [0:3];
+    logic [63:0] perf_frontend_empty;
+    logic [63:0] perf_frontend_held;
+    logic [63:0] perf_fetch_request_wait;
+    logic [63:0] perf_l1i_busy_cycles;
+    logic [63:0] perf_dispatch_nonempty;
+    logic [63:0] perf_dispatch_no_issue;
+    logic [63:0] perf_dispatch_full;
+    logic [63:0] perf_retire_nonempty;
+    logic [63:0] perf_retire_no_progress;
+    logic [63:0] perf_retire_head_incomplete;
+    logic [63:0] perf_retire_completed_behind;
+    logic [63:0] perf_lsu_request_wait;
+    logic [63:0] perf_barrier_cycles;
+    logic [63:0] perf_control_flushes;
+
+    logic [63:0] perf_branch_allocations;
+    logic [63:0] perf_branch_predictions_taken;
+    logic [63:0] perf_branch_resolutions;
+    logic [63:0] perf_conditional_branches;
+    logic [63:0] perf_branches_taken;
+    logic [63:0] perf_direction_mispredicts;
+    logic [63:0] perf_target_mispredicts;
+    logic [63:0] perf_bp_fetch_stall_cycles;
+
+    logic [63:0] perf_itlb_demand_lookups;
+    logic [63:0] perf_itlb_demand_hits;
+    logic [63:0] perf_itlb_demand_misses;
+    logic [63:0] perf_itlb_demand_faults;
+    logic [63:0] perf_itlb_prefetch_lookups;
+    logic [63:0] perf_itlb_prefetch_hits;
+    logic [63:0] perf_itlb_prefetch_misses;
+    logic [63:0] perf_itlb_prefetch_faults;
+    logic [63:0] perf_dtlb_pipe_lookups;
+    logic [63:0] perf_dtlb_pipe_hits;
+    logic [63:0] perf_dtlb_pipe_misses;
+    logic [63:0] perf_dtlb_pipe_faults;
+    logic [63:0] perf_dtlb_serial_lookups;
+    logic [63:0] perf_dtlb_serial_hits;
+    logic [63:0] perf_dtlb_serial_misses;
+    logic [63:0] perf_dtlb_serial_faults;
+    logic [63:0] perf_tlb_invalidates;
+    logic [63:0] perf_itlb_fills;
+    logic [63:0] perf_dtlb_fills;
+    logic [63:0] perf_ptw_lsu_starts;
+    logic [63:0] perf_ptw_fetch_starts;
+    logic [63:0] perf_ptw_prefetch_starts;
+    logic [63:0] perf_ptw_responses;
+    logic [63:0] perf_ptw_faults;
+    logic [63:0] perf_ptw_pte_cache_hits;
+    logic [63:0] perf_ptw_ccx_reads;
+    logic [63:0] perf_ptw_active_cycles;
+
+    logic [63:0] perf_l1i_demand_requests;
+    logic [63:0] perf_l1i_prefetch_requests;
+    logic [63:0] perf_l1i_demand_responses;
+    logic [63:0] perf_l1i_prefetch_responses;
+    logic [63:0] perf_l1i_line_misses;
+    logic [63:0] perf_l1i_line_responses;
+
+    logic [63:0] perf_l1d_load_requests;
+    logic [63:0] perf_l1d_store_requests;
+    logic [63:0] perf_l1d_load_wait_cycles;
+    logic [63:0] perf_l1d_store_wait_cycles;
+    logic [63:0] perf_l1d_misses;
+    logic [63:0] perf_l1d_mshr_allocations;
+    logic [63:0] perf_l1d_mshr_merges;
+    logic [63:0] perf_l1d_mshr_responses;
+    logic [63:0] perf_l1d_mshr_full_cycles;
+    logic [63:0] perf_l1d_mshr_max;
+    logic [63:0] perf_l1d_store_allocations;
+    logic [63:0] perf_l1d_store_merges;
+    logic [63:0] perf_l1d_store_responses;
+    logic [63:0] perf_l1d_store_full_cycles;
+    logic [63:0] perf_l1d_store_max;
+    logic [63:0] perf_l1d_prefetch_issued;
+    logic [63:0] perf_l1d_prefetch_useful;
+    logic [63:0] perf_l1d_prefetch_late;
+    logic [63:0] perf_l1d_prefetch_dropped;
+    logic [63:0] perf_l1d_prefetch_useless;
+    logic [63:0] perf_l1d_prefetch_max_depth;
+
+    logic [63:0] perf_ccx_requests;
+    logic [63:0] perf_ccx_icache_reads;
+    logic [63:0] perf_ccx_dcache_reads;
+    logic [63:0] perf_ccx_dcache_writes;
+    logic [63:0] perf_ccx_request_wait_cycles;
+    logic [63:0] perf_ccx_wdata_wait_cycles;
+    logic [63:0] perf_ccx_responses;
+    logic [63:0] perf_ccx_response_wait_cycles;
+
+    logic [63:0] perf_l2_hits;
+    logic [63:0] perf_l2_merges;
+    logic [63:0] perf_l2_allocations;
+    logic [63:0] perf_l2_bypasses;
+    logic [63:0] perf_l2_write_arounds;
+    logic [63:0] perf_l2_victim_hits;
+    logic [63:0] perf_l2_lookup_stall_cycles;
+    logic [63:0] perf_l2_command_full_cycles;
+    logic [63:0] perf_l2_mshr_full_cycles;
+    logic [63:0] perf_l2_mshr_max;
+    logic [63:0] perf_l2_command_max;
+    logic [63:0] perf_l2_response_max;
+    logic [63:0] perf_l2_bus_track_max;
+    logic [63:0] perf_l2_bus_reads;
+    logic [63:0] perf_l2_bus_writes;
+    logic [63:0] perf_l2_bus_wait_cycles;
+    logic [63:0] perf_l2_bus_responses;
+
+    logic [63:0] perf_mem_wide_reads;
+    logic [63:0] perf_mem_wide_writes;
+    logic [63:0] perf_mem_wide_wait_cycles;
+    logic [63:0] perf_mem_scalar_reads;
+    logic [63:0] perf_mem_scalar_writes;
+    logic [63:0] perf_mem_scalar_wait_cycles;
     logic saw_banner;
     logic saw_payload_text;
     logic saw_linux_panic;
@@ -361,6 +485,555 @@ module tb_opensbi #(
             assign observed_l1d_ccx_req_valid =
                 dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
                     .l1d_ccx_req_valid;
+
+            wire [2:0] perf_issued_this_cycle =
+                dut.u_core.g_backend_3p.u_core_3p.backend_issue_valid[0] +
+                dut.u_core.g_backend_3p.u_core_3p.backend_issue_valid[1] +
+                dut.u_core.g_backend_3p.u_core_3p.backend_issue_valid[2] +
+                dut.u_core.g_backend_3p.u_core_3p.backend_issue_valid[3];
+            wire [1:0] perf_decoded_this_cycle =
+                dut.u_core.g_backend_3p.u_core_3p.frontend_decode_fire[0] +
+                dut.u_core.g_backend_3p.u_core_3p.frontend_decode_fire[1] +
+                dut.u_core.g_backend_3p.u_core_3p.frontend_decode_fire[2];
+            wire [2:0] perf_l1d_mshr_occupancy =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.demand_mshr_valid_q[0] +
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.demand_mshr_valid_q[1] +
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.demand_mshr_valid_q[2];
+
+            always @(posedge clk) begin
+                if (core_rst_n && perf_summary_enabled) begin
+                    perf_cycles <= perf_cycles + 1'b1;
+                    perf_issued <= perf_issued + perf_issued_this_cycle;
+                    perf_decoded <= perf_decoded + perf_decoded_this_cycle;
+                    perf_retired <= perf_retired +
+                        dut.u_core.g_backend_3p.u_core_3p
+                            .backend_retire_count;
+                    perf_issue_width[perf_issued_this_cycle] <=
+                        perf_issue_width[perf_issued_this_cycle] + 1'b1;
+                    perf_decode_width[perf_decoded_this_cycle] <=
+                        perf_decode_width[perf_decoded_this_cycle] + 1'b1;
+                    perf_retire_width[
+                        dut.u_core.g_backend_3p.u_core_3p
+                            .backend_retire_count] <=
+                        perf_retire_width[
+                            dut.u_core.g_backend_3p.u_core_3p
+                                .backend_retire_count] + 1'b1;
+
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .fetch_decode_valid == 0)
+                        perf_frontend_empty <= perf_frontend_empty + 1'b1;
+                    if ((dut.u_core.g_backend_3p.u_core_3p
+                             .fetch_decode_valid != 0) &&
+                        (dut.u_core.g_backend_3p.u_core_3p
+                             .frontend_decode_fire == 0))
+                        perf_frontend_held <= perf_frontend_held + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .fetch_pipe_req_valid &&
+                        !dut.u_core.g_backend_3p.u_core_3p
+                             .fetch_pipe_req_ready)
+                        perf_fetch_request_wait <=
+                            perf_fetch_request_wait + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.backend_state_q != 0)
+                        perf_l1i_busy_cycles <=
+                            perf_l1i_busy_cycles + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .backend_dispatch_occupancy != 0) begin
+                        perf_dispatch_nonempty <=
+                            perf_dispatch_nonempty + 1'b1;
+                        if (perf_issued_this_cycle == 0)
+                            perf_dispatch_no_issue <=
+                                perf_dispatch_no_issue + 1'b1;
+                    end
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .backend_dispatch_occupancy == 6)
+                        perf_dispatch_full <= perf_dispatch_full + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .backend_retire_occupancy != 0) begin
+                        perf_retire_nonempty <=
+                            perf_retire_nonempty + 1'b1;
+                        if (dut.u_core.g_backend_3p.u_core_3p
+                                .backend_retire_count == 0)
+                            perf_retire_no_progress <=
+                                perf_retire_no_progress + 1'b1;
+                        if (!dut.u_core.g_backend_3p.u_core_3p.u_backend
+                                 .queue_retire_valid[0]) begin
+                            perf_retire_head_incomplete <=
+                                perf_retire_head_incomplete + 1'b1;
+                            if (dut.u_core.g_backend_3p.u_core_3p.u_backend
+                                    .completed_entry_valid != 0)
+                                perf_retire_completed_behind <=
+                                    perf_retire_completed_behind + 1'b1;
+                        end
+                    end
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .backend_mem_valid &&
+                        !dut.u_core.g_backend_3p.u_core_3p
+                             .backend_mem_ready)
+                        perf_lsu_request_wait <=
+                            perf_lsu_request_wait + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.backend_barrier)
+                        perf_barrier_cycles <= perf_barrier_cycles + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.control_flush)
+                        perf_control_flushes <=
+                            perf_control_flushes + 1'b1;
+
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .bp_branch_allocate)
+                        perf_branch_allocations <=
+                            perf_branch_allocations + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .bp_prediction_taken)
+                        perf_branch_predictions_taken <=
+                            perf_branch_predictions_taken + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.branch_resolved)
+                        perf_branch_resolutions <=
+                            perf_branch_resolutions + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.branch_resolved &&
+                        dut.u_core.g_backend_3p.u_core_3p.branch_conditional)
+                        perf_conditional_branches <=
+                            perf_conditional_branches + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.branch_resolved &&
+                        dut.u_core.g_backend_3p.u_core_3p.branch_taken)
+                        perf_branches_taken <= perf_branches_taken + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.backend_redirect)
+                        perf_direction_mispredicts <=
+                            perf_direction_mispredicts + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .bp_target_mispredict)
+                        perf_target_mispredicts <=
+                            perf_target_mispredicts + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.bp_fetch_stall)
+                        perf_bp_fetch_stall_cycles <=
+                            perf_bp_fetch_stall_cycles + 1'b1;
+
+                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.fetch_lookup_valid &&
+                         !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                              .u_bus.fetch_lookup_bare &&
+                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.itlb_lookup_hit) ||
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_fetch_walk)
+                        perf_itlb_demand_lookups <=
+                            perf_itlb_demand_lookups + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.fetch_lookup_valid &&
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.fetch_lookup_bare &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.itlb_lookup_hit)
+                        perf_itlb_demand_hits <=
+                            perf_itlb_demand_hits + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_fetch_walk)
+                        perf_itlb_demand_misses <=
+                            perf_itlb_demand_misses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.fetch_lookup_valid &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.itlb_lookup_hit &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.itlb_lookup_page_fault)
+                        perf_itlb_demand_faults <=
+                            perf_itlb_demand_faults + 1'b1;
+                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.prefetch_xlate_lookup &&
+                         !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                              .u_bus.prefetch_xlate_bare &&
+                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.itlb_lookup_hit) ||
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_prefetch_walk)
+                        perf_itlb_prefetch_lookups <=
+                            perf_itlb_prefetch_lookups + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.prefetch_xlate_lookup &&
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.prefetch_xlate_bare &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.itlb_lookup_hit)
+                        perf_itlb_prefetch_hits <=
+                            perf_itlb_prefetch_hits + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_prefetch_walk)
+                        perf_itlb_prefetch_misses <=
+                            perf_itlb_prefetch_misses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.prefetch_xlate_lookup &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.itlb_lookup_hit &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.itlb_lookup_page_fault)
+                        perf_itlb_prefetch_faults <=
+                            perf_itlb_prefetch_faults + 1'b1;
+
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_is_pipe)
+                        perf_dtlb_pipe_lookups <=
+                            perf_dtlb_pipe_lookups + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.pipe_fast_request_fire &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.pipe_translated_hit)
+                        perf_dtlb_pipe_hits <= perf_dtlb_pipe_hits + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_is_pipe &&
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.dtlb_lookup_hit)
+                        perf_dtlb_pipe_misses <=
+                            perf_dtlb_pipe_misses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_is_pipe &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_hit &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_page_fault)
+                        perf_dtlb_pipe_faults <=
+                            perf_dtlb_pipe_faults + 1'b1;
+                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.serial_dtlb_lookup &&
+                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.dtlb_lookup_hit) ||
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_lsu_walk)
+                        perf_dtlb_serial_lookups <=
+                            perf_dtlb_serial_lookups + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.serial_dtlb_lookup &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_hit)
+                        perf_dtlb_serial_hits <=
+                            perf_dtlb_serial_hits + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_lsu_walk)
+                        perf_dtlb_serial_misses <=
+                            perf_dtlb_serial_misses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.serial_dtlb_lookup &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_hit &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_lookup_page_fault)
+                        perf_dtlb_serial_faults <=
+                            perf_dtlb_serial_faults + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.tlbi_i)
+                        perf_tlb_invalidates <=
+                            perf_tlb_invalidates + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.itlb_fill_valid)
+                        perf_itlb_fills <= perf_itlb_fills + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.dtlb_fill_valid)
+                        perf_dtlb_fills <= perf_dtlb_fills + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_lsu_walk)
+                        perf_ptw_lsu_starts <=
+                            perf_ptw_lsu_starts + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_fetch_walk)
+                        perf_ptw_fetch_starts <=
+                            perf_ptw_fetch_starts + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.start_prefetch_walk)
+                        perf_ptw_prefetch_starts <=
+                            perf_ptw_prefetch_starts + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.ptw_resp_valid) begin
+                        perf_ptw_responses <= perf_ptw_responses + 1'b1;
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.ptw_resp_page_fault ||
+                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.ptw_resp_access_fault)
+                            perf_ptw_faults <= perf_ptw_faults + 1'b1;
+                    end
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_ptw.pte_cache_hit_use)
+                        perf_ptw_pte_cache_hits <=
+                            perf_ptw_pte_cache_hits + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.ptw_ccx_req_valid &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.ptw_ccx_req_ready)
+                        perf_ptw_ccx_reads <=
+                            perf_ptw_ccx_reads + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.miss_active_q)
+                        perf_ptw_active_cycles <=
+                            perf_ptw_active_cycles + 1'b1;
+
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.l1_request_fire &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.select_demand)
+                        perf_l1i_demand_requests <=
+                            perf_l1i_demand_requests + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.l1_request_fire &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.select_prefetch)
+                        perf_l1i_prefetch_requests <=
+                            perf_l1i_prefetch_requests + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.l1_response_fire &&
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.u_l1i.response_is_prefetch)
+                        perf_l1i_demand_responses <=
+                            perf_l1i_demand_responses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.l1_response_fire &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.response_is_prefetch)
+                        perf_l1i_prefetch_responses <=
+                            perf_l1i_prefetch_responses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.ccx_req_valid_o &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.ccx_req_ready_i)
+                        perf_l1i_line_misses <=
+                            perf_l1i_line_misses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.response_fire)
+                        perf_l1i_line_responses <=
+                            perf_l1i_line_responses + 1'b1;
+
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.l1d_req_valid &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.l1d_req_ready) begin
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.l1d_req_write)
+                            perf_l1d_store_requests <=
+                                perf_l1d_store_requests + 1'b1;
+                        else
+                            perf_l1d_load_requests <=
+                                perf_l1d_load_requests + 1'b1;
+                    end
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.l1d_req_valid &&
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.l1d_req_ready) begin
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.l1d_req_write)
+                            perf_l1d_store_wait_cycles <=
+                                perf_l1d_store_wait_cycles + 1'b1;
+                        else
+                            perf_l1d_load_wait_cycles <=
+                                perf_l1d_load_wait_cycles + 1'b1;
+                    end
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.l1_miss_fire) begin
+                        perf_l1d_misses <= perf_l1d_misses + 1'b1;
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.u_l1d.demand_mshr_match_found_r)
+                            perf_l1d_mshr_merges <=
+                                perf_l1d_mshr_merges + 1'b1;
+                        else
+                            perf_l1d_mshr_allocations <=
+                                perf_l1d_mshr_allocations + 1'b1;
+                    end
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.demand_mshr_response_fire)
+                        perf_l1d_mshr_responses <=
+                            perf_l1d_mshr_responses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.demand_mshr_any_valid_r &&
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                             .u_bus.u_l1d.demand_mshr_free_found_r)
+                        perf_l1d_mshr_full_cycles <=
+                            perf_l1d_mshr_full_cycles + 1'b1;
+                    if (perf_l1d_mshr_occupancy > perf_l1d_mshr_max)
+                        perf_l1d_mshr_max <= perf_l1d_mshr_occupancy;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.store_buffer_accept) begin
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.u_l1d.store_buffer_merge)
+                            perf_l1d_store_merges <=
+                                perf_l1d_store_merges + 1'b1;
+                        else
+                            perf_l1d_store_allocations <=
+                                perf_l1d_store_allocations + 1'b1;
+                    end
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.store_response_fire)
+                        perf_l1d_store_responses <=
+                            perf_l1d_store_responses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.store_buffer_full)
+                        perf_l1d_store_full_cycles <=
+                            perf_l1d_store_full_cycles + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.store_buffer_count_q >
+                        perf_l1d_store_max)
+                        perf_l1d_store_max <=
+                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.u_l1d.store_buffer_count_q;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_issued_o)
+                        perf_l1d_prefetch_issued <=
+                            perf_l1d_prefetch_issued + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_useful_o)
+                        perf_l1d_prefetch_useful <=
+                            perf_l1d_prefetch_useful + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_late_o)
+                        perf_l1d_prefetch_late <=
+                            perf_l1d_prefetch_late + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_dropped_o)
+                        perf_l1d_prefetch_dropped <=
+                            perf_l1d_prefetch_dropped + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_useless_o)
+                        perf_l1d_prefetch_useless <=
+                            perf_l1d_prefetch_useless + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_depth_o >
+                        perf_l1d_prefetch_max_depth)
+                        perf_l1d_prefetch_max_depth <=
+                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                                .u_bus.u_l1d.prefetch_depth_o;
+
+                    if (dut.ccx_req_valid && dut.ccx_req_ready) begin
+                        perf_ccx_requests <= perf_ccx_requests + 1'b1;
+                        if (dut.ccx_req_source_id ==
+                                `OPENRV64_CCX_SOURCE_ICACHE)
+                            perf_ccx_icache_reads <=
+                                perf_ccx_icache_reads + 1'b1;
+                        else if (dut.ccx_req_source_id ==
+                                 `OPENRV64_CCX_SOURCE_DCACHE) begin
+                            if (dut.ccx_req_op ==
+                                    `OPENRV64_CCX_OP_WRITE)
+                                perf_ccx_dcache_writes <=
+                                    perf_ccx_dcache_writes + 1'b1;
+                            else
+                                perf_ccx_dcache_reads <=
+                                    perf_ccx_dcache_reads + 1'b1;
+                        end
+                    end
+                    if (dut.ccx_req_valid && !dut.ccx_req_ready)
+                        perf_ccx_request_wait_cycles <=
+                            perf_ccx_request_wait_cycles + 1'b1;
+                    if (dut.ccx_wdata_valid && !dut.ccx_wdata_ready)
+                        perf_ccx_wdata_wait_cycles <=
+                            perf_ccx_wdata_wait_cycles + 1'b1;
+                    if (dut.ccx_resp_valid && dut.ccx_resp_ready)
+                        perf_ccx_responses <= perf_ccx_responses + 1'b1;
+                    if (dut.ccx_resp_valid && !dut.ccx_resp_ready)
+                        perf_ccx_response_wait_cycles <=
+                            perf_ccx_response_wait_cycles + 1'b1;
+
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .lookup_dispatch_r) begin
+                        case (dut.g_ccx_l2_platform.u_ccx_l2.u_complex
+                                  .u_l2.lookup_action_r)
+                            3'd2:
+                                perf_l2_hits <= perf_l2_hits + 1'b1;
+                            3'd3:
+                                perf_l2_merges <= perf_l2_merges + 1'b1;
+                            3'd4:
+                                perf_l2_allocations <=
+                                    perf_l2_allocations + 1'b1;
+                            3'd5:
+                                perf_l2_bypasses <=
+                                    perf_l2_bypasses + 1'b1;
+                            3'd6:
+                                perf_l2_write_arounds <=
+                                    perf_l2_write_arounds + 1'b1;
+                            3'd7:
+                                perf_l2_victim_hits <=
+                                    perf_l2_victim_hits + 1'b1;
+                            default: begin
+                            end
+                        endcase
+                    end
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .lookup_valid_q &&
+                        !dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                             .lookup_dispatch_r)
+                        perf_l2_lookup_stall_cycles <=
+                            perf_l2_lookup_stall_cycles + 1'b1;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .command_queue_full)
+                        perf_l2_command_full_cycles <=
+                            perf_l2_command_full_cycles + 1'b1;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .active_mshr_count_r == 8)
+                        perf_l2_mshr_full_cycles <=
+                            perf_l2_mshr_full_cycles + 1'b1;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .active_mshr_count_r > perf_l2_mshr_max)
+                        perf_l2_mshr_max <=
+                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                                .active_mshr_count_r;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .cmd_count_q > perf_l2_command_max)
+                        perf_l2_command_max <=
+                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                                .cmd_count_q;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .response_count_q > perf_l2_response_max)
+                        perf_l2_response_max <=
+                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                                .response_count_q;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .bus_track_count_q > perf_l2_bus_track_max)
+                        perf_l2_bus_track_max <=
+                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                                .bus_track_count_q;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .bus_req_valid_o &&
+                        dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .bus_req_ready_i) begin
+                        if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                                .bus_req_write_o)
+                            perf_l2_bus_writes <=
+                                perf_l2_bus_writes + 1'b1;
+                        else
+                            perf_l2_bus_reads <=
+                                perf_l2_bus_reads + 1'b1;
+                    end
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .bus_req_valid_o &&
+                        !dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                             .bus_req_ready_i)
+                        perf_l2_bus_wait_cycles <=
+                            perf_l2_bus_wait_cycles + 1'b1;
+                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            .bus_response_fire)
+                        perf_l2_bus_responses <=
+                            perf_l2_bus_responses + 1'b1;
+
+                    if (dut.memory_wide_valid && dut.memory_wide_ready) begin
+                        if (dut.memory_wide_write)
+                            perf_mem_wide_writes <=
+                                perf_mem_wide_writes + 1'b1;
+                        else
+                            perf_mem_wide_reads <=
+                                perf_mem_wide_reads + 1'b1;
+                    end
+                    if (dut.memory_wide_valid && !dut.memory_wide_ready)
+                        perf_mem_wide_wait_cycles <=
+                            perf_mem_wide_wait_cycles + 1'b1;
+                    if (dut.platform_mem_valid &&
+                        dut.platform_mem_ready) begin
+                        if (dut.platform_mem_write)
+                            perf_mem_scalar_writes <=
+                                perf_mem_scalar_writes + 1'b1;
+                        else
+                            perf_mem_scalar_reads <=
+                                perf_mem_scalar_reads + 1'b1;
+                    end
+                    if (dut.platform_mem_valid && !dut.platform_mem_ready)
+                        perf_mem_scalar_wait_cycles <=
+                            perf_mem_scalar_wait_cycles + 1'b1;
+                end
+            end
         end else begin : g_observe_1p
             assign observed_priv_mode = dut.u_core.u_core.u_csrs.priv_mode_q;
             assign observed_ra = dut.u_core.u_core.u_gpr.regs[1];
@@ -432,6 +1105,127 @@ module tb_opensbi #(
     end
 `endif
 
+    task automatic report_perf;
+        input string name;
+        begin
+            if (perf_summary_enabled) begin
+                $display("PERF BROAD CORE name=%0s cycles=%0d issued=%0d decoded=%0d retired=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
+                         name, perf_cycles, perf_issued, perf_decoded,
+                         perf_retired,
+                         perf_issue_width[0], perf_issue_width[1],
+                         perf_issue_width[2], perf_issue_width[3],
+                         perf_issue_width[4],
+                         perf_decode_width[0], perf_decode_width[1],
+                         perf_decode_width[2], perf_decode_width[3],
+                         perf_retire_width[0], perf_retire_width[1],
+                         perf_retire_width[2], perf_retire_width[3]);
+                $display("PERF BROAD STALL name=%0s frontend_empty=%0d frontend_held=%0d fetch_request_wait=%0d l1i_busy=%0d dispatch_nonempty=%0d dispatch_no_issue=%0d dispatch_full=%0d retire_nonempty=%0d retire_no_progress=%0d retire_head_incomplete=%0d retire_completed_behind=%0d lsu_request_wait=%0d barrier_cycles=%0d control_flushes=%0d",
+                         name, perf_frontend_empty, perf_frontend_held,
+                         perf_fetch_request_wait, perf_l1i_busy_cycles,
+                         perf_dispatch_nonempty, perf_dispatch_no_issue,
+                         perf_dispatch_full, perf_retire_nonempty,
+                         perf_retire_no_progress,
+                         perf_retire_head_incomplete,
+                         perf_retire_completed_behind,
+                         perf_lsu_request_wait, perf_barrier_cycles,
+                         perf_control_flushes);
+                $display("PERF BROAD BRANCH name=%0s allocations=%0d predicted_taken_cycles=%0d resolutions=%0d conditional=%0d taken=%0d direction_mispredicts=%0d target_mispredicts=%0d fetch_stall_cycles=%0d",
+                         name, perf_branch_allocations,
+                         perf_branch_predictions_taken,
+                         perf_branch_resolutions,
+                         perf_conditional_branches, perf_branches_taken,
+                         perf_direction_mispredicts,
+                         perf_target_mispredicts,
+                         perf_bp_fetch_stall_cycles);
+                $display("PERF BROAD TLB name=%0s itlb_demand_lookups=%0d itlb_demand_hits=%0d itlb_demand_misses=%0d itlb_demand_faults=%0d itlb_prefetch_lookups=%0d itlb_prefetch_hits=%0d itlb_prefetch_misses=%0d itlb_prefetch_faults=%0d dtlb_pipe_probe_cycles=%0d dtlb_pipe_accepted_hits=%0d dtlb_pipe_miss_cycles=%0d dtlb_pipe_fault_cycles=%0d dtlb_serial_lookups=%0d dtlb_serial_hits=%0d dtlb_serial_misses=%0d dtlb_serial_faults=%0d invalidates=%0d itlb_fills=%0d dtlb_fills=%0d",
+                         name, perf_itlb_demand_lookups,
+                         perf_itlb_demand_hits,
+                         perf_itlb_demand_misses,
+                         perf_itlb_demand_faults,
+                         perf_itlb_prefetch_lookups,
+                         perf_itlb_prefetch_hits,
+                         perf_itlb_prefetch_misses,
+                         perf_itlb_prefetch_faults,
+                         perf_dtlb_pipe_lookups,
+                         perf_dtlb_pipe_hits,
+                         perf_dtlb_pipe_misses,
+                         perf_dtlb_pipe_faults,
+                         perf_dtlb_serial_lookups,
+                         perf_dtlb_serial_hits,
+                         perf_dtlb_serial_misses,
+                         perf_dtlb_serial_faults,
+                         perf_tlb_invalidates, perf_itlb_fills,
+                         perf_dtlb_fills);
+                $display("PERF BROAD PTW name=%0s lsu_starts=%0d fetch_starts=%0d prefetch_starts=%0d responses=%0d faults=%0d pte_cache_hits=%0d ccx_line_reads=%0d active_cycles=%0d",
+                         name, perf_ptw_lsu_starts,
+                         perf_ptw_fetch_starts,
+                         perf_ptw_prefetch_starts,
+                         perf_ptw_responses, perf_ptw_faults,
+                         perf_ptw_pte_cache_hits, perf_ptw_ccx_reads,
+                         perf_ptw_active_cycles);
+                $display("PERF BROAD L1I name=%0s demand_requests=%0d prefetch_requests=%0d demand_responses=%0d prefetch_responses=%0d line_misses=%0d line_responses=%0d busy_cycles=%0d",
+                         name, perf_l1i_demand_requests,
+                         perf_l1i_prefetch_requests,
+                         perf_l1i_demand_responses,
+                         perf_l1i_prefetch_responses,
+                         perf_l1i_line_misses,
+                         perf_l1i_line_responses,
+                         perf_l1i_busy_cycles);
+                $display("PERF BROAD L1D name=%0s load_requests=%0d store_requests=%0d load_wait_cycles=%0d store_wait_cycles=%0d misses=%0d mshr_allocations=%0d mshr_merges=%0d mshr_responses=%0d mshr_full_cycles=%0d mshr_max=%0d store_allocations=%0d store_merges=%0d store_responses=%0d store_full_cycles=%0d store_max=%0d prefetch_issued=%0d prefetch_useful=%0d prefetch_late=%0d prefetch_dropped=%0d prefetch_useless=%0d prefetch_max_depth=%0d",
+                         name, perf_l1d_load_requests,
+                         perf_l1d_store_requests,
+                         perf_l1d_load_wait_cycles,
+                         perf_l1d_store_wait_cycles,
+                         perf_l1d_misses,
+                         perf_l1d_mshr_allocations,
+                         perf_l1d_mshr_merges,
+                         perf_l1d_mshr_responses,
+                         perf_l1d_mshr_full_cycles,
+                         perf_l1d_mshr_max,
+                         perf_l1d_store_allocations,
+                         perf_l1d_store_merges,
+                         perf_l1d_store_responses,
+                         perf_l1d_store_full_cycles,
+                         perf_l1d_store_max,
+                         perf_l1d_prefetch_issued,
+                         perf_l1d_prefetch_useful,
+                         perf_l1d_prefetch_late,
+                         perf_l1d_prefetch_dropped,
+                         perf_l1d_prefetch_useless,
+                         perf_l1d_prefetch_max_depth);
+                $display("PERF BROAD CCX name=%0s requests=%0d icache_reads=%0d dcache_reads=%0d dcache_writes=%0d ptw_reads=%0d request_wait_cycles=%0d wdata_wait_cycles=%0d responses=%0d response_wait_cycles=%0d",
+                         name, perf_ccx_requests,
+                         perf_ccx_icache_reads,
+                         perf_ccx_dcache_reads,
+                         perf_ccx_dcache_writes,
+                         perf_ptw_ccx_reads,
+                         perf_ccx_request_wait_cycles,
+                         perf_ccx_wdata_wait_cycles,
+                         perf_ccx_responses,
+                         perf_ccx_response_wait_cycles);
+                $display("PERF BROAD L2 name=%0s hits=%0d merges=%0d allocations=%0d bypasses=%0d write_arounds=%0d victim_hits=%0d lookup_stall_cycles=%0d command_full_cycles=%0d mshr_full_cycles=%0d mshr_max=%0d command_max=%0d response_max=%0d bus_track_max=%0d bus_reads=%0d bus_writes=%0d bus_wait_cycles=%0d bus_responses=%0d",
+                         name, perf_l2_hits, perf_l2_merges,
+                         perf_l2_allocations, perf_l2_bypasses,
+                         perf_l2_write_arounds, perf_l2_victim_hits,
+                         perf_l2_lookup_stall_cycles,
+                         perf_l2_command_full_cycles,
+                         perf_l2_mshr_full_cycles,
+                         perf_l2_mshr_max, perf_l2_command_max,
+                         perf_l2_response_max, perf_l2_bus_track_max,
+                         perf_l2_bus_reads, perf_l2_bus_writes,
+                         perf_l2_bus_wait_cycles,
+                         perf_l2_bus_responses);
+                $display("PERF BROAD MEM name=%0s wide_reads=%0d wide_writes=%0d wide_wait_cycles=%0d scalar_reads=%0d scalar_writes=%0d scalar_wait_cycles=%0d",
+                         name, perf_mem_wide_reads,
+                         perf_mem_wide_writes,
+                         perf_mem_wide_wait_cycles,
+                         perf_mem_scalar_reads,
+                         perf_mem_scalar_writes,
+                         perf_mem_scalar_wait_cycles);
+            end
+        end
+    endtask
+
     task automatic match_byte;
         input logic [7:0] value;
         begin
@@ -444,6 +1238,8 @@ module tb_opensbi #(
                             $display("\nPERF SIGNPOST name=opensbi cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
                                      cycle_count, observed_minstret,
                                      uart_byte_count, dbg_pc);
+                        if (linux_mode)
+                            report_perf("opensbi");
                     end
                 end else begin
                     banner_index = (value == banner[0]) ? 1 : 0;
@@ -459,6 +1255,8 @@ module tb_opensbi #(
                             $display("\nPERF SIGNPOST name=linux cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
                                      cycle_count, observed_minstret,
                                      uart_byte_count, dbg_pc);
+                        if (linux_mode)
+                            report_perf("linux");
                     end
                 end else begin
                     payload_index = (value == payload_text[0]) ? 1 : 0;
@@ -485,6 +1283,7 @@ module tb_opensbi #(
                         $display("\nPERF SIGNPOST name=bash cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
                                  cycle_count, observed_minstret,
                                  uart_byte_count, dbg_pc);
+                        report_perf("bash");
                     end
                 end else begin
                     linux_prompt_index =
@@ -500,6 +1299,7 @@ module tb_opensbi #(
                         $display("\nPERF SIGNPOST name=plic cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
                                  cycle_count, observed_minstret,
                                  uart_byte_count, dbg_pc);
+                        report_perf("plic");
                     end
                 end else begin
                     linux_plic_index =
@@ -540,6 +1340,7 @@ module tb_opensbi #(
                         $display("\nPERF SIGNPOST name=%0s cycles=%0d instret=%0d uart_bytes=%0d pc=%016x",
                                  name, cycle_count, observed_minstret,
                                  uart_byte_count, dbg_pc);
+                        report_perf(name);
                     end
                 end else begin
                     index = (value == text[0]) ? 1 : 0;
@@ -581,6 +1382,7 @@ module tb_opensbi #(
                          observed_priv_mode, saw_banner, saw_payload_text,
                          uart_byte_count, observed_mcause, observed_mtval,
                          observed_scause, observed_stval);
+                report_perf("timeout");
                 $finish;
             end else begin
                 $fatal(1,
@@ -952,6 +1754,77 @@ module tb_opensbi #(
         lsu_trace_fd = 0;
         ccx_trace_fd = 0;
         l1d_lock_trace_count = 0;
+        perf_summary_enabled = $test$plusargs("perf_summary");
+        for (perf_init_index = 0; perf_init_index < 5;
+             perf_init_index = perf_init_index + 1) begin
+            perf_issue_width[perf_init_index] = 0;
+            if (perf_init_index < 4) begin
+                perf_decode_width[perf_init_index] = 0;
+                perf_retire_width[perf_init_index] = 0;
+            end
+        end
+        {
+            perf_cycles, perf_issued, perf_decoded, perf_retired,
+            perf_frontend_empty, perf_frontend_held,
+            perf_fetch_request_wait, perf_l1i_busy_cycles,
+            perf_dispatch_nonempty, perf_dispatch_no_issue,
+            perf_dispatch_full, perf_retire_nonempty,
+            perf_retire_no_progress, perf_retire_head_incomplete,
+            perf_retire_completed_behind, perf_lsu_request_wait,
+            perf_barrier_cycles, perf_control_flushes,
+            perf_branch_allocations, perf_branch_predictions_taken,
+            perf_branch_resolutions, perf_conditional_branches,
+            perf_branches_taken, perf_direction_mispredicts,
+            perf_target_mispredicts, perf_bp_fetch_stall_cycles
+        } = '0;
+        {
+            perf_itlb_demand_lookups, perf_itlb_demand_hits,
+            perf_itlb_demand_misses, perf_itlb_demand_faults,
+            perf_itlb_prefetch_lookups, perf_itlb_prefetch_hits,
+            perf_itlb_prefetch_misses, perf_itlb_prefetch_faults,
+            perf_dtlb_pipe_lookups, perf_dtlb_pipe_hits,
+            perf_dtlb_pipe_misses, perf_dtlb_pipe_faults,
+            perf_dtlb_serial_lookups, perf_dtlb_serial_hits,
+            perf_dtlb_serial_misses, perf_dtlb_serial_faults,
+            perf_tlb_invalidates, perf_itlb_fills, perf_dtlb_fills,
+            perf_ptw_lsu_starts, perf_ptw_fetch_starts,
+            perf_ptw_prefetch_starts, perf_ptw_responses,
+            perf_ptw_faults, perf_ptw_pte_cache_hits,
+            perf_ptw_ccx_reads, perf_ptw_active_cycles
+        } = '0;
+        {
+            perf_l1i_demand_requests, perf_l1i_prefetch_requests,
+            perf_l1i_demand_responses, perf_l1i_prefetch_responses,
+            perf_l1i_line_misses, perf_l1i_line_responses,
+            perf_l1d_load_requests, perf_l1d_store_requests,
+            perf_l1d_load_wait_cycles, perf_l1d_store_wait_cycles,
+            perf_l1d_misses, perf_l1d_mshr_allocations,
+            perf_l1d_mshr_merges, perf_l1d_mshr_responses,
+            perf_l1d_mshr_full_cycles, perf_l1d_mshr_max,
+            perf_l1d_store_allocations, perf_l1d_store_merges,
+            perf_l1d_store_responses, perf_l1d_store_full_cycles,
+            perf_l1d_store_max, perf_l1d_prefetch_issued,
+            perf_l1d_prefetch_useful, perf_l1d_prefetch_late,
+            perf_l1d_prefetch_dropped, perf_l1d_prefetch_useless,
+            perf_l1d_prefetch_max_depth
+        } = '0;
+        {
+            perf_ccx_requests, perf_ccx_icache_reads,
+            perf_ccx_dcache_reads, perf_ccx_dcache_writes,
+            perf_ccx_request_wait_cycles, perf_ccx_wdata_wait_cycles,
+            perf_ccx_responses, perf_ccx_response_wait_cycles,
+            perf_l2_hits, perf_l2_merges, perf_l2_allocations,
+            perf_l2_bypasses, perf_l2_write_arounds,
+            perf_l2_victim_hits, perf_l2_lookup_stall_cycles,
+            perf_l2_command_full_cycles, perf_l2_mshr_full_cycles,
+            perf_l2_mshr_max, perf_l2_command_max,
+            perf_l2_response_max, perf_l2_bus_track_max,
+            perf_l2_bus_reads, perf_l2_bus_writes,
+            perf_l2_bus_wait_cycles, perf_l2_bus_responses,
+            perf_mem_wide_reads, perf_mem_wide_writes,
+            perf_mem_wide_wait_cycles, perf_mem_scalar_reads,
+            perf_mem_scalar_writes, perf_mem_scalar_wait_cycles
+        } = '0;
 
         if ($value$plusargs("instruction_trace=%s",
                             instruction_trace_path)) begin
