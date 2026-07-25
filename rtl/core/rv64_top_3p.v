@@ -924,6 +924,9 @@ module openrv64_rv64_top_3p #(
     wire backend_mem_resp_valid;
     wire backend_mem_resp_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_resp_tag;
+    wire backend_mem_store_done_valid;
+    wire backend_mem_store_done_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_store_done_tag;
     wire [63:0] backend_mem_resp_paddr;
     wire backend_mem_lock;
     wire backend_mem_write;
@@ -1021,6 +1024,9 @@ module openrv64_rv64_top_3p #(
         .mem_resp_valid_i(backend_mem_resp_valid),
         .mem_resp_ready_o(backend_mem_resp_ready),
         .mem_resp_tag_i(backend_mem_resp_tag),
+        .mem_store_done_valid_i(backend_mem_store_done_valid),
+        .mem_store_done_ready_o(backend_mem_store_done_ready),
+        .mem_store_done_tag_i(backend_mem_store_done_tag),
         .mem_resp_paddr_i(backend_mem_resp_paddr),
         .mem_error_i(backend_mem_access_fault),
         .mem_page_fault_i(backend_mem_page_fault),
@@ -1270,6 +1276,9 @@ module openrv64_rv64_top_3p #(
         .lsu_pipe_resp_valid_o(backend_mem_resp_valid),
         .lsu_pipe_resp_ready_i(backend_mem_resp_ready),
         .lsu_pipe_resp_tag_o(backend_mem_resp_tag),
+        .lsu_pipe_store_done_valid_o(backend_mem_store_done_valid),
+        .lsu_pipe_store_done_ready_i(backend_mem_store_done_ready),
+        .lsu_pipe_store_done_tag_o(backend_mem_store_done_tag),
         .lsu_pipe_resp_paddr_o(backend_mem_resp_paddr),
         .lsu_pipe_resp_rdata_o(backend_mem_rdata),
         .lsu_pipe_resp_access_fault_o(backend_mem_access_fault),

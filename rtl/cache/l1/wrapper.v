@@ -29,6 +29,7 @@ module openrv64_l1 #(
     input  wire [ADDR_WIDTH-1:0]     req_phys_addr_i,
     input  wire                      req_prefetch_i,
     input  wire                      req_aged_i,
+    input  wire                      req_separate_write_resp_i,
     input  wire [DATA_WIDTH-1:0]     req_wdata_i,
     input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
     output wire                      resp_valid_o,
@@ -36,6 +37,9 @@ module openrv64_l1 #(
     output wire [REQ_TAG_WIDTH-1:0]  resp_tag_o,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
     output wire                      req_error_o,
+    output wire                      write_resp_valid_o,
+    input  wire                      write_resp_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  write_resp_tag_o,
     output wire                      miss_valid_o,
     input  wire                      miss_ready_i,
     output wire [REQ_TAG_WIDTH-1:0]  miss_tag_o,
@@ -87,6 +91,8 @@ module openrv64_l1 #(
                 .req_phys_addr_i(req_phys_addr_i),
                 .req_prefetch_i(req_prefetch_i),
                 .req_aged_i(req_aged_i),
+                .req_separate_write_resp_i(
+                    req_separate_write_resp_i),
                 .req_wdata_i(req_wdata_i),
                 .req_wstrb_i(req_wstrb_i),
                 .resp_valid_o(resp_valid_o),
@@ -94,6 +100,9 @@ module openrv64_l1 #(
                 .resp_tag_o(resp_tag_o),
                 .req_rdata_o(req_rdata_o),
                 .req_error_o(req_error_o),
+                .write_resp_valid_o(write_resp_valid_o),
+                .write_resp_ready_i(write_resp_ready_i),
+                .write_resp_tag_o(write_resp_tag_o),
                 .miss_valid_o(miss_valid_o),
                 .miss_ready_i(miss_ready_i),
                 .miss_tag_o(miss_tag_o),
@@ -123,6 +132,7 @@ module openrv64_l1 #(
             reg request_valid_q;
             reg [REQ_TAG_WIDTH-1:0] request_tag_q;
             reg request_write_q;
+            reg request_separate_write_resp_q;
             reg [ADDR_WIDTH-1:0] request_addr_q;
             reg [DATA_WIDTH-1:0] request_wdata_q;
             reg [DATA_WIDTH/8-1:0] request_wstrb_q;
@@ -130,13 +140,19 @@ module openrv64_l1 #(
             reg [REQ_TAG_WIDTH-1:0] response_tag_q;
             reg [DATA_WIDTH-1:0] response_data_q;
             reg response_error_q;
+            reg write_response_valid_q;
+            reg [REQ_TAG_WIDTH-1:0] write_response_tag_q;
 
             assign req_ready_o = !request_valid_q &&
-                                 (!response_valid_q || resp_ready_i);
+                (req_separate_write_resp_i ?
+                    (!write_response_valid_q || write_resp_ready_i) :
+                    (!response_valid_q || resp_ready_i));
             assign resp_valid_o = response_valid_q;
             assign resp_tag_o = response_tag_q;
             assign req_rdata_o = response_data_q;
             assign req_error_o = response_error_q;
+            assign write_resp_valid_o = write_response_valid_q;
+            assign write_resp_tag_o = write_response_tag_q;
             assign miss_valid_o = 1'b0;
             assign miss_tag_o = {REQ_TAG_WIDTH{1'b0}};
             assign miss_addr_o = {ADDR_WIDTH{1'b0}};
@@ -155,6 +171,7 @@ module openrv64_l1 #(
                     request_valid_q <= 1'b0;
                     request_tag_q <= {REQ_TAG_WIDTH{1'b0}};
                     request_write_q <= 1'b0;
+                    request_separate_write_resp_q <= 1'b0;
                     request_addr_q <= {ADDR_WIDTH{1'b0}};
                     request_wdata_q <= {DATA_WIDTH{1'b0}};
                     request_wstrb_q <= {DATA_WIDTH/8{1'b0}};
@@ -162,24 +179,35 @@ module openrv64_l1 #(
                     response_tag_q <= {REQ_TAG_WIDTH{1'b0}};
                     response_data_q <= {DATA_WIDTH{1'b0}};
                     response_error_q <= 1'b0;
+                    write_response_valid_q <= 1'b0;
+                    write_response_tag_q <= {REQ_TAG_WIDTH{1'b0}};
                 end else begin
                     if (response_valid_q && resp_ready_i)
                         response_valid_q <= 1'b0;
+                    if (write_response_valid_q && write_resp_ready_i)
+                        write_response_valid_q <= 1'b0;
                     if (req_valid_i && req_ready_o) begin
                         request_valid_q <= 1'b1;
                         request_tag_q <= req_tag_i;
                         request_write_q <= req_write_i;
+                        request_separate_write_resp_q <=
+                            req_separate_write_resp_i;
                         request_addr_q <= req_phys_addr_i;
                         request_wdata_q <= req_wdata_i;
                         request_wstrb_q <= req_wstrb_i;
                     end
                     if (request_valid_q && mem_ready_i) begin
                         request_valid_q <= 1'b0;
-                        response_valid_q <= 1'b1;
-                        response_tag_q <= request_tag_q;
-                        response_data_q <= mem_rdata_i[
-                            DATA_WIDTH-1:0];
-                        response_error_q <= mem_error_i;
+                        if (request_separate_write_resp_q) begin
+                            write_response_valid_q <= 1'b1;
+                            write_response_tag_q <= request_tag_q;
+                        end else begin
+                            response_valid_q <= 1'b1;
+                            response_tag_q <= request_tag_q;
+                            response_data_q <= mem_rdata_i[
+                                DATA_WIDTH-1:0];
+                            response_error_q <= mem_error_i;
+                        end
                     end
                 end
             end

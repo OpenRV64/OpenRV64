@@ -303,6 +303,7 @@ module tb_top_3p_soc #(
     wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
     wire ccx_wdata_valid;
     wire ccx_wdata_ready;
+    wire complex_ccx_wdata_ready;
     wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
     wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
     wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
@@ -333,6 +334,123 @@ module tb_top_3p_soc #(
         complex_ccx_resp_rdata;
     wire complex_ccx_resp_error;
     wire complex_ccx_resp_sc_success;
+
+    /*
+     * Directed Sv39 fence checker.
+     *
+     * In +fence_check mode, selected cacheable lines and the mapped device
+     * page terminate here instead of at L2.  Completion is intentionally
+     * delayed.  Ordering is checked when a successor request reaches this
+     * external CCX/home boundary; dispatch or retirement state is not used as
+     * the ordering oracle.
+     */
+    localparam [63:0] FENCE_TEST_BASE = 64'h0000_0000_8001_0000;
+    localparam [63:0] FENCE_TEST_LIMIT = 64'h0000_0000_8001_2000;
+    localparam [63:0] FENCE_SMC_LINE = 64'h0000_0000_8001_8000;
+    localparam [63:0] FENCE_DEVICE_BASE = 64'h0000_0000_1000_0000;
+    localparam [63:0] FENCE_DEVICE_LIMIT = 64'h0000_0000_1000_1000;
+    localparam integer FENCE_QUEUE_DEPTH = 32;
+    localparam integer FENCE_QUEUE_INDEX_WIDTH =
+        $clog2(FENCE_QUEUE_DEPTH);
+    localparam integer FENCE_SHADOW_DEPTH = 64;
+    localparam integer FENCE_SHADOW_INDEX_WIDTH =
+        $clog2(FENCE_SHADOW_DEPTH);
+    localparam integer FENCE_RESPONSE_DELAY = 24;
+
+    reg fence_check_enabled_q;
+    wire fence_test_dcache_request =
+        ccx_req_source_id == `OPENRV64_CCX_SOURCE_DCACHE &&
+        (((ccx_req_addr >= FENCE_TEST_BASE) &&
+          (ccx_req_addr < FENCE_TEST_LIMIT)) ||
+         (ccx_req_addr == FENCE_SMC_LINE) ||
+         ((ccx_req_addr >= FENCE_DEVICE_BASE) &&
+          (ccx_req_addr < FENCE_DEVICE_LIMIT)));
+    wire fence_test_icache_request =
+        (ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE) &&
+        (ccx_req_addr == FENCE_SMC_LINE);
+    wire fence_ccx_select = fence_check_enabled_q &&
+        (fence_test_dcache_request || fence_test_icache_request);
+
+    reg fence_queue_valid_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        fence_queue_hart_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        fence_queue_txn_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        fence_queue_source_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [`OPENRV64_CCX_OP_WIDTH-1:0]
+        fence_queue_op_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [63:0] fence_queue_addr_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        fence_queue_wdata_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        fence_queue_wstrb_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        fence_queue_rdata_q [0:FENCE_QUEUE_DEPTH-1];
+    reg [FENCE_SHADOW_INDEX_WIDTH-1:0]
+        fence_queue_shadow_q [0:FENCE_QUEUE_DEPTH-1];
+    integer fence_queue_delay_q [0:FENCE_QUEUE_DEPTH-1];
+    reg fence_queue_space_r;
+    reg [FENCE_QUEUE_INDEX_WIDTH-1:0] fence_queue_free_index_r;
+    reg fence_queue_response_found_r;
+    reg [FENCE_QUEUE_INDEX_WIDTH-1:0] fence_queue_response_index_r;
+    integer fence_queue_scan;
+    integer fence_queue_reset_scan;
+
+    reg fence_shadow_valid_q [0:FENCE_SHADOW_DEPTH-1];
+    reg [63:0] fence_shadow_addr_q [0:FENCE_SHADOW_DEPTH-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        fence_shadow_data_q [0:FENCE_SHADOW_DEPTH-1];
+    reg fence_shadow_match_r;
+    reg [FENCE_SHADOW_INDEX_WIDTH-1:0] fence_shadow_match_index_r;
+    reg fence_shadow_space_r;
+    reg [FENCE_SHADOW_INDEX_WIDTH-1:0] fence_shadow_free_index_r;
+    integer fence_shadow_scan;
+    integer fence_shadow_reset_scan;
+    integer fence_shadow_write_byte;
+
+    reg fence_resp_valid_q;
+    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] fence_resp_hart_q;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] fence_resp_txn_q;
+    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] fence_resp_source_q;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] fence_resp_rdata_q;
+    wire fence_resp_fire = fence_resp_valid_q && ccx_resp_ready;
+    wire fence_ccx_req_fire =
+        ccx_req_valid && ccx_req_ready && fence_ccx_select;
+
+    reg fence_ww_pred_done_q;
+    reg fence_wr_pred_done_q;
+    reg fence_rr_pred_done_q;
+    reg fence_rw_pred_done_q;
+    reg fence_oo_pred_done_q;
+    reg fence_oi_pred_done_q;
+    reg fence_ii_pred_done_q;
+    reg fence_io_pred_done_q;
+    reg fence_partial_done_q;
+    reg [11:0] fence_pressure_done_q;
+    reg fence_smc_store_seen_q;
+    reg fence_smc_store_done_q;
+    integer fence_smc_fetches_q;
+    reg fence_ww_succ_seen_q;
+    reg fence_wr_succ_seen_q;
+    reg fence_rr_succ_seen_q;
+    reg fence_rw_succ_seen_q;
+    reg fence_oo_succ_seen_q;
+    reg fence_oi_succ_seen_q;
+    reg fence_ii_succ_seen_q;
+    reg fence_io_succ_seen_q;
+    reg fence_partial_succ_seen_q;
+    reg fence_pressure_succ_seen_q;
+    reg fence_final_store_done_q;
+    reg [10:0] fence_order_violation_q;
+    reg fence_smc_pending_valid_q;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        fence_smc_forward_data_q;
+    integer fence_external_requests_q;
+    integer fence_external_completions_q;
+    integer fence_retired_q;
+    integer fence_i_retired_q;
+    integer sfence_vma_retired_q;
 
     // Simulation-only, initiator-keyed CCX latency bisection.  Selected
     // private-cache line reads obtain their data directly from the testbench
@@ -402,39 +520,114 @@ module tb_top_3p_soc #(
         complex_ccx_resp_valid && complex_ccx_resp_ready &&
         magic_ccx_shadow_resp_match_r;
 
-    // Selected requests are still accepted by L2.  Their eventual tagged L2
-    // responses are consumed below after L2 has performed its normal fill.
-    assign ccx_req_ready = complex_ccx_req_ready &&
-        (!magic_ccx_req_select ||
-         (magic_ccx_resp_slot_ready && magic_ccx_shadow_space_r));
+    always @* begin
+        fence_queue_space_r = 1'b0;
+        fence_queue_free_index_r =
+            {FENCE_QUEUE_INDEX_WIDTH{1'b0}};
+        fence_queue_response_found_r = 1'b0;
+        fence_queue_response_index_r =
+            {FENCE_QUEUE_INDEX_WIDTH{1'b0}};
+        for (fence_queue_scan = 0;
+             fence_queue_scan < FENCE_QUEUE_DEPTH;
+             fence_queue_scan = fence_queue_scan + 1) begin
+            if (!fence_queue_space_r &&
+                !fence_queue_valid_q[fence_queue_scan]) begin
+                fence_queue_space_r = 1'b1;
+                fence_queue_free_index_r =
+                    fence_queue_scan[FENCE_QUEUE_INDEX_WIDTH-1:0];
+            end
+            if (!fence_queue_response_found_r &&
+                fence_queue_valid_q[fence_queue_scan] &&
+                (fence_queue_delay_q[fence_queue_scan] == 0)) begin
+                fence_queue_response_found_r = 1'b1;
+                fence_queue_response_index_r =
+                    fence_queue_scan[FENCE_QUEUE_INDEX_WIDTH-1:0];
+            end
+        end
+    end
+
+    always @* begin
+        fence_shadow_match_r = 1'b0;
+        fence_shadow_match_index_r =
+            {FENCE_SHADOW_INDEX_WIDTH{1'b0}};
+        fence_shadow_space_r = 1'b0;
+        fence_shadow_free_index_r =
+            {FENCE_SHADOW_INDEX_WIDTH{1'b0}};
+        for (fence_shadow_scan = 0;
+             fence_shadow_scan < FENCE_SHADOW_DEPTH;
+             fence_shadow_scan = fence_shadow_scan + 1) begin
+            if (!fence_shadow_match_r &&
+                fence_shadow_valid_q[fence_shadow_scan] &&
+                (fence_shadow_addr_q[fence_shadow_scan] ==
+                 {ccx_req_addr[63:6], 6'b0})) begin
+                fence_shadow_match_r = 1'b1;
+                fence_shadow_match_index_r =
+                    fence_shadow_scan[FENCE_SHADOW_INDEX_WIDTH-1:0];
+            end
+            if (!fence_shadow_space_r &&
+                !fence_shadow_valid_q[fence_shadow_scan]) begin
+                fence_shadow_space_r = 1'b1;
+                fence_shadow_free_index_r =
+                    fence_shadow_scan[FENCE_SHADOW_INDEX_WIDTH-1:0];
+            end
+        end
+    end
+
+    wire fence_ccx_write =
+        ccx_req_op == `OPENRV64_CCX_OP_WRITE;
+    wire fence_ccx_read =
+        ccx_req_op == `OPENRV64_CCX_OP_READ;
+    wire fence_ccx_can_accept = fence_queue_space_r &&
+        (fence_shadow_match_r || fence_shadow_space_r) &&
+        (fence_ccx_read || fence_ccx_write) &&
+        (!fence_ccx_write || ccx_wdata_valid);
+
+    // Fence-check requests terminate in the delayed external model.  Existing
+    // magic-read requests are still accepted by L2 for normal fill behavior.
+    assign ccx_req_ready = fence_ccx_select ?
+        fence_ccx_can_accept :
+        (complex_ccx_req_ready &&
+         (!magic_ccx_req_select ||
+          (magic_ccx_resp_slot_ready && magic_ccx_shadow_space_r)));
     assign complex_ccx_req_valid =
-        ccx_req_valid &&
+        ccx_req_valid && !fence_ccx_select &&
         (!magic_ccx_req_select ||
          (magic_ccx_resp_slot_ready && magic_ccx_shadow_space_r));
+    assign ccx_wdata_ready = fence_ccx_select ?
+        fence_ccx_can_accept : complex_ccx_wdata_ready;
 
     assign ccx_resp_valid =
-        magic_ccx_resp_valid_q ||
+        fence_resp_valid_q || magic_ccx_resp_valid_q ||
         (complex_ccx_resp_valid && !magic_ccx_shadow_resp_match_r);
-    assign ccx_resp_hart_id = magic_ccx_resp_valid_q ?
+    assign ccx_resp_hart_id = fence_resp_valid_q ?
+        fence_resp_hart_q : magic_ccx_resp_valid_q ?
         magic_ccx_resp_hart_id_q : complex_ccx_resp_hart_id;
-    assign ccx_resp_txn_id = magic_ccx_resp_valid_q ?
+    assign ccx_resp_txn_id = fence_resp_valid_q ?
+        fence_resp_txn_q : magic_ccx_resp_valid_q ?
         magic_ccx_resp_txn_id_q : complex_ccx_resp_txn_id;
-    assign ccx_resp_source_id = magic_ccx_resp_valid_q ?
+    assign ccx_resp_source_id = fence_resp_valid_q ?
+        fence_resp_source_q : magic_ccx_resp_valid_q ?
         magic_ccx_resp_source_id_q : complex_ccx_resp_source_id;
-    assign ccx_resp_beat_index = magic_ccx_resp_valid_q ?
+    assign ccx_resp_beat_index =
+        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
         {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}} :
         complex_ccx_resp_beat_index;
-    assign ccx_resp_last = magic_ccx_resp_valid_q ?
+    assign ccx_resp_last =
+        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
         1'b1 : complex_ccx_resp_last;
-    assign ccx_resp_rdata = magic_ccx_resp_valid_q ?
+    assign ccx_resp_rdata = fence_resp_valid_q ?
+        fence_resp_rdata_q : magic_ccx_resp_valid_q ?
         magic_ccx_resp_rdata_q : complex_ccx_resp_rdata;
-    assign ccx_resp_error = magic_ccx_resp_valid_q ?
+    assign ccx_resp_error =
+        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
         1'b0 : complex_ccx_resp_error;
-    assign ccx_resp_sc_success = magic_ccx_resp_valid_q ?
+    assign ccx_resp_sc_success =
+        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
         1'b0 : complex_ccx_resp_sc_success;
     assign complex_ccx_resp_ready =
         magic_ccx_shadow_resp_match_r ||
-        (ccx_resp_ready && !magic_ccx_resp_valid_q);
+        (ccx_resp_ready && !fence_resp_valid_q &&
+         !magic_ccx_resp_valid_q);
 
     always @* begin
         magic_ccx_shadow_space_r = 1'b0;
@@ -899,6 +1092,60 @@ module tb_top_3p_soc #(
               RETIRE_RESULT_PC_LSB +: 64] == done_pc));
     wire run_done = dbg_halted || (done_pc_valid && done_pc_retired);
 
+    localparam integer RETIRE_RESULT_INSTR_LSB = 233;
+    wire [31:0] fence_retire_instr0 =
+        dut.u_backend.queue_retire_result[
+            0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            RETIRE_RESULT_INSTR_LSB +: 32];
+    wire [31:0] fence_retire_instr1 =
+        dut.u_backend.queue_retire_result[
+            1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            RETIRE_RESULT_INSTR_LSB +: 32];
+    wire [31:0] fence_retire_instr2 =
+        dut.u_backend.queue_retire_result[
+            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            RETIRE_RESULT_INSTR_LSB +: 32];
+    wire fence_retire0 = dut.backend_retire_arch[0] &&
+        (`RV64_OPCODE(fence_retire_instr0) == `RV64_OPCODE_MISC_MEM) &&
+        (`RV64_FUNCT3(fence_retire_instr0) == 3'b000);
+    wire fence_retire1 = dut.backend_retire_arch[1] &&
+        (`RV64_OPCODE(fence_retire_instr1) == `RV64_OPCODE_MISC_MEM) &&
+        (`RV64_FUNCT3(fence_retire_instr1) == 3'b000);
+    wire fence_retire2 = dut.backend_retire_arch[2] &&
+        (`RV64_OPCODE(fence_retire_instr2) == `RV64_OPCODE_MISC_MEM) &&
+        (`RV64_FUNCT3(fence_retire_instr2) == 3'b000);
+    wire fence_i_retire0 = dut.backend_retire_arch[0] &&
+        (`RV64_OPCODE(fence_retire_instr0) == `RV64_OPCODE_MISC_MEM) &&
+        (`RV64_FUNCT3(fence_retire_instr0) == 3'b001);
+    wire fence_i_retire1 = dut.backend_retire_arch[1] &&
+        (`RV64_OPCODE(fence_retire_instr1) == `RV64_OPCODE_MISC_MEM) &&
+        (`RV64_FUNCT3(fence_retire_instr1) == 3'b001);
+    wire fence_i_retire2 = dut.backend_retire_arch[2] &&
+        (`RV64_OPCODE(fence_retire_instr2) == `RV64_OPCODE_MISC_MEM) &&
+        (`RV64_FUNCT3(fence_retire_instr2) == 3'b001);
+    wire sfence_vma_retire0 = dut.backend_retire_arch[0] &&
+        `RV64_IS_SFENCE_VMA(fence_retire_instr0);
+    wire sfence_vma_retire1 = dut.backend_retire_arch[1] &&
+        `RV64_IS_SFENCE_VMA(fence_retire_instr1);
+    wire sfence_vma_retire2 = dut.backend_retire_arch[2] &&
+        `RV64_IS_SFENCE_VMA(fence_retire_instr2);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fence_retired_q <= 0;
+            fence_i_retired_q <= 0;
+            sfence_vma_retired_q <= 0;
+        end else begin
+            fence_retired_q <= fence_retired_q +
+                fence_retire0 + fence_retire1 + fence_retire2;
+            fence_i_retired_q <= fence_i_retired_q +
+                fence_i_retire0 + fence_i_retire1 + fence_i_retire2;
+            sfence_vma_retired_q <= sfence_vma_retired_q +
+                sfence_vma_retire0 + sfence_vma_retire1 +
+                sfence_vma_retire2;
+        end
+    end
+
     wire [2:0] trace_candidate_valid =
         dut.u_backend.u_dispatch.g_3p.u_dispatch.candidate_valid;
     wire [2:0] trace_candidate_fire =
@@ -1323,8 +1570,8 @@ module tb_top_3p_soc #(
         .ccx_req_size_i(ccx_req_size),
         .ccx_req_addr_i(ccx_req_addr),
         .ccx_req_burst_len_i(ccx_req_burst_len),
-        .ccx_wdata_valid_i(ccx_wdata_valid),
-        .ccx_wdata_ready_o(ccx_wdata_ready),
+        .ccx_wdata_valid_i(ccx_wdata_valid && !fence_ccx_select),
+        .ccx_wdata_ready_o(complex_ccx_wdata_ready),
         .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
         .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
         .ccx_wdata_source_id_i(ccx_wdata_source_id),
@@ -1642,6 +1889,7 @@ module tb_top_3p_soc #(
     initial begin
         magic_ccx_source_mask_q = 4'b0000;
         magic_ccx_source_mask_arg = 0;
+        fence_check_enabled_q = $test$plusargs("fence_check");
         if ($test$plusargs("magic_l1i"))
             magic_ccx_source_mask_q[`OPENRV64_CCX_SOURCE_ICACHE] = 1'b1;
         if ($test$plusargs("magic_l1d"))
@@ -1706,6 +1954,385 @@ module tb_top_3p_soc #(
                 else if (ccx_req_source_id ==
                          `OPENRV64_CCX_SOURCE_DCACHE)
                     magic_ccx_l1d_reads <= magic_ccx_l1d_reads + 1;
+            end
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fence_resp_valid_q <= 1'b0;
+            fence_resp_hart_q <=
+                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+            fence_resp_txn_q <=
+                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+            fence_resp_source_q <=
+                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+            fence_resp_rdata_q <=
+                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            fence_ww_pred_done_q <= 1'b0;
+            fence_wr_pred_done_q <= 1'b0;
+            fence_rr_pred_done_q <= 1'b0;
+            fence_rw_pred_done_q <= 1'b0;
+            fence_oo_pred_done_q <= 1'b0;
+            fence_oi_pred_done_q <= 1'b0;
+            fence_ii_pred_done_q <= 1'b0;
+            fence_io_pred_done_q <= 1'b0;
+            fence_partial_done_q <= 1'b0;
+            fence_pressure_done_q <= 12'd0;
+            fence_smc_store_seen_q <= 1'b0;
+            fence_smc_store_done_q <= 1'b0;
+            fence_smc_fetches_q <= 0;
+            fence_ww_succ_seen_q <= 1'b0;
+            fence_wr_succ_seen_q <= 1'b0;
+            fence_rr_succ_seen_q <= 1'b0;
+            fence_rw_succ_seen_q <= 1'b0;
+            fence_oo_succ_seen_q <= 1'b0;
+            fence_oi_succ_seen_q <= 1'b0;
+            fence_ii_succ_seen_q <= 1'b0;
+            fence_io_succ_seen_q <= 1'b0;
+            fence_partial_succ_seen_q <= 1'b0;
+            fence_pressure_succ_seen_q <= 1'b0;
+            fence_final_store_done_q <= 1'b0;
+            fence_order_violation_q <= 11'd0;
+            fence_smc_pending_valid_q <= 1'b0;
+            fence_smc_forward_data_q <=
+                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            fence_external_requests_q <= 0;
+            fence_external_completions_q <= 0;
+            for (fence_queue_reset_scan = 0;
+                 fence_queue_reset_scan < FENCE_QUEUE_DEPTH;
+                 fence_queue_reset_scan =
+                     fence_queue_reset_scan + 1) begin
+                fence_queue_valid_q[fence_queue_reset_scan] <= 1'b0;
+                fence_queue_hart_q[fence_queue_reset_scan] <=
+                    {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+                fence_queue_txn_q[fence_queue_reset_scan] <=
+                    {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                fence_queue_source_q[fence_queue_reset_scan] <=
+                    {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+                fence_queue_op_q[fence_queue_reset_scan] <=
+                    {`OPENRV64_CCX_OP_WIDTH{1'b0}};
+                fence_queue_addr_q[fence_queue_reset_scan] <= 64'd0;
+                fence_queue_wdata_q[fence_queue_reset_scan] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                fence_queue_wstrb_q[fence_queue_reset_scan] <=
+                    {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+                fence_queue_rdata_q[fence_queue_reset_scan] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                fence_queue_shadow_q[fence_queue_reset_scan] <=
+                    {FENCE_SHADOW_INDEX_WIDTH{1'b0}};
+                fence_queue_delay_q[fence_queue_reset_scan] <= 0;
+            end
+            for (fence_shadow_reset_scan = 0;
+                 fence_shadow_reset_scan < FENCE_SHADOW_DEPTH;
+                 fence_shadow_reset_scan =
+                     fence_shadow_reset_scan + 1) begin
+                fence_shadow_valid_q[fence_shadow_reset_scan] <= 1'b0;
+                fence_shadow_addr_q[fence_shadow_reset_scan] <= 64'd0;
+                fence_shadow_data_q[fence_shadow_reset_scan] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            end
+        end else begin
+            if (fence_resp_fire)
+                fence_resp_valid_q <= 1'b0;
+
+            for (fence_queue_reset_scan = 0;
+                 fence_queue_reset_scan < FENCE_QUEUE_DEPTH;
+                 fence_queue_reset_scan =
+                     fence_queue_reset_scan + 1)
+                if (fence_queue_valid_q[fence_queue_reset_scan] &&
+                    (fence_queue_delay_q[fence_queue_reset_scan] != 0))
+                    fence_queue_delay_q[fence_queue_reset_scan] <=
+                        fence_queue_delay_q[fence_queue_reset_scan] - 1;
+
+            if (fence_queue_response_found_r &&
+                (!fence_resp_valid_q || fence_resp_fire)) begin
+                fence_resp_valid_q <= 1'b1;
+                fence_resp_hart_q <= fence_queue_hart_q[
+                    fence_queue_response_index_r];
+                fence_resp_txn_q <= fence_queue_txn_q[
+                    fence_queue_response_index_r];
+                fence_resp_source_q <= fence_queue_source_q[
+                    fence_queue_response_index_r];
+                fence_resp_rdata_q <= fence_queue_rdata_q[
+                    fence_queue_response_index_r];
+                fence_queue_valid_q[
+                    fence_queue_response_index_r] <= 1'b0;
+                fence_external_completions_q <=
+                    fence_external_completions_q + 1;
+
+                if (fence_queue_op_q[fence_queue_response_index_r] ==
+                    `OPENRV64_CCX_OP_WRITE) begin
+                    for (fence_shadow_write_byte = 0;
+                         fence_shadow_write_byte <
+                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                         fence_shadow_write_byte =
+                             fence_shadow_write_byte + 1)
+                        if (fence_queue_wstrb_q[
+                                fence_queue_response_index_r][
+                                fence_shadow_write_byte])
+                            fence_shadow_data_q[
+                                fence_queue_shadow_q[
+                                    fence_queue_response_index_r]][
+                                fence_shadow_write_byte*8 +: 8] <=
+                                fence_queue_wdata_q[
+                                    fence_queue_response_index_r][
+                                    fence_shadow_write_byte*8 +: 8];
+                end
+
+                case (fence_queue_addr_q[
+                          fence_queue_response_index_r])
+                    FENCE_TEST_BASE + 64'h000:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_WRITE)
+                            fence_ww_pred_done_q <= 1'b1;
+                    FENCE_TEST_BASE + 64'h100:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_WRITE)
+                            fence_wr_pred_done_q <= 1'b1;
+                    FENCE_TEST_BASE + 64'h200:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_READ)
+                            fence_rr_pred_done_q <= 1'b1;
+                    FENCE_TEST_BASE + 64'h300:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_READ)
+                            fence_rw_pred_done_q <= 1'b1;
+                    FENCE_TEST_BASE + 64'h400:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_WRITE)
+                            fence_partial_done_q <= 1'b1;
+                    FENCE_TEST_BASE + 64'hd00:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_WRITE)
+                            fence_final_store_done_q <= 1'b1;
+                    FENCE_SMC_LINE:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_WRITE) begin
+                            fence_smc_store_done_q <= 1'b1;
+                            fence_smc_pending_valid_q <= 1'b0;
+                        end
+                    FENCE_DEVICE_BASE + 64'h000:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_WRITE)
+                            fence_oo_pred_done_q <= 1'b1;
+                    FENCE_DEVICE_BASE + 64'h100:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_WRITE)
+                            fence_oi_pred_done_q <= 1'b1;
+                    FENCE_DEVICE_BASE + 64'h200:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_READ)
+                            fence_ii_pred_done_q <= 1'b1;
+                    FENCE_DEVICE_BASE + 64'h300:
+                        if (fence_queue_op_q[
+                                fence_queue_response_index_r] ==
+                            `OPENRV64_CCX_OP_READ)
+                            fence_io_pred_done_q <= 1'b1;
+                    default: begin
+                        if ((fence_queue_addr_q[
+                                 fence_queue_response_index_r] >=
+                             FENCE_TEST_BASE + 64'h800) &&
+                            (fence_queue_addr_q[
+                                 fence_queue_response_index_r] <
+                             FENCE_TEST_BASE + 64'hb00) &&
+                            (fence_queue_op_q[
+                                 fence_queue_response_index_r] ==
+                             `OPENRV64_CCX_OP_WRITE))
+                            fence_pressure_done_q[
+                                (fence_queue_addr_q[
+                                     fence_queue_response_index_r] -
+                                 (FENCE_TEST_BASE + 64'h800)) >> 6] <=
+                                1'b1;
+                    end
+                endcase
+            end
+
+            if (fence_ccx_req_fire) begin
+                fence_external_requests_q <=
+                    fence_external_requests_q + 1;
+                fence_queue_valid_q[fence_queue_free_index_r] <= 1'b1;
+                fence_queue_hart_q[fence_queue_free_index_r] <=
+                    ccx_req_hart_id;
+                fence_queue_txn_q[fence_queue_free_index_r] <=
+                    ccx_req_txn_id;
+                fence_queue_source_q[fence_queue_free_index_r] <=
+                    ccx_req_source_id;
+                fence_queue_op_q[fence_queue_free_index_r] <= ccx_req_op;
+                fence_queue_addr_q[fence_queue_free_index_r] <=
+                    ccx_req_addr;
+                fence_queue_wdata_q[fence_queue_free_index_r] <=
+                    ccx_wdata;
+                fence_queue_wstrb_q[fence_queue_free_index_r] <=
+                    ccx_wstrb;
+                fence_queue_rdata_q[fence_queue_free_index_r] <=
+                    ((ccx_req_addr == FENCE_SMC_LINE) &&
+                     (ccx_req_source_id ==
+                      `OPENRV64_CCX_SOURCE_ICACHE) &&
+                     fence_smc_pending_valid_q) ?
+                        fence_smc_forward_data_q :
+                    fence_shadow_match_r ?
+                        fence_shadow_data_q[
+                            fence_shadow_match_index_r] :
+                        ((ccx_req_addr >= FENCE_DEVICE_BASE) &&
+                         (ccx_req_addr < FENCE_DEVICE_LIMIT)) ?
+                            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}} :
+                            magic_ccx_read_data;
+                fence_queue_shadow_q[fence_queue_free_index_r] <=
+                    fence_shadow_match_r ?
+                        fence_shadow_match_index_r :
+                        fence_shadow_free_index_r;
+                fence_queue_delay_q[fence_queue_free_index_r] <=
+                    FENCE_RESPONSE_DELAY;
+
+                if (!fence_shadow_match_r) begin
+                    fence_shadow_valid_q[
+                        fence_shadow_free_index_r] <= 1'b1;
+                    fence_shadow_addr_q[
+                        fence_shadow_free_index_r] <=
+                        {ccx_req_addr[63:6], 6'b0};
+                    fence_shadow_data_q[
+                        fence_shadow_free_index_r] <=
+                        ((ccx_req_addr >= FENCE_DEVICE_BASE) &&
+                         (ccx_req_addr < FENCE_DEVICE_LIMIT)) ?
+                            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}} :
+                            magic_ccx_read_data;
+                end
+
+                if (ccx_req_addr == FENCE_TEST_BASE + 64'h040) begin
+                    if (!fence_ww_pred_done_q) begin
+                        fence_order_violation_q[0] <= 1'b1;
+                        $display(
+                            "FENCE w,w exposed successor store before predecessor completion");
+                    end
+                    fence_ww_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_TEST_BASE + 64'h140) begin
+                    if (!fence_wr_pred_done_q) begin
+                        fence_order_violation_q[1] <= 1'b1;
+                        $display(
+                            "FENCE w,r exposed successor load before predecessor completion");
+                    end
+                    fence_wr_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_TEST_BASE + 64'h240) begin
+                    if (!fence_rr_pred_done_q) begin
+                        fence_order_violation_q[2] <= 1'b1;
+                        $display(
+                            "FENCE r,r exposed successor load before predecessor completion");
+                    end
+                    fence_rr_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_TEST_BASE + 64'h340) begin
+                    if (!fence_rw_pred_done_q) begin
+                        fence_order_violation_q[3] <= 1'b1;
+                        $display(
+                            "FENCE r,w exposed successor store before predecessor completion");
+                    end
+                    fence_rw_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h040) begin
+                    if (!fence_oo_pred_done_q) begin
+                        fence_order_violation_q[4] <= 1'b1;
+                        $display(
+                            "FENCE o,o exposed successor output before predecessor completion");
+                    end
+                    fence_oo_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h140) begin
+                    if (!fence_oi_pred_done_q) begin
+                        fence_order_violation_q[5] <= 1'b1;
+                        $display(
+                            "FENCE o,i exposed successor input before predecessor completion");
+                    end
+                    fence_oi_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h240) begin
+                    if (!fence_ii_pred_done_q) begin
+                        fence_order_violation_q[6] <= 1'b1;
+                        $display(
+                            "FENCE i,i exposed successor input before predecessor completion");
+                    end
+                    fence_ii_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h340) begin
+                    if (!fence_io_pred_done_q) begin
+                        fence_order_violation_q[7] <= 1'b1;
+                        $display(
+                            "FENCE i,o exposed successor output before predecessor completion");
+                    end
+                    fence_io_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_TEST_BASE + 64'h400) begin
+                    if ((ccx_wstrb[15:0] != 16'hfffe) ||
+                        (|ccx_wstrb[
+                            `OPENRV64_CCX_LINE_STRB_WIDTH-1:16]) ||
+                        (ccx_wdata[127:0] !=
+                         128'hffeeddccbbaa99887766554433221100))
+                        $fatal(1,
+                            "partial stores did not merge at external boundary strb=%h data=%032h",
+                            ccx_wstrb, ccx_wdata[127:0]);
+                end
+                if (ccx_req_addr == FENCE_TEST_BASE + 64'h440) begin
+                    if (!fence_partial_done_q) begin
+                        fence_order_violation_q[8] <= 1'b1;
+                        $display(
+                            "partial-line stores were not complete before successor load");
+                    end
+                    fence_partial_succ_seen_q <= 1'b1;
+                end
+                if (ccx_req_addr == FENCE_TEST_BASE + 64'hc00) begin
+                    if (fence_pressure_done_q != 12'hfff) begin
+                        fence_order_violation_q[9] <= 1'b1;
+                        $display(
+                            "buffer-pressure successor escaped with completions=%03h",
+                            fence_pressure_done_q);
+                    end
+                    fence_pressure_succ_seen_q <= 1'b1;
+                end
+                if ((ccx_req_addr == FENCE_SMC_LINE) &&
+                    (ccx_req_source_id ==
+                     `OPENRV64_CCX_SOURCE_DCACHE) &&
+                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE)) begin
+                    fence_smc_store_seen_q <= 1'b1;
+                    fence_smc_pending_valid_q <= 1'b1;
+                    fence_smc_forward_data_q <=
+                        fence_shadow_match_r ?
+                            fence_shadow_data_q[
+                                fence_shadow_match_index_r] :
+                            magic_ccx_read_data;
+                    for (fence_shadow_write_byte = 0;
+                         fence_shadow_write_byte <
+                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                         fence_shadow_write_byte =
+                             fence_shadow_write_byte + 1)
+                        if (ccx_wstrb[fence_shadow_write_byte])
+                            fence_smc_forward_data_q[
+                                fence_shadow_write_byte*8 +: 8] <=
+                                ccx_wdata[
+                                    fence_shadow_write_byte*8 +: 8];
+                end
+                if ((ccx_req_addr == FENCE_SMC_LINE) &&
+                    (ccx_req_source_id ==
+                     `OPENRV64_CCX_SOURCE_ICACHE)) begin
+                    if (fence_smc_store_seen_q &&
+                        !fence_smc_store_done_q) begin
+                        fence_order_violation_q[10] <= 1'b1;
+                        $display(
+                            "FENCE.I refetch crossed external boundary before code store completion");
+                    end
+                    fence_smc_fetches_q <= fence_smc_fetches_q + 1;
+                end
             end
         end
     end
@@ -2865,6 +3492,55 @@ module tb_top_3p_soc #(
                 saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
                 ccx_ptw_reads, zero_scatter_xlates,
                 zero_scatter_accesses, zero_scatter_mapping_errors);
+        if (fence_check_enabled_q) begin
+            if (!fence_ww_pred_done_q || !fence_wr_pred_done_q ||
+                !fence_rr_pred_done_q || !fence_rw_pred_done_q ||
+                !fence_oo_pred_done_q || !fence_oi_pred_done_q ||
+                !fence_ii_pred_done_q || !fence_io_pred_done_q ||
+                !fence_partial_done_q ||
+                (fence_pressure_done_q != 12'hfff) ||
+                !fence_smc_store_done_q ||
+                !fence_final_store_done_q)
+                $fatal(1,
+                    "fence predecessor coverage incomplete mem=%b%b%b%b io=%b%b%b%b partial=%b pressure=%03h smc=%b final=%b",
+                    fence_ww_pred_done_q, fence_wr_pred_done_q,
+                    fence_rr_pred_done_q, fence_rw_pred_done_q,
+                    fence_oo_pred_done_q, fence_oi_pred_done_q,
+                    fence_ii_pred_done_q, fence_io_pred_done_q,
+                    fence_partial_done_q, fence_pressure_done_q,
+                    fence_smc_store_done_q, fence_final_store_done_q);
+            if (!fence_ww_succ_seen_q || !fence_wr_succ_seen_q ||
+                !fence_rr_succ_seen_q || !fence_rw_succ_seen_q ||
+                !fence_oo_succ_seen_q || !fence_oi_succ_seen_q ||
+                !fence_ii_succ_seen_q || !fence_io_succ_seen_q ||
+                !fence_partial_succ_seen_q ||
+                !fence_pressure_succ_seen_q)
+                $fatal(1,
+                    "fence successor coverage incomplete mem=%b%b%b%b io=%b%b%b%b partial=%b pressure=%b",
+                    fence_ww_succ_seen_q, fence_wr_succ_seen_q,
+                    fence_rr_succ_seen_q, fence_rw_succ_seen_q,
+                    fence_oo_succ_seen_q, fence_oi_succ_seen_q,
+                    fence_ii_succ_seen_q, fence_io_succ_seen_q,
+                    fence_partial_succ_seen_q,
+                    fence_pressure_succ_seen_q);
+            if (fence_smc_fetches_q < 2)
+                $fatal(1,
+                    "FENCE.I did not produce an externally visible refetch count=%0d",
+                    fence_smc_fetches_q);
+            if ((fence_retired_q != 15) ||
+                (fence_i_retired_q != 1) ||
+                (sfence_vma_retired_q != 1))
+                $fatal(1,
+                    "fence retirement coverage ordinary=%0d fence_i=%0d sfence_vma=%0d expected=15/1/1",
+                    fence_retired_q, fence_i_retired_q,
+                    sfence_vma_retired_q);
+            if (fence_external_requests_q !=
+                fence_external_completions_q)
+                $fatal(1,
+                    "fence external requests remain incomplete requests=%0d completions=%0d",
+                    fence_external_requests_q,
+                    fence_external_completions_q);
+        end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
             "PERF_CCX_L2 mode=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
@@ -2876,6 +3552,26 @@ module tb_top_3p_soc #(
             cycles, retired, ipc,
             dut.u_backend.u_gpr.regs[10], L1I_CACHE_BYTES,
             L1D_CACHE_BYTES, L2_BYTES, L2_WAYS, RAM_BYTES);
+        if ($test$plusargs("report_a_regs"))
+            $display(
+                "PERF_FENCE_SV39_RESULTS iters=1024 rr_none=%0d rr=%0d rw_none=%0d rw=%0d wr_none=%0d wr=%0d ww_none=%0d ww=%0d",
+                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.u_gpr.regs[11],
+                dut.u_backend.u_gpr.regs[12],
+                dut.u_backend.u_gpr.regs[13],
+                dut.u_backend.u_gpr.regs[14],
+                dut.u_backend.u_gpr.regs[15],
+                dut.u_backend.u_gpr.regs[16],
+                dut.u_backend.u_gpr.regs[17]);
+        if (fence_check_enabled_q)
+            $display(
+                "PERF_FENCE_SV39_CHECK requests=%0d completions=%0d ordinary=%0d fence_i=%0d bootstrap_sfence_vma=%0d delayed_cycles=%0d smc_fetches=%0d pressure_lines=%0d violation_mask=%03h",
+                fence_external_requests_q,
+                fence_external_completions_q,
+                fence_retired_q, fence_i_retired_q,
+                sfence_vma_retired_q, FENCE_RESPONSE_DELAY,
+                fence_smc_fetches_q, 12,
+                fence_order_violation_q);
         $display(
             "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
             ccx_requests, ccx_fetch_reads, ccx_data_reads,
@@ -3119,6 +3815,11 @@ module tb_top_3p_soc #(
             $test$plusargs("require_timed_memory") &&
             (ddr3_commands == 0))
             $fatal(1, "timed-memory path accepted no commands");
+        if (fence_check_enabled_q &&
+            (fence_order_violation_q != 11'd0))
+            $fatal(1,
+                "external-boundary fence ordering violations mask=%03h",
+                fence_order_violation_q);
         if (DDR3_ENABLE != 0)
             if (MEMORY_TIMING_MODEL == 1)
                 $display(

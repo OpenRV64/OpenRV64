@@ -146,6 +146,10 @@ module tb_backend_3p #(
         .mem_resp_valid_i(mem_resp_valid),
         .mem_resp_ready_o(mem_resp_ready),
         .mem_resp_tag_i(mem_resp_tag),
+        .mem_store_done_valid_i(1'b0),
+        .mem_store_done_ready_o(),
+        .mem_store_done_tag_i(
+            {`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
         .mem_resp_paddr_i(64'd0),
         .mem_xlate_valid_o(mem_xlate_valid),
         .mem_xlate_ready_i(mem_xlate_ready),

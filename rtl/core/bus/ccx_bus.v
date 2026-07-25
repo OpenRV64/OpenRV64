@@ -118,6 +118,10 @@ module openrv64_core_ccx_bus #(
     output wire [`RV64_XLEN-1:0]        lsu_pipe_resp_rdata_o,
     output wire                         lsu_pipe_resp_access_fault_o,
     output wire                         lsu_pipe_resp_page_fault_o,
+    output wire                         lsu_pipe_store_done_valid_o,
+    input  wire                         lsu_pipe_store_done_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0]
+                                        lsu_pipe_store_done_tag_o,
 
     input  wire                         lsu_xlate_req_valid_i,
     output wire                         lsu_xlate_req_ready_o,
@@ -1156,6 +1160,13 @@ module openrv64_core_ccx_bus #(
         l1d_resp_tag[L1D_REQ_TAG_WIDTH-1] == L1D_OWNER_PIPE;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] l1d_resp_pipe_tag =
         l1d_resp_tag[`OPENRV64_LSU_TAG_WIDTH-1:0];
+    wire l1d_posted_resp_valid;
+    wire l1d_posted_resp_ready;
+    wire [L1D_REQ_TAG_WIDTH-1:0] l1d_posted_resp_tag;
+    wire l1d_posted_resp_is_pipe =
+        l1d_posted_resp_tag[L1D_REQ_TAG_WIDTH-1] == L1D_OWNER_PIPE;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] l1d_posted_resp_pipe_tag =
+        l1d_posted_resp_tag[`OPENRV64_LSU_TAG_WIDTH-1:0];
     wire l1d_store_resp_valid;
     wire l1d_store_resp_error;
 
@@ -1242,6 +1253,9 @@ module openrv64_core_ccx_bus #(
         .resp_valid_o(l1d_resp_valid),
         .resp_ready_i(l1d_resp_ready),
         .resp_tag_o(l1d_resp_tag),
+        .posted_resp_valid_o(l1d_posted_resp_valid),
+        .posted_resp_ready_i(l1d_posted_resp_ready),
+        .posted_resp_tag_o(l1d_posted_resp_tag),
         .store_resp_valid_o(l1d_store_resp_valid),
         .store_resp_ready_i(1'b1),
         .store_resp_error_o(l1d_store_resp_error),
@@ -1578,6 +1592,22 @@ module openrv64_core_ccx_bus #(
     assign lsu_pipe_resp_page_fault_o =
         pipe_local_resp_valid_q ? pipe_local_resp_page_fault_q :
         (pipe_fallback_visible && lsu_page_fault_q);
+
+    wire pipe_store_done_inflight = l1d_posted_resp_is_pipe &&
+        pipe_inflight_q[l1d_posted_resp_pipe_tag] &&
+        pipe_write_q[l1d_posted_resp_pipe_tag];
+    wire fallback_store_done_inflight =
+        !l1d_posted_resp_is_pipe && pipe_fallback_active_q &&
+        lsu_write_q && (lsu_state_q == LSU_WAIT) &&
+        (l1d_posted_resp_pipe_tag == pipe_fallback_tag_q);
+    assign lsu_pipe_store_done_valid_o = l1d_posted_resp_valid &&
+        (pipe_store_done_inflight || fallback_store_done_inflight);
+    assign lsu_pipe_store_done_tag_o = l1d_posted_resp_pipe_tag;
+    assign l1d_posted_resp_ready =
+        (pipe_store_done_inflight || fallback_store_done_inflight) ?
+            lsu_pipe_store_done_ready_i : 1'b1;
+    wire l1d_posted_resp_fire =
+        l1d_posted_resp_valid && l1d_posted_resp_ready;
 
     wire xlate_fallback_visible =
         !xlate_local_resp_valid_q && xlate_fallback_response_pending;
@@ -2011,6 +2041,11 @@ module openrv64_core_ccx_bus #(
                 pipe_cancelled_q[l1d_resp_pipe_tag] <= 1'b0;
                 pipe_write_q[l1d_resp_pipe_tag] <= 1'b0;
             end
+            if (l1d_posted_resp_fire && pipe_store_done_inflight) begin
+                pipe_inflight_q[l1d_posted_resp_pipe_tag] <= 1'b0;
+                pipe_cancelled_q[l1d_posted_resp_pipe_tag] <= 1'b0;
+                pipe_write_q[l1d_posted_resp_pipe_tag] <= 1'b0;
+            end
 
             case (lsu_state_q)
                 LSU_IDLE: begin
@@ -2127,7 +2162,12 @@ module openrv64_core_ccx_bus #(
                 end
 
                 LSU_WAIT: begin
-                    if (l1d_resp_valid && l1d_resp_ready &&
+                    if (l1d_posted_resp_fire &&
+                        fallback_store_done_inflight) begin
+                        lsu_state_q <= LSU_IDLE;
+                        pipe_fallback_active_q <= 1'b0;
+                        pipe_fallback_cancelled_q <= 1'b0;
+                    end else if (l1d_resp_valid && l1d_resp_ready &&
                         !l1d_resp_is_pipe) begin
                         lsu_rdata_q <= l1d_req_rdata;
                         lsu_access_fault_q <= l1d_req_error;

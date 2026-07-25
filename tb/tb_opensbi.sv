@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-priv.v"
+`include "core/isa/rv64-zifencei.v"
 `include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
 `include "core/exec/bp/defs.v"
@@ -138,6 +139,21 @@ module tb_opensbi #(
     logic [63:0] perf_retire_completed_behind;
     logic [63:0] perf_lsu_request_wait;
     logic [63:0] perf_barrier_cycles;
+    logic [63:0] perf_barrier_entries;
+    logic [63:0] perf_barrier_frontend_block_cycles;
+    logic [63:0] perf_fence_retired;
+    logic [63:0] perf_fence_rr;
+    logic [63:0] perf_fence_rw;
+    logic [63:0] perf_fence_wr;
+    logic [63:0] perf_fence_ww;
+    logic [63:0] perf_fence_io;
+    logic [63:0] perf_fence_i_retired;
+    logic [63:0] perf_sfence_vma_retired;
+    logic [63:0] perf_satp_writes;
+    logic [63:0] perf_translation_barrier_cycles;
+    logic [63:0] perf_store_barrier_cycles;
+    logic [63:0] perf_fence_with_posted_stores;
+    logic perf_barrier_active_q;
     logic [63:0] perf_control_flushes;
 
     logic [63:0] perf_branch_allocations;
@@ -638,6 +654,63 @@ module tb_opensbi #(
                     .u_l1d.demand_mshr_valid_q[1] +
                 dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
                     .u_l1d.demand_mshr_valid_q[2];
+            wire [31:0] perf_retire_instr0 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_result[
+                        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        233 +: 32];
+            wire [31:0] perf_retire_instr1 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_result[
+                        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        233 +: 32];
+            wire [31:0] perf_retire_instr2 =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_result[
+                        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        233 +: 32];
+            wire perf_retire_fence0 =
+                dut.u_core.g_backend_3p.u_core_3p.backend_retire_arch[0] &&
+                (`RV64_OPCODE(perf_retire_instr0) ==
+                    `RV64_OPCODE_MISC_MEM) &&
+                (`RV64_FUNCT3(perf_retire_instr0) == `RV64_FUNCT3_FENCE);
+            wire perf_retire_fence1 =
+                dut.u_core.g_backend_3p.u_core_3p.backend_retire_arch[1] &&
+                (`RV64_OPCODE(perf_retire_instr1) ==
+                    `RV64_OPCODE_MISC_MEM) &&
+                (`RV64_FUNCT3(perf_retire_instr1) == `RV64_FUNCT3_FENCE);
+            wire perf_retire_fence2 =
+                dut.u_core.g_backend_3p.u_core_3p.backend_retire_arch[2] &&
+                (`RV64_OPCODE(perf_retire_instr2) ==
+                    `RV64_OPCODE_MISC_MEM) &&
+                (`RV64_FUNCT3(perf_retire_instr2) == `RV64_FUNCT3_FENCE);
+            wire [2:0] perf_retire_fence = {
+                perf_retire_fence2,
+                perf_retire_fence1,
+                perf_retire_fence0
+            };
+            wire [31:0] perf_retire_fence_instr =
+                perf_retire_fence0 ? perf_retire_instr0 :
+                perf_retire_fence1 ? perf_retire_instr1 :
+                                     perf_retire_instr2;
+            wire perf_fence_rr_event = (|perf_retire_fence) &&
+                perf_retire_fence_instr[25] &&
+                perf_retire_fence_instr[21];
+            wire perf_fence_rw_event = (|perf_retire_fence) &&
+                perf_retire_fence_instr[25] &&
+                perf_retire_fence_instr[20];
+            wire perf_fence_wr_event = (|perf_retire_fence) &&
+                perf_retire_fence_instr[24] &&
+                perf_retire_fence_instr[21];
+            wire perf_fence_ww_event = (|perf_retire_fence) &&
+                perf_retire_fence_instr[24] &&
+                perf_retire_fence_instr[20];
+            wire perf_fence_io_event = (|perf_retire_fence) &&
+                (|{perf_retire_fence_instr[27:26],
+                   perf_retire_fence_instr[23:22]});
+            wire perf_l1d_posted_store_pending =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.store_buffer_count_q != 0;
 
             always @(posedge clk) begin
                 if (core_rst_n && perf_summary_enabled) begin
@@ -713,6 +786,55 @@ module tb_opensbi #(
                             perf_lsu_request_wait + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.backend_barrier)
                         perf_barrier_cycles <= perf_barrier_cycles + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.backend_barrier &&
+                        !perf_barrier_active_q)
+                        perf_barrier_entries <=
+                            perf_barrier_entries + 1'b1;
+                    perf_barrier_active_q <=
+                        dut.u_core.g_backend_3p.u_core_3p.backend_barrier;
+                    if (dut.u_core.g_backend_3p.u_core_3p.backend_barrier &&
+                        (dut.u_core.g_backend_3p.u_core_3p
+                             .fetch_decode_valid != 0) &&
+                        (dut.u_core.g_backend_3p.u_core_3p
+                             .frontend_decode_fire == 0))
+                        perf_barrier_frontend_block_cycles <=
+                            perf_barrier_frontend_block_cycles + 1'b1;
+                    if (|perf_retire_fence)
+                        perf_fence_retired <= perf_fence_retired +
+                            perf_retire_fence0 + perf_retire_fence1 +
+                            perf_retire_fence2;
+                    if (perf_fence_rr_event)
+                        perf_fence_rr <= perf_fence_rr + 1'b1;
+                    if (perf_fence_rw_event)
+                        perf_fence_rw <= perf_fence_rw + 1'b1;
+                    if (perf_fence_wr_event)
+                        perf_fence_wr <= perf_fence_wr + 1'b1;
+                    if (perf_fence_ww_event)
+                        perf_fence_ww <= perf_fence_ww + 1'b1;
+                    if (perf_fence_io_event)
+                        perf_fence_io <= perf_fence_io + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.backend_fence_i)
+                        perf_fence_i_retired <=
+                            perf_fence_i_retired + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .backend_sfence_vma)
+                        perf_sfence_vma_retired <=
+                            perf_sfence_vma_retired + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .backend_satp_write)
+                        perf_satp_writes <= perf_satp_writes + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p
+                            .translation_barrier_busy)
+                        perf_translation_barrier_cycles <=
+                            perf_translation_barrier_cycles + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.l1d_store_barrier_busy)
+                        perf_store_barrier_cycles <=
+                            perf_store_barrier_cycles + 1'b1;
+                    if ((|perf_retire_fence) &&
+                        perf_l1d_posted_store_pending)
+                        perf_fence_with_posted_stores <=
+                            perf_fence_with_posted_stores + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.control_flush)
                         perf_control_flushes <=
                             perf_control_flushes + 1'b1;
@@ -1286,6 +1408,19 @@ module tb_opensbi #(
                          perf_retire_completed_behind,
                          perf_lsu_request_wait, perf_barrier_cycles,
                          perf_control_flushes);
+                $display("PERF BROAD BARRIER name=%0s hard_entries=%0d hard_active_cycles=%0d hard_frontend_block_cycles=%0d fence=%0d fence_rr=%0d fence_rw=%0d fence_wr=%0d fence_ww=%0d fence_io=%0d fence_i=%0d sfence_vma=%0d satp_writes=%0d translation_cycles=%0d store_drain_cycles=%0d fence_with_posted_stores=%0d",
+                         name, perf_barrier_entries,
+                         perf_barrier_cycles,
+                         perf_barrier_frontend_block_cycles,
+                         perf_fence_retired, perf_fence_rr,
+                         perf_fence_rw, perf_fence_wr,
+                         perf_fence_ww, perf_fence_io,
+                         perf_fence_i_retired,
+                         perf_sfence_vma_retired,
+                         perf_satp_writes,
+                         perf_translation_barrier_cycles,
+                         perf_store_barrier_cycles,
+                         perf_fence_with_posted_stores);
                 $display("PERF BROAD BRANCH name=%0s allocations=%0d predicted_taken_cycles=%0d resolutions=%0d conditional=%0d taken=%0d direction_mispredicts=%0d target_mispredicts=%0d fetch_stall_cycles=%0d",
                          name, perf_branch_allocations,
                          perf_branch_predictions_taken,
@@ -2018,12 +2153,20 @@ module tb_opensbi #(
             perf_dispatch_full, perf_retire_nonempty,
             perf_retire_no_progress, perf_retire_head_incomplete,
             perf_retire_completed_behind, perf_lsu_request_wait,
-            perf_barrier_cycles, perf_control_flushes,
+            perf_barrier_cycles, perf_barrier_entries,
+            perf_barrier_frontend_block_cycles,
+            perf_fence_retired, perf_fence_rr, perf_fence_rw,
+            perf_fence_wr, perf_fence_ww, perf_fence_io,
+            perf_fence_i_retired, perf_sfence_vma_retired,
+            perf_satp_writes, perf_translation_barrier_cycles,
+            perf_store_barrier_cycles, perf_fence_with_posted_stores,
+            perf_control_flushes,
             perf_branch_allocations, perf_branch_predictions_taken,
             perf_branch_resolutions, perf_conditional_branches,
             perf_branches_taken, perf_direction_mispredicts,
             perf_target_mispredicts, perf_bp_fetch_stall_cycles
         } = '0;
+        perf_barrier_active_q = 1'b0;
         {
             perf_itlb_demand_lookups, perf_itlb_demand_hits,
             perf_itlb_demand_misses, perf_itlb_demand_faults,

@@ -25,6 +25,7 @@ module openrv64_l1d #(
     output wire                      req_ready_o,
     input  wire [REQ_TAG_WIDTH-1:0]  req_tag_i,
     input  wire                      req_write_i,
+    input  wire                      req_posted_i,
     input  wire                      req_cacheable_i,
     input  wire [ADDR_WIDTH-1:0]     req_addr_i,
     input  wire [DATA_WIDTH-1:0]     req_wdata_i,
@@ -34,6 +35,9 @@ module openrv64_l1d #(
     output wire [REQ_TAG_WIDTH-1:0]  resp_tag_o,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
     output wire                      req_error_o,
+    output wire                      posted_resp_valid_o,
+    input  wire                      posted_resp_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  posted_resp_tag_o,
     output wire                      miss_valid_o,
     input  wire                      miss_ready_i,
     output wire [REQ_TAG_WIDTH-1:0]  miss_tag_o,
@@ -84,6 +88,7 @@ module openrv64_l1d #(
         .req_phys_addr_i(req_addr_i),
         .req_prefetch_i(1'b0),
         .req_aged_i(1'b0),
+        .req_separate_write_resp_i(req_posted_i),
         .req_wdata_i(req_wdata_i),
         .req_wstrb_i(req_wstrb_i),
         .resp_valid_o(resp_valid_o),
@@ -91,6 +96,9 @@ module openrv64_l1d #(
         .resp_tag_o(resp_tag_o),
         .req_rdata_o(req_rdata_o),
         .req_error_o(req_error_o),
+        .write_resp_valid_o(posted_resp_valid_o),
+        .write_resp_ready_i(posted_resp_ready_i),
+        .write_resp_tag_o(posted_resp_tag_o),
         .miss_valid_o(miss_valid_o),
         .miss_ready_i(miss_ready_i),
         .miss_tag_o(miss_tag_o),
@@ -189,9 +197,14 @@ module openrv64_l1d_ccx #(
     input  wire                      resp_ready_i,
     output wire [REQ_TAG_WIDTH-1:0]  resp_tag_o,
 
-    // A posted store completes northbound when it enters the byte-masked
-    // line FIFO.  Its ordered lower-level completion is returned here so the
-    // core can release the original LSU tag and report a deferred bus fault.
+    // Original-tag completion when a posted store enters the byte-masked
+    // line FIFO.  This is independent of the normal load response channel.
+    output wire                      posted_resp_valid_o,
+    input  wire                      posted_resp_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  posted_resp_tag_o,
+
+    // Ordered lower-level completion of the oldest coalesced store-buffer
+    // line.  Coalescing means this event has no original requester tag.
     output wire                      store_resp_valid_o,
     input  wire                      store_resp_ready_i,
     output wire                      store_resp_error_o,
@@ -661,6 +674,14 @@ module openrv64_l1d_ccx #(
     wire l1_resp_valid;
     wire [63:0] l1_req_rdata;
     wire l1_req_error;
+    wire l1_posted_resp_valid;
+    wire [REQ_TAG_WIDTH-1:0] l1_posted_resp_tag;
+    wire postable_store;
+    wire store_buffer_accept;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        posted_store_line_data;
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        posted_store_line_strb;
     wire l1_invalidate_ready;
     wire freeloader_oracle_valid;
     wire [63:0] freeloader_oracle_data;
@@ -696,6 +717,8 @@ module openrv64_l1d_ccx #(
         invalidate_addr_i : req_addr_i;
     wire response_tag_full =
         response_tag_count_q == REQ_COUNT_WIDTH'(REQ_DEPTH);
+    wire request_needs_normal_response =
+        !(req_write_i && req_posted_i);
     // The single-hart atomic marker remains a strong local serialization
     // point even though it no longer acquires a CCX/L2 home lock.  Invalidate
     // early and admit the marked request only after all older stores and the
@@ -735,7 +758,8 @@ module openrv64_l1d_ccx #(
     wire freeloader_request_fire =
         freeloader_request && freeloader_request_ready;
     wire l1_req_valid = req_valid_i && !freeloader_request &&
-        !response_tag_full && lock_request_ready &&
+        (!request_needs_normal_response || !response_tag_full) &&
+        lock_request_ready &&
         !demand_load_store_block;
     wire l1_req_cacheable = req_cacheable_i && !req_lock_i;
     wire l1_request_fire = l1_req_valid && l1_req_ready;
@@ -934,6 +958,26 @@ module openrv64_l1d_ccx #(
                 end
             end
         end
+        // A posted store can still occupy the shared L1 write-through stage
+        // while this load uses the SRAM read port.  The registered FIFO scan
+        // above does not yet contain that fragment, so fold the pending store
+        // into the same dirty-line snapshot explicitly.
+        if (postable_store &&
+            ({l1_mem_addr[63:6], 6'b0} ==
+             {req_addr_i[63:6], 6'b0})) begin
+            for (demand_store_byte = 0;
+                 demand_store_byte <
+                     `OPENRV64_CCX_LINE_STRB_WIDTH;
+                 demand_store_byte = demand_store_byte + 1) begin
+                if (posted_store_line_strb[demand_store_byte]) begin
+                    demand_store_data_r[
+                        demand_store_byte*8 +: 8] =
+                        posted_store_line_data[
+                            demand_store_byte*8 +: 8];
+                    demand_store_strb_r[demand_store_byte] = 1'b1;
+                end
+            end
+        end
     end
 
     // Completed demand misses win one response cycle.  A held resident-hit
@@ -941,7 +985,9 @@ module openrv64_l1d_ccx #(
     // other.  The simulation-only freeloader remains last priority.
     assign req_ready_o = freeloader_request ?
                          freeloader_request_ready :
-                         (l1_req_ready && !response_tag_full &&
+                         (l1_req_ready &&
+                          (!request_needs_normal_response ||
+                           !response_tag_full) &&
                           lock_request_ready &&
                           !demand_load_store_block);
     assign resp_valid_o = demand_response_valid ||
@@ -960,6 +1006,8 @@ module openrv64_l1d_ccx #(
     assign req_error_o = demand_response_valid ?
         demand_mshr_error_q[demand_waiter_response_mshr_r] :
         normal_response_valid ? l1_req_error : 1'b0;
+    assign posted_resp_valid_o = l1_posted_resp_valid;
+    assign posted_resp_tag_o = l1_posted_resp_tag;
     assign invalidate_ready_o = l1_invalidate_ready &&
         !lock_invalidate_request && (store_buffer_count_q == 0) &&
         !demand_mshr_any_valid_r;
@@ -1356,6 +1404,9 @@ module openrv64_l1d_ccx #(
     end
 
     wire l1_miss_fire = l1_miss_valid && l1_miss_ready;
+    wire l1_response_tag_push =
+        l1_request_fire && !l1_miss_fire &&
+        request_needs_normal_response;
     assign l1_miss_ready =
         !demand_waiter_valid_q[l1_miss_tag] &&
         (demand_mshr_match_found_r || demand_mshr_free_found_r);
@@ -1661,14 +1712,12 @@ module openrv64_l1d_ccx #(
     wire store_buffer_full =
         (store_buffer_count_q ==
          STORE_BUFFER_COUNT_WIDTH'(STORE_BUFFER_LINES));
-    wire postable_store = l1_mem_valid && l1_mem_write &&
-                          active_req_cacheable_q && active_req_posted_q;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        posted_store_line_data =
+    assign postable_store = l1_mem_valid && l1_mem_write &&
+                            active_req_cacheable_q && active_req_posted_q;
+    assign posted_store_line_data =
             {{(`OPENRV64_CCX_LINE_DATA_WIDTH-64){1'b0}}, l1_mem_wdata}
             << (l1_mem_addr[5:3] * 64);
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
-        posted_store_line_strb =
+    assign posted_store_line_strb =
             {{(`OPENRV64_CCX_LINE_STRB_WIDTH-8){1'b0}}, l1_mem_wstrb}
             << (l1_mem_addr[5:3] * 8);
     wire store_completion_fire = store_completion_valid_q &&
@@ -1685,7 +1734,7 @@ module openrv64_l1d_ccx #(
          {l1_mem_addr[63:6], 6'b0});
     wire store_buffer_allocate = postable_store && !store_buffer_merge &&
         (!store_buffer_full || store_completion_fire);
-    wire store_buffer_accept =
+    assign store_buffer_accept =
         store_buffer_merge || store_buffer_allocate;
     wire store_buffer_watermark =
         store_buffer_count_q >=
@@ -1941,6 +1990,7 @@ module openrv64_l1d_ccx #(
         .req_ready_o(l1_req_ready),
         .req_tag_i(req_tag_i),
         .req_write_i(req_write_i),
+        .req_posted_i(req_posted_i),
         .req_cacheable_i(l1_req_cacheable),
         .req_addr_i(req_addr_i),
         .req_wdata_i(req_wdata_i),
@@ -1950,6 +2000,9 @@ module openrv64_l1d_ccx #(
         .resp_tag_o(l1_resp_tag),
         .req_rdata_o(l1_req_rdata),
         .req_error_o(l1_req_error),
+        .posted_resp_valid_o(l1_posted_resp_valid),
+        .posted_resp_ready_i(posted_resp_ready_i),
+        .posted_resp_tag_o(l1_posted_resp_tag),
         .miss_valid_o(l1_miss_valid),
         .miss_ready_i(l1_miss_ready),
         .miss_tag_o(l1_miss_tag),
@@ -2393,7 +2446,7 @@ module openrv64_l1d_ccx #(
                 // memory.
                 active_req_cacheable_q <= req_cacheable_i;
                 active_req_size_q <= req_size_i;
-                if (!l1_miss_fire) begin
+                if (request_needs_normal_response && !l1_miss_fire) begin
                     response_tag_q[response_tag_tail_q] <= req_tag_i;
                     response_store_data_q[response_tag_tail_q] <=
                         (!req_write_i && !req_lock_i &&
@@ -2604,7 +2657,7 @@ module openrv64_l1d_ccx #(
                     {REQ_INDEX_WIDTH{1'b0}} :
                     response_tag_head_q + 1'b1;
 
-            case ({l1_request_fire && !l1_miss_fire,
+            case ({l1_response_tag_push,
                    l1_response_fire})
                 2'b10: response_tag_count_q <=
                     response_tag_count_q + 1'b1;

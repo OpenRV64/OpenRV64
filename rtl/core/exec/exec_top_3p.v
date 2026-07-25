@@ -116,6 +116,10 @@ module openrv64_exec_top_3p #(
     input  wire [`RV64_XLEN-1:0]        mem_resp_paddr_i,
     input  wire                         mem_error_i,
     input  wire                         mem_page_fault_i,
+    input  wire                         mem_store_done_valid_i,
+    output wire                         mem_store_done_ready_o,
+    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0]
+                                        mem_store_done_tag_i,
     input  wire                         mem_access_allowed_i,
     output wire                         mem_lock_o,
     output wire                         mem_write_o,
@@ -503,6 +507,9 @@ module openrv64_exec_top_3p #(
         .mem_rdata_i(mem_rdata_i),
         .mem_error_i(mem_error_i),
         .mem_page_fault_i(mem_page_fault_i),
+        .mem_store_done_valid_i(mem_store_done_valid_i),
+        .mem_store_done_ready_o(mem_store_done_ready_o),
+        .mem_store_done_tag_i(mem_store_done_tag_i),
         .store_pending_o(mem_posted_store_pending)
     );
 

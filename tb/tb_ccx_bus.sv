@@ -68,6 +68,9 @@ module tb_ccx_bus #(
     wire [63:0] pipe_resp_rdata;
     wire pipe_resp_access_fault;
     wire pipe_resp_page_fault;
+    wire pipe_store_done_valid;
+    logic pipe_store_done_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_store_done_tag;
     logic xlate_req_valid;
     wire xlate_req_ready;
     logic [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_req_tag;
@@ -284,6 +287,9 @@ module tb_ccx_bus #(
         .lsu_pipe_resp_rdata_o(pipe_resp_rdata),
         .lsu_pipe_resp_access_fault_o(pipe_resp_access_fault),
         .lsu_pipe_resp_page_fault_o(pipe_resp_page_fault),
+        .lsu_pipe_store_done_valid_o(pipe_store_done_valid),
+        .lsu_pipe_store_done_ready_i(pipe_store_done_ready),
+        .lsu_pipe_store_done_tag_o(pipe_store_done_tag),
         .lsu_xlate_req_valid_i(xlate_req_valid),
         .lsu_xlate_req_ready_o(xlate_req_ready),
         .lsu_xlate_req_tag_i(xlate_req_tag),
@@ -565,6 +571,27 @@ module tb_ccx_bus #(
         end
     endtask
 
+    task automatic expect_pipe_store_done(
+        input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag
+    );
+        integer wait_cycles;
+        begin
+            wait_cycles = 0;
+            while (!pipe_store_done_valid && wait_cycles < 300) begin
+                tick();
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!pipe_store_done_valid)
+                $fatal(1,
+                    "tagged posted-store completion timeout tag=%0d", tag);
+            if (pipe_store_done_tag != tag)
+                $fatal(1,
+                    "tagged posted-store completion mismatch tag=%0d got=%0d",
+                    tag, pipe_store_done_tag);
+            tick();
+        end
+    endtask
+
     task automatic push_fetch(input [63:0] addr);
         begin
             fetch_req_addr = addr;
@@ -823,6 +850,7 @@ module tb_ccx_bus #(
         pipe_cancel = 0;
         tlbi = 0;
         pipe_resp_ready = 1;
+        pipe_store_done_ready = 1;
         xlate_req_valid = 0;
         xlate_req_tag = 0;
         xlate_req_write = 0;
@@ -988,7 +1016,7 @@ module tb_ccx_bus #(
         // completion reports that admission, not the later CCX drain result.
         // Deferred write faults therefore cannot be attributed to the posted
         // LSU tag and are intentionally not returned on this interface.
-        pipe_resp_ready = 0;
+        pipe_store_done_ready = 0;
         ccx_fail_enable = 1;
         ccx_fail_addr = 64'h100;
         ccx_allow_cmd = 0;
@@ -1020,12 +1048,11 @@ module tb_ccx_bus #(
         pipe_cancel = 1'b1;
         tick();
         pipe_cancel = 1'b0;
-        while (!pipe_resp_valid)
+        while (!pipe_store_done_valid)
             tick();
-        if (pipe_resp_tag != 2'd1 || pipe_resp_access_fault ||
-            pipe_resp_page_fault)
+        if (pipe_store_done_tag != 2'd1)
             $fatal(1, "posted store admission response changed across cancel");
-        pipe_resp_ready = 1;
+        pipe_store_done_ready = 1;
         tick();
         ccx_allow_cmd = 1;
         while ((ccx_writes - wait_count) != 1)
@@ -1043,28 +1070,28 @@ module tb_ccx_bus #(
         ccx_allow_wdata = 1;
         push_pipe_request(2'd0, 1'b1, 64'h300,
                           64'h1122_3344_5566_7788, 8'h0f);
-        expect_pipe_response(2'd0, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(2'd0);
         push_pipe_request(2'd1, 1'b1, 64'h308,
                           64'haabb_ccdd_eeff_0011, 8'hf0);
-        expect_pipe_response(2'd1, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(2'd1);
         push_pipe_request(2'd2, 1'b1, 64'h310,
                           64'h0123_4567_89ab_cdef, 8'h81);
-        expect_pipe_response(2'd2, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(2'd2);
         push_pipe_request(3'd3, 1'b1, 64'h318,
                           64'h1020_3040_5060_7080, 8'hff);
-        expect_pipe_response(3'd3, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(3'd3);
         push_pipe_request(3'd4, 1'b1, 64'h320,
                           64'hfedc_ba98_7654_3210, 8'h33);
-        expect_pipe_response(3'd4, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(3'd4);
         push_pipe_request(3'd5, 1'b1, 64'h328,
                           64'h0f1e_2d3c_4b5a_6978, 8'hcc);
-        expect_pipe_response(3'd5, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(3'd5);
         push_pipe_request(3'd6, 1'b1, 64'h330,
                           64'h8877_6655_4433_2211, 8'h55);
-        expect_pipe_response(3'd6, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(3'd6);
         push_pipe_request(3'd7, 1'b1, 64'h338,
                           64'h99aa_bbcc_ddee_ff00, 8'haa);
-        expect_pipe_response(3'd7, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(3'd7);
         channel_wait = 0;
         while ((dut.u_l1d.store_buffer_count_q != 1) &&
                channel_wait < 150) begin
@@ -1131,7 +1158,7 @@ module tb_ccx_bus #(
         ccx_allow_cmd = 1'b0;
         push_pipe_request(3'd2, 1'b1, 64'h388,
                           64'h0000_0000_23ff_fce7, 8'hff);
-        expect_pipe_response(3'd2, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(3'd2);
         if (dut.u_l1d.store_buffer_count_q != 1)
             $fatal(1, "translation-barrier setup store was not buffered");
         tlbi = 1'b1;
@@ -1404,7 +1431,7 @@ module tb_ccx_bus #(
         expect_xlate_response(3'd5, 64'h3010, 1'b0, 1'b0);
         push_pipe_request(3'd5, 1'b1, 64'h3010,
                           64'hdeaf_beef_cafe_f00d, 8'hff);
-        expect_pipe_response(3'd5, 64'd0, 1'b0, 1'b0);
+        expect_pipe_store_done(3'd5);
         push_xlate_request(3'd6, 1'b0, 64'h4010);
         expect_xlate_response(3'd6, 64'h3010, 1'b0, 1'b0);
         push_pipe_request(3'd6, 1'b0, 64'h3010, 64'd0, 8'd0);

@@ -23,6 +23,8 @@ module tb_l1d_store_buffer;
     wire req_error;
     wire resp_valid;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] resp_tag;
+    wire posted_resp_valid;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] posted_resp_tag;
 
     wire ccx_req_valid;
     wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
@@ -125,7 +127,7 @@ module tb_l1d_store_buffer;
         .req_ready_o(req_ready),
         .req_tag_i(req_tag),
         .req_lock_i(1'b0),
-        .req_posted_i(1'b1),
+        .req_posted_i(req_write),
         .req_write_i(req_write),
         .req_cacheable_i(1'b1),
         .req_addr_i(req_addr),
@@ -137,6 +139,9 @@ module tb_l1d_store_buffer;
         .resp_valid_o(resp_valid),
         .resp_ready_i(1'b1),
         .resp_tag_o(resp_tag),
+        .posted_resp_valid_o(posted_resp_valid),
+        .posted_resp_ready_i(1'b1),
+        .posted_resp_tag_o(posted_resp_tag),
         .store_resp_valid_o(),
         .store_resp_ready_i(1'b1),
         .store_resp_error_o(),
@@ -349,11 +354,11 @@ module tb_l1d_store_buffer;
             req_wdata = 0;
             req_wstrb = 0;
             wait_cycles = 0;
-            while (!resp_valid && (wait_cycles < 200)) begin
+            while (!posted_resp_valid && (wait_cycles < 200)) begin
                 @(negedge clk);
                 wait_cycles = wait_cycles + 1;
             end
-            if (!resp_valid || req_error)
+            if (!posted_resp_valid || (posted_resp_tag != req_tag))
                 $fatal(1, "posted store response failed");
             @(posedge clk);
         end
@@ -409,6 +414,49 @@ module tb_l1d_store_buffer;
     endtask
 
     initial begin
+        reset_dut();
+
+        // Put the line in L1, then present a load immediately behind a posted
+        // store.  The store's array update and the load's SRAM lookup must
+        // occur on the same edge.  Both completion channels must be visible
+        // together, and same-word forwarding must return the new bytes even
+        // if the inferred RAM is read-before-write.
+        memory[BASE[9:6]][63:0] =
+            64'h0123_4567_89ab_cdef;
+        issue_load(BASE, 64'h0123_4567_89ab_cdef);
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b1;
+        req_addr = BASE;
+        req_wdata = 64'hfeed_face_cafe_beef;
+        req_wstrb = 8'hff;
+        req_tag = req_tag + 1'b1;
+        while (!req_ready)
+            @(negedge clk);
+        @(posedge clk);
+        @(negedge clk);
+        req_write = 1'b0;
+        req_wdata = 64'd0;
+        req_wstrb = 8'd0;
+        req_tag = req_tag + 1'b1;
+        #1;
+        if (!req_ready)
+            $fatal(1,
+                "resident load did not overlap posted-store array update");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        #1;
+        if (!posted_resp_valid || !resp_valid ||
+            (posted_resp_tag != req_tag - 1'b1) ||
+            (resp_tag != req_tag) || req_error ||
+            (req_rdata !== 64'hfeed_face_cafe_beef))
+            $fatal(1,
+                "split store/load completion failed posted=%b ptag=%0d load=%b ltag=%0d data=%016x error=%b",
+                posted_resp_valid, posted_resp_tag, resp_valid, resp_tag,
+                req_rdata, req_error);
+        @(posedge clk);
+
         reset_dut();
 
         // Eight scalar stores to one line must occupy one entry and emerge as

@@ -141,6 +141,7 @@ module tb_ccx_l1i;
         .lsu_pipe_req_translation_page_fault_o(),
         .lsu_pipe_cancel_i(1'b0),
         .lsu_pipe_resp_ready_i(1'b0),
+        .lsu_pipe_store_done_ready_i(1'b1),
         .lsu_xlate_req_valid_i(1'b0),
         .lsu_xlate_req_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
         .lsu_xlate_req_write_i(1'b0),

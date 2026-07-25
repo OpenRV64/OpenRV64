@@ -8,8 +8,10 @@
 // The requester side is decoupled: req_ready_o accepts a request and
 // resp_valid_o returns its ordered response.  The hit pipeline accepts and
 // completes one resident read hit per cycle when the response is consumed.
-// Misses, writes, and uncached accesses serialize behind the blocking memory
-// side.  Reads refill one REFILL_DATA_WIDTH beat at a time.  Writes are always
+// Misses, ordinary writes, and uncached accesses serialize behind the blocking
+// memory side.  In detached-miss mode, a posted write waiting on the memory
+// side may overlap cacheable reads through the independent array read port.
+// Reads refill one REFILL_DATA_WIDTH beat at a time.  Writes are always
 // forwarded and use no-write-allocate; a successful write hit also updates the
 // resident copy.
 module openrv64_l1_cache #(
@@ -48,6 +50,10 @@ module openrv64_l1_cache #(
     input  wire [ADDR_WIDTH-1:0]     req_phys_addr_i,
     input  wire                      req_prefetch_i,
     input  wire                      req_aged_i,
+    // Posted writes acknowledge through an independent tag-only channel.
+    // This is used by L1D to keep the normal read-response path available
+    // while a write-through store enters its line buffer.
+    input  wire                      req_separate_write_resp_i,
     input  wire [DATA_WIDTH-1:0]     req_wdata_i,
     input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
     output wire                      resp_valid_o,
@@ -55,6 +61,9 @@ module openrv64_l1_cache #(
     output wire [REQ_TAG_WIDTH-1:0]  resp_tag_o,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
     output wire                      req_error_o,
+    output wire                      write_resp_valid_o,
+    input  wire                      write_resp_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  write_resp_tag_o,
 
     output wire                      miss_valid_o,
     input  wire                      miss_ready_i,
@@ -152,6 +161,7 @@ module openrv64_l1_cache #(
     reg                      request_cacheable_q;
     reg                      request_prefetch_q;
     reg                      request_aged_q;
+    reg                      request_separate_write_resp_q;
     reg [ADDR_WIDTH-1:0]     request_addr_q;
     reg [ADDR_WIDTH-1:0]     request_phys_addr_q;
     reg [DATA_WIDTH-1:0]     request_wdata_q;
@@ -182,6 +192,8 @@ module openrv64_l1_cache #(
     reg [WAY_INDEX_WIDTH-1:0] response_way_q;
     reg [DATA_WIDTH-1:0] response_data_q;
     reg                  response_error_q;
+    reg                  write_response_valid_q;
+    reg [REQ_TAG_WIDTH-1:0] write_response_tag_q;
 
     reg [SET_INDEX_WIDTH-1:0] lookup_set;
     reg [WORD_INDEX_WIDTH-1:0] lookup_word;
@@ -401,9 +413,20 @@ module openrv64_l1_cache #(
     end
 
     wire response_slot_available = !response_valid_q || resp_ready_i;
+    wire write_response_slot_available =
+        !write_response_valid_q || write_resp_ready_i;
     wire detached_fill_enabled = DETACH_READ_MISSES != 0;
     wire fill_fire = fill_valid_i && fill_ready_o;
-    wire request_base_ready = (state_q == STATE_RUN) &&
+    // A detached L1D can use the SRAM's independent read and write ports in
+    // the same cycle.  The completing posted store owns the write port while
+    // the incoming cacheable load performs an ordinary tag/data lookup.
+    wire access_read_overlap =
+        detached_fill_enabled && (state_q == STATE_ACCESS) &&
+        request_write_q && request_separate_write_resp_q &&
+        req_valid_i && !req_write_i && req_cacheable_i &&
+        write_response_slot_available;
+    wire request_base_ready =
+        ((state_q == STATE_RUN) || access_read_overlap) &&
         !invalidate_valid_i && response_slot_available &&
         !(detached_fill_enabled && fill_valid_i);
     wire detached_miss_candidate = detached_fill_enabled && req_valid_i &&
@@ -416,12 +439,16 @@ module openrv64_l1_cache #(
     assign invalidate_ready_o = (state_q == STATE_RUN) &&
                                 invalidate_quiescent;
     assign req_ready_o = request_base_ready &&
+                         (!req_separate_write_resp_i ||
+                          write_response_slot_available) &&
                          (!detached_miss_candidate || miss_ready_i);
     assign resp_valid_o = response_valid_q;
     assign resp_tag_o = response_tag_q;
     assign req_rdata_o = response_hit_q ? response_hit_data :
                          response_data_q;
     assign req_error_o = response_error_q;
+    assign write_resp_valid_o = write_response_valid_q;
+    assign write_resp_tag_o = write_response_tag_q;
     assign miss_valid_o = request_base_ready && detached_miss_candidate;
     assign miss_tag_o = req_tag_i;
     assign miss_addr_o = {
@@ -530,6 +557,7 @@ module openrv64_l1_cache #(
             request_cacheable_q <= 1'b0;
             request_prefetch_q <= 1'b0;
             request_aged_q <= 1'b0;
+            request_separate_write_resp_q <= 1'b0;
             request_addr_q <= {ADDR_WIDTH{1'b0}};
             request_phys_addr_q <= {ADDR_WIDTH{1'b0}};
             request_wdata_q <= {DATA_WIDTH{1'b0}};
@@ -552,6 +580,8 @@ module openrv64_l1_cache #(
             response_way_q <= 0;
             response_data_q <= {DATA_WIDTH{1'b0}};
             response_error_q <= 1'b0;
+            write_response_valid_q <= 1'b0;
+            write_response_tag_q <= {REQ_TAG_WIDTH{1'b0}};
             for (set_index = 0; set_index < SETS;
                  set_index = set_index + 1)
                 replace_q[set_index] <= 0;
@@ -566,6 +596,8 @@ module openrv64_l1_cache #(
         end else begin
             if (response_fire)
                 response_valid_q <= 1'b0;
+            if (write_response_valid_q && write_resp_ready_i)
+                write_response_valid_q <= 1'b0;
 
             for (age_port = 0; age_port < 4;
                  age_port = age_port + 1) begin
@@ -652,6 +684,8 @@ module openrv64_l1_cache #(
                         request_cacheable_q <= req_cacheable_i;
                         request_prefetch_q <= req_prefetch_i;
                         request_aged_q <= req_aged_i;
+                        request_separate_write_resp_q <=
+                            req_separate_write_resp_i;
                         request_addr_q <= req_addr_i;
                         request_phys_addr_q <= req_phys_addr_i;
                         request_wdata_q <= req_wdata_i;
@@ -764,12 +798,51 @@ module openrv64_l1_cache #(
 
                 STATE_ACCESS: begin
                     if (mem_ready_i) begin
-                        response_data_q <= mem_rdata_i[
-                            DATA_WIDTH-1:0];
-                        response_error_q <= mem_error_i;
-                        response_valid_q <= 1'b1;
-                        response_tag_q <= request_tag_q;
+                        if (request_separate_write_resp_q) begin
+                            write_response_valid_q <= 1'b1;
+                            write_response_tag_q <= request_tag_q;
+                        end else begin
+                            response_data_q <= mem_rdata_i[
+                                DATA_WIDTH-1:0];
+                            response_error_q <= mem_error_i;
+                            response_valid_q <= 1'b1;
+                            response_tag_q <= request_tag_q;
+                        end
                         state_q <= STATE_RUN;
+                    end
+
+                    // The write-through store owns only the SRAM write port.
+                    // Cacheable reads can continue while it waits for the
+                    // line buffer as well as on its eventual acceptance edge.
+                    // Detached misses leave through miss_valid_o; hits use
+                    // the normal response register.
+                    if (request_fire) begin
+                        request_refill_word_q <= lookup_refill_word;
+                        if (detached_miss_candidate) begin
+                            response_hit_q <= 1'b0;
+                        end else if (lookup_hit) begin
+                            response_valid_q <= 1'b1;
+                            response_tag_q <= req_tag_i;
+                            response_hit_q <= 1'b1;
+                            response_way_q <= lookup_way;
+                            response_error_q <= 1'b0;
+                            replace_q[lookup_set] <=
+                                (lookup_way == LAST_WAY) ? 0 :
+                                lookup_way + 1'b1;
+                            if (!req_prefetch_i)
+                                aged_q[line_index_of(
+                                    lookup_set, lookup_way)] <= 1'b0;
+                            else if (req_aged_i)
+                                aged_q[line_index_of(
+                                    lookup_set, lookup_way)] <= 1'b1;
+                        end else if ((IDEAL_REFILLS != 0) &&
+                                     ideal_refill_valid_i) begin
+                            response_valid_q <= 1'b1;
+                            response_tag_q <= req_tag_i;
+                            response_hit_q <= 1'b0;
+                            response_data_q <= ideal_refill_data_i;
+                            response_error_q <= 1'b0;
+                        end
                     end
                 end
 
@@ -792,6 +865,12 @@ module openrv64_l1_cache #(
             $fatal(1,
                 "L1 detached fills currently require one full-line refill beat");
     end
+
+    always @(posedge clk_i)
+        if (rst_ni && req_valid_i && req_separate_write_resp_i &&
+            !req_write_i)
+            $fatal(1,
+                "L1 separate write response requested for a read");
 `endif
 
 endmodule

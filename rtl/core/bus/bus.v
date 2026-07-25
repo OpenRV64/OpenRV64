@@ -132,6 +132,10 @@ module openrv64_core_bus #(
     output wire [`RV64_XLEN-1:0]        lsu_pipe_resp_rdata_o,
     output wire                         lsu_pipe_resp_access_fault_o,
     output wire                         lsu_pipe_resp_page_fault_o,
+    output wire                         lsu_pipe_store_done_valid_o,
+    input  wire                         lsu_pipe_store_done_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0]
+                                        lsu_pipe_store_done_tag_o,
 
     input  wire                         lsu_xlate_req_valid_i,
     output wire                         lsu_xlate_req_ready_o,
@@ -438,6 +442,9 @@ module openrv64_core_bus #(
             assign lsu_pipe_resp_access_fault_o =
                 pipe_resp_access_fault_q;
             assign lsu_pipe_resp_page_fault_o = pipe_resp_page_fault_q;
+            assign lsu_pipe_store_done_valid_o = 1'b0;
+            assign lsu_pipe_store_done_tag_o =
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign lsu_pipe_req_translation_hit_o = 1'b0;
             assign lsu_pipe_req_translation_paddr_o =
                 {`RV64_XLEN{1'b0}};
@@ -768,6 +775,9 @@ module openrv64_core_bus #(
             assign lsu_pipe_resp_access_fault_o =
                 magic_xlate_resp_valid_q ? 1'b0 : ccx_resp_error_i;
             assign lsu_pipe_resp_page_fault_o = 1'b0;
+            assign lsu_pipe_store_done_valid_o = 1'b0;
+            assign lsu_pipe_store_done_tag_o =
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign lsu_pipe_req_translation_hit_o = 1'b0;
             assign lsu_pipe_req_translation_paddr_o =
                 {`RV64_XLEN{1'b0}};
@@ -1077,6 +1087,12 @@ module openrv64_core_bus #(
                 .lsu_pipe_resp_access_fault_o(
                     lsu_pipe_resp_access_fault_o),
                 .lsu_pipe_resp_page_fault_o(lsu_pipe_resp_page_fault_o),
+                .lsu_pipe_store_done_valid_o(
+                    lsu_pipe_store_done_valid_o),
+                .lsu_pipe_store_done_ready_i(
+                    lsu_pipe_store_done_ready_i),
+                .lsu_pipe_store_done_tag_o(
+                    lsu_pipe_store_done_tag_o),
                 .lsu_xlate_req_valid_i(lsu_xlate_req_valid_i),
                 .lsu_xlate_req_ready_o(lsu_xlate_req_ready_o),
                 .lsu_xlate_req_tag_i(lsu_xlate_req_tag_i),

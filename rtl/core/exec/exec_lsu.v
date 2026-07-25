@@ -85,6 +85,9 @@ module openrv64_exec_lsu #(
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
     input  wire                         mem_error_i,
     input  wire                         mem_page_fault_i,
+    input  wire                         mem_store_done_valid_i,
+    output wire                         mem_store_done_ready_o,
+    input  wire [LSU_TAG_WIDTH-1:0]     mem_store_done_tag_i,
 
     output wire                         store_pending_o
 );
@@ -327,6 +330,9 @@ module openrv64_exec_lsu #(
         .resp_rdata_i(mem_rdata_i),
         .resp_access_fault_i(mem_error_i),
         .resp_page_fault_i(mem_page_fault_i),
+        .store_done_valid_i(mem_store_done_valid_i),
+        .store_done_ready_o(mem_store_done_ready_o),
+        .store_done_tag_i(mem_store_done_tag_i),
         .result_valid_o(lsq_result_valid),
         .result_ready_i(lsq_result_ready),
         .result_id_o(lsq_result_id),

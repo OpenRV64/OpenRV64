@@ -55,6 +55,9 @@ module tb_lsq;
     wire resp_ready;
     logic [TAGW-1:0] resp_tag;
     logic [63:0] resp_paddr, resp_rdata;
+    logic store_done_valid;
+    logic [TAGW-1:0] store_done_tag;
+    wire store_done_ready;
     wire result_valid, result_access_fault, result_page_fault;
     wire result_store, store_pending;
     logic result_ready;
@@ -119,6 +122,9 @@ module tb_lsq;
         .resp_rdata_i(resp_rdata),
         .resp_access_fault_i(resp_access_fault),
         .resp_page_fault_i(resp_page_fault),
+        .store_done_valid_i(store_done_valid),
+        .store_done_ready_o(store_done_ready),
+        .store_done_tag_i(store_done_tag),
         .result_valid_o(result_valid), .result_ready_i(result_ready),
         .result_id_o(result_id), .result_slot_o(result_slot),
         .result_meta_o(result_meta), .result_rdata_o(result_rdata),
@@ -133,6 +139,18 @@ module tb_lsq;
         begin
             @(posedge clk);
             #1;
+        end
+    endtask
+
+    task automatic complete_store(input [TAGW-1:0] tag);
+        begin
+            store_done_tag = tag;
+            store_done_valid = 1'b1;
+            #1;
+            if (!store_done_ready)
+                $fatal(1, "store completion blocked tag=%0d", tag);
+            tick();
+            store_done_valid = 1'b0;
         end
     endtask
 
@@ -334,6 +352,7 @@ module tb_lsq;
         xlate_resp_tag = 0; xlate_resp_paddr = 0;
         xlate_resp_access_fault = 0; xlate_resp_page_fault = 0;
         req_ready = 0; resp_valid = 0; resp_tag = 0;
+        store_done_valid = 0; store_done_tag = 0;
         resp_paddr = 0; resp_rdata = 0; resp_access_fault = 0;
         resp_page_fault = 0; result_ready = 0;
 
@@ -411,7 +430,7 @@ module tb_lsq;
         if (s_ready)
             $fatal(1, "posted store tag was reused before response");
         s_valid = 1'b0;
-        respond(st, 64'h2000, 0, 0, 0);
+        complete_store(st);
         #1;
         if (result_valid)
             $fatal(1, "posted store response produced a second result");

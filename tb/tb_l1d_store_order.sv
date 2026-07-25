@@ -23,6 +23,8 @@ module tb_l1d_store_order;
     wire resp_valid;
     reg resp_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] resp_tag;
+    wire posted_resp_valid;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] posted_resp_tag;
 
     wire store_resp_valid;
     reg store_resp_ready;
@@ -76,7 +78,7 @@ module tb_l1d_store_order;
         .req_ready_o(req_ready),
         .req_tag_i(req_tag),
         .req_lock_i(1'b0),
-        .req_posted_i(1'b1),
+        .req_posted_i(req_write),
         .req_write_i(req_write),
         .req_cacheable_i(1'b1),
         .req_addr_i(req_addr),
@@ -88,6 +90,9 @@ module tb_l1d_store_order;
         .resp_valid_o(resp_valid),
         .resp_ready_i(resp_ready),
         .resp_tag_o(resp_tag),
+        .posted_resp_valid_o(posted_resp_valid),
+        .posted_resp_ready_i(1'b1),
+        .posted_resp_tag_o(posted_resp_tag),
         .store_resp_valid_o(store_resp_valid),
         .store_resp_ready_i(store_resp_ready),
         .store_resp_error_o(store_resp_error),
@@ -228,11 +233,11 @@ module tb_l1d_store_order;
             req_wdata = 0;
             req_wstrb = 0;
             wait_cycles = 0;
-            while (!resp_valid && (wait_cycles < 100)) begin
+            while (!posted_resp_valid && (wait_cycles < 100)) begin
                 @(negedge clk);
                 wait_cycles = wait_cycles + 1;
             end
-            if (!resp_valid || req_error || (resp_tag != 0))
+            if (!posted_resp_valid || (posted_resp_tag != 0))
                 $fatal(1, "posted store did not complete northbound");
         end
     endtask
