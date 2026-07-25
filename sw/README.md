@@ -52,7 +52,7 @@ Three statically linked page-table pages map virtual
 `0x4000_1000`. A/D bits are preset because the current PTW uses Svade
 semantics.
 
-Run the translated workload through the BP6, fetch-lookaside-mode-3,
+Run the translated workload through the BP8, fetch-lookaside-mode-3,
 16-entry-retirement, issue/speculation-window, posted-store,
 L1D-prefetch, L2/AXI/banked-DDR3 configuration with:
 
@@ -63,11 +63,39 @@ make sim-core-3p-ccx-l2-vm
 The test requires observation of Sv39 in `satp`, supervisor mode, translated
 instruction and data traffic in the physical alias, and at least three PTW
 reads. It also checks the same final `a0` signature as the Bare run. This is a
-functional VM test, not yet a fully matched VM performance result. Cacheable
-translated load and irrevocable store TLB hits use the tagged L1D fast path and
-may pass an active walk. Translation misses, atomics, permission faults, and
-non-cacheable accesses still use the serialized precise fallback in
-`ccx_bus.v`.
+functional VM test, not a fully matched VM performance result.
+
+The instruction and data sides each have a 16-entry fully associative
+micro-TLB in front of the shared 256-entry, four-way main TLB. The main array
+stores 4 KiB leaves; a small fully associative sidecar retains superpage
+translations. The LSQ translates ordinary loads and stores at admission and
+submits physical addresses to L1D later. Micro-TLB and main-TLB hits can return
+in the admission cycle, and a younger translation can overlap an older
+physical L1D access. Translation misses remain limited by the single shared
+PTW. Atomics and non-fast-path accesses retain the serialized precise path.
+
+## Non-contiguous Sv39 zero benchmark
+
+`zero/zero_sv39.S` zeros a contiguous 256 KiB supervisor virtual window. Its
+64 virtual pages map onto every other physical page, leaving a 4 KiB physical
+gap between adjacent mapped pages:
+
+```text
+VA 0x4004_0000 + i * 0x1000
+  -> PA 0x8020_0000 + i * 0x2000, 0 <= i < 64
+```
+
+The load image seeds each mapped page with nonzero data. The timed target
+stops after the stores and reports the `cycle` delta in `a0`; the full target
+then reads every word back and checks the pass signature. The integrated
+testbench also requires exactly 32,768 translated store admissions and
+physical L1D submissions and checks every submitted PA against the expected
+non-contiguous mapping.
+
+```sh
+make bench-zero-sv39
+make sim-zero-sv39
+```
 
 ## Atomic SoC tests
 
@@ -150,7 +178,7 @@ make bench-stream AXI_3P_FREELOADER=1 \
     AXI_3P_COMPLETION_FORWARD_MASK=4
 ```
 
-## Prefetch characterization suite
+## Performance and prefetch characterization suites
 
 The remaining prefetch workloads use the same native three-pipe L1/CCX
 harness. Build every configuration-specific ELF, binary, map, and disassembly
@@ -158,9 +186,19 @@ with:
 
 ```sh
 make sw-prefetch-benchmarks
+make bench-performance-suite
 make bench-prefetch-suite
 make sim-prefetch-checks
 ```
+
+`bench-performance-suite` is the default performance regression entry point.
+It runs the prefetch characterization suite, then CoreMark and all four STREAM
+kernels under Sv39 through the L1/CCX/L2/AXI/DDR3 hierarchy. STREAM runs once
+to the timing boundary and once through full result verification. The Sv39
+stages use the current BP8, fetch-lookaside-mode-3, confidence-gated profile;
+set `PERFORMANCE_CONFIDENCE_GATE=0` only for an explicit ungated comparison.
+`bench-prefetch-suite` remains available as the untranslated prefetch-only
+subset.
 
 Each source exposes `*_measure_begin` and `*_measure_end` symbols. The
 `bench-*` targets stop when the end marker retires and report the workload's
@@ -219,13 +257,14 @@ supervisor mapping and require translated instruction fetches, data accesses,
 PTW traffic, and fast-hit translated loads and stores:
 
 ```sh
+make bench-stream-ddr3-vm-suite STREAM_BYTES=65536
 make bench-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
 make sim-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
 ```
 
 The DDR3 targets route private L1 traffic through the one-hart CCX complex,
 shared L2, 512-to-256-bit AXI adapter, multi-outstanding memory channel, and
-banked DDR3 scheduler. Their default core configuration is BP6, fetch
+banked DDR3 scheduler. Their default core configuration is BP8, fetch
 lookaside mode 3, a 16-entry retirement queue, and enabled issue and
 speculation windows. The run prints maximum L2 MSHR, timing-owner, and banked
 command-queue occupancy. `PERF_MEMORY_CHANNEL*` reports accepted bursts and

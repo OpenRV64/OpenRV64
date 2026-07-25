@@ -1760,6 +1760,15 @@ module openrv64_l1d_ccx #(
         fill_buffer_prefetch_found_r;
     wire prefetch_response_uses_free =
         fill_buffer_free_count_r > PREFETCH_DEMAND_RESERVE;
+    // A queued prefetch and a newly admitted demand can name the same line
+    // in the same cycle.  The demand-side queue cleanup occurs at the clock
+    // edge, so without this combinational guard the backend can launch the
+    // candidate while simultaneously deleting it.  This is a correctness
+    // hazard for stores: the returned pre-store line can survive in the fill
+    // buffer after the posted store has drained.
+    wire prefetch_launch_demand_conflict =
+        demand_request_fire &&
+        (prefetch_launch_addr_r == demand_line_addr);
     wire [FILL_BUFFER_INDEX_WIDTH-1:0]
         next_fill_buffer_prefetch_replace =
             (fill_buffer_prefetch_index_r ==
@@ -1772,6 +1781,7 @@ module openrv64_l1d_ccx #(
         !(req_valid_i && req_lock_i) &&
         !atomic_active_q &&
         !demand_load_store_conflict_r &&
+        !prefetch_launch_demand_conflict &&
         !(l1_mem_valid && !refill_buffer_hit && !postable_store) &&
         !atomic_hot_match(prefetch_launch_addr_r) &&
         prefetch_launch_found_r && prefetch_slot_available &&

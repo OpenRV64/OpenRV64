@@ -42,6 +42,9 @@ sim-stage: $(STAGE_SIM_BUILD)
 sim-prf: $(PRF_SIM_BUILD)
 	vvp $(PRF_SIM_BUILD)
 
+sim-rename-identity: $(RENAME_IDENTITY_SIM_BUILD)
+	vvp $(RENAME_IDENTITY_SIM_BUILD)
+
 sim-rv64-i-gpr: $(RV64I_GPR_SIM_BUILD)
 	vvp $(RV64I_GPR_SIM_BUILD)
 
@@ -99,6 +102,9 @@ sim-exec-alu-rv64-m: $(EXEC_ALU_RV64M_SIM_BUILD)
 
 sim-exec-top-3p: $(EXEC_TOP_3P_SIM_BUILD)
 	vvp $(EXEC_TOP_3P_SIM_BUILD)
+
+sim-lsq: $(LSQ_SIM_BUILD)
+	vvp $(LSQ_SIM_BUILD)
 
 sim-exec-pipe-mem-timeout: $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD)
 	@mkdir -p sim

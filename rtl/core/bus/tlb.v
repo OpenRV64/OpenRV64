@@ -21,6 +21,14 @@ module openrv64_bus_tlb #(
     output reg                          lookup_hit_o,
     output reg  [`RV64_XLEN-1:0]        lookup_paddr_o,
     output reg                          lookup_page_fault_o,
+    output reg                          lookup_global_o,
+    output reg  [`RV64_PAGE_LEVEL_WIDTH-1:0] lookup_level_o,
+    output reg                          lookup_readable_o,
+    output reg                          lookup_writable_o,
+    output reg                          lookup_executable_o,
+    output reg                          lookup_user_o,
+    output reg                          lookup_accessed_o,
+    output reg                          lookup_dirty_o,
 
     input  wire                         fill_valid_i,
     input  wire [`RV64_XLEN-1:0]        fill_vaddr_i,
@@ -139,6 +147,14 @@ module openrv64_bus_tlb #(
         lookup_hit_o = 1'b0;
         lookup_paddr_o = {`RV64_XLEN{1'b0}};
         lookup_page_fault_o = 1'b0;
+        lookup_global_o = 1'b0;
+        lookup_level_o = `RV64_PAGE_LEVEL_4K;
+        lookup_readable_o = 1'b0;
+        lookup_writable_o = 1'b0;
+        lookup_executable_o = 1'b0;
+        lookup_user_o = 1'b0;
+        lookup_accessed_o = 1'b0;
+        lookup_dirty_o = 1'b0;
 
         for (lookup_index = 0;
              lookup_index < ENTRIES;
@@ -167,6 +183,14 @@ module openrv64_bus_tlb #(
                     lookup_sum_i,
                     lookup_mxr_i
                 );
+                lookup_global_o = global_q[lookup_index];
+                lookup_level_o = level_q[lookup_index];
+                lookup_readable_o = readable_q[lookup_index];
+                lookup_writable_o = writable_q[lookup_index];
+                lookup_executable_o = executable_q[lookup_index];
+                lookup_user_o = user_q[lookup_index];
+                lookup_accessed_o = accessed_q[lookup_index];
+                lookup_dirty_o = dirty_q[lookup_index];
             end
         end
     end

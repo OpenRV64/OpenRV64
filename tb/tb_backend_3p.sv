@@ -9,7 +9,10 @@
 module tb_backend_3p #(
     parameter integer RELAX_HAZARDS = 0,
     parameter integer RETIRE_DEPTH = 16,
-    parameter integer STORE_QUEUE_DEPTH = 4
+    parameter integer STORE_QUEUE_DEPTH = 4,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer PHYS_REG_ADDR_WIDTH =
+        (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1)
 );
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer SW = $clog2(RETIRE_DEPTH);
@@ -51,6 +54,8 @@ module tb_backend_3p #(
     wire mem_valid;
     reg mem_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_tag;
+    wire mem_xlate_only;
+    wire mem_physical;
     reg mem_resp_valid;
     wire mem_resp_ready;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag;
@@ -65,6 +70,17 @@ module tb_backend_3p #(
     wire [63:0] mem_effective_addr;
     wire [2:0] mem_size;
     reg [63:0] mem_rdata;
+    wire mem_xlate_valid;
+    wire mem_xlate_ready = 1'b1;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag;
+    wire mem_xlate_write;
+    wire [63:0] mem_xlate_vaddr;
+    reg xlate_resp_valid_q;
+    reg auto_xlate_enable;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_resp_tag_q;
+    reg [63:0] xlate_resp_paddr_q;
+    reg xlate_resp_access_fault_q;
+    wire xlate_resp_ready;
     reg irq_pending;
     reg [4:0] irq_cause;
     wire redirect_valid;
@@ -100,16 +116,21 @@ module tb_backend_3p #(
 
     openrv64_backend_3p #(
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
         .BRANCH_COMPLETION_FORWARD_MASK(3'b111),
         .ENABLE_FULL_FORWARDING(1),
         .RELAX_HAZARDS(RELAX_HAZARDS),
         .ENABLE_POSTED_STORES(1),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .STORE_FORWARD_BASE(64'h0),
-        .STORE_FORWARD_SIZE(64'h1000)
+        .STORE_FORWARD_SIZE(64'h1000),
+        .CACHEABLE_BASE(64'h0),
+        .CACHEABLE_SIZE(64'h1000)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
         .squash_frontend_i(squash),
+        .translation_bypass_i(1'b0),
         .decode_valid_i(decode_valid), .decode_ready_o(decode_ready),
         .decode_payload_i(decode_payload),
         .decode_uses_rs1_i(decode_uses_rs1),
@@ -119,8 +140,23 @@ module tb_backend_3p #(
         .csr_write_o(csr_write), .csr_write_addr_o(csr_write_addr),
         .csr_wdata_o(csr_wdata),
         .mem_valid_o(mem_valid), .mem_ready_i(mem_ready),
-        .mem_tag_o(mem_tag), .mem_resp_valid_i(mem_resp_valid),
-        .mem_resp_ready_o(mem_resp_ready), .mem_resp_tag_i(mem_resp_tag),
+        .mem_tag_o(mem_tag), .mem_xlate_only_o(mem_xlate_only),
+        .mem_physical_o(mem_physical),
+        .mem_resp_valid_i(mem_resp_valid),
+        .mem_resp_ready_o(mem_resp_ready),
+        .mem_resp_tag_i(mem_resp_tag),
+        .mem_resp_paddr_i(64'd0),
+        .mem_xlate_valid_o(mem_xlate_valid),
+        .mem_xlate_ready_i(mem_xlate_ready),
+        .mem_xlate_tag_o(mem_xlate_tag),
+        .mem_xlate_write_o(mem_xlate_write),
+        .mem_xlate_vaddr_o(mem_xlate_vaddr),
+        .mem_xlate_resp_valid_i(xlate_resp_valid_q),
+        .mem_xlate_resp_ready_o(xlate_resp_ready),
+        .mem_xlate_resp_tag_i(xlate_resp_tag_q),
+        .mem_xlate_resp_paddr_i(xlate_resp_paddr_q),
+        .mem_xlate_resp_access_fault_i(xlate_resp_access_fault_q),
+        .mem_xlate_resp_page_fault_i(1'b0),
         .mem_error_i(mem_error), .mem_page_fault_i(mem_page_fault),
         .mem_access_allowed_i(mem_access_allowed),
         .mem_write_o(mem_write), .mem_addr_o(mem_addr),
@@ -225,6 +261,29 @@ module tb_backend_3p #(
         begin @(posedge clk); #1; end
     endtask
 
+    // This backend-only bench models Bare translation as a tagged one-cycle
+    // operation.  Data/access responses remain explicitly controlled below.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            xlate_resp_valid_q <= 1'b0;
+            xlate_resp_tag_q <= 0;
+            xlate_resp_paddr_q <= 0;
+            xlate_resp_access_fault_q <= 1'b0;
+        end else begin
+            if (xlate_resp_valid_q && xlate_resp_ready)
+                xlate_resp_valid_q <= 1'b0;
+            if (auto_xlate_enable &&
+                mem_xlate_valid && mem_xlate_ready) begin
+                if (xlate_resp_valid_q && !xlate_resp_ready)
+                    $fatal(1, "translation response model overflow");
+                xlate_resp_valid_q <= 1'b1;
+                xlate_resp_tag_q <= mem_xlate_tag;
+                xlate_resp_paddr_q <= mem_xlate_vaddr;
+                xlate_resp_access_fault_q <= 1'b0;
+            end
+        end
+    end
+
     task automatic fail;
         input [8*100-1:0] msg;
         begin $display("FAIL: %0s", msg); $fatal(1); end
@@ -321,6 +380,7 @@ module tb_backend_3p #(
         mem_page_fault = 0;
         mem_access_allowed = 1;
         mem_rdata = 0;
+        auto_xlate_enable = 1'b1;
         irq_pending = 0;
         irq_cause = 0;
         saw_two_retire = 0;
@@ -390,9 +450,11 @@ module tb_backend_3p #(
         decode_uses_rs1 = 0;
         mem_ready = 1'b1;
         for (cycles = 0; cycles < 20 &&
-             !(mem_valid && !mem_write && mem_addr == 64'h180);
+             !(mem_valid && mem_physical && !mem_write &&
+               mem_addr == 64'h180);
              cycles = cycles + 1) tick();
-        if (!mem_valid || mem_write || mem_addr != 64'h180)
+        if (!mem_valid || !mem_physical || mem_write ||
+            mem_addr != 64'h180)
             fail("aggressive-hazard head load was not launched");
         aggressive_load_tag = mem_tag;
         tick();
@@ -455,7 +517,7 @@ module tb_backend_3p #(
         for (cycles = 0; cycles < 30 && !saw_ordered_waw_store;
              cycles = cycles + 1) begin
             #1;
-            if (mem_valid && mem_ready && mem_write) begin
+            if (mem_valid && mem_ready && mem_physical && mem_write) begin
                 if (mem_addr != 64'd4 ||
                     mem_wdata != 64'h0000_0002_0000_0000 ||
                     mem_wstrb != 8'hf0)
@@ -520,9 +582,9 @@ module tb_backend_3p #(
         send2(load_packet(8, 0, 20, 64'h100),
               addi_packet(9, 0, 11, 64), 2'b01, 2'b00);
         for (cycles = 0; cycles < 20 &&
-             !(mem_valid && mem_addr == 64'h100);
+             !(mem_valid && mem_physical && mem_addr == 64'h100);
              cycles = cycles + 1) tick();
-        if (!mem_valid || mem_addr != 64'h100)
+        if (!mem_valid || !mem_physical || mem_addr != 64'h100)
             fail("older load request was not launched");
         old_load_tag = mem_tag;
         tick();
@@ -538,14 +600,14 @@ module tb_backend_3p #(
         decode_uses_rs1 = 0;
 
         for (cycles = 0; cycles < 20 &&
-             !(mem_valid && mem_addr == 64'd72);
+             !(mem_valid && mem_physical && mem_addr == 64'd72);
              cycles = cycles + 1) begin
             #1;
             if (issue_valid[2] && dut.full_forward_valid[11])
                 saw_general_forward_issue = 1'b1;
             tick();
         end
-        if (!mem_valid || mem_addr != 64'd72)
+        if (!mem_valid || !mem_physical || mem_addr != 64'd72)
             fail("general forwarding did not issue EX-to-MEM dependent load");
         if (!saw_general_forward_issue)
             fail("dependent MEM issue did not coincide with completion map");
@@ -590,16 +652,19 @@ module tb_backend_3p #(
         p1[I_LSU_OP +: 5] = `RV64_LSU_OP_SD;
         p1[I_MEM_WRITE] = 1;
         send2(p0, p1, 2'b00, 2'b10);
+        mem_ready = 1'b1;
         #1;
-        if (issue_valid[2] && mem_valid)
-            fail("store produced a bus request at allocation");
-        for (cycles = 0; cycles < 20 && !mem_valid; cycles = cycles + 1) begin
+        if (issue_valid[2] && mem_valid && mem_physical)
+            fail("store produced a physical request at allocation");
+        for (cycles = 0; cycles < 20 &&
+             !(mem_valid && mem_physical); cycles = cycles + 1) begin
             if ((retire_occupancy >= 2) && !retire_arch[0])
                 saw_store_wait = 1;
             tick();
         end
         if (!saw_store_wait) fail("test did not observe store behind older work");
-        if (!mem_valid || !mem_write || mem_addr != 64'h80)
+        if (!mem_valid || !mem_physical || !mem_write ||
+            mem_addr != 64'h80)
             fail("ordered-head store request was not produced correctly");
         posted_store_tag = mem_tag;
         mem_ready = 1;
@@ -611,9 +676,10 @@ module tb_backend_3p #(
             tick();
         end
 
-        // Until the store response proves translation, PMP, and L1D admission,
-        // it remains the oldest memory-ordering point. A younger load must not
-        // escape merely because the untranslated request was captured.
+        // The store's physical address is known even though its admission
+        // response is delayed.  A younger cacheable load to another line may
+        // execute, but its completion remains behind the older store in the
+        // retirement queue.
         while (!decode_ready[0]) tick();
         decode_payload = {{2*IW{1'b0}}, load_packet(11, 0, 13, 64'h100)};
         decode_uses_rs1 = 3'b000;
@@ -623,15 +689,32 @@ module tb_backend_3p #(
         decode_valid = 3'b000;
         decode_payload = 0;
         mem_ready = 1'b1;
-        for (cycles = 0; cycles < 8; cycles = cycles + 1) begin
-            if (mem_valid)
-                fail("younger load passed an unresolved store");
-            tick();
-        end
+        for (cycles = 0; cycles < 20 &&
+             !(mem_valid && mem_physical && !mem_write &&
+               mem_addr == 64'h100);
+             cycles = cycles + 1) tick();
+        if (!mem_valid || !mem_physical || mem_write ||
+            mem_addr != 64'h100)
+            fail("non-overlapping load did not pass translated store");
+        younger_load_tag = mem_tag;
+        tick();
         mem_ready = 1'b0;
 
-        // The successful response is the store's architectural completion
-        // point. The physical write may remain posted in L1D below this point.
+        // Return the younger load first.  It may complete out of order but
+        // cannot retire before the older store.
+        mem_resp_valid = 1'b1;
+        mem_resp_tag = younger_load_tag;
+        mem_rdata = 64'h1234;
+        tick();
+        mem_resp_valid = 1'b0;
+        repeat (2) begin
+            if (retire_arch[0] && retire_rd == 13)
+                fail("younger load retired before older store");
+            tick();
+        end
+
+        // The successful store response is its architectural completion point.
+        // The physical write may remain posted in L1D below this point.
         mem_resp_valid = 1'b1;
         mem_resp_tag = posted_store_tag;
         tick();
@@ -642,24 +725,13 @@ module tb_backend_3p #(
             #1;
             if (retire_arch != 0)
                 saw_posted_store_retire = 1'b1;
+            if (retire_arch[0] && retire_rd == 13 &&
+                retire_wdata == 64'h1234)
+                saw_nonoverlap_load_retire = 1'b1;
             tick();
         end
         if (!saw_posted_store_retire)
             fail("store did not retire after successful admission response");
-        mem_ready = 1'b1;
-        for (cycles = 0; cycles < 20 &&
-             !(mem_valid && !mem_write && mem_addr == 64'h100);
-             cycles = cycles + 1) tick();
-        if (!mem_valid || mem_write || mem_addr != 64'h100)
-            fail("younger load did not issue after store admission");
-        younger_load_tag = mem_tag;
-        tick();
-        mem_ready = 1'b0;
-        mem_resp_valid = 1'b1;
-        mem_resp_tag = younger_load_tag;
-        mem_rdata = 64'h1234;
-        tick();
-        mem_resp_valid = 1'b0;
         for (cycles = 0; cycles < 20; cycles = cycles + 1) begin
             #1;
             if (retire_arch[0] && retire_rd == 13 &&
@@ -690,7 +762,8 @@ module tb_backend_3p #(
         decode_payload = 0;
         decode_uses_rs2 = 0;
         mem_ready = 1'b1;
-        while (!(mem_valid && mem_write && mem_addr == 64'h180)) tick();
+        while (!(mem_valid && mem_physical && mem_write &&
+                 mem_addr == 64'h180)) tick();
         posted_store_tag = mem_tag;
         tick();
         mem_ready = 1'b0;
@@ -732,7 +805,8 @@ module tb_backend_3p #(
         decode_payload = 0;
         decode_uses_rs2 = 0;
         mem_ready = 1'b1;
-        while (!(mem_valid && mem_write && mem_addr == 64'h180)) tick();
+        while (!(mem_valid && mem_physical && mem_write &&
+                 mem_addr == 64'h180)) tick();
         posted_store_tag = mem_tag;
         tick();
         mem_ready = 1'b0;
@@ -745,14 +819,15 @@ module tb_backend_3p #(
         if (retire_occupancy != 0 || exception)
             fail("retried store did not complete normally");
 
-        // PMP denial is known before request launch. It must produce a precise
-        // store-access fault without emitting any memory transaction.
+        // A translation/PMP probe denial must produce a precise store-access
+        // fault without issuing the subsequent physical memory transaction.
         p0 = base_packet(13, 64'h2f40, 32'h0080_3023);
         p0[I_RS2 +: 5] = 5'd1;
         p0[I_IMM +: 64] = 64'h1c0;
         p0[I_LSU_OP +: 5] = `RV64_LSU_OP_SD;
         p0[I_MEM_WRITE] = 1'b1;
-        mem_access_allowed = 1'b0;
+        auto_xlate_enable = 1'b0;
+        mem_ready = 1'b1;
         while (!decode_ready[0]) tick();
         decode_payload = {{2*IW{1'b0}}, p0};
         decode_uses_rs2 = 3'b001;
@@ -761,10 +836,21 @@ module tb_backend_3p #(
         decode_valid = 3'b000;
         decode_payload = 0;
         decode_uses_rs2 = 0;
+        while (!(mem_xlate_valid && mem_xlate_write &&
+                 mem_xlate_vaddr == 64'h1c0)) tick();
+        posted_store_tag = mem_xlate_tag;
+        tick();
+        xlate_resp_tag_q = posted_store_tag;
+        xlate_resp_paddr_q = 64'h1c0;
+        xlate_resp_access_fault_q = 1'b1;
+        xlate_resp_valid_q = 1'b1;
+        tick();
+        xlate_resp_valid_q = 1'b0;
+        xlate_resp_access_fault_q = 1'b0;
         for (cycles = 0; cycles < 20 && !exception;
              cycles = cycles + 1) begin
-            if (mem_valid)
-                fail("PMP-denied store emitted a memory request");
+            if (mem_valid && mem_physical)
+                fail("PMP-denied store emitted a physical memory request");
             tick();
         end
         if (!exception ||
@@ -774,7 +860,7 @@ module tb_backend_3p #(
             fail("PMP-denied store lost its original PC or address");
         if (retire_arch != 0)
             fail("PMP-denied store performed architectural retirement");
-        mem_access_allowed = 1'b1;
+        auto_xlate_enable = 1'b1;
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -796,7 +882,8 @@ module tb_backend_3p #(
         decode_payload = 0;
         decode_uses_rs2 = 0;
         mem_ready = 1'b1;
-        while (!(mem_valid && mem_write && (mem_addr == 64'h88))) tick();
+        while (!(mem_valid && mem_physical && mem_write &&
+                 (mem_addr == 64'h88))) tick();
         posted_store_tag = mem_tag;
         tick();
         mem_ready = 1'b0;

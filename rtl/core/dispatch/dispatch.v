@@ -22,6 +22,12 @@ module openrv64_dispatch #(
     parameter integer ISSUE_WINDOW_DEPTH_3P = 16,
     parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE_3P = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE_3P = {`RV64_XLEN{1'b0}},
+    parameter integer PHYS_REG_COUNT_3P = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer PHYS_REG_ADDR_WIDTH_3P =
+        (PHYS_REG_COUNT_3P < 1) ? 1 :
+        $clog2(PHYS_REG_COUNT_3P + 1),
+    parameter integer RETIRE_META_WIDTH_3P =
+        `OPENRV64_DISPATCH_META_WIDTH + 2*PHYS_REG_ADDR_WIDTH_3P,
     parameter integer COUNT_WIDTH_3P = $clog2(QUEUE_DEPTH_3P + 1)
 ) (
     input  wire                         clk,
@@ -120,13 +126,14 @@ module openrv64_dispatch #(
                                         decode_payload_3p_i,
     input  wire [2:0]                   decode_uses_rs1_3p_i,
     input  wire [2:0]                   decode_uses_rs2_3p_i,
-    output wire [6*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr_3p_o,
+    output wire [6*PHYS_REG_ADDR_WIDTH_3P-1:0]
+                                        gpr_read_addr_3p_o,
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_3p_i,
     input  wire                         allocation_ready_3p_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] allocation_slot_3p_i,
     output wire [2:0]                   allocation_valid_3p_o,
-    output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_3p_o,
+    output wire [3*RETIRE_META_WIDTH_3P-1:0] allocation_meta_3p_o,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_3p_i,
     input  wire [1:0]                   forward_valid_3p_i,
     input  wire [2*`RV64_REG_ADDR_WIDTH-1:0] forward_rd_addr_3p_i,
@@ -186,10 +193,11 @@ module openrv64_dispatch #(
                 .ENABLE_FORWARDING(ENABLE_FORWARDING)
             ) u_dispatch (.*);
             assign decode_ready_3p_o = 3'b000;
-            assign gpr_read_addr_3p_o = {6*`RV64_REG_ADDR_WIDTH{1'b0}};
+            assign gpr_read_addr_3p_o =
+                {6*PHYS_REG_ADDR_WIDTH_3P{1'b0}};
             assign allocation_valid_3p_o = 3'b000;
             assign allocation_meta_3p_o =
-                {3*`OPENRV64_RETIRE_META_WIDTH{1'b0}};
+                {3*RETIRE_META_WIDTH_3P{1'b0}};
             assign pipe_valid_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_id_3p_o =
@@ -220,7 +228,7 @@ module openrv64_dispatch #(
             wire [2:0] strict_decode_ready;
             wire [6*`RV64_REG_ADDR_WIDTH-1:0] strict_gpr_read_addr;
             wire [2:0] strict_allocation_valid;
-            wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0]
+            wire [3*`OPENRV64_DISPATCH_META_WIDTH-1:0]
                 strict_allocation_meta;
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] strict_pipe_valid;
             wire [`OPENRV64_EXEC_PIPE_COUNT*
@@ -316,7 +324,7 @@ module openrv64_dispatch #(
             wire [2:0] window_decode_ready;
             wire [6*`RV64_REG_ADDR_WIDTH-1:0] window_gpr_read_addr;
             wire [2:0] window_allocation_valid;
-            wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0]
+            wire [3*`OPENRV64_DISPATCH_META_WIDTH-1:0]
                 window_allocation_meta;
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] window_pipe_valid;
             wire [`OPENRV64_EXEC_PIPE_COUNT*
@@ -399,12 +407,93 @@ module openrv64_dispatch #(
 
             assign decode_ready_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_decode_ready : strict_decode_ready;
-            assign gpr_read_addr_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
+            wire [6*`RV64_REG_ADDR_WIDTH-1:0] selected_gpr_read_addr =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_gpr_read_addr : strict_gpr_read_addr;
-            assign allocation_valid_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
+            wire [2:0] selected_allocation_valid =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_allocation_valid : strict_allocation_valid;
-            assign allocation_meta_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
+            wire [3*`OPENRV64_DISPATCH_META_WIDTH-1:0]
+                selected_allocation_meta =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_allocation_meta : strict_allocation_meta;
+
+            wire [3*`RV64_REG_ADDR_WIDTH-1:0]
+                rename_destination_arch;
+            assign rename_destination_arch[
+                0*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH] =
+                selected_allocation_meta[35 +: `RV64_REG_ADDR_WIDTH];
+            assign rename_destination_arch[
+                1*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH] =
+                selected_allocation_meta[
+                    `OPENRV64_DISPATCH_META_WIDTH + 35 +:
+                    `RV64_REG_ADDR_WIDTH];
+            assign rename_destination_arch[
+                2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH] =
+                selected_allocation_meta[
+                    2*`OPENRV64_DISPATCH_META_WIDTH + 35 +:
+                    `RV64_REG_ADDR_WIDTH];
+
+            wire [2:0] rename_destination_valid;
+            assign rename_destination_valid[0] =
+                selected_allocation_valid[0] &&
+                selected_allocation_meta[17] &&
+                (rename_destination_arch[
+                    0*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0);
+            assign rename_destination_valid[1] =
+                selected_allocation_valid[1] &&
+                selected_allocation_meta[
+                    `OPENRV64_DISPATCH_META_WIDTH + 17] &&
+                (rename_destination_arch[
+                    1*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0);
+            assign rename_destination_valid[2] =
+                selected_allocation_valid[2] &&
+                selected_allocation_meta[
+                    2*`OPENRV64_DISPATCH_META_WIDTH + 17] &&
+                (rename_destination_arch[
+                    2*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0);
+
+            wire [3*PHYS_REG_ADDR_WIDTH_3P-1:0]
+                rename_destination_new_phys;
+            wire [3*PHYS_REG_ADDR_WIDTH_3P-1:0]
+                rename_destination_old_phys;
+            openrv64_rename_identity #(
+                .ARCH_ADDR_WIDTH(`RV64_REG_ADDR_WIDTH),
+                .ARCH_REG_COUNT(32),
+                .PHYS_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
+                .PHYS_REG_COUNT(PHYS_REG_COUNT_3P),
+                .LANES(3),
+                .SOURCES_PER_LANE(2)
+            ) u_rename (
+                .source_arch_i(selected_gpr_read_addr),
+                .source_phys_o(gpr_read_addr_3p_o),
+                .destination_valid_i(rename_destination_valid),
+                .destination_arch_i(rename_destination_arch),
+                .destination_new_phys_o(rename_destination_new_phys),
+                .destination_old_phys_o(rename_destination_old_phys)
+            );
+
+            assign allocation_valid_3p_o = selected_allocation_valid;
+            genvar rename_lane;
+            for (rename_lane = 0; rename_lane < 3;
+                 rename_lane = rename_lane + 1) begin : g_rename_meta
+                assign allocation_meta_3p_o[
+                    rename_lane*RETIRE_META_WIDTH_3P +:
+                    RETIRE_META_WIDTH_3P] = {
+                    rename_destination_old_phys[
+                        rename_lane*PHYS_REG_ADDR_WIDTH_3P +:
+                        PHYS_REG_ADDR_WIDTH_3P],
+                    rename_destination_new_phys[
+                        rename_lane*PHYS_REG_ADDR_WIDTH_3P +:
+                        PHYS_REG_ADDR_WIDTH_3P],
+                    selected_allocation_meta[
+                        rename_lane*`OPENRV64_DISPATCH_META_WIDTH +:
+                        `OPENRV64_DISPATCH_META_WIDTH]
+                };
+            end
             assign pipe_valid_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_pipe_valid : strict_pipe_valid;
             assign pipe_id_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?

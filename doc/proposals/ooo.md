@@ -1,12 +1,13 @@
 # Moderate out-of-order core proposal
 
-Status: design proposal
+Status: design proposal; shared PRF and LSQ substrates partially implemented
 
 This document proposes a parameterized out-of-order (OOO) OpenRV64 core while
 preserving the existing one-pipe (1P) and three-pipe (3P) cores.  It defines
 the intended abstraction boundaries and an initial implementation profile; it
-does not describe RTL that is already integrated.  The current implementation
-remains documented in [architecture.md](../architecture.md).
+distinguishes proposed OOO structures from shared substrate already integrated
+into 1P/3P. The current implementation remains documented in
+[architecture.md](../architecture.md).
 
 ## Goals
 
@@ -28,7 +29,7 @@ remains documented in [architecture.md](../architecture.md).
 - Replacing the existing 1P or 3P core.
 - Turning `dispatch_3p` or the optional tagged issue window into a
   parameter-heavy OOO scheduler.
-- Making the 3P MEM pipe implement an OOO load/store queue.
+- Forcing the legacy `exec_pipe_mem` implementation to contain the shared LSQ.
 - Treating AXI as the internal core protocol.  AXI remains an external
   transport below the core/cache/complex boundary.
 - Claiming that queue depths or RTL IPC establish a physically viable core.
@@ -58,13 +59,16 @@ Each backend owns the structures that define its scheduling model:
 | Backend | Dependency model | Scheduling | Register mapping | Memory path |
 | --- | --- | --- | --- | --- |
 | 1P | Scalar scoreboard | In order | Identity | Existing scalar pipeline |
-| 3P | Architectural ownership and forwarding | Strict prefix, with separate experimental window | Identity | Existing `exec_pipe_mem` |
-| OOO | Physical tags and readiness | Oldest-ready issue queue | RAT/RRAT | Ordered MEM initially; LSQ later |
+| 3P | Architectural ownership and forwarding | Strict prefix, with separate experimental window | Identity | Shared `exec_lsu` containing `lsq` |
+| OOO | Physical tags and readiness | Oldest-ready issue queue | RAT/RRAT | Shared LSQ contract with OOO admission/recovery |
 
-Configuration-specific modules are intentional.  `dispatch_1p`,
-`dispatch_3p`, and `exec_pipe_mem` remain valid implementations.  The OOO core
-adds its own rename/dispatch, scheduler, and memory-ordering modules rather than
-adding OOO cases throughout those files.
+Configuration-specific modules are intentional. `dispatch_1p`,
+`dispatch_3p`, and the legacy `exec_pipe_mem` remain valid implementations.
+The shared memory split is explicit: `exec_lsu` contains address generation,
+translation/cache sequencing, atomics, faults, and completion, while `lsq`
+contains queue state, memory ordering, physical disambiguation, and forwarding.
+The OOO core supplies its own rename/dispatch, scheduler, and recovery rather
+than adding OOO cases throughout those files.
 
 Backend selection should occur at a core-composition boundary.  The existing
 `dispatch.v` and `exec_top.v` selector interfaces already contain distinct 1P
@@ -168,17 +172,17 @@ The proposed starting point is moderate and deliberately parameterized:
 | Maximum writeback width | 3 | 2-3 |
 | Maximum retirement width | 3 | fixed initially |
 | ROB entries | 24 | 16/24/32 |
-| Integer physical registers | 64 | 64/80/96 after physical study |
+| Writable integer physical registers | TBD | selected with RAT/RRAT design |
 | Integer/control IQ entries | 16 | 12/16/24 |
 | Load queue entries | 8 | 4/8/12 |
 | Store queue entries | 8 | 4/8/12 |
 | Branch checkpoints | 8 | 4/8/16 |
 | Initial external data transactions | 3 | follows memory endpoint |
 
-Twenty-four ROB entries leave physical-register headroom with a 64-entry PRF
-while remaining larger than the current experimental window.  A larger ROB is
-not presumed faster: the existing 16-entry experiment was generally limited by
-control and ordering rules rather than capacity; see
+The PRF/ROB balance remains deliberately unsettled until RAT, RRAT, free-list,
+and recovery state are implemented together. A larger ROB is not presumed
+faster: the existing 16-entry experiment was generally limited by control and
+ordering rules rather than capacity; see
 [issue-window-16.md](../experiments/issue-window-16.md).
 
 The target execution cluster has four independently backpressured sources but
@@ -220,8 +224,8 @@ The same storage contract serves each core differently:
 | Core | Registers | Read ports | Write ports | Mapping | Write point |
 | --- | ---: | ---: | ---: | --- | --- |
 | 1P | 32 | 2 | 1 | `physical = architectural` | WB/retirement |
-| 3P | 32 | 6 | 3 | `physical = architectural` | Retirement |
-| OOO | 64 initially | 6 | 3 | `physical = RAT[architectural]` | Validated completion |
+| 3P | 31 writable plus p0 | 6 | 3 | `physical = architectural` | Retirement |
+| OOO | Parameterized, TBD | 6 | 3 | `physical = RAT[architectural]` | Validated completion |
 
 The current `rv64-i-gpr_3p.v` is already close to the unbanked 6R/3W storage
 case.  Its ordered duplicate-write behavior remains useful for 3P retirement.
@@ -348,14 +352,14 @@ is a compatibility wrapper around the same primitive with two banks and
 multiple slices.  This is storage and bank arbitration, not rename state: RAT,
 RRAT, free-list, readiness, and recovery logic remain OOO-backend concerns.
 
-Physical-register count is not the only scaling pressure.  A 64-entry 6R/3W
-file already has difficult global wiring; additional entries lengthen it, while
-the port count continues to dominate its replication, muxing, and routing.
+Physical-register count is not the only scaling pressure. A larger 6R/3W file
+has difficult global wiring; additional entries lengthen it, while the port
+count continues to dominate its replication, muxing, and routing.
 
 The initial implementation may be an unbanked flop-based register file:
 
 ```text
-PRF_REGS = 64
+PRF_REGS = selected after rename-state implementation
 PRF_IMPL = FF_UNBANKED
 PRF_READ_LATENCY = 0 or 1
 ```
@@ -405,8 +409,8 @@ Standalone synthesis and eventual placed/routed experiments should isolate:
 2. Validated completion through PRF write acceptance.
 3. Completion broadcast through IQ tag match and data capture.
 4. Ready/age selection through execution-port issue.
-5. Unbanked 64-entry versus banked 64/80/96-entry PRFs under the same port and
-   workload assumptions.
+5. The 31-writable-entry identity baseline versus candidate unbanked and
+   banked renamed PRFs under the same port and workload assumptions.
 
 Pre-layout combinational reports are useful problem locators, not whole-core
 frequency evidence.  The choice between operand capture and issue-time PRF read
@@ -496,20 +500,24 @@ halt, or serializing instruction terminates the group as required.
 - A faulting instruction cannot update RRAT or commit its destination.
 
 OOO mode defaults to precise retirement through store translation, protection,
-and L1D admission. The current 3P queue now enforces that boundary, but it is
-not a full LSQ: entries are not pretranslated and younger loads cannot pass an
-unresolved store. Physical writeback below L1D remains posted and needs a
-separate machine-check policy for unrecoverable downstream failures.
+and L1D admission. The current 3P LSU already provides the intended shared
+substrate: early tagged translation, physical-address disambiguation, fully
+covered same-word forwarding, and ordered store admission. The LSQ quarantines
+selectively killed accepted tags until their responses drain; full-flush
+cancellation is also tracked at the memory endpoint. Physical writeback below
+L1D remains posted and needs a separate machine-check policy for unrecoverable
+downstream failures.
 
 ## Memory progression
 
-`exec_pipe_mem` remains the 3P memory implementation.  It need not become an
-LSQ or understand physical register renaming.
+`exec_pipe_mem` remains a supported legacy memory implementation. The active
+3P backend instead instantiates `exec_lsu`, which contains the separate
+parameterized `lsq`. Neither module understands physical register renaming;
+instruction identity and backend metadata remain opaque.
 
-The first OOO milestone may use an ordered memory adapter that accepts renamed
-memory uops but issues them in program order through the existing requester.
-This permits rename and integer scheduling to be validated before adding
-memory-dependence machinery.
+The first OOO milestone may use the same LSQ with conservative admission from
+the renamed backend. This permits rename and integer scheduling to be
+validated before adding memory-dependence prediction or replay.
 
 The target OOO LSQ allocates load and store entries at rename and follows a
 conservative initial policy:
@@ -525,10 +533,10 @@ conservative initial policy:
 - fences drain the required older memory state; and
 - RV64A operations initially drain and serialize the LSQ.
 
-Memory disambiguation must ultimately compare translated physical addresses and
-use explicit memory attributes.  Effective-address aperture checks are not
-correct in the presence of virtual aliases.  Bare mode is therefore the first
-LSQ milestone; tagged DTLB ownership, PMA/MMIO classification, and Sv39 follow.
+The implemented substrate compares translated physical addresses, including
+the Sv39 tagged translation path. Effective-address aperture checks are not
+used as alias proofs. The current static cacheable aperture is only a temporary
+attribute mechanism; explicit PMA/MMIO classification is still required.
 
 The shared L1 remains blocking by default, but the current CCX L1D selects its
 detached-miss interface and implements a parameterized demand MSHR array
@@ -613,7 +621,7 @@ paths.
    - Disable branch speculation and posted stores.
 
 4. **Operand gather and integer OOO issue**
-   - Add the unbanked 64-entry PRF, operand-capture stage, IQ16, physical-tag
+   - Add the selected unbanked PRF, operand-capture stage, IQ16, physical-tag
      wakeup, and oldest-ready execution-port selection.
    - Keep memory program ordered and control operations conservative.
 
@@ -622,15 +630,18 @@ paths.
    - Reuse predictor identities and existing frontend redirect machinery.
 
 6. **LSQ and translated memory**
-   - Add LQ8/SQ8, physical-address disambiguation, forwarding, and precise
-     stores in Bare mode.
-   - Add tagged DTLB ownership, PMA/MMIO classification, fences, and RV64A.
+   - Scale the implemented parameterized LSQ substrate to the selected OOO
+     LQ/SQ depths and connect OOO allocation and selective recovery.
+   - Retain its tagged translation, physical disambiguation, forwarding, and
+     precise store-admission contract.
+   - Add explicit PMA/MMIO classification and measure whether another
+     translation/L1D launch port is justified.
 
 7. **Execution and physical scaling**
    - Split M from EX1.
    - Compare operand capture with issue-time PRF reads if physical results
      require it.
-   - Implement and measure banked PRFs above 64 entries.
+   - Implement and measure banking where the selected PRF depth requires it.
    - Sweep ROB/IQ/LSQ/PRF sizes and add cache concurrency based on measured
      bottlenecks.
 
@@ -640,7 +651,9 @@ paths.
 - OOO is parameterized and may gain optional features without redefining the
   simpler cores.
 - Configuration-specific dispatch and pipeline modules remain separate.
-- `dispatch_3p` and `exec_pipe_mem` remain supported 3P implementations.
+- `dispatch_3p` and the legacy `exec_pipe_mem` remain supported
+  implementations; the active 3P composition uses the separate `exec_lsu` and
+  `lsq`.
 - Register storage is physical-indexed and parameterized; RAT/RRAT indirection
   is external to it.
 - 1P and 3P use identity physical mapping with no unnecessary RAT hardware.

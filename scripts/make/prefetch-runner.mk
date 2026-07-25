@@ -2,7 +2,8 @@
 
 .PHONY: sw-stream sw-stream-suite bench-stream bench-stream-suite sim-stream \
 	sim-stream-suite bench-stream-ddr3 sim-stream-ddr3 \
-	bench-stream-ddr3-vm sim-stream-ddr3-vm \
+	bench-stream-ddr3-vm bench-stream-ddr3-vm-suite \
+	sim-stream-ddr3-vm sim-stream-ddr3-vm-suite \
 	bench-stream-magic sim-stream-magic \
 	sw-stream-a53-gem5 sim-stream-a53-gem5
 .PHONY: sw-stride sw-stride-sweep bench-stride bench-stride-sweep sim-stride
@@ -10,7 +11,8 @@
 .PHONY: sw-icache sw-icache-suite bench-icache bench-icache-footprints \
 	bench-icache-patterns sim-icache sim-icache-patterns
 .PHONY: sw-lz4 bench-lz4 sim-lz4 sw-prefetch-benchmarks \
-	bench-prefetch-suite sim-prefetch-checks sim-prefetch-3p-perf
+	bench-prefetch-suite bench-performance-suite \
+	sim-prefetch-checks sim-prefetch-3p-perf
 
 sim-prefetch-3p-perf: $(AXI_3P_PERF_MEMH)
 ifeq ($(PREFETCH_ENGINE),verilator)

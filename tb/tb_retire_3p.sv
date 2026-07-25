@@ -25,7 +25,7 @@ module tb_retire_3p;
     wire [2:0] release_reg_write;
     wire [14:0] release_rd_addr;
     wire [2:0] gpr_write;
-    wire [14:0] gpr_rd_addr;
+    wire [3*`OPENRV64_PHYS_REG_ADDR_WIDTH-1:0] gpr_rd_addr;
     wire [191:0] gpr_rd_data;
     wire csr_write;
     wire [11:0] csr_addr;
@@ -107,6 +107,13 @@ module tb_retire_3p;
             value[`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 2] = hard_order;
             value[`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 1] = uses2;
             value[`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = uses1;
+            value[`OPENRV64_DISPATCH_META_WIDTH +:
+                  `OPENRV64_PHYS_REG_ADDR_WIDTH] =
+                {{(`OPENRV64_PHYS_REG_ADDR_WIDTH-5){1'b0}}, rd};
+            value[`OPENRV64_DISPATCH_META_WIDTH +
+                  `OPENRV64_PHYS_REG_ADDR_WIDTH +:
+                  `OPENRV64_PHYS_REG_ADDR_WIDTH] =
+                {{(`OPENRV64_PHYS_REG_ADDR_WIDTH-5){1'b0}}, rd};
             value[17] = reg_write;
             value[35 +: 5] = rd;
             queue_meta[lane*META_WIDTH +: META_WIDTH] = value;
@@ -164,6 +171,10 @@ module tb_retire_3p;
         set_meta(0, 0, 1, 0, 1, 5'd5);
         set_meta(1, 0, 1, 1, 1, 5'd6);
         set_meta(2, 0, 0, 0, 1, 5'd7);
+        // The physical destination is allocation-time state.  Deliberately
+        // make it differ from architectural rd to catch re-derivation here.
+        queue_meta[1*META_WIDTH + `OPENRV64_DISPATCH_META_WIDTH +:
+                   `OPENRV64_PHYS_REG_ADDR_WIDTH] = 5'd30;
         set_result(0, 64'd10, 64'h100, 64'h104, 32'h1,
                    64'h55, 5'd1, 5'd0, 5'd5, 1, 0, 0, 5'd0, 0, 0, 0, 0);
         set_result(1, 64'd11, 64'h104, 64'h108, 32'h2,
@@ -180,6 +191,14 @@ module tb_retire_3p;
             (gpr_rd_data[1*64 +: 64] != 64'h66) ||
             (gpr_rd_data[2*64 +: 64] != 64'h77)) begin
             fail("three retirement write values were reordered");
+        end
+        if ((gpr_rd_addr[0*`OPENRV64_PHYS_REG_ADDR_WIDTH +:
+                           `OPENRV64_PHYS_REG_ADDR_WIDTH] != 6'd5) ||
+            (gpr_rd_addr[1*`OPENRV64_PHYS_REG_ADDR_WIDTH +:
+                           `OPENRV64_PHYS_REG_ADDR_WIDTH] != 5'd30) ||
+            (gpr_rd_addr[2*`OPENRV64_PHYS_REG_ADDR_WIDTH +:
+                           `OPENRV64_PHYS_REG_ADDR_WIDTH] != 6'd7)) begin
+            fail("retirement did not use captured physical destinations");
         end
 
         // Exception in position one commits position zero, consumes the fault,

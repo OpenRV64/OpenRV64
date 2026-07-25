@@ -126,6 +126,12 @@ bench-stream-ddr3-vm: $(STREAM_VM_MEMH)
 		CORE_3P_CCX_L2_SPEC_LOAD_SIZE=262144 \
 		CORE_3P_CCX_L2_DDR3=1
 
+bench-stream-ddr3-vm-suite:
+	$(MAKE) bench-stream-ddr3-vm STREAM_KERNEL=copy
+	$(MAKE) bench-stream-ddr3-vm STREAM_KERNEL=scale
+	$(MAKE) bench-stream-ddr3-vm STREAM_KERNEL=add
+	$(MAKE) bench-stream-ddr3-vm STREAM_KERNEL=triad
+
 sim-stream-ddr3-vm: $(STREAM_VM_MEMH)
 	test -n "$(STREAM_VM_DONE)"
 	$(MAKE) sim-core-3p-ccx-l2 \
@@ -151,6 +157,12 @@ sim-stream-ddr3-vm: $(STREAM_VM_MEMH)
 		CORE_3P_CCX_L2_SPEC_LOAD_BASE=1073741824 \
 		CORE_3P_CCX_L2_SPEC_LOAD_SIZE=262144 \
 		CORE_3P_CCX_L2_DDR3=1
+
+sim-stream-ddr3-vm-suite:
+	$(MAKE) sim-stream-ddr3-vm STREAM_KERNEL=copy
+	$(MAKE) sim-stream-ddr3-vm STREAM_KERNEL=scale
+	$(MAKE) sim-stream-ddr3-vm STREAM_KERNEL=add
+	$(MAKE) sim-stream-ddr3-vm STREAM_KERNEL=triad
 
 bench-stream-magic:
 	$(MAKE) bench-stream-ddr3 \

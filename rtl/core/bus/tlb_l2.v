@@ -2,17 +2,16 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 
-// Shared second-level translation cache.
+// Shared main translation cache. The legacy module name is retained.
 //
 // The main array caches final 4 KiB translations in indexed, set-associative
-// storage.  Superpage translations deliberately bypass this array: indexing a
-// 2 MiB or 1 GiB translation with 4 KiB VPN bits would make lookup incorrect,
-// while probing all possible sets would turn the structure back into a CAM.
-// The small fully-associative L1 ITLB/DTLB retain superpage translations.
+// storage.  A small fully-associative sidecar retains 2 MiB and 1 GiB
+// translations, whose wildcard VPN bits cannot be indexed as 4 KiB entries.
 module openrv64_bus_tlb_l2 #(
     parameter integer ENTRIES = 256,
     parameter integer WAYS = 4,
-    parameter integer ASID_WIDTH = 16
+    parameter integer ASID_WIDTH = 16,
+    parameter integer SUPERPAGE_ENTRIES = 8
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -30,6 +29,7 @@ module openrv64_bus_tlb_l2 #(
     output reg  [`RV64_XLEN-1:0]        lookup_paddr_o,
     output reg                          lookup_page_fault_o,
     output reg                          lookup_global_o,
+    output reg  [`RV64_PAGE_LEVEL_WIDTH-1:0] lookup_level_o,
     output reg                          lookup_readable_o,
     output reg                          lookup_writable_o,
     output reg                          lookup_executable_o,
@@ -93,6 +93,8 @@ module openrv64_bus_tlb_l2 #(
         fill_vaddr_i[12 +: SET_INDEX_WIDTH];
     wire fill_4k = fill_valid_i &&
         (fill_level_i == `RV64_PAGE_LEVEL_4K);
+    wire fill_superpage = fill_valid_i &&
+        (fill_level_i != `RV64_PAGE_LEVEL_4K);
     wire [ENTRY_WIDTH-1:0] fill_entry = {
         fill_vpn,
         fill_ppn,
@@ -153,12 +155,66 @@ module openrv64_bus_tlb_l2 #(
         end
     endfunction
 
+    wire superpage_lookup_hit;
+    wire [`RV64_XLEN-1:0] superpage_lookup_paddr;
+    wire superpage_lookup_page_fault;
+    wire superpage_lookup_global;
+    wire [`RV64_PAGE_LEVEL_WIDTH-1:0] superpage_lookup_level;
+    wire superpage_lookup_readable;
+    wire superpage_lookup_writable;
+    wire superpage_lookup_executable;
+    wire superpage_lookup_user;
+    wire superpage_lookup_accessed;
+    wire superpage_lookup_dirty;
+
+    openrv64_bus_tlb #(
+        .ENTRIES(SUPERPAGE_ENTRIES),
+        .ASID_WIDTH(ASID_WIDTH)
+    ) u_superpage (
+        .clk(clk),
+        .rst_n(rst_n),
+        .tlbi_i(tlbi_i),
+        .lookup_valid_i(lookup_valid_i),
+        .lookup_vaddr_i(lookup_vaddr_i),
+        .lookup_vm_mode_i(lookup_vm_mode_i),
+        .lookup_asid_i(lookup_asid_i),
+        .lookup_access_i(lookup_access_i),
+        .lookup_priv_i(lookup_priv_i),
+        .lookup_sum_i(lookup_sum_i),
+        .lookup_mxr_i(lookup_mxr_i),
+        .lookup_hit_o(superpage_lookup_hit),
+        .lookup_paddr_o(superpage_lookup_paddr),
+        .lookup_page_fault_o(superpage_lookup_page_fault),
+        .lookup_global_o(superpage_lookup_global),
+        .lookup_level_o(superpage_lookup_level),
+        .lookup_readable_o(superpage_lookup_readable),
+        .lookup_writable_o(superpage_lookup_writable),
+        .lookup_executable_o(superpage_lookup_executable),
+        .lookup_user_o(superpage_lookup_user),
+        .lookup_accessed_o(superpage_lookup_accessed),
+        .lookup_dirty_o(superpage_lookup_dirty),
+        .fill_valid_i(fill_superpage),
+        .fill_vaddr_i(fill_vaddr_i),
+        .fill_paddr_i(fill_paddr_i),
+        .fill_vm_mode_i(fill_vm_mode_i),
+        .fill_asid_i(fill_asid_i),
+        .fill_global_i(fill_global_i),
+        .fill_level_i(fill_level_i),
+        .fill_readable_i(fill_readable_i),
+        .fill_writable_i(fill_writable_i),
+        .fill_executable_i(fill_executable_i),
+        .fill_user_i(fill_user_i),
+        .fill_accessed_i(fill_accessed_i),
+        .fill_dirty_i(fill_dirty_i)
+    );
+
     integer lookup_way;
     always @* begin
         lookup_hit_o = 1'b0;
         lookup_paddr_o = {`RV64_XLEN{1'b0}};
         lookup_page_fault_o = 1'b0;
         lookup_global_o = 1'b0;
+        lookup_level_o = `RV64_PAGE_LEVEL_4K;
         lookup_readable_o = 1'b0;
         lookup_writable_o = 1'b0;
         lookup_executable_o = 1'b0;
@@ -197,6 +253,7 @@ module openrv64_bus_tlb_l2 #(
                 );
                 lookup_global_o =
                     lookup_entry[lookup_way][ENTRY_GLOBAL_BIT];
+                lookup_level_o = `RV64_PAGE_LEVEL_4K;
                 lookup_readable_o =
                     lookup_entry[lookup_way][ENTRY_READABLE_BIT];
                 lookup_writable_o =
@@ -211,12 +268,26 @@ module openrv64_bus_tlb_l2 #(
                     lookup_entry[lookup_way][ENTRY_DIRTY_BIT];
             end
         end
+
+        if (!lookup_hit_o && superpage_lookup_hit) begin
+            lookup_hit_o = 1'b1;
+            lookup_paddr_o = superpage_lookup_paddr;
+            lookup_page_fault_o = superpage_lookup_page_fault;
+            lookup_global_o = superpage_lookup_global;
+            lookup_level_o = superpage_lookup_level;
+            lookup_readable_o = superpage_lookup_readable;
+            lookup_writable_o = superpage_lookup_writable;
+            lookup_executable_o = superpage_lookup_executable;
+            lookup_user_o = superpage_lookup_user;
+            lookup_accessed_o = superpage_lookup_accessed;
+            lookup_dirty_o = superpage_lookup_dirty;
+        end
     end
 
     reg fill_invalid_found_r;
     integer select_way;
     // A payload fill can only follow this structure's own miss, and the
-    // shared walker admits one miss at a time.  No other L2-TLB fill can race
+    // shared walker admits one miss at a time. No other main-TLB fill can race
     // that walk, so a successful response cannot duplicate a resident tag.
     // Replacement therefore needs only an invalid-way search plus round
     // robin, avoiding a second payload-bank read port on the fill address.
@@ -242,8 +313,7 @@ module openrv64_bus_tlb_l2 #(
     wire diag_miss = diag_lookup && !lookup_hit_o;
     wire diag_fill = fill_4k && !tlbi_i;
     wire diag_evict = diag_fill && fill_victim_valid;
-    wire diag_superpage_bypass = fill_valid_i &&
-        (fill_level_i != `RV64_PAGE_LEVEL_4K);
+    wire diag_superpage_fill = fill_superpage && !tlbi_i;
 
     integer state_way;
     integer state_set;
@@ -274,10 +344,12 @@ module openrv64_bus_tlb_l2 #(
 `ifndef SYNTHESIS
     initial begin
         if ((ENTRIES < 1) || (WAYS < 1) || (ENTRIES % WAYS != 0))
-            $fatal(1, "L2 TLB entries must be divisible by ways");
+            $fatal(1, "main TLB entries must be divisible by ways");
+        if (SUPERPAGE_ENTRIES < 1)
+            $fatal(1, "main TLB needs at least one superpage entry");
         if (((WAYS & (WAYS - 1)) != 0) ||
             ((SETS & (SETS - 1)) != 0))
-            $fatal(1, "L2 TLB ways and sets must be powers of two");
+            $fatal(1, "main TLB ways and sets must be powers of two");
     end
 `endif
 

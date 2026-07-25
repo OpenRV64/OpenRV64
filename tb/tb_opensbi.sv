@@ -12,11 +12,13 @@ module tb_opensbi #(
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer RETIRE_DEPTH = 8,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
+    parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer CCX_BUS_TYPE = 0,
     parameter integer CCX_BUS_DATA_WIDTH = 256,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
@@ -336,11 +338,13 @@ module tb_opensbi #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .L2_BYTES(L2_BYTES),
         .L2_WAYS(L2_WAYS),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
+        .FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .CCX_BUS_TYPE(CCX_BUS_TYPE),
         .CCX_BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
@@ -682,22 +686,22 @@ module tb_opensbi #(
                             perf_itlb_prefetch_faults + 1'b1;
 
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.dtlb_lookup_is_pipe)
+                            .u_bus.dtlb_lookup_is_xlate)
                         perf_dtlb_pipe_lookups <=
                             perf_dtlb_pipe_lookups + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.pipe_fast_request_fire &&
+                            .u_bus.dtlb_lookup_is_xlate &&
                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.pipe_translated_hit)
+                            .u_bus.dtlb_lookup_hit)
                         perf_dtlb_pipe_hits <= perf_dtlb_pipe_hits + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.dtlb_lookup_is_pipe &&
+                            .u_bus.dtlb_lookup_is_xlate &&
                         !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
                              .u_bus.dtlb_lookup_hit)
                         perf_dtlb_pipe_misses <=
                             perf_dtlb_pipe_misses + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.dtlb_lookup_is_pipe &&
+                            .u_bus.dtlb_lookup_is_xlate &&
                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
                             .u_bus.dtlb_lookup_hit &&
                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
@@ -758,7 +762,7 @@ module tb_opensbi #(
                         perf_l2_tlb_evictions <=
                             perf_l2_tlb_evictions + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.u_l2_tlb.diag_superpage_bypass)
+                            .u_bus.u_l2_tlb.diag_superpage_fill)
                         perf_l2_tlb_superpage_bypasses <=
                             perf_l2_tlb_superpage_bypasses + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx

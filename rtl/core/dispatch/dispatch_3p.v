@@ -37,7 +37,7 @@ module openrv64_dispatch_3p #(
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0] allocation_slot_i,
     output wire [2:0]                   allocation_valid_o,
-    output wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta_o,
+    output wire [3*`OPENRV64_DISPATCH_META_WIDTH-1:0] allocation_meta_o,
 
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_i,
     input  wire [1:0]                   forward_valid_i,
@@ -649,8 +649,8 @@ module openrv64_dispatch_3p #(
     generate
         for (read_lane = 0; read_lane < 3; read_lane = read_lane + 1) begin : g_meta
             assign allocation_meta_o[
-                read_lane*`OPENRV64_RETIRE_META_WIDTH +:
-                `OPENRV64_RETIRE_META_WIDTH] = {
+                read_lane*`OPENRV64_DISPATCH_META_WIDTH +:
+                `OPENRV64_DISPATCH_META_WIDTH] = {
                 candidate_hard[read_lane],
                 reg_map_uses_rs2[read_lane],
                 reg_map_uses_rs1[read_lane],

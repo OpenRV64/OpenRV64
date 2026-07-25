@@ -9,7 +9,7 @@ module tb_dispatch_window_3p;
     localparam integer CW = 5;
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer OW = `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH;
-    localparam integer MW = `OPENRV64_RETIRE_META_WIDTH;
+    localparam integer MW = `OPENRV64_DISPATCH_META_WIDTH;
     localparam integer IDW = `OPENRV64_INSTR_ID_WIDTH;
 
     localparam integer I_REG_WRITE = 17;

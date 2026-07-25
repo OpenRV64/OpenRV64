@@ -147,6 +147,28 @@ module openrv64_l1i_ccx #(
     reg slot_sum_q [0:PREFETCH_SLOTS-1];
     reg slot_mxr_q [0:PREFETCH_SLOTS-1];
 
+    // A short rolling filter prevents hot branches from repeatedly probing a
+    // line that their earlier hint already covered.  It is deliberately only
+    // PREFETCH_SLOTS deep: old lines become eligible again as the instruction
+    // working set moves, rather than being suppressed until eviction.
+    reg recent_valid_q [0:PREFETCH_SLOTS-1];
+    reg [ADDR_WIDTH-1:0] recent_vaddr_q [0:PREFETCH_SLOTS-1];
+    reg [`RV64_SATP_MODE_WIDTH-1:0]
+        recent_vm_mode_q [0:PREFETCH_SLOTS-1];
+    reg [`RV64_SATP_ASID_WIDTH-1:0]
+        recent_asid_q [0:PREFETCH_SLOTS-1];
+    reg [`RV64_SATP_PPN_WIDTH-1:0]
+        recent_root_ppn_q [0:PREFETCH_SLOTS-1];
+    reg [PREFETCH_INDEX_WIDTH-1:0] recent_replace_q;
+    wire [PREFETCH_INDEX_WIDTH-1:0] recent_replace_next =
+        (recent_replace_q ==
+         PREFETCH_INDEX_WIDTH'(PREFETCH_SLOTS - 1)) ?
+        {PREFETCH_INDEX_WIDTH{1'b0}} : recent_replace_q + 1'b1;
+    wire [PREFETCH_INDEX_WIDTH-1:0] recent_replace_next2 =
+        (recent_replace_next ==
+         PREFETCH_INDEX_WIDTH'(PREFETCH_SLOTS - 1)) ?
+        {PREFETCH_INDEX_WIDTH{1'b0}} : recent_replace_next + 1'b1;
+
     reg xlate_slot_found_r;
     reg [PREFETCH_INDEX_WIDTH-1:0] xlate_slot_r;
     reg fill_slot_found_r;
@@ -261,6 +283,17 @@ module openrv64_l1i_ccx #(
                               prefetch_taken_addr_i))
                     taken_duplicate_r = 1'b1;
                 if (same_line(slot_vaddr_q[enqueue_index],
+                              prefetch_fallthrough_addr_i))
+                    fallthrough_duplicate_r = 1'b1;
+            end
+            if (recent_valid_q[enqueue_index] &&
+                same_current_context(recent_vm_mode_q[enqueue_index],
+                                     recent_asid_q[enqueue_index],
+                                     recent_root_ppn_q[enqueue_index])) begin
+                if (same_line(recent_vaddr_q[enqueue_index],
+                              prefetch_taken_addr_i))
+                    taken_duplicate_r = 1'b1;
+                if (same_line(recent_vaddr_q[enqueue_index],
                               prefetch_fallthrough_addr_i))
                     fallthrough_duplicate_r = 1'b1;
             end
@@ -537,6 +570,7 @@ module openrv64_l1i_ccx #(
             xlate_active_q <= 1'b0;
             xlate_active_slot_q <=
                 {PREFETCH_INDEX_WIDTH{1'b0}};
+            recent_replace_q <= {PREFETCH_INDEX_WIDTH{1'b0}};
             for (slot_index = 0; slot_index < PREFETCH_SLOTS;
                  slot_index = slot_index + 1) begin
                 slot_valid_q[slot_index] <= 1'b0;
@@ -554,6 +588,14 @@ module openrv64_l1i_ccx #(
                     {`RV64_SATP_PPN_WIDTH{1'b0}};
                 slot_sum_q[slot_index] <= 1'b0;
                 slot_mxr_q[slot_index] <= 1'b0;
+                recent_valid_q[slot_index] <= 1'b0;
+                recent_vaddr_q[slot_index] <= {ADDR_WIDTH{1'b0}};
+                recent_vm_mode_q[slot_index] <=
+                    `RV64_SATP_MODE_BARE;
+                recent_asid_q[slot_index] <=
+                    {`RV64_SATP_ASID_WIDTH{1'b0}};
+                recent_root_ppn_q[slot_index] <=
+                    {`RV64_SATP_PPN_WIDTH{1'b0}};
             end
             for (response_reset_index = 0;
                  response_reset_index < DEMAND_DEPTH;
@@ -682,6 +724,13 @@ module openrv64_l1i_ccx #(
                     prefetch_root_ppn_i;
                 slot_sum_q[enqueue_taken_slot_r] <= prefetch_sum_i;
                 slot_mxr_q[enqueue_taken_slot_r] <= prefetch_mxr_i;
+                recent_valid_q[recent_replace_q] <= 1'b1;
+                recent_vaddr_q[recent_replace_q] <=
+                    {prefetch_taken_addr_i[ADDR_WIDTH-1:6], 6'b000000};
+                recent_vm_mode_q[recent_replace_q] <= prefetch_vm_mode_i;
+                recent_asid_q[recent_replace_q] <= prefetch_asid_i;
+                recent_root_ppn_q[recent_replace_q] <=
+                    prefetch_root_ppn_i;
             end
             if (enqueue_fallthrough_r) begin
                 slot_valid_q[enqueue_fallthrough_slot_r] <= 1'b1;
@@ -714,7 +763,28 @@ module openrv64_l1i_ccx #(
                     prefetch_root_ppn_i;
                 slot_sum_q[enqueue_fallthrough_slot_r] <= prefetch_sum_i;
                 slot_mxr_q[enqueue_fallthrough_slot_r] <= prefetch_mxr_i;
+                recent_valid_q[enqueue_taken_r ? recent_replace_next :
+                                                  recent_replace_q] <= 1'b1;
+                recent_vaddr_q[enqueue_taken_r ? recent_replace_next :
+                                                  recent_replace_q] <=
+                    {prefetch_fallthrough_addr_i[ADDR_WIDTH-1:6],
+                     6'b000000};
+                recent_vm_mode_q[enqueue_taken_r ? recent_replace_next :
+                                                    recent_replace_q] <=
+                    prefetch_vm_mode_i;
+                recent_asid_q[enqueue_taken_r ? recent_replace_next :
+                                                 recent_replace_q] <=
+                    prefetch_asid_i;
+                recent_root_ppn_q[enqueue_taken_r ? recent_replace_next :
+                                                     recent_replace_q] <=
+                    prefetch_root_ppn_i;
             end
+            case ({enqueue_taken_r, enqueue_fallthrough_r})
+                2'b01: recent_replace_q <= recent_replace_next;
+                2'b10: recent_replace_q <= recent_replace_next;
+                2'b11: recent_replace_q <= recent_replace_next2;
+                default: recent_replace_q <= recent_replace_q;
+            endcase
             for (retire_age_port = 0; retire_age_port < 3;
                  retire_age_port = retire_age_port + 1) begin
                 if (enqueue_age_r[retire_age_port]) begin
@@ -765,8 +835,10 @@ module openrv64_l1i_ccx #(
 
             if (prefetch_flush_i) begin
                 for (slot_index = 0; slot_index < PREFETCH_SLOTS;
-                     slot_index = slot_index + 1)
+                     slot_index = slot_index + 1) begin
                     slot_valid_q[slot_index] <= 1'b0;
+                    recent_valid_q[slot_index] <= 1'b0;
+                end
             end
         end
     end

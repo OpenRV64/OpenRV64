@@ -77,6 +77,24 @@ module tb_rv64i_gpr_3p #(
             fail("three retirement writes were not stored");
         end
 
+        // p31 is the final stored default entry. p0 is not stored.
+        write_valid = 3'b001;
+        write_addr = {5'd0, 5'd0, 5'd31};
+        write_data = {64'd0, 64'd0, 64'h3131};
+        read_addr = {5'd0, 5'd0, 5'd0, 5'd0, 5'd0, 5'd31};
+        #1;
+        if ((read_data[0*64 +: 64] != 64'h3131) ||
+            (read_data[1*64 +: 64] != 64'd0)) begin
+            fail("compact p31 bypass or unstored p0 failed");
+        end
+        tick();
+        write_valid = 3'b000;
+        #1;
+        if ((read_data[0*64 +: 64] != 64'h3131) ||
+            (dut.regs[31] != 64'h3131)) begin
+            fail("p31 did not map to final writable PRF entry");
+        end
+
         // Suppressed x0 writes are not duplicate physical destinations.
         write_valid = 3'b111;
         write_addr = {5'd0, 5'd0, 5'd0};

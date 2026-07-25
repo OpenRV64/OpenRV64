@@ -19,6 +19,9 @@ module openrv64_rv64_top_3p #(
         `OPENRV64_BUS_GEN,
     parameter ENABLE_RV64M = 0,
     parameter integer RETIRE_DEPTH = 8,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer PHYS_REG_ADDR_WIDTH =
+        (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter ENABLE_FULL_FORWARDING = 0,
@@ -338,11 +341,24 @@ module openrv64_rv64_top_3p #(
     wire [63:0] bp_direct_target;
     wire bp_fetch_stall;
     wire bp_decode_stall;
+    wire icache_branch_hint_valid;
+    wire fetch_alt_pair_valid;
     wire icache_prefetch_valid;
+    wire l1i_branch_prefetch_valid;
+    wire l1i_next_line_prefetch;
+    wire l1i_high_confidence_hint;
+    wire l1i_predicted_line_resident;
+    wire l1i_predicted_line_response;
     wire [63:0] icache_prefetch_taken_addr;
     wire [63:0] icache_prefetch_fallthrough_addr;
     wire [63:0] icache_prefetch_predicted_addr;
     wire [63:0] icache_prefetch_unpredicted_addr;
+    wire [63:0] icache_prefetch_predicted_next_line;
+    reg l1i_next_line_pending_q;
+    reg [63:0] l1i_next_line_source_q;
+    reg [63:0] l1i_next_line_addr_q;
+    wire [63:0] l1i_prefetch_first_addr;
+    wire [63:0] l1i_prefetch_second_addr;
     wire control_redirect = backend_redirect || bp_target_mispredict;
 
     wire fetch3_restart = reset_pending_q || except_vector_valid ||
@@ -439,7 +455,7 @@ module openrv64_rv64_top_3p #(
                 .resp_page_fault_i(fetch_pipe_resp_page_fault),
                 .resp_stash_i(fetch_pipe_resp_stash),
                 .resp_demand_i(fetch_pipe_resp_demand),
-                .branch_pair_valid_i(icache_prefetch_valid),
+                .branch_pair_valid_i(fetch_alt_pair_valid),
                 .branch_predicted_addr_i(
                     icache_prefetch_predicted_addr),
                 .branch_unpredicted_addr_i(
@@ -801,10 +817,12 @@ module openrv64_rv64_top_3p #(
         {1'b0, frontend_decode_fire[2]};
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
-    assign icache_prefetch_valid = use_ccx_bus && bp_branch_allocate &&
-                                   bp_lookup_branch &&
-                                   (!ENABLE_FETCH_ALT_CONFIDENCE_GATE ||
-                                    bp_prediction_weak);
+    assign icache_branch_hint_valid = use_ccx_bus && bp_branch_allocate &&
+                                      bp_lookup_branch;
+    assign fetch_alt_pair_valid = icache_branch_hint_valid &&
+                                  (!ENABLE_FETCH_ALT_CONFIDENCE_GATE ||
+                                   bp_prediction_weak);
+    assign icache_prefetch_valid = fetch_alt_pair_valid;
     assign icache_prefetch_taken_addr = bp_direct_target;
     assign icache_prefetch_fallthrough_addr = bp_selected_pc + 64'd4;
     assign icache_prefetch_predicted_addr =
@@ -813,6 +831,58 @@ module openrv64_rv64_top_3p #(
     assign icache_prefetch_unpredicted_addr =
         bp_prediction_taken ? icache_prefetch_fallthrough_addr :
                               icache_prefetch_taken_addr;
+    assign icache_prefetch_predicted_next_line =
+        {icache_prefetch_predicted_addr[63:6], 6'b000000} + 64'd64;
+
+    // Weak predictions retain the two-path hint.  A strong prediction arms
+    // depth prefetching, but may not launch the following line ahead of the
+    // predicted line itself.  Decoding proves a same-line destination is
+    // already resident; other destinations wait for their demand response.
+    assign l1i_high_confidence_hint =
+        icache_branch_hint_valid && ENABLE_FETCH_ALT_CONFIDENCE_GATE &&
+        !bp_prediction_weak;
+    assign l1i_predicted_line_resident =
+        icache_prefetch_predicted_addr[63:6] == bp_selected_pc[63:6];
+    assign l1i_predicted_line_response =
+        l1i_next_line_pending_q && fetch_pipe_resp_valid &&
+        fetch_pipe_resp_ready && fetch_pipe_resp_demand &&
+        !fetch_pipe_resp_access_fault && !fetch_pipe_resp_page_fault &&
+        (fetch_pipe_resp_addr[63:6] == l1i_next_line_source_q[63:6]);
+    assign l1i_next_line_prefetch =
+        (l1i_high_confidence_hint && l1i_predicted_line_resident) ||
+        l1i_predicted_line_response;
+    assign l1i_branch_prefetch_valid =
+        ((ENABLE_FETCH_ALT_LOOKASIDE == 0) && fetch_alt_pair_valid) ||
+        l1i_next_line_prefetch;
+    assign l1i_prefetch_first_addr = l1i_next_line_prefetch ?
+        ((l1i_high_confidence_hint && l1i_predicted_line_resident) ?
+         icache_prefetch_predicted_next_line : l1i_next_line_addr_q) :
+        icache_prefetch_taken_addr;
+    assign l1i_prefetch_second_addr = l1i_next_line_prefetch ?
+        ((l1i_high_confidence_hint && l1i_predicted_line_resident) ?
+         icache_prefetch_predicted_next_line : l1i_next_line_addr_q) :
+        icache_prefetch_fallthrough_addr;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            l1i_next_line_pending_q <= 1'b0;
+            l1i_next_line_source_q <= 64'd0;
+            l1i_next_line_addr_q <= 64'd0;
+        end else begin
+            if (fetch3_restart || translation_barrier_busy)
+                l1i_next_line_pending_q <= 1'b0;
+            if (l1i_predicted_line_response)
+                l1i_next_line_pending_q <= 1'b0;
+            if (l1i_high_confidence_hint) begin
+                l1i_next_line_pending_q <=
+                    !l1i_predicted_line_resident;
+                l1i_next_line_source_q <=
+                    {icache_prefetch_predicted_addr[63:6], 6'b000000};
+                l1i_next_line_addr_q <=
+                    icache_prefetch_predicted_next_line;
+            end
+        end
+    end
     assign fetch_decode_ready[0] = backend_decode_ready[0] &&
                                    frontend_prefix_allow[0] &&
                                    frontend_decode_enable;
@@ -837,9 +907,24 @@ module openrv64_rv64_top_3p #(
     wire backend_mem_ready;
     wire backend_mem_bus_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_tag;
+    wire backend_mem_xlate_only;
+    wire backend_mem_physical;
+    wire backend_mem_xlate_valid;
+    wire backend_mem_xlate_ready;
+    wire backend_mem_xlate_bus_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_tag;
+    wire backend_mem_xlate_write;
+    wire [63:0] backend_mem_xlate_vaddr;
+    wire backend_mem_xlate_resp_valid;
+    wire backend_mem_xlate_resp_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_resp_tag;
+    wire [63:0] backend_mem_xlate_resp_paddr;
+    wire backend_mem_xlate_resp_access_fault;
+    wire backend_mem_xlate_resp_page_fault;
     wire backend_mem_resp_valid;
     wire backend_mem_resp_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_resp_tag;
+    wire [63:0] backend_mem_resp_paddr;
     wire backend_mem_lock;
     wire backend_mem_write;
     wire [63:0] backend_mem_addr;
@@ -877,6 +962,8 @@ module openrv64_rv64_top_3p #(
 
     openrv64_backend_3p #(
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
         .ENABLE_RV64M(ENABLE_RV64M),
         .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
         .BRANCH_COMPLETION_FORWARD_MASK(BRANCH_COMPLETION_FORWARD_MASK),
@@ -892,11 +979,16 @@ module openrv64_rv64_top_3p #(
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
+        .CACHEABLE_BASE(L1D_CACHEABLE_BASE),
+        .CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
         .SPEC_LOAD_BASE(SPEC_LOAD_BASE),
         .SPEC_LOAD_SIZE(SPEC_LOAD_SIZE)
     ) u_backend (
         .clk(clk), .rst_n(rst_n), .flush_i(control_flush),
         .squash_frontend_i(control_redirect),
+        .translation_bypass_i(
+            (csr_data_priv_mode == `RV64_PRIV_M) ||
+            (csr_satp_mode == `RV64_SATP_MODE_BARE)),
         .decode_valid_i(backend_decode_valid),
         .decode_ready_o(backend_decode_ready),
         .decode_payload_i(backend_decode_payload),
@@ -911,9 +1003,25 @@ module openrv64_rv64_top_3p #(
         .csr_wdata_o(backend_csr_wdata),
         .mem_valid_o(backend_mem_valid), .mem_ready_i(backend_mem_ready),
         .mem_tag_o(backend_mem_tag),
+        .mem_xlate_only_o(backend_mem_xlate_only),
+        .mem_physical_o(backend_mem_physical),
+        .mem_xlate_valid_o(backend_mem_xlate_valid),
+        .mem_xlate_ready_i(backend_mem_xlate_ready),
+        .mem_xlate_tag_o(backend_mem_xlate_tag),
+        .mem_xlate_write_o(backend_mem_xlate_write),
+        .mem_xlate_vaddr_o(backend_mem_xlate_vaddr),
+        .mem_xlate_resp_valid_i(backend_mem_xlate_resp_valid),
+        .mem_xlate_resp_ready_o(backend_mem_xlate_resp_ready),
+        .mem_xlate_resp_tag_i(backend_mem_xlate_resp_tag),
+        .mem_xlate_resp_paddr_i(backend_mem_xlate_resp_paddr),
+        .mem_xlate_resp_access_fault_i(
+            backend_mem_xlate_resp_access_fault),
+        .mem_xlate_resp_page_fault_i(
+            backend_mem_xlate_resp_page_fault),
         .mem_resp_valid_i(backend_mem_resp_valid),
         .mem_resp_ready_o(backend_mem_resp_ready),
         .mem_resp_tag_i(backend_mem_resp_tag),
+        .mem_resp_paddr_i(backend_mem_resp_paddr),
         .mem_error_i(backend_mem_access_fault),
         .mem_page_fault_i(backend_mem_page_fault),
         .mem_access_allowed_i(1'b1),
@@ -1140,6 +1248,8 @@ module openrv64_rv64_top_3p #(
                               !translation_barrier_busy),
         .lsu_pipe_req_ready_o(backend_mem_bus_ready),
         .lsu_pipe_req_tag_i(backend_mem_tag),
+        .lsu_pipe_req_xlate_only_i(backend_mem_xlate_only),
+        .lsu_pipe_req_physical_i(backend_mem_physical),
         .lsu_pipe_req_lock_i(backend_mem_lock),
         .lsu_pipe_req_write_i(backend_mem_write),
         .lsu_pipe_req_addr_i(backend_mem_addr),
@@ -1153,22 +1263,47 @@ module openrv64_rv64_top_3p #(
         .lsu_pipe_req_root_ppn_i(csr_satp_root_ppn),
         .lsu_pipe_req_sum_i(csr_status_sum),
         .lsu_pipe_req_mxr_i(csr_status_mxr),
+        .lsu_pipe_req_translation_hit_o(),
+        .lsu_pipe_req_translation_paddr_o(),
+        .lsu_pipe_req_translation_page_fault_o(),
         .lsu_pipe_cancel_i(control_flush),
         .lsu_pipe_resp_valid_o(backend_mem_resp_valid),
         .lsu_pipe_resp_ready_i(backend_mem_resp_ready),
         .lsu_pipe_resp_tag_o(backend_mem_resp_tag),
+        .lsu_pipe_resp_paddr_o(backend_mem_resp_paddr),
         .lsu_pipe_resp_rdata_o(backend_mem_rdata),
         .lsu_pipe_resp_access_fault_o(backend_mem_access_fault),
         .lsu_pipe_resp_page_fault_o(backend_mem_page_fault),
+        .lsu_xlate_req_valid_i(backend_mem_xlate_valid &&
+                               !translation_barrier_busy),
+        .lsu_xlate_req_ready_o(backend_mem_xlate_bus_ready),
+        .lsu_xlate_req_tag_i(backend_mem_xlate_tag),
+        .lsu_xlate_req_write_i(backend_mem_xlate_write),
+        .lsu_xlate_req_vaddr_i(backend_mem_xlate_vaddr),
+        .lsu_xlate_req_priv_i(csr_data_priv_mode),
+        .lsu_xlate_req_vm_mode_i(
+            (csr_data_priv_mode == `RV64_PRIV_M) ?
+            `RV64_SATP_MODE_BARE : csr_satp_mode),
+        .lsu_xlate_req_asid_i(csr_satp_asid),
+        .lsu_xlate_req_root_ppn_i(csr_satp_root_ppn),
+        .lsu_xlate_req_sum_i(csr_status_sum),
+        .lsu_xlate_req_mxr_i(csr_status_mxr),
+        .lsu_xlate_resp_valid_o(backend_mem_xlate_resp_valid),
+        .lsu_xlate_resp_ready_i(backend_mem_xlate_resp_ready),
+        .lsu_xlate_resp_tag_o(backend_mem_xlate_resp_tag),
+        .lsu_xlate_resp_paddr_o(backend_mem_xlate_resp_paddr),
+        .lsu_xlate_resp_access_fault_o(
+            backend_mem_xlate_resp_access_fault),
+        .lsu_xlate_resp_page_fault_o(
+            backend_mem_xlate_resp_page_fault),
         .tlbi_i(backend_sfence_vma || backend_satp_write),
         .tlbi_busy_o(translation_barrier_busy),
         .icache_invalidate_i(backend_fence_i),
-        .icache_prefetch_valid_i(icache_prefetch_valid &&
-                                 !translation_barrier_busy &&
-                                 (ENABLE_FETCH_ALT_LOOKASIDE == 0)),
-        .icache_prefetch_taken_addr_i(icache_prefetch_taken_addr),
+        .icache_prefetch_valid_i(l1i_branch_prefetch_valid &&
+                                 !translation_barrier_busy),
+        .icache_prefetch_taken_addr_i(l1i_prefetch_first_addr),
         .icache_prefetch_fallthrough_addr_i(
-            icache_prefetch_fallthrough_addr),
+            l1i_prefetch_second_addr),
         .icache_age_valid_i(branch_retire_age_valid),
         .icache_age_addr_i(branch_retire_age_addr),
         .req_valid_o(core_mem_valid),
@@ -1239,6 +1374,8 @@ module openrv64_rv64_top_3p #(
 
     assign backend_mem_ready =
         backend_mem_bus_ready && !translation_barrier_busy;
+    assign backend_mem_xlate_ready =
+        backend_mem_xlate_bus_ready && !translation_barrier_busy;
 
     assign dbg_pc = dbg_pc_q;
     assign dbg_instr = dbg_instr_q;

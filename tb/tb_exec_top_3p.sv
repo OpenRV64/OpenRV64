@@ -98,9 +98,12 @@ module tb_exec_top_3p;
     wire mem_valid;
     reg mem_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_tag;
+    wire mem_xlate_only;
+    wire mem_physical;
     reg mem_resp_valid;
     wire mem_resp_ready;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag;
+    reg [`RV64_XLEN-1:0] mem_resp_paddr;
     reg mem_error;
     reg mem_page_fault;
     reg mem_access_allowed;
@@ -113,6 +116,15 @@ module tb_exec_top_3p;
     wire [`RV64_XLEN-1:0] mem_effective_addr;
     wire [2:0] mem_size;
     reg [`RV64_XLEN-1:0] mem_rdata;
+    wire mem_xlate_valid;
+    reg mem_xlate_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag;
+    wire mem_xlate_write;
+    wire [`RV64_XLEN-1:0] mem_xlate_vaddr;
+    reg mem_xlate_resp_valid;
+    wire mem_xlate_resp_ready;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag;
+    reg [`RV64_XLEN-1:0] mem_xlate_resp_paddr;
     wire mem1_valid;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag;
     wire mem1_lock;
@@ -127,11 +139,16 @@ module tb_exec_top_3p;
     openrv64_exec_top_3p #(
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH),
         .ENABLE_RV64M(1),
-        .ENABLE_POSTED_STORES(0)
+        .ENABLE_POSTED_STORES(0),
+        .CACHEABLE_BASE(64'h0),
+        .CACHEABLE_SIZE({64{1'b1}})
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush),
+        .squash_younger_i(1'b0),
+        .squash_id_i({ID_WIDTH{1'b0}}),
+        .translation_bypass_i(1'b0),
         .issue_valid_i(issue_valid),
         .issue_ready_o(issue_ready),
         .issue_unsupported_o(issue_unsupported),
@@ -166,9 +183,23 @@ module tb_exec_top_3p;
         .mem_valid_o(mem_valid),
         .mem_ready_i(mem_ready),
         .mem_tag_o(mem_tag),
+        .mem_xlate_only_o(mem_xlate_only),
+        .mem_physical_o(mem_physical),
         .mem_resp_valid_i(mem_resp_valid),
         .mem_resp_ready_o(mem_resp_ready),
         .mem_resp_tag_i(mem_resp_tag),
+        .mem_resp_paddr_i(mem_resp_paddr),
+        .mem_xlate_valid_o(mem_xlate_valid),
+        .mem_xlate_ready_i(mem_xlate_ready),
+        .mem_xlate_tag_o(mem_xlate_tag),
+        .mem_xlate_write_o(mem_xlate_write),
+        .mem_xlate_vaddr_o(mem_xlate_vaddr),
+        .mem_xlate_resp_valid_i(mem_xlate_resp_valid),
+        .mem_xlate_resp_ready_o(mem_xlate_resp_ready),
+        .mem_xlate_resp_tag_i(mem_xlate_resp_tag),
+        .mem_xlate_resp_paddr_i(mem_xlate_resp_paddr),
+        .mem_xlate_resp_access_fault_i(1'b0),
+        .mem_xlate_resp_page_fault_i(1'b0),
         .mem_error_i(mem_error),
         .mem_page_fault_i(mem_page_fault),
         .mem_access_allowed_i(mem_access_allowed),
@@ -195,6 +226,24 @@ module tb_exec_top_3p;
     );
 
     always #5 clk = ~clk;
+
+    // Identity translation service used by this execution-only test.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mem_xlate_resp_valid <= 1'b0;
+            mem_xlate_resp_tag <=
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            mem_xlate_resp_paddr <= {`RV64_XLEN{1'b0}};
+        end else begin
+            if (mem_xlate_resp_valid && mem_xlate_resp_ready)
+                mem_xlate_resp_valid <= 1'b0;
+            if (mem_xlate_valid && mem_xlate_ready) begin
+                mem_xlate_resp_valid <= 1'b1;
+                mem_xlate_resp_tag <= mem_xlate_tag;
+                mem_xlate_resp_paddr <= mem_xlate_vaddr;
+            end
+        end
+    end
 
     function automatic [ISSUE_WIDTH-1:0] packet_base;
         input [63:0] trace;
@@ -231,6 +280,7 @@ module tb_exec_top_3p;
     reg [ISSUE_WIDTH-1:0] packet;
     integer wait_cycles;
     integer depth_index;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] saved_mem_tag;
 
     initial begin
         clk = 1'b0;
@@ -261,8 +311,10 @@ module tb_exec_top_3p;
         csr_valid = 1'b1;
         csr_writable = 1'b1;
         mem_ready = 1'b1;
+        mem_xlate_ready = 1'b1;
         mem_resp_valid = 1'b0;
         mem_resp_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+        mem_resp_paddr = {`RV64_XLEN{1'b0}};
         mem_error = 1'b0;
         mem_page_fault = 1'b0;
         mem_access_allowed = 1'b1;
@@ -487,8 +539,8 @@ module tb_exec_top_3p;
         tick();
         complete_ready = 3'b000;
 
-        // A store may occupy MEM and compute its address, but the request is
-        // invisible until the exact instruction reaches ordered head.
+        // Store translation begins before retirement, but no physical write
+        // may launch until the exact instruction reaches ordered head.
         packet = packet_base(64'd102, 64'h3000, 32'h0020_b023);
         packet[ISSUE_RS1 +: 5] = 5'd1;
         packet[ISSUE_RS2 +: 5] = 5'd2;
@@ -504,23 +556,28 @@ module tb_exec_top_3p;
         issue_valid = 4'b1000;
         #1;
         if (!issue_ready[3]) fail("MEM1 did not accept store");
+        if (!mem_xlate_valid || !mem_xlate_write ||
+            (mem_xlate_vaddr != 64'h4000))
+            fail("store did not translate at LSQ admission");
+        saved_mem_tag = mem_xlate_tag;
         tick();
         issue_valid = 3'b000;
+        tick();
+        tick();
         #1;
-        if (mem_valid) fail("store escaped before ordered-head permission");
-        if (!mem_access || (mem_effective_addr != 64'h4000))
-            fail("MEM did not expose store address for protection checks");
+        if (mem_valid)
+            fail("store escaped before ordered-head permission");
         ordered_head_id = ID_WIDTH'(2);
         ordered_head_slot = 3'd2;
         #1;
-        if (!mem_valid || !mem_write || (mem_addr != 64'h4000) ||
+        if (!mem_valid || !mem_physical || !mem_write ||
+            (mem_addr != 64'h4000) ||
             (mem_wdata != 64'hdead_beef_cafe_f00d) || (mem_wstrb != 8'hff))
             fail("ordered store request mismatch");
+        saved_mem_tag = mem_tag;
         tick();
         mem_resp_valid = 1'b1;
-        mem_resp_tag = {
-            1'b1, {(`OPENRV64_LSU_TAG_WIDTH-1){1'b0}}
-        };
+        mem_resp_tag = saved_mem_tag;
         // A younger redirect may coincide with the one-cycle admission
         // response. The ordered store completion must survive that flush.
         flush = 1'b1;
@@ -574,7 +631,7 @@ module tb_exec_top_3p;
         tick();
         issue_valid = 4'b0000;
         #1;
-        if (mem_valid)
+        if (mem_valid && mem_physical)
             fail("younger MEM0 load escaped ahead of unordered atomic");
         flush = 1'b1;
         tick();
@@ -772,8 +829,8 @@ module tb_exec_top_3p;
             #1;
             if (!issue_ready[3])
                 fail("four-entry store queue backpressured before full");
-            if (mem_valid)
-                fail("uncommitted queued store produced a memory request");
+            if (mem_valid && mem_physical)
+                fail("uncommitted queued store produced a physical request");
             tick();
         end
         packet = packet_base(64'd124, 64'h5810, 32'h0020_3023);
@@ -823,6 +880,7 @@ module tb_exec_top_3p;
         while (!mem_valid) tick();
         if (!mem_lock || mem_write || (mem_addr != 64'h7000))
             fail("AMO read did not carry the internal phase marker");
+        saved_mem_tag = mem_tag;
         tick();
 
         flush = 1'b1;
@@ -830,16 +888,16 @@ module tb_exec_top_3p;
         flush = 1'b0;
         mem_rdata = 64'd11;
         mem_resp_valid = 1'b1;
-        mem_resp_tag = {
-            1'b1, {(`OPENRV64_LSU_TAG_WIDTH-1){1'b0}}
-        };
+        mem_resp_tag = saved_mem_tag;
         tick();
         mem_resp_valid = 1'b0;
         while (!mem_valid) tick();
         if (!mem_lock || !mem_write || (mem_addr != 64'h7000) ||
             (mem_wdata != 64'd13) || (mem_wstrb != 8'hff))
             fail("flushed AMO did not reach its lock-releasing write");
+        saved_mem_tag = mem_tag;
         tick();
+        mem_resp_tag = saved_mem_tag;
         mem_resp_valid = 1'b1;
         tick();
         mem_resp_valid = 1'b0;
@@ -869,6 +927,7 @@ module tb_exec_top_3p;
         mem1_valid, mem1_tag, mem1_lock, mem1_write, mem1_addr,
         mem1_wdata, mem1_wstrb, mem1_access, mem1_effective_addr,
         mem1_size,
+        mem_xlate_only, mem_physical,
         csr_addr,
         mem_size
     };

@@ -43,6 +43,8 @@ module tb_ccx_bus #(
 
     logic pipe_req_valid;
     logic pipe_req_lock;
+    logic pipe_req_xlate_only;
+    logic pipe_req_physical;
     wire pipe_req_ready;
     logic [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_req_tag;
     logic pipe_req_write;
@@ -54,14 +56,32 @@ module tb_ccx_bus #(
     logic [3:0] pipe_req_vm_mode;
     logic [43:0] pipe_req_root_ppn;
     logic pipe_cancel;
+    wire pipe_req_translation_hit;
+    wire [63:0] pipe_req_translation_paddr;
+    wire pipe_req_translation_page_fault;
     logic tlbi;
     wire tlbi_busy;
     wire pipe_resp_valid;
     logic pipe_resp_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_resp_tag;
+    wire [63:0] pipe_resp_paddr;
     wire [63:0] pipe_resp_rdata;
     wire pipe_resp_access_fault;
     wire pipe_resp_page_fault;
+    logic xlate_req_valid;
+    wire xlate_req_ready;
+    logic [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_req_tag;
+    logic xlate_req_write;
+    logic [63:0] xlate_req_vaddr;
+    logic [1:0] xlate_req_priv;
+    logic [3:0] xlate_req_vm_mode;
+    logic [43:0] xlate_req_root_ppn;
+    wire xlate_resp_valid;
+    logic xlate_resp_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_resp_tag;
+    wire [63:0] xlate_resp_paddr;
+    wire xlate_resp_access_fault;
+    wire xlate_resp_page_fault;
 
     wire pmp_valid;
     wire [63:0] pmp_addr;
@@ -179,7 +199,7 @@ module tb_ccx_bus #(
             translated_fast_store_fires <= 0;
             l2_tlb_hits <= 0;
         end else begin
-            if (dut.pipe_fast_request_fire && !dut.pipe_req_bare) begin
+            if (dut.pipe_fast_request_fire) begin
                 translated_fast_fires <= translated_fast_fires + 1;
                 if (dut.l1d_req_write)
                     translated_fast_store_fires <=
@@ -238,6 +258,8 @@ module tb_ccx_bus #(
         .lsu_pipe_req_valid_i(pipe_req_valid),
         .lsu_pipe_req_ready_o(pipe_req_ready),
         .lsu_pipe_req_tag_i(pipe_req_tag),
+        .lsu_pipe_req_xlate_only_i(pipe_req_xlate_only),
+        .lsu_pipe_req_physical_i(pipe_req_physical),
         .lsu_pipe_req_lock_i(pipe_req_lock),
         .lsu_pipe_req_write_i(pipe_req_write),
         .lsu_pipe_req_addr_i(pipe_req_addr),
@@ -249,13 +271,36 @@ module tb_ccx_bus #(
         .lsu_pipe_req_asid_i(16'd0),
         .lsu_pipe_req_root_ppn_i(pipe_req_root_ppn),
         .lsu_pipe_req_sum_i(1'b0), .lsu_pipe_req_mxr_i(1'b0),
+        .lsu_pipe_req_translation_hit_o(pipe_req_translation_hit),
+        .lsu_pipe_req_translation_paddr_o(
+            pipe_req_translation_paddr),
+        .lsu_pipe_req_translation_page_fault_o(
+            pipe_req_translation_page_fault),
         .lsu_pipe_cancel_i(pipe_cancel),
         .lsu_pipe_resp_valid_o(pipe_resp_valid),
         .lsu_pipe_resp_ready_i(pipe_resp_ready),
         .lsu_pipe_resp_tag_o(pipe_resp_tag),
+        .lsu_pipe_resp_paddr_o(pipe_resp_paddr),
         .lsu_pipe_resp_rdata_o(pipe_resp_rdata),
         .lsu_pipe_resp_access_fault_o(pipe_resp_access_fault),
         .lsu_pipe_resp_page_fault_o(pipe_resp_page_fault),
+        .lsu_xlate_req_valid_i(xlate_req_valid),
+        .lsu_xlate_req_ready_o(xlate_req_ready),
+        .lsu_xlate_req_tag_i(xlate_req_tag),
+        .lsu_xlate_req_write_i(xlate_req_write),
+        .lsu_xlate_req_vaddr_i(xlate_req_vaddr),
+        .lsu_xlate_req_priv_i(xlate_req_priv),
+        .lsu_xlate_req_vm_mode_i(xlate_req_vm_mode),
+        .lsu_xlate_req_asid_i(16'd0),
+        .lsu_xlate_req_root_ppn_i(xlate_req_root_ppn),
+        .lsu_xlate_req_sum_i(1'b0),
+        .lsu_xlate_req_mxr_i(1'b0),
+        .lsu_xlate_resp_valid_o(xlate_resp_valid),
+        .lsu_xlate_resp_ready_i(xlate_resp_ready),
+        .lsu_xlate_resp_tag_o(xlate_resp_tag),
+        .lsu_xlate_resp_paddr_o(xlate_resp_paddr),
+        .lsu_xlate_resp_access_fault_o(xlate_resp_access_fault),
+        .lsu_xlate_resp_page_fault_o(xlate_resp_page_fault),
         .pmp_valid_o(pmp_valid), .pmp_addr_o(pmp_addr),
         .pmp_priv_o(pmp_priv), .pmp_size_o(pmp_size),
         .pmp_write_o(pmp_write), .pmp_exec_o(pmp_exec),
@@ -564,6 +609,74 @@ module tb_ccx_bus #(
         end
     endtask
 
+    task automatic push_xlate_request(
+        input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag,
+        input write,
+        input [63:0] vaddr
+    );
+        integer wait_cycles;
+        reg completed;
+        reg saved_resp_ready;
+        begin
+            // Hold the response while the task drives the request. Fast
+            // micro/main-TLB hits may respond on the acceptance cycle.
+            saved_resp_ready = xlate_resp_ready;
+            xlate_resp_ready = 1'b0;
+            xlate_req_tag = tag;
+            xlate_req_write = write;
+            xlate_req_vaddr = vaddr;
+            xlate_req_valid = 1'b1;
+            wait_cycles = 0;
+            completed = 1'b0;
+            while (!completed && wait_cycles < 100) begin
+                @(posedge clk);
+                if (xlate_req_ready)
+                    completed = 1'b1;
+                #1;
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!completed)
+                $fatal(1,
+                    "tagged translation request timeout tag=%0d lsu=%0d miss=%b dtlb_sel=%b dtlb_hit=%b l2_sel=%b l2_hit=%b pipe_fb=%b xlate_fb=%b",
+                    tag, dut.lsu_state_q, dut.miss_active_q,
+                    dut.dtlb_lookup_is_xlate, dut.dtlb_lookup_hit,
+                    dut.l2_tlb_select_xlate, dut.l2_tlb_lookup_hit,
+                    dut.pipe_fallback_active_q,
+                    dut.xlate_fallback_active_q);
+            xlate_req_valid = 1'b0;
+            xlate_resp_ready = saved_resp_ready;
+        end
+    endtask
+
+    task automatic expect_xlate_response(
+        input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag,
+        input [63:0] expected_paddr,
+        input expected_access_fault,
+        input expected_page_fault
+    );
+        integer wait_cycles;
+        begin
+            wait_cycles = 0;
+            while (!xlate_resp_valid && wait_cycles < 300) begin
+                tick();
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!xlate_resp_valid)
+                $fatal(1, "tagged translation response timeout tag=%0d",
+                       tag);
+            if (xlate_resp_tag != tag ||
+                xlate_resp_paddr != expected_paddr ||
+                xlate_resp_access_fault != expected_access_fault ||
+                xlate_resp_page_fault != expected_page_fault)
+                $fatal(1,
+                    "translation response mismatch tag=%0d/%0d paddr=%h/%h faults=%b/%b expected=%b/%b",
+                    xlate_resp_tag, tag, xlate_resp_paddr, expected_paddr,
+                    xlate_resp_access_fault, xlate_resp_page_fault,
+                    expected_access_fault, expected_page_fault);
+            tick();
+        end
+    endtask
+
     task automatic send_pipe_read_response(
         input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag,
         input [255:0] response_data,
@@ -696,6 +809,8 @@ module tb_ccx_bus #(
         lsu_size = 3;
         pipe_req_valid = 0;
         pipe_req_lock = 0;
+        pipe_req_xlate_only = 0;
+        pipe_req_physical = 0;
         pipe_req_tag = 0;
         pipe_req_write = 0;
         pipe_req_addr = 0;
@@ -708,6 +823,14 @@ module tb_ccx_bus #(
         pipe_cancel = 0;
         tlbi = 0;
         pipe_resp_ready = 1;
+        xlate_req_valid = 0;
+        xlate_req_tag = 0;
+        xlate_req_write = 0;
+        xlate_req_vaddr = 0;
+        xlate_req_priv = `RV64_PRIV_M;
+        xlate_req_vm_mode = `RV64_SATP_MODE_BARE;
+        xlate_req_root_ppn = 0;
+        xlate_resp_ready = 1;
         pmp_allow = 1;
         arready = 1;
         rid = 0;
@@ -1033,17 +1156,18 @@ module tb_ccx_bus #(
             $fatal(1,
                    "translation barrier did not order store then shootdown");
 
-        // Translated tagged traffic uses a cacheable PTE line read on CCX and
-        // returns the page fault under the original request tag.  An invalid
-        // root PTE is sufficient to exercise the fallback without a full map.
-        pipe_req_vm_mode = `RV64_SATP_MODE_SV39;
-        pipe_req_priv = `RV64_PRIV_S;
-        pipe_resp_ready = 0;
+        // Translation-only tagged traffic uses a cacheable PTE line read on
+        // CCX and returns the page fault under the original request tag.  It
+        // must not perform an L1D access.  An invalid root PTE is sufficient to
+        // exercise the fallback without a full map.
+        xlate_req_vm_mode = `RV64_SATP_MODE_SV39;
+        xlate_req_priv = `RV64_PRIV_S;
+        xlate_resp_ready = 0;
         wait_count = ccx_reads;
         channel_wait = ar_count;
-        push_pipe_request(2'd2, 1'b0, 64'h1000, 64'd0, 8'd0);
+        push_xlate_request(2'd2, 1'b0, 64'h1000);
         ptw_wait = 0;
-        while (!pipe_resp_valid && ptw_wait < 50) begin
+        while (!xlate_resp_valid && ptw_wait < 50) begin
             tick();
             ptw_wait = ptw_wait + 1;
         end
@@ -1053,14 +1177,14 @@ module tb_ccx_bus #(
                    dut.lsu_state_q, dut.miss_active_q,
                    dut.u_ptw.state_q,
                    dut.u_ptw.backend_state_q);
-        if (pipe_resp_tag != 2'd2 || !pipe_resp_page_fault ||
-            pipe_resp_access_fault)
+        if (xlate_resp_tag != 2'd2 || !xlate_resp_page_fault ||
+            xlate_resp_access_fault)
             $fatal(1, "translated tagged LSU fallback mismatch");
         if ((ccx_reads - wait_count) != 1 ||
             ar_count != channel_wait)
             $fatal(1,
                    "translated PTW did not use exactly one CCX PTE line");
-        pipe_resp_ready = 1;
+        xlate_resp_ready = 1;
         tick();
 
         // Walk a complete three-level mapping.  Each dependent PTE fetch is a
@@ -1118,7 +1242,10 @@ module tb_ccx_bus #(
 
         wait_count = ccx_reads;
         channel_wait = ar_count;
-        push_pipe_request(3'd3, 1'b0, 64'h4000, 64'd0, 8'd0);
+        push_xlate_request(3'd3, 1'b0, 64'h4000);
+        expect_xlate_response(3'd3, 64'h3000, 1'b0, 1'b0);
+        pipe_req_physical = 1'b1;
+        push_pipe_request(3'd3, 1'b0, 64'h3000, 64'd0, 8'd0);
         expect_pipe_response(3'd3, 64'h5a17_c0de_cafe_1234,
                              1'b0, 1'b0);
         if ((ccx_reads - wait_count) != 4)
@@ -1143,26 +1270,24 @@ module tb_ccx_bus #(
         fetch_req_demand = 1;
         fetch_req_addr = 64'h4000;
         fetch_resp_ready = 0;
-        pipe_resp_ready = 0;
-        pipe_req_tag = 3'd4;
-        pipe_req_write = 0;
-        pipe_req_addr = 64'h4008;
-        pipe_req_wdata = 0;
-        pipe_req_wstrb = 0;
+        xlate_resp_ready = 0;
+        xlate_req_tag = 3'd4;
+        xlate_req_write = 0;
+        xlate_req_vaddr = 64'h4008;
         fetch_req_valid = 1;
-        pipe_req_valid = 1;
+        xlate_req_valid = 1;
         #1;
-        if (!fetch_req_ready || !pipe_req_ready)
+        if (!fetch_req_ready || !xlate_req_ready)
             $fatal(1, "simultaneous L2 TLB test requests not accepted");
+        if (!dut.l2_tlb_select_xlate || !dut.l2_tlb_lookup_hit)
+            $fatal(1, "shared L2 TLB did not fast-path live LSU lookup");
         wait_count = l2_tlb_hits;
         channel_wait = ar_count;
         locked_reads_before = ccx_reads;
         tick();
         fetch_req_valid = 0;
-        pipe_req_valid = 0;
-        if (!dut.l2_tlb_select_lsu || !dut.l2_tlb_lookup_hit)
-            $fatal(1, "shared L2 TLB did not give LSU first lookup");
-        tick();
+        xlate_req_valid = 0;
+        #1;
         if (!dut.l2_tlb_select_fetch || !dut.l2_tlb_lookup_hit)
             $fatal(1, "shared L2 TLB lost waiting fetch lookup");
         tick();
@@ -1174,7 +1299,9 @@ module tb_ccx_bus #(
         if (ar_count != channel_wait + 1)
             $fatal(1, "translated L2-hit fetch did not launch one AXI read");
         send_read_response(seen_id[channel_wait], 256'h1234, 2'b00);
-        pipe_resp_ready = 1;
+        xlate_resp_ready = 1;
+        expect_xlate_response(3'd4, 64'h3008, 1'b0, 1'b0);
+        push_pipe_request(3'd4, 1'b0, 64'h3008, 64'd0, 8'd0);
         expect_pipe_response(3'd4, 64'h1357_9bdf_2468_ace0,
                              1'b0, 1'b0);
         fetch_resp_ready = 1;
@@ -1187,6 +1314,57 @@ module tb_ccx_bus #(
                 ccx_reads - locked_reads_before);
         fetch_req_priv = `RV64_PRIV_M;
         fetch_req_vm_mode = `RV64_SATP_MODE_BARE;
+
+        // An L2-hit store translation completes locally with its physical
+        // address and refills the L1 DTLB.  A second store translation then
+        // consumes that L1 hit on the immediately following cycle.  Neither
+        // translation-only admission may read or write L1D, consume CCX, or
+        // enter the serial LSU slot.
+        @(negedge clk);
+        dut.u_dtlb.valid_q = 0;
+        wait_count = ccx_reads;
+        channel_wait = ccx_writes;
+        locked_reads_before = dut.u_l1d.store_buffer_count_q;
+        fences_before = l2_tlb_hits;
+        xlate_resp_ready = 1'b1;
+        xlate_req_tag = 3'd5;
+        xlate_req_write = 1'b1;
+        xlate_req_vaddr = 64'h4010;
+        xlate_req_valid = 1'b1;
+        #1;
+        if (!xlate_req_ready || !dut.xlate_l2_hit)
+            $fatal(1, "L2-hit store translation did not fast-path");
+        tick();
+        if (!xlate_resp_valid || xlate_resp_tag != 3'd5 ||
+            xlate_resp_paddr != 64'h3010 ||
+            xlate_resp_access_fault || xlate_resp_page_fault)
+            $fatal(1,
+                "L2-hit translation-only response mismatch tag=%0d paddr=%h faults=%b/%b",
+                xlate_resp_tag, xlate_resp_paddr,
+                xlate_resp_access_fault, xlate_resp_page_fault);
+        xlate_req_tag = 3'd6;
+        xlate_req_vaddr = 64'h4018;
+        #1;
+        if (!xlate_req_ready || !dut.xlate_l1_hit)
+            $fatal(1,
+                   "L1-hit store translation did not accept behind response");
+        tick();
+        xlate_req_valid = 1'b0;
+        if (!xlate_resp_valid || xlate_resp_tag != 3'd6 ||
+            xlate_resp_paddr != 64'h3018 ||
+            xlate_resp_access_fault || xlate_resp_page_fault)
+            $fatal(1,
+                "L1-hit translation-only response mismatch tag=%0d paddr=%h faults=%b/%b",
+                xlate_resp_tag, xlate_resp_paddr,
+                xlate_resp_access_fault, xlate_resp_page_fault);
+        tick();
+        if (ccx_reads != wait_count || ccx_writes != channel_wait ||
+            dut.u_l1d.store_buffer_count_q != locked_reads_before ||
+            dut.lsu_state_q != 0 ||
+            (l2_tlb_hits - fences_before) != 1)
+            $fatal(1,
+                "translation-only stores serialized or touched memory l2_hits=%0d state=%0d",
+                l2_tlb_hits - fences_before, dut.lsu_state_q);
 
         // The completed walk populated DTLB and L1D state.  Hold an unrelated
         // instruction walk at CCX, then require translated load and store hits
@@ -1209,24 +1387,38 @@ module tb_ccx_bus #(
         if (!dut.miss_active_q || (dut.miss_owner_q != 0))
             $fatal(1, "translated fast-hit test did not hold fetch PTW");
 
+        // Evict the L1 DTLB entry while the unrelated fetch walk remains
+        // active.  The first load must consume the retained L2 hit directly;
+        // it may not wait for the walker.
+        @(negedge clk);
+        dut.u_dtlb.valid_q = 0;
         wait_count = translated_fast_fires;
         channel_wait = translated_fast_store_fires;
-        push_pipe_request(3'd4, 1'b0, 64'h4008, 64'd0, 8'd0);
+        fences_before = l2_tlb_hits;
+        push_xlate_request(3'd4, 1'b0, 64'h4008);
+        expect_xlate_response(3'd4, 64'h3008, 1'b0, 1'b0);
+        push_pipe_request(3'd4, 1'b0, 64'h3008, 64'd0, 8'd0);
         expect_pipe_response(3'd4, 64'h1357_9bdf_2468_ace0,
                              1'b0, 1'b0);
-        push_pipe_request(3'd5, 1'b1, 64'h4010,
+        push_xlate_request(3'd5, 1'b1, 64'h4010);
+        expect_xlate_response(3'd5, 64'h3010, 1'b0, 1'b0);
+        push_pipe_request(3'd5, 1'b1, 64'h3010,
                           64'hdeaf_beef_cafe_f00d, 8'hff);
         expect_pipe_response(3'd5, 64'd0, 1'b0, 1'b0);
-        push_pipe_request(3'd6, 1'b0, 64'h4010, 64'd0, 8'd0);
+        push_xlate_request(3'd6, 1'b0, 64'h4010);
+        expect_xlate_response(3'd6, 64'h3010, 1'b0, 1'b0);
+        push_pipe_request(3'd6, 1'b0, 64'h3010, 64'd0, 8'd0);
         expect_pipe_response(3'd6, 64'hdeaf_beef_cafe_f00d,
                              1'b0, 1'b0);
         if ((translated_fast_fires - wait_count) != 3 ||
             (translated_fast_store_fires - channel_wait) != 1 ||
+            (l2_tlb_hits - fences_before) != 1 ||
             !dut.miss_active_q)
             $fatal(1,
-                "DTLB hits did not pass active PTW fast=%0d stores=%0d miss=%b state=%0d",
+                "L1/L2 DTLB hits did not pass active PTW fast=%0d stores=%0d l2=%0d miss=%b state=%0d",
                 translated_fast_fires - wait_count,
                 translated_fast_store_fires - channel_wait,
+                l2_tlb_hits - fences_before,
                 dut.miss_active_q, dut.lsu_state_q);
 
         ccx_allow_cmd = 1;
@@ -1256,14 +1448,15 @@ module tb_ccx_bus #(
         end
         if (dut.u_l1d.store_buffer_count_q != 0)
             $fatal(1, "translated fast store did not drain");
-        push_pipe_request(3'd7, 1'b0, 64'h5000, 64'd0, 8'd0);
+        push_xlate_request(3'd7, 1'b0, 64'h5000);
+        expect_xlate_response(3'd7, 64'h3000, 1'b0, 1'b0);
+        push_pipe_request(3'd7, 1'b0, 64'h3000, 64'd0, 8'd0);
         expect_pipe_response(3'd7, 64'h5a17_c0de_cafe_1234,
                              1'b0, 1'b0);
         wait_count = translated_fast_store_fires;
         channel_wait = ccx_writes;
-        push_pipe_request(3'd0, 1'b1, 64'h5000,
-                          64'h1111_2222_3333_4444, 8'hff);
-        expect_pipe_response(3'd0, 64'd0, 1'b0, 1'b1);
+        push_xlate_request(3'd0, 1'b1, 64'h5000);
+        expect_xlate_response(3'd0, 64'h3000, 1'b0, 1'b1);
         if ((translated_fast_store_fires != wait_count) ||
             (ccx_writes != channel_wait) ||
             (ccx_memory_word(64'h3000) !=
@@ -1271,17 +1464,23 @@ module tb_ccx_bus #(
             $fatal(1, "read-only DTLB store hit escaped precise fault path");
 
         // Exercise the ugly shootdown edge.  The old translation exists in
-        // ITLB and L2, while DTLB has been capacity-evicted.  Raise TLBI while
-        // the serial LSU sees the old L2 hit and while a replacement PTE is
-        // already visible.  Invalidation must suppress that hit/fill on the
-        // same edge, clear both L1s and L2, then make the held request walk to
-        // the replacement physical page.
+        // ITLB and L2, while DTLB has been capacity-evicted.  Raise TLBI after
+        // the live LSU lookup exposes the old L2 hit but before its acceptance
+        // edge, while a replacement PTE is already visible.  Invalidation
+        // must suppress that hit/fill, capture the held request on the
+        // fallback path, clear both L1s and L2, then walk to the replacement
+        // physical page.
         @(negedge clk);
         dut.u_dtlb.valid_q = 0;
-        pipe_resp_ready = 0;
+        xlate_resp_ready = 0;
         wait_count = ccx_reads;
-        push_pipe_request(3'd1, 1'b0, 64'h4008, 64'd0, 8'd0);
-        if (!dut.l2_tlb_select_lsu || !dut.l2_tlb_lookup_hit ||
+        xlate_req_tag = 3'd1;
+        xlate_req_write = 1'b0;
+        xlate_req_vaddr = 64'h4008;
+        xlate_req_valid = 1'b1;
+        #1;
+        if (!xlate_req_ready || !dut.l2_tlb_select_xlate ||
+            !dut.l2_tlb_lookup_hit ||
             !dut.dtlb_l2_fill_valid)
             $fatal(1, "shootdown race setup did not expose stale L2 hit");
         ccx_memory[64'h2000 >> 6][4*64 +: 64] =
@@ -1310,7 +1509,26 @@ module tb_ccx_bus #(
         end
         if (tlbi_busy)
             $fatal(1, "shootdown race barrier did not complete");
-        pipe_resp_ready = 1;
+        channel_wait = 0;
+        while (xlate_req_valid && (channel_wait < 100)) begin
+            @(posedge clk);
+            if (xlate_req_ready) begin
+                #1;
+                xlate_req_valid = 1'b0;
+            end else begin
+                #1;
+            end
+            channel_wait = channel_wait + 1;
+        end
+        if (xlate_req_valid)
+            $fatal(1,
+                "shootdown replacement translation not accepted state=%0d ready=%b resp=%b local=%b fallback=%b miss=%b",
+                dut.lsu_state_q, xlate_req_ready, xlate_resp_valid,
+                dut.xlate_local_resp_valid_q,
+                dut.xlate_fallback_active_q, dut.miss_active_q);
+        xlate_resp_ready = 1;
+        expect_xlate_response(3'd1, 64'h1008, 1'b0, 1'b0);
+        push_pipe_request(3'd1, 1'b0, 64'h1008, 64'd0, 8'd0);
         expect_pipe_response(3'd1, 64'hfeed_face_1234_5678,
                              1'b0, 1'b0);
         if ((ccx_reads - wait_count) != 4)

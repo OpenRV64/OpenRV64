@@ -19,6 +19,7 @@ module tb_tlb_l2;
     wire [`RV64_XLEN-1:0] lookup_paddr;
     wire lookup_page_fault;
     wire lookup_global;
+    wire [`RV64_PAGE_LEVEL_WIDTH-1:0] lookup_level;
     wire lookup_readable;
     wire lookup_writable;
     wire lookup_executable;
@@ -58,6 +59,7 @@ module tb_tlb_l2;
         .lookup_paddr_o(lookup_paddr),
         .lookup_page_fault_o(lookup_page_fault),
         .lookup_global_o(lookup_global),
+        .lookup_level_o(lookup_level),
         .lookup_readable_o(lookup_readable),
         .lookup_writable_o(lookup_writable),
         .lookup_executable_o(lookup_executable),
@@ -228,12 +230,20 @@ module tb_tlb_l2;
         fill_accessed = 1'b1;
         fill_dirty = 1'b1;
         @(negedge clk);
-        if (!dut.diag_superpage_bypass)
-            $fatal(1, "superpage fill was not classified as bypass");
+        if (!dut.diag_superpage_fill)
+            $fatal(1, "superpage fill was not classified");
         fill_valid = 1'b0;
         expect_lookup(64'h0000_0000_0040_1000, 16'h0044, 2'd0,
-                      `RV64_PRIV_S, 1'b0, 1'b0, 1'b0, 64'd0,
-                      "superpage bypass");
+                      `RV64_PRIV_S, 1'b0, 1'b1, 1'b0,
+                      64'h0000_0000_7000_1000,
+                      "superpage sidecar");
+        lookup_valid = 1'b1;
+        lookup_vaddr = 64'h0000_0000_0040_1000;
+        lookup_asid = 16'h0044;
+        #1;
+        if (lookup_level !== `RV64_PAGE_LEVEL_2M)
+            $fatal(1, "superpage level was not returned");
+        lookup_valid = 1'b0;
 
         @(negedge clk);
         tlbi = 1'b1;

@@ -20,6 +20,14 @@
 // valid while fewer than half the namespace (512 IDs) can remain live.
 `define OPENRV64_INSTR_ID_WIDTH 10
 
+// Default integer physical-register configuration. PHYS_REG_COUNT counts
+// stored, writable registers; hardwired p0 is part of the tag namespace but
+// consumes no PRF entry. The current 3P renamer maps xN to pN. Live 3P
+// composition derives the tag and retirement-metadata widths from the count;
+// these macros retain the default shape for fixed-width unit wrappers.
+`define OPENRV64_PHYS_REG_COUNT 31
+`define OPENRV64_PHYS_REG_ADDR_WIDTH 5
+
 // Fixed-width portion of a three-pipe issue packet.  Instruction identity and
 // retire-queue slot are carried separately because slot width follows queue
 // depth.  The payload is packed, most-significant field first, as:
@@ -52,10 +60,19 @@
 `define OPENRV64_COMPLETE_RD_LSB 154
 `define OPENRV64_COMPLETE_DATA_LSB 169
 
-// Retirement metadata is the original issue payload plus source-use and
-// hard-order classification bits.  Packing from MSB to LSB is:
+// Metadata produced internally by the strict and window dispatch engines.
+// Packing from MSB to LSB is:
 //
 //   hard_order, uses_rs2, uses_rs1, issue_payload
-`define OPENRV64_RETIRE_META_WIDTH 405
+`define OPENRV64_DISPATCH_META_WIDTH 405
+
+// The common rename layer augments dispatch metadata before ROB allocation.
+// old_phys is retained even by the identity implementation because a dynamic
+// renamer must return it to the free list only when the instruction commits.
+// Packing from MSB to LSB is:
+//
+//   old_phys, new_phys, hard_order, uses_rs2, uses_rs1, issue_payload
+`define OPENRV64_RETIRE_META_WIDTH \
+    (`OPENRV64_DISPATCH_META_WIDTH + 2*`OPENRV64_PHYS_REG_ADDR_WIDTH)
 
 `endif

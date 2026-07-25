@@ -35,11 +35,16 @@ module openrv64_exec_top_3p #(
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
-    parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}}
+    parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE = {`RV64_XLEN{1'b0}}
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         flush_i,
+    input  wire                         squash_younger_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
+    input  wire                         translation_bypass_i,
 
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready_o,
@@ -103,9 +108,12 @@ module openrv64_exec_top_3p #(
     output wire                         mem_valid_o,
     input  wire                         mem_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_tag_o,
+    output wire                         mem_xlate_only_o,
+    output wire                         mem_physical_o,
     input  wire                         mem_resp_valid_i,
     output wire                         mem_resp_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag_i,
+    input  wire [`RV64_XLEN-1:0]        mem_resp_paddr_i,
     input  wire                         mem_error_i,
     input  wire                         mem_page_fault_i,
     input  wire                         mem_access_allowed_i,
@@ -118,6 +126,18 @@ module openrv64_exec_top_3p #(
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
+
+    output wire                         mem_xlate_valid_o,
+    input  wire                         mem_xlate_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag_o,
+    output wire                         mem_xlate_write_o,
+    output wire [`RV64_XLEN-1:0]        mem_xlate_vaddr_o,
+    input  wire                         mem_xlate_resp_valid_i,
+    output wire                         mem_xlate_resp_ready_o,
+    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag_i,
+    input  wire [`RV64_XLEN-1:0]        mem_xlate_resp_paddr_i,
+    input  wire                         mem_xlate_resp_access_fault_i,
+    input  wire                         mem_xlate_resp_page_fault_i,
 
     output wire                         mem1_valid_o,
     input  wire                         mem1_ready_i,
@@ -280,10 +300,7 @@ module openrv64_exec_top_3p #(
         (`RV64_CSR(ex1_instr) == `RV64_CSR_SATP);
     wire ex1_translation_barrier =
         ex1_satp_access || `RV64_IS_SFENCE_VMA(ex1_instr);
-    wire mem0_posted_store_pending;
-    wire mem1_posted_store_pending;
-    wire mem_posted_store_pending =
-        mem0_posted_store_pending || mem1_posted_store_pending;
+    wire mem_posted_store_pending;
     wire ex1_order_match = ordered_head_valid_i &&
         (ordered_head_id_i == issue_id_i[
             1*`OPENRV64_INSTR_ID_WIDTH +:
@@ -409,355 +426,108 @@ module openrv64_exec_top_3p #(
         .redirect_target_o(redirect_target_o)
     );
 
-    wire mem0_complete_valid;
-    wire mem1_complete_valid;
-    wire mem0_complete_ready;
-    wire mem1_complete_ready;
-    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem0_complete_id;
-    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem1_complete_id;
-    wire [RETIRE_SLOT_WIDTH-1:0] mem0_complete_slot;
-    wire [RETIRE_SLOT_WIDTH-1:0] mem1_complete_slot;
-    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
-        mem0_complete_payload;
-    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
-        mem1_complete_payload;
-
-    wire mem0_async_store_fault;
-    wire mem1_async_store_fault;
-    wire mem0_async_store_page_fault;
-    wire mem1_async_store_page_fault;
-    wire [`RV64_XLEN-1:0] mem0_async_store_fault_pc;
-    wire [`RV64_XLEN-1:0] mem1_async_store_fault_pc;
-    wire [`RV64_XLEN-1:0] mem0_async_store_fault_addr;
-    wire [`RV64_XLEN-1:0] mem1_async_store_fault_addr;
-    wire [63:0] mem0_async_store_fault_trace;
-    wire [63:0] mem1_async_store_fault_trace;
-    wire [`RV64_INSTR_WIDTH-1:0] mem0_async_store_fault_instr;
-    wire [`RV64_INSTR_WIDTH-1:0] mem1_async_store_fault_instr;
-
-    wire mem0_raw_valid;
-    wire mem1_raw_valid;
-    wire mem0_raw_ready;
-    wire mem1_raw_ready;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem0_raw_tag;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_raw_tag;
-    wire mem0_raw_lock;
-    wire mem1_raw_lock;
-    wire mem0_raw_write;
-    wire mem1_raw_write;
-    wire [`RV64_XLEN-1:0] mem0_raw_addr;
-    wire [`RV64_XLEN-1:0] mem1_raw_addr;
-    wire [`RV64_XLEN-1:0] mem0_raw_wdata;
-    wire [`RV64_XLEN-1:0] mem1_raw_wdata;
-    wire [7:0] mem0_raw_wstrb;
-    wire [7:0] mem1_raw_wstrb;
-    wire mem0_raw_access;
-    wire mem1_raw_access;
-    wire [`RV64_XLEN-1:0] mem0_raw_effective_addr;
-    wire [`RV64_XLEN-1:0] mem1_raw_effective_addr;
-    wire [2:0] mem0_raw_size;
-    wire [2:0] mem1_raw_size;
-    wire mem0_head_valid;
-    wire mem1_head_valid;
-    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem0_head_id;
-    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] mem1_head_id;
-    wire mem0_head_ordered;
-    wire mem1_head_ordered;
-    wire mem0_forward_store_valid;
-    wire [`RV64_XLEN-1:0] mem0_forward_store_addr;
-    wire [`RV64_XLEN-1:0] mem0_forward_store_wdata;
-    wire [7:0] mem0_forward_store_wstrb;
-    wire mem1_forward_store_valid;
-    wire [`RV64_XLEN-1:0] mem1_forward_store_addr;
-    wire [`RV64_XLEN-1:0] mem1_forward_store_wdata;
-    wire [7:0] mem1_forward_store_wstrb;
-    wire mem0_raw_resp_ready;
-    wire mem1_raw_resp_ready;
-    wire mem0_raw_resp_valid = mem_resp_valid_i &&
-                               !mem_resp_tag_i[
-                                   `OPENRV64_LSU_TAG_WIDTH-1];
-    wire mem1_raw_resp_valid = mem_resp_valid_i &&
-                               mem_resp_tag_i[
-                                   `OPENRV64_LSU_TAG_WIDTH-1];
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] local_resp_tag = {
-        1'b0, mem_resp_tag_i[`OPENRV64_LSU_TAG_WIDTH-2:0]
-    };
-    assign mem_resp_ready_o = mem_resp_tag_i[
-        `OPENRV64_LSU_TAG_WIDTH-1] ? mem1_raw_resp_ready :
-                                     mem0_raw_resp_ready;
-
-    openrv64_exec_pipe_mem #(
+    openrv64_exec_lsu #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .LSU_DEPTH(4),
-        .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
-        .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
-        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
-    ) u_mem0 (
+        .LOAD_QUEUE_DEPTH(4),
+        .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
+        .CACHEABLE_BASE(CACHEABLE_BASE),
+        .CACHEABLE_SIZE(CACHEABLE_SIZE)
+    ) u_lsu (
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush_i),
-        .issue_valid_i(mem0_issue_valid),
-        .issue_ready_o(mem0_issue_ready),
-        .issue_id_i(issue_id_i[
+        .squash_younger_i(squash_younger_i),
+        .squash_id_i(squash_id_i),
+        .translation_bypass_i(translation_bypass_i),
+        .load_issue_valid_i(mem0_issue_valid),
+        .load_issue_ready_o(mem0_issue_ready),
+        .load_issue_id_i(issue_id_i[
             2*`OPENRV64_INSTR_ID_WIDTH +:
             `OPENRV64_INSTR_ID_WIDTH]),
-        .issue_slot_i(issue_slot_i[2*RETIRE_SLOT_WIDTH +:
-                                   RETIRE_SLOT_WIDTH]),
-        .issue_payload_i(issue_payload_i[
+        .load_issue_slot_i(issue_slot_i[
+            2*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH]),
+        .load_issue_payload_i(issue_payload_i[
             2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
-        .ordered_head_valid_i(ordered_head_valid_i),
-        .ordered_head_id_i(ordered_head_id_i),
-        .ordered_head_slot_i(ordered_head_slot_i),
-        .complete_valid_o(mem0_complete_valid),
-        .complete_ready_i(mem0_complete_ready),
-        .complete_id_o(mem0_complete_id),
-        .complete_slot_o(mem0_complete_slot),
-        .complete_payload_o(mem0_complete_payload),
-        .async_store_fault_o(mem0_async_store_fault),
-        .async_store_page_fault_o(mem0_async_store_page_fault),
-        .async_store_fault_pc_o(mem0_async_store_fault_pc),
-        .async_store_fault_addr_o(mem0_async_store_fault_addr),
-        .async_store_fault_trace_o(mem0_async_store_fault_trace),
-        .async_store_fault_instr_o(mem0_async_store_fault_instr),
-        .posted_store_pending_o(mem0_posted_store_pending),
-        .mem_valid_o(mem0_raw_valid),
-        .mem_ready_i(mem0_raw_ready),
-        .mem_tag_o(mem0_raw_tag),
-        .mem_resp_valid_i(mem0_raw_resp_valid),
-        .mem_resp_ready_o(mem0_raw_resp_ready),
-        .mem_resp_tag_i(local_resp_tag),
-        .mem_error_i(mem_error_i),
-        .mem_page_fault_i(mem_page_fault_i),
-        .mem_access_allowed_i(mem_access_allowed_i),
-        .mem_lock_o(mem0_raw_lock),
-        .mem_write_o(mem0_raw_write),
-        .mem_addr_o(mem0_raw_addr),
-        .mem_wdata_o(mem0_raw_wdata),
-        .mem_wstrb_o(mem0_raw_wstrb),
-        .mem_access_o(mem0_raw_access),
-        .mem_effective_addr_o(mem0_raw_effective_addr),
-        .mem_size_o(mem0_raw_size),
-        .pending_head_valid_o(mem0_head_valid),
-        .pending_head_id_o(mem0_head_id),
-        .pending_head_ordered_o(mem0_head_ordered),
-        .queue_busy_o(),
-        .forward_store_valid_i(mem1_forward_store_valid),
-        .forward_store_addr_i(mem1_forward_store_addr),
-        .forward_store_wdata_i(mem1_forward_store_wdata),
-        .forward_store_wstrb_i(mem1_forward_store_wstrb),
-        .forward_store_valid_o(mem0_forward_store_valid),
-        .forward_store_addr_o(mem0_forward_store_addr),
-        .forward_store_wdata_o(mem0_forward_store_wdata),
-        .forward_store_wstrb_o(mem0_forward_store_wstrb),
-        .mem_rdata_i(mem_rdata_i)
-    );
-
-    openrv64_exec_pipe_mem #(
-        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .LSU_DEPTH(STORE_QUEUE_DEPTH),
-        .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
-        .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
-        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
-    ) u_mem1 (
-        .clk(clk),
-        .rst_n(rst_n),
-        .flush_i(flush_i),
-        .issue_valid_i(mem1_issue_valid),
-        .issue_ready_o(mem1_issue_ready),
-        .issue_id_i(issue_id_i[
+        .store_issue_valid_i(mem1_issue_valid),
+        .store_issue_ready_o(mem1_issue_ready),
+        .store_issue_id_i(issue_id_i[
             3*`OPENRV64_INSTR_ID_WIDTH +:
             `OPENRV64_INSTR_ID_WIDTH]),
-        .issue_slot_i(issue_slot_i[3*RETIRE_SLOT_WIDTH +:
-                                   RETIRE_SLOT_WIDTH]),
-        .issue_payload_i(issue_payload_i[
+        .store_issue_slot_i(issue_slot_i[
+            3*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH]),
+        .store_issue_payload_i(issue_payload_i[
             3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
         .ordered_head_valid_i(ordered_head_valid_i),
         .ordered_head_id_i(ordered_head_id_i),
         .ordered_head_slot_i(ordered_head_slot_i),
-        .complete_valid_o(mem1_complete_valid),
-        .complete_ready_i(mem1_complete_ready),
-        .complete_id_o(mem1_complete_id),
-        .complete_slot_o(mem1_complete_slot),
-        .complete_payload_o(mem1_complete_payload),
-        .async_store_fault_o(mem1_async_store_fault),
-        .async_store_page_fault_o(mem1_async_store_page_fault),
-        .async_store_fault_pc_o(mem1_async_store_fault_pc),
-        .async_store_fault_addr_o(mem1_async_store_fault_addr),
-        .async_store_fault_trace_o(mem1_async_store_fault_trace),
-        .async_store_fault_instr_o(mem1_async_store_fault_instr),
-        .posted_store_pending_o(mem1_posted_store_pending),
-        .mem_valid_o(mem1_raw_valid),
-        .mem_ready_i(mem1_raw_ready),
-        .mem_tag_o(mem1_raw_tag),
-        .mem_resp_valid_i(mem1_raw_resp_valid),
-        .mem_resp_ready_o(mem1_raw_resp_ready),
-        .mem_resp_tag_i(local_resp_tag),
+        .complete_valid_o(complete_valid_o[2]),
+        .complete_ready_i(complete_ready_i[2]),
+        .complete_id_o(complete_id_o[
+            2*`OPENRV64_INSTR_ID_WIDTH +:
+            `OPENRV64_INSTR_ID_WIDTH]),
+        .complete_slot_o(complete_slot_o[
+            2*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH]),
+        .complete_payload_o(complete_payload_o[
+            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH]),
+        .mem_valid_o(mem_valid_o),
+        .mem_ready_i(mem_ready_i),
+        .mem_tag_o(mem_tag_o),
+        .mem_xlate_only_o(mem_xlate_only_o),
+        .mem_physical_o(mem_physical_o),
+        .mem_lock_o(mem_lock_o),
+        .mem_write_o(mem_write_o),
+        .mem_addr_o(mem_addr_o),
+        .mem_wdata_o(mem_wdata_o),
+        .mem_wstrb_o(mem_wstrb_o),
+        .mem_access_o(mem_access_o),
+        .mem_effective_addr_o(mem_effective_addr_o),
+        .mem_size_o(mem_size_o),
+        .xlate_valid_o(mem_xlate_valid_o),
+        .xlate_ready_i(mem_xlate_ready_i),
+        .xlate_tag_o(mem_xlate_tag_o),
+        .xlate_write_o(mem_xlate_write_o),
+        .xlate_vaddr_o(mem_xlate_vaddr_o),
+        .xlate_resp_valid_i(mem_xlate_resp_valid_i),
+        .xlate_resp_ready_o(mem_xlate_resp_ready_o),
+        .xlate_resp_tag_i(mem_xlate_resp_tag_i),
+        .xlate_resp_paddr_i(mem_xlate_resp_paddr_i),
+        .xlate_resp_access_fault_i(mem_xlate_resp_access_fault_i),
+        .xlate_resp_page_fault_i(mem_xlate_resp_page_fault_i),
+        .mem_resp_valid_i(mem_resp_valid_i),
+        .mem_resp_ready_o(mem_resp_ready_o),
+        .mem_resp_tag_i(mem_resp_tag_i),
+        .mem_resp_paddr_i(mem_resp_paddr_i),
+        .mem_rdata_i(mem_rdata_i),
         .mem_error_i(mem_error_i),
         .mem_page_fault_i(mem_page_fault_i),
-        .mem_access_allowed_i(mem_access_allowed_i),
-        .mem_lock_o(mem1_raw_lock),
-        .mem_write_o(mem1_raw_write),
-        .mem_addr_o(mem1_raw_addr),
-        .mem_wdata_o(mem1_raw_wdata),
-        .mem_wstrb_o(mem1_raw_wstrb),
-        .mem_access_o(mem1_raw_access),
-        .mem_effective_addr_o(mem1_raw_effective_addr),
-        .mem_size_o(mem1_raw_size),
-        .pending_head_valid_o(mem1_head_valid),
-        .pending_head_id_o(mem1_head_id),
-        .pending_head_ordered_o(mem1_head_ordered),
-        .queue_busy_o(),
-        .forward_store_valid_i(mem0_forward_store_valid),
-        .forward_store_addr_i(mem0_forward_store_addr),
-        .forward_store_wdata_i(mem0_forward_store_wdata),
-        .forward_store_wstrb_i(mem0_forward_store_wstrb),
-        .forward_store_valid_o(mem1_forward_store_valid),
-        .forward_store_addr_o(mem1_forward_store_addr),
-        .forward_store_wdata_o(mem1_forward_store_wdata),
-        .forward_store_wstrb_o(mem1_forward_store_wstrb),
-        .mem_rdata_i(mem_rdata_i)
+        .store_pending_o(mem_posted_store_pending)
     );
 
-    function automatic id_is_younger;
-        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
-        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
-        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
-        begin
-            distance = candidate - reference;
-            id_is_younger =
-                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
-                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
-        end
-    endfunction
+    // The unified LSQ has one translation/L1D launch port.  Keep the legacy
+    // second external port tied off until the memory endpoint exposes a second
+    // independent translation/PMP probe.
+    assign mem1_valid_o = 1'b0;
+    assign mem1_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+    assign mem1_lock_o = 1'b0;
+    assign mem1_write_o = 1'b0;
+    assign mem1_addr_o = {`RV64_XLEN{1'b0}};
+    assign mem1_wdata_o = {`RV64_XLEN{1'b0}};
+    assign mem1_wstrb_o = 8'h00;
+    assign mem1_access_o = 1'b0;
+    assign mem1_effective_addr_o = {`RV64_XLEN{1'b0}};
+    assign mem1_size_o = 3'd0;
 
-    // A pending store or atomic in one physical queue blocks younger memory
-    // requests from the other queue until that ordered operation receives its
-    // tagged translation/PMP/L1D-admission response.
-    wire mem0_request_allowed = mem0_raw_valid &&
-        !(mem1_head_valid && mem1_head_ordered &&
-          id_is_younger(mem0_head_id, mem1_head_id));
-    wire mem1_request_allowed = mem1_raw_valid &&
-        !(mem0_head_valid && mem0_head_ordered &&
-          id_is_younger(mem1_head_id, mem0_head_id));
-    wire both_mem_requests = mem0_request_allowed && mem1_request_allowed;
-    wire port0_select_mem1 = mem1_request_allowed &&
-        (!mem0_request_allowed ||
-         id_is_younger(mem0_head_id, mem1_head_id));
-    // Address/protection metadata must describe the oldest pending head even
-    // when an ordered store is not yet allowed to assert mem_valid.  Request
-    // grant and metadata selection are therefore deliberately separate.
-    wire port0_payload_select_mem1 = mem1_head_valid &&
-        (!mem0_head_valid ||
-         id_is_younger(mem0_head_id, mem1_head_id));
-
-    assign mem_valid_o = mem0_request_allowed || mem1_request_allowed;
-    assign mem1_valid_o = both_mem_requests;
-    assign mem_tag_o = port0_payload_select_mem1 ?
-        {1'b1, mem1_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]} :
-        {1'b0, mem0_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]};
-    assign mem1_tag_o = port0_payload_select_mem1 ?
-        {1'b0, mem0_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]} :
-        {1'b1, mem1_raw_tag[`OPENRV64_LSU_TAG_WIDTH-2:0]};
-    assign mem_lock_o = port0_payload_select_mem1 ?
-                        mem1_raw_lock : mem0_raw_lock;
-    assign mem1_lock_o = port0_payload_select_mem1 ?
-                         mem0_raw_lock : mem1_raw_lock;
-    assign mem_write_o = port0_payload_select_mem1 ?
-                         mem1_raw_write : mem0_raw_write;
-    assign mem1_write_o = port0_payload_select_mem1 ?
-                          mem0_raw_write : mem1_raw_write;
-    assign mem_addr_o = port0_payload_select_mem1 ?
-                        mem1_raw_addr : mem0_raw_addr;
-    assign mem1_addr_o = port0_payload_select_mem1 ?
-                         mem0_raw_addr : mem1_raw_addr;
-    assign mem_wdata_o = port0_payload_select_mem1 ?
-                         mem1_raw_wdata : mem0_raw_wdata;
-    assign mem1_wdata_o = port0_payload_select_mem1 ?
-                          mem0_raw_wdata : mem1_raw_wdata;
-    assign mem_wstrb_o = port0_payload_select_mem1 ?
-                         mem1_raw_wstrb : mem0_raw_wstrb;
-    assign mem1_wstrb_o = port0_payload_select_mem1 ?
-                          mem0_raw_wstrb : mem1_raw_wstrb;
-    assign mem_access_o = port0_payload_select_mem1 ?
-                          mem1_raw_access : mem0_raw_access;
-    assign mem1_access_o = port0_payload_select_mem1 ?
-                           mem0_raw_access : mem1_raw_access;
-    assign mem_effective_addr_o = port0_payload_select_mem1 ?
-                                  mem1_raw_effective_addr :
-                                  mem0_raw_effective_addr;
-    assign mem1_effective_addr_o = port0_payload_select_mem1 ?
-                                   mem0_raw_effective_addr :
-                                   mem1_raw_effective_addr;
-    assign mem_size_o = port0_payload_select_mem1 ?
-                        mem1_raw_size : mem0_raw_size;
-    assign mem1_size_o = port0_payload_select_mem1 ?
-                         mem0_raw_size : mem1_raw_size;
-
-    assign mem0_raw_ready = mem0_request_allowed &&
-        (port0_select_mem1 ? (both_mem_requests && mem1_ready_i) :
-                             mem_ready_i);
-    assign mem1_raw_ready = mem1_request_allowed &&
-        (port0_select_mem1 ? mem_ready_i :
-         (both_mem_requests && mem1_ready_i));
-
-`ifndef SYNTHESIS
-    initial begin
-        if ((STORE_QUEUE_DEPTH < 1) || (STORE_QUEUE_DEPTH > 4))
-            $fatal(1,
-                "3p store queue must contain one through four entries");
-    end
-`endif
-
-    // EX0 and EX1 retain dedicated completion ports.  MEM0 and MEM1 share the
-    // third retirement-queue completion port; each pipe already holds its
-    // completion under backpressure.
-    reg mem_complete_prefer1_q;
-    wire select_mem1_completion = mem1_complete_valid &&
-        (!mem0_complete_valid || mem_complete_prefer1_q);
-    wire mem_completion_fire = complete_valid_o[2] &&
-                               complete_ready_i[2];
-    assign complete_valid_o[2] =
-        select_mem1_completion ? mem1_complete_valid : mem0_complete_valid;
-    assign complete_id_o[
-        2*`OPENRV64_INSTR_ID_WIDTH +:
-        `OPENRV64_INSTR_ID_WIDTH] =
-        select_mem1_completion ? mem1_complete_id : mem0_complete_id;
-    assign complete_slot_o[
-        2*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH] =
-        select_mem1_completion ? mem1_complete_slot : mem0_complete_slot;
-    assign complete_payload_o[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-        `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH] =
-        select_mem1_completion ?
-        mem1_complete_payload : mem0_complete_payload;
-    assign mem0_complete_ready = complete_ready_i[2] &&
-                                 !select_mem1_completion;
-    assign mem1_complete_ready = complete_ready_i[2] &&
-                                 select_mem1_completion;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            mem_complete_prefer1_q <= 1'b0;
-        else if (flush_i)
-            mem_complete_prefer1_q <= 1'b0;
-        else if (mem_completion_fire)
-            mem_complete_prefer1_q <= !select_mem1_completion;
-    end
-
-    assign async_store_fault_o =
-        mem0_async_store_fault || mem1_async_store_fault;
-    assign async_store_page_fault_o = mem0_async_store_fault ?
-        mem0_async_store_page_fault : mem1_async_store_page_fault;
-    assign async_store_fault_pc_o = mem0_async_store_fault ?
-        mem0_async_store_fault_pc : mem1_async_store_fault_pc;
-    assign async_store_fault_addr_o = mem0_async_store_fault ?
-        mem0_async_store_fault_addr : mem1_async_store_fault_addr;
-    assign async_store_fault_trace_o = mem0_async_store_fault ?
-        mem0_async_store_fault_trace : mem1_async_store_fault_trace;
-    assign async_store_fault_instr_o = mem0_async_store_fault ?
-        mem0_async_store_fault_instr : mem1_async_store_fault_instr;
+    // Translation/PMP faults remain precise LSQ completions.  Failures after a
+    // committed store has entered L1D require a separate machine-check path.
+    assign async_store_fault_o = 1'b0;
+    assign async_store_page_fault_o = 1'b0;
+    assign async_store_fault_pc_o = {`RV64_XLEN{1'b0}};
+    assign async_store_fault_addr_o = {`RV64_XLEN{1'b0}};
+    assign async_store_fault_trace_o = 64'd0;
+    assign async_store_fault_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
 
 `ifndef SYNTHESIS
     always @(posedge clk) begin

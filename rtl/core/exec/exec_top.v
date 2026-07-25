@@ -21,6 +21,10 @@ module openrv64_exec_top #(
     parameter integer STORE_QUEUE_DEPTH_3P = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_BASE_3P =
+        {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE_3P =
+        {`RV64_XLEN{1'b0}},
     parameter integer RETIRE_SLOT_WIDTH_3P = 3
 ) (
     input  wire                         clk,
@@ -82,9 +86,12 @@ module openrv64_exec_top #(
     output wire                         mem_valid_o,
     input  wire                         mem_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_tag_o,
+    output wire                         mem_xlate_only_o,
+    output wire                         mem_physical_o,
     input  wire                         mem_resp_valid_i,
     output wire                         mem_resp_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag_i,
+    input  wire [`RV64_XLEN-1:0]        mem_resp_paddr_i,
     input  wire                         mem_error_i,
     input  wire                         mem_page_fault_i,
     input  wire                         mem_access_allowed_i,
@@ -97,6 +104,17 @@ module openrv64_exec_top #(
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
+    output wire                         mem_xlate_valid_o,
+    input  wire                         mem_xlate_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag_o,
+    output wire                         mem_xlate_write_o,
+    output wire [`RV64_XLEN-1:0]        mem_xlate_vaddr_o,
+    input  wire                         mem_xlate_resp_valid_i,
+    output wire                         mem_xlate_resp_ready_o,
+    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag_i,
+    input  wire [`RV64_XLEN-1:0]        mem_xlate_resp_paddr_i,
+    input  wire                         mem_xlate_resp_access_fault_i,
+    input  wire                         mem_xlate_resp_page_fault_i,
     output wire                         mem1_valid_o,
     input  wire                         mem1_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag_o,
@@ -145,6 +163,9 @@ module openrv64_exec_top #(
     output wire                         trace_serializing_o,
 
     input  wire                         flush_3p_i,
+    input  wire                         squash_younger_3p_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_3p_i,
+    input  wire                         translation_bypass_3p_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_3p_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready_3p_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_unsupported_3p_o,
@@ -216,7 +237,15 @@ module openrv64_exec_top #(
             assign branch_pc_o = pc_i;
             assign branch_instr_o = instr_i;
             assign mem_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            assign mem_xlate_only_o = 1'b0;
+            assign mem_physical_o = 1'b0;
             assign mem_resp_ready_o = 1'b0;
+            assign mem_xlate_valid_o = 1'b0;
+            assign mem_xlate_tag_o =
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            assign mem_xlate_write_o = 1'b0;
+            assign mem_xlate_vaddr_o = {`RV64_XLEN{1'b0}};
+            assign mem_xlate_resp_ready_o = 1'b0;
             assign mem1_valid_o = 1'b0;
             assign mem1_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign mem1_lock_o = 1'b0;
@@ -242,9 +271,14 @@ module openrv64_exec_top #(
                 .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
                 .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH_3P),
                 .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
-                .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
+                .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
+                .CACHEABLE_BASE(CACHEABLE_BASE_3P),
+                .CACHEABLE_SIZE(CACHEABLE_SIZE_3P)
             ) u_exec (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_3p_i),
+                .squash_younger_i(squash_younger_3p_i),
+                .squash_id_i(squash_id_3p_i),
+                .translation_bypass_i(translation_bypass_3p_i),
                 .issue_valid_i(issue_valid_3p_i),
                 .issue_ready_o(issue_ready_3p_o),
                 .issue_unsupported_o(issue_unsupported_3p_o),
@@ -289,9 +323,12 @@ module openrv64_exec_top #(
                 .csr_valid_i(csr_valid_i), .csr_writable_i(csr_writable_i),
                 .mem_valid_o(mem_valid_o), .mem_ready_i(mem_ready_i),
                 .mem_tag_o(mem_tag_o),
+                .mem_xlate_only_o(mem_xlate_only_o),
+                .mem_physical_o(mem_physical_o),
                 .mem_resp_valid_i(mem_resp_valid_i),
                 .mem_resp_ready_o(mem_resp_ready_o),
                 .mem_resp_tag_i(mem_resp_tag_i),
+                .mem_resp_paddr_i(mem_resp_paddr_i),
                 .mem_error_i(mem_error_i),
                 .mem_page_fault_i(mem_page_fault_i),
                 .mem_access_allowed_i(mem_access_allowed_i),
@@ -300,7 +337,21 @@ module openrv64_exec_top #(
                 .mem_wdata_o(mem_wdata_o), .mem_wstrb_o(mem_wstrb_o),
                 .mem_access_o(mem_access_o),
                 .mem_effective_addr_o(mem_effective_addr_o),
-                .mem_size_o(mem_size_o), .mem_rdata_i(mem_rdata_i),
+                .mem_size_o(mem_size_o),
+                .mem_xlate_valid_o(mem_xlate_valid_o),
+                .mem_xlate_ready_i(mem_xlate_ready_i),
+                .mem_xlate_tag_o(mem_xlate_tag_o),
+                .mem_xlate_write_o(mem_xlate_write_o),
+                .mem_xlate_vaddr_o(mem_xlate_vaddr_o),
+                .mem_xlate_resp_valid_i(mem_xlate_resp_valid_i),
+                .mem_xlate_resp_ready_o(mem_xlate_resp_ready_o),
+                .mem_xlate_resp_tag_i(mem_xlate_resp_tag_i),
+                .mem_xlate_resp_paddr_i(mem_xlate_resp_paddr_i),
+                .mem_xlate_resp_access_fault_i(
+                    mem_xlate_resp_access_fault_i),
+                .mem_xlate_resp_page_fault_i(
+                    mem_xlate_resp_page_fault_i),
+                .mem_rdata_i(mem_rdata_i),
                 .mem1_valid_o(mem1_valid_o),
                 .mem1_ready_i(mem1_ready_i),
                 .mem1_tag_o(mem1_tag_o),
@@ -373,7 +424,15 @@ module openrv64_exec_top #(
             assign csr_wdata_o = {`RV64_XLEN{1'b0}};
             assign mem_valid_o = 1'b0;
             assign mem_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            assign mem_xlate_only_o = 1'b0;
+            assign mem_physical_o = 1'b0;
             assign mem_resp_ready_o = 1'b0;
+            assign mem_xlate_valid_o = 1'b0;
+            assign mem_xlate_tag_o =
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            assign mem_xlate_write_o = 1'b0;
+            assign mem_xlate_vaddr_o = {`RV64_XLEN{1'b0}};
+            assign mem_xlate_resp_ready_o = 1'b0;
             assign mem_write_o = 1'b0;
             assign mem_addr_o = {`RV64_XLEN{1'b0}};
             assign mem_wdata_o = {`RV64_XLEN{1'b0}};

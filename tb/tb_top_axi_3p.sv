@@ -526,6 +526,7 @@ module tb_top_axi_3p #(
     parameter integer BP_BTB_TAG_BITS = 16,
     parameter integer BP_INFLIGHT_DEPTH = 16,
     parameter integer RETIRE_DEPTH = 8,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_FORWARD_MASK = 3'b001,
     parameter integer FULL_FORWARDING = 0,
@@ -897,6 +898,7 @@ module tb_top_axi_3p #(
         .RESET_VECTOR(`OPENRV64_SOC_MEMORY_BASE),
         .ENABLE_RV64M(1'b1),
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
         .BRANCH_COMPLETION_FORWARD_MASK(BRANCH_FORWARD_MASK),
         .ENABLE_FULL_FORWARDING(FULL_FORWARDING),
@@ -1284,44 +1286,43 @@ module tb_top_axi_3p #(
         dut.u_core.u_backend.completed_entry_valid;
     wire [`OPENRV64_LSU_OUTSTANDING-1:0] trace_lsu_slots;
     wire [`OPENRV64_LSU_OUTSTANDING-1:0] trace_lsu_sent;
+    wire [`OPENRV64_LSU_OUTSTANDING-1:0] trace_lsu_store_access;
+    wire [`OPENRV64_LSU_OUTSTANDING-1:0] trace_lsu_order_wait;
     genvar trace_lsu_index;
     generate
         for (trace_lsu_index = 0;
              trace_lsu_index < `OPENRV64_LSU_OUTSTANDING;
              trace_lsu_index = trace_lsu_index + 1) begin : g_trace_lsu
-            if (trace_lsu_index < 4) begin : g_mem0
-                assign trace_lsu_slots[trace_lsu_index] =
-                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
-                        .slot_valid_q[trace_lsu_index];
-                assign trace_lsu_sent[trace_lsu_index] =
-                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
-                        .slot_sent_q[trace_lsu_index];
-            end else begin : g_mem1
-                assign trace_lsu_slots[trace_lsu_index] =
-                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
-                        .slot_valid_q[trace_lsu_index - 4];
-                assign trace_lsu_sent[trace_lsu_index] =
-                    dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
-                        .slot_sent_q[trace_lsu_index - 4];
-            end
+            assign trace_lsu_slots[trace_lsu_index] =
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_valid_q[trace_lsu_index];
+            assign trace_lsu_sent[trace_lsu_index] =
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_xlate_sent_q[trace_lsu_index] ||
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_access_sent_q[trace_lsu_index];
+            assign trace_lsu_store_access[trace_lsu_index] =
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_valid_q[trace_lsu_index] &&
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_store_q[trace_lsu_index] &&
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_access_sent_q[trace_lsu_index];
+            assign trace_lsu_order_wait[trace_lsu_index] =
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_valid_q[trace_lsu_index] &&
+                dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_store_q[trace_lsu_index] &&
+                !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_immediate_q[trace_lsu_index] &&
+                !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_access_sent_q[trace_lsu_index] &&
+                !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_order_match[trace_lsu_index];
         end
     endgenerate
-    wire trace_lsu_store_inflight =
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0.store_inflight_q ||
-        dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1.store_inflight_q;
-    wire trace_lsu_order_block =
-        (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0.request_slot_valid &&
-         (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
-              .pending_store_order_block ||
-          (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0.request_mem_write &&
-           !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem0
-                .request_order_match))) ||
-        (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1.request_slot_valid &&
-         (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
-              .pending_store_order_block ||
-          (dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1.request_mem_write &&
-           !dut.u_core.u_backend.u_exec.g_3p.u_exec.u_mem1
-                .request_order_match)));
+    wire trace_lsu_store_inflight = |trace_lsu_store_access;
+    wire trace_lsu_order_block = |trace_lsu_order_wait;
     wire [3:0] trace_fetch_lines = {
         2'b00,
         dut.u_core.g_fetch_axi.u_fetch.line_valid_q[1],
@@ -2889,7 +2890,11 @@ module tb_top_axi_3p #(
         if (!saw_ram_ccx)
             $fatal(1, "core did not fetch from native CCX RAM");
         if (!saw_gpio_ccx_write || !saw_gpio_ccx_read)
-            $fatal(1, "firmware did not traverse the CCX-to-SoC MMIO path");
+            $fatal(1,
+                   "firmware did not traverse the CCX-to-SoC MMIO path write=%0d read=%0d gpio=%08x x11=%016x x12=%016x",
+                   saw_gpio_ccx_write, saw_gpio_ccx_read, gpio_out,
+                   dut.u_core.u_backend.u_gpr.regs[11],
+                   dut.u_core.u_backend.u_gpr.regs[12]);
         if (!saw_three_retire)
             $fatal(1, "AXI/SoC 3P core never retired three instructions");
         if (gpio_out != 32'h0000_005a)

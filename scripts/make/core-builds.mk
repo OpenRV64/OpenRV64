@@ -63,6 +63,13 @@ $(PRF_SIM_BUILD): rtl/core/regs/prf.v tb/tb_prf.sv
 	iverilog -g2012 -Wall -Irtl -s tb_prf -o $(PRF_SIM_BUILD) \
 		rtl/core/regs/prf.v tb/tb_prf.sv
 
+$(RENAME_IDENTITY_SIM_BUILD): rtl/core/rename/identity.v \
+		tb/tb_rename_identity.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_rename_identity \
+		-o $(RENAME_IDENTITY_SIM_BUILD) \
+		rtl/core/rename/identity.v tb/tb_rename_identity.sv
+
 $(RV64I_GPR_SIM_BUILD): $(RV64I_GPR_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_GPR_SIM_BUILD) $(RV64I_GPR_SIM_SRCS)
@@ -176,6 +183,11 @@ $(EXEC_TOP_3P_SIM_BUILD): tb/tb_exec_top_3p.sv $(EXEC_SRCS) $(EXCEPT_SRCS) $(ISA
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_TOP_3P_SIM_BUILD) \
 		$(EXEC_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) $(STAGE_SRCS) tb/tb_exec_top_3p.sv
+
+$(LSQ_SIM_BUILD): $(LSQ_SIM_SRCS) rtl/core/exec/lsq.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(LSQ_SIM_BUILD) \
+		rtl/core/exec/lsq.v $(LSQ_SIM_SRCS)
 
 $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD): tb/tb_exec_pipe_mem_timeout.sv \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/lsu/rv64-i.v \

@@ -93,6 +93,8 @@ module openrv64_core_ccx_bus #(
     input  wire                         lsu_pipe_req_valid_i,
     output wire                         lsu_pipe_req_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_pipe_req_tag_i,
+    input  wire                         lsu_pipe_req_xlate_only_i,
+    input  wire                         lsu_pipe_req_physical_i,
     input  wire                         lsu_pipe_req_lock_i,
     input  wire                         lsu_pipe_req_write_i,
     input  wire [`RV64_XLEN-1:0]        lsu_pipe_req_addr_i,
@@ -105,13 +107,35 @@ module openrv64_core_ccx_bus #(
     input  wire [`RV64_SATP_PPN_WIDTH-1:0] lsu_pipe_req_root_ppn_i,
     input  wire                         lsu_pipe_req_sum_i,
     input  wire                         lsu_pipe_req_mxr_i,
+    output wire                         lsu_pipe_req_translation_hit_o,
+    output wire [`RV64_XLEN-1:0]        lsu_pipe_req_translation_paddr_o,
+    output wire                         lsu_pipe_req_translation_page_fault_o,
     input  wire                         lsu_pipe_cancel_i,
     output wire                         lsu_pipe_resp_valid_o,
     input  wire                         lsu_pipe_resp_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_pipe_resp_tag_o,
+    output wire [`RV64_XLEN-1:0]        lsu_pipe_resp_paddr_o,
     output wire [`RV64_XLEN-1:0]        lsu_pipe_resp_rdata_o,
     output wire                         lsu_pipe_resp_access_fault_o,
     output wire                         lsu_pipe_resp_page_fault_o,
+
+    input  wire                         lsu_xlate_req_valid_i,
+    output wire                         lsu_xlate_req_ready_o,
+    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_req_tag_i,
+    input  wire                         lsu_xlate_req_write_i,
+    input  wire [`RV64_XLEN-1:0]        lsu_xlate_req_vaddr_i,
+    input  wire [`RV64_PRIV_WIDTH-1:0]  lsu_xlate_req_priv_i,
+    input  wire [`RV64_SATP_MODE_WIDTH-1:0] lsu_xlate_req_vm_mode_i,
+    input  wire [`RV64_SATP_ASID_WIDTH-1:0] lsu_xlate_req_asid_i,
+    input  wire [`RV64_SATP_PPN_WIDTH-1:0] lsu_xlate_req_root_ppn_i,
+    input  wire                         lsu_xlate_req_sum_i,
+    input  wire                         lsu_xlate_req_mxr_i,
+    output wire                         lsu_xlate_resp_valid_o,
+    input  wire                         lsu_xlate_resp_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_resp_tag_o,
+    output wire [`RV64_XLEN-1:0]        lsu_xlate_resp_paddr_o,
+    output wire                         lsu_xlate_resp_access_fault_o,
+    output wire                         lsu_xlate_resp_page_fault_o,
 
     input  wire                         tlbi_i,
     output wire                         tlbi_busy_o,
@@ -390,6 +414,8 @@ module openrv64_core_ccx_bus #(
     reg [2:0] lsu_state_q;
     reg lsu_lock_q;
     reg lsu_write_q;
+    reg lsu_xlate_only_q;
+    reg lsu_physical_q;
     reg [`RV64_XLEN-1:0] lsu_vaddr_q;
     reg [`RV64_XLEN-1:0] lsu_paddr_q;
     reg [`RV64_XLEN-1:0] lsu_wdata_q;
@@ -412,6 +438,15 @@ module openrv64_core_ccx_bus #(
     reg pipe_write_q [0:`OPENRV64_LSU_OUTSTANDING-1];
     reg pipe_local_resp_valid_q;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_local_resp_tag_q;
+    reg [`RV64_XLEN-1:0] pipe_local_resp_paddr_q;
+    reg pipe_local_resp_access_fault_q;
+    reg pipe_local_resp_page_fault_q;
+    reg xlate_local_resp_valid_q;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_local_resp_tag_q;
+    reg [`RV64_XLEN-1:0] xlate_local_resp_paddr_q;
+    reg xlate_local_resp_page_fault_q;
+    reg xlate_fallback_active_q;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_fallback_tag_q;
     integer pipe_index;
 
     wire pipe_req_tag_valid =
@@ -426,38 +461,42 @@ module openrv64_core_ccx_bus #(
     wire dtlb_lookup_hit;
     wire [`RV64_XLEN-1:0] dtlb_lookup_paddr;
     wire dtlb_lookup_page_fault;
-    wire pipe_req_bare =
-        lsu_pipe_req_vm_mode_i == `RV64_SATP_MODE_BARE;
+    wire pipe_req_bare = lsu_pipe_req_physical_i ||
+        (lsu_pipe_req_vm_mode_i == `RV64_SATP_MODE_BARE);
+    wire xlate_req_bare =
+        lsu_xlate_req_vm_mode_i == `RV64_SATP_MODE_BARE;
     wire lsu_xlate_bare = (lsu_state_q == LSU_TRANSLATE) &&
-                          (lsu_vm_mode_q == `RV64_SATP_MODE_BARE);
+        (lsu_physical_q ||
+         (lsu_vm_mode_q == `RV64_SATP_MODE_BARE));
     wire pipe_fast_state_available =
         ((lsu_state_q == LSU_IDLE) && !lsu_valid_i) ||
-        ((lsu_state_q == LSU_MISS) && pipe_fallback_active_q &&
-         !lsu_write_q && !lsu_lock_q && !lsu_valid_i);
-    wire pipe_dtlb_lookup = lsu_pipe_req_valid_i && !pipe_req_bare &&
-        !lsu_pipe_req_lock_i &&
-        pipe_fast_state_available && !tlbi_i;
+        ((lsu_state_q == LSU_MISS) &&
+         (pipe_fallback_active_q || xlate_fallback_active_q) &&
+         !lsu_lock_q && !lsu_valid_i);
     wire serial_dtlb_lookup = (lsu_state_q == LSU_TRANSLATE) &&
                               !lsu_xlate_bare;
-    wire dtlb_lookup_is_pipe = pipe_dtlb_lookup &&
-                               !serial_dtlb_lookup;
+    wire xlate_dtlb_lookup = lsu_xlate_req_valid_i &&
+                             !xlate_req_bare && !tlbi_i &&
+                             !tlbi_busy_o;
+    wire dtlb_lookup_is_xlate = xlate_dtlb_lookup &&
+                                !serial_dtlb_lookup;
     wire dtlb_lookup_valid = serial_dtlb_lookup ||
-                             dtlb_lookup_is_pipe;
+                             dtlb_lookup_is_xlate;
     wire [`RV64_XLEN-1:0] dtlb_lookup_vaddr =
-        dtlb_lookup_is_pipe ? lsu_pipe_req_addr_i : lsu_vaddr_q;
+        dtlb_lookup_is_xlate ? lsu_xlate_req_vaddr_i : lsu_vaddr_q;
     wire [`RV64_SATP_MODE_WIDTH-1:0] dtlb_lookup_vm_mode =
-        dtlb_lookup_is_pipe ? lsu_pipe_req_vm_mode_i : lsu_vm_mode_q;
+        dtlb_lookup_is_xlate ? lsu_xlate_req_vm_mode_i : lsu_vm_mode_q;
     wire [`RV64_SATP_ASID_WIDTH-1:0] dtlb_lookup_asid =
-        dtlb_lookup_is_pipe ? lsu_pipe_req_asid_i : lsu_asid_q;
-    wire [1:0] dtlb_lookup_access = dtlb_lookup_is_pipe ?
-        (lsu_pipe_req_write_i ? ACCESS_WRITE : ACCESS_READ) :
+        dtlb_lookup_is_xlate ? lsu_xlate_req_asid_i : lsu_asid_q;
+    wire [1:0] dtlb_lookup_access = dtlb_lookup_is_xlate ?
+        (lsu_xlate_req_write_i ? ACCESS_WRITE : ACCESS_READ) :
         (lsu_write_q ? ACCESS_WRITE : ACCESS_READ);
     wire [`RV64_PRIV_WIDTH-1:0] dtlb_lookup_priv =
-        dtlb_lookup_is_pipe ? lsu_pipe_req_priv_i : lsu_priv_q;
-    wire dtlb_lookup_sum = dtlb_lookup_is_pipe ?
-        lsu_pipe_req_sum_i : lsu_sum_q;
-    wire dtlb_lookup_mxr = dtlb_lookup_is_pipe ?
-        lsu_pipe_req_mxr_i : lsu_mxr_q;
+        dtlb_lookup_is_xlate ? lsu_xlate_req_priv_i : lsu_priv_q;
+    wire dtlb_lookup_sum = dtlb_lookup_is_xlate ?
+        lsu_xlate_req_sum_i : lsu_sum_q;
+    wire dtlb_lookup_mxr = dtlb_lookup_is_xlate ?
+        lsu_xlate_req_mxr_i : lsu_mxr_q;
 
     assign lsu_ready_o = (lsu_state_q == LSU_RESP) &&
                          !pipe_fallback_active_q;
@@ -535,52 +574,75 @@ module openrv64_core_ccx_bus #(
 
     wire lsu_l1_tlb_miss = (lsu_state_q == LSU_TRANSLATE) &&
                            !lsu_xlate_bare && !dtlb_lookup_hit;
+    wire xlate_l1_tlb_miss = dtlb_lookup_is_xlate &&
+                             !dtlb_lookup_hit;
     wire fetch_l1_tlb_miss = fetch_xlate_found_r &&
                              !fetch_xlate_bare && !itlb_lookup_hit;
     wire prefetch_l1_tlb_miss = prefetch_xlate_lookup &&
         !prefetch_xlate_bare && !itlb_lookup_hit;
 
-    // A single indexed L2 lookup serves L1 misses.  Demand LSU has priority,
-    // then demand fetch, then speculative instruction prefetch.  An L2 hit
-    // refills the requesting L1; the request remains in its lookup state and
-    // consumes that L1 hit on the following cycle.  Only an L2 miss starts
-    // the blocking walker.
-    wire l2_tlb_select_lsu = !miss_active_q && lsu_l1_tlb_miss;
-    wire l2_tlb_select_fetch = !miss_active_q && !lsu_l1_tlb_miss &&
+    // The single indexed main TLB serves micro-TLB misses. Demand LSU has
+    // priority, then demand fetch, then speculative instruction prefetch.
+    // A main-TLB hit
+    // refills the requesting micro-TLB. A live tagged LSU consumes that hit
+    // directly; captured LSU and fetch requests consume the refill on the
+    // following cycle. Only a main-TLB miss starts the blocking walker.
+    // A live tagged LSU request may consume a main-TLB hit while an unrelated
+    // walk is active. A miss still cannot be captured or start another walk
+    // until miss_active_q clears.
+    wire l2_tlb_select_xlate = xlate_l1_tlb_miss;
+    wire l2_tlb_select_serial_lsu =
+        !miss_active_q && !l2_tlb_select_xlate &&
+        lsu_l1_tlb_miss;
+    wire l2_tlb_select_lsu = l2_tlb_select_xlate ||
+                             l2_tlb_select_serial_lsu;
+    wire l2_tlb_select_fetch = !miss_active_q &&
+                               !l2_tlb_select_lsu &&
                                fetch_l1_tlb_miss;
     wire l2_tlb_select_prefetch = !miss_active_q &&
-        !lsu_l1_tlb_miss && !fetch_l1_tlb_miss &&
+        !l2_tlb_select_lsu && !l2_tlb_select_fetch &&
         prefetch_l1_tlb_miss;
     wire l2_tlb_lookup_valid = l2_tlb_select_lsu ||
         l2_tlb_select_fetch || l2_tlb_select_prefetch;
     wire [`RV64_XLEN-1:0] l2_tlb_lookup_vaddr =
-        l2_tlb_select_lsu ? lsu_vaddr_q :
+        l2_tlb_select_xlate ? lsu_xlate_req_vaddr_i :
+        l2_tlb_select_serial_lsu ? lsu_vaddr_q :
         l2_tlb_select_fetch ? fetch_vaddr_q[fetch_xlate_slot_r] :
         prefetch_xlate_vaddr_q;
     wire [`RV64_SATP_MODE_WIDTH-1:0] l2_tlb_lookup_vm_mode =
-        l2_tlb_select_lsu ? lsu_vm_mode_q :
+        l2_tlb_select_xlate ? lsu_xlate_req_vm_mode_i :
+        l2_tlb_select_serial_lsu ? lsu_vm_mode_q :
         l2_tlb_select_fetch ? fetch_vm_mode_q[fetch_xlate_slot_r] :
         prefetch_xlate_vm_mode_q;
     wire [`RV64_SATP_ASID_WIDTH-1:0] l2_tlb_lookup_asid =
-        l2_tlb_select_lsu ? lsu_asid_q :
+        l2_tlb_select_xlate ? lsu_xlate_req_asid_i :
+        l2_tlb_select_serial_lsu ? lsu_asid_q :
         l2_tlb_select_fetch ? fetch_asid_q[fetch_xlate_slot_r] :
         prefetch_xlate_asid_q;
-    wire [1:0] l2_tlb_lookup_access = l2_tlb_select_lsu ?
+    wire [1:0] l2_tlb_lookup_access = l2_tlb_select_xlate ?
+        (lsu_xlate_req_write_i ? ACCESS_WRITE : ACCESS_READ) :
+        l2_tlb_select_serial_lsu ?
         (lsu_write_q ? ACCESS_WRITE : ACCESS_READ) : ACCESS_EXEC;
     wire [`RV64_PRIV_WIDTH-1:0] l2_tlb_lookup_priv =
-        l2_tlb_select_lsu ? lsu_priv_q :
+        l2_tlb_select_xlate ? lsu_xlate_req_priv_i :
+        l2_tlb_select_serial_lsu ? lsu_priv_q :
         l2_tlb_select_fetch ? fetch_priv_q[fetch_xlate_slot_r] :
         prefetch_xlate_priv_q;
-    wire l2_tlb_lookup_sum = l2_tlb_select_lsu ? lsu_sum_q :
+    wire l2_tlb_lookup_sum =
+        l2_tlb_select_xlate ? lsu_xlate_req_sum_i :
+        l2_tlb_select_serial_lsu ? lsu_sum_q :
         l2_tlb_select_fetch ? fetch_sum_q[fetch_xlate_slot_r] :
         prefetch_xlate_sum_q;
-    wire l2_tlb_lookup_mxr = l2_tlb_select_lsu ? lsu_mxr_q :
+    wire l2_tlb_lookup_mxr =
+        l2_tlb_select_xlate ? lsu_xlate_req_mxr_i :
+        l2_tlb_select_serial_lsu ? lsu_mxr_q :
         l2_tlb_select_fetch ? fetch_mxr_q[fetch_xlate_slot_r] :
         prefetch_xlate_mxr_q;
     wire l2_tlb_lookup_hit;
     wire [`RV64_XLEN-1:0] l2_tlb_lookup_paddr;
     wire l2_tlb_lookup_page_fault;
     wire l2_tlb_lookup_global;
+    wire [`RV64_PAGE_LEVEL_WIDTH-1:0] l2_tlb_lookup_level;
     wire l2_tlb_lookup_readable;
     wire l2_tlb_lookup_writable;
     wire l2_tlb_lookup_executable;
@@ -588,7 +650,11 @@ module openrv64_core_ccx_bus #(
     wire l2_tlb_lookup_accessed;
     wire l2_tlb_lookup_dirty;
 
-    wire lsu_needs_walk = l2_tlb_select_lsu && !l2_tlb_lookup_hit;
+    // A pipe-side main-TLB miss is first captured by the fallback state.
+    // Only that captured request may start a walk; using the live pipe request
+    // here would launch the PTW before its tag and attributes were retained.
+    wire lsu_needs_walk = l2_tlb_select_serial_lsu &&
+                          !l2_tlb_lookup_hit;
     wire fetch_needs_walk =
         l2_tlb_select_fetch && !l2_tlb_lookup_hit;
     wire prefetch_needs_walk =
@@ -691,7 +757,7 @@ module openrv64_core_ccx_bus #(
     wire selected_itlb_fill_global = itlb_ptw_fill_valid ?
         ptw_resp_global : l2_tlb_lookup_global;
     wire [`RV64_PAGE_LEVEL_WIDTH-1:0] selected_itlb_fill_level =
-        itlb_ptw_fill_valid ? ptw_resp_level : `RV64_PAGE_LEVEL_4K;
+        itlb_ptw_fill_valid ? ptw_resp_level : l2_tlb_lookup_level;
     wire selected_itlb_fill_readable = itlb_ptw_fill_valid ?
         ptw_resp_readable : l2_tlb_lookup_readable;
     wire selected_itlb_fill_writable = itlb_ptw_fill_valid ?
@@ -716,7 +782,7 @@ module openrv64_core_ccx_bus #(
     wire selected_dtlb_fill_global = dtlb_ptw_fill_valid ?
         ptw_resp_global : l2_tlb_lookup_global;
     wire [`RV64_PAGE_LEVEL_WIDTH-1:0] selected_dtlb_fill_level =
-        dtlb_ptw_fill_valid ? ptw_resp_level : `RV64_PAGE_LEVEL_4K;
+        dtlb_ptw_fill_valid ? ptw_resp_level : l2_tlb_lookup_level;
     wire selected_dtlb_fill_readable = dtlb_ptw_fill_valid ?
         ptw_resp_readable : l2_tlb_lookup_readable;
     wire selected_dtlb_fill_writable = dtlb_ptw_fill_valid ?
@@ -825,6 +891,7 @@ module openrv64_core_ccx_bus #(
         .lookup_paddr_o(l2_tlb_lookup_paddr),
         .lookup_page_fault_o(l2_tlb_lookup_page_fault),
         .lookup_global_o(l2_tlb_lookup_global),
+        .lookup_level_o(l2_tlb_lookup_level),
         .lookup_readable_o(l2_tlb_lookup_readable),
         .lookup_writable_o(l2_tlb_lookup_writable),
         .lookup_executable_o(l2_tlb_lookup_executable),
@@ -899,25 +966,24 @@ module openrv64_core_ccx_bus #(
         .ccx_resp_error_i(ccx_resp_error_i)
     );
 
-    // Bare cacheable traffic and translated cacheable load/store hits enter
-    // L1D under the native LSU tag.  A translated hit uses the physical TLB
-    // result for both PMA/PMP classification and the cache request.  The MEM
-    // lane presents stores only at ordered retirement head, so L1D admission
-    // is their irrevocable boundary.  Misses, permission faults, locked
-    // accesses, and device requests retain the precise fallback path.
-    wire pipe_translated_hit = dtlb_lookup_is_pipe && dtlb_lookup_hit &&
-                               !dtlb_lookup_page_fault;
-    wire [`RV64_XLEN-1:0] pipe_req_paddr = pipe_req_bare ?
-        lsu_pipe_req_addr_i : dtlb_lookup_paddr;
+    // Normal tagged LSU traffic is physical. Translation has its own tagged
+    // channel, allowing one D micro-TLB probe and one L1D access in a cycle.
+    assign lsu_pipe_req_translation_hit_o = 1'b0;
+    assign lsu_pipe_req_translation_paddr_o =
+        {`RV64_XLEN{1'b0}};
+    assign lsu_pipe_req_translation_page_fault_o = 1'b0;
+    wire [`RV64_XLEN-1:0] pipe_req_paddr = lsu_pipe_req_addr_i;
     wire pipe_req_cacheable = (L1D_CACHEABLE_SIZE != 0) &&
         ((pipe_req_paddr - L1D_CACHEABLE_BASE) <
          L1D_CACHEABLE_SIZE);
-    wire pipe_fast_class =
-        (pipe_req_bare || pipe_translated_hit) &&
+    wire pipe_fast_class = pipe_req_bare &&
+        !lsu_pipe_req_xlate_only_i &&
         !lsu_pipe_req_lock_i && pipe_req_cacheable;
+    wire pipe_local_resp_available =
+        !pipe_local_resp_valid_q || lsu_pipe_resp_ready_i;
     wire pipe_fast_candidate = lsu_pipe_req_valid_i &&
         pipe_req_tag_valid && !pipe_req_tag_busy && !lsu_pipe_cancel_i &&
-        pipe_fast_class && !pipe_local_resp_valid_q &&
+        pipe_fast_class && pipe_local_resp_available &&
         pipe_fast_state_available && !ptw_pmp_valid;
     wire pipe_fallback_candidate = lsu_pipe_req_valid_i &&
         pipe_req_tag_valid && !pipe_req_tag_busy && !lsu_pipe_cancel_i &&
@@ -925,6 +991,42 @@ module openrv64_core_ccx_bus #(
         !pipe_fallback_active_q &&
         !lsu_valid_i && (lsu_state_q == LSU_IDLE) &&
         !miss_active_q;
+
+    wire xlate_l1_hit = dtlb_lookup_is_xlate && dtlb_lookup_hit;
+    wire xlate_l2_hit = l2_tlb_select_xlate && l2_tlb_lookup_hit;
+    wire xlate_lookup_hit = xlate_l1_hit || xlate_l2_hit;
+    wire [`RV64_XLEN-1:0] xlate_lookup_paddr =
+        xlate_req_bare ? lsu_xlate_req_vaddr_i :
+        xlate_l1_hit ? dtlb_lookup_paddr : l2_tlb_lookup_paddr;
+    wire xlate_lookup_page_fault =
+        (xlate_l1_hit && dtlb_lookup_page_fault) ||
+        (xlate_l2_hit && l2_tlb_lookup_page_fault);
+    wire xlate_fallback_response_pending =
+        xlate_fallback_active_q && (lsu_state_q == LSU_RESP);
+    // A fast hit is returned combinationally when no older response occupies
+    // the output. The one-entry register is only a skid buffer. Do not let a
+    // queued fast response indefinitely displace a completed page walk.
+    wire xlate_local_resp_available =
+        (!xlate_local_resp_valid_q &&
+         !xlate_fallback_response_pending) ||
+        (lsu_xlate_resp_ready_i &&
+         !(xlate_local_resp_valid_q &&
+           xlate_fallback_response_pending));
+    wire xlate_fast_candidate = lsu_xlate_req_valid_i &&
+        !tlbi_i && !tlbi_busy_o && xlate_local_resp_available &&
+        (xlate_req_bare || xlate_lookup_hit);
+    wire xlate_fallback_candidate = lsu_xlate_req_valid_i &&
+        !tlbi_i && !tlbi_busy_o &&
+        !xlate_req_bare && dtlb_lookup_is_xlate &&
+        !dtlb_lookup_hit && l2_tlb_select_xlate &&
+        !l2_tlb_lookup_hit && !miss_active_q &&
+        !pipe_fallback_candidate &&
+        !xlate_fallback_active_q && !pipe_fallback_active_q &&
+        !lsu_valid_i && (lsu_state_q == LSU_IDLE);
+    assign lsu_xlate_req_ready_o =
+        xlate_fast_candidate || xlate_fallback_candidate;
+    wire xlate_request_fire =
+        lsu_xlate_req_valid_i && lsu_xlate_req_ready_o;
 
     wire ptw_pmp_candidate = ptw_pmp_valid;
 
@@ -1019,7 +1121,8 @@ module openrv64_core_ccx_bus #(
     assign l1i_resp_ready = l1i_slot_count_q != 0;
 
     wire l1d_pipe_request = select_pipe_probe && pmp_allow_i;
-    wire l1d_serial_request = select_lsu_probe && pmp_allow_i;
+    wire l1d_serial_request = select_lsu_probe && pmp_allow_i &&
+                              !lsu_xlate_only_q;
     wire l1d_req_valid = l1d_pipe_request || l1d_serial_request;
     wire l1d_req_ready;
     wire [`RV64_XLEN-1:0] l1d_req_rdata;
@@ -1463,13 +1566,44 @@ module openrv64_core_ccx_bus #(
     assign lsu_pipe_resp_tag_o = pipe_local_resp_valid_q ?
         pipe_local_resp_tag_q : pipe_l1d_visible ?
         l1d_resp_pipe_tag : pipe_fallback_tag_q;
+    assign lsu_pipe_resp_paddr_o = pipe_local_resp_valid_q ?
+        pipe_local_resp_paddr_q : pipe_fallback_visible ?
+        lsu_paddr_q : {`RV64_XLEN{1'b0}};
     assign lsu_pipe_resp_rdata_o = pipe_l1d_visible ? l1d_req_rdata :
         pipe_fallback_visible ? lsu_rdata_q : {`RV64_XLEN{1'b0}};
-    assign lsu_pipe_resp_access_fault_o = pipe_local_resp_valid_q ? 1'b1 :
+    assign lsu_pipe_resp_access_fault_o = pipe_local_resp_valid_q ?
+        pipe_local_resp_access_fault_q :
         pipe_l1d_visible ? l1d_req_error :
         (pipe_fallback_visible && lsu_access_fault_q);
     assign lsu_pipe_resp_page_fault_o =
-        pipe_fallback_visible && lsu_page_fault_q;
+        pipe_local_resp_valid_q ? pipe_local_resp_page_fault_q :
+        (pipe_fallback_visible && lsu_page_fault_q);
+
+    wire xlate_fallback_visible =
+        !xlate_local_resp_valid_q && xlate_fallback_response_pending;
+    wire xlate_fast_resp_visible =
+        !xlate_local_resp_valid_q &&
+        !xlate_fallback_response_pending &&
+        xlate_fast_candidate;
+    wire xlate_fallback_response_fire =
+        xlate_fallback_visible && lsu_xlate_resp_ready_i;
+    wire xlate_fast_response_fire =
+        xlate_fast_resp_visible && lsu_xlate_resp_ready_i;
+    assign lsu_xlate_resp_valid_o = xlate_local_resp_valid_q ||
+                                    xlate_fallback_visible ||
+                                    xlate_fast_resp_visible;
+    assign lsu_xlate_resp_tag_o = xlate_local_resp_valid_q ?
+        xlate_local_resp_tag_q : xlate_fallback_visible ?
+        xlate_fallback_tag_q : lsu_xlate_req_tag_i;
+    assign lsu_xlate_resp_paddr_o = xlate_local_resp_valid_q ?
+        xlate_local_resp_paddr_q : xlate_fallback_visible ?
+        lsu_paddr_q : xlate_lookup_paddr;
+    assign lsu_xlate_resp_access_fault_o =
+        xlate_fallback_visible && lsu_access_fault_q;
+    assign lsu_xlate_resp_page_fault_o = xlate_local_resp_valid_q ?
+        xlate_local_resp_page_fault_q :
+        xlate_fallback_visible ? lsu_page_fault_q :
+        (xlate_fast_resp_visible && xlate_lookup_page_fault);
 
     integer l1i_slot_index;
     always @(posedge clk or negedge rst_n) begin
@@ -1778,6 +1912,8 @@ module openrv64_core_ccx_bus #(
             lsu_state_q <= LSU_IDLE;
             lsu_lock_q <= 1'b0;
             lsu_write_q <= 1'b0;
+            lsu_xlate_only_q <= 1'b0;
+            lsu_physical_q <= 1'b0;
             lsu_vaddr_q <= {`RV64_XLEN{1'b0}};
             lsu_paddr_q <= {`RV64_XLEN{1'b0}};
             lsu_wdata_q <= {`RV64_XLEN{1'b0}};
@@ -1799,6 +1935,17 @@ module openrv64_core_ccx_bus #(
             pipe_local_resp_valid_q <= 1'b0;
             pipe_local_resp_tag_q <=
                 {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            pipe_local_resp_paddr_q <= {`RV64_XLEN{1'b0}};
+            pipe_local_resp_access_fault_q <= 1'b0;
+            pipe_local_resp_page_fault_q <= 1'b0;
+            xlate_local_resp_valid_q <= 1'b0;
+            xlate_local_resp_tag_q <=
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+            xlate_local_resp_paddr_q <= {`RV64_XLEN{1'b0}};
+            xlate_local_resp_page_fault_q <= 1'b0;
+            xlate_fallback_active_q <= 1'b0;
+            xlate_fallback_tag_q <=
+                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             for (pipe_index = 0;
                  pipe_index < `OPENRV64_LSU_OUTSTANDING;
                  pipe_index = pipe_index + 1) begin
@@ -1814,7 +1961,7 @@ module openrv64_core_ccx_bus #(
             // Dropping its read response would prevent the MEM lane from
             // issuing the matching write phase.
             if (lsu_pipe_cancel_i && pipe_fallback_active_q &&
-                !lsu_write_q && !lsu_lock_q)
+                (!lsu_write_q || lsu_xlate_only_q) && !lsu_lock_q)
                 pipe_fallback_cancelled_q <= 1'b1;
 
             if (lsu_pipe_cancel_i) begin
@@ -1831,9 +1978,24 @@ module openrv64_core_ccx_bus #(
                 lsu_pipe_req_ready_o) begin
                 pipe_local_resp_valid_q <= 1'b1;
                 pipe_local_resp_tag_q <= lsu_pipe_req_tag_i;
+                pipe_local_resp_paddr_q <= pipe_req_paddr;
+                pipe_local_resp_access_fault_q <= 1'b1;
+                pipe_local_resp_page_fault_q <= 1'b0;
             end else if (pipe_local_resp_valid_q &&
                          lsu_pipe_resp_ready_i) begin
                 pipe_local_resp_valid_q <= 1'b0;
+            end
+
+            if (xlate_fast_candidate && lsu_xlate_req_ready_o &&
+                !xlate_fast_response_fire) begin
+                xlate_local_resp_valid_q <= 1'b1;
+                xlate_local_resp_tag_q <= lsu_xlate_req_tag_i;
+                xlate_local_resp_paddr_q <= xlate_lookup_paddr;
+                xlate_local_resp_page_fault_q <=
+                    xlate_lookup_page_fault;
+            end else if (xlate_local_resp_valid_q &&
+                         lsu_xlate_resp_ready_i) begin
+                xlate_local_resp_valid_q <= 1'b0;
             end
 
             if (pipe_fast_request_fire) begin
@@ -1852,12 +2014,22 @@ module openrv64_core_ccx_bus #(
 
             case (lsu_state_q)
                 LSU_IDLE: begin
-                    if (lsu_valid_i || pipe_fallback_candidate) begin
+                    if (lsu_valid_i || pipe_fallback_candidate ||
+                        xlate_fallback_candidate) begin
                         lsu_lock_q <= pipe_fallback_candidate ?
-                            lsu_pipe_req_lock_i : lsu_lock_i;
-                        lsu_write_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_lock_i : 1'b0;
+                        lsu_write_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_write_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_write_i : lsu_write_i;
-                        lsu_vaddr_q <= pipe_fallback_candidate ?
+                        lsu_xlate_only_q <= xlate_fallback_candidate ||
+                            (pipe_fallback_candidate &&
+                             lsu_pipe_req_xlate_only_i);
+                        lsu_physical_q <= pipe_fallback_candidate ?
+                            lsu_pipe_req_physical_i : 1'b0;
+                        lsu_vaddr_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_vaddr_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_addr_i : lsu_addr_i;
                         lsu_wdata_q <= pipe_fallback_candidate ?
                             lsu_pipe_req_wdata_i : lsu_wdata_i;
@@ -1865,17 +2037,29 @@ module openrv64_core_ccx_bus #(
                             lsu_pipe_req_wstrb_i : lsu_wstrb_i;
                         lsu_size_q <= pipe_fallback_candidate ?
                             lsu_pipe_req_size_i : lsu_size_i;
-                        lsu_priv_q <= pipe_fallback_candidate ?
+                        lsu_priv_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_priv_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_priv_i : lsu_priv_i;
-                        lsu_vm_mode_q <= pipe_fallback_candidate ?
+                        lsu_vm_mode_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_vm_mode_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_vm_mode_i : lsu_vm_mode_i;
-                        lsu_asid_q <= pipe_fallback_candidate ?
+                        lsu_asid_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_asid_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_asid_i : lsu_asid_i;
-                        lsu_root_ppn_q <= pipe_fallback_candidate ?
+                        lsu_root_ppn_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_root_ppn_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_root_ppn_i : lsu_root_ppn_i;
-                        lsu_sum_q <= pipe_fallback_candidate ?
+                        lsu_sum_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_sum_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_sum_i : lsu_sum_i;
-                        lsu_mxr_q <= pipe_fallback_candidate ?
+                        lsu_mxr_q <= xlate_fallback_candidate ?
+                            lsu_xlate_req_mxr_i :
+                            pipe_fallback_candidate ?
                             lsu_pipe_req_mxr_i : lsu_mxr_i;
                         lsu_rdata_q <= {`RV64_XLEN{1'b0}};
                         lsu_access_fault_q <= 1'b0;
@@ -1885,6 +2069,10 @@ module openrv64_core_ccx_bus #(
                             pipe_fallback_cancelled_q <= 1'b0;
                             pipe_fallback_tag_q <= lsu_pipe_req_tag_i;
                         end
+                        if (xlate_fallback_candidate) begin
+                            xlate_fallback_active_q <= 1'b1;
+                            xlate_fallback_tag_q <= lsu_xlate_req_tag_i;
+                        end
                         lsu_state_q <= LSU_TRANSLATE;
                     end
                 end
@@ -1892,14 +2080,16 @@ module openrv64_core_ccx_bus #(
                 LSU_TRANSLATE: begin
                     if (lsu_xlate_bare) begin
                         lsu_paddr_q <= lsu_vaddr_q;
-                        lsu_state_q <= LSU_ACCESS;
+                        lsu_state_q <= xlate_fallback_active_q ?
+                            LSU_RESP : LSU_ACCESS;
                     end else if (dtlb_lookup_hit) begin
                         if (dtlb_lookup_page_fault) begin
                             lsu_page_fault_q <= 1'b1;
                             lsu_state_q <= LSU_RESP;
                         end else begin
                             lsu_paddr_q <= dtlb_lookup_paddr;
-                            lsu_state_q <= LSU_ACCESS;
+                            lsu_state_q <= xlate_fallback_active_q ?
+                                LSU_RESP : LSU_ACCESS;
                         end
                     end else if (start_lsu_walk) begin
                         lsu_state_q <= LSU_MISS;
@@ -1927,6 +2117,9 @@ module openrv64_core_ccx_bus #(
                     if (lsu_pmp_denied) begin
                         lsu_access_fault_q <= 1'b1;
                         lsu_state_q <= LSU_RESP;
+                    end else if (lsu_xlate_only_q &&
+                                 select_lsu_probe) begin
+                        lsu_state_q <= LSU_RESP;
                     end else if (l1d_request_fire &&
                                  l1d_serial_request) begin
                         lsu_state_q <= LSU_WAIT;
@@ -1943,12 +2136,16 @@ module openrv64_core_ccx_bus #(
                 end
 
                 LSU_RESP: begin
-                    if (!pipe_fallback_active_q ||
-                        pipe_fallback_cancelled_q ||
-                        lsu_pipe_resp_ready_i) begin
+                    if ((xlate_fallback_active_q &&
+                         xlate_fallback_response_fire) ||
+                        (!xlate_fallback_active_q &&
+                         (!pipe_fallback_active_q ||
+                          pipe_fallback_cancelled_q ||
+                          lsu_pipe_resp_ready_i))) begin
                         lsu_state_q <= LSU_IDLE;
                         pipe_fallback_active_q <= 1'b0;
                         pipe_fallback_cancelled_q <= 1'b0;
+                        xlate_fallback_active_q <= 1'b0;
                     end
                 end
 

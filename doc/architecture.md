@@ -16,9 +16,12 @@ The current design is built around a few deliberate rules:
 2. The default three-pipe dispatcher is not an out-of-order scheduler. It may
    send as many as three oldest queued instructions to independent units, but
    it cannot step around a blocked older candidate.
-3. There is no register renaming or physical register file. Outstanding
-   architectural-register writers are tracked explicitly, and optional
-   forwarding is an exception to the resulting RAW interlock.
+3. The 3P backend has a parameterized physical register file (31 writable
+   entries plus hardwired `p0`, with five-bit tags by default), but the active
+   map is strictly `xN -> pN`. There is no dynamic physical allocation, RAT,
+   free list, or rename recovery. Outstanding architectural-register writers
+   are therefore still tracked explicitly, and optional forwarding is an
+   exception to the resulting RAW interlock.
 4. Ordinary aligned conditional branches may execute before reaching the
    retirement head. In the default strict backend, a correctly predicted BEQ
    or BNE may share its issue group with younger predicted-path work; every
@@ -325,18 +328,35 @@ do not pass it even when another pipe is idle.
 
 ### Register ownership and forwarding
 
-The 3P integer register file has six combinational read selectors and three
-ordered retirement write ports. x0 is hardwired to zero. Same-cycle retirement
-bypass gives a reader the youngest matching retiring lane, and multiple
-same-destination retirement writes leave the youngest program-order value in
-the architectural register.
+The 3P integer register file has `PHYS_REG_COUNT` writable storage entries (31
+by default), six combinational read selectors, and three ordered retirement
+write ports. Hardwired `p0` consumes no entry; physical tag `pN` maps to storage
+entry `N-1`. The tag width is therefore
+`clog2(PHYS_REG_COUNT + 1)`. The current identity renamer maps architectural
+`x0` through `x31` to `p0` through `p31`, so all 31 default writable entries
+are reachable. Counts below 31 are illegal. Source indices are translated
+before PRF reads.
+
+Each retirement entry captures `new_phys` and `old_phys` when it is allocated.
+Retirement writes the captured `new_phys` rather than deriving a physical tag
+again from the completion's architectural `rd`. In identity mode both tags
+equal `rd`; retaining both now establishes the ROB/free-list boundary required
+by later dynamic renaming. Same-cycle retirement bypass gives a reader the
+youngest matching physical tag, and multiple same-destination retirement
+writes leave the youngest program-order value in the identity-mapped register.
+
+This seam is not dynamic renaming. Source physical tags are not retained in
+issue entries, physical readiness is not tracked, and results still write the
+PRF at retirement rather than validated completion. A real RAT/free-list
+implementation must add those pieces plus committed-map and squash recovery;
+replacing the identity function alone would be incorrect.
 
 `RELAX_WAW=1`, the default, allows several live instructions to write the same
 architectural register. A per-register writer count is incremented on
 allocation and decremented on ordered retirement. This removes false WAW
-serialization without introducing physical registers. A consumer behind
-multiple live writers still waits unless a producer-tagged experimental mode
-can identify the youngest value unambiguously.
+serialization without allocating distinct physical destinations. A consumer
+behind multiple live writers still waits unless a producer-tagged experimental
+mode can identify the youngest value unambiguously.
 
 The forwarding tiers are distinct:
 
@@ -416,13 +436,33 @@ machine-check policy and is not a replayable page/PMP fault.
 
 ## Load/store and memory ordering
 
-The 3P backend has a four-entry load queue and a parameterized pre-retire store
-queue, with four store entries by default. Requests launch from their local
-memory sequence. Stores may allocate speculatively, but a store request cannot
-launch until that instruction is the ordered retirement head. The core bus
-currently serializes tagged scalar requests through one translation/PTW slot.
-The backend tag is retained across translation, PMP checking, and the L1D
-operation, then restored on the response.
+The 3P backend uses `exec_lsu.v` as its containing LSU and `lsq.v` as a
+separate, parameterized unified load/store queue. The defaults are four load
+entries and four store entries. The single age-ordered entry array uses fixed
+load/store slot partitions so its two allocation-ready paths are independent.
+The LSU owns address generation, translation and cache request sequencing,
+RV64A, exception construction, and backend completion. The LSQ owns entry
+state, age/order checks, physical-address disambiguation, forwarding, and
+request eligibility. The legacy
+`exec_pipe_mem.v` remains available to configurations which use the older
+memory pipe; it does not contain the unified LSQ.
+
+Loads and stores have independent allocation ports, but the containing LSU
+currently has one translation/L1D launch port. The second legacy 3P external
+memory port is tied off. An ordinary store may allocate and request translation
+speculatively. Translation and PMP return a tagged physical address without
+touching L1D. Only an exact match at the ordered retirement head permits the
+store's physical request to reach L1D. A successful physical response means
+L1D admitted the store into its ordered store buffer.
+
+An ordinary load also translates before physical access. It waits behind every
+older store whose physical address is unknown. Once all relevant addresses are
+known, a cacheable load may pass stores on different physical cache lines. A
+same-word load whose requested bytes are fully covered by older stores is
+forwarded bytewise from the youngest matching stores. Partial coverage and
+other same-line cases wait. Uncacheable loads issue only at the ordered head.
+These rules use translated physical addresses; virtual-address equality is not
+used as a memory-dependence proof.
 
 Cacheable load misses allocate a parameterized demand MSHR (three by default)
 and issue one aligned 512-bit native CCX line read per unique line. Different
@@ -439,24 +479,25 @@ at the memory-ordering head until its tagged response. On success that response
 means the translated and PMP-approved store was admitted by L1D; retirement may
 then proceed while L1D drains the physical cache-line write independently.
 
-While the pre-retire store is unresolved:
-
-- younger memory requests remain blocked;
-- SATP, `SFENCE.VMA`, fences, and atomics cannot pass it; and
-- younger non-memory execution may continue filling the retirement window.
-
-The retained store-data forwarding hooks remain restricted to
-`STORE_FORWARD_BASE` through `STORE_FORWARD_SIZE`, but the safe translated
-configuration does not currently let younger loads reach them while a store is
-unresolved. Allowing that bypass requires physical-address disambiguation; an
-effective-address comparison is not sufficient in a general translated system.
+The static `STORE_FORWARD_BASE`/`STORE_FORWARD_SIZE` aperture currently
+classifies cacheable addresses for speculative load issue. It is not a
+complete PMA implementation. Outside that aperture, reads remain ordered.
+SATP, `SFENCE.VMA`, fences, and atomics cannot pass pending ordered memory
+state; younger non-memory execution may continue filling the retirement
+window.
 
 RV64A drains simple MEM work and runs as a serialized ordered operation. It
-uses the core request/response contract rather than AXI exclusives. The current
-store queue retains speculative virtual-address operations but does not
-pretranslate them, compare translated physical addresses, or permit younger
-loads to bypass an unresolved store. There is no physical-address forwarding
-CAM, complete PMA model, or cache-coherence protocol.
+uses the core request/response contract rather than AXI exclusives. Atomics do
+not yet use the ordinary early-translation path.
+
+A redirect immediately removes younger LSQ entries that have not launched a
+request. A younger entry with an accepted translation or physical request
+retains its LSQ tag in a killed quarantine slot until the response is consumed;
+the response cannot complete architecturally and the finite-width tag cannot
+be reused early. A store whose physical request was accepted at the ordered
+head is already irrevocable and is retained through redirect. A full flush may
+also mark accepted reads canceled at the tagged memory endpoint while their
+underlying operations drain.
 
 ## Translation, protection, and physical bus
 
@@ -612,10 +653,10 @@ uncached test fabric; it is not a substitute for cache request cancellation,
 memory-dependence speculation, or an ordered load/store queue.
 
 The implementation is selectable and checksum-tested, but it is not the
-current baseline. It has no physical-register renaming, retains in-order
-retirement, and the current associative wakeup/owner-rebuild logic has not
-been timing-closed. The RAS is conservatively cleared on selective recovery
-rather than checkpointed. See
+current baseline. It has no dynamic physical-register renaming, retains
+in-order retirement, and the current associative wakeup/owner-rebuild logic
+has not been timing-closed. The RAS is conservatively cleared on selective
+recovery rather than checkpointed. See
 [experiments/issue-window-16.md](experiments/issue-window-16.md).
 
 ## Scalar 1P core
@@ -703,9 +744,9 @@ die-size claims.
 - Private L1I/L1D and branch-path L1I prefetching exist, but there is no
   complete coherent multi-hart hierarchy or final cacheable-memory attribute
   policy.
-- The four-entry store queue does not pretranslate entries or support
-  physical-address load disambiguation; an unresolved store blocks younger
-  memory.
+- The unified LSQ has one translation/L1D launch port. It blocks partial
+  same-line forwarding cases, uses a static cacheable aperture rather than a
+  complete PMA model, and serializes atomics at the ordered head.
 - Predictor modes 6 through 8 have a direct-mapped BTB for non-return JALRs;
   the default stall policy and modes 1 through 5 still limit indirect
   prediction to the RAS.

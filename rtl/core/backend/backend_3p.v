@@ -15,6 +15,9 @@
 module openrv64_backend_3p #(
     parameter integer RETIRE_DEPTH = 8,
     parameter integer DISPATCH_DEPTH = 6,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer PHYS_REG_ADDR_WIDTH =
+        (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter integer MAX_READS_PER_REG = 2,
     parameter integer ENABLE_RV64M = 1,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
@@ -31,6 +34,8 @@ module openrv64_backend_3p #(
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE = {`RV64_XLEN{1'b0}},
     parameter integer SLOT_WIDTH = $clog2(RETIRE_DEPTH),
@@ -42,6 +47,7 @@ module openrv64_backend_3p #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_frontend_i,
+    input  wire                         translation_bypass_i,
 
     input  wire [2:0]                   decode_valid_i,
     output wire [2:0]                   decode_ready_o,
@@ -64,9 +70,12 @@ module openrv64_backend_3p #(
     output wire                         mem_valid_o,
     input  wire                         mem_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_tag_o,
+    output wire                         mem_xlate_only_o,
+    output wire                         mem_physical_o,
     input  wire                         mem_resp_valid_i,
     output wire                         mem_resp_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag_i,
+    input  wire [`RV64_XLEN-1:0]        mem_resp_paddr_i,
     input  wire                         mem_error_i,
     input  wire                         mem_page_fault_i,
     input  wire                         mem_access_allowed_i,
@@ -79,6 +88,17 @@ module openrv64_backend_3p #(
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
+    output wire                         mem_xlate_valid_o,
+    input  wire                         mem_xlate_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag_o,
+    output wire                         mem_xlate_write_o,
+    output wire [`RV64_XLEN-1:0]        mem_xlate_vaddr_o,
+    input  wire                         mem_xlate_resp_valid_i,
+    output wire                         mem_xlate_resp_ready_o,
+    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag_i,
+    input  wire [`RV64_XLEN-1:0]        mem_xlate_resp_paddr_i,
+    input  wire                         mem_xlate_resp_access_fault_i,
+    input  wire                         mem_xlate_resp_page_fault_i,
     output wire                         mem1_valid_o,
     input  wire                         mem1_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag_o,
@@ -137,10 +157,13 @@ module openrv64_backend_3p #(
     output wire [DISPATCH_COUNT_WIDTH-1:0] dispatch_occupancy_o
 );
 
-    wire [6*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr;
+    localparam integer RETIRE_META_WIDTH =
+        `OPENRV64_DISPATCH_META_WIDTH + 2*PHYS_REG_ADDR_WIDTH;
+
+    wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_read_addr;
     wire [6*`RV64_XLEN-1:0] gpr_read_data;
     wire [2:0] gpr_write;
-    wire [3*`RV64_REG_ADDR_WIDTH-1:0] gpr_write_addr;
+    wire [3*PHYS_REG_ADDR_WIDTH-1:0] gpr_write_addr;
     wire [3*`RV64_XLEN-1:0] gpr_write_data;
 
     wire allocation_ready;
@@ -148,7 +171,7 @@ module openrv64_backend_3p #(
     wire [2:0] allocation_valid;
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id;
     wire [3*SLOT_WIDTH-1:0] allocation_slot;
-    wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] allocation_meta;
+    wire [3*RETIRE_META_WIDTH-1:0] allocation_meta;
     wire [2:0] allocation_complete;
     wire [2:0] allocation_mispredict;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
@@ -228,7 +251,7 @@ module openrv64_backend_3p #(
              free_lane = free_lane + 1) begin : g_free_branch
             wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] alloc_payload =
                 allocation_meta[
-                    free_lane*`OPENRV64_RETIRE_META_WIDTH +:
+                    free_lane*RETIRE_META_WIDTH +:
                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
             wire alloc_branch = alloc_payload[14];
             wire alloc_fault = alloc_payload[8] || alloc_payload[5] ||
@@ -287,7 +310,7 @@ module openrv64_backend_3p #(
     wire [2:0] queue_retire_valid;
     wire [2:0] queue_retire_accept;
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] queue_retire_id;
-    wire [3*`OPENRV64_RETIRE_META_WIDTH-1:0] queue_retire_meta;
+    wire [3*RETIRE_META_WIDTH-1:0] queue_retire_meta;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         queue_retire_result;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] next_retire_id;
@@ -340,33 +363,33 @@ module openrv64_backend_3p #(
             0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
             WINDOW_RESULT_EXCEPTION] &&
         (queue_retire_meta[
-             0*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
+             0*RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
          queue_retire_meta[
-             0*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+             0*RETIRE_META_WIDTH + WINDOW_META_JUMP]);
     wire window_resolve1 = release_valid[1] &&
         !queue_retire_result[
             1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
             WINDOW_RESULT_EXCEPTION] &&
         (queue_retire_meta[
-             1*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
+             1*RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
          queue_retire_meta[
-             1*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+             1*RETIRE_META_WIDTH + WINDOW_META_JUMP]);
     wire window_resolve2 = release_valid[2] &&
         !queue_retire_result[
             2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
             WINDOW_RESULT_EXCEPTION] &&
         (queue_retire_meta[
-             2*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
+             2*RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
          queue_retire_meta[
-             2*`OPENRV64_RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+             2*RETIRE_META_WIDTH + WINDOW_META_JUMP]);
     wire window_branch_resolved = window_resolve0 || window_resolve1 ||
                                   window_resolve2;
     wire [1:0] window_resolve_lane = window_resolve0 ? 2'd0 :
                                      window_resolve1 ? 2'd1 : 2'd2;
-    wire [`OPENRV64_RETIRE_META_WIDTH-1:0] window_resolve_meta =
+    wire [RETIRE_META_WIDTH-1:0] window_resolve_meta =
         queue_retire_meta[
-            window_resolve_lane*`OPENRV64_RETIRE_META_WIDTH +:
-            `OPENRV64_RETIRE_META_WIDTH];
+            window_resolve_lane*RETIRE_META_WIDTH +:
+            RETIRE_META_WIDTH];
     wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         window_resolve_result = queue_retire_result[
             window_resolve_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
@@ -390,10 +413,10 @@ module openrv64_backend_3p #(
     generate
         for (retire_age_lane = 0; retire_age_lane < 3;
              retire_age_lane = retire_age_lane + 1) begin : g_retire_age
-            wire [`OPENRV64_RETIRE_META_WIDTH-1:0] age_meta =
+            wire [RETIRE_META_WIDTH-1:0] age_meta =
                 queue_retire_meta[
-                    retire_age_lane*`OPENRV64_RETIRE_META_WIDTH +:
-                    `OPENRV64_RETIRE_META_WIDTH];
+                    retire_age_lane*RETIRE_META_WIDTH +:
+                    RETIRE_META_WIDTH];
             wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] age_result =
                 queue_retire_result[
                     retire_age_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
@@ -427,10 +450,10 @@ module openrv64_backend_3p #(
     // update port observes the oldest branch; BTFNT itself is stateless.
     wire [1:0] free_branch_lane = allocation_complete[0] ? 2'd0 :
                                   allocation_complete[1] ? 2'd1 : 2'd2;
-    wire [`OPENRV64_RETIRE_META_WIDTH-1:0] free_branch_meta =
+    wire [RETIRE_META_WIDTH-1:0] free_branch_meta =
         allocation_meta[
-            free_branch_lane*`OPENRV64_RETIRE_META_WIDTH +:
-            `OPENRV64_RETIRE_META_WIDTH];
+            free_branch_lane*RETIRE_META_WIDTH +:
+            RETIRE_META_WIDTH];
     wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] free_branch_result =
         allocation_result[
             free_branch_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
@@ -515,18 +538,18 @@ module openrv64_backend_3p #(
     generate
         for (train_lane = 0; train_lane < 3;
              train_lane = train_lane + 1) begin : g_branch_train
-            wire [`OPENRV64_RETIRE_META_WIDTH-1:0] train_alloc_meta =
+            wire [RETIRE_META_WIDTH-1:0] train_alloc_meta =
                 allocation_meta[
-                    train_lane*`OPENRV64_RETIRE_META_WIDTH +:
-                    `OPENRV64_RETIRE_META_WIDTH];
+                    train_lane*RETIRE_META_WIDTH +:
+                    RETIRE_META_WIDTH];
             wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                 train_alloc_result = allocation_result[
                     train_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
-            wire [`OPENRV64_RETIRE_META_WIDTH-1:0] train_window_meta =
+            wire [RETIRE_META_WIDTH-1:0] train_window_meta =
                 queue_retire_meta[
-                    train_lane*`OPENRV64_RETIRE_META_WIDTH +:
-                    `OPENRV64_RETIRE_META_WIDTH];
+                    train_lane*RETIRE_META_WIDTH +:
+                    RETIRE_META_WIDTH];
             wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                 train_window_result = queue_retire_result[
                     train_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
@@ -665,11 +688,11 @@ module openrv64_backend_3p #(
             for (youngest_owner_lane = 0; youngest_owner_lane < 3;
                  youngest_owner_lane = youngest_owner_lane + 1) begin
                 youngest_owner_rd = allocation_meta[
-                    youngest_owner_lane*`OPENRV64_RETIRE_META_WIDTH +
+                    youngest_owner_lane*RETIRE_META_WIDTH +
                     35 +: `RV64_REG_ADDR_WIDTH];
                 if (allocation_valid[youngest_owner_lane] &&
                     allocation_meta[
-                        youngest_owner_lane*`OPENRV64_RETIRE_META_WIDTH + 17] &&
+                        youngest_owner_lane*RETIRE_META_WIDTH + 17] &&
                     (youngest_owner_rd != `RV64_REG_X0)) begin
                     youngest_owner_valid_q[youngest_owner_rd] <= 1'b1;
                     youngest_owner_ready_q[youngest_owner_rd] <= 1'b0;
@@ -949,6 +972,9 @@ module openrv64_backend_3p #(
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
         .SPEC_LOAD_BASE_3P(SPEC_LOAD_BASE),
         .SPEC_LOAD_SIZE_3P(SPEC_LOAD_SIZE),
+        .PHYS_REG_COUNT_3P(PHYS_REG_COUNT),
+        .PHYS_REG_ADDR_WIDTH_3P(PHYS_REG_ADDR_WIDTH),
+        .RETIRE_META_WIDTH_3P(RETIRE_META_WIDTH),
         .COUNT_WIDTH_3P(DISPATCH_COUNT_WIDTH)
     ) u_dispatch (
         .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
@@ -1033,7 +1059,9 @@ module openrv64_backend_3p #(
     );
 
     openrv64_rv64i_gpr_3p #(
-        .ALLOW_DUPLICATE_WRITES(RELAX_WAW)
+        .ALLOW_DUPLICATE_WRITES(RELAX_WAW),
+        .NUM_REGS(PHYS_REG_COUNT),
+        .REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH)
     ) u_gpr (
         .clk(clk), .rst_n(rst_n),
         .read_addr_i(gpr_read_addr), .read_data_o(gpr_read_data),
@@ -1076,7 +1104,9 @@ module openrv64_backend_3p #(
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
-        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE)
+        .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
+        .CACHEABLE_BASE_3P(CACHEABLE_BASE),
+        .CACHEABLE_SIZE_3P(CACHEABLE_SIZE)
     ) u_exec (
         .clk(clk), .rst_n(rst_n),
         // Selective speculation recovery leaves already-issued operations in
@@ -1087,6 +1117,9 @@ module openrv64_backend_3p #(
                     ((ENABLE_ISSUE_WINDOW != 0) &&
                      (ENABLE_SPECULATION_WINDOW == 0) &&
                      squash_frontend_i)),
+        .squash_younger_3p_i(speculative_window && squash_frontend_i),
+        .squash_id_3p_i(exec_redirect_id),
+        .translation_bypass_3p_i(translation_bypass_i),
         .valid_i(1'b0), .flush_ex_mem_i(1'b0),
         .flush_mem_wb_i(1'b0), .pc_i(64'd0), .instr_i(32'd0),
         .rs1_addr_i(5'd0), .rs2_addr_i(5'd0), .rs1_data_i(64'd0),
@@ -1146,8 +1179,11 @@ module openrv64_backend_3p #(
         .csr_valid_i(csr_valid_i), .csr_writable_i(csr_writable_i),
         .mem_valid_o(mem_valid_o), .mem_ready_i(mem_ready_i),
         .mem_tag_o(mem_tag_o), .mem_resp_valid_i(mem_resp_valid_i),
+        .mem_xlate_only_o(mem_xlate_only_o),
+        .mem_physical_o(mem_physical_o),
         .mem_resp_ready_o(mem_resp_ready_o),
         .mem_resp_tag_i(mem_resp_tag_i),
+        .mem_resp_paddr_i(mem_resp_paddr_i),
         .mem_error_i(mem_error_i), .mem_page_fault_i(mem_page_fault_i),
         .mem_access_allowed_i(mem_access_allowed_i),
         .mem_lock_o(mem_lock_o),
@@ -1155,7 +1191,19 @@ module openrv64_backend_3p #(
         .mem_wdata_o(mem_wdata_o), .mem_wstrb_o(mem_wstrb_o),
         .mem_access_o(mem_access_o),
         .mem_effective_addr_o(mem_effective_addr_o),
-        .mem_size_o(mem_size_o), .mem_rdata_i(mem_rdata_i),
+        .mem_size_o(mem_size_o),
+        .mem_xlate_valid_o(mem_xlate_valid_o),
+        .mem_xlate_ready_i(mem_xlate_ready_i),
+        .mem_xlate_tag_o(mem_xlate_tag_o),
+        .mem_xlate_write_o(mem_xlate_write_o),
+        .mem_xlate_vaddr_o(mem_xlate_vaddr_o),
+        .mem_xlate_resp_valid_i(mem_xlate_resp_valid_i),
+        .mem_xlate_resp_ready_o(mem_xlate_resp_ready_o),
+        .mem_xlate_resp_tag_i(mem_xlate_resp_tag_i),
+        .mem_xlate_resp_paddr_i(mem_xlate_resp_paddr_i),
+        .mem_xlate_resp_access_fault_i(mem_xlate_resp_access_fault_i),
+        .mem_xlate_resp_page_fault_i(mem_xlate_resp_page_fault_i),
+        .mem_rdata_i(mem_rdata_i),
         .mem1_valid_o(mem1_valid_o), .mem1_ready_i(mem1_ready_i),
         .mem1_tag_o(mem1_tag_o), .mem1_lock_o(mem1_lock_o),
         .mem1_write_o(mem1_write_o), .mem1_addr_o(mem1_addr_o),
@@ -1168,7 +1216,7 @@ module openrv64_backend_3p #(
     openrv64_retire_queue_3p #(
         .DEPTH(RETIRE_DEPTH),
         .ID_WIDTH(`OPENRV64_INSTR_ID_WIDTH),
-        .META_WIDTH(`OPENRV64_RETIRE_META_WIDTH),
+        .META_WIDTH(RETIRE_META_WIDTH),
         .RESULT_WIDTH(`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH)
     ) u_retire_queue (
         .clk(clk), .rst_n(rst_n),
@@ -1209,7 +1257,11 @@ module openrv64_backend_3p #(
     // imprecise abort.
     wire [2:0] retire_queue_valid = async_store_fault_pending_q ?
                                     3'b000 : queue_retire_valid;
-    openrv64_retire_3p u_retire (
+    openrv64_retire_3p #(
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
+        .META_WIDTH(RETIRE_META_WIDTH)
+    ) u_retire (
         .queue_valid_i(retire_queue_valid),
         .queue_meta_i(queue_retire_meta),
         .queue_result_i(queue_retire_result),

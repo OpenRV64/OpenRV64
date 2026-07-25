@@ -19,6 +19,7 @@ module openrv64_platform #(
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
     parameter int unsigned RETIRE_DEPTH = 8,
+    parameter int unsigned PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter int unsigned STORE_QUEUE_DEPTH = 4,
     parameter bit ENABLE_ISSUE_WINDOW = 1'b0,
     parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
@@ -33,6 +34,7 @@ module openrv64_platform #(
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
     parameter int unsigned L2_TLB_ENTRIES = 256,
     parameter int unsigned L2_TLB_WAYS = 4,
+    parameter int unsigned FETCH_ALT_LOOKASIDE = 3,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
@@ -310,6 +312,7 @@ module openrv64_platform #(
         .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(ENABLE_RV64A),
@@ -318,6 +321,7 @@ module openrv64_platform #(
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
+        .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .ENABLE_TRACE(ENABLE_TRACE),

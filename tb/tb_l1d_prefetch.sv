@@ -660,6 +660,71 @@ module tb_l1d_prefetch;
         rst_n = 1'b0;
         test_epoch = 0;
 
+        // A store can arrive on the exact cycle that a queued same-line
+        // prefetch becomes launchable.  The store must cancel the candidate
+        // combinationally; deleting the queue entry only at the edge is too
+        // late and can preserve a stale pre-store line in the fill buffer.
+        reset_dut();
+        response_latency_cycles = 16;
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b0;
+        req_cacheable = 1'b1;
+        req_addr = MEMORY_BASE + 64'h0d00;
+        req_tag = test_epoch[`OPENRV64_LSU_TAG_WIDTH-1:0];
+        prefetch_wait_cycles = 0;
+        #1;
+        while (!req_ready && prefetch_wait_cycles < 200) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "prefetch/store collision seed load timed out");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_cacheable = 1'b0;
+        req_addr = 64'd0;
+        prefetch_wait_cycles = 0;
+        while (!dut.prefetch_launch &&
+               prefetch_wait_cycles < 200) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+        end
+        if (!dut.prefetch_launch ||
+            (dut.prefetch_launch_addr_r !=
+             MEMORY_BASE + 64'h0d40))
+            $fatal(1,
+                "same-line collision candidate missing launch=%0d addr=%016x",
+                dut.prefetch_launch, dut.prefetch_launch_addr_r);
+        req_valid = 1'b1;
+        req_posted = 1'b1;
+        req_write = 1'b1;
+        req_cacheable = 1'b1;
+        req_addr = MEMORY_BASE + 64'h0d40;
+        req_wdata = 64'h0123_4567_89ab_cdef;
+        req_wstrb = 8'hff;
+        req_tag = test_epoch + 1;
+        #1;
+        if (!req_ready)
+            $fatal(1, "same-line collision store was not ready");
+        if (dut.prefetch_launch)
+            $fatal(1,
+                "same-line prefetch launched with an admitted store");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_posted = 1'b0;
+        req_write = 1'b0;
+        req_cacheable = 1'b0;
+        req_addr = 64'd0;
+        req_wdata = 64'd0;
+        req_wstrb = 8'd0;
+        repeat (80) @(negedge clk);
+        if (prefetch_command_seen(MEMORY_BASE + 64'h0d40))
+            $fatal(1,
+                "canceled same-line prefetch reached CCX after store");
+
         // A first demand creates a next-line candidate.  The following demand
         // must consume that buffered line without another demand CCX read.
         reset_dut();

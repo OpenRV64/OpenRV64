@@ -1,3 +1,4 @@
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -114,6 +115,937 @@ uint64_t wide_bits64(const VlWide<Words>& value, unsigned lsb) {
         result |= static_cast<uint64_t>(value[word + 2]) << (64 - shift);
     return result;
 }
+
+struct L2TlbProbe {
+    static constexpr unsigned kWays = 4;
+    static constexpr unsigned kSets = 64;
+    static constexpr uint64_t kField52Mask = (UINT64_C(1) << 52) - 1;
+
+    struct EntryOrigin {
+        bool known = false;
+        uint64_t root_ppn = 0;
+        uint64_t vaddr = 0;
+        uint16_t asid = 0;
+        uint8_t vm_mode = 0;
+        bool global = false;
+        uint64_t fill_cycle = 0;
+    };
+
+    std::ostream& stream;
+    std::array<std::array<EntryOrigin, kSets>, kWays> origin{};
+    bool walk_known = false;
+    uint64_t walk_vaddr = 0;
+    uint64_t walk_root_ppn = 0;
+    uint16_t walk_asid = 0;
+    uint8_t walk_vm_mode = 0;
+    unsigned walk_owner = 0;
+    uint64_t last_satp = 0;
+    bool last_satp_valid = false;
+    uint64_t last_tlbi_cycle = 0;
+    bool expect_clear = false;
+    uint64_t lookups = 0;
+    uint64_t hits = 0;
+    uint64_t misses = 0;
+    uint64_t fills = 0;
+    uint64_t walks = 0;
+    uint64_t flushes = 0;
+    uint64_t satp_changes = 0;
+    uint64_t anomalies = 0;
+    uint64_t root_mismatches = 0;
+    uint64_t fill_owner_mismatches = 0;
+    uint64_t lookup_decode_mismatches = 0;
+    uint64_t clear_mismatches = 0;
+
+    explicit L2TlbProbe(std::ostream& output) : stream(output) {}
+
+    void anomaly(uint64_t cycle, const char* kind) {
+        ++anomalies;
+        stream << "L2TLB ANOMALY cycle=" << std::dec << cycle
+               << " kind=" << kind << '\n';
+        stream.flush();
+    }
+
+    void clear_origins() {
+        for (auto& way : origin)
+            for (auto& entry : way)
+                entry = EntryOrigin{};
+    }
+
+    void sample_pre_edge(Vtb_opensbi* top) {
+        Vtb_opensbi___024root* const root = top->rootp;
+        const uint64_t cycle = top->checkpoint_cycle_o;
+
+#define L2P_CORE(name) \
+    root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
+#define L2P_BUS(name) \
+    L2P_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+#define L2P_PTW(name) L2P_BUS(u_ptw__DOT__##name)
+#define L2P_L2(name) L2P_BUS(u_l2_tlb__DOT__##name)
+
+        const bool tlbi = L2P_CORE(__Vcellinp__u_bus__tlbi_i);
+        const uint64_t satp = L2P_CORE(u_csrs__DOT__satp_q);
+
+        if (expect_clear) {
+            bool any_valid = false;
+            for (unsigned way = 0; way < kWays; ++way)
+                any_valid |= L2P_L2(valid_q)[way] != 0;
+            if (any_valid) {
+                ++clear_mismatches;
+                anomaly(cycle, "valid-after-tlbi");
+            }
+            expect_clear = false;
+        }
+
+        if (!last_satp_valid) {
+            last_satp = satp;
+            last_satp_valid = true;
+        } else if (satp != last_satp) {
+            ++satp_changes;
+            stream << "L2TLB SATP cycle=" << std::dec << cycle
+                   << std::hex << std::setfill('0')
+                   << " old=" << std::setw(16) << last_satp
+                   << " new=" << std::setw(16) << satp
+                   << std::dec << " tlbi_age="
+                   << (cycle - last_tlbi_cycle) << '\n';
+            if ((cycle - last_tlbi_cycle) > 1)
+                anomaly(cycle, "satp-change-without-adjacent-tlbi");
+            last_satp = satp;
+        }
+
+        if (tlbi) {
+            ++flushes;
+            last_tlbi_cycle = cycle;
+            expect_clear = true;
+            clear_origins();
+            walk_known = false;
+            stream << "L2TLB FLUSH cycle=" << std::dec << cycle
+                   << std::hex << std::setfill('0')
+                   << " satp=" << std::setw(16) << satp << '\n';
+        }
+
+        if (L2P_BUS(ptw_req_valid) && L2P_BUS(ptw_req_ready)) {
+            ++walks;
+            walk_known = true;
+            walk_vaddr = L2P_BUS(ptw_req_vaddr);
+            walk_vm_mode = L2P_BUS(ptw_req_vm_mode);
+            if (L2P_BUS(start_lsu_walk)) {
+                walk_owner = 1;
+                walk_root_ppn = L2P_BUS(lsu_root_ppn_q);
+                walk_asid = L2P_BUS(lsu_asid_q);
+            } else if (L2P_BUS(start_fetch_walk)) {
+                const unsigned slot = L2P_BUS(fetch_xlate_slot_r);
+                walk_owner = 0;
+                walk_root_ppn = L2P_BUS(fetch_root_ppn_q)[slot];
+                walk_asid = L2P_BUS(fetch_asid_q)[slot];
+            } else {
+                walk_owner = 2;
+                walk_root_ppn = L2P_BUS(prefetch_xlate_root_ppn_q);
+                walk_asid = L2P_BUS(prefetch_xlate_asid_q);
+            }
+            stream << "L2TLB WALK cycle=" << std::dec << cycle
+                   << " owner=" << walk_owner
+                   << std::hex << std::setfill('0')
+                   << " va=" << std::setw(16) << walk_vaddr
+                   << " root=" << std::setw(11) << walk_root_ppn
+                   << " asid=" << std::setw(4) << walk_asid
+                   << " mode=" << std::setw(1)
+                   << static_cast<unsigned>(walk_vm_mode) << '\n';
+        }
+
+        if (L2P_L2(diag_fill)) {
+            ++fills;
+            const uint64_t fill_vaddr = L2P_BUS(l2_tlb_fill_vaddr);
+            const uint64_t ptw_vaddr = L2P_PTW(vaddr_q);
+            const uint64_t fill_paddr = L2P_PTW(resp_paddr_q);
+            const unsigned set = (fill_vaddr >> 12) & (kSets - 1);
+            const unsigned way = L2P_L2(fill_way_r);
+            const auto& fill_entry = L2P_L2(fill_entry);
+            const bool global = ((wide_bits64(fill_entry, 6) >> 0) & 1U) != 0;
+
+            stream << "L2TLB FILL cycle=" << std::dec << cycle
+                   << " owner=" << walk_owner
+                   << " set=" << set << " way=" << way
+                   << std::hex << std::setfill('0')
+                   << " va=" << std::setw(16) << fill_vaddr
+                   << " ptw_va=" << std::setw(16) << ptw_vaddr
+                   << " pa=" << std::setw(16) << fill_paddr
+                   << " root=" << std::setw(11) << walk_root_ppn
+                   << " global=" << global << '\n';
+
+            if (fill_vaddr != ptw_vaddr ||
+                (walk_known && fill_vaddr != walk_vaddr)) {
+                ++fill_owner_mismatches;
+                anomaly(cycle, "fill-va-does-not-match-active-walk");
+            }
+            if (way >= kWays) {
+                ++fill_owner_mismatches;
+                anomaly(cycle, "fill-way-out-of-range");
+            } else {
+                origin[way][set] = EntryOrigin{
+                    walk_known,
+                    walk_root_ppn,
+                    fill_vaddr,
+                    walk_asid,
+                    walk_vm_mode,
+                    global,
+                    cycle
+                };
+            }
+        }
+
+        if (L2P_L2(diag_lookup)) {
+            ++lookups;
+            const bool xlate_select =
+                L2P_BUS(dtlb_lookup_is_xlate) &&
+                !L2P_BUS(dtlb_lookup_hit);
+            const bool lsu_select =
+                xlate_select ||
+                ((L2P_BUS(lsu_state_q) == 1) &&
+                 !L2P_BUS(lsu_xlate_bare) &&
+                 !L2P_BUS(dtlb_lookup_hit));
+            const bool fetch_select =
+                !lsu_select && L2P_BUS(fetch_xlate_found_r) &&
+                !L2P_BUS(fetch_xlate_bare) &&
+                !L2P_BUS(itlb_lookup_hit);
+            const bool prefetch_select =
+                !lsu_select && !fetch_select;
+
+            uint64_t vaddr = 0;
+            uint64_t root_ppn = 0;
+            uint16_t asid = 0;
+            uint8_t vm_mode = 0;
+            unsigned owner = 3;
+            if (lsu_select) {
+                owner = 1;
+                if (xlate_select) {
+                    vaddr = L2P_CORE(backend_mem_xlate_vaddr);
+                    root_ppn = satp & ((UINT64_C(1) << 44) - 1);
+                    asid = (satp >> 44) & 0xffffU;
+                    vm_mode = (satp >> 60) & 0xfU;
+                } else {
+                    vaddr = L2P_BUS(lsu_vaddr_q);
+                    root_ppn = L2P_BUS(lsu_root_ppn_q);
+                    asid = L2P_BUS(lsu_asid_q);
+                    vm_mode = L2P_BUS(lsu_vm_mode_q);
+                }
+            } else if (fetch_select) {
+                const unsigned slot = L2P_BUS(fetch_xlate_slot_r);
+                owner = 0;
+                vaddr = L2P_BUS(fetch_vaddr_q)[slot];
+                root_ppn = L2P_BUS(fetch_root_ppn_q)[slot];
+                asid = L2P_BUS(fetch_asid_q)[slot];
+                vm_mode = L2P_BUS(fetch_vm_mode_q)[slot];
+            } else if (prefetch_select) {
+                owner = 2;
+                vaddr = L2P_BUS(prefetch_xlate_vaddr_q);
+                root_ppn = L2P_BUS(prefetch_xlate_root_ppn_q);
+                asid = L2P_BUS(prefetch_xlate_asid_q);
+                vm_mode = L2P_BUS(prefetch_xlate_vm_mode_q);
+            }
+
+            const uint64_t vpn = (vaddr >> 12) & kField52Mask;
+            const unsigned set = (vaddr >> 12) & (kSets - 1);
+            unsigned matching_ways = 0;
+            unsigned matching_way = 0;
+            uint64_t decoded_paddr = 0;
+            bool decoded_global = false;
+            for (unsigned way = 0; way < kWays; ++way) {
+                if (((L2P_L2(valid_q)[way] >> set) & 1U) == 0)
+                    continue;
+                const auto& entry = L2P_L2(lookup_entry)[way];
+                const uint64_t entry_vpn =
+                    wide_bits64(entry, 79) & kField52Mask;
+                const uint64_t entry_ppn =
+                    wide_bits64(entry, 27) & kField52Mask;
+                const uint8_t entry_mode =
+                    wide_bits64(entry, 23) & 0xfU;
+                const uint16_t entry_asid =
+                    wide_bits64(entry, 7) & 0xffffU;
+                const bool entry_global =
+                    (wide_bits64(entry, 6) & 1U) != 0;
+                if (entry_vpn != vpn || entry_mode != vm_mode ||
+                    (!entry_global && entry_asid != asid))
+                    continue;
+                ++matching_ways;
+                matching_way = way;
+                decoded_paddr = (entry_ppn << 12) | (vaddr & 0xfffU);
+                decoded_global = entry_global;
+            }
+
+            const bool rtl_hit = L2P_BUS(l2_tlb_lookup_hit);
+            const uint64_t rtl_paddr = L2P_BUS(l2_tlb_lookup_paddr);
+            hits += rtl_hit;
+            misses += !rtl_hit;
+            stream << "L2TLB LOOKUP cycle=" << std::dec << cycle
+                   << " owner=" << owner << " set=" << set
+                   << " hit=" << rtl_hit
+                   << " matches=" << matching_ways
+                   << std::hex << std::setfill('0')
+                   << " va=" << std::setw(16) << vaddr
+                   << " pa=" << std::setw(16) << rtl_paddr
+                   << " root=" << std::setw(11) << root_ppn
+                   << " asid=" << std::setw(4) << asid
+                   << " mode=" << std::setw(1)
+                   << static_cast<unsigned>(vm_mode) << '\n';
+
+            if (owner == 3) {
+                ++lookup_decode_mismatches;
+                anomaly(cycle, "lookup-owner-undecodable");
+            }
+            if ((rtl_hit && matching_ways != 1) ||
+                (!rtl_hit && matching_ways != 0) ||
+                (rtl_hit && rtl_paddr != decoded_paddr)) {
+                ++lookup_decode_mismatches;
+                anomaly(cycle, "rtl-hit-disagrees-with-decoded-array");
+            }
+            if (rtl_hit && matching_ways == 1) {
+                const EntryOrigin& entry_origin =
+                    origin[matching_way][set];
+                if (entry_origin.known && !decoded_global &&
+                    entry_origin.root_ppn != root_ppn) {
+                    ++root_mismatches;
+                    anomaly(cycle, "nonglobal-hit-from-different-root");
+                    stream << "L2TLB ROOT_MISMATCH cycle=" << std::dec
+                           << cycle << " way=" << matching_way
+                           << std::hex << std::setfill('0')
+                           << " fill_root=" << std::setw(11)
+                           << entry_origin.root_ppn
+                           << " lookup_root=" << std::setw(11)
+                           << root_ppn
+                           << " fill_va=" << std::setw(16)
+                           << entry_origin.vaddr
+                           << " lookup_va=" << std::setw(16)
+                           << vaddr << '\n';
+                }
+            }
+        }
+
+        if (L2P_BUS(ptw_resp_valid))
+            walk_known = false;
+
+#undef L2P_L2
+#undef L2P_PTW
+#undef L2P_BUS
+#undef L2P_CORE
+    }
+
+    void report() const {
+        std::cout
+            << "HOST L2 TLB PROBE lookups=" << lookups
+            << " hits=" << hits
+            << " misses=" << misses
+            << " fills=" << fills
+            << " walks=" << walks
+            << " flushes=" << flushes
+            << " satp_changes=" << satp_changes
+            << " anomalies=" << anomalies
+            << " root_mismatches=" << root_mismatches
+            << " fill_owner_mismatches=" << fill_owner_mismatches
+            << " lookup_decode_mismatches=" << lookup_decode_mismatches
+            << " clear_mismatches=" << clear_mismatches << '\n';
+    }
+};
+
+struct L2TlbEntryInvalidator {
+    static constexpr unsigned kWays = 4;
+    static constexpr unsigned kSets = 64;
+
+    unsigned target_way;
+    unsigned target_set;
+    bool fired = false;
+
+    L2TlbEntryInvalidator(unsigned way, unsigned set)
+        : target_way(way), target_set(set) {}
+
+    void invalidate_now(Vtb_opensbi* top) {
+        if (fired)
+            return;
+
+        Vtb_opensbi___024root* const root = top->rootp;
+
+#define L2I_CORE(name) \
+    root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
+#define L2I_BUS(name) \
+    L2I_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+#define L2I_L2(name) L2I_BUS(u_l2_tlb__DOT__##name)
+#define L2I_ENTRY(way) \
+    L2I_L2(g_way_storage__BRA__##way##__KET____DOT__entry_q)
+
+        if (target_way >= kWays || target_set >= kSets) {
+            std::cerr << "L2 TLB ENTRY INVALIDATE out of range way="
+                      << target_way << " set=" << target_set << '\n';
+            std::exit(EXIT_FAILURE);
+        }
+
+        auto& valid = L2I_L2(valid_q);
+        if (((valid[target_way] >> target_set) & 1U) == 0) {
+            std::cerr << "L2 TLB ENTRY INVALIDATE target is not valid way="
+                      << target_way << " set=" << target_set << '\n';
+            std::exit(EXIT_FAILURE);
+        }
+
+        const VlWide<5>* entry = nullptr;
+        switch (target_way) {
+        case 0:
+            entry = &L2I_ENTRY(0)[target_set];
+            break;
+        case 1:
+            entry = &L2I_ENTRY(1)[target_set];
+            break;
+        case 2:
+            entry = &L2I_ENTRY(2)[target_set];
+            break;
+        case 3:
+            entry = &L2I_ENTRY(3)[target_set];
+            break;
+        default:
+            break;
+        }
+
+        const uint64_t vpn = wide_bits64(*entry, 79) &
+            ((UINT64_C(1) << 52) - 1);
+        const uint64_t ppn = wide_bits64(*entry, 27) &
+            ((UINT64_C(1) << 52) - 1);
+        const uint8_t vm_mode = wide_bits64(*entry, 23) & 0xfU;
+        const uint16_t asid = wide_bits64(*entry, 7) & 0xffffU;
+        const bool global = (wide_bits64(*entry, 6) & 1U) != 0;
+        const bool active_lookup =
+            L2I_L2(diag_lookup) && L2I_BUS(l2_tlb_lookup_hit);
+
+        valid[target_way] &= ~(UINT64_C(1) << target_set);
+        top->eval();
+        fired = true;
+
+        std::cout << "L2 TLB ENTRY INVALIDATED cycle=" << std::dec
+                  << top->checkpoint_cycle_o
+                  << " way=" << target_way
+                  << " set=" << target_set
+                  << " active_lookup=" << active_lookup
+                  << std::hex << std::setfill('0')
+                  << " vpn=" << std::setw(13) << vpn
+                  << " ppn=" << std::setw(13) << ppn
+                  << " asid=" << std::setw(4) << asid
+                  << " mode=" << static_cast<unsigned>(vm_mode)
+                  << " global=" << global
+                  << std::dec << '\n';
+
+#undef L2I_ENTRY
+#undef L2I_L2
+#undef L2I_BUS
+#undef L2I_CORE
+    }
+
+    void report() const {
+        std::cout << "HOST L2 TLB ENTRY INVALIDATE way="
+                  << target_way << " set=" << target_set
+                  << " fired=" << fired << '\n';
+    }
+};
+
+struct L1dProbe {
+    std::ostream& stream;
+
+    explicit L1dProbe(std::ostream& output) : stream(output) {}
+
+    void sample_pre_edge(Vtb_opensbi* top) {
+        Vtb_opensbi___024root* const root = top->rootp;
+
+#define L1DP_CORE(name) \
+    root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
+#define L1DP_BUS(name) \
+    L1DP_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+#define L1DP(name) L1DP_BUS(u_l1d__DOT__##name)
+#define L1DP_CACHE(name) \
+    L1DP(u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__##name)
+
+        const uint64_t cycle = top->checkpoint_cycle_o;
+        stream << std::dec
+               << "cycle=" << cycle
+               << " cache_state=" << static_cast<unsigned>(L1DP_CACHE(state_q))
+               << " req_fire=" << static_cast<unsigned>(L1DP_CACHE(request_fire))
+               << " lookup_hit=" << static_cast<unsigned>(L1DP_CACHE(lookup_hit))
+               << " req_write=" << static_cast<unsigned>(L1DP_CACHE(request_write_q))
+               << " access_update="
+               << static_cast<unsigned>(L1DP_CACHE(access_updates_line_q))
+               << " access_set="
+               << static_cast<unsigned>(L1DP_CACHE(access_set_q))
+               << " access_way="
+               << static_cast<unsigned>(L1DP_CACHE(access_way_q))
+               << std::hex << std::setfill('0')
+               << " req_pa=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP_CACHE(request_phys_addr_q))
+               << " req_data=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP_CACHE(request_wdata_q))
+               << " req_strb=" << std::setw(2)
+               << static_cast<unsigned>(L1DP_CACHE(request_wstrb_q))
+               << std::dec
+               << " resp_valid="
+               << static_cast<unsigned>(L1DP_CACHE(response_valid_q))
+               << " resp_hit="
+               << static_cast<unsigned>(L1DP_CACHE(response_hit_q))
+               << std::hex << std::setfill('0')
+               << " resp_data=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP_CACHE(response_data_q))
+               << std::dec
+               << " fill_fire="
+               << static_cast<unsigned>(L1DP_CACHE(fill_fire))
+               << std::hex << std::setfill('0')
+               << " fill_addr=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP(l1_fill_addr))
+               << " fill_data0=" << std::setw(16)
+               << wide_bits64(L1DP(demand_fill_data_r), 0)
+               << std::dec
+               << " mem_valid=" << static_cast<unsigned>(L1DP(l1_mem_valid))
+               << " mem_ready=" << static_cast<unsigned>(L1DP(l1_mem_ready))
+               << " mem_write=" << static_cast<unsigned>(L1DP(l1_mem_write))
+               << std::hex << std::setfill('0')
+               << " mem_addr=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP(l1_mem_addr))
+               << " mem_data=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP(l1_mem_wdata))
+               << " mem_strb=" << std::setw(2)
+               << static_cast<unsigned>(L1DP(l1_mem_wstrb))
+               << std::dec
+               << " backend_state="
+               << static_cast<unsigned>(L1DP(backend_state_q))
+               << " sb_count="
+               << static_cast<unsigned>(L1DP(store_buffer_count_q))
+               << " sb_head="
+               << static_cast<unsigned>(L1DP(store_buffer_head_q))
+               << " sb_tail="
+               << static_cast<unsigned>(L1DP(store_buffer_tail_q))
+               << " sb_accept="
+               << static_cast<unsigned>(L1DP(store_buffer_accept))
+               << " sb_merge="
+               << static_cast<unsigned>(L1DP(store_buffer_merge))
+               << " sb_allocate="
+               << static_cast<unsigned>(L1DP(store_buffer_allocate))
+               << " sb_issue_found="
+               << static_cast<unsigned>(L1DP(store_buffer_issue_found_r))
+               << " sb_issue_index="
+               << static_cast<unsigned>(L1DP(store_buffer_issue_index_r))
+               << " sb_resp_match="
+               << static_cast<unsigned>(L1DP(store_response_match_r))
+               << " sb_resp_index="
+               << static_cast<unsigned>(L1DP(store_response_index_r))
+               << " sb_resp_fire="
+               << static_cast<unsigned>(L1DP(store_response_fire))
+               << " cmd_fire="
+               << static_cast<unsigned>(L1DP(command_fire))
+               << " wdata_fire="
+               << static_cast<unsigned>(L1DP(wdata_fire))
+               << " main_resp_fire="
+               << static_cast<unsigned>(L1DP(main_response_fire))
+               << " normal_resp="
+               << static_cast<unsigned>(L1DP(normal_response_valid))
+               << std::hex << std::setfill('0')
+               << " normal_data=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP(normal_response_merged_data_r))
+               << " outer_req_addr=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP(request_addr_q))
+               << " outer_req_strb=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP(request_wstrb_q))
+               << std::dec
+               << " outer_req_write="
+               << static_cast<unsigned>(L1DP(request_write_q))
+               << " outer_req_buffered="
+               << static_cast<unsigned>(L1DP(request_buffered_store_q))
+               << " pf_launch="
+               << static_cast<unsigned>(L1DP(prefetch_launch))
+               << " pf_launch_found="
+               << static_cast<unsigned>(L1DP(prefetch_launch_found_r))
+               << std::hex << std::setfill('0')
+               << " pf_launch_addr=" << std::setw(16)
+               << static_cast<uint64_t>(L1DP(prefetch_launch_addr_r))
+               << std::dec
+               << " pf_command="
+               << static_cast<unsigned>(L1DP(prefetch_command_inflight))
+               << " req_prefetch="
+               << static_cast<unsigned>(L1DP(request_prefetch_q));
+
+        for (unsigned index = 0; index < 3; ++index) {
+            if (!L1DP(demand_mshr_valid_q)[index])
+                continue;
+            stream << " mshr[" << index << "]={"
+                   << std::hex << std::setfill('0')
+                   << "addr=" << std::setw(16)
+                   << static_cast<uint64_t>(L1DP(demand_mshr_addr_q)[index])
+                   << ",data0=" << std::setw(16)
+                   << wide_bits64(L1DP(demand_mshr_data_q)[index], 0)
+                   << ",store_data0=" << std::setw(16)
+                   << wide_bits64(L1DP(demand_mshr_store_data_q)[index], 0)
+                   << ",store_strb=" << std::setw(16)
+                   << static_cast<uint64_t>(
+                          L1DP(demand_mshr_store_strb_q)[index])
+                   << std::dec
+                   << ",issued="
+                   << static_cast<unsigned>(L1DP(demand_mshr_issued_q)[index])
+                   << ",complete="
+                   << static_cast<unsigned>(L1DP(demand_mshr_complete_q)[index])
+                   << ",fill_done="
+                   << static_cast<unsigned>(L1DP(demand_mshr_fill_done_q)[index])
+                   << '}';
+        }
+        for (unsigned index = 0; index < 4; ++index) {
+            if (!L1DP(prefetch_mshr_valid_q)[index])
+                continue;
+            stream << " pf_mshr[" << index << "]={"
+                   << std::hex << std::setfill('0')
+                   << "addr=" << std::setw(16)
+                   << static_cast<uint64_t>(L1DP(prefetch_mshr_addr_q)[index])
+                   << std::dec
+                   << ",discard="
+                   << static_cast<unsigned>(
+                          L1DP(prefetch_mshr_discard_q)[index])
+                   << '}';
+        }
+        for (unsigned index = 0; index < 8; ++index) {
+            if (!L1DP(store_buffer_valid_q)[index])
+                continue;
+            stream << " sb[" << index << "]={"
+                   << std::hex << std::setfill('0')
+                   << "addr=" << std::setw(16)
+                   << static_cast<uint64_t>(L1DP(store_buffer_addr_q)[index])
+                   << ",data0=" << std::setw(16)
+                   << wide_bits64(L1DP(store_buffer_data_q)[index], 0)
+                   << ",strb=" << std::setw(16)
+                   << static_cast<uint64_t>(L1DP(store_buffer_strb_q)[index])
+                   << std::dec
+                   << ",issued="
+                   << static_cast<unsigned>(L1DP(store_buffer_issued_q)[index])
+                   << ",complete="
+                   << static_cast<unsigned>(L1DP(store_buffer_completed_q)[index])
+                   << ",txn="
+                   << static_cast<unsigned>(L1DP(store_buffer_txn_id_q)[index])
+                   << '}';
+        }
+        stream << '\n';
+
+#undef L1DP_CACHE
+#undef L1DP
+#undef L1DP_BUS
+#undef L1DP_CORE
+    }
+};
+
+static void suppress_l1d_prefetch_launch(Vtb_opensbi* top) {
+    Vtb_opensbi___024root* const root = top->rootp;
+
+#define L1DS_CORE(name) \
+    root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
+#define L1DS_BUS(name) \
+    L1DS_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+#define L1DS(name) L1DS_BUS(u_l1d__DOT__##name)
+
+    if (!L1DS(prefetch_launch_found_r)) {
+        std::cerr << "L1D PREFETCH SUPPRESS requested without candidate"
+                  << " cycle=" << top->checkpoint_cycle_o << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+
+    const unsigned index = L1DS(prefetch_launch_index_r);
+    const uint64_t addr = L1DS(prefetch_launch_addr_r);
+    L1DS(prefetch_candidate_valid_q)[index] = 0;
+    top->eval();
+    std::cout << "L1D PREFETCH SUPPRESSED cycle="
+              << top->checkpoint_cycle_o
+              << " index=" << index
+              << std::hex << std::setfill('0')
+              << " addr=" << std::setw(16) << addr
+              << std::dec << '\n';
+
+#undef L1DS
+#undef L1DS_BUS
+#undef L1DS_CORE
+}
+
+struct FullRetireTrace {
+    std::ostream& stream;
+
+    explicit FullRetireTrace(std::ostream& output) : stream(output) {}
+
+    void sample_pre_edge(Vtb_opensbi* top) {
+        Vtb_opensbi___024root* const root = top->rootp;
+
+#define R3P_BACKEND(name) \
+    root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__u_backend__DOT__##name
+#define R3P_QUEUE(name) R3P_BACKEND(u_retire_queue__DOT__##name)
+#define R3P_RETIRE(name) R3P_BACKEND(u_retire__DOT__##name)
+#define R3P_CORE(name) \
+    root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
+
+        const std::array<bool, 3> arch = {
+            static_cast<bool>(R3P_RETIRE(arch0)),
+            static_cast<bool>(R3P_RETIRE(arch1)),
+            static_cast<bool>(R3P_RETIRE(arch2))
+        };
+        const unsigned head = R3P_QUEUE(head_q);
+        const unsigned privilege = R3P_CORE(u_csrs__DOT__priv_mode_q);
+        for (unsigned lane = 0; lane < arch.size(); ++lane) {
+            if (!arch[lane])
+                continue;
+            const unsigned slot = (head + lane) & 15U;
+            const auto& result = R3P_QUEUE(result_q)[slot];
+            const uint64_t pc = wide_bits64(result, 329);
+            const uint64_t next_pc = wide_bits64(result, 265);
+            const uint32_t instr =
+                static_cast<uint32_t>(wide_bits64(result, 233));
+            const bool result_reg_write =
+                (wide_bits64(result, 153) & 1U) != 0;
+            const unsigned rd =
+                static_cast<unsigned>(wide_bits64(result, 154) & 0x1fU);
+            const uint64_t wdata = wide_bits64(result, 169);
+            const uint64_t trace_id = wide_bits64(result, 393);
+
+            stream << "cycle=" << std::dec << top->checkpoint_cycle_o
+                   << " lane=" << lane
+                   << " id=" << trace_id
+                   << std::hex << std::setfill('0')
+                   << " pc=" << std::setw(16) << pc
+                   << " instr=" << std::setw(8) << instr
+                   << std::dec << " priv=" << privilege
+                   << std::hex << std::setfill('0')
+                   << " next=" << std::setw(16) << next_pc
+                   << std::dec
+                   << " rd_write=" << (result_reg_write && rd != 0)
+                   << " rd=" << rd
+                   << std::hex << std::setfill('0')
+                   << " wdata=" << std::setw(16) << wdata << '\n';
+        }
+
+#undef R3P_CORE
+#undef R3P_RETIRE
+#undef R3P_QUEUE
+#undef R3P_BACKEND
+    }
+};
+
+struct FrontendBreakdown {
+    enum class Recovery : uint8_t {
+        None,
+        PredictedRedirect,
+        DirectionRedirect,
+        ControlFlush,
+    };
+
+    uint64_t sampled_cycles = 0;
+    uint64_t frontend_empty = 0;
+
+    // Mutually exclusive empty-cycle buckets, in priority order.
+    uint64_t empty_recovery_predicted = 0;
+    uint64_t empty_recovery_direction = 0;
+    uint64_t empty_recovery_flush = 0;
+    uint64_t empty_translation_barrier = 0;
+    uint64_t empty_fetch_ptw = 0;
+    uint64_t empty_fetch_l1i = 0;
+    uint64_t empty_fetch_uncached = 0;
+    uint64_t empty_fetch_translate = 0;
+    uint64_t empty_request_backpressure = 0;
+    uint64_t empty_response_complete = 0;
+    uint64_t empty_outstanding_other = 0;
+    uint64_t empty_no_current_sector = 0;
+    uint64_t empty_current_sector_no_lane = 0;
+    uint64_t empty_inactive = 0;
+    uint64_t empty_other = 0;
+
+    // Orthogonal observations.  These deliberately overlap.
+    uint64_t overlap_current_sector_missing = 0;
+    uint64_t overlap_following_sector_missing = 0;
+    uint64_t overlap_l1i_busy = 0;
+    uint64_t overlap_fetch_queue_nonempty = 0;
+    uint64_t overlap_pending_request = 0;
+    uint64_t overlap_pair_pending = 0;
+    uint64_t overlap_bp_fetch_stall = 0;
+    uint64_t overlap_request_fire = 0;
+    uint64_t overlap_response_match = 0;
+
+    uint64_t predicted_redirects = 0;
+    uint64_t direction_redirects = 0;
+    uint64_t control_flushes = 0;
+    uint64_t branch_resolutions = 0;
+    uint64_t conditional_resolutions = 0;
+    uint64_t jump_resolutions = 0;
+    uint64_t conditional_direction_misses = 0;
+    uint64_t jump_direction_misses = 0;
+    uint64_t conditional_target_misses = 0;
+    uint64_t jump_target_misses = 0;
+
+    Recovery recovery = Recovery::None;
+
+    void sample(Vtb_opensbi* top) {
+        Vtb_opensbi___024root* const root = top->rootp;
+
+#define FE_CORE(name) \
+    root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
+#define FE_FETCH(name) \
+    FE_CORE(g_fetch_axi__DOT__u_fetch__DOT__##name)
+#define FE_BUS(name) \
+    FE_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+
+        ++sampled_cycles;
+
+        const bool predicted_redirect = FE_CORE(bp_predict_redirect);
+        const bool direction_redirect = FE_CORE(backend_redirect);
+        const bool control_flush = FE_CORE(control_flush);
+        const bool branch_resolved = FE_CORE(branch_resolved);
+        const bool branch_conditional = FE_CORE(branch_conditional);
+        const bool target_miss = FE_CORE(bp_target_mispredict);
+
+        predicted_redirects += predicted_redirect;
+        direction_redirects += direction_redirect;
+        control_flushes += control_flush;
+        branch_resolutions += branch_resolved;
+        conditional_resolutions += branch_resolved && branch_conditional;
+        jump_resolutions += branch_resolved && !branch_conditional;
+        conditional_direction_misses +=
+            direction_redirect && branch_conditional;
+        jump_direction_misses += direction_redirect && !branch_conditional;
+        conditional_target_misses += target_miss && branch_conditional;
+        jump_target_misses += target_miss && !branch_conditional;
+
+        if (control_flush)
+            recovery = Recovery::ControlFlush;
+        else if (direction_redirect)
+            recovery = Recovery::DirectionRedirect;
+        else if (predicted_redirect)
+            recovery = Recovery::PredictedRedirect;
+
+        const bool empty = FE_CORE(fetch_decode_valid) == 0;
+        if (!empty) {
+            if (!control_flush && !direction_redirect &&
+                !predicted_redirect)
+                recovery = Recovery::None;
+            return;
+        }
+        ++frontend_empty;
+
+        bool fetch_translate = false;
+        bool fetch_ptw = false;
+        bool fetch_uncached = false;
+        bool fetch_complete = false;
+        bool fetch_l1i = false;
+        for (unsigned index = 0; index < 4; ++index) {
+            const unsigned state = FE_BUS(fetch_state_q)[index];
+            fetch_translate |= state == 1;
+            fetch_ptw |= state == 2;
+            fetch_uncached |= state == 3;
+            fetch_complete |= state == 4;
+            fetch_l1i |= state == 5;
+        }
+
+        const uint64_t consume_pc = FE_FETCH(consume_pc_q);
+        const unsigned current_sector = (consume_pc >> 4) & 1U;
+        const bool current_sector_valid =
+            ((FE_FETCH(consume_sector_valid) >> current_sector) & 1U) != 0;
+        const bool following_sector_valid =
+            (FE_FETCH(following_sector_valid) & 1U) != 0;
+        const bool request_backpressure =
+            FE_CORE(fetch_pipe_req_valid) && !FE_CORE(fetch_pipe_req_ready);
+        const bool fetch_queue_nonempty = FE_BUS(fetch_count_q) != 0;
+        const bool pair_pending = FE_FETCH(pair_predicted_valid_q) ||
+                                  FE_FETCH(pair_unpredicted_valid_q);
+
+        overlap_current_sector_missing += !current_sector_valid;
+        overlap_following_sector_missing += !following_sector_valid;
+        overlap_l1i_busy += FE_BUS(u_l1i__DOT__backend_state_q) != 0;
+        overlap_fetch_queue_nonempty += fetch_queue_nonempty;
+        overlap_pending_request += FE_FETCH(pending_valid_q);
+        overlap_pair_pending += pair_pending;
+        overlap_bp_fetch_stall += FE_CORE(bp_fetch_stall);
+        overlap_request_fire += FE_FETCH(req_fire);
+        overlap_response_match += FE_FETCH(resp_match);
+
+        if (recovery == Recovery::ControlFlush)
+            ++empty_recovery_flush;
+        else if (recovery == Recovery::DirectionRedirect)
+            ++empty_recovery_direction;
+        else if (recovery == Recovery::PredictedRedirect)
+            ++empty_recovery_predicted;
+        else if (FE_CORE(translation_barrier_busy))
+            ++empty_translation_barrier;
+        else if (fetch_ptw)
+            ++empty_fetch_ptw;
+        else if (fetch_l1i)
+            ++empty_fetch_l1i;
+        else if (fetch_uncached)
+            ++empty_fetch_uncached;
+        else if (fetch_translate)
+            ++empty_fetch_translate;
+        else if (request_backpressure)
+            ++empty_request_backpressure;
+        else if (fetch_complete)
+            ++empty_response_complete;
+        else if (fetch_queue_nonempty || FE_FETCH(pending_valid_q))
+            ++empty_outstanding_other;
+        else if (!current_sector_valid)
+            ++empty_no_current_sector;
+        else if (FE_FETCH(lane_found_r) == 0)
+            ++empty_current_sector_no_lane;
+        else if (!FE_FETCH(active_q))
+            ++empty_inactive;
+        else
+            ++empty_other;
+
+#undef FE_BUS
+#undef FE_FETCH
+#undef FE_CORE
+    }
+
+    void report() const {
+        const uint64_t exclusive_sum =
+            empty_recovery_predicted + empty_recovery_direction +
+            empty_recovery_flush + empty_translation_barrier +
+            empty_fetch_ptw + empty_fetch_l1i + empty_fetch_uncached +
+            empty_fetch_translate + empty_request_backpressure +
+            empty_response_complete + empty_outstanding_other +
+            empty_no_current_sector + empty_current_sector_no_lane +
+            empty_inactive + empty_other;
+
+        std::cout
+            << "HOST FRONTEND BREAKDOWN sampled_cycles=" << sampled_cycles
+            << " empty=" << frontend_empty
+            << " exclusive_sum=" << exclusive_sum
+            << " recovery_predicted=" << empty_recovery_predicted
+            << " recovery_direction=" << empty_recovery_direction
+            << " recovery_flush=" << empty_recovery_flush
+            << " translation_barrier=" << empty_translation_barrier
+            << " fetch_ptw=" << empty_fetch_ptw
+            << " fetch_l1i=" << empty_fetch_l1i
+            << " fetch_uncached=" << empty_fetch_uncached
+            << " fetch_translate=" << empty_fetch_translate
+            << " request_backpressure=" << empty_request_backpressure
+            << " response_complete=" << empty_response_complete
+            << " outstanding_other=" << empty_outstanding_other
+            << " no_current_sector=" << empty_no_current_sector
+            << " current_sector_no_lane=" << empty_current_sector_no_lane
+            << " inactive=" << empty_inactive
+            << " other=" << empty_other << '\n';
+        std::cout
+            << "HOST FRONTEND OVERLAP empty=" << frontend_empty
+            << " current_sector_missing=" << overlap_current_sector_missing
+            << " following_sector_missing="
+            << overlap_following_sector_missing
+            << " l1i_busy=" << overlap_l1i_busy
+            << " fetch_queue_nonempty=" << overlap_fetch_queue_nonempty
+            << " pending_request=" << overlap_pending_request
+            << " pair_pending=" << overlap_pair_pending
+            << " bp_fetch_stall=" << overlap_bp_fetch_stall
+            << " request_fire=" << overlap_request_fire
+            << " response_match=" << overlap_response_match << '\n';
+        std::cout
+            << "HOST BRANCH BREAKDOWN resolutions=" << branch_resolutions
+            << " conditional=" << conditional_resolutions
+            << " jumps=" << jump_resolutions
+            << " direction_misses_conditional="
+            << conditional_direction_misses
+            << " direction_misses_jump=" << jump_direction_misses
+            << " target_misses_conditional=" << conditional_target_misses
+            << " target_misses_jump=" << jump_target_misses
+            << " predicted_redirects=" << predicted_redirects
+            << " direction_redirects=" << direction_redirects
+            << " control_flushes=" << control_flushes << '\n';
+    }
+};
 
 void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
     Vtb_opensbi___024root* const root = top->rootp;
@@ -322,16 +1254,52 @@ int main(int argc, char** argv, char**) {
         plusarg_value(argc, argv, "+stop_cycles=");
     const char* const max_cycles_override_text =
         plusarg_value(argc, argv, "+max_cycles_override=");
+    const char* const mtimecmp_subtract_text =
+        plusarg_value(argc, argv, "+mtimecmp_subtract=");
+    const char* const mtimecmp_add_text =
+        plusarg_value(argc, argv, "+mtimecmp_add=");
     const char* const pipeline_trace_path =
         plusarg_value(argc, argv, "+pipeline_trace=");
+    const char* const l2_tlb_probe_path =
+        plusarg_value(argc, argv, "+l2_tlb_probe=");
+    const char* const l1d_probe_path =
+        plusarg_value(argc, argv, "+l1d_probe=");
+    const char* const suppress_l1d_prefetch_cycle_text =
+        plusarg_value(argc, argv, "+suppress_l1d_prefetch_cycle=");
+    const char* const retire3_trace_path =
+        plusarg_value(argc, argv, "+retire3_trace=");
+    const char* const l2_tlb_invalidate_way_text =
+        plusarg_value(argc, argv, "+l2_tlb_invalidate_way=");
+    const char* const l2_tlb_invalidate_set_text =
+        plusarg_value(argc, argv, "+l2_tlb_invalidate_set=");
     const bool checkpoint_exit =
         has_plusarg(argc, argv, "+checkpoint_exit");
+    const bool frontend_breakdown_enabled =
+        has_plusarg(argc, argv, "+frontend_breakdown");
+    const bool l2_tlb_disable =
+        has_plusarg(argc, argv, "+l2_tlb_disable");
+    if ((l2_tlb_invalidate_way_text == nullptr) !=
+        (l2_tlb_invalidate_set_text == nullptr)) {
+        std::cerr << "+l2_tlb_invalidate_way and "
+                     "+l2_tlb_invalidate_set must be used together\n";
+        return EXIT_FAILURE;
+    }
+    if (mtimecmp_subtract_text && mtimecmp_add_text) {
+        std::cerr << "+mtimecmp_subtract and +mtimecmp_add are mutually "
+                     "exclusive\n";
+        return EXIT_FAILURE;
+    }
     const uint32_t checkpoint_cycle =
         checkpoint_path
             ? parse_cycle(checkpoint_cycles_text, "+checkpoint_cycles")
             : 0;
     const uint32_t stop_cycle =
         stop_cycles_text ? parse_cycle(stop_cycles_text, "+stop_cycles") : 0;
+    const uint32_t suppress_l1d_prefetch_cycle =
+        suppress_l1d_prefetch_cycle_text
+            ? parse_cycle(suppress_l1d_prefetch_cycle_text,
+                          "+suppress_l1d_prefetch_cycle")
+            : 0;
 
     if (restore_path) {
         restore_model(restore_path, context.get(), top.get());
@@ -346,7 +1314,45 @@ int main(int argc, char** argv, char**) {
         std::cout << "CHECKPOINT RESTORED path=" << restore_path
                   << " cycle=" << top->checkpoint_cycle_o
                   << " time=" << context->time() << '\n';
+        if (mtimecmp_subtract_text) {
+            const uint32_t delta =
+                parse_cycle(mtimecmp_subtract_text,
+                            "+mtimecmp_subtract");
+            auto& mtimecmp =
+                top->rootp->
+                    tb_opensbi__DOT__dut__DOT__u_clint__DOT__mtimecmp_q;
+            const uint64_t old_mtimecmp = mtimecmp;
+            mtimecmp -= delta;
+            top->eval();
+            std::cout << "MTIMECMP ADJUST old=" << old_mtimecmp
+                      << " new=" << mtimecmp
+                      << " mtime="
+                      << top->rootp->
+                             tb_opensbi__DOT__dut__DOT__u_clint__DOT__mtime_q
+                      << " subtract=" << delta << '\n';
+        }
+        if (mtimecmp_add_text) {
+            const uint32_t delta =
+                parse_cycle(mtimecmp_add_text, "+mtimecmp_add");
+            auto& mtimecmp =
+                top->rootp->
+                    tb_opensbi__DOT__dut__DOT__u_clint__DOT__mtimecmp_q;
+            const uint64_t old_mtimecmp = mtimecmp;
+            mtimecmp += delta;
+            top->eval();
+            std::cout << "MTIMECMP ADJUST old=" << old_mtimecmp
+                      << " new=" << mtimecmp
+                      << " mtime="
+                      << top->rootp->
+                             tb_opensbi__DOT__dut__DOT__u_clint__DOT__mtime_q
+                      << " add=" << delta << '\n';
+        }
     } else {
+        if (mtimecmp_subtract_text || mtimecmp_add_text) {
+            std::cerr << "+mtimecmp_subtract and +mtimecmp_add require "
+                         "+restore\n";
+            return EXIT_FAILURE;
+        }
         top->checkpoint_clk_i = 0;
         top->eval();
     }
@@ -363,13 +1369,95 @@ int main(int argc, char** argv, char**) {
                   << pipeline_trace_path << '\n';
     }
 
+    std::ofstream l2_tlb_probe_stream;
+    std::unique_ptr<L2TlbProbe> l2_tlb_probe;
+    if (l2_tlb_probe_path) {
+        l2_tlb_probe_stream.open(l2_tlb_probe_path);
+        if (!l2_tlb_probe_stream) {
+            std::cerr << "Unable to open L2 TLB probe: "
+                      << l2_tlb_probe_path << '\n';
+            return EXIT_FAILURE;
+        }
+        l2_tlb_probe =
+            std::make_unique<L2TlbProbe>(l2_tlb_probe_stream);
+        std::cout << "TRACE OPENED name=l2_tlb path="
+                  << l2_tlb_probe_path << '\n';
+    }
+    if (l2_tlb_disable)
+        std::cout << "L2 TLB DIAGNOSTIC DISABLE enabled\n";
+    std::unique_ptr<L2TlbEntryInvalidator> l2_tlb_entry_invalidator;
+    if (l2_tlb_invalidate_way_text) {
+        l2_tlb_entry_invalidator =
+            std::make_unique<L2TlbEntryInvalidator>(
+                parse_cycle(l2_tlb_invalidate_way_text,
+                            "+l2_tlb_invalidate_way"),
+                parse_cycle(l2_tlb_invalidate_set_text,
+                            "+l2_tlb_invalidate_set"));
+        l2_tlb_entry_invalidator->invalidate_now(top.get());
+    }
+
+    std::ofstream l1d_probe_stream;
+    std::unique_ptr<L1dProbe> l1d_probe;
+    if (l1d_probe_path) {
+        l1d_probe_stream.open(l1d_probe_path);
+        if (!l1d_probe_stream) {
+            std::cerr << "Unable to open L1D probe: "
+                      << l1d_probe_path << '\n';
+            return EXIT_FAILURE;
+        }
+        l1d_probe = std::make_unique<L1dProbe>(l1d_probe_stream);
+        std::cout << "TRACE OPENED name=l1d path="
+                  << l1d_probe_path << '\n';
+    }
+
+    std::ofstream retire3_trace_stream;
+    std::unique_ptr<FullRetireTrace> retire3_trace;
+    if (retire3_trace_path) {
+        retire3_trace_stream.open(retire3_trace_path);
+        if (!retire3_trace_stream) {
+            std::cerr << "Unable to open full retire trace: "
+                      << retire3_trace_path << '\n';
+            return EXIT_FAILURE;
+        }
+        retire3_trace =
+            std::make_unique<FullRetireTrace>(retire3_trace_stream);
+        std::cout << "TRACE OPENED name=retire3 path="
+                  << retire3_trace_path << '\n';
+    }
+
     bool checkpoint_saved = false;
+    bool l1d_prefetch_suppressed = false;
+    FrontendBreakdown frontend_breakdown;
     while (VL_LIKELY(!context->gotFinish())) {
         context->timeInc(5);
         top->checkpoint_clk_i = !top->checkpoint_clk_i;
         top->eval();
-        if (pipeline_trace && top->checkpoint_clk_i)
-            write_pipeline_trace(pipeline_trace, top.get());
+        if (!top->checkpoint_clk_i && l2_tlb_disable) {
+            auto& valid =
+                top->rootp->
+                    tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l2_tlb__DOT__valid_q;
+            for (unsigned way = 0; way < 4; ++way)
+                valid[way] = 0;
+            top->eval();
+        }
+        if (!top->checkpoint_clk_i && suppress_l1d_prefetch_cycle_text
+            && !l1d_prefetch_suppressed
+            && top->checkpoint_cycle_o >= suppress_l1d_prefetch_cycle) {
+            suppress_l1d_prefetch_launch(top.get());
+            l1d_prefetch_suppressed = true;
+        }
+        if (!top->checkpoint_clk_i && l2_tlb_probe)
+            l2_tlb_probe->sample_pre_edge(top.get());
+        if (!top->checkpoint_clk_i && l1d_probe)
+            l1d_probe->sample_pre_edge(top.get());
+        if (!top->checkpoint_clk_i && retire3_trace)
+            retire3_trace->sample_pre_edge(top.get());
+        if (top->checkpoint_clk_i) {
+            if (pipeline_trace)
+                write_pipeline_trace(pipeline_trace, top.get());
+            if (frontend_breakdown_enabled)
+                frontend_breakdown.sample(top.get());
+        }
 
         if (checkpoint_path && !checkpoint_saved
             && top->checkpoint_cycle_o >= checkpoint_cycle) {
@@ -393,6 +1481,13 @@ int main(int argc, char** argv, char**) {
         VL_DEBUG_IF(VL_PRINTF(
             "+ Exiting without $finish; no events left\n"););
     }
+
+    if (frontend_breakdown_enabled)
+        frontend_breakdown.report();
+    if (l2_tlb_probe)
+        l2_tlb_probe->report();
+    if (l2_tlb_entry_invalidator)
+        l2_tlb_entry_invalidator->report();
 
     top->final();
     context->statsPrintSummary();

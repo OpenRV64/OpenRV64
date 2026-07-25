@@ -20,6 +20,7 @@ module tb_core_3p_magic #(
     parameter integer RELAX_WAW = 1,
     parameter integer RELAX_HAZARDS = 0,
     parameter integer RETIRE_DEPTH = 8,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer SRAM_BYTES = 64 * 1024
@@ -177,6 +178,7 @@ module tb_core_3p_magic #(
         .RELAX_WAW(RELAX_WAW),
         .RELAX_HAZARDS(RELAX_HAZARDS),
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .SPEC_LOAD_BASE(SRAM_BASE),

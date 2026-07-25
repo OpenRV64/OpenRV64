@@ -1,6 +1,7 @@
 # Aggregate targets and phony declarations.
 
-.PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-vm sw-atomic \
+.PHONY: FORCE sw-uart sw-coremark-loop sw-coremark-loop-vm \
+	sw-zero-sv39 bench-zero-sv39 sim-zero-sv39 sw-atomic \
 	sim-atomic-soc \
 	sw-memcpy sw-memcpy-4k \
 	sw-memcpy-64k sim-memcpy sim-memcpy-4k sim-memcpy-64k \
@@ -29,7 +30,7 @@
 .PHONY: sim-core-complex-1h-axi sim-core-complex-2h-axi \
 	sim-core-complex-4h-wb
 .PHONY: sim-mem-channel sim-l2-axi-ddr3 sim-mesh-router
-.PHONY: sim-prf
+.PHONY: sim-prf sim-rename-identity sim-lsq
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
 	compliance-smoke-local-3p compliance-smoke-local-platform \
 	compliance-smoke-local-platform-3p \
@@ -45,6 +46,8 @@ sim: sim-decode-rv64c
 sim: sim-atomic-soc
 sim: sim-vec
 sim: sim-prf
+sim: sim-rename-identity
+sim: sim-lsq
 sim: sim-l1-cache
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr

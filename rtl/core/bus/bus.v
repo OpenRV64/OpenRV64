@@ -107,6 +107,8 @@ module openrv64_core_bus #(
     input  wire                         lsu_pipe_req_valid_i,
     output wire                         lsu_pipe_req_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_pipe_req_tag_i,
+    input  wire                         lsu_pipe_req_xlate_only_i,
+    input  wire                         lsu_pipe_req_physical_i,
     input  wire                         lsu_pipe_req_lock_i,
     input  wire                         lsu_pipe_req_write_i,
     input  wire [`RV64_XLEN-1:0]        lsu_pipe_req_addr_i,
@@ -119,13 +121,35 @@ module openrv64_core_bus #(
     input  wire [`RV64_SATP_PPN_WIDTH-1:0] lsu_pipe_req_root_ppn_i,
     input  wire                         lsu_pipe_req_sum_i,
     input  wire                         lsu_pipe_req_mxr_i,
+    output wire                         lsu_pipe_req_translation_hit_o,
+    output wire [`RV64_XLEN-1:0]        lsu_pipe_req_translation_paddr_o,
+    output wire                         lsu_pipe_req_translation_page_fault_o,
     input  wire                         lsu_pipe_cancel_i,
     output wire                         lsu_pipe_resp_valid_o,
     input  wire                         lsu_pipe_resp_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_pipe_resp_tag_o,
+    output wire [`RV64_XLEN-1:0]        lsu_pipe_resp_paddr_o,
     output wire [`RV64_XLEN-1:0]        lsu_pipe_resp_rdata_o,
     output wire                         lsu_pipe_resp_access_fault_o,
     output wire                         lsu_pipe_resp_page_fault_o,
+
+    input  wire                         lsu_xlate_req_valid_i,
+    output wire                         lsu_xlate_req_ready_o,
+    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_req_tag_i,
+    input  wire                         lsu_xlate_req_write_i,
+    input  wire [`RV64_XLEN-1:0]        lsu_xlate_req_vaddr_i,
+    input  wire [`RV64_PRIV_WIDTH-1:0]  lsu_xlate_req_priv_i,
+    input  wire [`RV64_SATP_MODE_WIDTH-1:0] lsu_xlate_req_vm_mode_i,
+    input  wire [`RV64_SATP_ASID_WIDTH-1:0] lsu_xlate_req_asid_i,
+    input  wire [`RV64_SATP_PPN_WIDTH-1:0] lsu_xlate_req_root_ppn_i,
+    input  wire                         lsu_xlate_req_sum_i,
+    input  wire                         lsu_xlate_req_mxr_i,
+    output wire                         lsu_xlate_resp_valid_o,
+    input  wire                         lsu_xlate_resp_ready_i,
+    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_resp_tag_o,
+    output wire [`RV64_XLEN-1:0]        lsu_xlate_resp_paddr_o,
+    output wire                         lsu_xlate_resp_access_fault_o,
+    output wire                         lsu_xlate_resp_page_fault_o,
 
     input  wire                         tlbi_i,
     output wire                         tlbi_busy_o,
@@ -268,6 +292,7 @@ module openrv64_core_bus #(
             reg pipe_resp_valid_q;
             reg [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_tag_q;
             reg pipe_write_q;
+            reg pipe_xlate_only_q;
             reg [`RV64_XLEN-1:0] pipe_addr_q;
             reg [`RV64_XLEN-1:0] pipe_wdata_q;
             reg [7:0] pipe_wstrb_q;
@@ -281,6 +306,11 @@ module openrv64_core_bus #(
             reg [`RV64_XLEN-1:0] pipe_resp_rdata_q;
             reg pipe_resp_access_fault_q;
             reg pipe_resp_page_fault_q;
+            reg [`RV64_XLEN-1:0] pipe_resp_paddr_q;
+            reg gen_xlate_resp_valid_q;
+            reg [`OPENRV64_LSU_TAG_WIDTH-1:0] gen_xlate_resp_tag_q;
+            reg [`RV64_XLEN-1:0] gen_xlate_resp_paddr_q;
+            reg gen_xlate_resp_access_fault_q;
             wire gen_lsu_valid = pipe_active_q || lsu_valid_i;
             wire gen_lsu_write = pipe_active_q ? pipe_write_q : lsu_write_i;
             wire [`RV64_XLEN-1:0] gen_lsu_addr =
@@ -403,10 +433,24 @@ module openrv64_core_bus #(
                                           !lsu_valid_i;
             assign lsu_pipe_resp_valid_o = pipe_resp_valid_q;
             assign lsu_pipe_resp_tag_o = pipe_tag_q;
+            assign lsu_pipe_resp_paddr_o = pipe_resp_paddr_q;
             assign lsu_pipe_resp_rdata_o = pipe_resp_rdata_q;
             assign lsu_pipe_resp_access_fault_o =
                 pipe_resp_access_fault_q;
             assign lsu_pipe_resp_page_fault_o = pipe_resp_page_fault_q;
+            assign lsu_pipe_req_translation_hit_o = 1'b0;
+            assign lsu_pipe_req_translation_paddr_o =
+                {`RV64_XLEN{1'b0}};
+            assign lsu_pipe_req_translation_page_fault_o = 1'b0;
+            assign lsu_xlate_req_ready_o =
+                !gen_xlate_resp_valid_q ||
+                lsu_xlate_resp_ready_i;
+            assign lsu_xlate_resp_valid_o = gen_xlate_resp_valid_q;
+            assign lsu_xlate_resp_tag_o = gen_xlate_resp_tag_q;
+            assign lsu_xlate_resp_paddr_o = gen_xlate_resp_paddr_q;
+            assign lsu_xlate_resp_access_fault_o =
+                gen_xlate_resp_access_fault_q;
+            assign lsu_xlate_resp_page_fault_o = 1'b0;
 
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
@@ -414,6 +458,7 @@ module openrv64_core_bus #(
                     pipe_resp_valid_q <= 1'b0;
                     pipe_tag_q <= {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
                     pipe_write_q <= 1'b0;
+                    pipe_xlate_only_q <= 1'b0;
                     pipe_addr_q <= {`RV64_XLEN{1'b0}};
                     pipe_wdata_q <= {`RV64_XLEN{1'b0}};
                     pipe_wstrb_q <= 8'd0;
@@ -427,32 +472,72 @@ module openrv64_core_bus #(
                     pipe_resp_rdata_q <= {`RV64_XLEN{1'b0}};
                     pipe_resp_access_fault_q <= 1'b0;
                     pipe_resp_page_fault_q <= 1'b0;
+                    pipe_resp_paddr_q <= {`RV64_XLEN{1'b0}};
+                    gen_xlate_resp_valid_q <= 1'b0;
+                    gen_xlate_resp_tag_q <=
+                        {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                    gen_xlate_resp_paddr_q <= {`RV64_XLEN{1'b0}};
+                    gen_xlate_resp_access_fault_q <= 1'b0;
                 end else begin
+                    if (lsu_xlate_req_valid_i &&
+                        lsu_xlate_req_ready_o) begin
+                        gen_xlate_resp_valid_q <= 1'b1;
+                        gen_xlate_resp_tag_q <= lsu_xlate_req_tag_i;
+                        gen_xlate_resp_paddr_q <=
+                            lsu_xlate_req_vaddr_i;
+                        gen_xlate_resp_access_fault_q <=
+                            lsu_xlate_req_vm_mode_i !=
+                            `RV64_SATP_MODE_BARE;
+                    end else if (gen_xlate_resp_valid_q &&
+                                 lsu_xlate_resp_ready_i) begin
+                        gen_xlate_resp_valid_q <= 1'b0;
+                    end
                     // A tagged load may be discarded on redirect.  A tagged
                     // store accepted at ordered head is already irrevocable;
                     // keep driving it and preserve its eventual fault
                     // response for the backend's imprecise abort path.
                     if (lsu_pipe_cancel_i &&
-                        !(pipe_write_q &&
+                        !((pipe_write_q && !pipe_xlate_only_q) &&
                           (pipe_active_q || pipe_resp_valid_q))) begin
                         pipe_active_q <= 1'b0;
                         pipe_resp_valid_q <= 1'b0;
                     end else begin
                         if (lsu_pipe_req_valid_i &&
                             lsu_pipe_req_ready_o) begin
-                            pipe_active_q <= 1'b1;
                             pipe_tag_q <= lsu_pipe_req_tag_i;
                             pipe_write_q <= lsu_pipe_req_write_i;
+                            pipe_xlate_only_q <=
+                                lsu_pipe_req_xlate_only_i;
                             pipe_addr_q <= lsu_pipe_req_addr_i;
                             pipe_wdata_q <= lsu_pipe_req_wdata_i;
                             pipe_wstrb_q <= lsu_pipe_req_wstrb_i;
                             pipe_size_q <= lsu_pipe_req_size_i;
                             pipe_priv_q <= lsu_pipe_req_priv_i;
-                            pipe_vm_mode_q <= lsu_pipe_req_vm_mode_i;
+                            pipe_vm_mode_q <= lsu_pipe_req_physical_i ?
+                                `RV64_SATP_MODE_BARE :
+                                lsu_pipe_req_vm_mode_i;
                             pipe_asid_q <= lsu_pipe_req_asid_i;
                             pipe_root_ppn_q <= lsu_pipe_req_root_ppn_i;
                             pipe_sum_q <= lsu_pipe_req_sum_i;
                             pipe_mxr_q <= lsu_pipe_req_mxr_i;
+                            if (lsu_pipe_req_xlate_only_i) begin
+                                // The generic bus does not expose an internal
+                                // Sv39 translation-only boundary.  Bare-mode
+                                // translation is still exact; reject other
+                                // modes rather than performing a data access.
+                                pipe_active_q <= 1'b0;
+                                pipe_resp_valid_q <= 1'b1;
+                                pipe_resp_paddr_q <=
+                                    lsu_pipe_req_addr_i;
+                                pipe_resp_rdata_q <=
+                                    {`RV64_XLEN{1'b0}};
+                                pipe_resp_access_fault_q <=
+                                    (lsu_pipe_req_vm_mode_i !=
+                                     `RV64_SATP_MODE_BARE);
+                                pipe_resp_page_fault_q <= 1'b0;
+                            end else begin
+                                pipe_active_q <= 1'b1;
+                            end
                         end
                         if (pipe_active_q && gen_lsu_ready) begin
                             pipe_active_q <= 1'b0;
@@ -461,6 +546,7 @@ module openrv64_core_bus #(
                             pipe_resp_access_fault_q <=
                                 gen_lsu_access_fault;
                             pipe_resp_page_fault_q <= gen_lsu_page_fault;
+                            pipe_resp_paddr_q <= pipe_addr_q;
                         end
                         if (pipe_resp_valid_q && lsu_pipe_resp_ready_i)
                             pipe_resp_valid_q <= 1'b0;
@@ -635,6 +721,14 @@ module openrv64_core_bus #(
                 [0:`OPENRV64_LSU_OUTSTANDING-1];
             reg magic_lsu_write_q
                 [0:`OPENRV64_LSU_OUTSTANDING-1];
+            reg magic_xlate_resp_valid_q;
+            reg [`OPENRV64_LSU_TAG_WIDTH-1:0] magic_xlate_resp_tag_q;
+            reg [`RV64_XLEN-1:0] magic_xlate_resp_paddr_q;
+            reg magic_dedicated_xlate_resp_valid_q;
+            reg [`OPENRV64_LSU_TAG_WIDTH-1:0]
+                magic_dedicated_xlate_resp_tag_q;
+            reg [`RV64_XLEN-1:0] magic_dedicated_xlate_resp_paddr_q;
+            reg magic_dedicated_xlate_resp_access_fault_q;
             integer magic_lsu_index;
             wire [`OPENRV64_LSU_TAG_WIDTH-1:0] magic_lsu_resp_tag =
                 ccx_resp_txn_id_i[`OPENRV64_LSU_TAG_WIDTH-1:0];
@@ -648,24 +742,53 @@ module openrv64_core_bus #(
                 ccx_req_ready_i &&
                 (!lsu_pipe_req_write_i || ccx_wdata_ready_i) &&
                 !magic_lsu_inflight_q[lsu_pipe_req_tag_i];
+            wire magic_xlate_req =
+                lsu_pipe_req_valid_i && lsu_pipe_req_xlate_only_i;
             wire magic_lsu_req_fire =
-                lsu_pipe_req_valid_i && lsu_pipe_req_ready_o;
+                lsu_pipe_req_valid_i && lsu_pipe_req_ready_o &&
+                !lsu_pipe_req_xlate_only_i;
+            wire magic_xlate_req_fire =
+                magic_xlate_req && lsu_pipe_req_ready_o;
             wire magic_lsu_resp_fire =
                 magic_lsu_resp && ccx_resp_ready_o;
 
             assign lsu_pipe_req_ready_o =
-                !lsu_pipe_cancel_i && magic_lsu_req_can_fire;
+                !lsu_pipe_cancel_i && !magic_xlate_resp_valid_q &&
+                (lsu_pipe_req_xlate_only_i || magic_lsu_req_can_fire);
             assign lsu_pipe_resp_valid_o =
-                magic_lsu_resp && magic_lsu_resp_live;
-            assign lsu_pipe_resp_tag_o = magic_lsu_resp_tag;
+                magic_xlate_resp_valid_q ||
+                (magic_lsu_resp && magic_lsu_resp_live);
+            assign lsu_pipe_resp_tag_o = magic_xlate_resp_valid_q ?
+                magic_xlate_resp_tag_q : magic_lsu_resp_tag;
+            assign lsu_pipe_resp_paddr_o = magic_xlate_resp_valid_q ?
+                magic_xlate_resp_paddr_q : {`RV64_XLEN{1'b0}};
             assign lsu_pipe_resp_rdata_o =
+                magic_xlate_resp_valid_q ? {`RV64_XLEN{1'b0}} :
                 ccx_resp_rdata_i[`RV64_XLEN-1:0];
             assign lsu_pipe_resp_access_fault_o =
-                ccx_resp_error_i;
+                magic_xlate_resp_valid_q ? 1'b0 : ccx_resp_error_i;
             assign lsu_pipe_resp_page_fault_o = 1'b0;
+            assign lsu_pipe_req_translation_hit_o = 1'b0;
+            assign lsu_pipe_req_translation_paddr_o =
+                {`RV64_XLEN{1'b0}};
+            assign lsu_pipe_req_translation_page_fault_o = 1'b0;
+            assign lsu_xlate_req_ready_o =
+                !magic_dedicated_xlate_resp_valid_q ||
+                lsu_xlate_resp_ready_i;
+            assign lsu_xlate_resp_valid_o =
+                magic_dedicated_xlate_resp_valid_q;
+            assign lsu_xlate_resp_tag_o =
+                magic_dedicated_xlate_resp_tag_q;
+            assign lsu_xlate_resp_paddr_o =
+                magic_dedicated_xlate_resp_paddr_q;
+            assign lsu_xlate_resp_access_fault_o =
+                magic_dedicated_xlate_resp_access_fault_q;
+            assign lsu_xlate_resp_page_fault_o = 1'b0;
 
             assign ccx_req_valid_o =
                 lsu_pipe_req_valid_i && !lsu_pipe_cancel_i &&
+                !lsu_pipe_req_xlate_only_i &&
+                !magic_xlate_resp_valid_q &&
                 !magic_lsu_inflight_q[lsu_pipe_req_tag_i] &&
                 (!lsu_pipe_req_write_i || ccx_wdata_ready_i);
             assign ccx_req_hart_id_o = HART_ID;
@@ -689,7 +812,9 @@ module openrv64_core_bus #(
                 {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
             assign ccx_wdata_valid_o =
                 lsu_pipe_req_valid_i && lsu_pipe_req_write_i &&
+                !lsu_pipe_req_xlate_only_i &&
                 !lsu_pipe_cancel_i &&
+                !magic_xlate_resp_valid_q &&
                 !magic_lsu_inflight_q[lsu_pipe_req_tag_i] &&
                 ccx_req_ready_i;
             assign ccx_wdata_hart_id_o = HART_ID;
@@ -710,12 +835,23 @@ module openrv64_core_bus #(
                 lsu_pipe_req_wstrb_i
             };
             assign ccx_resp_ready_o =
-                !magic_lsu_resp ||
+                !magic_xlate_resp_valid_q &&
+                (!magic_lsu_resp ||
                 !magic_lsu_resp_live ||
-                lsu_pipe_resp_ready_i;
+                lsu_pipe_resp_ready_i);
 
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
+                    magic_xlate_resp_valid_q <= 1'b0;
+                    magic_xlate_resp_tag_q <=
+                        {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                    magic_xlate_resp_paddr_q <= {`RV64_XLEN{1'b0}};
+                    magic_dedicated_xlate_resp_valid_q <= 1'b0;
+                    magic_dedicated_xlate_resp_tag_q <=
+                        {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                    magic_dedicated_xlate_resp_paddr_q <=
+                        {`RV64_XLEN{1'b0}};
+                    magic_dedicated_xlate_resp_access_fault_q <= 1'b0;
                     for (magic_lsu_index = 0;
                          magic_lsu_index < `OPENRV64_LSU_OUTSTANDING;
                          magic_lsu_index = magic_lsu_index + 1) begin
@@ -724,6 +860,30 @@ module openrv64_core_bus #(
                         magic_lsu_write_q[magic_lsu_index] <= 1'b0;
                     end
                 end else begin
+                    if (lsu_xlate_req_valid_i &&
+                        lsu_xlate_req_ready_o) begin
+                        magic_dedicated_xlate_resp_valid_q <= 1'b1;
+                        magic_dedicated_xlate_resp_tag_q <=
+                            lsu_xlate_req_tag_i;
+                        magic_dedicated_xlate_resp_paddr_q <=
+                            lsu_xlate_req_vaddr_i;
+                        magic_dedicated_xlate_resp_access_fault_q <=
+                            lsu_xlate_req_vm_mode_i !=
+                            `RV64_SATP_MODE_BARE;
+                    end else if (magic_dedicated_xlate_resp_valid_q &&
+                                 lsu_xlate_resp_ready_i) begin
+                        magic_dedicated_xlate_resp_valid_q <= 1'b0;
+                    end
+                    if (magic_xlate_req_fire) begin
+                        magic_xlate_resp_valid_q <= 1'b1;
+                        magic_xlate_resp_tag_q <= lsu_pipe_req_tag_i;
+                        magic_xlate_resp_paddr_q <= lsu_pipe_req_addr_i;
+                    end else if (magic_xlate_resp_valid_q &&
+                                 lsu_pipe_resp_ready_i) begin
+                        magic_xlate_resp_valid_q <= 1'b0;
+                    end
+                    if (lsu_pipe_cancel_i)
+                        magic_xlate_resp_valid_q <= 1'b0;
                     if (magic_lsu_req_fire) begin
                         magic_lsu_inflight_q[lsu_pipe_req_tag_i] <= 1'b1;
                         magic_lsu_cancelled_q[lsu_pipe_req_tag_i] <= 1'b0;
@@ -802,6 +962,10 @@ module openrv64_core_bus #(
                 if (rst_n && magic_lsu_req_fire && lsu_pipe_req_lock_i)
                     $fatal(1,
                         "magic LSU memory does not model atomics");
+                if (rst_n && ccx_req_valid_o && ccx_req_ready_i &&
+                    !magic_lsu_req_fire)
+                    $fatal(1,
+                        "magic LSU emitted CCX request without accepting LSU request");
             end
 `endif
         end else begin : g_ccx
@@ -884,6 +1048,8 @@ module openrv64_core_bus #(
                 .lsu_pipe_req_valid_i(lsu_pipe_req_valid_i),
                 .lsu_pipe_req_ready_o(lsu_pipe_req_ready_o),
                 .lsu_pipe_req_tag_i(lsu_pipe_req_tag_i),
+                .lsu_pipe_req_xlate_only_i(lsu_pipe_req_xlate_only_i),
+                .lsu_pipe_req_physical_i(lsu_pipe_req_physical_i),
                 .lsu_pipe_req_lock_i(lsu_pipe_req_lock_i),
                 .lsu_pipe_req_write_i(lsu_pipe_req_write_i),
                 .lsu_pipe_req_addr_i(lsu_pipe_req_addr_i),
@@ -896,14 +1062,40 @@ module openrv64_core_bus #(
                 .lsu_pipe_req_root_ppn_i(lsu_pipe_req_root_ppn_i),
                 .lsu_pipe_req_sum_i(lsu_pipe_req_sum_i),
                 .lsu_pipe_req_mxr_i(lsu_pipe_req_mxr_i),
+                .lsu_pipe_req_translation_hit_o(
+                    lsu_pipe_req_translation_hit_o),
+                .lsu_pipe_req_translation_paddr_o(
+                    lsu_pipe_req_translation_paddr_o),
+                .lsu_pipe_req_translation_page_fault_o(
+                    lsu_pipe_req_translation_page_fault_o),
                 .lsu_pipe_cancel_i(lsu_pipe_cancel_i),
                 .lsu_pipe_resp_valid_o(lsu_pipe_resp_valid_o),
                 .lsu_pipe_resp_ready_i(lsu_pipe_resp_ready_i),
                 .lsu_pipe_resp_tag_o(lsu_pipe_resp_tag_o),
+                .lsu_pipe_resp_paddr_o(lsu_pipe_resp_paddr_o),
                 .lsu_pipe_resp_rdata_o(lsu_pipe_resp_rdata_o),
                 .lsu_pipe_resp_access_fault_o(
                     lsu_pipe_resp_access_fault_o),
                 .lsu_pipe_resp_page_fault_o(lsu_pipe_resp_page_fault_o),
+                .lsu_xlate_req_valid_i(lsu_xlate_req_valid_i),
+                .lsu_xlate_req_ready_o(lsu_xlate_req_ready_o),
+                .lsu_xlate_req_tag_i(lsu_xlate_req_tag_i),
+                .lsu_xlate_req_write_i(lsu_xlate_req_write_i),
+                .lsu_xlate_req_vaddr_i(lsu_xlate_req_vaddr_i),
+                .lsu_xlate_req_priv_i(lsu_xlate_req_priv_i),
+                .lsu_xlate_req_vm_mode_i(lsu_xlate_req_vm_mode_i),
+                .lsu_xlate_req_asid_i(lsu_xlate_req_asid_i),
+                .lsu_xlate_req_root_ppn_i(lsu_xlate_req_root_ppn_i),
+                .lsu_xlate_req_sum_i(lsu_xlate_req_sum_i),
+                .lsu_xlate_req_mxr_i(lsu_xlate_req_mxr_i),
+                .lsu_xlate_resp_valid_o(lsu_xlate_resp_valid_o),
+                .lsu_xlate_resp_ready_i(lsu_xlate_resp_ready_i),
+                .lsu_xlate_resp_tag_o(lsu_xlate_resp_tag_o),
+                .lsu_xlate_resp_paddr_o(lsu_xlate_resp_paddr_o),
+                .lsu_xlate_resp_access_fault_o(
+                    lsu_xlate_resp_access_fault_o),
+                .lsu_xlate_resp_page_fault_o(
+                    lsu_xlate_resp_page_fault_o),
                 .pmp_valid_o(pmp_valid_o), .pmp_addr_o(pmp_addr_o),
                 .pmp_priv_o(pmp_priv_o), .pmp_size_o(pmp_size_o),
                 .pmp_write_o(pmp_write_o), .pmp_exec_o(pmp_exec_o),

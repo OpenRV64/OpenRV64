@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "soc/bus/mem_map.v"
+`include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
 `include "core/exec/bp/defs.v"
 `include "complex/protocol/defs.v"
@@ -15,6 +16,9 @@ module openrv64_top_3p #(
     parameter [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
     parameter ENABLE_RV64M = 0,
     parameter integer RETIRE_DEPTH = 8,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer PHYS_REG_ADDR_WIDTH =
+        (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter ENABLE_FULL_FORWARDING = 0,
@@ -189,6 +193,8 @@ module openrv64_top_3p #(
         .BUS_CONFIG(`OPENRV64_BUS_AXI),
         .ENABLE_RV64M(ENABLE_RV64M),
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
         .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
         .BRANCH_COMPLETION_FORWARD_MASK(BRANCH_COMPLETION_FORWARD_MASK),
         .ENABLE_FULL_FORWARDING(ENABLE_FULL_FORWARDING),

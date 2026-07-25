@@ -251,6 +251,7 @@ module tb_top_3p_soc #(
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer RETIRE_DEPTH = 8,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer RAM_BYTES = 16 * 1024 * 1024,
     parameter [63:0] SPEC_LOAD_BASE = `OPENRV64_SOC_MEMORY_BASE,
@@ -550,11 +551,19 @@ module tb_top_3p_soc #(
     integer ccx_ptw_reads;
     integer dtlb_fast_loads;
     integer dtlb_fast_stores;
+    integer dtlb_access_overlap_loads;
+    integer dtlb_serial_loads;
+    integer dtlb_serial_stores;
     reg require_sv39;
+    reg require_zero_scatter;
     reg saw_sv39;
     reg saw_supervisor;
     reg saw_sv39_alias_fetch;
     reg saw_sv39_alias_data;
+    integer zero_scatter_xlates;
+    integer zero_scatter_accesses;
+    integer zero_scatter_mapping_errors;
+    reg [63:0] zero_scatter_expected_paddr;
     integer axi_read_transactions;
     integer axi_read_beats;
     integer axi_write_transactions;
@@ -591,6 +600,10 @@ module tb_top_3p_soc #(
     integer lookaside_sector_unpredicted_taps;
     integer lookaside_sector_background_requests;
     integer lookaside_sector_background_deferred;
+    integer l1i_next_line_hints;
+    integer l1i_next_line_enqueues;
+    integer l1i_prefetch_probes;
+    integer l1i_prefetch_miss_completions;
     integer l1d_prefetch_issued;
     integer l1d_prefetch_useful;
     integer l1d_prefetch_late;
@@ -653,6 +666,19 @@ module tb_top_3p_soc #(
     integer retire_nonempty_no_retire;
     integer retire_head_incomplete;
     integer retire_completed_behind_head;
+    integer retire_head_wait_alu;
+    integer retire_head_wait_branch;
+    integer retire_head_wait_jump;
+    integer retire_head_wait_load;
+    integer retire_head_wait_store;
+    integer retire_head_mem_lsq_absent;
+    integer retire_head_mem_absent_unissued;
+    integer retire_head_mem_absent_issued;
+    integer retire_head_mem_absent_result;
+    integer retire_head_mem_absent_complete;
+    integer retire_head_mem_wait_xlate;
+    integer retire_head_mem_wait_access;
+    integer retire_head_mem_access_inflight;
     integer frontend_empty;
     integer frontend_held;
     integer frontend_request_wait;
@@ -791,6 +817,72 @@ module tb_top_3p_soc #(
                 perf_op_class = PERF_OP_ALU;
         end
     endfunction
+
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        trace_retire_head_payload =
+            dut.u_backend.u_retire_queue.meta_q[
+                dut.u_backend.u_retire_queue.head_q][
+                    0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+    wire [2:0] trace_retire_head_op =
+        perf_op_class(trace_retire_head_payload);
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] trace_retire_head_id =
+        dut.u_backend.u_retire_queue.id_q[
+            dut.u_backend.u_retire_queue.head_q];
+    reg trace_retire_head_lsq_valid;
+    reg trace_retire_head_lsq_xlate_done;
+    reg trace_retire_head_lsq_access_sent;
+    reg trace_retire_head_window_valid;
+    reg trace_retire_head_window_issued;
+    integer trace_retire_head_lsq_index;
+    integer trace_retire_head_window_index;
+    always @* begin
+        trace_retire_head_lsq_valid = 1'b0;
+        trace_retire_head_lsq_xlate_done = 1'b0;
+        trace_retire_head_lsq_access_sent = 1'b0;
+        trace_retire_head_window_valid = 1'b0;
+        trace_retire_head_window_issued = 1'b0;
+        for (trace_retire_head_lsq_index = 0;
+             trace_retire_head_lsq_index < `OPENRV64_LSU_OUTSTANDING;
+             trace_retire_head_lsq_index =
+                 trace_retire_head_lsq_index + 1) begin
+            if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_valid_q[trace_retire_head_lsq_index] &&
+                (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_id_q[trace_retire_head_lsq_index] ==
+                 trace_retire_head_id)) begin
+                trace_retire_head_lsq_valid = 1'b1;
+                trace_retire_head_lsq_xlate_done =
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                        .slot_xlate_done_q[trace_retire_head_lsq_index];
+                trace_retire_head_lsq_access_sent =
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                        .slot_access_sent_q[trace_retire_head_lsq_index];
+            end
+        end
+        for (trace_retire_head_window_index = 0;
+             trace_retire_head_window_index < 16;
+             trace_retire_head_window_index =
+                 trace_retire_head_window_index + 1) begin
+            if (dut.u_backend.u_dispatch.g_3p.u_window
+                    .valid_q[trace_retire_head_window_index] &&
+                (dut.u_backend.u_dispatch.g_3p.u_window
+                    .id_q[trace_retire_head_window_index] ==
+                 trace_retire_head_id)) begin
+                trace_retire_head_window_valid = 1'b1;
+                trace_retire_head_window_issued =
+                    dut.u_backend.u_dispatch.g_3p.u_window.issued_q[
+                        trace_retire_head_window_index];
+            end
+        end
+    end
+    wire trace_retire_head_lsq_result =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.lsq_result_valid &&
+        (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.lsq_result_id ==
+         trace_retire_head_id);
+    wire trace_retire_head_lsu_complete =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.complete_valid_q &&
+        (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.complete_id_q ==
+         trace_retire_head_id);
 
     wire done_pc_retired =
         (dut.backend_retire_arch[0] &&
@@ -1054,15 +1146,11 @@ module tb_top_3p_soc #(
         for (trace_lsu_index = 0;
              trace_lsu_index < `OPENRV64_LSU_OUTSTANDING;
              trace_lsu_index = trace_lsu_index + 1) begin : g_trace_lsu
-            if (trace_lsu_index < 4) begin : g_mem0
-                assign trace_lsu_sent[trace_lsu_index] =
-                    dut.u_backend.u_exec.g_3p.u_exec.u_mem0.slot_sent_q[
-                        trace_lsu_index];
-            end else begin : g_mem1
-                assign trace_lsu_sent[trace_lsu_index] =
-                    dut.u_backend.u_exec.g_3p.u_exec.u_mem1.slot_sent_q[
-                        trace_lsu_index - 4];
-            end
+            assign trace_lsu_sent[trace_lsu_index] =
+                dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_xlate_sent_q[trace_lsu_index] ||
+                dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                    .slot_access_sent_q[trace_lsu_index];
         end
     endgenerate
 
@@ -1077,6 +1165,7 @@ module tb_top_3p_soc #(
         .RELAX_WAW(RELAX_WAW),
         .RELAX_HAZARDS(RELAX_HAZARDS),
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
@@ -1955,11 +2044,20 @@ module tb_top_3p_soc #(
         ccx_ptw_reads = 0;
         dtlb_fast_loads = 0;
         dtlb_fast_stores = 0;
+        dtlb_access_overlap_loads = 0;
+        dtlb_serial_loads = 0;
+        dtlb_serial_stores = 0;
         require_sv39 = $test$plusargs("require_sv39");
+        require_zero_scatter =
+            $test$plusargs("require_zero_scatter");
         saw_sv39 = 1'b0;
         saw_supervisor = 1'b0;
         saw_sv39_alias_fetch = 1'b0;
         saw_sv39_alias_data = 1'b0;
+        zero_scatter_xlates = 0;
+        zero_scatter_accesses = 0;
+        zero_scatter_mapping_errors = 0;
+        zero_scatter_expected_paddr = 64'd0;
         direction_corrections = 0;
         target_corrections = 0;
         bp_btb_lookups = 0;
@@ -1988,6 +2086,10 @@ module tb_top_3p_soc #(
         lookaside_sector_unpredicted_taps = 0;
         lookaside_sector_background_requests = 0;
         lookaside_sector_background_deferred = 0;
+        l1i_next_line_hints = 0;
+        l1i_next_line_enqueues = 0;
+        l1i_prefetch_probes = 0;
+        l1i_prefetch_miss_completions = 0;
         l1d_prefetch_issued = 0;
         l1d_prefetch_useful = 0;
         l1d_prefetch_late = 0;
@@ -2050,6 +2152,19 @@ module tb_top_3p_soc #(
         retire_nonempty_no_retire = 0;
         retire_head_incomplete = 0;
         retire_completed_behind_head = 0;
+        retire_head_wait_alu = 0;
+        retire_head_wait_branch = 0;
+        retire_head_wait_jump = 0;
+        retire_head_wait_load = 0;
+        retire_head_wait_store = 0;
+        retire_head_mem_lsq_absent = 0;
+        retire_head_mem_absent_unissued = 0;
+        retire_head_mem_absent_issued = 0;
+        retire_head_mem_absent_result = 0;
+        retire_head_mem_absent_complete = 0;
+        retire_head_mem_wait_xlate = 0;
+        retire_head_mem_wait_access = 0;
+        retire_head_mem_access_inflight = 0;
         frontend_empty = 0;
         frontend_held = 0;
         frontend_request_wait = 0;
@@ -2272,6 +2387,51 @@ module tb_top_3p_soc #(
                     if (dut.u_backend.completed_entry_valid != 0)
                         retire_completed_behind_head =
                             retire_completed_behind_head + 1;
+                    case (trace_retire_head_op)
+                        PERF_OP_BRANCH:
+                            retire_head_wait_branch =
+                                retire_head_wait_branch + 1;
+                        PERF_OP_JUMP:
+                            retire_head_wait_jump =
+                                retire_head_wait_jump + 1;
+                        PERF_OP_LOAD:
+                            retire_head_wait_load =
+                                retire_head_wait_load + 1;
+                        PERF_OP_STORE:
+                            retire_head_wait_store =
+                                retire_head_wait_store + 1;
+                        default:
+                            retire_head_wait_alu =
+                                retire_head_wait_alu + 1;
+                    endcase
+                    if ((trace_retire_head_op == PERF_OP_LOAD) ||
+                        (trace_retire_head_op == PERF_OP_STORE)) begin
+                        if (!trace_retire_head_lsq_valid) begin
+                            retire_head_mem_lsq_absent =
+                                retire_head_mem_lsq_absent + 1;
+                            if (trace_retire_head_lsq_result)
+                                retire_head_mem_absent_result =
+                                    retire_head_mem_absent_result + 1;
+                            else if (trace_retire_head_lsu_complete)
+                                retire_head_mem_absent_complete =
+                                    retire_head_mem_absent_complete + 1;
+                            else if (trace_retire_head_window_valid &&
+                                     trace_retire_head_window_issued)
+                                retire_head_mem_absent_issued =
+                                    retire_head_mem_absent_issued + 1;
+                            else
+                                retire_head_mem_absent_unissued =
+                                    retire_head_mem_absent_unissued + 1;
+                        end else if (!trace_retire_head_lsq_xlate_done)
+                            retire_head_mem_wait_xlate =
+                                retire_head_mem_wait_xlate + 1;
+                        else if (!trace_retire_head_lsq_access_sent)
+                            retire_head_mem_wait_access =
+                                retire_head_mem_wait_access + 1;
+                        else
+                            retire_head_mem_access_inflight =
+                                retire_head_mem_access_inflight + 1;
+                    end
                 end
             end
             if (dut.fetch_decode_valid == 0)
@@ -2492,15 +2652,61 @@ module tb_top_3p_soc #(
                      `OPENRV64_CCX_SOURCE_DCACHE) &&
                     (dut.csr_priv_mode == `RV64_PRIV_S) &&
                     (ccx_req_addr >= 64'h0000_0000_8000_0000) &&
-                    (ccx_req_addr < 64'h0000_0000_8002_0000))
+                    (ccx_req_addr <
+                     (64'h0000_0000_8000_0000 + RAM_BYTES)))
                     saw_sv39_alias_data = 1'b1;
             end
+            if (dut.u_bus.g_ccx.u_bus.xlate_request_fire &&
+                dut.u_bus.g_ccx.u_bus.lsu_xlate_req_write_i &&
+                (dut.u_bus.g_ccx.u_bus.lsu_xlate_req_vaddr_i >=
+                 64'h0000_0000_4004_0000) &&
+                (dut.u_bus.g_ccx.u_bus.lsu_xlate_req_vaddr_i <
+                 64'h0000_0000_4008_0000))
+                zero_scatter_xlates = zero_scatter_xlates + 1;
             if (dut.u_bus.g_ccx.u_bus.pipe_fast_request_fire &&
-                dut.u_bus.g_ccx.u_bus.pipe_translated_hit) begin
-                if (dut.u_bus.g_ccx.u_bus.l1d_req_write)
+                dut.u_bus.g_ccx.u_bus.lsu_pipe_req_write_i &&
+                (dut.backend_mem_effective_addr >=
+                 64'h0000_0000_4004_0000) &&
+                (dut.backend_mem_effective_addr <
+                 64'h0000_0000_4008_0000)) begin
+                zero_scatter_accesses = zero_scatter_accesses + 1;
+                zero_scatter_expected_paddr =
+                    64'h0000_0000_8020_0000 +
+                    ((((dut.backend_mem_effective_addr -
+                        64'h0000_0000_4004_0000) >> 12) << 13)) +
+                    (dut.backend_mem_effective_addr &
+                     64'h0000_0000_0000_0fff);
+                if (dut.backend_mem_addr !=
+                    zero_scatter_expected_paddr)
+                    zero_scatter_mapping_errors =
+                        zero_scatter_mapping_errors + 1;
+            end
+            // The LSQ translates at admission. Count micro/main-TLB fast
+            // accepts independently from later physical L1D accesses.
+            if (dut.u_bus.g_ccx.u_bus.xlate_request_fire &&
+                (dut.u_bus.g_ccx.u_bus.xlate_l1_hit ||
+                 dut.u_bus.g_ccx.u_bus.xlate_l2_hit)) begin
+                if (dut.u_bus.g_ccx.u_bus.lsu_xlate_req_write_i)
                     dtlb_fast_stores = dtlb_fast_stores + 1;
                 else
                     dtlb_fast_loads = dtlb_fast_loads + 1;
+            end
+            // This is actual channel overlap, not a fused translation/cache
+            // lookup: a younger load translation and an older physical L1D
+            // request were both accepted on this cycle.
+            if (dut.u_bus.g_ccx.u_bus.xlate_request_fire &&
+                !dut.u_bus.g_ccx.u_bus.lsu_xlate_req_write_i &&
+                dut.u_bus.g_ccx.u_bus.pipe_fast_request_fire)
+                dtlb_access_overlap_loads =
+                    dtlb_access_overlap_loads + 1;
+            if (dut.u_bus.g_ccx.u_bus.serial_dtlb_lookup &&
+                dut.u_bus.g_ccx.u_bus.dtlb_lookup_hit &&
+                !dut.u_bus.g_ccx.u_bus.dtlb_lookup_page_fault &&
+                dut.u_bus.g_ccx.u_bus.lsu_xlate_only_q) begin
+                if (dut.u_bus.g_ccx.u_bus.lsu_write_q)
+                    dtlb_serial_stores = dtlb_serial_stores + 1;
+                else
+                    dtlb_serial_loads = dtlb_serial_loads + 1;
             end
             if (dut.csr_satp_mode == `RV64_SATP_MODE_SV39)
                 saw_sv39 = 1'b1;
@@ -2574,6 +2780,19 @@ module tb_top_3p_soc #(
                 dut.g_fetch_axi.u_fetch.alt_sector_background_deferred)
                 lookaside_sector_background_deferred =
                     lookaside_sector_background_deferred + 1;
+            if (dut.l1i_next_line_prefetch)
+                l1i_next_line_hints = l1i_next_line_hints + 1;
+            if (dut.l1i_next_line_prefetch &&
+                dut.u_bus.g_ccx.u_bus.u_l1i.enqueue_taken_r)
+                l1i_next_line_enqueues = l1i_next_line_enqueues + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1i.l1_request_fire &&
+                dut.u_bus.g_ccx.u_bus.u_l1i.select_prefetch)
+                l1i_prefetch_probes = l1i_prefetch_probes + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1i.l1_mem_valid &&
+                dut.u_bus.g_ccx.u_bus.u_l1i.l1_mem_ready &&
+                dut.u_bus.g_ccx.u_bus.u_l1i.cache_prefetch_q)
+                l1i_prefetch_miss_completions =
+                    l1i_prefetch_miss_completions + 1;
             if (dut.g_fetch_axi.u_fetch.pair_saved_count >
                 lookaside_pair_stack_max_saved)
                 lookaside_pair_stack_max_saved =
@@ -2628,12 +2847,24 @@ module tb_top_3p_soc #(
         if (require_sv39 &&
             (!saw_sv39 || !saw_supervisor || !saw_sv39_alias_fetch ||
              !saw_sv39_alias_data || (ccx_ptw_reads < 3) ||
-             (dtlb_fast_loads == 0) || (dtlb_fast_stores == 0)))
+             (dtlb_fast_loads == 0) || (dtlb_fast_stores == 0) ||
+             (dtlb_access_overlap_loads == 0)))
             $fatal(1,
-                "Sv39 requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d",
+                "Sv39 requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d dtlb_access_overlap_loads=%0d",
                 saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
                 saw_sv39_alias_data, ccx_ptw_reads, dtlb_fast_loads,
-                dtlb_fast_stores);
+                dtlb_fast_stores, dtlb_access_overlap_loads);
+        if (require_zero_scatter &&
+            (!saw_sv39 || !saw_supervisor || !saw_sv39_alias_fetch ||
+             (ccx_ptw_reads < 3) ||
+             (zero_scatter_xlates != 32768) ||
+             (zero_scatter_accesses != 32768) ||
+             (zero_scatter_mapping_errors != 0)))
+            $fatal(1,
+                "zero scatter requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b ptw_reads=%0d xlates=%0d accesses=%0d mapping_errors=%0d",
+                saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
+                ccx_ptw_reads, zero_scatter_xlates,
+                zero_scatter_accesses, zero_scatter_mapping_errors);
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
             "PERF_CCX_L2 mode=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
@@ -2652,11 +2883,21 @@ module tb_top_3p_soc #(
             axi_read_beats, axi_write_transactions,
             axi_write_beats);
         $display(
-            "PERF_CCX_L2_VM required=%0b satp_sv39=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d spec_load_base=%016h spec_load_size=%016h",
+            "PERF_CCX_L2_L1I_PREFETCH next_line_hints=%0d next_line_enqueues=%0d probes=%0d miss_completions=%0d",
+            l1i_next_line_hints, l1i_next_line_enqueues,
+            l1i_prefetch_probes, l1i_prefetch_miss_completions);
+        $display(
+            "PERF_CCX_L2_VM required=%0b satp_sv39=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d dtlb_access_overlap_loads=%0d dtlb_serial_loads=%0d dtlb_serial_stores=%0d spec_load_base=%016h spec_load_size=%016h",
             require_sv39, saw_sv39, saw_supervisor,
             saw_sv39_alias_fetch, saw_sv39_alias_data, ccx_ptw_reads,
             dtlb_fast_loads, dtlb_fast_stores,
+            dtlb_access_overlap_loads,
+            dtlb_serial_loads, dtlb_serial_stores,
             SPEC_LOAD_BASE, SPEC_LOAD_SIZE);
+        $display(
+            "PERF_ZERO_SV39 required=%0b xlates=%0d accesses=%0d mapping_errors=%0d",
+            require_zero_scatter, zero_scatter_xlates,
+            zero_scatter_accesses, zero_scatter_mapping_errors);
         $display(
             "PERF_CCX_MAGIC source_mask=%x l1i_line_reads=%0d l1d_line_reads=%0d",
             magic_ccx_source_mask_q, magic_ccx_l1i_reads,
@@ -2807,6 +3048,19 @@ module tb_top_3p_soc #(
             "PERF_CCX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d",
             retire_nonempty, retire_nonempty_no_retire,
             retire_head_incomplete, retire_completed_behind_head);
+        $display(
+            "PERF_CCX_L2_RETIRE_HEAD alu=%0d branch=%0d jump=%0d load=%0d store=%0d mem_lsq_absent=%0d mem_wait_xlate=%0d mem_wait_access=%0d mem_access_inflight=%0d",
+            retire_head_wait_alu, retire_head_wait_branch,
+            retire_head_wait_jump, retire_head_wait_load,
+            retire_head_wait_store, retire_head_mem_lsq_absent,
+            retire_head_mem_wait_xlate, retire_head_mem_wait_access,
+            retire_head_mem_access_inflight);
+        $display(
+            "PERF_CCX_L2_RETIRE_HEAD_ABSENT unissued=%0d issued=%0d result=%0d complete=%0d",
+            retire_head_mem_absent_unissued,
+            retire_head_mem_absent_issued,
+            retire_head_mem_absent_result,
+            retire_head_mem_absent_complete);
         $display(
             "PERF_CCX_L2_FETCH empty=%0d held=%0d request_wait=%0d control_empty=%0d refill_wait=%0d no_line=%0d bp_stall=%0d other_empty=%0d",
             frontend_empty, frontend_held, frontend_request_wait,
