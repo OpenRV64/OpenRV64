@@ -18,6 +18,11 @@ module openrv64_soc_ccx_l2_bridge #(
     parameter integer L2_RESPONSE_ENTRIES = 16,
     parameter integer BUS_TYPE = `OPENRV64_COMPLEX_BUS_AXI,
     parameter integer BUS_DATA_WIDTH = 256,
+    parameter integer DDR3_ENABLE = 0,
+    parameter integer DDR3_READ_QUEUE_DEPTH = 8,
+    parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
+    parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter integer MEMORY_TIMING_MODEL = 0,
     parameter integer MEMORY_BYTES = `OPENRV64_SOC_MEMORY_SIZE
 ) (
     input  wire clk_i,
@@ -442,57 +447,128 @@ module openrv64_soc_ccx_l2_bridge #(
         .mem_error_i(mem_error_i)
     );
 
-    openrv64_soc_axi_to_wide #(
-        .ADDR_WIDTH(64),
-        .DATA_WIDTH(BUS_DATA_WIDTH),
-        .ID_WIDTH(AXI_ID_WIDTH)
-    ) u_axi_ram (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .s_axi_arid_i(axi_arid),
-        .s_axi_araddr_i(axi_araddr),
-        .s_axi_arlen_i(axi_arlen),
-        .s_axi_arsize_i(axi_arsize),
-        .s_axi_arburst_i(axi_arburst),
-        .s_axi_arvalid_i(wide_arvalid),
-        .s_axi_arready_o(wide_arready),
-        .s_axi_rid_o(wide_rid),
-        .s_axi_rdata_o(wide_rdata),
-        .s_axi_rresp_o(wide_rresp),
-        .s_axi_rlast_o(wide_rlast),
-        .s_axi_rvalid_o(wide_rvalid),
-        .s_axi_rready_i(wide_rready),
-        .s_axi_awid_i(axi_awid),
-        .s_axi_awaddr_i(axi_awaddr),
-        .s_axi_awlen_i(axi_awlen),
-        .s_axi_awsize_i(axi_awsize),
-        .s_axi_awburst_i(axi_awburst),
-        .s_axi_awvalid_i(wide_awvalid),
-        .s_axi_awready_o(wide_awready),
-        .s_axi_wdata_i(axi_wdata),
-        .s_axi_wstrb_i(axi_wstrb),
-        .s_axi_wlast_i(axi_wlast),
-        .s_axi_wvalid_i(wide_wvalid),
-        .s_axi_wready_o(wide_wready),
-        .s_axi_bid_o(wide_bid),
-        .s_axi_bresp_o(wide_bresp),
-        .s_axi_bvalid_o(wide_bvalid),
-        .s_axi_bready_i(wide_bready),
-        .mem_valid_o(axi_wide_mem_valid),
-        .mem_ready_i((BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ?
-                     ram_ready_i : 1'b0),
-        .mem_write_o(axi_wide_mem_write),
-        .mem_addr_o(axi_wide_mem_addr),
-        .mem_wdata_o(axi_wide_mem_wdata),
-        .mem_wstrb_o(axi_wide_mem_wstrb),
-        .mem_rdata_i(ram_rdata_i),
-        .mem_error_i(ram_error_i)
-    );
+    generate
+        if (DDR3_ENABLE != 0) begin : g_ddr3_ram
+            openrv64_axi_ddr3 #(
+                .ADDR_WIDTH(64),
+                .DATA_WIDTH(BUS_DATA_WIDTH),
+                .ID_WIDTH(AXI_ID_WIDTH),
+                .MEM_BASE(`OPENRV64_SOC_MEMORY_BASE),
+                .MEM_BYTES(MEMORY_BYTES),
+                .READ_QUEUE_DEPTH(DDR3_READ_QUEUE_DEPTH),
+                .WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
+                .ZERO_INIT_WORDS(0),
+                .COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+                .TIMING_MODEL(MEMORY_TIMING_MODEL)
+            ) u_ddr3 (
+                .clk_i(clk_i),
+                .rst_ni(rst_ni),
+                .s_axi_arid_i(axi_arid),
+                .s_axi_araddr_i(axi_araddr),
+                .s_axi_arlen_i(axi_arlen),
+                .s_axi_arsize_i(axi_arsize),
+                .s_axi_arburst_i(axi_arburst),
+                .s_axi_arlock_i(axi_arlock),
+                .s_axi_arcache_i(axi_arcache),
+                .s_axi_arprot_i(axi_arprot),
+                .s_axi_arqos_i(axi_arqos),
+                .s_axi_arvalid_i(wide_arvalid),
+                .s_axi_arready_o(wide_arready),
+                .s_axi_rid_o(wide_rid),
+                .s_axi_rdata_o(wide_rdata),
+                .s_axi_rresp_o(wide_rresp),
+                .s_axi_rlast_o(wide_rlast),
+                .s_axi_rvalid_o(wide_rvalid),
+                .s_axi_rready_i(wide_rready),
+                .s_axi_awid_i(axi_awid),
+                .s_axi_awaddr_i(axi_awaddr),
+                .s_axi_awlen_i(axi_awlen),
+                .s_axi_awsize_i(axi_awsize),
+                .s_axi_awburst_i(axi_awburst),
+                .s_axi_awlock_i(axi_awlock),
+                .s_axi_awcache_i(axi_awcache),
+                .s_axi_awprot_i(axi_awprot),
+                .s_axi_awqos_i(axi_awqos),
+                .s_axi_awvalid_i(wide_awvalid),
+                .s_axi_awready_o(wide_awready),
+                .s_axi_wdata_i(axi_wdata),
+                .s_axi_wstrb_i(axi_wstrb),
+                .s_axi_wlast_i(axi_wlast),
+                .s_axi_wvalid_i(wide_wvalid),
+                .s_axi_wready_o(wide_wready),
+                .s_axi_bid_o(wide_bid),
+                .s_axi_bresp_o(wide_bresp),
+                .s_axi_bvalid_o(wide_bvalid),
+                .s_axi_bready_i(wide_bready)
+            );
+
+            assign axi_wide_mem_valid = 1'b0;
+            assign axi_wide_mem_write = 1'b0;
+            assign axi_wide_mem_addr = 64'd0;
+            assign axi_wide_mem_wdata = {BUS_DATA_WIDTH{1'b0}};
+            assign axi_wide_mem_wstrb =
+                {(BUS_DATA_WIDTH/8){1'b0}};
+        end else begin : g_sram_ram
+            openrv64_soc_axi_to_wide #(
+                .ADDR_WIDTH(64),
+                .DATA_WIDTH(BUS_DATA_WIDTH),
+                .ID_WIDTH(AXI_ID_WIDTH)
+            ) u_axi_ram (
+                .clk_i(clk_i),
+                .rst_ni(rst_ni),
+                .s_axi_arid_i(axi_arid),
+                .s_axi_araddr_i(axi_araddr),
+                .s_axi_arlen_i(axi_arlen),
+                .s_axi_arsize_i(axi_arsize),
+                .s_axi_arburst_i(axi_arburst),
+                .s_axi_arvalid_i(wide_arvalid),
+                .s_axi_arready_o(wide_arready),
+                .s_axi_rid_o(wide_rid),
+                .s_axi_rdata_o(wide_rdata),
+                .s_axi_rresp_o(wide_rresp),
+                .s_axi_rlast_o(wide_rlast),
+                .s_axi_rvalid_o(wide_rvalid),
+                .s_axi_rready_i(wide_rready),
+                .s_axi_awid_i(axi_awid),
+                .s_axi_awaddr_i(axi_awaddr),
+                .s_axi_awlen_i(axi_awlen),
+                .s_axi_awsize_i(axi_awsize),
+                .s_axi_awburst_i(axi_awburst),
+                .s_axi_awvalid_i(wide_awvalid),
+                .s_axi_awready_o(wide_awready),
+                .s_axi_wdata_i(axi_wdata),
+                .s_axi_wstrb_i(axi_wstrb),
+                .s_axi_wlast_i(axi_wlast),
+                .s_axi_wvalid_i(wide_wvalid),
+                .s_axi_wready_o(wide_wready),
+                .s_axi_bid_o(wide_bid),
+                .s_axi_bresp_o(wide_bresp),
+                .s_axi_bvalid_o(wide_bvalid),
+                .s_axi_bready_i(wide_bready),
+                .mem_valid_o(axi_wide_mem_valid),
+                .mem_ready_i(
+                    (BUS_TYPE == `OPENRV64_COMPLEX_BUS_AXI) ?
+                    ram_ready_i : 1'b0),
+                .mem_write_o(axi_wide_mem_write),
+                .mem_addr_o(axi_wide_mem_addr),
+                .mem_wdata_o(axi_wide_mem_wdata),
+                .mem_wstrb_o(axi_wide_mem_wstrb),
+                .mem_rdata_i(ram_rdata_i),
+                .mem_error_i(ram_error_i)
+            );
+        end
+    endgenerate
 
     wire unused_bus_attributes = ^{
-        axi_arlock, axi_arcache, axi_arprot, axi_arqos,
-        axi_awlock, axi_awcache, axi_awprot, axi_awqos,
         wb_cti, wb_bte, wb_lock
     };
+
+`ifndef SYNTHESIS
+    initial begin
+        if ((DDR3_ENABLE != 0) &&
+            (BUS_TYPE != `OPENRV64_COMPLEX_BUS_AXI))
+            $fatal(1, "DDR3 platform memory requires the AXI backend");
+    end
+`endif
 
 endmodule

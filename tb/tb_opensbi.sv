@@ -21,6 +21,11 @@ module tb_opensbi #(
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer CCX_BUS_TYPE = 0,
     parameter integer CCX_BUS_DATA_WIDTH = 256,
+    parameter integer DDR3_ENABLE = 0,
+    parameter integer DDR3_READ_QUEUE_DEPTH = 8,
+    parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
+    parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter integer MEMORY_TIMING_MODEL = 0,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
     parameter integer MEMORY_BYTES = 256 * 1024 * 1024,
     parameter logic [31:0] FDT_BASE_LO = 32'h8ff0_0000
@@ -240,6 +245,28 @@ module tb_opensbi #(
     logic [63:0] perf_mem_scalar_reads;
     logic [63:0] perf_mem_scalar_writes;
     logic [63:0] perf_mem_scalar_wait_cycles;
+    wire [63:0] perf_ddr3_read_bursts;
+    wire [63:0] perf_ddr3_write_bursts;
+    wire [63:0] perf_ddr3_read_beats_requested;
+    wire [63:0] perf_ddr3_write_beats_requested;
+    wire [63:0] perf_ddr3_read_beats_returned;
+    wire [63:0] perf_ddr3_write_beats_received;
+    wire [63:0] perf_ddr3_read_address_wait;
+    wire [63:0] perf_ddr3_write_address_wait;
+    wire [63:0] perf_ddr3_write_data_wait;
+    wire [63:0] perf_ddr3_read_response_wait;
+    wire [63:0] perf_ddr3_write_response_wait;
+    wire [63:0] perf_ddr3_timing_backend_wait;
+    wire [63:0] perf_ddr3_timing_owner_full;
+    wire [63:0] perf_ddr3_read_timing_wait;
+    wire [63:0] perf_ddr3_write_timing_wait;
+    wire [63:0] perf_ddr3_timing_read_commands;
+    wire [63:0] perf_ddr3_timing_write_commands;
+    wire [63:0] perf_ddr3_max_read_queue;
+    wire [63:0] perf_ddr3_max_write_queue;
+    wire [63:0] perf_ddr3_max_timing_owners;
+    logic images_staged_q;
+    wire memory_images_ready;
     logic saw_banner;
     logic saw_payload_text;
     logic saw_linux_panic;
@@ -347,6 +374,11 @@ module tb_opensbi #(
         .FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .CCX_BUS_TYPE(CCX_BUS_TYPE),
         .CCX_BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
+        .DDR3_ENABLE(DDR3_ENABLE),
+        .DDR3_READ_QUEUE_DEPTH(DDR3_READ_QUEUE_DEPTH),
+        .DDR3_WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
+        .DDR3_COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+        .MEMORY_TIMING_MODEL(MEMORY_TIMING_MODEL),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .MEMORY_BYTES(MEMORY_BYTES),
         .ENABLE_RV64M(1'b1),
@@ -385,6 +417,96 @@ module tb_opensbi #(
         .trace_retire_rd(trace_retire_rd),
         .trace_retire_wdata(trace_retire_wdata)
     );
+
+    generate
+        if ((DDR3_ENABLE != 0) &&
+            (BACKEND_CONFIG == `OPENRV64_BACKEND_3P)) begin :
+                g_ddr3_observe
+            assign perf_ddr3_read_bursts =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_read_bursts_q;
+            assign perf_ddr3_write_bursts =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_write_bursts_q;
+            assign perf_ddr3_read_beats_requested =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_read_beats_requested_q;
+            assign perf_ddr3_write_beats_requested =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_write_beats_requested_q;
+            assign perf_ddr3_read_beats_returned =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_read_beats_returned_q;
+            assign perf_ddr3_write_beats_received =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_write_beats_received_q;
+            assign perf_ddr3_read_address_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_read_address_wait_cycles_q;
+            assign perf_ddr3_write_address_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_write_address_wait_cycles_q;
+            assign perf_ddr3_write_data_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_write_data_wait_cycles_q;
+            assign perf_ddr3_read_response_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_read_response_wait_cycles_q;
+            assign perf_ddr3_write_response_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_write_response_wait_cycles_q;
+            assign perf_ddr3_timing_backend_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_timing_backend_wait_cycles_q;
+            assign perf_ddr3_timing_owner_full =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_timing_owner_full_cycles_q;
+            assign perf_ddr3_read_timing_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_read_timing_wait_cycles_q;
+            assign perf_ddr3_write_timing_wait =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_write_timing_wait_cycles_q;
+            assign perf_ddr3_timing_read_commands =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_timing_read_commands_q;
+            assign perf_ddr3_timing_write_commands =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_timing_write_commands_q;
+            assign perf_ddr3_max_read_queue =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_max_read_queue_q;
+            assign perf_ddr3_max_write_queue =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_max_write_queue_q;
+            assign perf_ddr3_max_timing_owners =
+                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                    .u_channel.perf_max_timing_owners_q;
+        end else begin : g_no_ddr3_observe
+            assign {
+                perf_ddr3_read_bursts,
+                perf_ddr3_write_bursts,
+                perf_ddr3_read_beats_requested,
+                perf_ddr3_write_beats_requested,
+                perf_ddr3_read_beats_returned,
+                perf_ddr3_write_beats_received,
+                perf_ddr3_read_address_wait,
+                perf_ddr3_write_address_wait,
+                perf_ddr3_write_data_wait,
+                perf_ddr3_read_response_wait,
+                perf_ddr3_write_response_wait,
+                perf_ddr3_timing_backend_wait,
+                perf_ddr3_timing_owner_full,
+                perf_ddr3_read_timing_wait,
+                perf_ddr3_write_timing_wait,
+                perf_ddr3_timing_read_commands,
+                perf_ddr3_timing_write_commands,
+                perf_ddr3_max_read_queue,
+                perf_ddr3_max_write_queue,
+                perf_ddr3_max_timing_owners
+            } = '0;
+        end
+    endgenerate
 
     generate
         if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_observe_3p
@@ -1262,6 +1384,28 @@ module tb_opensbi #(
                          perf_mem_scalar_reads,
                          perf_mem_scalar_writes,
                          perf_mem_scalar_wait_cycles);
+                $display("PERF BROAD DDR3_AXI name=%0s read_bursts=%0d write_bursts=%0d read_beats_requested=%0d write_beats_requested=%0d read_beats_returned=%0d write_beats_received=%0d ar_wait=%0d aw_wait=%0d w_wait=%0d r_wait=%0d b_wait=%0d",
+                         name, perf_ddr3_read_bursts,
+                         perf_ddr3_write_bursts,
+                         perf_ddr3_read_beats_requested,
+                         perf_ddr3_write_beats_requested,
+                         perf_ddr3_read_beats_returned,
+                         perf_ddr3_write_beats_received,
+                         perf_ddr3_read_address_wait,
+                         perf_ddr3_write_address_wait,
+                         perf_ddr3_write_data_wait,
+                         perf_ddr3_read_response_wait,
+                         perf_ddr3_write_response_wait);
+                $display("PERF BROAD DDR3_TIMING name=%0s backend_wait=%0d owner_full=%0d read_wait=%0d write_wait=%0d read_commands=%0d write_commands=%0d max_read_queue=%0d max_write_queue=%0d max_timing_owners=%0d",
+                         name, perf_ddr3_timing_backend_wait,
+                         perf_ddr3_timing_owner_full,
+                         perf_ddr3_read_timing_wait,
+                         perf_ddr3_write_timing_wait,
+                         perf_ddr3_timing_read_commands,
+                         perf_ddr3_timing_write_commands,
+                         perf_ddr3_max_read_queue,
+                         perf_ddr3_max_write_queue,
+                         perf_ddr3_max_timing_owners);
             end
         end
     endtask
@@ -1411,8 +1555,70 @@ module tb_opensbi #(
                       (FDT_BASE - RAM_BASE) >> 3,
                       ((FDT_BASE - RAM_BASE) >> 3) + FDT_WORDS - 1);
             $display("OpenSBI load: complete");
+            images_staged_q = 1'b1;
         end
     endtask
+
+    generate
+        if ((DDR3_ENABLE != 0) &&
+            (BACKEND_CONFIG == `OPENRV64_BACKEND_3P)) begin :
+                g_ddr3_image_mirror
+            integer mirror_word;
+            reg ddr3_images_mirrored_q;
+
+            initial ddr3_images_mirrored_q = 1'b0;
+
+            always @(posedge clk) begin
+                if (images_staged_q && !ddr3_images_mirrored_q) begin
+                    for (mirror_word =
+                             (RAM_BASE - RAM_BASE) >> 3;
+                         mirror_word <
+                             ((RAM_BASE - RAM_BASE) >> 3) +
+                             TRAMPOLINE_WORDS;
+                         mirror_word = mirror_word + 1)
+                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                            .u_ddr3.u_channel.memory_q[mirror_word >> 2]
+                            [(mirror_word & 3) * 64 +: 64] =
+                            dut.u_memory.memory_q[mirror_word];
+                    for (mirror_word =
+                             (FIRMWARE_BASE - RAM_BASE) >> 3;
+                         mirror_word <
+                             ((FIRMWARE_BASE - RAM_BASE) >> 3) +
+                             FIRMWARE_WORDS;
+                         mirror_word = mirror_word + 1)
+                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                            .u_ddr3.u_channel.memory_q[mirror_word >> 2]
+                            [(mirror_word & 3) * 64 +: 64] =
+                            dut.u_memory.memory_q[mirror_word];
+                    for (mirror_word =
+                             (PAYLOAD_BASE - RAM_BASE) >> 3;
+                         mirror_word <
+                             ((PAYLOAD_BASE - RAM_BASE) >> 3) +
+                             payload_words;
+                         mirror_word = mirror_word + 1)
+                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                            .u_ddr3.u_channel.memory_q[mirror_word >> 2]
+                            [(mirror_word & 3) * 64 +: 64] =
+                            dut.u_memory.memory_q[mirror_word];
+                    for (mirror_word =
+                             (FDT_BASE - RAM_BASE) >> 3;
+                         mirror_word <
+                             ((FDT_BASE - RAM_BASE) >> 3) + FDT_WORDS;
+                         mirror_word = mirror_word + 1)
+                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                            .u_ddr3.u_channel.memory_q[mirror_word >> 2]
+                            [(mirror_word & 3) * 64 +: 64] =
+                            dut.u_memory.memory_q[mirror_word];
+                    ddr3_images_mirrored_q = 1'b1;
+                    $display("OpenSBI load: DDR3 mirror complete");
+                end
+            end
+
+            assign memory_images_ready = ddr3_images_mirrored_q;
+        end else begin : g_no_ddr3_image_mirror
+            assign memory_images_ready = images_staged_q;
+        end
+    endgenerate
 
     task automatic report_timeout;
         begin
@@ -1756,6 +1962,7 @@ module tb_opensbi #(
 
     initial begin
         rst_n = 1'b0;
+        images_staged_q = 1'b0;
         banner_index = 0;
         payload_index = 0;
         linux_panic_index = 0;
@@ -1900,6 +2107,7 @@ module tb_opensbi #(
 `ifndef OPENRV64_VERILATOR_CHECKPOINT
         #1;
         load_images();
+        wait (memory_images_ready);
 
         repeat (4) @(posedge clk);
         @(negedge clk);
@@ -1944,7 +2152,7 @@ module tb_opensbi #(
         if (!verilator_images_loaded_q) begin
             load_images();
             verilator_images_loaded_q <= 1'b1;
-        end else if (!rst_n) begin
+        end else if (!rst_n && memory_images_ready) begin
             verilator_reset_edges_q <= verilator_reset_edges_q + 1'b1;
         end
 
@@ -1953,7 +2161,7 @@ module tb_opensbi #(
     end
 
     always @(negedge clk) begin
-        if (verilator_images_loaded_q &&
+        if (memory_images_ready &&
             (verilator_reset_edges_q >= 3'd4))
             rst_n <= 1'b1;
     end

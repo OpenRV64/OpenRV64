@@ -31,6 +31,11 @@ module openrv64_platform #(
     parameter int unsigned L2_WAYS = 8,
     parameter int unsigned CCX_BUS_TYPE = 0,
     parameter int unsigned CCX_BUS_DATA_WIDTH = 256,
+    parameter bit DDR3_ENABLE = 1'b0,
+    parameter int unsigned DDR3_READ_QUEUE_DEPTH = 8,
+    parameter int unsigned DDR3_WRITE_QUEUE_DEPTH = 8,
+    parameter int unsigned DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter int unsigned MEMORY_TIMING_MODEL = 0,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
     parameter int unsigned L2_TLB_ENTRIES = 256,
     parameter int unsigned L2_TLB_WAYS = 4,
@@ -425,7 +430,12 @@ module openrv64_platform #(
                 .L2_WAYS(L2_WAYS),
                 .BUS_TYPE(CCX_BUS_TYPE),
                 .BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
-                .MEMORY_BYTES(MEMORY_BYTES)
+                .MEMORY_BYTES(MEMORY_BYTES),
+                .DDR3_ENABLE(DDR3_ENABLE),
+                .DDR3_READ_QUEUE_DEPTH(DDR3_READ_QUEUE_DEPTH),
+                .DDR3_WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
+                .DDR3_COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+                .MEMORY_TIMING_MODEL(MEMORY_TIMING_MODEL)
             ) u_ccx_l2 (
                 .clk_i(clk_i),
                 .rst_ni(core_rst_no),

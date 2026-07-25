@@ -120,6 +120,7 @@ PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
 	rtl/soc/bus/axi_to_scalar.v rtl/soc/bus/axi_to_wide.v \
 	rtl/soc/bus/ccx_l2_bridge.v \
 	$(CORE_COMPLEX_SRCS) \
+	$(AXI_DDR3_SRCS) \
 	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
 	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
