@@ -40,6 +40,8 @@ module openrv64_top #(
     parameter int unsigned L1D_PREFETCH_OUTSTANDING = 4,
     parameter int unsigned L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter int unsigned L1I_FILL_BUFFER_LINES = 8,
+    parameter int unsigned L2_TLB_ENTRIES = 256,
+    parameter int unsigned L2_TLB_WAYS = 4,
     parameter int unsigned PTW_PTE_CACHE_ENTRIES = 64,
     parameter int unsigned PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID = '0,
@@ -49,7 +51,7 @@ module openrv64_top #(
     parameter int unsigned ENABLE_FETCH_ALT_LOOKASIDE = 3,
     parameter bit ENABLE_FETCH_ALT_CONFIDENCE_GATE = 1'b0,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_STALL,
+        `OPENRV64_BP_DEFAULT,
     parameter bit BP_RAS_ENABLE = 1'b1,
     parameter int unsigned BP_RAS_DEPTH = 8,
     parameter int unsigned BP_BIMODAL_ENTRIES = 32,
@@ -433,6 +435,8 @@ module openrv64_top #(
                 .L1D_PREFETCH_DEMAND_RESERVE(
                     L1D_PREFETCH_DEMAND_RESERVE),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+                .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
+                .L2_TLB_WAYS(L2_TLB_WAYS),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID),

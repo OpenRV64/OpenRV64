@@ -15,6 +15,8 @@
 // request can enter AXI.
 module openrv64_core_ccx_bus #(
     parameter integer TLB_ENTRIES = 16,
+    parameter integer L2_TLB_ENTRIES = 256,
+    parameter integer L2_TLB_WAYS = 4,
     parameter integer FETCH_OUTSTANDING = 4,
     parameter integer ENABLE_L1I = 1,
     parameter integer ENABLE_L1D = 1,
@@ -531,12 +533,66 @@ module openrv64_core_ccx_bus #(
         ptw_ccx_req_burst_len;
     wire ptw_ccx_resp_ready;
 
-    wire lsu_needs_walk = (lsu_state_q == LSU_TRANSLATE) &&
-                          !lsu_xlate_bare && !dtlb_lookup_hit;
-    wire fetch_needs_walk = fetch_xlate_found_r &&
-                            !fetch_xlate_bare && !itlb_lookup_hit;
-    wire prefetch_needs_walk = prefetch_xlate_lookup &&
+    wire lsu_l1_tlb_miss = (lsu_state_q == LSU_TRANSLATE) &&
+                           !lsu_xlate_bare && !dtlb_lookup_hit;
+    wire fetch_l1_tlb_miss = fetch_xlate_found_r &&
+                             !fetch_xlate_bare && !itlb_lookup_hit;
+    wire prefetch_l1_tlb_miss = prefetch_xlate_lookup &&
         !prefetch_xlate_bare && !itlb_lookup_hit;
+
+    // A single indexed L2 lookup serves L1 misses.  Demand LSU has priority,
+    // then demand fetch, then speculative instruction prefetch.  An L2 hit
+    // refills the requesting L1; the request remains in its lookup state and
+    // consumes that L1 hit on the following cycle.  Only an L2 miss starts
+    // the blocking walker.
+    wire l2_tlb_select_lsu = !miss_active_q && lsu_l1_tlb_miss;
+    wire l2_tlb_select_fetch = !miss_active_q && !lsu_l1_tlb_miss &&
+                               fetch_l1_tlb_miss;
+    wire l2_tlb_select_prefetch = !miss_active_q &&
+        !lsu_l1_tlb_miss && !fetch_l1_tlb_miss &&
+        prefetch_l1_tlb_miss;
+    wire l2_tlb_lookup_valid = l2_tlb_select_lsu ||
+        l2_tlb_select_fetch || l2_tlb_select_prefetch;
+    wire [`RV64_XLEN-1:0] l2_tlb_lookup_vaddr =
+        l2_tlb_select_lsu ? lsu_vaddr_q :
+        l2_tlb_select_fetch ? fetch_vaddr_q[fetch_xlate_slot_r] :
+        prefetch_xlate_vaddr_q;
+    wire [`RV64_SATP_MODE_WIDTH-1:0] l2_tlb_lookup_vm_mode =
+        l2_tlb_select_lsu ? lsu_vm_mode_q :
+        l2_tlb_select_fetch ? fetch_vm_mode_q[fetch_xlate_slot_r] :
+        prefetch_xlate_vm_mode_q;
+    wire [`RV64_SATP_ASID_WIDTH-1:0] l2_tlb_lookup_asid =
+        l2_tlb_select_lsu ? lsu_asid_q :
+        l2_tlb_select_fetch ? fetch_asid_q[fetch_xlate_slot_r] :
+        prefetch_xlate_asid_q;
+    wire [1:0] l2_tlb_lookup_access = l2_tlb_select_lsu ?
+        (lsu_write_q ? ACCESS_WRITE : ACCESS_READ) : ACCESS_EXEC;
+    wire [`RV64_PRIV_WIDTH-1:0] l2_tlb_lookup_priv =
+        l2_tlb_select_lsu ? lsu_priv_q :
+        l2_tlb_select_fetch ? fetch_priv_q[fetch_xlate_slot_r] :
+        prefetch_xlate_priv_q;
+    wire l2_tlb_lookup_sum = l2_tlb_select_lsu ? lsu_sum_q :
+        l2_tlb_select_fetch ? fetch_sum_q[fetch_xlate_slot_r] :
+        prefetch_xlate_sum_q;
+    wire l2_tlb_lookup_mxr = l2_tlb_select_lsu ? lsu_mxr_q :
+        l2_tlb_select_fetch ? fetch_mxr_q[fetch_xlate_slot_r] :
+        prefetch_xlate_mxr_q;
+    wire l2_tlb_lookup_hit;
+    wire [`RV64_XLEN-1:0] l2_tlb_lookup_paddr;
+    wire l2_tlb_lookup_page_fault;
+    wire l2_tlb_lookup_global;
+    wire l2_tlb_lookup_readable;
+    wire l2_tlb_lookup_writable;
+    wire l2_tlb_lookup_executable;
+    wire l2_tlb_lookup_user;
+    wire l2_tlb_lookup_accessed;
+    wire l2_tlb_lookup_dirty;
+
+    wire lsu_needs_walk = l2_tlb_select_lsu && !l2_tlb_lookup_hit;
+    wire fetch_needs_walk =
+        l2_tlb_select_fetch && !l2_tlb_lookup_hit;
+    wire prefetch_needs_walk =
+        l2_tlb_select_prefetch && !l2_tlb_lookup_hit;
     wire start_lsu_walk = !miss_active_q && ptw_req_ready &&
                           lsu_needs_walk;
     wire start_fetch_walk = !miss_active_q && ptw_req_ready &&
@@ -581,14 +637,20 @@ module openrv64_core_ccx_bus #(
     wire itlb_fill_for_fetch = (miss_owner_q == OWNER_FETCH) &&
         !fetch_cancelled_q[miss_fetch_slot_q];
     wire itlb_fill_for_prefetch = (miss_owner_q == OWNER_PREFETCH);
-    wire itlb_fill_valid = ptw_resp_valid && miss_active_q &&
+    wire itlb_ptw_fill_valid = ptw_resp_valid && miss_active_q &&
         (itlb_fill_for_fetch || itlb_fill_for_prefetch) &&
         !miss_invalidated_q && !ptw_resp_invalidated &&
         !ptw_resp_page_fault && !ptw_resp_access_fault && !tlbi_i;
-    wire dtlb_fill_valid = ptw_resp_valid && miss_active_q &&
+    wire dtlb_ptw_fill_valid = ptw_resp_valid && miss_active_q &&
         (miss_owner_q == OWNER_LSU) && !miss_invalidated_q &&
         !ptw_resp_invalidated &&
         !ptw_resp_page_fault && !ptw_resp_access_fault && !tlbi_i;
+    wire itlb_l2_fill_valid = l2_tlb_lookup_hit &&
+        (l2_tlb_select_fetch || l2_tlb_select_prefetch) && !tlbi_i;
+    wire dtlb_l2_fill_valid = l2_tlb_lookup_hit &&
+        l2_tlb_select_lsu && !tlbi_i;
+    wire itlb_fill_valid = itlb_ptw_fill_valid || itlb_l2_fill_valid;
+    wire dtlb_fill_valid = dtlb_ptw_fill_valid || dtlb_l2_fill_valid;
 
     wire itlb_lookup_is_prefetch = prefetch_xlate_lookup;
     wire [`RV64_XLEN-1:0] itlb_lookup_vaddr =
@@ -617,6 +679,56 @@ module openrv64_core_ccx_bus #(
     wire [`RV64_SATP_ASID_WIDTH-1:0] itlb_fill_asid =
         itlb_fill_for_prefetch ? prefetch_xlate_asid_q :
         fetch_asid_q[miss_fetch_slot_q];
+    wire [`RV64_XLEN-1:0] selected_itlb_fill_vaddr =
+        itlb_ptw_fill_valid ? itlb_fill_vaddr : l2_tlb_lookup_vaddr;
+    wire [`RV64_XLEN-1:0] selected_itlb_fill_paddr =
+        itlb_ptw_fill_valid ? ptw_resp_paddr : l2_tlb_lookup_paddr;
+    wire [`RV64_SATP_MODE_WIDTH-1:0] selected_itlb_fill_vm_mode =
+        itlb_ptw_fill_valid ? itlb_fill_vm_mode :
+        l2_tlb_lookup_vm_mode;
+    wire [`RV64_SATP_ASID_WIDTH-1:0] selected_itlb_fill_asid =
+        itlb_ptw_fill_valid ? itlb_fill_asid : l2_tlb_lookup_asid;
+    wire selected_itlb_fill_global = itlb_ptw_fill_valid ?
+        ptw_resp_global : l2_tlb_lookup_global;
+    wire [`RV64_PAGE_LEVEL_WIDTH-1:0] selected_itlb_fill_level =
+        itlb_ptw_fill_valid ? ptw_resp_level : `RV64_PAGE_LEVEL_4K;
+    wire selected_itlb_fill_readable = itlb_ptw_fill_valid ?
+        ptw_resp_readable : l2_tlb_lookup_readable;
+    wire selected_itlb_fill_writable = itlb_ptw_fill_valid ?
+        ptw_resp_writable : l2_tlb_lookup_writable;
+    wire selected_itlb_fill_executable = itlb_ptw_fill_valid ?
+        ptw_resp_executable : l2_tlb_lookup_executable;
+    wire selected_itlb_fill_user = itlb_ptw_fill_valid ?
+        ptw_resp_user : l2_tlb_lookup_user;
+    wire selected_itlb_fill_accessed = itlb_ptw_fill_valid ?
+        ptw_resp_accessed : l2_tlb_lookup_accessed;
+    wire selected_itlb_fill_dirty = itlb_ptw_fill_valid ?
+        ptw_resp_dirty : l2_tlb_lookup_dirty;
+
+    wire [`RV64_XLEN-1:0] selected_dtlb_fill_vaddr =
+        dtlb_ptw_fill_valid ? lsu_vaddr_q : l2_tlb_lookup_vaddr;
+    wire [`RV64_XLEN-1:0] selected_dtlb_fill_paddr =
+        dtlb_ptw_fill_valid ? ptw_resp_paddr : l2_tlb_lookup_paddr;
+    wire [`RV64_SATP_MODE_WIDTH-1:0] selected_dtlb_fill_vm_mode =
+        dtlb_ptw_fill_valid ? lsu_vm_mode_q : l2_tlb_lookup_vm_mode;
+    wire [`RV64_SATP_ASID_WIDTH-1:0] selected_dtlb_fill_asid =
+        dtlb_ptw_fill_valid ? lsu_asid_q : l2_tlb_lookup_asid;
+    wire selected_dtlb_fill_global = dtlb_ptw_fill_valid ?
+        ptw_resp_global : l2_tlb_lookup_global;
+    wire [`RV64_PAGE_LEVEL_WIDTH-1:0] selected_dtlb_fill_level =
+        dtlb_ptw_fill_valid ? ptw_resp_level : `RV64_PAGE_LEVEL_4K;
+    wire selected_dtlb_fill_readable = dtlb_ptw_fill_valid ?
+        ptw_resp_readable : l2_tlb_lookup_readable;
+    wire selected_dtlb_fill_writable = dtlb_ptw_fill_valid ?
+        ptw_resp_writable : l2_tlb_lookup_writable;
+    wire selected_dtlb_fill_executable = dtlb_ptw_fill_valid ?
+        ptw_resp_executable : l2_tlb_lookup_executable;
+    wire selected_dtlb_fill_user = dtlb_ptw_fill_valid ?
+        ptw_resp_user : l2_tlb_lookup_user;
+    wire selected_dtlb_fill_accessed = dtlb_ptw_fill_valid ?
+        ptw_resp_accessed : l2_tlb_lookup_accessed;
+    wire selected_dtlb_fill_dirty = dtlb_ptw_fill_valid ?
+        ptw_resp_dirty : l2_tlb_lookup_dirty;
 
     openrv64_bus_tlb #(
         .ENTRIES(TLB_ENTRIES), .ASID_WIDTH(`RV64_SATP_ASID_WIDTH)
@@ -635,16 +747,18 @@ module openrv64_core_ccx_bus #(
         .lookup_paddr_o(itlb_lookup_paddr),
         .lookup_page_fault_o(itlb_lookup_page_fault),
         .fill_valid_i(itlb_fill_valid),
-        .fill_vaddr_i(itlb_fill_vaddr),
-        .fill_paddr_i(ptw_resp_paddr),
-        .fill_vm_mode_i(itlb_fill_vm_mode),
-        .fill_asid_i(itlb_fill_asid),
-        .fill_global_i(ptw_resp_global), .fill_level_i(ptw_resp_level),
-        .fill_readable_i(ptw_resp_readable),
-        .fill_writable_i(ptw_resp_writable),
-        .fill_executable_i(ptw_resp_executable),
-        .fill_user_i(ptw_resp_user), .fill_accessed_i(ptw_resp_accessed),
-        .fill_dirty_i(ptw_resp_dirty)
+        .fill_vaddr_i(selected_itlb_fill_vaddr),
+        .fill_paddr_i(selected_itlb_fill_paddr),
+        .fill_vm_mode_i(selected_itlb_fill_vm_mode),
+        .fill_asid_i(selected_itlb_fill_asid),
+        .fill_global_i(selected_itlb_fill_global),
+        .fill_level_i(selected_itlb_fill_level),
+        .fill_readable_i(selected_itlb_fill_readable),
+        .fill_writable_i(selected_itlb_fill_writable),
+        .fill_executable_i(selected_itlb_fill_executable),
+        .fill_user_i(selected_itlb_fill_user),
+        .fill_accessed_i(selected_itlb_fill_accessed),
+        .fill_dirty_i(selected_itlb_fill_dirty)
     );
 
     openrv64_bus_tlb #(
@@ -662,14 +776,73 @@ module openrv64_core_ccx_bus #(
         .lookup_hit_o(dtlb_lookup_hit),
         .lookup_paddr_o(dtlb_lookup_paddr),
         .lookup_page_fault_o(dtlb_lookup_page_fault),
-        .fill_valid_i(dtlb_fill_valid), .fill_vaddr_i(lsu_vaddr_q),
-        .fill_paddr_i(ptw_resp_paddr), .fill_vm_mode_i(lsu_vm_mode_q),
-        .fill_asid_i(lsu_asid_q), .fill_global_i(ptw_resp_global),
+        .fill_valid_i(dtlb_fill_valid),
+        .fill_vaddr_i(selected_dtlb_fill_vaddr),
+        .fill_paddr_i(selected_dtlb_fill_paddr),
+        .fill_vm_mode_i(selected_dtlb_fill_vm_mode),
+        .fill_asid_i(selected_dtlb_fill_asid),
+        .fill_global_i(selected_dtlb_fill_global),
+        .fill_level_i(selected_dtlb_fill_level),
+        .fill_readable_i(selected_dtlb_fill_readable),
+        .fill_writable_i(selected_dtlb_fill_writable),
+        .fill_executable_i(selected_dtlb_fill_executable),
+        .fill_user_i(selected_dtlb_fill_user),
+        .fill_accessed_i(selected_dtlb_fill_accessed),
+        .fill_dirty_i(selected_dtlb_fill_dirty)
+    );
+
+    wire l2_tlb_fill_valid = ptw_resp_valid && miss_active_q &&
+        !miss_invalidated_q && !ptw_resp_invalidated &&
+        !ptw_resp_page_fault && !ptw_resp_access_fault && !tlbi_i;
+    wire [`RV64_XLEN-1:0] l2_tlb_fill_vaddr =
+        (miss_owner_q == OWNER_LSU) ? lsu_vaddr_q :
+        (miss_owner_q == OWNER_PREFETCH) ? prefetch_xlate_vaddr_q :
+        fetch_vaddr_q[miss_fetch_slot_q];
+    wire [`RV64_SATP_MODE_WIDTH-1:0] l2_tlb_fill_vm_mode =
+        (miss_owner_q == OWNER_LSU) ? lsu_vm_mode_q :
+        (miss_owner_q == OWNER_PREFETCH) ? prefetch_xlate_vm_mode_q :
+        fetch_vm_mode_q[miss_fetch_slot_q];
+    wire [`RV64_SATP_ASID_WIDTH-1:0] l2_tlb_fill_asid =
+        (miss_owner_q == OWNER_LSU) ? lsu_asid_q :
+        (miss_owner_q == OWNER_PREFETCH) ? prefetch_xlate_asid_q :
+        fetch_asid_q[miss_fetch_slot_q];
+
+    openrv64_bus_tlb_l2 #(
+        .ENTRIES(L2_TLB_ENTRIES),
+        .WAYS(L2_TLB_WAYS),
+        .ASID_WIDTH(`RV64_SATP_ASID_WIDTH)
+    ) u_l2_tlb (
+        .clk(clk), .rst_n(rst_n), .tlbi_i(tlbi_i),
+        .lookup_valid_i(l2_tlb_lookup_valid),
+        .lookup_vaddr_i(l2_tlb_lookup_vaddr),
+        .lookup_vm_mode_i(l2_tlb_lookup_vm_mode),
+        .lookup_asid_i(l2_tlb_lookup_asid),
+        .lookup_access_i(l2_tlb_lookup_access),
+        .lookup_priv_i(l2_tlb_lookup_priv),
+        .lookup_sum_i(l2_tlb_lookup_sum),
+        .lookup_mxr_i(l2_tlb_lookup_mxr),
+        .lookup_hit_o(l2_tlb_lookup_hit),
+        .lookup_paddr_o(l2_tlb_lookup_paddr),
+        .lookup_page_fault_o(l2_tlb_lookup_page_fault),
+        .lookup_global_o(l2_tlb_lookup_global),
+        .lookup_readable_o(l2_tlb_lookup_readable),
+        .lookup_writable_o(l2_tlb_lookup_writable),
+        .lookup_executable_o(l2_tlb_lookup_executable),
+        .lookup_user_o(l2_tlb_lookup_user),
+        .lookup_accessed_o(l2_tlb_lookup_accessed),
+        .lookup_dirty_o(l2_tlb_lookup_dirty),
+        .fill_valid_i(l2_tlb_fill_valid),
+        .fill_vaddr_i(l2_tlb_fill_vaddr),
+        .fill_paddr_i(ptw_resp_paddr),
+        .fill_vm_mode_i(l2_tlb_fill_vm_mode),
+        .fill_asid_i(l2_tlb_fill_asid),
+        .fill_global_i(ptw_resp_global),
         .fill_level_i(ptw_resp_level),
         .fill_readable_i(ptw_resp_readable),
         .fill_writable_i(ptw_resp_writable),
         .fill_executable_i(ptw_resp_executable),
-        .fill_user_i(ptw_resp_user), .fill_accessed_i(ptw_resp_accessed),
+        .fill_user_i(ptw_resp_user),
+        .fill_accessed_i(ptw_resp_accessed),
         .fill_dirty_i(ptw_resp_dirty)
     );
 

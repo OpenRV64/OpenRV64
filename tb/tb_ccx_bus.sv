@@ -166,6 +166,9 @@ module tb_ccx_bus #(
     integer fences_before;
     integer translated_fast_fires;
     integer translated_fast_store_fires;
+    integer l2_tlb_hits;
+    integer l2_tlb_way;
+    integer l2_tlb_set;
     reg [63:0] locked_old_word;
     reg [2:0] seen_id [0:15];
     reg [63:0] seen_addr [0:15];
@@ -174,11 +177,16 @@ module tb_ccx_bus #(
         if (!rst_n) begin
             translated_fast_fires <= 0;
             translated_fast_store_fires <= 0;
-        end else if (dut.pipe_fast_request_fire && !dut.pipe_req_bare) begin
-            translated_fast_fires <= translated_fast_fires + 1;
-            if (dut.l1d_req_write)
-                translated_fast_store_fires <=
-                    translated_fast_store_fires + 1;
+            l2_tlb_hits <= 0;
+        end else begin
+            if (dut.pipe_fast_request_fire && !dut.pipe_req_bare) begin
+                translated_fast_fires <= translated_fast_fires + 1;
+                if (dut.l1d_req_write)
+                    translated_fast_store_fires <=
+                        translated_fast_store_fires + 1;
+            end
+            if (dut.u_l2_tlb.diag_hit)
+                l2_tlb_hits <= l2_tlb_hits + 1;
         end
     end
 
@@ -1120,6 +1128,66 @@ module tb_ccx_bus #(
         if (ar_count != channel_wait)
             $fatal(1, "translated PTW or L1D request escaped onto AXI");
 
+        // Model independent L1 ITLB/DTLB capacity evictions while retaining
+        // the shared L2 entry.  Present I-side and D-side misses together:
+        // LSU wins the first indexed lookup, fetch wins the next, and neither
+        // request may start another page walk.  L2 replacement is deliberately
+        // non-inclusive, so removing either L1 entry does not alter L2 state.
+        @(negedge clk);
+        dut.u_itlb.valid_q = 0;
+        dut.u_dtlb.valid_q = 0;
+        fetch_req_priv = `RV64_PRIV_S;
+        fetch_req_vm_mode = `RV64_SATP_MODE_SV39;
+        fetch_req_root_ppn = 0;
+        fetch_req_stash = 0;
+        fetch_req_demand = 1;
+        fetch_req_addr = 64'h4000;
+        fetch_resp_ready = 0;
+        pipe_resp_ready = 0;
+        pipe_req_tag = 3'd4;
+        pipe_req_write = 0;
+        pipe_req_addr = 64'h4008;
+        pipe_req_wdata = 0;
+        pipe_req_wstrb = 0;
+        fetch_req_valid = 1;
+        pipe_req_valid = 1;
+        #1;
+        if (!fetch_req_ready || !pipe_req_ready)
+            $fatal(1, "simultaneous L2 TLB test requests not accepted");
+        wait_count = l2_tlb_hits;
+        channel_wait = ar_count;
+        locked_reads_before = ccx_reads;
+        tick();
+        fetch_req_valid = 0;
+        pipe_req_valid = 0;
+        if (!dut.l2_tlb_select_lsu || !dut.l2_tlb_lookup_hit)
+            $fatal(1, "shared L2 TLB did not give LSU first lookup");
+        tick();
+        if (!dut.l2_tlb_select_fetch || !dut.l2_tlb_lookup_hit)
+            $fatal(1, "shared L2 TLB lost waiting fetch lookup");
+        tick();
+        ptw_wait = 0;
+        while ((ar_count == channel_wait) && (ptw_wait < 30)) begin
+            tick();
+            ptw_wait = ptw_wait + 1;
+        end
+        if (ar_count != channel_wait + 1)
+            $fatal(1, "translated L2-hit fetch did not launch one AXI read");
+        send_read_response(seen_id[channel_wait], 256'h1234, 2'b00);
+        pipe_resp_ready = 1;
+        expect_pipe_response(3'd4, 64'h1357_9bdf_2468_ace0,
+                             1'b0, 1'b0);
+        fetch_resp_ready = 1;
+        expect_fetch(64'h4000, 256'h1234, 1'b0, 1'b0, 1'b1);
+        if ((l2_tlb_hits - wait_count) != 2 ||
+            (ccx_reads != locked_reads_before))
+            $fatal(1,
+                "shared L2 TLB arbitration hit/walk mismatch hits=%0d ccx_reads=%0d",
+                l2_tlb_hits - wait_count,
+                ccx_reads - locked_reads_before);
+        fetch_req_priv = `RV64_PRIV_M;
+        fetch_req_vm_mode = `RV64_SATP_MODE_BARE;
+
         // The completed walk populated DTLB and L1D state.  Hold an unrelated
         // instruction walk at CCX, then require translated load and store hits
         // to pass it through the native tagged path without consuming the
@@ -1201,6 +1269,54 @@ module tb_ccx_bus #(
             (ccx_memory_word(64'h3000) !=
              64'h5a17_c0de_cafe_1234))
             $fatal(1, "read-only DTLB store hit escaped precise fault path");
+
+        // Exercise the ugly shootdown edge.  The old translation exists in
+        // ITLB and L2, while DTLB has been capacity-evicted.  Raise TLBI while
+        // the serial LSU sees the old L2 hit and while a replacement PTE is
+        // already visible.  Invalidation must suppress that hit/fill on the
+        // same edge, clear both L1s and L2, then make the held request walk to
+        // the replacement physical page.
+        @(negedge clk);
+        dut.u_dtlb.valid_q = 0;
+        pipe_resp_ready = 0;
+        wait_count = ccx_reads;
+        push_pipe_request(3'd1, 1'b0, 64'h4008, 64'd0, 8'd0);
+        if (!dut.l2_tlb_select_lsu || !dut.l2_tlb_lookup_hit ||
+            !dut.dtlb_l2_fill_valid)
+            $fatal(1, "shootdown race setup did not expose stale L2 hit");
+        ccx_memory[64'h2000 >> 6][4*64 +: 64] =
+            64'h0000_0000_0000_04cf;
+        ccx_memory[64'h1000 >> 6][1*64 +: 64] =
+            64'hfeed_face_1234_5678;
+        tlbi = 1'b1;
+        #1;
+        if (dut.l2_tlb_lookup_hit || dut.dtlb_l2_fill_valid ||
+            dut.itlb_l2_fill_valid || dut.l2_tlb_fill_valid)
+            $fatal(1, "TLBI did not suppress same-cycle translation fill");
+        tick();
+        if ((|dut.u_itlb.valid_q) || (|dut.u_dtlb.valid_q))
+            $fatal(1, "shootdown did not clear both L1 TLBs");
+        for (l2_tlb_way = 0; l2_tlb_way < 4;
+             l2_tlb_way = l2_tlb_way + 1)
+            for (l2_tlb_set = 0; l2_tlb_set < 64;
+                 l2_tlb_set = l2_tlb_set + 1)
+                if (dut.u_l2_tlb.valid_q[l2_tlb_way][l2_tlb_set])
+                    $fatal(1, "shootdown left an L2 TLB entry valid");
+        tlbi = 1'b0;
+        ptw_wait = 0;
+        while (tlbi_busy && (ptw_wait < 300)) begin
+            tick();
+            ptw_wait = ptw_wait + 1;
+        end
+        if (tlbi_busy)
+            $fatal(1, "shootdown race barrier did not complete");
+        pipe_resp_ready = 1;
+        expect_pipe_response(3'd1, 64'hfeed_face_1234_5678,
+                             1'b0, 1'b0);
+        if ((ccx_reads - wait_count) != 4)
+            $fatal(1,
+                "post-shootdown request did not perform fresh walk/data read count=%0d",
+                ccx_reads - wait_count);
 
         pipe_req_vm_mode = `RV64_SATP_MODE_BARE;
         pipe_req_priv = `RV64_PRIV_M;

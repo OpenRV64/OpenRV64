@@ -194,9 +194,14 @@ module tb_exec_bp_modes78;
         dut8.g_tournament.u_tournament.global_valid_q[0] = 1'b1;
         dut8.g_tournament.u_tournament.global_counter_q[0] = 3'b000;
         dut8.g_tournament.u_tournament.local_valid_q[0] = 1'b1;
-        dut8.g_tournament.u_tournament.local_counter_q[0] = 3'b111;
+        dut8.g_tournament.u_tournament.local_counter_q[0] = 3'b000;
         dut8.g_tournament.u_tournament.chooser_valid_q[0] = 1'b1;
         dut8.g_tournament.u_tournament.chooser_counter_q[0] = 2'b01;
+        #1;
+        if (mode8_prediction_taken || mode8_prediction_weak)
+            $fatal(1, "tournament agreement incorrectly reported weak");
+
+        dut8.g_tournament.u_tournament.local_counter_q[0] = 3'b111;
         #1;
         if (mode8_prediction_taken || !mode8_prediction_weak)
             $fatal(1, "tournament weak-global selection is incorrect");
@@ -215,8 +220,12 @@ module tb_exec_bp_modes78;
         dut8.g_tournament.u_tournament.local_valid_q[1] = 1'b1;
         dut8.g_tournament.u_tournament.local_counter_q[1] = 3'b111;
         #1;
-        if (!mode8_prediction_taken)
-            $fatal(1, "trained tournament chooser did not select local");
+        if (!mode8_prediction_taken || !mode8_prediction_weak)
+            $fatal(1, "weak-local chooser selection is incorrect");
+        dut8.g_tournament.u_tournament.chooser_counter_q[0] = 2'b11;
+        #1;
+        if (!mode8_prediction_taken || mode8_prediction_weak)
+            $fatal(1, "strong-local chooser selection reported weak");
         lookup_valid = 1'b0;
 
         // Tagged mode must retain its older checkpoint, allow a younger

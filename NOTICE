@@ -20,3 +20,13 @@ sw/coremark_loop.c is:
 That file remains licensed under Apache License 2.0. Its original notice
 controls, and the complete Apache License 2.0 text is in
 LICENSES/Apache-2.0.txt.
+
+tools/gen_multichase_ring.py and its generated pointer rings are adapted from
+Google Multi-Chase:
+
+    Copyright 2015 Google Inc. All Rights Reserved.
+    SPDX-License-Identifier: Apache-2.0
+
+Those files remain licensed under Apache License 2.0. The upstream source is
+https://github.com/google/multichase and the adaptation was based on commit
+8cc86819b290d359f72d3f3308b6c2294cbc6455.

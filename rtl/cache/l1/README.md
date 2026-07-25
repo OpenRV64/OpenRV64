@@ -92,10 +92,14 @@ can select cached or cacheless builds without changing bus wiring.
 The 256-bit frontend instantiates `openrv64_l1i_ccx` as a VIPT cache.  A demand
 virtual address indexes L1I while the ITLB produces the physical tag and CCX
 address; Bare and ITLB-hit launches avoid a serialized translation state.
-Translation misses use the shared PTW, and every architectural demand is PMP
-checked.  Fetch owns one current 256-bit line plus the immediately following
-line needed for boundary-crossing bundles, with only one cache request in
-flight.  Cache residency and speculative work belong to L1I.
+Translation misses first use the shared 256-entry, four-way L2 TLB; only an L2
+miss uses the shared PTW. The L2 caches 4 KiB leaves and refills ITLB on a hit;
+superpages bypass it. The TLB hierarchy is non-inclusive and non-exclusive,
+with independent replacement and global shootdown of all levels. Every
+architectural demand is PMP checked. Fetch owns one current 256-bit line plus
+the immediately following line needed for boundary-crossing bundles, with
+only one cache request in flight. Cache residency and speculative work belong
+to L1I.
 
 The cache hit datapath is pipelined; misses, writes, and uncached operations
 still serialize the pipeline while they use the blocking lower-memory port.  A

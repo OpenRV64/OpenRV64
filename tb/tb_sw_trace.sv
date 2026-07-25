@@ -1,9 +1,10 @@
 `timescale 1ns/1ps
+`include "core/exec/bp/defs.v"
 
 module tb_sw_trace #(
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
-    parameter BP_TYPE = 0,
+    parameter BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8
 );

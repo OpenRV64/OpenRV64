@@ -16,6 +16,8 @@ module openrv64_core_bus #(
     // independent one-cycle testbench SRAM ports.
     parameter integer ENABLE_MAGIC_MEMORY = 0,
     parameter integer TLB_ENTRIES = 16,
+    parameter integer L2_TLB_ENTRIES = 256,
+    parameter integer L2_TLB_WAYS = 4,
     parameter integer ENABLE_L1I = 1,
     parameter integer ENABLE_L1D = 1,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
@@ -805,6 +807,8 @@ module openrv64_core_bus #(
         end else begin : g_ccx
             openrv64_core_ccx_bus #(
                 .TLB_ENTRIES(TLB_ENTRIES),
+                .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
+                .L2_TLB_WAYS(L2_TLB_WAYS),
                 .ENABLE_L1I(ENABLE_L1I),
                 .ENABLE_L1D(ENABLE_L1D),
                 .L1I_CACHE_BYTES(L1I_CACHE_BYTES),

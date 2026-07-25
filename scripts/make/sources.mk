@@ -26,7 +26,8 @@ FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
 	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1i/ccx.v \
 	rtl/cache/l1/l1d/l1d.v
-BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/ptw.v \
+BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v \
+	rtl/core/bus/tlb_l2.v rtl/core/bus/ptw.v \
 	rtl/core/bus/gen_bus.v rtl/core/bus/ccx_bus.v rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS)
 CCX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
@@ -73,8 +74,9 @@ CORE_SRCS := rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(DISPATCH_SRCS) $(EXEC_SRCS) $(RETIRE_SRCS) $(EXCEPT_SRCS) $(TRACE_SRCS)
 CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
-	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/ptw.v \
-	rtl/core/bus/ccx_bus.v rtl/core/bus/bus.v $(L1_CACHE_SRCS) \
+	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/tlb_l2.v \
+	rtl/core/bus/ptw.v rtl/core/bus/ccx_bus.v rtl/core/bus/bus.v \
+	$(L1_CACHE_SRCS) \
 	$(DECODE_SRCS) \
 	rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr_3p.v \
 	rtl/core/regs/rv64-i-pmp.v \
@@ -148,6 +150,7 @@ L1I_TOP_SIM_SRCS := rtl/openrv64_l1i_top.v \
 	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1i/ccx.v \
 	tb/tb_openrv64_l1i_top.sv
 TLB_SIM_SRCS := tb/tb_tlb.sv
+TLB_L2_SIM_SRCS := tb/tb_tlb_l2.sv
 PTW_SIM_SRCS := tb/tb_ptw.sv
 PTW_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_ptw_context.sv
 DECODE_EARLY_SIM_SRCS := tb/tb_decode_early.sv

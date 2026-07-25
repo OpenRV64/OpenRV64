@@ -24,6 +24,7 @@ include scripts/make/compliance-builds.mk
 include scripts/make/prefetch-config.mk
 include scripts/make/prefetch-runner.mk
 include scripts/make/stream.mk
+include scripts/make/pointer-chase.mk
 include scripts/make/stride.mk
 include scripts/make/icache.mk
 include scripts/make/lz4.mk

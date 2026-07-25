@@ -6,6 +6,9 @@
 // 8 KiB aggregate page.  Timing defaults mirror gem5's DDR3_1600_8x8 preset
 // used by the saved Cortex-A53/HPI comparison: tCK=1.25 ns, 13.75 ns
 // tRCD/tRP/tCL/tCWL, 35 ns tRAS, 15 ns tWR, 260 ns tRFC, and 7.8 us tREFI.
+// The 10 ns frontend and 10 ns backend defaults mirror gem5 MemCtrl's
+// controller/PHY pipeline rather than folding that fixed cost into DRAM-array
+// timings.
 // The common timing engine queues commands and overlaps independent-bank row
 // preparation while serializing native bursts on one shared rank data bus.
 module openrv64_timing_ddr3 #(
@@ -28,6 +31,8 @@ module openrv64_timing_ddr3 #(
     parameter integer T_CCD = 4,
     parameter integer T_RFC = 208,
     parameter integer REFRESH_INTERVAL = 6240,
+    parameter integer FRONTEND_LATENCY_PS = 10000,
+    parameter integer BACKEND_LATENCY_PS = 10000,
     parameter integer COMMAND_QUEUE_DEPTH = 16
 ) (
     input  wire                  clk_i,
@@ -54,6 +59,8 @@ module openrv64_timing_ddr3 #(
         .T_RAS(T_RAS), .T_WR(T_WR),
         .T_CL(T_CL), .T_CWL(T_CWL), .T_CCD(T_CCD),
         .T_RFC(T_RFC), .REFRESH_INTERVAL(REFRESH_INTERVAL),
+        .FRONTEND_LATENCY_PS(FRONTEND_LATENCY_PS),
+        .BACKEND_LATENCY_PS(BACKEND_LATENCY_PS),
         .COMMAND_QUEUE_DEPTH(COMMAND_QUEUE_DEPTH)
     ) u_timing (
         .clk_i(clk_i), .rst_ni(rst_ni),

@@ -193,11 +193,14 @@ module openrv64_exec_bp_tournament_btb #(
     wire chooser_prediction_weak =
         lookup_chooser_counter[CHOOSER_COUNTER_BITS-1] !=
         lookup_chooser_counter[CHOOSER_COUNTER_BITS-2];
+    // Agreement is confident whenever the common component prediction is
+    // confident; the chooser is irrelevant in that case.  On disagreement,
+    // the selected component and chooser must both be confident.
     wire conditional_prediction_weak =
         (chooser_select_local ? local_prediction_weak :
                                 global_prediction_weak) ||
-        (global_prediction != local_prediction) ||
-        chooser_prediction_weak;
+        ((global_prediction != local_prediction) &&
+         chooser_prediction_weak);
 
     wire [BTB_INDEX_WIDTH-1:0] lookup_btb_index =
         lookup_pc_i[BTB_INDEX_WIDTH+1:2];

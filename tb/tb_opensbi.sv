@@ -8,13 +8,15 @@ module tb_opensbi #(
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_STALL,
+        `OPENRV64_BP_DEFAULT,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer RETIRE_DEPTH = 8,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
+    parameter integer L2_TLB_ENTRIES = 256,
+    parameter integer L2_TLB_WAYS = 4,
     parameter integer CCX_BUS_TYPE = 0,
     parameter integer CCX_BUS_DATA_WIDTH = 256,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
@@ -159,6 +161,12 @@ module tb_opensbi #(
     logic [63:0] perf_tlb_invalidates;
     logic [63:0] perf_itlb_fills;
     logic [63:0] perf_dtlb_fills;
+    logic [63:0] perf_l2_tlb_lookups;
+    logic [63:0] perf_l2_tlb_hits;
+    logic [63:0] perf_l2_tlb_misses;
+    logic [63:0] perf_l2_tlb_fills;
+    logic [63:0] perf_l2_tlb_evictions;
+    logic [63:0] perf_l2_tlb_superpage_bypasses;
     logic [63:0] perf_ptw_lsu_starts;
     logic [63:0] perf_ptw_fetch_starts;
     logic [63:0] perf_ptw_prefetch_starts;
@@ -331,6 +339,8 @@ module tb_opensbi #(
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .L2_BYTES(L2_BYTES),
         .L2_WAYS(L2_WAYS),
+        .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
+        .L2_TLB_WAYS(L2_TLB_WAYS),
         .CCX_BUS_TYPE(CCX_BUS_TYPE),
         .CCX_BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
@@ -725,11 +735,32 @@ module tb_opensbi #(
                         perf_tlb_invalidates <=
                             perf_tlb_invalidates + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.itlb_fill_valid)
+                            .u_bus.itlb_ptw_fill_valid)
                         perf_itlb_fills <= perf_itlb_fills + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.dtlb_fill_valid)
+                            .u_bus.dtlb_ptw_fill_valid)
                         perf_dtlb_fills <= perf_dtlb_fills + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l2_tlb.diag_lookup)
+                        perf_l2_tlb_lookups <=
+                            perf_l2_tlb_lookups + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l2_tlb.diag_hit)
+                        perf_l2_tlb_hits <= perf_l2_tlb_hits + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l2_tlb.diag_miss)
+                        perf_l2_tlb_misses <= perf_l2_tlb_misses + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l2_tlb.diag_fill)
+                        perf_l2_tlb_fills <= perf_l2_tlb_fills + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l2_tlb.diag_evict)
+                        perf_l2_tlb_evictions <=
+                            perf_l2_tlb_evictions + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l2_tlb.diag_superpage_bypass)
+                        perf_l2_tlb_superpage_bypasses <=
+                            perf_l2_tlb_superpage_bypasses + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
                             .u_bus.start_lsu_walk)
                         perf_ptw_lsu_starts <=
@@ -1156,6 +1187,11 @@ module tb_opensbi #(
                          perf_dtlb_serial_faults,
                          perf_tlb_invalidates, perf_itlb_fills,
                          perf_dtlb_fills);
+                $display("PERF BROAD L2TLB name=%0s lookups=%0d hits=%0d misses=%0d fills=%0d evictions=%0d superpage_bypasses=%0d",
+                         name, perf_l2_tlb_lookups,
+                         perf_l2_tlb_hits, perf_l2_tlb_misses,
+                         perf_l2_tlb_fills, perf_l2_tlb_evictions,
+                         perf_l2_tlb_superpage_bypasses);
                 $display("PERF BROAD PTW name=%0s lsu_starts=%0d fetch_starts=%0d prefetch_starts=%0d responses=%0d faults=%0d pte_cache_hits=%0d ccx_line_reads=%0d active_cycles=%0d",
                          name, perf_ptw_lsu_starts,
                          perf_ptw_fetch_starts,
@@ -1787,6 +1823,9 @@ module tb_opensbi #(
             perf_dtlb_serial_lookups, perf_dtlb_serial_hits,
             perf_dtlb_serial_misses, perf_dtlb_serial_faults,
             perf_tlb_invalidates, perf_itlb_fills, perf_dtlb_fills,
+            perf_l2_tlb_lookups, perf_l2_tlb_hits,
+            perf_l2_tlb_misses, perf_l2_tlb_fills,
+            perf_l2_tlb_evictions, perf_l2_tlb_superpage_bypasses,
             perf_ptw_lsu_starts, perf_ptw_fetch_starts,
             perf_ptw_prefetch_starts, perf_ptw_responses,
             perf_ptw_faults, perf_ptw_pte_cache_hits,

@@ -34,7 +34,7 @@ module openrv64_rv64_top #(
         {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
-    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
+    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,
     parameter integer BP_BIMODAL_ENTRIES = 32,

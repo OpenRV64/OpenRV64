@@ -18,6 +18,13 @@ Mode 7 removes 310 corrections (18.7%) relative to mode 6. Mode 8 removes
 926 (55.9%). Relative to mode 7, mode 8 saves another 2,617 cycles (3.84%)
 and 616 corrections (45.7%).
 
+The mode-8 total separates into 729 conditional-direction corrections and
+three cold BTB misses. In the matched cache-hierarchy run, the new target
+counters report 737 accepted BTB lookups, 734 hits, three misses, and zero
+wrong targets; the RAS reports 737 lookups and 737 hits. Lookup counts include
+wrong-path predictor activity and therefore need not equal retired control
+counts. The performance harness emits this breakdown as `PERF_BP_TARGET`.
+
 The controlled configuration used `RETIRE_DEPTH=16`, issue and speculation
 windows enabled, fetch alternate lookaside mode 3, full forwarding disabled,
 and the current adaptive two-stream L1D prefetch configuration. These are

@@ -32,7 +32,6 @@ sim-core-3p-ccx-l2: $(CORE_3P_CCX_L2_VERILATOR_BUILD) \
 sim-core-3p-ccx-l2-vm: $(CORE_3P_VM_MEMH)
 	test -n "$(CORE_3P_VM_DONE_PC)"
 	$(MAKE) sim-core-3p-ccx-l2 \
-		CORE_3P_CCX_L2_BP_TYPE=6 \
 		CORE_3P_CCX_L2_MODE=3 \
 		CORE_3P_CCX_L2_RETIRE_DEPTH=16 \
 		CORE_3P_CCX_L2_ISSUE_WINDOW=1 \

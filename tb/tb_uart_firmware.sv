@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
+`include "core/exec/bp/defs.v"
 
 module tb_uart_firmware #(
-    parameter integer BP_TYPE = 0,
+    parameter integer BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter integer BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8
 );

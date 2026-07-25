@@ -15,7 +15,9 @@
 // This is still a transaction-level controller fixture: it does not model
 // command/address bus occupancy or rank switching.  It models dependency-safe
 // read/write reordering, open-row grouping, independent bank progress, and
-// serialized native-burst data transfer.
+// serialized native-burst data transfer.  Optional frontend and backend
+// delays model controller/PHY pipelines without occupying a bank or the
+// shared data bus, so multiple commands may remain in flight through both.
 module openrv64_timing_dram_banked #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer TAG_WIDTH = 8,
@@ -36,6 +38,8 @@ module openrv64_timing_dram_banked #(
     parameter integer T_CCD = 4,
     parameter integer T_RFC = 208,
     parameter integer REFRESH_INTERVAL = 6240,
+    parameter integer FRONTEND_LATENCY_PS = 0,
+    parameter integer BACKEND_LATENCY_PS = 0,
     parameter integer COMMAND_QUEUE_DEPTH = 16
 ) (
     input  wire                  clk_i,
@@ -81,6 +85,12 @@ module openrv64_timing_dram_banked #(
         (REFRESH_INTERVAL == 0) ? 0 :
         ((REFRESH_INTERVAL * DRAM_TCK_PS + CONTROLLER_TCK_PS - 1) /
          CONTROLLER_TCK_PS);
+    localparam integer FRONTEND_LATENCY_CYCLES =
+        (FRONTEND_LATENCY_PS + CONTROLLER_TCK_PS - 1) /
+        CONTROLLER_TCK_PS;
+    localparam integer BACKEND_LATENCY_CYCLES =
+        (BACKEND_LATENCY_PS + CONTROLLER_TCK_PS - 1) /
+        CONTROLLER_TCK_PS;
 
     reg command_valid_q [0:COMMAND_QUEUE_DEPTH-1];
     reg command_assigned_q [0:COMMAND_QUEUE_DEPTH-1];
@@ -93,6 +103,10 @@ module openrv64_timing_dram_banked #(
     reg [BANK_BITS-1:0] command_bank_q [0:COMMAND_QUEUE_DEPTH-1];
     reg [ROW_TAG_WIDTH-1:0] command_row_q [0:COMMAND_QUEUE_DEPTH-1];
     reg [15:0] command_bursts_q [0:COMMAND_QUEUE_DEPTH-1];
+    reg [63:0] command_frontend_ready_cycle_q
+        [0:COMMAND_QUEUE_DEPTH-1];
+    reg [63:0] command_backend_ready_cycle_q
+        [0:COMMAND_QUEUE_DEPTH-1];
     reg [QUEUE_PTR_WIDTH-1:0] command_head_q;
     reg [QUEUE_PTR_WIDTH-1:0] command_tail_q;
     reg [QUEUE_COUNT_WIDTH-1:0] command_count_q;
@@ -206,7 +220,9 @@ module openrv64_timing_dram_banked #(
             if (command_valid_q[eligible_slot] &&
                 !command_assigned_q[eligible_slot] &&
                 !command_complete_q[eligible_slot] &&
-                !command_reported_q[eligible_slot]) begin
+                !command_reported_q[eligible_slot] &&
+                (command_frontend_ready_cycle_q[eligible_slot] <=
+                 controller_cycle_q)) begin
                 command_eligible[eligible_slot] = 1'b1;
                 for (older_offset = 0;
                      older_offset < eligible_offset;
@@ -428,7 +444,9 @@ module openrv64_timing_dram_banked #(
             if (!response_candidate_found &&
                 command_valid_q[response_scan_slot] &&
                 command_complete_q[response_scan_slot] &&
-                !command_reported_q[response_scan_slot]) begin
+                !command_reported_q[response_scan_slot] &&
+                (command_backend_ready_cycle_q[response_scan_slot] <=
+                 controller_cycle_q)) begin
                 response_candidate_found = 1'b1;
                 response_candidate_valid = 1'b1;
                 response_candidate_slot = response_scan_slot;
@@ -512,6 +530,8 @@ module openrv64_timing_dram_banked #(
                 command_bank_q[reset_slot] <= {BANK_BITS{1'b0}};
                 command_row_q[reset_slot] <= {ROW_TAG_WIDTH{1'b0}};
                 command_bursts_q[reset_slot] <= 16'd0;
+                command_frontend_ready_cycle_q[reset_slot] <= 64'd0;
+                command_backend_ready_cycle_q[reset_slot] <= 64'd0;
             end
             for (bank_index = 0; bank_index < BANK_COUNT;
                  bank_index = bank_index + 1) begin
@@ -563,6 +583,10 @@ module openrv64_timing_dram_banked #(
                 command_row_q[command_tail_q] <= incoming_row;
                 command_bursts_q[command_tail_q] <=
                     16'(incoming_native_bursts);
+                command_frontend_ready_cycle_q[command_tail_q] <=
+                    controller_cycle_q + 64'd1 +
+                    64'(FRONTEND_LATENCY_CYCLES);
+                command_backend_ready_cycle_q[command_tail_q] <= 64'd0;
                 command_tail_q <= next_queue_ptr(command_tail_q);
             end
 
@@ -583,6 +607,8 @@ module openrv64_timing_dram_banked #(
                 command_assigned_q[command_head_q] <= 1'b0;
                 command_complete_q[command_head_q] <= 1'b0;
                 command_reported_q[command_head_q] <= 1'b0;
+                command_frontend_ready_cycle_q[command_head_q] <= 64'd0;
+                command_backend_ready_cycle_q[command_head_q] <= 64'd0;
                 command_head_q <= next_queue_ptr(command_head_q);
             end
 
@@ -676,6 +702,10 @@ module openrv64_timing_dram_banked #(
                     if (bank_bursts_left_q[bus_bank_q] <= 1) begin
                         command_complete_q[
                             bank_slot_q[bus_bank_q]] <= 1'b1;
+                        command_backend_ready_cycle_q[
+                            bank_slot_q[bus_bank_q]] <=
+                            controller_cycle_q + 64'd1 +
+                            64'(BACKEND_LATENCY_CYCLES);
                         if (command_write_q[
                             bank_slot_q[bus_bank_q]] &&
                             ((controller_cycle_q +
@@ -792,6 +822,8 @@ module openrv64_timing_dram_banked #(
             $fatal(1, "banked DRAM command queue must be power-of-two >= 2");
         if ((CONTROLLER_TCK_PS < 1) || (DRAM_TCK_PS < 1))
             $fatal(1, "banked DRAM clock periods must be positive");
+        if ((FRONTEND_LATENCY_PS < 0) || (BACKEND_LATENCY_PS < 0))
+            $fatal(1, "banked DRAM controller latencies cannot be negative");
     end
 
 endmodule

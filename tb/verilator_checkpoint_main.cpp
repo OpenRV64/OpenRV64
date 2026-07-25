@@ -212,9 +212,9 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
            << '/' << static_cast<unsigned>(
                       FETCH3P(line_sector_valid_q)[1])
            << ",hit=" << static_cast<unsigned>(
-                      FETCH3P(consume_line_tag_hit))
+                      FETCH3P(consume_sector_valid) & 1U)
            << '/' << static_cast<unsigned>(
-                      FETCH3P(following_line_tag_hit))
+                      FETCH3P(following_sector_valid) & 1U)
            << ",lanes=" << static_cast<unsigned>(FETCH3P(lane_found_r))
            << ",reqfire=" << static_cast<unsigned>(FETCH3P(req_fire))
            << ",respmatch=" << static_cast<unsigned>(FETCH3P(resp_match))

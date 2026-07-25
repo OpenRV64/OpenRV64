@@ -143,6 +143,9 @@ sim-l1i-top: $(L1I_TOP_SIM_BUILD) $(L1I_COREMARK_MEMH)
 sim-tlb: $(TLB_SIM_BUILD)
 	vvp $(TLB_SIM_BUILD)
 
+sim-tlb-l2: $(TLB_L2_SIM_BUILD)
+	vvp $(TLB_L2_SIM_BUILD)
+
 sim-ptw: $(PTW_SIM_BUILD)
 	vvp $(PTW_SIM_BUILD)
 

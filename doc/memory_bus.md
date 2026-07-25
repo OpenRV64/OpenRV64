@@ -60,12 +60,23 @@ CSR or requester-context changes. TLB entries are tagged by VM mode and ASID,
 with global entries matching every ASID only within their original VM mode.
 
 Bare requests use identity translation. When the effective privilege is S or
-U and `satp.MODE=Sv39`, requests first search the fully associative CAM in
-`rtl/core/bus/tlb.v`; a miss is sent to `rtl/core/bus/ptw.v`. The TLB stores
-mode, ASID/global ownership, 4 KiB/2 MiB/1 GiB page level, and leaf permission
-metadata. A tag hit can therefore complete with a page fault when the cached
-leaf rejects the current read, write, execute, privilege, SUM, MXR, A, or D
-requirements.
+U and `satp.MODE=Sv39`, CCX-path requests first search the separate
+fully-associative 16-entry L1 ITLB or DTLB in `rtl/core/bus/tlb.v`. An L1 miss
+searches the shared 256-entry, four-way L2 TLB in
+`rtl/core/bus/tlb_l2.v`; only an L2 miss is sent to
+`rtl/core/bus/ptw.v`. The generic blocking bus retains one shared L1 TLB and
+does not instantiate the L2 TLB. TLB entries store mode, ASID/global
+ownership, page level, and leaf permission metadata. A tag hit can therefore
+complete with a page fault when the cached leaf rejects the current read,
+write, execute, privilege, SUM, MXR, A, or D requirements.
+
+The L2 TLB caches 4 KiB translations in 64 indexed sets by default. Superpage
+translations bypass it and remain eligible for the fully associative L1 TLBs.
+The hierarchy permits duplication but does not enforce inclusion: L1 and L2
+replacement are independent and need no back-invalidation tracking. A
+successful walk fills the requesting L1 and L2; an L2 hit refills the
+requesting L1. Simultaneous misses are serviced LSU, demand fetch, then
+speculative instruction prefetch.
 
 The PTW implements a blocking three-level Sv39 walk. It checks canonical
 virtual addresses, PTE validity and reserved encodings, leaf permissions,
@@ -83,7 +94,9 @@ faulting entry. The next access misses and either obtains a fresh translation
 or receives the PTW's page/access fault. If a shootdown overlaps an active
 walk, the PTW terminates that walk and drains any already-accepted CCX response
 without consuming it, so pre-fence state cannot refill either the PTE cache or
-the TLB.
+any TLB. The initiating invalidation also suppresses an L2 hit or PTW response
+from filling either L1 on that edge and clears both L1 TLBs plus the shared L2
+TLB.
 
 PMP is enforced after translation. Final instruction/data accesses use their
 effective privilege and access type. The PTW independently probes PMP as an

@@ -423,6 +423,22 @@ Both the generic 1P core and native 3P core expose this PTW CCX client. The
 residual AXI read path in the 3P core is only for structural cacheless
 instruction fetch.
 
+The native 3P path places a shared 256-entry, four-way L2 TLB between its
+separate 16-entry fully associative L1 ITLB/DTLB and the walker. The default
+geometry is 64 sets. Four packed 131-bit payload banks are indexed in parallel,
+and only those four selected entries are compared; Yosys retains four memory
+cells rather than expanding the payload into a 256-entry CAM. Reset and
+shootdown clear separate valid bits without resetting the payload banks.
+
+Only 4 KiB leaves enter the L2 TLB. Superpage leaves bypass it and may remain
+in an L1 TLB. The hierarchy is neither inclusive nor exclusive: walk fills
+may duplicate an entry in the requesting L1 and L2, but an eviction at one
+level never back-invalidates the other. The shared blocking walker guarantees
+that an L2-miss fill cannot race another translation fill for the same tag.
+L2 lookup arbitration is LSU first, demand fetch second, and speculative
+instruction prefetch last. `L2_TLB_ENTRIES` and `L2_TLB_WAYS` are propagated
+through the 3P core, public tops, and platform.
+
 `SFENCE.VMA` and a successful writable `satp` CSR access make the PTW issue
 `FENCE + kind=PTE + order=ACQ_REL` on CCX. Before either instruction executes,
 the 3P backend waits for every older store's translation/PMP/L1D-admission
@@ -481,9 +497,11 @@ requests; this cache stores individual PTEs rather than duplicating L2 lines.
 `SFENCE.VMA` clears every non-leaf PTE-cache valid bit and terminates an
 overlapping walk.  An already-issued physical PTE transaction may be drained,
 but its value is not consumed, no later level is requested, and the aborted
-walk cannot refill either the PTE cache or a TLB.  PTW fetch-ahead remains
-unimplemented.  `kind=PTE` identifies the L2 object class; `source=PTW`
-independently identifies the response destination.
+walk cannot refill either the PTE cache or a TLB. The same initiating edge
+clears ITLB, DTLB, and the shared L2 TLB and takes priority over a simultaneous
+PTW fill or L2-to-L1 refill. PTW fetch-ahead remains unimplemented.
+`kind=PTE` identifies the L2 object class; `source=PTW` independently
+identifies the response destination.
 
 `SFENCE.VMA` invalidates the local TLB and prevents an overlapping stale walk
 from refilling it.  Remote TLB shootdown is not an L2 probe operation; software

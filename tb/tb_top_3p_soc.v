@@ -242,7 +242,7 @@ module tb_top_3p_soc #(
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_GSHARE_BTB,
+        `OPENRV64_BP_DEFAULT,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter integer ENABLE_FULL_FORWARDING = 0,
@@ -257,6 +257,8 @@ module tb_top_3p_soc #(
     parameter [63:0] SPEC_LOAD_SIZE = RAM_BYTES,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
+    parameter integer L2_TLB_ENTRIES = 256,
+    parameter integer L2_TLB_WAYS = 4,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
     parameter integer L2_MERGE_ENTRIES = 8,
@@ -563,6 +565,14 @@ module tb_top_3p_soc #(
     integer max_timing_owners;
     integer direction_corrections;
     integer target_corrections;
+    integer bp_btb_lookups;
+    integer bp_btb_hits;
+    integer bp_btb_misses;
+    integer bp_btb_wrong_targets;
+    integer bp_ras_lookups;
+    integer bp_ras_hits;
+    integer bp_ras_misses;
+    integer bp_ras_wrong_targets;
     integer lookaside_restart_hits;
     integer lookaside_eligible_restarts;
     integer lookaside_pair_replacements;
@@ -1076,6 +1086,8 @@ module tb_top_3p_soc #(
         .ENABLE_L1D(1'b1),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
+        .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
+        .L2_TLB_WAYS(L2_TLB_WAYS),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_STREAMS(L1D_PREFETCH_STREAMS),
         .L1D_PREFETCH_DISTANCE(L1D_PREFETCH_DISTANCE),
@@ -1950,6 +1962,14 @@ module tb_top_3p_soc #(
         saw_sv39_alias_data = 1'b0;
         direction_corrections = 0;
         target_corrections = 0;
+        bp_btb_lookups = 0;
+        bp_btb_hits = 0;
+        bp_btb_misses = 0;
+        bp_btb_wrong_targets = 0;
+        bp_ras_lookups = 0;
+        bp_ras_hits = 0;
+        bp_ras_misses = 0;
+        bp_ras_wrong_targets = 0;
         lookaside_restart_hits = 0;
         lookaside_eligible_restarts = 0;
         lookaside_pair_replacements = 0;
@@ -2490,6 +2510,22 @@ module tb_top_3p_soc #(
                 direction_corrections = direction_corrections + 1;
             if (dut.bp_target_mispredict)
                 target_corrections = target_corrections + 1;
+            if (dut.u_bp.diag_btb_lookup)
+                bp_btb_lookups = bp_btb_lookups + 1;
+            if (dut.u_bp.diag_btb_hit)
+                bp_btb_hits = bp_btb_hits + 1;
+            if (dut.u_bp.diag_btb_miss)
+                bp_btb_misses = bp_btb_misses + 1;
+            if (dut.u_bp.diag_btb_wrong_target)
+                bp_btb_wrong_targets = bp_btb_wrong_targets + 1;
+            if (dut.u_bp.diag_ras_lookup)
+                bp_ras_lookups = bp_ras_lookups + 1;
+            if (dut.u_bp.diag_ras_hit)
+                bp_ras_hits = bp_ras_hits + 1;
+            if (dut.u_bp.diag_ras_miss)
+                bp_ras_misses = bp_ras_misses + 1;
+            if (dut.u_bp.diag_ras_wrong_target)
+                bp_ras_wrong_targets = bp_ras_wrong_targets + 1;
             if (dut.fetch_alt_restart_hit)
                 lookaside_restart_hits = lookaside_restart_hits + 1;
             if (dut.fetch3_restart &&
@@ -2664,6 +2700,11 @@ module tb_top_3p_soc #(
             "PERF_CCX_L2_FRONTEND direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d",
             direction_corrections, target_corrections,
             lookaside_restart_hits);
+        $display(
+            "PERF_CCX_L2_BP_TARGET btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d",
+            bp_btb_lookups, bp_btb_hits, bp_btb_misses,
+            bp_btb_wrong_targets, bp_ras_lookups, bp_ras_hits,
+            bp_ras_misses, bp_ras_wrong_targets);
         $display(
             "PERF_CCX_L2_LOOKASIDE pair_stack_depth=%0d eligible_restarts=%0d hits=%0d pair_overlaps=%0d pair_stack_overflows=%0d pair_stack_max_saved=%0d fills=%0d duplicate_fills=%0d free_fills=%0d evictions=%0d full_branch_allocations=%0d",
             FETCH_ALT_PAIR_STACK_DEPTH,

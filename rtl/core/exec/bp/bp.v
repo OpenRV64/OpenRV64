@@ -15,7 +15,7 @@
 // separate files above; this wrapper owns the common unresolved-control stall
 // used by the no-speculation policy and by targetless indirect jumps.
 module openrv64_exec_bp #(
-    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
+    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter integer ENABLE_RAS = 1,
     parameter integer RAS_DEPTH = 8,
     parameter integer BIMODAL_ENTRIES = 32,
@@ -366,6 +366,44 @@ module openrv64_exec_bp #(
     assign fetch_stall_o = effective_lookup_requires_stall || unresolved_q ||
                            selected_allocation_stall;
     assign decode_stall_o = unresolved_q || selected_allocation_stall;
+
+    // Simulation-visible target-predictor events.  These deliberately remain
+    // internal wires rather than architectural counters or public RTL ports.
+    // A lookup is counted only when the frontend accepts the control record,
+    // so a stalled indirect does not count repeatedly.
+    wire diag_lookup_is_jalr =
+        `RV64_OPCODE(lookup_instr_i) == `RV64_OPCODE_JALR;
+    wire diag_lookup_rs1_link =
+        (`RV64_RS1(lookup_instr_i) == 5'd1) ||
+        (`RV64_RS1(lookup_instr_i) == 5'd5);
+    wire diag_lookup_rd_link =
+        (`RV64_RD(lookup_instr_i) == 5'd1) ||
+        (`RV64_RD(lookup_instr_i) == 5'd5);
+    wire diag_lookup_return = lookup_indirect_i &&
+        diag_lookup_is_jalr && diag_lookup_rs1_link &&
+        !diag_lookup_rd_link;
+    wire diag_resolve_is_jalr =
+        `RV64_OPCODE(resolve_instr_i) == `RV64_OPCODE_JALR;
+    wire diag_resolve_rs1_link =
+        (`RV64_RS1(resolve_instr_i) == 5'd1) ||
+        (`RV64_RS1(resolve_instr_i) == 5'd5);
+    wire diag_resolve_rd_link =
+        (`RV64_RD(resolve_instr_i) == 5'd1) ||
+        (`RV64_RD(resolve_instr_i) == 5'd5);
+    wire diag_resolve_return = diag_resolve_is_jalr &&
+        diag_resolve_rs1_link && !diag_resolve_rd_link;
+    wire diag_btb_lookup = use_table_predictor &&
+        lookup_allocate_i && lookup_indirect_i && !diag_lookup_return;
+    wire diag_btb_hit = diag_btb_lookup && selected_target_valid;
+    wire diag_btb_miss = diag_btb_lookup && !selected_target_valid;
+    wire diag_ras_lookup = (ENABLE_RAS != 0) &&
+        lookup_allocate_i && diag_lookup_return;
+    wire diag_ras_hit = diag_ras_lookup && ras_prediction_valid;
+    wire diag_ras_miss = diag_ras_lookup && !ras_prediction_valid;
+    wire diag_btb_wrong_target = target_mispredict_o &&
+        diag_resolve_is_jalr && !diag_resolve_return;
+    wire diag_ras_wrong_target = target_mispredict_o &&
+        diag_resolve_return;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

@@ -20,6 +20,8 @@ module openrv64_axi_ddr3 #(
     parameter INIT_FILE = "",
     parameter integer CONTROLLER_TCK_PS = 1000,
     parameter integer REFRESH_INTERVAL = 6240,
+    parameter integer FRONTEND_LATENCY_PS = 10000,
+    parameter integer BACKEND_LATENCY_PS = 10000,
     parameter integer COMMAND_QUEUE_DEPTH = 16,
     parameter integer TIMING_MODEL = 0
 ) (
@@ -165,6 +167,8 @@ module openrv64_axi_ddr3 #(
                 .TAG_WIDTH(TIMING_TAG_WIDTH),
                 .CONTROLLER_TCK_PS(CONTROLLER_TCK_PS),
                 .REFRESH_INTERVAL(REFRESH_INTERVAL),
+                .FRONTEND_LATENCY_PS(FRONTEND_LATENCY_PS),
+                .BACKEND_LATENCY_PS(BACKEND_LATENCY_PS),
                 .COMMAND_QUEUE_DEPTH(COMMAND_QUEUE_DEPTH)
             ) u_timing (
                 .clk_i(clk_i),

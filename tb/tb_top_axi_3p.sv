@@ -514,7 +514,7 @@ module tb_top_axi_3p #(
     parameter integer RAM_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
     parameter integer RAM_ZERO_INIT_LINES = RAM_BYTES / 32,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_STALL,
+        `OPENRV64_BP_DEFAULT,
     parameter integer BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,
     parameter integer BP_BIMODAL_ENTRIES = 32,
@@ -796,6 +796,14 @@ module tb_top_axi_3p #(
     integer bp_taken_predictions;
     integer bp_resolutions;
     integer bp_corrections;
+    integer bp_btb_lookups;
+    integer bp_btb_hits;
+    integer bp_btb_misses;
+    integer bp_btb_wrong_targets;
+    integer bp_ras_lookups;
+    integer bp_ras_hits;
+    integer bp_ras_misses;
+    integer bp_ras_wrong_targets;
     integer fetch_alt_redirect_hits;
     integer eq_branch_pairings;
     integer branch_forward_issues;
@@ -2344,6 +2352,22 @@ module tb_top_axi_3p #(
                 if (dut.u_core.bp_prediction_taken)
                     bp_taken_predictions <= bp_taken_predictions + 1;
             end
+            if (dut.u_core.u_bp.diag_btb_lookup)
+                bp_btb_lookups <= bp_btb_lookups + 1;
+            if (dut.u_core.u_bp.diag_btb_hit)
+                bp_btb_hits <= bp_btb_hits + 1;
+            if (dut.u_core.u_bp.diag_btb_miss)
+                bp_btb_misses <= bp_btb_misses + 1;
+            if (dut.u_core.u_bp.diag_btb_wrong_target)
+                bp_btb_wrong_targets <= bp_btb_wrong_targets + 1;
+            if (dut.u_core.u_bp.diag_ras_lookup)
+                bp_ras_lookups <= bp_ras_lookups + 1;
+            if (dut.u_core.u_bp.diag_ras_hit)
+                bp_ras_hits <= bp_ras_hits + 1;
+            if (dut.u_core.u_bp.diag_ras_miss)
+                bp_ras_misses <= bp_ras_misses + 1;
+            if (dut.u_core.u_bp.diag_ras_wrong_target)
+                bp_ras_wrong_targets <= bp_ras_wrong_targets + 1;
             if (FREE_BRANCHES != 0)
                 bp_resolutions <= bp_resolutions +
                     {2'd0, trace_free_branch_complete[0]} +
@@ -2451,6 +2475,14 @@ module tb_top_axi_3p #(
         bp_taken_predictions = 0;
         bp_resolutions = 0;
         bp_corrections = 0;
+        bp_btb_lookups = 0;
+        bp_btb_hits = 0;
+        bp_btb_misses = 0;
+        bp_btb_wrong_targets = 0;
+        bp_ras_lookups = 0;
+        bp_ras_hits = 0;
+        bp_ras_misses = 0;
+        bp_ras_wrong_targets = 0;
         fetch_alt_redirect_hits = 0;
         eq_branch_pairings = 0;
         branch_forward_issues = 0;
@@ -2732,6 +2764,10 @@ module tb_top_axi_3p #(
                      bp_allocations, bp_taken_predictions,
                      bp_resolutions, bp_corrections,
                      dut.u_core.bp_update_overflow);
+            $display("PERF_BP_TARGET btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d",
+                     bp_btb_lookups, bp_btb_hits, bp_btb_misses,
+                     bp_btb_wrong_targets, bp_ras_lookups, bp_ras_hits,
+                     bp_ras_misses, bp_ras_wrong_targets);
             $display("PERF_FETCH_ALT mode=%0d correction_hits=%0d",
                      FETCH_ALT_LOOKASIDE, fetch_alt_redirect_hits);
             $display("PERF_BRANCH_PAIR useful=%0d", eq_branch_pairings);

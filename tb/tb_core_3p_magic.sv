@@ -13,7 +13,7 @@ module tb_core_3p_magic #(
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
-        `OPENRV64_BP_GSHARE_BTB,
+        `OPENRV64_BP_DEFAULT,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter integer ENABLE_FULL_FORWARDING = 0,
@@ -100,6 +100,14 @@ module tb_core_3p_magic #(
     integer resolved_conditional_branches;
     integer direction_corrections;
     integer target_corrections;
+    integer btb_lookups;
+    integer btb_hits;
+    integer btb_misses;
+    integer btb_wrong_targets;
+    integer ras_lookups;
+    integer ras_hits;
+    integer ras_misses;
+    integer ras_wrong_targets;
     integer lookaside_restart_hits;
     integer weak_branch_pairs;
     integer stashed_pair_halves_suppressed;
@@ -413,6 +421,14 @@ module tb_core_3p_magic #(
         resolved_conditional_branches = 0;
         direction_corrections = 0;
         target_corrections = 0;
+        btb_lookups = 0;
+        btb_hits = 0;
+        btb_misses = 0;
+        btb_wrong_targets = 0;
+        ras_lookups = 0;
+        ras_hits = 0;
+        ras_misses = 0;
+        ras_wrong_targets = 0;
         lookaside_restart_hits = 0;
         weak_branch_pairs = 0;
         stashed_pair_halves_suppressed = 0;
@@ -456,6 +472,22 @@ module tb_core_3p_magic #(
                 direction_corrections = direction_corrections + 1;
             if (dut.bp_target_mispredict)
                 target_corrections = target_corrections + 1;
+            if (dut.u_bp.diag_btb_lookup)
+                btb_lookups = btb_lookups + 1;
+            if (dut.u_bp.diag_btb_hit)
+                btb_hits = btb_hits + 1;
+            if (dut.u_bp.diag_btb_miss)
+                btb_misses = btb_misses + 1;
+            if (dut.u_bp.diag_btb_wrong_target)
+                btb_wrong_targets = btb_wrong_targets + 1;
+            if (dut.u_bp.diag_ras_lookup)
+                ras_lookups = ras_lookups + 1;
+            if (dut.u_bp.diag_ras_hit)
+                ras_hits = ras_hits + 1;
+            if (dut.u_bp.diag_ras_miss)
+                ras_misses = ras_misses + 1;
+            if (dut.u_bp.diag_ras_wrong_target)
+                ras_wrong_targets = ras_wrong_targets + 1;
             if (dut.fetch_alt_restart_hit)
                 lookaside_restart_hits =
                     lookaside_restart_hits + 1;
@@ -571,6 +603,10 @@ module tb_core_3p_magic #(
             stashed_pair_halves_suppressed,
             fetch_requests, pair_fetch_requests, pair512_requests,
             pair1024_requests);
+        $display(
+            "PERF_MAGIC_BP_TARGET btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d",
+            btb_lookups, btb_hits, btb_misses, btb_wrong_targets,
+            ras_lookups, ras_hits, ras_misses, ras_wrong_targets);
         $display(
             "PERF_MAGIC_FETCH_EMPTY empty_cycles=%0d underflow_cycles=%0d refill_wait=%0d no_request=%0d",
             frontend_empty_cycles, frontend_underflow_cycles,

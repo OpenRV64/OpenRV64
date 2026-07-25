@@ -987,14 +987,16 @@ module tb_mem_channel;
         // DDR3-1600 x64, BL8: 64-byte native burst.  At a 1 ns controller
         // clock, a closed-row read is ceil((tRCD + tCL + BL/2) * 1.25 ns)
         // = 33 ns after dispatch; command acceptance adds one controller
-        // cycle, so observed response latencies are 34 ns, 20 ns, and 48 ns.
+        // cycle, and the DDR3 preset adds 10 ns frontend plus 10 ns backend
+        // controller/PHY latency.  Observed response latencies are therefore
+        // 54 ns, 40 ns, and 68 ns.
         // The third access selects another row in the same bank and pays tRP.
         issue_ddr3_request(32'h0000_1000, 8'd64, ddr3_miss_latency);
         issue_ddr3_request(32'h0000_1040, 8'd64, ddr3_hit_latency);
         issue_ddr3_request(32'h0001_1000, 8'd64, ddr3_conflict_latency);
-        if ((ddr3_miss_latency != 34) ||
-            (ddr3_hit_latency != 20) ||
-            (ddr3_conflict_latency != 48))
+        if ((ddr3_miss_latency != 54) ||
+            (ddr3_hit_latency != 40) ||
+            (ddr3_conflict_latency != 68))
             $fatal(1,
                 "DDR3 latency mismatch: miss=%0d hit=%0d conflict=%0d",
                 ddr3_miss_latency, ddr3_hit_latency,
@@ -1003,9 +1005,9 @@ module tb_mem_channel;
                            ddr3_two_burst_latency);
         // A 128-byte row hit consumes two BL8 transfers separated by the
         // shared-bus scheduler handoff; it cannot collapse to one delay.
-        if (ddr3_two_burst_latency != 26)
+        if (ddr3_two_burst_latency != 46)
             $fatal(1,
-                "DDR3 native-burst scheduling mismatch: got=%0d expected=26",
+                "DDR3 native-burst scheduling mismatch: got=%0d expected=46",
                 ddr3_two_burst_latency);
         issue_ddr3_coalesced_pair(ddr3_coalesced_pair_latency);
         issue_ddr3_ordering_barrier();

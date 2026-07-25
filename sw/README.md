@@ -181,6 +181,10 @@ The data-side workloads are:
 - `lz4/lz4.c`: a bounds-checked raw LZ4 decoder. Its fixed 1584-byte,
   64-sequence block expands to 64 KiB and exercises literal and dependent
   match-copy streams; it is not a one-token copy-loop surrogate.
+- `multichase/pointer_chase.S`: a deterministic, static adaptation of Google
+  Multi-Chase. Its default single dependent chain spans 16 MiB at a 256-byte
+  stride, producing a 4 MiB touched-line working set. It measures exposed load
+  latency, not memory-level parallelism.
 
 Run them with:
 
@@ -189,6 +193,8 @@ make bench-stream-suite
 make bench-stride-sweep
 make bench-stencil5
 make bench-lz4
+make bench-pointer-chase-ddr3
+make sim-pointer-chase-a53-gem5
 ```
 
 Select one STREAM case with, for example:

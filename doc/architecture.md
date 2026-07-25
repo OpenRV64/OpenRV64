@@ -215,12 +215,21 @@ conditional-branch resolution. The direction payload is 15,360 bits
 (1.875 KiB); resettable valid state adds 4,096 bits, for 2.375 KiB total
 direction state before checkpoint records, BTB, and RAS.
 
+Tournament confidence ignores the chooser when the global and local
+components agree. When they disagree, a prediction is strong only when both
+the selected component and the chooser are strong. This confidence affects
+alternate-path fetching only when the frontend confidence gate is enabled.
+
 The predictor data arrays are reset-free and guarded by resettable valid
 vectors, so synthesis retains the large tables as memories. This is not yet a
 physical timing result. Mode 8's local-history read, local-PHT read, and final
 chooser mux form a serial lookup path in the current combinational frontend.
 A macro implementation also needs an explicit solution for simultaneous
 lookup and training ports.
+
+The simulation harnesses count accepted BTB and RAS lookups, hits, misses, and
+wrong-target resolutions separately. These are simulation-visible events in
+the predictor wrapper, not architectural performance counters.
 
 In the normal strict 3P path, an aligned conditional branch issues as soon as
 its operands and EX1 are ready; it does not wait for retirement. It resolves in
@@ -454,8 +463,20 @@ CAM, complete PMA model, or cache-coherence protocol.
 The core bus owns instruction/data translation and the shared physical
 requester. Bare mode is identity translated. In the AXI configuration, S/U
 accesses under Sv39 consult separate 16-entry, fully associative instruction
-and data TLBs. The generic blocking requester instead uses one shared 16-entry
+and data L1 TLBs, then a shared 256-entry, four-way L2 TLB on an L1 miss. The
+generic blocking requester instead uses one shared 16-entry TLB and has no L2
 TLB. Entries retain ASID, global, page-size, permission, A, and D state.
+
+The shared L2 TLB has 64 indexed sets and four independently read payload
+banks. It caches 4 KiB translations only; 2 MiB and 1 GiB leaves remain in the
+fully associative L1 TLBs because indexing a superpage with 4 KiB VPN bits
+would be incorrect. The hierarchy is neither inclusive nor exclusive. A PTW
+response fills the requesting L1 and the L2, and an L2 hit fills the
+requesting L1, but replacement at either level does not invalidate or update
+the other. Demand LSU lookup has priority over demand fetch and speculative
+instruction prefetch. `L2_TLB_ENTRIES` and `L2_TLB_WAYS` parameterize the
+structure; the entry count, way count, and resulting set count must be
+powers of two.
 
 One blocking three-level page-table walker handles 4 KiB, 2 MiB, and 1 GiB
 leaves. It checks canonical addresses, invalid/reserved PTE encodings,
@@ -465,8 +486,9 @@ atomic PTE update mechanism. `SFENCE.VMA` and a successful writable `satp` CSR
 access currently perform the same conservative global translation barrier:
 older memory completes first, all local TLB/PTW and frontend context is
 invalidated, a CCX `ACQ_REL` PTE fence completes, and only then may fetch or
-LSU traffic restart. Address- and ASID-selective invalidation are not
-implemented.
+LSU traffic restart. The initiating pulse clears both L1 TLBs and the shared
+L2 TLB and suppresses any same-cycle PTW or L2-to-L1 fill. Address- and
+ASID-selective invalidation are not implemented.
 
 PMP is checked after translation at the physical requester boundary. Page
 faults and physical access faults remain distinct through completion and
@@ -635,8 +657,8 @@ ordered WAW relaxation:
 | `ENABLE_POSTED_STORES` | 1 | Compatibility parameter; 3P completion still waits for L1D admission |
 | `ENABLE_EQ_BRANCH_PAIRING` | 1 | Proved-correct BEQ/BNE may retain younger predicted-path issue |
 | `FREE_BRANCHES` | 0 | Diagnostic branch completion at dispatch disabled |
-| `BP_TYPE` | 0 | No-speculation stall policy |
-| `BP_RAS_ENABLE` | 1 | RAS hardware elaborated; stall policy still suppresses speculation |
+| `BP_TYPE` | 8 | Tournament direction predictor, tagged indirect BTB, and RAS |
+| `BP_RAS_ENABLE` | 1 | RAS hardware elaborated |
 | `BP_RAS_DEPTH` | 8 | Return stack entries |
 | `BP_BIMODAL_ENTRIES` | 32 | Bimodal direction entries when selected |
 | `BP_BIMODAL_COUNTER_BITS` | 3 | Saturating counter width |
@@ -648,8 +670,8 @@ ordered WAW relaxation:
 | `BP_INFLIGHT_DEPTH` | 16 | Ordered prediction/checkpoint records |
 | `ENABLE_PREDECODE_TARGETS` | 1 | Direct PC-relative target sidecar enabled |
 
-Performance experiments commonly select BTFNT, bimodal, or gshare/BTB
-prediction, live or full forwarding, and aggressive hazards. Those are valid RTL configurations,
+Performance experiments commonly select alternate predictor modes, live or
+full forwarding, and aggressive hazards. Those are valid RTL configurations,
 but results from them must name the parameters rather than being presented as
 the default core.
 

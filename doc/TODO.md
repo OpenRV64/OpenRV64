@@ -4,6 +4,11 @@
 - [ ] Cache
 - [ ] Multi-hart
 - [ ] Linux
+- [ ] Relax translation invalidation for Linux address-space switches: stop
+      treating every retiring `satp` write as a global shootdown, preserve
+      ASID-tagged L1/L2 TLB entries across `mm` switches, and implement the
+      required ASID-reuse/rollover invalidation plus `SFENCE.VMA` address/ASID
+      selection. Until then, retain the conservative global barrier.
 - [ ] Replace the temporary L1D atomic admission hammer, which drains the
       entire posted-store queue before a locked read, with targeted ordering
       against the older stores required by the AMO ordering mode.

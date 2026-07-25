@@ -56,6 +56,8 @@ module openrv64_rv64_top_3p #(
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer L2_TLB_ENTRIES = 256,
+    parameter integer L2_TLB_WAYS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
@@ -68,7 +70,7 @@ module openrv64_rv64_top_3p #(
     // alternate path; set this to one to restrict stashing to weak BP output.
     parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
-    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_STALL,
+    parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,
     parameter integer BP_BIMODAL_ENTRIES = 32,
@@ -1084,6 +1086,8 @@ module openrv64_rv64_top_3p #(
         .L1D_PREFETCH_DEMAND_RESERVE(
             L1D_PREFETCH_DEMAND_RESERVE),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+        .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
+        .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
         .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID)
