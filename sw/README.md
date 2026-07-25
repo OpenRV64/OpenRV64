@@ -208,6 +208,15 @@ make bench-stream-magic STREAM_KERNEL=triad STREAM_BYTES=65536
 make sim-stream-magic STREAM_KERNEL=triad STREAM_BYTES=65536
 ```
 
+The Sv39 variants run the same kernel through a non-identity 256 KiB
+supervisor mapping and require translated instruction fetches, data accesses,
+PTW traffic, and fast-hit translated loads and stores:
+
+```sh
+make bench-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
+make sim-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
+```
+
 The DDR3 targets route private L1 traffic through the one-hart CCX complex,
 shared L2, 512-to-256-bit AXI adapter, multi-outstanding memory channel, and
 banked DDR3 scheduler. Their default core configuration is BP6, fetch

@@ -164,14 +164,17 @@ module openrv64_ccx_l2_native #(
     reg [63:0] cmd_addr_q [0:COMMAND_ENTRIES-1];
     reg [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
         cmd_burst_len_q [0:COMMAND_ENTRIES-1];
+    reg cmd_entry_valid_q [0:COMMAND_ENTRIES-1];
     reg [COMMAND_INDEX_WIDTH-1:0] cmd_head_q;
     reg [COMMAND_INDEX_WIDTH-1:0] cmd_tail_q;
     reg [COMMAND_COUNT_WIDTH-1:0] cmd_count_q;
     reg [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] cmd_beat_q;
-    reg cmd_wdata_valid_q;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] cmd_wdata_q;
-    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] cmd_wstrb_q;
-    reg cmd_wdata_error_q;
+    reg cmd_wdata_valid_q [0:COMMAND_ENTRIES-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        cmd_wdata_q [0:COMMAND_ENTRIES-1];
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        cmd_wstrb_q [0:COMMAND_ENTRIES-1];
+    reg cmd_wdata_error_q [0:COMMAND_ENTRIES-1];
 
     reg lookup_valid_q;
     reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] lookup_hart_id_q;
@@ -281,6 +284,7 @@ module openrv64_ccx_l2_native #(
     reg [63:0] lock_line_addr_q;
 
     integer reset_index;
+    integer command_reset_index;
     integer set_reset_index;
     integer active_scan;
     integer lookup_way_scan;
@@ -294,6 +298,7 @@ module openrv64_ccx_l2_native #(
     integer replay_write_byte;
     integer bus_waiter_index;
     integer replay_waiter_index;
+    integer wdata_scan;
 
     reg lookup_hit_r;
     reg [WAY_INDEX_WIDTH-1:0] lookup_hit_way_r;
@@ -317,6 +322,9 @@ module openrv64_ccx_l2_native #(
     reg [MSHR_INDEX_WIDTH-1:0] replay_candidate_mshr_r;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] lookup_write_data_r;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] replay_write_data_r;
+    reg wdata_match_found_r;
+    reg wdata_match_multiple_r;
+    reg [COMMAND_INDEX_WIDTH-1:0] wdata_match_index_r;
 
     wire command_queue_full =
         (cmd_count_q == COMMAND_COUNT_WIDTH'(COMMAND_ENTRIES));
@@ -350,13 +358,37 @@ module openrv64_ccx_l2_native #(
         (!cmd_head_line && (cmd_size_q[cmd_head_q] > 3'd3)) ||
         (cmd_lock_q[cmd_head_q] &&
          (cmd_head_line || (cmd_burst_len_q[cmd_head_q] != 0)));
-    wire wdata_identity_match =
-        (wdata_hart_id_i == cmd_hart_id_q[cmd_head_q]) &&
-        (wdata_txn_id_i == cmd_txn_id_q[cmd_head_q]) &&
-        (wdata_source_id_i == cmd_source_id_q[cmd_head_q]) &&
-        (wdata_beat_index_i == cmd_beat_q);
-    assign wdata_ready_o = (cmd_count_q != 0) && cmd_head_write &&
-                           !cmd_wdata_valid_q && wdata_identity_match;
+    // Write data is independently backpressured and tagged.  Buffer one
+    // pending beat with every queued command so a stalled head does not block
+    // data belonging to a later command.  Only the head can have advanced
+    // beyond beat zero.
+    always @* begin
+        wdata_match_found_r = 1'b0;
+        wdata_match_multiple_r = 1'b0;
+        wdata_match_index_r = 0;
+        for (wdata_scan = 0; wdata_scan < COMMAND_ENTRIES;
+             wdata_scan = wdata_scan + 1) begin
+            if (cmd_entry_valid_q[wdata_scan] &&
+                (cmd_op_q[wdata_scan] == `OPENRV64_CCX_OP_WRITE) &&
+                !cmd_wdata_valid_q[wdata_scan] &&
+                (wdata_hart_id_i == cmd_hart_id_q[wdata_scan]) &&
+                (wdata_txn_id_i == cmd_txn_id_q[wdata_scan]) &&
+                (wdata_source_id_i == cmd_source_id_q[wdata_scan]) &&
+                (wdata_beat_index_i ==
+                    ((COMMAND_INDEX_WIDTH'(wdata_scan) == cmd_head_q) ?
+                        cmd_beat_q :
+                        `OPENRV64_CCX_BEAT_INDEX_WIDTH'(0)))) begin
+                if (wdata_match_found_r)
+                    wdata_match_multiple_r = 1'b1;
+                else
+                    wdata_match_index_r =
+                        COMMAND_INDEX_WIDTH'(wdata_scan);
+                wdata_match_found_r = 1'b1;
+            end
+        end
+    end
+    assign wdata_ready_o =
+        wdata_match_found_r && !wdata_match_multiple_r;
     wire wdata_fire = wdata_valid_i && wdata_ready_o;
 
     wire response_dequeue = resp_valid_o && resp_ready_i;
@@ -592,7 +624,8 @@ module openrv64_ccx_l2_native #(
     wire [31:0] lookup_alloc_waiter_index =
         32'(mshr_free_index_r) * WAITERS_PER_MSHR;
     wire command_source_valid =
-        (cmd_count_q != 0) && (!cmd_head_write || cmd_wdata_valid_q);
+        (cmd_count_q != 0) &&
+        (!cmd_head_write || cmd_wdata_valid_q[cmd_head_q]);
     wire lookup_capture = command_source_valid && lookup_stage_ready;
     wire command_pop = lookup_capture && cmd_head_last;
     wire command_advance = lookup_capture && !cmd_head_last;
@@ -892,10 +925,6 @@ module openrv64_ccx_l2_native #(
             cmd_tail_q <= 0;
             cmd_count_q <= 0;
             cmd_beat_q <= 0;
-            cmd_wdata_valid_q <= 1'b0;
-            cmd_wdata_q <= 0;
-            cmd_wstrb_q <= 0;
-            cmd_wdata_error_q <= 1'b0;
             lookup_valid_q <= 1'b0;
             hit_valid_q <= 1'b0;
             response_head_q <= 0;
@@ -910,6 +939,13 @@ module openrv64_ccx_l2_native #(
             lock_active_q <= 1'b0;
             lock_hart_id_q <= 0;
             lock_line_addr_q <= 0;
+            for (command_reset_index = 0;
+                 command_reset_index < COMMAND_ENTRIES;
+                 command_reset_index = command_reset_index + 1) begin
+                cmd_entry_valid_q[command_reset_index] <= 1'b0;
+                cmd_wdata_valid_q[command_reset_index] <= 1'b0;
+                cmd_wdata_error_q[command_reset_index] <= 1'b0;
+            end
             for (set_reset_index = 0; set_reset_index < SETS;
                  set_reset_index = set_reset_index + 1) begin
                 valid_q[set_reset_index] <= 0;
@@ -946,6 +982,9 @@ module openrv64_ccx_l2_native #(
                 cmd_size_q[cmd_tail_q] <= req_size_i;
                 cmd_addr_q[cmd_tail_q] <= req_addr_i;
                 cmd_burst_len_q[cmd_tail_q] <= req_burst_len_i;
+                cmd_entry_valid_q[cmd_tail_q] <= 1'b1;
+                cmd_wdata_valid_q[cmd_tail_q] <= 1'b0;
+                cmd_wdata_error_q[cmd_tail_q] <= 1'b0;
                 if (cmd_tail_q ==
                     COMMAND_INDEX_WIDTH'(COMMAND_ENTRIES - 1))
                     cmd_tail_q <= 0;
@@ -960,17 +999,24 @@ module openrv64_ccx_l2_native #(
             end
 
             if (wdata_fire) begin
-                cmd_wdata_valid_q <= 1'b1;
-                cmd_wdata_q <= wdata_i;
-                cmd_wstrb_q <= wstrb_i;
-                cmd_wdata_error_q <=
-                    (wdata_last_i != cmd_head_last);
+                cmd_wdata_valid_q[wdata_match_index_r] <= 1'b1;
+                cmd_wdata_q[wdata_match_index_r] <= wdata_i;
+                cmd_wstrb_q[wdata_match_index_r] <= wstrb_i;
+                cmd_wdata_error_q[wdata_match_index_r] <=
+                    (wdata_last_i !=
+                     (wdata_beat_index_i ==
+                      cmd_burst_len_q[wdata_match_index_r]));
             end
 
             if (command_advance)
                 cmd_beat_q <= cmd_beat_q + 1'b1;
             if (command_pop) begin
                 cmd_beat_q <= 0;
+                if (!(command_push && (cmd_tail_q == cmd_head_q))) begin
+                    cmd_entry_valid_q[cmd_head_q] <= 1'b0;
+                    cmd_wdata_valid_q[cmd_head_q] <= 1'b0;
+                    cmd_wdata_error_q[cmd_head_q] <= 1'b0;
+                end
                 if (cmd_head_q ==
                     COMMAND_INDEX_WIDTH'(COMMAND_ENTRIES - 1))
                     cmd_head_q <= 0;
@@ -978,8 +1024,8 @@ module openrv64_ccx_l2_native #(
                     cmd_head_q <= cmd_head_q + 1'b1;
             end
             if (lookup_capture && cmd_head_write) begin
-                cmd_wdata_valid_q <= 1'b0;
-                cmd_wdata_error_q <= 1'b0;
+                cmd_wdata_valid_q[cmd_head_q] <= 1'b0;
+                cmd_wdata_error_q[cmd_head_q] <= 1'b0;
             end
 
             case ({command_push, command_pop})
@@ -1002,10 +1048,10 @@ module openrv64_ccx_l2_native #(
                 lookup_addr_q <= cmd_head_effective_addr;
                 lookup_beat_q <= cmd_beat_q;
                 lookup_last_q <= cmd_head_last;
-                lookup_wdata_q <= cmd_wdata_q;
-                lookup_wstrb_q <= cmd_wstrb_q;
+                lookup_wdata_q <= cmd_wdata_q[cmd_head_q];
+                lookup_wstrb_q <= cmd_wstrb_q[cmd_head_q];
                 lookup_protocol_error_q <= cmd_head_protocol_error |
-                                           cmd_wdata_error_q;
+                                           cmd_wdata_error_q[cmd_head_q];
             end else if (lookup_dispatch_r) begin
                 lookup_valid_q <= 1'b0;
             end
@@ -1303,9 +1349,8 @@ module openrv64_ccx_l2_native #(
         if (rst_ni && command_push && req_lock_i &&
             ((req_size_i == 3'd6) || (req_burst_len_i != 0)))
             $fatal(1, "native L2 lock is valid only for scalar operations");
-        if (rst_ni && (cmd_count_q != 0) && cmd_head_write &&
-            wdata_valid_i && !wdata_identity_match)
-            $fatal(1, "native L2 write-data identity mismatch");
+        if (rst_ni && wdata_valid_i && wdata_match_multiple_r)
+            $fatal(1, "native L2 has duplicate write-data identities");
         if (rst_ni && bus_request_fire &&
             (bus_candidate_action_r != BUS_ACTION_BYPASS) &&
             ((bus_req_size_o != 3'd6) ||

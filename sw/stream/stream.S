@@ -47,7 +47,11 @@ _start:
 .endif
 
     fence   rw, rw
+.ifdef STREAM_VM
+    csrr    s4, cycle
+.else
     csrr    s4, mcycle
+.endif
 
 .globl stream_measure_begin
 stream_measure_begin:
@@ -147,7 +151,11 @@ stream_measure_begin:
     bnez    s2, stream_measure_begin
 
     fence   rw, rw
+.ifdef STREAM_VM
+    csrr    t0, cycle
+.else
     csrr    t0, mcycle
+.endif
     sub     a0, t0, s4
     la      t1, stream_cycles
     sd      a0, 0(t1)

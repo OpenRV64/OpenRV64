@@ -9,6 +9,8 @@ module openrv64_l1d #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
     parameter integer REFILL_DATA_WIDTH = DATA_WIDTH,
+    parameter integer REQ_TAG_WIDTH = 1,
+    parameter integer DETACH_READ_MISSES = 0,
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
@@ -21,6 +23,7 @@ module openrv64_l1d #(
     input  wire                      rst_ni,
     input  wire                      req_valid_i,
     output wire                      req_ready_o,
+    input  wire [REQ_TAG_WIDTH-1:0]  req_tag_i,
     input  wire                      req_write_i,
     input  wire                      req_cacheable_i,
     input  wire [ADDR_WIDTH-1:0]     req_addr_i,
@@ -28,8 +31,19 @@ module openrv64_l1d #(
     input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
     output wire                      resp_valid_o,
     input  wire                      resp_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  resp_tag_o,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
     output wire                      req_error_o,
+    output wire                      miss_valid_o,
+    input  wire                      miss_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  miss_tag_o,
+    output wire [ADDR_WIDTH-1:0]     miss_addr_o,
+    output wire                      miss_aged_o,
+    input  wire                      fill_valid_i,
+    output wire                      fill_ready_o,
+    input  wire [ADDR_WIDTH-1:0]     fill_addr_i,
+    input  wire [REFILL_DATA_WIDTH-1:0] fill_data_i,
+    input  wire                      fill_aged_i,
     input  wire                      invalidate_valid_i,
     output wire                      invalidate_ready_o,
     input  wire                      invalidate_all_i,
@@ -51,6 +65,8 @@ module openrv64_l1d #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
         .REFILL_DATA_WIDTH(REFILL_DATA_WIDTH),
+        .REQ_TAG_WIDTH(REQ_TAG_WIDTH),
+        .DETACH_READ_MISSES(DETACH_READ_MISSES),
         .CACHE_BYTES(CACHE_BYTES),
         .LINE_BYTES(LINE_BYTES),
         .WAYS(WAYS),
@@ -61,6 +77,7 @@ module openrv64_l1d #(
         .rst_ni(rst_ni),
         .req_valid_i(req_valid_i),
         .req_ready_o(req_ready_o),
+        .req_tag_i(req_tag_i),
         .req_write_i(req_write_i),
         .req_cacheable_i(req_cacheable_i),
         .req_addr_i(req_addr_i),
@@ -71,8 +88,19 @@ module openrv64_l1d #(
         .req_wstrb_i(req_wstrb_i),
         .resp_valid_o(resp_valid_o),
         .resp_ready_i(resp_ready_i),
+        .resp_tag_o(resp_tag_o),
         .req_rdata_o(req_rdata_o),
         .req_error_o(req_error_o),
+        .miss_valid_o(miss_valid_o),
+        .miss_ready_i(miss_ready_i),
+        .miss_tag_o(miss_tag_o),
+        .miss_addr_o(miss_addr_o),
+        .miss_aged_o(miss_aged_o),
+        .fill_valid_i(fill_valid_i),
+        .fill_ready_o(fill_ready_o),
+        .fill_addr_i(fill_addr_i),
+        .fill_data_i(fill_data_i),
+        .fill_aged_i(fill_aged_i),
         .invalidate_valid_i(invalidate_valid_i),
         .invalidate_ready_o(invalidate_ready_o),
         .invalidate_all_i(invalidate_all_i),
@@ -105,6 +133,7 @@ module openrv64_l1d_ccx #(
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
     parameter integer FILL_BUFFER_LINES = 8,
+    parameter integer DEMAND_MSHRS = 3,
     parameter integer STORE_BUFFER_LINES = 8,
     parameter integer STORE_BUFFER_DRAIN_WATERMARK =
         (STORE_BUFFER_LINES < 4) ? STORE_BUFFER_LINES : 4,
@@ -259,6 +288,9 @@ module openrv64_l1d_ccx #(
         (PREFETCH_STREAMS > 1) ? $clog2(PREFETCH_STREAMS) : 1;
     localparam integer PREFETCH_MSHR_INDEX_WIDTH =
         (PREFETCH_OUTSTANDING > 1) ? $clog2(PREFETCH_OUTSTANDING) : 1;
+    localparam integer DEMAND_MSHR_INDEX_WIDTH =
+        (DEMAND_MSHRS > 1) ? $clog2(DEMAND_MSHRS) : 1;
+    localparam integer DEMAND_WAITER_COUNT = 1 << REQ_TAG_WIDTH;
     localparam integer PREFETCH_WINDOW_INDEX_WIDTH =
         (PREFETCH_MAX_DISTANCE > 1) ?
         $clog2(PREFETCH_MAX_DISTANCE) : 1;
@@ -287,6 +319,17 @@ module openrv64_l1d_ccx #(
     wire [7:0] l1_mem_wstrb;
     wire [511:0] l1_mem_rdata;
     wire l1_mem_error;
+    wire l1_miss_valid;
+    wire l1_miss_ready;
+    wire [REQ_TAG_WIDTH-1:0] l1_miss_tag;
+    wire [ADDR_WIDTH-1:0] l1_miss_addr;
+    wire l1_miss_aged;
+    wire l1_fill_valid;
+    wire l1_fill_ready;
+    wire [ADDR_WIDTH-1:0] l1_fill_addr;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l1_fill_data;
+    wire l1_fill_aged;
+    wire [REQ_TAG_WIDTH-1:0] l1_resp_tag;
 
     reg [1:0] backend_state_q;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] request_txn_id_q;
@@ -299,11 +342,78 @@ module openrv64_l1d_ccx #(
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] request_wdata_q;
     reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] request_wstrb_q;
     reg request_buffered_store_q;
+    reg request_demand_q;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] request_demand_mshr_q;
     reg request_reissue_q;
     reg [SPECULATION_EPOCH_WIDTH-1:0] request_epoch_q;
     reg command_sent_q;
     reg wdata_sent_q;
     reg [SPECULATION_EPOCH_WIDTH-1:0] speculation_epoch_q;
+
+    // Demand MSHRs own detached cacheable read misses.  Each unique line gets
+    // one CCX transaction and any same-line loads become tagged waiters.  The
+    // aggregate overlay is used only for line installation; every waiter also
+    // retains its own older-store snapshot for architecturally correct data.
+    reg demand_mshr_valid_q [0:DEMAND_MSHRS-1];
+    reg demand_mshr_issued_q [0:DEMAND_MSHRS-1];
+    reg demand_mshr_complete_q [0:DEMAND_MSHRS-1];
+    reg demand_mshr_fill_done_q [0:DEMAND_MSHRS-1];
+    reg demand_mshr_reissue_q [0:DEMAND_MSHRS-1];
+    reg [63:0] demand_mshr_addr_q [0:DEMAND_MSHRS-1];
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        demand_mshr_txn_id_q [0:DEMAND_MSHRS-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        demand_mshr_data_q [0:DEMAND_MSHRS-1];
+    reg demand_mshr_error_q [0:DEMAND_MSHRS-1];
+    reg [SPECULATION_EPOCH_WIDTH-1:0]
+        demand_mshr_epoch_q [0:DEMAND_MSHRS-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        demand_mshr_store_data_q [0:DEMAND_MSHRS-1];
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        demand_mshr_store_strb_q [0:DEMAND_MSHRS-1];
+
+    reg demand_waiter_valid_q [0:DEMAND_WAITER_COUNT-1];
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
+        demand_waiter_mshr_q [0:DEMAND_WAITER_COUNT-1];
+    reg [2:0] demand_waiter_word_q [0:DEMAND_WAITER_COUNT-1];
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        demand_waiter_store_data_q [0:DEMAND_WAITER_COUNT-1];
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        demand_waiter_store_strb_q [0:DEMAND_WAITER_COUNT-1];
+
+    reg demand_mshr_match_found_r;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_match_index_r;
+    reg demand_mshr_free_found_r;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_free_index_r;
+    reg demand_mshr_issue_found_r;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_issue_index_r;
+    reg demand_mshr_response_match_r;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_response_index_r;
+    reg demand_mshr_fill_found_r;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_fill_index_r;
+    reg demand_waiter_response_found_r;
+    reg [REQ_TAG_WIDTH-1:0] demand_waiter_response_tag_r;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
+        demand_waiter_response_mshr_r;
+    reg demand_waiter_other_found_r;
+    reg demand_mshr_any_valid_r;
+    reg demand_prefetch_fill_hit_r;
+    reg [FILL_BUFFER_INDEX_WIDTH-1:0]
+        demand_prefetch_fill_index_r;
+    reg prefetch_inflight_demand_match_r;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        demand_response_data_r;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        demand_fill_data_r;
+    integer demand_mshr_scan;
+    integer demand_waiter_scan;
+    integer demand_waiter_other_scan;
+    integer demand_prefetch_fill_scan;
+    integer demand_prefetch_inflight_scan;
+    integer demand_merge_byte;
+    integer demand_fill_merge_byte;
+    integer demand_reset_index;
+    integer demand_waiter_reset_index;
 
     // Native line buffers retain complete speculative CCX responses until
     // the banked SRAM can install the full line in one cycle.
@@ -560,13 +670,15 @@ module openrv64_l1d_ccx #(
     wire lock_invalidate_request = req_valid_i && req_lock_i &&
         !locked_line_invalidated_q;
     wire lock_invalidate_fire = lock_invalidate_request &&
-        !invalidate_valid_i && l1_invalidate_ready;
+        !invalidate_valid_i && !demand_mshr_any_valid_r &&
+        l1_invalidate_ready;
     wire lock_barrier_request = req_valid_i && req_lock_i &&
                                 !lock_barrier_seen_q;
     wire speculation_barrier_event =
         speculation_barrier_i || lock_barrier_request;
-    wire l1_invalidate_valid = invalidate_valid_i ||
-        lock_invalidate_request;
+    wire l1_invalidate_valid =
+        (invalidate_valid_i || lock_invalidate_request) &&
+        !demand_mshr_any_valid_r;
     wire l1_invalidate_all = invalidate_valid_i && invalidate_all_i;
     wire [ADDR_WIDTH-1:0] l1_invalidate_addr = invalidate_valid_i ?
         invalidate_addr_i : req_addr_i;
@@ -579,6 +691,7 @@ module openrv64_l1d_ccx #(
     wire lock_backend_quiescent =
         (store_buffer_count_q == 0) &&
         !store_completion_valid_q &&
+        !demand_mshr_any_valid_r &&
         (backend_state_q == BACKEND_IDLE);
     wire lock_request_ready = !req_lock_i ||
         (locked_line_invalidated_q && lock_backend_quiescent);
@@ -587,7 +700,8 @@ module openrv64_l1d_ccx #(
     wire normal_response_valid = l1_resp_valid &&
         (response_tag_count_q != 0);
     wire freeloader_response_ready =
-        resp_ready_i && !normal_response_valid;
+        resp_ready_i && !demand_response_valid &&
+        !normal_response_valid;
     wire freeloader_pipe_advance =
         !freeloader_response_valid || freeloader_response_ready;
     wire freeloader_order_safe =
@@ -611,7 +725,8 @@ module openrv64_l1d_ccx #(
         !demand_load_store_block;
     wire l1_req_cacheable = req_cacheable_i && !req_lock_i;
     wire l1_request_fire = l1_req_valid && l1_req_ready;
-    wire l1_resp_ready = resp_ready_i && (response_tag_count_q != 0);
+    wire l1_resp_ready = resp_ready_i && !demand_response_valid &&
+        (response_tag_count_q != 0);
     wire l1_response_fire = l1_resp_valid && l1_resp_ready;
     wire demand_request_fire =
         l1_request_fire || freeloader_request_fire;
@@ -807,25 +922,33 @@ module openrv64_l1d_ccx #(
         end
     end
 
-    // The normal L1 and the simulation-only load pipeline share one tagged
-    // response port. Normal responses win arbitration so a continuous ideal
-    // load stream cannot prevent posted-store tags from being released.
+    // Completed demand misses win one response cycle.  A held resident-hit
+    // response then blocks new L1 lookups, so neither side can starve the
+    // other.  The simulation-only freeloader remains last priority.
     assign req_ready_o = freeloader_request ?
                          freeloader_request_ready :
                          (l1_req_ready && !response_tag_full &&
                           lock_request_ready &&
                           !demand_load_store_block);
-    assign resp_valid_o = normal_response_valid ||
+    assign resp_valid_o = demand_response_valid ||
+                          normal_response_valid ||
                           freeloader_response_valid;
-    assign resp_tag_o = normal_response_valid ?
+    assign resp_tag_o = demand_response_valid ?
+        demand_waiter_response_tag_r : normal_response_valid ?
         response_tag_q[response_tag_head_q] :
         freeloader_tag_q[FREELOADER_STAGES-1];
-    assign req_rdata_o = normal_response_valid ?
+    assign req_rdata_o = demand_response_valid ?
+        demand_response_data_r[
+            demand_waiter_word_q[demand_waiter_response_tag_r]*64 +: 64] :
+        normal_response_valid ?
         normal_response_merged_data_r :
         freeloader_data_q[FREELOADER_STAGES-1];
-    assign req_error_o = normal_response_valid ? l1_req_error : 1'b0;
+    assign req_error_o = demand_response_valid ?
+        demand_mshr_error_q[demand_waiter_response_mshr_r] :
+        normal_response_valid ? l1_req_error : 1'b0;
     assign invalidate_ready_o = l1_invalidate_ready &&
-        !lock_invalidate_request && (store_buffer_count_q == 0);
+        !lock_invalidate_request && (store_buffer_count_q == 0) &&
+        !demand_mshr_any_valid_r;
 
     // Apply the request's snapshotted dirty bytes to a resident-hit response.
     // The same overlay is applied to refill data below, so subsequent hits
@@ -1010,6 +1133,192 @@ module openrv64_l1d_ccx #(
             end
         end
     end
+
+    always @* begin
+        demand_mshr_match_found_r = 1'b0;
+        demand_mshr_match_index_r =
+            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+        demand_mshr_free_found_r = 1'b0;
+        demand_mshr_free_index_r =
+            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+        demand_mshr_issue_found_r = 1'b0;
+        demand_mshr_issue_index_r =
+            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+        demand_mshr_response_match_r = 1'b0;
+        demand_mshr_response_index_r =
+            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+        demand_mshr_fill_found_r = 1'b0;
+        demand_mshr_fill_index_r =
+            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+        demand_mshr_any_valid_r = 1'b0;
+        for (demand_mshr_scan = 0;
+             demand_mshr_scan < DEMAND_MSHRS;
+             demand_mshr_scan = demand_mshr_scan + 1) begin
+            if (demand_mshr_valid_q[demand_mshr_scan])
+                demand_mshr_any_valid_r = 1'b1;
+            if (!demand_mshr_match_found_r &&
+                demand_mshr_valid_q[demand_mshr_scan] &&
+                (demand_mshr_addr_q[demand_mshr_scan] ==
+                 l1_miss_addr)) begin
+                demand_mshr_match_found_r = 1'b1;
+                demand_mshr_match_index_r =
+                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
+            end
+            if (!demand_mshr_free_found_r &&
+                !demand_mshr_valid_q[demand_mshr_scan]) begin
+                demand_mshr_free_found_r = 1'b1;
+                demand_mshr_free_index_r =
+                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
+            end
+            if (!demand_mshr_issue_found_r &&
+                demand_mshr_valid_q[demand_mshr_scan] &&
+                !demand_mshr_issued_q[demand_mshr_scan] &&
+                !demand_mshr_complete_q[demand_mshr_scan]) begin
+                demand_mshr_issue_found_r = 1'b1;
+                demand_mshr_issue_index_r =
+                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
+            end
+            if (!demand_mshr_response_match_r &&
+                demand_mshr_valid_q[demand_mshr_scan] &&
+                demand_mshr_issued_q[demand_mshr_scan] &&
+                !demand_mshr_complete_q[demand_mshr_scan] &&
+                (ccx_resp_hart_id_i == HART_ID) &&
+                (ccx_resp_source_id_i ==
+                 `OPENRV64_CCX_SOURCE_DCACHE) &&
+                (ccx_resp_txn_id_i ==
+                 demand_mshr_txn_id_q[demand_mshr_scan])) begin
+                demand_mshr_response_match_r = 1'b1;
+                demand_mshr_response_index_r =
+                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
+            end
+            if (!demand_mshr_fill_found_r &&
+                demand_mshr_valid_q[demand_mshr_scan] &&
+                demand_mshr_complete_q[demand_mshr_scan] &&
+                !demand_mshr_fill_done_q[demand_mshr_scan] &&
+                !demand_mshr_error_q[demand_mshr_scan] &&
+                (demand_mshr_epoch_q[demand_mshr_scan] ==
+                 speculation_epoch_q)) begin
+                demand_mshr_fill_found_r = 1'b1;
+                demand_mshr_fill_index_r =
+                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
+            end
+        end
+    end
+
+    always @* begin
+        demand_prefetch_fill_hit_r = 1'b0;
+        demand_prefetch_fill_index_r =
+            {FILL_BUFFER_INDEX_WIDTH{1'b0}};
+        for (demand_prefetch_fill_scan = 0;
+             demand_prefetch_fill_scan < FILL_BUFFER_LINES;
+             demand_prefetch_fill_scan =
+                 demand_prefetch_fill_scan + 1) begin
+            if (!demand_prefetch_fill_hit_r &&
+                fill_buffer_valid_q[demand_prefetch_fill_scan] &&
+                (fill_buffer_addr_q[demand_prefetch_fill_scan] ==
+                 l1_miss_addr)) begin
+                demand_prefetch_fill_hit_r = 1'b1;
+                demand_prefetch_fill_index_r =
+                    FILL_BUFFER_INDEX_WIDTH'(
+                        demand_prefetch_fill_scan);
+            end
+        end
+    end
+
+    always @* begin
+        prefetch_inflight_demand_match_r =
+            prefetch_command_inflight &&
+            (request_addr_q == l1_miss_addr);
+        for (demand_prefetch_inflight_scan = 0;
+             demand_prefetch_inflight_scan < PREFETCH_OUTSTANDING;
+             demand_prefetch_inflight_scan =
+                 demand_prefetch_inflight_scan + 1) begin
+            if (prefetch_mshr_valid_q[demand_prefetch_inflight_scan] &&
+                (prefetch_mshr_addr_q[demand_prefetch_inflight_scan] ==
+                 l1_miss_addr))
+                prefetch_inflight_demand_match_r = 1'b1;
+        end
+    end
+
+    always @* begin
+        demand_waiter_response_found_r = 1'b0;
+        demand_waiter_response_tag_r = {REQ_TAG_WIDTH{1'b0}};
+        demand_waiter_response_mshr_r =
+            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+        for (demand_waiter_scan = 0;
+             demand_waiter_scan < DEMAND_WAITER_COUNT;
+             demand_waiter_scan = demand_waiter_scan + 1) begin
+            if (!demand_waiter_response_found_r &&
+                demand_waiter_valid_q[demand_waiter_scan] &&
+                demand_mshr_complete_q[
+                    demand_waiter_mshr_q[demand_waiter_scan]]) begin
+                demand_waiter_response_found_r = 1'b1;
+                demand_waiter_response_tag_r =
+                    REQ_TAG_WIDTH'(demand_waiter_scan);
+                demand_waiter_response_mshr_r =
+                    demand_waiter_mshr_q[demand_waiter_scan];
+            end
+        end
+    end
+
+    always @* begin
+        demand_waiter_other_found_r = 1'b0;
+        for (demand_waiter_other_scan = 0;
+             demand_waiter_other_scan < DEMAND_WAITER_COUNT;
+             demand_waiter_other_scan =
+                 demand_waiter_other_scan + 1) begin
+            if (demand_waiter_valid_q[demand_waiter_other_scan] &&
+                (REQ_TAG_WIDTH'(demand_waiter_other_scan) !=
+                 demand_waiter_response_tag_r) &&
+                (demand_waiter_mshr_q[demand_waiter_other_scan] ==
+                 demand_waiter_response_mshr_r))
+                demand_waiter_other_found_r = 1'b1;
+        end
+    end
+
+    always @* begin
+        demand_response_data_r =
+            demand_mshr_data_q[demand_waiter_response_mshr_r];
+        for (demand_merge_byte = 0;
+             demand_merge_byte < `OPENRV64_CCX_LINE_STRB_WIDTH;
+             demand_merge_byte = demand_merge_byte + 1) begin
+            if (demand_waiter_store_strb_q[
+                    demand_waiter_response_tag_r][demand_merge_byte])
+                demand_response_data_r[demand_merge_byte*8 +: 8] =
+                    demand_waiter_store_data_q[
+                        demand_waiter_response_tag_r][
+                        demand_merge_byte*8 +: 8];
+        end
+    end
+
+    always @* begin
+        demand_fill_data_r =
+            demand_mshr_data_q[demand_mshr_fill_index_r];
+        for (demand_fill_merge_byte = 0;
+             demand_fill_merge_byte < `OPENRV64_CCX_LINE_STRB_WIDTH;
+             demand_fill_merge_byte = demand_fill_merge_byte + 1) begin
+            if (demand_mshr_store_strb_q[
+                    demand_mshr_fill_index_r][demand_fill_merge_byte])
+                demand_fill_data_r[demand_fill_merge_byte*8 +: 8] =
+                    demand_mshr_store_data_q[
+                        demand_mshr_fill_index_r][
+                        demand_fill_merge_byte*8 +: 8];
+        end
+    end
+
+    wire l1_miss_fire = l1_miss_valid && l1_miss_ready;
+    assign l1_miss_ready =
+        !demand_waiter_valid_q[l1_miss_tag] &&
+        !prefetch_inflight_demand_match_r &&
+        (demand_mshr_match_found_r || demand_mshr_free_found_r);
+    wire demand_response_valid = demand_waiter_response_found_r;
+    wire demand_response_fire = demand_response_valid && resp_ready_i;
+    assign l1_fill_valid = demand_mshr_fill_found_r;
+    assign l1_fill_addr =
+        demand_mshr_addr_q[demand_mshr_fill_index_r];
+    assign l1_fill_data = demand_fill_data_r;
+    assign l1_fill_aged = 1'b0;
+    wire l1_fill_fire = l1_fill_valid && l1_fill_ready;
 
     // Keep a small unordered candidate pool, but select and launch entries by
     // distance from the current stream anchor.  Reusing the lowest-numbered
@@ -1377,6 +1686,8 @@ module openrv64_l1d_ccx #(
     wire main_response_fire = response_fire &&
         (backend_state_q == BACKEND_WAIT) &&
         main_response_identity_match;
+    wire demand_mshr_response_fire = response_fire &&
+        demand_mshr_response_match_r;
     wire prefetch_response_fire = response_fire &&
         prefetch_mshr_response_match_r;
     wire store_response_fire = response_fire && store_response_match_r;
@@ -1483,8 +1794,10 @@ module openrv64_l1d_ccx #(
     assign store_resp_valid_o = store_completion_valid_q;
     assign store_resp_error_o = store_completion_error_q;
     assign prefetch_issued_o = command_fire && request_prefetch_q;
-    assign prefetch_useful_o = refill_buffer_hit && l1_mem_valid &&
-        !l1_mem_write && fill_buffer_prefetch_q[fill_buffer_hit_index_r];
+    assign prefetch_useful_o =
+        (refill_buffer_hit && l1_mem_valid && !l1_mem_write &&
+         fill_buffer_prefetch_q[fill_buffer_hit_index_r]) ||
+        (l1_miss_fire && demand_prefetch_fill_hit_r);
     assign prefetch_late_o = prefetch_late_match;
     assign prefetch_dropped_o = prefetch_candidate_drop;
     assign prefetch_useless_o = prefetch_useless_replace;
@@ -1501,6 +1814,7 @@ module openrv64_l1d_ccx #(
     assign ccx_resp_ready_o =
         ((backend_state_q == BACKEND_WAIT) &&
          main_response_identity_match) ||
+        demand_mshr_response_match_r ||
         store_response_match_r ||
         (prefetch_mshr_response_match_r &&
          prefetch_response_buffer_available);
@@ -1535,6 +1849,8 @@ module openrv64_l1d_ccx #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(64),
         .REFILL_DATA_WIDTH(512),
+        .REQ_TAG_WIDTH(REQ_TAG_WIDTH),
+        .DETACH_READ_MISSES(1),
         .CACHE_BYTES(CACHE_BYTES),
         .LINE_BYTES(LINE_BYTES),
         .WAYS(WAYS),
@@ -1545,6 +1861,7 @@ module openrv64_l1d_ccx #(
         .rst_ni(rst_ni),
         .req_valid_i(l1_req_valid),
         .req_ready_o(l1_req_ready),
+        .req_tag_i(req_tag_i),
         .req_write_i(req_write_i),
         .req_cacheable_i(l1_req_cacheable),
         .req_addr_i(req_addr_i),
@@ -1552,8 +1869,19 @@ module openrv64_l1d_ccx #(
         .req_wstrb_i(req_wstrb_i),
         .resp_valid_o(l1_resp_valid),
         .resp_ready_i(l1_resp_ready),
+        .resp_tag_o(l1_resp_tag),
         .req_rdata_o(l1_req_rdata),
         .req_error_o(l1_req_error),
+        .miss_valid_o(l1_miss_valid),
+        .miss_ready_i(l1_miss_ready),
+        .miss_tag_o(l1_miss_tag),
+        .miss_addr_o(l1_miss_addr),
+        .miss_aged_o(l1_miss_aged),
+        .fill_valid_i(l1_fill_valid),
+        .fill_ready_o(l1_fill_ready),
+        .fill_addr_i(l1_fill_addr),
+        .fill_data_i(l1_fill_data),
+        .fill_aged_i(l1_fill_aged),
         .invalidate_valid_i(l1_invalidate_valid),
         .invalidate_ready_o(l1_invalidate_ready),
         .invalidate_all_i(l1_invalidate_all),
@@ -1585,6 +1913,9 @@ module openrv64_l1d_ccx #(
             request_wstrb_q <=
                 {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
             request_buffered_store_q <= 1'b0;
+            request_demand_q <= 1'b0;
+            request_demand_mshr_q <=
+                {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
             request_reissue_q <= 1'b0;
             request_epoch_q <=
                 {SPECULATION_EPOCH_WIDTH{1'b0}};
@@ -1608,6 +1939,42 @@ module openrv64_l1d_ccx #(
             store_completion_valid_q <= 1'b0;
             store_completion_error_q <= 1'b0;
             main_txn_in_use_q <= {MAIN_TXN_COUNT{1'b0}};
+            for (demand_reset_index = 0;
+                 demand_reset_index < DEMAND_MSHRS;
+                 demand_reset_index = demand_reset_index + 1) begin
+                demand_mshr_valid_q[demand_reset_index] <= 1'b0;
+                demand_mshr_issued_q[demand_reset_index] <= 1'b0;
+                demand_mshr_complete_q[demand_reset_index] <= 1'b0;
+                demand_mshr_fill_done_q[demand_reset_index] <= 1'b0;
+                demand_mshr_reissue_q[demand_reset_index] <= 1'b0;
+                demand_mshr_addr_q[demand_reset_index] <= 64'd0;
+                demand_mshr_txn_id_q[demand_reset_index] <=
+                    {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                demand_mshr_data_q[demand_reset_index] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                demand_mshr_error_q[demand_reset_index] <= 1'b0;
+                demand_mshr_epoch_q[demand_reset_index] <=
+                    {SPECULATION_EPOCH_WIDTH{1'b0}};
+                demand_mshr_store_data_q[demand_reset_index] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                demand_mshr_store_strb_q[demand_reset_index] <=
+                    {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+            end
+            for (demand_waiter_reset_index = 0;
+                 demand_waiter_reset_index < DEMAND_WAITER_COUNT;
+                 demand_waiter_reset_index =
+                     demand_waiter_reset_index + 1) begin
+                demand_waiter_valid_q[demand_waiter_reset_index] <= 1'b0;
+                demand_waiter_mshr_q[demand_waiter_reset_index] <=
+                    {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+                demand_waiter_word_q[demand_waiter_reset_index] <= 3'd0;
+                demand_waiter_store_data_q[
+                    demand_waiter_reset_index] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                demand_waiter_store_strb_q[
+                    demand_waiter_reset_index] <=
+                    {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+            end
             freeloader_pending_store_valid_q <= 1'b0;
             freeloader_pending_store_posted_q <= 1'b0;
             freeloader_pending_store_addr_q <= 64'd0;
@@ -2183,6 +2550,7 @@ module openrv64_l1d_ccx #(
                             store_buffer_strb_q[
                                 store_buffer_issue_index_r];
                         request_buffered_store_q <= 1'b1;
+                        request_demand_q <= 1'b0;
                         request_reissue_q <= 1'b0;
                         request_epoch_q <= speculation_epoch_q;
                         request_prefetch_q <= 1'b0;
@@ -2196,6 +2564,35 @@ module openrv64_l1d_ccx #(
                         store_buffer_txn_id_q[
                             store_buffer_issue_index_r] <=
                             main_txn_free_id_r;
+                        backend_state_q <= BACKEND_SEND;
+                    end else if (demand_mshr_issue_found_r &&
+                                 !speculation_barrier_event &&
+                                 main_txn_free_found_r) begin
+                        request_txn_id_q <= main_txn_free_id_r;
+                        request_write_q <= 1'b0;
+                        request_lock_q <= 1'b0;
+                        request_cacheable_q <= 1'b1;
+                        request_line_read_q <= 1'b1;
+                        request_size_q <= 3'd6;
+                        request_addr_q <= demand_mshr_addr_q[
+                            demand_mshr_issue_index_r];
+                        request_wdata_q <=
+                            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                        request_wstrb_q <=
+                            {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+                        request_buffered_store_q <= 1'b0;
+                        request_demand_q <= 1'b1;
+                        request_demand_mshr_q <=
+                            demand_mshr_issue_index_r;
+                        request_reissue_q <= 1'b0;
+                        request_epoch_q <= demand_mshr_epoch_q[
+                            demand_mshr_issue_index_r];
+                        request_prefetch_q <= 1'b0;
+                        request_discard_q <= 1'b0;
+                        prefetch_late_reported_q <= 1'b0;
+                        command_sent_q <= 1'b0;
+                        wdata_sent_q <= 1'b0;
+                        main_txn_in_use_q[main_txn_free_id_r] <= 1'b1;
                         backend_state_q <= BACKEND_SEND;
                     end else if (prefetch_launch) begin
                         request_txn_id_q <= PREFETCH_TXN_BASE +
@@ -2214,6 +2611,7 @@ module openrv64_l1d_ccx #(
                         request_wstrb_q <=
                             {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
                         request_buffered_store_q <= 1'b0;
+                        request_demand_q <= 1'b0;
                         request_reissue_q <= 1'b0;
                         request_epoch_q <= speculation_epoch_q;
                         request_prefetch_q <= 1'b1;
@@ -2247,6 +2645,7 @@ module openrv64_l1d_ccx #(
                             {{(`OPENRV64_CCX_LINE_STRB_WIDTH-8){1'b0}},
                               l1_mem_wstrb} << (l1_mem_addr[5:3] * 8);
                         request_buffered_store_q <= 1'b0;
+                        request_demand_q <= 1'b0;
                         request_reissue_q <= 1'b0;
                         request_epoch_q <= speculation_epoch_q;
                         request_prefetch_q <= 1'b0;
@@ -2260,7 +2659,17 @@ module openrv64_l1d_ccx #(
                 end
 
                 BACKEND_SEND: begin
-                    if (request_prefetch_q && command_fire) begin
+                    if (request_demand_q && command_fire) begin
+                        demand_mshr_issued_q[
+                            request_demand_mshr_q] <= 1'b1;
+                        demand_mshr_txn_id_q[
+                            request_demand_mshr_q] <= request_txn_id_q;
+                        demand_mshr_epoch_q[
+                            request_demand_mshr_q] <= request_epoch_q;
+                        request_demand_q <= 1'b0;
+                        command_sent_q <= 1'b0;
+                        backend_state_q <= BACKEND_IDLE;
+                    end else if (request_prefetch_q && command_fire) begin
                         prefetch_mshr_valid_q[
                             request_prefetch_mshr_q] <= 1'b1;
                         prefetch_mshr_addr_q[
@@ -2281,9 +2690,10 @@ module openrv64_l1d_ccx #(
                     end else if (command_fire) begin
                         command_sent_q <= 1'b1;
                     end
-                    if (!request_prefetch_q && wdata_fire)
+                    if (!request_demand_q && !request_prefetch_q &&
+                        wdata_fire)
                         wdata_sent_q <= 1'b1;
-                    if (!request_prefetch_q &&
+                    if (!request_demand_q && !request_prefetch_q &&
                         (command_sent_q || command_fire) &&
                         (!request_write_q || wdata_sent_q || wdata_fire)) begin
                         if (request_buffered_store_q) begin

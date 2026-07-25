@@ -68,9 +68,14 @@ Other current restrictions are:
   per-line MSHRs permit multiple outstanding misses, same-line request merging,
   and resident hits while unrelated fills are outstanding.  The default
   configuration has eight MSHRs, eight waiters per MSHR, sixteen command
-  entries, and sixteen response entries. PTE-visible cache lines additionally
-  carry an eight-bit generation. A `FENCE` request with `kind=PTE` advances the
-  current generation after draining older L2 work.
+  entries, and sixteen response entries.  Every command entry has a tagged
+  one-beat write-data slot containing the 512-bit line, 64 byte enables, and
+  protocol-error state.  This lets data for a later write be accepted while
+  the head write is stalled, without reordering command issue.  Multi-line
+  writes refill that slot one beat at a time as the command advances.
+  PTE-visible cache lines additionally carry an eight-bit generation. A
+  `FENCE` request with `kind=PTE` advances the current generation after
+  draining older L2 work.
 - The L2-to-bus-abstraction boundary is also fixed at 512 bits.  A fill,
   writeback, or uncached bypass is one size-6 neutral-bus request; width
   conversion happens below that boundary in `genbus_interface`.  For example,

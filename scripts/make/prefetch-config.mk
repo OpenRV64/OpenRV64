@@ -60,11 +60,22 @@ STREAM_ELF := sw/stream/stream-$(STREAM_TAG).elf
 STREAM_BIN := sw/stream/stream-$(STREAM_TAG).bin
 STREAM_MAP := sw/stream/stream-$(STREAM_TAG).map
 STREAM_DISASM := sw/stream/stream-$(STREAM_TAG).disasm
+STREAM_VM_ELF := sw/stream/stream-$(STREAM_TAG)-vm.elf
+STREAM_VM_BIN := sw/stream/stream-$(STREAM_TAG)-vm.bin
+STREAM_VM_MAP := sw/stream/stream-$(STREAM_TAG)-vm.map
+STREAM_VM_DISASM := sw/stream/stream-$(STREAM_TAG)-vm.disasm
+STREAM_VM_MEMH := sim/stream-$(STREAM_TAG)-vm.memh
 STREAM_MEASURE_END = $(shell $(RISCV_NM) -n $(STREAM_ELF) | \
 	awk '$$3 == "stream_measure_end" { print $$1 }')
+STREAM_VM_MEASURE_END = $(shell $(RISCV_NM) -n $(STREAM_VM_ELF) | \
+	awk '$$3 == "stream_measure_end" { print $$1 }')
+STREAM_VM_DONE = $(shell $(RISCV_NM) -n $(STREAM_VM_ELF) | \
+	awk '$$3 == "stream_vm_done" { print $$1 }')
 STREAM_PASS := 53545245414d4f4b
 STREAM_MEMH_BYTES := 0x40000
 STREAM_MEMH_WORDS := 8192
+STREAM_VM_MEMH_BYTES := 0x44000
+STREAM_VM_MEMH_WORDS := 8704
 STREAM_MAX_CYCLES ?= 10000000
 STREAM_DDR3_BP_TYPE ?= 6
 STREAM_DDR3_FETCH_ALT_LOOKASIDE ?= 3

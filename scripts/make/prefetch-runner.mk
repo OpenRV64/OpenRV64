@@ -2,6 +2,7 @@
 
 .PHONY: sw-stream sw-stream-suite bench-stream bench-stream-suite sim-stream \
 	sim-stream-suite bench-stream-ddr3 sim-stream-ddr3 \
+	bench-stream-ddr3-vm sim-stream-ddr3-vm \
 	bench-stream-magic sim-stream-magic \
 	sw-stream-a53-gem5 sim-stream-a53-gem5
 .PHONY: sw-stride sw-stride-sweep bench-stride bench-stride-sweep sim-stride

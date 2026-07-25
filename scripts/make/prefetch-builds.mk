@@ -14,6 +14,28 @@ $(STREAM_BIN): $(STREAM_ELF)
 $(STREAM_DISASM): $(STREAM_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(STREAM_VM_ELF): $(OPENRV64_MAKEFILES) sw/stream/stream.S \
+		sw/stream/stream_vm_boot.S sw/stream/openrv64-stream-vm.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
+		-Wa,--defsym,STREAM_KERNEL=$(STREAM_KERNEL_ID) \
+		-Wa,--defsym,STREAM_BYTES=$(STREAM_BYTES) \
+		-Wa,--defsym,STREAM_VM=1 \
+		-Wl,--build-id=none,-Map,$(STREAM_VM_MAP) \
+		-T sw/stream/openrv64-stream-vm.ld -o $@ \
+		sw/stream/stream_vm_boot.S sw/stream/stream.S
+
+$(STREAM_VM_BIN): $(STREAM_VM_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(STREAM_VM_MEMH): $(STREAM_VM_BIN)
+	mkdir -p $(dir $@)
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(STREAM_VM_MEMH_BYTES) --word-bytes 32
+
+$(STREAM_VM_DISASM): $(STREAM_VM_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(A53_STREAM_ELF): $(OPENRV64_MAKEFILES) sw/arm_a53/stream_se.S \
 		sw/arm_a53/coremark_loop_se.ld
 	mkdir -p $(dir $@)

@@ -16,6 +16,12 @@ module openrv64_l1_cache #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer DATA_WIDTH = 64,
     parameter integer REFILL_DATA_WIDTH = DATA_WIDTH,
+    parameter integer REQ_TAG_WIDTH = 1,
+    // When enabled, cacheable read misses leave through the tagged miss port
+    // instead of occupying STATE_REFILL.  Returned full lines enter through
+    // the independent fill port, allowing the outer policy controller to own
+    // multiple MSHRs while this module remains the shared tag/data array.
+    parameter integer DETACH_READ_MISSES = 0,
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
@@ -35,6 +41,7 @@ module openrv64_l1_cache #(
 
     input  wire                      req_valid_i,
     output wire                      req_ready_o,
+    input  wire [REQ_TAG_WIDTH-1:0]  req_tag_i,
     input  wire                      req_write_i,
     input  wire                      req_cacheable_i,
     input  wire [ADDR_WIDTH-1:0]     req_addr_i,
@@ -45,8 +52,21 @@ module openrv64_l1_cache #(
     input  wire [DATA_WIDTH/8-1:0]   req_wstrb_i,
     output wire                      resp_valid_o,
     input  wire                      resp_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  resp_tag_o,
     output wire [DATA_WIDTH-1:0]     req_rdata_o,
     output wire                      req_error_o,
+
+    output wire                      miss_valid_o,
+    input  wire                      miss_ready_i,
+    output wire [REQ_TAG_WIDTH-1:0]  miss_tag_o,
+    output wire [ADDR_WIDTH-1:0]     miss_addr_o,
+    output wire                      miss_aged_o,
+
+    input  wire                      fill_valid_i,
+    output wire                      fill_ready_o,
+    input  wire [ADDR_WIDTH-1:0]     fill_addr_i,
+    input  wire [REFILL_DATA_WIDTH-1:0] fill_data_i,
+    input  wire                      fill_aged_i,
 
     // Back-invalidation port.  A lower inclusive cache must complete this
     // request before evicting the corresponding line.  invalidate_all_i
@@ -128,6 +148,7 @@ module openrv64_l1_cache #(
     reg [WAY_INDEX_WIDTH-1:0] replace_q [0:SETS-1];
 
     reg                      request_write_q;
+    reg [REQ_TAG_WIDTH-1:0] request_tag_q;
     reg                      request_cacheable_q;
     reg                      request_prefetch_q;
     reg                      request_aged_q;
@@ -156,6 +177,7 @@ module openrv64_l1_cache #(
     reg [REFILL_WORD_INDEX_WIDTH-1:0] access_refill_word_q;
 
     reg                  response_valid_q;
+    reg [REQ_TAG_WIDTH-1:0] response_tag_q;
     reg                  response_hit_q;
     reg [WAY_INDEX_WIDTH-1:0] response_way_q;
     reg [DATA_WIDTH-1:0] response_data_q;
@@ -184,6 +206,14 @@ module openrv64_l1_cache #(
     integer lookup_way_index;
     integer age_port;
     integer age_way;
+    reg [SET_INDEX_WIDTH-1:0] fill_set;
+    reg [TAG_BITS-1:0] fill_tag;
+    reg [WAY_INDEX_WIDTH-1:0] fill_way;
+    reg [LINE_INDEX_WIDTH-1:0] fill_line;
+    reg fill_hit_found;
+    reg fill_invalid_found;
+    reg fill_aged_found;
+    integer fill_way_index;
     wire [WAYS*WORDS_PER_REFILL*DATA_WIDTH-1:0] lookup_bank_data;
     wire [DATA_WIDTH-1:0] response_hit_data =
         lookup_bank_data[
@@ -324,19 +354,84 @@ module openrv64_l1_cache #(
                                            LINE_OFFSET_BITS + SET_BITS];
     end
 
+    // A detached full-line fill owns the array write port for one cycle.  A
+    // resident match is overwritten in place; otherwise invalid, aged, and
+    // round-robin victims are preferred in that order.
+    always @* begin
+        fill_set = set_index_of(fill_addr_i);
+        fill_tag = fill_addr_i[ADDR_WIDTH-1:
+                               LINE_OFFSET_BITS + SET_BITS];
+        fill_way = replace_q[fill_set];
+        fill_hit_found = 1'b0;
+        fill_invalid_found = 1'b0;
+        fill_aged_found = 1'b0;
+        for (fill_way_index = 0; fill_way_index < WAYS;
+             fill_way_index = fill_way_index + 1) begin
+            if (!fill_aged_found &&
+                valid_q[line_index_of(
+                    fill_set, fill_way_index[WAY_INDEX_WIDTH-1:0])] &&
+                aged_q[line_index_of(
+                    fill_set, fill_way_index[WAY_INDEX_WIDTH-1:0])]) begin
+                fill_way = fill_way_index[WAY_INDEX_WIDTH-1:0];
+                fill_aged_found = 1'b1;
+            end
+        end
+        for (fill_way_index = 0; fill_way_index < WAYS;
+             fill_way_index = fill_way_index + 1) begin
+            if (!fill_invalid_found &&
+                !valid_q[line_index_of(
+                    fill_set, fill_way_index[WAY_INDEX_WIDTH-1:0])]) begin
+                fill_way = fill_way_index[WAY_INDEX_WIDTH-1:0];
+                fill_invalid_found = 1'b1;
+            end
+        end
+        for (fill_way_index = 0; fill_way_index < WAYS;
+             fill_way_index = fill_way_index + 1) begin
+            if (!fill_hit_found &&
+                valid_q[line_index_of(
+                    fill_set, fill_way_index[WAY_INDEX_WIDTH-1:0])] &&
+                (tag_q[line_index_of(
+                    fill_set, fill_way_index[WAY_INDEX_WIDTH-1:0])] ==
+                 fill_tag)) begin
+                fill_way = fill_way_index[WAY_INDEX_WIDTH-1:0];
+                fill_hit_found = 1'b1;
+            end
+        end
+        fill_line = line_index_of(fill_set, fill_way);
+    end
+
     wire response_slot_available = !response_valid_q || resp_ready_i;
+    wire detached_fill_enabled = DETACH_READ_MISSES != 0;
+    wire fill_fire = fill_valid_i && fill_ready_o;
+    wire request_base_ready = (state_q == STATE_RUN) &&
+        !invalidate_valid_i && response_slot_available &&
+        !(detached_fill_enabled && fill_valid_i);
+    wire detached_miss_candidate = detached_fill_enabled && req_valid_i &&
+        req_cacheable_i && !req_write_i && !lookup_hit &&
+        !((IDEAL_REFILLS != 0) && ideal_refill_valid_i);
     wire request_fire = req_valid_i && req_ready_o;
     wire response_fire = response_valid_q && resp_ready_i;
     wire invalidate_quiescent = !response_valid_q || resp_ready_i;
 
     assign invalidate_ready_o = (state_q == STATE_RUN) &&
                                 invalidate_quiescent;
-    assign req_ready_o = (state_q == STATE_RUN) &&
-                         !invalidate_valid_i && response_slot_available;
+    assign req_ready_o = request_base_ready &&
+                         (!detached_miss_candidate || miss_ready_i);
     assign resp_valid_o = response_valid_q;
+    assign resp_tag_o = response_tag_q;
     assign req_rdata_o = response_hit_q ? response_hit_data :
                          response_data_q;
     assign req_error_o = response_error_q;
+    assign miss_valid_o = request_base_ready && detached_miss_candidate;
+    assign miss_tag_o = req_tag_i;
+    assign miss_addr_o = {
+        req_phys_addr_i[ADDR_WIDTH-1:LINE_OFFSET_BITS],
+        {LINE_OFFSET_BITS{1'b0}}
+    };
+    assign miss_aged_o = req_aged_i;
+    assign fill_ready_o = detached_fill_enabled &&
+                          (state_q == STATE_RUN) &&
+                          !invalidate_valid_i && invalidate_quiescent;
 
     assign mem_valid_o = (state_q == STATE_REFILL) ||
                          (state_q == STATE_ACCESS);
@@ -388,14 +483,22 @@ module openrv64_l1_cache #(
                                      WAY_INDEX_WIDTH'(data_way)) &&
                                     (access_refill_word_q ==
                                      REFILL_WORD_INDEX_WIDTH'(data_bank));
-                wire data_write = refill_write || access_write;
+                wire detached_fill_write = fill_fire &&
+                    (fill_way == WAY_INDEX_WIDTH'(data_way));
+                wire data_write = detached_fill_write ||
+                                  refill_write || access_write;
                 wire [WAY_REFILL_INDEX_WIDTH-1:0] data_write_addr =
+                    detached_fill_write ?
+                        way_refill_index_of(fill_set, 0) :
                     refill_write ?
                         way_refill_index_of(
                             refill_set_q, refill_index_q) :
                         way_refill_index_of(
                             access_set_q, access_refill_index_q);
                 wire [DATA_WIDTH-1:0] data_write_value =
+                    detached_fill_write ?
+                        fill_data_i[
+                            data_bank*DATA_WIDTH +: DATA_WIDTH] :
                     refill_write ?
                         mem_rdata_i[data_bank*DATA_WIDTH +: DATA_WIDTH] :
                         access_write_value;
@@ -423,6 +526,7 @@ module openrv64_l1_cache #(
         if (!rst_ni) begin
             state_q <= STATE_RUN;
             request_write_q <= 1'b0;
+            request_tag_q <= {REQ_TAG_WIDTH{1'b0}};
             request_cacheable_q <= 1'b0;
             request_prefetch_q <= 1'b0;
             request_aged_q <= 1'b0;
@@ -443,6 +547,7 @@ module openrv64_l1_cache #(
             access_refill_index_q <= 0;
             access_refill_word_q <= 0;
             response_valid_q <= 1'b0;
+            response_tag_q <= {REQ_TAG_WIDTH{1'b0}};
             response_hit_q <= 1'b0;
             response_way_q <= 0;
             response_data_q <= {DATA_WIDTH{1'b0}};
@@ -484,6 +589,16 @@ module openrv64_l1_cache #(
                                 age_way[WAY_INDEX_WIDTH-1:0])] <= 1'b1;
                     end
                 end
+            end
+            if (fill_fire) begin
+                tag_q[fill_line] <= fill_tag;
+                valid_q[fill_line] <= 1'b1;
+                aged_q[fill_line] <= fill_aged_i;
+                mesi_q[fill_line] <= MESI_EXCLUSIVE;
+                dirty_timestamp_q[fill_line] <=
+                    {DIRTY_TIMESTAMP_WIDTH{1'b0}};
+                replace_q[fill_set] <=
+                    (fill_way == LAST_WAY) ? 0 : fill_way + 1'b1;
             end
             case (state_q)
                 STATE_RUN: begin
@@ -533,6 +648,7 @@ module openrv64_l1_cache #(
                         // Capture every field needed if this operation leaves
                         // the one-cycle hit path for refill or lower memory.
                         request_write_q <= req_write_i;
+                        request_tag_q <= req_tag_i;
                         request_cacheable_q <= req_cacheable_i;
                         request_prefetch_q <= req_prefetch_i;
                         request_aged_q <= req_aged_i;
@@ -541,7 +657,11 @@ module openrv64_l1_cache #(
                         request_wdata_q <= req_wdata_i;
                         request_wstrb_q <= req_wstrb_i;
                         request_refill_word_q <= lookup_refill_word;
-                        if (!req_cacheable_i) begin
+                        if (detached_miss_candidate) begin
+                            // The outer MSHR controller now owns completion and
+                            // line installation for this tagged request.
+                            response_hit_q <= 1'b0;
+                        end else if (!req_cacheable_i) begin
                             access_updates_line_q <= 1'b0;
                             response_hit_q <= 1'b0;
                             state_q <= STATE_ACCESS;
@@ -563,6 +683,7 @@ module openrv64_l1_cache #(
                             state_q <= STATE_ACCESS;
                         end else if (lookup_hit) begin
                             response_valid_q <= 1'b1;
+                            response_tag_q <= req_tag_i;
                             response_hit_q <= 1'b1;
                             response_way_q <= lookup_way;
                             response_error_q <= 1'b0;
@@ -578,6 +699,7 @@ module openrv64_l1_cache #(
                         end else if ((IDEAL_REFILLS != 0) &&
                                      ideal_refill_valid_i) begin
                             response_valid_q <= 1'b1;
+                            response_tag_q <= req_tag_i;
                             response_hit_q <= 1'b0;
                             response_data_q <= ideal_refill_data_i;
                             response_error_q <= 1'b0;
@@ -611,6 +733,7 @@ module openrv64_l1_cache #(
                             response_data_q <= {DATA_WIDTH{1'b0}};
                             response_error_q <= 1'b1;
                             response_valid_q <= 1'b1;
+                            response_tag_q <= request_tag_q;
                             state_q <= STATE_RUN;
                         end else begin
                             if (refill_index_q ==
@@ -630,6 +753,7 @@ module openrv64_l1_cache #(
                                     refill_way_q + 1'b1;
                                 response_error_q <= 1'b0;
                                 response_valid_q <= 1'b1;
+                                response_tag_q <= request_tag_q;
                                 state_q <= STATE_RUN;
                             end else begin
                                 refill_index_q <= refill_index_q + 1'b1;
@@ -644,6 +768,7 @@ module openrv64_l1_cache #(
                             DATA_WIDTH-1:0];
                         response_error_q <= mem_error_i;
                         response_valid_q <= 1'b1;
+                        response_tag_q <= request_tag_q;
                         state_q <= STATE_RUN;
                     end
                 end
@@ -654,5 +779,19 @@ module openrv64_l1_cache #(
             endcase
         end
     end
+
+`ifndef SYNTHESIS
+    initial begin
+        if (REQ_TAG_WIDTH < 1)
+            $fatal(1, "L1 request tag width must be at least one bit");
+        if ((DETACH_READ_MISSES != 0) &&
+            (DETACH_READ_MISSES != 1))
+            $fatal(1, "L1 detached-read-miss mode must be zero or one");
+        if ((DETACH_READ_MISSES != 0) &&
+            (REFILLS_PER_LINE != 1))
+            $fatal(1,
+                "L1 detached fills currently require one full-line refill beat");
+    end
+`endif
 
 endmodule

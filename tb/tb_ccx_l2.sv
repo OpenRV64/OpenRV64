@@ -272,7 +272,7 @@ module tb_ccx_l2;
                     wdata_source_id,
                     dut.cmd_source_id_q[dut.cmd_head_q],
                     wdata_beat_index, dut.cmd_beat_q,
-                    dut.cmd_wdata_valid_q);
+                    dut.cmd_wdata_valid_q[dut.cmd_head_q]);
             @(negedge clk);
             wdata_valid = 1'b0;
         end
@@ -384,8 +384,12 @@ module tb_ccx_l2;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] scalar_response;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_0;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_1;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] early_txn_0;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] early_txn_1;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] locked_read_txn;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] locked_write_txn;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] early_line_0;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] early_line_1;
     integer masked_reads_before;
     integer masked_writes_before;
     integer congruent_index;
@@ -445,6 +449,64 @@ module tb_ccx_l2;
         repeat (3) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        // Once the current head write has buffered its data, the independent
+        // write-data channel may present a future command's data.  Hold the
+        // lookup stage so both commands coexist and prove that each command
+        // queue entry buffers its own tagged data beat.
+        early_line_0 = line_pattern(64'h0100_0000_0000_0000);
+        early_line_1 = line_pattern(64'h0200_0000_0000_0000);
+        force dut.lookup_stage_ready = 1'b0;
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_WRITE, 1'b0,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd6, 64'h4000, early_txn_0);
+        send_write_data(early_txn_0, early_line_0);
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_WRITE, 1'b0,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd6, 64'h4040, early_txn_1);
+        wdata_hart_id = 0;
+        wdata_txn_id = early_txn_1;
+        wdata_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+        wdata_beat_index = 0;
+        wdata_last = 1'b1;
+        wdata = early_line_1;
+        wstrb = {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}};
+        wdata_valid = 1'b1;
+        #1;
+        if (!wdata_ready)
+            $fatal(1,
+                "future write data was not accepted into its slot: count=%0d head=%0d tail=%0d valid=%0b%0b%0b%0b txn=%0d slots=%0d,%0d,%0d,%0d data_valid=%0b%0b%0b%0b",
+                dut.cmd_count_q, dut.cmd_head_q, dut.cmd_tail_q,
+                dut.cmd_entry_valid_q[3], dut.cmd_entry_valid_q[2],
+                dut.cmd_entry_valid_q[1], dut.cmd_entry_valid_q[0],
+                early_txn_1, dut.cmd_txn_id_q[0],
+                dut.cmd_txn_id_q[1], dut.cmd_txn_id_q[2],
+                dut.cmd_txn_id_q[3], dut.cmd_wdata_valid_q[3],
+                dut.cmd_wdata_valid_q[2], dut.cmd_wdata_valid_q[1],
+                dut.cmd_wdata_valid_q[0]);
+        @(posedge clk);
+        @(negedge clk);
+        if (wdata_ready)
+            $fatal(1, "future write-data slot accepted the beat twice");
+        wdata_valid = 1'b0;
+        repeat (2) @(posedge clk);
+        release dut.lookup_stage_ready;
+        wait_response(early_txn_0, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        wait_response(early_txn_1, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                  `OPENRV64_CCX_KIND_DATA, 64'h4000, early_line_0);
+        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                  `OPENRV64_CCX_KIND_DATA, 64'h4040, early_line_1);
+        bus_reads = 0;
+        bus_writes = 0;
+        last_bus_write_addr = 0;
+        last_bus_write_strb = 0;
 
         read_line(`OPENRV64_CCX_SOURCE_PTW,
                   `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, old_line);
