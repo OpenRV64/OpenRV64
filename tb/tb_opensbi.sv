@@ -12,7 +12,7 @@ module tb_opensbi #(
         `OPENRV64_BP_DEFAULT,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
-    parameter integer RETIRE_DEPTH = 8,
+    parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer L2_BYTES = 256 * 1024,

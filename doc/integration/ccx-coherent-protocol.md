@@ -41,8 +41,9 @@ The initial protocol is Shared/Invalid with clean private lines:
 - L1D is write-through and no-write-allocate.
 - L1I and L1D may retain clean lines after the L2 evicts the corresponding
   line.
-- A cacheable write probes every recorded D-cache sharer and waits for all
-  acknowledgements before forwarding the write to L2.
+- A cacheable write probes every recorded D-cache sharer other than the
+  write-through requester and waits for all acknowledgements before
+  forwarding the write to L2.
 - A directory entry may be replaced only after all recorded I-cache and
   D-cache sharers of the victim line acknowledge invalidation.
 - Clean private eviction need not update the directory.  A stale sharer bit
@@ -95,8 +96,8 @@ reports any data-bearing response as a protocol error.
 
 1. Buffer the command and its tagged write-data beat.
 2. Look up the line in the directory.
-3. Invalidate every recorded D-cache sharer, including the requester when it
-   is recorded.
+3. Invalidate every recorded D-cache sharer except the requester.  The
+   write-through requester retains its newly updated clean copy.
 4. Wait for every probe response.
 5. Clear those D-cache sharer bits.
 6. Forward the write to L2.
@@ -105,6 +106,40 @@ reports any data-bearing response as a protocol error.
 Instruction-cache sharers are retained.  RISC-V instruction visibility still
 uses local and remote `FENCE.I`; ordinary stores do not silently replace that
 architectural protocol.
+
+### Compatibility LR/SC path
+
+The current architectural RV64A block performs AMO arithmetic locally and
+marks both the read and write halves of its read/modify/write sequence.  At the
+L1D/CCX boundary:
+
+1. a marked read is encoded as `LR`;
+2. a marked write is encoded as `SC`;
+3. `req_lock` remains zero across the shared fabric;
+4. a successful home LR records one 64-byte reservation line for its hart;
+5. any accepted coherent write to that line clears matching reservations;
+6. every SC attempt consumes the requester's reservation;
+7. a matching SC is forwarded to L2 as an ordinary write and returns
+   `sc_success=1`; and
+8. a non-matching SC consumes its tagged data beat, returns
+   `sc_success=0`, and performs no L2 operation.
+
+The crossbar classifies SC as a write-data-bearing command.  L2 remains
+unaware of reservations and sees only the successful underlying read or
+write.
+
+This is not a complete multicore AMO implementation.  The original AMO opcode,
+width, and `aq`/`rl` information are not carried to the home, the L1D currently
+drops `sc_success`, and the local AMO engine does not retry failed SC.  The
+verified compatibility sequence therefore runs atomics only after other
+traffic has drained.  Contended AMOs remain unsupported.
+
+Standalone architectural LR/SC is also not integrated through this marker
+path yet.  The local RV64A block does not mark its LR read, so that read does
+not create a home reservation even though the coherent frontend has directed
+LR/SC coverage.  The core-to-L1D contract must carry the actual atomic opcode,
+or at minimum mark direct LR consistently, before claiming architectural
+multihart LR/SC.
 
 ### Device request
 
@@ -137,7 +172,7 @@ down with tests and assertions:
 6. L2 may replace any line without consulting the coherence frontend.
 7. L2 never assumes that its own eviction invalidates a private line.
 8. The frontend submits only ordinary `READ`, `WRITE`, and `FENCE` operations;
-   it forces the transitional lock signal low and consumes `aq`/`rl` itself.
+   it consumes LR/SC reservations above L2 and forces the lock signal low.
 
 The current L2 already implements most of this shape.  Before integration,
 add directed regressions for read-after-partial-write, write-miss completion,
@@ -162,10 +197,12 @@ Not required for initial integration:
 - home LR/SC reservations inside L2; or
 - per-hart fence state inside L2.
 
-The coherent frontend can implement LR/SC and AMOs later as serialized L2
-read/modify/write microsequences while blocking conflicting frontend traffic.
-That remains coherent only for masters routed through this home; DMA and other
-external coherent agents would require an expanded system protocol.
+The coherent frontend now implements serialized LR/SC reservations.  A later
+revision must either execute AMOs as home read/modify/write microsequences or
+preserve enough operation metadata and failed-SC feedback to retry the current
+decomposition.  Either design remains coherent only for masters routed
+through this home; DMA and other external coherent agents require an expanded
+system protocol.
 
 ## Later performance work
 

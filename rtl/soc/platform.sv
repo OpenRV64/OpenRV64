@@ -18,7 +18,7 @@ module openrv64_platform #(
     parameter integer MEMORY_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
-    parameter int unsigned RETIRE_DEPTH = 8,
+    parameter int unsigned RETIRE_DEPTH = 16,
     parameter int unsigned PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter int unsigned STORE_QUEUE_DEPTH = 4,
     parameter bit ENABLE_ISSUE_WINDOW = 1'b0,

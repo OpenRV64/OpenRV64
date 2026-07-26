@@ -13,7 +13,7 @@
 // Operands are captured at issue, results may complete out of order, and the
 // retirement queue exposes only the maximal contiguous in-order prefix.
 module openrv64_backend_3p #(
-    parameter integer RETIRE_DEPTH = 8,
+    parameter integer RETIRE_DEPTH = 16,
     parameter integer DISPATCH_DEPTH = 6,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer PHYS_REG_ADDR_WIDTH =

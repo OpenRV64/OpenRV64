@@ -251,7 +251,7 @@ module tb_top_3p_soc #(
     parameter integer RELAX_HAZARDS = 0,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
-    parameter integer RETIRE_DEPTH = 8,
+    parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer RAM_BYTES = 16 * 1024 * 1024,

@@ -160,10 +160,14 @@ module openrv64_ccx_line_crossbar #(
                 candidate_index = candidate_index - NUM_HARTS;
             if (!grant_valid && hart_req_valid_i[candidate_index] &&
                 (!wdata_active_q ||
-                 (hart_req_op_i[
-                    candidate_index*`OPENRV64_CCX_OP_WIDTH +:
-                    `OPENRV64_CCX_OP_WIDTH] !=
-                  `OPENRV64_CCX_OP_WRITE))) begin
+                 ((hart_req_op_i[
+                     candidate_index*`OPENRV64_CCX_OP_WIDTH +:
+                     `OPENRV64_CCX_OP_WIDTH] !=
+                   `OPENRV64_CCX_OP_WRITE) &&
+                  (hart_req_op_i[
+                     candidate_index*`OPENRV64_CCX_OP_WIDTH +:
+                     `OPENRV64_CCX_OP_WIDTH] !=
+                   `OPENRV64_CCX_OP_SC)))) begin
                 grant_valid = 1'b1;
                 grant_hart = candidate_index[HART_INDEX_WIDTH-1:0];
             end
@@ -303,7 +307,8 @@ module openrv64_ccx_line_crossbar #(
                 else
                     round_robin_q <= grant_hart + 1'b1;
 
-                if (mem_req_op_o == `OPENRV64_CCX_OP_WRITE) begin
+                if ((mem_req_op_o == `OPENRV64_CCX_OP_WRITE) ||
+                    (mem_req_op_o == `OPENRV64_CCX_OP_SC)) begin
                     wdata_active_q <= 1'b1;
                     wdata_hart_q <= grant_hart;
                     wdata_txn_id_q <= mem_req_txn_id_o;
@@ -334,7 +339,8 @@ module openrv64_ccx_line_crossbar #(
             $fatal(1, "native CCX hart port carries the wrong strapped hart ID");
 
         if (rst_ni && command_fire && wdata_active_q &&
-            (mem_req_op_o == `OPENRV64_CCX_OP_WRITE))
+            ((mem_req_op_o == `OPENRV64_CCX_OP_WRITE) ||
+             (mem_req_op_o == `OPENRV64_CCX_OP_SC)))
             $fatal(1,
                 "native CCX crossbar accepted overlapping write-data owners");
 

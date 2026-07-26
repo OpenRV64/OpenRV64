@@ -56,6 +56,9 @@ Items below are deliberately not hidden behind compatibility behavior.
 - [ ] Poison or cancel a matching refill before acknowledging its probe.
 - [ ] Remove the current dependency between invalidation acceptance and an
   otherwise idle demand/store path.
+- [ ] Break the circular wait in which a probe forces the target L1D store
+  buffer to drain through a coherence home that is waiting for that probe.
+  Until then, simultaneous buffered writers are not a legal stress mode.
 - [ ] Define clean-eviction notification only if measurements show stale
   directory bits produce material probe traffic.
 
@@ -85,11 +88,25 @@ Items below are deliberately not hidden behind compatibility behavior.
 
 - [ ] Preserve LR, SC, AMO operation, width, and `aq`/`rl` from the core
   through the private-cache endpoint.
-- [ ] Execute LR/SC and AMOs at the coherent home.
-- [ ] Add one reservation record per hart and define the initial reservation
+- [ ] Mark or explicitly encode a direct architectural LR at the L1D
+  boundary.  `openrv64_exec_lsu_rv64a` currently marks AMO read halves and SC
+  writes, but not a standalone LR, so direct LR/SC is not integrated even
+  though the home protocol itself supports both operations.
+- [x] Translate the existing L1D atomic marker into LR for the marked read and
+  SC for the marked write while keeping the fabric lock signal low.
+- [x] Execute LR/SC reservation validation at the coherent home.
+- [ ] Move AMO arithmetic to the home, or carry the original AMO opcode to it.
+  The compatibility path still computes the AMO result in the local RV64A
+  block before issuing SC.
+- [x] Add one reservation record per hart and define the initial reservation
   granule as one 64-byte line.
-- [ ] Clear matching reservations on conflicting writes, AMOs, successful
-  SC, and per-hart reset.
+- [x] Clear matching reservations on conflicting writes and consume the
+  requester's reservation on every SC attempt.
+- [ ] Clear reservations on per-hart reset/disable without resetting unrelated
+  harts.
+- [ ] Return failed-SC status to the architectural LSU and retry decomposed
+  AMOs.  The current L1D drops `ccx_resp_sc_success`, so arbitrary contended
+  AMOs are not correct.
 - [ ] If dirty private ownership is ever added, implement data-bearing
   `READ_SHARED` and `READ_INVALIDATE` probes before enabling it.
 - [ ] Replace globally draining L2 fences with per-hart outstanding-operation
@@ -118,7 +135,11 @@ Items below are deliberately not hidden behind compatibility behavior.
   directory frontend, and the shared L2.
 - [ ] Same-line writes from two harts, including disjoint byte lanes.
 - [x] Non-inclusive directory eviction with mixed I-cache and D-cache sharers.
-- [ ] LR/SC interference and every implemented AMO width/operation.
+- [x] Directed LR/SC success, repeated-SC failure, and reservation loss after
+  an intervening write.
+- [x] Every implemented 64-bit AMO arithmetic operation through four local
+  RV64A engines under globally quiescent atomic phases.
+- [ ] Contended LR/SC and AMOs, 32-bit AMOs, and failed-SC retry.
 - [ ] Acquire/release message-passing and full-fence litmus tests.
 - [ ] Per-hart reset during an otherwise idle system and during queued traffic.
 - [ ] Four real cores through OpenSBI and timed DDR3.
@@ -128,7 +149,7 @@ Items below are deliberately not hidden behind compatibility behavior.
 `tb/tb_ccx_4h_l1d_directory_l2.sv` instantiates:
 
 ```text
-four LSU-side request agents
+four LSU-side request agents plus four local RV64A engines
   -> four openrv64_l1d_ccx instances
   -> openrv64_ccx_line_crossbar
   -> openrv64_ccx_coherent_protocol
@@ -154,15 +175,41 @@ The directed sequence proves:
   and
 - a later sharer set containing harts 0 and 3 is also invalidated correctly.
 
+The randomized phase then runs 2,048 rounds by default: 8,192 ordinary
+operations over an eight-page (32 KiB) window, including 2,048 stores, plus 64
+64-bit AMOs rotating across all four harts.  Addresses, word lanes, payloads,
+and AMO operations are varied from a deterministic xorshift seed; use
+`+seed=<decimal>` with the compiled simulation to replay another stream.
+
+Two independent scoreboards check the result:
+
+- a tag scoreboard records every accepted LSU/L1D request and matches the
+  normal or posted response by hart and tag, including read data; and
+- a home-order scoreboard compares every L2 command/data beat with the write
+  expected from that hart, applies byte strobes to reference memory in actual
+  home acceptance order, and checks later home reads against that state.
+
+The random round has four distinct lines and at most one buffered writer.
+This is a correctness restriction, not a claim that the intended protocol
+only supports one writer.  Multiple target store buffers can currently
+deadlock because a probe forces a target buffer to drain through the same
+serialized home that is waiting for the probe response.
+
+AMOs are also globally quiescent in this test.  The existing local RV64A block
+has already reduced an AMO to a marked read and marked write.  The L1D adapter
+encodes those halves as LR and SC, the directory checks the reservation, and
+the crossbar treats SC as a write-data-bearing command.  This proves the
+compatibility path only.  It does not prove contended AMOs because failed-SC
+status is not yet returned to or retried by the local AMO engine.
+
 This is not yet a four-core test.  The four agents drive the LSU-side contract
 below the core memory channel; they do not instantiate decode, translation, or
 the LSQ.  The backing store is deterministic, not timed DDR3.  The probe
 adapter is testbench-only because the production L1D and L1I still need
 independent probe queues.
 
-The current sequence deliberately has the writing hart absent from the
-directory sharer set.  A recorded requester can otherwise be self-probed while
-its posted store is still buffered, but the current L1D refuses invalidation
-until that store drains.  That circular wait is a real integration defect, not
-a testbench artifact.  Fix the private-cache probe queue and matching
-store/refill arbitration before enabling arbitrary four-core traffic.
+The home no longer probes a recorded write-through requester for its own
+store; it retains that requester's clean D-cache sharer bit and invalidates
+only the other recorded sharers.  The remaining cross-hart store-buffer/probe
+cycle is a separate integration defect.  Fix the private-cache probe queue and
+matching store/refill arbitration before enabling arbitrary four-core traffic.

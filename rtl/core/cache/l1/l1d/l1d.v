@@ -1848,6 +1848,7 @@ module openrv64_l1d_ccx #(
         .command_sent_i(command_sent_q),
         .wdata_sent_i(wdata_sent_q),
         .request_write_i(request_write_q),
+        .request_atomic_i(request_lock_q),
         .request_cacheable_i(request_cacheable_q),
         .request_line_read_i(request_line_read_q),
         .request_size_i(request_size_q),

@@ -171,6 +171,12 @@ module openrv64_ccx_coherent_protocol #(
     reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] next_probe_id_q;
 
     reg protocol_error_q;
+    reg [NUM_HARTS-1:0] reservation_valid_q;
+    reg [63:0] reservation_line_q [0:NUM_HARTS-1];
+    integer reservation_hart;
+    reg [NUM_HARTS-1:0] request_hart_mask_r;
+    reg request_sc_reservation_match_r;
+    integer request_hart;
 
     wire request_fire = req_valid_i && req_ready_o;
     wire wdata_fire = wdata_valid_i && wdata_ready_o;
@@ -187,6 +193,8 @@ module openrv64_ccx_coherent_protocol #(
     wire request_op_supported =
         (req_op_i == `OPENRV64_CCX_OP_READ) ||
         (req_op_i == `OPENRV64_CCX_OP_WRITE) ||
+        (req_op_i == `OPENRV64_CCX_OP_LR) ||
+        (req_op_i == `OPENRV64_CCX_OP_SC) ||
         (req_op_i == `OPENRV64_CCX_OP_FENCE);
     wire request_protocol_error =
         !request_hart_valid || !request_op_supported || req_lock_i;
@@ -206,11 +214,35 @@ module openrv64_ccx_coherent_protocol #(
         (req_op_q == `OPENRV64_CCX_OP_READ) &&
         ((req_source_id_q == `OPENRV64_CCX_SOURCE_ICACHE) ||
          (req_source_id_q == `OPENRV64_CCX_SOURCE_DCACHE));
+    wire request_is_write =
+        (req_op_q == `OPENRV64_CCX_OP_WRITE) ||
+        (req_op_q == `OPENRV64_CCX_OP_SC);
     wire request_coherent_write =
         request_cacheable &&
-        (req_op_q == `OPENRV64_CCX_OP_WRITE);
+        request_is_write;
     wire [63:0] request_line_addr =
         {req_addr_q[63:6], 6'b000000};
+    always @* begin
+        request_hart_mask_r = {NUM_HARTS{1'b0}};
+        request_sc_reservation_match_r = 1'b0;
+        for (request_hart = 0;
+             request_hart < NUM_HARTS;
+             request_hart = request_hart + 1) begin
+            if (req_hart_id_q ==
+                `OPENRV64_CCX_HART_ID_WIDTH'(
+                    HART_ID_BASE + request_hart)) begin
+                request_hart_mask_r[request_hart] = 1'b1;
+                request_sc_reservation_match_r =
+                    reservation_valid_q[request_hart] &&
+                    (reservation_line_q[request_hart] ==
+                     request_line_addr);
+            end
+        end
+    end
+    wire [NUM_HARTS-1:0] request_hart_mask =
+        request_hart_mask_r;
+    wire request_sc_reservation_match =
+        request_sc_reservation_match_r;
 
     wire directory_lookup_hit;
     wire [DIRECTORY_ENTRY_WIDTH-1:0] directory_lookup_entry;
@@ -221,6 +253,8 @@ module openrv64_ccx_coherent_protocol #(
     wire [63:0] directory_victim_line_addr;
     wire [NUM_HARTS-1:0] directory_victim_i_sharers;
     wire [NUM_HARTS-1:0] directory_victim_d_sharers;
+    wire [NUM_HARTS-1:0] write_probe_targets =
+        directory_lookup_d_sharers & ~request_hart_mask;
 
     wire directory_allocate = state_q == ST_DIR_ALLOCATE;
     wire directory_clear = state_q == ST_DIR_CLEAR;
@@ -358,7 +392,14 @@ module openrv64_ccx_coherent_protocol #(
     assign l2_req_hart_id_o = req_hart_id_q;
     assign l2_req_txn_id_o = req_txn_id_q;
     assign l2_req_source_id_o = req_source_id_q;
-    assign l2_req_op_o = req_op_q;
+    // L2 remains private-cache unaware.  The coherence home consumes LR/SC
+    // intent and presents the successful data operations as ordinary reads
+    // and writes.
+    assign l2_req_op_o =
+        (req_op_q == `OPENRV64_CCX_OP_LR) ?
+            `OPENRV64_CCX_OP_READ :
+        (req_op_q == `OPENRV64_CCX_OP_SC) ?
+            `OPENRV64_CCX_OP_WRITE : req_op_q;
     assign l2_req_lock_o = 1'b0;
     assign l2_req_order_o = `OPENRV64_CCX_ORDER_NONE;
     assign l2_req_kind_o = req_kind_q;
@@ -416,6 +457,11 @@ module openrv64_ccx_coherent_protocol #(
             next_probe_id_q <=
                 {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
             protocol_error_q <= 1'b0;
+            reservation_valid_q <= {NUM_HARTS{1'b0}};
+            for (reservation_hart = 0;
+                 reservation_hart < NUM_HARTS;
+                 reservation_hart = reservation_hart + 1)
+                reservation_line_q[reservation_hart] <= 64'd0;
         end else begin
             if (protocol_error_clear_i)
                 protocol_error_q <= 1'b0;
@@ -443,7 +489,8 @@ module openrv64_ccx_coherent_protocol #(
                 resp_sc_success_q <= 1'b0;
                 if (request_protocol_error)
                     protocol_error_q <= 1'b1;
-                if (req_op_i == `OPENRV64_CCX_OP_WRITE)
+                if ((req_op_i == `OPENRV64_CCX_OP_WRITE) ||
+                    (req_op_i == `OPENRV64_CCX_OP_SC))
                     state_q <= ST_WAIT_WDATA;
                 else if (request_protocol_error)
                     state_q <= ST_RESP;
@@ -473,7 +520,31 @@ module openrv64_ccx_coherent_protocol #(
                 end
 
                 ST_DIR_LOOKUP: begin
-                    if (request_private_fill) begin
+                    if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
+                        request_sc_reservation_match)
+                        resp_sc_success_q <= 1'b1;
+                    // Every SC attempt consumes the requester's reservation,
+                    // including a failed SC to a different line.
+                    if (req_op_q == `OPENRV64_CCX_OP_SC) begin
+                        for (reservation_hart = 0;
+                             reservation_hart < NUM_HARTS;
+                             reservation_hart =
+                                 reservation_hart + 1)
+                            if (req_hart_id_q ==
+                                `OPENRV64_CCX_HART_ID_WIDTH'(
+                                    HART_ID_BASE +
+                                    reservation_hart))
+                                reservation_valid_q[
+                                    reservation_hart] <= 1'b0;
+                    end
+                    if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
+                        !request_sc_reservation_match) begin
+                        // Failed SC performs no write.  Its data beat was
+                        // consumed before lookup so the command/data channel
+                        // cannot be left wedged.
+                        resp_sc_success_q <= 1'b0;
+                        state_q <= ST_RESP;
+                    end else if (request_private_fill) begin
                         if (directory_lookup_hit) begin
                             directory_entry_q <=
                                 directory_lookup_entry;
@@ -500,15 +571,34 @@ module openrv64_ccx_coherent_protocol #(
                         end
                     end else if (request_coherent_write &&
                                  directory_lookup_hit &&
-                                 (|directory_lookup_d_sharers)) begin
+                                 (|write_probe_targets)) begin
                         directory_entry_q <= directory_lookup_entry;
-                        probe_target_q <= directory_lookup_d_sharers;
+                        probe_target_q <= write_probe_targets;
                         probe_cache_mask_q <=
                             `OPENRV64_CCX_PROBE_CACHE_D;
                         probe_line_addr_q <= request_line_addr;
                         state_q <= ST_WRITE_PROBE_START;
                     end else begin
                         state_q <= ST_L2_REQ;
+                    end
+
+                    // Any write that will reach L2 invalidates every matching
+                    // reservation.  The SC requester's reservation was
+                    // already consumed above, including on failure.
+                    if (request_coherent_write &&
+                        ((req_op_q != `OPENRV64_CCX_OP_SC) ||
+                         request_sc_reservation_match)) begin
+                        for (reservation_hart = 0;
+                             reservation_hart < NUM_HARTS;
+                             reservation_hart =
+                                 reservation_hart + 1)
+                            if (reservation_valid_q[
+                                    reservation_hart] &&
+                                (reservation_line_q[
+                                     reservation_hart] ==
+                                 request_line_addr))
+                                reservation_valid_q[
+                                    reservation_hart] <= 1'b0;
                     end
                 end
 
@@ -546,7 +636,7 @@ module openrv64_ccx_coherent_protocol #(
 
                 ST_L2_REQ: begin
                     if (l2_request_fire) begin
-                        if (req_op_q == `OPENRV64_CCX_OP_WRITE)
+                        if (request_is_write)
                             state_q <= ST_L2_WDATA;
                         else
                             state_q <= ST_L2_RESP;
@@ -564,10 +654,30 @@ module openrv64_ccx_coherent_protocol #(
                         resp_error_q <=
                             l2_resp_error_i ||
                             l2_response_identity_error;
-                        resp_sc_success_q <= l2_resp_sc_success_i;
+                        if (req_op_q != `OPENRV64_CCX_OP_SC)
+                            resp_sc_success_q <=
+                                l2_resp_sc_success_i;
                         if (l2_response_identity_error)
                             protocol_error_q <= 1'b1;
-                        if (request_private_fill &&
+                        if ((req_op_q == `OPENRV64_CCX_OP_LR) &&
+                            !l2_resp_error_i &&
+                            !l2_response_identity_error) begin
+                            for (reservation_hart = 0;
+                                 reservation_hart < NUM_HARTS;
+                                 reservation_hart =
+                                     reservation_hart + 1)
+                                if (req_hart_id_q ==
+                                    `OPENRV64_CCX_HART_ID_WIDTH'(
+                                        HART_ID_BASE +
+                                        reservation_hart)) begin
+                                    reservation_valid_q[
+                                        reservation_hart] <= 1'b1;
+                                    reservation_line_q[
+                                        reservation_hart] <=
+                                        request_line_addr;
+                                end
+                            state_q <= ST_RESP;
+                        end else if (request_private_fill &&
                             !l2_resp_error_i &&
                             !l2_response_identity_error)
                             state_q <= ST_DIR_RECORD;

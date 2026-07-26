@@ -478,6 +478,104 @@ module tb_ccx_coherent_protocol #(
         end
     endtask
 
+    task automatic issue_lr;
+        input integer hart;
+        input [63:0] address;
+        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_hart_id =
+                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+            req_txn_id = transaction;
+            req_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+            req_op = `OPENRV64_CCX_OP_LR;
+            req_kind = `OPENRV64_CCX_KIND_DATA;
+            req_attr = `OPENRV64_CCX_ATTR_CACHEABLE;
+            req_size = 3'd3;
+            req_addr = address;
+            while (!req_ready)
+                @(negedge clk);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+
+            wait_cycles = 0;
+            while (!resp_valid && (wait_cycles < 100)) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!resp_valid || resp_error || resp_sc_success ||
+                (resp_hart_id !=
+                 `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
+                (resp_txn_id != transaction) ||
+                (resp_rdata != model_read_data(address)))
+                $fatal(1, "N=%0d LR response mismatch", NUM_HARTS);
+            resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            resp_ready = 1'b0;
+        end
+    endtask
+
+    task automatic issue_sc;
+        input integer hart;
+        input [63:0] address;
+        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input expected_success;
+        begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_hart_id =
+                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+            req_txn_id = transaction;
+            req_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+            req_op = `OPENRV64_CCX_OP_SC;
+            req_kind = `OPENRV64_CCX_KIND_DATA;
+            req_attr = `OPENRV64_CCX_ATTR_CACHEABLE;
+            req_size = 3'd3;
+            req_addr = address;
+            while (!req_ready)
+                @(negedge clk);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            wdata_valid = 1'b1;
+            wdata_hart_id =
+                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+            wdata_txn_id = transaction;
+            wdata_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+            wdata_beat_index =
+                {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+            wdata_last = 1'b1;
+            wdata = {8{address ^ 64'h5c5c_5c5c_5c5c_5c5c}};
+            wstrb = {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}};
+            while (!wdata_ready)
+                @(negedge clk);
+            @(posedge clk);
+            @(negedge clk);
+            wdata_valid = 1'b0;
+
+            wait_cycles = 0;
+            while (!resp_valid && (wait_cycles < 100)) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!resp_valid || resp_error ||
+                (resp_sc_success != expected_success) ||
+                (resp_hart_id !=
+                 `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
+                (resp_txn_id != transaction))
+                $fatal(1,
+                    "N=%0d SC response mismatch success=%0b expected=%0b",
+                    NUM_HARTS, resp_sc_success, expected_success);
+            resp_ready = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            resp_ready = 1'b0;
+        end
+    endtask
+
     task automatic issue_unsupported_amo;
         input [63:0] address;
         begin
@@ -552,10 +650,11 @@ module tb_ccx_coherent_protocol #(
         if (probe_transactions != probes_before)
             $fatal(1, "N=%0d ordinary shared fills probed", NUM_HARTS);
 
-        // A cacheable write must invalidate both recorded D$ copies before it
-        // is visible to the L2 backend.
+        // A write-through requester retains its newly updated clean copy.
+        // Invalidate the other recorded D$ copy before exposing the write to
+        // L2; probing the requester here can deadlock behind its own posted
+        // store.
         expected_targets = {NUM_HARTS{1'b0}};
-        expected_targets[0] = 1'b1;
         expected_targets[1] = 1'b1;
         probes_before = probe_transactions;
         issue_write(0, `OPENRV64_CCX_ATTR_CACHEABLE,
@@ -578,6 +677,7 @@ module tb_ccx_coherent_protocol #(
                    `OPENRV64_CCX_ATTR_CACHEABLE,
                    64'h0000_0000_8000_0080, 4'h5);
         expected_targets = {NUM_HARTS{1'b0}};
+        expected_targets[0] = 1'b1;
         expected_targets[1] = 1'b1;
         if ((probe_transactions != probes_before + 1) ||
             (last_probe_targets != expected_targets) ||
@@ -626,6 +726,46 @@ module tb_ccx_coherent_protocol #(
         protocol_error_clear = 1'b0;
         if (protocol_error)
             $fatal(1, "N=%0d protocol error did not clear", NUM_HARTS);
+
+        // The compatibility atomic marker is represented at this boundary as
+        // LR followed by SC.  The home owns reservations and only forwards a
+        // successful SC to L2.
+        l2_before = l2_requests;
+        issue_lr(0, 64'h0000_0000_8000_0300, 4'h9);
+        if (l2_requests != l2_before + 1)
+            $fatal(1, "N=%0d LR did not map to one L2 read", NUM_HARTS);
+        l2_before = l2_requests;
+        issue_sc(0, 64'h0000_0000_8000_0300, 4'ha, 1'b1);
+        if ((l2_requests != l2_before + 1) ||
+            (l2_writes == 0))
+            $fatal(1, "N=%0d successful SC did not reach L2", NUM_HARTS);
+        l2_before = l2_requests;
+        issue_sc(0, 64'h0000_0000_8000_0300, 4'hb, 1'b0);
+        if (l2_requests != l2_before)
+            $fatal(1, "N=%0d failed SC reached L2", NUM_HARTS);
+
+        // An intervening write to the reservation line invalidates it even
+        // when the writer is a different hart.
+        issue_lr(0, 64'h0000_0000_8000_0340, 4'hc);
+        issue_write(1, `OPENRV64_CCX_ATTR_CACHEABLE,
+                    64'h0000_0000_8000_0340, 4'hd);
+        l2_before = l2_requests;
+        issue_sc(0, 64'h0000_0000_8000_0340, 4'he, 1'b0);
+        if (l2_requests != l2_before)
+            $fatal(1,
+                "N=%0d invalidated reservation SC reached L2",
+                NUM_HARTS);
+
+        // A failed SC to another line also consumes the requester's prior
+        // reservation.
+        issue_lr(0, 64'h0000_0000_8000_0380, 4'hf);
+        l2_before = l2_requests;
+        issue_sc(0, 64'h0000_0000_8000_03c0, 4'h0, 1'b0);
+        issue_sc(0, 64'h0000_0000_8000_0380, 4'h1, 1'b0);
+        if (l2_requests != l2_before)
+            $fatal(1,
+                "N=%0d failed SC did not consume reservation",
+                NUM_HARTS);
 
         $display("PASS: %0d-hart non-inclusive coherent protocol directory",
                  NUM_HARTS);

@@ -2,6 +2,7 @@
 `include "complex/protocol/defs.v"
 `include "complex/coherent/protocol/defs.v"
 `include "core/bus/bus-defs.v"
+`include "core/decode/defs/lsu-defs.v"
 
 // Focused four-hart data-coherence integration test.
 //
@@ -16,11 +17,15 @@
 // adapter holds an invalidate request at each real L1D until that cache
 // accepts it, then returns the directory ACK.  It never fabricates an ACK
 // before the cache invalidation handshake.
-module tb_ccx_4h_l1d_directory_l2;
+module tb_ccx_4h_l1d_directory_l2 #(
+    parameter integer RANDOM_ROUNDS = 2048,
+    parameter integer ATOMIC_INTERVAL = 32
+);
 
     localparam integer NUM_HARTS = 4;
     localparam integer TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH;
-    localparam integer MEMORY_LINES = 256;
+    localparam integer TAG_COUNT = 1 << TAG_WIDTH;
+    localparam integer MEMORY_LINES = 512;
     localparam integer MEMORY_LATENCY = 4;
     localparam [63:0] MEMORY_BASE = 64'h0000_0000_8000_0000;
     localparam [63:0] LINE_A = MEMORY_BASE;
@@ -32,7 +37,6 @@ module tb_ccx_4h_l1d_directory_l2;
     logic clk;
     logic rst_n;
     integer cycle_count;
-    integer wait_cycles;
     integer commands_before;
     integer reads_before;
     integer hart_index;
@@ -44,6 +48,7 @@ module tb_ccx_4h_l1d_directory_l2;
     logic [NUM_HARTS-1:0] lsu_req_valid;
     wire [NUM_HARTS-1:0] lsu_req_ready;
     logic [NUM_HARTS*TAG_WIDTH-1:0] lsu_req_tag;
+    logic [NUM_HARTS-1:0] lsu_req_lock;
     logic [NUM_HARTS-1:0] lsu_req_write;
     logic [NUM_HARTS*64-1:0] lsu_req_addr;
     logic [NUM_HARTS*64-1:0] lsu_req_wdata;
@@ -59,6 +64,42 @@ module tb_ccx_4h_l1d_directory_l2;
     logic [NUM_HARTS-1:0] speculation_barrier;
     wire [NUM_HARTS-1:0] store_barrier_busy;
     logic [NUM_HARTS*TAG_WIDTH-1:0] next_lsu_tag;
+
+    // The local RV64A engine decomposes each AMO into a marked read and
+    // marked write.  The L1D CCX adapter converts that mark into explicit
+    // LR/SC home operations; no fabric lock is asserted.
+    logic [NUM_HARTS-1:0] atomic_select;
+    logic [NUM_HARTS-1:0] atomic_valid;
+    logic [NUM_HARTS-1:0] atomic_consume;
+    logic [NUM_HARTS*`RV64_LSU_OP_WIDTH-1:0] atomic_op;
+    logic [NUM_HARTS*`RV64_LSU_SIZE_WIDTH-1:0] atomic_size;
+    logic [NUM_HARTS*64-1:0] atomic_addr;
+    logic [NUM_HARTS*64-1:0] atomic_operand;
+    logic [NUM_HARTS*TAG_WIDTH-1:0] atomic_tag;
+    wire [NUM_HARTS-1:0] atomic_complete;
+    wire [NUM_HARTS-1:0] atomic_illegal;
+    wire [NUM_HARTS-1:0] atomic_misaligned;
+    wire [NUM_HARTS-1:0] atomic_access_fault;
+    wire [NUM_HARTS-1:0] atomic_page_fault;
+    wire [NUM_HARTS*64-1:0] atomic_result;
+    wire [NUM_HARTS-1:0] atomic_mem_valid;
+    wire [NUM_HARTS-1:0] atomic_mem_lock;
+    wire [NUM_HARTS-1:0] atomic_mem_write;
+    wire [NUM_HARTS*64-1:0] atomic_mem_addr;
+    wire [NUM_HARTS*64-1:0] atomic_mem_wdata;
+    wire [NUM_HARTS*8-1:0] atomic_mem_wstrb;
+    logic [NUM_HARTS-1:0] atomic_mem_inflight;
+
+    wire [NUM_HARTS-1:0] cache_req_valid;
+    wire [NUM_HARTS*TAG_WIDTH-1:0] cache_req_tag;
+    wire [NUM_HARTS-1:0] cache_req_lock;
+    wire [NUM_HARTS-1:0] cache_req_posted;
+    wire [NUM_HARTS-1:0] cache_req_write;
+    wire [NUM_HARTS*64-1:0] cache_req_addr;
+    wire [NUM_HARTS*64-1:0] cache_req_wdata;
+    wire [NUM_HARTS*8-1:0] cache_req_wstrb;
+    wire [NUM_HARTS*3-1:0] atomic_state_debug;
+    wire [NUM_HARTS*2-1:0] l1d_backend_state_debug;
 
     // Private L1D to CCX line-crossbar channels.
     wire [NUM_HARTS-1:0] hart_req_valid;
@@ -232,6 +273,63 @@ module tb_ccx_4h_l1d_directory_l2;
     integer l2_write_count;
     integer last_l2_write_cycle;
 
+    // Reference state is updated at the coherence-home write-data acceptance
+    // point.  That is the single total order exposed by this serialized home.
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        reference_memory [0:MEMORY_LINES-1];
+    logic expected_home_write_valid [0:NUM_HARTS-1];
+    logic [63:0] expected_home_write_addr [0:NUM_HARTS-1];
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        expected_home_write_data [0:NUM_HARTS-1];
+    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        expected_home_write_strb [0:NUM_HARTS-1];
+    logic home_write_active;
+    integer home_write_hart;
+    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] home_write_txn_id;
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] home_write_source_id;
+    logic l2_read_expected_valid;
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        l2_read_expected_data;
+    logic [63:0] l2_read_expected_addr;
+    integer home_score_hart;
+    integer home_score_byte;
+
+    // Request tags form the second scoreboard.  It checks each response
+    // against the accepted request, independent of task scheduling order.
+    logic tag_pending [0:NUM_HARTS-1][0:TAG_COUNT-1];
+    logic tag_pending_posted [0:NUM_HARTS-1][0:TAG_COUNT-1];
+    logic tag_pending_write [0:NUM_HARTS-1][0:TAG_COUNT-1];
+    logic [63:0] tag_pending_addr [0:NUM_HARTS-1][0:TAG_COUNT-1];
+    logic [63:0] tag_pending_read_data
+        [0:NUM_HARTS-1][0:TAG_COUNT-1];
+    integer request_sent_count [0:NUM_HARTS-1];
+    integer response_received_count [0:NUM_HARTS-1];
+    integer score_hart;
+    integer score_tag;
+    integer score_word;
+
+    logic [31:0] random_state;
+    logic [8:0] planned_line [0:NUM_HARTS-1];
+    logic [2:0] planned_word [0:NUM_HARTS-1];
+    logic planned_write [0:NUM_HARTS-1];
+    logic [63:0] planned_addr [0:NUM_HARTS-1];
+    logic [63:0] planned_data [0:NUM_HARTS-1];
+    logic [63:0] planned_expected [0:NUM_HARTS-1];
+    integer random_round;
+    integer random_hart;
+    integer random_prior_hart;
+    integer random_seed;
+    integer random_line_unique;
+    integer random_store_hart;
+    integer random_store_count;
+    integer atomic_sequence;
+    logic [NUM_HARTS-1:0] planned_store_mask;
+    logic [63:0] atomic_random_addr;
+    logic [63:0] atomic_random_operand;
+    integer atomic_sc_success_count;
+    integer atomic_lr_command_count;
+    integer atomic_sc_command_count;
+
     function automatic [63:0] initial_memory_word;
         input [63:0] address;
         begin
@@ -243,13 +341,137 @@ module tb_ccx_4h_l1d_directory_l2;
     function automatic integer line_index;
         input [63:0] address;
         begin
-            line_index = address[13:6];
+            line_index = address[14:6];
+        end
+    endfunction
+
+    function automatic [31:0] xorshift32;
+        input [31:0] value;
+        reg [31:0] next_value;
+        begin
+            next_value = value;
+            next_value = next_value ^ (next_value << 13);
+            next_value = next_value ^ (next_value >> 17);
+            next_value = next_value ^ (next_value << 5);
+            xorshift32 = next_value;
+        end
+    endfunction
+
+    function automatic [63:0] amo_result;
+        input [`RV64_LSU_OP_WIDTH-1:0] op;
+        input [63:0] old_value;
+        input [63:0] operand;
+        begin
+            case (op)
+                `RV64_LSU_OP_AMOSWAP: amo_result = operand;
+                `RV64_LSU_OP_AMOADD:  amo_result = old_value + operand;
+                `RV64_LSU_OP_AMOXOR:  amo_result = old_value ^ operand;
+                `RV64_LSU_OP_AMOAND:  amo_result = old_value & operand;
+                `RV64_LSU_OP_AMOOR:   amo_result = old_value | operand;
+                `RV64_LSU_OP_AMOMIN:  amo_result =
+                    ($signed(old_value) < $signed(operand)) ?
+                        old_value : operand;
+                `RV64_LSU_OP_AMOMAX:  amo_result =
+                    ($signed(old_value) > $signed(operand)) ?
+                        old_value : operand;
+                `RV64_LSU_OP_AMOMINU: amo_result =
+                    (old_value < operand) ? old_value : operand;
+                `RV64_LSU_OP_AMOMAXU: amo_result =
+                    (old_value > operand) ? old_value : operand;
+                default: amo_result = 64'd0;
+            endcase
         end
     endfunction
 
     genvar hart;
     generate
         for (hart = 0; hart < NUM_HARTS; hart = hart + 1) begin : g_l1d
+            assign cache_req_valid[hart] = atomic_select[hart] ?
+                (atomic_mem_valid[hart] &&
+                 !atomic_mem_inflight[hart]) :
+                lsu_req_valid[hart];
+            assign cache_req_tag[hart*TAG_WIDTH +: TAG_WIDTH] =
+                atomic_select[hart] ?
+                    atomic_tag[hart*TAG_WIDTH +: TAG_WIDTH] :
+                    lsu_req_tag[hart*TAG_WIDTH +: TAG_WIDTH];
+            assign cache_req_lock[hart] = atomic_select[hart] ?
+                atomic_mem_lock[hart] : lsu_req_lock[hart];
+            assign cache_req_posted[hart] =
+                !atomic_select[hart] && lsu_req_write[hart] &&
+                !lsu_req_lock[hart];
+            assign cache_req_write[hart] = atomic_select[hart] ?
+                atomic_mem_write[hart] : lsu_req_write[hart];
+            assign cache_req_addr[hart*64 +: 64] =
+                atomic_select[hart] ?
+                    atomic_mem_addr[hart*64 +: 64] :
+                    lsu_req_addr[hart*64 +: 64];
+            assign cache_req_wdata[hart*64 +: 64] =
+                atomic_select[hart] ?
+                    atomic_mem_wdata[hart*64 +: 64] :
+                    lsu_req_wdata[hart*64 +: 64];
+            assign cache_req_wstrb[hart*8 +: 8] =
+                atomic_select[hart] ?
+                    atomic_mem_wstrb[hart*8 +: 8] :
+                    lsu_req_wstrb[hart*8 +: 8];
+            assign atomic_state_debug[hart*3 +: 3] =
+                u_atomic_lsu.state_q;
+            assign l1d_backend_state_debug[hart*2 +: 2] =
+                u_l1d.backend_state_q;
+
+            openrv64_exec_lsu_rv64a u_atomic_lsu (
+                .clk(clk),
+                .rst_n(rst_n),
+                .flush_i(1'b0),
+                .valid_i(atomic_valid[hart]),
+                .consume_i(atomic_consume[hart]),
+                .clear_reservation_i(1'b0),
+                .op_sel_i(
+                    atomic_op[
+                        hart*`RV64_LSU_OP_WIDTH +:
+                        `RV64_LSU_OP_WIDTH]),
+                .size_sel_i(
+                    atomic_size[
+                        hart*`RV64_LSU_SIZE_WIDTH +:
+                        `RV64_LSU_SIZE_WIDTH]),
+                .addr_i(atomic_addr[hart*64 +: 64]),
+                .store_data_i(atomic_operand[hart*64 +: 64]),
+                .mem_ready_i(
+                    atomic_select[hart] &&
+                    atomic_mem_inflight[hart] &&
+                    lsu_resp_valid[hart]),
+                .mem_error_i(lsu_req_error[hart]),
+                .mem_page_fault_i(1'b0),
+                .mem_access_allowed_i(1'b1),
+                .mem_rdata_i(lsu_req_rdata[hart*64 +: 64]),
+                .complete_o(atomic_complete[hart]),
+                .illegal_o(atomic_illegal[hart]),
+                .misaligned_o(atomic_misaligned[hart]),
+                .access_fault_o(atomic_access_fault[hart]),
+                .page_fault_o(atomic_page_fault[hart]),
+                .result_o(atomic_result[hart*64 +: 64]),
+                .mem_valid_o(atomic_mem_valid[hart]),
+                .mem_lock_o(atomic_mem_lock[hart]),
+                .mem_write_o(atomic_mem_write[hart]),
+                .mem_addr_o(atomic_mem_addr[hart*64 +: 64]),
+                .mem_wdata_o(atomic_mem_wdata[hart*64 +: 64]),
+                .mem_wstrb_o(atomic_mem_wstrb[hart*8 +: 8])
+            );
+
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    atomic_mem_inflight[hart] <= 1'b0;
+                end else begin
+                    if (cache_req_valid[hart] &&
+                        lsu_req_ready[hart] &&
+                        atomic_select[hart])
+                        atomic_mem_inflight[hart] <= 1'b1;
+                    if (atomic_select[hart] &&
+                        atomic_mem_inflight[hart] &&
+                        lsu_resp_valid[hart])
+                        atomic_mem_inflight[hart] <= 1'b0;
+                end
+            end
+
             openrv64_l1d_ccx #(
                 .ENABLE(1),
                 .CACHE_BYTES(1024),
@@ -259,7 +481,7 @@ module tb_ccx_4h_l1d_directory_l2;
                 .DEMAND_MSHRS(2),
                 .STORE_BUFFER_LINES(2),
                 .STORE_BUFFER_DRAIN_WATERMARK(2),
-                .STORE_BUFFER_TIMEOUT_CYCLES(128),
+                .STORE_BUFFER_TIMEOUT_CYCLES(16384),
                 .PREFETCH_ENABLE(0),
                 .REQ_TAG_WIDTH(TAG_WIDTH),
                 .REQ_DEPTH(1 << TAG_WIDTH),
@@ -267,17 +489,18 @@ module tb_ccx_4h_l1d_directory_l2;
             ) u_l1d (
                 .clk_i(clk),
                 .rst_ni(rst_n),
-                .req_valid_i(lsu_req_valid[hart]),
+                .req_valid_i(cache_req_valid[hart]),
                 .req_ready_o(lsu_req_ready[hart]),
-                .req_tag_i(lsu_req_tag[hart*TAG_WIDTH +: TAG_WIDTH]),
-                .req_lock_i(1'b0),
-                .req_posted_i(lsu_req_write[hart]),
-                .req_write_i(lsu_req_write[hart]),
+                .req_tag_i(
+                    cache_req_tag[hart*TAG_WIDTH +: TAG_WIDTH]),
+                .req_lock_i(cache_req_lock[hart]),
+                .req_posted_i(cache_req_posted[hart]),
+                .req_write_i(cache_req_write[hart]),
                 .req_cacheable_i(1'b1),
-                .req_addr_i(lsu_req_addr[hart*64 +: 64]),
+                .req_addr_i(cache_req_addr[hart*64 +: 64]),
                 .req_size_i(3'd3),
-                .req_wdata_i(lsu_req_wdata[hart*64 +: 64]),
-                .req_wstrb_i(lsu_req_wstrb[hart*8 +: 8]),
+                .req_wdata_i(cache_req_wdata[hart*64 +: 64]),
+                .req_wstrb_i(cache_req_wstrb[hart*8 +: 8]),
                 .req_rdata_o(lsu_req_rdata[hart*64 +: 64]),
                 .req_error_o(lsu_req_error[hart]),
                 .resp_valid_o(lsu_resp_valid[hart]),
@@ -471,7 +694,7 @@ module tb_ccx_4h_l1d_directory_l2;
     openrv64_ccx_coherent_protocol #(
         .NUM_HARTS(NUM_HARTS),
         .HART_ID_BASE(0),
-        .DIRECTORY_ENTRIES(64),
+        .DIRECTORY_ENTRIES(MEMORY_LINES),
         .DIRECTORY_WAYS(4)
     ) u_directory_frontend (
         .clk_i(clk),
@@ -776,27 +999,297 @@ module tb_ccx_4h_l1d_directory_l2;
         end
     end
 
+    // Verify the exact command/data stream received by the coherence home.
+    // Reference writes are applied in l2_wdata acceptance order, not in the
+    // order in which the four stimulus tasks happened to start.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            home_write_active <= 1'b0;
+            home_write_hart <= 0;
+            home_write_txn_id <=
+                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+            home_write_source_id <=
+                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+            l2_read_expected_valid <= 1'b0;
+            l2_read_expected_data <=
+                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            l2_read_expected_addr <= 64'd0;
+            atomic_sc_success_count <= 0;
+            atomic_lr_command_count <= 0;
+            atomic_sc_command_count <= 0;
+            for (home_score_hart = 0;
+                 home_score_hart < NUM_HARTS;
+                 home_score_hart = home_score_hart + 1) begin
+                expected_home_write_valid[home_score_hart] <= 1'b0;
+                expected_home_write_addr[home_score_hart] <= 64'd0;
+                expected_home_write_data[home_score_hart] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                expected_home_write_strb[home_score_hart] <=
+                    {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+            end
+        end else begin
+            if (ccx_req_valid && ccx_req_ready) begin
+                if (ccx_req_lock)
+                    $fatal(1,
+                        "fabric lock asserted instead of LR/SC opcode");
+                if (ccx_req_op == `OPENRV64_CCX_OP_LR)
+                    atomic_lr_command_count <=
+                        atomic_lr_command_count + 1;
+                if (ccx_req_op == `OPENRV64_CCX_OP_SC)
+                    atomic_sc_command_count <=
+                        atomic_sc_command_count + 1;
+            end
+
+            if (ccx_resp_valid && ccx_resp_ready &&
+                (u_directory_frontend.req_op_q ==
+                 `OPENRV64_CCX_OP_SC)) begin
+                if (!ccx_resp_sc_success)
+                    $fatal(1,
+                        "guarded AMO reached a failed home SC");
+                atomic_sc_success_count <=
+                    atomic_sc_success_count + 1;
+            end
+
+            if (l2_req_valid && l2_req_ready) begin
+                if ((l2_req_addr < MEMORY_BASE) ||
+                    (l2_req_addr >=
+                     (MEMORY_BASE + MEMORY_LINES*64)))
+                    $fatal(1, "L2 request outside stress window addr=%016x",
+                           l2_req_addr);
+                if (l2_req_op == `OPENRV64_CCX_OP_WRITE) begin
+                    home_score_hart = l2_req_hart_id;
+                    if ((home_score_hart < 0) ||
+                        (home_score_hart >= NUM_HARTS))
+                        $fatal(1, "home write has invalid hart %0d",
+                               home_score_hart);
+                    if (home_write_active)
+                        $fatal(1, "overlapping serialized home writes");
+                    if (!expected_home_write_valid[home_score_hart])
+                        $fatal(1,
+                            "unexpected home write hart=%0d addr=%016x",
+                            home_score_hart, l2_req_addr);
+                    if ({l2_req_addr[63:6], 6'b0} !==
+                        expected_home_write_addr[home_score_hart])
+                        $fatal(1,
+                            "home write order/address mismatch hart=%0d got=%016x expected=%016x",
+                            home_score_hart, l2_req_addr,
+                            expected_home_write_addr[home_score_hart]);
+                    home_write_active <= 1'b1;
+                    home_write_hart <= home_score_hart;
+                    home_write_txn_id <= l2_req_txn_id;
+                    home_write_source_id <= l2_req_source_id;
+                end else if (l2_req_op == `OPENRV64_CCX_OP_READ) begin
+                    if (l2_read_expected_valid)
+                        $fatal(1, "overlapping serialized home reads");
+                    l2_read_expected_valid <= 1'b1;
+                    l2_read_expected_addr <=
+                        {l2_req_addr[63:6], 6'b0};
+                    if (l2_req_size == 3'd6)
+                        l2_read_expected_data <=
+                            reference_memory[line_index(l2_req_addr)];
+                    else
+                        l2_read_expected_data <=
+                            ({{448{1'b0}},
+                              reference_memory[
+                                  line_index(l2_req_addr)][
+                                  l2_req_addr[5:3]*64 +: 64]} <<
+                             (l2_req_addr[5:3]*64));
+                end
+            end
+
+            if (l2_wdata_valid && l2_wdata_ready) begin
+                if (!home_write_active)
+                    $fatal(1, "home write data arrived without command");
+                if ((l2_wdata_hart_id != home_write_hart) ||
+                    (l2_wdata_txn_id != home_write_txn_id) ||
+                    (l2_wdata_source_id != home_write_source_id) ||
+                    (l2_wdata_beat_index !=
+                     {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
+                    !l2_wdata_last)
+                    $fatal(1, "home write data identity mismatch");
+                if (l2_wdata !==
+                    expected_home_write_data[home_write_hart])
+                    $fatal(1,
+                        "home write payload mismatch hart=%0d",
+                        home_write_hart);
+                if (l2_wstrb !==
+                    expected_home_write_strb[home_write_hart])
+                    $fatal(1,
+                        "home write strobe mismatch hart=%0d got=%016x expected=%016x",
+                        home_write_hart, l2_wstrb,
+                        expected_home_write_strb[home_write_hart]);
+                for (home_score_byte = 0;
+                     home_score_byte <
+                         `OPENRV64_CCX_LINE_STRB_WIDTH;
+                     home_score_byte = home_score_byte + 1)
+                    if (l2_wstrb[home_score_byte])
+                        reference_memory[
+                            line_index(
+                                expected_home_write_addr[
+                                    home_write_hart])][
+                            home_score_byte*8 +: 8] <=
+                            l2_wdata[home_score_byte*8 +: 8];
+                expected_home_write_valid[home_write_hart] <= 1'b0;
+                home_write_active <= 1'b0;
+            end
+
+            if (l2_resp_valid && l2_resp_ready &&
+                l2_read_expected_valid) begin
+                if (l2_resp_error ||
+                    (l2_resp_rdata !== l2_read_expected_data))
+                    $fatal(1,
+                        "home read data mismatch addr=%016x error=%0b got=%0128x expected=%0128x",
+                        l2_read_expected_addr, l2_resp_error,
+                        l2_resp_rdata, l2_read_expected_data);
+                l2_read_expected_valid <= 1'b0;
+            end
+        end
+    end
+
+    // Compare accepted LSU-side tags with the exact normal/posted response
+    // stream.  Four harts may complete in any relative order.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (score_hart = 0;
+                 score_hart < NUM_HARTS;
+                 score_hart = score_hart + 1) begin
+                request_sent_count[score_hart] <= 0;
+                response_received_count[score_hart] <= 0;
+                for (score_tag = 0;
+                     score_tag < TAG_COUNT;
+                     score_tag = score_tag + 1) begin
+                    tag_pending[score_hart][score_tag] <= 1'b0;
+                    tag_pending_posted[score_hart][score_tag] <= 1'b0;
+                    tag_pending_write[score_hart][score_tag] <= 1'b0;
+                    tag_pending_addr[score_hart][score_tag] <= 64'd0;
+                    tag_pending_read_data[score_hart][score_tag] <=
+                        64'd0;
+                end
+            end
+        end else begin
+            for (score_hart = 0;
+                 score_hart < NUM_HARTS;
+                 score_hart = score_hart + 1) begin
+                if (cache_req_valid[score_hart] &&
+                    lsu_req_ready[score_hart]) begin
+                    score_tag =
+                        cache_req_tag[
+                            score_hart*TAG_WIDTH +: TAG_WIDTH];
+                    if (tag_pending[score_hart][score_tag])
+                        $fatal(1,
+                            "hart %0d reused pending LSU tag %0d",
+                            score_hart, score_tag);
+                    tag_pending[score_hart][score_tag] <= 1'b1;
+                    tag_pending_posted[score_hart][score_tag] <=
+                        cache_req_posted[score_hart];
+                    tag_pending_write[score_hart][score_tag] <=
+                        cache_req_write[score_hart];
+                    tag_pending_addr[score_hart][score_tag] <=
+                        cache_req_addr[score_hart*64 +: 64];
+                    score_word =
+                        cache_req_addr[
+                            score_hart*64 + 3 +: 3];
+                    tag_pending_read_data[score_hart][score_tag] <=
+                        reference_memory[
+                            line_index(
+                                cache_req_addr[
+                                    score_hart*64 +: 64])][
+                            score_word*64 +: 64];
+                    request_sent_count[score_hart] <=
+                        request_sent_count[score_hart] + 1;
+                end
+
+                if (lsu_resp_valid[score_hart]) begin
+                    score_tag =
+                        lsu_resp_tag[
+                            score_hart*TAG_WIDTH +: TAG_WIDTH];
+                    if (!tag_pending[score_hart][score_tag] ||
+                        tag_pending_posted[score_hart][score_tag])
+                        $fatal(1,
+                            "hart %0d unexpected normal response tag=%0d",
+                            score_hart, score_tag);
+                    if (lsu_req_error[score_hart])
+                        $fatal(1,
+                            "hart %0d response error tag=%0d",
+                            score_hart, score_tag);
+                    if (!tag_pending_write[score_hart][score_tag] &&
+                        (lsu_req_rdata[score_hart*64 +: 64] !==
+                         tag_pending_read_data[score_hart][score_tag]))
+                        $fatal(1,
+                            "hart %0d response data mismatch tag=%0d addr=%016x got=%016x expected=%016x",
+                            score_hart, score_tag,
+                            tag_pending_addr[score_hart][score_tag],
+                            lsu_req_rdata[score_hart*64 +: 64],
+                            tag_pending_read_data[
+                                score_hart][score_tag]);
+                    tag_pending[score_hart][score_tag] <= 1'b0;
+                    response_received_count[score_hart] <=
+                        response_received_count[score_hart] + 1;
+                end
+
+                if (lsu_posted_resp_valid[score_hart]) begin
+                    score_tag =
+                        lsu_posted_resp_tag[
+                            score_hart*TAG_WIDTH +: TAG_WIDTH];
+                    if (!tag_pending[score_hart][score_tag] ||
+                        !tag_pending_posted[score_hart][score_tag])
+                        $fatal(1,
+                            "hart %0d unexpected posted response tag=%0d",
+                            score_hart, score_tag);
+                    tag_pending[score_hart][score_tag] <= 1'b0;
+                    response_received_count[score_hart] <=
+                        response_received_count[score_hart] + 1;
+                end
+            end
+        end
+    end
+
+    task automatic expect_home_write;
+        input integer selected_hart;
+        input [63:0] address;
+        input [63:0] data;
+        begin
+            if (expected_home_write_valid[selected_hart])
+                $fatal(1,
+                    "hart %0d already has an expected home write",
+                    selected_hart);
+            expected_home_write_valid[selected_hart] = 1'b1;
+            expected_home_write_addr[selected_hart] =
+                {address[63:6], 6'b0};
+            expected_home_write_data[selected_hart] =
+                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            expected_home_write_data[selected_hart][
+                address[5:3]*64 +: 64] = data;
+            expected_home_write_strb[selected_hart] =
+                {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+            expected_home_write_strb[selected_hart][
+                address[5:3]*8 +: 8] = 8'hff;
+        end
+    endtask
+
     task automatic issue_load;
         input integer selected_hart;
         input [63:0] address;
         input [63:0] expected;
         logic [TAG_WIDTH-1:0] selected_tag;
+        integer task_wait_cycles;
         begin
             selected_tag =
                 next_lsu_tag[selected_hart*TAG_WIDTH +: TAG_WIDTH];
             @(negedge clk);
             lsu_req_valid[selected_hart] = 1'b1;
+            lsu_req_lock[selected_hart] = 1'b0;
             lsu_req_write[selected_hart] = 1'b0;
             lsu_req_tag[selected_hart*TAG_WIDTH +: TAG_WIDTH] =
                 selected_tag;
             lsu_req_addr[selected_hart*64 +: 64] = address;
             lsu_req_wdata[selected_hart*64 +: 64] = 64'd0;
             lsu_req_wstrb[selected_hart*8 +: 8] = 8'd0;
-            wait_cycles = 0;
+            task_wait_cycles = 0;
             while (!lsu_req_ready[selected_hart] &&
-                   (wait_cycles < 1000)) begin
+                   (task_wait_cycles < 1000)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                task_wait_cycles = task_wait_cycles + 1;
             end
             if (!lsu_req_ready[selected_hart])
                 $fatal(1, "hart %0d load request timeout",
@@ -806,11 +1299,11 @@ module tb_ccx_4h_l1d_directory_l2;
             lsu_req_valid[selected_hart] = 1'b0;
             lsu_req_addr[selected_hart*64 +: 64] = 64'd0;
 
-            wait_cycles = 0;
+            task_wait_cycles = 0;
             while (!lsu_resp_valid[selected_hart] &&
-                   (wait_cycles < 2000)) begin
+                   (task_wait_cycles < 4000)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                task_wait_cycles = task_wait_cycles + 1;
             end
             if (!lsu_resp_valid[selected_hart])
                 $fatal(1, "hart %0d load response timeout",
@@ -838,22 +1331,25 @@ module tb_ccx_4h_l1d_directory_l2;
         input [63:0] address;
         input [63:0] data;
         logic [TAG_WIDTH-1:0] selected_tag;
+        integer task_wait_cycles;
         begin
             selected_tag =
                 next_lsu_tag[selected_hart*TAG_WIDTH +: TAG_WIDTH];
             @(negedge clk);
+            expect_home_write(selected_hart, address, data);
             lsu_req_valid[selected_hart] = 1'b1;
+            lsu_req_lock[selected_hart] = 1'b0;
             lsu_req_write[selected_hart] = 1'b1;
             lsu_req_tag[selected_hart*TAG_WIDTH +: TAG_WIDTH] =
                 selected_tag;
             lsu_req_addr[selected_hart*64 +: 64] = address;
             lsu_req_wdata[selected_hart*64 +: 64] = data;
             lsu_req_wstrb[selected_hart*8 +: 8] = 8'hff;
-            wait_cycles = 0;
+            task_wait_cycles = 0;
             while (!lsu_req_ready[selected_hart] &&
-                   (wait_cycles < 1000)) begin
+                   (task_wait_cycles < 1000)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                task_wait_cycles = task_wait_cycles + 1;
             end
             if (!lsu_req_ready[selected_hart])
                 $fatal(1, "hart %0d store request timeout",
@@ -866,11 +1362,11 @@ module tb_ccx_4h_l1d_directory_l2;
             lsu_req_wdata[selected_hart*64 +: 64] = 64'd0;
             lsu_req_wstrb[selected_hart*8 +: 8] = 8'd0;
 
-            wait_cycles = 0;
+            task_wait_cycles = 0;
             while (!lsu_posted_resp_valid[selected_hart] &&
-                   (wait_cycles < 1000)) begin
+                   (task_wait_cycles < 1000)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                task_wait_cycles = task_wait_cycles + 1;
             end
             if (!lsu_posted_resp_valid[selected_hart] ||
                 (lsu_posted_resp_tag[
@@ -886,17 +1382,18 @@ module tb_ccx_4h_l1d_directory_l2;
 
     task automatic drain_stores;
         input integer selected_hart;
+        integer task_wait_cycles;
         begin
             @(negedge clk);
             speculation_barrier[selected_hart] = 1'b1;
             @(posedge clk);
             @(negedge clk);
             speculation_barrier[selected_hart] = 1'b0;
-            wait_cycles = 0;
+            task_wait_cycles = 0;
             while (store_barrier_busy[selected_hart] &&
-                   (wait_cycles < 3000)) begin
+                   (task_wait_cycles < 8000)) begin
                 @(negedge clk);
-                wait_cycles = wait_cycles + 1;
+                task_wait_cycles = task_wait_cycles + 1;
             end
             if (store_barrier_busy[selected_hart])
                 $fatal(1, "hart %0d store barrier timeout",
@@ -904,6 +1401,145 @@ module tb_ccx_4h_l1d_directory_l2;
             if (lsu_store_resp_error[selected_hart])
                 $fatal(1, "hart %0d downstream store error",
                        selected_hart);
+            if (expected_home_write_valid[selected_hart])
+                $fatal(1,
+                    "hart %0d barrier completed before home write",
+                    selected_hart);
+        end
+    endtask
+
+    task automatic drain_store_mask;
+        input [NUM_HARTS-1:0] selected_harts;
+        integer selected_hart;
+        begin
+            // A probe cannot currently preempt another demand/backend command
+            // at its target L1D.  Simultaneous store drains can therefore form
+            // a cycle through the serialized home.  Keep issue concurrent but
+            // drain each selected endpoint separately until the production
+            // probe queue removes that progress dependency.
+            for (selected_hart = 0;
+                 selected_hart < NUM_HARTS;
+                 selected_hart = selected_hart + 1)
+                if (selected_harts[selected_hart])
+                    drain_stores(selected_hart);
+        end
+    endtask
+
+    task automatic run_planned_operation;
+        input integer selected_hart;
+        begin
+            if (planned_write[selected_hart])
+                issue_store(selected_hart,
+                            planned_addr[selected_hart],
+                            planned_data[selected_hart]);
+            else
+                issue_load(selected_hart,
+                           planned_addr[selected_hart],
+                           planned_expected[selected_hart]);
+        end
+    endtask
+
+    task automatic issue_atomic;
+        input integer selected_hart;
+        input [`RV64_LSU_OP_WIDTH-1:0] selected_op;
+        input [63:0] address;
+        input [63:0] operand;
+        logic [TAG_WIDTH-1:0] selected_tag;
+        logic [63:0] expected_old;
+        logic [63:0] expected_new;
+        integer task_wait_cycles;
+        integer sc_count_before;
+        begin
+            if (home_write_active || l2_read_expected_valid)
+                $fatal(1, "atomic started while home was active");
+            expected_old =
+                reference_memory[line_index(address)][
+                    address[5:3]*64 +: 64];
+            expected_new =
+                amo_result(selected_op, expected_old, operand);
+            selected_tag =
+                next_lsu_tag[selected_hart*TAG_WIDTH +: TAG_WIDTH];
+            expect_home_write(selected_hart, address, expected_new);
+            sc_count_before = atomic_sc_success_count;
+
+            @(negedge clk);
+            atomic_select[selected_hart] = 1'b1;
+            atomic_valid[selected_hart] = 1'b1;
+            atomic_consume[selected_hart] = 1'b0;
+            atomic_op[
+                selected_hart*`RV64_LSU_OP_WIDTH +:
+                `RV64_LSU_OP_WIDTH] = selected_op;
+            atomic_size[
+                selected_hart*`RV64_LSU_SIZE_WIDTH +:
+                `RV64_LSU_SIZE_WIDTH] = `RV64_LSU_SIZE_DWORD;
+            atomic_addr[selected_hart*64 +: 64] = address;
+            atomic_operand[selected_hart*64 +: 64] = operand;
+            atomic_tag[selected_hart*TAG_WIDTH +: TAG_WIDTH] =
+                selected_tag;
+
+            task_wait_cycles = 0;
+            while (!atomic_complete[selected_hart] &&
+                   (task_wait_cycles < 12000)) begin
+                @(negedge clk);
+                task_wait_cycles = task_wait_cycles + 1;
+            end
+            if (!atomic_complete[selected_hart])
+                $fatal(1,
+                    "hart %0d atomic timeout engine=%0d mem_valid=%0b mem_write=%0b inflight=%0b l1_backend=%0d home=%0d ccx_req=%0b/%0b ccx_resp=%0b/%0b",
+                    selected_hart,
+                    atomic_state_debug[selected_hart*3 +: 3],
+                    atomic_mem_valid[selected_hart],
+                    atomic_mem_write[selected_hart],
+                    atomic_mem_inflight[selected_hart],
+                    l1d_backend_state_debug[selected_hart*2 +: 2],
+                    u_directory_frontend.state_q,
+                    ccx_req_valid, ccx_req_ready,
+                    ccx_resp_valid, ccx_resp_ready);
+            if (atomic_illegal[selected_hart] ||
+                atomic_misaligned[selected_hart] ||
+                atomic_access_fault[selected_hart] ||
+                atomic_page_fault[selected_hart])
+                $fatal(1,
+                    "hart %0d atomic fault illegal=%0b misaligned=%0b access=%0b page=%0b",
+                    selected_hart,
+                    atomic_illegal[selected_hart],
+                    atomic_misaligned[selected_hart],
+                    atomic_access_fault[selected_hart],
+                    atomic_page_fault[selected_hart]);
+            if (atomic_result[selected_hart*64 +: 64] !==
+                expected_old)
+                $fatal(1,
+                    "hart %0d atomic old value mismatch got=%016x expected=%016x",
+                    selected_hart,
+                    atomic_result[selected_hart*64 +: 64],
+                    expected_old);
+            if (atomic_sc_success_count != sc_count_before + 1)
+                $fatal(1,
+                    "hart %0d atomic did not complete one successful SC",
+                    selected_hart);
+            if (expected_home_write_valid[selected_hart])
+                $fatal(1,
+                    "hart %0d atomic completed before home write",
+                    selected_hart);
+            if (reference_memory[line_index(address)][
+                    address[5:3]*64 +: 64] !== expected_new)
+                $fatal(1,
+                    "hart %0d atomic reference update mismatch",
+                    selected_hart);
+
+            atomic_consume[selected_hart] = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            atomic_consume[selected_hart] = 1'b0;
+            atomic_valid[selected_hart] = 1'b0;
+            atomic_select[selected_hart] = 1'b0;
+            atomic_op[
+                selected_hart*`RV64_LSU_OP_WIDTH +:
+                `RV64_LSU_OP_WIDTH] = `RV64_LSU_OP_INVALID;
+            atomic_addr[selected_hart*64 +: 64] = 64'd0;
+            atomic_operand[selected_hart*64 +: 64] = 64'd0;
+            next_lsu_tag[selected_hart*TAG_WIDTH +: TAG_WIDTH] =
+                selected_tag + 1'b1;
         end
     endtask
 
@@ -921,13 +1557,21 @@ module tb_ccx_4h_l1d_directory_l2;
              memory_line_index = memory_line_index + 1) begin
             memory[memory_line_index] =
                 {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            reference_memory[memory_line_index] =
+                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
             for (memory_word_index = 0;
                  memory_word_index < 8;
-                 memory_word_index = memory_word_index + 1)
+                 memory_word_index = memory_word_index + 1) begin
                 memory[memory_line_index][memory_word_index*64 +: 64] =
                     initial_memory_word(
                         MEMORY_BASE + memory_line_index*64 +
                         memory_word_index*8);
+                reference_memory[memory_line_index][
+                    memory_word_index*64 +: 64] =
+                    initial_memory_word(
+                        MEMORY_BASE + memory_line_index*64 +
+                        memory_word_index*8);
+            end
         end
     end
 
@@ -935,6 +1579,7 @@ module tb_ccx_4h_l1d_directory_l2;
         rst_n = 1'b0;
         cycle_count = 0;
         lsu_req_valid = {NUM_HARTS{1'b0}};
+        lsu_req_lock = {NUM_HARTS{1'b0}};
         lsu_req_write = {NUM_HARTS{1'b0}};
         lsu_req_tag = {NUM_HARTS*TAG_WIDTH{1'b0}};
         lsu_req_addr = {NUM_HARTS*64{1'b0}};
@@ -942,6 +1587,23 @@ module tb_ccx_4h_l1d_directory_l2;
         lsu_req_wstrb = {NUM_HARTS*8{1'b0}};
         speculation_barrier = {NUM_HARTS{1'b0}};
         next_lsu_tag = {NUM_HARTS*TAG_WIDTH{1'b0}};
+        atomic_select = {NUM_HARTS{1'b0}};
+        atomic_valid = {NUM_HARTS{1'b0}};
+        atomic_consume = {NUM_HARTS{1'b0}};
+        atomic_op =
+            {NUM_HARTS{`RV64_LSU_OP_INVALID}};
+        atomic_size =
+            {NUM_HARTS{`RV64_LSU_SIZE_DWORD}};
+        atomic_addr = {NUM_HARTS*64{1'b0}};
+        atomic_operand = {NUM_HARTS*64{1'b0}};
+        atomic_tag = {NUM_HARTS*TAG_WIDTH{1'b0}};
+        if (!$value$plusargs("seed=%d", random_seed))
+            random_seed = 32'h4c32_4343;
+        random_state = random_seed;
+        if (random_state == 0)
+            random_state = 32'h1;
+        random_store_count = 0;
+        atomic_sequence = 0;
 
         repeat (6) @(posedge clk);
         @(negedge clk);
@@ -965,9 +1627,8 @@ module tb_ccx_4h_l1d_directory_l2;
         if (l2_command_count != commands_before)
             $fatal(1, "hart 0 resident load escaped L1D");
 
-        // Hart 2 has no cached A copy, avoiding a self-probe limitation in
-        // the current idle/drain-coupled L1D invalidation seam.  Its posted
-        // write must invalidate the recorded harts 0 and 1 before L2 sees it.
+        // Hart 2 has no cached A copy.  Its posted write must invalidate the
+        // recorded harts 0 and 1 before L2 sees it.
         issue_store(2, LINE_A, WRITE_A0);
         drain_stores(2);
         if ((probe_accept_count[0] != 1) ||
@@ -1012,13 +1673,179 @@ module tb_ccx_4h_l1d_directory_l2;
             $fatal(1, "L2 write command count=%0d expected=2",
                    l2_write_count);
 
+        // Four operations are launched per round.  Their lines are distinct
+        // within the round, so the accepted home order is the only ordering
+        // needed to update the reference model.  Stores remain posted until
+        // all concurrent loads have completed; this avoids conflating the
+        // current probe-progress limitation with data-order verification.
+        for (random_round = 0;
+             random_round < RANDOM_ROUNDS;
+             random_round = random_round + 1) begin
+            planned_store_mask = {NUM_HARTS{1'b0}};
+            // At most one private store buffer may be non-empty.  A home
+            // probe currently forces a target buffer to drain before it can
+            // ACK, which otherwise permits a circular wait through the
+            // serialized directory.  Rotate the writer so every hart
+            // generates the same amount of store traffic.
+            random_store_hart =
+                (random_round + random_seed) % NUM_HARTS;
+            for (random_hart = 0;
+                 random_hart < NUM_HARTS;
+                 random_hart = random_hart + 1) begin
+                random_line_unique = 0;
+                while (!random_line_unique) begin
+                    random_state = xorshift32(random_state);
+                    planned_line[random_hart] = random_state[8:0];
+                    random_line_unique = 1;
+                    for (random_prior_hart = 0;
+                         random_prior_hart < random_hart;
+                         random_prior_hart =
+                             random_prior_hart + 1)
+                        if (planned_line[random_hart] ==
+                            planned_line[random_prior_hart])
+                            random_line_unique = 0;
+                end
+                random_state = xorshift32(random_state);
+                planned_word[random_hart] = random_state[2:0];
+                random_state = xorshift32(random_state);
+                planned_write[random_hart] =
+                    (random_hart == random_store_hart);
+                random_state = xorshift32(random_state);
+                planned_data[random_hart][31:0] = random_state;
+                random_state = xorshift32(random_state);
+                planned_data[random_hart][63:32] = random_state;
+                planned_addr[random_hart] =
+                    MEMORY_BASE +
+                    planned_line[random_hart]*64 +
+                    planned_word[random_hart]*8;
+                planned_expected[random_hart] =
+                    reference_memory[planned_line[random_hart]][
+                        planned_word[random_hart]*64 +: 64];
+                planned_store_mask[random_hart] =
+                    planned_write[random_hart];
+                if (planned_write[random_hart])
+                    random_store_count = random_store_count + 1;
+            end
+
+            fork
+                run_planned_operation(0);
+                run_planned_operation(1);
+                run_planned_operation(2);
+                run_planned_operation(3);
+            join
+            drain_store_mask(planned_store_mask);
+
+            if ((ATOMIC_INTERVAL > 0) &&
+                (((random_round + 1) % ATOMIC_INTERVAL) == 0)) begin
+                random_state = xorshift32(random_state);
+                atomic_random_addr =
+                    MEMORY_BASE +
+                    random_state[8:0]*64;
+                random_state = xorshift32(random_state);
+                atomic_random_addr =
+                    atomic_random_addr + random_state[2:0]*8;
+                random_state = xorshift32(random_state);
+                atomic_random_operand[31:0] = random_state;
+                random_state = xorshift32(random_state);
+                atomic_random_operand[63:32] = random_state;
+                case (atomic_sequence % 9)
+                    0: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOSWAP,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    1: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOADD,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    2: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOXOR,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    3: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOAND,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    4: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOOR,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    5: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOMIN,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    6: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOMAX,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    7: issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOMINU,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                    default:
+                       issue_atomic(atomic_sequence % NUM_HARTS,
+                                    `RV64_LSU_OP_AMOMAXU,
+                                    atomic_random_addr,
+                                    atomic_random_operand);
+                endcase
+                atomic_sequence = atomic_sequence + 1;
+            end
+
+            if (((random_round + 1) % 256) == 0)
+                $display(
+                    "progress: rounds=%0d ordinary_ops=%0d atomics=%0d cycles=%0d",
+                    random_round + 1,
+                    (random_round + 1)*NUM_HARTS,
+                    atomic_sequence, cycle_count);
+        end
+
+        for (hart_index = 0;
+             hart_index < NUM_HARTS;
+             hart_index = hart_index + 1) begin
+            if (request_sent_count[hart_index] !=
+                response_received_count[hart_index])
+                $fatal(1,
+                    "hart %0d sent/received mismatch %0d/%0d",
+                    hart_index, request_sent_count[hart_index],
+                    response_received_count[hart_index]);
+            for (memory_word_index = 0;
+                 memory_word_index < TAG_COUNT;
+                 memory_word_index = memory_word_index + 1)
+                if (tag_pending[hart_index][memory_word_index])
+                    $fatal(1,
+                        "hart %0d tag %0d remains pending",
+                        hart_index, memory_word_index);
+            if (expected_home_write_valid[hart_index])
+                $fatal(1,
+                    "hart %0d expected home write remains pending",
+                    hart_index);
+        end
+        if (home_write_active || l2_read_expected_valid)
+            $fatal(1, "home verifier still has an active transaction");
+        if ((atomic_lr_command_count != atomic_sequence) ||
+            (atomic_sc_command_count != atomic_sequence) ||
+            (atomic_sc_success_count != atomic_sequence))
+            $fatal(1,
+                "atomic command counts lr=%0d sc=%0d success=%0d expected=%0d",
+                atomic_lr_command_count, atomic_sc_command_count,
+                atomic_sc_success_count, atomic_sequence);
+        if (l2_write_count !=
+            (2 + random_store_count + atomic_sequence))
+            $fatal(1,
+                "home write count=%0d expected=%0d",
+                l2_write_count,
+                2 + random_store_count + atomic_sequence);
+        if (protocol_error)
+            $fatal(1, "coherent protocol failed during random stress");
+
         $display(
-            "PASS: 4 LSU agents -> 4 L1D -> CCX directory -> shared L2");
+            "PASS: rounds=%0d ops=%0d stores=%0d atomics=%0d sent/received verified",
+            RANDOM_ROUNDS, RANDOM_ROUNDS*NUM_HARTS,
+            random_store_count, atomic_sequence);
         $finish;
     end
 
     initial begin
-        repeat (20000) @(posedge clk);
+        repeat (RANDOM_ROUNDS*1000 + 200000) @(posedge clk);
         $fatal(1, "four-hart L1D/directory/L2 test timed out");
     end
 

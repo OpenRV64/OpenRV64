@@ -18,7 +18,7 @@ module openrv64_rv64_top_3p #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
     parameter ENABLE_RV64M = 0,
-    parameter integer RETIRE_DEPTH = 8,
+    parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer PHYS_REG_ADDR_WIDTH =
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),

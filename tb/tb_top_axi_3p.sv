@@ -525,7 +525,7 @@ module tb_top_axi_3p #(
     parameter integer BP_BTB_ENTRIES = 256,
     parameter integer BP_BTB_TAG_BITS = 16,
     parameter integer BP_INFLIGHT_DEPTH = 16,
-    parameter integer RETIRE_DEPTH = 8,
+    parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_FORWARD_MASK = 3'b001,

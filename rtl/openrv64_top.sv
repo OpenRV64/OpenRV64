@@ -11,7 +11,7 @@ module openrv64_top #(
         `OPENRV64_BACKEND_1P,
     parameter logic [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
-    parameter int unsigned RETIRE_DEPTH = 8,
+    parameter int unsigned RETIRE_DEPTH = 16,
     parameter int unsigned PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter int unsigned PHYS_REG_ADDR_WIDTH =
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
