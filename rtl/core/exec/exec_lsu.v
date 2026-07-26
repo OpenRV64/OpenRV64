@@ -9,9 +9,10 @@
 
 // Backend-facing LSU containing the unified LSQ.
 //
-// The LSQ owns ordering and transaction state.  This wrapper owns instruction
-// semantics: address generation, RV64A sequencing, exception construction,
-// and conversion between opaque backend packets and completion packets.
+// The LSQ owns ordering and transaction state.  This wrapper owns address
+// generation, memory/result arbitration, exception construction, and conversion
+// between opaque backend packets and completion packets.  RV64A sequencing lives
+// in lsu/atomics.v.
 module openrv64_exec_lsu #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer LOAD_QUEUE_DEPTH = 4,
@@ -241,15 +242,34 @@ module openrv64_exec_lsu #(
     wire [RETIRE_SLOT_WIDTH-1:0] atomic_start_slot;
     wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] atomic_start_meta;
     wire atomic_start_access_allowed;
-    reg atomic_active_q;
-    reg atomic_irrevocable_q;
-    reg atomic_req_inflight_q;
-    reg [LSU_TAG_WIDTH-1:0] atomic_tag_q;
-    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] atomic_id_q;
-    reg [RETIRE_SLOT_WIDTH-1:0] atomic_slot_q;
-    reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] atomic_meta_q;
-    reg atomic_access_allowed_q;
+    wire atomic_start_ready;
+    wire atomic_active;
+    wire atomic_irrevocable;
+    wire [LSU_TAG_WIDTH-1:0] atomic_tag;
     wire atomic_done;
+
+    wire atomic_mem_valid;
+    wire [LSU_TAG_WIDTH-1:0] atomic_mem_tag;
+    wire atomic_mem_lock;
+    wire atomic_mem_write;
+    wire [`RV64_XLEN-1:0] atomic_mem_addr;
+    wire [`RV64_XLEN-1:0] atomic_mem_wdata;
+    wire [7:0] atomic_mem_wstrb;
+    wire [`RV64_XLEN-1:0] atomic_effective_addr;
+    wire [2:0] atomic_access_size;
+    wire atomic_resp_claim;
+    wire atomic_resp_ready;
+
+    wire atomic_result_valid;
+    wire atomic_result_ready;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] atomic_result_id;
+    wire [RETIRE_SLOT_WIDTH-1:0] atomic_result_slot;
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] atomic_result_meta;
+    wire [`RV64_XLEN-1:0] atomic_result;
+    wire atomic_illegal;
+    wire atomic_misaligned;
+    wire atomic_access_fault;
+    wire atomic_page_fault;
 
     openrv64_lsq #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
@@ -299,9 +319,9 @@ module openrv64_exec_lsu #(
         .atomic_start_slot_o(atomic_start_slot),
         .atomic_start_meta_o(atomic_start_meta),
         .atomic_start_access_allowed_o(atomic_start_access_allowed),
-        .atomic_active_i(atomic_active_q),
-        .atomic_tag_i(atomic_tag_q),
-        .atomic_irrevocable_i(atomic_irrevocable_q),
+        .atomic_active_i(atomic_active),
+        .atomic_tag_i(atomic_tag),
+        .atomic_irrevocable_i(atomic_irrevocable),
         .atomic_done_i(atomic_done),
         .xlate_req_valid_o(xlate_valid_o),
         .xlate_req_ready_i(xlate_ready_i),
@@ -345,93 +365,79 @@ module openrv64_exec_lsu #(
         .store_pending_o(store_pending_o)
     );
 
-    wire [`RV64_INSTR_WIDTH-1:0] atomic_instr =
-        atomic_meta_q[I_INSTR +: `RV64_INSTR_WIDTH];
-    wire [`RV64_LSU_OP_WIDTH-1:0] atomic_lsu_op =
-        atomic_meta_q[I_LSU_OP +: `RV64_LSU_OP_WIDTH];
-    wire [`RV64_XLEN-1:0] atomic_rs1_data =
-        atomic_meta_q[I_RS1_DATA +: `RV64_XLEN];
-    wire [`RV64_XLEN-1:0] atomic_rs2_data =
-        atomic_meta_q[I_RS2_DATA +: `RV64_XLEN];
-    wire [`RV64_XLEN-1:0] atomic_imm =
-        atomic_meta_q[I_IMM +: `RV64_XLEN];
-    wire [`RV64_XLEN-1:0] atomic_effective_addr =
-        atomic_rs1_data + atomic_imm;
-    wire [2:0] atomic_access_size = {1'b0, atomic_instr[13:12]};
-    wire atomic_complete;
-    wire atomic_illegal;
-    wire atomic_misaligned;
-    wire atomic_access_fault;
-    wire atomic_page_fault;
-    wire [`RV64_XLEN-1:0] atomic_result;
-    wire atomic_mem_valid;
-    wire atomic_mem_lock;
-    wire atomic_mem_write;
-    wire [`RV64_XLEN-1:0] atomic_mem_addr;
-    wire [`RV64_XLEN-1:0] atomic_mem_wdata;
-    wire [7:0] atomic_mem_wstrb;
-
-    wire atomic_response = atomic_active_q && atomic_req_inflight_q &&
-                           (mem_resp_tag_i == atomic_tag_q);
-    assign lsq_resp_valid = mem_resp_valid_i && !atomic_response;
-    assign mem_resp_ready_o = atomic_response ? 1'b1 : lsq_resp_ready;
-    wire mem_resp_fire = mem_resp_valid_i && mem_resp_ready_o;
-    wire atomic_resp_fire = mem_resp_fire && atomic_response;
     wire clear_atomic_reservation =
         lsq_result_valid && lsq_result_ready && lsq_result_store;
 
-    openrv64_exec_lsu_rv64a u_atomic (
+    openrv64_lsu_atomics #(
+        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .LSU_TAG_WIDTH(LSU_TAG_WIDTH),
+        .META_WIDTH(`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH)
+    ) u_atomics (
         .clk(clk),
         .rst_n(rst_n),
-        .flush_i(flush_i && !atomic_irrevocable_q),
-        .valid_i(atomic_active_q),
-        .consume_i(atomic_done),
+        .flush_i(flush_i),
+        .start_valid_i(atomic_start_valid),
+        .start_ready_o(atomic_start_ready),
+        .start_tag_i(atomic_start_tag),
+        .start_id_i(atomic_start_id),
+        .start_slot_i(atomic_start_slot),
+        .start_meta_i(atomic_start_meta),
+        .start_access_allowed_i(atomic_start_access_allowed),
         .clear_reservation_i(clear_atomic_reservation),
-        .op_sel_i(atomic_lsu_op),
-        .size_sel_i(atomic_access_size[`RV64_LSU_SIZE_WIDTH-1:0]),
-        .addr_i(atomic_effective_addr),
-        .store_data_i(atomic_rs2_data),
-        .mem_ready_i(atomic_resp_fire),
-        .mem_error_i(mem_error_i),
-        .mem_page_fault_i(mem_page_fault_i),
-        .mem_access_allowed_i(atomic_access_allowed_q),
-        .mem_rdata_i(mem_rdata_i),
-        .complete_o(atomic_complete),
-        .illegal_o(atomic_illegal),
-        .misaligned_o(atomic_misaligned),
-        .access_fault_o(atomic_access_fault),
-        .page_fault_o(atomic_page_fault),
-        .result_o(atomic_result),
+        .active_o(atomic_active),
+        .irrevocable_o(atomic_irrevocable),
+        .active_tag_o(atomic_tag),
         .mem_valid_o(atomic_mem_valid),
+        .mem_ready_i(mem_ready_i),
+        .mem_tag_o(atomic_mem_tag),
         .mem_lock_o(atomic_mem_lock),
         .mem_write_o(atomic_mem_write),
         .mem_addr_o(atomic_mem_addr),
         .mem_wdata_o(atomic_mem_wdata),
-        .mem_wstrb_o(atomic_mem_wstrb)
+        .mem_wstrb_o(atomic_mem_wstrb),
+        .mem_effective_addr_o(atomic_effective_addr),
+        .mem_size_o(atomic_access_size),
+        .mem_resp_valid_i(mem_resp_valid_i),
+        .mem_resp_claim_o(atomic_resp_claim),
+        .mem_resp_ready_o(atomic_resp_ready),
+        .mem_resp_tag_i(mem_resp_tag_i),
+        .mem_rdata_i(mem_rdata_i),
+        .mem_error_i(mem_error_i),
+        .mem_page_fault_i(mem_page_fault_i),
+        .result_valid_o(atomic_result_valid),
+        .result_ready_i(atomic_result_ready),
+        .result_id_o(atomic_result_id),
+        .result_slot_o(atomic_result_slot),
+        .result_meta_o(atomic_result_meta),
+        .result_data_o(atomic_result),
+        .result_illegal_o(atomic_illegal),
+        .result_misaligned_o(atomic_misaligned),
+        .result_access_fault_o(atomic_access_fault),
+        .result_page_fault_o(atomic_page_fault),
+        .done_o(atomic_done)
     );
 
-    wire atomic_request_valid =
-        atomic_active_q && atomic_mem_valid && !atomic_req_inflight_q;
-    assign mem_valid_o = atomic_active_q ? atomic_request_valid :
-                         lsq_req_valid;
-    assign mem_tag_o = atomic_active_q ? atomic_tag_q : lsq_req_tag;
+    assign lsq_resp_valid = mem_resp_valid_i && !atomic_resp_claim;
+    assign mem_resp_ready_o = atomic_resp_claim ? atomic_resp_ready :
+                              lsq_resp_ready;
+
+    assign mem_valid_o = atomic_active ? atomic_mem_valid : lsq_req_valid;
+    assign mem_tag_o = atomic_active ? atomic_mem_tag : lsq_req_tag;
     assign mem_xlate_only_o = 1'b0;
-    assign mem_physical_o = !atomic_active_q;
-    assign mem_lock_o = atomic_active_q ? atomic_mem_lock : 1'b0;
-    assign mem_write_o = atomic_active_q ? atomic_mem_write :
+    assign mem_physical_o = !atomic_active;
+    assign mem_lock_o = atomic_active ? atomic_mem_lock : 1'b0;
+    assign mem_write_o = atomic_active ? atomic_mem_write :
                          lsq_req_write;
-    assign mem_addr_o = atomic_active_q ? atomic_mem_addr : lsq_req_addr;
-    assign mem_wdata_o = atomic_active_q ? atomic_mem_wdata :
+    assign mem_addr_o = atomic_active ? atomic_mem_addr : lsq_req_addr;
+    assign mem_wdata_o = atomic_active ? atomic_mem_wdata :
                          lsq_req_wdata;
-    assign mem_wstrb_o = atomic_active_q ? atomic_mem_wstrb :
+    assign mem_wstrb_o = atomic_active ? atomic_mem_wstrb :
                          lsq_req_wstrb;
     assign mem_access_o = mem_valid_o;
-    assign mem_effective_addr_o = atomic_active_q ?
+    assign mem_effective_addr_o = atomic_active ?
                                   atomic_effective_addr : lsq_req_vaddr;
-    assign mem_size_o = atomic_active_q ? atomic_access_size : lsq_req_size;
-    assign lsq_req_ready = !atomic_active_q && mem_ready_i;
-    wire mem_request_fire = mem_valid_o && mem_ready_i;
-    wire atomic_request_fire = mem_request_fire && atomic_active_q;
+    assign mem_size_o = atomic_active ? atomic_access_size : lsq_req_size;
+    assign lsq_req_ready = !atomic_active && mem_ready_i;
 
     reg complete_valid_q;
     reg complete_store_q;
@@ -439,15 +445,14 @@ module openrv64_exec_lsu #(
     reg [RETIRE_SLOT_WIDTH-1:0] complete_slot_q;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_q;
     wire output_available = !complete_valid_q || complete_ready_i;
-    wire atomic_finish = atomic_active_q && atomic_complete &&
-                         output_available;
-    assign atomic_done = atomic_finish;
-    assign lsq_result_ready = output_available && !atomic_finish;
+    assign atomic_result_ready = output_available;
+    wire atomic_result_fire = atomic_result_valid && atomic_result_ready;
+    assign lsq_result_ready = output_available && !atomic_result_valid;
     wire lsq_result_fire = lsq_result_valid && lsq_result_ready;
 
     wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] completion_source =
-        atomic_finish ? atomic_meta_q : lsq_result_meta;
-    wire completion_is_atomic = atomic_finish;
+        atomic_result_valid ? atomic_result_meta : lsq_result_meta;
+    wire completion_is_atomic = atomic_result_valid;
     wire [`RV64_INSTR_WIDTH-1:0] completion_instr =
         completion_source[I_INSTR +: `RV64_INSTR_WIDTH];
     wire [`RV64_XLEN-1:0] completion_pc =
@@ -601,15 +606,6 @@ module openrv64_exec_lsu #(
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
                 {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
-            atomic_active_q <= 1'b0;
-            atomic_irrevocable_q <= 1'b0;
-            atomic_req_inflight_q <= 1'b0;
-            atomic_tag_q <= {LSU_TAG_WIDTH{1'b0}};
-            atomic_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
-            atomic_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
-            atomic_meta_q <=
-                {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
-            atomic_access_allowed_q <= 1'b1;
         end else if (flush_i) begin
             // An accepted ordinary store (or completed atomic) is
             // irrevocable. Keep an already-buffered completion across a
@@ -618,25 +614,18 @@ module openrv64_exec_lsu #(
                                 !complete_ready_i;
             complete_store_q <= complete_valid_q && complete_store_q &&
                                 !complete_ready_i;
-            if (!atomic_irrevocable_q) begin
-                atomic_active_q <= 1'b0;
-                atomic_req_inflight_q <= 1'b0;
-            end
             if (lsq_result_fire && lsq_result_store) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= lsq_result_id;
                 complete_slot_q <= lsq_result_slot;
                 complete_payload_q <= completion_data;
                 complete_store_q <= 1'b1;
-            end else if (atomic_finish) begin
+            end else if (atomic_result_fire) begin
                 complete_valid_q <= 1'b1;
-                complete_id_q <= atomic_id_q;
-                complete_slot_q <= atomic_slot_q;
+                complete_id_q <= atomic_result_id;
+                complete_slot_q <= atomic_result_slot;
                 complete_payload_q <= completion_data;
                 complete_store_q <= 1'b1;
-                atomic_active_q <= 1'b0;
-                atomic_irrevocable_q <= 1'b0;
-                atomic_req_inflight_q <= 1'b0;
             end
         end else begin
             if (complete_valid_q && complete_ready_i) begin
@@ -644,32 +633,12 @@ module openrv64_exec_lsu #(
                 complete_store_q <= 1'b0;
             end
 
-            if (atomic_start_valid) begin
-                atomic_active_q <= 1'b1;
-                atomic_irrevocable_q <= 1'b0;
-                atomic_req_inflight_q <= 1'b0;
-                atomic_tag_q <= atomic_start_tag;
-                atomic_id_q <= atomic_start_id;
-                atomic_slot_q <= atomic_start_slot;
-                atomic_meta_q <= atomic_start_meta;
-                atomic_access_allowed_q <= atomic_start_access_allowed;
-            end
-            if (atomic_request_fire) begin
-                atomic_req_inflight_q <= 1'b1;
-                atomic_irrevocable_q <= 1'b1;
-            end
-            if (atomic_resp_fire)
-                atomic_req_inflight_q <= 1'b0;
-
-            if (atomic_finish) begin
+            if (atomic_result_fire) begin
                 complete_valid_q <= 1'b1;
-                complete_id_q <= atomic_id_q;
-                complete_slot_q <= atomic_slot_q;
+                complete_id_q <= atomic_result_id;
+                complete_slot_q <= atomic_result_slot;
                 complete_payload_q <= completion_data;
                 complete_store_q <= 1'b1;
-                atomic_active_q <= 1'b0;
-                atomic_irrevocable_q <= 1'b0;
-                atomic_req_inflight_q <= 1'b0;
             end else if (lsq_result_fire) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= lsq_result_id;

@@ -59,6 +59,7 @@ module openrv64_rv64_top_3p #(
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -460,6 +461,8 @@ module openrv64_rv64_top_3p #(
                     icache_prefetch_predicted_addr),
                 .branch_unpredicted_addr_i(
                     icache_prefetch_unpredicted_addr),
+                .ras_fetch_valid_i(ras_return_fetch_valid),
+                .ras_fetch_addr_i(bp_prediction_target),
                 .pair512_req_valid_o(pair512_req_valid),
                 .pair512_req_ready_i(pair512_req_ready),
                 .pair512_req_predicted_addr_o(
@@ -675,6 +678,17 @@ module openrv64_rv64_top_3p #(
         !predecode_conditional[bp_lane] : decode_jump[bp_lane];
     wire bp_lookup_indirect = bp_selected_predecode ?
         1'b0 : decode_br_indirect[bp_lane];
+    wire bp_lookup_is_jalr =
+        `RV64_OPCODE(bp_selected_instr) == `RV64_OPCODE_JALR;
+    wire bp_lookup_rs1_link =
+        (`RV64_RS1(bp_selected_instr) == 5'd1) ||
+        (`RV64_RS1(bp_selected_instr) == 5'd5);
+    wire bp_lookup_rd_link =
+        (`RV64_RD(bp_selected_instr) == 5'd1) ||
+        (`RV64_RD(bp_selected_instr) == 5'd5);
+    wire bp_lookup_return = bp_lookup_indirect && bp_lookup_is_jalr &&
+                            bp_lookup_rs1_link && !bp_lookup_rd_link;
+    wire ras_return_fetch_valid;
 
     assign bp_branch_present = use_ccx_bus &&
                                (|frontend_control_select) &&
@@ -817,10 +831,16 @@ module openrv64_rv64_top_3p #(
         {1'b0, frontend_decode_fire[2]};
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
+    assign ras_return_fetch_valid = bp_branch_allocate &&
+                                    bp_lookup_return &&
+                                    bp_prediction_taken &&
+                                    bp_prediction_target_valid;
     assign icache_branch_hint_valid = use_ccx_bus && bp_branch_allocate &&
                                       bp_lookup_branch;
+    // Confidence policy: 0 = all branch pairs, 1 = weak pairs plus strong
+    // next-line prefetch, 2 = weak pairs without strong next-line prefetch.
     assign fetch_alt_pair_valid = icache_branch_hint_valid &&
-                                  (!ENABLE_FETCH_ALT_CONFIDENCE_GATE ||
+                                  ((ENABLE_FETCH_ALT_CONFIDENCE_GATE == 0) ||
                                    bp_prediction_weak);
     assign icache_prefetch_valid = fetch_alt_pair_valid;
     assign icache_prefetch_taken_addr = bp_direct_target;
@@ -839,7 +859,8 @@ module openrv64_rv64_top_3p #(
     // predicted line itself.  Decoding proves a same-line destination is
     // already resident; other destinations wait for their demand response.
     assign l1i_high_confidence_hint =
-        icache_branch_hint_valid && ENABLE_FETCH_ALT_CONFIDENCE_GATE &&
+        icache_branch_hint_valid &&
+        (ENABLE_FETCH_ALT_CONFIDENCE_GATE == 1) &&
         !bp_prediction_weak;
     assign l1i_predicted_line_resident =
         icache_prefetch_predicted_addr[63:6] == bp_selected_pc[63:6];
@@ -1200,6 +1221,7 @@ module openrv64_rv64_top_3p #(
         .L1D_PREFETCH_DEMAND_RESERVE(
             L1D_PREFETCH_DEMAND_RESERVE),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+        .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),

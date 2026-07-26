@@ -76,10 +76,37 @@ module tb_ccx_l1i;
     logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] response_txn_q;
     logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] response_source_q;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] response_data_q;
+    logic hold_ccx_responses;
+    logic held_response_valid_q [0:15];
+    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        held_response_hart_q [0:15];
+    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        held_response_source_q [0:15];
+    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        held_response_data_q [0:15];
+    logic held_response_found;
+    logic [3:0] held_response_index;
     integer ccx_count_q;
     integer pte_count_q;
     integer memory_index;
     integer word_index;
+    integer held_response_scan;
+    integer held_response_reset;
+    integer response_wait_cycles;
+    logic [2:0] ooo_remaining_seen;
+
+    always_comb begin
+        held_response_found = 1'b0;
+        held_response_index = 4'd0;
+        for (held_response_scan = 0;
+             held_response_scan < 16;
+             held_response_scan = held_response_scan + 1) begin
+            if (held_response_valid_q[held_response_scan]) begin
+                held_response_found = 1'b1;
+                held_response_index = held_response_scan[3:0];
+            end
+        end
+    end
 
     openrv64_core_ccx_bus #(
         .ENABLE_L1I(1),
@@ -233,6 +260,14 @@ module tb_ccx_l1i;
             axi_resp_valid_q <= 1'b0;
             axi_resp_id_q <= 3'd0;
             axi_read_count_q <= 0;
+            for (held_response_reset = 0;
+                 held_response_reset < 16;
+                 held_response_reset = held_response_reset + 1) begin
+                held_response_valid_q[held_response_reset] <= 1'b0;
+                held_response_hart_q[held_response_reset] <= '0;
+                held_response_source_q[held_response_reset] <= '0;
+                held_response_data_q[held_response_reset] <= '0;
+            end
         end else begin
             if (ccx_resp_valid && ccx_resp_ready)
                 ccx_resp_valid <= 1'b0;
@@ -249,8 +284,23 @@ module tb_ccx_l1i;
                 ccx_resp_error <= 1'b0;
             end
 
+            if (!hold_ccx_responses && held_response_found &&
+                !response_pending_q) begin
+                held_response_valid_q[held_response_index] <= 1'b0;
+                response_pending_q <= 1'b1;
+                response_hart_q <=
+                    held_response_hart_q[held_response_index];
+                response_txn_q <= held_response_index;
+                response_source_q <=
+                    held_response_source_q[held_response_index];
+                response_data_q <=
+                    held_response_data_q[held_response_index];
+            end
+
             if (ccx_req_valid && ccx_req_ready) begin
-                if (response_pending_q || ccx_resp_valid)
+                if (!hold_ccx_responses &&
+                    (response_pending_q || ccx_resp_valid ||
+                     held_response_found))
                     $fatal(1, "hart issued a second request before response");
                 if (ccx_req_hart_id != 0 ||
                     ccx_req_op != `OPENRV64_CCX_OP_READ ||
@@ -279,11 +329,27 @@ module tb_ccx_l1i;
                 end else begin
                     $fatal(1, "unexpected native CCX source");
                 end
-                response_pending_q <= 1'b1;
-                response_hart_q <= ccx_req_hart_id;
-                response_txn_q <= ccx_req_txn_id;
-                response_source_q <= ccx_req_source_id;
-                response_data_q <= memory[ccx_req_addr[8:6]];
+                if (hold_ccx_responses) begin
+                    if (ccx_req_source_id !=
+                        `OPENRV64_CCX_SOURCE_ICACHE)
+                        $fatal(1,
+                               "held response phase admitted non-L1I traffic");
+                    if (held_response_valid_q[ccx_req_txn_id])
+                        $fatal(1, "L1I reused an outstanding transaction ID");
+                    held_response_valid_q[ccx_req_txn_id] <= 1'b1;
+                    held_response_hart_q[ccx_req_txn_id] <=
+                        ccx_req_hart_id;
+                    held_response_source_q[ccx_req_txn_id] <=
+                        ccx_req_source_id;
+                    held_response_data_q[ccx_req_txn_id] <=
+                        memory[ccx_req_addr[8:6]];
+                end else begin
+                    response_pending_q <= 1'b1;
+                    response_hart_q <= ccx_req_hart_id;
+                    response_txn_q <= ccx_req_txn_id;
+                    response_source_q <= ccx_req_source_id;
+                    response_data_q <= memory[ccx_req_addr[8:6]];
+                end
             end
 
             if (axi_resp_valid_q && m_axi_rready)
@@ -431,6 +497,7 @@ module tb_ccx_l1i;
         icache_prefetch_fallthrough_addr = 64'd0;
         icache_age_valid = 3'b000;
         icache_age_addr = 192'd0;
+        hold_ccx_responses = 1'b0;
         fetch_resp_ready = 1'b1;
         pmp_allow = 1'b1;
         ccx_req_ready = 1'b1;
@@ -477,6 +544,117 @@ module tb_ccx_l1i;
                           "multi-hit response 3");
         if (ccx_count_q != before_count)
             $fatal(1, "resident multi-hit traffic escaped onto CCX");
+
+        // Four distinct cold lines must cross CCX before any response is
+        // released.  Return transaction IDs in descending order and verify
+        // that tagged frontend completions are visible in completion order.
+        pulse_invalidate();
+        before_count = ccx_count_q;
+        hold_ccx_responses = 1'b1;
+        push_fetch_only(64'h00);
+        push_fetch_only(64'h40);
+        push_fetch_only(64'h80);
+        push_fetch_only(64'hc0);
+        wait_for_ccx_count(before_count + 4,
+                           "four concurrent L1I demand misses");
+        if (!held_response_valid_q[0] ||
+            !held_response_valid_q[1] ||
+            !held_response_valid_q[2] ||
+            !held_response_valid_q[3])
+            $fatal(1, "L1I did not occupy four independent MSHRs");
+        fetch_resp_ready = 1'b0;
+        hold_ccx_responses = 1'b0;
+        while (!fetch_resp_valid)
+            @(negedge clk);
+        repeat (12) begin
+            @(negedge clk);
+            if (!fetch_resp_valid || fetch_resp_addr !== 64'hc0 ||
+                fetch_resp_data !== memory[3][255:0])
+                $fatal(1,
+                       "backpressured out-of-order response was not stable");
+        end
+        fetch_resp_ready = 1'b1;
+        expect_fetch_only(64'hc0, memory[3][255:0],
+                          "out-of-order miss response 3");
+        // Once the held response is consumed, the fetch completion arbiter
+        // may choose any of the other already-complete slots.  Require exact,
+        // duplicate-free tagged delivery instead of imposing request order.
+        ooo_remaining_seen = 3'b000;
+        repeat (3) begin
+            response_wait_cycles = 0;
+            while (!fetch_resp_valid && response_wait_cycles < 200) begin
+                @(negedge clk);
+                response_wait_cycles = response_wait_cycles + 1;
+            end
+            if (!fetch_resp_valid)
+                $fatal(1, "remaining out-of-order response timed out");
+            if (fetch_resp_access_fault || fetch_resp_page_fault)
+                $fatal(1, "remaining out-of-order response faulted");
+            case (fetch_resp_addr)
+                64'h00: begin
+                    if (ooo_remaining_seen[0] ||
+                        fetch_resp_data !== memory[0][255:0])
+                        $fatal(1,
+                               "bad or duplicate out-of-order response 0");
+                    ooo_remaining_seen[0] = 1'b1;
+                end
+                64'h40: begin
+                    if (ooo_remaining_seen[1] ||
+                        fetch_resp_data !== memory[1][255:0])
+                        $fatal(1,
+                               "bad or duplicate out-of-order response 1");
+                    ooo_remaining_seen[1] = 1'b1;
+                end
+                64'h80: begin
+                    if (ooo_remaining_seen[2] ||
+                        fetch_resp_data !== memory[2][255:0])
+                        $fatal(1,
+                               "bad or duplicate out-of-order response 2");
+                    ooo_remaining_seen[2] = 1'b1;
+                end
+                default:
+                    $fatal(1, "unexpected out-of-order response address");
+            endcase
+            @(posedge clk);
+            @(negedge clk);
+        end
+        if (ooo_remaining_seen != 3'b111)
+            $fatal(1, "out-of-order response set incomplete");
+
+        pulse_invalidate();
+        before_count = ccx_count_q;
+        hold_ccx_responses = 1'b1;
+        push_fetch_only(64'h00);
+        push_fetch_only(64'h20);
+        wait_for_ccx_count(before_count + 1,
+                           "same-line demand miss merge");
+        repeat (20) @(negedge clk);
+        if (ccx_count_q != before_count + 1)
+            $fatal(1, "same-line demand fetches allocated two MSHRs");
+        hold_ccx_responses = 1'b0;
+        expect_fetch_only(64'h00, memory[0][255:0],
+                          "merged miss response lower");
+        expect_fetch_only(64'h20, memory[0][511:256],
+                          "merged miss response upper");
+
+        // A resident hit behind an unresolved miss must bypass it all the way
+        // back to fetch.  Keeping the miss response held proves this is not
+        // merely multiple CCX requests followed by ordered completion.
+        issue_fetch(64'h100, memory[4][255:0], 1'b0,
+                    "prime hit-under-miss resident line");
+        before_count = ccx_count_q;
+        hold_ccx_responses = 1'b1;
+        push_fetch_only(64'h140);
+        wait_for_ccx_count(before_count + 1,
+                           "hit-under-miss outstanding line");
+        push_fetch_only(64'h100);
+        expect_fetch_only(64'h100, memory[4][255:0],
+                          "resident hit bypassed outstanding miss");
+        if (!held_response_found)
+            $fatal(1, "hit-under-miss test lost held miss response");
+        hold_ccx_responses = 1'b0;
+        expect_fetch_only(64'h140, memory[5][255:0],
+                          "outstanding miss completed after bypass hit");
 
         stale_lower = memory[0][255:0];
         memory[0][255:0] = 256'hface_cafe;

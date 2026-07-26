@@ -26,7 +26,9 @@ FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
 L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
 	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1i/ccx.v \
-	rtl/cache/l1/l1d/l1d.v
+	rtl/core/cache/l1/l1d/array.v rtl/core/cache/l1/l1d/ccx.v \
+	rtl/core/cache/l1/l1d/lsu_if.v rtl/core/cache/l1/l1d/mshr.v \
+	rtl/core/cache/l1/l1d/l1d.v
 BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v \
 	rtl/core/bus/tlb_l2.v rtl/core/bus/ptw.v \
 	rtl/core/bus/gen_bus.v rtl/core/bus/ccx_bus.v rtl/core/bus/bus.v \
@@ -58,7 +60,8 @@ BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
 	rtl/core/exec/bp/bimodal.v rtl/core/exec/bp/gshare_btb.v \
 	rtl/core/exec/bp/tournament_btb.v rtl/core/exec/bp/ras.v
 EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
-	rtl/core/exec/lsq.v rtl/core/exec/exec_lsu.v \
+	rtl/core/exec/lsq.v rtl/core/exec/lsu/atomics.v \
+	rtl/core/exec/exec_lsu.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top_1p.v rtl/core/exec/exec_top.v \
 	rtl/core/exec/alu/rv64-i.v rtl/core/exec/alu/rv64-m.v \
@@ -89,7 +92,8 @@ CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v rtl/core/dispatch/dispatch.v \
 	rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
-	rtl/core/exec/lsq.v rtl/core/exec/exec_lsu.v \
+	rtl/core/exec/lsq.v rtl/core/exec/lsu/atomics.v \
+	rtl/core/exec/exec_lsu.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top.v rtl/core/exec/alu/rv64-i.v \
 	rtl/core/exec/alu/rv64-m.v rtl/core/exec/lsu/rv64-i.v \
@@ -189,6 +193,7 @@ PREFIX_ADDSUB_SIM_SRCS := tb/tb_prefix_addsub.sv
 EXEC_ALU_RV64I_SIM_SRCS := tb/tb_exec_alu_rv64-i.sv
 EXEC_ALU_RV64M_SIM_SRCS := tb/tb_exec_alu_rv64-m.sv
 LSQ_SIM_SRCS := tb/tb_lsq.sv
+LSU_ATOMICS_SIM_SRCS := tb/tb_lsu_atomics.sv
 EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
 EXEC_LSU_RV64A_SIM_SRCS := tb/tb_exec_lsu_rv64-a.sv
 ATOMIC_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_atomic_context.sv

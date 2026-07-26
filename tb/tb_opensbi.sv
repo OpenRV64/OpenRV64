@@ -20,6 +20,8 @@ module tb_opensbi #(
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer FETCH_ALT_LOOKASIDE = 3,
+    parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
+    parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer CCX_BUS_TYPE = 0,
     parameter integer CCX_BUS_DATA_WIDTH = 256,
     parameter integer DDR3_ENABLE = 0,
@@ -388,6 +390,8 @@ module tb_opensbi #(
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
+        .FETCH_ALT_CONFIDENCE_GATE(FETCH_ALT_CONFIDENCE_GATE),
+        .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .CCX_BUS_TYPE(CCX_BUS_TYPE),
         .CCX_BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
         .DDR3_ENABLE(DDR3_ENABLE),
@@ -746,7 +750,7 @@ module tb_opensbi #(
                         perf_fetch_request_wait <=
                             perf_fetch_request_wait + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.u_l1i.backend_state_q != 0)
+                            .u_bus.u_l1i.demand_mshr_any_valid_r)
                         perf_l1i_busy_cycles <=
                             perf_l1i_busy_cycles + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p
@@ -1058,15 +1062,18 @@ module tb_opensbi #(
                         perf_l1i_prefetch_requests <=
                             perf_l1i_prefetch_requests + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.u_l1i.l1_response_fire &&
-                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                             .u_bus.u_l1i.response_is_prefetch)
+                            .u_bus.u_l1i.resp_valid_o &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1i.resp_ready_i)
                         perf_l1i_demand_responses <=
                             perf_l1i_demand_responses + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.u_l1i.l1_response_fire &&
+                            .u_bus.u_l1i.response_pop &&
                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.u_l1i.response_is_prefetch)
+                            .u_bus.u_l1i.response_prefetch_q[
+                                dut.u_core.g_backend_3p.u_core_3p.u_bus
+                                    .g_ccx.u_bus.u_l1i
+                                    .response_pop_index])
                         perf_l1i_prefetch_responses <=
                             perf_l1i_prefetch_responses + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx

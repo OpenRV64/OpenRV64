@@ -50,6 +50,13 @@ module openrv64_fetch_3w #(
     input  wire [`RV64_XLEN-1:0]        branch_predicted_addr_i,
     input  wire [`RV64_XLEN-1:0]        branch_unpredicted_addr_i,
 
+    // A valid RAS prediction is an architectural redirect replacement, not
+    // a cache-warming hint. Launch its demand on the restart edge and mark it
+    // as qualified stash work so the bus cancels older fetches without
+    // cancelling this replacement.
+    input  wire                         ras_fetch_valid_i,
+    input  wire [`RV64_XLEN-1:0]        ras_fetch_addr_i,
+
     // Experimental mode 4 models a dual-address 512-bit L1I return: one
     // 256-bit fetch block from each branch side in a single transaction.
     output wire                         pair512_req_valid_o,
@@ -621,6 +628,12 @@ module openrv64_fetch_3w #(
         !pending_valid_q && !request_line_hit &&
         (pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS] ==
          request_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
+    wire [`RV64_XLEN-1:0] ras_request_addr = {
+        ras_fetch_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS],
+        {LINE_BYTE_BITS{1'b0}}
+    };
+    wire ras_request_valid = ras_fetch_valid_i && restart_i &&
+                             !invalidate_i && !flush_i && !stall_i;
     wire incoming_pair_line_hit =
         ((ENABLE_ALT_LOOKASIDE == 4) && pair512_resp_valid_i &&
          ((pair512_resp_predicted_addr_i[
@@ -644,15 +657,19 @@ module openrv64_fetch_3w #(
          pair_request_is_demand);
     wire demand_request_valid = !pair_request_select &&
                                 demand_request_needed;
-    assign req_valid_o = active_q && !restart_i && !invalidate_i &&
-                         !flush_i && !stall_i &&
-                         (pair_request_select || demand_request_valid);
-    assign req_addr_o = pair_request_select ? pair_request_addr :
-                                             request_line_addr;
-    assign req_stash_o = pair_request_select;
-    assign req_demand_o = !pair_request_select ||
+    assign req_valid_o = active_q &&
+        (ras_request_valid ||
+         (!restart_i && !invalidate_i && !flush_i && !stall_i &&
+          (pair_request_select || demand_request_valid)));
+    assign req_addr_o = ras_request_valid ? ras_request_addr :
+                        (pair_request_select ? pair_request_addr :
+                                               request_line_addr);
+    assign req_stash_o = ras_request_valid || pair_request_select;
+    assign req_demand_o = ras_request_valid ||
+                          !pair_request_select ||
                           pair_request_is_demand;
     wire req_fire = req_valid_o && req_ready_i;
+    wire ras_req_fire = req_fire && ras_request_valid;
     wire pair_req_fire = req_fire && pair_request_select;
     wire alt_sector_background_deferred =
         (ENABLE_ALT_LOOKASIDE == 3) && pair_request_valid &&
@@ -1292,8 +1309,17 @@ module openrv64_fetch_3w #(
                     end
                     if ((ENABLE_ALT_LOOKASIDE != 0) &&
                         branch_pair_valid_i) begin
+                        // Mode 3 explicitly launches the missing predicted
+                        // block as demand.  After a predicted redirect it
+                        // matches request_line_addr and therefore wins over
+                        // the background alternate request; its response
+                        // populates normal fetch storage as well as the FAL
+                        // context.  The unpredicted side remains stash work.
                         pair_predicted_valid_q <=
-                            (ENABLE_ALT_LOOKASIDE >= 3) ?
+                            (ENABLE_ALT_LOOKASIDE == 3) ?
+                                (!branch_sector_context_match_r &&
+                                 !branch_predicted_sector_source_valid_r) :
+                            (ENABLE_ALT_LOOKASIDE >= 4) ?
                                 1'b0 :
                                 !branch_predicted_stashed_r;
                         pair_unpredicted_valid_q <=
@@ -1413,8 +1439,14 @@ module openrv64_fetch_3w #(
                                     pair_unpredicted_addr_q;
                         end
                     end
+                    // Keep the stacked-pair implementation identical to the
+                    // single-pair path: mode 3 fetches the missing predicted
+                    // block as demand and defers the alternate as stash work.
                     pair_predicted_valid_q <=
-                        (ENABLE_ALT_LOOKASIDE >= 3) ?
+                        (ENABLE_ALT_LOOKASIDE == 3) ?
+                            (!branch_sector_context_match_r &&
+                             !branch_predicted_sector_source_valid_r) :
+                        (ENABLE_ALT_LOOKASIDE >= 4) ?
                             1'b0 :
                             !branch_predicted_stashed_r;
                     pair_unpredicted_valid_q <=
@@ -1500,7 +1532,9 @@ module openrv64_fetch_3w #(
         end else if (restart_i) begin
             active_q <= 1'b1;
             consume_pc_q <= restart_pc_i;
-            pending_valid_q <= 1'b0;
+            pending_valid_q <= ras_req_fire;
+            if (ras_req_fire)
+                pending_addr_q <= ras_request_addr;
             // Redirect only changes the logical fetch selection.  Tag lookup
             // above chooses live or alternate storage for the new PC.  A
             // context-changing restart still invalidates every resident path.

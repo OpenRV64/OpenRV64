@@ -441,6 +441,150 @@ module tb_lsq;
 
         reset_dut();
 
+        // Once an ordered atomic starts, it owns the memory path until its
+        // real response completes.  Younger LSQ work may allocate, but must
+        // not translate or access L1D while the atomic is active.
+        translation_bypass = 1'b1;
+        s_atomic = 1'b1;
+        alloc_store(IDW'(9), 3'd1, 64'h5000, 3'd3,
+                    64'h0102_0304_0506_0708, 8'hff);
+        s_atomic = 1'b0;
+        head_valid = 1'b1;
+        head_id = IDW'(9);
+        head_slot = 3'd1;
+        #1;
+        if (!atomic_start_valid || atomic_start_id != IDW'(9))
+            $fatal(1, "ordered atomic did not start");
+        atomic_tag = atomic_start_tag;
+        atomic_active = 1'b1;
+        tick();
+        alloc_load(IDW'(10), 3'd2, 64'h6000, 3'd3);
+        repeat (2) begin
+            #1;
+            if (req_valid || xlate_valid || atomic_start_valid)
+                $fatal(1,
+                    "LSQ escaped active atomic req=%b xlate=%b restart=%b",
+                    req_valid, xlate_valid, atomic_start_valid);
+            tick();
+        end
+        atomic_done = 1'b1;
+        atomic_active = 1'b0;
+        tick();
+        atomic_done = 1'b0;
+        head_valid = 1'b0;
+        take_req(1'b0, 64'h6000, lt);
+        respond_result(lt, 64'h6000, 64'h8877_6655_4433_2211,
+                       IDW'(10), 0, 64'h8877_6655_4433_2211);
+        translation_bypass = 1'b0;
+
+        reset_dut();
+
+        // A full architectural flush must retain an already accepted posted
+        // store until its independent L1D tag-release response arrives.
+        translation_bypass = 1'b1;
+        alloc_store(IDW'(4), 3'd4, 64'h1800, 3'd3,
+                    64'h0123_4567_89ab_cdef, 8'hff);
+        head_valid = 1; head_id = IDW'(4); head_slot = 3'd4;
+        take_req(1'b1, 64'h1800, st);
+        take_result(IDW'(4), 1, 0, 0, 0);
+        head_valid = 0;
+        flush = 1; tick(); flush = 0;
+        if (!store_pending)
+            $fatal(1, "full flush discarded accepted posted store");
+        complete_store(st);
+        #1;
+        if (store_pending || result_valid)
+            $fatal(1,
+                "post-flush store completion left pending/result state");
+        translation_bypass = 1'b0;
+
+        reset_dut();
+
+        // Store tag release and an unrelated load result are independent and
+        // may fire together.  The store response must not consume or corrupt
+        // the normal result port.
+        translation_bypass = 1'b1;
+        alloc_store(IDW'(5), 3'd5, 64'h2000, 3'd3,
+                    64'h1111_2222_3333_4444, 8'hff);
+        head_valid = 1; head_id = IDW'(5); head_slot = 3'd5;
+        take_req(1'b1, 64'h2000, st);
+        take_result(IDW'(5), 1, 0, 0, 0);
+        head_valid = 0;
+        alloc_load(IDW'(6), 3'd6, 64'h3000, 3'd3);
+        take_req(1'b0, 64'h3000, lt);
+        store_done_tag = st;
+        store_done_valid = 1'b1;
+        resp_tag = lt;
+        resp_paddr = 64'h3000;
+        resp_rdata = 64'h8877_6655_4433_2211;
+        resp_valid = 1'b1;
+        result_ready = 1'b1;
+        #1;
+        if (!store_done_ready || !resp_ready || !result_valid ||
+            result_store || result_id != IDW'(6) ||
+            result_rdata != 64'h8877_6655_4433_2211)
+            $fatal(1,
+                "concurrent store/load completion failed store_ready=%b resp_ready=%b result=%b/%b/%0d/%h",
+                store_done_ready, resp_ready, result_valid, result_store,
+                result_id, result_rdata);
+        tick();
+        store_done_valid = 1'b0;
+        resp_valid = 1'b0;
+        result_ready = 1'b0;
+        if (store_pending)
+            $fatal(1, "concurrent store completion retained stale state");
+        translation_bypass = 1'b0;
+
+        reset_dut();
+
+        // Exercise the exact MRET-like boundary: architectural store result
+        // consumption and full flush coincide, followed by delayed L1D tag
+        // release.
+        translation_bypass = 1'b1;
+        alloc_store(IDW'(7), 3'd7, 64'h3800, 3'd3,
+                    64'ha5a5_5a5a_a5a5_5a5a, 8'hff);
+        head_valid = 1; head_id = IDW'(7); head_slot = 3'd7;
+        take_req(1'b1, 64'h3800, st);
+        head_valid = 0;
+        flush = 1'b1;
+        result_ready = 1'b1;
+        #1;
+        if (!result_valid || !result_store || result_id != IDW'(7))
+            $fatal(1, "flush-cycle posted-store result absent");
+        tick();
+        flush = 1'b0;
+        result_ready = 1'b0;
+        if (!store_pending)
+            $fatal(1, "flush-cycle result released posted-store tag early");
+        complete_store(st);
+        if (store_pending)
+            $fatal(1, "delayed completion after flush retained store");
+        translation_bypass = 1'b0;
+
+        reset_dut();
+
+        // A tag release can arrive on the flush edge itself.  Both sides see
+        // the pre-edge accepted-store state, so this must consume the tag
+        // exactly once rather than preserve or discard it inconsistently.
+        translation_bypass = 1'b1;
+        alloc_store(IDW'(8), 3'd0, 64'h4000, 3'd3,
+                    64'hccdd_eeff_0011_2233, 8'hff);
+        head_valid = 1; head_id = IDW'(8); head_slot = 3'd0;
+        take_req(1'b1, 64'h4000, st);
+        take_result(IDW'(8), 1, 0, 0, 0);
+        head_valid = 0;
+        store_done_tag = st;
+        store_done_valid = 1'b1;
+        flush = 1'b1;
+        tick();
+        store_done_valid = 1'b0;
+        flush = 1'b0;
+        if (store_pending || result_valid)
+            $fatal(1, "flush-edge store completion was not consumed once");
+        translation_bypass = 1'b0;
+
+        reset_dut();
+
         // Younger cacheable load waits for an older store paddr, then passes
         // because the translated physical lines differ.
         alloc_store(IDW'(2), 3'd2, 64'h3000, 3'd3,

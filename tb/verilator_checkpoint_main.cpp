@@ -295,9 +295,15 @@ struct L2TlbProbe {
 
         if (L2P_L2(diag_lookup)) {
             ++lookups;
+#ifdef OPENRV64_CHECKPOINT_LEGACY_LAYOUT
+            // Checkpoints predating the tagged LSU translation port have no
+            // independent live xlate lookup in the generated model.
+            const bool xlate_select = false;
+#else
             const bool xlate_select =
                 L2P_BUS(dtlb_lookup_is_xlate) &&
                 !L2P_BUS(dtlb_lookup_hit);
+#endif
             const bool lsu_select =
                 xlate_select ||
                 ((L2P_BUS(lsu_state_q) == 1) &&
@@ -318,10 +324,12 @@ struct L2TlbProbe {
             if (lsu_select) {
                 owner = 1;
                 if (xlate_select) {
+#ifndef OPENRV64_CHECKPOINT_LEGACY_LAYOUT
                     vaddr = L2P_CORE(backend_mem_xlate_vaddr);
                     root_ppn = satp & ((UINT64_C(1) << 44) - 1);
                     asid = (satp >> 44) & 0xffffU;
                     vm_mode = (satp >> 60) & 0xfU;
+#endif
                 } else {
                     vaddr = L2P_BUS(lsu_vaddr_q);
                     root_ppn = L2P_BUS(lsu_root_ppn_q);
@@ -828,6 +836,48 @@ struct FrontendBreakdown {
         ControlFlush,
     };
 
+    enum class TargetSource : uint8_t {
+        ResidentFetchLine,
+        AlternateFal,
+        L1iHit,
+        L1iMiss,
+        TranslationPtw,
+        ChainedRedirect,
+        Count,
+    };
+
+    static constexpr unsigned kTargetLatencyBuckets = 6;
+    static constexpr unsigned kTargetSourceCount =
+        static_cast<unsigned>(TargetSource::Count);
+
+    struct PendingTarget {
+        bool valid = false;
+        bool chained = false;
+        bool resident = false;
+        bool l1_probe_pending = false;
+        bool l1_miss = false;
+        bool translation_delay = false;
+        bool fetch_request_fire_valid = false;
+        bool translation_complete_valid = false;
+        bool l1i_request_fire_valid = false;
+        bool l1i_response_valid = false;
+        bool target_decode_valid = false;
+        bool redirect_pending_valid = false;
+        bool redirect_pending_target_line = false;
+        bool redirect_pending_fallthrough_line = false;
+        bool fetch_slot_valid = false;
+        unsigned fetch_slot = 0;
+        uint64_t event_id = 0;
+        uint64_t target = 0;
+        uint64_t branch_pc = 0;
+        uint64_t start_cycle = 0;
+        uint64_t fetch_request_fire_cycle = 0;
+        uint64_t translation_complete_cycle = 0;
+        uint64_t l1i_request_fire_cycle = 0;
+        uint64_t l1i_response_cycle = 0;
+        uint64_t target_decode_cycle = 0;
+    };
+
     uint64_t sampled_cycles = 0;
     uint64_t frontend_empty = 0;
 
@@ -870,7 +920,105 @@ struct FrontendBreakdown {
     uint64_t conditional_target_misses = 0;
     uint64_t jump_target_misses = 0;
 
+    std::array<uint64_t, kTargetLatencyBuckets> target_latency{};
+    std::array<std::array<uint64_t, kTargetLatencyBuckets>,
+               kTargetSourceCount>
+        target_latency_by_source{};
+    std::array<uint64_t, 9> l1i_hit_exact_latency{};
+    uint64_t target_deliveries = 0;
+    uint64_t target_superseded_control = 0;
+    uint64_t target_superseded_prediction = 0;
+    uint64_t redirect_pending_valid = 0;
+    uint64_t redirect_pending_target_line = 0;
+    uint64_t redirect_pending_fallthrough_line = 0;
+    uint64_t next_target_event_id = 0;
+    PendingTarget pending_target{};
+    std::ostream* target_trace = nullptr;
+
     Recovery recovery = Recovery::None;
+
+    explicit FrontendBreakdown(std::ostream* trace = nullptr)
+        : target_trace(trace) {
+        if (target_trace) {
+            *target_trace
+                << "event_id,target,branch_pc,outcome,source,"
+                   "redirect,fetch_request_fire,translation_complete,"
+                   "l1i_request_fire,l1i_response,target_decode_valid,"
+                   "redirect_pending_valid,"
+                   "redirect_pending_target_line,"
+                   "redirect_pending_fallthrough_line\n";
+        }
+    }
+
+    static unsigned target_latency_bucket(uint64_t bubble_cycles) {
+        if (bubble_cycles <= 3)
+            return static_cast<unsigned>(bubble_cycles);
+        if (bubble_cycles <= 7)
+            return 4;
+        return 5;
+    }
+
+    static const char* target_source_name(TargetSource source) {
+        switch (source) {
+        case TargetSource::ChainedRedirect:
+            return "chained_redirect";
+        case TargetSource::ResidentFetchLine:
+            return "resident_fetch_line";
+        case TargetSource::AlternateFal:
+            return "alternate_fal";
+        case TargetSource::TranslationPtw:
+            return "translation_ptw";
+        case TargetSource::L1iHit:
+            return "l1i_hit";
+        case TargetSource::L1iMiss:
+            return "l1i_miss";
+        default:
+            return "invalid";
+        }
+    }
+
+    static void write_optional_cycle(std::ostream& stream, bool valid,
+                                     uint64_t cycle) {
+        if (valid)
+            stream << cycle;
+    }
+
+    void write_target_trace(const PendingTarget& event,
+                            const char* outcome,
+                            const char* source) {
+        if (!target_trace)
+            return;
+        *target_trace
+            << std::dec << event.event_id
+            << ",0x" << std::hex << event.target
+            << ",0x" << event.branch_pc
+            << std::dec << ',' << outcome << ',' << source << ','
+            << event.start_cycle << ',';
+        write_optional_cycle(*target_trace,
+                             event.fetch_request_fire_valid,
+                             event.fetch_request_fire_cycle);
+        *target_trace << ',';
+        write_optional_cycle(*target_trace,
+                             event.translation_complete_valid,
+                             event.translation_complete_cycle);
+        *target_trace << ',';
+        write_optional_cycle(*target_trace,
+                             event.l1i_request_fire_valid,
+                             event.l1i_request_fire_cycle);
+        *target_trace << ',';
+        write_optional_cycle(*target_trace,
+                             event.l1i_response_valid,
+                             event.l1i_response_cycle);
+        *target_trace << ',';
+        write_optional_cycle(*target_trace,
+                             event.target_decode_valid,
+                             event.target_decode_cycle);
+        *target_trace
+            << ',' << event.redirect_pending_valid
+            << ',' << event.redirect_pending_target_line
+            << ',' << event.redirect_pending_fallthrough_line
+            << '\n';
+    }
 
     void sample(Vtb_opensbi* top) {
         Vtb_opensbi___024root* const root = top->rootp;
@@ -881,15 +1029,20 @@ struct FrontendBreakdown {
     FE_CORE(g_fetch_axi__DOT__u_fetch__DOT__##name)
 #define FE_BUS(name) \
     FE_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+#define FE_L1I(name) \
+    FE_BUS(u_l1i__DOT__##name)
 
         ++sampled_cycles;
 
-        const bool predicted_redirect = FE_CORE(bp_predict_redirect);
+        const bool predicted_redirect =
+            FE_CORE(bp_branch_allocate) && FE_CORE(bp_prediction_taken);
         const bool direction_redirect = FE_CORE(backend_redirect);
         const bool control_flush = FE_CORE(control_flush);
+        const bool control_redirect = FE_CORE(control_redirect);
         const bool branch_resolved = FE_CORE(branch_resolved);
         const bool branch_conditional = FE_CORE(branch_conditional);
         const bool target_miss = FE_CORE(bp_target_mispredict);
+        const uint64_t cycle = top->checkpoint_cycle_o;
 
         predicted_redirects += predicted_redirect;
         direction_redirects += direction_redirect;
@@ -902,6 +1055,209 @@ struct FrontendBreakdown {
         jump_direction_misses += direction_redirect && !branch_conditional;
         conditional_target_misses += target_miss && branch_conditional;
         jump_target_misses += target_miss && !branch_conditional;
+
+        bool target_delivered_now = false;
+        if (pending_target.valid) {
+            const uint64_t target_line = pending_target.target >> 5;
+
+            if (!pending_target.fetch_request_fire_valid &&
+                FE_CORE(fetch_pipe_req_valid) &&
+                FE_CORE(fetch_pipe_req_ready) &&
+                FE_CORE(fetch_pipe_req_demand) &&
+                ((FE_CORE(fetch_pipe_req_addr) >> 5) == target_line)) {
+                pending_target.fetch_request_fire_valid = true;
+                pending_target.fetch_request_fire_cycle = cycle;
+                pending_target.fetch_slot_valid = true;
+                pending_target.fetch_slot = FE_BUS(fetch_tail_q);
+            }
+
+            bool target_translate = false;
+            bool target_ptw = false;
+            for (unsigned index = 0; index < 4; ++index) {
+                const bool target_slot =
+                    pending_target.fetch_slot_valid &&
+                    index == pending_target.fetch_slot &&
+                    FE_BUS(fetch_state_q)[index] != 0 &&
+                    FE_BUS(fetch_demand_q)[index] &&
+                    !FE_BUS(fetch_cancelled_q)[index] &&
+                    ((FE_BUS(fetch_vaddr_q)[index] >> 5) ==
+                     (pending_target.target >> 5));
+                if (!target_slot)
+                    continue;
+                target_ptw |= FE_BUS(fetch_state_q)[index] == 2;
+            }
+            if (pending_target.fetch_slot_valid &&
+                FE_BUS(fetch_xlate_found_r) &&
+                FE_BUS(fetch_xlate_slot_r) ==
+                    pending_target.fetch_slot) {
+                const unsigned xlate_slot =
+                    FE_BUS(fetch_xlate_slot_r);
+                target_translate =
+                    FE_BUS(fetch_demand_q)[xlate_slot] &&
+                    !FE_BUS(fetch_cancelled_q)[xlate_slot] &&
+                    FE_BUS(fetch_vm_mode_q)[xlate_slot] != 0 &&
+                    !FE_BUS(itlb_lookup_hit) &&
+                    ((FE_BUS(fetch_vaddr_q)[xlate_slot] >> 5) ==
+                     target_line);
+                if (!pending_target.translation_complete_valid &&
+                    FE_BUS(fetch_lookup_ready) &&
+                    FE_BUS(fetch_demand_q)[xlate_slot] &&
+                    !FE_BUS(fetch_cancelled_q)[xlate_slot] &&
+                    ((FE_BUS(fetch_vaddr_q)[xlate_slot] >> 5) ==
+                     target_line)) {
+                    pending_target.translation_complete_valid = true;
+                    pending_target.translation_complete_cycle = cycle;
+                }
+            }
+            pending_target.translation_delay |=
+                target_translate || target_ptw;
+
+            const unsigned l1i_request_slot =
+                FE_BUS(l1i_req_active_q)
+                    ? FE_BUS(l1i_req_slot_q)
+                    : FE_BUS(fetch_xlate_slot_r);
+            if (pending_target.fetch_slot_valid &&
+                FE_BUS(l1i_req_fire) &&
+                l1i_request_slot == pending_target.fetch_slot &&
+                ((FE_BUS(l1i_req_vaddr) >> 5) == target_line)) {
+                // Detached L1I misses are identified on the request
+                // handshake.  They no longer occupy a blocking memory FSM.
+                pending_target.l1_miss |= FE_L1I(l1_miss_fire);
+                if (!pending_target.l1i_request_fire_valid) {
+                    pending_target.l1i_request_fire_valid = true;
+                    pending_target.l1i_request_fire_cycle = cycle;
+                }
+            }
+
+            if (!pending_target.l1i_response_valid &&
+                FE_BUS(l1i_resp_valid)) {
+                const unsigned response_slot = FE_BUS(l1i_resp_tag);
+                if (pending_target.fetch_slot_valid &&
+                    response_slot == pending_target.fetch_slot &&
+                    FE_BUS(fetch_demand_q)[response_slot] &&
+                    !FE_BUS(fetch_cancelled_q)[response_slot] &&
+                    ((FE_BUS(fetch_vaddr_q)[response_slot] >> 5) ==
+                     target_line)) {
+                    pending_target.l1i_response_valid = true;
+                    pending_target.l1i_response_cycle = cycle;
+                }
+            }
+
+            const bool target_valid =
+                (FE_CORE(fetch_decode_valid) & 1U) != 0 &&
+                FE_FETCH(consume_pc_q) == pending_target.target;
+            if (target_valid) {
+                TargetSource source;
+                const unsigned target_sector =
+                    (pending_target.target >> 4) & 1U;
+                const bool alternate =
+                    ((FE_FETCH(consume_fetch_select) >> target_sector) &
+                     1U) != 0;
+                if (pending_target.chained)
+                    source = TargetSource::ChainedRedirect;
+                else if (pending_target.resident)
+                    source = TargetSource::ResidentFetchLine;
+                else if (alternate)
+                    source = TargetSource::AlternateFal;
+                else if (pending_target.translation_delay)
+                    source = TargetSource::TranslationPtw;
+                else if (pending_target.l1_miss)
+                    source = TargetSource::L1iMiss;
+                else
+                    source = TargetSource::L1iHit;
+
+                // Count empty slots between the redirecting instruction and
+                // target output.  Delivery in the immediately following
+                // cycle is therefore the zero-bubble bucket.
+                const uint64_t elapsed =
+                    cycle >= pending_target.start_cycle
+                        ? cycle - pending_target.start_cycle
+                        : 0;
+                const uint64_t bubble_cycles =
+                    elapsed == 0 ? 0 : elapsed - 1;
+                const unsigned bucket =
+                    target_latency_bucket(bubble_cycles);
+                ++target_latency[bucket];
+                ++target_latency_by_source[
+                    static_cast<unsigned>(source)][bucket];
+                if (source == TargetSource::L1iHit) {
+                    const unsigned exact_bucket =
+                        bubble_cycles <= 7
+                            ? static_cast<unsigned>(bubble_cycles)
+                            : 8;
+                    ++l1i_hit_exact_latency[exact_bucket];
+                }
+                ++target_deliveries;
+                pending_target.target_decode_valid = true;
+                pending_target.target_decode_cycle = cycle;
+                write_target_trace(pending_target, "delivered",
+                                   target_source_name(source));
+                pending_target.valid = false;
+                target_delivered_now = true;
+            } else if (control_flush || control_redirect) {
+                ++target_superseded_control;
+                write_target_trace(pending_target,
+                                   "superseded_control",
+                                   "undelivered");
+                pending_target.valid = false;
+            }
+        }
+
+        if (predicted_redirect) {
+            bool chained = target_delivered_now;
+            if (pending_target.valid) {
+                // This should only occur if a new redirect is generated from
+                // a bundle other than the requested target.  Keep accounting
+                // explicit rather than allowing the old target to match later.
+                ++target_superseded_prediction;
+                write_target_trace(pending_target,
+                                   "superseded_prediction",
+                                   "undelivered");
+                pending_target.valid = false;
+                chained = true;
+            }
+
+            const uint64_t target =
+                FE_CORE(bp_prediction_target_valid)
+                    ? FE_CORE(bp_prediction_target)
+                    : FE_CORE(bp_direct_target);
+            const uint64_t branch_pc = FE_CORE(bp_selected_pc);
+            const uint64_t fallthrough = branch_pc + 4;
+            const bool pending_valid = FE_FETCH(pending_valid_q);
+            const bool pending_target_line =
+                pending_valid &&
+                ((FE_FETCH(pending_addr_q) >> 5) == (target >> 5));
+            const bool pending_fallthrough_line =
+                pending_valid &&
+                ((FE_FETCH(pending_addr_q) >> 5) ==
+                 (fallthrough >> 5));
+            const unsigned line_slot = (target >> 5) & 1U;
+            const unsigned target_sector = (target >> 4) & 1U;
+            const bool resident =
+                FE_FETCH(line_valid_q)[line_slot] &&
+                ((FE_FETCH(line_addr_q)[line_slot] >> 5) ==
+                 (target >> 5)) &&
+                (((FE_FETCH(line_sector_valid_q)[line_slot] >>
+                   target_sector) & 1U) != 0);
+
+            pending_target = PendingTarget{};
+            pending_target.valid = true;
+            pending_target.chained = chained;
+            pending_target.resident = resident;
+            pending_target.redirect_pending_valid = pending_valid;
+            pending_target.redirect_pending_target_line =
+                pending_target_line;
+            pending_target.redirect_pending_fallthrough_line =
+                pending_fallthrough_line;
+            pending_target.event_id = next_target_event_id++;
+            pending_target.target = target;
+            pending_target.branch_pc = branch_pc;
+            pending_target.start_cycle = cycle;
+            redirect_pending_valid += pending_valid;
+            redirect_pending_target_line += pending_target_line;
+            redirect_pending_fallthrough_line +=
+                pending_fallthrough_line;
+        }
 
         if (control_flush)
             recovery = Recovery::ControlFlush;
@@ -941,13 +1297,16 @@ struct FrontendBreakdown {
             (FE_FETCH(following_sector_valid) & 1U) != 0;
         const bool request_backpressure =
             FE_CORE(fetch_pipe_req_valid) && !FE_CORE(fetch_pipe_req_ready);
-        const bool fetch_queue_nonempty = FE_BUS(fetch_count_q) != 0;
+        const bool fetch_queue_nonempty =
+            fetch_translate || fetch_ptw || fetch_uncached ||
+            fetch_complete || fetch_l1i;
         const bool pair_pending = FE_FETCH(pair_predicted_valid_q) ||
                                   FE_FETCH(pair_unpredicted_valid_q);
 
         overlap_current_sector_missing += !current_sector_valid;
         overlap_following_sector_missing += !following_sector_valid;
-        overlap_l1i_busy += FE_BUS(u_l1i__DOT__backend_state_q) != 0;
+        overlap_l1i_busy +=
+            FE_BUS(u_l1i__DOT__demand_mshr_any_valid_r) != 0;
         overlap_fetch_queue_nonempty += fetch_queue_nonempty;
         overlap_pending_request += FE_FETCH(pending_valid_q);
         overlap_pair_pending += pair_pending;
@@ -986,12 +1345,13 @@ struct FrontendBreakdown {
         else
             ++empty_other;
 
+#undef FE_L1I
 #undef FE_BUS
 #undef FE_FETCH
 #undef FE_CORE
     }
 
-    void report() const {
+    void report() {
         const uint64_t exclusive_sum =
             empty_recovery_predicted + empty_recovery_direction +
             empty_recovery_flush + empty_translation_barrier +
@@ -1044,6 +1404,73 @@ struct FrontendBreakdown {
             << " predicted_redirects=" << predicted_redirects
             << " direction_redirects=" << direction_redirects
             << " control_flushes=" << control_flushes << '\n';
+        std::cout
+            << "HOST TARGET DELIVERY semantics=zero_bubble_to_fetch_valid"
+            << " source_precedence=chained_redirect,resident_fetch_line,"
+               "alternate_fal,translation_ptw,l1i_miss,l1i_hit"
+            << " translation=itlb_miss_or_fetch_ptw"
+            << " predictions=" << predicted_redirects
+            << " delivered=" << target_deliveries
+            << " superseded_control=" << target_superseded_control
+            << " superseded_prediction=" << target_superseded_prediction
+            << " pending=" << pending_target.valid
+            << " accounted="
+            << target_deliveries + target_superseded_control +
+                   target_superseded_prediction + pending_target.valid
+            << " 0=" << target_latency[0]
+            << " 1=" << target_latency[1]
+            << " 2=" << target_latency[2]
+            << " 3=" << target_latency[3]
+            << " 4-7=" << target_latency[4]
+            << " 8+=" << target_latency[5] << '\n';
+        for (unsigned source_index = 0;
+             source_index < kTargetSourceCount; ++source_index) {
+            const auto source =
+                static_cast<TargetSource>(source_index);
+            const auto& histogram =
+                target_latency_by_source[source_index];
+            const uint64_t total =
+                histogram[0] + histogram[1] + histogram[2] +
+                histogram[3] + histogram[4] + histogram[5];
+            std::cout
+                << "HOST TARGET DELIVERY SOURCE source="
+                << target_source_name(source)
+                << " total=" << total
+                << " 0=" << histogram[0]
+                << " 1=" << histogram[1]
+                << " 2=" << histogram[2]
+                << " 3=" << histogram[3]
+                << " 4-7=" << histogram[4]
+                << " 8+=" << histogram[5] << '\n';
+        }
+        uint64_t l1i_hit_exact_total = 0;
+        for (const uint64_t count : l1i_hit_exact_latency)
+            l1i_hit_exact_total += count;
+        std::cout
+            << "HOST TARGET DELIVERY L1I HIT EXACT"
+            << " total=" << l1i_hit_exact_total
+            << " 0=" << l1i_hit_exact_latency[0]
+            << " 1=" << l1i_hit_exact_latency[1]
+            << " 2=" << l1i_hit_exact_latency[2]
+            << " 3=" << l1i_hit_exact_latency[3]
+            << " 4=" << l1i_hit_exact_latency[4]
+            << " 5=" << l1i_hit_exact_latency[5]
+            << " 6=" << l1i_hit_exact_latency[6]
+            << " 7=" << l1i_hit_exact_latency[7]
+            << " 8+=" << l1i_hit_exact_latency[8] << '\n';
+        std::cout
+            << "HOST TARGET DELIVERY REDIRECT PENDING"
+            << " redirects=" << predicted_redirects
+            << " pending_valid=" << redirect_pending_valid
+            << " target_line=" << redirect_pending_target_line
+            << " fallthrough_line="
+            << redirect_pending_fallthrough_line
+            << " line_bytes=32 observations=orthogonal\n";
+        if (pending_target.valid)
+            write_target_trace(pending_target, "pending",
+                               "undelivered");
+        if (target_trace)
+            target_trace->flush();
     }
 };
 
@@ -1069,6 +1496,9 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
     unsigned retire_complete = 0;
     unsigned window_valid = 0;
     unsigned window_issued = 0;
+    unsigned fetch_queue_count = 0;
+    for (unsigned index = 0; index < 4; ++index)
+        fetch_queue_count += BUS3P(fetch_state_q)[index] != 0;
     for (unsigned index = 0; index < 16; ++index) {
         retire_valid |= (RETIRE3P(valid_q)[index] & 1U) << index;
         retire_complete |= (RETIRE3P(complete_q)[index] & 1U) << index;
@@ -1101,12 +1531,13 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
            << " redirect="
            << static_cast<unsigned>(CORE3P(control_redirect))
            << " bp_redirect="
-           << static_cast<unsigned>(CORE3P(bp_predict_redirect))
+           << static_cast<unsigned>(CORE3P(bp_branch_allocate) &&
+                                    CORE3P(bp_prediction_taken))
            << " fetch=" << static_cast<unsigned>(CORE3P(fetch_decode_valid))
            << " fetchq="
            << static_cast<unsigned>(CORE3P(fetch_pipe_req_valid))
            << '/' << static_cast<unsigned>(CORE3P(fetch_pipe_req_ready))
-           << '/' << static_cast<unsigned>(CORE3P(fetch_pipe_resp_valid))
+           << '/' << static_cast<unsigned>(BUS3P(l1i_resp_valid))
            << " decode=" << static_cast<unsigned>(CORE3P(backend_decode_valid))
            << " alloc=" << static_cast<unsigned>(BACKEND3P(allocation_valid))
            << " complete=" << static_cast<unsigned>(BACKEND3P(complete_valid))
@@ -1158,19 +1589,16 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
     stream << " bus{fq=" << std::dec
            << static_cast<unsigned>(BUS3P(fetch_head_q)) << ':'
            << static_cast<unsigned>(BUS3P(fetch_tail_q)) << ':'
-           << static_cast<unsigned>(BUS3P(fetch_count_q))
+           << fetch_queue_count
            << ",pop=" << static_cast<unsigned>(BUS3P(fetch_pop))
-           << ",l1slot="
-           << static_cast<unsigned>(BUS3P(l1i_slot_head_q)) << ':'
-           << static_cast<unsigned>(BUS3P(l1i_slot_tail_q)) << ':'
-           << static_cast<unsigned>(BUS3P(l1i_slot_count_q))
            << ",l1req="
            << static_cast<unsigned>(BUS3P(l1i_req_active_q)) << '/'
            << static_cast<unsigned>(BUS3P(l1i_req_valid)) << '/'
            << static_cast<unsigned>(BUS3P(l1i_req_fire))
            << ",l1resp="
            << static_cast<unsigned>(BUS3P(l1i_resp_valid)) << '/'
-           << static_cast<unsigned>(BUS3P(l1i_resp_fire))
+           << static_cast<unsigned>(BUS3P(l1i_resp_valid)) << '/'
+           << static_cast<unsigned>(BUS3P(l1i_resp_tag))
            << ",launch="
            << static_cast<unsigned>(BUS3P(fetch_l1i_launch));
     for (unsigned index = 0; index < 4; ++index) {
@@ -1181,9 +1609,7 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
                << '/' << std::dec
                << static_cast<unsigned>(BUS3P(fetch_stash_q)[index])
                << static_cast<unsigned>(BUS3P(fetch_demand_q)[index])
-               << static_cast<unsigned>(BUS3P(fetch_cancelled_q)[index])
-               << "/ls" << static_cast<unsigned>(
-                      BUS3P(l1i_slot_q)[index]);
+               << static_cast<unsigned>(BUS3P(fetch_cancelled_q)[index]);
     }
     stream << '}';
 
@@ -1260,6 +1686,8 @@ int main(int argc, char** argv, char**) {
         plusarg_value(argc, argv, "+mtimecmp_add=");
     const char* const pipeline_trace_path =
         plusarg_value(argc, argv, "+pipeline_trace=");
+    const char* const target_delivery_trace_path =
+        plusarg_value(argc, argv, "+target_delivery_trace=");
     const char* const l2_tlb_probe_path =
         plusarg_value(argc, argv, "+l2_tlb_probe=");
     const char* const l1d_probe_path =
@@ -1275,7 +1703,8 @@ int main(int argc, char** argv, char**) {
     const bool checkpoint_exit =
         has_plusarg(argc, argv, "+checkpoint_exit");
     const bool frontend_breakdown_enabled =
-        has_plusarg(argc, argv, "+frontend_breakdown");
+        has_plusarg(argc, argv, "+frontend_breakdown") ||
+        target_delivery_trace_path;
     const bool l2_tlb_disable =
         has_plusarg(argc, argv, "+l2_tlb_disable");
     if ((l2_tlb_invalidate_way_text == nullptr) !=
@@ -1369,6 +1798,18 @@ int main(int argc, char** argv, char**) {
                   << pipeline_trace_path << '\n';
     }
 
+    std::ofstream target_delivery_trace;
+    if (target_delivery_trace_path) {
+        target_delivery_trace.open(target_delivery_trace_path);
+        if (!target_delivery_trace) {
+            std::cerr << "Unable to open target delivery trace: "
+                      << target_delivery_trace_path << '\n';
+            return EXIT_FAILURE;
+        }
+        std::cout << "TRACE OPENED name=target_delivery path="
+                  << target_delivery_trace_path << '\n';
+    }
+
     std::ofstream l2_tlb_probe_stream;
     std::unique_ptr<L2TlbProbe> l2_tlb_probe;
     if (l2_tlb_probe_path) {
@@ -1427,7 +1868,8 @@ int main(int argc, char** argv, char**) {
 
     bool checkpoint_saved = false;
     bool l1d_prefetch_suppressed = false;
-    FrontendBreakdown frontend_breakdown;
+    FrontendBreakdown frontend_breakdown{
+        target_delivery_trace_path ? &target_delivery_trace : nullptr};
     while (VL_LIKELY(!context->gotFinish())) {
         context->timeInc(5);
         top->checkpoint_clk_i = !top->checkpoint_clk_i;

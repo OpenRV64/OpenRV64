@@ -62,6 +62,7 @@ module tb_fetch_3w_sector;
         .branch_pair_valid_i(branch_pair_valid),
         .branch_predicted_addr_i(branch_predicted_addr),
         .branch_unpredicted_addr_i(branch_unpredicted_addr),
+        .ras_fetch_valid_i(1'b0), .ras_fetch_addr_i(64'd0),
         .pair512_req_valid_o(), .pair512_req_ready_i(1'b0),
         .pair512_req_predicted_addr_o(),
         .pair512_req_unpredicted_addr_o(),
@@ -226,7 +227,10 @@ module tb_fetch_3w_sector;
         return_line(64'h180, 32'h200, 1'b0, 1'b1);
 
         // When both a new architectural target and an alternate are absent,
-        // the target demand must be accepted first.
+        // mode 3 must explicitly launch the predicted block first as a
+        // demand-qualified stash request.  It populates normal fetch storage.
+        // On its completion edge the alternate may launch in parallel; the
+        // sequential following block then launches as the next demand.
         branch_predicted_addr = 64'h310;
         branch_unpredicted_addr = 64'h384;
         restart_pc = 64'h310;
@@ -236,9 +240,26 @@ module tb_fetch_3w_sector;
         branch_pair_valid = 1'b0;
         restart = 1'b0;
         while (request_count < 5) tick();
-        if (request_addr[4] != 64'h300 || request_stash[4] ||
+        if (request_addr[4] != 64'h300 || !request_stash[4] ||
             !request_demand[4])
-            $fatal(1, "background alternate outranked architectural demand");
+            $fatal(1, "mode 3 did not launch predicted-side demand");
+        return_line(64'h300, 32'h300, 1'b1, 1'b1);
+
+        while (request_count < 6) tick();
+        if (request_addr[5] != 64'h380 || !request_stash[5] ||
+            request_demand[5])
+            $fatal(1,
+                   "mode 3 alternate mismatch addr=%h stash=%b demand=%b",
+                   request_addr[5], request_stash[5], request_demand[5]);
+
+        while (request_count < 7) tick();
+        if (request_addr[6] != 64'h320 || request_stash[6] ||
+            !request_demand[6])
+            $fatal(1,
+                   "predicted following block mismatch addr=%h stash=%b demand=%b",
+                   request_addr[6], request_stash[6], request_demand[6]);
+        return_line(64'h380, 32'h380, 1'b1, 1'b0);
+        return_line(64'h320, 32'h308, 1'b0, 1'b1);
 
         $display("PASS: 128-bit paired sector lookaside");
         $finish;

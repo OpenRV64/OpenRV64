@@ -30,7 +30,7 @@
 .PHONY: sim-core-complex-1h-axi sim-core-complex-2h-axi \
 	sim-core-complex-4h-wb
 .PHONY: sim-mem-channel sim-l2-axi-ddr3 sim-mesh-router
-.PHONY: sim-prf sim-rename-identity sim-lsq
+.PHONY: sim-prf sim-rename-identity sim-lsq sim-lsu-atomics
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
 	compliance-smoke-local-3p compliance-smoke-local-platform \
 	compliance-smoke-local-platform-3p \
@@ -48,6 +48,7 @@ sim: sim-vec
 sim: sim-prf
 sim: sim-rename-identity
 sim: sim-lsq
+sim: sim-lsu-atomics
 sim: sim-l1-cache
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr

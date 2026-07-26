@@ -66,6 +66,7 @@ EXEC_ALU_RV64I_SIM_BUILD := sim/exec_alu_rv64-i_tb.vvp
 EXEC_ALU_RV64M_SIM_BUILD := sim/exec_alu_rv64-m_tb.vvp
 EXEC_TOP_3P_SIM_BUILD := sim/exec_top_3p_tb.vvp
 LSQ_SIM_BUILD := sim/lsq_tb.vvp
+LSU_ATOMICS_SIM_BUILD := sim/lsu_atomics_tb.vvp
 EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD := sim/exec_pipe_mem_timeout_tb.vvp
 EXEC_LSU_RV64I_SIM_BUILD := sim/exec_lsu_rv64-i_tb.vvp
 EXEC_LSU_RV64A_SIM_BUILD := sim/exec_lsu_rv64-a_tb.vvp

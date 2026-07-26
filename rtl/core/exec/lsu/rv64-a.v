@@ -175,11 +175,14 @@ module openrv64_exec_lsu_rv64a (
     assign mem_valid_o = valid_i &&
                          ((state_q == STATE_READ) ||
                           (state_q == STATE_WRITE));
-    // Mark both halves of the local AMO read/modify/write sequence.  In the
-    // current single-hart implementation this is a local L1D bypass and
-    // serialization marker only; it is deliberately not forwarded as a
-    // CCX/L2 lock.  LR/SC do not use this marker.
-    assign mem_lock_o = mem_valid_o && op_is_amo(op_q);
+    // Mark both halves of the local AMO read/modify/write sequence and the
+    // successful SC write.  The marker drains and bypasses the local L1D; it
+    // is deliberately not forwarded as a CCX/L2 home lock.  LR remains a
+    // normal cacheable read, while SC must wait for the real write response
+    // rather than being acknowledged as a posted ordinary store.
+    assign mem_lock_o = mem_valid_o &&
+                        (op_is_amo(op_q) ||
+                         (op_q == `RV64_LSU_OP_SC));
     assign mem_write_o = valid_i && (state_q == STATE_WRITE);
     assign mem_addr_o = addr_q;
     assign mem_wdata_o = word_access_q ? word_write_data : write_data_q;

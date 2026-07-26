@@ -39,6 +39,7 @@ module openrv64_core_ccx_bus #(
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
@@ -279,9 +280,7 @@ module openrv64_core_ccx_bus #(
     localparam [1:0] ACCESS_WRITE = 2'd1;
     localparam [1:0] ACCESS_EXEC = 2'd2;
     localparam integer L1D_REQ_TAG_WIDTH =
-        `OPENRV64_LSU_TAG_WIDTH + 1;
-    localparam L1D_OWNER_PIPE = 1'b0;
-    localparam L1D_OWNER_SERIAL = 1'b1;
+        `OPENRV64_LSU_TAG_WIDTH;
     localparam [1:0] CCX_CLIENT_ICACHE = 2'd0;
     localparam [1:0] CCX_CLIENT_DCACHE = 2'd1;
     localparam [1:0] CCX_CLIENT_PTE = 2'd2;
@@ -316,13 +315,27 @@ module openrv64_core_ccx_bus #(
         fetch_data_q [0:FETCH_OUTSTANDING-1];
     reg fetch_access_fault_q [0:FETCH_OUTSTANDING-1];
     reg fetch_page_fault_q [0:FETCH_OUTSTANDING-1];
+    // These are round-robin allocation and completion cursors.  Fetch
+    // responses are address-qualified and may return out of request order.
     reg [FETCH_SLOT_WIDTH-1:0] fetch_head_q;
     reg [FETCH_SLOT_WIDTH-1:0] fetch_tail_q;
     reg [FETCH_COUNT_WIDTH-1:0] fetch_count_q;
 
     reg fetch_xlate_found_r;
     reg [FETCH_SLOT_WIDTH-1:0] fetch_xlate_slot_r;
+    reg fetch_free_found_r;
+    reg [FETCH_SLOT_WIDTH-1:0] fetch_free_slot_r;
+    reg fetch_complete_found_r;
+    reg [FETCH_SLOT_WIDTH-1:0] fetch_complete_slot_r;
+    reg fetch_drop_found_r;
+    reg [FETCH_SLOT_WIDTH-1:0] fetch_drop_slot_r;
+    reg fetch_resp_hold_valid_q;
+    reg [FETCH_SLOT_WIDTH-1:0] fetch_resp_hold_slot_q;
+    reg [FETCH_SLOT_WIDTH-1:0] fetch_free_scan_slot_r;
+    reg [FETCH_SLOT_WIDTH-1:0] fetch_complete_scan_slot_r;
     integer fetch_scan;
+    integer fetch_free_scan;
+    integer fetch_complete_scan;
     always @* begin
         fetch_xlate_found_r = 1'b0;
         fetch_xlate_slot_r = {FETCH_SLOT_WIDTH{1'b0}};
@@ -337,26 +350,93 @@ module openrv64_core_ccx_bus #(
         end
     end
 
-    wire fetch_accept = fetch_req_valid_i && fetch_req_ready_o;
-    wire fetch_head_complete = (fetch_count_q != 0) &&
-        (fetch_state_q[fetch_head_q] == FETCH_COMPLETE);
-    wire fetch_head_drop = fetch_head_complete &&
-                           fetch_cancelled_q[fetch_head_q];
-    wire fetch_resp_fire = fetch_resp_valid_o && fetch_resp_ready_i;
-    wire fetch_pop = fetch_head_drop || fetch_resp_fire;
+    always @* begin
+        fetch_free_found_r = 1'b0;
+        fetch_free_slot_r = {FETCH_SLOT_WIDTH{1'b0}};
+        fetch_free_scan_slot_r = {FETCH_SLOT_WIDTH{1'b0}};
+        for (fetch_free_scan = 0;
+             fetch_free_scan < FETCH_OUTSTANDING;
+             fetch_free_scan = fetch_free_scan + 1) begin
+            fetch_free_scan_slot_r =
+                fetch_tail_q + FETCH_SLOT_WIDTH'(fetch_free_scan);
+            if (!fetch_free_found_r &&
+                (fetch_state_q[fetch_free_scan_slot_r] == FETCH_EMPTY)) begin
+                fetch_free_found_r = 1'b1;
+                fetch_free_slot_r = fetch_free_scan_slot_r;
+            end
+        end
+    end
 
-    assign fetch_req_ready_o = rst_n && !fetch_cancel_i &&
-                               (fetch_count_q < FETCH_OUTSTANDING);
-    assign fetch_resp_valid_o = fetch_head_complete &&
-                                !fetch_cancelled_q[fetch_head_q];
-    assign fetch_resp_addr_o = fetch_vaddr_q[fetch_head_q];
-    assign fetch_resp_data_o = fetch_data_q[fetch_head_q];
+    always @* begin
+        fetch_complete_found_r = 1'b0;
+        fetch_complete_slot_r = {FETCH_SLOT_WIDTH{1'b0}};
+        fetch_drop_found_r = 1'b0;
+        fetch_drop_slot_r = {FETCH_SLOT_WIDTH{1'b0}};
+        fetch_complete_scan_slot_r = {FETCH_SLOT_WIDTH{1'b0}};
+        for (fetch_complete_scan = 0;
+             fetch_complete_scan < FETCH_OUTSTANDING;
+             fetch_complete_scan = fetch_complete_scan + 1) begin
+            fetch_complete_scan_slot_r =
+                fetch_head_q + FETCH_SLOT_WIDTH'(fetch_complete_scan);
+            if (!fetch_complete_found_r &&
+                (fetch_state_q[fetch_complete_scan_slot_r] ==
+                 FETCH_COMPLETE) &&
+                !fetch_cancelled_q[fetch_complete_scan_slot_r]) begin
+                fetch_complete_found_r = 1'b1;
+                fetch_complete_slot_r = fetch_complete_scan_slot_r;
+            end
+            if (!fetch_drop_found_r &&
+                (fetch_state_q[fetch_complete_scan_slot_r] ==
+                 FETCH_COMPLETE) &&
+                fetch_cancelled_q[fetch_complete_scan_slot_r]) begin
+                fetch_drop_found_r = 1'b1;
+                fetch_drop_slot_r = fetch_complete_scan_slot_r;
+            end
+        end
+        // The legacy cacheless AXI endpoint promises in-order frontend
+        // responses.  Native L1I is tagged and may expose any completed slot.
+        if (ENABLE_L1I == 0) begin
+            fetch_complete_found_r =
+                (fetch_state_q[fetch_head_q] == FETCH_COMPLETE) &&
+                !fetch_cancelled_q[fetch_head_q];
+            fetch_complete_slot_r = fetch_head_q;
+            fetch_drop_found_r =
+                (fetch_state_q[fetch_head_q] == FETCH_COMPLETE) &&
+                fetch_cancelled_q[fetch_head_q];
+            fetch_drop_slot_r = fetch_head_q;
+        end
+    end
+
+    wire fetch_accept = fetch_req_valid_i && fetch_req_ready_o;
+    wire [FETCH_SLOT_WIDTH-1:0] fetch_response_slot =
+        fetch_resp_hold_valid_q ? fetch_resp_hold_slot_q :
+                                  fetch_complete_slot_r;
+    wire fetch_resp_fire = fetch_resp_valid_o && fetch_resp_ready_i;
+    wire fetch_drop = fetch_drop_found_r && !fetch_resp_valid_o;
+    wire fetch_pop = fetch_drop || fetch_resp_fire;
+    wire [FETCH_SLOT_WIDTH-1:0] fetch_pop_slot =
+        fetch_resp_fire ? fetch_response_slot : fetch_drop_slot_r;
+
+    // An ordinary redirect may replace the cancelled stream with one
+    // qualified architectural demand on the same edge. The cancellation
+    // loop observes pre-edge slot validity, so it cancels older entries
+    // while leaving a newly allocated replacement intact.
+    wire fetch_redirect_replacement = fetch_cancel_i &&
+        !fetch_cancel_stash_i && fetch_req_stash_i &&
+        fetch_req_demand_i;
+    assign fetch_req_ready_o = rst_n &&
+        (!fetch_cancel_i || fetch_redirect_replacement) &&
+        fetch_free_found_r;
+    assign fetch_resp_valid_o = fetch_resp_hold_valid_q ||
+                                fetch_complete_found_r;
+    assign fetch_resp_addr_o = fetch_vaddr_q[fetch_response_slot];
+    assign fetch_resp_data_o = fetch_data_q[fetch_response_slot];
     assign fetch_resp_access_fault_o =
-        fetch_access_fault_q[fetch_head_q];
+        fetch_access_fault_q[fetch_response_slot];
     assign fetch_resp_page_fault_o =
-        fetch_page_fault_q[fetch_head_q];
-    assign fetch_resp_stash_o = fetch_stash_q[fetch_head_q];
-    assign fetch_resp_demand_o = fetch_demand_q[fetch_head_q];
+        fetch_page_fault_q[fetch_response_slot];
+    assign fetch_resp_stash_o = fetch_stash_q[fetch_response_slot];
+    assign fetch_resp_demand_o = fetch_demand_q[fetch_response_slot];
 
     wire itlb_lookup_hit;
     wire [`RV64_XLEN-1:0] itlb_lookup_paddr;
@@ -1042,18 +1122,13 @@ module openrv64_core_ccx_bus #(
         {AXI_BYTE_BITS{1'b0}}
     };
 
-    // The L1I accepts ordered, decoupled 256-bit frontend requests and stores
-    // native 64-byte lines.  Track the bus fetch slot for each accepted L1I
-    // request so cache responses can complete the correct reorder slot.
+    // The L1I accepts tagged, decoupled 256-bit frontend requests and stores
+    // native 64-byte lines.  The fetch slot is the L1I request tag, so a hit
+    // may complete while older misses remain outstanding.
     reg l1i_req_active_q;
     reg [`RV64_XLEN-1:0] l1i_req_vaddr_q;
     reg [`RV64_XLEN-1:0] l1i_req_paddr_q;
     reg [FETCH_SLOT_WIDTH-1:0] l1i_req_slot_q;
-    reg [FETCH_SLOT_WIDTH-1:0]
-        l1i_slot_q [0:FETCH_OUTSTANDING-1];
-    reg [FETCH_SLOT_WIDTH-1:0] l1i_slot_head_q;
-    reg [FETCH_SLOT_WIDTH-1:0] l1i_slot_tail_q;
-    reg [FETCH_COUNT_WIDTH-1:0] l1i_slot_count_q;
     reg l1i_invalidate_pending_q;
     wire l1i_invalidate_ready;
     wire l1i_invalidate_valid = icache_invalidate_i ||
@@ -1061,14 +1136,14 @@ module openrv64_core_ccx_bus #(
     wire l1i_req_ready;
     wire l1i_resp_valid;
     wire l1i_resp_ready;
+    wire [FETCH_SLOT_WIDTH-1:0] l1i_resp_tag;
     wire [AXI_DATA_WIDTH-1:0] l1i_req_rdata;
     wire l1i_req_error;
     wire axi_r_error;
     wire l1i_enabled = (ENABLE_L1I != 0);
     wire fetch_cache_candidate = fetch_axi_candidate &&
-        (!l1i_enabled || (!l1i_req_active_q && l1i_invalidate_ready &&
-                          !l1i_invalidate_valid &&
-                          (l1i_slot_count_q < FETCH_OUTSTANDING)));
+        (!l1i_enabled || (!l1i_req_active_q &&
+                          !l1i_invalidate_valid));
 
     // Tagged fast-path data gets the single PMP probe first, except when the
     // active walker needs it.  Once a request enters L1D, the probe is free
@@ -1120,13 +1195,17 @@ module openrv64_core_ccx_bus #(
         l1i_req_slot_q : fetch_xlate_slot_r;
     wire l1i_req_fire = l1i_req_valid && l1i_req_ready;
     wire l1i_resp_fire = l1i_resp_valid && l1i_resp_ready;
-    wire [FETCH_SLOT_WIDTH-1:0] l1i_resp_slot =
-        l1i_slot_q[l1i_slot_head_q];
-    assign l1i_resp_ready = l1i_slot_count_q != 0;
+    wire [FETCH_SLOT_WIDTH-1:0] l1i_resp_slot = l1i_resp_tag;
+    assign l1i_resp_ready = 1'b1;
 
     wire l1d_pipe_request = select_pipe_probe && pmp_allow_i;
+    wire l1d_serial_tag_busy =
+        pipe_inflight_q[pipe_fallback_tag_q] ||
+        (pipe_local_resp_valid_q &&
+         (pipe_local_resp_tag_q == pipe_fallback_tag_q));
     wire l1d_serial_request = select_lsu_probe && pmp_allow_i &&
-                              !lsu_xlate_only_q;
+                              !lsu_xlate_only_q &&
+                              !l1d_serial_tag_busy;
     wire l1d_req_valid = l1d_pipe_request || l1d_serial_request;
     wire l1d_req_ready;
     wire [`RV64_XLEN-1:0] l1d_req_rdata;
@@ -1149,24 +1228,23 @@ module openrv64_core_ccx_bus #(
     wire l1d_posted_request = l1d_req_write && !l1d_req_lock &&
         l1d_req_cacheable &&
         (l1d_pipe_request || pipe_fallback_active_q);
-    wire [L1D_REQ_TAG_WIDTH-1:0] l1d_req_tag = {
-        l1d_pipe_request ? L1D_OWNER_PIPE : L1D_OWNER_SERIAL,
-        l1d_pipe_request ? lsu_pipe_req_tag_i : pipe_fallback_tag_q
-    };
+    // The LSU tag is the global request identity.  Pipe fallback and serial
+    // processing are control states, not separate tag namespaces.
+    wire [L1D_REQ_TAG_WIDTH-1:0] l1d_req_tag =
+        l1d_pipe_request ? lsu_pipe_req_tag_i : pipe_fallback_tag_q;
     wire l1d_resp_valid;
     wire l1d_resp_ready;
     wire [L1D_REQ_TAG_WIDTH-1:0] l1d_resp_tag;
-    wire l1d_resp_is_pipe =
-        l1d_resp_tag[L1D_REQ_TAG_WIDTH-1] == L1D_OWNER_PIPE;
+    wire l1d_resp_is_pipe = pipe_inflight_q[l1d_resp_tag];
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] l1d_resp_pipe_tag =
-        l1d_resp_tag[`OPENRV64_LSU_TAG_WIDTH-1:0];
+        l1d_resp_tag;
     wire l1d_posted_resp_valid;
     wire l1d_posted_resp_ready;
     wire [L1D_REQ_TAG_WIDTH-1:0] l1d_posted_resp_tag;
     wire l1d_posted_resp_is_pipe =
-        l1d_posted_resp_tag[L1D_REQ_TAG_WIDTH-1] == L1D_OWNER_PIPE;
+        pipe_inflight_q[l1d_posted_resp_tag];
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] l1d_posted_resp_pipe_tag =
-        l1d_posted_resp_tag[`OPENRV64_LSU_TAG_WIDTH-1:0];
+        l1d_posted_resp_tag;
     wire l1d_store_resp_valid;
     wire l1d_store_resp_error;
 
@@ -1232,7 +1310,7 @@ module openrv64_core_ccx_bus #(
         .PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
         .PREFETCH_DEMAND_RESERVE(L1D_PREFETCH_DEMAND_RESERVE),
         .REQ_TAG_WIDTH(L1D_REQ_TAG_WIDTH),
-        .REQ_DEPTH(`OPENRV64_LSU_OUTSTANDING + 1),
+        .REQ_DEPTH(`OPENRV64_LSU_OUTSTANDING),
         .HART_ID(HART_ID)
     ) u_l1d (
         .clk_i(clk),
@@ -1315,6 +1393,8 @@ module openrv64_core_ccx_bus #(
         .ADDR_WIDTH(`RV64_XLEN),
         .CACHE_BYTES(L1I_CACHE_BYTES),
         .FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+        .DEMAND_MSHRS(L1I_DEMAND_MSHRS),
+        .REQ_TAG_WIDTH(FETCH_SLOT_WIDTH),
         .HART_ID(HART_ID)
     ) u_l1i (
         .clk_i(clk),
@@ -1322,10 +1402,12 @@ module openrv64_core_ccx_bus #(
         .req_valid_i(l1i_req_valid),
         .req_ready_o(l1i_req_ready),
         .req_cacheable_i(1'b1),
+        .req_tag_i(l1i_req_slot),
         .req_addr_i(l1i_req_vaddr),
         .req_phys_addr_i(l1i_req_paddr),
         .resp_valid_o(l1i_resp_valid),
         .resp_ready_i(l1i_resp_ready),
+        .resp_tag_o(l1i_resp_tag),
         .req_rdata_o(l1i_req_rdata),
         .req_error_o(l1i_req_error),
         .prefetch_valid_i(icache_prefetch_valid_i),
@@ -1635,21 +1717,12 @@ module openrv64_core_ccx_bus #(
         xlate_fallback_visible ? lsu_page_fault_q :
         (xlate_fast_resp_visible && xlate_lookup_page_fault);
 
-    integer l1i_slot_index;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             l1i_req_active_q <= 1'b0;
             l1i_req_vaddr_q <= {`RV64_XLEN{1'b0}};
             l1i_req_paddr_q <= {`RV64_XLEN{1'b0}};
             l1i_req_slot_q <= {FETCH_SLOT_WIDTH{1'b0}};
-            l1i_slot_head_q <= {FETCH_SLOT_WIDTH{1'b0}};
-            l1i_slot_tail_q <= {FETCH_SLOT_WIDTH{1'b0}};
-            l1i_slot_count_q <= {FETCH_COUNT_WIDTH{1'b0}};
-            for (l1i_slot_index = 0;
-                 l1i_slot_index < FETCH_OUTSTANDING;
-                 l1i_slot_index = l1i_slot_index + 1)
-                l1i_slot_q[l1i_slot_index] <=
-                    {FETCH_SLOT_WIDTH{1'b0}};
             l1i_invalidate_pending_q <= 1'b0;
         end else begin
             if (fetch_l1i_launch && !l1i_req_fire) begin
@@ -1660,19 +1733,6 @@ module openrv64_core_ccx_bus #(
             end
             if (l1i_req_fire)
                 l1i_req_active_q <= 1'b0;
-
-            case ({l1i_req_fire, l1i_resp_fire})
-                2'b10: l1i_slot_count_q <= l1i_slot_count_q + 1'b1;
-                2'b01: l1i_slot_count_q <= l1i_slot_count_q - 1'b1;
-                default: begin
-                end
-            endcase
-            if (l1i_req_fire) begin
-                l1i_slot_q[l1i_slot_tail_q] <= l1i_req_slot;
-                l1i_slot_tail_q <= l1i_slot_tail_q + 1'b1;
-            end
-            if (l1i_resp_fire)
-                l1i_slot_head_q <= l1i_slot_head_q + 1'b1;
 
             if (icache_invalidate_i)
                 l1i_invalidate_pending_q <= 1'b1;
@@ -1792,6 +1852,8 @@ module openrv64_core_ccx_bus #(
             fetch_head_q <= {FETCH_SLOT_WIDTH{1'b0}};
             fetch_tail_q <= {FETCH_SLOT_WIDTH{1'b0}};
             fetch_count_q <= {FETCH_COUNT_WIDTH{1'b0}};
+            fetch_resp_hold_valid_q <= 1'b0;
+            fetch_resp_hold_slot_q <= {FETCH_SLOT_WIDTH{1'b0}};
             for (fetch_index = 0; fetch_index < FETCH_OUTSTANDING;
                  fetch_index = fetch_index + 1) begin
                 fetch_state_q[fetch_index] <= FETCH_EMPTY;
@@ -1812,6 +1874,14 @@ module openrv64_core_ccx_bus #(
                 fetch_page_fault_q[fetch_index] <= 1'b0;
             end
         end else begin
+            if (!fetch_resp_hold_valid_q && fetch_resp_valid_o &&
+                !fetch_resp_ready_i) begin
+                fetch_resp_hold_valid_q <= 1'b1;
+                fetch_resp_hold_slot_q <= fetch_complete_slot_r;
+            end
+            if (fetch_resp_fire)
+                fetch_resp_hold_valid_q <= 1'b0;
+
             case ({fetch_accept, fetch_pop})
                 2'b10: fetch_count_q <= fetch_count_q + 1'b1;
                 2'b01: fetch_count_q <= fetch_count_q - 1'b1;
@@ -1819,31 +1889,33 @@ module openrv64_core_ccx_bus #(
                 end
             endcase
             if (fetch_accept) begin
-                fetch_state_q[fetch_tail_q] <= FETCH_TRANSLATE;
-                fetch_vaddr_q[fetch_tail_q] <= {
+                fetch_state_q[fetch_free_slot_r] <= FETCH_TRANSLATE;
+                fetch_vaddr_q[fetch_free_slot_r] <= {
                     fetch_req_addr_i[`RV64_XLEN-1:AXI_BYTE_BITS],
                     {AXI_BYTE_BITS{1'b0}}
                 };
-                fetch_priv_q[fetch_tail_q] <= fetch_req_priv_i;
-                fetch_vm_mode_q[fetch_tail_q] <= fetch_req_vm_mode_i;
-                fetch_asid_q[fetch_tail_q] <= fetch_req_asid_i;
-                fetch_root_ppn_q[fetch_tail_q] <= fetch_req_root_ppn_i;
-                fetch_sum_q[fetch_tail_q] <= fetch_req_sum_i;
-                fetch_mxr_q[fetch_tail_q] <= fetch_req_mxr_i;
-                fetch_stash_q[fetch_tail_q] <= fetch_req_stash_i;
-                fetch_demand_q[fetch_tail_q] <= fetch_req_demand_i;
-                fetch_cancelled_q[fetch_tail_q] <= 1'b0;
-                fetch_data_q[fetch_tail_q] <= {AXI_DATA_WIDTH{1'b0}};
-                fetch_access_fault_q[fetch_tail_q] <= 1'b0;
-                fetch_page_fault_q[fetch_tail_q] <= 1'b0;
-                fetch_tail_q <= fetch_tail_q + 1'b1;
+                fetch_priv_q[fetch_free_slot_r] <= fetch_req_priv_i;
+                fetch_vm_mode_q[fetch_free_slot_r] <= fetch_req_vm_mode_i;
+                fetch_asid_q[fetch_free_slot_r] <= fetch_req_asid_i;
+                fetch_root_ppn_q[fetch_free_slot_r] <=
+                    fetch_req_root_ppn_i;
+                fetch_sum_q[fetch_free_slot_r] <= fetch_req_sum_i;
+                fetch_mxr_q[fetch_free_slot_r] <= fetch_req_mxr_i;
+                fetch_stash_q[fetch_free_slot_r] <= fetch_req_stash_i;
+                fetch_demand_q[fetch_free_slot_r] <= fetch_req_demand_i;
+                fetch_cancelled_q[fetch_free_slot_r] <= 1'b0;
+                fetch_data_q[fetch_free_slot_r] <=
+                    {AXI_DATA_WIDTH{1'b0}};
+                fetch_access_fault_q[fetch_free_slot_r] <= 1'b0;
+                fetch_page_fault_q[fetch_free_slot_r] <= 1'b0;
+                fetch_tail_q <= fetch_free_slot_r + 1'b1;
             end
             if (fetch_pop) begin
-                fetch_state_q[fetch_head_q] <= FETCH_EMPTY;
-                fetch_stash_q[fetch_head_q] <= 1'b0;
-                fetch_demand_q[fetch_head_q] <= 1'b0;
-                fetch_cancelled_q[fetch_head_q] <= 1'b0;
-                fetch_head_q <= fetch_head_q + 1'b1;
+                fetch_state_q[fetch_pop_slot] <= FETCH_EMPTY;
+                fetch_stash_q[fetch_pop_slot] <= 1'b0;
+                fetch_demand_q[fetch_pop_slot] <= 1'b0;
+                fetch_cancelled_q[fetch_pop_slot] <= 1'b0;
+                fetch_head_q <= fetch_pop_slot + 1'b1;
             end
 
             if (fetch_cancel_i) begin
@@ -2249,6 +2321,9 @@ module openrv64_core_ccx_bus #(
         if (rst_n && l1i_resp_fire &&
             (fetch_state_q[l1i_resp_slot] != FETCH_WAIT_L1I))
             $fatal(1, "L1I response does not name an outstanding fetch");
+        if (rst_n && l1d_request_fire && l1d_serial_request &&
+            l1d_serial_tag_busy)
+            $fatal(1, "L1D serial request reused an active global LSU tag");
     end
 `endif
 

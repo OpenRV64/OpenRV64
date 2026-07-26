@@ -43,6 +43,7 @@ module openrv64_top #(
     parameter int unsigned L1D_PREFETCH_OUTSTANDING = 4,
     parameter int unsigned L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter int unsigned L1I_FILL_BUFFER_LINES = 8,
+    parameter int unsigned L1I_DEMAND_MSHRS = 4,
     parameter int unsigned L2_TLB_ENTRIES = 256,
     parameter int unsigned L2_TLB_WAYS = 4,
     parameter int unsigned PTW_PTE_CACHE_ENTRIES = 64,
@@ -52,7 +53,7 @@ module openrv64_top #(
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter int unsigned ENABLE_FETCH_ALT_LOOKASIDE = 3,
-    parameter bit ENABLE_FETCH_ALT_CONFIDENCE_GATE = 1'b0,
+    parameter integer ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_DEFAULT,
     parameter bit BP_RAS_ENABLE = 1'b1,
@@ -438,6 +439,7 @@ module openrv64_top #(
                 .L1D_PREFETCH_DEMAND_RESERVE(
                     L1D_PREFETCH_DEMAND_RESERVE),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+                .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
                 .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
                 .L2_TLB_WAYS(L2_TLB_WAYS),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),

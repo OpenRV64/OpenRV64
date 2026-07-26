@@ -54,6 +54,7 @@ module openrv64_top_3p #(
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -233,6 +234,7 @@ module openrv64_top_3p #(
         .L1D_PREFETCH_DEMAND_RESERVE(
             L1D_PREFETCH_DEMAND_RESERVE),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+        .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),

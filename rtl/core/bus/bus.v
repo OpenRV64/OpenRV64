@@ -39,6 +39,7 @@ module openrv64_core_bus #(
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
+    parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_CCX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
@@ -1008,6 +1009,7 @@ module openrv64_core_bus #(
                 .L1D_PREFETCH_DEMAND_RESERVE(
                     L1D_PREFETCH_DEMAND_RESERVE),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
+                .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID)

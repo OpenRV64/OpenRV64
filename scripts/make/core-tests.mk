@@ -106,6 +106,9 @@ sim-exec-top-3p: $(EXEC_TOP_3P_SIM_BUILD)
 sim-lsq: $(LSQ_SIM_BUILD)
 	vvp $(LSQ_SIM_BUILD)
 
+sim-lsu-atomics: $(LSU_ATOMICS_SIM_BUILD)
+	vvp $(LSU_ATOMICS_SIM_BUILD)
+
 sim-exec-pipe-mem-timeout: $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD)
 	@mkdir -p sim
 	@if vvp $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD) \

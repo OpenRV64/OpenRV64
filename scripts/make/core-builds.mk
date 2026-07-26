@@ -189,6 +189,13 @@ $(LSQ_SIM_BUILD): $(LSQ_SIM_SRCS) rtl/core/exec/lsq.v
 	iverilog -g2012 -Wall -Irtl -o $(LSQ_SIM_BUILD) \
 		rtl/core/exec/lsq.v $(LSQ_SIM_SRCS)
 
+$(LSU_ATOMICS_SIM_BUILD): $(LSU_ATOMICS_SIM_SRCS) \
+		rtl/core/exec/lsu/atomics.v rtl/core/exec/lsu/rv64-a.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(LSU_ATOMICS_SIM_BUILD) \
+		rtl/core/exec/lsu/atomics.v rtl/core/exec/lsu/rv64-a.v \
+		$(LSU_ATOMICS_SIM_SRCS)
+
 $(EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD): tb/tb_exec_pipe_mem_timeout.sv \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/lsu/rv64-i.v \
 	rtl/core/exec/lsu/rv64-a.v rtl/core/except/except.v

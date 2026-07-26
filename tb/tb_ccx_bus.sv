@@ -588,7 +588,15 @@ module tb_ccx_bus #(
                 $fatal(1,
                     "tagged posted-store completion mismatch tag=%0d got=%0d",
                     tag, pipe_store_done_tag);
+            if (pipe_resp_valid && (pipe_resp_tag == tag))
+                $fatal(1,
+                    "posted store also appeared on normal response tag=%0d",
+                    tag);
             tick();
+            #1;
+            if (pipe_store_done_valid && (pipe_store_done_tag == tag))
+                $fatal(1,
+                    "duplicate tagged posted-store completion tag=%0d", tag);
         end
     endtask
 
@@ -1016,6 +1024,9 @@ module tb_ccx_bus #(
         // completion reports that admission, not the later CCX drain result.
         // Deferred write faults therefore cannot be attributed to the posted
         // LSU tag and are intentionally not returned on this interface.
+        locked_old_word = ccx_memory_word(64'h180);
+        push_pipe_request(2'd0, 1'b0, 64'h180, 64'd0, 8'd0);
+        expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
         pipe_store_done_ready = 0;
         ccx_fail_enable = 1;
         ccx_fail_addr = 64'h100;
@@ -1024,6 +1035,24 @@ module tb_ccx_bus #(
         wait_count = ccx_writes;
         push_pipe_request(2'd1, 1'b1, 64'h114,
             64'haabb_ccdd_0000_0000, 8'hf0);
+        channel_wait = 0;
+        while (!pipe_store_done_valid && channel_wait < 20) begin
+            tick();
+            channel_wait = channel_wait + 1;
+        end
+        if (!pipe_store_done_valid || pipe_store_done_tag != 2'd1)
+            $fatal(1,
+                "held posted-store completion setup failed valid=%b tag=%0d",
+                pipe_store_done_valid, pipe_store_done_tag);
+        // Keep the independent store response backpressured while a resident
+        // load completes through the normal response path.
+        locked_old_word = ccx_memory_word(64'h180);
+        push_pipe_request(2'd0, 1'b0, 64'h180, 64'd0, 8'd0);
+        expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
+        if (!pipe_store_done_valid || pipe_store_done_tag != 2'd1)
+            $fatal(1,
+                "load displaced held posted-store completion valid=%b tag=%0d",
+                pipe_store_done_valid, pipe_store_done_tag);
         channel_wait = 0;
         // A lone posted store may remain coalescible until the default
         // 1024-cycle L1D store-buffer timeout.  This test is about independent

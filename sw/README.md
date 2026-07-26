@@ -123,6 +123,22 @@ Success returns `ATOMICOK` in `a0`. A failure returns `ATOMFA` followed by a
 state currently lives in the LSU and AMOs are locally serialized read/write
 pairs. They do not establish multicore atomicity at the L2/home agent.
 
+## Sv39 fence suite
+
+`fence/` contains independent external-boundary correctness cases and matched
+cycle microbenchmarks for ordinary `FENCE` and `FENCE.I` under a non-identity
+Sv39 mapping. It also runs the existing atomic tests, including the same
+workload under Sv39.
+
+```sh
+make check-fence-sv39
+make bench-fence-sv39
+make fence-sv39-suite
+```
+
+See [`fence/README.md`](fence/README.md) for the case map, visibility-boundary
+definition, and the intentionally deferred SATP/`SFENCE.VMA` stress scope.
+
 ## memcpy prefetch benchmark
 
 `memcpy/memcpy.S` supplies 4 KiB and 64 KiB page-copy workloads for the

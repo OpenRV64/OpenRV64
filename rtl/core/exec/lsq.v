@@ -891,8 +891,20 @@ module openrv64_lsq #(
         if (rst_n && store_done_valid_i &&
             !store_done_is_expected)
             $fatal(1,
-                "LSQ received unexpected posted-store completion tag=%0d",
-                store_done_tag_i);
+                "LSQ received unexpected posted-store completion tag=%0d tag_valid=%b slot_valid=%b access_sent=%b store=%b atomic=%b cacheable=%b killed=%b result_sent=%b access_done=%b flush=%b squash=%b req_fire=%b resp_fire=%b posted_resp_fire=%b result_fire=%b id=%0d paddr=%h",
+                store_done_tag_i, store_done_tag_valid,
+                store_done_slot_valid,
+                slot_access_sent_q[store_done_tag_i],
+                slot_store_q[store_done_tag_i],
+                slot_atomic_q[store_done_tag_i],
+                slot_cacheable[store_done_tag_i],
+                slot_killed_q[store_done_tag_i],
+                slot_store_result_sent_q[store_done_tag_i],
+                slot_access_done_q[store_done_tag_i],
+                flush_i, squash_younger_i, req_fire, resp_fire,
+                posted_store_resp_fire, result_fire,
+                slot_id_q[store_done_tag_i],
+                slot_paddr_q[store_done_tag_i]);
 
         if (!rst_n || flush_i) begin
             for (timeout_index = 0; timeout_index < DEPTH;

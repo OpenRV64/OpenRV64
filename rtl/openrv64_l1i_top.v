@@ -8,8 +8,8 @@
 // address together.  Branch-prefetch and retirement-aging addresses are
 // virtual and use the private translation service below.
 //
-// The request/response ports are decoupled and retain ordered multiple-demand
-// concurrency through the L1 hit pipeline.
+// The request/response ports are decoupled.  Responses are address-qualified
+// and may complete out of request order around an outstanding line miss.
 module openrv64_l1i_top #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
@@ -29,6 +29,7 @@ module openrv64_l1i_top #(
     input  wire [ADDR_WIDTH-1:0]        fetch_req_paddr_i,
     output wire                         fetch_resp_valid_o,
     input  wire                         fetch_resp_ready_i,
+    output wire [ADDR_WIDTH-1:0]        fetch_resp_addr_o,
     output wire [255:0]                 fetch_resp_data_o,
     output wire                         fetch_resp_error_o,
 
@@ -100,11 +101,13 @@ module openrv64_l1i_top #(
 
     wire l1i_demand_ready;
     wire l1i_response_valid;
+    wire [ADDR_WIDTH-1:0] l1i_response_addr;
     wire [255:0] l1i_demand_data;
     wire l1i_demand_error;
 
     assign fetch_req_ready_o = l1i_demand_ready;
     assign fetch_resp_valid_o = l1i_response_valid;
+    assign fetch_resp_addr_o = l1i_response_addr;
     assign fetch_resp_data_o = l1i_demand_data;
     assign fetch_resp_error_o = l1i_demand_error;
 
@@ -114,6 +117,7 @@ module openrv64_l1i_top #(
         .CACHE_BYTES(CACHE_BYTES),
         .WAYS(WAYS),
         .PREFETCH_SLOTS(PREFETCH_SLOTS),
+        .REQ_TAG_WIDTH(ADDR_WIDTH),
         .HART_ID(HART_ID)
     ) u_l1i_ccx (
         .clk_i(clk_i),
@@ -121,10 +125,12 @@ module openrv64_l1i_top #(
         .req_valid_i(fetch_req_valid_i),
         .req_ready_o(l1i_demand_ready),
         .req_cacheable_i(fetch_req_cacheable_i),
+        .req_tag_i(fetch_req_vaddr_i),
         .req_addr_i(fetch_req_vaddr_i),
         .req_phys_addr_i(fetch_req_paddr_i),
         .resp_valid_o(l1i_response_valid),
         .resp_ready_i(fetch_resp_ready_i),
+        .resp_tag_o(l1i_response_addr),
         .req_rdata_o(l1i_demand_data),
         .req_error_o(l1i_demand_error),
         .prefetch_valid_i(prefetch_valid_i),

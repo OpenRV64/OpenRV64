@@ -61,6 +61,7 @@ module tb_fetch_3w_pair1024;
         .branch_pair_valid_i(branch_pair_valid),
         .branch_predicted_addr_i(branch_predicted_addr),
         .branch_unpredicted_addr_i(branch_unpredicted_addr),
+        .ras_fetch_valid_i(1'b0), .ras_fetch_addr_i(64'd0),
         .pair512_req_valid_o(), .pair512_req_ready_i(1'b0),
         .pair512_req_predicted_addr_o(),
         .pair512_req_unpredicted_addr_o(),

@@ -257,6 +257,7 @@ module tb_top_3p_soc #(
     parameter [63:0] SPEC_LOAD_BASE = `OPENRV64_SOC_MEMORY_BASE,
     parameter [63:0] SPEC_LOAD_SIZE = RAM_BYTES,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
+    parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
@@ -358,6 +359,8 @@ module tb_top_3p_soc #(
     localparam integer FENCE_RESPONSE_DELAY = 24;
 
     reg fence_check_enabled_q;
+    reg fence_trace_enabled_q;
+    integer fence_case_q;
     wire fence_test_dcache_request =
         ccx_req_source_id == `OPENRV64_CCX_SOURCE_DCACHE &&
         (((ccx_req_addr >= FENCE_TEST_BASE) &&
@@ -748,6 +751,7 @@ module tb_top_3p_soc #(
     integer dtlb_serial_loads;
     integer dtlb_serial_stores;
     reg require_sv39;
+    reg require_sv39_active;
     reg require_zero_scatter;
     reg saw_sv39;
     reg saw_supervisor;
@@ -1091,6 +1095,7 @@ module tb_top_3p_soc #(
               2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
               RETIRE_RESULT_PC_LSB +: 64] == done_pc));
     wire run_done = dbg_halted || (done_pc_valid && done_pc_retired);
+    reg run_completed_q;
 
     localparam integer RETIRE_RESULT_INSTR_LSB = 233;
     wire [31:0] fence_retire_instr0 =
@@ -1421,6 +1426,7 @@ module tb_top_3p_soc #(
         .ENABLE_L1I(1'b1),
         .ENABLE_L1D(1'b1),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+        .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
@@ -1889,7 +1895,11 @@ module tb_top_3p_soc #(
     initial begin
         magic_ccx_source_mask_q = 4'b0000;
         magic_ccx_source_mask_arg = 0;
+        fence_case_q = 0;
+        if (!$value$plusargs("fence_case=%d", fence_case_q))
+            fence_case_q = 0;
         fence_check_enabled_q = $test$plusargs("fence_check");
+        fence_trace_enabled_q = $test$plusargs("fence_trace");
         if ($test$plusargs("magic_l1i"))
             magic_ccx_source_mask_q[`OPENRV64_CCX_SOURCE_ICACHE] = 1'b1;
         if ($test$plusargs("magic_l1d"))
@@ -2047,6 +2057,17 @@ module tb_top_3p_soc #(
 
             if (fence_queue_response_found_r &&
                 (!fence_resp_valid_q || fence_resp_fire)) begin
+                if (fence_trace_enabled_q)
+                    $display(
+                        "FENCE_BOUNDARY response source=%0d txn=%0d op=%0d addr=%016h",
+                        fence_queue_source_q[
+                            fence_queue_response_index_r],
+                        fence_queue_txn_q[
+                            fence_queue_response_index_r],
+                        fence_queue_op_q[
+                            fence_queue_response_index_r],
+                        fence_queue_addr_q[
+                            fence_queue_response_index_r]);
                 fence_resp_valid_q <= 1'b1;
                 fence_resp_hart_q <= fence_queue_hart_q[
                     fence_queue_response_index_r];
@@ -2159,6 +2180,11 @@ module tb_top_3p_soc #(
             end
 
             if (fence_ccx_req_fire) begin
+                if (fence_trace_enabled_q)
+                    $display(
+                        "FENCE_BOUNDARY request source=%0d txn=%0d op=%0d addr=%016h",
+                        ccx_req_source_id, ccx_req_txn_id,
+                        ccx_req_op, ccx_req_addr);
                 fence_external_requests_q <=
                     fence_external_requests_q + 1;
                 fence_queue_valid_q[fence_queue_free_index_r] <= 1'b1;
@@ -2325,7 +2351,7 @@ module tb_top_3p_soc #(
                 if ((ccx_req_addr == FENCE_SMC_LINE) &&
                     (ccx_req_source_id ==
                      `OPENRV64_CCX_SOURCE_ICACHE)) begin
-                    if (fence_smc_store_seen_q &&
+                    if ((fence_smc_fetches_q != 0) &&
                         !fence_smc_store_done_q) begin
                         fence_order_violation_q[10] <= 1'b1;
                         $display(
@@ -2376,7 +2402,8 @@ module tb_top_3p_soc #(
             fetch_demand_trace_cycle_q = fetch_demand_trace_cycle_q + 1;
 
             if (fetch_demand_trace_active_q) begin
-                if (dut.u_bus.g_ccx.u_bus.u_l1i.backend_state_q != 0)
+                if (dut.u_bus.g_ccx.u_bus.u_l1i
+                        .demand_mshr_any_valid_r)
                     fetch_demand_trace_external_q =
                         fetch_demand_trace_external_q + 1;
                 if ((dut.fetch_decode_valid == 0) &&
@@ -2675,6 +2702,8 @@ module tb_top_3p_soc #(
         dtlb_serial_loads = 0;
         dtlb_serial_stores = 0;
         require_sv39 = $test$plusargs("require_sv39");
+        require_sv39_active =
+            $test$plusargs("fence_sv39_active");
         require_zero_scatter =
             $test$plusargs("require_zero_scatter");
         saw_sv39 = 1'b0;
@@ -3090,7 +3119,8 @@ module tb_top_3p_soc #(
                 if (dut.backend_dispatch_occupancy == 6)
                     frontend_empty_dispatch_full =
                         frontend_empty_dispatch_full + 1;
-                if (dut.u_bus.g_ccx.u_bus.u_l1i.backend_state_q != 0)
+                if (dut.u_bus.g_ccx.u_bus.u_l1i
+                        .demand_mshr_any_valid_r)
                     frontend_empty_l1i_external_miss =
                         frontend_empty_l1i_external_miss + 1;
                 else if (!dut.g_fetch_axi.u_fetch.consume_line_hit &&
@@ -3463,10 +3493,29 @@ module tb_top_3p_soc #(
                     dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_o;
         end
 
-        if (!run_done)
+        run_completed_q = run_done;
+        /*
+         * A posted successor is allowed to retire after the ordering point
+         * has been observed.  Keep the external model alive long enough to
+         * consume its response before checking queue completeness.
+         */
+        if (run_completed_q && fence_check_enabled_q)
+            repeat (FENCE_RESPONSE_DELAY + 4096) @(posedge clk);
+
+        if (!run_completed_q)
             $fatal(1,
                 "full-CCX workload timeout pc=%h instr=%h retired=%0d",
                 dbg_pc, dbg_instr, retired);
+        if (fence_check_enabled_q)
+            $display(
+                "PERF_FENCE_SV39_CHECK case=%0d requests=%0d completions=%0d ordinary=%0d fence_i=%0d bootstrap_sfence_vma=%0d delayed_cycles=%0d smc_fetches=%0d pressure_lines=%0d violation_mask=%03h",
+                fence_case_q,
+                fence_external_requests_q,
+                fence_external_completions_q,
+                fence_retired_q, fence_i_retired_q,
+                sfence_vma_retired_q, FENCE_RESPONSE_DELAY,
+                fence_smc_fetches_q, 12,
+                fence_order_violation_q);
         if (expected_a0_valid &&
             (dut.u_backend.u_gpr.regs[10] != expected_a0))
             $fatal(1, "full-CCX a0=%h expected=%h",
@@ -3481,6 +3530,13 @@ module tb_top_3p_soc #(
                 saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
                 saw_sv39_alias_data, ccx_ptw_reads, dtlb_fast_loads,
                 dtlb_fast_stores, dtlb_access_overlap_loads);
+        if (require_sv39_active &&
+            (!saw_sv39 || !saw_supervisor ||
+             !saw_sv39_alias_fetch || (ccx_ptw_reads < 3)))
+            $fatal(1,
+                "active Sv39 requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b ptw_reads=%0d",
+                saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
+                ccx_ptw_reads);
         if (require_zero_scatter &&
             (!saw_sv39 || !saw_supervisor || !saw_sv39_alias_fetch ||
              (ccx_ptw_reads < 3) ||
@@ -3493,47 +3549,124 @@ module tb_top_3p_soc #(
                 ccx_ptw_reads, zero_scatter_xlates,
                 zero_scatter_accesses, zero_scatter_mapping_errors);
         if (fence_check_enabled_q) begin
-            if (!fence_ww_pred_done_q || !fence_wr_pred_done_q ||
-                !fence_rr_pred_done_q || !fence_rw_pred_done_q ||
-                !fence_oo_pred_done_q || !fence_oi_pred_done_q ||
-                !fence_ii_pred_done_q || !fence_io_pred_done_q ||
-                !fence_partial_done_q ||
-                (fence_pressure_done_q != 12'hfff) ||
-                !fence_smc_store_done_q ||
-                !fence_final_store_done_q)
-                $fatal(1,
-                    "fence predecessor coverage incomplete mem=%b%b%b%b io=%b%b%b%b partial=%b pressure=%03h smc=%b final=%b",
-                    fence_ww_pred_done_q, fence_wr_pred_done_q,
-                    fence_rr_pred_done_q, fence_rw_pred_done_q,
-                    fence_oo_pred_done_q, fence_oi_pred_done_q,
-                    fence_ii_pred_done_q, fence_io_pred_done_q,
-                    fence_partial_done_q, fence_pressure_done_q,
-                    fence_smc_store_done_q, fence_final_store_done_q);
-            if (!fence_ww_succ_seen_q || !fence_wr_succ_seen_q ||
-                !fence_rr_succ_seen_q || !fence_rw_succ_seen_q ||
-                !fence_oo_succ_seen_q || !fence_oi_succ_seen_q ||
-                !fence_ii_succ_seen_q || !fence_io_succ_seen_q ||
-                !fence_partial_succ_seen_q ||
-                !fence_pressure_succ_seen_q)
-                $fatal(1,
-                    "fence successor coverage incomplete mem=%b%b%b%b io=%b%b%b%b partial=%b pressure=%b",
-                    fence_ww_succ_seen_q, fence_wr_succ_seen_q,
-                    fence_rr_succ_seen_q, fence_rw_succ_seen_q,
-                    fence_oo_succ_seen_q, fence_oi_succ_seen_q,
-                    fence_ii_succ_seen_q, fence_io_succ_seen_q,
-                    fence_partial_succ_seen_q,
-                    fence_pressure_succ_seen_q);
-            if (fence_smc_fetches_q < 2)
-                $fatal(1,
-                    "FENCE.I did not produce an externally visible refetch count=%0d",
-                    fence_smc_fetches_q);
-            if ((fence_retired_q != 15) ||
-                (fence_i_retired_q != 1) ||
+            case (fence_case_q)
+                0: begin
+                    if (!fence_ww_pred_done_q ||
+                        !fence_wr_pred_done_q ||
+                        !fence_rr_pred_done_q ||
+                        !fence_rw_pred_done_q ||
+                        !fence_partial_done_q ||
+                        (fence_pressure_done_q != 12'hfff) ||
+                        !fence_smc_store_done_q ||
+                        !fence_final_store_done_q ||
+                        !fence_ww_succ_seen_q ||
+                        !fence_wr_succ_seen_q ||
+                        !fence_rr_succ_seen_q ||
+                        !fence_rw_succ_seen_q ||
+                        !fence_partial_succ_seen_q ||
+                        !fence_pressure_succ_seen_q ||
+                        (fence_smc_fetches_q < 2))
+                        $fatal(1,
+                            "combined fence coverage incomplete");
+                    if ((fence_retired_q != 11) ||
+                        (fence_i_retired_q != 1) ||
+                        (sfence_vma_retired_q != 1))
+                        $fatal(1,
+                            "combined fence retirement coverage ordinary=%0d fence_i=%0d sfence_vma=%0d expected=11/1/1",
+                            fence_retired_q, fence_i_retired_q,
+                            sfence_vma_retired_q);
+                end
+                1: begin
+                    if (!fence_ww_pred_done_q ||
+                        !fence_ww_succ_seen_q ||
+                        (fence_retired_q != 1))
+                        $fatal(1, "FENCE w,w coverage incomplete");
+                end
+                2: begin
+                    if (!fence_wr_pred_done_q ||
+                        !fence_wr_succ_seen_q ||
+                        (fence_retired_q != 1))
+                        $fatal(1, "FENCE w,r coverage incomplete");
+                end
+                3: begin
+                    if (!fence_rr_pred_done_q ||
+                        !fence_rr_succ_seen_q ||
+                        (fence_retired_q != 1))
+                        $fatal(1, "FENCE r,r coverage incomplete");
+                end
+                4: begin
+                    if (!fence_rw_pred_done_q ||
+                        !fence_rw_succ_seen_q ||
+                        (fence_retired_q != 1))
+                        $fatal(1, "FENCE r,w coverage incomplete");
+                end
+                5: begin
+                    if (!fence_oo_pred_done_q ||
+                        !fence_oi_pred_done_q ||
+                        !fence_ii_pred_done_q ||
+                        !fence_io_pred_done_q ||
+                        !fence_oo_succ_seen_q ||
+                        !fence_oi_succ_seen_q ||
+                        !fence_ii_succ_seen_q ||
+                        !fence_io_succ_seen_q ||
+                        (fence_retired_q != 4))
+                        $fatal(1,
+                            "fence I/O coverage incomplete pred=%b%b%b%b succ=%b%b%b%b ordinary=%0d",
+                            fence_oo_pred_done_q,
+                            fence_oi_pred_done_q,
+                            fence_ii_pred_done_q,
+                            fence_io_pred_done_q,
+                            fence_oo_succ_seen_q,
+                            fence_oi_succ_seen_q,
+                            fence_ii_succ_seen_q,
+                            fence_io_succ_seen_q,
+                            fence_retired_q);
+                end
+                6: begin
+                    if (!fence_partial_done_q ||
+                        !fence_partial_succ_seen_q ||
+                        (fence_retired_q != 1))
+                        $fatal(1,
+                            "partial-line fence coverage incomplete");
+                end
+                7: begin
+                    if ((fence_pressure_done_q != 12'hfff) ||
+                        !fence_pressure_succ_seen_q ||
+                        (fence_retired_q != 1))
+                        $fatal(1,
+                            "pressure fence coverage incomplete completions=%03h",
+                            fence_pressure_done_q);
+                end
+                8: begin
+                    if (!fence_final_store_done_q ||
+                        (fence_retired_q != 4))
+                        $fatal(1,
+                            "empty/back-to-back fence coverage incomplete");
+                end
+                9: begin
+                    if (!fence_smc_store_done_q ||
+                        (fence_smc_fetches_q < 2) ||
+                        (fence_retired_q != 0) ||
+                        (fence_i_retired_q != 1))
+                        $fatal(1,
+                            "FENCE.I coverage incomplete store=%b fetches=%0d ordinary=%0d fence_i=%0d",
+                            fence_smc_store_done_q,
+                            fence_smc_fetches_q,
+                            fence_retired_q, fence_i_retired_q);
+                end
+                default:
+                    $fatal(1, "unknown fence case %0d", fence_case_q);
+            endcase
+            if ((fence_case_q != 0) &&
                 (sfence_vma_retired_q != 1))
                 $fatal(1,
-                    "fence retirement coverage ordinary=%0d fence_i=%0d sfence_vma=%0d expected=15/1/1",
-                    fence_retired_q, fence_i_retired_q,
+                    "Sv39 bootstrap SFENCE.VMA count=%0d expected=1",
                     sfence_vma_retired_q);
+            if ((fence_case_q != 0) && (fence_case_q != 9) &&
+                (fence_i_retired_q != 0))
+                $fatal(1,
+                    "unexpected FENCE.I count=%0d case=%0d",
+                    fence_i_retired_q, fence_case_q);
             if (fence_external_requests_q !=
                 fence_external_completions_q)
                 $fatal(1,
@@ -3563,15 +3696,6 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[15],
                 dut.u_backend.u_gpr.regs[16],
                 dut.u_backend.u_gpr.regs[17]);
-        if (fence_check_enabled_q)
-            $display(
-                "PERF_FENCE_SV39_CHECK requests=%0d completions=%0d ordinary=%0d fence_i=%0d bootstrap_sfence_vma=%0d delayed_cycles=%0d smc_fetches=%0d pressure_lines=%0d violation_mask=%03h",
-                fence_external_requests_q,
-                fence_external_completions_q,
-                fence_retired_q, fence_i_retired_q,
-                sfence_vma_retired_q, FENCE_RESPONSE_DELAY,
-                fence_smc_fetches_q, 12,
-                fence_order_violation_q);
         $display(
             "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
             ccx_requests, ccx_fetch_reads, ccx_data_reads,

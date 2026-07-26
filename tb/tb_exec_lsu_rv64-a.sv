@@ -153,8 +153,15 @@ module tb_exec_lsu_rv64a;
 
         issue(`RV64_LSU_OP_SC, `RV64_LSU_SIZE_WORD, 64'h104,
               64'h1234_5678_aabb_ccdd);
-        wait_request(1'b1, 1'b0, 64'h104, 64'haabb_ccdd_0000_0000,
+        wait_request(1'b1, 1'b1, 64'h104, 64'haabb_ccdd_0000_0000,
                      8'hf0, "sc.w success write");
+        repeat (2) begin
+            @(negedge clk);
+            if (!mem_valid || !mem_write || !mem_lock ||
+                mem_addr != 64'h104)
+                $fatal(1,
+                    "sc.w request did not remain locked under backpressure");
+        end
         respond(64'd0, 1'b0, 1'b0);
         expect_complete(64'd0, 1'b0, 1'b0, 1'b0, 1'b0, "sc.w success");
         consume_result();
