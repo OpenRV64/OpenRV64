@@ -36,6 +36,7 @@ module tb_fetch_3w_carousel;
     integer request_count;
     integer alias_request_base;
     integer fal_request_base;
+    integer ingress_test_index;
     reg [63:0] request_addr [0:31];
     reg request_stash [0:31];
     reg request_demand [0:31];
@@ -102,6 +103,18 @@ module tb_fetch_3w_carousel;
             make_line = 256'd0;
             for (index = 0; index < 8; index = index + 1)
                 make_line[index*32 +: 32] = base + index;
+        end
+    endfunction
+
+    function automatic integer ingress_slot(input [63:0] addr);
+        integer index;
+        begin
+            ingress_slot = -1;
+            for (index = 0; index < 4; index = index + 1) begin
+                if (dut.ingress_valid_q[index] &&
+                    (dut.ingress_addr_q[index][63:5] == addr[63:5]))
+                    ingress_slot = index;
+            end
         end
     endfunction
 
@@ -230,26 +243,36 @@ module tb_fetch_3w_carousel;
             (dut.carousel_pending_addr_q[0] != 64'h380))
             $fatal(1, "carousel did not remain independent of RAS slot");
         return_qualified(64'h300, 32'h180, 1'b1, 1'b1);
-        if (!dut.ras_line_valid_q || dut.ras_line_pending_q ||
+        if (dut.ras_line_pending_q ||
             (dut.ras_line_addr_q != 64'h300) ||
+            (ingress_slot(64'h300) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h300)] != 2'd1) ||
             !dut.carousel_pending_valid_q[0] ||
             (dut.carousel_pending_addr_q[0] != 64'h380))
-            $fatal(1, "late RAS response disturbed carousel ownership");
+            $fatal(1, "RAS response did not enter ingress independently");
         dut.consume_pc_q = 64'h310;
         #1;
         if (decode_valid != 3'b111 || stream_pc != 64'h310)
-            $fatal(1, "carousel RAS target did not reach decode");
+            $fatal(1, "ingress RAS target did not reach decode");
         tick();
         if (!dut.line_valid_q[0] ||
             (dut.line_addr_q[0] != 64'h300) ||
-            dut.carousel_pending_valid_q[0] ||
-            dut.ras_line_valid_q ||
+            !dut.carousel_pending_valid_q[0] ||
+            (dut.carousel_pending_addr_q[0] != 64'h380) ||
+            (ingress_slot(64'h300) >= 0) ||
             (decode_valid != 3'b111))
-            $fatal(1, "demanded RAS line was not promoted to carousel");
+            $fatal(1, "demanded RAS ingress line was not promoted");
         return_line(64'h380, 32'h1c0);
+        if (!dut.line_valid_q[0] ||
+            (dut.line_addr_q[0] != 64'h300) ||
+            dut.carousel_pending_valid_q[0] ||
+            (ingress_slot(64'h380) < 0))
+            $fatal(1, "late response did not remain in ingress");
 
-        // A FAL request owns the sixth block and does not consume a carousel
-        // pending tag.
+        // Back-to-back branch contexts may each retain their own completed
+        // 32-byte FAL half. These are not two sides of one branch.
+        // The request owner remains scalar because fills are serialized, but
+        // neither resident line has a fixed FAL slot.
         dut.consume_pc_q = 64'h700;
         dut.next_req_addr_q = 64'h1000;
         dut.pair_predicted_valid_q = 1'b0;
@@ -262,45 +285,54 @@ module tb_fetch_3w_carousel;
             request_demand[fal_request_base] ||
             !dut.fal_line_pending_q ||
             (dut.fal_line_addr_q != 64'h500))
-            $fatal(1, "FAL request did not use its dedicated slot");
+            $fatal(1, "first back-to-back FAL request mismatch");
         return_qualified(64'h500, 32'h200, 1'b1, 1'b0);
-        if (!dut.fal_line_valid_q || dut.fal_line_pending_q ||
-            (dut.fal_line_addr_q != 64'h500))
-            $fatal(1, "FAL response did not fill its dedicated slot");
+        if (dut.fal_line_pending_q ||
+            (ingress_slot(64'h500) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h500)] != 2'd2))
+            $fatal(1, "first branch FAL did not enter ingress");
+
+        dut.pair_unpredicted_valid_q = 1'b1;
+        dut.pair_unpredicted_addr_q = 64'h520;
+        fal_request_base = request_count;
+        while (request_count == fal_request_base) tick();
+        if ((request_addr[fal_request_base] != 64'h520) ||
+            !request_stash[fal_request_base] ||
+            request_demand[fal_request_base] ||
+            !dut.fal_line_pending_q ||
+            (ingress_slot(64'h500) < 0))
+            $fatal(1, "second back-to-back FAL request lost first line");
+        return_qualified(64'h520, 32'h220, 1'b1, 1'b0);
+        if (dut.fal_line_pending_q ||
+            (ingress_slot(64'h500) < 0) ||
+            (ingress_slot(64'h520) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h500)] != 2'd2) ||
+            (dut.ingress_origin_q[ingress_slot(64'h520)] != 2'd2))
+            $fatal(1,
+                "two back-to-back branch FAL halves not resident");
+
         restart_pc = 64'h510;
         restart = 1'b1;
         tick();
         restart = 1'b0;
         #1;
         if (decode_valid != 3'b111 || stream_pc != 64'h510)
-            $fatal(1, "FAL slot did not serve redirected fetch");
-        dut.pair_unpredicted_valid_q = 1'b1;
-        dut.pair_unpredicted_addr_q = 64'h520;
-        fal_request_base = request_count;
+            $fatal(1, "first FAL ingress line did not serve redirect");
         tick();
-        if ((request_count != fal_request_base + 1) ||
-            (request_addr[fal_request_base] != 64'h520) ||
-            !request_stash[fal_request_base] ||
-            request_demand[fal_request_base] ||
-            !dut.line_valid_q[0] ||
+        if (!dut.line_valid_q[0] ||
             (dut.line_addr_q[0] != 64'h500) ||
-            !dut.fal_line_pending_q ||
-            (dut.fal_line_addr_q != 64'h520) ||
-            (decode_valid != 3'b111))
-            $fatal(1,
-                "FAL reallocation lost demanded line instead of promoting it");
-        return_qualified(64'h520, 32'h220, 1'b1, 1'b0);
-        if (!dut.fal_line_valid_q || dut.fal_line_pending_q)
-            $fatal(1, "replacement FAL response did not become resident");
+            (ingress_slot(64'h500) >= 0) ||
+            (ingress_slot(64'h520) < 0))
+            $fatal(1, "first FAL promotion disturbed second context");
         dut.consume_pc_q = 64'h500;
         dut.next_req_addr_q = 64'h520;
         tick();
         if (!dut.line_valid_q[1] ||
             (dut.line_addr_q[1] != 64'h520) ||
-            dut.fal_line_valid_q ||
+            (ingress_slot(64'h520) >= 0) ||
             (dut.next_req_addr_q != 64'h540))
             $fatal(1,
-                "future FAL demand was not promoted at carousel cursor");
+                "second branch FAL was not promoted at demand cursor");
         prefetch_age_valid = 3'b001;
         prefetch_age_addr[63:0] = 64'h520;
         tick();
@@ -310,9 +342,145 @@ module tb_fetch_3w_carousel;
         if (decode_valid != 3'b111 || stream_pc != 64'h528)
             $fatal(1, "aged FAL demand did not survive in carousel");
 
+        // When a queued FAL line is also selected as the active demand, keep
+        // both ownership tags. FAL retirement aging may release the
+        // speculative owner, but must not remove the durable demand owner.
+        dut.consume_pc_q = 64'h600;
+        dut.next_req_addr_q = 64'h620;
+        dut.line_valid_q[1] = 1'b0;
+        dut.carousel_pending_valid_q[1] = 1'b0;
+        dut.pair_unpredicted_valid_q = 1'b1;
+        dut.pair_unpredicted_addr_q = 64'h620;
+        fal_request_base = request_count;
+        while (request_count == fal_request_base) tick();
+        if ((request_addr[fal_request_base] != 64'h620) ||
+            !request_stash[fal_request_base] ||
+            !request_demand[fal_request_base] ||
+            !dut.fal_line_pending_q ||
+            !dut.carousel_pending_valid_q[1] ||
+            (dut.carousel_pending_addr_q[1] != 64'h620))
+            $fatal(1, "demanded FAL did not retain dual ownership");
+        stall = 1'b1;
+        prefetch_age_valid = 3'b001;
+        prefetch_age_addr[63:0] = 64'h620;
+        tick();
+        prefetch_age_valid = 3'b000;
+        if (dut.fal_line_pending_q ||
+            !dut.carousel_pending_valid_q[1])
+            $fatal(1, "FAL age removed durable demand ownership");
+        return_qualified(64'h620, 32'h260, 1'b1, 1'b1);
+        stall = 1'b0;
+        if (dut.carousel_pending_valid_q[1] ||
+            (ingress_slot(64'h620) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h620)] != 2'd0))
+            $fatal(1, "aged demanded FAL response was not recovered");
+
+        // A duplicate speculative FAL completion for an already demanded
+        // line may refresh its data, but must not downgrade its ownership.
+        // Otherwise the duplicate branch context can age out the only copy.
+        dut.fal_line_pending_q = 1'b1;
+        dut.fal_line_addr_q = 64'h620;
+        return_qualified(64'h620, 32'h2a0, 1'b1, 1'b0);
+        if ((ingress_slot(64'h620) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h620)] != 2'd0))
+            $fatal(1, "duplicate FAL downgraded demanded ingress line");
+        prefetch_age_valid = 3'b001;
+        prefetch_age_addr[63:0] = 64'h620;
+        tick();
+        prefetch_age_valid = 3'b000;
+        if ((ingress_slot(64'h620) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h620)] != 2'd0))
+            $fatal(1, "duplicate FAL age removed demanded ingress line");
+
+        // If the same completion satisfies live FAL and demand owners, demand
+        // provenance must win even when this is a new ingress allocation.
+        dut.carousel_pending_valid_q[2] = 1'b1;
+        dut.carousel_pending_addr_q[2] = 64'h640;
+        dut.fal_line_pending_q = 1'b1;
+        dut.fal_line_addr_q = 64'h640;
+        return_qualified(64'h640, 32'h2e0, 1'b1, 1'b1);
+        if (dut.carousel_pending_valid_q[2] ||
+            dut.fal_line_pending_q ||
+            (ingress_slot(64'h640) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h640)] != 2'd0))
+            $fatal(1, "simultaneous FAL and demand response lost demand");
+        prefetch_age_valid = 3'b001;
+        prefetch_age_addr[63:0] = 64'h640;
+        tick();
+        prefetch_age_valid = 3'b000;
+        if ((ingress_slot(64'h640) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h640)] != 2'd0))
+            $fatal(1, "simultaneous-owner demand was FAL-aged");
+
+        // A matching response releases its old pending owner, but an
+        // out-of-window line must not replace a useful same-index demand on
+        // the edge where the cursor consumes that demand.
+        dut.consume_pc_q = 64'h840;
+        dut.next_req_addr_q = 64'h880;
+        dut.line_valid_q[0] = 1'b1;
+        dut.line_addr_q[0] = 64'h880;
+        dut.line_data_q[0] = make_line(32'h300);
+        dut.line_sector_valid_q[0] = 2'b11;
+        dut.carousel_pending_valid_q[0] = 1'b1;
+        dut.carousel_pending_addr_q[0] = 64'h800;
+        return_line(64'h800, 32'h340);
+        if (!dut.line_valid_q[0] ||
+            (dut.line_addr_q[0] != 64'h880) ||
+            dut.carousel_pending_valid_q[0] ||
+            (dut.next_req_addr_q != 64'h8a0) ||
+            (ingress_slot(64'h800) < 0))
+            $fatal(1,
+                "late alias response bypassed ingress or overwrote demand");
+
+        // If the demanded alias is not resident, retain the cursor until the
+        // older same-slot owner completes instead of rebinding its tag.
+        dut.line_valid_q[0] = 1'b0;
+        dut.carousel_pending_valid_q[0] = 1'b1;
+        dut.carousel_pending_addr_q[0] = 64'h800;
+        dut.next_req_addr_q = 64'h880;
+        fal_request_base = request_count;
+        repeat (2) tick();
+        if ((request_count != fal_request_base) ||
+            (dut.next_req_addr_q != 64'h880))
+            $fatal(1, "busy carousel slot did not hold demand cursor");
+        return_line(64'h800, 32'h380);
+        while (request_count == fal_request_base) tick();
+        if ((request_addr[fal_request_base] != 64'h880) ||
+            !request_demand[fal_request_base])
+            $fatal(1, "released carousel slot did not issue held demand");
+
+        // A speculative completion must not evict any of four ingress lines
+        // covering the active demand window. With no safe victim, drop it.
+        dut.consume_pc_q = 64'h900;
+        dut.next_req_addr_q = 64'ha00;
+        dut.line_valid_q[0] = 1'b1;
+        dut.line_addr_q[0] = 64'h900;
+        dut.line_data_q[0] = make_line(32'h3f0);
+        dut.line_sector_valid_q[0] = 2'b11;
+        for (ingress_test_index = 0; ingress_test_index < 4;
+             ingress_test_index = ingress_test_index + 1) begin
+            dut.ingress_valid_q[ingress_test_index] = 1'b1;
+            dut.ingress_addr_q[ingress_test_index] =
+                64'h900 + ingress_test_index * 32;
+            dut.ingress_data_q[ingress_test_index] =
+                make_line(32'h400 + ingress_test_index * 8);
+            dut.ingress_origin_q[ingress_test_index] = 2'd0;
+        end
+        dut.fal_line_pending_q = 1'b1;
+        dut.fal_line_addr_q = 64'ha00;
+        return_qualified(64'ha00, 32'h440, 1'b1, 1'b0);
+        if (ingress_slot(64'ha00) >= 0)
+            $fatal(1, "speculative response evicted active ingress line");
+        for (ingress_test_index = 0; ingress_test_index < 4;
+             ingress_test_index = ingress_test_index + 1) begin
+            if (!dut.ingress_valid_q[ingress_test_index] ||
+                (dut.ingress_addr_q[ingress_test_index] !=
+                    (64'h900 + ingress_test_index * 32)))
+                $fatal(1, "active ingress protection lost demand line");
+        end
+
         // A stash-only FAL may be aged downstream without a response.  Its
         // pending tag must not suppress a later same-line demand.
-        dut.fal_line_valid_q = 1'b0;
         dut.fal_line_pending_q = 1'b1;
         dut.fal_line_addr_q = 64'h600;
         restart_pc = 64'h610;
@@ -329,21 +497,25 @@ module tb_fetch_3w_carousel;
         if (!dut.ras_line_pending_q || !dut.fal_line_pending_q)
             $fatal(1, "same-line RAS and FAL ownership was not independent");
         return_qualified(64'h600, 32'h240, 1'b1, 1'b1);
-        if (!dut.ras_line_valid_q || dut.ras_line_pending_q ||
-            !dut.fal_line_pending_q)
+        if (dut.ras_line_pending_q || !dut.fal_line_pending_q ||
+            (ingress_slot(64'h600) < 0) ||
+            (dut.ingress_origin_q[ingress_slot(64'h600)] != 2'd1))
             $fatal(1, "RAS demand response consumed FAL ownership");
         prefetch_age_valid = 3'b001;
         prefetch_age_addr[63:0] = 64'h600;
         tick();
         prefetch_age_valid = 3'b000;
-        if (dut.fal_line_valid_q || dut.fal_line_pending_q)
-            $fatal(1, "retirement age did not release FAL slot");
-        dut.ras_line_valid_q = 1'b0;
+        if (dut.fal_line_pending_q ||
+            !((ingress_slot(64'h600) >= 0) ||
+              (dut.line_valid_q[0] &&
+               (dut.line_addr_q[0] == 64'h600))))
+            $fatal(1, "FAL age damaged independent RAS ingress ownership");
         return_qualified(64'h600, 32'h280, 1'b1, 1'b1);
+        tick();
         if (!dut.line_valid_q[0] || (dut.line_addr_q[0] != 64'h600))
-            $fatal(1, "useful late forced demand did not fill carousel");
+            $fatal(1, "useful late forced demand was not promoted");
 
-        $display("PASS: 4-demand + RAS + FAL fetch structure and aging");
+        $display("PASS: 4-demand + 4-ingress fetch banks and aging");
         $finish;
     end
 endmodule

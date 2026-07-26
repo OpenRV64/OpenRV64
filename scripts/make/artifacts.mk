@@ -15,6 +15,14 @@ CORE_BUS_SIM_BUILD := sim/core_bus_tb.vvp
 CCX_PROTOCOL_1H_SIM_BUILD := sim/ccx_protocol_1h_tb.vvp
 CCX_PROTOCOL_2H_SIM_BUILD := sim/ccx_protocol_2h_tb.vvp
 CCX_PROTOCOL_4H_SIM_BUILD := sim/ccx_protocol_4h_tb.vvp
+CCX_COHERENT_2H_SIM_BUILD := sim/ccx_coherent_2h_tb.vvp
+CCX_COHERENT_4H_SIM_BUILD := sim/ccx_coherent_4h_tb.vvp
+CCX_COHERENT_PROTOCOL_2H_SIM_BUILD := \
+	sim/ccx_coherent_protocol_2h_tb.vvp
+CCX_COHERENT_PROTOCOL_4H_SIM_BUILD := \
+	sim/ccx_coherent_protocol_4h_tb.vvp
+CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD := \
+	sim/ccx_4h_l1d_directory_l2_tb.vvp
 L1_CACHE_SIM_BUILD := sim/l1_cache_tb.vvp
 L1D_PREFETCH_SIM_BUILD := sim/l1d_prefetch_tb.vvp
 L1D_DEMAND_MSHR_SIM_BUILD := sim/l1d_demand_mshr_tb.vvp

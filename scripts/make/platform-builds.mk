@@ -183,6 +183,51 @@ $(CCX_PROTOCOL_4H_SIM_BUILD): $(CCX_PROTOCOL_NH_SIM_SRCS) $(CCX_PROTOCOL_SRCS)
 		-o $(CCX_PROTOCOL_4H_SIM_BUILD) $(CCX_PROTOCOL_SRCS) \
 		$(CCX_PROTOCOL_NH_SIM_SRCS)
 
+$(CCX_COHERENT_2H_SIM_BUILD): tb/tb_ccx_coherent_control.sv \
+		$(CCX_COHERENT_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_control \
+		-Ptb_ccx_coherent_control.NUM_HARTS=2 \
+		-o $(CCX_COHERENT_2H_SIM_BUILD) $(CCX_COHERENT_SRCS) \
+		tb/tb_ccx_coherent_control.sv
+
+$(CCX_COHERENT_4H_SIM_BUILD): tb/tb_ccx_coherent_control.sv \
+		$(CCX_COHERENT_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_control \
+		-Ptb_ccx_coherent_control.NUM_HARTS=4 \
+		-o $(CCX_COHERENT_4H_SIM_BUILD) $(CCX_COHERENT_SRCS) \
+		tb/tb_ccx_coherent_control.sv
+
+$(CCX_COHERENT_PROTOCOL_2H_SIM_BUILD): \
+		tb/tb_ccx_coherent_protocol.sv $(CCX_COHERENT_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_protocol \
+		-Ptb_ccx_coherent_protocol.NUM_HARTS=2 \
+		-o $(CCX_COHERENT_PROTOCOL_2H_SIM_BUILD) \
+		rtl/complex/protocol/defs.v $(CCX_COHERENT_SRCS) \
+		tb/tb_ccx_coherent_protocol.sv
+
+$(CCX_COHERENT_PROTOCOL_4H_SIM_BUILD): \
+		tb/tb_ccx_coherent_protocol.sv $(CCX_COHERENT_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_protocol \
+		-Ptb_ccx_coherent_protocol.NUM_HARTS=4 \
+		-o $(CCX_COHERENT_PROTOCOL_4H_SIM_BUILD) \
+		rtl/complex/protocol/defs.v $(CCX_COHERENT_SRCS) \
+		tb/tb_ccx_coherent_protocol.sv
+
+$(CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD): \
+		tb/tb_ccx_4h_l1d_directory_l2.sv $(L1_CACHE_SRCS) \
+		$(CCX_COHERENT_SRCS) $(CCX_L2_SRCS) \
+		rtl/complex/protocol/line_crossbar.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_4h_l1d_directory_l2 \
+		-o $(CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD) \
+		$(L1_CACHE_SRCS) rtl/complex/protocol/line_crossbar.v \
+		$(CCX_COHERENT_SRCS) $(CCX_L2_SRCS) \
+		tb/tb_ccx_4h_l1d_directory_l2.sv
+
 $(L1_CACHE_SIM_BUILD): $(L1_CACHE_SIM_SRCS) $(L1_CACHE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_l1_cache \

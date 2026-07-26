@@ -1673,16 +1673,25 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
            << ",next=" << std::hex << std::setw(16)
            << static_cast<uint64_t>(FETCH3P(next_req_addr_q))
            << ",ras=" << std::dec
-           << static_cast<unsigned>(FETCH3P(ras_line_valid_q))
-           << '/' << static_cast<unsigned>(FETCH3P(ras_line_pending_q))
+           << static_cast<unsigned>(FETCH3P(ras_line_pending_q))
            << '/' << std::hex << std::setw(16)
            << static_cast<uint64_t>(FETCH3P(ras_line_addr_q))
            << ",fal=" << std::dec
-           << static_cast<unsigned>(FETCH3P(fal_line_valid_q))
-           << '/' << static_cast<unsigned>(FETCH3P(fal_line_pending_q))
+           << static_cast<unsigned>(FETCH3P(fal_line_pending_q))
            << '/' << std::hex << std::setw(16)
            << static_cast<uint64_t>(FETCH3P(fal_line_addr_q))
-           << '}';
+           << ",ingress=";
+    for (unsigned slot = 0; slot < 4; ++slot) {
+        if (slot != 0)
+            stream << ':';
+        stream << std::dec
+               << static_cast<unsigned>(FETCH3P(ingress_valid_q)[slot])
+               << '/' << std::hex << std::setw(16)
+               << static_cast<uint64_t>(FETCH3P(ingress_addr_q)[slot])
+               << '/' << std::dec
+               << static_cast<unsigned>(FETCH3P(ingress_origin_q)[slot]);
+    }
+    stream << '}';
     stream << " bus{fq=" << std::dec
            << static_cast<unsigned>(BUS3P(fetch_head_q)) << ':'
            << static_cast<unsigned>(BUS3P(fetch_tail_q)) << ':'

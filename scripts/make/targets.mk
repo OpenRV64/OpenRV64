@@ -22,7 +22,10 @@
 .PHONY: sim-l1-cache sim-l1d-prefetch sim-l1d-demand-mshr \
 	sim-l1d-store-order \
 	sim-l1d-store-buffer sim-l1i-top sim-ccx-protocol-1h \
-	sim-ccx-protocol-2h sim-ccx-protocol-4h
+	sim-ccx-protocol-2h sim-ccx-protocol-4h \
+	sim-ccx-coherent-2h sim-ccx-coherent-4h \
+	sim-ccx-coherent-protocol-2h sim-ccx-coherent-protocol-4h \
+	sim-ccx-4h-l1d-directory-l2
 .PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-ccx-l2 \
 	sim-core-3p-ccx-l2-vm
 .PHONY: sim-ccx-l2
@@ -55,6 +58,9 @@ sim: sim-l1d-demand-mshr
 sim: sim-l1d-store-order sim-l1d-store-buffer
 sim: sim-ccx-protocol-1h
 sim: sim-ccx-protocol-2h sim-ccx-protocol-4h
+sim: sim-ccx-coherent-2h sim-ccx-coherent-4h
+sim: sim-ccx-coherent-protocol-2h sim-ccx-coherent-protocol-4h
+sim: sim-ccx-4h-l1d-directory-l2
 sim: sim-ccx-l2
 sim: sim-genbus-axi sim-genbus-wb-widths
 sim: sim-core-complex-1h-axi sim-core-complex-2h-axi \

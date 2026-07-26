@@ -48,6 +48,13 @@ CORE_COMPLEX_SRCS := rtl/complex/protocol/defs.v \
 	$(CCX_L2_SRCS) \
 	$(COMPLEX_BUS_SRCS) \
 	rtl/complex/wrapper_nh.v
+CCX_COHERENT_SRCS := rtl/complex/coherent/protocol/defs.v \
+	rtl/complex/coherent/directory.v \
+	rtl/complex/coherent/snoop_filter.v \
+	rtl/complex/coherent/probe_tracker.v \
+	rtl/complex/coherent/control.v \
+	rtl/complex/coherent/protocol/coherent_protocol.v \
+	rtl/complex/2h/ccx.v rtl/complex/4h/ccx.v
 DISPATCH_SRCS := $(RENAME_SRCS) rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_3p.v \
 	rtl/core/dispatch/dispatch_window_3p.v \

@@ -1,0 +1,184 @@
+# Non-inclusive coherent protocol and L2 boundary
+
+## Decision
+
+The two-hart and four-hart complexes use a coherence frontend between the
+hart-facing CCX crossbar and the shared L2:
+
+```text
+private L1I/L1D endpoints
+        |
+        v
+CCX line crossbar
+        |
+        v
+coherent_protocol
+  - independently tagged snoop-filter directory
+  - probe issue and response tracking
+  - write permission
+  - ordering and future home atomics
+        |
+        v
+non-inclusive l2_native
+        |
+        v
+GenBus / AXI / timed DDR3
+```
+
+The L2 is not the coherence home.  It is a non-inclusive data cache behind the
+home.  L2 replacement therefore has no relationship to private-cache
+residency and does not require a probe or directory callback.
+
+The directory remains necessary.  It is an independently tagged snoop filter,
+not metadata attached to L2 set/way entries.  It records a conservative
+superset of private I-cache and D-cache sharers for each resident directory
+line.
+
+## Initial private-cache state model
+
+The initial protocol is Shared/Invalid with clean private lines:
+
+- L1D is write-through and no-write-allocate.
+- L1I and L1D may retain clean lines after the L2 evicts the corresponding
+  line.
+- A cacheable write probes every recorded D-cache sharer and waits for all
+  acknowledgements before forwarding the write to L2.
+- A directory entry may be replaced only after all recorded I-cache and
+  D-cache sharers of the victim line acknowledge invalidation.
+- Clean private eviction need not update the directory.  A stale sharer bit
+  causes a harmless probe to a cache that no longer holds the line.
+- Device traffic bypasses the directory and probe path.
+- PTW traffic may use L2 but is never recorded as a private sharer.
+
+The frontend records a private sharer before returning a successful fill to
+the requesting cache.  Consequently, a directory miss means no private cache
+can legally retain that line.
+
+## Cross-hart fetches
+
+No cross-hart data fetch is required while private lines are clean.  L2 or
+memory remains authoritative, so a read always obtains data below the
+coherence frontend.
+
+Cross-hart data intervention becomes mandatory only if a later protocol adds
+Modified or dirty private ownership.  That extension requires:
+
+- one precise dirty owner instead of only clean sharer vectors;
+- `READ_SHARED` and `READ_INVALIDATE` probes;
+- a probe response capable of returning a full 512-bit line;
+- arbitration between an owner response, L2 refill, store-buffer contents,
+  and a concurrent invalidation;
+- writing intervention data back to L2, or forwarding it directly while
+  preserving a later writeback obligation; and
+- directory transient states that prevent a second requester from observing
+  the old owner or stale L2 data.
+
+The coherent protocol definitions reserve the commands and data-response
+encoding now.  The current frontend accepts only clean `ACK` responses and
+reports any data-bearing response as a protocol error.
+
+## Current operation sequences
+
+### Private read or instruction fetch
+
+1. Look up the physical line in the snoop-filter directory.
+2. On a directory miss, choose an entry.
+3. If the victim records private sharers, invalidate them and wait for every
+   response.
+4. Allocate the independently tagged directory entry.
+5. Send the read to L2.
+6. After a successful L2 response, record the requesting I-cache or D-cache
+   sharer.
+7. Return the response to the private cache.
+
+### Cacheable write
+
+1. Buffer the command and its tagged write-data beat.
+2. Look up the line in the directory.
+3. Invalidate every recorded D-cache sharer, including the requester when it
+   is recorded.
+4. Wait for every probe response.
+5. Clear those D-cache sharer bits.
+6. Forward the write to L2.
+7. Return completion only after the L2 response.
+
+Instruction-cache sharers are retained.  RISC-V instruction visibility still
+uses local and remote `FENCE.I`; ordinary stores do not silently replace that
+architectural protocol.
+
+### Device request
+
+The request goes directly to L2's bypass path.  The physical memory map must
+not permit cacheable and device aliases to the same storage.
+
+### Fence
+
+The initial frontend allows one global transaction, so an accepted fence is
+already behind all prior frontend traffic.  It forwards the fence to L2 and
+waits for L2 completion.  This is stronger and slower than required.  A later
+multi-transaction frontend must replace it with per-hart accounting.
+
+## L2 requirements for the initial protocol
+
+Basic clean S/I coherence does not require a new L2 controller.  The current
+`l2_native.v` can remain the backend if the following contracts are locked
+down with tests and assertions:
+
+1. A write response is the L2 coherence point.  After the response, a later
+   read accepted through the frontend must observe the written bytes.
+2. A resident partial write updates the authoritative L2 line before
+   completion.
+3. A write miss or device write does not complete until the downstream write
+   response is known.
+4. A read response carries the original hart, transaction, source, beat, and
+   error identity without rewriting.
+5. `FENCE` completes only after older L2 MSHRs, writebacks, bypass requests,
+   and queued responses have drained.
+6. L2 may replace any line without consulting the coherence frontend.
+7. L2 never assumes that its own eviction invalidates a private line.
+8. The frontend submits only ordinary `READ`, `WRITE`, and `FENCE` operations;
+   it forces the transitional lock signal low and consumes `aq`/`rl` itself.
+
+The current L2 already implements most of this shape.  Before integration,
+add directed regressions for read-after-partial-write, write-miss completion,
+fence drain, and identity preservation through backpressure.
+
+## Required L2 work
+
+Required for initial integration:
+
+- diagnose the existing full-line mismatch in `tb_core_complex.sv`;
+- add explicit assertions for the write-response coherence point;
+- add the frontend-to-L2 contract regressions above;
+- document that L2 is non-inclusive and private-cache unaware; and
+- retain device bypass and PTW generation behavior through the frontend.
+
+Not required for initial integration:
+
+- L2 sharer bits;
+- L2 allocation or eviction probe hooks;
+- L2 ownership state;
+- data-bearing snoops;
+- home LR/SC reservations inside L2; or
+- per-hart fence state inside L2.
+
+The coherent frontend can implement LR/SC and AMOs later as serialized L2
+read/modify/write microsequences while blocking conflicting frontend traffic.
+That remains coherent only for masters routed through this home; DMA and other
+external coherent agents would require an expanded system protocol.
+
+## Later performance work
+
+The current frontend deliberately permits one transaction globally.  Scaling
+it requires per-line home entries rather than relaxing correctness:
+
+- a synchronous SRAM-qualified directory lookup pipeline;
+- multiple directory lookups and outstanding L2 transactions;
+- same-line serialization with unrelated-line concurrency;
+- per-hart response queues and ordering counters;
+- independent probe transactions with unique IDs;
+- conflict handling between directory victim invalidation and a request for
+  that victim line; and
+- measured directory geometry and replacement policy.
+
+None of those changes require making L2 inclusive.

@@ -91,6 +91,21 @@ sim-ccx-protocol-2h: $(CCX_PROTOCOL_2H_SIM_BUILD)
 sim-ccx-protocol-4h: $(CCX_PROTOCOL_4H_SIM_BUILD)
 	vvp $(CCX_PROTOCOL_4H_SIM_BUILD)
 
+sim-ccx-coherent-2h: $(CCX_COHERENT_2H_SIM_BUILD)
+	vvp $(CCX_COHERENT_2H_SIM_BUILD)
+
+sim-ccx-coherent-4h: $(CCX_COHERENT_4H_SIM_BUILD)
+	vvp $(CCX_COHERENT_4H_SIM_BUILD)
+
+sim-ccx-coherent-protocol-2h: $(CCX_COHERENT_PROTOCOL_2H_SIM_BUILD)
+	vvp $(CCX_COHERENT_PROTOCOL_2H_SIM_BUILD)
+
+sim-ccx-coherent-protocol-4h: $(CCX_COHERENT_PROTOCOL_4H_SIM_BUILD)
+	vvp $(CCX_COHERENT_PROTOCOL_4H_SIM_BUILD)
+
+sim-ccx-4h-l1d-directory-l2: $(CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD)
+	vvp $(CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD)
+
 sim-l1-cache: $(L1_CACHE_SIM_BUILD)
 	vvp $(L1_CACHE_SIM_BUILD)
 

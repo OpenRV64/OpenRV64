@@ -123,6 +123,11 @@ module openrv64_fetch_3w #(
     localparam integer ALT_SECTOR_CONTEXT_INDEX_WIDTH =
         (ALT_SECTOR_CONTEXTS > 1) ?
             $clog2(ALT_SECTOR_CONTEXTS) : 1;
+    localparam integer INGRESS_DEPTH = 4;
+    localparam integer INGRESS_INDEX_WIDTH = $clog2(INGRESS_DEPTH);
+    localparam [1:0] INGRESS_ORIGIN_DEMAND = 2'd0;
+    localparam [1:0] INGRESS_ORIGIN_RAS = 2'd1;
+    localparam [1:0] INGRESS_ORIGIN_FAL = 2'd2;
 
     reg active_q;
     reg [`RV64_XLEN-1:0] consume_pc_q;
@@ -141,22 +146,33 @@ module openrv64_fetch_3w #(
     reg [`RV64_XLEN-1:0]
         carousel_pending_addr_q [0:LINE_DEPTH-1]
         /* verilator public_flat_rd */;
-    // Six 8x32-bit fetch blocks: four direct-mapped sequential-demand
-    // carousel entries plus one fully associative RAS entry and one fully
-    // associative FAL entry.  Side entries keep independent pending tags so
-    // forced fetches never overwrite carousel response ownership.
-    reg ras_line_valid_q;
+    // Eight 8x32-bit fetch blocks split into two banks.  The four direct
+    // entries above are populated only by fetch demand.  Every response first
+    // enters this four-entry associative ingress bank, then is promoted to the
+    // direct bank when the demand cursor or decoder consumes it.  RAS/FAL
+    // remain independent request-owner tags, not fixed resident slots; this
+    // permits two FAL halves from two back-to-back branch contexts to remain
+    // resident concurrently.  They are not the two sides of one branch.
+    reg ingress_valid_q [0:INGRESS_DEPTH-1]
+        /* verilator public_flat_rd */;
+    reg [`RV64_XLEN-1:0]
+        ingress_addr_q [0:INGRESS_DEPTH-1]
+        /* verilator public_flat_rd */;
+    reg [`OPENRV64_AXI_DATA_WIDTH-1:0]
+        ingress_data_q [0:INGRESS_DEPTH-1]
+        /* verilator public_flat_rd */;
+    reg ingress_access_fault_q [0:INGRESS_DEPTH-1]
+        /* verilator public_flat_rd */;
+    reg ingress_page_fault_q [0:INGRESS_DEPTH-1]
+        /* verilator public_flat_rd */;
+    reg [1:0] ingress_origin_q [0:INGRESS_DEPTH-1]
+        /* verilator public_flat_rd */;
+    reg [INGRESS_INDEX_WIDTH-1:0]
+        ingress_replace_q /* verilator public_flat_rd */;
     reg ras_line_pending_q;
     reg [`RV64_XLEN-1:0] ras_line_addr_q;
-    reg [`OPENRV64_AXI_DATA_WIDTH-1:0] ras_line_data_q;
-    reg ras_line_access_fault_q;
-    reg ras_line_page_fault_q;
-    reg fal_line_valid_q;
     reg fal_line_pending_q;
     reg [`RV64_XLEN-1:0] fal_line_addr_q;
-    reg [`OPENRV64_AXI_DATA_WIDTH-1:0] fal_line_data_q;
-    reg fal_line_access_fault_q;
-    reg fal_line_page_fault_q;
     wire measurement_carousel_enabled /* verilator public_flat_rd */ =
         ENABLE_CAROUSEL != 0;
 
@@ -196,6 +212,7 @@ module openrv64_fetch_3w #(
     reg [ALT_PREVIEW_BITS-1:0] branch_unpredicted_sector_source_data_r;
     reg alt_prefetch_aged_r;
     reg fal_prefetch_aged_r;
+    reg ingress_fal_aged_r [0:INGRESS_DEPTH-1];
     integer branch_stash_index;
     integer branch_sector_index;
     integer branch_line_index;
@@ -608,89 +625,96 @@ module openrv64_fetch_3w #(
         line_sector_valid_q[consume_slot] : 2'b00;
     wire [1:0] following_live_sector_valid = following_line_tag_hit ?
         line_sector_valid_q[following_slot] : 2'b00;
-    wire consume_ras_line_hit = ras_line_valid_q &&
-        (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         consume_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire following_ras_line_hit = ras_line_valid_q &&
-        (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         following_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire consume_fal_line_hit = fal_line_valid_q &&
-        (fal_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         consume_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire following_fal_line_hit = fal_line_valid_q &&
-        (fal_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         following_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire [1:0] consume_ras_sector_valid =
-        consume_ras_line_hit ? 2'b11 : 2'b00;
-    wire [1:0] following_ras_sector_valid =
-        following_ras_line_hit ? 2'b11 : 2'b00;
-    wire [1:0] consume_fal_sector_valid =
-        consume_fal_line_hit ? 2'b11 : 2'b00;
-    wire [1:0] following_fal_sector_valid =
-        following_fal_line_hit ? 2'b11 : 2'b00;
+    reg consume_ingress_hit_r;
+    reg following_ingress_hit_r;
+    reg [INGRESS_INDEX_WIDTH-1:0] consume_ingress_index_r;
+    reg [INGRESS_INDEX_WIDTH-1:0] following_ingress_index_r;
+    integer ingress_lookup_index;
+    always @* begin
+        consume_ingress_hit_r = 1'b0;
+        following_ingress_hit_r = 1'b0;
+        consume_ingress_index_r = {INGRESS_INDEX_WIDTH{1'b0}};
+        following_ingress_index_r = {INGRESS_INDEX_WIDTH{1'b0}};
+        for (ingress_lookup_index = 0;
+             ingress_lookup_index < INGRESS_DEPTH;
+             ingress_lookup_index = ingress_lookup_index + 1) begin
+            if (!consume_ingress_hit_r &&
+                ingress_valid_q[ingress_lookup_index] &&
+                (ingress_addr_q[ingress_lookup_index][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 consume_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                consume_ingress_hit_r = 1'b1;
+                consume_ingress_index_r = ingress_lookup_index;
+            end
+            if (!following_ingress_hit_r &&
+                ingress_valid_q[ingress_lookup_index] &&
+                (ingress_addr_q[ingress_lookup_index][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 following_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                following_ingress_hit_r = 1'b1;
+                following_ingress_index_r = ingress_lookup_index;
+            end
+        end
+    end
+    wire [1:0] consume_ingress_sector_valid =
+        consume_ingress_hit_r ? 2'b11 : 2'b00;
+    wire [1:0] following_ingress_sector_valid =
+        following_ingress_hit_r ? 2'b11 : 2'b00;
     wire [1:0] consume_alt_sector_valid =
         fetch_alt_candidate_r[0][257:256];
     wire [1:0] following_alt_sector_valid =
         fetch_alt_candidate_r[1][257:256];
-    wire [1:0] consume_ras_select =
-        (~consume_live_sector_valid) & consume_ras_sector_valid;
-    wire [1:0] following_ras_select =
-        (~following_live_sector_valid) & following_ras_sector_valid;
-    wire [1:0] consume_fal_select =
-        (~consume_live_sector_valid) & (~consume_ras_sector_valid) &
-        consume_fal_sector_valid;
-    wire [1:0] following_fal_select =
-        (~following_live_sector_valid) & (~following_ras_sector_valid) &
-        following_fal_sector_valid;
+    wire [1:0] consume_ingress_select =
+        (~consume_live_sector_valid) & consume_ingress_sector_valid;
+    wire [1:0] following_ingress_select =
+        (~following_live_sector_valid) & following_ingress_sector_valid;
     wire [1:0] consume_alt_select =
-        (~consume_live_sector_valid) & (~consume_ras_sector_valid) &
-        (~consume_fal_sector_valid) & consume_alt_sector_valid;
+        (~consume_live_sector_valid) & (~consume_ingress_sector_valid) &
+        consume_alt_sector_valid;
     wire [1:0] following_alt_select =
-        (~following_live_sector_valid) & (~following_ras_sector_valid) &
-        (~following_fal_sector_valid) & following_alt_sector_valid;
+        (~following_live_sector_valid) &
+        (~following_ingress_sector_valid) & following_alt_sector_valid;
     wire [1:0] consume_fetch_select /* verilator public_flat_rd */ =
-        consume_ras_select | consume_fal_select | consume_alt_select;
+        consume_ingress_select | consume_alt_select;
     wire [1:0] following_fetch_select =
-        following_ras_select | following_fal_select |
-        following_alt_select;
+        following_ingress_select | following_alt_select;
     wire [`OPENRV64_AXI_DATA_WIDTH-1:0] consume_line_data =
-        {consume_ras_select[1] ? ras_line_data_q[255:128] :
-         consume_fal_select[1] ? fal_line_data_q[255:128] :
+        {consume_ingress_select[1] ?
+            ingress_data_q[consume_ingress_index_r][255:128] :
          consume_alt_select[1] ?
             fetch_alt_candidate_r[0][255:128] :
             line_data_q[consume_slot][255:128],
-         consume_ras_select[0] ? ras_line_data_q[127:0] :
-         consume_fal_select[0] ? fal_line_data_q[127:0] :
+         consume_ingress_select[0] ?
+            ingress_data_q[consume_ingress_index_r][127:0] :
          consume_alt_select[0] ?
             fetch_alt_candidate_r[0][127:0] :
             line_data_q[consume_slot][127:0]};
     wire [`OPENRV64_AXI_DATA_WIDTH-1:0] following_line_data =
-        {following_ras_select[1] ? ras_line_data_q[255:128] :
-         following_fal_select[1] ? fal_line_data_q[255:128] :
+        {following_ingress_select[1] ?
+            ingress_data_q[following_ingress_index_r][255:128] :
          following_alt_select[1] ?
             fetch_alt_candidate_r[1][255:128] :
             line_data_q[following_slot][255:128],
-         following_ras_select[0] ? ras_line_data_q[127:0] :
-         following_fal_select[0] ? fal_line_data_q[127:0] :
+         following_ingress_select[0] ?
+            ingress_data_q[following_ingress_index_r][127:0] :
          following_alt_select[0] ?
             fetch_alt_candidate_r[1][127:0] :
             line_data_q[following_slot][127:0]};
     wire [1:0] consume_sector_valid =
-        consume_live_sector_valid | consume_ras_sector_valid |
-        consume_fal_sector_valid | consume_alt_sector_valid;
+        consume_live_sector_valid | consume_ingress_sector_valid |
+        consume_alt_sector_valid;
     wire [1:0] following_sector_valid =
-        following_live_sector_valid | following_ras_sector_valid |
-        following_fal_sector_valid | following_alt_sector_valid;
+        following_live_sector_valid | following_ingress_sector_valid |
+        following_alt_sector_valid;
     wire consume_line_hit =
         consume_sector_valid[consume_pc_q[ALT_SECTOR_BYTE_BITS]];
     wire following_line_hit = following_sector_valid[0];
     wire consume_line_full = &consume_sector_valid;
     wire following_line_full = &following_sector_valid;
-    // RAS/FAL are side buffers, not long-lived demand storage. Once either
-    // supplies the current fetch line, promote the full block into the
-    // demand carousel so the side slot may be safely reused.
-    wire consume_ras_demand = |consume_ras_select;
-    wire consume_fal_demand = |consume_fal_select;
+    // Ingress is response storage, not long-lived demand storage. Once an
+    // ingress entry supplies the current fetch line, promote the full block
+    // into the direct demand bank.
+    wire consume_ingress_demand = |consume_ingress_select;
 
     // The carousel cursor walks from the consumed block through the next three
     // blocks, and each direct-mapped slot may have an independent replacement
@@ -717,37 +741,48 @@ module openrv64_fetch_3w #(
         (carousel_pending_addr_q[carousel_request_slot][
             `RV64_XLEN-1:LINE_BYTE_BITS] ==
          next_req_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire ras_request_line_resident = ras_line_valid_q &&
-        (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         next_req_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS]);
+    wire carousel_request_slot_busy =
+        carousel_pending_valid_q[carousel_request_slot];
+    reg request_ingress_hit_r;
+    reg [INGRESS_INDEX_WIDTH-1:0] request_ingress_index_r;
+    integer request_ingress_index;
+    always @* begin
+        request_ingress_hit_r = 1'b0;
+        request_ingress_index_r = {INGRESS_INDEX_WIDTH{1'b0}};
+        for (request_ingress_index = 0;
+             request_ingress_index < INGRESS_DEPTH;
+             request_ingress_index = request_ingress_index + 1) begin
+            if (!request_ingress_hit_r &&
+                ingress_valid_q[request_ingress_index] &&
+                (ingress_addr_q[request_ingress_index][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 next_req_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                request_ingress_hit_r = 1'b1;
+                request_ingress_index_r = request_ingress_index;
+            end
+        end
+    end
     wire ras_request_line_pending = ras_line_pending_q &&
         (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
          next_req_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire fal_request_line_resident = fal_line_valid_q &&
-        (fal_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-         next_req_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS]);
     wire carousel_request_in_window =
         next_req_addr_q <= carousel_last_addr;
-    // A side-buffer hit at the demand cursor satisfies a future block in the
-    // active four-line window. Move it into demand storage on that edge;
-    // otherwise FAL aging or side-slot reuse can remove the only copy before
-    // decode reaches the block.
-    wire ras_cursor_demand = carousel_request_in_window &&
-        !carousel_request_resident && ras_request_line_resident;
-    wire fal_cursor_demand = carousel_request_in_window &&
-        !carousel_request_resident && !ras_request_line_resident &&
-        fal_request_line_resident;
-    wire ras_side_demand = consume_ras_demand || ras_cursor_demand;
-    wire fal_side_demand = consume_fal_demand || fal_cursor_demand;
-    wire [LINE_INDEX_WIDTH-1:0] ras_line_slot =
-        ras_line_addr_q[LINE_INDEX_MSB:LINE_INDEX_LSB];
-    wire [LINE_INDEX_WIDTH-1:0] fal_line_slot =
-        fal_line_addr_q[LINE_INDEX_MSB:LINE_INDEX_LSB];
+    // An ingress hit at the demand cursor satisfies a future block in the
+    // active four-line window. Promote it before speculative aging or later
+    // ingress traffic can remove the only copy.
+    wire ingress_cursor_demand = carousel_request_in_window &&
+        !carousel_request_resident && request_ingress_hit_r;
+    wire [LINE_INDEX_WIDTH-1:0] consume_ingress_line_slot =
+        ingress_addr_q[consume_ingress_index_r][
+            LINE_INDEX_MSB:LINE_INDEX_LSB];
+    wire [LINE_INDEX_WIDTH-1:0] request_ingress_line_slot =
+        ingress_addr_q[request_ingress_index_r][
+            LINE_INDEX_MSB:LINE_INDEX_LSB];
     wire [`RV64_XLEN-1:0] request_line_addr = ENABLE_CAROUSEL ?
         next_req_addr_q : bridge_request_line_addr;
     wire request_line_hit = ENABLE_CAROUSEL ?
-        (carousel_request_resident || ras_request_line_resident ||
-         fal_request_line_resident) : bridge_request_line_hit;
+        (carousel_request_resident || request_ingress_hit_r) :
+        bridge_request_line_hit;
     // A stash-only FAL may be canceled or aged below this interface without
     // producing a response.  It therefore cannot satisfy demand ownership.
     wire request_line_pending = ENABLE_CAROUSEL ?
@@ -760,6 +795,7 @@ module openrv64_fetch_3w #(
                                  pair_unpredicted_addr_q;
     wire pair_request_is_demand = pair_request_valid &&
         !request_line_pending && !request_line_hit &&
+        (!ENABLE_CAROUSEL || !carousel_request_slot_busy) &&
         (pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS] ==
          request_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
     wire [`RV64_XLEN-1:0] ras_request_addr = {
@@ -774,13 +810,28 @@ module openrv64_fetch_3w #(
         (line_addr_q[ras_request_slot][
             `RV64_XLEN-1:LINE_BYTE_BITS] ==
          ras_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
-    wire ras_request_side_hit =
-        (ras_line_valid_q &&
-         (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-          ras_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) ||
-        (fal_line_valid_q &&
-         (fal_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-          ras_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS]));
+    reg ras_request_ingress_hit_r;
+    reg pair_request_ingress_hit_r;
+    integer side_ingress_index;
+    always @* begin
+        ras_request_ingress_hit_r = 1'b0;
+        pair_request_ingress_hit_r = 1'b0;
+        for (side_ingress_index = 0;
+             side_ingress_index < INGRESS_DEPTH;
+             side_ingress_index = side_ingress_index + 1) begin
+            if (ingress_valid_q[side_ingress_index] &&
+                (ingress_addr_q[side_ingress_index][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 ras_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS]))
+                ras_request_ingress_hit_r = 1'b1;
+            if (ingress_valid_q[side_ingress_index] &&
+                (ingress_addr_q[side_ingress_index][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS]))
+                pair_request_ingress_hit_r = 1'b1;
+        end
+    end
+    wire ras_request_side_hit = ras_request_ingress_hit_r;
     wire ras_request_side_pending =
         ras_line_pending_q &&
         (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
@@ -809,17 +860,14 @@ module openrv64_fetch_3w #(
                                  (!ENABLE_CAROUSEL ||
                                   carousel_request_in_window) &&
                                  !request_line_pending &&
+                                 (!ENABLE_CAROUSEL ||
+                                  !carousel_request_slot_busy) &&
                                  !request_line_hit &&
                                  !incoming_pair_line_hit;
     wire pair_request_side_match =
-        (ras_line_valid_q &&
-         (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-          pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) ||
+        pair_request_ingress_hit_r ||
         (ras_line_pending_q &&
          (ras_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
-          pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) ||
-        (fal_line_valid_q &&
-         (fal_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
           pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) ||
         (fal_line_pending_q &&
          (fal_line_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
@@ -922,14 +970,10 @@ module openrv64_fetch_3w #(
                 lane_found_r[lane_index] = 1'b1;
                 lane_instr_r[lane_index*`RV64_INSTR_WIDTH +:
                              `RV64_INSTR_WIDTH] =
-                    ((consume_ras_select[
+                    ((consume_ingress_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                      (ras_line_access_fault_q ||
-                       ras_line_page_fault_q)) ||
-                     (consume_fal_select[
-                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                      (fal_line_access_fault_q ||
-                       fal_line_page_fault_q)) ||
+                      (ingress_access_fault_q[consume_ingress_index_r] ||
+                       ingress_page_fault_q[consume_ingress_index_r])) ||
                      (!consume_fetch_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                       (line_access_fault_q[consume_slot] ||
@@ -938,22 +982,16 @@ module openrv64_fetch_3w #(
                         lane_pc_r[lane_index][LINE_BYTE_BITS-1:2] *
                         `RV64_INSTR_WIDTH +: `RV64_INSTR_WIDTH];
                 lane_access_fault_r[lane_index] =
-                    (consume_ras_select[
+                    (consume_ingress_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     ras_line_access_fault_q) ||
-                    (consume_fal_select[
-                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     fal_line_access_fault_q) ||
+                     ingress_access_fault_q[consume_ingress_index_r]) ||
                     (!consume_fetch_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                      line_access_fault_q[consume_slot]);
                 lane_page_fault_r[lane_index] =
-                    (consume_ras_select[
+                    (consume_ingress_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     ras_line_page_fault_q) ||
-                    (consume_fal_select[
-                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     fal_line_page_fault_q) ||
+                     ingress_page_fault_q[consume_ingress_index_r]) ||
                     (!consume_fetch_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                      line_page_fault_q[consume_slot]);
@@ -967,14 +1005,12 @@ module openrv64_fetch_3w #(
                 lane_found_r[lane_index] = 1'b1;
                 lane_instr_r[lane_index*`RV64_INSTR_WIDTH +:
                              `RV64_INSTR_WIDTH] =
-                    ((following_ras_select[
+                    ((following_ingress_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                      (ras_line_access_fault_q ||
-                       ras_line_page_fault_q)) ||
-                     (following_fal_select[
-                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                      (fal_line_access_fault_q ||
-                       fal_line_page_fault_q)) ||
+                      (ingress_access_fault_q[
+                            following_ingress_index_r] ||
+                       ingress_page_fault_q[
+                            following_ingress_index_r])) ||
                      (!following_fetch_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                       (line_access_fault_q[following_slot] ||
@@ -983,22 +1019,18 @@ module openrv64_fetch_3w #(
                         lane_pc_r[lane_index][LINE_BYTE_BITS-1:2] *
                         `RV64_INSTR_WIDTH +: `RV64_INSTR_WIDTH];
                 lane_access_fault_r[lane_index] =
-                    (following_ras_select[
+                    (following_ingress_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     ras_line_access_fault_q) ||
-                    (following_fal_select[
-                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     fal_line_access_fault_q) ||
+                     ingress_access_fault_q[
+                        following_ingress_index_r]) ||
                     (!following_fetch_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                      line_access_fault_q[following_slot]);
                 lane_page_fault_r[lane_index] =
-                    (following_ras_select[
+                    (following_ingress_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     ras_line_page_fault_q) ||
-                    (following_fal_select[
-                        lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
-                     fal_line_page_fault_q) ||
+                     ingress_page_fault_q[
+                        following_ingress_index_r]) ||
                     (!following_fetch_select[
                         lane_pc_r[lane_index][ALT_SECTOR_BYTE_BITS]] &&
                      line_page_fault_q[following_slot]);
@@ -1085,7 +1117,6 @@ module openrv64_fetch_3w #(
         (pending_addr_q[`RV64_XLEN-1:LINE_BYTE_BITS] ==
          resp_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS]);
     wire carousel_resp_match = resp_demand_i &&
-        !resp_stash_i &&
         carousel_pending_valid_q[resp_slot] &&
         (carousel_pending_addr_q[resp_slot][
             `RV64_XLEN-1:LINE_BYTE_BITS] ==
@@ -1103,7 +1134,7 @@ module openrv64_fetch_3w #(
         resp_addr_i[`RV64_XLEN-1:LINE_BYTE_BITS],
         {LINE_BYTE_BITS{1'b0}}
     };
-    wire carousel_resp_in_window = active_q &&
+    wire carousel_resp_in_window /* verilator public_flat_rd */ = active_q &&
         (resp_line_addr >= consume_line_addr) &&
         (resp_line_addr <= carousel_last_addr);
     wire orphan_forced_demand_in_window = ENABLE_CAROUSEL &&
@@ -1116,6 +1147,95 @@ module openrv64_fetch_3w #(
              orphan_forced_demand_in_window) :
             bridge_resp_match;
 
+    // All carousel responses land in the associative ingress bank. Prefer an
+    // existing tag, then an invalid entry, then an entry outside the current
+    // demand window. Never evict a live-window ingress line for speculative or
+    // late traffic; four distinct live-window lines already cover the whole
+    // demand window, so a useful fifth line cannot exist without a tag match.
+    reg ingress_alloc_valid_r;
+    reg ingress_alloc_new_r;
+    reg [INGRESS_INDEX_WIDTH-1:0] ingress_alloc_index_r;
+    reg [1:0] ingress_resp_origin_r;
+    integer ingress_alloc_scan;
+    integer ingress_alloc_candidate;
+    always @* begin
+        ingress_alloc_valid_r = 1'b0;
+        ingress_alloc_new_r = 1'b0;
+        ingress_alloc_index_r = {INGRESS_INDEX_WIDTH{1'b0}};
+        // One completion may satisfy both a speculative FAL owner and the
+        // durable demand owner installed when that line reached the cursor.
+        // Demand wins that simultaneous match; otherwise later FAL aging
+        // could discard a line whose demand request already completed.
+        ingress_resp_origin_r =
+            carousel_resp_match ? INGRESS_ORIGIN_DEMAND :
+            (ras_resp_match ? INGRESS_ORIGIN_RAS :
+             (fal_resp_match ? INGRESS_ORIGIN_FAL :
+                               INGRESS_ORIGIN_DEMAND));
+
+        for (ingress_alloc_scan = 0;
+             ingress_alloc_scan < INGRESS_DEPTH;
+             ingress_alloc_scan = ingress_alloc_scan + 1) begin
+            if (!ingress_alloc_valid_r &&
+                ingress_valid_q[ingress_alloc_scan] &&
+                (ingress_addr_q[ingress_alloc_scan][
+                    `RV64_XLEN-1:LINE_BYTE_BITS] ==
+                 resp_line_addr[`RV64_XLEN-1:LINE_BYTE_BITS])) begin
+                ingress_alloc_valid_r = 1'b1;
+                ingress_alloc_index_r = ingress_alloc_scan;
+            end
+        end
+
+        for (ingress_alloc_scan = 0;
+             ingress_alloc_scan < INGRESS_DEPTH;
+             ingress_alloc_scan = ingress_alloc_scan + 1) begin
+            ingress_alloc_candidate =
+                (ingress_replace_q + ingress_alloc_scan) &
+                (INGRESS_DEPTH - 1);
+            if (!ingress_alloc_valid_r &&
+                !ingress_valid_q[ingress_alloc_candidate]) begin
+                ingress_alloc_valid_r = 1'b1;
+                ingress_alloc_new_r = 1'b1;
+                ingress_alloc_index_r = ingress_alloc_candidate;
+            end
+        end
+
+        for (ingress_alloc_scan = 0;
+             ingress_alloc_scan < INGRESS_DEPTH;
+             ingress_alloc_scan = ingress_alloc_scan + 1) begin
+            ingress_alloc_candidate =
+                (ingress_replace_q + ingress_alloc_scan) &
+                (INGRESS_DEPTH - 1);
+            if (!ingress_alloc_valid_r &&
+                (!active_q ||
+                 (ingress_addr_q[ingress_alloc_candidate] <
+                    consume_line_addr) ||
+                 (ingress_addr_q[ingress_alloc_candidate] >
+                    carousel_last_addr))) begin
+                ingress_alloc_valid_r = 1'b1;
+                ingress_alloc_new_r = 1'b1;
+                ingress_alloc_index_r = ingress_alloc_candidate;
+            end
+        end
+
+        // A later duplicate response may have weaker ownership than the copy
+        // already resident under the same tag.  In particular, a speculative
+        // FAL response must not downgrade demanded data back to FAL, because
+        // the next branch-age event would then discard the only useful copy.
+        // Demand is strongest, RAS is non-ageable, and FAL is weakest.
+        if (ingress_alloc_valid_r && !ingress_alloc_new_r) begin
+            if ((ingress_origin_q[ingress_alloc_index_r] ==
+                    INGRESS_ORIGIN_DEMAND) ||
+                (ingress_resp_origin_r == INGRESS_ORIGIN_DEMAND))
+                ingress_resp_origin_r = INGRESS_ORIGIN_DEMAND;
+            else if ((ingress_origin_q[ingress_alloc_index_r] ==
+                        INGRESS_ORIGIN_RAS) ||
+                     (ingress_resp_origin_r == INGRESS_ORIGIN_RAS))
+                ingress_resp_origin_r = INGRESS_ORIGIN_RAS;
+            else
+                ingress_resp_origin_r = INGRESS_ORIGIN_FAL;
+        end
+    end
+
     reg alt_restart_hit_r;
     reg alt_fill_match_r;
     reg alt_fill_slot_r;
@@ -1123,6 +1243,7 @@ module openrv64_fetch_3w #(
     integer alt_index;
     integer alt_age_port;
     integer fal_age_port;
+    integer ingress_age_index;
     always @* begin
         alt_prefetch_aged_r = 1'b0;
         for (alt_age_port = 0; alt_age_port < 3;
@@ -1136,8 +1257,14 @@ module openrv64_fetch_3w #(
         end
 
         // FAL ownership is speculative. Retirement may age the downstream
-        // stash request without returning a fetch response.
+        // stash request without returning a fetch response. Resident FAL
+        // lines are aged independently so back-to-back branch contexts may
+        // coexist in ingress.
         fal_prefetch_aged_r = 1'b0;
+        for (ingress_age_index = 0;
+             ingress_age_index < INGRESS_DEPTH;
+             ingress_age_index = ingress_age_index + 1)
+            ingress_fal_aged_r[ingress_age_index] = 1'b0;
         for (fal_age_port = 0; fal_age_port < 3;
              fal_age_port = fal_age_port + 1) begin
             if (prefetch_age_valid_i[fal_age_port] &&
@@ -1146,6 +1273,20 @@ module openrv64_fetch_3w #(
                     `RV64_XLEN-6] ==
                  fal_line_addr_q[6 +: `RV64_XLEN-6]))
                 fal_prefetch_aged_r = 1'b1;
+            for (ingress_age_index = 0;
+                 ingress_age_index < INGRESS_DEPTH;
+                 ingress_age_index = ingress_age_index + 1) begin
+                if (prefetch_age_valid_i[fal_age_port] &&
+                    ingress_valid_q[ingress_age_index] &&
+                    (ingress_origin_q[ingress_age_index] ==
+                        INGRESS_ORIGIN_FAL) &&
+                    (prefetch_age_addr_i[
+                        fal_age_port*`RV64_XLEN + 6 +:
+                        `RV64_XLEN-6] ==
+                     ingress_addr_q[ingress_age_index][
+                        6 +: `RV64_XLEN-6]))
+                    ingress_fal_aged_r[ingress_age_index] = 1'b1;
+            end
         end
 
         alt_restart_hit_r = 1'b0;
@@ -1820,18 +1961,11 @@ module openrv64_fetch_3w #(
             next_req_addr_q <= {`RV64_XLEN{1'b0}};
             pending_valid_q <= 1'b0;
             pending_addr_q <= {`RV64_XLEN{1'b0}};
-            ras_line_valid_q <= 1'b0;
             ras_line_pending_q <= 1'b0;
             ras_line_addr_q <= {`RV64_XLEN{1'b0}};
-            ras_line_data_q <= {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
-            ras_line_access_fault_q <= 1'b0;
-            ras_line_page_fault_q <= 1'b0;
-            fal_line_valid_q <= 1'b0;
             fal_line_pending_q <= 1'b0;
             fal_line_addr_q <= {`RV64_XLEN{1'b0}};
-            fal_line_data_q <= {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
-            fal_line_access_fault_q <= 1'b0;
-            fal_line_page_fault_q <= 1'b0;
+            ingress_replace_q <= {INGRESS_INDEX_WIDTH{1'b0}};
             for (reset_index = 0; reset_index < LINE_DEPTH;
                  reset_index = reset_index + 1) begin
                 line_valid_q[reset_index] <= 1'b0;
@@ -1844,6 +1978,16 @@ module openrv64_fetch_3w #(
                 carousel_pending_valid_q[reset_index] <= 1'b0;
                 carousel_pending_addr_q[reset_index] <=
                     {`RV64_XLEN{1'b0}};
+            end
+            for (reset_index = 0; reset_index < INGRESS_DEPTH;
+                 reset_index = reset_index + 1) begin
+                ingress_valid_q[reset_index] <= 1'b0;
+                ingress_addr_q[reset_index] <= {`RV64_XLEN{1'b0}};
+                ingress_data_q[reset_index] <=
+                    {`OPENRV64_AXI_DATA_WIDTH{1'b0}};
+                ingress_access_fault_q[reset_index] <= 1'b0;
+                ingress_page_fault_q[reset_index] <= 1'b0;
+                ingress_origin_q[reset_index] <= INGRESS_ORIGIN_DEMAND;
             end
         end else if (restart_i) begin
             active_q <= 1'b1;
@@ -1859,33 +2003,30 @@ module openrv64_fetch_3w #(
             // above chooses live or alternate storage for the new PC.  A
             // context-changing restart still invalidates every resident path.
             if (invalidate_i || flush_i) begin
-                ras_line_valid_q <= 1'b0;
                 ras_line_pending_q <= 1'b0;
-                fal_line_valid_q <= 1'b0;
                 fal_line_pending_q <= 1'b0;
                 for (reset_index = 0; reset_index < LINE_DEPTH;
                      reset_index = reset_index + 1) begin
                     line_valid_q[reset_index] <= 1'b0;
                     line_sector_valid_q[reset_index] <= 2'b00;
                 end
+                for (reset_index = 0; reset_index < INGRESS_DEPTH;
+                     reset_index = reset_index + 1)
+                    ingress_valid_q[reset_index] <= 1'b0;
             end
             for (reset_index = 0; reset_index < LINE_DEPTH;
                  reset_index = reset_index + 1)
                 carousel_pending_valid_q[reset_index] <= 1'b0;
             if (ENABLE_CAROUSEL && !invalidate_i && !flush_i) begin
                 ras_line_pending_q <= ras_req_fire;
-                if (ras_req_fire) begin
-                    ras_line_valid_q <= 1'b0;
+                if (ras_req_fire)
                     ras_line_addr_q <= ras_request_addr;
-                end
             end
         end else if (flush_i || invalidate_i) begin
             if (flush_i)
                 active_q <= 1'b0;
             pending_valid_q <= 1'b0;
-            ras_line_valid_q <= 1'b0;
             ras_line_pending_q <= 1'b0;
-            fal_line_valid_q <= 1'b0;
             fal_line_pending_q <= 1'b0;
             for (reset_index = 0; reset_index < LINE_DEPTH;
                  reset_index = reset_index + 1) begin
@@ -1893,38 +2034,47 @@ module openrv64_fetch_3w #(
                 line_sector_valid_q[reset_index] <= 2'b00;
                 carousel_pending_valid_q[reset_index] <= 1'b0;
             end
+            for (reset_index = 0; reset_index < INGRESS_DEPTH;
+                 reset_index = reset_index + 1)
+                ingress_valid_q[reset_index] <= 1'b0;
         end else begin
-            if (ENABLE_CAROUSEL && ras_side_demand) begin
-                line_valid_q[ras_line_slot] <= 1'b1;
-                line_addr_q[ras_line_slot] <= ras_line_addr_q;
-                line_data_q[ras_line_slot] <= ras_line_data_q;
-                line_sector_valid_q[ras_line_slot] <= 2'b11;
-                line_access_fault_q[ras_line_slot] <=
-                    ras_line_access_fault_q;
-                line_page_fault_q[ras_line_slot] <=
-                    ras_line_page_fault_q;
-                carousel_pending_valid_q[ras_line_slot] <= 1'b0;
-                ras_line_valid_q <= 1'b0;
+            if (ENABLE_CAROUSEL && consume_ingress_demand) begin
+                line_valid_q[consume_ingress_line_slot] <= 1'b1;
+                line_addr_q[consume_ingress_line_slot] <=
+                    ingress_addr_q[consume_ingress_index_r];
+                line_data_q[consume_ingress_line_slot] <=
+                    ingress_data_q[consume_ingress_index_r];
+                line_sector_valid_q[consume_ingress_line_slot] <= 2'b11;
+                line_access_fault_q[consume_ingress_line_slot] <=
+                    ingress_access_fault_q[consume_ingress_index_r];
+                line_page_fault_q[consume_ingress_line_slot] <=
+                    ingress_page_fault_q[consume_ingress_index_r];
+                ingress_valid_q[consume_ingress_index_r] <= 1'b0;
             end
-            if (ENABLE_CAROUSEL && fal_side_demand) begin
-                line_valid_q[fal_line_slot] <= 1'b1;
-                line_addr_q[fal_line_slot] <= fal_line_addr_q;
-                line_data_q[fal_line_slot] <= fal_line_data_q;
-                line_sector_valid_q[fal_line_slot] <= 2'b11;
-                line_access_fault_q[fal_line_slot] <=
-                    fal_line_access_fault_q;
-                line_page_fault_q[fal_line_slot] <=
-                    fal_line_page_fault_q;
-                carousel_pending_valid_q[fal_line_slot] <= 1'b0;
-                fal_line_valid_q <= 1'b0;
+            if (ENABLE_CAROUSEL && ingress_cursor_demand) begin
+                line_valid_q[request_ingress_line_slot] <= 1'b1;
+                line_addr_q[request_ingress_line_slot] <=
+                    ingress_addr_q[request_ingress_index_r];
+                line_data_q[request_ingress_line_slot] <=
+                    ingress_data_q[request_ingress_index_r];
+                line_sector_valid_q[request_ingress_line_slot] <= 2'b11;
+                line_access_fault_q[request_ingress_line_slot] <=
+                    ingress_access_fault_q[request_ingress_index_r];
+                line_page_fault_q[request_ingress_line_slot] <=
+                    ingress_page_fault_q[request_ingress_index_r];
+                ingress_valid_q[request_ingress_index_r] <= 1'b0;
             end
-            if (ENABLE_CAROUSEL && fal_prefetch_aged_r) begin
-                fal_line_valid_q <= 1'b0;
+            for (reset_index = 0; reset_index < INGRESS_DEPTH;
+                 reset_index = reset_index + 1) begin
+                if (ENABLE_CAROUSEL &&
+                    ingress_fal_aged_r[reset_index])
+                    ingress_valid_q[reset_index] <= 1'b0;
+            end
+            if (ENABLE_CAROUSEL && fal_prefetch_aged_r)
                 fal_line_pending_q <= 1'b0;
-            end
             if (req_fire && req_demand_o &&
                 (!ENABLE_CAROUSEL ||
-                 (!ras_req_fire && !pair_req_fire))) begin
+                 !ras_req_fire)) begin
                 if (ENABLE_CAROUSEL) begin
                     carousel_pending_valid_q[
                         req_addr_o[
@@ -1938,7 +2088,6 @@ module openrv64_fetch_3w #(
                 end
             end
             if (ENABLE_CAROUSEL && pair_req_fire) begin
-                fal_line_valid_q <= 1'b0;
                 fal_line_pending_q <= 1'b1;
                 fal_line_addr_q <= req_addr_o;
             end
@@ -1946,36 +2095,30 @@ module openrv64_fetch_3w #(
                 next_req_addr_q <= next_req_addr_q + LINE_BYTES;
             if (resp_valid_i) begin
                 if (ENABLE_CAROUSEL && ras_resp_match) begin
-                    ras_line_valid_q <= 1'b1;
                     ras_line_pending_q <= 1'b0;
                     ras_line_addr_q <= resp_line_addr;
-                    ras_line_data_q <= resp_data_i;
-                    ras_line_access_fault_q <= resp_access_fault_i;
-                    ras_line_page_fault_q <= resp_page_fault_i;
                 end
                 if (ENABLE_CAROUSEL && fal_resp_match) begin
-                    fal_line_valid_q <= 1'b1;
                     fal_line_pending_q <= 1'b0;
                     fal_line_addr_q <= resp_line_addr;
-                    fal_line_data_q <= resp_data_i;
-                    fal_line_access_fault_q <= resp_access_fault_i;
-                    fal_line_page_fault_q <= resp_page_fault_i;
                 end
-                if (ENABLE_CAROUSEL && resp_demand_i &&
-                    !ras_resp_match && !fal_resp_match) begin
-                    if (carousel_resp_match)
-                        carousel_pending_valid_q[resp_slot] <= 1'b0;
-                    if (carousel_resp_match ||
-                        carousel_resp_in_window) begin
-                        line_valid_q[resp_slot] <= 1'b1;
-                        line_addr_q[resp_slot] <= resp_line_addr;
-                        line_data_q[resp_slot] <= resp_data_i;
-                        line_sector_valid_q[resp_slot] <= 2'b11;
-                        line_access_fault_q[resp_slot] <=
-                            resp_access_fault_i;
-                        line_page_fault_q[resp_slot] <=
-                            resp_page_fault_i;
-                    end
+                if (ENABLE_CAROUSEL && carousel_resp_match)
+                    carousel_pending_valid_q[resp_slot] <= 1'b0;
+                if (ENABLE_CAROUSEL && resp_match &&
+                    ingress_alloc_valid_r) begin
+                    ingress_valid_q[ingress_alloc_index_r] <= 1'b1;
+                    ingress_addr_q[ingress_alloc_index_r] <=
+                        resp_line_addr;
+                    ingress_data_q[ingress_alloc_index_r] <= resp_data_i;
+                    ingress_access_fault_q[ingress_alloc_index_r] <=
+                        resp_access_fault_i;
+                    ingress_page_fault_q[ingress_alloc_index_r] <=
+                        resp_page_fault_i;
+                    ingress_origin_q[ingress_alloc_index_r] <=
+                        ingress_resp_origin_r;
+                    if (ingress_alloc_new_r)
+                        ingress_replace_q <=
+                            ingress_alloc_index_r + 1'b1;
                 end else if (!ENABLE_CAROUSEL &&
                              bridge_resp_match) begin
                     pending_valid_q <= 1'b0;
