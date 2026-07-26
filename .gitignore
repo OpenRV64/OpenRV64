@@ -6,3 +6,7 @@
 *.bin
 *.disasm
 */__pycache__
+sw/Image
+sw/initramfs/
+sw/initramfs.cpio
+
