@@ -1,3 +1,5 @@
+# This document is extermely old, and is kept primarily to use for HPI number reference
+
 # Cortex-A53-class performance reference
 
 This document freezes the 2026-07-18 comparison for
