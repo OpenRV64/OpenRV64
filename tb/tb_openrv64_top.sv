@@ -436,9 +436,9 @@ module tb_openrv64_top;
                 $fatal(1, "conditional-branch predictor stall was never observed");
             end
 
-            if (dut.u_core.u_csrs.minstret_q != 64'd18) begin
+            if (dut.u_core.u_csrs.u_cmu.minstret_q != 64'd18) begin
                 $fatal(1, "minstret mismatch: %0d",
-                       dut.u_core.u_csrs.minstret_q);
+                       dut.u_core.u_csrs.u_cmu.minstret_q);
             end
 
             if (trace_arch_count != 18 || trace_exception_count != 1) begin
@@ -446,8 +446,8 @@ module tb_openrv64_top;
                        trace_arch_count, trace_exception_count);
             end
 
-            if (dut.u_core.u_csrs.mcycle_q <=
-                dut.u_core.u_csrs.minstret_q) begin
+            if (dut.u_core.u_csrs.u_cmu.mcycle_q <=
+                dut.u_core.u_csrs.u_cmu.minstret_q) begin
                 $fatal(1, "mcycle did not advance independently");
             end
 

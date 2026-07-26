@@ -331,21 +331,21 @@
 
   <g id="retire-queue">
     <rect x="1675" y="215" width="430" height="355" class="block block-retire"/>
-    <text x="1694" y="244" class="block-title">Completion / retirement queue</text>
-    <text x="1694" y="265" class="block-subtitle">openrv64_retire_queue_3p · depth 8</text>
+    <text x="1694" y="244" class="block-title">Retirement ordering + canonical records</text>
+    <text x="1694" y="265" class="block-subtitle">retire_queue_3p + retire_records_3p · depth 8</text>
     <line x1="1690" y1="278" x2="2090" y2="278" class="divider"/>
-    <text x="1694" y="302" class="body">3 allocations + 3 completions + 3 head reads</text>
+    <text x="1694" y="302" class="body">3 allocations + 3 completions + 3 slot-selected reads</text>
     <text x="1694" y="324" class="body">out-of-order completion; contiguous in-order head</text>
-    <text x="1694" y="346" class="body">selective younger squash by ID/slot</text>
+    <text x="1694" y="346" class="body">selective squash by branch slot; no depth-wide count scan</text>
     <text x="1694" y="374" class="mono">per entry:</text>
-    <text x="1710" y="395" class="mono">valid1 + complete1 + dynamic ID10</text>
-    <text x="1710" y="416" class="mono">+ retirement meta405 + result457</text>
-    <text x="1710" y="437" class="mono strong">= 874 bits/entry · 6,992 bits total</text>
-    <text x="1694" y="466" class="mono">completed-result CAM export:</text>
-    <text x="1710" y="487" class="mono strong">8 valid + 8×457 = 3,664 bits</text>
+    <text x="1710" y="395" class="mono">control: valid1 + complete1 + dynamic ID10</text>
+    <text x="1710" y="416" class="mono">records: allocation130 + completion-only281</text>
+    <text x="1710" y="437" class="mono strong">= 423 bits/entry · 3,384 bits total</text>
+    <text x="1694" y="466" class="mono">forwarding:</text>
+    <text x="1710" y="487" class="mono strong">indexed youngest-owner map + 3 live completions</text>
     <rect x="1692" y="507" width="394" height="43" class="badge badge-blue"/>
-    <text x="1704" y="526" class="badge-text">ID width is 10; age comparison is modular.</text>
-    <text x="1704" y="543" class="tiny">Correct while fewer than 512 dynamic IDs remain live.</text>
+    <text x="1704" y="526" class="badge-text">Trace64 is one allocation-only sidebank when enabled.</text>
+    <text x="1704" y="543" class="tiny">Area profile disables it; no trace state remains.</text>
   </g>
 
   <g id="retire-commit">
@@ -356,7 +356,7 @@
     <text x="1694" y="712" class="body">retire maximal ordered prefix, up to 3/cycle</text>
     <text x="1694" y="734" class="body">GPR writes · CSR writes · branch training</text>
     <text x="1694" y="756" class="body">exceptions/IRQ · MRET/SRET · FENCE.I/SFENCE</text>
-    <text x="1694" y="784" class="mono">head input/lane: meta405 + result457</text>
+    <text x="1694" y="784" class="mono">head/lane: allocation130 + completion281</text>
     <text x="1694" y="804" class="mono">release deps: rs1/rs2/rd 5b + flags</text>
     <text x="1694" y="824" class="mono">architectural writes: 3 × (rd5,data64)</text>
     <text x="1694" y="852" class="body">Asynchronous posted-store faults are delivered</text>
@@ -443,7 +443,7 @@
 
   <path d="M1890 570 V625" class="commit"/>
   <rect x="1904" y="579" width="172" height="26" class="label-bg"/>
-  <text x="1913" y="597" class="mono">3 × 863b to retire</text>
+  <text x="1913" y="597" class="mono">3 × 412b to retire</text>
 
   <path d="M1675 736 H1545 V945 H1010 V870" class="commit"/>
   <rect x="1240" y="914" width="278" height="27" class="label-bg"/>
@@ -455,7 +455,7 @@
 
   <path d="M1675 450 H1588 V592 H1210" class="feedback"/>
   <rect x="1312" y="560" width="331" height="26" class="label-bg"/>
-  <text x="1322" y="578" class="mono strong">completion/CAM → 2,080b full-forward map</text>
+  <text x="1322" y="578" class="mono strong">indexed owner data + live completion overlay</text>
 
   <path d="M1675 520 H1570 V615 H1210" class="feedback"/>
   <rect x="1328" y="617" width="275" height="25" class="label-bg"/>

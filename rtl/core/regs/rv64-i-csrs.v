@@ -2,10 +2,12 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 `include "core/except/except-defs.v"
+`include "core/cmu/defs.v"
 
 module openrv64_rv64i_csrs #(
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_RV64A = 1,
+    parameter integer HPM_COUNTERS = 8,
     parameter [`RV64_XLEN-1:0] HART_ID = {`RV64_XLEN{1'b0}}
 ) (
     input  wire                             clk,
@@ -26,6 +28,7 @@ module openrv64_rv64i_csrs #(
     input  wire                             mret_i,
     input  wire                             sret_i,
     input  wire [1:0]                       retire_count_i,
+    input  wire [`OPENRV64_CMU_EVENT_COUNT-1:0] perf_events_i,
 
     input  wire                             irq_software_i,
     input  wire                             irq_timer_i,
@@ -77,13 +80,6 @@ module openrv64_rv64i_csrs #(
     // M-mode firmware uses mip.STIP to inject an SBI timer event into S-mode.
     localparam [`RV64_XLEN-1:0] MIP_SW_WRITABLE_MASK =
         BIT_SSIP | BIT_MSIP | BIT_STIP;
-    localparam [`RV64_XLEN-1:0] COUNTER_ENABLE_MASK =
-        (64'd1 << `RV64_MCOUNTER_CY_BIT) |
-        (64'd1 << `RV64_MCOUNTER_TM_BIT) |
-        (64'd1 << `RV64_MCOUNTER_IR_BIT);
-    localparam [`RV64_XLEN-1:0] COUNTINHIBIT_MASK =
-        (64'd1 << `RV64_MCOUNTER_CY_BIT) |
-        (64'd1 << `RV64_MCOUNTER_IR_BIT);
     localparam [`RV64_XLEN-1:0] MEDELEG_MASK =
         (64'd1 << `RV64_EXCEPT_CAUSE_INSTR_ADDR_MISALIGNED) |
         (64'd1 << `RV64_EXCEPT_CAUSE_INSTR_ACCESS_FAULT) |
@@ -125,20 +121,7 @@ module openrv64_rv64i_csrs #(
     reg [`RV64_XLEN-1:0] mcause_q;
     reg [`RV64_XLEN-1:0] mtval_q;
     reg [`RV64_XLEN-1:0] mip_sw_q;
-    reg [`RV64_XLEN-1:0] mcounteren_q;
-    reg [`RV64_XLEN-1:0] mcountinhibit_q;
-    reg [`RV64_XLEN-1:0] mcycle_q;
-    reg [`RV64_XLEN-1:0] minstret_q;
-    // A wide backend may execute an ordered CSR read in the same cycle that
-    // older instructions retire. Present those architecturally prior
-    // retirements to instret immediately; minstret_q receives the same count
-    // on the active edge below.
-    wire [`RV64_XLEN-1:0] minstret_read_value = minstret_q +
-        (mcountinhibit_q[`RV64_MCOUNTER_IR_BIT] ? {`RV64_XLEN{1'b0}} :
-         {{(`RV64_XLEN-2){1'b0}}, retire_count_i});
-
     reg [`RV64_XLEN-1:0] stvec_q;
-    reg [`RV64_XLEN-1:0] scounteren_q;
     reg [`RV64_XLEN-1:0] sscratch_q;
     reg [`RV64_XLEN-1:0] sepc_q;
     reg [`RV64_XLEN-1:0] scause_q;
@@ -149,6 +132,10 @@ module openrv64_rv64i_csrs #(
     wire [`RV64_XLEN-1:0] pmp_csr_rdata;
     wire pmp_csr_match;
     wire pmp_csr_writable;
+    wire [`RV64_XLEN-1:0] cmu_csr_rdata;
+    wire cmu_csr_match;
+    wire cmu_csr_valid;
+    wire cmu_csr_writable;
 
     wire [`RV64_XLEN-1:0] mip_external =
         (irq_s_software_i ? BIT_SSIP : 64'd0) |
@@ -177,27 +164,6 @@ module openrv64_rv64i_csrs #(
          mstatus_q[`RV64_MSTATUS_MPRV_BIT]) ? mpp_value : priv_mode_q;
     wire csr_privilege_ok =
         (priv_mode_q >= csr_addr_i[9:8]);
-    wire csr_is_counter_alias =
-        (csr_addr_i == `RV64_CSR_CYCLE) ||
-        (csr_addr_i == `RV64_CSR_TIME) ||
-        (csr_addr_i == `RV64_CSR_INSTRET);
-    wire selected_counter_enabled =
-        (csr_addr_i == `RV64_CSR_CYCLE) ?
-        mcounteren_q[`RV64_MCOUNTER_CY_BIT] :
-        (csr_addr_i == `RV64_CSR_TIME) ?
-        mcounteren_q[`RV64_MCOUNTER_TM_BIT] :
-        mcounteren_q[`RV64_MCOUNTER_IR_BIT];
-    wire selected_scounter_enabled =
-        (csr_addr_i == `RV64_CSR_CYCLE) ?
-        scounteren_q[`RV64_MCOUNTER_CY_BIT] :
-        (csr_addr_i == `RV64_CSR_TIME) ?
-        scounteren_q[`RV64_MCOUNTER_TM_BIT] :
-        scounteren_q[`RV64_MCOUNTER_IR_BIT];
-    wire counter_access_ok =
-        (priv_mode_q == `RV64_PRIV_M) ||
-        ((priv_mode_q == `RV64_PRIV_S) && selected_counter_enabled) ||
-        ((priv_mode_q == `RV64_PRIV_U) && selected_counter_enabled &&
-         selected_scounter_enabled);
     wire satp_access_ok = !((csr_addr_i == `RV64_CSR_SATP) &&
                             (priv_mode_q == `RV64_PRIV_S) &&
                             mstatus_q[`RV64_MSTATUS_TVM_BIT]);
@@ -221,6 +187,23 @@ module openrv64_rv64i_csrs #(
     assign satp_root_ppn_o = satp_q[`RV64_SATP_PPN_BITS];
     assign status_sum_o = mstatus_q[`RV64_MSTATUS_SUM_BIT];
     assign status_mxr_o = mstatus_q[`RV64_MSTATUS_MXR_BIT];
+
+    openrv64_cmu #(
+        .HPM_COUNTERS(HPM_COUNTERS)
+    ) u_cmu (
+        .clk(clk),
+        .rst_n(rst_n),
+        .csr_addr_i(csr_addr_i),
+        .csr_write_i(csr_write_i),
+        .csr_wdata_i(csr_wdata_i),
+        .priv_mode_i(priv_mode_q),
+        .csr_rdata_o(cmu_csr_rdata),
+        .csr_match_o(cmu_csr_match),
+        .csr_valid_o(cmu_csr_valid),
+        .csr_writable_o(cmu_csr_writable),
+        .retire_count_i(retire_count_i),
+        .event_pulses_i(perf_events_i)
+    );
 
     openrv64_rv64i_pmp u_pmp (
         .clk(clk),
@@ -315,7 +298,6 @@ module openrv64_rv64i_csrs #(
             `RV64_CSR_SSTATUS: csr_rdata_o = mstatus_q & SSTATUS_READ_MASK;
             `RV64_CSR_SIE: csr_rdata_o = mie_q & mideleg_q & MIP_S_MASK;
             `RV64_CSR_STVEC: csr_rdata_o = stvec_q;
-            `RV64_CSR_SCOUNTEREN: csr_rdata_o = scounteren_q;
             `RV64_CSR_SSCRATCH: csr_rdata_o = sscratch_q;
             `RV64_CSR_SEPC: csr_rdata_o = sepc_q;
             `RV64_CSR_SCAUSE: csr_rdata_o = scause_q;
@@ -332,29 +314,11 @@ module openrv64_rv64i_csrs #(
             `RV64_CSR_MIDELEG: csr_rdata_o = mideleg_q;
             `RV64_CSR_MIE: csr_rdata_o = mie_q;
             `RV64_CSR_MTVEC: csr_rdata_o = mtvec_q;
-            `RV64_CSR_MCOUNTEREN: csr_rdata_o = mcounteren_q;
-            `RV64_CSR_MCOUNTINHIBIT: csr_rdata_o = mcountinhibit_q;
             `RV64_CSR_MSCRATCH: csr_rdata_o = mscratch_q;
             `RV64_CSR_MEPC: csr_rdata_o = mepc_q;
             `RV64_CSR_MCAUSE: csr_rdata_o = mcause_q;
             `RV64_CSR_MTVAL: csr_rdata_o = mtval_q;
             `RV64_CSR_MIP: csr_rdata_o = mip_value;
-            `RV64_CSR_MCYCLE: csr_rdata_o = mcycle_q;
-            `RV64_CSR_MINSTRET: csr_rdata_o = minstret_read_value;
-            `RV64_CSR_CYCLE: begin
-                csr_rdata_o = mcycle_q;
-                csr_writable_o = 1'b0;
-            end
-            `RV64_CSR_TIME: begin
-                // Limited platform timebase: one tick per core clock.  A
-                // future SoC integration should supply mtime directly.
-                csr_rdata_o = mcycle_q;
-                csr_writable_o = 1'b0;
-            end
-            `RV64_CSR_INSTRET: begin
-                csr_rdata_o = minstret_read_value;
-                csr_writable_o = 1'b0;
-            end
 
             `RV64_CSR_MVENDORID,
             `RV64_CSR_MARCHID,
@@ -369,7 +333,11 @@ module openrv64_rv64i_csrs #(
             end
 
             default: begin
-                if (pmp_csr_match) begin
+                if (cmu_csr_match) begin
+                    csr_rdata_o = cmu_csr_rdata;
+                    csr_valid_o = cmu_csr_valid;
+                    csr_writable_o = cmu_csr_writable;
+                end else if (pmp_csr_match) begin
                     csr_rdata_o = pmp_csr_rdata;
                     csr_writable_o = pmp_csr_writable;
                 end else begin
@@ -379,8 +347,7 @@ module openrv64_rv64i_csrs #(
             end
         endcase
 
-        if (!csr_privilege_ok || !satp_access_ok ||
-            (csr_is_counter_alias && !counter_access_ok)) begin
+        if (!csr_privilege_ok || !satp_access_ok) begin
             csr_rdata_o = {`RV64_XLEN{1'b0}};
             csr_valid_o = 1'b0;
             csr_writable_o = 1'b0;
@@ -405,10 +372,7 @@ module openrv64_rv64i_csrs #(
             mcause_q <= 64'd0;
             mtval_q <= 64'd0;
             mip_sw_q <= 64'd0;
-            mcounteren_q <= 64'd0;
-            mcountinhibit_q <= 64'd0;
             stvec_q <= 64'd0;
-            scounteren_q <= 64'd0;
             sscratch_q <= 64'd0;
             sepc_q <= 64'd0;
             scause_q <= 64'd0;
@@ -471,8 +435,6 @@ module openrv64_rv64i_csrs #(
                     stvec_q <= {csr_wdata_i[`RV64_XLEN-1:2],
                         (csr_wdata_i[1:0] == 2'b01) ? 2'b01 : 2'b00};
                 end
-                `RV64_CSR_SCOUNTEREN:
-                    scounteren_q <= csr_wdata_i & COUNTER_ENABLE_MASK;
                 `RV64_CSR_SSCRATCH: sscratch_q <= csr_wdata_i;
                 `RV64_CSR_SEPC: sepc_q <= {csr_wdata_i[`RV64_XLEN-1:2], 2'b00};
                 `RV64_CSR_SCAUSE: scause_q <= csr_wdata_i;
@@ -532,10 +494,6 @@ module openrv64_rv64i_csrs #(
                     mtvec_q <= {csr_wdata_i[`RV64_XLEN-1:2],
                         (csr_wdata_i[1:0] == 2'b01) ? 2'b01 : 2'b00};
                 end
-                `RV64_CSR_MCOUNTEREN:
-                    mcounteren_q <= csr_wdata_i & COUNTER_ENABLE_MASK;
-                `RV64_CSR_MCOUNTINHIBIT: mcountinhibit_q <=
-                    csr_wdata_i & COUNTINHIBIT_MASK;
                 `RV64_CSR_MSCRATCH: mscratch_q <= csr_wdata_i;
                 `RV64_CSR_MEPC: mepc_q <= {csr_wdata_i[`RV64_XLEN-1:2], 2'b00};
                 `RV64_CSR_MCAUSE: mcause_q <= csr_wdata_i;
@@ -546,29 +504,6 @@ module openrv64_rv64i_csrs #(
                 default: begin
                 end
             endcase
-        end
-    end
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            mcycle_q <= {`RV64_XLEN{1'b0}};
-            minstret_q <= {`RV64_XLEN{1'b0}};
-        end else begin
-            if (!mcountinhibit_q[`RV64_MCOUNTER_CY_BIT]) begin
-                mcycle_q <= mcycle_q + 64'd1;
-            end
-            if ((retire_count_i != 2'd0) &&
-                !mcountinhibit_q[`RV64_MCOUNTER_IR_BIT]) begin
-                minstret_q <= minstret_q + {{62{1'b0}}, retire_count_i};
-            end
-            if (csr_write_i && csr_valid_o && csr_writable_o) begin
-                case (csr_addr_i)
-                    `RV64_CSR_MCYCLE: mcycle_q <= csr_wdata_i;
-                    `RV64_CSR_MINSTRET: minstret_q <= csr_wdata_i;
-                    default: begin
-                    end
-                endcase
-            end
         end
     end
 

@@ -68,9 +68,12 @@ $(REG_OWNER_SIM_BUILD): $(REG_OWNER_SIM_SRCS) rtl/core/dispatch/reg_map.v $(ISA_
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(REG_OWNER_SIM_BUILD) rtl/core/dispatch/reg_map.v $(REG_OWNER_SIM_SRCS)
 
-$(RETIRE_QUEUE_3P_SIM_BUILD): rtl/core/retire/retire_queue_3p.v tb/tb_retire_queue_3p.sv
+$(RETIRE_QUEUE_3P_SIM_BUILD): rtl/core/retire/retire_queue_3p.v \
+	rtl/core/retire/retire_records_3p.v tb/tb_retire_queue_3p.sv
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $(RETIRE_QUEUE_3P_SIM_BUILD) rtl/core/retire/retire_queue_3p.v tb/tb_retire_queue_3p.sv
+	iverilog -g2012 -Wall -Irtl -o $(RETIRE_QUEUE_3P_SIM_BUILD) \
+		rtl/core/retire/retire_queue_3p.v \
+		rtl/core/retire/retire_records_3p.v tb/tb_retire_queue_3p.sv
 
 $(RETIRE_3P_SIM_BUILD): rtl/core/retire/retire_3p.v tb/tb_retire_3p.sv
 	mkdir -p sim

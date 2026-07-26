@@ -14,12 +14,13 @@ module openrv64_retire_3p #(
     parameter integer PHYS_REG_ADDR_WIDTH =
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter integer META_WIDTH =
-        `OPENRV64_DISPATCH_META_WIDTH + 2*PHYS_REG_ADDR_WIDTH
+        `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + 2*PHYS_REG_ADDR_WIDTH,
+    parameter integer RESULT_WIDTH = `OPENRV64_RETIRE_RESULT_WIDTH
 ) (
     input  wire [2:0]                   queue_valid_i,
     input  wire [3*META_WIDTH-1:0]      queue_meta_i,
-    input  wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
-                                        queue_result_i,
+    input  wire [3*RESULT_WIDTH-1:0]    queue_result_i,
+    input  wire [3*64-1:0]              queue_trace_id_i,
     output wire [2:0]                   queue_accept_o,
 
     input  wire                         irq_pending_i,
@@ -63,46 +64,46 @@ module openrv64_retire_3p #(
     output wire [`RV64_XLEN-1:0]        trace_wdata_o
 );
 
-    localparam integer META_PAYLOAD_LSB = 0;
-    localparam integer META_USES_RS1 = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
-    localparam integer META_USES_RS2 = META_USES_RS1 + 1;
-    localparam integer META_HARD = META_USES_RS2 + 1;
-    localparam integer META_NEW_PHYS = META_HARD + 1;
+    localparam integer META_USES_RS1 =
+        `OPENRV64_RETIRE_ALLOC_USES_RS1_BIT;
+    localparam integer META_USES_RS2 =
+        `OPENRV64_RETIRE_ALLOC_USES_RS2_BIT;
+    localparam integer META_HARD = `OPENRV64_RETIRE_ALLOC_HARD_BIT;
+    localparam integer META_NEW_PHYS =
+        `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB;
 
-    localparam integer RESULT_CSR_WDATA = 0;
-    localparam integer RESULT_CSR_ADDR = 64;
-    localparam integer RESULT_CSR_WRITE = 76;
-    localparam integer RESULT_SRET = 77;
-    localparam integer RESULT_MRET = 78;
-    localparam integer RESULT_TVAL = 79;
-    localparam integer RESULT_CAUSE = 143;
-    localparam integer RESULT_HALT = 148;
-    localparam integer RESULT_EXCEPTION = 149;
-    localparam integer RESULT_REG_WRITE = 153;
-    localparam integer RESULT_RD = 154;
-    localparam integer RESULT_RS2 = 159;
-    localparam integer RESULT_RS1 = 164;
-    localparam integer RESULT_DATA = 169;
-    localparam integer RESULT_INSTR = 233;
-    localparam integer RESULT_NEXT_PC = 265;
-    localparam integer RESULT_PC = 329;
-    localparam integer RESULT_TRACE = 393;
+    localparam integer RESULT_CSR_WDATA =
+        `OPENRV64_RETIRE_RESULT_CSR_WDATA_LSB;
+    localparam integer RESULT_CSR_ADDR =
+        `OPENRV64_RETIRE_RESULT_CSR_ADDR_LSB;
+    localparam integer RESULT_CSR_WRITE =
+        `OPENRV64_RETIRE_RESULT_CSR_WRITE_BIT;
+    localparam integer RESULT_SRET = `OPENRV64_RETIRE_RESULT_SRET_BIT;
+    localparam integer RESULT_MRET = `OPENRV64_RETIRE_RESULT_MRET_BIT;
+    localparam integer RESULT_TVAL = `OPENRV64_RETIRE_RESULT_TVAL_LSB;
+    localparam integer RESULT_CAUSE = `OPENRV64_RETIRE_RESULT_CAUSE_LSB;
+    localparam integer RESULT_HALT = `OPENRV64_RETIRE_RESULT_HALT_BIT;
+    localparam integer RESULT_EXCEPTION =
+        `OPENRV64_RETIRE_RESULT_EXCEPTION_BIT;
+    localparam integer RESULT_DATA = `OPENRV64_RETIRE_RESULT_DATA_LSB;
+    localparam integer RESULT_NEXT_PC =
+        `OPENRV64_RETIRE_RESULT_NEXT_PC_LSB;
 
     wire hard0 = queue_meta_i[0*META_WIDTH + META_HARD];
     wire hard1 = queue_meta_i[1*META_WIDTH + META_HARD];
     wire hard2 = queue_meta_i[2*META_WIDTH + META_HARD];
     wire exception0 = queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_EXCEPTION];
+        0*RESULT_WIDTH + RESULT_EXCEPTION];
     wire exception1 = queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_EXCEPTION];
+        1*RESULT_WIDTH + RESULT_EXCEPTION];
     wire exception2 = queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_EXCEPTION];
+        2*RESULT_WIDTH + RESULT_EXCEPTION];
     wire halt0 = queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_HALT];
+        0*RESULT_WIDTH + RESULT_HALT];
     wire halt1 = queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_HALT];
+        1*RESULT_WIDTH + RESULT_HALT];
     wire halt2 = queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_HALT];
+        2*RESULT_WIDTH + RESULT_HALT];
 
     wire accept0 = queue_valid_i[0];
     wire accept1 = queue_valid_i[1] && accept0 &&
@@ -129,16 +130,10 @@ module openrv64_retire_3p #(
                 lane*META_WIDTH + META_USES_RS2];
             wire issue_reg_write = queue_meta_i[
                 lane*META_WIDTH +
-                META_PAYLOAD_LSB + 17];
+                `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT];
             wire [`RV64_REG_ADDR_WIDTH-1:0] issue_rd = queue_meta_i[
                 lane*META_WIDTH +
-                META_PAYLOAD_LSB + 35 +: `RV64_REG_ADDR_WIDTH];
-            wire result_reg_write = queue_result_i[
-                lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                RESULT_REG_WRITE];
-            wire [`RV64_REG_ADDR_WIDTH-1:0] result_rd = queue_result_i[
-                lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                RESULT_RD +: `RV64_REG_ADDR_WIDTH];
+                `OPENRV64_RETIRE_ALLOC_RD_LSB +: `RV64_REG_ADDR_WIDTH];
             wire [PHYS_REG_ADDR_WIDTH-1:0] new_phys =
                 queue_meta_i[
                     lane*META_WIDTH + META_NEW_PHYS +:
@@ -149,14 +144,14 @@ module openrv64_retire_3p #(
             assign release_uses_rs2_o[lane] = queue_accept_o[lane] && uses_rs2;
             assign release_rs1_addr_o[
                 lane*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH] =
-                queue_result_i[
-                    lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    RESULT_RS1 +: `RV64_REG_ADDR_WIDTH];
+                queue_meta_i[
+                    lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_RS1_LSB +:
+                    `RV64_REG_ADDR_WIDTH];
             assign release_rs2_addr_o[
                 lane*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH] =
-                queue_result_i[
-                    lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    RESULT_RS2 +: `RV64_REG_ADDR_WIDTH];
+                queue_meta_i[
+                    lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_RS2_LSB +:
+                    `RV64_REG_ADDR_WIDTH];
             assign release_reg_write_o[lane] = queue_accept_o[lane] &&
                                                 issue_reg_write &&
                                                 (issue_rd != `RV64_REG_X0);
@@ -164,40 +159,40 @@ module openrv64_retire_3p #(
                 lane*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH] = issue_rd;
 
             assign gpr_write_o[lane] = retire_arch_o[lane] &&
-                                       result_reg_write &&
-                                       (result_rd != `RV64_REG_X0);
+                                       issue_reg_write &&
+                                       (issue_rd != `RV64_REG_X0);
             assign gpr_rd_addr_o[
                 lane*PHYS_REG_ADDR_WIDTH +:
                 PHYS_REG_ADDR_WIDTH] = new_phys;
             assign gpr_rd_data_o[lane*`RV64_XLEN +: `RV64_XLEN] =
                 queue_result_i[
-                    lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                    lane*RESULT_WIDTH +
                     RESULT_DATA +: `RV64_XLEN];
         end
     endgenerate
 
     wire csr_write0 = arch0 && queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_WRITE];
+        0*RESULT_WIDTH + RESULT_CSR_WRITE];
     wire csr_write1 = arch1 && queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_WRITE];
+        1*RESULT_WIDTH + RESULT_CSR_WRITE];
     wire csr_write2 = arch2 && queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_WRITE];
+        2*RESULT_WIDTH + RESULT_CSR_WRITE];
     assign csr_write_o = csr_write0 || csr_write1 || csr_write2;
     assign csr_addr_o = csr_write0 ? queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_ADDR +:
+        0*RESULT_WIDTH + RESULT_CSR_ADDR +:
         `RV64_FUNCT12_WIDTH] :
         csr_write1 ? queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_ADDR +:
+        1*RESULT_WIDTH + RESULT_CSR_ADDR +:
         `RV64_FUNCT12_WIDTH] : queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_ADDR +:
+        2*RESULT_WIDTH + RESULT_CSR_ADDR +:
         `RV64_FUNCT12_WIDTH];
     assign csr_wdata_o = csr_write0 ? queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_WDATA +:
+        0*RESULT_WIDTH + RESULT_CSR_WDATA +:
         `RV64_XLEN] :
         csr_write1 ? queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_WDATA +:
+        1*RESULT_WIDTH + RESULT_CSR_WDATA +:
         `RV64_XLEN] : queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_CSR_WDATA +:
+        2*RESULT_WIDTH + RESULT_CSR_WDATA +:
         `RV64_XLEN];
 
     wire exception_event0 = accept0 && exception0;
@@ -209,28 +204,28 @@ module openrv64_retire_3p #(
                     (accept2 && halt2);
 
     wire mret0 = arch0 && queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_MRET];
+        0*RESULT_WIDTH + RESULT_MRET];
     wire mret1 = arch1 && queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_MRET];
+        1*RESULT_WIDTH + RESULT_MRET];
     wire mret2 = arch2 && queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_MRET];
+        2*RESULT_WIDTH + RESULT_MRET];
     wire sret0 = arch0 && queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_SRET];
+        0*RESULT_WIDTH + RESULT_SRET];
     wire sret1 = arch1 && queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_SRET];
+        1*RESULT_WIDTH + RESULT_SRET];
     wire sret2 = arch2 && queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_SRET];
+        2*RESULT_WIDTH + RESULT_SRET];
     assign mret_o = mret0 || mret1 || mret2;
     assign sret_o = sret0 || sret1 || sret2;
 
-    wire [`RV64_INSTR_WIDTH-1:0] instr0 = queue_result_i[
-        0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_INSTR +:
+    wire [`RV64_INSTR_WIDTH-1:0] instr0 = queue_meta_i[
+        0*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
         `RV64_INSTR_WIDTH];
-    wire [`RV64_INSTR_WIDTH-1:0] instr1 = queue_result_i[
-        1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_INSTR +:
+    wire [`RV64_INSTR_WIDTH-1:0] instr1 = queue_meta_i[
+        1*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
         `RV64_INSTR_WIDTH];
-    wire [`RV64_INSTR_WIDTH-1:0] instr2 = queue_result_i[
-        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + RESULT_INSTR +:
+    wire [`RV64_INSTR_WIDTH-1:0] instr2 = queue_meta_i[
+        2*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
         `RV64_INSTR_WIDTH];
     wire fence_i0 = arch0 &&
         (`RV64_OPCODE(instr0) == `RV64_OPCODE_MISC_MEM) &&
@@ -261,18 +256,23 @@ module openrv64_retire_3p #(
                             exception_event2 ? 2'd2 :
                             arch2 ? 2'd2 :
                             arch1 ? 2'd1 : 2'd0;
-    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] event_result =
-        queue_result_i[event_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-                       `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+    wire [META_WIDTH-1:0] event_meta =
+        queue_meta_i[event_lane*META_WIDTH +: META_WIDTH];
+    wire [RESULT_WIDTH-1:0] event_result =
+        queue_result_i[event_lane*RESULT_WIDTH +: RESULT_WIDTH];
     assign cause_o = irq_o ? irq_cause_i :
         event_result[RESULT_CAUSE +: `RV64_EXCEPT_CAUSE_WIDTH];
-    assign pc_o = event_result[RESULT_PC +: `RV64_XLEN];
+    assign pc_o = event_meta[
+        `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
     assign next_pc_o = event_result[RESULT_NEXT_PC +: `RV64_XLEN];
     assign tval_o = exception_o ?
         event_result[RESULT_TVAL +: `RV64_XLEN] : {`RV64_XLEN{1'b0}};
-    assign trace_id_o = event_result[RESULT_TRACE +: 64];
-    assign instr_o = event_result[RESULT_INSTR +: `RV64_INSTR_WIDTH];
-    assign trace_rd_o = event_result[RESULT_RD +: `RV64_REG_ADDR_WIDTH];
+    assign trace_id_o =
+        queue_trace_id_i[event_lane*64 +: 64];
+    assign instr_o = event_meta[
+        `OPENRV64_RETIRE_ALLOC_INSTR_LSB +: `RV64_INSTR_WIDTH];
+    assign trace_rd_o = event_meta[
+        `OPENRV64_RETIRE_ALLOC_RD_LSB +: `RV64_REG_ADDR_WIDTH];
     assign trace_wdata_o = event_result[RESULT_DATA +: `RV64_XLEN];
 
 endmodule

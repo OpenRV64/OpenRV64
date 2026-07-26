@@ -43,6 +43,8 @@
 `define RV64_CSR_MTVEC      12'h305
 `define RV64_CSR_MCOUNTEREN 12'h306
 `define RV64_CSR_MCOUNTINHIBIT 12'h320
+`define RV64_CSR_MHPMEVENT3  12'h323
+`define RV64_CSR_MHPMEVENT31 12'h33f
 `define RV64_CSR_MSCRATCH   12'h340
 `define RV64_CSR_MEPC       12'h341
 `define RV64_CSR_MCAUSE     12'h342
@@ -68,9 +70,13 @@
 `define RV64_CSR_PMPADDR15  12'h3bf
 `define RV64_CSR_MCYCLE     12'hb00
 `define RV64_CSR_MINSTRET   12'hb02
+`define RV64_CSR_MHPMCOUNTER3  12'hb03
+`define RV64_CSR_MHPMCOUNTER31 12'hb1f
 `define RV64_CSR_CYCLE      12'hc00
 `define RV64_CSR_TIME       12'hc01
 `define RV64_CSR_INSTRET    12'hc02
+`define RV64_CSR_HPMCOUNTER3  12'hc03
+`define RV64_CSR_HPMCOUNTER31 12'hc1f
 
 // Current privilege encoding.
 `define RV64_PRIV_WIDTH 2

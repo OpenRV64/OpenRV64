@@ -5,12 +5,13 @@
 
 module tb_retire_3p;
 
-    localparam integer META_WIDTH = `OPENRV64_RETIRE_META_WIDTH;
-    localparam integer RESULT_WIDTH = `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH;
+    localparam integer META_WIDTH = `OPENRV64_RETIRE_ALLOC_WIDTH;
+    localparam integer RESULT_WIDTH = `OPENRV64_RETIRE_RESULT_WIDTH;
 
     reg [2:0] queue_valid;
     reg [3*META_WIDTH-1:0] queue_meta;
     reg [3*RESULT_WIDTH-1:0] queue_result;
+    reg [191:0] queue_trace;
     wire [2:0] queue_accept;
     reg irq_pending;
     reg [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause;
@@ -50,6 +51,7 @@ module tb_retire_3p;
         .queue_valid_i(queue_valid),
         .queue_meta_i(queue_meta),
         .queue_result_i(queue_result),
+        .queue_trace_id_i(queue_trace),
         .queue_accept_o(queue_accept),
         .irq_pending_i(irq_pending),
         .irq_cause_i(irq_cause),
@@ -104,18 +106,18 @@ module tb_retire_3p;
         reg [META_WIDTH-1:0] value;
         begin
             value = {META_WIDTH{1'b0}};
-            value[`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 2] = hard_order;
-            value[`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 1] = uses2;
-            value[`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = uses1;
-            value[`OPENRV64_DISPATCH_META_WIDTH +:
+            value[`OPENRV64_RETIRE_ALLOC_HARD_BIT] = hard_order;
+            value[`OPENRV64_RETIRE_ALLOC_USES_RS2_BIT] = uses2;
+            value[`OPENRV64_RETIRE_ALLOC_USES_RS1_BIT] = uses1;
+            value[`OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +:
                   `OPENRV64_PHYS_REG_ADDR_WIDTH] =
                 {{(`OPENRV64_PHYS_REG_ADDR_WIDTH-5){1'b0}}, rd};
-            value[`OPENRV64_DISPATCH_META_WIDTH +
+            value[`OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +
                   `OPENRV64_PHYS_REG_ADDR_WIDTH +:
                   `OPENRV64_PHYS_REG_ADDR_WIDTH] =
                 {{(`OPENRV64_PHYS_REG_ADDR_WIDTH-5){1'b0}}, rd};
-            value[17] = reg_write;
-            value[35 +: 5] = rd;
+            value[`OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT] = reg_write;
+            value[`OPENRV64_RETIRE_ALLOC_RD_LSB +: 5] = rd;
             queue_meta[lane*META_WIDTH +: META_WIDTH] = value;
         end
     endtask
@@ -148,16 +150,28 @@ module tb_retire_3p;
             value[143 +: `RV64_EXCEPT_CAUSE_WIDTH] = cause_value;
             value[148] = halt_value;
             value[149] = exception_value;
-            value[153] = reg_write;
-            value[154 +: 5] = rd;
-            value[159 +: 5] = rs2;
-            value[164 +: 5] = rs1;
-            value[169 +: 64] = data;
-            value[233 +: 32] = instr_value;
-            value[265 +: 64] = next_pc_value;
-            value[329 +: 64] = pc_value;
-            value[393 +: 64] = trace;
+            value[`OPENRV64_RETIRE_RESULT_DATA_LSB +: 64] = data;
+            value[`OPENRV64_RETIRE_RESULT_NEXT_PC_LSB +: 64] =
+                next_pc_value;
             queue_result[lane*RESULT_WIDTH +: RESULT_WIDTH] = value;
+            queue_meta[
+                lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_PC_LSB +: 64] =
+                pc_value;
+            queue_meta[
+                lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +: 32] =
+                instr_value;
+            queue_meta[
+                lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_RS1_LSB +: 5] =
+                rs1;
+            queue_meta[
+                lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_RS2_LSB +: 5] =
+                rs2;
+            queue_meta[
+                lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_RD_LSB +: 5] = rd;
+            queue_meta[
+                lane*META_WIDTH +
+                `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT] = reg_write;
+            queue_trace[lane*64 +: 64] = trace;
         end
     endtask
 
@@ -165,6 +179,7 @@ module tb_retire_3p;
         queue_valid = 3'b000;
         queue_meta = {3*META_WIDTH{1'b0}};
         queue_result = {3*RESULT_WIDTH{1'b0}};
+        queue_trace = 192'd0;
         irq_pending = 1'b0;
         irq_cause = 5'd0;
 
@@ -173,7 +188,7 @@ module tb_retire_3p;
         set_meta(2, 0, 0, 0, 1, 5'd7);
         // The physical destination is allocation-time state.  Deliberately
         // make it differ from architectural rd to catch re-derivation here.
-        queue_meta[1*META_WIDTH + `OPENRV64_DISPATCH_META_WIDTH +:
+        queue_meta[1*META_WIDTH + `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +:
                    `OPENRV64_PHYS_REG_ADDR_WIDTH] = 5'd30;
         set_result(0, 64'd10, 64'h100, 64'h104, 32'h1,
                    64'h55, 5'd1, 5'd0, 5'd5, 1, 0, 0, 5'd0, 0, 0, 0, 0);
@@ -224,7 +239,8 @@ module tb_retire_3p;
         // Restore lane one and mark it hard.  The hard instruction retires but
         // terminates the group even though lane two is ready.
         queue_result[1*RESULT_WIDTH + 149] = 1'b0;
-        queue_meta[1*META_WIDTH + `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 2] = 1'b1;
+        queue_meta[
+            1*META_WIDTH + `OPENRV64_RETIRE_ALLOC_HARD_BIT] = 1'b1;
         #1;
         if ((queue_accept != 3'b011) || (retire_arch != 3'b011) ||
             (retire_hard != 3'b010)) begin
@@ -233,7 +249,8 @@ module tb_retire_3p;
 
         // IRQ is taken after the youngest normal instruction accepted in the
         // group, not after the oldest lane.
-        queue_meta[1*META_WIDTH + `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 2] = 1'b0;
+        queue_meta[
+            1*META_WIDTH + `OPENRV64_RETIRE_ALLOC_HARD_BIT] = 1'b0;
         irq_pending = 1'b1;
         irq_cause = 5'd11;
         #1;

@@ -553,11 +553,11 @@ module tb_opensbi #(
             assign observed_t1 =
                 dut.u_core.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[6];
             assign observed_mcycle =
-                dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcycle_q;
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.u_cmu.mcycle_q;
             assign observed_minstret =
-                dut.u_core.g_backend_3p.u_core_3p.u_csrs.minstret_q;
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.u_cmu.minstret_q;
             assign observed_mcountinhibit =
-                dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcountinhibit_q;
+                dut.u_core.g_backend_3p.u_core_3p.u_csrs.u_cmu.mcountinhibit_q;
             assign observed_mcause =
                 dut.u_core.g_backend_3p.u_core_3p.u_csrs.mcause_q;
             assign observed_mtval =
@@ -1332,10 +1332,11 @@ module tb_opensbi #(
             assign observed_a7 = dut.u_core.u_core.u_gpr.regs[17];
             assign observed_t0 = dut.u_core.u_core.u_gpr.regs[5];
             assign observed_t1 = dut.u_core.u_core.u_gpr.regs[6];
-            assign observed_mcycle = dut.u_core.u_core.u_csrs.mcycle_q;
-            assign observed_minstret = dut.u_core.u_core.u_csrs.minstret_q;
+            assign observed_mcycle = dut.u_core.u_core.u_csrs.u_cmu.mcycle_q;
+            assign observed_minstret =
+                dut.u_core.u_core.u_csrs.u_cmu.minstret_q;
             assign observed_mcountinhibit =
-                dut.u_core.u_core.u_csrs.mcountinhibit_q;
+                dut.u_core.u_core.u_csrs.u_cmu.mcountinhibit_q;
             assign observed_mcause = dut.u_core.u_core.u_csrs.mcause_q;
             assign observed_mtval = dut.u_core.u_core.u_csrs.mtval_q;
             assign observed_scause = dut.u_core.u_core.u_csrs.scause_q;

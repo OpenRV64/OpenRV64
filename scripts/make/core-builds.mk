@@ -82,7 +82,9 @@ $(RV64I_GPR_3P_SIM_BUILD): rtl/core/regs/prf.v \
 
 $(RV64I_CSRS_SIM_BUILD): $(RV64I_CSRS_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS) $(EXCEPT_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $(RV64I_CSRS_SIM_BUILD) rtl/core/regs/rv64-i-pmp.v $(RV64I_CSRS_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -o $(RV64I_CSRS_SIM_BUILD) \
+		rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) \
+		$(RV64I_CSRS_SIM_SRCS)
 
 $(RV64I_PMP_SIM_BUILD): $(RV64I_PMP_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 	mkdir -p sim

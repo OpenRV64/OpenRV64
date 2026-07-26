@@ -1004,26 +1004,26 @@ module tb_top_3p_soc #(
     localparam integer PERF_OP_STORE = 4;
 
     function automatic [2:0] perf_op_class;
-        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        input [`OPENRV64_RETIRE_ALLOC_WIDTH-1:0] payload;
         begin
-            if (payload[14])
+            if (payload[`OPENRV64_RETIRE_ALLOC_BRANCH_BIT])
                 perf_op_class = PERF_OP_BRANCH;
-            else if (payload[13])
+            else if (payload[`OPENRV64_RETIRE_ALLOC_JUMP_BIT])
                 perf_op_class = PERF_OP_JUMP;
-            else if (payload[16] && !payload[15])
+            else if (payload[`OPENRV64_RETIRE_ALLOC_MEM_READ_BIT] &&
+                     !payload[`OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT])
                 perf_op_class = PERF_OP_LOAD;
-            else if (payload[15])
+            else if (payload[`OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT])
                 perf_op_class = PERF_OP_STORE;
             else
                 perf_op_class = PERF_OP_ALU;
         end
     endfunction
 
-    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    wire [`OPENRV64_RETIRE_ALLOC_WIDTH-1:0]
         trace_retire_head_payload =
-            dut.u_backend.u_retire_queue.meta_q[
-                dut.u_backend.u_retire_queue.head_q][
-                    0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+            dut.u_backend.queue_retire_record[
+                0 +: `OPENRV64_RETIRE_ALLOC_WIDTH];
     wire [2:0] trace_retire_head_op =
         perf_op_class(trace_retire_head_payload);
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] trace_retire_head_id =

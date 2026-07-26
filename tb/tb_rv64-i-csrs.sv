@@ -20,6 +20,7 @@ module tb_rv64i_csrs;
     logic mret;
     logic sret;
     logic [1:0] retire_count;
+    logic [`OPENRV64_CMU_EVENT_COUNT-1:0] perf_events;
     logic irq_software;
     logic irq_timer;
     logic irq_external;
@@ -77,6 +78,7 @@ module tb_rv64i_csrs;
         .mret_i(mret),
         .sret_i(sret),
         .retire_count_i(retire_count),
+        .perf_events_i(perf_events),
         .irq_software_i(irq_software),
         .irq_timer_i(irq_timer),
         .irq_external_i(irq_external),
@@ -217,6 +219,7 @@ module tb_rv64i_csrs;
         mret = 1'b0;
         sret = 1'b0;
         retire_count = 2'd0;
+        perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
         irq_software = 1'b0;
         irq_timer = 1'b0;
         irq_external = 1'b0;
@@ -281,8 +284,46 @@ module tb_rv64i_csrs;
         check_csr(`RV64_CSR_TIME, 1'b1, 1'b0, 64'd100,
                   "limited time alias");
         write_csr(`RV64_CSR_MCOUNTEREN, 64'hffff_ffff_ffff_ffff);
-        check_csr(`RV64_CSR_MCOUNTEREN, 1'b1, 1'b1, 64'd7,
+        check_csr(`RV64_CSR_MCOUNTEREN, 1'b1, 1'b1, 64'h7ff,
                   "mcounteren WARL mask");
+
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd0,
+                  "mhpmcounter3 reset");
+        check_csr(`RV64_CSR_MHPMEVENT3, 1'b1, 1'b1, 64'd0,
+                  "mhpmevent3 reset");
+        check_csr(`RV64_CSR_MHPMCOUNTER31, 1'b1, 1'b0, 64'd0,
+                  "unimplemented mhpmcounter31");
+        check_csr(`RV64_CSR_MHPMEVENT31, 1'b1, 1'b0, 64'd0,
+                  "unimplemented mhpmevent31");
+        write_csr(`RV64_CSR_MHPMEVENT3,
+                  (64'd1 << `OPENRV64_CMU_EVENT_ISSUE_LANE0) |
+                  (64'd1 << `OPENRV64_CMU_EVENT_ISSUE_LANE1) |
+                  (64'd1 << 63));
+        check_csr(`RV64_CSR_MHPMEVENT3, 1'b1, 1'b1,
+                  (64'd1 << `OPENRV64_CMU_EVENT_ISSUE_LANE0) |
+                  (64'd1 << `OPENRV64_CMU_EVENT_ISSUE_LANE1),
+                  "mhpmevent3 WARL event mask");
+        write_csr(`RV64_CSR_MHPMCOUNTER3, 64'd10);
+        @(negedge clk);
+        perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE0] = 1'b1;
+        perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE1] = 1'b1;
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
+                  "mhpmcounter same-cycle event forwarding");
+        @(posedge clk);
+        @(negedge clk);
+        perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
+                  "mhpmcounter event commit");
+        write_csr(`RV64_CSR_MCOUNTINHIBIT,
+                  (64'd1 << `RV64_MCOUNTER_CY_BIT) |
+                  (64'd1 << 3));
+        @(negedge clk);
+        perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE0] = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
+                  "mhpmcounter inhibit");
 
         write_csr(`RV64_CSR_MIP, 64'hffff_ffff_ffff_ffff);
         check_csr(`RV64_CSR_MIP, 1'b1, 1'b1,
@@ -370,11 +411,13 @@ module tb_rv64i_csrs;
         write_csr(`RV64_CSR_MCOUNTEREN,
                   (64'd1 << `RV64_MCOUNTER_CY_BIT) |
                   (64'd1 << `RV64_MCOUNTER_TM_BIT) |
-                  (64'd1 << `RV64_MCOUNTER_IR_BIT));
+                  (64'd1 << `RV64_MCOUNTER_IR_BIT) |
+                  (64'd1 << 3));
         write_csr(`RV64_CSR_SCOUNTEREN,
                   (64'd1 << `RV64_MCOUNTER_CY_BIT) |
                   (64'd1 << `RV64_MCOUNTER_TM_BIT) |
-                  (64'd1 << `RV64_MCOUNTER_IR_BIT));
+                  (64'd1 << `RV64_MCOUNTER_IR_BIT) |
+                  (64'd1 << 3));
         write_csr(`RV64_CSR_MEPC, 64'h0000_0000_0000_0400);
         write_csr(`RV64_CSR_MSTATUS,
                   64'd1 << `RV64_MSTATUS_SIE_BIT);
@@ -391,6 +434,8 @@ module tb_rv64i_csrs;
                   "U-mode cycle access");
         check_csr(`RV64_CSR_TIME, 1'b1, 1'b0, 64'd100,
                   "U-mode time access");
+        check_csr(`RV64_CSR_HPMCOUNTER3, 1'b1, 1'b0, 64'd12,
+                  "U-mode hpmcounter3 access");
         check_csr(`RV64_CSR_SATP, 1'b0, 1'b0, 64'h0,
                   "U-mode satp denied");
 
@@ -527,7 +572,7 @@ module tb_rv64i_csrs;
                   64'h8000_0000_0000_0009,
                   "delegated interrupt scause");
 
-        $display("PASS: RV64 M/S/U CSR state, STIP injection, and context updates");
+        $display("PASS: RV64 M/S/U CSR, HPM, STIP, and context updates");
         $finish;
     end
 

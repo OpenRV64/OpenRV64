@@ -375,9 +375,11 @@ The forwarding tiers are distinct:
    is `000`; useful masks are `011` for ALU completions, `100` for MEM, and
    `111` for all three.
 4. **Full forwarding**, selected by `ENABLE_FULL_FORWARDING`, constructs an
-   architectural-register value map from current completions and completed
-   but unretired retirement entries. It is an upper-bound experiment and is
-   disabled by default.
+   architectural-register value map from the indexed youngest-owner state and
+   current completion overlay. Completed-but-unretired values remain in that
+   canonical owner map; the backend no longer scans or exports every
+   retirement result entry. It is an upper-bound experiment and is disabled
+   by default.
 5. **Aggressive producer ownership**, selected by `RELAX_HAZARDS`, retains the
    youngest live producer ID, ready bit, and result for every architectural
    register. It makes relaxed WAW plus broad forwarding unambiguous, but it is
@@ -411,8 +413,17 @@ without making architectural state out of order.
 ### Retirement and precise state
 
 The default retirement queue has eight entries. Strict dispatch assigns a
-monotonically increasing 64-bit ID and circular slot when an instruction
-issues. Each execution lane may complete its own slot independently.
+monotonically increasing modular 10-bit dynamic ID and circular slot when an
+instruction issues. Each execution lane may complete its own slot
+independently. The separate 64-bit trace ID is debug state, not the execution
+identity.
+
+The ordering queue stores only valid, complete, dynamic ID, and ring pointers.
+It drives three slot selectors into a canonical record bank. Each selected
+entry supplies a 130-bit allocation record and a 281-bit completion-only
+record; allocation fields are not copied back through the 457-bit execution
+completion packet. Trace-enabled builds store one 64-bit trace value per
+allocation in a separate bank. The physical area profile disables that bank.
 
 The queue presents only the maximal completed prefix beginning at its head.
 Up to three ordinary instructions may retire in one cycle. An exception, halt,

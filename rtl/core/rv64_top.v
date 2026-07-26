@@ -11,6 +11,7 @@
 `include "core/exec/bp/defs.v"
 `include "core/except/except-defs.v"
 `include "core/trace/trace-defs.v"
+`include "core/cmu/defs.v"
 `include "core/arith/prefix-addsub.v"
 `include "core/backend/backend-defs.v"
 `include "core/bus/bus-defs.v"
@@ -26,6 +27,7 @@ module openrv64_rv64_top #(
     parameter PIPE_MEM_WB = 1,
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_RV64A = 1,
+    parameter integer HPM_COUNTERS = 8,
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -731,9 +733,55 @@ module openrv64_rv64_top #(
         .rd_data_i(wb_rd_data)
     );
 
+    wire cmu_issue_fire = dispatch_exec_valid && exec_clear;
+    wire cmu_fetch_fire = fetch_mem_valid && fetch_mem_ready;
+    wire cmu_lsu_fire = exec_mem_valid && exec_mem_ready;
+    wire [`OPENRV64_CMU_EVENT_COUNT-1:0] cmu_perf_events = {
+        1'b0,                                      // 37 lost issue slot 2
+        1'b0,                                      // 36 lost issue slot 1
+        1'b0,                                      // 35 lost issue slot 0
+        1'b0,                                      // 34 completed behind head
+        1'b0,                                      // 33 retire head incomplete
+        cmu_lsu_fire && exec_mem_write,             // 32 store request
+        1'b0,                                      // 31 L1D load miss
+        1'b0,                                      // 30 L1D load hit
+        1'b0,                                      // 29 demand waits prefetch
+        1'b0,                                      // 28 useful L1I prefetch
+        1'b0,                                      // 27 L1I prefetch launch
+        1'b0,                                      // 26 L1I demand miss
+        1'b0,                                      // 25 L1I demand hit
+        exec_mem_valid,                            // 24 LSU outstanding
+        exec_mem_valid && !exec_mem_ready,         // 23 LSU request wait
+        cmu_lsu_fire,                              // 22 LSU response
+        cmu_lsu_fire,                              // 21 LSU request
+        flush_fetch,                               // 20 fetch cancellation
+        cmu_fetch_fire,                            // 19 fetch response
+        cmu_fetch_fire,                            // 18 fetch request
+        bp_target_mispredict,                      // 17 target mispredict
+        exec_redirect_valid,                       // 16 direction mispredict
+        1'b0,                                      // 15 redirect recovery
+        hard_flush_redirect_req,                   // 14 redirect
+        dispatch_exec_valid && !exec_clear,        // 13 pipe busy stall
+        translation_barrier_busy && dispatch_exec_valid,
+                                                    // 12 barrier stall
+        dispatch_scoreboard_stall,                 // 11 RAW stall
+        !dispatch_exec_valid,                      // 10 dispatch empty
+        !fetch_decode_valid,                       //  9 frontend empty
+        !retire_arch,                              //  8 zero retire
+        !cmu_issue_fire,                           //  7 zero issue
+        1'b0,                                      //  6 retire lane 2
+        1'b0,                                      //  5 retire lane 1
+        retire_arch,                               //  4 retire lane 0
+        1'b0,                                      //  3 issue lane 2
+        1'b0,                                      //  2 issue lane 1
+        cmu_issue_fire,                            //  1 issue lane 0
+        1'b0                                       //  0 cycle (CMU-owned)
+    };
+
     openrv64_rv64i_csrs #(
         .ENABLE_RV64M(ENABLE_RV64M),
-        .ENABLE_RV64A(ENABLE_RV64A)
+        .ENABLE_RV64A(ENABLE_RV64A),
+        .HPM_COUNTERS(HPM_COUNTERS)
     ) u_csrs (
         .clk(clk),
         .rst_n(rst_n),
@@ -751,6 +799,7 @@ module openrv64_rv64_top #(
         .mret_i(retire_mret),
         .sret_i(retire_sret),
         .retire_count_i({1'b0, retire_arch}),
+        .perf_events_i(cmu_perf_events),
         .irq_software_i(irq_m_software),
         .irq_timer_i(irq_m_timer),
         .irq_external_i(irq_m_external),

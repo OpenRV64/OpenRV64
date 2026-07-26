@@ -20,6 +20,7 @@ module openrv64_top #(
     parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
     parameter bit ENABLE_RV64M = 1'b0,
     parameter bit ENABLE_RV64A = 1'b1,
+    parameter int unsigned HPM_COUNTERS = 8,
     parameter bit ENABLE_FORWARDING = 1'b1,
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
     parameter bit ENABLE_L1I = 1'b1,
@@ -321,6 +322,7 @@ module openrv64_top #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_1P),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(ENABLE_RV64A),
+        .HPM_COUNTERS(HPM_COUNTERS),
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
@@ -410,6 +412,7 @@ module openrv64_top #(
         if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_backend_3p
             openrv64_rv64_top_3p #(
                 .RESET_VECTOR(RESET_VECTOR), .ENABLE_RV64M(ENABLE_RV64M),
+                .HPM_COUNTERS(HPM_COUNTERS),
                 .BUS_CONFIG(BUS_CONFIG),
                 .STORE_FORWARD_BASE(`OPENRV64_SOC_MEMORY_BASE),
                 .STORE_FORWARD_SIZE(`OPENRV64_SOC_MEMORY_SIZE),

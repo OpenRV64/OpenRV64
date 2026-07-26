@@ -777,8 +777,10 @@ struct FullRetireTrace {
 
 #define R3P_BACKEND(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__u_backend__DOT__##name
-#define R3P_QUEUE(name) R3P_BACKEND(u_retire_queue__DOT__##name)
 #define R3P_RETIRE(name) R3P_BACKEND(u_retire__DOT__##name)
+#define R3P_RECORDS(name) R3P_BACKEND(u_retire_records__DOT__##name)
+#define R3P_RETIRE_QUEUE(name) \
+    R3P_BACKEND(u_retire_queue__DOT__##name)
 #define R3P_CORE(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
 
@@ -787,23 +789,27 @@ struct FullRetireTrace {
             static_cast<bool>(R3P_RETIRE(arch1)),
             static_cast<bool>(R3P_RETIRE(arch2))
         };
-        const unsigned head = R3P_QUEUE(head_q);
         const unsigned privilege = R3P_CORE(u_csrs__DOT__priv_mode_q);
         for (unsigned lane = 0; lane < arch.size(); ++lane) {
             if (!arch[lane])
                 continue;
-            const unsigned slot = (head + lane) & 15U;
-            const auto& result = R3P_QUEUE(result_q)[slot];
-            const uint64_t pc = wide_bits64(result, 329);
-            const uint64_t next_pc = wide_bits64(result, 265);
+            const unsigned slot =
+                lane == 0 ? R3P_RETIRE_QUEUE(head_q) :
+                lane == 1 ? R3P_RETIRE_QUEUE(retire_slot1) :
+                            R3P_RETIRE_QUEUE(retire_slot2);
+            const auto& record = R3P_RECORDS(alloc_q)[slot];
+            const auto& result = R3P_RECORDS(result_q)[slot];
+            const uint64_t pc = wide_bits64(record, 0U);
+            const uint64_t next_pc = wide_bits64(result, 217U);
             const uint32_t instr =
-                static_cast<uint32_t>(wide_bits64(result, 233));
+                static_cast<uint32_t>(wide_bits64(record, 64U));
             const bool result_reg_write =
-                (wide_bits64(result, 153) & 1U) != 0;
+                (wide_bits64(record, 111U) & 1U) != 0;
             const unsigned rd =
-                static_cast<unsigned>(wide_bits64(result, 154) & 0x1fU);
-            const uint64_t wdata = wide_bits64(result, 169);
-            const uint64_t trace_id = wide_bits64(result, 393);
+                static_cast<unsigned>(wide_bits64(record, 106U) & 0x1fU);
+            const uint64_t wdata = wide_bits64(result, 153U);
+            const uint64_t trace_id =
+                (R3P_BACKEND(queue_retire_id) >> (lane * 10U)) & 0x3ffU;
 
             stream << "cycle=" << std::dec << top->checkpoint_cycle_o
                    << " lane=" << lane
@@ -822,8 +828,9 @@ struct FullRetireTrace {
         }
 
 #undef R3P_CORE
+#undef R3P_RETIRE_QUEUE
+#undef R3P_RECORDS
 #undef R3P_RETIRE
-#undef R3P_QUEUE
 #undef R3P_BACKEND
     }
 };
@@ -1345,7 +1352,7 @@ struct FrontendBreakdown {
         overlap_pending_request += fetch_pending_any;
         overlap_pair_pending += pair_pending;
         overlap_bp_fetch_stall += FE_CORE(bp_fetch_stall);
-        overlap_request_fire += FE_FETCH(req_fire);
+        overlap_request_fire += FE_CORE(cmu_fetch_req_fire);
         overlap_response_match += FE_FETCH(resp_match);
 
         if (recovery == Recovery::ControlFlush)
@@ -1653,7 +1660,8 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
            << '/' << static_cast<unsigned>(
                       FETCH3P(following_sector_valid) & 1U)
            << ",lanes=" << static_cast<unsigned>(FETCH3P(lane_found_r))
-           << ",reqfire=" << static_cast<unsigned>(FETCH3P(req_fire))
+           << ",reqfire=" << static_cast<unsigned>(
+                      CORE3P(cmu_fetch_req_fire))
            << '/' << static_cast<unsigned>(FETCH3P(ras_req_fire))
            << '/' << static_cast<unsigned>(FETCH3P(pair_req_fire))
            << ",need=" << static_cast<unsigned>(

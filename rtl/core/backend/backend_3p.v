@@ -20,6 +20,7 @@ module openrv64_backend_3p #(
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter integer MAX_READS_PER_REG = 2,
     parameter integer ENABLE_RV64M = 1,
+    parameter integer ENABLE_TRACE = 1,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter integer ENABLE_FULL_FORWARDING = 0,
@@ -163,6 +164,10 @@ module openrv64_backend_3p #(
 
     localparam integer RETIRE_META_WIDTH =
         `OPENRV64_DISPATCH_META_WIDTH + 2*PHYS_REG_ADDR_WIDTH;
+    localparam integer RETIRE_RECORD_WIDTH =
+        `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + 2*PHYS_REG_ADDR_WIDTH;
+    localparam integer RETIRE_RESULT_WIDTH =
+        `OPENRV64_RETIRE_RESULT_WIDTH;
 
     wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_read_addr;
     wire [6*`RV64_XLEN-1:0] gpr_read_data;
@@ -176,10 +181,13 @@ module openrv64_backend_3p #(
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id;
     wire [3*SLOT_WIDTH-1:0] allocation_slot;
     wire [3*RETIRE_META_WIDTH-1:0] allocation_meta;
+    wire [3*RETIRE_RECORD_WIDTH-1:0] allocation_record;
     wire [2:0] allocation_complete;
     wire [2:0] allocation_mispredict;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         allocation_result;
+    wire [3*RETIRE_RESULT_WIDTH-1:0] allocation_retire_result;
+    wire [3*64-1:0] allocation_trace;
 
     assign decode_allocation_id_o = allocation_id;
     assign decode_allocation_slot_o = allocation_slot;
@@ -204,6 +212,7 @@ module openrv64_backend_3p #(
     wire [3*SLOT_WIDTH-1:0] complete_slot;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         complete_payload;
+    wire [3*RETIRE_RESULT_WIDTH-1:0] complete_retire_result;
     wire exec_redirect_valid;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] exec_redirect_id;
     wire [SLOT_WIDTH-1:0] exec_redirect_slot;
@@ -311,18 +320,99 @@ module openrv64_backend_3p #(
         end
     endgenerate
 
+    // Retirement stores one canonical compact record per slot.  Fields that
+    // already exist at allocation are not echoed through completion.  Trace
+    // state is a separate allocation-only debug bank and is absent when trace
+    // support is disabled.
+    genvar retire_record_lane;
+    generate
+        for (retire_record_lane = 0; retire_record_lane < 3;
+             retire_record_lane = retire_record_lane + 1) begin :
+                g_retire_record
+            wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_record =
+                allocation_meta[
+                    retire_record_lane*RETIRE_META_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+                alloc_complete_record = allocation_result[
+                    retire_record_lane*
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+                live_complete_record = complete_payload[
+                    retire_record_lane*
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+
+            assign allocation_record[
+                retire_record_lane*RETIRE_RECORD_WIDTH +:
+                RETIRE_RECORD_WIDTH] = {
+                allocation_meta[
+                    retire_record_lane*RETIRE_META_WIDTH +
+                    `OPENRV64_DISPATCH_META_WIDTH +
+                    PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH],
+                allocation_meta[
+                    retire_record_lane*RETIRE_META_WIDTH +
+                    `OPENRV64_DISPATCH_META_WIDTH +:
+                    PHYS_REG_ADDR_WIDTH],
+                issue_record[12], // predicted taken
+                issue_record[13], // jump
+                issue_record[14], // branch
+                issue_record[15], // memory write
+                issue_record[16], // memory read
+                allocation_meta[
+                    retire_record_lane*RETIRE_META_WIDTH +
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 2], // hard
+                allocation_meta[
+                    retire_record_lane*RETIRE_META_WIDTH +
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 1], // uses rs2
+                allocation_meta[
+                    retire_record_lane*RETIRE_META_WIDTH +
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH],     // uses rs1
+                issue_record[17],                           // register write
+                issue_record[35 +: `RV64_REG_ADDR_WIDTH],
+                issue_record[232 +: `RV64_REG_ADDR_WIDTH],
+                issue_record[237 +: `RV64_REG_ADDR_WIDTH],
+                issue_record[242 +: `RV64_INSTR_WIDTH],
+                issue_record[274 +: `RV64_XLEN]
+            };
+            assign allocation_trace[
+                retire_record_lane*64 +: 64] =
+                (ENABLE_TRACE != 0) ? issue_record[338 +: 64] : 64'd0;
+            assign allocation_retire_result[
+                retire_record_lane*RETIRE_RESULT_WIDTH +:
+                RETIRE_RESULT_WIDTH] = {
+                alloc_complete_record[265 +: `RV64_XLEN],
+                alloc_complete_record[
+                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN],
+                alloc_complete_record[0 +: 153]
+            };
+            assign complete_retire_result[
+                retire_record_lane*RETIRE_RESULT_WIDTH +:
+                RETIRE_RESULT_WIDTH] = {
+                live_complete_record[265 +: `RV64_XLEN],
+                live_complete_record[
+                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN],
+                live_complete_record[0 +: 153]
+            };
+        end
+    endgenerate
+
     wire [2:0] queue_retire_valid;
     wire [2:0] queue_retire_accept;
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] queue_retire_id;
-    wire [3*RETIRE_META_WIDTH-1:0] queue_retire_meta;
-    wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
-        queue_retire_result;
+    wire [3*RETIRE_RECORD_WIDTH-1:0] queue_retire_record;
+    wire [3*RETIRE_RESULT_WIDTH-1:0] queue_retire_commit;
+    wire [3*64-1:0] queue_retire_trace;
+    wire [3*SLOT_WIDTH-1:0] queue_retire_slot;
+    wire [2:0] queue_alloc_accept;
+    wire [2:0] queue_complete_accept;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] next_retire_id;
     wire [SLOT_WIDTH-1:0] next_retire_slot;
     wire queue_post_retire_valid;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] queue_post_retire_id;
     wire [SLOT_WIDTH-1:0] queue_post_retire_slot;
-    wire [3*SLOT_WIDTH-1:0] window_retire_slot;
+    wire [3*SLOT_WIDTH-1:0] window_retire_slot = queue_retire_slot;
 
     wire retire_exception;
     wire retire_halt;
@@ -355,51 +445,57 @@ module openrv64_backend_3p #(
     // retires.  The speculation-window path instead consumes EX0 resolution
     // immediately and selectively discards younger IDs below.  This retire-time
     // resolver remains the recovery path for the non-speculative window.
-    localparam integer WINDOW_META_BRANCH = 14;
-    localparam integer WINDOW_META_JUMP = 13;
-    localparam integer WINDOW_META_PREDICTED_TAKEN = 12;
-    localparam integer WINDOW_RESULT_EXCEPTION = 149;
-    localparam integer WINDOW_RESULT_INSTR = 233;
-    localparam integer WINDOW_RESULT_NEXT_PC = 265;
-    localparam integer WINDOW_RESULT_PC = 329;
+    localparam integer WINDOW_META_BRANCH =
+        `OPENRV64_RETIRE_ALLOC_BRANCH_BIT;
+    localparam integer WINDOW_META_JUMP =
+        `OPENRV64_RETIRE_ALLOC_JUMP_BIT;
+    localparam integer WINDOW_META_PREDICTED_TAKEN =
+        `OPENRV64_RETIRE_ALLOC_PREDICTED_TAKEN_BIT;
+    localparam integer WINDOW_RESULT_EXCEPTION =
+        `OPENRV64_RETIRE_RESULT_EXCEPTION_BIT;
+    localparam integer WINDOW_RESULT_NEXT_PC =
+        `OPENRV64_RETIRE_RESULT_NEXT_PC_LSB;
+    localparam integer COMPLETE_RESULT_INSTR = 233;
+    localparam integer COMPLETE_RESULT_NEXT_PC = 265;
+    localparam integer COMPLETE_RESULT_PC = 329;
     wire window_resolve0 = release_valid[0] &&
-        !queue_retire_result[
-            0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+        !queue_retire_commit[
+            0*RETIRE_RESULT_WIDTH +
             WINDOW_RESULT_EXCEPTION] &&
-        (queue_retire_meta[
-             0*RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
-         queue_retire_meta[
-             0*RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+        (queue_retire_record[
+             0*RETIRE_RECORD_WIDTH + WINDOW_META_BRANCH] ||
+         queue_retire_record[
+             0*RETIRE_RECORD_WIDTH + WINDOW_META_JUMP]);
     wire window_resolve1 = release_valid[1] &&
-        !queue_retire_result[
-            1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+        !queue_retire_commit[
+            1*RETIRE_RESULT_WIDTH +
             WINDOW_RESULT_EXCEPTION] &&
-        (queue_retire_meta[
-             1*RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
-         queue_retire_meta[
-             1*RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+        (queue_retire_record[
+             1*RETIRE_RECORD_WIDTH + WINDOW_META_BRANCH] ||
+         queue_retire_record[
+             1*RETIRE_RECORD_WIDTH + WINDOW_META_JUMP]);
     wire window_resolve2 = release_valid[2] &&
-        !queue_retire_result[
-            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+        !queue_retire_commit[
+            2*RETIRE_RESULT_WIDTH +
             WINDOW_RESULT_EXCEPTION] &&
-        (queue_retire_meta[
-             2*RETIRE_META_WIDTH + WINDOW_META_BRANCH] ||
-         queue_retire_meta[
-             2*RETIRE_META_WIDTH + WINDOW_META_JUMP]);
+        (queue_retire_record[
+             2*RETIRE_RECORD_WIDTH + WINDOW_META_BRANCH] ||
+         queue_retire_record[
+             2*RETIRE_RECORD_WIDTH + WINDOW_META_JUMP]);
     wire window_branch_resolved = window_resolve0 || window_resolve1 ||
                                   window_resolve2;
     wire [1:0] window_resolve_lane = window_resolve0 ? 2'd0 :
                                      window_resolve1 ? 2'd1 : 2'd2;
-    wire [RETIRE_META_WIDTH-1:0] window_resolve_meta =
-        queue_retire_meta[
-            window_resolve_lane*RETIRE_META_WIDTH +:
-            RETIRE_META_WIDTH];
-    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
-        window_resolve_result = queue_retire_result[
-            window_resolve_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
-    wire [`RV64_XLEN-1:0] window_branch_pc = window_resolve_result[
-        WINDOW_RESULT_PC +: `RV64_XLEN];
+    wire [RETIRE_RECORD_WIDTH-1:0] window_resolve_meta =
+        queue_retire_record[
+            window_resolve_lane*RETIRE_RECORD_WIDTH +:
+            RETIRE_RECORD_WIDTH];
+    wire [RETIRE_RESULT_WIDTH-1:0]
+        window_resolve_result = queue_retire_commit[
+            window_resolve_lane*RETIRE_RESULT_WIDTH +:
+            RETIRE_RESULT_WIDTH];
+    wire [`RV64_XLEN-1:0] window_branch_pc = window_resolve_meta[
+        `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
     wire [`RV64_XLEN-1:0] window_branch_next_pc = window_resolve_result[
         WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
     wire window_branch_taken =
@@ -417,20 +513,23 @@ module openrv64_backend_3p #(
     generate
         for (retire_age_lane = 0; retire_age_lane < 3;
              retire_age_lane = retire_age_lane + 1) begin : g_retire_age
-            wire [RETIRE_META_WIDTH-1:0] age_meta =
-                queue_retire_meta[
-                    retire_age_lane*RETIRE_META_WIDTH +:
-                    RETIRE_META_WIDTH];
-            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] age_result =
-                queue_retire_result[
-                    retire_age_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+            wire [RETIRE_RECORD_WIDTH-1:0] age_meta =
+                queue_retire_record[
+                    retire_age_lane*RETIRE_RECORD_WIDTH +:
+                    RETIRE_RECORD_WIDTH];
+            wire [RETIRE_RESULT_WIDTH-1:0] age_result =
+                queue_retire_commit[
+                    retire_age_lane*RETIRE_RESULT_WIDTH +:
+                    RETIRE_RESULT_WIDTH];
             wire [`RV64_XLEN-1:0] age_pc =
-                age_result[WINDOW_RESULT_PC +: `RV64_XLEN];
+                age_meta[
+                    `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
             wire [`RV64_XLEN-1:0] age_next_pc =
                 age_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
             wire [`RV64_INSTR_WIDTH-1:0] age_instr =
-                age_result[WINDOW_RESULT_INSTR +: `RV64_INSTR_WIDTH];
+                age_meta[
+                    `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
+                    `RV64_INSTR_WIDTH];
             wire [`RV64_XLEN-1:0] age_fallthrough = age_pc + 64'd4;
             wire [`RV64_XLEN-1:0] age_target =
                 age_pc + `RV64_IMM_B(age_instr);
@@ -463,9 +562,9 @@ module openrv64_backend_3p #(
             free_branch_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
     wire [`RV64_XLEN-1:0] free_branch_pc =
-        free_branch_result[WINDOW_RESULT_PC +: `RV64_XLEN];
+        free_branch_result[COMPLETE_RESULT_PC +: `RV64_XLEN];
     wire [`RV64_XLEN-1:0] free_branch_next_pc =
-        free_branch_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
+        free_branch_result[COMPLETE_RESULT_NEXT_PC +: `RV64_XLEN];
     wire free_branch_mispredict = |allocation_mispredict;
     wire [1:0] free_mispredict_lane = allocation_mispredict[0] ? 2'd0 :
                                       allocation_mispredict[1] ? 2'd1 : 2'd2;
@@ -490,7 +589,7 @@ module openrv64_backend_3p #(
                 window_resolve_lane*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] : exec_redirect_id;
     assign redirect_target_o = free_branch_mispredict ?
-        free_mispredict_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN] :
+        free_mispredict_result[COMPLETE_RESULT_NEXT_PC +: `RV64_XLEN] :
         speculative_window ? exec_redirect_target :
         (ENABLE_ISSUE_WINDOW != 0) ? window_branch_next_pc :
                                      exec_redirect_target;
@@ -511,10 +610,10 @@ module openrv64_backend_3p #(
         speculative_window ? exec_branch_pc :
         (ENABLE_ISSUE_WINDOW != 0) ? window_branch_pc : exec_branch_pc;
     assign branch_instr_o = free_branch_resolved ?
-        free_branch_result[WINDOW_RESULT_INSTR +: `RV64_INSTR_WIDTH] :
+        free_branch_result[COMPLETE_RESULT_INSTR +: `RV64_INSTR_WIDTH] :
         speculative_window ? exec_branch_instr :
         (ENABLE_ISSUE_WINDOW != 0) ?
-            window_resolve_result[WINDOW_RESULT_INSTR +:
+            window_resolve_meta[`OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
                                   `RV64_INSTR_WIDTH] : exec_branch_instr;
     assign branch_id_o = free_branch_resolved ?
         allocation_id[
@@ -550,20 +649,20 @@ module openrv64_backend_3p #(
                 train_alloc_result = allocation_result[
                     train_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
-            wire [RETIRE_META_WIDTH-1:0] train_window_meta =
-                queue_retire_meta[
-                    train_lane*RETIRE_META_WIDTH +:
-                    RETIRE_META_WIDTH];
-            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
-                train_window_result = queue_retire_result[
-                    train_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
-                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+            wire [RETIRE_RECORD_WIDTH-1:0] train_window_meta =
+                queue_retire_record[
+                    train_lane*RETIRE_RECORD_WIDTH +:
+                    RETIRE_RECORD_WIDTH];
+            wire [RETIRE_RESULT_WIDTH-1:0]
+                train_window_result = queue_retire_commit[
+                    train_lane*RETIRE_RESULT_WIDTH +:
+                    RETIRE_RESULT_WIDTH];
             wire [`RV64_XLEN-1:0] train_alloc_pc = train_alloc_result[
-                WINDOW_RESULT_PC +: `RV64_XLEN];
+                COMPLETE_RESULT_PC +: `RV64_XLEN];
             wire [`RV64_XLEN-1:0] train_alloc_next_pc =
-                train_alloc_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
-            wire [`RV64_XLEN-1:0] train_window_pc = train_window_result[
-                WINDOW_RESULT_PC +: `RV64_XLEN];
+                train_alloc_result[COMPLETE_RESULT_NEXT_PC +: `RV64_XLEN];
+            wire [`RV64_XLEN-1:0] train_window_pc = train_window_meta[
+                `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
             wire [`RV64_XLEN-1:0] train_window_next_pc =
                 train_window_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
 
@@ -601,8 +700,6 @@ module openrv64_backend_3p #(
     endgenerate
 
     wire [RETIRE_DEPTH-1:0] completed_entry_valid;
-    wire [RETIRE_DEPTH*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
-        completed_entry_result;
 
     // Remember the youngest allocated producer of each architectural
     // register.  The compact retirement-slot tag qualifies the branch-only
@@ -622,10 +719,6 @@ module openrv64_backend_3p #(
         if (!rst_n) begin
             youngest_owner_valid_q <= 32'd0;
             youngest_owner_ready_q <= 32'd0;
-            youngest_owner_id_q <=
-                {32*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
-            youngest_owner_slot_q <= {32*SLOT_WIDTH{1'b0}};
-            youngest_owner_data_q <= {32*`RV64_XLEN{1'b0}};
         end else if (flush_i ||
                      ((ENABLE_ISSUE_WINDOW != 0) && squash_frontend_i)) begin
             youngest_owner_valid_q <= 32'd0;
@@ -710,9 +803,6 @@ module openrv64_backend_3p #(
                         youngest_owner_rd*SLOT_WIDTH +: SLOT_WIDTH] <=
                         allocation_slot[
                             youngest_owner_lane*SLOT_WIDTH +: SLOT_WIDTH];
-                    youngest_owner_data_q[
-                        youngest_owner_rd*`RV64_XLEN +: `RV64_XLEN] <=
-                        {`RV64_XLEN{1'b0}};
                 end
             end
 
@@ -828,77 +918,10 @@ module openrv64_backend_3p #(
         end
     endgenerate
 
-    // Experimental full completion network.  The default WAW exclusion gives
-    // this rd-indexed map one live producer per architectural register.  In
-    // relaxed-WAW mode normally permits reads only after counted ownership has
-    // fallen back to one writer.  RELAX_HAZARDS replaces this untagged map with
-    // the producer-ID map below.  Queue-resident completions cover arbitrary
-    // completion-to-retirement distance; the live ports remove the extra cycle
-    // that would otherwise be introduced while writing the queue.
-    reg [31:0] full_forward_valid_raw;
-    reg [32*`RV64_XLEN-1:0] full_forward_data_raw;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] full_forward_rd;
-    integer full_forward_entry;
-    integer full_forward_port;
-    always @* begin
-        full_forward_valid_raw = 32'd0;
-        full_forward_data_raw = {32*`RV64_XLEN{1'b0}};
-        full_forward_rd = `RV64_REG_X0;
-
-        for (full_forward_entry = 0;
-             full_forward_entry < RETIRE_DEPTH;
-             full_forward_entry = full_forward_entry + 1) begin
-            full_forward_rd = completed_entry_result[
-                full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH];
-            if (completed_entry_valid[full_forward_entry] &&
-                completed_entry_result[
-                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_REG_WRITE_BIT] &&
-                !completed_entry_result[
-                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_ILLEGAL_BIT] &&
-                !completed_entry_result[
-                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_EXCEPTION_BIT] &&
-                (full_forward_rd != `RV64_REG_X0)) begin
-                full_forward_valid_raw[full_forward_rd] = 1'b1;
-                full_forward_data_raw[full_forward_rd*`RV64_XLEN +:
-                                      `RV64_XLEN] = completed_entry_result[
-                    full_forward_entry*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
-            end
-        end
-
-        for (full_forward_port = 0; full_forward_port < 3;
-             full_forward_port = full_forward_port + 1) begin
-            full_forward_rd = complete_payload[
-                full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH];
-            if (complete_valid[full_forward_port] &&
-                complete_payload[
-                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_REG_WRITE_BIT] &&
-                !complete_payload[
-                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_ILLEGAL_BIT] &&
-                !complete_payload[
-                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_EXCEPTION_BIT] &&
-                (full_forward_rd != `RV64_REG_X0)) begin
-                full_forward_valid_raw[full_forward_rd] = 1'b1;
-                full_forward_data_raw[full_forward_rd*`RV64_XLEN +:
-                                      `RV64_XLEN] = complete_payload[
-                    full_forward_port*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
-                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
-            end
-        end
-    end
-
-    // Producer-tagged map used only by RELAX_HAZARDS.  The registered state
-    // retains completed values, and the completion overlay removes the one
-    // cycle state-update bubble.  Matching the 64-bit allocation ID is what
-    // makes multiple outstanding writers to one architectural rd unambiguous.
+    // The producer-tagged table is the canonical forwarding store.  Retaining
+    // one value per architectural destination avoids the old depth-wide scan
+    // of every 457-bit retirement result.  The live completion overlay removes
+    // the state-update cycle and exact instruction IDs reject stale WAW data.
     reg [31:0] youngest_forward_valid_raw;
     reg [32*`RV64_XLEN-1:0] youngest_forward_data_raw;
     reg [`RV64_REG_ADDR_WIDTH-1:0] youngest_forward_rd;
@@ -946,12 +969,10 @@ module openrv64_backend_3p #(
 
     wire [31:0] full_forward_valid =
         (ENABLE_FULL_FORWARDING != 0) && !flush_i ?
-        ((RELAX_HAZARDS != 0) ? youngest_forward_valid_raw :
-                                full_forward_valid_raw) : 32'd0;
+        youngest_forward_valid_raw : 32'd0;
     wire [32*`RV64_XLEN-1:0] full_forward_data =
         (ENABLE_FULL_FORWARDING != 0) && !flush_i ?
-        ((RELAX_HAZARDS != 0) ? youngest_forward_data_raw :
-                                full_forward_data_raw) :
+        youngest_forward_data_raw :
         {32*`RV64_XLEN{1'b0}};
 
     // Deliberately conservative capacity gate: issue resumes with room for a
@@ -1073,26 +1094,9 @@ module openrv64_backend_3p #(
         .write_data_i(gpr_write_data)
     );
 
-    // Order checks use the head after the retirement occurring on this edge.
-    // The GPR bank has same-edge retirement bypass, so a dependent branch or
-    // store sees the committed operand while issuing beside the older prefix.
-    // If retirement drains the queue, the oldest dispatch candidate is the
-    // prospective head, just as it is for an initially empty backend.
-    wire [SLOT_WIDTH:0] window_retire_slot1_sum =
-        {1'b0, next_retire_slot} + {{SLOT_WIDTH{1'b0}}, 1'b1};
-    wire [SLOT_WIDTH:0] window_retire_slot2_sum =
-        {1'b0, next_retire_slot} + {{(SLOT_WIDTH-1){1'b0}}, 2'd2};
-    wire [SLOT_WIDTH-1:0] window_retire_slot1 =
-        (window_retire_slot1_sum >= RETIRE_DEPTH) ?
-        window_retire_slot1_sum - RETIRE_DEPTH :
-        window_retire_slot1_sum[SLOT_WIDTH-1:0];
-    wire [SLOT_WIDTH-1:0] window_retire_slot2 =
-        (window_retire_slot2_sum >= RETIRE_DEPTH) ?
-        window_retire_slot2_sum - RETIRE_DEPTH :
-        window_retire_slot2_sum[SLOT_WIDTH-1:0];
-    assign window_retire_slot = {
-        window_retire_slot2, window_retire_slot1, next_retire_slot
-    };
+    // The queue supplies the three contiguous head selectors directly.  The
+    // GPR bank has same-edge retirement bypass, so dependent work may still
+    // issue beside the older retiring prefix.
     wire ordered_head_valid = !flush_i &&
         (queue_post_retire_valid || (dispatch_occupancy_o != 0));
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id =
@@ -1223,8 +1227,7 @@ module openrv64_backend_3p #(
     openrv64_retire_queue_3p #(
         .DEPTH(RETIRE_DEPTH),
         .ID_WIDTH(`OPENRV64_INSTR_ID_WIDTH),
-        .META_WIDTH(RETIRE_META_WIDTH),
-        .RESULT_WIDTH(`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH)
+        .INDEX_WIDTH(SLOT_WIDTH)
     ) u_retire_queue (
         .clk(clk), .rst_n(rst_n),
         .flush_i(flush_i ||
@@ -1236,20 +1239,18 @@ module openrv64_backend_3p #(
         .squash_slot_i(exec_redirect_slot),
         .alloc_valid_i(allocation_valid),
         .alloc_ready_o(queue_allocation_ready),
-        .alloc_meta_i(allocation_meta),
+        .alloc_accept_o(queue_alloc_accept),
         .alloc_complete_i(allocation_complete),
-        .alloc_result_i(allocation_result),
         .alloc_id_o(allocation_id),
         .alloc_slot_o(allocation_slot),
         .complete_valid_i(complete_valid), .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
-        .complete_result_i(complete_payload),
+        .complete_accept_o(queue_complete_accept),
         .retire_valid_o(queue_retire_valid),
         .retire_accept_i(queue_retire_accept),
-        .retire_id_o(queue_retire_id), .retire_meta_o(queue_retire_meta),
-        .retire_result_o(queue_retire_result),
+        .retire_id_o(queue_retire_id),
+        .retire_slot_o(queue_retire_slot),
         .completed_entry_valid_o(completed_entry_valid),
-        .completed_entry_result_o(completed_entry_result),
         .occupancy_o(retire_occupancy_o),
         .next_retire_id_o(next_retire_id),
         .next_retire_slot_o(next_retire_slot),
@@ -1257,6 +1258,91 @@ module openrv64_backend_3p #(
         .post_retire_id_o(queue_post_retire_id),
         .post_retire_slot_o(queue_post_retire_slot)
     );
+
+    openrv64_retire_records_3p #(
+        .DEPTH(RETIRE_DEPTH),
+        .SLOT_WIDTH(SLOT_WIDTH),
+        .ALLOC_WIDTH(RETIRE_RECORD_WIDTH),
+        .RESULT_WIDTH(RETIRE_RESULT_WIDTH),
+        .ENABLE_TRACE(ENABLE_TRACE)
+    ) u_retire_records (
+        .clk(clk),
+        .alloc_valid_i(queue_alloc_accept),
+        .alloc_slot_i(allocation_slot),
+        .alloc_record_i(allocation_record),
+        .alloc_complete_i(allocation_complete),
+        .alloc_result_i(allocation_retire_result),
+        .alloc_trace_i(allocation_trace),
+        .complete_valid_i(queue_complete_accept),
+        .complete_slot_i(complete_slot),
+        .complete_result_i(complete_retire_result),
+        .read_slot_i(queue_retire_slot),
+        .read_record_o(queue_retire_record),
+        .read_result_o(queue_retire_commit),
+        .read_trace_o(queue_retire_trace)
+    );
+
+`ifndef SYNTHESIS
+    // Simulation-only compatibility view for system benches and trace tools
+    // that inspect the historical completion packet.  This is reconstructed
+    // from the canonical record selected for each retire lane; no copy of this
+    // 457-bit packet exists in synthesized retirement storage.
+    wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        queue_retire_result;
+    genvar debug_retire_lane;
+    generate
+        for (debug_retire_lane = 0; debug_retire_lane < 3;
+             debug_retire_lane = debug_retire_lane + 1) begin :
+                g_debug_retire_result
+            reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+                debug_result;
+            always @* begin
+                debug_result =
+                    {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
+                debug_result[0 +: 153] = queue_retire_commit[
+                    debug_retire_lane*RETIRE_RESULT_WIDTH +: 153];
+                debug_result[153] = queue_retire_record[
+                    debug_retire_lane*RETIRE_RECORD_WIDTH +
+                    `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT];
+                debug_result[154 +: `RV64_REG_ADDR_WIDTH] =
+                    queue_retire_record[
+                        debug_retire_lane*RETIRE_RECORD_WIDTH +
+                        `OPENRV64_RETIRE_ALLOC_RD_LSB +:
+                        `RV64_REG_ADDR_WIDTH];
+                debug_result[159 +: `RV64_REG_ADDR_WIDTH] =
+                    queue_retire_record[
+                        debug_retire_lane*RETIRE_RECORD_WIDTH +
+                        `OPENRV64_RETIRE_ALLOC_RS2_LSB +:
+                        `RV64_REG_ADDR_WIDTH];
+                debug_result[164 +: `RV64_REG_ADDR_WIDTH] =
+                    queue_retire_record[
+                        debug_retire_lane*RETIRE_RECORD_WIDTH +
+                        `OPENRV64_RETIRE_ALLOC_RS1_LSB +:
+                        `RV64_REG_ADDR_WIDTH];
+                debug_result[169 +: `RV64_XLEN] = queue_retire_commit[
+                    debug_retire_lane*RETIRE_RESULT_WIDTH +
+                    `OPENRV64_RETIRE_RESULT_DATA_LSB +: `RV64_XLEN];
+                debug_result[233 +: `RV64_INSTR_WIDTH] =
+                    queue_retire_record[
+                        debug_retire_lane*RETIRE_RECORD_WIDTH +
+                        `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
+                        `RV64_INSTR_WIDTH];
+                debug_result[265 +: `RV64_XLEN] = queue_retire_commit[
+                    debug_retire_lane*RETIRE_RESULT_WIDTH +
+                    `OPENRV64_RETIRE_RESULT_NEXT_PC_LSB +: `RV64_XLEN];
+                debug_result[329 +: `RV64_XLEN] = queue_retire_record[
+                    debug_retire_lane*RETIRE_RECORD_WIDTH +
+                    `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
+                debug_result[393 +: 64] = queue_retire_trace[
+                    debug_retire_lane*64 +: 64];
+            end
+            assign queue_retire_result[
+                debug_retire_lane*
+                `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH] = debug_result;
+        end
+    endgenerate
+`endif
 
     // A delayed store failure is delivered alone at an architectural
     // boundary.  Holding the normal retirement inputs for this cycle avoids
@@ -1267,11 +1353,13 @@ module openrv64_backend_3p #(
     openrv64_retire_3p #(
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
-        .META_WIDTH(RETIRE_META_WIDTH)
+        .META_WIDTH(RETIRE_RECORD_WIDTH),
+        .RESULT_WIDTH(RETIRE_RESULT_WIDTH)
     ) u_retire (
         .queue_valid_i(retire_queue_valid),
-        .queue_meta_i(queue_retire_meta),
-        .queue_result_i(queue_retire_result),
+        .queue_meta_i(queue_retire_record),
+        .queue_result_i(queue_retire_commit),
+        .queue_trace_id_i(queue_retire_trace),
         .queue_accept_o(queue_retire_accept),
         .irq_pending_i(irq_pending_i), .irq_cause_i(irq_cause_i),
         .retire_arch_o(retire_arch_o), .retire_count_o(retire_count_o),

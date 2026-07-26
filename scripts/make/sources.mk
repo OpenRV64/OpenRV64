@@ -12,6 +12,7 @@ VEC_REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-vec.v
 VEC_EXEC_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec.v
 VEC_LSU_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec-lsu.v
 ARITH_DEPS := rtl/core/arith/prefix-addsub.v
+CMU_SRCS := rtl/core/cmu/cmu.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
 	rtl/core/decode/early.v rtl/core/decode/decode_top.v rtl/core/decode/rv64-c.v \
@@ -20,7 +21,7 @@ DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v
 REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr.v \
 	rtl/core/regs/rv64-i-gpr_3p.v \
-	rtl/core/regs/rv64-i-pmp.v rtl/core/regs/rv64-i-csrs.v
+	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) rtl/core/regs/rv64-i-csrs.v
 RENAME_SRCS := rtl/core/rename/identity.v
 FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
@@ -80,7 +81,7 @@ EXCEPT_SRCS := rtl/core/except/except-defs.v rtl/core/except/except.v \
 	rtl/core/except/vector.v
 STAGE_SRCS := rtl/core/stage/stage.v
 RETIRE_SRCS := rtl/core/retire/retire.v rtl/core/retire/retire_queue_3p.v \
-	rtl/core/retire/retire_3p.v
+	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v
 TRACE_SRCS := rtl/core/trace/trace-defs.v
 BACKEND_SRCS := rtl/core/backend/backend_3p.v
 CORE_SRCS := rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
@@ -93,7 +94,7 @@ CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(L1_CACHE_SRCS) \
 	$(DECODE_SRCS) \
 	rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr_3p.v \
-	rtl/core/regs/rv64-i-pmp.v \
+	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) \
 	rtl/core/regs/rv64-i-csrs.v $(RENAME_SRCS) \
 	rtl/core/dispatch/reg_map_3p.v \
 	rtl/core/dispatch/dispatch_3p.v rtl/core/dispatch/dispatch_window_3p.v \
@@ -108,6 +109,7 @@ CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	rtl/core/exec/alu/rv64-m.v rtl/core/exec/lsu/rv64-i.v \
 	rtl/core/exec/lsu/rv64-a.v rtl/core/exec/br.v $(BP_SRC) \
 	rtl/core/exec/system/csr.v rtl/core/retire/retire_queue_3p.v \
+	rtl/core/retire/retire_records_3p.v \
 	rtl/core/retire/retire_3p.v $(EXCEPT_SRCS) $(TRACE_SRCS)
 CLINT_SRCS := rtl/clint/clint.v
 PLIC_SRCS := rtl/plic/plic.v

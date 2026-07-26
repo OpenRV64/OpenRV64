@@ -8,7 +8,7 @@ module tb_retire_queue_3p #(
     localparam ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH;
     localparam META_WIDTH = 8;
     localparam RESULT_WIDTH = 16;
-    localparam INDEX_WIDTH = $clog2(DEPTH);
+    localparam INDEX_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
     localparam COUNT_WIDTH = $clog2(DEPTH + 1);
 
     logic clk;
@@ -19,18 +19,23 @@ module tb_retire_queue_3p #(
     logic [INDEX_WIDTH-1:0] squash_slot;
     logic [2:0] alloc_valid;
     wire alloc_ready;
+    wire [2:0] alloc_accept;
     logic [3*META_WIDTH-1:0] alloc_meta;
     logic [2:0] alloc_complete;
     logic [3*RESULT_WIDTH-1:0] alloc_result;
+    logic [191:0] alloc_trace;
     wire [3*ID_WIDTH-1:0] alloc_id;
     wire [3*INDEX_WIDTH-1:0] alloc_slot;
     logic [2:0] complete_valid;
     logic [3*ID_WIDTH-1:0] complete_id;
     logic [3*INDEX_WIDTH-1:0] complete_slot;
     logic [3*RESULT_WIDTH-1:0] complete_result;
+    wire [2:0] complete_accept;
     wire [2:0] retire_valid;
     logic [2:0] retire_accept;
     wire [3*ID_WIDTH-1:0] retire_id;
+    wire [3*INDEX_WIDTH-1:0] retire_slot;
+    wire [191:0] retire_trace;
     wire [3*META_WIDTH-1:0] retire_meta;
     wire [3*RESULT_WIDTH-1:0] retire_result;
     wire [COUNT_WIDTH-1:0] occupancy;
@@ -45,9 +50,7 @@ module tb_retire_queue_3p #(
 
     openrv64_retire_queue_3p #(
         .DEPTH(DEPTH),
-        .ID_WIDTH(ID_WIDTH),
-        .META_WIDTH(META_WIDTH),
-        .RESULT_WIDTH(RESULT_WIDTH)
+        .ID_WIDTH(ID_WIDTH)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -57,22 +60,42 @@ module tb_retire_queue_3p #(
         .squash_slot_i(squash_slot),
         .alloc_valid_i(alloc_valid),
         .alloc_ready_o(alloc_ready),
-        .alloc_meta_i(alloc_meta),
+        .alloc_accept_o(alloc_accept),
         .alloc_complete_i(alloc_complete),
-        .alloc_result_i(alloc_result),
         .alloc_id_o(alloc_id),
         .alloc_slot_o(alloc_slot),
         .complete_valid_i(complete_valid),
         .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
-        .complete_result_i(complete_result),
+        .complete_accept_o(complete_accept),
         .retire_valid_o(retire_valid),
         .retire_accept_i(retire_accept),
         .retire_id_o(retire_id),
-        .retire_meta_o(retire_meta),
-        .retire_result_o(retire_result),
+        .retire_slot_o(retire_slot),
         .occupancy_o(occupancy),
         .next_retire_id_o(next_retire_id)
+    );
+
+    openrv64_retire_records_3p #(
+        .DEPTH(DEPTH),
+        .SLOT_WIDTH(INDEX_WIDTH),
+        .ALLOC_WIDTH(META_WIDTH),
+        .RESULT_WIDTH(RESULT_WIDTH)
+    ) records (
+        .clk(clk),
+        .alloc_valid_i(alloc_accept),
+        .alloc_slot_i(alloc_slot),
+        .alloc_record_i(alloc_meta),
+        .alloc_complete_i(alloc_complete),
+        .alloc_result_i(alloc_result),
+        .alloc_trace_i(alloc_trace),
+        .complete_valid_i(complete_accept),
+        .complete_slot_i(complete_slot),
+        .complete_result_i(complete_result),
+        .read_slot_i(retire_slot),
+        .read_record_o(retire_meta),
+        .read_result_o(retire_result),
+        .read_trace_o(retire_trace)
     );
 
     always #5 clk = ~clk;
@@ -84,6 +107,7 @@ module tb_retire_queue_3p #(
             alloc_meta = 24'd0;
             alloc_complete = 3'b000;
             alloc_result = 48'd0;
+            alloc_trace = 192'd0;
             complete_valid = 3'b000;
             complete_id = {3*ID_WIDTH{1'b0}};
             complete_slot = {3*INDEX_WIDTH{1'b0}};
@@ -100,6 +124,9 @@ module tb_retire_queue_3p #(
             @(negedge clk);
             alloc_valid = 3'b111;
             alloc_meta = {meta2, meta1, meta0};
+            alloc_trace = {
+                {56'd0, meta2}, {56'd0, meta1}, {56'd0, meta0}
+            };
             #1;
             if (!alloc_ready) begin
                 $fatal(1, "three-entry allocation was not ready");
@@ -114,6 +141,7 @@ module tb_retire_queue_3p #(
             #1;
             alloc_valid = 3'b000;
             alloc_meta = 24'd0;
+            alloc_trace = 192'd0;
         end
     endtask
 
@@ -187,13 +215,16 @@ module tb_retire_queue_3p #(
         alloc_meta = {8'd0, 8'h92, 8'h91};
         alloc_complete = 3'b011;
         alloc_result = {16'd0, 16'h9292, 16'h9191};
+        alloc_trace = {64'd0, 64'h9292, 64'h9191};
         @(posedge clk);
         #1;
         alloc_valid = 3'b000;
         alloc_complete = 3'b000;
         if ((retire_valid !== 3'b011) ||
             (retire_result[0 +: RESULT_WIDTH] !== 16'h9191) ||
-            (retire_result[RESULT_WIDTH +: RESULT_WIDTH] !== 16'h9292)) begin
+            (retire_result[RESULT_WIDTH +: RESULT_WIDTH] !== 16'h9292) ||
+            (retire_trace[0 +: 64] !== 64'h9191) ||
+            (retire_trace[64 +: 64] !== 64'h9292)) begin
             $fatal(1, "allocation-time completion was not immediately visible");
         end
         @(negedge clk);
@@ -202,6 +233,7 @@ module tb_retire_queue_3p #(
         #1;
         retire_accept = 3'b000;
         alloc_result = 48'd0;
+        alloc_trace = 192'd0;
         if (occupancy != 0)
             $fatal(1, "allocation-time completed entries did not drain");
 
@@ -230,7 +262,8 @@ module tb_retire_queue_3p #(
             $fatal(1, "three completed head entries were not exposed together");
         end
         if (retire_meta !== {8'ha2, 8'ha1, 8'ha0} ||
-            retire_result !== {16'h2222, 16'h1111, 16'h0000}) begin
+            retire_result !== {16'h2222, 16'h1111, 16'h0000} ||
+            retire_trace !== {64'ha2, 64'ha1, 64'ha0}) begin
             $fatal(1, "retirement payload order mismatch");
         end
 

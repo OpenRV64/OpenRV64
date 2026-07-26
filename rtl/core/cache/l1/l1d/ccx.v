@@ -85,14 +85,15 @@ module openrv64_l1d_ccx_interface #(
     assign ccx_req_hart_id_o = HART_ID;
     assign ccx_req_txn_id_o = request_txn_id_i;
     assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_DCACHE;
-    // The core-facing compatibility signal marks both halves of the local
-    // RV64A read/modify/write sequence.  Do not propagate it as a fabric
-    // lock: preserve atomic intent as an explicit home operation.
-    assign ccx_req_op_o = request_atomic_i ?
-        (request_write_i ? `OPENRV64_CCX_OP_SC :
-                           `OPENRV64_CCX_OP_LR) :
-        (request_write_i ? `OPENRV64_CCX_OP_WRITE :
-                           `OPENRV64_CCX_OP_READ);
+    // The current RV64A engine owns LR/SC reservations locally and does not
+    // consume the CCX SC-success response.  Its compatibility marker therefore
+    // cannot be promoted to fabric LR/SC intent yet: doing so sends an
+    // unsupported LR directly into the non-coherent L2 and also omits the LR
+    // half of a standalone LR/SC pair.  Keep the established READ/WRITE
+    // contract until reservation ownership moves to the coherent home.
+    wire unused_request_atomic = request_atomic_i;
+    assign ccx_req_op_o = request_write_i ? `OPENRV64_CCX_OP_WRITE :
+                                            `OPENRV64_CCX_OP_READ;
     assign ccx_req_lock_o = 1'b0;
     assign ccx_req_order_o = `OPENRV64_CCX_ORDER_NONE;
     assign ccx_req_kind_o = `OPENRV64_CCX_KIND_DATA;

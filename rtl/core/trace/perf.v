@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "core/cmu/defs.v"
 
 // Core-local performance events and a small configurable counter bank.
 //
@@ -25,7 +26,7 @@
 //  10 dispatch empty                29 demand blocked by prefetch
 //  11 RAW stall                     30 L1D load hit
 //  12 barrier stall                 31 L1D load miss
-//  13 pipe busy                     32 L1D store
+//  13 pipe busy                     32 store request accepted
 //  14 redirect                      33 retire head incomplete
 //  15 redirect recovery             34 completed behind head
 //  16 direction mispredict          35 lost issue slot 0
@@ -72,13 +73,14 @@ module openrv64_core_perf #(
     input  wire                         retire_completed_behind_i,
     input  wire [1:0]                   issue_slots_lost_i,
 
-    input  wire [NUM_COUNTERS*38-1:0]  counter_event_mask_i,
+    input  wire [NUM_COUNTERS*`OPENRV64_CMU_EVENT_COUNT-1:0]
+                                             counter_event_mask_i,
     input  wire [COUNTER_INDEX_WIDTH-1:0] counter_select_i,
     output reg  [COUNTER_WIDTH-1:0]     counter_value_o,
-    output wire [37:0]                  event_pulses_o
+    output wire [`OPENRV64_CMU_EVENT_COUNT-1:0] event_pulses_o
 );
 
-    localparam integer EVENT_COUNT = 38;
+    localparam integer EVENT_COUNT = `OPENRV64_CMU_EVENT_COUNT;
     localparam integer INCREMENT_WIDTH = 6;
 
     reg [COUNTER_WIDTH-1:0] counter_q [0:NUM_COUNTERS-1];

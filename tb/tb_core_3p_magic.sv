@@ -120,6 +120,23 @@ module tb_core_3p_magic #(
     integer frontend_underflow_cycles;
     integer frontend_underflow_refill_wait;
     integer frontend_underflow_no_request;
+    integer issued;
+    integer issued_this_cycle;
+    integer decoded;
+    integer decoded_this_cycle;
+    integer issue_width_0;
+    integer issue_width_1;
+    integer issue_width_2;
+    integer issue_width_3;
+    integer issue_width_4;
+    integer decode_width_0;
+    integer decode_width_1;
+    integer decode_width_2;
+    integer decode_width_3;
+    integer retire_width_0;
+    integer retire_width_1;
+    integer retire_width_2;
+    integer retire_width_3;
     reg [63:0] expected_a0;
     reg expected_a0_valid;
     real ipc;
@@ -442,6 +459,23 @@ module tb_core_3p_magic #(
         frontend_underflow_cycles = 0;
         frontend_underflow_refill_wait = 0;
         frontend_underflow_no_request = 0;
+        issued = 0;
+        issued_this_cycle = 0;
+        decoded = 0;
+        decoded_this_cycle = 0;
+        issue_width_0 = 0;
+        issue_width_1 = 0;
+        issue_width_2 = 0;
+        issue_width_3 = 0;
+        issue_width_4 = 0;
+        decode_width_0 = 0;
+        decode_width_1 = 0;
+        decode_width_2 = 0;
+        decode_width_3 = 0;
+        retire_width_0 = 0;
+        retire_width_1 = 0;
+        retire_width_2 = 0;
+        retire_width_3 = 0;
         underflow_trace_fd = 0;
         if ($value$plusargs("underflow_trace=%s",
                             underflow_trace_path)) begin
@@ -465,6 +499,36 @@ module tb_core_3p_magic #(
             #1;
             retired = retired +
                 dut.backend_retire_count;
+            issued_this_cycle =
+                dut.backend_issue_valid[0] +
+                dut.backend_issue_valid[1] +
+                dut.backend_issue_valid[2] +
+                dut.backend_issue_valid[3];
+            decoded_this_cycle =
+                dut.frontend_decode_fire[0] +
+                dut.frontend_decode_fire[1] +
+                dut.frontend_decode_fire[2];
+            issued = issued + issued_this_cycle;
+            decoded = decoded + decoded_this_cycle;
+            case (issued_this_cycle)
+                0: issue_width_0 = issue_width_0 + 1;
+                1: issue_width_1 = issue_width_1 + 1;
+                2: issue_width_2 = issue_width_2 + 1;
+                3: issue_width_3 = issue_width_3 + 1;
+                4: issue_width_4 = issue_width_4 + 1;
+            endcase
+            case (decoded_this_cycle)
+                0: decode_width_0 = decode_width_0 + 1;
+                1: decode_width_1 = decode_width_1 + 1;
+                2: decode_width_2 = decode_width_2 + 1;
+                3: decode_width_3 = decode_width_3 + 1;
+            endcase
+            case (dut.backend_retire_count)
+                0: retire_width_0 = retire_width_0 + 1;
+                1: retire_width_1 = retire_width_1 + 1;
+                2: retire_width_2 = retire_width_2 + 1;
+                3: retire_width_3 = retire_width_3 + 1;
+            endcase
             if (dut.branch_resolved)
                 resolved_branches = resolved_branches + 1;
             if (dut.branch_resolved && dut.branch_conditional)
@@ -614,6 +678,13 @@ module tb_core_3p_magic #(
             frontend_empty_cycles, frontend_underflow_cycles,
             frontend_underflow_refill_wait,
             frontend_underflow_no_request);
+        $display(
+            "PERF_MAGIC_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
+            issued, decoded,
+            issue_width_0, issue_width_1, issue_width_2, issue_width_3,
+            issue_width_4,
+            decode_width_0, decode_width_1, decode_width_2, decode_width_3,
+            retire_width_0, retire_width_1, retire_width_2, retire_width_3);
         if (underflow_trace_fd != 0)
             $fclose(underflow_trace_fd);
         $display("PASS: core-only one-cycle fetch/LSU SRAM");

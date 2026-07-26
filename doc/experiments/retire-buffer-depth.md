@@ -52,11 +52,14 @@ availability stop the machine first.
 
 ## Cost
 
-One retirement entry currently holds approximately 928 logical state bits:
-64 ID bits, 405 retirement-metadata bits, 457 completion-result bits, plus
-valid and complete.  Eight additional entries therefore add about 7,424 bits
-before pointer, decode, completion-update, and routing overhead.  Slot tags
-also widen from three to four bits through dispatch and execution.
+At the time of the experiment, one retirement entry held the full allocation
+and completion packets. The 2026-07-26 compact-record rewrite supersedes that
+representation. The area profile now stores 423 logical state bits per entry:
+10 dynamic-ID bits, valid/complete, a 130-bit allocation record, and a 281-bit
+completion-only record. Eight additional entries therefore add 3,384 resident
+bits before pointer, decode, completion-update, and routing overhead. A
+trace-enabled build adds one 64-bit allocation-only trace value per entry.
+Slot tags also widen from three to four bits through dispatch and execution.
 
 That cost buys zero cycles on this workload.  Keep the depth parameter for
 future workloads with genuinely long, overlappable execution, but retain
@@ -81,7 +84,9 @@ make -B sim-retire-queue-3p
 iverilog -g2012 -Wall -Irtl \
     -Ptb_retire_queue_3p.DEPTH=16 \
     -o /tmp/openrv64-retire16-tb.vvp \
-    rtl/core/retire/retire_queue_3p.v tb/tb_retire_queue_3p.sv
+    rtl/core/retire/retire_queue_3p.v \
+    rtl/core/retire/retire_records_3p.v \
+    tb/tb_retire_queue_3p.sv
 vvp /tmp/openrv64-retire16-tb.vvp
 ```
 

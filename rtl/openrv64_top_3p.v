@@ -15,6 +15,7 @@
 module openrv64_top_3p #(
     parameter [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
     parameter ENABLE_RV64M = 0,
+    parameter integer HPM_COUNTERS = 8,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer PHYS_REG_ADDR_WIDTH =
@@ -194,6 +195,7 @@ module openrv64_top_3p #(
         .RESET_VECTOR(RESET_VECTOR),
         .BUS_CONFIG(`OPENRV64_BUS_AXI),
         .ENABLE_RV64M(ENABLE_RV64M),
+        .HPM_COUNTERS(HPM_COUNTERS),
         .RETIRE_DEPTH(RETIRE_DEPTH),
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),

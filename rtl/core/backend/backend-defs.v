@@ -75,4 +75,53 @@
 `define OPENRV64_RETIRE_META_WIDTH \
     (`OPENRV64_DISPATCH_META_WIDTH + 2*`OPENRV64_PHYS_REG_ADDR_WIDTH)
 
+// Canonical retirement records are split from the ordering queue.  The queue
+// carries only validity, completion, instruction ID, and a compact slot
+// selector.  Allocation-time state lives once in a slot-indexed record bank:
+//
+//   pc, instr, rs1, rs2, rd, reg_write, uses_rs1, uses_rs2, hard_order,
+//   mem_read, mem_write, branch, jump, predicted_taken, new_phys, old_phys
+//
+// The fixed portion is 120 bits; the two physical-register tags follow it.
+// Trace identity is held in a separate allocation-only debug bank when trace
+// support is enabled, so it is not echoed through completion and disappears
+// entirely from the area configuration.
+`define OPENRV64_RETIRE_ALLOC_PC_LSB 0
+`define OPENRV64_RETIRE_ALLOC_INSTR_LSB 64
+`define OPENRV64_RETIRE_ALLOC_RS1_LSB 96
+`define OPENRV64_RETIRE_ALLOC_RS2_LSB 101
+`define OPENRV64_RETIRE_ALLOC_RD_LSB 106
+`define OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT 111
+`define OPENRV64_RETIRE_ALLOC_USES_RS1_BIT 112
+`define OPENRV64_RETIRE_ALLOC_USES_RS2_BIT 113
+`define OPENRV64_RETIRE_ALLOC_HARD_BIT 114
+`define OPENRV64_RETIRE_ALLOC_MEM_READ_BIT 115
+`define OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT 116
+`define OPENRV64_RETIRE_ALLOC_BRANCH_BIT 117
+`define OPENRV64_RETIRE_ALLOC_JUMP_BIT 118
+`define OPENRV64_RETIRE_ALLOC_PREDICTED_TAKEN_BIT 119
+`define OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB 120
+`define OPENRV64_RETIRE_ALLOC_FIXED_WIDTH 120
+`define OPENRV64_RETIRE_ALLOC_WIDTH \
+    (`OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + \
+     2*`OPENRV64_PHYS_REG_ADDR_WIDTH)
+
+// Completion-time state retains only fields not already canonical in the
+// allocation record.  Bits 0:152 deliberately preserve the low portion of the
+// execution completion packet (CSR/return/exception intent and decoded
+// exception flags).  Data and next PC follow it.  Source/destination tags,
+// instruction, PC, and trace ID are not copied back through completion.
+`define OPENRV64_RETIRE_RESULT_CSR_WDATA_LSB 0
+`define OPENRV64_RETIRE_RESULT_CSR_ADDR_LSB 64
+`define OPENRV64_RETIRE_RESULT_CSR_WRITE_BIT 76
+`define OPENRV64_RETIRE_RESULT_SRET_BIT 77
+`define OPENRV64_RETIRE_RESULT_MRET_BIT 78
+`define OPENRV64_RETIRE_RESULT_TVAL_LSB 79
+`define OPENRV64_RETIRE_RESULT_CAUSE_LSB 143
+`define OPENRV64_RETIRE_RESULT_HALT_BIT 148
+`define OPENRV64_RETIRE_RESULT_EXCEPTION_BIT 149
+`define OPENRV64_RETIRE_RESULT_DATA_LSB 153
+`define OPENRV64_RETIRE_RESULT_NEXT_PC_LSB 217
+`define OPENRV64_RETIRE_RESULT_WIDTH 281
+
 `endif

@@ -10,6 +10,7 @@
 `include "core/exec/bp/defs.v"
 `include "core/except/except-defs.v"
 `include "core/trace/trace-defs.v"
+`include "core/cmu/defs.v"
 `include "complex/protocol/defs.v"
 
 // Selectable two-wide generic or three-wide AXI frontend plus EX0/EX1/MEM.
@@ -18,6 +19,7 @@ module openrv64_rv64_top_3p #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
     parameter ENABLE_RV64M = 0,
+    parameter integer HPM_COUNTERS = 8,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer PHYS_REG_ADDR_WIDTH =
@@ -991,6 +993,7 @@ module openrv64_rv64_top_3p #(
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
         .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_TRACE(ENABLE_TRACE),
         .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
         .BRANCH_COMPLETION_FORWARD_MASK(BRANCH_COMPLETION_FORWARD_MASK),
         .ENABLE_FULL_FORWARDING(ENABLE_FULL_FORWARDING),
@@ -1134,8 +1137,67 @@ module openrv64_rv64_top_3p #(
     wire core_pmp_write;
     wire core_pmp_exec;
 
+    wire [1:0] cmu_issue_count =
+        {1'b0, backend_issue_valid[0]} +
+        {1'b0, backend_issue_valid[1]} +
+        {1'b0, backend_issue_valid[2]};
+    wire cmu_fetch_req_fire = use_ccx_bus ?
+        (fetch_pipe_req_valid && fetch_pipe_req_ready) :
+        (fetch_mem_valid && fetch_mem_ready);
+    wire cmu_fetch_resp_fire = use_ccx_bus ?
+        (fetch_pipe_resp_valid && fetch_pipe_resp_ready) :
+        (fetch_mem_valid && fetch_mem_ready);
+    wire cmu_fetch_cancel = use_ccx_bus ? fetch3_cancel :
+                            (fetch_invalidate || control_redirect);
+    wire cmu_lsu_req_fire = backend_mem_valid && backend_mem_ready;
+    wire cmu_lsu_resp_fire =
+        (backend_mem_resp_valid && backend_mem_resp_ready) ||
+        (backend_mem_store_done_valid && backend_mem_store_done_ready);
+    wire [`OPENRV64_CMU_EVENT_COUNT-1:0] cmu_perf_events = {
+        1'b0,                                      // 37 lost issue slot 2
+        1'b0,                                      // 36 lost issue slot 1
+        1'b0,                                      // 35 lost issue slot 0
+        1'b0,                                      // 34 completed behind head
+        1'b0,                                      // 33 retire head incomplete
+        cmu_lsu_req_fire && backend_mem_write,      // 32 store request
+        1'b0,                                      // 31 L1D load miss
+        1'b0,                                      // 30 L1D load hit
+        1'b0,                                      // 29 demand waits prefetch
+        1'b0,                                      // 28 useful L1I prefetch
+        1'b0,                                      // 27 L1I prefetch launch
+        1'b0,                                      // 26 L1I demand miss
+        1'b0,                                      // 25 L1I demand hit
+        1'b0,                                      // 24 LSU outstanding
+        backend_mem_valid && !backend_mem_ready,   // 23 LSU request wait
+        cmu_lsu_resp_fire,                         // 22 LSU response
+        cmu_lsu_req_fire,                          // 21 LSU request
+        cmu_fetch_cancel,                          // 20 fetch cancellation
+        cmu_fetch_resp_fire,                       // 19 fetch response
+        cmu_fetch_req_fire,                        // 18 fetch request
+        bp_target_mispredict,                      // 17 target mispredict
+        backend_redirect,                          // 16 direction mispredict
+        1'b0,                                      // 15 redirect recovery
+        control_redirect,                          // 14 redirect
+        1'b0,                                      // 13 pipe busy stall
+        backend_barrier && (backend_dispatch_occupancy != 0),
+                                                    // 12 barrier stall
+        1'b0,                                      // 11 RAW stall
+        (backend_dispatch_occupancy == 0),          // 10 dispatch empty
+        !(|fetch_decode_valid),                     //  9 frontend empty
+        (backend_retire_count == 0),                //  8 zero retire
+        (cmu_issue_count == 0),                     //  7 zero issue
+        (backend_retire_count >= 2'd3),             //  6 retire lane 2
+        (backend_retire_count >= 2'd2),             //  5 retire lane 1
+        (backend_retire_count >= 2'd1),             //  4 retire lane 0
+        (cmu_issue_count >= 2'd3),                  //  3 issue lane 2
+        (cmu_issue_count >= 2'd2),                  //  2 issue lane 1
+        (cmu_issue_count >= 2'd1),                  //  1 issue lane 0
+        1'b0                                       //  0 cycle (CMU-owned)
+    };
+
     openrv64_rv64i_csrs #(
-        .ENABLE_RV64M(ENABLE_RV64M), .ENABLE_RV64A(ENABLE_RV64A)
+        .ENABLE_RV64M(ENABLE_RV64M), .ENABLE_RV64A(ENABLE_RV64A),
+        .HPM_COUNTERS(HPM_COUNTERS)
     ) u_csrs (
         .clk(clk), .rst_n(rst_n), .csr_addr_i(csr_access_addr),
         .csr_rdata_o(csr_rdata), .csr_valid_o(csr_valid),
@@ -1145,6 +1207,7 @@ module openrv64_rv64_top_3p #(
         .trap_pc_i(trap_pc), .trap_tval_i(trap_tval),
         .mret_i(backend_mret), .sret_i(backend_sret),
         .retire_count_i(backend_retire_count),
+        .perf_events_i(cmu_perf_events),
         .irq_software_i(irq_m_software), .irq_timer_i(irq_m_timer),
         .irq_external_i(irq_m_external),
         .irq_s_software_i(irq_s_software), .irq_s_timer_i(irq_s_timer),
