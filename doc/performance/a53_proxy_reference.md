@@ -1,4 +1,4 @@
-# This document is extermely old, and is kept primarily to use for HPI number reference
+# This document is extermely old (like, a whole week!), and is kept primarily to use for HPI number reference
 
 # Cortex-A53-class performance reference
 
