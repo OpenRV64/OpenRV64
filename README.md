@@ -23,6 +23,8 @@ Next steps:
 
 Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
 
+edit: these numbers are very old, will put new numbers under doc/performance/current.md. Basically I fixed the frontend, and there was an issue with stores serializing.
+
 | Coremarks: Metric    | OpenRV64 3P, prefetch on | gem5 HPI proxy |
 | -------------------- | -----------------------: | -------------: |
 | Cycles               |                   65,572 |         71,443 |
