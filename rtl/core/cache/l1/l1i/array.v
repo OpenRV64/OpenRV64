@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 
-// Instruction-side specialization of the shared pipelined cache.  This
-// requester can only issue reads.
+// Instruction-side specialization of the shared pipelined cache. This module
+// owns only the instruction-array adaptation; MSHRs, frontend ordering, and
+// CCX protocol state live in the surrounding L1I composition.
 module openrv64_l1i #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,

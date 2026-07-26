@@ -40,6 +40,7 @@ module openrv64_platform #(
     parameter int unsigned L1I_DEMAND_MSHRS = 4,
     parameter int unsigned L2_TLB_ENTRIES = 256,
     parameter int unsigned L2_TLB_WAYS = 4,
+    parameter bit FETCH_CAROUSEL = 1'b1,
     parameter int unsigned FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter bit ENABLE_TRACE = 1'b0,
@@ -329,6 +330,7 @@ module openrv64_platform #(
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
+        .ENABLE_FETCH_CAROUSEL(FETCH_CAROUSEL),
         .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
             FETCH_ALT_CONFIDENCE_GATE),

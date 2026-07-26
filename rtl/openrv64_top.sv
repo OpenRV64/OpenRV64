@@ -52,6 +52,7 @@ module openrv64_top #(
     parameter bit ENABLE_MAGIC_MEMORY = 1'b0,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
+    parameter bit ENABLE_FETCH_CAROUSEL = 1'b1,
     parameter int unsigned ENABLE_FETCH_ALT_LOOKASIDE = 3,
     parameter integer ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter logic [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
@@ -455,6 +456,7 @@ module openrv64_top #(
                 .ENABLE_MAGIC_MEMORY(ENABLE_MAGIC_MEMORY),
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
+                .ENABLE_FETCH_CAROUSEL(ENABLE_FETCH_CAROUSEL),
                 .ENABLE_FETCH_ALT_LOOKASIDE(
                     ENABLE_FETCH_ALT_LOOKASIDE),
                 .ENABLE_FETCH_ALT_CONFIDENCE_GATE(

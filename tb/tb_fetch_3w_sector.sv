@@ -43,6 +43,7 @@ module tb_fetch_3w_sector;
     reg request_demand [0:31];
 
     openrv64_fetch_3w #(
+        .ENABLE_CAROUSEL(0),
         .ENABLE_TRACE(0),
         .ENABLE_ALT_LOOKASIDE(3),
         .BRANCH_PAIR_STACK_DEPTH(2)

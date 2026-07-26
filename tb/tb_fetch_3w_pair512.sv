@@ -42,6 +42,7 @@ module tb_fetch_3w_pair512;
     integer ordinary_stash_requests;
 
     openrv64_fetch_3w #(
+        .ENABLE_CAROUSEL(0),
         .ENABLE_TRACE(0),
         .ENABLE_ALT_LOOKASIDE(4),
         .BRANCH_PAIR_STACK_DEPTH(2)

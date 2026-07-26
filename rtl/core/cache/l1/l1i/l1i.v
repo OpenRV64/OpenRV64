@@ -2,7 +2,8 @@
 `include "complex/protocol/defs.v"
 `include "core/isa/rv64-priv.v"
 
-// 256-bit frontend view of a native 512-bit CCX instruction-cache endpoint.
+// Public composition for the 256-bit frontend view of a native 512-bit CCX
+// instruction-cache endpoint.
 //
 // The private cache stores a complete 64-byte line in one data word.  A
 // frontend request selects either 256-bit half of that resident line.  A miss
@@ -251,11 +252,10 @@ module openrv64_l1i_ccx #(
         response_data_q [0:DEMAND_DEPTH-1];
     reg response_error_q [0:DEMAND_DEPTH-1];
     reg [DEMAND_COUNT_WIDTH-1:0] response_count_q;
-    reg response_free_found_r;
-    reg [DEMAND_INDEX_WIDTH-1:0] response_free_index_r;
-    reg response_complete_found_r;
-    reg [DEMAND_INDEX_WIDTH-1:0] response_complete_index_r;
-    integer response_scan;
+    wire response_free_found_r;
+    wire [DEMAND_INDEX_WIDTH-1:0] response_free_index_r;
+    wire response_complete_found_r;
+    wire [DEMAND_INDEX_WIDTH-1:0] response_complete_index_r;
     integer response_reset_index;
 
     function same_line;
@@ -444,6 +444,11 @@ module openrv64_l1i_ccx #(
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l1_mem_wdata;
     wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] l1_mem_wstrb;
     wire l1_mem_error;
+    wire ccx_issue_fire;
+    wire ccx_response_ready;
+    wire response_fire;
+    wire ccx_response_for_icache;
+    wire response_geometry_error;
 
     reg demand_mshr_valid_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_issued_q [0:DEMAND_MSHRS-1];
@@ -455,20 +460,19 @@ module openrv64_l1i_ccx #(
     reg demand_mshr_error_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_aged_q [0:DEMAND_MSHRS-1];
 
-    reg demand_mshr_match_found_r;
-    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_match_index_r;
-    reg demand_mshr_free_found_r;
-    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_free_index_r;
-    reg demand_mshr_issue_found_r;
-    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_issue_index_r;
-    reg demand_mshr_fill_found_r;
-    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_fill_index_r;
-    reg demand_mshr_finalize_found_r;
-    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_finalize_index_r;
-    reg demand_mshr_response_match_r;
-    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_response_index_r;
-    reg demand_mshr_any_valid_r;
-    integer demand_mshr_scan;
+    wire demand_mshr_match_found_r;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_match_index_r;
+    wire demand_mshr_free_found_r;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_free_index_r;
+    wire demand_mshr_issue_found_r;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_issue_index_r;
+    wire demand_mshr_fill_found_r;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_fill_index_r;
+    wire demand_mshr_finalize_found_r;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_finalize_index_r;
+    wire demand_mshr_response_match_r;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_response_index_r;
+    wire demand_mshr_any_valid_r;
     integer response_waiter_scan;
     integer demand_mshr_reset_index;
 
@@ -478,130 +482,93 @@ module openrv64_l1i_ccx #(
     wire [DEMAND_MSHR_INDEX_WIDTH-1:0] issue_index =
         issue_active_q ? issue_mshr_q : demand_mshr_issue_index_r;
 
-    always @* begin
-        demand_mshr_match_found_r = 1'b0;
-        demand_mshr_match_index_r =
-            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
-        demand_mshr_free_found_r = 1'b0;
-        demand_mshr_free_index_r =
-            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
-        demand_mshr_issue_found_r = 1'b0;
-        demand_mshr_issue_index_r =
-            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
-        demand_mshr_fill_found_r = 1'b0;
-        demand_mshr_fill_index_r =
-            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
-        demand_mshr_finalize_found_r = 1'b0;
-        demand_mshr_finalize_index_r =
-            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
-        demand_mshr_response_match_r = 1'b0;
-        demand_mshr_response_index_r =
-            {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
-        demand_mshr_any_valid_r = 1'b0;
-        for (demand_mshr_scan = 0;
-             demand_mshr_scan < DEMAND_MSHRS;
-             demand_mshr_scan = demand_mshr_scan + 1) begin
-            if (demand_mshr_valid_q[demand_mshr_scan])
-                demand_mshr_any_valid_r = 1'b1;
-            if (!demand_mshr_match_found_r &&
-                demand_mshr_valid_q[demand_mshr_scan] &&
-                (demand_mshr_addr_q[demand_mshr_scan] ==
-                 l1_miss_addr)) begin
-                demand_mshr_match_found_r = 1'b1;
-                demand_mshr_match_index_r =
-                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
-            end
-            if (!demand_mshr_free_found_r &&
-                !demand_mshr_valid_q[demand_mshr_scan]) begin
-                demand_mshr_free_found_r = 1'b1;
-                demand_mshr_free_index_r =
-                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
-            end
-            if (!demand_mshr_issue_found_r &&
-                demand_mshr_valid_q[demand_mshr_scan] &&
-                !demand_mshr_issued_q[demand_mshr_scan] &&
-                !demand_mshr_complete_q[demand_mshr_scan]) begin
-                demand_mshr_issue_found_r = 1'b1;
-                demand_mshr_issue_index_r =
-                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
-            end
-            if (!demand_mshr_fill_found_r &&
-                demand_mshr_valid_q[demand_mshr_scan] &&
-                demand_mshr_complete_q[demand_mshr_scan] &&
-                !demand_mshr_fill_done_q[demand_mshr_scan] &&
-                !demand_mshr_error_q[demand_mshr_scan]) begin
-                demand_mshr_fill_found_r = 1'b1;
-                demand_mshr_fill_index_r =
-                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
-            end
-            if (!demand_mshr_finalize_found_r &&
-                demand_mshr_valid_q[demand_mshr_scan] &&
-                demand_mshr_complete_q[demand_mshr_scan] &&
-                (demand_mshr_fill_done_q[demand_mshr_scan] ||
-                 demand_mshr_error_q[demand_mshr_scan])) begin
-                demand_mshr_finalize_found_r = 1'b1;
-                demand_mshr_finalize_index_r =
-                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
-            end
-            if (!demand_mshr_response_match_r &&
-                demand_mshr_valid_q[demand_mshr_scan] &&
-                demand_mshr_issued_q[demand_mshr_scan] &&
-                !demand_mshr_complete_q[demand_mshr_scan] &&
-                (ccx_resp_hart_id_i == HART_ID) &&
-                (ccx_resp_source_id_i ==
-                 `OPENRV64_CCX_SOURCE_ICACHE) &&
-                (ccx_resp_txn_id_i ==
-                 `OPENRV64_CCX_TXN_ID_WIDTH'(demand_mshr_scan))) begin
-                demand_mshr_response_match_r = 1'b1;
-                demand_mshr_response_index_r =
-                    DEMAND_MSHR_INDEX_WIDTH'(demand_mshr_scan);
-            end
+    wire [DEMAND_MSHRS-1:0] demand_mshr_valid_vec;
+    wire [DEMAND_MSHRS-1:0] demand_mshr_issued_vec;
+    wire [DEMAND_MSHRS-1:0] demand_mshr_complete_vec;
+    wire [DEMAND_MSHRS-1:0] demand_mshr_fill_done_vec;
+    wire [DEMAND_MSHRS-1:0] demand_mshr_error_vec;
+    wire [DEMAND_MSHRS*ADDR_WIDTH-1:0] demand_mshr_addr_vec;
+    genvar demand_mshr_pack_index;
+    generate
+        for (demand_mshr_pack_index = 0;
+             demand_mshr_pack_index < DEMAND_MSHRS;
+             demand_mshr_pack_index = demand_mshr_pack_index + 1) begin :
+                g_demand_mshr_pack
+            assign demand_mshr_valid_vec[demand_mshr_pack_index] =
+                demand_mshr_valid_q[demand_mshr_pack_index];
+            assign demand_mshr_issued_vec[demand_mshr_pack_index] =
+                demand_mshr_issued_q[demand_mshr_pack_index];
+            assign demand_mshr_complete_vec[demand_mshr_pack_index] =
+                demand_mshr_complete_q[demand_mshr_pack_index];
+            assign demand_mshr_fill_done_vec[demand_mshr_pack_index] =
+                demand_mshr_fill_done_q[demand_mshr_pack_index];
+            assign demand_mshr_error_vec[demand_mshr_pack_index] =
+                demand_mshr_error_q[demand_mshr_pack_index];
+            assign demand_mshr_addr_vec[
+                demand_mshr_pack_index*ADDR_WIDTH +: ADDR_WIDTH] =
+                demand_mshr_addr_q[demand_mshr_pack_index];
         end
-    end
+    endgenerate
 
-    wire response_geometry_error =
-        (ccx_resp_beat_index_i !=
-         {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
-        !ccx_resp_last_i || ccx_resp_sc_success_i;
-    wire response_fire = ccx_resp_valid_i && ccx_resp_ready_o;
+    openrv64_l1i_demand_mshr_select #(
+        .ENTRIES(DEMAND_MSHRS),
+        .INDEX_WIDTH(DEMAND_MSHR_INDEX_WIDTH),
+        .ADDR_WIDTH(ADDR_WIDTH)
+    ) u_demand_mshr_select (
+        .valid_i(demand_mshr_valid_vec),
+        .issued_i(demand_mshr_issued_vec),
+        .complete_i(demand_mshr_complete_vec),
+        .fill_done_i(demand_mshr_fill_done_vec),
+        .error_i(demand_mshr_error_vec),
+        .addr_i(demand_mshr_addr_vec),
+        .miss_addr_i(l1_miss_addr),
+        .response_for_icache_i(ccx_response_for_icache),
+        .response_txn_id_i(ccx_resp_txn_id_i),
+        .match_found_o(demand_mshr_match_found_r),
+        .match_index_o(demand_mshr_match_index_r),
+        .free_found_o(demand_mshr_free_found_r),
+        .free_index_o(demand_mshr_free_index_r),
+        .issue_found_o(demand_mshr_issue_found_r),
+        .issue_index_o(demand_mshr_issue_index_r),
+        .fill_found_o(demand_mshr_fill_found_r),
+        .fill_index_o(demand_mshr_fill_index_r),
+        .finalize_found_o(demand_mshr_finalize_found_r),
+        .finalize_index_o(demand_mshr_finalize_index_r),
+        .response_match_o(demand_mshr_response_match_r),
+        .response_index_o(demand_mshr_response_index_r),
+        .any_valid_o(demand_mshr_any_valid_r)
+    );
 
-    always @* begin
-        response_free_found_r = 1'b0;
-        response_free_index_r = {DEMAND_INDEX_WIDTH{1'b0}};
-        response_complete_found_r = 1'b0;
-        response_complete_index_r = {DEMAND_INDEX_WIDTH{1'b0}};
-        for (response_scan = 0; response_scan < DEMAND_DEPTH;
-             response_scan = response_scan + 1) begin
-            if (!response_free_found_r &&
-                !response_valid_q[response_scan]) begin
-                response_free_found_r = 1'b1;
-                response_free_index_r =
-                    DEMAND_INDEX_WIDTH'(response_scan);
-            end
-            // Completed demand responses take priority over speculative
-            // prefetch bookkeeping.  Neither is constrained by request age.
-            if (!response_complete_found_r &&
-                response_valid_q[response_scan] &&
-                response_complete_q[response_scan] &&
-                !response_prefetch_q[response_scan]) begin
-                response_complete_found_r = 1'b1;
-                response_complete_index_r =
-                    DEMAND_INDEX_WIDTH'(response_scan);
-            end
+    wire [DEMAND_DEPTH-1:0] response_valid_vec;
+    wire [DEMAND_DEPTH-1:0] response_complete_vec;
+    wire [DEMAND_DEPTH-1:0] response_prefetch_vec;
+    genvar response_pack_index;
+    generate
+        for (response_pack_index = 0;
+             response_pack_index < DEMAND_DEPTH;
+             response_pack_index = response_pack_index + 1) begin :
+                g_response_pack
+            assign response_valid_vec[response_pack_index] =
+                response_valid_q[response_pack_index];
+            assign response_complete_vec[response_pack_index] =
+                response_complete_q[response_pack_index];
+            assign response_prefetch_vec[response_pack_index] =
+                response_prefetch_q[response_pack_index];
         end
-        if (!response_complete_found_r) begin
-            for (response_scan = 0; response_scan < DEMAND_DEPTH;
-                 response_scan = response_scan + 1) begin
-                if (!response_complete_found_r &&
-                    response_valid_q[response_scan] &&
-                    response_complete_q[response_scan]) begin
-                    response_complete_found_r = 1'b1;
-                    response_complete_index_r =
-                        DEMAND_INDEX_WIDTH'(response_scan);
-                end
-            end
-        end
-    end
+    endgenerate
+
+    openrv64_l1i_frontend_select #(
+        .DEPTH(DEMAND_DEPTH),
+        .INDEX_WIDTH(DEMAND_INDEX_WIDTH)
+    ) u_frontend_select (
+        .valid_i(response_valid_vec),
+        .complete_i(response_complete_vec),
+        .prefetch_i(response_prefetch_vec),
+        .free_found_o(response_free_found_r),
+        .free_index_o(response_free_index_r),
+        .complete_found_o(response_complete_found_r),
+        .complete_index_o(response_complete_index_r)
+    );
 
     wire response_selected_prefetch = response_complete_found_r &&
         response_prefetch_q[response_complete_index_r];
@@ -691,22 +658,41 @@ module openrv64_l1i_ccx #(
         response_error_q[response_complete_index_r] :
         (output_direct_response && l1_req_error);
 
-    assign ccx_req_valid_o = issue_valid;
-    assign ccx_req_hart_id_o = HART_ID;
-    assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_ICACHE;
-    assign ccx_req_txn_id_o =
-        `OPENRV64_CCX_TXN_ID_WIDTH'(issue_index);
-    assign ccx_req_op_o = `OPENRV64_CCX_OP_READ;
-    assign ccx_req_order_o = `OPENRV64_CCX_ORDER_NONE;
-    assign ccx_req_kind_o = `OPENRV64_CCX_KIND_FETCH;
-    assign ccx_req_attr_o = `OPENRV64_CCX_ATTR_CACHEABLE |
-                            `OPENRV64_CCX_ATTR_EXECUTABLE;
-    assign ccx_req_size_o = 3'd6;
-    assign ccx_req_addr_o = demand_mshr_addr_q[issue_index];
-    assign ccx_req_burst_len_o =
-        {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
+    assign ccx_response_ready = demand_mshr_response_match_r;
 
-    assign ccx_resp_ready_o = demand_mshr_response_match_r;
+    openrv64_l1i_ccx_interface #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .HART_ID(HART_ID)
+    ) u_ccx_interface (
+        .issue_valid_i(issue_valid),
+        .issue_txn_id_i(
+            `OPENRV64_CCX_TXN_ID_WIDTH'(issue_index)),
+        .issue_addr_i(demand_mshr_addr_q[issue_index]),
+        .issue_fire_o(ccx_issue_fire),
+        .ccx_req_valid_o(ccx_req_valid_o),
+        .ccx_req_ready_i(ccx_req_ready_i),
+        .ccx_req_hart_id_o(ccx_req_hart_id_o),
+        .ccx_req_source_id_o(ccx_req_source_id_o),
+        .ccx_req_txn_id_o(ccx_req_txn_id_o),
+        .ccx_req_op_o(ccx_req_op_o),
+        .ccx_req_order_o(ccx_req_order_o),
+        .ccx_req_kind_o(ccx_req_kind_o),
+        .ccx_req_attr_o(ccx_req_attr_o),
+        .ccx_req_size_o(ccx_req_size_o),
+        .ccx_req_addr_o(ccx_req_addr_o),
+        .ccx_req_burst_len_o(ccx_req_burst_len_o),
+        .response_ready_i(ccx_response_ready),
+        .ccx_resp_valid_i(ccx_resp_valid_i),
+        .ccx_resp_ready_o(ccx_resp_ready_o),
+        .ccx_resp_hart_id_i(ccx_resp_hart_id_i),
+        .ccx_resp_source_id_i(ccx_resp_source_id_i),
+        .ccx_resp_beat_index_i(ccx_resp_beat_index_i),
+        .ccx_resp_last_i(ccx_resp_last_i),
+        .ccx_resp_sc_success_i(ccx_resp_sc_success_i),
+        .response_fire_o(response_fire),
+        .response_for_icache_o(ccx_response_for_icache),
+        .response_geometry_error_o(response_geometry_error)
+    );
 
     assign l1_miss_ready = demand_mshr_match_found_r ?
         !(demand_mshr_finalize_found_r &&
@@ -1147,11 +1133,11 @@ module openrv64_l1i_ccx #(
             end
         end else begin
             if (!issue_active_q && demand_mshr_issue_found_r &&
-                !(ccx_req_valid_o && ccx_req_ready_i)) begin
+                !ccx_issue_fire) begin
                 issue_active_q <= 1'b1;
                 issue_mshr_q <= demand_mshr_issue_index_r;
             end
-            if (ccx_req_valid_o && ccx_req_ready_i) begin
+            if (ccx_issue_fire) begin
                 issue_active_q <= 1'b0;
                 demand_mshr_issued_q[issue_index] <= 1'b1;
             end
@@ -1224,9 +1210,7 @@ module openrv64_l1i_ccx #(
             !response_valid_q[l1_resp_tag])
             $fatal(1, "L1I returned an unknown tagged hit response");
         if (rst_ni && ccx_resp_valid_i &&
-            (ccx_resp_hart_id_i == HART_ID) &&
-            (ccx_resp_source_id_i ==
-             `OPENRV64_CCX_SOURCE_ICACHE) &&
+            ccx_response_for_icache &&
             !demand_mshr_response_match_r)
             $fatal(1, "L1I received an unknown CCX miss response");
     end

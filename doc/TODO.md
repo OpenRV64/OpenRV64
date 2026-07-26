@@ -2,6 +2,12 @@
 
 - [ ] Store buffers
 - [ ] Cache
+- [ ] Complete the L1I/L1D decomposition begun under
+      `rtl/core/cache/l1/`: move demand-MSHR mutation, waiter/fill-buffer
+      ownership, L1D posted-store query/drain/completion state, and L1I/L1D
+      prefetch policy out of the composition wrappers. Before moving state,
+      replace testbench and Verilator hierarchical state probes with explicit
+      debug/observability interfaces.
 - [ ] Multi-hart
 - [ ] Linux
 - [ ] Relax translation invalidation for Linux address-space switches: stop

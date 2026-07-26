@@ -113,6 +113,12 @@ $(FETCH_3W_SIM_BUILD): rtl/core/fetch/fetch_3w.v $(FETCH_3W_SIM_SRCS)
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_3W_SIM_BUILD) \
 		rtl/core/fetch/fetch_3w.v $(FETCH_3W_SIM_SRCS)
 
+$(FETCH_3W_CAROUSEL_SIM_BUILD): rtl/core/fetch/fetch_3w.v \
+		$(FETCH_3W_CAROUSEL_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(FETCH_3W_CAROUSEL_SIM_BUILD) \
+		rtl/core/fetch/fetch_3w.v $(FETCH_3W_CAROUSEL_SIM_SRCS)
+
 $(FETCH_3W_SECTOR_SIM_BUILD): rtl/core/fetch/fetch_3w.v \
 		$(FETCH_3W_SECTOR_SIM_SRCS)
 	mkdir -p sim

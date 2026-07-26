@@ -25,7 +25,9 @@ RENAME_SRCS := rtl/core/rename/identity.v
 FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
 L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
-	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1i/ccx.v \
+	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/ccx.v \
+	rtl/core/cache/l1/l1i/frontend_if.v \
+	rtl/core/cache/l1/l1i/mshr.v rtl/core/cache/l1/l1i/l1i.v \
 	rtl/core/cache/l1/l1d/array.v rtl/core/cache/l1/l1d/ccx.v \
 	rtl/core/cache/l1/l1d/lsu_if.v rtl/core/cache/l1/l1d/mshr.v \
 	rtl/core/cache/l1/l1d/l1d.v
@@ -156,7 +158,9 @@ CCX_BUS_SIM_SRCS := tb/tb_ccx_bus.sv
 CCX_L1I_SIM_SRCS := tb/tb_ccx_l1i.sv
 L1I_TOP_SIM_SRCS := rtl/openrv64_l1i_top.v \
 	rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
-	rtl/cache/l1/l1i/l1i.v rtl/cache/l1/l1i/ccx.v \
+	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/ccx.v \
+	rtl/core/cache/l1/l1i/frontend_if.v \
+	rtl/core/cache/l1/l1i/mshr.v rtl/core/cache/l1/l1i/l1i.v \
 	tb/tb_openrv64_l1i_top.sv
 TLB_SIM_SRCS := tb/tb_tlb.sv
 TLB_L2_SIM_SRCS := tb/tb_tlb_l2.sv
@@ -186,6 +190,7 @@ RV64I_CSRS_SIM_SRCS := tb/tb_rv64-i-csrs.sv
 RV64I_PMP_SIM_SRCS := tb/tb_rv64-i-pmp.sv
 FETCH_SIM_SRCS := tb/tb_fetch.sv
 FETCH_3W_SIM_SRCS := tb/tb_fetch_3w.sv
+FETCH_3W_CAROUSEL_SIM_SRCS := tb/tb_fetch_3w_carousel.sv
 FETCH_3W_SECTOR_SIM_SRCS := tb/tb_fetch_3w_sector.sv
 FETCH_3W_PAIR512_SIM_SRCS := tb/tb_fetch_3w_pair512.sv
 FETCH_3W_PAIR1024_SIM_SRCS := tb/tb_fetch_3w_pair1024.sv

@@ -48,6 +48,7 @@ module tb_fetch_3w;
     reg request_demand [0:15];
 
     openrv64_fetch_3w #(
+        .ENABLE_CAROUSEL(0),
         .ENABLE_TRACE(1),
         .ENABLE_ALT_LOOKASIDE(1)
     ) dut (

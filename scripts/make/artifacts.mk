@@ -58,6 +58,7 @@ FETCH_NOTRACE_SIM_BUILD := sim/fetch_notrace_tb.vvp
 FETCH_NOPREDECODE_SIM_BUILD := sim/fetch_nopredecode_tb.vvp
 FETCH_2P_SIM_BUILD := sim/fetch_2p_tb.vvp
 FETCH_3W_SIM_BUILD := sim/fetch_3w_tb.vvp
+FETCH_3W_CAROUSEL_SIM_BUILD := sim/fetch_3w_carousel_tb.vvp
 FETCH_3W_SECTOR_SIM_BUILD := sim/fetch_3w_sector_tb.vvp
 FETCH_3W_PAIR512_SIM_BUILD := sim/fetch_3w_pair512_tb.vvp
 FETCH_3W_PAIR1024_SIM_BUILD := sim/fetch_3w_pair1024_tb.vvp

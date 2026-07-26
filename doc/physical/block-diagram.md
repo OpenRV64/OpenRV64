@@ -96,6 +96,6 @@ The legacy 64-bit blocking bus is tied off by `openrv64_top_3p`.
 - [`rtl/core/exec/exec_top_3p.v`](../../rtl/core/exec/exec_top_3p.v)
 - [`rtl/core/retire/retire_queue_3p.v`](../../rtl/core/retire/retire_queue_3p.v)
 - [`rtl/core/bus/ccx_bus.v`](../../rtl/core/bus/ccx_bus.v)
-- [`rtl/cache/l1/l1i/ccx.v`](../../rtl/cache/l1/l1i/ccx.v)
-- [`rtl/cache/l1/l1d/l1d.v`](../../rtl/cache/l1/l1d/l1d.v)
+- [`rtl/core/cache/l1/l1i/l1i.v`](../../rtl/core/cache/l1/l1i/l1i.v)
+- [`rtl/core/cache/l1/l1d/l1d.v`](../../rtl/core/cache/l1/l1d/l1d.v)
 - [`rtl/complex/protocol/defs.v`](../../rtl/complex/protocol/defs.v)

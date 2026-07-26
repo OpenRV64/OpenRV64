@@ -212,7 +212,7 @@ module openrv64_l1d_ccx #(
     wire l1_miss_aged;
     wire l1_fill_valid;
     wire l1_fill_ready;
-    wire [ADDR_WIDTH-1:0] l1_fill_addr;
+    wire [ADDR_WIDTH-1:0] l1_fill_addr /* verilator public_flat_rd */;
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l1_fill_data;
     wire l1_fill_aged;
     wire [REQ_TAG_WIDTH-1:0] l1_resp_tag;

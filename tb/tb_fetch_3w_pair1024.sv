@@ -43,6 +43,7 @@ module tb_fetch_3w_pair1024;
     integer ordinary_demand_requests;
 
     openrv64_fetch_3w #(
+        .ENABLE_CAROUSEL(0),
         .ENABLE_TRACE(0),
         .ENABLE_ALT_LOOKASIDE(5),
         .BRANCH_PAIR_STACK_DEPTH(2)

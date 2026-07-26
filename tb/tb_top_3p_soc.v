@@ -238,6 +238,7 @@ endmodule
 //   3P core + private L1I/L1D -> native one-hart CCX -> shared L2
 //       -> 512-to-256-bit generic bus adapter -> AXI SRAM or banked DDR3.
 module tb_top_3p_soc #(
+    parameter integer FETCH_CAROUSEL = 1,
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
@@ -894,12 +895,15 @@ module tb_top_3p_soc #(
     integer frontend_empty_pending_no_external_miss;
     integer fetch_demand_trace_enabled;
     integer fetch_demand_trace_cycle_q;
-    integer fetch_demand_trace_start_q;
-    integer fetch_demand_trace_external_q;
-    integer fetch_demand_trace_empty_q;
-    reg fetch_demand_trace_active_q;
-    reg [63:0] fetch_demand_trace_addr_q;
-    reg [63:0] fetch_demand_trace_pc_q;
+    integer fetch_demand_trace_start_q [0:3];
+    integer fetch_demand_trace_external_q [0:3];
+    integer fetch_demand_trace_empty_q [0:3];
+    reg fetch_demand_trace_valid_q [0:3];
+    reg [63:0] fetch_demand_trace_addr_q [0:3];
+    reg [63:0] fetch_demand_trace_pc_q [0:3];
+    integer fetch_demand_trace_scan;
+    integer fetch_demand_trace_match;
+    integer fetch_demand_trace_free;
     integer stash_trace_episodes;
     integer stash_trace_completed;
     integer stash_trace_interrupted;
@@ -1442,6 +1446,7 @@ module tb_top_3p_soc #(
             L1D_PREFETCH_DEMAND_RESERVE),
         .ENABLE_MAGIC_MEMORY(1'b0),
         .ENABLE_TRACE(1'b0),
+        .ENABLE_FETCH_CAROUSEL(FETCH_CAROUSEL),
         .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
             FETCH_ALT_CONFIDENCE_GATE),
@@ -2386,72 +2391,147 @@ module tb_top_3p_soc #(
 
     always #5 clk = ~clk;
 
-    // Optional address-level timing for the single architectural fetch demand
-    // retained by fetch_3w.  This distinguishes lower-memory line fills from
-    // the much more common L1I-hit request/response turnaround.
+    // Optional address-level timing for up to four architectural fetch
+    // demands. This supports both the single-request bridge and the
+    // experimental four-slot carousel.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             fetch_demand_trace_cycle_q = 0;
-            fetch_demand_trace_start_q = 0;
-            fetch_demand_trace_external_q = 0;
-            fetch_demand_trace_empty_q = 0;
-            fetch_demand_trace_active_q = 1'b0;
-            fetch_demand_trace_addr_q = 64'd0;
-            fetch_demand_trace_pc_q = 64'd0;
+            for (fetch_demand_trace_scan = 0;
+                 fetch_demand_trace_scan < 4;
+                 fetch_demand_trace_scan =
+                    fetch_demand_trace_scan + 1) begin
+                fetch_demand_trace_start_q[
+                    fetch_demand_trace_scan] = 0;
+                fetch_demand_trace_external_q[
+                    fetch_demand_trace_scan] = 0;
+                fetch_demand_trace_empty_q[
+                    fetch_demand_trace_scan] = 0;
+                fetch_demand_trace_valid_q[
+                    fetch_demand_trace_scan] = 1'b0;
+                fetch_demand_trace_addr_q[
+                    fetch_demand_trace_scan] = 64'd0;
+                fetch_demand_trace_pc_q[
+                    fetch_demand_trace_scan] = 64'd0;
+            end
         end else begin
             fetch_demand_trace_cycle_q = fetch_demand_trace_cycle_q + 1;
 
-            if (fetch_demand_trace_active_q) begin
-                if (dut.u_bus.g_ccx.u_bus.u_l1i
-                        .demand_mshr_any_valid_r)
-                    fetch_demand_trace_external_q =
-                        fetch_demand_trace_external_q + 1;
-                if ((dut.fetch_decode_valid == 0) &&
-                    dut.backend_decode_ready[0] &&
-                    dut.frontend_decode_enable)
-                    fetch_demand_trace_empty_q =
-                        fetch_demand_trace_empty_q + 1;
+            for (fetch_demand_trace_scan = 0;
+                 fetch_demand_trace_scan < 4;
+                 fetch_demand_trace_scan =
+                    fetch_demand_trace_scan + 1) begin
+                if (fetch_demand_trace_valid_q[
+                        fetch_demand_trace_scan]) begin
+                    if (dut.u_bus.g_ccx.u_bus.u_l1i
+                            .demand_mshr_any_valid_r)
+                        fetch_demand_trace_external_q[
+                            fetch_demand_trace_scan] =
+                            fetch_demand_trace_external_q[
+                                fetch_demand_trace_scan] + 1;
+                    if ((dut.fetch_decode_valid == 0) &&
+                        dut.backend_decode_ready[0] &&
+                        dut.frontend_decode_enable)
+                        fetch_demand_trace_empty_q[
+                            fetch_demand_trace_scan] =
+                            fetch_demand_trace_empty_q[
+                                fetch_demand_trace_scan] + 1;
+                end
+            end
 
-                if (dut.fetch_pipe_resp_valid &&
-                    dut.fetch_pipe_resp_ready &&
-                    dut.fetch_pipe_resp_demand) begin
-                    if (fetch_demand_trace_enabled != 0)
-                        $display(
-                            "TRACE_FETCH_DEMAND kind=complete start_pc=%016h addr=%016h latency=%0d external=%0d empty=%0d",
-                            fetch_demand_trace_pc_q,
-                            fetch_demand_trace_addr_q,
-                            fetch_demand_trace_cycle_q -
-                                fetch_demand_trace_start_q,
-                            fetch_demand_trace_external_q,
-                            fetch_demand_trace_empty_q);
-                    fetch_demand_trace_active_q = 1'b0;
-                end else if (dut.fetch3_restart ||
-                             dut.fetch3_invalidate) begin
-                    if (fetch_demand_trace_enabled != 0)
+            if (dut.fetch_pipe_resp_valid &&
+                dut.fetch_pipe_resp_ready &&
+                dut.fetch_pipe_resp_demand) begin
+                fetch_demand_trace_match = -1;
+                for (fetch_demand_trace_scan = 0;
+                     fetch_demand_trace_scan < 4;
+                     fetch_demand_trace_scan =
+                        fetch_demand_trace_scan + 1)
+                    if ((fetch_demand_trace_match < 0) &&
+                        fetch_demand_trace_valid_q[
+                            fetch_demand_trace_scan] &&
+                        (fetch_demand_trace_addr_q[
+                            fetch_demand_trace_scan][63:5] ==
+                         dut.fetch_pipe_resp_addr[63:5]))
+                        fetch_demand_trace_match =
+                            fetch_demand_trace_scan;
+                if (fetch_demand_trace_match < 0)
+                    $fatal(1,
+                        "fetch demand trace response had no matching request");
+                if (fetch_demand_trace_enabled != 0)
+                    $display(
+                        "TRACE_FETCH_DEMAND kind=complete start_pc=%016h addr=%016h latency=%0d external=%0d empty=%0d",
+                        fetch_demand_trace_pc_q[
+                            fetch_demand_trace_match],
+                        fetch_demand_trace_addr_q[
+                            fetch_demand_trace_match],
+                        fetch_demand_trace_cycle_q -
+                            fetch_demand_trace_start_q[
+                                fetch_demand_trace_match],
+                        fetch_demand_trace_external_q[
+                            fetch_demand_trace_match],
+                        fetch_demand_trace_empty_q[
+                            fetch_demand_trace_match]);
+                fetch_demand_trace_valid_q[
+                    fetch_demand_trace_match] = 1'b0;
+            end
+
+            if (dut.fetch3_restart || dut.fetch3_invalidate) begin
+                for (fetch_demand_trace_scan = 0;
+                     fetch_demand_trace_scan < 4;
+                     fetch_demand_trace_scan =
+                        fetch_demand_trace_scan + 1) begin
+                    if (fetch_demand_trace_valid_q[
+                            fetch_demand_trace_scan] &&
+                        (fetch_demand_trace_enabled != 0))
                         $display(
                             "TRACE_FETCH_DEMAND kind=cancel start_pc=%016h addr=%016h latency=%0d external=%0d empty=%0d",
-                            fetch_demand_trace_pc_q,
-                            fetch_demand_trace_addr_q,
+                            fetch_demand_trace_pc_q[
+                                fetch_demand_trace_scan],
+                            fetch_demand_trace_addr_q[
+                                fetch_demand_trace_scan],
                             fetch_demand_trace_cycle_q -
-                                fetch_demand_trace_start_q,
-                            fetch_demand_trace_external_q,
-                            fetch_demand_trace_empty_q);
-                    fetch_demand_trace_active_q = 1'b0;
+                                fetch_demand_trace_start_q[
+                                    fetch_demand_trace_scan],
+                            fetch_demand_trace_external_q[
+                                fetch_demand_trace_scan],
+                            fetch_demand_trace_empty_q[
+                                fetch_demand_trace_scan]);
+                    fetch_demand_trace_valid_q[
+                        fetch_demand_trace_scan] = 1'b0;
                 end
             end
 
             if (dut.fetch_pipe_req_valid &&
                 dut.fetch_pipe_req_ready &&
                 dut.fetch_pipe_req_demand) begin
-                if (fetch_demand_trace_active_q)
+                fetch_demand_trace_free = -1;
+                for (fetch_demand_trace_scan = 0;
+                     fetch_demand_trace_scan < 4;
+                     fetch_demand_trace_scan =
+                        fetch_demand_trace_scan + 1)
+                    if ((fetch_demand_trace_free < 0) &&
+                        !fetch_demand_trace_valid_q[
+                            fetch_demand_trace_scan])
+                        fetch_demand_trace_free =
+                            fetch_demand_trace_scan;
+                if (fetch_demand_trace_free < 0)
                     $fatal(1,
-                        "fetch demand trace observed overlapping demand requests");
-                fetch_demand_trace_active_q = 1'b1;
-                fetch_demand_trace_start_q = fetch_demand_trace_cycle_q;
-                fetch_demand_trace_external_q = 0;
-                fetch_demand_trace_empty_q = 0;
-                fetch_demand_trace_addr_q = dut.fetch_pipe_req_addr;
-                fetch_demand_trace_pc_q =
+                        "fetch demand trace exceeded four outstanding requests");
+                fetch_demand_trace_valid_q[
+                    fetch_demand_trace_free] = 1'b1;
+                fetch_demand_trace_start_q[
+                    fetch_demand_trace_free] =
+                    fetch_demand_trace_cycle_q;
+                fetch_demand_trace_external_q[
+                    fetch_demand_trace_free] = 0;
+                fetch_demand_trace_empty_q[
+                    fetch_demand_trace_free] = 0;
+                fetch_demand_trace_addr_q[
+                    fetch_demand_trace_free] =
+                    dut.fetch_pipe_req_addr;
+                fetch_demand_trace_pc_q[
+                    fetch_demand_trace_free] =
                     dut.g_fetch_axi.u_fetch.consume_pc_q;
             end
         end
@@ -2552,9 +2632,7 @@ module tb_top_3p_soc #(
                     !dut.control_redirect &&
                     !dut.bp_fetch_stall &&
                     !dut.g_fetch_axi.u_fetch.consume_line_hit &&
-                    dut.g_fetch_axi.u_fetch.pending_valid_q &&
-                    (dut.g_fetch_axi.u_fetch.pending_addr_q[63:5] ==
-                     stash_trace_line[63:5])) begin
+                    dut.g_fetch_axi.u_fetch.consume_line_pending) begin
                     if (stash_trace_episode_stall_cycles == 0) begin
                         stash_trace_stalled = stash_trace_stalled + 1;
                         stash_trace_offset_stalled[
@@ -3124,7 +3202,7 @@ module tb_top_3p_soc #(
                     frontend_empty_l1i_external_miss =
                         frontend_empty_l1i_external_miss + 1;
                 else if (!dut.g_fetch_axi.u_fetch.consume_line_hit &&
-                         (dut.g_fetch_axi.u_fetch.pending_valid_q ||
+                         (dut.g_fetch_axi.u_fetch.demand_pending_any ||
                           (dut.u_bus.g_ccx.u_bus.fetch_count_q != 0)))
                     frontend_empty_pending_no_external_miss =
                         frontend_empty_pending_no_external_miss + 1;
@@ -3133,7 +3211,7 @@ module tb_top_3p_soc #(
                 else if (dut.bp_fetch_stall)
                     frontend_bp_stall = frontend_bp_stall + 1;
                 else if (!dut.g_fetch_axi.u_fetch.consume_line_hit &&
-                         (dut.g_fetch_axi.u_fetch.pending_valid_q ||
+                         (dut.g_fetch_axi.u_fetch.demand_pending_any ||
                           (dut.u_bus.g_ccx.u_bus.fetch_count_q != 0)))
                     frontend_refill_wait = frontend_refill_wait + 1;
                 else if (!dut.g_fetch_axi.u_fetch.consume_line_hit)
@@ -3676,8 +3754,9 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_CCX_L2 mode=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
-            FETCH_ALT_LOOKASIDE, FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
+            "PERF_CCX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
+            FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
             ISSUE_WINDOW, SPECULATION_WINDOW, RETIRE_DEPTH,

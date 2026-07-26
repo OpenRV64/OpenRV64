@@ -69,6 +69,7 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_MAGIC_MEMORY = 0,
     parameter ENABLE_TRACE = 0,
     parameter ENABLE_PREDECODE_TARGETS = 1,
+    parameter ENABLE_FETCH_CAROUSEL = 1,
     parameter ENABLE_FETCH_ALT_LOOKASIDE = 3,
     // Optional bandwidth policy.  The default stashes every eligible
     // alternate path; set this to one to restrict stashing to weak BP output.
@@ -432,6 +433,7 @@ module openrv64_rv64_top_3p #(
             assign pair1024_req_unpredicted_addr = 64'd0;
         end else begin : g_fetch_axi
             openrv64_fetch_3w #(
+                .ENABLE_CAROUSEL(ENABLE_FETCH_CAROUSEL),
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
                 .ENABLE_ALT_LOOKASIDE(ENABLE_FETCH_ALT_LOOKASIDE),

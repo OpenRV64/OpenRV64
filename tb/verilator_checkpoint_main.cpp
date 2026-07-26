@@ -1043,6 +1043,42 @@ struct FrontendBreakdown {
         const bool branch_conditional = FE_CORE(branch_conditional);
         const bool target_miss = FE_CORE(bp_target_mispredict);
         const uint64_t cycle = top->checkpoint_cycle_o;
+        const bool fetch_carousel =
+            FE_FETCH(measurement_carousel_enabled);
+        const unsigned fetch_line_depth = fetch_carousel ? 4U : 2U;
+        const auto fetch_pending_slot_valid =
+            [&](unsigned slot) {
+                return fetch_carousel
+                    ? FE_FETCH(carousel_pending_valid_q)[slot] != 0
+                    : slot == 0 && FE_FETCH(pending_valid_q);
+            };
+        const auto fetch_pending_slot_addr =
+            [&](unsigned slot) {
+                return fetch_carousel
+                    ? static_cast<uint64_t>(
+                          FE_FETCH(carousel_pending_addr_q)[slot])
+                    : static_cast<uint64_t>(FE_FETCH(pending_addr_q));
+            };
+        const auto fetch_pending_line =
+            [&](uint64_t line) {
+                for (unsigned slot = 0; slot < fetch_line_depth; ++slot) {
+                    if (fetch_pending_slot_valid(slot) &&
+                        (fetch_pending_slot_addr(slot) >> 5) == line)
+                        return true;
+                }
+                if (FE_FETCH(ras_line_pending_q) &&
+                    (FE_FETCH(ras_line_addr_q) >> 5) == line)
+                    return true;
+                if (FE_FETCH(fal_line_pending_q) &&
+                    (FE_FETCH(fal_line_addr_q) >> 5) == line)
+                    return true;
+                return false;
+            };
+        bool fetch_pending_any =
+            FE_FETCH(ras_line_pending_q) ||
+            FE_FETCH(fal_line_pending_q);
+        for (unsigned slot = 0; slot < fetch_line_depth; ++slot)
+            fetch_pending_any |= fetch_pending_slot_valid(slot);
 
         predicted_redirects += predicted_redirect;
         direction_redirects += direction_redirect;
@@ -1223,15 +1259,13 @@ struct FrontendBreakdown {
                     : FE_CORE(bp_direct_target);
             const uint64_t branch_pc = FE_CORE(bp_selected_pc);
             const uint64_t fallthrough = branch_pc + 4;
-            const bool pending_valid = FE_FETCH(pending_valid_q);
+            const bool pending_valid = fetch_pending_any;
             const bool pending_target_line =
-                pending_valid &&
-                ((FE_FETCH(pending_addr_q) >> 5) == (target >> 5));
+                fetch_pending_line(target >> 5);
             const bool pending_fallthrough_line =
-                pending_valid &&
-                ((FE_FETCH(pending_addr_q) >> 5) ==
-                 (fallthrough >> 5));
-            const unsigned line_slot = (target >> 5) & 1U;
+                fetch_pending_line(fallthrough >> 5);
+            const unsigned line_slot =
+                (target >> 5) & (fetch_line_depth - 1U);
             const unsigned target_sector = (target >> 4) & 1U;
             const bool resident =
                 FE_FETCH(line_valid_q)[line_slot] &&
@@ -1308,7 +1342,7 @@ struct FrontendBreakdown {
         overlap_l1i_busy +=
             FE_BUS(u_l1i__DOT__demand_mshr_any_valid_r) != 0;
         overlap_fetch_queue_nonempty += fetch_queue_nonempty;
-        overlap_pending_request += FE_FETCH(pending_valid_q);
+        overlap_pending_request += fetch_pending_any;
         overlap_pair_pending += pair_pending;
         overlap_bp_fetch_stall += FE_CORE(bp_fetch_stall);
         overlap_request_fire += FE_FETCH(req_fire);
@@ -1334,7 +1368,7 @@ struct FrontendBreakdown {
             ++empty_request_backpressure;
         else if (fetch_complete)
             ++empty_response_complete;
-        else if (fetch_queue_nonempty || FE_FETCH(pending_valid_q))
+        else if (fetch_queue_nonempty || fetch_pending_any)
             ++empty_outstanding_other;
         else if (!current_sector_valid)
             ++empty_no_current_sector;
@@ -1488,6 +1522,23 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
 #define BUS3P(name) \
     CORE3P(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
 
+    const bool fetch_carousel =
+        FETCH3P(measurement_carousel_enabled);
+    const unsigned fetch_line_depth = fetch_carousel ? 4U : 2U;
+    bool fetch_pending_valid = false;
+    uint64_t fetch_pending_addr = 0;
+    for (unsigned slot = 0; slot < fetch_line_depth; ++slot) {
+        const bool slot_valid = fetch_carousel
+            ? FETCH3P(carousel_pending_valid_q)[slot] != 0
+            : slot == 0 && FETCH3P(pending_valid_q);
+        if (slot_valid && !fetch_pending_valid) {
+            fetch_pending_valid = true;
+            fetch_pending_addr = fetch_carousel
+                ? FETCH3P(carousel_pending_addr_q)[slot]
+                : FETCH3P(pending_addr_q);
+        }
+    }
+
     const auto& trace_pcs =
         root->tb_opensbi__DOT__dut__DOT__u_core__DOT__three_trace_pcs;
     const auto& trace_instrs =
@@ -1559,9 +1610,9 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
            << ",pc=" << std::hex << std::setw(16)
            << static_cast<uint64_t>(FETCH3P(consume_pc_q))
            << ",pending=" << std::dec
-           << static_cast<unsigned>(FETCH3P(pending_valid_q))
+           << static_cast<unsigned>(fetch_pending_valid)
            << '/' << std::hex << std::setw(16)
-           << static_cast<uint64_t>(FETCH3P(pending_addr_q))
+           << fetch_pending_addr
            << ",line0=" << std::dec
            << static_cast<unsigned>(FETCH3P(line_valid_q)[0])
            << '/' << std::hex << std::setw(16)
@@ -1574,17 +1625,63 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
            << static_cast<uint64_t>(FETCH3P(line_addr_q)[1])
            << '/' << static_cast<unsigned>(
                       FETCH3P(line_sector_valid_q)[1])
+           << ",slots=";
+    for (unsigned slot = 0; slot < fetch_line_depth; ++slot) {
+        if (slot != 0)
+            stream << ':';
+        stream << std::dec
+               << static_cast<unsigned>(FETCH3P(line_valid_q)[slot])
+               << '/' << std::hex << std::setw(16)
+               << static_cast<uint64_t>(FETCH3P(line_addr_q)[slot])
+               << '/' << std::dec
+               << static_cast<unsigned>(
+                      FETCH3P(line_sector_valid_q)[slot])
+               << '/'
+               << static_cast<unsigned>(
+                      fetch_carousel
+                          ? FETCH3P(carousel_pending_valid_q)[slot]
+                          : slot == 0 && FETCH3P(pending_valid_q))
+               << '/' << std::hex << std::setw(16)
+               << static_cast<uint64_t>(
+                      fetch_carousel
+                          ? FETCH3P(carousel_pending_addr_q)[slot]
+                          : FETCH3P(pending_addr_q));
+    }
+    stream
            << ",hit=" << static_cast<unsigned>(
                       FETCH3P(consume_sector_valid) & 1U)
            << '/' << static_cast<unsigned>(
                       FETCH3P(following_sector_valid) & 1U)
            << ",lanes=" << static_cast<unsigned>(FETCH3P(lane_found_r))
            << ",reqfire=" << static_cast<unsigned>(FETCH3P(req_fire))
+           << '/' << static_cast<unsigned>(FETCH3P(ras_req_fire))
+           << '/' << static_cast<unsigned>(FETCH3P(pair_req_fire))
+           << ",need=" << static_cast<unsigned>(
+                      FETCH3P(demand_request_needed))
+           << '/' << static_cast<unsigned>(FETCH3P(request_line_hit))
+           << '/' << static_cast<unsigned>(
+                      FETCH3P(request_line_pending))
            << ",respmatch=" << static_cast<unsigned>(FETCH3P(resp_match))
+           << '/' << static_cast<unsigned>(
+                      FETCH3P(carousel_resp_match))
+           << '/' << static_cast<unsigned>(
+                      FETCH3P(carousel_resp_in_window))
            << ",pair=" << static_cast<unsigned>(
                       FETCH3P(pair_predicted_valid_q))
            << '/' << static_cast<unsigned>(
                       FETCH3P(pair_unpredicted_valid_q))
+           << ",next=" << std::hex << std::setw(16)
+           << static_cast<uint64_t>(FETCH3P(next_req_addr_q))
+           << ",ras=" << std::dec
+           << static_cast<unsigned>(FETCH3P(ras_line_valid_q))
+           << '/' << static_cast<unsigned>(FETCH3P(ras_line_pending_q))
+           << '/' << std::hex << std::setw(16)
+           << static_cast<uint64_t>(FETCH3P(ras_line_addr_q))
+           << ",fal=" << std::dec
+           << static_cast<unsigned>(FETCH3P(fal_line_valid_q))
+           << '/' << static_cast<unsigned>(FETCH3P(fal_line_pending_q))
+           << '/' << std::hex << std::setw(16)
+           << static_cast<uint64_t>(FETCH3P(fal_line_addr_q))
            << '}';
     stream << " bus{fq=" << std::dec
            << static_cast<unsigned>(BUS3P(fetch_head_q)) << ':'

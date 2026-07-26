@@ -731,7 +731,7 @@
   </text>
   <text x="70" y="1974" class="small">
     Sources: rtl/openrv64_top_3p.v, rtl/core/rv64_top_3p.v, rtl/core/backend/backend_3p.v,
-    rtl/core/bus/ccx_bus.v, rtl/cache/l1/l1i/ccx.v, rtl/cache/l1/l1d/l1d.v.
+    rtl/core/bus/ccx_bus.v, rtl/core/cache/l1/l1i/l1i.v, rtl/core/cache/l1/l1d/l1d.v.
   </text>
 
   <!-- Legend -->
