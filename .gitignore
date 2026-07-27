@@ -10,3 +10,5 @@ sw/Image
 sw/initramfs/
 sw/initramfs.cpio
 
+__pycache__/
+*.pyc
