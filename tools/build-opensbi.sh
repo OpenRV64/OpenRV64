@@ -22,6 +22,16 @@ firmware_addr=0x80100000
 payload_addr=0x80200000
 fdt_addr=${OPENSBI_FDT_ADDR:-0x8ff00000}
 memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
+zicclsm=${OPENRV64_ZICCLSM:-1}
+
+if [[ "${zicclsm}" != 0 && "${zicclsm}" != 1 ]]; then
+    echo "build-opensbi.sh: OPENRV64_ZICCLSM must be 0 or 1" >&2
+    exit 2
+fi
+zicclsm_cpp_args=()
+if [[ "${zicclsm}" == 1 ]]; then
+    zicclsm_cpp_args=(-DOPENRV64_ZICCLSM)
+fi
 
 for tool in git make dtc python3 awk \
             "${opensbi_cross}gcc" "${opensbi_cross}objcopy" \
@@ -63,6 +73,13 @@ fi
     "${repo_root}/sw/opensbi.dts"
 dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
     "${artifact_dir}/openrv64.dts"
+"${bare_cross}gcc" -E -P -x assembler-with-cpp \
+    -DOPENRV64_MEMORY_SIZE="${memory_size}" \
+    "${zicclsm_cpp_args[@]}" \
+    -o "${artifact_dir}/openrv64-3p.dts" \
+    "${repo_root}/sw/opensbi.dts"
+dtc -I dts -O dtb -o "${artifact_dir}/openrv64-3p.dtb" \
+    "${artifact_dir}/openrv64-3p.dts"
 
 "${bare_cross}gcc" -march=rv64ima_zicsr_zifencei -mabi=lp64 \
     -mcmodel=medany -mno-relax -nostdlib -nostartfiles \
@@ -125,6 +142,10 @@ python3 "${repo_root}/tools/bin2mem.py" \
 python3 "${repo_root}/tools/bin2mem.py" \
     "${artifact_dir}/openrv64.dtb" "${artifact_dir}/openrv64-dtb.memh" \
     --size 0x10000
+python3 "${repo_root}/tools/bin2mem.py" \
+    "${artifact_dir}/openrv64-3p.dtb" \
+    "${artifact_dir}/openrv64-3p-dtb.memh" \
+    --size 0x10000
 
 # The fixed 3P baseline attaches a native 256-bit AXI RAM.  Emit matching
 # 32-byte lines as separate bounded fragments so its testbench can place each
@@ -139,8 +160,8 @@ python3 "${repo_root}/tools/bin2mem.py" \
     "${artifact_dir}/payload.bin" "${artifact_dir}/payload-axi.memh" \
     --size 0x10000 --word-bytes 32
 python3 "${repo_root}/tools/bin2mem.py" \
-    "${artifact_dir}/openrv64.dtb" \
-    "${artifact_dir}/openrv64-dtb-axi.memh" \
+    "${artifact_dir}/openrv64-3p.dtb" \
+    "${artifact_dir}/openrv64-3p-dtb-axi.memh" \
     --size 0x10000 --word-bytes 32
 
 echo "OpenSBI ${opensbi_ref} (${actual_commit})"

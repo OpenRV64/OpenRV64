@@ -192,6 +192,14 @@ $(EXEC_TOP_3P_SIM_BUILD): tb/tb_exec_top_3p.sv $(EXEC_SRCS) $(EXCEPT_SRCS) $(ISA
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_TOP_3P_SIM_BUILD) \
 		$(EXEC_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) $(STAGE_SRCS) tb/tb_exec_top_3p.sv
 
+$(EXEC_TOP_3P_NO_ZICCLSM_SIM_BUILD): tb/tb_exec_top_3p.sv $(EXEC_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(STAGE_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl \
+		-Ptb_exec_top_3p.ENABLE_ZICCLSM=0 \
+		-o $(EXEC_TOP_3P_NO_ZICCLSM_SIM_BUILD) \
+		$(EXEC_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) $(STAGE_SRCS) \
+		tb/tb_exec_top_3p.sv
+
 $(LSQ_SIM_BUILD): $(LSQ_SIM_SRCS) rtl/core/exec/lsq.v
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(LSQ_SIM_BUILD) \

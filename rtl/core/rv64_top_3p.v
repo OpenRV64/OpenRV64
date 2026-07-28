@@ -34,6 +34,7 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_ISSUE_WINDOW = 0,
     parameter ENABLE_SPECULATION_WINDOW = 0,
     parameter ENABLE_POSTED_STORES = 1,
+    parameter ENABLE_ZICCLSM = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
@@ -349,7 +350,9 @@ module openrv64_rv64_top_3p #(
     wire fetch_alt_pair_valid;
     wire icache_prefetch_valid;
     wire l1i_branch_prefetch_valid;
+    wire l1i_sequential_prefetch_valid;
     wire l1i_next_line_prefetch;
+    wire l1i_branch_next_line_prefetch;
     wire l1i_high_confidence_hint;
     wire l1i_predicted_line_resident;
     wire l1i_predicted_line_response;
@@ -361,6 +364,8 @@ module openrv64_rv64_top_3p #(
     reg l1i_next_line_pending_q;
     reg [63:0] l1i_next_line_source_q;
     reg [63:0] l1i_next_line_addr_q;
+    wire [63:0] l1i_sequential_first_addr;
+    wire [63:0] l1i_sequential_second_addr;
     wire [63:0] l1i_prefetch_first_addr;
     wire [63:0] l1i_prefetch_second_addr;
     wire control_redirect = backend_redirect || bp_target_mispredict;
@@ -873,20 +878,44 @@ module openrv64_rv64_top_3p #(
         fetch_pipe_resp_ready && fetch_pipe_resp_demand &&
         !fetch_pipe_resp_access_fault && !fetch_pipe_resp_page_fault &&
         (fetch_pipe_resp_addr[63:6] == l1i_next_line_source_q[63:6]);
-    assign l1i_next_line_prefetch =
+    assign l1i_branch_next_line_prefetch =
         (l1i_high_confidence_hint && l1i_predicted_line_resident) ||
         l1i_predicted_line_response;
     assign l1i_branch_prefetch_valid =
         ((ENABLE_FETCH_ALT_LOOKASIDE == 0) && fetch_alt_pair_valid) ||
-        l1i_next_line_prefetch;
-    assign l1i_prefetch_first_addr = l1i_next_line_prefetch ?
+        l1i_branch_next_line_prefetch;
+
+    // Branch/FAL policy cannot be the only source of L1I prefetches:
+    // straight-line code otherwise issues no hints at all.  Every accepted
+    // demand fetch seeds the following cacheline and a line eight positions
+    // ahead.  Subsequent demand progress closes the initial gaps and then
+    // maintains eight-line lookahead while the L1I demand MSHRs bound actual
+    // outstanding traffic.
+    // The L1I's slot and recent-line filters suppress duplicates, and
+    // speculative translation faults are discarded without becoming
+    // architectural.
+    assign l1i_sequential_prefetch_valid =
+        use_ccx_bus && fetch_pipe_req_valid && fetch_pipe_req_ready &&
+        fetch_pipe_req_demand;
+    assign l1i_sequential_first_addr =
+        {fetch_pipe_req_addr[63:6], 6'b000000} + 64'd64;
+    assign l1i_sequential_second_addr =
+        {fetch_pipe_req_addr[63:6], 6'b000000} + 64'd512;
+    assign l1i_next_line_prefetch =
+        l1i_branch_next_line_prefetch ||
+        (l1i_sequential_prefetch_valid && !l1i_branch_prefetch_valid);
+    assign l1i_prefetch_first_addr = l1i_branch_prefetch_valid ?
+        (l1i_branch_next_line_prefetch ?
         ((l1i_high_confidence_hint && l1i_predicted_line_resident) ?
          icache_prefetch_predicted_next_line : l1i_next_line_addr_q) :
-        icache_prefetch_taken_addr;
-    assign l1i_prefetch_second_addr = l1i_next_line_prefetch ?
+         icache_prefetch_taken_addr) :
+        l1i_sequential_first_addr;
+    assign l1i_prefetch_second_addr = l1i_branch_prefetch_valid ?
+        (l1i_branch_next_line_prefetch ?
         ((l1i_high_confidence_hint && l1i_predicted_line_resident) ?
          icache_prefetch_predicted_next_line : l1i_next_line_addr_q) :
-        icache_prefetch_fallthrough_addr;
+         icache_prefetch_fallthrough_addr) :
+        l1i_sequential_second_addr;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -1007,6 +1036,7 @@ module openrv64_rv64_top_3p #(
         .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
         .ISSUE_WINDOW_DEPTH(RETIRE_DEPTH),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
@@ -1401,7 +1431,8 @@ module openrv64_rv64_top_3p #(
         .tlbi_i(backend_sfence_vma || backend_satp_write),
         .tlbi_busy_o(translation_barrier_busy),
         .icache_invalidate_i(backend_fence_i),
-        .icache_prefetch_valid_i(l1i_branch_prefetch_valid &&
+        .icache_prefetch_valid_i((l1i_branch_prefetch_valid ||
+                                  l1i_sequential_prefetch_valid) &&
                                  !translation_barrier_busy),
         .icache_prefetch_taken_addr_i(l1i_prefetch_first_addr),
         .icache_prefetch_fallthrough_addr_i(

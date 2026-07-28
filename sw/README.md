@@ -195,16 +195,21 @@ retired-instruction deltas, bytes/cycle, and IPC. The run continues through a
 full byte comparison and requires `MEMCPYOK`; `sim-memcpy-sweep` is an alias
 for the same report-and-check run.
 
-The core faults naturally misaligned accesses wider than a byte. The sweep
-therefore models a portable scalar implementation instead of issuing faulting
-misaligned `ld`/`sd`: equal source/destination alignment uses a byte prologue
-followed by aligned 64-byte bulk iterations, while unequal alignment uses
-the Linux RISC-V kernel's slow-access fallback shape: one byte load, one byte
-store, and one loop branch per copied byte. Each timed span includes
-call/return and the final ordering fence; the zero-byte case exposes that
-fixed cost. The sweep results are still from the functional fixed-latency AXI
-test memory, so they characterize core/cache behavior rather than DRAM
-bandwidth.
+The 1P core faults naturally misaligned accesses wider than a byte. The 3P
+core implements Zicclsm for ordinary scalar loads and stores to cacheable,
+coherent main memory with a small ordered component-serial engine. Atomics
+retain their alignment faults, and non-cacheable misaligned accesses remain
+unsupported. `ENABLE_ZICCLSM` defaults to one on the 3P RTL tops. For OpenSBI
+and Linux simulations, `OPENSBI_3P_ENABLE_ZICCLSM=0` disables the RTL feature
+and removes it from the 3P FDT. The sweep deliberately models a portable
+scalar implementation rather than depending on 3P-only misaligned `ld`/`sd`:
+equal source/destination alignment uses a byte prologue followed by aligned
+64-byte bulk iterations, while unequal alignment uses the Linux RISC-V
+kernel's slow-access fallback shape: one byte load, one byte store, and one
+loop branch per copied byte. Each timed span includes call/return and the final
+ordering fence; the zero-byte case exposes that fixed cost. The sweep results
+are still from the functional fixed-latency AXI test memory, so they
+characterize core/cache behavior rather than DRAM bandwidth.
 
 `AXI_3P_FREELOADER=1` is a stronger simulation-only backend bound. Cacheable,
 unlocked RAM loads bypass L1D/CCX demand timing and return through a tagged,

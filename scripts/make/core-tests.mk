@@ -105,6 +105,9 @@ sim-exec-alu-rv64-m: $(EXEC_ALU_RV64M_SIM_BUILD)
 sim-exec-top-3p: $(EXEC_TOP_3P_SIM_BUILD)
 	vvp $(EXEC_TOP_3P_SIM_BUILD)
 
+sim-exec-top-3p-no-zicclsm: $(EXEC_TOP_3P_NO_ZICCLSM_SIM_BUILD)
+	vvp $(EXEC_TOP_3P_NO_ZICCLSM_SIM_BUILD)
+
 sim-lsq: $(LSQ_SIM_BUILD)
 	vvp $(LSQ_SIM_BUILD)
 

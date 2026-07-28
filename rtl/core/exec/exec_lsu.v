@@ -18,6 +18,7 @@ module openrv64_exec_lsu #(
     parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer LSU_TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
+    parameter integer ENABLE_ZICCLSM = 1,
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE = {`RV64_XLEN{1'b0}}
 ) (
@@ -123,6 +124,25 @@ module openrv64_exec_lsu #(
         end
     endfunction
 
+    function automatic [`RV64_XLEN-1:0] format_misaligned_load;
+        input [`RV64_LSU_OP_WIDTH-1:0] op;
+        input [`RV64_XLEN-1:0] data;
+        begin
+            case (op)
+                `RV64_LSU_OP_LH:
+                    format_misaligned_load = {{48{data[15]}}, data[15:0]};
+                `RV64_LSU_OP_LHU:
+                    format_misaligned_load = {{48{1'b0}}, data[15:0]};
+                `RV64_LSU_OP_LW:
+                    format_misaligned_load = {{32{data[31]}}, data[31:0]};
+                `RV64_LSU_OP_LWU:
+                    format_misaligned_load = {{32{1'b0}}, data[31:0]};
+                default:
+                    format_misaligned_load = data;
+            endcase
+        end
+    endfunction
+
     wire [`RV64_INSTR_WIDTH-1:0] load_instr =
         load_issue_payload_i[I_INSTR +: `RV64_INSTR_WIDTH];
     wire [`RV64_LSU_OP_WIDTH-1:0] load_lsu_op =
@@ -215,6 +235,32 @@ module openrv64_exec_lsu #(
     wire [`RV64_XLEN-1:0] store_effective_addr =
         store_rs1_data + store_imm;
 
+    // Zicclsm is implemented only in this 3P LSU. Ordinary naturally
+    // misaligned scalar accesses bypass the speculative LSQ and enter one
+    // component-serial engine at ordered retirement. Atomics retain their
+    // required alignment faults.
+    wire load_requires_misaligned =
+        (ENABLE_ZICCLSM != 0) &&
+        !load_issue_payload_i[I_ILLEGAL] &&
+        !load_issue_payload_i[I_INSTR_ACCESS_FAULT] &&
+        !load_issue_payload_i[I_INSTR_PAGE_FAULT] &&
+        load_issue_payload_i[I_MEM_READ] &&
+        !load_issue_payload_i[I_MEM_WRITE] &&
+        load_lsu_valid && !load_lsu_illegal && load_lsu_misaligned;
+    wire store_requires_misaligned =
+        (ENABLE_ZICCLSM != 0) &&
+        !store_is_atomic &&
+        !store_issue_payload_i[I_ILLEGAL] &&
+        !store_issue_payload_i[I_INSTR_ACCESS_FAULT] &&
+        !store_issue_payload_i[I_INSTR_PAGE_FAULT] &&
+        store_issue_payload_i[I_MEM_WRITE] &&
+        store_lsu_valid && !store_lsu_illegal && store_lsu_misaligned;
+    wire load_order_match = ordered_head_valid_i &&
+        (ordered_head_id_i == load_issue_id_i) &&
+        (ordered_head_slot_i == load_issue_slot_i);
+    wire store_order_match = ordered_head_valid_i &&
+        (ordered_head_id_i == store_issue_id_i) &&
+        (ordered_head_slot_i == store_issue_slot_i);
     wire lsq_req_valid;
     wire lsq_req_ready;
     wire [LSU_TAG_WIDTH-1:0] lsq_req_tag;
@@ -235,6 +281,10 @@ module openrv64_exec_lsu #(
     wire lsq_result_access_fault;
     wire lsq_result_page_fault;
     wire lsq_result_store;
+    wire lsq_load_alloc_ready;
+    wire lsq_store_alloc_ready;
+    wire lsq_store_pending;
+    wire lsq_empty;
 
     wire atomic_start_valid;
     wire [LSU_TAG_WIDTH-1:0] atomic_start_tag;
@@ -271,6 +321,84 @@ module openrv64_exec_lsu #(
     wire atomic_access_fault;
     wire atomic_page_fault;
 
+    wire misaligned_active;
+    wire misaligned_start_ready;
+    wire misaligned_result_valid;
+    wire misaligned_result_ready;
+    wire [`RV64_XLEN-1:0] misaligned_result_rdata;
+    wire misaligned_result_access_fault;
+    wire misaligned_result_page_fault;
+    wire [`RV64_XLEN-1:0] misaligned_result_fault_addr;
+    wire misaligned_xlate_valid;
+    wire misaligned_xlate_ready;
+    wire [LSU_TAG_WIDTH-1:0] misaligned_xlate_tag;
+    wire misaligned_xlate_write;
+    wire [`RV64_XLEN-1:0] misaligned_xlate_vaddr;
+    wire misaligned_xlate_resp_ready;
+    wire misaligned_mem_valid;
+    wire misaligned_mem_ready;
+    wire [LSU_TAG_WIDTH-1:0] misaligned_mem_tag;
+    wire misaligned_mem_write;
+    wire [`RV64_XLEN-1:0] misaligned_mem_addr;
+    wire [`RV64_XLEN-1:0] misaligned_mem_wdata;
+    wire [7:0] misaligned_mem_wstrb;
+    wire [`RV64_XLEN-1:0] misaligned_mem_effective_addr;
+    wire [2:0] misaligned_mem_size;
+    wire misaligned_mem_resp_ready;
+    wire misaligned_store_done_ready;
+
+    wire lsq_xlate_valid;
+    wire lsq_xlate_ready;
+    wire [LSU_TAG_WIDTH-1:0] lsq_xlate_tag;
+    wire lsq_xlate_write;
+    wire [`RV64_XLEN-1:0] lsq_xlate_vaddr;
+    wire lsq_xlate_resp_ready;
+    wire lsq_store_done_ready;
+
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] misaligned_id_q;
+    wire [RETIRE_SLOT_WIDTH-1:0] misaligned_slot_q;
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] misaligned_meta_q;
+    wire misaligned_pending_q;
+    wire misaligned_store_q;
+    wire misaligned_translation_bypass_q;
+    wire [`RV64_XLEN-1:0] misaligned_addr_q;
+    wire [2:0] misaligned_size_q;
+    wire [`RV64_XLEN-1:0] misaligned_wdata_q;
+
+    wire misaligned_load_accept = load_issue_valid_i &&
+                                  load_issue_ready_o &&
+                                  load_requires_misaligned;
+    wire misaligned_store_accept = store_issue_valid_i &&
+                                   store_issue_ready_o &&
+                                   store_requires_misaligned;
+    wire misaligned_accept =
+        misaligned_load_accept || misaligned_store_accept;
+    wire misaligned_load_candidate =
+        load_issue_valid_i && load_requires_misaligned && load_order_match;
+    wire misaligned_store_candidate =
+        store_issue_valid_i && store_requires_misaligned && store_order_match;
+    wire misaligned_can_start = misaligned_pending_q && lsq_empty &&
+                                !atomic_active && !misaligned_active;
+    wire misaligned_start_valid = misaligned_can_start;
+    wire misaligned_start_fire =
+        misaligned_start_valid && misaligned_start_ready;
+
+    // A single registered pending slot breaks the dispatch ready/valid path.
+    // Do not admit an operation on the other LSQ port in the same cycle as an
+    // ordered misaligned candidate. In particular, a younger store cannot
+    // drain while the misaligned instruction owns the ordered head, so
+    // admitting both would deadlock misaligned_pending_q against lsq_empty.
+    assign load_issue_ready_o =
+        (misaligned_active || misaligned_pending_q) ? 1'b0 :
+        misaligned_store_candidate ? 1'b0 :
+        load_requires_misaligned ?
+        load_order_match : lsq_load_alloc_ready;
+    assign store_issue_ready_o =
+        (misaligned_active || misaligned_pending_q) ? 1'b0 :
+        misaligned_load_candidate ? 1'b0 :
+        store_requires_misaligned ?
+        store_order_match : lsq_store_alloc_ready;
+
     openrv64_lsq #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
         .META_WIDTH(`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH),
@@ -286,8 +414,12 @@ module openrv64_exec_lsu #(
         .squash_younger_i(squash_younger_i),
         .squash_id_i(squash_id_i),
         .translation_bypass_i(translation_bypass_i),
-        .load_alloc_valid_i(load_issue_valid_i),
-        .load_alloc_ready_o(load_issue_ready_o),
+        .load_alloc_valid_i(load_issue_valid_i &&
+                            !load_requires_misaligned &&
+                            !misaligned_store_candidate &&
+                            !misaligned_active &&
+                            !misaligned_pending_q),
+        .load_alloc_ready_o(lsq_load_alloc_ready),
         .load_alloc_id_i(load_issue_id_i),
         .load_alloc_slot_i(load_issue_slot_i),
         .load_alloc_meta_i(load_issue_payload_i),
@@ -297,8 +429,12 @@ module openrv64_exec_lsu #(
         .load_alloc_access_fault_i(1'b0),
         .load_alloc_vaddr_i(load_bus_addr),
         .load_alloc_size_i({1'b0, load_instr[13:12]}),
-        .store_alloc_valid_i(store_issue_valid_i),
-        .store_alloc_ready_o(store_issue_ready_o),
+        .store_alloc_valid_i(store_issue_valid_i &&
+                             !store_requires_misaligned &&
+                             !misaligned_load_candidate &&
+                             !misaligned_active &&
+                             !misaligned_pending_q),
+        .store_alloc_ready_o(lsq_store_alloc_ready),
         .store_alloc_id_i(store_issue_id_i),
         .store_alloc_slot_i(store_issue_slot_i),
         .store_alloc_meta_i(store_issue_payload_i),
@@ -323,13 +459,13 @@ module openrv64_exec_lsu #(
         .atomic_tag_i(atomic_tag),
         .atomic_irrevocable_i(atomic_irrevocable),
         .atomic_done_i(atomic_done),
-        .xlate_req_valid_o(xlate_valid_o),
-        .xlate_req_ready_i(xlate_ready_i),
-        .xlate_req_tag_o(xlate_tag_o),
-        .xlate_req_write_o(xlate_write_o),
-        .xlate_req_vaddr_o(xlate_vaddr_o),
-        .xlate_resp_valid_i(xlate_resp_valid_i),
-        .xlate_resp_ready_o(xlate_resp_ready_o),
+        .xlate_req_valid_o(lsq_xlate_valid),
+        .xlate_req_ready_i(lsq_xlate_ready),
+        .xlate_req_tag_o(lsq_xlate_tag),
+        .xlate_req_write_o(lsq_xlate_write),
+        .xlate_req_vaddr_o(lsq_xlate_vaddr),
+        .xlate_resp_valid_i(xlate_resp_valid_i && !misaligned_active),
+        .xlate_resp_ready_o(lsq_xlate_resp_ready),
         .xlate_resp_tag_i(xlate_resp_tag_i),
         .xlate_resp_paddr_i(xlate_resp_paddr_i),
         .xlate_resp_access_fault_i(xlate_resp_access_fault_i),
@@ -350,8 +486,8 @@ module openrv64_exec_lsu #(
         .resp_rdata_i(mem_rdata_i),
         .resp_access_fault_i(mem_error_i),
         .resp_page_fault_i(mem_page_fault_i),
-        .store_done_valid_i(mem_store_done_valid_i),
-        .store_done_ready_o(mem_store_done_ready_o),
+        .store_done_valid_i(mem_store_done_valid_i && !misaligned_active),
+        .store_done_ready_o(lsq_store_done_ready),
         .store_done_tag_i(mem_store_done_tag_i),
         .result_valid_o(lsq_result_valid),
         .result_ready_i(lsq_result_ready),
@@ -362,8 +498,191 @@ module openrv64_exec_lsu #(
         .result_access_fault_o(lsq_result_access_fault),
         .result_page_fault_o(lsq_result_page_fault),
         .result_store_o(lsq_result_store),
-        .store_pending_o(store_pending_o)
+        .store_pending_o(lsq_store_pending),
+        .empty_o(lsq_empty)
     );
+
+    generate
+        if (ENABLE_ZICCLSM != 0) begin : g_zicclsm
+            reg [`OPENRV64_INSTR_ID_WIDTH-1:0] id_q;
+            reg [RETIRE_SLOT_WIDTH-1:0] slot_q;
+            reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] meta_q;
+            reg pending_q;
+            reg store_q;
+            reg translation_bypass_q;
+            reg [`RV64_XLEN-1:0] addr_q;
+            reg [2:0] size_q;
+            reg [`RV64_XLEN-1:0] wdata_q;
+
+            assign misaligned_id_q = id_q;
+            assign misaligned_slot_q = slot_q;
+            assign misaligned_meta_q = meta_q;
+            assign misaligned_pending_q = pending_q;
+            assign misaligned_store_q = store_q;
+            assign misaligned_translation_bypass_q =
+                translation_bypass_q;
+            assign misaligned_addr_q = addr_q;
+            assign misaligned_size_q = size_q;
+            assign misaligned_wdata_q = wdata_q;
+
+            openrv64_lsu_misaligned #(
+                .TAG_WIDTH(LSU_TAG_WIDTH),
+                .CACHEABLE_BASE(CACHEABLE_BASE),
+                .CACHEABLE_SIZE(CACHEABLE_SIZE)
+            ) u_misaligned (
+                .clk(clk),
+                .rst_n(rst_n),
+                .flush_i(flush_i),
+                .start_valid_i(misaligned_start_valid),
+                .start_ready_o(misaligned_start_ready),
+                .start_write_i(misaligned_store_q),
+                .start_addr_i(misaligned_addr_q),
+                .start_size_i(misaligned_size_q),
+                .start_wdata_i(misaligned_wdata_q),
+                .translation_bypass_i(misaligned_translation_bypass_q),
+                .active_o(misaligned_active),
+                .result_valid_o(misaligned_result_valid),
+                .result_ready_i(misaligned_result_ready),
+                .result_rdata_o(misaligned_result_rdata),
+                .result_access_fault_o(misaligned_result_access_fault),
+                .result_page_fault_o(misaligned_result_page_fault),
+                .result_fault_addr_o(misaligned_result_fault_addr),
+                .xlate_valid_o(misaligned_xlate_valid),
+                .xlate_ready_i(misaligned_xlate_ready),
+                .xlate_tag_o(misaligned_xlate_tag),
+                .xlate_write_o(misaligned_xlate_write),
+                .xlate_vaddr_o(misaligned_xlate_vaddr),
+                .xlate_resp_valid_i(xlate_resp_valid_i &&
+                                    misaligned_active),
+                .xlate_resp_ready_o(misaligned_xlate_resp_ready),
+                .xlate_resp_tag_i(xlate_resp_tag_i),
+                .xlate_resp_paddr_i(xlate_resp_paddr_i),
+                .xlate_resp_access_fault_i(xlate_resp_access_fault_i),
+                .xlate_resp_page_fault_i(xlate_resp_page_fault_i),
+                .mem_valid_o(misaligned_mem_valid),
+                .mem_ready_i(misaligned_mem_ready),
+                .mem_tag_o(misaligned_mem_tag),
+                .mem_write_o(misaligned_mem_write),
+                .mem_addr_o(misaligned_mem_addr),
+                .mem_wdata_o(misaligned_mem_wdata),
+                .mem_wstrb_o(misaligned_mem_wstrb),
+                .mem_effective_addr_o(misaligned_mem_effective_addr),
+                .mem_size_o(misaligned_mem_size),
+                .mem_resp_valid_i(mem_resp_valid_i &&
+                                  misaligned_active),
+                .mem_resp_ready_o(misaligned_mem_resp_ready),
+                .mem_resp_tag_i(mem_resp_tag_i),
+                .mem_rdata_i(mem_rdata_i),
+                .mem_error_i(mem_error_i),
+                .mem_page_fault_i(mem_page_fault_i),
+                .mem_store_done_valid_i(mem_store_done_valid_i &&
+                                        misaligned_active),
+                .mem_store_done_ready_o(misaligned_store_done_ready),
+                .mem_store_done_tag_i(mem_store_done_tag_i)
+            );
+
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    id_q <=
+                        {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+                    slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
+                    meta_q <=
+                        {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+                    pending_q <= 1'b0;
+                    store_q <= 1'b0;
+                    translation_bypass_q <= 1'b0;
+                    addr_q <= {`RV64_XLEN{1'b0}};
+                    size_q <= 3'd0;
+                    wdata_q <= {`RV64_XLEN{1'b0}};
+                end else begin
+                    if (misaligned_accept) begin
+                        pending_q <= 1'b1;
+                        id_q <= misaligned_store_accept ?
+                            store_issue_id_i : load_issue_id_i;
+                        slot_q <= misaligned_store_accept ?
+                            store_issue_slot_i : load_issue_slot_i;
+                        meta_q <= misaligned_store_accept ?
+                            store_issue_payload_i :
+                            load_issue_payload_i;
+                        store_q <= misaligned_store_accept;
+                        translation_bypass_q <=
+                            translation_bypass_i;
+                        addr_q <= misaligned_store_accept ?
+                            store_effective_addr :
+                            (load_rs1_data + load_imm);
+                        size_q <= misaligned_store_accept ?
+                            {1'b0, store_instr[13:12]} :
+                            {1'b0, load_instr[13:12]};
+                        wdata_q <= store_rs2_data;
+                    end
+                    if (misaligned_start_fire)
+                        pending_q <= 1'b0;
+                end
+            end
+        end else begin : g_no_zicclsm
+            assign misaligned_start_ready = 1'b0;
+            assign misaligned_active = 1'b0;
+            assign misaligned_result_valid = 1'b0;
+            assign misaligned_result_rdata = {`RV64_XLEN{1'b0}};
+            assign misaligned_result_access_fault = 1'b0;
+            assign misaligned_result_page_fault = 1'b0;
+            assign misaligned_result_fault_addr = {`RV64_XLEN{1'b0}};
+            assign misaligned_xlate_valid = 1'b0;
+            assign misaligned_xlate_tag = {LSU_TAG_WIDTH{1'b0}};
+            assign misaligned_xlate_write = 1'b0;
+            assign misaligned_xlate_vaddr = {`RV64_XLEN{1'b0}};
+            assign misaligned_xlate_resp_ready = 1'b0;
+            assign misaligned_mem_valid = 1'b0;
+            assign misaligned_mem_tag = {LSU_TAG_WIDTH{1'b0}};
+            assign misaligned_mem_write = 1'b0;
+            assign misaligned_mem_addr = {`RV64_XLEN{1'b0}};
+            assign misaligned_mem_wdata = {`RV64_XLEN{1'b0}};
+            assign misaligned_mem_wstrb = 8'h00;
+            assign misaligned_mem_effective_addr =
+                {`RV64_XLEN{1'b0}};
+            assign misaligned_mem_size = 3'd0;
+            assign misaligned_mem_resp_ready = 1'b0;
+            assign misaligned_store_done_ready = 1'b0;
+
+            assign misaligned_id_q =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign misaligned_slot_q = {RETIRE_SLOT_WIDTH{1'b0}};
+            assign misaligned_meta_q =
+                {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+            assign misaligned_pending_q = 1'b0;
+            assign misaligned_store_q = 1'b0;
+            assign misaligned_translation_bypass_q = 1'b0;
+            assign misaligned_addr_q = {`RV64_XLEN{1'b0}};
+            assign misaligned_size_q = 3'd0;
+            assign misaligned_wdata_q = {`RV64_XLEN{1'b0}};
+        end
+    endgenerate
+
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (rst_n && misaligned_load_accept &&
+            misaligned_store_accept)
+            $fatal(1,
+                "3P LSU accepted two ordered misaligned operations");
+    end
+`endif
+
+    assign xlate_valid_o = misaligned_active ?
+                           misaligned_xlate_valid : lsq_xlate_valid;
+    assign xlate_tag_o = misaligned_active ?
+                         misaligned_xlate_tag : lsq_xlate_tag;
+    assign xlate_write_o = misaligned_active ?
+                           misaligned_xlate_write : lsq_xlate_write;
+    assign xlate_vaddr_o = misaligned_active ?
+                           misaligned_xlate_vaddr : lsq_xlate_vaddr;
+    assign misaligned_xlate_ready = misaligned_active && xlate_ready_i;
+    assign lsq_xlate_ready = !misaligned_active && xlate_ready_i;
+    assign xlate_resp_ready_o = misaligned_active ?
+        misaligned_xlate_resp_ready : lsq_xlate_resp_ready;
+
+    assign store_pending_o = lsq_store_pending ||
+        ((misaligned_pending_q || misaligned_active) &&
+         misaligned_store_q);
 
     wire clear_atomic_reservation =
         lsq_result_valid && lsq_result_ready && lsq_result_store;
@@ -397,7 +716,7 @@ module openrv64_exec_lsu #(
         .mem_wstrb_o(atomic_mem_wstrb),
         .mem_effective_addr_o(atomic_effective_addr),
         .mem_size_o(atomic_access_size),
-        .mem_resp_valid_i(mem_resp_valid_i),
+        .mem_resp_valid_i(mem_resp_valid_i && !misaligned_active),
         .mem_resp_claim_o(atomic_resp_claim),
         .mem_resp_ready_o(atomic_resp_ready),
         .mem_resp_tag_i(mem_resp_tag_i),
@@ -417,27 +736,40 @@ module openrv64_exec_lsu #(
         .done_o(atomic_done)
     );
 
-    assign lsq_resp_valid = mem_resp_valid_i && !atomic_resp_claim;
-    assign mem_resp_ready_o = atomic_resp_claim ? atomic_resp_ready :
-                              lsq_resp_ready;
+    assign lsq_resp_valid = mem_resp_valid_i &&
+                            !misaligned_active &&
+                            !atomic_resp_claim;
+    assign mem_resp_ready_o = misaligned_active ?
+        misaligned_mem_resp_ready :
+        atomic_resp_claim ? atomic_resp_ready : lsq_resp_ready;
+    assign mem_store_done_ready_o = misaligned_active ?
+        misaligned_store_done_ready : lsq_store_done_ready;
 
-    assign mem_valid_o = atomic_active ? atomic_mem_valid : lsq_req_valid;
-    assign mem_tag_o = atomic_active ? atomic_mem_tag : lsq_req_tag;
+    assign mem_valid_o = misaligned_active ? misaligned_mem_valid :
+                         atomic_active ? atomic_mem_valid : lsq_req_valid;
+    assign mem_tag_o = misaligned_active ? misaligned_mem_tag :
+                       atomic_active ? atomic_mem_tag : lsq_req_tag;
     assign mem_xlate_only_o = 1'b0;
-    assign mem_physical_o = !atomic_active;
-    assign mem_lock_o = atomic_active ? atomic_mem_lock : 1'b0;
-    assign mem_write_o = atomic_active ? atomic_mem_write :
-                         lsq_req_write;
-    assign mem_addr_o = atomic_active ? atomic_mem_addr : lsq_req_addr;
-    assign mem_wdata_o = atomic_active ? atomic_mem_wdata :
-                         lsq_req_wdata;
-    assign mem_wstrb_o = atomic_active ? atomic_mem_wstrb :
-                         lsq_req_wstrb;
+    assign mem_physical_o = misaligned_active || !atomic_active;
+    assign mem_lock_o = misaligned_active ? 1'b0 :
+                        atomic_active ? atomic_mem_lock : 1'b0;
+    assign mem_write_o = misaligned_active ? misaligned_mem_write :
+                         atomic_active ? atomic_mem_write : lsq_req_write;
+    assign mem_addr_o = misaligned_active ? misaligned_mem_addr :
+                        atomic_active ? atomic_mem_addr : lsq_req_addr;
+    assign mem_wdata_o = misaligned_active ? misaligned_mem_wdata :
+                         atomic_active ? atomic_mem_wdata : lsq_req_wdata;
+    assign mem_wstrb_o = misaligned_active ? misaligned_mem_wstrb :
+                         atomic_active ? atomic_mem_wstrb : lsq_req_wstrb;
     assign mem_access_o = mem_valid_o;
-    assign mem_effective_addr_o = atomic_active ?
-                                  atomic_effective_addr : lsq_req_vaddr;
-    assign mem_size_o = atomic_active ? atomic_access_size : lsq_req_size;
-    assign lsq_req_ready = !atomic_active && mem_ready_i;
+    assign mem_effective_addr_o = misaligned_active ?
+        misaligned_mem_effective_addr :
+        atomic_active ? atomic_effective_addr : lsq_req_vaddr;
+    assign mem_size_o = misaligned_active ? misaligned_mem_size :
+                        atomic_active ? atomic_access_size : lsq_req_size;
+    assign misaligned_mem_ready = misaligned_active && mem_ready_i;
+    assign lsq_req_ready = !misaligned_active &&
+                           !atomic_active && mem_ready_i;
 
     reg complete_valid_q;
     reg complete_store_q;
@@ -447,12 +779,21 @@ module openrv64_exec_lsu #(
     wire output_available = !complete_valid_q || complete_ready_i;
     assign atomic_result_ready = output_available;
     wire atomic_result_fire = atomic_result_valid && atomic_result_ready;
-    assign lsq_result_ready = output_available && !atomic_result_valid;
+    assign misaligned_result_ready = output_available &&
+                                     !atomic_result_valid;
+    wire misaligned_result_fire =
+        misaligned_result_valid && misaligned_result_ready;
+    assign lsq_result_ready = output_available &&
+                              !atomic_result_valid &&
+                              !misaligned_result_valid;
     wire lsq_result_fire = lsq_result_valid && lsq_result_ready;
 
     wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] completion_source =
-        atomic_result_valid ? atomic_result_meta : lsq_result_meta;
+        atomic_result_valid ? atomic_result_meta :
+        misaligned_result_valid ? misaligned_meta_q : lsq_result_meta;
     wire completion_is_atomic = atomic_result_valid;
+    wire completion_is_misaligned =
+        !completion_is_atomic && misaligned_result_valid;
     wire [`RV64_INSTR_WIDTH-1:0] completion_instr =
         completion_source[I_INSTR +: `RV64_INSTR_WIDTH];
     wire [`RV64_XLEN-1:0] completion_pc =
@@ -516,21 +857,27 @@ module openrv64_exec_lsu #(
 
     wire load_misaligned = completion_mem_read &&
         (completion_is_atomic ? atomic_misaligned :
+         completion_is_misaligned ? 1'b0 :
                                 completion_lsu_misaligned);
     wire store_misaligned = completion_mem_write &&
         (completion_is_atomic ? atomic_misaligned :
+         completion_is_misaligned ? 1'b0 :
                                 completion_lsu_misaligned);
     wire load_access_fault = completion_mem_read &&
         (completion_is_atomic ? atomic_access_fault :
+         completion_is_misaligned ? misaligned_result_access_fault :
                                 lsq_result_access_fault);
     wire store_access_fault = completion_mem_write &&
         (completion_is_atomic ? atomic_access_fault :
+         completion_is_misaligned ? misaligned_result_access_fault :
                                 lsq_result_access_fault);
     wire load_page_fault = completion_mem_read &&
         (completion_is_atomic ? atomic_page_fault :
+         completion_is_misaligned ? misaligned_result_page_fault :
                                 lsq_result_page_fault);
     wire store_page_fault = completion_mem_write &&
         (completion_is_atomic ? atomic_page_fault :
+         completion_is_misaligned ? misaligned_result_page_fault :
                                 lsq_result_page_fault);
     wire result_illegal = completion_illegal_input ||
         (completion_is_atomic ? atomic_illegal :
@@ -556,7 +903,11 @@ module openrv64_exec_lsu #(
         .priv_mode_i(completion_priv),
         .pc_i(completion_pc),
         .instr_i(completion_instr),
-        .badaddr_i(completion_effective_addr),
+        .badaddr_i((completion_is_misaligned &&
+                    (misaligned_result_access_fault ||
+                     misaligned_result_page_fault)) ?
+                   misaligned_result_fault_addr :
+                   completion_effective_addr),
         .exception_o(exception),
         .halt_o(halt),
         .cause_o(cause),
@@ -565,6 +916,9 @@ module openrv64_exec_lsu #(
 
     wire [`RV64_XLEN-1:0] result_data =
         completion_is_atomic ? atomic_result :
+        completion_is_misaligned && completion_mem_read ?
+        format_misaligned_load(completion_lsu_op,
+                               misaligned_result_rdata) :
         completion_mem_read ? completion_load_data :
         {`RV64_XLEN{1'b0}};
     wire completion_reg_write = completion_reg_write_intent &&
@@ -626,6 +980,13 @@ module openrv64_exec_lsu #(
                 complete_slot_q <= atomic_result_slot;
                 complete_payload_q <= completion_data;
                 complete_store_q <= 1'b1;
+            end else if (misaligned_result_fire) begin
+                complete_valid_q <= 1'b1;
+                complete_id_q <= misaligned_id_q;
+                complete_slot_q <= misaligned_slot_q;
+                complete_payload_q <= completion_data;
+                // The ordered component sequence is irrevocable once started.
+                complete_store_q <= 1'b1;
             end
         end else begin
             if (complete_valid_q && complete_ready_i) begin
@@ -637,6 +998,12 @@ module openrv64_exec_lsu #(
                 complete_valid_q <= 1'b1;
                 complete_id_q <= atomic_result_id;
                 complete_slot_q <= atomic_result_slot;
+                complete_payload_q <= completion_data;
+                complete_store_q <= 1'b1;
+            end else if (misaligned_result_fire) begin
+                complete_valid_q <= 1'b1;
+                complete_id_q <= misaligned_id_q;
+                complete_slot_q <= misaligned_slot_q;
                 complete_payload_q <= completion_data;
                 complete_store_q <= 1'b1;
             end else if (lsq_result_fire) begin

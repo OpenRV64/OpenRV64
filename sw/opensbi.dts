@@ -24,9 +24,15 @@
             reg = <0>;
             status = "okay";
             compatible = "riscv";
+#ifdef OPENRV64_ZICCLSM
+            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
+#else
             riscv,isa = "rv64ima_svade_zicsr_zifencei";
             riscv,isa-base = "rv64i";
             riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
+#endif
             mmu-type = "riscv,sv39";
 
             cpu0_intc: interrupt-controller {

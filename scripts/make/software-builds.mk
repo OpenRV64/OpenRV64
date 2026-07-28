@@ -125,6 +125,23 @@ $(MEMCPY_SWEEP_BIN): $(MEMCPY_SWEEP_ELF)
 $(MEMCPY_SWEEP_DISASM): $(MEMCPY_SWEEP_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(MEMCPY_ZICCLSM_SWEEP_ELF): $(OPENRV64_MAKEFILES) \
+		sw/memcpy/memcpy_sweep.S sw/memcpy/memcpy-linux.S \
+		sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
+		-DOPENRV64_MEMCPY_BENCH=1 \
+		-DMEMCPY_SWEEP_LINUX=1 \
+		-DCONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS=1 \
+		-Wl,--build-id=none,-Map,$(MEMCPY_ZICCLSM_SWEEP_MAP) \
+		-T sw/openrv64.ld -o $@ sw/memcpy/memcpy_sweep.S
+
+$(MEMCPY_ZICCLSM_SWEEP_BIN): $(MEMCPY_ZICCLSM_SWEEP_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(MEMCPY_ZICCLSM_SWEEP_DISASM): $(MEMCPY_ZICCLSM_SWEEP_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(L1I_COREMARK_MEMH): $(COREMARK_LOOP_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ --size 0x800 --word-bytes 64
 

@@ -74,6 +74,12 @@ when their parameters are enabled.
 
 - RV64I integer, control-flow, load/store, and word operations are integrated.
 - Zicsr and Zifencei behavior is integrated.
+- The 3P LSU implements Zicclsm for ordinary scalar loads and stores to
+  cacheable, coherent main memory. It serializes misaligned accesses at the
+  ordered head and decomposes them into naturally aligned 1-, 2-, or 4-byte
+  operations. The 3P `ENABLE_ZICCLSM` parameter defaults to one; setting it to
+  zero restores address-misaligned exceptions. The 1P core does not implement
+  or advertise Zicclsm.
 - RV64A is implemented and enabled by default. Atomics are serialized through
   the MEM lane; the AXI requester does not use AXI exclusive transactions.
 - RV64M is implemented by the EX0 lane but disabled by default at the public

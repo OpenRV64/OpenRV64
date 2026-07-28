@@ -10,9 +10,11 @@ high-visibility Linux test. Run commands from the repository root:
 The reference configuration is the three-pipe platform core with BP type 6,
 a one-entry issue window, speculation enabled, a 16-entry retirement window,
 a four-entry pre-retire store queue, a 256 KiB eight-way L2, L1D prefetching,
-a 256-bit AXI generic-bus backend, 256 MiB of RAM, and one Verilator thread.
-Do not silently substitute a different configuration and compare its timing
-as though it were the same test.
+a 256-bit AXI generic-bus backend, Zicclsm enabled, 256 MiB of RAM, and one
+Verilator thread. `OPENSBI_3P_ENABLE_ZICCLSM` defaults to one and controls both
+the 3P RTL parameter and its FDT advertisement. Do not silently substitute a
+different configuration and compare its timing as though it were the same
+test.
 
 ## Preserve evidence
 
@@ -27,6 +29,42 @@ as though it were the same test.
   debugging an unrelated failure. Threaded execution is a separate experiment
   and has previously failed early.
 
+For a new reset run, prefer the retained wrapper over a hand-written build and
+simulator command:
+
+```bash
+tools/run-linux-3p.sh -j8 \
+  --name zicclsm-linux-boot \
+  --comment "Full reset boot using the Zicclsm kernel and current dirty RTL." \
+  LINUX_IMAGE=sw/Image.Zicclsm \
+  OPENSBI_3P_ENABLE_ZICCLSM=1 \
+  OPENSBI_3P_PLATFORM_BP_TYPE=8 \
+  OPENSBI_3P_PLATFORM_RETIRE_DEPTH=32 \
+  OPENSBI_3P_PLATFORM_DDR3_ENABLE=1
+```
+
+It requires a test `--name` and a `--comment` explaining the purpose and known
+repository state. The comment is preserved verbatim in `comment.txt` and both
+log headers. It accepts Make-style `NAME=value` overrides and forces a fresh
+simulator, OpenSBI, DTB, and Linux memh build by default. Each invocation
+creates a unique directory under `build/runs/linux-3p/`. Its `build.log` begins
+with the exact effective Make values, Git/dirty-tree fingerprints, tool
+versions, the build command, and a hash of the complete source-input manifest.
+Build output and its exit status are retained even when configuration
+resolution or compilation fails. After a successful build,
+`artifacts.sha256` records the simulator, kernel, generated memh, firmware, and
+DTB identities. The simulator, source kernel image, firmware, and DTB are
+snapshotted under the run's `inputs/` directory before the shared build lock is
+released, and the run consumes those private copies. `run.log` records the
+exact simulator command and exit status.
+
+The wrapper defaults to 200 million cycles and a non-terminating checkpoint at
+50 million cycles. Override those with `LINUX_MAX_CYCLES=N` and
+`OPENSBI_3P_PLATFORM_CHECKPOINT_CYCLES=N`. Use `--build-only` to stop after
+building, `--manifest-only` to inspect the resolved record without building,
+or `--no-force` only when intentional incremental reuse is part of the
+experiment. Simulator plusargs may follow `--`.
+
 ## Inputs
 
 The reset run loads these files:
@@ -35,7 +73,7 @@ The reset run loads these files:
 build/opensbi/artifacts/trampoline.memh
 build/opensbi/artifacts/fw_jump.memh
 build/opensbi/artifacts/linux-image.memh
-build/opensbi/artifacts/openrv64-dtb.memh
+build/opensbi/artifacts/openrv64-3p-dtb.memh
 ```
 
 `sw/Image` is the source Linux image used to generate
@@ -46,7 +84,7 @@ make -j8 opensbi build/opensbi/artifacts/linux-image.memh
 test -s build/opensbi/artifacts/trampoline.memh
 test -s build/opensbi/artifacts/fw_jump.memh
 test -s build/opensbi/artifacts/linux-image.memh
-test -s build/opensbi/artifacts/openrv64-dtb.memh
+test -s build/opensbi/artifacts/openrv64-3p-dtb.memh
 ```
 
 Do not assume `sw/Image` belongs to the current kernel merely because it
@@ -118,7 +156,7 @@ stdbuf -oL -eL "$SIM" \
   +firmware_memh=build/opensbi/artifacts/fw_jump.memh \
   +payload_memh=build/opensbi/artifacts/linux-image.memh \
   +payload_words=2097152 \
-  +fdt_memh=build/opensbi/artifacts/openrv64-dtb.memh \
+  +fdt_memh=build/opensbi/artifacts/openrv64-3p-dtb.memh \
   +linux_mode \
   +max_cycles=200000000 \
   2>&1 |
@@ -144,7 +182,7 @@ running the watcher:
   +firmware_memh=build/opensbi/artifacts/fw_jump.memh \
   +payload_memh=build/opensbi/artifacts/linux-image.memh \
   +payload_words=2097152 \
-  +fdt_memh=build/opensbi/artifacts/openrv64-dtb.memh \
+  +fdt_memh=build/opensbi/artifacts/openrv64-3p-dtb.memh \
   +linux_mode +max_cycles=200000000 \
   > "build/logs/$RUN.log" 2>&1
 ```
@@ -188,7 +226,7 @@ mkdir -p build/checkpoints build/logs
   +firmware_memh=build/opensbi/artifacts/fw_jump.memh \
   +payload_memh=build/opensbi/artifacts/linux-image.memh \
   +payload_words=2097152 \
-  +fdt_memh=build/opensbi/artifacts/openrv64-dtb.memh \
+  +fdt_memh=build/opensbi/artifacts/openrv64-3p-dtb.memh \
   +linux_mode +max_cycles=200000000 \
   +checkpoint="build/checkpoints/$RUN.vls" \
   +checkpoint_cycles=140000000 \

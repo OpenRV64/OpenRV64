@@ -438,12 +438,20 @@ module tb_ccx_l1i;
     endtask
 
     task automatic pulse_invalidate;
+        integer cycles;
         begin
             @(negedge clk);
             icache_invalidate = 1'b1;
             @(posedge clk);
             @(negedge clk);
             icache_invalidate = 1'b0;
+            cycles = 0;
+            while (dut.l1i_invalidate_pending_q && cycles < 400) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            if (dut.l1i_invalidate_pending_q)
+                $fatal(1, "L1I invalidation did not drain");
         end
     endtask
 
@@ -516,8 +524,11 @@ module tb_ccx_l1i;
         before_count = ccx_count_q;
         issue_fetch(64'h20, memory[0][511:256], 1'b0,
                     "upper-half cold miss");
-        if ((ccx_count_q - before_count) != 1)
-            $fatal(1, "cold miss was not one native CCX line");
+        wait_for_ccx_count(before_count + 2,
+                           "cold demand plus next-line prefetch");
+        repeat (20) @(negedge clk);
+        if ((ccx_count_q - before_count) != 2)
+            $fatal(1, "demand did not issue exactly one next-line prefetch");
         before_count = ccx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "lower-half resident hit");
@@ -543,7 +554,7 @@ module tb_ccx_l1i;
         expect_fetch_only(64'h20, memory[0][511:256],
                           "multi-hit response 3");
         if (ccx_count_q != before_count)
-            $fatal(1, "resident multi-hit traffic escaped onto CCX");
+            $fatal(1, "resident multi-hit traffic duplicated prefetch");
 
         // Four distinct cold lines must cross CCX before any response is
         // released.  Return transaction IDs in descending order and verify
@@ -636,15 +647,21 @@ module tb_ccx_l1i;
                           "merged miss response lower");
         expect_fetch_only(64'h20, memory[0][511:256],
                           "merged miss response upper");
+        wait_for_ccx_count(before_count + 2,
+                           "merged demand next-line prefetch");
 
         // A resident hit behind an unresolved miss must bypass it all the way
         // back to fetch.  Keeping the miss response held proves this is not
         // merely multiple CCX requests followed by ordered completion.
+        pulse_invalidate();
+        before_count = ccx_count_q;
         issue_fetch(64'h100, memory[4][255:0], 1'b0,
                     "prime hit-under-miss resident line");
+        wait_for_ccx_count(before_count + 2,
+                           "hit-under-miss prime and next line");
         before_count = ccx_count_q;
         hold_ccx_responses = 1'b1;
-        push_fetch_only(64'h140);
+        push_fetch_only(64'h180);
         wait_for_ccx_count(before_count + 1,
                            "hit-under-miss outstanding line");
         push_fetch_only(64'h100);
@@ -653,18 +670,29 @@ module tb_ccx_l1i;
         if (!held_response_found)
             $fatal(1, "hit-under-miss test lost held miss response");
         hold_ccx_responses = 1'b0;
-        expect_fetch_only(64'h140, memory[5][255:0],
+        expect_fetch_only(64'h180, memory[6][255:0],
                           "outstanding miss completed after bypass hit");
+        wait_for_ccx_count(before_count + 2,
+                           "hit-under-miss next-line prefetch");
 
+        pulse_invalidate();
+        before_count = ccx_count_q;
+        issue_fetch(64'h00, memory[0][255:0], 1'b0,
+                    "prime pre-fence resident line");
+        wait_for_ccx_count(before_count + 2,
+                           "pre-fence prime and next line");
         stale_lower = memory[0][255:0];
         memory[0][255:0] = 256'hface_cafe;
+        before_count = ccx_count_q;
         issue_fetch(64'h00, stale_lower, 1'b0, "pre-fence stale hit");
+        if (ccx_count_q != before_count)
+            $fatal(1, "resident stale hit duplicated next-line prefetch");
         pulse_invalidate();
         before_count = ccx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "post-fence refill");
-        if ((ccx_count_q - before_count) != 1)
-            $fatal(1, "FENCE.I did not force one-line refill");
+        wait_for_ccx_count(before_count + 2,
+                           "post-fence refill plus next line");
 
         pmp_allow = 1'b0;
         before_count = ccx_count_q;
@@ -688,8 +716,8 @@ module tb_ccx_l1i;
         before_count = ccx_count_q;
         issue_fetch(64'h80, memory[2][255:0], 1'b0,
                     "held invalidation refetch");
-        if ((ccx_count_q - before_count) != 1)
-            $fatal(1, "in-flight FENCE.I invalidation was dropped");
+        wait_for_ccx_count(before_count + 2,
+                           "held invalidation refetch plus next line");
 
         pulse_invalidate();
         before_count = ccx_count_q;
@@ -701,8 +729,8 @@ module tb_ccx_l1i;
                     "taken prefetch demand hit");
         issue_fetch(64'h1a0, memory[6][511:256], 1'b0,
                     "fallthrough prefetch demand hit");
-        if (ccx_count_q != before_count)
-            $fatal(1, "prefetched branch path missed in L1I");
+        wait_for_ccx_count(before_count + 2,
+                           "branch-path demand next-line prefetches");
 
         pulse_invalidate();
         before_count = ccx_count_q;

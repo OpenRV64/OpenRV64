@@ -89,7 +89,8 @@ sim-atomic-soc: $(CORE_3P_CCX_L2_VERILATOR_BUILD) $(ATOMIC_SOC_MEMH)
 		+max_cycles=$(ATOMIC_SOC_MAX_CYCLES) \
 		+expect_a0=$(ATOMIC_SOC_PASS)
 
-sw-memcpy: sw-memcpy-4k sw-memcpy-64k sw-memcpy-sweep
+sw-memcpy: sw-memcpy-4k sw-memcpy-64k sw-memcpy-sweep \
+	sw-memcpy-zicclsm-sweep
 
 sw-memcpy-4k: $(MEMCPY_4K_ELF) $(MEMCPY_4K_BIN) \
 	$(MEMCPY_4K_DISASM)
@@ -100,7 +101,11 @@ sw-memcpy-64k: $(MEMCPY_64K_ELF) $(MEMCPY_64K_BIN) \
 sw-memcpy-sweep: $(MEMCPY_SWEEP_ELF) $(MEMCPY_SWEEP_BIN) \
 	$(MEMCPY_SWEEP_DISASM)
 
-sim-memcpy: sim-memcpy-4k sim-memcpy-64k sim-memcpy-sweep
+sw-memcpy-zicclsm-sweep: $(MEMCPY_ZICCLSM_SWEEP_ELF) \
+	$(MEMCPY_ZICCLSM_SWEEP_BIN) $(MEMCPY_ZICCLSM_SWEEP_DISASM)
+
+sim-memcpy: sim-memcpy-4k sim-memcpy-64k sim-memcpy-sweep \
+	sim-memcpy-zicclsm-sweep
 
 sim-memcpy-4k: $(MEMCPY_4K_ELF)
 	$(MAKE) sim-prefetch-3p-perf \
@@ -128,7 +133,10 @@ sim-memcpy-64k: $(MEMCPY_64K_ELF)
 
 sim-memcpy-sweep: bench-memcpy-sweep
 
-bench-memcpy: bench-memcpy-4k bench-memcpy-64k bench-memcpy-sweep
+sim-memcpy-zicclsm-sweep: bench-memcpy-zicclsm-sweep
+
+bench-memcpy: bench-memcpy-4k bench-memcpy-64k bench-memcpy-sweep \
+	bench-memcpy-zicclsm-sweep
 
 bench-memcpy-4k: $(MEMCPY_4K_ELF)
 	test -n "$(MEMCPY_4K_MEASURE_END)"
@@ -168,6 +176,19 @@ bench-memcpy-sweep: $(MEMCPY_SWEEP_ELF)
 		AXI_3P_PERF_ARGS="+memh_words=$(MEMCPY_SWEEP_MEMH_WORDS) +expect_a0=$(MEMCPY_PASS) +memcpy_report_pc=$(MEMCPY_SWEEP_REPORT_PC) +memcpy_report_expected=$(MEMCPY_SWEEP_REPORTS)" \
 		AXI_3P_TRACE_CSV=sim/memcpy-sweep-trace.csv \
 		AXI_3P_TRACE_REPORT=sim/memcpy-sweep-pipeline.txt
+
+bench-memcpy-zicclsm-sweep: $(MEMCPY_ZICCLSM_SWEEP_ELF)
+	test -n "$(MEMCPY_ZICCLSM_SWEEP_REPORT_PC)"
+	$(MAKE) sim-prefetch-3p-perf \
+		AXI_3P_PERF_PIPELINE_TRACE=$(PREFETCH_PIPELINE_TRACE) \
+		AXI_3P_PERF_ELF=$(MEMCPY_ZICCLSM_SWEEP_ELF) \
+		AXI_3P_PERF_BIN=sim/memcpy-zicclsm-sweep.bin \
+		AXI_3P_PERF_MEMH=sim/memcpy-zicclsm-sweep.memh \
+		AXI_3P_PERF_MEMH_BYTES=$(MEMCPY_SWEEP_MEMH_BYTES) \
+		AXI_3P_PERF_MAX_CYCLES=$(MEMCPY_SWEEP_MAX_CYCLES) \
+		AXI_3P_PERF_ARGS="+memh_words=$(MEMCPY_SWEEP_MEMH_WORDS) +expect_a0=$(MEMCPY_PASS) +memcpy_report_pc=$(MEMCPY_ZICCLSM_SWEEP_REPORT_PC) +memcpy_report_expected=$(MEMCPY_SWEEP_REPORTS) +memcpy_native_misaligned" \
+		AXI_3P_TRACE_CSV=sim/memcpy-zicclsm-sweep-trace.csv \
+		AXI_3P_TRACE_REPORT=sim/memcpy-zicclsm-sweep-pipeline.txt
 
 sw-vector-matmul: $(VEC_MATMUL_ELF) $(VEC_MATMUL_BIN) \
 		$(VEC_MATMUL_DISASM)

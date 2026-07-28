@@ -5,8 +5,11 @@
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
+`include "core/except/except-defs.v"
 
-module tb_exec_top_3p;
+module tb_exec_top_3p #(
+    parameter integer ENABLE_ZICCLSM = 1
+);
 
     localparam integer SLOT_WIDTH = 3;
     localparam integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH;
@@ -116,6 +119,9 @@ module tb_exec_top_3p;
     wire [`RV64_XLEN-1:0] mem_effective_addr;
     wire [2:0] mem_size;
     reg [`RV64_XLEN-1:0] mem_rdata;
+    reg mem_store_done_valid;
+    wire mem_store_done_ready;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_store_done_tag;
     wire mem_xlate_valid;
     reg mem_xlate_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag;
@@ -125,6 +131,8 @@ module tb_exec_top_3p;
     wire mem_xlate_resp_ready;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag;
     reg [`RV64_XLEN-1:0] mem_xlate_resp_paddr;
+    reg inject_xlate_page_fault;
+    reg [`RV64_XLEN-1:0] inject_xlate_fault_addr;
     wire mem1_valid;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem1_tag;
     wire mem1_lock;
@@ -140,6 +148,7 @@ module tb_exec_top_3p;
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH),
         .ENABLE_RV64M(1),
         .ENABLE_POSTED_STORES(0),
+        .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .CACHEABLE_BASE(64'h0),
         .CACHEABLE_SIZE({64{1'b1}})
     ) dut (
@@ -188,10 +197,9 @@ module tb_exec_top_3p;
         .mem_resp_valid_i(mem_resp_valid),
         .mem_resp_ready_o(mem_resp_ready),
         .mem_resp_tag_i(mem_resp_tag),
-        .mem_store_done_valid_i(1'b0),
-        .mem_store_done_ready_o(),
-        .mem_store_done_tag_i(
-            {`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .mem_store_done_valid_i(mem_store_done_valid),
+        .mem_store_done_ready_o(mem_store_done_ready),
+        .mem_store_done_tag_i(mem_store_done_tag),
         .mem_resp_paddr_i(mem_resp_paddr),
         .mem_xlate_valid_o(mem_xlate_valid),
         .mem_xlate_ready_i(mem_xlate_ready),
@@ -203,7 +211,9 @@ module tb_exec_top_3p;
         .mem_xlate_resp_tag_i(mem_xlate_resp_tag),
         .mem_xlate_resp_paddr_i(mem_xlate_resp_paddr),
         .mem_xlate_resp_access_fault_i(1'b0),
-        .mem_xlate_resp_page_fault_i(1'b0),
+        .mem_xlate_resp_page_fault_i(
+            inject_xlate_page_fault &&
+            (mem_xlate_resp_paddr == inject_xlate_fault_addr)),
         .mem_error_i(mem_error),
         .mem_page_fault_i(mem_page_fault),
         .mem_access_allowed_i(mem_access_allowed),
@@ -284,7 +294,12 @@ module tb_exec_top_3p;
     reg [ISSUE_WIDTH-1:0] packet;
     integer wait_cycles;
     integer depth_index;
+    integer misaligned_component;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] saved_mem_tag;
+    reg [`RV64_XLEN-1:0] expected_component_addr;
+    reg [2:0] expected_component_size;
+    reg [`RV64_XLEN-1:0] expected_component_data;
+    reg [7:0] expected_component_strobe;
 
     initial begin
         clk = 1'b0;
@@ -319,14 +334,89 @@ module tb_exec_top_3p;
         mem_resp_valid = 1'b0;
         mem_resp_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
         mem_resp_paddr = {`RV64_XLEN{1'b0}};
+        mem_store_done_valid = 1'b0;
+        mem_store_done_tag =
+            {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
         mem_error = 1'b0;
         mem_page_fault = 1'b0;
         mem_access_allowed = 1'b1;
         mem_rdata = 64'h8877_6655_4433_2211;
+        inject_xlate_page_fault = 1'b0;
+        inject_xlate_fault_addr = {`RV64_XLEN{1'b0}};
 
         repeat (3) tick();
         rst_n = 1'b1;
         tick();
+
+        if (!ENABLE_ZICCLSM) begin
+            // With the parameter disabled, ordinary misaligned accesses
+            // retain the base ISA address-misaligned exceptions and must not
+            // reach translation or the physical memory interface.
+            packet = packet_base(64'd200, 64'h8000, 32'h0000_b283);
+            packet[ISSUE_RS1_DATA +: 64] = 64'h7003;
+            packet[ISSUE_RD +: 5] = 5'd5;
+            packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+            packet[ISSUE_MEM_READ] = 1'b1;
+            packet[ISSUE_REG_WRITE] = 1'b1;
+            issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+            issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(40);
+            issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
+            issue_valid = 4'b0100;
+            #1;
+            if (!issue_ready[2])
+                fail("disabled Zicclsm misaligned LD was not accepted");
+            tick();
+            issue_valid = 4'b0000;
+            wait_cycles = 0;
+            while (!complete_valid[2] && (wait_cycles < 20)) begin
+                if (mem_valid || mem_xlate_valid)
+                    fail("disabled Zicclsm misaligned LD reached memory");
+                tick();
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!complete_valid[2] ||
+                !complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION] ||
+                (complete_payload[2*COMPLETE_WIDTH + COMPLETE_CAUSE +: 5] !=
+                 `RV64_EXCEPT_CAUSE_LOAD_ADDR_MISALIGNED) ||
+                (complete_payload[2*COMPLETE_WIDTH + COMPLETE_TVAL +: 64] !=
+                 64'h7003))
+                fail("disabled Zicclsm misaligned LD exception mismatch");
+            complete_ready = 3'b100;
+            tick();
+            complete_ready = 3'b000;
+
+            packet = packet_base(64'd201, 64'h8004, 32'h0020_b023);
+            packet[ISSUE_RS1_DATA +: 64] = 64'h7105;
+            packet[ISSUE_RS2_DATA +: 64] = 64'h0123_4567_89ab_cdef;
+            packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+            packet[ISSUE_MEM_WRITE] = 1'b1;
+            issue_payload[3*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+            issue_id[3*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(41);
+            issue_slot[3*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
+            issue_valid = 4'b1000;
+            #1;
+            if (!issue_ready[3])
+                fail("disabled Zicclsm misaligned SD was not accepted");
+            tick();
+            issue_valid = 4'b0000;
+            wait_cycles = 0;
+            while (!complete_valid[2] && (wait_cycles < 20)) begin
+                if (mem_valid || mem_xlate_valid)
+                    fail("disabled Zicclsm misaligned SD reached memory");
+                tick();
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!complete_valid[2] ||
+                !complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION] ||
+                (complete_payload[2*COMPLETE_WIDTH + COMPLETE_CAUSE +: 5] !=
+                 `RV64_EXCEPT_CAUSE_STORE_ADDR_MISALIGNED) ||
+                (complete_payload[2*COMPLETE_WIDTH + COMPLETE_TVAL +: 64] !=
+                 64'h7105))
+                fail("disabled Zicclsm misaligned SD exception mismatch");
+
+            $display("PASS: ENABLE_ZICCLSM=0 restores 3P misalignment faults");
+            $finish;
+        end
 
         // EX0 base ALU does not require the ordered-head token.
         packet = packet_base(64'd100, 64'h1000, 32'h0050_8193);
@@ -866,6 +956,351 @@ module tb_exec_top_3p;
         if (!issue_ready[3])
             fail("architectural flush did not clear speculative stores");
 
+        // Leave an older aligned load in the LSQ. The ordered misaligned
+        // operation must be accepted into its pending slot, stop new LSU
+        // issue, and wait for the older tag to drain.
+        packet = packet_base(64'd149, 64'h58fc, 32'h0000_b283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h6800;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(29);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd5;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2])
+            fail("older aligned LD was not accepted");
+        tick();
+        issue_valid = 4'b0000;
+        while (!mem_valid) tick();
+        if (mem_addr != 64'h6800)
+            fail("older aligned LD request address mismatch");
+        saved_mem_tag = mem_tag;
+        tick();
+
+        // Zicclsm uses one ordered component-serial engine. Verify a
+        // doubleword load across an aligned 8-byte boundary, including
+        // naturally aligned component sizing, lane extraction, and
+        // little-endian reassembly.
+        packet = packet_base(64'd150, 64'h5900, 32'h0000_b283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7003;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(30);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd6;
+        // A younger store presented on the other LSU port in this cycle must
+        // not enter the LSQ behind the pending ordered operation. It could not
+        // become ordered until the misaligned operation completed, while the
+        // misaligned engine cannot start until the LSQ is empty.
+        packet = packet_base(64'd151, 64'h5904, 32'h0060_3023);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7400;
+        packet[ISSUE_RS2_DATA +: 64] = 64'h0123_4567_89ab_cdef;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+        packet[ISSUE_MEM_WRITE] = 1'b1;
+        issue_payload[3*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[3*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(35);
+        issue_slot[3*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
+        ordered_head_id = ID_WIDTH'(30);
+        ordered_head_slot = 3'd6;
+        issue_valid = 4'b1100;
+        #1;
+        if (!issue_ready[2])
+            fail("ordered misaligned LD was not accepted");
+        if (issue_ready[3])
+            fail("younger same-cycle store entered behind misaligned head");
+        tick();
+        issue_valid = 4'b0000;
+
+        packet = packet_base(64'd154, 64'h5910, 32'h0000_b283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7300;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(34);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
+        issue_valid = 4'b0100;
+        #1;
+        if (issue_ready[2])
+            fail("pending misaligned operation did not stop LSU issue");
+        issue_valid = 4'b0000;
+
+        mem_rdata = 64'h1111_2222_3333_4444;
+        mem_resp_tag = saved_mem_tag;
+        mem_resp_paddr = 64'h6800;
+        mem_resp_valid = 1'b1;
+        complete_ready = 3'b100;
+        tick();
+        mem_resp_valid = 1'b0;
+        while (!complete_valid[2]) tick();
+        if (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(29))
+            fail("older aligned LD completion was lost");
+        tick();
+        complete_ready = 3'b000;
+
+        for (misaligned_component = 0; misaligned_component < 4;
+             misaligned_component = misaligned_component + 1) begin
+            case (misaligned_component)
+                0: begin
+                    expected_component_addr = 64'h7003;
+                    expected_component_size = 3'd0;
+                    expected_component_data =
+                        64'h0000_0000_1100_0000;
+                end
+                1: begin
+                    expected_component_addr = 64'h7004;
+                    expected_component_size = 3'd2;
+                    expected_component_data =
+                        64'h5544_3322_0000_0000;
+                end
+                2: begin
+                    expected_component_addr = 64'h7008;
+                    expected_component_size = 3'd1;
+                    expected_component_data =
+                        64'h0000_0000_0000_7766;
+                end
+                default: begin
+                    expected_component_addr = 64'h700a;
+                    expected_component_size = 3'd0;
+                    expected_component_data =
+                        64'h0000_0000_0088_0000;
+                end
+            endcase
+            wait_cycles = 0;
+            while (!mem_valid && (wait_cycles < 20)) begin
+                tick();
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!mem_valid || !mem_physical || mem_write ||
+                (mem_addr != expected_component_addr) ||
+                (mem_effective_addr != expected_component_addr) ||
+                (mem_size != expected_component_size) ||
+                (mem_wstrb != 8'h00))
+                fail("misaligned LD component request mismatch");
+            saved_mem_tag = mem_tag;
+            tick();
+            mem_rdata = expected_component_data;
+            mem_resp_tag = saved_mem_tag;
+            mem_resp_paddr = mem_addr;
+            mem_resp_valid = 1'b1;
+            #1;
+            if (!mem_resp_ready)
+                fail("misaligned LD component response was blocked");
+            tick();
+            mem_resp_valid = 1'b0;
+        end
+        while (!complete_valid[2]) tick();
+        if (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(30) ||
+            complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION] ||
+            (complete_payload[2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'h8877_6655_4433_2211))
+            fail("misaligned LD completion mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+
+        // Verify that the normal scalar load formatting still applies after
+        // component reassembly.
+        packet = packet_base(64'd153, 64'h590c, 32'h0000_a283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7201;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LW;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(31);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
+        ordered_head_id = ID_WIDTH'(31);
+        ordered_head_slot = 3'd7;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2])
+            fail("ordered misaligned LW was not accepted");
+        tick();
+        issue_valid = 4'b0000;
+        for (misaligned_component = 0; misaligned_component < 3;
+             misaligned_component = misaligned_component + 1) begin
+            case (misaligned_component)
+                0: begin
+                    expected_component_addr = 64'h7201;
+                    expected_component_size = 3'd0;
+                    expected_component_data =
+                        64'h0000_0000_0000_c300;
+                end
+                1: begin
+                    expected_component_addr = 64'h7202;
+                    expected_component_size = 3'd1;
+                    expected_component_data =
+                        64'h0000_0000_a1b2_0000;
+                end
+                default: begin
+                    expected_component_addr = 64'h7204;
+                    expected_component_size = 3'd0;
+                    expected_component_data =
+                        64'h0000_0080_0000_0000;
+                end
+            endcase
+            while (!mem_valid) tick();
+            if (mem_write || (mem_addr != expected_component_addr) ||
+                (mem_size != expected_component_size))
+                fail("misaligned LW component request mismatch");
+            saved_mem_tag = mem_tag;
+            tick();
+            mem_rdata = expected_component_data;
+            mem_resp_tag = saved_mem_tag;
+            mem_resp_paddr = mem_addr;
+            mem_resp_valid = 1'b1;
+            tick();
+            mem_resp_valid = 1'b0;
+        end
+        while (!complete_valid[2]) tick();
+        if (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(31) ||
+            complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION] ||
+            (complete_payload[2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'hffff_ffff_80a1_b2c3))
+            fail("misaligned signed LW completion mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+
+        // Stores use the same engine and place each source component in the
+        // physical bus lanes selected by its translated address.
+        packet = packet_base(64'd151, 64'h5904, 32'h0020_b023);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7105;
+        packet[ISSUE_RS2_DATA +: 64] = 64'h0123_4567_89ab_cdef;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+        packet[ISSUE_MEM_WRITE] = 1'b1;
+        issue_payload[3*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[3*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(32);
+        issue_slot[3*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
+        ordered_head_id = ID_WIDTH'(32);
+        ordered_head_slot = 3'd7;
+        issue_valid = 4'b1000;
+        #1;
+        if (!issue_ready[3])
+            fail("ordered misaligned SD was not accepted");
+        tick();
+        issue_valid = 4'b0000;
+        for (misaligned_component = 0; misaligned_component < 4;
+             misaligned_component = misaligned_component + 1) begin
+            case (misaligned_component)
+                0: begin
+                    expected_component_addr = 64'h7105;
+                    expected_component_size = 3'd0;
+                    expected_component_strobe = 8'h20;
+                    expected_component_data =
+                        64'h0000_ef00_0000_0000;
+                end
+                1: begin
+                    expected_component_addr = 64'h7106;
+                    expected_component_size = 3'd1;
+                    expected_component_strobe = 8'hc0;
+                    expected_component_data =
+                        64'habcd_0000_0000_0000;
+                end
+                2: begin
+                    expected_component_addr = 64'h7108;
+                    expected_component_size = 3'd2;
+                    expected_component_strobe = 8'h0f;
+                    expected_component_data =
+                        64'h0000_0000_2345_6789;
+                end
+                default: begin
+                    expected_component_addr = 64'h710c;
+                    expected_component_size = 3'd0;
+                    expected_component_strobe = 8'h10;
+                    expected_component_data =
+                        64'h0000_0001_0000_0000;
+                end
+            endcase
+            wait_cycles = 0;
+            while (!mem_valid && (wait_cycles < 20)) begin
+                tick();
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!mem_valid || !mem_physical || !mem_write ||
+                (mem_addr != expected_component_addr) ||
+                (mem_effective_addr != expected_component_addr) ||
+                (mem_size != expected_component_size) ||
+                (mem_wstrb != expected_component_strobe) ||
+                (mem_wdata != expected_component_data)) begin
+                $display("misaligned SD component=%0d addr=%h/%h size=%0d/%0d wstrb=%h/%h wdata=%h/%h",
+                         misaligned_component,
+                         mem_addr, expected_component_addr,
+                         mem_size, expected_component_size,
+                         mem_wstrb, expected_component_strobe,
+                         mem_wdata, expected_component_data);
+                fail("misaligned SD component request mismatch");
+            end
+            saved_mem_tag = mem_tag;
+            tick();
+            mem_store_done_tag = saved_mem_tag;
+            mem_store_done_valid = 1'b1;
+            #1;
+            if (!mem_store_done_ready)
+                fail("misaligned SD component completion was blocked");
+            tick();
+            mem_store_done_valid = 1'b0;
+        end
+        while (!complete_valid[2]) tick();
+        if (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(32) ||
+            complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION] ||
+            complete_payload[2*COMPLETE_WIDTH + COMPLETE_REG_WRITE])
+            fail("misaligned SD completion mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+
+        // A later component can fault after earlier bytes completed. The trap
+        // value names the failing component address rather than the original
+        // misaligned base.
+        inject_xlate_page_fault = 1'b1;
+        inject_xlate_fault_addr = 64'h8000;
+        packet = packet_base(64'd152, 64'h5908, 32'h0000_a283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7fff;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LW;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(33);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
+        ordered_head_id = ID_WIDTH'(33);
+        ordered_head_slot = 3'd0;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2])
+            fail("page-crossing misaligned LW was not accepted");
+        tick();
+        issue_valid = 4'b0000;
+        while (!mem_valid) tick();
+        if (mem_addr != 64'h7fff)
+            fail("page-crossing LW first byte address mismatch");
+        saved_mem_tag = mem_tag;
+        tick();
+        mem_rdata = 64'h5a00_0000_0000_0000;
+        mem_resp_tag = saved_mem_tag;
+        mem_resp_valid = 1'b1;
+        tick();
+        mem_resp_valid = 1'b0;
+        while (!complete_valid[2]) tick();
+        if (!complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION] ||
+            (complete_payload[2*COMPLETE_WIDTH + COMPLETE_CAUSE +: 5] !=
+             `RV64_EXCEPT_CAUSE_LOAD_PAGE_FAULT) ||
+            (complete_payload[2*COMPLETE_WIDTH + COMPLETE_TVAL +: 64] !=
+             64'h8000))
+            fail("page-crossing misaligned LW fault metadata mismatch");
+        inject_xlate_page_fault = 1'b0;
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+
         // Once an ordered AMO starts, a younger redirect cannot discard the
         // read response: the marked write phase still depends on that value.
         // The atomic therefore survives this flush.
@@ -919,7 +1354,7 @@ module tb_exec_top_3p;
              64'd11))
             fail("AMO completion after flush mismatch");
 
-        $display("PASS: 3p local forwarding, four-entry load/store queues, store capacity/flush, EX1 ordering, EX0 M context, and irrevocable AMO");
+        $display("PASS: 3p local forwarding, four-entry load/store queues, ordered component-serial Zicclsm, store capacity/flush, EX1 ordering, EX0 M context, and irrevocable AMO");
         $finish;
     end
 

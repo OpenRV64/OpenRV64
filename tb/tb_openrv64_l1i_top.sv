@@ -351,6 +351,7 @@ module tb_openrv64_l1i_top #(
 
     integer cold_fills;
     integer warm_start_fills;
+    integer next_line_wait_cycles;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -377,6 +378,20 @@ module tb_openrv64_l1i_top #(
         @(negedge clk);
         rst_n = 1'b1;
 
+        // A consumed demand for the first half of line zero must warm the
+        // following 64-byte line without a branch hint.  Replaying line zero
+        // below also checks that the recent-line filter suppresses duplicates.
+        issue_fetch(IMAGE_BASE, memory[0][31:0]);
+        next_line_wait_cycles = 0;
+        while (!filled_lines_q[1] && next_line_wait_cycles < 200) begin
+            @(posedge clk);
+            next_line_wait_cycles = next_line_wait_cycles + 1;
+        end
+        if (!filled_lines_q[1] || ccx_fill_count_q != 2)
+            $fatal(1,
+                "L1I next-line prefetch missing: fills=%0d line1=%0b",
+                ccx_fill_count_q, filled_lines_q[1]);
+
         replay_excerpt();
         repeat (300) @(posedge clk);
         cold_fills = ccx_fill_count_q;
@@ -392,9 +407,9 @@ module tb_openrv64_l1i_top #(
                 warm_start_fills, ccx_fill_count_q);
 
         $display(
-            "PASS: L1I bytes=%0d ways=%0d prefetch_slots=%0d CoreMark excerpt_length=%0d replays=2 checked_instructions=%0d branch_pairs=%0d cold_line_fills=%0d warm_line_fills=0",
+            "PASS: L1I bytes=%0d ways=%0d prefetch_slots=%0d next_line_prefetch=1 CoreMark excerpt_length=%0d replays=2 checked_instructions=%0d branch_pairs=%0d cold_line_fills=%0d warm_line_fills=0",
             CACHE_BYTES, WAYS, PREFETCH_SLOTS, EXCERPT_LENGTH,
-            2 * EXCERPT_LENGTH, branch_hint_count_q, cold_fills);
+            (2 * EXCERPT_LENGTH) + 1, branch_hint_count_q, cold_fills);
         $finish;
     end
 

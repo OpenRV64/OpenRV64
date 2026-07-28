@@ -535,6 +535,7 @@ module tb_top_axi_3p #(
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer POSTED_STORES = 1,
+    parameter integer ENABLE_ZICCLSM = 1,
     parameter integer FREE_BRANCHES = 0,
     parameter integer EQ_BRANCH_PAIRING = 1,
     parameter integer ORACLE_BRANCHES = 0,
@@ -930,6 +931,7 @@ module tb_top_axi_3p #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(POSTED_STORES),
+        .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_MAX_STRIDE_LINES(
             L1D_PREFETCH_MAX_STRIDE_LINES),
@@ -2594,8 +2596,12 @@ module tb_top_axi_3p #(
         if (memcpy_report_expected_valid && !memcpy_report_pc_valid)
             $fatal(1,
                    "+memcpy_report_expected requires +memcpy_report_pc");
-        if (memcpy_report_pc_valid)
-            $display("MEMCPY_SPAN_HEADER path=0:different-alignment-kernel-byte path=1:same-alignment case repeat bytes src_offset dst_offset cycles instret bytes_per_cycle IPC");
+        if (memcpy_report_pc_valid) begin
+            if ($test$plusargs("memcpy_native_misaligned"))
+                $display("MEMCPY_SPAN_HEADER path=0:different-alignment-native-misaligned path=1:same-alignment case repeat bytes src_offset dst_offset cycles instret bytes_per_cycle IPC");
+            else
+                $display("MEMCPY_SPAN_HEADER path=0:different-alignment-kernel-byte path=1:same-alignment case repeat bytes src_offset dst_offset cycles instret bytes_per_cycle IPC");
+        end
         if (!$value$plusargs("max_cycles=%d", max_cycles))
             max_cycles = 20000;
         if (!$value$plusargs("memh_words=%d", external_memh_words))

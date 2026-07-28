@@ -71,6 +71,7 @@ BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
 	rtl/core/exec/bp/tournament_btb.v rtl/core/exec/bp/ras.v
 EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
 	rtl/core/exec/lsq.v rtl/core/exec/lsu/atomics.v \
+	rtl/core/exec/lsu/misaligned.v \
 	rtl/core/exec/exec_lsu.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top_1p.v rtl/core/exec/exec_top.v \
@@ -103,6 +104,7 @@ CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	rtl/core/dispatch/dispatch_control_3p.v rtl/core/dispatch/dispatch.v \
 	rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
 	rtl/core/exec/lsq.v rtl/core/exec/lsu/atomics.v \
+	rtl/core/exec/lsu/misaligned.v \
 	rtl/core/exec/exec_lsu.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top.v rtl/core/exec/alu/rv64-i.v \

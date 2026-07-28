@@ -106,7 +106,8 @@ module openrv64_lsq #(
     output wire                         result_access_fault_o,
     output wire                         result_page_fault_o,
     output wire                         result_store_o,
-    output wire                         store_pending_o
+    output wire                         store_pending_o,
+    output wire                         empty_o
 );
 
     function automatic id_is_younger;
@@ -606,18 +607,23 @@ module openrv64_lsq #(
     assign atomic_start_access_allowed_o =
         !slot_input_access_fault_q[atomic_start_index_r];
 
+    reg any_valid_r;
     reg any_store_r;
     integer pending_scan;
     always @* begin
+        any_valid_r = 1'b0;
         any_store_r = 1'b0;
         for (pending_scan = 0; pending_scan < DEPTH;
              pending_scan = pending_scan + 1)
-            if (slot_valid_q[pending_scan] &&
-                !slot_killed_q[pending_scan] &&
-                slot_store_q[pending_scan])
-                any_store_r = 1'b1;
+            if (slot_valid_q[pending_scan]) begin
+                any_valid_r = 1'b1;
+                if (!slot_killed_q[pending_scan] &&
+                    slot_store_q[pending_scan])
+                    any_store_r = 1'b1;
+            end
     end
     assign store_pending_o = any_store_r || atomic_active_i;
+    assign empty_o = !any_valid_r && !atomic_active_i;
 
     integer slot_index;
     always @(posedge clk or negedge rst_n) begin

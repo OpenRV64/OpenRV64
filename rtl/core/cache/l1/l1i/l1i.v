@@ -35,6 +35,12 @@ module openrv64_l1i_ccx #(
     input  wire [REQ_TAG_WIDTH-1:0]     req_tag_i,
     input  wire [ADDR_WIDTH-1:0]        req_addr_i,
     input  wire [ADDR_WIDTH-1:0]        req_phys_addr_i,
+    input  wire [`RV64_PRIV_WIDTH-1:0]  req_priv_i,
+    input  wire [`RV64_SATP_MODE_WIDTH-1:0] req_vm_mode_i,
+    input  wire [`RV64_SATP_ASID_WIDTH-1:0] req_asid_i,
+    input  wire [`RV64_SATP_PPN_WIDTH-1:0] req_root_ppn_i,
+    input  wire                         req_sum_i,
+    input  wire                         req_mxr_i,
     output wire                         resp_valid_o,
     input  wire                         resp_ready_i,
     output wire [REQ_TAG_WIDTH-1:0]     resp_tag_o,
@@ -177,6 +183,10 @@ module openrv64_l1i_ccx #(
         (recent_replace_next ==
          PREFETCH_INDEX_WIDTH'(PREFETCH_SLOTS - 1)) ?
         {PREFETCH_INDEX_WIDTH{1'b0}} : recent_replace_next + 1'b1;
+    wire [PREFETCH_INDEX_WIDTH-1:0] recent_replace_next3 =
+        (recent_replace_next2 ==
+         PREFETCH_INDEX_WIDTH'(PREFETCH_SLOTS - 1)) ?
+        {PREFETCH_INDEX_WIDTH{1'b0}} : recent_replace_next2 + 1'b1;
 
     reg xlate_slot_found_r;
     reg [PREFETCH_INDEX_WIDTH-1:0] xlate_slot_r;
@@ -217,18 +227,36 @@ module openrv64_l1i_ccx #(
     end
 
     reg [PREFETCH_SLOTS-1:0] enqueue_reserved_r;
+    reg enqueue_sequential_r;
     reg enqueue_taken_r;
     reg enqueue_fallthrough_r;
+    reg [PREFETCH_INDEX_WIDTH-1:0] enqueue_sequential_slot_r;
     reg [PREFETCH_INDEX_WIDTH-1:0] enqueue_taken_slot_r;
     reg [PREFETCH_INDEX_WIDTH-1:0] enqueue_fallthrough_slot_r;
     reg [2:0] enqueue_age_r;
     reg [3*PREFETCH_INDEX_WIDTH-1:0] enqueue_age_slot_r;
+    reg sequential_duplicate_r;
     reg taken_duplicate_r;
     reg fallthrough_duplicate_r;
     reg [2:0] age_duplicate_r;
     reg free_found_r;
     integer enqueue_index;
     integer enqueue_age_port;
+    wire next_line_consume;
+    wire [ADDR_WIDTH-1:0] next_line_vaddr;
+    wire [`RV64_PRIV_WIDTH-1:0] next_line_priv;
+    wire [`RV64_SATP_MODE_WIDTH-1:0] next_line_vm_mode;
+    wire [`RV64_SATP_ASID_WIDTH-1:0] next_line_asid;
+    wire [`RV64_SATP_PPN_WIDTH-1:0] next_line_root_ppn;
+    wire next_line_sum;
+    wire next_line_mxr;
+    wire [PREFETCH_INDEX_WIDTH-1:0] recent_taken_index =
+        enqueue_sequential_r ? recent_replace_next : recent_replace_q;
+    wire [PREFETCH_INDEX_WIDTH-1:0] recent_fallthrough_index =
+        enqueue_sequential_r ?
+            (enqueue_taken_r ? recent_replace_next2 :
+                               recent_replace_next) :
+            (enqueue_taken_r ? recent_replace_next : recent_replace_q);
 
     reg cache_active_q;
     reg cache_prefetch_q;
@@ -243,7 +271,19 @@ module openrv64_l1i_ccx #(
     reg response_valid_q [0:DEMAND_DEPTH-1];
     reg response_complete_q [0:DEMAND_DEPTH-1];
     reg response_prefetch_q [0:DEMAND_DEPTH-1];
+    reg response_cacheable_q [0:DEMAND_DEPTH-1];
     reg [REQ_TAG_WIDTH-1:0] response_tag_q [0:DEMAND_DEPTH-1];
+    reg [ADDR_WIDTH-1:0] response_vaddr_q [0:DEMAND_DEPTH-1];
+    reg [`RV64_PRIV_WIDTH-1:0]
+        response_priv_q [0:DEMAND_DEPTH-1];
+    reg [`RV64_SATP_MODE_WIDTH-1:0]
+        response_vm_mode_q [0:DEMAND_DEPTH-1];
+    reg [`RV64_SATP_ASID_WIDTH-1:0]
+        response_asid_q [0:DEMAND_DEPTH-1];
+    reg [`RV64_SATP_PPN_WIDTH-1:0]
+        response_root_ppn_q [0:DEMAND_DEPTH-1];
+    reg response_sum_q [0:DEMAND_DEPTH-1];
+    reg response_mxr_q [0:DEMAND_DEPTH-1];
     reg response_upper_half_q [0:DEMAND_DEPTH-1];
     reg response_wait_mshr_q [0:DEMAND_DEPTH-1];
     reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
@@ -278,12 +318,32 @@ module openrv64_l1i_ccx #(
         end
     endfunction
 
+    function same_context;
+        input [`RV64_SATP_MODE_WIDTH-1:0] left_vm_mode;
+        input [`RV64_SATP_ASID_WIDTH-1:0] left_asid;
+        input [`RV64_SATP_PPN_WIDTH-1:0] left_root_ppn;
+        input [`RV64_SATP_MODE_WIDTH-1:0] right_vm_mode;
+        input [`RV64_SATP_ASID_WIDTH-1:0] right_asid;
+        input [`RV64_SATP_PPN_WIDTH-1:0] right_root_ppn;
+        begin
+            same_context =
+                (left_vm_mode == right_vm_mode) &&
+                (left_asid == right_asid) &&
+                (left_root_ppn == right_root_ppn);
+        end
+    endfunction
+
     always @* begin
         enqueue_reserved_r = {PREFETCH_SLOTS{1'b0}};
         for (enqueue_index = 0; enqueue_index < PREFETCH_SLOTS;
              enqueue_index = enqueue_index + 1)
             enqueue_reserved_r[enqueue_index] = slot_valid_q[enqueue_index];
 
+        sequential_duplicate_r = cache_active_q && cache_prefetch_q &&
+            same_line(cache_vaddr_q, next_line_vaddr) &&
+            same_context(cache_vm_mode_q, cache_asid_q,
+                         cache_root_ppn_q, next_line_vm_mode,
+                         next_line_asid, next_line_root_ppn);
         taken_duplicate_r = cache_active_q &&
             same_line(cache_vaddr_q, prefetch_taken_addr_i) &&
             same_current_context(cache_vm_mode_q, cache_asid_q,
@@ -294,6 +354,16 @@ module openrv64_l1i_ccx #(
                                  cache_root_ppn_q);
         for (enqueue_index = 0; enqueue_index < PREFETCH_SLOTS;
              enqueue_index = enqueue_index + 1) begin
+            if (slot_valid_q[enqueue_index] &&
+                !slot_age_only_q[enqueue_index] &&
+                same_context(slot_vm_mode_q[enqueue_index],
+                             slot_asid_q[enqueue_index],
+                             slot_root_ppn_q[enqueue_index],
+                             next_line_vm_mode, next_line_asid,
+                             next_line_root_ppn) &&
+                same_line(slot_vaddr_q[enqueue_index],
+                          next_line_vaddr))
+                sequential_duplicate_r = 1'b1;
             if (slot_valid_q[enqueue_index] &&
                 !slot_age_only_q[enqueue_index] &&
                 same_current_context(slot_vm_mode_q[enqueue_index],
@@ -307,6 +377,15 @@ module openrv64_l1i_ccx #(
                     fallthrough_duplicate_r = 1'b1;
             end
             if (recent_valid_q[enqueue_index] &&
+                same_context(recent_vm_mode_q[enqueue_index],
+                             recent_asid_q[enqueue_index],
+                             recent_root_ppn_q[enqueue_index],
+                             next_line_vm_mode, next_line_asid,
+                             next_line_root_ppn) &&
+                same_line(recent_vaddr_q[enqueue_index],
+                          next_line_vaddr))
+                sequential_duplicate_r = 1'b1;
+            if (recent_valid_q[enqueue_index] &&
                 same_current_context(recent_vm_mode_q[enqueue_index],
                                      recent_asid_q[enqueue_index],
                                      recent_root_ppn_q[enqueue_index])) begin
@@ -317,6 +396,32 @@ module openrv64_l1i_ccx #(
                               prefetch_fallthrough_addr_i))
                     fallthrough_duplicate_r = 1'b1;
             end
+        end
+
+        enqueue_sequential_r = 1'b0;
+        enqueue_sequential_slot_r = {PREFETCH_INDEX_WIDTH{1'b0}};
+        free_found_r = 1'b0;
+        if (next_line_consume && !sequential_duplicate_r) begin
+            for (enqueue_index = 0; enqueue_index < PREFETCH_SLOTS;
+                 enqueue_index = enqueue_index + 1) begin
+                if (!free_found_r && !enqueue_reserved_r[enqueue_index]) begin
+                    enqueue_sequential_r = 1'b1;
+                    enqueue_sequential_slot_r =
+                        enqueue_index[PREFETCH_INDEX_WIDTH-1:0];
+                    enqueue_reserved_r[enqueue_index] = 1'b1;
+                    free_found_r = 1'b1;
+                end
+            end
+        end
+
+        if (enqueue_sequential_r &&
+            same_context(next_line_vm_mode, next_line_asid,
+                         next_line_root_ppn, prefetch_vm_mode_i,
+                         prefetch_asid_i, prefetch_root_ppn_i)) begin
+            if (same_line(next_line_vaddr, prefetch_taken_addr_i))
+                taken_duplicate_r = 1'b1;
+            if (same_line(next_line_vaddr, prefetch_fallthrough_addr_i))
+                fallthrough_duplicate_r = 1'b1;
         end
 
         enqueue_taken_r = 1'b0;
@@ -384,6 +489,14 @@ module openrv64_l1i_ccx #(
                  same_line(prefetch_fallthrough_addr_i,
                     retire_age_addr_i[
                         enqueue_age_port*ADDR_WIDTH +: ADDR_WIDTH])))
+                age_duplicate_r[enqueue_age_port] = 1'b1;
+            if (enqueue_sequential_r &&
+                same_context(next_line_vm_mode, next_line_asid,
+                             next_line_root_ppn, prefetch_vm_mode_i,
+                             prefetch_asid_i, prefetch_root_ppn_i) &&
+                same_line(next_line_vaddr,
+                    retire_age_addr_i[
+                        enqueue_age_port*ADDR_WIDTH +: ADDR_WIDTH]))
                 age_duplicate_r[enqueue_age_port] = 1'b1;
 
             free_found_r = 1'b0;
@@ -578,7 +691,7 @@ module openrv64_l1i_ccx #(
         (response_count_q < DEMAND_COUNT_WIDTH'(DEMAND_DEPTH - 1)) &&
         !invalidate_valid_i;
     wire launch_prefetch = cache_can_launch && !req_valid_i &&
-                           fill_slot_found_r;
+                           fill_slot_found_r && !prefetch_flush_i;
     wire select_demand = req_valid_i;
     wire select_prefetch = !select_demand && cache_active_q &&
                            !l1_request_sent_q;
@@ -657,6 +770,26 @@ module openrv64_l1i_ccx #(
     assign req_error_o = output_stored_response ?
         response_error_q[response_complete_index_r] :
         (output_direct_response && l1_req_error);
+
+    // A frontend response handshake is the cache's consumed-line event.  Queue
+    // the following 64-byte virtual line through the same best-effort
+    // translation/PMP/fill path as branch hints.  The rolling recent filter
+    // suppresses the second 256-bit half and repeated fetches of the same line.
+    assign next_line_consume = response_pop &&
+        !response_prefetch_q[response_pop_index] &&
+        response_cacheable_q[response_pop_index] && !req_error_o &&
+        !prefetch_flush_i && !invalidate_valid_i;
+    assign next_line_vaddr =
+        {response_vaddr_q[response_pop_index][ADDR_WIDTH-1:6], 6'b000000} +
+        ADDR_WIDTH'(64);
+    assign next_line_priv = response_priv_q[response_pop_index];
+    assign next_line_vm_mode =
+        response_vm_mode_q[response_pop_index];
+    assign next_line_asid = response_asid_q[response_pop_index];
+    assign next_line_root_ppn =
+        response_root_ppn_q[response_pop_index];
+    assign next_line_sum = response_sum_q[response_pop_index];
+    assign next_line_mxr = response_mxr_q[response_pop_index];
 
     assign ccx_response_ready = demand_mshr_response_match_r;
 
@@ -827,8 +960,20 @@ module openrv64_l1i_ccx #(
                 response_valid_q[response_reset_index] <= 1'b0;
                 response_complete_q[response_reset_index] <= 1'b0;
                 response_prefetch_q[response_reset_index] <= 1'b0;
+                response_cacheable_q[response_reset_index] <= 1'b0;
                 response_tag_q[response_reset_index] <=
                     {REQ_TAG_WIDTH{1'b0}};
+                response_vaddr_q[response_reset_index] <=
+                    {ADDR_WIDTH{1'b0}};
+                response_priv_q[response_reset_index] <= `RV64_PRIV_M;
+                response_vm_mode_q[response_reset_index] <=
+                    `RV64_SATP_MODE_BARE;
+                response_asid_q[response_reset_index] <=
+                    {`RV64_SATP_ASID_WIDTH{1'b0}};
+                response_root_ppn_q[response_reset_index] <=
+                    {`RV64_SATP_PPN_WIDTH{1'b0}};
+                response_sum_q[response_reset_index] <= 1'b0;
+                response_mxr_q[response_reset_index] <= 1'b0;
                 response_upper_half_q[response_reset_index] <= 1'b0;
                 response_wait_mshr_q[response_reset_index] <= 1'b0;
                 response_mshr_q[response_reset_index] <=
@@ -843,7 +988,26 @@ module openrv64_l1i_ccx #(
                 response_complete_q[response_free_index_r] <= 1'b0;
                 response_prefetch_q[response_free_index_r] <=
                     select_prefetch;
+                response_cacheable_q[response_free_index_r] <=
+                    select_demand ? req_cacheable_i : cache_cacheable_q;
                 response_tag_q[response_free_index_r] <= req_tag_i;
+                response_vaddr_q[response_free_index_r] <=
+                    select_demand ? req_addr_i : cache_vaddr_q;
+                response_priv_q[response_free_index_r] <=
+                    select_demand ? req_priv_i : `RV64_PRIV_M;
+                response_vm_mode_q[response_free_index_r] <=
+                    select_demand ? req_vm_mode_i :
+                                    `RV64_SATP_MODE_BARE;
+                response_asid_q[response_free_index_r] <=
+                    select_demand ? req_asid_i :
+                                    {`RV64_SATP_ASID_WIDTH{1'b0}};
+                response_root_ppn_q[response_free_index_r] <=
+                    select_demand ? req_root_ppn_i :
+                                    {`RV64_SATP_PPN_WIDTH{1'b0}};
+                response_sum_q[response_free_index_r] <=
+                    select_demand && req_sum_i;
+                response_mxr_q[response_free_index_r] <=
+                    select_demand && req_mxr_i;
                 response_upper_half_q[response_free_index_r] <=
                     select_demand ? req_addr_i[5] : cache_vaddr_q[5];
                 response_wait_mshr_q[response_free_index_r] <=
@@ -904,6 +1068,9 @@ module openrv64_l1i_ccx #(
                 cache_active_q <= 1'b0;
                 l1_request_sent_q <= 1'b0;
             end
+            if ((prefetch_flush_i || invalidate_valid_i) &&
+                cache_active_q && !l1_request_sent_q)
+                cache_active_q <= 1'b0;
 
             if (launch_prefetch) begin
                 cache_active_q <= 1'b1;
@@ -965,6 +1132,30 @@ module openrv64_l1i_ccx #(
                 end
             end
 
+            if (enqueue_sequential_r) begin
+                slot_valid_q[enqueue_sequential_slot_r] <= 1'b1;
+                slot_age_only_q[enqueue_sequential_slot_r] <= 1'b0;
+                slot_translating_q[enqueue_sequential_slot_r] <= 1'b0;
+                slot_translated_q[enqueue_sequential_slot_r] <= 1'b0;
+                slot_aged_q[enqueue_sequential_slot_r] <= 1'b0;
+                slot_vaddr_q[enqueue_sequential_slot_r] <=
+                    next_line_vaddr;
+                slot_paddr_q[enqueue_sequential_slot_r] <=
+                    {ADDR_WIDTH{1'b0}};
+                slot_priv_q[enqueue_sequential_slot_r] <= next_line_priv;
+                slot_vm_mode_q[enqueue_sequential_slot_r] <=
+                    next_line_vm_mode;
+                slot_asid_q[enqueue_sequential_slot_r] <= next_line_asid;
+                slot_root_ppn_q[enqueue_sequential_slot_r] <=
+                    next_line_root_ppn;
+                slot_sum_q[enqueue_sequential_slot_r] <= next_line_sum;
+                slot_mxr_q[enqueue_sequential_slot_r] <= next_line_mxr;
+                recent_valid_q[recent_replace_q] <= 1'b1;
+                recent_vaddr_q[recent_replace_q] <= next_line_vaddr;
+                recent_vm_mode_q[recent_replace_q] <= next_line_vm_mode;
+                recent_asid_q[recent_replace_q] <= next_line_asid;
+                recent_root_ppn_q[recent_replace_q] <= next_line_root_ppn;
+            end
             if (enqueue_taken_r) begin
                 slot_valid_q[enqueue_taken_slot_r] <= 1'b1;
                 slot_age_only_q[enqueue_taken_slot_r] <= 1'b0;
@@ -993,12 +1184,12 @@ module openrv64_l1i_ccx #(
                     prefetch_root_ppn_i;
                 slot_sum_q[enqueue_taken_slot_r] <= prefetch_sum_i;
                 slot_mxr_q[enqueue_taken_slot_r] <= prefetch_mxr_i;
-                recent_valid_q[recent_replace_q] <= 1'b1;
-                recent_vaddr_q[recent_replace_q] <=
+                recent_valid_q[recent_taken_index] <= 1'b1;
+                recent_vaddr_q[recent_taken_index] <=
                     {prefetch_taken_addr_i[ADDR_WIDTH-1:6], 6'b000000};
-                recent_vm_mode_q[recent_replace_q] <= prefetch_vm_mode_i;
-                recent_asid_q[recent_replace_q] <= prefetch_asid_i;
-                recent_root_ppn_q[recent_replace_q] <=
+                recent_vm_mode_q[recent_taken_index] <= prefetch_vm_mode_i;
+                recent_asid_q[recent_taken_index] <= prefetch_asid_i;
+                recent_root_ppn_q[recent_taken_index] <=
                     prefetch_root_ppn_i;
             end
             if (enqueue_fallthrough_r) begin
@@ -1032,26 +1223,26 @@ module openrv64_l1i_ccx #(
                     prefetch_root_ppn_i;
                 slot_sum_q[enqueue_fallthrough_slot_r] <= prefetch_sum_i;
                 slot_mxr_q[enqueue_fallthrough_slot_r] <= prefetch_mxr_i;
-                recent_valid_q[enqueue_taken_r ? recent_replace_next :
-                                                  recent_replace_q] <= 1'b1;
-                recent_vaddr_q[enqueue_taken_r ? recent_replace_next :
-                                                  recent_replace_q] <=
+                recent_valid_q[recent_fallthrough_index] <= 1'b1;
+                recent_vaddr_q[recent_fallthrough_index] <=
                     {prefetch_fallthrough_addr_i[ADDR_WIDTH-1:6],
                      6'b000000};
-                recent_vm_mode_q[enqueue_taken_r ? recent_replace_next :
-                                                    recent_replace_q] <=
+                recent_vm_mode_q[recent_fallthrough_index] <=
                     prefetch_vm_mode_i;
-                recent_asid_q[enqueue_taken_r ? recent_replace_next :
-                                                 recent_replace_q] <=
+                recent_asid_q[recent_fallthrough_index] <=
                     prefetch_asid_i;
-                recent_root_ppn_q[enqueue_taken_r ? recent_replace_next :
-                                                     recent_replace_q] <=
+                recent_root_ppn_q[recent_fallthrough_index] <=
                     prefetch_root_ppn_i;
             end
-            case ({enqueue_taken_r, enqueue_fallthrough_r})
-                2'b01: recent_replace_q <= recent_replace_next;
-                2'b10: recent_replace_q <= recent_replace_next;
-                2'b11: recent_replace_q <= recent_replace_next2;
+            case ({enqueue_sequential_r, enqueue_taken_r,
+                   enqueue_fallthrough_r})
+                3'b001,
+                3'b010,
+                3'b100: recent_replace_q <= recent_replace_next;
+                3'b011,
+                3'b101,
+                3'b110: recent_replace_q <= recent_replace_next2;
+                3'b111: recent_replace_q <= recent_replace_next3;
                 default: recent_replace_q <= recent_replace_q;
             endcase
             for (retire_age_port = 0; retire_age_port < 3;

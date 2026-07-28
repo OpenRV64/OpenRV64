@@ -1,6 +1,6 @@
 # Minimal Linux configuration for OpenRV64
 
-This document describes a first-boot Linux configuration for the current
+This document describes a first-boot Linux configuration for the current 3P
 single-hart OpenRV64 platform running in S-mode under OpenSBI. The immediate
 target is early console output, normal `printk`/`dmesg`, working timer ticks,
 and an intentional panic when no root filesystem is present. An initramfs can
@@ -15,7 +15,7 @@ change, so re-run the checks in this document when changing kernel versions.
 | Item | Current OpenRV64 contract |
 | --- | --- |
 | Execution mode | Linux in S-mode; OpenSBI remains in M-mode |
-| ISA | RV64IMA, Zicsr, Zifencei, Zicntr, Svade |
+| ISA | Default 3P: RV64IMA, Zicsr, Zifencei, Zicclsm, Zicntr, Svade |
 | Deliberately absent | C, F, D, V |
 | Virtual memory | Sv39 |
 | Page-table A/D behavior | Svade: clear A or D bits cause page faults for software handling |
@@ -64,9 +64,10 @@ The reasons are:
 - `CONFIG_FPU=n` and `CONFIG_RISCV_ISA_V=n` match the scalar integer core.
   The repository's experimental vector RTL is not the ratified RISC-V V
   extension and must not be advertised to Linux.
-- `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS=y` avoids treating unaligned access
-  as efficient hardware behavior and retains Linux emulation for userspace.
-  Kernel code is built with strict alignment.
+- `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS=y` retains the userspace emulation
+  fallback. Zicclsm requires correctness but does not imply fast misaligned
+  accesses; the 3P implementation is deliberately serialized. Kernel code is
+  still built with strict alignment.
 
 `CONFIG_NONPORTABLE=y` needs special emphasis. In Linux 7.2-rc4,
 `CONFIG_PORTABLE` selects EFI, and RISC-V EFI selects

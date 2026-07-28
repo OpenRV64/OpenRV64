@@ -70,12 +70,15 @@ branches and exposing independent byte operations materially improves this
 core even though its average IPC falls. It does not establish the best unroll
 factor across RISC-V CPUs.
 
-Both measurements used `make bench-memcpy-sweep` on the same dirty OpenRV64
-RTL snapshot and simulator configuration; only the fallback body and its
-descriptive report label changed. Each completed all 162 size/alignment reports
-and the final byte comparison with `MEMCPYOK`. The timed span includes the
-function call and final ordering fence. The backing memory is the functional
-fixed-latency AXI model, not the timed DDR3 model.
+Both measurements used `make bench-memcpy-sweep` with the same observed
+simulator configuration; this task intentionally changed only the fallback
+body and its descriptive report label. The broader OpenRV64 worktree was dirty
+and was committed concurrently, so this is not a pristine, commit-isolated
+A/B result. It must be repeated from two explicit source commits before use as
+upstream evidence. Each run completed all 162 size/alignment reports and the
+final byte comparison with `MEMCPYOK`. The timed span includes the function call
+and final ordering fence. The backing memory is the functional fixed-latency
+AXI model, not the timed DDR3 model.
 
 ## Proposed patch
 
@@ -90,9 +93,7 @@ diff --git a/arch/riscv/lib/memcpy.S b/arch/riscv/lib/memcpy.S
 index 44e009ec5fef..XXXXXXXXXXXX 100644
 --- a/arch/riscv/lib/memcpy.S
 +++ b/arch/riscv/lib/memcpy.S
-@@ -97,11 +97,39 @@ SYM_FUNC_START(__memcpy)
- 	ret
- 
+@@ -99,9 +99,37 @@ SYM_FUNC_START(__memcpy)
  5:
 +	/* Copy eight bytes per iteration, then handle a bounded byte tail. */
 +	andi a5, a2, -8

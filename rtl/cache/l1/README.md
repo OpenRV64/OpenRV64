@@ -119,6 +119,13 @@ retires, the losing path is marked as a preferred replacement victim; aging
 does not invalidate a resident line.  Demand lookup always has priority over
 starting another prefetch lookup or fill.
 
+Every successfully consumed cacheable demand also queues the following
+64-byte virtual line through those same best-effort slots.  A rolling
+context-qualified recent-line filter collapses the two 256-bit halves and
+repeated demand reads, so sequential prefetch does not recursively run ahead
+on its own completions.  Page crossings use the speculative translation and
+PMP path above; faults are dropped rather than exposed to the frontend.
+
 The generic 64-bit frontend is unchanged.  Set `ENABLE_L1I=0` on the 256-bit
 AXI top-level path for a direct, single-request cacheless fetch path.
 

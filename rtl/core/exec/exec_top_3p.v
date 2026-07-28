@@ -33,6 +33,7 @@ module openrv64_exec_top_3p #(
     parameter integer ENABLE_RV64M = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer ENABLE_ZICCLSM = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
@@ -434,6 +435,7 @@ module openrv64_exec_top_3p #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
         .LOAD_QUEUE_DEPTH(4),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
+        .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .CACHEABLE_BASE(CACHEABLE_BASE),
         .CACHEABLE_SIZE(CACHEABLE_SIZE)
     ) u_lsu (
