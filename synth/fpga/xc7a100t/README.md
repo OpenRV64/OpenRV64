@@ -36,7 +36,7 @@ Vivado 2026.1 regenerates Xilinx `mig_7series` 4.2 from MYIR's project:
 - ECC disabled.
 
 The board top uses one clock wizard/MMCM to generate the 200 MHz MIG input
-and a conservative 10 MHz core clock from R4. A toggle-handshake rate bridge
+and a conservative default 10 MHz core clock from R4. A toggle-handshake rate bridge
 crosses scalar and PTW traffic between the 10 MHz core and 100 MHz MIG UI
 domains. Both clocks come from the same clock wizard and remain statically
 related: Vivado times every bundled-data and control crossing in both
@@ -112,6 +112,13 @@ ignored `build/` directory.
 # Or run synthesis through bitstream generation in one process
 /home/bill/bin/vivado -mode batch -nolog -nojournal \
   -source synth/fpga/xc7a100t/build.tcl -tclargs bitstream
+```
+
+An optional second argument selects another core clock, such as 40 MHz:
+
+```sh
+/home/bill/bin/vivado -mode batch -nolog -nojournal \
+  -source synth/fpga/xc7a100t/build.tcl -tclargs bitstream 40
 ```
 
 The focused CDC/native-interface test is:

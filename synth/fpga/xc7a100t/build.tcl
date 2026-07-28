@@ -17,11 +17,18 @@ set mig_config_file [
 ]
 
 set flow rtl
+set requested_core_clock_mhz 10.000
 if {$argc > 0} {
     set flow [lindex $argv 0]
 }
-if {$flow ni {rtl synth bitstream}} {
-    error "usage: build.tcl <rtl|synth|bitstream>"
+if {$argc > 1} {
+    set requested_core_clock_mhz [lindex $argv 1]
+}
+if {($argc > 2) ||
+    ($flow ni {rtl synth bitstream}) ||
+    ![string is double -strict $requested_core_clock_mhz] ||
+    ($requested_core_clock_mhz <= 0.0)} {
+    error "usage: build.tcl <rtl|synth|bitstream> ?core_clock_mhz?"
 }
 
 file mkdir $output_dir
@@ -53,7 +60,7 @@ set_property -dict [list \
     CONFIG.PRIM_SOURCE {No_buffer} \
     CONFIG.PRIM_IN_FREQ {200.000} \
     CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {200.000} \
-    CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {10.000} \
+    CONFIG.CLKOUT2_REQUESTED_OUT_FREQ $requested_core_clock_mhz \
     CONFIG.USE_PHASE_ALIGNMENT {true} \
     CONFIG.USE_LOCKED {true} \
     CONFIG.USE_RESET {false} \
@@ -66,8 +73,8 @@ set core_clock_mhz [
 ]
 if {([get_property CONFIG.CLKOUT2_USED $clock_ip] ne "true") ||
     (abs($mig_input_clock_mhz - 200.0) > 0.001) ||
-    (abs($core_clock_mhz - 10.0) > 0.001)} {
-    error "clock wizard configuration did not accept 200/10 MHz outputs"
+    (abs($core_clock_mhz - $requested_core_clock_mhz) > 0.001)} {
+    error "clock wizard configuration did not accept requested outputs"
 }
 puts "OPENRV64_FPGA_MIG_INPUT_CLOCK_MHZ=$mig_input_clock_mhz"
 puts "OPENRV64_FPGA_CORE_CLOCK_MHZ=$core_clock_mhz"
