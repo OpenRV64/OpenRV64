@@ -180,6 +180,12 @@ module openrv64_mem_channel #(
     // state.
     reg [63:0] perf_read_bursts_q;
     reg [63:0] perf_write_bursts_q;
+    reg [63:0] perf_read_single_beat_bursts_q;
+    reg [63:0] perf_read_two_beat_bursts_q;
+    reg [63:0] perf_read_other_bursts_q;
+    reg [63:0] perf_write_single_beat_bursts_q;
+    reg [63:0] perf_write_two_beat_bursts_q;
+    reg [63:0] perf_write_other_bursts_q;
     reg [63:0] perf_read_beats_requested_q;
     reg [63:0] perf_write_beats_requested_q;
     reg [63:0] perf_read_beats_returned_q;
@@ -207,8 +213,11 @@ module openrv64_mem_channel #(
     integer read_scan_slot;
     integer write_scan_offset;
     integer write_scan_slot;
+    integer write_older_offset;
+    integer write_older_slot;
     integer commit_beat;
     integer commit_byte;
+    reg write_candidate_blocked;
 
     function [ADDR_WIDTH:0] transfer_bytes_of;
         input [2:0] size_value;
@@ -351,6 +360,55 @@ module openrv64_mem_channel #(
         end
     endfunction
 
+    function bursts_overlap;
+        input [ADDR_WIDTH-1:0] first_addr;
+        input [7:0] first_len;
+        input [2:0] first_size;
+        input [1:0] first_burst;
+        input [ADDR_WIDTH-1:0] second_addr;
+        input [7:0] second_len;
+        input [2:0] second_size;
+        input [1:0] second_burst;
+        reg [ADDR_WIDTH:0] first_beat_bytes;
+        reg [ADDR_WIDTH:0] first_burst_bytes;
+        reg [ADDR_WIDTH:0] first_start;
+        reg [ADDR_WIDTH:0] first_end;
+        reg [ADDR_WIDTH:0] second_beat_bytes;
+        reg [ADDR_WIDTH:0] second_burst_bytes;
+        reg [ADDR_WIDTH:0] second_start;
+        reg [ADDR_WIDTH:0] second_end;
+        begin
+            first_beat_bytes = transfer_bytes_of(first_size);
+            first_burst_bytes = first_beat_bytes *
+                ({{(ADDR_WIDTH-8){1'b0}}, 1'b0, first_len} + 1'b1);
+            first_start = {1'b0, first_addr};
+            if (first_burst == AXI_BURST_FIXED)
+                first_end = first_start + first_beat_bytes;
+            else if (first_burst == AXI_BURST_WRAP) begin
+                first_start = first_start & ~(first_burst_bytes - 1'b1);
+                first_end = first_start + first_burst_bytes;
+            end else
+                first_end = first_start + first_burst_bytes;
+
+            second_beat_bytes = transfer_bytes_of(second_size);
+            second_burst_bytes = second_beat_bytes *
+                ({{(ADDR_WIDTH-8){1'b0}}, 1'b0, second_len} + 1'b1);
+            second_start = {1'b0, second_addr};
+            if (second_burst == AXI_BURST_FIXED)
+                second_end = second_start + second_beat_bytes;
+            else if (second_burst == AXI_BURST_WRAP) begin
+                second_start =
+                    second_start & ~(second_burst_bytes - 1'b1);
+                second_end = second_start + second_burst_bytes;
+            end else
+                second_end = second_start + second_burst_bytes;
+
+            bursts_overlap =
+                (first_start < second_end) &&
+                (second_start < first_end);
+        end
+    endfunction
+
     function [DATA_BYTES-1:0] transfer_lane_mask;
         input [ADDR_WIDTH-1:0] transfer_address;
         input [2:0] transfer_size;
@@ -418,7 +476,33 @@ module openrv64_mem_channel #(
             write_scan_slot = 32'(write_head_q) + write_scan_offset;
             if (write_scan_slot >= WRITE_QUEUE_DEPTH)
                 write_scan_slot = write_scan_slot - WRITE_QUEUE_DEPTH;
+            write_candidate_blocked = 1'b0;
+            for (write_older_offset = 0;
+                 write_older_offset < WRITE_QUEUE_DEPTH;
+                 write_older_offset = write_older_offset + 1) begin
+                write_older_slot =
+                    32'(write_head_q) + write_older_offset;
+                if (write_older_slot >= WRITE_QUEUE_DEPTH)
+                    write_older_slot =
+                        write_older_slot - WRITE_QUEUE_DEPTH;
+                if ((write_older_offset < write_scan_offset) &&
+                    write_valid_q[write_older_slot] &&
+                    !write_timing_done_q[write_older_slot] &&
+                    (write_resp_fifo_q[write_older_slot] ==
+                     AXI_RESP_OKAY) &&
+                    bursts_overlap(
+                        write_addr_fifo_q[write_older_slot],
+                        write_len_fifo_q[write_older_slot],
+                        write_size_fifo_q[write_older_slot],
+                        write_burst_fifo_q[write_older_slot],
+                        write_addr_fifo_q[write_scan_slot],
+                        write_len_fifo_q[write_scan_slot],
+                        write_size_fifo_q[write_scan_slot],
+                        write_burst_fifo_q[write_scan_slot]))
+                    write_candidate_blocked = 1'b1;
+            end
             if (!write_candidate_valid &&
+                !write_candidate_blocked &&
                 write_valid_q[write_scan_slot] &&
                 write_data_complete_q[write_scan_slot] &&
                 !write_timing_submitted_q[write_scan_slot] &&
@@ -552,6 +636,12 @@ module openrv64_mem_channel #(
         if (!rst_ni) begin
             perf_read_bursts_q <= 64'd0;
             perf_write_bursts_q <= 64'd0;
+            perf_read_single_beat_bursts_q <= 64'd0;
+            perf_read_two_beat_bursts_q <= 64'd0;
+            perf_read_other_bursts_q <= 64'd0;
+            perf_write_single_beat_bursts_q <= 64'd0;
+            perf_write_two_beat_bursts_q <= 64'd0;
+            perf_write_other_bursts_q <= 64'd0;
             perf_read_beats_requested_q <= 64'd0;
             perf_write_beats_requested_q <= 64'd0;
             perf_read_beats_returned_q <= 64'd0;
@@ -576,12 +666,30 @@ module openrv64_mem_channel #(
                 perf_read_beats_requested_q <=
                     perf_read_beats_requested_q +
                     {56'd0, s_axi_arlen_i} + 64'd1;
+                if (s_axi_arlen_i == 0)
+                    perf_read_single_beat_bursts_q <=
+                        perf_read_single_beat_bursts_q + 64'd1;
+                else if (s_axi_arlen_i == 1)
+                    perf_read_two_beat_bursts_q <=
+                        perf_read_two_beat_bursts_q + 64'd1;
+                else
+                    perf_read_other_bursts_q <=
+                        perf_read_other_bursts_q + 64'd1;
             end
             if (write_address_fire) begin
                 perf_write_bursts_q <= perf_write_bursts_q + 64'd1;
                 perf_write_beats_requested_q <=
                     perf_write_beats_requested_q +
                     {56'd0, s_axi_awlen_i} + 64'd1;
+                if (s_axi_awlen_i == 0)
+                    perf_write_single_beat_bursts_q <=
+                        perf_write_single_beat_bursts_q + 64'd1;
+                else if (s_axi_awlen_i == 1)
+                    perf_write_two_beat_bursts_q <=
+                        perf_write_two_beat_bursts_q + 64'd1;
+                else
+                    perf_write_other_bursts_q <=
+                        perf_write_other_bursts_q + 64'd1;
             end
             if (read_response_fire)
                 perf_read_beats_returned_q <=

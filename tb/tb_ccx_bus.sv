@@ -1642,6 +1642,51 @@ module tb_ccx_bus #(
         tick();
         lsu_valid = 0;
 
+        // A full backend flush cancels an accepted ordinary load at this
+        // boundary.  The old L1D response must be consumed invisibly, and
+        // the physical tag must remain busy until that drain so a new LSQ
+        // owner cannot receive the stale data.
+        wait_count = ccx_reads;
+        ccx_allow_cmd = 1'b0;
+        push_pipe_request(3'd3, 1'b0, 64'h200, 64'd0, 8'd0);
+        while (!ccx_req_valid)
+            tick();
+        pipe_cancel = 1'b1;
+        tick();
+        pipe_cancel = 1'b0;
+        pipe_req_tag = 3'd3;
+        pipe_req_write = 1'b0;
+        pipe_req_addr = 64'h280;
+        pipe_req_wdata = 64'd0;
+        pipe_req_wstrb = 8'd0;
+        pipe_req_valid = 1'b1;
+        repeat (2) begin
+            #1;
+            if (pipe_req_ready || pipe_resp_valid)
+                $fatal(1,
+                    "cancelled load released tag before physical drain ready=%b resp=%b",
+                    pipe_req_ready, pipe_resp_valid);
+            tick();
+        end
+        ccx_allow_cmd = 1'b1;
+        channel_wait = 0;
+        while (!pipe_req_ready && channel_wait < 300) begin
+            if (pipe_resp_valid)
+                $fatal(1, "cancelled load response became visible");
+            tick();
+            channel_wait = channel_wait + 1;
+        end
+        if (!pipe_req_ready)
+            $fatal(1, "cancelled physical tag did not drain");
+        tick();
+        pipe_req_valid = 1'b0;
+        locked_old_word = ccx_memory_word(64'h280);
+        expect_pipe_response(3'd3, locked_old_word, 1'b0, 1'b0);
+        if ((ccx_reads - wait_count) != 2)
+            $fatal(1,
+                "cancel/reuse sequence used %0d CCX reads instead of 2",
+                ccx_reads - wait_count);
+
         $display("PASS: core CCX memory path and cacheless AXI fetch");
         $finish;
     end

@@ -129,10 +129,10 @@ the present branch predictor and recovery cost, not a realizable configuration.
 - The gshare checkpoint queue resolves associatively by instruction ID. A
   correctly resolved younger branch may wait for older records, while committed
   history advances only at the ordered checkpoint head.
-- Ordinary loads may pass unresolved branches only when their awakened
-  effective address lies inside `SPEC_LOAD_BASE`/`SPEC_LOAD_SIZE`. The fixed 3P
-  wrapper maps this to the 16 MiB RAM aperture. The check uses the actual
-  forwarded base operand, not its stale decode-time placeholder.
+- Ordinary loads may begin translation past unresolved branches regardless of
+  VA. The LSQ authorizes an early physical request only after the translated
+  PA is inside `L1D_CACHEABLE_BASE`/`L1D_CACHEABLE_SIZE`; non-RAM/device PAs
+  remain ordered.
 - Stores, atomics, MMIO reads, system operations, fences, and faulting hard
   operations remain non-speculative. Wrong-path RAM responses are drained and
   discarded by their stale instruction IDs.

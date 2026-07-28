@@ -37,8 +37,6 @@ module openrv64_rv64_top_3p #(
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
-    parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE = {`RV64_XLEN{1'b0}},
-    parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE = {`RV64_XLEN{1'b0}},
     parameter ENABLE_RV64A = 1,
     parameter ENABLE_L1I = 1,
     parameter ENABLE_L1D = 1,
@@ -60,6 +58,7 @@ module openrv64_rv64_top_3p #(
     parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer L2_TLB_ENTRIES = 256,
@@ -1009,9 +1008,7 @@ module openrv64_rv64_top_3p #(
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
         .CACHEABLE_BASE(L1D_CACHEABLE_BASE),
-        .CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
-        .SPEC_LOAD_BASE(SPEC_LOAD_BASE),
-        .SPEC_LOAD_SIZE(SPEC_LOAD_SIZE)
+        .CACHEABLE_SIZE(L1D_CACHEABLE_SIZE)
     ) u_backend (
         .clk(clk), .rst_n(rst_n), .flush_i(control_flush),
         .squash_frontend_i(control_redirect),
@@ -1285,6 +1282,7 @@ module openrv64_rv64_top_3p #(
         .L1D_PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
         .L1D_PREFETCH_DEMAND_RESERVE(
             L1D_PREFETCH_DEMAND_RESERVE),
+        .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),

@@ -29,6 +29,9 @@ module openrv64_platform #(
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
     parameter int unsigned L2_BYTES = 256 * 1024,
     parameter int unsigned L2_WAYS = 8,
+    parameter int unsigned L2_MERGE_ENTRIES = 8,
+    parameter int unsigned GENBUS_READ_BUFFER_DEPTH = 8,
+    parameter int unsigned GENBUS_WRITE_BUFFER_DEPTH = 8,
     parameter int unsigned CCX_BUS_TYPE = 0,
     parameter int unsigned CCX_BUS_DATA_WIDTH = 256,
     parameter bit DDR3_ENABLE = 1'b0,
@@ -36,7 +39,16 @@ module openrv64_platform #(
     parameter int unsigned DDR3_WRITE_QUEUE_DEPTH = 8,
     parameter int unsigned DDR3_COMMAND_QUEUE_DEPTH = 16,
     parameter int unsigned MEMORY_TIMING_MODEL = 0,
+    // Board targets with physical memory controllers can move the scalar RAM
+    // and native PTW CCX endpoint outside this board-independent platform.
+    // The current external boundary is intentionally limited to the 1P path.
+    parameter bit EXTERNAL_MEMORY_ENABLE = 1'b0,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
+    parameter int unsigned L1D_PREFETCH_MAX_DISTANCE = 4,
+    parameter int unsigned L1D_PREFETCH_QUEUE_LINES = 4,
+    parameter int unsigned L1D_PREFETCH_OUTSTANDING = 4,
+    parameter int unsigned L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter int unsigned L1D_PREFETCH_PAGE_GATING = 1,
     parameter int unsigned L1I_DEMAND_MSHRS = 4,
     parameter int unsigned L2_TLB_ENTRIES = 256,
     parameter int unsigned L2_TLB_WAYS = 4,
@@ -74,6 +86,65 @@ module openrv64_platform #(
     // Bits 0..28 map to PLIC architectural source IDs 4..32.  Source IDs
     // 1..3 are reserved for UART, GPIO, and the general-purpose timer.
     input  logic [28:0]           external_irq_i,
+
+    output logic                  ext_mem_valid_o,
+    input  logic                  ext_mem_ready_i,
+    output logic                  ext_mem_write_o,
+    output logic [63:0]           ext_mem_addr_o,
+    output logic [63:0]           ext_mem_wdata_o,
+    output logic [7:0]            ext_mem_wstrb_o,
+    input  logic [63:0]           ext_mem_rdata_i,
+
+    output logic                  ext_ccx_req_valid_o,
+    input  logic                  ext_ccx_req_ready_i,
+    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                  ext_ccx_req_hart_id_o,
+    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                  ext_ccx_req_txn_id_o,
+    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                  ext_ccx_req_source_id_o,
+    output logic [`OPENRV64_CCX_OP_WIDTH-1:0] ext_ccx_req_op_o,
+    output logic                  ext_ccx_req_lock_o,
+    output logic [`OPENRV64_CCX_ORDER_WIDTH-1:0]
+                                  ext_ccx_req_order_o,
+    output logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ext_ccx_req_kind_o,
+    output logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ext_ccx_req_attr_o,
+    output logic [2:0]            ext_ccx_req_size_o,
+    output logic [63:0]           ext_ccx_req_addr_o,
+    output logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+                                  ext_ccx_req_burst_len_o,
+
+    output logic                  ext_ccx_wdata_valid_o,
+    input  logic                  ext_ccx_wdata_ready_i,
+    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                  ext_ccx_wdata_hart_id_o,
+    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                  ext_ccx_wdata_txn_id_o,
+    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                  ext_ccx_wdata_source_id_o,
+    output logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                  ext_ccx_wdata_beat_index_o,
+    output logic                  ext_ccx_wdata_last_o,
+    output logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                  ext_ccx_wdata_o,
+    output logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+                                  ext_ccx_wstrb_o,
+
+    input  logic                  ext_ccx_resp_valid_i,
+    output logic                  ext_ccx_resp_ready_o,
+    input  logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+                                  ext_ccx_resp_hart_id_i,
+    input  logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+                                  ext_ccx_resp_txn_id_i,
+    input  logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+                                  ext_ccx_resp_source_id_i,
+    input  logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+                                  ext_ccx_resp_beat_index_i,
+    input  logic                  ext_ccx_resp_last_i,
+    input  logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+                                  ext_ccx_resp_rdata_i,
+    input  logic                  ext_ccx_resp_error_i,
+    input  logic                  ext_ccx_resp_sc_success_i,
 
     // Reset visibility is useful at the board boundary and in validation.
     output logic                  soc_rst_no,
@@ -327,6 +398,11 @@ module openrv64_platform #(
         .L1D_CACHEABLE_BASE(`OPENRV64_SOC_MEMORY_BASE),
         .L1D_CACHEABLE_SIZE(MEMORY_BYTES),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+        .L1D_PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),
+        .L1D_PREFETCH_QUEUE_LINES(L1D_PREFETCH_QUEUE_LINES),
+        .L1D_PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
+        .L1D_PREFETCH_DEMAND_RESERVE(L1D_PREFETCH_DEMAND_RESERVE),
+        .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
@@ -435,6 +511,9 @@ module openrv64_platform #(
             openrv64_soc_ccx_l2_bridge #(
                 .L2_BYTES(L2_BYTES),
                 .L2_WAYS(L2_WAYS),
+                .L2_MERGE_ENTRIES(L2_MERGE_ENTRIES),
+                .GENBUS_READ_BUFFER_DEPTH(GENBUS_READ_BUFFER_DEPTH),
+                .GENBUS_WRITE_BUFFER_DEPTH(GENBUS_WRITE_BUFFER_DEPTH),
                 .BUS_TYPE(CCX_BUS_TYPE),
                 .BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
                 .MEMORY_BYTES(MEMORY_BYTES),
@@ -644,29 +723,150 @@ module openrv64_platform #(
         .mem_rdata_o(rom_rdata)
     );
 
+    wire internal_memory_ready;
+    wire [63:0] internal_memory_rdata;
+    wire internal_memory_wide_ready;
+    wire [CCX_BUS_DATA_WIDTH-1:0] internal_memory_wide_rdata;
+    wire internal_memory_wide_error;
+    wire internal_memory_ccx_req_ready;
+    wire internal_memory_ccx_wdata_ready;
+    wire internal_memory_ccx_resp_valid;
+    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+        internal_memory_ccx_resp_hart_id;
+    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+        internal_memory_ccx_resp_txn_id;
+    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+        internal_memory_ccx_resp_source_id;
+    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+        internal_memory_ccx_resp_beat_index;
+    wire internal_memory_ccx_resp_last;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        internal_memory_ccx_resp_rdata;
+    wire internal_memory_ccx_resp_error;
+    wire internal_memory_ccx_resp_sc_success;
+
+    initial begin
+        if (EXTERNAL_MEMORY_ENABLE &&
+            (BACKEND_CONFIG == `OPENRV64_BACKEND_3P))
+            $fatal(1, "external platform memory currently supports only 1P");
+    end
+
+    assign ext_mem_valid_o =
+        EXTERNAL_MEMORY_ENABLE ? memory_valid : 1'b0;
+    assign ext_mem_write_o =
+        EXTERNAL_MEMORY_ENABLE ? memory_write : 1'b0;
+    assign ext_mem_addr_o =
+        EXTERNAL_MEMORY_ENABLE ? memory_addr : 64'd0;
+    assign ext_mem_wdata_o =
+        EXTERNAL_MEMORY_ENABLE ? memory_wdata : 64'd0;
+    assign ext_mem_wstrb_o =
+        EXTERNAL_MEMORY_ENABLE ? memory_wstrb : 8'd0;
+    assign memory_ready = EXTERNAL_MEMORY_ENABLE ?
+        ext_mem_ready_i : internal_memory_ready;
+    assign memory_rdata = EXTERNAL_MEMORY_ENABLE ?
+        ext_mem_rdata_i : internal_memory_rdata;
+
+    assign memory_wide_ready = EXTERNAL_MEMORY_ENABLE ?
+        1'b0 : internal_memory_wide_ready;
+    assign memory_wide_rdata = EXTERNAL_MEMORY_ENABLE ?
+        0 : internal_memory_wide_rdata;
+    assign memory_wide_error = EXTERNAL_MEMORY_ENABLE ?
+        memory_wide_valid : internal_memory_wide_error;
+
+    assign ext_ccx_req_valid_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_valid : 1'b0;
+    assign memory_ccx_req_ready = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_req_ready_i : internal_memory_ccx_req_ready;
+    assign ext_ccx_req_hart_id_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_hart_id : 0;
+    assign ext_ccx_req_txn_id_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_txn_id : 0;
+    assign ext_ccx_req_source_id_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_source_id : 0;
+    assign ext_ccx_req_op_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_op : `OPENRV64_CCX_OP_READ;
+    assign ext_ccx_req_lock_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_lock : 1'b0;
+    assign ext_ccx_req_order_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_order : `OPENRV64_CCX_ORDER_NONE;
+    assign ext_ccx_req_kind_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_kind : `OPENRV64_CCX_KIND_LEGACY;
+    assign ext_ccx_req_attr_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_attr : `OPENRV64_CCX_ATTR_NONE;
+    assign ext_ccx_req_size_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_size : 3'd0;
+    assign ext_ccx_req_addr_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_addr : 64'd0;
+    assign ext_ccx_req_burst_len_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_req_burst_len : 0;
+
+    assign ext_ccx_wdata_valid_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wdata_valid : 1'b0;
+    assign memory_ccx_wdata_ready = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_wdata_ready_i : internal_memory_ccx_wdata_ready;
+    assign ext_ccx_wdata_hart_id_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wdata_hart_id : 0;
+    assign ext_ccx_wdata_txn_id_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wdata_txn_id : 0;
+    assign ext_ccx_wdata_source_id_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wdata_source_id : 0;
+    assign ext_ccx_wdata_beat_index_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wdata_beat_index : 0;
+    assign ext_ccx_wdata_last_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wdata_last : 1'b0;
+    assign ext_ccx_wdata_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wdata : 0;
+    assign ext_ccx_wstrb_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_wstrb : 0;
+
+    assign memory_ccx_resp_valid = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_valid_i : internal_memory_ccx_resp_valid;
+    assign ext_ccx_resp_ready_o = EXTERNAL_MEMORY_ENABLE ?
+        memory_ccx_resp_ready : 1'b0;
+    assign memory_ccx_resp_hart_id = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_hart_id_i : internal_memory_ccx_resp_hart_id;
+    assign memory_ccx_resp_txn_id = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_txn_id_i : internal_memory_ccx_resp_txn_id;
+    assign memory_ccx_resp_source_id = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_source_id_i : internal_memory_ccx_resp_source_id;
+    assign memory_ccx_resp_beat_index = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_beat_index_i : internal_memory_ccx_resp_beat_index;
+    assign memory_ccx_resp_last = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_last_i : internal_memory_ccx_resp_last;
+    assign memory_ccx_resp_rdata = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_rdata_i : internal_memory_ccx_resp_rdata;
+    assign memory_ccx_resp_error = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_error_i : internal_memory_ccx_resp_error;
+    assign memory_ccx_resp_sc_success = EXTERNAL_MEMORY_ENABLE ?
+        ext_ccx_resp_sc_success_i : internal_memory_ccx_resp_sc_success;
+
+    // Keep this instance at the historical hierarchy path (`u_memory`) so
+    // existing platform testbenches can initialize and inspect its RAM.
+    // External-memory targets reduce it to one inert 64-byte line.
     openrv64_soc_memory #(
-        .MEM_BYTES(MEMORY_BYTES),
+        .MEM_BYTES(EXTERNAL_MEMORY_ENABLE ? 64 : MEMORY_BYTES),
         .WIDE_DATA_WIDTH(CCX_BUS_DATA_WIDTH)
     ) u_memory (
         .clk_i(clk_i),
         .rst_ni(soc_rst_no),
-        .mem_valid_i(memory_valid),
-        .mem_ready_o(memory_ready),
+        .mem_valid_i(EXTERNAL_MEMORY_ENABLE ? 1'b0 : memory_valid),
+        .mem_ready_o(internal_memory_ready),
         .mem_write_i(memory_write),
         .mem_addr_i(memory_addr),
         .mem_wdata_i(memory_wdata),
         .mem_wstrb_i(memory_wstrb),
-        .mem_rdata_o(memory_rdata),
-        .wide_valid_i(memory_wide_valid),
-        .wide_ready_o(memory_wide_ready),
+        .mem_rdata_o(internal_memory_rdata),
+        .wide_valid_i(EXTERNAL_MEMORY_ENABLE ? 1'b0 : memory_wide_valid),
+        .wide_ready_o(internal_memory_wide_ready),
         .wide_write_i(memory_wide_write),
         .wide_addr_i(memory_wide_addr),
         .wide_wdata_i(memory_wide_wdata),
         .wide_wstrb_i(memory_wide_wstrb),
-        .wide_rdata_o(memory_wide_rdata),
-        .wide_error_o(memory_wide_error),
-        .ccx_req_valid_i(memory_ccx_req_valid),
-        .ccx_req_ready_o(memory_ccx_req_ready),
+        .wide_rdata_o(internal_memory_wide_rdata),
+        .wide_error_o(internal_memory_wide_error),
+        .ccx_req_valid_i(
+            EXTERNAL_MEMORY_ENABLE ? 1'b0 : memory_ccx_req_valid),
+        .ccx_req_ready_o(internal_memory_ccx_req_ready),
         .ccx_req_hart_id_i(memory_ccx_req_hart_id),
         .ccx_req_txn_id_i(memory_ccx_req_txn_id),
         .ccx_req_source_id_i(memory_ccx_req_source_id),
@@ -678,8 +878,9 @@ module openrv64_platform #(
         .ccx_req_size_i(memory_ccx_req_size),
         .ccx_req_addr_i(memory_ccx_req_addr),
         .ccx_req_burst_len_i(memory_ccx_req_burst_len),
-        .ccx_wdata_valid_i(memory_ccx_wdata_valid),
-        .ccx_wdata_ready_o(memory_ccx_wdata_ready),
+        .ccx_wdata_valid_i(
+            EXTERNAL_MEMORY_ENABLE ? 1'b0 : memory_ccx_wdata_valid),
+        .ccx_wdata_ready_o(internal_memory_ccx_wdata_ready),
         .ccx_wdata_hart_id_i(memory_ccx_wdata_hart_id),
         .ccx_wdata_txn_id_i(memory_ccx_wdata_txn_id),
         .ccx_wdata_source_id_i(memory_ccx_wdata_source_id),
@@ -687,16 +888,17 @@ module openrv64_platform #(
         .ccx_wdata_last_i(memory_ccx_wdata_last),
         .ccx_wdata_i(memory_ccx_wdata),
         .ccx_wstrb_i(memory_ccx_wstrb),
-        .ccx_resp_valid_o(memory_ccx_resp_valid),
-        .ccx_resp_ready_i(memory_ccx_resp_ready),
-        .ccx_resp_hart_id_o(memory_ccx_resp_hart_id),
-        .ccx_resp_txn_id_o(memory_ccx_resp_txn_id),
-        .ccx_resp_source_id_o(memory_ccx_resp_source_id),
-        .ccx_resp_beat_index_o(memory_ccx_resp_beat_index),
-        .ccx_resp_last_o(memory_ccx_resp_last),
-        .ccx_resp_rdata_o(memory_ccx_resp_rdata),
-        .ccx_resp_error_o(memory_ccx_resp_error),
-        .ccx_resp_sc_success_o(memory_ccx_resp_sc_success)
+        .ccx_resp_valid_o(internal_memory_ccx_resp_valid),
+        .ccx_resp_ready_i(
+            EXTERNAL_MEMORY_ENABLE ? 1'b0 : memory_ccx_resp_ready),
+        .ccx_resp_hart_id_o(internal_memory_ccx_resp_hart_id),
+        .ccx_resp_txn_id_o(internal_memory_ccx_resp_txn_id),
+        .ccx_resp_source_id_o(internal_memory_ccx_resp_source_id),
+        .ccx_resp_beat_index_o(internal_memory_ccx_resp_beat_index),
+        .ccx_resp_last_o(internal_memory_ccx_resp_last),
+        .ccx_resp_rdata_o(internal_memory_ccx_resp_rdata),
+        .ccx_resp_error_o(internal_memory_ccx_resp_error),
+        .ccx_resp_sc_success_o(internal_memory_ccx_resp_sc_success)
     );
 
     openrv64_clint #(

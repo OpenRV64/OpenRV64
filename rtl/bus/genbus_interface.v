@@ -19,8 +19,8 @@ module genbus_interface #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer UPSTREAM_DATA_WIDTH = 256,
     parameter integer DOWNSTREAM_DATA_WIDTH = 256,
-    parameter integer READ_BUFFER_DEPTH = 4,
-    parameter integer WRITE_BUFFER_DEPTH = 4,
+    parameter integer READ_BUFFER_DEPTH = 8,
+    parameter integer WRITE_BUFFER_DEPTH = 8,
     parameter integer AXI_ID_WIDTH = 3,
     parameter [AXI_ID_WIDTH-1:0] AXI_ID = {AXI_ID_WIDTH{1'b1}},
     parameter integer WB_ADDR_SHIFT =

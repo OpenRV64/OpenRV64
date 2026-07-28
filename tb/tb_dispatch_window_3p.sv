@@ -36,6 +36,7 @@ module tb_dispatch_window_3p;
     reg flush;
     reg squash;
     reg [IDW-1:0] squash_id;
+    reg translation_bypass;
     reg [2:0] decode_valid;
     wire [2:0] decode_ready;
     reg [3*IW-1:0] decode_payload;
@@ -75,13 +76,14 @@ module tb_dispatch_window_3p;
 
     openrv64_dispatch_window_3p #(
         .ENABLE_SPECULATION(1), .DEPTH(DEPTH),
-        .SPEC_LOAD_BASE(64'h0000_0000_8000_0000),
-        .SPEC_LOAD_SIZE(64'h0000_0000_0100_0000),
+        .CACHEABLE_BASE(64'h0000_0000_8000_0000),
+        .CACHEABLE_SIZE(64'h0000_0000_0100_0000),
         .RETIRE_SLOT_WIDTH(SW), .COUNT_WIDTH(CW)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
         .squash_frontend_i(squash),
         .squash_id_i(squash_id),
+        .translation_bypass_i(translation_bypass),
         .decode_valid_i(decode_valid), .decode_ready_o(decode_ready),
         .decode_payload_i(decode_payload),
         .decode_uses_rs1_i(decode_uses_rs1),
@@ -189,6 +191,7 @@ module tb_dispatch_window_3p;
         flush = 1'b0;
         squash = 1'b0;
         squash_id = IDW'(0);
+        translation_bypass = 1'b0;
         allocation_ready = 1'b1;
         allocation_id = {IDW'(3), IDW'(2), IDW'(1)};
         allocation_slot = {4'd2, 4'd1, 4'd0};
@@ -323,10 +326,10 @@ module tb_dispatch_window_3p;
         tick();
         clear_inputs();
 
-        // A load whose base is supplied by a producer completion must use
-        // that awakened value for the speculative RAM-aperture check.  The
-        // decode-captured placeholder is zero and would incorrectly hold this
-        // safe load behind the already-issued branch.
+        // A load whose base is supplied by a producer completion may begin
+        // translation behind a live branch even when its virtual address is
+        // outside the old physical-looking aperture. PMA classification
+        // belongs to the translated physical address in the LSQ, not this VA.
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -355,15 +358,50 @@ module tb_dispatch_window_3p;
         completion_valid = 3'b001;
         completion_id[0 +: IDW] = IDW'(40);
         completion_payload[0 +: OW] =
-            reg_completion(5'd5, 64'h0000_0000_8000_0100);
+            reg_completion(5'd5, 64'hffff_ffd6_0000_1000);
         #1;
         if (!pipe_valid[2] ||
             (pipe_id[2*IDW +: IDW] != IDW'(42)) ||
             (pipe_payload[2*IW + I_RS1_DATA +: 64] !=
-             64'h0000_0000_8000_0100))
-            fail("awakened RAM load did not pass live branch safely");
+             64'hffff_ffd6_0000_1000))
+            fail("arbitrary-VA load did not reach translation past branch");
         tick();
         clear_inputs();
+
+        // In Bare/M-mode the effective address is already physical. A device
+        // load must therefore remain behind the unresolved branch instead of
+        // entering the LSQ merely to rediscover that it is non-cacheable.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        translation_bypass = 1'b1;
+        allocation_id = {IDW'(46), IDW'(45), IDW'(44)};
+        allocation_slot = {4'd2, 4'd1, 4'd0};
+        next_retire_id = IDW'(44);
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd44, 5'd0, 5'd0, 5'd5);
+        p1 = alu_packet(64'd45, 5'd0, 5'd0, 5'd0);
+        p1[I_BRANCH] = 1'b1;
+        p2 = alu_packet(64'd46, 5'd5, 5'd0, 5'd6);
+        p2[I_MEM_READ] = 1'b1;
+        decode_payload = {p2, p1, p0};
+        decode_uses_rs1 = 3'b100;
+        decode_valid = 3'b111;
+        tick();
+        clear_inputs();
+        if ((pipe_valid[1:0] != 2'b11) || pipe_valid[2])
+            fail("Bare-mode branch/device-load setup failed");
+        tick();
+        completion_valid = 3'b001;
+        completion_id[0 +: IDW] = IDW'(44);
+        completion_payload[0 +: OW] =
+            reg_completion(5'd5, 64'h0000_0000_1000_0000);
+        #1;
+        if (pipe_valid[2])
+            fail("Bare-mode device load passed unresolved branch");
+        tick();
+        clear_inputs();
+        translation_bypass = 1'b0;
 
         // A legal aligned direct JAL has a deterministic target and must not
         // wait for the retirement head or prevent younger replayable ALU work

@@ -777,17 +777,17 @@ struct FullRetireTrace {
 
 #define R3P_BACKEND(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__u_backend__DOT__##name
-#define R3P_RETIRE(name) R3P_BACKEND(u_retire__DOT__##name)
 #define R3P_RECORDS(name) R3P_BACKEND(u_retire_records__DOT__##name)
 #define R3P_RETIRE_QUEUE(name) \
     R3P_BACKEND(u_retire_queue__DOT__##name)
 #define R3P_CORE(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
 
+        const unsigned retire_arch = R3P_CORE(backend_retire_arch);
         const std::array<bool, 3> arch = {
-            static_cast<bool>(R3P_RETIRE(arch0)),
-            static_cast<bool>(R3P_RETIRE(arch1)),
-            static_cast<bool>(R3P_RETIRE(arch2))
+            static_cast<bool>(retire_arch & 1U),
+            static_cast<bool>(retire_arch & 2U),
+            static_cast<bool>(retire_arch & 4U)
         };
         const unsigned privilege = R3P_CORE(u_csrs__DOT__priv_mode_q);
         for (unsigned lane = 0; lane < arch.size(); ++lane) {

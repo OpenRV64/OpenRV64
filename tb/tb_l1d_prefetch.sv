@@ -98,6 +98,8 @@ module tb_l1d_prefetch;
     integer demand_commands;
     integer prefetch_commands;
     integer useful_prefetches;
+    integer on_time_useful_prefetches;
+    integer late_useful_prefetches;
     integer late_prefetches;
     integer dropped_prefetches;
     integer useless_prefetches;
@@ -106,9 +108,12 @@ module tb_l1d_prefetch;
     integer prefetch_wait_cycles;
     integer demand_before_barrier;
     integer useful_before_barrier;
+    integer race_response_slot;
+    reg race_response_found;
     reg [63:0] last_prefetch_addr;
-    reg [63:0] prefetch_command_addr [0:63];
+    reg [63:0] prefetch_command_addr [0:127];
     integer cycles;
+    integer long_walk_index;
     integer test_epoch;
     wire [2:0] prefetch_outstanding_count =
         dut.prefetch_mshr_valid_q[0] +
@@ -120,6 +125,20 @@ module tb_l1d_prefetch;
         input [63:0] address;
         begin
             memory_word = address ^ 64'h6d65_6d6f_7279_5a5a;
+        end
+    endfunction
+
+    function automatic fill_buffer_contains_line;
+        input [63:0] address;
+        integer fill_index;
+        begin
+            fill_buffer_contains_line = 1'b0;
+            for (fill_index = 0; fill_index < 4;
+                 fill_index = fill_index + 1)
+                if (dut.fill_buffer_valid_q[fill_index] &&
+                    (dut.fill_buffer_addr_q[fill_index] ==
+                     {address[63:6], 6'b0}))
+                    fill_buffer_contains_line = 1'b1;
         end
     endfunction
 
@@ -319,6 +338,8 @@ module tb_l1d_prefetch;
             demand_commands <= 0;
             prefetch_commands <= 0;
             useful_prefetches <= 0;
+            on_time_useful_prefetches <= 0;
+            late_useful_prefetches <= 0;
             late_prefetches <= 0;
             dropped_prefetches <= 0;
             useless_prefetches <= 0;
@@ -342,6 +363,12 @@ module tb_l1d_prefetch;
         end else begin
             if (prefetch_useful)
                 useful_prefetches <= useful_prefetches + 1;
+            if (dut.prefetch_on_time_useful)
+                on_time_useful_prefetches <=
+                    on_time_useful_prefetches + 1;
+            if (dut.prefetch_late_useful)
+                late_useful_prefetches <=
+                    late_useful_prefetches + 1;
             if (prefetch_late)
                 late_prefetches <= late_prefetches + 1;
             if (prefetch_dropped)
@@ -591,6 +618,41 @@ module tb_l1d_prefetch;
         end
     endtask
 
+    task automatic issue_posted_store;
+        input [63:0] address;
+        input [63:0] data;
+        integer wait_cycles;
+        begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_posted = 1'b1;
+            req_write = 1'b1;
+            req_cacheable = 1'b1;
+            req_addr = address;
+            req_wdata = data;
+            req_wstrb = 8'hff;
+            req_tag = test_epoch[`OPENRV64_LSU_TAG_WIDTH-1:0];
+            wait_cycles = 0;
+            #1;
+            while (!req_ready && wait_cycles < 400) begin
+                @(negedge clk);
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!req_ready)
+                $fatal(1, "posted store acceptance timed out addr=%016x",
+                       address);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            req_posted = 1'b0;
+            req_write = 1'b0;
+            req_cacheable = 1'b0;
+            req_addr = 64'd0;
+            req_wdata = 64'd0;
+            req_wstrb = 8'd0;
+        end
+    endtask
+
     task automatic wait_for_prefetch;
         input [63:0] expected_address;
         integer wait_cycles;
@@ -662,11 +724,15 @@ module tb_l1d_prefetch;
     initial begin
         rst_n = 1'b0;
         test_epoch = 0;
+        if ((dut.MAIN_TXN_COUNT != 12) ||
+            (dut.PREFETCH_TXN_BASE != 4'd12))
+            $fatal(1,
+                "4-bit transaction IDs did not partition as 12 main / 4 prefetch");
 
-        // A store can arrive on the exact cycle that a queued same-line
-        // prefetch becomes launchable.  The store must cancel the candidate
-        // combinationally; deleting the queue entry only at the edge is too
-        // late and can preserve a stale pre-store line in the fill buffer.
+        // A store can be accepted on the exact cycle that a queued same-line
+        // prefetch launches.  Both operations may cross their interfaces;
+        // the prefetch transaction must be poisoned so its old line cannot
+        // enter the speculative fill buffer.
         reset_dut();
         response_latency_cycles = 16;
         @(negedge clk);
@@ -711,9 +777,9 @@ module tb_l1d_prefetch;
         #1;
         if (!req_ready)
             $fatal(1, "same-line collision store was not ready");
-        if (dut.prefetch_launch)
+        if (!dut.prefetch_launch)
             $fatal(1,
-                "same-line prefetch launched with an admitted store");
+                "parallel prefetch/store race did not launch both sides");
         @(posedge clk);
         @(negedge clk);
         req_valid = 1'b0;
@@ -724,9 +790,134 @@ module tb_l1d_prefetch;
         req_wdata = 64'd0;
         req_wstrb = 8'd0;
         repeat (80) @(negedge clk);
-        if (prefetch_command_seen(MEMORY_BASE + 64'h0d40))
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h0d40))
             $fatal(1,
-                "canceled same-line prefetch reached CCX after store");
+                "parallel same-line prefetch did not reach CCX");
+        if (fill_buffer_contains_line(MEMORY_BASE + 64'h0d40))
+            $fatal(1,
+                "parallel prefetch/store response installed stale fill");
+
+        // A full line FIFO must backpressure another posted store rather
+        // than retaining it as hidden state in the shared L1.  A same-line
+        // prefetch which is already in flight may complete while that store
+        // remains pending; the response must be discarded immediately.
+        reset_dut();
+        response_latency_cycles = 400;
+        issue_posted_store(MEMORY_BASE + 64'h0e00,
+                           64'h1111_1111_1111_1111);
+        issue_posted_store(MEMORY_BASE + 64'h0e40,
+                           64'h2222_2222_2222_2222);
+        prefetch_wait_cycles = 0;
+        while ((dut.store_buffer_count_q != 2) &&
+               (prefetch_wait_cycles < 100)) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+        end
+        if (dut.store_buffer_count_q != 2)
+            $fatal(1, "prefetch race setup did not fill store buffer");
+
+        // Train the next-line candidate without waiting for the detached
+        // demand miss to return.
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b0;
+        req_cacheable = 1'b1;
+        req_addr = MEMORY_BASE + 64'h0f00;
+        req_tag = test_epoch[`OPENRV64_LSU_TAG_WIDTH-1:0];
+        prefetch_wait_cycles = 0;
+        #1;
+        while (!req_ready && prefetch_wait_cycles < 100) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "held-store prefetch seed load timed out");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_cacheable = 1'b0;
+        req_addr = 64'd0;
+
+        prefetch_wait_cycles = 0;
+        while (!prefetch_command_seen(MEMORY_BASE + 64'h0f40) &&
+               (prefetch_wait_cycles < 200)) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+        end
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h0f40))
+            $fatal(1,
+                "backpressured-store race has no in-flight prefetch");
+
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_posted = 1'b1;
+        req_write = 1'b1;
+        req_cacheable = 1'b1;
+        req_addr = MEMORY_BASE + 64'h0f40;
+        req_wdata = 64'h3333_3333_3333_3333;
+        req_wstrb = 8'hff;
+        req_tag = test_epoch[`OPENRV64_LSU_TAG_WIDTH-1:0];
+        #1;
+        if (req_ready)
+            $fatal(1, "full store buffer accepted a hidden store");
+
+        // Force the old prefetch line back while the store is visibly valid
+        // but still unaccepted.
+        race_response_found = 1'b0;
+        race_response_slot = 0;
+        for (cycles = 0; cycles < RESPONSE_SLOTS;
+             cycles = cycles + 1) begin
+            if (response_slot_valid_q[cycles] &&
+                (response_slot_addr_q[cycles] ==
+                 MEMORY_BASE + 64'h0f40)) begin
+                response_slot_delay_q[cycles] = 0;
+                race_response_found = 1'b1;
+                race_response_slot = cycles;
+            end
+        end
+        if (!race_response_found)
+            $fatal(1, "could not locate in-flight prefetch response");
+        prefetch_wait_cycles = 0;
+        while ((response_slot_valid_q[race_response_slot] ||
+                (ccx_resp_valid &&
+                 (ccx_resp_txn_id ==
+                  response_slot_txn_q[race_response_slot]))) &&
+               (prefetch_wait_cycles < 20)) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+            #1;
+            if (req_ready)
+                $fatal(1,
+                    "store became ready before poisoned fill returned");
+        end
+        if (prefetch_wait_cycles >= 20)
+            $fatal(1, "forced prefetch response did not complete");
+        if (fill_buffer_contains_line(MEMORY_BASE + 64'h0f40))
+            $fatal(1,
+                "backpressured store allowed stale prefetch fill");
+
+        // Release the older store responses and hold the request until the
+        // newly available explicit FIFO slot accepts it.
+        for (cycles = 0; cycles < RESPONSE_SLOTS;
+             cycles = cycles + 1)
+            if (response_slot_valid_q[cycles])
+                response_slot_delay_q[cycles] = 0;
+        prefetch_wait_cycles = 0;
+        while (!req_ready && (prefetch_wait_cycles < 400)) begin
+            @(negedge clk);
+            prefetch_wait_cycles = prefetch_wait_cycles + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "backpressured posted store never obtained a slot");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_posted = 1'b0;
+        req_write = 1'b0;
+        req_cacheable = 1'b0;
+        req_addr = 64'd0;
+        req_wdata = 64'd0;
+        req_wstrb = 8'd0;
 
         // A first demand creates a next-line candidate.  The following demand
         // must consume that buffered line without another demand CCX read.
@@ -745,6 +936,126 @@ module tb_l1d_prefetch;
         issue_load(MEMORY_BASE + 64'h0040);
         if (demand_commands != 1 || useful_prefetches != 1)
             $fatal(1, "demand-promoted prefetch did not become an L1 hit");
+
+        // A stream may probe exactly one line across a physical 4 KiB
+        // boundary. Deeper lines remain held until an architectural demand
+        // consumes that probe as a useful prefetch; then the complete
+        // preserved depth window is restored.
+        reset_dut();
+        issue_load(MEMORY_BASE + 64'h3f00);
+        issue_load(MEMORY_BASE + 64'h3f40);
+        issue_load(MEMORY_BASE + 64'h3f80);
+        issue_load(MEMORY_BASE + 64'h3fc0);
+        wait_for_prefetch(MEMORY_BASE + 64'h4000);
+        repeat (40) @(posedge clk);
+        if (prefetch_depth != 4)
+            $fatal(1,
+                "boundary stream did not reach full adaptive depth depth=%0d",
+                prefetch_depth);
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h4000) ||
+            prefetch_command_seen(MEMORY_BASE + 64'h4040) ||
+            prefetch_command_seen(MEMORY_BASE + 64'h4080))
+            $fatal(1,
+                "forward boundary probe did not hold deeper predictions");
+        if (!dut.prefetch_train_valid_q[0] ||
+            !dut.prefetch_stride_valid_q[0] ||
+            !dut.prefetch_generation_active_q[0] ||
+            !dut.prefetch_stream_page_end[0] ||
+            !dut.prefetch_boundary_probe_wait_q[0] ||
+            dut.prefetch_stream_long_q[0] ||
+            (dut.prefetch_last_line_q[0] !=
+             MEMORY_BASE + 64'h3fc0))
+            $fatal(1, "forward stream was not paused at page boundary");
+        useful_before_barrier = useful_prefetches;
+        issue_load(MEMORY_BASE + 64'h4000);
+        wait_for_prefetch_quiescence();
+        if (useful_prefetches != useful_before_barrier + 1)
+            $fatal(1, "forward boundary probe was not useful");
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h4040) ||
+            !prefetch_command_seen(MEMORY_BASE + 64'h4080) ||
+            !prefetch_command_seen(MEMORY_BASE + 64'h40c0) ||
+            !prefetch_command_seen(MEMORY_BASE + 64'h4100))
+            $fatal(1,
+                "boundary resume did not restore full depth window depth=%0d",
+                prefetch_depth);
+        if (!dut.prefetch_train_valid_q[0] ||
+            dut.prefetch_stream_page_end[0] ||
+            dut.prefetch_boundary_probe_wait_q[0] ||
+            !dut.prefetch_stream_long_q[0] ||
+            (dut.prefetch_last_line_q[0] !=
+             MEMORY_BASE + 64'h4000))
+            $fatal(1, "forward stream did not resume after demand");
+
+        // Once a stream earns long status, a later page crossing restores
+        // the full current distance immediately instead of probing again.
+        for (long_walk_index = 0; long_walk_index < 61;
+             long_walk_index = long_walk_index + 1)
+            issue_load(MEMORY_BASE + 64'h4040 +
+                       long_walk_index * 64);
+        wait_for_prefetch_quiescence();
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h5000) ||
+            !prefetch_command_seen(MEMORY_BASE + 64'h5040) ||
+            dut.prefetch_boundary_probe_wait_q[0] ||
+            !dut.prefetch_stream_long_q[0])
+            $fatal(1,
+                "long second crossing seen5000=%0d seen5040=%0d wait=%0d/%0d long=%0d/%0d depth=%0d last=%016x/%016x valid=%0d/%0d prefetches=%0d useful=%0d useless=%0d",
+                prefetch_command_seen(MEMORY_BASE + 64'h5000),
+                prefetch_command_seen(MEMORY_BASE + 64'h5040),
+                dut.prefetch_boundary_probe_wait_q[0],
+                dut.prefetch_boundary_probe_wait_q[1],
+                dut.prefetch_stream_long_q[0],
+                dut.prefetch_stream_long_q[1], prefetch_depth,
+                dut.prefetch_last_line_q[0],
+                dut.prefetch_last_line_q[1],
+                dut.prefetch_train_valid_q[0],
+                dut.prefetch_train_valid_q[1], prefetch_commands,
+                useful_prefetches, useless_prefetches);
+        issue_load(MEMORY_BASE + 64'h4f80);
+        issue_load(MEMORY_BASE + 64'h4fc0);
+        issue_load(MEMORY_BASE + 64'h5000);
+        issue_load(MEMORY_BASE + 64'h5040);
+        if (!dut.prefetch_stream_long_q[0] ||
+            !dut.prefetch_stride_valid_q[0] ||
+            (dut.prefetch_stride_q[0] != 64))
+            $fatal(1,
+                "later boundary demand restarted long stream long=%0d stride_valid=%0d stride=%0d",
+                dut.prefetch_stream_long_q[0],
+                dut.prefetch_stride_valid_q[0],
+                dut.prefetch_stride_q[0]);
+        issue_load(MEMORY_BASE + 64'h5200);
+        if (dut.prefetch_stream_long_q[0])
+            $fatal(1,
+                "stride change retained long permission last=%016x stride=%0d valid=%0d confidence=%0d",
+                dut.prefetch_last_line_q[0],
+                dut.prefetch_stride_q[0],
+                dut.prefetch_stride_valid_q[0],
+                dut.prefetch_confidence_q[0]);
+
+        // The same probe/hold/release rule applies to a negative stride.
+        reset_dut();
+        issue_load(MEMORY_BASE + 64'h4080);
+        issue_load(MEMORY_BASE + 64'h4040);
+        issue_load(MEMORY_BASE + 64'h4000);
+        wait_for_prefetch(MEMORY_BASE + 64'h3fc0);
+        repeat (40) @(posedge clk);
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h3fc0) ||
+            prefetch_command_seen(MEMORY_BASE + 64'h3f80))
+            $fatal(1,
+                "reverse boundary probe did not hold deeper predictions");
+        if (!dut.prefetch_train_valid_q[0] ||
+            !dut.prefetch_stream_page_end[0] ||
+            !dut.prefetch_boundary_probe_wait_q[0] ||
+            dut.prefetch_stream_long_q[0])
+            $fatal(1, "reverse stream was not paused at page boundary");
+        useful_before_barrier = useful_prefetches;
+        issue_load(MEMORY_BASE + 64'h3fc0);
+        wait_for_prefetch_quiescence();
+        if (useful_prefetches != useful_before_barrier + 1)
+            $fatal(1, "reverse boundary probe was not useful");
+        if (!dut.prefetch_stream_long_q[0])
+            $fatal(1, "reverse useful probe did not earn long status");
+        if (!prefetch_command_seen(MEMORY_BASE + 64'h3f80))
+            wait_for_prefetch(MEMORY_BASE + 64'h3f80);
 
         // Two equal non-unit deltas train one history entry.  Earlier
         // observations use the conservative next-line fallback.
@@ -964,6 +1275,12 @@ module tb_l1d_prefetch;
             $fatal(1,
                 "unused speculative replacements did not reduce depth useless=%0d depth=%0d",
                 useless_prefetches, prefetch_depth);
+        if (useful_prefetches !=
+            on_time_useful_prefetches + late_useful_prefetches)
+            $fatal(1,
+                "prefetch useful categories do not sum total=%0d ontime=%0d late=%0d",
+                useful_prefetches, on_time_useful_prefetches,
+                late_useful_prefetches);
 
         $display("PASS: L1D two-stream adaptive prefetch, CCX MSHRs, and decay");
         $finish;

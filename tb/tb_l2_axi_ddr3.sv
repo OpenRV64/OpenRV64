@@ -7,7 +7,7 @@ module tb_l2_axi_ddr3;
     localparam integer AXI_DATA_WIDTH = 256;
     localparam integer AXI_ID_WIDTH = 3;
     localparam [63:0] MEM_BASE = 64'h0000_0000_8000_0000;
-    localparam integer MEM_BYTES = 64 * 1024;
+    localparam integer MEM_BYTES = 1024 * 1024;
 
     logic clk;
     logic rst_n;
@@ -119,8 +119,8 @@ module tb_l2_axi_ddr3;
         .BUS_TYPE(`OPENRV64_COMPLEX_BUS_AXI),
         .BUS_ADDR_WIDTH(64),
         .BUS_DATA_WIDTH(AXI_DATA_WIDTH),
-        .GENBUS_READ_BUFFER_DEPTH(4),
-        .GENBUS_WRITE_BUFFER_DEPTH(4),
+        .GENBUS_READ_BUFFER_DEPTH(8),
+        .GENBUS_WRITE_BUFFER_DEPTH(8),
         .AXI_ID_WIDTH(AXI_ID_WIDTH),
         .AXI_ID(3'd7)
     ) u_complex (
@@ -220,7 +220,7 @@ module tb_l2_axi_ddr3;
         .READ_QUEUE_DEPTH(4),
         .WRITE_QUEUE_DEPTH(4),
         .CONTROLLER_TCK_PS(1000),
-        .REFRESH_INTERVAL(0),
+        .REFRESH_INTERVAL(64),
         .COMMAND_QUEUE_DEPTH(8)
     ) u_ddr3 (
         .clk_i(clk),
@@ -387,6 +387,58 @@ module tb_l2_axi_ddr3;
         end
     endtask
 
+    task automatic expect_two_responses(
+        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn0,
+        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data0,
+        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn1,
+        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data1
+    );
+        integer guard;
+        reg seen0;
+        reg seen1;
+        begin
+            seen0 = 1'b0;
+            seen1 = 1'b0;
+            guard = 0;
+            @(negedge clk);
+            ccx_resp_ready = 1'b1;
+            while (!(seen0 && seen1) && (guard < 20000)) begin
+                @(posedge clk);
+                if (ccx_resp_valid && ccx_resp_ready) begin
+                    if (ccx_resp_error || ccx_resp_sc_success ||
+                        (ccx_resp_hart_id !== 0) ||
+                        (ccx_resp_source_id !==
+                         `OPENRV64_CCX_SOURCE_DCACHE) ||
+                        (ccx_resp_beat_index !== 0) ||
+                        !ccx_resp_last)
+                        $fatal(1,
+                            "malformed concurrent CCX response txn=%0d",
+                            ccx_resp_txn_id);
+                    if (ccx_resp_txn_id == txn0) begin
+                        if (seen0 || (ccx_resp_rdata !== data0))
+                            $fatal(1,
+                                "concurrent response mismatch txn=%0d",
+                                txn0);
+                        seen0 = 1'b1;
+                    end else if (ccx_resp_txn_id == txn1) begin
+                        if (seen1 || (ccx_resp_rdata !== data1))
+                            $fatal(1,
+                                "concurrent response mismatch txn=%0d",
+                                txn1);
+                        seen1 = 1'b1;
+                    end else begin
+                        $fatal(1,
+                            "unexpected concurrent CCX response txn=%0d",
+                            ccx_resp_txn_id);
+                    end
+                end
+                guard = guard + 1;
+            end
+            if (!(seen0 && seen1))
+                $fatal(1, "concurrent CCX response timeout");
+        end
+    endtask
+
     localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_A = {
         64'h0707_0707_0707_0707, 64'h0606_0606_0606_0606,
         64'h0505_0505_0505_0505, 64'h0404_0404_0404_0404,
@@ -405,6 +457,13 @@ module tb_l2_axi_ddr3;
     localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_D = {
         8{64'hd4d4_d4d4_d4d4_d4d4}
     };
+    localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_E = {
+        8{64'he5e5_e5e5_e5e5_e5e5}
+    };
+    localparam [63:0] EVICT_A = MEM_BASE + 64'h0008_0000;
+    localparam [63:0] EVICT_B = MEM_BASE + 64'h000a_0000;
+    localparam [63:0] EVICT_C = MEM_BASE + 64'h000c_0000;
+    localparam [63:0] EVICT_D = MEM_BASE + 64'h000e_0000;
     integer reads_before_hit;
     integer commands_before_hit;
 
@@ -504,6 +563,41 @@ module tb_l2_axi_ddr3;
         expect_response(4'd9, LINE_B);
         expect_response(4'd11, LINE_D);
 
+        // All four addresses map to one set in this 256 KiB, two-way L2.
+        // Dirty A, then launch misses for C and D together.  C must write A
+        // back while D fills through an independent MSHR.  A later refill
+        // must recover the dirty data rather than a response from either
+        // younger miss.
+        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+                 4'd1, EVICT_A, LINE_A, 512'd0);
+        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+                 4'd2, EVICT_B, LINE_C, 512'd0);
+        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+                 4'd3, EVICT_C, LINE_D, 512'd0);
+        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+                 4'd4, EVICT_D, LINE_E, 512'd0);
+        transact(`OPENRV64_CCX_OP_READ,
+                 `OPENRV64_CCX_ATTR_CACHEABLE,
+                 4'd5, EVICT_A, 512'd0, LINE_A);
+        transact(`OPENRV64_CCX_OP_WRITE,
+                 `OPENRV64_CCX_ATTR_CACHEABLE,
+                 4'd6, EVICT_A, LINE_B, 512'd0);
+        transact(`OPENRV64_CCX_OP_READ,
+                 `OPENRV64_CCX_ATTR_CACHEABLE,
+                 4'd7, EVICT_B, 512'd0, LINE_C);
+        @(negedge clk);
+        ccx_resp_ready = 1'b0;
+        launch_request(`OPENRV64_CCX_OP_READ,
+                       `OPENRV64_CCX_ATTR_CACHEABLE,
+                       4'd12, EVICT_C, 512'd0);
+        launch_request(`OPENRV64_CCX_OP_READ,
+                       `OPENRV64_CCX_ATTR_CACHEABLE,
+                       4'd13, EVICT_D, 512'd0);
+        expect_two_responses(4'd12, LINE_D, 4'd13, LINE_E);
+        transact(`OPENRV64_CCX_OP_READ,
+                 `OPENRV64_CCX_ATTR_CACHEABLE,
+                 4'd14, EVICT_A, 512'd0, LINE_B);
+
         if (max_active_mshrs < 3)
             $fatal(1, "L2 never retained three outstanding misses");
         if ((max_ddr3_queued < 3) || (max_timing_owners < 3))
@@ -519,10 +613,26 @@ module tb_l2_axi_ddr3;
                 "DDR3 command count does not match complete AXI bursts");
 
         $display(
-            "tb_l2_axi_ddr3: PASS reads=%0d writes=%0d rbeats=%0d wbeats=%0d ddr3_cmds=%0d max_mshrs=%0d max_ddr3_queued=%0d max_timing_owners=%0d",
+            "tb_l2_axi_ddr3: PASS reads=%0d writes=%0d rbeats=%0d wbeats=%0d ddr3_cmds=%0d max_mshrs=%0d max_ddr3_queued=%0d max_timing_owners=%0d trains=%0d/%0d/%0d/%0d/%0d/%0d/%0d/%0d",
             axi_read_transactions, axi_write_transactions,
             axi_read_beats, axi_write_beats, ddr3_commands,
-            max_active_mshrs, max_ddr3_queued, max_timing_owners);
+            max_active_mshrs, max_ddr3_queued, max_timing_owners,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_single_burst_trains_q,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_two_burst_trains_q,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_three_burst_trains_q,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_four_burst_trains_q,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_five_burst_trains_q,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_six_burst_trains_q,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_seven_burst_trains_q,
+            u_ddr3.g_ddr3.u_timing.u_timing
+                .perf_eight_burst_trains_q);
         $finish;
     end
 

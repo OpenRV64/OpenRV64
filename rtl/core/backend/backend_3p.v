@@ -37,8 +37,6 @@ module openrv64_backend_3p #(
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE = {`RV64_XLEN{1'b0}},
-    parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE = {`RV64_XLEN{1'b0}},
-    parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE = {`RV64_XLEN{1'b0}},
     parameter integer SLOT_WIDTH = $clog2(RETIRE_DEPTH),
     parameter integer RETIRE_COUNT_WIDTH = $clog2(RETIRE_DEPTH + 1),
     parameter integer DISPATCH_COUNT_WIDTH = $clog2(
@@ -995,8 +993,8 @@ module openrv64_backend_3p #(
         .ENABLE_ISSUE_WINDOW_3P(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW_3P(ENABLE_SPECULATION_WINDOW),
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
-        .SPEC_LOAD_BASE_3P(SPEC_LOAD_BASE),
-        .SPEC_LOAD_SIZE_3P(SPEC_LOAD_SIZE),
+        .CACHEABLE_BASE_3P(CACHEABLE_BASE),
+        .CACHEABLE_SIZE_3P(CACHEABLE_SIZE),
         .PHYS_REG_COUNT_3P(PHYS_REG_COUNT),
         .PHYS_REG_ADDR_WIDTH_3P(PHYS_REG_ADDR_WIDTH),
         .RETIRE_META_WIDTH_3P(RETIRE_META_WIDTH),
@@ -1032,6 +1030,7 @@ module openrv64_backend_3p #(
         .retire_rd_addr_i(5'd0), .decode_trace_id_i(64'd0),
         .squash_frontend_3p_i(squash_frontend_i),
         .squash_id_3p_i(exec_redirect_id),
+        .translation_bypass_3p_i(translation_bypass_i),
         .decode_valid_3p_i(decode_valid_i),
         .decode_ready_3p_o(decode_ready_o),
         .decode_payload_3p_i(decode_payload_i),
@@ -1384,6 +1383,174 @@ module openrv64_backend_3p #(
         .trace_rd_o(retire_rd_o),
         .trace_wdata_o(retire_wdata_o)
     );
+
+`ifndef SYNTHESIS
+    /*
+     * Simulation-only speculative-memory outcome accounting.  The LSQ knows
+     * whether an operation crossed its allocation boundary before becoming
+     * the ordered head, while retirement owns the architectural outcome.
+     * Retain that one bit in a shadow bank indexed by the retirement slot.
+     */
+    reg perf_mem_seen_q [0:RETIRE_DEPTH-1];
+    reg perf_mem_spec_q [0:RETIRE_DEPTH-1];
+    reg [63:0] perf_lsq_load_retired_q;
+    reg [63:0] perf_lsq_load_spec_retired_q;
+    reg [63:0] perf_lsq_load_ordered_retired_q;
+    reg [63:0] perf_lsq_store_retired_q;
+    reg [63:0] perf_lsq_store_spec_retired_q;
+    reg [63:0] perf_lsq_store_ordered_retired_q;
+    reg [63:0] perf_lsq_retired_untracked_q;
+    integer perf_mem_slot;
+    integer perf_mem_lane;
+    integer perf_count_lane;
+    integer perf_load_retired_count_r;
+    integer perf_load_spec_retired_count_r;
+    integer perf_load_ordered_retired_count_r;
+    integer perf_store_retired_count_r;
+    integer perf_store_spec_retired_count_r;
+    integer perf_store_ordered_retired_count_r;
+    integer perf_retired_untracked_count_r;
+    reg [SLOT_WIDTH-1:0] perf_retire_slot_r;
+    reg [SLOT_WIDTH-1:0] perf_count_slot_r;
+    reg [RETIRE_RECORD_WIDTH-1:0] perf_count_record_r;
+
+    always @* begin
+        perf_load_retired_count_r = 0;
+        perf_load_spec_retired_count_r = 0;
+        perf_load_ordered_retired_count_r = 0;
+        perf_store_retired_count_r = 0;
+        perf_store_spec_retired_count_r = 0;
+        perf_store_ordered_retired_count_r = 0;
+        perf_retired_untracked_count_r = 0;
+        perf_count_slot_r = {SLOT_WIDTH{1'b0}};
+        perf_count_record_r = {RETIRE_RECORD_WIDTH{1'b0}};
+        for (perf_count_lane = 0;
+             perf_count_lane < 3;
+             perf_count_lane = perf_count_lane + 1) begin
+            perf_count_slot_r = queue_retire_slot[
+                perf_count_lane*SLOT_WIDTH +: SLOT_WIDTH];
+            perf_count_record_r = queue_retire_record[
+                perf_count_lane*RETIRE_RECORD_WIDTH +:
+                RETIRE_RECORD_WIDTH];
+            if (retire_arch_o[perf_count_lane] &&
+                perf_count_record_r[
+                    `OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT]) begin
+                perf_store_retired_count_r =
+                    perf_store_retired_count_r + 1;
+                if (perf_mem_seen_q[perf_count_slot_r] &&
+                    perf_mem_spec_q[perf_count_slot_r])
+                    perf_store_spec_retired_count_r =
+                        perf_store_spec_retired_count_r + 1;
+                else
+                    perf_store_ordered_retired_count_r =
+                        perf_store_ordered_retired_count_r + 1;
+                if (!perf_mem_seen_q[perf_count_slot_r])
+                    perf_retired_untracked_count_r =
+                        perf_retired_untracked_count_r + 1;
+            end else if (retire_arch_o[perf_count_lane] &&
+                         perf_count_record_r[
+                             `OPENRV64_RETIRE_ALLOC_MEM_READ_BIT]) begin
+                perf_load_retired_count_r =
+                    perf_load_retired_count_r + 1;
+                if (perf_mem_seen_q[perf_count_slot_r] &&
+                    perf_mem_spec_q[perf_count_slot_r])
+                    perf_load_spec_retired_count_r =
+                        perf_load_spec_retired_count_r + 1;
+                else
+                    perf_load_ordered_retired_count_r =
+                        perf_load_ordered_retired_count_r + 1;
+                if (!perf_mem_seen_q[perf_count_slot_r])
+                    perf_retired_untracked_count_r =
+                        perf_retired_untracked_count_r + 1;
+            end
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            perf_lsq_load_retired_q <= 64'd0;
+            perf_lsq_load_spec_retired_q <= 64'd0;
+            perf_lsq_load_ordered_retired_q <= 64'd0;
+            perf_lsq_store_retired_q <= 64'd0;
+            perf_lsq_store_spec_retired_q <= 64'd0;
+            perf_lsq_store_ordered_retired_q <= 64'd0;
+            perf_lsq_retired_untracked_q <= 64'd0;
+            for (perf_mem_slot = 0;
+                 perf_mem_slot < RETIRE_DEPTH;
+                 perf_mem_slot = perf_mem_slot + 1) begin
+                perf_mem_seen_q[perf_mem_slot] <= 1'b0;
+                perf_mem_spec_q[perf_mem_slot] <= 1'b0;
+            end
+        end else begin
+            perf_lsq_load_retired_q <= perf_lsq_load_retired_q +
+                perf_load_retired_count_r;
+            perf_lsq_load_spec_retired_q <=
+                perf_lsq_load_spec_retired_q +
+                perf_load_spec_retired_count_r;
+            perf_lsq_load_ordered_retired_q <=
+                perf_lsq_load_ordered_retired_q +
+                perf_load_ordered_retired_count_r;
+            perf_lsq_store_retired_q <= perf_lsq_store_retired_q +
+                perf_store_retired_count_r;
+            perf_lsq_store_spec_retired_q <=
+                perf_lsq_store_spec_retired_q +
+                perf_store_spec_retired_count_r;
+            perf_lsq_store_ordered_retired_q <=
+                perf_lsq_store_ordered_retired_q +
+                perf_store_ordered_retired_count_r;
+            perf_lsq_retired_untracked_q <=
+                perf_lsq_retired_untracked_q +
+                perf_retired_untracked_count_r;
+            for (perf_mem_lane = 0;
+                 perf_mem_lane < 3;
+                 perf_mem_lane = perf_mem_lane + 1) begin
+                perf_retire_slot_r = queue_retire_slot[
+                    perf_mem_lane*SLOT_WIDTH +: SLOT_WIDTH];
+                if (queue_retire_accept[perf_mem_lane])
+                    perf_mem_seen_q[perf_retire_slot_r] <= 1'b0;
+            end
+
+            // Clear every newly allocated slot, including non-memory work.
+            // A later LSQ allocation below records the memory classification.
+            for (perf_mem_lane = 0;
+                 perf_mem_lane < 3;
+                 perf_mem_lane = perf_mem_lane + 1) begin
+                if (queue_alloc_accept[perf_mem_lane]) begin
+                    perf_mem_seen_q[allocation_slot[
+                        perf_mem_lane*SLOT_WIDTH +:
+                        SLOT_WIDTH]] <= 1'b0;
+                    perf_mem_spec_q[allocation_slot[
+                        perf_mem_lane*SLOT_WIDTH +:
+                        SLOT_WIDTH]] <= 1'b0;
+                end
+            end
+            if (u_exec.g_3p.u_exec.u_lsu.u_lsq.load_alloc_fire) begin
+                perf_mem_seen_q[
+                    u_exec.g_3p.u_exec.u_lsu.u_lsq.load_alloc_slot_i] <=
+                    1'b1;
+                perf_mem_spec_q[
+                    u_exec.g_3p.u_exec.u_lsu.u_lsq.load_alloc_slot_i] <=
+                    !u_exec.g_3p.u_exec.u_lsu.u_lsq
+                        .perf_load_alloc_order_match;
+            end
+            if (u_exec.g_3p.u_exec.u_lsu.u_lsq.store_alloc_fire) begin
+                perf_mem_seen_q[
+                    u_exec.g_3p.u_exec.u_lsu.u_lsq.store_alloc_slot_i] <=
+                    1'b1;
+                perf_mem_spec_q[
+                    u_exec.g_3p.u_exec.u_lsu.u_lsq.store_alloc_slot_i] <=
+                    !u_exec.g_3p.u_exec.u_lsu.u_lsq
+                        .perf_store_alloc_order_match;
+            end
+            if (flush_i) begin
+                for (perf_mem_slot = 0;
+                     perf_mem_slot < RETIRE_DEPTH;
+                     perf_mem_slot = perf_mem_slot + 1)
+                    perf_mem_seen_q[perf_mem_slot] <= 1'b0;
+            end
+        end
+    end
+`endif
 
     // The store has already retired, so this is deliberately not a precise
     // replay point.  Trap at the next unretired architectural PC, retain the

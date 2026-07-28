@@ -585,6 +585,51 @@ module tb_lsq;
 
         reset_dut();
 
+        // A full flush cannot reuse an accepted translation tag until the
+        // stale response returns.  Otherwise that response can translate a
+        // new instruction which happens to allocate the same slot.
+        alloc_load(IDW'(40), 3'd0, 64'h8000, 3'd3);
+        take_xlate(1'b0, 64'h8000, lt);
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        alloc_load(IDW'(41), 3'd1, 64'h9000, 3'd3);
+        take_xlate(1'b0, 64'h9000, st);
+        if (st == lt)
+            $fatal(1, "full flush reused outstanding xlate tag=%0d", lt);
+        respond_xlate(lt, 64'ha000, 0, 0);
+        #1;
+        if (result_valid)
+            $fatal(1, "flushed translation produced a result");
+        respond_xlate(st, 64'hb000, 0, 0);
+        take_req(1'b0, 64'hb000, st);
+        respond_result(st, 64'hb000, 64'h1234_5678_9abc_def0,
+                       IDW'(41), 0, 64'h1234_5678_9abc_def0);
+
+        reset_dut();
+
+        // Physical requests use a different contract.  The CCX bus consumes
+        // the flush as a cancellation, suppresses the old response, and keeps
+        // its own copy of the tag busy until L1D drains it.  LSQ must release
+        // this slot immediately instead of waiting for a response which is
+        // deliberately hidden.
+        translation_bypass = 1'b1;
+        alloc_load(IDW'(42), 3'd2, 64'hc000, 3'd3);
+        take_req(1'b0, 64'hc000, lt);
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        alloc_load(IDW'(43), 3'd3, 64'hd000, 3'd3);
+        take_req(1'b0, 64'hd000, st);
+        if (st != lt)
+            $fatal(1, "full flush retained cancelled access tag=%0d/%0d",
+                   st, lt);
+        respond_result(st, 64'hd000, 64'h0fed_cba9_8765_4321,
+                       IDW'(43), 0, 64'h0fed_cba9_8765_4321);
+        translation_bypass = 1'b0;
+
+        reset_dut();
+
         // Younger cacheable load waits for an older store paddr, then passes
         // because the translated physical lines differ.
         alloc_store(IDW'(2), 3'd2, 64'h3000, 3'd3,
@@ -649,6 +694,28 @@ module tb_lsq;
         take_req(1'b0, 64'h5000, lt);
         respond_result(lt, 64'h5000, 64'h5555_6666_7777_8888,
                        IDW'(13), 0, 64'h5555_6666_7777_8888);
+
+        reset_dut();
+
+        // An arbitrary VA may translate before ordered retirement, but a
+        // translated physical address outside cacheable RAM must not issue a
+        // device read until that load becomes the ordered head.
+        alloc_load(IDW'(14), 3'd6, 64'hffff_ffd6_1000_2000, 3'd3);
+        take_xlate(1'b0, 64'hffff_ffd6_1000_2000, lt);
+        respond_xlate(lt, 64'h1_0020, 0, 0);
+        repeat (2) begin
+            tick();
+            if (req_valid)
+                $fatal(1,
+                    "translated non-RAM load escaped before ordered head");
+        end
+        head_valid = 1'b1;
+        head_id = IDW'(14);
+        head_slot = 3'd6;
+        take_req(1'b0, 64'h1_0020, lt);
+        respond_result(lt, 64'h1_0020, 64'h0bad_f00d_dead_beef,
+                       IDW'(14), 0, 64'h0bad_f00d_dead_beef);
+        head_valid = 1'b0;
 
         reset_dut();
 

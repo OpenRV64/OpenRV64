@@ -23,6 +23,7 @@ module openrv64_axi_ddr3 #(
     parameter integer FRONTEND_LATENCY_PS = 10000,
     parameter integer BACKEND_LATENCY_PS = 10000,
     parameter integer COMMAND_QUEUE_DEPTH = 16,
+    parameter integer MAX_BURST_TRAIN_BURSTS = 8,
     parameter integer TIMING_MODEL = 0
 ) (
     input  wire                      clk_i,
@@ -169,7 +170,8 @@ module openrv64_axi_ddr3 #(
                 .REFRESH_INTERVAL(REFRESH_INTERVAL),
                 .FRONTEND_LATENCY_PS(FRONTEND_LATENCY_PS),
                 .BACKEND_LATENCY_PS(BACKEND_LATENCY_PS),
-                .COMMAND_QUEUE_DEPTH(COMMAND_QUEUE_DEPTH)
+                .COMMAND_QUEUE_DEPTH(COMMAND_QUEUE_DEPTH),
+                .MAX_BURST_TRAIN_BURSTS(MAX_BURST_TRAIN_BURSTS)
             ) u_timing (
                 .clk_i(clk_i),
                 .rst_ni(rst_ni),

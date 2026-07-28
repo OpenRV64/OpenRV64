@@ -38,6 +38,7 @@ module openrv64_core_ccx_bus #(
     parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -1309,6 +1310,7 @@ module openrv64_core_ccx_bus #(
         .PREFETCH_QUEUE_LINES(L1D_PREFETCH_QUEUE_LINES),
         .PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
         .PREFETCH_DEMAND_RESERVE(L1D_PREFETCH_DEMAND_RESERVE),
+        .PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .REQ_TAG_WIDTH(L1D_REQ_TAG_WIDTH),
         .REQ_DEPTH(`OPENRV64_LSU_OUTSTANDING),
         .HART_ID(HART_ID)

@@ -17,8 +17,12 @@ module tb_opensbi #(
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
+    parameter integer L2_MERGE_ENTRIES = 8,
+    parameter integer GENBUS_READ_BUFFER_DEPTH = 8,
+    parameter integer GENBUS_WRITE_BUFFER_DEPTH = 8,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
+    parameter integer FETCH_CAROUSEL = 1,
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter integer L1I_DEMAND_MSHRS = 4,
@@ -30,6 +34,11 @@ module tb_opensbi #(
     parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
     parameter integer MEMORY_TIMING_MODEL = 0,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
+    parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
+    parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
+    parameter integer L1D_PREFETCH_OUTSTANDING = 4,
+    parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer MEMORY_BYTES = 256 * 1024 * 1024,
     parameter logic [31:0] FDT_BASE_LO = 32'h8ff0_0000
 ) (
@@ -105,6 +114,8 @@ module tb_opensbi #(
     integer linux_initmem_index;
     integer linux_init_index;
     integer cycle_count;
+    logic [63:0] progress_last_cycle;
+    logic [63:0] progress_last_instret;
     integer uart_byte_count;
     integer payload_words;
     integer max_cycles;
@@ -120,6 +131,23 @@ module tb_opensbi #(
     string lsu_trace_path;
     string ccx_trace_path;
     logic perf_summary_enabled;
+
+    function automatic string format_ipc;
+        input logic [63:0] instructions;
+        input logic [63:0] cycles;
+        logic [63:0] whole;
+        logic [63:0] fraction;
+        begin
+            if (cycles == 0) begin
+                format_ipc = "0.000000";
+            end else begin
+                whole = instructions / cycles;
+                fraction = ((instructions % cycles) * 64'd1000000) /
+                           cycles;
+                format_ipc = $sformatf("%0d.%06d", whole, fraction);
+            end
+        end
+    endfunction
 
     logic [63:0] perf_cycles;
     logic [63:0] perf_issued;
@@ -225,10 +253,94 @@ module tb_opensbi #(
     logic [63:0] perf_l1d_store_max;
     logic [63:0] perf_l1d_prefetch_issued;
     logic [63:0] perf_l1d_prefetch_useful;
+    logic [63:0] perf_l1d_prefetch_on_time_useful;
+    logic [63:0] perf_l1d_prefetch_late_useful;
     logic [63:0] perf_l1d_prefetch_late;
+    logic [63:0] perf_l1d_prefetch_late_queued;
+    logic [63:0] perf_l1d_prefetch_late_command;
+    logic [63:0] perf_l1d_prefetch_late_mshr;
     logic [63:0] perf_l1d_prefetch_dropped;
     logic [63:0] perf_l1d_prefetch_useless;
     logic [63:0] perf_l1d_prefetch_max_depth;
+    logic [63:0] perf_l1d_store_poison_any_events;
+    logic [63:0] perf_l1d_store_poison_prefetch_events;
+    logic [63:0] perf_l1d_store_poison_prefetch_queue;
+    logic [63:0] perf_l1d_store_poison_prefetch_command;
+    logic [63:0] perf_l1d_store_poison_prefetch_mshr;
+    logic [63:0] perf_l1d_store_poison_prefetch_fill;
+    logic [63:0] perf_l1d_store_poison_demand_events;
+    logic [63:0] perf_l1d_store_poison_demand_wait_prefetch;
+    logic [63:0] perf_l1d_store_poison_demand_fill;
+    logic [63:0] perf_l1d_store_overlay_demand_mshr;
+
+    wire [63:0] perf_lsq_load_allocations;
+    wire [63:0] perf_lsq_load_spec_allocations;
+    wire [63:0] perf_lsq_load_ordered_allocations;
+    wire [63:0] perf_lsq_load_alloc_wait_cycles;
+    wire [63:0] perf_lsq_load_queue_full_cycles;
+    wire [63:0] perf_lsq_load_xlate_requests;
+    wire [63:0] perf_lsq_load_spec_xlate_requests;
+    wire [63:0] perf_lsq_load_xlate_wait_cycles;
+    wire [63:0] perf_lsq_load_access_requests;
+    wire [63:0] perf_lsq_load_spec_access_requests;
+    wire [63:0] perf_lsq_load_ordered_access_requests;
+    wire [63:0] perf_lsq_load_access_wait_cycles;
+    wire [63:0] perf_lsq_load_responses;
+    wire [63:0] perf_lsq_load_completions;
+    wire [63:0] perf_lsq_load_forwarded;
+    wire [63:0] perf_lsq_load_faults;
+    wire [63:0] perf_lsq_load_squashed;
+    wire [63:0] perf_lsq_load_squashed_before_xlate;
+    wire [63:0] perf_lsq_load_squashed_xlate_inflight;
+    wire [63:0] perf_lsq_load_squashed_xlate_done;
+    wire [63:0] perf_lsq_load_squashed_access_inflight;
+    wire [63:0] perf_lsq_load_killed_responses;
+    wire [63:0] perf_lsq_load_flushed;
+    wire [63:0] perf_lsq_load_dependency_block_cycles;
+    wire [63:0] perf_lsq_load_dependency_block_entry_cycles;
+    wire [63:0] perf_lsq_load_forward_ready_cycles;
+    wire [63:0] perf_lsq_load_forward_ready_entry_cycles;
+    wire [63:0] perf_lsq_load_occupancy_entry_cycles;
+    wire [63:0] perf_lsq_load_spec_occupancy_entry_cycles;
+    wire [63:0] perf_lsq_load_max_occupancy;
+
+    wire [63:0] perf_lsq_store_allocations;
+    wire [63:0] perf_lsq_store_spec_allocations;
+    wire [63:0] perf_lsq_store_ordered_allocations;
+    wire [63:0] perf_lsq_store_atomic_allocations;
+    wire [63:0] perf_lsq_store_alloc_wait_cycles;
+    wire [63:0] perf_lsq_store_queue_full_cycles;
+    wire [63:0] perf_lsq_store_xlate_requests;
+    wire [63:0] perf_lsq_store_spec_xlate_requests;
+    wire [63:0] perf_lsq_store_xlate_wait_cycles;
+    wire [63:0] perf_lsq_store_access_requests;
+    wire [63:0] perf_lsq_store_access_wait_cycles;
+    wire [63:0] perf_lsq_store_posted_results;
+    wire [63:0] perf_lsq_store_done;
+    wire [63:0] perf_lsq_store_squashed;
+    wire [63:0] perf_lsq_store_squashed_before_xlate;
+    wire [63:0] perf_lsq_store_squashed_xlate_inflight;
+    wire [63:0] perf_lsq_store_squashed_xlate_done;
+    wire [63:0] perf_lsq_store_squashed_access_inflight;
+    wire [63:0] perf_lsq_store_killed_responses;
+    wire [63:0] perf_lsq_store_flushed;
+    wire [63:0] perf_lsq_store_order_wait_cycles;
+    wire [63:0] perf_lsq_store_order_wait_entry_cycles;
+    wire [63:0] perf_lsq_store_occupancy_entry_cycles;
+    wire [63:0] perf_lsq_store_spec_occupancy_entry_cycles;
+    wire [63:0] perf_lsq_store_max_occupancy;
+    wire [63:0] perf_lsq_atomic_starts;
+    wire [63:0] perf_lsq_atomic_done;
+    wire [63:0] perf_lsq_atomic_active_cycles;
+    wire [63:0] perf_lsq_load_retired;
+    wire [63:0] perf_lsq_load_spec_retired;
+    wire [63:0] perf_lsq_load_ordered_retired;
+    wire [63:0] perf_lsq_store_retired;
+    wire [63:0] perf_lsq_store_spec_retired;
+    wire [63:0] perf_lsq_store_ordered_retired;
+    wire [63:0] perf_lsq_retired_untracked;
+    wire [63:0] perf_l1d_demand_reissues;
+    wire [63:0] perf_l1d_prefetch_page_ends;
 
     logic [63:0] perf_ccx_requests;
     logic [63:0] perf_ccx_icache_reads;
@@ -387,8 +499,12 @@ module tb_opensbi #(
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .L2_BYTES(L2_BYTES),
         .L2_WAYS(L2_WAYS),
+        .L2_MERGE_ENTRIES(L2_MERGE_ENTRIES),
+        .GENBUS_READ_BUFFER_DEPTH(GENBUS_READ_BUFFER_DEPTH),
+        .GENBUS_WRITE_BUFFER_DEPTH(GENBUS_WRITE_BUFFER_DEPTH),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
+        .FETCH_CAROUSEL(FETCH_CAROUSEL),
         .FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .FETCH_ALT_CONFIDENCE_GATE(FETCH_ALT_CONFIDENCE_GATE),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
@@ -400,6 +516,11 @@ module tb_opensbi #(
         .DDR3_COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
         .MEMORY_TIMING_MODEL(MEMORY_TIMING_MODEL),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+        .L1D_PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),
+        .L1D_PREFETCH_QUEUE_LINES(L1D_PREFETCH_QUEUE_LINES),
+        .L1D_PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
+        .L1D_PREFETCH_DEMAND_RESERVE(L1D_PREFETCH_DEMAND_RESERVE),
+        .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .MEMORY_BYTES(MEMORY_BYTES),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64A(1'b1),
@@ -598,6 +719,217 @@ module tb_opensbi #(
                 dut.u_core.g_backend_3p.u_core_3p.backend_mem_wstrb;
             assign observed_lsu_req_size =
                 dut.u_core.g_backend_3p.u_core_3p.backend_mem_size;
+            assign perf_lsq_load_allocations =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_allocations_q;
+            assign perf_lsq_load_spec_allocations =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_spec_allocations_q;
+            assign perf_lsq_load_ordered_allocations =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_ordered_allocations_q;
+            assign perf_lsq_load_alloc_wait_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_alloc_wait_cycles_q;
+            assign perf_lsq_load_queue_full_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_queue_full_cycles_q;
+            assign perf_lsq_load_xlate_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_xlate_requests_q;
+            assign perf_lsq_load_spec_xlate_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_spec_xlate_requests_q;
+            assign perf_lsq_load_xlate_wait_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_xlate_wait_cycles_q;
+            assign perf_lsq_load_access_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_access_requests_q;
+            assign perf_lsq_load_spec_access_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_spec_access_requests_q;
+            assign perf_lsq_load_ordered_access_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_ordered_access_requests_q;
+            assign perf_lsq_load_access_wait_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_access_wait_cycles_q;
+            assign perf_lsq_load_responses =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_responses_q;
+            assign perf_lsq_load_completions =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_completions_q;
+            assign perf_lsq_load_forwarded =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_forwarded_q;
+            assign perf_lsq_load_faults =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_faults_q;
+            assign perf_lsq_load_squashed =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_squashed_q;
+            assign perf_lsq_load_squashed_before_xlate =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_squashed_before_xlate_q;
+            assign perf_lsq_load_squashed_xlate_inflight =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_load_squashed_xlate_inflight_q;
+            assign perf_lsq_load_squashed_xlate_done =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_squashed_xlate_done_q;
+            assign perf_lsq_load_squashed_access_inflight =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_load_squashed_access_inflight_q;
+            assign perf_lsq_load_killed_responses =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_killed_responses_q;
+            assign perf_lsq_load_flushed =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_flushed_q;
+            assign perf_lsq_load_dependency_block_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_load_dependency_block_cycles_q;
+            assign perf_lsq_load_dependency_block_entry_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_load_dependency_block_entry_cycles_q;
+            assign perf_lsq_load_forward_ready_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_forward_ready_cycles_q;
+            assign perf_lsq_load_forward_ready_entry_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_load_forward_ready_entry_cycles_q;
+            assign perf_lsq_load_occupancy_entry_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_occupancy_cycles_q;
+            assign perf_lsq_load_spec_occupancy_entry_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_load_spec_occupancy_cycles_q;
+            assign perf_lsq_load_max_occupancy =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_load_max_occupancy_q;
+            assign perf_lsq_store_allocations =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_allocations_q;
+            assign perf_lsq_store_spec_allocations =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_spec_allocations_q;
+            assign perf_lsq_store_ordered_allocations =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_ordered_allocations_q;
+            assign perf_lsq_store_atomic_allocations =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_atomic_allocations_q;
+            assign perf_lsq_store_alloc_wait_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_alloc_wait_cycles_q;
+            assign perf_lsq_store_queue_full_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_queue_full_cycles_q;
+            assign perf_lsq_store_xlate_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_xlate_requests_q;
+            assign perf_lsq_store_spec_xlate_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_spec_xlate_requests_q;
+            assign perf_lsq_store_xlate_wait_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_xlate_wait_cycles_q;
+            assign perf_lsq_store_access_requests =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_access_requests_q;
+            assign perf_lsq_store_access_wait_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_access_wait_cycles_q;
+            assign perf_lsq_store_posted_results =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_posted_results_q;
+            assign perf_lsq_store_done =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_done_q;
+            assign perf_lsq_store_squashed =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_squashed_q;
+            assign perf_lsq_store_squashed_before_xlate =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_squashed_before_xlate_q;
+            assign perf_lsq_store_squashed_xlate_inflight =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_store_squashed_xlate_inflight_q;
+            assign perf_lsq_store_squashed_xlate_done =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_squashed_xlate_done_q;
+            assign perf_lsq_store_squashed_access_inflight =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_store_squashed_access_inflight_q;
+            assign perf_lsq_store_killed_responses =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_killed_responses_q;
+            assign perf_lsq_store_flushed =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_flushed_q;
+            assign perf_lsq_store_order_wait_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_order_wait_cycles_q;
+            assign perf_lsq_store_order_wait_entry_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_store_order_wait_entry_cycles_q;
+            assign perf_lsq_store_occupancy_entry_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_occupancy_cycles_q;
+            assign perf_lsq_store_spec_occupancy_entry_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq
+                        .perf_store_spec_occupancy_cycles_q;
+            assign perf_lsq_store_max_occupancy =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_store_max_occupancy_q;
+            assign perf_lsq_atomic_starts =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_atomic_starts_q;
+            assign perf_lsq_atomic_done =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_atomic_done_q;
+            assign perf_lsq_atomic_active_cycles =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.g_3p
+                    .u_exec.u_lsu.u_lsq.perf_atomic_active_cycles_q;
+            assign perf_lsq_load_retired =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .perf_lsq_load_retired_q;
+            assign perf_lsq_load_spec_retired =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .perf_lsq_load_spec_retired_q;
+            assign perf_lsq_load_ordered_retired =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .perf_lsq_load_ordered_retired_q;
+            assign perf_lsq_store_retired =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .perf_lsq_store_retired_q;
+            assign perf_lsq_store_spec_retired =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .perf_lsq_store_spec_retired_q;
+            assign perf_lsq_store_ordered_retired =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .perf_lsq_store_ordered_retired_q;
+            assign perf_lsq_retired_untracked =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .perf_lsq_retired_untracked_q;
+            assign perf_l1d_demand_reissues =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.perf_demand_reissues_q;
+            assign perf_l1d_prefetch_page_ends =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                    .u_l1d.perf_prefetch_page_ends_q;
             assign observed_lsu_resp_valid =
                 dut.u_core.g_backend_3p.u_core_3p.backend_mem_resp_valid;
             assign observed_lsu_resp_ready =
@@ -1167,9 +1499,29 @@ module tb_opensbi #(
                         perf_l1d_prefetch_useful <=
                             perf_l1d_prefetch_useful + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_on_time_useful)
+                        perf_l1d_prefetch_on_time_useful <=
+                            perf_l1d_prefetch_on_time_useful + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_late_useful)
+                        perf_l1d_prefetch_late_useful <=
+                            perf_l1d_prefetch_late_useful + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
                             .u_bus.u_l1d.prefetch_late_o)
                         perf_l1d_prefetch_late <=
                             perf_l1d_prefetch_late + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_queued_demand_match_r)
+                        perf_l1d_prefetch_late_queued <=
+                            perf_l1d_prefetch_late_queued + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_inflight_late_match)
+                        perf_l1d_prefetch_late_command <=
+                            perf_l1d_prefetch_late_command + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.prefetch_mshr_late_match_r)
+                        perf_l1d_prefetch_late_mshr <=
+                            perf_l1d_prefetch_late_mshr + 1'b1;
                     if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
                             .u_bus.u_l1d.prefetch_dropped_o)
                         perf_l1d_prefetch_dropped <=
@@ -1184,6 +1536,53 @@ module tb_opensbi #(
                         perf_l1d_prefetch_max_depth <=
                             dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
                                 .u_bus.u_l1d.prefetch_depth_o;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.store_poison_any_event_r)
+                        perf_l1d_store_poison_any_events <=
+                            perf_l1d_store_poison_any_events + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.store_poison_prefetch_event_r)
+                        perf_l1d_store_poison_prefetch_events <=
+                            perf_l1d_store_poison_prefetch_events + 1'b1;
+                    perf_l1d_store_poison_prefetch_queue <=
+                        perf_l1d_store_poison_prefetch_queue +
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d
+                                .store_poison_prefetch_queue_count_r;
+                    perf_l1d_store_poison_prefetch_command <=
+                        perf_l1d_store_poison_prefetch_command +
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d
+                                .store_poison_prefetch_command_count_r;
+                    perf_l1d_store_poison_prefetch_mshr <=
+                        perf_l1d_store_poison_prefetch_mshr +
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d
+                                .store_poison_prefetch_mshr_count_r;
+                    perf_l1d_store_poison_prefetch_fill <=
+                        perf_l1d_store_poison_prefetch_fill +
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d
+                                .store_poison_prefetch_fill_count_r;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d.store_poison_demand_event_r)
+                        perf_l1d_store_poison_demand_events <=
+                            perf_l1d_store_poison_demand_events + 1'b1;
+                    perf_l1d_store_poison_demand_wait_prefetch <=
+                        perf_l1d_store_poison_demand_wait_prefetch +
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d
+                            .store_poison_demand_wait_prefetch_count_r;
+                    perf_l1d_store_poison_demand_fill <=
+                        perf_l1d_store_poison_demand_fill +
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d
+                                .store_poison_demand_fill_count_r;
+                    perf_l1d_store_overlay_demand_mshr <=
+                        perf_l1d_store_overlay_demand_mshr +
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            .u_bus.u_l1d
+                                .store_overlay_demand_mshr_count_r;
 
                     if (dut.ccx_req_valid && dut.ccx_req_ready) begin
                         perf_ccx_requests <= perf_ccx_requests + 1'b1;
@@ -1363,6 +1762,75 @@ module tb_opensbi #(
             assign observed_lsu_req_wdata = 64'd0;
             assign observed_lsu_req_wstrb = 8'd0;
             assign observed_lsu_req_size = 3'd0;
+            assign {
+                perf_lsq_load_allocations,
+                perf_lsq_load_spec_allocations,
+                perf_lsq_load_ordered_allocations,
+                perf_lsq_load_alloc_wait_cycles,
+                perf_lsq_load_queue_full_cycles,
+                perf_lsq_load_xlate_requests,
+                perf_lsq_load_spec_xlate_requests,
+                perf_lsq_load_xlate_wait_cycles,
+                perf_lsq_load_access_requests,
+                perf_lsq_load_spec_access_requests,
+                perf_lsq_load_ordered_access_requests,
+                perf_lsq_load_access_wait_cycles,
+                perf_lsq_load_responses,
+                perf_lsq_load_completions,
+                perf_lsq_load_forwarded,
+                perf_lsq_load_faults,
+                perf_lsq_load_squashed,
+                perf_lsq_load_squashed_before_xlate,
+                perf_lsq_load_squashed_xlate_inflight,
+                perf_lsq_load_squashed_xlate_done,
+                perf_lsq_load_squashed_access_inflight,
+                perf_lsq_load_killed_responses,
+                perf_lsq_load_flushed,
+                perf_lsq_load_dependency_block_cycles,
+                perf_lsq_load_dependency_block_entry_cycles,
+                perf_lsq_load_forward_ready_cycles,
+                perf_lsq_load_forward_ready_entry_cycles,
+                perf_lsq_load_occupancy_entry_cycles,
+                perf_lsq_load_spec_occupancy_entry_cycles,
+                perf_lsq_load_max_occupancy,
+                perf_lsq_store_allocations,
+                perf_lsq_store_spec_allocations,
+                perf_lsq_store_ordered_allocations,
+                perf_lsq_store_atomic_allocations,
+                perf_lsq_store_alloc_wait_cycles,
+                perf_lsq_store_queue_full_cycles,
+                perf_lsq_store_xlate_requests,
+                perf_lsq_store_spec_xlate_requests,
+                perf_lsq_store_xlate_wait_cycles,
+                perf_lsq_store_access_requests,
+                perf_lsq_store_access_wait_cycles,
+                perf_lsq_store_posted_results,
+                perf_lsq_store_done,
+                perf_lsq_store_squashed,
+                perf_lsq_store_squashed_before_xlate,
+                perf_lsq_store_squashed_xlate_inflight,
+                perf_lsq_store_squashed_xlate_done,
+                perf_lsq_store_squashed_access_inflight,
+                perf_lsq_store_killed_responses,
+                perf_lsq_store_flushed,
+                perf_lsq_store_order_wait_cycles,
+                perf_lsq_store_order_wait_entry_cycles,
+                perf_lsq_store_occupancy_entry_cycles,
+                perf_lsq_store_spec_occupancy_entry_cycles,
+                perf_lsq_store_max_occupancy,
+                perf_lsq_atomic_starts,
+                perf_lsq_atomic_done,
+                perf_lsq_atomic_active_cycles,
+                perf_lsq_load_retired,
+                perf_lsq_load_spec_retired,
+                perf_lsq_load_ordered_retired,
+                perf_lsq_store_retired,
+                perf_lsq_store_spec_retired,
+                perf_lsq_store_ordered_retired,
+                perf_lsq_retired_untracked,
+                perf_l1d_demand_reissues,
+                perf_l1d_prefetch_page_ends
+            } = '0;
             assign observed_lsu_resp_valid = 1'b0;
             assign observed_lsu_resp_ready = 1'b0;
             assign observed_lsu_resp_tag = 0;
@@ -1476,7 +1944,7 @@ module tb_opensbi #(
                          perf_l1i_line_misses,
                          perf_l1i_line_responses,
                          perf_l1i_busy_cycles);
-                $display("PERF BROAD L1D name=%0s load_requests=%0d store_requests=%0d load_wait_cycles=%0d store_wait_cycles=%0d misses=%0d mshr_allocations=%0d mshr_merges=%0d mshr_responses=%0d mshr_full_cycles=%0d mshr_max=%0d store_allocations=%0d store_merges=%0d store_responses=%0d store_full_cycles=%0d store_max=%0d prefetch_issued=%0d prefetch_useful=%0d prefetch_late=%0d prefetch_dropped=%0d prefetch_useless=%0d prefetch_max_depth=%0d",
+                $display("PERF BROAD L1D name=%0s load_requests=%0d store_requests=%0d load_wait_cycles=%0d store_wait_cycles=%0d misses=%0d mshr_allocations=%0d mshr_merges=%0d mshr_responses=%0d mshr_full_cycles=%0d mshr_max=%0d store_allocations=%0d store_merges=%0d store_responses=%0d store_full_cycles=%0d store_max=%0d prefetch_issued=%0d prefetch_useful=%0d prefetch_useful_pct=%0.2f prefetch_on_time_useful=%0d prefetch_on_time_pct=%0.2f prefetch_late_useful=%0d prefetch_late_useful_pct=%0.2f prefetch_late=%0d prefetch_late_queued=%0d prefetch_late_command=%0d prefetch_late_mshr=%0d prefetch_dropped=%0d prefetch_useless=%0d prefetch_max_depth=%0d",
                          name, perf_l1d_load_requests,
                          perf_l1d_store_requests,
                          perf_l1d_load_wait_cycles,
@@ -1494,10 +1962,125 @@ module tb_opensbi #(
                          perf_l1d_store_max,
                          perf_l1d_prefetch_issued,
                          perf_l1d_prefetch_useful,
+                         (perf_l1d_prefetch_issued == 0) ? 0.0 :
+                            (100.0 * perf_l1d_prefetch_useful /
+                             perf_l1d_prefetch_issued),
+                         perf_l1d_prefetch_on_time_useful,
+                         (perf_l1d_prefetch_issued == 0) ? 0.0 :
+                            (100.0 * perf_l1d_prefetch_on_time_useful /
+                             perf_l1d_prefetch_issued),
+                         perf_l1d_prefetch_late_useful,
+                         (perf_l1d_prefetch_issued == 0) ? 0.0 :
+                            (100.0 * perf_l1d_prefetch_late_useful /
+                             perf_l1d_prefetch_issued),
                          perf_l1d_prefetch_late,
+                         perf_l1d_prefetch_late_queued,
+                         perf_l1d_prefetch_late_command,
+                         perf_l1d_prefetch_late_mshr,
                          perf_l1d_prefetch_dropped,
                          perf_l1d_prefetch_useless,
                          perf_l1d_prefetch_max_depth);
+                $display("PERF BROAD L1D_STORE_POISON name=%0s any_events=%0d prefetch_events=%0d prefetch_queue=%0d prefetch_command=%0d prefetch_mshr=%0d prefetch_fill=%0d demand_events=%0d demand_wait_prefetch=%0d demand_fill=%0d demand_mshr_overlays=%0d",
+                         name,
+                         perf_l1d_store_poison_any_events,
+                         perf_l1d_store_poison_prefetch_events,
+                         perf_l1d_store_poison_prefetch_queue,
+                         perf_l1d_store_poison_prefetch_command,
+                         perf_l1d_store_poison_prefetch_mshr,
+                         perf_l1d_store_poison_prefetch_fill,
+                         perf_l1d_store_poison_demand_events,
+                         perf_l1d_store_poison_demand_wait_prefetch,
+                         perf_l1d_store_poison_demand_fill,
+                         perf_l1d_store_overlay_demand_mshr);
+                $display("PERF BROAD SPEC_LOAD name=%0s alloc=%0d spec_alloc=%0d ordered_alloc=%0d xlate=%0d spec_xlate=%0d access=%0d spec_access=%0d ordered_access=%0d responses=%0d completions=%0d forwarded=%0d faults=%0d",
+                         name,
+                         perf_lsq_load_allocations,
+                         perf_lsq_load_spec_allocations,
+                         perf_lsq_load_ordered_allocations,
+                         perf_lsq_load_xlate_requests,
+                         perf_lsq_load_spec_xlate_requests,
+                         perf_lsq_load_access_requests,
+                         perf_lsq_load_spec_access_requests,
+                         perf_lsq_load_ordered_access_requests,
+                         perf_lsq_load_responses,
+                         perf_lsq_load_completions,
+                         perf_lsq_load_forwarded,
+                         perf_lsq_load_faults);
+                $display("PERF BROAD SPEC_LOAD_WAIT name=%0s alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d dependency_cycles=%0d dependency_entry_cycles=%0d forward_cycles=%0d forward_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
+                         name,
+                         perf_lsq_load_alloc_wait_cycles,
+                         perf_lsq_load_queue_full_cycles,
+                         perf_lsq_load_xlate_wait_cycles,
+                         perf_lsq_load_access_wait_cycles,
+                         perf_lsq_load_dependency_block_cycles,
+                         perf_lsq_load_dependency_block_entry_cycles,
+                         perf_lsq_load_forward_ready_cycles,
+                         perf_lsq_load_forward_ready_entry_cycles,
+                         perf_lsq_load_occupancy_entry_cycles,
+                         perf_lsq_load_spec_occupancy_entry_cycles,
+                         perf_lsq_load_max_occupancy);
+                $display("PERF BROAD SPEC_LOAD_SQUASH name=%0s branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
+                         name,
+                         perf_lsq_load_squashed,
+                         perf_lsq_load_squashed_before_xlate,
+                         perf_lsq_load_squashed_xlate_inflight,
+                         perf_lsq_load_squashed_xlate_done,
+                         perf_lsq_load_squashed_access_inflight,
+                         perf_lsq_load_killed_responses,
+                         perf_lsq_load_flushed);
+                $display("PERF BROAD SPEC_LOAD_OUTCOME name=%0s retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=%0d branch_aborted=%0d flush_aborted=%0d",
+                         name,
+                         perf_lsq_load_retired,
+                         perf_lsq_load_spec_retired,
+                         perf_lsq_load_ordered_retired,
+                         perf_l1d_demand_reissues,
+                         perf_lsq_load_squashed,
+                         perf_lsq_load_flushed);
+                $display("PERF BROAD SPEC_STORE name=%0s alloc=%0d spec_alloc=%0d ordered_alloc=%0d atomic_alloc=%0d xlate=%0d spec_xlate=%0d ordered_access=%0d posted_results=%0d done=%0d",
+                         name,
+                         perf_lsq_store_allocations,
+                         perf_lsq_store_spec_allocations,
+                         perf_lsq_store_ordered_allocations,
+                         perf_lsq_store_atomic_allocations,
+                         perf_lsq_store_xlate_requests,
+                         perf_lsq_store_spec_xlate_requests,
+                         perf_lsq_store_access_requests,
+                         perf_lsq_store_posted_results,
+                         perf_lsq_store_done);
+                $display("PERF BROAD SPEC_STORE_WAIT name=%0s alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d order_wait_cycles=%0d order_wait_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
+                         name,
+                         perf_lsq_store_alloc_wait_cycles,
+                         perf_lsq_store_queue_full_cycles,
+                         perf_lsq_store_xlate_wait_cycles,
+                         perf_lsq_store_access_wait_cycles,
+                         perf_lsq_store_order_wait_cycles,
+                         perf_lsq_store_order_wait_entry_cycles,
+                         perf_lsq_store_occupancy_entry_cycles,
+                         perf_lsq_store_spec_occupancy_entry_cycles,
+                         perf_lsq_store_max_occupancy);
+                $display("PERF BROAD SPEC_STORE_SQUASH name=%0s branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
+                         name,
+                         perf_lsq_store_squashed,
+                         perf_lsq_store_squashed_before_xlate,
+                         perf_lsq_store_squashed_xlate_inflight,
+                         perf_lsq_store_squashed_xlate_done,
+                         perf_lsq_store_squashed_access_inflight,
+                         perf_lsq_store_killed_responses,
+                         perf_lsq_store_flushed);
+                $display("PERF BROAD SPEC_STORE_OUTCOME name=%0s retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=0 branch_aborted=%0d flush_aborted=%0d untracked_retired=%0d",
+                         name,
+                         perf_lsq_store_retired,
+                         perf_lsq_store_spec_retired,
+                         perf_lsq_store_ordered_retired,
+                         perf_lsq_store_squashed,
+                         perf_lsq_store_flushed,
+                         perf_lsq_retired_untracked);
+                $display("PERF BROAD ATOMIC name=%0s starts=%0d done=%0d active_cycles=%0d",
+                         name, perf_lsq_atomic_starts,
+                         perf_lsq_atomic_done,
+                         perf_lsq_atomic_active_cycles);
+                $display("PERF BROAD PREFETCH_PAGE_END name=%0s boundaries_seen=%0d",
+                         name, perf_l1d_prefetch_page_ends);
                 $display("PERF BROAD CCX name=%0s requests=%0d icache_reads=%0d dcache_reads=%0d dcache_writes=%0d ptw_reads=%0d request_wait_cycles=%0d wdata_wait_cycles=%0d responses=%0d response_wait_cycles=%0d",
                          name, perf_ccx_requests,
                          perf_ccx_icache_reads,
@@ -1911,12 +2494,19 @@ module tb_opensbi #(
                 ((cycle_count > 10000) && (cycle_count <= 250000) &&
                  ((cycle_count % 10000) == 0)) ||
                 ((cycle_count != 0) && ((cycle_count % 250000) == 0))) begin
-                $display("OpenSBI progress cycles=%0d instret=%0d pc=%016x instr=%08x priv=%0d uart_bytes=%0d t0=%016x t1=%016x mcause=%016x mtval=%016x",
-                         cycle_count, observed_minstret, dbg_pc, dbg_instr,
+                $display("OpenSBI progress cycles=%0d instret=%0d ipc=%0s interval_ipc=%0s pc=%016x instr=%08x priv=%0d uart_bytes=%0d t0=%016x t1=%016x mcause=%016x mtval=%016x",
+                         cycle_count, observed_minstret,
+                         format_ipc(observed_minstret, cycle_count),
+                         format_ipc(
+                             observed_minstret - progress_last_instret,
+                             cycle_count - progress_last_cycle),
+                         dbg_pc, dbg_instr,
                          observed_priv_mode,
                          uart_byte_count,
                          observed_t0, observed_t1,
                          observed_mcause, observed_mtval);
+                progress_last_cycle <= cycle_count;
+                progress_last_instret <= observed_minstret;
                 if (linux_mode && (observed_priv_mode == `RV64_PRIV_S))
                     $display("Linux trace valid=%05b stall=%05b flush=%05b advance=%05b causes=%08b pc={if:%016x id:%016x ex:%016x mem:%016x wb:%016x} instr={if:%08x id:%08x ex:%08x mem:%08x wb:%08x}",
                              trace_valid, trace_stall, trace_flush,
@@ -2117,6 +2707,8 @@ module tb_opensbi #(
         linux_initmem_index = 0;
         linux_init_index = 0;
         cycle_count = 0;
+        progress_last_cycle = 0;
+        progress_last_instret = 0;
         uart_byte_count = 0;
         linux_trap_count = 0;
         linux_same_trap_count = 0;
@@ -2205,9 +2797,25 @@ module tb_opensbi #(
             perf_l1d_store_allocations, perf_l1d_store_merges,
             perf_l1d_store_responses, perf_l1d_store_full_cycles,
             perf_l1d_store_max, perf_l1d_prefetch_issued,
-            perf_l1d_prefetch_useful, perf_l1d_prefetch_late,
+            perf_l1d_prefetch_useful,
+            perf_l1d_prefetch_on_time_useful,
+            perf_l1d_prefetch_late_useful,
+            perf_l1d_prefetch_late,
+            perf_l1d_prefetch_late_queued,
+            perf_l1d_prefetch_late_command,
+            perf_l1d_prefetch_late_mshr,
             perf_l1d_prefetch_dropped, perf_l1d_prefetch_useless,
-            perf_l1d_prefetch_max_depth
+            perf_l1d_prefetch_max_depth,
+            perf_l1d_store_poison_any_events,
+            perf_l1d_store_poison_prefetch_events,
+            perf_l1d_store_poison_prefetch_queue,
+            perf_l1d_store_poison_prefetch_command,
+            perf_l1d_store_poison_prefetch_mshr,
+            perf_l1d_store_poison_prefetch_fill,
+            perf_l1d_store_poison_demand_events,
+            perf_l1d_store_poison_demand_wait_prefetch,
+            perf_l1d_store_poison_demand_fill,
+            perf_l1d_store_overlay_demand_mshr
         } = '0;
         {
             perf_ccx_requests, perf_ccx_icache_reads,

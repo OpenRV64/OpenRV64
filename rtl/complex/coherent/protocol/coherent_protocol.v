@@ -144,6 +144,7 @@ module openrv64_ccx_coherent_protocol #(
     localparam [3:0] ST_L2_RESP           = 4'd11;
     localparam [3:0] ST_DIR_RECORD        = 4'd12;
     localparam [3:0] ST_RESP              = 4'd13;
+    localparam [3:0] ST_DIR_WAIT          = 4'd14;
 
     reg [3:0] state_q;
     reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id_q;
@@ -245,6 +246,9 @@ module openrv64_ccx_coherent_protocol #(
         request_sc_reservation_match_r;
 
     wire directory_lookup_hit;
+    wire directory_lookup_ready;
+    wire directory_lookup_response_valid;
+    wire directory_init_busy;
     wire [DIRECTORY_ENTRY_WIDTH-1:0] directory_lookup_entry;
     wire [NUM_HARTS-1:0] directory_lookup_i_sharers;
     wire [NUM_HARTS-1:0] directory_lookup_d_sharers;
@@ -282,7 +286,11 @@ module openrv64_ccx_coherent_protocol #(
     ) u_snoop_filter (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
+        .lookup_valid_i(state_q == ST_DIR_LOOKUP),
+        .lookup_ready_o(directory_lookup_ready),
         .lookup_line_addr_i(request_line_addr),
+        .lookup_response_valid_o(directory_lookup_response_valid),
+        .init_busy_o(directory_init_busy),
         .lookup_hit_o(directory_lookup_hit),
         .lookup_entry_o(directory_lookup_entry),
         .lookup_i_sharers_o(directory_lookup_i_sharers),
@@ -373,6 +381,7 @@ module openrv64_ccx_coherent_protocol #(
 
     assign req_ready_o =
         (state_q == ST_IDLE) &&
+        !directory_init_busy &&
         (req_burst_len_i ==
          {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}});
     assign wdata_ready_o = state_q == ST_WAIT_WDATA;
@@ -520,85 +529,92 @@ module openrv64_ccx_coherent_protocol #(
                 end
 
                 ST_DIR_LOOKUP: begin
-                    if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
-                        request_sc_reservation_match)
-                        resp_sc_success_q <= 1'b1;
-                    // Every SC attempt consumes the requester's reservation,
-                    // including a failed SC to a different line.
-                    if (req_op_q == `OPENRV64_CCX_OP_SC) begin
-                        for (reservation_hart = 0;
-                             reservation_hart < NUM_HARTS;
-                             reservation_hart =
-                                 reservation_hart + 1)
-                            if (req_hart_id_q ==
-                                `OPENRV64_CCX_HART_ID_WIDTH'(
-                                    HART_ID_BASE +
-                                    reservation_hart))
-                                reservation_valid_q[
-                                    reservation_hart] <= 1'b0;
-                    end
-                    if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
-                        !request_sc_reservation_match) begin
-                        // Failed SC performs no write.  Its data beat was
-                        // consumed before lookup so the command/data channel
-                        // cannot be left wedged.
-                        resp_sc_success_q <= 1'b0;
-                        state_q <= ST_RESP;
-                    end else if (request_private_fill) begin
-                        if (directory_lookup_hit) begin
-                            directory_entry_q <=
-                                directory_lookup_entry;
-                            state_q <= ST_L2_REQ;
-                        end else begin
-                            directory_entry_q <=
-                                directory_victim_entry;
-                            if (directory_victim_valid &&
-                                (|(directory_victim_i_sharers |
-                                   directory_victim_d_sharers))) begin
-                                probe_target_q <=
-                                    directory_victim_i_sharers |
-                                    directory_victim_d_sharers;
-                                probe_cache_mask_q <= {
-                                    |directory_victim_d_sharers,
-                                    |directory_victim_i_sharers
-                                };
-                                probe_line_addr_q <=
-                                    directory_victim_line_addr;
-                                state_q <= ST_EVICT_PROBE_START;
-                            end else begin
-                                state_q <= ST_DIR_ALLOCATE;
-                            end
-                        end
-                    end else if (request_coherent_write &&
-                                 directory_lookup_hit &&
-                                 (|write_probe_targets)) begin
-                        directory_entry_q <= directory_lookup_entry;
-                        probe_target_q <= write_probe_targets;
-                        probe_cache_mask_q <=
-                            `OPENRV64_CCX_PROBE_CACHE_D;
-                        probe_line_addr_q <= request_line_addr;
-                        state_q <= ST_WRITE_PROBE_START;
-                    end else begin
-                        state_q <= ST_L2_REQ;
-                    end
+                    if (directory_lookup_ready)
+                        state_q <= ST_DIR_WAIT;
+                end
 
-                    // Any write that will reach L2 invalidates every matching
-                    // reservation.  The SC requester's reservation was
-                    // already consumed above, including on failure.
-                    if (request_coherent_write &&
-                        ((req_op_q != `OPENRV64_CCX_OP_SC) ||
-                         request_sc_reservation_match)) begin
-                        for (reservation_hart = 0;
-                             reservation_hart < NUM_HARTS;
-                             reservation_hart =
-                                 reservation_hart + 1)
-                            if (reservation_valid_q[
-                                    reservation_hart] &&
-                                (reservation_line_q[
-                                     reservation_hart] ==
-                                 request_line_addr))
-                                reservation_valid_q[
-                                    reservation_hart] <= 1'b0;
+                ST_DIR_WAIT: begin
+                    if (directory_lookup_response_valid) begin
+                        if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
+                            request_sc_reservation_match)
+                            resp_sc_success_q <= 1'b1;
+                        // Every SC attempt consumes the requester's
+                        // reservation, including a failed SC to another line.
+                        if (req_op_q == `OPENRV64_CCX_OP_SC) begin
+                            for (reservation_hart = 0;
+                                 reservation_hart < NUM_HARTS;
+                                 reservation_hart =
+                                     reservation_hart + 1)
+                                if (req_hart_id_q ==
+                                    `OPENRV64_CCX_HART_ID_WIDTH'(
+                                        HART_ID_BASE +
+                                        reservation_hart))
+                                    reservation_valid_q[
+                                        reservation_hart] <= 1'b0;
+                        end
+                        if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
+                            !request_sc_reservation_match) begin
+                            // Failed SC performs no write.  Its data beat was
+                            // consumed before lookup so the command/data
+                            // channel cannot be left wedged.
+                            resp_sc_success_q <= 1'b0;
+                            state_q <= ST_RESP;
+                        end else if (request_private_fill) begin
+                            if (directory_lookup_hit) begin
+                                directory_entry_q <=
+                                    directory_lookup_entry;
+                                state_q <= ST_L2_REQ;
+                            end else begin
+                                directory_entry_q <=
+                                    directory_victim_entry;
+                                if (directory_victim_valid &&
+                                    (|(directory_victim_i_sharers |
+                                       directory_victim_d_sharers))) begin
+                                    probe_target_q <=
+                                        directory_victim_i_sharers |
+                                        directory_victim_d_sharers;
+                                    probe_cache_mask_q <= {
+                                        |directory_victim_d_sharers,
+                                        |directory_victim_i_sharers
+                                    };
+                                    probe_line_addr_q <=
+                                        directory_victim_line_addr;
+                                    state_q <= ST_EVICT_PROBE_START;
+                                end else begin
+                                    state_q <= ST_DIR_ALLOCATE;
+                                end
+                            end
+                        end else if (request_coherent_write &&
+                                     directory_lookup_hit &&
+                                     (|write_probe_targets)) begin
+                            directory_entry_q <= directory_lookup_entry;
+                            probe_target_q <= write_probe_targets;
+                            probe_cache_mask_q <=
+                                `OPENRV64_CCX_PROBE_CACHE_D;
+                            probe_line_addr_q <= request_line_addr;
+                            state_q <= ST_WRITE_PROBE_START;
+                        end else begin
+                            state_q <= ST_L2_REQ;
+                        end
+
+                        // Any write reaching L2 invalidates every matching
+                        // reservation. The requester's SC reservation was
+                        // already consumed above, including on failure.
+                        if (request_coherent_write &&
+                            ((req_op_q != `OPENRV64_CCX_OP_SC) ||
+                             request_sc_reservation_match)) begin
+                            for (reservation_hart = 0;
+                                 reservation_hart < NUM_HARTS;
+                                 reservation_hart =
+                                     reservation_hart + 1)
+                                if (reservation_valid_q[
+                                        reservation_hart] &&
+                                    (reservation_line_q[
+                                         reservation_hart] ==
+                                     request_line_addr))
+                                    reservation_valid_q[
+                                        reservation_hart] <= 1'b0;
+                        end
                     end
                 end
 

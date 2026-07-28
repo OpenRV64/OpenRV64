@@ -63,6 +63,7 @@ module tb_l1d_store_buffer;
     integer response_count_q;
     integer max_response_count_q;
     integer response_active_slot_q;
+    reg hold_responses;
     reg response_free_found_r;
     integer response_free_slot_r;
     reg response_select_found_r;
@@ -269,7 +270,8 @@ module tb_l1d_store_buffer;
                 response_due_q[response_free_slot_r] <=
                     cycle_count + 20 - ((write_count % 4) * 4);
             end
-            if (!ccx_resp_valid && response_select_found_r) begin
+            if (!ccx_resp_valid && !hold_responses &&
+                response_select_found_r) begin
                 ccx_resp_valid <= 1'b1;
                 response_active_slot_q <= response_select_slot_r;
                 ccx_resp_hart_id <=
@@ -322,6 +324,7 @@ module tb_l1d_store_buffer;
             req_wdata = 0;
             req_wstrb = 0;
             speculation_barrier = 1'b0;
+            hold_responses = 1'b0;
             repeat (5) @(posedge clk);
             @(negedge clk);
             rst_n = 1'b1;
@@ -523,6 +526,97 @@ module tb_l1d_store_buffer;
             $fatal(1, "store FIFO order changed %x %x %x %x",
                    write_addr[0], write_addr[1],
                    write_addr[2], write_addr[3]);
+
+        // A younger load must see the newest fragment when the FIFO contains
+        // non-adjacent entries for the same line and the older entry is
+        // draining.  This is the A,B,A pattern exercised by OpenSBI's
+        // buffered console when its character data crosses a line boundary.
+        reset_dut();
+        memory[BASE[9:6]][63:0] = 64'h0000_0000_0000_000b;
+        issue_load(BASE, 64'h0000_0000_0000_000b);
+        issue_store(BASE, 64'h0000_0000_0000_000a);
+        issue_store(BASE + 64'h40, 64'hbbbb_bbbb_bbbb_bbbb);
+        issue_store(BASE, 64'h0000_0000_0000_0009);
+        issue_store(BASE + 64'h80, 64'hcccc_cccc_cccc_cccc);
+        issue_load(BASE, 64'h0000_0000_0000_0009);
+
+        // Keep eight issued lines live.  A ninth posted store must be
+        // backpressured at the request interface rather than retained as
+        // hidden state in the shared L1 write-through stage.
+        reset_dut();
+        memory[BASE[9:6]][63:0] = 64'h1111_2222_3333_4444;
+        memory[BASE[9:6]][127:64] = 64'h5555_6666_7777_8888;
+        memory[BASE[9:6] + 1][63:0] =
+            64'h9999_aaaa_bbbb_cccc;
+        issue_load(BASE, 64'h1111_2222_3333_4444);
+        issue_load(BASE + 64, 64'h9999_aaaa_bbbb_cccc);
+        hold_responses = 1'b1;
+        for (word_index = 1; word_index <= 8;
+             word_index = word_index + 1)
+            issue_store(BASE + word_index * 64,
+                        64'h8000_0000_0000_0000 + word_index);
+        if (dut.store_buffer_count_q != 8)
+            $fatal(1, "failed to fill store buffer count=%0d",
+                   dut.store_buffer_count_q);
+
+        // Even a store matching the newest unissued line must stall.  The
+        // drain arbiter may issue that entry on the accepting edge, so a
+        // prospective merge is not a stable capacity reservation.
+        if (!dut.store_buffer_valid_q[dut.store_buffer_newest_index] ||
+            dut.store_buffer_issued_q[dut.store_buffer_newest_index])
+            $fatal(1,
+                "full-buffer merge setup lacks newest unissued entry");
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b1;
+        req_addr =
+            dut.store_buffer_addr_q[dut.store_buffer_newest_index];
+        req_wdata = 64'hfeed_face_cafe_beef;
+        req_wstrb = 8'hff;
+        req_tag = req_tag + 1'b1;
+        #1;
+        if (req_ready)
+            $fatal(1,
+                "full store buffer accepted prospective newest merge");
+
+        @(negedge clk);
+        req_addr = BASE;
+        req_wdata = 64'h0000_0000_0000_00aa;
+        req_wstrb = 8'h01;
+        req_tag = req_tag + 1'b1;
+        #1;
+        if (req_ready)
+            $fatal(1, "full store buffer accepted a hidden ninth store");
+        repeat (8) begin
+            @(negedge clk);
+            #1;
+            if (req_ready)
+                $fatal(1,
+                    "posted store escaped backpressure while buffer full");
+        end
+        hold_responses = 1'b0;
+        while (!req_ready)
+            @(negedge clk);
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_write = 1'b0;
+        req_addr = 0;
+        req_wdata = 0;
+        req_wstrb = 0;
+        @(negedge clk);
+        speculation_barrier = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        speculation_barrier = 1'b0;
+        wait_cycles = 0;
+        while (store_barrier_busy && (wait_cycles < 500)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (store_barrier_busy)
+            $fatal(1, "backpressured partial store did not drain");
+        issue_load(BASE, 64'h1111_2222_3333_44aa);
 
         // A translation barrier must force even one partial line to CCX and
         // remain busy until the downstream write response is consumed.

@@ -638,6 +638,244 @@ module tb_mem_channel;
         end
     endtask
 
+    task automatic issue_ddr3_gem5_timing_checks;
+        integer guard;
+        integer launches;
+        integer responses;
+        integer index;
+        integer row_limit_hit_latency;
+        integer row_limit_reopen_latency;
+        integer row_limit_latency;
+        reg [63:0] launch_cycle [0:4];
+        reg launch_write [0:4];
+        reg [63:0] adaptive_conflicts_before;
+        reg [63:0] adaptive_empty_before;
+        begin
+            // Same-rank read-to-write.  With equal CL/CWL, gem5's
+            // tBURST+tRTW command gap is also the data-start gap: 8 ns after
+            // controller-clock ceiling.
+            ddr3_cmd_valid = 1'b1;
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_addr = 32'h0000_4000;
+            ddr3_cmd_bytes = 16'd64;
+            ddr3_cmd_tag = 8'h81;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 R->W timing read was not accepted");
+            tick();
+            ddr3_cmd_write = 1'b1;
+            ddr3_cmd_addr = 32'h0000_6000;
+            ddr3_cmd_tag = 8'h82;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 R->W timing write was not accepted");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+            ddr3_resp_ready = 1'b1;
+            guard = 0;
+            launches = 0;
+            responses = 0;
+            while ((responses < 2) && (guard < 500)) begin
+                if (u_ddr3.u_timing.bus_launch) begin
+                    launch_cycle[launches] =
+                        u_ddr3.u_timing.controller_cycle_q;
+                    launch_write[launches] =
+                        u_ddr3.u_timing.bank_group_write_q[
+                            u_ddr3.u_timing.bus_select_bank];
+                    launches = launches + 1;
+                end
+                if (ddr3_resp_valid)
+                    responses = responses + 1;
+                tick();
+                guard = guard + 1;
+            end
+            if ((launches != 2) || launch_write[0] ||
+                !launch_write[1] ||
+                ((launch_cycle[1] - launch_cycle[0]) < 8))
+                $fatal(1,
+                    "DDR3 gem5 R->W constraint failed launches=%0d dirs=%0d/%0d gap=%0d",
+                    launches, launch_write[0], launch_write[1],
+                    launch_cycle[1] - launch_cycle[0]);
+
+            // Same-rank write-to-read includes tBURST+tWTR+tWL at command
+            // level and the target read CL at data level: 27 ns here.
+            ddr3_cmd_valid = 1'b1;
+            ddr3_cmd_write = 1'b1;
+            ddr3_cmd_addr = 32'h0000_8000;
+            ddr3_cmd_tag = 8'h83;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 W->R timing write was not accepted");
+            tick();
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_addr = 32'h0000_a000;
+            ddr3_cmd_tag = 8'h84;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 W->R timing read was not accepted");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+            guard = 0;
+            launches = 0;
+            responses = 0;
+            while ((responses < 2) && (guard < 500)) begin
+                if (u_ddr3.u_timing.bus_launch) begin
+                    launch_cycle[launches] =
+                        u_ddr3.u_timing.controller_cycle_q;
+                    launch_write[launches] =
+                        u_ddr3.u_timing.bank_group_write_q[
+                            u_ddr3.u_timing.bus_select_bank];
+                    launches = launches + 1;
+                end
+                if (ddr3_resp_valid)
+                    responses = responses + 1;
+                tick();
+                guard = guard + 1;
+            end
+            if ((launches != 2) || !launch_write[0] ||
+                launch_write[1] ||
+                ((launch_cycle[1] - launch_cycle[0]) < 27))
+                $fatal(1,
+                    "DDR3 gem5 W->R constraint failed launches=%0d dirs=%0d/%0d gap=%0d",
+                    launches, launch_write[0], launch_write[1],
+                    launch_cycle[1] - launch_cycle[0]);
+
+            // Same-direction rank switch is tBURST+tCS = 7.5 ns, rounded to
+            // eight 1 ns controller cycles.  Bit 16 is the rank selector for
+            // the DDR3 RoRaBaCo map.
+            ddr3_cmd_valid = 1'b1;
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_addr = 32'h0000_c000;
+            ddr3_cmd_tag = 8'h85;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 rank-0 timing read was not accepted");
+            tick();
+            ddr3_cmd_addr = 32'h0001_c000;
+            ddr3_cmd_tag = 8'h86;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 rank-1 timing read was not accepted");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+            guard = 0;
+            launches = 0;
+            responses = 0;
+            while ((responses < 2) && (guard < 500)) begin
+                if (u_ddr3.u_timing.bus_launch) begin
+                    launch_cycle[launches] =
+                        u_ddr3.u_timing.controller_cycle_q;
+                    launches = launches + 1;
+                end
+                if (ddr3_resp_valid)
+                    responses = responses + 1;
+                tick();
+                guard = guard + 1;
+            end
+            if ((launches != 2) ||
+                ((launch_cycle[1] - launch_cycle[0]) < 8))
+                $fatal(1,
+                    "DDR3 gem5 rank-switch constraint failed launches=%0d gap=%0d",
+                    launches, launch_cycle[1] - launch_cycle[0]);
+
+            // open_adaptive sees the queued second row, finds no remaining
+            // hit to the first row, and auto-precharges the first access.
+            // The second access therefore reopens an empty bank rather than
+            // discovering a still-open conflicting row.
+            adaptive_conflicts_before =
+                u_ddr3.u_timing.perf_row_conflict_commands_q;
+            adaptive_empty_before =
+                u_ddr3.u_timing.perf_row_empty_commands_q;
+            ddr3_cmd_valid = 1'b1;
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_addr = 32'h0003_e000;
+            ddr3_cmd_tag = 8'h87;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 adaptive row-0 read was not accepted");
+            tick();
+            ddr3_cmd_addr = 32'h0005_e000;
+            ddr3_cmd_tag = 8'h88;
+            if (!ddr3_cmd_ready)
+                $fatal(1, "DDR3 adaptive row-1 read was not accepted");
+            tick();
+            ddr3_cmd_valid = 1'b0;
+            guard = 0;
+            responses = 0;
+            while ((responses < 2) && (guard < 500)) begin
+                if (ddr3_resp_valid)
+                    responses = responses + 1;
+                tick();
+                guard = guard + 1;
+            end
+            if (((u_ddr3.u_timing.perf_row_conflict_commands_q -
+                  adaptive_conflicts_before) != 0) ||
+                ((u_ddr3.u_timing.perf_row_empty_commands_q -
+                  adaptive_empty_before) != 2))
+                $fatal(1,
+                    "DDR3 open-adaptive close failed conflicts=%0d empty=%0d",
+                    u_ddr3.u_timing.perf_row_conflict_commands_q -
+                        adaptive_conflicts_before,
+                    u_ddr3.u_timing.perf_row_empty_commands_q -
+                        adaptive_empty_before);
+
+            // Five cold rows in distinct banks of one rank exercise tRRD=6
+            // ns and the four-activate tXAW=30 ns window.
+            ddr3_cmd_valid = 1'b1;
+            ddr3_cmd_write = 1'b0;
+            ddr3_cmd_bytes = 16'd64;
+            for (index = 0; index < 5; index = index + 1) begin
+                ddr3_cmd_addr = 32'h0004_0000 + (index * 32'h2000);
+                ddr3_cmd_tag = 8'h90 + index;
+                if (!ddr3_cmd_ready)
+                    $fatal(1, "DDR3 activation timing read not accepted");
+                tick();
+            end
+            ddr3_cmd_valid = 1'b0;
+            guard = 0;
+            launches = 0;
+            responses = 0;
+            while ((responses < 5) && (guard < 800)) begin
+                if (u_ddr3.u_timing.bus_launch) begin
+                    launch_cycle[launches] =
+                        u_ddr3.u_timing.controller_cycle_q;
+                    launches = launches + 1;
+                end
+                if (ddr3_resp_valid)
+                    responses = responses + 1;
+                tick();
+                guard = guard + 1;
+            end
+            ddr3_resp_ready = 1'b0;
+            if (launches != 5)
+                $fatal(1,
+                    "DDR3 activation timing launch count=%0d expected=5",
+                    launches);
+            for (index = 1; index < 4; index = index + 1)
+                if ((launch_cycle[index] - launch_cycle[index-1]) < 6)
+                    $fatal(1,
+                        "DDR3 tRRD failed at %0d gap=%0d",
+                        index, launch_cycle[index] -
+                        launch_cycle[index-1]);
+            if ((launch_cycle[4] - launch_cycle[0]) < 30)
+                $fatal(1,
+                    "DDR3 tXAW failed gap=%0d expected>=30",
+                    launch_cycle[4] - launch_cycle[0]);
+
+            // gem5's open-adaptive DDR3 preset caps one open-row episode at
+            // 16 column accesses.  The seventeenth access must reopen the
+            // row rather than being treated as an unlimited row hit.
+            row_limit_hit_latency = 0;
+            row_limit_reopen_latency = 0;
+            for (index = 0; index < 17; index = index + 1) begin
+                issue_ddr3_request(
+                    32'h0009_e000 + (index * 32'h40),
+                    16'd64, row_limit_latency);
+                if (index == 15)
+                    row_limit_hit_latency = row_limit_latency;
+                if (index == 16)
+                    row_limit_reopen_latency = row_limit_latency;
+            end
+            if (row_limit_reopen_latency <= row_limit_hit_latency)
+                $fatal(1,
+                    "DDR3 max-access row close failed hit=%0d reopen=%0d",
+                    row_limit_hit_latency, row_limit_reopen_latency);
+        end
+    endtask
+
     task automatic issue_gddr_request(
         input [ADDR_WIDTH-1:0] address,
         input [15:0] byte_count,
@@ -763,6 +1001,8 @@ module tb_mem_channel;
     reg [TIMING_TAG_WIDTH-1:0] held_timing_tag;
     reg [TIMING_TAG_WIDTH-1:0] manual_read_tag;
     reg [TIMING_TAG_WIDTH-1:0] manual_write_tag;
+    reg [TIMING_TAG_WIDTH-1:0] manual_write_tag_older;
+    reg [TIMING_TAG_WIDTH-1:0] manual_write_tag_younger;
     integer manual_guard;
     integer manual_slot;
     integer hold_check_cycle;
@@ -909,6 +1149,66 @@ module tb_mem_channel;
             128'hbbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb,
             2'b00, 1'b1, 0);
 
+        // AXI writes with one ID are ordered.  The timing backend may finish
+        // unrelated commands out of order, but reverse completion of two
+        // overlapping writes must not let the older value overwrite the
+        // younger value in backing storage.
+        manual_timing_mode = 1'b1;
+        manual_timing_cmd_ready = 1'b0;
+        send_aw(4'ha, 32'h0000_81c0, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_w(128'haaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa,
+               16'hffff, 1'b1);
+        send_aw(4'ha, 32'h0000_81c0, 8'd0, 3'd4, 2'b01, 1'b0);
+        send_w(128'hbbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb,
+               16'hffff, 1'b1);
+
+        manual_slot = dut.write_head_q;
+        manual_write_tag_older =
+            {1'b1, 5'd0, 2'(manual_slot)};
+        manual_slot = (manual_slot == 3) ? 0 : manual_slot + 1;
+        manual_write_tag_younger =
+            {1'b1, 5'd0, 2'(manual_slot)};
+
+        manual_timing_cmd_ready = 1'b1;
+        manual_guard = 0;
+        while (!dut.write_timing_submitted_q[
+                   manual_write_tag_older[1:0]] &&
+               (manual_guard < 100)) begin
+            tick();
+            manual_guard = manual_guard + 1;
+        end
+        if (!dut.write_timing_submitted_q[
+                manual_write_tag_older[1:0]])
+            $fatal(1, "older overlapping write was not submitted");
+        repeat (4) begin
+            tick();
+            if (dut.write_timing_submitted_q[
+                    manual_write_tag_younger[1:0]])
+                $fatal(1,
+                    "younger overlapping write escaped before older completion");
+        end
+
+        pulse_manual_timing_response(manual_write_tag_older);
+        manual_guard = 0;
+        while (!dut.write_timing_submitted_q[
+                   manual_write_tag_younger[1:0]] &&
+               (manual_guard < 100)) begin
+            tick();
+            manual_guard = manual_guard + 1;
+        end
+        manual_timing_cmd_ready = 1'b0;
+        if (!dut.write_timing_submitted_q[
+                manual_write_tag_younger[1:0]])
+            $fatal(1, "younger overlapping write did not unblock");
+        pulse_manual_timing_response(manual_write_tag_younger);
+        expect_b(4'ha, 2'b00);
+        expect_b(4'ha, 2'b00);
+        manual_timing_mode = 1'b0;
+        send_ar(4'hb, 32'h0000_81c0, 8'd0, 3'd4, 2'b01, 1'b0);
+        expect_r(4'hb,
+            128'hbbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb_bbbb,
+            2'b00, 1'b1, 0);
+
         // AW is accepted independently.  W follows the oldest AW descriptor,
         // and the complete four-beat burst is buffered before timing issue.
         send_aw(4'h9, 32'h0000_8000, 8'd3, 3'd4, 2'b01, 1'b0);
@@ -993,7 +1293,7 @@ module tb_mem_channel;
         // The third access selects another row in the same bank and pays tRP.
         issue_ddr3_request(32'h0000_1000, 8'd64, ddr3_miss_latency);
         issue_ddr3_request(32'h0000_1040, 8'd64, ddr3_hit_latency);
-        issue_ddr3_request(32'h0001_1000, 8'd64, ddr3_conflict_latency);
+        issue_ddr3_request(32'h0002_1000, 8'd64, ddr3_conflict_latency);
         if ((ddr3_miss_latency != 54) ||
             (ddr3_hit_latency != 40) ||
             (ddr3_conflict_latency != 68))
@@ -1001,7 +1301,7 @@ module tb_mem_channel;
                 "DDR3 latency mismatch: miss=%0d hit=%0d conflict=%0d",
                 ddr3_miss_latency, ddr3_hit_latency,
                 ddr3_conflict_latency);
-        issue_ddr3_request(32'h0001_1040, 16'd128,
+        issue_ddr3_request(32'h0002_1040, 16'd128,
                            ddr3_two_burst_latency);
         // A 128-byte row hit consumes two BL8 transfers separated by the
         // shared-bus scheduler handoff; it cannot collapse to one delay.
@@ -1013,6 +1313,7 @@ module tb_mem_channel;
         issue_ddr3_ordering_barrier();
         issue_ddr3_read_gather();
         issue_ddr3_write_gather();
+        issue_ddr3_gem5_timing_checks();
 
         // GDDR6 x16, BL16: 32-byte native burst.  At a 1 ns controller
         // clock, these are exact ceil() conversions from the 0.66 ns DRAM

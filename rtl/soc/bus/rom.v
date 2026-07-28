@@ -9,7 +9,7 @@
 //     slli x1, x1, 31
 //     jalr x0, 0(x1)       // jr x1
 module openrv64_soc_rom #(
-    parameter integer ROM_BYTES = 64 * 1024
+    parameter integer ROM_BYTES = 4 * 1024
 ) (
     input  wire        mem_valid_i,
     output wire        mem_ready_o,

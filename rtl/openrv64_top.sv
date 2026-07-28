@@ -43,6 +43,7 @@ module openrv64_top #(
     parameter int unsigned L1D_PREFETCH_QUEUE_LINES = 4,
     parameter int unsigned L1D_PREFETCH_OUTSTANDING = 4,
     parameter int unsigned L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter int unsigned L1D_PREFETCH_PAGE_GATING = 1,
     parameter int unsigned L1I_FILL_BUFFER_LINES = 8,
     parameter int unsigned L1I_DEMAND_MSHRS = 4,
     parameter int unsigned L2_TLB_ENTRIES = 256,
@@ -422,8 +423,6 @@ module openrv64_top #(
                 .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
                 .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
                 .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
-                .SPEC_LOAD_BASE(L1D_CACHEABLE_BASE),
-                .SPEC_LOAD_SIZE(L1D_CACHEABLE_SIZE),
                 .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
                 .L1D_DEMAND_MSHRS(L1D_DEMAND_MSHRS),
                 .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
@@ -442,6 +441,8 @@ module openrv64_top #(
                     L1D_PREFETCH_OUTSTANDING),
                 .L1D_PREFETCH_DEMAND_RESERVE(
                     L1D_PREFETCH_DEMAND_RESERVE),
+                .L1D_PREFETCH_PAGE_GATING(
+                    L1D_PREFETCH_PAGE_GATING),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
                 .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
                 .L2_TLB_ENTRIES(L2_TLB_ENTRIES),

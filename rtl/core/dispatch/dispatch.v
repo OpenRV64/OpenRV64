@@ -20,8 +20,10 @@ module openrv64_dispatch #(
     parameter integer ENABLE_ISSUE_WINDOW_3P = 0,
     parameter integer ENABLE_SPECULATION_WINDOW_3P = 0,
     parameter integer ISSUE_WINDOW_DEPTH_3P = 16,
-    parameter [`RV64_XLEN-1:0] SPEC_LOAD_BASE_3P = {`RV64_XLEN{1'b0}},
-    parameter [`RV64_XLEN-1:0] SPEC_LOAD_SIZE_3P = {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_BASE_3P =
+        {`RV64_XLEN{1'b0}},
+    parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE_3P =
+        {`RV64_XLEN{1'b0}},
     parameter integer PHYS_REG_COUNT_3P = `OPENRV64_PHYS_REG_COUNT,
     parameter integer PHYS_REG_ADDR_WIDTH_3P =
         (PHYS_REG_COUNT_3P < 1) ? 1 :
@@ -120,6 +122,7 @@ module openrv64_dispatch #(
     // and completion identity do not fit the old scalar port list.
     input  wire                         squash_frontend_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_3p_i,
+    input  wire                         translation_bypass_3p_i,
     input  wire [2:0]                   decode_valid_3p_i,
     output wire [2:0]                   decode_ready_3p_o,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
@@ -355,14 +358,15 @@ module openrv64_dispatch #(
                 .ENABLE(ENABLE_ISSUE_WINDOW_3P),
                 .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW_3P),
                 .DEPTH(ISSUE_WINDOW_DEPTH_3P),
-                .SPEC_LOAD_BASE(SPEC_LOAD_BASE_3P),
-                .SPEC_LOAD_SIZE(SPEC_LOAD_SIZE_3P),
+                .CACHEABLE_BASE(CACHEABLE_BASE_3P),
+                .CACHEABLE_SIZE(CACHEABLE_SIZE_3P),
                 .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH_3P),
                 .COUNT_WIDTH(COUNT_WIDTH_3P)
             ) u_window (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_frontend_i(squash_frontend_3p_i),
                 .squash_id_i(squash_id_3p_i),
+                .translation_bypass_i(translation_bypass_3p_i),
                 .decode_valid_i((ENABLE_ISSUE_WINDOW_3P != 0) ?
                                 decode_valid_3p_i : 3'b000),
                 .decode_ready_o(window_decode_ready),

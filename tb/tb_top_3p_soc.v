@@ -255,8 +255,6 @@ module tb_top_3p_soc #(
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer RAM_BYTES = 16 * 1024 * 1024,
-    parameter [63:0] SPEC_LOAD_BASE = `OPENRV64_SOC_MEMORY_BASE,
-    parameter [63:0] SPEC_LOAD_SIZE = RAM_BYTES,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
@@ -265,8 +263,8 @@ module tb_top_3p_soc #(
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
     parameter integer L2_MERGE_ENTRIES = 8,
-    parameter integer GENBUS_READ_BUFFER_DEPTH = 4,
-    parameter integer GENBUS_WRITE_BUFFER_DEPTH = 4,
+    parameter integer GENBUS_READ_BUFFER_DEPTH = 8,
+    parameter integer GENBUS_WRITE_BUFFER_DEPTH = 8,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_STREAMS = 2,
     parameter integer L1D_PREFETCH_DISTANCE = 1,
@@ -275,10 +273,12 @@ module tb_top_3p_soc #(
     parameter integer L1D_PREFETCH_QUEUE_LINES = 4,
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
+    parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer DDR3_ENABLE = 0,
     parameter integer DDR3_READ_QUEUE_DEPTH = 8,
     parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
     parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter integer DDR3_MAX_BURST_TRAIN_BURSTS = 8,
     parameter integer MEMORY_TIMING_MODEL = 0
 );
     reg clk;
@@ -711,6 +711,12 @@ module tb_top_3p_soc #(
 
     wire [63:0] memory_read_bursts;
     wire [63:0] memory_write_bursts;
+    wire [63:0] memory_read_single_beat_bursts;
+    wire [63:0] memory_read_two_beat_bursts;
+    wire [63:0] memory_read_other_bursts;
+    wire [63:0] memory_write_single_beat_bursts;
+    wire [63:0] memory_write_two_beat_bursts;
+    wire [63:0] memory_write_other_bursts;
     wire [63:0] memory_read_beats_requested;
     wire [63:0] memory_write_beats_requested;
     wire [63:0] memory_read_beats_returned;
@@ -733,6 +739,43 @@ module tb_top_3p_soc #(
     wire [63:0] memory_ddr_reads_coalesced;
     wire [63:0] memory_ddr_writes_coalesced;
     wire [63:0] memory_ddr_coalesced_groups;
+    wire [63:0] memory_ddr_active_cycles;
+    wire [63:0] memory_ddr_command_queue_entry_cycles;
+    wire [63:0] memory_ddr_command_queue_full_cycles;
+    wire [63:0] memory_ddr_command_input_wait_cycles;
+    wire [63:0] memory_ddr_command_refresh_wait_cycles;
+    wire [63:0] memory_ddr_bus_busy_cycles;
+    wire [63:0] memory_ddr_bus_read_cycles;
+    wire [63:0] memory_ddr_bus_write_cycles;
+    wire [63:0] memory_ddr_bus_launches;
+    wire [63:0] memory_ddr_bus_read_launches;
+    wire [63:0] memory_ddr_bus_write_launches;
+    wire [63:0] memory_ddr_bus_bank_wait_cycles;
+    wire [63:0] memory_ddr_bus_queue_wait_cycles;
+    wire [63:0] memory_ddr_bank_busy_entry_cycles;
+    wire [63:0] memory_ddr_max_busy_banks;
+    wire [63:0] memory_ddr_row_hit_commands;
+    wire [63:0] memory_ddr_row_miss_commands;
+    wire [63:0] memory_ddr_row_conflict_commands;
+    wire [63:0] memory_ddr_row_empty_commands;
+    wire [63:0] memory_ddr_native_bursts;
+    wire [63:0] memory_ddr_full_native_commands;
+    wire [63:0] memory_ddr_partial_native_commands;
+    wire [63:0] memory_ddr_multi_native_commands;
+    wire [63:0] memory_ddr_burst_trains;
+    wire [63:0] memory_ddr_single_burst_trains;
+    wire [63:0] memory_ddr_two_burst_trains;
+    wire [63:0] memory_ddr_three_burst_trains;
+    wire [63:0] memory_ddr_four_burst_trains;
+    wire [63:0] memory_ddr_five_burst_trains;
+    wire [63:0] memory_ddr_six_burst_trains;
+    wire [63:0] memory_ddr_seven_burst_trains;
+    wire [63:0] memory_ddr_eight_burst_trains;
+    wire [63:0] memory_ddr_long_burst_trains;
+    wire [63:0] memory_ddr_direction_switches;
+    wire [63:0] memory_ddr_refresh_cycles;
+    wire [63:0] memory_ddr_refresh_events;
+    wire [63:0] memory_ddr_refresh_deferred_cycles;
 
     wire [63:0] dbg_pc;
     wire [31:0] dbg_instr;
@@ -804,10 +847,31 @@ module tb_top_3p_soc #(
     integer l1i_prefetch_miss_completions;
     integer l1d_prefetch_issued;
     integer l1d_prefetch_useful;
+    integer l1d_prefetch_on_time_useful;
+    integer l1d_prefetch_late_useful;
     integer l1d_prefetch_late;
+    integer l1d_prefetch_late_queued;
+    integer l1d_prefetch_late_command;
+    integer l1d_prefetch_late_mshr;
     integer l1d_prefetch_dropped;
     integer l1d_prefetch_useless;
     integer l1d_prefetch_max_depth;
+    integer l1d_prefetch_trace_fd;
+    reg [1023:0] l1d_prefetch_trace_path;
+    integer l1d_prefetch_trace_scan;
+    integer l1d_prefetch_trace_queue_occupancy;
+    integer l1d_prefetch_trace_mshr_occupancy;
+    integer l1d_prefetch_trace_long_mask;
+    integer l1d_store_poison_any_events;
+    integer l1d_store_poison_prefetch_events;
+    integer l1d_store_poison_prefetch_queue;
+    integer l1d_store_poison_prefetch_command;
+    integer l1d_store_poison_prefetch_mshr;
+    integer l1d_store_poison_prefetch_fill;
+    integer l1d_store_poison_demand_events;
+    integer l1d_store_poison_demand_wait_prefetch;
+    integer l1d_store_poison_demand_fill;
+    integer l1d_store_overlay_demand_mshr;
     integer issued;
     integer decoded;
     integer issued_this_cycle;
@@ -1425,13 +1489,13 @@ module tb_top_3p_soc #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
-        .SPEC_LOAD_BASE(SPEC_LOAD_BASE),
-        .SPEC_LOAD_SIZE(SPEC_LOAD_SIZE),
         .ENABLE_L1I(1'b1),
         .ENABLE_L1D(1'b1),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
+        .L1D_CACHEABLE_BASE(`OPENRV64_SOC_MEMORY_BASE),
+        .L1D_CACHEABLE_SIZE(RAM_BYTES),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
@@ -1444,6 +1508,7 @@ module tb_top_3p_soc #(
         .L1D_PREFETCH_OUTSTANDING(L1D_PREFETCH_OUTSTANDING),
         .L1D_PREFETCH_DEMAND_RESERVE(
             L1D_PREFETCH_DEMAND_RESERVE),
+        .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .ENABLE_MAGIC_MEMORY(1'b0),
         .ENABLE_TRACE(1'b0),
         .ENABLE_FETCH_CAROUSEL(FETCH_CAROUSEL),
@@ -1656,6 +1721,8 @@ module tb_top_3p_soc #(
                 .WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
                 .ZERO_INIT_WORDS(0),
                 .COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+                .MAX_BURST_TRAIN_BURSTS(
+                    DDR3_MAX_BURST_TRAIN_BURSTS),
                 .TIMING_MODEL(MEMORY_TIMING_MODEL)
             ) u_ddr3 (
                 .clk_i(clk),
@@ -1709,6 +1776,18 @@ module tb_top_3p_soc #(
                 u_ddr3.u_channel.perf_read_bursts_q;
             assign memory_write_bursts =
                 u_ddr3.u_channel.perf_write_bursts_q;
+            assign memory_read_single_beat_bursts =
+                u_ddr3.u_channel.perf_read_single_beat_bursts_q;
+            assign memory_read_two_beat_bursts =
+                u_ddr3.u_channel.perf_read_two_beat_bursts_q;
+            assign memory_read_other_bursts =
+                u_ddr3.u_channel.perf_read_other_bursts_q;
+            assign memory_write_single_beat_bursts =
+                u_ddr3.u_channel.perf_write_single_beat_bursts_q;
+            assign memory_write_two_beat_bursts =
+                u_ddr3.u_channel.perf_write_two_beat_bursts_q;
+            assign memory_write_other_bursts =
+                u_ddr3.u_channel.perf_write_other_bursts_q;
             assign memory_read_beats_requested =
                 u_ddr3.u_channel.perf_read_beats_requested_q;
             assign memory_write_beats_requested =
@@ -1789,6 +1868,117 @@ module tb_top_3p_soc #(
                 assign memory_ddr_coalesced_groups =
                     u_ddr3.g_ddr3.u_timing.u_timing
                         .perf_coalesced_groups_q;
+                assign memory_ddr_active_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_active_cycles_q;
+                assign memory_ddr_command_queue_entry_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_command_queue_entry_cycles_q;
+                assign memory_ddr_command_queue_full_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_command_queue_full_cycles_q;
+                assign memory_ddr_command_input_wait_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_command_input_wait_cycles_q;
+                assign memory_ddr_command_refresh_wait_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_command_refresh_wait_cycles_q;
+                assign memory_ddr_bus_busy_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_busy_cycles_q;
+                assign memory_ddr_bus_read_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_read_cycles_q;
+                assign memory_ddr_bus_write_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_write_cycles_q;
+                assign memory_ddr_bus_launches =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_launches_q;
+                assign memory_ddr_bus_read_launches =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_read_launches_q;
+                assign memory_ddr_bus_write_launches =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_write_launches_q;
+                assign memory_ddr_bus_bank_wait_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_bank_wait_cycles_q;
+                assign memory_ddr_bus_queue_wait_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bus_queue_wait_cycles_q;
+                assign memory_ddr_bank_busy_entry_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_bank_busy_entry_cycles_q;
+                assign memory_ddr_max_busy_banks =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_max_busy_banks_q;
+                assign memory_ddr_row_hit_commands =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_row_hit_commands_q;
+                assign memory_ddr_row_miss_commands =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_row_miss_commands_q;
+                assign memory_ddr_row_conflict_commands =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_row_conflict_commands_q;
+                assign memory_ddr_row_empty_commands =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_row_empty_commands_q;
+                assign memory_ddr_native_bursts =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_native_bursts_q;
+                assign memory_ddr_full_native_commands =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_full_native_commands_q;
+                assign memory_ddr_partial_native_commands =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_partial_native_commands_q;
+                assign memory_ddr_multi_native_commands =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_multi_native_commands_q;
+                assign memory_ddr_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_burst_trains_q;
+                assign memory_ddr_single_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_single_burst_trains_q;
+                assign memory_ddr_two_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_two_burst_trains_q;
+                assign memory_ddr_three_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_three_burst_trains_q;
+                assign memory_ddr_four_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_four_burst_trains_q;
+                assign memory_ddr_five_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_five_burst_trains_q;
+                assign memory_ddr_six_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_six_burst_trains_q;
+                assign memory_ddr_seven_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_seven_burst_trains_q;
+                assign memory_ddr_eight_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_eight_burst_trains_q;
+                assign memory_ddr_long_burst_trains =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_long_burst_trains_q;
+                assign memory_ddr_direction_switches =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_direction_switches_q;
+                assign memory_ddr_refresh_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_refresh_cycles_q;
+                assign memory_ddr_refresh_events =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_refresh_events_q;
+                assign memory_ddr_refresh_deferred_cycles =
+                    u_ddr3.g_ddr3.u_timing.u_timing
+                        .perf_refresh_deferred_cycles_q;
                 always @(posedge clk) begin
                     if (!rst_n) begin
                         max_ddr3_queued = 0;
@@ -1804,6 +1994,43 @@ module tb_top_3p_soc #(
                 assign memory_ddr_reads_coalesced = 64'd0;
                 assign memory_ddr_writes_coalesced = 64'd0;
                 assign memory_ddr_coalesced_groups = 64'd0;
+                assign memory_ddr_active_cycles = 64'd0;
+                assign memory_ddr_command_queue_entry_cycles = 64'd0;
+                assign memory_ddr_command_queue_full_cycles = 64'd0;
+                assign memory_ddr_command_input_wait_cycles = 64'd0;
+                assign memory_ddr_command_refresh_wait_cycles = 64'd0;
+                assign memory_ddr_bus_busy_cycles = 64'd0;
+                assign memory_ddr_bus_read_cycles = 64'd0;
+                assign memory_ddr_bus_write_cycles = 64'd0;
+                assign memory_ddr_bus_launches = 64'd0;
+                assign memory_ddr_bus_read_launches = 64'd0;
+                assign memory_ddr_bus_write_launches = 64'd0;
+                assign memory_ddr_bus_bank_wait_cycles = 64'd0;
+                assign memory_ddr_bus_queue_wait_cycles = 64'd0;
+                assign memory_ddr_bank_busy_entry_cycles = 64'd0;
+                assign memory_ddr_max_busy_banks = 64'd0;
+                assign memory_ddr_row_hit_commands = 64'd0;
+                assign memory_ddr_row_miss_commands = 64'd0;
+                assign memory_ddr_row_conflict_commands = 64'd0;
+                assign memory_ddr_row_empty_commands = 64'd0;
+                assign memory_ddr_native_bursts = 64'd0;
+                assign memory_ddr_full_native_commands = 64'd0;
+                assign memory_ddr_partial_native_commands = 64'd0;
+                assign memory_ddr_multi_native_commands = 64'd0;
+                assign memory_ddr_burst_trains = 64'd0;
+                assign memory_ddr_single_burst_trains = 64'd0;
+                assign memory_ddr_two_burst_trains = 64'd0;
+                assign memory_ddr_three_burst_trains = 64'd0;
+                assign memory_ddr_four_burst_trains = 64'd0;
+                assign memory_ddr_five_burst_trains = 64'd0;
+                assign memory_ddr_six_burst_trains = 64'd0;
+                assign memory_ddr_seven_burst_trains = 64'd0;
+                assign memory_ddr_eight_burst_trains = 64'd0;
+                assign memory_ddr_long_burst_trains = 64'd0;
+                assign memory_ddr_direction_switches = 64'd0;
+                assign memory_ddr_refresh_cycles = 64'd0;
+                assign memory_ddr_refresh_events = 64'd0;
+                assign memory_ddr_refresh_deferred_cycles = 64'd0;
                 always @(posedge clk) begin
                     if (!rst_n)
                         max_ddr3_queued = 0;
@@ -1814,6 +2041,12 @@ module tb_top_3p_soc #(
         end else begin : g_sram
             assign memory_read_bursts = 64'd0;
             assign memory_write_bursts = 64'd0;
+            assign memory_read_single_beat_bursts = 64'd0;
+            assign memory_read_two_beat_bursts = 64'd0;
+            assign memory_read_other_bursts = 64'd0;
+            assign memory_write_single_beat_bursts = 64'd0;
+            assign memory_write_two_beat_bursts = 64'd0;
+            assign memory_write_other_bursts = 64'd0;
             assign memory_read_beats_requested = 64'd0;
             assign memory_write_beats_requested = 64'd0;
             assign memory_read_beats_returned = 64'd0;
@@ -1836,6 +2069,43 @@ module tb_top_3p_soc #(
             assign memory_ddr_reads_coalesced = 64'd0;
             assign memory_ddr_writes_coalesced = 64'd0;
             assign memory_ddr_coalesced_groups = 64'd0;
+            assign memory_ddr_active_cycles = 64'd0;
+            assign memory_ddr_command_queue_entry_cycles = 64'd0;
+            assign memory_ddr_command_queue_full_cycles = 64'd0;
+            assign memory_ddr_command_input_wait_cycles = 64'd0;
+            assign memory_ddr_command_refresh_wait_cycles = 64'd0;
+            assign memory_ddr_bus_busy_cycles = 64'd0;
+            assign memory_ddr_bus_read_cycles = 64'd0;
+            assign memory_ddr_bus_write_cycles = 64'd0;
+            assign memory_ddr_bus_launches = 64'd0;
+            assign memory_ddr_bus_read_launches = 64'd0;
+            assign memory_ddr_bus_write_launches = 64'd0;
+            assign memory_ddr_bus_bank_wait_cycles = 64'd0;
+            assign memory_ddr_bus_queue_wait_cycles = 64'd0;
+            assign memory_ddr_bank_busy_entry_cycles = 64'd0;
+            assign memory_ddr_max_busy_banks = 64'd0;
+            assign memory_ddr_row_hit_commands = 64'd0;
+            assign memory_ddr_row_miss_commands = 64'd0;
+            assign memory_ddr_row_conflict_commands = 64'd0;
+            assign memory_ddr_row_empty_commands = 64'd0;
+            assign memory_ddr_native_bursts = 64'd0;
+            assign memory_ddr_full_native_commands = 64'd0;
+            assign memory_ddr_partial_native_commands = 64'd0;
+            assign memory_ddr_multi_native_commands = 64'd0;
+            assign memory_ddr_burst_trains = 64'd0;
+            assign memory_ddr_single_burst_trains = 64'd0;
+            assign memory_ddr_two_burst_trains = 64'd0;
+            assign memory_ddr_three_burst_trains = 64'd0;
+            assign memory_ddr_four_burst_trains = 64'd0;
+            assign memory_ddr_five_burst_trains = 64'd0;
+            assign memory_ddr_six_burst_trains = 64'd0;
+            assign memory_ddr_seven_burst_trains = 64'd0;
+            assign memory_ddr_eight_burst_trains = 64'd0;
+            assign memory_ddr_long_burst_trains = 64'd0;
+            assign memory_ddr_direction_switches = 64'd0;
+            assign memory_ddr_refresh_cycles = 64'd0;
+            assign memory_ddr_refresh_events = 64'd0;
+            assign memory_ddr_refresh_deferred_cycles = 64'd0;
 
             tb_axi256_burst_sram #(
                 .RAM_BYTES(RAM_BYTES)
@@ -2826,10 +3096,38 @@ module tb_top_3p_soc #(
         l1i_prefetch_miss_completions = 0;
         l1d_prefetch_issued = 0;
         l1d_prefetch_useful = 0;
+        l1d_prefetch_on_time_useful = 0;
+        l1d_prefetch_late_useful = 0;
         l1d_prefetch_late = 0;
+        l1d_prefetch_late_queued = 0;
+        l1d_prefetch_late_command = 0;
+        l1d_prefetch_late_mshr = 0;
         l1d_prefetch_dropped = 0;
         l1d_prefetch_useless = 0;
         l1d_prefetch_max_depth = 0;
+        l1d_prefetch_trace_fd = 0;
+        l1d_prefetch_trace_path = "l1d-prefetch.trace";
+        if ($value$plusargs("l1d_prefetch_trace=%s",
+                            l1d_prefetch_trace_path)) begin
+            l1d_prefetch_trace_fd =
+                $fopen(l1d_prefetch_trace_path, "w");
+            if (l1d_prefetch_trace_fd == 0)
+                $fatal(1, "cannot open L1D prefetch trace %0s",
+                       l1d_prefetch_trace_path);
+            $fdisplay(
+                l1d_prefetch_trace_fd,
+                "cycle,event,address,stream,distance,depth,queue_occupancy,mshr_occupancy,long_mask,slot,txn");
+        end
+        l1d_store_poison_any_events = 0;
+        l1d_store_poison_prefetch_events = 0;
+        l1d_store_poison_prefetch_queue = 0;
+        l1d_store_poison_prefetch_command = 0;
+        l1d_store_poison_prefetch_mshr = 0;
+        l1d_store_poison_prefetch_fill = 0;
+        l1d_store_poison_demand_events = 0;
+        l1d_store_poison_demand_wait_prefetch = 0;
+        l1d_store_poison_demand_fill = 0;
+        l1d_store_overlay_demand_mshr = 0;
         issued = 0;
         decoded = 0;
         issued_this_cycle = 0;
@@ -3555,12 +3853,192 @@ module tb_top_3p_soc #(
                     lookaside_store_evictions =
                         lookaside_store_evictions + 1;
             end
+            if (l1d_prefetch_trace_fd != 0) begin
+                l1d_prefetch_trace_queue_occupancy = 0;
+                for (l1d_prefetch_trace_scan = 0;
+                     l1d_prefetch_trace_scan <
+                         L1D_PREFETCH_QUEUE_LINES;
+                     l1d_prefetch_trace_scan =
+                         l1d_prefetch_trace_scan + 1)
+                    if (dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_candidate_valid_q[
+                                l1d_prefetch_trace_scan])
+                        l1d_prefetch_trace_queue_occupancy =
+                            l1d_prefetch_trace_queue_occupancy + 1;
+                l1d_prefetch_trace_mshr_occupancy = 0;
+                for (l1d_prefetch_trace_scan = 0;
+                     l1d_prefetch_trace_scan <
+                         L1D_PREFETCH_OUTSTANDING;
+                     l1d_prefetch_trace_scan =
+                         l1d_prefetch_trace_scan + 1)
+                    if (dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_mshr_valid_q[
+                                l1d_prefetch_trace_scan])
+                        l1d_prefetch_trace_mshr_occupancy =
+                            l1d_prefetch_trace_mshr_occupancy + 1;
+                l1d_prefetch_trace_long_mask = 0;
+                for (l1d_prefetch_trace_scan = 0;
+                     l1d_prefetch_trace_scan <
+                         L1D_PREFETCH_STREAMS;
+                     l1d_prefetch_trace_scan =
+                         l1d_prefetch_trace_scan + 1)
+                    if (dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_stream_long_q[
+                                l1d_prefetch_trace_scan])
+                        l1d_prefetch_trace_long_mask =
+                            l1d_prefetch_trace_long_mask |
+                            (1 << l1d_prefetch_trace_scan);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        .demand_request_fire &&
+                    !dut.u_bus.g_ccx.u_bus.u_l1d.req_write_i &&
+                    dut.u_bus.g_ccx.u_bus.u_l1d.l1_req_cacheable)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,DEMAND,%016h,-1,0,%0d,%0d,%0d,%0h,-1,-1",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.demand_line_addr,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d.l1_miss_fire)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,MISS,%016h,-1,0,%0d,%0d,%0d,%0h,-1,-1",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.l1_miss_addr,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        .prefetch_candidate_queue)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,CANDIDATE,%016h,%0d,%0d,%0d,%0d,%0d,%0h,%0d,-1",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_generate_addr_r,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_generate_stream_r,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_generate_index_r + 1,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_candidate_free_index_r);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        .prefetch_candidate_drop)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,DROP,%016h,%0d,%0d,%0d,%0d,%0d,%0h,-1,-1",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_generate_addr_r,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_generate_stream_r,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_generate_index_r + 1,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_launch)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,LAUNCH,%016h,%0d,-1,%0d,%0d,%0d,%0h,%0d,-1",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_launch_addr_r,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_candidate_stream_q[
+                                dut.u_bus.g_ccx.u_bus.u_l1d
+                                    .prefetch_launch_index_r],
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_launch_index_r);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_issued_o)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,ISSUE,%016h,-1,-1,%0d,%0d,%0d,%0h,-1,%0d",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.request_addr_q,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.request_txn_id_q);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        .prefetch_response_fire)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,RESPONSE,%016h,-1,-1,%0d,%0d,%0d,%0h,%0d,%0d",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_mshr_addr_q[
+                                dut.u_bus.g_ccx.u_bus.u_l1d
+                                    .prefetch_mshr_response_index_r],
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_mshr_response_index_r,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.ccx_resp_txn_id_i);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        .prefetch_on_time_useful)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,USE_ON_TIME,%016h,-1,-1,%0d,%0d,%0d,%0h,-1,-1",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_useful_line_addr,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask);
+                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        .prefetch_late_useful)
+                    $fdisplay(
+                        l1d_prefetch_trace_fd,
+                        "%0d,USE_LATE,%016h,-1,-1,%0d,%0d,%0d,%0h,-1,-1",
+                        cycles,
+                        dut.u_bus.g_ccx.u_bus.u_l1d
+                            .prefetch_useful_line_addr,
+                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        l1d_prefetch_trace_queue_occupancy,
+                        l1d_prefetch_trace_mshr_occupancy,
+                        l1d_prefetch_trace_long_mask);
+            end
             if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_issued_o)
                 l1d_prefetch_issued = l1d_prefetch_issued + 1;
             if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_useful_o)
                 l1d_prefetch_useful = l1d_prefetch_useful + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_on_time_useful)
+                l1d_prefetch_on_time_useful =
+                    l1d_prefetch_on_time_useful + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_late_useful)
+                l1d_prefetch_late_useful =
+                    l1d_prefetch_late_useful + 1;
             if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_late_o)
                 l1d_prefetch_late = l1d_prefetch_late + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    .prefetch_queued_demand_match_r)
+                l1d_prefetch_late_queued =
+                    l1d_prefetch_late_queued + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    .prefetch_inflight_late_match)
+                l1d_prefetch_late_command =
+                    l1d_prefetch_late_command + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    .prefetch_mshr_late_match_r)
+                l1d_prefetch_late_mshr =
+                    l1d_prefetch_late_mshr + 1;
             if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_dropped_o)
                 l1d_prefetch_dropped = l1d_prefetch_dropped + 1;
             if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_useless_o)
@@ -3569,6 +4047,45 @@ module tb_top_3p_soc #(
                 l1d_prefetch_max_depth)
                 l1d_prefetch_max_depth =
                     dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_o;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d.store_poison_any_event_r)
+                l1d_store_poison_any_events =
+                    l1d_store_poison_any_events + 1;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_prefetch_event_r)
+                l1d_store_poison_prefetch_events =
+                    l1d_store_poison_prefetch_events + 1;
+            l1d_store_poison_prefetch_queue =
+                l1d_store_poison_prefetch_queue +
+                dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_prefetch_queue_count_r;
+            l1d_store_poison_prefetch_command =
+                l1d_store_poison_prefetch_command +
+                dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_prefetch_command_count_r;
+            l1d_store_poison_prefetch_mshr =
+                l1d_store_poison_prefetch_mshr +
+                dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_prefetch_mshr_count_r;
+            l1d_store_poison_prefetch_fill =
+                l1d_store_poison_prefetch_fill +
+                dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_prefetch_fill_count_r;
+            if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_demand_event_r)
+                l1d_store_poison_demand_events =
+                    l1d_store_poison_demand_events + 1;
+            l1d_store_poison_demand_wait_prefetch =
+                l1d_store_poison_demand_wait_prefetch +
+                dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_demand_wait_prefetch_count_r;
+            l1d_store_poison_demand_fill =
+                l1d_store_poison_demand_fill +
+                dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_poison_demand_fill_count_r;
+            l1d_store_overlay_demand_mshr =
+                l1d_store_overlay_demand_mshr +
+                dut.u_bus.g_ccx.u_bus.u_l1d
+                    .store_overlay_demand_mshr_count_r;
         end
 
         run_completed_q = run_done;
@@ -3775,6 +4292,14 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[15],
                 dut.u_backend.u_gpr.regs[16],
                 dut.u_backend.u_gpr.regs[17]);
+        if ($test$plusargs("report_pagefree"))
+            $display(
+                "PERF_PAGEFREE kernel=%0d loop_cycles=%0d loop_instructions=%0d records=%0d drain_cycles=%0d",
+                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.u_gpr.regs[11],
+                dut.u_backend.u_gpr.regs[12],
+                dut.u_backend.u_gpr.regs[13],
+                dut.u_backend.u_gpr.regs[14]);
         $display(
             "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
             ccx_requests, ccx_fetch_reads, ccx_data_reads,
@@ -3786,13 +4311,13 @@ module tb_top_3p_soc #(
             l1i_next_line_hints, l1i_next_line_enqueues,
             l1i_prefetch_probes, l1i_prefetch_miss_completions);
         $display(
-            "PERF_CCX_L2_VM required=%0b satp_sv39=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d dtlb_access_overlap_loads=%0d dtlb_serial_loads=%0d dtlb_serial_stores=%0d spec_load_base=%016h spec_load_size=%016h",
+            "PERF_CCX_L2_VM required=%0b satp_sv39=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d dtlb_access_overlap_loads=%0d dtlb_serial_loads=%0d dtlb_serial_stores=%0d cacheable_pa_base=%016h cacheable_pa_size=%016h",
             require_sv39, saw_sv39, saw_supervisor,
             saw_sv39_alias_fetch, saw_sv39_alias_data, ccx_ptw_reads,
             dtlb_fast_loads, dtlb_fast_stores,
             dtlb_access_overlap_loads,
             dtlb_serial_loads, dtlb_serial_stores,
-            SPEC_LOAD_BASE, SPEC_LOAD_SIZE);
+            `OPENRV64_SOC_MEMORY_BASE, RAM_BYTES);
         $display(
             "PERF_ZERO_SV39 required=%0b xlates=%0d accesses=%0d mapping_errors=%0d",
             require_zero_scatter, zero_scatter_xlates,
@@ -3803,11 +4328,12 @@ module tb_top_3p_soc #(
             magic_ccx_l1d_reads);
         if (DDR3_ENABLE != 0)
             $display(
-                "PERF_MEMORY timing_model=%0d commands=%0d max_command_queue=%0d max_timing_owners=%0d max_l2_mshrs=%0d read_queue_depth=%0d write_queue_depth=%0d command_queue_depth=%0d",
+                "PERF_MEMORY timing_model=%0d commands=%0d max_command_queue=%0d max_timing_owners=%0d max_l2_mshrs=%0d read_queue_depth=%0d write_queue_depth=%0d command_queue_depth=%0d max_burst_train_bursts=%0d",
                 MEMORY_TIMING_MODEL,
                 ddr3_commands, max_ddr3_queued, max_timing_owners,
                 max_l2_mshrs, DDR3_READ_QUEUE_DEPTH,
-                DDR3_WRITE_QUEUE_DEPTH, DDR3_COMMAND_QUEUE_DEPTH);
+                DDR3_WRITE_QUEUE_DEPTH, DDR3_COMMAND_QUEUE_DEPTH,
+                DDR3_MAX_BURST_TRAIN_BURSTS);
         if (DDR3_ENABLE != 0) begin
             $display(
                 "PERF_MEMORY_CHANNEL read_bursts=%0d write_bursts=%0d read_beats_requested=%0d read_beats_returned=%0d write_beats_requested=%0d write_beats_received=%0d timing_read_commands=%0d timing_write_commands=%0d",
@@ -3816,6 +4342,14 @@ module tb_top_3p_soc #(
                 memory_write_beats_requested, memory_write_beats_received,
                 memory_timing_read_commands,
                 memory_timing_write_commands);
+            $display(
+                "PERF_MEMORY_AXI_BURSTS read_1beat=%0d read_2beat=%0d read_other=%0d write_1beat=%0d write_2beat=%0d write_other=%0d",
+                memory_read_single_beat_bursts,
+                memory_read_two_beat_bursts,
+                memory_read_other_bursts,
+                memory_write_single_beat_bursts,
+                memory_write_two_beat_bursts,
+                memory_write_other_bursts);
             $display(
                 "PERF_MEMORY_CHANNEL_WAIT ar_queue=%0d aw_queue=%0d w_queue=%0d r_backpressure=%0d b_backpressure=%0d read_timing=%0d write_timing=%0d timing_backend=%0d timing_owner_full=%0d max_read_queue=%0d max_write_queue=%0d max_timing_owners=%0d",
                 memory_read_address_wait, memory_write_address_wait,
@@ -3835,6 +4369,55 @@ module tb_top_3p_soc #(
                 memory_ddr_reads_coalesced,
                 memory_ddr_writes_coalesced,
                 memory_ddr_coalesced_groups);
+            $display(
+                "PERF_MEMORY_DDR_UTIL active_cycles=%0d total_cycles=%0d bus_busy=%0d bus_read=%0d bus_write=%0d bus_launches=%0d read_launches=%0d write_launches=%0d bank_wait=%0d queue_wait=%0d bank_entry_cycles=%0d max_busy_banks=%0d",
+                memory_ddr_active_cycles, cycles,
+                memory_ddr_bus_busy_cycles,
+                memory_ddr_bus_read_cycles,
+                memory_ddr_bus_write_cycles,
+                memory_ddr_bus_launches,
+                memory_ddr_bus_read_launches,
+                memory_ddr_bus_write_launches,
+                memory_ddr_bus_bank_wait_cycles,
+                memory_ddr_bus_queue_wait_cycles,
+                memory_ddr_bank_busy_entry_cycles,
+                memory_ddr_max_busy_banks);
+            $display(
+                "PERF_MEMORY_DDR_QUEUE entry_cycles=%0d full_cycles=%0d input_wait=%0d refresh_wait=%0d",
+                memory_ddr_command_queue_entry_cycles,
+                memory_ddr_command_queue_full_cycles,
+                memory_ddr_command_input_wait_cycles,
+                memory_ddr_command_refresh_wait_cycles);
+            $display(
+                "PERF_MEMORY_DDR_ROWS hits=%0d misses=%0d conflicts=%0d empty=%0d direction_switches=%0d",
+                memory_ddr_row_hit_commands,
+                memory_ddr_row_miss_commands,
+                memory_ddr_row_conflict_commands,
+                memory_ddr_row_empty_commands,
+                memory_ddr_direction_switches);
+            $display(
+                "PERF_MEMORY_DDR_BURSTS native=%0d full_commands=%0d partial_commands=%0d multi_commands=%0d",
+                memory_ddr_native_bursts,
+                memory_ddr_full_native_commands,
+                memory_ddr_partial_native_commands,
+                memory_ddr_multi_native_commands);
+            $display(
+                "PERF_MEMORY_DDR_TRAINS total=%0d burst1=%0d burst2=%0d burst3=%0d burst4=%0d burst5=%0d burst6=%0d burst7=%0d burst8=%0d burst_long=%0d",
+                memory_ddr_burst_trains,
+                memory_ddr_single_burst_trains,
+                memory_ddr_two_burst_trains,
+                memory_ddr_three_burst_trains,
+                memory_ddr_four_burst_trains,
+                memory_ddr_five_burst_trains,
+                memory_ddr_six_burst_trains,
+                memory_ddr_seven_burst_trains,
+                memory_ddr_eight_burst_trains,
+                memory_ddr_long_burst_trains);
+            $display(
+                "PERF_MEMORY_DDR_REFRESH cycles=%0d events=%0d deferred_cycles=%0d",
+                memory_ddr_refresh_cycles,
+                memory_ddr_refresh_events,
+                memory_ddr_refresh_deferred_cycles);
         end
         $display(
             "PERF_CCX_L2_FRONTEND direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d",
@@ -3902,14 +4485,40 @@ module tb_top_3p_soc #(
             stash_trace_sector_stall_cycles[0],
             stash_trace_sector_stall_cycles[1]);
         $display(
-            "PERF_CCX_L2_PREFETCH enabled=%0d streams=%0d initial_depth=%0d adaptive=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d late=%0d dropped=%0d useless=%0d",
+            "PERF_CCX_L2_PREFETCH enabled=%0d streams=%0d initial_depth=%0d adaptive=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d useful_pct=%0.2f on_time_useful=%0d on_time_pct=%0.2f late_useful=%0d late_useful_pct=%0.2f late=%0d late_queued=%0d late_command=%0d late_mshr=%0d dropped=%0d useless=%0d",
             L1D_PREFETCH_ENABLE, L1D_PREFETCH_STREAMS,
             L1D_PREFETCH_DISTANCE, L1D_PREFETCH_ADAPTIVE_ENABLE,
             L1D_PREFETCH_MAX_DISTANCE, l1d_prefetch_max_depth,
             L1D_PREFETCH_OUTSTANDING, L1D_PREFETCH_DEMAND_RESERVE,
             l1d_prefetch_issued,
-            l1d_prefetch_useful, l1d_prefetch_late,
+            l1d_prefetch_useful,
+            (l1d_prefetch_issued == 0) ? 0.0 :
+                (100.0 * l1d_prefetch_useful / l1d_prefetch_issued),
+            l1d_prefetch_on_time_useful,
+            (l1d_prefetch_issued == 0) ? 0.0 :
+                (100.0 * l1d_prefetch_on_time_useful /
+                 l1d_prefetch_issued),
+            l1d_prefetch_late_useful,
+            (l1d_prefetch_issued == 0) ? 0.0 :
+                (100.0 * l1d_prefetch_late_useful /
+                 l1d_prefetch_issued),
+            l1d_prefetch_late,
+            l1d_prefetch_late_queued,
+            l1d_prefetch_late_command,
+            l1d_prefetch_late_mshr,
             l1d_prefetch_dropped, l1d_prefetch_useless);
+        $display(
+            "PERF_CCX_L2_STORE_POISON any_events=%0d prefetch_events=%0d prefetch_queue=%0d prefetch_command=%0d prefetch_mshr=%0d prefetch_fill=%0d demand_events=%0d demand_wait_prefetch=%0d demand_fill=%0d demand_mshr_overlays=%0d",
+            l1d_store_poison_any_events,
+            l1d_store_poison_prefetch_events,
+            l1d_store_poison_prefetch_queue,
+            l1d_store_poison_prefetch_command,
+            l1d_store_poison_prefetch_mshr,
+            l1d_store_poison_prefetch_fill,
+            l1d_store_poison_demand_events,
+            l1d_store_poison_demand_wait_prefetch,
+            l1d_store_poison_demand_fill,
+            l1d_store_overlay_demand_mshr);
         $display(
             "PERF_CCX_L2_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
             issued, decoded,
@@ -3979,6 +4588,159 @@ module tb_top_3p_soc #(
             lsu_store_request_wait, lsu_outstanding_cycles,
             branch_resolutions, conditional_branch_resolutions);
         $display(
+            "PERF_CCX_L2_SPEC_LOAD alloc=%0d spec_alloc=%0d ordered_alloc=%0d xlate=%0d spec_xlate=%0d access=%0d spec_access=%0d ordered_access=%0d responses=%0d completions=%0d forwarded=%0d faults=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_allocations_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_spec_allocations_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_ordered_allocations_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_xlate_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_spec_xlate_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_access_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_spec_access_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_ordered_access_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_responses_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_completions_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_forwarded_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_faults_q);
+        $display(
+            "PERF_CCX_L2_SPEC_LOAD_WAIT alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d dependency_cycles=%0d dependency_entry_cycles=%0d forward_cycles=%0d forward_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_alloc_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_queue_full_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_xlate_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_access_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_dependency_block_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_dependency_block_entry_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_forward_ready_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_forward_ready_entry_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_occupancy_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_spec_occupancy_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_max_occupancy_q);
+        $display(
+            "PERF_CCX_L2_SPEC_LOAD_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_squashed_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_squashed_before_xlate_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_squashed_xlate_inflight_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_squashed_xlate_done_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_squashed_access_inflight_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_killed_responses_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_flushed_q);
+        $display(
+            "PERF_CCX_L2_SPEC_LOAD_OUTCOME retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=%0d branch_aborted=%0d flush_aborted=%0d",
+            dut.u_backend.perf_lsq_load_retired_q,
+            dut.u_backend.perf_lsq_load_spec_retired_q,
+            dut.u_backend.perf_lsq_load_ordered_retired_q,
+            dut.u_bus.g_ccx.u_bus.u_l1d.perf_demand_reissues_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_squashed_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_flushed_q);
+        $display(
+            "PERF_CCX_L2_SPEC_STORE alloc=%0d spec_alloc=%0d ordered_alloc=%0d atomic_alloc=%0d xlate=%0d spec_xlate=%0d ordered_access=%0d posted_results=%0d done=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_allocations_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_spec_allocations_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_ordered_allocations_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_atomic_allocations_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_xlate_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_spec_xlate_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_access_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_posted_results_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_done_q);
+        $display(
+            "PERF_CCX_L2_SPEC_STORE_WAIT alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d order_wait_cycles=%0d order_wait_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_alloc_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_queue_full_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_xlate_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_access_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_order_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_order_wait_entry_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_occupancy_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_spec_occupancy_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_max_occupancy_q);
+        $display(
+            "PERF_CCX_L2_SPEC_STORE_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_squashed_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_squashed_before_xlate_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_squashed_xlate_inflight_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_squashed_xlate_done_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_squashed_access_inflight_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_killed_responses_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_flushed_q);
+        $display(
+            "PERF_CCX_L2_SPEC_STORE_OUTCOME retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=0 branch_aborted=%0d flush_aborted=%0d untracked_retired=%0d",
+            dut.u_backend.perf_lsq_store_retired_q,
+            dut.u_backend.perf_lsq_store_spec_retired_q,
+            dut.u_backend.perf_lsq_store_ordered_retired_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_squashed_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_flushed_q,
+            dut.u_backend.perf_lsq_retired_untracked_q);
+        $display(
+            "PERF_CCX_L2_ATOMIC starts=%0d done=%0d active_cycles=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_atomic_starts_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_atomic_done_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_atomic_active_cycles_q);
+        $display(
+            "PERF_CCX_L2_PREFETCH_PAGE_END boundaries_seen=%0d",
+            dut.u_bus.g_ccx.u_bus.u_l1d.perf_prefetch_page_ends_q);
+        $display(
             "PERF_CCX_L2_MEM_PORTS second_port_opportunities=%0d",
             lsu_second_port_opportunities);
         $display(
@@ -4033,6 +4795,8 @@ module tb_top_3p_soc #(
         else
             $display(
                 "PASS: 3P L1I/L1D -> CCX -> L2 -> 16 MiB AXI SRAM");
+        if (l1d_prefetch_trace_fd != 0)
+            $fclose(l1d_prefetch_trace_fd);
         $finish;
     end
 endmodule

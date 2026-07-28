@@ -662,6 +662,18 @@ module openrv64_lsq #(
                              (atomic_tag_i ==
                               slot_index[TAG_WIDTH-1:0])) begin
                     slot_valid_q[slot_index] <= 1'b1;
+                end else if (slot_valid_q[slot_index] &&
+                             slot_xlate_sent_q[slot_index] &&
+                             !((xlate_resp_fire &&
+                                (xlate_resp_tag_i ==
+                                 slot_index[TAG_WIDTH-1:0])))) begin
+                    // The translation channel has no cancellation input.
+                    // Retain its tag until the stale response is consumed.
+                    // Physical accesses are different: the CCX bus consumes
+                    // the architectural cancel, suppresses the response, and
+                    // keeps the physical tag busy until the L1D drains it.
+                    slot_valid_q[slot_index] <= 1'b1;
+                    slot_killed_q[slot_index] <= 1'b1;
                 end else begin
                     slot_valid_q[slot_index] <= 1'b0;
                     slot_xlate_sent_q[slot_index] <= 1'b0;
@@ -869,6 +881,438 @@ module openrv64_lsq #(
     end
 
 `ifndef SYNTHESIS
+    /*
+     * Simulation-only LSQ accounting.  "Speculative" means the operation
+     * crossed the LSQ boundary before it became the ordered retirement head.
+     * Stores may allocate and translate speculatively, but req_fire remains
+     * ordered by slot_order_match.
+     */
+    wire perf_load_alloc_order_match =
+        ordered_head_valid_i &&
+        (ordered_head_id_i == load_alloc_id_i) &&
+        (ordered_head_slot_i == load_alloc_slot_i);
+    wire perf_store_alloc_order_match =
+        ordered_head_valid_i &&
+        (ordered_head_id_i == store_alloc_id_i) &&
+        (ordered_head_slot_i == store_alloc_slot_i);
+    wire perf_xlate_order_match = xlate_request_from_alloc ?
+        (xlate_alloc_select_load ? perf_load_alloc_order_match :
+                                   perf_store_alloc_order_match) :
+        slot_order_match[xlate_request_index_r];
+    wire perf_load_result_fire = result_fire && !result_store_o;
+    wire perf_store_result_fire = result_fire && result_store_o;
+    // Loads and stores occupy fixed halves of the unified tag array.
+    wire perf_load_response_fire = resp_fire && resp_is_access &&
+        (resp_tag_i < LOAD_QUEUE_DEPTH);
+    wire perf_load_killed_response_fire = perf_load_response_fire &&
+        (resp_slot_killed || access_resp_squashed_now);
+    wire perf_store_killed_response_fire =
+        store_done_killed_fire ||
+        (resp_fire && resp_is_access &&
+         (resp_tag_i >= LOAD_QUEUE_DEPTH) &&
+         resp_slot_killed);
+
+    integer perf_slot_index;
+    integer perf_load_valid_count_r;
+    integer perf_load_spec_count_r;
+    integer perf_store_valid_count_r;
+    integer perf_store_spec_count_r;
+    integer perf_load_block_count_r;
+    integer perf_load_forward_count_r;
+    integer perf_store_order_wait_count_r;
+    integer perf_load_squashed_count_r;
+    integer perf_load_squashed_before_xlate_count_r;
+    integer perf_load_squashed_xlate_inflight_count_r;
+    integer perf_load_squashed_xlate_done_count_r;
+    integer perf_load_squashed_access_inflight_count_r;
+    integer perf_store_squashed_count_r;
+    integer perf_store_squashed_before_xlate_count_r;
+    integer perf_store_squashed_xlate_inflight_count_r;
+    integer perf_store_squashed_xlate_done_count_r;
+    integer perf_store_squashed_access_inflight_count_r;
+    always @* begin
+        perf_load_valid_count_r = 0;
+        perf_load_spec_count_r = 0;
+        perf_store_valid_count_r = 0;
+        perf_store_spec_count_r = 0;
+        perf_load_block_count_r = 0;
+        perf_load_forward_count_r = 0;
+        perf_store_order_wait_count_r = 0;
+        perf_load_squashed_count_r = 0;
+        perf_load_squashed_before_xlate_count_r = 0;
+        perf_load_squashed_xlate_inflight_count_r = 0;
+        perf_load_squashed_xlate_done_count_r = 0;
+        perf_load_squashed_access_inflight_count_r = 0;
+        perf_store_squashed_count_r = 0;
+        perf_store_squashed_before_xlate_count_r = 0;
+        perf_store_squashed_xlate_inflight_count_r = 0;
+        perf_store_squashed_xlate_done_count_r = 0;
+        perf_store_squashed_access_inflight_count_r = 0;
+        for (perf_slot_index = 0; perf_slot_index < DEPTH;
+             perf_slot_index = perf_slot_index + 1) begin
+            if (slot_valid_q[perf_slot_index] &&
+                !slot_killed_q[perf_slot_index]) begin
+                if (slot_store_q[perf_slot_index]) begin
+                    perf_store_valid_count_r =
+                        perf_store_valid_count_r + 1;
+                    if (!slot_order_match[perf_slot_index])
+                        perf_store_spec_count_r =
+                            perf_store_spec_count_r + 1;
+                    if (!slot_atomic_q[perf_slot_index] &&
+                        slot_xlate_done_q[perf_slot_index] &&
+                        !slot_xlate_fault[perf_slot_index] &&
+                        !slot_access_sent_q[perf_slot_index] &&
+                        !slot_order_match[perf_slot_index])
+                        perf_store_order_wait_count_r =
+                            perf_store_order_wait_count_r + 1;
+                end else begin
+                    perf_load_valid_count_r =
+                        perf_load_valid_count_r + 1;
+                    if (!slot_order_match[perf_slot_index])
+                        perf_load_spec_count_r =
+                            perf_load_spec_count_r + 1;
+                    if (load_block_r[perf_slot_index])
+                        perf_load_block_count_r =
+                            perf_load_block_count_r + 1;
+                    if (load_forward_r[perf_slot_index])
+                        perf_load_forward_count_r =
+                            perf_load_forward_count_r + 1;
+                end
+            end
+
+            if (squash_younger_i &&
+                slot_valid_q[perf_slot_index] &&
+                id_is_younger(slot_id_q[perf_slot_index],
+                              squash_id_i)) begin
+                if (slot_store_q[perf_slot_index]) begin
+                    perf_store_squashed_count_r =
+                        perf_store_squashed_count_r + 1;
+                    if (slot_access_sent_q[perf_slot_index])
+                        perf_store_squashed_access_inflight_count_r =
+                            perf_store_squashed_access_inflight_count_r + 1;
+                    else if (slot_xlate_sent_q[perf_slot_index])
+                        perf_store_squashed_xlate_inflight_count_r =
+                            perf_store_squashed_xlate_inflight_count_r + 1;
+                    else if (slot_xlate_done_q[perf_slot_index])
+                        perf_store_squashed_xlate_done_count_r =
+                            perf_store_squashed_xlate_done_count_r + 1;
+                    else
+                        perf_store_squashed_before_xlate_count_r =
+                            perf_store_squashed_before_xlate_count_r + 1;
+                end else begin
+                    perf_load_squashed_count_r =
+                        perf_load_squashed_count_r + 1;
+                    if (slot_access_sent_q[perf_slot_index])
+                        perf_load_squashed_access_inflight_count_r =
+                            perf_load_squashed_access_inflight_count_r + 1;
+                    else if (slot_xlate_sent_q[perf_slot_index])
+                        perf_load_squashed_xlate_inflight_count_r =
+                            perf_load_squashed_xlate_inflight_count_r + 1;
+                    else if (slot_xlate_done_q[perf_slot_index])
+                        perf_load_squashed_xlate_done_count_r =
+                            perf_load_squashed_xlate_done_count_r + 1;
+                    else
+                        perf_load_squashed_before_xlate_count_r =
+                            perf_load_squashed_before_xlate_count_r + 1;
+                end
+            end
+        end
+    end
+
+    reg [63:0] perf_load_allocations_q;
+    reg [63:0] perf_load_spec_allocations_q;
+    reg [63:0] perf_load_ordered_allocations_q;
+    reg [63:0] perf_load_alloc_wait_cycles_q;
+    reg [63:0] perf_load_queue_full_cycles_q;
+    reg [63:0] perf_load_xlate_requests_q;
+    reg [63:0] perf_load_spec_xlate_requests_q;
+    reg [63:0] perf_load_xlate_wait_cycles_q;
+    reg [63:0] perf_load_access_requests_q;
+    reg [63:0] perf_load_spec_access_requests_q;
+    reg [63:0] perf_load_ordered_access_requests_q;
+    reg [63:0] perf_load_access_wait_cycles_q;
+    reg [63:0] perf_load_responses_q;
+    reg [63:0] perf_load_completions_q;
+    reg [63:0] perf_load_forwarded_q;
+    reg [63:0] perf_load_faults_q;
+    reg [63:0] perf_load_squashed_q;
+    reg [63:0] perf_load_squashed_before_xlate_q;
+    reg [63:0] perf_load_squashed_xlate_inflight_q;
+    reg [63:0] perf_load_squashed_xlate_done_q;
+    reg [63:0] perf_load_squashed_access_inflight_q;
+    reg [63:0] perf_load_flushed_q;
+    reg [63:0] perf_load_killed_responses_q;
+    reg [63:0] perf_load_dependency_block_cycles_q;
+    reg [63:0] perf_load_dependency_block_entry_cycles_q;
+    reg [63:0] perf_load_forward_ready_cycles_q;
+    reg [63:0] perf_load_forward_ready_entry_cycles_q;
+    reg [63:0] perf_load_occupancy_cycles_q;
+    reg [63:0] perf_load_spec_occupancy_cycles_q;
+    reg [63:0] perf_load_max_occupancy_q;
+
+    reg [63:0] perf_store_allocations_q;
+    reg [63:0] perf_store_spec_allocations_q;
+    reg [63:0] perf_store_ordered_allocations_q;
+    reg [63:0] perf_store_atomic_allocations_q;
+    reg [63:0] perf_store_alloc_wait_cycles_q;
+    reg [63:0] perf_store_queue_full_cycles_q;
+    reg [63:0] perf_store_xlate_requests_q;
+    reg [63:0] perf_store_spec_xlate_requests_q;
+    reg [63:0] perf_store_xlate_wait_cycles_q;
+    reg [63:0] perf_store_access_requests_q;
+    reg [63:0] perf_store_access_wait_cycles_q;
+    reg [63:0] perf_store_posted_results_q;
+    reg [63:0] perf_store_done_q;
+    reg [63:0] perf_store_squashed_q;
+    reg [63:0] perf_store_squashed_before_xlate_q;
+    reg [63:0] perf_store_squashed_xlate_inflight_q;
+    reg [63:0] perf_store_squashed_xlate_done_q;
+    reg [63:0] perf_store_squashed_access_inflight_q;
+    reg [63:0] perf_store_flushed_q;
+    reg [63:0] perf_store_killed_responses_q;
+    reg [63:0] perf_store_order_wait_cycles_q;
+    reg [63:0] perf_store_order_wait_entry_cycles_q;
+    reg [63:0] perf_store_occupancy_cycles_q;
+    reg [63:0] perf_store_spec_occupancy_cycles_q;
+    reg [63:0] perf_store_max_occupancy_q;
+    reg [63:0] perf_atomic_starts_q;
+    reg [63:0] perf_atomic_done_q;
+    reg [63:0] perf_atomic_active_cycles_q;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            perf_load_allocations_q <= 64'd0;
+            perf_load_spec_allocations_q <= 64'd0;
+            perf_load_ordered_allocations_q <= 64'd0;
+            perf_load_alloc_wait_cycles_q <= 64'd0;
+            perf_load_queue_full_cycles_q <= 64'd0;
+            perf_load_xlate_requests_q <= 64'd0;
+            perf_load_spec_xlate_requests_q <= 64'd0;
+            perf_load_xlate_wait_cycles_q <= 64'd0;
+            perf_load_access_requests_q <= 64'd0;
+            perf_load_spec_access_requests_q <= 64'd0;
+            perf_load_ordered_access_requests_q <= 64'd0;
+            perf_load_access_wait_cycles_q <= 64'd0;
+            perf_load_responses_q <= 64'd0;
+            perf_load_completions_q <= 64'd0;
+            perf_load_forwarded_q <= 64'd0;
+            perf_load_faults_q <= 64'd0;
+            perf_load_squashed_q <= 64'd0;
+            perf_load_squashed_before_xlate_q <= 64'd0;
+            perf_load_squashed_xlate_inflight_q <= 64'd0;
+            perf_load_squashed_xlate_done_q <= 64'd0;
+            perf_load_squashed_access_inflight_q <= 64'd0;
+            perf_load_flushed_q <= 64'd0;
+            perf_load_killed_responses_q <= 64'd0;
+            perf_load_dependency_block_cycles_q <= 64'd0;
+            perf_load_dependency_block_entry_cycles_q <= 64'd0;
+            perf_load_forward_ready_cycles_q <= 64'd0;
+            perf_load_forward_ready_entry_cycles_q <= 64'd0;
+            perf_load_occupancy_cycles_q <= 64'd0;
+            perf_load_spec_occupancy_cycles_q <= 64'd0;
+            perf_load_max_occupancy_q <= 64'd0;
+            perf_store_allocations_q <= 64'd0;
+            perf_store_spec_allocations_q <= 64'd0;
+            perf_store_ordered_allocations_q <= 64'd0;
+            perf_store_atomic_allocations_q <= 64'd0;
+            perf_store_alloc_wait_cycles_q <= 64'd0;
+            perf_store_queue_full_cycles_q <= 64'd0;
+            perf_store_xlate_requests_q <= 64'd0;
+            perf_store_spec_xlate_requests_q <= 64'd0;
+            perf_store_xlate_wait_cycles_q <= 64'd0;
+            perf_store_access_requests_q <= 64'd0;
+            perf_store_access_wait_cycles_q <= 64'd0;
+            perf_store_posted_results_q <= 64'd0;
+            perf_store_done_q <= 64'd0;
+            perf_store_squashed_q <= 64'd0;
+            perf_store_squashed_before_xlate_q <= 64'd0;
+            perf_store_squashed_xlate_inflight_q <= 64'd0;
+            perf_store_squashed_xlate_done_q <= 64'd0;
+            perf_store_squashed_access_inflight_q <= 64'd0;
+            perf_store_flushed_q <= 64'd0;
+            perf_store_killed_responses_q <= 64'd0;
+            perf_store_order_wait_cycles_q <= 64'd0;
+            perf_store_order_wait_entry_cycles_q <= 64'd0;
+            perf_store_occupancy_cycles_q <= 64'd0;
+            perf_store_spec_occupancy_cycles_q <= 64'd0;
+            perf_store_max_occupancy_q <= 64'd0;
+            perf_atomic_starts_q <= 64'd0;
+            perf_atomic_done_q <= 64'd0;
+            perf_atomic_active_cycles_q <= 64'd0;
+        end else begin
+            if (load_alloc_fire) begin
+                perf_load_allocations_q <= perf_load_allocations_q + 1'b1;
+                if (perf_load_alloc_order_match)
+                    perf_load_ordered_allocations_q <=
+                        perf_load_ordered_allocations_q + 1'b1;
+                else
+                    perf_load_spec_allocations_q <=
+                        perf_load_spec_allocations_q + 1'b1;
+            end
+            if (load_alloc_valid_i && !load_alloc_ready_o)
+                perf_load_alloc_wait_cycles_q <=
+                    perf_load_alloc_wait_cycles_q + 1'b1;
+            if (load_alloc_valid_i && !load_free_found_r)
+                perf_load_queue_full_cycles_q <=
+                    perf_load_queue_full_cycles_q + 1'b1;
+            if (xlate_req_fire && !xlate_req_write_o) begin
+                perf_load_xlate_requests_q <=
+                    perf_load_xlate_requests_q + 1'b1;
+                if (!perf_xlate_order_match)
+                    perf_load_spec_xlate_requests_q <=
+                        perf_load_spec_xlate_requests_q + 1'b1;
+            end
+            if (xlate_req_valid_o && !xlate_req_ready_i &&
+                !xlate_req_write_o)
+                perf_load_xlate_wait_cycles_q <=
+                    perf_load_xlate_wait_cycles_q + 1'b1;
+            if (req_fire && !req_write_o) begin
+                perf_load_access_requests_q <=
+                    perf_load_access_requests_q + 1'b1;
+                if (slot_order_match[request_index_r])
+                    perf_load_ordered_access_requests_q <=
+                        perf_load_ordered_access_requests_q + 1'b1;
+                else
+                    perf_load_spec_access_requests_q <=
+                        perf_load_spec_access_requests_q + 1'b1;
+            end
+            if (req_valid_o && !req_ready_i && !req_write_o)
+                perf_load_access_wait_cycles_q <=
+                    perf_load_access_wait_cycles_q + 1'b1;
+            if (perf_load_response_fire)
+                perf_load_responses_q <= perf_load_responses_q + 1'b1;
+            if (perf_load_result_fire) begin
+                perf_load_completions_q <=
+                    perf_load_completions_q + 1'b1;
+                if (!result_select_resp &&
+                    load_forward_r[local_index_r])
+                    perf_load_forwarded_q <=
+                        perf_load_forwarded_q + 1'b1;
+                if (result_access_fault_o || result_page_fault_o)
+                    perf_load_faults_q <= perf_load_faults_q + 1'b1;
+            end
+            perf_load_squashed_q <= perf_load_squashed_q +
+                perf_load_squashed_count_r;
+            perf_load_squashed_before_xlate_q <=
+                perf_load_squashed_before_xlate_q +
+                perf_load_squashed_before_xlate_count_r;
+            perf_load_squashed_xlate_inflight_q <=
+                perf_load_squashed_xlate_inflight_q +
+                perf_load_squashed_xlate_inflight_count_r;
+            perf_load_squashed_xlate_done_q <=
+                perf_load_squashed_xlate_done_q +
+                perf_load_squashed_xlate_done_count_r;
+            perf_load_squashed_access_inflight_q <=
+                perf_load_squashed_access_inflight_q +
+                perf_load_squashed_access_inflight_count_r;
+            if (flush_i)
+                perf_load_flushed_q <= perf_load_flushed_q +
+                    perf_load_valid_count_r;
+            if (perf_load_killed_response_fire)
+                perf_load_killed_responses_q <=
+                    perf_load_killed_responses_q + 1'b1;
+            if (perf_load_block_count_r != 0)
+                perf_load_dependency_block_cycles_q <=
+                    perf_load_dependency_block_cycles_q + 1'b1;
+            perf_load_dependency_block_entry_cycles_q <=
+                perf_load_dependency_block_entry_cycles_q +
+                perf_load_block_count_r;
+            if (perf_load_forward_count_r != 0)
+                perf_load_forward_ready_cycles_q <=
+                    perf_load_forward_ready_cycles_q + 1'b1;
+            perf_load_forward_ready_entry_cycles_q <=
+                perf_load_forward_ready_entry_cycles_q +
+                perf_load_forward_count_r;
+            perf_load_occupancy_cycles_q <=
+                perf_load_occupancy_cycles_q + perf_load_valid_count_r;
+            perf_load_spec_occupancy_cycles_q <=
+                perf_load_spec_occupancy_cycles_q + perf_load_spec_count_r;
+            if (perf_load_valid_count_r > perf_load_max_occupancy_q)
+                perf_load_max_occupancy_q <= perf_load_valid_count_r;
+
+            if (store_alloc_fire) begin
+                perf_store_allocations_q <=
+                    perf_store_allocations_q + 1'b1;
+                if (perf_store_alloc_order_match)
+                    perf_store_ordered_allocations_q <=
+                        perf_store_ordered_allocations_q + 1'b1;
+                else
+                    perf_store_spec_allocations_q <=
+                        perf_store_spec_allocations_q + 1'b1;
+                if (store_alloc_atomic_i)
+                    perf_store_atomic_allocations_q <=
+                        perf_store_atomic_allocations_q + 1'b1;
+            end
+            if (store_alloc_valid_i && !store_alloc_ready_o)
+                perf_store_alloc_wait_cycles_q <=
+                    perf_store_alloc_wait_cycles_q + 1'b1;
+            if (store_alloc_valid_i && !store_free_found_r)
+                perf_store_queue_full_cycles_q <=
+                    perf_store_queue_full_cycles_q + 1'b1;
+            if (xlate_req_fire && xlate_req_write_o) begin
+                perf_store_xlate_requests_q <=
+                    perf_store_xlate_requests_q + 1'b1;
+                if (!perf_xlate_order_match)
+                    perf_store_spec_xlate_requests_q <=
+                        perf_store_spec_xlate_requests_q + 1'b1;
+            end
+            if (xlate_req_valid_o && !xlate_req_ready_i &&
+                xlate_req_write_o)
+                perf_store_xlate_wait_cycles_q <=
+                    perf_store_xlate_wait_cycles_q + 1'b1;
+            if (req_fire && req_write_o)
+                perf_store_access_requests_q <=
+                    perf_store_access_requests_q + 1'b1;
+            if (req_valid_o && !req_ready_i && req_write_o)
+                perf_store_access_wait_cycles_q <=
+                    perf_store_access_wait_cycles_q + 1'b1;
+            if (perf_store_result_fire)
+                perf_store_posted_results_q <=
+                    perf_store_posted_results_q + 1'b1;
+            if (posted_store_done_fire)
+                perf_store_done_q <= perf_store_done_q + 1'b1;
+            perf_store_squashed_q <= perf_store_squashed_q +
+                perf_store_squashed_count_r;
+            perf_store_squashed_before_xlate_q <=
+                perf_store_squashed_before_xlate_q +
+                perf_store_squashed_before_xlate_count_r;
+            perf_store_squashed_xlate_inflight_q <=
+                perf_store_squashed_xlate_inflight_q +
+                perf_store_squashed_xlate_inflight_count_r;
+            perf_store_squashed_xlate_done_q <=
+                perf_store_squashed_xlate_done_q +
+                perf_store_squashed_xlate_done_count_r;
+            perf_store_squashed_access_inflight_q <=
+                perf_store_squashed_access_inflight_q +
+                perf_store_squashed_access_inflight_count_r;
+            if (flush_i)
+                perf_store_flushed_q <= perf_store_flushed_q +
+                    perf_store_valid_count_r;
+            if (perf_store_killed_response_fire)
+                perf_store_killed_responses_q <=
+                    perf_store_killed_responses_q + 1'b1;
+            if (perf_store_order_wait_count_r != 0)
+                perf_store_order_wait_cycles_q <=
+                    perf_store_order_wait_cycles_q + 1'b1;
+            perf_store_order_wait_entry_cycles_q <=
+                perf_store_order_wait_entry_cycles_q +
+                perf_store_order_wait_count_r;
+            perf_store_occupancy_cycles_q <=
+                perf_store_occupancy_cycles_q + perf_store_valid_count_r;
+            perf_store_spec_occupancy_cycles_q <=
+                perf_store_spec_occupancy_cycles_q + perf_store_spec_count_r;
+            if (perf_store_valid_count_r > perf_store_max_occupancy_q)
+                perf_store_max_occupancy_q <= perf_store_valid_count_r;
+            if (atomic_start_valid_o && !atomic_active_i)
+                perf_atomic_starts_q <= perf_atomic_starts_q + 1'b1;
+            if (atomic_done_i)
+                perf_atomic_done_q <= perf_atomic_done_q + 1'b1;
+            if (atomic_active_i)
+                perf_atomic_active_cycles_q <=
+                    perf_atomic_active_cycles_q + 1'b1;
+        end
+    end
+
     integer timeout_index;
     integer slot_timeout_age_q [0:DEPTH-1];
     initial begin

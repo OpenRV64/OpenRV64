@@ -8,6 +8,12 @@
       prefetch policy out of the composition wrappers. Before moving state,
       replace testbench and Verilator hierarchical state probes with explicit
       debug/observability interfaces.
+- [ ] Add and evaluate a native 256-bit CCX mode in which every 64-byte cache
+      line transfer uses two fixed 256-bit data beats. Keep this distinct from
+      the existing `burst_len` field, which denotes multiple consecutive cache
+      lines. Define beat-index/last and response ownership through L1I/L1D,
+      the line crossbar, coherent home/L2, and the memory bridge, then compare
+      wiring/area and sustained bandwidth against the current 512-bit mode.
 - [ ] Multi-hart
 - [ ] Linux
 - [ ] Relax translation invalidation for Linux address-space switches: stop

@@ -8,7 +8,7 @@
 // Standard-device bases follow the conventional QEMU RISC-V "virt" layout.
 // Window sizes remain OpenRV64 implementation choices.
 `define OPENRV64_SOC_ROM_BASE    64'h0000_0000_0000_1000
-`define OPENRV64_SOC_ROM_SIZE    64'h0000_0000_0001_0000
+`define OPENRV64_SOC_ROM_SIZE    64'h0000_0000_0000_1000
 
 `define OPENRV64_SOC_MEMORY_BASE 64'h0000_0000_8000_0000
 `define OPENRV64_SOC_MEMORY_SIZE 64'h0000_0000_1000_0000
