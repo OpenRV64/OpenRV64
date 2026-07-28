@@ -1,0 +1,6 @@
+board_signal,top_port,direction,package_pin,io_standard,voltage,status,source
+DEBUG_RXD,uart_rx_i,input,R18,LVCMOS33,3.3V,verified,MYC-J7A100T-PinList-V1.0.xlsx row 80
+DEBUG_TXD,uart_tx_o,output,T18,LVCMOS33,3.3V,verified,MYC-J7A100T-PinList-V1.0.xlsx row 82
+SYS_CLK_P,sys_clk_p,input,R4,DIFF_SSTL15,1.5V,verified,MYIR 07_ddr_test ddr.xdc
+SYS_CLK_N,sys_clk_n,input,paired with R4,DIFF_SSTL15,1.5V,verified,MYIR 07_ddr_test differential pair
+SYS_RST_N,rst_n,input,P17,LVCMOS33,3.3V,verified,MYIR 07_ddr_test ddr.xdc
