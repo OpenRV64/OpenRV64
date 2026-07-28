@@ -80,6 +80,7 @@ module openrv64_exec_top #(
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
     input  wire                         csr_valid_i,
     input  wire                         csr_writable_i,
+    input  wire                         csr_busy_i,
     output wire                         csr_write_o,
     output wire [`RV64_XLEN-1:0]        csr_wdata_o,
 

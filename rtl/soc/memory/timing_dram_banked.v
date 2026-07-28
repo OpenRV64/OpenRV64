@@ -29,6 +29,7 @@ module openrv64_timing_dram_banked #(
     parameter integer BURST_LENGTH = 8,
     parameter integer BURST_CYCLES = 4,
     parameter integer BANK_BITS = 3,
+    parameter integer BANK_ROW_SWIZZLE = 0,
     parameter integer RANKS = 1,
     parameter integer ROW_BYTES = 8192,
     parameter integer CONTROLLER_TCK_PS = 1000,
@@ -283,8 +284,18 @@ module openrv64_timing_dram_banked #(
     reg perf_last_launch_write_q;
 `endif
 
-    wire [BANK_BITS-1:0] incoming_bank =
+    wire [BANK_BITS-1:0] incoming_bank_raw =
         cmd_addr_i[ROW_OFFSET_BITS +: BANK_BITS];
+    wire [ROW_TAG_WIDTH-1:0] incoming_row =
+        cmd_addr_i[
+            ADDR_WIDTH-1:
+            ROW_OFFSET_BITS+BANK_BITS+RANK_ADDRESS_BITS];
+    // Hash low row bits into the timing bank index without changing the
+    // address used by storage.
+    wire [BANK_BITS-1:0] incoming_bank =
+        (BANK_ROW_SWIZZLE != 0)
+            ? (incoming_bank_raw ^ incoming_row[BANK_BITS-1:0])
+            : incoming_bank_raw;
     wire [RANK_INDEX_WIDTH-1:0] incoming_rank;
     generate
         if (RANKS > 1) begin : g_incoming_rank
@@ -298,10 +309,6 @@ module openrv64_timing_dram_banked #(
     wire [BANK_MACHINE_INDEX_WIDTH-1:0] incoming_bank_machine =
         BANK_MACHINE_INDEX_WIDTH'(
             (32'(incoming_rank) * BANK_COUNT) + 32'(incoming_bank));
-    wire [ROW_TAG_WIDTH-1:0] incoming_row =
-        cmd_addr_i[
-            ADDR_WIDTH-1:
-            ROW_OFFSET_BITS+BANK_BITS+RANK_ADDRESS_BITS];
     wire command_fire = cmd_valid_i && cmd_ready_o;
     wire response_fire = resp_valid_o && resp_ready_i;
     wire refresh_due = (REFRESH_INTERVAL_CONTROLLER_CYCLES != 0) &&
@@ -1501,6 +1508,10 @@ module openrv64_timing_dram_banked #(
             $fatal(1, "banked DRAM burst scheduling intervals must be positive");
         if ((BANK_BITS < 1) || (BANK_BITS > 6))
             $fatal(1, "banked DRAM bank bits must be 1 through 6");
+        if ((BANK_ROW_SWIZZLE != 0) && (BANK_ROW_SWIZZLE != 1))
+            $fatal(1, "bank-row swizzle must be disabled (0) or enabled (1)");
+        if ((BANK_ROW_SWIZZLE != 0) && (ROW_TAG_WIDTH < BANK_BITS))
+            $fatal(1, "bank-row swizzle requires at least BANK_BITS row bits");
         if ((ROW_BYTES < NATIVE_BURST_BYTES) ||
             ((ROW_BYTES & (ROW_BYTES - 1)) != 0))
             $fatal(1, "banked DRAM row size must contain complete bursts");

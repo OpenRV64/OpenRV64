@@ -116,6 +116,59 @@ uint64_t wide_bits64(const VlWide<Words>& value, unsigned lsb) {
     return result;
 }
 
+struct RetireHeadBlockSnapshot {
+    uint64_t cycle = 0;
+    uint64_t incomplete = 0;
+    uint64_t load = 0;
+    uint64_t store = 0;
+    uint64_t branch = 0;
+    uint64_t barrier = 0;
+    uint64_t alu = 0;
+};
+
+RetireHeadBlockSnapshot snapshot_retire_head_block(Vtb_opensbi* top) {
+    const Vtb_opensbi___024root* const root = top->rootp;
+    return {
+        top->checkpoint_cycle_o,
+        root->tb_opensbi__DOT__perf_retire_head_incomplete,
+        root->tb_opensbi__DOT__perf_retire_head_block_load,
+        root->tb_opensbi__DOT__perf_retire_head_block_store,
+        root->tb_opensbi__DOT__perf_retire_head_block_branch,
+        root->tb_opensbi__DOT__perf_retire_head_block_barrier,
+        root->tb_opensbi__DOT__perf_retire_head_block_alu,
+    };
+}
+
+bool report_retire_head_block_delta(
+    const RetireHeadBlockSnapshot& baseline, Vtb_opensbi* top) {
+    const RetireHeadBlockSnapshot current =
+        snapshot_retire_head_block(top);
+    const uint64_t incomplete = current.incomplete - baseline.incomplete;
+    const uint64_t load = current.load - baseline.load;
+    const uint64_t store = current.store - baseline.store;
+    const uint64_t branch = current.branch - baseline.branch;
+    const uint64_t barrier = current.barrier - baseline.barrier;
+    const uint64_t alu = current.alu - baseline.alu;
+    const uint64_t accounted = load + store + branch + barrier + alu;
+    std::cout << "RETIRE HEAD BLOCK DELTA"
+              << " start_cycle=" << baseline.cycle
+              << " end_cycle=" << current.cycle
+              << " incomplete=" << incomplete
+              << " load=" << load
+              << " store=" << store
+              << " branch=" << branch
+              << " barrier=" << barrier
+              << " alu=" << alu
+              << " accounted=" << accounted << '\n';
+    if (accounted != incomplete) {
+        std::cerr << "Retirement-head block delta classification mismatch"
+                  << " incomplete=" << incomplete
+                  << " accounted=" << accounted << '\n';
+        return false;
+    }
+    return true;
+}
+
 struct L2TlbProbe {
     static constexpr unsigned kWays = 4;
     static constexpr unsigned kSets = 64;
@@ -1810,6 +1863,8 @@ int main(int argc, char** argv, char**) {
         plusarg_value(argc, argv, "+suppress_l1d_prefetch_cycle=");
     const char* const retire3_trace_path =
         plusarg_value(argc, argv, "+retire3_trace=");
+    const char* const retire_head_baseline_cycle_text =
+        plusarg_value(argc, argv, "+retire_head_baseline_cycle=");
     const char* const l2_tlb_invalidate_way_text =
         plusarg_value(argc, argv, "+l2_tlb_invalidate_way=");
     const char* const l2_tlb_invalidate_set_text =
@@ -1821,6 +1876,8 @@ int main(int argc, char** argv, char**) {
         target_delivery_trace_path;
     const bool l2_tlb_disable =
         has_plusarg(argc, argv, "+l2_tlb_disable");
+    const bool retire_head_baseline_on_restore =
+        has_plusarg(argc, argv, "+retire_head_baseline_on_restore");
     if ((l2_tlb_invalidate_way_text == nullptr) !=
         (l2_tlb_invalidate_set_text == nullptr)) {
         std::cerr << "+l2_tlb_invalidate_way and "
@@ -1830,6 +1887,17 @@ int main(int argc, char** argv, char**) {
     if (mtimecmp_subtract_text && mtimecmp_add_text) {
         std::cerr << "+mtimecmp_subtract and +mtimecmp_add are mutually "
                      "exclusive\n";
+        return EXIT_FAILURE;
+    }
+    if (retire_head_baseline_cycle_text &&
+        retire_head_baseline_on_restore) {
+        std::cerr << "+retire_head_baseline_cycle and "
+                     "+retire_head_baseline_on_restore are mutually "
+                     "exclusive\n";
+        return EXIT_FAILURE;
+    }
+    if (retire_head_baseline_on_restore && !restore_path) {
+        std::cerr << "+retire_head_baseline_on_restore requires +restore\n";
         return EXIT_FAILURE;
     }
     const uint32_t checkpoint_cycle =
@@ -1843,6 +1911,13 @@ int main(int argc, char** argv, char**) {
             ? parse_cycle(suppress_l1d_prefetch_cycle_text,
                           "+suppress_l1d_prefetch_cycle")
             : 0;
+    const uint32_t retire_head_baseline_cycle =
+        retire_head_baseline_cycle_text
+            ? parse_cycle(retire_head_baseline_cycle_text,
+                          "+retire_head_baseline_cycle")
+            : 0;
+    RetireHeadBlockSnapshot retire_head_baseline;
+    bool retire_head_baseline_valid = false;
 
     if (restore_path) {
         restore_model(restore_path, context.get(), top.get());
@@ -1857,6 +1932,12 @@ int main(int argc, char** argv, char**) {
         std::cout << "CHECKPOINT RESTORED path=" << restore_path
                   << " cycle=" << top->checkpoint_cycle_o
                   << " time=" << context->time() << '\n';
+        if (retire_head_baseline_on_restore) {
+            retire_head_baseline = snapshot_retire_head_block(top.get());
+            retire_head_baseline_valid = true;
+            std::cout << "RETIRE HEAD BLOCK BASELINE"
+                      << " cycle=" << retire_head_baseline.cycle << '\n';
+        }
         if (mtimecmp_subtract_text) {
             const uint32_t delta =
                 parse_cycle(mtimecmp_subtract_text,
@@ -2008,6 +2089,14 @@ int main(int argc, char** argv, char**) {
             l1d_probe->sample_pre_edge(top.get());
         if (!top->checkpoint_clk_i && retire3_trace)
             retire3_trace->sample_pre_edge(top.get());
+        if (!top->checkpoint_clk_i && retire_head_baseline_cycle_text &&
+            !retire_head_baseline_valid &&
+            top->checkpoint_cycle_o >= retire_head_baseline_cycle) {
+            retire_head_baseline = snapshot_retire_head_block(top.get());
+            retire_head_baseline_valid = true;
+            std::cout << "RETIRE HEAD BLOCK BASELINE"
+                      << " cycle=" << retire_head_baseline.cycle << '\n';
+        }
         if (top->checkpoint_clk_i) {
             if (pipeline_trace)
                 write_pipeline_trace(pipeline_trace, top.get());
@@ -2045,7 +2134,20 @@ int main(int argc, char** argv, char**) {
     if (l2_tlb_entry_invalidator)
         l2_tlb_entry_invalidator->report();
 
+    bool retire_head_delta_ok = true;
+    if (retire_head_baseline_cycle_text ||
+        retire_head_baseline_on_restore) {
+        if (!retire_head_baseline_valid) {
+            std::cerr << "Retirement-head block baseline was not reached\n";
+            retire_head_delta_ok = false;
+        } else {
+            retire_head_delta_ok =
+                report_retire_head_block_delta(retire_head_baseline,
+                                               top.get());
+        }
+    }
+
     top->final();
     context->statsPrintSummary();
-    return 0;
+    return retire_head_delta_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

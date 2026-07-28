@@ -19,6 +19,10 @@ module openrv64_rv64i_csrs #(
     output reg                              csr_writable_o,
     input  wire                             csr_write_i,
     input  wire [`RV64_XLEN-1:0]           csr_wdata_i,
+    output wire                             csr_write_ready_o,
+    output wire                             csr_pmp_busy_o,
+    output wire                             csr_satp_busy_o,
+    output wire                             csr_hpm_busy_o,
 
     input  wire                             trap_enter_i,
     input  wire                             trap_interrupt_i,
@@ -110,6 +114,10 @@ module openrv64_rv64i_csrs #(
         (ENABLE_RV64M ? (64'd1 << 12) : 64'd0) |
         (64'd1 << 18) |
         (64'd1 << 20);
+    localparam integer SATP_WRITE_CYCLES = 30;
+    localparam [4:0] SATP_WRITE_LAST = 5'd29;
+    localparam integer HPM_ACCESS_CYCLES = 3;
+    localparam [1:0] HPM_ACCESS_LAST = 2'd2;
 
     reg [`RV64_XLEN-1:0] mstatus_q;
     reg [`RV64_XLEN-1:0] medeleg_q;
@@ -127,15 +135,29 @@ module openrv64_rv64i_csrs #(
     reg [`RV64_XLEN-1:0] scause_q;
     reg [`RV64_XLEN-1:0] stval_q;
     reg [`RV64_XLEN-1:0] satp_q;
+    reg [`RV64_XLEN-1:0] satp_pending_q;
+    reg [4:0] satp_count_q;
+    reg satp_busy_q;
+    reg satp_done_q;
+    reg [1:0] hpm_write_count_q;
+    reg hpm_write_busy_q;
+    reg hpm_write_done_q;
+    reg [`RV64_FUNCT12_WIDTH-1:0] hpm_write_addr_q;
+    reg [`RV64_XLEN-1:0] hpm_write_data_q;
     reg [`RV64_PRIV_WIDTH-1:0] priv_mode_q;
 
     wire [`RV64_XLEN-1:0] pmp_csr_rdata;
     wire pmp_csr_match;
     wire pmp_csr_writable;
+    wire pmp_csr_write_ready;
+    wire pmp_csr_busy;
     wire [`RV64_XLEN-1:0] cmu_csr_rdata;
     wire cmu_csr_match;
     wire cmu_csr_valid;
     wire cmu_csr_writable;
+    wire [`RV64_FUNCT12_WIDTH-1:0] cmu_csr_addr;
+    wire cmu_csr_write;
+    wire [`RV64_XLEN-1:0] cmu_csr_wdata;
 
     wire [`RV64_XLEN-1:0] mip_external =
         (irq_s_software_i ? BIT_SSIP : 64'd0) |
@@ -167,6 +189,22 @@ module openrv64_rv64i_csrs #(
     wire satp_access_ok = !((csr_addr_i == `RV64_CSR_SATP) &&
                             (priv_mode_q == `RV64_PRIV_S) &&
                             mstatus_q[`RV64_MSTATUS_TVM_BIT]);
+    wire satp_write_request =
+        csr_write_i && csr_valid_o && csr_writable_o &&
+        (csr_addr_i == `RV64_CSR_SATP);
+    wire satp_start =
+        satp_write_request && !satp_busy_q && !satp_done_q;
+    wire hpm_write_commit =
+        hpm_write_busy_q && (hpm_write_count_q == HPM_ACCESS_LAST);
+    assign cmu_csr_addr = hpm_write_commit ?
+                          hpm_write_addr_q : csr_addr_i;
+    assign cmu_csr_write = hpm_write_commit;
+    assign cmu_csr_wdata = hpm_write_commit ?
+                           hpm_write_data_q : csr_wdata_i;
+    wire hpm_write_request =
+        csr_write_i && csr_valid_o && csr_writable_o && cmu_csr_match;
+    wire hpm_write_start =
+        hpm_write_request && !hpm_write_busy_q && !hpm_write_done_q;
 
     assign trap_vector_o = selected_tvec_base +
                            ((trap_interrupt_i && selected_tvec_vectored) ?
@@ -193,9 +231,9 @@ module openrv64_rv64i_csrs #(
     ) u_cmu (
         .clk(clk),
         .rst_n(rst_n),
-        .csr_addr_i(csr_addr_i),
-        .csr_write_i(csr_write_i),
-        .csr_wdata_i(csr_wdata_i),
+        .csr_addr_i(cmu_csr_addr),
+        .csr_write_i(cmu_csr_write),
+        .csr_wdata_i(cmu_csr_wdata),
         .priv_mode_i(priv_mode_q),
         .csr_rdata_o(cmu_csr_rdata),
         .csr_match_o(cmu_csr_match),
@@ -215,6 +253,8 @@ module openrv64_rv64i_csrs #(
         .csr_write_i(csr_write_i && csr_valid_o && csr_writable_o &&
                      pmp_csr_match && pmp_csr_writable),
         .csr_wdata_i(csr_wdata_i),
+        .csr_write_ready_o(pmp_csr_write_ready),
+        .csr_busy_o(pmp_csr_busy),
         .instr_priv_mode_i(priv_mode_q),
         .data_priv_mode_i(pmp_data_priv),
         .instr_addr_i(pmp_instr_addr_i),
@@ -232,6 +272,15 @@ module openrv64_rv64i_csrs #(
         .bus_priv_mode_i(pmp_bus_priv_mode_i),
         .bus_allow_o(pmp_bus_allow_o)
     );
+
+    assign csr_write_ready_o =
+        pmp_csr_match ? pmp_csr_write_ready :
+        satp_write_request ? satp_done_q :
+        hpm_write_request ? hpm_write_done_q :
+        1'b1;
+    assign csr_pmp_busy_o = pmp_csr_busy;
+    assign csr_satp_busy_o = satp_busy_q;
+    assign csr_hpm_busy_o = hpm_write_busy_q;
 
     function irq_eligible;
         input [`RV64_EXCEPT_CAUSE_WIDTH-1:0] cause;
@@ -358,6 +407,75 @@ module openrv64_rv64i_csrs #(
         end
     end
 
+    // HPM writes latch their address and data, then pulse the CMU commit port
+    // after three full busy cycles.  Read latency belongs in the execution
+    // pipe, which can hold the complete instruction without feeding readiness
+    // back into CSR address selection.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hpm_write_count_q <= 2'd0;
+            hpm_write_busy_q <= 1'b0;
+            hpm_write_done_q <= 1'b0;
+            hpm_write_addr_q <= 12'd0;
+            hpm_write_data_q <= 64'd0;
+        end else begin
+            if (!hpm_write_request || hpm_write_done_q)
+                hpm_write_done_q <= 1'b0;
+            if (hpm_write_busy_q) begin
+                if (hpm_write_count_q == HPM_ACCESS_LAST) begin
+                    hpm_write_busy_q <= 1'b0;
+                    hpm_write_done_q <= 1'b1;
+                end else begin
+                    hpm_write_count_q <= hpm_write_count_q + 1'b1;
+                end
+            end else if (hpm_write_start) begin
+                hpm_write_addr_q <= csr_addr_i;
+                hpm_write_data_q <= csr_wdata_i;
+                hpm_write_count_q <= 2'd0;
+                hpm_write_busy_q <= 1'b1;
+            end
+        end
+    end
+
+    // SATP writes are hard-order operations, so only the admission/retirement
+    // barrier needs to react immediately.  The architectural value is held
+    // stable for thirty cycles and commits atomically before ready is raised.
+    // Unsupported MODE writes consume the same latency and retain the old
+    // value, preserving the existing WARL behavior.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            satp_q <= 64'd0;
+            satp_pending_q <= 64'd0;
+            satp_count_q <= 5'd0;
+            satp_busy_q <= 1'b0;
+            satp_done_q <= 1'b0;
+        end else begin
+            if (!satp_write_request || satp_done_q)
+                satp_done_q <= 1'b0;
+
+            if (satp_busy_q) begin
+                if (satp_count_q == SATP_WRITE_LAST) begin
+                    satp_q <= satp_pending_q;
+                    satp_busy_q <= 1'b0;
+                    satp_done_q <= 1'b1;
+                end else begin
+                    satp_count_q <= satp_count_q + 1'b1;
+                end
+            end else if (satp_start) begin
+                case (csr_wdata_i[`RV64_SATP_MODE_BITS])
+                    `RV64_SATP_MODE_BARE:
+                        satp_pending_q <= 64'd0;
+                    `RV64_SATP_MODE_SV39:
+                        satp_pending_q <= csr_wdata_i;
+                    default:
+                        satp_pending_q <= satp_q;
+                endcase
+                satp_count_q <= 5'd0;
+                satp_busy_q <= 1'b1;
+            end
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             mstatus_q <= (64'd2 << 34) |
@@ -377,7 +495,6 @@ module openrv64_rv64i_csrs #(
             sepc_q <= 64'd0;
             scause_q <= 64'd0;
             stval_q <= 64'd0;
-            satp_q <= 64'd0;
             priv_mode_q <= `RV64_PRIV_M;
         end else if (trap_enter_i) begin
             if (trap_delegated) begin
@@ -444,12 +561,6 @@ module openrv64_rv64i_csrs #(
                         (csr_wdata_i & mideleg_q & BIT_SSIP);
                 end
                 `RV64_CSR_SATP: begin
-                    case (csr_wdata_i[`RV64_SATP_MODE_BITS])
-                        `RV64_SATP_MODE_BARE: satp_q <= 64'd0;
-                        `RV64_SATP_MODE_SV39: satp_q <= csr_wdata_i;
-                        default: begin
-                        end
-                    endcase
                 end
 
                 `RV64_CSR_MSTATUS: begin

@@ -55,6 +55,8 @@ module openrv64_cmu #(
         mhpmcounter_q [0:HPM_STORAGE_COUNTERS-1];
     reg [`RV64_XLEN-1:0]
         mhpmevent_q [0:HPM_STORAGE_COUNTERS-1];
+    reg [EVENT_INCREMENT_WIDTH-1:0]
+        hpm_increment_q [0:HPM_STORAGE_COUNTERS-1];
 
     wire csr_is_mhpmcounter =
         (csr_addr_i >= `RV64_CSR_MHPMCOUNTER3) &&
@@ -108,6 +110,8 @@ module openrv64_cmu #(
         hpm_increment [0:HPM_STORAGE_COUNTERS-1];
     wire [`RV64_XLEN-1:0]
         hpm_read_value [0:HPM_STORAGE_COUNTERS-1];
+    wire [`RV64_XLEN-1:0]
+        hpm_next_value [0:HPM_STORAGE_COUNTERS-1];
 
     genvar counter_index;
     generate
@@ -116,12 +120,15 @@ module openrv64_cmu #(
             assign hpm_increment[counter_index] = count_events(
                 active_event_pulses &
                 mhpmevent_q[counter_index][EVENT_COUNT-1:0]);
-            assign hpm_read_value[counter_index] =
+            // Event decode and population count terminate at increment_q.
+            // The live backend event cone no longer drives the 64-bit counter
+            // adder in the same cycle.
+            assign hpm_next_value[counter_index] =
                 mhpmcounter_q[counter_index] +
-                (mcountinhibit_q[counter_index + 3] ?
-                 {`RV64_XLEN{1'b0}} :
-                 {{(`RV64_XLEN-EVENT_INCREMENT_WIDTH){1'b0}},
-                  hpm_increment[counter_index]});
+                {{(`RV64_XLEN-EVENT_INCREMENT_WIDTH){1'b0}},
+                 hpm_increment_q[counter_index]};
+            assign hpm_read_value[counter_index] =
+                hpm_next_value[counter_index];
         end
     endgenerate
 
@@ -211,6 +218,8 @@ module openrv64_cmu #(
                  reset_index = reset_index + 1) begin
                 mhpmcounter_q[reset_index] <= {`RV64_XLEN{1'b0}};
                 mhpmevent_q[reset_index] <= {`RV64_XLEN{1'b0}};
+                hpm_increment_q[reset_index] <=
+                    {EVENT_INCREMENT_WIDTH{1'b0}};
             end
         end else begin
             if (!mcountinhibit_q[`RV64_MCOUNTER_CY_BIT])
@@ -221,13 +230,22 @@ module openrv64_cmu #(
                     {{(`RV64_XLEN-2){1'b0}}, retire_count_i};
 
             for (reset_index = 0; reset_index < HPM_COUNTERS;
-                 reset_index = reset_index + 1)
-                if (!mcountinhibit_q[reset_index + 3] &&
-                    (hpm_increment[reset_index] != 0))
+                 reset_index = reset_index + 1) begin
+                if (hpm_increment_q[reset_index] != 0)
                     mhpmcounter_q[reset_index] <=
-                        mhpmcounter_q[reset_index] +
-                        {{(`RV64_XLEN-EVENT_INCREMENT_WIDTH){1'b0}},
-                         hpm_increment[reset_index]};
+                        hpm_next_value[reset_index];
+                if (csr_write_accept && csr_is_mhpmcounter &&
+                    csr_hpm_implemented &&
+                    (csr_hpm_index == reset_index[4:0]))
+                    hpm_increment_q[reset_index] <=
+                        {EVENT_INCREMENT_WIDTH{1'b0}};
+                else if (mcountinhibit_q[reset_index + 3])
+                    hpm_increment_q[reset_index] <=
+                        {EVENT_INCREMENT_WIDTH{1'b0}};
+                else
+                    hpm_increment_q[reset_index] <=
+                        hpm_increment[reset_index];
+            end
 
             if (csr_write_accept) begin
                 case (csr_addr_i)

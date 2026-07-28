@@ -15,6 +15,7 @@ module tb_retire_3p;
     wire [2:0] queue_accept;
     reg irq_pending;
     reg [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause;
+    reg csr_write_ready;
     wire [2:0] retire_arch;
     wire [1:0] retire_count;
     wire [2:0] retire_hard;
@@ -53,6 +54,7 @@ module tb_retire_3p;
         .queue_result_i(queue_result),
         .queue_trace_id_i(queue_trace),
         .queue_accept_o(queue_accept),
+        .csr_write_ready_i(csr_write_ready),
         .irq_pending_i(irq_pending),
         .irq_cause_i(irq_cause),
         .retire_arch_o(retire_arch),
@@ -182,6 +184,7 @@ module tb_retire_3p;
         queue_trace = 192'd0;
         irq_pending = 1'b0;
         irq_cause = 5'd0;
+        csr_write_ready = 1'b1;
 
         set_meta(0, 0, 1, 0, 1, 5'd5);
         set_meta(1, 0, 1, 1, 1, 5'd6);
@@ -264,13 +267,24 @@ module tb_retire_3p;
         queue_result[0*RESULT_WIDTH + 76] = 1'b1;
         queue_result[0*RESULT_WIDTH + 64 +: 12] = 12'h305;
         queue_result[0*RESULT_WIDTH + 0 +: 64] = 64'h1234;
+        csr_write_ready = 1'b0;
         #1;
         if (!csr_write || (csr_addr != 12'h305) ||
             (csr_wdata != 64'h1234)) begin
-            fail("retirement did not apply CSR write intent");
+            fail("retirement did not hold CSR write request");
+        end
+        if ((queue_accept != 3'b000) || (retire_arch != 3'b000) ||
+            (gpr_write != 3'b000)) begin
+            fail("unready CSR write retired before completion");
+        end
+        csr_write_ready = 1'b1;
+        #1;
+        if ((queue_accept != 3'b001) || (retire_arch != 3'b001) ||
+            !csr_write) begin
+            fail("ready CSR write did not retire");
         end
 
-        $display("PASS: 3p commit prefix, exception boundary, IRQ, and CSR intent");
+        $display("PASS: 3p commit prefix, exception boundary, IRQ, and held CSR request");
         $finish;
     end
 

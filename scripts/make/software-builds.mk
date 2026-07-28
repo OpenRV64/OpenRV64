@@ -112,6 +112,19 @@ $(MEMCPY_64K_BIN): $(MEMCPY_64K_ELF)
 $(MEMCPY_64K_DISASM): $(MEMCPY_64K_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(MEMCPY_SWEEP_ELF): $(OPENRV64_MAKEFILES) sw/memcpy/memcpy_sweep.S \
+		sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(MEMCPY_SWEEP_MAP) \
+		-T sw/openrv64.ld -o $@ sw/memcpy/memcpy_sweep.S
+
+$(MEMCPY_SWEEP_BIN): $(MEMCPY_SWEEP_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(MEMCPY_SWEEP_DISASM): $(MEMCPY_SWEEP_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(L1I_COREMARK_MEMH): $(COREMARK_LOOP_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ --size 0x800 --word-bytes 64
 

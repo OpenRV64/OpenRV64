@@ -24,6 +24,7 @@ module openrv64_soc_ccx_l2_bridge #(
     parameter integer DDR3_READ_QUEUE_DEPTH = 8,
     parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
     parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter integer DDR3_BANK_ROW_SWIZZLE = 1,
     parameter integer MEMORY_TIMING_MODEL = 0,
     parameter integer MEMORY_BYTES = `OPENRV64_SOC_MEMORY_SIZE
 ) (
@@ -461,6 +462,7 @@ module openrv64_soc_ccx_l2_bridge #(
                 .WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
                 .ZERO_INIT_WORDS(0),
                 .COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+                .BANK_ROW_SWIZZLE(DDR3_BANK_ROW_SWIZZLE),
                 .TIMING_MODEL(MEMORY_TIMING_MODEL)
             ) u_ddr3 (
                 .clk_i(clk_i),

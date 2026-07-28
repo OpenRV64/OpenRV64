@@ -30,6 +30,7 @@ include scripts/make/icache.mk
 include scripts/make/lz4.mk
 include scripts/make/spec-test.mk
 include scripts/make/pagefree.mk
+include scripts/make/blake2s.mk
 include scripts/make/prefetch-suite.mk
 include scripts/make/prefetch-builds.mk
 include scripts/make/fence.mk

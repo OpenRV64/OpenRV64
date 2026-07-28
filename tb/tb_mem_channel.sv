@@ -650,7 +650,22 @@ module tb_mem_channel;
         reg launch_write [0:4];
         reg [63:0] adaptive_conflicts_before;
         reg [63:0] adaptive_empty_before;
+        reg [2:0] swizzle_bank_base;
+        reg [2:0] swizzle_bank_256k;
         begin
+            // A 256 KiB delta changes row bit 1 but not the raw RoRaBaCo
+            // bank/rank fields.  The row/bank XOR must steer it elsewhere.
+            ddr3_cmd_valid = 1'b0;
+            ddr3_cmd_addr = 32'h0000_0000;
+            #1;
+            swizzle_bank_base = u_ddr3.u_timing.incoming_bank;
+            ddr3_cmd_addr = 32'h0004_0000;
+            #1;
+            swizzle_bank_256k = u_ddr3.u_timing.incoming_bank;
+            if (swizzle_bank_base == swizzle_bank_256k)
+                $fatal(1,
+                    "DDR3 row/bank swizzle did not break 256 KiB alias");
+
             // Same-rank read-to-write.  With equal CL/CWL, gem5's
             // tBURST+tRTW command gap is also the data-start gap: 8 ns after
             // controller-clock ceiling.
@@ -737,8 +752,8 @@ module tb_mem_channel;
                     launch_cycle[1] - launch_cycle[0]);
 
             // Same-direction rank switch is tBURST+tCS = 7.5 ns, rounded to
-            // eight 1 ns controller cycles.  Bit 16 is the rank selector for
-            // the DDR3 RoRaBaCo map.
+            // eight 1 ns controller cycles.  Bit 16 remains the rank selector
+            // after the bank-only row XOR.
             ddr3_cmd_valid = 1'b1;
             ddr3_cmd_write = 1'b0;
             ddr3_cmd_addr = 32'h0000_c000;
@@ -782,12 +797,12 @@ module tb_mem_channel;
                 u_ddr3.u_timing.perf_row_empty_commands_q;
             ddr3_cmd_valid = 1'b1;
             ddr3_cmd_write = 1'b0;
-            ddr3_cmd_addr = 32'h0003_e000;
+            ddr3_cmd_addr = 32'h0003_c000;
             ddr3_cmd_tag = 8'h87;
             if (!ddr3_cmd_ready)
                 $fatal(1, "DDR3 adaptive row-0 read was not accepted");
             tick();
-            ddr3_cmd_addr = 32'h0005_e000;
+            ddr3_cmd_addr = 32'h0005_a000;
             ddr3_cmd_tag = 8'h88;
             if (!ddr3_cmd_ready)
                 $fatal(1, "DDR3 adaptive row-1 read was not accepted");
@@ -1290,10 +1305,11 @@ module tb_mem_channel;
         // cycle, and the DDR3 preset adds 10 ns frontend plus 10 ns backend
         // controller/PHY latency.  Observed response latencies are therefore
         // 54 ns, 40 ns, and 68 ns.
-        // The third access selects another row in the same bank and pays tRP.
+        // The third access selects another row with raw bank 1 so the row XOR
+        // maps it back to the first access's timing bank and charges tRP.
         issue_ddr3_request(32'h0000_1000, 8'd64, ddr3_miss_latency);
         issue_ddr3_request(32'h0000_1040, 8'd64, ddr3_hit_latency);
-        issue_ddr3_request(32'h0002_1000, 8'd64, ddr3_conflict_latency);
+        issue_ddr3_request(32'h0002_3000, 8'd64, ddr3_conflict_latency);
         if ((ddr3_miss_latency != 54) ||
             (ddr3_hit_latency != 40) ||
             (ddr3_conflict_latency != 68))
@@ -1301,7 +1317,7 @@ module tb_mem_channel;
                 "DDR3 latency mismatch: miss=%0d hit=%0d conflict=%0d",
                 ddr3_miss_latency, ddr3_hit_latency,
                 ddr3_conflict_latency);
-        issue_ddr3_request(32'h0002_1040, 16'd128,
+        issue_ddr3_request(32'h0002_3040, 16'd128,
                            ddr3_two_burst_latency);
         // A 128-byte row hit consumes two BL8 transfers separated by the
         // shared-bus scheduler handoff; it cannot collapse to one delay.

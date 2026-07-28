@@ -23,6 +23,7 @@ module openrv64_retire_3p #(
     input  wire [3*64-1:0]              queue_trace_id_i,
     output wire [2:0]                   queue_accept_o,
 
+    input  wire                         csr_write_ready_i,
     input  wire                         irq_pending_i,
     input  wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause_i,
 
@@ -104,12 +105,21 @@ module openrv64_retire_3p #(
         1*RESULT_WIDTH + RESULT_HALT];
     wire halt2 = queue_result_i[
         2*RESULT_WIDTH + RESULT_HALT];
+    wire csr_pending0 = queue_valid_i[0] && !exception0 &&
+        queue_result_i[0*RESULT_WIDTH + RESULT_CSR_WRITE];
+    wire csr_pending1 = queue_valid_i[1] && !exception1 &&
+        queue_result_i[1*RESULT_WIDTH + RESULT_CSR_WRITE];
+    wire csr_pending2 = queue_valid_i[2] && !exception2 &&
+        queue_result_i[2*RESULT_WIDTH + RESULT_CSR_WRITE];
 
-    wire accept0 = queue_valid_i[0];
+    wire accept0 = queue_valid_i[0] &&
+                   (!csr_pending0 || csr_write_ready_i);
     wire accept1 = queue_valid_i[1] && accept0 &&
-                   !exception0 && !halt0 && !hard0;
+                   !exception0 && !halt0 && !hard0 &&
+                   (!csr_pending1 || csr_write_ready_i);
     wire accept2 = queue_valid_i[2] && accept1 &&
-                   !exception1 && !halt1 && !hard1;
+                   !exception1 && !halt1 && !hard1 &&
+                   (!csr_pending2 || csr_write_ready_i);
     assign queue_accept_o = {accept2, accept1, accept0};
 
     wire arch0 = accept0 && !exception0;
@@ -171,12 +181,16 @@ module openrv64_retire_3p #(
         end
     endgenerate
 
-    wire csr_write0 = arch0 && queue_result_i[
-        0*RESULT_WIDTH + RESULT_CSR_WRITE];
-    wire csr_write1 = arch1 && queue_result_i[
-        1*RESULT_WIDTH + RESULT_CSR_WRITE];
-    wire csr_write2 = arch2 && queue_result_i[
-        2*RESULT_WIDTH + RESULT_CSR_WRITE];
+    // csr_write_o is a held request, not merely an acceptance pulse.  A slow
+    // CSR unit may lower csr_write_ready_i, consume this stable request, and
+    // let the hard-order retirement entry commit only after its work is done.
+    wire csr_write0 = csr_pending0;
+    wire csr_write1 = csr_pending1 && queue_valid_i[0] &&
+                      !exception0 && !halt0 && !hard0;
+    wire csr_write2 = csr_pending2 && queue_valid_i[0] &&
+                      queue_valid_i[1] &&
+                      !exception0 && !halt0 && !hard0 &&
+                      !exception1 && !halt1 && !hard1;
     assign csr_write_o = csr_write0 || csr_write1 || csr_write2;
     assign csr_addr_o = csr_write0 ? queue_result_i[
         0*RESULT_WIDTH + RESULT_CSR_ADDR +:

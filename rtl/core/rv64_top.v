@@ -386,6 +386,11 @@ module openrv64_rv64_top #(
     wire csr_pmp_instr_allow;
     wire csr_pmp_data_allow;
     wire csr_pmp_bus_allow;
+    wire csr_pmp_busy;
+    wire csr_satp_busy;
+    wire csr_hpm_busy;
+    wire csr_serial_busy =
+        csr_pmp_busy || csr_satp_busy || csr_hpm_busy;
     wire unused_legacy_pmp_allow = csr_pmp_instr_allow &&
                                    csr_pmp_data_allow;
     wire core_mem_valid;
@@ -791,6 +796,10 @@ module openrv64_rv64_top #(
         .csr_writable_o(exec_csr_writable),
         .csr_write_i(exec_csr_write),
         .csr_wdata_i(exec_csr_wdata),
+        .csr_write_ready_o(),
+        .csr_pmp_busy_o(csr_pmp_busy),
+        .csr_satp_busy_o(csr_satp_busy),
+        .csr_hpm_busy_o(csr_hpm_busy),
         .trap_enter_i(trap_enter),
         .trap_interrupt_i(trap_interrupt),
         .trap_cause_i(trap_cause),
@@ -1033,6 +1042,7 @@ module openrv64_rv64_top #(
         .csr_rdata_i(exec_csr_rdata),
         .csr_valid_i(exec_csr_valid),
         .csr_writable_i(exec_csr_writable),
+        .csr_busy_i(csr_serial_busy),
         .csr_write_o(exec_csr_write),
         .csr_wdata_o(exec_csr_wdata),
         .mem_valid_o(exec_mem_valid),
@@ -1139,7 +1149,10 @@ module openrv64_rv64_top #(
         .complete_ready_3p_i(3'b000)
     );
 
-    assign exec_wb_clear = 1'b1;
+    // Deliberately slow PMPADDR and SATP writes have already left execute when
+    // their sequencers start.  Hold retirement and younger issue until their
+    // atomic commits complete.
+    assign exec_wb_clear = !csr_serial_busy;
 
     openrv64_retire u_retire (
         .valid_i(exec_wb_valid),

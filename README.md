@@ -20,6 +20,7 @@ Next steps:
 8. We make it rain with prefetches, I have confidence gating in some branch predictors, but the whole algorithm needs tuning.
 9. satp is a massive hammer, as is sfence.vma, need to do a better job on pruning vs absolute desolation.
 10. l2 latency at 11 l2u is too aggressive, not viable in pd.
+11. 0 DFT whatsoever, we need that.
 
 Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
 

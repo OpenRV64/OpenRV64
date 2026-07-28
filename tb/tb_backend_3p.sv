@@ -138,6 +138,7 @@ module tb_backend_3p #(
         .decode_uses_rs2_i(decode_uses_rs2),
         .csr_addr_o(csr_addr), .csr_rdata_i(csr_rdata),
         .csr_valid_i(csr_valid), .csr_writable_i(csr_writable),
+        .csr_write_ready_i(1'b1),
         .csr_write_o(csr_write), .csr_write_addr_o(csr_write_addr),
         .csr_wdata_o(csr_wdata),
         .mem_valid_o(mem_valid), .mem_ready_i(mem_ready),

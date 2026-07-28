@@ -65,6 +65,7 @@ module openrv64_exec_top_1p #(
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
     input  wire                         csr_valid_i,
     input  wire                         csr_writable_i,
+    input  wire                         csr_busy_i,
     output wire                         csr_write_o,
     output wire [`RV64_XLEN-1:0]        csr_wdata_o,
 
@@ -182,6 +183,21 @@ module openrv64_exec_top_1p #(
                            system_i &&
                            (system_funct3 != `RV64_FUNCT3_SYSTEM_PRIV) &&
                            !illegal_i;
+    wire ex_hpm_selected = ex_csr_selected && (
+        (system_csr_addr == `RV64_CSR_SCOUNTEREN) ||
+        (system_csr_addr == `RV64_CSR_MCOUNTEREN) ||
+        (system_csr_addr == `RV64_CSR_MCOUNTINHIBIT) ||
+        (system_csr_addr == `RV64_CSR_MCYCLE) ||
+        (system_csr_addr == `RV64_CSR_MINSTRET) ||
+        (system_csr_addr == `RV64_CSR_CYCLE) ||
+        (system_csr_addr == `RV64_CSR_TIME) ||
+        (system_csr_addr == `RV64_CSR_INSTRET) ||
+        ((system_csr_addr >= `RV64_CSR_MHPMCOUNTER3) &&
+         (system_csr_addr <= `RV64_CSR_MHPMCOUNTER31)) ||
+        ((system_csr_addr >= `RV64_CSR_MHPMEVENT3) &&
+         (system_csr_addr <= `RV64_CSR_MHPMEVENT31)) ||
+        ((system_csr_addr >= `RV64_CSR_HPMCOUNTER3) &&
+         (system_csr_addr <= `RV64_CSR_HPMCOUNTER31)));
     wire ex_fence_selected = valid_i && fence_i && !illegal_i;
     wire ex_mret = valid_i && system_i && (instr_i == `RV64_INSTR_MRET);
     wire ex_sret = valid_i && system_i && (instr_i == `RV64_INSTR_SRET);
@@ -374,6 +390,10 @@ module openrv64_exec_top_1p #(
                              (ex_mem_is_atomic && !atomic_is_lr &&
                               atomic_page_fault));
     reg serializing_q;
+    reg hpm_delay_active_q;
+    reg hpm_delay_done_q;
+    reg [1:0] hpm_delay_count_q;
+    wire hpm_delay_ready = !ex_hpm_selected || hpm_delay_done_q;
     wire ex_serializing = valid_i &&
                            ((system_i && !ex_csr_selected) ||
                             illegal_i ||
@@ -386,15 +406,40 @@ module openrv64_exec_top_1p #(
     wire serial_issue_ready = pipeline_empty && !serializing_q;
     wire ex_ready = ex_mem_in_clear &&
                     !serializing_q &&
+                    !csr_busy_i &&
+                    hpm_delay_ready &&
                     (!ex_requires_drain || serial_issue_ready) &&
                     (!ex_m_selected ||
                      (alu_m_issued_q && alu_m_result_valid));
     wire serial_issue = ex_mem_in_valid && ex_serializing;
 
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hpm_delay_active_q <= 1'b0;
+            hpm_delay_done_q <= 1'b0;
+            hpm_delay_count_q <= 2'd0;
+        end else if (!ex_hpm_selected) begin
+            hpm_delay_active_q <= 1'b0;
+            hpm_delay_done_q <= 1'b0;
+            hpm_delay_count_q <= 2'd0;
+        end else if (hpm_delay_active_q) begin
+            if (hpm_delay_count_q == 2'd2) begin
+                hpm_delay_active_q <= 1'b0;
+                hpm_delay_done_q <= 1'b1;
+            end else begin
+                hpm_delay_count_q <= hpm_delay_count_q + 1'b1;
+            end
+        end else if (!hpm_delay_done_q) begin
+            hpm_delay_active_q <= 1'b1;
+            hpm_delay_count_q <= 2'd0;
+        end
+    end
+
     assign alu_m_start = ex_m_selected &&
                          !alu_m_issued_q &&
                          alu_m_ready &&
                          ex_mem_in_clear &&
+                         !csr_busy_i &&
                          !serializing_q;
 
     openrv64_exec_alu_rv64i u_alu_base_exec (
@@ -477,14 +522,17 @@ module openrv64_exec_top_1p #(
     assign csr_wdata_o = csr_unit_wdata;
 
     assign clear_o = ex_ready;
-    assign alu_ready_o = ex_mem_in_clear && alu_m_ready && !serializing_q;
-    assign lsu_ready_o = ex_mem_in_clear && !serializing_q;
-    assign br_ready_o = ex_mem_in_clear && !serializing_q;
-    assign system_ready_o = ex_mem_in_clear && serial_issue_ready;
+    assign alu_ready_o = ex_mem_in_clear && alu_m_ready &&
+                         !serializing_q && !csr_busy_i;
+    assign lsu_ready_o = ex_mem_in_clear && !serializing_q && !csr_busy_i;
+    assign br_ready_o = ex_mem_in_clear && !serializing_q && !csr_busy_i;
+    assign system_ready_o = ex_mem_in_clear && serial_issue_ready &&
+                            !csr_busy_i && hpm_delay_ready;
     assign alu_m_result_ready = ex_m_selected &&
                                 alu_m_issued_q &&
                                 alu_m_result_valid &&
                                 ex_mem_in_clear &&
+                                !csr_busy_i &&
                                 !serializing_q;
     assign ex_mem_in_valid = valid_i && ex_ready;
     assign forward_ex_valid_o = ENABLE_FORWARDING &&
@@ -756,6 +804,7 @@ module openrv64_exec_top_1p #(
     assign trace_mem_pc_o = ex_mem_pc;
     assign trace_mem_instr_o = ex_mem_instr;
     assign trace_serializing_o = serializing_q ||
+                                 csr_busy_i ||
                                  (valid_i && ex_requires_drain &&
                                   !serial_issue_ready);
 

@@ -279,6 +279,7 @@ module tb_top_3p_soc #(
     parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
     parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
     parameter integer DDR3_MAX_BURST_TRAIN_BURSTS = 8,
+    parameter integer DDR3_BANK_ROW_SWIZZLE = 1,
     parameter integer MEMORY_TIMING_MODEL = 0
 );
     reg clk;
@@ -784,6 +785,8 @@ module tb_top_3p_soc #(
     integer cycles;
     integer max_cycles;
     integer retired;
+    integer progress_interval_cycles;
+    integer progress_next_cycle;
     integer ccx_requests;
     integer ccx_fetch_reads;
     integer ccx_data_reads;
@@ -1723,6 +1726,7 @@ module tb_top_3p_soc #(
                 .COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
                 .MAX_BURST_TRAIN_BURSTS(
                     DDR3_MAX_BURST_TRAIN_BURSTS),
+                .BANK_ROW_SWIZZLE(DDR3_BANK_ROW_SWIZZLE),
                 .TIMING_MODEL(MEMORY_TIMING_MODEL)
             ) u_ddr3 (
                 .clk_i(clk),
@@ -3039,6 +3043,8 @@ module tb_top_3p_soc #(
         done_pc = 0;
         done_pc_valid = 1'b0;
         retired = 0;
+        progress_interval_cycles = 0;
+        progress_next_cycle = 0;
         ccx_requests = 0;
         ccx_fetch_reads = 0;
         ccx_data_reads = 0;
@@ -3264,6 +3270,10 @@ module tb_top_3p_soc #(
             expected_a0_valid = 1'b1;
         if ($value$plusargs("done_pc=%h", done_pc))
             done_pc_valid = 1'b1;
+        if ($value$plusargs("progress_cycles=%d",
+                            progress_interval_cycles) &&
+            (progress_interval_cycles > 0))
+            progress_next_cycle = progress_interval_cycles;
 
         repeat (5) @(posedge clk);
         rst_n = 1'b1;
@@ -3272,6 +3282,15 @@ module tb_top_3p_soc #(
             @(posedge clk);
             #1;
             retired = retired + dut.backend_retire_count;
+            if ((progress_interval_cycles > 0) &&
+                ((cycles + 1) >= progress_next_cycle)) begin
+                $display(
+                    "SIM_PROGRESS cycles=%0d retired=%0d IPC=%0.4f pc=%016h",
+                    cycles + 1, retired,
+                    $itor(retired) / $itor(cycles + 1), dbg_pc);
+                progress_next_cycle =
+                    progress_next_cycle + progress_interval_cycles;
+            end
             issued_this_cycle =
                 dut.backend_issue_valid[0] +
                 dut.backend_issue_valid[1] +
@@ -4300,6 +4319,15 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[12],
                 dut.u_backend.u_gpr.regs[13],
                 dut.u_backend.u_gpr.regs[14]);
+        if ($test$plusargs("report_blake2s"))
+            $display(
+                "PERF_BLAKE2S cycles=%0d instructions=%0d calls=%0d blocks_per_call=%0d total_blocks=%0d checksum=%08h",
+                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.u_gpr.regs[11],
+                dut.u_backend.u_gpr.regs[12],
+                dut.u_backend.u_gpr.regs[13],
+                dut.u_backend.u_gpr.regs[14],
+                dut.u_backend.u_gpr.regs[15][31:0]);
         $display(
             "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
             ccx_requests, ccx_fetch_reads, ccx_data_reads,
@@ -4328,12 +4356,13 @@ module tb_top_3p_soc #(
             magic_ccx_l1d_reads);
         if (DDR3_ENABLE != 0)
             $display(
-                "PERF_MEMORY timing_model=%0d commands=%0d max_command_queue=%0d max_timing_owners=%0d max_l2_mshrs=%0d read_queue_depth=%0d write_queue_depth=%0d command_queue_depth=%0d max_burst_train_bursts=%0d",
+                "PERF_MEMORY timing_model=%0d commands=%0d max_command_queue=%0d max_timing_owners=%0d max_l2_mshrs=%0d read_queue_depth=%0d write_queue_depth=%0d command_queue_depth=%0d max_burst_train_bursts=%0d bank_row_swizzle=%0d",
                 MEMORY_TIMING_MODEL,
                 ddr3_commands, max_ddr3_queued, max_timing_owners,
                 max_l2_mshrs, DDR3_READ_QUEUE_DEPTH,
                 DDR3_WRITE_QUEUE_DEPTH, DDR3_COMMAND_QUEUE_DEPTH,
-                DDR3_MAX_BURST_TRAIN_BURSTS);
+                DDR3_MAX_BURST_TRAIN_BURSTS,
+                DDR3_BANK_ROW_SWIZZLE);
         if (DDR3_ENABLE != 0) begin
             $display(
                 "PERF_MEMORY_CHANNEL read_bursts=%0d write_bursts=%0d read_beats_requested=%0d read_beats_returned=%0d write_beats_requested=%0d write_beats_received=%0d timing_read_commands=%0d timing_write_commands=%0d",

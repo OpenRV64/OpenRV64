@@ -38,6 +38,7 @@ module openrv64_platform #(
     parameter int unsigned DDR3_READ_QUEUE_DEPTH = 8,
     parameter int unsigned DDR3_WRITE_QUEUE_DEPTH = 8,
     parameter int unsigned DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter bit DDR3_BANK_ROW_SWIZZLE = 1'b1,
     parameter int unsigned MEMORY_TIMING_MODEL = 0,
     // Board targets with physical memory controllers can move the scalar RAM
     // and native PTW CCX endpoint outside this board-independent platform.
@@ -521,6 +522,7 @@ module openrv64_platform #(
                 .DDR3_READ_QUEUE_DEPTH(DDR3_READ_QUEUE_DEPTH),
                 .DDR3_WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
                 .DDR3_COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+                .DDR3_BANK_ROW_SWIZZLE(DDR3_BANK_ROW_SWIZZLE),
                 .MEMORY_TIMING_MODEL(MEMORY_TIMING_MODEL)
             ) u_ccx_l2 (
                 .clk_i(clk_i),

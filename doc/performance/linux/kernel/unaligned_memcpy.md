@@ -70,6 +70,13 @@ branches and exposing independent byte operations materially improves this
 core even though its average IPC falls. It does not establish the best unroll
 factor across RISC-V CPUs.
 
+Both measurements used `make bench-memcpy-sweep` on the same dirty OpenRV64
+RTL snapshot and simulator configuration; only the fallback body and its
+descriptive report label changed. Each completed all 162 size/alignment reports
+and the final byte comparison with `MEMCPYOK`. The timed span includes the
+function call and final ordering fence. The backing memory is the functional
+fixed-latency AXI model, not the timed DDR3 model.
+
 ## Proposed patch
 
 The patch copies eight bytes per main-loop iteration and leaves a zero-to-seven
@@ -137,8 +144,11 @@ should be compared with interleaved load/store and eight-load/eight-store
 variants on real CPUs before submission.
 
 When stacked on the local native-misaligned-access change, the same body should
-replace label `10`, with fresh numeric labels because that change already uses
-labels `8`, `9`, and `11`.
+replace label `10`. Numeric local labels may legally be reused, although
+renumbering them makes the merged result easier to review. The changes are
+logically independent but overlap the same trailing-copy hunk, so parallel
+submissions will require a rebase or manual conflict resolution if either is
+accepted first.
 
 ## Correctness constraints
 

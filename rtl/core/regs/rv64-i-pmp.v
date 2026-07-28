@@ -12,6 +12,8 @@ module openrv64_rv64i_pmp (
     output reg                              csr_writable_o,
     input  wire                             csr_write_i,
     input  wire [`RV64_XLEN-1:0]           csr_wdata_i,
+    output wire                             csr_write_ready_o,
+    output wire                             csr_busy_o,
 
     input  wire [`RV64_PRIV_WIDTH-1:0]     instr_priv_mode_i,
     input  wire [`RV64_PRIV_WIDTH-1:0]     data_priv_mode_i,
@@ -56,6 +58,24 @@ module openrv64_rv64i_pmp (
     reg [64:0] pmp_region_high_q [0:PMP_ENTRIES-1];
     wire [PMP_REGION_LOW_BITS-1:0] pmp_region_low_state;
     wire [PMP_REGION_HIGH_BITS-1:0] pmp_region_high_state;
+
+    // PMPADDR writes are intentionally glacial.  The trailing-one scan and
+    // the high-bound increment each consume exactly one source bit per cycle.
+    // The architectural address and normalized bounds remain unchanged until
+    // the final increment bit commits all three arrays together.
+    reg pmpaddr_busy_q;
+    reg pmpaddr_add_phase_q;
+    reg pmpaddr_done_q;
+    reg [3:0] pmpaddr_entry_q;
+    reg [PMP_ADDR_WIDTH-1:0] pmpaddr_pending_q;
+    reg [PMP_ADDR_WIDTH-1:0] pmpaddr_scan_q;
+    reg [6:0] pmpaddr_bit_count_q;
+    reg [63:0] pmpaddr_address_q;
+    reg [63:0] pmpaddr_mask_q;
+    reg [63:0] pmpaddr_low_q;
+    reg [64:0] pmpaddr_add_source_q;
+    reg [64:0] pmpaddr_high_work_q;
+    reg pmpaddr_add_carry_q;
 
     integer i;
     integer read_entry;
@@ -110,24 +130,34 @@ module openrv64_rv64i_pmp (
 
     wire [PMP_ADDR_WIDTH-1:0] csr_pmpaddr_value =
         csr_wdata_i[PMP_ADDR_WIDTH-1:0];
-    wire [PMP_ADDR_WIDTH-1:0] csr_napot_encoded =
-        csr_pmpaddr_value |
-        {{(PMP_ADDR_WIDTH-PMP_NAPOT_FORCED_ONES){1'b0}},
-         {PMP_NAPOT_FORCED_ONES{1'b1}}};
-    wire [PMP_ADDR_WIDTH-1:0] csr_napot_changed =
-        csr_napot_encoded ^
-        (csr_napot_encoded +
-         {{(PMP_ADDR_WIDTH-1){1'b0}}, 1'b1});
-    wire [63:0] csr_napot_mask = {
-        {(64-PMP_ADDR_WIDTH-2){1'b0}}, csr_napot_changed, 2'b11
+    wire csr_pmpaddr_match =
+        (csr_addr_i >= `RV64_CSR_PMPADDR0) &&
+        (csr_addr_i < (`RV64_CSR_PMPADDR0 + PMP_ENTRIES));
+    wire [3:0] csr_pmpaddr_entry =
+        csr_addr_i - `RV64_CSR_PMPADDR0;
+    wire csr_pmpaddr_locked = csr_pmpaddr_match &&
+        pmpcfg_q[(csr_pmpaddr_entry * 8) + `RV64_PMP_CFG_L_BIT];
+    wire pmpaddr_start = csr_write_i && csr_pmpaddr_match &&
+        !csr_pmpaddr_locked && !pmpaddr_busy_q && !pmpaddr_done_q;
+    wire [63:0] pmpaddr_scan_mask_next =
+        {pmpaddr_mask_q[62:0], 1'b1};
+    wire pmpaddr_add_sum =
+        pmpaddr_add_source_q[0] ^ pmpaddr_add_carry_q;
+    wire pmpaddr_add_carry_next =
+        pmpaddr_add_source_q[0] & pmpaddr_add_carry_q;
+    wire [64:0] pmpaddr_high_next = {
+        pmpaddr_add_sum, pmpaddr_high_work_q[64:1]
     };
-    wire [63:0] csr_napot_address = {
-        {(64-PMP_ADDR_WIDTH-2){1'b0}}, csr_pmpaddr_value, 2'b00
-    };
-    wire [63:0] csr_napot_low =
-        csr_napot_address & ~csr_napot_mask;
-    wire [64:0] csr_napot_high =
-        {1'b0, csr_napot_low} + {1'b0, csr_napot_mask} + 65'd1;
+
+    assign csr_busy_o = pmpaddr_busy_q;
+    // A held 3P retirement request becomes ready only after the atomic
+    // commit.  Locked PMPADDR writes and ordinary PMPCFG writes complete
+    // immediately.  The 1P pipeline separately uses csr_busy_o to hold WB.
+    assign csr_write_ready_o =
+        !csr_write_i ? 1'b1 :
+        (csr_pmpaddr_match && !csr_pmpaddr_locked) ?
+            pmpaddr_done_q :
+            !pmpaddr_busy_q;
 
     function pmp_allow;
         input [`RV64_XLEN-1:0] access_addr;
@@ -251,35 +281,104 @@ module openrv64_rv64i_pmp (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pmpcfg_q <= {PMP_CFG_BITS{1'b0}};
+            pmpaddr_busy_q <= 1'b0;
+            pmpaddr_add_phase_q <= 1'b0;
+            pmpaddr_done_q <= 1'b0;
+            pmpaddr_entry_q <= 4'd0;
+            pmpaddr_pending_q <= {PMP_ADDR_WIDTH{1'b0}};
+            pmpaddr_scan_q <= {PMP_ADDR_WIDTH{1'b0}};
+            pmpaddr_bit_count_q <= 7'd0;
+            pmpaddr_address_q <= 64'd0;
+            pmpaddr_mask_q <= 64'd0;
+            pmpaddr_low_q <= 64'd0;
+            pmpaddr_add_source_q <= 65'd0;
+            pmpaddr_high_work_q <= 65'd0;
+            pmpaddr_add_carry_q <= 1'b0;
             for (i = 0; i < PMP_ENTRIES; i = i + 1) begin
                 pmpaddr_q[i] <= {PMP_ADDR_WIDTH{1'b0}};
                 pmp_region_low_q[i] <= 64'd0;
                 pmp_region_high_q[i] <= 65'd4096;
             end
-        end else if (csr_write_i) begin
-            if (csr_addr_i == `RV64_CSR_PMPCFG0) begin
+        end else begin
+            if (!csr_write_i || pmpaddr_done_q)
+                pmpaddr_done_q <= 1'b0;
+
+            if (pmpaddr_busy_q) begin
+                if (!pmpaddr_add_phase_q) begin
+                    // Include the first zero above the trailing-one run in
+                    // the mask.  A full-width all-one value terminates at the
+                    // implemented physical-address limit.
+                    if (!pmpaddr_scan_q[0] ||
+                        (pmpaddr_bit_count_q ==
+                         (PMP_ADDR_WIDTH - 1))) begin
+                        pmpaddr_low_q <= pmpaddr_address_q &
+                                         ~pmpaddr_scan_mask_next;
+                        pmpaddr_add_source_q <= {
+                            1'b0,
+                            pmpaddr_address_q |
+                            pmpaddr_scan_mask_next
+                        };
+                        pmpaddr_high_work_q <= 65'd0;
+                        pmpaddr_add_carry_q <= 1'b1;
+                        pmpaddr_bit_count_q <= 7'd0;
+                        pmpaddr_add_phase_q <= 1'b1;
+                    end else begin
+                        pmpaddr_scan_q <= {
+                            1'b0, pmpaddr_scan_q[PMP_ADDR_WIDTH-1:1]
+                        };
+                        pmpaddr_mask_q <= pmpaddr_scan_mask_next;
+                        pmpaddr_bit_count_q <= pmpaddr_bit_count_q + 1'b1;
+                    end
+                end else begin
+                    pmpaddr_add_source_q <= {
+                        1'b0, pmpaddr_add_source_q[64:1]
+                    };
+                    pmpaddr_high_work_q <= pmpaddr_high_next;
+                    pmpaddr_add_carry_q <= pmpaddr_add_carry_next;
+                    if (pmpaddr_bit_count_q == 7'd64) begin
+                        pmpaddr_q[pmpaddr_entry_q] <= pmpaddr_pending_q;
+                        pmp_region_low_q[pmpaddr_entry_q] <=
+                            pmpaddr_low_q;
+                        pmp_region_high_q[pmpaddr_entry_q] <=
+                            pmpaddr_high_next;
+                        pmpaddr_busy_q <= 1'b0;
+                        pmpaddr_add_phase_q <= 1'b0;
+                        pmpaddr_done_q <= 1'b1;
+                    end else begin
+                        pmpaddr_bit_count_q <= pmpaddr_bit_count_q + 1'b1;
+                    end
+                end
+            end else if (pmpaddr_start) begin
+                pmpaddr_busy_q <= 1'b1;
+                pmpaddr_add_phase_q <= 1'b0;
+                pmpaddr_entry_q <= csr_pmpaddr_entry;
+                pmpaddr_pending_q <= csr_pmpaddr_value;
+                pmpaddr_scan_q <=
+                    csr_pmpaddr_value |
+                    {{(PMP_ADDR_WIDTH-PMP_NAPOT_FORCED_ONES){1'b0}},
+                     {PMP_NAPOT_FORCED_ONES{1'b1}}};
+                pmpaddr_bit_count_q <= 7'd0;
+                pmpaddr_address_q <= {
+                    {(64-PMP_ADDR_WIDTH-2){1'b0}},
+                    csr_pmpaddr_value, 2'b00
+                };
+                pmpaddr_mask_q <= 64'b11;
+            end else if (csr_write_i && !pmpaddr_done_q &&
+                         (csr_addr_i == `RV64_CSR_PMPCFG0)) begin
                 for (i = 0; i < 8; i = i + 1) begin
                     if (!pmpcfg_q[(i * 8) +
                                   `RV64_PMP_CFG_L_BIT])
                         pmpcfg_q[(i * 8) +: 8] <=
                             pmpcfg_warl(csr_wdata_i[(i * 8) +: 8]);
                 end
-            end else if (csr_addr_i == `RV64_CSR_PMPCFG2) begin
+            end else if (csr_write_i && !pmpaddr_done_q &&
+                         (csr_addr_i == `RV64_CSR_PMPCFG2)) begin
                 for (i = 8; i < PMP_ENTRIES; i = i + 1) begin
                     if (!pmpcfg_q[(i * 8) +
                                   `RV64_PMP_CFG_L_BIT])
                         pmpcfg_q[(i * 8) +: 8] <=
                             pmpcfg_warl(
                                 csr_wdata_i[((i - 8) * 8) +: 8]);
-                end
-            end
-
-            for (i = 0; i < PMP_ENTRIES; i = i + 1) begin
-                if ((csr_addr_i == (`RV64_CSR_PMPADDR0 + i)) &&
-                    !pmpcfg_q[(i * 8) + `RV64_PMP_CFG_L_BIT]) begin
-                    pmpaddr_q[i] <= csr_pmpaddr_value;
-                    pmp_region_low_q[i] <= csr_napot_low;
-                    pmp_region_high_q[i] <= csr_napot_high;
                 end
             end
         end

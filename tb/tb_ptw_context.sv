@@ -423,7 +423,7 @@ module tb_ptw_context;
         rst_n = 1'b1;
 
         cycles = 0;
-        while (!dbg_halted && cycles < 200) begin
+        while (!dbg_halted && cycles < 260) begin
             @(posedge clk);
             cycles = cycles + 1;
         end

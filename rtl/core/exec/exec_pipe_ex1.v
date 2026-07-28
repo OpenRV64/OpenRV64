@@ -92,6 +92,11 @@ module openrv64_exec_pipe_ex1 #(
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] complete_slot_q;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_q;
+    reg hpm_pending_q;
+    reg [1:0] hpm_count_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] hpm_id_q;
+    reg [RETIRE_SLOT_WIDTH-1:0] hpm_slot_q;
+    reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] hpm_payload_q;
 
     assign {
         trace_id,
@@ -210,6 +215,21 @@ module openrv64_exec_pipe_ex1 #(
     wire csr_selected = system &&
                         (system_funct3 != `RV64_FUNCT3_SYSTEM_PRIV) &&
                         !illegal;
+    wire csr_hpm_selected = csr_selected && (
+        (system_csr_addr == `RV64_CSR_SCOUNTEREN) ||
+        (system_csr_addr == `RV64_CSR_MCOUNTEREN) ||
+        (system_csr_addr == `RV64_CSR_MCOUNTINHIBIT) ||
+        (system_csr_addr == `RV64_CSR_MCYCLE) ||
+        (system_csr_addr == `RV64_CSR_MINSTRET) ||
+        (system_csr_addr == `RV64_CSR_CYCLE) ||
+        (system_csr_addr == `RV64_CSR_TIME) ||
+        (system_csr_addr == `RV64_CSR_INSTRET) ||
+        ((system_csr_addr >= `RV64_CSR_MHPMCOUNTER3) &&
+         (system_csr_addr <= `RV64_CSR_MHPMCOUNTER31)) ||
+        ((system_csr_addr >= `RV64_CSR_MHPMEVENT3) &&
+         (system_csr_addr <= `RV64_CSR_MHPMEVENT31)) ||
+        ((system_csr_addr >= `RV64_CSR_HPMCOUNTER3) &&
+         (system_csr_addr <= `RV64_CSR_HPMCOUNTER31)));
     wire csr_ready;
     wire csr_illegal;
     wire csr_write;
@@ -314,7 +334,8 @@ module openrv64_exec_pipe_ex1 #(
         csr_wdata
     };
 
-    assign issue_ready_o = !complete_valid_q || complete_ready_i;
+    assign issue_ready_o =
+        (!complete_valid_q || complete_ready_i) && !hpm_pending_q;
     assign complete_valid_o = complete_valid_q;
     assign complete_id_o = complete_id_q;
     assign complete_slot_o = complete_slot_q;
@@ -327,14 +348,39 @@ module openrv64_exec_pipe_ex1 #(
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
                 {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
+            hpm_pending_q <= 1'b0;
+            hpm_count_q <= 2'd0;
+            hpm_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            hpm_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
+            hpm_payload_q <=
+                {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
         end else if (flush_i) begin
             complete_valid_q <= 1'b0;
+            hpm_pending_q <= 1'b0;
         end else begin
             if (complete_valid_q && complete_ready_i) begin
                 complete_valid_q <= 1'b0;
             end
 
-            if (issue_fire) begin
+            if (hpm_pending_q) begin
+                if (hpm_count_q == 2'd2) begin
+                    complete_valid_q <= 1'b1;
+                    complete_id_q <= hpm_id_q;
+                    complete_slot_q <= hpm_slot_q;
+                    complete_payload_q <= hpm_payload_q;
+                    hpm_pending_q <= 1'b0;
+                end else begin
+                    hpm_count_q <= hpm_count_q + 1'b1;
+                end
+            end
+
+            if (issue_fire && csr_hpm_selected) begin
+                hpm_pending_q <= 1'b1;
+                hpm_count_q <= 2'd0;
+                hpm_id_q <= issue_id_i;
+                hpm_slot_q <= issue_slot_i;
+                hpm_payload_q <= completion_data;
+            end else if (issue_fire) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= issue_id_i;
                 complete_slot_q <= issue_slot_i;

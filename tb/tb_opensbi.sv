@@ -32,6 +32,7 @@ module tb_opensbi #(
     parameter integer DDR3_READ_QUEUE_DEPTH = 8,
     parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
     parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
+    parameter integer DDR3_BANK_ROW_SWIZZLE = 1,
     parameter integer MEMORY_TIMING_MODEL = 0,
     parameter bit L1D_PREFETCH_ENABLE = 1'b1,
     parameter integer L1D_PREFETCH_MAX_DISTANCE = 4,
@@ -167,6 +168,11 @@ module tb_opensbi #(
     logic [63:0] perf_retire_no_progress;
     logic [63:0] perf_retire_head_incomplete;
     logic [63:0] perf_retire_completed_behind;
+    logic [63:0] perf_retire_head_block_load;
+    logic [63:0] perf_retire_head_block_store;
+    logic [63:0] perf_retire_head_block_branch;
+    logic [63:0] perf_retire_head_block_barrier;
+    logic [63:0] perf_retire_head_block_alu;
     logic [63:0] perf_lsu_request_wait;
     logic [63:0] perf_barrier_cycles;
     logic [63:0] perf_barrier_entries;
@@ -514,6 +520,7 @@ module tb_opensbi #(
         .DDR3_READ_QUEUE_DEPTH(DDR3_READ_QUEUE_DEPTH),
         .DDR3_WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
         .DDR3_COMMAND_QUEUE_DEPTH(DDR3_COMMAND_QUEUE_DEPTH),
+        .DDR3_BANK_ROW_SWIZZLE(DDR3_BANK_ROW_SWIZZLE),
         .MEMORY_TIMING_MODEL(MEMORY_TIMING_MODEL),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_MAX_DISTANCE(L1D_PREFETCH_MAX_DISTANCE),
@@ -990,6 +997,43 @@ module tb_opensbi #(
                     .u_l1d.demand_mshr_valid_q[1] +
                 dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
                     .u_l1d.demand_mshr_valid_q[2];
+            wire perf_retire_head_mem_read =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_record[
+                        `OPENRV64_RETIRE_ALLOC_MEM_READ_BIT];
+            wire perf_retire_head_mem_write =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_record[
+                        `OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT];
+            wire perf_retire_head_control =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_record[
+                        `OPENRV64_RETIRE_ALLOC_BRANCH_BIT] ||
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_record[
+                        `OPENRV64_RETIRE_ALLOC_JUMP_BIT];
+            wire perf_retire_head_hard =
+                dut.u_core.g_backend_3p.u_core_3p.u_backend
+                    .queue_retire_record[
+                        `OPENRV64_RETIRE_ALLOC_HARD_BIT];
+            // The classes are mutually exclusive and exhaustive.  A
+            // read-modify-write operation is a store; branch/jump is
+            // separated from the broader hard-order class; ALU is the
+            // catch-all for every remaining non-memory instruction.
+            wire perf_retire_head_is_store =
+                perf_retire_head_mem_write;
+            wire perf_retire_head_is_load =
+                !perf_retire_head_is_store &&
+                perf_retire_head_mem_read;
+            wire perf_retire_head_is_branch =
+                !perf_retire_head_is_store &&
+                !perf_retire_head_is_load &&
+                perf_retire_head_control;
+            wire perf_retire_head_is_barrier =
+                !perf_retire_head_is_store &&
+                !perf_retire_head_is_load &&
+                !perf_retire_head_is_branch &&
+                perf_retire_head_hard;
             wire [31:0] perf_retire_instr0 =
                 dut.u_core.g_backend_3p.u_core_3p.u_backend
                     .queue_retire_result[
@@ -1108,6 +1152,21 @@ module tb_opensbi #(
                                  .queue_retire_valid[0]) begin
                             perf_retire_head_incomplete <=
                                 perf_retire_head_incomplete + 1'b1;
+                            if (perf_retire_head_is_store)
+                                perf_retire_head_block_store <=
+                                    perf_retire_head_block_store + 1'b1;
+                            else if (perf_retire_head_is_load)
+                                perf_retire_head_block_load <=
+                                    perf_retire_head_block_load + 1'b1;
+                            else if (perf_retire_head_is_branch)
+                                perf_retire_head_block_branch <=
+                                    perf_retire_head_block_branch + 1'b1;
+                            else if (perf_retire_head_is_barrier)
+                                perf_retire_head_block_barrier <=
+                                    perf_retire_head_block_barrier + 1'b1;
+                            else
+                                perf_retire_head_block_alu <=
+                                    perf_retire_head_block_alu + 1'b1;
                             if (dut.u_core.g_backend_3p.u_core_3p.u_backend
                                     .completed_entry_valid != 0)
                                 perf_retire_completed_behind <=
@@ -1884,6 +1943,26 @@ module tb_opensbi #(
                          perf_retire_completed_behind,
                          perf_lsu_request_wait, perf_barrier_cycles,
                          perf_control_flushes);
+                $display("PERF BROAD RETIRE_HEAD_BLOCK name=%0s load=%0d store=%0d branch=%0d barrier=%0d alu=%0d accounted=%0d",
+                         name,
+                         perf_retire_head_block_load,
+                         perf_retire_head_block_store,
+                         perf_retire_head_block_branch,
+                         perf_retire_head_block_barrier,
+                         perf_retire_head_block_alu,
+                         perf_retire_head_block_load +
+                             perf_retire_head_block_store +
+                             perf_retire_head_block_branch +
+                             perf_retire_head_block_barrier +
+                             perf_retire_head_block_alu);
+                if ((perf_retire_head_block_load +
+                     perf_retire_head_block_store +
+                     perf_retire_head_block_branch +
+                     perf_retire_head_block_barrier +
+                     perf_retire_head_block_alu) !=
+                    perf_retire_head_incomplete)
+                    $fatal(1,
+                        "retirement-head block classification mismatch");
                 $display("PERF BROAD BARRIER name=%0s hard_entries=%0d hard_active_cycles=%0d hard_frontend_block_cycles=%0d fence=%0d fence_rr=%0d fence_rw=%0d fence_wr=%0d fence_ww=%0d fence_io=%0d fence_i=%0d sfence_vma=%0d satp_writes=%0d translation_cycles=%0d store_drain_cycles=%0d fence_with_posted_stores=%0d",
                          name, perf_barrier_entries,
                          perf_barrier_cycles,
@@ -2752,7 +2831,13 @@ module tb_opensbi #(
             perf_dispatch_nonempty, perf_dispatch_no_issue,
             perf_dispatch_full, perf_retire_nonempty,
             perf_retire_no_progress, perf_retire_head_incomplete,
-            perf_retire_completed_behind, perf_lsu_request_wait,
+            perf_retire_completed_behind,
+            perf_retire_head_block_load,
+            perf_retire_head_block_store,
+            perf_retire_head_block_branch,
+            perf_retire_head_block_barrier,
+            perf_retire_head_block_alu,
+            perf_lsu_request_wait,
             perf_barrier_cycles, perf_barrier_entries,
             perf_barrier_frontend_block_cycles,
             perf_fence_retired, perf_fence_rr, perf_fence_rw,

@@ -12,6 +12,8 @@ module tb_rv64i_pmp;
     logic csr_writable;
     logic csr_write;
     logic [`RV64_XLEN-1:0] csr_wdata;
+    logic csr_write_ready;
+    logic csr_busy;
     logic [`RV64_PRIV_WIDTH-1:0] priv_mode;
     logic [`RV64_XLEN-1:0] instr_addr;
     logic instr_allow;
@@ -37,6 +39,8 @@ module tb_rv64i_pmp;
         .csr_writable_o(csr_writable),
         .csr_write_i(csr_write),
         .csr_wdata_i(csr_wdata),
+        .csr_write_ready_o(csr_write_ready),
+        .csr_busy_o(csr_busy),
         .instr_priv_mode_i(priv_mode),
         .data_priv_mode_i(priv_mode),
         .instr_addr_i(instr_addr),
@@ -70,9 +74,10 @@ module tb_rv64i_pmp;
         end
     endtask
 
-    task automatic write_csr;
+    task automatic write_csr_timed;
         input [`RV64_FUNCT12_WIDTH-1:0] addr;
         input [`RV64_XLEN-1:0] data;
+        output integer busy_cycles;
         begin
             @(negedge clk);
             csr_addr = addr;
@@ -81,6 +86,20 @@ module tb_rv64i_pmp;
             @(posedge clk);
             @(negedge clk);
             csr_write = 1'b0;
+            busy_cycles = 0;
+            while (csr_busy) begin
+                @(negedge clk);
+                busy_cycles = busy_cycles + 1;
+            end
+        end
+    endtask
+
+    task automatic write_csr;
+        input [`RV64_FUNCT12_WIDTH-1:0] addr;
+        input [`RV64_XLEN-1:0] data;
+        integer ignored_busy_cycles;
+        begin
+            write_csr_timed(addr, data, ignored_busy_cycles);
         end
     endtask
 
@@ -168,6 +187,7 @@ module tb_rv64i_pmp;
     endtask
 
     initial begin
+        integer busy_cycles;
         csr_addr = 12'h000;
         csr_write = 1'b0;
         csr_wdata = 64'h0;
@@ -230,7 +250,11 @@ module tb_rv64i_pmp;
 
         // OpenSBI probes granularity with A=OFF and an all-ones pmpaddr.
         apply_reset();
-        write_csr(`RV64_CSR_PMPADDR0, 64'hffff_ffff_ffff_ffff);
+        write_csr_timed(`RV64_CSR_PMPADDR0,
+                        64'hffff_ffff_ffff_ffff, busy_cycles);
+        if (busy_cycles != 119)
+            $fatal(1, "all-one serial PMPADDR latency=%0d/119",
+                   busy_cycles);
         check_csr(`RV64_CSR_PMPADDR0, 64'h003f_ffff_ffff_fc00,
                   "OpenSBI 56-bit address and 4 KiB grain probe");
 
@@ -299,14 +323,18 @@ module tb_rv64i_pmp;
         priv_mode = `RV64_PRIV_M;
         check_data(64'h2000, 3'd3, 1'b1, 1'b0,
                    "locked M write denied");
-        write_csr(`RV64_CSR_PMPADDR0, 64'h11ff);
+        write_csr_timed(`RV64_CSR_PMPADDR0, 64'h11ff, busy_cycles);
+        if (busy_cycles != 0)
+            $fatal(1, "locked PMPADDR write entered serial sequencer");
         check_csr(`RV64_CSR_PMPADDR0, 64'h9ff,
                   "locked pmpaddr");
         write_csr(`RV64_CSR_PMPCFG0, 64'h1f);
         check_csr(`RV64_CSR_PMPCFG0, 64'h99,
                   "locked pmpcfg");
 
-        // An unlocked address write atomically moves the normalized bounds.
+        // An unlocked address write spends ten cycles scanning the minimum
+        // 4 KiB NAPOT encoding and 65 cycles adding the exclusive bound.
+        // Readback and permissions must expose the old tuple throughout.
         apply_reset();
         write_csr(`RV64_CSR_PMPADDR0, 64'h9ff);
         write_csr(`RV64_CSR_PMPCFG0, 64'h1b);
@@ -314,14 +342,38 @@ module tb_rv64i_pmp;
         check_data(64'h2000, 3'd3, 1'b0, 1'b1,
                    "pre-normalization-write region");
         priv_mode = `RV64_PRIV_M;
-        write_csr(`RV64_CSR_PMPADDR0, 64'h11ff);
+        @(negedge clk);
+        csr_addr = `RV64_CSR_PMPADDR0;
+        csr_wdata = 64'h11ff;
+        csr_write = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        if (!csr_busy || csr_write_ready)
+            $fatal(1, "serial PMPADDR request did not enter busy");
+        csr_write = 1'b0;
+        #1;
+        if (csr_rdata !== 64'h9ff)
+            $fatal(1, "PMPADDR readback changed before atomic commit");
+        priv_mode = `RV64_PRIV_U;
+        check_data(64'h2000, 3'd3, 1'b0, 1'b1,
+                   "old region retained while serial write busy");
+        check_data(64'h4000, 3'd3, 1'b0, 1'b0,
+                   "new region hidden while serial write busy");
+        busy_cycles = 0;
+        while (csr_busy) begin
+            @(negedge clk);
+            busy_cycles = busy_cycles + 1;
+        end
+        if (busy_cycles != 75)
+            $fatal(1, "minimum serial PMPADDR latency=%0d/75",
+                   busy_cycles);
         priv_mode = `RV64_PRIV_U;
         check_data(64'h2000, 3'd3, 1'b0, 1'b0,
                    "old normalized region removed");
         check_data(64'h4000, 3'd3, 1'b0, 1'b1,
                    "new normalized region active");
 
-        $display("PASS: 16-entry 4 KiB OFF/NAPOT PMP, WARL modes, priorities, bounds, and locks");
+        $display("PASS: serial 16-entry 4 KiB OFF/NAPOT PMP, 1-bit scan/add, atomic bounds, WARL, priorities, and locks");
         $finish;
     end
 

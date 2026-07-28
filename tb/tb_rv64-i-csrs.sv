@@ -12,6 +12,10 @@ module tb_rv64i_csrs;
     logic csr_writable;
     logic csr_write;
     logic [`RV64_XLEN-1:0] csr_wdata;
+    logic csr_write_ready;
+    logic csr_pmp_busy;
+    logic csr_satp_busy;
+    logic csr_hpm_busy;
     logic trap_enter;
     logic trap_interrupt;
     logic [`RV64_EXCEPT_CAUSE_WIDTH-1:0] trap_cause;
@@ -70,6 +74,10 @@ module tb_rv64i_csrs;
         .csr_writable_o(csr_writable),
         .csr_write_i(csr_write),
         .csr_wdata_i(csr_wdata),
+        .csr_write_ready_o(csr_write_ready),
+        .csr_pmp_busy_o(csr_pmp_busy),
+        .csr_satp_busy_o(csr_satp_busy),
+        .csr_hpm_busy_o(csr_hpm_busy),
         .trap_enter_i(trap_enter),
         .trap_interrupt_i(trap_interrupt),
         .trap_cause_i(trap_cause),
@@ -130,7 +138,6 @@ module tb_rv64i_csrs;
         begin
             csr_addr = addr;
             #1;
-
             if (csr_valid !== exp_valid ||
                 csr_writable !== exp_writable ||
                 csr_rdata !== exp_data) begin
@@ -139,12 +146,27 @@ module tb_rv64i_csrs;
                     label, csr_valid, exp_valid, csr_writable, exp_writable,
                     csr_rdata, exp_data);
             end
+            csr_addr = 12'd0;
+            #1;
         end
     endtask
 
-    task automatic write_csr;
+    task automatic read_csr;
+        input [`RV64_FUNCT12_WIDTH-1:0] addr;
+        output [`RV64_XLEN-1:0] data;
+        begin
+            csr_addr = addr;
+            #1;
+            data = csr_rdata;
+            csr_addr = 12'd0;
+            #1;
+        end
+    endtask
+
+    task automatic write_csr_timed;
         input [`RV64_FUNCT12_WIDTH-1:0] addr;
         input [`RV64_XLEN-1:0] data;
+        output integer busy_cycles;
         begin
             @(negedge clk);
             csr_addr = addr;
@@ -152,7 +174,24 @@ module tb_rv64i_csrs;
             csr_write = 1'b1;
             @(posedge clk);
             @(negedge clk);
+            busy_cycles = 0;
+            while (!csr_write_ready) begin
+                if (csr_satp_busy || csr_hpm_busy)
+                    busy_cycles = busy_cycles + 1;
+                @(posedge clk);
+                @(negedge clk);
+            end
             csr_write = 1'b0;
+            csr_addr = 12'd0;
+        end
+    endtask
+
+    task automatic write_csr;
+        input [`RV64_FUNCT12_WIDTH-1:0] addr;
+        input [`RV64_XLEN-1:0] data;
+        integer ignored_busy_cycles;
+        begin
+            write_csr_timed(addr, data, ignored_busy_cycles);
         end
     endtask
 
@@ -208,6 +247,7 @@ module tb_rv64i_csrs;
     endtask
 
     initial begin
+        integer busy_cycles;
         csr_addr = 12'h000;
         csr_write = 1'b0;
         csr_wdata = 64'h0;
@@ -258,23 +298,21 @@ module tb_rv64i_csrs;
             $fatal(1, "reset privilege/PMP state mismatch");
         end
 
-        csr_addr = `RV64_CSR_MCYCLE;
-        #1;
-        counter_snapshot = csr_rdata;
+        read_csr(`RV64_CSR_MCYCLE, counter_snapshot);
         repeat (3) @(posedge clk);
-        #1;
-        if (csr_rdata <= counter_snapshot) begin
+        read_csr(`RV64_CSR_MCYCLE, csr_wdata);
+        if (csr_wdata <= counter_snapshot) begin
             $fatal(1, "mcycle did not increment");
         end
 
-        write_csr(`RV64_CSR_MCOUNTINHIBIT,
-                  64'd1 << `RV64_MCOUNTER_CY_BIT);
-        csr_addr = `RV64_CSR_MCYCLE;
-        #1;
-        counter_snapshot = csr_rdata;
+        write_csr_timed(`RV64_CSR_MCOUNTINHIBIT,
+                        64'd1 << `RV64_MCOUNTER_CY_BIT, busy_cycles);
+        if (busy_cycles != 3)
+            $fatal(1, "HPM write latency=%0d/3", busy_cycles);
+        read_csr(`RV64_CSR_MCYCLE, counter_snapshot);
         repeat (3) @(posedge clk);
-        #1;
-        if (csr_rdata != counter_snapshot) begin
+        read_csr(`RV64_CSR_MCYCLE, csr_wdata);
+        if (csr_wdata != counter_snapshot) begin
             $fatal(1, "mcycle incremented while inhibited");
         end
 
@@ -307,11 +345,11 @@ module tb_rv64i_csrs;
         @(negedge clk);
         perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE0] = 1'b1;
         perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE1] = 1'b1;
-        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
-                  "mhpmcounter same-cycle event forwarding");
         @(posedge clk);
         @(negedge clk);
         perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
+                  "mhpmcounter registered event forwarding");
         check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
                   "mhpmcounter event commit");
         write_csr(`RV64_CSR_MCOUNTINHIBIT,
@@ -336,11 +374,11 @@ module tb_rv64i_csrs;
         write_csr(`RV64_CSR_MINSTRET, 64'd20);
         @(negedge clk);
         retire_count = 2'd3;
-        check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd23,
-                  "minstret same-cycle retirement forwarding");
         @(posedge clk);
         @(negedge clk);
         retire_count = 2'd0;
+        check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd23,
+                  "minstret retirement pulse");
         check_csr(`RV64_CSR_MINSTRET, 1'b1, 1'b1, 64'd23,
                   "minstret forwarded retirement committed");
         write_csr(`RV64_CSR_MINSTRET, 64'd20);
@@ -466,7 +504,10 @@ module tb_rv64i_csrs;
             $fatal(1, "S-mode translation controls mismatch");
         end
 
-        write_csr(`RV64_CSR_SATP, 64'h8123_4000_00ab_cdef);
+        write_csr_timed(`RV64_CSR_SATP,
+                        64'h8123_4000_00ab_cdef, busy_cycles);
+        if (busy_cycles != 30)
+            $fatal(1, "SATP Sv39 write latency=%0d/30", busy_cycles);
         check_csr(`RV64_CSR_SATP, 1'b1, 1'b1,
                   64'h8123_4000_00ab_cdef, "S-mode Sv39 satp");
         if (satp_mode != `RV64_SATP_MODE_SV39 ||
@@ -475,10 +516,36 @@ module tb_rv64i_csrs;
             $fatal(1, "satp context outputs mismatch");
         end
 
-        write_csr(`RV64_CSR_SATP, 64'h9123_4000_00de_ad00);
+        write_csr_timed(`RV64_CSR_SATP,
+                        64'h9123_4000_00de_ad00, busy_cycles);
+        if (busy_cycles != 30)
+            $fatal(1, "SATP unsupported write latency=%0d/30",
+                   busy_cycles);
         check_csr(`RV64_CSR_SATP, 1'b1, 1'b1,
                   64'h8123_4000_00ab_cdef, "unsupported satp mode ignored");
-        write_csr(`RV64_CSR_SATP, 64'h0000_0000_0000_0000);
+
+        // The old translation context remains visible until the final cycle.
+        @(negedge clk);
+        csr_addr = `RV64_CSR_SATP;
+        csr_wdata = 64'd0;
+        csr_write = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        busy_cycles = 0;
+        while (!csr_write_ready) begin
+            if (!csr_satp_busy)
+                $fatal(1, "SATP unready without busy");
+            if (csr_rdata !== 64'h8123_4000_00ab_cdef)
+                $fatal(1, "SATP changed before atomic commit");
+            busy_cycles = busy_cycles + 1;
+            @(posedge clk);
+            @(negedge clk);
+        end
+        csr_write = 1'b0;
+        if (busy_cycles != 30)
+            $fatal(1, "SATP bare write latency=%0d/30", busy_cycles);
+        check_csr(`RV64_CSR_SATP, 1'b1, 1'b1, 64'd0,
+                  "S-mode delayed bare satp");
 
         write_csr(`RV64_CSR_SEPC, 64'h0000_0000_0000_0503);
         if (!sret_allowed) begin

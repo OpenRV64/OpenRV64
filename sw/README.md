@@ -175,6 +175,37 @@ to establish separate ideal-refill bounds. Its backing RAM is still a
 functional fixed-latency model, not a DRAM timing model; prefetch distance and
 bandwidth tuning require the memory-channel timing model in the measured path.
 
+`memcpy/memcpy_sweep.S` adds a general scalar memcpy characterization sweep:
+
+```sh
+make bench-memcpy-sweep
+```
+
+It reports 162 `MEMCPY_SPAN` records: three repetitions of 54 size/alignment
+cases. The aligned boundary sweep covers 0 through 65 bytes around scalar and
+cache-line boundaries, then 127/128, 255/256, 511/512, 1 KiB, 4 KiB, and
+64 KiB. Additional cases cover equal source/destination offsets of 1 and 7,
+including the offset-specific thresholds at 63/64/65 and 70/71/72 bytes, and
+unequal offsets `1:0`, `0:1`, and `3:5`. Each case has a disjoint buffer slot
+with roughly 16 cache lines of separation, beyond the default four-line
+maximum prefetch distance. Repetition zero is therefore the default-profile
+cold access to that slot and repetitions one and two expose its warm behavior.
+Every record includes byte count, offsets, alignment-path class, cycle and
+retired-instruction deltas, bytes/cycle, and IPC. The run continues through a
+full byte comparison and requires `MEMCPYOK`; `sim-memcpy-sweep` is an alias
+for the same report-and-check run.
+
+The core faults naturally misaligned accesses wider than a byte. The sweep
+therefore models a portable scalar implementation instead of issuing faulting
+misaligned `ld`/`sd`: equal source/destination alignment uses a byte prologue
+followed by aligned 64-byte bulk iterations, while unequal alignment uses
+the Linux RISC-V kernel's slow-access fallback shape: one byte load, one byte
+store, and one loop branch per copied byte. Each timed span includes
+call/return and the final ordering fence; the zero-byte case exposes that
+fixed cost. The sweep results are still from the functional fixed-latency AXI
+test memory, so they characterize core/cache behavior rather than DRAM
+bandwidth.
+
 `AXI_3P_FREELOADER=1` is a stronger simulation-only backend bound. Cacheable,
 unlocked RAM loads bypass L1D/CCX demand timing and return through a tagged,
 pipelined oracle. `AXI_3P_FREELOADER_LATENCY` is MEM issue to registered

@@ -330,6 +330,7 @@ module openrv64_rv64_top_3p #(
     wire [`RV64_SATP_PPN_WIDTH-1:0] csr_satp_root_ppn;
     wire csr_status_sum;
     wire csr_status_mxr;
+    wire csr_hpm_busy;
 
     wire bp_branch_present;
     wire bp_branch_allocate;
@@ -921,8 +922,10 @@ module openrv64_rv64_top_3p #(
     wire backend_csr_write;
     wire [11:0] backend_csr_write_addr;
     wire [63:0] backend_csr_wdata;
+    wire csr_write_ready;
     assign backend_satp_write =
         backend_csr_write &&
+        csr_write_ready &&
         (backend_csr_write_addr == `RV64_CSR_SATP);
     wire [63:0] csr_rdata;
     wire csr_valid;
@@ -1024,6 +1027,7 @@ module openrv64_rv64_top_3p #(
         .decode_allocation_slot_o(backend_decode_allocation_slot),
         .csr_addr_o(backend_csr_addr), .csr_rdata_i(csr_rdata),
         .csr_valid_i(csr_valid), .csr_writable_i(csr_writable),
+        .csr_write_ready_i(csr_write_ready),
         .csr_write_o(backend_csr_write),
         .csr_write_addr_o(backend_csr_write_addr),
         .csr_wdata_o(backend_csr_wdata),
@@ -1199,7 +1203,11 @@ module openrv64_rv64_top_3p #(
         .clk(clk), .rst_n(rst_n), .csr_addr_i(csr_access_addr),
         .csr_rdata_o(csr_rdata), .csr_valid_o(csr_valid),
         .csr_writable_o(csr_writable), .csr_write_i(backend_csr_write),
-        .csr_wdata_i(backend_csr_wdata), .trap_enter_i(trap_enter),
+        .csr_wdata_i(backend_csr_wdata),
+        .csr_write_ready_o(csr_write_ready), .csr_pmp_busy_o(),
+        .csr_satp_busy_o(),
+        .csr_hpm_busy_o(csr_hpm_busy),
+        .trap_enter_i(trap_enter),
         .trap_interrupt_i(trap_interrupt), .trap_cause_i(backend_cause),
         .trap_pc_i(trap_pc), .trap_tval_i(trap_tval),
         .mret_i(backend_mret), .sret_i(backend_sret),

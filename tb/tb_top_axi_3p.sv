@@ -737,10 +737,15 @@ module tb_top_axi_3p #(
     reg external_done;
     reg done_pc_valid;
     reg expect_a0_valid;
+    reg memcpy_report_pc_valid;
+    reg memcpy_report_expected_valid;
     reg [63:0] done_pc;
+    reg [63:0] memcpy_report_pc;
     reg [63:0] expected_a0;
     integer max_cycles;
     integer external_memh_words;
+    integer memcpy_report_count;
+    integer memcpy_report_expected;
     wire done_pc_retired =
         (dut.u_core.backend_retire_arch[0] &&
          (dut.u_core.u_backend.queue_retire_result[
@@ -757,6 +762,22 @@ module tb_top_axi_3p #(
               2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
               RETIRE_RESULT_PC_LSB +: 64] ==
           done_pc));
+    wire memcpy_report_pc_retired =
+        (dut.u_core.backend_retire_arch[0] &&
+         (dut.u_core.u_backend.queue_retire_result[
+              0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] ==
+          memcpy_report_pc)) ||
+        (dut.u_core.backend_retire_arch[1] &&
+         (dut.u_core.u_backend.queue_retire_result[
+              1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] ==
+          memcpy_report_pc)) ||
+        (dut.u_core.backend_retire_arch[2] &&
+         (dut.u_core.u_backend.queue_retire_result[
+              2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+              RETIRE_RESULT_PC_LSB +: 64] ==
+          memcpy_report_pc));
     integer perf_retired;
     integer perf_issued;
     integer retire_width_0;
@@ -2432,10 +2453,15 @@ module tb_top_axi_3p #(
         external_done = 1'b0;
         done_pc_valid = 1'b0;
         expect_a0_valid = 1'b0;
+        memcpy_report_pc_valid = 1'b0;
+        memcpy_report_expected_valid = 1'b0;
         done_pc = 64'd0;
+        memcpy_report_pc = 64'd0;
         expected_a0 = 64'd0;
         max_cycles = 20000;
         external_memh_words = 2048;
+        memcpy_report_count = 0;
+        memcpy_report_expected = 0;
         perf_retired = 0;
         perf_issued = 0;
         retire_width_0 = 0;
@@ -2560,6 +2586,16 @@ module tb_top_axi_3p #(
             $fatal(1, "select either +memh or OpenSBI fragments, not both");
         done_pc_valid = $value$plusargs("done_pc=%h", done_pc);
         expect_a0_valid = $value$plusargs("expect_a0=%h", expected_a0);
+        memcpy_report_pc_valid =
+            $value$plusargs("memcpy_report_pc=%h", memcpy_report_pc);
+        memcpy_report_expected_valid =
+            $value$plusargs("memcpy_report_expected=%d",
+                            memcpy_report_expected);
+        if (memcpy_report_expected_valid && !memcpy_report_pc_valid)
+            $fatal(1,
+                   "+memcpy_report_expected requires +memcpy_report_pc");
+        if (memcpy_report_pc_valid)
+            $display("MEMCPY_SPAN_HEADER path=0:different-alignment-kernel-byte path=1:same-alignment case repeat bytes src_offset dst_offset cycles instret bytes_per_cycle IPC");
         if (!$value$plusargs("max_cycles=%d", max_cycles))
             max_cycles = 20000;
         if (!$value$plusargs("memh_words=%d", external_memh_words))
@@ -2696,6 +2732,36 @@ module tb_top_axi_3p #(
                 #1;
                 sample_performance();
                 sample_pipeline_trace();
+                if (memcpy_report_pc_valid &&
+                    memcpy_report_pc_retired) begin
+                    memcpy_report_count = memcpy_report_count + 1;
+                    if (dut.u_core.u_backend.u_gpr.regs[12] == 0)
+                        $display("MEMCPY_SPAN case=%0d repeat=%0d bytes=%0d src_offset=%0d dst_offset=%0d path=%0d cycles=%0d instret=%0d bytes_per_cycle=0.000000 IPC=%0.6f",
+                                 dut.u_core.u_backend.u_gpr.regs[10],
+                                 dut.u_core.u_backend.u_gpr.regs[11],
+                                 dut.u_core.u_backend.u_gpr.regs[12],
+                                 dut.u_core.u_backend.u_gpr.regs[13],
+                                 dut.u_core.u_backend.u_gpr.regs[14],
+                                 dut.u_core.u_backend.u_gpr.regs[16],
+                                 dut.u_core.u_backend.u_gpr.regs[15],
+                                 dut.u_core.u_backend.u_gpr.regs[17],
+                                 $itor(dut.u_core.u_backend.u_gpr.regs[17]) /
+                                 $itor(dut.u_core.u_backend.u_gpr.regs[15]));
+                    else
+                        $display("MEMCPY_SPAN case=%0d repeat=%0d bytes=%0d src_offset=%0d dst_offset=%0d path=%0d cycles=%0d instret=%0d bytes_per_cycle=%0.6f IPC=%0.6f",
+                                 dut.u_core.u_backend.u_gpr.regs[10],
+                                 dut.u_core.u_backend.u_gpr.regs[11],
+                                 dut.u_core.u_backend.u_gpr.regs[12],
+                                 dut.u_core.u_backend.u_gpr.regs[13],
+                                 dut.u_core.u_backend.u_gpr.regs[14],
+                                 dut.u_core.u_backend.u_gpr.regs[16],
+                                 dut.u_core.u_backend.u_gpr.regs[15],
+                                 dut.u_core.u_backend.u_gpr.regs[17],
+                                 $itor(dut.u_core.u_backend.u_gpr.regs[12]) /
+                                 $itor(dut.u_core.u_backend.u_gpr.regs[15]),
+                                 $itor(dut.u_core.u_backend.u_gpr.regs[17]) /
+                                 $itor(dut.u_core.u_backend.u_gpr.regs[15]));
+                end
                 if (dbg_halted)
                     external_done = 1'b1;
                 if (done_pc_valid && done_pc_retired)
@@ -2715,6 +2781,14 @@ module tb_top_axi_3p #(
                 (dut.u_core.u_backend.u_gpr.regs[10] != expected_a0))
                 $fatal(1, "external image a0=%016x expected=%016x",
                        dut.u_core.u_backend.u_gpr.regs[10], expected_a0);
+            if (memcpy_report_expected_valid &&
+                (memcpy_report_count != memcpy_report_expected))
+                $fatal(1,
+                       "memcpy span reports=%0d expected=%0d",
+                       memcpy_report_count, memcpy_report_expected);
+            if (memcpy_report_pc_valid)
+                $display("MEMCPY_SPAN_SUMMARY reports=%0d",
+                         memcpy_report_count);
             if (opensbi_image) begin
                 if (!saw_three_retire)
                     $fatal(1, "OpenSBI boot never exercised three-wide retirement");

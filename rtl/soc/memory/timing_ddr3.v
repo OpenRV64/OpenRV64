@@ -3,9 +3,10 @@
 // DDR3-1600 channel preset using eight x8 devices.
 //
 // Physical channel: 64 DQs, BL8 (64-byte native burst), two ranks with eight
-// banks each, and an 8 KiB aggregate page per bank.  Address mapping is
-// RoRaBaCo (there is only one channel).  Timing defaults mirror gem5's
-// DDR3_1600_8x8 preset
+// banks each, and an 8 KiB aggregate page per bank.  The raw mapping is
+// RoRaBaCo (there is only one channel); by default the low row bits are XORed
+// into the bank index.  Disable BANK_ROW_SWIZZLE for gem5's plain mapping.
+// Timing defaults mirror gem5's DDR3_1600_8x8 preset
 // used by the saved Cortex-A53/HPI comparison: tCK=1.25 ns, 13.75 ns
 // tRCD/tRP/tCL/tCWL, 35 ns tRAS, 15 ns tWR, 260 ns tRFC, and 7.8 us tREFI.
 // The 10 ns frontend and 10 ns backend defaults mirror gem5 MemCtrl's
@@ -21,6 +22,7 @@ module openrv64_timing_ddr3 #(
     parameter integer BURST_LENGTH = 8,
     parameter integer BURST_CYCLES = 4,
     parameter integer BANK_BITS = 3,
+    parameter integer BANK_ROW_SWIZZLE = 1,
     parameter integer RANKS = 2,
     parameter integer ROW_BYTES = 8192,
     parameter integer DRAM_TCK_PS = 1250,
@@ -66,7 +68,8 @@ module openrv64_timing_ddr3 #(
         .ADDR_WIDTH(ADDR_WIDTH), .TAG_WIDTH(TAG_WIDTH),
         .DQ_WIDTH(DQ_WIDTH),
         .BURST_LENGTH(BURST_LENGTH), .BURST_CYCLES(BURST_CYCLES),
-        .BANK_BITS(BANK_BITS), .RANKS(RANKS), .ROW_BYTES(ROW_BYTES),
+        .BANK_BITS(BANK_BITS), .BANK_ROW_SWIZZLE(BANK_ROW_SWIZZLE),
+        .RANKS(RANKS), .ROW_BYTES(ROW_BYTES),
         .CONTROLLER_TCK_PS(CONTROLLER_TCK_PS),
         .DRAM_TCK_PS(DRAM_TCK_PS),
         .T_RCD_RD(T_RCD_RD), .T_RCD_WR(T_RCD_WR), .T_RP(T_RP),
