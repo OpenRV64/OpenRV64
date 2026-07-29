@@ -37,6 +37,8 @@
 	sim-core-complex-4h-wb
 .PHONY: sim-mem-channel sim-l2-axi-ddr3 sim-mesh-router
 .PHONY: sim-prf sim-rename-identity sim-lsq sim-lsu-atomics \
+	sim-lsu-misaligned \
+	sim-zicclsm-context \
 	sim-exec-top-3p-no-zicclsm
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
 	compliance-smoke-local-3p compliance-smoke-local-platform \
@@ -56,6 +58,8 @@ sim: sim-prf
 sim: sim-rename-identity
 sim: sim-lsq
 sim: sim-lsu-atomics
+sim: sim-lsu-misaligned
+sim: sim-zicclsm-context
 sim: sim-l1-cache
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr

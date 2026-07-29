@@ -108,6 +108,9 @@ sim-exec-top-3p: $(EXEC_TOP_3P_SIM_BUILD)
 sim-exec-top-3p-no-zicclsm: $(EXEC_TOP_3P_NO_ZICCLSM_SIM_BUILD)
 	vvp $(EXEC_TOP_3P_NO_ZICCLSM_SIM_BUILD)
 
+sim-lsu-misaligned: $(LSU_MISALIGNED_SIM_BUILD)
+	vvp $(LSU_MISALIGNED_SIM_BUILD)
+
 sim-lsq: $(LSQ_SIM_BUILD)
 	vvp $(LSQ_SIM_BUILD)
 
@@ -235,6 +238,9 @@ sim-priv-context: $(PRIV_CONTEXT_SIM_BUILD)
 
 sim-irq-context: $(IRQ_CONTEXT_SIM_BUILD)
 	vvp $(IRQ_CONTEXT_SIM_BUILD)
+
+sim-zicclsm-context: $(ZICCLSM_CONTEXT_SIM_BUILD)
+	vvp $(ZICCLSM_CONTEXT_SIM_BUILD)
 
 sim-load-use-context: $(LOAD_USE_CONTEXT_SIM_BUILD)
 	vvp $(LOAD_USE_CONTEXT_SIM_BUILD)

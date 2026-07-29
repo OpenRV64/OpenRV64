@@ -242,6 +242,7 @@ EXEC_SYSTEM_CSR_SIM_SRCS := tb/tb_exec_system_csr.sv
 TRAP_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_trap_context.sv
 PRIV_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_priv_context.sv
 IRQ_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_irq_context.sv
+ZICCLSM_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_zicclsm_context.sv
 LOAD_USE_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_load_use_context.sv
 REG_OWNER_SIM_SRCS := tb/tb_reg_owner.sv
 DISPATCH_SIM_SRCS := tb/tb_dispatch.sv

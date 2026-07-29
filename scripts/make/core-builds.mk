@@ -200,6 +200,13 @@ $(EXEC_TOP_3P_NO_ZICCLSM_SIM_BUILD): tb/tb_exec_top_3p.sv $(EXEC_SRCS) $(EXCEPT_
 		$(EXEC_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) $(STAGE_SRCS) \
 		tb/tb_exec_top_3p.sv
 
+$(LSU_MISALIGNED_SIM_BUILD): tb/tb_lsu_misaligned.sv \
+		rtl/core/exec/lsu/misaligned.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_lsu_misaligned \
+		-o $(LSU_MISALIGNED_SIM_BUILD) \
+		rtl/core/exec/lsu/misaligned.v tb/tb_lsu_misaligned.sv
+
 $(LSQ_SIM_BUILD): $(LSQ_SIM_SRCS) rtl/core/exec/lsq.v
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(LSQ_SIM_BUILD) \
