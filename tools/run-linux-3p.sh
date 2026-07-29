@@ -4,7 +4,13 @@ set -Eeuo pipefail
 export LC_ALL=C
 export TZ=UTC
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+wrapper_path=${BASH_SOURCE[0]:-$0}
+if [[ "${OPENRV64_LINUX_RUN_BUFFERED:-0}" != 1 ]]; then
+    wrapper_source=$(<"${wrapper_path}")
+    exec env OPENRV64_LINUX_RUN_BUFFERED=1 \
+        bash -c "${wrapper_source}" "${wrapper_path}" "$@"
+fi
+repo_root=$(cd "$(dirname "${wrapper_path}")/.." && pwd)
 cd "${repo_root}"
 
 usage() {
@@ -20,6 +26,8 @@ passed to both configuration resolution and the build.
 Options:
   --name NAME        Required human-readable test name.
   --comment TEXT     Required explanation of purpose and relevant repo state.
+  --tmux-session NAME
+                     Launch this invocation in a detached named tmux session.
   --build-only       Stop after a successful build and artifact fingerprint.
   --manifest-only    Resolve and record configuration without building.
   --no-force         Permit an incremental build instead of the default -B.
@@ -49,12 +57,33 @@ Examples:
     --comment "Resolve the proposed configuration without building it." \
     --manifest-only \
     LINUX_IMAGE=sw/Image.Zicclsm OPENSBI_3P_ENABLE_ZICCLSM=1
+
+  tools/run-linux-3p.sh \
+    --tmux-session zicclsm-boot \
+    --name zicclsm-sequential-l1i \
+    --comment "Attach with: tmux attach-session -t zicclsm-boot" \
+    LINUX_IMAGE=sw/Image.Zicclsm OPENSBI_3P_ENABLE_ZICCLSM=1
 EOF
+}
+
+shell_join() {
+    local output=
+    local quoted
+    local argument
+    for argument in "$@"; do
+        printf -v quoted '%q' "${argument}"
+        if [[ -n "${output}" ]]; then
+            output+=" "
+        fi
+        output+="${quoted}"
+    done
+    printf '%s' "${output}"
 }
 
 original_arguments=("$@")
 test_name=
 test_comment=
+tmux_session=
 build_enabled=1
 run_enabled=1
 force_build=1
@@ -79,6 +108,14 @@ while (($#)); do
                 exit 2
             fi
             test_comment=$2
+            shift 2
+            ;;
+        --tmux-session)
+            if (($# < 2)); then
+                echo "run-linux-3p.sh: --tmux-session requires a value" >&2
+                exit 2
+            fi
+            tmux_session=$2
             shift 2
             ;;
         --build-only)
@@ -150,6 +187,11 @@ if [[ -z "${test_comment}" ]]; then
     echo "run-linux-3p.sh: --comment is required" >&2
     exit 2
 fi
+if [[ -n "${tmux_session}" &&
+      ! "${tmux_session}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "run-linux-3p.sh: --tmux-session must match [A-Za-z0-9_-]+" >&2
+    exit 2
+fi
 
 for argument in "${simulator_arguments[@]}"; do
     if [[ "${argument}" != +* ]]; then
@@ -157,6 +199,32 @@ for argument in "${simulator_arguments[@]}"; do
         exit 2
     fi
 done
+
+if [[ -n "${tmux_session}" &&
+      "${OPENRV64_LINUX_RUN_TMUX_REENTRY:-0}" != 1 ]]; then
+    if ! command -v tmux >/dev/null 2>&1; then
+        echo "run-linux-3p.sh: tmux is not installed" >&2
+        exit 127
+    fi
+    if tmux has-session -t "=${tmux_session}" 2>/dev/null; then
+        echo "run-linux-3p.sh: tmux session already exists: ${tmux_session}" \
+            >&2
+        exit 2
+    fi
+
+    tmux_command=$(
+        shell_join env OPENRV64_LINUX_RUN_TMUX_REENTRY=1 \
+            "${repo_root}/tools/run-linux-3p.sh" \
+            "${original_arguments[@]}"
+    )
+    tmux new-session -d -s "${tmux_session}" -c "${repo_root}" \
+        "${tmux_command}"
+    printf 'run-linux-3p.sh: launched tmux session: %s\n' \
+        "${tmux_session}" >&2
+    printf 'run-linux-3p.sh: attach: tmux attach-session -t %s\n' \
+        "${tmux_session}" >&2
+    exit 0
+fi
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 name_slug=$(
@@ -266,20 +334,6 @@ if ((jobs_present == 0)); then
     make_arguments=("-j8" "${make_arguments[@]}")
 fi
 
-shell_join() {
-    local output=
-    local quoted
-    local argument
-    for argument in "$@"; do
-        printf -v quoted '%q' "${argument}"
-        if [[ -n "${output}" ]]; then
-            output+=" "
-        fi
-        output+="${quoted}"
-    done
-    printf '%s' "${output}"
-}
-
 first_line() {
     "$@" 2>&1 | sed -n '1p'
 }
@@ -296,6 +350,7 @@ git diff --binary HEAD >"${git_diff_file}"
     printf 'record.wrapper=%s\n' "tools/run-linux-3p.sh"
     printf 'record.wrapper_command=%s\n' \
         "$(shell_join tools/run-linux-3p.sh "${original_arguments[@]}")"
+    printf 'record.tmux_session=%s\n' "${tmux_session}"
     printf 'record.test_name=%s\n' "${test_name}"
     printf 'record.test_name_file=%s\n' "${test_name_file}"
     printf 'record.test_comment_file=%s\n' "${test_comment_file}"

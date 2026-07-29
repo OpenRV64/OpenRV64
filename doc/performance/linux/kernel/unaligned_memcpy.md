@@ -80,6 +80,85 @@ final byte comparison with `MEMCPYOK`. The timed span includes the function call
 and final ordering fence. The backing memory is the functional fixed-latency
 AXI model, not the timed DDR3 model.
 
+## Full Linux Zicclsm control experiment
+
+A three-run full Linux boot experiment separated the Zicclsm RTL enable from
+its FDT advertisement. All runs used the same `sw/Image.Zicclsm` binary, BP8,
+a 32-entry retirement window, one Verilator thread, the functional SRAM model,
+and the same L1D prefetch settings: distance eight, queue depth eight, and four
+outstanding requests. Every run reached the literal `openrv64# ` prompt,
+reported the testbench PASS, and exited with status zero.
+
+The recorded artifact hashes establish the intended controls:
+
+- all three runs used the same Linux image;
+- hardware-on/advertised and hardware-on/not-advertised used the same
+  simulator binary; and
+- hardware-on/not-advertised and hardware-off/not-advertised used the same
+  DTB, which omitted Zicclsm.
+
+The cumulative signposts were:
+
+| RTL | FDT advertisement | Signpost | Cycles | Retired instructions |
+|---|---|---|---:|---:|
+| on | on | OpenSBI | 1,317,653 | 1,798,855 |
+| on | on | Linux | 3,646,079 | 4,413,147 |
+| on | on | PLIC | 19,284,807 | 15,945,882 |
+| on | on | Bash prompt | 80,691,730 | 58,906,019 |
+| on | off | OpenSBI | 1,315,628 | 1,796,271 |
+| on | off | Linux | 3,643,292 | 4,409,492 |
+| on | off | PLIC | 19,296,493 | 15,940,341 |
+| on | off | Bash prompt | 80,798,787 | 58,937,990 |
+| off | off | OpenSBI | 1,315,628 | 1,796,271 |
+| off | off | Linux | 3,709,304 | 4,458,827 |
+| off | off | PLIC | 20,520,862 | 16,794,029 |
+| off | off | Bash prompt | 93,451,606 | 67,055,171 |
+
+Removing only the advertisement increased prompt time by 0.133% and retired
+instructions by 0.054%. This is a whole-boot result, not a direct attribution
+to memcpy or another kernel policy. A small phase change can alter the
+placement of timer-driven work. Repeat the pair and compare event counts before
+treating a difference this small as a stable advertisement penalty.
+
+Disabling the hardware while retaining the non-advertising DTB increased
+prompt time by 15.66% and retired instructions by 13.77%. This is not a
+measurement of dormant Zicclsm RTL overhead. The hardware-off log repeatedly
+sampled `mcause` values four and six, indicating misaligned load and store
+exceptions. The kernel, firmware, or userspace can still execute misaligned
+instructions when Zicclsm is not advertised; advertisement changes software
+policy, not the legality of every instruction in existing code. The
+hardware-off run therefore includes trap-and-emulation work that the
+hardware-on run avoids.
+
+The hardware-on and hardware-off non-advertising runs had exactly the same
+OpenSBI signpost, 1,315,628 cycles and 1,796,271 retired instructions. This
+shows no cycle-level difference in that prefix. It does not prove that adding
+Zicclsm has no cost to ordinary LSU operations.
+
+There are two remaining cost questions:
+
+1. The current serialized engine waits for accepted LSQ transactions to drain
+   before starting a misaligned operation and suppresses ordinary LSQ launches
+   while that operation is pending or active. This can impose cycle-level
+   interference on workloads that actually issue misaligned accesses.
+2. The additional arbitration and muxing can lengthen an LSU critical path or
+   increase area even when the engine is inactive. Verilator cycle counts
+   cannot measure an Fmax penalty.
+
+The first question needs an aligned-only directed workload built both ways,
+plus an assertion or counter proving that the misaligned engine never
+activates. The second needs matched synthesis and post-route timing results.
+The full Linux boots characterize the architectural benefit and software
+policy interaction, not those dormant structural costs.
+
+The retained records are:
+
+```text
+build/runs/linux-3p/20260729T025818Z-l1i-response-plus64-sram-full-linux/
+build/runs/linux-3p/20260729T033408Z-l1i-response-plus64-sram-zicclsm-hardware-on-advert-off/
+build/runs/linux-3p/20260729T033549Z-l1i-response-plus64-sram-zicclsm-hardware-off-advert-off/
+```
+
 ## Proposed patch
 
 The patch copies eight bytes per main-loop iteration and leaves a zero-to-seven

@@ -350,7 +350,6 @@ module openrv64_rv64_top_3p #(
     wire fetch_alt_pair_valid;
     wire icache_prefetch_valid;
     wire l1i_branch_prefetch_valid;
-    wire l1i_sequential_prefetch_valid;
     wire l1i_next_line_prefetch;
     wire l1i_branch_next_line_prefetch;
     wire l1i_high_confidence_hint;
@@ -364,8 +363,6 @@ module openrv64_rv64_top_3p #(
     reg l1i_next_line_pending_q;
     reg [63:0] l1i_next_line_source_q;
     reg [63:0] l1i_next_line_addr_q;
-    wire [63:0] l1i_sequential_first_addr;
-    wire [63:0] l1i_sequential_second_addr;
     wire [63:0] l1i_prefetch_first_addr;
     wire [63:0] l1i_prefetch_second_addr;
     wire control_redirect = backend_redirect || bp_target_mispredict;
@@ -885,37 +882,21 @@ module openrv64_rv64_top_3p #(
         ((ENABLE_FETCH_ALT_LOOKASIDE == 0) && fetch_alt_pair_valid) ||
         l1i_branch_next_line_prefetch;
 
-    // Branch/FAL policy cannot be the only source of L1I prefetches:
-    // straight-line code otherwise issues no hints at all.  Every accepted
-    // demand fetch seeds the following cacheline and a line eight positions
-    // ahead.  Subsequent demand progress closes the initial gaps and then
-    // maintains eight-line lookahead while the L1I demand MSHRs bound actual
-    // outstanding traffic.
-    // The L1I's slot and recent-line filters suppress duplicates, and
-    // speculative translation faults are discarded without becoming
-    // architectural.
-    assign l1i_sequential_prefetch_valid =
-        use_ccx_bus && fetch_pipe_req_valid && fetch_pipe_req_ready &&
-        fetch_pipe_req_demand;
-    assign l1i_sequential_first_addr =
-        {fetch_pipe_req_addr[63:6], 6'b000000} + 64'd64;
-    assign l1i_sequential_second_addr =
-        {fetch_pipe_req_addr[63:6], 6'b000000} + 64'd512;
-    assign l1i_next_line_prefetch =
-        l1i_branch_next_line_prefetch ||
-        (l1i_sequential_prefetch_valid && !l1i_branch_prefetch_valid);
-    assign l1i_prefetch_first_addr = l1i_branch_prefetch_valid ?
-        (l1i_branch_next_line_prefetch ?
+    // Straight-line next-line prefetching is generated once inside L1I after
+    // a successful cacheable demand response is consumed.  Keep this
+    // top-level port exclusively for branch/FAL hints so request admission
+    // cannot create a redundant +64 stream or the aggressive +512 stream.
+    assign l1i_next_line_prefetch = l1i_branch_next_line_prefetch;
+    assign l1i_prefetch_first_addr =
+        l1i_branch_next_line_prefetch ?
         ((l1i_high_confidence_hint && l1i_predicted_line_resident) ?
          icache_prefetch_predicted_next_line : l1i_next_line_addr_q) :
-         icache_prefetch_taken_addr) :
-        l1i_sequential_first_addr;
-    assign l1i_prefetch_second_addr = l1i_branch_prefetch_valid ?
-        (l1i_branch_next_line_prefetch ?
+        icache_prefetch_taken_addr;
+    assign l1i_prefetch_second_addr =
+        l1i_branch_next_line_prefetch ?
         ((l1i_high_confidence_hint && l1i_predicted_line_resident) ?
          icache_prefetch_predicted_next_line : l1i_next_line_addr_q) :
-         icache_prefetch_fallthrough_addr) :
-        l1i_sequential_second_addr;
+        icache_prefetch_fallthrough_addr;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -1431,8 +1412,7 @@ module openrv64_rv64_top_3p #(
         .tlbi_i(backend_sfence_vma || backend_satp_write),
         .tlbi_busy_o(translation_barrier_busy),
         .icache_invalidate_i(backend_fence_i),
-        .icache_prefetch_valid_i((l1i_branch_prefetch_valid ||
-                                  l1i_sequential_prefetch_valid) &&
+        .icache_prefetch_valid_i(l1i_branch_prefetch_valid &&
                                  !translation_barrier_busy),
         .icache_prefetch_taken_addr_i(l1i_prefetch_first_addr),
         .icache_prefetch_fallthrough_addr_i(

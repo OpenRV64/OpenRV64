@@ -107,6 +107,7 @@ module openrv64_lsq #(
     output wire                         result_page_fault_o,
     output wire                         result_store_o,
     output wire                         store_pending_o,
+    output wire                         quiescent_o,
     output wire                         empty_o
 );
 
@@ -609,10 +610,12 @@ module openrv64_lsq #(
 
     reg any_valid_r;
     reg any_store_r;
+    reg any_transaction_inflight_r;
     integer pending_scan;
     always @* begin
         any_valid_r = 1'b0;
         any_store_r = 1'b0;
+        any_transaction_inflight_r = 1'b0;
         for (pending_scan = 0; pending_scan < DEPTH;
              pending_scan = pending_scan + 1)
             if (slot_valid_q[pending_scan]) begin
@@ -620,9 +623,16 @@ module openrv64_lsq #(
                 if (!slot_killed_q[pending_scan] &&
                     slot_store_q[pending_scan])
                     any_store_r = 1'b1;
+                if (slot_xlate_sent_q[pending_scan] ||
+                    slot_access_sent_q[pending_scan])
+                    any_transaction_inflight_r = 1'b1;
             end
     end
     assign store_pending_o = any_store_r || atomic_active_i;
+    // A dormant translated entry is safe to retain while another ordered
+    // engine owns the external translation and memory ports.  Quiescence
+    // therefore tracks accepted transactions, not queue occupancy.
+    assign quiescent_o = !any_transaction_inflight_r && !atomic_active_i;
     assign empty_o = !any_valid_r && !atomic_active_i;
 
     integer slot_index;

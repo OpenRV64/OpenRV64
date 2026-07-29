@@ -284,7 +284,7 @@ module openrv64_exec_lsu #(
     wire lsq_load_alloc_ready;
     wire lsq_store_alloc_ready;
     wire lsq_store_pending;
-    wire lsq_empty;
+    wire lsq_quiescent;
 
     wire atomic_start_valid;
     wire [LSU_TAG_WIDTH-1:0] atomic_start_tag;
@@ -377,7 +377,7 @@ module openrv64_exec_lsu #(
         load_issue_valid_i && load_requires_misaligned && load_order_match;
     wire misaligned_store_candidate =
         store_issue_valid_i && store_requires_misaligned && store_order_match;
-    wire misaligned_can_start = misaligned_pending_q && lsq_empty &&
+    wire misaligned_can_start = misaligned_pending_q && lsq_quiescent &&
                                 !atomic_active && !misaligned_active;
     wire misaligned_start_valid = misaligned_can_start;
     wire misaligned_start_fire =
@@ -385,9 +385,9 @@ module openrv64_exec_lsu #(
 
     // A single registered pending slot breaks the dispatch ready/valid path.
     // Do not admit an operation on the other LSQ port in the same cycle as an
-    // ordered misaligned candidate. In particular, a younger store cannot
-    // drain while the misaligned instruction owns the ordered head, so
-    // admitting both would deadlock misaligned_pending_q against lsq_empty.
+    // ordered misaligned candidate.  Once pending is registered, existing
+    // entries remain allocated but new LSQ launches are frozen until accepted
+    // transactions drain and the component engine takes port ownership.
     assign load_issue_ready_o =
         (misaligned_active || misaligned_pending_q) ? 1'b0 :
         misaligned_store_candidate ? 1'b0 :
@@ -499,7 +499,8 @@ module openrv64_exec_lsu #(
         .result_page_fault_o(lsq_result_page_fault),
         .result_store_o(lsq_result_store),
         .store_pending_o(lsq_store_pending),
-        .empty_o(lsq_empty)
+        .quiescent_o(lsq_quiescent),
+        .empty_o()
     );
 
     generate
@@ -667,8 +668,11 @@ module openrv64_exec_lsu #(
     end
 `endif
 
+    wire lsq_launch_enable =
+        !misaligned_pending_q && !misaligned_active;
     assign xlate_valid_o = misaligned_active ?
-                           misaligned_xlate_valid : lsq_xlate_valid;
+                           misaligned_xlate_valid :
+                           (lsq_launch_enable && lsq_xlate_valid);
     assign xlate_tag_o = misaligned_active ?
                          misaligned_xlate_tag : lsq_xlate_tag;
     assign xlate_write_o = misaligned_active ?
@@ -676,7 +680,7 @@ module openrv64_exec_lsu #(
     assign xlate_vaddr_o = misaligned_active ?
                            misaligned_xlate_vaddr : lsq_xlate_vaddr;
     assign misaligned_xlate_ready = misaligned_active && xlate_ready_i;
-    assign lsq_xlate_ready = !misaligned_active && xlate_ready_i;
+    assign lsq_xlate_ready = lsq_launch_enable && xlate_ready_i;
     assign xlate_resp_ready_o = misaligned_active ?
         misaligned_xlate_resp_ready : lsq_xlate_resp_ready;
 
@@ -746,7 +750,8 @@ module openrv64_exec_lsu #(
         misaligned_store_done_ready : lsq_store_done_ready;
 
     assign mem_valid_o = misaligned_active ? misaligned_mem_valid :
-                         atomic_active ? atomic_mem_valid : lsq_req_valid;
+                         atomic_active ? atomic_mem_valid :
+                         (lsq_launch_enable && lsq_req_valid);
     assign mem_tag_o = misaligned_active ? misaligned_mem_tag :
                        atomic_active ? atomic_mem_tag : lsq_req_tag;
     assign mem_xlate_only_o = 1'b0;
@@ -768,7 +773,7 @@ module openrv64_exec_lsu #(
     assign mem_size_o = misaligned_active ? misaligned_mem_size :
                         atomic_active ? atomic_access_size : lsq_req_size;
     assign misaligned_mem_ready = misaligned_active && mem_ready_i;
-    assign lsq_req_ready = !misaligned_active &&
+    assign lsq_req_ready = lsq_launch_enable &&
                            !atomic_active && mem_ready_i;
 
     reg complete_valid_q;

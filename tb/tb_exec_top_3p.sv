@@ -956,6 +956,118 @@ module tb_exec_top_3p #(
         if (!issue_ready[3])
             fail("architectural flush did not clear speculative stores");
 
+        // A younger aligned store can enter and translate before an older
+        // misaligned load reaches ordered head.  The misaligned engine must
+        // wait for older/in-flight LSQ traffic, but the dormant younger store
+        // must not prevent it from starting: that store cannot become ordered
+        // until the misaligned load completes.
+        ordered_head_valid = 1'b0;
+        packet = packet_base(64'd155, 64'h5920, 32'h0020_b023);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7600;
+        packet[ISSUE_RS2_DATA +: 64] = 64'h0123_4567_89ab_cdef;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+        packet[ISSUE_MEM_WRITE] = 1'b1;
+        issue_payload[3*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[3*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(43);
+        issue_slot[3*SLOT_WIDTH +: SLOT_WIDTH] = 3'd3;
+        issue_valid = 4'b1000;
+        #1;
+        if (!issue_ready[3])
+            fail("younger preexisting store was not accepted");
+        tick();
+        issue_valid = 4'b0000;
+        repeat (3) tick();
+        if (mem_valid && mem_physical)
+            fail("younger preexisting store escaped before ordered head");
+
+        packet = packet_base(64'd154, 64'h591c, 32'h0000_b283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h7504;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(42);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd2;
+        ordered_head_valid = 1'b1;
+        ordered_head_id = ID_WIDTH'(42);
+        ordered_head_slot = 3'd2;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2])
+            fail("older misaligned LD with younger LSQ store was not accepted");
+        tick();
+        issue_valid = 4'b0000;
+
+        for (misaligned_component = 0; misaligned_component < 2;
+             misaligned_component = misaligned_component + 1) begin
+            wait_cycles = 0;
+            while (!mem_valid && (wait_cycles < 20)) begin
+                tick();
+                wait_cycles = wait_cycles + 1;
+            end
+            if (!mem_valid)
+                fail("younger LSQ store deadlocked misaligned LD");
+            expected_component_addr =
+                misaligned_component == 0 ? 64'h7504 : 64'h7508;
+            if (!mem_physical || mem_write ||
+                (mem_addr != expected_component_addr) ||
+                (mem_effective_addr != expected_component_addr) ||
+                (mem_size != 3'd2) || (mem_wstrb != 8'h00))
+                fail("preexisting-younger misaligned LD request mismatch");
+            saved_mem_tag = mem_tag;
+            tick();
+            mem_rdata = misaligned_component == 0 ?
+                64'h4433_2211_0000_0000 :
+                64'h0000_0000_8877_6655;
+            mem_resp_tag = saved_mem_tag;
+            mem_resp_paddr = expected_component_addr;
+            mem_resp_valid = 1'b1;
+            #1;
+            if (!mem_resp_ready)
+                fail("preexisting-younger misaligned response was blocked");
+            tick();
+            mem_resp_valid = 1'b0;
+        end
+        while (!complete_valid[2]) tick();
+        if (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(42) ||
+            complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION] ||
+            (complete_payload[2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'h8877_6655_4433_2211))
+            fail("preexisting-younger misaligned LD completion mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+
+        ordered_head_id = ID_WIDTH'(43);
+        ordered_head_slot = 3'd3;
+        #1;
+        wait_cycles = 0;
+        while (!mem_valid && (wait_cycles < 20)) begin
+            tick();
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!mem_valid || !mem_physical || !mem_write ||
+            (mem_addr != 64'h7600) ||
+            (mem_wdata != 64'h0123_4567_89ab_cdef) ||
+            (mem_wstrb != 8'hff))
+            fail("younger store did not drain after misaligned LD");
+        saved_mem_tag = mem_tag;
+        tick();
+        #1;
+        if (!complete_valid[2])
+            fail("younger store did not complete after misaligned LD");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+        mem_resp_tag = saved_mem_tag;
+        mem_resp_valid = 1'b1;
+        #1;
+        if (!mem_resp_ready)
+            fail("younger store response was blocked");
+        tick();
+        mem_resp_valid = 1'b0;
+
         // Leave an older aligned load in the LSQ. The ordered misaligned
         // operation must be accepted into its pending slot, stop new LSU
         // issue, and wait for the older tag to drain.
@@ -994,9 +1106,9 @@ module tb_exec_top_3p #(
         issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(30);
         issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd6;
         // A younger store presented on the other LSU port in this cycle must
-        // not enter the LSQ behind the pending ordered operation. It could not
-        // become ordered until the misaligned operation completed, while the
-        // misaligned engine cannot start until the LSQ is empty.
+        // not enter behind the pending ordered operation.  Pending ownership
+        // must freeze new LSQ admission before the engine checks whether
+        // older and already-in-flight traffic has drained.
         packet = packet_base(64'd151, 64'h5904, 32'h0060_3023);
         packet[ISSUE_RS1_DATA +: 64] = 64'h7400;
         packet[ISSUE_RS2_DATA +: 64] = 64'h0123_4567_89ab_cdef;

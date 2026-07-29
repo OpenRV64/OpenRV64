@@ -11,10 +11,12 @@ The reference configuration is the three-pipe platform core with BP type 6,
 a one-entry issue window, speculation enabled, a 16-entry retirement window,
 a four-entry pre-retire store queue, a 256 KiB eight-way L2, L1D prefetching,
 a 256-bit AXI generic-bus backend, Zicclsm enabled, 256 MiB of RAM, and one
-Verilator thread. `OPENSBI_3P_ENABLE_ZICCLSM` defaults to one and controls both
-the 3P RTL parameter and its FDT advertisement. Do not silently substitute a
-different configuration and compare its timing as though it were the same
-test.
+Verilator thread. `OPENSBI_3P_ENABLE_ZICCLSM` defaults to one and controls the
+3P RTL parameter. `OPENSBI_3P_ADVERTISE_ZICCLSM` controls its FDT
+advertisement and defaults to the RTL setting. Override the advertisement
+separately only for an explicit hardware-versus-software-path experiment; do
+not silently substitute a different configuration and compare its timing as
+though it were the same test.
 
 ## Preserve evidence
 
@@ -64,6 +66,32 @@ The wrapper defaults to 200 million cycles and a non-terminating checkpoint at
 building, `--manifest-only` to inspect the resolved record without building,
 or `--no-force` only when intentional incremental reuse is part of the
 experiment. Simulator plusargs may follow `--`.
+
+For an interactive long run, launch the same recorder in a detached named tmux
+session:
+
+```bash
+tools/run-linux-3p.sh \
+  --tmux-session zicclsm-boot \
+  --name zicclsm-sequential-l1i \
+  --comment "Full Zicclsm boot; attachable live run." \
+  LINUX_IMAGE=sw/Image.Zicclsm \
+  OPENSBI_3P_ENABLE_ZICCLSM=1
+
+tmux attach-session -t zicclsm-boot
+```
+
+Detach with `Ctrl-b d`. The tmux session ends when the invocation finishes;
+the stamped build log, run log, and final `status` file remain under
+`build/runs/linux-3p/`. The detached launcher only confirms that tmux accepted
+the command; use the session or recorded `status` file for the eventual build
+and simulator result. Session names are restricted to letters, digits,
+underscores, and hyphens, and an existing session is never replaced.
+
+The wrapper buffers its own source before parsing the invocation. Editing
+`tools/run-linux-3p.sh` while an older invocation is running therefore affects
+only future launches; it cannot make the active shell resume from a changed
+file offset after the simulator exits.
 
 ## Inputs
 

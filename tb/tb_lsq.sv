@@ -59,7 +59,7 @@ module tb_lsq;
     logic [TAGW-1:0] store_done_tag;
     wire store_done_ready;
     wire result_valid, result_access_fault, result_page_fault;
-    wire result_store, store_pending, empty;
+    wire result_store, store_pending, quiescent, empty;
     logic result_ready;
     wire [IDW-1:0] result_id;
     wire [2:0] result_slot;
@@ -131,6 +131,7 @@ module tb_lsq;
         .result_access_fault_o(result_access_fault),
         .result_page_fault_o(result_page_fault),
         .result_store_o(result_store), .store_pending_o(store_pending),
+        .quiescent_o(quiescent),
         .empty_o(empty)
     );
 
@@ -869,7 +870,7 @@ module tb_lsq;
     end
 
     wire unused = &{
-        1'b0, result_slot, result_meta, store_pending, empty,
+        1'b0, result_slot, result_meta, store_pending, quiescent, empty,
         atomic_start_valid, atomic_start_tag, atomic_start_id,
         atomic_start_slot, atomic_start_meta, atomic_start_allowed,
         req_vaddr, req_size, req_wdata, req_wstrb
