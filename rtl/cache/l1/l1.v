@@ -441,7 +441,19 @@ module openrv64_l1_cache #(
     // to consume that response.  This keeps coherence progress independent
     // of retirement backpressure while preserving the read-before-snoop
     // ordering point.
-    assign invalidate_ready_o = (state_q == STATE_RUN);
+    /*
+     * A targeted snoop may arrive while a write-through access is waiting
+     * for its lower-memory transaction.  The access does not use the tag
+     * write port until completion, so revoking a tag in parallel is safe.
+     * Requiring STATE_RUN here creates a coherence deadlock: the lower
+     * transaction can be queued behind the home request which is waiting
+     * for this invalidate acknowledgement.
+     *
+     * Full-cache maintenance retains the quiescent STATE_RUN contract.
+     */
+    assign invalidate_ready_o =
+        (state_q == STATE_RUN) ||
+        ((state_q == STATE_ACCESS) && !invalidate_all_i);
     assign req_ready_o = request_base_ready &&
                          (!req_separate_write_resp_i ||
                           write_response_slot_available) &&
@@ -801,6 +813,46 @@ module openrv64_l1_cache #(
                 end
 
                 STATE_ACCESS: begin
+                    if (invalidate_valid_i && invalidate_ready_o) begin
+                        for (way_index = 0; way_index < WAYS;
+                             way_index = way_index + 1) begin
+                            if (valid_q[line_index_of(
+                                    invalidate_set,
+                                    way_index[WAY_INDEX_WIDTH-1:0])] &&
+                                tag_q[line_index_of(
+                                    invalidate_set,
+                                    way_index[WAY_INDEX_WIDTH-1:0])] ==
+                                invalidate_tag) begin
+                                valid_q[line_index_of(
+                                    invalidate_set,
+                                    way_index[WAY_INDEX_WIDTH-1:0])] <=
+                                    1'b0;
+                                aged_q[line_index_of(
+                                    invalidate_set,
+                                    way_index[WAY_INDEX_WIDTH-1:0])] <=
+                                    1'b0;
+                                mesi_q[line_index_of(
+                                    invalidate_set,
+                                    way_index[WAY_INDEX_WIDTH-1:0])] <=
+                                    MESI_INVALID;
+                                dirty_timestamp_q[line_index_of(
+                                    invalidate_set,
+                                    way_index[WAY_INDEX_WIDTH-1:0])] <=
+                                    {DIRTY_TIMESTAMP_WIDTH{1'b0}};
+                            end
+                        end
+                        /*
+                         * If the snoop revoked the line of the pending
+                         * write, do not recreate an untracked private copy
+                         * when its write-through response arrives.
+                         */
+                        if (request_phys_addr_q[
+                                ADDR_WIDTH-1:LINE_OFFSET_BITS] ==
+                            invalidate_addr_i[
+                                ADDR_WIDTH-1:LINE_OFFSET_BITS])
+                            access_updates_line_q <= 1'b0;
+                    end
+
                     if (mem_ready_i) begin
                         if (request_separate_write_resp_q) begin
                             write_response_valid_q <= 1'b1;

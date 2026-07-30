@@ -54,12 +54,12 @@ module tb_soc_rom;
             $fatal(1, "idle ROM produced a response");
         end
 
-        expect_read(64'h0, 64'h01f0_9093_0010_0093,
-                    "LI and SLLI boot instructions");
-        expect_read(64'h4, 64'h01f0_9093_0010_0093,
+        expect_read(64'h0, 64'h0010_0093_f140_2573,
+                    "MHARTID and LI boot instructions");
+        expect_read(64'h4, 64'h0010_0093_f140_2573,
                     "upper instruction uses containing word");
-        expect_read(64'h8, 64'h0000_0000_0000_8067,
-                    "JR boot instruction");
+        expect_read(64'h8, 64'h0000_8067_01f0_9093,
+                    "SLLI and JR boot instructions");
         expect_read(64'h10, 64'h0, "unused ROM is zero");
         expect_read(ROM_BYTES - 8, 64'h0, "final ROM word is zero");
 
@@ -74,7 +74,7 @@ module tb_soc_rom;
         end
         mem_valid = 1'b0;
         #1;
-        expect_read(64'h0, 64'h01f0_9093_0010_0093,
+        expect_read(64'h0, 64'h0010_0093_f140_2573,
                     "ROM write was ignored");
 
         expect_read(ROM_BYTES, 64'h0, "out-of-range local request");

@@ -500,6 +500,46 @@ module tb_l1_cache;
                       "line invalidation");
         expect_request_delta(before_count, 8, "line invalidation refills");
 
+        /*
+         * A coherence snoop must be able to revoke a targeted line while a
+         * write-through access waits for lower memory.  Otherwise a shared
+         * home can wait for this acknowledgement while the access waits for
+         * that same home.  Revoking the pending write's line must also keep
+         * its eventual completion from recreating the private copy.
+         */
+        before_count = memory_requests;
+        mem_stall = 1'b1;
+        fork
+            issue_request(1'b1, 1'b1, 64'h118,
+                          64'h0000_0000_0000_0066, 8'h01,
+                          64'd0, 1'b0,
+                          "stalled write with targeted invalidate");
+            begin
+                wait (mem_valid && mem_write);
+                @(negedge clk);
+                invalidate_valid = 1'b1;
+                invalidate_all = 1'b0;
+                invalidate_addr = 64'h100;
+                #1;
+                if (!invalidate_ready)
+                    $fatal(1,
+                        "targeted invalidate blocked behind write access");
+                @(posedge clk);
+                @(negedge clk);
+                invalidate_valid = 1'b0;
+                invalidate_addr = 64'd0;
+                mem_stall = 1'b0;
+            end
+        join
+        expect_request_delta(
+            before_count, 1, "snooped write-through access");
+        before_count = memory_requests;
+        issue_request(1'b0, 1'b1, 64'h118, 64'd0, 8'd0,
+                      64'h1000_0000_aa00_0066, 1'b0,
+                      "snooped pending write line stays invalid");
+        expect_request_delta(
+            before_count, 8, "snooped pending write line refills");
+
         invalidate(1'b1, 64'd0);
         before_count = memory_requests;
         issue_request(1'b0, 1'b1, 64'h208, 64'd0, 8'd0,

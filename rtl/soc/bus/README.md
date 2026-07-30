@@ -26,4 +26,5 @@ the 256 MiB aperture declared by `mem_map.v`.
 The fixed devices follow the conventional QEMU RISC-V `virt` addresses. GPIO
 and the general-purpose timer are board-specific and occupy separate 4 KiB
 slots outside QEMU's first VirtIO aperture. Reset begins at ROM `0x1000`; its
-three-instruction stub constructs RAM base `0x8000_0000` and jumps there.
+four-instruction stub forwards `mhartid` in `a0`, constructs RAM base
+`0x8000_0000`, and jumps there.

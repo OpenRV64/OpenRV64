@@ -2,9 +2,10 @@
 
 // Small target-local boot ROM.
 //
-// The initial program constructs the RAM base (0x8000_0000) in x1 and jumps
-// to it:
+// The initial program forwards the architectural hart ID in a0, constructs
+// the RAM base (0x8000_0000) in x1, and jumps to it:
 //
+//     csrr a0, mhartid
 //     addi x1, x0, 1       // li x1, 1
 //     slli x1, x1, 31
 //     jalr x0, 0(x1)       // jr x1
@@ -38,8 +39,8 @@ module openrv64_soc_rom #(
         end
 
         // Two little-endian 32-bit instructions per 64-bit bus word.
-        rom_q[0] = 64'h01f0_9093_0010_0093;
-        rom_q[1] = 64'h0000_0000_0000_8067;
+        rom_q[0] = 64'h0010_0093_f140_2573;
+        rom_q[1] = 64'h0000_8067_01f0_9093;
     end
 
     assign mem_ready_o = mem_valid_i;

@@ -421,10 +421,13 @@ The RAM image layout is:
 0x8ff0_0000  flattened device tree
 ```
 
-The ROM remains a policy-free jump to `0x8000_0000`; the trampoline supplies
-the OpenSBI entry registers and jumps to fw_jump. The build script forces
-OpenSBI-generated linker inputs to refresh, checks the linked entry address,
-and writes bounded memory fragments under `build/opensbi/artifacts/`.
+The ROM reads `mhartid` into `a0` and jumps to `0x8000_0000`; the trampoline
+preserves that hart ID, supplies the remaining OpenSBI entry registers, and
+jumps to fw_jump. The build script forces OpenSBI-generated linker inputs to
+refresh, checks the linked entry address, derives the linked
+`sbi_hsm_hart_wait()` WFI PC, and writes bounded memory fragments under
+`build/opensbi/artifacts/`. `OPENRV64_HART_COUNT` selects a one- or four-hart
+device tree.
 
 Build only the artifacts with:
 
@@ -452,3 +455,16 @@ completion. The device tree advertises Svade and 256 MiB of RAM.
 `make sim-opensbi-icarus` provides a much slower
 Icarus path. Set `OPENSBI_DEBUG=1` only when an unoptimized OpenSBI build is
 intentional; the script ignores an unrelated ambient `DEBUG` variable.
+
+The focused four-core coherent harness provides two additional targets:
+
+```sh
+make sim-opensbi-4h-held  # only hart 0 leaves reset
+make sim-opensbi-4h-smp   # all harts enter OpenSBI
+```
+
+The SMP target requires harts 1 through 3 to retire the exact build-derived
+OpenSBI HSM WFI instruction while remaining in M-mode, and requires hart 0 to
+complete the S-mode payload. Because WFI is currently implemented as a legal
+immediately-resuming hint, the secondary debug PCs spin through the HSM wait
+loop rather than remaining fixed at the WFI address.

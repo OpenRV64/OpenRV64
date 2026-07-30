@@ -8,16 +8,19 @@
 /*
  * Four full three-pipe cores behind one coherent CCX home and shared L2.
  *
- * This is deliberately below the platform boundary: there is no CLINT, PLIC,
- * UART, AXI fabric, or DDR controller.  All interrupt inputs are tied low and
- * a bounded-latency 512-bit memory terminates the L2 southbound interface.
+ * The normal four-hart workloads remain below the platform boundary and use a
+ * bounded-latency 512-bit memory.  The OpenSBI modes additionally route L2
+ * device bypasses to one shared CLINT, PLIC, and UART. +opensbi_held holds
+ * harts 1-3 in reset; +opensbi_smp releases all four and checks that the
+ * secondary harts retire the build-derived OpenSBI HSM WFI instruction.
+ * Neither mode is a DDR timing test.
  *
  * Plusargs select the original private-root image, a shared Sv39 address
  * space, or a shared physical image running S-mode with satp Bare.
  * Shared-space workloads use mhartid-indexed private pages; the atomic
- * workload additionally contends on one common LR/SC word.
- * This remains below the Linux/platform boundary and the current coherence
- * home serializes global transactions.
+ * workload additionally contends on one common LR/SC word.  Those finite
+ * workloads remain below the Linux/platform boundary.  The current coherence
+ * home serializes global transactions in every mode.
  */
 module tb_4h_3p #(
     parameter integer MEMORY_LATENCY = 8,
@@ -26,18 +29,49 @@ module tb_4h_3p #(
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L2_CACHE_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
-    parameter integer L2_MSHRS = 8
+    parameter integer L2_MSHRS = 8,
+    parameter integer MEMORY_BYTES = 32'h0032_3000,
+    parameter integer ENABLE_BOOT_ROM = 0,
+    parameter logic [31:0] OPENSBI_FDT_BASE_LO = 32'h80f0_0000
 );
     localparam integer NUM_HARTS = 4;
     localparam [63:0] PHYSICAL_BASE = 64'h0000_0000_8000_0000;
     localparam [63:0] VIRTUAL_BASE = 64'h0000_0000_4000_0000;
     localparam [63:0] PREFIX_STRIDE = 64'h0000_0000_0010_0000;
-    localparam integer MEMORY_BYTES = 32'h0032_3000;
     localparam integer MEMORY_WORDS = MEMORY_BYTES / 64;
     localparam integer RETIRE_RESULT_PC_LSB = 329;
+    localparam [63:0] ROM_BASE = 64'h0000_0000_0000_1000;
+    localparam [63:0] ROM_SIZE = 64'h0000_0000_0000_1000;
+    localparam [63:0] CLINT_BASE = 64'h0000_0000_0200_0000;
+    localparam [63:0] CLINT_SIZE = 64'h0000_0000_0001_0000;
+    localparam [63:0] PLIC_BASE = 64'h0000_0000_0c00_0000;
+    localparam [63:0] PLIC_SIZE = 64'h0000_0000_0400_0000;
+    localparam [63:0] UART_BASE = 64'h0000_0000_1000_0000;
+    localparam [63:0] UART_SIZE = 64'h0000_0000_0000_0100;
+    localparam [63:0] OPENSBI_FDT_BASE =
+        {32'd0, OPENSBI_FDT_BASE_LO};
+    localparam [63:0] OPENSBI_MAGIC_ADDR =
+        64'h0000_0000_80e0_0000;
+    localparam [63:0] OPENSBI_MAGIC_VALUE =
+        64'h5342_4950_4153_5301;
+    localparam integer OPENSBI_TRAMPOLINE_WORDS = 32'h0001_0000 / 8;
+    localparam integer OPENSBI_FIRMWARE_WORDS = 32'h0010_0000 / 8;
+    localparam integer OPENSBI_PAYLOAD_WORDS = 32'h0001_0000 / 8;
+    localparam integer OPENSBI_FDT_WORDS = 32'h0001_0000 / 8;
 
     logic clk;
     logic rst_n;
+    wire [NUM_HARTS-1:0] hart_rst_n;
+    wire [NUM_HARTS-1:0] clint_msip;
+    wire [NUM_HARTS-1:0] clint_mtip;
+    wire [NUM_HARTS-1:0] plic_seip;
+    wire [63:0] clint_mtime;
+    wire uart_irq;
+    integer opensbi_held;
+    integer opensbi_smp;
+    integer opensbi_mode;
+    logic [63:0] opensbi_hsm_wfi_pc;
+    logic [NUM_HARTS-1:0] opensbi_hsm_wfi_seen;
 
     wire [NUM_HARTS-1:0] hart_req_valid;
     wire [NUM_HARTS-1:0] hart_req_ready;
@@ -189,6 +223,26 @@ module tb_4h_3p #(
     wire bus_resp_ready;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
     logic bus_resp_error;
+    wire clint_selected;
+    wire plic_selected;
+    wire uart_selected;
+    wire rom_selected;
+    wire device_selected;
+    wire [63:0] device_wdata;
+    wire [7:0] device_wstrb;
+    wire [63:0] clint_rdata;
+    wire [63:0] plic_rdata;
+    wire [63:0] uart_rdata;
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] rom_rdata;
+    wire clint_ready;
+    wire plic_ready;
+    wire uart_ready;
+    wire [7:0] rom_ready;
+    wire uart_tx;
+    wire uart_dtr_n;
+    wire uart_rts_n;
+    wire uart_out1_n;
+    wire uart_out2_n;
 
     wire [NUM_HARTS*64-1:0] dbg_pc;
     wire [NUM_HARTS*32-1:0] dbg_instr;
@@ -196,6 +250,7 @@ module tb_4h_3p #(
 
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_WORDS-1];
+    logic [63:0] image_words [0:OPENSBI_FIRMWARE_WORDS-1];
     logic memory_pending;
     logic memory_pending_write;
     logic [63:0] memory_pending_addr;
@@ -255,6 +310,25 @@ module tb_4h_3p #(
     logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] home_request_hart;
     logic protocol_error;
     logic probe_endpoint_protocol_error;
+    logic opensbi_s_mode_seen;
+    logic opensbi_banner_seen;
+    logic opensbi_payload_seen;
+    logic opensbi_magic_seen;
+    integer opensbi_banner_index;
+    integer opensbi_payload_index;
+    integer opensbi_uart_bytes;
+    localparam integer OPENSBI_TRACE_DEPTH = 128;
+    logic [63:0] opensbi_trace_pc [0:OPENSBI_TRACE_DEPTH-1];
+    logic [31:0] opensbi_trace_instr [0:OPENSBI_TRACE_DEPTH-1];
+    logic [4:0] opensbi_trace_cause [0:OPENSBI_TRACE_DEPTH-1];
+    logic opensbi_trace_exception [0:OPENSBI_TRACE_DEPTH-1];
+    integer opensbi_trace_write;
+    integer opensbi_trace_count;
+    integer opensbi_hang_cycles;
+    integer opensbi_trace_dump;
+    integer opensbi_trace_slot;
+    string opensbi_banner = "OpenSBI v1.9";
+    string opensbi_payload_text = "OPENRV64 SBI TIMER PAYLOAD";
 
     function automatic [63:0] hart_prefix(input integer hart);
         hart_prefix = PHYSICAL_BASE + PREFIX_STRIDE * hart;
@@ -298,6 +372,16 @@ module tb_4h_3p #(
             PHYSICAL_BASE + (atomic_counter_va - VIRTUAL_BASE);
     endfunction
 
+    generate
+        for (genvar reset_hart = 0;
+             reset_hart < NUM_HARTS;
+             reset_hart = reset_hart + 1) begin : g_hart_reset
+            assign hart_rst_n[reset_hart] =
+                rst_n &&
+                ((opensbi_held == 0) || (reset_hart == 0));
+        end
+    endgenerate
+
     genvar hart;
     generate
         for (hart = 0; hart < NUM_HARTS; hart = hart + 1) begin : g_hart
@@ -316,9 +400,11 @@ module tb_4h_3p #(
                       RETIRE_RESULT_PC_LSB +: 64] == done_pc));
 
             openrv64_rv64_top_3p #(
-                .RESET_VECTOR(PHYSICAL_BASE),
+                .RESET_VECTOR(
+                    (ENABLE_BOOT_ROM != 0) ? ROM_BASE : PHYSICAL_BASE),
                 .BUS_CONFIG(`OPENRV64_BUS_AXI),
                 .HART_ID(`OPENRV64_CCX_HART_ID_WIDTH'(hart)),
+                .ENABLE_RV64M(1),
                 .ENABLE_ISSUE_WINDOW(1),
                 .ENABLE_SPECULATION_WINDOW(1),
                 .ENABLE_POSTED_STORES(1),
@@ -335,7 +421,7 @@ module tb_4h_3p #(
                 .L1D_CACHEABLE_SIZE(64'(MEMORY_BYTES))
             ) u_core (
                 .clk(clk),
-                .rst_n(rst_n),
+                .rst_n(hart_rst_n[hart]),
                 .mem_ready(1'b0),
                 .mem_rdata(64'd0),
                 .mem_error(1'b0),
@@ -461,12 +547,15 @@ module tb_4h_3p #(
                     l1d_invalidate_addr[hart*64 +: 64]),
                 .coherent_reservation_clear_i(
                     coherent_reservation_clear[hart]),
-                .irq_m_software(1'b0),
-                .irq_m_timer(1'b0),
+                .irq_m_software(
+                    opensbi_mode && clint_msip[hart]),
+                .irq_m_timer(
+                    opensbi_mode && clint_mtip[hart]),
                 .irq_m_external(1'b0),
                 .irq_s_software(1'b0),
                 .irq_s_timer(1'b0),
-                .irq_s_external(1'b0),
+                .irq_s_external(
+                    opensbi_mode && plic_seip[hart]),
                 .dbg_pc(dbg_pc[hart*64 +: 64]),
                 .dbg_instr(dbg_instr[hart*32 +: 32]),
                 .dbg_halted(dbg_halted[hart])
@@ -484,27 +573,58 @@ module tb_4h_3p #(
                     root_seen[hart] <= 1'b0;
                     satp_seen[hart] <= 1'b0;
                     supervisor_fetch_seen[hart] <= 1'b0;
+                    opensbi_hsm_wfi_seen[hart] <= 1'b0;
                 end else begin
                     if ((atomic_debug != 0) && (cycles != 0) &&
                         ((cycles % 500) == 0))
                         $display(
-                            "ATOMIC_HART_DEBUG cycle=%0d hart=%0d active=%b irrev=%b inflight=%b engine_state=%0d engine_op=%0d local_res=%b l1_backend=%0d l1_res_req=%b l1_res_done=%b l1_req=%b/%b",
+                            "ATOMIC_HART_DEBUG cycle=%0d hart=%0d active=%b irrev=%b inflight=%b engine_state=%0d engine_op=%0d atomic_addr=%h local_res=%b l1_backend=%0d l1_array=%0d l1_res_req=%b l1_res_done=%b l1_req=%b/%b home_state=%0d home_active=%b home_op=%0d home_addr=%h home_src=%0d home_hart=%0d probe_target=%b mask=%b issue=%b ack=%b lane_vr=%b/%b resp_vr=%b/%b inv_vr=%b/%b l2_cmd=%0d l2_rsp=%0d l2_mshr=%b:%0d,%b:%0d bus=%b/%b/%b/%b mem=%b:%0d",
                             cycles, hart,
                             u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.active_q,
                             u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.irrevocable_q,
                             u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.req_inflight_q,
                             u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.state_q,
                             u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.op_q,
+                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.addr_q,
                             u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.reservation_valid_q,
                             u_core.u_bus.g_ccx.u_bus.u_l1d.backend_state_q,
+                            u_core.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.
+                                g_cache.u_cache.state_q,
                             u_core.u_bus.g_ccx.u_bus.u_l1d.request_reservation_q,
                             u_core.u_bus.g_ccx.u_bus.u_l1d.coherent_lr_reservation_done_q,
                             u_core.u_bus.g_ccx.u_bus.u_l1d.req_valid_i,
-                            u_core.u_bus.g_ccx.u_bus.u_l1d.req_ready_o);
+                            u_core.u_bus.g_ccx.u_bus.u_l1d.req_ready_o,
+                            u_coherence_home.state_q,
+                            home_request_active, home_request_op,
+                            u_coherence_home.req_addr_q,
+                            u_coherence_home.req_source_id_q,
+                            u_coherence_home.req_hart_id_q,
+                            u_coherence_home.probe_target_q,
+                            u_coherence_home.probe_cache_mask_q,
+                            u_coherence_home.u_probe_tracker.issue_pending_q,
+                            u_coherence_home.u_probe_tracker.ack_pending_q,
+                            probe_valid, probe_ready,
+                            probe_resp_valid, probe_resp_ready,
+                            l1d_invalidate_valid, l1d_invalidate_ready,
+                            u_l2.cmd_count_q, u_l2.response_count_q,
+                            u_l2.mshr_valid_q[0],
+                            u_l2.mshr_state_q[0],
+                            u_l2.mshr_valid_q[1],
+                            u_l2.mshr_state_q[1],
+                            bus_req_valid, bus_req_ready,
+                            bus_resp_valid, bus_resp_ready,
+                            memory_pending, memory_delay);
                     retired[hart] <= retired[hart] +
                         u_core.backend_retire_arch[0] +
                         u_core.backend_retire_arch[1] +
                         u_core.backend_retire_arch[2];
+                    if ((opensbi_smp != 0) && (hart != 0) &&
+                        (|u_core.backend_retire_arch) &&
+                        (u_core.backend_retire_pc ==
+                         opensbi_hsm_wfi_pc) &&
+                        (u_core.backend_retire_instr ==
+                         `RV64_INSTR_WFI))
+                        opensbi_hsm_wfi_seen[hart] <= 1'b1;
                     if (u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
                         store_alloc_fire)
                         store_allocations[hart] <=
@@ -811,6 +931,111 @@ module tb_4h_3p #(
         .protocol_error_o(probe_endpoint_protocol_error)
     );
 
+    assign rom_selected =
+        opensbi_mode && (ENABLE_BOOT_ROM != 0) &&
+        (bus_req_addr >= ROM_BASE) &&
+        (bus_req_addr < ROM_BASE + ROM_SIZE);
+    assign clint_selected =
+        opensbi_mode && !bus_req_cacheable &&
+        (bus_req_addr >= CLINT_BASE) &&
+        (bus_req_addr < CLINT_BASE + CLINT_SIZE);
+    assign plic_selected =
+        opensbi_mode && !bus_req_cacheable &&
+        (bus_req_addr >= PLIC_BASE) &&
+        (bus_req_addr < PLIC_BASE + PLIC_SIZE);
+    assign uart_selected =
+        opensbi_mode && !bus_req_cacheable &&
+        (bus_req_addr >= UART_BASE) &&
+        (bus_req_addr < UART_BASE + UART_SIZE);
+    assign device_selected =
+        rom_selected || clint_selected || plic_selected || uart_selected;
+    assign device_wdata =
+        bus_req_wdata >> (bus_req_addr[5:3] * 64);
+    assign device_wstrb =
+        bus_req_wstrb >> (bus_req_addr[5:3] * 8);
+
+    generate
+        for (genvar rom_lane = 0; rom_lane < 8;
+             rom_lane = rom_lane + 1) begin : g_rom_lane
+            openrv64_soc_rom u_rom (
+                .mem_valid_i(
+                    bus_req_valid && bus_req_ready &&
+                    rom_selected),
+                .mem_ready_o(rom_ready[rom_lane]),
+                .mem_write_i(bus_req_write),
+                .mem_addr_i(
+                    (bus_req_addr - ROM_BASE) +
+                    rom_lane*8),
+                .mem_wdata_i(device_wdata),
+                .mem_wstrb_i(device_wstrb),
+                .mem_rdata_o(
+                    rom_rdata[rom_lane*64 +: 64])
+            );
+        end
+    endgenerate
+
+    openrv64_clint #(
+        .NUM_HARTS(NUM_HARTS)
+    ) u_clint (
+        .clk_i(clk),
+        .rst_ni(rst_n),
+        .mtime_tick_i(1'b1),
+        .mem_valid_i(
+            bus_req_valid && bus_req_ready && clint_selected),
+        .mem_ready_o(clint_ready),
+        .mem_write_i(bus_req_write),
+        .mem_addr_i(bus_req_addr - CLINT_BASE),
+        .mem_wdata_i(device_wdata),
+        .mem_wstrb_i(device_wstrb),
+        .mem_rdata_o(clint_rdata),
+        .msip_o(clint_msip),
+        .mtip_o(clint_mtip),
+        .mtime_o(clint_mtime)
+    );
+
+    openrv64_plic #(
+        .NUM_HARTS(NUM_HARTS),
+        .NUM_SOURCES(32),
+        .PRIORITY_WIDTH(3)
+    ) u_plic (
+        .clk_i(clk),
+        .rst_ni(rst_n),
+        .irq_sources_i({31'd0, uart_irq}),
+        .mem_valid_i(
+            bus_req_valid && bus_req_ready && plic_selected),
+        .mem_ready_o(plic_ready),
+        .mem_write_i(bus_req_write),
+        .mem_addr_i(bus_req_addr - PLIC_BASE),
+        .mem_wdata_i(device_wdata),
+        .mem_wstrb_i(device_wstrb),
+        .mem_rdata_o(plic_rdata),
+        .seip_o(plic_seip)
+    );
+
+    openrv64_uart16550 u_uart (
+        .clk_i(clk),
+        .rst_ni(rst_n),
+        .rx_i(1'b1),
+        .tx_o(uart_tx),
+        .cts_ni(1'b1),
+        .dsr_ni(1'b1),
+        .ri_ni(1'b1),
+        .dcd_ni(1'b1),
+        .dtr_no(uart_dtr_n),
+        .rts_no(uart_rts_n),
+        .out1_no(uart_out1_n),
+        .out2_no(uart_out2_n),
+        .mem_valid_i(
+            bus_req_valid && bus_req_ready && uart_selected),
+        .mem_ready_o(uart_ready),
+        .mem_write_i(bus_req_write),
+        .mem_addr_i(bus_req_addr - UART_BASE),
+        .mem_wdata_i(device_wdata),
+        .mem_wstrb_i(device_wstrb),
+        .mem_rdata_o(uart_rdata),
+        .irq_o(uart_irq)
+    );
+
     assign bus_req_ready = !memory_pending && !bus_resp_valid;
 
     /*
@@ -913,35 +1138,62 @@ module tb_4h_3p #(
                 bus_resp_valid <= 1'b0;
 
             if (bus_req_valid && bus_req_ready) begin
-                if ((bus_req_size != 3'd6) ||
-                    (bus_req_addr[5:0] != 6'd0) ||
-                    !bus_req_cacheable ||
-                    (bus_req_addr < PHYSICAL_BASE) ||
-                    (bus_req_addr >= PHYSICAL_BASE + MEMORY_BYTES))
-                    $fatal(1,
-                        "malformed/out-of-range L2 memory request addr=%h size=%0d",
-                        bus_req_addr, bus_req_size);
-                memory_pending <= 1'b1;
-                memory_pending_write <= bus_req_write;
-                memory_pending_addr <= bus_req_addr;
-                memory_delay <= MEMORY_LATENCY - 1;
-                if (bus_req_write) begin
-                    memory_writes <= memory_writes + 1;
-                    for (memory_byte = 0;
-                         memory_byte <
-                             `OPENRV64_CCX_LINE_STRB_WIDTH;
-                         memory_byte = memory_byte + 1)
-                        if (bus_req_wstrb[memory_byte])
-                            memory[memory_line(bus_req_addr)][
-                                memory_byte*8 +: 8] <=
-                                bus_req_wdata[memory_byte*8 +: 8];
+                    bus_resp_error <= 1'b0;
+                if (device_selected) begin
+                    bus_resp_valid <= 1'b1;
+                    if (rom_selected) begin
+                        if ((bus_req_size != 3'd6) ||
+                            (bus_req_addr[5:0] != 6'd0))
+                            $fatal(1,
+                                "malformed ROM line request addr=%h size=%0d",
+                                bus_req_addr, bus_req_size);
+                        bus_resp_rdata <= rom_rdata;
+                    end
+                    else if (clint_selected)
+                        bus_resp_rdata <=
+                            {448'd0, clint_rdata} <<
+                            (bus_req_addr[5:3] * 64);
+                    else if (plic_selected)
+                        bus_resp_rdata <=
+                            {448'd0, plic_rdata} <<
+                            (bus_req_addr[5:3] * 64);
+                    else
+                        bus_resp_rdata <=
+                            {448'd0, uart_rdata} <<
+                            (bus_req_addr[5:3] * 64);
                 end else begin
-                    memory_reads <= memory_reads + 1;
+                    if ((bus_req_size != 3'd6) ||
+                        (bus_req_addr[5:0] != 6'd0) ||
+                        !bus_req_cacheable ||
+                        (bus_req_addr < PHYSICAL_BASE) ||
+                        (bus_req_addr >= PHYSICAL_BASE + MEMORY_BYTES))
+                        $fatal(1,
+                            "malformed/out-of-range L2 request addr=%h size=%0d cacheable=%0b",
+                            bus_req_addr, bus_req_size,
+                            bus_req_cacheable);
+                    memory_pending <= 1'b1;
+                    memory_pending_write <= bus_req_write;
+                    memory_pending_addr <= bus_req_addr;
+                    memory_delay <= MEMORY_LATENCY - 1;
+                    if (bus_req_write) begin
+                        memory_writes <= memory_writes + 1;
+                        for (memory_byte = 0;
+                             memory_byte <
+                                 `OPENRV64_CCX_LINE_STRB_WIDTH;
+                             memory_byte = memory_byte + 1)
+                            if (bus_req_wstrb[memory_byte])
+                                memory[memory_line(bus_req_addr)][
+                                    memory_byte*8 +: 8] <=
+                                    bus_req_wdata[memory_byte*8 +: 8];
+                    end else begin
+                        memory_reads <= memory_reads + 1;
+                    end
                 end
             end else if (memory_pending) begin
                 if (memory_delay == 0) begin
                     memory_pending <= 1'b0;
                     bus_resp_valid <= 1'b1;
+                    bus_resp_error <= 1'b0;
                     bus_resp_rdata <= memory_pending_write ?
                         {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}} :
                         memory[memory_line(memory_pending_addr)];
@@ -972,6 +1224,7 @@ module tb_4h_3p #(
                 {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
             atomic_last_value <= 0;
             atomic_final_seen <= 1'b0;
+            opensbi_magic_seen <= 1'b0;
             for (mailbox_hart = 0;
                  mailbox_hart < NUM_HARTS;
                  mailbox_hart = mailbox_hart + 1) begin
@@ -999,6 +1252,23 @@ module tb_4h_3p #(
                       (l2_req_op == `OPENRV64_CCX_OP_WRITE)))
                     $fatal(1, "L2 write data without a write command");
                 l2_write_active <= 1'b0;
+
+                if (opensbi_mode &&
+                    ((observed_write_addr &
+                      64'hffff_ffff_ffff_ffc0) ==
+                     (OPENSBI_MAGIC_ADDR &
+                      64'hffff_ffff_ffff_ffc0)) &&
+                    (l2_wstrb[
+                        OPENSBI_MAGIC_ADDR[5:0] +: 8] == 8'hff) &&
+                    (l2_wdata[
+                        OPENSBI_MAGIC_ADDR[5:0]*8 +: 64] ==
+                     OPENSBI_MAGIC_VALUE)) begin
+                    if (observed_write_hart != 0)
+                        $fatal(1,
+                            "OpenSBI completion written by non-boot hart %0d",
+                            observed_write_hart);
+                    opensbi_magic_seen <= 1'b1;
+                end
 
                 for (mailbox_hart = 0;
                      mailbox_hart < NUM_HARTS;
@@ -1095,10 +1365,76 @@ module tb_4h_3p #(
 
     integer init_hart;
     string memh_path;
+    string trampoline_memh_path;
+    string firmware_memh_path;
+    string payload_memh_path;
+    string fdt_memh_path;
     integer memh_words;
+
+    task automatic load_image_fragment;
+        input string path;
+        input [63:0] base;
+        input integer word_count;
+        integer image_word;
+        begin
+            if ((base < PHYSICAL_BASE) ||
+                (base + word_count*8 >
+                 PHYSICAL_BASE + MEMORY_BYTES))
+                $fatal(1,
+                    "OpenSBI image out of range base=%h words=%0d memory_bytes=%0d",
+                    base, word_count, MEMORY_BYTES);
+            $readmemh(path, image_words, 0, word_count - 1);
+            for (image_word = 0;
+                 image_word < word_count;
+                 image_word = image_word + 1)
+                memory[
+                    memory_line(base) + (image_word >> 3)][
+                    (image_word & 7)*64 +: 64] =
+                        image_words[image_word];
+        end
+    endtask
+
+    task automatic match_opensbi_byte;
+        input logic [7:0] value;
+        begin
+            if (!opensbi_banner_seen) begin
+                if (value ==
+                    opensbi_banner[opensbi_banner_index]) begin
+                    opensbi_banner_index =
+                        opensbi_banner_index + 1;
+                    if (opensbi_banner_index ==
+                        opensbi_banner.len())
+                        opensbi_banner_seen = 1'b1;
+                end else begin
+                    opensbi_banner_index =
+                        (value == opensbi_banner[0]) ? 1 : 0;
+                end
+            end
+            if (!opensbi_payload_seen) begin
+                if (value ==
+                    opensbi_payload_text[
+                        opensbi_payload_index]) begin
+                    opensbi_payload_index =
+                        opensbi_payload_index + 1;
+                    if (opensbi_payload_index ==
+                        opensbi_payload_text.len())
+                        opensbi_payload_seen = 1'b1;
+                end else begin
+                    opensbi_payload_index =
+                        (value == opensbi_payload_text[0]) ? 1 : 0;
+                end
+            end
+        end
+    endtask
+
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
+        opensbi_held = $test$plusargs("opensbi_held");
+        opensbi_smp = $test$plusargs("opensbi_smp");
+        opensbi_mode =
+            (opensbi_held != 0) || (opensbi_smp != 0);
+        opensbi_hsm_wfi_pc = 64'd0;
         done_pc = 64'd0;
         mailbox_va = 64'd0;
         result_va = 64'd0;
@@ -1118,6 +1454,15 @@ module tb_4h_3p #(
         cycles = 0;
         first_done_cycle = -1;
         progress_before_first_done = 1'b0;
+        opensbi_s_mode_seen = 1'b0;
+        opensbi_banner_seen = 1'b0;
+        opensbi_payload_seen = 1'b0;
+        opensbi_banner_index = 0;
+        opensbi_payload_index = 0;
+        opensbi_uart_bytes = 0;
+        opensbi_trace_write = 0;
+        opensbi_trace_count = 0;
+        opensbi_hang_cycles = 0;
 
         for (memory_index = 0;
              memory_index < MEMORY_WORDS;
@@ -1125,23 +1470,80 @@ module tb_4h_3p #(
             memory[memory_index] =
                 {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
 
-        if (!$value$plusargs("memh=%s", memh_path))
-            $fatal(1, "tb_4h_3p requires +memh=<512-bit image>");
-        memh_words = MEMORY_WORDS;
-        void'($value$plusargs("memh_words=%d", memh_words));
-        if ((memh_words <= 0) || (memh_words > MEMORY_WORDS))
-            $fatal(1, "invalid memh_words=%0d", memh_words);
-        $readmemh(memh_path, memory, 0, memh_words - 1);
+        if (opensbi_mode) begin
+            if ((opensbi_held != 0) && (opensbi_smp != 0))
+                $fatal(1,
+                    "+opensbi_held and +opensbi_smp are mutually exclusive");
+            if (ENABLE_BOOT_ROM == 0)
+                $fatal(1,
+                    "OpenSBI mode requires ENABLE_BOOT_ROM=1");
+            if ((opensbi_smp != 0) &&
+                !$value$plusargs(
+                    "opensbi_hsm_wfi_pc=%h",
+                    opensbi_hsm_wfi_pc))
+                $fatal(1,
+                    "+opensbi_smp requires +opensbi_hsm_wfi_pc");
+            if (!$value$plusargs(
+                    "trampoline_memh=%s",
+                    trampoline_memh_path) ||
+                !$value$plusargs(
+                    "firmware_memh=%s",
+                    firmware_memh_path) ||
+                !$value$plusargs(
+                    "payload_memh=%s",
+                    payload_memh_path) ||
+                !$value$plusargs(
+                    "fdt_memh=%s",
+                    fdt_memh_path))
+                $fatal(1,
+                    "OpenSBI mode requires trampoline, firmware, payload, and FDT memh paths");
+            load_image_fragment(
+                trampoline_memh_path,
+                PHYSICAL_BASE,
+                OPENSBI_TRAMPOLINE_WORDS);
+            load_image_fragment(
+                firmware_memh_path,
+                PHYSICAL_BASE + 64'h0010_0000,
+                OPENSBI_FIRMWARE_WORDS);
+            load_image_fragment(
+                payload_memh_path,
+                PHYSICAL_BASE + 64'h0020_0000,
+                OPENSBI_PAYLOAD_WORDS);
+            load_image_fragment(
+                fdt_memh_path,
+                OPENSBI_FDT_BASE,
+                OPENSBI_FDT_WORDS);
+            max_cycles = 20000000;
+            if (opensbi_smp != 0)
+                $display(
+                    "OpenSBI 4H SMP load complete ROM=%h FDT=%h HSM_WFI_PC=%h memory_bytes=%0d",
+                    ROM_BASE, OPENSBI_FDT_BASE,
+                    opensbi_hsm_wfi_pc, MEMORY_BYTES);
+            else
+                $display(
+                    "OpenSBI 4H held-reset load complete ROM=%h FDT=%h memory_bytes=%0d",
+                    ROM_BASE, OPENSBI_FDT_BASE, MEMORY_BYTES);
+        end else begin
+            if (!$value$plusargs("memh=%s", memh_path))
+                $fatal(1,
+                    "tb_4h_3p requires +memh=<512-bit image>");
+            memh_words = MEMORY_WORDS;
+            void'($value$plusargs("memh_words=%d", memh_words));
+            if ((memh_words <= 0) ||
+                (memh_words > MEMORY_WORDS))
+                $fatal(1, "invalid memh_words=%0d", memh_words);
+            $readmemh(memh_path, memory, 0, memh_words - 1);
 
-        if ($value$plusargs("done_pc=%h", done_pc))
-            done_pc_valid = 1'b1;
-        if ($value$plusargs("mailbox_va=%h", mailbox_va))
-            mailbox_va_valid = 1'b1;
-        if ($value$plusargs("result_va=%h", result_va))
-            result_va_valid = 1'b1;
-        if ($value$plusargs(
-                "atomic_counter_va=%h", atomic_counter_va))
-            atomic_counter_va_valid = 1'b1;
+            if ($value$plusargs("done_pc=%h", done_pc))
+                done_pc_valid = 1'b1;
+            if ($value$plusargs("mailbox_va=%h", mailbox_va))
+                mailbox_va_valid = 1'b1;
+            if ($value$plusargs("result_va=%h", result_va))
+                result_va_valid = 1'b1;
+            if ($value$plusargs(
+                    "atomic_counter_va=%h", atomic_counter_va))
+                atomic_counter_va_valid = 1'b1;
+        end
         void'($value$plusargs("shared_satp=%d", shared_satp));
         void'($value$plusargs("bare=%d", bare_mode));
         void'($value$plusargs("mailbox_stride=%d", mailbox_stride));
@@ -1150,15 +1552,18 @@ module tb_4h_3p #(
         void'($value$plusargs("atomic_test=%d", atomic_test));
         void'($value$plusargs("atomic_debug=%d", atomic_debug));
         void'($value$plusargs("max_cycles=%d", max_cycles));
-        if (!done_pc_valid || !mailbox_va_valid)
+        if (!opensbi_mode &&
+            (!done_pc_valid || !mailbox_va_valid))
             $fatal(1, "tb_4h_3p requires +done_pc and +mailbox_va");
-        if (((shared_satp != 0) || (bare_mode != 0)) &&
+        if (!opensbi_mode &&
+            ((shared_satp != 0) || (bare_mode != 0)) &&
             (mailbox_stride <= 0))
             $fatal(1,
                 "shared-image workload requires positive +mailbox_stride");
-        if ((shared_satp != 0) && (bare_mode != 0))
+        if (!opensbi_mode &&
+            (shared_satp != 0) && (bare_mode != 0))
             $fatal(1, "+shared_satp and +bare are mutually exclusive");
-        if ((atomic_test != 0) &&
+        if (!opensbi_mode && (atomic_test != 0) &&
             (!atomic_counter_va_valid || !result_va_valid ||
              (atomic_expected <= 0) || (result_expected <= 0)))
             $fatal(1,
@@ -1171,6 +1576,105 @@ module tb_4h_3p #(
     always @(posedge clk) begin
         if (rst_n) begin
             cycles <= cycles + 1;
+
+            if (opensbi_mode) begin
+                if ((|g_hart[0].u_core.backend_retire_arch) ||
+                    g_hart[0].u_core.backend_exception) begin
+                    opensbi_trace_pc[opensbi_trace_write] <=
+                        g_hart[0].u_core.backend_retire_pc;
+                    opensbi_trace_instr[opensbi_trace_write] <=
+                        g_hart[0].u_core.backend_retire_instr;
+                    opensbi_trace_cause[opensbi_trace_write] <=
+                        g_hart[0].u_core.backend_cause;
+                    opensbi_trace_exception[opensbi_trace_write] <=
+                        g_hart[0].u_core.backend_exception;
+                    opensbi_trace_write <=
+                        (opensbi_trace_write + 1) %
+                        OPENSBI_TRACE_DEPTH;
+                    if (opensbi_trace_count < OPENSBI_TRACE_DEPTH)
+                        opensbi_trace_count <=
+                            opensbi_trace_count + 1;
+                end
+
+                if ((dbg_pc[63:0] ==
+                     64'h0000_0000_8010_0410) ||
+                    (dbg_pc[63:0] ==
+                     64'h0000_0000_8010_0414))
+                    opensbi_hang_cycles <= opensbi_hang_cycles + 1;
+                else
+                    opensbi_hang_cycles <= 0;
+
+                if (opensbi_hang_cycles == 64) begin
+                    $display(
+                        "OpenSBI entered _start_hang: mcause=%016h mtval=%016h mepc=%016h mstatus=%016h priv=%0d",
+                        g_hart[0].u_core.u_csrs.mcause_q,
+                        g_hart[0].u_core.u_csrs.mtval_q,
+                        g_hart[0].u_core.u_csrs.mepc_q,
+                        g_hart[0].u_core.u_csrs.mstatus_q,
+                        g_hart[0].u_core.csr_priv_mode);
+                    for (opensbi_trace_dump = 0;
+                         opensbi_trace_dump < opensbi_trace_count;
+                         opensbi_trace_dump =
+                             opensbi_trace_dump + 1) begin
+                        opensbi_trace_slot =
+                            (opensbi_trace_write -
+                             opensbi_trace_count +
+                             opensbi_trace_dump +
+                             OPENSBI_TRACE_DEPTH) %
+                            OPENSBI_TRACE_DEPTH;
+                        $display(
+                            "OPENSBI_4H_TRACE pc=%016h instr=%08h exception=%0b cause=%0d",
+                            opensbi_trace_pc[opensbi_trace_slot],
+                            opensbi_trace_instr[opensbi_trace_slot],
+                            opensbi_trace_exception[
+                                opensbi_trace_slot],
+                            opensbi_trace_cause[
+                                opensbi_trace_slot]);
+                    end
+                    $fatal(1,
+                        "OpenSBI hart 0 parked in _start_hang before payload completion");
+                end
+
+                if (g_hart[0].u_core.csr_priv_mode ==
+                    `RV64_PRIV_S)
+                    opensbi_s_mode_seen <= 1'b1;
+
+                if (u_uart.write_thr) begin
+                    opensbi_uart_bytes <=
+                        opensbi_uart_bytes + 1;
+                    $write("%c", device_wdata[7:0]);
+                    $fflush();
+                    match_opensbi_byte(device_wdata[7:0]);
+                end
+
+                if ((opensbi_held != 0) &&
+                    ((|hart_req_valid[NUM_HARTS-1:1]) ||
+                     (|hart_wdata_valid[NUM_HARTS-1:1])))
+                    $fatal(1,
+                        "held hart emitted CCX traffic req=%b wdata=%b",
+                        hart_req_valid, hart_wdata_valid);
+
+                if ((cycles != 0) &&
+                    ((cycles % 1000000) == 0)) begin
+                    $display(
+                        "OPENSBI_4H_PROGRESS cycles=%0d pc=%016h,%016h,%016h,%016h priv=%0d,%0d,%0d,%0d hsm_wfi=%b banner=%0b payload=%0b magic=%0b uart_bytes=%0d",
+                        cycles,
+                        dbg_pc[0*64 +: 64],
+                        dbg_pc[1*64 +: 64],
+                        dbg_pc[2*64 +: 64],
+                        dbg_pc[3*64 +: 64],
+                        g_hart[0].u_core.csr_priv_mode,
+                        g_hart[1].u_core.csr_priv_mode,
+                        g_hart[2].u_core.csr_priv_mode,
+                        g_hart[3].u_core.csr_priv_mode,
+                        opensbi_hsm_wfi_seen,
+                        opensbi_banner_seen,
+                        opensbi_payload_seen,
+                        opensbi_magic_seen,
+                        opensbi_uart_bytes);
+                    $fflush();
+                end
+            end
 
             if ((atomic_test != 0) && (cycles != 0) &&
                 ((cycles % 50000) == 0)) begin
@@ -1192,12 +1696,14 @@ module tb_4h_3p #(
                 $fatal(1,
                     "coherence protocol error home=%0b endpoint=%0b",
                     protocol_error, probe_endpoint_protocol_error);
-            if (|dbg_halted)
+            if (((opensbi_held != 0) && dbg_halted[0]) ||
+                ((opensbi_held == 0) && (|dbg_halted)))
                 $fatal(1,
                     "hart halted mask=%b pc=%h instr=%h",
                     dbg_halted, dbg_pc, dbg_instr);
 
-            if ((first_done_cycle < 0) &&
+            if (!opensbi_mode &&
+                (first_done_cycle < 0) &&
                 (done_seen[0] || done_seen[1] ||
                  done_seen[2] || done_seen[3])) begin
                 first_done_cycle <= cycles;
@@ -1206,7 +1712,8 @@ module tb_4h_3p #(
                     (retired[2] > 0) && (retired[3] > 0);
             end
 
-            if (done_seen[0] && done_seen[1] &&
+            if (!opensbi_mode &&
+                done_seen[0] && done_seen[1] &&
                 done_seen[2] && done_seen[3] &&
                 mailbox_seen[0] && mailbox_seen[1] &&
                 mailbox_seen[2] && mailbox_seen[3] &&
@@ -1314,6 +1821,60 @@ module tb_4h_3p #(
                 $finish;
             end
 
+            if ((opensbi_held != 0) &&
+                opensbi_banner_seen &&
+                opensbi_payload_seen &&
+                opensbi_s_mode_seen &&
+                opensbi_magic_seen) begin
+                if ((retired[1] != 0) || (retired[2] != 0) ||
+                    (retired[3] != 0) || (requests[1] != 0) ||
+                    (requests[2] != 0) || (requests[3] != 0))
+                    $fatal(1,
+                        "held harts made progress retired=%0d,%0d,%0d requests=%0d,%0d,%0d",
+                        retired[1], retired[2], retired[3],
+                        requests[1], requests[2], requests[3]);
+                $display(
+                    "\nPASS: 4H coherent OpenSBI v1.9 on hart 0 with harts 1-3 held in reset; ROM handoff, banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion");
+                $display(
+                    "  cycles=%0d hart0_retired=%0d hart0_ccx_req=%0d uart_bytes=%0d memory_reads=%0d memory_writes=%0d",
+                    cycles, retired[0], requests[0],
+                    opensbi_uart_bytes, memory_reads,
+                    memory_writes);
+                $finish;
+            end
+
+            if ((opensbi_smp != 0) &&
+                opensbi_banner_seen &&
+                opensbi_payload_seen &&
+                opensbi_s_mode_seen &&
+                opensbi_magic_seen &&
+                (&opensbi_hsm_wfi_seen[NUM_HARTS-1:1])) begin
+                if ((g_hart[1].u_core.csr_priv_mode !=
+                     `RV64_PRIV_M) ||
+                    (g_hart[2].u_core.csr_priv_mode !=
+                     `RV64_PRIV_M) ||
+                    (g_hart[3].u_core.csr_priv_mode !=
+                     `RV64_PRIV_M))
+                    $fatal(1,
+                        "secondary hart left M-mode priv=%0d,%0d,%0d",
+                        g_hart[1].u_core.csr_priv_mode,
+                        g_hart[2].u_core.csr_priv_mode,
+                        g_hart[3].u_core.csr_priv_mode);
+                $display(
+                    "\nPASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and harts 1-3 retired HSM WFI at %016h",
+                    opensbi_hsm_wfi_pc);
+                $display(
+                    "  cycles=%0d retired=%0d,%0d,%0d,%0d ccx_req=%0d,%0d,%0d,%0d uart_bytes=%0d memory_reads=%0d memory_writes=%0d",
+                    cycles,
+                    retired[0], retired[1],
+                    retired[2], retired[3],
+                    requests[0], requests[1],
+                    requests[2], requests[3],
+                    opensbi_uart_bytes, memory_reads,
+                    memory_writes);
+                $finish;
+            end
+
             if ((cycles >= max_cycles) && (atomic_test != 0))
                 $display(
                     "ATOMIC_TIMEOUT value=%0d lr=%0d,%0d,%0d,%0d sc_success=%0d,%0d,%0d,%0d sc_failure=%0d,%0d,%0d,%0d probes=%0d,%0d,%0d,%0d clears=%0d,%0d,%0d,%0d home_state=%0d",
@@ -1329,13 +1890,30 @@ module tb_4h_3p #(
                     reservation_clears[0], reservation_clears[1],
                     reservation_clears[2], reservation_clears[3],
                     u_coherence_home.state_q);
-            if (cycles >= max_cycles)
-                $fatal(1,
-                    "timeout cycles=%0d done=%0b%0b%0b%0b mailbox=%0b%0b%0b%0b pc=%h",
-                    cycles, done_seen[3], done_seen[2],
-                    done_seen[1], done_seen[0],
-                    mailbox_seen[3], mailbox_seen[2],
-                    mailbox_seen[1], mailbox_seen[0], dbg_pc);
+            if (cycles >= max_cycles) begin
+                if (opensbi_mode)
+                    $fatal(1,
+                        "OpenSBI 4H timeout cycles=%0d pc=%h instr=%h priv=%0d,%0d,%0d,%0d hsm_wfi=%b banner=%0b payload=%0b s_mode=%0b magic=%0b req=%0d,%0d,%0d,%0d",
+                        cycles, dbg_pc, dbg_instr,
+                        g_hart[0].u_core.csr_priv_mode,
+                        g_hart[1].u_core.csr_priv_mode,
+                        g_hart[2].u_core.csr_priv_mode,
+                        g_hart[3].u_core.csr_priv_mode,
+                        opensbi_hsm_wfi_seen,
+                        opensbi_banner_seen,
+                        opensbi_payload_seen,
+                        opensbi_s_mode_seen,
+                        opensbi_magic_seen,
+                        requests[0], requests[1],
+                        requests[2], requests[3]);
+                else
+                    $fatal(1,
+                        "timeout cycles=%0d done=%0b%0b%0b%0b mailbox=%0b%0b%0b%0b pc=%h",
+                        cycles, done_seen[3], done_seen[2],
+                        done_seen[1], done_seen[0],
+                        mailbox_seen[3], mailbox_seen[2],
+                        mailbox_seen[1], mailbox_seen[0], dbg_pc);
+            end
         end
     end
 

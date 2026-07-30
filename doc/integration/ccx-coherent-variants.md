@@ -69,6 +69,10 @@ Items below are deliberately not hidden behind compatibility behavior.
 - [x] Break the serialized-home circular wait: targeted snoops do not force
   the target's unrelated store buffer to drain, so all four private store
   buffers may wait on the home while still servicing probes.
+- [x] Allow a targeted snoop to revoke an L1D tag while the cache array is in
+  `STATE_ACCESS` waiting for a write-through response.  A matching pending
+  write cannot recreate the revoked line when it completes.  Full-cache
+  maintenance remains quiescent-only.
 - [ ] Define clean-eviction notification only if measurements show stale
   directory bits produce material probe traffic.
 
@@ -134,11 +138,16 @@ Items below are deliberately not hidden behind compatibility behavior.
   the focused `tb_4h_3p` integration harness.  This is not yet a production
   four-hart SoC wrapper.
 - [ ] Parameterize platform CLINT and PLIC integration for the selected hart
-  count.
-- [ ] Replace the single-hart OpenSBI device tree with generated 1/2/4-hart
-  descriptions.
-- [ ] Stop forcing hart zero in the OpenSBI trampoline.
-- [ ] Add secondary-hart release and boot synchronization.
+  count in a production SoC wrapper.  The focused 4h testbench has shared
+  four-hart CLINT and PLIC instances in its held-secondary and all-hart
+  OpenSBI modes.
+- [ ] Add a generated two-hart OpenSBI description.  The build currently
+  generates and validates one- and four-hart CPU, CLINT, and PLIC descriptions.
+- [x] Stop forcing hart zero in the ROM/trampoline path; read `mhartid` in the
+  ROM and preserve it through the trampoline into OpenSBI.
+- [ ] Add S-mode secondary-hart release and boot synchronization.  Concurrent
+  ROM/OpenSBI entry and OpenSBI HSM WFI parking are validated, but SBI HSM
+  restart and OS bring-up are not.
 - [ ] Reuse the AXI and timed-DDR3 path below the new coherent L2.
 
 ### Verification gates
@@ -158,11 +167,19 @@ Items below are deliberately not hidden behind compatibility behavior.
 - [x] Four complete cores share one SATP and one atomic line while enforcing
   modulo-four turn taking.  Every successful write invalidates the other three
   retained L1D copies.  This schedule does not force SC failure.
+- [x] Boot hart 0 through the normal ROM and OpenSBI v1.9 on the four-core
+  coherent hierarchy while harts 1 through 3 remain in reset.  Require
+  M-to-S handoff, SBI timer and DBCN use, supervisor payload completion, and
+  zero held-hart retirement or CCX traffic.
+- [x] Release all four harts through the normal ROM and OpenSBI v1.9 on the
+  fixed-latency coherent harness.  Require the hart-0 supervisor payload and
+  exact build-derived HSM WFI retirement on M-mode harts 1 through 3.
 - [ ] Concurrent LR/SC and AMO contention, 32-bit AMOs, and an observed
   failed-SC AMO retry.
 - [ ] Acquire/release message-passing and full-fence litmus tests.
 - [ ] Per-hart reset during an otherwise idle system and during queued traffic.
-- [ ] Four real cores through OpenSBI and timed DDR3.
+- [ ] Four simultaneously running cores through OpenSBI and timed DDR3.  The
+  fixed-latency coherent-memory version passes.
 
 ## Four-L1D integration test
 

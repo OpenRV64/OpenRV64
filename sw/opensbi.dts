@@ -4,14 +4,32 @@
 #define OPENRV64_MEMORY_SIZE 0x10000000
 #endif
 
+#ifndef OPENRV64_HART_COUNT
+#define OPENRV64_HART_COUNT 1
+#endif
+
+#if OPENRV64_HART_COUNT != 1 && OPENRV64_HART_COUNT != 4
+#error OPENRV64_HART_COUNT must be 1 or 4
+#endif
+
 / {
     #address-cells = <2>;
     #size-cells = <2>;
     compatible = "openrv64,platform";
+#if OPENRV64_HART_COUNT == 4
+    model = "OpenRV64 four-hart platform";
+#else
     model = "OpenRV64 single-hart platform";
+#endif
 
     chosen {
         stdout-path = "/soc/serial@10000000";
+#if OPENRV64_HART_COUNT == 4
+        opensbi-config {
+            compatible = "opensbi,config";
+            cold-boot-harts = <&cpu0>;
+        };
+#endif
     };
 
     cpus {
@@ -41,6 +59,77 @@
                 compatible = "riscv,cpu-intc";
             };
         };
+
+#if OPENRV64_HART_COUNT == 4
+        cpu1: cpu@1 {
+            device_type = "cpu";
+            reg = <1>;
+            status = "okay";
+            compatible = "riscv";
+#ifdef OPENRV64_ZICCLSM
+            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
+#else
+            riscv,isa = "rv64ima_svade_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
+#endif
+            mmu-type = "riscv,sv39";
+
+            cpu1_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+
+        cpu2: cpu@2 {
+            device_type = "cpu";
+            reg = <2>;
+            status = "okay";
+            compatible = "riscv";
+#ifdef OPENRV64_ZICCLSM
+            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
+#else
+            riscv,isa = "rv64ima_svade_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
+#endif
+            mmu-type = "riscv,sv39";
+
+            cpu2_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+
+        cpu3: cpu@3 {
+            device_type = "cpu";
+            reg = <3>;
+            status = "okay";
+            compatible = "riscv";
+#ifdef OPENRV64_ZICCLSM
+            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
+#else
+            riscv,isa = "rv64ima_svade_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
+#endif
+            mmu-type = "riscv,sv39";
+
+            cpu3_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+#endif
     };
 
     memory@80000000 {
@@ -57,7 +146,15 @@
         clint: clint@2000000 {
             compatible = "riscv,clint0";
             reg = <0x0 0x02000000 0x0 0x00010000>;
+#if OPENRV64_HART_COUNT == 4
+            interrupts-extended =
+                <&cpu0_intc 3>, <&cpu0_intc 7>,
+                <&cpu1_intc 3>, <&cpu1_intc 7>,
+                <&cpu2_intc 3>, <&cpu2_intc 7>,
+                <&cpu3_intc 3>, <&cpu3_intc 7>;
+#else
             interrupts-extended = <&cpu0_intc 3>, <&cpu0_intc 7>;
+#endif
         };
 
         plic: interrupt-controller@c000000 {
@@ -66,7 +163,13 @@
             #interrupt-cells = <1>;
             interrupt-controller;
             riscv,ndev = <32>;
+#if OPENRV64_HART_COUNT == 4
+            interrupts-extended =
+                <&cpu0_intc 9>, <&cpu1_intc 9>,
+                <&cpu2_intc 9>, <&cpu3_intc 9>;
+#else
             interrupts-extended = <&cpu0_intc 9>;
+#endif
         };
 
         serial@10000000 {

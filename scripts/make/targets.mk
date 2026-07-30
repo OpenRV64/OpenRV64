@@ -25,7 +25,9 @@
 .PHONY: sim-bp-context-gshare-btb sim-bp-context-gshare-btb-512 \
 	sim-bp-context-tournament-btb
 .PHONY: yosys-resources-core-sky130
-.PHONY: sim-opensbi-3p sim-opensbi-3p-platform \
+.PHONY: opensbi-4h-held sim-opensbi-4h-held \
+	opensbi-4h-smp sim-opensbi-4h-smp \
+	sim-opensbi-3p sim-opensbi-3p-platform \
 	sim-linux-3p-platform-checkpoint sim-linux-3p-platform-restore
 .PHONY: sim-linux
 .PHONY: sim-l1-cache sim-l1d-prefetch sim-l1d-demand-mshr \

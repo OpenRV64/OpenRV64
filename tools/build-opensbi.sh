@@ -23,9 +23,14 @@ payload_addr=0x80200000
 fdt_addr=${OPENSBI_FDT_ADDR:-0x8ff00000}
 memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
 zicclsm=${OPENRV64_ZICCLSM:-1}
+hart_count=${OPENRV64_HART_COUNT:-1}
 
 if [[ "${zicclsm}" != 0 && "${zicclsm}" != 1 ]]; then
     echo "build-opensbi.sh: OPENRV64_ZICCLSM must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "${hart_count}" != 1 && "${hart_count}" != 4 ]]; then
+    echo "build-opensbi.sh: OPENRV64_HART_COUNT must be 1 or 4" >&2
     exit 2
 fi
 zicclsm_cpp_args=()
@@ -35,7 +40,8 @@ fi
 
 for tool in git make dtc python3 awk \
             "${opensbi_cross}gcc" "${opensbi_cross}objcopy" \
-            "${opensbi_cross}readelf" \
+            "${opensbi_cross}readelf" "${opensbi_cross}objdump" \
+            "${opensbi_cross}addr2line" \
             "${bare_cross}gcc" "${bare_cross}objcopy"; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
         echo "build-opensbi.sh: missing required tool: ${tool}" >&2
@@ -69,12 +75,14 @@ fi
 
 "${bare_cross}gcc" -E -P -x assembler-with-cpp \
     -DOPENRV64_MEMORY_SIZE="${memory_size}" \
+    -DOPENRV64_HART_COUNT="${hart_count}" \
     -o "${artifact_dir}/openrv64.dts" \
     "${repo_root}/sw/opensbi.dts"
 dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
     "${artifact_dir}/openrv64.dts"
 "${bare_cross}gcc" -E -P -x assembler-with-cpp \
     -DOPENRV64_MEMORY_SIZE="${memory_size}" \
+    -DOPENRV64_HART_COUNT="${hart_count}" \
     "${zicclsm_cpp_args[@]}" \
     -o "${artifact_dir}/openrv64-3p.dts" \
     "${repo_root}/sw/opensbi.dts"
@@ -128,6 +136,30 @@ if [[ "${linked_entry}" != "${firmware_addr}" ]]; then
     exit 2
 fi
 
+# sbi_hsm_hart_wait() is inlined into sbi_hsm_init(), so it has no stable
+# linker symbol of its own. Locate its WFI using DWARF attribution and retain
+# the exact linked PC for the multicore testbench.
+hsm_wfi_pc=
+while read -r candidate_pc; do
+    candidate_function=$("${opensbi_cross}addr2line" -f \
+        -e "${artifact_dir}/fw_jump.elf" "0x${candidate_pc}" |
+        awk 'NR == 1 { print; exit }')
+    if [[ "${candidate_function}" == sbi_hsm_hart_wait ]]; then
+        if [[ -n "${hsm_wfi_pc}" ]]; then
+            echo "build-opensbi.sh: multiple HSM wait WFI PCs found" >&2
+            exit 2
+        fi
+        hsm_wfi_pc="0x${candidate_pc}"
+    fi
+done < <("${opensbi_cross}objdump" -d \
+    "${artifact_dir}/fw_jump.elf" |
+    awk '$2 == "10500073" { sub(/:$/, "", $1); print $1 }')
+if [[ -z "${hsm_wfi_pc}" ]]; then
+    echo "build-opensbi.sh: failed to locate HSM wait WFI PC" >&2
+    exit 2
+fi
+printf '%s\n' "${hsm_wfi_pc}" > "${artifact_dir}/hsm-wfi-pc.txt"
+
 # Fixed-size fragments keep readmemh loads bounded without generating a full
 # 256 MiB textual image. bin2mem also rejects an artifact that outgrows its slot.
 python3 "${repo_root}/tools/bin2mem.py" \
@@ -169,4 +201,6 @@ echo "  trampoline ${trampoline_addr} -> firmware ${firmware_addr}"
 echo "  payload    ${payload_addr}"
 echo "  FDT        ${fdt_addr}"
 echo "  memory     ${memory_size}"
+echo "  HARTs      ${hart_count}"
+echo "  HSM WFI PC ${hsm_wfi_pc}"
 echo "  artifacts  ${artifact_dir}"

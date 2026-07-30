@@ -29,6 +29,8 @@ make -B sim-ccx-4h-l1d-directory-l2
 make -B sim-4h-3p-sv39 sim-4h-3p-shared-sv39
 make sim-4h-3p-bare-configured sim-4h-3p-atomic-sv39
 make -B sim-core-3p-ccx-l2-vm
+make sim-opensbi-4h-held
+make sim-opensbi-4h-smp
 ```
 
 | Main-based 4h test | Cycles | Completion cycles, harts 0..3 | CCX requests, harts 0..3 | L2 memory R/W |
@@ -47,6 +49,86 @@ The separate one-hart timed-memory regression passed in 55,745 cycles at
 0.9430 IPC through `openrv64_axi_ddr3`, `openrv64_timing_ddr3`, banked timing,
 CCX, and L2.  That result validates the existing one-hart DDR path; it does not
 make the fixed-latency 4h test DDR-timed.
+
+### OpenSBI with secondary harts held in reset
+
+`make sim-opensbi-4h-held` builds the same pinned OpenSBI v1.9 revision and
+the same boot ROM implementation used by the normal OpenSBI platform test.
+The four-core coherent topology is instantiated, but only hart 0 leaves reset.
+Harts 1 through 3 remain in reset for the complete run.  The coherence home,
+shared L2, and four probe endpoints remain out of reset.
+
+The `+opensbi_held` harness mode adds:
+
+- the normal `openrv64_soc_rom` contents at reset vector `0x1000`, widened
+  across eight 64-bit ROM instances for the 512-bit L2 line interface;
+- one shared four-hart CLINT, one PLIC, and one UART on the L2 device-bypass
+  path;
+- OpenSBI trampoline, `fw_jump`, supervisor payload, and FDT images at
+  `0x80000000`, `0x80100000`, `0x80200000`, and `0x80f00000`;
+- 1M-cycle progress records and an OpenSBI retirement trace on failure; and
+- explicit checks for the OpenSBI v1.9 banner, M-to-S handoff, SBI timer
+  interrupt, DBCN output, supervisor payload magic, no held-hart retirement
+  or CCX traffic, and no coherence protocol error.
+
+The 2026-07-30 run passed:
+
+```text
+PASS: 4H coherent OpenSBI v1.9 on hart 0 with harts 1-3 held in reset;
+ROM handoff, banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion
+cycles=3543682 hart0_retired=4065191 hart0_ccx_req=126654
+uart_bytes=2692 memory_reads=1725 memory_writes=624
+```
+
+This run exposed a real progress bug before it passed.  A hart-0 I-cache fill
+evicted a directory entry with a hart-0 D-cache sharer.  The home accepted the
+probe, but the L1D array was in `STATE_ACCESS` waiting to send an AMO
+write-through transaction to that same occupied home.  The home waited for
+the invalidate ACK while the write waited for the home.  Targeted invalidation
+now revokes a tag during a stalled write-through access; full-cache
+maintenance still requires the cache to return to `STATE_RUN`.  If the probe
+matches the pending write line, its later completion cannot recreate the
+revoked private copy.  `make sim-l1-cache` contains a directed stalled-write
+regression for this case.
+
+The result is deliberately narrow.  It proves normal ROM-to-OpenSBI-to-S-mode
+execution through the four-hart coherent hierarchy with three reset harts and
+fixed-latency backing memory.  It does not prove secondary-hart release,
+simultaneous four-hart OpenSBI execution, reset-time directory cleanup, or
+timed DDR3 operation.
+
+### OpenSBI with all four harts released
+
+`make sim-opensbi-4h-smp` builds a four-hart FDT, releases all four cores from
+reset, and selects hart 0 as the OpenSBI coldboot hart.  The ROM reads each
+core's real `mhartid`; the RAM trampoline preserves it instead of forcing
+zero.  The FDT describes CPU, CLINT, and PLIC interrupt contexts for harts
+zero through three.
+
+OpenRV64 currently implements WFI as a legal hint that resumes immediately.
+Consequently, a secondary hart does not remain at one stable debug PC.  The
+test instead derives the exact `sbi_hsm_hart_wait()` WFI address from the
+linked OpenSBI ELF using DWARF attribution, passes it to the testbench, and
+records whether each secondary retires that instruction while still in
+M-mode.  The generated address is also retained in
+`build/opensbi-4h-smp/artifacts/hsm-wfi-pc.txt`.
+
+The 2026-07-30 run passed:
+
+```text
+PASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and
+harts 1-3 retired HSM WFI at 00000000801173ec
+cycles=7775571
+retired=9650778,4115605,4265852,4050650
+ccx_req=278793,7263,7357,7243
+uart_bytes=2705 memory_reads=1782 memory_writes=710
+```
+
+This proves concurrent ROM and OpenSBI entry, four-hart FDT discovery, HSM
+parking of harts 1 through 3, and the existing hart-0 S-mode payload path
+through the coherent hierarchy.  It still uses fixed-latency backing memory.
+It does not prove SBI HSM restart of a stopped hart, Linux SMP bring-up,
+reset-time directory cleanup, or timed DDR3 operation.
 
 ## Historical source-branch validation: 2026-07-27 UTC
 
@@ -205,9 +287,11 @@ openrv64_ccx_coherent_protocol
 fixed-latency 512-bit line-memory model
 ```
 
-All interrupt inputs are tied low.  There is no CLINT, PLIC, platform bus, AXI
-bridge, or timed DDR model in `tb_4h_3p`.  This intentionally bypasses the
-current single-hart interrupt-platform problem; it does not solve it.
+The finite four-hart workloads tie interrupts low and do not enable the
+platform devices.  In `+opensbi_held` mode the harness instead routes one
+shared CLINT, PLIC, UART, and the normal boot ROM around L2 while leaving RAM
+behind the same fixed-latency 512-bit model.  Neither mode includes the AXI
+bridge or timed DDR model.
 
 ## Address-space tests
 
