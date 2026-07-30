@@ -79,6 +79,8 @@ module openrv64_exec_top_3p #(
     input  wire                         ordered_head_valid_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] ordered_head_slot_i,
+    output wire                         store_barrier_request_o,
+    input  wire                         store_barrier_busy_i,
 
     output wire [2:0]                   complete_valid_o,
     input  wire [2:0]                   complete_ready_i,
@@ -305,21 +307,44 @@ module openrv64_exec_top_3p #(
     wire ex1_satp_access = ex1_system &&
         (`RV64_FUNCT3(ex1_instr) != `RV64_FUNCT3_SYSTEM_PRIV) &&
         (`RV64_CSR(ex1_instr) == `RV64_CSR_SATP);
+    wire ex1_wfi = ex1_system &&
+                   (ex1_instr == `RV64_INSTR_WFI);
     wire ex1_translation_barrier =
         ex1_satp_access || `RV64_IS_SFENCE_VMA(ex1_instr);
+    wire ex1_drain_barrier = ex1_translation_barrier || ex1_wfi;
     wire mem_posted_store_pending;
+    localparam [1:0] FENCE_BARRIER_IDLE = 2'd0;
+    localparam [1:0] FENCE_BARRIER_WAIT = 2'd1;
+    localparam [1:0] FENCE_BARRIER_READY = 2'd2;
+    reg [1:0] fence_barrier_state_q;
     wire ex1_order_match = ordered_head_valid_i &&
         (ordered_head_id_i == issue_id_i[
             1*`OPENRV64_INSTR_ID_WIDTH +:
             `OPENRV64_INSTR_ID_WIDTH]) &&
         (ordered_head_slot_i ==
          issue_slot_i[1*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH]);
-    // SATP and SFENCE.VMA execute only at ordered head.  An unresolved store
-    // remains the MEM ordering head until translation/PMP/L1D admission
-    // completes, so it cannot be bypassed by either barrier.
+    /*
+     * Do not qualify this with issue_valid_i[1]. The strict dispatcher
+     * qualifies valid with pipe ready; a fence waiting for this barrier would
+     * otherwise form a valid/ready deadlock. The decoded fence plus exact
+     * ordered-head ID/slot is the stable candidate qualification.
+     */
+    wire ex1_fence_barrier_candidate =
+        ex1_supported && ex1_fence &&
+        ex1_order_match && !mem_posted_store_pending;
+    assign store_barrier_request_o =
+        ex1_fence_barrier_candidate &&
+        (fence_barrier_state_q == FENCE_BARRIER_IDLE);
+    // SATP, SFENCE.VMA, and WFI execute only at ordered head. WFI also drains
+    // posted stores so the backend can be clock-gated without stranding an
+    // LSU completion or delayed store fault. Ordinary FENCE and FENCE.I use
+    // the separate L1D barrier handshake below: younger memory remains behind
+    // the persistent dispatch barrier until the write queue has completed.
     wire ex1_order_ready =
         (!ex1_requires_order || ex1_order_match) &&
-        (!ex1_translation_barrier || !mem_posted_store_pending);
+        (!ex1_drain_barrier || !mem_posted_store_pending) &&
+        (!ex1_fence ||
+         (fence_barrier_state_q == FENCE_BARRIER_READY));
     wire mem0_supported = mem0_mem_read && !mem0_mem_write && !mem0_atomic &&
                           !mem0_branch && !mem0_jump && !mem0_system &&
                           !mem0_fence && !mem0_illegal;
@@ -336,6 +361,28 @@ module openrv64_exec_top_3p #(
     wire ex1_issue_ready;
     wire mem0_issue_ready;
     wire mem1_issue_ready;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            fence_barrier_state_q <= FENCE_BARRIER_IDLE;
+        else if (flush_i)
+            fence_barrier_state_q <= FENCE_BARRIER_IDLE;
+        else begin
+            case (fence_barrier_state_q)
+                FENCE_BARRIER_IDLE:
+                    if (ex1_fence_barrier_candidate)
+                        fence_barrier_state_q <= FENCE_BARRIER_WAIT;
+                FENCE_BARRIER_WAIT:
+                    if (!store_barrier_busy_i)
+                        fence_barrier_state_q <= FENCE_BARRIER_READY;
+                FENCE_BARRIER_READY:
+                    if (ex1_issue_valid && ex1_issue_ready)
+                        fence_barrier_state_q <= FENCE_BARRIER_IDLE;
+                default:
+                    fence_barrier_state_q <= FENCE_BARRIER_IDLE;
+            endcase
+        end
+    end
 
     assign issue_ready_o[0] = ex0_issue_ready && ex0_supported;
     assign issue_ready_o[1] = ex1_issue_ready && ex1_supported &&

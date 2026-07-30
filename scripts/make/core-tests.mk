@@ -142,6 +142,9 @@ sim-exec-lsu-rv64-a: $(EXEC_LSU_RV64A_SIM_BUILD)
 sim-atomic-context: $(ATOMIC_CONTEXT_SIM_BUILD)
 	vvp $(ATOMIC_CONTEXT_SIM_BUILD)
 
+sim-wfi-context: $(WFI_CONTEXT_SIM_BUILD)
+	vvp $(WFI_CONTEXT_SIM_BUILD)
+
 sim-exec-br: $(EXEC_BR_SIM_BUILD)
 	vvp $(EXEC_BR_SIM_BUILD)
 

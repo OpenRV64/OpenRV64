@@ -16,6 +16,8 @@ module tb_atomic_context;
     logic [63:0] dbg_pc;
     logic [31:0] dbg_instr;
     logic dbg_halted;
+    logic wfi_sleep;
+    logic irq_m_timer;
     logic [63:0] memory [0:MEM_WORDS-1];
     logic mem_addr_in_range;
 
@@ -33,10 +35,11 @@ module tb_atomic_context;
         .mem_write(mem_write), .mem_addr(mem_addr),
         .mem_wdata(mem_wdata), .mem_wstrb(mem_wstrb),
         .mem_rdata(mem_rdata), .mem_error(1'b0),
-        .irq_m_software(1'b0), .irq_m_timer(1'b0),
+        .irq_m_software(1'b0), .irq_m_timer(irq_m_timer),
         .irq_m_external(1'b0), .irq_s_software(1'b0),
         .irq_s_timer(1'b0), .irq_s_external(1'b0),
-        .dbg_pc(dbg_pc), .dbg_instr(dbg_instr), .dbg_halted(dbg_halted)
+        .dbg_pc(dbg_pc), .dbg_instr(dbg_instr), .dbg_halted(dbg_halted),
+        .wfi_sleep(wfi_sleep)
     );
 
     initial begin
@@ -111,15 +114,19 @@ module tb_atomic_context;
         put_instr(6, enc_amo_d(`RV64_AMO_FUNCT5_SC, 5'd6, 5'd1, 5'd2));
         put_instr(7, enc_amo_d(`RV64_AMO_FUNCT5_ADD, 5'd7, 5'd1, 5'd2));
         put_instr(8, enc_ld(5'd8, 5'd1, 12'd0));
-        put_instr(9, `RV64_INSTR_WFI);
-        put_instr(10, enc_addi(5'd9, `RV64_REG_X0, 12'h080));
-        put_instr(11, enc_csr(`RV64_CSR_MTVEC, 5'd9,
+        put_instr(9, enc_addi(5'd9, `RV64_REG_X0, 12'h080));
+        put_instr(10, enc_csr(`RV64_CSR_MIE, 5'd9,
                               `RV64_ZICSR_FUNCT3_CSRRW,
                               `RV64_REG_X0));
-        put_instr(12, enc_addi(5'd1, 5'd1, 12'd3));
-        put_instr(13, enc_amo_d(`RV64_AMO_FUNCT5_ADD,
+        put_instr(11, `RV64_INSTR_WFI);
+        put_instr(12, enc_addi(5'd9, `RV64_REG_X0, 12'h080));
+        put_instr(13, enc_csr(`RV64_CSR_MTVEC, 5'd9,
+                              `RV64_ZICSR_FUNCT3_CSRRW,
+                              `RV64_REG_X0));
+        put_instr(14, enc_addi(5'd1, 5'd1, 12'd3));
+        put_instr(15, enc_amo_d(`RV64_AMO_FUNCT5_ADD,
                                 5'd10, 5'd1, 5'd2));
-        put_instr(14, `RV64_INSTR_EBREAK);
+        put_instr(16, `RV64_INSTR_EBREAK);
 
         put_instr(32, enc_csr(`RV64_CSR_MCAUSE, `RV64_REG_X0,
                               `RV64_ZICSR_FUNCT3_CSRRS, 5'd11));
@@ -128,9 +135,19 @@ module tb_atomic_context;
         put_instr(34, `RV64_INSTR_EBREAK);
 
         rst_n = 1'b0;
+        irq_m_timer = 1'b0;
         repeat (4) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+    end
+
+    initial begin
+        wait (rst_n);
+        wait (wfi_sleep);
+        @(negedge clk);
+        irq_m_timer = 1'b1;
+        @(negedge clk);
+        irq_m_timer = 1'b0;
     end
 
     always @(posedge clk) begin
@@ -170,7 +187,7 @@ module tb_atomic_context;
                     dut.u_core.u_gpr.regs[8], dut.u_core.u_gpr.regs[11],
                     dut.u_core.u_gpr.regs[12], memory[32]);
             end
-            $display("PASS: integrated LR/SC, AMO, WFI hint, and AMO fault context");
+            $display("PASS: integrated LR/SC, AMO, WFI wake, and AMO fault context");
             $finish;
         end
     end

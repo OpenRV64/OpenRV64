@@ -139,6 +139,19 @@ make fence-sv39-suite
 See [`fence/README.md`](fence/README.md) for the case map, visibility-boundary
 definition, and the intentionally deferred SATP/`SFENCE.VMA` stress scope.
 
+The separate four-hart target covers the inter-hart software shootdown
+sequence and its interaction with coherence invalidates and LR/SC
+reservations:
+
+```sh
+make sim-4h-3p-tlbi-sv39
+```
+
+Hart 0 updates a shared PTE and performs its local `SFENCE.VMA`, remote harts
+first prove their translations remain stale, then CLINT MSIP handlers execute
+the remote fences and acknowledge completion. This is not an OpenSBI or Linux
+shootdown-path test.
+
 ## memcpy prefetch benchmark
 
 `memcpy/memcpy.S` supplies 4 KiB and 64 KiB page-copy workloads for the
@@ -464,7 +477,7 @@ make sim-opensbi-4h-smp   # all harts enter OpenSBI
 ```
 
 The SMP target requires harts 1 through 3 to retire the exact build-derived
-OpenSBI HSM WFI instruction while remaining in M-mode, and requires hart 0 to
-complete the S-mode payload. Because WFI is currently implemented as a legal
-immediately-resuming hint, the secondary debug PCs spin through the HSM wait
-loop rather than remaining fixed at the WFI address.
+OpenSBI HSM WFI instruction, remain asleep there in M-mode, and requires hart
+0 to complete the S-mode payload. WFI wake detection honors individual
+interrupt-enable bits but does not require the global MIE/SIE bits, matching
+the privileged ISA rule.

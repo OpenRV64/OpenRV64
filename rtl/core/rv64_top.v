@@ -106,6 +106,7 @@ module openrv64_rv64_top #(
     output wire [63:0] dbg_pc,
     output wire [31:0] dbg_instr,
     output wire        dbg_halted,
+    output wire        wfi_sleep_o,
 
     output wire [63:0]  trace_cycle,
     output wire [4:0]   trace_valid,
@@ -134,6 +135,7 @@ module openrv64_rv64_top #(
     reg [`RV64_XLEN-1:0] dbg_pc_q;
     reg [`RV64_INSTR_WIDTH-1:0] dbg_instr_q;
     reg halted_q;
+    reg wfi_sleep_q;
     reg halt_pending_q;
     reg reset_pending_q;
     reg redirect_dispatch_flush_q;
@@ -370,6 +372,7 @@ module openrv64_rv64_top #(
 
     wire csr_irq_pending;
     wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] csr_irq_cause;
+    wire csr_wfi_wake;
     wire [`RV64_XLEN-1:0] csr_trap_vector;
     wire [`RV64_XLEN-1:0] csr_mepc;
     wire [`RV64_XLEN-1:0] csr_sepc;
@@ -453,6 +456,8 @@ module openrv64_rv64_top #(
     wire retire_mret = retire_accept && exec_wb_mret && !exec_wb_exception;
     wire retire_sret = retire_accept && exec_wb_sret && !exec_wb_exception;
     wire retire_arch = retire_accept && !exec_wb_exception;
+    wire retire_wfi = retire_arch &&
+                      (exec_wb_instr == `RV64_INSTR_WFI);
     wire retire_fence = retire_accept &&
                         !exec_wb_exception &&
                         (`RV64_OPCODE(exec_wb_instr) ==
@@ -482,17 +487,20 @@ module openrv64_rv64_top #(
                               `RV64_CSR_SATP);
     wire retire_translation_fence =
         retire_sfence_vma || retire_satp_write;
-    wire irq_take = csr_irq_pending &&
-                    retire_accept &&
-                    !retire_exception &&
-                    !exec_wb_halt &&
-                    !retire_mret &&
-                    !retire_sret;
+    wire wfi_irq_take = wfi_sleep_q && csr_irq_pending;
+    wire irq_take = wfi_irq_take ||
+                    (csr_irq_pending &&
+                     retire_accept &&
+                     !retire_exception &&
+                     !exec_wb_halt &&
+                     !retire_mret &&
+                     !retire_sret);
     wire trap_enter = retire_exception || irq_take;
     wire trap_interrupt = irq_take;
     wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] trap_cause =
         irq_take ? csr_irq_cause : exec_wb_cause;
     wire [`RV64_XLEN-1:0] trap_pc =
+        wfi_irq_take ? pc_q :
         irq_take ? exec_wb_next_pc : exec_wb_pc;
     wire [`RV64_XLEN-1:0] trap_tval =
         irq_take ? 64'd0 : exec_wb_tval;
@@ -504,7 +512,7 @@ module openrv64_rv64_top #(
     assign hard_flush_mret_req = retire_mret;
     assign hard_flush_sret_req = retire_sret;
     assign hard_flush_restart_req =
-        retire_fence_i || retire_translation_fence;
+        retire_fence_i || retire_translation_fence || retire_wfi;
     assign hard_flush_req = except_vector_valid;
 
     assign flush_if_id = hard_flush_req;
@@ -536,6 +544,7 @@ module openrv64_rv64_top #(
 
     assign fetch_pc_valid = fetch_pc_ready &&
                             !halted_q &&
+                            !wfi_sleep_q &&
                             !halt_pending_q &&
                             !decode_ebreak_accept &&
                             !bp_fetch_stall &&
@@ -658,6 +667,7 @@ module openrv64_rv64_top #(
                                 1'b0 : decode_br_indirect;
     assign bp_branch_present = if_id_out_valid &&
                                !hard_flush_req &&
+                               !wfi_sleep_q &&
                                (if_id_predecode_valid ||
                                 decode_branch || decode_jump);
     assign bp_branch_allocate = bp_branch_present && if_id_out_clear;
@@ -817,6 +827,7 @@ module openrv64_rv64_top #(
         .irq_s_external_i(irq_s_external),
         .irq_pending_o(csr_irq_pending),
         .irq_cause_o(csr_irq_cause),
+        .wfi_wake_o(csr_wfi_wake),
         .trap_vector_o(csr_trap_vector),
         .trap_to_s_o(csr_trap_to_s),
         .mepc_o(csr_mepc),
@@ -1274,6 +1285,7 @@ module openrv64_rv64_top #(
         .lsu_xlate_resp_ready_i(1'b1),
         .tlbi_i(retire_translation_fence),
         .tlbi_busy_o(translation_barrier_busy),
+        .store_barrier_i(1'b0),
         .icache_invalidate_i(retire_fence_i),
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),
@@ -1349,6 +1361,7 @@ module openrv64_rv64_top #(
     assign dbg_pc = dbg_pc_q;
     assign dbg_instr = dbg_instr_q;
     assign dbg_halted = halted_q;
+    assign wfi_sleep_o = wfi_sleep_q;
 
     // Trace slot order is fixed: 0=IF, 1=ID, 2=EX, 3=MEM, 4=WB.
     // Each packed vector uses the stage number as its element index, so the
@@ -1504,9 +1517,16 @@ module openrv64_rv64_top #(
             dbg_pc_q       <= {`RV64_XLEN{1'b0}};
             dbg_instr_q    <= `RV64_INSTR_NOP;
             halted_q       <= 1'b0;
+            wfi_sleep_q    <= 1'b0;
             halt_pending_q <= 1'b0;
             reset_pending_q <= 1'b1;
         end else begin
+            if (wfi_sleep_q) begin
+                if (csr_wfi_wake)
+                    wfi_sleep_q <= 1'b0;
+            end else if (retire_wfi && !csr_wfi_wake) begin
+                wfi_sleep_q <= 1'b1;
+            end
             if (except_vector_valid) begin
                 pc_q <= except_vector_target;
             end else if (bp_predict_redirect) begin

@@ -161,6 +161,7 @@ module openrv64_core_bus #(
 
     input  wire                         tlbi_i,
     output wire                         tlbi_busy_o,
+    input  wire                         store_barrier_i,
     input  wire                         icache_invalidate_i,
     input  wire                         icache_prefetch_valid_i,
     input  wire [`RV64_XLEN-1:0]        icache_prefetch_taken_addr_i,
@@ -1065,6 +1066,7 @@ module openrv64_core_bus #(
                 .lsu_access_fault_o(lsu_access_fault_o),
                 .lsu_page_fault_o(lsu_page_fault_o), .tlbi_i(tlbi_i),
                 .tlbi_busy_o(tlbi_busy_o),
+                .store_barrier_i(store_barrier_i),
                 .icache_invalidate_i(icache_invalidate_i),
                 .icache_prefetch_valid_i(icache_prefetch_valid_i),
                 .icache_prefetch_taken_addr_i(

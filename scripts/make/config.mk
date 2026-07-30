@@ -97,6 +97,30 @@ ATOMIC_4H_SHARED_VM_SUCCESS_VA = $(shell $(RISCV_NM) -n \
 ATOMIC_4H_SHARED_VM_COUNTER_VA = $(shell $(RISCV_NM) -n \
 	$(ATOMIC_4H_SHARED_VM_ELF) | \
 	awk '$$3 == "atomic_4h_counter" { print $$1 }')
+TLBI_4H_SHARED_VM_ELF := sim/tlbi-4h-shared-vm.elf
+TLBI_4H_SHARED_VM_TEMPLATE_BIN := sim/tlbi-4h-shared-vm-template.bin
+TLBI_4H_SHARED_VM_BIN := sim/tlbi-4h-shared-vm.bin
+TLBI_4H_SHARED_VM_MEMH := sim/tlbi-4h-shared-vm-512.memh
+TLBI_4H_SHARED_VM_MAP := sim/tlbi-4h-shared-vm.map
+TLBI_4H_SHARED_VM_DISASM := sim/tlbi-4h-shared-vm.disasm
+TLBI_4H_SHARED_VM_MEMH_BYTES := 0x23000
+TLBI_4H_SHARED_VM_MEMH_WORDS := 2240
+TLBI_4H_SHARED_VM_MAX_CYCLES ?= 1000000
+TLBI_4H_SHARED_VM_DONE_PC = $(shell $(RISCV_NM) -n \
+	$(TLBI_4H_SHARED_VM_ELF) | \
+	awk '$$3 == "tlbi_4h_shared_vm_done" { print $$1 }')
+TLBI_4H_SHARED_VM_MAILBOX_VA = $(shell $(RISCV_NM) -n \
+	$(TLBI_4H_SHARED_VM_ELF) | \
+	awk '$$3 == "tlbi_4h_private_pages" { print $$1 }')
+TLBI_4H_SHARED_VM_RESULT_VA = $(shell $(RISCV_NM) -n \
+	$(TLBI_4H_SHARED_VM_ELF) | \
+	awk '$$3 == "tlbi_4h_result_base" { print $$1 }')
+TLBI_4H_SHARED_VM_RESERVATION_VA = $(shell $(RISCV_NM) -n \
+	$(TLBI_4H_SHARED_VM_ELF) | \
+	awk '$$3 == "tlbi_reservation_line" { print $$1 }')
+TLBI_4H_SHARED_VM_TARGET_VA := 40018000
+TLBI_4H_SHARED_VM_OLD_PA := 80018000
+TLBI_4H_SHARED_VM_NEW_PA := 8001c000
 ZERO_VM_ELF := sim/zero-sv39.elf
 ZERO_VM_BIN := sim/zero-sv39.bin
 ZERO_VM_MEMH := sim/zero-sv39.memh

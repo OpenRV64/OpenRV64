@@ -181,6 +181,7 @@ module tb_ccx_l1i;
         .lsu_xlate_req_mxr_i(1'b0),
         .lsu_xlate_resp_ready_i(1'b1),
         .tlbi_i(1'b0),
+        .store_barrier_i(1'b0),
         .icache_invalidate_i(icache_invalidate),
         .icache_prefetch_valid_i(icache_prefetch_valid),
         .icache_prefetch_taken_addr_i(icache_prefetch_taken_addr),

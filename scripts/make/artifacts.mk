@@ -82,6 +82,7 @@ EXEC_PIPE_MEM_TIMEOUT_SIM_BUILD := sim/exec_pipe_mem_timeout_tb.vvp
 EXEC_LSU_RV64I_SIM_BUILD := sim/exec_lsu_rv64-i_tb.vvp
 EXEC_LSU_RV64A_SIM_BUILD := sim/exec_lsu_rv64-a_tb.vvp
 ATOMIC_CONTEXT_SIM_BUILD := sim/atomic_context_tb.vvp
+WFI_CONTEXT_SIM_BUILD := sim/wfi_context_tb.vvp
 EXEC_BR_SIM_BUILD := sim/exec_br_tb.vvp
 EXEC_BP_SIM_BUILD := sim/exec_bp_tb.vvp
 EXEC_BP_GSHARE_BTB_SIM_BUILD := sim/exec_bp_gshare_btb_tb.vvp

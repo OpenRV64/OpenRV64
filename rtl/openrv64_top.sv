@@ -171,6 +171,7 @@ module openrv64_top #(
     output logic [63:0] dbg_pc,
     output logic [31:0] dbg_instr,
     output logic        dbg_halted,
+    output logic        wfi_sleep,
 
     // Optional, synthesizable cycle trace. Packed stage order is
     // 0=IF, 1=ID, 2=EX, 3=MEM, 4=WB (least to most significant slice).
@@ -226,6 +227,7 @@ module openrv64_top #(
     wire [63:0] legacy_dbg_pc;
     wire [31:0] legacy_dbg_instr;
     wire legacy_dbg_halted;
+    wire legacy_wfi_sleep;
     wire [63:0] legacy_trace_cycle;
     wire [4:0] legacy_trace_valid;
     wire [4:0] legacy_trace_stall;
@@ -253,6 +255,7 @@ module openrv64_top #(
     wire [63:0] three_dbg_pc;
     wire [31:0] three_dbg_instr;
     wire three_dbg_halted;
+    wire three_wfi_sleep;
     wire [63:0] three_trace_cycle;
     wire [4:0] three_trace_valid;
     wire [4:0] three_trace_stall;
@@ -394,6 +397,7 @@ module openrv64_top #(
         .irq_s_external(use_3p ? 1'b0 : irq_s_external),
         .dbg_pc(legacy_dbg_pc), .dbg_instr(legacy_dbg_instr),
         .dbg_halted(legacy_dbg_halted),
+        .wfi_sleep_o(legacy_wfi_sleep),
         .trace_cycle(legacy_trace_cycle), .trace_valid(legacy_trace_valid),
         .trace_stall(legacy_trace_stall), .trace_flush(legacy_trace_flush),
         .trace_advance(legacy_trace_advance), .trace_ids(legacy_trace_ids),
@@ -582,6 +586,7 @@ module openrv64_top #(
                 .irq_s_timer(irq_s_timer),
                 .irq_s_external(irq_s_external), .dbg_pc(three_dbg_pc),
                 .dbg_instr(three_dbg_instr), .dbg_halted(three_dbg_halted),
+                .wfi_sleep_o(three_wfi_sleep),
                 .trace_cycle(three_trace_cycle),
                 .trace_valid(three_trace_valid),
                 .trace_stall(three_trace_stall),
@@ -609,6 +614,7 @@ module openrv64_top #(
             assign three_dbg_pc = 64'd0;
             assign three_dbg_instr = 32'd0;
             assign three_dbg_halted = 1'b0;
+            assign three_wfi_sleep = 1'b0;
             assign three_trace_cycle = 64'd0;
             assign three_trace_valid = 5'd0;
             assign three_trace_stall = 5'd0;
@@ -750,6 +756,7 @@ module openrv64_top #(
     assign dbg_pc = use_3p ? three_dbg_pc : legacy_dbg_pc;
     assign dbg_instr = use_3p ? three_dbg_instr : legacy_dbg_instr;
     assign dbg_halted = use_3p ? three_dbg_halted : legacy_dbg_halted;
+    assign wfi_sleep = use_3p ? three_wfi_sleep : legacy_wfi_sleep;
     assign trace_cycle = use_3p ? three_trace_cycle : legacy_trace_cycle;
     assign trace_valid = use_3p ? three_trace_valid : legacy_trace_valid;
     assign trace_stall = use_3p ? three_trace_stall : legacy_trace_stall;

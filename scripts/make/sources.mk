@@ -214,6 +214,7 @@ LSU_ATOMICS_SIM_SRCS := tb/tb_lsu_atomics.sv
 EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
 EXEC_LSU_RV64A_SIM_SRCS := tb/tb_exec_lsu_rv64-a.sv
 ATOMIC_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_atomic_context.sv
+WFI_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_wfi_context.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
 EXEC_BP_SIM_SRCS := tb/tb_exec_bp.sv
 RV64FD_FPR_SIM_SRCS := tb/tb_rv64-fd-fpr.sv

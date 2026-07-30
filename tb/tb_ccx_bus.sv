@@ -252,6 +252,7 @@ module tb_ccx_bus #(
         .lsu_access_fault_o(lsu_access_fault),
         .lsu_page_fault_o(lsu_page_fault), .tlbi_i(tlbi),
         .tlbi_busy_o(tlbi_busy),
+        .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),

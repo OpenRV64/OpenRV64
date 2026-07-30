@@ -125,6 +125,7 @@ module tb_core_bus;
         .lsu_xlate_req_mxr_i(1'b0),
         .lsu_xlate_resp_ready_i(1'b1),
         .tlbi_i(tlbi),
+        .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),

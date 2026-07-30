@@ -42,6 +42,7 @@ module openrv64_rv64i_csrs #(
     input  wire                             irq_s_external_i,
     output reg                              irq_pending_o,
     output reg  [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause_o,
+    output wire                             wfi_wake_o,
     output wire [`RV64_XLEN-1:0]           trap_vector_o,
     output wire                             trap_to_s_o,
     output wire [`RV64_XLEN-1:0]           mepc_o,
@@ -209,6 +210,10 @@ module openrv64_rv64i_csrs #(
     assign trap_vector_o = selected_tvec_base +
                            ((trap_interrupt_i && selected_tvec_vectored) ?
                             trap_offset : 64'd0);
+    // WFI ignores global MIE/SIE and delegation, but honors each interrupt's
+    // individual enable.  This remains combinational so an always-on clock
+    // controller can use it while the architectural pipeline is stopped.
+    assign wfi_wake_o = |enabled_pending;
     assign trap_to_s_o = trap_delegated;
     assign mepc_o = mepc_q;
     assign sepc_o = sepc_q;

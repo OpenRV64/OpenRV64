@@ -1,5 +1,18 @@
 # TODO
 
+## Correctness
+
+- [ ] Implement lower-privilege WFI interception: honor `mstatus.TW` in S-mode
+      and the bounded U-mode WFI rule. The current WFI sleep/wake path is
+      correct for OpenSBI's M-mode HSM wait but does not raise the required
+      lower-privilege illegal-instruction exception.
+- [ ] Extend the directed four-hart MSIP/`SFENCE.VMA` shootdown test through
+      the real OpenSBI SBI IPI and Linux `flush_tlb_*` paths, including target
+      masks, completion acknowledgement, ASID reuse, and concurrent PTE
+      update stress.
+
+## General
+
 - [ ] Store buffers
 - [ ] Cache
 - [ ] Complete the L1I/L1D decomposition begun under

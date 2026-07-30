@@ -87,6 +87,20 @@ when their parameters are enabled.
 - Machine, supervisor, and user privilege modes, delegated traps and
   interrupts, MRET/SRET, and the main machine/supervisor CSR state are
   implemented.
+- WFI stops architectural fetch and issue after the instruction retires. It
+  resumes when any individually enabled local interrupt becomes pending,
+  regardless of the global MIE/SIE bits or delegation; disabled raw interrupt
+  inputs do not wake it. The ISA permits spurious wakeups, although this
+  implementation does not generate them internally. If global interrupt
+  delivery is active, wake takes the interrupt before WFI+4 retires and writes
+  WFI+4 to xEPC; otherwise execution resumes at WFI+4. CSR interrupt
+  detection, outstanding LSU work, private caches, and CCX probe handling
+  remain clocked while the architectural pipeline is quiescent. In the 3P
+  core, WFI waits for posted stores to drain and then a low-phase-latched gate
+  stops the backend clock. This deliberately is not a complete hart clock
+  gate: the always-on domains must still observe wake sources and service
+  coherence. Lower-privilege interception through `mstatus.TW`, including
+  mandatory bounded handling of U-mode WFI, is not yet implemented.
 - Sixteen PMP entries use 4 KiB grain and support OFF/NAPOT matching plus
   lock bits. TOR and NA4 writes are WARL-coerced to OFF. NAPOT bounds are
   normalized when `pmpaddr` is written rather than decoded on every access.
@@ -506,6 +520,12 @@ speculative device reads. SATP, `SFENCE.VMA`, fences, stores, and atomics
 cannot pass pending ordered memory state; younger non-memory execution may
 continue filling the retirement window.
 
+In the 3P path, ordinary `FENCE` and `FENCE.I` do not complete merely because
+they have reached the ordered head. They first wait for older LSQ stores to
+enter L1D, request an L1D store barrier, and wait for every buffered write's
+CCX response. This is a store-completion barrier, not a translation
+invalidation; ordinary fences do not flush the TLB or emit a PTE fence.
+
 RV64A drains simple MEM work and runs as a serialized ordered operation. It
 uses the core request/response contract rather than AXI exclusives. Atomics do
 not yet use the ordinary early-translation path.
@@ -550,6 +570,12 @@ invalidated, a CCX `ACQ_REL` PTE fence completes, and only then may fetch or
 LSU traffic restart. The initiating pulse clears both L1 TLBs and the shared
 L2 TLB and suppresses any same-cycle PTW or L2-to-L1 fill. Address- and
 ASID-selective invalidation are not implemented.
+
+`SFENCE.VMA` affects only the executing hart. Inter-hart TLB shootdown is the
+software protocol required by RISC-V: the initiating hart updates the PTE and
+orders that write, sends IPIs to the target harts, and each remote handler
+executes its own `SFENCE.VMA` before acknowledging completion. There is no
+hardware broadcast-TLBI path between cores.
 
 PMP is checked after translation at the physical requester boundary. Page
 faults and physical access faults remain distinct through completion and

@@ -21,6 +21,10 @@ sw-atomic-4h-shared-vm: $(ATOMIC_4H_SHARED_VM_ELF) \
 		$(ATOMIC_4H_SHARED_VM_TEMPLATE_BIN) $(ATOMIC_4H_SHARED_VM_BIN) \
 		$(ATOMIC_4H_SHARED_VM_MEMH) $(ATOMIC_4H_SHARED_VM_DISASM)
 
+sw-tlbi-4h-shared-vm: $(TLBI_4H_SHARED_VM_ELF) \
+		$(TLBI_4H_SHARED_VM_TEMPLATE_BIN) $(TLBI_4H_SHARED_VM_BIN) \
+		$(TLBI_4H_SHARED_VM_MEMH) $(TLBI_4H_SHARED_VM_DISASM)
+
 sim-4h-3p-sv39: $(CORE_4H_3P_VERILATOR_BUILD) $(CORE_4H_VM_MEMH)
 	test -n "$(CORE_4H_VM_DONE_PC)"
 	test -n "$(CORE_4H_VM_MAILBOX_VA)"
@@ -76,8 +80,28 @@ sim-4h-3p-atomic-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
 		+shared_satp=1 +mailbox_stride=4096 +atomic_test=1 \
 		+max_cycles=$(ATOMIC_4H_SHARED_VM_MAX_CYCLES)
 
+sim-4h-3p-tlbi-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
+		$(TLBI_4H_SHARED_VM_MEMH)
+	test -n "$(TLBI_4H_SHARED_VM_DONE_PC)"
+	test -n "$(TLBI_4H_SHARED_VM_MAILBOX_VA)"
+	test -n "$(TLBI_4H_SHARED_VM_RESULT_VA)"
+	test -n "$(TLBI_4H_SHARED_VM_RESERVATION_VA)"
+	$(CORE_4H_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(TLBI_4H_SHARED_VM_MEMH)) \
+		+memh_words=$(TLBI_4H_SHARED_VM_MEMH_WORDS) \
+		+done_pc=$(TLBI_4H_SHARED_VM_DONE_PC) \
+		+mailbox_va=$(TLBI_4H_SHARED_VM_MAILBOX_VA) \
+		+result_va=$(TLBI_4H_SHARED_VM_RESULT_VA) \
+		+result_expected=1 \
+		+tlbi_reservation_va=$(TLBI_4H_SHARED_VM_RESERVATION_VA) \
+		+tlbi_target_va=$(TLBI_4H_SHARED_VM_TARGET_VA) \
+		+tlbi_old_pa=$(TLBI_4H_SHARED_VM_OLD_PA) \
+		+tlbi_new_pa=$(TLBI_4H_SHARED_VM_NEW_PA) \
+		+shared_satp=1 +mailbox_stride=4096 +tlbi_test=1 \
+		+max_cycles=$(TLBI_4H_SHARED_VM_MAX_CYCLES)
+
 sim-4h-3p-shared-suite: sim-4h-3p-shared-sv39 \
-		sim-4h-3p-atomic-sv39
+		sim-4h-3p-atomic-sv39 sim-4h-3p-tlbi-sv39
 
 sw-zero-sv39: $(ZERO_VM_ELF) $(ZERO_VM_BIN) $(ZERO_VM_MEMH) \
 		$(ZERO_VM_DISASM)

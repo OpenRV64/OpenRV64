@@ -147,6 +147,7 @@ module openrv64_core_ccx_bus #(
 
     input  wire                         tlbi_i,
     output wire                         tlbi_busy_o,
+    input  wire                         store_barrier_i,
     input  wire                         icache_invalidate_i,
     input  wire                         icache_prefetch_valid_i,
     input  wire [`RV64_XLEN-1:0]        icache_prefetch_taken_addr_i,
@@ -1358,7 +1359,7 @@ module openrv64_core_ccx_bus #(
         .prefetch_dropped_o(),
         .prefetch_useless_o(),
         .prefetch_depth_o(),
-        .speculation_barrier_i(tlbi_i),
+        .speculation_barrier_i(tlbi_i || store_barrier_i),
         .store_barrier_busy_o(l1d_store_barrier_busy),
         .invalidate_valid_i(
             (ENABLE_L1D_COHERENCE_PROBES != 0) &&

@@ -203,6 +203,8 @@ module openrv64_exec_top #(
     input  wire                         ordered_head_valid_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] ordered_head_slot_3p_i,
+    output wire                         store_barrier_request_3p_o,
+    input  wire                         store_barrier_busy_3p_i,
     output wire [2:0]                   complete_valid_3p_o,
     input  wire [2:0]                   complete_ready_3p_i,
     output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_3p_o,
@@ -272,6 +274,7 @@ module openrv64_exec_top #(
             assign async_store_fault_trace_3p_o = 64'd0;
             assign async_store_fault_instr_3p_o =
                 {`RV64_INSTR_WIDTH{1'b0}};
+            assign store_barrier_request_3p_o = 1'b0;
         end else if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_3p
             openrv64_exec_top_3p #(
                 .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH_3P),
@@ -313,6 +316,8 @@ module openrv64_exec_top #(
                 .ordered_head_valid_i(ordered_head_valid_3p_i),
                 .ordered_head_id_i(ordered_head_id_3p_i),
                 .ordered_head_slot_i(ordered_head_slot_3p_i),
+                .store_barrier_request_o(store_barrier_request_3p_o),
+                .store_barrier_busy_i(store_barrier_busy_3p_i),
                 .complete_valid_o(complete_valid_3p_o),
                 .complete_ready_i(complete_ready_3p_i),
                 .complete_id_o(complete_id_3p_o),
@@ -488,6 +493,7 @@ module openrv64_exec_top #(
             assign trace_mem_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
             assign trace_wb_id_o = 64'd0;
             assign trace_serializing_o = 1'b0;
+            assign store_barrier_request_3p_o = 1'b0;
         end
     endgenerate
 

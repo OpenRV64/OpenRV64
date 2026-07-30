@@ -208,6 +208,7 @@ module openrv64_rv64_top_3p #(
     output wire [63:0] dbg_pc,
     output wire [31:0] dbg_instr,
     output wire        dbg_halted,
+    output wire        wfi_sleep_o,
     output wire [63:0]  trace_cycle,
     output wire [4:0]   trace_valid,
     output wire [4:0]   trace_stall,
@@ -234,11 +235,24 @@ module openrv64_rv64_top_3p #(
     reg [63:0] dbg_pc_q;
     reg [31:0] dbg_instr_q;
     reg halted_q;
+    reg wfi_sleep_q;
+    reg backend_clock_enable_q;
     reg reset_pending_q;
+    wire backend_clk = clk & backend_clock_enable_q;
+
+    // Keep the CSR, cache, PTW, and CCX domains on the ungated clock. The
+    // enable latch only changes while clk is low, avoiding a shortened pulse
+    // when an interrupt wakes the backend.
+    always_latch begin
+        if (!rst_n)
+            backend_clock_enable_q <= 1'b1;
+        else if (!clk)
+            backend_clock_enable_q <= !wfi_sleep_q;
+    end
 
     wire fetch_pc_ready;
     wire translation_barrier_busy;
-    wire fetch_pc_valid = fetch_pc_ready && !halted_q &&
+    wire fetch_pc_valid = fetch_pc_ready && !halted_q && !wfi_sleep_q &&
                           !reset_pending_q &&
                           !translation_barrier_busy;
     wire fetch_mem_valid;
@@ -303,6 +317,7 @@ module openrv64_rv64_top_3p #(
     wire backend_fence_i;
     wire backend_sfence_vma;
     wire backend_satp_write;
+    wire backend_store_barrier_request;
     wire [4:0] backend_cause;
     wire [63:0] backend_retire_pc;
     wire [63:0] backend_retire_next_pc;
@@ -313,18 +328,23 @@ module openrv64_rv64_top_3p #(
     wire [63:0] backend_retire_wdata;
     wire [2:0] backend_retire_arch;
     wire [1:0] backend_retire_count;
+    wire backend_wfi =
+        (|backend_retire_arch) &&
+        (backend_retire_instr == `RV64_INSTR_WFI);
 
     wire control_trap = backend_exception && !backend_halt;
+    wire wfi_irq_take;
     wire control_restart = backend_fence_i || backend_sfence_vma ||
-                           backend_satp_write;
-    wire control_flush = control_trap || backend_irq || backend_mret ||
-                         backend_sret || control_restart;
+                           backend_satp_write || backend_wfi;
+    wire control_flush = control_trap || backend_irq || wfi_irq_take ||
+                         backend_mret || backend_sret || control_restart;
     wire fetch_invalidate = reset_pending_q || control_flush || backend_halt;
 
     wire except_vector_valid;
     wire [63:0] except_vector_target;
     wire csr_irq_pending;
     wire [4:0] csr_irq_cause;
+    wire csr_wfi_wake;
     wire [63:0] csr_trap_vector;
     wire [63:0] csr_mepc;
     wire [63:0] csr_sepc;
@@ -339,6 +359,7 @@ module openrv64_rv64_top_3p #(
     wire csr_status_sum;
     wire csr_status_mxr;
     wire csr_hpm_busy;
+    assign wfi_irq_take = wfi_sleep_q && csr_irq_pending;
 
     wire bp_branch_present;
     wire bp_branch_allocate;
@@ -706,7 +727,7 @@ module openrv64_rv64_top_3p #(
     assign bp_branch_present = use_ccx_bus &&
                                (|frontend_control_select) &&
                                !control_flush && !control_redirect &&
-                               !halted_q;
+                               !halted_q && !wfi_sleep_q;
     assign bp_predict_redirect = bp_branch_allocate &&
                                  bp_prediction_taken;
 
@@ -832,7 +853,8 @@ module openrv64_rv64_top_3p #(
 
     wire [2:0] backend_decode_ready;
     wire frontend_decode_enable = !control_flush && !control_redirect &&
-                                  !halted_q && !bp_decode_stall &&
+                                  !halted_q && !wfi_sleep_q &&
+                                  !bp_decode_stall &&
                                   !translation_barrier_busy;
     wire [2:0] backend_decode_valid = fetch_decode_valid &
         frontend_prefix_allow & {3{frontend_decode_enable}};
@@ -1032,7 +1054,7 @@ module openrv64_rv64_top_3p #(
         .CACHEABLE_BASE(L1D_CACHEABLE_BASE),
         .CACHEABLE_SIZE(L1D_CACHEABLE_SIZE)
     ) u_backend (
-        .clk(clk), .rst_n(rst_n), .flush_i(control_flush),
+        .clk(backend_clk), .rst_n(rst_n), .flush_i(control_flush),
         .squash_frontend_i(control_redirect),
         .coherent_reservation_clear_i(
             coherent_reservation_clear_i),
@@ -1075,6 +1097,8 @@ module openrv64_rv64_top_3p #(
         .mem_store_done_valid_i(backend_mem_store_done_valid),
         .mem_store_done_ready_o(backend_mem_store_done_ready),
         .mem_store_done_tag_i(backend_mem_store_done_tag),
+        .store_barrier_request_o(backend_store_barrier_request),
+        .store_barrier_busy_i(translation_barrier_busy),
         .mem_resp_paddr_i(backend_mem_resp_paddr),
         .mem_error_i(backend_mem_access_fault),
         .mem_page_fault_i(backend_mem_page_fault),
@@ -1132,11 +1156,15 @@ module openrv64_rv64_top_3p #(
 
     wire [11:0] csr_access_addr = backend_csr_write ?
                                   backend_csr_write_addr : backend_csr_addr;
-    wire trap_enter = control_trap || backend_irq;
-    wire trap_interrupt = backend_irq;
-    wire [63:0] trap_pc = backend_irq ? backend_retire_next_pc :
-                                       backend_retire_pc;
-    wire [63:0] trap_tval = backend_irq ? 64'd0 : backend_retire_tval;
+    wire trap_enter = control_trap || backend_irq || wfi_irq_take;
+    wire trap_interrupt = backend_irq || wfi_irq_take;
+    wire [4:0] trap_cause = wfi_irq_take ? csr_irq_cause :
+                            backend_cause;
+    wire [63:0] trap_pc = wfi_irq_take ? pc_q :
+                          backend_irq ? backend_retire_next_pc :
+                                        backend_retire_pc;
+    wire [63:0] trap_tval =
+        (backend_irq || wfi_irq_take) ? 64'd0 : backend_retire_tval;
 
     wire csr_pmp_instr_allow;
     wire csr_pmp_data_allow;
@@ -1230,7 +1258,7 @@ module openrv64_rv64_top_3p #(
         .csr_satp_busy_o(),
         .csr_hpm_busy_o(csr_hpm_busy),
         .trap_enter_i(trap_enter),
-        .trap_interrupt_i(trap_interrupt), .trap_cause_i(backend_cause),
+        .trap_interrupt_i(trap_interrupt), .trap_cause_i(trap_cause),
         .trap_pc_i(trap_pc), .trap_tval_i(trap_tval),
         .mret_i(backend_mret), .sret_i(backend_sret),
         .retire_count_i(backend_retire_count),
@@ -1240,6 +1268,7 @@ module openrv64_rv64_top_3p #(
         .irq_s_software_i(irq_s_software), .irq_s_timer_i(irq_s_timer),
         .irq_s_external_i(irq_s_external),
         .irq_pending_o(csr_irq_pending), .irq_cause_o(csr_irq_cause),
+        .wfi_wake_o(csr_wfi_wake),
         .trap_vector_o(csr_trap_vector), .trap_to_s_o(csr_trap_to_s),
         .mepc_o(csr_mepc), .sepc_o(csr_sepc),
         .priv_mode_o(csr_priv_mode), .data_priv_mode_o(csr_data_priv_mode),
@@ -1265,7 +1294,8 @@ module openrv64_rv64_top_3p #(
 
     openrv64_except_vector #(.RESET_VECTOR(RESET_VECTOR)) u_vector (
         .reset_i(reset_pending_q), .trap_i(control_trap),
-        .irq_i(backend_irq), .mret_i(backend_mret), .sret_i(backend_sret),
+        .irq_i(backend_irq || wfi_irq_take),
+        .mret_i(backend_mret), .sret_i(backend_sret),
         .restart_i(control_restart), .redirect_i(1'b0),
         .trap_vector_i(csr_trap_vector), .mepc_i(csr_mepc),
         .sepc_i(csr_sepc), .restart_target_i(backend_retire_next_pc),
@@ -1428,6 +1458,7 @@ module openrv64_rv64_top_3p #(
             backend_mem_xlate_resp_page_fault),
         .tlbi_i(backend_sfence_vma || backend_satp_write),
         .tlbi_busy_o(translation_barrier_busy),
+        .store_barrier_i(backend_store_barrier_request),
         .icache_invalidate_i(backend_fence_i),
         .icache_prefetch_valid_i(l1i_branch_prefetch_valid &&
                                  !translation_barrier_busy),
@@ -1510,6 +1541,7 @@ module openrv64_rv64_top_3p #(
     assign dbg_pc = dbg_pc_q;
     assign dbg_instr = dbg_instr_q;
     assign dbg_halted = halted_q;
+    assign wfi_sleep_o = wfi_sleep_q;
 
     wire retire_event = (|backend_retire_arch) || backend_exception ||
                         backend_halt;
@@ -1588,9 +1620,16 @@ module openrv64_rv64_top_3p #(
             dbg_pc_q <= RESET_VECTOR;
             dbg_instr_q <= `RV64_INSTR_NOP;
             halted_q <= 1'b0;
+            wfi_sleep_q <= 1'b0;
             reset_pending_q <= 1'b1;
         end else begin
             reset_pending_q <= 1'b0;
+            if (wfi_sleep_q) begin
+                if (csr_wfi_wake)
+                    wfi_sleep_q <= 1'b0;
+            end else if (backend_wfi && !csr_wfi_wake) begin
+                wfi_sleep_q <= 1'b1;
+            end
             if (except_vector_valid)
                 pc_q <= except_vector_target;
             else if (control_redirect)

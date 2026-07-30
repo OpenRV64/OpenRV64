@@ -85,6 +85,8 @@ module openrv64_backend_3p #(
     output wire                         mem_store_done_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0]
                                         mem_store_done_tag_i,
+    output wire                         store_barrier_request_o,
+    input  wire                         store_barrier_busy_i,
     input  wire                         mem_access_allowed_i,
     output wire                         mem_lock_o,
     output wire                         mem_write_o,
@@ -1170,6 +1172,8 @@ module openrv64_backend_3p #(
         .ordered_head_valid_3p_i(ordered_head_valid),
         .ordered_head_id_3p_i(ordered_head_id),
         .ordered_head_slot_3p_i(ordered_head_slot),
+        .store_barrier_request_3p_o(store_barrier_request_o),
+        .store_barrier_busy_3p_i(store_barrier_busy_i),
         .complete_valid_3p_o(complete_valid),
         .complete_ready_3p_i(3'b111),
         .complete_id_3p_o(complete_id),

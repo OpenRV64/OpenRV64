@@ -247,6 +247,7 @@ module tb_4h_3p #(
     wire [NUM_HARTS*64-1:0] dbg_pc;
     wire [NUM_HARTS*32-1:0] dbg_instr;
     wire [NUM_HARTS-1:0] dbg_halted;
+    wire [NUM_HARTS-1:0] hart_wfi_sleep;
 
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_WORDS-1];
@@ -264,16 +265,25 @@ module tb_4h_3p #(
     logic [63:0] mailbox_va;
     logic [63:0] result_va;
     logic [63:0] atomic_counter_va;
+    logic [63:0] tlbi_reservation_va;
+    logic [63:0] tlbi_target_va;
+    logic [63:0] tlbi_old_pa;
+    logic [63:0] tlbi_new_pa;
     logic done_pc_valid;
     logic mailbox_va_valid;
     logic result_va_valid;
     logic atomic_counter_va_valid;
+    logic tlbi_reservation_va_valid;
+    logic tlbi_target_va_valid;
+    logic tlbi_old_pa_valid;
+    logic tlbi_new_pa_valid;
     integer shared_satp;
     integer bare_mode;
     integer mailbox_stride;
     integer result_expected;
     integer atomic_expected;
     integer atomic_test;
+    integer tlbi_test;
     integer atomic_debug;
     integer max_cycles;
     integer cycles;
@@ -305,6 +315,11 @@ module tb_4h_3p #(
     integer sc_failures [0:NUM_HARTS-1];
     integer atomic_line_probes [0:NUM_HARTS-1];
     integer reservation_clears [0:NUM_HARTS-1];
+    integer tlbi_sfence_retired [0:NUM_HARTS-1];
+    integer tlbi_pte_fences [0:NUM_HARTS-1];
+    integer tlbi_old_reads [0:NUM_HARTS-1];
+    integer tlbi_new_reads [0:NUM_HARTS-1];
+    integer tlbi_reservation_probes [0:NUM_HARTS-1];
     logic home_request_active;
     logic [`OPENRV64_CCX_OP_WIDTH-1:0] home_request_op;
     logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] home_request_hart;
@@ -370,6 +385,11 @@ module tb_4h_3p #(
     function automatic [63:0] atomic_counter_pa;
         atomic_counter_pa =
             PHYSICAL_BASE + (atomic_counter_va - VIRTUAL_BASE);
+    endfunction
+
+    function automatic [63:0] tlbi_reservation_pa;
+        tlbi_reservation_pa =
+            PHYSICAL_BASE + (tlbi_reservation_va - VIRTUAL_BASE);
     endfunction
 
     generate
@@ -548,7 +568,8 @@ module tb_4h_3p #(
                 .coherent_reservation_clear_i(
                     coherent_reservation_clear[hart]),
                 .irq_m_software(
-                    opensbi_mode && clint_msip[hart]),
+                    (opensbi_mode || (tlbi_test != 0)) &&
+                    clint_msip[hart]),
                 .irq_m_timer(
                     opensbi_mode && clint_mtip[hart]),
                 .irq_m_external(1'b0),
@@ -558,7 +579,8 @@ module tb_4h_3p #(
                     opensbi_mode && plic_seip[hart]),
                 .dbg_pc(dbg_pc[hart*64 +: 64]),
                 .dbg_instr(dbg_instr[hart*32 +: 32]),
-                .dbg_halted(dbg_halted[hart])
+                .dbg_halted(dbg_halted[hart]),
+                .wfi_sleep_o(hart_wfi_sleep[hart])
             );
 
             always @(posedge clk or negedge rst_n) begin
@@ -574,6 +596,7 @@ module tb_4h_3p #(
                     satp_seen[hart] <= 1'b0;
                     supervisor_fetch_seen[hart] <= 1'b0;
                     opensbi_hsm_wfi_seen[hart] <= 1'b0;
+                    tlbi_sfence_retired[hart] <= 0;
                 end else begin
                     if ((atomic_debug != 0) && (cycles != 0) &&
                         ((cycles % 500) == 0))
@@ -618,6 +641,10 @@ module tb_4h_3p #(
                         u_core.backend_retire_arch[0] +
                         u_core.backend_retire_arch[1] +
                         u_core.backend_retire_arch[2];
+                    if ((tlbi_test != 0) &&
+                        u_core.backend_sfence_vma)
+                        tlbi_sfence_retired[hart] <=
+                            tlbi_sfence_retired[hart] + 1;
                     if ((opensbi_smp != 0) && (hart != 0) &&
                         (|u_core.backend_retire_arch) &&
                         (u_core.backend_retire_pc ==
@@ -936,7 +963,7 @@ module tb_4h_3p #(
         (bus_req_addr >= ROM_BASE) &&
         (bus_req_addr < ROM_BASE + ROM_SIZE);
     assign clint_selected =
-        opensbi_mode && !bus_req_cacheable &&
+        (opensbi_mode || (tlbi_test != 0)) && !bus_req_cacheable &&
         (bus_req_addr >= CLINT_BASE) &&
         (bus_req_addr < CLINT_BASE + CLINT_SIZE);
     assign plic_selected =
@@ -1059,6 +1086,10 @@ module tb_4h_3p #(
                 sc_failures[atomic_hart] <= 0;
                 atomic_line_probes[atomic_hart] <= 0;
                 reservation_clears[atomic_hart] <= 0;
+                tlbi_pte_fences[atomic_hart] <= 0;
+                tlbi_old_reads[atomic_hart] <= 0;
+                tlbi_new_reads[atomic_hart] <= 0;
+                tlbi_reservation_probes[atomic_hart] <= 0;
             end
         end else begin
             for (atomic_hart = 0;
@@ -1084,6 +1115,23 @@ module tb_4h_3p #(
                       64'hffff_ffff_ffff_ffc0)))
                     atomic_line_probes[atomic_hart] <=
                         atomic_line_probes[atomic_hart] + 1;
+                if ((tlbi_test != 0) &&
+                    tlbi_reservation_va_valid &&
+                    probe_valid[atomic_hart] &&
+                    probe_ready[atomic_hart] &&
+                    (probe_command[
+                         atomic_hart*`OPENRV64_CCX_PROBE_CMD_WIDTH +:
+                         `OPENRV64_CCX_PROBE_CMD_WIDTH] ==
+                     `OPENRV64_CCX_PROBE_INV) &&
+                    (|(probe_cache_mask[
+                          atomic_hart*`OPENRV64_CCX_PROBE_CACHE_WIDTH +:
+                          `OPENRV64_CCX_PROBE_CACHE_WIDTH] &
+                       `OPENRV64_CCX_PROBE_CACHE_D)) &&
+                    (probe_line_addr[atomic_hart*64 +: 64] ==
+                     (tlbi_reservation_pa() &
+                      64'hffff_ffff_ffff_ffc0)))
+                    tlbi_reservation_probes[atomic_hart] <=
+                        tlbi_reservation_probes[atomic_hart] + 1;
             end
             if (ccx_req_valid && ccx_req_ready) begin
                 if (home_request_active)
@@ -1098,6 +1146,31 @@ module tb_4h_3p #(
                 if (ccx_req_op == `OPENRV64_CCX_OP_SC)
                     sc_requests[ccx_req_hart_id] <=
                         sc_requests[ccx_req_hart_id] + 1;
+                if ((tlbi_test != 0) &&
+                    (ccx_req_hart_id < NUM_HARTS)) begin
+                    if ((ccx_req_source_id ==
+                         `OPENRV64_CCX_SOURCE_PTW) &&
+                        (ccx_req_op == `OPENRV64_CCX_OP_FENCE))
+                        tlbi_pte_fences[ccx_req_hart_id] <=
+                            tlbi_pte_fences[ccx_req_hart_id] + 1;
+                    if ((ccx_req_source_id ==
+                         `OPENRV64_CCX_SOURCE_DCACHE) &&
+                        ((ccx_req_op == `OPENRV64_CCX_OP_READ) ||
+                         (ccx_req_op == `OPENRV64_CCX_OP_LR))) begin
+                        if ((ccx_req_addr &
+                             64'hffff_ffff_ffff_ffc0) ==
+                            (tlbi_old_pa &
+                             64'hffff_ffff_ffff_ffc0))
+                            tlbi_old_reads[ccx_req_hart_id] <=
+                                tlbi_old_reads[ccx_req_hart_id] + 1;
+                        if ((ccx_req_addr &
+                             64'hffff_ffff_ffff_ffc0) ==
+                            (tlbi_new_pa &
+                             64'hffff_ffff_ffff_ffc0))
+                            tlbi_new_reads[ccx_req_hart_id] <=
+                                tlbi_new_reads[ccx_req_hart_id] + 1;
+                    end
+                end
             end
 
             if (ccx_resp_valid && ccx_resp_ready) begin
@@ -1439,16 +1512,25 @@ module tb_4h_3p #(
         mailbox_va = 64'd0;
         result_va = 64'd0;
         atomic_counter_va = 64'd0;
+        tlbi_reservation_va = 64'd0;
+        tlbi_target_va = 64'd0;
+        tlbi_old_pa = 64'd0;
+        tlbi_new_pa = 64'd0;
         done_pc_valid = 1'b0;
         mailbox_va_valid = 1'b0;
         result_va_valid = 1'b0;
         atomic_counter_va_valid = 1'b0;
+        tlbi_reservation_va_valid = 1'b0;
+        tlbi_target_va_valid = 1'b0;
+        tlbi_old_pa_valid = 1'b0;
+        tlbi_new_pa_valid = 1'b0;
         shared_satp = 0;
         bare_mode = 0;
         mailbox_stride = 0;
         result_expected = 0;
         atomic_expected = 0;
         atomic_test = 0;
+        tlbi_test = 0;
         atomic_debug = 0;
         max_cycles = 800000;
         cycles = 0;
@@ -1543,6 +1625,17 @@ module tb_4h_3p #(
             if ($value$plusargs(
                     "atomic_counter_va=%h", atomic_counter_va))
                 atomic_counter_va_valid = 1'b1;
+            if ($value$plusargs(
+                    "tlbi_reservation_va=%h",
+                    tlbi_reservation_va))
+                tlbi_reservation_va_valid = 1'b1;
+            if ($value$plusargs(
+                    "tlbi_target_va=%h", tlbi_target_va))
+                tlbi_target_va_valid = 1'b1;
+            if ($value$plusargs("tlbi_old_pa=%h", tlbi_old_pa))
+                tlbi_old_pa_valid = 1'b1;
+            if ($value$plusargs("tlbi_new_pa=%h", tlbi_new_pa))
+                tlbi_new_pa_valid = 1'b1;
         end
         void'($value$plusargs("shared_satp=%d", shared_satp));
         void'($value$plusargs("bare=%d", bare_mode));
@@ -1550,6 +1643,7 @@ module tb_4h_3p #(
         void'($value$plusargs("result_expected=%d", result_expected));
         void'($value$plusargs("atomic_expected=%d", atomic_expected));
         void'($value$plusargs("atomic_test=%d", atomic_test));
+        void'($value$plusargs("tlbi_test=%d", tlbi_test));
         void'($value$plusargs("atomic_debug=%d", atomic_debug));
         void'($value$plusargs("max_cycles=%d", max_cycles));
         if (!opensbi_mode &&
@@ -1563,11 +1657,20 @@ module tb_4h_3p #(
         if (!opensbi_mode &&
             (shared_satp != 0) && (bare_mode != 0))
             $fatal(1, "+shared_satp and +bare are mutually exclusive");
+        if (!opensbi_mode && (atomic_test != 0) && (tlbi_test != 0))
+            $fatal(1, "+atomic_test and +tlbi_test are mutually exclusive");
         if (!opensbi_mode && (atomic_test != 0) &&
             (!atomic_counter_va_valid || !result_va_valid ||
              (atomic_expected <= 0) || (result_expected <= 0)))
             $fatal(1,
                 "atomic workload requires counter/result addresses and positive expectations");
+        if (!opensbi_mode && (tlbi_test != 0) &&
+            (!tlbi_reservation_va_valid || !tlbi_target_va_valid ||
+             !tlbi_old_pa_valid || !tlbi_new_pa_valid ||
+             !result_va_valid || (result_expected != 1) ||
+             (shared_satp == 0) || (bare_mode != 0)))
+            $fatal(1,
+                "TLBI workload requires shared Sv39, reservation/target/old/new addresses, and result=1");
 
         repeat (12) @(posedge clk);
         rst_n = 1'b1;
@@ -1657,7 +1760,7 @@ module tb_4h_3p #(
                 if ((cycles != 0) &&
                     ((cycles % 1000000) == 0)) begin
                     $display(
-                        "OPENSBI_4H_PROGRESS cycles=%0d pc=%016h,%016h,%016h,%016h priv=%0d,%0d,%0d,%0d hsm_wfi=%b banner=%0b payload=%0b magic=%0b uart_bytes=%0d",
+                        "OPENSBI_4H_PROGRESS cycles=%0d pc=%016h,%016h,%016h,%016h priv=%0d,%0d,%0d,%0d hsm_wfi=%b sleep=%b banner=%0b payload=%0b magic=%0b uart_bytes=%0d",
                         cycles,
                         dbg_pc[0*64 +: 64],
                         dbg_pc[1*64 +: 64],
@@ -1668,6 +1771,7 @@ module tb_4h_3p #(
                         g_hart[2].u_core.csr_priv_mode,
                         g_hart[3].u_core.csr_priv_mode,
                         opensbi_hsm_wfi_seen,
+                        hart_wfi_sleep,
                         opensbi_banner_seen,
                         opensbi_payload_seen,
                         opensbi_magic_seen,
@@ -1689,6 +1793,28 @@ module tb_4h_3p #(
                     sc_successes[3] + sc_failures[3],
                     atomic_line_probes[0], atomic_line_probes[1],
                     atomic_line_probes[2], atomic_line_probes[3]);
+                $fflush();
+            end
+            if ((tlbi_test != 0) && (cycles != 0) &&
+                ((cycles % 50000) == 0)) begin
+                $display(
+                    "TLBI_PROGRESS cycle=%0d sfence=%0d,%0d,%0d,%0d pte_fence=%0d,%0d,%0d,%0d old=%0d,%0d,%0d,%0d new=%0d,%0d,%0d,%0d probes=%0d,%0d,%0d,%0d sleep=%b",
+                    cycles,
+                    tlbi_sfence_retired[0],
+                    tlbi_sfence_retired[1],
+                    tlbi_sfence_retired[2],
+                    tlbi_sfence_retired[3],
+                    tlbi_pte_fences[0], tlbi_pte_fences[1],
+                    tlbi_pte_fences[2], tlbi_pte_fences[3],
+                    tlbi_old_reads[0], tlbi_old_reads[1],
+                    tlbi_old_reads[2], tlbi_old_reads[3],
+                    tlbi_new_reads[0], tlbi_new_reads[1],
+                    tlbi_new_reads[2], tlbi_new_reads[3],
+                    tlbi_reservation_probes[0],
+                    tlbi_reservation_probes[1],
+                    tlbi_reservation_probes[2],
+                    tlbi_reservation_probes[3],
+                    hart_wfi_sleep);
                 $fflush();
             end
 
@@ -1772,6 +1898,52 @@ module tb_4h_3p #(
                                 reservation_clears[init_hart],
                                 atomic_line_probes[init_hart]);
                     end
+                    if (tlbi_test != 0) begin
+                        if (tlbi_sfence_retired[init_hart] != 2)
+                            $fatal(1,
+                                "hart %0d SFENCE.VMA retire count=%0d expected=2",
+                                init_hart,
+                                tlbi_sfence_retired[init_hart]);
+                        if (tlbi_pte_fences[init_hart] < 3)
+                            $fatal(1,
+                                "hart %0d PTE fences=%0d expected at least 3",
+                                init_hart,
+                                tlbi_pte_fences[init_hart]);
+                        if ((tlbi_old_reads[init_hart] == 0) ||
+                            (tlbi_new_reads[init_hart] == 0))
+                            $fatal(1,
+                                "hart %0d remap reads old=%0d new=%0d",
+                                init_hart,
+                                tlbi_old_reads[init_hart],
+                                tlbi_new_reads[init_hart]);
+                        if (init_hart != 0) begin
+                            if (tlbi_reservation_probes[
+                                    init_hart] == 0)
+                                $fatal(1,
+                                    "hart %0d received no reservation-line invalidate",
+                                    init_hart);
+                            if (reservation_clears[init_hart] <
+                                tlbi_reservation_probes[init_hart])
+                                $fatal(1,
+                                    "hart %0d reservation clears=%0d TLBI probes=%0d",
+                                    init_hart,
+                                    reservation_clears[init_hart],
+                                    tlbi_reservation_probes[
+                                        init_hart]);
+                            /*
+                             * The probe clears the backend reservation, so
+                             * the directed SC fails locally and need not
+                             * reach the coherent home.  The per-hart result
+                             * word checked above proves the architectural
+                             * nonzero SC result.
+                             */
+                            if (sc_successes[init_hart] != 0)
+                                $fatal(1,
+                                    "hart %0d post-invalidate SC unexpectedly succeeded externally count=%0d",
+                                    init_hart,
+                                    sc_successes[init_hart]);
+                        end
+                    end
                 end
                 if ((atomic_test != 0) &&
                     (atomic_last_value != atomic_expected))
@@ -1818,6 +1990,26 @@ module tb_4h_3p #(
                         reservation_clears[0], reservation_clears[1],
                         reservation_clears[2], reservation_clears[3]);
                 end
+                if (tlbi_test != 0) begin
+                    $display(
+                        "  tlbi sfence=%0d,%0d,%0d,%0d pte_fence=%0d,%0d,%0d,%0d",
+                        tlbi_sfence_retired[0],
+                        tlbi_sfence_retired[1],
+                        tlbi_sfence_retired[2],
+                        tlbi_sfence_retired[3],
+                        tlbi_pte_fences[0], tlbi_pte_fences[1],
+                        tlbi_pte_fences[2], tlbi_pte_fences[3]);
+                    $display(
+                        "  tlbi old_reads=%0d,%0d,%0d,%0d new_reads=%0d,%0d,%0d,%0d probes=%0d,%0d,%0d,%0d",
+                        tlbi_old_reads[0], tlbi_old_reads[1],
+                        tlbi_old_reads[2], tlbi_old_reads[3],
+                        tlbi_new_reads[0], tlbi_new_reads[1],
+                        tlbi_new_reads[2], tlbi_new_reads[3],
+                        tlbi_reservation_probes[0],
+                        tlbi_reservation_probes[1],
+                        tlbi_reservation_probes[2],
+                        tlbi_reservation_probes[3]);
+                end
                 $finish;
             end
 
@@ -1848,7 +2040,8 @@ module tb_4h_3p #(
                 opensbi_payload_seen &&
                 opensbi_s_mode_seen &&
                 opensbi_magic_seen &&
-                (&opensbi_hsm_wfi_seen[NUM_HARTS-1:1])) begin
+                (&opensbi_hsm_wfi_seen[NUM_HARTS-1:1]) &&
+                (&hart_wfi_sleep[NUM_HARTS-1:1])) begin
                 if ((g_hart[1].u_core.csr_priv_mode !=
                      `RV64_PRIV_M) ||
                     (g_hart[2].u_core.csr_priv_mode !=
@@ -1861,7 +2054,7 @@ module tb_4h_3p #(
                         g_hart[2].u_core.csr_priv_mode,
                         g_hart[3].u_core.csr_priv_mode);
                 $display(
-                    "\nPASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and harts 1-3 retired HSM WFI at %016h",
+                    "\nPASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and harts 1-3 sleep at HSM WFI %016h",
                     opensbi_hsm_wfi_pc);
                 $display(
                     "  cycles=%0d retired=%0d,%0d,%0d,%0d ccx_req=%0d,%0d,%0d,%0d uart_bytes=%0d memory_reads=%0d memory_writes=%0d",
@@ -1889,6 +2082,33 @@ module tb_4h_3p #(
                     atomic_line_probes[2], atomic_line_probes[3],
                     reservation_clears[0], reservation_clears[1],
                     reservation_clears[2], reservation_clears[3],
+                    u_coherence_home.state_q);
+            if ((cycles >= max_cycles) && (tlbi_test != 0))
+                $display(
+                    "TLBI_TIMEOUT sfence=%0d,%0d,%0d,%0d pte_fence=%0d,%0d,%0d,%0d old=%0d,%0d,%0d,%0d new=%0d,%0d,%0d,%0d probes=%0d,%0d,%0d,%0d clears=%0d,%0d,%0d,%0d sc_failure=%0d,%0d,%0d,%0d sleep=%b priv=%0d,%0d,%0d,%0d home_state=%0d",
+                    tlbi_sfence_retired[0],
+                    tlbi_sfence_retired[1],
+                    tlbi_sfence_retired[2],
+                    tlbi_sfence_retired[3],
+                    tlbi_pte_fences[0], tlbi_pte_fences[1],
+                    tlbi_pte_fences[2], tlbi_pte_fences[3],
+                    tlbi_old_reads[0], tlbi_old_reads[1],
+                    tlbi_old_reads[2], tlbi_old_reads[3],
+                    tlbi_new_reads[0], tlbi_new_reads[1],
+                    tlbi_new_reads[2], tlbi_new_reads[3],
+                    tlbi_reservation_probes[0],
+                    tlbi_reservation_probes[1],
+                    tlbi_reservation_probes[2],
+                    tlbi_reservation_probes[3],
+                    reservation_clears[0], reservation_clears[1],
+                    reservation_clears[2], reservation_clears[3],
+                    sc_failures[0], sc_failures[1],
+                    sc_failures[2], sc_failures[3],
+                    hart_wfi_sleep,
+                    g_hart[0].u_core.csr_priv_mode,
+                    g_hart[1].u_core.csr_priv_mode,
+                    g_hart[2].u_core.csr_priv_mode,
+                    g_hart[3].u_core.csr_priv_mode,
                     u_coherence_home.state_q);
             if (cycles >= max_cycles) begin
                 if (opensbi_mode)

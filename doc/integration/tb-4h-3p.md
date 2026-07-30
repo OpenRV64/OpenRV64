@@ -105,15 +105,15 @@ core's real `mhartid`; the RAM trampoline preserves it instead of forcing
 zero.  The FDT describes CPU, CLINT, and PLIC interrupt contexts for harts
 zero through three.
 
-OpenRV64 currently implements WFI as a legal hint that resumes immediately.
-Consequently, a secondary hart does not remain at one stable debug PC.  The
-test instead derives the exact `sbi_hsm_hart_wait()` WFI address from the
-linked OpenSBI ELF using DWARF attribution, passes it to the testbench, and
-records whether each secondary retires that instruction while still in
-M-mode.  The generated address is also retained in
+WFI now quiesces architectural fetch and issue until an individually enabled
+local interrupt becomes pending. The test derives the exact
+`sbi_hsm_hart_wait()` WFI address from the linked OpenSBI ELF using DWARF
+attribution, passes it to the testbench, and requires each secondary both to
+retire that instruction in M-mode and remain asleep at that PC. The generated
+address is also retained in
 `build/opensbi-4h-smp/artifacts/hsm-wfi-pc.txt`.
 
-The 2026-07-30 run passed:
+The pre-WFI-sleep 2026-07-30 baseline passed:
 
 ```text
 PASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and
@@ -124,11 +124,33 @@ ccx_req=278793,7263,7357,7243
 uart_bytes=2705 memory_reads=1782 memory_writes=710
 ```
 
+The source-matched WFI sleep and backend-gating run then passed:
+
+```text
+PASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and
+harts 1-3 sleep at HSM WFI 00000000801173ec
+cycles=7770120
+retired=9649110,425994,426057,426295
+ccx_req=280034,155,164,171
+uart_bytes=2705 memory_reads=1783 memory_writes=708
+walltime=1439.188 s
+```
+
+Target completion time changed by only 5,451 cycles (0.070%): the hart-0
+coldboot/timer path, not secondary spinning, determines this endpoint.
+Secondary retirement fell from 12,432,107 instructions in aggregate to
+1,278,346 (89.7%), and their aggregate CCX requests fell from 21,863 to 490
+(97.8%). Verilator wall time fell from 1540.766 seconds to 1439.188 seconds
+(6.59%). The wall-time comparison is an observed simulator result, not an RTL
+frequency or physical-power measurement.
+
 This proves concurrent ROM and OpenSBI entry, four-hart FDT discovery, HSM
 parking of harts 1 through 3, and the existing hart-0 S-mode payload path
-through the coherent hierarchy.  It still uses fixed-latency backing memory.
-It does not prove SBI HSM restart of a stopped hart, Linux SMP bring-up,
-reset-time directory cleanup, or timed DDR3 operation.
+through the coherent hierarchy. That baseline only observed the HSM WFI
+retiring: secondaries still spun because WFI resumed immediately. It still
+uses fixed-latency backing memory. It does not prove SBI HSM restart of a
+stopped hart, Linux SMP bring-up, reset-time directory cleanup, or timed DDR3
+operation.
 
 ## Historical source-branch validation: 2026-07-27 UTC
 
@@ -382,6 +404,38 @@ home.  This run therefore does not validate acquire/release ordering.
   The home now probes only remote sharers and still clears all sharer metadata
   after successful SC.
 
+## Directed four-hart TLB shootdown
+
+`make sim-4h-3p-tlbi-sv39` exercises translation invalidation, cache
+invalidation, and atomic reservation state in one directed sequence:
+
+1. all four harts install and warm the same old Sv39 leaf mapping;
+2. harts 1-3 establish LR reservations and cache the reservation line;
+3. hart 0 writes that line, requiring remote D-cache probes and reservation
+   clears;
+4. hart 0 rewrites the leaf PTE through a supervisor-writable alias, orders
+   the PTE store, and executes its local `SFENCE.VMA`;
+5. the remote harts prove that their old translations remain stale before
+   shootdown;
+6. hart 0 sets the real CLINT MSIP bits for harts 1-3; each remote M-mode
+   handler executes `SFENCE.VMA`, clears MSIP, and acknowledges completion;
+7. every hart reads the new physical page, and each remote SC proves failure
+   after the earlier coherence invalidate cleared its reservation.
+
+The final source-matched 2026-07-30 run passed in 3,672 cycles. Each hart
+retired two
+`SFENCE.VMA` instructions (bootstrap and directed) and emitted three
+completion-tracked PTE fences (`satp`, bootstrap fence, directed fence).
+Every hart fetched both old and new physical target lines. Harts 1-3 each
+accepted a reservation-line invalidate probe and returned a nonzero SC
+result.
+
+This is a real hardware IPI/local-invalidate sequence, but it uses the
+workload's small M-mode handler. It does not execute the OpenSBI SBI IPI path
+or Linux `flush_tlb_*` code, and it does not cover selective VPN/ASID
+invalidation because the current hardware deliberately over-flushes all local
+translation state.
+
 ## Scope limits
 
 This proves four complete cores can execute concurrently through Sv39 and the
@@ -395,6 +449,8 @@ remote L1D invalidation.  It does not prove:
 - acquire/release, fence, or general RISC-V memory-model litmus behavior;
 - L1I coherence or executable-data modification;
 - DMA or external coherent-master interaction;
-- interrupt routing, secondary-hart release, OpenSBI/Linux boot, AXI, or timed
-  DDR behavior in the four-hart hierarchy; or
+- the standard shared/atomic workloads do not cover interrupt routing,
+  secondary-hart release, OpenSBI/Linux boot, AXI, or timed DDR behavior in
+  the four-hart hierarchy; the directed shootdown target covers only CLINT
+  MSIP routing and its local M-mode handler; or
 - fixed host affinity between one Verilator worker and one RTL hart.

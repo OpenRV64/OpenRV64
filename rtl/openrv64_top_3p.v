@@ -164,6 +164,7 @@ module openrv64_top_3p #(
     output wire [63:0] dbg_pc,
     output wire [31:0] dbg_instr,
     output wire        dbg_halted,
+    output wire        wfi_sleep,
 
     output wire [63:0]  trace_cycle,
     output wire [4:0]   trace_valid,
@@ -348,6 +349,7 @@ module openrv64_top_3p #(
         .irq_s_software(irq_s_software), .irq_s_timer(irq_s_timer),
         .irq_s_external(irq_s_external),
         .dbg_pc(dbg_pc), .dbg_instr(dbg_instr), .dbg_halted(dbg_halted),
+        .wfi_sleep_o(wfi_sleep),
         .trace_cycle(trace_cycle), .trace_valid(trace_valid),
         .trace_stall(trace_stall), .trace_flush(trace_flush),
         .trace_advance(trace_advance), .trace_ids(trace_ids),
