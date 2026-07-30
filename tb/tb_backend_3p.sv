@@ -131,6 +131,7 @@ module tb_backend_3p #(
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
         .squash_frontend_i(squash),
+        .coherent_reservation_clear_i(1'b0),
         .translation_bypass_i(1'b0),
         .decode_valid_i(decode_valid), .decode_ready_o(decode_ready),
         .decode_payload_i(decode_payload),

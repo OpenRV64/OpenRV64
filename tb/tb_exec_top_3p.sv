@@ -157,6 +157,7 @@ module tb_exec_top_3p #(
         .flush_i(flush),
         .squash_younger_i(1'b0),
         .squash_id_i({ID_WIDTH{1'b0}}),
+        .coherent_reservation_clear_i(1'b0),
         .translation_bypass_i(1'b0),
         .issue_valid_i(issue_valid),
         .issue_ready_o(issue_ready),

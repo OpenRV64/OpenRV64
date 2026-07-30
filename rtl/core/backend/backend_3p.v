@@ -34,6 +34,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
+    parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
@@ -47,6 +48,7 @@ module openrv64_backend_3p #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_frontend_i,
+    input  wire                         coherent_reservation_clear_i,
     input  wire                         translation_bypass_i,
 
     input  wire [2:0]                   decode_valid_i,
@@ -1113,6 +1115,7 @@ module openrv64_backend_3p #(
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),
         .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
+        .ENABLE_COHERENT_ATOMICS_3P(ENABLE_COHERENT_ATOMICS),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
         .CACHEABLE_BASE_3P(CACHEABLE_BASE),
@@ -1129,6 +1132,8 @@ module openrv64_backend_3p #(
                      squash_frontend_i)),
         .squash_younger_3p_i(speculative_window && squash_frontend_i),
         .squash_id_3p_i(exec_redirect_id),
+        .coherent_reservation_clear_3p_i(
+            coherent_reservation_clear_i),
         .translation_bypass_3p_i(translation_bypass_i),
         .valid_i(1'b0), .flush_ex_mem_i(1'b0),
         .flush_mem_wb_i(1'b0), .pc_i(64'd0), .instr_i(32'd0),

@@ -1115,6 +1115,7 @@ module openrv64_rv64_top #(
         .flush_3p_i(1'b0),
         .squash_younger_3p_i(1'b0),
         .squash_id_3p_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .coherent_reservation_clear_3p_i(1'b0),
         .translation_bypass_3p_i(1'b0),
         .issue_valid_3p_i(
             {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
@@ -1191,6 +1192,8 @@ module openrv64_rv64_top #(
     assign mem_wstrb = core_mem_wstrb;
 
     openrv64_core_bus #(
+        .ENABLE_L1D_COHERENCE_PROBES(1'b0),
+        .ENABLE_COHERENT_ATOMICS(1'b0),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
         .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID)
@@ -1277,6 +1280,9 @@ module openrv64_rv64_top #(
         .icache_prefetch_fallthrough_addr_i(64'd0),
         .icache_age_valid_i(3'b000),
         .icache_age_addr_i(192'd0),
+        .l1d_probe_valid_i(1'b0),
+        .l1d_probe_ready_o(),
+        .l1d_probe_addr_i(64'd0),
         .req_valid_o(core_mem_valid),
         .req_ready_i(core_mem_ready),
         .req_write_o(core_mem_write),
