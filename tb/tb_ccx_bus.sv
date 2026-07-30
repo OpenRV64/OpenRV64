@@ -60,6 +60,8 @@ module tb_ccx_bus #(
     wire [63:0] pipe_req_translation_paddr;
     wire pipe_req_translation_page_fault;
     logic tlbi;
+    logic context_flush;
+    logic [`RV64_SATP_ASID_WIDTH-1:0] current_asid;
     wire tlbi_busy;
     wire pipe_resp_valid;
     logic pipe_resp_ready;
@@ -227,7 +229,7 @@ module tb_ccx_bus #(
         .fetch_req_demand_i(fetch_req_demand),
         .fetch_req_priv_i(fetch_req_priv),
         .fetch_req_vm_mode_i(fetch_req_vm_mode),
-        .fetch_req_asid_i(16'd0),
+        .fetch_req_asid_i(current_asid),
         .fetch_req_root_ppn_i(fetch_req_root_ppn),
         .fetch_req_sum_i(1'b0), .fetch_req_mxr_i(1'b0),
         .fetch_cancel_i(fetch_cancel),
@@ -246,11 +248,12 @@ module tb_ccx_bus #(
         .lsu_wstrb_i(lsu_wstrb), .lsu_size_i(lsu_size),
         .lsu_priv_i(`RV64_PRIV_M),
         .lsu_vm_mode_i(`RV64_SATP_MODE_BARE),
-        .lsu_asid_i(16'd0), .lsu_root_ppn_i(44'd0),
+        .lsu_asid_i(current_asid), .lsu_root_ppn_i(44'd0),
         .lsu_sum_i(1'b0), .lsu_mxr_i(1'b0),
         .lsu_ready_o(lsu_ready), .lsu_rdata_o(lsu_rdata),
         .lsu_access_fault_o(lsu_access_fault),
         .lsu_page_fault_o(lsu_page_fault), .tlbi_i(tlbi),
+        .context_flush_i(context_flush),
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),
@@ -272,7 +275,7 @@ module tb_ccx_bus #(
         .lsu_pipe_req_size_i(pipe_req_size),
         .lsu_pipe_req_priv_i(pipe_req_priv),
         .lsu_pipe_req_vm_mode_i(pipe_req_vm_mode),
-        .lsu_pipe_req_asid_i(16'd0),
+        .lsu_pipe_req_asid_i(current_asid),
         .lsu_pipe_req_root_ppn_i(pipe_req_root_ppn),
         .lsu_pipe_req_sum_i(1'b0), .lsu_pipe_req_mxr_i(1'b0),
         .lsu_pipe_req_translation_hit_o(pipe_req_translation_hit),
@@ -298,7 +301,7 @@ module tb_ccx_bus #(
         .lsu_xlate_req_vaddr_i(xlate_req_vaddr),
         .lsu_xlate_req_priv_i(xlate_req_priv),
         .lsu_xlate_req_vm_mode_i(xlate_req_vm_mode),
-        .lsu_xlate_req_asid_i(16'd0),
+        .lsu_xlate_req_asid_i(current_asid),
         .lsu_xlate_req_root_ppn_i(xlate_req_root_ppn),
         .lsu_xlate_req_sum_i(1'b0),
         .lsu_xlate_req_mxr_i(1'b0),
@@ -858,6 +861,8 @@ module tb_ccx_bus #(
         pipe_req_root_ppn = 0;
         pipe_cancel = 0;
         tlbi = 0;
+        context_flush = 0;
+        current_asid = 0;
         pipe_resp_ready = 1;
         pipe_store_done_ready = 1;
         xlate_req_valid = 0;
@@ -1312,11 +1317,44 @@ module tb_ccx_bus #(
         if (ar_count != channel_wait)
             $fatal(1, "translated PTW or L1D request escaped onto AXI");
 
-        // Model independent L1 ITLB/DTLB capacity evictions while retaining
-        // the shared L2 entry.  Present I-side and D-side misses together:
+        /*
+         * SATP selects a new current address space. It must flush the untagged
+         * micro-TLBs and cancel old walk state, but an ASID-tagged L2 entry
+         * must survive switches away from and back to its ASID.
+         */
+        current_asid = 16'h0001;
+        context_flush = 1'b1;
+        #1;
+        if (!dut.micro_tlbi)
+            $fatal(1, "SATP context flush did not reach micro-TLBs");
+        tick();
+        context_flush = 1'b0;
+        while (tlbi_busy)
+            tick();
+        if ((|dut.u_itlb.valid_q) || (|dut.u_dtlb.valid_q))
+            $fatal(1, "SATP context flush did not clear micro-TLBs");
+
+        current_asid = 16'h0000;
+        context_flush = 1'b1;
+        tick();
+        context_flush = 1'b0;
+        while (tlbi_busy)
+            tick();
+        wait_count = ccx_reads;
+        fences_before = l2_tlb_hits;
+        push_xlate_request(3'd4, 1'b0, 64'h4008);
+        expect_xlate_response(3'd4, 64'h3008, 1'b0, 1'b0);
+        if ((l2_tlb_hits != fences_before + 1) ||
+            (ccx_reads != wait_count))
+            $fatal(1,
+                "SATP switch lost tagged L2 entry hits=%0d reads=%0d",
+                l2_tlb_hits - fences_before, ccx_reads - wait_count);
+
+        // Model independent micro-ITLB/DTLB capacity evictions while retaining
+        // the shared L2 entry. Present I-side and D-side misses together:
         // LSU wins the first indexed lookup, fetch wins the next, and neither
         // request may start another page walk.  L2 replacement is deliberately
-        // non-inclusive, so removing either L1 entry does not alter L2 state.
+        // independent of micro replacement.
         @(negedge clk);
         dut.u_itlb.valid_q = 0;
         dut.u_dtlb.valid_q = 0;

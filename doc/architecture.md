@@ -544,32 +544,45 @@ underlying operations drain.
 The core bus owns instruction/data translation and the shared physical
 requester. Bare mode is identity translated. In the AXI configuration, S/U
 accesses under Sv39 consult separate 16-entry, fully associative instruction
-and data L1 TLBs, then a shared 256-entry, four-way L2 TLB on an L1 miss. The
-generic blocking requester instead uses one shared 16-entry TLB and has no L2
-TLB. Entries retain ASID, global, page-size, permission, A, and D state.
+and data micro-TLBs, then a shared ASID-tagged main TLB on a micro-TLB miss.
+The micro-TLBs contain only the current address space: they retain VPN, PPN,
+page size, permissions, A, and D state, but no ASID, global, or VM-mode tags.
+The generic blocking requester instead uses one shared 16-entry tagged TLB and
+has no second level.
 
-The shared L2 TLB has 64 indexed sets and four independently read payload
-banks. It caches 4 KiB translations only; 2 MiB and 1 GiB leaves remain in the
-fully associative L1 TLBs because indexing a superpage with 4 KiB VPN bits
-would be incorrect. The hierarchy is neither inclusive nor exclusive. A PTW
-response fills the requesting L1 and the L2, and an L2 hit fills the
-requesting L1, but replacement at either level does not invalidate or update
-the other. Demand LSU lookup has priority over demand fetch and speculative
-instruction prefetch. `L2_TLB_ENTRIES` and `L2_TLB_WAYS` parameterize the
-structure; the entry count, way count, and resulting set count must be
-powers of two.
+The shared main TLB has a 256-entry, four-way 4 KiB array with 64 indexed sets
+and four independently read payload banks. An eight-entry fully associative
+sidecar retains 2 MiB and 1 GiB leaves, whose wildcard VPN bits cannot safely
+index the 4 KiB array. Both structures retain ASID, global, VM-mode, page-size,
+permission, A, and D state. Replacement chooses an invalid entry first, then
+prefers an inactive-ASID, non-global entry over the current address space. If
+forward progress requires eviction of a current-ASID or global entry, both
+micro-TLBs are flushed. Every PTW response fills the main TLB with the
+requesting micro-TLB, and every main-TLB hit that is consumed fills the
+requesting micro-TLB. This coarse eviction rule therefore keeps live
+micro-TLB state backed by the main TLB without per-entry presence bits.
+Demand LSU lookup has priority over demand fetch and speculative instruction
+prefetch. `L2_TLB_ENTRIES` and `L2_TLB_WAYS` parameterize the 4 KiB structure;
+the entry count, way count, and resulting set count must be powers of two.
 
 One blocking three-level page-table walker handles 4 KiB, 2 MiB, and 1 GiB
 leaves. It checks canonical addresses, invalid/reserved PTE encodings,
 superpage alignment, privilege, SUM, MXR, and access type. A/D bits use
 Svade-style fault-on-clear behavior because the physical interface has no
-atomic PTE update mechanism. `SFENCE.VMA` and a successful writable `satp` CSR
-access currently perform the same conservative global translation barrier:
-older memory completes first, all local TLB/PTW and frontend context is
-invalidated, a CCX `ACQ_REL` PTE fence completes, and only then may fetch or
-LSU traffic restart. The initiating pulse clears both L1 TLBs and the shared
-L2 TLB and suppresses any same-cycle PTW or L2-to-L1 fill. Address- and
-ASID-selective invalidation are not implemented.
+atomic PTE update mechanism. A successful writable `satp` CSR access changes
+the current translation context: older memory completes first, both
+micro-TLBs and in-flight PTW/PTE-cache state are invalidated, a CCX `ACQ_REL`
+PTE fence completes, and only then may fetch or LSU traffic restart. The
+ASID-tagged main TLB survives this operation, so switching back to a retained
+ASID can refill a micro-TLB without a page walk.
+
+`SFENCE.VMA` uses the same ordered barrier but additionally invalidates the
+entire tagged main TLB. It suppresses same-cycle PTW or main-to-micro fills.
+Address- and ASID-selective invalidation are not implemented, so all operand
+forms currently perform this conservative local flush. Reusing an ASID for
+different page tables still requires the architecturally mandated
+`SFENCE.VMA`; a `satp` write alone does not make retained same-ASID entries
+safe.
 
 `SFENCE.VMA` affects only the executing hart. Inter-hart TLB shootdown is the
 software protocol required by RISC-V: the initiating hart updates the PTE and

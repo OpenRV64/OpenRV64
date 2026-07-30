@@ -16,6 +16,7 @@ module openrv64_bus_tlb_l2 #(
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         tlbi_i,
+    input  wire [ASID_WIDTH-1:0]        current_asid_i,
 
     input  wire                         lookup_valid_i,
     input  wire [`RV64_XLEN-1:0]        lookup_vaddr_i,
@@ -49,7 +50,8 @@ module openrv64_bus_tlb_l2 #(
     input  wire                         fill_executable_i,
     input  wire                         fill_user_i,
     input  wire                         fill_accessed_i,
-    input  wire                         fill_dirty_i
+    input  wire                         fill_dirty_i,
+    output wire                         fill_evict_current_o
 );
 
     localparam [1:0] ACCESS_READ = 2'd0;
@@ -110,13 +112,20 @@ module openrv64_bus_tlb_l2 #(
     };
 
     wire [ENTRY_WIDTH-1:0] lookup_entry [0:WAYS-1];
+    /*
+     * A PTW fill reuses the payload banks' single asynchronous read port to
+     * inspect its replacement set. A coincident unrelated 4 KiB lookup retries
+     * one cycle later; the independent superpage sidecar remains available.
+     */
+    wire [SET_INDEX_WIDTH-1:0] storage_read_set =
+        fill_4k ? fill_set : lookup_set;
     genvar storage_way;
     generate
         for (storage_way = 0; storage_way < WAYS;
              storage_way = storage_way + 1) begin : g_way_storage
             reg [ENTRY_WIDTH-1:0] entry_q [0:SETS-1];
 
-            assign lookup_entry[storage_way] = entry_q[lookup_set];
+            assign lookup_entry[storage_way] = entry_q[storage_read_set];
 
             always @(posedge clk) begin
                 if (!tlbi_i && fill_4k &&
@@ -166,6 +175,8 @@ module openrv64_bus_tlb_l2 #(
     wire superpage_lookup_user;
     wire superpage_lookup_accessed;
     wire superpage_lookup_dirty;
+    wire superpage_fill_evict_valid;
+    wire superpage_fill_evict_preferred;
 
     openrv64_bus_tlb #(
         .ENTRIES(SUPERPAGE_ENTRIES),
@@ -174,6 +185,8 @@ module openrv64_bus_tlb_l2 #(
         .clk(clk),
         .rst_n(rst_n),
         .tlbi_i(tlbi_i),
+        .prefer_asid_valid_i(1'b1),
+        .prefer_asid_i(current_asid_i),
         .lookup_valid_i(lookup_valid_i),
         .lookup_vaddr_i(lookup_vaddr_i),
         .lookup_vm_mode_i(lookup_vm_mode_i),
@@ -205,7 +218,9 @@ module openrv64_bus_tlb_l2 #(
         .fill_executable_i(fill_executable_i),
         .fill_user_i(fill_user_i),
         .fill_accessed_i(fill_accessed_i),
-        .fill_dirty_i(fill_dirty_i)
+        .fill_dirty_i(fill_dirty_i),
+        .fill_evict_valid_o(superpage_fill_evict_valid),
+        .fill_evict_preferred_o(superpage_fill_evict_preferred)
     );
 
     integer lookup_way;
@@ -224,7 +239,7 @@ module openrv64_bus_tlb_l2 #(
 
         for (lookup_way = 0; lookup_way < WAYS;
              lookup_way = lookup_way + 1) begin
-            if (!lookup_hit_o && lookup_valid_i && !tlbi_i &&
+            if (!lookup_hit_o && lookup_valid_i && !tlbi_i && !fill_4k &&
                 valid_q[lookup_way][lookup_set] &&
                 (lookup_entry[lookup_way][ENTRY_VPN_LSB +: VPN_WIDTH] ==
                  lookup_vpn) &&
@@ -285,15 +300,18 @@ module openrv64_bus_tlb_l2 #(
     end
 
     reg fill_invalid_found_r;
+    reg fill_cold_found_r;
     integer select_way;
+    integer candidate_way;
     // A payload fill can only follow this structure's own miss, and the
     // shared walker admits one miss at a time. No other main-TLB fill can race
     // that walk, so a successful response cannot duplicate a resident tag.
     // Replacement therefore needs only an invalid-way search plus round
-    // robin, avoiding a second payload-bank read port on the fill address.
+    // robin. The fill cycle owns the existing payload-bank read port.
     always @* begin
         fill_way_r = replace_q[fill_set];
         fill_invalid_found_r = 1'b0;
+        fill_cold_found_r = 1'b0;
 
         for (select_way = 0; select_way < WAYS;
              select_way = select_way + 1) begin
@@ -303,12 +321,59 @@ module openrv64_bus_tlb_l2 #(
                 fill_invalid_found_r = 1'b1;
             end
         end
+
+        /*
+         * Preserve the active address-space working set while any inactive
+         * ASID occupies this set. Global translations are active in every
+         * address space and receive the same protection. A set containing
+         * only active/global entries still falls back to round-robin.
+         */
+        for (select_way = 0; select_way < WAYS;
+             select_way = select_way + 1) begin
+            candidate_way = replace_q[fill_set] + select_way;
+            if (candidate_way >= WAYS)
+                candidate_way = candidate_way - WAYS;
+            if (!fill_invalid_found_r && !fill_cold_found_r &&
+                valid_q[candidate_way][fill_set] &&
+                !lookup_entry[candidate_way][ENTRY_GLOBAL_BIT] &&
+                (lookup_entry[candidate_way][
+                    ENTRY_ASID_LSB +: ASID_WIDTH] != current_asid_i)) begin
+                fill_way_r = candidate_way[WAY_INDEX_WIDTH-1:0];
+                fill_cold_found_r = 1'b1;
+            end
+        end
     end
 
     wire fill_victim_valid = valid_q[fill_way_r][fill_set];
+    wire fill_victim_current = fill_victim_valid &&
+        (lookup_entry[fill_way_r][ENTRY_GLOBAL_BIT] ||
+         (lookup_entry[fill_way_r][ENTRY_ASID_LSB +: ASID_WIDTH] ==
+          current_asid_i));
+    /*
+     * Register the forced-eviction indication. Feeding this decision directly
+     * back into micro-TLB lookup would make the main-TLB lookup address depend
+     * combinationally on its own victim payload. The registered pulse
+     * suppresses micro hits immediately after the replacement edge and clears
+     * their valid state on the following edge.
+     */
+    reg fill_evict_current_q;
+    assign fill_evict_current_o = fill_evict_current_q;
 
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || tlbi_i) begin
+            fill_evict_current_q <= 1'b0;
+        end else begin
+            fill_evict_current_q <=
+                (fill_4k && fill_victim_current) ||
+                (fill_superpage && superpage_fill_evict_valid &&
+                 superpage_fill_evict_preferred);
+        end
+    end
+
+    // A 4K fill borrows the payload-bank read port to inspect its victim.
+    // A simultaneous main-array lookup retries, so it is not an L2 miss.
     // Simulation-visible performance events.
-    wire diag_lookup = lookup_valid_i && !tlbi_i;
+    wire diag_lookup = lookup_valid_i && !tlbi_i && !fill_4k;
     wire diag_hit = diag_lookup && lookup_hit_o;
     wire diag_miss = diag_lookup && !lookup_hit_o;
     wire diag_fill = fill_4k && !tlbi_i;

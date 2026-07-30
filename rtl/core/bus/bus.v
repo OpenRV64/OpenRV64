@@ -160,6 +160,7 @@ module openrv64_core_bus #(
     output wire                         lsu_xlate_resp_page_fault_o,
 
     input  wire                         tlbi_i,
+    input  wire                         context_flush_i,
     output wire                         tlbi_busy_o,
     input  wire                         store_barrier_i,
     input  wire                         icache_invalidate_i,
@@ -377,7 +378,8 @@ module openrv64_core_bus #(
                 .lsu_sum_i(gen_lsu_sum), .lsu_mxr_i(gen_lsu_mxr),
                 .lsu_ready_o(gen_lsu_ready), .lsu_rdata_o(gen_lsu_rdata),
                 .lsu_access_fault_o(gen_lsu_access_fault),
-                .lsu_page_fault_o(gen_lsu_page_fault), .tlbi_i(tlbi_i),
+                .lsu_page_fault_o(gen_lsu_page_fault),
+                .tlbi_i(tlbi_i || context_flush_i),
                 .tlbi_busy_o(tlbi_busy_o),
                 .req_valid_o(raw_req_valid), .req_ready_i(raw_req_ready),
                 .req_write_o(raw_req_write), .req_addr_o(raw_req_addr),
@@ -613,7 +615,7 @@ module openrv64_core_bus #(
             // Magic memory deliberately has no translation/cache hierarchy.
             // Preserve the serialization contract for one cycle so core-side
             // restart logic still observes the initiating barrier.
-            assign tlbi_busy_o = tlbi_i;
+            assign tlbi_busy_o = tlbi_i || context_flush_i;
             assign l1d_probe_ready_o = 1'b0;
             localparam integer MAGIC_FETCH_DEPTH = 4;
             localparam integer MAGIC_FETCH_PTR_WIDTH =
@@ -1065,6 +1067,7 @@ module openrv64_core_bus #(
                 .lsu_rdata_o(lsu_rdata_o),
                 .lsu_access_fault_o(lsu_access_fault_o),
                 .lsu_page_fault_o(lsu_page_fault_o), .tlbi_i(tlbi_i),
+                .context_flush_i(context_flush_i),
                 .tlbi_busy_o(tlbi_busy_o),
                 .store_barrier_i(store_barrier_i),
                 .icache_invalidate_i(icache_invalidate_i),

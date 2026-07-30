@@ -29,11 +29,11 @@
       wiring/area and sustained bandwidth against the current 512-bit mode.
 - [ ] Multi-hart
 - [ ] Linux
-- [ ] Relax translation invalidation for Linux address-space switches: stop
-      treating every retiring `satp` write as a global shootdown, preserve
-      ASID-tagged L1/L2 TLB entries across `mm` switches, and implement the
-      required ASID-reuse/rollover invalidation plus `SFENCE.VMA` address/ASID
-      selection. Until then, retain the conservative global barrier.
+- [ ] Complete selective translation invalidation: `satp` writes now flush the
+      current-context micro-TLBs while retaining the ASID-tagged main TLB.
+      Add VPN/ASID-selective `SFENCE.VMA` handling and directed Linux
+      ASID-reuse/rollover coverage; the current fence implementation still
+      conservatively flushes the complete local hierarchy.
 - [ ] Replace the temporary L1D atomic admission hammer, which drains the
       entire posted-store queue before a locked read, with targeted ordering
       against the older stores required by the AMO ordering mode.

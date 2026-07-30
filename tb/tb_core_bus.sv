@@ -42,6 +42,7 @@ module tb_core_bus;
     wire lsu_page_fault;
 
     logic tlbi;
+    logic context_flush;
 
     wire req_valid;
     logic req_ready;
@@ -125,6 +126,7 @@ module tb_core_bus;
         .lsu_xlate_req_mxr_i(1'b0),
         .lsu_xlate_resp_ready_i(1'b1),
         .tlbi_i(tlbi),
+        .context_flush_i(context_flush),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),
         .icache_prefetch_valid_i(1'b0),
@@ -367,6 +369,7 @@ module tb_core_bus;
         lsu_sum = 1'b0;
         lsu_mxr = 1'b0;
         tlbi = 1'b0;
+        context_flush = 1'b0;
         req_ready = 1'b0;
         req_rdata = 64'd0;
         req_error = 1'b0;

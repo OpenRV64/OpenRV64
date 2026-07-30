@@ -239,6 +239,8 @@ module openrv64_core_gen_bus #(
         .clk(clk),
         .rst_n(rst_n),
         .tlbi_i(tlbi_i),
+        .prefer_asid_valid_i(1'b0),
+        .prefer_asid_i({`RV64_SATP_ASID_WIDTH{1'b0}}),
         .lookup_valid_i((state_q == STATE_TRANSLATE) &&
                         !translation_bare),
         .lookup_vaddr_i(vaddr_q),
@@ -263,7 +265,9 @@ module openrv64_core_gen_bus #(
         .fill_executable_i(ptw_resp_executable),
         .fill_user_i(ptw_resp_user),
         .fill_accessed_i(ptw_resp_accessed),
-        .fill_dirty_i(ptw_resp_dirty)
+        .fill_dirty_i(ptw_resp_dirty),
+        .fill_evict_valid_o(),
+        .fill_evict_preferred_o()
     );
 
     openrv64_bus_ptw #(

@@ -146,6 +146,7 @@ module openrv64_core_ccx_bus #(
     output wire                         lsu_xlate_resp_page_fault_o,
 
     input  wire                         tlbi_i,
+    input  wire                         context_flush_i,
     output wire                         tlbi_busy_o,
     input  wire                         store_barrier_i,
     input  wire                         icache_invalidate_i,
@@ -302,6 +303,9 @@ module openrv64_core_ccx_bus #(
     localparam [2:0] PREFETCH_XLATE_MISS = 3'd2;
     localparam [2:0] PREFETCH_XLATE_PMP = 3'd3;
     localparam [2:0] PREFETCH_XLATE_RESP = 3'd4;
+    wire translation_invalidate = tlbi_i || context_flush_i;
+    wire l2_tlb_evict_current;
+    wire micro_tlbi = translation_invalidate || l2_tlb_evict_current;
 
     // Fetch slots decouple frontend admission from translation, PMP, and L1I.
     // Responses complete slots independently but are retired to the frontend
@@ -494,7 +498,8 @@ module openrv64_core_ccx_bus #(
     wire l1i_xlate_resp_fault;
 
     assign l1i_xlate_req_ready =
-        (prefetch_xlate_state_q == PREFETCH_XLATE_IDLE) && !tlbi_i;
+        (prefetch_xlate_state_q == PREFETCH_XLATE_IDLE) &&
+        !translation_invalidate;
     assign l1i_xlate_resp_valid =
         (prefetch_xlate_state_q == PREFETCH_XLATE_RESP);
     assign l1i_xlate_resp_paddr = prefetch_xlate_paddr_q;
@@ -570,7 +575,7 @@ module openrv64_core_ccx_bus #(
     wire serial_dtlb_lookup = (lsu_state_q == LSU_TRANSLATE) &&
                               !lsu_xlate_bare;
     wire xlate_dtlb_lookup = lsu_xlate_req_valid_i &&
-                             !xlate_req_bare && !tlbi_i &&
+                             !xlate_req_bare && !translation_invalidate &&
                              !tlbi_busy_o;
     wire dtlb_lookup_is_xlate = xlate_dtlb_lookup &&
                                 !serial_dtlb_lookup;
@@ -578,10 +583,6 @@ module openrv64_core_ccx_bus #(
                              dtlb_lookup_is_xlate;
     wire [`RV64_XLEN-1:0] dtlb_lookup_vaddr =
         dtlb_lookup_is_xlate ? lsu_xlate_req_vaddr_i : lsu_vaddr_q;
-    wire [`RV64_SATP_MODE_WIDTH-1:0] dtlb_lookup_vm_mode =
-        dtlb_lookup_is_xlate ? lsu_xlate_req_vm_mode_i : lsu_vm_mode_q;
-    wire [`RV64_SATP_ASID_WIDTH-1:0] dtlb_lookup_asid =
-        dtlb_lookup_is_xlate ? lsu_xlate_req_asid_i : lsu_asid_q;
     wire [1:0] dtlb_lookup_access = dtlb_lookup_is_xlate ?
         (lsu_xlate_req_write_i ? ACCESS_WRITE : ACCESS_READ) :
         (lsu_write_q ? ACCESS_WRITE : ACCESS_READ);
@@ -800,15 +801,18 @@ module openrv64_core_ccx_bus #(
     wire itlb_ptw_fill_valid = ptw_resp_valid && miss_active_q &&
         (itlb_fill_for_fetch || itlb_fill_for_prefetch) &&
         !miss_invalidated_q && !ptw_resp_invalidated &&
-        !ptw_resp_page_fault && !ptw_resp_access_fault && !tlbi_i;
+        !ptw_resp_page_fault && !ptw_resp_access_fault &&
+        !translation_invalidate;
     wire dtlb_ptw_fill_valid = ptw_resp_valid && miss_active_q &&
         (miss_owner_q == OWNER_LSU) && !miss_invalidated_q &&
         !ptw_resp_invalidated &&
-        !ptw_resp_page_fault && !ptw_resp_access_fault && !tlbi_i;
+        !ptw_resp_page_fault && !ptw_resp_access_fault &&
+        !translation_invalidate;
     wire itlb_l2_fill_valid = l2_tlb_lookup_hit &&
-        (l2_tlb_select_fetch || l2_tlb_select_prefetch) && !tlbi_i;
+        (l2_tlb_select_fetch || l2_tlb_select_prefetch) &&
+        !translation_invalidate;
     wire dtlb_l2_fill_valid = l2_tlb_lookup_hit &&
-        l2_tlb_select_lsu && !tlbi_i;
+        l2_tlb_select_lsu && !translation_invalidate;
     wire itlb_fill_valid = itlb_ptw_fill_valid || itlb_l2_fill_valid;
     wire dtlb_fill_valid = dtlb_ptw_fill_valid || dtlb_l2_fill_valid;
 
@@ -816,12 +820,6 @@ module openrv64_core_ccx_bus #(
     wire [`RV64_XLEN-1:0] itlb_lookup_vaddr =
         itlb_lookup_is_prefetch ? prefetch_xlate_vaddr_q :
         fetch_lookup_vaddr;
-    wire [`RV64_SATP_MODE_WIDTH-1:0] itlb_lookup_vm_mode =
-        itlb_lookup_is_prefetch ? prefetch_xlate_vm_mode_q :
-        fetch_lookup_vm_mode;
-    wire [`RV64_SATP_ASID_WIDTH-1:0] itlb_lookup_asid =
-        itlb_lookup_is_prefetch ? prefetch_xlate_asid_q :
-        fetch_asid_q[fetch_xlate_slot_r];
     wire [`RV64_PRIV_WIDTH-1:0] itlb_lookup_priv =
         itlb_lookup_is_prefetch ? prefetch_xlate_priv_q :
         fetch_lookup_priv;
@@ -833,23 +831,10 @@ module openrv64_core_ccx_bus #(
         fetch_mxr_q[fetch_xlate_slot_r];
     wire [`RV64_XLEN-1:0] itlb_fill_vaddr = itlb_fill_for_prefetch ?
         prefetch_xlate_vaddr_q : fetch_vaddr_q[miss_fetch_slot_q];
-    wire [`RV64_SATP_MODE_WIDTH-1:0] itlb_fill_vm_mode =
-        itlb_fill_for_prefetch ? prefetch_xlate_vm_mode_q :
-        fetch_vm_mode_q[miss_fetch_slot_q];
-    wire [`RV64_SATP_ASID_WIDTH-1:0] itlb_fill_asid =
-        itlb_fill_for_prefetch ? prefetch_xlate_asid_q :
-        fetch_asid_q[miss_fetch_slot_q];
     wire [`RV64_XLEN-1:0] selected_itlb_fill_vaddr =
         itlb_ptw_fill_valid ? itlb_fill_vaddr : l2_tlb_lookup_vaddr;
     wire [`RV64_XLEN-1:0] selected_itlb_fill_paddr =
         itlb_ptw_fill_valid ? ptw_resp_paddr : l2_tlb_lookup_paddr;
-    wire [`RV64_SATP_MODE_WIDTH-1:0] selected_itlb_fill_vm_mode =
-        itlb_ptw_fill_valid ? itlb_fill_vm_mode :
-        l2_tlb_lookup_vm_mode;
-    wire [`RV64_SATP_ASID_WIDTH-1:0] selected_itlb_fill_asid =
-        itlb_ptw_fill_valid ? itlb_fill_asid : l2_tlb_lookup_asid;
-    wire selected_itlb_fill_global = itlb_ptw_fill_valid ?
-        ptw_resp_global : l2_tlb_lookup_global;
     wire [`RV64_PAGE_LEVEL_WIDTH-1:0] selected_itlb_fill_level =
         itlb_ptw_fill_valid ? ptw_resp_level : l2_tlb_lookup_level;
     wire selected_itlb_fill_readable = itlb_ptw_fill_valid ?
@@ -869,12 +854,6 @@ module openrv64_core_ccx_bus #(
         dtlb_ptw_fill_valid ? lsu_vaddr_q : l2_tlb_lookup_vaddr;
     wire [`RV64_XLEN-1:0] selected_dtlb_fill_paddr =
         dtlb_ptw_fill_valid ? ptw_resp_paddr : l2_tlb_lookup_paddr;
-    wire [`RV64_SATP_MODE_WIDTH-1:0] selected_dtlb_fill_vm_mode =
-        dtlb_ptw_fill_valid ? lsu_vm_mode_q : l2_tlb_lookup_vm_mode;
-    wire [`RV64_SATP_ASID_WIDTH-1:0] selected_dtlb_fill_asid =
-        dtlb_ptw_fill_valid ? lsu_asid_q : l2_tlb_lookup_asid;
-    wire selected_dtlb_fill_global = dtlb_ptw_fill_valid ?
-        ptw_resp_global : l2_tlb_lookup_global;
     wire [`RV64_PAGE_LEVEL_WIDTH-1:0] selected_dtlb_fill_level =
         dtlb_ptw_fill_valid ? ptw_resp_level : l2_tlb_lookup_level;
     wire selected_dtlb_fill_readable = dtlb_ptw_fill_valid ?
@@ -890,15 +869,13 @@ module openrv64_core_ccx_bus #(
     wire selected_dtlb_fill_dirty = dtlb_ptw_fill_valid ?
         ptw_resp_dirty : l2_tlb_lookup_dirty;
 
-    openrv64_bus_tlb #(
-        .ENTRIES(TLB_ENTRIES), .ASID_WIDTH(`RV64_SATP_ASID_WIDTH)
+    openrv64_bus_micro_tlb #(
+        .ENTRIES(TLB_ENTRIES)
     ) u_itlb (
-        .clk(clk), .rst_n(rst_n), .tlbi_i(tlbi_i),
+        .clk(clk), .rst_n(rst_n), .flush_i(micro_tlbi),
         .lookup_valid_i((fetch_lookup_valid && !fetch_lookup_bare) ||
                         (prefetch_xlate_lookup && !prefetch_xlate_bare)),
         .lookup_vaddr_i(itlb_lookup_vaddr),
-        .lookup_vm_mode_i(itlb_lookup_vm_mode),
-        .lookup_asid_i(itlb_lookup_asid),
         .lookup_access_i(ACCESS_EXEC),
         .lookup_priv_i(itlb_lookup_priv),
         .lookup_sum_i(itlb_lookup_sum),
@@ -909,9 +886,6 @@ module openrv64_core_ccx_bus #(
         .fill_valid_i(itlb_fill_valid),
         .fill_vaddr_i(selected_itlb_fill_vaddr),
         .fill_paddr_i(selected_itlb_fill_paddr),
-        .fill_vm_mode_i(selected_itlb_fill_vm_mode),
-        .fill_asid_i(selected_itlb_fill_asid),
-        .fill_global_i(selected_itlb_fill_global),
         .fill_level_i(selected_itlb_fill_level),
         .fill_readable_i(selected_itlb_fill_readable),
         .fill_writable_i(selected_itlb_fill_writable),
@@ -921,14 +895,12 @@ module openrv64_core_ccx_bus #(
         .fill_dirty_i(selected_itlb_fill_dirty)
     );
 
-    openrv64_bus_tlb #(
-        .ENTRIES(TLB_ENTRIES), .ASID_WIDTH(`RV64_SATP_ASID_WIDTH)
+    openrv64_bus_micro_tlb #(
+        .ENTRIES(TLB_ENTRIES)
     ) u_dtlb (
-        .clk(clk), .rst_n(rst_n), .tlbi_i(tlbi_i),
+        .clk(clk), .rst_n(rst_n), .flush_i(micro_tlbi),
         .lookup_valid_i(dtlb_lookup_valid),
         .lookup_vaddr_i(dtlb_lookup_vaddr),
-        .lookup_vm_mode_i(dtlb_lookup_vm_mode),
-        .lookup_asid_i(dtlb_lookup_asid),
         .lookup_access_i(dtlb_lookup_access),
         .lookup_priv_i(dtlb_lookup_priv),
         .lookup_sum_i(dtlb_lookup_sum),
@@ -939,9 +911,6 @@ module openrv64_core_ccx_bus #(
         .fill_valid_i(dtlb_fill_valid),
         .fill_vaddr_i(selected_dtlb_fill_vaddr),
         .fill_paddr_i(selected_dtlb_fill_paddr),
-        .fill_vm_mode_i(selected_dtlb_fill_vm_mode),
-        .fill_asid_i(selected_dtlb_fill_asid),
-        .fill_global_i(selected_dtlb_fill_global),
         .fill_level_i(selected_dtlb_fill_level),
         .fill_readable_i(selected_dtlb_fill_readable),
         .fill_writable_i(selected_dtlb_fill_writable),
@@ -953,7 +922,8 @@ module openrv64_core_ccx_bus #(
 
     wire l2_tlb_fill_valid = ptw_resp_valid && miss_active_q &&
         !miss_invalidated_q && !ptw_resp_invalidated &&
-        !ptw_resp_page_fault && !ptw_resp_access_fault && !tlbi_i;
+        !ptw_resp_page_fault && !ptw_resp_access_fault &&
+        !translation_invalidate;
     wire [`RV64_XLEN-1:0] l2_tlb_fill_vaddr =
         (miss_owner_q == OWNER_LSU) ? lsu_vaddr_q :
         (miss_owner_q == OWNER_PREFETCH) ? prefetch_xlate_vaddr_q :
@@ -973,6 +943,7 @@ module openrv64_core_ccx_bus #(
         .ASID_WIDTH(`RV64_SATP_ASID_WIDTH)
     ) u_l2_tlb (
         .clk(clk), .rst_n(rst_n), .tlbi_i(tlbi_i),
+        .current_asid_i(fetch_req_asid_i),
         .lookup_valid_i(l2_tlb_lookup_valid),
         .lookup_vaddr_i(l2_tlb_lookup_vaddr),
         .lookup_vm_mode_i(l2_tlb_lookup_vm_mode),
@@ -1004,7 +975,8 @@ module openrv64_core_ccx_bus #(
         .fill_executable_i(ptw_resp_executable),
         .fill_user_i(ptw_resp_user),
         .fill_accessed_i(ptw_resp_accessed),
-        .fill_dirty_i(ptw_resp_dirty)
+        .fill_dirty_i(ptw_resp_dirty),
+        .fill_evict_current_o(l2_tlb_evict_current)
     );
 
     openrv64_bus_ptw #(
@@ -1013,7 +985,8 @@ module openrv64_core_ccx_bus #(
         .HART_ID(HART_ID),
         .TXN_ID(PTE_TXN_ID)
     ) u_ptw (
-        .clk(clk), .rst_n(rst_n), .invalidate_i(tlbi_i),
+        .clk(clk), .rst_n(rst_n),
+        .invalidate_i(translation_invalidate),
         .invalidate_busy_o(ptw_invalidate_busy),
         .shootdown_ready_i(!l1d_store_barrier_busy),
         .req_valid_i(ptw_req_valid),
@@ -1107,10 +1080,11 @@ module openrv64_core_ccx_bus #(
          !(xlate_local_resp_valid_q &&
            xlate_fallback_response_pending));
     wire xlate_fast_candidate = lsu_xlate_req_valid_i &&
-        !tlbi_i && !tlbi_busy_o && xlate_local_resp_available &&
+        !translation_invalidate && !tlbi_busy_o &&
+        xlate_local_resp_available &&
         (xlate_req_bare || xlate_lookup_hit);
     wire xlate_fallback_candidate = lsu_xlate_req_valid_i &&
-        !tlbi_i && !tlbi_busy_o &&
+        !translation_invalidate && !tlbi_busy_o &&
         !xlate_req_bare && dtlb_lookup_is_xlate &&
         !dtlb_lookup_hit && l2_tlb_select_xlate &&
         !l2_tlb_lookup_hit && !miss_active_q &&
@@ -1359,7 +1333,8 @@ module openrv64_core_ccx_bus #(
         .prefetch_dropped_o(),
         .prefetch_useless_o(),
         .prefetch_depth_o(),
-        .speculation_barrier_i(tlbi_i || store_barrier_i),
+        .speculation_barrier_i(
+            translation_invalidate || store_barrier_i),
         .store_barrier_busy_o(l1d_store_barrier_busy),
         .invalidate_valid_i(
             (ENABLE_L1D_COHERENCE_PROBES != 0) &&
@@ -1401,9 +1376,9 @@ module openrv64_core_ccx_bus #(
         .ccx_resp_sc_success_i(ccx_resp_sc_success_i)
     );
 
-    // SATP writes and SFENCE.VMA use the same conservative global barrier.
-    // The PTW is invalidated immediately, but its ordered shootdown cannot
-    // issue until all older posted L1D stores have completed downstream.
+    // SATP writes flush current-context state and SFENCE.VMA additionally
+    // invalidates the tagged main TLB. The ordered PTW fence cannot issue
+    // until all older posted L1D stores have completed downstream.
     assign tlbi_busy_o = l1d_store_barrier_busy || ptw_invalidate_busy;
 
     openrv64_l1i_ccx #(
@@ -1446,7 +1421,8 @@ module openrv64_core_ccx_bus #(
         .prefetch_mxr_i(fetch_req_mxr_i),
         .retire_age_valid_i(icache_age_valid_i),
         .retire_age_addr_i(icache_age_addr_i),
-        .prefetch_flush_i(tlbi_i || icache_invalidate_i),
+        .prefetch_flush_i(
+            translation_invalidate || icache_invalidate_i),
         .xlate_req_valid_o(l1i_xlate_req_valid),
         .xlate_req_ready_i(l1i_xlate_req_ready),
         .xlate_req_vaddr_o(l1i_xlate_req_vaddr),
@@ -1818,7 +1794,7 @@ module openrv64_core_ccx_bus #(
                     if (ptw_resp_valid && miss_active_q &&
                         (miss_owner_q == OWNER_PREFETCH)) begin
                         if (miss_invalidated_q || ptw_resp_invalidated ||
-                            tlbi_i) begin
+                            translation_invalidate) begin
                             prefetch_xlate_state_q <=
                                 PREFETCH_XLATE_LOOKUP;
                         end else if (ptw_resp_page_fault ||
@@ -2004,7 +1980,8 @@ module openrv64_core_ccx_bus #(
                     fetch_miss_cancel_now) begin
                     fetch_state_q[miss_fetch_slot_q] <= FETCH_COMPLETE;
                 end else if (miss_invalidated_q ||
-                             ptw_resp_invalidated || tlbi_i) begin
+                             ptw_resp_invalidated ||
+                             translation_invalidate) begin
                     fetch_state_q[miss_fetch_slot_q] <= FETCH_TRANSLATE;
                 end else if (ptw_resp_page_fault ||
                              ptw_resp_access_fault) begin
@@ -2231,7 +2208,7 @@ module openrv64_core_ccx_bus #(
                     if (ptw_resp_valid && miss_active_q &&
                         (miss_owner_q == OWNER_LSU)) begin
                         if (miss_invalidated_q || ptw_resp_invalidated ||
-                            tlbi_i) begin
+                            translation_invalidate) begin
                             lsu_state_q <= LSU_TRANSLATE;
                         end else if (ptw_resp_page_fault ||
                                      ptw_resp_access_fault) begin
@@ -2304,7 +2281,7 @@ module openrv64_core_ccx_bus #(
                     miss_fetch_slot_q <= fetch_xlate_slot_r;
                 miss_invalidated_q <= 1'b0;
             end
-            if (tlbi_i && miss_active_q)
+            if (translation_invalidate && miss_active_q)
                 miss_invalidated_q <= 1'b1;
             if (ptw_resp_valid) begin
                 miss_active_q <= 1'b0;

@@ -370,6 +370,12 @@ $(TLB_SIM_BUILD): $(TLB_SIM_SRCS) rtl/core/bus/tlb.v $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TLB_SIM_BUILD) rtl/core/bus/tlb.v $(TLB_SIM_SRCS)
 
+$(MICRO_TLB_SIM_BUILD): $(MICRO_TLB_SIM_SRCS) \
+		rtl/core/bus/micro_tlb.v $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(MICRO_TLB_SIM_BUILD) \
+		rtl/core/bus/micro_tlb.v $(MICRO_TLB_SIM_SRCS)
+
 $(TLB_L2_SIM_BUILD): $(TLB_L2_SIM_SRCS) rtl/core/bus/tlb_l2.v \
 		rtl/core/bus/tlb.v $(ISA_SRCS)
 	mkdir -p sim

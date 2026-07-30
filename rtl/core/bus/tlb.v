@@ -9,6 +9,8 @@ module openrv64_bus_tlb #(
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         tlbi_i,
+    input  wire                         prefer_asid_valid_i,
+    input  wire [ASID_WIDTH-1:0]        prefer_asid_i,
 
     input  wire                         lookup_valid_i,
     input  wire [`RV64_XLEN-1:0]        lookup_vaddr_i,
@@ -42,7 +44,9 @@ module openrv64_bus_tlb #(
     input  wire                         fill_executable_i,
     input  wire                         fill_user_i,
     input  wire                         fill_accessed_i,
-    input  wire                         fill_dirty_i
+    input  wire                         fill_dirty_i,
+    output wire                         fill_evict_valid_o,
+    output wire                         fill_evict_preferred_o
 );
 
     localparam [1:0] ACCESS_READ = 2'd0;
@@ -70,8 +74,10 @@ module openrv64_bus_tlb #(
     reg [INDEX_WIDTH-1:0] fill_index;
     reg fill_match_found;
     reg fill_invalid_found;
+    reg fill_cold_found;
     integer lookup_index;
     integer select_index;
+    integer candidate_index;
     integer update_index;
 
     wire [VPN_WIDTH-1:0] lookup_vpn = lookup_vaddr_i[`RV64_XLEN-1:12];
@@ -199,6 +205,7 @@ module openrv64_bus_tlb #(
         fill_index = replace_q;
         fill_match_found = 1'b0;
         fill_invalid_found = 1'b0;
+        fill_cold_found = 1'b0;
 
         for (select_index = 0;
              select_index < ENTRIES;
@@ -223,7 +230,37 @@ module openrv64_bus_tlb #(
                 fill_invalid_found = 1'b1;
             end
         end
+
+        /*
+         * The shared main-TLB superpage sidecar uses this tagged CAM. Avoid
+         * evicting the active ASID (or a global entry) while an inactive-ASID
+         * victim exists. If every entry belongs to the active context,
+         * round-robin still guarantees forward progress.
+         */
+        for (select_index = 0;
+             select_index < ENTRIES;
+             select_index = select_index + 1) begin
+            candidate_index = replace_q + select_index;
+            if (candidate_index >= ENTRIES)
+                candidate_index = candidate_index - ENTRIES;
+            if (!fill_match_found && !fill_invalid_found &&
+                !fill_cold_found && prefer_asid_valid_i &&
+                valid_q[candidate_index] &&
+                !global_q[candidate_index] &&
+                (asid_q[candidate_index] != prefer_asid_i)) begin
+                fill_index = candidate_index[INDEX_WIDTH-1:0];
+                fill_cold_found = 1'b1;
+            end
+        end
     end
+
+    assign fill_evict_valid_o =
+        fill_valid_i && !tlbi_i && valid_q[fill_index] &&
+        !fill_match_found;
+    assign fill_evict_preferred_o =
+        fill_evict_valid_o && prefer_asid_valid_i &&
+        (global_q[fill_index] ||
+         (asid_q[fill_index] == prefer_asid_i));
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

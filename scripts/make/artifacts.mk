@@ -42,6 +42,7 @@ CCX_BUS_SIM_BUILD := sim/ccx_bus_tb.vvp
 CCX_L1I_SIM_BUILD := sim/ccx_l1i_tb.vvp
 L1I_TOP_SIM_BUILD := sim/openrv64_l1i_top_tb.vvp
 TLB_SIM_BUILD := sim/tlb_tb.vvp
+MICRO_TLB_SIM_BUILD := sim/micro_tlb_tb.vvp
 TLB_L2_SIM_BUILD := sim/tlb_l2_tb.vvp
 PTW_SIM_BUILD := sim/ptw_tb.vvp
 PTW_CONTEXT_SIM_BUILD := sim/ptw_context_tb.vvp

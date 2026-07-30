@@ -7,6 +7,7 @@ module tb_tlb_l2;
     reg clk;
     reg rst_n;
     reg tlbi;
+    reg [`RV64_SATP_ASID_WIDTH-1:0] current_asid;
     reg lookup_valid;
     reg [`RV64_XLEN-1:0] lookup_vaddr;
     reg [`RV64_SATP_MODE_WIDTH-1:0] lookup_vm_mode;
@@ -40,6 +41,8 @@ module tb_tlb_l2;
     reg fill_user;
     reg fill_accessed;
     reg fill_dirty;
+    wire fill_evict_current;
+    integer superpage_index;
 
     openrv64_bus_tlb_l2 #(
         .ENTRIES(256),
@@ -47,6 +50,7 @@ module tb_tlb_l2;
         .ASID_WIDTH(`RV64_SATP_ASID_WIDTH)
     ) dut (
         .clk(clk), .rst_n(rst_n), .tlbi_i(tlbi),
+        .current_asid_i(current_asid),
         .lookup_valid_i(lookup_valid),
         .lookup_vaddr_i(lookup_vaddr),
         .lookup_vm_mode_i(lookup_vm_mode),
@@ -78,7 +82,8 @@ module tb_tlb_l2;
         .fill_executable_i(fill_executable),
         .fill_user_i(fill_user),
         .fill_accessed_i(fill_accessed),
-        .fill_dirty_i(fill_dirty)
+        .fill_dirty_i(fill_dirty),
+        .fill_evict_current_o(fill_evict_current)
     );
 
     always #5 clk = ~clk;
@@ -151,6 +156,7 @@ module tb_tlb_l2;
         clk = 1'b0;
         rst_n = 1'b0;
         tlbi = 1'b0;
+        current_asid = 16'd0;
         lookup_valid = 1'b0;
         lookup_vaddr = 64'd0;
         lookup_vm_mode = `RV64_SATP_MODE_SV39;
@@ -245,6 +251,69 @@ module tb_tlb_l2;
             $fatal(1, "superpage level was not returned");
         lookup_valid = 1'b0;
 
+        /*
+         * Active-ASID and global entries are the protected replacement class.
+         * Fill one set with three protected entries and one inactive-ASID
+         * entry. The next fill must consume the inactive entry without asking
+         * the caller to flush its current-context micro-TLBs.
+         */
+        current_asid = 16'h0055;
+        install_4k(64'h0000_0000_0000_5000, 64'h6100_5000,
+                   16'h0055, 1'b0, 1'b1, 1'b1, 1'b0, 1'b0);
+        install_4k(64'h0000_0000_0004_5000, 64'h6104_5000,
+                   16'h0066, 1'b0, 1'b1, 1'b1, 1'b0, 1'b0);
+        install_4k(64'h0000_0000_0008_5000, 64'h6108_5000,
+                   16'h0055, 1'b0, 1'b1, 1'b1, 1'b0, 1'b0);
+        install_4k(64'h0000_0000_000c_5000, 64'h610c_5000,
+                   16'h0000, 1'b1, 1'b1, 1'b1, 1'b0, 1'b0);
+
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_vaddr = 64'h0000_0000_0010_5000;
+        fill_paddr = 64'h6110_5000;
+        fill_vm_mode = `RV64_SATP_MODE_SV39;
+        fill_asid = 16'h0055;
+        fill_global = 1'b0;
+        fill_level = `RV64_PAGE_LEVEL_4K;
+        fill_readable = 1'b1;
+        fill_writable = 1'b1;
+        fill_executable = 1'b0;
+        fill_user = 1'b0;
+        fill_accessed = 1'b1;
+        fill_dirty = 1'b1;
+        @(posedge clk);
+        #1;
+        if (fill_evict_current)
+            $fatal(1, "inactive-ASID victim requested micro-TLB flush");
+        @(negedge clk);
+        fill_valid = 1'b0;
+        expect_lookup(64'h0000_0000_0004_5008, 16'h0066, 2'd0,
+                      `RV64_PRIV_S, 1'b0, 1'b0, 1'b0, 64'd0,
+                      "inactive-ASID preferred victim");
+        expect_lookup(64'h0000_0000_0000_5008, 16'h0055, 2'd0,
+                      `RV64_PRIV_S, 1'b0, 1'b1, 1'b0,
+                      64'h6100_5008, "active-ASID survivor");
+        expect_lookup(64'h0000_0000_000c_5008, 16'h7777, 2'd0,
+                      `RV64_PRIV_S, 1'b0, 1'b1, 1'b0,
+                      64'h610c_5008, "global survivor");
+
+        /*
+         * The set now contains only active-ASID/global entries. Forward
+         * progress permits replacement, but it must request a full
+         * current-context micro-TLB flush after the replacement edge.
+         */
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_vaddr = 64'h0000_0000_0014_5000;
+        fill_paddr = 64'h6114_5000;
+        fill_asid = 16'h0055;
+        @(posedge clk);
+        #1;
+        if (!fill_evict_current)
+            $fatal(1, "forced active-ASID victim did not request flush");
+        @(negedge clk);
+        fill_valid = 1'b0;
+
         @(negedge clk);
         tlbi = 1'b1;
         @(negedge clk);
@@ -300,6 +369,55 @@ module tb_tlb_l2;
         expect_lookup(64'h0000_0000_0000_7040, 16'h0077, 2'd0,
                       `RV64_PRIV_S, 1'b0, 1'b0, 1'b0, 64'd0,
                       "TLBI rejected same-edge fill");
+
+        // Apply the same active-ASID preference and forced-flush contract to
+        // the fully associative superpage sidecar.
+        current_asid = 16'h0088;
+        for (superpage_index = 0; superpage_index < 8;
+             superpage_index = superpage_index + 1) begin
+            @(negedge clk);
+            fill_valid = 1'b1;
+            fill_vaddr = superpage_index * 64'h20_0000;
+            fill_paddr = 64'h8000_0000 +
+                         superpage_index * 64'h20_0000;
+            fill_vm_mode = `RV64_SATP_MODE_SV39;
+            fill_asid = (superpage_index == 1) ?
+                        16'h0099 : 16'h0088;
+            fill_global = 1'b0;
+            fill_level = `RV64_PAGE_LEVEL_2M;
+            fill_readable = 1'b1;
+            fill_writable = 1'b1;
+            fill_executable = 1'b1;
+            fill_user = 1'b0;
+            fill_accessed = 1'b1;
+            fill_dirty = 1'b1;
+            @(negedge clk);
+            fill_valid = 1'b0;
+        end
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_vaddr = 64'h0100_0000;
+        fill_paddr = 64'h9000_0000;
+        fill_asid = 16'h0088;
+        @(posedge clk);
+        #1;
+        if (fill_evict_current)
+            $fatal(1,
+                "superpage inactive-ASID victim requested micro flush");
+        @(negedge clk);
+        fill_valid = 1'b0;
+
+        @(negedge clk);
+        fill_valid = 1'b1;
+        fill_vaddr = 64'h0120_0000;
+        fill_paddr = 64'h9020_0000;
+        @(posedge clk);
+        #1;
+        if (!fill_evict_current)
+            $fatal(1,
+                "forced current-ASID superpage victim did not request flush");
+        @(negedge clk);
+        fill_valid = 1'b0;
 
         $display("PASS: 256-entry four-way shared L2 TLB");
         $finish;

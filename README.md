@@ -18,7 +18,7 @@ Next steps:
 6. OOO, but this is a ways off.
 7. This is actually first, ordered an Artix-7 100t, need to validate under a full distribution like debian, might have to recompile due to lack of -C.
 8. We make it rain with prefetches, I have confidence gating in some branch predictors, but the whole algorithm needs tuning.
-9. satp is a massive hammer, as is sfence.vma, need to do a better job on pruning vs absolute desolation.
+9. satp still drains and restarts translation state but preserves the tagged main TLB; sfence.vma remains a global local-hart hammer and needs selective invalidation.
 10. l2 latency at 11 l2u is too aggressive, not viable in pd.
 11. 0 DFT whatsoever, we need that.
 

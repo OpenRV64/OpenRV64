@@ -40,6 +40,8 @@ module tb_tlb;
         .clk(clk),
         .rst_n(rst_n),
         .tlbi_i(tlbi),
+        .prefer_asid_valid_i(1'b0),
+        .prefer_asid_i(16'd0),
         .lookup_valid_i(lookup_valid),
         .lookup_vaddr_i(lookup_vaddr),
         .lookup_vm_mode_i(lookup_vm_mode),
@@ -63,7 +65,9 @@ module tb_tlb;
         .fill_executable_i(fill_executable),
         .fill_user_i(fill_user),
         .fill_accessed_i(fill_accessed),
-        .fill_dirty_i(fill_dirty)
+        .fill_dirty_i(fill_dirty),
+        .fill_evict_valid_o(),
+        .fill_evict_preferred_o()
     );
 
     initial begin

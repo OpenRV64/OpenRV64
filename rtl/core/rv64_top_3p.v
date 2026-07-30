@@ -1456,7 +1456,8 @@ module openrv64_rv64_top_3p #(
             backend_mem_xlate_resp_access_fault),
         .lsu_xlate_resp_page_fault_o(
             backend_mem_xlate_resp_page_fault),
-        .tlbi_i(backend_sfence_vma || backend_satp_write),
+        .tlbi_i(backend_sfence_vma),
+        .context_flush_i(backend_satp_write),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(backend_store_barrier_request),
         .icache_invalidate_i(backend_fence_i),
