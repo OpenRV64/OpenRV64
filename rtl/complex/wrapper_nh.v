@@ -303,6 +303,23 @@ module openrv64_core_complex_nh #(
         .resp_rdata_o(line_resp_rdata),
         .resp_error_o(line_resp_error),
         .resp_sc_success_o(line_resp_sc_success),
+        .probe_valid_o(),
+        .probe_ready_i({NUM_HARTS{1'b0}}),
+        .probe_id_o(),
+        .probe_command_o(),
+        .probe_cache_mask_o(),
+        .probe_line_addr_o(),
+        .probe_resp_valid_i({NUM_HARTS{1'b0}}),
+        .probe_resp_ready_o(),
+        .probe_resp_id_i(
+            {NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}}),
+        .probe_resp_kind_i(
+            {NUM_HARTS*`OPENRV64_CCX_PROBE_RESP_WIDTH{1'b0}}),
+        .probe_resp_data_i(
+            {NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+        .probe_resp_error_i({NUM_HARTS{1'b0}}),
+        .protocol_error_clear_i(1'b0),
+        .protocol_error_o(),
         .bus_req_valid_o(bus_req_valid),
         .bus_req_ready_i(bus_req_ready),
         .bus_req_write_o(bus_req_write),

@@ -76,6 +76,7 @@ module openrv64_ccx_snoop_filter #(
 
     input  wire                         write_valid_i,
     input  wire                         write_allocate_i,
+    input  wire                         write_overwrite_i,
     input  wire [ENTRY_WIDTH-1:0]       write_entry_i,
     input  wire [ADDR_WIDTH-1:0]        write_line_addr_i,
     input  wire [NUM_HARTS-1:0]         write_add_i_sharers_i,
@@ -132,7 +133,7 @@ module openrv64_ccx_snoop_filter #(
     always @* begin
         selected_write_way_word =
             way_read_word[32'(write_way)*WORD_WIDTH +: WORD_WIDTH];
-        if (write_allocate_i) begin
+        if (write_allocate_i || write_overwrite_i) begin
             normal_write_word = {
                 1'b1,
                 write_tag,

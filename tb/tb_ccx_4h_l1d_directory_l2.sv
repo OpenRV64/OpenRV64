@@ -31,6 +31,10 @@ module tb_ccx_4h_l1d_directory_l2 #(
     localparam [63:0] LINE_A = MEMORY_BASE;
     localparam [63:0] LINE_B = MEMORY_BASE + 64'h0000_0040;
     localparam [63:0] LINE_C = MEMORY_BASE + 64'h0000_0080;
+    localparam [63:0] DELAYED_FILL_LINE =
+        MEMORY_BASE + 64'h0000_2000;
+    localparam [63:0] DELAYED_FILL_WRITE =
+        64'hd31a_9ed0_0000_0001;
     localparam integer PINGPONG_LINES = 16;
     localparam [63:0] PINGPONG_BASE =
         MEMORY_BASE + 64'h0000_1000;
@@ -179,6 +183,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
     wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
 
     wire ccx_resp_valid;
+    wire l2_ccx_resp_valid;
     wire ccx_resp_ready;
     wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
     wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
@@ -188,6 +193,8 @@ module tb_ccx_4h_l1d_directory_l2 #(
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
     wire ccx_resp_error;
     wire ccx_resp_sc_success;
+    logic ccx_response_hold;
+    integer delayed_fill_wait_cycles;
 
     // Coherence-home probes.
     wire [NUM_HARTS-1:0] probe_valid;
@@ -278,8 +285,14 @@ module tb_ccx_4h_l1d_directory_l2 #(
     integer l2_write_count;
     integer last_l2_write_cycle;
 
-    // Reference state is updated at the coherence-home write-data acceptance
-    // point.  That is the single total order exposed by this serialized home.
+    // Reference state is updated at the integrated coherence/L2 commit point.
+    // Independent reads may overlap; their expected data is tracked by the
+    // response identity rather than by the old serialized-home assumption.
+    localparam integer HOME_ID_STRIDE =
+        1 << (`OPENRV64_CCX_SOURCE_ID_WIDTH +
+              `OPENRV64_CCX_TXN_ID_WIDTH);
+    localparam integer HOME_READ_IDENTITIES =
+        NUM_HARTS * HOME_ID_STRIDE;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         reference_memory [0:MEMORY_LINES-1];
     logic expected_home_write_valid [0:NUM_HARTS-1];
@@ -292,12 +305,15 @@ module tb_ccx_4h_l1d_directory_l2 #(
     integer home_write_hart;
     logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] home_write_txn_id;
     logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] home_write_source_id;
-    logic l2_read_expected_valid;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        l2_read_expected_data;
-    logic [63:0] l2_read_expected_addr;
+        l2_read_expected_data [0:HOME_READ_IDENTITIES-1];
+    logic [63:0]
+        l2_read_expected_addr [0:HOME_READ_IDENTITIES-1];
+    logic l2_read_expected_valid [0:HOME_READ_IDENTITIES-1];
+    integer l2_read_expected_count;
     integer home_score_hart;
     integer home_score_byte;
+    integer home_score_identity;
 
     // Request tags form the second scoreboard.  It checks each response
     // against the accepted request, independent of task scheduling order.
@@ -709,12 +725,21 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .hart_resp_sc_success_o(hart_resp_sc_success)
     );
 
-    openrv64_ccx_coherent_protocol #(
+    openrv64_ccx_l2_native #(
+        .CACHE_BYTES(256 * 1024),
+        .LINE_BYTES(64),
+        .WAYS(4),
+        .MSHR_ENTRIES(2),
+        .WAITERS_PER_MSHR(4),
+        .COMMAND_ENTRIES(4),
+        .RESPONSE_ENTRIES(8),
+        .BUS_TRACK_ENTRIES(2),
+        .ENABLE_COHERENCE(1),
         .NUM_HARTS(NUM_HARTS),
         .HART_ID_BASE(0),
         .DIRECTORY_ENTRIES(MEMORY_LINES),
         .DIRECTORY_WAYS(4)
-    ) u_directory_frontend (
+    ) u_l2 (
         .clk_i(clk),
         .rst_ni(rst_n),
         .req_valid_i(ccx_req_valid),
@@ -739,8 +764,8 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .wdata_last_i(ccx_wdata_last),
         .wdata_i(ccx_wdata),
         .wstrb_i(ccx_wstrb),
-        .resp_valid_o(ccx_resp_valid),
-        .resp_ready_i(ccx_resp_ready),
+        .resp_valid_o(l2_ccx_resp_valid),
+        .resp_ready_i(ccx_resp_ready && !ccx_response_hold),
         .resp_hart_id_o(ccx_resp_hart_id),
         .resp_txn_id_o(ccx_resp_txn_id),
         .resp_source_id_o(ccx_resp_source_id),
@@ -761,86 +786,8 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .probe_resp_kind_i(probe_resp_kind),
         .probe_resp_data_i(probe_resp_data),
         .probe_resp_error_i(probe_resp_error),
-        .l2_req_valid_o(l2_req_valid),
-        .l2_req_ready_i(l2_req_ready),
-        .l2_req_hart_id_o(l2_req_hart_id),
-        .l2_req_txn_id_o(l2_req_txn_id),
-        .l2_req_source_id_o(l2_req_source_id),
-        .l2_req_op_o(l2_req_op),
-        .l2_req_lock_o(l2_req_lock),
-        .l2_req_order_o(l2_req_order),
-        .l2_req_kind_o(l2_req_kind),
-        .l2_req_attr_o(l2_req_attr),
-        .l2_req_size_o(l2_req_size),
-        .l2_req_addr_o(l2_req_addr),
-        .l2_req_burst_len_o(l2_req_burst_len),
-        .l2_wdata_valid_o(l2_wdata_valid),
-        .l2_wdata_ready_i(l2_wdata_ready),
-        .l2_wdata_hart_id_o(l2_wdata_hart_id),
-        .l2_wdata_txn_id_o(l2_wdata_txn_id),
-        .l2_wdata_source_id_o(l2_wdata_source_id),
-        .l2_wdata_beat_index_o(l2_wdata_beat_index),
-        .l2_wdata_last_o(l2_wdata_last),
-        .l2_wdata_o(l2_wdata),
-        .l2_wstrb_o(l2_wstrb),
-        .l2_resp_valid_i(l2_resp_valid),
-        .l2_resp_ready_o(l2_resp_ready),
-        .l2_resp_hart_id_i(l2_resp_hart_id),
-        .l2_resp_txn_id_i(l2_resp_txn_id),
-        .l2_resp_source_id_i(l2_resp_source_id),
-        .l2_resp_beat_index_i(l2_resp_beat_index),
-        .l2_resp_last_i(l2_resp_last),
-        .l2_resp_rdata_i(l2_resp_rdata),
-        .l2_resp_error_i(l2_resp_error),
-        .l2_resp_sc_success_i(l2_resp_sc_success),
         .protocol_error_clear_i(1'b0),
-        .protocol_error_o(protocol_error)
-    );
-
-    openrv64_ccx_l2_native #(
-        .CACHE_BYTES(256 * 1024),
-        .LINE_BYTES(64),
-        .WAYS(4),
-        .MSHR_ENTRIES(2),
-        .WAITERS_PER_MSHR(4),
-        .COMMAND_ENTRIES(4),
-        .RESPONSE_ENTRIES(8),
-        .BUS_TRACK_ENTRIES(2)
-    ) u_l2 (
-        .clk_i(clk),
-        .rst_ni(rst_n),
-        .req_valid_i(l2_req_valid),
-        .req_ready_o(l2_req_ready),
-        .req_hart_id_i(l2_req_hart_id),
-        .req_txn_id_i(l2_req_txn_id),
-        .req_source_id_i(l2_req_source_id),
-        .req_op_i(l2_req_op),
-        .req_lock_i(l2_req_lock),
-        .req_order_i(l2_req_order),
-        .req_kind_i(l2_req_kind),
-        .req_attr_i(l2_req_attr),
-        .req_size_i(l2_req_size),
-        .req_addr_i(l2_req_addr),
-        .req_burst_len_i(l2_req_burst_len),
-        .wdata_valid_i(l2_wdata_valid),
-        .wdata_ready_o(l2_wdata_ready),
-        .wdata_hart_id_i(l2_wdata_hart_id),
-        .wdata_txn_id_i(l2_wdata_txn_id),
-        .wdata_source_id_i(l2_wdata_source_id),
-        .wdata_beat_index_i(l2_wdata_beat_index),
-        .wdata_last_i(l2_wdata_last),
-        .wdata_i(l2_wdata),
-        .wstrb_i(l2_wstrb),
-        .resp_valid_o(l2_resp_valid),
-        .resp_ready_i(l2_resp_ready),
-        .resp_hart_id_o(l2_resp_hart_id),
-        .resp_txn_id_o(l2_resp_txn_id),
-        .resp_source_id_o(l2_resp_source_id),
-        .resp_beat_index_o(l2_resp_beat_index),
-        .resp_last_o(l2_resp_last),
-        .resp_rdata_o(l2_resp_rdata),
-        .resp_error_o(l2_resp_error),
-        .resp_sc_success_o(l2_resp_sc_success),
+        .protocol_error_o(protocol_error),
         .bus_req_valid_o(bus_req_valid),
         .bus_req_ready_i(bus_req_ready),
         .bus_req_write_o(bus_req_write),
@@ -854,6 +801,101 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .bus_resp_rdata_i(bus_resp_rdata),
         .bus_resp_error_i(bus_resp_error)
     );
+    assign ccx_resp_valid = l2_ccx_resp_valid && !ccx_response_hold;
+
+    /*
+     * The former home-to-L2 boundary is now an internal lookup-dispatch
+     * event.  Retain equivalent visibility for the existing scoreboards.
+     */
+    wire l2_direct_commit = u_l2.lookup_dispatch_r &&
+        (u_l2.lookup_action_r != u_l2.LOOKUP_COH_PROBE) &&
+        !u_l2.lookup_protocol_error_q &&
+        !u_l2.coherence_hart_error &&
+        !u_l2.lookup_sc_failed;
+    wire l2_probe_commit = u_l2.coherence_probe_completion;
+    wire [31:0] l2_probe_waiter =
+        32'(u_l2.active_probe_mshr_q) * 4;
+    assign l2_req_valid = l2_direct_commit || l2_probe_commit;
+    assign l2_req_ready = 1'b1;
+    assign l2_req_hart_id = l2_probe_commit ?
+        u_l2.waiter_hart_id_q[l2_probe_waiter] :
+        u_l2.lookup_hart_id_q;
+    assign l2_req_txn_id = l2_probe_commit ?
+        u_l2.waiter_txn_id_q[l2_probe_waiter] :
+        u_l2.lookup_txn_id_q;
+    assign l2_req_source_id = l2_probe_commit ?
+        u_l2.waiter_source_id_q[l2_probe_waiter] :
+        u_l2.lookup_source_id_q;
+    assign l2_req_op =
+        ((l2_probe_commit ?
+          u_l2.waiter_op_q[l2_probe_waiter] :
+          u_l2.lookup_op_q) == `OPENRV64_CCX_OP_LR) ?
+            `OPENRV64_CCX_OP_READ :
+        ((l2_probe_commit ?
+          u_l2.waiter_op_q[l2_probe_waiter] :
+          u_l2.lookup_op_q) == `OPENRV64_CCX_OP_SC) ?
+            `OPENRV64_CCX_OP_WRITE :
+        (l2_probe_commit ?
+          u_l2.waiter_op_q[l2_probe_waiter] :
+          u_l2.lookup_op_q);
+    assign l2_req_lock = 1'b0;
+    assign l2_req_order = `OPENRV64_CCX_ORDER_NONE;
+    assign l2_req_kind = l2_probe_commit ?
+        u_l2.waiter_kind_q[l2_probe_waiter] :
+        u_l2.lookup_kind_q;
+    assign l2_req_attr = l2_probe_commit ?
+        u_l2.waiter_attr_q[l2_probe_waiter] :
+        u_l2.lookup_attr_q;
+    assign l2_req_size = l2_probe_commit ?
+        u_l2.waiter_size_q[l2_probe_waiter] :
+        u_l2.lookup_size_q;
+    assign l2_req_addr = l2_probe_commit ?
+        u_l2.waiter_addr_q[l2_probe_waiter] :
+        u_l2.lookup_addr_q;
+    assign l2_req_burst_len = 0;
+    assign l2_wdata_valid =
+        l2_req_valid && (l2_req_op == `OPENRV64_CCX_OP_WRITE);
+    assign l2_wdata_ready = 1'b1;
+    assign l2_wdata_hart_id = l2_req_hart_id;
+    assign l2_wdata_txn_id = l2_req_txn_id;
+    assign l2_wdata_source_id = l2_req_source_id;
+    assign l2_wdata_beat_index = 0;
+    assign l2_wdata_last = 1'b1;
+    assign l2_wdata = l2_probe_commit ?
+        u_l2.waiter_wdata_q[l2_probe_waiter] :
+        u_l2.lookup_wdata_q;
+    assign l2_wstrb = l2_probe_commit ?
+        u_l2.waiter_wstrb_q[l2_probe_waiter] :
+        u_l2.lookup_wstrb_q;
+    assign l2_resp_valid = ccx_resp_valid;
+    assign l2_resp_ready = ccx_resp_ready;
+    assign l2_resp_hart_id = ccx_resp_hart_id;
+    assign l2_resp_txn_id = ccx_resp_txn_id;
+    assign l2_resp_source_id = ccx_resp_source_id;
+    assign l2_resp_beat_index = ccx_resp_beat_index;
+    assign l2_resp_last = ccx_resp_last;
+    assign l2_resp_rdata = ccx_resp_rdata;
+    assign l2_resp_error = ccx_resp_error;
+    assign l2_resp_sc_success = ccx_resp_sc_success;
+    wire [31:0] l2_req_identity =
+        (32'(l2_req_hart_id) *
+         HOME_ID_STRIDE) +
+        (32'(l2_req_source_id) <<
+         `OPENRV64_CCX_TXN_ID_WIDTH) +
+        32'(l2_req_txn_id);
+    wire [31:0] l2_resp_identity =
+        (32'(l2_resp_hart_id) *
+         HOME_ID_STRIDE) +
+        (32'(l2_resp_source_id) <<
+         `OPENRV64_CCX_TXN_ID_WIDTH) +
+        32'(l2_resp_txn_id);
+    wire l2_read_commit =
+        l2_req_valid && l2_req_ready &&
+        (l2_req_op == `OPENRV64_CCX_OP_READ);
+    wire l2_read_response =
+        l2_resp_valid && l2_resp_ready &&
+        (l2_resp_identity < HOME_READ_IDENTITIES) &&
+        l2_read_expected_valid[l2_resp_identity];
 
     // Production four-hart probe termination.  Each endpoint owns independent
     // request/response storage and clears the local LR reservation as soon as
@@ -994,13 +1036,18 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
             home_write_source_id <=
                 {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
-            l2_read_expected_valid <= 1'b0;
-            l2_read_expected_data <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-            l2_read_expected_addr <= 64'd0;
+            l2_read_expected_count <= 0;
             atomic_sc_success_count <= 0;
             atomic_lr_command_count <= 0;
             atomic_sc_command_count <= 0;
+            for (home_score_identity = 0;
+                 home_score_identity < HOME_READ_IDENTITIES;
+                 home_score_identity = home_score_identity + 1) begin
+                l2_read_expected_valid[home_score_identity] <= 1'b0;
+                l2_read_expected_data[home_score_identity] <=
+                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                l2_read_expected_addr[home_score_identity] <= 64'd0;
+            end
             for (home_score_hart = 0;
                  home_score_hart < NUM_HARTS;
                  home_score_hart = home_score_hart + 1) begin
@@ -1025,11 +1072,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
             end
 
             if (ccx_resp_valid && ccx_resp_ready &&
-                (u_directory_frontend.req_op_q ==
-                 `OPENRV64_CCX_OP_SC)) begin
-                if (!ccx_resp_sc_success)
-                    $fatal(1,
-                        "guarded AMO reached a failed home SC");
+                ccx_resp_sc_success) begin
                 atomic_sc_success_count <=
                     atomic_sc_success_count + 1;
             end
@@ -1063,16 +1106,24 @@ module tb_ccx_4h_l1d_directory_l2 #(
                     home_write_txn_id <= l2_req_txn_id;
                     home_write_source_id <= l2_req_source_id;
                 end else if (l2_req_op == `OPENRV64_CCX_OP_READ) begin
-                    if (l2_read_expected_valid)
-                        $fatal(1, "overlapping serialized home reads");
-                    l2_read_expected_valid <= 1'b1;
-                    l2_read_expected_addr <=
+                    if (l2_req_identity >= HOME_READ_IDENTITIES)
+                        $fatal(1,
+                            "home read has invalid identity hart=%0d source=%0d txn=%0d",
+                            l2_req_hart_id, l2_req_source_id,
+                            l2_req_txn_id);
+                    if (l2_read_expected_valid[l2_req_identity])
+                        $fatal(1,
+                            "home read identity reused before response hart=%0d source=%0d txn=%0d",
+                            l2_req_hart_id, l2_req_source_id,
+                            l2_req_txn_id);
+                    l2_read_expected_valid[l2_req_identity] <= 1'b1;
+                    l2_read_expected_addr[l2_req_identity] <=
                         {l2_req_addr[63:6], 6'b0};
                     if (l2_req_size == 3'd6)
-                        l2_read_expected_data <=
+                        l2_read_expected_data[l2_req_identity] <=
                             reference_memory[line_index(l2_req_addr)];
                     else
-                        l2_read_expected_data <=
+                        l2_read_expected_data[l2_req_identity] <=
                             ({{448{1'b0}},
                               reference_memory[
                                   line_index(l2_req_addr)][
@@ -1082,26 +1133,34 @@ module tb_ccx_4h_l1d_directory_l2 #(
             end
 
             if (l2_wdata_valid && l2_wdata_ready) begin
-                if (!home_write_active)
+                if (!home_write_active &&
+                    !(l2_req_valid && l2_req_ready &&
+                      (l2_req_op == `OPENRV64_CCX_OP_WRITE)))
                     $fatal(1, "home write data arrived without command");
-                if ((l2_wdata_hart_id != home_write_hart) ||
-                    (l2_wdata_txn_id != home_write_txn_id) ||
-                    (l2_wdata_source_id != home_write_source_id) ||
+                home_score_hart = home_write_active ?
+                    home_write_hart : l2_req_hart_id;
+                if ((l2_wdata_hart_id != home_score_hart) ||
+                    (l2_wdata_txn_id !=
+                     (home_write_active ?
+                      home_write_txn_id : l2_req_txn_id)) ||
+                    (l2_wdata_source_id !=
+                     (home_write_active ?
+                      home_write_source_id : l2_req_source_id)) ||
                     (l2_wdata_beat_index !=
                      {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
                     !l2_wdata_last)
                     $fatal(1, "home write data identity mismatch");
                 if (l2_wdata !==
-                    expected_home_write_data[home_write_hart])
+                    expected_home_write_data[home_score_hart])
                     $fatal(1,
                         "home write payload mismatch hart=%0d",
-                        home_write_hart);
+                        home_score_hart);
                 if (l2_wstrb !==
-                    expected_home_write_strb[home_write_hart])
+                    expected_home_write_strb[home_score_hart])
                     $fatal(1,
                         "home write strobe mismatch hart=%0d got=%016x expected=%016x",
-                        home_write_hart, l2_wstrb,
-                        expected_home_write_strb[home_write_hart]);
+                        home_score_hart, l2_wstrb,
+                        expected_home_write_strb[home_score_hart]);
                 for (home_score_byte = 0;
                      home_score_byte <
                          `OPENRV64_CCX_LINE_STRB_WIDTH;
@@ -1110,23 +1169,36 @@ module tb_ccx_4h_l1d_directory_l2 #(
                         reference_memory[
                             line_index(
                                 expected_home_write_addr[
-                                    home_write_hart])][
+                                    home_score_hart])][
                             home_score_byte*8 +: 8] <=
                             l2_wdata[home_score_byte*8 +: 8];
-                expected_home_write_valid[home_write_hart] <= 1'b0;
+                expected_home_write_valid[home_score_hart] <= 1'b0;
                 home_write_active <= 1'b0;
             end
 
-            if (l2_resp_valid && l2_resp_ready &&
-                l2_read_expected_valid) begin
+            if (l2_read_response) begin
                 if (l2_resp_error ||
-                    (l2_resp_rdata !== l2_read_expected_data))
+                    (l2_resp_rdata !==
+                     l2_read_expected_data[l2_resp_identity]))
                     $fatal(1,
                         "home read data mismatch addr=%016x error=%0b got=%0128x expected=%0128x",
-                        l2_read_expected_addr, l2_resp_error,
-                        l2_resp_rdata, l2_read_expected_data);
-                l2_read_expected_valid <= 1'b0;
+                        l2_read_expected_addr[l2_resp_identity],
+                        l2_resp_error, l2_resp_rdata,
+                        l2_read_expected_data[l2_resp_identity]);
+                l2_read_expected_valid[l2_resp_identity] <= 1'b0;
             end
+
+            case ({l2_read_commit, l2_read_response})
+                2'b10:
+                    l2_read_expected_count <=
+                        l2_read_expected_count + 1;
+                2'b01:
+                    l2_read_expected_count <=
+                        l2_read_expected_count - 1;
+                default:
+                    l2_read_expected_count <=
+                        l2_read_expected_count;
+            endcase
         end
     end
 
@@ -1547,7 +1619,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
         integer task_wait_cycles;
         integer sc_count_before;
         begin
-            if (home_write_active || l2_read_expected_valid)
+            if (home_write_active || (l2_read_expected_count != 0))
                 $fatal(1, "atomic started while home was active");
             expected_old =
                 reference_memory[line_index(address)][
@@ -1589,7 +1661,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                     atomic_mem_write[selected_hart],
                     atomic_mem_inflight[selected_hart],
                     l1d_backend_state_debug[selected_hart*2 +: 2],
-                    u_directory_frontend.state_q,
+                    u_l2.lookup_action_r,
                     ccx_req_valid, ccx_req_ready,
                     ccx_resp_valid, ccx_resp_ready);
             if (atomic_illegal[selected_hart] ||
@@ -1729,6 +1801,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
         contention_monitor_line = 64'd0;
         contention_expected_hart = 0;
         contention_grant_count = 0;
+        ccx_response_hold = 1'b0;
 
         repeat (6) @(posedge clk);
         @(negedge clk);
@@ -1797,6 +1870,66 @@ module tb_ccx_4h_l1d_directory_l2 #(
         if (l2_write_count != 2)
             $fatal(1, "L2 write command count=%0d expected=2",
                    l2_write_count);
+
+        // Hold a private fill at the L2 response boundary, then queue a
+        // conflicting writer.  The writer must not probe before the fill is
+        // delivered: an early probe would observe no private copy, after which
+        // the delayed stale fill could install without directory ownership.
+        ccx_response_hold = 1'b1;
+        fork
+            issue_load(
+                0, DELAYED_FILL_LINE,
+                initial_memory_word(DELAYED_FILL_LINE));
+            begin
+                while ((u_l2.response_count_q == 0) ||
+                       !u_l2.response_private_fill_q[
+                            u_l2.response_head_q])
+                    @(posedge clk);
+                issue_store(
+                    1, DELAYED_FILL_LINE, DELAYED_FILL_WRITE);
+                drain_stores(1);
+            end
+            begin
+                delayed_fill_wait_cycles = 0;
+                while (!((u_l2.response_count_q != 0) &&
+                         u_l2.response_private_fill_q[
+                            u_l2.response_head_q]) &&
+                       (delayed_fill_wait_cycles < 1000)) begin
+                    @(posedge clk);
+                    delayed_fill_wait_cycles =
+                        delayed_fill_wait_cycles + 1;
+                end
+                if (delayed_fill_wait_cycles >= 1000)
+                    $fatal(1, "delayed private fill did not reach response queue");
+                delayed_fill_wait_cycles = 0;
+                while (!(u_l2.lookup_valid_q &&
+                         (u_l2.lookup_line_addr ==
+                          {DELAYED_FILL_LINE[63:6], 6'b0}) &&
+                         (u_l2.lookup_op_q ==
+                          `OPENRV64_CCX_OP_WRITE)) &&
+                       (delayed_fill_wait_cycles < 1000)) begin
+                    @(posedge clk);
+                    delayed_fill_wait_cycles =
+                        delayed_fill_wait_cycles + 1;
+                end
+                if (delayed_fill_wait_cycles >= 1000)
+                    $fatal(1,
+                        "conflicting write did not reach L2 lookup lookup_valid=%0b op=%0d addr=%016x cmd_count=%0d ccx_req=%0b/%0b hart1_req=%0b/%0b l1state=%0d",
+                        u_l2.lookup_valid_q, u_l2.lookup_op_q,
+                        u_l2.lookup_addr_q, u_l2.cmd_count_q,
+                        ccx_req_valid, ccx_req_ready,
+                        hart_req_valid[1], hart_req_ready[1],
+                        l1d_backend_state_debug[3:2]);
+                repeat (4) begin
+                    @(posedge clk);
+                    if (u_l2.lookup_dispatch_r)
+                        $fatal(1,
+                            "write crossed a pending private fill response");
+                end
+                ccx_response_hold = 1'b0;
+            end
+        join
+        issue_load(0, DELAYED_FILL_LINE, DELAYED_FILL_WRITE);
 
         // Sixteen-line four-hart ping-pong.  Each line is first shared by all
         // readers, then receives four simultaneously queued stores, then four
@@ -2036,7 +2169,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                     "hart %0d expected home write remains pending",
                     hart_index);
         end
-        if (home_write_active || l2_read_expected_valid)
+        if (home_write_active || (l2_read_expected_count != 0))
             $fatal(1, "home verifier still has an active transaction");
         if ((atomic_lr_command_count !=
              (atomic_sequence + standalone_lr_count)) ||
@@ -2048,11 +2181,11 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 atomic_sc_success_count, atomic_sequence,
                 standalone_lr_count);
         if (l2_write_count !=
-            (2 + random_store_count + atomic_sequence))
+            (3 + random_store_count + atomic_sequence))
             $fatal(1,
                 "home write count=%0d expected=%0d",
                 l2_write_count,
-                2 + random_store_count + atomic_sequence);
+                3 + random_store_count + atomic_sequence);
         if (protocol_error || probe_endpoint_protocol_error)
             $fatal(1, "coherent protocol failed during random stress");
 

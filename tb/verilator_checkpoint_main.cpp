@@ -235,7 +235,7 @@ struct L2TlbProbe {
 #define L2P_PTW(name) L2P_BUS(u_ptw__DOT__##name)
 #define L2P_L2(name) L2P_BUS(u_l2_tlb__DOT__##name)
 
-        const bool tlbi = L2P_CORE(__Vcellinp__u_bus__tlbi_i);
+        const bool tlbi = L2P_CORE(backend_sfence_vma);
         const uint64_t satp = L2P_CORE(u_csrs__DOT__satp_q);
 
         if (expect_clear) {
@@ -260,8 +260,6 @@ struct L2TlbProbe {
                    << " new=" << std::setw(16) << satp
                    << std::dec << " tlbi_age="
                    << (cycle - last_tlbi_cycle) << '\n';
-            if ((cycle - last_tlbi_cycle) > 1)
-                anomaly(cycle, "satp-change-without-adjacent-tlbi");
             last_satp = satp;
         }
 

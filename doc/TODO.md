@@ -2,6 +2,10 @@
 
 ## Correctness
 
+- [ ] Do not call SMP viable until four harts run concurrently on the full
+      FPGA and extended user-mode and kernel-mode meat-grinder workloads pass.
+      Directed simulation, OpenSBI HSM release, and a Linux prompt are
+      necessary gates, not substitutes for that hardware stress.
 - [ ] Implement lower-privilege WFI interception: honor `mstatus.TW` in S-mode
       and the bounded U-mode WFI rule. The current WFI sleep/wake path is
       correct for OpenSBI's M-mode HSM wait but does not raise the required

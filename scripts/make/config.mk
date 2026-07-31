@@ -74,6 +74,84 @@ CORE_4H_BARE_DONE_PC = $(shell $(RISCV_NM) -n $(CORE_4H_BARE_ELF) | \
 	awk '$$3 == "coremark_4h_bare_done" { print $$1 }')
 CORE_4H_BARE_MAILBOX_PA = $(shell $(RISCV_NM) -n $(CORE_4H_BARE_ELF) | \
 	awk '$$3 == "coremark_4h_bare_pages" { print $$1 }')
+CORE_4H_BARE_PERF_ELF := sim/coremark-loop-4h-bare-perf.elf
+CORE_4H_BARE_PERF_BIN := sim/coremark-loop-4h-bare-perf.bin
+CORE_4H_BARE_PERF_MEMH := sim/coremark-loop-4h-bare-perf-512.memh
+CORE_4H_BARE_PERF_MAP := sim/coremark-loop-4h-bare-perf.map
+CORE_4H_BARE_PERF_DISASM := sim/coremark-loop-4h-bare-perf.disasm
+CORE_4H_BARE_PERF_MEMH_BYTES := 0x20000
+CORE_4H_BARE_PERF_MEMH_WORDS := 2048
+CORE_4H_BARE_PERF_ITERATIONS ?= 16
+CORE_4H_BARE_PERF_MAX_CYCLES ?= 3000000
+CORE_4H_BARE_PERF_DONE_PC = $(shell $(RISCV_NM) -n \
+	$(CORE_4H_BARE_PERF_ELF) | \
+	awk '$$3 == "coremark_4h_bare_perf_done" { print $$1 }')
+CORE_4H_BARE_PERF_RESULTS_PA = $(shell $(RISCV_NM) -n \
+	$(CORE_4H_BARE_PERF_ELF) | \
+	awk '$$3 == "coremark_4h_bare_perf_results" { print $$1 }')
+CORE_4H_BARE_PERF_STATUS_PA = $(shell $(RISCV_NM) -n \
+	$(CORE_4H_BARE_PERF_ELF) | \
+	awk '$$3 == "coremark_4h_bare_perf_status" { print $$1 }')
+COHERENCE_PERF_CASES := private different_lines same_line same_page \
+	different_pages lrsc ticket
+COHERENCE_PERF_HART_COUNTS := 1 2 3 4
+COHERENCE_PERF_ITERATIONS ?= 64
+COHERENCE_PERF_MEMH_BYTES := 0x23000
+COHERENCE_PERF_512_WORDS := 2240
+COHERENCE_PERF_256_WORDS := 4480
+COHERENCE_PERF_MAX_CYCLES ?= 2000000
+coherence_perf_case_id = $(if $(filter private,$1),0,$(if \
+	$(filter same_line,$1),1,$(if $(filter same_page,$1),2,$(if \
+	$(filter different_pages,$1),3,$(if $(filter lrsc,$1),4,$(if \
+	$(filter ticket,$1),5,6))))))
+coherence_perf_case_lines = $(if $(filter private different_lines,$2),$1,$(if \
+	$(filter same_page different_pages,$2),8,$(if $(filter ticket,$2),3,1)))
+coherence_perf_operation_lines = $(if $(filter same_page different_pages,$1),8,1)
+coherence_perf_line_stride = $(if $(filter private different_pages,$1),4096,$(if \
+	$(filter different_lines,$1),1024,64))
+coherence_perf_operations = $(shell expr \
+	$(COHERENCE_PERF_ITERATIONS) \* $1 \* \
+	$(call coherence_perf_operation_lines,$2))
+coherence_perf_signature = $(if $(filter private,$1),4350524956415445,$(if \
+	$(filter different_lines,$1),434f484449464c4e,$(if \
+	$(filter same_line,$1),434f483148414e44,$(if \
+	$(filter same_page,$1),434f483848414e44,$(if \
+	$(filter different_pages,$1),434f485041474553,$(if \
+	$(filter lrsc,$1),434f48314c525343,434f485449434b54))))))
+coherence_perf_stem = sim/coherence-$1h-shared-perf-$2-i$(COHERENCE_PERF_ITERATIONS)
+coherence_perf_elf = $(call coherence_perf_stem,$1,$2).elf
+coherence_perf_template_bin = $(call coherence_perf_stem,$1,$2)-template.bin
+coherence_perf_bin = $(call coherence_perf_stem,$1,$2).bin
+coherence_perf_memh_512 = $(call coherence_perf_stem,$1,$2)-512.memh
+coherence_perf_memh_256 = $(call coherence_perf_stem,$1,$2)-256.memh
+coherence_perf_map = $(call coherence_perf_stem,$1,$2).map
+coherence_perf_disasm = $(call coherence_perf_stem,$1,$2).disasm
+coherence_perf_artifacts = $(foreach case,$(COHERENCE_PERF_CASES),\
+	$(call coherence_perf_elf,$1,$(case)) \
+	$(call coherence_perf_template_bin,$1,$(case)) \
+	$(call coherence_perf_bin,$1,$(case)) \
+	$(call coherence_perf_memh_512,$1,$(case)) \
+	$(call coherence_perf_memh_256,$1,$(case)) \
+	$(call coherence_perf_disasm,$1,$(case)))
+COHERENCE_PERF_ARTIFACTS := $(foreach harts,$(COHERENCE_PERF_HART_COUNTS),\
+	$(call coherence_perf_artifacts,$(harts)))
+COHERENCE_1H_PERF_ARTIFACTS := $(call coherence_perf_artifacts,1)
+COHERENCE_4H_PERF_ARTIFACTS := $(call coherence_perf_artifacts,4)
+coherence_perf_symbol = $(shell $(RISCV_NM) -n \
+	$(call coherence_perf_elf,$1,$2) | \
+	awk '$$3 == "$3" { print $$1 }')
+coherence_perf_done_pc = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_done)
+coherence_perf_measure_start_pc = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_measure_start)
+coherence_perf_measure_end_pc = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_measure_end)
+coherence_perf_results_va = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_results)
+coherence_perf_status_va = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_status)
+coherence_perf_lines_va = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_lines)
+coherence_perf_page_lines_va = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_page_lines)
+coherence_perf_ticket_lines_va = $(call coherence_perf_symbol,$1,$2,coherence_4h_perf_ticket_lines)
+coherence_perf_base_va = $(strip $(if $(filter private different_pages,$2),\
+	$(call coherence_perf_page_lines_va,$1,$2),$(if $(filter ticket,$2),\
+	$(call coherence_perf_ticket_lines_va,$1,$2),\
+	$(call coherence_perf_lines_va,$1,$2))))
 ATOMIC_4H_SHARED_VM_ELF := sim/atomic-4h-shared-vm.elf
 ATOMIC_4H_SHARED_VM_TEMPLATE_BIN := sim/atomic-4h-shared-vm-template.bin
 ATOMIC_4H_SHARED_VM_BIN := sim/atomic-4h-shared-vm.bin
@@ -289,10 +367,44 @@ OPENSBI_4H_HELD_FDT_ADDR ?= 0x80f00000
 OPENSBI_4H_HELD_FDT_BASE ?= 2163212288
 OPENSBI_4H_HELD_MAX_CYCLES ?= 20000000
 OPENSBI_4H_HELD_VERILATOR_THREADS ?= 4
+OPENSBI_4H_DDR3_ENABLE ?= 1
+OPENSBI_4H_GENBUS_READ_DEPTH ?= 8
+OPENSBI_4H_GENBUS_WRITE_DEPTH ?= 8
+OPENSBI_4H_DDR3_READ_QUEUE_DEPTH ?= 8
+OPENSBI_4H_DDR3_WRITE_QUEUE_DEPTH ?= 8
+OPENSBI_4H_DDR3_COMMAND_QUEUE_DEPTH ?= 16
+OPENSBI_4H_DDR3_MAX_BURST_TRAIN_BURSTS ?= 8
+OPENSBI_4H_DDR3_BANK_ROW_SWIZZLE ?= 0
 OPENSBI_4H_HELD_VERILATOR_DIR := \
-	build/verilator/opensbi-4h-held-t$(OPENSBI_4H_HELD_VERILATOR_THREADS)-pf$(CORE_4H_3P_L1D_PREFETCH_ENABLE)-mem$(OPENSBI_4H_HELD_MEMORY_BYTES)-fdt$(OPENSBI_4H_HELD_FDT_BASE)
+	build/verilator/opensbi-4h-held-t$(OPENSBI_4H_HELD_VERILATOR_THREADS)-pf$(CORE_4H_3P_L1D_PREFETCH_ENABLE)-mem$(OPENSBI_4H_HELD_MEMORY_BYTES)-fdt$(OPENSBI_4H_HELD_FDT_BASE)-ddr3$(OPENSBI_4H_DDR3_ENABLE)x$(OPENSBI_4H_DDR3_READ_QUEUE_DEPTH)x$(OPENSBI_4H_DDR3_WRITE_QUEUE_DEPTH)x$(OPENSBI_4H_DDR3_COMMAND_QUEUE_DEPTH)xbt$(OPENSBI_4H_DDR3_MAX_BURST_TRAIN_BURSTS)xsw$(OPENSBI_4H_DDR3_BANK_ROW_SWIZZLE)-gb$(OPENSBI_4H_GENBUS_READ_DEPTH)x$(OPENSBI_4H_GENBUS_WRITE_DEPTH)
 OPENSBI_4H_HELD_VERILATOR_BUILD := \
 	$(OPENSBI_4H_HELD_VERILATOR_DIR)/opensbi_4h_held_tb
+OPENSBI_4H_LINUX_IMAGE ?= sw/Image.Zicclsm
+OPENSBI_4H_LINUX_MEMORY_BYTES ?= 268435456
+OPENSBI_4H_LINUX_MEMORY_SIZE ?= 0x10000000
+OPENSBI_4H_LINUX_FDT_ADDR ?= 0x8ff00000
+OPENSBI_4H_LINUX_FDT_BASE ?= 2414870528
+OPENSBI_4H_LINUX_MAX_CYCLES ?= 200000000
+OPENSBI_SMP_LINUX_IMAGE ?= sw/Image.smp
+OPENSBI_SMP_LINUX_MEMORY_BYTES ?= 268435456
+OPENSBI_SMP_LINUX_MEMORY_SIZE ?= 0x10000000
+OPENSBI_SMP_LINUX_FDT_ADDR ?= 0x8ff00000
+OPENSBI_SMP_LINUX_FDT_BASE ?= 2414870528
+OPENSBI_SMP_LINUX_MAX_CYCLES ?= 250000000
+OPENSBI_2H_LINUX_VERILATOR_THREADS ?= 4
+OPENSBI_4H_LINUX_VERILATOR_THREADS ?= 4
+OPENSBI_2H_LINUX_BUILD_DIR ?= build/opensbi-2h-linux-smp
+OPENSBI_2H_LINUX_SOURCE_DIR ?= $(OPENSBI_SOURCE_DIR)
+OPENSBI_2H_LINUX_ARTIFACT_DIR := \
+	$(OPENSBI_2H_LINUX_BUILD_DIR)/artifacts
+OPENSBI_2H_LINUX_IMAGE_MEMH := \
+	$(OPENSBI_2H_LINUX_ARTIFACT_DIR)/linux-image.memh
+OPENSBI_4H_LINUX_SMP_BUILD_DIR ?= build/opensbi-4h-linux-smp
+OPENSBI_4H_LINUX_SMP_SOURCE_DIR ?= $(OPENSBI_SOURCE_DIR)
+OPENSBI_4H_LINUX_SMP_ARTIFACT_DIR := \
+	$(OPENSBI_4H_LINUX_SMP_BUILD_DIR)/artifacts
+OPENSBI_4H_LINUX_SMP_IMAGE_MEMH := \
+	$(OPENSBI_4H_LINUX_SMP_ARTIFACT_DIR)/linux-image.memh
 OPENSBI_4H_SMP_BUILD_DIR ?= build/opensbi-4h-smp
 OPENSBI_4H_SMP_SOURCE_DIR ?= $(OPENSBI_SOURCE_DIR)
 OPENSBI_4H_SMP_ARTIFACT_DIR := \
@@ -302,6 +414,23 @@ OPENSBI_4H_SMP_MEMORY_SIZE ?= $(OPENSBI_4H_HELD_MEMORY_SIZE)
 OPENSBI_4H_SMP_FDT_ADDR ?= $(OPENSBI_4H_HELD_FDT_ADDR)
 OPENSBI_4H_SMP_FDT_BASE ?= $(OPENSBI_4H_HELD_FDT_BASE)
 OPENSBI_4H_SMP_MAX_CYCLES ?= 30000000
+OPENSBI_HART_START_PAYLOAD_SOURCE ?= sw/opensbi_hart_start_payload.S
+OPENSBI_HART_START_DDR3_ENABLE ?= 0
+OPENSBI_HART_START_MAX_CYCLES ?= 30000000
+# The two inactive cores remain in the Verilated model. On the reference host,
+# a clean 1M-cycle two-active-hart run took 150.0 s with one runtime thread,
+# 159.6 s with two, and 124.7 s with four. Keep this separately overrideable
+# rather than equating it with the active-hart count.
+OPENSBI_2H_HART_START_VERILATOR_THREADS ?= 4
+OPENSBI_4H_HART_START_VERILATOR_THREADS ?= 4
+OPENSBI_2H_HART_START_BUILD_DIR ?= build/opensbi-2h-hart-start
+OPENSBI_2H_HART_START_SOURCE_DIR ?= $(OPENSBI_SOURCE_DIR)
+OPENSBI_2H_HART_START_ARTIFACT_DIR := \
+	$(OPENSBI_2H_HART_START_BUILD_DIR)/artifacts
+OPENSBI_4H_HART_START_BUILD_DIR ?= build/opensbi-4h-hart-start
+OPENSBI_4H_HART_START_SOURCE_DIR ?= $(OPENSBI_SOURCE_DIR)
+OPENSBI_4H_HART_START_ARTIFACT_DIR := \
+	$(OPENSBI_4H_HART_START_BUILD_DIR)/artifacts
 OPENSBI_SIM_BUILD := sim/opensbi_tb.vvp
 OPENSBI_PLATFORM_MEMORY_BYTES ?= 268435456
 OPENSBI_PLATFORM_FDT_BASE ?= 2414870528

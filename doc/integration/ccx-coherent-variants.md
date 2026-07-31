@@ -81,6 +81,10 @@ Items below are deliberately not hidden behind compatibility behavior.
 - [x] Separate the coherent frontend from the non-inclusive L2 backend.
 - [x] Add an independently tagged I/D snoop-filter directory.
 - [x] Invalidate recorded private copies before directory replacement.
+- [x] Preserve the complete directory lookup snapshot in an L2 MSHR while a
+  write waits for probe acknowledgements. Deferred clear completion overwrites
+  the matching entry from that snapshot rather than combining with a later
+  SRAM lookup row.
 - [ ] Replace or qualify the current combinational snoop-filter arrays with a
   synchronous SRAM-friendly lookup pipeline before making frequency or area
   claims.
@@ -141,8 +145,8 @@ Items below are deliberately not hidden behind compatibility behavior.
   count in a production SoC wrapper.  The focused 4h testbench has shared
   four-hart CLINT and PLIC instances in its held-secondary and all-hart
   OpenSBI modes.
-- [ ] Add a generated two-hart OpenSBI description.  The build currently
-  generates and validates one- and four-hart CPU, CLINT, and PLIC descriptions.
+- [x] Add generated two- and four-hart OpenSBI descriptions with matching CPU,
+  CLINT, and PLIC contexts.
 - [x] Stop forcing hart zero in the ROM/trampoline path; read `mhartid` in the
   ROM and preserve it through the trampoline into OpenSBI.
 - [ ] Add S-mode secondary-hart release and boot synchronization.  Concurrent
@@ -174,12 +178,18 @@ Items below are deliberately not hidden behind compatibility behavior.
 - [x] Release all four harts through the normal ROM and OpenSBI v1.9 on the
   fixed-latency coherent harness.  Require the hart-0 supervisor payload and
   exact build-derived HSM WFI retirement on M-mode harts 1 through 3.
+- [x] Start every secondary through SBI HSM into S-mode, then pass private,
+  bidirectional coherent, and contended LR/SC memory tests in both two- and
+  four-hart fixed-latency configurations.
 - [ ] Concurrent LR/SC and AMO contention, 32-bit AMOs, and an observed
   failed-SC AMO retry.
 - [ ] Acquire/release message-passing and full-fence litmus tests.
 - [ ] Per-hart reset during an otherwise idle system and during queued traffic.
 - [ ] Four simultaneously running cores through OpenSBI and timed DDR3.  The
   fixed-latency coherent-memory version passes.
+- [ ] Do not call SMP viable until four harts run concurrently on the full
+  FPGA and survive extended user-mode and kernel-mode meat-grinder workloads.
+  Directed simulation and Linux boot are necessary but insufficient.
 
 ## Four-L1D integration test
 

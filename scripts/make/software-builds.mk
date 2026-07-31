@@ -115,6 +115,68 @@ $(CORE_4H_BARE_MEMH): $(CORE_4H_BARE_BIN) tools/bin2mem.py
 $(CORE_4H_BARE_DISASM): $(CORE_4H_BARE_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(CORE_4H_BARE_PERF_ELF): $(OPENRV64_MAKEFILES) \
+		sw/coremark_4h_bare_perf_start.S sw/coremark_loop.c \
+		sw/openrv64-4h-bare-perf.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(COREMARK_VM_CFLAGS) \
+		-DOPENRV64_4H_PERF_ITERATIONS=$(CORE_4H_BARE_PERF_ITERATIONS) \
+		-nostdlib \
+		-Wl,--build-id=none,--gc-sections,-Map,$(CORE_4H_BARE_PERF_MAP) \
+		-T sw/openrv64-4h-bare-perf.ld -o $@ \
+		sw/coremark_4h_bare_perf_start.S sw/coremark_loop.c
+
+$(CORE_4H_BARE_PERF_BIN): $(CORE_4H_BARE_PERF_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(CORE_4H_BARE_PERF_MEMH): $(CORE_4H_BARE_PERF_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(CORE_4H_BARE_PERF_MEMH_BYTES) --word-bytes 64
+
+$(CORE_4H_BARE_PERF_DISASM): $(CORE_4H_BARE_PERF_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+define COHERENCE_PERF_BUILD
+$(call coherence_perf_elf,$1,$2): $(OPENRV64_MAKEFILES) \
+		sw/coherence_4h_shared_perf.S sw/openrv64-4h-shared-vm.ld
+	mkdir -p $$(dir $$@)
+	$$(RISCV_CC) $$(ATOMIC_SOC_ASFLAGS) \
+		-DOPENRV64_COHERENCE_CASE=$(call coherence_perf_case_id,$2) \
+		-DOPENRV64_COHERENCE_HARTS=$1 \
+		-DOPENRV64_COHERENCE_ITERATIONS=$$(COHERENCE_PERF_ITERATIONS) \
+		-nostdlib \
+		-Wl,--build-id=none,--gc-sections,-Map,$(call coherence_perf_map,$1,$2) \
+		-T sw/openrv64-4h-shared-vm.ld -o $$@ \
+		sw/coherence_4h_shared_perf.S
+
+$(call coherence_perf_template_bin,$1,$2): \
+		$(call coherence_perf_elf,$1,$2)
+	$$(RISCV_OBJCOPY) -O binary $$< $$@
+
+$(call coherence_perf_bin,$1,$2): \
+		$(call coherence_perf_template_bin,$1,$2) \
+		tools/make_shared_sv39_image.py
+	$$(PYTHON) tools/make_shared_sv39_image.py $$< $$@
+
+$(call coherence_perf_memh_512,$1,$2): \
+		$(call coherence_perf_bin,$1,$2) tools/bin2mem.py
+	$$(PYTHON) tools/bin2mem.py $$< $$@ \
+		--size $$(COHERENCE_PERF_MEMH_BYTES) --word-bytes 64
+
+$(call coherence_perf_memh_256,$1,$2): \
+		$(call coherence_perf_bin,$1,$2) tools/bin2mem.py
+	$$(PYTHON) tools/bin2mem.py $$< $$@ \
+		--size $$(COHERENCE_PERF_MEMH_BYTES) --word-bytes 32
+
+$(call coherence_perf_disasm,$1,$2): \
+		$(call coherence_perf_elf,$1,$2)
+	$$(RISCV_OBJDUMP) -d -M no-aliases $$< > $$@
+endef
+
+$(foreach harts,$(COHERENCE_PERF_HART_COUNTS),\
+	$(foreach case,$(COHERENCE_PERF_CASES),\
+		$(eval $(call COHERENCE_PERF_BUILD,$(harts),$(case)))))
+
 $(ATOMIC_4H_SHARED_VM_ELF): $(OPENRV64_MAKEFILES) \
 		sw/atomic_4h_shared_vm.S sw/openrv64-4h-shared-vm.ld
 	mkdir -p $(dir $@)

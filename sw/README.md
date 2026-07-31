@@ -65,6 +65,90 @@ instruction and data traffic in the physical alias, and at least three PTW
 reads. It also checks the same final `a0` signature as the Bare run. This is a
 functional VM test, not a fully matched VM performance result.
 
+## Synchronized four-hart bare performance payload
+
+`coremark_4h_bare_perf_start.S` runs the finite CoreMark-derived parser loop
+concurrently on all four harts in S-mode with `satp` Bare. Text and read-only
+data are shared; each hart has a separate 4 KiB result/stack page and parser
+sink. A software barrier excludes machine-mode setup and start skew from the
+per-hart measurements.
+
+Build the software image or run it on the four-hart coherent rig with:
+
+```sh
+make sw-coremark-loop-4h-bare-perf
+make sim-4h-3p-bare-perf
+```
+
+`CORE_4H_BARE_PERF_ITERATIONS` selects the number of parser calls per hart and
+defaults to 16. Each hart records raw start/end `cycle` and `instret` values,
+their deltas, and a deterministic signature accumulated across all calls. The
+testbench requires complete, internally consistent records and identical
+instruction counts and signatures before reporting:
+
+- per-hart IPC: that hart's measured `instret` delta divided by its measured
+  cycle delta;
+- aggregate IPC: the sum of all four `instret` deltas divided by the interval
+  from the earliest start to the latest end.
+
+This is a synchronized throughput test, not a CoreMark score. Its small hot
+working set primarily exercises concurrent core, shared-L2, and coherence
+throughput. The default four-hart testbench uses fixed-latency 512-bit backing
+memory, so the result is not evidence about DDR3 performance or Linux SMP
+stability.
+
+## Shared-Sv39 L2 coherence performance suite
+
+`coherence_4h_shared_perf.S` isolates coherence traffic from useful-core
+throughput. One source builds for one through four active harts; every active
+hart installs the same Sv39 root and uses the same virtual-to-physical mapping.
+Inactive harts remain in reset. Setup, cache warming, barriers, validation, and
+result publication are outside the timed interval. The closing `fence rw,rw`
+is inside it so the measured interval includes completion of every tested
+write.
+
+The seven cases are:
+
+- `private`: one page-separated private line per hart, with no remote probes;
+- `different_lines`: one disjoint line per hart, 1 KiB apart within the same
+  page; any probes here expose non-demand residency or conservative directory
+  state, not architectural false sharing;
+- `same_line`: release-completed ordinary load/store ownership handoff on one
+  shared line;
+- `same_page`: eight independent handoff lines within one shared page;
+- `different_pages`: eight independent handoff lines separated by 4 KiB;
+- `lrsc`: deterministic turn-taking with `lr.w.aq` and `sc.w.rl`;
+- `ticket`: `amoadd.d.aq` ticket allocation, a separate serving line, and a
+  protected counter on a third line.
+
+The ordinary handoffs use an explicit completion fence after the one-line
+transfer or eight-line batch. Without it, posted stores can remain local while
+the same hart polls for the token's return; that measures store-drain policy,
+not a defined coherence handoff boundary. The ticket case validates the ticket
+dispenser, serving counter, and protected counter independently. ISA AMOs are
+lowered to coherent LR/SC transactions before CCX, so the harness reports LR
+attempts plus successful and failed SC responses rather than expecting a raw
+AMO opcode at the home.
+
+Build or run with:
+
+```sh
+make sw-coherence-shared-perf
+make sim-1h-3p-coherence-suite
+make sim-4h-3p-coherence-suite
+make sim-4h-3p-coherence-scaling-suite
+make sim-coherence-scaling-suite
+```
+
+The one-hart suite is the noncoherent one-hart CCX/L2 control. The scaling
+suite uses the coherent four-hart rig with one, two, three, then four active
+harts. `COHERENCE_PERF_ITERATIONS` defaults to 64. Each run verifies the final
+shared values and signatures, reports operations per thousand cycles, target
+L2 reads and writes, LR attempts, invalidate probes, SC outcomes, and maximum
+target-line L2 MSHR occupancy. Compare scaling only within one case: the
+eight-line cases define eight logical operations per iteration, while the
+other cases define one.
+
 The instruction and data sides each have a 16-entry fully associative
 micro-TLB in front of the shared 256-entry, four-way main TLB. The main array
 stores 4 KiB leaves; a small fully associative sidecar retains superpage
@@ -439,8 +523,8 @@ preserves that hart ID, supplies the remaining OpenSBI entry registers, and
 jumps to fw_jump. The build script forces OpenSBI-generated linker inputs to
 refresh, checks the linked entry address, derives the linked
 `sbi_hsm_hart_wait()` WFI PC, and writes bounded memory fragments under
-`build/opensbi/artifacts/`. `OPENRV64_HART_COUNT` selects a one- or four-hart
-device tree.
+`build/opensbi/artifacts/`. `OPENRV64_HART_COUNT` selects a one-, two-, or
+four-hart device tree.
 
 Build only the artifacts with:
 
@@ -481,3 +565,22 @@ OpenSBI HSM WFI instruction, remain asleep there in M-mode, and requires hart
 0 to complete the S-mode payload. WFI wake detection honors individual
 interrupt-enable bits but does not require the global MIE/SIE bits, matching
 the privileged ISA rule.
+
+Two directed HSM targets replace the timer payload with
+`opensbi_hart_start_payload.S`:
+
+```sh
+make sim-opensbi-2h-hart-start
+make sim-opensbi-4h-hart-start
+```
+
+Hart 0 calls SBI HSM `hart_start` for every secondary with a distinct opaque
+value. Each secondary verifies its SBI entry arguments, publishes and reads
+back a private cache-line signature, performs 64 contended LR/SC increments
+on one shared counter, and completes a command/response exchange with hart 0.
+The testbench also requires every active secondary to have slept at the
+build-derived OpenSBI HSM WFI before release, every active hart to reach
+S-mode, the exact final counter value, correct writer-hart identity for the
+private and response lines, and no traffic from reset harts in the two-hart
+case. These targets use fixed-latency memory by default; set
+`OPENSBI_HART_START_DDR3_ENABLE=1` for the timed-DDR3 backend.

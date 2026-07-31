@@ -14,9 +14,12 @@ across unresolved branches and uses the resolved physical cacheability check
 to hold MMIO/non-cacheable accesses at the ordered head.  Reintroducing the
 older virtual-address eligibility window would regress that policy.
 
-The four-hart testbench still terminates in a fixed-latency 512-bit line-memory
-model.  It is a coherence/core integration test, not a DDR timing or
-performance model.
+The four-hart testbench now has two backing-memory modes.  The finite
+coherence workloads retain the fixed-latency 512-bit line model.  The OpenSBI
+targets default to a 512-to-256-bit generic-bus adapter, 256-bit AXI, and the
+existing timed DDR3-1600 endpoint.  `OPENSBI_4H_DDR3_ENABLE=0` retains the
+old OpenSBI memory model for controlled comparisons; the build identity
+records the selected backend and all queue/mapping parameters.
 
 The main-based port passed the following focused regressions:
 
@@ -45,10 +48,10 @@ no SC failures.  Each hart accepted 192 remote probes and observed 192 local
 reservation clears.  The randomized four-L1D directory/L2 test also passed
 2,048 rounds and 8,192 ordinary operations.
 
-The separate one-hart timed-memory regression passed in 55,745 cycles at
-0.9430 IPC through `openrv64_axi_ddr3`, `openrv64_timing_ddr3`, banked timing,
-CCX, and L2.  That result validates the existing one-hart DDR path; it does not
-make the fixed-latency 4h test DDR-timed.
+Before the four-hart migration, the separate one-hart timed-memory regression
+passed in 55,745 cycles at 0.9430 IPC through `openrv64_axi_ddr3`,
+`openrv64_timing_ddr3`, banked timing, CCX, and L2.  The OpenSBI results below
+now exercise that timed-memory stack from the four-hart coherent hierarchy.
 
 ### OpenSBI with secondary harts held in reset
 
@@ -71,7 +74,7 @@ The `+opensbi_held` harness mode adds:
   interrupt, DBCN output, supervisor payload magic, no held-hart retirement
   or CCX traffic, and no coherence protocol error.
 
-The 2026-07-30 run passed:
+The initial 2026-07-30 fixed-latency run passed:
 
 ```text
 PASS: 4H coherent OpenSBI v1.9 on hart 0 with harts 1-3 held in reset;
@@ -79,6 +82,27 @@ ROM handoff, banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion
 cycles=3543682 hart0_retired=4065191 hart0_ccx_req=126654
 uart_bytes=2692 memory_reads=1725 memory_writes=624
 ```
+
+The default target was then migrated to timed DDR3 and passed:
+
+```text
+PASS: 4H coherent OpenSBI v1.9 on hart 0 with harts 1-3 held in reset;
+ROM handoff, banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion
+cycles=3634843 hart0_retired=4032724 hart0_ccx_req=137179
+uart_bytes=2692 memory_reads=1719 memory_writes=629
+ddr3 read_bursts=1719 write_bursts=629
+ddr3 read_commands=1719 write_commands=629
+ddr3 max_command_queue=1 max_timing_owners=1
+walltime=935.039 s
+```
+
+This configuration uses 8-entry genbus read and write buffers, 8-entry DDR
+read and write queues, a 16-command timing queue, burst-train limit eight, and
+bank/row swizzling disabled.  Every L2 line became one 64-byte timed command
+and one two-beat 256-bit AXI burst.  The observed queue maxima were one because
+this workload and the globally blocking coherence home exposed only one
+backing-memory command at a time; the result validates placement and protocol,
+not DDR queue concurrency.
 
 This run exposed a real progress bug before it passed.  A hart-0 I-cache fill
 evicted a directory entry with a hart-0 D-cache sharer.  The home accepted the
@@ -93,9 +117,9 @@ regression for this case.
 
 The result is deliberately narrow.  It proves normal ROM-to-OpenSBI-to-S-mode
 execution through the four-hart coherent hierarchy with three reset harts and
-fixed-latency backing memory.  It does not prove secondary-hart release,
+timed DDR3 backing memory.  It does not prove secondary-hart release,
 simultaneous four-hart OpenSBI execution, reset-time directory cleanup, or
-timed DDR3 operation.
+memory-level parallelism from multiple harts.
 
 ### OpenSBI with all four harts released
 
@@ -136,6 +160,28 @@ uart_bytes=2705 memory_reads=1783 memory_writes=708
 walltime=1439.188 s
 ```
 
+The default target was then migrated to timed DDR3 and passed:
+
+```text
+PASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and
+harts 1-3 sleep at HSM WFI 00000000801173ec
+cycles=7865514
+retired=9621510,449911,449357,449655
+ccx_req=288306,163,163,171
+uart_bytes=2705 memory_reads=1771 memory_writes=714
+ddr3 read_bursts=1771 write_bursts=714
+ddr3 read_commands=1771 write_commands=714
+ddr3 max_command_queue=1 max_timing_owners=1
+walltime=1580.648 s
+```
+
+At the first 1M-cycle checkpoint, harts 1 through 3 had already retired the
+derived HSM WFI and were asleep at that PC.  They remained asleep through the
+hart-0 platform report, M-to-S handoff, SBI timer interrupt, DBCN payload, and
+completion magic.  The older fixed-latency result and this run are not a
+source-matched performance comparison because intervening main changes alter
+retirement and cache/TLB behavior.
+
 Target completion time changed by only 5,451 cycles (0.070%): the hart-0
 coldboot/timer path, not secondary spinning, determines this endpoint.
 Secondary retirement fell from 12,432,107 instructions in aggregate to
@@ -146,11 +192,173 @@ frequency or physical-power measurement.
 
 This proves concurrent ROM and OpenSBI entry, four-hart FDT discovery, HSM
 parking of harts 1 through 3, and the existing hart-0 S-mode payload path
-through the coherent hierarchy. That baseline only observed the HSM WFI
-retiring: secondaries still spun because WFI resumed immediately. It still
-uses fixed-latency backing memory. It does not prove SBI HSM restart of a
-stopped hart, Linux SMP bring-up, reset-time directory cleanup, or timed DDR3
-operation.
+through the coherent hierarchy and timed DDR3. The pre-sleep baseline only
+observed the HSM WFI retiring: secondaries still spun because WFI resumed
+immediately. The current DDR-backed run requires them to remain asleep. It
+does not prove SBI HSM restart of a stopped hart, Linux SMP bring-up,
+reset-time directory cleanup, or scalable memory concurrency.
+
+### Directed SBI HSM hart-start and coherent-memory test
+
+`make sim-opensbi-2h-hart-start` and
+`make sim-opensbi-4h-hart-start` replace the ordinary supervisor payload with
+a finite HSM and coherent-memory test. Hart 0 issues `SBI_EXT_HSM_HART_START`
+for every secondary. Each secondary must enter S-mode at the requested start
+address with its requested opaque argument. The payload then checks:
+
+- a private signature and readback on a separate cache line per hart;
+- bidirectional cache-line command and response transfers between hart 0 and
+  every secondary; and
+- 64 contended LR/SC increments per active hart, with an exact final count.
+
+The testbench independently observes every hart's OpenSBI HSM WFI, WFI sleep,
+S-mode entry, retirement, CCX requests, signatures, responses, and LR/SC
+counter. Inactive harts in the two-hart variant remain in reset and must
+produce no retirement or CCX traffic.
+
+The first two-hart run found a snoop-filter bookkeeping defect rather than an
+OpenSBI defect. A deferred write-probe completion reconstructed its directory
+entry from whichever SRAM row had most recently been looked up. An unrelated
+lookup could therefore corrupt the saved sharer set while the probe was in
+flight. The L2 MSHR now captures the complete I/D sharer snapshot and the
+completion overwrites the matching directory entry from that snapshot.
+`make sim-ccx-4h-l1d-directory-l2` passes 8,192 randomized operations and 128
+atomic operations with this fix.
+
+The fixed-latency two-hart run passed:
+
+```text
+PASS: 2H OpenSBI SBI hart_start woke all secondaries into S-mode and completed
+private, bidirectional coherent, and contended LR/SC memory tests
+cycles=4743722
+active=0011 retired=5724567,319873,0,0 ccx_req=184868,1572,0,0
+hsm_wfi=0010 hsm_sleep=0010 s_mode=0011 private=0011 response=0011 counter=128
+sc success=222,74,0,0 failure=64,65,0,0
+```
+
+The fixed-latency four-hart run passed:
+
+```text
+PASS: 4H OpenSBI SBI hart_start woke all secondaries into S-mode and completed
+private, bidirectional coherent, and contended LR/SC memory tests
+cycles=7743410
+active=1111 retired=9686324,441210,436493,429505
+ccx_req=299825,1743,1835,2005
+hsm_wfi=1110 hsm_sleep=1110 s_mode=1111 private=1111 response=1111 counter=256
+sc success=236,74,74,74 failure=138,107,137,197
+```
+
+These are directed fixed-latency-memory tests. They are not timed-DDR3
+performance results and do not establish Linux SMP viability. That claim
+remains gated on four harts running on the full FPGA plus extended user-mode
+and kernel-mode stress.
+
+## Synchronized bare-metal software performance
+
+`make sim-4h-3p-bare-perf` runs the same finite CoreMark-derived parser work on
+all four harts after a shared software barrier. Machine-mode setup, barrier
+arrival, result publication, and completion polling are outside each hart's
+measured interval. Each hart records raw `cycle` and `instret` endpoints and a
+signature accumulated across every parser call; the testbench rejects
+incomplete deltas, mismatched signatures, or mismatched measured instruction
+counts.
+
+The 2026-07-31 run used the fixed-latency 512-bit backing memory at latency 8,
+L1D prefetch enabled, and 16 parser calls per hart:
+
+```text
+PERF_4H_BARE iterations=16 signature=c2457f54a813c07b
+parallel_start=638 parallel_end=878596 parallel_cycles=877958
+total_instret=3363560 aggregate_ipc_x1000=3831
+PERF_4H_BARE_HART hart=0 cycles=877958 instret=840890 ipc_x1000=957
+PERF_4H_BARE_HART hart=1 cycles=874852 instret=840890 ipc_x1000=961
+PERF_4H_BARE_HART hart=2 cycles=874897 instret=840890 ipc_x1000=961
+PERF_4H_BARE_HART hart=3 cycles=874898 instret=840890 ipc_x1000=961
+```
+
+Aggregate IPC is the sum of the four measured instruction deltas divided by
+the span from the earliest start to the latest end. It is 3.831 here; the
+per-hart IPC range is 0.957-0.961. Start endpoints span 14 cycles. These are
+source-matched concurrent-core throughput numbers, not a CoreMark score and
+not a DDR3 result. The payload's small hot working set also makes it a poor
+proxy for Linux memory behavior. It does not satisfy the project's SMP
+viability criterion, which still requires the full FPGA and extended
+user-mode and kernel-mode stress.
+
+## Shared-Sv39 coherence scaling suite
+
+The CoreMark-derived run above measures aggregate core throughput and is a
+poor coherence benchmark. `sw/coherence_4h_shared_perf.S` instead keeps every
+active hart on one shared Sv39 root, prewarms the target lines, excludes setup
+and barriers from timing, and varies only the sharing pattern. Harts above the
+selected active count remain in reset. The private control places each hart's
+line on a separate 4 KiB page. A second disjoint control keeps the lines 1 KiB
+apart within one page, separating page placement from actual address sharing.
+
+The source-matched 2026-07-31 runs used 64 iterations, L1D prefetch enabled,
+the 256 KiB eight-way L2 with eight MSHRs, and the four-hart harness's
+fixed-latency 512-bit backing model at latency 8. `cycles / ops/kcycle` is
+shown below. Operations are comparable down a column within a case, not
+between cases: `same_page` and `different_pages` count eight independent line
+transfers per iteration.
+
+| Case | Pre-coherent 1H control | Coherent rig, 1 active | 2 active | 3 active | 4 active |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Private, disjoint pages | 295 / 216 | 295 / 216 | 305 / 419 | 308 / 623 | 311 / 823 |
+| Disjoint lines, one page | 295 / 216 | 295 / 216 | 305 / 419 | 308 / 623 | 312 / 820 |
+| One shared line | 1,631 / 39 | 1,631 / 39 | 3,485 / 36 | 5,153 / 37 | 6,691 / 38 |
+| Eight shared lines, one page | 5,405 / 94 | 5,405 / 94 | 8,981 / 114 | 12,781 / 120 | 17,002 / 120 |
+| Eight shared lines, eight pages | 10,910 / 46 | 10,910 / 46 | 12,103 / 84 | 17,208 / 89 | 20,663 / 99 |
+| Ordered LR/SC handoff | 2,581 / 24 | 3,029 / 21 | 4,963 / 25 | 7,724 / 24 | 10,268 / 24 |
+| Ticket lock | 4,447 / 14 | 4,951 / 12 | 7,733 / 16 | 13,274 / 14 | 19,065 / 13 |
+
+The pre-coherent control is the one-hart CCX/L2 rig, not the four-hart
+coherence home with three harts held in reset. Its fixed-latency endpoint is
+not structurally identical to the four-hart harness. All target data is warm
+before measurement, and the four ordinary-access cases match exactly at one
+hart, but the topology distinction remains part of the result. Coherent
+atomics are slower at one active hart because they still traverse the home
+reservation protocol.
+
+The four-active-hart protocol evidence was:
+
+| Case | Target L2 reads/writes | Atomic LR attempts | Invalidate probes | SC success/failure | Max target MSHRs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Private | 0 / 4 | 0 | 0 | 0 / 0 | 0 |
+| Disjoint same-page lines | 0 / 4 | 0 | 3 | 0 / 0 | 1 |
+| One shared line | 762 / 256 | 0 | 765 | 0 / 0 | 1 |
+| Same-page lines | 2,809 / 2,048 | 0 | 2,821 | 0 / 0 | 4 |
+| Different-page lines | 2,558 / 2,048 | 0 | 2,571 | 0 / 0 | 2 |
+| LR/SC | 2,286 / 256 | 1,272 | 762 | 256 / 0 | 1 |
+| Ticket lock | 1,669 / 768 | 263 | 1,156 | 256 / 7 | 1 |
+
+These results show the intended distinction. Disjoint private work reaches
+3.80-3.81x aggregate logical-operation throughput at four harts regardless of
+whether the lines occupy one page or four. The same-page disjoint case still
+generated one, two, and three remote probes at two, three, and four harts.
+Because no hart architecturally touches another hart's line, those probes show
+non-demand residency or conservative directory state; the present counters do
+not distinguish prefetch residency from a directory false positive. A single
+shared line remains about 36-39 operations/kcycle because ownership is
+serialized.
+The eight-line same-page case exposes four simultaneous target MSHRs and gains
+some throughput, but it does not scale like private work. LR/SC and the ticket
+lock remain serialization-bound. In the ticket test, 263 target LR attempts
+equal 256 successful plus seven failed SC attempts, and software separately
+validated the ticket dispenser, serving counter, and protected counter.
+
+Run the complete controls and matrix with:
+
+```sh
+make sim-1h-3p-coherence-suite
+make sim-4h-3p-coherence-scaling-suite
+make sim-coherence-scaling-suite
+```
+
+This is fixed-latency, hot-data, bare-metal evidence. It is not a DDR3 result,
+an FPGA throughput result, a general RVWMO litmus suite, or evidence that Linux
+SMP is viable. The latter still requires four harts on the full FPGA and long
+user-mode and kernel-mode stress.
 
 ## Historical source-branch validation: 2026-07-27 UTC
 
@@ -306,14 +514,16 @@ openrv64_ccx_coherent_protocol
 256 KiB shared l2_native
         |
         v
-fixed-latency 512-bit line-memory model
+selectable backing memory
+  - fixed-latency 512-bit line model for finite coherence tests
+  - 512-to-256-bit genbus -> 256-bit AXI -> timed DDR3 for OpenSBI
 ```
 
 The finite four-hart workloads tie interrupts low and do not enable the
 platform devices.  In `+opensbi_held` mode the harness instead routes one
-shared CLINT, PLIC, UART, and the normal boot ROM around L2 while leaving RAM
-behind the same fixed-latency 512-bit model.  Neither mode includes the AXI
-bridge or timed DDR model.
+shared CLINT, PLIC, UART, and the normal boot ROM around L2. Both OpenSBI modes
+default to the AXI/timed-DDR backend. Device requests wait for all accepted
+RAM responses to drain before entering the untagged L2 response stream.
 
 ## Address-space tests
 
@@ -403,6 +613,10 @@ home.  This run therefore does not validate acquire/release ordering.
 - Probing the SC requester created the local circular wait described above.
   The home now probes only remote sharers and still clears all sharer metadata
   after successful SC.
+- Deferred probe completion originally updated the directory from the SRAM's
+  most recently read row. An unrelated lookup could replace that row while
+  the probe was in flight. The L2 MSHR now carries the complete lookup sharer
+  snapshot and overwrites the original entry on completion.
 
 ## Directed four-hart TLB shootdown
 
@@ -450,7 +664,9 @@ remote L1D invalidation.  It does not prove:
 - L1I coherence or executable-data modification;
 - DMA or external coherent-master interaction;
 - the standard shared/atomic workloads do not cover interrupt routing,
-  secondary-hart release, OpenSBI/Linux boot, AXI, or timed DDR behavior in
-  the four-hart hierarchy; the directed shootdown target covers only CLINT
-  MSIP routing and its local M-mode handler; or
+  secondary-hart release, OpenSBI/Linux boot, AXI, or timed DDR behavior;
+  the OpenSBI targets cover AXI/timed DDR, CLINT/PLIC/UART discovery, and HSM
+  parking; the fixed-latency HSM tests cover secondary restart into S-mode and
+  directed coherent-memory traffic but not Linux SMP; the directed shootdown
+  target covers only CLINT MSIP routing and its local M-mode handler; or
 - fixed host affinity between one Verilator worker and one RTL hart.

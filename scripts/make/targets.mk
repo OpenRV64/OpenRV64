@@ -6,6 +6,15 @@
 	sw-tlbi-4h-shared-vm \
 	sw-coremark-loop-4h-bare sim-4h-3p-bare \
 	sim-4h-3p-bare-configured \
+	sw-coremark-loop-4h-bare-perf sim-4h-3p-bare-perf \
+	sw-coherence-shared-perf sw-coherence-1h-shared-perf \
+	sw-coherence-4h-shared-perf \
+	sim-4h-3p-coherence-private \
+	sim-4h-3p-coherence-handoff1 \
+	sim-4h-3p-coherence-handoff8 \
+	sim-4h-3p-coherence-lrsc1 \
+	sim-1h-3p-coherence-suite sim-4h-3p-coherence-suite \
+	sim-4h-3p-coherence-scaling-suite sim-coherence-scaling-suite \
 	sim-4h-3p-shared-sv39 sim-4h-3p-atomic-sv39 \
 	sim-4h-3p-tlbi-sv39 \
 	sim-4h-3p-shared-suite \
@@ -24,11 +33,26 @@
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
 	sim-vec-cache-wb-512 sim-vec-test-top \
 	sim-vec-matmul sim-vec-matmul-bf16
+.PHONY: $(foreach case,$(COHERENCE_PERF_CASES),\
+	sim-1h-3p-coherence-$(case)) \
+	$(foreach harts,$(COHERENCE_PERF_HART_COUNTS),\
+	$(foreach case,$(COHERENCE_PERF_CASES),\
+	sim-4h-3p-coherence-$(harts)h-$(case)))
 .PHONY: sim-bp-context-gshare-btb sim-bp-context-gshare-btb-512 \
 	sim-bp-context-tournament-btb
 .PHONY: yosys-resources-core-sky130
 .PHONY: opensbi-4h-held sim-opensbi-4h-held \
+	sim-linux-4h-held sim-linux-4h-held-configured \
 	opensbi-4h-smp sim-opensbi-4h-smp \
+	opensbi-2h-linux-smp opensbi-4h-linux-smp \
+	sim-linux-2h-smp sim-linux-2h-smp-configured \
+	sim-linux-4h-smp sim-linux-4h-smp-configured \
+	opensbi-2h-hart-start opensbi-4h-hart-start \
+	sim-opensbi-2h-hart-start \
+	sim-opensbi-2h-hart-start-configured \
+	sim-opensbi-4h-hart-start \
+	sim-opensbi-4h-hart-start-configured \
+	sim-opensbi-hart-start \
 	sim-opensbi-3p sim-opensbi-3p-platform \
 	sim-linux-3p-platform-checkpoint sim-linux-3p-platform-restore
 .PHONY: sim-linux

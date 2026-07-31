@@ -4339,6 +4339,27 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[13],
                 dut.u_backend.u_gpr.regs[14],
                 dut.u_backend.u_gpr.regs[15][31:0]);
+        if ($test$plusargs("report_coherence_1h")) begin
+            if ((dut.u_backend.u_gpr.regs[11] == 0) ||
+                (dut.u_backend.u_gpr.regs[13] == 0) ||
+                (dut.u_backend.u_gpr.regs[14] != 0))
+                $fatal(1,
+                    "one-hart coherence result cycles=%0d operations=%0d status=%0d",
+                    dut.u_backend.u_gpr.regs[11],
+                    dut.u_backend.u_gpr.regs[13],
+                    dut.u_backend.u_gpr.regs[14]);
+            $display(
+                "COHERENCE_1H case=%0d signature=%h operations=%0d cycles=%0d operations_per_kcycle=%0d instret=%0d ipc_x1000=%0d",
+                dut.u_backend.u_gpr.regs[15],
+                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.u_gpr.regs[13],
+                dut.u_backend.u_gpr.regs[11],
+                (dut.u_backend.u_gpr.regs[13] * 1000) /
+                    dut.u_backend.u_gpr.regs[11],
+                dut.u_backend.u_gpr.regs[12],
+                (dut.u_backend.u_gpr.regs[12] * 1000) /
+                    dut.u_backend.u_gpr.regs[11]);
+        end
         $display(
             "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
             ccx_requests, ccx_fetch_reads, ccx_data_reads,

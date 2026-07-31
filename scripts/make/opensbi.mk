@@ -25,6 +25,44 @@ opensbi-4h-smp:
 		OPENRV64_ZICCLSM=$(OPENSBI_3P_ADVERTISE_ZICCLSM) \
 		tools/build-opensbi.sh
 
+opensbi-2h-linux-smp:
+	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_2H_LINUX_BUILD_DIR)) \
+		OPENSBI_SOURCE_DIR=$(abspath $(OPENSBI_2H_LINUX_SOURCE_DIR)) \
+		OPENSBI_MEMORY_SIZE=$(OPENSBI_SMP_LINUX_MEMORY_SIZE) \
+		OPENSBI_FDT_ADDR=$(OPENSBI_SMP_LINUX_FDT_ADDR) \
+		OPENRV64_HART_COUNT=2 \
+		OPENRV64_ZICCLSM=$(OPENSBI_3P_ADVERTISE_ZICCLSM) \
+		tools/build-opensbi.sh
+
+opensbi-4h-linux-smp:
+	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_4H_LINUX_SMP_BUILD_DIR)) \
+		OPENSBI_SOURCE_DIR=$(abspath $(OPENSBI_4H_LINUX_SMP_SOURCE_DIR)) \
+		OPENSBI_MEMORY_SIZE=$(OPENSBI_SMP_LINUX_MEMORY_SIZE) \
+		OPENSBI_FDT_ADDR=$(OPENSBI_SMP_LINUX_FDT_ADDR) \
+		OPENRV64_HART_COUNT=4 \
+		OPENRV64_ZICCLSM=$(OPENSBI_3P_ADVERTISE_ZICCLSM) \
+		tools/build-opensbi.sh
+
+opensbi-2h-hart-start:
+	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_2H_HART_START_BUILD_DIR)) \
+		OPENSBI_SOURCE_DIR=$(abspath $(OPENSBI_2H_HART_START_SOURCE_DIR)) \
+		OPENSBI_MEMORY_SIZE=$(OPENSBI_4H_SMP_MEMORY_SIZE) \
+		OPENSBI_FDT_ADDR=$(OPENSBI_4H_SMP_FDT_ADDR) \
+		OPENRV64_HART_COUNT=2 \
+		OPENRV64_PAYLOAD_SOURCE=$(abspath $(OPENSBI_HART_START_PAYLOAD_SOURCE)) \
+		OPENRV64_ZICCLSM=$(OPENSBI_3P_ADVERTISE_ZICCLSM) \
+		tools/build-opensbi.sh
+
+opensbi-4h-hart-start:
+	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_4H_HART_START_BUILD_DIR)) \
+		OPENSBI_SOURCE_DIR=$(abspath $(OPENSBI_4H_HART_START_SOURCE_DIR)) \
+		OPENSBI_MEMORY_SIZE=$(OPENSBI_4H_SMP_MEMORY_SIZE) \
+		OPENSBI_FDT_ADDR=$(OPENSBI_4H_SMP_FDT_ADDR) \
+		OPENRV64_HART_COUNT=4 \
+		OPENRV64_PAYLOAD_SOURCE=$(abspath $(OPENSBI_HART_START_PAYLOAD_SOURCE)) \
+		OPENRV64_ZICCLSM=$(OPENSBI_3P_ADVERTISE_ZICCLSM) \
+		tools/build-opensbi.sh
+
 sim-opensbi-4h-held: $(OPENSBI_4H_HELD_VERILATOR_BUILD) \
 		opensbi-4h-held
 	$(OPENSBI_4H_HELD_VERILATOR_BUILD) \
@@ -33,6 +71,78 @@ sim-opensbi-4h-held: $(OPENSBI_4H_HELD_VERILATOR_BUILD) \
 		+firmware_memh=$(OPENSBI_4H_HELD_ARTIFACT_DIR)/fw_jump.memh \
 		+payload_memh=$(OPENSBI_4H_HELD_ARTIFACT_DIR)/payload.memh \
 		+fdt_memh=$(OPENSBI_4H_HELD_ARTIFACT_DIR)/openrv64-3p-dtb.memh \
+		+max_cycles=$(OPENSBI_4H_HELD_MAX_CYCLES)
+
+sim-linux-4h-held:
+	$(MAKE) --no-print-directory \
+		OPENSBI_4H_HELD_MEMORY_BYTES=$(OPENSBI_4H_LINUX_MEMORY_BYTES) \
+		OPENSBI_4H_HELD_MEMORY_SIZE=$(OPENSBI_4H_LINUX_MEMORY_SIZE) \
+		OPENSBI_4H_HELD_FDT_ADDR=$(OPENSBI_4H_LINUX_FDT_ADDR) \
+		OPENSBI_4H_HELD_FDT_BASE=$(OPENSBI_4H_LINUX_FDT_BASE) \
+		OPENSBI_4H_HELD_MAX_CYCLES=$(OPENSBI_4H_LINUX_MAX_CYCLES) \
+		LINUX_IMAGE=$(OPENSBI_4H_LINUX_IMAGE) \
+		sim-linux-4h-held-configured
+
+sim-linux-4h-held-configured: $(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		opensbi-4h-held $(LINUX_IMAGE_MEMH)
+	$(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		+opensbi_held +linux_mode \
+		+trampoline_memh=$(OPENSBI_4H_HELD_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_4H_HELD_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(LINUX_IMAGE_MEMH) \
+		+payload_words=$(LINUX_IMAGE_WORDS) \
+		+fdt_memh=$(OPENSBI_4H_HELD_ARTIFACT_DIR)/openrv64-3p-dtb.memh \
+		+max_cycles=$(OPENSBI_4H_HELD_MAX_CYCLES)
+
+sim-linux-2h-smp:
+	$(MAKE) --no-print-directory \
+		OPENSBI_4H_HELD_MEMORY_BYTES=$(OPENSBI_SMP_LINUX_MEMORY_BYTES) \
+		OPENSBI_4H_HELD_MEMORY_SIZE=$(OPENSBI_SMP_LINUX_MEMORY_SIZE) \
+		OPENSBI_4H_HELD_FDT_ADDR=$(OPENSBI_SMP_LINUX_FDT_ADDR) \
+		OPENSBI_4H_HELD_FDT_BASE=$(OPENSBI_SMP_LINUX_FDT_BASE) \
+		OPENSBI_4H_HELD_MAX_CYCLES=$(OPENSBI_SMP_LINUX_MAX_CYCLES) \
+		OPENSBI_4H_HELD_VERILATOR_THREADS=$(OPENSBI_2H_LINUX_VERILATOR_THREADS) \
+		LINUX_IMAGE=$(OPENSBI_SMP_LINUX_IMAGE) \
+		LINUX_IMAGE_MEMH=$(OPENSBI_2H_LINUX_IMAGE_MEMH) \
+		sim-linux-2h-smp-configured
+
+sim-linux-2h-smp-configured: $(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		opensbi-2h-linux-smp $(LINUX_IMAGE_MEMH)
+	$(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		+opensbi_smp +linux_mode \
+		+opensbi_active_harts=2 +gate_held_hart_clocks \
+		+opensbi_hsm_wfi_pc=$$(sed -n '1p' \
+			$(OPENSBI_2H_LINUX_ARTIFACT_DIR)/hsm-wfi-pc.txt) \
+		+trampoline_memh=$(OPENSBI_2H_LINUX_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_2H_LINUX_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(LINUX_IMAGE_MEMH) \
+		+payload_words=$(LINUX_IMAGE_WORDS) \
+		+fdt_memh=$(OPENSBI_2H_LINUX_ARTIFACT_DIR)/openrv64-3p-dtb.memh \
+		+max_cycles=$(OPENSBI_4H_HELD_MAX_CYCLES)
+
+sim-linux-4h-smp:
+	$(MAKE) --no-print-directory \
+		OPENSBI_4H_HELD_MEMORY_BYTES=$(OPENSBI_SMP_LINUX_MEMORY_BYTES) \
+		OPENSBI_4H_HELD_MEMORY_SIZE=$(OPENSBI_SMP_LINUX_MEMORY_SIZE) \
+		OPENSBI_4H_HELD_FDT_ADDR=$(OPENSBI_SMP_LINUX_FDT_ADDR) \
+		OPENSBI_4H_HELD_FDT_BASE=$(OPENSBI_SMP_LINUX_FDT_BASE) \
+		OPENSBI_4H_HELD_MAX_CYCLES=$(OPENSBI_SMP_LINUX_MAX_CYCLES) \
+		OPENSBI_4H_HELD_VERILATOR_THREADS=$(OPENSBI_4H_LINUX_VERILATOR_THREADS) \
+		LINUX_IMAGE=$(OPENSBI_SMP_LINUX_IMAGE) \
+		LINUX_IMAGE_MEMH=$(OPENSBI_4H_LINUX_SMP_IMAGE_MEMH) \
+		sim-linux-4h-smp-configured
+
+sim-linux-4h-smp-configured: $(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		opensbi-4h-linux-smp $(LINUX_IMAGE_MEMH)
+	$(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		+opensbi_smp +linux_mode +opensbi_active_harts=4 \
+		+opensbi_hsm_wfi_pc=$$(sed -n '1p' \
+			$(OPENSBI_4H_LINUX_SMP_ARTIFACT_DIR)/hsm-wfi-pc.txt) \
+		+trampoline_memh=$(OPENSBI_4H_LINUX_SMP_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_4H_LINUX_SMP_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(LINUX_IMAGE_MEMH) \
+		+payload_words=$(LINUX_IMAGE_WORDS) \
+		+fdt_memh=$(OPENSBI_4H_LINUX_SMP_ARTIFACT_DIR)/openrv64-3p-dtb.memh \
 		+max_cycles=$(OPENSBI_4H_HELD_MAX_CYCLES)
 
 sim-opensbi-4h-smp: $(OPENSBI_4H_HELD_VERILATOR_BUILD) \
@@ -46,6 +156,47 @@ sim-opensbi-4h-smp: $(OPENSBI_4H_HELD_VERILATOR_BUILD) \
 		+payload_memh=$(OPENSBI_4H_SMP_ARTIFACT_DIR)/payload.memh \
 		+fdt_memh=$(OPENSBI_4H_SMP_ARTIFACT_DIR)/openrv64-3p-dtb.memh \
 		+max_cycles=$(OPENSBI_4H_SMP_MAX_CYCLES)
+
+sim-opensbi-2h-hart-start:
+	$(MAKE) --no-print-directory \
+		OPENSBI_4H_DDR3_ENABLE=$(OPENSBI_HART_START_DDR3_ENABLE) \
+		OPENSBI_4H_HELD_VERILATOR_THREADS=$(OPENSBI_2H_HART_START_VERILATOR_THREADS) \
+		sim-opensbi-2h-hart-start-configured
+
+sim-opensbi-2h-hart-start-configured: \
+		$(OPENSBI_4H_HELD_VERILATOR_BUILD) opensbi-2h-hart-start
+	$(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		+opensbi_smp +opensbi_hart_start \
+		+opensbi_active_harts=2 +gate_held_hart_clocks \
+		+opensbi_hsm_wfi_pc=$$(sed -n '1p' \
+			$(OPENSBI_2H_HART_START_ARTIFACT_DIR)/hsm-wfi-pc.txt) \
+		+trampoline_memh=$(OPENSBI_2H_HART_START_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_2H_HART_START_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(OPENSBI_2H_HART_START_ARTIFACT_DIR)/payload.memh \
+		+fdt_memh=$(OPENSBI_2H_HART_START_ARTIFACT_DIR)/openrv64-3p-dtb.memh \
+		+max_cycles=$(OPENSBI_HART_START_MAX_CYCLES)
+
+sim-opensbi-4h-hart-start:
+	$(MAKE) --no-print-directory \
+		OPENSBI_4H_DDR3_ENABLE=$(OPENSBI_HART_START_DDR3_ENABLE) \
+		OPENSBI_4H_HELD_VERILATOR_THREADS=$(OPENSBI_4H_HART_START_VERILATOR_THREADS) \
+		sim-opensbi-4h-hart-start-configured
+
+sim-opensbi-4h-hart-start-configured: \
+		$(OPENSBI_4H_HELD_VERILATOR_BUILD) opensbi-4h-hart-start
+	$(OPENSBI_4H_HELD_VERILATOR_BUILD) \
+		+opensbi_smp +opensbi_hart_start \
+		+opensbi_active_harts=4 \
+		+opensbi_hsm_wfi_pc=$$(sed -n '1p' \
+			$(OPENSBI_4H_HART_START_ARTIFACT_DIR)/hsm-wfi-pc.txt) \
+		+trampoline_memh=$(OPENSBI_4H_HART_START_ARTIFACT_DIR)/trampoline.memh \
+		+firmware_memh=$(OPENSBI_4H_HART_START_ARTIFACT_DIR)/fw_jump.memh \
+		+payload_memh=$(OPENSBI_4H_HART_START_ARTIFACT_DIR)/payload.memh \
+		+fdt_memh=$(OPENSBI_4H_HART_START_ARTIFACT_DIR)/openrv64-3p-dtb.memh \
+		+max_cycles=$(OPENSBI_HART_START_MAX_CYCLES)
+
+sim-opensbi-hart-start: sim-opensbi-2h-hart-start \
+	sim-opensbi-4h-hart-start
 
 sim-opensbi: $(OPENSBI_VERILATOR_BUILD) opensbi
 	$(OPENSBI_VERILATOR_BUILD) \

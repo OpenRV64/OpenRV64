@@ -8,8 +8,8 @@
 #define OPENRV64_HART_COUNT 1
 #endif
 
-#if OPENRV64_HART_COUNT != 1 && OPENRV64_HART_COUNT != 4
-#error OPENRV64_HART_COUNT must be 1 or 4
+#if OPENRV64_HART_COUNT != 1 && OPENRV64_HART_COUNT != 2 && OPENRV64_HART_COUNT != 4
+#error OPENRV64_HART_COUNT must be 1, 2, or 4
 #endif
 
 / {
@@ -18,13 +18,15 @@
     compatible = "openrv64,platform";
 #if OPENRV64_HART_COUNT == 4
     model = "OpenRV64 four-hart platform";
+#elif OPENRV64_HART_COUNT == 2
+    model = "OpenRV64 two-hart platform";
 #else
     model = "OpenRV64 single-hart platform";
 #endif
 
     chosen {
         stdout-path = "/soc/serial@10000000";
-#if OPENRV64_HART_COUNT == 4
+#if OPENRV64_HART_COUNT > 1
         opensbi-config {
             compatible = "opensbi,config";
             cold-boot-harts = <&cpu0>;
@@ -60,7 +62,7 @@
             };
         };
 
-#if OPENRV64_HART_COUNT == 4
+#if OPENRV64_HART_COUNT >= 2
         cpu1: cpu@1 {
             device_type = "cpu";
             reg = <1>;
@@ -83,7 +85,9 @@
                 compatible = "riscv,cpu-intc";
             };
         };
+#endif
 
+#if OPENRV64_HART_COUNT == 4
         cpu2: cpu@2 {
             device_type = "cpu";
             reg = <2>;
@@ -152,6 +156,10 @@
                 <&cpu1_intc 3>, <&cpu1_intc 7>,
                 <&cpu2_intc 3>, <&cpu2_intc 7>,
                 <&cpu3_intc 3>, <&cpu3_intc 7>;
+#elif OPENRV64_HART_COUNT == 2
+            interrupts-extended =
+                <&cpu0_intc 3>, <&cpu0_intc 7>,
+                <&cpu1_intc 3>, <&cpu1_intc 7>;
 #else
             interrupts-extended = <&cpu0_intc 3>, <&cpu0_intc 7>;
 #endif
@@ -167,6 +175,9 @@
             interrupts-extended =
                 <&cpu0_intc 9>, <&cpu1_intc 9>,
                 <&cpu2_intc 9>, <&cpu3_intc 9>;
+#elif OPENRV64_HART_COUNT == 2
+            interrupts-extended =
+                <&cpu0_intc 9>, <&cpu1_intc 9>;
 #else
             interrupts-extended = <&cpu0_intc 9>;
 #endif

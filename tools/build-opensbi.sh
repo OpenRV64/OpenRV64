@@ -24,13 +24,23 @@ fdt_addr=${OPENSBI_FDT_ADDR:-0x8ff00000}
 memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
 zicclsm=${OPENRV64_ZICCLSM:-1}
 hart_count=${OPENRV64_HART_COUNT:-1}
+payload_source=${OPENRV64_PAYLOAD_SOURCE:-"${repo_root}/sw/opensbi_payload.S"}
+
+if [[ "${payload_source}" != /* ]]; then
+    payload_source="${repo_root}/${payload_source}"
+fi
 
 if [[ "${zicclsm}" != 0 && "${zicclsm}" != 1 ]]; then
     echo "build-opensbi.sh: OPENRV64_ZICCLSM must be 0 or 1" >&2
     exit 2
 fi
-if [[ "${hart_count}" != 1 && "${hart_count}" != 4 ]]; then
-    echo "build-opensbi.sh: OPENRV64_HART_COUNT must be 1 or 4" >&2
+if [[ "${hart_count}" != 1 && "${hart_count}" != 2 &&
+      "${hart_count}" != 4 ]]; then
+    echo "build-opensbi.sh: OPENRV64_HART_COUNT must be 1, 2, or 4" >&2
+    exit 2
+fi
+if [[ ! -f "${payload_source}" ]]; then
+    echo "build-opensbi.sh: missing payload source: ${payload_source}" >&2
     exit 2
 fi
 zicclsm_cpp_args=()
@@ -100,9 +110,10 @@ dtc -I dts -O dtb -o "${artifact_dir}/openrv64-3p.dtb" \
 
 "${bare_cross}gcc" -march=rv64ima_zicsr_zifencei -mabi=lp64 \
     -mcmodel=medany -mno-relax -nostdlib -nostartfiles \
+    -DOPENRV64_HART_COUNT="${hart_count}" \
     -Wl,--build-id=none -T "${repo_root}/sw/opensbi_payload.ld" \
     -o "${artifact_dir}/payload.elf" \
-    "${repo_root}/sw/opensbi_payload.S"
+    "${payload_source}"
 "${bare_cross}objcopy" -O binary \
     "${artifact_dir}/payload.elf" "${artifact_dir}/payload.bin"
 
@@ -202,5 +213,6 @@ echo "  payload    ${payload_addr}"
 echo "  FDT        ${fdt_addr}"
 echo "  memory     ${memory_size}"
 echo "  HARTs      ${hart_count}"
+echo "  payload    ${payload_source}"
 echo "  HSM WFI PC ${hsm_wfi_pc}"
 echo "  artifacts  ${artifact_dir}"

@@ -312,6 +312,7 @@ module openrv64_ccx_coherent_protocol #(
         .victim_d_sharers_o(directory_victim_d_sharers),
         .write_valid_i(directory_write_valid),
         .write_allocate_i(directory_allocate),
+        .write_overwrite_i(1'b0),
         .write_entry_i(directory_entry_q),
         .write_line_addr_i(request_line_addr),
         .write_add_i_sharers_i(

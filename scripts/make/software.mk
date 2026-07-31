@@ -17,6 +17,16 @@ sw-coremark-loop-4h-shared-vm: $(CORE_4H_SHARED_VM_ELF) \
 sw-coremark-loop-4h-bare: $(CORE_4H_BARE_ELF) $(CORE_4H_BARE_BIN) \
 		$(CORE_4H_BARE_MEMH) $(CORE_4H_BARE_DISASM)
 
+sw-coremark-loop-4h-bare-perf: $(CORE_4H_BARE_PERF_ELF) \
+		$(CORE_4H_BARE_PERF_BIN) $(CORE_4H_BARE_PERF_MEMH) \
+		$(CORE_4H_BARE_PERF_DISASM)
+
+sw-coherence-shared-perf: $(COHERENCE_PERF_ARTIFACTS)
+
+sw-coherence-1h-shared-perf: $(COHERENCE_1H_PERF_ARTIFACTS)
+
+sw-coherence-4h-shared-perf: $(COHERENCE_4H_PERF_ARTIFACTS)
+
 sw-atomic-4h-shared-vm: $(ATOMIC_4H_SHARED_VM_ELF) \
 		$(ATOMIC_4H_SHARED_VM_TEMPLATE_BIN) $(ATOMIC_4H_SHARED_VM_BIN) \
 		$(ATOMIC_4H_SHARED_VM_MEMH) $(ATOMIC_4H_SHARED_VM_DISASM)
@@ -61,6 +71,96 @@ sim-4h-3p-bare-configured: $(CORE_4H_3P_VERILATOR_BUILD) \
 		+mailbox_va=$(CORE_4H_BARE_MAILBOX_PA) \
 		+bare=1 +mailbox_stride=4096 \
 		+max_cycles=$(CORE_4H_BARE_MAX_CYCLES)
+
+sim-4h-3p-bare-perf: $(CORE_4H_3P_VERILATOR_BUILD) \
+		$(CORE_4H_BARE_PERF_MEMH)
+	test -n "$(CORE_4H_BARE_PERF_DONE_PC)"
+	test -n "$(CORE_4H_BARE_PERF_RESULTS_PA)"
+	test -n "$(CORE_4H_BARE_PERF_STATUS_PA)"
+	$(CORE_4H_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(CORE_4H_BARE_PERF_MEMH)) \
+		+memh_words=$(CORE_4H_BARE_PERF_MEMH_WORDS) \
+		+done_pc=$(CORE_4H_BARE_PERF_DONE_PC) \
+		+mailbox_va=$(CORE_4H_BARE_PERF_RESULTS_PA) \
+		+result_va=$(CORE_4H_BARE_PERF_STATUS_PA) \
+		+result_expected=0 \
+		+perf_results_va=$(CORE_4H_BARE_PERF_RESULTS_PA) \
+		+perf_iterations=$(CORE_4H_BARE_PERF_ITERATIONS) \
+		+bare=1 +mailbox_stride=4096 \
+		+max_cycles=$(CORE_4H_BARE_PERF_MAX_CYCLES)
+
+define COHERENCE_4H_PERF_RUN
+sim-4h-3p-coherence-$1h-$2: $(CORE_4H_3P_VERILATOR_BUILD) \
+		$(call coherence_perf_memh_512,$1,$2)
+	test -n "$$(call coherence_perf_done_pc,$1,$2)"
+	test -n "$$(call coherence_perf_measure_start_pc,$1,$2)"
+	test -n "$$(call coherence_perf_measure_end_pc,$1,$2)"
+	test -n "$$(call coherence_perf_results_va,$1,$2)"
+	test -n "$$(call coherence_perf_status_va,$1,$2)"
+	test -n "$$(call coherence_perf_base_va,$1,$2)"
+	$(CORE_4H_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(call coherence_perf_memh_512,$1,$2)) \
+		+memh_words=$(COHERENCE_PERF_512_WORDS) \
+		+done_pc=$$(call coherence_perf_done_pc,$1,$2) \
+		+mailbox_va=$$(call coherence_perf_results_va,$1,$2) \
+		+result_va=$$(call coherence_perf_status_va,$1,$2) \
+		+result_expected=0 \
+		+perf_results_va=$$(call coherence_perf_results_va,$1,$2) \
+		+perf_iterations=$(COHERENCE_PERF_ITERATIONS) \
+		+perf_name=COHERENCE_$1H_$2 \
+		+coherence_perf=1 \
+		+coherence_case=$(call coherence_perf_case_id,$2) \
+		+coherence_base_va=$$(call coherence_perf_base_va,$1,$2) \
+		+coherence_lines=$(call coherence_perf_case_lines,$1,$2) \
+		+coherence_line_stride=$(call coherence_perf_line_stride,$2) \
+		+coherence_operations=$(call coherence_perf_operations,$1,$2) \
+		+coherence_measure_start_pc=$$(call coherence_perf_measure_start_pc,$1,$2) \
+		+coherence_measure_end_pc=$$(call coherence_perf_measure_end_pc,$1,$2) \
+		+active_harts=$1 \
+		+shared_satp=1 +mailbox_stride=4096 \
+		+max_cycles=$(COHERENCE_PERF_MAX_CYCLES)
+endef
+
+$(foreach harts,$(COHERENCE_PERF_HART_COUNTS),\
+	$(foreach case,$(COHERENCE_PERF_CASES),\
+		$(eval $(call COHERENCE_4H_PERF_RUN,$(harts),$(case)))))
+
+define COHERENCE_1H_PERF_RUN
+sim-1h-3p-coherence-$1: $(call coherence_perf_memh_256,1,$1)
+	$$(MAKE) sim-core-3p-ccx-l2 \
+		CORE_3P_CCX_L2_MODE=3 \
+		CORE_3P_CCX_L2_RETIRE_DEPTH=16 \
+		CORE_3P_CCX_L2_ISSUE_WINDOW=1 \
+		CORE_3P_CCX_L2_SPECULATION_WINDOW=1 \
+		CORE_3P_CCX_L2_POSTED_STORES=1 \
+		CORE_3P_CCX_L2_L1D_PREFETCH_ENABLE=1 \
+		CORE_3P_CCX_L2_DDR3=0 \
+		CORE_3P_CCX_L2_MEMH=$(call coherence_perf_memh_256,1,$1) \
+		CORE_3P_CCX_L2_MEMH_WORDS=$$(COHERENCE_PERF_256_WORDS) \
+		CORE_3P_CCX_L2_MAX_CYCLES=$$(COHERENCE_PERF_MAX_CYCLES) \
+		CORE_3P_CCX_L2_ARGS="+done_pc=$$(call coherence_perf_done_pc,1,$1) +expect_a0=$(call coherence_perf_signature,$1) +require_sv39 +report_coherence_1h"
+endef
+
+$(foreach case,$(COHERENCE_PERF_CASES),\
+	$(eval $(call COHERENCE_1H_PERF_RUN,$(case))))
+
+sim-4h-3p-coherence-suite: $(foreach case,$(COHERENCE_PERF_CASES),\
+	sim-4h-3p-coherence-4h-$(case))
+
+sim-1h-3p-coherence-suite: $(foreach case,$(COHERENCE_PERF_CASES),\
+	sim-1h-3p-coherence-$(case))
+
+sim-4h-3p-coherence-scaling-suite: $(foreach harts,\
+	$(COHERENCE_PERF_HART_COUNTS),$(foreach case,$(COHERENCE_PERF_CASES),\
+	sim-4h-3p-coherence-$(harts)h-$(case)))
+
+sim-coherence-scaling-suite: sim-1h-3p-coherence-suite \
+		sim-4h-3p-coherence-scaling-suite
+
+sim-4h-3p-coherence-private: sim-4h-3p-coherence-4h-private
+sim-4h-3p-coherence-handoff1: sim-4h-3p-coherence-4h-same_line
+sim-4h-3p-coherence-handoff8: sim-4h-3p-coherence-4h-same_page
+sim-4h-3p-coherence-lrsc1: sim-4h-3p-coherence-4h-lrsc
 
 sim-4h-3p-atomic-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
 		$(ATOMIC_4H_SHARED_VM_MEMH)
