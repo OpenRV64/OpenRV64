@@ -124,6 +124,9 @@ sim-l1d-store-buffer: $(L1D_STORE_BUFFER_SIM_BUILD)
 sim-ccx-l2: $(CCX_L2_SIM_BUILD)
 	vvp $(CCX_L2_SIM_BUILD)
 
+sim-ccx-l2-sc-refill: $(CCX_L2_SC_REFILL_SIM_BUILD)
+	vvp $(CCX_L2_SC_REFILL_SIM_BUILD)
+
 sim-genbus-axi: $(GENBUS_AXI_SIM_BUILD)
 	vvp $(GENBUS_AXI_SIM_BUILD)
 

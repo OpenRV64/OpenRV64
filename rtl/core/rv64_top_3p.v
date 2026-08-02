@@ -4,6 +4,7 @@
 `include "core/isa/rv64-priv.v"
 `include "core/fetch/fetch-defs.v"
 `include "core/bus/bus-defs.v"
+`include "core/decode/defs/early-defs.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
@@ -635,7 +636,29 @@ module openrv64_rv64_top_3p #(
             openrv64_decode_top #(
                 .ENABLE_RV64M(ENABLE_RV64M), .ENABLE_RV64A(ENABLE_RV64A)
             ) u_decode (
-                .instr_i(lane_instr), .valid_o(decode_valid[decode_lane]),
+                .instr_i(lane_instr),
+                .extension_selected_i(1'b0),
+                .extension_valid_i(1'b0),
+                .extension_illegal_i(1'b0),
+                .extension_class_sel_i({`RV64_EARLY_CLASS_WIDTH{1'b0}}),
+                .extension_format_sel_i({`RV64_EARLY_FORMAT_WIDTH{1'b0}}),
+                .extension_uses_rs1_i(1'b0),
+                .extension_uses_rs2_i(1'b0),
+                .extension_uses_rd_i(1'b0),
+                .extension_rs1_addr_i({`RV64_REG_ADDR_WIDTH{1'b0}}),
+                .extension_rs2_addr_i({`RV64_REG_ADDR_WIDTH{1'b0}}),
+                .extension_rd_addr_i({`RV64_REG_ADDR_WIDTH{1'b0}}),
+                .extension_reg_write_i(1'b0),
+                .extension_imm_valid_i(1'b0),
+                .extension_has_imm_i(1'b0),
+                .extension_imm_i({`RV64_XLEN{1'b0}}),
+                .extension_mem_read_i(1'b0),
+                .extension_mem_write_i(1'b0),
+                .extension_lsu_op_sel_i({`RV64_LSU_OP_WIDTH{1'b0}}),
+                .extension_lsu_size_sel_i({`RV64_LSU_SIZE_WIDTH{1'b0}}),
+                .extension_lsu_unsigned_i(1'b0),
+                .extension_payload_i(1'b0),
+                .valid_o(decode_valid[decode_lane]),
                 .illegal_o(decode_illegal[decode_lane]),
                 .opcode_o(), .funct3_o(), .funct7_o(), .funct12_o(),
                 .class_sel_o(), .format_sel_o(),
@@ -960,6 +983,7 @@ module openrv64_rv64_top_3p #(
     wire [11:0] backend_csr_addr;
     wire backend_csr_write;
     wire [11:0] backend_csr_write_addr;
+    wire [`RV64_FUNCT3_WIDTH-1:0] backend_csr_op;
     wire [63:0] backend_csr_wdata;
     wire csr_write_ready;
     assign backend_satp_write =
@@ -1073,6 +1097,7 @@ module openrv64_rv64_top_3p #(
         .csr_write_ready_i(csr_write_ready),
         .csr_write_o(backend_csr_write),
         .csr_write_addr_o(backend_csr_write_addr),
+        .csr_op_o(backend_csr_op),
         .csr_wdata_o(backend_csr_wdata),
         .mem_valid_o(backend_mem_valid), .mem_ready_i(backend_mem_ready),
         .mem_tag_o(backend_mem_tag),
@@ -1253,10 +1278,23 @@ module openrv64_rv64_top_3p #(
         .clk(clk), .rst_n(rst_n), .csr_addr_i(csr_access_addr),
         .csr_rdata_o(csr_rdata), .csr_valid_o(csr_valid),
         .csr_writable_o(csr_writable), .csr_write_i(backend_csr_write),
+        .csr_op_i(backend_csr_op),
         .csr_wdata_i(backend_csr_wdata),
         .csr_write_ready_o(csr_write_ready), .csr_pmp_busy_o(),
         .csr_satp_busy_o(),
         .csr_hpm_busy_o(csr_hpm_busy),
+        .extension_csr_selected_i(1'b0),
+        .extension_csr_valid_i(1'b0),
+        .extension_csr_writable_i(1'b0),
+        .extension_csr_rdata_i({`RV64_XLEN{1'b0}}),
+        .extension_csr_write_ready_i(1'b1),
+        .extension_csr_write_o(),
+        .extension_csr_wdata_o(),
+        .extension_mstatus_write_o(),
+        .extension_sstatus_write_o(),
+        .extension_misa_bits_i({`RV64_XLEN{1'b0}}),
+        .extension_mstatus_bits_i({`RV64_XLEN{1'b0}}),
+        .extension_sstatus_bits_i({`RV64_XLEN{1'b0}}),
         .trap_enter_i(trap_enter),
         .trap_interrupt_i(trap_interrupt), .trap_cause_i(trap_cause),
         .trap_pc_i(trap_pc), .trap_tval_i(trap_tval),

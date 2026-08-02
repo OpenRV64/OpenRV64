@@ -103,6 +103,12 @@ $(TOP_3P_SIM_BUILD): tb/tb_top_3p.sv rtl/openrv64_top.sv $(CORE_SRCS) \
 	iverilog -g2012 -Wall -Irtl -o $(TOP_3P_SIM_BUILD) \
 		rtl/openrv64_top.sv $(CORE_SRCS) tb/tb_top_3p.sv
 
+$(TOP_4PF_SIM_BUILD): tb/tb_top_4pf.sv $(CORE_4PF_SRCS) \
+		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s openrv64_top_4pf -s tb_top_4pf \
+		-o $(TOP_4PF_SIM_BUILD) $(CORE_4PF_SRCS) tb/tb_top_4pf.sv
+
 $(CORE_3P_MAGIC_VERILATOR_BUILD): tb/tb_core_3p_magic.sv \
 		$(CORE_3P_AXI_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p $(CORE_3P_MAGIC_VERILATOR_DIR)
@@ -196,6 +202,29 @@ $(CORE_4H_3P_VERILATOR_BUILD): tb/tb_4h_3p.sv \
 		$(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) \
 		tb/tb_4h_3p.sv
 
+$(CORE_1H_COHERENT_3P_VERILATOR_BUILD): \
+		tb/tb_1h_coherent_3p.sv tb/tb_4h_3p.sv \
+		$(CORE_3P_AXI_SRCS) rtl/complex/protocol/line_crossbar.v \
+		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
+		$(COMPLEX_BUS_SRCS) $(AXI_DDR3_SRCS) \
+		$(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) \
+		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(CORE_1H_COHERENT_3P_VERILATOR_DIR)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 32 \
+		--threads $(CORE_1H_COHERENT_3P_VERILATOR_THREADS) -Irtl \
+		-GL1D_PREFETCH_ENABLE=$(CORE_4H_3P_L1D_PREFETCH_ENABLE) \
+		-GDDR3_ENABLE=1 \
+		--output-split 20000 --output-split-cfuncs 2000 \
+		--top-module tb_1h_coherent_3p \
+		--Mdir $(CORE_1H_COHERENT_3P_VERILATOR_DIR) \
+		-o core_1h_coherent_3p_tb \
+		rtl/core/decode/defs/early-defs.v $(CORE_3P_AXI_SRCS) \
+		rtl/complex/protocol/line_crossbar.v \
+		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
+		$(COMPLEX_BUS_SRCS) $(AXI_DDR3_SRCS) \
+		$(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) \
+		tb/tb_4h_3p.sv tb/tb_1h_coherent_3p.sv
+
 $(OPENSBI_4H_HELD_VERILATOR_BUILD): tb/tb_4h_3p.sv \
 		$(CORE_3P_AXI_SRCS) rtl/complex/protocol/line_crossbar.v \
 		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
@@ -205,6 +234,7 @@ $(OPENSBI_4H_HELD_VERILATOR_BUILD): tb/tb_4h_3p.sv \
 	mkdir -p $(OPENSBI_4H_HELD_VERILATOR_DIR)
 	+$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 32 \
 		--threads $(OPENSBI_4H_HELD_VERILATOR_THREADS) -Irtl \
+		-GCORE_INSTANCES=$(OPENSBI_4H_HELD_CORE_INSTANCES) \
 		-GL1D_PREFETCH_ENABLE=$(CORE_4H_3P_L1D_PREFETCH_ENABLE) \
 		-GMEMORY_BYTES=$(OPENSBI_4H_HELD_MEMORY_BYTES) \
 		-GENABLE_BOOT_ROM=1 \
@@ -221,6 +251,43 @@ $(OPENSBI_4H_HELD_VERILATOR_BUILD): tb/tb_4h_3p.sv \
 		--top-module tb_4h_3p \
 		--Mdir $(OPENSBI_4H_HELD_VERILATOR_DIR) \
 		-o opensbi_4h_held_tb $(CORE_3P_AXI_SRCS) \
+		rtl/complex/protocol/line_crossbar.v \
+		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
+		$(COMPLEX_BUS_SRCS) $(AXI_DDR3_SRCS) \
+		$(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) \
+		tb/tb_4h_3p.sv
+
+$(OPENSBI_4H_HELD_CHECKPOINT_VERILATOR_BUILD): \
+		tb/verilator_4h_checkpoint_main.cpp tb/tb_4h_3p.sv \
+		$(CORE_3P_AXI_SRCS) rtl/complex/protocol/line_crossbar.v \
+		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
+		$(COMPLEX_BUS_SRCS) $(AXI_DDR3_SRCS) \
+		$(ROM_SRCS) $(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) \
+		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(OPENSBI_4H_HELD_CHECKPOINT_VERILATOR_DIR)
+	+$(VERILATOR) --cc --exe --build --no-timing --savable \
+		-Wall -Wno-fatal -j 32 \
+		--threads $(OPENSBI_4H_HELD_VERILATOR_THREADS) -Irtl \
+		-DOPENRV64_4H_VERILATOR_CHECKPOINT \
+		-GCORE_INSTANCES=$(OPENSBI_4H_HELD_CORE_INSTANCES) \
+		-GL1D_PREFETCH_ENABLE=$(CORE_4H_3P_L1D_PREFETCH_ENABLE) \
+		-GMEMORY_BYTES=$(OPENSBI_4H_HELD_MEMORY_BYTES) \
+		-GENABLE_BOOT_ROM=1 \
+		-GOPENSBI_FDT_BASE_LO=$(OPENSBI_4H_HELD_FDT_BASE) \
+		-GDDR3_ENABLE=$(OPENSBI_4H_DDR3_ENABLE) \
+		-GGENBUS_READ_BUFFER_DEPTH=$(OPENSBI_4H_GENBUS_READ_DEPTH) \
+		-GGENBUS_WRITE_BUFFER_DEPTH=$(OPENSBI_4H_GENBUS_WRITE_DEPTH) \
+		-GDDR3_READ_QUEUE_DEPTH=$(OPENSBI_4H_DDR3_READ_QUEUE_DEPTH) \
+		-GDDR3_WRITE_QUEUE_DEPTH=$(OPENSBI_4H_DDR3_WRITE_QUEUE_DEPTH) \
+		-GDDR3_COMMAND_QUEUE_DEPTH=$(OPENSBI_4H_DDR3_COMMAND_QUEUE_DEPTH) \
+		-GDDR3_MAX_BURST_TRAIN_BURSTS=$(OPENSBI_4H_DDR3_MAX_BURST_TRAIN_BURSTS) \
+		-GDDR3_BANK_ROW_SWIZZLE=$(OPENSBI_4H_DDR3_BANK_ROW_SWIZZLE) \
+		--output-split 20000 --output-split-cfuncs 2000 \
+		--top-module tb_4h_3p \
+		--Mdir $(OPENSBI_4H_HELD_CHECKPOINT_VERILATOR_DIR) \
+		-o opensbi_4h_checkpoint_tb \
+		$(abspath tb/verilator_4h_checkpoint_main.cpp) \
+		$(CORE_3P_AXI_SRCS) \
 		rtl/complex/protocol/line_crossbar.v \
 		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
 		$(COMPLEX_BUS_SRCS) $(AXI_DDR3_SRCS) \

@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-zicsr.v"
 `include "core/except/except-defs.v"
 
 module tb_retire_3p;
@@ -13,6 +14,12 @@ module tb_retire_3p;
     reg [3*RESULT_WIDTH-1:0] queue_result;
     reg [191:0] queue_trace;
     wire [2:0] queue_accept;
+    reg [2:0] extension_ready;
+    reg [2:0] extension_gpr_result_valid;
+    reg [191:0] extension_gpr_result;
+    reg [2:0] extension_exception;
+    reg [3*`RV64_EXCEPT_CAUSE_WIDTH-1:0] extension_cause;
+    reg [191:0] extension_tval;
     reg irq_pending;
     reg [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause;
     reg csr_write_ready;
@@ -31,6 +38,7 @@ module tb_retire_3p;
     wire [191:0] gpr_rd_data;
     wire csr_write;
     wire [11:0] csr_addr;
+    wire [`RV64_FUNCT3_WIDTH-1:0] csr_op;
     wire [63:0] csr_wdata;
     wire exception;
     wire halt;
@@ -48,12 +56,20 @@ module tb_retire_3p;
     wire [4:0] trace_rd;
     wire [63:0] trace_wdata;
 
-    openrv64_retire_3p dut (
+    openrv64_retire_3p #(
+        .ENABLE_EXTENSION(1)
+    ) dut (
         .queue_valid_i(queue_valid),
         .queue_meta_i(queue_meta),
         .queue_result_i(queue_result),
         .queue_trace_id_i(queue_trace),
         .queue_accept_o(queue_accept),
+        .extension_ready_i(extension_ready),
+        .extension_gpr_result_valid_i(extension_gpr_result_valid),
+        .extension_gpr_result_i(extension_gpr_result),
+        .extension_exception_i(extension_exception),
+        .extension_cause_i(extension_cause),
+        .extension_tval_i(extension_tval),
         .csr_write_ready_i(csr_write_ready),
         .irq_pending_i(irq_pending),
         .irq_cause_i(irq_cause),
@@ -72,6 +88,7 @@ module tb_retire_3p;
         .gpr_rd_data_o(gpr_rd_data),
         .csr_write_o(csr_write),
         .csr_addr_o(csr_addr),
+        .csr_op_o(csr_op),
         .csr_wdata_o(csr_wdata),
         .exception_o(exception),
         .halt_o(halt),
@@ -185,6 +202,12 @@ module tb_retire_3p;
         irq_pending = 1'b0;
         irq_cause = 5'd0;
         csr_write_ready = 1'b1;
+        extension_ready = 3'b111;
+        extension_gpr_result_valid = 3'b000;
+        extension_gpr_result = 192'd0;
+        extension_exception = 3'b000;
+        extension_cause = {3*`RV64_EXCEPT_CAUSE_WIDTH{1'b0}};
+        extension_tval = 192'd0;
 
         set_meta(0, 0, 1, 0, 1, 5'd5);
         set_meta(1, 0, 1, 1, 1, 5'd6);
@@ -210,6 +233,33 @@ module tb_retire_3p;
             (gpr_rd_data[2*64 +: 64] != 64'h77)) begin
             fail("three retirement write values were reordered");
         end
+
+        // A sparse extension may stop the ordered prefix and may supply the
+        // value only for an actual cross-domain GPR write.
+        extension_ready = 3'b101;
+        extension_gpr_result_valid = 3'b001;
+        extension_gpr_result[0 +: 64] = 64'hfeedface;
+        #1;
+        if ((queue_accept != 3'b001) ||
+            (gpr_rd_data[0 +: 64] != 64'hfeedface) ||
+            (trace_wdata != 64'hfeedface)) begin
+            fail("extension retirement readiness or GPR result override failed");
+        end
+        extension_ready = 3'b111;
+        extension_gpr_result_valid = 3'b000;
+
+        extension_exception = 3'b010;
+        extension_cause[1*`RV64_EXCEPT_CAUSE_WIDTH +:
+                        `RV64_EXCEPT_CAUSE_WIDTH] =
+            `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR;
+        extension_tval[1*64 +: 64] = 64'hf00d;
+        #1;
+        if ((queue_accept != 3'b011) || (retire_arch != 3'b001) ||
+            !exception || (cause != `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR) ||
+            (tval != 64'hf00d)) begin
+            fail("generic extension exception did not end ordered retirement");
+        end
+        extension_exception = 3'b000;
         if ((gpr_rd_addr[0*`OPENRV64_PHYS_REG_ADDR_WIDTH +:
                            `OPENRV64_PHYS_REG_ADDR_WIDTH] != 6'd5) ||
             (gpr_rd_addr[1*`OPENRV64_PHYS_REG_ADDR_WIDTH +:
@@ -267,9 +317,14 @@ module tb_retire_3p;
         queue_result[0*RESULT_WIDTH + 76] = 1'b1;
         queue_result[0*RESULT_WIDTH + 64 +: 12] = 12'h305;
         queue_result[0*RESULT_WIDTH + 0 +: 64] = 64'h1234;
+        queue_meta[0*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
+                   `RV64_INSTR_WIDTH] =
+            {12'h305, 5'd4, `RV64_ZICSR_FUNCT3_CSRRC,
+             5'd0, `RV64_OPCODE_SYSTEM};
         csr_write_ready = 1'b0;
         #1;
         if (!csr_write || (csr_addr != 12'h305) ||
+            (csr_op != `RV64_ZICSR_FUNCT3_CSRRC) ||
             (csr_wdata != 64'h1234)) begin
             fail("retirement did not hold CSR write request");
         end

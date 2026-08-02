@@ -1,5 +1,28 @@
 # AI runbook: reproduce and debug the 3P Linux boot
 
+## 4PF F/D focused gate
+
+The 4PF F/D core is a separate hierarchy; its tests do not alter or validate
+the 1P/3P Linux configuration. Before changing its decode, window, sidecar,
+retirement, LSU-transfer, or CSR seams, run:
+
+```bash
+make -j2 \
+  sim-decode-rv64-fd \
+  sim-fd-dispatch \
+  sim-fd-uop-harness \
+  sim-fpu-csrs \
+  sim-top-4pf \
+  sim-top-4pf-faults
+```
+
+`sim-top-4pf` executes a full RV64D DAXPY program. `sim-top-4pf-faults`
+executes a machine-mode trap handler and requires load access cause 5, store
+access cause 7, and an execution-time unsupported operation to use standard
+illegal-instruction cause 2 with the original instruction in `mtval`. Treat
+standalone decode/FPU/uop passes as partial evidence; they are not substitutes
+for these two fetch-to-retirement tests.
+
 This is an operational runbook for an AI agent reproducing the current
 high-visibility Linux test. Run commands from the repository root:
 
@@ -92,6 +115,36 @@ The wrapper buffers its own source before parsing the invocation. Editing
 `tools/run-linux-3p.sh` while an older invocation is running therefore affects
 only future launches; it cannot make the active shell resume from a changed
 file offset after the simulator exits.
+
+### Coherent SMP run configurations
+
+Do not assemble coherent Linux SMP commands, tmux sessions, monitors, and log
+directories by hand. Named targets live under `run/cfg/` and are executable:
+
+```bash
+run/cfg/linux-smp-2h-ddr3.cfg
+run/cfg/linux-smp-4h-ddr3.cfg
+```
+
+Equivalently, pass a configuration name or path to the common runner:
+
+```bash
+run/run linux-smp-4h-ddr3
+run/run run/cfg/linux-smp-4h-ddr3.cfg --rebuild
+```
+
+Every launch creates `run/log/<configuration-name>-<UTC timestamp>/` and
+copies the selected configuration to `run.cfg`. The same directory retains
+the effective Make configuration, Git state and dirty patch, source hashes,
+build log, private simulator/firmware/DTB/Image snapshots, artifact hashes,
+run log, checkpoint, and final validation status. Use `run/run status`,
+`run/run list`, `run/run log`, `run/run tail`, `run/run attach`, and
+`run/run stop` rather than reconstructing tmux commands separately. Resume a
+managed checkpoint with `--resume RUN_OR_CHECKPOINT`; the runner must use the
+source run's snapshotted simulator and inputs, not rebuild current RTL against
+old serialized state. Add a new `run/cfg/*.cfg` file when a target needs a
+different durable configuration; command-line overrides are for deliberate
+one-off experiments, not hidden defaults.
 
 ## Inputs
 

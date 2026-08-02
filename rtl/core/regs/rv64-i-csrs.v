@@ -1,12 +1,14 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
+`include "core/isa/rv64-zicsr.v"
 `include "core/except/except-defs.v"
 `include "core/cmu/defs.v"
 
 module openrv64_rv64i_csrs #(
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_RV64A = 1,
+    parameter ENABLE_EXTENSION = 0,
     parameter integer HPM_COUNTERS = 8,
     parameter [`RV64_XLEN-1:0] HART_ID = {`RV64_XLEN{1'b0}}
 ) (
@@ -18,11 +20,28 @@ module openrv64_rv64i_csrs #(
     output reg                              csr_valid_o,
     output reg                              csr_writable_o,
     input  wire                             csr_write_i,
+    input  wire [`RV64_FUNCT3_WIDTH-1:0]   csr_op_i,
     input  wire [`RV64_XLEN-1:0]           csr_wdata_i,
     output wire                             csr_write_ready_o,
     output wire                             csr_pmp_busy_o,
     output wire                             csr_satp_busy_o,
     output wire                             csr_hpm_busy_o,
+
+    // Optional generic architectural-extension CSR client.  The integer CSR
+    // block validates privilege and read-only encoding; the client owns its
+    // CSR state and any disjoint status/misa bits it contributes.
+    input  wire                             extension_csr_selected_i,
+    input  wire                             extension_csr_valid_i,
+    input  wire                             extension_csr_writable_i,
+    input  wire [`RV64_XLEN-1:0]           extension_csr_rdata_i,
+    input  wire                             extension_csr_write_ready_i,
+    output wire                             extension_csr_write_o,
+    output wire [`RV64_XLEN-1:0]           extension_csr_wdata_o,
+    output wire                             extension_mstatus_write_o,
+    output wire                             extension_sstatus_write_o,
+    input  wire [`RV64_XLEN-1:0]           extension_misa_bits_i,
+    input  wire [`RV64_XLEN-1:0]           extension_mstatus_bits_i,
+    input  wire [`RV64_XLEN-1:0]           extension_sstatus_bits_i,
 
     input  wire                             trap_enter_i,
     input  wire                             trap_interrupt_i,
@@ -84,7 +103,7 @@ module openrv64_rv64i_csrs #(
     localparam [`RV64_XLEN-1:0] MIP_MASK = MIP_S_MASK | MIP_M_MASK;
     // M-mode firmware uses mip.STIP to inject an SBI timer event into S-mode.
     localparam [`RV64_XLEN-1:0] MIP_SW_WRITABLE_MASK =
-        BIT_SSIP | BIT_MSIP | BIT_STIP;
+        BIT_SSIP | BIT_STIP;
     localparam [`RV64_XLEN-1:0] MEDELEG_MASK =
         (64'd1 << `RV64_EXCEPT_CAUSE_INSTR_ADDR_MISALIGNED) |
         (64'd1 << `RV64_EXCEPT_CAUSE_INSTR_ACCESS_FAULT) |
@@ -168,6 +187,16 @@ module openrv64_rv64i_csrs #(
         (irq_s_external_i ? BIT_SEIP : 64'd0) |
         (irq_external_i ? BIT_MEIP : 64'd0);
     wire [`RV64_XLEN-1:0] mip_value = (mip_sw_q | mip_external) & MIP_MASK;
+    wire csr_op_set = (csr_op_i == `RV64_ZICSR_FUNCT3_CSRRS) ||
+                      (csr_op_i == `RV64_ZICSR_FUNCT3_CSRRSI);
+    wire csr_op_clear = (csr_op_i == `RV64_ZICSR_FUNCT3_CSRRC) ||
+                        (csr_op_i == `RV64_ZICSR_FUNCT3_CSRRCI);
+    wire [`RV64_XLEN-1:0] csr_write_mask =
+        (csr_op_set || csr_op_clear) ? csr_wdata_i :
+        {`RV64_XLEN{1'b1}};
+    wire [`RV64_XLEN-1:0] csr_write_value = csr_op_set ?
+        (csr_rdata_o | csr_wdata_i) :
+        csr_op_clear ? (csr_rdata_o & ~csr_wdata_i) : csr_wdata_i;
     wire [`RV64_XLEN-1:0] enabled_pending = mie_q & mip_value;
     wire trap_delegated = (priv_mode_q != `RV64_PRIV_M) &&
                            (trap_interrupt_i ? mideleg_q[trap_cause_i] :
@@ -201,11 +230,24 @@ module openrv64_rv64i_csrs #(
                           hpm_write_addr_q : csr_addr_i;
     assign cmu_csr_write = hpm_write_commit;
     assign cmu_csr_wdata = hpm_write_commit ?
-                           hpm_write_data_q : csr_wdata_i;
+                           hpm_write_data_q : csr_write_value;
     wire hpm_write_request =
         csr_write_i && csr_valid_o && csr_writable_o && cmu_csr_match;
     wire hpm_write_start =
         hpm_write_request && !hpm_write_busy_q && !hpm_write_done_q;
+    wire extension_csr_selected = (ENABLE_EXTENSION != 0) &&
+                                  extension_csr_selected_i;
+    wire extension_write_commit = csr_write_i && csr_valid_o &&
+                                  csr_writable_o;
+    assign extension_csr_write_o = extension_write_commit &&
+                                   extension_csr_selected;
+    assign extension_csr_wdata_o = csr_write_value;
+    assign extension_mstatus_write_o = (ENABLE_EXTENSION != 0) &&
+                                       extension_write_commit &&
+                                       (csr_addr_i == `RV64_CSR_MSTATUS);
+    assign extension_sstatus_write_o = (ENABLE_EXTENSION != 0) &&
+                                       extension_write_commit &&
+                                       (csr_addr_i == `RV64_CSR_SSTATUS);
 
     assign trap_vector_o = selected_tvec_base +
                            ((trap_interrupt_i && selected_tvec_vectored) ?
@@ -257,7 +299,7 @@ module openrv64_rv64i_csrs #(
         .csr_writable_o(pmp_csr_writable),
         .csr_write_i(csr_write_i && csr_valid_o && csr_writable_o &&
                      pmp_csr_match && pmp_csr_writable),
-        .csr_wdata_i(csr_wdata_i),
+        .csr_wdata_i(csr_write_value),
         .csr_write_ready_o(pmp_csr_write_ready),
         .csr_busy_o(pmp_csr_busy),
         .instr_priv_mode_i(priv_mode_q),
@@ -279,6 +321,7 @@ module openrv64_rv64i_csrs #(
     );
 
     assign csr_write_ready_o =
+        extension_csr_selected ? extension_csr_write_ready_i :
         pmp_csr_match ? pmp_csr_write_ready :
         satp_write_request ? satp_done_q :
         hpm_write_request ? hpm_write_done_q :
@@ -349,7 +392,10 @@ module openrv64_rv64i_csrs #(
         csr_writable_o = 1'b1;
 
         case (csr_addr_i)
-            `RV64_CSR_SSTATUS: csr_rdata_o = mstatus_q & SSTATUS_READ_MASK;
+            `RV64_CSR_SSTATUS: csr_rdata_o =
+                (mstatus_q & SSTATUS_READ_MASK) |
+                ((ENABLE_EXTENSION != 0) ? extension_sstatus_bits_i :
+                                           {`RV64_XLEN{1'b0}});
             `RV64_CSR_SIE: csr_rdata_o = mie_q & mideleg_q & MIP_S_MASK;
             `RV64_CSR_STVEC: csr_rdata_o = stvec_q;
             `RV64_CSR_SSCRATCH: csr_rdata_o = sscratch_q;
@@ -359,9 +405,13 @@ module openrv64_rv64i_csrs #(
             `RV64_CSR_SIP: csr_rdata_o = mip_value & mideleg_q & MIP_S_MASK;
             `RV64_CSR_SATP: csr_rdata_o = satp_q;
 
-            `RV64_CSR_MSTATUS: csr_rdata_o = mstatus_q;
+            `RV64_CSR_MSTATUS: csr_rdata_o = mstatus_q |
+                ((ENABLE_EXTENSION != 0) ? extension_mstatus_bits_i :
+                                           {`RV64_XLEN{1'b0}});
             `RV64_CSR_MISA: begin
-                csr_rdata_o = MISA_VALUE;
+                csr_rdata_o = MISA_VALUE |
+                    ((ENABLE_EXTENSION != 0) ? extension_misa_bits_i :
+                                               {`RV64_XLEN{1'b0}});
                 csr_writable_o = 1'b0;
             end
             `RV64_CSR_MEDELEG: csr_rdata_o = medeleg_q;
@@ -387,7 +437,11 @@ module openrv64_rv64i_csrs #(
             end
 
             default: begin
-                if (cmu_csr_match) begin
+                if (extension_csr_selected) begin
+                    csr_rdata_o = extension_csr_rdata_i;
+                    csr_valid_o = extension_csr_valid_i;
+                    csr_writable_o = extension_csr_writable_i;
+                end else if (cmu_csr_match) begin
                     csr_rdata_o = cmu_csr_rdata;
                     csr_valid_o = cmu_csr_valid;
                     csr_writable_o = cmu_csr_writable;
@@ -435,7 +489,7 @@ module openrv64_rv64i_csrs #(
                 end
             end else if (hpm_write_start) begin
                 hpm_write_addr_q <= csr_addr_i;
-                hpm_write_data_q <= csr_wdata_i;
+                hpm_write_data_q <= csr_write_value;
                 hpm_write_count_q <= 2'd0;
                 hpm_write_busy_q <= 1'b1;
             end
@@ -467,11 +521,11 @@ module openrv64_rv64i_csrs #(
                     satp_count_q <= satp_count_q + 1'b1;
                 end
             end else if (satp_start) begin
-                case (csr_wdata_i[`RV64_SATP_MODE_BITS])
+                case (csr_write_value[`RV64_SATP_MODE_BITS])
                     `RV64_SATP_MODE_BARE:
                         satp_pending_q <= 64'd0;
                     `RV64_SATP_MODE_SV39:
-                        satp_pending_q <= csr_wdata_i;
+                        satp_pending_q <= csr_write_value;
                     default:
                         satp_pending_q <= satp_q;
                 endcase
@@ -547,75 +601,85 @@ module openrv64_rv64i_csrs #(
             case (csr_addr_i)
                 `RV64_CSR_SSTATUS: begin
                     mstatus_q <= (mstatus_q & ~SSTATUS_RW_MASK) |
-                                 (csr_wdata_i & SSTATUS_RW_MASK);
+                                 (csr_write_value & SSTATUS_RW_MASK);
                 end
                 `RV64_CSR_SIE: begin
                     mie_q <= (mie_q & ~MIP_S_MASK) |
-                             (csr_wdata_i & mideleg_q & MIP_S_MASK);
+                             (csr_write_value & mideleg_q & MIP_S_MASK);
                 end
                 `RV64_CSR_STVEC: begin
-                    stvec_q <= {csr_wdata_i[`RV64_XLEN-1:2],
-                        (csr_wdata_i[1:0] == 2'b01) ? 2'b01 : 2'b00};
+                    stvec_q <= {csr_write_value[`RV64_XLEN-1:2],
+                        (csr_write_value[1:0] == 2'b01) ? 2'b01 : 2'b00};
                 end
-                `RV64_CSR_SSCRATCH: sscratch_q <= csr_wdata_i;
-                `RV64_CSR_SEPC: sepc_q <= {csr_wdata_i[`RV64_XLEN-1:2], 2'b00};
-                `RV64_CSR_SCAUSE: scause_q <= csr_wdata_i;
-                `RV64_CSR_STVAL: stval_q <= csr_wdata_i;
+                `RV64_CSR_SSCRATCH: sscratch_q <= csr_write_value;
+                `RV64_CSR_SEPC: sepc_q <=
+                    {csr_write_value[`RV64_XLEN-1:2], 2'b00};
+                `RV64_CSR_SCAUSE: scause_q <= csr_write_value;
+                `RV64_CSR_STVAL: stval_q <= csr_write_value;
                 `RV64_CSR_SIP: begin
-                    mip_sw_q <= (mip_sw_q & ~BIT_SSIP) |
-                        (csr_wdata_i & mideleg_q & BIT_SSIP);
+                    mip_sw_q <=
+                        (mip_sw_q & ~(csr_write_mask & BIT_SSIP)) |
+                        (csr_write_value & csr_write_mask &
+                         mideleg_q & BIT_SSIP);
                 end
                 `RV64_CSR_SATP: begin
                 end
 
                 `RV64_CSR_MSTATUS: begin
                     mstatus_q[`RV64_MSTATUS_SIE_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_SIE_BIT];
+                        csr_write_value[`RV64_MSTATUS_SIE_BIT];
                     mstatus_q[`RV64_MSTATUS_MIE_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_MIE_BIT];
+                        csr_write_value[`RV64_MSTATUS_MIE_BIT];
                     mstatus_q[`RV64_MSTATUS_SPIE_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_SPIE_BIT];
+                        csr_write_value[`RV64_MSTATUS_SPIE_BIT];
                     mstatus_q[`RV64_MSTATUS_MPIE_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_MPIE_BIT];
+                        csr_write_value[`RV64_MSTATUS_MPIE_BIT];
                     mstatus_q[`RV64_MSTATUS_SPP_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_SPP_BIT];
+                        csr_write_value[`RV64_MSTATUS_SPP_BIT];
                     mstatus_q[`RV64_MSTATUS_MPRV_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_MPRV_BIT];
+                        csr_write_value[`RV64_MSTATUS_MPRV_BIT];
                     mstatus_q[`RV64_MSTATUS_SUM_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_SUM_BIT];
+                        csr_write_value[`RV64_MSTATUS_SUM_BIT];
                     mstatus_q[`RV64_MSTATUS_MXR_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_MXR_BIT];
+                        csr_write_value[`RV64_MSTATUS_MXR_BIT];
                     mstatus_q[`RV64_MSTATUS_TVM_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_TVM_BIT];
+                        csr_write_value[`RV64_MSTATUS_TVM_BIT];
                     mstatus_q[`RV64_MSTATUS_TW_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_TW_BIT];
+                        csr_write_value[`RV64_MSTATUS_TW_BIT];
                     mstatus_q[`RV64_MSTATUS_TSR_BIT] <=
-                        csr_wdata_i[`RV64_MSTATUS_TSR_BIT];
-                    case (csr_wdata_i[`RV64_MSTATUS_MPP_BITS])
+                        csr_write_value[`RV64_MSTATUS_TSR_BIT];
+                    case (csr_write_value[`RV64_MSTATUS_MPP_BITS])
                         `RV64_PRIV_U,
                         `RV64_PRIV_S,
                         `RV64_PRIV_M:
                             mstatus_q[`RV64_MSTATUS_MPP_BITS] <=
-                                csr_wdata_i[`RV64_MSTATUS_MPP_BITS];
+                                csr_write_value[`RV64_MSTATUS_MPP_BITS];
                         default:
                             mstatus_q[`RV64_MSTATUS_MPP_BITS] <= `RV64_PRIV_U;
                     endcase
                     mstatus_q[`RV64_MSTATUS_SXL_BITS] <= `RV64_MSTATUS_SXL_64;
                     mstatus_q[`RV64_MSTATUS_UXL_BITS] <= `RV64_MSTATUS_UXL_64;
                 end
-                `RV64_CSR_MEDELEG: medeleg_q <= csr_wdata_i & MEDELEG_MASK;
-                `RV64_CSR_MIDELEG: mideleg_q <= csr_wdata_i & MIDELEG_MASK;
-                `RV64_CSR_MIE: mie_q <= csr_wdata_i & MIP_MASK;
+                `RV64_CSR_MEDELEG: medeleg_q <=
+                    csr_write_value & MEDELEG_MASK;
+                `RV64_CSR_MIDELEG: mideleg_q <=
+                    csr_write_value & MIDELEG_MASK;
+                `RV64_CSR_MIE: mie_q <= csr_write_value & MIP_MASK;
                 `RV64_CSR_MTVEC: begin
-                    mtvec_q <= {csr_wdata_i[`RV64_XLEN-1:2],
-                        (csr_wdata_i[1:0] == 2'b01) ? 2'b01 : 2'b00};
+                    mtvec_q <= {csr_write_value[`RV64_XLEN-1:2],
+                        (csr_write_value[1:0] == 2'b01) ? 2'b01 : 2'b00};
                 end
-                `RV64_CSR_MSCRATCH: mscratch_q <= csr_wdata_i;
-                `RV64_CSR_MEPC: mepc_q <= {csr_wdata_i[`RV64_XLEN-1:2], 2'b00};
-                `RV64_CSR_MCAUSE: mcause_q <= csr_wdata_i;
-                `RV64_CSR_MTVAL: mtval_q <= csr_wdata_i;
+                `RV64_CSR_MSCRATCH: mscratch_q <= csr_write_value;
+                `RV64_CSR_MEPC: mepc_q <=
+                    {csr_write_value[`RV64_XLEN-1:2], 2'b00};
+                `RV64_CSR_MCAUSE: mcause_q <= csr_write_value;
+                `RV64_CSR_MTVAL: mtval_q <= csr_write_value;
                 `RV64_CSR_MIP: begin
-                    mip_sw_q <= csr_wdata_i & MIP_SW_WRITABLE_MASK;
+                    mip_sw_q <=
+                        (mip_sw_q &
+                         ~(csr_write_mask & MIP_SW_WRITABLE_MASK)) |
+                        (csr_write_value & csr_write_mask &
+                         MIP_SW_WRITABLE_MASK);
                 end
                 default: begin
                 end

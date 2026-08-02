@@ -11,6 +11,7 @@ module tb_rv64i_csrs;
     logic csr_valid;
     logic csr_writable;
     logic csr_write;
+    logic [`RV64_FUNCT3_WIDTH-1:0] csr_op;
     logic [`RV64_XLEN-1:0] csr_wdata;
     logic csr_write_ready;
     logic csr_pmp_busy;
@@ -61,9 +62,19 @@ module tb_rv64i_csrs;
     logic [`RV64_PRIV_WIDTH-1:0] pmp_bus_priv_mode;
     logic pmp_bus_allow;
     logic [`RV64_XLEN-1:0] counter_snapshot;
+    logic extension_enable;
+    logic [`RV64_XLEN-1:0] extension_misa_bits;
+    logic [`RV64_XLEN-1:0] extension_mstatus_bits;
+    logic [`RV64_XLEN-1:0] extension_sstatus_bits;
+    wire extension_csr_selected = extension_enable &&
+                                  (csr_addr == 12'h7c0);
+    wire extension_csr_write;
+    wire extension_mstatus_write;
+    wire extension_sstatus_write;
 
     openrv64_rv64i_csrs #(
         .ENABLE_RV64M(1'b1),
+        .ENABLE_EXTENSION(1'b1),
         .HART_ID(64'd3)
     ) dut (
         .clk(clk),
@@ -73,11 +84,24 @@ module tb_rv64i_csrs;
         .csr_valid_o(csr_valid),
         .csr_writable_o(csr_writable),
         .csr_write_i(csr_write),
+        .csr_op_i(csr_op),
         .csr_wdata_i(csr_wdata),
         .csr_write_ready_o(csr_write_ready),
         .csr_pmp_busy_o(csr_pmp_busy),
         .csr_satp_busy_o(csr_satp_busy),
         .csr_hpm_busy_o(csr_hpm_busy),
+        .extension_csr_selected_i(extension_csr_selected),
+        .extension_csr_valid_i(extension_csr_selected),
+        .extension_csr_writable_i(extension_csr_selected),
+        .extension_csr_rdata_i(64'h0123_4567_89ab_cdef),
+        .extension_csr_write_ready_i(1'b1),
+        .extension_csr_write_o(extension_csr_write),
+        .extension_csr_wdata_o(),
+        .extension_mstatus_write_o(extension_mstatus_write),
+        .extension_sstatus_write_o(extension_sstatus_write),
+        .extension_misa_bits_i(extension_misa_bits),
+        .extension_mstatus_bits_i(extension_mstatus_bits),
+        .extension_sstatus_bits_i(extension_sstatus_bits),
         .trap_enter_i(trap_enter),
         .trap_interrupt_i(trap_interrupt),
         .trap_cause_i(trap_cause),
@@ -195,6 +219,17 @@ module tb_rv64i_csrs;
         end
     endtask
 
+    task automatic write_csr_op;
+        input [`RV64_FUNCT12_WIDTH-1:0] addr;
+        input [`RV64_FUNCT3_WIDTH-1:0] op;
+        input [`RV64_XLEN-1:0] operand;
+        begin
+            csr_op = op;
+            write_csr(addr, operand);
+            csr_op = `RV64_ZICSR_FUNCT3_CSRRW;
+        end
+    endtask
+
     task automatic pulse_trap;
         begin
             @(negedge clk);
@@ -250,6 +285,7 @@ module tb_rv64i_csrs;
         integer busy_cycles;
         csr_addr = 12'h000;
         csr_write = 1'b0;
+        csr_op = `RV64_ZICSR_FUNCT3_CSRRW;
         csr_wdata = 64'h0;
         trap_enter = 1'b0;
         trap_interrupt = 1'b0;
@@ -277,6 +313,10 @@ module tb_rv64i_csrs;
         pmp_bus_write = 1'b0;
         pmp_bus_exec = 1'b0;
         pmp_bus_priv_mode = `RV64_PRIV_M;
+        extension_enable = 1'b1;
+        extension_misa_bits = 64'd0;
+        extension_mstatus_bits = 64'd0;
+        extension_sstatus_bits = 64'd0;
 
         rst_n = 1'b0;
         repeat (2) @(posedge clk);
@@ -293,6 +333,37 @@ module tb_rv64i_csrs;
         check_csr(`RV64_CSR_PMPADDR15, 1'b1, 1'b1, 64'h0,
                   "pmpaddr15 reset");
         check_csr(12'hfff, 1'b0, 1'b0, 64'h0, "unimplemented csr");
+
+        check_csr(12'h7c0, 1'b1, 1'b1,
+                  64'h0123_4567_89ab_cdef,
+                  "generic extension csr response");
+        @(negedge clk);
+        csr_addr = 12'h7c0;
+        csr_wdata = 64'h55aa;
+        csr_write = 1'b1;
+        #1;
+        if (!extension_csr_write)
+            $fatal(1, "validated extension CSR write was not forwarded");
+        @(posedge clk);
+        @(negedge clk);
+        csr_write = 1'b0;
+        csr_addr = 12'd0;
+
+        extension_misa_bits = 64'd1 << 23;
+        extension_mstatus_bits = 64'd1 << 63;
+        extension_sstatus_bits = 64'd1 << 63;
+        check_csr(`RV64_CSR_MISA, 1'b1, 1'b0,
+                  64'h8000_0000_0094_1101,
+                  "generic extension misa overlay");
+        check_csr(`RV64_CSR_MSTATUS, 1'b1, 1'b1,
+                  64'h8000_000a_0000_1800,
+                  "generic extension mstatus overlay");
+        check_csr(`RV64_CSR_SSTATUS, 1'b1, 1'b1,
+                  64'h8000_0002_0000_0000,
+                  "generic extension sstatus overlay");
+        extension_misa_bits = 64'd0;
+        extension_mstatus_bits = 64'd0;
+        extension_sstatus_bits = 64'd0;
 
         if (priv_mode != `RV64_PRIV_M || !pmp_instr_allow) begin
             $fatal(1, "reset privilege/PMP state mismatch");
@@ -366,9 +437,33 @@ module tb_rv64i_csrs;
         write_csr(`RV64_CSR_MIP, 64'hffff_ffff_ffff_ffff);
         check_csr(`RV64_CSR_MIP, 1'b1, 1'b1,
                   (64'd1 << `RV64_MIP_SSIP_BIT) |
-                  (64'd1 << `RV64_MIP_MSIP_BIT) |
                   (64'd1 << `RV64_MIP_STIP_BIT),
                   "M-mode software-writable MIP bits");
+        write_csr(`RV64_CSR_MIP, 64'd0);
+
+        // MSIP is a read-only reflection of the memory-mapped CLINT source.
+        // A CSR read/modify/write while that source is asserted must not copy
+        // external MSIP into the software-pending state after CLINT clears.
+        irq_software = 1'b1;
+        check_csr(`RV64_CSR_MIP, 1'b1, 1'b1,
+                  64'd1 << `RV64_MIP_MSIP_BIT,
+                  "external MSIP reflected in MIP");
+        write_csr_op(`RV64_CSR_MIP,
+                     `RV64_ZICSR_FUNCT3_CSRRC,
+                     64'd1 << `RV64_MIP_STIP_BIT);
+        irq_software = 1'b0;
+        check_csr(`RV64_CSR_MIP, 1'b1, 1'b1,
+                  64'd0,
+                  "MIP CSRRC does not latch external MSIP");
+
+        irq_software = 1'b1;
+        write_csr(`RV64_CSR_MIP,
+                  (64'd1 << `RV64_MIP_MSIP_BIT) |
+                  (64'd1 << `RV64_MIP_SSIP_BIT));
+        irq_software = 1'b0;
+        check_csr(`RV64_CSR_MIP, 1'b1, 1'b1,
+                  64'd1 << `RV64_MIP_SSIP_BIT,
+                  "MIP CSRRW does not latch external MSIP");
         write_csr(`RV64_CSR_MIP, 64'd0);
 
         write_csr(`RV64_CSR_MINSTRET, 64'd20);

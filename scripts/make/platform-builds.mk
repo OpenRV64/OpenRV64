@@ -279,6 +279,15 @@ $(CCX_L2_SIM_BUILD): $(CCX_L2_SIM_SRCS) $(CCX_L2_SRCS) \
 		-o $(CCX_L2_SIM_BUILD) rtl/complex/protocol/defs.v \
 		$(CCX_L2_SRCS) $(CCX_L2_SIM_SRCS)
 
+$(CCX_L2_SC_REFILL_SIM_BUILD): $(CCX_L2_SC_REFILL_SIM_SRCS) \
+		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
+		rtl/complex/protocol/defs.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_ccx_l2_sc_refill \
+		-o $(CCX_L2_SC_REFILL_SIM_BUILD) \
+		rtl/complex/protocol/defs.v $(CCX_COHERENT_SRCS) \
+		$(CCX_L2_SRCS) $(CCX_L2_SC_REFILL_SIM_SRCS)
+
 $(GENBUS_AXI_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_genbus_interface \

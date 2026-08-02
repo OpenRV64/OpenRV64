@@ -4,9 +4,10 @@
 
 // Native 512-bit, nonblocking shared L2.
 //
-// The north and south neutral interfaces both move one complete 64-byte line
-// per cacheable request.  Width conversion belongs below this module in
-// genbus_interface.  A command FIFO feeds a synchronous per-way SRAM lookup
+// Cache fills and evictions move complete 64-byte lines.  A cacheable write
+// miss may instead write around as one naturally aligned scalar request with
+// line-relative data and strobes.  Width conversion belongs below this module
+// in genbus_interface.  A command FIFO feeds a synchronous per-way SRAM lookup
 // followed by a registered hit stage, allowing requests to continue behind
 // outstanding fills.  Independent per-line MSHRs merge requests to an active
 // miss, while an ordered bus tracking FIFO permits multiple writebacks/refills
@@ -1029,10 +1030,14 @@ module openrv64_ccx_l2_native #(
                     lookup_base_action_r = LOOKUP_HIT;
                 end
             end else if (lookup_is_write &&
+                         !((ENABLE_COHERENCE != 0) &&
+                           (lookup_op_q == `OPENRV64_CCX_OP_SC)) &&
                          mshr_free_found_r) begin
                 // A write miss needs no read-for-ownership.  Preserve its
                 // byte enables and let the backing memory merge the partial
-                // line.  Resident writes still merge into the L2 SRAM above.
+                // line.  A successful SC is excluded: it allocates and fills
+                // the line before replaying the atomic write.  Resident
+                // writes still merge into the L2 SRAM above.
                 lookup_base_action_r = LOOKUP_WRITE_AROUND;
             end else if (mshr_free_found_r && victim_found_r) begin
                 lookup_base_action_r = LOOKUP_ALLOC;
@@ -2048,6 +2053,11 @@ module openrv64_ccx_l2_native #(
             ((bus_req_size_o != 3'd6) ||
              (bus_req_addr_o[LINE_OFFSET_BITS-1:0] != 0)))
             $fatal(1, "native L2 emitted a non-line cache bus request");
+        if (rst_ni && bus_request_fire &&
+            (bus_candidate_action_r == BUS_ACTION_BYPASS) &&
+            mshr_bus_cacheable_q[bus_candidate_mshr_r] &&
+            (waiter_op_q[bus_waiter_index] == `OPENRV64_CCX_OP_SC))
+            $fatal(1, "native L2 emitted a cacheable SC write-around");
     end
 
     initial begin

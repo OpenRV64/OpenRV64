@@ -1,11 +1,11 @@
 `ifndef OPENRV64_RV64FD_FPR_V
 `define OPENRV64_RV64FD_FPR_V
 
-`include "core/isa/rv64-d.v"
+`include "core/exec/fpu/isa/rv64-d.v"
 `include "core/regs/prf.v"
 `timescale 1ns/1ps
 
-// Architectural RV64F/RV64D floating-point register file.
+// FPU-owned architectural RV64F/RV64D floating-point register file.
 //
 // The FPRs remain identity-mapped architectural state: there is no rename
 // table, free list, or physical readiness state here.  Three reads cover the

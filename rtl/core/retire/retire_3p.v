@@ -15,13 +15,25 @@ module openrv64_retire_3p #(
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter integer META_WIDTH =
         `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + 2*PHYS_REG_ADDR_WIDTH,
-    parameter integer RESULT_WIDTH = `OPENRV64_RETIRE_RESULT_WIDTH
+    parameter integer RESULT_WIDTH = `OPENRV64_RETIRE_RESULT_WIDTH,
+    parameter integer ENABLE_EXTENSION = 0
 ) (
     input  wire [2:0]                   queue_valid_i,
     input  wire [3*META_WIDTH-1:0]      queue_meta_i,
     input  wire [3*RESULT_WIDTH-1:0]    queue_result_i,
     input  wire [3*64-1:0]              queue_trace_id_i,
     output wire [2:0]                   queue_accept_o,
+
+    // Generic retirement-side extension contract.  The extension retains
+    // its private result state and qualifies each candidate using the same
+    // ordered lanes.  Only cross-domain GPR results enter integer retirement.
+    input  wire [2:0]                   extension_ready_i,
+    input  wire [2:0]                   extension_gpr_result_valid_i,
+    input  wire [3*`RV64_XLEN-1:0]      extension_gpr_result_i,
+    input  wire [2:0]                   extension_exception_i,
+    input  wire [3*`RV64_EXCEPT_CAUSE_WIDTH-1:0]
+                                        extension_cause_i,
+    input  wire [3*`RV64_XLEN-1:0]      extension_tval_i,
 
     input  wire                         csr_write_ready_i,
     input  wire                         irq_pending_i,
@@ -45,6 +57,7 @@ module openrv64_retire_3p #(
 
     output wire                         csr_write_o,
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
+    output wire [`RV64_FUNCT3_WIDTH-1:0] csr_op_o,
     output wire [`RV64_XLEN-1:0]        csr_wdata_o,
 
     output wire                         exception_o,
@@ -72,6 +85,7 @@ module openrv64_retire_3p #(
     localparam integer META_HARD = `OPENRV64_RETIRE_ALLOC_HARD_BIT;
     localparam integer META_NEW_PHYS =
         `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB;
+    localparam integer META_INSTR = `OPENRV64_RETIRE_ALLOC_INSTR_LSB;
 
     localparam integer RESULT_CSR_WDATA =
         `OPENRV64_RETIRE_RESULT_CSR_WDATA_LSB;
@@ -93,12 +107,14 @@ module openrv64_retire_3p #(
     wire hard0 = queue_meta_i[0*META_WIDTH + META_HARD];
     wire hard1 = queue_meta_i[1*META_WIDTH + META_HARD];
     wire hard2 = queue_meta_i[2*META_WIDTH + META_HARD];
+    wire [2:0] extension_exception = (ENABLE_EXTENSION != 0) ?
+                                     extension_exception_i : 3'b000;
     wire exception0 = queue_result_i[
-        0*RESULT_WIDTH + RESULT_EXCEPTION];
+        0*RESULT_WIDTH + RESULT_EXCEPTION] || extension_exception[0];
     wire exception1 = queue_result_i[
-        1*RESULT_WIDTH + RESULT_EXCEPTION];
+        1*RESULT_WIDTH + RESULT_EXCEPTION] || extension_exception[1];
     wire exception2 = queue_result_i[
-        2*RESULT_WIDTH + RESULT_EXCEPTION];
+        2*RESULT_WIDTH + RESULT_EXCEPTION] || extension_exception[2];
     wire halt0 = queue_result_i[
         0*RESULT_WIDTH + RESULT_HALT];
     wire halt1 = queue_result_i[
@@ -112,13 +128,22 @@ module openrv64_retire_3p #(
     wire csr_pending2 = queue_valid_i[2] && !exception2 &&
         queue_result_i[2*RESULT_WIDTH + RESULT_CSR_WRITE];
 
+    wire [2:0] extension_ready = (ENABLE_EXTENSION != 0) ?
+                                 extension_ready_i : 3'b111;
+    wire [2:0] extension_gpr_result_valid = (ENABLE_EXTENSION != 0) ?
+                                            extension_gpr_result_valid_i :
+                                            3'b000;
+
     wire accept0 = queue_valid_i[0] &&
+                   extension_ready[0] &&
                    (!csr_pending0 || csr_write_ready_i);
     wire accept1 = queue_valid_i[1] && accept0 &&
                    !exception0 && !halt0 && !hard0 &&
+                   extension_ready[1] &&
                    (!csr_pending1 || csr_write_ready_i);
     wire accept2 = queue_valid_i[2] && accept1 &&
                    !exception1 && !halt1 && !hard1 &&
+                   extension_ready[2] &&
                    (!csr_pending2 || csr_write_ready_i);
     assign queue_accept_o = {accept2, accept1, accept0};
 
@@ -175,9 +200,11 @@ module openrv64_retire_3p #(
                 lane*PHYS_REG_ADDR_WIDTH +:
                 PHYS_REG_ADDR_WIDTH] = new_phys;
             assign gpr_rd_data_o[lane*`RV64_XLEN +: `RV64_XLEN] =
-                queue_result_i[
-                    lane*RESULT_WIDTH +
-                    RESULT_DATA +: `RV64_XLEN];
+                extension_gpr_result_valid[lane] ?
+                extension_gpr_result_i[
+                    lane*`RV64_XLEN +: `RV64_XLEN] :
+                queue_result_i[lane*RESULT_WIDTH + RESULT_DATA +:
+                               `RV64_XLEN];
         end
     endgenerate
 
@@ -200,6 +227,12 @@ module openrv64_retire_3p #(
         `RV64_FUNCT12_WIDTH] : queue_result_i[
         2*RESULT_WIDTH + RESULT_CSR_ADDR +:
         `RV64_FUNCT12_WIDTH];
+    assign csr_op_o = csr_write0 ? queue_meta_i[
+        0*META_WIDTH + META_INSTR + 12 +: `RV64_FUNCT3_WIDTH] :
+        csr_write1 ? queue_meta_i[
+        1*META_WIDTH + META_INSTR + 12 +: `RV64_FUNCT3_WIDTH] :
+        queue_meta_i[
+        2*META_WIDTH + META_INSTR + 12 +: `RV64_FUNCT3_WIDTH];
     assign csr_wdata_o = csr_write0 ? queue_result_i[
         0*RESULT_WIDTH + RESULT_CSR_WDATA +:
         `RV64_XLEN] :
@@ -274,19 +307,28 @@ module openrv64_retire_3p #(
         queue_meta_i[event_lane*META_WIDTH +: META_WIDTH];
     wire [RESULT_WIDTH-1:0] event_result =
         queue_result_i[event_lane*RESULT_WIDTH +: RESULT_WIDTH];
+    wire event_extension_exception = extension_exception[event_lane];
     assign cause_o = irq_o ? irq_cause_i :
+        event_extension_exception ? extension_cause_i[
+            event_lane*`RV64_EXCEPT_CAUSE_WIDTH +:
+            `RV64_EXCEPT_CAUSE_WIDTH] :
         event_result[RESULT_CAUSE +: `RV64_EXCEPT_CAUSE_WIDTH];
     assign pc_o = event_meta[
         `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
     assign next_pc_o = event_result[RESULT_NEXT_PC +: `RV64_XLEN];
     assign tval_o = exception_o ?
-        event_result[RESULT_TVAL +: `RV64_XLEN] : {`RV64_XLEN{1'b0}};
+        (event_extension_exception ? extension_tval_i[
+            event_lane*`RV64_XLEN +: `RV64_XLEN] :
+         event_result[RESULT_TVAL +: `RV64_XLEN]) :
+        {`RV64_XLEN{1'b0}};
     assign trace_id_o =
         queue_trace_id_i[event_lane*64 +: 64];
     assign instr_o = event_meta[
         `OPENRV64_RETIRE_ALLOC_INSTR_LSB +: `RV64_INSTR_WIDTH];
     assign trace_rd_o = event_meta[
         `OPENRV64_RETIRE_ALLOC_RD_LSB +: `RV64_REG_ADDR_WIDTH];
-    assign trace_wdata_o = event_result[RESULT_DATA +: `RV64_XLEN];
+    assign trace_wdata_o = extension_gpr_result_valid[event_lane] ?
+        extension_gpr_result_i[event_lane*`RV64_XLEN +: `RV64_XLEN] :
+        event_result[RESULT_DATA +: `RV64_XLEN];
 
 endmodule

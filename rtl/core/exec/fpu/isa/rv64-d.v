@@ -1,7 +1,7 @@
 `ifndef OPENRV64_RV64_D_V
 `define OPENRV64_RV64_D_V
 
-`include "core/isa/rv64-f.v"
+`include "core/exec/fpu/isa/rv64-f.v"
 
 // D depends on F and reuses the common OP-FP funct5 values with fmt=D.
 `define RV64_FP_FUNCT3_FLD_FSD      3'b011

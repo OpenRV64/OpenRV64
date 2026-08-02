@@ -176,7 +176,15 @@ module openrv64_decode_early (
             end
 
             default: begin
-                valid_o = 1'b0;
+                // Any otherwise-unowned 32-bit major opcode is offered to
+                // extension decoders.  This stage deliberately does not know
+                // which extension, operand format, or register domain owns it.
+                if (opcode_i[1:0] == 2'b11) begin
+                    valid_o                     = 1'b1;
+                    class_sel_o                 = `RV64_EARLY_CLASS_EXTENSION;
+                    subdecode_needed_o          = 1'b1;
+                    extension_decode_possible_o = 1'b1;
+                end
             end
         endcase
     end

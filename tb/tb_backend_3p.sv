@@ -2,6 +2,7 @@
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
+`include "core/isa/rv64-zicsr.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
@@ -50,6 +51,7 @@ module tb_backend_3p #(
     reg csr_writable;
     wire csr_write;
     wire [11:0] csr_write_addr;
+    wire [`RV64_FUNCT3_WIDTH-1:0] csr_op;
     wire [63:0] csr_wdata;
     wire mem_valid;
     reg mem_ready;
@@ -141,6 +143,7 @@ module tb_backend_3p #(
         .csr_valid_i(csr_valid), .csr_writable_i(csr_writable),
         .csr_write_ready_i(1'b1),
         .csr_write_o(csr_write), .csr_write_addr_o(csr_write_addr),
+        .csr_op_o(csr_op),
         .csr_wdata_o(csr_wdata),
         .mem_valid_o(mem_valid), .mem_ready_i(mem_ready),
         .mem_tag_o(mem_tag), .mem_xlate_only_o(mem_xlate_only),
@@ -911,7 +914,8 @@ module tb_backend_3p #(
         for (cycles = 0; cycles < 20 && !saw_satp_after_store_drain;
              cycles = cycles + 1) begin
             #1;
-            if (csr_write && (csr_write_addr == `RV64_CSR_SATP))
+            if (csr_write && (csr_write_addr == `RV64_CSR_SATP) &&
+                (csr_op == `RV64_ZICSR_FUNCT3_CSRRW))
                 saw_satp_after_store_drain = 1'b1;
             tick();
         end

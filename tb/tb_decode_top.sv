@@ -46,6 +46,27 @@ module tb_decode_top;
 
     openrv64_decode_top dut (
         .instr_i(instr),
+        .extension_selected_i(1'b0),
+        .extension_valid_i(1'b0),
+        .extension_illegal_i(1'b0),
+        .extension_class_sel_i({`RV64_EARLY_CLASS_WIDTH{1'b0}}),
+        .extension_format_sel_i({`RV64_EARLY_FORMAT_WIDTH{1'b0}}),
+        .extension_uses_rs1_i(1'b0),
+        .extension_uses_rs2_i(1'b0),
+        .extension_uses_rd_i(1'b0),
+        .extension_rs1_addr_i({`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .extension_rs2_addr_i({`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .extension_rd_addr_i({`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .extension_reg_write_i(1'b0),
+        .extension_imm_valid_i(1'b0),
+        .extension_has_imm_i(1'b0),
+        .extension_imm_i({`RV64_XLEN{1'b0}}),
+        .extension_mem_read_i(1'b0),
+        .extension_mem_write_i(1'b0),
+        .extension_lsu_op_sel_i({`RV64_LSU_OP_WIDTH{1'b0}}),
+        .extension_lsu_size_sel_i({`RV64_LSU_SIZE_WIDTH{1'b0}}),
+        .extension_lsu_unsigned_i(1'b0),
+        .extension_payload_i(1'b0),
         .valid_o(valid),
         .illegal_o(illegal),
         .opcode_o(opcode),
@@ -321,6 +342,17 @@ module tb_decode_top;
                      1'b1, 64'h0, 1'b0, 1'b0, 1'b0, 1'b0,
                      `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
                      "invalid jalr funct3");
+
+        // An unclaimed extension opcode reaches ordinary illegal-instruction
+        // handling in the legacy integer-only configuration.
+        instr = {25'd0, 7'b0001011};
+        check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_EXTENSION,
+                     `RV64_EARLY_FORMAT_INVALID,
+                     1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0,
+                     `RV64_REG_X0, 1'b0, 1'b0, 64'h0,
+                     1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID,
+                     `RV64_BR_OP_INVALID, "unclaimed extension opcode");
 
         instr = 32'h0000_0000;
         check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_INVALID,

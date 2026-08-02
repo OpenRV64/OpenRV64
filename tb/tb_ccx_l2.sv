@@ -52,6 +52,14 @@ module tb_ccx_l2;
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
     wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
     wire bus_req_cacheable;
+    wire bus_line_request_shape =
+        (bus_req_size == 3'd6) && (bus_req_addr[5:0] == 6'd0);
+    wire bus_scalar_write_shape =
+        bus_req_write && (bus_req_size <= 3'd3) &&
+        ((bus_req_addr & ((64'd1 << bus_req_size) - 1'b1)) == 0) &&
+        (bus_req_wstrb ==
+         ((((64'd1 << (64'd1 << bus_req_size)) - 1'b1)) <<
+          bus_req_addr[5:0]));
     logic bus_resp_valid;
     wire bus_resp_ready;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
@@ -184,9 +192,12 @@ module tb_ccx_l2;
                 bus_resp_valid <= 1'b0;
 
             if (bus_req_valid && bus_req_ready) begin
-                if ((bus_req_size != 3'd6) ||
-                    (bus_req_addr[5:0] != 0) || !bus_req_cacheable)
-                    $fatal(1, "native L2 emitted malformed line request");
+                if (!(bus_line_request_shape ||
+                      bus_scalar_write_shape) || !bus_req_cacheable)
+                    $fatal(1,
+                        "native L2 emitted malformed memory request addr=%h size=%0d write=%0b cacheable=%0b wstrb=%h",
+                        bus_req_addr, bus_req_size, bus_req_write,
+                        bus_req_cacheable, bus_req_wstrb);
                 bus_pending_q <= 1'b1;
                 pending_write_q <= bus_req_write;
                 pending_addr_q <= bus_req_addr;
@@ -322,7 +333,11 @@ module tb_ccx_l2;
                 resp_txn_id != transaction || resp_source_id != source ||
                 resp_beat_index != 0 || !resp_last || resp_error ||
                 resp_sc_success)
-                $fatal(1, "native L2 response envelope mismatch");
+                $fatal(1,
+                    "native L2 response envelope mismatch hart=%0d txn=%0d/%0d source=%0d/%0d beat=%0d last=%0b error=%0b sc=%0b",
+                    resp_hart_id, resp_txn_id, transaction,
+                    resp_source_id, source, resp_beat_index,
+                    resp_last, resp_error, resp_sc_success);
             if (check_data && (resp_rdata !== expected_data))
                 $fatal(1,
                        "native L2 response data mismatch txn=%0d actual=%0128x expected=%0128x",
@@ -374,7 +389,7 @@ module tb_ccx_l2;
                          1'b0,
                          `OPENRV64_CCX_KIND_DATA,
                          `OPENRV64_CCX_ATTR_CACHEABLE,
-                         3'd6, address, transaction);
+                         3'd3, address, transaction);
             send_write_data_masked(transaction, data, strobes);
         end
     endtask
@@ -582,7 +597,7 @@ module tb_ccx_l2;
             64'h0000_0000_0000_00ff, masked_txn_0);
         masked_store_data[127:64] = 64'hfedc_ba98_7654_3210;
         start_masked_write(
-            MASKED_LINE_ADDR, masked_store_data,
+            MASKED_LINE_ADDR + 8, masked_store_data,
             64'h0000_0000_0000_ff00, masked_txn_1);
         wait_response(masked_txn_0, `OPENRV64_CCX_SOURCE_DCACHE,
                       512'd0, 1'b0);

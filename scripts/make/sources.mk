@@ -4,9 +4,15 @@ ISA_SRCS := rtl/core/isa/rv64-i.v rtl/core/isa/rv64-a.v rtl/core/isa/rv64-m.v \
 	rtl/core/isa/rv64-zicsr.v rtl/core/isa/rv64-priv.v rtl/core/isa/rv64-zifencei.v \
 	rtl/core/isa/rv64-zba.v rtl/core/isa/rv64-zbb.v \
 	rtl/core/isa/rv64-zbc.v rtl/core/isa/rv64-zbs.v rtl/core/isa/rv64-b.v
-FP_ISA_SRCS := rtl/core/isa/rv64-f.v rtl/core/isa/rv64-d.v
-FPR_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-fd-fpr.v
-FPU_SRCS := rtl/core/exec/fpu/defs.v rtl/core/exec/fpu/rv64-fd.v
+FP_ISA_SRCS := rtl/core/exec/fpu/isa/rv64-f.v \
+	rtl/core/exec/fpu/isa/rv64-d.v
+EXTENSION_SRCS := rtl/core/exec/extension/defs.v
+FPR_SRCS := rtl/core/regs/prf.v rtl/core/exec/fpu/fpr.v
+FPU_SRCS := $(EXTENSION_SRCS) rtl/core/exec/fpu/defs.v \
+	rtl/core/exec/fpu/rv64-fd.v
+FPU_CSR_SRCS := rtl/core/exec/fpu/csrs.v
+FPU_DECODE_SRCS := rtl/core/exec/fpu/decode_rv64-fd.v \
+	rtl/core/exec/fpu/decode.v rtl/core/exec/fpu/decode_top.v
 VEC_DEFS := rtl/core/exec/vec/defs.v
 VEC_REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-vec.v
 VEC_EXEC_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec.v
@@ -15,7 +21,8 @@ ARITH_DEPS := rtl/core/arith/prefix-addsub.v
 CMU_SRCS := rtl/core/cmu/cmu.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
-	rtl/core/decode/early.v rtl/core/decode/decode_top.v rtl/core/decode/rv64-c.v \
+	rtl/core/decode/early.v rtl/core/decode/decode_top.v \
+	rtl/core/decode/rv64-c.v \
 	rtl/core/decode/imm.v rtl/core/decode/alu.v \
 	rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v rtl/core/decode/fence.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v
@@ -65,6 +72,9 @@ DISPATCH_SRCS := $(RENAME_SRCS) rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v \
 	rtl/core/dispatch/dispatch_1p.v rtl/core/dispatch/dispatch.v
+FD_DISPATCH_SRCS := rtl/core/exec/fpu/transfer_buffer.v \
+	rtl/core/exec/fpu/dispatch.v
+FD_UOP_HARNESS_SIM_SRCS := tb/tb_fd_uop_harness.sv
 BP_SRC := rtl/core/exec/bp/bp.v
 BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
 	rtl/core/exec/bp/always_branch.v rtl/core/exec/bp/always_decline.v \
@@ -90,6 +100,14 @@ BACKEND_SRCS := rtl/core/backend/backend_3p.v
 CORE_SRCS := rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) $(FETCH_SRCS) $(BUS_SRCS) $(DECODE_SRCS) $(REG_SRCS) \
 	$(DISPATCH_SRCS) $(EXEC_SRCS) $(RETIRE_SRCS) $(EXCEPT_SRCS) $(TRACE_SRCS)
+CORE_4PF_SRCS := rtl/core/exec/fpu/top_4pf.v \
+	rtl/core/exec/fpu/core_top_4pf.v \
+	rtl/core/exec/fpu/backend_4pf.v \
+	rtl/core/exec/fpu/dispatch_window_4pf.v \
+	$(FD_DISPATCH_SRCS) rtl/core/exec/fpu/fpr.v \
+	$(FPU_CSR_SRCS) $(FPU_DECODE_SRCS) $(FPU_SRCS) \
+	$(filter-out rtl/core/rv64_top.v rtl/core/rv64_top_3p.v \
+		rtl/core/backend/backend_3p.v,$(CORE_SRCS))
 CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
 	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/micro_tlb.v \
@@ -166,6 +184,7 @@ CCX_PROTOCOL_1H_SIM_SRCS := tb/tb_ccx_protocol_1h.sv
 CCX_PROTOCOL_NH_SIM_SRCS := tb/tb_ccx_protocol_nh.sv
 L1_CACHE_SIM_SRCS := tb/tb_l1_cache.sv
 CCX_L2_SIM_SRCS := tb/tb_ccx_l2.sv
+CCX_L2_SC_REFILL_SIM_SRCS := tb/tb_ccx_l2_sc_refill.sv
 GENBUS_SIM_SRCS := tb/tb_genbus_interface.sv
 CORE_COMPLEX_SIM_SRCS := tb/tb_core_complex.sv
 CCX_BUS_SIM_SRCS := tb/tb_ccx_bus.sv
@@ -184,13 +203,23 @@ PTW_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_ptw_context.sv
 DECODE_EARLY_SIM_SRCS := tb/tb_decode_early.sv
 DECODE_TOP_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
 	rtl/core/decode/alu.v rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v rtl/core/decode/fence.v \
-	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v tb/tb_decode_top.sv
+	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v \
+	rtl/core/decode/reg/system.v \
+	tb/tb_decode_top.sv
+DECODE_RV64FD_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
+	rtl/core/decode/alu.v rtl/core/decode/lsu.v rtl/core/decode/br.v \
+	rtl/core/decode/system.v rtl/core/decode/fence.v \
+	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v \
+	rtl/core/decode/reg/system.v rtl/core/decode/decode_top.v \
+	$(FPU_DECODE_SRCS) \
+	tb/tb_decode_rv64-fd.sv
 DECODE_RV64C_SIM_SRCS := rtl/core/decode/rv64-c.v \
 	rtl/core/decode/early.v rtl/core/decode/imm.v rtl/core/decode/alu.v \
 	rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v \
 	rtl/core/decode/fence.v rtl/core/decode/reg/alu.v \
 	rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v \
-	rtl/core/decode/decode_top.v tb/tb_decode_rv64c.sv
+	rtl/core/decode/decode_top.v \
+	tb/tb_decode_rv64c.sv
 DECODE_IMM_SIM_SRCS := tb/tb_decode_imm.sv
 DECODE_ALU_SIM_SRCS := tb/tb_decode_alu.sv
 DECODE_LSU_SIM_SRCS := tb/tb_decode_lsu.sv

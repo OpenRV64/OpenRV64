@@ -48,8 +48,9 @@
 //   reg_write, illegal, ebreak, ecall, exception, halt, cause, tval,
 //   mret, sret, csr_write, csr_addr, csr_wdata
 //
-// CSR writes are intents.  The retirement side applies them only when the
-// instruction retires; execution is not itself an architectural commit point.
+// CSR writes are intents.  csr_wdata carries the unmodified register or zimm
+// operand; the retirement-side CSR owner applies CSRRW/CSRRS/CSRRC only when
+// the instruction retires.  Execution is not an architectural commit point.
 `define OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH 457
 
 // Frequently consumed completion fields, expressed as offsets from the
@@ -108,7 +109,7 @@
 
 // Completion-time state retains only fields not already canonical in the
 // allocation record.  Bits 0:152 deliberately preserve the low portion of the
-// execution completion packet (CSR/return/exception intent and decoded
+// execution completion packet (CSR operand/return/exception intent and decoded
 // exception flags).  Data and next PC follow it.  Source/destination tags,
 // instruction, PC, and trace ID are not copied back through completion.
 `define OPENRV64_RETIRE_RESULT_CSR_WDATA_LSB 0

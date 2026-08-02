@@ -1,7 +1,7 @@
 `ifndef OPENRV64_EXEC_FPU_RV64_FD_V
 `define OPENRV64_EXEC_FPU_RV64_FD_V
 `timescale 1ns/1ps
-`include "core/isa/rv64-d.v"
+`include "core/exec/fpu/isa/rv64-d.v"
 `include "core/exec/fpu/defs.v"
 
 // Standalone, fully backpressured RV64F/RV64D execution unit.

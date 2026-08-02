@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export LC_ALL=C
+export TZ=UTC
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cfg_root=${repo_root}/run/cfg
+log_root=$(realpath -m \
+    "${OPENRV64_RUN_LOG_ROOT:-${repo_root}/run/log}")
+backend=${repo_root}/tools/run-linux-smp.sh
+
+usage() {
+    cat <<'EOF'
+Usage:
+  run/run CFG [start overrides ...]
+  run/run status [RUN]
+  run/run list
+  run/run log [RUN] [LINES]
+  run/run tail [RUN] [LINES]
+  run/run attach [RUN]
+  run/run path [RUN]
+  run/run checkpoint [RUN]
+  run/run command [RUN]
+  run/run wait [RUN]
+  run/run stop [RUN]
+
+CFG may be a path under run/cfg or its basename with or without .cfg.
+Configuration files are also executable, for example:
+
+  run/cfg/linux-smp-4h-ddr3.cfg
+  run/cfg/linux-smp-4h-ddr3.cfg --rebuild
+
+Each invocation creates:
+
+  run/log/<config-name>-<UTC timestamp>/
+
+The directory contains the effective configuration, source and artifact
+hashes, dirty-tree patch, snapshotted executable/firmware/DTB/Image, build and
+run logs, checkpoint, progress state, and final validation status.
+
+Useful start overrides include:
+
+  --max-cycles N
+  --checkpoint N
+  --checkpoint-exit
+  --resume CHECKPOINT_OR_RUN
+  --stop-cycles N
+EOF
+}
+
+die() {
+    printf 'run/run: %s\n' "$*" >&2
+    exit 2
+}
+
+shell_join() {
+    local output= quoted argument
+    for argument in "$@"; do
+        printf -v quoted '%q' "${argument}"
+        [[ -z ${output} ]] || output+=' '
+        output+=${quoted}
+    done
+    printf '%s' "${output}"
+}
+
+resolve_config() {
+    local requested=$1
+    local candidate=
+
+    if [[ -f ${requested} ]]; then
+        candidate=$(realpath -m "${requested}")
+    elif [[ -f ${cfg_root}/${requested} ]]; then
+        candidate=$(realpath -m "${cfg_root}/${requested}")
+    elif [[ -f ${cfg_root}/${requested}.cfg ]]; then
+        candidate=$(realpath -m "${cfg_root}/${requested}.cfg")
+    else
+        die "configuration not found: ${requested}"
+    fi
+
+    case "${candidate}" in
+        "${cfg_root}/"*.cfg) ;;
+        *) die "configuration must be a run/cfg/*.cfg file: ${candidate}" ;;
+    esac
+    printf '%s' "${candidate}"
+}
+
+launch_config() {
+    local requested=$1
+    shift
+    local config_path config_filename config_name timestamp run_id
+    config_path=$(resolve_config "${requested}")
+    config_filename=${config_path##*/}
+    config_name=${config_filename%.cfg}
+    [[ ${config_name} =~ ^[A-Za-z0-9._-]+$ ]] ||
+        die "unsafe configuration filename: ${config_filename}"
+
+    RUN_CONFIG_VERSION=
+    RUN_TARGET=
+    RUN_DESCRIPTION=
+    RUN_HARTS=
+    RUN_THREADS=
+    RUN_IMAGE=
+    RUN_ZICCLSM=
+    RUN_MAX_CYCLES=
+    RUN_CHECKPOINT_CYCLES=
+    RUN_MONITOR_SECONDS=
+    RUN_REBUILD=0
+    RUN_MAKE_ARGUMENTS=()
+    # shellcheck disable=SC1090
+    source "${config_path}"
+
+    [[ ${RUN_CONFIG_VERSION} == 1 ]] ||
+        die "${config_filename}: RUN_CONFIG_VERSION must be 1"
+    [[ ${RUN_TARGET} == linux-smp ]] ||
+        die "${config_filename}: unsupported RUN_TARGET=${RUN_TARGET}"
+    [[ -n ${RUN_DESCRIPTION} ]] ||
+        die "${config_filename}: RUN_DESCRIPTION is required"
+
+    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    run_id=${config_name}-${timestamp}
+    local tmux_session="openrv64-${config_name}-${timestamp}"
+    tmux_session=${tmux_session//./-}
+    local task_name=${config_name}
+    local recorded_command
+    recorded_command=$(shell_join run/run "${config_path#${repo_root}/}" "$@")
+
+    local backend_arguments=(start
+        --name "${config_name}"
+        --comment "${RUN_DESCRIPTION}"
+        --harts "${RUN_HARTS}"
+        --threads "${RUN_THREADS}"
+        --image "${RUN_IMAGE}"
+        --zicclsm "${RUN_ZICCLSM}"
+        --max-cycles "${RUN_MAX_CYCLES}"
+        --checkpoint "${RUN_CHECKPOINT_CYCLES}"
+        --monitor-seconds "${RUN_MONITOR_SECONDS}")
+    [[ ${RUN_REBUILD} == 0 ]] || backend_arguments+=(--rebuild)
+    local resume_requested=0
+    local checkpoint_requested=0
+    local argument
+    for argument in "$@"; do
+        case "${argument}" in
+            --resume) resume_requested=1 ;;
+            --checkpoint|--checkpoint-cycles) checkpoint_requested=1 ;;
+        esac
+    done
+    if ((resume_requested == 1 && checkpoint_requested == 0)); then
+        backend_arguments+=(--checkpoint 0)
+    fi
+    backend_arguments+=("${RUN_MAKE_ARGUMENTS[@]}" "$@")
+
+    mkdir -p "${log_root}"
+    OPENRV64_SMP_RUN_ROOT=${log_root} \
+    OPENRV64_SMP_RUN_ID=${run_id} \
+    OPENRV64_SMP_TMUX_SESSION=${tmux_session} \
+    OPENRV64_SMP_TASK_NAME=${task_name} \
+    OPENRV64_SMP_CONFIG_PATH=${config_path} \
+    OPENRV64_SMP_RECORDED_COMMAND=${recorded_command} \
+        exec "${backend}" "${backend_arguments[@]}"
+}
+
+main() {
+    local command=${1:-}
+    [[ -n ${command} ]] || { usage; exit 2; }
+    shift || true
+
+    case "${command}" in
+        status|list|ls|log|tail|follow|attach|path|checkpoint|command|wait|stop)
+            OPENRV64_SMP_RUN_ROOT=${log_root} \
+                exec "${backend}" "${command}" "$@"
+            ;;
+        -h|--help|help)
+            usage
+            ;;
+        *)
+            launch_config "${command}" "$@"
+            ;;
+    esac
+}
+
+main "$@"

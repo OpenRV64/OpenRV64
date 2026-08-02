@@ -2,6 +2,17 @@
 
 sw-uart: $(UART_FIRMWARE_ELF) $(UART_FIRMWARE_BIN)
 
+sw-fp-daxpy: $(FP_DAXPY_ELF) $(FP_DAXPY_BIN) $(FP_DAXPY_DISASM) \
+	$(FP_DAXPY_MEMH)
+
+sw-fp-fmadd32: $(FP_FMADD32_ELF) $(FP_FMADD32_BIN) \
+	$(FP_FMADD32_DISASM) $(FP_FMADD32_MEMH)
+
+sw-fp-faults: $(FP_FAULTS_ELF) $(FP_FAULTS_BIN) $(FP_FAULTS_DISASM) \
+	$(FP_FAULTS_MEMH)
+
+sw-smp-thread-probe: $(SMP_THREAD_PROBE_BIN) $(SMP_THREAD_TEST_SCRIPT)
+
 sw-coremark-loop: $(COREMARK_LOOP_ELF) $(COREMARK_LOOP_BIN)
 
 sw-coremark-loop-vm: $(CORE_3P_VM_ELF) $(CORE_3P_VM_BIN) \
@@ -35,6 +46,10 @@ sw-tlbi-4h-shared-vm: $(TLBI_4H_SHARED_VM_ELF) \
 		$(TLBI_4H_SHARED_VM_TEMPLATE_BIN) $(TLBI_4H_SHARED_VM_BIN) \
 		$(TLBI_4H_SHARED_VM_MEMH) $(TLBI_4H_SHARED_VM_DISASM)
 
+sw-ipi-2h-shared-vm: $(IPI_2H_SHARED_VM_ELF) \
+		$(IPI_2H_SHARED_VM_TEMPLATE_BIN) $(IPI_2H_SHARED_VM_BIN) \
+		$(IPI_2H_SHARED_VM_MEMH) $(IPI_2H_SHARED_VM_DISASM)
+
 sim-4h-3p-sv39: $(CORE_4H_3P_VERILATOR_BUILD) $(CORE_4H_VM_MEMH)
 	test -n "$(CORE_4H_VM_DONE_PC)"
 	test -n "$(CORE_4H_VM_MAILBOX_VA)"
@@ -59,6 +74,33 @@ sim-4h-3p-shared-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
 
 sim-4h-3p-bare:
 	$(MAKE) sim-4h-3p-bare-configured
+
+sim-1h-coherent-3p-ddr3: sim-1h-coherent-3p-ddr3-private
+
+sim-1h-coherent-3p-ddr3-private: \
+		$(CORE_1H_COHERENT_3P_VERILATOR_BUILD) \
+		$(call coherence_perf_memh_512,1,private)
+	test -n "$(call coherence_perf_done_pc,1,private)"
+	test -n "$(call coherence_perf_measure_start_pc,1,private)"
+	test -n "$(call coherence_perf_measure_end_pc,1,private)"
+	$(CORE_1H_COHERENT_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(call coherence_perf_memh_512,1,private)) \
+		+memh_words=$(COHERENCE_PERF_512_WORDS) \
+		+done_pc=$(call coherence_perf_done_pc,1,private) \
+		+mailbox_va=$(call coherence_perf_results_va,1,private) \
+		+result_va=$(call coherence_perf_status_va,1,private) \
+		+result_expected=0 \
+		+perf_results_va=$(call coherence_perf_results_va,1,private) \
+		+perf_iterations=$(COHERENCE_PERF_ITERATIONS) \
+		+perf_name=COHERENCE_1H_PRIVATE_DDR3 \
+		+coherence_perf=1 +coherence_case=0 \
+		+coherence_base_va=$(call coherence_perf_base_va,1,private) \
+		+coherence_lines=1 +coherence_line_stride=4096 \
+		+coherence_operations=$(COHERENCE_PERF_ITERATIONS) \
+		+coherence_measure_start_pc=$(call coherence_perf_measure_start_pc,1,private) \
+		+coherence_measure_end_pc=$(call coherence_perf_measure_end_pc,1,private) \
+		+active_harts=1 +shared_satp=1 +mailbox_stride=4096 \
+		+max_cycles=$(COHERENCE_PERF_MAX_CYCLES)
 
 sim-4h-3p-bare-configured: $(CORE_4H_3P_VERILATOR_BUILD) \
 		$(CORE_4H_BARE_MEMH)
@@ -200,8 +242,25 @@ sim-4h-3p-tlbi-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
 		+shared_satp=1 +mailbox_stride=4096 +tlbi_test=1 \
 		+max_cycles=$(TLBI_4H_SHARED_VM_MAX_CYCLES)
 
+sim-2h-3p-ipi-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
+		$(IPI_2H_SHARED_VM_MEMH)
+	test -n "$(IPI_2H_SHARED_VM_DONE_PC)"
+	test -n "$(IPI_2H_SHARED_VM_MAILBOX_VA)"
+	test -n "$(IPI_2H_SHARED_VM_RESULT_VA)"
+	$(CORE_4H_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(IPI_2H_SHARED_VM_MEMH)) \
+		+memh_words=$(IPI_2H_SHARED_VM_MEMH_WORDS) \
+		+done_pc=$(IPI_2H_SHARED_VM_DONE_PC) \
+		+mailbox_va=$(IPI_2H_SHARED_VM_MAILBOX_VA) \
+		+result_va=$(IPI_2H_SHARED_VM_RESULT_VA) \
+		+result_expected=$(IPI_2H_SHARED_VM_ROUNDS) \
+		+ipi_test=1 +ipi_expected=$(IPI_2H_SHARED_VM_ROUNDS) \
+		+active_harts=2 +shared_satp=1 +mailbox_stride=4096 \
+		+max_cycles=$(IPI_2H_SHARED_VM_MAX_CYCLES)
+
 sim-4h-3p-shared-suite: sim-4h-3p-shared-sv39 \
-		sim-4h-3p-atomic-sv39 sim-4h-3p-tlbi-sv39
+		sim-4h-3p-atomic-sv39 sim-4h-3p-tlbi-sv39 \
+		sim-2h-3p-ipi-sv39
 
 sw-zero-sv39: $(ZERO_VM_ELF) $(ZERO_VM_BIN) $(ZERO_VM_MEMH) \
 		$(ZERO_VM_DISASM)

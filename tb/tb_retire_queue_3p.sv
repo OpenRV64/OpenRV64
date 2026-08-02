@@ -31,6 +31,10 @@ module tb_retire_queue_3p #(
     logic [3*INDEX_WIDTH-1:0] complete_slot;
     logic [3*RESULT_WIDTH-1:0] complete_result;
     wire [2:0] complete_accept;
+    logic extension_complete_valid;
+    logic [ID_WIDTH-1:0] extension_complete_id;
+    logic [INDEX_WIDTH-1:0] extension_complete_slot;
+    wire extension_complete_accept;
     wire [2:0] retire_valid;
     logic [2:0] retire_accept;
     wire [3*ID_WIDTH-1:0] retire_id;
@@ -50,7 +54,8 @@ module tb_retire_queue_3p #(
 
     openrv64_retire_queue_3p #(
         .DEPTH(DEPTH),
-        .ID_WIDTH(ID_WIDTH)
+        .ID_WIDTH(ID_WIDTH),
+        .ENABLE_EXTENSION_COMPLETION(1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -68,6 +73,10 @@ module tb_retire_queue_3p #(
         .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
         .complete_accept_o(complete_accept),
+        .extension_complete_valid_i(extension_complete_valid),
+        .extension_complete_id_i(extension_complete_id),
+        .extension_complete_slot_i(extension_complete_slot),
+        .extension_complete_accept_o(extension_complete_accept),
         .retire_valid_o(retire_valid),
         .retire_accept_i(retire_accept),
         .retire_id_o(retire_id),
@@ -87,6 +96,7 @@ module tb_retire_queue_3p #(
         .alloc_slot_i(alloc_slot),
         .alloc_record_i(alloc_meta),
         .alloc_complete_i(alloc_complete),
+        .alloc_result_valid_i(alloc_complete),
         .alloc_result_i(alloc_result),
         .alloc_trace_i(alloc_trace),
         .complete_valid_i(complete_accept),
@@ -112,6 +122,9 @@ module tb_retire_queue_3p #(
             complete_id = {3*ID_WIDTH{1'b0}};
             complete_slot = {3*INDEX_WIDTH{1'b0}};
             complete_result = 48'd0;
+            extension_complete_valid = 1'b0;
+            extension_complete_id = {ID_WIDTH{1'b0}};
+            extension_complete_slot = {INDEX_WIDTH{1'b0}};
             retire_accept = 3'b000;
         end
     endtask
@@ -236,6 +249,37 @@ module tb_retire_queue_3p #(
         alloc_trace = 192'd0;
         if (occupancy != 0)
             $fatal(1, "allocation-time completed entries did not drain");
+
+        // Extensions retain their result data locally.  The integer queue
+        // only receives the exact identity of a completed sparse entry.
+        @(negedge clk);
+        alloc_valid = 3'b001;
+        alloc_meta[0 +: META_WIDTH] = 8'h99;
+        #1;
+        saved_id[0] = alloc_id[0 +: ID_WIDTH];
+        saved_slot[0] = alloc_slot[0 +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+        @(negedge clk);
+        extension_complete_valid = 1'b1;
+        extension_complete_id = saved_id[0];
+        extension_complete_slot = saved_slot[0];
+        #1;
+        if (!extension_complete_accept)
+            $fatal(1, "live extension completion identity was rejected");
+        @(posedge clk);
+        #1;
+        extension_complete_valid = 1'b0;
+        if (retire_valid !== 3'b001)
+            $fatal(1, "extension completion did not make the head retireable");
+        @(negedge clk);
+        retire_accept = 3'b001;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        if (occupancy != 0)
+            $fatal(1, "extension-completed entry did not drain");
 
         allocate_three(8'ha0, 8'ha1, 8'ha2);
         if (occupancy !== 4'd3 || next_retire_id !== saved_id[0]) begin

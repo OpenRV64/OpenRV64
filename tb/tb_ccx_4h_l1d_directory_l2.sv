@@ -269,6 +269,14 @@ module tb_ccx_4h_l1d_directory_l2 #(
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
     wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
     wire bus_req_cacheable;
+    wire bus_line_request_shape =
+        (bus_req_size == 3'd6) && (bus_req_addr[5:0] == 6'd0);
+    wire bus_scalar_write_shape =
+        bus_req_write && (bus_req_size <= 3'd3) &&
+        ((bus_req_addr & ((64'd1 << bus_req_size) - 1'b1)) == 0) &&
+        (bus_req_wstrb ==
+         ((((64'd1 << (64'd1 << bus_req_size)) - 1'b1)) <<
+          bus_req_addr[5:0]));
     logic bus_resp_valid;
     wire bus_resp_ready;
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
@@ -974,10 +982,12 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 bus_resp_valid <= 1'b0;
 
             if (bus_req_valid && bus_req_ready) begin
-                if ((bus_req_size != 3'd6) ||
-                    (bus_req_addr[5:0] != 6'd0) ||
-                    !bus_req_cacheable)
-                    $fatal(1, "malformed L2 memory request");
+                if (!(bus_line_request_shape ||
+                      bus_scalar_write_shape) || !bus_req_cacheable)
+                    $fatal(1,
+                        "malformed L2 memory request addr=%h size=%0d write=%0b cacheable=%0b wstrb=%h",
+                        bus_req_addr, bus_req_size, bus_req_write,
+                        bus_req_cacheable, bus_req_wstrb);
                 memory_pending <= 1'b1;
                 memory_pending_write <= bus_req_write;
                 memory_pending_addr <= bus_req_addr;

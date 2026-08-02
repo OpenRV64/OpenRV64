@@ -25,6 +25,7 @@
  * concurrently while each line remains ordered.
  */
 module tb_4h_3p #(
+    parameter integer CORE_INSTANCES = 4,
     parameter integer MEMORY_LATENCY = 8,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
@@ -43,12 +44,19 @@ module tb_4h_3p #(
     parameter integer DDR3_COMMAND_QUEUE_DEPTH = 16,
     parameter integer DDR3_MAX_BURST_TRAIN_BURSTS = 8,
     parameter integer DDR3_BANK_ROW_SWIZZLE = 0
+) (
+    output wire [31:0] checkpoint_cycle_o
+`ifdef OPENRV64_4H_VERILATOR_CHECKPOINT
+    ,
+    input  wire        checkpoint_clk_i
+`endif
 );
     localparam integer NUM_HARTS = 4;
     localparam [63:0] PHYSICAL_BASE = 64'h0000_0000_8000_0000;
     localparam [63:0] VIRTUAL_BASE = 64'h0000_0000_4000_0000;
     localparam [63:0] PREFIX_STRIDE = 64'h0000_0000_0010_0000;
     localparam integer MEMORY_WORDS = MEMORY_BYTES / 64;
+    localparam integer RETIRE_RESULT_INSTR_LSB = 233;
     localparam integer RETIRE_RESULT_PC_LSB = 329;
     localparam [63:0] ROM_BASE = 64'h0000_0000_0000_1000;
     localparam [63:0] ROM_SIZE = 64'h0000_0000_0000_1000;
@@ -103,6 +111,10 @@ module tb_4h_3p #(
     integer opensbi_active_harts;
     integer opensbi_mode;
     integer linux_mode;
+    integer require_smp_threads;
+    integer pc_trace_fd;
+    integer pc_trace_mask;
+    string pc_trace_path;
     logic [NUM_HARTS-1:0] opensbi_active_hart_mask;
     logic [63:0] opensbi_hsm_wfi_pc;
     logic [NUM_HARTS-1:0] opensbi_hsm_wfi_seen;
@@ -285,6 +297,14 @@ module tb_4h_3p #(
     wire uart_selected;
     wire rom_selected;
     wire device_selected;
+    wire dram_line_request_shape =
+        (bus_req_size == 3'd6) && (bus_req_addr[5:0] == 6'd0);
+    wire dram_scalar_write_shape =
+        bus_req_write && (bus_req_size <= 3'd3) &&
+        ((bus_req_addr & ((64'd1 << bus_req_size) - 1'b1)) == 0) &&
+        (bus_req_wstrb ==
+         ((((64'd1 << (64'd1 << bus_req_size)) - 1'b1)) <<
+          bus_req_addr[5:0]));
     wire [63:0] device_wdata;
     wire [7:0] device_wstrb;
     wire [63:0] clint_rdata;
@@ -305,6 +325,7 @@ module tb_4h_3p #(
     wire [NUM_HARTS*32-1:0] dbg_instr;
     wire [NUM_HARTS-1:0] dbg_halted;
     wire [NUM_HARTS-1:0] hart_wfi_sleep;
+    wire [NUM_HARTS*`RV64_PRIV_WIDTH-1:0] hart_priv_mode;
 
     logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_WORDS-1];
@@ -317,6 +338,10 @@ module tb_4h_3p #(
     integer memory_byte;
     integer memory_reads;
     integer memory_writes;
+`ifdef OPENRV64_4H_VERILATOR_CHECKPOINT
+    integer checkpoint_reset_edges;
+    logic checkpoint_ddr_load_pending;
+`endif
 
     logic [63:0] done_pc;
     logic [63:0] mailbox_va;
@@ -353,6 +378,8 @@ module tb_4h_3p #(
     integer atomic_expected;
     integer atomic_test;
     integer tlbi_test;
+    integer ipi_test;
+    integer ipi_expected;
     integer atomic_debug;
     integer max_cycles;
     integer cycles;
@@ -421,6 +448,13 @@ module tb_4h_3p #(
     integer tlbi_old_reads [0:NUM_HARTS-1];
     integer tlbi_new_reads [0:NUM_HARTS-1];
     integer tlbi_reservation_probes [0:NUM_HARTS-1];
+    integer ipi_msip_assertions [0:NUM_HARTS-1];
+    integer ipi_msip_clears [0:NUM_HARTS-1];
+    integer ipi_interrupts [0:NUM_HARTS-1];
+    integer opensbi_msoft_interrupts [0:NUM_HARTS-1];
+    integer opensbi_ssoft_interrupts [0:NUM_HARTS-1];
+    logic [NUM_HARTS-1:0] ipi_msip_previous;
+    logic [NUM_HARTS-1:0] ipi_wfi_seen;
     logic home_request_valid [0:HOME_IDENTITIES-1];
     logic [`OPENRV64_CCX_OP_WIDTH-1:0]
         home_request_op [0:HOME_IDENTITIES-1];
@@ -439,11 +473,13 @@ module tb_4h_3p #(
     logic linux_prompt_seen;
     logic linux_panic_seen;
     logic linux_smp_online_seen;
+    logic linux_smp_threads_seen;
     integer opensbi_banner_index;
     integer opensbi_payload_index;
     integer linux_prompt_index;
     integer linux_panic_index;
     integer linux_smp_online_index;
+    integer linux_smp_threads_index;
     integer opensbi_uart_bytes;
     localparam integer OPENSBI_TRACE_DEPTH = 128;
     logic [63:0] opensbi_trace_pc [0:OPENSBI_TRACE_DEPTH-1];
@@ -460,6 +496,7 @@ module tb_4h_3p #(
     string linux_prompt_text = "openrv64# ";
     string linux_panic_text = "Kernel panic";
     string linux_smp_online_text;
+    string linux_smp_threads_text = "SMP_THREADS_PASS";
 
     function automatic [63:0] hart_prefix(input integer hart);
         hart_prefix = PHYSICAL_BASE + PREFIX_STRIDE * hart;
@@ -570,7 +607,8 @@ module tb_4h_3p #(
 
     genvar hart;
     generate
-        for (hart = 0; hart < NUM_HARTS; hart = hart + 1) begin : g_hart
+        for (hart = 0; hart < CORE_INSTANCES; hart = hart + 1) begin : g_hart
+            integer pc_trace_lane;
             wire hart_done_retired =
                 (u_core.backend_retire_arch[0] &&
                  (u_core.u_backend.queue_retire_result[
@@ -734,7 +772,8 @@ module tb_4h_3p #(
                 .coherent_reservation_clear_i(
                     coherent_reservation_clear[hart]),
                 .irq_m_software(
-                    (opensbi_mode || (tlbi_test != 0)) &&
+                    (opensbi_mode || (tlbi_test != 0) ||
+                     (ipi_test != 0)) &&
                     clint_msip[hart]),
                 .irq_m_timer(
                     opensbi_mode && clint_mtip[hart]),
@@ -748,6 +787,10 @@ module tb_4h_3p #(
                 .dbg_halted(dbg_halted[hart]),
                 .wfi_sleep_o(hart_wfi_sleep[hart])
             );
+
+            assign hart_priv_mode[
+                hart*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH] =
+                u_core.csr_priv_mode;
 
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
@@ -765,10 +808,99 @@ module tb_4h_3p #(
                     opensbi_hsm_sleep_seen[hart] <= 1'b0;
                     opensbi_s_mode_hart_seen[hart] <= 1'b0;
                     tlbi_sfence_retired[hart] <= 0;
+                    ipi_msip_assertions[hart] <= 0;
+                    ipi_msip_clears[hart] <= 0;
+                    ipi_interrupts[hart] <= 0;
+                    opensbi_msoft_interrupts[hart] <= 0;
+                    opensbi_ssoft_interrupts[hart] <= 0;
+                    ipi_msip_previous[hart] <= 1'b0;
+                    ipi_wfi_seen[hart] <= 1'b0;
                     coherence_measure_active[hart] <= 1'b0;
                     coherence_measure_started[hart] <= 1'b0;
                     coherence_measure_ended[hart] <= 1'b0;
                 end else begin
+                    ipi_msip_previous[hart] <= clint_msip[hart];
+                    if ((pc_trace_fd != 0) &&
+                        pc_trace_mask[hart]) begin
+                        for (pc_trace_lane = 0;
+                             pc_trace_lane < 3;
+                             pc_trace_lane = pc_trace_lane + 1)
+                            if (u_core.backend_retire_arch[
+                                    pc_trace_lane])
+                                $fdisplay(pc_trace_fd,
+                                    "RET cycle=%0d hart=%0d lane=%0d priv=%0d pc=%016h instr=%08h",
+                                    cycles, hart, pc_trace_lane,
+                                    u_core.csr_priv_mode,
+                                    u_core.u_backend.queue_retire_result[
+                                        pc_trace_lane*
+                                        `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                                        RETIRE_RESULT_PC_LSB +: 64],
+                                    u_core.u_backend.queue_retire_result[
+                                        pc_trace_lane*
+                                        `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                                        RETIRE_RESULT_INSTR_LSB +: 32]);
+                        if (u_core.trap_enter) begin
+                            $fdisplay(pc_trace_fd,
+                                "TRAP cycle=%0d hart=%0d from_priv=%0d to_s=%0b interrupt=%0b cause=%0d epc=%016h vector=%016h msip=%0b mtip=%0b",
+                                cycles, hart,
+                                u_core.csr_priv_mode,
+                                u_core.csr_trap_to_s,
+                                u_core.trap_interrupt,
+                                u_core.trap_cause,
+                                u_core.trap_pc,
+                                u_core.csr_trap_vector,
+                                clint_msip[hart],
+                                clint_mtip[hart]);
+                            $fflush(pc_trace_fd);
+                        end
+                    end
+                    if ((opensbi_mode != 0) &&
+                        u_core.trap_enter &&
+                        u_core.trap_interrupt &&
+                        (u_core.trap_cause ==
+                         `RV64_IRQ_CAUSE_MACHINE_SOFTWARE)) begin
+                        opensbi_msoft_interrupts[hart] <=
+                            opensbi_msoft_interrupts[hart] + 1;
+                        $display(
+                            "OPENSBI_4H_IPI_TRAP cycle=%0d hart=%0d level=M cause=3 pc=%016h vector=%016h msip=%0b count=%0d",
+                            cycles, hart, u_core.trap_pc,
+                            u_core.csr_trap_vector,
+                            clint_msip[hart],
+                            opensbi_msoft_interrupts[hart] + 1);
+                        $fflush();
+                    end
+                    if ((opensbi_mode != 0) &&
+                        u_core.trap_enter &&
+                        u_core.trap_interrupt &&
+                        (u_core.trap_cause ==
+                         `RV64_IRQ_CAUSE_SUPERVISOR_SOFTWARE)) begin
+                        opensbi_ssoft_interrupts[hart] <=
+                            opensbi_ssoft_interrupts[hart] + 1;
+                        $display(
+                            "OPENSBI_4H_IPI_TRAP cycle=%0d hart=%0d level=S cause=1 pc=%016h vector=%016h count=%0d",
+                            cycles, hart, u_core.trap_pc,
+                            u_core.csr_trap_vector,
+                            opensbi_ssoft_interrupts[hart] + 1);
+                        $fflush();
+                    end
+                    if (ipi_test != 0) begin
+                        if (!ipi_msip_previous[hart] &&
+                            clint_msip[hart])
+                            ipi_msip_assertions[hart] <=
+                                ipi_msip_assertions[hart] + 1;
+                        if (ipi_msip_previous[hart] &&
+                            !clint_msip[hart])
+                            ipi_msip_clears[hart] <=
+                                ipi_msip_clears[hart] + 1;
+                        if (hart_wfi_sleep[hart])
+                            ipi_wfi_seen[hart] <= 1'b1;
+                        if (u_core.trap_enter &&
+                            u_core.trap_interrupt &&
+                            (u_core.trap_cause ==
+                             `RV64_IRQ_CAUSE_MACHINE_SOFTWARE))
+                            ipi_interrupts[hart] <=
+                                ipi_interrupts[hart] + 1;
+                    end
                     if ((atomic_debug != 0) && (cycles != 0) &&
                         ((cycles % 500) == 0))
                         $display(
@@ -909,6 +1041,97 @@ module tb_4h_3p #(
                         done_cycle[hart] <= cycles;
                     end
                 end
+            end
+        end
+
+        for (genvar tied_hart = CORE_INSTANCES;
+             tied_hart < NUM_HARTS;
+             tied_hart = tied_hart + 1) begin : g_tied_hart
+            assign hart_req_valid[tied_hart] = 1'b0;
+            assign hart_req_hart_id[
+                tied_hart*`OPENRV64_CCX_HART_ID_WIDTH +:
+                `OPENRV64_CCX_HART_ID_WIDTH] = '0;
+            assign hart_req_txn_id[
+                tied_hart*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                `OPENRV64_CCX_TXN_ID_WIDTH] = '0;
+            assign hart_req_source_id[
+                tied_hart*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
+                `OPENRV64_CCX_SOURCE_ID_WIDTH] = '0;
+            assign hart_req_op[
+                tied_hart*`OPENRV64_CCX_OP_WIDTH +:
+                `OPENRV64_CCX_OP_WIDTH] = '0;
+            assign hart_req_lock[tied_hart] = 1'b0;
+            assign hart_req_order[
+                tied_hart*`OPENRV64_CCX_ORDER_WIDTH +:
+                `OPENRV64_CCX_ORDER_WIDTH] = '0;
+            assign hart_req_kind[
+                tied_hart*`OPENRV64_CCX_KIND_WIDTH +:
+                `OPENRV64_CCX_KIND_WIDTH] = '0;
+            assign hart_req_attr[
+                tied_hart*`OPENRV64_CCX_ATTR_WIDTH +:
+                `OPENRV64_CCX_ATTR_WIDTH] = '0;
+            assign hart_req_size[tied_hart*3 +: 3] = '0;
+            assign hart_req_addr[tied_hart*64 +: 64] = '0;
+            assign hart_req_burst_len[
+                tied_hart*`OPENRV64_CCX_BURST_LEN_WIDTH +:
+                `OPENRV64_CCX_BURST_LEN_WIDTH] = '0;
+
+            assign hart_wdata_valid[tied_hart] = 1'b0;
+            assign hart_wdata_hart_id[
+                tied_hart*`OPENRV64_CCX_HART_ID_WIDTH +:
+                `OPENRV64_CCX_HART_ID_WIDTH] = '0;
+            assign hart_wdata_txn_id[
+                tied_hart*`OPENRV64_CCX_TXN_ID_WIDTH +:
+                `OPENRV64_CCX_TXN_ID_WIDTH] = '0;
+            assign hart_wdata_source_id[
+                tied_hart*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
+                `OPENRV64_CCX_SOURCE_ID_WIDTH] = '0;
+            assign hart_wdata_beat_index[
+                tied_hart*`OPENRV64_CCX_BEAT_INDEX_WIDTH +:
+                `OPENRV64_CCX_BEAT_INDEX_WIDTH] = '0;
+            assign hart_wdata_last[tied_hart] = 1'b0;
+            assign hart_wdata[
+                tied_hart*`OPENRV64_CCX_LINE_DATA_WIDTH +:
+                `OPENRV64_CCX_LINE_DATA_WIDTH] = '0;
+            assign hart_wstrb[
+                tied_hart*`OPENRV64_CCX_LINE_STRB_WIDTH +:
+                `OPENRV64_CCX_LINE_STRB_WIDTH] = '0;
+
+            assign hart_resp_ready[tied_hart] = 1'b1;
+            assign l1d_invalidate_ready[tied_hart] = 1'b1;
+            assign dbg_pc[tied_hart*64 +: 64] = '0;
+            assign dbg_instr[tied_hart*32 +: 32] = '0;
+            assign dbg_halted[tied_hart] = 1'b0;
+            assign hart_wfi_sleep[tied_hart] = 1'b0;
+            assign hart_priv_mode[
+                tied_hart*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH] =
+                `RV64_PRIV_M;
+
+            initial begin
+                done_seen[tied_hart] = 1'b0;
+                done_cycle[tied_hart] = -1;
+                retired[tied_hart] = 0;
+                requests[tied_hart] = 0;
+                store_allocations[tied_hart] = 0;
+                fast_store_requests[tied_hart] = 0;
+                fallback_store_requests[tied_hart] = 0;
+                root_seen[tied_hart] = 1'b0;
+                satp_seen[tied_hart] = 1'b0;
+                supervisor_fetch_seen[tied_hart] = 1'b0;
+                opensbi_hsm_wfi_seen[tied_hart] = 1'b0;
+                opensbi_hsm_sleep_seen[tied_hart] = 1'b0;
+                opensbi_s_mode_hart_seen[tied_hart] = 1'b0;
+                tlbi_sfence_retired[tied_hart] = 0;
+                ipi_msip_assertions[tied_hart] = 0;
+                ipi_msip_clears[tied_hart] = 0;
+                ipi_interrupts[tied_hart] = 0;
+                opensbi_msoft_interrupts[tied_hart] = 0;
+                opensbi_ssoft_interrupts[tied_hart] = 0;
+                ipi_msip_previous[tied_hart] = 1'b0;
+                ipi_wfi_seen[tied_hart] = 1'b0;
+                coherence_measure_active[tied_hart] = 1'b0;
+                coherence_measure_started[tied_hart] = 1'b0;
+                coherence_measure_ended[tied_hart] = 1'b0;
             end
         end
     endgenerate
@@ -1207,7 +1430,8 @@ module tb_4h_3p #(
         (bus_req_addr >= ROM_BASE) &&
         (bus_req_addr < ROM_BASE + ROM_SIZE);
     assign clint_selected =
-        (opensbi_mode || (tlbi_test != 0)) && !bus_req_cacheable &&
+        (opensbi_mode || (tlbi_test != 0) || (ipi_test != 0)) &&
+        !bus_req_cacheable &&
         (bus_req_addr >= CLINT_BASE) &&
         (bus_req_addr < CLINT_BASE + CLINT_SIZE);
     assign plic_selected =
@@ -1589,15 +1813,15 @@ module tb_4h_3p #(
                             {448'd0, uart_rdata} <<
                             (bus_req_addr[5:3] * 64);
                 end else begin
-                    if ((bus_req_size != 3'd6) ||
-                        (bus_req_addr[5:0] != 6'd0) ||
+                    if (!(dram_line_request_shape ||
+                          dram_scalar_write_shape) ||
                         !bus_req_cacheable ||
                         (bus_req_addr < PHYSICAL_BASE) ||
                         (bus_req_addr >= PHYSICAL_BASE + MEMORY_BYTES))
                         $fatal(1,
-                            "malformed/out-of-range L2 request addr=%h size=%0d cacheable=%0b",
-                            bus_req_addr, bus_req_size,
-                            bus_req_cacheable);
+                            "malformed/out-of-range L2 request addr=%h size=%0d write=%0b cacheable=%0b wstrb=%h",
+                            bus_req_addr, bus_req_size, bus_req_write,
+                            bus_req_cacheable, bus_req_wstrb);
                     if (DDR3_ENABLE == 0) begin
                         memory_pending <= 1'b1;
                         memory_pending_write <= bus_req_write;
@@ -1946,7 +2170,16 @@ module tb_4h_3p #(
         end
     end
 
-    always #5 clk = ~clk;
+    assign checkpoint_cycle_o = cycles;
+
+`ifdef OPENRV64_4H_VERILATOR_CHECKPOINT
+    always @* clk = checkpoint_clk_i;
+`else
+    initial begin
+        clk = 1'b0;
+        forever #5 clk = ~clk;
+    end
+`endif
 
     integer init_hart;
     string memh_path;
@@ -2052,12 +2285,33 @@ module tb_4h_3p #(
                         (value == linux_smp_online_text[0]) ? 1 : 0;
                 end
             end
+            if ((linux_mode != 0) && !linux_smp_threads_seen) begin
+                if (value ==
+                    linux_smp_threads_text[linux_smp_threads_index]) begin
+                    linux_smp_threads_index =
+                        linux_smp_threads_index + 1;
+                    if (linux_smp_threads_index ==
+                        linux_smp_threads_text.len()) begin
+                        linux_smp_threads_seen = 1'b1;
+                        $display(
+                            "\nLINUX_SMP_THREADS cycles=%0d retired=%0d,%0d,%0d,%0d",
+                            cycles, retired[0], retired[1],
+                            retired[2], retired[3]);
+                    end
+                end else begin
+                    linux_smp_threads_index =
+                        (value == linux_smp_threads_text[0]) ? 1 : 0;
+                end
+            end
         end
     endtask
 
     initial begin
-        clk = 1'b0;
         rst_n = 1'b0;
+`ifdef OPENRV64_4H_VERILATOR_CHECKPOINT
+        checkpoint_reset_edges = 0;
+        checkpoint_ddr_load_pending = 1'b0;
+`endif
         opensbi_held = $test$plusargs("opensbi_held");
         gate_held_hart_clocks =
             $test$plusargs("gate_held_hart_clocks");
@@ -2065,16 +2319,39 @@ module tb_4h_3p #(
         opensbi_hart_start =
             $test$plusargs("opensbi_hart_start");
         linux_mode = $test$plusargs("linux_mode");
+        require_smp_threads =
+            $test$plusargs("require_smp_threads");
+        pc_trace_fd = 0;
+        pc_trace_mask = (1 << NUM_HARTS) - 1;
+        pc_trace_path = "";
+        void'($value$plusargs("pc_trace_mask=%h", pc_trace_mask));
+        if ($value$plusargs("pc_trace=%s", pc_trace_path)) begin
+            pc_trace_fd = $fopen(pc_trace_path, "w");
+            if (pc_trace_fd == 0)
+                $fatal(1,
+                    "failed to open PC trace %s", pc_trace_path);
+            $fdisplay(pc_trace_fd,
+                "# OpenRV64 4H retirement and trap PC trace mask=%h",
+                pc_trace_mask);
+            $fflush(pc_trace_fd);
+        end
         opensbi_mode =
             (opensbi_held != 0) || (opensbi_smp != 0);
         opensbi_active_harts =
-            (opensbi_held != 0) ? 1 : NUM_HARTS;
+            (opensbi_held != 0) ? 1 : CORE_INSTANCES;
         if (opensbi_mode != 0)
             void'($value$plusargs(
                 "opensbi_active_harts=%d", opensbi_active_harts));
         else
             void'($value$plusargs(
                 "active_harts=%d", opensbi_active_harts));
+        if ((CORE_INSTANCES < 1) || (CORE_INSTANCES > NUM_HARTS))
+            $fatal(1,
+                "CORE_INSTANCES must be 1 through %0d", NUM_HARTS);
+        if (opensbi_active_harts > CORE_INSTANCES)
+            $fatal(1,
+                "active hart count %0d exceeds instantiated cores %0d",
+                opensbi_active_harts, CORE_INSTANCES);
         case (opensbi_active_harts)
             1: opensbi_active_hart_mask = 4'b0001;
             2: opensbi_active_hart_mask = 4'b0011;
@@ -2123,6 +2400,8 @@ module tb_4h_3p #(
         atomic_expected = 0;
         atomic_test = 0;
         tlbi_test = 0;
+        ipi_test = 0;
+        ipi_expected = 0;
         atomic_debug = 0;
         max_cycles = 800000;
         cycles = 0;
@@ -2136,9 +2415,11 @@ module tb_4h_3p #(
         linux_prompt_seen = 1'b0;
         linux_panic_seen = 1'b0;
         linux_smp_online_seen = 1'b0;
+        linux_smp_threads_seen = 1'b0;
         linux_prompt_index = 0;
         linux_panic_index = 0;
         linux_smp_online_index = 0;
+        linux_smp_threads_index = 0;
         opensbi_uart_bytes = 0;
         opensbi_trace_write = 0;
         opensbi_trace_count = 0;
@@ -2292,6 +2573,8 @@ module tb_4h_3p #(
         void'($value$plusargs("atomic_expected=%d", atomic_expected));
         void'($value$plusargs("atomic_test=%d", atomic_test));
         void'($value$plusargs("tlbi_test=%d", tlbi_test));
+        void'($value$plusargs("ipi_test=%d", ipi_test));
+        void'($value$plusargs("ipi_expected=%d", ipi_expected));
         void'($value$plusargs("atomic_debug=%d", atomic_debug));
         void'($value$plusargs("max_cycles=%d", max_cycles));
         if (!opensbi_mode &&
@@ -2327,8 +2610,12 @@ module tb_4h_3p #(
               coherence_measure_end_pc)))
             $fatal(1,
                 "coherence performance workload requires shared Sv39, performance results, case/range/operation metadata, and distinct measurement PCs");
-        if (!opensbi_mode && (atomic_test != 0) && (tlbi_test != 0))
-            $fatal(1, "+atomic_test and +tlbi_test are mutually exclusive");
+        if (!opensbi_mode &&
+            (((atomic_test != 0) && (tlbi_test != 0)) ||
+             ((atomic_test != 0) && (ipi_test != 0)) ||
+             ((tlbi_test != 0) && (ipi_test != 0))))
+            $fatal(1,
+                "+atomic_test, +tlbi_test, and +ipi_test are mutually exclusive");
         if (!opensbi_mode && (atomic_test != 0) &&
             (!atomic_counter_va_valid || !result_va_valid ||
              (atomic_expected <= 0) || (result_expected <= 0)))
@@ -2341,18 +2628,29 @@ module tb_4h_3p #(
              (shared_satp == 0) || (bare_mode != 0)))
             $fatal(1,
                 "TLBI workload requires shared Sv39, reservation/target/old/new addresses, and result=1");
+        if (!opensbi_mode && (ipi_test != 0) &&
+            ((opensbi_active_harts != 2) ||
+             (ipi_expected <= 0) || !result_va_valid ||
+             (result_expected != ipi_expected) ||
+             (shared_satp == 0) || (bare_mode != 0)))
+            $fatal(1,
+                "IPI workload requires exactly two harts, shared Sv39, a result address, and matching positive expectations");
 
         if (DDR3_ENABLE != 0) begin
             /*
              * Let the memory-channel initializer finish before copying the
              * assembled 512-bit image into its 256-bit backing array.
              */
+`ifdef OPENRV64_4H_VERILATOR_CHECKPOINT
+            checkpoint_ddr_load_pending = 1'b1;
+`else
             #1;
             for (memory_index = 0;
                  memory_index < MEMORY_WORDS;
                  memory_index = memory_index + 1)
                 u_ddr_backend.load_line(
                     memory_index, memory[memory_index]);
+`endif
             $display(
                 "4H memory backend: timed DDR3, 256-bit AXI, genbus=%0dx%0d ddr_queue=%0dx%0dx%0d burst_train=%0d swizzle=%0d",
                 GENBUS_READ_BUFFER_DEPTH,
@@ -2368,9 +2666,29 @@ module tb_4h_3p #(
                 MEMORY_LATENCY);
         end
 
+`ifndef OPENRV64_4H_VERILATOR_CHECKPOINT
         repeat (12) @(posedge clk);
         rst_n = 1'b1;
+`endif
     end
+
+`ifdef OPENRV64_4H_VERILATOR_CHECKPOINT
+    always @(posedge clk) begin
+        if (checkpoint_ddr_load_pending) begin
+            for (memory_index = 0;
+                 memory_index < MEMORY_WORDS;
+                 memory_index = memory_index + 1)
+                u_ddr_backend.load_line(
+                    memory_index, memory[memory_index]);
+            checkpoint_ddr_load_pending <= 1'b0;
+        end
+        if (!rst_n) begin
+            checkpoint_reset_edges <= checkpoint_reset_edges + 1;
+            if (checkpoint_reset_edges == 11)
+                rst_n <= 1'b1;
+        end
+    end
+`endif
 
     always @(posedge clk) begin
         if (rst_n) begin
@@ -2459,17 +2777,21 @@ module tb_4h_3p #(
                 if ((cycles != 0) &&
                     ((cycles % 1000000) == 0)) begin
                     $display(
-                    "OPENSBI_4H_PROGRESS cycles=%0d active=%b pc=%016h,%016h,%016h,%016h priv=%0d,%0d,%0d,%0d hsm_wfi=%b hsm_sleep=%b sleep=%b s_mode=%b banner=%0b payload=%0b magic=%0b hart_start_counter=%0d linux_online=%0b linux_prompt=%0b linux_panic=%0b uart_bytes=%0d",
+                    "OPENSBI_4H_PROGRESS cycles=%0d active=%b pc=%016h,%016h,%016h,%016h priv=%0d,%0d,%0d,%0d hsm_wfi=%b hsm_sleep=%b sleep=%b s_mode=%b banner=%0b payload=%0b magic=%0b hart_start_counter=%0d linux_online=%0b linux_threads=%0b linux_prompt=%0b linux_panic=%0b uart_bytes=%0d",
                         cycles,
                         opensbi_active_hart_mask,
                         dbg_pc[0*64 +: 64],
                         dbg_pc[1*64 +: 64],
                         dbg_pc[2*64 +: 64],
                         dbg_pc[3*64 +: 64],
-                        g_hart[0].u_core.csr_priv_mode,
-                        g_hart[1].u_core.csr_priv_mode,
-                        g_hart[2].u_core.csr_priv_mode,
-                        g_hart[3].u_core.csr_priv_mode,
+                        hart_priv_mode[0*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
+                        hart_priv_mode[1*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
+                        hart_priv_mode[2*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
+                        hart_priv_mode[3*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
                         opensbi_hsm_wfi_seen,
                         opensbi_hsm_sleep_seen,
                         hart_wfi_sleep,
@@ -2479,9 +2801,12 @@ module tb_4h_3p #(
                         opensbi_magic_seen,
                         hart_start_counter_last,
                         linux_smp_online_seen,
+                        linux_smp_threads_seen,
                         linux_prompt_seen,
                         linux_panic_seen,
                         opensbi_uart_bytes);
+                    if (pc_trace_fd != 0)
+                        $fflush(pc_trace_fd);
                     $fflush();
                 end
             end
@@ -2523,6 +2848,22 @@ module tb_4h_3p #(
                     hart_wfi_sleep);
                 $fflush();
             end
+            if ((ipi_test != 0) && (cycles != 0) &&
+                ((cycles % 50000) == 0)) begin
+                $display(
+                    "IPI_PROGRESS cycle=%0d expected=%0d msip=%b asserted=%0d,%0d,%0d,%0d cleared=%0d,%0d,%0d,%0d interrupts=%0d,%0d,%0d,%0d wfi=%b",
+                    cycles, ipi_expected, clint_msip,
+                    ipi_msip_assertions[0],
+                    ipi_msip_assertions[1],
+                    ipi_msip_assertions[2],
+                    ipi_msip_assertions[3],
+                    ipi_msip_clears[0], ipi_msip_clears[1],
+                    ipi_msip_clears[2], ipi_msip_clears[3],
+                    ipi_interrupts[0], ipi_interrupts[1],
+                    ipi_interrupts[2], ipi_interrupts[3],
+                    ipi_wfi_seen);
+                $fflush();
+            end
 
             if (protocol_error || probe_endpoint_protocol_error)
                 $fatal(1,
@@ -2554,7 +2895,7 @@ module tb_4h_3p #(
                 ((atomic_test == 0) || atomic_final_seen)) begin
                 if (!progress_before_first_done)
                     $fatal(1,
-                        "a hart completed before all four made retirement progress");
+                        "a hart completed before all active harts made retirement progress");
                 for (init_hart = 0;
                      init_hart < NUM_HARTS;
                      init_hart = init_hart + 1) begin
@@ -2689,6 +3030,51 @@ module tb_4h_3p #(
                                     sc_successes[init_hart]);
                         end
                     end
+                end
+                if (ipi_test != 0) begin
+                    for (init_hart = 0;
+                         init_hart < NUM_HARTS;
+                         init_hart = init_hart + 1) begin
+                        if (opensbi_active_hart_mask[init_hart]) begin
+                            if ((ipi_msip_assertions[init_hart] !=
+                                 ipi_expected) ||
+                                (ipi_msip_clears[init_hart] !=
+                                 ipi_expected) ||
+                                (ipi_interrupts[init_hart] !=
+                                 ipi_expected))
+                                $fatal(1,
+                                    "hart %0d IPI accounting asserted=%0d cleared=%0d interrupts=%0d expected=%0d",
+                                    init_hart,
+                                    ipi_msip_assertions[init_hart],
+                                    ipi_msip_clears[init_hart],
+                                    ipi_interrupts[init_hart],
+                                    ipi_expected);
+                            if (!ipi_wfi_seen[init_hart])
+                                $fatal(1,
+                                    "hart %0d never slept in WFI while awaiting an IPI",
+                                    init_hart);
+                        end else if ((ipi_msip_assertions[init_hart] != 0) ||
+                                     (ipi_msip_clears[init_hart] != 0) ||
+                                     (ipi_interrupts[init_hart] != 0))
+                            $fatal(1,
+                                "inactive hart %0d observed IPI activity asserted=%0d cleared=%0d interrupts=%0d",
+                                init_hart,
+                                ipi_msip_assertions[init_hart],
+                                ipi_msip_clears[init_hart],
+                                ipi_interrupts[init_hart]);
+                    end
+                    if (clint_msip != {NUM_HARTS{1'b0}})
+                        $fatal(1,
+                            "IPI test completed with asserted MSIP bits=%b",
+                            clint_msip);
+                    $display(
+                        "IPI_2H_SV39 rounds=%0d asserted=%0d,%0d cleared=%0d,%0d interrupts=%0d,%0d wfi=%b",
+                        ipi_expected,
+                        ipi_msip_assertions[0],
+                        ipi_msip_assertions[1],
+                        ipi_msip_clears[0], ipi_msip_clears[1],
+                        ipi_interrupts[0], ipi_interrupts[1],
+                        ipi_wfi_seen);
                 end
                 if ((atomic_test != 0) &&
                     (atomic_last_value != atomic_expected))
@@ -2955,6 +3341,12 @@ module tb_4h_3p #(
             end
 
             if ((opensbi_smp != 0) && (linux_mode != 0) &&
+                (require_smp_threads != 0) && linux_prompt_seen &&
+                !linux_smp_threads_seen)
+                $fatal(1,
+                    "Linux reached the prompt without passing the two-thread SMP userspace probe");
+
+            if ((opensbi_smp != 0) && (linux_mode != 0) &&
                 linux_smp_online_seen && linux_prompt_seen) begin
                 for (init_hart = 0;
                      init_hart < NUM_HARTS;
@@ -3107,17 +3499,23 @@ module tb_4h_3p #(
                 opensbi_magic_seen &&
                 (&opensbi_hsm_wfi_seen[NUM_HARTS-1:1]) &&
                 (&hart_wfi_sleep[NUM_HARTS-1:1])) begin
-                if ((g_hart[1].u_core.csr_priv_mode !=
+                if ((hart_priv_mode[
+                         1*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH] !=
                      `RV64_PRIV_M) ||
-                    (g_hart[2].u_core.csr_priv_mode !=
+                    (hart_priv_mode[
+                         2*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH] !=
                      `RV64_PRIV_M) ||
-                    (g_hart[3].u_core.csr_priv_mode !=
+                    (hart_priv_mode[
+                         3*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH] !=
                      `RV64_PRIV_M))
                     $fatal(1,
                         "secondary hart left M-mode priv=%0d,%0d,%0d",
-                        g_hart[1].u_core.csr_priv_mode,
-                        g_hart[2].u_core.csr_priv_mode,
-                        g_hart[3].u_core.csr_priv_mode);
+                        hart_priv_mode[
+                            1*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH],
+                        hart_priv_mode[
+                            2*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH],
+                        hart_priv_mode[
+                            3*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH]);
                 if ((DDR3_ENABLE != 0) &&
                     (ddr_read_commands == 0))
                     $fatal(1,
@@ -3182,26 +3580,35 @@ module tb_4h_3p #(
                     sc_failures[0], sc_failures[1],
                     sc_failures[2], sc_failures[3],
                     hart_wfi_sleep,
-                    g_hart[0].u_core.csr_priv_mode,
-                    g_hart[1].u_core.csr_priv_mode,
-                    g_hart[2].u_core.csr_priv_mode,
-                    g_hart[3].u_core.csr_priv_mode,
+                    hart_priv_mode[0*`RV64_PRIV_WIDTH +:
+                        `RV64_PRIV_WIDTH],
+                    hart_priv_mode[1*`RV64_PRIV_WIDTH +:
+                        `RV64_PRIV_WIDTH],
+                    hart_priv_mode[2*`RV64_PRIV_WIDTH +:
+                        `RV64_PRIV_WIDTH],
+                    hart_priv_mode[3*`RV64_PRIV_WIDTH +:
+                        `RV64_PRIV_WIDTH],
                     u_l2.lookup_action_r);
             if (cycles >= max_cycles) begin
                 if (opensbi_mode)
                     $fatal(1,
-                        "OpenSBI/Linux 4H timeout cycles=%0d pc=%h instr=%h priv=%0d,%0d,%0d,%0d hsm_wfi=%b banner=%0b payload=%0b s_mode=%0b magic=%0b linux_online=%0b linux_prompt=%0b linux_panic=%0b req=%0d,%0d,%0d,%0d",
+                        "OpenSBI/Linux 4H timeout cycles=%0d pc=%h instr=%h priv=%0d,%0d,%0d,%0d hsm_wfi=%b banner=%0b payload=%0b s_mode=%0b magic=%0b linux_online=%0b linux_threads=%0b linux_prompt=%0b linux_panic=%0b req=%0d,%0d,%0d,%0d",
                         cycles, dbg_pc, dbg_instr,
-                        g_hart[0].u_core.csr_priv_mode,
-                        g_hart[1].u_core.csr_priv_mode,
-                        g_hart[2].u_core.csr_priv_mode,
-                        g_hart[3].u_core.csr_priv_mode,
+                        hart_priv_mode[0*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
+                        hart_priv_mode[1*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
+                        hart_priv_mode[2*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
+                        hart_priv_mode[3*`RV64_PRIV_WIDTH +:
+                            `RV64_PRIV_WIDTH],
                         opensbi_hsm_wfi_seen,
                         opensbi_banner_seen,
                         opensbi_payload_seen,
                         opensbi_s_mode_seen,
                         opensbi_magic_seen,
                         linux_smp_online_seen,
+                        linux_smp_threads_seen,
                         linux_prompt_seen,
                         linux_panic_seen,
                         requests[0], requests[1],
@@ -3215,6 +3622,11 @@ module tb_4h_3p #(
                         mailbox_seen[1], mailbox_seen[0], dbg_pc);
             end
         end
+    end
+
+    final begin
+        if (pc_trace_fd != 0)
+            $fclose(pc_trace_fd);
     end
 
 endmodule

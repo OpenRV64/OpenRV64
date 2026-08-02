@@ -1,6 +1,8 @@
 `ifndef OPENRV64_EXEC_FPU_DEFS_V
 `define OPENRV64_EXEC_FPU_DEFS_V
 
+`include "core/exec/extension/defs.v"
+
 `define OPENRV64_FP_OP_WIDTH        5
 `define OPENRV64_FP_OP_INVALID      5'd0
 `define OPENRV64_FP_OP_ADD          5'd1
@@ -29,5 +31,32 @@
 
 `define OPENRV64_FP_RESULT_FP       1'b0
 `define OPENRV64_FP_RESULT_INT      1'b1
+
+// Opaque F/D decode payload carried through the generic extension contract.
+// Only modules below rtl/core/exec/fpu interpret these fields.
+`define OPENRV64_FPU_SRC1_PRIVATE_BIT       0
+`define OPENRV64_FPU_SRC2_PRIVATE_BIT       1
+`define OPENRV64_FPU_SRC3_PRIVATE_BIT       2
+`define OPENRV64_FPU_USES_SRC3_BIT          3
+`define OPENRV64_FPU_PRIVATE_REG_WRITE_BIT  4
+`define OPENRV64_FPU_STATE_WRITE_BIT        5
+`define OPENRV64_FPU_RS3_ADDR_LSB           6
+`define OPENRV64_FPU_OP_LSB                11
+`define OPENRV64_FPU_FMT_LSB               16
+`define OPENRV64_FPU_RM_LSB                18
+`define OPENRV64_FPU_TYPE_LSB              21
+`define OPENRV64_FPU_LOAD_BIT              26
+`define OPENRV64_FPU_STORE_BIT             27
+`define OPENRV64_FPU_DECODE_PAYLOAD_WIDTH  28
+
+// F/D-owned privileged status fields.  Shared CSR logic treats these only as
+// opaque extension status overlays.
+`define RV64_MSTATUS_FS_BITS       14:13
+`define RV64_MSTATUS_FS_SHIFT      13
+`define RV64_MSTATUS_SD_BIT        63
+`define RV64_MSTATUS_FS_OFF        2'b00
+`define RV64_MSTATUS_FS_INITIAL    2'b01
+`define RV64_MSTATUS_FS_CLEAN      2'b10
+`define RV64_MSTATUS_FS_DIRTY      2'b11
 
 `endif

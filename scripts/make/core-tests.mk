@@ -6,6 +6,9 @@ sim-decode-early: $(DECODE_EARLY_SIM_BUILD)
 sim-decode-top: $(DECODE_TOP_SIM_BUILD)
 	vvp $(DECODE_TOP_SIM_BUILD)
 
+sim-decode-rv64-fd: $(DECODE_RV64FD_SIM_BUILD)
+	vvp $(DECODE_RV64FD_SIM_BUILD)
+
 sim-decode-rv64c: $(DECODE_RV64C_SIM_BUILD)
 	vvp $(DECODE_RV64C_SIM_BUILD)
 
@@ -35,6 +38,9 @@ sim-isa-fp: $(ISA_FP_SIM_BUILD)
 
 sim-rv64-fd-fpr: $(RV64FD_FPR_SIM_BUILD)
 	vvp $(RV64FD_FPR_SIM_BUILD)
+
+sim-fpu-csrs: $(FPU_CSRS_SIM_BUILD)
+	vvp $(FPU_CSRS_SIM_BUILD)
 
 sim-stage: $(STAGE_SIM_BUILD)
 	vvp $(STAGE_SIM_BUILD)
@@ -92,6 +98,12 @@ sim-dispatch-window-3p: $(DISPATCH_WINDOW_3P_SIM_BUILD)
 
 sim-dispatch-3p: $(DISPATCH_3P_SIM_BUILD)
 	vvp $(DISPATCH_3P_SIM_BUILD)
+
+sim-fd-dispatch: $(FD_DISPATCH_SIM_BUILD)
+	vvp $(FD_DISPATCH_SIM_BUILD)
+
+sim-fd-uop-harness: $(FD_UOP_HARNESS_SIM_BUILD)
+	vvp $(FD_UOP_HARNESS_SIM_BUILD)
 
 sim-reg-map-3p: $(REG_MAP_3P_SIM_BUILD)
 	vvp $(REG_MAP_3P_SIM_BUILD)
@@ -262,6 +274,15 @@ sim-backend-3p: $(BACKEND_3P_SIM_BUILD)
 
 sim-top-3p: $(TOP_3P_SIM_BUILD)
 	vvp $(TOP_3P_SIM_BUILD)
+
+sim-top-4pf: $(TOP_4PF_SIM_BUILD) $(FP_DAXPY_MEMH)
+	vvp $(TOP_4PF_SIM_BUILD)
+
+sim-top-4pf-fmadd32: $(TOP_4PF_SIM_BUILD) $(FP_FMADD32_MEMH)
+	vvp $(TOP_4PF_SIM_BUILD) +fmadd32 +memh=$(FP_FMADD32_MEMH)
+
+sim-top-4pf-faults: $(TOP_4PF_SIM_BUILD) $(FP_FAULTS_MEMH)
+	vvp $(TOP_4PF_SIM_BUILD) +faults +memh=$(FP_FAULTS_MEMH)
 
 sim-top-axi-3p: $(TOP_AXI_3P_SIM_BUILD)
 	vvp $(TOP_AXI_3P_SIM_BUILD)

@@ -122,6 +122,12 @@ module tb_decode_early;
         check(`RV64_OPCODE_SYSTEM, 1'b1, `RV64_EARLY_CLASS_SYSTEM, `RV64_EARLY_FORMAT_I,
               1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b1, 1'b0);
 
+        // An otherwise-unowned 32-bit major opcode is an extension candidate.
+        // No particular extension or operand format is identified here.
+        check(7'b0001011, 1'b1, `RV64_EARLY_CLASS_EXTENSION,
+              `RV64_EARLY_FORMAT_INVALID,
+              1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b1, 1'b1);
+
         check(7'b0000000, 1'b0, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_INVALID,
               1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0);
 

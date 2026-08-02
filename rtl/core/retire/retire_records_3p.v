@@ -21,6 +21,10 @@ module openrv64_retire_records_3p #(
     input  wire [3*SLOT_WIDTH-1:0]      alloc_slot_i,
     input  wire [3*ALLOC_WIDTH-1:0]     alloc_record_i,
     input  wire [2:0]                   alloc_complete_i,
+    // Write the ordinary result/control bank without marking the ordering
+    // entry complete.  Out-of-line extensions use this to initialize next-PC
+    // while keeping private result data in extension-owned storage.
+    input  wire [2:0]                   alloc_result_valid_i,
     input  wire [3*RESULT_WIDTH-1:0]    alloc_result_i,
     input  wire [3*64-1:0]              alloc_trace_i,
 
@@ -65,7 +69,8 @@ module openrv64_retire_records_3p #(
             if (alloc_valid_i[write_port]) begin
                 alloc_q[write_slot] <= alloc_record_i[
                     write_port*ALLOC_WIDTH +: ALLOC_WIDTH];
-                if (alloc_complete_i[write_port])
+                if (alloc_complete_i[write_port] ||
+                    alloc_result_valid_i[write_port])
                     result_q[write_slot] <= alloc_result_i[
                         write_port*RESULT_WIDTH +: RESULT_WIDTH];
             end

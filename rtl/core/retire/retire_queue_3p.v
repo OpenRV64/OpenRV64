@@ -5,7 +5,8 @@ module openrv64_retire_queue_3p #(
     parameter integer DEPTH = 8,
     parameter integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer INDEX_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH),
-    parameter integer COUNT_WIDTH = $clog2(DEPTH + 1)
+    parameter integer COUNT_WIDTH = $clog2(DEPTH + 1),
+    parameter integer ENABLE_EXTENSION_COMPLETION = 0
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -25,6 +26,13 @@ module openrv64_retire_queue_3p #(
     input  wire [3*ID_WIDTH-1:0]        complete_id_i,
     input  wire [3*INDEX_WIDTH-1:0]     complete_slot_i,
     output wire [2:0]                   complete_accept_o,
+
+    // Optional sparse extension-completion port.  It carries identity only;
+    // extension data remains in extension-owned storage until retirement.
+    input  wire                         extension_complete_valid_i,
+    input  wire [ID_WIDTH-1:0]          extension_complete_id_i,
+    input  wire [INDEX_WIDTH-1:0]       extension_complete_slot_i,
+    output wire                         extension_complete_accept_o,
 
     output wire [2:0]                   retire_valid_o,
     input  wire [2:0]                   retire_accept_i,
@@ -140,6 +148,20 @@ module openrv64_retire_queue_3p #(
         end
     endgenerate
 
+    generate
+        if (ENABLE_EXTENSION_COMPLETION != 0) begin : g_extension_complete
+            assign extension_complete_accept_o =
+                extension_complete_valid_i &&
+                (!squash_younger_i ||
+                 !id_is_younger(extension_complete_id_i, squash_id_i)) &&
+                valid_q[extension_complete_slot_i] &&
+                (id_q[extension_complete_slot_i] ==
+                 extension_complete_id_i);
+        end else begin : g_no_extension_complete
+            assign extension_complete_accept_o = 1'b0;
+        end
+    endgenerate
+
     function [INDEX_WIDTH-1:0] index_add;
         input [INDEX_WIDTH-1:0] base;
         input [1:0] increment;
@@ -247,6 +269,9 @@ module openrv64_retire_queue_3p #(
                     complete_q[complete_slot_i[
                         port_idx*INDEX_WIDTH +: INDEX_WIDTH]] <= 1'b1;
             end
+
+            if (extension_complete_accept_o)
+                complete_q[extension_complete_slot_i] <= 1'b1;
 
             if (!squash_younger_i && alloc_fire[0]) begin
                 valid_q[alloc_slot0] <= 1'b1;

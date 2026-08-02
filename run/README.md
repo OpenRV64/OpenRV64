@@ -1,0 +1,59 @@
+# Run configurations
+
+`run/cfg/` contains named, executable configurations for long-running targets.
+Invoke a configuration directly:
+
+```sh
+run/cfg/linux-smp-4h-ddr3.cfg
+```
+
+or pass it to the common runner:
+
+```sh
+run/run linux-smp-4h-ddr3
+run/run run/cfg/linux-smp-4h-ddr3.cfg --rebuild
+```
+
+Each launch creates `run/log/<configuration-name>-<UTC timestamp>/`. The
+directory is self-contained: it records the selected configuration, effective
+Make values, source hashes, repository state, build and simulation logs,
+snapshotted inputs and executable, checkpoint, and final validation status.
+
+Manage generated runs with:
+
+```sh
+run/run status latest
+run/run list
+run/run log latest 80
+run/run tail latest
+run/run attach latest
+run/run path latest
+run/run checkpoint latest
+run/run command latest
+run/run wait latest
+run/run stop latest
+```
+
+`log` prints a finite suffix. `tail`/`follow` follows the build and simulation
+logs. `attach` switches to the run when invoked inside tmux and attaches
+normally outside tmux. `wait` blocks until the run's session ends and then
+prints its final status.
+
+Common start controls are:
+
+```sh
+run/cfg/linux-smp-4h-ddr3.cfg --max-cycles 80000000
+run/cfg/linux-smp-4h-ddr3.cfg --checkpoint 18000000
+run/cfg/linux-smp-4h-ddr3.cfg --checkpoint 18000000 --checkpoint-exit
+run/cfg/linux-smp-4h-ddr3.cfg --resume RUN_OR_CHECKPOINT
+run/cfg/linux-smp-4h-ddr3.cfg --resume RUN_OR_CHECKPOINT \
+    --stop-cycles 35000000
+```
+
+Resume copies the source run's checkpoint, exact snapshotted simulator, and
+inputs into a new timestamped record. It does not rebuild current RTL against
+old serialized state. Unless a new `--checkpoint` is explicitly supplied,
+resume disables the configuration's normal checkpoint.
+
+`tools/run-linux-smp.sh` remains the target-specific backend. New automation
+should call a configuration rather than construct backend arguments directly.

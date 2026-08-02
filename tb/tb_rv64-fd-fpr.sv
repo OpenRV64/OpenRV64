@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-`include "core/regs/rv64-fd-fpr.v"
+`include "core/exec/fpu/fpr.v"
 `timescale 1ns/1ps
 
 module tb_rv64fd_fpr;

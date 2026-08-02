@@ -1,5 +1,16 @@
 # Software artifact build recipes.
 
+$(SMP_THREAD_PROBE_BIN): $(OPENRV64_MAKEFILES) sw/smp_thread_probe.S
+	mkdir -p $(dir $@)
+	$(RISCV_LINUX_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mno-relax -nostdlib -nostartfiles -static -no-pie \
+		-Wl,--build-id=none,-e,_start,-z,noexecstack \
+		-o $@ sw/smp_thread_probe.S
+
+$(SMP_THREAD_TEST_SCRIPT): sw/smp-thread-test.sh
+	mkdir -p $(dir $@)
+	install -m 0755 $< $@
+
 $(UART_FIRMWARE_ELF): $(OPENRV64_MAKEFILES) sw/start.S sw/uart.c sw/openrv64.ld
 	$(RISCV_CC) $(UART_FIRMWARE_CFLAGS) -nostdlib -nostartfiles \
 		-Wl,--build-id=none,-Map=$(UART_FIRMWARE_MAP) \
@@ -7,6 +18,54 @@ $(UART_FIRMWARE_ELF): $(OPENRV64_MAKEFILES) sw/start.S sw/uart.c sw/openrv64.ld
 
 $(UART_FIRMWARE_BIN): $(UART_FIRMWARE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(FP_DAXPY_ELF): $(OPENRV64_MAKEFILES) sw/fp/daxpy.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(FP_DAXPY_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(FP_DAXPY_MAP) \
+		-T sw/openrv64.ld -o $@ sw/fp/daxpy.S
+
+$(FP_DAXPY_BIN): $(FP_DAXPY_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(FP_DAXPY_DISASM): $(FP_DAXPY_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(FP_DAXPY_MEMH): $(FP_DAXPY_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(FP_DAXPY_MEMH_BYTES) --word-bytes 32
+
+$(FP_FMADD32_ELF): $(OPENRV64_MAKEFILES) sw/fp/fmadd32.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(FP_FMADD32_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(FP_FMADD32_MAP) \
+		-T sw/openrv64.ld -o $@ sw/fp/fmadd32.S
+
+$(FP_FMADD32_BIN): $(FP_FMADD32_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(FP_FMADD32_DISASM): $(FP_FMADD32_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(FP_FMADD32_MEMH): $(FP_FMADD32_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(FP_FMADD32_MEMH_BYTES) --word-bytes 32
+
+$(FP_FAULTS_ELF): $(OPENRV64_MAKEFILES) sw/fp/faults.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(FP_FAULTS_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(FP_FAULTS_MAP) \
+		-T sw/openrv64.ld -o $@ sw/fp/faults.S
+
+$(FP_FAULTS_BIN): $(FP_FAULTS_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(FP_FAULTS_DISASM): $(FP_FAULTS_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(FP_FAULTS_MEMH): $(FP_FAULTS_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(FP_FAULTS_MEMH_BYTES) --word-bytes 32
 
 $(COREMARK_LOOP_ELF): $(OPENRV64_MAKEFILES) sw/coremark_loop_start.S \
 		sw/coremark_loop.c sw/openrv64.ld
@@ -220,6 +279,29 @@ $(TLBI_4H_SHARED_VM_MEMH): $(TLBI_4H_SHARED_VM_BIN) tools/bin2mem.py
 		--size $(TLBI_4H_SHARED_VM_MEMH_BYTES) --word-bytes 64
 
 $(TLBI_4H_SHARED_VM_DISASM): $(TLBI_4H_SHARED_VM_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(IPI_2H_SHARED_VM_ELF): $(OPENRV64_MAKEFILES) \
+		sw/ipi_2h_shared_vm.S sw/openrv64-4h-shared-vm.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(ATOMIC_SOC_ASFLAGS) \
+		-DOPENRV64_IPI_ROUNDS=$(IPI_2H_SHARED_VM_ROUNDS) \
+		-Wl,--build-id=none,--gc-sections,-Map,$(IPI_2H_SHARED_VM_MAP) \
+		-T sw/openrv64-4h-shared-vm.ld -o $@ \
+		sw/ipi_2h_shared_vm.S
+
+$(IPI_2H_SHARED_VM_TEMPLATE_BIN): $(IPI_2H_SHARED_VM_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(IPI_2H_SHARED_VM_BIN): $(IPI_2H_SHARED_VM_TEMPLATE_BIN) \
+		tools/make_shared_sv39_image.py
+	$(PYTHON) tools/make_shared_sv39_image.py $< $@
+
+$(IPI_2H_SHARED_VM_MEMH): $(IPI_2H_SHARED_VM_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(IPI_2H_SHARED_VM_MEMH_BYTES) --word-bytes 64
+
+$(IPI_2H_SHARED_VM_DISASM): $(IPI_2H_SHARED_VM_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
 $(ZERO_VM_ELF): $(OPENRV64_MAKEFILES) sw/zero/zero_sv39.S \

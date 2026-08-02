@@ -26,50 +26,51 @@ module openrv64_exec_system_csr (
 
     reg op_valid;
     reg write_required;
-    reg [`RV64_XLEN-1:0] write_value;
+    reg [`RV64_XLEN-1:0] write_operand;
 
     always @* begin
         op_valid      = 1'b1;
         write_required = 1'b0;
-        write_value   = csr_rdata_i;
+        write_operand = {`RV64_XLEN{1'b0}};
 
         case (funct3_i)
             `RV64_ZICSR_FUNCT3_CSRRW: begin
                 write_required = 1'b1;
-                write_value    = rs1_data_i;
+                write_operand  = rs1_data_i;
             end
 
             `RV64_ZICSR_FUNCT3_CSRRS: begin
                 write_required = (rs1_addr_i != `RV64_REG_X0);
-                write_value    = csr_rdata_i | rs1_data_i;
+                write_operand  = rs1_data_i;
             end
 
             `RV64_ZICSR_FUNCT3_CSRRC: begin
                 write_required = (rs1_addr_i != `RV64_REG_X0);
-                write_value    = csr_rdata_i & ~rs1_data_i;
+                write_operand  = rs1_data_i;
             end
 
             `RV64_ZICSR_FUNCT3_CSRRWI: begin
                 write_required = 1'b1;
-                write_value    = {{(`RV64_XLEN-`RV64_REG_ADDR_WIDTH){1'b0}}, zimm_i};
+                write_operand  =
+                    {{(`RV64_XLEN-`RV64_REG_ADDR_WIDTH){1'b0}}, zimm_i};
             end
 
             `RV64_ZICSR_FUNCT3_CSRRSI: begin
                 write_required = (zimm_i != `RV64_REG_X0);
-                write_value    = csr_rdata_i |
-                                 {{(`RV64_XLEN-`RV64_REG_ADDR_WIDTH){1'b0}}, zimm_i};
+                write_operand  =
+                    {{(`RV64_XLEN-`RV64_REG_ADDR_WIDTH){1'b0}}, zimm_i};
             end
 
             `RV64_ZICSR_FUNCT3_CSRRCI: begin
                 write_required = (zimm_i != `RV64_REG_X0);
-                write_value    = csr_rdata_i &
-                                 ~{{(`RV64_XLEN-`RV64_REG_ADDR_WIDTH){1'b0}}, zimm_i};
+                write_operand  =
+                    {{(`RV64_XLEN-`RV64_REG_ADDR_WIDTH){1'b0}}, zimm_i};
             end
 
             default: begin
                 op_valid       = 1'b0;
                 write_required = 1'b0;
-                write_value    = {`RV64_XLEN{1'b0}};
+                write_operand  = {`RV64_XLEN{1'b0}};
             end
         endcase
     end
@@ -83,7 +84,11 @@ module openrv64_exec_system_csr (
                          csr_valid_i &&
                          csr_writable_i &&
                          write_required;
-    assign csr_wdata_o = csr_write_o ? write_value : {`RV64_XLEN{1'b0}};
+    // Carry the unmodified source operand to the architectural CSR owner.
+    // The owner applies CSRRW/CSRRS/CSRRC at retirement, where it can retain
+    // per-bit write intent and enforce read-only fields.
+    assign csr_wdata_o = csr_write_o ? write_operand :
+                         {`RV64_XLEN{1'b0}};
     assign rd_data_o = (valid_i && op_valid && csr_valid_i) ?
                        csr_rdata_i : {`RV64_XLEN{1'b0}};
 

@@ -12,6 +12,12 @@ $(DECODE_TOP_SIM_BUILD): $(DECODE_TOP_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(DECODE_TOP_SIM_BUILD) $(DECODE_TOP_SIM_SRCS)
 
+$(DECODE_RV64FD_SIM_BUILD): $(DECODE_RV64FD_SIM_SRCS) $(DECODE_SRCS) \
+		$(ISA_SRCS) $(FP_ISA_SRCS) $(FPU_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_decode_rv64fd \
+		-o $(DECODE_RV64FD_SIM_BUILD) $(DECODE_RV64FD_SIM_SRCS)
+
 $(DECODE_RV64C_SIM_BUILD): $(DECODE_RV64C_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(DECODE_RV64C_SIM_BUILD) $(DECODE_RV64C_SIM_SRCS)
@@ -53,6 +59,12 @@ $(RV64FD_FPR_SIM_BUILD): $(RV64FD_FPR_SIM_SRCS) $(FPR_SRCS) \
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_rv64fd_fpr \
 		-o $(RV64FD_FPR_SIM_BUILD) $(RV64FD_FPR_SIM_SRCS)
+
+$(FPU_CSRS_SIM_BUILD): $(FPU_CSR_SRCS) tb/tb_fpu_csrs.sv \
+		$(FP_ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_fpu_csrs \
+		-o $(FPU_CSRS_SIM_BUILD) tb/tb_fpu_csrs.sv
 
 $(STAGE_SIM_BUILD): $(STAGE_SIM_SRCS) $(STAGE_SRCS)
 	mkdir -p sim
@@ -173,6 +185,20 @@ $(DISPATCH_3P_SIM_BUILD): rtl/core/dispatch/dispatch_3p.v \
 		rtl/core/dispatch/dispatch_issue_3p.v \
 		rtl/core/dispatch/dispatch_control_3p.v \
 		rtl/core/dispatch/dispatch_3p.v tb/tb_dispatch_3p.sv
+
+$(FD_DISPATCH_SIM_BUILD): $(FD_DISPATCH_SRCS) tb/tb_fd_dispatch.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_fd_dispatch \
+		-o $(FD_DISPATCH_SIM_BUILD) \
+		$(FD_DISPATCH_SRCS) tb/tb_fd_dispatch.sv
+
+$(FD_UOP_HARNESS_SIM_BUILD): $(FD_UOP_HARNESS_SIM_SRCS) \
+		$(FD_DISPATCH_SRCS) $(FPR_SRCS) $(FPU_SRCS) $(FP_ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_fd_uop_harness \
+		-o $(FD_UOP_HARNESS_SIM_BUILD) \
+		$(FD_DISPATCH_SRCS) $(FPR_SRCS) $(FPU_SRCS) \
+		$(FD_UOP_HARNESS_SIM_SRCS)
 
 $(REG_MAP_3P_SIM_BUILD): rtl/core/dispatch/reg_map_3p.v tb/tb_reg_map_3p.sv
 	mkdir -p sim

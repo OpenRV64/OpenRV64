@@ -7,9 +7,35 @@
 
 module openrv64_decode_top #(
     parameter ENABLE_RV64M = 1,
-    parameter ENABLE_RV64A = 1
+    parameter ENABLE_RV64A = 1,
+    parameter ENABLE_EXTENSION = 0,
+    parameter integer EXTENSION_PAYLOAD_WIDTH = 1
 ) (
     input  wire [`RV64_INSTR_WIDTH-1:0] instr_i,
+
+    // Optional extension response.  The instruction remains illegal unless
+    // an enabled extension decoder claims the generic candidate.
+    input  wire                         extension_selected_i,
+    input  wire                         extension_valid_i,
+    input  wire                         extension_illegal_i,
+    input  wire [`RV64_EARLY_CLASS_WIDTH-1:0] extension_class_sel_i,
+    input  wire [`RV64_EARLY_FORMAT_WIDTH-1:0] extension_format_sel_i,
+    input  wire                         extension_uses_rs1_i,
+    input  wire                         extension_uses_rs2_i,
+    input  wire                         extension_uses_rd_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] extension_rs1_addr_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] extension_rs2_addr_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] extension_rd_addr_i,
+    input  wire                         extension_reg_write_i,
+    input  wire                         extension_imm_valid_i,
+    input  wire                         extension_has_imm_i,
+    input  wire [`RV64_XLEN-1:0]        extension_imm_i,
+    input  wire                         extension_mem_read_i,
+    input  wire                         extension_mem_write_i,
+    input  wire [`RV64_LSU_OP_WIDTH-1:0] extension_lsu_op_sel_i,
+    input  wire [`RV64_LSU_SIZE_WIDTH-1:0] extension_lsu_size_sel_i,
+    input  wire                         extension_lsu_unsigned_i,
+    input  wire [EXTENSION_PAYLOAD_WIDTH-1:0] extension_payload_i,
 
     output wire                         valid_o,
     output wire                         illegal_o,
@@ -50,7 +76,10 @@ module openrv64_decode_top #(
     output wire                         br_indirect_o,
 
     output wire                         subdecode_needed_o,
-    output wire                         extension_decode_possible_o
+    output wire                         extension_decode_possible_o,
+    output wire                         extension_candidate_o,
+    output wire                         extension_instr_o,
+    output wire [EXTENSION_PAYLOAD_WIDTH-1:0] extension_payload_o
 );
 
     wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(instr_i);
@@ -153,6 +182,10 @@ module openrv64_decode_top #(
     wire class_is_brjump = class_is_branch || class_is_jump;
     wire class_is_system = (early_class_sel == `RV64_EARLY_CLASS_SYSTEM);
     wire class_is_fence = (early_class_sel == `RV64_EARLY_CLASS_FENCE);
+    wire extension_candidate = early_valid &&
+                               early_extension_decode_possible;
+    wire extension_selected = (ENABLE_EXTENSION != 0) ?
+        (extension_candidate && extension_selected_i) : 1'b0;
 
     reg selected_decode_valid;
     reg selected_decode_illegal;
@@ -338,47 +371,99 @@ module openrv64_decode_top #(
     assign funct3_o = funct3;
     assign funct7_o = funct7;
     assign funct12_o = funct12;
-    assign class_sel_o = early_class_sel;
-    assign format_sel_o = early_format_sel;
+    assign class_sel_o = extension_selected ? extension_class_sel_i :
+                         early_class_sel;
+    assign format_sel_o = extension_selected ? extension_format_sel_i :
+                          early_format_sel;
 
-    assign imm_valid_o = early_valid && imm_decode_valid;
-    assign illegal_o = !early_valid ||
-                       !imm_decode_valid ||
-                       !selected_decode_valid ||
-                       selected_decode_illegal ||
-                       !selected_reg_valid;
-    assign valid_o = early_valid && imm_decode_valid && !illegal_o;
+    assign imm_valid_o = extension_selected ? extension_imm_valid_i :
+                         (early_valid && imm_decode_valid);
+    assign illegal_o = extension_selected ? extension_illegal_i :
+                       (!early_valid ||
+                        !imm_decode_valid ||
+                        !selected_decode_valid ||
+                        selected_decode_illegal ||
+                        !selected_reg_valid);
+    assign valid_o = extension_selected ?
+                     (extension_valid_i && !extension_illegal_i) :
+                     (early_valid && imm_decode_valid && !illegal_o);
 
-    assign uses_rs1_o = valid_o && selected_uses_rs1;
-    assign uses_rs2_o = valid_o && selected_uses_rs2;
-    assign uses_rd_o  = valid_o && selected_uses_rd;
-    assign rs1_addr_o = uses_rs1_o ? selected_rs1_addr : `RV64_REG_X0;
-    assign rs2_addr_o = uses_rs2_o ? selected_rs2_addr : `RV64_REG_X0;
-    assign rd_addr_o  = uses_rd_o ? selected_rd_addr : `RV64_REG_X0;
+    assign uses_rs1_o = valid_o &&
+                        (extension_selected ? extension_uses_rs1_i :
+                         selected_uses_rs1);
+    assign uses_rs2_o = valid_o &&
+                        (extension_selected ? extension_uses_rs2_i :
+                         selected_uses_rs2);
+    assign uses_rd_o  = valid_o &&
+                        (extension_selected ? extension_uses_rd_i :
+                         selected_uses_rd);
+    assign rs1_addr_o = uses_rs1_o ?
+                        (extension_selected ? extension_rs1_addr_i :
+                         selected_rs1_addr) :
+                        `RV64_REG_X0;
+    assign rs2_addr_o = uses_rs2_o ?
+                        (extension_selected ? extension_rs2_addr_i :
+                         selected_rs2_addr) :
+                        `RV64_REG_X0;
+    assign rd_addr_o  = uses_rd_o ?
+                        (extension_selected ? extension_rd_addr_i :
+                         selected_rd_addr) :
+                        `RV64_REG_X0;
     assign reg_write_o = valid_o &&
-                         (class_is_system ? reg_system_uses_rd : early_reg_write);
+                         (extension_selected ? extension_reg_write_i :
+                          (class_is_system ? reg_system_uses_rd : early_reg_write));
 
-    assign has_imm_o = imm_valid_o && imm_decode_has_imm;
-    assign imm_o = imm_valid_o ? imm_decode_value : {`RV64_XLEN{1'b0}};
+    assign has_imm_o = imm_valid_o &&
+                       (extension_selected ? extension_has_imm_i :
+                        imm_decode_has_imm);
+    assign imm_o = imm_valid_o ?
+                   (extension_selected ? extension_imm_i :
+                    imm_decode_value) :
+                   {`RV64_XLEN{1'b0}};
 
-    assign mem_read_o  = valid_o && class_is_mem && lsu_load && early_mem_read;
-    assign mem_write_o = valid_o && class_is_mem && lsu_store && early_mem_write;
-    assign branch_o    = valid_o && class_is_branch && br_branch && early_branch;
-    assign jump_o      = valid_o && class_is_jump && br_jump && early_jump;
-    assign word_op_o   = valid_o && class_is_alu && alu_word_op && early_word_op;
-    assign system_o    = valid_o && class_is_system;
-    assign fence_o     = valid_o && class_is_fence;
+    assign mem_read_o  = valid_o &&
+                         (extension_selected ? extension_mem_read_i :
+                          (class_is_mem && lsu_load && early_mem_read));
+    assign mem_write_o = valid_o &&
+                         (extension_selected ? extension_mem_write_i :
+                          (class_is_mem && lsu_store && early_mem_write));
+    assign branch_o    = valid_o && !extension_selected && class_is_branch &&
+                         br_branch && early_branch;
+    assign jump_o      = valid_o && !extension_selected && class_is_jump &&
+                         br_jump && early_jump;
+    assign word_op_o   = valid_o && !extension_selected && class_is_alu &&
+                         alu_word_op && early_word_op;
+    assign system_o    = valid_o && !extension_selected && class_is_system;
+    assign fence_o     = valid_o && !extension_selected && class_is_fence;
 
-    assign alu_ext_sel_o = (valid_o && class_is_alu) ? alu_ext_sel : `RV64_ALU_EXT_INVALID;
-    assign alu_op_sel_o  = (valid_o && class_is_alu) ? alu_op_sel : `RV64_ALU_OP_INVALID;
-    assign lsu_op_sel_o  = (valid_o && class_is_mem) ? lsu_op_sel : `RV64_LSU_OP_INVALID;
-    assign lsu_size_sel_o = (valid_o && class_is_mem) ? lsu_size_sel : `RV64_LSU_SIZE_BYTE;
-    assign lsu_unsigned_o = valid_o && class_is_mem && lsu_unsigned;
-    assign br_op_sel_o = (valid_o && class_is_brjump) ? br_op_sel : `RV64_BR_OP_INVALID;
-    assign br_link_o = valid_o && class_is_brjump && br_link;
-    assign br_indirect_o = valid_o && class_is_brjump && br_indirect;
+    assign alu_ext_sel_o = (valid_o && !extension_selected && class_is_alu) ?
+                           alu_ext_sel : `RV64_ALU_EXT_INVALID;
+    assign alu_op_sel_o  = (valid_o && !extension_selected && class_is_alu) ?
+                           alu_op_sel : `RV64_ALU_OP_INVALID;
+    assign lsu_op_sel_o = (valid_o && extension_selected) ?
+                          extension_lsu_op_sel_i :
+                          ((valid_o && class_is_mem) ? lsu_op_sel :
+                           `RV64_LSU_OP_INVALID);
+    assign lsu_size_sel_o = (valid_o && extension_selected) ?
+                            extension_lsu_size_sel_i :
+                            ((valid_o && class_is_mem) ? lsu_size_sel :
+                             `RV64_LSU_SIZE_BYTE);
+    assign lsu_unsigned_o = valid_o &&
+                            (extension_selected ? extension_lsu_unsigned_i :
+                             (class_is_mem && lsu_unsigned));
+    assign br_op_sel_o = (valid_o && !extension_selected && class_is_brjump) ?
+                         br_op_sel : `RV64_BR_OP_INVALID;
+    assign br_link_o = valid_o && !extension_selected && class_is_brjump &&
+                       br_link;
+    assign br_indirect_o = valid_o && !extension_selected &&
+                           class_is_brjump && br_indirect;
 
-    assign subdecode_needed_o = early_valid && early_subdecode_needed;
-    assign extension_decode_possible_o = valid_o && early_extension_decode_possible;
+    assign subdecode_needed_o = extension_selected ? 1'b1 :
+                                (early_valid && early_subdecode_needed);
+    assign extension_decode_possible_o = extension_candidate;
+    assign extension_candidate_o = extension_candidate;
+    assign extension_instr_o = valid_o && extension_selected;
+    assign extension_payload_o = extension_instr_o ? extension_payload_i :
+        {EXTENSION_PAYLOAD_WIDTH{1'b0}};
 
 endmodule

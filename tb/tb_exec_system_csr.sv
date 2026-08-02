@@ -90,7 +90,7 @@ module tb_exec_system_csr;
 
         csr_writable = 1'b1;
         funct3 = `RV64_ZICSR_FUNCT3_CSRRC;
-        check(1'b0, 1'b1, 12'h300, csr_rdata & ~rs1_data, csr_rdata,
+        check(1'b0, 1'b1, 12'h300, rs1_data, csr_rdata,
               "csrrc");
 
         funct3 = `RV64_ZICSR_FUNCT3_CSRRWI;
@@ -101,6 +101,15 @@ module tb_exec_system_csr;
         csr_writable = 1'b0;
         check(1'b0, 1'b0, 12'h300, 64'h0, csr_rdata,
               "csrrsi zero read-only read");
+
+        zimm = 5'd7;
+        csr_writable = 1'b1;
+        check(1'b0, 1'b1, 12'h300, 64'd7, csr_rdata,
+              "csrrsi raw operand");
+
+        funct3 = `RV64_ZICSR_FUNCT3_CSRRCI;
+        check(1'b0, 1'b1, 12'h300, 64'd7, csr_rdata,
+              "csrrci raw operand");
 
         csr_valid = 1'b0;
         check(1'b1, 1'b0, 12'h300, 64'h0, 64'h0, "unimplemented csr");

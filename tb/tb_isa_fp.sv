@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-`include "core/isa/rv64-d.v"
+`include "core/exec/fpu/isa/rv64-d.v"
 
 module tb_isa_fp;
 

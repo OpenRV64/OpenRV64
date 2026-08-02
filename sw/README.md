@@ -41,6 +41,46 @@ make sim-uart-firmware
 The toolchain prefix can be overridden with `RISCV_CC` and
 `RISCV_OBJCOPY`. The default is Arch Linux's `riscv64-elf-*` toolchain.
 
+## RV64D DAXPY integration payload
+
+`fp/daxpy.S` is a finite, self-checking 4PF bring-up payload. It executes four
+256-element kernels with software unroll factors 1, 4, 16, and 32 over private
+copies of a repeated binary-exact data pattern. It records kernel-only `cycle`
+and `instret` deltas in a table addressed by `a1` at the final `EBREAK`.
+The larger variants expose integrated FPU overlap while retaining
+`FLD`/`FMADD.D`/`FSD` traffic. The u16 body preloads fifteen independent pairs
+before a one-element tail; because RV64D lacks enough registers for 32
+simultaneously independent DAXPY elements, the u32 body contains two
+fifteen-wide waves and a two-element tail. The payload checks
+`fflags == 0`, and verifies the stored double-precision result bits using
+integer loads. Build its ELF, flat binary, disassembly, and 256-bit memory
+image with:
+
+```sh
+make sw-fp-daxpy
+```
+
+A retired `EBREAK` with `a0 = 0x44415850595f4f4b` (`DAXPY_OK`) is success.
+The `DAXPY_BD` and `DAXPY_FL` signatures distinguish stored-data and floating
+flag failures. The existing 1P/3P cores do not enable F/D, so this payload is
+an input only for the separate 4PF core regression. Run the complete path with
+`make sim-top-4pf`; 1P and 3P still reject F/D.
+
+`fp/fmadd32.S` is a compute-only pipeline microbenchmark. Its loop body has
+exactly 32 adjacent `fmadd.d f0,f1,f2,f3,rne` instructions and repeats 32
+times. Since `f0` is destination-only, the stream has a same-destination WAW
+relationship but no arithmetic RAW dependency. The payload checks the final
+10.0 result and `fflags`, and reports kernel-only counters plus FPU handshake
+overlap through `make sim-top-4pf-fmadd32`.
+
+`fp/faults.S` installs a machine-mode trap handler and checks that FP load and
+store access faults reuse ordinary LSU causes and addresses. It also selects a
+reserved dynamic rounding mode to force an execution-time FPU rejection and
+checks standard illegal-instruction cause 2, `mepc`, and instruction `mtval`.
+Build it with `make sw-fp-faults` or run it with
+`make sim-top-4pf-faults`. The success signature is
+`a0 = 0x4650464c545f4f4b` (`FPFLT_OK`).
+
 ## Sv39 CoreMark-derived wrapper
 
 `coremark_loop_vm_start.S` runs the CoreMark-derived loop in supervisor mode
@@ -235,6 +275,23 @@ Hart 0 updates a shared PTE and performs its local `SFENCE.VMA`, remote harts
 first prove their translations remain stale, then CLINT MSIP handlers execute
 the remote fences and acknowledge completion. This is not an OpenSBI or Linux
 shootdown-path test.
+
+The focused two-hart IPI target runs without OpenSBI, but follows the same
+firmware-owned CLINT path: S-mode enters a minimal M-mode handler with `ecall`,
+the handler sets the peer's MSIP bit, and the peer wakes from `WFI`, clears the
+level interrupt, and returns to S-mode. Both harts execute through one shared,
+non-identity Sv39 map and ping-pong 4096 interrupts in each direction. A
+deterministic per-hart xorshift sequence inserts 0--31 architectural NOPs
+before every send, varying the interrupt/WFI phase while keeping failures
+reproducible.
+
+```sh
+make sim-2h-3p-ipi-sv39
+```
+
+The testbench independently requires 4096 MSIP assertions, 4096 clears, and
+4096 machine-software trap entries per hart, exact software receive counts,
+WFI sleep on both harts, and no execution or IPI activity from harts 2-3.
 
 ## memcpy prefetch benchmark
 
