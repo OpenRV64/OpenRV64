@@ -34,6 +34,7 @@ module openrv64_exec_top_3p #(
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
+    parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
@@ -135,6 +136,15 @@ module openrv64_exec_top_3p #(
     output wire [`RV64_XLEN-1:0]        mem_effective_addr_o,
     output wire [2:0]                   mem_size_o,
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
+
+    output wire                         load_assignment_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        load_assignment_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0]
+                                        load_assignment_slot_o,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0]
+                                        load_assignment_rd_o,
+    output wire [2:0]                   load_assignment_size_o,
 
     output wire                         mem_xlate_valid_o,
     input  wire                         mem_xlate_ready_i,
@@ -482,7 +492,7 @@ module openrv64_exec_top_3p #(
 
     openrv64_exec_lsu #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .LOAD_QUEUE_DEPTH(4),
+        .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .COHERENT_ATOMICS(ENABLE_COHERENT_ATOMICS),
@@ -507,6 +517,11 @@ module openrv64_exec_top_3p #(
         .load_issue_payload_i(issue_payload_i[
             2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
+        .load_assignment_valid_o(load_assignment_valid_o),
+        .load_assignment_id_o(load_assignment_id_o),
+        .load_assignment_slot_o(load_assignment_slot_o),
+        .load_assignment_rd_o(load_assignment_rd_o),
+        .load_assignment_size_o(load_assignment_size_o),
         .store_issue_valid_i(mem1_issue_valid),
         .store_issue_ready_o(mem1_issue_ready),
         .store_issue_id_i(issue_id_i[

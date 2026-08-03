@@ -38,6 +38,19 @@ module openrv64_exec_lsu #(
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         load_issue_payload_i,
 
+    // Generic notification that a load has crossed the LSU allocation
+    // boundary.  Extensions may use the exact identity and architectural
+    // destination to confirm private-register reservations; the LSU does not
+    // interpret which register file owns rd.
+    output wire                         load_assignment_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        load_assignment_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0]
+                                        load_assignment_slot_o,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0]
+                                        load_assignment_rd_o,
+    output wire [2:0]                   load_assignment_size_o,
+
     input  wire                         store_issue_valid_i,
     output wire                         store_issue_ready_o,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] store_issue_id_i,
@@ -400,6 +413,14 @@ module openrv64_exec_lsu #(
         misaligned_load_candidate ? 1'b0 :
         store_requires_misaligned ?
         store_order_match : lsq_store_alloc_ready;
+
+    assign load_assignment_valid_o =
+        load_issue_valid_i && load_issue_ready_o;
+    assign load_assignment_id_o = load_issue_id_i;
+    assign load_assignment_slot_o = load_issue_slot_i;
+    assign load_assignment_rd_o =
+        load_issue_payload_i[I_RD +: `RV64_REG_ADDR_WIDTH];
+    assign load_assignment_size_o = {1'b0, load_instr[13:12]};
 
     openrv64_lsq #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),

@@ -4,24 +4,21 @@
 
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
+`include "core/decode/defs/lsu-defs.v"
 `include "core/exec/fpu/defs.v"
+`include "core/exec/fpu/isa/rv64-f.v"
 
 // F/D client of the generic extension scheduling contract.
 //
 // The parent window remains the only owner of program age, global issue
 // eligibility, control recovery, memory ordering, and retirement slots.  This
 // sidecar is indexed by those same slots and owns only F/D-specific state:
-// FPR producer tags, retire-only FPR wakeup, FPU selection/backpressure, and
-// the small LSU/FPR transfer buffer.
-//
-// No FPR value forwarding is performed.  A consumer waiting on an FPR producer
-// becomes ready only when that exact producer retires.  Operand values are then
-// read from the architectural FPR when the instruction is selected.
+// FPR producer tags, tagged pending results, FPU selection/backpressure, and
+// ordered architectural FPR commit.  FPU and LSU-load results use the same
+// slot-indexed result cells and exact-tag operand bypass.
 module openrv64_fd_dispatch #(
     parameter integer WINDOW_DEPTH = 16,
-    parameter integer TRANSFER_DEPTH = 2,
-    parameter integer RETIRE_SLOT_WIDTH = $clog2(WINDOW_DEPTH),
-    parameter integer TRANSFER_COUNT_WIDTH = $clog2(TRANSFER_DEPTH + 1)
+    parameter integer RETIRE_SLOT_WIDTH = $clog2(WINDOW_DEPTH)
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -60,6 +57,8 @@ module openrv64_fd_dispatch #(
 
     output reg  [3*`RV64_REG_ADDR_WIDTH-1:0] fpr_read_addr_o,
     input  wire [3*`RV64_XLEN-1:0]      fpr_read_data_i,
+    output reg  [`RV64_REG_ADDR_WIDTH-1:0] fpr_store_read_addr_o,
+    input  wire [`RV64_XLEN-1:0]        fpr_store_read_data_i,
 
     input  wire                         fpu_ready_i,
     output reg                          fpu_valid_o,
@@ -97,18 +96,18 @@ module openrv64_fd_dispatch #(
     output reg  [`OPENRV64_INSTR_ID_WIDTH-1:0] completion_id_o,
     output reg  [RETIRE_SLOT_WIDTH-1:0] completion_slot_o,
 
-    // One FP memory operation is presented by the parent after its ordinary
-    // memory-order selection.  Candidate-valid is independent of readiness;
-    // fire records the coupled sidecar/LSU acceptance.  A load reserves
-    // transfer capacity before LSU acceptance.  A store is ready only after
-    // its FPR data has been captured.
-    input  wire                         fp_mem_issue_valid_i,
-    input  wire                         fp_mem_issue_fire_i,
-    input  wire                         fp_mem_issue_is_load_i,
-    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] fp_mem_issue_id_i,
-    input  wire [RETIRE_SLOT_WIDTH-1:0] fp_mem_issue_slot_i,
-    output reg                          fp_mem_issue_ready_o,
-    output reg  [`RV64_XLEN-1:0]        fp_mem_store_data_o,
+    // The generic LSU pulses this when a load is accepted.  Decode has
+    // already reserved the private destination; this exact-tagged event
+    // confirms that the reservation reached the shared LSQ.
+    input  wire                         fp_load_assignment_valid_i,
+    output wire                         fp_load_assignment_match_o,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        fp_load_assignment_id_i,
+    input  wire [RETIRE_SLOT_WIDTH-1:0]
+                                        fp_load_assignment_slot_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0]
+                                        fp_load_assignment_rd_i,
+    input  wire [2:0]                   fp_load_assignment_size_i,
 
     input  wire                         fp_load_result_valid_i,
     output wire                         fp_load_result_match_o,
@@ -116,13 +115,9 @@ module openrv64_fd_dispatch #(
     input  wire [RETIRE_SLOT_WIDTH-1:0] fp_load_result_slot_i,
     input  wire [`RV64_XLEN-1:0]        fp_load_result_data_i,
 
-    input  wire                         fp_mem_complete_valid_i,
-    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] fp_mem_complete_id_i,
-    input  wire [RETIRE_SLOT_WIDTH-1:0] fp_mem_complete_slot_i,
-
     // Memory exceptions remain ordinary LSU/retirement exceptions.  The
     // sidecar needs only the matching identity so a faulting load does not
-    // wait forever for transfer data that architecturally must not arrive.
+    // wait forever for result data that architecturally must not arrive.
     input  wire                         fp_mem_fault_valid_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] fp_mem_fault_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] fp_mem_fault_slot_i,
@@ -143,8 +138,7 @@ module openrv64_fd_dispatch #(
     output reg  [3*5-1:0]               retire_fflags_o,
     output reg  [2:0]                   retire_unsupported_o,
 
-    output wire [31:0]                  fp_write_busy_o,
-    output wire [TRANSFER_COUNT_WIDTH-1:0] transfer_count_o
+    output wire [31:0]                  fp_write_busy_o
 );
 
     localparam integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH;
@@ -179,9 +173,13 @@ module openrv64_fd_dispatch #(
     reg [ID_WIDTH-1:0] src1_tag_q [0:WINDOW_DEPTH-1];
     reg [ID_WIDTH-1:0] src2_tag_q [0:WINDOW_DEPTH-1];
     reg [ID_WIDTH-1:0] src3_tag_q [0:WINDOW_DEPTH-1];
+    reg [RETIRE_SLOT_WIDTH-1:0] src1_slot_q [0:WINDOW_DEPTH-1];
+    reg [RETIRE_SLOT_WIDTH-1:0] src2_slot_q [0:WINDOW_DEPTH-1];
+    reg [RETIRE_SLOT_WIDTH-1:0] src3_slot_q [0:WINDOW_DEPTH-1];
 
     reg [31:0] owner_valid_q;
     reg [ID_WIDTH-1:0] owner_id_q [0:31];
+    reg [RETIRE_SLOT_WIDTH-1:0] owner_slot_q [0:31];
 
     // Sparse in use even though it shares the parent window's slot index:
     // result_valid_q and complete_pending_q are set only for F/D operations.
@@ -192,6 +190,12 @@ module openrv64_fd_dispatch #(
     reg result_unsupported_q [0:WINDOW_DEPTH-1];
     reg result_mem_fault_q [0:WINDOW_DEPTH-1];
     reg complete_pending_q [0:WINDOW_DEPTH-1];
+    reg load_assigned_q [0:WINDOW_DEPTH-1];
+    // Store operands are pre-read through the dedicated FPR port and retained
+    // in their owning window slots.  The LSU sees registered data only, so no
+    // private-register path participates in integer LSU ready/valid.
+    reg store_data_valid_q [0:WINDOW_DEPTH-1];
+    reg [`RV64_XLEN-1:0] store_data_q [0:WINDOW_DEPTH-1];
 
     function automatic id_is_younger;
         input [ID_WIDTH-1:0] candidate;
@@ -212,16 +216,52 @@ module openrv64_fd_dispatch #(
         end
     endfunction
 
+    // A live FPR producer keeps its value in the slot-indexed result bank
+    // until ordered retirement writes the architectural FPR.  Consumers use
+    // the full {slot, instruction-ID} producer identity rather than an
+    // architectural register number so slot reuse and later writers cannot
+    // alias the bypass.  The slot makes this a direct lookup, not a window CAM.
+    function automatic producer_result_available;
+        input [ID_WIDTH-1:0] producer_id;
+        input [RETIRE_SLOT_WIDTH-1:0] producer_slot;
+        begin
+            producer_result_available =
+                (producer_slot < WINDOW_DEPTH) &&
+                meta_valid_q[producer_slot] &&
+                fp_reg_write_q[producer_slot] &&
+                result_valid_q[producer_slot] &&
+                (id_q[producer_slot] == producer_id);
+        end
+    endfunction
+
+    function automatic [`RV64_XLEN-1:0] producer_result_data;
+        input [ID_WIDTH-1:0] producer_id;
+        input [RETIRE_SLOT_WIDTH-1:0] producer_slot;
+        begin
+            producer_result_data = {`RV64_XLEN{1'b0}};
+            if ((producer_slot < WINDOW_DEPTH) &&
+                meta_valid_q[producer_slot] &&
+                fp_reg_write_q[producer_slot] &&
+                result_valid_q[producer_slot] &&
+                (id_q[producer_slot] == producer_id))
+                producer_result_data = result_data_q[producer_slot];
+        end
+    endfunction
+
     // Ordered admission view: retirement removes current owners first, then
     // later allocation lanes observe FPR writers from earlier lanes.
     reg [31:0] owner_valid_view;
     reg [ID_WIDTH-1:0] owner_id_view [0:31];
+    reg [RETIRE_SLOT_WIDTH-1:0] owner_slot_view [0:31];
     reg admit_src1_ready [0:2];
     reg admit_src2_ready [0:2];
     reg admit_src3_ready [0:2];
     reg [ID_WIDTH-1:0] admit_src1_tag [0:2];
     reg [ID_WIDTH-1:0] admit_src2_tag [0:2];
     reg [ID_WIDTH-1:0] admit_src3_tag [0:2];
+    reg [RETIRE_SLOT_WIDTH-1:0] admit_src1_slot [0:2];
+    reg [RETIRE_SLOT_WIDTH-1:0] admit_src2_slot [0:2];
+    reg [RETIRE_SLOT_WIDTH-1:0] admit_src3_slot [0:2];
     reg [BASE_WIDTH-1:0] admit_base_payload [0:2];
     reg [PAYLOAD_WIDTH-1:0] admit_payload [0:2];
     reg [`RV64_REG_ADDR_WIDTH-1:0] admit_rs1;
@@ -236,8 +276,10 @@ module openrv64_fd_dispatch #(
     always_comb begin
         owner_valid_view = owner_valid_q;
         for (view_owner_idx = 0; view_owner_idx < 32;
-             view_owner_idx = view_owner_idx + 1)
+             view_owner_idx = view_owner_idx + 1) begin
             owner_id_view[view_owner_idx] = owner_id_q[view_owner_idx];
+            owner_slot_view[view_owner_idx] = owner_slot_q[view_owner_idx];
+        end
 
         for (view_retire_lane = 0; view_retire_lane < 3;
              view_retire_lane = view_retire_lane + 1) begin
@@ -274,6 +316,12 @@ module openrv64_fd_dispatch #(
             admit_src1_tag[view_admit_lane] = {ID_WIDTH{1'b0}};
             admit_src2_tag[view_admit_lane] = {ID_WIDTH{1'b0}};
             admit_src3_tag[view_admit_lane] = {ID_WIDTH{1'b0}};
+            admit_src1_slot[view_admit_lane] =
+                {RETIRE_SLOT_WIDTH{1'b0}};
+            admit_src2_slot[view_admit_lane] =
+                {RETIRE_SLOT_WIDTH{1'b0}};
+            admit_src3_slot[view_admit_lane] =
+                {RETIRE_SLOT_WIDTH{1'b0}};
 
             if (allocation_valid_i[view_admit_lane] &&
                 admit_payload[view_admit_lane][
@@ -281,6 +329,8 @@ module openrv64_fd_dispatch #(
                 owner_valid_view[admit_rs1]) begin
                 admit_src1_ready[view_admit_lane] = 1'b0;
                 admit_src1_tag[view_admit_lane] = owner_id_view[admit_rs1];
+                admit_src1_slot[view_admit_lane] =
+                    owner_slot_view[admit_rs1];
             end
             if (allocation_valid_i[view_admit_lane] &&
                 admit_payload[view_admit_lane][
@@ -288,6 +338,8 @@ module openrv64_fd_dispatch #(
                 owner_valid_view[admit_rs2]) begin
                 admit_src2_ready[view_admit_lane] = 1'b0;
                 admit_src2_tag[view_admit_lane] = owner_id_view[admit_rs2];
+                admit_src2_slot[view_admit_lane] =
+                    owner_slot_view[admit_rs2];
             end
             if (allocation_valid_i[view_admit_lane] &&
                 admit_payload[view_admit_lane][`OPENRV64_FPU_USES_SRC3_BIT] &&
@@ -296,6 +348,8 @@ module openrv64_fd_dispatch #(
                 owner_valid_view[admit_rs3]) begin
                 admit_src3_ready[view_admit_lane] = 1'b0;
                 admit_src3_tag[view_admit_lane] = owner_id_view[admit_rs3];
+                admit_src3_slot[view_admit_lane] =
+                    owner_slot_view[admit_rs3];
             end
 
             if (allocation_valid_i[view_admit_lane] &&
@@ -303,6 +357,9 @@ module openrv64_fd_dispatch #(
                     `OPENRV64_FPU_PRIVATE_REG_WRITE_BIT]) begin
                 owner_valid_view[admit_rd] = 1'b1;
                 owner_id_view[admit_rd] = admit_id;
+                owner_slot_view[admit_rd] = allocation_slot_i[
+                    view_admit_lane*RETIRE_SLOT_WIDTH +:
+                    RETIRE_SLOT_WIDTH];
             end
         end
     end
@@ -310,6 +367,7 @@ module openrv64_fd_dispatch #(
     // Rebuild the youngest surviving FPR owner after selective recovery.
     reg [31:0] survivor_owner_valid;
     reg [ID_WIDTH-1:0] survivor_owner_id [0:31];
+    reg [RETIRE_SLOT_WIDTH-1:0] survivor_owner_slot [0:31];
     reg survivor_retiring;
     integer survivor_idx;
     integer survivor_lane;
@@ -317,8 +375,11 @@ module openrv64_fd_dispatch #(
     always_comb begin
         survivor_owner_valid = 32'd0;
         for (survivor_owner_idx = 0; survivor_owner_idx < 32;
-             survivor_owner_idx = survivor_owner_idx + 1)
+             survivor_owner_idx = survivor_owner_idx + 1) begin
             survivor_owner_id[survivor_owner_idx] = {ID_WIDTH{1'b0}};
+            survivor_owner_slot[survivor_owner_idx] =
+                {RETIRE_SLOT_WIDTH{1'b0}};
+        end
         for (survivor_idx = 0; survivor_idx < WINDOW_DEPTH;
              survivor_idx = survivor_idx + 1) begin
             survivor_retiring = 1'b0;
@@ -337,108 +398,32 @@ module openrv64_fd_dispatch #(
                                survivor_owner_id[rd_q[survivor_idx]]))) begin
                 survivor_owner_valid[rd_q[survivor_idx]] = 1'b1;
                 survivor_owner_id[rd_q[survivor_idx]] = id_q[survivor_idx];
+                survivor_owner_slot[rd_q[survivor_idx]] =
+                    survivor_idx[RETIRE_SLOT_WIDTH-1:0];
             end
         end
     end
 
-    // Two-entry transfer buffer by default.  The flattened state is used for
-    // associative matching against window entries and retirement lanes.
-    wire transfer_reserve_ready;
-    reg transfer_reserve_valid;
-    reg transfer_reserve_is_load;
-    reg [ID_WIDTH-1:0] transfer_reserve_id;
-    reg [RETIRE_SLOT_WIDTH-1:0] transfer_reserve_slot;
-    reg [`RV64_XLEN-1:0] transfer_reserve_data;
-    reg [3:0] transfer_consume_valid;
-    reg [4*ID_WIDTH-1:0] transfer_consume_id;
-    reg [4*RETIRE_SLOT_WIDTH-1:0] transfer_consume_slot;
-    wire [TRANSFER_DEPTH-1:0] transfer_valid;
-    wire [TRANSFER_DEPTH-1:0] transfer_is_load;
-    wire [TRANSFER_DEPTH-1:0] transfer_data_valid;
-    wire [TRANSFER_DEPTH*ID_WIDTH-1:0] transfer_id;
-    wire [TRANSFER_DEPTH*RETIRE_SLOT_WIDTH-1:0] transfer_slot;
-    wire [TRANSFER_DEPTH*`RV64_XLEN-1:0] transfer_data;
-
-    openrv64_fd_transfer_buffer #(
-        .DEPTH(TRANSFER_DEPTH),
-        .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .COUNT_WIDTH(TRANSFER_COUNT_WIDTH)
-    ) u_transfer (
-        .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
-        .squash_i(squash_i), .squash_id_i(squash_id_i),
-        .reserve_valid_i(transfer_reserve_valid),
-        .reserve_ready_o(transfer_reserve_ready),
-        .reserve_is_load_i(transfer_reserve_is_load),
-        .reserve_id_i(transfer_reserve_id),
-        .reserve_slot_i(transfer_reserve_slot),
-        .reserve_data_i(transfer_reserve_data),
-        .fill_valid_i(fp_load_result_valid_i),
-        .fill_match_o(fp_load_result_match_o),
-        .fill_id_i(fp_load_result_id_i),
-        .fill_slot_i(fp_load_result_slot_i),
-        .fill_data_i(fp_load_result_data_i),
-        .consume_valid_i(transfer_consume_valid),
-        .consume_id_i(transfer_consume_id),
-        .consume_slot_i(transfer_consume_slot),
-        .entry_valid_o(transfer_valid),
-        .entry_is_load_o(transfer_is_load),
-        .entry_data_valid_o(transfer_data_valid),
-        .entry_id_o(transfer_id),
-        .entry_slot_o(transfer_slot),
-        .entry_data_o(transfer_data),
-        .count_o(transfer_count_o)
-    );
-
 `ifndef SYNTHESIS
     // Simulation-only dependency attribution.  A blocked operand is
-    // "forwardable" only when every currently blocked FPR source already has
-    // an exact-tag value resident in the sidecar result bank or load-transfer
-    // buffer.  Such an instruction could issue under a bypass policy without
-    // changing architectural retirement.  A pending count instead means at
-    // least one producer value does not exist yet, so forwarding alone cannot
-    // make that entry issue in the current cycle.
+    // "forwardable" only when every currently blocked FPR source has a value
+    // arriving on a completion input in this cycle.  Values already resident
+    // in the common result bank participate in normal operand readiness.
     localparam integer TRACE_COUNT_WIDTH = $clog2(WINDOW_DEPTH + 1);
 
     function automatic trace_producer_value_available;
         input [ID_WIDTH-1:0] producer_id;
-        integer trace_producer_slot;
-        integer trace_transfer_idx;
+        input [RETIRE_SLOT_WIDTH-1:0] producer_slot;
         begin
-            trace_producer_value_available = 1'b0;
-            for (trace_producer_slot = 0;
-                 trace_producer_slot < WINDOW_DEPTH;
-                 trace_producer_slot = trace_producer_slot + 1) begin
-                if (meta_valid_q[trace_producer_slot] &&
-                    (id_q[trace_producer_slot] == producer_id)) begin
-                    if (!fp_load_q[trace_producer_slot] &&
-                        !fp_store_q[trace_producer_slot] &&
-                        result_valid_q[trace_producer_slot])
-                        trace_producer_value_available = 1'b1;
-                    if (fp_load_q[trace_producer_slot]) begin
-                        for (trace_transfer_idx = 0;
-                             trace_transfer_idx < TRANSFER_DEPTH;
-                             trace_transfer_idx = trace_transfer_idx + 1) begin
-                            if (transfer_valid[trace_transfer_idx] &&
-                                transfer_is_load[trace_transfer_idx] &&
-                                transfer_data_valid[trace_transfer_idx] &&
-                                (transfer_id[
-                                    trace_transfer_idx*ID_WIDTH +:
-                                    ID_WIDTH] == producer_id) &&
-                                (transfer_slot[
-                                    trace_transfer_idx*RETIRE_SLOT_WIDTH +:
-                                    RETIRE_SLOT_WIDTH] ==
-                                 trace_producer_slot[
-                                    RETIRE_SLOT_WIDTH-1:0]))
-                                trace_producer_value_available = 1'b1;
-                        end
-                    end
-                end
-            end
+            trace_producer_value_available =
+                producer_result_available(producer_id, producer_slot);
             if (fpu_result_valid_i &&
-                (fpu_result_id_i == producer_id))
+                (fpu_result_id_i == producer_id) &&
+                (fpu_result_slot_i == producer_slot))
                 trace_producer_value_available = 1'b1;
             if (fp_load_result_valid_i &&
-                (fp_load_result_id_i == producer_id))
+                (fp_load_result_id_i == producer_id) &&
+                (fp_load_result_slot_i == producer_slot))
                 trace_producer_value_available = 1'b1;
         end
     endfunction
@@ -490,27 +475,30 @@ module openrv64_fd_dispatch #(
                     if (src1_fp_q[trace_dependency_slot] &&
                         !src1_ready_q[trace_dependency_slot]) begin
                         trace_has_blocked_source = 1'b1;
-                        trace_source_available =
+                            trace_source_available =
                             trace_producer_value_available(
-                                src1_tag_q[trace_dependency_slot]);
+                                src1_tag_q[trace_dependency_slot],
+                                src1_slot_q[trace_dependency_slot]);
                         if (!trace_source_available)
                             trace_all_blocked_sources_available = 1'b0;
                     end
                     if (src2_fp_q[trace_dependency_slot] &&
                         !src2_ready_q[trace_dependency_slot]) begin
                         trace_has_blocked_source = 1'b1;
-                        trace_source_available =
+                            trace_source_available =
                             trace_producer_value_available(
-                                src2_tag_q[trace_dependency_slot]);
+                                src2_tag_q[trace_dependency_slot],
+                                src2_slot_q[trace_dependency_slot]);
                         if (!trace_source_available)
                             trace_all_blocked_sources_available = 1'b0;
                     end
                     if (src3_fp_q[trace_dependency_slot] &&
                         !src3_ready_q[trace_dependency_slot]) begin
                         trace_has_blocked_source = 1'b1;
-                        trace_source_available =
+                            trace_source_available =
                             trace_producer_value_available(
-                                src3_tag_q[trace_dependency_slot]);
+                                src3_tag_q[trace_dependency_slot],
+                                src3_slot_q[trace_dependency_slot]);
                         if (!trace_source_available)
                             trace_all_blocked_sources_available = 1'b0;
                     end
@@ -532,7 +520,8 @@ module openrv64_fd_dispatch #(
                 trace_store_source_block_count =
                     trace_store_source_block_count + 1'b1;
                 if (trace_producer_value_available(
-                        src2_tag_q[trace_dependency_slot]))
+                        src2_tag_q[trace_dependency_slot],
+                        src2_slot_q[trace_dependency_slot]))
                     trace_store_source_forwardable_count =
                         trace_store_source_forwardable_count + 1'b1;
             end
@@ -540,9 +529,10 @@ module openrv64_fd_dispatch #(
     end
 `endif
 
-    reg store_transfer_ready [0:WINDOW_DEPTH-1];
+    reg src1_ready_now [0:WINDOW_DEPTH-1];
+    reg src2_ready_now [0:WINDOW_DEPTH-1];
+    reg src3_ready_now [0:WINDOW_DEPTH-1];
     integer ready_slot;
-    integer transfer_idx;
     always_comb begin
         entry_fp_valid_o = {WINDOW_DEPTH{1'b0}};
         entry_fp_compute_o = {WINDOW_DEPTH{1'b0}};
@@ -553,26 +543,18 @@ module openrv64_fd_dispatch #(
             {WINDOW_DEPTH*`RV64_XLEN{1'b0}};
         for (ready_slot = 0; ready_slot < WINDOW_DEPTH;
             ready_slot = ready_slot + 1) begin
-            store_transfer_ready[ready_slot] = 1'b0;
-            for (transfer_idx = 0; transfer_idx < TRANSFER_DEPTH;
-                 transfer_idx = transfer_idx + 1) begin
-                if (transfer_valid[transfer_idx] &&
-                    (transfer_id[transfer_idx*ID_WIDTH +: ID_WIDTH] ==
-                     id_q[ready_slot]) &&
-                    (transfer_slot[
-                        transfer_idx*RETIRE_SLOT_WIDTH +:
-                        RETIRE_SLOT_WIDTH] ==
-                     ready_slot[RETIRE_SLOT_WIDTH-1:0])) begin
-                    if (!transfer_is_load[transfer_idx] &&
-                        transfer_data_valid[transfer_idx]) begin
-                        store_transfer_ready[ready_slot] = 1'b1;
-                        entry_mem_store_data_o[
-                            ready_slot*`RV64_XLEN +: `RV64_XLEN] =
-                            transfer_data[
-                                transfer_idx*`RV64_XLEN +: `RV64_XLEN];
-                    end
-                end
-            end
+            src1_ready_now[ready_slot] = src1_ready_q[ready_slot] ||
+                (src1_fp_q[ready_slot] &&
+                 producer_result_available(src1_tag_q[ready_slot],
+                                           src1_slot_q[ready_slot]));
+            src2_ready_now[ready_slot] = src2_ready_q[ready_slot] ||
+                (src2_fp_q[ready_slot] &&
+                 producer_result_available(src2_tag_q[ready_slot],
+                                           src2_slot_q[ready_slot]));
+            src3_ready_now[ready_slot] = src3_ready_q[ready_slot] ||
+                (src3_fp_q[ready_slot] &&
+                 producer_result_available(src3_tag_q[ready_slot],
+                                           src3_slot_q[ready_slot]));
             entry_fp_valid_o[ready_slot] = meta_valid_q[ready_slot];
             entry_fp_compute_o[ready_slot] =
                 is_fp_compute_slot(ready_slot);
@@ -581,15 +563,21 @@ module openrv64_fd_dispatch #(
             entry_fp_store_o[ready_slot] =
                 meta_valid_q[ready_slot] && fp_store_q[ready_slot];
             if (meta_valid_q[ready_slot]) begin
-                entry_operand_ready_o[ready_slot] =
-                    (!src1_fp_q[ready_slot] || src1_ready_q[ready_slot]) &&
-                    (!src2_fp_q[ready_slot] || src2_ready_q[ready_slot]) &&
-                    (!src3_fp_q[ready_slot] || src3_ready_q[ready_slot]);
                 if (fp_store_q[ready_slot])
                     entry_operand_ready_o[ready_slot] =
-                        entry_operand_ready_o[ready_slot] &&
-                        store_transfer_ready[ready_slot];
+                        store_data_valid_q[ready_slot];
+                else
+                    entry_operand_ready_o[ready_slot] =
+                        (!src1_fp_q[ready_slot] ||
+                         src1_ready_now[ready_slot]) &&
+                        (!src2_fp_q[ready_slot] ||
+                         src2_ready_now[ready_slot]) &&
+                        (!src3_fp_q[ready_slot] ||
+                         src3_ready_now[ready_slot]);
             end
+            entry_mem_store_data_o[
+                ready_slot*`RV64_XLEN +: `RV64_XLEN] =
+                store_data_q[ready_slot];
         end
     end
 
@@ -647,17 +635,30 @@ module openrv64_fd_dispatch #(
             fpu_fmt_o = fmt_q[fpu_slot_index];
             fpu_rm_o = rm_q[fpu_slot_index];
             fpu_type_o = type_q[fpu_slot_index];
-            fpu_src1_o = src1_fp_q[fpu_slot_index] ?
-                fpr_read_data_i[0*`RV64_XLEN +: `RV64_XLEN] :
-                window_src1_data_i[
+            if (src1_fp_q[fpu_slot_index]) begin
+                fpu_src1_o = src1_ready_q[fpu_slot_index] ?
+                    fpr_read_data_i[0*`RV64_XLEN +: `RV64_XLEN] :
+                    producer_result_data(src1_tag_q[fpu_slot_index],
+                                         src1_slot_q[fpu_slot_index]);
+            end else begin
+                fpu_src1_o = window_src1_data_i[
                     fpu_slot_index*`RV64_XLEN +: `RV64_XLEN];
-            fpu_src2_o = src2_fp_q[fpu_slot_index] ?
-                fpr_read_data_i[1*`RV64_XLEN +: `RV64_XLEN] :
-                window_src2_data_i[
+            end
+            if (src2_fp_q[fpu_slot_index]) begin
+                fpu_src2_o = src2_ready_q[fpu_slot_index] ?
+                    fpr_read_data_i[1*`RV64_XLEN +: `RV64_XLEN] :
+                    producer_result_data(src2_tag_q[fpu_slot_index],
+                                         src2_slot_q[fpu_slot_index]);
+            end else begin
+                fpu_src2_o = window_src2_data_i[
                     fpu_slot_index*`RV64_XLEN +: `RV64_XLEN];
-            fpu_src3_o = src3_fp_q[fpu_slot_index] ?
-                fpr_read_data_i[2*`RV64_XLEN +: `RV64_XLEN] :
-                {`RV64_XLEN{1'b0}};
+            end
+            if (src3_fp_q[fpu_slot_index]) begin
+                fpu_src3_o = src3_ready_q[fpu_slot_index] ?
+                    fpr_read_data_i[2*`RV64_XLEN +: `RV64_XLEN] :
+                    producer_result_data(src3_tag_q[fpu_slot_index],
+                                         src3_slot_q[fpu_slot_index]);
+            end
             fpu_rd_o = rd_q[fpu_slot_index];
             fpu_fp_reg_write_o = fp_reg_write_q[fpu_slot_index];
             fpu_int_reg_write_o = int_reg_write_q[fpu_slot_index];
@@ -714,34 +715,8 @@ module openrv64_fd_dispatch #(
         end
     end
 
-    // Capture one store source opportunistically when the FPU is not using
-    // the three-read FPR port.  Loads presented by the parent receive reserve
-    // priority, preventing a speculative store capture from consuming the
-    // final transfer entry needed by an already-selected load.
-    reg store_capture_selected;
-    integer store_capture_slot;
-    integer store_select_offset;
-    integer store_select_slot;
+    // Computational operands use the three normal FPR read ports.
     always_comb begin
-        store_capture_selected = 1'b0;
-        store_capture_slot = 0;
-        for (store_select_offset = 0; store_select_offset < WINDOW_DEPTH;
-             store_select_offset = store_select_offset + 1) begin
-            store_select_slot =
-                {{(32-RETIRE_SLOT_WIDTH){1'b0}}, next_retire_slot_i};
-            store_select_slot = store_select_slot + store_select_offset;
-            if (store_select_slot >= WINDOW_DEPTH)
-                store_select_slot = store_select_slot - WINDOW_DEPTH;
-            if (!store_capture_selected && meta_valid_q[store_select_slot] &&
-                fp_store_q[store_select_slot] &&
-                !window_issued_i[store_select_slot] &&
-                src2_ready_q[store_select_slot] &&
-                !store_transfer_ready[store_select_slot]) begin
-                store_capture_selected = 1'b1;
-                store_capture_slot = store_select_slot;
-            end
-        end
-
         fpr_read_addr_o = {3*`RV64_REG_ADDR_WIDTH{1'b0}};
         if (fpu_selected) begin
             if (src1_fp_q[fpu_slot_index])
@@ -753,124 +728,78 @@ module openrv64_fd_dispatch #(
             if (src3_fp_q[fpu_slot_index])
                 fpr_read_addr_o[2*`RV64_REG_ADDR_WIDTH +:
                     `RV64_REG_ADDR_WIDTH] = rs3_q[fpu_slot_index];
-        end else if (store_capture_selected) begin
-            fpr_read_addr_o[1*`RV64_REG_ADDR_WIDTH +:
-                `RV64_REG_ADDR_WIDTH] = rs2_q[store_capture_slot];
         end
     end
 
-    integer mem_lookup_idx;
-    reg mem_store_match;
+    // Pre-read at most one store operand per cycle, oldest first.  This is a
+    // buffered FPR read port, not a second memory queue: address translation,
+    // ordering, faults, and completion remain entirely in the ordinary LSU.
+    reg store_capture_selected;
+    integer store_capture_offset;
+    integer store_capture_index;
+    integer store_capture_slot;
+    reg [`RV64_XLEN-1:0] store_capture_data;
     always_comb begin
-        mem_store_match = 1'b0;
-        fp_mem_store_data_o = {`RV64_XLEN{1'b0}};
-        for (mem_lookup_idx = 0; mem_lookup_idx < TRANSFER_DEPTH;
-             mem_lookup_idx = mem_lookup_idx + 1) begin
-            if (!mem_store_match && transfer_valid[mem_lookup_idx] &&
-                !transfer_is_load[mem_lookup_idx] &&
-                transfer_data_valid[mem_lookup_idx] &&
-                (transfer_id[mem_lookup_idx*ID_WIDTH +: ID_WIDTH] ==
-                 fp_mem_issue_id_i) &&
-                (transfer_slot[
-                    mem_lookup_idx*RETIRE_SLOT_WIDTH +:
-                    RETIRE_SLOT_WIDTH] == fp_mem_issue_slot_i)) begin
-                mem_store_match = 1'b1;
-                fp_mem_store_data_o = transfer_data[
-                    mem_lookup_idx*`RV64_XLEN +: `RV64_XLEN];
+        store_capture_selected = 1'b0;
+        store_capture_slot = 0;
+        fpr_store_read_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
+        for (store_capture_offset = 0;
+             store_capture_offset < WINDOW_DEPTH;
+             store_capture_offset = store_capture_offset + 1) begin
+            store_capture_index =
+                {{(32-RETIRE_SLOT_WIDTH){1'b0}}, next_retire_slot_i};
+            store_capture_index = store_capture_index + store_capture_offset;
+            if (store_capture_index >= WINDOW_DEPTH)
+                store_capture_index = store_capture_index - WINDOW_DEPTH;
+            if (!store_capture_selected &&
+                meta_valid_q[store_capture_index] &&
+                fp_store_q[store_capture_index] &&
+                !store_data_valid_q[store_capture_index] &&
+                src2_ready_now[store_capture_index]) begin
+                store_capture_selected = 1'b1;
+                store_capture_slot = store_capture_index;
             end
         end
+        if (store_capture_selected)
+            fpr_store_read_addr_o = rs2_q[store_capture_slot];
     end
 
+    // Keep returned FPR data out of the address-selection process.  The shared
+    // PRF is combinational; mixing address and returned data in one process
+    // obscures the one-way dependency and creates a false combinational loop.
     always_comb begin
-        fp_mem_issue_ready_o = fp_mem_issue_is_load_i ?
-                               transfer_reserve_ready : mem_store_match;
-    end
-    assign fp_mem_load_ready_o = transfer_reserve_ready;
-
-    integer mem_consume_retire_lane;
-    always_comb begin
-        transfer_consume_valid = 4'b0000;
-        transfer_consume_id = {4*ID_WIDTH{1'b0}};
-        transfer_consume_slot = {4*RETIRE_SLOT_WIDTH{1'b0}};
-        for (mem_consume_retire_lane = 0; mem_consume_retire_lane < 3;
-             mem_consume_retire_lane = mem_consume_retire_lane + 1) begin
-            transfer_consume_valid[mem_consume_retire_lane] =
-                retire_fire[mem_consume_retire_lane];
-            transfer_consume_id[
-                mem_consume_retire_lane*ID_WIDTH +: ID_WIDTH] =
-                retire_id_i[mem_consume_retire_lane*ID_WIDTH +: ID_WIDTH];
-            transfer_consume_slot[
-                mem_consume_retire_lane*RETIRE_SLOT_WIDTH +:
-                RETIRE_SLOT_WIDTH] =
-                retire_slot_i[
-                    mem_consume_retire_lane*RETIRE_SLOT_WIDTH +:
-                    RETIRE_SLOT_WIDTH];
-        end
-        transfer_consume_valid[3] = fp_mem_issue_fire_i &&
-                                    !fp_mem_issue_is_load_i &&
-                                    fp_mem_issue_ready_o;
-        transfer_consume_id[3*ID_WIDTH +: ID_WIDTH] = fp_mem_issue_id_i;
-        transfer_consume_slot[
-            3*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH] = fp_mem_issue_slot_i;
-    end
-
-    always_comb begin
-        transfer_reserve_valid = 1'b0;
-        transfer_reserve_is_load = 1'b0;
-        transfer_reserve_id = {ID_WIDTH{1'b0}};
-        transfer_reserve_slot = {RETIRE_SLOT_WIDTH{1'b0}};
-        transfer_reserve_data = {`RV64_XLEN{1'b0}};
-        if (fp_mem_issue_valid_i && fp_mem_issue_is_load_i) begin
-            // Drive the candidate identity even before acceptance so the
-            // registered-capacity/duplicate readiness query cannot depend on
-            // fire.  Only fire mutates the transfer buffer.
-            transfer_reserve_valid = fp_mem_issue_fire_i;
-            transfer_reserve_is_load = 1'b1;
-            transfer_reserve_id = fp_mem_issue_id_i;
-            transfer_reserve_slot = fp_mem_issue_slot_i;
-        end else if (!fpu_selected && store_capture_selected) begin
-            transfer_reserve_valid = 1'b1;
-            transfer_reserve_is_load = 1'b0;
-            transfer_reserve_id = id_q[store_capture_slot];
-            transfer_reserve_slot =
-                store_capture_slot[RETIRE_SLOT_WIDTH-1:0];
-            transfer_reserve_data = fpr_read_data_i[
-                1*`RV64_XLEN +: `RV64_XLEN];
+        store_capture_data = {`RV64_XLEN{1'b0}};
+        if (store_capture_selected) begin
+            store_capture_data = src2_ready_q[store_capture_slot] ?
+                fpr_store_read_data_i :
+                producer_result_data(src2_tag_q[store_capture_slot],
+                                     src2_slot_q[store_capture_slot]);
         end
     end
+    assign fp_mem_load_ready_o = 1'b1;
 
-    // Load data is visible to ordered retirement only after a matching LSU
-    // fill.  Arithmetic results remain in the FPU-owned result bank above.
+    // Compatibility view of load results at ordered retirement.  Loads and
+    // arithmetic now occupy the same tagged result bank.
     integer retire_lookup_lane;
-    integer retire_transfer_idx;
+    integer retire_lookup_slot;
     always_comb begin
         retire_load_data_valid_o = 3'b000;
         retire_load_data_o = {3*`RV64_XLEN{1'b0}};
         for (retire_lookup_lane = 0; retire_lookup_lane < 3;
              retire_lookup_lane = retire_lookup_lane + 1) begin
-            for (retire_transfer_idx = 0;
-                 retire_transfer_idx < TRANSFER_DEPTH;
-                 retire_transfer_idx = retire_transfer_idx + 1) begin
-                if (!retire_load_data_valid_o[retire_lookup_lane] &&
-                    retire_valid_i[retire_lookup_lane] &&
-                    transfer_valid[retire_transfer_idx] &&
-                    transfer_is_load[retire_transfer_idx] &&
-                    transfer_data_valid[retire_transfer_idx] &&
-                    (transfer_id[
-                        retire_transfer_idx*ID_WIDTH +: ID_WIDTH] ==
-                     retire_id_i[
-                        retire_lookup_lane*ID_WIDTH +: ID_WIDTH]) &&
-                    (transfer_slot[
-                        retire_transfer_idx*RETIRE_SLOT_WIDTH +:
-                        RETIRE_SLOT_WIDTH] == retire_slot_i[
-                        retire_lookup_lane*RETIRE_SLOT_WIDTH +:
-                        RETIRE_SLOT_WIDTH])) begin
-                    retire_load_data_valid_o[retire_lookup_lane] = 1'b1;
-                    retire_load_data_o[
-                        retire_lookup_lane*`RV64_XLEN +: `RV64_XLEN] =
-                        transfer_data[
-                            retire_transfer_idx*`RV64_XLEN +: `RV64_XLEN];
-                end
+            retire_lookup_slot = retire_slot_i[
+                retire_lookup_lane*RETIRE_SLOT_WIDTH +:
+                RETIRE_SLOT_WIDTH];
+            if (retire_valid_i[retire_lookup_lane] &&
+                meta_valid_q[retire_lookup_slot] &&
+                fp_load_q[retire_lookup_slot] &&
+                result_valid_q[retire_lookup_slot] &&
+                (id_q[retire_lookup_slot] == retire_id_i[
+                    retire_lookup_lane*ID_WIDTH +: ID_WIDTH])) begin
+                retire_load_data_valid_o[retire_lookup_lane] = 1'b1;
+                retire_load_data_o[
+                    retire_lookup_lane*`RV64_XLEN +: `RV64_XLEN] =
+                    result_data_q[retire_lookup_slot];
             end
         end
     end
@@ -904,12 +833,11 @@ module openrv64_fd_dispatch #(
             retire_entry_data_ready = 1'b1;
             if (retire_entry_match && fp_load_q[retire_result_slot])
                 retire_entry_data_ready =
-                    retire_load_data_valid_o[retire_result_lane] ||
+                    result_valid_q[retire_result_slot] ||
                     result_mem_fault_q[retire_result_slot];
             else if (retire_entry_match &&
                      !fp_store_q[retire_result_slot])
                 retire_entry_data_ready = result_valid_q[retire_result_slot];
-
             if (retire_entry_match &&
                 fp_reg_write_q[retire_result_slot] &&
                 retire_private_port_used)
@@ -950,22 +878,55 @@ module openrv64_fd_dispatch #(
         end
     end
 
-    wire fp_load_completion_live = fp_load_result_valid_i &&
-        fp_load_result_match_o &&
+    wire fp_load_assignment_identity_match =
+        meta_valid_q[fp_load_assignment_slot_i] &&
+        fp_load_q[fp_load_assignment_slot_i] &&
+        (id_q[fp_load_assignment_slot_i] == fp_load_assignment_id_i) &&
+        (!squash_i ||
+         !id_is_younger(fp_load_assignment_id_i, squash_id_i));
+    wire fp_load_assignment_format_match =
+        ((fmt_q[fp_load_assignment_slot_i] == `RV64_FP_FMT_S) &&
+         (fp_load_assignment_size_i ==
+          {1'b0, `RV64_LSU_SIZE_WORD})) ||
+        ((fmt_q[fp_load_assignment_slot_i] == `RV64_FP_FMT_D) &&
+         (fp_load_assignment_size_i ==
+          {1'b0, `RV64_LSU_SIZE_DWORD}));
+    assign fp_load_assignment_match_o =
+        fp_load_assignment_valid_i &&
+        fp_load_assignment_identity_match &&
+        (rd_q[fp_load_assignment_slot_i] == fp_load_assignment_rd_i) &&
+        fp_load_assignment_format_match;
+
+    assign fp_load_result_match_o =
         meta_valid_q[fp_load_result_slot_i] &&
         fp_load_q[fp_load_result_slot_i] &&
-        (id_q[fp_load_result_slot_i] == fp_load_result_id_i);
-    wire fp_store_completion_live = fp_mem_complete_valid_i &&
-        meta_valid_q[fp_mem_complete_slot_i] &&
-        fp_store_q[fp_mem_complete_slot_i] &&
-        (id_q[fp_mem_complete_slot_i] == fp_mem_complete_id_i) &&
+        (id_q[fp_load_result_slot_i] == fp_load_result_id_i) &&
         (!squash_i ||
-         !id_is_younger(fp_mem_complete_id_i, squash_id_i));
+         !id_is_younger(fp_load_result_id_i, squash_id_i));
+    wire fp_load_result_assigned_now =
+        fp_load_assignment_match_o &&
+        (fp_load_assignment_id_i == fp_load_result_id_i) &&
+        (fp_load_assignment_slot_i == fp_load_result_slot_i);
+    wire fp_load_completion_live = fp_load_result_valid_i &&
+        fp_load_result_match_o &&
+        (load_assigned_q[fp_load_result_slot_i] ||
+         fp_load_result_assigned_now) &&
+        !result_valid_q[fp_load_result_slot_i];
+    wire fp_mem_fault_is_load =
+        meta_valid_q[fp_mem_fault_slot_i] &&
+        fp_load_q[fp_mem_fault_slot_i];
+    wire fp_mem_fault_assigned_now =
+        fp_load_assignment_match_o &&
+        (fp_load_assignment_id_i == fp_mem_fault_id_i) &&
+        (fp_load_assignment_slot_i == fp_mem_fault_slot_i);
     wire fp_mem_fault_live = fp_mem_fault_valid_i &&
         meta_valid_q[fp_mem_fault_slot_i] &&
         (fp_load_q[fp_mem_fault_slot_i] ||
          fp_store_q[fp_mem_fault_slot_i]) &&
         (id_q[fp_mem_fault_slot_i] == fp_mem_fault_id_i) &&
+        (!fp_mem_fault_is_load ||
+         load_assigned_q[fp_mem_fault_slot_i] ||
+         fp_mem_fault_assigned_now) &&
         (!squash_i ||
          !id_is_younger(fp_mem_fault_id_i, squash_id_i));
 
@@ -982,6 +943,7 @@ module openrv64_fd_dispatch #(
                 result_unsupported_q[result_seq_slot] <= 1'b0;
                 result_mem_fault_q[result_seq_slot] <= 1'b0;
                 complete_pending_q[result_seq_slot] <= 1'b0;
+                load_assigned_q[result_seq_slot] <= 1'b0;
             end
         end else if (flush_i) begin
             for (result_seq_slot = 0; result_seq_slot < WINDOW_DEPTH;
@@ -989,6 +951,7 @@ module openrv64_fd_dispatch #(
                 result_valid_q[result_seq_slot] <= 1'b0;
                 result_mem_fault_q[result_seq_slot] <= 1'b0;
                 complete_pending_q[result_seq_slot] <= 1'b0;
+                load_assigned_q[result_seq_slot] <= 1'b0;
             end
         end else begin
             if (squash_i) begin
@@ -999,6 +962,7 @@ module openrv64_fd_dispatch #(
                         result_valid_q[result_seq_slot] <= 1'b0;
                         result_mem_fault_q[result_seq_slot] <= 1'b0;
                         complete_pending_q[result_seq_slot] <= 1'b0;
+                        load_assigned_q[result_seq_slot] <= 1'b0;
                     end
                 end
             end
@@ -1015,6 +979,7 @@ module openrv64_fd_dispatch #(
                     result_valid_q[result_update_slot] <= 1'b0;
                     result_mem_fault_q[result_update_slot] <= 1'b0;
                     complete_pending_q[result_update_slot] <= 1'b0;
+                    load_assigned_q[result_update_slot] <= 1'b0;
                 end
 
                 result_update_slot = allocation_slot_i[
@@ -1024,8 +989,12 @@ module openrv64_fd_dispatch #(
                     result_valid_q[result_update_slot] <= 1'b0;
                     result_mem_fault_q[result_update_slot] <= 1'b0;
                     complete_pending_q[result_update_slot] <= 1'b0;
+                    load_assigned_q[result_update_slot] <= 1'b0;
                 end
             end
+
+            if (fp_load_assignment_match_o)
+                load_assigned_q[fp_load_assignment_slot_i] <= 1'b1;
 
             if (fpu_result_capture) begin
                 result_valid_q[fpu_result_slot_i] <= 1'b1;
@@ -1039,16 +1008,18 @@ module openrv64_fd_dispatch #(
                 complete_pending_q[fpu_result_slot_i] <= 1'b1;
             end
 
-            if (fp_load_completion_live)
-                complete_pending_q[fp_load_result_slot_i] <= 1'b1;
-
-            if (fp_store_completion_live)
-                complete_pending_q[fp_mem_complete_slot_i] <= 1'b1;
+            if (fp_load_completion_live) begin
+                result_valid_q[fp_load_result_slot_i] <= 1'b1;
+                result_data_q[fp_load_result_slot_i] <=
+                    fp_load_result_data_i;
+                result_fflags_q[fp_load_result_slot_i] <= 5'd0;
+                result_unsupported_q[fp_load_result_slot_i] <= 1'b0;
+            end
 
             if (fp_mem_fault_live) begin
                 result_mem_fault_q[fp_mem_fault_slot_i] <= 1'b1;
-                complete_pending_q[fp_mem_fault_slot_i] <= 1'b1;
             end
+
         end
     end
 
@@ -1063,8 +1034,11 @@ module openrv64_fd_dispatch #(
         if (!rst_n) begin
             owner_valid_q <= 32'd0;
             for (seq_owner_idx = 0; seq_owner_idx < 32;
-                 seq_owner_idx = seq_owner_idx + 1)
+                 seq_owner_idx = seq_owner_idx + 1) begin
                 owner_id_q[seq_owner_idx] <= {ID_WIDTH{1'b0}};
+                owner_slot_q[seq_owner_idx] <=
+                    {RETIRE_SLOT_WIDTH{1'b0}};
+            end
             for (seq_entry_idx = 0; seq_entry_idx < WINDOW_DEPTH;
                  seq_entry_idx = seq_entry_idx + 1) begin
                 meta_valid_q[seq_entry_idx] <= 1'b0;
@@ -1093,18 +1067,31 @@ module openrv64_fd_dispatch #(
                 src1_tag_q[seq_entry_idx] <= {ID_WIDTH{1'b0}};
                 src2_tag_q[seq_entry_idx] <= {ID_WIDTH{1'b0}};
                 src3_tag_q[seq_entry_idx] <= {ID_WIDTH{1'b0}};
+                src1_slot_q[seq_entry_idx] <=
+                    {RETIRE_SLOT_WIDTH{1'b0}};
+                src2_slot_q[seq_entry_idx] <=
+                    {RETIRE_SLOT_WIDTH{1'b0}};
+                src3_slot_q[seq_entry_idx] <=
+                    {RETIRE_SLOT_WIDTH{1'b0}};
+                store_data_valid_q[seq_entry_idx] <= 1'b0;
+                store_data_q[seq_entry_idx] <= {`RV64_XLEN{1'b0}};
             end
         end else if (flush_i) begin
             owner_valid_q <= 32'd0;
             for (seq_entry_idx = 0; seq_entry_idx < WINDOW_DEPTH;
-                 seq_entry_idx = seq_entry_idx + 1)
+                 seq_entry_idx = seq_entry_idx + 1) begin
                 meta_valid_q[seq_entry_idx] <= 1'b0;
+                store_data_valid_q[seq_entry_idx] <= 1'b0;
+            end
         end else if (squash_i) begin
             owner_valid_q <= survivor_owner_valid;
             for (seq_owner_idx = 0; seq_owner_idx < 32;
-                 seq_owner_idx = seq_owner_idx + 1)
+                 seq_owner_idx = seq_owner_idx + 1) begin
                 owner_id_q[seq_owner_idx] <=
                     survivor_owner_id[seq_owner_idx];
+                owner_slot_q[seq_owner_idx] <=
+                    survivor_owner_slot[seq_owner_idx];
+            end
             for (seq_entry_idx = 0; seq_entry_idx < WINDOW_DEPTH;
                  seq_entry_idx = seq_entry_idx + 1) begin
                 seq_recover_retiring = 1'b0;
@@ -1118,8 +1105,10 @@ module openrv64_fd_dispatch #(
                 end
                 if (meta_valid_q[seq_entry_idx] &&
                     (seq_recover_retiring ||
-                     id_is_younger(id_q[seq_entry_idx], squash_id_i)))
+                     id_is_younger(id_q[seq_entry_idx], squash_id_i))) begin
                     meta_valid_q[seq_entry_idx] <= 1'b0;
+                    store_data_valid_q[seq_entry_idx] <= 1'b0;
+                end
                 for (seq_wake_lane = 0; seq_wake_lane < 3;
                      seq_wake_lane = seq_wake_lane + 1) begin
                     if (retire_fire[seq_wake_lane] &&
@@ -1142,8 +1131,11 @@ module openrv64_fd_dispatch #(
         end else begin
             owner_valid_q <= owner_valid_view;
             for (seq_owner_idx = 0; seq_owner_idx < 32;
-                 seq_owner_idx = seq_owner_idx + 1)
+                 seq_owner_idx = seq_owner_idx + 1) begin
                 owner_id_q[seq_owner_idx] <= owner_id_view[seq_owner_idx];
+                owner_slot_q[seq_owner_idx] <=
+                    owner_slot_view[seq_owner_idx];
+            end
 
             for (seq_entry_idx = 0; seq_entry_idx < WINDOW_DEPTH;
                  seq_entry_idx = seq_entry_idx + 1) begin
@@ -1174,8 +1166,10 @@ module openrv64_fd_dispatch #(
                 if (retire_fire[seq_retire_lane] &&
                     meta_valid_q[update_slot] &&
                     (id_q[update_slot] == retire_id_i[
-                        seq_retire_lane*ID_WIDTH +: ID_WIDTH]))
+                        seq_retire_lane*ID_WIDTH +: ID_WIDTH])) begin
                     meta_valid_q[update_slot] <= 1'b0;
+                    store_data_valid_q[update_slot] <= 1'b0;
+                end
             end
 
             for (seq_admit_lane = 0; seq_admit_lane < 3;
@@ -1184,6 +1178,7 @@ module openrv64_fd_dispatch #(
                     seq_admit_lane*RETIRE_SLOT_WIDTH +: RETIRE_SLOT_WIDTH];
                 if (allocation_valid_i[seq_admit_lane]) begin
                     meta_valid_q[update_slot] <= 1'b1;
+                    store_data_valid_q[update_slot] <= 1'b0;
                     id_q[update_slot] <= allocation_id_i[
                         seq_admit_lane*ID_WIDTH +: ID_WIDTH];
                     src1_fp_q[update_slot] <= allocation_payload_i[
@@ -1250,7 +1245,18 @@ module openrv64_fd_dispatch #(
                         admit_src2_tag[seq_admit_lane];
                     src3_tag_q[update_slot] <=
                         admit_src3_tag[seq_admit_lane];
+                    src1_slot_q[update_slot] <=
+                        admit_src1_slot[seq_admit_lane];
+                    src2_slot_q[update_slot] <=
+                        admit_src2_slot[seq_admit_lane];
+                    src3_slot_q[update_slot] <=
+                        admit_src3_slot[seq_admit_lane];
                 end
+            end
+
+            if (store_capture_selected) begin
+                store_data_valid_q[store_capture_slot] <= 1'b1;
+                store_data_q[store_capture_slot] <= store_capture_data;
             end
         end
     end
@@ -1261,8 +1267,6 @@ module openrv64_fd_dispatch #(
     initial begin
         if (WINDOW_DEPTH < 1)
             $fatal(1, "F/D dispatch window depth must be positive");
-        if (TRANSFER_DEPTH < 1)
-            $fatal(1, "F/D transfer depth must be positive");
     end
 
     integer assert_lane;
@@ -1278,6 +1282,42 @@ module openrv64_fd_dispatch #(
                 $fatal(1, "FPU result domain disagrees with decoded destination");
             if ((retire_accept_i & ~retire_ready_o) != 3'b000)
                 $fatal(1, "parent retired an unready FPU sidecar entry");
+            if (fp_load_assignment_valid_i &&
+                fp_load_assignment_identity_match &&
+                (rd_q[fp_load_assignment_slot_i] !=
+                 fp_load_assignment_rd_i))
+                $fatal(1,
+                    "LSU load assignment destination mismatch slot=%0d id=%0d",
+                    fp_load_assignment_slot_i,
+                    fp_load_assignment_id_i);
+            if (fp_load_assignment_valid_i &&
+                fp_load_assignment_identity_match &&
+                !fp_load_assignment_format_match)
+                $fatal(1,
+                    "LSU load assignment width mismatch slot=%0d id=%0d size=%0d fmt=%0d",
+                    fp_load_assignment_slot_i,
+                    fp_load_assignment_id_i,
+                    fp_load_assignment_size_i,
+                    fmt_q[fp_load_assignment_slot_i]);
+            if (fp_load_assignment_match_o &&
+                load_assigned_q[fp_load_assignment_slot_i])
+                $fatal(1,
+                    "duplicate LSU load assignment slot=%0d id=%0d",
+                    fp_load_assignment_slot_i,
+                    fp_load_assignment_id_i);
+            if (fp_load_result_valid_i && fp_load_result_match_o &&
+                !load_assigned_q[fp_load_result_slot_i] &&
+                !fp_load_result_assigned_now)
+                $fatal(1,
+                    "FP load result arrived without LSU assignment slot=%0d id=%0d",
+                    fp_load_result_slot_i, fp_load_result_id_i);
+            if (fp_mem_fault_valid_i && fp_mem_fault_is_load &&
+                (id_q[fp_mem_fault_slot_i] == fp_mem_fault_id_i) &&
+                !load_assigned_q[fp_mem_fault_slot_i] &&
+                !fp_mem_fault_assigned_now)
+                $fatal(1,
+                    "FP load fault arrived without LSU assignment slot=%0d id=%0d",
+                    fp_mem_fault_slot_i, fp_mem_fault_id_i);
             for (assert_lane = 0; assert_lane < 3;
                  assert_lane = assert_lane + 1) begin
                 if (allocation_valid_i[assert_lane] &&

@@ -12,7 +12,14 @@ or pass it to the common runner:
 ```sh
 run/run linux-smp-4h-ddr3
 run/run run/cfg/linux-smp-4h-ddr3.cfg --rebuild
+run/run linux-smp-4h-user-tests-ddr3 --rebuild
 ```
+
+`linux-smp-4h-user-tests-ddr3` uses the separately built
+`sw/Image.smp-user-tests`.  Its initramfs runs the short Linux userspace SMP,
+atomic, cache-coherence, VA-alias, and remote-remap tests before opening the
+interactive shell.  The ordinary SMP configurations continue to use
+`sw/Image.smp`.
 
 Each launch creates `run/log/<configuration-name>-<UTC timestamp>/`. The
 directory is self-contained: it records the selected configuration, effective

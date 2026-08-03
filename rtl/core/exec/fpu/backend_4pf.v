@@ -34,8 +34,8 @@ module openrv64_backend_4pf #(
     parameter integer ISSUE_WINDOW_DEPTH = 16,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
+    parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
-    parameter integer FP_TRANSFER_DEPTH = 2,
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
@@ -1026,6 +1026,8 @@ module openrv64_backend_4pf #(
 
     wire [3*`RV64_REG_ADDR_WIDTH-1:0] fpr_read_addr;
     wire [3*`RV64_XLEN-1:0] fpr_read_data;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] fpr_store_read_addr;
+    wire [`RV64_XLEN-1:0] fpr_store_read_data;
     wire fpu_valid;
     wire fpu_ready;
     wire fpu_fire;
@@ -1073,7 +1075,13 @@ module openrv64_backend_4pf #(
     wire [14:0] fp_retire_fflags;
     wire [2:0] fp_retire_unsupported;
     wire [31:0] fp_write_busy;
-    wire [$clog2(FP_TRANSFER_DEPTH + 1)-1:0] fp_transfer_count;
+
+    wire lsu_load_assignment_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lsu_load_assignment_id;
+    wire [SLOT_WIDTH-1:0] lsu_load_assignment_slot;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] lsu_load_assignment_rd;
+    wire [2:0] lsu_load_assignment_size;
+    wire fp_load_assignment_match;
 
     wire [SLOT_WIDTH-1:0] fp_mem_complete_slot =
         complete_slot[2*SLOT_WIDTH +: SLOT_WIDTH];
@@ -1093,9 +1101,6 @@ module openrv64_backend_4pf #(
         `OPENRV64_COMPLETE_ILLEGAL_BIT];
     wire fp_load_result_valid = fp_mem_complete_match &&
         fp_entry_load[fp_mem_complete_slot] &&
-        !fp_mem_complete_exception;
-    wire fp_store_complete_valid = fp_mem_complete_match &&
-        fp_entry_store[fp_mem_complete_slot] &&
         !fp_mem_complete_exception;
     wire fp_mem_fault_valid = fp_mem_complete_match &&
         fp_mem_complete_exception;
@@ -1232,7 +1237,6 @@ module openrv64_backend_4pf #(
 
     openrv64_fd_dispatch #(
         .WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
-        .TRANSFER_DEPTH(FP_TRANSFER_DEPTH),
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH)
     ) u_fp_dispatch (
         .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
@@ -1258,6 +1262,8 @@ module openrv64_backend_4pf #(
         .fp_mem_load_ready_o(fp_mem_load_ready),
         .fpr_read_addr_o(fpr_read_addr),
         .fpr_read_data_i(fpr_read_data),
+        .fpr_store_read_addr_o(fpr_store_read_addr),
+        .fpr_store_read_data_i(fpr_store_read_data),
         .fpu_ready_i(fpu_ready),
         .fpu_valid_o(fpu_valid),
         .fpu_fire_o(fpu_fire),
@@ -1290,24 +1296,17 @@ module openrv64_backend_4pf #(
         .completion_accept_i(extension_completion_accept),
         .completion_id_o(extension_completion_id),
         .completion_slot_o(extension_completion_slot),
-        // Candidate-valid drives the sidecar readiness query; fire records
-        // the atomic sidecar/LSU acceptance.  Keeping these distinct avoids
-        // a ready -> valid -> ready combinational loop.
-        .fp_mem_issue_valid_i(fp_mem_issue_valid),
-        .fp_mem_issue_fire_i(fp_mem_issue_fire),
-        .fp_mem_issue_is_load_i(fp_mem_issue_is_load),
-        .fp_mem_issue_id_i(fp_mem_issue_id),
-        .fp_mem_issue_slot_i(fp_mem_issue_slot),
-        .fp_mem_issue_ready_o(),
-        .fp_mem_store_data_o(),
+        .fp_load_assignment_valid_i(lsu_load_assignment_valid),
+        .fp_load_assignment_match_o(fp_load_assignment_match),
+        .fp_load_assignment_id_i(lsu_load_assignment_id),
+        .fp_load_assignment_slot_i(lsu_load_assignment_slot),
+        .fp_load_assignment_rd_i(lsu_load_assignment_rd),
+        .fp_load_assignment_size_i(lsu_load_assignment_size),
         .fp_load_result_valid_i(fp_load_result_valid),
         .fp_load_result_match_o(),
         .fp_load_result_id_i(fp_mem_complete_id),
         .fp_load_result_slot_i(fp_mem_complete_slot),
         .fp_load_result_data_i(fp_mem_complete_data),
-        .fp_mem_complete_valid_i(fp_store_complete_valid),
-        .fp_mem_complete_id_i(fp_mem_complete_id),
-        .fp_mem_complete_slot_i(fp_mem_complete_slot),
         .fp_mem_fault_valid_i(fp_mem_fault_valid),
         .fp_mem_fault_id_i(fp_mem_complete_id),
         .fp_mem_fault_slot_i(fp_mem_complete_slot),
@@ -1326,8 +1325,7 @@ module openrv64_backend_4pf #(
         .retire_fflags_valid_o(fp_retire_fflags_valid),
         .retire_fflags_o(fp_retire_fflags),
         .retire_unsupported_o(fp_retire_unsupported),
-        .fp_write_busy_o(fp_write_busy),
-        .transfer_count_o(fp_transfer_count)
+        .fp_write_busy_o(fp_write_busy)
     );
 
     openrv64_exec_fpu_rv64fd #(
@@ -1394,6 +1392,8 @@ module openrv64_backend_4pf #(
         .rs3_addr_i(fpr_read_addr[2*`RV64_REG_ADDR_WIDTH +:
                                   `RV64_REG_ADDR_WIDTH]),
         .rs3_data_o(fpr_read_data[2*`RV64_XLEN +: `RV64_XLEN]),
+        .store_addr_i(fpr_store_read_addr),
+        .store_data_o(fpr_store_read_data),
         .rd_write_i(fp_fpr_write),
         .rd_addr_i(fp_fpr_write_addr),
         .rd_data_i(fp_fpr_write_data)
@@ -1426,6 +1426,7 @@ module openrv64_backend_4pf #(
         .ENABLE_LOCAL_FORWARDING_3P(ENABLE_ISSUE_WINDOW == 0),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),
+        .LOAD_QUEUE_DEPTH_3P(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
         .ENABLE_COHERENT_ATOMICS_3P(ENABLE_COHERENT_ATOMICS),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
@@ -1495,6 +1496,11 @@ module openrv64_backend_4pf #(
         .async_store_fault_addr_3p_o(async_store_fault_addr),
         .async_store_fault_trace_3p_o(async_store_fault_trace),
         .async_store_fault_instr_3p_o(async_store_fault_instr),
+        .load_assignment_valid_3p_o(lsu_load_assignment_valid),
+        .load_assignment_id_3p_o(lsu_load_assignment_id),
+        .load_assignment_slot_3p_o(lsu_load_assignment_slot),
+        .load_assignment_rd_3p_o(lsu_load_assignment_rd),
+        .load_assignment_size_3p_o(lsu_load_assignment_size),
         .redirect_valid_o(exec_redirect_valid),
         .redirect_id_3p_o(exec_redirect_id),
         .redirect_slot_3p_o(exec_redirect_slot),

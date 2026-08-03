@@ -19,6 +19,7 @@ module openrv64_exec_top #(
     parameter integer ENABLE_LOCAL_FORWARDING_3P = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM_3P = 1,
+    parameter integer LOAD_QUEUE_DEPTH_3P = 4,
     parameter integer STORE_QUEUE_DEPTH_3P = 4,
     parameter integer ENABLE_COHERENT_ATOMICS_3P = 0,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
@@ -217,6 +218,14 @@ module openrv64_exec_top #(
     output wire [`RV64_XLEN-1:0]        async_store_fault_addr_3p_o,
     output wire [63:0]                  async_store_fault_trace_3p_o,
     output wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr_3p_o,
+    output wire                         load_assignment_valid_3p_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        load_assignment_id_3p_o,
+    output wire [RETIRE_SLOT_WIDTH_3P-1:0]
+                                        load_assignment_slot_3p_o,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0]
+                                        load_assignment_rd_3p_o,
+    output wire [2:0]                   load_assignment_size_3p_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_3p_o,
     output wire [RETIRE_SLOT_WIDTH_3P-1:0] redirect_slot_3p_o
 );
@@ -274,6 +283,14 @@ module openrv64_exec_top #(
             assign async_store_fault_trace_3p_o = 64'd0;
             assign async_store_fault_instr_3p_o =
                 {`RV64_INSTR_WIDTH{1'b0}};
+            assign load_assignment_valid_3p_o = 1'b0;
+            assign load_assignment_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign load_assignment_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign load_assignment_rd_3p_o =
+                {`RV64_REG_ADDR_WIDTH{1'b0}};
+            assign load_assignment_size_3p_o = 3'd0;
             assign store_barrier_request_3p_o = 1'b0;
         end else if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_3p
             openrv64_exec_top_3p #(
@@ -282,6 +299,7 @@ module openrv64_exec_top #(
                 .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING_3P),
                 .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
                 .ENABLE_ZICCLSM(ENABLE_ZICCLSM_3P),
+                .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH_3P),
                 .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH_3P),
                 .ENABLE_COHERENT_ATOMICS(
                     ENABLE_COHERENT_ATOMICS_3P),
@@ -329,6 +347,11 @@ module openrv64_exec_top #(
                 .async_store_fault_addr_o(async_store_fault_addr_3p_o),
                 .async_store_fault_trace_o(async_store_fault_trace_3p_o),
                 .async_store_fault_instr_o(async_store_fault_instr_3p_o),
+                .load_assignment_valid_o(load_assignment_valid_3p_o),
+                .load_assignment_id_o(load_assignment_id_3p_o),
+                .load_assignment_slot_o(load_assignment_slot_3p_o),
+                .load_assignment_rd_o(load_assignment_rd_3p_o),
+                .load_assignment_size_o(load_assignment_size_3p_o),
                 .redirect_valid_o(redirect_valid_o),
                 .redirect_id_o(redirect_id_3p_o),
                 .redirect_slot_o(redirect_slot_3p_o),
@@ -493,6 +516,14 @@ module openrv64_exec_top #(
             assign trace_mem_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
             assign trace_wb_id_o = 64'd0;
             assign trace_serializing_o = 1'b0;
+            assign load_assignment_valid_3p_o = 1'b0;
+            assign load_assignment_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign load_assignment_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign load_assignment_rd_3p_o =
+                {`RV64_REG_ADDR_WIDTH{1'b0}};
+            assign load_assignment_size_3p_o = 3'd0;
             assign store_barrier_request_3p_o = 1'b0;
         end
     endgenerate

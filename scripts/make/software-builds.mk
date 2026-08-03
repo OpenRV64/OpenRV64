@@ -11,6 +11,43 @@ $(SMP_THREAD_TEST_SCRIPT): sw/smp-thread-test.sh
 	mkdir -p $(dir $@)
 	install -m 0755 $< $@
 
+$(LINUX_USER_STRESS_BIN): $(OPENRV64_MAKEFILES) \
+		sw/linux-user-tests/start.S \
+		sw/linux-user-tests/openrv64_user_stress.c
+	mkdir -p $(dir $@)
+	$(RISCV_LINUX_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mno-relax -mcmodel=medany -O2 -g -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-common -fno-pic \
+		-fno-stack-protector -fno-asynchronous-unwind-tables \
+		-ffunction-sections -fdata-sections -nostdlib -nostartfiles \
+		-static -no-pie -Wl,--build-id=none,--gc-sections,-e,_start \
+		-o $@ sw/linux-user-tests/start.S \
+		sw/linux-user-tests/openrv64_user_stress.c
+
+$(LINUX_USER_TEST_SCRIPT): sw/linux-user-tests/run.sh
+	mkdir -p $(dir $@)
+	install -m 0755 $< $@
+
+$(LINUX_USER_PTHREAD_BIN): $(OPENRV64_MAKEFILES) \
+		sw/linux-user-tests/pthread_lock_stress.c
+	@test -n "$(RISCV_LINUX_PTHREAD_CC)" || { \
+		echo "RISCV_LINUX_PTHREAD_CC must name an RV64IMA/lp64 pthread compiler"; \
+		exit 1; \
+	}
+	@test -n "$(RISCV_LINUX_PTHREAD_SYSROOT)" || { \
+		echo "RISCV_LINUX_PTHREAD_SYSROOT must name its static musl sysroot"; \
+		exit 1; \
+	}
+	mkdir -p $(dir $@)
+	$(RISCV_LINUX_PTHREAD_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mno-relax -O2 -g -Wall -Wextra -Werror -static -pthread -no-pie \
+		-nostdlib -nostartfiles -nodefaultlibs \
+		$(RISCV_LINUX_PTHREAD_SYSROOT)/lib/crt1.o \
+		$(RISCV_LINUX_PTHREAD_SYSROOT)/lib/crti.o \
+		sw/linux-user-tests/pthread_lock_stress.c \
+		-Wl,--build-id=none,--start-group -lc -lpthread -Wl,--end-group \
+		$(RISCV_LINUX_PTHREAD_SYSROOT)/lib/crtn.o -o $@
+
 $(UART_FIRMWARE_ELF): $(OPENRV64_MAKEFILES) sw/start.S sw/uart.c sw/openrv64.ld
 	$(RISCV_CC) $(UART_FIRMWARE_CFLAGS) -nostdlib -nostartfiles \
 		-Wl,--build-id=none,-Map=$(UART_FIRMWARE_MAP) \
@@ -34,6 +71,40 @@ $(FP_DAXPY_DISASM): $(FP_DAXPY_ELF)
 $(FP_DAXPY_MEMH): $(FP_DAXPY_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(FP_DAXPY_MEMH_BYTES) --word-bytes 32
+
+$(FP_DAXPY_COMPUTE_ELF): $(OPENRV64_MAKEFILES) \
+		sw/fp/daxpy_compute.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(FP_DAXPY_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(FP_DAXPY_COMPUTE_MAP) \
+		-T sw/openrv64.ld -o $@ sw/fp/daxpy_compute.S
+
+$(FP_DAXPY_COMPUTE_BIN): $(FP_DAXPY_COMPUTE_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(FP_DAXPY_COMPUTE_DISASM): $(FP_DAXPY_COMPUTE_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(FP_DAXPY_COMPUTE_MEMH): $(FP_DAXPY_COMPUTE_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(FP_DAXPY_COMPUTE_MEMH_BYTES) --word-bytes 32
+
+$(FP_DAXPY_STORE_ELF): $(OPENRV64_MAKEFILES) \
+		sw/fp/daxpy_store.S sw/openrv64.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(FP_DAXPY_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(FP_DAXPY_STORE_MAP) \
+		-T sw/openrv64.ld -o $@ sw/fp/daxpy_store.S
+
+$(FP_DAXPY_STORE_BIN): $(FP_DAXPY_STORE_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(FP_DAXPY_STORE_DISASM): $(FP_DAXPY_STORE_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(FP_DAXPY_STORE_MEMH): $(FP_DAXPY_STORE_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(FP_DAXPY_STORE_MEMH_BYTES) --word-bytes 32
 
 $(FP_FMADD32_ELF): $(OPENRV64_MAKEFILES) sw/fp/fmadd32.S sw/openrv64.ld
 	mkdir -p $(dir $@)

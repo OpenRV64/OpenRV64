@@ -1,11 +1,11 @@
 `timescale 1ns/1ps
 `include "core/backend/backend-defs.v"
+`include "core/decode/defs/lsu-defs.v"
 `include "core/exec/fpu/isa/rv64-d.v"
 `include "core/exec/fpu/defs.v"
 
 module tb_fd_dispatch;
     localparam integer WINDOW_DEPTH = 4;
-    localparam integer TRANSFER_DEPTH = 2;
     localparam integer SW = 2;
     localparam integer IDW = `OPENRV64_INSTR_ID_WIDTH;
     localparam integer BASEW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
@@ -36,8 +36,11 @@ module tb_fd_dispatch;
     wire [WINDOW_DEPTH-1:0] entry_fp_load;
     wire [WINDOW_DEPTH-1:0] entry_fp_store;
     wire [WINDOW_DEPTH-1:0] entry_operand_ready;
+    wire [WINDOW_DEPTH*64-1:0] entry_mem_store_data;
     wire [14:0] fpr_read_addr;
     reg [191:0] fpr_read_data;
+    wire [4:0] fpr_store_read_addr;
+    reg [63:0] fpr_store_read_data;
     reg fpu_ready;
     wire fpu_valid;
     wire fpu_fire;
@@ -68,8 +71,16 @@ module tb_fd_dispatch;
     reg fp_mem_issue_is_load;
     reg [IDW-1:0] fp_mem_issue_id;
     reg [SW-1:0] fp_mem_issue_slot;
-    wire fp_mem_issue_ready;
-    wire [63:0] fp_mem_store_data;
+    wire fp_mem_issue_ready = fp_mem_issue_is_load ? 1'b1 :
+        entry_operand_ready[fp_mem_issue_slot];
+    wire [63:0] fp_mem_store_data = entry_mem_store_data[
+        fp_mem_issue_slot*64 +: 64];
+    reg fp_load_assignment_valid;
+    wire fp_load_assignment_match;
+    reg [IDW-1:0] fp_load_assignment_id;
+    reg [SW-1:0] fp_load_assignment_slot;
+    reg [4:0] fp_load_assignment_rd;
+    reg [2:0] fp_load_assignment_size;
     reg fp_load_result_valid;
     wire fp_load_result_match;
     reg [IDW-1:0] fp_load_result_id;
@@ -83,11 +94,9 @@ module tb_fd_dispatch;
     wire [2:0] retire_load_data_valid;
     wire [191:0] retire_load_data;
     wire [31:0] fp_write_busy;
-    wire [1:0] transfer_count;
 
     openrv64_fd_dispatch #(
         .WINDOW_DEPTH(WINDOW_DEPTH),
-        .TRANSFER_DEPTH(TRANSFER_DEPTH),
         .RETIRE_SLOT_WIDTH(SW)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
@@ -108,10 +117,12 @@ module tb_fd_dispatch;
         .entry_fp_load_o(entry_fp_load),
         .entry_fp_store_o(entry_fp_store),
         .entry_operand_ready_o(entry_operand_ready),
-        .entry_mem_store_data_o(),
+        .entry_mem_store_data_o(entry_mem_store_data),
         .fp_mem_load_ready_o(),
         .fpr_read_addr_o(fpr_read_addr),
         .fpr_read_data_i(fpr_read_data),
+        .fpr_store_read_addr_o(fpr_store_read_addr),
+        .fpr_store_read_data_i(fpr_store_read_data),
         .fpu_ready_i(fpu_ready), .fpu_valid_o(fpu_valid),
         .fpu_fire_o(fpu_fire), .fpu_id_o(fpu_id),
         .fpu_slot_o(fpu_slot), .fpu_op_o(fpu_op),
@@ -135,21 +146,17 @@ module tb_fd_dispatch;
         .completion_accept_i(1'b1),
         .completion_id_o(),
         .completion_slot_o(),
-        .fp_mem_issue_valid_i(fp_mem_issue_valid),
-        .fp_mem_issue_fire_i(fp_mem_issue_valid && fp_mem_issue_ready),
-        .fp_mem_issue_is_load_i(fp_mem_issue_is_load),
-        .fp_mem_issue_id_i(fp_mem_issue_id),
-        .fp_mem_issue_slot_i(fp_mem_issue_slot),
-        .fp_mem_issue_ready_o(fp_mem_issue_ready),
-        .fp_mem_store_data_o(fp_mem_store_data),
+        .fp_load_assignment_valid_i(fp_load_assignment_valid),
+        .fp_load_assignment_match_o(fp_load_assignment_match),
+        .fp_load_assignment_id_i(fp_load_assignment_id),
+        .fp_load_assignment_slot_i(fp_load_assignment_slot),
+        .fp_load_assignment_rd_i(fp_load_assignment_rd),
+        .fp_load_assignment_size_i(fp_load_assignment_size),
         .fp_load_result_valid_i(fp_load_result_valid),
         .fp_load_result_match_o(fp_load_result_match),
         .fp_load_result_id_i(fp_load_result_id),
         .fp_load_result_slot_i(fp_load_result_slot),
         .fp_load_result_data_i(fp_load_result_data),
-        .fp_mem_complete_valid_i(1'b0),
-        .fp_mem_complete_id_i({IDW{1'b0}}),
-        .fp_mem_complete_slot_i({SW{1'b0}}),
         .fp_mem_fault_valid_i(1'b0),
         .fp_mem_fault_id_i({IDW{1'b0}}),
         .fp_mem_fault_slot_i({SW{1'b0}}),
@@ -167,8 +174,7 @@ module tb_fd_dispatch;
         .retire_fflags_valid_o(),
         .retire_fflags_o(),
         .retire_unsupported_o(),
-        .fp_write_busy_o(fp_write_busy),
-        .transfer_count_o(transfer_count)
+        .fp_write_busy_o(fp_write_busy)
     );
 
     always #5 clk = ~clk;
@@ -182,6 +188,8 @@ module tb_fd_dispatch;
             {{59{1'b0}}, fpr_read_addr[1*5 +: 5]};
         fpr_read_data[2*64 +: 64] = 64'hf000_0000_0000_0000 |
             {{59{1'b0}}, fpr_read_addr[2*5 +: 5]};
+        fpr_store_read_data = 64'hf000_0000_0000_0000 |
+            {{59{1'b0}}, fpr_store_read_addr};
     end
 
     task automatic tick;
@@ -214,6 +222,11 @@ module tb_fd_dispatch;
             fp_mem_issue_is_load = 1'b0;
             fp_mem_issue_id = {IDW{1'b0}};
             fp_mem_issue_slot = {SW{1'b0}};
+            fp_load_assignment_valid = 1'b0;
+            fp_load_assignment_id = {IDW{1'b0}};
+            fp_load_assignment_slot = {SW{1'b0}};
+            fp_load_assignment_rd = 5'd0;
+            fp_load_assignment_size = 3'd0;
             fp_load_result_valid = 1'b0;
             fp_load_result_id = {IDW{1'b0}};
             fp_load_result_slot = {SW{1'b0}};
@@ -366,7 +379,7 @@ module tb_fd_dispatch;
         window_issued[0] = 1'b1;
         #1;
         if (fpu_valid)
-            fail("dependent FPR consumer woke before producer retirement");
+            fail("dependent FPR consumer woke before producer result");
 
         fpu_result_valid = 1'b1;
         fpu_result_id = IDW'(1);
@@ -377,19 +390,17 @@ module tb_fd_dispatch;
             fail("live FPU result was not accepted by the sidecar scoreboard");
         tick();
         clear_cycle_inputs();
-
+        #1;
+        if (!entry_operand_ready[1] || !fpu_valid ||
+            fpu_id != IDW'(2) ||
+            fpu_src1 != 64'h3ff0_0000_0000_0000)
+            fail("tagged FPU result did not wake and bypass to consumer");
+        window_issued[1] = 1'b1;
         retire_valid = 3'b001;
         retire_id[0 +: IDW] = IDW'(1);
         retire_slot[0 +: SW] = SW'(0);
-        #1;
-        if (entry_operand_ready[1])
-            fail("retirement wake became combinational FPR forwarding");
         tick();
         clear_cycle_inputs();
-        #1;
-        if (!entry_operand_ready[1] || !fpu_valid ||
-            fpu_id != IDW'(2) || fpr_read_addr[0 +: 5] != 5'd3)
-            fail("matching retirement did not release FPR consumer");
 
         // Cross-domain conversion gets its integer operand from the parent
         // window; fd_dispatch must not reinterpret x6 as f6.
@@ -415,8 +426,8 @@ module tb_fd_dispatch;
             fpu_int_reg_write)
             fail("cross-domain integer source was read from the FPR domain");
 
-        // Start a transfer test with two stores.  Their data is captured into
-        // the two tagged entries while no FPU request owns the read ports.
+        // Stores use a dedicated architectural FPR read port and therefore do
+        // not reserve transfer entries or arbitrate against FPU operand reads.
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -433,17 +444,19 @@ module tb_fd_dispatch;
         tick();
         clear_cycle_inputs();
         #1;
-        if (fpr_read_addr[5 +: 5] != 5'd6)
-            fail("oldest FP store was not selected for data capture");
+        if (entry_operand_ready[0] || entry_operand_ready[1] ||
+            fpr_store_read_addr != 5'd6)
+            fail("FP store operand was not selected for buffered FPR read");
         tick();
         #1;
-        if (transfer_count != 1 || !entry_operand_ready[0] ||
-            fpr_read_addr[5 +: 5] != 5'd7)
-            fail("first FP store transfer was not captured");
+        if (!entry_operand_ready[0] || entry_operand_ready[1] ||
+            fp_mem_store_data != 64'hf000_0000_0000_0006 ||
+            fpr_store_read_addr != 5'd7)
+            fail("first buffered FP store operand was not retained by slot");
         tick();
         #1;
-        if (transfer_count != 2 || !entry_operand_ready[1])
-            fail("two-entry FP transfer buffer did not fill");
+        if (!entry_operand_ready[1])
+            fail("second buffered FP store operand was not retained by slot");
 
         fp_mem_issue_valid = 1'b1;
         fp_mem_issue_is_load = 1'b0;
@@ -452,43 +465,62 @@ module tb_fd_dispatch;
         #1;
         if (!fp_mem_issue_ready ||
             fp_mem_store_data != 64'hf000_0000_0000_0006)
-            fail("captured FP store data was not offered to LSU");
+            fail("buffered FPR store port did not supply ordinary LSU data");
         tick();
         clear_cycle_inputs();
         window_issued[0] = 1'b1;
         #1;
-        if (transfer_count != 1)
-            fail("LSU store acceptance did not release transfer entry");
 
-        // Reserve the freed entry for a load.  A third transfer must then
-        // backpressure until one of the two exact-tagged entries is consumed.
+        // FP loads use their live retirement slots as result cells.  Two
+        // loads can be accepted without a separate two-entry reservation.
         packet0 = fp_load(5'd8);
-        allocation_valid = 3'b001;
-        allocation_id[0 +: IDW] = IDW'(12);
-        allocation_slot[0 +: SW] = SW'(2);
+        packet1 = fp_load(5'd9);
+        allocation_valid = 3'b011;
+        allocation_id = {IDW'(0), IDW'(13), IDW'(12)};
+        allocation_slot = {SW'(0), SW'(3), SW'(2)};
         set_allocation_lane(0, packet0);
+        set_allocation_lane(1, packet1);
         tick();
         clear_cycle_inputs();
         fp_mem_issue_valid = 1'b1;
         fp_mem_issue_is_load = 1'b1;
         fp_mem_issue_id = IDW'(12);
         fp_mem_issue_slot = SW'(2);
+        fp_load_assignment_valid = 1'b1;
+        fp_load_assignment_id = IDW'(12);
+        fp_load_assignment_slot = SW'(2);
+        fp_load_assignment_rd = 5'd8;
+        fp_load_assignment_size = {1'b0, `RV64_LSU_SIZE_WORD};
         #1;
-        if (!fp_mem_issue_ready)
-            fail("FP load could not reserve the freed transfer entry");
+        if (!fp_mem_issue_ready || !fp_load_assignment_match)
+            fail("first FP load did not confirm its LSU assignment");
         tick();
         clear_cycle_inputs();
+
+        fp_load_assignment_valid = 1'b1;
+        fp_load_assignment_id = IDW'(13);
+        fp_load_assignment_slot = SW'(2);
+        fp_load_assignment_rd = 5'd8;
+        fp_load_assignment_size = {1'b0, `RV64_LSU_SIZE_WORD};
         #1;
-        if (transfer_count != 2)
-            fail("FP load transfer reservation was not retained");
+        if (fp_load_assignment_match)
+            fail("mismatched load ID confirmed an FPR assignment");
+        tick();
+        clear_cycle_inputs();
 
         fp_mem_issue_valid = 1'b1;
         fp_mem_issue_is_load = 1'b1;
         fp_mem_issue_id = IDW'(13);
         fp_mem_issue_slot = SW'(3);
+        fp_load_assignment_valid = 1'b1;
+        fp_load_assignment_id = IDW'(13);
+        fp_load_assignment_slot = SW'(3);
+        fp_load_assignment_rd = 5'd9;
+        fp_load_assignment_size = {1'b0, `RV64_LSU_SIZE_WORD};
         #1;
-        if (fp_mem_issue_ready)
-            fail("full two-entry transfer buffer did not backpressure load");
+        if (!fp_mem_issue_ready || !fp_load_assignment_match)
+            fail("second FP load did not confirm its LSU assignment");
+        tick();
         clear_cycle_inputs();
 
         fp_load_result_valid = 1'b1;
@@ -520,23 +552,13 @@ module tb_fd_dispatch;
             fail("filled FP load data was not presented at retirement");
         tick();
         clear_cycle_inputs();
-        if (transfer_count != 1)
-            fail("retiring FP load did not consume its transfer entry");
 
-        // Squash the remaining younger transfer and prove a late response is
+        // Squash the remaining younger load and prove a late response is
         // dropped even if its physical slot is subsequently reused.
-        fp_mem_issue_valid = 1'b1;
-        fp_mem_issue_is_load = 1'b1;
-        fp_mem_issue_id = IDW'(13);
-        fp_mem_issue_slot = SW'(3);
-        tick();
-        clear_cycle_inputs();
         squash_id = IDW'(12);
         squash = 1'b1;
         tick();
         squash = 1'b0;
-        if (transfer_count != 1)
-            fail("selective squash removed older store or retained load");
         fp_load_result_valid = 1'b1;
         fp_load_result_id = IDW'(13);
         fp_load_result_slot = SW'(3);
@@ -545,7 +567,7 @@ module tb_fd_dispatch;
         if (fp_load_result_match)
             fail("late squashed FP load response matched reused state");
 
-        $display("PASS: F/D sidecar retire-only dependencies, FPU backpressure, and two tagged transfers");
+        $display("PASS: F/D sidecar tagged result bypass, buffered FP store read, and slot-owned loads");
         $finish;
     end
 endmodule

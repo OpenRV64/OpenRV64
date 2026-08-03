@@ -912,6 +912,32 @@ module tb_ccx_bus #(
         rst_n = 1;
         tick();
 
+        // A client may withdraw speculative work after arbitration but
+        // before the downstream CCX handshake.  The saved grant must not
+        // block a different client indefinitely.
+        ccx_allow_cmd = 0;
+        force dut.l1d_ccx_req_valid = 1'b1;
+        tick();
+        if (!dut.ccx_cmd_grant_valid_q ||
+            (dut.ccx_cmd_grant_client_q != 2'd1))
+            $fatal(1, "CCX cancellation test did not grant L1D");
+        force dut.l1d_ccx_req_valid = 1'b0;
+        force dut.l1i_ccx_req_valid = 1'b1;
+        tick();
+        if (!dut.ccx_cmd_grant_valid_q ||
+            (dut.ccx_cmd_grant_client_q != 2'd0))
+            $fatal(1,
+                "CCX arbiter retained a withdrawn client grant valid=%b client=%0d",
+                dut.ccx_cmd_grant_valid_q,
+                dut.ccx_cmd_grant_client_q);
+        force dut.l1i_ccx_req_valid = 1'b0;
+        tick();
+        if (dut.ccx_cmd_grant_valid_q)
+            $fatal(1, "CCX arbiter retained final withdrawn grant");
+        release dut.l1d_ccx_req_valid;
+        release dut.l1i_ccx_req_valid;
+        ccx_allow_cmd = 1;
+
         // Four fetches enter before any response.  AXI may return them out of
         // order, while the frontend must still observe request order.
         fetch_resp_ready = 0;

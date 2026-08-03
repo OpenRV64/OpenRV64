@@ -4,7 +4,7 @@
 
 The 4PF F/D core is a separate hierarchy; its tests do not alter or validate
 the 1P/3P Linux configuration. Before changing its decode, window, sidecar,
-retirement, LSU-transfer, or CSR seams, run:
+retirement, LSU/private-result, or CSR seams, run:
 
 ```bash
 make -j2 \

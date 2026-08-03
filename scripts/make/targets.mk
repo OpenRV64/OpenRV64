@@ -1,6 +1,10 @@
 # Aggregate targets and phony declarations.
 
-.PHONY: FORCE sw-uart sw-fp-daxpy sw-fp-fmadd32 sw-fp-faults sw-smp-thread-probe sw-coremark-loop \
+.PHONY: FORCE sw-uart sw-fp-daxpy sw-fp-daxpy-compute \
+	sw-fp-daxpy-store \
+	sw-fp-fmadd32 sw-fp-faults \
+	sw-smp-thread-probe sw-linux-user-tests sw-linux-user-pthread-test \
+	sw-coremark-loop \
 	sw-coremark-loop-vm \
 	sw-coremark-loop-4h-vm sim-4h-3p-sv39 \
 	sw-coremark-loop-4h-shared-vm sw-atomic-4h-shared-vm \
@@ -31,7 +35,9 @@
 	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-rv64-fd-fpr sim-fpu-csrs \
 	sim-exec-fpu-rv64-fd sim-fd-dispatch sim-fd-uop-harness \
-	sim-top-4pf sim-top-4pf-fmadd32 sim-top-4pf-faults
+	sim-top-4pf sim-top-4pf-daxpy-compute sim-top-4pf-daxpy-store \
+	sim-top-4pf-fmadd32 \
+	sim-top-4pf-faults
 .PHONY: sim-decode-rv64c sim-decode-rv64-fd
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \

@@ -72,8 +72,7 @@ DISPATCH_SRCS := $(RENAME_SRCS) rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v \
 	rtl/core/dispatch/dispatch_1p.v rtl/core/dispatch/dispatch.v
-FD_DISPATCH_SRCS := rtl/core/exec/fpu/transfer_buffer.v \
-	rtl/core/exec/fpu/dispatch.v
+FD_DISPATCH_SRCS := rtl/core/exec/fpu/dispatch.v
 FD_UOP_HARNESS_SIM_SRCS := tb/tb_fd_uop_harness.sv
 BP_SRC := rtl/core/exec/bp/bp.v
 BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \

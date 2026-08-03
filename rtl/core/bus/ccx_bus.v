@@ -1837,6 +1837,15 @@ module openrv64_core_ccx_bus #(
                     ccx_cmd_grant_valid_q <= 1'b0;
                     ccx_cmd_last_client_q <=
                         ccx_cmd_grant_client_q;
+                end else if (!ccx_cmd_selected_valid) begin
+                    // A speculative cache request may be withdrawn before
+                    // the local grant reaches the shared CCX port.  Do not
+                    // strand the arbiter on a client that no longer has a
+                    // command; move directly to the next live requester.
+                    ccx_cmd_grant_valid_q <= ccx_cmd_next_valid_r;
+                    if (ccx_cmd_next_valid_r)
+                        ccx_cmd_grant_client_q <=
+                            ccx_cmd_next_client_r;
                 end
             end else if (ccx_cmd_next_valid_r) begin
                 ccx_cmd_grant_valid_q <= 1'b1;

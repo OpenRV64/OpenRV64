@@ -373,7 +373,8 @@ worker() {
         phase=build
         local build_command=("${make_base[@]}" -j8)
         [[ ${rebuild} == 0 ]] || build_command+=(-B)
-        build_command+=("${make_arguments[@]}" "${simulator}"
+        build_command+=("${make_arguments[@]}"
+            "LINUX_IMAGE_MEMH=${linux_memh}" "${simulator}"
             "${opensbi_target}" "${linux_memh}")
         printf 'build_command=%s\n' "$(shell_join "${build_command[@]}")" \
             >>"${build_log}"

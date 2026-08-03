@@ -51,21 +51,41 @@ The parent combines global eligibility, GPR readiness, memory ordering, and the
 extension's private-operand readiness.  The extension selects among globally
 eligible extension entries and obeys ordinary valid/ready backpressure.
 
-The LSU remains unaware of private registers.  The extension owns any transfer
-storage needed to bridge LSU data and private registers.  A memory transfer is
-identified by `(slot, ID)`; a load reports completion only after its data is in
-extension-owned storage, and a store reports completion only after the LSU
-completion event.  This permits most instructions to use no transfer slot.
-Memory exceptions remain ordinary LSU completion records. The sidecar receives
-the faulting identity only to release private wait state; it does not replace
-the LSU cause, address, or precise-retirement decision.
+The LSU remains unaware of private registers.  A memory transfer is identified
+by `(slot, ID)` and uses the ordinary LSU/LSQ for ordering, translation,
+protection, faults, and completion.  An extension load captures the returned
+value into extension-owned, slot-indexed result state on the same exact-tagged
+LSU event.  It does not emit a duplicate extension-completion token.  An
+extension store prebuffers its private-register operand before the parent
+asserts the ordinary LSU request; once presented, it is ordinary store data.
+
+On accepted load issue, the LSU exposes a generic assignment notification
+containing `(slot, ID, rd, size)`.  `rd` is only an architectural destination
+number at this boundary; the LSU does not decide which register file owns it.
+An extension that writes private state must reserve its destination during
+decode, before younger dependency capture, then use this notification to
+confirm that the exact load crossed into the shared LSQ.  A matching load
+result or load fault is invalid unless that assignment was observed.  The
+notification validates ownership and transfer width; it is not a second queue
+and does not increase memory concurrency.
+
+Private operand availability must not feed a combinational ready/valid loop
+through the integer LSU.  If the parent supports paired memory issue, the
+extension boundary needs a registered reservation or skid stage.  Integer-only
+memory issue must not arbitrate with, or consult, an inactive sidecar.
+
+Memory exceptions remain ordinary LSU completion records.  The sidecar
+receives the faulting identity only to release private wait state; it does not
+replace the LSU cause, address, or precise-retirement decision.
 
 ## Completion and retirement
 
-Execution results remain in extension-owned, slot-indexed storage.  After a
-result is resident, the sidecar emits a sparse completion token containing only
-`(slot, ID)`.  The integer retirement queue records its normal completion bit;
-it does not acquire extension result or private-register fields.
+Non-memory execution results remain in extension-owned, slot-indexed storage.
+After such a result is resident, the sidecar emits a sparse completion token
+containing only `(slot, ID)`.  Memory operations use the ordinary LSU
+completion record instead.  In both cases the integer retirement queue records
+only its normal completion bit; it does not acquire extension result or
+private-register fields.
 
 For the ordered retirement candidates, an extension returns:
 
@@ -95,5 +115,5 @@ The initial contract has one sparse extension-completion port, four unresolved
 branch tokens, and up to three ordered retirement candidates.  Multiple
 sidecars must arbitrate the single completion port outside integer retirement.
 These are policy choices, not FPU semantics.  A sidecar may further restrict
-retirement; the F/D sidecar currently permits one private FPR write per cycle
-and performs no FPR forwarding.
+retirement.  The F/D sidecar currently permits one private FPR write per cycle
+and bypasses resident results only by exact `(slot, ID)` producer tags.

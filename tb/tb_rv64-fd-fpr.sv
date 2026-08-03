@@ -14,6 +14,8 @@ module tb_rv64fd_fpr;
     wire [FLEN-1:0] rs2_data;
     reg [`RV64_REG_ADDR_WIDTH-1:0] rs3_addr;
     wire [FLEN-1:0] rs3_data;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] store_addr;
+    wire [FLEN-1:0] store_data;
     reg rd_write;
     reg [`RV64_REG_ADDR_WIDTH-1:0] rd_addr;
     reg [FLEN-1:0] rd_data;
@@ -29,6 +31,8 @@ module tb_rv64fd_fpr;
         .rs2_data_o(rs2_data),
         .rs3_addr_i(rs3_addr),
         .rs3_data_o(rs3_data),
+        .store_addr_i(store_addr),
+        .store_data_o(store_data),
         .rd_write_i(rd_write),
         .rd_addr_i(rd_addr),
         .rd_data_i(rd_data)
@@ -78,6 +82,7 @@ module tb_rv64fd_fpr;
         rs1_addr = 5'd0;
         rs2_addr = 5'd1;
         rs3_addr = 5'd31;
+        store_addr = 5'd0;
         rd_write = 1'b0;
         rd_addr = 5'd0;
         rd_data = 64'd0;
@@ -102,17 +107,21 @@ module tb_rv64fd_fpr;
         rs1_addr = 5'd1;
         rs2_addr = 5'd2;
         rs3_addr = 5'd31;
+        store_addr = 5'd0;
         expect_reads(64'hffff_ffff_3fc0_0000,
                      64'h4002_0000_0000_0000,
                      64'h7ff8_0000_0000_1234,
                      "three architectural sources");
+        if (store_data !== 64'h3ff0_0000_0000_0000)
+            $fatal(1, "independent store read port selected wrong FPR");
 
-        // Ordered writeback may forward to any of the three source selectors
-        // in the acceptance cycle.
+        // Ordered writeback may forward to every source selector, including
+        // the independent store port, in the acceptance cycle.
         @(negedge clk);
         rs1_addr = 5'd7;
         rs2_addr = 5'd7;
         rs3_addr = 5'd7;
+        store_addr = 5'd7;
         rd_write = 1'b1;
         rd_addr = 5'd7;
         rd_data = 64'hc008_0000_0000_0000;
@@ -120,6 +129,8 @@ module tb_rv64fd_fpr;
                      64'hc008_0000_0000_0000,
                      64'hc008_0000_0000_0000,
                      "three-port write bypass");
+        if (store_data !== 64'hc008_0000_0000_0000)
+            $fatal(1, "store read port did not bypass ordered writeback");
         @(posedge clk);
         @(negedge clk);
         rd_write = 1'b0;
@@ -127,12 +138,14 @@ module tb_rv64fd_fpr;
                      64'hc008_0000_0000_0000,
                      64'hc008_0000_0000_0000,
                      "committed writeback");
+        if (store_data !== 64'hc008_0000_0000_0000)
+            $fatal(1, "store read port did not retain committed value");
 
         if ((dut.regs[0] !== 64'h3ff0_0000_0000_0000) ||
             (dut.regs[31] !== 64'h7ff8_0000_0000_1234))
             $fatal(1, "FPR hierarchy compatibility view is wrong");
 
-        $display("PASS: architectural three-read one-write RV64F/D FPR");
+        $display("PASS: architectural four-read one-write RV64F/D FPR");
         $finish;
     end
 

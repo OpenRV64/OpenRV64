@@ -106,7 +106,8 @@ $(TOP_3P_SIM_BUILD): tb/tb_top_3p.sv rtl/openrv64_top.sv $(CORE_SRCS) \
 $(TOP_4PF_SIM_BUILD): tb/tb_top_4pf.sv $(CORE_4PF_SRCS) \
 		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s openrv64_top_4pf -s tb_top_4pf \
+	iverilog -g2012 -Wall -Irtl $(TOP_4PF_IVERILOG_FLAGS) \
+		-s openrv64_top_4pf -s tb_top_4pf \
 		-o $(TOP_4PF_SIM_BUILD) $(CORE_4PF_SRCS) tb/tb_top_4pf.sv
 
 $(CORE_3P_MAGIC_VERILATOR_BUILD): tb/tb_core_3p_magic.sv \
@@ -269,6 +270,7 @@ $(OPENSBI_4H_HELD_CHECKPOINT_VERILATOR_BUILD): \
 		-Wall -Wno-fatal -j 32 \
 		--threads $(OPENSBI_4H_HELD_VERILATOR_THREADS) -Irtl \
 		-DOPENRV64_4H_VERILATOR_CHECKPOINT \
+		-CFLAGS "-DOPENRV64_4H_CORE_INSTANCES=$(OPENSBI_4H_HELD_CORE_INSTANCES)" \
 		-GCORE_INSTANCES=$(OPENSBI_4H_HELD_CORE_INSTANCES) \
 		-GL1D_PREFETCH_ENABLE=$(CORE_4H_3P_L1D_PREFETCH_ENABLE) \
 		-GMEMORY_BYTES=$(OPENSBI_4H_HELD_MEMORY_BYTES) \

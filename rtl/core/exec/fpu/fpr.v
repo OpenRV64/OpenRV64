@@ -9,9 +9,10 @@
 //
 // The FPRs remain identity-mapped architectural state: there is no rename
 // table, free list, or physical readiness state here.  Three reads cover the
-// rs1/rs2/rs3 operands required by fused operations, while the single write
-// port matches ordered architectural writeback.  Unlike the integer file,
-// f0 is an ordinary writable register.
+// rs1/rs2/rs3 operands required by fused operations.  A fourth independent
+// read supplies ordinary LSU store data without arbitrating against compute;
+// the single write port remains ordered architectural writeback.  Unlike the
+// integer file, f0 is an ordinary writable register.
 //
 // Values are stored bit-for-bit.  Producers of binary32 results are
 // responsible for architectural NaN boxing before writeback.
@@ -29,6 +30,8 @@ module openrv64_rv64fd_fpr #(
     output wire [FLEN-1:0]                 rs2_data_o,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0] rs3_addr_i,
     output wire [FLEN-1:0]                 rs3_data_o,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] store_addr_i,
+    output wire [FLEN-1:0]                 store_data_o,
 
     input  wire                             rd_write_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0] rd_addr_i,
@@ -37,10 +40,10 @@ module openrv64_rv64fd_fpr #(
 
     localparam integer NUM_FPRS = 32;
 
-    wire [3*`RV64_REG_ADDR_WIDTH-1:0] read_addr =
-        {rs3_addr_i, rs2_addr_i, rs1_addr_i};
-    wire [3*FLEN-1:0] read_data;
-    wire [2:0] read_ready_unused;
+    wire [4*`RV64_REG_ADDR_WIDTH-1:0] read_addr =
+        {store_addr_i, rs3_addr_i, rs2_addr_i, rs1_addr_i};
+    wire [4*FLEN-1:0] read_data;
+    wire [3:0] read_ready_unused;
     wire write_ready_unused;
     wire [NUM_FPRS*FLEN-1:0] prf_debug_regs;
 
@@ -51,9 +54,9 @@ module openrv64_rv64fd_fpr #(
         .NUM_SLICES(1),
         .SLICE_ADDR_WIDTH(1),
         .NUM_BANKS(1),
-        .READ_PORTS(3),
+        .READ_PORTS(4),
         .WRITE_PORTS(1),
-        .READ_PORTS_PER_BANK(3),
+        .READ_PORTS_PER_BANK(4),
         .WRITE_PORTS_PER_BANK(1),
         .ZERO_REG_ENABLE(0),
         .RESET_REGS(RESET_REGS),
@@ -62,10 +65,10 @@ module openrv64_rv64fd_fpr #(
     ) u_prf (
         .clk(clk),
         .rst_n(rst_n),
-        .read_valid_i(3'b111),
+        .read_valid_i(4'b1111),
         .read_ready_o(read_ready_unused),
         .read_addr_i(read_addr),
-        .read_slice_i(3'b000),
+        .read_slice_i(4'b0000),
         .read_data_o(read_data),
         .write_valid_i(rd_write_i),
         .write_ready_o(write_ready_unused),
@@ -78,6 +81,7 @@ module openrv64_rv64fd_fpr #(
     assign rs1_data_o = read_data[0*FLEN +: FLEN];
     assign rs2_data_o = read_data[1*FLEN +: FLEN];
     assign rs3_data_o = read_data[2*FLEN +: FLEN];
+    assign store_data_o = read_data[3*FLEN +: FLEN];
 
     // Read-only hierarchy-visible view, matching the existing integer GPR
     // compatibility seam.  All 32 FPRs are present because f0 is writable.

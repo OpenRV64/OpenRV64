@@ -18,9 +18,9 @@
 // until the following cycle.  Source values are captured either from the
 // architectural GPR, the youngest completed producer, or a matching tagged
 // completion.  Up to one instruction per physical pipe is then selected from
-// the ready entries.  Memory issue remains program ordered, but the oldest two
-// unissued memory operations may enter MEM0 and MEM1 together when they target
-// opposite lanes and both lanes accept the complete pair.  The optional
+// the ready entries.  Memory issue remains program ordered and is currently
+// limited to one operation per cycle; paired issue requires a registered
+// acceptance boundary rather than a combinational cross-lane contract.  The optional
 // speculation mode lets replayable work pass an older conditional branch that
 // is still waiting for operands, and lets ordinary loads begin translation
 // past unresolved control.  The physically addressed LSQ admits the later
@@ -1081,11 +1081,10 @@ module openrv64_dispatch_window_4pf #(
              !extension_entry_load_i[select_mem] ||
              extension_load_issue_ready_i))
             pipe_valid_o[selected_mem_pipe] = 1'b1;
-        // The initial 4PF variant deliberately issues at most one memory
-        // operation per cycle.  This keeps valid independent of execution
-        // ready and of extension transfer capacity.  Integer memory pairing
-        // can be restored only with an explicit skid/reservation boundary;
-        // the 3P combinational ready coupling is not safe across a sidecar.
+        // This variant still issues at most one memory operation per cycle.
+        // Restoring the 3P paired-valid equation here creates a zero-time loop
+        // through the 4PF execution wrapper.  That wrapper needs an explicit
+        // registered/skid acceptance boundary before integer pairing is safe.
     end
 
     always @* begin

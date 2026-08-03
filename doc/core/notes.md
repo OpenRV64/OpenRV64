@@ -18,7 +18,27 @@ exact-ID check and relies on the mask for early kill. In that design, either:
 
 The initial 4PF window issues at most one memory operation per cycle. The 3P
 window's dual-memory coupling lets execution readiness affect valid generation.
-Adding FPU transfer-capacity readiness to that path formed a real combinational
-loop. Restoring two memory issues requires an explicit registered
-skid/reservation boundary; do not reconnect sidecar ready directly to LSU
-ready/valid.
+The F/D transfer-capacity dependency has been removed: loads use slot-owned
+result state, and stores are prebuffered through a dedicated FPR read port.
+That change adds no sidecar ready dependency to integer LSU arbitration.
+
+A direct attempt to restore paired integer memory issue still formed a
+wrapper-level combinational loop through issue valid and execution readiness.
+Restoring two memory issues therefore requires an explicit registered
+skid/reservation boundary. Do not reconnect sidecar readiness or private
+register data directly to LSU ready/valid.
+
+## Deferred: full-core FMV.X.D progress
+
+The initial compute-only DAXPY setup issued `FMV.D.X` writes to `f0` through
+`f17`, followed by `fmv.x.d t1,f17` as a drain check.  The 4PF full-core test
+made no further progress at the `FMV.X.D` for 100,000 cycles.  Removing that
+transfer and relying on ordered retirement of the following phase marker made
+the compute-only DAXPY test pass.  Post-measurement FPR validation through
+`FSD` plus integer `LD` also passed.
+
+This is evidence of a 4PF FPR-to-GPR transfer progress bug, but its precise
+cause is not isolated.  Add a directed full-core test covering a single
+`FMV.D.X`/`FMV.X.D` pair, a source dependent on a resident result, GPR result
+retirement, and a window-saturation sequence before changing the transfer
+path.

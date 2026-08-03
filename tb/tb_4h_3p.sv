@@ -3347,7 +3347,8 @@ module tb_4h_3p #(
                     "Linux reached the prompt without passing the two-thread SMP userspace probe");
 
             if ((opensbi_smp != 0) && (linux_mode != 0) &&
-                linux_smp_online_seen && linux_prompt_seen) begin
+                linux_smp_online_seen && linux_prompt_seen &&
+                !$test$plusargs("defer_linux_completion")) begin
                 for (init_hart = 0;
                      init_hart < NUM_HARTS;
                      init_hart = init_hart + 1) begin

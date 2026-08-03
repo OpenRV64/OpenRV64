@@ -32,7 +32,8 @@ run/run run/cfg/linux-smp-4h-ddr3.cfg
 run/
 ├── cfg/
 │   ├── linux-smp-2h-ddr3.cfg
-│   └── linux-smp-4h-ddr3.cfg
+│   ├── linux-smp-4h-ddr3.cfg
+│   └── linux-smp-4h-user-tests-ddr3.cfg
 ├── log/
 │   └── <configuration-name>-<UTC timestamp>/
 ├── README.md
@@ -53,10 +54,12 @@ The checked-in coherent Linux configurations are:
 |---|---:|---:|---|---:|
 | `linux-smp-2h-ddr3.cfg` | 2 | 1 | timed DDR3 | 0 |
 | `linux-smp-4h-ddr3.cfg` | 4 | 1 | timed DDR3 | 0 |
+| `linux-smp-4h-user-tests-ddr3.cfg` | 4 | 1 | timed DDR3 | 0 |
 
-Both currently select:
+The first two configurations select `sw/Image.smp`.  The user-test target
+selects `sw/Image.smp-user-tests`, whose initramfs runs the quick Linux
+userspace SMP/coherence/VM suite before opening the shell.  All three select:
 
-- `sw/Image.smp`;
 - Zicclsm advertisement enabled;
 - 250 million maximum cycles;
 - a non-terminating checkpoint at 25 million cycles;

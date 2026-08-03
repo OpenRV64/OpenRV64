@@ -278,6 +278,15 @@ sim-top-3p: $(TOP_3P_SIM_BUILD)
 sim-top-4pf: $(TOP_4PF_SIM_BUILD) $(FP_DAXPY_MEMH)
 	vvp $(TOP_4PF_SIM_BUILD)
 
+sim-top-4pf-daxpy-compute: $(TOP_4PF_SIM_BUILD) \
+		$(FP_DAXPY_COMPUTE_MEMH)
+	vvp $(TOP_4PF_SIM_BUILD) +daxpy_compute \
+		+memh=$(FP_DAXPY_COMPUTE_MEMH)
+
+sim-top-4pf-daxpy-store: $(TOP_4PF_SIM_BUILD) $(FP_DAXPY_STORE_MEMH)
+	vvp $(TOP_4PF_SIM_BUILD) +daxpy_store \
+		+memh=$(FP_DAXPY_STORE_MEMH)
+
 sim-top-4pf-fmadd32: $(TOP_4PF_SIM_BUILD) $(FP_FMADD32_MEMH)
 	vvp $(TOP_4PF_SIM_BUILD) +fmadd32 +memh=$(FP_FMADD32_MEMH)
 
