@@ -8,10 +8,12 @@
 // Decoded-uop integration harness for the 4PF F/D path.
 //
 // The parent window, LSU, and retirement queue are deliberately small models;
-// the F/D sidecar, architectural FPR, and pipelined FPU are the real RTL.  This
+// the F/D sidecar, architectural FPR, and configurable FPU are the real RTL.  This
 // is the last directed boundary before adding the
 // 4PF fetch/decode top and executing a software image.
-module tb_fd_uop_harness;
+module tb_fd_uop_harness #(
+    parameter integer ENABLE_PIPELINED_MULTIPLY = 1
+);
     localparam integer WINDOW_DEPTH = 8;
     localparam integer SW = 3;
     localparam integer IDW = `OPENRV64_INSTR_ID_WIDTH;
@@ -310,7 +312,8 @@ module tb_fd_uop_harness;
     );
 
     openrv64_exec_fpu_rv64fd #(
-        .TAG_WIDTH(TAGW)
+        .TAG_WIDTH(TAGW),
+        .ENABLE_PIPELINED_MULTIPLY(ENABLE_PIPELINED_MULTIPLY)
     ) u_fpu (
         .clk(clk),
         .rst_n(rst_n),

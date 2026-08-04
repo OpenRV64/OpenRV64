@@ -102,8 +102,13 @@ sim-dispatch-3p: $(DISPATCH_3P_SIM_BUILD)
 sim-fd-dispatch: $(FD_DISPATCH_SIM_BUILD)
 	vvp $(FD_DISPATCH_SIM_BUILD)
 
-sim-fd-uop-harness: $(FD_UOP_HARNESS_SIM_BUILD)
+sim-fd-uop-harness: $(FD_UOP_HARNESS_SIM_BUILD) \
+		$(FD_UOP_HARNESS_COMPACT_MUL_SIM_BUILD)
 	vvp $(FD_UOP_HARNESS_SIM_BUILD)
+	vvp $(FD_UOP_HARNESS_COMPACT_MUL_SIM_BUILD)
+
+sim-fd-uop-harness-compact-mul: $(FD_UOP_HARNESS_COMPACT_MUL_SIM_BUILD)
+	vvp $(FD_UOP_HARNESS_COMPACT_MUL_SIM_BUILD)
 
 sim-reg-map-3p: $(REG_MAP_3P_SIM_BUILD)
 	vvp $(REG_MAP_3P_SIM_BUILD)
@@ -167,8 +172,13 @@ sim-exec-bp: $(EXEC_BP_SIM_BUILD) $(EXEC_BP_GSHARE_BTB_SIM_BUILD) \
 	vvp $(EXEC_BP_TAGGED_SPEC_SIM_BUILD)
 	vvp $(EXEC_BP_MODES78_SIM_BUILD)
 
-sim-exec-fpu-rv64-fd: $(EXEC_FPU_RV64FD_SIM_BUILD)
+sim-exec-fpu-rv64-fd: $(EXEC_FPU_RV64FD_SIM_BUILD) \
+		$(EXEC_FPU_RV64FD_COMPACT_MUL_SIM_BUILD)
 	vvp $(EXEC_FPU_RV64FD_SIM_BUILD)
+	vvp $(EXEC_FPU_RV64FD_COMPACT_MUL_SIM_BUILD)
+
+sim-exec-fpu-rv64-fd-compact-mul: $(EXEC_FPU_RV64FD_COMPACT_MUL_SIM_BUILD)
+	vvp $(EXEC_FPU_RV64FD_COMPACT_MUL_SIM_BUILD)
 
 sim-vec: sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu sim-vec-cache \
 	sim-vec-cache-axi sim-vec-cache-wb sim-vec-cache-wb-512 \

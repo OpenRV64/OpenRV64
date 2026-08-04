@@ -360,7 +360,9 @@ module openrv64_bus_tlb_l2 #(
     assign fill_evict_current_o = fill_evict_current_q;
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || tlbi_i) begin
+        if (!rst_n) begin
+            fill_evict_current_q <= 1'b0;
+        end else if (tlbi_i) begin
             fill_evict_current_q <= 1'b0;
         end else begin
             fill_evict_current_q <=

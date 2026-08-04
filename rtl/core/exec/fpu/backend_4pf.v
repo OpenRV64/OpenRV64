@@ -21,6 +21,8 @@ module openrv64_backend_4pf #(
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter integer MAX_READS_PER_REG = 2,
     parameter integer ENABLE_RV64M = 1,
+    parameter integer ENABLE_FD = 1,
+    parameter integer ENABLE_PIPELINED_FP_MULTIPLY = 1,
     parameter integer ENABLE_TRACE = 1,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
@@ -1235,10 +1237,12 @@ module openrv64_backend_4pf #(
         .destination_old_phys_o(rename_destination_old_phys)
     );
 
-    openrv64_fd_dispatch #(
-        .WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
-        .RETIRE_SLOT_WIDTH(SLOT_WIDTH)
-    ) u_fp_dispatch (
+    generate
+    if (ENABLE_FD != 0) begin : g_fd_extension
+        openrv64_fd_dispatch #(
+            .WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
+            .RETIRE_SLOT_WIDTH(SLOT_WIDTH)
+        ) u_fp_dispatch (
         .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
         .squash_i(squash_frontend_i),
         .squash_id_i(exec_redirect_id),
@@ -1325,27 +1329,76 @@ module openrv64_backend_4pf #(
         .retire_fflags_valid_o(fp_retire_fflags_valid),
         .retire_fflags_o(fp_retire_fflags),
         .retire_unsupported_o(fp_retire_unsupported),
-        .fp_write_busy_o(fp_write_busy)
-    );
+            .fp_write_busy_o(fp_write_busy)
+        );
 
-    openrv64_exec_fpu_rv64fd #(
-        .TAG_WIDTH(FPU_TAG_WIDTH)
-    ) u_fpu (
-        .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
-        .valid_i(fpu_valid), .ready_o(fpu_ready),
-        .tag_i(fpu_request_tag),
-        .op_i(fpu_op), .fmt_i(fpu_fmt), .rm_i(fpu_rm),
-        .frm_i(fp_frm_i), .type_i(fpu_type),
-        .src1_i(fpu_src1), .src2_i(fpu_src2), .src3_i(fpu_src3),
-        .result_valid_o(fpu_result_valid),
-        .result_ready_i(fpu_result_ready),
-        .result_tag_o(fpu_result_tag),
-        .result_is_int_o(fpu_result_is_int),
-        .fp_result_o(fpu_result_fp),
-        .int_result_o(fpu_result_int),
-        .fflags_o(fpu_result_fflags),
-        .unsupported_o(fpu_result_unsupported)
-    );
+        openrv64_exec_fpu_rv64fd #(
+            .TAG_WIDTH(FPU_TAG_WIDTH),
+            .ENABLE_PIPELINED_MULTIPLY(ENABLE_PIPELINED_FP_MULTIPLY)
+        ) u_fpu (
+            .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+            .valid_i(fpu_valid), .ready_o(fpu_ready),
+            .tag_i(fpu_request_tag),
+            .op_i(fpu_op), .fmt_i(fpu_fmt), .rm_i(fpu_rm),
+            .frm_i(fp_frm_i), .type_i(fpu_type),
+            .src1_i(fpu_src1), .src2_i(fpu_src2), .src3_i(fpu_src3),
+            .result_valid_o(fpu_result_valid),
+            .result_ready_i(fpu_result_ready),
+            .result_tag_o(fpu_result_tag),
+            .result_is_int_o(fpu_result_is_int),
+            .fp_result_o(fpu_result_fp),
+            .int_result_o(fpu_result_int),
+            .fflags_o(fpu_result_fflags),
+            .unsupported_o(fpu_result_unsupported)
+        );
+    end else begin : g_no_fd_extension
+        assign fp_entry_valid = {ISSUE_WINDOW_DEPTH{1'b0}};
+        assign fp_entry_compute = {ISSUE_WINDOW_DEPTH{1'b0}};
+        assign fp_entry_load = {ISSUE_WINDOW_DEPTH{1'b0}};
+        assign fp_entry_store = {ISSUE_WINDOW_DEPTH{1'b0}};
+        assign fp_operand_ready = {ISSUE_WINDOW_DEPTH{1'b0}};
+        assign fp_entry_store_data =
+            {ISSUE_WINDOW_DEPTH*`RV64_XLEN{1'b0}};
+        assign fp_mem_load_ready = 1'b0;
+        assign fpr_read_addr = {3*`RV64_REG_ADDR_WIDTH{1'b0}};
+        assign fpr_store_read_addr = {`RV64_REG_ADDR_WIDTH{1'b0}};
+        assign fpu_valid = 1'b0;
+        assign fpu_fire = 1'b0;
+        assign fpu_id = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        assign fpu_slot = {SLOT_WIDTH{1'b0}};
+        assign fpu_op = {`OPENRV64_FP_OP_WIDTH{1'b0}};
+        assign fpu_fmt = 2'b00;
+        assign fpu_rm = 3'b000;
+        assign fpu_type = 5'b00000;
+        assign fpu_src1 = {`RV64_XLEN{1'b0}};
+        assign fpu_src2 = {`RV64_XLEN{1'b0}};
+        assign fpu_src3 = {`RV64_XLEN{1'b0}};
+        assign fpu_rd = {`RV64_REG_ADDR_WIDTH{1'b0}};
+        assign fpu_fp_reg_write = 1'b0;
+        assign fpu_int_reg_write = 1'b0;
+        assign fpu_fflags_write = 1'b0;
+        assign fpu_branch_mask =
+            {`OPENRV64_EXTENSION_BRANCH_COUNT{1'b0}};
+        assign fpu_result_ready = 1'b0;
+        assign extension_completion_valid = 1'b0;
+        assign extension_completion_id =
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        assign extension_completion_slot = {SLOT_WIDTH{1'b0}};
+        assign fp_load_assignment_match = 1'b0;
+        assign fp_retire_ready = 3'b111;
+        assign fp_retire_load_data_valid = 3'b000;
+        assign fp_retire_load_data = {3*`RV64_XLEN{1'b0}};
+        assign fp_retire_result_valid = 3'b000;
+        assign fp_retire_private_write = 3'b000;
+        assign fp_retire_gpr_write = 3'b000;
+        assign fp_retire_rd = {3*`RV64_REG_ADDR_WIDTH{1'b0}};
+        assign fp_retire_result_data = {3*`RV64_XLEN{1'b0}};
+        assign fp_retire_fflags_valid = 3'b000;
+        assign fp_retire_fflags = 15'b0;
+        assign fp_retire_unsupported = 3'b000;
+        assign fp_write_busy = 32'b0;
+    end
+    endgenerate
 
     openrv64_rv64i_gpr_3p #(
         .ALLOW_DUPLICATE_WRITES(RELAX_WAW),
@@ -1381,23 +1434,30 @@ module openrv64_backend_4pf #(
         end
     end
 
-    openrv64_rv64fd_fpr u_fpr (
-        .clk(clk), .rst_n(rst_n),
-        .rs1_addr_i(fpr_read_addr[0*`RV64_REG_ADDR_WIDTH +:
-                                  `RV64_REG_ADDR_WIDTH]),
-        .rs1_data_o(fpr_read_data[0*`RV64_XLEN +: `RV64_XLEN]),
-        .rs2_addr_i(fpr_read_addr[1*`RV64_REG_ADDR_WIDTH +:
-                                  `RV64_REG_ADDR_WIDTH]),
-        .rs2_data_o(fpr_read_data[1*`RV64_XLEN +: `RV64_XLEN]),
-        .rs3_addr_i(fpr_read_addr[2*`RV64_REG_ADDR_WIDTH +:
-                                  `RV64_REG_ADDR_WIDTH]),
-        .rs3_data_o(fpr_read_data[2*`RV64_XLEN +: `RV64_XLEN]),
-        .store_addr_i(fpr_store_read_addr),
-        .store_data_o(fpr_store_read_data),
-        .rd_write_i(fp_fpr_write),
-        .rd_addr_i(fp_fpr_write_addr),
-        .rd_data_i(fp_fpr_write_data)
-    );
+    generate
+    if (ENABLE_FD != 0) begin : g_fd_fpr
+        openrv64_rv64fd_fpr u_fpr (
+            .clk(clk), .rst_n(rst_n),
+            .rs1_addr_i(fpr_read_addr[0*`RV64_REG_ADDR_WIDTH +:
+                                      `RV64_REG_ADDR_WIDTH]),
+            .rs1_data_o(fpr_read_data[0*`RV64_XLEN +: `RV64_XLEN]),
+            .rs2_addr_i(fpr_read_addr[1*`RV64_REG_ADDR_WIDTH +:
+                                      `RV64_REG_ADDR_WIDTH]),
+            .rs2_data_o(fpr_read_data[1*`RV64_XLEN +: `RV64_XLEN]),
+            .rs3_addr_i(fpr_read_addr[2*`RV64_REG_ADDR_WIDTH +:
+                                      `RV64_REG_ADDR_WIDTH]),
+            .rs3_data_o(fpr_read_data[2*`RV64_XLEN +: `RV64_XLEN]),
+            .store_addr_i(fpr_store_read_addr),
+            .store_data_o(fpr_store_read_data),
+            .rd_write_i(fp_fpr_write),
+            .rd_addr_i(fp_fpr_write_addr),
+            .rd_data_i(fp_fpr_write_data)
+        );
+    end else begin : g_no_fd_fpr
+        assign fpr_read_data = {3*`RV64_XLEN{1'b0}};
+        assign fpr_store_read_data = {`RV64_XLEN{1'b0}};
+    end
+    endgenerate
 
     wire [2:0] fp_arch_fflags_valid =
         fp_retire_fflags_valid & retire_arch_o;

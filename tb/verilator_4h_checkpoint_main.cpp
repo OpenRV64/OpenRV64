@@ -147,6 +147,13 @@ void trace_l2_bus_request(const Vtb_4h_3p___024root* root,
 
 void trace_coherence_state(const Vtb_4h_3p___024root* root,
                            uint32_t cycle) {
+#if OPENRV64_4H_CORE_INSTANCES == 1
+    // The one-core specialization removes the coherent-home/probe cluster and
+    // every hart-1 hierarchy.  Keep the optional four-hart replay trace out of
+    // that generated model rather than referencing optimized-away symbols.
+    (void)root;
+    (void)cycle;
+#else
     const uint64_t fetch_pc0 =
         static_cast<uint64_t>(root->tb_4h_3p__DOT__dbg_pc[0]) |
         (static_cast<uint64_t>(root->tb_4h_3p__DOT__dbg_pc[1]) << 32);
@@ -300,6 +307,7 @@ void trace_coherence_state(const Vtb_4h_3p___024root* root,
         << static_cast<unsigned>(root->tb_4h_3p__DOT__ddr_outstanding)
         << '\n';
     std::cout.flush();
+#endif
 }
 
 void trace_hart0_l1i_state(const Vtb_4h_3p___024root* root,

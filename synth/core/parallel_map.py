@@ -67,6 +67,8 @@ def run_worker(
     constraint: Path,
     worker_dir: Path,
     reuse_worker: bool,
+    fast: bool,
+    abc_script: Path | None,
 ) -> tuple[str, dict, float]:
     stem = worker_stem(index, module)
     script_path = worker_dir / f"{stem}.ys"
@@ -84,12 +86,19 @@ def run_worker(
                 f"reused worker stat omitted selected module {module}"
             )
         return key, modules[key], 0.0
+    if abc_script is not None:
+        abc_mode = f"-script {yosys_quote(abc_script)} "
+    elif fast:
+        abc_mode = "-fast "
+    else:
+        abc_mode = ""
     script_path.write_text(
         "\n".join(
             [
                 f"read_rtlil {yosys_quote(checkpoint)}",
                 (
-                    f"abc -liberty {yosys_quote(liberty)} "
+                    f"abc {abc_mode}"
+                    f"-liberty {yosys_quote(liberty)} "
                     f"-constr {yosys_quote(constraint)} {module}"
                 ),
                 "clean -purge",
@@ -135,7 +144,12 @@ def main() -> int:
     parser.add_argument("--worker-dir", type=Path, required=True)
     parser.add_argument("--jobs", type=int, required=True)
     parser.add_argument("--reuse-workers", action="store_true")
+    parser.add_argument("--fast", action="store_true")
+    parser.add_argument("--abc-script", type=Path)
     args = parser.parse_args()
+
+    if args.fast and args.abc_script is not None:
+        parser.error("--fast and --abc-script are mutually exclusive")
 
     if args.jobs < 1:
         parser.error("--jobs must be at least one")
@@ -186,6 +200,8 @@ def main() -> int:
                 constraint=args.constraint,
                 worker_dir=args.worker_dir,
                 reuse_worker=args.reuse_workers,
+                fast=args.fast,
+                abc_script=args.abc_script,
             ): module
             for index, module in enumerate(modules)
         }
@@ -252,6 +268,11 @@ def main() -> int:
                 "requested_jobs": args.jobs,
                 "jobs": min(jobs, len(modules)),
                 "job_limit": MAX_JOBS,
+                "abc_recipe": (
+                    str(args.abc_script)
+                    if args.abc_script is not None
+                    else "fast" if args.fast else "default"
+                ),
                 "module_seconds": dict(sorted(elapsed_by_module.items())),
             },
             indent=2,

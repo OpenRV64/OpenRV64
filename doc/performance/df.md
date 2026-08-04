@@ -1,6 +1,6 @@
 # RV64F/RV64D performance
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 
 ## Scope
 
@@ -13,9 +13,11 @@ therefore does not reproduce these numbers.
 
 The tests use the full 4PF decode, issue window, F/D sidecar, FPU, retirement,
 and core top.  L1I and L1D are enabled and connect to the testbench's native
-tagged-RAM CCX home.  The FPU accepts at most one computational request per
-cycle, so one accepted FMA per cycle is its current steady-state throughput
-limit.
+tagged-RAM CCX home. The recorded baseline uses the default pipelined
+multiplier. It accepts at most one computational request per cycle, so one
+accepted FMA per cycle is its steady-state throughput limit. The optional
+compact multiplier has different S and D initiation rates and is reported
+separately below.
 
 ## Workloads
 
@@ -166,6 +168,37 @@ whether the FPU remains filled.
 
 The 32-entry result is a controlled experiment.  It does not change the 4PF
 source or testbench default from 16 entries.
+
+## Compact-multiplier throughput probe
+
+`ENABLE_PIPELINED_FP_MULTIPLY=0` selects one 27x27 partial-product lane while
+retaining the pipelined divide/square-root path. Binary32 multiply/FMA uses one
+lane cycle and retains one-request-per-cycle initiation. Binary64 uses four
+partial products and has a four-cycle initiation interval.
+
+The full-core `fmadd32` isolation program completed with exact results in both
+source-matched configurations. This probe used the immediate testbench memory
+configuration (`ENABLE_L1=0`); its measured phase performs no data-memory
+operations.
+
+| Configuration | FMADD.D operations | Cycles | IPC | Average request interval | Maximum inflight |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Pipelined multiplier, window 16 | 1,024 | 1,808 | 0.602 | 1.736 cycles | 14 |
+| Compact multiplier, window 16 | 1,024 | 4,114 | 0.264 | 4.000 cycles | 2 |
+
+The measured phase recorded 3,069 FPU-backpressure cycles, 3,098 cycles with
+an incomplete retirement head, and no producer, forwarding, or global-block
+stalls. The standalone directed stream separately proves consecutive
+binary32 acceptance at a one-cycle interval. These are functional cycle-model
+results, not frequency or area results.
+
+Reproduce the compact full-core probe with:
+
+```sh
+make -B \
+  TOP_4PF_IVERILOG_FLAGS=-Ptb_top_4pf.ENABLE_PIPELINED_FP_MULTIPLY=0 \
+  sim-top-4pf-fmadd32
+```
 
 ## Reproduction
 

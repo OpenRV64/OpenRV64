@@ -291,3 +291,6 @@ SKY130_LIBERTY ?= sim/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
 SKY130_ABC_CONSTR ?= synth/sky130/abc.constr
 SKY130_LIBERTY_SHA256 := ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9
 SKY130_LIBERTY_URL := https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD-flow-scripts/f255c15b3dd4362a704b6af9f617b4091bdd4e6a/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+NANGATE45_LIBERTY ?= sim/pdk/nangate45/NangateOpenCellLibrary_typical.lib
+NANGATE45_ABC_CONSTR ?= synth/nangate45/abc.constr
+YOSYS_CORE_4PF_NANGATE45_REPORT_DIR ?= sim/yosys/core-4pf-nangate45

@@ -8,7 +8,8 @@ module tb_top_4pf #(
     parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer MEMORY_ORACLE = 0,
-    parameter integer ENABLE_L1 = 0
+    parameter integer ENABLE_L1 = 0,
+    parameter integer ENABLE_PIPELINED_FP_MULTIPLY = 1
 );
     localparam [63:0] RESET_VECTOR = 64'h0000_0000_8000_0000;
     localparam [63:0] DAXPY_PASS = 64'h4441_5850_595f_4f4b;
@@ -170,6 +171,7 @@ module tb_top_4pf #(
         .ENABLE_RV64M(1),
         .ENABLE_RV64F(1),
         .ENABLE_RV64D(1),
+        .ENABLE_PIPELINED_FP_MULTIPLY(ENABLE_PIPELINED_FP_MULTIPLY),
         .ENABLE_RV64A(1),
         .ENABLE_ISSUE_WINDOW(1),
         .ENABLE_SPECULATION_WINDOW(1),
@@ -601,10 +603,12 @@ module tb_top_4pf #(
                 if (dut.u_backend.fpu_valid && dut.u_backend.fpu_ready)
                     trace_fpu_issue_cycles[fpu_phase] <=
                         trace_fpu_issue_cycles[fpu_phase] + 1;
-                else if (dut.u_backend.u_fp_dispatch.trace_compute_unissued_count == 0)
+                else if (dut.u_backend.g_fd_extension.u_fp_dispatch.
+                         trace_compute_unissued_count == 0)
                     trace_fpu_no_candidate_cycles[fpu_phase] <=
                         trace_fpu_no_candidate_cycles[fpu_phase] + 1;
-                else if (dut.u_backend.u_fp_dispatch.trace_compute_eligible_count != 0) begin
+                else if (dut.u_backend.g_fd_extension.u_fp_dispatch.
+                         trace_compute_eligible_count != 0) begin
                     if (dut.u_backend.fpu_valid &&
                         !dut.u_backend.fpu_ready)
                         trace_fpu_backpressure_cycles[fpu_phase] <=
@@ -612,10 +616,12 @@ module tb_top_4pf #(
                     else
                         trace_fpu_other_idle_cycles[fpu_phase] <=
                             trace_fpu_other_idle_cycles[fpu_phase] + 1;
-                end else if (dut.u_backend.u_fp_dispatch.trace_compute_operand_ready_count != 0)
+                end else if (dut.u_backend.g_fd_extension.u_fp_dispatch.
+                             trace_compute_operand_ready_count != 0)
                     trace_fpu_global_block_cycles[fpu_phase] <=
                         trace_fpu_global_block_cycles[fpu_phase] + 1;
-                else if (dut.u_backend.u_fp_dispatch.trace_compute_forwardable_count != 0)
+                else if (dut.u_backend.g_fd_extension.u_fp_dispatch.
+                         trace_compute_forwardable_count != 0)
                     trace_fpu_forwardable_cycles[fpu_phase] <=
                         trace_fpu_forwardable_cycles[fpu_phase] + 1;
                 else
@@ -672,10 +678,12 @@ module tb_top_4pf #(
                     !dut.u_backend.queue_retire_accept[0])
                     trace_retire_ready_block_cycles[fpu_phase] <=
                         trace_retire_ready_block_cycles[fpu_phase] + 1;
-                if (dut.u_backend.u_fp_dispatch.trace_store_source_block_count != 0)
+                if (dut.u_backend.g_fd_extension.u_fp_dispatch.
+                    trace_store_source_block_count != 0)
                     trace_store_source_block_cycles[fpu_phase] <=
                         trace_store_source_block_cycles[fpu_phase] + 1;
-                if (dut.u_backend.u_fp_dispatch.trace_store_source_forwardable_count != 0)
+                if (dut.u_backend.g_fd_extension.u_fp_dispatch.
+                    trace_store_source_forwardable_count != 0)
                     trace_store_source_forwardable_cycles[fpu_phase] <=
                         trace_store_source_forwardable_cycles[fpu_phase] + 1;
                 if (dut.u_backend.fpu_valid && dut.u_backend.fpu_ready) begin

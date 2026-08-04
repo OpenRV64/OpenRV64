@@ -2,7 +2,9 @@
 `include "core/exec/fpu/rv64-fd.v"
 `timescale 1ns/1ps
 
-module tb_exec_fpu_rv64fd;
+module tb_exec_fpu_rv64fd #(
+    parameter integer ENABLE_PIPELINED_MULTIPLY = 1
+);
 
     localparam integer TAG_WIDTH = 8;
     localparam integer MAX_EXPECTED = 64;
@@ -46,7 +48,10 @@ module tb_exec_fpu_rv64fd;
     integer expected_index;
     integer completion_base;
 
-    openrv64_exec_fpu_rv64fd #(.TAG_WIDTH(TAG_WIDTH)) dut (
+    openrv64_exec_fpu_rv64fd #(
+        .TAG_WIDTH(TAG_WIDTH),
+        .ENABLE_PIPELINED_MULTIPLY(ENABLE_PIPELINED_MULTIPLY)
+    ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
         .valid_i(valid), .ready_o(ready), .tag_i(tag), .op_i(op),
         .fmt_i(fmt), .rm_i(rm), .frm_i(frm),
@@ -89,6 +94,25 @@ module tb_exec_fpu_rv64fd;
             expected_flags[exp_tag] = exp_flags;
             expected_unsupported[exp_tag] = exp_unsupported;
             expected_count = expected_count + 1;
+        end
+    endtask
+
+    task automatic send_multiply;
+        input [TAG_WIDTH-1:0] in_tag;
+        input [`OPENRV64_FP_OP_WIDTH-1:0] in_op;
+        input [1:0] in_fmt;
+        input [2:0] in_rm;
+        input [2:0] in_frm;
+        input [63:0] in_src1;
+        input [63:0] in_src2;
+        input [63:0] in_src3;
+        begin
+            if (ENABLE_PIPELINED_MULTIPLY != 0)
+                send_unstalled(in_tag, in_op, in_fmt, in_rm, in_frm,
+                    in_src1, in_src2, in_src3);
+            else
+                send(in_tag, in_op, in_fmt, in_rm, in_frm,
+                    in_src1, in_src2, in_src3);
         end
     endtask
 
@@ -161,6 +185,7 @@ module tb_exec_fpu_rv64fd;
             src2 = in_src2;
             src3 = in_src3;
             valid = 1'b1;
+            #0;
             while (!ready) begin
                 @(posedge clk);
                 @(negedge clk);
@@ -281,9 +306,11 @@ module tb_exec_fpu_rv64fd;
              64'hffff_ffff_3fc0_0000, 64'hffff_ffff_4010_0000,
              64'd0);
         wait_empty();
-        if ((completion_cycle[8'd48] - acceptance_cycle[8'd48]) != 7)
-            $fatal(1, "FMUL.S handshake latency was %0d, expected 7",
-                completion_cycle[8'd48] - acceptance_cycle[8'd48]);
+        if ((completion_cycle[8'd48] - acceptance_cycle[8'd48]) !=
+            ((ENABLE_PIPELINED_MULTIPLY != 0) ? 7 : 2))
+            $fatal(1, "FMUL.S handshake latency was %0d, expected %0d",
+                completion_cycle[8'd48] - acceptance_cycle[8'd48],
+                (ENABLE_PIPELINED_MULTIPLY != 0) ? 7 : 2);
 
         queue_expected(8'd49, 1'b0, 64'hffff_ffff_3fb5_04f3,
                        64'd0, `RV64_FP_FFLAG_NX, 1'b0);
@@ -313,9 +340,54 @@ module tb_exec_fpu_rv64fd;
              64'h3ff8_0000_0000_0000, 64'h3ff8_0000_0000_0000,
              64'd0);
         wait_empty();
-        if ((completion_cycle[8'd51] - acceptance_cycle[8'd51]) != 15)
-            $fatal(1, "FMUL.D handshake latency was %0d, expected 15",
-                completion_cycle[8'd51] - acceptance_cycle[8'd51]);
+        if ((completion_cycle[8'd51] - acceptance_cycle[8'd51]) !=
+            ((ENABLE_PIPELINED_MULTIPLY != 0) ? 15 : 5))
+            $fatal(1, "FMUL.D handshake latency was %0d, expected %0d",
+                completion_cycle[8'd51] - acceptance_cycle[8'd51],
+                (ENABLE_PIPELINED_MULTIPLY != 0) ? 15 : 5);
+
+        // The compact lane keeps one-request-per-cycle binary32 throughput,
+        // but a binary64 request consumes four partial-product cycles.
+        queue_expected(8'd52, 1'b0, 64'hffff_ffff_4058_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_multiply(8'd52, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'hffff_ffff_3fc0_0000, 64'hffff_ffff_4010_0000,
+             64'd0);
+        queue_expected(8'd53, 1'b0, 64'hffff_ffff_4058_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_multiply(8'd53, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'hffff_ffff_3fc0_0000, 64'hffff_ffff_4010_0000,
+             64'd0);
+        queue_expected(8'd54, 1'b0, 64'hffff_ffff_4058_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_multiply(8'd54, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_S,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'hffff_ffff_3fc0_0000, 64'hffff_ffff_4010_0000,
+             64'd0);
+        if (((acceptance_cycle[8'd53] - acceptance_cycle[8'd52]) != 1) ||
+            ((acceptance_cycle[8'd54] - acceptance_cycle[8'd53]) != 1))
+            $fatal(1, "FMUL.S initiation interval was not one cycle");
+
+        queue_expected(8'd55, 1'b0, 64'h4002_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_multiply(8'd55, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h3ff8_0000_0000_0000,
+             64'd0);
+        queue_expected(8'd56, 1'b0, 64'h4002_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_multiply(8'd56, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h3ff8_0000_0000_0000,
+             64'd0);
+        if ((acceptance_cycle[8'd56] - acceptance_cycle[8'd55]) !=
+            ((ENABLE_PIPELINED_MULTIPLY != 0) ? 1 : 4))
+            $fatal(1, "FMUL.D initiation interval was %0d, expected %0d",
+                acceptance_cycle[8'd56] - acceptance_cycle[8'd55],
+                (ENABLE_PIPELINED_MULTIPLY != 0) ? 1 : 4);
+        wait_empty();
 
         queue_expected(8'd4, 1'b0, 64'hffff_ffff_4070_0000,
                        64'd0, 5'd0, 1'b0);
@@ -392,9 +464,9 @@ module tb_exec_fpu_rv64fd;
              64'h3ff0_0000_0000_0000, 64'h4000_0000_0000_0000, 64'd0);
         wait_empty();
 
-        // Iterative operations enter on consecutive cycles.  Binary32
-        // multiply/square-root taps and resolved special cases may complete
-        // before older operations still travelling toward the final stage.
+        // Divide/square-root requests enter their pipeline on consecutive
+        // cycles.  Multiply requests do so only in the pipelined-multiply
+        // configuration; the shared configuration backpressures them.
         queue_expected(8'd20, 1'b0, 64'h3ff6_a09e_667f_3bcd,
                        64'd0, `RV64_FP_FFLAG_NX, 1'b0);
         send_unstalled(8'd20, `OPENRV64_FP_OP_SQRT, `RV64_FP_FMT_D,
@@ -407,31 +479,31 @@ module tb_exec_fpu_rv64fd;
              64'hffff_ffff_4000_0000, 64'd0, 64'd0);
         queue_expected(8'd22, 1'b0, 64'h400a_0000_0000_0000,
                        64'd0, 5'd0, 1'b0);
-        send_unstalled(8'd22, `OPENRV64_FP_OP_MADD, `RV64_FP_FMT_D,
+        send_multiply(8'd22, `OPENRV64_FP_OP_MADD, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
              64'h3fd0_0000_0000_0000);
         queue_expected(8'd23, 1'b0, 64'h4006_0000_0000_0000,
                        64'd0, 5'd0, 1'b0);
-        send_unstalled(8'd23, `OPENRV64_FP_OP_MSUB, `RV64_FP_FMT_D,
+        send_multiply(8'd23, `OPENRV64_FP_OP_MSUB, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
              64'h3fd0_0000_0000_0000);
         queue_expected(8'd24, 1'b0, 64'hc006_0000_0000_0000,
                        64'd0, 5'd0, 1'b0);
-        send_unstalled(8'd24, `OPENRV64_FP_OP_NMSUB, `RV64_FP_FMT_D,
+        send_multiply(8'd24, `OPENRV64_FP_OP_NMSUB, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
              64'h3fd0_0000_0000_0000);
         queue_expected(8'd25, 1'b0, 64'hc00a_0000_0000_0000,
                        64'd0, 5'd0, 1'b0);
-        send_unstalled(8'd25, `OPENRV64_FP_OP_NMADD, `RV64_FP_FMT_D,
+        send_multiply(8'd25, `OPENRV64_FP_OP_NMADD, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff8_0000_0000_0000, 64'h4000_0000_0000_0000,
              64'h3fd0_0000_0000_0000);
         queue_expected(8'd26, 1'b0, 64'h3c9f_ffff_ffff_fffe,
                        64'd0, 5'd0, 1'b0);
-        send_unstalled(8'd26, `OPENRV64_FP_OP_MADD, `RV64_FP_FMT_D,
+        send_multiply(8'd26, `OPENRV64_FP_OP_MADD, `RV64_FP_FMT_D,
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff0_0000_0000_0001, 64'h3fef_ffff_ffff_ffff,
              64'hbff0_0000_0000_0000);
@@ -548,6 +620,12 @@ module tb_exec_fpu_rv64fd;
              `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
              64'h3ff0_0000_0000_0000, 64'h4000_0000_0000_0000,
              64'd0);
+        queue_expected(8'd57, 1'b0, 64'h4002_0000_0000_0000,
+                       64'd0, 5'd0, 1'b0);
+        send_multiply(8'd57, `OPENRV64_FP_OP_MUL, `RV64_FP_FMT_D,
+             `RV64_FP_RM_RNE, `RV64_FP_RM_RNE,
+             64'h3ff8_0000_0000_0000, 64'h3ff8_0000_0000_0000,
+             64'd0);
         while (!result_valid) begin
             @(posedge clk);
             @(negedge clk);
@@ -587,7 +665,8 @@ module tb_exec_fpu_rv64fd;
                 $fatal(1, "flushed FPU request reached output");
         end
 
-        $display("PASS: standalone pipelined RV64F/RV64D execution");
+        $display("PASS: standalone RV64F/RV64D execution pipelined_mul=%0d",
+            ENABLE_PIPELINED_MULTIPLY);
         $finish;
     end
 

@@ -6,24 +6,24 @@
 
 // Standalone, fully backpressured RV64F/RV64D execution unit.
 //
-// This implementation deliberately favors low combinational complexity per
-// stage.  The iterative pipeline accepts one request per cycle when unstalled.
-// Four significand bits advance per stage for multiply, fused multiply-add,
-// divide, and square root.  Simple operations and resolved arithmetic special
-// cases use a one-entry fast lane, while binary32 multiply and square root tap
-// the iterative pipeline as soon as their arithmetic state is complete.
+// Divide and square root use a fourteen-stage iterative pipeline which accepts
+// one request per cycle when unstalled.  The compact multiply option uses one
+// 27x27 partial-product lane: binary32 consumes one lane cycle and binary64
+// consumes four.  Simple operations and resolved arithmetic special cases use a
+// one-entry fast lane, while binary32 square root taps the divide/square-root
+// pipeline as soon as its arithmetic state is complete.
 // Tagged responses may complete out of issue order.  The selected response
 // remains stable under backpressure.
-// Sustaining that throughput replicates arithmetic state and iteration logic
-// across the deep pipeline; this is not a small shared iterative unit.  This
-// module is deliberately not wired to decode, an F register file, fcsr,
-// retirement, or the LSU yet.
+// Divide/square-root throughput still replicates arithmetic state and iteration
+// logic across the deep pipeline.  The multiply engine deliberately trades
+// initiation rate for area by reusing one partial-product datapath.
 //
 // type_i carries the instruction rs2 type selector for conversions:
 // W/WU/L/LU for integer conversions and S/D for format conversions.  It is
 // ignored by other operations.
 module openrv64_exec_fpu_rv64fd #(
-    parameter integer TAG_WIDTH = 8
+    parameter integer TAG_WIDTH = 8,
+    parameter integer ENABLE_PIPELINED_MULTIPLY = 1
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -71,7 +71,7 @@ module openrv64_exec_fpu_rv64fd #(
     localparam integer MUL_S_RESULT_STAGE = 6;
     localparam integer SQRT_S_RESULT_STAGE = 7;
     localparam [1:0] RESULT_SOURCE_FAST = 2'd0;
-    localparam [1:0] RESULT_SOURCE_MUL_S = 2'd1;
+    localparam [1:0] RESULT_SOURCE_MUL = 2'd1;
     localparam [1:0] RESULT_SOURCE_SQRT_S = 2'd2;
     localparam [1:0] RESULT_SOURCE_FINAL = 2'd3;
     localparam integer PAY_EXEC_LO = 0;
@@ -89,6 +89,22 @@ module openrv64_exec_fpu_rv64fd #(
     localparam integer PAY_COUNT_LO = PAY_C_INVERT_BIT + 1;
     localparam integer PAY_LONG_BIT = PAY_COUNT_LO + 7;
     localparam integer PAYLOAD_WIDTH = PAY_LONG_BIT + 1;
+
+    function automatic is_multiply_operation;
+        input [`OPENRV64_FP_OP_WIDTH-1:0] operation;
+        begin
+            case (operation)
+                `OPENRV64_FP_OP_MUL,
+                `OPENRV64_FP_OP_MADD,
+                `OPENRV64_FP_OP_MSUB,
+                `OPENRV64_FP_OP_NMSUB,
+                `OPENRV64_FP_OP_NMADD:
+                    is_multiply_operation = 1'b1;
+                default:
+                    is_multiply_operation = 1'b0;
+            endcase
+        end
+    endfunction
 
     function automatic [127:0] shift_right_jam;
         input [127:0] value;
@@ -1399,6 +1415,8 @@ module openrv64_exec_fpu_rv64fd #(
                             };
                         end else begin
                             payload[PAY_LONG_BIT] = 1'b1;
+                            payload[PAY_COUNT_LO +: 7] =
+                                is_double ? 7'd4 : 7'd1;
                             payload[PAY_SIGN_BIT] = product_sign;
                             payload[PAY_EXP_LO +: 16] =
                                 exp_a + exp_b;
@@ -1494,6 +1512,8 @@ module openrv64_exec_fpu_rv64fd #(
                             };
                         end else begin
                             payload[PAY_LONG_BIT] = 1'b1;
+                            payload[PAY_COUNT_LO +: 7] =
+                                is_double ? 7'd4 : 7'd1;
                             payload[PAY_SIGN_BIT] = product_sign;
                             payload[PAY_C_INVERT_BIT] = c_sign_invert;
                             payload[PAY_EXP_LO +: 16] =
@@ -1653,18 +1673,81 @@ module openrv64_exec_fpu_rv64fd #(
         end
     endfunction
 
-    function automatic [PAYLOAD_WIDTH-1:0] advance_iteration;
+    function automatic [PAYLOAD_WIDTH-1:0] advance_mul_iteration;
         input [PAYLOAD_WIDTH-1:0] payload_in;
+        reg [127:0] state0;
+        reg [127:0] state1;
+        reg [127:0] state2;
+        reg [26:0] chunk_a;
+        reg [26:0] chunk_b;
+        reg [53:0] chunk_product;
+        reg [127:0] shifted_product;
+        reg [6:0] count;
+        reg [PAYLOAD_WIDTH-1:0] payload;
+        begin
+            payload = payload_in;
+            state0 = payload_in[PAY_STATE0_LO +: 128];
+            state1 = payload_in[PAY_STATE1_LO +: 128];
+            state2 = payload_in[PAY_STATE2_LO +: 128];
+            count = payload_in[PAY_COUNT_LO +: 7];
+
+            if (count != 0) begin
+                chunk_a = 27'd0;
+                chunk_b = 27'd0;
+                shifted_product = 128'd0;
+                if (!payload_in[PAY_IS_DOUBLE_BIT]) begin
+                    chunk_a = state1[26:0];
+                    chunk_b = state2[26:0];
+                end else begin
+                    case (count)
+                        7'd4: begin
+                            chunk_a = state1[26:0];
+                            chunk_b = state2[26:0];
+                        end
+                        7'd3: begin
+                            chunk_a = state1[26:0];
+                            chunk_b = state2[53:27];
+                        end
+                        7'd2: begin
+                            chunk_a = state1[53:27];
+                            chunk_b = state2[26:0];
+                        end
+                        default: begin
+                            chunk_a = state1[53:27];
+                            chunk_b = state2[53:27];
+                        end
+                    endcase
+                end
+                chunk_product = chunk_a * chunk_b;
+                if (!payload_in[PAY_IS_DOUBLE_BIT] || (count == 7'd4))
+                    shifted_product[53:0] = chunk_product;
+                else if ((count == 7'd3) || (count == 7'd2))
+                    shifted_product = {74'd0, chunk_product} << 27;
+                else
+                    shifted_product = {74'd0, chunk_product} << 54;
+                state0 = state0 + shifted_product;
+                count = count - 1'b1;
+            end
+
+            payload[PAY_STATE0_LO +: 128] = state0;
+            payload[PAY_STATE1_LO +: 128] = state1;
+            payload[PAY_STATE2_LO +: 128] = state2;
+            payload[PAY_COUNT_LO +: 7] = count;
+            advance_mul_iteration = payload;
+        end
+    endfunction
+
+    function automatic [PAYLOAD_WIDTH-1:0] advance_pipeline_iteration;
+        input [PAYLOAD_WIDTH-1:0] payload_in;
+        input enable_multiply;
         integer iteration;
         reg [`OPENRV64_FP_OP_WIDTH-1:0] operation;
         reg [127:0] state0;
         reg [127:0] state1;
         reg [127:0] state2;
-        reg [127:0] partial;
         reg [127:0] shifted_remainder;
         reg [127:0] trial;
         reg [6:0] count;
-        reg [3:0] digit;
         reg [1:0] radicand_pair;
         reg [PAYLOAD_WIDTH-1:0] payload;
         begin
@@ -1683,19 +1766,19 @@ module openrv64_exec_fpu_rv64fd #(
                     `OPENRV64_FP_OP_MSUB,
                     `OPENRV64_FP_OP_NMSUB,
                     `OPENRV64_FP_OP_NMADD: begin
-                        digit = state2[3:0];
-                        partial = 128'd0;
-                        if (digit[0])
-                            partial = partial + state1;
-                        if (digit[1])
-                            partial = partial + (state1 << 1);
-                        if (digit[2])
-                            partial = partial + (state1 << 2);
-                        if (digit[3])
-                            partial = partial + (state1 << 3);
-                        state0 = state0 + partial;
-                        state1 = state1 << PIPELINE_ITER_BITS;
-                        state2 = state2 >> PIPELINE_ITER_BITS;
+                        // enable_multiply is a compile-time constant at every
+                        // call site.  This explicit gate is required so the
+                        // compact configuration removes the replicated hardware
+                        // rather than merely making it unreachable by protocol.
+                        if (enable_multiply) begin
+                            state0 = state0 +
+                                (state2[0] ? state1 : 128'd0) +
+                                (state2[1] ? (state1 << 1) : 128'd0) +
+                                (state2[2] ? (state1 << 2) : 128'd0) +
+                                (state2[3] ? (state1 << 3) : 128'd0);
+                            state1 = state1 << PIPELINE_ITER_BITS;
+                            state2 = state2 >> PIPELINE_ITER_BITS;
+                        end
                     end
 
                     `OPENRV64_FP_OP_DIV: begin
@@ -1749,7 +1832,7 @@ module openrv64_exec_fpu_rv64fd #(
             payload[PAY_STATE1_LO +: 128] = state1;
             payload[PAY_STATE2_LO +: 128] = state2;
             payload[PAY_COUNT_LO +: 7] = count;
-            advance_iteration = payload;
+            advance_pipeline_iteration = payload;
         end
     endfunction
 
@@ -1862,26 +1945,34 @@ module openrv64_exec_fpu_rv64fd #(
         src3_i
     );
     wire input_needs_iteration = input_payload[PAY_LONG_BIT];
+    wire input_needs_mul = input_needs_iteration &&
+        is_multiply_operation(
+            input_payload[PAY_OP_LO +: `OPENRV64_FP_OP_WIDTH]
+        );
+    wire input_uses_compact_mul = input_needs_mul &&
+        (ENABLE_PIPELINED_MULTIPLY == 0);
+    wire input_needs_pipeline = input_needs_iteration &&
+        !input_uses_compact_mul;
     wire [EXEC_WIDTH-1:0] input_exec =
         input_payload[PAY_EXEC_LO +: EXEC_WIDTH];
 
-    wire [EXEC_WIDTH-1:0] final_exec = finalize_payload(
-        pipeline_payload_q[PIPELINE_ITER_STAGES]
-    );
+    reg mul_valid_q;
+    reg [TAG_WIDTH-1:0] mul_tag_q;
+    reg [PAYLOAD_WIDTH-1:0] mul_payload_q;
+    reg mul_result_valid_q;
+    reg [TAG_WIDTH-1:0] mul_result_tag_q;
+    reg [PAYLOAD_WIDTH-1:0] mul_result_payload_q;
+    wire [PAYLOAD_WIDTH-1:0] advanced_mul_payload =
+        advance_mul_iteration(mul_payload_q);
+    wire compact_mul_result_valid = mul_result_valid_q;
 
-    wire mul_s_result_valid =
+    wire pipelined_mul_s_result_valid =
         pipeline_valid_q[MUL_S_RESULT_STAGE] &&
         (pipeline_payload_q[MUL_S_RESULT_STAGE][
             PAY_OP_LO +: `OPENRV64_FP_OP_WIDTH] ==
          `OPENRV64_FP_OP_MUL) &&
         !pipeline_payload_q[MUL_S_RESULT_STAGE][PAY_IS_DOUBLE_BIT];
-    wire sqrt_s_result_valid =
-        pipeline_valid_q[SQRT_S_RESULT_STAGE] &&
-        (pipeline_payload_q[SQRT_S_RESULT_STAGE][
-            PAY_OP_LO +: `OPENRV64_FP_OP_WIDTH] ==
-         `OPENRV64_FP_OP_SQRT) &&
-        !pipeline_payload_q[SQRT_S_RESULT_STAGE][PAY_IS_DOUBLE_BIT];
-    wire [68:0] mul_s_rounded = round_product(
+    wire [68:0] pipelined_mul_s_rounded = round_product(
         1'b0,
         pipeline_payload_q[MUL_S_RESULT_STAGE][PAY_SIGN_BIT],
         $signed(pipeline_payload_q[MUL_S_RESULT_STAGE][
@@ -1890,13 +1981,25 @@ module openrv64_exec_fpu_rv64fd #(
             PAY_STATE0_LO +: 128],
         pipeline_payload_q[MUL_S_RESULT_STAGE][PAY_RM_LO +: 3]
     );
-    wire [EXEC_WIDTH-1:0] mul_s_exec = {
+    wire [EXEC_WIDTH-1:0] pipelined_mul_s_exec = {
         1'b0,
         `OPENRV64_FP_RESULT_FP,
-        mul_s_rounded[68:64],
-        mul_s_rounded[63:0],
+        pipelined_mul_s_rounded[68:64],
+        pipelined_mul_s_rounded[63:0],
         64'd0
     };
+    wire mul_result_valid = (ENABLE_PIPELINED_MULTIPLY != 0) ?
+        pipelined_mul_s_result_valid : compact_mul_result_valid;
+    wire [TAG_WIDTH-1:0] mul_result_tag =
+        (ENABLE_PIPELINED_MULTIPLY != 0) ?
+            pipeline_tag_q[MUL_S_RESULT_STAGE] : mul_result_tag_q;
+
+    wire sqrt_s_result_valid =
+        pipeline_valid_q[SQRT_S_RESULT_STAGE] &&
+        (pipeline_payload_q[SQRT_S_RESULT_STAGE][
+            PAY_OP_LO +: `OPENRV64_FP_OP_WIDTH] ==
+         `OPENRV64_FP_OP_SQRT) &&
+        !pipeline_payload_q[SQRT_S_RESULT_STAGE][PAY_IS_DOUBLE_BIT];
     wire [127:0] sqrt_s_ext_shifted =
         pipeline_payload_q[SQRT_S_RESULT_STAGE][
             PAY_STATE2_LO +: 128] << 1;
@@ -1929,7 +2032,7 @@ module openrv64_exec_fpu_rv64fd #(
     wire [3:0] result_source_valid = {
         pipeline_valid_q[PIPELINE_ITER_STAGES],
         sqrt_s_result_valid,
-        mul_s_result_valid,
+        mul_result_valid,
         fast_valid_q
     };
     reg [1:0] result_prefer_q;
@@ -1946,9 +2049,9 @@ module openrv64_exec_fpu_rv64fd #(
                 if (result_source_valid[RESULT_SOURCE_FAST]) begin
                     result_unlocked_valid = 1'b1;
                     result_unlocked_source = RESULT_SOURCE_FAST;
-                end else if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+                end else if (result_source_valid[RESULT_SOURCE_MUL]) begin
                     result_unlocked_valid = 1'b1;
-                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                    result_unlocked_source = RESULT_SOURCE_MUL;
                 end else if (result_source_valid[RESULT_SOURCE_SQRT_S]) begin
                     result_unlocked_valid = 1'b1;
                     result_unlocked_source = RESULT_SOURCE_SQRT_S;
@@ -1958,10 +2061,10 @@ module openrv64_exec_fpu_rv64fd #(
                 end
             end
 
-            RESULT_SOURCE_MUL_S: begin
-                if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+            RESULT_SOURCE_MUL: begin
+                if (result_source_valid[RESULT_SOURCE_MUL]) begin
                     result_unlocked_valid = 1'b1;
-                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                    result_unlocked_source = RESULT_SOURCE_MUL;
                 end else if (result_source_valid[RESULT_SOURCE_SQRT_S]) begin
                     result_unlocked_valid = 1'b1;
                     result_unlocked_source = RESULT_SOURCE_SQRT_S;
@@ -1984,9 +2087,9 @@ module openrv64_exec_fpu_rv64fd #(
                 end else if (result_source_valid[RESULT_SOURCE_FAST]) begin
                     result_unlocked_valid = 1'b1;
                     result_unlocked_source = RESULT_SOURCE_FAST;
-                end else if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+                end else if (result_source_valid[RESULT_SOURCE_MUL]) begin
                     result_unlocked_valid = 1'b1;
-                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                    result_unlocked_source = RESULT_SOURCE_MUL;
                 end
             end
 
@@ -1997,9 +2100,9 @@ module openrv64_exec_fpu_rv64fd #(
                 end else if (result_source_valid[RESULT_SOURCE_FAST]) begin
                     result_unlocked_valid = 1'b1;
                     result_unlocked_source = RESULT_SOURCE_FAST;
-                end else if (result_source_valid[RESULT_SOURCE_MUL_S]) begin
+                end else if (result_source_valid[RESULT_SOURCE_MUL]) begin
                     result_unlocked_valid = 1'b1;
-                    result_unlocked_source = RESULT_SOURCE_MUL_S;
+                    result_unlocked_source = RESULT_SOURCE_MUL;
                 end else if (result_source_valid[RESULT_SOURCE_SQRT_S]) begin
                     result_unlocked_valid = 1'b1;
                     result_unlocked_source = RESULT_SOURCE_SQRT_S;
@@ -2011,6 +2114,14 @@ module openrv64_exec_fpu_rv64fd #(
     wire [1:0] result_source = result_lock_q ?
         result_lock_source_q : result_unlocked_source;
     wire result_valid = result_lock_q || result_unlocked_valid;
+    wire compact_mul_selected =
+        (ENABLE_PIPELINED_MULTIPLY == 0) &&
+        (result_source == RESULT_SOURCE_MUL);
+    wire [PAYLOAD_WIDTH-1:0] long_finalize_payload =
+        compact_mul_selected ? mul_result_payload_q :
+            pipeline_payload_q[PIPELINE_ITER_STAGES];
+    wire [EXEC_WIDTH-1:0] long_exec =
+        finalize_payload(long_finalize_payload);
     reg [TAG_WIDTH-1:0] selected_result_tag;
     reg [EXEC_WIDTH-1:0] selected_result_exec;
 
@@ -2022,10 +2133,11 @@ module openrv64_exec_fpu_rv64fd #(
                 selected_result_tag = fast_tag_q;
                 selected_result_exec = fast_exec_q;
             end
-            RESULT_SOURCE_MUL_S: begin
-                selected_result_tag =
-                    pipeline_tag_q[MUL_S_RESULT_STAGE];
-                selected_result_exec = mul_s_exec;
+            RESULT_SOURCE_MUL: begin
+                selected_result_tag = mul_result_tag;
+                selected_result_exec =
+                    (ENABLE_PIPELINED_MULTIPLY != 0) ?
+                        pipelined_mul_s_exec : long_exec;
             end
             RESULT_SOURCE_SQRT_S: begin
                 selected_result_tag =
@@ -2035,7 +2147,7 @@ module openrv64_exec_fpu_rv64fd #(
             default: begin
                 selected_result_tag =
                     pipeline_tag_q[PIPELINE_ITER_STAGES];
-                selected_result_exec = final_exec;
+                selected_result_exec = long_exec;
             end
         endcase
     end
@@ -2043,13 +2155,18 @@ module openrv64_exec_fpu_rv64fd #(
     wire result_fire = result_valid && result_ready_i && !flush_i;
     wire fast_result_pop =
         result_fire && (result_source == RESULT_SOURCE_FAST);
-    wire mul_s_result_pop =
-        result_fire && (result_source == RESULT_SOURCE_MUL_S);
+    wire mul_result_pop =
+        result_fire && (result_source == RESULT_SOURCE_MUL);
     wire sqrt_s_result_pop =
         result_fire && (result_source == RESULT_SOURCE_SQRT_S);
     wire final_result_pop =
         result_fire && (result_source == RESULT_SOURCE_FINAL);
     wire fast_ready = !fast_valid_q || fast_result_pop;
+    wire mul_result_ready = !mul_result_valid_q || mul_result_pop;
+    wire mul_work_complete = mul_valid_q &&
+        (mul_payload_q[PAY_COUNT_LO +: 7] == 1);
+    wire mul_work_transfer = mul_work_complete && mul_result_ready;
+    wire compact_mul_ready = !mul_valid_q || mul_work_transfer;
 
     assign pipeline_ready[PIPELINE_ITER_STAGES] =
         !pipeline_valid_q[PIPELINE_ITER_STAGES] || final_result_pop;
@@ -2059,14 +2176,15 @@ module openrv64_exec_fpu_rv64fd #(
         for (pipeline_stage = 0;
              pipeline_stage < PIPELINE_ITER_STAGES;
              pipeline_stage = pipeline_stage + 1) begin : g_fpu_pipeline
-            if (pipeline_stage == MUL_S_RESULT_STAGE) begin : g_mul_s_tap
+            if ((ENABLE_PIPELINED_MULTIPLY != 0) &&
+                (pipeline_stage == MUL_S_RESULT_STAGE)) begin : g_mul_s_tap
                 assign pipeline_ready[pipeline_stage] =
                     !pipeline_valid_q[pipeline_stage] ||
-                    (mul_s_result_valid ? mul_s_result_pop :
+                    (pipelined_mul_s_result_valid ? mul_result_pop :
                      pipeline_ready[pipeline_stage+1]);
                 assign pipeline_forward_valid[pipeline_stage] =
                     pipeline_valid_q[pipeline_stage] &&
-                    !mul_s_result_valid;
+                    !pipelined_mul_s_result_valid;
             end else if (pipeline_stage == SQRT_S_RESULT_STAGE) begin : g_sqrt_s_tap
                 assign pipeline_ready[pipeline_stage] =
                     !pipeline_valid_q[pipeline_stage] ||
@@ -2083,14 +2201,18 @@ module openrv64_exec_fpu_rv64fd #(
                     pipeline_valid_q[pipeline_stage];
             end
             assign advanced_payload[pipeline_stage] =
-                advance_iteration(pipeline_payload_q[pipeline_stage]);
+                advance_pipeline_iteration(
+                    pipeline_payload_q[pipeline_stage],
+                    ENABLE_PIPELINED_MULTIPLY != 0
+                );
         end
     endgenerate
 
-    assign ready_o = !flush_i && (input_needs_iteration ?
-        pipeline_ready[0] : fast_ready);
-    wire iterative_input_fire =
-        valid_i && ready_o && input_needs_iteration;
+    assign ready_o = !flush_i && (input_uses_compact_mul ? compact_mul_ready :
+        (input_needs_pipeline ? pipeline_ready[0] : fast_ready));
+    wire mul_input_fire = valid_i && ready_o && input_uses_compact_mul;
+    wire pipeline_input_fire =
+        valid_i && ready_o && input_needs_pipeline;
     wire fast_input_fire =
         valid_i && ready_o && !input_needs_iteration;
 
@@ -2115,6 +2237,39 @@ module openrv64_exec_fpu_rv64fd #(
             if (fast_input_fire) begin
                 fast_tag_q <= tag_i;
                 fast_exec_q <= input_exec;
+            end
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mul_valid_q <= 1'b0;
+            mul_tag_q <= {TAG_WIDTH{1'b0}};
+            mul_payload_q <= {PAYLOAD_WIDTH{1'b0}};
+            mul_result_valid_q <= 1'b0;
+            mul_result_tag_q <= {TAG_WIDTH{1'b0}};
+            mul_result_payload_q <= {PAYLOAD_WIDTH{1'b0}};
+        end else if (flush_i) begin
+            mul_valid_q <= 1'b0;
+            mul_result_valid_q <= 1'b0;
+        end else begin
+            if (mul_result_ready) begin
+                mul_result_valid_q <= mul_work_transfer;
+                if (mul_work_transfer) begin
+                    mul_result_tag_q <= mul_tag_q;
+                    mul_result_payload_q <= advanced_mul_payload;
+                end
+            end
+
+            if (compact_mul_ready) begin
+                mul_valid_q <= mul_input_fire;
+                if (mul_input_fire) begin
+                    mul_tag_q <= tag_i;
+                    mul_payload_q <= input_payload;
+                end
+            end else if (mul_valid_q &&
+                         (mul_payload_q[PAY_COUNT_LO +: 7] > 1)) begin
+                mul_payload_q <= advanced_mul_payload;
             end
         end
     end
@@ -2174,8 +2329,8 @@ module openrv64_exec_fpu_rv64fd #(
             end
 
             if (pipeline_ready[0]) begin
-                pipeline_valid_q[0] <= iterative_input_fire;
-                if (iterative_input_fire) begin
+                pipeline_valid_q[0] <= pipeline_input_fire;
+                if (pipeline_input_fire) begin
                     pipeline_tag_q[0] <= tag_i;
                     pipeline_payload_q[0] <= input_payload;
                 end

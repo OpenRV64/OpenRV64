@@ -78,30 +78,41 @@ selectors include RV64's signed and unsigned 64-bit `L`/`LU` forms.
 ## Standalone execution pipeline
 
 `openrv64_exec_fpu_rv64fd` in `rtl/core/exec/fpu/rv64-fd.v` is an elastic
-variable-latency pipeline:
+variable-latency unit with two multiplier configurations:
 
 1. The input stage classifies operands, handles architectural special cases,
    and initializes the arithmetic state.
 2. A one-entry fast lane accepts non-iterative operations and arithmetic
    special cases that were completely resolved during classification.
 3. Fourteen iteration stages advance four significand bits per stage for
-   multiply, fused multiply-add, divide, and square root.  Multiply consumes a
-   radix-16 digit; divide and square root unroll four radix-2 steps in each
-   stage.
-4. Binary32 multiply exits after six iteration stages and binary32 square root
-   after seven.  Fused operations, divide, and binary64 multiply/square root
-   continue to the final stage.
-5. A rotating arbiter selects among the fast lane, the two binary32 taps, and
-   the final iterative stage.
+   divide and square root. Each stage unrolls four radix-2 steps.
+4. With `ENABLE_PIPELINED_MULTIPLY=1` (the default), those stages also contain
+   replicated radix-16 multiply steps. Binary32 multiply exits after six
+   stages; fused operations and binary64 multiply continue to the final stage.
+5. With `ENABLE_PIPELINED_MULTIPLY=0`, multiply and fused operations use one
+   27x27 partial-product lane. Binary32 consumes one lane cycle; binary64 uses
+   four 27-bit partial products over four cycles. A one-entry product-result
+   buffer lets a completed binary32 request leave while the next enters.
+   Divide/square root remain pipelined and can overlap the compact lane.
+6. A rotating arbiter selects among the fast lane, binary32 taps, the shared
+   multiplier when enabled, and the final iterative stage.
 
 Without contention, the observable timing is:
 
 | Result class | `result_valid_o` appears | Earliest output handshake |
 | --- | ---: | ---: |
 | Fast lane | after acceptance | 1 cycle |
-| `FMUL.S` | after 6 iteration cycles | 7 cycles |
+| Pipelined `FMUL.S` | after 6 iteration cycles | 7 cycles |
+| Pipelined `FMUL.D`/fused | after 14 iteration cycles | 15 cycles |
+| Compact binary32 multiply/fused | after 1 partial-product cycle | 2 cycles |
+| Compact binary64 multiply/fused | after 4 partial-product cycles | 5 cycles |
 | `FSQRT.S` | after 7 iteration cycles | 8 cycles |
-| Final iterative stage | after 14 iteration cycles | 15 cycles |
+| `FDIV`/`FSQRT.D` final stage | after 14 iteration cycles | 15 cycles |
+
+The pipelined multiplier accepts one request per cycle for both formats. The
+compact multiplier retains one-request-per-cycle binary32 initiation and uses
+a four-cycle binary64 initiation interval. Arithmetic special cases that
+resolve during input classification use the fast lane.
 
 The distinction exists because ready/valid transfers occur on rising edges:
 the consumer observes a newly asserted `result_valid_o` during the cycle and
@@ -122,16 +133,46 @@ not prevent an iterative request from entering if the iterative pipeline has
 space, and vice versa.  `flush_i` discards every in-flight request in both
 lanes.
 
-This is intentionally a deep, low-combinational-complexity-per-stage
-implementation, not a short combinational divide/square-root path.  The
-throughput is not free: arithmetic state and iteration logic are replicated
-across all fourteen stages rather than shared by one blocking engine.
+This is intentionally not a short combinational divide/square-root path. The
+default multiplier pays for one-request-per-cycle binary64 throughput by
+replicating its iteration logic across all fourteen stages. The compact
+multiplier removes that replication but does not shrink the still-pipelined
+divide/square-root state, classification, conversion, or rounding logic.
 
 The interface reports floating and integer results separately, the five
 per-instruction exception flags, and an explicit `unsupported_o` bit.  The tag
 is opaque and is intended to become a retirement or producer tag during later
 integration.  `type_i` carries the instruction `rs2` selector for conversions:
 W/WU/L/LU for integer conversions and S/D for format conversions.
+
+### Multiplier area comparison
+
+A source-matched Yosys 0.66 map on 2026-08-04 used the Sky130 HD
+`tt_025C_1v80` library and the repository ABC constraint file. These are
+unplaced standard-cell area sums, not timing closure or physical-design
+results.
+
+| Multiplier configuration | Cells | Cell area | DFFs |
+| --- | ---: | ---: | ---: |
+| Pipelined, default | 344,528 | 2.1776 mm2 | 9,288 |
+| Compact 27x27 | 306,328 | 1.9609 mm2 | 10,207 |
+
+The compact configuration removes 38,200 mapped cells and 0.2167 mm2, or
+9.95% of the arithmetic-FPU area. It adds 919 flops for its work and product-
+result buffers. Using the separately mapped 16-slot sidecar, FPR, FP CSR, and
+FP decode blocks as a direct-module sum, total F/D area changes from
+2.9063 mm2 to 2.6896 mm2, a 7.46% reduction. This is not an integrated-top
+map. The modest reduction shows that the still-replicated divide/square-root
+pipeline, its state, and common classification/rounding logic dominate enough
+of the remaining area that multiplier compaction alone cannot make F/D
+proportional to the integer core.
+
+ABC's unconstrained-clock combinational estimates were 90.383 ns for the
+default and 98.154 ns for the compact configuration. The absolute values are
+not signoff timing, but neither result supports a timing-readiness claim, and
+the compact map is 8.6% worse on this metric. The 27x27 product plus wide
+accumulation and the existing classification/finalization paths need explicit
+timing partitioning before treating either configuration as physical RTL.
 
 ### Implemented now
 
@@ -205,9 +246,11 @@ The concrete hierarchy is:
   results, a buffered store-operand cell per live slot, and ordered private
   retirement state.
 
-"4PF" means the existing EX0/EX1/MEM issue structure plus a pipelined FPU
-sidecar. It does not mean four decoded instructions per cycle: fetch/decode and
-allocation remain three-wide.
+"4PF" means the existing EX0/EX1/MEM issue structure plus an FPU sidecar. It
+does not mean four decoded instructions per cycle: fetch/decode and allocation
+remain three-wide. `ENABLE_PIPELINED_FP_MULTIPLY`, propagated from
+`openrv64_top_4pf` through the core and backend, selects the multiplier; its
+default is the high-throughput implementation.
 
 Floating loads and stores use the ordinary LSU payload, ordering, translation,
 PMP/PMA, alignment, and completion records. Consequently their load/store
@@ -250,7 +293,7 @@ The focused checks for the new integration scaffolding are
 `make sim-fpu-csrs`, `make sim-retire-queue-3p`, `make sim-retire-3p`,
 `make sim-fd-dispatch`, and
 `make sim-fd-uop-harness`. The last target connects the real sidecar,
-architectural FPR, and pipelined FPU to small parent window, LSU, completion,
+architectural FPR, and configurable FPU to small parent window, LSU, completion,
 and ordered-retirement models.  It feeds a DAXPY-shaped decoded-uop chain and
 a selective-redirect/slot-reuse sequence, including load-to-FPU and
 FPU-to-store bypass before architectural FPR retirement.
@@ -476,5 +519,7 @@ exception causes.
 The standalone FPU remains intentionally absent from the 1P/3P `CORE_SRCS` and
 `EXEC_SRCS`; `CORE_4PF_SRCS` is a separate manifest. Its focused checks are `make sim-isa-fp`,
 `make sim-rv64-fd-fpr`, and
-`make sim-exec-fpu-rv64-fd`; the aggregate regression runs all three without
-wiring the FPU or FPR into either core.
+`make sim-exec-fpu-rv64-fd`; that FPU target now runs both multiplier
+configurations. `make sim-fd-uop-harness` likewise runs the default and shared
+multiplier through the decoded-uop boundary. The aggregate regression does not
+wire the FPU or FPR into either the 1P or 3P core.

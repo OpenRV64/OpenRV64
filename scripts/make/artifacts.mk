@@ -118,6 +118,8 @@ REG_MAP_3P_SIM_BUILD := sim/reg_map_3p_tb.vvp
 DISPATCH_3P_SIM_BUILD := sim/dispatch_3p_tb.vvp
 FD_DISPATCH_SIM_BUILD := sim/fd_dispatch_tb.vvp
 FD_UOP_HARNESS_SIM_BUILD := sim/fd_uop_harness_tb.vvp
+FD_UOP_HARNESS_COMPACT_MUL_SIM_BUILD := \
+	sim/fd_uop_harness_compact_mul_tb.vvp
 RETIRE_3P_SIM_BUILD := sim/retire_3p_tb.vvp
 BACKEND_3P_SIM_BUILD := sim/backend_3p_tb.vvp
 TOP_3P_SIM_BUILD := sim/top_3p_tb.vvp
@@ -165,6 +167,8 @@ COMPLIANCE_XFAIL := verification/compliance/expected_failures.tsv
 ISA_FP_SIM_BUILD := sim/isa_fp_tb.vvp
 RV64FD_FPR_SIM_BUILD := sim/rv64-fd-fpr_tb.vvp
 EXEC_FPU_RV64FD_SIM_BUILD := sim/exec_fpu_rv64-fd_tb.vvp
+EXEC_FPU_RV64FD_COMPACT_MUL_SIM_BUILD := \
+	sim/exec_fpu_rv64-fd_compact_mul_tb.vvp
 FPU_CSRS_SIM_BUILD := sim/fpu_csrs_tb.vvp
 RV64I_VEC_SIM_BUILD := sim/rv64-i-vec_tb.vvp
 EXEC_VEC_SIM_BUILD := sim/exec_vec_tb.vvp
