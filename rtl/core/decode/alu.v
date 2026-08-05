@@ -1,14 +1,17 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-m.v"
+`include "core/isa/rv64-zbb.v"
 `include "core/decode/defs/alu-defs.v"
 
 module openrv64_decode_alu #(
-    parameter ENABLE_RV64M = 1
+    parameter ENABLE_RV64M = 1,
+    parameter ENABLE_RV64ZBB = 0
 ) (
     input  wire [`RV64_OPCODE_WIDTH-1:0] opcode_i,
     input  wire [`RV64_FUNCT3_WIDTH-1:0] funct3_i,
     input  wire [`RV64_FUNCT7_WIDTH-1:0] funct7_i,
+    input  wire [`RV64_FUNCT12_WIDTH-1:0] funct12_i,
 
     output reg                         valid_o,
     output reg                         illegal_o,
@@ -56,13 +59,54 @@ module openrv64_decode_alu #(
                     `RV64_FUNCT3_AND:     accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_AND);
 
                     `RV64_FUNCT3_SLL: begin
-                        if (funct7_i[6:1] == `RV64_FUNCT6_SLLI) begin
+                        if (ENABLE_RV64ZBB &&
+                            (funct12_i == `RV64_ZBB_FUNCT12_CLZ)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_CLZ);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_CTZ)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_CTZ);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_CPOP)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_CPOP);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_SEXT_B)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_SEXT_B);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_SEXT_H)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_SEXT_H);
+                        end else if (funct7_i[6:1] ==
+                                     `RV64_FUNCT6_SLLI) begin
                             accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_SLL);
                         end
                     end
 
                     `RV64_FUNCT3_SRL_SRA: begin
-                        if (funct7_i[6:1] == `RV64_FUNCT6_SRLI) begin
+                        if (ENABLE_RV64ZBB &&
+                            (funct7_i[6:1] ==
+                             `RV64_ZBB_FUNCT6_RORI)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_ROR);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_ORC_B)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_ORC_B);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_REV8)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_REV8);
+                        end else if (funct7_i[6:1] ==
+                                     `RV64_FUNCT6_SRLI) begin
                             accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_SRL);
                         end else if (funct7_i[6:1] == `RV64_FUNCT6_SRAI) begin
                             accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_SRA);
@@ -82,13 +126,31 @@ module openrv64_decode_alu #(
                     `RV64_FUNCT3_ADD_SUB: accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_ADD);
 
                     `RV64_FUNCT3_SLL: begin
-                        if (funct7_i == `RV64_FUNCT7_SLLIW) begin
+                        if (ENABLE_RV64ZBB &&
+                            (funct12_i == `RV64_ZBB_FUNCT12_CLZW)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_CLZ);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_CTZW)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_CTZ);
+                        end else if (ENABLE_RV64ZBB &&
+                                     (funct12_i ==
+                                      `RV64_ZBB_FUNCT12_CPOPW)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_CPOP);
+                        end else if (funct7_i == `RV64_FUNCT7_SLLIW) begin
                             accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_SLL);
                         end
                     end
 
                     `RV64_FUNCT3_SRL_SRA: begin
-                        if (funct7_i == `RV64_FUNCT7_SRLIW) begin
+                        if (ENABLE_RV64ZBB &&
+                            (funct7_i == `RV64_ZBB_FUNCT7_ROTATE)) begin
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_ROR);
+                        end else if (funct7_i == `RV64_FUNCT7_SRLIW) begin
                             accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_SRL);
                         end else if (funct7_i == `RV64_FUNCT7_SRAIW) begin
                             accept(`RV64_ALU_EXT_BASE, `RV64_ALU_OP_SRA);
@@ -104,7 +166,61 @@ module openrv64_decode_alu #(
             `RV64_OPCODE_OP_32: begin
                 word_op_o = (opcode_i == `RV64_OPCODE_OP_32);
 
-                if (funct7_i == `RV64_M_FUNCT7) begin
+                if (ENABLE_RV64ZBB &&
+                    (opcode_i == `RV64_OPCODE_OP) &&
+                    (funct7_i == `RV64_ZBB_FUNCT7_LOGIC_N) &&
+                    ((funct3_i == `RV64_ZBB_FUNCT3_ANDN) ||
+                     (funct3_i == `RV64_ZBB_FUNCT3_ORN) ||
+                     (funct3_i == `RV64_ZBB_FUNCT3_XNOR))) begin
+                    case (funct3_i)
+                        `RV64_ZBB_FUNCT3_ANDN:
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_ANDN);
+                        `RV64_ZBB_FUNCT3_ORN:
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_ORN);
+                        default:
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_XNOR);
+                    endcase
+                end else if (ENABLE_RV64ZBB &&
+                             (opcode_i == `RV64_OPCODE_OP) &&
+                             (funct7_i == `RV64_ZBB_FUNCT7_MINMAX)) begin
+                    case (funct3_i)
+                        `RV64_ZBB_FUNCT3_MIN:
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_MIN);
+                        `RV64_ZBB_FUNCT3_MINU:
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_MINU);
+                        `RV64_ZBB_FUNCT3_MAX:
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_MAX);
+                        `RV64_ZBB_FUNCT3_MAXU:
+                            accept(`RV64_ALU_EXT_ZBB,
+                                   `RV64_ALU_OP_ZBB_MAXU);
+                        default: begin
+                        end
+                    endcase
+                end else if (ENABLE_RV64ZBB &&
+                             (funct7_i == `RV64_ZBB_FUNCT7_ROTATE) &&
+                             ((funct3_i == `RV64_ZBB_FUNCT3_ROL) ||
+                              (funct3_i == `RV64_ZBB_FUNCT3_ROR))) begin
+                    if (funct3_i == `RV64_ZBB_FUNCT3_ROL)
+                        accept(`RV64_ALU_EXT_ZBB,
+                               `RV64_ALU_OP_ZBB_ROL);
+                    else
+                        accept(`RV64_ALU_EXT_ZBB,
+                               `RV64_ALU_OP_ZBB_ROR);
+                end else if (ENABLE_RV64ZBB &&
+                             (opcode_i == `RV64_ZBB_OPCODE_ZEXT_H) &&
+                             (funct7_i == `RV64_ZBB_FUNCT7_ZEXT_H) &&
+                             (funct3_i == `RV64_ZBB_FUNCT3_ZEXT_H) &&
+                             (funct12_i[4:0] ==
+                              `RV64_ZBB_RS2_ZEXT_H)) begin
+                    accept(`RV64_ALU_EXT_ZBB,
+                           `RV64_ALU_OP_ZBB_ZEXT_H);
+                end else if (funct7_i == `RV64_M_FUNCT7) begin
                     ext_sel_o = `RV64_ALU_EXT_M;
 
                     if (ENABLE_RV64M) begin

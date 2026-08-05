@@ -7,12 +7,13 @@
 `include "core/decode/defs/br-defs.v"
 `include "core/except/except-defs.v"
 
-// EX0 owns a base integer ALU and the single iterative RV64M worker.
-// Only the M worker needs instruction context storage; base operations write
-// the completion register directly on issue.
+// EX0 owns a base integer ALU, the iterative RV64M worker, and an optional
+// separate iterative Zbb worker.  M and Zbb share one tagged long-operation
+// context; base operations write the completion register directly on issue.
 module openrv64_exec_pipe_ex0 #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer ENABLE_RV64M = 1,
+    parameter integer ENABLE_RV64ZBB = 0,
     parameter integer ENABLE_LOCAL_FORWARDING = 1
 ) (
     input  wire                         clk,
@@ -131,14 +132,27 @@ module openrv64_exec_pipe_ex0 #(
                                      {`RV64_XLEN{1'b0}} : operand_rs1;
     wire [`RV64_XLEN-1:0] alu_src2 = alu_uses_imm ? imm : operand_rs2;
 
+    wire zbb_alu_request;
+    wire [`RV64_ALU_OP_WIDTH-1:0] zbb_alu_op;
+    wire zbb_alu_word;
+    wire [`RV64_XLEN-1:0] zbb_alu_src1;
+    wire [`RV64_XLEN-1:0] zbb_alu_src2;
+    wire [`RV64_ALU_OP_WIDTH-1:0] shared_alu_op =
+        zbb_alu_request ? zbb_alu_op : alu_op;
+    wire shared_alu_word = zbb_alu_request ? zbb_alu_word : word_op;
+    wire [`RV64_XLEN-1:0] shared_alu_src1 =
+        zbb_alu_request ? zbb_alu_src1 : alu_src1;
+    wire [`RV64_XLEN-1:0] shared_alu_src2 =
+        zbb_alu_request ? zbb_alu_src2 : alu_src2;
+
     wire alu_valid;
     wire alu_illegal;
     wire [`RV64_XLEN-1:0] alu_result;
     openrv64_exec_alu_rv64i u_alu (
-        .op_sel_i(alu_op),
-        .word_op_i(word_op),
-        .src1_i(alu_src1),
-        .src2_i(alu_src2),
+        .op_sel_i(shared_alu_op),
+        .word_op_i(shared_alu_word),
+        .src1_i(shared_alu_src1),
+        .src2_i(shared_alu_src2),
         .pc_i(pc),
         .valid_o(alu_valid),
         .illegal_o(alu_illegal),
@@ -169,10 +183,58 @@ module openrv64_exec_pipe_ex0 #(
         .result_o(m_result)
     );
 
+    wire zbb_ready;
+    wire zbb_busy;
+    wire zbb_result_valid;
+    wire zbb_result_ready;
+    wire zbb_illegal;
+    wire [`RV64_XLEN-1:0] zbb_result;
+    wire zbb_start;
+    generate
+        if (ENABLE_RV64ZBB != 0) begin : g_zbb
+            openrv64_exec_ext_zbb u_zbb (
+                .clk(clk),
+                .rst_n(rst_n),
+                .flush_i(flush_i),
+                .valid_i(zbb_start),
+                .ready_o(zbb_ready),
+                .busy_o(zbb_busy),
+                .op_sel_i(alu_op),
+                .word_op_i(word_op),
+                .src1_i(operand_rs1),
+                .src2_i(alu_src2),
+                .alu_request_o(zbb_alu_request),
+                .alu_op_o(zbb_alu_op),
+                .alu_word_o(zbb_alu_word),
+                .alu_src1_o(zbb_alu_src1),
+                .alu_src2_o(zbb_alu_src2),
+                .alu_valid_i(alu_valid),
+                .alu_result_i(alu_result),
+                .result_valid_o(zbb_result_valid),
+                .result_ready_i(zbb_result_ready),
+                .illegal_o(zbb_illegal),
+                .result_o(zbb_result)
+            );
+        end else begin : g_no_zbb
+            assign zbb_ready = 1'b0;
+            assign zbb_busy = 1'b0;
+            assign zbb_result_valid = 1'b0;
+            assign zbb_illegal = 1'b0;
+            assign zbb_result = {`RV64_XLEN{1'b0}};
+            assign zbb_alu_request = 1'b0;
+            assign zbb_alu_op = `RV64_ALU_OP_INVALID;
+            assign zbb_alu_word = 1'b0;
+            assign zbb_alu_src1 = {`RV64_XLEN{1'b0}};
+            assign zbb_alu_src2 = {`RV64_XLEN{1'b0}};
+        end
+    endgenerate
+
     wire base_selected = (alu_ext == `RV64_ALU_EXT_BASE) &&
                           (alu_op != `RV64_ALU_OP_INVALID);
     wire m_selected = (alu_ext == `RV64_ALU_EXT_M) &&
                        (alu_op != `RV64_ALU_OP_INVALID);
+    wire zbb_selected = (alu_ext == `RV64_ALU_EXT_ZBB) &&
+                         (alu_op != `RV64_ALU_OP_INVALID);
     wire base_result_illegal = illegal || !alu_valid || alu_illegal;
     wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] base_cause =
         base_result_illegal ? `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR :
@@ -203,40 +265,46 @@ module openrv64_exec_pipe_ex0 #(
         {`RV64_XLEN{1'b0}}
     };
 
-    reg m_pending_q;
-    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] m_id_q;
-    reg [RETIRE_SLOT_WIDTH-1:0] m_slot_q;
-    reg [63:0] m_trace_id_q;
-    reg [`RV64_XLEN-1:0] m_pc_q;
-    reg [`RV64_INSTR_WIDTH-1:0] m_instr_q;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] m_rs1_addr_q;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] m_rs2_addr_q;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] m_rd_addr_q;
-    reg m_reg_write_q;
+    reg worker_pending_q;
+    reg worker_zbb_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] worker_id_q;
+    reg [RETIRE_SLOT_WIDTH-1:0] worker_slot_q;
+    reg [63:0] worker_trace_id_q;
+    reg [`RV64_XLEN-1:0] worker_pc_q;
+    reg [`RV64_INSTR_WIDTH-1:0] worker_instr_q;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] worker_rs1_addr_q;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] worker_rs2_addr_q;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] worker_rd_addr_q;
+    reg worker_reg_write_q;
 
-    wire m_result_illegal = m_illegal;
-    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] m_cause =
-        m_result_illegal ? `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR :
+    wire worker_result_valid = worker_zbb_q ? zbb_result_valid :
+                                             m_result_valid;
+    wire worker_result_illegal = worker_zbb_q ? zbb_illegal : m_illegal;
+    wire [`RV64_XLEN-1:0] worker_result = worker_zbb_q ? zbb_result :
+                                                           m_result;
+    wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] worker_cause =
+        worker_result_illegal ? `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR :
                            {`RV64_EXCEPT_CAUSE_WIDTH{1'b0}};
-    wire [`RV64_XLEN-1:0] m_tval = m_result_illegal ?
-        {{32{1'b0}}, m_instr_q} : {`RV64_XLEN{1'b0}};
-    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] m_completion_data = {
-        m_trace_id_q,
-        m_pc_q,
-        m_pc_q + 64'd4,
-        m_instr_q,
-        m_result,
-        m_rs1_addr_q,
-        m_rs2_addr_q,
-        m_rd_addr_q,
-        m_reg_write_q,
-        m_result_illegal,
+    wire [`RV64_XLEN-1:0] worker_tval = worker_result_illegal ?
+        {{32{1'b0}}, worker_instr_q} : {`RV64_XLEN{1'b0}};
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        worker_completion_data = {
+        worker_trace_id_q,
+        worker_pc_q,
+        worker_pc_q + 64'd4,
+        worker_instr_q,
+        worker_result,
+        worker_rs1_addr_q,
+        worker_rs2_addr_q,
+        worker_rd_addr_q,
+        worker_reg_write_q,
+        worker_result_illegal,
         1'b0,
         1'b0,
-        m_result_illegal,
+        worker_result_illegal,
         1'b0,
-        m_cause,
-        m_tval,
+        worker_cause,
+        worker_tval,
         1'b0,
         1'b0,
         1'b0,
@@ -245,13 +313,19 @@ module openrv64_exec_pipe_ex0 #(
     };
 
     wire output_available = !complete_valid_q || complete_ready_i;
-    assign issue_ready_o = !m_pending_q && output_available &&
+    assign issue_ready_o = !worker_pending_q && output_available &&
                            (base_selected ||
-                            (m_selected && ENABLE_RV64M && m_ready));
+                            (m_selected && ENABLE_RV64M && m_ready) ||
+                            (zbb_selected && ENABLE_RV64ZBB && zbb_ready));
     wire issue_fire = issue_valid_i && issue_ready_o;
     wire base_fire = issue_fire && base_selected;
     assign m_start = issue_fire && m_selected && ENABLE_RV64M;
-    assign m_result_ready = m_pending_q && m_result_valid && output_available;
+    assign zbb_start = issue_fire && zbb_selected && ENABLE_RV64ZBB;
+    assign m_result_ready = worker_pending_q && !worker_zbb_q &&
+                            m_result_valid && output_available;
+    assign zbb_result_ready = worker_pending_q && worker_zbb_q &&
+                              zbb_result_valid && output_available;
+    wire worker_result_ready = m_result_ready || zbb_result_ready;
 
     assign complete_valid_o = complete_valid_q;
     assign complete_id_o = complete_id_q;
@@ -260,48 +334,51 @@ module openrv64_exec_pipe_ex0 #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            m_pending_q <= 1'b0;
-            m_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
-            m_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
-            m_trace_id_q <= 64'd0;
-            m_pc_q <= {`RV64_XLEN{1'b0}};
-            m_instr_q <= {`RV64_INSTR_WIDTH{1'b0}};
-            m_rs1_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
-            m_rs2_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
-            m_rd_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
-            m_reg_write_q <= 1'b0;
+            worker_pending_q <= 1'b0;
+            worker_zbb_q <= 1'b0;
+            worker_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            worker_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
+            worker_trace_id_q <= 64'd0;
+            worker_pc_q <= {`RV64_XLEN{1'b0}};
+            worker_instr_q <= {`RV64_INSTR_WIDTH{1'b0}};
+            worker_rs1_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
+            worker_rs2_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
+            worker_rd_addr_q <= {`RV64_REG_ADDR_WIDTH{1'b0}};
+            worker_reg_write_q <= 1'b0;
             complete_valid_q <= 1'b0;
             complete_id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             complete_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             complete_payload_q <=
                 {`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
         end else if (flush_i) begin
-            m_pending_q <= 1'b0;
+            worker_pending_q <= 1'b0;
+            worker_zbb_q <= 1'b0;
             complete_valid_q <= 1'b0;
         end else begin
             if (complete_valid_q && complete_ready_i) begin
                 complete_valid_q <= 1'b0;
             end
 
-            if (m_start) begin
-                m_pending_q <= 1'b1;
-                m_id_q <= issue_id_i;
-                m_slot_q <= issue_slot_i;
-                m_trace_id_q <= trace_id;
-                m_pc_q <= pc;
-                m_instr_q <= instr;
-                m_rs1_addr_q <= rs1_addr;
-                m_rs2_addr_q <= rs2_addr;
-                m_rd_addr_q <= rd_addr;
-                m_reg_write_q <= reg_write;
+            if (m_start || zbb_start) begin
+                worker_pending_q <= 1'b1;
+                worker_zbb_q <= zbb_start;
+                worker_id_q <= issue_id_i;
+                worker_slot_q <= issue_slot_i;
+                worker_trace_id_q <= trace_id;
+                worker_pc_q <= pc;
+                worker_instr_q <= instr;
+                worker_rs1_addr_q <= rs1_addr;
+                worker_rs2_addr_q <= rs2_addr;
+                worker_rd_addr_q <= rd_addr;
+                worker_reg_write_q <= reg_write;
             end
 
-            if (m_result_ready) begin
-                m_pending_q <= 1'b0;
+            if (worker_result_ready) begin
+                worker_pending_q <= 1'b0;
                 complete_valid_q <= 1'b1;
-                complete_id_q <= m_id_q;
-                complete_slot_q <= m_slot_q;
-                complete_payload_q <= m_completion_data;
+                complete_id_q <= worker_id_q;
+                complete_slot_q <= worker_slot_q;
+                complete_payload_q <= worker_completion_data;
             end else if (base_fire) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= issue_id_i;
@@ -328,7 +405,9 @@ module openrv64_exec_pipe_ex0 #(
         priv_mode,
         sret_allowed,
         sfence_vma_allowed,
-        m_busy
+        m_busy,
+        zbb_busy,
+        worker_result_valid
     };
 
 endmodule

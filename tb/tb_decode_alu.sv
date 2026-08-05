@@ -7,6 +7,7 @@ module tb_decode_alu;
     logic [`RV64_OPCODE_WIDTH-1:0] opcode;
     logic [`RV64_FUNCT3_WIDTH-1:0] funct3;
     logic [`RV64_FUNCT7_WIDTH-1:0] funct7;
+    logic [`RV64_FUNCT12_WIDTH-1:0] funct12;
 
     logic valid_m;
     logic illegal_m;
@@ -20,12 +21,19 @@ module tb_decode_alu;
     logic [`RV64_ALU_OP_WIDTH-1:0] op_nom;
     logic word_nom;
 
+    logic valid_zbb;
+    logic illegal_zbb;
+    logic [`RV64_ALU_EXT_WIDTH-1:0] ext_zbb;
+    logic [`RV64_ALU_OP_WIDTH-1:0] op_zbb;
+    logic word_zbb;
+
     openrv64_decode_alu #(
         .ENABLE_RV64M(1)
     ) dut_m (
         .opcode_i(opcode),
         .funct3_i(funct3),
         .funct7_i(funct7),
+        .funct12_i(funct12),
         .valid_o(valid_m),
         .illegal_o(illegal_m),
         .ext_sel_o(ext_m),
@@ -39,11 +47,27 @@ module tb_decode_alu;
         .opcode_i(opcode),
         .funct3_i(funct3),
         .funct7_i(funct7),
+        .funct12_i(funct12),
         .valid_o(valid_nom),
         .illegal_o(illegal_nom),
         .ext_sel_o(ext_nom),
         .op_sel_o(op_nom),
         .word_op_o(word_nom)
+    );
+
+    openrv64_decode_alu #(
+        .ENABLE_RV64M(1),
+        .ENABLE_RV64ZBB(1)
+    ) dut_zbb (
+        .opcode_i(opcode),
+        .funct3_i(funct3),
+        .funct7_i(funct7),
+        .funct12_i(funct12),
+        .valid_o(valid_zbb),
+        .illegal_o(illegal_zbb),
+        .ext_sel_o(ext_zbb),
+        .op_sel_o(op_zbb),
+        .word_op_o(word_zbb)
     );
 
     task automatic check_enabled(
@@ -105,10 +129,43 @@ module tb_decode_alu;
             opcode = in_opcode;
             funct3 = in_funct3;
             funct7 = in_funct7;
+            funct12 = {in_funct7, 5'd0};
             #1;
 
             check_enabled(exp_valid_m, exp_illegal_m, exp_ext_m, exp_op_m, exp_word_m);
             check_disabled(exp_valid_nom, exp_illegal_nom, exp_ext_nom, exp_op_nom, exp_word_nom);
+            if (valid_zbb !== exp_valid_m ||
+                illegal_zbb !== exp_illegal_m ||
+                ext_zbb !== exp_ext_m ||
+                op_zbb !== exp_op_m ||
+                word_zbb !== exp_word_m)
+                $fatal(1, "Zbb-enabled decoder changed base/M decode");
+        end
+    endtask
+
+    task automatic check_zbb(
+        input logic [`RV64_OPCODE_WIDTH-1:0] in_opcode,
+        input logic [`RV64_FUNCT3_WIDTH-1:0] in_funct3,
+        input logic [`RV64_FUNCT12_WIDTH-1:0] in_funct12,
+        input logic [`RV64_ALU_OP_WIDTH-1:0] exp_op,
+        input logic exp_word
+    );
+        begin
+            opcode = in_opcode;
+            funct3 = in_funct3;
+            funct7 = in_funct12[11:5];
+            funct12 = in_funct12;
+            #1;
+
+            if (!valid_zbb || illegal_zbb ||
+                (ext_zbb != `RV64_ALU_EXT_ZBB) ||
+                (op_zbb != exp_op) || (word_zbb != exp_word))
+                $fatal(1,
+                    "Zbb decode mismatch opcode=%07b funct3=%03b funct12=%012b valid=%0b illegal=%0b ext=%0d op=%0d word=%0b",
+                    opcode, funct3, funct12, valid_zbb, illegal_zbb,
+                    ext_zbb, op_zbb, word_zbb);
+            if (valid_m || !illegal_m || valid_nom || !illegal_nom)
+                $fatal(1, "Zbb decoded when ENABLE_RV64ZBB=0");
         end
     endtask
 
@@ -165,7 +222,88 @@ module tb_decode_alu;
               1'b0, 1'b1, `RV64_ALU_EXT_INVALID, `RV64_ALU_OP_INVALID, 1'b0,
               1'b0, 1'b1, `RV64_ALU_EXT_INVALID, `RV64_ALU_OP_INVALID, 1'b0);
 
-        $display("PASS: ALU decode base and M extension routing");
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_ANDN,
+                  {`RV64_ZBB_FUNCT7_LOGIC_N, 5'd2},
+                  `RV64_ALU_OP_ZBB_ANDN, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_ORN,
+                  {`RV64_ZBB_FUNCT7_LOGIC_N, 5'd2},
+                  `RV64_ALU_OP_ZBB_ORN, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_XNOR,
+                  {`RV64_ZBB_FUNCT7_LOGIC_N, 5'd2},
+                  `RV64_ALU_OP_ZBB_XNOR, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_MIN,
+                  {`RV64_ZBB_FUNCT7_MINMAX, 5'd2},
+                  `RV64_ALU_OP_ZBB_MIN, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_MINU,
+                  {`RV64_ZBB_FUNCT7_MINMAX, 5'd2},
+                  `RV64_ALU_OP_ZBB_MINU, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_MAX,
+                  {`RV64_ZBB_FUNCT7_MINMAX, 5'd2},
+                  `RV64_ALU_OP_ZBB_MAX, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_MAXU,
+                  {`RV64_ZBB_FUNCT7_MINMAX, 5'd2},
+                  `RV64_ALU_OP_ZBB_MAXU, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_ROL,
+                  {`RV64_ZBB_FUNCT7_ROTATE, 5'd2},
+                  `RV64_ALU_OP_ZBB_ROL, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG, `RV64_ZBB_FUNCT3_ROR,
+                  {`RV64_ZBB_FUNCT7_ROTATE, 5'd2},
+                  `RV64_ALU_OP_ZBB_ROR, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_REG_32, `RV64_ZBB_FUNCT3_ROL,
+                  {`RV64_ZBB_FUNCT7_ROTATE, 5'd2},
+                  `RV64_ALU_OP_ZBB_ROL, 1'b1);
+        check_zbb(`RV64_ZBB_OPCODE_REG_32, `RV64_ZBB_FUNCT3_ROR,
+                  {`RV64_ZBB_FUNCT7_ROTATE, 5'd2},
+                  `RV64_ALU_OP_ZBB_ROR, 1'b1);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_CLZ,
+                  `RV64_ALU_OP_ZBB_CLZ, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_CTZ,
+                  `RV64_ALU_OP_ZBB_CTZ, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_CPOP,
+                  `RV64_ALU_OP_ZBB_CPOP, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_IMM_32, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_CLZW,
+                  `RV64_ALU_OP_ZBB_CLZ, 1'b1);
+        check_zbb(`RV64_ZBB_OPCODE_IMM_32, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_CTZW,
+                  `RV64_ALU_OP_ZBB_CTZ, 1'b1);
+        check_zbb(`RV64_ZBB_OPCODE_IMM_32, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_CPOPW,
+                  `RV64_ALU_OP_ZBB_CPOP, 1'b1);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_SEXT_B,
+                  `RV64_ALU_OP_ZBB_SEXT_B, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_UNARY,
+                  `RV64_ZBB_FUNCT12_SEXT_H,
+                  `RV64_ALU_OP_ZBB_SEXT_H, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_RORI,
+                  {`RV64_ZBB_FUNCT6_RORI, 6'd37},
+                  `RV64_ALU_OP_ZBB_ROR, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_IMM_32, `RV64_ZBB_FUNCT3_RORI,
+                  {`RV64_ZBB_FUNCT7_ROTATE, 5'd13},
+                  `RV64_ALU_OP_ZBB_ROR, 1'b1);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_ORC_B,
+                  `RV64_ZBB_FUNCT12_ORC_B,
+                  `RV64_ALU_OP_ZBB_ORC_B, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_IMM, `RV64_ZBB_FUNCT3_REV8,
+                  `RV64_ZBB_FUNCT12_REV8,
+                  `RV64_ALU_OP_ZBB_REV8, 1'b0);
+        check_zbb(`RV64_ZBB_OPCODE_ZEXT_H, `RV64_ZBB_FUNCT3_ZEXT_H,
+                  {`RV64_ZBB_FUNCT7_ZEXT_H, `RV64_ZBB_RS2_ZEXT_H},
+                  `RV64_ALU_OP_ZBB_ZEXT_H, 1'b1);
+
+        opcode = `RV64_ZBB_OPCODE_ZEXT_H;
+        funct3 = `RV64_ZBB_FUNCT3_ZEXT_H;
+        funct7 = `RV64_ZBB_FUNCT7_ZEXT_H;
+        funct12 = {`RV64_ZBB_FUNCT7_ZEXT_H, 5'd1};
+        #1;
+        if (valid_zbb || !illegal_zbb)
+            $fatal(1, "zext.h accepted nonzero rs2");
+
+        $display("PASS: ALU decode base, M, and 3P-gated Zbb routing");
         $finish;
     end
 

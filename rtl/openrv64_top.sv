@@ -20,6 +20,7 @@ module openrv64_top #(
     parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
     parameter bit ENABLE_ZICCLSM = 1'b1,
     parameter bit ENABLE_RV64M = 1'b0,
+    parameter bit ENABLE_RV64ZBB = 1'b0,
     parameter bit ENABLE_RV64A = 1'b1,
     parameter int unsigned HPM_COUNTERS = 8,
     parameter bit ENABLE_FORWARDING = 1'b1,
@@ -418,6 +419,7 @@ module openrv64_top #(
         if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_backend_3p
             openrv64_rv64_top_3p #(
                 .RESET_VECTOR(RESET_VECTOR), .ENABLE_RV64M(ENABLE_RV64M),
+                .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
                 .HPM_COUNTERS(HPM_COUNTERS),
                 .BUS_CONFIG(BUS_CONFIG),
                 .ENABLE_ZICCLSM(ENABLE_ZICCLSM),

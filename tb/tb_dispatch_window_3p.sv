@@ -756,7 +756,28 @@ module tb_dispatch_window_3p;
             pipe_id[2*IDW +: IDW] != IDW'(83))
             fail("LR/load pair did not dual issue to MEM1/MEM0");
 
-        $display("PASS: dispatch window issue, dual ordered MEM roles, producer tags, and selective recovery");
+        // Zbb shares EX0's long-operation issue slot with RV64M.  It must not
+        // be steered to the otherwise interchangeable EX1 base-ALU lane.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(90)};
+        allocation_slot = {4'd0, 4'd0, 4'd0};
+        next_retire_id = IDW'(90);
+        p0 = alu_packet(64'd90, 5'd1, 5'd0, 5'd5);
+        p0[I_ALU_EXT +: 3] = `RV64_ALU_EXT_ZBB;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_ZBB_CPOP;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[0] || |pipe_valid[3:1] ||
+            pipe_id[0*IDW +: IDW] != IDW'(90))
+            fail("Zbb instruction was not fixed to EX0");
+
+        $display("PASS: dispatch window issue, fixed EX0 Zbb, dual ordered MEM roles, producer tags, and selective recovery");
         $finish;
     end
 endmodule

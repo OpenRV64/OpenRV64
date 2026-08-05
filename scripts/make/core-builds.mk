@@ -222,6 +222,13 @@ $(EXEC_ALU_RV64M_SIM_BUILD): $(EXEC_ALU_RV64M_SIM_SRCS) $(EXEC_SRCS) $(DECODE_SR
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_ALU_RV64M_SIM_BUILD) $(EXEC_ALU_RV64M_SIM_SRCS)
 
+$(EXEC_EXT_ZBB_SIM_BUILD): tb/tb_exec_ext_zbb.sv \
+		rtl/core/exec/ext/zbb.v rtl/core/exec/alu/rv64-i.v \
+		rtl/core/arith/prefix-addsub.v rtl/core/decode/defs/alu-defs.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_EXT_ZBB_SIM_BUILD) \
+		tb/tb_exec_ext_zbb.sv
+
 $(EXEC_TOP_3P_SIM_BUILD): tb/tb_exec_top_3p.sv $(EXEC_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(STAGE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_TOP_3P_SIM_BUILD) \

@@ -264,8 +264,10 @@ module openrv64_dispatch_window_3p #(
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
             is_fixed_ex0 = !is_hard(payload) && !is_mem(payload) &&
-                (payload[PAYLOAD_ALU_EXT +: `RV64_ALU_EXT_WIDTH] ==
-                 `RV64_ALU_EXT_M);
+                ((payload[PAYLOAD_ALU_EXT +: `RV64_ALU_EXT_WIDTH] ==
+                  `RV64_ALU_EXT_M) ||
+                 (payload[PAYLOAD_ALU_EXT +: `RV64_ALU_EXT_WIDTH] ==
+                  `RV64_ALU_EXT_ZBB));
         end
     endfunction
 

@@ -20,6 +20,7 @@ module openrv64_backend_3p #(
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
     parameter integer MAX_READS_PER_REG = 2,
     parameter integer ENABLE_RV64M = 1,
+    parameter integer ENABLE_RV64ZBB = 0,
     parameter integer ENABLE_TRACE = 1,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
@@ -1114,6 +1115,7 @@ module openrv64_backend_3p #(
     openrv64_exec_top #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
         .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH), .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_RV64ZBB_3P(ENABLE_RV64ZBB),
         .ENABLE_LOCAL_FORWARDING_3P(ENABLE_ISSUE_WINDOW == 0),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),

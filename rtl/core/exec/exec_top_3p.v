@@ -9,7 +9,7 @@
 
 // Four fixed-capability execution lanes:
 //
-//   lane 0 / EX0: base ALU and RV64M
+//   lane 0 / EX0: base ALU, RV64M, and optional iterative Zbb
 //   lane 1 / EX1: base ALU, branch/jump, system/CSR, traps and fences
 //   lane 2 / MEM0: ordinary loads only
 //   lane 3 / MEM1: stores and all RV64A operations, including LR
@@ -32,6 +32,7 @@ module openrv64_exec_top_3p #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer PRODUCER_TAG_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer ENABLE_RV64M = 1,
+    parameter integer ENABLE_RV64ZBB = 0,
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
@@ -275,7 +276,9 @@ module openrv64_exec_top_3p #(
         `RV64_OPCODE(mem1_instr) == `RV64_OPCODE_AMO;
 
     wire ex0_alu = ((ex0_alu_ext == `RV64_ALU_EXT_BASE) ||
-                    ((ex0_alu_ext == `RV64_ALU_EXT_M) && ENABLE_RV64M)) &&
+                    ((ex0_alu_ext == `RV64_ALU_EXT_M) && ENABLE_RV64M) ||
+                    ((ex0_alu_ext == `RV64_ALU_EXT_ZBB) &&
+                     ENABLE_RV64ZBB)) &&
                    (ex0_alu_op != `RV64_ALU_OP_INVALID);
     wire ex0_control = ex0_branch || ex0_jump || ex0_system || ex0_fence ||
                        ex0_illegal || ex0_ebreak || ex0_ecall ||
@@ -409,6 +412,7 @@ module openrv64_exec_top_3p #(
     openrv64_exec_pipe_ex0 #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
         .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING)
     ) u_ex0 (
         .clk(clk),

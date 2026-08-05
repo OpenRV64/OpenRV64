@@ -7,6 +7,7 @@
 
 module openrv64_decode_top #(
     parameter ENABLE_RV64M = 1,
+    parameter ENABLE_RV64ZBB = 0,
     parameter ENABLE_RV64A = 1,
     parameter ENABLE_EXTENSION = 0,
     parameter integer EXTENSION_PAYLOAD_WIDTH = 1
@@ -229,11 +230,13 @@ module openrv64_decode_top #(
     );
 
     openrv64_decode_alu #(
-        .ENABLE_RV64M(ENABLE_RV64M)
+        .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_RV64ZBB(ENABLE_RV64ZBB)
     ) u_alu (
         .opcode_i(opcode),
         .funct3_i(funct3),
         .funct7_i(funct7),
+        .funct12_i(funct12),
         .valid_o(alu_valid),
         .illegal_o(alu_illegal),
         .ext_sel_o(alu_ext_sel),

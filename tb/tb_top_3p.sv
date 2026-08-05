@@ -68,7 +68,7 @@ module tb_top_3p;
     openrv64_top #(
         .RESET_VECTOR(64'd0),
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
-        .ENABLE_RV64M(1), .ENABLE_TRACE(1)
+        .ENABLE_RV64M(1), .ENABLE_RV64ZBB(1), .ENABLE_TRACE(1)
     ) dut (
         .clk(clk), .rst_n(rst_n), .mem_valid(mem_valid),
         .mem_ready(mem_ready), .mem_write(mem_write), .mem_addr(mem_addr),
@@ -196,7 +196,10 @@ module tb_top_3p;
         // A CSRW exercises the three-cycle HPM read and write phases; the
         // following pure read exercises the read phase alone.
         memory[5] = {32'h3200_1073, 32'h0870_3023};
-        memory[6] = {32'h0010_0073, 32'hb000_24f3};
+        // CPOP x10,x7 proves Zbb decode, fixed-EX0 issue, completion, and
+        // retirement before the final halt.
+        memory[6] = {32'h6023_9513, 32'hb000_24f3};
+        memory[7] = {32'h0000_0013, 32'h0010_0073};
         repeat (5) @(posedge clk);
         rst_n = 1;
 
@@ -311,10 +314,11 @@ module tb_top_3p;
             dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[6] != 22 ||
             dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[7] != 33 ||
             dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[8] != 1 ||
-            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[9] == 0)
+            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[9] == 0 ||
+            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[10] != 2)
             $fatal(1, "3P architectural GPR results are wrong");
 
-        $display("PASS: selectable 3P core serial PMP/SATP/HPM retirement, two-wide fetch/retire, and ordered store");
+        $display("PASS: selectable 3P core Zbb plus serial PMP/SATP/HPM retirement, two-wide fetch/retire, and ordered store");
         $finish;
     end
 endmodule

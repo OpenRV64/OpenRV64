@@ -354,6 +354,13 @@ module tb_decode_top;
                      `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID,
                      `RV64_BR_OP_INVALID, "unclaimed extension opcode");
 
+        // Shared decode defaults to the 1P-compatible configuration.  Zbb is
+        // therefore illegal unless a 3P top explicitly enables it.
+        instr = 32'h6023_9513; // cpop x10,x7
+        #1;
+        if (valid || !illegal || (alu_ext == `RV64_ALU_EXT_ZBB))
+            $fatal(1, "default/1P decode accepted Zbb CPOP");
+
         instr = 32'h0000_0000;
         check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_INVALID,
                      1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,

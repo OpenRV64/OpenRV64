@@ -20,6 +20,7 @@ module openrv64_rv64_top_3p #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
     parameter ENABLE_RV64M = 0,
+    parameter ENABLE_RV64ZBB = 0,
     parameter integer HPM_COUNTERS = 8,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
@@ -634,7 +635,9 @@ module openrv64_rv64_top_3p #(
             wire [31:0] lane_instr = (decode_lane == 0) ? instr0 :
                                      (decode_lane == 1) ? instr1 : instr2;
             openrv64_decode_top #(
-                .ENABLE_RV64M(ENABLE_RV64M), .ENABLE_RV64A(ENABLE_RV64A)
+                .ENABLE_RV64M(ENABLE_RV64M),
+                .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
+                .ENABLE_RV64A(ENABLE_RV64A)
             ) u_decode (
                 .instr_i(lane_instr),
                 .extension_selected_i(1'b0),
@@ -1058,6 +1061,7 @@ module openrv64_rv64_top_3p #(
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
         .ENABLE_RV64M(ENABLE_RV64M),
+        .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_TRACE(ENABLE_TRACE),
         .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
         .BRANCH_COMPLETION_FORWARD_MASK(BRANCH_COMPLETION_FORWARD_MASK),

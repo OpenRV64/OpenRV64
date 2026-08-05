@@ -147,6 +147,7 @@ module tb_exec_top_3p #(
     openrv64_exec_top_3p #(
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH),
         .ENABLE_RV64M(1),
+        .ENABLE_RV64ZBB(1),
         .ENABLE_POSTED_STORES(0),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .CACHEABLE_BASE(64'h0),
@@ -903,6 +904,46 @@ module tb_exec_top_3p #(
         complete_ready = 3'b001;
         tick();
         complete_ready = 3'b000;
+
+        // Zbb shares EX0's long-operation context but remains a distinct unit.
+        // It must not be accepted on EX1.
+        packet = packet_base(64'd107, 64'h500c, 32'h6023_1513);
+        packet[ISSUE_RS1_DATA +: 64] = 64'hf0f0_0000_0000_000f;
+        packet[ISSUE_RD +: 5] = 5'd10;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_ZBB;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ZBB_CPOP;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(7);
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
+        issue_valid = 4'b0010;
+        #1;
+        if (issue_ready[1] || !issue_unsupported[1])
+            fail("EX1 accepted fixed-EX0 Zbb operation");
+        issue_valid = 4'b0000;
+
+        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(7);
+        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd7;
+        issue_valid = 4'b0001;
+        #1;
+        if (!issue_ready[0]) fail("EX0 did not accept Zbb CPOP");
+        tick();
+        issue_valid = 4'b0000;
+        wait_cycles = 0;
+        while (!complete_valid[0] && (wait_cycles < 8)) begin
+            tick();
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!complete_valid[0]) fail("EX0 Zbb CPOP timed out");
+        if (complete_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(7))
+            fail("EX0 Zbb completion ID mismatch");
+        if (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+            64'd12)
+            fail("EX0 Zbb CPOP result mismatch");
+        complete_ready = 3'b001;
+        tick();
+        complete_ready = 3'b000;
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -1467,7 +1508,7 @@ module tb_exec_top_3p #(
              64'd11))
             fail("AMO completion after flush mismatch");
 
-        $display("PASS: 3p local forwarding, four-entry load/store queues, ordered component-serial Zicclsm, store capacity/flush, EX1 ordering, EX0 M context, and irrevocable AMO");
+        $display("PASS: 3p local forwarding, fixed-EX0 M/Zbb, load/store queues, ordered component-serial Zicclsm, EX1 ordering, and irrevocable AMO");
         $finish;
     end
 

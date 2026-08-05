@@ -84,6 +84,9 @@ when their parameters are enabled.
   the MEM lane; the AXI requester does not use AXI exclusive transactions.
 - RV64M is implemented by the EX0 lane but disabled by default at the public
   tops.
+- Zbb is optionally implemented by a separate iterative EX0 worker in the 3P
+  core. It shares RV64M's issue lane and tagged long-operation context, but not
+  RV64M's arithmetic RTL. The 1P core does not implement Zbb.
 - Machine, supervisor, and user privilege modes, delegated traps and
   interrupts, MRET/SRET, and the main machine/supervisor CSR state are
   implemented.
@@ -328,7 +331,7 @@ operations:
 | Instruction class | Pipe |
 | --- | --- |
 | Branch, jump, system/CSR, fence, decoded fault | EX1 |
-| RV64M | EX0 |
+| RV64M, optional 3P Zbb | EX0 |
 | Load, store, RV64A | MEM |
 | Base integer ALU | EX0 or EX1 |
 
@@ -417,8 +420,9 @@ Each physical lane has independent input readiness and a held tagged
 completion port. A long M operation or memory request does not inherently stop
 the other execution lanes from accepting unrelated work.
 
-- **EX0** implements a base integer ALU and the single RV64M worker. M
-  operations are iterative/variable-latency and fixed to this pipe.
+- **EX0** implements a base integer ALU, the RV64M worker, and the optional
+  standalone Zbb worker. M and Zbb operations are iterative/variable-latency,
+  mutually exclusive, and fixed to this pipe.
 - **EX1** implements a second base integer ALU plus branch/jump, system/CSR,
   fence, exception, and trap-producing operations. Valid aligned conditional
   branches produce their direction and redirect as they execute.
@@ -746,6 +750,7 @@ ordered WAW relaxation:
 | --- | ---: | --- |
 | `RETIRE_DEPTH` | 8 | Retirement/completion entries |
 | `ENABLE_RV64M` | 0 | Iterative M execution disabled |
+| `ENABLE_RV64ZBB` | 0 | Iterative 3P-only Zbb execution disabled |
 | `ENABLE_RV64A` | 1 | Serialized atomics enabled |
 | `RELAX_WAW` | 1 | Multiple ordered writers to one architectural rd allowed |
 | `RELAX_HAZARDS` | 0 | Youngest-producer result table disabled |

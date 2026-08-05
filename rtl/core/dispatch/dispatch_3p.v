@@ -316,7 +316,8 @@ module openrv64_dispatch_3p #(
                          payload[7] || payload[6] || payload[5] ||
                          payload[4] || payload[14] || payload[13]) begin
                 fixed_pipe = `OPENRV64_EXEC_PIPE_EX1;
-            end else if (payload[34:32] == `RV64_ALU_EXT_M) begin
+            end else if ((payload[34:32] == `RV64_ALU_EXT_M) ||
+                         (payload[34:32] == `RV64_ALU_EXT_ZBB)) begin
                 fixed_pipe = `OPENRV64_EXEC_PIPE_EX0;
             end else begin
                 fixed_pipe = `OPENRV64_EXEC_PIPE_EX0;
@@ -332,7 +333,8 @@ module openrv64_dispatch_3p #(
                 payload[10] || payload[9] || payload[8] ||
                 payload[7] || payload[6] || payload[5] ||
                 payload[4] || payload[14] || payload[13] ||
-                (payload[34:32] == `RV64_ALU_EXT_M);
+                (payload[34:32] == `RV64_ALU_EXT_M) ||
+                (payload[34:32] == `RV64_ALU_EXT_ZBB);
         end
     endfunction
 
