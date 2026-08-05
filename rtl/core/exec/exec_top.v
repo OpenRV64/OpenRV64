@@ -28,7 +28,8 @@ module openrv64_exec_top #(
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE_3P =
         {`RV64_XLEN{1'b0}},
-    parameter integer RETIRE_SLOT_WIDTH_3P = 3
+    parameter integer RETIRE_SLOT_WIDTH_3P = 3,
+    parameter integer PRODUCER_TAG_WIDTH_3P = `OPENRV64_INSTR_ID_WIDTH
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -186,21 +187,21 @@ module openrv64_exec_top #(
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_3p_i,
     input  wire                         branch_forward_valid_3p_i,
-    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
-                                        branch_forward_id_3p_i,
+    input  wire [PRODUCER_TAG_WIDTH_3P-1:0]
+                                        branch_forward_tag_3p_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         branch_forward_rd_addr_3p_i,
     input  wire [`RV64_XLEN-1:0]        branch_forward_data_3p_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         issue_src1_producer_valid_3p_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
-                 `OPENRV64_INSTR_ID_WIDTH-1:0]
-                                        issue_src1_producer_id_3p_i,
+                 PRODUCER_TAG_WIDTH_3P-1:0]
+                                        issue_src1_producer_tag_3p_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         issue_src2_producer_valid_3p_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
-                 `OPENRV64_INSTR_ID_WIDTH-1:0]
-                                        issue_src2_producer_id_3p_i,
+                 PRODUCER_TAG_WIDTH_3P-1:0]
+                                        issue_src2_producer_tag_3p_i,
     input  wire                         ordered_head_valid_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] ordered_head_slot_3p_i,
@@ -295,6 +296,7 @@ module openrv64_exec_top #(
         end else if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_3p
             openrv64_exec_top_3p #(
                 .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH_3P),
+                .PRODUCER_TAG_WIDTH(PRODUCER_TAG_WIDTH_3P),
                 .ENABLE_RV64M(ENABLE_RV64M),
                 .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING_3P),
                 .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
@@ -321,16 +323,16 @@ module openrv64_exec_top #(
                 .issue_slot_i(issue_slot_3p_i),
                 .issue_payload_i(issue_payload_3p_i),
                 .branch_forward_valid_i(branch_forward_valid_3p_i),
-                .branch_forward_id_i(branch_forward_id_3p_i),
+                .branch_forward_tag_i(branch_forward_tag_3p_i),
                 .branch_forward_rd_addr_i(
                     branch_forward_rd_addr_3p_i),
                 .branch_forward_data_i(branch_forward_data_3p_i),
                 .issue_src1_producer_valid_i(
                     issue_src1_producer_valid_3p_i),
-                .issue_src1_producer_id_i(issue_src1_producer_id_3p_i),
+                .issue_src1_producer_tag_i(issue_src1_producer_tag_3p_i),
                 .issue_src2_producer_valid_i(
                     issue_src2_producer_valid_3p_i),
-                .issue_src2_producer_id_i(issue_src2_producer_id_3p_i),
+                .issue_src2_producer_tag_i(issue_src2_producer_tag_3p_i),
                 .ordered_head_valid_i(ordered_head_valid_3p_i),
                 .ordered_head_id_i(ordered_head_id_3p_i),
                 .ordered_head_slot_i(ordered_head_slot_3p_i),

@@ -21,6 +21,9 @@ def canonical(name: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--variant", choices=("fd", "nofd"), required=True)
+    parser.add_argument(
+        "--register-issue-select", type=int, choices=(0, 1), default=0
+    )
     parser.add_argument("--stat", type=Path, required=True)
     parser.add_argument("--liberty", type=Path, required=True)
     parser.add_argument("--worker-dir", type=Path, required=True)
@@ -60,6 +63,7 @@ def main() -> int:
             "l1d": False,
             "trace": False,
             "pipelined_fp_multiply": True,
+            "registered_issue_select": bool(args.register_issue_select),
         },
         "area_um2": float(top.get("area", 0.0)),
         "sequential_area_um2": float(top.get("sequential_area", 0.0)),

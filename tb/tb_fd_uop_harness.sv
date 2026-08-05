@@ -52,6 +52,9 @@ module tb_fd_uop_harness #(
     reg [WINDOW_DEPTH-1:0] window_issued;
     reg [WINDOW_DEPTH*64-1:0] window_src1_data;
     reg [WINDOW_DEPTH*64-1:0] window_src2_data;
+    wire scalar_read_valid;
+    wire [4:0] scalar_read_addr;
+    wire [63:0] scalar_read_data;
     reg [SW-1:0] next_retire_slot;
 
     wire [WINDOW_DEPTH-1:0] entry_fp_valid;
@@ -191,6 +194,8 @@ module tb_fd_uop_harness #(
                                   init_fpr_data : retire_fpr_data;
 
     assign fpr_read_data = {fpr_rs3_data, fpr_rs2_data, fpr_rs1_data};
+    assign scalar_read_data = window_src1_data[
+        fpu_request_slot*64 +: 64];
     assign fpu_request_tag = {
         fpu_request_branch_mask,
         fpu_request_flags_write,
@@ -219,9 +224,11 @@ module tb_fd_uop_harness #(
         .allocation_branch_mask_i(allocation_branch_mask),
         .window_eligible_i(window_eligible),
         .window_issued_i(window_issued),
-        .window_src1_data_i(window_src1_data),
-        .window_src2_data_i(window_src2_data),
         .next_retire_slot_i(next_retire_slot),
+        .scalar_read_valid_o(scalar_read_valid),
+        .scalar_read_addr_o(scalar_read_addr),
+        .scalar_read_ready_i(1'b1),
+        .scalar_read_data_i(scalar_read_data),
         .entry_fp_valid_o(entry_fp_valid),
         .entry_fp_compute_o(entry_fp_compute),
         .entry_fp_load_o(entry_fp_load),

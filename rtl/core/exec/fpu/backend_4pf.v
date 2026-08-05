@@ -33,6 +33,7 @@ module openrv64_backend_4pf #(
     parameter integer ENABLE_EQ_BRANCH_PAIRING = 1,
     parameter integer ENABLE_ISSUE_WINDOW = 1,
     parameter integer ENABLE_SPECULATION_WINDOW = 1,
+    parameter integer REGISTER_ISSUE_SELECT = 0,
     parameter integer ISSUE_WINDOW_DEPTH = 16,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
@@ -217,11 +218,11 @@ module openrv64_backend_4pf #(
     wire [`OPENRV64_EXEC_PIPE_COUNT*
           `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] pipe_payload;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_src1_producer_valid;
-    wire [`OPENRV64_EXEC_PIPE_COUNT*
-          `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_src1_producer_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
+        pipe_src1_producer_slot;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_src2_producer_valid;
-    wire [`OPENRV64_EXEC_PIPE_COUNT*
-          `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_src2_producer_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
+        pipe_src2_producer_slot;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_unsupported;
 
     wire [2:0] complete_valid;
@@ -911,7 +912,7 @@ module openrv64_backend_4pf #(
     // Cheap branch-only bypass.  Retain the youngest-owner check as the
     // qualification used by strict dispatch, whose same-cycle forwarding is
     // still architectural-register based.  The issue-window path additionally
-    // carries the exact source-producer ID to EX1; that identity check rejects
+    // carries the exact source-producer slot to EX1; that tag check rejects
     // a younger WAW completion even when this coarse owner check accepts it.
     wire [2:0] branch_completion_forward_valid;
     genvar branch_forward_lane;
@@ -1017,8 +1018,10 @@ module openrv64_backend_4pf #(
     wire fp_mem_load_ready;
     wire [ISSUE_WINDOW_DEPTH-1:0] fp_window_eligible;
     wire [ISSUE_WINDOW_DEPTH-1:0] fp_window_issued;
-    wire [ISSUE_WINDOW_DEPTH*`RV64_XLEN-1:0] fp_window_src1_data;
-    wire [ISSUE_WINDOW_DEPTH*`RV64_XLEN-1:0] fp_window_src2_data;
+    wire fp_scalar_read_valid;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] fp_scalar_read_addr;
+    wire fp_scalar_read_ready;
+    wire [`RV64_XLEN-1:0] fp_scalar_read_data;
 
     wire fp_mem_issue_valid;
     wire fp_mem_issue_fire;
@@ -1113,6 +1116,8 @@ module openrv64_backend_4pf #(
     openrv64_dispatch_window_4pf #(
         .ENABLE(1),
         .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW),
+        .ENABLE_TRACE(ENABLE_TRACE),
+        .REGISTER_ISSUE_SELECT(REGISTER_ISSUE_SELECT),
         .DEPTH(ISSUE_WINDOW_DEPTH),
         .CACHEABLE_BASE(CACHEABLE_BASE),
         .CACHEABLE_SIZE(CACHEABLE_SIZE),
@@ -1122,6 +1127,7 @@ module openrv64_backend_4pf #(
         .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
         .squash_frontend_i(squash_frontend_i),
         .squash_id_i(exec_redirect_id),
+        .squash_slot_i(exec_redirect_slot),
         .translation_bypass_i(translation_bypass_i),
         .decode_valid_i(decode_valid_i),
         .decode_ready_o(decode_ready_o),
@@ -1149,8 +1155,10 @@ module openrv64_backend_4pf #(
         .extension_load_issue_ready_i(fp_mem_load_ready),
         .extension_window_eligible_o(fp_window_eligible),
         .extension_window_issued_o(fp_window_issued),
-        .extension_window_src1_data_o(fp_window_src1_data),
-        .extension_window_src2_data_o(fp_window_src2_data),
+        .extension_scalar_read_valid_i(fp_scalar_read_valid),
+        .extension_scalar_read_addr_i(fp_scalar_read_addr),
+        .extension_scalar_read_ready_o(fp_scalar_read_ready),
+        .extension_scalar_read_data_o(fp_scalar_read_data),
         .extension_issue_fire_i(fpu_fire),
         .extension_issue_id_i(fpu_id),
         .extension_issue_slot_i(fpu_slot),
@@ -1165,17 +1173,16 @@ module openrv64_backend_4pf #(
         .pipe_slot_o(pipe_slot),
         .pipe_payload_o(pipe_payload),
         .pipe_src1_producer_valid_o(pipe_src1_producer_valid),
-        .pipe_src1_producer_id_o(pipe_src1_producer_id),
+        .pipe_src1_producer_slot_o(pipe_src1_producer_slot),
         .pipe_src2_producer_valid_o(pipe_src2_producer_valid),
-        .pipe_src2_producer_id_o(pipe_src2_producer_id),
+        .pipe_src2_producer_slot_o(pipe_src2_producer_slot),
         .completion_valid_i(complete_valid),
         .completion_id_i(complete_id),
+        .completion_slot_i(complete_slot),
         .completion_payload_i(complete_payload),
         .retire_valid_i(release_valid),
-        .retire_id_i(queue_retire_id),
         .retire_slot_i(window_retire_slot),
         .retire_hard_i(retire_hard),
-        .next_retire_id_i(next_retire_id),
         .next_retire_slot_i(next_retire_slot),
         .barrier_active_o(barrier_active_o),
         .raw_hazard_o(raw_hazard),
@@ -1254,9 +1261,11 @@ module openrv64_backend_4pf #(
         .allocation_branch_mask_i(allocation_branch_mask),
         .window_eligible_i(fp_window_eligible),
         .window_issued_i(fp_window_issued),
-        .window_src1_data_i(fp_window_src1_data),
-        .window_src2_data_i(fp_window_src2_data),
         .next_retire_slot_i(next_retire_slot),
+        .scalar_read_valid_o(fp_scalar_read_valid),
+        .scalar_read_addr_o(fp_scalar_read_addr),
+        .scalar_read_ready_i(fp_scalar_read_ready),
+        .scalar_read_data_i(fp_scalar_read_data),
         .entry_fp_valid_o(fp_entry_valid),
         .entry_fp_compute_o(fp_entry_compute),
         .entry_fp_load_o(fp_entry_load),
@@ -1360,6 +1369,8 @@ module openrv64_backend_4pf #(
         assign fp_entry_store_data =
             {ISSUE_WINDOW_DEPTH*`RV64_XLEN{1'b0}};
         assign fp_mem_load_ready = 1'b0;
+        assign fp_scalar_read_valid = 1'b0;
+        assign fp_scalar_read_addr = {`RV64_REG_ADDR_WIDTH{1'b0}};
         assign fpr_read_addr = {3*`RV64_REG_ADDR_WIDTH{1'b0}};
         assign fpr_store_read_addr = {`RV64_REG_ADDR_WIDTH{1'b0}};
         assign fpu_valid = 1'b0;
@@ -1401,6 +1412,7 @@ module openrv64_backend_4pf #(
     endgenerate
 
     openrv64_rv64i_gpr_3p #(
+        .READ_WRITE_BYPASS(0),
         .ALLOW_DUPLICATE_WRITES(RELAX_WAW),
         .NUM_REGS(PHYS_REG_COUNT),
         .REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH)
@@ -1483,6 +1495,7 @@ module openrv64_backend_4pf #(
     openrv64_exec_top #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
         .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH), .ENABLE_RV64M(ENABLE_RV64M),
+        .PRODUCER_TAG_WIDTH_3P(SLOT_WIDTH),
         .ENABLE_LOCAL_FORWARDING_3P(ENABLE_ISSUE_WINDOW == 0),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),
@@ -1530,16 +1543,15 @@ module openrv64_backend_4pf #(
         .issue_payload_3p_i(pipe_payload),
         .branch_forward_valid_3p_i(
             branch_completion_forward_valid[0]),
-        .branch_forward_id_3p_i(
-            complete_id[0 +: `OPENRV64_INSTR_ID_WIDTH]),
+        .branch_forward_tag_3p_i(complete_slot[0 +: SLOT_WIDTH]),
         .branch_forward_rd_addr_3p_i(
             completion_forward_rd_addr[0 +: `RV64_REG_ADDR_WIDTH]),
         .branch_forward_data_3p_i(
             completion_forward_data[0 +: `RV64_XLEN]),
         .issue_src1_producer_valid_3p_i(pipe_src1_producer_valid),
-        .issue_src1_producer_id_3p_i(pipe_src1_producer_id),
+        .issue_src1_producer_tag_3p_i(pipe_src1_producer_slot),
         .issue_src2_producer_valid_3p_i(pipe_src2_producer_valid),
-        .issue_src2_producer_id_3p_i(pipe_src2_producer_id),
+        .issue_src2_producer_tag_3p_i(pipe_src2_producer_slot),
         .ordered_head_valid_3p_i(ordered_head_valid),
         .ordered_head_id_3p_i(ordered_head_id),
         .ordered_head_slot_3p_i(ordered_head_slot),

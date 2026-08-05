@@ -1160,16 +1160,16 @@ module openrv64_backend_3p #(
         .issue_payload_3p_i(pipe_payload),
         .branch_forward_valid_3p_i(
             branch_completion_forward_valid[0]),
-        .branch_forward_id_3p_i(
+        .branch_forward_tag_3p_i(
             complete_id[0 +: `OPENRV64_INSTR_ID_WIDTH]),
         .branch_forward_rd_addr_3p_i(
             completion_forward_rd_addr[0 +: `RV64_REG_ADDR_WIDTH]),
         .branch_forward_data_3p_i(
             completion_forward_data[0 +: `RV64_XLEN]),
         .issue_src1_producer_valid_3p_i(pipe_src1_producer_valid),
-        .issue_src1_producer_id_3p_i(pipe_src1_producer_id),
+        .issue_src1_producer_tag_3p_i(pipe_src1_producer_id),
         .issue_src2_producer_valid_3p_i(pipe_src2_producer_valid),
-        .issue_src2_producer_id_3p_i(pipe_src2_producer_id),
+        .issue_src2_producer_tag_3p_i(pipe_src2_producer_id),
         .ordered_head_valid_3p_i(ordered_head_valid),
         .ordered_head_id_3p_i(ordered_head_id),
         .ordered_head_slot_3p_i(ordered_head_slot),

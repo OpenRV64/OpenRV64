@@ -11,6 +11,7 @@ liberty=${LIBERTY:-$repo_root/sim/pdk/nangate45/NangateOpenCellLibrary_typical.l
 abc_constr=${ABC_CONSTR:-$script_dir/abc.constr}
 out_root=${OUT_DIR:-$repo_root/sim/yosys/core-4pf-nangate45}
 resource_jobs=${RESOURCE_JOBS:-16}
+register_issue_select=${REGISTER_ISSUE_SELECT:-0}
 
 case "$variant" in
     fd)
@@ -35,6 +36,10 @@ if [[ ! "$resource_jobs" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if (( resource_jobs > 32 )); then
     resource_jobs=32
+fi
+if [[ "$register_issue_select" != 0 && "$register_issue_select" != 1 ]]; then
+    echo "error: REGISTER_ISSUE_SELECT must be 0 or 1" >&2
+    exit 2
 fi
 
 for path_var in liberty abc_constr out_root; do
@@ -80,6 +85,7 @@ hierarchy -check -top openrv64_top_4pf \
     -chparam RETIRE_DEPTH 16 \
     -chparam ENABLE_ISSUE_WINDOW 1 \
     -chparam ENABLE_SPECULATION_WINDOW 1 \
+    -chparam REGISTER_ISSUE_SELECT $register_issue_select \
     -chparam ENABLE_L1I 0 \
     -chparam ENABLE_L1D 0 \
     -chparam ENABLE_TRACE 0;"
@@ -142,6 +148,7 @@ python3 "$repo_root/synth/core/parallel_map.py" \
 
 python3 "$script_dir/summarize-core-4pf.py" \
     --variant "$variant" \
+    --register-issue-select "$register_issue_select" \
     --stat "$map_stat" \
     --liberty "$liberty" \
     --worker-dir "$worker_dir" \

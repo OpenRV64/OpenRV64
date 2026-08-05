@@ -30,6 +30,7 @@
 // buffered until retirement.
 module openrv64_exec_top_3p #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
+    parameter integer PRODUCER_TAG_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer ENABLE_RV64M = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
@@ -61,21 +62,20 @@ module openrv64_exec_top_3p #(
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_i,
     input  wire                         branch_forward_valid_i,
-    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
-                                        branch_forward_id_i,
+    input  wire [PRODUCER_TAG_WIDTH-1:0] branch_forward_tag_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         branch_forward_rd_addr_i,
     input  wire [`RV64_XLEN-1:0]        branch_forward_data_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         issue_src1_producer_valid_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
-                 `OPENRV64_INSTR_ID_WIDTH-1:0]
-                                        issue_src1_producer_id_i,
+                 PRODUCER_TAG_WIDTH-1:0]
+                                        issue_src1_producer_tag_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         issue_src2_producer_valid_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
-                 `OPENRV64_INSTR_ID_WIDTH-1:0]
-                                        issue_src2_producer_id_i,
+                 PRODUCER_TAG_WIDTH-1:0]
+                                        issue_src2_producer_tag_i,
 
     input  wire                         ordered_head_valid_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_i,
@@ -438,6 +438,7 @@ module openrv64_exec_top_3p #(
 
     openrv64_exec_pipe_ex1 #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .PRODUCER_TAG_WIDTH(PRODUCER_TAG_WIDTH),
         .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING)
     ) u_ex1 (
         .clk(clk),
@@ -454,17 +455,15 @@ module openrv64_exec_top_3p #(
             1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
         .branch_forward_valid_i(branch_forward_valid_i),
-        .branch_forward_id_i(branch_forward_id_i),
+        .branch_forward_tag_i(branch_forward_tag_i),
         .branch_forward_rd_addr_i(branch_forward_rd_addr_i),
         .branch_forward_data_i(branch_forward_data_i),
         .src1_producer_valid_i(issue_src1_producer_valid_i[1]),
-        .src1_producer_id_i(issue_src1_producer_id_i[
-            1*`OPENRV64_INSTR_ID_WIDTH +:
-            `OPENRV64_INSTR_ID_WIDTH]),
+        .src1_producer_tag_i(issue_src1_producer_tag_i[
+            1*PRODUCER_TAG_WIDTH +: PRODUCER_TAG_WIDTH]),
         .src2_producer_valid_i(issue_src2_producer_valid_i[1]),
-        .src2_producer_id_i(issue_src2_producer_id_i[
-            1*`OPENRV64_INSTR_ID_WIDTH +:
-            `OPENRV64_INSTR_ID_WIDTH]),
+        .src2_producer_tag_i(issue_src2_producer_tag_i[
+            1*PRODUCER_TAG_WIDTH +: PRODUCER_TAG_WIDTH]),
         .complete_valid_o(complete_valid_o[1]),
         .complete_ready_i(complete_ready_i[1]),
         .complete_id_o(complete_id_o[

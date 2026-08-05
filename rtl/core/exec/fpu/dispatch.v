@@ -43,9 +43,16 @@ module openrv64_fd_dispatch #(
     // while the macro-instruction remains resident until retirement.
     input  wire [WINDOW_DEPTH-1:0]      window_eligible_i,
     input  wire [WINDOW_DEPTH-1:0]      window_issued_i,
-    input  wire [WINDOW_DEPTH*`RV64_XLEN-1:0] window_src1_data_i,
-    input  wire [WINDOW_DEPTH*`RV64_XLEN-1:0] window_src2_data_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] next_retire_slot_i,
+
+    // F/D compute operations normally read FPRs.  Integer-to-FP moves and
+    // conversions request their one scalar operand only after this sidecar has
+    // selected a slot; the parent window either resolves its dependency or
+    // lends a spare GPR read port.
+    output reg                          scalar_read_valid_o,
+    output reg  [`RV64_REG_ADDR_WIDTH-1:0] scalar_read_addr_o,
+    input  wire                         scalar_read_ready_i,
+    input  wire [`RV64_XLEN-1:0]        scalar_read_data_i,
 
     output reg  [WINDOW_DEPTH-1:0]      entry_fp_valid_o,
     output reg  [WINDOW_DEPTH-1:0]      entry_fp_compute_o,
@@ -609,11 +616,13 @@ module openrv64_fd_dispatch #(
     end
 
     // Keep payload generation separate from selection.  In particular, FPR
-    // read data must not appear in the select process: the real combinational
-    // FPR is addressed from the selected slot, and merging these two concerns
-    // creates a false read-address/data feedback loop during elaboration.
+    // and scalar read data must not appear in the select process: both register
+    // files are addressed from the selected slot, and merging these concerns
+    // creates read-address/data feedback during elaboration.
     always_comb begin
         fpu_valid_o = fpu_selected;
+        scalar_read_valid_o = 1'b0;
+        scalar_read_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
         fpu_id_o = {ID_WIDTH{1'b0}};
         fpu_slot_o = {RETIRE_SLOT_WIDTH{1'b0}};
         fpu_op_o = `OPENRV64_FP_OP_INVALID;
@@ -641,8 +650,11 @@ module openrv64_fd_dispatch #(
                     producer_result_data(src1_tag_q[fpu_slot_index],
                                          src1_slot_q[fpu_slot_index]);
             end else begin
-                fpu_src1_o = window_src1_data_i[
-                    fpu_slot_index*`RV64_XLEN +: `RV64_XLEN];
+                scalar_read_valid_o = 1'b1;
+                scalar_read_addr_o = rs1_q[fpu_slot_index];
+                fpu_src1_o = scalar_read_data_i;
+                if (!scalar_read_ready_i)
+                    fpu_valid_o = 1'b0;
             end
             if (src2_fp_q[fpu_slot_index]) begin
                 fpu_src2_o = src2_ready_q[fpu_slot_index] ?
@@ -650,8 +662,9 @@ module openrv64_fd_dispatch #(
                     producer_result_data(src2_tag_q[fpu_slot_index],
                                          src2_slot_q[fpu_slot_index]);
             end else begin
-                fpu_src2_o = window_src2_data_i[
-                    fpu_slot_index*`RV64_XLEN +: `RV64_XLEN];
+                // No standard F/D compute operation has a second scalar GPR
+                // operand.  Non-private src2 is an unused encoded field.
+                fpu_src2_o = {`RV64_XLEN{1'b0}};
             end
             if (src3_fp_q[fpu_slot_index]) begin
                 fpu_src3_o = src3_ready_q[fpu_slot_index] ?

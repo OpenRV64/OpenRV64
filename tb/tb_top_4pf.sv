@@ -9,7 +9,8 @@ module tb_top_4pf #(
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer MEMORY_ORACLE = 0,
     parameter integer ENABLE_L1 = 0,
-    parameter integer ENABLE_PIPELINED_FP_MULTIPLY = 1
+    parameter integer ENABLE_PIPELINED_FP_MULTIPLY = 1,
+    parameter integer REGISTER_ISSUE_SELECT = 0
 );
     localparam [63:0] RESET_VECTOR = 64'h0000_0000_8000_0000;
     localparam [63:0] DAXPY_PASS = 64'h4441_5850_595f_4f4b;
@@ -175,6 +176,7 @@ module tb_top_4pf #(
         .ENABLE_RV64A(1),
         .ENABLE_ISSUE_WINDOW(1),
         .ENABLE_SPECULATION_WINDOW(1),
+        .REGISTER_ISSUE_SELECT(REGISTER_ISSUE_SELECT),
         .ENABLE_POSTED_STORES(0),
         .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),

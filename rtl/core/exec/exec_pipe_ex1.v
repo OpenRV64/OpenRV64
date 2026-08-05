@@ -13,6 +13,7 @@
 // retire queue completion port.
 module openrv64_exec_pipe_ex1 #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
+    parameter integer PRODUCER_TAG_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer ENABLE_LOCAL_FORWARDING = 1
 ) (
     input  wire                         clk,
@@ -25,15 +26,14 @@ module openrv64_exec_pipe_ex1 #(
     input  wire [RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
     input  wire                         branch_forward_valid_i,
-    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
-                                        branch_forward_id_i,
+    input  wire [PRODUCER_TAG_WIDTH-1:0] branch_forward_tag_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         branch_forward_rd_addr_i,
     input  wire [`RV64_XLEN-1:0]        branch_forward_data_i,
     input  wire                         src1_producer_valid_i,
-    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] src1_producer_id_i,
+    input  wire [PRODUCER_TAG_WIDTH-1:0] src1_producer_tag_i,
     input  wire                         src2_producer_valid_i,
-    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] src2_producer_id_i,
+    input  wire [PRODUCER_TAG_WIDTH-1:0] src2_producer_tag_i,
 
     output wire                         complete_valid_o,
     input  wire                         complete_ready_i,
@@ -149,14 +149,15 @@ module openrv64_exec_pipe_ex1 #(
     // Architectural rd identifies a value's destination, not which dynamic
     // producer a branch consumes.  A younger WAW may complete before an older
     // branch in the issue-window backend, so cross-pipe forwarding must match
-    // the producer ID captured with that specific source operand.
+    // the producer tag captured with that specific source operand.  Dispatch
+    // may use a global ID or a bounded retirement-slot dependency tag.
     wire branch_forward_rs1 = branch && branch_forward_valid_i &&
         src1_producer_valid_i &&
-        (src1_producer_id_i == branch_forward_id_i) &&
+        (src1_producer_tag_i == branch_forward_tag_i) &&
         (rs1_addr == branch_forward_rd_addr_i);
     wire branch_forward_rs2 = branch && branch_forward_valid_i &&
         src2_producer_valid_i &&
-        (src2_producer_id_i == branch_forward_id_i) &&
+        (src2_producer_tag_i == branch_forward_tag_i) &&
         (rs2_addr == branch_forward_rd_addr_i);
     wire [`RV64_XLEN-1:0] operand_rs1 = branch_forward_rs1 ?
         branch_forward_data_i :
