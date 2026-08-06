@@ -43,10 +43,10 @@ coherence-traffic workloads.
 
 ### Standard one-hart baseline
 
-`sim-1h-3p-coherence-suite` uses `tb_top_3p_soc`, the standard one-hart CCX
+`sim-1h-3p-coherence-suite` uses `tb_top_3p_soc`, the standard one-hart ICX
 compatibility wrapper and L2.  `ENABLE_L1D_COHERENCE_PROBES` is zero and the
 multi-hart coherent home is absent.  It is therefore the non-coherent
-baseline, although the one-hart CCX wrapper remains in the hierarchy.
+baseline, although the one-hart ICX wrapper remains in the hierarchy.
 
 The relevant configuration is:
 
@@ -142,7 +142,7 @@ count.  The host-side checkpoint capture point also differed (25 million
 cycles for 2H and 34 million for 4H).
 
 The completed four-hart run retired 44,205,499, 17,965,672, 25,778,899, and
-14,462,807 instructions on harts 0-3.  The corresponding per-hart CCX request
+14,462,807 instructions on harts 0-3.  The corresponding per-hart ICX request
 counts were 8,151,264, 3,908,712, 5,302,998, and 3,458,313.  It issued
 2,074,946 memory reads and 979,739 memory writes; the DDR model reported the
 same numbers of read and write bursts.
@@ -157,7 +157,7 @@ hart-1 samples repeatedly symbolized to the OpenSBI `spin_lock` path.  The run
 was manually stopped after 25 million sampled cycles without boot-thread
 progress; it had no prompt, testbench PASS, simulator result, or runner
 validation result.  Cycle tracing identified the owning defect as the
-hart-local CCX command arbiter retaining a grant after a one-cycle requester
+hart-local ICX command arbiter retaining a grant after a one-cycle requester
 withdrew before the downstream handshake.  The stale data-side grant then
 masked a later instruction-side request indefinitely.
 
@@ -167,7 +167,7 @@ serialization-compatible simulator, SHA-256
 `79dbd8659e2910c0fc53bb8a747978f861f6969687034cbfe83e1583b3d52585`.  It
 reached the literal `openrv64# ` prompt and testbench PASS at cycle 124,872,576.
 Harts 0 and 1 retired
-51,214,548 and 27,079,683 instructions and issued 8,337,236 and 6,316,927 CCX
+51,214,548 and 27,079,683 instructions and issued 8,337,236 and 6,316,927 ICX
 requests.  The memory model completed 1,389,271 reads and 712,707 writes; the
 DDR model reported the same read- and write-burst counts.  The reported wall
 time covers only the 106.9-million-cycle-to-prompt replay and was measured

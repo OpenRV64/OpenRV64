@@ -10,11 +10,11 @@ Backnds to AXI4 (64-512b) or WB (64-512 which isn't compliant, best to use this 
 
 Next steps:
 
-1. Multiprocessing, CCX is designed for 4 cores, atomics need much more testing/validation, as do shootdowns, etc.
-2. Integrate fp unit
+1. Multiprocessing, ICX is designed for 4 cores, atomics need much more testing/validation, as do shootdowns, etc. #update now boots linux and passes test suite with 2/4 harts
+2. Integrate fp unit - in progress
 3. Have non-RVV vector units want to test in main design, currently they're in their own harness.
-4. Performance, it seems pretty solid, close to an a53 at 1/3 the size. Haven't pushed it, but much of performance work was using coremarks to design the frontend, then simple things like streams for everything memory.
-5. PD is a concern, timing isn't terrible (though mul is still bad), but mostly there are CAM structures and the forwarding network is unpleasant, need a better design here.
+4. Performance, it seems pretty solid, beats an a53 handily on most integer loads so far. Haven't pushed it, but much of performance work was using coremarks to design the frontend, then simple things like streams for everything memory.
+5. PD is the biggest concern, timing isn't terrible (though mul is still bad), but mostly there are CAM structures and the forwarding network is unpleasant, need a better design here.
 6. OOO, but this is a ways off.
 7. This is actually first, ordered an Artix-7 100t, need to validate under a full distribution like debian, might have to recompile due to lack of -C.
 8. We make it rain with prefetches, I have confidence gating in some branch predictors, but the whole algorithm needs tuning.

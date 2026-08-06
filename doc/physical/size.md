@@ -36,7 +36,7 @@ There is no single honest area number without defining the boundary:
 | Boundary | Standard-cell area | Detailed total | What it includes |
 |---|---:|---:|---|
 | CPU-side logic | **2.404753 mm²** | 45.18% | Frontend, backend, GPR, execution, LSU, CSR/PMP, retirement |
-| Cacheless core | **3.080753 mm²** | 57.88% | CPU-side logic plus I/D TLBs, PTW, request routing, and AXI/CCX glue |
+| Cacheless core | **3.080753 mm²** | 57.88% | CPU-side logic plus I/D TLBs, PTW, request routing, and AXI/ICX glue |
 | L1-integrated core logic | **5.322836 mm²** | 100.00% | Cacheless core plus L1I/L1D control, tags, buffers, and prefetch logic |
 | L1 data arrays | **32 KiB, area unknown** | n/a | Eight inferred 1R/1W SRAM banks; no mapped macro area |
 
@@ -93,16 +93,16 @@ The percentages use the detailed 5.322836 mm² standard-cell total.
 
 - **L1D control/tags:** four-way tags and metadata, eight fill-buffer lines,
   eight store-buffer lines, stride prefetch state/queue, request tracking,
-  replacement state, and the native CCX client. Its four 512x64-bit data banks
+  replacement state, and the native ICX client. Its four 512x64-bit data banks
   are excluded from the cell area.
 - **L1I control/tags:** four-way tags and metadata, eight fill-buffer lines,
-  prefetch and retirement-age state, replacement state, and the native CCX
+  prefetch and retirement-age state, replacement state, and the native ICX
   client. Its four 64x512-bit data banks are excluded.
-- **PTW:** page-walk state, a 64-entry PTE cache, permission handling, and a CCX
+- **PTW:** page-walk state, a 64-entry PTE cache, permission handling, and a ICX
   client.
 - **I/D TLBs:** two 16-entry fully checked translation arrays.
 - **Memory-system routing/AXI:** translation/request queues, PMP arbitration,
-  cache/PTW CCX arbitration, response ownership, cancellation, and the residual
+  cache/PTW ICX arbitration, response ownership, cancellation, and the residual
   256-bit AXI instruction path.
 
 The L1 controller totals are large because only the bulk data arrays inferred

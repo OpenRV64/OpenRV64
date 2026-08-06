@@ -71,17 +71,17 @@ def category_for(module: str) -> tuple[str, str]:
             "Memory-system routing/AXI",
             "core-bus wrapper and external interface selection",
         ),
-        "openrv64_core_ccx_bus": (
+        "openrv64_core_icx_bus": (
             "Memory-system routing/AXI",
-            "translation/request queues, PMP and CCX arbitration, and the residual 256-bit AXI path",
+            "translation/request queues, PMP and ICX arbitration, and the residual 256-bit AXI path",
         ),
-        "openrv64_l1d_ccx": (
+        "openrv64_l1d_icx": (
             "L1D control/tags",
-            "16 KiB four-way L1D control, tags, fill/store buffers, prefetcher, and CCX client; data SRAM excluded",
+            "16 KiB four-way L1D control, tags, fill/store buffers, prefetcher, and ICX client; data SRAM excluded",
         ),
-        "openrv64_l1i_ccx": (
+        "openrv64_l1i_icx": (
             "L1I control/tags",
-            "16 KiB four-way L1I control, tags, fill buffers, prefetch state, and CCX client; data SRAM excluded",
+            "16 KiB four-way L1I control, tags, fill buffers, prefetch state, and ICX client; data SRAM excluded",
         ),
         "openrv64_bus_tlb": (
             "I/D TLBs",
@@ -93,7 +93,7 @@ def category_for(module: str) -> tuple[str, str]:
         ),
         "openrv64_bus_ptw": (
             "Page-table walker",
-            "shared page-table walker, PTE cache, and CCX client",
+            "shared page-table walker, PTE cache, and ICX client",
         ),
         "openrv64_dispatch_3p": (
             "Dispatch/hazards",
@@ -198,7 +198,7 @@ def inferred_memories(path: Path) -> list[dict]:
         module = current_memory["module"].lower()
         if (
             "tag_overlay_mem" in name
-            and "openrv64_l1d_ccx" in module
+            and "openrv64_l1d_icx" in module
         ):
             current_memory["group"] = "L1D request overlay"
         elif "u_l1i" in name:

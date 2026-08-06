@@ -538,7 +538,7 @@ the Sv39 tagged translation path. Effective-address aperture checks are not
 used as alias proofs. The current static cacheable aperture is only a temporary
 attribute mechanism; explicit PMA/MMIO classification is still required.
 
-The shared L1 remains blocking by default, but the current CCX L1D selects its
+The shared L1 remains blocking by default, but the current ICX L1D selects its
 detached-miss interface and implements a parameterized demand MSHR array
 (default three). Different lines issue with independent transaction IDs,
 same-line requests merge as tagged waiters, and responses may return out of

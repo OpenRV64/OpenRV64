@@ -2,7 +2,7 @@
 
 // Data-side specialization of the shared L1 array/controller. Stores remain
 // write-through and no-write-allocate; reads use the shared set-associative
-// implementation. The surrounding L1D owns MSHRs, dirty overlays, and CCX.
+// implementation. The surrounding L1D owns MSHRs, dirty overlays, and ICX.
 module openrv64_l1d #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,

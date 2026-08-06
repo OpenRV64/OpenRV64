@@ -267,7 +267,7 @@ The VLSU/cache link remains a tagged request/response stream. The cache retains
 the client and tag in its miss entry and owns cache-level replay. The
 bus-facing wrapper has an ordered tag FIFO matching genbus admission capacity,
 so multiple miss requests can remain in flight without losing the cache MSHR
-identity. Genbus is shared with CCX/L2, independently parameterizes producer
+identity. Genbus is shared with ICX/L2, independently parameterizes producer
 and downstream widths, and selects AXI or WISHBONE. Separate read and write
 buffers permit multiple fixed-ID AXI transactions to be outstanding while
 restoring the untagged response stream to acceptance order. AXI IDs identify
@@ -290,7 +290,7 @@ lowest ready address so an unrelated round-robin pointer cannot split it at
 the MSHR ring boundary. A line-wide cache producer can therefore turn a
 four-line VPRFM into one four-beat transaction on 512-bit AXI. A longer
 descriptor is emitted in batches bounded by the MSHR count, genbus read-buffer
-depth, and AXI's 256-beat limit. Genbus also splits at 4 KiB boundaries. CCX
+depth, and AXI's 256-beat limit. Genbus also splits at 4 KiB boundaries. ICX
 does not use this hint and drives its genbus burst count to zero.
 
 The bus wrapper supports 32, 64, 128, 256, and 512-bit buses. With the default

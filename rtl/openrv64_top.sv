@@ -51,8 +51,8 @@ module openrv64_top #(
     parameter int unsigned L2_TLB_ENTRIES = 256,
     parameter int unsigned L2_TLB_WAYS = 4,
     parameter int unsigned PTW_PTE_CACHE_ENTRIES = 64,
-    parameter int unsigned PTW_CCX_TIMEOUT_CYCLES = 65536,
-    parameter logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID = '0,
+    parameter int unsigned PTW_ICX_TIMEOUT_CYCLES = 65536,
+    parameter logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID = '0,
     parameter bit ENABLE_MAGIC_MEMORY = 1'b0,
     parameter bit ENABLE_TRACE = 1'b0,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
@@ -129,38 +129,38 @@ module openrv64_top #(
     input  logic        m_axi_bvalid,
     output logic        m_axi_bready,
 
-    output logic        ccx_req_valid,
-    input  logic        ccx_req_ready,
-    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id,
-    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id,
-    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id,
-    output logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op,
-    output logic        ccx_req_lock,
-    output logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order,
-    output logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind,
-    output logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr,
-    output logic [2:0]  ccx_req_size,
-    output logic [63:0] ccx_req_addr,
-    output logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len,
-    output logic        ccx_wdata_valid,
-    input  logic        ccx_wdata_ready,
-    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id,
-    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id,
-    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id,
-    output logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index,
-    output logic        ccx_wdata_last,
-    output logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata,
-    output logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb,
-    input  logic        ccx_resp_valid,
-    output logic        ccx_resp_ready,
-    input  logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id,
-    input  logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id,
-    input  logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id,
-    input  logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index,
-    input  logic        ccx_resp_last,
-    input  logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata,
-    input  logic        ccx_resp_error,
-    input  logic        ccx_resp_sc_success,
+    output logic        icx_req_valid,
+    input  logic        icx_req_ready,
+    output logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id,
+    output logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id,
+    output logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id,
+    output logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op,
+    output logic        icx_req_lock,
+    output logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order,
+    output logic [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind,
+    output logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr,
+    output logic [2:0]  icx_req_size,
+    output logic [63:0] icx_req_addr,
+    output logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len,
+    output logic        icx_wdata_valid,
+    input  logic        icx_wdata_ready,
+    output logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_wdata_hart_id,
+    output logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_wdata_txn_id,
+    output logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id,
+    output logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_wdata_beat_index,
+    output logic        icx_wdata_last,
+    output logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata,
+    output logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb,
+    input  logic        icx_resp_valid,
+    output logic        icx_resp_ready,
+    input  logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id,
+    input  logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id,
+    input  logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id,
+    input  logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_resp_beat_index,
+    input  logic        icx_resp_last,
+    input  logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata,
+    input  logic        icx_resp_error,
+    input  logic        icx_resp_sc_success,
 
     input  logic        irq_m_software,
     input  logic        irq_m_timer,
@@ -203,28 +203,28 @@ module openrv64_top #(
     wire [63:0] legacy_mem_addr;
     wire [63:0] legacy_mem_wdata;
     wire [7:0] legacy_mem_wstrb;
-    wire legacy_ccx_req_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] legacy_ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] legacy_ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] legacy_ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] legacy_ccx_req_op;
-    wire legacy_ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] legacy_ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] legacy_ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] legacy_ccx_req_attr;
-    wire [2:0] legacy_ccx_req_size;
-    wire [63:0] legacy_ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] legacy_ccx_req_burst_len;
-    wire legacy_ccx_wdata_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] legacy_ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] legacy_ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] legacy_ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-        legacy_ccx_wdata_beat_index;
-    wire legacy_ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] legacy_ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] legacy_ccx_wstrb;
-    wire legacy_ccx_resp_ready;
+    wire legacy_icx_req_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] legacy_icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] legacy_icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] legacy_icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] legacy_icx_req_op;
+    wire legacy_icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] legacy_icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] legacy_icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] legacy_icx_req_attr;
+    wire [2:0] legacy_icx_req_size;
+    wire [63:0] legacy_icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] legacy_icx_req_burst_len;
+    wire legacy_icx_wdata_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] legacy_icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] legacy_icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] legacy_icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+        legacy_icx_wdata_beat_index;
+    wire legacy_icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] legacy_icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] legacy_icx_wstrb;
+    wire legacy_icx_resp_ready;
     wire [63:0] legacy_dbg_pc;
     wire [31:0] legacy_dbg_instr;
     wire legacy_dbg_halted;
@@ -301,27 +301,27 @@ module openrv64_top #(
     wire three_axi_wlast;
     wire three_axi_wvalid;
     wire three_axi_bready;
-    wire three_ccx_req_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] three_ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] three_ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] three_ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] three_ccx_req_op;
-    wire three_ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] three_ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] three_ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] three_ccx_req_attr;
-    wire [2:0] three_ccx_req_size;
-    wire [63:0] three_ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] three_ccx_req_burst_len;
-    wire three_ccx_wdata_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] three_ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] three_ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] three_ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] three_ccx_wdata_beat_index;
-    wire three_ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] three_ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] three_ccx_wstrb;
-    wire three_ccx_resp_ready;
+    wire three_icx_req_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] three_icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] three_icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] three_icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] three_icx_req_op;
+    wire three_icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] three_icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] three_icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] three_icx_req_attr;
+    wire [2:0] three_icx_req_size;
+    wire [63:0] three_icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] three_icx_req_burst_len;
+    wire three_icx_wdata_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] three_icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] three_icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] three_icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] three_icx_wdata_beat_index;
+    wire three_icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] three_icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] three_icx_wstrb;
+    wire three_icx_resp_ready;
 
     openrv64_rv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
@@ -332,7 +332,7 @@ module openrv64_top #(
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
-        .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
+        .PTW_ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
@@ -358,38 +358,38 @@ module openrv64_top #(
         .mem_wstrb(legacy_mem_wstrb),
         .mem_rdata(mem_rdata),
         .mem_error(mem_error),
-        .ccx_req_valid(legacy_ccx_req_valid),
-        .ccx_req_ready(!use_3p && ccx_req_ready),
-        .ccx_req_hart_id(legacy_ccx_req_hart_id),
-        .ccx_req_txn_id(legacy_ccx_req_txn_id),
-        .ccx_req_source_id(legacy_ccx_req_source_id),
-        .ccx_req_op(legacy_ccx_req_op),
-        .ccx_req_lock(legacy_ccx_req_lock),
-        .ccx_req_order(legacy_ccx_req_order),
-        .ccx_req_kind(legacy_ccx_req_kind),
-        .ccx_req_attr(legacy_ccx_req_attr),
-        .ccx_req_size(legacy_ccx_req_size),
-        .ccx_req_addr(legacy_ccx_req_addr),
-        .ccx_req_burst_len(legacy_ccx_req_burst_len),
-        .ccx_wdata_valid(legacy_ccx_wdata_valid),
-        .ccx_wdata_ready(!use_3p && ccx_wdata_ready),
-        .ccx_wdata_hart_id(legacy_ccx_wdata_hart_id),
-        .ccx_wdata_txn_id(legacy_ccx_wdata_txn_id),
-        .ccx_wdata_source_id(legacy_ccx_wdata_source_id),
-        .ccx_wdata_beat_index(legacy_ccx_wdata_beat_index),
-        .ccx_wdata_last(legacy_ccx_wdata_last),
-        .ccx_wdata(legacy_ccx_wdata),
-        .ccx_wstrb(legacy_ccx_wstrb),
-        .ccx_resp_valid(!use_3p && ccx_resp_valid),
-        .ccx_resp_ready(legacy_ccx_resp_ready),
-        .ccx_resp_hart_id(ccx_resp_hart_id),
-        .ccx_resp_txn_id(ccx_resp_txn_id),
-        .ccx_resp_source_id(ccx_resp_source_id),
-        .ccx_resp_beat_index(ccx_resp_beat_index),
-        .ccx_resp_last(ccx_resp_last),
-        .ccx_resp_rdata(ccx_resp_rdata),
-        .ccx_resp_error(ccx_resp_error),
-        .ccx_resp_sc_success(ccx_resp_sc_success),
+        .icx_req_valid(legacy_icx_req_valid),
+        .icx_req_ready(!use_3p && icx_req_ready),
+        .icx_req_hart_id(legacy_icx_req_hart_id),
+        .icx_req_txn_id(legacy_icx_req_txn_id),
+        .icx_req_source_id(legacy_icx_req_source_id),
+        .icx_req_op(legacy_icx_req_op),
+        .icx_req_lock(legacy_icx_req_lock),
+        .icx_req_order(legacy_icx_req_order),
+        .icx_req_kind(legacy_icx_req_kind),
+        .icx_req_attr(legacy_icx_req_attr),
+        .icx_req_size(legacy_icx_req_size),
+        .icx_req_addr(legacy_icx_req_addr),
+        .icx_req_burst_len(legacy_icx_req_burst_len),
+        .icx_wdata_valid(legacy_icx_wdata_valid),
+        .icx_wdata_ready(!use_3p && icx_wdata_ready),
+        .icx_wdata_hart_id(legacy_icx_wdata_hart_id),
+        .icx_wdata_txn_id(legacy_icx_wdata_txn_id),
+        .icx_wdata_source_id(legacy_icx_wdata_source_id),
+        .icx_wdata_beat_index(legacy_icx_wdata_beat_index),
+        .icx_wdata_last(legacy_icx_wdata_last),
+        .icx_wdata(legacy_icx_wdata),
+        .icx_wstrb(legacy_icx_wstrb),
+        .icx_resp_valid(!use_3p && icx_resp_valid),
+        .icx_resp_ready(legacy_icx_resp_ready),
+        .icx_resp_hart_id(icx_resp_hart_id),
+        .icx_resp_txn_id(icx_resp_txn_id),
+        .icx_resp_source_id(icx_resp_source_id),
+        .icx_resp_beat_index(icx_resp_beat_index),
+        .icx_resp_last(icx_resp_last),
+        .icx_resp_rdata(icx_resp_rdata),
+        .icx_resp_error(icx_resp_error),
+        .icx_resp_sc_success(icx_resp_sc_success),
         .irq_m_software(use_3p ? 1'b0 : irq_m_software),
         .irq_m_timer(use_3p ? 1'b0 : irq_m_timer),
         .irq_m_external(use_3p ? 1'b0 : irq_m_external),
@@ -458,7 +458,7 @@ module openrv64_top #(
                 .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
                 .L2_TLB_WAYS(L2_TLB_WAYS),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
-                .PTW_CCX_TIMEOUT_CYCLES(PTW_CCX_TIMEOUT_CYCLES),
+                .PTW_ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID),
                 .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
                 .ENABLE_SPECULATION_WINDOW(
@@ -508,10 +508,10 @@ module openrv64_top #(
                 .pair1024_resp_valid(1'b0),
                 .pair1024_resp_predicted_addr(64'd0),
                 .pair1024_resp_predicted_data(
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
                 .pair1024_resp_unpredicted_addr(64'd0),
                 .pair1024_resp_unpredicted_data(
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
                 .m_axi_arid(three_axi_arid),
                 .m_axi_araddr(three_axi_araddr),
                 .m_axi_arlen(three_axi_arlen),
@@ -545,38 +545,38 @@ module openrv64_top #(
                 .m_axi_wready(m_axi_wready), .m_axi_bid(m_axi_bid),
                 .m_axi_bresp(m_axi_bresp), .m_axi_bvalid(m_axi_bvalid),
                 .m_axi_bready(three_axi_bready),
-                .ccx_req_valid(three_ccx_req_valid),
-                .ccx_req_ready(ccx_req_ready),
-                .ccx_req_hart_id(three_ccx_req_hart_id),
-                .ccx_req_txn_id(three_ccx_req_txn_id),
-                .ccx_req_source_id(three_ccx_req_source_id),
-                .ccx_req_op(three_ccx_req_op),
-                .ccx_req_lock(three_ccx_req_lock),
-                .ccx_req_order(three_ccx_req_order),
-                .ccx_req_kind(three_ccx_req_kind),
-                .ccx_req_attr(three_ccx_req_attr),
-                .ccx_req_size(three_ccx_req_size),
-                .ccx_req_addr(three_ccx_req_addr),
-                .ccx_req_burst_len(three_ccx_req_burst_len),
-                .ccx_wdata_valid(three_ccx_wdata_valid),
-                .ccx_wdata_ready(ccx_wdata_ready),
-                .ccx_wdata_hart_id(three_ccx_wdata_hart_id),
-                .ccx_wdata_txn_id(three_ccx_wdata_txn_id),
-                .ccx_wdata_source_id(three_ccx_wdata_source_id),
-                .ccx_wdata_beat_index(three_ccx_wdata_beat_index),
-                .ccx_wdata_last(three_ccx_wdata_last),
-                .ccx_wdata(three_ccx_wdata),
-                .ccx_wstrb(three_ccx_wstrb),
-                .ccx_resp_valid(ccx_resp_valid),
-                .ccx_resp_ready(three_ccx_resp_ready),
-                .ccx_resp_hart_id(ccx_resp_hart_id),
-                .ccx_resp_txn_id(ccx_resp_txn_id),
-                .ccx_resp_source_id(ccx_resp_source_id),
-                .ccx_resp_beat_index(ccx_resp_beat_index),
-                .ccx_resp_last(ccx_resp_last),
-                .ccx_resp_rdata(ccx_resp_rdata),
-                .ccx_resp_error(ccx_resp_error),
-                .ccx_resp_sc_success(ccx_resp_sc_success),
+                .icx_req_valid(three_icx_req_valid),
+                .icx_req_ready(icx_req_ready),
+                .icx_req_hart_id(three_icx_req_hart_id),
+                .icx_req_txn_id(three_icx_req_txn_id),
+                .icx_req_source_id(three_icx_req_source_id),
+                .icx_req_op(three_icx_req_op),
+                .icx_req_lock(three_icx_req_lock),
+                .icx_req_order(three_icx_req_order),
+                .icx_req_kind(three_icx_req_kind),
+                .icx_req_attr(three_icx_req_attr),
+                .icx_req_size(three_icx_req_size),
+                .icx_req_addr(three_icx_req_addr),
+                .icx_req_burst_len(three_icx_req_burst_len),
+                .icx_wdata_valid(three_icx_wdata_valid),
+                .icx_wdata_ready(icx_wdata_ready),
+                .icx_wdata_hart_id(three_icx_wdata_hart_id),
+                .icx_wdata_txn_id(three_icx_wdata_txn_id),
+                .icx_wdata_source_id(three_icx_wdata_source_id),
+                .icx_wdata_beat_index(three_icx_wdata_beat_index),
+                .icx_wdata_last(three_icx_wdata_last),
+                .icx_wdata(three_icx_wdata),
+                .icx_wstrb(three_icx_wstrb),
+                .icx_resp_valid(icx_resp_valid),
+                .icx_resp_ready(three_icx_resp_ready),
+                .icx_resp_hart_id(icx_resp_hart_id),
+                .icx_resp_txn_id(icx_resp_txn_id),
+                .icx_resp_source_id(icx_resp_source_id),
+                .icx_resp_beat_index(icx_resp_beat_index),
+                .icx_resp_last(icx_resp_last),
+                .icx_resp_rdata(icx_resp_rdata),
+                .icx_resp_error(icx_resp_error),
+                .icx_resp_sc_success(icx_resp_sc_success),
                 .l1d_probe_valid_i(1'b0),
                 .l1d_probe_ready_o(),
                 .l1d_probe_addr_i(64'd0),
@@ -661,27 +661,27 @@ module openrv64_top #(
             assign three_axi_wlast = 1'b0;
             assign three_axi_wvalid = 1'b0;
             assign three_axi_bready = 1'b0;
-            assign three_ccx_req_valid = 1'b0;
-            assign three_ccx_req_hart_id = '0;
-            assign three_ccx_req_txn_id = '0;
-            assign three_ccx_req_source_id = '0;
-            assign three_ccx_req_op = '0;
-            assign three_ccx_req_lock = 1'b0;
-            assign three_ccx_req_order = '0;
-            assign three_ccx_req_kind = '0;
-            assign three_ccx_req_attr = '0;
-            assign three_ccx_req_size = '0;
-            assign three_ccx_req_addr = '0;
-            assign three_ccx_req_burst_len = '0;
-            assign three_ccx_wdata_valid = 1'b0;
-            assign three_ccx_wdata_hart_id = '0;
-            assign three_ccx_wdata_txn_id = '0;
-            assign three_ccx_wdata_source_id = '0;
-            assign three_ccx_wdata_beat_index = '0;
-            assign three_ccx_wdata_last = 1'b0;
-            assign three_ccx_wdata = '0;
-            assign three_ccx_wstrb = '0;
-            assign three_ccx_resp_ready = 1'b0;
+            assign three_icx_req_valid = 1'b0;
+            assign three_icx_req_hart_id = '0;
+            assign three_icx_req_txn_id = '0;
+            assign three_icx_req_source_id = '0;
+            assign three_icx_req_op = '0;
+            assign three_icx_req_lock = 1'b0;
+            assign three_icx_req_order = '0;
+            assign three_icx_req_kind = '0;
+            assign three_icx_req_attr = '0;
+            assign three_icx_req_size = '0;
+            assign three_icx_req_addr = '0;
+            assign three_icx_req_burst_len = '0;
+            assign three_icx_wdata_valid = 1'b0;
+            assign three_icx_wdata_hart_id = '0;
+            assign three_icx_wdata_txn_id = '0;
+            assign three_icx_wdata_source_id = '0;
+            assign three_icx_wdata_beat_index = '0;
+            assign three_icx_wdata_last = 1'b0;
+            assign three_icx_wdata = '0;
+            assign three_icx_wstrb = '0;
+            assign three_icx_resp_ready = 1'b0;
         end
     endgenerate
 
@@ -716,45 +716,45 @@ module openrv64_top #(
     assign m_axi_wlast = three_axi_wlast;
     assign m_axi_wvalid = three_axi_wvalid;
     assign m_axi_bready = three_axi_bready;
-    assign ccx_req_valid = use_3p ? three_ccx_req_valid :
-                                      legacy_ccx_req_valid;
-    assign ccx_req_hart_id = use_3p ? three_ccx_req_hart_id :
-                                        legacy_ccx_req_hart_id;
-    assign ccx_req_txn_id = use_3p ? three_ccx_req_txn_id :
-                                       legacy_ccx_req_txn_id;
-    assign ccx_req_source_id = use_3p ? three_ccx_req_source_id :
-                                          legacy_ccx_req_source_id;
-    assign ccx_req_op = use_3p ? three_ccx_req_op : legacy_ccx_req_op;
-    assign ccx_req_lock = use_3p ? three_ccx_req_lock :
-                                   legacy_ccx_req_lock;
-    assign ccx_req_order = use_3p ? three_ccx_req_order :
-                                    legacy_ccx_req_order;
-    assign ccx_req_kind = use_3p ? three_ccx_req_kind :
-                                   legacy_ccx_req_kind;
-    assign ccx_req_attr = use_3p ? three_ccx_req_attr :
-                                   legacy_ccx_req_attr;
-    assign ccx_req_size = use_3p ? three_ccx_req_size :
-                                   legacy_ccx_req_size;
-    assign ccx_req_addr = use_3p ? three_ccx_req_addr :
-                                   legacy_ccx_req_addr;
-    assign ccx_req_burst_len = use_3p ? three_ccx_req_burst_len :
-                                        legacy_ccx_req_burst_len;
-    assign ccx_wdata_valid = use_3p ? three_ccx_wdata_valid :
-                                       legacy_ccx_wdata_valid;
-    assign ccx_wdata_hart_id = use_3p ? three_ccx_wdata_hart_id :
-                                          legacy_ccx_wdata_hart_id;
-    assign ccx_wdata_txn_id = use_3p ? three_ccx_wdata_txn_id :
-                                         legacy_ccx_wdata_txn_id;
-    assign ccx_wdata_source_id = use_3p ? three_ccx_wdata_source_id :
-                                            legacy_ccx_wdata_source_id;
-    assign ccx_wdata_beat_index = use_3p ? three_ccx_wdata_beat_index :
-                                             legacy_ccx_wdata_beat_index;
-    assign ccx_wdata_last = use_3p ? three_ccx_wdata_last :
-                                     legacy_ccx_wdata_last;
-    assign ccx_wdata = use_3p ? three_ccx_wdata : legacy_ccx_wdata;
-    assign ccx_wstrb = use_3p ? three_ccx_wstrb : legacy_ccx_wstrb;
-    assign ccx_resp_ready = use_3p ? three_ccx_resp_ready :
-                                     legacy_ccx_resp_ready;
+    assign icx_req_valid = use_3p ? three_icx_req_valid :
+                                      legacy_icx_req_valid;
+    assign icx_req_hart_id = use_3p ? three_icx_req_hart_id :
+                                        legacy_icx_req_hart_id;
+    assign icx_req_txn_id = use_3p ? three_icx_req_txn_id :
+                                       legacy_icx_req_txn_id;
+    assign icx_req_source_id = use_3p ? three_icx_req_source_id :
+                                          legacy_icx_req_source_id;
+    assign icx_req_op = use_3p ? three_icx_req_op : legacy_icx_req_op;
+    assign icx_req_lock = use_3p ? three_icx_req_lock :
+                                   legacy_icx_req_lock;
+    assign icx_req_order = use_3p ? three_icx_req_order :
+                                    legacy_icx_req_order;
+    assign icx_req_kind = use_3p ? three_icx_req_kind :
+                                   legacy_icx_req_kind;
+    assign icx_req_attr = use_3p ? three_icx_req_attr :
+                                   legacy_icx_req_attr;
+    assign icx_req_size = use_3p ? three_icx_req_size :
+                                   legacy_icx_req_size;
+    assign icx_req_addr = use_3p ? three_icx_req_addr :
+                                   legacy_icx_req_addr;
+    assign icx_req_burst_len = use_3p ? three_icx_req_burst_len :
+                                        legacy_icx_req_burst_len;
+    assign icx_wdata_valid = use_3p ? three_icx_wdata_valid :
+                                       legacy_icx_wdata_valid;
+    assign icx_wdata_hart_id = use_3p ? three_icx_wdata_hart_id :
+                                          legacy_icx_wdata_hart_id;
+    assign icx_wdata_txn_id = use_3p ? three_icx_wdata_txn_id :
+                                         legacy_icx_wdata_txn_id;
+    assign icx_wdata_source_id = use_3p ? three_icx_wdata_source_id :
+                                            legacy_icx_wdata_source_id;
+    assign icx_wdata_beat_index = use_3p ? three_icx_wdata_beat_index :
+                                             legacy_icx_wdata_beat_index;
+    assign icx_wdata_last = use_3p ? three_icx_wdata_last :
+                                     legacy_icx_wdata_last;
+    assign icx_wdata = use_3p ? three_icx_wdata : legacy_icx_wdata;
+    assign icx_wstrb = use_3p ? three_icx_wstrb : legacy_icx_wstrb;
+    assign icx_resp_ready = use_3p ? three_icx_resp_ready :
+                                     legacy_icx_resp_ready;
     assign dbg_pc = use_3p ? three_dbg_pc : legacy_dbg_pc;
     assign dbg_instr = use_3p ? three_dbg_instr : legacy_dbg_instr;
     assign dbg_halted = use_3p ? three_dbg_halted : legacy_dbg_halted;

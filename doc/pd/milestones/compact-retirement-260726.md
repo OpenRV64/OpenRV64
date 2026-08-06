@@ -239,9 +239,9 @@ Passed:
 failed at runtime with:
 
 ```text
-FATAL: tb/tb_top_axi_3p.sv:365: unsupported native CCX command
+FATAL: tb/tb_top_axi_3p.sv:365: unsupported native ICX command
 ```
 
-That failure is in the concurrently changing cache/CCX path. It is not evidence
+That failure is in the concurrently changing cache/ICX path. It is not evidence
 against retirement correctness, but it means there is no clean current
 full-system regression or full-core area snapshot to claim here.

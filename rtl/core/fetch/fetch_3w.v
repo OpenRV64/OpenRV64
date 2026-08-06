@@ -83,10 +83,10 @@ module openrv64_fetch_3w #(
     output wire [`RV64_XLEN-1:0]        pair1024_req_unpredicted_addr_o,
     input  wire                         pair1024_resp_valid_i,
     input  wire [`RV64_XLEN-1:0]        pair1024_resp_predicted_addr_i,
-    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
                                             pair1024_resp_predicted_data_i,
     input  wire [`RV64_XLEN-1:0]        pair1024_resp_unpredicted_addr_i,
-    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
                                             pair1024_resp_unpredicted_data_i,
 
     // Retirement ages the unchosen 64-byte L1I line.  Apply the same policy
@@ -112,7 +112,7 @@ module openrv64_fetch_3w #(
     localparam integer ALT_SECTOR_BYTES = 16;
     localparam integer ALT_SECTOR_BYTE_BITS = $clog2(ALT_SECTOR_BYTES);
     localparam integer CACHE_LINE_BYTES =
-        `OPENRV64_CCX_LINE_DATA_WIDTH / 8;
+        `OPENRV64_ICX_LINE_DATA_WIDTH / 8;
     localparam integer CACHE_LINE_BYTE_BITS = $clog2(CACHE_LINE_BYTES);
     localparam integer ALT_PREVIEW_BYTES =
         (ENABLE_ALT_LOOKASIDE == 5) ? CACHE_LINE_BYTES :
@@ -234,7 +234,7 @@ module openrv64_fetch_3w #(
 
     function automatic [`OPENRV64_AXI_DATA_WIDTH-1:0]
         select_cache_line_block;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data;
         input [`RV64_XLEN-1:0] addr;
         begin
             if (addr[LINE_BYTE_BITS])
@@ -498,12 +498,12 @@ module openrv64_fetch_3w #(
         reg [1:0] sector_valid;
         reg [`OPENRV64_AXI_DATA_WIDTH-1:0] block_data;
         reg [`OPENRV64_AXI_DATA_WIDTH-1:0] selected_source_block;
-        reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] widened_source_data;
+        reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] widened_source_data;
         begin
             sector_valid = current[257:256];
             block_data = current[255:0];
             widened_source_data =
-                {{(`OPENRV64_CCX_LINE_DATA_WIDTH-ALT_PREVIEW_BITS){1'b0}},
+                {{(`OPENRV64_ICX_LINE_DATA_WIDTH-ALT_PREVIEW_BITS){1'b0}},
                  source_data};
             selected_source_block =
                 select_cache_line_block(widened_source_data, target_addr);

@@ -5,14 +5,14 @@
 // One-hart core-complex protocol wrapper.
 //
 // Northbound is the current OpenRV64 blocking physical memory port.
-// Internally every access crosses the CCX request/response protocol.
+// Internally every access crosses the ICX request/response protocol.
 // Southbound is AXI4, which is an external transport rather than the internal
 // core-complex protocol.
-module openrv64_ccx_protocol_wrapper_1h #(
-    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
-        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
-    parameter [`OPENRV64_CCX_ATTR_WIDTH-1:0] DEFAULT_ATTR =
-        `OPENRV64_CCX_ATTR_NONE,
+module openrv64_icx_protocol_wrapper_1h #(
+    parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}},
+    parameter [`OPENRV64_ICX_ATTR_WIDTH-1:0] DEFAULT_ATTR =
+        `OPENRV64_ICX_ATTR_NONE,
     parameter integer AXI_ADDR_WIDTH = `OPENRV64_AXI_ADDR_WIDTH,
     parameter integer AXI_DATA_WIDTH = `OPENRV64_AXI_DATA_WIDTH,
     parameter integer AXI_ID_WIDTH = `OPENRV64_AXI_ID_WIDTH,
@@ -70,28 +70,28 @@ module openrv64_ccx_protocol_wrapper_1h #(
     output wire                      m_axi_bready_o
 );
 
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [63:0] ccx_req_wdata;
-    wire [7:0] ccx_req_wstrb;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [63:0] icx_req_wdata;
+    wire [7:0] icx_req_wstrb;
 
-    wire ccx_resp_valid;
-    wire ccx_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    wire [63:0] ccx_resp_rdata;
-    wire ccx_resp_error;
-    wire ccx_resp_sc_success;
+    wire icx_resp_valid;
+    wire icx_resp_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    wire [63:0] icx_resp_rdata;
+    wire icx_resp_error;
+    wire icx_resp_sc_success;
 
-    openrv64_ccx_hart_legacy_adapter #(
+    openrv64_icx_hart_legacy_adapter #(
         .HART_ID(HART_ID),
         .DEFAULT_ATTR(DEFAULT_ATTR)
     ) u_hart_adapter (
@@ -105,28 +105,28 @@ module openrv64_ccx_protocol_wrapper_1h #(
         .core_wstrb_i(core_mem_wstrb_i),
         .core_rdata_o(core_mem_rdata_o),
         .core_error_o(core_mem_error_o),
-        .req_valid_o(ccx_req_valid),
-        .req_ready_i(ccx_req_ready),
-        .req_hart_id_o(ccx_req_hart_id),
-        .req_txn_id_o(ccx_req_txn_id),
-        .req_op_o(ccx_req_op),
-        .req_order_o(ccx_req_order),
-        .req_kind_o(ccx_req_kind),
-        .req_attr_o(ccx_req_attr),
-        .req_size_o(ccx_req_size),
-        .req_addr_o(ccx_req_addr),
-        .req_wdata_o(ccx_req_wdata),
-        .req_wstrb_o(ccx_req_wstrb),
-        .resp_valid_i(ccx_resp_valid),
-        .resp_ready_o(ccx_resp_ready),
-        .resp_hart_id_i(ccx_resp_hart_id),
-        .resp_txn_id_i(ccx_resp_txn_id),
-        .resp_rdata_i(ccx_resp_rdata),
-        .resp_error_i(ccx_resp_error),
-        .resp_sc_success_i(ccx_resp_sc_success)
+        .req_valid_o(icx_req_valid),
+        .req_ready_i(icx_req_ready),
+        .req_hart_id_o(icx_req_hart_id),
+        .req_txn_id_o(icx_req_txn_id),
+        .req_op_o(icx_req_op),
+        .req_order_o(icx_req_order),
+        .req_kind_o(icx_req_kind),
+        .req_attr_o(icx_req_attr),
+        .req_size_o(icx_req_size),
+        .req_addr_o(icx_req_addr),
+        .req_wdata_o(icx_req_wdata),
+        .req_wstrb_o(icx_req_wstrb),
+        .resp_valid_i(icx_resp_valid),
+        .resp_ready_o(icx_resp_ready),
+        .resp_hart_id_i(icx_resp_hart_id),
+        .resp_txn_id_i(icx_resp_txn_id),
+        .resp_rdata_i(icx_resp_rdata),
+        .resp_error_i(icx_resp_error),
+        .resp_sc_success_i(icx_resp_sc_success)
     );
 
-    openrv64_ccx_axi_master #(
+    openrv64_icx_axi_master #(
         .AXI_ADDR_WIDTH(AXI_ADDR_WIDTH),
         .AXI_DATA_WIDTH(AXI_DATA_WIDTH),
         .AXI_ID_WIDTH(AXI_ID_WIDTH),
@@ -134,25 +134,25 @@ module openrv64_ccx_protocol_wrapper_1h #(
     ) u_axi_master (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
-        .req_valid_i(ccx_req_valid),
-        .req_ready_o(ccx_req_ready),
-        .req_hart_id_i(ccx_req_hart_id),
-        .req_txn_id_i(ccx_req_txn_id),
-        .req_op_i(ccx_req_op),
-        .req_order_i(ccx_req_order),
-        .req_kind_i(ccx_req_kind),
-        .req_attr_i(ccx_req_attr),
-        .req_size_i(ccx_req_size),
-        .req_addr_i(ccx_req_addr),
-        .req_wdata_i(ccx_req_wdata),
-        .req_wstrb_i(ccx_req_wstrb),
-        .resp_valid_o(ccx_resp_valid),
-        .resp_ready_i(ccx_resp_ready),
-        .resp_hart_id_o(ccx_resp_hart_id),
-        .resp_txn_id_o(ccx_resp_txn_id),
-        .resp_rdata_o(ccx_resp_rdata),
-        .resp_error_o(ccx_resp_error),
-        .resp_sc_success_o(ccx_resp_sc_success),
+        .req_valid_i(icx_req_valid),
+        .req_ready_o(icx_req_ready),
+        .req_hart_id_i(icx_req_hart_id),
+        .req_txn_id_i(icx_req_txn_id),
+        .req_op_i(icx_req_op),
+        .req_order_i(icx_req_order),
+        .req_kind_i(icx_req_kind),
+        .req_attr_i(icx_req_attr),
+        .req_size_i(icx_req_size),
+        .req_addr_i(icx_req_addr),
+        .req_wdata_i(icx_req_wdata),
+        .req_wstrb_i(icx_req_wstrb),
+        .resp_valid_o(icx_resp_valid),
+        .resp_ready_i(icx_resp_ready),
+        .resp_hart_id_o(icx_resp_hart_id),
+        .resp_txn_id_o(icx_resp_txn_id),
+        .resp_rdata_o(icx_resp_rdata),
+        .resp_error_o(icx_resp_error),
+        .resp_sc_success_o(icx_resp_sc_success),
         .m_axi_arid_o(m_axi_arid_o),
         .m_axi_araddr_o(m_axi_araddr_o),
         .m_axi_arlen_o(m_axi_arlen_o),

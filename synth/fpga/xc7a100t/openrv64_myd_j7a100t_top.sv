@@ -181,42 +181,42 @@ module openrv64_myd_j7a100t_top #(
     wire [7:0]  ext_mem_wstrb;
     wire [63:0] ext_mem_rdata;
 
-    wire ext_ccx_req_valid;
-    wire ext_ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ext_ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ext_ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ext_ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ext_ccx_req_op;
-    wire ext_ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ext_ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ext_ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ext_ccx_req_attr;
-    wire [2:0] ext_ccx_req_size;
-    wire [63:0] ext_ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ext_ccx_req_burst_len;
+    wire ext_icx_req_valid;
+    wire ext_icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] ext_icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] ext_icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] ext_icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] ext_icx_req_op;
+    wire ext_icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] ext_icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] ext_icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] ext_icx_req_attr;
+    wire [2:0] ext_icx_req_size;
+    wire [63:0] ext_icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] ext_icx_req_burst_len;
 
-    wire ext_ccx_wdata_valid;
-    wire ext_ccx_wdata_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ext_ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ext_ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ext_ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-        ext_ccx_wdata_beat_index;
-    wire ext_ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ext_ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ext_ccx_wstrb;
+    wire ext_icx_wdata_valid;
+    wire ext_icx_wdata_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] ext_icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] ext_icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] ext_icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+        ext_icx_wdata_beat_index;
+    wire ext_icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] ext_icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] ext_icx_wstrb;
 
-    wire ext_ccx_resp_valid;
-    wire ext_ccx_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ext_ccx_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ext_ccx_resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ext_ccx_resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-        ext_ccx_resp_beat_index;
-    wire ext_ccx_resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ext_ccx_resp_rdata;
-    wire ext_ccx_resp_error;
-    wire ext_ccx_resp_sc_success;
+    wire ext_icx_resp_valid;
+    wire ext_icx_resp_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] ext_icx_resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] ext_icx_resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] ext_icx_resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+        ext_icx_resp_beat_index;
+    wire ext_icx_resp_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] ext_icx_resp_rdata;
+    wire ext_icx_resp_error;
+    wire ext_icx_resp_sc_success;
 
     openrv64_mig_native_memory_cdc #(
         .MEM_BYTES(DDR3_BYTES)
@@ -233,38 +233,38 @@ module openrv64_myd_j7a100t_top #(
         .mem_wdata_i(ext_mem_wdata),
         .mem_wstrb_i(ext_mem_wstrb),
         .mem_rdata_o(ext_mem_rdata),
-        .ccx_req_valid_i(ext_ccx_req_valid),
-        .ccx_req_ready_o(ext_ccx_req_ready),
-        .ccx_req_hart_id_i(ext_ccx_req_hart_id),
-        .ccx_req_txn_id_i(ext_ccx_req_txn_id),
-        .ccx_req_source_id_i(ext_ccx_req_source_id),
-        .ccx_req_op_i(ext_ccx_req_op),
-        .ccx_req_lock_i(ext_ccx_req_lock),
-        .ccx_req_order_i(ext_ccx_req_order),
-        .ccx_req_kind_i(ext_ccx_req_kind),
-        .ccx_req_attr_i(ext_ccx_req_attr),
-        .ccx_req_size_i(ext_ccx_req_size),
-        .ccx_req_addr_i(ext_ccx_req_addr),
-        .ccx_req_burst_len_i(ext_ccx_req_burst_len),
-        .ccx_wdata_valid_i(ext_ccx_wdata_valid),
-        .ccx_wdata_ready_o(ext_ccx_wdata_ready),
-        .ccx_wdata_hart_id_i(ext_ccx_wdata_hart_id),
-        .ccx_wdata_txn_id_i(ext_ccx_wdata_txn_id),
-        .ccx_wdata_source_id_i(ext_ccx_wdata_source_id),
-        .ccx_wdata_beat_index_i(ext_ccx_wdata_beat_index),
-        .ccx_wdata_last_i(ext_ccx_wdata_last),
-        .ccx_wdata_i(ext_ccx_wdata),
-        .ccx_wstrb_i(ext_ccx_wstrb),
-        .ccx_resp_valid_o(ext_ccx_resp_valid),
-        .ccx_resp_ready_i(ext_ccx_resp_ready),
-        .ccx_resp_hart_id_o(ext_ccx_resp_hart_id),
-        .ccx_resp_txn_id_o(ext_ccx_resp_txn_id),
-        .ccx_resp_source_id_o(ext_ccx_resp_source_id),
-        .ccx_resp_beat_index_o(ext_ccx_resp_beat_index),
-        .ccx_resp_last_o(ext_ccx_resp_last),
-        .ccx_resp_rdata_o(ext_ccx_resp_rdata),
-        .ccx_resp_error_o(ext_ccx_resp_error),
-        .ccx_resp_sc_success_o(ext_ccx_resp_sc_success),
+        .icx_req_valid_i(ext_icx_req_valid),
+        .icx_req_ready_o(ext_icx_req_ready),
+        .icx_req_hart_id_i(ext_icx_req_hart_id),
+        .icx_req_txn_id_i(ext_icx_req_txn_id),
+        .icx_req_source_id_i(ext_icx_req_source_id),
+        .icx_req_op_i(ext_icx_req_op),
+        .icx_req_lock_i(ext_icx_req_lock),
+        .icx_req_order_i(ext_icx_req_order),
+        .icx_req_kind_i(ext_icx_req_kind),
+        .icx_req_attr_i(ext_icx_req_attr),
+        .icx_req_size_i(ext_icx_req_size),
+        .icx_req_addr_i(ext_icx_req_addr),
+        .icx_req_burst_len_i(ext_icx_req_burst_len),
+        .icx_wdata_valid_i(ext_icx_wdata_valid),
+        .icx_wdata_ready_o(ext_icx_wdata_ready),
+        .icx_wdata_hart_id_i(ext_icx_wdata_hart_id),
+        .icx_wdata_txn_id_i(ext_icx_wdata_txn_id),
+        .icx_wdata_source_id_i(ext_icx_wdata_source_id),
+        .icx_wdata_beat_index_i(ext_icx_wdata_beat_index),
+        .icx_wdata_last_i(ext_icx_wdata_last),
+        .icx_wdata_i(ext_icx_wdata),
+        .icx_wstrb_i(ext_icx_wstrb),
+        .icx_resp_valid_o(ext_icx_resp_valid),
+        .icx_resp_ready_i(ext_icx_resp_ready),
+        .icx_resp_hart_id_o(ext_icx_resp_hart_id),
+        .icx_resp_txn_id_o(ext_icx_resp_txn_id),
+        .icx_resp_source_id_o(ext_icx_resp_source_id),
+        .icx_resp_beat_index_o(ext_icx_resp_beat_index),
+        .icx_resp_last_o(ext_icx_resp_last),
+        .icx_resp_rdata_o(ext_icx_resp_rdata),
+        .icx_resp_error_o(ext_icx_resp_error),
+        .icx_resp_sc_success_o(ext_icx_resp_sc_success),
         .app_addr_o(app_addr),
         .app_cmd_o(app_cmd),
         .app_en_o(app_en),
@@ -307,38 +307,38 @@ module openrv64_myd_j7a100t_top #(
         .ext_mem_wdata_o(ext_mem_wdata),
         .ext_mem_wstrb_o(ext_mem_wstrb),
         .ext_mem_rdata_i(ext_mem_rdata),
-        .ext_ccx_req_valid_o(ext_ccx_req_valid),
-        .ext_ccx_req_ready_i(ext_ccx_req_ready),
-        .ext_ccx_req_hart_id_o(ext_ccx_req_hart_id),
-        .ext_ccx_req_txn_id_o(ext_ccx_req_txn_id),
-        .ext_ccx_req_source_id_o(ext_ccx_req_source_id),
-        .ext_ccx_req_op_o(ext_ccx_req_op),
-        .ext_ccx_req_lock_o(ext_ccx_req_lock),
-        .ext_ccx_req_order_o(ext_ccx_req_order),
-        .ext_ccx_req_kind_o(ext_ccx_req_kind),
-        .ext_ccx_req_attr_o(ext_ccx_req_attr),
-        .ext_ccx_req_size_o(ext_ccx_req_size),
-        .ext_ccx_req_addr_o(ext_ccx_req_addr),
-        .ext_ccx_req_burst_len_o(ext_ccx_req_burst_len),
-        .ext_ccx_wdata_valid_o(ext_ccx_wdata_valid),
-        .ext_ccx_wdata_ready_i(ext_ccx_wdata_ready),
-        .ext_ccx_wdata_hart_id_o(ext_ccx_wdata_hart_id),
-        .ext_ccx_wdata_txn_id_o(ext_ccx_wdata_txn_id),
-        .ext_ccx_wdata_source_id_o(ext_ccx_wdata_source_id),
-        .ext_ccx_wdata_beat_index_o(ext_ccx_wdata_beat_index),
-        .ext_ccx_wdata_last_o(ext_ccx_wdata_last),
-        .ext_ccx_wdata_o(ext_ccx_wdata),
-        .ext_ccx_wstrb_o(ext_ccx_wstrb),
-        .ext_ccx_resp_valid_i(ext_ccx_resp_valid),
-        .ext_ccx_resp_ready_o(ext_ccx_resp_ready),
-        .ext_ccx_resp_hart_id_i(ext_ccx_resp_hart_id),
-        .ext_ccx_resp_txn_id_i(ext_ccx_resp_txn_id),
-        .ext_ccx_resp_source_id_i(ext_ccx_resp_source_id),
-        .ext_ccx_resp_beat_index_i(ext_ccx_resp_beat_index),
-        .ext_ccx_resp_last_i(ext_ccx_resp_last),
-        .ext_ccx_resp_rdata_i(ext_ccx_resp_rdata),
-        .ext_ccx_resp_error_i(ext_ccx_resp_error),
-        .ext_ccx_resp_sc_success_i(ext_ccx_resp_sc_success),
+        .ext_icx_req_valid_o(ext_icx_req_valid),
+        .ext_icx_req_ready_i(ext_icx_req_ready),
+        .ext_icx_req_hart_id_o(ext_icx_req_hart_id),
+        .ext_icx_req_txn_id_o(ext_icx_req_txn_id),
+        .ext_icx_req_source_id_o(ext_icx_req_source_id),
+        .ext_icx_req_op_o(ext_icx_req_op),
+        .ext_icx_req_lock_o(ext_icx_req_lock),
+        .ext_icx_req_order_o(ext_icx_req_order),
+        .ext_icx_req_kind_o(ext_icx_req_kind),
+        .ext_icx_req_attr_o(ext_icx_req_attr),
+        .ext_icx_req_size_o(ext_icx_req_size),
+        .ext_icx_req_addr_o(ext_icx_req_addr),
+        .ext_icx_req_burst_len_o(ext_icx_req_burst_len),
+        .ext_icx_wdata_valid_o(ext_icx_wdata_valid),
+        .ext_icx_wdata_ready_i(ext_icx_wdata_ready),
+        .ext_icx_wdata_hart_id_o(ext_icx_wdata_hart_id),
+        .ext_icx_wdata_txn_id_o(ext_icx_wdata_txn_id),
+        .ext_icx_wdata_source_id_o(ext_icx_wdata_source_id),
+        .ext_icx_wdata_beat_index_o(ext_icx_wdata_beat_index),
+        .ext_icx_wdata_last_o(ext_icx_wdata_last),
+        .ext_icx_wdata_o(ext_icx_wdata),
+        .ext_icx_wstrb_o(ext_icx_wstrb),
+        .ext_icx_resp_valid_i(ext_icx_resp_valid),
+        .ext_icx_resp_ready_o(ext_icx_resp_ready),
+        .ext_icx_resp_hart_id_i(ext_icx_resp_hart_id),
+        .ext_icx_resp_txn_id_i(ext_icx_resp_txn_id),
+        .ext_icx_resp_source_id_i(ext_icx_resp_source_id),
+        .ext_icx_resp_beat_index_i(ext_icx_resp_beat_index),
+        .ext_icx_resp_last_i(ext_icx_resp_last),
+        .ext_icx_resp_rdata_i(ext_icx_resp_rdata),
+        .ext_icx_resp_error_i(ext_icx_resp_error),
+        .ext_icx_resp_sc_success_i(ext_icx_resp_sc_success),
         .soc_rst_no(),
         .core_rst_no(),
         .dbg_pc(),

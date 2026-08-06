@@ -2,7 +2,7 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-module tb_ccx_protocol_1h;
+module tb_icx_protocol_1h;
 
     logic clk;
     logic rst_n;
@@ -58,9 +58,9 @@ module tb_ccx_protocol_1h;
     integer protocol_requests;
     integer cycles;
 
-    openrv64_ccx_protocol_wrapper_1h #(
+    openrv64_icx_protocol_wrapper_1h #(
         .HART_ID(4'd5),
-        .DEFAULT_ATTR(`OPENRV64_CCX_ATTR_CACHEABLE)
+        .DEFAULT_ATTR(`OPENRV64_ICX_ATTR_CACHEABLE)
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -117,21 +117,21 @@ module tb_ccx_protocol_1h;
     end
 
     always @(posedge clk) begin
-        if (rst_n && dut.ccx_req_valid && dut.ccx_req_ready) begin
-            if (dut.ccx_req_hart_id !== 4'd5)
-                $fatal(1, "CCX request lost hart identity");
-            if (dut.ccx_req_txn_id !== protocol_requests[3:0])
-                $fatal(1, "CCX transaction ID mismatch got=%0d expected=%0d",
-                       dut.ccx_req_txn_id, protocol_requests);
-            if (dut.ccx_req_order !== `OPENRV64_CCX_ORDER_NONE ||
-                dut.ccx_req_kind !== `OPENRV64_CCX_KIND_LEGACY ||
-                dut.ccx_req_attr !== `OPENRV64_CCX_ATTR_CACHEABLE ||
-                dut.ccx_req_size !== 3'd3)
-                $fatal(1, "CCX compatibility metadata mismatch");
-            if (dut.ccx_req_op !==
-                (core_mem_write ? `OPENRV64_CCX_OP_WRITE :
-                                  `OPENRV64_CCX_OP_READ))
-                $fatal(1, "CCX operation mismatch");
+        if (rst_n && dut.icx_req_valid && dut.icx_req_ready) begin
+            if (dut.icx_req_hart_id !== 4'd5)
+                $fatal(1, "ICX request lost hart identity");
+            if (dut.icx_req_txn_id !== protocol_requests[3:0])
+                $fatal(1, "ICX transaction ID mismatch got=%0d expected=%0d",
+                       dut.icx_req_txn_id, protocol_requests);
+            if (dut.icx_req_order !== `OPENRV64_ICX_ORDER_NONE ||
+                dut.icx_req_kind !== `OPENRV64_ICX_KIND_LEGACY ||
+                dut.icx_req_attr !== `OPENRV64_ICX_ATTR_CACHEABLE ||
+                dut.icx_req_size !== 3'd3)
+                $fatal(1, "ICX compatibility metadata mismatch");
+            if (dut.icx_req_op !==
+                (core_mem_write ? `OPENRV64_ICX_OP_WRITE :
+                                  `OPENRV64_ICX_OP_READ))
+                $fatal(1, "ICX operation mismatch");
             protocol_requests <= protocol_requests + 1;
         end
     end
@@ -372,13 +372,13 @@ module tb_ccx_protocol_1h;
         if (protocol_requests != 4)
             $fatal(1, "expected four protocol requests, observed %0d",
                    protocol_requests);
-        $display("PASS: one-hart CCX protocol identity, ordering, AXI lane steering, backpressure, and errors");
+        $display("PASS: one-hart ICX protocol identity, ordering, AXI lane steering, backpressure, and errors");
         $finish;
     end
 
     initial begin
         repeat (2000) @(posedge clk);
-        $fatal(1, "one-hart CCX protocol test timeout");
+        $fatal(1, "one-hart ICX protocol test timeout");
     end
 
 endmodule

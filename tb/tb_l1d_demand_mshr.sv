@@ -25,16 +25,16 @@ module tb_l1d_demand_mshr;
     reg resp_ready;
     wire [TAG_WIDTH-1:0] resp_tag;
 
-    reg ccx_resp_valid;
-    wire ccx_resp_ready;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    reg icx_resp_valid;
+    wire icx_resp_ready;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
 
-    wire ccx_req_valid;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
+    wire icx_req_valid;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
 
     wire unused_store_resp_valid;
     wire unused_store_resp_error;
@@ -46,39 +46,39 @@ module tb_l1d_demand_mshr;
     wire unused_prefetch_dropped;
     wire unused_prefetch_useless;
     wire [4:0] unused_prefetch_depth;
-    wire unused_ccx_req_lock;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-        unused_ccx_req_hart_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        unused_ccx_req_source_id;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0]
-        unused_ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0]
-        unused_ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0]
-        unused_ccx_req_attr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
-        unused_ccx_req_burst_len;
-    wire unused_ccx_wdata_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-        unused_ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-        unused_ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        unused_ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-        unused_ccx_wdata_beat_index;
-    wire unused_ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        unused_ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
-        unused_ccx_wstrb;
+    wire unused_icx_req_lock;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        unused_icx_req_hart_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        unused_icx_req_source_id;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0]
+        unused_icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0]
+        unused_icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0]
+        unused_icx_req_attr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
+        unused_icx_req_burst_len;
+    wire unused_icx_wdata_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        unused_icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+        unused_icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        unused_icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+        unused_icx_wdata_beat_index;
+    wire unused_icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        unused_icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
+        unused_icx_wstrb;
 
     integer command_count;
     reg [63:0] command_addr [0:15];
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] command_txn [0:15];
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] command_txn [0:15];
     integer store_command_count;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] store_command_txn;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] store_command_txn;
     integer completion_count;
     reg expected_valid [0:TAG_COUNT-1];
     reg [63:0] expected_data [0:TAG_COUNT-1];
@@ -98,11 +98,11 @@ module tb_l1d_demand_mshr;
         end
     endfunction
 
-    function automatic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] memory_line;
+    function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] memory_line;
         input [63:0] address;
         integer word_index;
         begin
-            memory_line = {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            memory_line = {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             for (word_index = 0; word_index < 8;
                  word_index = word_index + 1)
                 memory_line[word_index*64 +: 64] =
@@ -111,7 +111,7 @@ module tb_l1d_demand_mshr;
         end
     endfunction
 
-    openrv64_l1d_ccx #(
+    openrv64_l1d_icx #(
         .ENABLE(1),
         .CACHE_BYTES(1024),
         .LINE_BYTES(64),
@@ -159,40 +159,40 @@ module tb_l1d_demand_mshr;
         .invalidate_ready_o(unused_invalidate_ready),
         .invalidate_all_i(1'b0),
         .invalidate_addr_i(64'd0),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(1'b1),
-        .ccx_req_hart_id_o(unused_ccx_req_hart_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_source_id_o(unused_ccx_req_source_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_lock_o(unused_ccx_req_lock),
-        .ccx_req_order_o(unused_ccx_req_order),
-        .ccx_req_kind_o(unused_ccx_req_kind),
-        .ccx_req_attr_o(unused_ccx_req_attr),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(unused_ccx_req_burst_len),
-        .ccx_wdata_valid_o(unused_ccx_wdata_valid),
-        .ccx_wdata_ready_i(1'b1),
-        .ccx_wdata_hart_id_o(unused_ccx_wdata_hart_id),
-        .ccx_wdata_txn_id_o(unused_ccx_wdata_txn_id),
-        .ccx_wdata_source_id_o(unused_ccx_wdata_source_id),
-        .ccx_wdata_beat_index_o(unused_ccx_wdata_beat_index),
-        .ccx_wdata_last_o(unused_ccx_wdata_last),
-        .ccx_wdata_o(unused_ccx_wdata),
-        .ccx_wstrb_o(unused_ccx_wstrb),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i(
-            {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}),
-        .ccx_resp_txn_id_i(ccx_resp_txn_id),
-        .ccx_resp_source_id_i(`OPENRV64_CCX_SOURCE_DCACHE),
-        .ccx_resp_beat_index_i(
-            {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}),
-        .ccx_resp_last_i(1'b1),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_error_i(1'b0),
-        .ccx_resp_sc_success_i(1'b0)
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(1'b1),
+        .icx_req_hart_id_o(unused_icx_req_hart_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_source_id_o(unused_icx_req_source_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_lock_o(unused_icx_req_lock),
+        .icx_req_order_o(unused_icx_req_order),
+        .icx_req_kind_o(unused_icx_req_kind),
+        .icx_req_attr_o(unused_icx_req_attr),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(unused_icx_req_burst_len),
+        .icx_wdata_valid_o(unused_icx_wdata_valid),
+        .icx_wdata_ready_i(1'b1),
+        .icx_wdata_hart_id_o(unused_icx_wdata_hart_id),
+        .icx_wdata_txn_id_o(unused_icx_wdata_txn_id),
+        .icx_wdata_source_id_o(unused_icx_wdata_source_id),
+        .icx_wdata_beat_index_o(unused_icx_wdata_beat_index),
+        .icx_wdata_last_o(unused_icx_wdata_last),
+        .icx_wdata_o(unused_icx_wdata),
+        .icx_wstrb_o(unused_icx_wstrb),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i(
+            {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}}),
+        .icx_resp_txn_id_i(icx_resp_txn_id),
+        .icx_resp_source_id_i(`OPENRV64_ICX_SOURCE_DCACHE),
+        .icx_resp_beat_index_i(
+            {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}),
+        .icx_resp_last_i(1'b1),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_error_i(1'b0),
+        .icx_resp_sc_success_i(1'b0)
     );
 
     always begin
@@ -215,20 +215,20 @@ module tb_l1d_demand_mshr;
                 completion_seen[reset_index] <= 1'b0;
             end
         end else begin
-            if (ccx_req_valid) begin
-                if (ccx_req_size != 3'd6 ||
-                    ccx_req_addr[5:0] != 0)
-                    $fatal(1, "L1D emitted malformed CCX command");
-                if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
-                    command_addr[command_count] <= ccx_req_addr;
-                    command_txn[command_count] <= ccx_req_txn_id;
+            if (icx_req_valid) begin
+                if (icx_req_size != 3'd6 ||
+                    icx_req_addr[5:0] != 0)
+                    $fatal(1, "L1D emitted malformed ICX command");
+                if (icx_req_op == `OPENRV64_ICX_OP_READ) begin
+                    command_addr[command_count] <= icx_req_addr;
+                    command_txn[command_count] <= icx_req_txn_id;
                     command_count <= command_count + 1;
-                end else if (ccx_req_op ==
-                             `OPENRV64_CCX_OP_WRITE) begin
-                    store_command_txn <= ccx_req_txn_id;
+                end else if (icx_req_op ==
+                             `OPENRV64_ICX_OP_WRITE) begin
+                    store_command_txn <= icx_req_txn_id;
                     store_command_count <= store_command_count + 1;
                 end else begin
-                    $fatal(1, "L1D emitted unexpected CCX operation");
+                    $fatal(1, "L1D emitted unexpected ICX operation");
                 end
             end
             if (resp_valid && resp_ready) begin
@@ -332,7 +332,7 @@ module tb_l1d_demand_mshr;
                 wait_cycles = wait_cycles + 1;
             end
             if (command_count != expected)
-                $fatal(1, "CCX commands=%0d expected=%0d",
+                $fatal(1, "ICX commands=%0d expected=%0d",
                        command_count, expected);
         end
     endtask
@@ -342,25 +342,25 @@ module tb_l1d_demand_mshr;
         integer wait_cycles;
         begin
             @(negedge clk);
-            ccx_resp_valid = 1'b1;
-            ccx_resp_txn_id = command_txn[command_index];
-            ccx_resp_rdata = memory_line(command_addr[command_index]);
+            icx_resp_valid = 1'b1;
+            icx_resp_txn_id = command_txn[command_index];
+            icx_resp_rdata = memory_line(command_addr[command_index]);
             wait_cycles = 0;
             #1;
-            while (!ccx_resp_ready && wait_cycles < 100) begin
+            while (!icx_resp_ready && wait_cycles < 100) begin
                 @(negedge clk);
                 wait_cycles = wait_cycles + 1;
             end
-            if (!ccx_resp_ready)
-                $fatal(1, "CCX response %0d was not accepted",
+            if (!icx_resp_ready)
+                $fatal(1, "ICX response %0d was not accepted",
                        command_index);
             @(posedge clk);
             @(negedge clk);
-            ccx_resp_valid = 1'b0;
-            ccx_resp_txn_id =
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            ccx_resp_rdata =
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            icx_resp_valid = 1'b0;
+            icx_resp_txn_id =
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            icx_resp_rdata =
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
         end
     endtask
 
@@ -377,23 +377,23 @@ module tb_l1d_demand_mshr;
                 $fatal(1, "store commands=%0d expected=1",
                        store_command_count);
             @(negedge clk);
-            ccx_resp_valid = 1'b1;
-            ccx_resp_txn_id = store_command_txn;
-            ccx_resp_rdata =
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            icx_resp_valid = 1'b1;
+            icx_resp_txn_id = store_command_txn;
+            icx_resp_rdata =
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             wait_cycles = 0;
             #1;
-            while (!ccx_resp_ready && wait_cycles < 100) begin
+            while (!icx_resp_ready && wait_cycles < 100) begin
                 @(negedge clk);
                 wait_cycles = wait_cycles + 1;
             end
-            if (!ccx_resp_ready)
-                $fatal(1, "store CCX response was not accepted");
+            if (!icx_resp_ready)
+                $fatal(1, "store ICX response was not accepted");
             @(posedge clk);
             @(negedge clk);
-            ccx_resp_valid = 1'b0;
-            ccx_resp_txn_id =
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+            icx_resp_valid = 1'b0;
+            icx_resp_txn_id =
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
         end
     endtask
 
@@ -422,11 +422,11 @@ module tb_l1d_demand_mshr;
         req_wdata = 64'd0;
         req_wstrb = 8'd0;
         resp_ready = 1'b1;
-        ccx_resp_valid = 1'b0;
-        ccx_resp_txn_id =
-            {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-        ccx_resp_rdata =
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+        icx_resp_valid = 1'b0;
+        icx_resp_txn_id =
+            {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+        icx_resp_rdata =
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
 
         repeat (4) @(posedge clk);
         @(negedge clk);
@@ -486,14 +486,14 @@ module tb_l1d_demand_mshr;
         if (!overlay_fill_seen)
             $fatal(1, "same-line store overlay was never installed");
 
-        // Two words from one absent line share one CCX transaction but retain
+        // Two words from one absent line share one ICX transaction but retain
         // independent response tags and word selection.
         issue_load(TAG_WIDTH'(4), MEMORY_BASE + 64'h4000);
         issue_load(TAG_WIDTH'(5), MEMORY_BASE + 64'h4008);
         wait_for_commands(4);
         repeat (4) @(negedge clk);
         if (command_count != 4)
-            $fatal(1, "same-line demands launched duplicate CCX reads");
+            $fatal(1, "same-line demands launched duplicate ICX reads");
         return_command(3);
         wait_for_completions(6);
         if (!completion_seen[4] || !completion_seen[5])
@@ -519,11 +519,11 @@ module tb_l1d_demand_mshr;
         resp_ready = 1'b1;
         wait_for_completions(7);
 
-        // The installed line must subsequently hit without another CCX read.
+        // The installed line must subsequently hit without another ICX read.
         issue_load(TAG_WIDTH'(7), MEMORY_BASE + 64'h5048);
         wait_for_completions(8);
         if (command_count != 5)
-            $fatal(1, "resident line reissued a demand CCX read");
+            $fatal(1, "resident line reissued a demand ICX read");
 
         $display(
             "PASS: three demand MSHRs, OOO matching, merge, store overlay, and hold");

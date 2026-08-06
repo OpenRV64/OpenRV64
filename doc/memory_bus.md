@@ -2,20 +2,20 @@
 
 `rtl/core/bus/bus.v` is the core-bus geometry selector. `BUS_CONFIG` chooses
 the original 64-bit instruction/data requester in `rtl/core/bus/gen_bus.v` or
-the native cache/CCX boundary in `rtl/core/bus/ccx_bus.v`. Both paths expose a
-separate native 512-bit CCX PTE client. The generic scalar path remains the
+the native cache/ICX boundary in `rtl/core/bus/icx_bus.v`. Both paths expose a
+separate native 512-bit ICX PTE client. The generic scalar path remains the
 default interface used by `openrv64_platform`.
 `rtl/openrv64_top_3p.v` is the fixed three-pipe boundary: it exposes native
-512-bit CCX command/write-data/response channels plus residual 256-bit AXI,
+512-bit ICX command/write-data/response channels plus residual 256-bit AXI,
 and elaborates the AXI-configured bus and three-wide frontend unconditionally.
-With L1I enabled, instruction misses are exactly one 64-byte CCX transaction;
-they do not use AXI. Page-table walks are also native CCX transactions. AXI
+With L1I enabled, instruction misses are exactly one 64-byte ICX transaction;
+they do not use AXI. Page-table walks are also native ICX transactions. AXI
 remains only for explicit cacheless-L1I operation.
 
 ## Generic blocking interface
 
 The generic instruction/data interface is a single 64-bit blocking memory
-bus. PTW traffic is structurally absent from it and uses the parallel CCX
+bus. PTW traffic is structurally absent from it and uses the parallel ICX
 interface.
 
 ## Signals
@@ -60,7 +60,7 @@ CSR or requester-context changes. TLB entries are tagged by VM mode and ASID,
 with global entries matching every ASID only within their original VM mode.
 
 Bare requests use identity translation. When the effective privilege is S or
-U and `satp.MODE=Sv39`, CCX-path requests first search the separate
+U and `satp.MODE=Sv39`, ICX-path requests first search the separate
 fully-associative 16-entry L1 ITLB or DTLB in `rtl/core/bus/tlb.v`. An L1 miss
 searches the shared 256-entry, four-way L2 TLB in
 `rtl/core/bus/tlb_l2.v`; only an L2 miss is sent to
@@ -92,7 +92,7 @@ treats every `SFENCE.VMA`, including forms with nonzero `rs1` or `rs2`, as a
 global shootdown. Invalidation clears TLB validity; it does not manufacture a
 faulting entry. The next access misses and either obtains a fresh translation
 or receives the PTW's page/access fault. If a shootdown overlaps an active
-walk, the PTW terminates that walk and drains any already-accepted CCX response
+walk, the PTW terminates that walk and drains any already-accepted ICX response
 without consuming it, so pre-fence state cannot refill either the PTE cache or
 any TLB. The initiating invalidation also suppresses an L2 hit or PTW response
 from filling either L1 on that edge and clears both L1 TLBs plus the shared L2
@@ -100,7 +100,7 @@ TLB.
 
 PMP is enforced after translation. Final instruction/data accesses use their
 effective privilege and access type. The PTW independently probes PMP as an
-S-mode 8-byte read before issuing its CCX line request. A PMP denial becomes
+S-mode 8-byte read before issuing its ICX line request. A PMP denial becomes
 an access fault for the original operation and no PTE request is emitted.
 
 Current VM limitations are deliberate: only Bare and Sv39 are WARL `satp`
@@ -117,10 +117,10 @@ transaction (`AxLEN=0`). AXI is used only by the structural `ENABLE_L1I=0`
 cacheless-fetch path. Native L1I, L1D, and PTW traffic does not use it.
 
 With L1I enabled, `fetch_3w.v` requests one 256-bit frontend half-line by
-virtual address. `openrv64_l1i_ccx` is VIPT: page-offset virtual bits select
-the set/half while the ITLB supplies the physical tag and CCX address. Bare and
+virtual address. `openrv64_l1i_icx` is VIPT: page-offset virtual bits select
+the set/half while the ITLB supplies the physical tag and ICX address. Bare and
 ITLB-hit demands launch without a separate translation state. The cache stores
-the containing 512-bit line and turns a miss into one aligned native CCX read.
+the containing 512-bit line and turns a miss into one aligned native ICX read.
 Predicted and
 execute-time redirects may preserve resident frontend data for replay, while
 reset, context-changing restarts, and `FENCE.I` invalidate the required state.
@@ -143,14 +143,14 @@ The three-pipe LSU retains three tagged execution slots, but the core bus
 serializes their physical memory operations through one precise DTLB/PTW/PMP
 slot and one blocking L1D request port. The original LSU tag is retained and
 returned with the data or page/access fault. A cacheable miss emits one aligned
-512-bit native CCX read and returns the addressed 64-bit word. Write-through
+512-bit native ICX read and returns the addressed 64-bit word. Write-through
 stores and uncached operations use sub-line address, size, data, and strobes on
-the same 512-bit CCX channels. A flush hides a canceled speculative load
+the same 512-bit ICX channels. A flush hides a canceled speculative load
 response; an accepted store remains irrevocable and is drained.
 
 Stores launch only when they are the ordered retirement head. The current 3P
 baseline treats acceptance by the core bus as architectural completion; it
-does not wait for the eventual CCX response. The execution LSU retains the
+does not wait for the eventual ICX response. The execution LSU retains the
 original store tag, PC, instruction, trace ID, and effective address until that
 response arrives. While it is pending, another scalar request requiring L1D
 remains blocked. A fully covered load may still complete locally from the

@@ -49,37 +49,37 @@ module tb_openrv64_l1i_top #(
     logic invalidate_valid;
     wire invalidate_ready;
 
-    wire ccx_req_valid;
-    logic ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    logic ccx_resp_valid;
-    wire ccx_resp_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    wire icx_req_valid;
+    logic icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    logic icx_resp_valid;
+    wire icx_resp_ready;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
 
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_LINES-1];
     logic [95:0] excerpt [0:EXCERPT_LENGTH-1];
     string memory_file;
 
-    logic ccx_pending_q;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_pending_hart_q;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_pending_source_q;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_pending_txn_q;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_pending_data_q;
+    logic icx_pending_q;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_pending_hart_q;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_pending_source_q;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_pending_txn_q;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_pending_data_q;
     logic [MEMORY_LINES-1:0] filled_lines_q;
-    integer ccx_fill_count_q;
+    integer icx_fill_count_q;
     integer branch_hint_count_q;
 
     openrv64_l1i_top #(
@@ -127,34 +127,34 @@ module tb_openrv64_l1i_top #(
         .invalidate_ready_o(invalidate_ready),
         .invalidate_all_i(1'b1),
         .invalidate_paddr_i(64'd0),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(ccx_req_ready),
-        .ccx_req_hart_id_o(ccx_req_hart_id),
-        .ccx_req_source_id_o(ccx_req_source_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_order_o(ccx_req_order),
-        .ccx_req_kind_o(ccx_req_kind),
-        .ccx_req_attr_o(ccx_req_attr),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(ccx_req_burst_len),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i(ccx_resp_hart_id),
-        .ccx_resp_source_id_i(ccx_resp_source_id),
-        .ccx_resp_txn_id_i(ccx_resp_txn_id),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_beat_index_i('0),
-        .ccx_resp_last_i(1'b1),
-        .ccx_resp_error_i(1'b0),
-        .ccx_resp_sc_success_i(1'b0)
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(icx_req_ready),
+        .icx_req_hart_id_o(icx_req_hart_id),
+        .icx_req_source_id_o(icx_req_source_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_order_o(icx_req_order),
+        .icx_req_kind_o(icx_req_kind),
+        .icx_req_attr_o(icx_req_attr),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(icx_req_burst_len),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i(icx_resp_hart_id),
+        .icx_resp_source_id_i(icx_resp_source_id),
+        .icx_resp_txn_id_i(icx_resp_txn_id),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_beat_index_i('0),
+        .icx_resp_last_i(1'b1),
+        .icx_resp_error_i(1'b0),
+        .icx_resp_sc_success_i(1'b0)
     );
 
     always #5 clk = ~clk;
 
     assign xlate_req_ready = !xlate_resp_valid;
-    assign ccx_req_ready = !ccx_pending_q && !ccx_resp_valid;
+    assign icx_req_ready = !icx_pending_q && !icx_resp_valid;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -177,58 +177,58 @@ module tb_openrv64_l1i_top #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_pending_q <= 1'b0;
-            ccx_pending_hart_q <= '0;
-            ccx_pending_source_q <= '0;
-            ccx_pending_txn_q <= '0;
-            ccx_pending_data_q <= '0;
-            ccx_resp_valid <= 1'b0;
-            ccx_resp_hart_id <= '0;
-            ccx_resp_source_id <= '0;
-            ccx_resp_txn_id <= '0;
-            ccx_resp_rdata <= '0;
+            icx_pending_q <= 1'b0;
+            icx_pending_hart_q <= '0;
+            icx_pending_source_q <= '0;
+            icx_pending_txn_q <= '0;
+            icx_pending_data_q <= '0;
+            icx_resp_valid <= 1'b0;
+            icx_resp_hart_id <= '0;
+            icx_resp_source_id <= '0;
+            icx_resp_txn_id <= '0;
+            icx_resp_rdata <= '0;
             filled_lines_q <= '0;
-            ccx_fill_count_q <= 0;
+            icx_fill_count_q <= 0;
         end else begin
-            if (ccx_resp_valid && ccx_resp_ready)
-                ccx_resp_valid <= 1'b0;
+            if (icx_resp_valid && icx_resp_ready)
+                icx_resp_valid <= 1'b0;
 
-            if (ccx_pending_q && (!ccx_resp_valid || ccx_resp_ready)) begin
-                ccx_pending_q <= 1'b0;
-                ccx_resp_valid <= 1'b1;
-                ccx_resp_hart_id <= ccx_pending_hart_q;
-                ccx_resp_source_id <= ccx_pending_source_q;
-                ccx_resp_txn_id <= ccx_pending_txn_q;
-                ccx_resp_rdata <= ccx_pending_data_q;
+            if (icx_pending_q && (!icx_resp_valid || icx_resp_ready)) begin
+                icx_pending_q <= 1'b0;
+                icx_resp_valid <= 1'b1;
+                icx_resp_hart_id <= icx_pending_hart_q;
+                icx_resp_source_id <= icx_pending_source_q;
+                icx_resp_txn_id <= icx_pending_txn_q;
+                icx_resp_rdata <= icx_pending_data_q;
             end
 
-            if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_hart_id != 0 ||
-                    ccx_req_source_id != `OPENRV64_CCX_SOURCE_ICACHE ||
-                    ccx_req_op != `OPENRV64_CCX_OP_READ ||
-                    ccx_req_order != `OPENRV64_CCX_ORDER_NONE ||
-                    ccx_req_kind != `OPENRV64_CCX_KIND_FETCH ||
-                    ccx_req_size != 3'd6 || ccx_req_addr[5:0] != 0 ||
-                    ccx_req_burst_len != 0 ||
-                    (ccx_req_attr & (`OPENRV64_CCX_ATTR_CACHEABLE |
-                                     `OPENRV64_CCX_ATTR_EXECUTABLE)) !=
-                    (`OPENRV64_CCX_ATTR_CACHEABLE |
-                     `OPENRV64_CCX_ATTR_EXECUTABLE))
-                    $fatal(1, "L1I emitted a non-line CCX command");
-                if (ccx_req_addr < IMAGE_BASE ||
-                    ccx_req_addr >= IMAGE_BASE + IMAGE_BYTES)
-                    $fatal(1, "L1I CCX address outside CoreMark image: %h",
-                           ccx_req_addr);
-                if (filled_lines_q[ccx_req_addr[10:6]])
+            if (icx_req_valid && icx_req_ready) begin
+                if (icx_req_hart_id != 0 ||
+                    icx_req_source_id != `OPENRV64_ICX_SOURCE_ICACHE ||
+                    icx_req_op != `OPENRV64_ICX_OP_READ ||
+                    icx_req_order != `OPENRV64_ICX_ORDER_NONE ||
+                    icx_req_kind != `OPENRV64_ICX_KIND_FETCH ||
+                    icx_req_size != 3'd6 || icx_req_addr[5:0] != 0 ||
+                    icx_req_burst_len != 0 ||
+                    (icx_req_attr & (`OPENRV64_ICX_ATTR_CACHEABLE |
+                                     `OPENRV64_ICX_ATTR_EXECUTABLE)) !=
+                    (`OPENRV64_ICX_ATTR_CACHEABLE |
+                     `OPENRV64_ICX_ATTR_EXECUTABLE))
+                    $fatal(1, "L1I emitted a non-line ICX command");
+                if (icx_req_addr < IMAGE_BASE ||
+                    icx_req_addr >= IMAGE_BASE + IMAGE_BYTES)
+                    $fatal(1, "L1I ICX address outside CoreMark image: %h",
+                           icx_req_addr);
+                if (filled_lines_q[icx_req_addr[10:6]])
                     $fatal(1, "duplicate CoreMark line refill: %h",
-                           ccx_req_addr);
-                ccx_pending_q <= 1'b1;
-                ccx_pending_hart_q <= ccx_req_hart_id;
-                ccx_pending_source_q <= ccx_req_source_id;
-                ccx_pending_txn_q <= ccx_req_txn_id;
-                ccx_pending_data_q <= memory[ccx_req_addr[10:6]];
-                filled_lines_q[ccx_req_addr[10:6]] <= 1'b1;
-                ccx_fill_count_q <= ccx_fill_count_q + 1;
+                           icx_req_addr);
+                icx_pending_q <= 1'b1;
+                icx_pending_hart_q <= icx_req_hart_id;
+                icx_pending_source_q <= icx_req_source_id;
+                icx_pending_txn_q <= icx_req_txn_id;
+                icx_pending_data_q <= memory[icx_req_addr[10:6]];
+                filled_lines_q[icx_req_addr[10:6]] <= 1'b1;
+                icx_fill_count_q <= icx_fill_count_q + 1;
             end
         end
     end
@@ -387,24 +387,24 @@ module tb_openrv64_l1i_top #(
             @(posedge clk);
             next_line_wait_cycles = next_line_wait_cycles + 1;
         end
-        if (!filled_lines_q[1] || ccx_fill_count_q != 2)
+        if (!filled_lines_q[1] || icx_fill_count_q != 2)
             $fatal(1,
                 "L1I next-line prefetch missing: fills=%0d line1=%0b",
-                ccx_fill_count_q, filled_lines_q[1]);
+                icx_fill_count_q, filled_lines_q[1]);
 
         replay_excerpt();
         repeat (300) @(posedge clk);
-        cold_fills = ccx_fill_count_q;
+        cold_fills = icx_fill_count_q;
         if (cold_fills == 0)
             $fatal(1, "CoreMark cold replay produced no L1I fills");
 
-        warm_start_fills = ccx_fill_count_q;
+        warm_start_fills = icx_fill_count_q;
         replay_excerpt();
         repeat (300) @(posedge clk);
-        if (ccx_fill_count_q != warm_start_fills)
+        if (icx_fill_count_q != warm_start_fills)
             $fatal(1,
                 "warm CoreMark replay missed: before=%0d after=%0d",
-                warm_start_fills, ccx_fill_count_q);
+                warm_start_fills, icx_fill_count_q);
 
         $display(
             "PASS: L1I bytes=%0d ways=%0d prefetch_slots=%0d next_line_prefetch=1 CoreMark excerpt_length=%0d replays=2 checked_instructions=%0d branch_pairs=%0d cold_line_fills=%0d warm_line_fills=0",

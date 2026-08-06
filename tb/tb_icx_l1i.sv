@@ -4,7 +4,7 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-module tb_ccx_l1i;
+module tb_icx_l1i;
     logic clk;
     logic rst_n;
     logic fetch_req_valid;
@@ -36,29 +36,29 @@ module tb_ccx_l1i;
     wire pmp_write;
     wire pmp_exec;
 
-    wire ccx_req_valid;
-    logic ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    wire ccx_wdata_valid;
-    logic ccx_wdata_ready;
-    logic ccx_resp_valid;
-    wire ccx_resp_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index;
-    logic ccx_resp_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
-    logic ccx_resp_error;
+    wire icx_req_valid;
+    logic icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    wire icx_wdata_valid;
+    logic icx_wdata_ready;
+    logic icx_resp_valid;
+    wire icx_resp_ready;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_resp_beat_index;
+    logic icx_resp_last;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
+    logic icx_resp_error;
 
     wire m_axi_arvalid;
     wire [2:0] m_axi_arid;
@@ -70,23 +70,23 @@ module tb_ccx_l1i;
     logic [2:0] axi_resp_id_q;
     integer axi_read_count_q;
 
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] memory [0:7];
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] memory [0:7];
     logic response_pending_q;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] response_hart_q;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] response_txn_q;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] response_source_q;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] response_data_q;
-    logic hold_ccx_responses;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] response_hart_q;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] response_txn_q;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] response_source_q;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] response_data_q;
+    logic hold_icx_responses;
     logic held_response_valid_q [0:15];
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         held_response_hart_q [0:15];
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         held_response_source_q [0:15];
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         held_response_data_q [0:15];
     logic held_response_found;
     logic [3:0] held_response_index;
-    integer ccx_count_q;
+    integer icx_count_q;
     integer pte_count_q;
     integer memory_index;
     integer word_index;
@@ -108,7 +108,7 @@ module tb_ccx_l1i;
         end
     end
 
-    openrv64_core_ccx_bus #(
+    openrv64_core_icx_bus #(
         .ENABLE_L1I(1),
         .ENABLE_L1D(1),
         .L1D_PREFETCH_ENABLE(0)
@@ -197,30 +197,30 @@ module tb_ccx_l1i;
         .pmp_write_o(pmp_write),
         .pmp_exec_o(pmp_exec),
         .pmp_allow_i(pmp_allow),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(ccx_req_ready),
-        .ccx_req_hart_id_o(ccx_req_hart_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_source_id_o(ccx_req_source_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_order_o(ccx_req_order),
-        .ccx_req_kind_o(ccx_req_kind),
-        .ccx_req_attr_o(ccx_req_attr),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(ccx_req_burst_len),
-        .ccx_wdata_valid_o(ccx_wdata_valid),
-        .ccx_wdata_ready_i(ccx_wdata_ready),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i(ccx_resp_hart_id),
-        .ccx_resp_txn_id_i(ccx_resp_txn_id),
-        .ccx_resp_source_id_i(ccx_resp_source_id),
-        .ccx_resp_beat_index_i(ccx_resp_beat_index),
-        .ccx_resp_last_i(ccx_resp_last),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_error_i(ccx_resp_error),
-        .ccx_resp_sc_success_i(1'b0),
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(icx_req_ready),
+        .icx_req_hart_id_o(icx_req_hart_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_source_id_o(icx_req_source_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_order_o(icx_req_order),
+        .icx_req_kind_o(icx_req_kind),
+        .icx_req_attr_o(icx_req_attr),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(icx_req_burst_len),
+        .icx_wdata_valid_o(icx_wdata_valid),
+        .icx_wdata_ready_i(icx_wdata_ready),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i(icx_resp_hart_id),
+        .icx_resp_txn_id_i(icx_resp_txn_id),
+        .icx_resp_source_id_i(icx_resp_source_id),
+        .icx_resp_beat_index_i(icx_resp_beat_index),
+        .icx_resp_last_i(icx_resp_last),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_error_i(icx_resp_error),
+        .icx_resp_sc_success_i(1'b0),
         .m_axi_arid_o(m_axi_arid),
         .m_axi_araddr_o(m_axi_araddr),
         .m_axi_arvalid_o(m_axi_arvalid),
@@ -249,15 +249,15 @@ module tb_ccx_l1i;
             response_txn_q <= '0;
             response_source_q <= '0;
             response_data_q <= '0;
-            ccx_resp_valid <= 1'b0;
-            ccx_resp_hart_id <= '0;
-            ccx_resp_txn_id <= '0;
-            ccx_resp_source_id <= '0;
-            ccx_resp_beat_index <= '0;
-            ccx_resp_last <= 1'b1;
-            ccx_resp_rdata <= '0;
-            ccx_resp_error <= 1'b0;
-            ccx_count_q <= 0;
+            icx_resp_valid <= 1'b0;
+            icx_resp_hart_id <= '0;
+            icx_resp_txn_id <= '0;
+            icx_resp_source_id <= '0;
+            icx_resp_beat_index <= '0;
+            icx_resp_last <= 1'b1;
+            icx_resp_rdata <= '0;
+            icx_resp_error <= 1'b0;
+            icx_count_q <= 0;
             pte_count_q <= 0;
             axi_resp_valid_q <= 1'b0;
             axi_resp_id_q <= 3'd0;
@@ -271,22 +271,22 @@ module tb_ccx_l1i;
                 held_response_data_q[held_response_reset] <= '0;
             end
         end else begin
-            if (ccx_resp_valid && ccx_resp_ready)
-                ccx_resp_valid <= 1'b0;
+            if (icx_resp_valid && icx_resp_ready)
+                icx_resp_valid <= 1'b0;
 
-            if (response_pending_q && (!ccx_resp_valid || ccx_resp_ready)) begin
+            if (response_pending_q && (!icx_resp_valid || icx_resp_ready)) begin
                 response_pending_q <= 1'b0;
-                ccx_resp_valid <= 1'b1;
-                ccx_resp_hart_id <= response_hart_q;
-                ccx_resp_txn_id <= response_txn_q;
-                ccx_resp_source_id <= response_source_q;
-                ccx_resp_beat_index <= '0;
-                ccx_resp_last <= 1'b1;
-                ccx_resp_rdata <= response_data_q;
-                ccx_resp_error <= 1'b0;
+                icx_resp_valid <= 1'b1;
+                icx_resp_hart_id <= response_hart_q;
+                icx_resp_txn_id <= response_txn_q;
+                icx_resp_source_id <= response_source_q;
+                icx_resp_beat_index <= '0;
+                icx_resp_last <= 1'b1;
+                icx_resp_rdata <= response_data_q;
+                icx_resp_error <= 1'b0;
             end
 
-            if (!hold_ccx_responses && held_response_found &&
+            if (!hold_icx_responses && held_response_found &&
                 !response_pending_q) begin
                 held_response_valid_q[held_response_index] <= 1'b0;
                 response_pending_q <= 1'b1;
@@ -299,58 +299,58 @@ module tb_ccx_l1i;
                     held_response_data_q[held_response_index];
             end
 
-            if (ccx_req_valid && ccx_req_ready) begin
-                if (!hold_ccx_responses &&
-                    (response_pending_q || ccx_resp_valid ||
+            if (icx_req_valid && icx_req_ready) begin
+                if (!hold_icx_responses &&
+                    (response_pending_q || icx_resp_valid ||
                      held_response_found))
                     $fatal(1, "hart issued a second request before response");
-                if (ccx_req_hart_id != 0 ||
-                    ccx_req_op != `OPENRV64_CCX_OP_READ ||
-                    ccx_req_order != `OPENRV64_CCX_ORDER_NONE ||
-                    ccx_req_size != 3'd6 || ccx_req_addr[5:0] != 0 ||
-                    ccx_req_burst_len != 0)
-                    $fatal(1, "native CCX read command mismatch");
-                if (ccx_req_source_id ==
-                    `OPENRV64_CCX_SOURCE_ICACHE) begin
-                    if (ccx_req_kind != `OPENRV64_CCX_KIND_FETCH ||
-                        (ccx_req_attr &
-                         (`OPENRV64_CCX_ATTR_CACHEABLE |
-                          `OPENRV64_CCX_ATTR_EXECUTABLE)) !=
-                         (`OPENRV64_CCX_ATTR_CACHEABLE |
-                          `OPENRV64_CCX_ATTR_EXECUTABLE))
-                        $fatal(1, "native L1I CCX command mismatch");
-                    ccx_count_q <= ccx_count_q + 1;
-                end else if (ccx_req_source_id ==
-                             `OPENRV64_CCX_SOURCE_PTW) begin
-                    if (ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
-                        ccx_req_attr !=
-                            (`OPENRV64_CCX_ATTR_CACHEABLE |
-                             `OPENRV64_CCX_ATTR_IDEMPOTENT))
-                        $fatal(1, "native PTE CCX command mismatch");
+                if (icx_req_hart_id != 0 ||
+                    icx_req_op != `OPENRV64_ICX_OP_READ ||
+                    icx_req_order != `OPENRV64_ICX_ORDER_NONE ||
+                    icx_req_size != 3'd6 || icx_req_addr[5:0] != 0 ||
+                    icx_req_burst_len != 0)
+                    $fatal(1, "native ICX read command mismatch");
+                if (icx_req_source_id ==
+                    `OPENRV64_ICX_SOURCE_ICACHE) begin
+                    if (icx_req_kind != `OPENRV64_ICX_KIND_FETCH ||
+                        (icx_req_attr &
+                         (`OPENRV64_ICX_ATTR_CACHEABLE |
+                          `OPENRV64_ICX_ATTR_EXECUTABLE)) !=
+                         (`OPENRV64_ICX_ATTR_CACHEABLE |
+                          `OPENRV64_ICX_ATTR_EXECUTABLE))
+                        $fatal(1, "native L1I ICX command mismatch");
+                    icx_count_q <= icx_count_q + 1;
+                end else if (icx_req_source_id ==
+                             `OPENRV64_ICX_SOURCE_PTW) begin
+                    if (icx_req_kind != `OPENRV64_ICX_KIND_PTE ||
+                        icx_req_attr !=
+                            (`OPENRV64_ICX_ATTR_CACHEABLE |
+                             `OPENRV64_ICX_ATTR_IDEMPOTENT))
+                        $fatal(1, "native PTE ICX command mismatch");
                     pte_count_q <= pte_count_q + 1;
                 end else begin
-                    $fatal(1, "unexpected native CCX source");
+                    $fatal(1, "unexpected native ICX source");
                 end
-                if (hold_ccx_responses) begin
-                    if (ccx_req_source_id !=
-                        `OPENRV64_CCX_SOURCE_ICACHE)
+                if (hold_icx_responses) begin
+                    if (icx_req_source_id !=
+                        `OPENRV64_ICX_SOURCE_ICACHE)
                         $fatal(1,
                                "held response phase admitted non-L1I traffic");
-                    if (held_response_valid_q[ccx_req_txn_id])
+                    if (held_response_valid_q[icx_req_txn_id])
                         $fatal(1, "L1I reused an outstanding transaction ID");
-                    held_response_valid_q[ccx_req_txn_id] <= 1'b1;
-                    held_response_hart_q[ccx_req_txn_id] <=
-                        ccx_req_hart_id;
-                    held_response_source_q[ccx_req_txn_id] <=
-                        ccx_req_source_id;
-                    held_response_data_q[ccx_req_txn_id] <=
-                        memory[ccx_req_addr[8:6]];
+                    held_response_valid_q[icx_req_txn_id] <= 1'b1;
+                    held_response_hart_q[icx_req_txn_id] <=
+                        icx_req_hart_id;
+                    held_response_source_q[icx_req_txn_id] <=
+                        icx_req_source_id;
+                    held_response_data_q[icx_req_txn_id] <=
+                        memory[icx_req_addr[8:6]];
                 end else begin
                     response_pending_q <= 1'b1;
-                    response_hart_q <= ccx_req_hart_id;
-                    response_txn_q <= ccx_req_txn_id;
-                    response_source_q <= ccx_req_source_id;
-                    response_data_q <= memory[ccx_req_addr[8:6]];
+                    response_hart_q <= icx_req_hart_id;
+                    response_txn_q <= icx_req_txn_id;
+                    response_source_q <= icx_req_source_id;
+                    response_data_q <= memory[icx_req_addr[8:6]];
                 end
             end
 
@@ -360,7 +360,7 @@ module tb_ccx_l1i;
                 $fatal(1, "enabled L1I/PTW emitted residual AXI read");
             end
 
-            if (ccx_wdata_valid)
+            if (icx_wdata_valid)
                 $fatal(1, "L1I emitted write data");
             if (m_axi_awvalid || m_axi_wvalid)
                 $fatal(1, "L1I emitted an AXI write");
@@ -473,19 +473,19 @@ module tb_ccx_l1i;
         end
     endtask
 
-    task automatic wait_for_ccx_count;
+    task automatic wait_for_icx_count;
         input integer expected_count;
         input [8*48-1:0] label;
         integer cycles;
         begin
             cycles = 0;
-            while ((ccx_count_q != expected_count) && cycles < 400) begin
+            while ((icx_count_q != expected_count) && cycles < 400) begin
                 @(negedge clk);
                 cycles = cycles + 1;
             end
-            if (ccx_count_q != expected_count)
+            if (icx_count_q != expected_count)
                 $fatal(1, "%0s count=%0d expected=%0d", label,
-                       ccx_count_q, expected_count);
+                       icx_count_q, expected_count);
         end
     endtask
 
@@ -507,11 +507,11 @@ module tb_ccx_l1i;
         icache_prefetch_fallthrough_addr = 64'd0;
         icache_age_valid = 3'b000;
         icache_age_addr = 192'd0;
-        hold_ccx_responses = 1'b0;
+        hold_icx_responses = 1'b0;
         fetch_resp_ready = 1'b1;
         pmp_allow = 1'b1;
-        ccx_req_ready = 1'b1;
-        ccx_wdata_ready = 1'b1;
+        icx_req_ready = 1'b1;
+        icx_wdata_ready = 1'b1;
         for (memory_index = 0; memory_index < 8;
              memory_index = memory_index + 1)
             for (word_index = 0; word_index < 8;
@@ -523,19 +523,19 @@ module tb_ccx_l1i;
         @(negedge clk);
         rst_n = 1'b1;
 
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h20, memory[0][511:256], 1'b0,
                     "upper-half cold miss");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "cold demand plus next-line prefetch");
         repeat (20) @(negedge clk);
-        if ((ccx_count_q - before_count) != 2)
+        if ((icx_count_q - before_count) != 2)
             $fatal(1, "demand did not issue exactly one next-line prefetch");
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "lower-half resident hit");
-        if (ccx_count_q != before_count)
-            $fatal(1, "same-line hit escaped onto CCX");
+        if (icx_count_q != before_count)
+            $fatal(1, "same-line hit escaped onto ICX");
 
         // Hold frontend responses while four resident requests enter.  The
         // bus and L1I must accept all four, then preserve request order.
@@ -555,20 +555,20 @@ module tb_ccx_l1i;
                           "multi-hit response 2");
         expect_fetch_only(64'h20, memory[0][511:256],
                           "multi-hit response 3");
-        if (ccx_count_q != before_count)
+        if (icx_count_q != before_count)
             $fatal(1, "resident multi-hit traffic duplicated prefetch");
 
-        // Four distinct cold lines must cross CCX before any response is
+        // Four distinct cold lines must cross ICX before any response is
         // released.  Return transaction IDs in descending order and verify
         // that tagged frontend completions are visible in completion order.
         pulse_invalidate();
-        before_count = ccx_count_q;
-        hold_ccx_responses = 1'b1;
+        before_count = icx_count_q;
+        hold_icx_responses = 1'b1;
         push_fetch_only(64'h00);
         push_fetch_only(64'h40);
         push_fetch_only(64'h80);
         push_fetch_only(64'hc0);
-        wait_for_ccx_count(before_count + 4,
+        wait_for_icx_count(before_count + 4,
                            "four concurrent L1I demand misses");
         if (!held_response_valid_q[0] ||
             !held_response_valid_q[1] ||
@@ -576,7 +576,7 @@ module tb_ccx_l1i;
             !held_response_valid_q[3])
             $fatal(1, "L1I did not occupy four independent MSHRs");
         fetch_resp_ready = 1'b0;
-        hold_ccx_responses = 1'b0;
+        hold_icx_responses = 1'b0;
         while (!fetch_resp_valid)
             @(negedge clk);
         repeat (12) begin
@@ -635,121 +635,121 @@ module tb_ccx_l1i;
             $fatal(1, "out-of-order response set incomplete");
 
         pulse_invalidate();
-        before_count = ccx_count_q;
-        hold_ccx_responses = 1'b1;
+        before_count = icx_count_q;
+        hold_icx_responses = 1'b1;
         push_fetch_only(64'h00);
         push_fetch_only(64'h20);
-        wait_for_ccx_count(before_count + 1,
+        wait_for_icx_count(before_count + 1,
                            "same-line demand miss merge");
         repeat (20) @(negedge clk);
-        if (ccx_count_q != before_count + 1)
+        if (icx_count_q != before_count + 1)
             $fatal(1, "same-line demand fetches allocated two MSHRs");
-        hold_ccx_responses = 1'b0;
+        hold_icx_responses = 1'b0;
         expect_fetch_only(64'h00, memory[0][255:0],
                           "merged miss response lower");
         expect_fetch_only(64'h20, memory[0][511:256],
                           "merged miss response upper");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "merged demand next-line prefetch");
 
         // A resident hit behind an unresolved miss must bypass it all the way
         // back to fetch.  Keeping the miss response held proves this is not
-        // merely multiple CCX requests followed by ordered completion.
+        // merely multiple ICX requests followed by ordered completion.
         pulse_invalidate();
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h100, memory[4][255:0], 1'b0,
                     "prime hit-under-miss resident line");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "hit-under-miss prime and next line");
-        before_count = ccx_count_q;
-        hold_ccx_responses = 1'b1;
+        before_count = icx_count_q;
+        hold_icx_responses = 1'b1;
         push_fetch_only(64'h180);
-        wait_for_ccx_count(before_count + 1,
+        wait_for_icx_count(before_count + 1,
                            "hit-under-miss outstanding line");
         push_fetch_only(64'h100);
         expect_fetch_only(64'h100, memory[4][255:0],
                           "resident hit bypassed outstanding miss");
         if (!held_response_found)
             $fatal(1, "hit-under-miss test lost held miss response");
-        hold_ccx_responses = 1'b0;
+        hold_icx_responses = 1'b0;
         expect_fetch_only(64'h180, memory[6][255:0],
                           "outstanding miss completed after bypass hit");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "hit-under-miss next-line prefetch");
 
         pulse_invalidate();
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "prime pre-fence resident line");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "pre-fence prime and next line");
         stale_lower = memory[0][255:0];
         memory[0][255:0] = 256'hface_cafe;
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h00, stale_lower, 1'b0, "pre-fence stale hit");
-        if (ccx_count_q != before_count)
+        if (icx_count_q != before_count)
             $fatal(1, "resident stale hit duplicated next-line prefetch");
         pulse_invalidate();
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "post-fence refill");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "post-fence refill plus next line");
 
         pmp_allow = 1'b0;
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h00, 256'd0, 1'b1,
                     "PMP denial on resident line");
-        if (ccx_count_q != before_count)
-            $fatal(1, "PMP-denied hit issued CCX traffic");
+        if (icx_count_q != before_count)
+            $fatal(1, "PMP-denied hit issued ICX traffic");
         pmp_allow = 1'b1;
 
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         fork
             issue_fetch(64'h80, memory[2][255:0], 1'b0,
                         "refill concurrent with FENCE.I");
             begin
-                wait (ccx_count_q == before_count + 1);
+                wait (icx_count_q == before_count + 1);
                 pulse_invalidate();
             end
         join
-        if ((ccx_count_q - before_count) != 1)
-            $fatal(1, "concurrent miss was not one CCX line");
-        before_count = ccx_count_q;
+        if ((icx_count_q - before_count) != 1)
+            $fatal(1, "concurrent miss was not one ICX line");
+        before_count = icx_count_q;
         issue_fetch(64'h80, memory[2][255:0], 1'b0,
                     "held invalidation refetch");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "held invalidation refetch plus next line");
 
         pulse_invalidate();
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         pulse_prefetch_pair(64'h100, 64'h180);
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "taken/fallthrough prefetch");
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         issue_fetch(64'h100, memory[4][255:0], 1'b0,
                     "taken prefetch demand hit");
         issue_fetch(64'h1a0, memory[6][511:256], 1'b0,
                     "fallthrough prefetch demand hit");
-        wait_for_ccx_count(before_count + 2,
+        wait_for_icx_count(before_count + 2,
                            "branch-path demand next-line prefetches");
 
         pulse_invalidate();
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         pulse_prefetch_pair(64'h200, 64'h220);
-        wait_for_ccx_count(before_count + 1,
+        wait_for_icx_count(before_count + 1,
                            "same-line branch prefetch collapse");
         repeat (30) @(negedge clk);
-        if (ccx_count_q != before_count + 1)
+        if (icx_count_q != before_count + 1)
             $fatal(1, "same-line branch paths issued duplicate fills");
 
         // Speculative Sv39 faults are consumed by L1I.  Their PTE lines use
-        // the shared CCX path, but they neither issue I-cache line fills nor
+        // the shared ICX path, but they neither issue I-cache line fills nor
         // create an architectural fetch response.
         pulse_invalidate();
         fetch_priv = `RV64_PRIV_S;
         fetch_vm_mode = `RV64_SATP_MODE_SV39;
-        before_count = ccx_count_q;
+        before_count = icx_count_q;
         memory_index = pte_count_q;
         pulse_prefetch_pair(64'h1000, 64'h2000);
         word_index = 0;
@@ -760,12 +760,12 @@ module tb_ccx_l1i;
         end
         repeat (20) @(negedge clk);
         if (pte_count_q != memory_index + 2 ||
-            ccx_count_q != before_count || fetch_resp_valid)
+            icx_count_q != before_count || fetch_resp_valid)
             $fatal(1, "speculative translation fault became architectural");
         fetch_priv = `RV64_PRIV_M;
         fetch_vm_mode = `RV64_SATP_MODE_BARE;
 
-        $display("PASS: native CCX VIPT L1I refill/hit/prefetch/PMP/FENCE.I");
+        $display("PASS: native ICX VIPT L1I refill/hit/prefetch/PMP/FENCE.I");
         $finish;
     end
 

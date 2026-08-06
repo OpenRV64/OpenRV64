@@ -40,23 +40,23 @@ module tb_ptw_context;
     logic block_ptw;
     logic saw_instr_access_fault;
     logic [63:0] instr_access_fault_tval;
-    logic ccx_req_valid;
-    logic ccx_req_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    logic [2:0] ccx_req_size;
-    logic [63:0] ccx_req_addr;
-    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    logic ccx_resp_valid;
-    logic ccx_resp_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    logic icx_req_valid;
+    logic icx_req_ready;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    logic [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    logic [2:0] icx_req_size;
+    logic [63:0] icx_req_addr;
+    logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    logic icx_resp_valid;
+    logic icx_resp_ready;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
     logic [2:0] fence_response_delay;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
@@ -68,7 +68,7 @@ module tb_ptw_context;
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
         .ENABLE_RV64M(1'b0),
-        .PTW_CCX_TIMEOUT_CYCLES(8)
+        .PTW_ICX_TIMEOUT_CYCLES(8)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -91,28 +91,28 @@ module tb_ptw_context;
         .m_axi_bid('0),
         .m_axi_bresp(2'b00),
         .m_axi_bvalid(1'b0),
-        .ccx_req_valid(ccx_req_valid),
-        .ccx_req_ready(ccx_req_ready),
-        .ccx_req_hart_id(ccx_req_hart_id),
-        .ccx_req_txn_id(ccx_req_txn_id),
-        .ccx_req_source_id(ccx_req_source_id),
-        .ccx_req_op(ccx_req_op),
-        .ccx_req_order(ccx_req_order),
-        .ccx_req_kind(ccx_req_kind),
-        .ccx_req_size(ccx_req_size),
-        .ccx_req_addr(ccx_req_addr),
-        .ccx_req_burst_len(ccx_req_burst_len),
-        .ccx_wdata_ready(1'b1),
-        .ccx_resp_valid(ccx_resp_valid),
-        .ccx_resp_ready(ccx_resp_ready),
-        .ccx_resp_hart_id(ccx_resp_hart_id),
-        .ccx_resp_txn_id(ccx_resp_txn_id),
-        .ccx_resp_source_id(ccx_resp_source_id),
-        .ccx_resp_beat_index('0),
-        .ccx_resp_last(1'b1),
-        .ccx_resp_rdata(ccx_resp_rdata),
-        .ccx_resp_error(1'b0),
-        .ccx_resp_sc_success(1'b0),
+        .icx_req_valid(icx_req_valid),
+        .icx_req_ready(icx_req_ready),
+        .icx_req_hart_id(icx_req_hart_id),
+        .icx_req_txn_id(icx_req_txn_id),
+        .icx_req_source_id(icx_req_source_id),
+        .icx_req_op(icx_req_op),
+        .icx_req_order(icx_req_order),
+        .icx_req_kind(icx_req_kind),
+        .icx_req_size(icx_req_size),
+        .icx_req_addr(icx_req_addr),
+        .icx_req_burst_len(icx_req_burst_len),
+        .icx_wdata_ready(1'b1),
+        .icx_resp_valid(icx_resp_valid),
+        .icx_resp_ready(icx_resp_ready),
+        .icx_resp_hart_id(icx_resp_hart_id),
+        .icx_resp_txn_id(icx_resp_txn_id),
+        .icx_resp_source_id(icx_resp_source_id),
+        .icx_resp_beat_index('0),
+        .icx_resp_last(1'b1),
+        .icx_resp_rdata(icx_resp_rdata),
+        .icx_resp_error(1'b0),
+        .icx_resp_sc_success(1'b0),
         .irq_m_software(1'b0),
         .irq_m_timer(1'b0),
         .irq_m_external(1'b0),
@@ -190,56 +190,56 @@ module tb_ptw_context;
 
     integer lane;
     // The timeout phase blocks page-table reads, not maintenance traffic.
-    // SATP retirement now issues a CCX fence before the first translated
+    // SATP retirement now issues a ICX fence before the first translated
     // fetch, and that fence must remain serviceable.
-    assign ccx_req_ready = !ccx_resp_valid && (fence_response_delay == 0) &&
-        (!block_ptw || (ccx_req_op == `OPENRV64_CCX_OP_FENCE));
+    assign icx_req_ready = !icx_resp_valid && (fence_response_delay == 0) &&
+        (!block_ptw || (icx_req_op == `OPENRV64_ICX_OP_FENCE));
 
     always @(posedge clk) begin
         if (!rst_n) begin
-            ccx_resp_valid <= 1'b0;
-            ccx_resp_hart_id <= '0;
-            ccx_resp_txn_id <= '0;
-            ccx_resp_source_id <= '0;
-            ccx_resp_rdata <= '0;
+            icx_resp_valid <= 1'b0;
+            icx_resp_hart_id <= '0;
+            icx_resp_txn_id <= '0;
+            icx_resp_source_id <= '0;
+            icx_resp_rdata <= '0;
             fence_response_delay <= 3'd0;
             satp_barrier_active <= 1'b0;
             satp_barrier_cycles <= 0;
         end else begin
-            if (ccx_resp_valid && ccx_resp_ready)
-                ccx_resp_valid <= 1'b0;
+            if (icx_resp_valid && icx_resp_ready)
+                icx_resp_valid <= 1'b0;
             if (fence_response_delay != 0) begin
                 fence_response_delay <= fence_response_delay - 1'b1;
                 if (fence_response_delay == 1)
-                    ccx_resp_valid <= 1'b1;
+                    icx_resp_valid <= 1'b1;
             end
-            if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_source_id != `OPENRV64_CCX_SOURCE_PTW ||
-                    ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
-                    ccx_req_burst_len != '0)
-                    $fatal(1, "invalid PTW CCX request");
-                if ((ccx_req_op == `OPENRV64_CCX_OP_READ) &&
-                    (ccx_req_size != 3'd6))
+            if (icx_req_valid && icx_req_ready) begin
+                if (icx_req_source_id != `OPENRV64_ICX_SOURCE_PTW ||
+                    icx_req_kind != `OPENRV64_ICX_KIND_PTE ||
+                    icx_req_burst_len != '0)
+                    $fatal(1, "invalid PTW ICX request");
+                if ((icx_req_op == `OPENRV64_ICX_OP_READ) &&
+                    (icx_req_size != 3'd6))
                     $fatal(1, "invalid PTW line read");
-                if ((ccx_req_op == `OPENRV64_CCX_OP_FENCE) &&
-                    (ccx_req_size != 3'd0))
+                if ((icx_req_op == `OPENRV64_ICX_OP_FENCE) &&
+                    (icx_req_size != 3'd0))
                     $fatal(1, "invalid PTW shootdown request");
-                if ((ccx_req_op == `OPENRV64_CCX_OP_FENCE) &&
-                    (ccx_req_order != `OPENRV64_CCX_ORDER_ACQ_REL))
+                if ((icx_req_op == `OPENRV64_ICX_OP_FENCE) &&
+                    (icx_req_order != `OPENRV64_ICX_ORDER_ACQ_REL))
                     $fatal(1, "PTW shootdown is not an ACQ_REL fence");
-                if ((ccx_req_op != `OPENRV64_CCX_OP_READ) &&
-                    (ccx_req_op != `OPENRV64_CCX_OP_FENCE))
+                if ((icx_req_op != `OPENRV64_ICX_OP_READ) &&
+                    (icx_req_op != `OPENRV64_ICX_OP_FENCE))
                     $fatal(1, "unexpected PTW operation");
-                ccx_resp_hart_id <= ccx_req_hart_id;
-                ccx_resp_txn_id <= ccx_req_txn_id;
-                ccx_resp_source_id <= ccx_req_source_id;
-                if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
-                    ccx_resp_valid <= 1'b1;
+                icx_resp_hart_id <= icx_req_hart_id;
+                icx_resp_txn_id <= icx_req_txn_id;
+                icx_resp_source_id <= icx_req_source_id;
+                if (icx_req_op == `OPENRV64_ICX_OP_READ) begin
+                    icx_resp_valid <= 1'b1;
                     for (lane = 0; lane < 8; lane = lane + 1)
-                        ccx_resp_rdata[lane * 64 +: 64] <=
-                            memory[ccx_req_addr[13:3] + lane];
+                        icx_resp_rdata[lane * 64 +: 64] <=
+                            memory[icx_req_addr[13:3] + lane];
                 end else begin
-                    ccx_resp_rdata <= '0;
+                    icx_resp_rdata <= '0;
                     // Hold the fence response long enough to prove that a
                     // Bare-mode fetch cannot escape after the SATP write.
                     fence_response_delay <= 3'd4;
@@ -260,8 +260,8 @@ module tb_ptw_context;
             end
         end
 
-        if (rst_n && ccx_req_valid && ccx_req_ready &&
-            (ccx_req_addr == 64'h0000_0000_0000_1000)) begin
+        if (rst_n && icx_req_valid && icx_req_ready &&
+            (icx_req_addr == 64'h0000_0000_0000_1000)) begin
             saw_ptw_read <= 1'b1;
         end
         if (rst_n && mem_valid && !mem_write &&
@@ -410,7 +410,7 @@ module tb_ptw_context;
                    saw_load_page_fault, load_page_fault_tval);
         end
 
-        // Repeat the handoff with a CCX endpoint that never accepts the first
+        // Repeat the handoff with a ICX endpoint that never accepts the first
         // PTE request.  The watchdog must turn the blocked instruction walk
         // into a precise instruction access fault at the original virtual PC.
         @(negedge clk);

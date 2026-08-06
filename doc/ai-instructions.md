@@ -177,7 +177,7 @@ Before spending hours on a boot, test the affected seams:
 
 ```bash
 make -B -j8 \
-  sim-ccx-bus \
+  sim-icx-bus \
   sim-exec-pipe-mem-timeout \
   sim-exec-top-3p \
   sim-backend-3p
@@ -279,7 +279,7 @@ The reset and restore binaries accept:
 |---|---|
 | `+instruction_trace=PATH` | One record per retired instruction: cycle, PC, instruction, privilege, exception, next PC, and architectural writeback |
 | `+lsu_trace=PATH` | LSU requests/responses and a bounded L1D lock-state diagnostic |
-| `+ccx_trace=PATH` | Native CCX command, write-data, and response handshakes, including IDs, kind, address, burst, beat, and error |
+| `+icx_trace=PATH` | Native ICX command, write-data, and response handshakes, including IDs, kind, address, burst, beat, and error |
 | `+pipeline_trace=PATH` | Per-cycle deep 3P frontend/window/retirement/LSU/PTW state from the C++ harness |
 | `+stop_cycles=N` | Stop the C++ harness at absolute testbench cycle `N` |
 | `+max_cycles=N` | Set the testbench limit on a reset run |
@@ -348,7 +348,7 @@ Then run a bounded high-visibility replay around the suspected failure:
   +stop_cycles=154500000 \
   +instruction_trace="build/logs/$RUN-inst.trace" \
   +lsu_trace="build/logs/$RUN-lsu.trace" \
-  +ccx_trace="build/logs/$RUN-ccx.trace" \
+  +icx_trace="build/logs/$RUN-icx.trace" \
   +pipeline_trace="build/logs/$RUN-pipeline.trace" \
   > "build/logs/$RUN-replay.log" 2>&1
 ```
@@ -436,7 +436,7 @@ one address, and stdout may be buffered. Compare at least:
 - UART byte count;
 - instruction trace retirement;
 - retirement/window valid and complete masks in the deep pipeline trace;
-- outstanding LSU, PTW, and CCX request/response state.
+- outstanding LSU, PTW, and ICX request/response state.
 
 If cycles advance but `instret` does not, inspect a narrow trace interval before
 calling it a deadlock. If the 10,000-cycle LSU watchdog fires, preserve the
@@ -453,7 +453,7 @@ The PTW/cancellation invariant also matters. A cancelled fetch miss must not
 transition to `FETCH_TRANSLATE`, including when cancellation and PTW response
 occur on the same edge. If the invariant reports a cancelled fetch slot in
 translate state, preserve the exact cycle and replay the preceding interval
-with instruction, CCX, and pipeline traces.
+with instruction, ICX, and pipeline traces.
 
 ## Minimal handoff record
 

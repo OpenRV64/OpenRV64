@@ -28,7 +28,7 @@ Usage:
 
 Start options:
   --harts 1|2|4             Active Linux harts (default: 4). One hart
-                            builds only core 0 and ties off CCX ports 1-3.
+                            builds only core 0 and ties off ICX ports 1-3.
   --name NAME               Required run label.
   --comment TEXT            Purpose; defaults to NAME.
   --threads N               Verilator runtime threads (default: 1).

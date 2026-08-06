@@ -8,7 +8,7 @@
 // This intentionally permits only one active invalidation.  It establishes
 // the probe/ACK correctness contract before the coherent L2 adds multiple
 // per-line home transactions.
-module openrv64_ccx_probe_tracker #(
+module openrv64_icx_probe_tracker #(
     parameter integer NUM_HARTS = 2
 ) (
     input  wire                         clk_i,
@@ -17,33 +17,33 @@ module openrv64_ccx_probe_tracker #(
     input  wire                         start_valid_i,
     output wire                         start_ready_o,
     input  wire [NUM_HARTS-1:0]         start_target_harts_i,
-    input  wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                start_probe_id_i,
-    input  wire [`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0]
                                                start_command_i,
-    input  wire [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
                                                start_cache_mask_i,
     input  wire [63:0]                  start_line_addr_i,
 
     output wire [NUM_HARTS-1:0]         probe_valid_o,
     input  wire [NUM_HARTS-1:0]         probe_ready_i,
-    output reg  [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    output reg  [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                probe_id_o,
-    output reg  [NUM_HARTS*`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0]
+    output reg  [NUM_HARTS*`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0]
                                                probe_command_o,
-    output reg  [NUM_HARTS*`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    output reg  [NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
                                                probe_cache_mask_o,
     output reg  [NUM_HARTS*64-1:0]      probe_line_addr_o,
 
     input  wire [NUM_HARTS-1:0]         probe_ack_valid_i,
     output wire [NUM_HARTS-1:0]         probe_ack_ready_o,
-    input  wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    input  wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                probe_ack_id_i,
 
     output wire                         busy_o,
     output wire                         done_valid_o,
     input  wire                         done_ready_i,
-    output wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                done_probe_id_o,
 
     input  wire                         protocol_error_clear_i,
@@ -54,8 +54,8 @@ module openrv64_ccx_probe_tracker #(
     reg busy_d;
     reg done_valid_q;
     reg done_valid_d;
-    reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] done_probe_id_q;
-    reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] done_probe_id_d;
+    reg [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] done_probe_id_q;
+    reg [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] done_probe_id_d;
     reg protocol_error_q;
     reg protocol_error_d;
 
@@ -63,12 +63,12 @@ module openrv64_ccx_probe_tracker #(
     reg [NUM_HARTS-1:0] issue_pending_d;
     reg [NUM_HARTS-1:0] ack_pending_q;
     reg [NUM_HARTS-1:0] ack_pending_d;
-    reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_id_q;
-    reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_id_d;
-    reg [`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0] command_q;
-    reg [`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0] command_d;
-    reg [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0] cache_mask_q;
-    reg [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0] cache_mask_d;
+    reg [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_id_q;
+    reg [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_id_d;
+    reg [`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0] command_q;
+    reg [`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0] command_d;
+    reg [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0] cache_mask_q;
+    reg [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0] cache_mask_d;
     reg [63:0] line_addr_q;
     reg [63:0] line_addr_d;
 
@@ -90,23 +90,23 @@ module openrv64_ccx_probe_tracker #(
 
     always @* begin
         probe_id_o =
-            {NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
+            {NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
         probe_command_o =
-            {NUM_HARTS*`OPENRV64_CCX_PROBE_CMD_WIDTH{1'b0}};
+            {NUM_HARTS*`OPENRV64_ICX_PROBE_CMD_WIDTH{1'b0}};
         probe_cache_mask_o =
-            {NUM_HARTS*`OPENRV64_CCX_PROBE_CACHE_WIDTH{1'b0}};
+            {NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH{1'b0}};
         probe_line_addr_o = {NUM_HARTS*64{1'b0}};
         for (output_hart_index = 0; output_hart_index < NUM_HARTS;
              output_hart_index = output_hart_index + 1) begin
             probe_id_o[
-                output_hart_index*`OPENRV64_CCX_PROBE_ID_WIDTH +:
-                `OPENRV64_CCX_PROBE_ID_WIDTH] = probe_id_q;
+                output_hart_index*`OPENRV64_ICX_PROBE_ID_WIDTH +:
+                `OPENRV64_ICX_PROBE_ID_WIDTH] = probe_id_q;
             probe_command_o[
-                output_hart_index*`OPENRV64_CCX_PROBE_CMD_WIDTH +:
-                `OPENRV64_CCX_PROBE_CMD_WIDTH] = command_q;
+                output_hart_index*`OPENRV64_ICX_PROBE_CMD_WIDTH +:
+                `OPENRV64_ICX_PROBE_CMD_WIDTH] = command_q;
             probe_cache_mask_o[
-                output_hart_index*`OPENRV64_CCX_PROBE_CACHE_WIDTH +:
-                `OPENRV64_CCX_PROBE_CACHE_WIDTH] = cache_mask_q;
+                output_hart_index*`OPENRV64_ICX_PROBE_CACHE_WIDTH +:
+                `OPENRV64_ICX_PROBE_CACHE_WIDTH] = cache_mask_q;
             probe_line_addr_o[output_hart_index*64 +: 64] = line_addr_q;
         end
     end
@@ -153,8 +153,8 @@ module openrv64_ccx_probe_tracker #(
                           probe_ready_i[state_hart_index])) &&
                         (probe_ack_id_i[
                             state_hart_index*
-                            `OPENRV64_CCX_PROBE_ID_WIDTH +:
-                            `OPENRV64_CCX_PROBE_ID_WIDTH] ==
+                            `OPENRV64_ICX_PROBE_ID_WIDTH +:
+                            `OPENRV64_ICX_PROBE_ID_WIDTH] ==
                          probe_id_q)) begin
                         ack_pending_d[state_hart_index] = 1'b0;
                     end else begin
@@ -179,14 +179,14 @@ module openrv64_ccx_probe_tracker #(
             busy_q <= 1'b0;
             done_valid_q <= 1'b0;
             done_probe_id_q <=
-                {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
             protocol_error_q <= 1'b0;
             issue_pending_q <= {NUM_HARTS{1'b0}};
             ack_pending_q <= {NUM_HARTS{1'b0}};
-            probe_id_q <= {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
-            command_q <= {`OPENRV64_CCX_PROBE_CMD_WIDTH{1'b0}};
+            probe_id_q <= {`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
+            command_q <= {`OPENRV64_ICX_PROBE_CMD_WIDTH{1'b0}};
             cache_mask_q <=
-                {`OPENRV64_CCX_PROBE_CACHE_WIDTH{1'b0}};
+                {`OPENRV64_ICX_PROBE_CACHE_WIDTH{1'b0}};
             line_addr_q <= 64'd0;
         end else begin
             busy_q <= busy_d;

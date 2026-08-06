@@ -2,10 +2,10 @@
 
 // Intentionally no include guard: wrapper_2h.v and wrapper_4h.v each include
 // this template with a distinct module name and fixed hart count.
-module `OPENRV64_CCX_FIXED_MODULE #(
+module `OPENRV64_ICX_FIXED_MODULE #(
     parameter integer HART_ID_BASE = 0,
-    parameter [`OPENRV64_CCX_ATTR_WIDTH-1:0] DEFAULT_ATTR =
-        `OPENRV64_CCX_ATTR_NONE,
+    parameter [`OPENRV64_ICX_ATTR_WIDTH-1:0] DEFAULT_ATTR =
+        `OPENRV64_ICX_ATTR_NONE,
     parameter integer AXI_ADDR_WIDTH = `OPENRV64_AXI_ADDR_WIDTH,
     parameter integer AXI_DATA_WIDTH = `OPENRV64_AXI_DATA_WIDTH,
     parameter integer AXI_ID_WIDTH = `OPENRV64_AXI_ID_WIDTH,
@@ -14,14 +14,14 @@ module `OPENRV64_CCX_FIXED_MODULE #(
     input  wire clk_i,
     input  wire rst_ni,
 
-    input  wire [`OPENRV64_CCX_FIXED_HARTS-1:0] core_mem_valid_i,
-    output wire [`OPENRV64_CCX_FIXED_HARTS-1:0] core_mem_ready_o,
-    input  wire [`OPENRV64_CCX_FIXED_HARTS-1:0] core_mem_write_i,
-    input  wire [`OPENRV64_CCX_FIXED_HARTS*64-1:0] core_mem_addr_i,
-    input  wire [`OPENRV64_CCX_FIXED_HARTS*64-1:0] core_mem_wdata_i,
-    input  wire [`OPENRV64_CCX_FIXED_HARTS*8-1:0] core_mem_wstrb_i,
-    output wire [`OPENRV64_CCX_FIXED_HARTS*64-1:0] core_mem_rdata_o,
-    output wire [`OPENRV64_CCX_FIXED_HARTS-1:0] core_mem_error_o,
+    input  wire [`OPENRV64_ICX_FIXED_HARTS-1:0] core_mem_valid_i,
+    output wire [`OPENRV64_ICX_FIXED_HARTS-1:0] core_mem_ready_o,
+    input  wire [`OPENRV64_ICX_FIXED_HARTS-1:0] core_mem_write_i,
+    input  wire [`OPENRV64_ICX_FIXED_HARTS*64-1:0] core_mem_addr_i,
+    input  wire [`OPENRV64_ICX_FIXED_HARTS*64-1:0] core_mem_wdata_i,
+    input  wire [`OPENRV64_ICX_FIXED_HARTS*8-1:0] core_mem_wstrb_i,
+    output wire [`OPENRV64_ICX_FIXED_HARTS*64-1:0] core_mem_rdata_o,
+    output wire [`OPENRV64_ICX_FIXED_HARTS-1:0] core_mem_error_o,
 
     output wire [AXI_ID_WIDTH-1:0]   m_axi_arid_o,
     output wire [AXI_ADDR_WIDTH-1:0] m_axi_araddr_o,
@@ -63,8 +63,8 @@ module `OPENRV64_CCX_FIXED_MODULE #(
     output wire                      m_axi_bready_o
 );
 
-    openrv64_ccx_protocol_wrapper_nh #(
-        .NUM_HARTS(`OPENRV64_CCX_FIXED_HARTS),
+    openrv64_icx_protocol_wrapper_nh #(
+        .NUM_HARTS(`OPENRV64_ICX_FIXED_HARTS),
         .HART_ID_BASE(HART_ID_BASE),
         .DEFAULT_ATTR(DEFAULT_ATTR),
         .AXI_ADDR_WIDTH(AXI_ADDR_WIDTH),

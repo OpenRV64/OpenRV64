@@ -17,7 +17,7 @@ The main configuration is BP8, the fetch carousel, confidence gate zero, the
 issue/speculation window enabled, and retirement depth 16. The bare CoreMark
 run replaces the cache/DDR3 hierarchy with one-cycle instruction/data SRAM.
 The SoC CoreMark and all STREAM runs use Sv39 and the full
-L1I/L1D -> CCX -> L2 -> AXI -> banked-DDR3 path.
+L1I/L1D -> ICX -> L2 -> AXI -> banked-DDR3 path.
 
 | Area | Setting |
 | --- | --- |
@@ -239,7 +239,7 @@ aeb0c0be2abea924fa48f2acfe8a1acc5f746eae488387234381faabd5d5f1d3  rtl/core/rv64_
 b40da41e47aeeb9f459cf5d120ad3d6426bcdc7dd034fffc6b6c0173bc1cec73  sw/stream/stream.S
 ```
 
-The accepted CoreMark SoC run used `sim-core-3p-ccx-l2` directly. The
-`sim-core-3p-ccx-l2-vm` wrapper hard-codes retirement depth 16 and a nonzero
+The accepted CoreMark SoC run used `sim-core-3p-icx-l2` directly. The
+`sim-core-3p-icx-l2-vm` wrapper hard-codes retirement depth 16 and a nonzero
 speculation enable, so it is behaviorally equivalent for those controls but
 reports `speculation_window=1` rather than the requested build tag value 16.

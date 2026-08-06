@@ -16,15 +16,15 @@ bench-prefetch-suite:
 
 # Default performance regression entry point.  Keep the prefetch-only suite
 # independently callable, then add end-to-end Sv39 coverage through the
-# production L1/CCX/L2/AXI/DDR3 hierarchy.
+# production L1/ICX/L2/AXI/DDR3 hierarchy.
 bench-performance-suite:
 	$(MAKE) bench-prefetch-suite
-	$(MAKE) sim-core-3p-ccx-l2-vm \
-		CORE_3P_CCX_L2_CONFIDENCE_GATE=$(PERFORMANCE_CONFIDENCE_GATE)
+	$(MAKE) sim-core-3p-icx-l2-vm \
+		CORE_3P_ICX_L2_CONFIDENCE_GATE=$(PERFORMANCE_CONFIDENCE_GATE)
 	$(MAKE) bench-stream-ddr3-vm-suite \
-		CORE_3P_CCX_L2_CONFIDENCE_GATE=$(PERFORMANCE_CONFIDENCE_GATE)
+		CORE_3P_ICX_L2_CONFIDENCE_GATE=$(PERFORMANCE_CONFIDENCE_GATE)
 	$(MAKE) sim-stream-ddr3-vm-suite \
-		CORE_3P_CCX_L2_CONFIDENCE_GATE=$(PERFORMANCE_CONFIDENCE_GATE)
+		CORE_3P_ICX_L2_CONFIDENCE_GATE=$(PERFORMANCE_CONFIDENCE_GATE)
 
 sim-prefetch-checks:
 	$(MAKE) sim-memcpy

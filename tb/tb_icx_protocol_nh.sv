@@ -2,11 +2,11 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-module tb_ccx_protocol_nh #(
+module tb_icx_protocol_nh #(
     parameter integer NUM_HARTS = 2
 );
 
-    localparam [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID_BASE = 4'd4;
+    localparam [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID_BASE = 4'd4;
 
     logic clk;
     logic rst_n;
@@ -69,10 +69,10 @@ module tb_ccx_protocol_nh #(
     logic aw_seen;
     logic w_seen;
 
-    openrv64_ccx_protocol_wrapper_nh #(
+    openrv64_icx_protocol_wrapper_nh #(
         .NUM_HARTS(NUM_HARTS),
         .HART_ID_BASE(HART_ID_BASE),
-        .DEFAULT_ATTR(`OPENRV64_CCX_ATTR_CACHEABLE)
+        .DEFAULT_ATTR(`OPENRV64_ICX_ATTR_CACHEABLE)
     ) dut (
         .clk_i(clk),
         .rst_ni(rst_n),
@@ -192,15 +192,15 @@ module tb_ccx_protocol_nh #(
                 $fatal(1, "N=%0d round-robin address order mismatch",
                        NUM_HARTS);
             if (dut.shared_req_op !==
-                ((expected_phase == 0) ? `OPENRV64_CCX_OP_READ :
-                                         `OPENRV64_CCX_OP_WRITE))
+                ((expected_phase == 0) ? `OPENRV64_ICX_OP_READ :
+                                         `OPENRV64_ICX_OP_WRITE))
                 $fatal(1, "N=%0d operation routing mismatch", NUM_HARTS);
             protocol_issues <= protocol_issues + 1;
         end
     end
 
     // Minimal single-outstanding AXI memory target.  Its response value is a
-    // function of the accepted address, making a misrouted CCX response fail
+    // function of the accepted address, making a misrouted ICX response fail
     // at the receiving hart.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -330,13 +330,13 @@ module tb_ccx_protocol_nh #(
                    "N=%0d traffic count mismatch protocol=%0d read=%0d write=%0d",
                    NUM_HARTS, protocol_issues, axi_reads, axi_writes);
 
-        $display("PASS: %0d-hart CCX IDs, round-robin arbitration, response routing, and external AXI", NUM_HARTS);
+        $display("PASS: %0d-hart ICX IDs, round-robin arbitration, response routing, and external AXI", NUM_HARTS);
         $finish;
     end
 
     initial begin
         repeat (4000) @(posedge clk);
-        $fatal(1, "N=%0d multi-hart CCX test timeout", NUM_HARTS);
+        $fatal(1, "N=%0d multi-hart ICX test timeout", NUM_HARTS);
     end
 
 endmodule

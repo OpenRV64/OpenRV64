@@ -15,25 +15,25 @@
 // event_pulses_o and route-mask bit assignments:
 //
 //   0 cycle                       20 L2 blocked by another line
-//   1 CCX request accepted        21 L2 merge full
+//   1 ICX request accepted        21 L2 merge full
 //   2 I-cache request             22 L2 lock blocked
 //   3 D-cache request             23 L2 refill line
 //   4 PTW request                 24 L2 writeback line
-//   5 CCX read                    25 clean eviction
-//   6 CCX write                   26 dirty eviction
-//   7 CCX atomic                  27 L2 miss active
-//   8 CCX fence                   28 L2 merge queue occupied
+//   5 ICX read                    25 clean eviction
+//   6 ICX write                   26 dirty eviction
+//   7 ICX atomic                  27 L2 miss active
+//   8 ICX fence                   28 L2 merge queue occupied
 //   9 arbitration wait            29 L2 response backpressure
 //  10 downstream wait             30 lock held
 //  11 lock wait                   31 external-bus request
 //  12 credit wait                 32 external-bus response
-//  13 CCX response backpressure   33 external-bus read
-//  14 CCX outstanding             34 external-bus write
+//  13 ICX response backpressure   33 external-bus read
+//  14 ICX outstanding             34 external-bus write
 //  15 L2 access                   35 external request wait
 //  16 L2 hit                      36 external response wait
 //  17 L2 miss                     37 external response backpressure
 //  18 L2 bypass                   38 external-bus error
-//  19 same-line merge             39 CCX response error
+//  19 same-line merge             39 ICX response error
 module openrv64_soc_trace #(
     parameter integer COUNTER_WIDTH = 64,
     parameter integer NUM_COUNTERS = 8,
@@ -45,19 +45,19 @@ module openrv64_soc_trace #(
     input  wire                         enable_i,
     input  wire                         clear_i,
 
-    input  wire                         ccx_req_valid_i,
-    input  wire                         ccx_req_ready_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                             ccx_req_source_i,
-    input  wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_i,
-    input  wire                         ccx_req_arb_wait_i,
-    input  wire                         ccx_req_downstream_wait_i,
-    input  wire                         ccx_req_lock_wait_i,
-    input  wire                         ccx_req_credit_wait_i,
-    input  wire                         ccx_outstanding_i,
-    input  wire                         ccx_resp_valid_i,
-    input  wire                         ccx_resp_ready_i,
-    input  wire                         ccx_resp_error_i,
+    input  wire                         icx_req_valid_i,
+    input  wire                         icx_req_ready_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                             icx_req_source_i,
+    input  wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op_i,
+    input  wire                         icx_req_arb_wait_i,
+    input  wire                         icx_req_downstream_wait_i,
+    input  wire                         icx_req_lock_wait_i,
+    input  wire                         icx_req_credit_wait_i,
+    input  wire                         icx_outstanding_i,
+    input  wire                         icx_resp_valid_i,
+    input  wire                         icx_resp_ready_i,
+    input  wire                         icx_resp_error_i,
 
     input  wire                         l2_access_i,
     input  wire                         l2_hit_i,
@@ -96,17 +96,17 @@ module openrv64_soc_trace #(
     reg [COUNTER_WIDTH-1:0] counter_q [0:NUM_COUNTERS-1];
     wire [EVENT_COUNT-1:0] event_pulses_raw;
 
-    wire ccx_req_fire = ccx_req_valid_i && ccx_req_ready_i;
-    wire ccx_resp_fire = ccx_resp_valid_i && ccx_resp_ready_i;
-    wire ccx_req_atomic = ccx_req_fire &&
-        (ccx_req_op_i >= `OPENRV64_CCX_OP_LR) &&
-        (ccx_req_op_i <= `OPENRV64_CCX_OP_AMOMAXU);
+    wire icx_req_fire = icx_req_valid_i && icx_req_ready_i;
+    wire icx_resp_fire = icx_resp_valid_i && icx_resp_ready_i;
+    wire icx_req_atomic = icx_req_fire &&
+        (icx_req_op_i >= `OPENRV64_ICX_OP_LR) &&
+        (icx_req_op_i <= `OPENRV64_ICX_OP_AMOMAXU);
     wire bus_req_fire = bus_req_valid_i && bus_req_ready_i;
     wire bus_resp_fire = bus_resp_valid_i && bus_resp_ready_i;
     wire bus_response_wait = bus_outstanding_i && !bus_resp_valid_i;
 
     assign event_pulses_raw = {
-        (ccx_resp_fire && ccx_resp_error_i),       // 39
+        (icx_resp_fire && icx_resp_error_i),       // 39
         (bus_resp_fire && bus_resp_error_i),       // 38
         (bus_resp_valid_i && !bus_resp_ready_i),   // 37
         bus_response_wait,                         // 36
@@ -131,26 +131,26 @@ module openrv64_soc_trace #(
         l2_miss_i,                                 // 17
         l2_hit_i,                                  // 16
         l2_access_i,                               // 15
-        ccx_outstanding_i,                         // 14
-        (ccx_resp_valid_i && !ccx_resp_ready_i),   // 13
-        ccx_req_credit_wait_i,                     // 12
-        ccx_req_lock_wait_i,                       // 11
-        ccx_req_downstream_wait_i,                 // 10
-        ccx_req_arb_wait_i,                        // 9
-        (ccx_req_fire &&
-         (ccx_req_op_i == `OPENRV64_CCX_OP_FENCE)), // 8
-        ccx_req_atomic,                            // 7
-        (ccx_req_fire &&
-         (ccx_req_op_i == `OPENRV64_CCX_OP_WRITE)), // 6
-        (ccx_req_fire &&
-         (ccx_req_op_i == `OPENRV64_CCX_OP_READ)), // 5
-        (ccx_req_fire &&
-         (ccx_req_source_i == `OPENRV64_CCX_SOURCE_PTW)), // 4
-        (ccx_req_fire &&
-         (ccx_req_source_i == `OPENRV64_CCX_SOURCE_DCACHE)), // 3
-        (ccx_req_fire &&
-         (ccx_req_source_i == `OPENRV64_CCX_SOURCE_ICACHE)), // 2
-        ccx_req_fire,                              // 1
+        icx_outstanding_i,                         // 14
+        (icx_resp_valid_i && !icx_resp_ready_i),   // 13
+        icx_req_credit_wait_i,                     // 12
+        icx_req_lock_wait_i,                       // 11
+        icx_req_downstream_wait_i,                 // 10
+        icx_req_arb_wait_i,                        // 9
+        (icx_req_fire &&
+         (icx_req_op_i == `OPENRV64_ICX_OP_FENCE)), // 8
+        icx_req_atomic,                            // 7
+        (icx_req_fire &&
+         (icx_req_op_i == `OPENRV64_ICX_OP_WRITE)), // 6
+        (icx_req_fire &&
+         (icx_req_op_i == `OPENRV64_ICX_OP_READ)), // 5
+        (icx_req_fire &&
+         (icx_req_source_i == `OPENRV64_ICX_SOURCE_PTW)), // 4
+        (icx_req_fire &&
+         (icx_req_source_i == `OPENRV64_ICX_SOURCE_DCACHE)), // 3
+        (icx_req_fire &&
+         (icx_req_source_i == `OPENRV64_ICX_SOURCE_ICACHE)), // 2
+        icx_req_fire,                              // 1
         1'b1                                       // 0
     };
     assign event_pulses_o = event_pulses_raw & {EVENT_COUNT{rst_ni}};

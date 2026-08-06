@@ -35,35 +35,35 @@ module tb_l1d_prefetch;
     reg [63:0] invalidate_addr;
     reg speculation_barrier;
 
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
 
-    wire ccx_wdata_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
-    wire ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
+    wire icx_wdata_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_wdata_beat_index;
+    wire icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
 
-    reg ccx_resp_valid;
-    wire ccx_resp_ready;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    reg icx_resp_valid;
+    wire icx_resp_ready;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
 
     wire prefetch_issued;
     wire prefetch_useful;
@@ -76,11 +76,11 @@ module tb_l1d_prefetch;
     reg response_slot_valid_q [0:RESPONSE_SLOTS-1];
     integer response_slot_delay_q [0:RESPONSE_SLOTS-1];
     reg [63:0] response_slot_addr_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         response_slot_hart_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
         response_slot_txn_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         response_slot_source_q [0:RESPONSE_SLOTS-1];
     integer response_slot_sequence_q [0:RESPONSE_SLOTS-1];
     reg response_slot_free_found_r;
@@ -142,11 +142,11 @@ module tb_l1d_prefetch;
         end
     endfunction
 
-    function automatic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] memory_line;
+    function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] memory_line;
         input [63:0] address;
         integer word_index;
         begin
-            memory_line = {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            memory_line = {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             for (word_index = 0; word_index < 8;
                  word_index = word_index + 1)
                 memory_line[word_index*64 +: 64] =
@@ -205,7 +205,7 @@ module tb_l1d_prefetch;
         end
     endfunction
 
-    openrv64_l1d_ccx #(
+    openrv64_l1d_icx #(
         .ENABLE(1),
         .CACHE_BYTES(1024),
         .LINE_BYTES(64),
@@ -261,42 +261,42 @@ module tb_l1d_prefetch;
         .invalidate_ready_o(invalidate_ready),
         .invalidate_all_i(invalidate_all),
         .invalidate_addr_i(invalidate_addr),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(ccx_req_ready),
-        .ccx_req_hart_id_o(ccx_req_hart_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_source_id_o(ccx_req_source_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_lock_o(ccx_req_lock),
-        .ccx_req_order_o(ccx_req_order),
-        .ccx_req_kind_o(ccx_req_kind),
-        .ccx_req_attr_o(ccx_req_attr),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(ccx_req_burst_len),
-        .ccx_wdata_valid_o(ccx_wdata_valid),
-        .ccx_wdata_ready_i(1'b1),
-        .ccx_wdata_hart_id_o(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id_o(ccx_wdata_txn_id),
-        .ccx_wdata_source_id_o(ccx_wdata_source_id),
-        .ccx_wdata_beat_index_o(ccx_wdata_beat_index),
-        .ccx_wdata_last_o(ccx_wdata_last),
-        .ccx_wdata_o(ccx_wdata),
-        .ccx_wstrb_o(ccx_wstrb),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i(ccx_resp_hart_id),
-        .ccx_resp_txn_id_i(ccx_resp_txn_id),
-        .ccx_resp_source_id_i(ccx_resp_source_id),
-        .ccx_resp_beat_index_i(
-            {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}),
-        .ccx_resp_last_i(1'b1),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_error_i(1'b0),
-        .ccx_resp_sc_success_i(1'b0)
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(icx_req_ready),
+        .icx_req_hart_id_o(icx_req_hart_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_source_id_o(icx_req_source_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_lock_o(icx_req_lock),
+        .icx_req_order_o(icx_req_order),
+        .icx_req_kind_o(icx_req_kind),
+        .icx_req_attr_o(icx_req_attr),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(icx_req_burst_len),
+        .icx_wdata_valid_o(icx_wdata_valid),
+        .icx_wdata_ready_i(1'b1),
+        .icx_wdata_hart_id_o(icx_wdata_hart_id),
+        .icx_wdata_txn_id_o(icx_wdata_txn_id),
+        .icx_wdata_source_id_o(icx_wdata_source_id),
+        .icx_wdata_beat_index_o(icx_wdata_beat_index),
+        .icx_wdata_last_o(icx_wdata_last),
+        .icx_wdata_o(icx_wdata),
+        .icx_wstrb_o(icx_wstrb),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i(icx_resp_hart_id),
+        .icx_resp_txn_id_i(icx_resp_txn_id),
+        .icx_resp_source_id_i(icx_resp_source_id),
+        .icx_resp_beat_index_i(
+            {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}),
+        .icx_resp_last_i(1'b1),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_error_i(1'b0),
+        .icx_resp_sc_success_i(1'b0)
     );
 
-    assign ccx_req_ready = response_slot_free_found_r;
+    assign icx_req_ready = response_slot_free_found_r;
 
     always begin
         clk = 1'b0;
@@ -322,7 +322,7 @@ module tb_l1d_prefetch;
             end
             if (response_slot_valid_q[response_comb_scan]) begin
                 response_pending_r = 1'b1;
-                if (ccx_resp_valid &&
+                if (icx_resp_valid &&
                     (response_comb_scan != response_active_slot_q) &&
                     (response_slot_sequence_q[response_comb_scan] <
                      response_slot_sequence_q[
@@ -341,16 +341,16 @@ module tb_l1d_prefetch;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_resp_valid <= 1'b0;
+            icx_resp_valid <= 1'b0;
             response_active_slot_q <= 3'd0;
-            ccx_resp_hart_id <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            ccx_resp_txn_id <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            ccx_resp_source_id <=
-                `OPENRV64_CCX_SOURCE_DCACHE;
-            ccx_resp_rdata <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            icx_resp_hart_id <=
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            icx_resp_txn_id <=
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            icx_resp_source_id <=
+                `OPENRV64_ICX_SOURCE_DCACHE;
+            icx_resp_rdata <=
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             total_commands <= 0;
             demand_commands <= 0;
             prefetch_commands <= 0;
@@ -370,11 +370,11 @@ module tb_l1d_prefetch;
                 response_slot_delay_q[response_seq_scan] <= 0;
                 response_slot_addr_q[response_seq_scan] <= 64'd0;
                 response_slot_hart_q[response_seq_scan] <=
-                    {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
                 response_slot_txn_q[response_seq_scan] <=
-                    {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
                 response_slot_source_q[response_seq_scan] <=
-                    {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
                 response_slot_sequence_q[response_seq_scan] <= 0;
             end
         end else begin
@@ -397,23 +397,23 @@ module tb_l1d_prefetch;
                 max_prefetch_outstanding <=
                     prefetch_outstanding_count;
 
-            if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_op != `OPENRV64_CCX_OP_READ &&
-                    ccx_req_op != `OPENRV64_CCX_OP_WRITE)
-                    $fatal(1, "unexpected CCX operation in prefetch test");
+            if (icx_req_valid && icx_req_ready) begin
+                if (icx_req_op != `OPENRV64_ICX_OP_READ &&
+                    icx_req_op != `OPENRV64_ICX_OP_WRITE)
+                    $fatal(1, "unexpected ICX operation in prefetch test");
                 if (dut.request_prefetch_q &&
-                    (ccx_req_size != 3'd6 || ccx_req_addr[5:0] != 0))
-                    $fatal(1, "CCX prefetch is not one aligned cacheline");
-                if (ccx_req_lock)
-                    $fatal(1, "L1D leaked its local atomic marker to CCX");
-                if (ccx_req_source_id != `OPENRV64_CCX_SOURCE_DCACHE)
-                    $fatal(1, "CCX read has wrong source");
+                    (icx_req_size != 3'd6 || icx_req_addr[5:0] != 0))
+                    $fatal(1, "ICX prefetch is not one aligned cacheline");
+                if (icx_req_lock)
+                    $fatal(1, "L1D leaked its local atomic marker to ICX");
+                if (icx_req_source_id != `OPENRV64_ICX_SOURCE_DCACHE)
+                    $fatal(1, "ICX read has wrong source");
                 total_commands <= total_commands + 1;
                 if (dut.request_prefetch_q) begin
                     prefetch_commands <= prefetch_commands + 1;
-                    last_prefetch_addr <= ccx_req_addr;
+                    last_prefetch_addr <= icx_req_addr;
                     prefetch_command_addr[prefetch_commands] <=
-                        ccx_req_addr;
+                        icx_req_addr;
                 end else begin
                     demand_commands <= demand_commands + 1;
                 end
@@ -428,13 +428,13 @@ module tb_l1d_prefetch;
                       ((RESPONSE_SLOTS - 1 -
                         response_slot_free_index_r) * 8) : 0));
                 response_slot_addr_q[
-                    response_slot_free_index_r] <= ccx_req_addr;
+                    response_slot_free_index_r] <= icx_req_addr;
                 response_slot_hart_q[
-                    response_slot_free_index_r] <= ccx_req_hart_id;
+                    response_slot_free_index_r] <= icx_req_hart_id;
                 response_slot_txn_q[
-                    response_slot_free_index_r] <= ccx_req_txn_id;
+                    response_slot_free_index_r] <= icx_req_txn_id;
                 response_slot_source_q[
-                    response_slot_free_index_r] <= ccx_req_source_id;
+                    response_slot_free_index_r] <= icx_req_source_id;
                 response_slot_sequence_q[
                     response_slot_free_index_r] <= total_commands;
             end
@@ -447,26 +447,26 @@ module tb_l1d_prefetch;
                     response_slot_delay_q[response_seq_scan] <=
                         response_slot_delay_q[response_seq_scan] - 1;
 
-            if (!ccx_resp_valid && response_slot_ready_found_r) begin
+            if (!icx_resp_valid && response_slot_ready_found_r) begin
                 response_active_slot_q <= response_slot_ready_index_r;
-                ccx_resp_hart_id <=
+                icx_resp_hart_id <=
                     response_slot_hart_q[response_slot_ready_index_r];
-                ccx_resp_txn_id <=
+                icx_resp_txn_id <=
                     response_slot_txn_q[response_slot_ready_index_r];
-                ccx_resp_source_id <=
+                icx_resp_source_id <=
                     response_slot_source_q[response_slot_ready_index_r];
-                ccx_resp_rdata <=
+                icx_resp_rdata <=
                     memory_line(response_slot_addr_q[
                         response_slot_ready_index_r]);
-                ccx_resp_valid <= 1'b1;
+                icx_resp_valid <= 1'b1;
             end
 
-            if (ccx_resp_valid && ccx_resp_ready) begin
+            if (icx_resp_valid && icx_resp_ready) begin
                 if (response_older_pending_r)
                     out_of_order_responses <=
                         out_of_order_responses + 1;
                 response_slot_valid_q[response_active_slot_q] <= 1'b0;
-                ccx_resp_valid <= 1'b0;
+                icx_resp_valid <= 1'b0;
             end
         end
     end
@@ -579,9 +579,9 @@ module tb_l1d_prefetch;
             #1;
             if (!resp_valid)
                 $fatal(1,
-                    "atomic load response timed out addr=%016x backend=%0d l1mem=%0d ccxresp=%0d pending=%0d commands=%0d demand=%0d prefetch=%0d tags=%0d l1resp=%0d active=%0d invalidated=%0d",
+                    "atomic load response timed out addr=%016x backend=%0d l1mem=%0d icxresp=%0d pending=%0d commands=%0d demand=%0d prefetch=%0d tags=%0d l1resp=%0d active=%0d invalidated=%0d",
                     address, dut.backend_state_q, dut.l1_mem_valid,
-                    ccx_resp_valid, response_pending_r, total_commands,
+                    icx_resp_valid, response_pending_r, total_commands,
                     demand_commands, prefetch_commands,
                     dut.response_tag_count_q, dut.l1_resp_valid,
                     dut.atomic_active_q, dut.locked_line_invalidated_q);
@@ -685,7 +685,7 @@ module tb_l1d_prefetch;
                 $fatal(1,
                     "prefetch address=%016x expected=%016x",
                     last_prefetch_addr, expected_address);
-            while ((response_pending_r || ccx_resp_valid ||
+            while ((response_pending_r || icx_resp_valid ||
                     (dut.backend_state_q != 0)) &&
                    wait_cycles < 800) begin
                 @(negedge clk);
@@ -700,7 +700,7 @@ module tb_l1d_prefetch;
         integer wait_cycles;
         begin
             wait_cycles = 0;
-            while ((response_pending_r || ccx_resp_valid ||
+            while ((response_pending_r || icx_resp_valid ||
                     (dut.backend_state_q != 0) ||
                     (prefetch_outstanding_count != 0) ||
                     dut.prefetch_candidate_valid_q[0] ||
@@ -809,7 +809,7 @@ module tb_l1d_prefetch;
         repeat (80) @(negedge clk);
         if (!prefetch_command_seen(MEMORY_BASE + 64'h0d40))
             $fatal(1,
-                "parallel same-line prefetch did not reach CCX");
+                "parallel same-line prefetch did not reach ICX");
         if (fill_buffer_contains_line(MEMORY_BASE + 64'h0d40))
             $fatal(1,
                 "parallel prefetch/store response installed stale fill");
@@ -896,8 +896,8 @@ module tb_l1d_prefetch;
             $fatal(1, "could not locate in-flight prefetch response");
         prefetch_wait_cycles = 0;
         while ((response_slot_valid_q[race_response_slot] ||
-                (ccx_resp_valid &&
-                 (ccx_resp_txn_id ==
+                (icx_resp_valid &&
+                 (icx_resp_txn_id ==
                   response_slot_txn_q[race_response_slot]))) &&
                (prefetch_wait_cycles < 20)) begin
             @(negedge clk);
@@ -937,7 +937,7 @@ module tb_l1d_prefetch;
         req_wstrb = 8'd0;
 
         // A first demand creates a next-line candidate.  The following demand
-        // must consume that buffered line without another demand CCX read.
+        // must consume that buffered line without another demand ICX read.
         reset_dut();
         issue_load(MEMORY_BASE + 64'h0000);
         wait_for_prefetch(MEMORY_BASE + 64'h0040);
@@ -1097,7 +1097,7 @@ module tb_l1d_prefetch;
             $fatal(1, "invalidation did not discard prefetched line");
 
         // A translation/speculation barrier cuts the read epoch. An
-        // architectural read-miss buffer which already crossed CCX must
+        // architectural read-miss buffer which already crossed ICX must
         // consume its old response without completing L1 and then reissue.
         reset_dut();
         response_latency_cycles = 24;
@@ -1147,7 +1147,7 @@ module tb_l1d_prefetch;
 
         // AMO admission is the same epoch barrier as a translation
         // shootdown. It must discard unrelated speculative reads which were
-        // already accepted by CCX before the marked read arrived.
+        // already accepted by ICX before the marked read arrived.
         reset_dut();
         response_latency_cycles = 32;
         issue_load(MEMORY_BASE + 64'h7000);
@@ -1246,7 +1246,7 @@ module tb_l1d_prefetch;
                 "independent prefetch did not get ahead depth=%0d late=%0d useful=%0d",
                 prefetch_depth, late_prefetches, useful_prefetches);
         if (max_prefetch_outstanding < 2)
-            $fatal(1, "prefetch CCX path never had multiple requests live");
+            $fatal(1, "prefetch ICX path never had multiple requests live");
         prefetch_wait_cycles = 0;
         while ((prefetch_commands < 4) &&
                (prefetch_wait_cycles < 100)) begin
@@ -1287,7 +1287,7 @@ module tb_l1d_prefetch;
                  useless_prefetches, prefetch_depth,
                  out_of_order_responses);
         if (out_of_order_responses == 0)
-            $fatal(1, "staggered CCX responses never exercised ID matching");
+            $fatal(1, "staggered ICX responses never exercised ID matching");
         if (useless_prefetches < 2 || prefetch_depth > 2)
             $fatal(1,
                 "unused speculative replacements did not reduce depth useless=%0d depth=%0d",
@@ -1299,7 +1299,7 @@ module tb_l1d_prefetch;
                 useful_prefetches, on_time_useful_prefetches,
                 late_useful_prefetches);
 
-        $display("PASS: L1D two-stream adaptive prefetch, CCX MSHRs, and decay");
+        $display("PASS: L1D two-stream adaptive prefetch, ICX MSHRs, and decay");
         $finish;
     end
 

@@ -8,7 +8,7 @@ the initial page tables; directed workloads execute no translation fence.
 
 ## Ordering oracle
 
-`+fence_check` terminates selected physical requests in a delayed CCX/home
+`+fence_check` terminates selected physical requests in a delayed ICX/home
 model in `tb_top_3p_soc.v`.  A predecessor becomes complete only when that
 external model launches its tagged response after 24 cycles.  A successor
 request reaching the model before that point is a failure.  Retirement,
@@ -44,7 +44,7 @@ isolated so a deadlock or lost posted store cannot hide later results.
 
 Case 6 also checks the exact external 64-byte write payload and byte strobes.
 Case 7 exceeds the historical eight-line pressure point.  All selected
-requests and responses are delayed, covering outstanding L1D/CCX traffic.
+requests and responses are delayed, covering outstanding L1D/ICX traffic.
 
 Run all correctness cases, the Sv39 and bare end-to-end atomic workloads, and
 the existing serialized/integrated atomic tests with:

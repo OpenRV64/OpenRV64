@@ -30,7 +30,7 @@ The current design is built around a few deliberate rules:
 5. Stores are ordered at the retirement head. A core-to-bus request handshake
    is only translation-wrapper capture; architectural completion waits for the
    tagged translation, PMP, and L1D-admission response.
-6. The 3P path has private L1I/L1D clients on native 512-bit CCX. L1D has
+6. The 3P path has private L1I/L1D clients on native 512-bit ICX. L1D has
    parameterized demand MSHRs and a cache-line store buffer, but there is still
    no complete coherent multi-hart hierarchy.
 
@@ -42,9 +42,9 @@ speculative recovery mechanism.
 
 | Boundary | Backend | Memory boundary | Purpose |
 | --- | --- | --- | --- |
-| `openrv64_l1i_top` | Standalone 256-bit fetch client | Native 512-bit CCX plus external translation service | VIPT L1I integration, synthesis, and trace-replay validation |
+| `openrv64_l1i_top` | Standalone 256-bit fetch client | Native 512-bit ICX plus external translation service | VIPT L1I integration, synthesis, and trace-replay validation |
 | `openrv64_top` | Selectable 1P or 3P | 64-bit blocking bus; 256-bit AXI is legal only with 3P | General integration wrapper |
-| `openrv64_top_3p` | Fixed 3P | Native 512-bit CCX plus residual 256-bit AXI4 | Primary 3P performance and cache/CCX boundary |
+| `openrv64_top_3p` | Fixed 3P | Native 512-bit ICX plus residual 256-bit AXI4 | Primary 3P performance and cache/ICX boundary |
 | `openrv64_platform` | Currently the general wrapper and blocking SoC bus | Integrated ROM, 256 MiB simulation RAM, CLINT, PLIC, UART, GPIO, and timer | Firmware and OpenSBI platform validation |
 
 `OPENRV64_BACKEND_1P` and `OPENRV64_BACKEND_3P` are implemented. The encoded
@@ -55,12 +55,12 @@ parameters that the general wrapper leaves at their 3P defaults.
 The 3P core can still be elaborated behind the generic bus for compatibility,
 but that geometry uses the legacy fetch path and presents at most two decode
 lanes. `openrv64_top_3p` fixes both parts of the throughput configuration: the
-three-wide fetcher and the native-CCX cache path.
+three-wide fetcher and the native-ICX cache path.
 
 The 3P integration testbench is a separate artifact. It terminates 512-bit
-native CCX cache-line traffic against a 256-bit, 256 MiB RAM model, and routes
-non-RAM CCX accesses to the existing 64-bit SoC peripheral bus. PTW requests
-use CCX with `kind=PTE`; residual AXI services only explicit cacheless
+native ICX cache-line traffic against a 256-bit, 256 MiB RAM model, and routes
+non-RAM ICX accesses to the existing 64-bit SoC peripheral bus. PTW requests
+use ICX with `kind=PTE`; residual AXI services only explicit cacheless
 instruction fetch. The
 fabric currently lives in
 `tb/tb_top_axi_3p.sv`; it is not yet the synthesizable `openrv64_platform`
@@ -97,7 +97,7 @@ when their parameters are enabled.
   implementation does not generate them internally. If global interrupt
   delivery is active, wake takes the interrupt before WFI+4 retires and writes
   WFI+4 to xEPC; otherwise execution resumes at WFI+4. CSR interrupt
-  detection, outstanding LSU work, private caches, and CCX probe handling
+  detection, outstanding LSU work, private caches, and ICX probe handling
   remain clocked while the architectural pipeline is quiescent. In the 3P
   core, WFI waits for posted stores to drain and then a low-phase-latched gate
   stops the backend clock. This deliberately is not a complete hart clock
@@ -159,13 +159,13 @@ The frontend:
 - advances only by the prefix accepted by decode;
 - preserves resident lines across ordinary predicted and execute-time
   redirects, which makes small loops replay locally;
-- cancels an obsolete frontend request on redirects while lower cache/CCX work
+- cancels an obsolete frontend request on redirects while lower cache/ICX work
   is drained by L1I; and
 - invalidates the resident window on reset, traps, privilege returns,
   `FENCE.I`, `SFENCE.VMA`, and other context-changing restarts.
 
 This two-line window is a fetch bridge, not the instruction cache.  The L1I
-beneath it is virtually indexed and physically tagged, uses 64-byte native CCX
+beneath it is virtually indexed and physically tagged, uses 64-byte native ICX
 fills, and queues both paths of accepted conditional branches.  The path not
 taken is aged for replacement only after the branch retires.
 
@@ -500,12 +500,12 @@ These rules use translated physical addresses; virtual-address equality is not
 used as a memory-dependence proof.
 
 Cacheable load misses allocate a parameterized demand MSHR (three by default)
-and issue one aligned 512-bit native CCX line read per unique line. Different
+and issue one aligned 512-bit native ICX line read per unique line. Different
 lines use independent transaction IDs and may return out of order; same-line
 loads merge as tagged waiters. L1D returns each addressed 64-bit word and
 retains the full line in the cache.
 Write-through stores and uncached scalar accesses use sub-line address, size,
-data, and strobes on the same 512-bit CCX channels. No scalar LSU request uses
+data, and strobes on the same 512-bit ICX channels. No scalar LSU request uses
 an AXI ID or drives AXI directly. A redirect hides a canceled speculative load
 response, while an accepted store remains irrevocable and is drained.
 
@@ -527,7 +527,7 @@ continue filling the retirement window.
 In the 3P path, ordinary `FENCE` and `FENCE.I` do not complete merely because
 they have reached the ordered head. They first wait for older LSQ stores to
 enter L1D, request an L1D store barrier, and wait for every buffered write's
-CCX response. This is a store-completion barrier, not a translation
+ICX response. This is a store-completion barrier, not a translation
 invalidation; ordinary fences do not flush the TLB or emit a PTE fence.
 
 RV64A drains simple MEM work and runs as a serialized ordered operation. It
@@ -575,7 +575,7 @@ superpage alignment, privilege, SUM, MXR, and access type. A/D bits use
 Svade-style fault-on-clear behavior because the physical interface has no
 atomic PTE update mechanism. A successful writable `satp` CSR access changes
 the current translation context: older memory completes first, both
-micro-TLBs and in-flight PTW/PTE-cache state are invalidated, a CCX `ACQ_REL`
+micro-TLBs and in-flight PTW/PTE-cache state are invalidated, a ICX `ACQ_REL`
 PTE fence completes, and only then may fetch or LSU traffic restart. The
 ASID-tagged main TLB survives this operation, so switching back to a retained
 ASID can refill a micro-TLB without a page walk.
@@ -617,7 +617,7 @@ The 3P AXI interface has:
 Every current transfer is a single-beat INCR transaction with `AxLEN=0`.
 Cacheless instruction reads use a 32-byte transfer. IDs 0-3 identify its four
 instruction-line slots. IDs 4-7 are currently unused; L1D and PTW requests use
-native CCX rather than AXI.
+native ICX rather than AXI.
 
 | AXI ID | Owner |
 | ---: | --- |

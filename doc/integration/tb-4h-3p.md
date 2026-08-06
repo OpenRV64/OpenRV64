@@ -2,7 +2,7 @@
 
 ## Main-based port: 2026-07-30 UTC
 
-The `ccx-merge` branch imports this four-hart variant onto main at
+The `icx-merge` branch imports this four-hart variant onto main at
 `bcc49fa3b2b0`.  Coherent L1D probes and coherent atomic reservation clearing
 remain explicit `openrv64_rv64_top_3p` options and default off.  The public
 one-hart wrappers hard-disable and tie off those interfaces, so the port does
@@ -28,15 +28,15 @@ make -B sim-exec-top-3p sim-backend-3p sim-top-3p sim-core-3p-magic
 make -B sim-dispatch-window-3p sim-lsq sim-lsu-misaligned
 make -B sim-zicclsm-context sim-top-axi-3p
 make -B sim-exec-lsu-rv64-a sim-atomic-context
-make -B sim-ccx-4h-l1d-directory-l2
+make -B sim-icx-4h-l1d-directory-l2
 make -B sim-4h-3p-sv39 sim-4h-3p-shared-sv39
 make sim-4h-3p-bare-configured sim-4h-3p-atomic-sv39
-make -B sim-core-3p-ccx-l2-vm
+make -B sim-core-3p-icx-l2-vm
 make sim-opensbi-4h-held
 make sim-opensbi-4h-smp
 ```
 
-| Main-based 4h test | Cycles | Completion cycles, harts 0..3 | CCX requests, harts 0..3 | L2 memory R/W |
+| Main-based 4h test | Cycles | Completion cycles, harts 0..3 | ICX requests, harts 0..3 | L2 memory R/W |
 | --- | ---: | --- | --- | ---: |
 | Separate Sv39 | 71,311 | 68,240 / 69,375 / 70,288 / 70,299 | 1,537 / 1,539 / 1,539 / 1,538 | 147 / 16 |
 | Shared Sv39 | 72,576 | 71,566 / 71,533 / 71,544 / 71,555 | 1,562 / 1,561 / 1,561 / 1,561 | 57 / 44 |
@@ -50,7 +50,7 @@ reservation clears.  The randomized four-L1D directory/L2 test also passed
 
 Before the four-hart migration, the separate one-hart timed-memory regression
 passed in 55,745 cycles at 0.9430 IPC through `openrv64_axi_ddr3`,
-`openrv64_timing_ddr3`, banked timing, CCX, and L2.  The OpenSBI results below
+`openrv64_timing_ddr3`, banked timing, ICX, and L2.  The OpenSBI results below
 now exercise that timed-memory stack from the four-hart coherent hierarchy.
 
 ### OpenSBI with secondary harts held in reset
@@ -72,14 +72,14 @@ The `+opensbi_held` harness mode adds:
 - 1M-cycle progress records and an OpenSBI retirement trace on failure; and
 - explicit checks for the OpenSBI v1.9 banner, M-to-S handoff, SBI timer
   interrupt, DBCN output, supervisor payload magic, no held-hart retirement
-  or CCX traffic, and no coherence protocol error.
+  or ICX traffic, and no coherence protocol error.
 
 The initial 2026-07-30 fixed-latency run passed:
 
 ```text
 PASS: 4H coherent OpenSBI v1.9 on hart 0 with harts 1-3 held in reset;
 ROM handoff, banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion
-cycles=3543682 hart0_retired=4065191 hart0_ccx_req=126654
+cycles=3543682 hart0_retired=4065191 hart0_icx_req=126654
 uart_bytes=2692 memory_reads=1725 memory_writes=624
 ```
 
@@ -88,7 +88,7 @@ The default target was then migrated to timed DDR3 and passed:
 ```text
 PASS: 4H coherent OpenSBI v1.9 on hart 0 with harts 1-3 held in reset;
 ROM handoff, banner, M-to-S handoff, SBI TIME/STIP, DBCN, and payload completion
-cycles=3634843 hart0_retired=4032724 hart0_ccx_req=137179
+cycles=3634843 hart0_retired=4032724 hart0_icx_req=137179
 uart_bytes=2692 memory_reads=1719 memory_writes=629
 ddr3 read_bursts=1719 write_bursts=629
 ddr3 read_commands=1719 write_commands=629
@@ -144,7 +144,7 @@ PASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and
 harts 1-3 retired HSM WFI at 00000000801173ec
 cycles=7775571
 retired=9650778,4115605,4265852,4050650
-ccx_req=278793,7263,7357,7243
+icx_req=278793,7263,7357,7243
 uart_bytes=2705 memory_reads=1782 memory_writes=710
 ```
 
@@ -155,7 +155,7 @@ PASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and
 harts 1-3 sleep at HSM WFI 00000000801173ec
 cycles=7770120
 retired=9649110,425994,426057,426295
-ccx_req=280034,155,164,171
+icx_req=280034,155,164,171
 uart_bytes=2705 memory_reads=1783 memory_writes=708
 walltime=1439.188 s
 ```
@@ -167,7 +167,7 @@ PASS: 4H coherent OpenSBI v1.9; hart 0 completed the S-mode payload and
 harts 1-3 sleep at HSM WFI 00000000801173ec
 cycles=7865514
 retired=9621510,449911,449357,449655
-ccx_req=288306,163,163,171
+icx_req=288306,163,163,171
 uart_bytes=2705 memory_reads=1771 memory_writes=714
 ddr3 read_bursts=1771 write_bursts=714
 ddr3 read_commands=1771 write_commands=714
@@ -185,7 +185,7 @@ retirement and cache/TLB behavior.
 Target completion time changed by only 5,451 cycles (0.070%): the hart-0
 coldboot/timer path, not secondary spinning, determines this endpoint.
 Secondary retirement fell from 12,432,107 instructions in aggregate to
-1,278,346 (89.7%), and their aggregate CCX requests fell from 21,863 to 490
+1,278,346 (89.7%), and their aggregate ICX requests fell from 21,863 to 490
 (97.8%). Verilator wall time fell from 1540.766 seconds to 1439.188 seconds
 (6.59%). The wall-time comparison is an observed simulator result, not an RTL
 frequency or physical-power measurement.
@@ -212,9 +212,9 @@ address with its requested opaque argument. The payload then checks:
 - 64 contended LR/SC increments per active hart, with an exact final count.
 
 The testbench independently observes every hart's OpenSBI HSM WFI, WFI sleep,
-S-mode entry, retirement, CCX requests, signatures, responses, and LR/SC
+S-mode entry, retirement, ICX requests, signatures, responses, and LR/SC
 counter. Inactive harts in the two-hart variant remain in reset and must
-produce no retirement or CCX traffic.
+produce no retirement or ICX traffic.
 
 The first two-hart run found a snoop-filter bookkeeping defect rather than an
 OpenSBI defect. A deferred write-probe completion reconstructed its directory
@@ -222,7 +222,7 @@ entry from whichever SRAM row had most recently been looked up. An unrelated
 lookup could therefore corrupt the saved sharer set while the probe was in
 flight. The L2 MSHR now captures the complete I/D sharer snapshot and the
 completion overwrites the matching directory entry from that snapshot.
-`make sim-ccx-4h-l1d-directory-l2` passes 8,192 randomized operations and 128
+`make sim-icx-4h-l1d-directory-l2` passes 8,192 randomized operations and 128
 atomic operations with this fix.
 
 The fixed-latency two-hart run passed:
@@ -231,7 +231,7 @@ The fixed-latency two-hart run passed:
 PASS: 2H OpenSBI SBI hart_start woke all secondaries into S-mode and completed
 private, bidirectional coherent, and contended LR/SC memory tests
 cycles=4743722
-active=0011 retired=5724567,319873,0,0 ccx_req=184868,1572,0,0
+active=0011 retired=5724567,319873,0,0 icx_req=184868,1572,0,0
 hsm_wfi=0010 hsm_sleep=0010 s_mode=0011 private=0011 response=0011 counter=128
 sc success=222,74,0,0 failure=64,65,0,0
 ```
@@ -243,7 +243,7 @@ PASS: 4H OpenSBI SBI hart_start woke all secondaries into S-mode and completed
 private, bidirectional coherent, and contended LR/SC memory tests
 cycles=7743410
 active=1111 retired=9686324,441210,436493,429505
-ccx_req=299825,1743,1835,2005
+icx_req=299825,1743,1835,2005
 hsm_wfi=1110 hsm_sleep=1110 s_mode=1111 private=1111 response=1111 counter=256
 sc success=236,74,74,74 failure=138,107,137,197
 ```
@@ -312,7 +312,7 @@ transfers per iteration.
 | Ordered LR/SC handoff | 2,581 / 24 | 3,029 / 21 | 4,963 / 25 | 7,724 / 24 | 10,268 / 24 |
 | Ticket lock | 4,447 / 14 | 4,951 / 12 | 7,733 / 16 | 13,274 / 14 | 19,065 / 13 |
 
-The pre-coherent control is the one-hart CCX/L2 rig, not the four-hart
+The pre-coherent control is the one-hart ICX/L2 rig, not the four-hart
 coherence home with three harts held in reset. Its fixed-latency endpoint is
 not structurally identical to the four-hart harness. All target data is warm
 before measurement, and the four ordinary-access cases match exactly at one
@@ -386,9 +386,9 @@ make sim-4h-3p-bare
 make sim-4h-3p-bare CORE_4H_3P_L1D_PREFETCH_ENABLE=0
 make sim-4h-3p-atomic-sv39
 make sim-4h-3p-shared-suite
-make sim-ccx-4h-l1d-directory-l2
+make sim-icx-4h-l1d-directory-l2
 make sim-exec-lsu-rv64-a sim-atomic-context
-make sim-core-3p-ccx-l2-vm
+make sim-core-3p-icx-l2-vm
 ```
 
 All commands passed.  The complete-core results were:
@@ -397,7 +397,7 @@ The final four-hart Verilation rebuilt 147 generated C++ files in 42.392 s
 wall time; Verilator reported 27.841 s CPU on the configured 32 compile
 threads.
 
-| Test | SATP arrangement | Cycles | Completion cycles, harts 0..3 | Retired, harts 0..3 | CCX requests, harts 0..3 | L2 memory R/W |
+| Test | SATP arrangement | Cycles | Completion cycles, harts 0..3 | Retired, harts 0..3 | ICX requests, harts 0..3 | L2 memory R/W |
 | --- | --- | ---: | --- | --- | --- | ---: |
 | `sim-4h-3p-sv39` | four roots, same VA maps to separate physical prefixes | 66,320 | 62,574 / 64,102 / 65,119 / 65,309 | 56,324 / 54,796 / 53,779 / 53,589 | 1,542 / 1,541 / 1,542 / 1,541 | 155 / 16 |
 | `sim-4h-3p-shared-sv39` | one shared root, hart-indexed private pages | 67,825 | 66,368 / 66,778 / 66,788 / 66,798 | 54,036 / 53,626 / 53,616 / 53,606 | 1,593 / 1,574 / 1,574 / 1,566 | 58 / 44 |
@@ -413,7 +413,7 @@ not accidentally reuse an incompatible model.  The main-based port retains
 only the prefetch setting in its build identity because main no longer has the
 address-window parameters.
 
-| L1D prefetch | Test completion | Hart completion cycles, 0..3 | Completion mean / spread | CCX requests, 0..3 | L2 memory R/W |
+| L1D prefetch | Test completion | Hart completion cycles, 0..3 | Completion mean / spread | ICX requests, 0..3 | L2 memory R/W |
 | --- | ---: | --- | ---: | --- | ---: |
 | on (default) | 67,825 | 66,368 / 66,778 / 66,788 / 66,798 | 66,683 / 430 | 1,593 / 1,574 / 1,574 / 1,566 | 58 / 44 |
 | off | 67,587 | 66,548 / 66,558 / 66,568 / 66,578 | 66,563 / 30 | 1,549 / 1,549 / 1,549 / 1,549 | 51 / 44 |
@@ -423,7 +423,7 @@ mean hart completion by 120 cycles (0.180%).  This was not a uniform speedup:
 hart 0 finished 180 cycles later, while harts 1 through 3 each finished 220
 cycles earlier.  The more defensible result is that prefetch increased
 contention and completion skew in this globally serialized four-hart home.  It
-added 111 CCX requests and seven backing-memory reads without improving the
+added 111 ICX requests and seven backing-memory reads without improving the
 tail.
 
 The reported retired-instruction totals are not suitable for this comparison.
@@ -440,7 +440,7 @@ image.  These numbers were produced on the source branch, whose bare target
 moved its speculative-load eligibility window from virtual `0x40000000` to
 physical `0x80000000`.  The main-based port does not have that window.
 
-| Address mode | L1D prefetch | Test completion | Hart completion cycles, 0..3 | Completion mean / spread | CCX requests, 0..3 | L2 memory R/W |
+| Address mode | L1D prefetch | Test completion | Hart completion cycles, 0..3 | Completion mean / spread | ICX requests, 0..3 | L2 memory R/W |
 | --- | --- | ---: | --- | ---: | --- | ---: |
 | Sv39 | off | 67,587 | 66,548 / 66,558 / 66,568 / 66,578 | 66,563 / 30 | 1,549 / 1,549 / 1,549 / 1,549 | 51 / 44 |
 | Bare | off | 67,247 | 66,208 / 66,218 / 66,228 / 66,238 | 66,223 / 30 | 1,542 / 1,542 / 1,542 / 1,542 | 47 / 44 |
@@ -448,7 +448,7 @@ physical `0x80000000`.  The main-based port does not have that window.
 | Bare | on | 67,526 | 65,979 / 66,479 / 66,489 / 66,499 | 66,361.5 / 520 | 1,595 / 1,566 / 1,566 / 1,559 | 54 / 44 |
 
 With prefetch disabled, removing Sv39 saved exactly 340 cycles per hart and
-seven accepted CCX requests per hart.  The shared L2 reduced those 28 PTW
+seven accepted ICX requests per hart.  The shared L2 reduced those 28 PTW
 requests to four additional backing-memory reads.  Bare mode was 0.503%
 faster at final test completion.
 
@@ -463,7 +463,7 @@ than a general correctness proof: it does not exercise uncached stores,
 atomics, PMP rejection, or every redirect/backpressure interleaving.
 
 Within Bare mode, disabling prefetch saved 279 final-completion cycles
-(0.413%) and 138.5 mean hart-completion cycles (0.209%).  It removed 118 CCX
+(0.413%) and 138.5 mean hart-completion cycles (0.209%).  It removed 118 ICX
 requests and seven backing-memory reads.  This independently reproduces the
 Sv39 result: current L1D prefetching causes small contention and completion
 skew, not bus saturation.
@@ -486,7 +486,7 @@ aggregate CPU on four threads.
 The lower-level four-L1D directory test passed at cycle 113,615 after 2,048
 randomized rounds, 8,192 ordinary operations, 2,113 stores, and 128 atomics.
 The serialized RV64A LSU test, integrated atomic-context test, and one-core
-Sv39 CCX/L2/AXI/banked-DDR3 regression also passed.  The last completed in
+Sv39 ICX/L2/AXI/banked-DDR3 regression also passed.  The last completed in
 55,846 cycles with `a0=0x000000000a277880`.
 
 ## Instantiated hierarchy
@@ -499,10 +499,10 @@ Sv39 CCX/L2/AXI/banked-DDR3 regression also passed.  The last completed in
   - coherent reservation-clear input from its L1D probe endpoint
         |
         v
-openrv64_ccx_line_crossbar
+openrv64_icx_line_crossbar
         |
         v
-openrv64_ccx_coherent_protocol
+openrv64_icx_coherent_protocol
   - independently tagged D/I sharer directory
   - one 64-byte LR reservation record per hart
   - one globally active home transaction
@@ -602,7 +602,7 @@ home.  This run therefore does not validate acquire/release ordering.
 
 ## Bugs exposed by the complete-core runs
 
-- `HART_ID` reached the CCX bus but not the CSR implementation, so every core
+- `HART_ID` reached the ICX bus but not the CSR implementation, so every core
   originally observed `mhartid == 0`.
 - A full posted-store buffer could hold the shared L1 port while waiting for
   home progress, preventing an incoming probe from draining.  Posted-store
@@ -653,7 +653,7 @@ translation state.
 ## Scope limits
 
 This proves four complete cores can execute concurrently through Sv39 and the
-shared CCX/L2 hierarchy, and that the directed atomic schedule causes real
+shared ICX/L2 hierarchy, and that the directed atomic schedule causes real
 remote L1D invalidation.  It does not prove:
 
 - scalable coherent throughput; the home serializes globally;

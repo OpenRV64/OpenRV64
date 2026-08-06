@@ -30,7 +30,7 @@ Build and run all three functional variants:
 make -j8 sim-pagefree-suite
 ```
 
-Measure all three variants through the BP8/RD32 L1/CCX/L2 hierarchy with the
+Measure all three variants through the BP8/RD32 L1/ICX/L2 hierarchy with the
 untimed AXI SRAM backend:
 
 ```bash

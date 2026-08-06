@@ -7,7 +7,7 @@
     Detailed block and connection diagram for the live openrv64_top_3p RTL.
     It covers the three-wide frontend, dispatch and forwarding fabric,
     EX0, EX1 and MEM execution pipes, retirement, CSRs and PMP, the MMU,
-    private L1 instruction and data caches, and native 512-bit CCX channels.
+    private L1 instruction and data caches, and native 512-bit ICX channels.
   </desc>
 
   <defs>
@@ -492,7 +492,7 @@
   <!-- Memory subsystem -->
   <rect x="35" y="1020" width="2810" height="765" class="cluster cluster-memory"/>
   <text x="58" y="1054" class="section-title">
-    CORE MEMORY SUBSYSTEM · openrv64_core_ccx_bus · translated private-cache clients + native CCX
+    CORE MEMORY SUBSYSTEM · openrv64_core_icx_bus · translated private-cache clients + native ICX
   </text>
 
   <g id="fetch-tracker">
@@ -525,14 +525,14 @@
   <g id="l1i">
     <rect x="730" y="1100" width="500" height="245" class="block block-cache"/>
     <text x="749" y="1129" class="block-title">Private VIPT L1 instruction cache</text>
-    <text x="749" y="1150" class="block-subtitle">openrv64_l1i_ccx · live default 16 KiB, 4-way, 64-byte line</text>
+    <text x="749" y="1150" class="block-subtitle">openrv64_l1i_icx · live default 16 KiB, 4-way, 64-byte line</text>
     <line x1="745" y1="1163" x2="1215" y2="1163" class="divider"/>
     <text x="749" y="1187" class="body">64 sets · physical tag / virtual page-offset index</text>
     <text x="749" y="1209" class="body">8 demand entries · 8 fill/prefetch slots</text>
     <text x="749" y="1231" class="body">two-path branch prefetch + retirement aging</text>
     <text x="749" y="1259" class="mono">frontend: req VA64+PA64 → rsp256</text>
     <text x="749" y="1279" class="mono">data RAM: 4 × (64 × 512) 1R/1W = 16 KiB</text>
-    <text x="749" y="1299" class="mono">miss: one CCX READ size=6 → one 512b beat</text>
+    <text x="749" y="1299" class="mono">miss: one ICX READ size=6 → one 512b beat</text>
     <text x="749" y="1325" class="small">Read-allocate; pipelined resident hits; full-line storage.</text>
   </g>
 
@@ -569,16 +569,16 @@
   <g id="l1d">
     <rect x="730" y="1400" width="500" height="315" class="block block-cache"/>
     <text x="749" y="1429" class="block-title">Private PIPT L1 data cache</text>
-    <text x="749" y="1450" class="block-subtitle">openrv64_l1d_ccx · live default 16 KiB, 8-way, 64-byte line</text>
+    <text x="749" y="1450" class="block-subtitle">openrv64_l1d_icx · live default 16 KiB, 8-way, 64-byte line</text>
     <line x1="745" y1="1463" x2="1215" y2="1463" class="divider"/>
     <text x="749" y="1487" class="body">32 sets · read-allocate · write-through</text>
     <text x="749" y="1509" class="body">no-write-allocate · one resident hit/cycle</text>
     <text x="749" y="1531" class="body">8 fill lines · 8 posted-store lines</text>
     <text x="749" y="1553" class="body">stride prefetch: queue4 / up to4 outstanding</text>
     <text x="749" y="1581" class="mono">data RAM: 8 × (256 × 64) 1R/1W = 16 KiB</text>
-    <text x="749" y="1601" class="mono">load miss: CCX READ line512; refill as 8×64</text>
+    <text x="749" y="1601" class="mono">load miss: ICX READ line512; refill as 8×64</text>
     <text x="749" y="1621" class="mono">store/MMIO: lane-positioned data512 + strb64</text>
-    <text x="749" y="1649" class="body">CCX transaction ID4; core request tag3.</text>
+    <text x="749" y="1649" class="body">ICX transaction ID4; core request tag3.</text>
     <text x="749" y="1681" class="small">MESI/timestamps are reserved metadata, not coherence.</text>
   </g>
 
@@ -589,7 +589,7 @@
     <line x1="1295" y1="1163" x2="1685" y2="1163" class="divider"/>
     <text x="1299" y="1187" class="body">3-level walk · one active walk state machine</text>
     <text x="1299" y="1209" class="body">PMP-checks each 8-byte implicit PTE read</text>
-    <text x="1299" y="1231" class="body">extracts selected PTE from a 512-bit CCX line</text>
+    <text x="1299" y="1231" class="body">extracts selected PTE from a 512-bit ICX line</text>
     <text x="1299" y="1259" class="mono">request: VA64, access2, priv2, mode4,</text>
     <text x="1299" y="1279" class="mono">ASID16, root PPN44, SUM, MXR</text>
     <text x="1299" y="1307" class="mono">response: PA64 + faults + page level/permissions</text>
@@ -599,17 +599,17 @@
     <text x="1318" y="1414" class="body">tag53 + PTE64 + level/age/valid</text>
     <text x="1318" y="1436" class="mono">≈ 7,808 state bits before decode/mux</text>
     <text x="1318" y="1462" class="small">Not mapped to an SRAM macro in current flow.</text>
-    <text x="1299" y="1537" class="body">CCX source = PTW (2)</text>
+    <text x="1299" y="1537" class="body">ICX source = PTW (2)</text>
     <text x="1299" y="1559" class="body">kind = PTE · cacheable · ordered identity check</text>
-    <text x="1299" y="1587" class="mono">CCX cmd: READ, size=6, addr64, burst=0</text>
-    <text x="1299" y="1607" class="mono">CCX rsp: txn4/source2 + data512 + error</text>
+    <text x="1299" y="1587" class="mono">ICX cmd: READ, size=6, addr64, burst=0</text>
+    <text x="1299" y="1607" class="mono">ICX rsp: txn4/source2 + data512 + error</text>
     <text x="1299" y="1641" class="body">SFENCE aborts or invalidates in-flight state.</text>
-    <text x="1299" y="1681" class="small">PTW traffic is native CCX; it does not use AXI.</text>
+    <text x="1299" y="1681" class="small">PTW traffic is native ICX; it does not use AXI.</text>
   </g>
 
-  <g id="ccx-arbiter">
+  <g id="icx-arbiter">
     <rect x="1750" y="1100" width="500" height="615" class="block block-memory"/>
-    <text x="1769" y="1129" class="block-title">Native CCX client arbiter / response demux</text>
+    <text x="1769" y="1129" class="block-title">Native ICX client arbiter / response demux</text>
     <text x="1769" y="1150" class="block-subtitle">three clients: L1I source0 · L1D source1 · PTW source2</text>
     <line x1="1765" y1="1163" x2="2235" y2="1163" class="divider"/>
     <text x="1769" y="1187" class="body">held-grant command arbitration with source/txn routing</text>
@@ -639,7 +639,7 @@
     <text x="2319" y="1150" class="block-subtitle">single clock domain; external fabric supplies backpressure</text>
     <line x1="2315" y1="1163" x2="2795" y2="1163" class="divider"/>
     <rect x="2325" y="1190" width="460" height="225" class="block block-memory"/>
-    <text x="2344" y="1219" class="block-title">ACTIVE: native 512-bit CCX</text>
+    <text x="2344" y="1219" class="block-title">ACTIVE: native 512-bit ICX</text>
     <text x="2344" y="1245" class="body">command + write-data + response channels</text>
     <text x="2344" y="1267" class="body">64-byte line geometry; independent backpressure</text>
     <text x="2344" y="1295" class="mono">request address64 · line data512 · strobe64</text>
@@ -691,11 +691,11 @@
 
   <path d="M1230 1222 H1750" class="data"/>
   <rect x="1320" y="1188" width="298" height="25" class="label-bg"/>
-  <text x="1330" y="1205" class="mono">L1I CCX READ cmd / 512b response</text>
+  <text x="1330" y="1205" class="mono">L1I ICX READ cmd / 512b response</text>
 
   <path d="M1230 1555 H1750" class="data"/>
   <rect x="1308" y="1521" width="327" height="25" class="label-bg"/>
-  <text x="1318" y="1538" class="mono">L1D CCX cmd + 512b data / response</text>
+  <text x="1318" y="1538" class="mono">L1D ICX cmd + 512b data / response</text>
 
   <path d="M1700 1385 H1750" class="data"/>
   <rect x="1626" y="1352" width="208" height="25" class="label-bg"/>
@@ -703,7 +703,7 @@
 
   <path d="M2250 1295 H2325" class="data"/>
   <rect x="2206" y="1260" width="166" height="25" class="label-bg"/>
-  <text x="2215" y="1277" class="mono">native CCX channels</text>
+  <text x="2215" y="1277" class="mono">native ICX channels</text>
 
   <path d="M2250 1565 H2325" class="optional"/>
   <rect x="2202" y="1578" width="176" height="25" class="label-bg"/>
@@ -731,7 +731,7 @@
   </text>
   <text x="70" y="1974" class="small">
     Sources: rtl/openrv64_top_3p.v, rtl/core/rv64_top_3p.v, rtl/core/backend/backend_3p.v,
-    rtl/core/bus/ccx_bus.v, rtl/core/cache/l1/l1i/l1i.v, rtl/core/cache/l1/l1d/l1d.v.
+    rtl/core/bus/icx_bus.v, rtl/core/cache/l1/l1i/l1i.v, rtl/core/cache/l1/l1d/l1d.v.
   </text>
 
   <!-- Legend -->

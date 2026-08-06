@@ -1,5 +1,5 @@
 /*
- * Scalar memcpy size/alignment sweep for the native 3P L1D/CCX path.
+ * Scalar memcpy size/alignment sweep for the native 3P L1D/ICX path.
  *
  * Each table entry is assigned a disjoint source/destination slot and is run
  * three times.  Repetition zero therefore starts without a prior access to

@@ -685,7 +685,7 @@ module openrv64_lsq #(
                                  slot_index[TAG_WIDTH-1:0])))) begin
                     // The translation channel has no cancellation input.
                     // Retain its tag until the stale response is consumed.
-                    // Physical accesses are different: the CCX bus consumes
+                    // Physical accesses are different: the ICX bus consumes
                     // the architectural cancel, suppresses the response, and
                     // keeps the physical tag busy until the L1D drains it.
                     slot_valid_q[slot_index] <= 1'b1;

@@ -34,15 +34,15 @@ module tb_top_3p;
     wire trace_retire_rd_write;
     wire [4:0] trace_retire_rd;
     wire [63:0] trace_retire_wdata;
-    wire ccx_req_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire ccx_resp_ready;
-    reg ccx_resp_valid_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id_q;
+    wire icx_req_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire icx_resp_ready;
+    reg icx_resp_valid_q;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id_q;
 
     reg [63:0] memory [0:63];
     reg pending_q;
@@ -74,20 +74,20 @@ module tb_top_3p;
         .mem_ready(mem_ready), .mem_write(mem_write), .mem_addr(mem_addr),
         .mem_wdata(mem_wdata), .mem_wstrb(mem_wstrb),
         .mem_rdata(mem_rdata), .mem_error(mem_error),
-        .ccx_req_valid(ccx_req_valid), .ccx_req_ready(1'b1),
-        .ccx_req_hart_id(ccx_req_hart_id),
-        .ccx_req_txn_id(ccx_req_txn_id),
-        .ccx_req_source_id(ccx_req_source_id),
-        .ccx_wdata_ready(1'b1),
-        .ccx_resp_valid(ccx_resp_valid_q),
-        .ccx_resp_ready(ccx_resp_ready),
-        .ccx_resp_hart_id(ccx_resp_hart_id_q),
-        .ccx_resp_txn_id(ccx_resp_txn_id_q),
-        .ccx_resp_source_id(ccx_resp_source_id_q),
-        .ccx_resp_beat_index({`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}),
-        .ccx_resp_last(1'b1),
-        .ccx_resp_rdata({`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
-        .ccx_resp_error(1'b0), .ccx_resp_sc_success(1'b0),
+        .icx_req_valid(icx_req_valid), .icx_req_ready(1'b1),
+        .icx_req_hart_id(icx_req_hart_id),
+        .icx_req_txn_id(icx_req_txn_id),
+        .icx_req_source_id(icx_req_source_id),
+        .icx_wdata_ready(1'b1),
+        .icx_resp_valid(icx_resp_valid_q),
+        .icx_resp_ready(icx_resp_ready),
+        .icx_resp_hart_id(icx_resp_hart_id_q),
+        .icx_resp_txn_id(icx_resp_txn_id_q),
+        .icx_resp_source_id(icx_resp_source_id_q),
+        .icx_resp_beat_index({`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}),
+        .icx_resp_last(1'b1),
+        .icx_resp_rdata({`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
+        .icx_resp_error(1'b0), .icx_resp_sc_success(1'b0),
         .irq_m_software(1'b0), .irq_m_timer(1'b0),
         .irq_m_external(1'b0), .irq_s_software(1'b0),
         .irq_s_timer(1'b0), .irq_s_external(1'b0),
@@ -140,26 +140,26 @@ module tb_top_3p;
         end
     end
 
-    // Generic-bus Sv39 still uses the native CCX port for PTW traffic and
+    // Generic-bus Sv39 still uses the native ICX port for PTW traffic and
     // completion-tracked translation shootdowns.  This test runs in Bare mode,
     // so the only possible request is the SATP shootdown fence.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_resp_valid_q <= 1'b0;
-            ccx_resp_hart_id_q <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            ccx_resp_txn_id_q <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            ccx_resp_source_id_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+            icx_resp_valid_q <= 1'b0;
+            icx_resp_hart_id_q <=
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            icx_resp_txn_id_q <=
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            icx_resp_source_id_q <=
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
         end else begin
-            if (ccx_resp_valid_q && ccx_resp_ready)
-                ccx_resp_valid_q <= 1'b0;
-            if (ccx_req_valid) begin
-                ccx_resp_valid_q <= 1'b1;
-                ccx_resp_hart_id_q <= ccx_req_hart_id;
-                ccx_resp_txn_id_q <= ccx_req_txn_id;
-                ccx_resp_source_id_q <= ccx_req_source_id;
+            if (icx_resp_valid_q && icx_resp_ready)
+                icx_resp_valid_q <= 1'b0;
+            if (icx_req_valid) begin
+                icx_resp_valid_q <= 1'b1;
+                icx_resp_hart_id_q <= icx_req_hart_id;
+                icx_resp_txn_id_q <= icx_req_txn_id;
+                icx_resp_source_id_q <= icx_req_source_id;
             end
         end
     end

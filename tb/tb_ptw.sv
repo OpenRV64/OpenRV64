@@ -43,25 +43,25 @@ module tb_ptw;
     wire pmp_valid;
     wire [63:0] pmp_addr;
 
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    wire ccx_resp_valid;
-    wire ccx_resp_ready;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
-    reg ccx_resp_pending_q;
-    reg [63:0] ccx_resp_line_addr_q;
-    reg ccx_resp_error_q;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    wire icx_resp_valid;
+    wire icx_resp_ready;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
+    reg icx_resp_pending_q;
+    reg [63:0] icx_resp_line_addr_q;
+    reg icx_resp_error_q;
 
     reg [63:0] page_memory [0:8191];
     logic inject_mem_error;
@@ -75,20 +75,20 @@ module tb_ptw;
     integer root_a_reads;
     integer middle_a_reads;
 
-    assign ccx_req_ready = mem_allow && !ccx_resp_pending_q;
-    assign ccx_resp_valid = ccx_resp_pending_q && !suppress_response;
+    assign icx_req_ready = mem_allow && !icx_resp_pending_q;
+    assign icx_resp_valid = icx_resp_pending_q && !suppress_response;
     integer response_word;
     always @* begin
-        ccx_resp_rdata = {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+        icx_resp_rdata = {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
         for (response_word = 0; response_word < 8;
              response_word = response_word + 1)
-            ccx_resp_rdata[response_word*64 +: 64] =
-                page_memory[(ccx_resp_line_addr_q >> 3) + response_word];
+            icx_resp_rdata[response_word*64 +: 64] =
+                page_memory[(icx_resp_line_addr_q >> 3) + response_word];
     end
 
     openrv64_bus_ptw #(
         .PTE_CACHE_ENTRIES(4),
-        .CCX_TIMEOUT_CYCLES(8)
+        .ICX_TIMEOUT_CYCLES(8)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -123,28 +123,28 @@ module tb_ptw;
         .pmp_ready_i(pmp_valid),
         .pmp_addr_o(pmp_addr),
         .pmp_allow_i(1'b1),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(ccx_req_ready),
-        .ccx_req_hart_id_o(ccx_req_hart_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_source_id_o(ccx_req_source_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_lock_o(ccx_req_lock),
-        .ccx_req_order_o(ccx_req_order),
-        .ccx_req_kind_o(ccx_req_kind),
-        .ccx_req_attr_o(ccx_req_attr),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(ccx_req_burst_len),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i('0),
-        .ccx_resp_txn_id_i('0),
-        .ccx_resp_source_id_i(`OPENRV64_CCX_SOURCE_PTW),
-        .ccx_resp_beat_index_i('0),
-        .ccx_resp_last_i(1'b1),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_error_i(ccx_resp_error_q)
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(icx_req_ready),
+        .icx_req_hart_id_o(icx_req_hart_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_source_id_o(icx_req_source_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_lock_o(icx_req_lock),
+        .icx_req_order_o(icx_req_order),
+        .icx_req_kind_o(icx_req_kind),
+        .icx_req_attr_o(icx_req_attr),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(icx_req_burst_len),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i('0),
+        .icx_resp_txn_id_i('0),
+        .icx_resp_source_id_i(`OPENRV64_ICX_SOURCE_PTW),
+        .icx_resp_beat_index_i('0),
+        .icx_resp_last_i(1'b1),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_error_i(icx_resp_error_q)
     );
 
     always @(posedge clk) begin
@@ -152,47 +152,47 @@ module tb_ptw;
             memory_reads <= 0;
             root_a_reads <= 0;
             middle_a_reads <= 0;
-            ccx_resp_pending_q <= 1'b0;
-            ccx_resp_line_addr_q <= 64'd0;
-            ccx_resp_error_q <= 1'b0;
+            icx_resp_pending_q <= 1'b0;
+            icx_resp_line_addr_q <= 64'd0;
+            icx_resp_error_q <= 1'b0;
             shootdowns <= 0;
         end else begin
-            if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_source_id != `OPENRV64_CCX_SOURCE_PTW ||
-                    ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
-                    ccx_req_burst_len != 0 || ccx_req_lock)
-                    $fatal(1, "invalid PTW CCX request envelope");
-                if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
-                    if (ccx_req_size != 3'd6 ||
-                        ccx_req_attr !=
-                            (`OPENRV64_CCX_ATTR_CACHEABLE |
-                             `OPENRV64_CCX_ATTR_IDEMPOTENT))
+            if (icx_req_valid && icx_req_ready) begin
+                if (icx_req_source_id != `OPENRV64_ICX_SOURCE_PTW ||
+                    icx_req_kind != `OPENRV64_ICX_KIND_PTE ||
+                    icx_req_burst_len != 0 || icx_req_lock)
+                    $fatal(1, "invalid PTW ICX request envelope");
+                if (icx_req_op == `OPENRV64_ICX_OP_READ) begin
+                    if (icx_req_size != 3'd6 ||
+                        icx_req_attr !=
+                            (`OPENRV64_ICX_ATTR_CACHEABLE |
+                             `OPENRV64_ICX_ATTR_IDEMPOTENT))
                         $fatal(1, "invalid PTW PTE-line read");
-                end else if (ccx_req_op == `OPENRV64_CCX_OP_FENCE) begin
-                    if (ccx_req_size != 3'd0 ||
-                        ccx_req_attr != `OPENRV64_CCX_ATTR_NONE ||
-                        ccx_req_order != `OPENRV64_CCX_ORDER_ACQ_REL)
+                end else if (icx_req_op == `OPENRV64_ICX_OP_FENCE) begin
+                    if (icx_req_size != 3'd0 ||
+                        icx_req_attr != `OPENRV64_ICX_ATTR_NONE ||
+                        icx_req_order != `OPENRV64_ICX_ORDER_ACQ_REL)
                         $fatal(1, "invalid PTW generation shootdown");
                     shootdowns <= shootdowns + 1;
                 end else begin
-                    $fatal(1, "unexpected PTW CCX operation");
+                    $fatal(1, "unexpected PTW ICX operation");
                 end
-                ccx_resp_pending_q <= 1'b1;
-                ccx_resp_line_addr_q <= ccx_req_addr;
-                ccx_resp_error_q <=
-                    (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
+                icx_resp_pending_q <= 1'b1;
+                icx_resp_line_addr_q <= icx_req_addr;
+                icx_resp_error_q <=
+                    (icx_req_op == `OPENRV64_ICX_OP_READ) &&
                     inject_mem_error &&
-                    (mem_error_addr[63:6] == ccx_req_addr[63:6]);
+                    (mem_error_addr[63:6] == icx_req_addr[63:6]);
             end
-            if (ccx_resp_valid && ccx_resp_ready)
-                ccx_resp_pending_q <= 1'b0;
+            if (icx_resp_valid && icx_resp_ready)
+                icx_resp_pending_q <= 1'b0;
         end
-        if (rst_n && ccx_req_valid && ccx_req_ready &&
-            (ccx_req_op == `OPENRV64_CCX_OP_READ)) begin
+        if (rst_n && icx_req_valid && icx_req_ready &&
+            (icx_req_op == `OPENRV64_ICX_OP_READ)) begin
             memory_reads <= memory_reads + 1;
-            if (ccx_req_addr == 64'h0000_0000_0000_8000)
+            if (icx_req_addr == 64'h0000_0000_0000_8000)
                 root_a_reads <= root_a_reads + 1;
-            if (ccx_req_addr == 64'h0000_0000_0000_9000)
+            if (icx_req_addr == 64'h0000_0000_0000_9000)
                 middle_a_reads <= middle_a_reads + 1;
         end
     end
@@ -569,18 +569,18 @@ module tb_ptw;
         @(negedge clk);
         req_valid = 1'b0;
         memory_index = 0;
-        while (!ccx_req_valid && memory_index < 4) begin
+        while (!icx_req_valid && memory_index < 4) begin
             @(negedge clk);
             memory_index = memory_index + 1;
         end
-        if (!ccx_req_valid)
-            $fatal(1, "shootdown test did not start a CCX PTE request");
+        if (!icx_req_valid)
+            $fatal(1, "shootdown test did not start a ICX PTE request");
         invalidate = 1'b1;
         @(posedge clk);
         @(negedge clk);
         invalidate = 1'b0;
-        if (!ccx_req_valid)
-            $fatal(1, "shootdown abandoned an outstanding CCX request");
+        if (!icx_req_valid)
+            $fatal(1, "shootdown abandoned an outstanding ICX request");
         mem_allow = 1'b1;
         while (!resp_valid)
             @(negedge clk);
@@ -667,7 +667,7 @@ module tb_ptw;
                       "PTE physical access fault");
         inject_mem_error = 1'b0;
 
-        // A CCX endpoint which never accepts a PTE request must become a
+        // A ICX endpoint which never accepts a PTE request must become a
         // precise access fault instead of wedging translation forever.
         flush_translation_caches();
         mem_allow = 1'b0;
@@ -676,7 +676,7 @@ module tb_ptw;
                       `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
                       64'd0, 1'b0, 1'b1,
                       `RV64_PAGE_LEVEL_4K, 1'b0,
-                      "PTE CCX request timeout");
+                      "PTE ICX request timeout");
         mem_allow = 1'b1;
 
         // Once a request has been accepted, timeout reports the fault but
@@ -688,7 +688,7 @@ module tb_ptw;
                       `RV64_SATP_MODE_SV39, 44'd1, 1'b0, 1'b0,
                       64'd0, 1'b0, 1'b1,
                       `RV64_PAGE_LEVEL_4K, 1'b0,
-                      "PTE CCX response timeout");
+                      "PTE ICX response timeout");
         if (req_ready)
             $fatal(1, "PTW reused a timed-out transaction before drain");
         suppress_response = 1'b0;
@@ -707,15 +707,15 @@ module tb_ptw;
                       1'b0, 1'b0, `RV64_PAGE_LEVEL_4K, 1'b1,
                       "Bare identity translation");
 
-        $display("PASS: Sv39 PTW, weighted non-leaf cache, shootdown, faults, and CCX timeouts");
+        $display("PASS: Sv39 PTW, weighted non-leaf cache, shootdown, faults, and ICX timeouts");
         $finish;
     end
 
     wire unused_ptw_sidebands = |{
-        pmp_addr, ccx_req_hart_id, ccx_req_txn_id,
-        ccx_req_source_id, ccx_req_op, ccx_req_lock,
-        ccx_req_order, ccx_req_kind, ccx_req_attr,
-        ccx_req_size, ccx_req_burst_len
+        pmp_addr, icx_req_hart_id, icx_req_txn_id,
+        icx_req_source_id, icx_req_op, icx_req_lock,
+        icx_req_order, icx_req_kind, icx_req_attr,
+        icx_req_size, icx_req_burst_len
     };
     wire unused_leaf_attrs = |{
         resp_readable, resp_writable, resp_executable,

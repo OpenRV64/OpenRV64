@@ -97,7 +97,7 @@ Run the translated workload through the BP8, fetch-lookaside-mode-3,
 L1D-prefetch, L2/AXI/banked-DDR3 configuration with:
 
 ```sh
-make sim-core-3p-ccx-l2-vm
+make sim-core-3p-icx-l2-vm
 ```
 
 The test requires observation of Sv39 in `satp`, supervisor mode, translated
@@ -166,7 +166,7 @@ transfer or eight-line batch. Without it, posted stores can remain local while
 the same hart polls for the token's return; that measures store-drain policy,
 not a defined coherence handoff boundary. The ticket case validates the ticket
 dispenser, serving counter, and protected counter independently. ISA AMOs are
-lowered to coherent LR/SC transactions before CCX, so the harness reports LR
+lowered to coherent LR/SC transactions before ICX, so the harness reports LR
 attempts plus successful and failed SC responses rather than expecting a raw
 AMO opcode at the home.
 
@@ -180,7 +180,7 @@ make sim-4h-3p-coherence-scaling-suite
 make sim-coherence-scaling-suite
 ```
 
-The one-hart suite is the noncoherent one-hart CCX/L2 control. The scaling
+The one-hart suite is the noncoherent one-hart ICX/L2 control. The scaling
 suite uses the coherent four-hart rig with one, two, three, then four active
 harts. `COHERENCE_PERF_ITERATIONS` defaults to 64. Each run verifies the final
 shared values and signatures, reports operations per thousand cycles, target
@@ -224,7 +224,7 @@ make sim-zero-sv39
 ## Atomic SoC tests
 
 `atomic/atomic.S` is a self-checking RV64A test that runs on the production
-three-pipe hierarchy: L1I/L1D, native CCX, shared L2, and the AXI SRAM model.
+three-pipe hierarchy: L1I/L1D, native ICX, shared L2, and the AXI SRAM model.
 It covers successful and failed LR/SC sequences, reservation consumption and
 local-store invalidation, and every integer AMO in both 64-bit and upper-lane
 32-bit forms. The word cases also check sign extension and preservation of the
@@ -296,7 +296,7 @@ WFI sleep on both harts, and no execution or IPI activity from harts 2-3.
 ## memcpy prefetch benchmark
 
 `memcpy/memcpy.S` supplies 4 KiB and 64 KiB page-copy workloads for the
-three-pipe native L1D/CCX path. Each loop iteration copies one aligned 64-byte
+three-pipe native L1D/ICX path. Each loop iteration copies one aligned 64-byte
 cache line. The source is already present in the load image, so source
 generation does not warm the data cache before measurement.
 
@@ -366,7 +366,7 @@ are still from the functional fixed-latency AXI test memory, so they
 characterize core/cache behavior rather than DRAM bandwidth.
 
 `AXI_3P_FREELOADER=1` is a stronger simulation-only backend bound. Cacheable,
-unlocked RAM loads bypass L1D/CCX demand timing and return through a tagged,
+unlocked RAM loads bypass L1D/ICX demand timing and return through a tagged,
 pipelined oracle. `AXI_3P_FREELOADER_LATENCY` is MEM issue to registered
 result and defaults to 3, the minimum supported by the current MEM/L1D
 crossings. Posted stores still enter and drain the real L1D store buffer;
@@ -386,7 +386,7 @@ make bench-stream AXI_3P_FREELOADER=1 \
 
 ## Performance and prefetch characterization suites
 
-The remaining prefetch workloads use the same native three-pipe L1/CCX
+The remaining prefetch workloads use the same native three-pipe L1/ICX
 harness. Build every configuration-specific ELF, binary, map, and disassembly
 with:
 
@@ -399,7 +399,7 @@ make sim-prefetch-checks
 
 `bench-performance-suite` is the default performance regression entry point.
 It runs the prefetch characterization suite, then CoreMark and all four STREAM
-kernels under Sv39 through the L1/CCX/L2/AXI/DDR3 hierarchy. STREAM runs once
+kernels under Sv39 through the L1/ICX/L2/AXI/DDR3 hierarchy. STREAM runs once
 to the timing boundary and once through full result verification. The Sv39
 stages use the current BP8, fetch-lookaside-mode-3, confidence-gated profile;
 set `PERFORMANCE_CONFIDENCE_GATE=0` only for an explicit ungated comparison.
@@ -448,7 +448,7 @@ make bench-stream STREAM_KERNEL=triad STREAM_BYTES=65536
 make sim-stream-suite STREAM_BYTES=4096
 ```
 
-Those targets use the direct functional CCX home. To run the same STREAM
+Those targets use the direct functional ICX home. To run the same STREAM
 image through the production memory hierarchy, use:
 
 ```sh
@@ -468,7 +468,7 @@ make bench-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
 make sim-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
 ```
 
-The DDR3 targets route private L1 traffic through the one-hart CCX complex,
+The DDR3 targets route private L1 traffic through the one-hart ICX complex,
 shared L2, 512-to-256-bit AXI adapter, multi-outstanding memory channel, and
 banked DDR3 scheduler. Their default core configuration is BP8, fetch
 lookaside mode 3, a 16-entry retirement queue, and enabled issue and
@@ -536,7 +536,7 @@ make bench-stride STRIDE_BYTES=64 PREFETCH_L1D_ENABLE=1
 `PREFETCH_L1D_STREAMS` defaults to two independent address histories,
 `PREFETCH_L1D_DISTANCE` is the initial depth and defaults to 1, and adaptive
 read-ahead defaults to a maximum depth of 4. The default candidate queue and
-outstanding CCX-prefetch count are both four; two fill-buffer entries are
+outstanding ICX-prefetch count are both four; two fill-buffer entries are
 reserved for demand. `PREFETCH_L1D_STREAMS` accepts one through four;
 `PREFETCH_L1D_ADAPTIVE_ENABLE`,
 `PREFETCH_L1D_MAX_DISTANCE`, `PREFETCH_L1D_QUEUE_LINES`,
@@ -544,13 +544,13 @@ reserved for demand. `PREFETCH_L1D_STREAMS` accepts one through four;
 controls. Changing any value selects a separate Verilator build.
 
 Each run prints issued, useful, late, dropped, and unused-replacement counts,
-plus maximum adaptive depth seen. It also prints total native `PERF_CCX` reads
+plus maximum adaptive depth seen. It also prints total native `PERF_ICX` reads
 and writes; coverage without that traffic delta is not enough to judge a
 prefetcher.
 
-These tests can characterize cache-line coverage, pollution, and extra CCX
-traffic now. Their direct CCX backing RAM does not represent real memory
-timing. DDR timing is deliberately not attached to that CCX home: the modeled
+These tests can characterize cache-line coverage, pollution, and extra ICX
+traffic now. Their direct ICX backing RAM does not represent real memory
+timing. DDR timing is deliberately not attached to that ICX home: the modeled
 memory hierarchy is shared L2 to AXI to DDR3. Run `make sim-l2-axi-ddr3` for
 the focused hierarchy regression. It checks AXI burst conversion, banked DDR3
 scheduling, uncached reads and writes, an L2 fill and hit, and multiple active

@@ -47,12 +47,12 @@ The adapter implements:
 
 - blocking aligned 64-bit scalar reads and byte-masked writes;
 - one outstanding scalar request per clock domain;
-- 64-byte PTW CCX reads, assembled from two 256-bit MIG reads;
+- 64-byte PTW ICX reads, assembled from two 256-bit MIG reads;
 - one outstanding PTW request per clock domain;
 - PTW fences after all older adapter traffic has drained.
 
-CCX write-data traffic is not implemented. That is sufficient for the
-current 1P core because its external CCX client is the page-table walker,
+ICX write-data traffic is not implemented. That is sufficient for the
+current 1P core because its external ICX client is the page-table walker,
 which emits reads and fences. The external-memory seam deliberately rejects
 the 3P platform configuration.
 

@@ -33,38 +33,38 @@ RENAME_SRCS := rtl/core/rename/identity.v
 FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
 L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
-	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/ccx.v \
+	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/icx.v \
 	rtl/core/cache/l1/l1i/frontend_if.v \
 	rtl/core/cache/l1/l1i/mshr.v rtl/core/cache/l1/l1i/l1i.v \
-	rtl/core/cache/l1/l1d/array.v rtl/core/cache/l1/l1d/ccx.v \
+	rtl/core/cache/l1/l1d/array.v rtl/core/cache/l1/l1d/icx.v \
 	rtl/core/cache/l1/l1d/lsu_if.v rtl/core/cache/l1/l1d/mshr.v \
 	rtl/core/cache/l1/l1d/l1d.v
 BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v \
 	rtl/core/bus/micro_tlb.v \
 	rtl/core/bus/tlb_l2.v rtl/core/bus/ptw.v \
-	rtl/core/bus/gen_bus.v rtl/core/bus/ccx_bus.v rtl/core/bus/bus.v \
+	rtl/core/bus/gen_bus.v rtl/core/bus/icx_bus.v rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS)
-CCX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
+ICX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
 	rtl/complex/protocol/hart_legacy_adapter.v \
 	rtl/complex/protocol/axi_master.v rtl/complex/protocol/crossbar.v \
 	rtl/complex/protocol/wrapper_nh.v rtl/complex/protocol/wrapper_1h.v \
 	rtl/complex/protocol/wrapper_2h.v rtl/complex/protocol/wrapper_4h.v
 COMPLEX_BUS_SRCS := rtl/complex/bus/defs.v \
 	rtl/complex/bus/wishbone_backend.v rtl/bus/genbus_interface.v
-CCX_L2_SRCS := rtl/cache/l2/sram_way.v rtl/cache/l2/l2_native.v
+ICX_L2_SRCS := rtl/cache/l2/sram_way.v rtl/cache/l2/l2_native.v
 CORE_COMPLEX_SRCS := rtl/complex/protocol/defs.v \
 	rtl/complex/protocol/line_crossbar.v \
-	$(CCX_L2_SRCS) \
+	$(ICX_L2_SRCS) \
 	$(COMPLEX_BUS_SRCS) \
 	rtl/complex/wrapper_nh.v
-CCX_COHERENT_SRCS := rtl/complex/coherent/protocol/defs.v \
+ICX_COHERENT_SRCS := rtl/complex/coherent/protocol/defs.v \
 	rtl/complex/coherent/directory.v \
 	rtl/complex/coherent/snoop_filter.v \
 	rtl/complex/coherent/probe_tracker.v \
 	rtl/complex/coherent/l1d_probe_endpoint.v \
 	rtl/complex/coherent/control.v \
 	rtl/complex/coherent/protocol/coherent_protocol.v \
-	rtl/complex/2h/ccx.v rtl/complex/4h/ccx.v
+	rtl/complex/2h/icx.v rtl/complex/4h/icx.v
 DISPATCH_SRCS := $(RENAME_SRCS) rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_3p.v \
 	rtl/core/dispatch/dispatch_window_3p.v \
@@ -112,7 +112,7 @@ CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
 	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/micro_tlb.v \
 	rtl/core/bus/tlb_l2.v \
-	rtl/core/bus/ptw.v rtl/core/bus/ccx_bus.v rtl/core/bus/bus.v \
+	rtl/core/bus/ptw.v rtl/core/bus/icx_bus.v rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS) \
 	$(DECODE_SRCS) \
 	rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr_3p.v \
@@ -157,7 +157,7 @@ SOC_BUS_SRCS := rtl/soc/bus/mem_map.v rtl/soc/bus/decode.v
 RESET_SEQUENCER_SRCS := rtl/soc/reset_sequencer.v
 PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
 	rtl/soc/bus/axi_to_scalar.v rtl/soc/bus/axi_to_wide.v \
-	rtl/soc/bus/ccx_l2_bridge.v \
+	rtl/soc/bus/icx_l2_bridge.v \
 	$(CORE_COMPLEX_SRCS) \
 	$(AXI_DDR3_SRCS) \
 	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
@@ -181,18 +181,18 @@ L2_AXI_DDR3_SIM_SRCS := tb/tb_l2_axi_ddr3.sv
 MESH_ROUTER_SIM_SRCS := tb/tb_mesh_router_tile.sv
 SOC_BUS_SIM_SRCS := tb/tb_soc_bus_decode.sv
 CORE_BUS_SIM_SRCS := tb/tb_core_bus.sv
-CCX_PROTOCOL_1H_SIM_SRCS := tb/tb_ccx_protocol_1h.sv
-CCX_PROTOCOL_NH_SIM_SRCS := tb/tb_ccx_protocol_nh.sv
+ICX_PROTOCOL_1H_SIM_SRCS := tb/tb_icx_protocol_1h.sv
+ICX_PROTOCOL_NH_SIM_SRCS := tb/tb_icx_protocol_nh.sv
 L1_CACHE_SIM_SRCS := tb/tb_l1_cache.sv
-CCX_L2_SIM_SRCS := tb/tb_ccx_l2.sv
-CCX_L2_SC_REFILL_SIM_SRCS := tb/tb_ccx_l2_sc_refill.sv
+ICX_L2_SIM_SRCS := tb/tb_icx_l2.sv
+ICX_L2_SC_REFILL_SIM_SRCS := tb/tb_icx_l2_sc_refill.sv
 GENBUS_SIM_SRCS := tb/tb_genbus_interface.sv
 CORE_COMPLEX_SIM_SRCS := tb/tb_core_complex.sv
-CCX_BUS_SIM_SRCS := tb/tb_ccx_bus.sv
-CCX_L1I_SIM_SRCS := tb/tb_ccx_l1i.sv
+ICX_BUS_SIM_SRCS := tb/tb_icx_bus.sv
+ICX_L1I_SIM_SRCS := tb/tb_icx_l1i.sv
 L1I_TOP_SIM_SRCS := rtl/openrv64_l1i_top.v \
 	rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
-	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/ccx.v \
+	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/icx.v \
 	rtl/core/cache/l1/l1i/frontend_if.v \
 	rtl/core/cache/l1/l1i/mshr.v rtl/core/cache/l1/l1i/l1i.v \
 	tb/tb_openrv64_l1i_top.sv

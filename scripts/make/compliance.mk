@@ -58,7 +58,7 @@ compliance-isa: compliance-act4-generate
 		--xfail "$(COMPLIANCE_XFAIL)" \
 		--results-dir "$(COMPLIANCE_BUILD_DIR)/results-platform"
 
-# The 3p target validates the native AXI/CCX path with inert setup MMIO. Use
+# The 3p target validates the native AXI/ICX path with inert setup MMIO. Use
 # compliance-priv for tests that require functional CLINT/PLIC behavior.
 compliance-isa-3p: compliance-act4-generate
 	$(PYTHON) tools/compliance.py suite "$(COMPLIANCE_ACT4_ELFS)/rv64i" \
@@ -67,7 +67,7 @@ compliance-isa-3p: compliance-act4-generate
 		--xfail "$(COMPLIANCE_XFAIL)" \
 		--results-dir "$(COMPLIANCE_BUILD_DIR)/results-3p"
 
-# Exact integrated hierarchy: 3p core, L1I/L1D, native CCX, shared L2, then
+# Exact integrated hierarchy: 3p core, L1I/L1D, native ICX, shared L2, then
 # the platform decoder and peripherals.  Verilator is mandatory for this path.
 compliance-isa-platform-3p: compliance-act4-generate
 	$(PYTHON) tools/compliance.py suite "$(COMPLIANCE_ACT4_ELFS)/rv64i" \

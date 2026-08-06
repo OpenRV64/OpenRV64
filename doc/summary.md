@@ -65,8 +65,8 @@ The two focused groups were invoked as:
 
 ```text
 make -j8 sim-l1-sync-tag sim-l1d-prefetch sim-l1d-demand-mshr \
-  sim-l1d-store-order sim-l1d-store-buffer sim-l1-cache sim-ccx-l2 \
-  sim-l2-axi-ddr3 sim-ccx-4h-l1d-directory-l2
+  sim-l1d-store-order sim-l1d-store-buffer sim-l1-cache sim-icx-l2 \
+  sim-l2-axi-ddr3 sim-icx-4h-l1d-directory-l2
 
 make -j8 sim-exec-top-3p sim-backend-3p sim-top-axi-3p \
   sim-zicclsm-context sim-top-4pf sim-top-4pf-faults sim-vec \
@@ -104,7 +104,7 @@ configuration have drifted apart.
 | Variant | Current role | Status |
 |---|---|---|
 | `openrv64_top` | Generic 1P-by-default wrapper over the blocking memory bus; can select 3P. | Principal simple integration surface. It exposes optional Zbb. |
-| `openrv64_top_3p` | Fixed 3P native-CCX/residual-AXI top with 16-entry retirement, BP8 default, optional issue/speculation, A, optional M, and Zicclsm. | Most capable integer core surface. It does not expose the documented Zbb parameter, despite the inner 3P core supporting it. |
+| `openrv64_top_3p` | Fixed 3P native-ICX/residual-AXI top with 16-entry retirement, BP8 default, optional issue/speculation, A, optional M, and Zicclsm. | Most capable integer core surface. It does not expose the documented Zbb parameter, despite the inner 3P core supporting it. |
 | `soc/platform.sv` | Synthesizable single-hart platform with boot ROM, CLINT/PLIC/UART and selectable memory models. | Linux simulation vehicle. The external-memory seam is intentionally limited to 1P. |
 | `tb_4h_3p.sv` hierarchy | One-to-four real 3P cores, coherent home/directory/L2, residual AXI and platform devices. | Demonstrates SMP Linux in simulation. It is a testbench hierarchy, not a production SoC wrapper. |
 | `top_4pf.v` | Separate four-pipeline F/D-capable execution top. | Directed full-core F/D behavior works, but it is not integrated into the main 1P/3P/Linux platform. |
@@ -155,7 +155,7 @@ performance TODO.
 ### Memory hierarchy, coherence, and VM
 
 The repository contains 16 KiB L1I and 16 KiB write-through L1D designs, a
-256 KiB eight-way L2, a 512-bit-line native CCX path, three L1D demand MSHRs, an
+256 KiB eight-way L2, a 512-bit-line native ICX path, three L1D demand MSHRs, an
 eight-line store buffer, adaptive prefetch, a coherent home/directory, and
 fixed-latency/AXI/timed-DDR simulation backends.
 
@@ -177,7 +177,7 @@ but several product contracts remain incomplete:
   architectural specification rather than local assumptions at different buses;
 - posted-store asynchronous error reporting and machine-check behavior are not
   defined;
-- residual AXI, native CCX, probe, invalidation, reset, and error behavior need
+- residual AXI, native ICX, probe, invalidation, reset, and error behavior need
   protocol assertions and adversarial backpressure testing;
 - the globally serialized home simplifies correctness but may become an SMP
   bottleneck. Existing tests establish function, not scalable throughput.
@@ -320,7 +320,7 @@ external-memory integration rejects the 3P product path. See
      hierarchy;
    - [ordering/fence-suite.md](ordering/fence-suite.md) records an old FAIL even
      though the current suite passes;
-   - [integration/ccx-coherent-variants.md](integration/ccx-coherent-variants.md)
+   - [integration/icx-coherent-variants.md](integration/icx-coherent-variants.md)
      retains unchecked Linux/timed-DDR items superseded by later runs;
    - the compliance README's PMP description no longer matches the RTL;
    - F/D cycle counts in prose have already drifted from current execution.

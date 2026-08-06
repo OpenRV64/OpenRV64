@@ -108,7 +108,7 @@ The following passed on the tagged-L1D RTL:
 | `make -B sim-l1d-prefetch` | PASS |
 | `make -B sim-l1-cache` | PASS |
 | `make -B sim-lsq` | PASS |
-| `make -B sim-ccx-bus` | PASS, including native CCX L1I |
+| `make -B sim-icx-bus` | PASS, including native ICX L1I |
 | `git diff --check` | PASS |
 
 The store-buffer regression specifically covers a posted store immediately
@@ -120,9 +120,9 @@ overlay-sensitive results to the measured manifest rather than to the moving
 live worktree.
 
 After the map completed, the live L1D was split from
-`rtl/cache/l1/l1d/l1d.v` into `rtl/core/cache/l1/l1d/{array,ccx,lsu_if,mshr,l1d}.v`.
+`rtl/cache/l1/l1d/l1d.v` into `rtl/core/cache/l1/l1d/{array,icx,lsu_if,mshr,l1d}.v`.
 The split tree retains the global LSU tags and synchronous overlay RAM.
-`sim-l1d-store-buffer`, `sim-l1d-demand-mshr`, and `sim-ccx-bus` were rebuilt
+`sim-l1d-store-buffer`, `sim-l1d-demand-mshr`, and `sim-icx-bus` were rebuilt
 against that live source after the move and passed. The area numbers below
 still identify the frozen pre-split manifest; the later source split has not
 been remeasured.

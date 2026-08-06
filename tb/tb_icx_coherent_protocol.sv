@@ -2,7 +2,7 @@
 `include "complex/protocol/defs.v"
 `include "complex/coherent/protocol/defs.v"
 
-module tb_ccx_coherent_protocol #(
+module tb_icx_coherent_protocol #(
     parameter integer NUM_HARTS = 2
 );
 
@@ -16,89 +16,89 @@ module tb_ccx_coherent_protocol #(
 
     logic req_valid;
     wire req_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] req_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] req_source_id;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] req_op;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] req_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] req_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] req_source_id;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] req_op;
     logic req_lock;
-    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] req_order;
-    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] req_kind;
-    logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] req_attr;
+    logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] req_order;
+    logic [`OPENRV64_ICX_KIND_WIDTH-1:0] req_kind;
+    logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] req_attr;
     logic [2:0] req_size;
     logic [63:0] req_addr;
-    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] req_burst_len;
+    logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] req_burst_len;
 
     logic wdata_valid;
     wire wdata_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] wdata_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] wdata_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] wdata_source_id;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] wdata_beat_index;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] wdata_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] wdata_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] wdata_source_id;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] wdata_beat_index;
     logic wdata_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] wdata;
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] wstrb;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] wdata;
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] wstrb;
 
     wire resp_valid;
     logic resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] resp_beat_index;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] resp_beat_index;
     wire resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] resp_rdata;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] resp_rdata;
     wire resp_error;
     wire resp_sc_success;
 
     wire [NUM_HARTS-1:0] probe_valid;
     logic [NUM_HARTS-1:0] probe_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_id;
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0]
         probe_command;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
         probe_cache_mask;
     wire [NUM_HARTS*64-1:0] probe_line_addr;
     logic [NUM_HARTS-1:0] probe_resp_valid;
     wire [NUM_HARTS-1:0] probe_resp_ready;
-    logic [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    logic [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
         probe_resp_id;
-    logic [NUM_HARTS*`OPENRV64_CCX_PROBE_RESP_WIDTH-1:0]
+    logic [NUM_HARTS*`OPENRV64_ICX_PROBE_RESP_WIDTH-1:0]
         probe_resp_kind;
-    logic [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [NUM_HARTS*`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         probe_resp_data;
     logic [NUM_HARTS-1:0] probe_resp_error;
 
     wire l2_req_valid;
     logic l2_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] l2_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] l2_req_op;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] l2_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] l2_req_op;
     wire l2_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] l2_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] l2_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] l2_req_attr;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] l2_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] l2_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] l2_req_attr;
     wire [2:0] l2_req_size;
     wire [63:0] l2_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] l2_req_burst_len;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] l2_req_burst_len;
 
     wire l2_wdata_valid;
     logic l2_wdata_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] l2_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] l2_wdata_beat_index;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] l2_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] l2_wdata_beat_index;
     wire l2_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l2_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] l2_wstrb;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l2_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] l2_wstrb;
 
     logic l2_resp_valid;
     wire l2_resp_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_resp_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_resp_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] l2_resp_source_id;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] l2_resp_beat_index;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_resp_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_resp_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] l2_resp_source_id;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] l2_resp_beat_index;
     logic l2_resp_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l2_resp_rdata;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l2_resp_rdata;
     logic l2_resp_error;
     logic l2_resp_sc_success;
 
@@ -111,13 +111,13 @@ module tb_ccx_coherent_protocol #(
     integer last_probe_response_cycle;
     integer last_l2_request_cycle;
     logic [NUM_HARTS-1:0] last_probe_targets;
-    logic [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    logic [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
         last_probe_cache_mask;
     logic [63:0] last_probe_address;
     logic l2_write_waiting;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] saved_l2_hart;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] saved_l2_txn;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] saved_l2_source;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] saved_l2_hart;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] saved_l2_txn;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] saved_l2_source;
     logic [63:0] saved_l2_addr;
     integer model_hart;
     integer wait_cycles;
@@ -125,7 +125,7 @@ module tb_ccx_coherent_protocol #(
     integer l2_before;
     logic [NUM_HARTS-1:0] expected_targets;
 
-    openrv64_ccx_coherent_protocol #(
+    openrv64_icx_coherent_protocol #(
         .NUM_HARTS(NUM_HARTS),
         .HART_ID_BASE(HART_ID_BASE),
         .DIRECTORY_ENTRIES(DIRECTORY_ENTRIES),
@@ -218,13 +218,13 @@ module tb_ccx_coherent_protocol #(
         forever #5 clk = ~clk;
     end
 
-    function automatic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         model_read_data;
         input [63:0] address;
         integer lane;
         begin
             model_read_data =
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             for (lane = 0; lane < 8; lane = lane + 1)
                 model_read_data[lane*64 +: 64] =
                     address ^ (64'h1111_0000_0000_0000 + lane);
@@ -238,17 +238,17 @@ module tb_ccx_coherent_protocol #(
         if (!rst_n) begin
             probe_resp_valid <= {NUM_HARTS{1'b0}};
             probe_resp_id <=
-                {NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
+                {NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
             probe_resp_kind <=
-                {NUM_HARTS*`OPENRV64_CCX_PROBE_RESP_WIDTH{1'b0}};
+                {NUM_HARTS*`OPENRV64_ICX_PROBE_RESP_WIDTH{1'b0}};
             probe_resp_data <=
-                {NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {NUM_HARTS*`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             probe_resp_error <= {NUM_HARTS{1'b0}};
             probe_transactions <= 0;
             last_probe_response_cycle <= -1;
             last_probe_targets <= {NUM_HARTS{1'b0}};
             last_probe_cache_mask <=
-                `OPENRV64_CCX_PROBE_CACHE_NONE;
+                `OPENRV64_ICX_PROBE_CACHE_NONE;
             last_probe_address <= 64'd0;
         end else begin
             if (|(probe_resp_valid & probe_resp_ready)) begin
@@ -268,28 +268,28 @@ module tb_ccx_coherent_protocol #(
                     if (probe_valid[model_hart] &&
                         probe_ready[model_hart]) begin
                         probe_resp_id[
-                            model_hart*`OPENRV64_CCX_PROBE_ID_WIDTH +:
-                            `OPENRV64_CCX_PROBE_ID_WIDTH] <=
+                            model_hart*`OPENRV64_ICX_PROBE_ID_WIDTH +:
+                            `OPENRV64_ICX_PROBE_ID_WIDTH] <=
                             probe_id[
                                 model_hart*
-                                `OPENRV64_CCX_PROBE_ID_WIDTH +:
-                                `OPENRV64_CCX_PROBE_ID_WIDTH];
+                                `OPENRV64_ICX_PROBE_ID_WIDTH +:
+                                `OPENRV64_ICX_PROBE_ID_WIDTH];
                         probe_resp_kind[
-                            model_hart*`OPENRV64_CCX_PROBE_RESP_WIDTH +:
-                            `OPENRV64_CCX_PROBE_RESP_WIDTH] <=
-                            `OPENRV64_CCX_PROBE_RESP_ACK;
+                            model_hart*`OPENRV64_ICX_PROBE_RESP_WIDTH +:
+                            `OPENRV64_ICX_PROBE_RESP_WIDTH] <=
+                            `OPENRV64_ICX_PROBE_RESP_ACK;
                         if (probe_command[
                                 model_hart*
-                                `OPENRV64_CCX_PROBE_CMD_WIDTH +:
-                                `OPENRV64_CCX_PROBE_CMD_WIDTH] !=
-                            `OPENRV64_CCX_PROBE_INV)
+                                `OPENRV64_ICX_PROBE_CMD_WIDTH +:
+                                `OPENRV64_ICX_PROBE_CMD_WIDTH] !=
+                            `OPENRV64_ICX_PROBE_INV)
                             $fatal(1,
                                    "clean protocol emitted data probe");
                         last_probe_cache_mask <=
                             probe_cache_mask[
                                 model_hart*
-                                `OPENRV64_CCX_PROBE_CACHE_WIDTH +:
-                                `OPENRV64_CCX_PROBE_CACHE_WIDTH];
+                                `OPENRV64_ICX_PROBE_CACHE_WIDTH +:
+                                `OPENRV64_ICX_PROBE_CACHE_WIDTH];
                         last_probe_address <=
                             probe_line_addr[model_hart*64 +: 64];
                     end
@@ -304,23 +304,23 @@ module tb_ccx_coherent_protocol #(
         if (!rst_n) begin
             l2_resp_valid <= 1'b0;
             l2_resp_hart_id <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            l2_resp_txn_id <= {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            l2_resp_txn_id <= {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
             l2_resp_source_id <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
             l2_resp_beat_index <=
-                {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+                {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}};
             l2_resp_last <= 1'b1;
             l2_resp_rdata <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             l2_resp_error <= 1'b0;
             l2_resp_sc_success <= 1'b0;
             l2_write_waiting <= 1'b0;
             saved_l2_hart <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            saved_l2_txn <= {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            saved_l2_txn <= {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
             saved_l2_source <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
             saved_l2_addr <= 64'd0;
             l2_requests <= 0;
             l2_writes <= 0;
@@ -333,7 +333,7 @@ module tb_ccx_coherent_protocol #(
                 if (l2_write_waiting)
                     $fatal(1, "L2 received a command before write data");
                 if (l2_req_lock ||
-                    (l2_req_order != `OPENRV64_CCX_ORDER_NONE) ||
+                    (l2_req_order != `OPENRV64_ICX_ORDER_NONE) ||
                     (l2_req_burst_len != 0))
                     $fatal(1, "frontend leaked home-only ordering to L2");
                 saved_l2_hart <= l2_req_hart_id;
@@ -342,7 +342,7 @@ module tb_ccx_coherent_protocol #(
                 saved_l2_addr <= l2_req_addr;
                 l2_requests <= l2_requests + 1;
                 last_l2_request_cycle <= cycle_count;
-                if (l2_req_op == `OPENRV64_CCX_OP_WRITE) begin
+                if (l2_req_op == `OPENRV64_ICX_OP_WRITE) begin
                     l2_write_waiting <= 1'b1;
                 end else begin
                     l2_resp_valid <= 1'b1;
@@ -350,9 +350,9 @@ module tb_ccx_coherent_protocol #(
                     l2_resp_txn_id <= l2_req_txn_id;
                     l2_resp_source_id <= l2_req_source_id;
                     l2_resp_rdata <=
-                        (l2_req_op == `OPENRV64_CCX_OP_READ) ?
+                        (l2_req_op == `OPENRV64_ICX_OP_READ) ?
                             model_read_data(l2_req_addr) :
-                            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 end
             end
 
@@ -371,29 +371,29 @@ module tb_ccx_coherent_protocol #(
                 l2_resp_txn_id <= saved_l2_txn;
                 l2_resp_source_id <= saved_l2_source;
                 l2_resp_rdata <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             end
         end
     end
 
     task automatic issue_read;
         input integer hart;
-        input [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] source;
-        input [`OPENRV64_CCX_ATTR_WIDTH-1:0] attributes;
+        input [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] source;
+        input [`OPENRV64_ICX_ATTR_WIDTH-1:0] attributes;
         input [63:0] address;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         begin
             @(negedge clk);
             req_valid = 1'b1;
             req_hart_id =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+                `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart);
             req_txn_id = transaction;
             req_source_id = source;
-            req_op = `OPENRV64_CCX_OP_READ;
+            req_op = `OPENRV64_ICX_OP_READ;
             req_kind =
-                (source == `OPENRV64_CCX_SOURCE_ICACHE) ?
-                    `OPENRV64_CCX_KIND_FETCH :
-                    `OPENRV64_CCX_KIND_DATA;
+                (source == `OPENRV64_ICX_SOURCE_ICACHE) ?
+                    `OPENRV64_ICX_KIND_FETCH :
+                    `OPENRV64_ICX_KIND_DATA;
             req_attr = attributes;
             req_size = 3'd6;
             req_addr = address;
@@ -412,7 +412,7 @@ module tb_ccx_coherent_protocol #(
                 $fatal(1, "N=%0d read response timeout", NUM_HARTS);
             if (resp_error ||
                 (resp_hart_id !=
-                 `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
+                 `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
                 (resp_txn_id != transaction) ||
                 (resp_source_id != source) ||
                 (resp_rdata != model_read_data(address)) ||
@@ -427,18 +427,18 @@ module tb_ccx_coherent_protocol #(
 
     task automatic issue_write;
         input integer hart;
-        input [`OPENRV64_CCX_ATTR_WIDTH-1:0] attributes;
+        input [`OPENRV64_ICX_ATTR_WIDTH-1:0] attributes;
         input [63:0] address;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         begin
             @(negedge clk);
             req_valid = 1'b1;
             req_hart_id =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+                `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart);
             req_txn_id = transaction;
-            req_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
-            req_op = `OPENRV64_CCX_OP_WRITE;
-            req_kind = `OPENRV64_CCX_KIND_DATA;
+            req_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
+            req_op = `OPENRV64_ICX_OP_WRITE;
+            req_kind = `OPENRV64_ICX_KIND_DATA;
             req_attr = attributes;
             req_size = 3'd6;
             req_addr = address;
@@ -449,14 +449,14 @@ module tb_ccx_coherent_protocol #(
             req_valid = 1'b0;
             wdata_valid = 1'b1;
             wdata_hart_id =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+                `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart);
             wdata_txn_id = transaction;
-            wdata_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+            wdata_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
             wdata_beat_index =
-                {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+                {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}};
             wdata_last = 1'b1;
             wdata = {8{address}};
-            wstrb = {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}};
+            wstrb = {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}};
             while (!wdata_ready)
                 @(negedge clk);
             @(posedge clk);
@@ -481,17 +481,17 @@ module tb_ccx_coherent_protocol #(
     task automatic issue_lr;
         input integer hart;
         input [63:0] address;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         begin
             @(negedge clk);
             req_valid = 1'b1;
             req_hart_id =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+                `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart);
             req_txn_id = transaction;
-            req_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
-            req_op = `OPENRV64_CCX_OP_LR;
-            req_kind = `OPENRV64_CCX_KIND_DATA;
-            req_attr = `OPENRV64_CCX_ATTR_CACHEABLE;
+            req_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
+            req_op = `OPENRV64_ICX_OP_LR;
+            req_kind = `OPENRV64_ICX_KIND_DATA;
+            req_attr = `OPENRV64_ICX_ATTR_CACHEABLE;
             req_size = 3'd3;
             req_addr = address;
             while (!req_ready)
@@ -507,7 +507,7 @@ module tb_ccx_coherent_protocol #(
             end
             if (!resp_valid || resp_error || resp_sc_success ||
                 (resp_hart_id !=
-                 `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
+                 `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
                 (resp_txn_id != transaction) ||
                 (resp_rdata != model_read_data(address)))
                 $fatal(1, "N=%0d LR response mismatch", NUM_HARTS);
@@ -521,18 +521,18 @@ module tb_ccx_coherent_protocol #(
     task automatic issue_sc;
         input integer hart;
         input [63:0] address;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         input expected_success;
         begin
             @(negedge clk);
             req_valid = 1'b1;
             req_hart_id =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+                `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart);
             req_txn_id = transaction;
-            req_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
-            req_op = `OPENRV64_CCX_OP_SC;
-            req_kind = `OPENRV64_CCX_KIND_DATA;
-            req_attr = `OPENRV64_CCX_ATTR_CACHEABLE;
+            req_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
+            req_op = `OPENRV64_ICX_OP_SC;
+            req_kind = `OPENRV64_ICX_KIND_DATA;
+            req_attr = `OPENRV64_ICX_ATTR_CACHEABLE;
             req_size = 3'd3;
             req_addr = address;
             while (!req_ready)
@@ -542,14 +542,14 @@ module tb_ccx_coherent_protocol #(
             req_valid = 1'b0;
             wdata_valid = 1'b1;
             wdata_hart_id =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart);
+                `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart);
             wdata_txn_id = transaction;
-            wdata_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+            wdata_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
             wdata_beat_index =
-                {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+                {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}};
             wdata_last = 1'b1;
             wdata = {8{address ^ 64'h5c5c_5c5c_5c5c_5c5c}};
-            wstrb = {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}};
+            wstrb = {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}};
             while (!wdata_ready)
                 @(negedge clk);
             @(posedge clk);
@@ -564,7 +564,7 @@ module tb_ccx_coherent_protocol #(
             if (!resp_valid || resp_error ||
                 (resp_sc_success != expected_success) ||
                 (resp_hart_id !=
-                 `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
+                 `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + hart)) ||
                 (resp_txn_id != transaction))
                 $fatal(1,
                     "N=%0d SC response mismatch success=%0b expected=%0b",
@@ -582,12 +582,12 @@ module tb_ccx_coherent_protocol #(
             @(negedge clk);
             req_valid = 1'b1;
             req_hart_id =
-                `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE);
+                `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE);
             req_txn_id = 4'he;
-            req_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
-            req_op = `OPENRV64_CCX_OP_AMOADD;
-            req_kind = `OPENRV64_CCX_KIND_DATA;
-            req_attr = `OPENRV64_CCX_ATTR_CACHEABLE;
+            req_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
+            req_op = `OPENRV64_ICX_OP_AMOADD;
+            req_kind = `OPENRV64_ICX_KIND_DATA;
+            req_attr = `OPENRV64_ICX_ATTR_CACHEABLE;
             req_size = 3'd3;
             req_addr = address;
             while (!req_ready)
@@ -612,11 +612,11 @@ module tb_ccx_coherent_protocol #(
         req_hart_id = 0;
         req_txn_id = 0;
         req_source_id = 0;
-        req_op = `OPENRV64_CCX_OP_READ;
+        req_op = `OPENRV64_ICX_OP_READ;
         req_lock = 1'b0;
-        req_order = `OPENRV64_CCX_ORDER_NONE;
-        req_kind = `OPENRV64_CCX_KIND_DATA;
-        req_attr = `OPENRV64_CCX_ATTR_CACHEABLE;
+        req_order = `OPENRV64_ICX_ORDER_NONE;
+        req_kind = `OPENRV64_ICX_KIND_DATA;
+        req_attr = `OPENRV64_ICX_ATTR_CACHEABLE;
         req_size = 3'd6;
         req_addr = 64'd0;
         req_burst_len = 0;
@@ -641,11 +641,11 @@ module tb_ccx_coherent_protocol #(
 
         // Two D$ fills of the same line create two recorded clean sharers.
         probes_before = probe_transactions;
-        issue_read(0, `OPENRV64_CCX_SOURCE_DCACHE,
-                   `OPENRV64_CCX_ATTR_CACHEABLE,
+        issue_read(0, `OPENRV64_ICX_SOURCE_DCACHE,
+                   `OPENRV64_ICX_ATTR_CACHEABLE,
                    64'h0000_0000_8000_0000, 4'h1);
-        issue_read(1, `OPENRV64_CCX_SOURCE_DCACHE,
-                   `OPENRV64_CCX_ATTR_CACHEABLE,
+        issue_read(1, `OPENRV64_ICX_SOURCE_DCACHE,
+                   `OPENRV64_ICX_ATTR_CACHEABLE,
                    64'h0000_0000_8000_0000, 4'h2);
         if (probe_transactions != probes_before)
             $fatal(1, "N=%0d ordinary shared fills probed", NUM_HARTS);
@@ -657,24 +657,24 @@ module tb_ccx_coherent_protocol #(
         expected_targets = {NUM_HARTS{1'b0}};
         expected_targets[1] = 1'b1;
         probes_before = probe_transactions;
-        issue_write(0, `OPENRV64_CCX_ATTR_CACHEABLE,
+        issue_write(0, `OPENRV64_ICX_ATTR_CACHEABLE,
                     64'h0000_0000_8000_0000, 4'h3);
         if ((probe_transactions != probes_before + 1) ||
             (last_probe_targets != expected_targets) ||
             (last_probe_cache_mask !=
-             `OPENRV64_CCX_PROBE_CACHE_D) ||
+             `OPENRV64_ICX_PROBE_CACHE_D) ||
             (last_probe_address != 64'h0000_0000_8000_0000) ||
             (last_l2_request_cycle <= last_probe_response_cycle))
             $fatal(1, "N=%0d write probe ordering mismatch", NUM_HARTS);
 
         // Record one new sharer, then force a non-inclusive directory
         // replacement with another line mapping to the same directory set.
-        issue_read(1, `OPENRV64_CCX_SOURCE_DCACHE,
-                   `OPENRV64_CCX_ATTR_CACHEABLE,
+        issue_read(1, `OPENRV64_ICX_SOURCE_DCACHE,
+                   `OPENRV64_ICX_ATTR_CACHEABLE,
                    64'h0000_0000_8000_0000, 4'h4);
         probes_before = probe_transactions;
-        issue_read(0, `OPENRV64_CCX_SOURCE_DCACHE,
-                   `OPENRV64_CCX_ATTR_CACHEABLE,
+        issue_read(0, `OPENRV64_ICX_SOURCE_DCACHE,
+                   `OPENRV64_ICX_ATTR_CACHEABLE,
                    64'h0000_0000_8000_0080, 4'h5);
         expected_targets = {NUM_HARTS{1'b0}};
         expected_targets[0] = 1'b1;
@@ -682,20 +682,20 @@ module tb_ccx_coherent_protocol #(
         if ((probe_transactions != probes_before + 1) ||
             (last_probe_targets != expected_targets) ||
             (last_probe_cache_mask !=
-             `OPENRV64_CCX_PROBE_CACHE_D) ||
+             `OPENRV64_ICX_PROBE_CACHE_D) ||
             (last_probe_address != 64'h0000_0000_8000_0000))
             $fatal(1, "N=%0d directory victim probe mismatch",
                    NUM_HARTS);
 
         // Add an I$ sharer to the resident line.  Replacing it must invalidate
         // both recorded cache classes, but still requires no cross-hart data.
-        issue_read(1, `OPENRV64_CCX_SOURCE_ICACHE,
-                   `OPENRV64_CCX_ATTR_CACHEABLE |
-                   `OPENRV64_CCX_ATTR_EXECUTABLE,
+        issue_read(1, `OPENRV64_ICX_SOURCE_ICACHE,
+                   `OPENRV64_ICX_ATTR_CACHEABLE |
+                   `OPENRV64_ICX_ATTR_EXECUTABLE,
                    64'h0000_0000_8000_0080, 4'h6);
         probes_before = probe_transactions;
-        issue_read(0, `OPENRV64_CCX_SOURCE_DCACHE,
-                   `OPENRV64_CCX_ATTR_CACHEABLE,
+        issue_read(0, `OPENRV64_ICX_SOURCE_DCACHE,
+                   `OPENRV64_ICX_ATTR_CACHEABLE,
                    64'h0000_0000_8000_0100, 4'h7);
         expected_targets = {NUM_HARTS{1'b0}};
         expected_targets[0] = 1'b1;
@@ -703,7 +703,7 @@ module tb_ccx_coherent_protocol #(
         if ((probe_transactions != probes_before + 1) ||
             (last_probe_targets != expected_targets) ||
             (last_probe_cache_mask !=
-             `OPENRV64_CCX_PROBE_CACHE_BOTH) ||
+             `OPENRV64_ICX_PROBE_CACHE_BOTH) ||
             (last_probe_address != 64'h0000_0000_8000_0080))
             $fatal(1, "N=%0d mixed I/D victim probe mismatch",
                    NUM_HARTS);
@@ -711,7 +711,7 @@ module tb_ccx_coherent_protocol #(
         // Device writes bypass the snoop filter.  Coherent and device aliases
         // are forbidden by the platform map; use an unrelated MMIO address.
         probes_before = probe_transactions;
-        issue_write(0, `OPENRV64_CCX_ATTR_DEVICE,
+        issue_write(0, `OPENRV64_ICX_ATTR_DEVICE,
                     64'h0000_0000_1000_0000, 4'h8);
         if (probe_transactions != probes_before)
             $fatal(1, "N=%0d device write entered coherence", NUM_HARTS);
@@ -747,7 +747,7 @@ module tb_ccx_coherent_protocol #(
         // An intervening write to the reservation line invalidates it even
         // when the writer is a different hart.
         issue_lr(0, 64'h0000_0000_8000_0340, 4'hc);
-        issue_write(1, `OPENRV64_CCX_ATTR_CACHEABLE,
+        issue_write(1, `OPENRV64_ICX_ATTR_CACHEABLE,
                     64'h0000_0000_8000_0340, 4'hd);
         l2_before = l2_requests;
         issue_sc(0, 64'h0000_0000_8000_0340, 4'he, 1'b0);

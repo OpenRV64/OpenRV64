@@ -13,7 +13,7 @@
 // This first implementation permits one global transaction.  That is
 // deliberately stronger than RVWMO and lower throughput than the final
 // per-line home design, but it provides a simple correctness baseline.
-module openrv64_ccx_coherent_protocol #(
+module openrv64_icx_coherent_protocol #(
     parameter integer NUM_HARTS = 2,
     parameter integer HART_ID_BASE = 0,
     parameter integer DIRECTORY_ENTRIES = 256,
@@ -26,103 +26,103 @@ module openrv64_ccx_coherent_protocol #(
 
     input  wire                         req_valid_i,
     output wire                         req_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] req_txn_id_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] req_source_id_i,
-    input  wire [`OPENRV64_CCX_OP_WIDTH-1:0] req_op_i,
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] req_hart_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] req_txn_id_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] req_source_id_i,
+    input  wire [`OPENRV64_ICX_OP_WIDTH-1:0] req_op_i,
     input  wire                         req_lock_i,
-    input  wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] req_order_i,
-    input  wire [`OPENRV64_CCX_KIND_WIDTH-1:0] req_kind_i,
-    input  wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] req_attr_i,
+    input  wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] req_order_i,
+    input  wire [`OPENRV64_ICX_KIND_WIDTH-1:0] req_kind_i,
+    input  wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] req_attr_i,
     input  wire [2:0]                   req_size_i,
     input  wire [63:0]                  req_addr_i,
-    input  wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
                                                req_burst_len_i,
 
     input  wire                         wdata_valid_i,
     output wire                         wdata_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] wdata_hart_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] wdata_txn_id_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] wdata_hart_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] wdata_txn_id_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
                                                wdata_source_id_i,
-    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
                                                wdata_beat_index_i,
     input  wire                         wdata_last_i,
-    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] wdata_i,
-    input  wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] wstrb_i,
+    input  wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] wdata_i,
+    input  wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] wstrb_i,
 
     output wire                         resp_valid_o,
     input  wire                         resp_ready_i,
-    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] resp_hart_id_o,
-    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] resp_txn_id_o,
-    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] resp_source_id_o,
-    output wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] resp_hart_id_o,
+    output wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] resp_txn_id_o,
+    output wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] resp_source_id_o,
+    output wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
                                                resp_beat_index_o,
     output wire                         resp_last_o,
-    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] resp_rdata_o,
+    output wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] resp_rdata_o,
     output wire                         resp_error_o,
     output wire                         resp_sc_success_o,
 
     output wire [NUM_HARTS-1:0]         probe_valid_o,
     input  wire [NUM_HARTS-1:0]         probe_ready_i,
-    output wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    output wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                probe_id_o,
-    output wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0]
+    output wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0]
                                                probe_command_o,
-    output wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    output wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
                                                probe_cache_mask_o,
     output wire [NUM_HARTS*64-1:0]      probe_line_addr_o,
 
     input  wire [NUM_HARTS-1:0]         probe_resp_valid_i,
     output wire [NUM_HARTS-1:0]         probe_resp_ready_o,
-    input  wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    input  wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                probe_resp_id_i,
-    input  wire [NUM_HARTS*`OPENRV64_CCX_PROBE_RESP_WIDTH-1:0]
+    input  wire [NUM_HARTS*`OPENRV64_ICX_PROBE_RESP_WIDTH-1:0]
                                                probe_resp_kind_i,
-    input  wire [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    input  wire [NUM_HARTS*`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
                                                probe_resp_data_i,
     input  wire [NUM_HARTS-1:0]         probe_resp_error_i,
 
     output wire                         l2_req_valid_o,
     input  wire                         l2_req_ready_i,
-    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_req_hart_id_o,
-    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_req_txn_id_o,
-    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_req_hart_id_o,
+    output wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_req_txn_id_o,
+    output wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
                                                l2_req_source_id_o,
-    output wire [`OPENRV64_CCX_OP_WIDTH-1:0] l2_req_op_o,
+    output wire [`OPENRV64_ICX_OP_WIDTH-1:0] l2_req_op_o,
     output wire                         l2_req_lock_o,
-    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] l2_req_order_o,
-    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] l2_req_kind_o,
-    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] l2_req_attr_o,
+    output wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] l2_req_order_o,
+    output wire [`OPENRV64_ICX_KIND_WIDTH-1:0] l2_req_kind_o,
+    output wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] l2_req_attr_o,
     output wire [2:0]                   l2_req_size_o,
     output wire [63:0]                  l2_req_addr_o,
-    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
                                                l2_req_burst_len_o,
 
     output wire                         l2_wdata_valid_o,
     input  wire                         l2_wdata_ready_i,
-    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
                                                l2_wdata_hart_id_o,
-    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
                                                l2_wdata_txn_id_o,
-    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
                                                l2_wdata_source_id_o,
-    output wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
                                                l2_wdata_beat_index_o,
     output wire                         l2_wdata_last_o,
-    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l2_wdata_o,
-    output wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] l2_wstrb_o,
+    output wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l2_wdata_o,
+    output wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] l2_wstrb_o,
 
     input  wire                         l2_resp_valid_i,
     output wire                         l2_resp_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_resp_hart_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_resp_txn_id_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_resp_hart_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_resp_txn_id_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
                                                l2_resp_source_id_i,
-    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
                                                l2_resp_beat_index_i,
     input  wire                         l2_resp_last_i,
-    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l2_resp_rdata_i,
+    input  wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l2_resp_rdata_i,
     input  wire                         l2_resp_error_i,
     input  wire                         l2_resp_sc_success_i,
 
@@ -147,29 +147,29 @@ module openrv64_ccx_coherent_protocol #(
     localparam [3:0] ST_DIR_WAIT          = 4'd14;
 
     reg [3:0] state_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] req_txn_id_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] req_source_id_q;
-    reg [`OPENRV64_CCX_OP_WIDTH-1:0] req_op_q;
-    reg [`OPENRV64_CCX_ORDER_WIDTH-1:0] req_order_q;
-    reg [`OPENRV64_CCX_KIND_WIDTH-1:0] req_kind_q;
-    reg [`OPENRV64_CCX_ATTR_WIDTH-1:0] req_attr_q;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] req_hart_id_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] req_txn_id_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] req_source_id_q;
+    reg [`OPENRV64_ICX_OP_WIDTH-1:0] req_op_q;
+    reg [`OPENRV64_ICX_ORDER_WIDTH-1:0] req_order_q;
+    reg [`OPENRV64_ICX_KIND_WIDTH-1:0] req_kind_q;
+    reg [`OPENRV64_ICX_ATTR_WIDTH-1:0] req_attr_q;
     reg [2:0] req_size_q;
     reg [63:0] req_addr_q;
     reg command_error_q;
 
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] wdata_q;
-    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] wstrb_q;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] wdata_q;
+    reg [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] wstrb_q;
 
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] resp_rdata_q;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] resp_rdata_q;
     reg resp_error_q;
     reg resp_sc_success_q;
 
     reg [DIRECTORY_ENTRY_WIDTH-1:0] directory_entry_q;
     reg [NUM_HARTS-1:0] probe_target_q;
-    reg [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0] probe_cache_mask_q;
+    reg [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0] probe_cache_mask_q;
     reg [63:0] probe_line_addr_q;
-    reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] next_probe_id_q;
+    reg [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] next_probe_id_q;
 
     reg protocol_error_q;
     reg [NUM_HARTS-1:0] reservation_valid_q;
@@ -188,15 +188,15 @@ module openrv64_ccx_coherent_protocol #(
 
     wire request_hart_valid =
         (req_hart_id_i >=
-         `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE)) &&
+         `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE)) &&
         (req_hart_id_i <
-         `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE + NUM_HARTS));
+         `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE + NUM_HARTS));
     wire request_op_supported =
-        (req_op_i == `OPENRV64_CCX_OP_READ) ||
-        (req_op_i == `OPENRV64_CCX_OP_WRITE) ||
-        (req_op_i == `OPENRV64_CCX_OP_LR) ||
-        (req_op_i == `OPENRV64_CCX_OP_SC) ||
-        (req_op_i == `OPENRV64_CCX_OP_FENCE);
+        (req_op_i == `OPENRV64_ICX_OP_READ) ||
+        (req_op_i == `OPENRV64_ICX_OP_WRITE) ||
+        (req_op_i == `OPENRV64_ICX_OP_LR) ||
+        (req_op_i == `OPENRV64_ICX_OP_SC) ||
+        (req_op_i == `OPENRV64_ICX_OP_FENCE);
     wire request_protocol_error =
         !request_hart_valid || !request_op_supported || req_lock_i;
     wire wdata_protocol_error =
@@ -204,21 +204,21 @@ module openrv64_ccx_coherent_protocol #(
         (wdata_txn_id_i != req_txn_id_q) ||
         (wdata_source_id_i != req_source_id_q) ||
         (wdata_beat_index_i !=
-         {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
+         {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}) ||
         !wdata_last_i;
 
     wire request_cacheable =
-        |(req_attr_q & `OPENRV64_CCX_ATTR_CACHEABLE) &&
-        !(|(req_attr_q & `OPENRV64_CCX_ATTR_DEVICE));
+        |(req_attr_q & `OPENRV64_ICX_ATTR_CACHEABLE) &&
+        !(|(req_attr_q & `OPENRV64_ICX_ATTR_DEVICE));
     wire request_private_fill =
         request_cacheable &&
-        ((req_op_q == `OPENRV64_CCX_OP_READ) ||
-         (req_op_q == `OPENRV64_CCX_OP_LR)) &&
-        ((req_source_id_q == `OPENRV64_CCX_SOURCE_ICACHE) ||
-         (req_source_id_q == `OPENRV64_CCX_SOURCE_DCACHE));
+        ((req_op_q == `OPENRV64_ICX_OP_READ) ||
+         (req_op_q == `OPENRV64_ICX_OP_LR)) &&
+        ((req_source_id_q == `OPENRV64_ICX_SOURCE_ICACHE) ||
+         (req_source_id_q == `OPENRV64_ICX_SOURCE_DCACHE));
     wire request_is_write =
-        (req_op_q == `OPENRV64_CCX_OP_WRITE) ||
-        (req_op_q == `OPENRV64_CCX_OP_SC);
+        (req_op_q == `OPENRV64_ICX_OP_WRITE) ||
+        (req_op_q == `OPENRV64_ICX_OP_SC);
     wire request_coherent_write =
         request_cacheable &&
         request_is_write;
@@ -231,7 +231,7 @@ module openrv64_ccx_coherent_protocol #(
              request_hart < NUM_HARTS;
              request_hart = request_hart + 1) begin
             if (req_hart_id_q ==
-                `OPENRV64_CCX_HART_ID_WIDTH'(
+                `OPENRV64_ICX_HART_ID_WIDTH'(
                     HART_ID_BASE + request_hart)) begin
                 request_hart_mask_r[request_hart] = 1'b1;
                 request_sc_reservation_match_r =
@@ -276,19 +276,19 @@ module openrv64_ccx_coherent_protocol #(
     wire directory_write_valid =
         directory_allocate || directory_clear || directory_record;
     wire [NUM_HARTS-1:0] directory_record_i =
-        (req_source_id_q == `OPENRV64_CCX_SOURCE_ICACHE) ?
+        (req_source_id_q == `OPENRV64_ICX_SOURCE_ICACHE) ?
             ({{(NUM_HARTS-1){1'b0}}, 1'b1} <<
              (req_hart_id_q -
-              `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE))) :
+              `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE))) :
             {NUM_HARTS{1'b0}};
     wire [NUM_HARTS-1:0] directory_record_d =
-        (req_source_id_q == `OPENRV64_CCX_SOURCE_DCACHE) ?
+        (req_source_id_q == `OPENRV64_ICX_SOURCE_DCACHE) ?
             ({{(NUM_HARTS-1){1'b0}}, 1'b1} <<
              (req_hart_id_q -
-              `OPENRV64_CCX_HART_ID_WIDTH'(HART_ID_BASE))) :
+              `OPENRV64_ICX_HART_ID_WIDTH'(HART_ID_BASE))) :
             {NUM_HARTS{1'b0}};
 
-    openrv64_ccx_snoop_filter #(
+    openrv64_icx_snoop_filter #(
         .NUM_HARTS(NUM_HARTS),
         .ENTRIES(DIRECTORY_ENTRIES),
         .WAYS(DIRECTORY_WAYS),
@@ -324,7 +324,7 @@ module openrv64_ccx_coherent_protocol #(
         .write_clear_i_sharers_i({NUM_HARTS{1'b0}}),
         .write_clear_d_sharers_i(
             directory_clear ?
-                ((req_op_q == `OPENRV64_CCX_OP_SC) ?
+                ((req_op_q == `OPENRV64_ICX_OP_SC) ?
                  {NUM_HARTS{1'b1}} : probe_target_q) :
                               {NUM_HARTS{1'b0}})
     );
@@ -351,9 +351,9 @@ module openrv64_ccx_coherent_protocol #(
             if (probe_resp_valid_i[probe_response_hart] &&
                 ((probe_resp_kind_i[
                     probe_response_hart*
-                    `OPENRV64_CCX_PROBE_RESP_WIDTH +:
-                    `OPENRV64_CCX_PROBE_RESP_WIDTH] !=
-                  `OPENRV64_CCX_PROBE_RESP_ACK) ||
+                    `OPENRV64_ICX_PROBE_RESP_WIDTH +:
+                    `OPENRV64_ICX_PROBE_RESP_WIDTH] !=
+                  `OPENRV64_ICX_PROBE_RESP_ACK) ||
                  probe_resp_error_i[probe_response_hart]))
                 bad_probe_response[probe_response_hart] = 1'b1;
         end
@@ -363,7 +363,7 @@ module openrv64_ccx_coherent_protocol #(
         probe_resp_valid_i & ~bad_probe_response;
     assign probe_resp_ready_o = probe_ack_ready;
 
-    openrv64_ccx_probe_tracker #(
+    openrv64_icx_probe_tracker #(
         .NUM_HARTS(NUM_HARTS)
     ) u_probe_tracker (
         .clk_i(clk_i),
@@ -372,7 +372,7 @@ module openrv64_ccx_coherent_protocol #(
         .start_ready_o(probe_tracker_start_ready),
         .start_target_harts_i(probe_target_q),
         .start_probe_id_i(next_probe_id_q),
-        .start_command_i(`OPENRV64_CCX_PROBE_INV),
+        .start_command_i(`OPENRV64_ICX_PROBE_INV),
         .start_cache_mask_i(probe_cache_mask_q),
         .start_line_addr_i(probe_line_addr_q),
         .probe_valid_o(probe_valid_o),
@@ -396,7 +396,7 @@ module openrv64_ccx_coherent_protocol #(
         (state_q == ST_IDLE) &&
         !directory_init_busy &&
         (req_burst_len_i ==
-         {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}});
+         {`OPENRV64_ICX_BURST_LEN_WIDTH{1'b0}});
     assign wdata_ready_o = state_q == ST_WAIT_WDATA;
 
     assign resp_valid_o = state_q == ST_RESP;
@@ -404,7 +404,7 @@ module openrv64_ccx_coherent_protocol #(
     assign resp_txn_id_o = req_txn_id_q;
     assign resp_source_id_o = req_source_id_q;
     assign resp_beat_index_o =
-        {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+        {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}};
     assign resp_last_o = 1'b1;
     assign resp_rdata_o = resp_rdata_q;
     assign resp_error_o = resp_error_q;
@@ -418,25 +418,25 @@ module openrv64_ccx_coherent_protocol #(
     // intent and presents the successful data operations as ordinary reads
     // and writes.
     assign l2_req_op_o =
-        (req_op_q == `OPENRV64_CCX_OP_LR) ?
-            `OPENRV64_CCX_OP_READ :
-        (req_op_q == `OPENRV64_CCX_OP_SC) ?
-            `OPENRV64_CCX_OP_WRITE : req_op_q;
+        (req_op_q == `OPENRV64_ICX_OP_LR) ?
+            `OPENRV64_ICX_OP_READ :
+        (req_op_q == `OPENRV64_ICX_OP_SC) ?
+            `OPENRV64_ICX_OP_WRITE : req_op_q;
     assign l2_req_lock_o = 1'b0;
-    assign l2_req_order_o = `OPENRV64_CCX_ORDER_NONE;
+    assign l2_req_order_o = `OPENRV64_ICX_ORDER_NONE;
     assign l2_req_kind_o = req_kind_q;
     assign l2_req_attr_o = req_attr_q;
     assign l2_req_size_o = req_size_q;
     assign l2_req_addr_o = req_addr_q;
     assign l2_req_burst_len_o =
-        {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
+        {`OPENRV64_ICX_BURST_LEN_WIDTH{1'b0}};
 
     assign l2_wdata_valid_o = state_q == ST_L2_WDATA;
     assign l2_wdata_hart_id_o = req_hart_id_q;
     assign l2_wdata_txn_id_o = req_txn_id_q;
     assign l2_wdata_source_id_o = req_source_id_q;
     assign l2_wdata_beat_index_o =
-        {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}};
+        {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}};
     assign l2_wdata_last_o = 1'b1;
     assign l2_wdata_o = wdata_q;
     assign l2_wstrb_o = wstrb_q;
@@ -447,7 +447,7 @@ module openrv64_ccx_coherent_protocol #(
         (l2_resp_txn_id_i != req_txn_id_q) ||
         (l2_resp_source_id_i != req_source_id_q) ||
         (l2_resp_beat_index_i !=
-         {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
+         {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}) ||
         !l2_resp_last_i;
 
     assign protocol_error_o =
@@ -456,28 +456,28 @@ module openrv64_ccx_coherent_protocol #(
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             state_q <= ST_IDLE;
-            req_hart_id_q <= {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            req_txn_id_q <= {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+            req_hart_id_q <= {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            req_txn_id_q <= {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
             req_source_id_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
-            req_op_q <= `OPENRV64_CCX_OP_READ;
-            req_order_q <= `OPENRV64_CCX_ORDER_NONE;
-            req_kind_q <= `OPENRV64_CCX_KIND_LEGACY;
-            req_attr_q <= `OPENRV64_CCX_ATTR_NONE;
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
+            req_op_q <= `OPENRV64_ICX_OP_READ;
+            req_order_q <= `OPENRV64_ICX_ORDER_NONE;
+            req_kind_q <= `OPENRV64_ICX_KIND_LEGACY;
+            req_attr_q <= `OPENRV64_ICX_ATTR_NONE;
             req_size_q <= 3'd0;
             req_addr_q <= 64'd0;
             command_error_q <= 1'b0;
-            wdata_q <= {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-            wstrb_q <= {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
-            resp_rdata_q <= {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+            wdata_q <= {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+            wstrb_q <= {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+            resp_rdata_q <= {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             resp_error_q <= 1'b0;
             resp_sc_success_q <= 1'b0;
             directory_entry_q <= {DIRECTORY_ENTRY_WIDTH{1'b0}};
             probe_target_q <= {NUM_HARTS{1'b0}};
-            probe_cache_mask_q <= `OPENRV64_CCX_PROBE_CACHE_NONE;
+            probe_cache_mask_q <= `OPENRV64_ICX_PROBE_CACHE_NONE;
             probe_line_addr_q <= 64'd0;
             next_probe_id_q <=
-                {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
             protocol_error_q <= 1'b0;
             reservation_valid_q <= {NUM_HARTS{1'b0}};
             for (reservation_hart = 0;
@@ -489,7 +489,7 @@ module openrv64_ccx_coherent_protocol #(
                 protocol_error_q <= 1'b0;
             if ((state_q == ST_IDLE) && req_valid_i &&
                 (req_burst_len_i !=
-                 {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}}))
+                 {`OPENRV64_ICX_BURST_LEN_WIDTH{1'b0}}))
                 protocol_error_q <= 1'b1;
             if (|(bad_probe_response & probe_resp_ready_o))
                 protocol_error_q <= 1'b1;
@@ -506,13 +506,13 @@ module openrv64_ccx_coherent_protocol #(
                 req_addr_q <= req_addr_i;
                 command_error_q <= request_protocol_error;
                 resp_rdata_q <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 resp_error_q <= request_protocol_error;
                 resp_sc_success_q <= 1'b0;
                 if (request_protocol_error)
                     protocol_error_q <= 1'b1;
-                if ((req_op_i == `OPENRV64_CCX_OP_WRITE) ||
-                    (req_op_i == `OPENRV64_CCX_OP_SC))
+                if ((req_op_i == `OPENRV64_ICX_OP_WRITE) ||
+                    (req_op_i == `OPENRV64_ICX_OP_SC))
                     state_q <= ST_WAIT_WDATA;
                 else if (request_protocol_error)
                     state_q <= ST_RESP;
@@ -548,24 +548,24 @@ module openrv64_ccx_coherent_protocol #(
 
                 ST_DIR_WAIT: begin
                     if (directory_lookup_response_valid) begin
-                        if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
+                        if ((req_op_q == `OPENRV64_ICX_OP_SC) &&
                             request_sc_reservation_match)
                             resp_sc_success_q <= 1'b1;
                         // Every SC attempt consumes the requester's
                         // reservation, including a failed SC to another line.
-                        if (req_op_q == `OPENRV64_CCX_OP_SC) begin
+                        if (req_op_q == `OPENRV64_ICX_OP_SC) begin
                             for (reservation_hart = 0;
                                  reservation_hart < NUM_HARTS;
                                  reservation_hart =
                                      reservation_hart + 1)
                                 if (req_hart_id_q ==
-                                    `OPENRV64_CCX_HART_ID_WIDTH'(
+                                    `OPENRV64_ICX_HART_ID_WIDTH'(
                                         HART_ID_BASE +
                                         reservation_hart))
                                     reservation_valid_q[
                                         reservation_hart] <= 1'b0;
                         end
-                        if ((req_op_q == `OPENRV64_CCX_OP_SC) &&
+                        if ((req_op_q == `OPENRV64_ICX_OP_SC) &&
                             !request_sc_reservation_match) begin
                             // Failed SC performs no write.  Its data beat was
                             // consumed before lookup so the command/data
@@ -603,11 +603,11 @@ module openrv64_ccx_coherent_protocol #(
                             directory_entry_q <= directory_lookup_entry;
                             probe_target_q <= write_probe_targets;
                             probe_cache_mask_q <=
-                                `OPENRV64_CCX_PROBE_CACHE_D;
+                                `OPENRV64_ICX_PROBE_CACHE_D;
                             probe_line_addr_q <= request_line_addr;
                             state_q <= ST_WRITE_PROBE_START;
                         end else if ((req_op_q ==
-                                      `OPENRV64_CCX_OP_SC) &&
+                                      `OPENRV64_ICX_OP_SC) &&
                                      directory_lookup_hit) begin
                             // The successful SC requester invalidated itself.
                             // With no remote sharers to probe, still clear the
@@ -623,7 +623,7 @@ module openrv64_ccx_coherent_protocol #(
                         // reservation. The requester's SC reservation was
                         // already consumed above, including on failure.
                         if (request_coherent_write &&
-                            ((req_op_q != `OPENRV64_CCX_OP_SC) ||
+                            ((req_op_q != `OPENRV64_ICX_OP_SC) ||
                              request_sc_reservation_match)) begin
                             for (reservation_hart = 0;
                                  reservation_hart < NUM_HARTS;
@@ -692,12 +692,12 @@ module openrv64_ccx_coherent_protocol #(
                         resp_error_q <=
                             l2_resp_error_i ||
                             l2_response_identity_error;
-                        if (req_op_q != `OPENRV64_CCX_OP_SC)
+                        if (req_op_q != `OPENRV64_ICX_OP_SC)
                             resp_sc_success_q <=
                                 l2_resp_sc_success_i;
                         if (l2_response_identity_error)
                             protocol_error_q <= 1'b1;
-                        if ((req_op_q == `OPENRV64_CCX_OP_LR) &&
+                        if ((req_op_q == `OPENRV64_ICX_OP_LR) &&
                             !l2_resp_error_i &&
                             !l2_response_identity_error) begin
                             for (reservation_hart = 0;
@@ -705,7 +705,7 @@ module openrv64_ccx_coherent_protocol #(
                                  reservation_hart =
                                      reservation_hart + 1)
                                 if (req_hart_id_q ==
-                                    `OPENRV64_CCX_HART_ID_WIDTH'(
+                                    `OPENRV64_ICX_HART_ID_WIDTH'(
                                         HART_ID_BASE +
                                         reservation_hart)) begin
                                     reservation_valid_q[

@@ -26,38 +26,38 @@ module tb_l1d_store_buffer;
     wire posted_resp_valid;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] posted_resp_tag;
 
-    wire ccx_req_valid;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire ccx_wdata_valid;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
+    wire icx_req_valid;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire icx_wdata_valid;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
 
-    reg ccx_resp_valid;
-    wire ccx_resp_ready;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    reg icx_resp_valid;
+    wire icx_resp_ready;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
     localparam integer RESPONSE_SLOTS = 16;
     reg response_slot_valid_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         response_hart_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
         response_txn_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         response_source_q [0:RESPONSE_SLOTS-1];
     reg response_write_q [0:RESPONSE_SLOTS-1];
     reg [63:0] response_addr_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         response_wdata_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
         response_wstrb_q [0:RESPONSE_SLOTS-1];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         response_rdata_q [0:RESPONSE_SLOTS-1];
     integer response_due_q [0:RESPONSE_SLOTS-1];
     integer response_count_q;
@@ -79,11 +79,11 @@ module tb_l1d_store_buffer;
     integer memory_byte;
     integer memory_reset_line;
     localparam integer MEMORY_LINES = 16;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_LINES-1];
     reg [63:0] write_addr [0:15];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] write_data [0:15];
-    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] write_strb [0:15];
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] write_data [0:15];
+    reg [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] write_strb [0:15];
 
     always @* begin
         response_free_found_r = 1'b0;
@@ -108,7 +108,7 @@ module tb_l1d_store_buffer;
         end
     end
 
-    openrv64_l1d_ccx #(
+    openrv64_l1d_icx #(
         .ENABLE(1),
         .CACHE_BYTES(1024),
         .LINE_BYTES(64),
@@ -158,39 +158,39 @@ module tb_l1d_store_buffer;
         .invalidate_ready_o(),
         .invalidate_all_i(1'b0),
         .invalidate_addr_i(64'd0),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(1'b1),
-        .ccx_req_hart_id_o(ccx_req_hart_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_source_id_o(ccx_req_source_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_lock_o(),
-        .ccx_req_order_o(),
-        .ccx_req_kind_o(),
-        .ccx_req_attr_o(),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(),
-        .ccx_wdata_valid_o(ccx_wdata_valid),
-        .ccx_wdata_ready_i(1'b1),
-        .ccx_wdata_hart_id_o(),
-        .ccx_wdata_txn_id_o(),
-        .ccx_wdata_source_id_o(),
-        .ccx_wdata_beat_index_o(),
-        .ccx_wdata_last_o(),
-        .ccx_wdata_o(ccx_wdata),
-        .ccx_wstrb_o(ccx_wstrb),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i(ccx_resp_hart_id),
-        .ccx_resp_txn_id_i(ccx_resp_txn_id),
-        .ccx_resp_source_id_i(ccx_resp_source_id),
-        .ccx_resp_beat_index_i(
-            {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}),
-        .ccx_resp_last_i(1'b1),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_error_i(1'b0),
-        .ccx_resp_sc_success_i(1'b0)
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(1'b1),
+        .icx_req_hart_id_o(icx_req_hart_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_source_id_o(icx_req_source_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_lock_o(),
+        .icx_req_order_o(),
+        .icx_req_kind_o(),
+        .icx_req_attr_o(),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(),
+        .icx_wdata_valid_o(icx_wdata_valid),
+        .icx_wdata_ready_i(1'b1),
+        .icx_wdata_hart_id_o(),
+        .icx_wdata_txn_id_o(),
+        .icx_wdata_source_id_o(),
+        .icx_wdata_beat_index_o(),
+        .icx_wdata_last_o(),
+        .icx_wdata_o(icx_wdata),
+        .icx_wstrb_o(icx_wstrb),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i(icx_resp_hart_id),
+        .icx_resp_txn_id_i(icx_resp_txn_id),
+        .icx_resp_source_id_i(icx_resp_source_id),
+        .icx_resp_beat_index_i(
+            {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}),
+        .icx_resp_last_i(1'b1),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_error_i(1'b0),
+        .icx_resp_sc_success_i(1'b0)
     );
 
     always begin
@@ -202,11 +202,11 @@ module tb_l1d_store_buffer;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_resp_valid <= 1'b0;
-            ccx_resp_hart_id <= 0;
-            ccx_resp_txn_id <= 0;
-            ccx_resp_source_id <= 0;
-            ccx_resp_rdata <= 0;
+            icx_resp_valid <= 1'b0;
+            icx_resp_hart_id <= 0;
+            icx_resp_txn_id <= 0;
+            icx_resp_source_id <= 0;
+            icx_resp_rdata <= 0;
             response_count_q <= 0;
             max_response_count_q <= 0;
             response_active_slot_q <= 0;
@@ -232,63 +232,63 @@ module tb_l1d_store_buffer;
             write_count <= 0;
         end else begin
             cycle_count <= cycle_count + 1;
-            if (ccx_req_valid) begin
+            if (icx_req_valid) begin
                 if (!response_free_found_r)
                     $fatal(1, "store-buffer response model overflow");
-                if (ccx_req_size != 3'd6)
+                if (icx_req_size != 3'd6)
                     $fatal(1, "store-buffer request was not line-sized");
-                if (ccx_req_op == `OPENRV64_CCX_OP_WRITE) begin
-                    if (!ccx_wdata_valid)
+                if (icx_req_op == `OPENRV64_ICX_OP_WRITE) begin
+                    if (!icx_wdata_valid)
                         $fatal(1,
                             "store-buffer line write lacked write data");
                     if (write_count >= 16)
                         $fatal(1,
                             "store-buffer test write log overflow");
-                    write_addr[write_count] <= ccx_req_addr;
-                    write_data[write_count] <= ccx_wdata;
-                    write_strb[write_count] <= ccx_wstrb;
+                    write_addr[write_count] <= icx_req_addr;
+                    write_data[write_count] <= icx_wdata;
+                    write_strb[write_count] <= icx_wstrb;
                     write_count <= write_count + 1;
-                end else if (ccx_req_op == `OPENRV64_CCX_OP_READ) begin
+                end else if (icx_req_op == `OPENRV64_ICX_OP_READ) begin
                     read_count <= read_count + 1;
                 end else begin
-                    $fatal(1, "unexpected CCX operation");
+                    $fatal(1, "unexpected ICX operation");
                 end
                 response_slot_valid_q[response_free_slot_r] <= 1'b1;
                 response_hart_q[response_free_slot_r] <=
-                    ccx_req_hart_id;
+                    icx_req_hart_id;
                 response_txn_q[response_free_slot_r] <=
-                    ccx_req_txn_id;
+                    icx_req_txn_id;
                 response_source_q[response_free_slot_r] <=
-                    ccx_req_source_id;
+                    icx_req_source_id;
                 response_write_q[response_free_slot_r] <=
-                    ccx_req_op == `OPENRV64_CCX_OP_WRITE;
-                response_addr_q[response_free_slot_r] <= ccx_req_addr;
-                response_wdata_q[response_free_slot_r] <= ccx_wdata;
-                response_wstrb_q[response_free_slot_r] <= ccx_wstrb;
+                    icx_req_op == `OPENRV64_ICX_OP_WRITE;
+                response_addr_q[response_free_slot_r] <= icx_req_addr;
+                response_wdata_q[response_free_slot_r] <= icx_wdata;
+                response_wstrb_q[response_free_slot_r] <= icx_wstrb;
                 response_rdata_q[response_free_slot_r] <=
-                    memory[ccx_req_addr[9:6]];
+                    memory[icx_req_addr[9:6]];
                 response_due_q[response_free_slot_r] <=
                     cycle_count + 20 - ((write_count % 4) * 4);
             end
-            if (!ccx_resp_valid && !hold_responses &&
+            if (!icx_resp_valid && !hold_responses &&
                 response_select_found_r) begin
-                ccx_resp_valid <= 1'b1;
+                icx_resp_valid <= 1'b1;
                 response_active_slot_q <= response_select_slot_r;
-                ccx_resp_hart_id <=
+                icx_resp_hart_id <=
                     response_hart_q[response_select_slot_r];
-                ccx_resp_txn_id <=
+                icx_resp_txn_id <=
                     response_txn_q[response_select_slot_r];
-                ccx_resp_source_id <=
+                icx_resp_source_id <=
                     response_source_q[response_select_slot_r];
-                ccx_resp_rdata <=
+                icx_resp_rdata <=
                     response_rdata_q[response_select_slot_r];
             end
-            if (ccx_resp_valid && ccx_resp_ready) begin
-                ccx_resp_valid <= 1'b0;
+            if (icx_resp_valid && icx_resp_ready) begin
+                icx_resp_valid <= 1'b0;
                 if (response_write_q[response_active_slot_q]) begin
                     for (memory_byte = 0;
                          memory_byte <
-                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                             `OPENRV64_ICX_LINE_STRB_WIDTH;
                          memory_byte = memory_byte + 1)
                         if (response_wstrb_q[
                                 response_active_slot_q][memory_byte])
@@ -301,8 +301,8 @@ module tb_l1d_store_buffer;
                 end
                 response_slot_valid_q[response_active_slot_q] <= 1'b0;
             end
-            case ({ccx_req_valid,
-                   ccx_resp_valid && ccx_resp_ready})
+            case ({icx_req_valid,
+                   icx_resp_valid && icx_resp_ready})
                 2'b10: response_count_q <= response_count_q + 1;
                 2'b01: response_count_q <= response_count_q - 1;
                 default: response_count_q <= response_count_q;
@@ -496,7 +496,7 @@ module tb_l1d_store_buffer;
             $fatal(1, "watermark drain did not empty FIFO");
         if ((write_addr[0] != BASE) ||
             (write_strb[0] !=
-             {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}}))
+             {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}}))
             $fatal(1, "combined line geometry addr=%016x strb=%016x",
                    write_addr[0], write_strb[0]);
         for (word_index = 0; word_index < 8;
@@ -624,7 +624,7 @@ module tb_l1d_store_buffer;
             $fatal(1, "backpressured partial store did not drain");
         issue_load(BASE, 64'h1111_2222_3333_44aa);
 
-        // A translation barrier must force even one partial line to CCX and
+        // A translation barrier must force even one partial line to ICX and
         // remain busy until the downstream write response is consumed.
         reset_dut();
         issue_store(BASE, 64'hfeed_face_0123_4567);

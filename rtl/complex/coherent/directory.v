@@ -6,7 +6,7 @@
 // an invalid L2 entry gates its stale metadata, and allocation must use
 // write_clear_entry_i before exposing the entry as valid.  This avoids
 // requiring a resettable 4-KiB register array for the default four-hart L2.
-module openrv64_ccx_coherent_directory #(
+module openrv64_icx_coherent_directory #(
     parameter integer NUM_HARTS = 2,
     parameter integer ENTRIES = 4096,
     parameter integer INDEX_WIDTH =

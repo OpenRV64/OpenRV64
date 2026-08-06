@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "complex/coherent/protocol/defs.v"
 
-module tb_ccx_coherent_control #(
+module tb_icx_coherent_control #(
     parameter integer NUM_HARTS = 2
 );
 
@@ -29,25 +29,25 @@ module tb_ccx_coherent_control #(
     wire inv_ready;
     logic [DIRECTORY_INDEX_WIDTH-1:0] inv_dir_index;
     logic [NUM_HARTS-1:0] inv_target_harts;
-    logic [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] inv_probe_id;
-    logic [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0] inv_cache_mask;
+    logic [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] inv_probe_id;
+    logic [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0] inv_cache_mask;
     logic [63:0] inv_line_addr;
     wire inv_done_valid;
     logic inv_done_ready;
     wire [DIRECTORY_INDEX_WIDTH-1:0] inv_done_dir_index;
-    wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] inv_done_probe_id;
+    wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] inv_done_probe_id;
 
     wire [NUM_HARTS-1:0] probe_valid;
     logic [NUM_HARTS-1:0] probe_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_id;
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0]
         probe_command;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
         probe_cache_mask;
     wire [NUM_HARTS*64-1:0] probe_line_addr;
     logic [NUM_HARTS-1:0] probe_ack_valid;
     wire [NUM_HARTS-1:0] probe_ack_ready;
-    logic [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    logic [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
         probe_ack_id;
 
     logic protocol_error_clear;
@@ -61,7 +61,7 @@ module tb_ccx_coherent_control #(
 
     generate
         if (NUM_HARTS == 2) begin : g_2h
-            openrv64_ccx_2h_control #(
+            openrv64_icx_2h_control #(
                 .DIRECTORY_ENTRIES(DIRECTORY_ENTRIES),
                 .DIRECTORY_INDEX_WIDTH(DIRECTORY_INDEX_WIDTH)
             ) dut (
@@ -105,7 +105,7 @@ module tb_ccx_coherent_control #(
                 .protocol_error_o(protocol_error)
             );
         end else if (NUM_HARTS == 4) begin : g_4h
-            openrv64_ccx_4h_control #(
+            openrv64_icx_4h_control #(
                 .DIRECTORY_ENTRIES(DIRECTORY_ENTRIES),
                 .DIRECTORY_INDEX_WIDTH(DIRECTORY_INDEX_WIDTH)
             ) dut (
@@ -191,8 +191,8 @@ module tb_ccx_coherent_control #(
     task automatic run_invalidation;
         input [DIRECTORY_INDEX_WIDTH-1:0] entry_index;
         input logic [NUM_HARTS-1:0] targets;
-        input logic [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0] cache_mask;
-        input logic [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_tag;
+        input logic [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0] cache_mask;
+        input logic [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_tag;
         input logic [63:0] line_address;
         begin
             @(negedge clk);
@@ -216,18 +216,18 @@ module tb_ccx_coherent_control #(
                  hart_index = hart_index + 1) begin
                 if (targets[hart_index]) begin
                     if (probe_id[
-                            hart_index*`OPENRV64_CCX_PROBE_ID_WIDTH +:
-                            `OPENRV64_CCX_PROBE_ID_WIDTH] !== probe_tag)
+                            hart_index*`OPENRV64_ICX_PROBE_ID_WIDTH +:
+                            `OPENRV64_ICX_PROBE_ID_WIDTH] !== probe_tag)
                         $fatal(1, "N=%0d probe ID mismatch", NUM_HARTS);
                     if (probe_command[
-                            hart_index*`OPENRV64_CCX_PROBE_CMD_WIDTH +:
-                            `OPENRV64_CCX_PROBE_CMD_WIDTH] !==
-                        `OPENRV64_CCX_PROBE_INV)
+                            hart_index*`OPENRV64_ICX_PROBE_CMD_WIDTH +:
+                            `OPENRV64_ICX_PROBE_CMD_WIDTH] !==
+                        `OPENRV64_ICX_PROBE_INV)
                         $fatal(1, "N=%0d probe command mismatch",
                                NUM_HARTS);
                     if (probe_cache_mask[
-                            hart_index*`OPENRV64_CCX_PROBE_CACHE_WIDTH +:
-                            `OPENRV64_CCX_PROBE_CACHE_WIDTH] !==
+                            hart_index*`OPENRV64_ICX_PROBE_CACHE_WIDTH +:
+                            `OPENRV64_ICX_PROBE_CACHE_WIDTH] !==
                         cache_mask)
                         $fatal(1, "N=%0d probe cache mask mismatch",
                                NUM_HARTS);
@@ -253,8 +253,8 @@ module tb_ccx_coherent_control #(
                 if (targets[hart_index]) begin
                     probe_ack_valid[hart_index] = 1'b1;
                     probe_ack_id[
-                        hart_index*`OPENRV64_CCX_PROBE_ID_WIDTH +:
-                        `OPENRV64_CCX_PROBE_ID_WIDTH] = probe_tag;
+                        hart_index*`OPENRV64_ICX_PROBE_ID_WIDTH +:
+                        `OPENRV64_ICX_PROBE_ID_WIDTH] = probe_tag;
                     if (!probe_ack_ready[hart_index])
                         $fatal(1, "N=%0d ACK lane not ready", NUM_HARTS);
                     @(posedge clk);
@@ -309,15 +309,15 @@ module tb_ccx_coherent_control #(
         inv_valid = 1'b0;
         inv_dir_index = {DIRECTORY_INDEX_WIDTH{1'b0}};
         inv_target_harts = {NUM_HARTS{1'b0}};
-        inv_probe_id = {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
+        inv_probe_id = {`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
         inv_cache_mask =
-            {`OPENRV64_CCX_PROBE_CACHE_WIDTH{1'b0}};
+            {`OPENRV64_ICX_PROBE_CACHE_WIDTH{1'b0}};
         inv_line_addr = 64'd0;
         inv_done_ready = 1'b0;
         probe_ready = {NUM_HARTS{1'b0}};
         probe_ack_valid = {NUM_HARTS{1'b0}};
         probe_ack_id =
-            {NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
+            {NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
         protocol_error_clear = 1'b0;
         initial_i_sharers = {NUM_HARTS{1'b0}};
         initial_d_sharers = {NUM_HARTS{1'b1}};
@@ -348,7 +348,7 @@ module tb_ccx_coherent_control #(
             $fatal(1, "N=%0d directory allocation mismatch", NUM_HARTS);
 
         run_invalidation(4'd3, target_harts,
-                         `OPENRV64_CCX_PROBE_CACHE_BOTH, 4'ha,
+                         `OPENRV64_ICX_PROBE_CACHE_BOTH, 4'ha,
                          64'h0000_0000_8000_0140);
         #1;
         if (dir_read_i_sharers !==
@@ -364,7 +364,7 @@ module tb_ccx_coherent_control #(
                         {NUM_HARTS{1'b1}}, {NUM_HARTS{1'b1}},
                         {NUM_HARTS{1'b0}}, {NUM_HARTS{1'b0}});
         run_invalidation(4'd3, {NUM_HARTS{1'b1}},
-                         `OPENRV64_CCX_PROBE_CACHE_D, 4'hb,
+                         `OPENRV64_ICX_PROBE_CACHE_D, 4'hb,
                          64'h0000_0000_8000_0140);
         #1;
         if (dir_read_i_sharers !== {NUM_HARTS{1'b1}})
@@ -384,7 +384,7 @@ module tb_ccx_coherent_control #(
         inv_dir_index = 4'd4;
         inv_target_harts = {{(NUM_HARTS-1){1'b0}}, 1'b1};
         inv_probe_id = 4'hc;
-        inv_cache_mask = `OPENRV64_CCX_PROBE_CACHE_I;
+        inv_cache_mask = `OPENRV64_ICX_PROBE_CACHE_I;
         inv_line_addr = 64'h0000_0000_8000_0180;
         while (!inv_ready)
             @(negedge clk);
@@ -396,7 +396,7 @@ module tb_ccx_coherent_control #(
                    NUM_HARTS);
         probe_ready[0] = 1'b1;
         probe_ack_valid[0] = 1'b1;
-        probe_ack_id[`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] = 4'hc;
+        probe_ack_id[`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] = 4'hc;
         @(posedge clk);
         @(negedge clk);
         probe_ready[0] = 1'b0;
@@ -419,7 +419,7 @@ module tb_ccx_coherent_control #(
         // An unsolicited acknowledgement is consumed as a protocol fault,
         // never mistaken for progress on a later probe.
         probe_ack_valid[0] = 1'b1;
-        probe_ack_id[`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] = 4'hf;
+        probe_ack_id[`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] = 4'hf;
         @(posedge clk);
         @(negedge clk);
         probe_ack_valid[0] = 1'b0;

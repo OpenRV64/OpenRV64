@@ -4,7 +4,7 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-module tb_ccx_bus #(
+module tb_icx_bus #(
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_STORE_BUFFER_LINES = 8
 );
@@ -124,63 +124,63 @@ module tb_ccx_bus #(
     logic bvalid;
     wire bready;
 
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire [3:0] ccx_req_hart_id;
-    wire [3:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [3:0] ccx_req_op;
-    wire ccx_req_lock;
-    wire [1:0] ccx_req_order;
-    wire [1:0] ccx_req_kind;
-    wire [3:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    wire ccx_wdata_valid;
-    wire ccx_wdata_ready;
-    wire [3:0] ccx_wdata_hart_id;
-    wire [3:0] ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
-    wire ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
-    logic ccx_resp_valid;
-    wire ccx_resp_ready;
-    logic [3:0] ccx_resp_hart_id;
-    logic [3:0] ccx_resp_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index;
-    logic ccx_resp_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
-    logic ccx_resp_error;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_memory [0:255];
-    logic ccx_cmd_pending;
-    logic [3:0] ccx_cmd_hart_id;
-    logic [3:0] ccx_cmd_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_cmd_source_id;
-    logic [3:0] ccx_cmd_op;
-    logic [2:0] ccx_cmd_size;
-    logic [63:0] ccx_cmd_addr;
-    logic ccx_data_pending;
-    logic [3:0] ccx_data_hart_id;
-    logic [3:0] ccx_data_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_data_source_id;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_data;
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_data_strb;
-    logic ccx_fail_enable;
-    logic [63:0] ccx_fail_addr;
-    logic ccx_allow_cmd;
-    logic ccx_allow_wdata;
-    integer ccx_reads;
-    integer ccx_writes;
-    integer ccx_fences;
-    integer ccx_locked_reads;
-    integer ccx_locked_writes;
-    integer ccx_byte;
-    integer ccx_index;
-    integer ccx_word_index;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire [3:0] icx_req_hart_id;
+    wire [3:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [3:0] icx_req_op;
+    wire icx_req_lock;
+    wire [1:0] icx_req_order;
+    wire [1:0] icx_req_kind;
+    wire [3:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    wire icx_wdata_valid;
+    wire icx_wdata_ready;
+    wire [3:0] icx_wdata_hart_id;
+    wire [3:0] icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_wdata_beat_index;
+    wire icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
+    logic icx_resp_valid;
+    wire icx_resp_ready;
+    logic [3:0] icx_resp_hart_id;
+    logic [3:0] icx_resp_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_resp_beat_index;
+    logic icx_resp_last;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
+    logic icx_resp_error;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_memory [0:255];
+    logic icx_cmd_pending;
+    logic [3:0] icx_cmd_hart_id;
+    logic [3:0] icx_cmd_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_cmd_source_id;
+    logic [3:0] icx_cmd_op;
+    logic [2:0] icx_cmd_size;
+    logic [63:0] icx_cmd_addr;
+    logic icx_data_pending;
+    logic [3:0] icx_data_hart_id;
+    logic [3:0] icx_data_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_data_source_id;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_data;
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_data_strb;
+    logic icx_fail_enable;
+    logic [63:0] icx_fail_addr;
+    logic icx_allow_cmd;
+    logic icx_allow_wdata;
+    integer icx_reads;
+    integer icx_writes;
+    integer icx_fences;
+    integer icx_locked_reads;
+    integer icx_locked_writes;
+    integer icx_byte;
+    integer icx_index;
+    integer icx_word_index;
 
     integer ar_count;
     integer wait_count;
@@ -215,7 +215,7 @@ module tb_ccx_bus #(
         end
     end
 
-    openrv64_core_ccx_bus #(
+    openrv64_core_icx_bus #(
         .ENABLE_L1I(0),
         .L1D_PREFETCH_ENABLE(0),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
@@ -315,38 +315,38 @@ module tb_ccx_bus #(
         .pmp_priv_o(pmp_priv), .pmp_size_o(pmp_size),
         .pmp_write_o(pmp_write), .pmp_exec_o(pmp_exec),
         .pmp_allow_i(pmp_allow),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(ccx_req_ready),
-        .ccx_req_hart_id_o(ccx_req_hart_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_source_id_o(ccx_req_source_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_lock_o(ccx_req_lock),
-        .ccx_req_order_o(ccx_req_order),
-        .ccx_req_kind_o(ccx_req_kind),
-        .ccx_req_attr_o(ccx_req_attr),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(ccx_req_burst_len),
-        .ccx_wdata_valid_o(ccx_wdata_valid),
-        .ccx_wdata_ready_i(ccx_wdata_ready),
-        .ccx_wdata_hart_id_o(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id_o(ccx_wdata_txn_id),
-        .ccx_wdata_source_id_o(ccx_wdata_source_id),
-        .ccx_wdata_beat_index_o(ccx_wdata_beat_index),
-        .ccx_wdata_last_o(ccx_wdata_last),
-        .ccx_wdata_o(ccx_wdata),
-        .ccx_wstrb_o(ccx_wstrb),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i(ccx_resp_hart_id),
-        .ccx_resp_txn_id_i(ccx_resp_txn_id),
-        .ccx_resp_source_id_i(ccx_resp_source_id),
-        .ccx_resp_beat_index_i(ccx_resp_beat_index),
-        .ccx_resp_last_i(ccx_resp_last),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_error_i(ccx_resp_error),
-        .ccx_resp_sc_success_i(1'b0),
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(icx_req_ready),
+        .icx_req_hart_id_o(icx_req_hart_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_source_id_o(icx_req_source_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_lock_o(icx_req_lock),
+        .icx_req_order_o(icx_req_order),
+        .icx_req_kind_o(icx_req_kind),
+        .icx_req_attr_o(icx_req_attr),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(icx_req_burst_len),
+        .icx_wdata_valid_o(icx_wdata_valid),
+        .icx_wdata_ready_i(icx_wdata_ready),
+        .icx_wdata_hart_id_o(icx_wdata_hart_id),
+        .icx_wdata_txn_id_o(icx_wdata_txn_id),
+        .icx_wdata_source_id_o(icx_wdata_source_id),
+        .icx_wdata_beat_index_o(icx_wdata_beat_index),
+        .icx_wdata_last_o(icx_wdata_last),
+        .icx_wdata_o(icx_wdata),
+        .icx_wstrb_o(icx_wstrb),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i(icx_resp_hart_id),
+        .icx_resp_txn_id_i(icx_resp_txn_id),
+        .icx_resp_source_id_i(icx_resp_source_id),
+        .icx_resp_beat_index_i(icx_resp_beat_index),
+        .icx_resp_last_i(icx_resp_last),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_error_i(icx_resp_error),
+        .icx_resp_sc_success_i(1'b0),
         .m_axi_arid_o(arid), .m_axi_araddr_o(araddr),
         .m_axi_arlen_o(arlen), .m_axi_arsize_o(arsize),
         .m_axi_arburst_o(arburst), .m_axi_arlock_o(),
@@ -376,75 +376,75 @@ module tb_ccx_bus #(
         end
     end
 
-    assign ccx_req_ready = rst_n && ccx_allow_cmd &&
-                           !ccx_cmd_pending && !ccx_resp_valid;
-    assign ccx_wdata_ready = rst_n && ccx_allow_wdata &&
-                              !ccx_data_pending && !ccx_resp_valid;
+    assign icx_req_ready = rst_n && icx_allow_cmd &&
+                           !icx_cmd_pending && !icx_resp_valid;
+    assign icx_wdata_ready = rst_n && icx_allow_wdata &&
+                              !icx_data_pending && !icx_resp_valid;
 
-    function automatic [63:0] ccx_memory_word(input [63:0] addr);
-        ccx_memory_word = ccx_memory[addr[13:6]][addr[5:3]*64 +: 64];
+    function automatic [63:0] icx_memory_word(input [63:0] addr);
+        icx_memory_word = icx_memory[addr[13:6]][addr[5:3]*64 +: 64];
     endfunction
 
-    function automatic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        ccx_read_response(
+    function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        icx_read_response(
             input [63:0] addr,
             input [2:0] size
         );
         begin
             if (size == 3'd6) begin
-                ccx_read_response = ccx_memory[addr[13:6]];
+                icx_read_response = icx_memory[addr[13:6]];
             end else begin
-                ccx_read_response = 0;
-                ccx_read_response[addr[5:3]*64 +: 64] =
-                    ccx_memory_word(addr);
+                icx_read_response = 0;
+                icx_read_response[addr[5:3]*64 +: 64] =
+                    icx_memory_word(addr);
             end
         end
     endfunction
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_cmd_pending <= 1'b0;
-            ccx_cmd_hart_id <= 4'd0;
-            ccx_cmd_txn_id <= 4'd0;
-            ccx_cmd_source_id <= 0;
-            ccx_cmd_op <= 0;
-            ccx_cmd_size <= 0;
-            ccx_cmd_addr <= 0;
-            ccx_data_pending <= 1'b0;
-            ccx_data_hart_id <= 0;
-            ccx_data_txn_id <= 0;
-            ccx_data_source_id <= 0;
-            ccx_data <= 0;
-            ccx_data_strb <= 0;
-            ccx_resp_valid <= 1'b0;
-            ccx_resp_hart_id <= 4'd0;
-            ccx_resp_txn_id <= 4'd0;
-            ccx_resp_source_id <= 0;
-            ccx_resp_beat_index <= 0;
-            ccx_resp_last <= 1'b0;
-            ccx_resp_rdata <= 0;
-            ccx_resp_error <= 1'b0;
-            ccx_reads <= 0;
-            ccx_writes <= 0;
-            ccx_fences <= 0;
-            ccx_locked_reads <= 0;
-            ccx_locked_writes <= 0;
+            icx_cmd_pending <= 1'b0;
+            icx_cmd_hart_id <= 4'd0;
+            icx_cmd_txn_id <= 4'd0;
+            icx_cmd_source_id <= 0;
+            icx_cmd_op <= 0;
+            icx_cmd_size <= 0;
+            icx_cmd_addr <= 0;
+            icx_data_pending <= 1'b0;
+            icx_data_hart_id <= 0;
+            icx_data_txn_id <= 0;
+            icx_data_source_id <= 0;
+            icx_data <= 0;
+            icx_data_strb <= 0;
+            icx_resp_valid <= 1'b0;
+            icx_resp_hart_id <= 4'd0;
+            icx_resp_txn_id <= 4'd0;
+            icx_resp_source_id <= 0;
+            icx_resp_beat_index <= 0;
+            icx_resp_last <= 1'b0;
+            icx_resp_rdata <= 0;
+            icx_resp_error <= 1'b0;
+            icx_reads <= 0;
+            icx_writes <= 0;
+            icx_fences <= 0;
+            icx_locked_reads <= 0;
+            icx_locked_writes <= 0;
         end else begin
-            if (ccx_resp_valid && ccx_resp_ready)
-                ccx_resp_valid <= 1'b0;
+            if (icx_resp_valid && icx_resp_ready)
+                icx_resp_valid <= 1'b0;
 
-            if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_hart_id != 0 || ccx_req_burst_len != 0)
-                    $fatal(1, "hart emitted malformed CCX command");
-                if (ccx_req_source_id == `OPENRV64_CCX_SOURCE_PTW) begin
-                    if (ccx_req_op == `OPENRV64_CCX_OP_FENCE) begin
-                        if (ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
-                            ccx_req_order !=
-                                `OPENRV64_CCX_ORDER_ACQ_REL ||
-                            ccx_req_lock || (ccx_req_size != 0) ||
-                            (ccx_req_addr != 0) ||
-                            (ccx_req_attr !=
-                             `OPENRV64_CCX_ATTR_NONE))
+            if (icx_req_valid && icx_req_ready) begin
+                if (icx_req_hart_id != 0 || icx_req_burst_len != 0)
+                    $fatal(1, "hart emitted malformed ICX command");
+                if (icx_req_source_id == `OPENRV64_ICX_SOURCE_PTW) begin
+                    if (icx_req_op == `OPENRV64_ICX_OP_FENCE) begin
+                        if (icx_req_kind != `OPENRV64_ICX_KIND_PTE ||
+                            icx_req_order !=
+                                `OPENRV64_ICX_ORDER_ACQ_REL ||
+                            icx_req_lock || (icx_req_size != 0) ||
+                            (icx_req_addr != 0) ||
+                            (icx_req_attr !=
+                             `OPENRV64_ICX_ATTR_NONE))
                             $fatal(1,
                                    "PTW emitted malformed shootdown fence");
                         if ((dut.u_l1d.store_buffer_count_q != 0) ||
@@ -453,116 +453,116 @@ module tb_ccx_bus #(
                             $fatal(1,
                                    "PTW shootdown passed an older L1D store");
                     end else if (
-                        ccx_req_kind != `OPENRV64_CCX_KIND_PTE ||
-                        ccx_req_op != `OPENRV64_CCX_OP_READ ||
-                        ccx_req_order != `OPENRV64_CCX_ORDER_NONE ||
-                        ccx_req_lock || ccx_req_size != 3'd6 ||
-                        ccx_req_addr[5:0] != 0 ||
-                        ccx_req_attr !=
-                            (`OPENRV64_CCX_ATTR_CACHEABLE |
-                             `OPENRV64_CCX_ATTR_IDEMPOTENT)) begin
-                        $fatal(1, "PTW emitted malformed PTE CCX command");
+                        icx_req_kind != `OPENRV64_ICX_KIND_PTE ||
+                        icx_req_op != `OPENRV64_ICX_OP_READ ||
+                        icx_req_order != `OPENRV64_ICX_ORDER_NONE ||
+                        icx_req_lock || icx_req_size != 3'd6 ||
+                        icx_req_addr[5:0] != 0 ||
+                        icx_req_attr !=
+                            (`OPENRV64_ICX_ATTR_CACHEABLE |
+                             `OPENRV64_ICX_ATTR_IDEMPOTENT)) begin
+                        $fatal(1, "PTW emitted malformed PTE ICX command");
                     end
                 end else begin
-                    if (ccx_req_source_id !=
-                            `OPENRV64_CCX_SOURCE_DCACHE ||
-                        ccx_req_kind != `OPENRV64_CCX_KIND_DATA ||
-                        ccx_req_order != `OPENRV64_CCX_ORDER_NONE)
-                        $fatal(1, "L1D emitted malformed CCX command");
-                    if ((ccx_req_attr ==
-                         `OPENRV64_CCX_ATTR_CACHEABLE) &&
-                        (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
-                        ((ccx_req_size != 3'd6) ||
-                         (ccx_req_addr[5:0] != 0)) &&
-                        !((ccx_req_size == 3'd3) &&
-                          (ccx_req_addr == 64'h108)))
+                    if (icx_req_source_id !=
+                            `OPENRV64_ICX_SOURCE_DCACHE ||
+                        icx_req_kind != `OPENRV64_ICX_KIND_DATA ||
+                        icx_req_order != `OPENRV64_ICX_ORDER_NONE)
+                        $fatal(1, "L1D emitted malformed ICX command");
+                    if ((icx_req_attr ==
+                         `OPENRV64_ICX_ATTR_CACHEABLE) &&
+                        (icx_req_op == `OPENRV64_ICX_OP_READ) &&
+                        ((icx_req_size != 3'd6) ||
+                         (icx_req_addr[5:0] != 0)) &&
+                        !((icx_req_size == 3'd3) &&
+                          (icx_req_addr == 64'h108)))
                         $fatal(1,
                                "L1D read had invalid line/scalar geometry");
-                    if ((ccx_req_attr ==
-                         `OPENRV64_CCX_ATTR_CACHEABLE) &&
-                        (ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
-                        ((ccx_req_size != 3'd6) ||
-                         (ccx_req_addr[5:0] != 0)) &&
-                        !((ccx_req_size == 3'd3) &&
-                          ((ccx_req_addr == 64'h108) ||
-                           (ccx_req_addr == 64'h118))))
+                    if ((icx_req_attr ==
+                         `OPENRV64_ICX_ATTR_CACHEABLE) &&
+                        (icx_req_op == `OPENRV64_ICX_OP_WRITE) &&
+                        ((icx_req_size != 3'd6) ||
+                         (icx_req_addr[5:0] != 0)) &&
+                        !((icx_req_size == 3'd3) &&
+                          ((icx_req_addr == 64'h108) ||
+                           (icx_req_addr == 64'h118))))
                         $fatal(1,
                                "L1D write had invalid line/scalar geometry");
                 end
-                ccx_cmd_pending <= 1'b1;
-                ccx_cmd_hart_id <= ccx_req_hart_id;
-                ccx_cmd_txn_id <= ccx_req_txn_id;
-                ccx_cmd_source_id <= ccx_req_source_id;
-                ccx_cmd_op <= ccx_req_op;
-                ccx_cmd_size <= ccx_req_size;
-                ccx_cmd_addr <= ccx_req_addr;
-                if (ccx_req_lock &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_READ)) begin
-                    if ((ccx_req_addr != 64'h108) ||
-                        (ccx_req_size != 3'd3))
+                icx_cmd_pending <= 1'b1;
+                icx_cmd_hart_id <= icx_req_hart_id;
+                icx_cmd_txn_id <= icx_req_txn_id;
+                icx_cmd_source_id <= icx_req_source_id;
+                icx_cmd_op <= icx_req_op;
+                icx_cmd_size <= icx_req_size;
+                icx_cmd_addr <= icx_req_addr;
+                if (icx_req_lock &&
+                    (icx_req_op == `OPENRV64_ICX_OP_READ)) begin
+                    if ((icx_req_addr != 64'h108) ||
+                        (icx_req_size != 3'd3))
                         $fatal(1,
                                "locked L1D read lost sub-line geometry addr=%h size=%0d",
-                               ccx_req_addr, ccx_req_size);
-                    ccx_locked_reads <= ccx_locked_reads + 1;
+                               icx_req_addr, icx_req_size);
+                    icx_locked_reads <= icx_locked_reads + 1;
                 end
-                if (ccx_req_lock &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE))
-                    ccx_locked_writes <= ccx_locked_writes + 1;
+                if (icx_req_lock &&
+                    (icx_req_op == `OPENRV64_ICX_OP_WRITE))
+                    icx_locked_writes <= icx_locked_writes + 1;
             end
 
-            if (ccx_wdata_valid && ccx_wdata_ready) begin
-                if (ccx_wdata_beat_index != 0 || !ccx_wdata_last)
+            if (icx_wdata_valid && icx_wdata_ready) begin
+                if (icx_wdata_beat_index != 0 || !icx_wdata_last)
                     $fatal(1, "L1D emitted malformed write-data beat");
-                ccx_data_pending <= 1'b1;
-                ccx_data_hart_id <= ccx_wdata_hart_id;
-                ccx_data_txn_id <= ccx_wdata_txn_id;
-                ccx_data_source_id <= ccx_wdata_source_id;
-                ccx_data <= ccx_wdata;
-                ccx_data_strb <= ccx_wstrb;
+                icx_data_pending <= 1'b1;
+                icx_data_hart_id <= icx_wdata_hart_id;
+                icx_data_txn_id <= icx_wdata_txn_id;
+                icx_data_source_id <= icx_wdata_source_id;
+                icx_data <= icx_wdata;
+                icx_data_strb <= icx_wstrb;
             end
 
-            if (ccx_cmd_pending && !ccx_resp_valid &&
-                ((ccx_cmd_op == `OPENRV64_CCX_OP_READ) ||
-                 (ccx_cmd_op == `OPENRV64_CCX_OP_FENCE) ||
-                 ((ccx_cmd_op == `OPENRV64_CCX_OP_WRITE) &&
-                  ccx_data_pending))) begin
-                if ((ccx_cmd_op == `OPENRV64_CCX_OP_WRITE) &&
-                    ((ccx_data_hart_id != ccx_cmd_hart_id) ||
-                     (ccx_data_txn_id != ccx_cmd_txn_id) ||
-                     (ccx_data_source_id != ccx_cmd_source_id)))
-                    $fatal(1, "CCX command/data identity mismatch");
-                ccx_resp_valid <= 1'b1;
-                ccx_resp_hart_id <= ccx_cmd_hart_id;
-                ccx_resp_txn_id <= ccx_cmd_txn_id;
-                ccx_resp_source_id <= ccx_cmd_source_id;
-                ccx_resp_beat_index <= 0;
-                ccx_resp_last <= 1'b1;
-                ccx_resp_rdata <= ccx_read_response(
-                    ccx_cmd_addr, ccx_cmd_size);
-                ccx_resp_error <= ccx_fail_enable &&
-                                  (ccx_cmd_addr == ccx_fail_addr);
-                ccx_cmd_pending <= 1'b0;
-                if (ccx_cmd_op == `OPENRV64_CCX_OP_READ) begin
-                    ccx_reads <= ccx_reads + 1;
-                end else if (ccx_cmd_op ==
-                             `OPENRV64_CCX_OP_WRITE) begin
-                    ccx_writes <= ccx_writes + 1;
-                    ccx_data_pending <= 1'b0;
-                    if (!(ccx_fail_enable &&
-                          (ccx_cmd_addr == ccx_fail_addr))) begin
-                        for (ccx_byte = 0; ccx_byte < 64;
-                             ccx_byte = ccx_byte + 1) begin
-                            if (ccx_data_strb[ccx_byte])
-                                ccx_memory[ccx_cmd_addr[13:6]]
-                                    [8*ccx_byte +: 8] <=
-                                    ccx_data[8*ccx_byte +: 8];
+            if (icx_cmd_pending && !icx_resp_valid &&
+                ((icx_cmd_op == `OPENRV64_ICX_OP_READ) ||
+                 (icx_cmd_op == `OPENRV64_ICX_OP_FENCE) ||
+                 ((icx_cmd_op == `OPENRV64_ICX_OP_WRITE) &&
+                  icx_data_pending))) begin
+                if ((icx_cmd_op == `OPENRV64_ICX_OP_WRITE) &&
+                    ((icx_data_hart_id != icx_cmd_hart_id) ||
+                     (icx_data_txn_id != icx_cmd_txn_id) ||
+                     (icx_data_source_id != icx_cmd_source_id)))
+                    $fatal(1, "ICX command/data identity mismatch");
+                icx_resp_valid <= 1'b1;
+                icx_resp_hart_id <= icx_cmd_hart_id;
+                icx_resp_txn_id <= icx_cmd_txn_id;
+                icx_resp_source_id <= icx_cmd_source_id;
+                icx_resp_beat_index <= 0;
+                icx_resp_last <= 1'b1;
+                icx_resp_rdata <= icx_read_response(
+                    icx_cmd_addr, icx_cmd_size);
+                icx_resp_error <= icx_fail_enable &&
+                                  (icx_cmd_addr == icx_fail_addr);
+                icx_cmd_pending <= 1'b0;
+                if (icx_cmd_op == `OPENRV64_ICX_OP_READ) begin
+                    icx_reads <= icx_reads + 1;
+                end else if (icx_cmd_op ==
+                             `OPENRV64_ICX_OP_WRITE) begin
+                    icx_writes <= icx_writes + 1;
+                    icx_data_pending <= 1'b0;
+                    if (!(icx_fail_enable &&
+                          (icx_cmd_addr == icx_fail_addr))) begin
+                        for (icx_byte = 0; icx_byte < 64;
+                             icx_byte = icx_byte + 1) begin
+                            if (icx_data_strb[icx_byte])
+                                icx_memory[icx_cmd_addr[13:6]]
+                                    [8*icx_byte +: 8] <=
+                                    icx_data[8*icx_byte +: 8];
                             end
                     end
-                end else if (ccx_cmd_op ==
-                             `OPENRV64_CCX_OP_FENCE) begin
-                    ccx_fences <= ccx_fences + 1;
+                end else if (icx_cmd_op ==
+                             `OPENRV64_ICX_OP_FENCE) begin
+                    icx_fences <= icx_fences + 1;
                 end else begin
-                    $fatal(1, "unsupported CCX command in test memory");
+                    $fatal(1, "unsupported ICX command in test memory");
                 end
             end
         end
@@ -641,9 +641,9 @@ module tb_ccx_bus #(
             end
             if (!completed)
                 $fatal(1,
-                    "tagged LSU request timeout tag=%0d ready=%b pmp=%b ccx=%b/%b",
+                    "tagged LSU request timeout tag=%0d ready=%b pmp=%b icx=%b/%b",
                     tag, pipe_req_ready, pmp_allow,
-                    ccx_req_valid, ccx_req_ready);
+                    icx_req_valid, icx_req_ready);
             pipe_req_valid = 1'b0;
         end
     endtask
@@ -885,27 +885,27 @@ module tb_ccx_bus #(
         bid = 3'b111;
         bresp = 0;
         bvalid = 0;
-        ccx_resp_valid = 0;
-        ccx_resp_hart_id = 0;
-        ccx_resp_txn_id = 0;
-        ccx_resp_source_id = 0;
-        ccx_resp_beat_index = 0;
-        ccx_resp_last = 0;
-        ccx_resp_rdata = 0;
-        ccx_resp_error = 0;
-        ccx_fail_enable = 0;
-        ccx_fail_addr = 0;
-        ccx_allow_cmd = 1;
-        ccx_allow_wdata = 1;
+        icx_resp_valid = 0;
+        icx_resp_hart_id = 0;
+        icx_resp_txn_id = 0;
+        icx_resp_source_id = 0;
+        icx_resp_beat_index = 0;
+        icx_resp_last = 0;
+        icx_resp_rdata = 0;
+        icx_resp_error = 0;
+        icx_fail_enable = 0;
+        icx_fail_addr = 0;
+        icx_allow_cmd = 1;
+        icx_allow_wdata = 1;
         icache_age_valid = 3'b000;
         icache_age_addr = 192'd0;
-        for (ccx_index = 0; ccx_index < 256;
-             ccx_index = ccx_index + 1) begin
-            for (ccx_word_index = 0; ccx_word_index < 8;
-                 ccx_word_index = ccx_word_index + 1)
-                ccx_memory[ccx_index][ccx_word_index*64 +: 64] =
+        for (icx_index = 0; icx_index < 256;
+             icx_index = icx_index + 1) begin
+            for (icx_word_index = 0; icx_word_index < 8;
+                 icx_word_index = icx_word_index + 1)
+                icx_memory[icx_index][icx_word_index*64 +: 64] =
                     64'h0101_0101_0101_0101 *
-                    (ccx_index * 8 + ccx_word_index);
+                    (icx_index * 8 + icx_word_index);
         end
         ar_count = 0;
         repeat (3) tick();
@@ -913,30 +913,30 @@ module tb_ccx_bus #(
         tick();
 
         // A client may withdraw speculative work after arbitration but
-        // before the downstream CCX handshake.  The saved grant must not
+        // before the downstream ICX handshake.  The saved grant must not
         // block a different client indefinitely.
-        ccx_allow_cmd = 0;
-        force dut.l1d_ccx_req_valid = 1'b1;
+        icx_allow_cmd = 0;
+        force dut.l1d_icx_req_valid = 1'b1;
         tick();
-        if (!dut.ccx_cmd_grant_valid_q ||
-            (dut.ccx_cmd_grant_client_q != 2'd1))
-            $fatal(1, "CCX cancellation test did not grant L1D");
-        force dut.l1d_ccx_req_valid = 1'b0;
-        force dut.l1i_ccx_req_valid = 1'b1;
+        if (!dut.icx_cmd_grant_valid_q ||
+            (dut.icx_cmd_grant_client_q != 2'd1))
+            $fatal(1, "ICX cancellation test did not grant L1D");
+        force dut.l1d_icx_req_valid = 1'b0;
+        force dut.l1i_icx_req_valid = 1'b1;
         tick();
-        if (!dut.ccx_cmd_grant_valid_q ||
-            (dut.ccx_cmd_grant_client_q != 2'd0))
+        if (!dut.icx_cmd_grant_valid_q ||
+            (dut.icx_cmd_grant_client_q != 2'd0))
             $fatal(1,
-                "CCX arbiter retained a withdrawn client grant valid=%b client=%0d",
-                dut.ccx_cmd_grant_valid_q,
-                dut.ccx_cmd_grant_client_q);
-        force dut.l1i_ccx_req_valid = 1'b0;
+                "ICX arbiter retained a withdrawn client grant valid=%b client=%0d",
+                dut.icx_cmd_grant_valid_q,
+                dut.icx_cmd_grant_client_q);
+        force dut.l1i_icx_req_valid = 1'b0;
         tick();
-        if (dut.ccx_cmd_grant_valid_q)
-            $fatal(1, "CCX arbiter retained final withdrawn grant");
-        release dut.l1d_ccx_req_valid;
-        release dut.l1i_ccx_req_valid;
-        ccx_allow_cmd = 1;
+        if (dut.icx_cmd_grant_valid_q)
+            $fatal(1, "ICX arbiter retained final withdrawn grant");
+        release dut.l1d_icx_req_valid;
+        release dut.l1i_icx_req_valid;
+        icx_allow_cmd = 1;
 
         // Four fetches enter before any response.  AXI may return them out of
         // order, while the frontend must still observe request order.
@@ -991,80 +991,80 @@ module tb_ccx_bus #(
         expect_fetch(64'h00c0, 256'h5555, 0, 1, 1);
         fetch_req_stash = 0;
         if ($test$plusargs("fetch_stash_aging_only")) begin
-            $display("PASS: CCX preserves aged stash+demand fetch");
+            $display("PASS: ICX preserves aged stash+demand fetch");
             $finish;
         end
 
-        // A miss is one native 512-bit CCX line read.  A second word in that
+        // A miss is one native 512-bit ICX line read.  A second word in that
         // line is a local hit; scalar data must not leak onto AXI.
-        wait_count = ccx_reads;
-        locked_old_word = ccx_memory_word(64'h100);
+        wait_count = icx_reads;
+        locked_old_word = icx_memory_word(64'h100);
         push_pipe_request(2'd0, 1'b0, 64'h100, 64'd0, 8'd0);
         expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
-        if ((ccx_reads - wait_count) != 1)
-            $fatal(1, "L1D miss used %0d CCX reads instead of 1",
-                   ccx_reads - wait_count);
+        if ((icx_reads - wait_count) != 1)
+            $fatal(1, "L1D miss used %0d ICX reads instead of 1",
+                   icx_reads - wait_count);
 
-        wait_count = ccx_reads;
-        locked_old_word = ccx_memory_word(64'h108);
+        wait_count = icx_reads;
+        locked_old_word = icx_memory_word(64'h108);
         push_pipe_request(2'd1, 1'b0, 64'h108, 64'd0, 8'd0);
         expect_pipe_response(2'd1, locked_old_word, 1'b0, 1'b0);
-        if (ccx_reads != wait_count)
-            $fatal(1, "L1D hit unexpectedly reached CCX");
+        if (icx_reads != wait_count)
+            $fatal(1, "L1D hit unexpectedly reached ICX");
         if (ar_count != 5 || awvalid || wvalid)
             $fatal(1, "scalar LSU traffic leaked onto AXI");
 
         // A bring-up AMO phase must bypass and invalidate a resident L1D
-        // line while retaining cacheable PMA attributes at CCX.
-        wait_count = ccx_reads;
-        ccx_allow_cmd = 1'b0;
+        // line while retaining cacheable PMA attributes at ICX.
+        wait_count = icx_reads;
+        icx_allow_cmd = 1'b0;
         pipe_req_lock = 1'b1;
-        locked_old_word = ccx_memory_word(64'h108);
+        locked_old_word = icx_memory_word(64'h108);
         push_pipe_request(2'd2, 1'b0, 64'h108, 64'd0, 8'd0);
         pipe_req_lock = 1'b0;
-        while (!ccx_req_valid) tick();
+        while (!icx_req_valid) tick();
         pipe_cancel = 1'b1;
         tick();
         pipe_cancel = 1'b0;
-        if (!ccx_req_valid || ccx_req_lock)
+        if (!icx_req_valid || icx_req_lock)
             $fatal(1,
-                "redirect cancelled AMO read or leaked its marker to CCX");
-        ccx_allow_cmd = 1'b1;
+                "redirect cancelled AMO read or leaked its marker to ICX");
+        icx_allow_cmd = 1'b1;
         expect_pipe_response(2'd2, locked_old_word, 1'b0, 1'b0);
-        if ((ccx_reads - wait_count) != 1 || ccx_locked_reads != 0)
+        if ((icx_reads - wait_count) != 1 || icx_locked_reads != 0)
             $fatal(1,
-                "atomic L1D read did not bypass L1 or leaked a CCX lock");
+                "atomic L1D read did not bypass L1 or leaked a ICX lock");
 
-        wait_count = ccx_reads;
-        locked_old_word = ccx_memory_word(64'h108);
+        wait_count = icx_reads;
+        locked_old_word = icx_memory_word(64'h108);
         push_pipe_request(2'd0, 1'b0, 64'h108, 64'd0, 8'd0);
         expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
-        if ((ccx_reads - wait_count) != 1)
+        if ((icx_reads - wait_count) != 1)
             $fatal(1, "locked L1D access did not invalidate resident line");
 
-        wait_count = ccx_writes;
-        locked_old_word = ccx_memory_word(64'h118);
+        wait_count = icx_writes;
+        locked_old_word = icx_memory_word(64'h118);
         pipe_req_lock = 1'b1;
         push_pipe_request(2'd2, 1'b1, 64'h118,
                           64'hcafe_babe_dead_beef, 8'hff);
         pipe_req_lock = 1'b0;
         expect_pipe_response(2'd2, locked_old_word, 1'b0, 1'b0);
-        if ((ccx_writes - wait_count) != 1 || ccx_locked_writes != 0)
-            $fatal(1, "atomic L1D write leaked a CCX lock");
+        if ((icx_writes - wait_count) != 1 || icx_locked_writes != 0)
+            $fatal(1, "atomic L1D write leaked a ICX lock");
 
         // A tagged store is irrevocable after L1 admission.  Architectural
-        // completion reports that admission, not the later CCX drain result.
+        // completion reports that admission, not the later ICX drain result.
         // Deferred write faults therefore cannot be attributed to the posted
         // LSU tag and are intentionally not returned on this interface.
-        locked_old_word = ccx_memory_word(64'h180);
+        locked_old_word = icx_memory_word(64'h180);
         push_pipe_request(2'd0, 1'b0, 64'h180, 64'd0, 8'd0);
         expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
         pipe_store_done_ready = 0;
-        ccx_fail_enable = 1;
-        ccx_fail_addr = 64'h100;
-        ccx_allow_cmd = 0;
-        ccx_allow_wdata = 1;
-        wait_count = ccx_writes;
+        icx_fail_enable = 1;
+        icx_fail_addr = 64'h100;
+        icx_allow_cmd = 0;
+        icx_allow_wdata = 1;
+        wait_count = icx_writes;
         push_pipe_request(2'd1, 1'b1, 64'h114,
             64'haabb_ccdd_0000_0000, 8'hf0);
         channel_wait = 0;
@@ -1078,7 +1078,7 @@ module tb_ccx_bus #(
                 pipe_store_done_valid, pipe_store_done_tag);
         // Keep the independent store response backpressured while a resident
         // load completes through the normal response path.
-        locked_old_word = ccx_memory_word(64'h180);
+        locked_old_word = icx_memory_word(64'h180);
         push_pipe_request(2'd0, 1'b0, 64'h180, 64'd0, 8'd0);
         expect_pipe_response(2'd0, locked_old_word, 1'b0, 1'b0);
         if (!pipe_store_done_valid || pipe_store_done_tag != 2'd1)
@@ -1088,24 +1088,24 @@ module tb_ccx_bus #(
         channel_wait = 0;
         // A lone posted store may remain coalescible until the default
         // 1024-cycle L1D store-buffer timeout.  This test is about independent
-        // CCX command/data backpressure, so wait through that policy interval
+        // ICX command/data backpressure, so wait through that policy interval
         // instead of assuming an immediate drain.
-        while (!ccx_data_pending && channel_wait < 1200) begin
+        while (!icx_data_pending && channel_wait < 1200) begin
             tick();
             channel_wait = channel_wait + 1;
         end
-        if (!ccx_data_pending)
+        if (!icx_data_pending)
             $fatal(1,
-                "CCX write data did not advance independently lsu=%0d l1count=%0d valid=%b complete=%b l1backend=%0d l1mem=%b/%b ccx=%b/%b wdata=%b/%b",
+                "ICX write data did not advance independently lsu=%0d l1count=%0d valid=%b complete=%b l1backend=%0d l1mem=%b/%b icx=%b/%b wdata=%b/%b",
                 dut.lsu_state_q, dut.u_l1d.store_buffer_count_q,
                 dut.u_l1d.store_buffer_valid_q[
                     dut.u_l1d.store_buffer_head_q],
                 dut.u_l1d.store_completion_valid_q,
                 dut.u_l1d.backend_state_q, dut.u_l1d.l1_mem_valid,
-                dut.u_l1d.l1_mem_write, ccx_req_valid, ccx_req_ready,
-                ccx_wdata_valid, ccx_wdata_ready);
-        if (!ccx_req_valid)
-            $fatal(1, "CCX command was not held after write data accepted");
+                dut.u_l1d.l1_mem_write, icx_req_valid, icx_req_ready,
+                icx_wdata_valid, icx_wdata_ready);
+        if (!icx_req_valid)
+            $fatal(1, "ICX command was not held after write data accepted");
         pipe_cancel = 1'b1;
         tick();
         pipe_cancel = 1'b0;
@@ -1115,20 +1115,20 @@ module tb_ccx_bus #(
             $fatal(1, "posted store admission response changed across cancel");
         pipe_store_done_ready = 1;
         tick();
-        ccx_allow_cmd = 1;
-        while ((ccx_writes - wait_count) != 1)
+        icx_allow_cmd = 1;
+        while ((icx_writes - wait_count) != 1)
             tick();
-        if ((ccx_writes - wait_count) != 1 || awvalid || wvalid)
-            $fatal(1, "L1D store did not use exactly one CCX write");
-        ccx_fail_enable = 0;
+        if ((icx_writes - wait_count) != 1 || awvalid || wvalid)
+            $fatal(1, "L1D store did not use exactly one ICX write");
+        icx_fail_enable = 0;
 
         // Stores complete architecturally at bus admission, then queue as
         // aligned 64-byte records with byte enables.  These eight writes
         // cover one line and must coalesce into one stalled buffer entry.
-        ccx_memory[6'h0c] = 512'd0;
-        wait_count = ccx_writes;
-        ccx_allow_cmd = 0;
-        ccx_allow_wdata = 1;
+        icx_memory[6'h0c] = 512'd0;
+        wait_count = icx_writes;
+        icx_allow_cmd = 0;
+        icx_allow_wdata = 1;
         push_pipe_request(2'd0, 1'b1, 64'h300,
                           64'h1122_3344_5566_7788, 8'h0f);
         expect_pipe_store_done(2'd0);
@@ -1165,58 +1165,58 @@ module tb_ccx_bus #(
 
         // The marked read is the first half of the serialized single-hart AMO
         // sequence.  It must remain outside L1D until every older posted store
-        // has reached CCX.  The marker is deliberately not forwarded as a
+        // has reached ICX.  The marker is deliberately not forwarded as a
         // shared-home lock.
-        locked_reads_before = ccx_reads;
+        locked_reads_before = icx_reads;
         pipe_req_lock = 1'b1;
         push_pipe_request(3'd0, 1'b0, 64'h108, 64'd0, 8'd0);
         pipe_req_lock = 1'b0;
-        if (ccx_reads != locked_reads_before)
-            $fatal(1, "atomic read reached CCX ahead of buffered stores");
-        ccx_allow_cmd = 1;
+        if (icx_reads != locked_reads_before)
+            $fatal(1, "atomic read reached ICX ahead of buffered stores");
+        icx_allow_cmd = 1;
         channel_wait = 0;
-        while ((ccx_reads == locked_reads_before) &&
+        while ((icx_reads == locked_reads_before) &&
                (channel_wait < 300)) begin
             tick();
             channel_wait = channel_wait + 1;
         end
-        if (ccx_reads == locked_reads_before)
+        if (icx_reads == locked_reads_before)
             $fatal(1, "atomic read did not force store-buffer drain");
-        if ((ccx_writes - wait_count) != 1)
-            $fatal(1, "atomic read admitted before coalesced store reached CCX");
-        locked_old_word = ccx_memory_word(64'h108);
+        if ((icx_writes - wait_count) != 1)
+            $fatal(1, "atomic read admitted before coalesced store reached ICX");
+        locked_old_word = icx_memory_word(64'h108);
         expect_pipe_response(3'd0, locked_old_word, 1'b0, 1'b0);
-        if (ccx_reads != locked_reads_before + 1 ||
-            ccx_locked_reads != 0)
-            $fatal(1, "post-drain atomic read leaked a CCX lock");
-        if ((ccx_writes - wait_count) != 1 ||
-            ccx_memory_word(64'h300) != 64'h0000_0000_5566_7788 ||
-            ccx_memory_word(64'h308) != 64'haabb_ccdd_0000_0000 ||
-            ccx_memory_word(64'h310) != 64'h0100_0000_0000_00ef ||
-            ccx_memory_word(64'h318) != 64'h1020_3040_5060_7080 ||
-            ccx_memory_word(64'h320) != 64'h0000_ba98_0000_3210 ||
-            ccx_memory_word(64'h328) != 64'h0f1e_0000_4b5a_0000 ||
-            ccx_memory_word(64'h330) != 64'h0077_0055_0033_0011 ||
-            ccx_memory_word(64'h338) != 64'h9900_bb00_dd00_ff00)
+        if (icx_reads != locked_reads_before + 1 ||
+            icx_locked_reads != 0)
+            $fatal(1, "post-drain atomic read leaked a ICX lock");
+        if ((icx_writes - wait_count) != 1 ||
+            icx_memory_word(64'h300) != 64'h0000_0000_5566_7788 ||
+            icx_memory_word(64'h308) != 64'haabb_ccdd_0000_0000 ||
+            icx_memory_word(64'h310) != 64'h0100_0000_0000_00ef ||
+            icx_memory_word(64'h318) != 64'h1020_3040_5060_7080 ||
+            icx_memory_word(64'h320) != 64'h0000_ba98_0000_3210 ||
+            icx_memory_word(64'h328) != 64'h0f1e_0000_4b5a_0000 ||
+            icx_memory_word(64'h330) != 64'h0077_0055_0033_0011 ||
+            icx_memory_word(64'h338) != 64'h9900_bb00_dd00_ff00)
             $fatal(1, "L1D byte-masked store coalescing/drain mismatch");
 
         // Complete the serialized atomic read/write pair before issuing
         // unrelated traffic.  Single-hart mode intentionally does not acquire
-        // a CCX/L2 home lock.
-        wait_count = ccx_writes;
+        // a ICX/L2 home lock.
+        wait_count = icx_writes;
         pipe_req_lock = 1'b1;
         push_pipe_request(3'd1, 1'b1, 64'h108, locked_old_word, 8'hff);
         pipe_req_lock = 1'b0;
         expect_pipe_response(3'd1, locked_old_word, 1'b0, 1'b0);
-        if (ccx_writes != wait_count + 1 || ccx_locked_writes != 0)
-            $fatal(1, "post-drain atomic write leaked a CCX lock");
+        if (icx_writes != wait_count + 1 || icx_locked_writes != 0)
+            $fatal(1, "post-drain atomic write leaked a ICX lock");
 
         // SFENCE.VMA/SATP share a full translation barrier. A partial posted
-        // PTE store must reach CCX and receive its write response before the
+        // PTE store must reach ICX and receive its write response before the
         // PTW may issue the ordered shootdown fence.
-        wait_count = ccx_writes;
-        fences_before = ccx_fences;
-        ccx_allow_cmd = 1'b0;
+        wait_count = icx_writes;
+        fences_before = icx_fences;
+        icx_allow_cmd = 1'b0;
         push_pipe_request(3'd2, 1'b1, 64'h388,
                           64'h0000_0000_23ff_fce7, 8'hff);
         expect_pipe_store_done(3'd2);
@@ -1229,29 +1229,29 @@ module tb_ccx_bus #(
         tick();
         tlbi = 1'b0;
         repeat (3) tick();
-        if ((ccx_writes != wait_count) ||
-            (ccx_fences != fences_before) || !tlbi_busy)
+        if ((icx_writes != wait_count) ||
+            (icx_fences != fences_before) || !tlbi_busy)
             $fatal(1, "translation barrier escaped blocked PTE store");
-        ccx_allow_cmd = 1'b1;
+        icx_allow_cmd = 1'b1;
         channel_wait = 0;
         while (tlbi_busy && (channel_wait < 300)) begin
             tick();
             channel_wait = channel_wait + 1;
         end
-        if (tlbi_busy || (ccx_writes != wait_count + 1) ||
-            (ccx_fences != fences_before + 1) ||
-            (ccx_memory_word(64'h388) != 64'h0000_0000_23ff_fce7))
+        if (tlbi_busy || (icx_writes != wait_count + 1) ||
+            (icx_fences != fences_before + 1) ||
+            (icx_memory_word(64'h388) != 64'h0000_0000_23ff_fce7))
             $fatal(1,
                    "translation barrier did not order store then shootdown");
 
         // Translation-only tagged traffic uses a cacheable PTE line read on
-        // CCX and returns the page fault under the original request tag.  It
+        // ICX and returns the page fault under the original request tag.  It
         // must not perform an L1D access.  An invalid root PTE is sufficient to
         // exercise the fallback without a full map.
         xlate_req_vm_mode = `RV64_SATP_MODE_SV39;
         xlate_req_priv = `RV64_PRIV_S;
         xlate_resp_ready = 0;
-        wait_count = ccx_reads;
+        wait_count = icx_reads;
         channel_wait = ar_count;
         push_xlate_request(2'd2, 1'b0, 64'h1000);
         ptw_wait = 0;
@@ -1261,28 +1261,28 @@ module tb_ccx_bus #(
         end
         if (ptw_wait == 50)
             $fatal(1,
-                   "translated PTE CCX response timeout lsu=%0d miss=%b req=%b resp=%b",
+                   "translated PTE ICX response timeout lsu=%0d miss=%b req=%b resp=%b",
                    dut.lsu_state_q, dut.miss_active_q,
                    dut.u_ptw.state_q,
                    dut.u_ptw.backend_state_q);
         if (xlate_resp_tag != 2'd2 || !xlate_resp_page_fault ||
             xlate_resp_access_fault)
             $fatal(1, "translated tagged LSU fallback mismatch");
-        if ((ccx_reads - wait_count) != 1 ||
+        if ((icx_reads - wait_count) != 1 ||
             ar_count != channel_wait)
             $fatal(1,
-                   "translated PTW did not use exactly one CCX PTE line");
+                   "translated PTW did not use exactly one ICX PTE line");
         xlate_resp_ready = 1;
         tick();
 
         // Walk a complete three-level mapping.  Each dependent PTE fetch is a
-        // line read on CCX, with the walker selecting its original 64-bit
+        // line read on ICX, with the walker selecting its original 64-bit
         // lane, followed by one data-cache line read at the translated PA.
-        ccx_memory[64'h0000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0401;
-        ccx_memory[64'h1000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0801;
-        ccx_memory[64'h2000 >> 6][4*64 +: 64] = 64'h0000_0000_0000_0ccf;
-        ccx_memory[64'h3000 >> 6][0*64 +: 64] = 64'h5a17_c0de_cafe_1234;
-        ccx_memory[64'h3000 >> 6][1*64 +: 64] = 64'h1357_9bdf_2468_ace0;
+        icx_memory[64'h0000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0401;
+        icx_memory[64'h1000 >> 6][0*64 +: 64] = 64'h0000_0000_0000_0801;
+        icx_memory[64'h2000 >> 6][4*64 +: 64] = 64'h0000_0000_0000_0ccf;
+        icx_memory[64'h3000 >> 6][0*64 +: 64] = 64'h5a17_c0de_cafe_1234;
+        icx_memory[64'h3000 >> 6][1*64 +: 64] = 64'h1357_9bdf_2468_ace0;
 
         // A redirect on the exact edge of a successful PTW response must win.
         // Otherwise the old cancelled bit lets the slot re-enter TRANSLATE,
@@ -1328,7 +1328,7 @@ module tb_ccx_bus #(
         fetch_req_priv = `RV64_PRIV_M;
         fetch_req_vm_mode = `RV64_SATP_MODE_BARE;
 
-        wait_count = ccx_reads;
+        wait_count = icx_reads;
         channel_wait = ar_count;
         push_xlate_request(3'd3, 1'b0, 64'h4000);
         expect_xlate_response(3'd3, 64'h3000, 1'b0, 1'b0);
@@ -1336,10 +1336,10 @@ module tb_ccx_bus #(
         push_pipe_request(3'd3, 1'b0, 64'h3000, 64'd0, 8'd0);
         expect_pipe_response(3'd3, 64'h5a17_c0de_cafe_1234,
                              1'b0, 1'b0);
-        if ((ccx_reads - wait_count) != 4)
+        if ((icx_reads - wait_count) != 4)
             $fatal(1,
-                   "three-level walk plus translated load used %0d CCX reads",
-                   ccx_reads - wait_count);
+                   "three-level walk plus translated load used %0d ICX reads",
+                   icx_reads - wait_count);
         if (ar_count != channel_wait)
             $fatal(1, "translated PTW or L1D request escaped onto AXI");
 
@@ -1366,15 +1366,15 @@ module tb_ccx_bus #(
         context_flush = 1'b0;
         while (tlbi_busy)
             tick();
-        wait_count = ccx_reads;
+        wait_count = icx_reads;
         fences_before = l2_tlb_hits;
         push_xlate_request(3'd4, 1'b0, 64'h4008);
         expect_xlate_response(3'd4, 64'h3008, 1'b0, 1'b0);
         if ((l2_tlb_hits != fences_before + 1) ||
-            (ccx_reads != wait_count))
+            (icx_reads != wait_count))
             $fatal(1,
                 "SATP switch lost tagged L2 entry hits=%0d reads=%0d",
-                l2_tlb_hits - fences_before, ccx_reads - wait_count);
+                l2_tlb_hits - fences_before, icx_reads - wait_count);
 
         // Model independent micro-ITLB/DTLB capacity evictions while retaining
         // the shared L2 entry. Present I-side and D-side misses together:
@@ -1404,7 +1404,7 @@ module tb_ccx_bus #(
             $fatal(1, "shared L2 TLB did not fast-path live LSU lookup");
         wait_count = l2_tlb_hits;
         channel_wait = ar_count;
-        locked_reads_before = ccx_reads;
+        locked_reads_before = icx_reads;
         tick();
         fetch_req_valid = 0;
         xlate_req_valid = 0;
@@ -1428,23 +1428,23 @@ module tb_ccx_bus #(
         fetch_resp_ready = 1;
         expect_fetch(64'h4000, 256'h1234, 1'b0, 1'b0, 1'b1);
         if ((l2_tlb_hits - wait_count) != 2 ||
-            (ccx_reads != locked_reads_before))
+            (icx_reads != locked_reads_before))
             $fatal(1,
-                "shared L2 TLB arbitration hit/walk mismatch hits=%0d ccx_reads=%0d",
+                "shared L2 TLB arbitration hit/walk mismatch hits=%0d icx_reads=%0d",
                 l2_tlb_hits - wait_count,
-                ccx_reads - locked_reads_before);
+                icx_reads - locked_reads_before);
         fetch_req_priv = `RV64_PRIV_M;
         fetch_req_vm_mode = `RV64_SATP_MODE_BARE;
 
         // An L2-hit store translation completes locally with its physical
         // address and refills the L1 DTLB.  A second store translation then
         // consumes that L1 hit on the immediately following cycle.  Neither
-        // translation-only admission may read or write L1D, consume CCX, or
+        // translation-only admission may read or write L1D, consume ICX, or
         // enter the serial LSU slot.
         @(negedge clk);
         dut.u_dtlb.valid_q = 0;
-        wait_count = ccx_reads;
-        channel_wait = ccx_writes;
+        wait_count = icx_reads;
+        channel_wait = icx_writes;
         locked_reads_before = dut.u_l1d.store_buffer_count_q;
         fences_before = l2_tlb_hits;
         xlate_resp_ready = 1'b1;
@@ -1479,7 +1479,7 @@ module tb_ccx_bus #(
                 xlate_resp_tag, xlate_resp_paddr,
                 xlate_resp_access_fault, xlate_resp_page_fault);
         tick();
-        if (ccx_reads != wait_count || ccx_writes != channel_wait ||
+        if (icx_reads != wait_count || icx_writes != channel_wait ||
             dut.u_l1d.store_buffer_count_q != locked_reads_before ||
             dut.lsu_state_q != 0 ||
             (l2_tlb_hits - fences_before) != 1)
@@ -1488,16 +1488,16 @@ module tb_ccx_bus #(
                 l2_tlb_hits - fences_before, dut.lsu_state_q);
 
         // The completed walk populated DTLB and L1D state.  Hold an unrelated
-        // instruction walk at CCX, then require translated load and store hits
+        // instruction walk at ICX, then require translated load and store hits
         // to pass it through the native tagged path without consuming the
         // serial LSU slot.  The following load also proves that dirty-store
         // overlay remains visible before the posted store can drain.
-        ccx_memory[64'h2040 >> 6][0*64 +: 64] = 64'd0;
+        icx_memory[64'h2040 >> 6][0*64 +: 64] = 64'd0;
         fetch_req_priv = `RV64_PRIV_S;
         fetch_req_vm_mode = `RV64_SATP_MODE_SV39;
         fetch_req_root_ppn = 0;
         fetch_resp_ready = 0;
-        ccx_allow_cmd = 0;
+        icx_allow_cmd = 0;
         push_fetch(64'h8000);
         ptw_wait = 0;
         while ((!dut.miss_active_q || (dut.miss_owner_q != 0)) &&
@@ -1542,7 +1542,7 @@ module tb_ccx_bus #(
                 l2_tlb_hits - fences_before,
                 dut.miss_active_q, dut.lsu_state_q);
 
-        ccx_allow_cmd = 1;
+        icx_allow_cmd = 1;
         ptw_wait = 0;
         while (!fetch_resp_valid && ptw_wait < 100) begin
             tick();
@@ -1559,7 +1559,7 @@ module tb_ccx_bus #(
         // A read-only leaf may populate DTLB through a load, but a subsequent
         // store hit must use write permissions and return a precise page
         // fault rather than entering the fast store path.
-        ccx_memory[64'h2000 >> 6][5*64 +: 64] =
+        icx_memory[64'h2000 >> 6][5*64 +: 64] =
             64'h0000_0000_0000_0c43;
         ptw_wait = 0;
         while ((dut.u_l1d.store_buffer_count_q != 0) &&
@@ -1575,12 +1575,12 @@ module tb_ccx_bus #(
         expect_pipe_response(3'd7, 64'h5a17_c0de_cafe_1234,
                              1'b0, 1'b0);
         wait_count = translated_fast_store_fires;
-        channel_wait = ccx_writes;
+        channel_wait = icx_writes;
         push_xlate_request(3'd0, 1'b1, 64'h5000);
         expect_xlate_response(3'd0, 64'h3000, 1'b0, 1'b1);
         if ((translated_fast_store_fires != wait_count) ||
-            (ccx_writes != channel_wait) ||
-            (ccx_memory_word(64'h3000) !=
+            (icx_writes != channel_wait) ||
+            (icx_memory_word(64'h3000) !=
              64'h5a17_c0de_cafe_1234))
             $fatal(1, "read-only DTLB store hit escaped precise fault path");
 
@@ -1594,7 +1594,7 @@ module tb_ccx_bus #(
         @(negedge clk);
         dut.u_dtlb.valid_q = 0;
         xlate_resp_ready = 0;
-        wait_count = ccx_reads;
+        wait_count = icx_reads;
         xlate_req_tag = 3'd1;
         xlate_req_write = 1'b0;
         xlate_req_vaddr = 64'h4008;
@@ -1604,9 +1604,9 @@ module tb_ccx_bus #(
             !dut.l2_tlb_lookup_hit ||
             !dut.dtlb_l2_fill_valid)
             $fatal(1, "shootdown race setup did not expose stale L2 hit");
-        ccx_memory[64'h2000 >> 6][4*64 +: 64] =
+        icx_memory[64'h2000 >> 6][4*64 +: 64] =
             64'h0000_0000_0000_04cf;
-        ccx_memory[64'h1000 >> 6][1*64 +: 64] =
+        icx_memory[64'h1000 >> 6][1*64 +: 64] =
             64'hfeed_face_1234_5678;
         tlbi = 1'b1;
         #1;
@@ -1652,37 +1652,37 @@ module tb_ccx_bus #(
         push_pipe_request(3'd1, 1'b0, 64'h1008, 64'd0, 8'd0);
         expect_pipe_response(3'd1, 64'hfeed_face_1234_5678,
                              1'b0, 1'b0);
-        if ((ccx_reads - wait_count) != 4)
+        if ((icx_reads - wait_count) != 4)
             $fatal(1,
                 "post-shootdown request did not perform fresh walk/data read count=%0d",
-                ccx_reads - wait_count);
+                icx_reads - wait_count);
 
         pipe_req_vm_mode = `RV64_SATP_MODE_BARE;
         pipe_req_priv = `RV64_PRIV_M;
 
         // The legacy scalar LSU frontend now terminates at L1D as well.  Its
         // load selects one 64-bit word from the returned 512-bit line.
-        wait_count = ccx_reads;
+        wait_count = icx_reads;
         lsu_addr = 64'h248;
         lsu_write = 0;
         lsu_size = 3;
         lsu_valid = 1;
         while (!lsu_ready) tick();
-        if (lsu_rdata != ccx_memory_word(64'h248) ||
+        if (lsu_rdata != icx_memory_word(64'h248) ||
             lsu_access_fault || lsu_page_fault)
             $fatal(1, "LSU read lane steering mismatch: %h", lsu_rdata);
-        if ((ccx_reads - wait_count) != 1 || awvalid || wvalid)
-            $fatal(1, "scalar LSU load did not use one native CCX line read");
+        if ((icx_reads - wait_count) != 1 || awvalid || wvalid)
+            $fatal(1, "scalar LSU load did not use one native ICX line read");
         tick();
         lsu_valid = 0;
         tick();
 
-        // A scalar store is lane-positioned on the independent 512-bit CCX
+        // A scalar store is lane-positioned on the independent 512-bit ICX
         // write-data channel and never reaches AXI.
-        ccx_memory[64'h250 >> 6][(64'h250 >> 3 & 7)*64 +: 64] = 64'd0;
-        wait_count = ccx_writes;
-        ccx_allow_cmd = 1;
-        ccx_allow_wdata = 0;
+        icx_memory[64'h250 >> 6][(64'h250 >> 3 & 7)*64 +: 64] = 64'd0;
+        wait_count = icx_writes;
+        icx_allow_cmd = 1;
+        icx_allow_wdata = 0;
         lsu_addr = 64'h254;
         lsu_write = 1;
         lsu_size = 2;
@@ -1690,20 +1690,20 @@ module tb_ccx_bus #(
         lsu_wstrb = 8'hf0;
         lsu_valid = 1;
         channel_wait = 0;
-        while (!ccx_cmd_pending && channel_wait < 50) begin
+        while (!icx_cmd_pending && channel_wait < 50) begin
             tick();
             channel_wait = channel_wait + 1;
         end
-        if (!ccx_cmd_pending)
-            $fatal(1, "CCX command did not advance independently");
-        if (!ccx_wdata_valid)
-            $fatal(1, "CCX write data was not held after command accepted");
-        ccx_allow_wdata = 1;
+        if (!icx_cmd_pending)
+            $fatal(1, "ICX command did not advance independently");
+        if (!icx_wdata_valid)
+            $fatal(1, "ICX write data was not held after command accepted");
+        icx_allow_wdata = 1;
         while (!lsu_ready) tick();
-        if (lsu_access_fault || (ccx_writes - wait_count) != 1 ||
-            ccx_memory_word(64'h250) != 64'haabb_ccdd_0000_0000 ||
+        if (lsu_access_fault || (icx_writes - wait_count) != 1 ||
+            icx_memory_word(64'h250) != 64'haabb_ccdd_0000_0000 ||
             awvalid || wvalid)
-            $fatal(1, "scalar CCX write lane steering mismatch");
+            $fatal(1, "scalar ICX write lane steering mismatch");
         tick();
         lsu_valid = 0;
 
@@ -1711,10 +1711,10 @@ module tb_ccx_bus #(
         // boundary.  The old L1D response must be consumed invisibly, and
         // the physical tag must remain busy until that drain so a new LSQ
         // owner cannot receive the stale data.
-        wait_count = ccx_reads;
-        ccx_allow_cmd = 1'b0;
+        wait_count = icx_reads;
+        icx_allow_cmd = 1'b0;
         push_pipe_request(3'd3, 1'b0, 64'h200, 64'd0, 8'd0);
-        while (!ccx_req_valid)
+        while (!icx_req_valid)
             tick();
         pipe_cancel = 1'b1;
         tick();
@@ -1733,7 +1733,7 @@ module tb_ccx_bus #(
                     pipe_req_ready, pipe_resp_valid);
             tick();
         end
-        ccx_allow_cmd = 1'b1;
+        icx_allow_cmd = 1'b1;
         channel_wait = 0;
         while (!pipe_req_ready && channel_wait < 300) begin
             if (pipe_resp_valid)
@@ -1745,14 +1745,14 @@ module tb_ccx_bus #(
             $fatal(1, "cancelled physical tag did not drain");
         tick();
         pipe_req_valid = 1'b0;
-        locked_old_word = ccx_memory_word(64'h280);
+        locked_old_word = icx_memory_word(64'h280);
         expect_pipe_response(3'd3, locked_old_word, 1'b0, 1'b0);
-        if ((ccx_reads - wait_count) != 2)
+        if ((icx_reads - wait_count) != 2)
             $fatal(1,
-                "cancel/reuse sequence used %0d CCX reads instead of 2",
-                ccx_reads - wait_count);
+                "cancel/reuse sequence used %0d ICX reads instead of 2",
+                icx_reads - wait_count);
 
-        $display("PASS: core CCX memory path and cacheless AXI fetch");
+        $display("PASS: core ICX memory path and cacheless AXI fetch");
         $finish;
     end
 endmodule

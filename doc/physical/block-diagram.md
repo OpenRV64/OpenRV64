@@ -10,7 +10,7 @@
 | Boundary | `openrv64_top_3p` |
 | Core topology | Three-wide fetch/decode/issue/retire, EX0/EX1/MEM |
 | ISA parameters | Live default `M=0`, `A=1`; last physical profile enabled RV64M+A |
-| Main memory path | Native ready/valid CCX, 512-bit line data |
+| Main memory path | Native ready/valid ICX, 512-bit line data |
 | Diagram | [`openrv64-core-block-diagram.svg`](openrv64-core-block-diagram.svg) |
 
 The SVG is intentionally large and zoomable. It documents the implemented RTL,
@@ -87,7 +87,7 @@ one 64-bit allocation-only entry, not another pair of full-packet copies.
 ## External memory protocols
 
 The enabled-cache configuration sends L1I, L1D, and PTW traffic through three
-independent ready/valid CCX channels:
+independent ready/valid ICX channels:
 
 | Channel | Payload |
 |---|---:|
@@ -109,7 +109,7 @@ The legacy 64-bit blocking bus is tied off by `openrv64_top_3p`.
 - [`rtl/core/exec/exec_top_3p.v`](../../rtl/core/exec/exec_top_3p.v)
 - [`rtl/core/retire/retire_queue_3p.v`](../../rtl/core/retire/retire_queue_3p.v)
 - [`rtl/core/retire/retire_records_3p.v`](../../rtl/core/retire/retire_records_3p.v)
-- [`rtl/core/bus/ccx_bus.v`](../../rtl/core/bus/ccx_bus.v)
+- [`rtl/core/bus/icx_bus.v`](../../rtl/core/bus/icx_bus.v)
 - [`rtl/core/cache/l1/l1i/l1i.v`](../../rtl/core/cache/l1/l1i/l1i.v)
 - [`rtl/core/cache/l1/l1d/l1d.v`](../../rtl/core/cache/l1/l1d/l1d.v)
 - [`rtl/complex/protocol/defs.v`](../../rtl/complex/protocol/defs.v)

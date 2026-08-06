@@ -162,7 +162,7 @@ narrow selected interface to the extension sidecar.
 
 The F/D whole-core delay improves because the changed source state also
 reduces logic in the retained 4PF core partition.  The no-F/D worst partition
-remains the CCX bus, so a large window-local improvement cannot change its
+remains the ICX bus, so a large window-local improvement cannot change its
 reported maximum.  Neither observation proves timing closure.
 
 ## Registered issue-selection probe
@@ -203,7 +203,7 @@ from this experiment.
 ### Cycle-model cost
 
 The source-matched full DAXPY comparison used the immediate testbench memory
-configuration (`l1i=0`, `l1d=0`, tagged-RAM CCX home).  Both configurations
+configuration (`l1i=0`, `l1d=0`, tagged-RAM ICX home).  Both configurations
 passed numerical checks, issued and received all 256 FMA operations in every
 phase, and completed all FP loads and stores.
 

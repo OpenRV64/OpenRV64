@@ -236,7 +236,7 @@ generic cross-extension contract is documented in
 
 The concrete hierarchy is:
 
-- `openrv64_top_4pf`: fixed AXI/native-CCX outer boundary;
+- `openrv64_top_4pf`: fixed AXI/native-ICX outer boundary;
 - `openrv64_rv64_top_4pf`: fetch, three-lane decode, CSR, and bus integration;
 - `openrv64_backend_4pf`: integer execution, window, extension completion, and
   ordered retirement;

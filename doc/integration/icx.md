@@ -5,11 +5,11 @@ to integrate with the shared core complex.  It covers the northbound coherent
 boundary.  AXI4 and WISHBONE remain external transports below the complex and
 are not hart-facing protocols.
 
-The native northbound CCX data interface is fixed at 512 bits: one transfer
+The native northbound ICX data interface is fixed at 512 bits: one transfer
 beat is exactly one 64-byte cache line.  A requester may issue a burst covering
 multiple consecutive cache lines.  Such a burst remains a sequence of 512-bit
-line beats; CCX never packs multiple cache lines into one beat.  Consequently,
-the native CCX line size is fixed at 64 bytes rather than parameterized
+line beats; ICX never packs multiple cache lines into one beat.  Consequently,
+the native ICX line size is fixed at 64 bytes rather than parameterized
 independently from the interface width.
 
 The generated core complex now accepts the same native command, write-data,
@@ -43,7 +43,7 @@ Other current restrictions are:
 - `rtl/core/exec/lsu/rv64-a.v` still keeps LR/SC reservations inside the hart.
   AMOs retain the local read/compute/write implementation but now mark both
   memory phases for private-L1 bypass and local serialization.  The marker is
-  not forwarded as `ccx_req_lock`, and the shared L2 performs no exclusion.
+  not forwarded as `icx_req_lock`, and the shared L2 performs no exclusion.
   This is a one-hart-only bring-up mechanism, not an atomic protocol.
 - The decoder accepts RV64A `aq` and `rl` bits, but the core currently discards
   them because the legacy memory path is blocking and strictly ordered.
@@ -56,14 +56,14 @@ Other current restrictions are:
   and that store FIFO before modifying tags.
 - L1I fill/prefetch slots and L1D fill/store buffers default to eight
   cachelines.  Their depths are parameterized.  The fill slots do not yet make
-  the private caches nonblocking: each demand backend still has one active CCX
+  the private caches nonblocking: each demand backend still has one active ICX
   miss and lacks transaction-ID-indexed MSHRs.
 - The shared native L2 accepts `READ`, `WRITE`, and a drain-style `FENCE`.
   Dormant compatibility logic can still consume a marked read/write pair, but
   the native core path never emits that marker.  LR, SC, and explicit AMO
   operations still fail.  It does not track private-cache sharers or emit
   probes.
-- `openrv64_ccx_l2_native` consumes and produces native 512-bit cache-line
+- `openrv64_icx_l2_native` consumes and produces native 512-bit cache-line
   beats.  Its command queue feeds a lookup/hit pipeline, and parameterized
   per-line MSHRs permit multiple outstanding misses, same-line request merging,
   and resident hits while unrelated fills are outstanding.  The default
@@ -90,7 +90,7 @@ Other current restrictions are:
   extra SRAM read ports.  Technology-specific SRAM macro selection and timing
   remain physical-implementation work, but the RTL no longer assumes
   combinational or arbitrarily multiported L2 storage.
-- `HART_ID` now reaches both native CCX identity and the `mhartid` CSR on the
+- `HART_ID` now reaches both native ICX identity and the `mhartid` CSR on the
   three-pipe top.  The generated complex has 1-16 native hart ports and checks
   their strapped IDs, but it does not instantiate or coherently probe the
   private caches.
@@ -119,12 +119,12 @@ The response must return `hart_id`, `source_id` or an equivalent uniquely
 routed identity, `txn_id`, one 512-bit cache-line data beat, `beat_index`,
 `last`, error, and SC success.
 
-The native CCX response carries `hart_id`, `source_id`, and `txn_id`.
+The native ICX response carries `hart_id`, `source_id`, and `txn_id`.
 The standalone legacy wrappers still lack `source_id` and therefore remain
 valid only for their single merged requester.
 
-The PTW bounds an active CCX request or response with
-`CCX_TIMEOUT_CYCLES` (65,536 cycles by default, zero to disable). A timeout
+The PTW bounds an active ICX request or response with
+`ICX_TIMEOUT_CYCLES` (65,536 cycles by default, zero to disable). A timeout
 completes the originating translation as a precise instruction, load, or
 store access fault. If the command was accepted before the timeout, the PTW
 retains a transaction tombstone and will not reuse its fixed transaction ID
@@ -133,10 +133,10 @@ blocking PTE read into an imprecise or asynchronous abort.
 
 ## Cache-line transport and bursts
 
-The interface above CCX is cache-line based.  Scalar execution loads and stores
+The interface above ICX is cache-line based.  Scalar execution loads and stores
 terminate at the private-cache or hart-endpoint boundary; they are not expanded
-into a 64-bit CCX datapath.  A cacheable miss, refill, eviction, intervention,
-or prefetch moves one complete 64-byte line on each accepted CCX beat.
+into a 64-bit ICX datapath.  A cacheable miss, refill, eviction, intervention,
+or prefetch moves one complete 64-byte line on each accepted ICX beat.
 
 The native burst contract is:
 
@@ -157,11 +157,11 @@ observing `last` alone is insufficient.  It is not an atomic multi-line
 operation and does not reserve or lock all of its lines.  The L2 expands it
 into individual home operations so each line is independently looked up,
 merged, probed, ordered, and faulted.  Arbitration may occur between its line
-operations so a long burst cannot monopolize CCX.
+operations so a long burst cannot monopolize ICX.
 
 All lines declared by one burst must be physically contiguous and use the same
 operation, ordering mode, and PMA attributes.  The requester splits a burst
-where translation is not physically contiguous or attributes change.  CCX is
+where translation is not physically contiguous or attributes change.  ICX is
 not constrained by AXI's 4 KiB rule; the southbound adapter splits an external
 AXI burst as necessary.
 
@@ -219,7 +219,7 @@ policy is not yet wired.
 
 ## Current posted-store contract
 
-`openrv64_l1d_ccx` implements the first cacheable store buffer at the private
+`openrv64_l1d_icx` implements the first cacheable store buffer at the private
 L1 boundary:
 
 - `STORE_BUFFER_LINES` defaults to eight entries and is configurable from one
@@ -228,12 +228,12 @@ L1 boundary:
   enables;
 - a scalar CPU store occupies its addressed lane without forcing L1 to read or
   merge the other bytes;
-- FIFO order is retained and each drain is one CCX line write with `size=6`;
+- FIFO order is retained and each drain is one ICX line write with `size=6`;
 - marked atomic, uncached, and device operations are not posted in this
-  revision; the single-hart atomic marker is not forwarded as a CCX/L2 lock;
+  revision; the single-hart atomic marker is not forwarded as a ICX/L2 lock;
 - an external invalidation is acknowledged only after the FIFO becomes empty;
   and
-- the separate ordered store-response channel carries the eventual CCX error.
+- the separate ordered store-response channel carries the eventual ICX error.
 
 The 3P backend has a four-entry pre-retire store queue. Core-bus request capture
 does not complete a store: the tagged response must first prove translation,
@@ -274,7 +274,7 @@ then performs the operation and returns its result.  A later ownership-based
 L1 protocol may execute atomics while holding a line exclusively, but that is
 not required for the first coherent version.
 
-The atomic still uses the 512-bit CCX data path.  Its physical address and size
+The atomic still uses the 512-bit ICX data path.  Its physical address and size
 select the 32- or 64-bit operand lane, the returned old value occupies that
 lane, and the remaining response-line bits have no architectural meaning.
 
@@ -298,7 +298,7 @@ The implemented temporary path is narrower than the required final contract:
    already-issued prefetches drain as discarded responses. An architectural
    read-miss buffer from the old epoch drains its stale response and reissues
    with a new transaction ID rather than completing from it.
-6. The CCX request is still an ordinary unmarked read or write. No L2/home
+6. The ICX request is still an ordinary unmarked read or write. No L2/home
    ownership is acquired, so this sequence is atomic only under the explicit
    assumption that there is one hart and no coherent DMA writer.
 
@@ -392,7 +392,7 @@ The first implementation may conservatively order more strongly than RVWMO:
   completed at the required point;
 - an acquire operation prevents younger memory operations from issuing until
   the acquire completes;
-- `FENCE` waits for all older reads, writes, and atomics, sends a CCX fence
+- `FENCE` waits for all older reads, writes, and atomics, sends a ICX fence
   token, and prevents younger memory operations from passing it; and
 - `FENCE.I` performs the data-side drain before local instruction invalidation.
 
@@ -401,7 +401,7 @@ store FIFO and its core-bus tag FIFO are empty.  Merely enqueueing all older
 stores is not fence completion.  The current execution path does not yet wire
 architectural fences to this drain condition.
 
-The existing two-bit CCX `order` field is sufficient for `aq` and `rl`.
+The existing two-bit ICX `order` field is sufficient for `aq` and `rl`.
 Supporting selective `FENCE` predecessor and successor sets later will require
 either additional fields or a deliberately documented full-fence
 implementation.
@@ -414,12 +414,12 @@ be globally serialized.
 
 The PTW is a native coherent client with `source=PTW` and `kind=PTE`; there is
 no scalar-memory or AXI backend on the walker. It PMP-checks the original
-8-byte PTE access, then directly emits one aligned 512-bit CCX line read with
+8-byte PTE access, then directly emits one aligned 512-bit ICX line read with
 the `CACHEABLE|IDEMPOTENT` attributes. It retains `pte_addr[5:3]` and selects
 that 64-bit lane from the returned line. A PTW request therefore allocates in
 L2 but never allocates a private L1 line or becomes a private-cache sharer.
 
-Both the generic 1P core and native 3P core expose this PTW CCX client. The
+Both the generic 1P core and native 3P core expose this PTW ICX client. The
 residual AXI read path in the 3P core is only for structural cacheless
 instruction fetch.
 
@@ -440,7 +440,7 @@ instruction prefetch last. `L2_TLB_ENTRIES` and `L2_TLB_WAYS` are propagated
 through the 3P core, public tops, and platform.
 
 `SFENCE.VMA` and a successful writable `satp` CSR access make the PTW issue
-`FENCE + kind=PTE + order=ACQ_REL` on CCX. Before either instruction executes,
+`FENCE + kind=PTE + order=ACQ_REL` on ICX. Before either instruction executes,
 the 3P backend waits for every older store's translation/PMP/L1D-admission
 response.
 The walker then terminates any active walk, drains an already accepted PTE
@@ -488,7 +488,7 @@ implementation should replace each way with an explicit synchronous
 register-file or SRAM wrapper and pipeline the lookup as required by timing.
 
 Only a valid non-leaf PTE actually consumed by a walk is installed.  Hits
-bypass CCX for that tree level.  Replacement first selects an invalid way,
+bypass ICX for that tree level.  Replacement first selects an invalid way,
 then prefers to evict a lower-level non-leaf PTE, and finally selects the
 oldest hit/fill within that level.  Thus root-level entries receive explicit
 retention weight.  Misses remain ordinary `source=PTW`, `kind=PTE` L2
@@ -568,7 +568,7 @@ justifies them.
 Instantiating actual cores in the complex, rather than accepting external core
 memory ports, also requires:
 
-- one `HART_ID` parameter per core, passed both to CCX and the `mhartid` CSR;
+- one `HART_ID` parameter per core, passed both to ICX and the `mhartid` CSR;
 - per-hart machine and supervisor software, timer, and external interrupts;
 - boot-hart and secondary-hart reset/release policy;
 - per-hart debug and halt selection; and
@@ -582,7 +582,7 @@ southbound interface cannot observe writes that bypass the complex.
 ## Verification requirements
 
 Coherence must be verified with integrated harts and enabled L1s, not only with
-direct CCX or L2 testbench transactions.  At minimum, tests must cover:
+direct ICX or L2 testbench transactions.  At minimum, tests must cover:
 
 - one hart reading a line after another hart writes it;
 - one-line requests and multi-line bursts under request and response

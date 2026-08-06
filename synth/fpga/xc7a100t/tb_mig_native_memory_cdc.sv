@@ -19,30 +19,30 @@ module tb_mig_native_memory_cdc;
     logic [7:0] mem_wstrb = 8'd0;
     logic [63:0] mem_rdata;
 
-    logic ccx_req_valid = 1'b0;
-    logic ccx_req_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart = '0;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn = '0;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source = '0;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op = '0;
-    logic ccx_req_lock = 1'b0;
-    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order = '0;
-    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind = '0;
-    logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr = '0;
-    logic [2:0] ccx_req_size = 3'd0;
-    logic [63:0] ccx_req_addr = 64'd0;
-    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_len = '0;
+    logic icx_req_valid = 1'b0;
+    logic icx_req_ready;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart = '0;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn = '0;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source = '0;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op = '0;
+    logic icx_req_lock = 1'b0;
+    logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order = '0;
+    logic [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind = '0;
+    logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr = '0;
+    logic [2:0] icx_req_size = 3'd0;
+    logic [63:0] icx_req_addr = 64'd0;
+    logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_len = '0;
 
-    logic ccx_resp_valid;
-    logic ccx_resp_ready = 1'b0;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat;
-    logic ccx_resp_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_data;
-    logic ccx_resp_error;
-    logic ccx_resp_sc_success;
+    logic icx_resp_valid;
+    logic icx_resp_ready = 1'b0;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_resp_beat;
+    logic icx_resp_last;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_data;
+    logic icx_resp_error;
+    logic icx_resp_sc_success;
 
     logic [27:0] app_addr;
     logic [2:0] app_cmd;
@@ -70,38 +70,38 @@ module tb_mig_native_memory_cdc;
         .mem_wdata_i(mem_wdata),
         .mem_wstrb_i(mem_wstrb),
         .mem_rdata_o(mem_rdata),
-        .ccx_req_valid_i(ccx_req_valid),
-        .ccx_req_ready_o(ccx_req_ready),
-        .ccx_req_hart_id_i(ccx_req_hart),
-        .ccx_req_txn_id_i(ccx_req_txn),
-        .ccx_req_source_id_i(ccx_req_source),
-        .ccx_req_op_i(ccx_req_op),
-        .ccx_req_lock_i(ccx_req_lock),
-        .ccx_req_order_i(ccx_req_order),
-        .ccx_req_kind_i(ccx_req_kind),
-        .ccx_req_attr_i(ccx_req_attr),
-        .ccx_req_size_i(ccx_req_size),
-        .ccx_req_addr_i(ccx_req_addr),
-        .ccx_req_burst_len_i(ccx_req_len),
-        .ccx_wdata_valid_i(1'b0),
-        .ccx_wdata_ready_o(),
-        .ccx_wdata_hart_id_i('0),
-        .ccx_wdata_txn_id_i('0),
-        .ccx_wdata_source_id_i('0),
-        .ccx_wdata_beat_index_i('0),
-        .ccx_wdata_last_i(1'b0),
-        .ccx_wdata_i('0),
-        .ccx_wstrb_i('0),
-        .ccx_resp_valid_o(ccx_resp_valid),
-        .ccx_resp_ready_i(ccx_resp_ready),
-        .ccx_resp_hart_id_o(ccx_resp_hart),
-        .ccx_resp_txn_id_o(ccx_resp_txn),
-        .ccx_resp_source_id_o(ccx_resp_source),
-        .ccx_resp_beat_index_o(ccx_resp_beat),
-        .ccx_resp_last_o(ccx_resp_last),
-        .ccx_resp_rdata_o(ccx_resp_data),
-        .ccx_resp_error_o(ccx_resp_error),
-        .ccx_resp_sc_success_o(ccx_resp_sc_success),
+        .icx_req_valid_i(icx_req_valid),
+        .icx_req_ready_o(icx_req_ready),
+        .icx_req_hart_id_i(icx_req_hart),
+        .icx_req_txn_id_i(icx_req_txn),
+        .icx_req_source_id_i(icx_req_source),
+        .icx_req_op_i(icx_req_op),
+        .icx_req_lock_i(icx_req_lock),
+        .icx_req_order_i(icx_req_order),
+        .icx_req_kind_i(icx_req_kind),
+        .icx_req_attr_i(icx_req_attr),
+        .icx_req_size_i(icx_req_size),
+        .icx_req_addr_i(icx_req_addr),
+        .icx_req_burst_len_i(icx_req_len),
+        .icx_wdata_valid_i(1'b0),
+        .icx_wdata_ready_o(),
+        .icx_wdata_hart_id_i('0),
+        .icx_wdata_txn_id_i('0),
+        .icx_wdata_source_id_i('0),
+        .icx_wdata_beat_index_i('0),
+        .icx_wdata_last_i(1'b0),
+        .icx_wdata_i('0),
+        .icx_wstrb_i('0),
+        .icx_resp_valid_o(icx_resp_valid),
+        .icx_resp_ready_i(icx_resp_ready),
+        .icx_resp_hart_id_o(icx_resp_hart),
+        .icx_resp_txn_id_o(icx_resp_txn),
+        .icx_resp_source_id_o(icx_resp_source),
+        .icx_resp_beat_index_o(icx_resp_beat),
+        .icx_resp_last_o(icx_resp_last),
+        .icx_resp_rdata_o(icx_resp_data),
+        .icx_resp_error_o(icx_resp_error),
+        .icx_resp_sc_success_o(icx_resp_sc_success),
         .app_addr_o(app_addr),
         .app_cmd_o(app_cmd),
         .app_en_o(app_en),
@@ -187,17 +187,17 @@ module tb_mig_native_memory_cdc;
         mem_write = 1'b0;
 
         // PTW line read: one core request becomes two MIG UI beats.
-        wait (ccx_req_ready);
+        wait (icx_req_ready);
         @(negedge core_clk);
-        ccx_req_hart = 4'h3;
-        ccx_req_txn = 4'h7;
-        ccx_req_source = `OPENRV64_CCX_SOURCE_PTW;
-        ccx_req_op = `OPENRV64_CCX_OP_READ;
-        ccx_req_size = 3'd6;
-        ccx_req_addr = 64'h0000_0000_8000_0040;
-        ccx_req_valid = 1'b1;
+        icx_req_hart = 4'h3;
+        icx_req_txn = 4'h7;
+        icx_req_source = `OPENRV64_ICX_SOURCE_PTW;
+        icx_req_op = `OPENRV64_ICX_OP_READ;
+        icx_req_size = 3'd6;
+        icx_req_addr = 64'h0000_0000_8000_0040;
+        icx_req_valid = 1'b1;
         @(posedge core_clk);
-        #1 ccx_req_valid = 1'b0;
+        #1 icx_req_valid = 1'b0;
 
         wait (app_en);
         if (app_addr != 28'd16)
@@ -210,19 +210,19 @@ module tb_mig_native_memory_cdc;
         @(posedge ui_clk);
         return_read({4{64'hbbbb_bbbb_bbbb_bbbb}});
 
-        wait (ccx_resp_valid);
-        if (ccx_resp_error || !ccx_resp_last ||
-            (ccx_resp_hart != 4'h3) || (ccx_resp_txn != 4'h7) ||
-            (ccx_resp_source != `OPENRV64_CCX_SOURCE_PTW) ||
-            (ccx_resp_data[255:0] !=
+        wait (icx_resp_valid);
+        if (icx_resp_error || !icx_resp_last ||
+            (icx_resp_hart != 4'h3) || (icx_resp_txn != 4'h7) ||
+            (icx_resp_source != `OPENRV64_ICX_SOURCE_PTW) ||
+            (icx_resp_data[255:0] !=
                 {4{64'haaaa_aaaa_aaaa_aaaa}}) ||
-            (ccx_resp_data[511:256] !=
+            (icx_resp_data[511:256] !=
                 {4{64'hbbbb_bbbb_bbbb_bbbb}}))
-            $fatal(1, "CDC CCX response mismatch");
+            $fatal(1, "CDC ICX response mismatch");
         repeat (2) @(posedge core_clk);
-        if (!ccx_resp_valid)
-            $fatal(1, "CDC CCX response did not hold under backpressure");
-        ccx_resp_ready = 1'b1;
+        if (!icx_resp_valid)
+            $fatal(1, "CDC ICX response did not hold under backpressure");
+        icx_resp_ready = 1'b1;
         @(posedge core_clk);
 
         $display("PASS: MYIR MIG native CDC adapter");

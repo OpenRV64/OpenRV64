@@ -21,13 +21,13 @@ module tb_perf_trace;
     wire [63:0] core_value;
     wire [37:0] core_events;
 
-    logic ccx_req_valid;
-    logic ccx_req_ready;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    logic ccx_resp_valid;
-    logic ccx_resp_ready;
-    logic ccx_resp_error;
+    logic icx_req_valid;
+    logic icx_req_ready;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    logic icx_resp_valid;
+    logic icx_resp_ready;
+    logic icx_resp_error;
     logic l2_hit;
     logic l2_miss;
     logic l2_bypass;
@@ -75,13 +75,13 @@ module tb_perf_trace;
         .NUM_COUNTERS(NUM_COUNTERS)
     ) u_soc_trace (
         .clk_i(clk), .rst_ni(rst_n), .enable_i(enable), .clear_i(clear),
-        .ccx_req_valid_i(ccx_req_valid), .ccx_req_ready_i(ccx_req_ready),
-        .ccx_req_source_i(ccx_req_source), .ccx_req_op_i(ccx_req_op),
-        .ccx_req_arb_wait_i(1'b0), .ccx_req_downstream_wait_i(1'b0),
-        .ccx_req_lock_wait_i(1'b0), .ccx_req_credit_wait_i(1'b0),
-        .ccx_outstanding_i(1'b0), .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_i(ccx_resp_ready),
-        .ccx_resp_error_i(ccx_resp_error), .l2_access_i(1'b1),
+        .icx_req_valid_i(icx_req_valid), .icx_req_ready_i(icx_req_ready),
+        .icx_req_source_i(icx_req_source), .icx_req_op_i(icx_req_op),
+        .icx_req_arb_wait_i(1'b0), .icx_req_downstream_wait_i(1'b0),
+        .icx_req_lock_wait_i(1'b0), .icx_req_credit_wait_i(1'b0),
+        .icx_outstanding_i(1'b0), .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_i(icx_resp_ready),
+        .icx_resp_error_i(icx_resp_error), .l2_access_i(1'b1),
         .l2_hit_i(l2_hit), .l2_miss_i(l2_miss),
         .l2_bypass_i(l2_bypass), .l2_merge_i(1'b0),
         .l2_block_other_line_i(l2_block_other_line),
@@ -135,13 +135,13 @@ module tb_perf_trace;
             redirect = 0;
             fetch_cancel = 0;
             issue_slots_lost = 0;
-            ccx_req_valid = 0;
-            ccx_req_ready = 0;
-            ccx_req_source = `OPENRV64_CCX_SOURCE_ICACHE;
-            ccx_req_op = `OPENRV64_CCX_OP_READ;
-            ccx_resp_valid = 0;
-            ccx_resp_ready = 0;
-            ccx_resp_error = 0;
+            icx_req_valid = 0;
+            icx_req_ready = 0;
+            icx_req_source = `OPENRV64_ICX_SOURCE_ICACHE;
+            icx_req_op = `OPENRV64_ICX_OP_READ;
+            icx_resp_valid = 0;
+            icx_resp_ready = 0;
+            icx_resp_error = 0;
             l2_hit = 0;
             l2_miss = 0;
             l2_bypass = 0;
@@ -179,7 +179,7 @@ module tb_perf_trace;
         core_masks[6*38 + 20] = 1'b1;
         core_masks[7*38 + 35 +: 3] = 3'b111;
 
-        // SoC: cycles, CCX accepts, source classes, operation classes,
+        // SoC: cycles, ICX accepts, source classes, operation classes,
         // L2 outcomes, L2 blocking, bus transfers, and transport errors.
         soc_masks[0*40 + 0] = 1'b1;
         soc_masks[1*40 + 1] = 1'b1;
@@ -201,10 +201,10 @@ module tb_perf_trace;
         frontend_empty = 1;
         redirect = 1;
         issue_slots_lost = 1;
-        ccx_req_valid = 1;
-        ccx_req_ready = 1;
-        ccx_req_source = `OPENRV64_CCX_SOURCE_ICACHE;
-        ccx_req_op = `OPENRV64_CCX_OP_READ;
+        icx_req_valid = 1;
+        icx_req_ready = 1;
+        icx_req_source = `OPENRV64_ICX_SOURCE_ICACHE;
+        icx_req_op = `OPENRV64_ICX_OP_READ;
         l2_hit = 1;
         bus_req_valid = 1;
         bus_req_ready = 1;
@@ -219,13 +219,13 @@ module tb_perf_trace;
         frontend_empty = 1;
         fetch_cancel = 1;
         issue_slots_lost = 3;
-        ccx_req_valid = 1;
-        ccx_req_ready = 1;
-        ccx_req_source = `OPENRV64_CCX_SOURCE_DCACHE;
-        ccx_req_op = `OPENRV64_CCX_OP_WRITE;
-        ccx_resp_valid = 1;
-        ccx_resp_ready = 1;
-        ccx_resp_error = 1;
+        icx_req_valid = 1;
+        icx_req_ready = 1;
+        icx_req_source = `OPENRV64_ICX_SOURCE_DCACHE;
+        icx_req_op = `OPENRV64_ICX_OP_WRITE;
+        icx_resp_valid = 1;
+        icx_resp_ready = 1;
+        icx_resp_error = 1;
         l2_miss = 1;
         l2_block_other_line = 1;
         bus_req_valid = 1;
@@ -242,10 +242,10 @@ module tb_perf_trace;
         drive_idle();
         retire_count = 1;
         frontend_valid = 1;
-        ccx_req_valid = 1;
-        ccx_req_ready = 1;
-        ccx_req_source = `OPENRV64_CCX_SOURCE_PTW;
-        ccx_req_op = `OPENRV64_CCX_OP_AMOADD;
+        icx_req_valid = 1;
+        icx_req_ready = 1;
+        icx_req_source = `OPENRV64_ICX_SOURCE_PTW;
+        icx_req_op = `OPENRV64_ICX_OP_AMOADD;
         l2_bypass = 1;
         l2_merge_full = 1;
         l2_lock_block = 1;
@@ -283,8 +283,8 @@ module tb_perf_trace;
         @(negedge clk);
         enable = 0;
         issue_count = 3;
-        ccx_req_valid = 1;
-        ccx_req_ready = 1;
+        icx_req_valid = 1;
+        icx_req_ready = 1;
         @(posedge clk);
         #1;
         check_core(0, 0);

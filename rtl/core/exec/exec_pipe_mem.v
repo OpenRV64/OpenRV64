@@ -311,7 +311,7 @@ module openrv64_exec_pipe_mem #(
     // The core-to-bus request channel admits only one untranslated request at
     // a time.  Once a store has reached the L1, its byte-masked line record
     // preserves program order, so a younger store need not wait for the older
-    // store's eventual CCX drain response.  Loads which overlap the one store
+    // store's eventual ICX drain response.  Loads which overlap the one store
     // still awaiting L1 admission either forward below or remain blocked.
     wire pending_store_order_block = pending_store_load_overlap;
     wire simple_request_valid = request_slot_valid && !request_immediate &&

@@ -8,7 +8,7 @@
 // The future coherent L2 is responsible for same-line serialization.  It may
 // not add a new sharer to an entry while an invalidation for that entry is
 // active.
-module openrv64_ccx_coherent_control #(
+module openrv64_icx_coherent_control #(
     parameter integer NUM_HARTS = 2,
     parameter integer DIRECTORY_ENTRIES = 4096,
     parameter integer DIRECTORY_INDEX_WIDTH =
@@ -37,9 +37,9 @@ module openrv64_ccx_coherent_control #(
     output wire                         inv_ready_o,
     input  wire [DIRECTORY_INDEX_WIDTH-1:0] inv_dir_index_i,
     input  wire [NUM_HARTS-1:0]         inv_target_harts_i,
-    input  wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                inv_probe_id_i,
-    input  wire [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
                                                inv_cache_mask_i,
     input  wire [63:0]                  inv_line_addr_i,
 
@@ -47,22 +47,22 @@ module openrv64_ccx_coherent_control #(
     input  wire                         inv_done_ready_i,
     output wire [DIRECTORY_INDEX_WIDTH-1:0]
                                                inv_done_dir_index_o,
-    output wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                inv_done_probe_id_o,
 
     output wire [NUM_HARTS-1:0]         probe_valid_o,
     input  wire [NUM_HARTS-1:0]         probe_ready_i,
-    output wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    output wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                probe_id_o,
-    output wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0]
+    output wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0]
                                                probe_command_o,
-    output wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    output wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
                                                probe_cache_mask_o,
     output wire [NUM_HARTS*64-1:0]      probe_line_addr_o,
 
     input  wire [NUM_HARTS-1:0]         probe_ack_valid_i,
     output wire [NUM_HARTS-1:0]         probe_ack_ready_o,
-    input  wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    input  wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
                                                probe_ack_id_i,
 
     input  wire                         protocol_error_clear_i,
@@ -71,14 +71,14 @@ module openrv64_ccx_coherent_control #(
 
     reg [DIRECTORY_INDEX_WIDTH-1:0] inv_dir_index_q;
     reg [NUM_HARTS-1:0] inv_target_harts_q;
-    reg [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0] inv_cache_mask_q;
+    reg [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0] inv_cache_mask_q;
     reg completion_valid_q;
     reg [DIRECTORY_INDEX_WIDTH-1:0] completion_dir_index_q;
-    reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] completion_probe_id_q;
+    reg [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] completion_probe_id_q;
 
     wire tracker_start_ready;
     wire tracker_done_valid;
-    wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
         tracker_done_probe_id;
     wire metadata_commit =
         tracker_done_valid && !completion_valid_q;
@@ -98,13 +98,13 @@ module openrv64_ccx_coherent_control #(
                           dir_update_add_d_sharers_i;
     wire [NUM_HARTS-1:0] directory_write_clear_i =
         metadata_commit &&
-        inv_cache_mask_q[`OPENRV64_CCX_PROBE_CACHE_WIDTH-2] ?
+        inv_cache_mask_q[`OPENRV64_ICX_PROBE_CACHE_WIDTH-2] ?
             inv_target_harts_q :
             (metadata_commit ? {NUM_HARTS{1'b0}} :
                                dir_update_clear_i_sharers_i);
     wire [NUM_HARTS-1:0] directory_write_clear_d =
         metadata_commit &&
-        inv_cache_mask_q[`OPENRV64_CCX_PROBE_CACHE_WIDTH-1] ?
+        inv_cache_mask_q[`OPENRV64_ICX_PROBE_CACHE_WIDTH-1] ?
             inv_target_harts_q :
             (metadata_commit ? {NUM_HARTS{1'b0}} :
                                dir_update_clear_d_sharers_i);
@@ -115,7 +115,7 @@ module openrv64_ccx_coherent_control #(
     assign inv_done_dir_index_o = completion_dir_index_q;
     assign inv_done_probe_id_o = completion_probe_id_q;
 
-    openrv64_ccx_coherent_directory #(
+    openrv64_icx_coherent_directory #(
         .NUM_HARTS(NUM_HARTS),
         .ENTRIES(DIRECTORY_ENTRIES),
         .INDEX_WIDTH(DIRECTORY_INDEX_WIDTH)
@@ -134,7 +134,7 @@ module openrv64_ccx_coherent_control #(
         .write_clear_d_sharers_i(directory_write_clear_d)
     );
 
-    openrv64_ccx_probe_tracker #(
+    openrv64_icx_probe_tracker #(
         .NUM_HARTS(NUM_HARTS)
     ) u_probe_tracker (
         .clk_i(clk_i),
@@ -143,7 +143,7 @@ module openrv64_ccx_coherent_control #(
         .start_ready_o(tracker_start_ready),
         .start_target_harts_i(inv_target_harts_i),
         .start_probe_id_i(inv_probe_id_i),
-        .start_command_i(`OPENRV64_CCX_PROBE_INV),
+        .start_command_i(`OPENRV64_ICX_PROBE_INV),
         .start_cache_mask_i(inv_cache_mask_i),
         .start_line_addr_i(inv_line_addr_i),
         .probe_valid_o(probe_valid_o),
@@ -168,12 +168,12 @@ module openrv64_ccx_coherent_control #(
             inv_dir_index_q <= {DIRECTORY_INDEX_WIDTH{1'b0}};
             inv_target_harts_q <= {NUM_HARTS{1'b0}};
             inv_cache_mask_q <=
-                {`OPENRV64_CCX_PROBE_CACHE_WIDTH{1'b0}};
+                {`OPENRV64_ICX_PROBE_CACHE_WIDTH{1'b0}};
             completion_valid_q <= 1'b0;
             completion_dir_index_q <=
                 {DIRECTORY_INDEX_WIDTH{1'b0}};
             completion_probe_id_q <=
-                {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
         end else begin
             if (inv_valid_i && inv_ready_o) begin
                 inv_dir_index_q <= inv_dir_index_i;

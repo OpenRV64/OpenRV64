@@ -99,9 +99,9 @@ void reopen_restored_traces(int argc, char** argv, Vtb_opensbi* top) {
     reopen_trace(plusarg_value(argc, argv, "+lsu_trace="), "lsu",
                  root->tb_opensbi__DOT__lsu_trace_path,
                  root->tb_opensbi__DOT__lsu_trace_fd);
-    reopen_trace(plusarg_value(argc, argv, "+ccx_trace="), "ccx",
-                 root->tb_opensbi__DOT__ccx_trace_path,
-                 root->tb_opensbi__DOT__ccx_trace_fd);
+    reopen_trace(plusarg_value(argc, argv, "+icx_trace="), "icx",
+                 root->tb_opensbi__DOT__icx_trace_path,
+                 root->tb_opensbi__DOT__icx_trace_fd);
 }
 
 template <std::size_t Words>
@@ -231,7 +231,7 @@ struct L2TlbProbe {
 #define L2P_CORE(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
 #define L2P_BUS(name) \
-    L2P_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+    L2P_CORE(u_bus__DOT__g_icx__DOT__u_bus__DOT__##name)
 #define L2P_PTW(name) L2P_BUS(u_ptw__DOT__##name)
 #define L2P_L2(name) L2P_BUS(u_l2_tlb__DOT__##name)
 
@@ -525,7 +525,7 @@ struct L2TlbEntryInvalidator {
 #define L2I_CORE(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
 #define L2I_BUS(name) \
-    L2I_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+    L2I_CORE(u_bus__DOT__g_icx__DOT__u_bus__DOT__##name)
 #define L2I_L2(name) L2I_BUS(u_l2_tlb__DOT__##name)
 #define L2I_ENTRY(way) \
     L2I_L2(g_way_storage__BRA__##way##__KET____DOT__entry_q)
@@ -612,7 +612,7 @@ struct L1dProbe {
 #define L1DP_CORE(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
 #define L1DP_BUS(name) \
-    L1DP_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+    L1DP_CORE(u_bus__DOT__g_icx__DOT__u_bus__DOT__##name)
 #define L1DP(name) L1DP_BUS(u_l1d__DOT__##name)
 #define L1DP_CACHE(name) \
     L1DP(u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__##name)
@@ -793,7 +793,7 @@ static void suppress_l1d_prefetch_launch(Vtb_opensbi* top) {
 #define L1DS_CORE(name) \
     root->tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__##name
 #define L1DS_BUS(name) \
-    L1DS_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+    L1DS_CORE(u_bus__DOT__g_icx__DOT__u_bus__DOT__##name)
 #define L1DS(name) L1DS_BUS(u_l1d__DOT__##name)
 
     if (!L1DS(prefetch_launch_found_r)) {
@@ -1086,7 +1086,7 @@ struct FrontendBreakdown {
 #define FE_FETCH(name) \
     FE_CORE(g_fetch_axi__DOT__u_fetch__DOT__##name)
 #define FE_BUS(name) \
-    FE_CORE(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+    FE_CORE(u_bus__DOT__g_icx__DOT__u_bus__DOT__##name)
 #define FE_L1I(name) \
     FE_BUS(u_l1i__DOT__##name)
 
@@ -1578,7 +1578,7 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
 #define FETCH3P(name) \
     CORE3P(g_fetch_axi__DOT__u_fetch__DOT__##name)
 #define BUS3P(name) \
-    CORE3P(u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name)
+    CORE3P(u_bus__DOT__g_icx__DOT__u_bus__DOT__##name)
 
     const bool fetch_carousel =
         FETCH3P(measurement_carousel_enabled);
@@ -2070,7 +2070,7 @@ int main(int argc, char** argv, char**) {
         if (!top->checkpoint_clk_i && l2_tlb_disable) {
             auto& valid =
                 top->rootp->
-                    tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l2_tlb__DOT__valid_q;
+                    tb_opensbi__DOT__dut__DOT__u_core__DOT__g_backend_3p__DOT__u_core_3p__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l2_tlb__DOT__valid_q;
             for (unsigned way = 0; way < 4; ++way)
                 valid[way] = 0;
             top->eval();

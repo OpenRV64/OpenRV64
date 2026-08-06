@@ -12,7 +12,7 @@ instructions, produced `a0=0x000000000a277880`, and passed.
 The issue-window depth is currently tied to retirement depth, so the columns
 below change both structures. They are not pure scheduler-window comparisons.
 
-`CORE_3P_CCX_L2_PAIR_STACK_DEPTH` also controls the number of mode-3
+`CORE_3P_ICX_L2_PAIR_STACK_DEPTH` also controls the number of mode-3
 alternate-sector lookaside contexts. The branch-pair stack itself reached only
 one saved entry and reported no overflow in these runs. The measured effect
 from increasing this parameter therefore came from additional lookaside

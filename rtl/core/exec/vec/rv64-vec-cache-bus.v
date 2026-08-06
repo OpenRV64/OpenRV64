@@ -4,7 +4,7 @@
 // Bus-facing wrapper for the shared vector SRAM cache. The upper side is the
 // packed multi-VLSU interface.  The cache-side beat width is independent of
 // the external transport width; genbus_interface performs the shared width
-// conversion and AXI4/WISHBONE selection also used below CCX/L2.
+// conversion and AXI4/WISHBONE selection also used below ICX/L2.
 module openrv64_vec_sram_cache_bus #(
     parameter integer ADDR_WIDTH = 64,
     parameter integer CLIENT_DATA_WIDTH = 256,

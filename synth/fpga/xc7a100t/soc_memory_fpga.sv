@@ -31,53 +31,53 @@ module openrv64_soc_memory #(
     output wire [WIDE_DATA_WIDTH-1:0]   wide_rdata_o,
     output wire                         wide_error_o,
 
-    input  wire                         ccx_req_valid_i,
-    output wire                         ccx_req_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                        ccx_req_hart_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                        ccx_req_txn_id_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                        ccx_req_source_id_i,
-    input  wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_i,
-    input  wire                         ccx_req_lock_i,
-    input  wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_i,
-    input  wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_i,
-    input  wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_i,
-    input  wire [2:0]                   ccx_req_size_i,
-    input  wire [63:0]                  ccx_req_addr_i,
-    input  wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
-                                        ccx_req_burst_len_i,
+    input  wire                         icx_req_valid_i,
+    output wire                         icx_req_ready_o,
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                        icx_req_hart_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                        icx_req_txn_id_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                        icx_req_source_id_i,
+    input  wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op_i,
+    input  wire                         icx_req_lock_i,
+    input  wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order_i,
+    input  wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind_i,
+    input  wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr_i,
+    input  wire [2:0]                   icx_req_size_i,
+    input  wire [63:0]                  icx_req_addr_i,
+    input  wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
+                                        icx_req_burst_len_i,
 
-    input  wire                         ccx_wdata_valid_i,
-    output wire                         ccx_wdata_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                        ccx_wdata_hart_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                        ccx_wdata_txn_id_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                        ccx_wdata_source_id_i,
-    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                        ccx_wdata_beat_index_i,
-    input  wire                         ccx_wdata_last_i,
-    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata_i,
-    input  wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb_i,
+    input  wire                         icx_wdata_valid_i,
+    output wire                         icx_wdata_ready_o,
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                        icx_wdata_hart_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                        icx_wdata_txn_id_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                        icx_wdata_source_id_i,
+    input  wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                        icx_wdata_beat_index_i,
+    input  wire                         icx_wdata_last_i,
+    input  wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata_i,
+    input  wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb_i,
 
-    output wire                         ccx_resp_valid_o,
-    input  wire                         ccx_resp_ready_i,
-    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                        ccx_resp_hart_id_o,
-    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                        ccx_resp_txn_id_o,
-    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                        ccx_resp_source_id_o,
-    output wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                        ccx_resp_beat_index_o,
-    output wire                         ccx_resp_last_o,
-    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-                                        ccx_resp_rdata_o,
-    output wire                         ccx_resp_error_o,
-    output wire                         ccx_resp_sc_success_o
+    output wire                         icx_resp_valid_o,
+    input  wire                         icx_resp_ready_i,
+    output wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                        icx_resp_hart_id_o,
+    output wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                        icx_resp_txn_id_o,
+    output wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                        icx_resp_source_id_o,
+    output wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                        icx_resp_beat_index_o,
+    output wire                         icx_resp_last_o,
+    output wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+                                        icx_resp_rdata_o,
+    output wire                         icx_resp_error_o,
+    output wire                         icx_resp_sc_success_o
 );
 
     localparam integer WORD_COUNT = MEM_BYTES / 8;
@@ -128,17 +128,17 @@ module openrv64_soc_memory #(
     assign wide_rdata_o = {WIDE_DATA_WIDTH{1'b0}};
     assign wide_error_o = wide_valid_i;
 
-    assign ccx_req_ready_o = 1'b0;
-    assign ccx_wdata_ready_o = 1'b0;
-    assign ccx_resp_valid_o = 1'b0;
-    assign ccx_resp_hart_id_o = 0;
-    assign ccx_resp_txn_id_o = 0;
-    assign ccx_resp_source_id_o = 0;
-    assign ccx_resp_beat_index_o = 0;
-    assign ccx_resp_last_o = 1'b0;
-    assign ccx_resp_rdata_o = 0;
-    assign ccx_resp_error_o = 1'b0;
-    assign ccx_resp_sc_success_o = 1'b0;
+    assign icx_req_ready_o = 1'b0;
+    assign icx_wdata_ready_o = 1'b0;
+    assign icx_resp_valid_o = 1'b0;
+    assign icx_resp_hart_id_o = 0;
+    assign icx_resp_txn_id_o = 0;
+    assign icx_resp_source_id_o = 0;
+    assign icx_resp_beat_index_o = 0;
+    assign icx_resp_last_o = 1'b0;
+    assign icx_resp_rdata_o = 0;
+    assign icx_resp_error_o = 1'b0;
+    assign icx_resp_sc_success_o = 1'b0;
 
     wire unused_non_scalar = |{
         MEM_BASE,
@@ -146,27 +146,27 @@ module openrv64_soc_memory #(
         wide_addr_i,
         wide_wdata_i,
         wide_wstrb_i,
-        ccx_req_valid_i,
-        ccx_req_hart_id_i,
-        ccx_req_txn_id_i,
-        ccx_req_source_id_i,
-        ccx_req_op_i,
-        ccx_req_lock_i,
-        ccx_req_order_i,
-        ccx_req_kind_i,
-        ccx_req_attr_i,
-        ccx_req_size_i,
-        ccx_req_addr_i,
-        ccx_req_burst_len_i,
-        ccx_wdata_valid_i,
-        ccx_wdata_hart_id_i,
-        ccx_wdata_txn_id_i,
-        ccx_wdata_source_id_i,
-        ccx_wdata_beat_index_i,
-        ccx_wdata_last_i,
-        ccx_wdata_i,
-        ccx_wstrb_i,
-        ccx_resp_ready_i
+        icx_req_valid_i,
+        icx_req_hart_id_i,
+        icx_req_txn_id_i,
+        icx_req_source_id_i,
+        icx_req_op_i,
+        icx_req_lock_i,
+        icx_req_order_i,
+        icx_req_kind_i,
+        icx_req_attr_i,
+        icx_req_size_i,
+        icx_req_addr_i,
+        icx_req_burst_len_i,
+        icx_wdata_valid_i,
+        icx_wdata_hart_id_i,
+        icx_wdata_txn_id_i,
+        icx_wdata_source_id_i,
+        icx_wdata_beat_index_i,
+        icx_wdata_last_i,
+        icx_wdata_i,
+        icx_wstrb_i,
+        icx_resp_ready_i
     };
 
     initial begin

@@ -25,55 +25,55 @@ module openrv64_mig_native_memory_cdc #(
     input  logic [7:0]  mem_wstrb_i,
     output logic [63:0] mem_rdata_o,
 
-    input  logic                         ccx_req_valid_i,
-    output logic                         ccx_req_ready_o,
-    input  logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                                ccx_req_hart_id_i,
-    input  logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                                ccx_req_txn_id_i,
-    input  logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                                ccx_req_source_id_i,
-    input  logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_i,
-    input  logic                         ccx_req_lock_i,
-    input  logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_i,
-    input  logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_i,
-    input  logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_i,
-    input  logic [2:0]                   ccx_req_size_i,
-    input  logic [63:0]                  ccx_req_addr_i,
-    input  logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
-                                                ccx_req_burst_len_i,
+    input  logic                         icx_req_valid_i,
+    output logic                         icx_req_ready_o,
+    input  logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                                icx_req_hart_id_i,
+    input  logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                                icx_req_txn_id_i,
+    input  logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                                icx_req_source_id_i,
+    input  logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op_i,
+    input  logic                         icx_req_lock_i,
+    input  logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order_i,
+    input  logic [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind_i,
+    input  logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr_i,
+    input  logic [2:0]                   icx_req_size_i,
+    input  logic [63:0]                  icx_req_addr_i,
+    input  logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
+                                                icx_req_burst_len_i,
 
-    input  logic                         ccx_wdata_valid_i,
-    output logic                         ccx_wdata_ready_o,
-    input  logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                                ccx_wdata_hart_id_i,
-    input  logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                                ccx_wdata_txn_id_i,
-    input  logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                                ccx_wdata_source_id_i,
-    input  logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                                ccx_wdata_beat_index_i,
-    input  logic                         ccx_wdata_last_i,
-    input  logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-                                                ccx_wdata_i,
-    input  logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
-                                                ccx_wstrb_i,
+    input  logic                         icx_wdata_valid_i,
+    output logic                         icx_wdata_ready_o,
+    input  logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                                icx_wdata_hart_id_i,
+    input  logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                                icx_wdata_txn_id_i,
+    input  logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                                icx_wdata_source_id_i,
+    input  logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                                icx_wdata_beat_index_i,
+    input  logic                         icx_wdata_last_i,
+    input  logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+                                                icx_wdata_i,
+    input  logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
+                                                icx_wstrb_i,
 
-    output logic                         ccx_resp_valid_o,
-    input  logic                         ccx_resp_ready_i,
-    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                                ccx_resp_hart_id_o,
-    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                                ccx_resp_txn_id_o,
-    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                                ccx_resp_source_id_o,
-    output logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                                ccx_resp_beat_index_o,
-    output logic                         ccx_resp_last_o,
-    output logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-                                                ccx_resp_rdata_o,
-    output logic                         ccx_resp_error_o,
-    output logic                         ccx_resp_sc_success_o,
+    output logic                         icx_resp_valid_o,
+    input  logic                         icx_resp_ready_i,
+    output logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                                icx_resp_hart_id_o,
+    output logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                                icx_resp_txn_id_o,
+    output logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                                icx_resp_source_id_o,
+    output logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                                icx_resp_beat_index_o,
+    output logic                         icx_resp_last_o,
+    output logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+                                                icx_resp_rdata_o,
+    output logic                         icx_resp_error_o,
+    output logic                         icx_resp_sc_success_o,
 
     output logic [27:0]  app_addr_o,
     output logic [2:0]   app_cmd_o,
@@ -185,188 +185,188 @@ module openrv64_mig_native_memory_cdc #(
         end
     end
 
-    logic [1:0] ccx_core_state_q;
-    logic ccx_req_toggle_core_q;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-        ccx_req_hart_id_core_q;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-        ccx_req_txn_id_core_q;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        ccx_req_source_id_core_q;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_core_q;
-    logic ccx_req_lock_core_q;
-    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_core_q;
-    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_core_q;
-    logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_core_q;
-    logic [2:0] ccx_req_size_core_q;
-    logic [63:0] ccx_req_addr_core_q;
-    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
-        ccx_req_burst_len_core_q;
+    logic [1:0] icx_core_state_q;
+    logic icx_req_toggle_core_q;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        icx_req_hart_id_core_q;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+        icx_req_txn_id_core_q;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        icx_req_source_id_core_q;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op_core_q;
+    logic icx_req_lock_core_q;
+    logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order_core_q;
+    logic [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind_core_q;
+    logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr_core_q;
+    logic [2:0] icx_req_size_core_q;
+    logic [63:0] icx_req_addr_core_q;
+    logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
+        icx_req_burst_len_core_q;
 
     (* ASYNC_REG = "TRUE" *)
-    logic [1:0] ccx_req_sync_ui_q;
-    logic ccx_req_seen_ui_q;
-    logic ccx_resp_toggle_ui_q;
+    logic [1:0] icx_req_sync_ui_q;
+    logic icx_req_seen_ui_q;
+    logic icx_resp_toggle_ui_q;
     (* ASYNC_REG = "TRUE" *)
-    logic [1:0] ccx_resp_sync_core_q;
-    logic ccx_resp_seen_core_q;
+    logic [1:0] icx_resp_sync_core_q;
+    logic icx_resp_seen_core_q;
 
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-        ccx_resp_hart_id_ui_q;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-        ccx_resp_txn_id_ui_q;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        ccx_resp_source_id_ui_q;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-        ccx_resp_beat_index_ui_q;
-    logic ccx_resp_last_ui_q;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        ccx_resp_rdata_ui_q;
-    logic ccx_resp_error_ui_q;
-    logic ccx_resp_sc_success_ui_q;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        icx_resp_hart_id_ui_q;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+        icx_resp_txn_id_ui_q;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        icx_resp_source_id_ui_q;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+        icx_resp_beat_index_ui_q;
+    logic icx_resp_last_ui_q;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        icx_resp_rdata_ui_q;
+    logic icx_resp_error_ui_q;
+    logic icx_resp_sc_success_ui_q;
 
-    logic adapter_ccx_req_ready;
-    logic adapter_ccx_resp_valid;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-        adapter_ccx_resp_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-        adapter_ccx_resp_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        adapter_ccx_resp_source_id;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-        adapter_ccx_resp_beat_index;
-    logic adapter_ccx_resp_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        adapter_ccx_resp_rdata;
-    logic adapter_ccx_resp_error;
-    logic adapter_ccx_resp_sc_success;
+    logic adapter_icx_req_ready;
+    logic adapter_icx_resp_valid;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        adapter_icx_resp_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+        adapter_icx_resp_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        adapter_icx_resp_source_id;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+        adapter_icx_resp_beat_index;
+    logic adapter_icx_resp_last;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        adapter_icx_resp_rdata;
+    logic adapter_icx_resp_error;
+    logic adapter_icx_resp_sc_success;
 
-    wire adapter_ccx_req_valid =
-        ccx_req_sync_ui_q[1] != ccx_req_seen_ui_q;
+    wire adapter_icx_req_valid =
+        icx_req_sync_ui_q[1] != icx_req_seen_ui_q;
 
     always_comb begin
-        ccx_req_ready_o =
-            core_rst_ni && (ccx_core_state_q == CORE_IDLE);
-        ccx_wdata_ready_o = 1'b0;
-        ccx_resp_valid_o = (ccx_core_state_q == CORE_RESP);
+        icx_req_ready_o =
+            core_rst_ni && (icx_core_state_q == CORE_IDLE);
+        icx_wdata_ready_o = 1'b0;
+        icx_resp_valid_o = (icx_core_state_q == CORE_RESP);
     end
 
     always_ff @(posedge core_clk_i or negedge core_rst_ni) begin
         if (!core_rst_ni) begin
-            ccx_core_state_q <= CORE_IDLE;
-            ccx_req_toggle_core_q <= 1'b0;
-            ccx_req_hart_id_core_q <= '0;
-            ccx_req_txn_id_core_q <= '0;
-            ccx_req_source_id_core_q <= '0;
-            ccx_req_op_core_q <= '0;
-            ccx_req_lock_core_q <= 1'b0;
-            ccx_req_order_core_q <= '0;
-            ccx_req_kind_core_q <= '0;
-            ccx_req_attr_core_q <= '0;
-            ccx_req_size_core_q <= 3'd0;
-            ccx_req_addr_core_q <= 64'd0;
-            ccx_req_burst_len_core_q <= '0;
-            ccx_resp_sync_core_q <= 2'b00;
-            ccx_resp_seen_core_q <= 1'b0;
-            ccx_resp_hart_id_o <= '0;
-            ccx_resp_txn_id_o <= '0;
-            ccx_resp_source_id_o <= '0;
-            ccx_resp_beat_index_o <= '0;
-            ccx_resp_last_o <= 1'b0;
-            ccx_resp_rdata_o <= '0;
-            ccx_resp_error_o <= 1'b0;
-            ccx_resp_sc_success_o <= 1'b0;
+            icx_core_state_q <= CORE_IDLE;
+            icx_req_toggle_core_q <= 1'b0;
+            icx_req_hart_id_core_q <= '0;
+            icx_req_txn_id_core_q <= '0;
+            icx_req_source_id_core_q <= '0;
+            icx_req_op_core_q <= '0;
+            icx_req_lock_core_q <= 1'b0;
+            icx_req_order_core_q <= '0;
+            icx_req_kind_core_q <= '0;
+            icx_req_attr_core_q <= '0;
+            icx_req_size_core_q <= 3'd0;
+            icx_req_addr_core_q <= 64'd0;
+            icx_req_burst_len_core_q <= '0;
+            icx_resp_sync_core_q <= 2'b00;
+            icx_resp_seen_core_q <= 1'b0;
+            icx_resp_hart_id_o <= '0;
+            icx_resp_txn_id_o <= '0;
+            icx_resp_source_id_o <= '0;
+            icx_resp_beat_index_o <= '0;
+            icx_resp_last_o <= 1'b0;
+            icx_resp_rdata_o <= '0;
+            icx_resp_error_o <= 1'b0;
+            icx_resp_sc_success_o <= 1'b0;
         end else begin
-            ccx_resp_sync_core_q <= {
-                ccx_resp_sync_core_q[0], ccx_resp_toggle_ui_q
+            icx_resp_sync_core_q <= {
+                icx_resp_sync_core_q[0], icx_resp_toggle_ui_q
             };
 
-            case (ccx_core_state_q)
+            case (icx_core_state_q)
                 CORE_IDLE: begin
-                    if (ccx_req_valid_i) begin
-                        ccx_req_hart_id_core_q <= ccx_req_hart_id_i;
-                        ccx_req_txn_id_core_q <= ccx_req_txn_id_i;
-                        ccx_req_source_id_core_q <=
-                            ccx_req_source_id_i;
-                        ccx_req_op_core_q <= ccx_req_op_i;
-                        ccx_req_lock_core_q <= ccx_req_lock_i;
-                        ccx_req_order_core_q <= ccx_req_order_i;
-                        ccx_req_kind_core_q <= ccx_req_kind_i;
-                        ccx_req_attr_core_q <= ccx_req_attr_i;
-                        ccx_req_size_core_q <= ccx_req_size_i;
-                        ccx_req_addr_core_q <= ccx_req_addr_i;
-                        ccx_req_burst_len_core_q <=
-                            ccx_req_burst_len_i;
-                        ccx_req_toggle_core_q <=
-                            !ccx_req_toggle_core_q;
-                        ccx_core_state_q <= CORE_WAIT;
+                    if (icx_req_valid_i) begin
+                        icx_req_hart_id_core_q <= icx_req_hart_id_i;
+                        icx_req_txn_id_core_q <= icx_req_txn_id_i;
+                        icx_req_source_id_core_q <=
+                            icx_req_source_id_i;
+                        icx_req_op_core_q <= icx_req_op_i;
+                        icx_req_lock_core_q <= icx_req_lock_i;
+                        icx_req_order_core_q <= icx_req_order_i;
+                        icx_req_kind_core_q <= icx_req_kind_i;
+                        icx_req_attr_core_q <= icx_req_attr_i;
+                        icx_req_size_core_q <= icx_req_size_i;
+                        icx_req_addr_core_q <= icx_req_addr_i;
+                        icx_req_burst_len_core_q <=
+                            icx_req_burst_len_i;
+                        icx_req_toggle_core_q <=
+                            !icx_req_toggle_core_q;
+                        icx_core_state_q <= CORE_WAIT;
                     end
                 end
                 CORE_WAIT: begin
-                    if (ccx_resp_sync_core_q[1] !=
-                        ccx_resp_seen_core_q) begin
-                        ccx_resp_seen_core_q <=
-                            ccx_resp_sync_core_q[1];
-                        ccx_resp_hart_id_o <=
-                            ccx_resp_hart_id_ui_q;
-                        ccx_resp_txn_id_o <=
-                            ccx_resp_txn_id_ui_q;
-                        ccx_resp_source_id_o <=
-                            ccx_resp_source_id_ui_q;
-                        ccx_resp_beat_index_o <=
-                            ccx_resp_beat_index_ui_q;
-                        ccx_resp_last_o <= ccx_resp_last_ui_q;
-                        ccx_resp_rdata_o <= ccx_resp_rdata_ui_q;
-                        ccx_resp_error_o <= ccx_resp_error_ui_q;
-                        ccx_resp_sc_success_o <=
-                            ccx_resp_sc_success_ui_q;
-                        ccx_core_state_q <= CORE_RESP;
+                    if (icx_resp_sync_core_q[1] !=
+                        icx_resp_seen_core_q) begin
+                        icx_resp_seen_core_q <=
+                            icx_resp_sync_core_q[1];
+                        icx_resp_hart_id_o <=
+                            icx_resp_hart_id_ui_q;
+                        icx_resp_txn_id_o <=
+                            icx_resp_txn_id_ui_q;
+                        icx_resp_source_id_o <=
+                            icx_resp_source_id_ui_q;
+                        icx_resp_beat_index_o <=
+                            icx_resp_beat_index_ui_q;
+                        icx_resp_last_o <= icx_resp_last_ui_q;
+                        icx_resp_rdata_o <= icx_resp_rdata_ui_q;
+                        icx_resp_error_o <= icx_resp_error_ui_q;
+                        icx_resp_sc_success_o <=
+                            icx_resp_sc_success_ui_q;
+                        icx_core_state_q <= CORE_RESP;
                     end
                 end
                 CORE_RESP: begin
-                    if (ccx_resp_ready_i)
-                        ccx_core_state_q <= CORE_IDLE;
+                    if (icx_resp_ready_i)
+                        icx_core_state_q <= CORE_IDLE;
                 end
-                default: ccx_core_state_q <= CORE_IDLE;
+                default: icx_core_state_q <= CORE_IDLE;
             endcase
         end
     end
 
     always_ff @(posedge ui_clk_i or negedge ui_rst_ni) begin
         if (!ui_rst_ni) begin
-            ccx_req_sync_ui_q <= 2'b00;
-            ccx_req_seen_ui_q <= 1'b0;
-            ccx_resp_toggle_ui_q <= 1'b0;
-            ccx_resp_hart_id_ui_q <= '0;
-            ccx_resp_txn_id_ui_q <= '0;
-            ccx_resp_source_id_ui_q <= '0;
-            ccx_resp_beat_index_ui_q <= '0;
-            ccx_resp_last_ui_q <= 1'b0;
-            ccx_resp_rdata_ui_q <= '0;
-            ccx_resp_error_ui_q <= 1'b0;
-            ccx_resp_sc_success_ui_q <= 1'b0;
+            icx_req_sync_ui_q <= 2'b00;
+            icx_req_seen_ui_q <= 1'b0;
+            icx_resp_toggle_ui_q <= 1'b0;
+            icx_resp_hart_id_ui_q <= '0;
+            icx_resp_txn_id_ui_q <= '0;
+            icx_resp_source_id_ui_q <= '0;
+            icx_resp_beat_index_ui_q <= '0;
+            icx_resp_last_ui_q <= 1'b0;
+            icx_resp_rdata_ui_q <= '0;
+            icx_resp_error_ui_q <= 1'b0;
+            icx_resp_sc_success_ui_q <= 1'b0;
         end else begin
-            ccx_req_sync_ui_q <= {
-                ccx_req_sync_ui_q[0], ccx_req_toggle_core_q
+            icx_req_sync_ui_q <= {
+                icx_req_sync_ui_q[0], icx_req_toggle_core_q
             };
 
-            if (adapter_ccx_req_valid && adapter_ccx_req_ready)
-                ccx_req_seen_ui_q <= ccx_req_sync_ui_q[1];
+            if (adapter_icx_req_valid && adapter_icx_req_ready)
+                icx_req_seen_ui_q <= icx_req_sync_ui_q[1];
 
-            if (adapter_ccx_resp_valid) begin
-                ccx_resp_hart_id_ui_q <=
-                    adapter_ccx_resp_hart_id;
-                ccx_resp_txn_id_ui_q <= adapter_ccx_resp_txn_id;
-                ccx_resp_source_id_ui_q <=
-                    adapter_ccx_resp_source_id;
-                ccx_resp_beat_index_ui_q <=
-                    adapter_ccx_resp_beat_index;
-                ccx_resp_last_ui_q <= adapter_ccx_resp_last;
-                ccx_resp_rdata_ui_q <= adapter_ccx_resp_rdata;
-                ccx_resp_error_ui_q <= adapter_ccx_resp_error;
-                ccx_resp_sc_success_ui_q <=
-                    adapter_ccx_resp_sc_success;
-                ccx_resp_toggle_ui_q <= !ccx_resp_toggle_ui_q;
+            if (adapter_icx_resp_valid) begin
+                icx_resp_hart_id_ui_q <=
+                    adapter_icx_resp_hart_id;
+                icx_resp_txn_id_ui_q <= adapter_icx_resp_txn_id;
+                icx_resp_source_id_ui_q <=
+                    adapter_icx_resp_source_id;
+                icx_resp_beat_index_ui_q <=
+                    adapter_icx_resp_beat_index;
+                icx_resp_last_ui_q <= adapter_icx_resp_last;
+                icx_resp_rdata_ui_q <= adapter_icx_resp_rdata;
+                icx_resp_error_ui_q <= adapter_icx_resp_error;
+                icx_resp_sc_success_ui_q <=
+                    adapter_icx_resp_sc_success;
+                icx_resp_toggle_ui_q <= !icx_resp_toggle_ui_q;
             end
         end
     end
@@ -385,38 +385,38 @@ module openrv64_mig_native_memory_cdc #(
         .mem_wdata_i(mem_req_wdata_core_q),
         .mem_wstrb_i(mem_req_wstrb_core_q),
         .mem_rdata_o(adapter_mem_rdata),
-        .ccx_req_valid_i(adapter_ccx_req_valid),
-        .ccx_req_ready_o(adapter_ccx_req_ready),
-        .ccx_req_hart_id_i(ccx_req_hart_id_core_q),
-        .ccx_req_txn_id_i(ccx_req_txn_id_core_q),
-        .ccx_req_source_id_i(ccx_req_source_id_core_q),
-        .ccx_req_op_i(ccx_req_op_core_q),
-        .ccx_req_lock_i(ccx_req_lock_core_q),
-        .ccx_req_order_i(ccx_req_order_core_q),
-        .ccx_req_kind_i(ccx_req_kind_core_q),
-        .ccx_req_attr_i(ccx_req_attr_core_q),
-        .ccx_req_size_i(ccx_req_size_core_q),
-        .ccx_req_addr_i(ccx_req_addr_core_q),
-        .ccx_req_burst_len_i(ccx_req_burst_len_core_q),
-        .ccx_wdata_valid_i(1'b0),
-        .ccx_wdata_ready_o(),
-        .ccx_wdata_hart_id_i('0),
-        .ccx_wdata_txn_id_i('0),
-        .ccx_wdata_source_id_i('0),
-        .ccx_wdata_beat_index_i('0),
-        .ccx_wdata_last_i(1'b0),
-        .ccx_wdata_i('0),
-        .ccx_wstrb_i('0),
-        .ccx_resp_valid_o(adapter_ccx_resp_valid),
-        .ccx_resp_ready_i(1'b1),
-        .ccx_resp_hart_id_o(adapter_ccx_resp_hart_id),
-        .ccx_resp_txn_id_o(adapter_ccx_resp_txn_id),
-        .ccx_resp_source_id_o(adapter_ccx_resp_source_id),
-        .ccx_resp_beat_index_o(adapter_ccx_resp_beat_index),
-        .ccx_resp_last_o(adapter_ccx_resp_last),
-        .ccx_resp_rdata_o(adapter_ccx_resp_rdata),
-        .ccx_resp_error_o(adapter_ccx_resp_error),
-        .ccx_resp_sc_success_o(adapter_ccx_resp_sc_success),
+        .icx_req_valid_i(adapter_icx_req_valid),
+        .icx_req_ready_o(adapter_icx_req_ready),
+        .icx_req_hart_id_i(icx_req_hart_id_core_q),
+        .icx_req_txn_id_i(icx_req_txn_id_core_q),
+        .icx_req_source_id_i(icx_req_source_id_core_q),
+        .icx_req_op_i(icx_req_op_core_q),
+        .icx_req_lock_i(icx_req_lock_core_q),
+        .icx_req_order_i(icx_req_order_core_q),
+        .icx_req_kind_i(icx_req_kind_core_q),
+        .icx_req_attr_i(icx_req_attr_core_q),
+        .icx_req_size_i(icx_req_size_core_q),
+        .icx_req_addr_i(icx_req_addr_core_q),
+        .icx_req_burst_len_i(icx_req_burst_len_core_q),
+        .icx_wdata_valid_i(1'b0),
+        .icx_wdata_ready_o(),
+        .icx_wdata_hart_id_i('0),
+        .icx_wdata_txn_id_i('0),
+        .icx_wdata_source_id_i('0),
+        .icx_wdata_beat_index_i('0),
+        .icx_wdata_last_i(1'b0),
+        .icx_wdata_i('0),
+        .icx_wstrb_i('0),
+        .icx_resp_valid_o(adapter_icx_resp_valid),
+        .icx_resp_ready_i(1'b1),
+        .icx_resp_hart_id_o(adapter_icx_resp_hart_id),
+        .icx_resp_txn_id_o(adapter_icx_resp_txn_id),
+        .icx_resp_source_id_o(adapter_icx_resp_source_id),
+        .icx_resp_beat_index_o(adapter_icx_resp_beat_index),
+        .icx_resp_last_o(adapter_icx_resp_last),
+        .icx_resp_rdata_o(adapter_icx_resp_rdata),
+        .icx_resp_error_o(adapter_icx_resp_error),
+        .icx_resp_sc_success_o(adapter_icx_resp_sc_success),
         .app_addr_o(app_addr_o),
         .app_cmd_o(app_cmd_o),
         .app_en_o(app_en_o),
@@ -431,15 +431,15 @@ module openrv64_mig_native_memory_cdc #(
         .app_wdf_rdy_i(app_wdf_rdy_i)
     );
 
-    wire unused_ccx_wdata = |{
-        ccx_wdata_valid_i,
-        ccx_wdata_hart_id_i,
-        ccx_wdata_txn_id_i,
-        ccx_wdata_source_id_i,
-        ccx_wdata_beat_index_i,
-        ccx_wdata_last_i,
-        ccx_wdata_i,
-        ccx_wstrb_i
+    wire unused_icx_wdata = |{
+        icx_wdata_valid_i,
+        icx_wdata_hart_id_i,
+        icx_wdata_txn_id_i,
+        icx_wdata_source_id_i,
+        icx_wdata_beat_index_i,
+        icx_wdata_last_i,
+        icx_wdata_i,
+        icx_wstrb_i
     };
 
 endmodule

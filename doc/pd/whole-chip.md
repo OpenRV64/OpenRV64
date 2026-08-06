@@ -29,7 +29,7 @@ The total cacheful tile area is not yet known.
 
 The measured design is [`openrv64_top_4pf`](../../rtl/core/exec/fpu/top_4pf.v),
 elaborated through the 4PF core, translation and protection machinery, and the
-CCX-facing memory boundary.  It is a core tile, not an SoC top.
+ICX-facing memory boundary.  It is a core tile, not an SoC top.
 
 The matched direct-selector runs use:
 
@@ -99,12 +99,12 @@ retained hierarchy, but it is not a floorplan.
 | Prefix arithmetic and exception vector | 0.001755 mm² | 0.07% |
 | **Total** | **2.362814 mm²** | **100.00%** |
 
-The 0.398924 mm² memory/translation category includes the CCX/L1 interface,
+The 0.398924 mm² memory/translation category includes the ICX/L1 interface,
 PTW, and TLB logic.  The nested mapped accounting is:
 
 | Memory/translation component | Area |
 | --- | ---: |
-| CCX/L1 interface and residual bus logic | 0.307753 mm² |
+| ICX/L1 interface and residual bus logic | 0.307753 mm² |
 | PTW | 0.063157 mm² |
 | L2 TLB, including leaf TLB | 0.028014 mm² |
 | **Total** | **0.398924 mm²** |
@@ -182,7 +182,7 @@ routing, clock uncertainty, and macro timing.
 Consequently:
 
 - the values must not be inverted into clock-frequency claims;
-- the no-F/D worst retained partition is the CCX bus;
+- the no-F/D worst retained partition is the ICX bus;
 - the F/D worst retained partition is flattened 4PF top logic; and
 - registering the integer/LSU issue selection did not change either maximum.
 

@@ -32,7 +32,7 @@
 	sim-memcpy-zicclsm-sweep \
 	bench-memcpy bench-memcpy-4k bench-memcpy-64k bench-memcpy-sweep \
 	bench-memcpy-zicclsm-sweep \
-	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-icx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-rv64-fd-fpr sim-fpu-csrs \
 	sim-exec-fpu-rv64-fd sim-exec-fpu-rv64-fd-compact-mul \
 	sim-fd-dispatch sim-fd-uop-harness sim-fd-uop-harness-compact-mul \
@@ -75,14 +75,14 @@
 .PHONY: sim-l1-cache sim-l1-sync-tag sim-l1d-prefetch \
 	sim-l1d-demand-mshr \
 	sim-l1d-store-order \
-	sim-l1d-store-buffer sim-l1i-top sim-ccx-protocol-1h \
-	sim-ccx-protocol-2h sim-ccx-protocol-4h \
-	sim-ccx-coherent-2h sim-ccx-coherent-4h \
-	sim-ccx-coherent-protocol-2h sim-ccx-coherent-protocol-4h \
-	sim-ccx-4h-l1d-directory-l2
-.PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-ccx-l2 \
-	sim-core-3p-ccx-l2-vm
-.PHONY: sim-ccx-l2 sim-ccx-l2-sc-refill
+	sim-l1d-store-buffer sim-l1i-top sim-icx-protocol-1h \
+	sim-icx-protocol-2h sim-icx-protocol-4h \
+	sim-icx-coherent-2h sim-icx-coherent-4h \
+	sim-icx-coherent-protocol-2h sim-icx-coherent-protocol-4h \
+	sim-icx-4h-l1d-directory-l2
+.PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-icx-l2 \
+	sim-core-3p-icx-l2-vm
+.PHONY: sim-icx-l2 sim-icx-l2-sc-refill
 .PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths
 .PHONY: sim-core-complex-1h-axi sim-core-complex-2h-axi \
 	sim-core-complex-4h-wb
@@ -100,7 +100,7 @@
 
 FORCE:
 
-sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-ccx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-top-3p-no-zicclsm sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
+sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-rom sim-memory sim-soc-bus sim-core-bus sim-icx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-top-3p-no-zicclsm sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
 sim: sim-isa-fp sim-rv64-fd-fpr sim-fpu-csrs sim-exec-fpu-rv64-fd
 sim: sim-decode-rv64c sim-decode-rv64-fd
 sim: sim-fd-dispatch
@@ -118,13 +118,13 @@ sim: sim-l1-sync-tag
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr
 sim: sim-l1d-store-order sim-l1d-store-buffer
-sim: sim-ccx-protocol-1h
-sim: sim-ccx-protocol-2h sim-ccx-protocol-4h
-sim: sim-ccx-coherent-2h sim-ccx-coherent-4h
-sim: sim-ccx-coherent-protocol-2h sim-ccx-coherent-protocol-4h
-sim: sim-ccx-4h-l1d-directory-l2
-sim: sim-ccx-l2
-sim: sim-ccx-l2-sc-refill
+sim: sim-icx-protocol-1h
+sim: sim-icx-protocol-2h sim-icx-protocol-4h
+sim: sim-icx-coherent-2h sim-icx-coherent-4h
+sim: sim-icx-coherent-protocol-2h sim-icx-coherent-protocol-4h
+sim: sim-icx-4h-l1d-directory-l2
+sim: sim-icx-l2
+sim: sim-icx-l2-sc-refill
 sim: sim-genbus-axi sim-genbus-wb-widths
 sim: sim-core-complex-1h-axi sim-core-complex-2h-axi \
 	sim-core-complex-4h-wb

@@ -3,13 +3,13 @@
 ## Decision
 
 The two-hart and four-hart complexes use a coherence frontend between the
-hart-facing CCX crossbar and the shared L2:
+hart-facing ICX crossbar and the shared L2:
 
 ```text
 private L1I/L1D endpoints
         |
         v
-CCX line crossbar
+ICX line crossbar
         |
         v
 coherent_protocol
@@ -111,7 +111,7 @@ architectural protocol.
 
 The current architectural RV64A block performs AMO arithmetic locally and
 marks both the read and write halves of its read/modify/write sequence.  At the
-L1D/CCX boundary:
+L1D/ICX boundary:
 
 1. a marked read first issues `LR` to the home;
 2. the home read establishes a 64-byte reservation and conservatively records

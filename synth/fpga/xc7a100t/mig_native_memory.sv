@@ -7,7 +7,7 @@
 // MIG exposes one 256-bit application beat for each DDR3 BL8 transaction.
 // Its app_addr is a 32-bit-word address, so a 32-byte UI beat advances
 // app_addr by eight. Commands are aligned to that beat; scalar accesses
-// select one 64-bit lane locally. PTW CCX reads collect two adjacent UI
+// select one 64-bit lane locally. PTW ICX reads collect two adjacent UI
 // beats into one 64-byte protocol line.
 module openrv64_mig_native_memory #(
     parameter logic [63:0] MEM_BASE = `OPENRV64_SOC_MEMORY_BASE,
@@ -25,55 +25,55 @@ module openrv64_mig_native_memory #(
     input  logic [7:0]  mem_wstrb_i,
     output logic [63:0] mem_rdata_o,
 
-    input  logic                         ccx_req_valid_i,
-    output logic                         ccx_req_ready_o,
-    input  logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                                ccx_req_hart_id_i,
-    input  logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                                ccx_req_txn_id_i,
-    input  logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                                ccx_req_source_id_i,
-    input  logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_i,
-    input  logic                         ccx_req_lock_i,
-    input  logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_i,
-    input  logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_i,
-    input  logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_i,
-    input  logic [2:0]                   ccx_req_size_i,
-    input  logic [63:0]                  ccx_req_addr_i,
-    input  logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
-                                                ccx_req_burst_len_i,
+    input  logic                         icx_req_valid_i,
+    output logic                         icx_req_ready_o,
+    input  logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                                icx_req_hart_id_i,
+    input  logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                                icx_req_txn_id_i,
+    input  logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                                icx_req_source_id_i,
+    input  logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op_i,
+    input  logic                         icx_req_lock_i,
+    input  logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order_i,
+    input  logic [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind_i,
+    input  logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr_i,
+    input  logic [2:0]                   icx_req_size_i,
+    input  logic [63:0]                  icx_req_addr_i,
+    input  logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
+                                                icx_req_burst_len_i,
 
-    input  logic                         ccx_wdata_valid_i,
-    output logic                         ccx_wdata_ready_o,
-    input  logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                                ccx_wdata_hart_id_i,
-    input  logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                                ccx_wdata_txn_id_i,
-    input  logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                                ccx_wdata_source_id_i,
-    input  logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                                ccx_wdata_beat_index_i,
-    input  logic                         ccx_wdata_last_i,
-    input  logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-                                                ccx_wdata_i,
-    input  logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
-                                                ccx_wstrb_i,
+    input  logic                         icx_wdata_valid_i,
+    output logic                         icx_wdata_ready_o,
+    input  logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                                icx_wdata_hart_id_i,
+    input  logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                                icx_wdata_txn_id_i,
+    input  logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                                icx_wdata_source_id_i,
+    input  logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                                icx_wdata_beat_index_i,
+    input  logic                         icx_wdata_last_i,
+    input  logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+                                                icx_wdata_i,
+    input  logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
+                                                icx_wstrb_i,
 
-    output logic                         ccx_resp_valid_o,
-    input  logic                         ccx_resp_ready_i,
-    output logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                                ccx_resp_hart_id_o,
-    output logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                                ccx_resp_txn_id_o,
-    output logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                                ccx_resp_source_id_o,
-    output logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                                ccx_resp_beat_index_o,
-    output logic                         ccx_resp_last_o,
-    output logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-                                                ccx_resp_rdata_o,
-    output logic                         ccx_resp_error_o,
-    output logic                         ccx_resp_sc_success_o,
+    output logic                         icx_resp_valid_o,
+    input  logic                         icx_resp_ready_i,
+    output logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                                icx_resp_hart_id_o,
+    output logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                                icx_resp_txn_id_o,
+    output logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                                icx_resp_source_id_o,
+    output logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                                icx_resp_beat_index_o,
+    output logic                         icx_resp_last_o,
+    output logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+                                                icx_resp_rdata_o,
+    output logic                         icx_resp_error_o,
+    output logic                         icx_resp_sc_success_o,
 
     output logic [27:0]  app_addr_o,
     output logic [2:0]   app_cmd_o,
@@ -94,11 +94,11 @@ module openrv64_mig_native_memory #(
     localparam logic [3:0] STATE_SCALAR_READ_DATA = 4'd2;
     localparam logic [3:0] STATE_SCALAR_WRITE     = 4'd3;
     localparam logic [3:0] STATE_SCALAR_RESP      = 4'd4;
-    localparam logic [3:0] STATE_CCX_READ0_CMD    = 4'd5;
-    localparam logic [3:0] STATE_CCX_READ0_DATA   = 4'd6;
-    localparam logic [3:0] STATE_CCX_READ1_CMD    = 4'd7;
-    localparam logic [3:0] STATE_CCX_READ1_DATA   = 4'd8;
-    localparam logic [3:0] STATE_CCX_RESP         = 4'd9;
+    localparam logic [3:0] STATE_ICX_READ0_CMD    = 4'd5;
+    localparam logic [3:0] STATE_ICX_READ0_DATA   = 4'd6;
+    localparam logic [3:0] STATE_ICX_READ1_CMD    = 4'd7;
+    localparam logic [3:0] STATE_ICX_READ1_DATA   = 4'd8;
+    localparam logic [3:0] STATE_ICX_RESP         = 4'd9;
 
     localparam logic [2:0] MIG_CMD_WRITE = 3'b000;
     localparam logic [2:0] MIG_CMD_READ  = 3'b001;
@@ -112,28 +112,28 @@ module openrv64_mig_native_memory #(
     logic        scalar_write_cmd_pending_q;
     logic        scalar_write_data_pending_q;
 
-    logic [63:0] ccx_local_addr_q;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_hart_id_q;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_txn_id_q;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_source_id_q;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_rdata_q;
-    logic ccx_error_q;
+    logic [63:0] icx_local_addr_q;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_hart_id_q;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_txn_id_q;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_source_id_q;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_rdata_q;
+    logic icx_error_q;
 
     wire scalar_request_in_range =
         (mem_addr_i < MEM_BYTES) && (mem_addr_i[2:0] == 3'b000);
-    wire ccx_read_address_in_range =
-        (ccx_req_addr_i >= MEM_BASE) &&
-        (ccx_req_addr_i <= (MEM_BASE + MEM_BYTES - 64));
-    wire ccx_read_geometry_valid =
-        (ccx_req_op_i == `OPENRV64_CCX_OP_READ) &&
-        !ccx_req_lock_i &&
-        (ccx_req_size_i == 3'd6) &&
-        (ccx_req_addr_i[5:0] == 6'b000000) &&
-        (ccx_req_burst_len_i == 0) &&
-        ccx_read_address_in_range;
-    wire ccx_fence_valid =
-        (ccx_req_op_i == `OPENRV64_CCX_OP_FENCE) &&
-        !ccx_req_lock_i && (ccx_req_burst_len_i == 0);
+    wire icx_read_address_in_range =
+        (icx_req_addr_i >= MEM_BASE) &&
+        (icx_req_addr_i <= (MEM_BASE + MEM_BYTES - 64));
+    wire icx_read_geometry_valid =
+        (icx_req_op_i == `OPENRV64_ICX_OP_READ) &&
+        !icx_req_lock_i &&
+        (icx_req_size_i == 3'd6) &&
+        (icx_req_addr_i[5:0] == 6'b000000) &&
+        (icx_req_burst_len_i == 0) &&
+        icx_read_address_in_range;
+    wire icx_fence_valid =
+        (icx_req_op_i == `OPENRV64_ICX_OP_FENCE) &&
+        !icx_req_lock_i && (icx_req_burst_len_i == 0);
 
     wire [1:0] scalar_lane = scalar_addr_q[4:3];
 
@@ -142,20 +142,20 @@ module openrv64_mig_native_memory #(
         mem_ready_o = (state_q == STATE_SCALAR_RESP);
         mem_rdata_o = scalar_rdata_q;
 
-        ccx_req_ready_o =
+        icx_req_ready_o =
             rst_ni && calib_complete_i && (state_q == STATE_IDLE);
-        // The 1P core's external CCX client is the PTW. It emits reads and
+        // The 1P core's external ICX client is the PTW. It emits reads and
         // fences, never write-data beats.
-        ccx_wdata_ready_o = 1'b0;
-        ccx_resp_valid_o = (state_q == STATE_CCX_RESP);
-        ccx_resp_hart_id_o = ccx_hart_id_q;
-        ccx_resp_txn_id_o = ccx_txn_id_q;
-        ccx_resp_source_id_o = ccx_source_id_q;
-        ccx_resp_beat_index_o = 0;
-        ccx_resp_last_o = 1'b1;
-        ccx_resp_rdata_o = ccx_rdata_q;
-        ccx_resp_error_o = ccx_error_q;
-        ccx_resp_sc_success_o = 1'b0;
+        icx_wdata_ready_o = 1'b0;
+        icx_resp_valid_o = (state_q == STATE_ICX_RESP);
+        icx_resp_hart_id_o = icx_hart_id_q;
+        icx_resp_txn_id_o = icx_txn_id_q;
+        icx_resp_source_id_o = icx_source_id_q;
+        icx_resp_beat_index_o = 0;
+        icx_resp_last_o = 1'b1;
+        icx_resp_rdata_o = icx_rdata_q;
+        icx_resp_error_o = icx_error_q;
+        icx_resp_sc_success_o = 1'b0;
 
         app_addr_o = 28'd0;
         app_cmd_o = MIG_CMD_READ;
@@ -189,13 +189,13 @@ module openrv64_mig_native_memory #(
                     calib_complete_i && scalar_write_data_pending_q;
                 app_wdf_end_o = app_wdf_wren_o;
             end
-            STATE_CCX_READ0_CMD: begin
-                app_addr_o = ccx_local_addr_q[29:2];
+            STATE_ICX_READ0_CMD: begin
+                app_addr_o = icx_local_addr_q[29:2];
                 app_cmd_o = MIG_CMD_READ;
                 app_en_o = calib_complete_i;
             end
-            STATE_CCX_READ1_CMD: begin
-                app_addr_o = ccx_local_addr_q[29:2] + 28'd8;
+            STATE_ICX_READ1_CMD: begin
+                app_addr_o = icx_local_addr_q[29:2] + 28'd8;
                 app_cmd_o = MIG_CMD_READ;
                 app_en_o = calib_complete_i;
             end
@@ -213,32 +213,32 @@ module openrv64_mig_native_memory #(
             scalar_rdata_q <= 64'd0;
             scalar_write_cmd_pending_q <= 1'b0;
             scalar_write_data_pending_q <= 1'b0;
-            ccx_local_addr_q <= 64'd0;
-            ccx_hart_id_q <= 0;
-            ccx_txn_id_q <= 0;
-            ccx_source_id_q <= 0;
-            ccx_rdata_q <= 0;
-            ccx_error_q <= 1'b0;
+            icx_local_addr_q <= 64'd0;
+            icx_hart_id_q <= 0;
+            icx_txn_id_q <= 0;
+            icx_source_id_q <= 0;
+            icx_rdata_q <= 0;
+            icx_error_q <= 1'b0;
         end else begin
             case (state_q)
                 STATE_IDLE: begin
                     scalar_write_cmd_pending_q <= 1'b0;
                     scalar_write_data_pending_q <= 1'b0;
 
-                    if (calib_complete_i && ccx_req_valid_i) begin
-                        ccx_hart_id_q <= ccx_req_hart_id_i;
-                        ccx_txn_id_q <= ccx_req_txn_id_i;
-                        ccx_source_id_q <= ccx_req_source_id_i;
-                        ccx_rdata_q <= 0;
-                        ccx_error_q <= 1'b0;
+                    if (calib_complete_i && icx_req_valid_i) begin
+                        icx_hart_id_q <= icx_req_hart_id_i;
+                        icx_txn_id_q <= icx_req_txn_id_i;
+                        icx_source_id_q <= icx_req_source_id_i;
+                        icx_rdata_q <= 0;
+                        icx_error_q <= 1'b0;
 
-                        if (ccx_read_geometry_valid) begin
-                            ccx_local_addr_q <=
-                                ccx_req_addr_i - MEM_BASE;
-                            state_q <= STATE_CCX_READ0_CMD;
+                        if (icx_read_geometry_valid) begin
+                            icx_local_addr_q <=
+                                icx_req_addr_i - MEM_BASE;
+                            state_q <= STATE_ICX_READ0_CMD;
                         end else begin
-                            ccx_error_q <= !ccx_fence_valid;
-                            state_q <= STATE_CCX_RESP;
+                            icx_error_q <= !icx_fence_valid;
+                            state_q <= STATE_ICX_RESP;
                         end
                     end else if (calib_complete_i && mem_valid_i) begin
                         scalar_addr_q <= mem_addr_i;
@@ -286,32 +286,32 @@ module openrv64_mig_native_memory #(
                     state_q <= STATE_IDLE;
                 end
 
-                STATE_CCX_READ0_CMD: begin
+                STATE_ICX_READ0_CMD: begin
                     if (app_rdy_i)
-                        state_q <= STATE_CCX_READ0_DATA;
+                        state_q <= STATE_ICX_READ0_DATA;
                 end
 
-                STATE_CCX_READ0_DATA: begin
+                STATE_ICX_READ0_DATA: begin
                     if (app_rd_data_valid_i) begin
-                        ccx_rdata_q[255:0] <= app_rd_data_i;
-                        state_q <= STATE_CCX_READ1_CMD;
+                        icx_rdata_q[255:0] <= app_rd_data_i;
+                        state_q <= STATE_ICX_READ1_CMD;
                     end
                 end
 
-                STATE_CCX_READ1_CMD: begin
+                STATE_ICX_READ1_CMD: begin
                     if (app_rdy_i)
-                        state_q <= STATE_CCX_READ1_DATA;
+                        state_q <= STATE_ICX_READ1_DATA;
                 end
 
-                STATE_CCX_READ1_DATA: begin
+                STATE_ICX_READ1_DATA: begin
                     if (app_rd_data_valid_i) begin
-                        ccx_rdata_q[511:256] <= app_rd_data_i;
-                        state_q <= STATE_CCX_RESP;
+                        icx_rdata_q[511:256] <= app_rd_data_i;
+                        state_q <= STATE_ICX_RESP;
                     end
                 end
 
-                STATE_CCX_RESP: begin
-                    if (ccx_resp_ready_i)
+                STATE_ICX_RESP: begin
+                    if (icx_resp_ready_i)
                         state_q <= STATE_IDLE;
                 end
 
@@ -323,17 +323,17 @@ module openrv64_mig_native_memory #(
     end
 
     wire unused_inputs = |{
-        ccx_req_order_i,
-        ccx_req_kind_i,
-        ccx_req_attr_i,
-        ccx_wdata_valid_i,
-        ccx_wdata_hart_id_i,
-        ccx_wdata_txn_id_i,
-        ccx_wdata_source_id_i,
-        ccx_wdata_beat_index_i,
-        ccx_wdata_last_i,
-        ccx_wdata_i,
-        ccx_wstrb_i,
+        icx_req_order_i,
+        icx_req_kind_i,
+        icx_req_attr_i,
+        icx_wdata_valid_i,
+        icx_wdata_hart_id_i,
+        icx_wdata_txn_id_i,
+        icx_wdata_source_id_i,
+        icx_wdata_beat_index_i,
+        icx_wdata_last_i,
+        icx_wdata_i,
+        icx_wstrb_i,
         app_rd_data_end_i
     };
 

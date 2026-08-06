@@ -13,7 +13,7 @@ therefore does not reproduce these numbers.
 
 The tests use the full 4PF decode, issue window, F/D sidecar, FPU, retirement,
 and core top.  L1I and L1D are enabled and connect to the testbench's native
-tagged-RAM CCX home. The recorded baseline uses the default pipelined
+tagged-RAM ICX home. The recorded baseline uses the default pipelined
 multiplier. It accepts at most one computational request per cycle, so one
 accepted FMA per cycle is its steady-state throughput limit. The optional
 compact multiplier has different S and D initiation rates and is reported

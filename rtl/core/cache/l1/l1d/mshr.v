@@ -18,13 +18,13 @@ module openrv64_l1d_demand_mshr_select #(
     input  wire [ENTRIES-1:0] error_i,
     input  wire [ENTRIES-1:0] wait_prefetch_i,
     input  wire [ENTRIES*64-1:0] addr_i,
-    input  wire [ENTRIES*`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn_id_i,
+    input  wire [ENTRIES*`OPENRV64_ICX_TXN_ID_WIDTH-1:0] txn_id_i,
     input  wire [ENTRIES*EPOCH_WIDTH-1:0] epoch_i,
 
     input  wire [63:0] miss_addr_i,
     input  wire [EPOCH_WIDTH-1:0] current_epoch_i,
     input  wire response_for_dcache_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] response_txn_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] response_txn_id_i,
     input  wire prefetch_response_match_i,
     input  wire [63:0] prefetch_response_addr_i,
 
@@ -45,7 +45,7 @@ module openrv64_l1d_demand_mshr_select #(
 
     integer scan;
     reg [63:0] scan_addr;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] scan_txn_id;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] scan_txn_id;
     reg [EPOCH_WIDTH-1:0] scan_epoch;
 
     always @* begin
@@ -63,14 +63,14 @@ module openrv64_l1d_demand_mshr_select #(
         prefetch_response_index_o = {INDEX_WIDTH{1'b0}};
         any_valid_o = 1'b0;
         scan_addr = 64'd0;
-        scan_txn_id = {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+        scan_txn_id = {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
         scan_epoch = {EPOCH_WIDTH{1'b0}};
 
         for (scan = 0; scan < ENTRIES; scan = scan + 1) begin
             scan_addr = addr_i[scan*64 +: 64];
             scan_txn_id =
-                txn_id_i[scan*`OPENRV64_CCX_TXN_ID_WIDTH +:
-                         `OPENRV64_CCX_TXN_ID_WIDTH];
+                txn_id_i[scan*`OPENRV64_ICX_TXN_ID_WIDTH +:
+                         `OPENRV64_ICX_TXN_ID_WIDTH];
             scan_epoch =
                 epoch_i[scan*EPOCH_WIDTH +: EPOCH_WIDTH];
 

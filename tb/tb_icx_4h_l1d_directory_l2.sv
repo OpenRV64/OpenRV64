@@ -8,7 +8,7 @@
 //
 // Each req_* lane below is the LSU-side contract normally driven by the core
 // memory channel.  The test deliberately does not instantiate execution,
-// translation, or the LSQ: those blocks do not alter the private-cache/CCX
+// translation, or the LSQ: those blocks do not alter the private-cache/ICX
 // coherence contract being checked here.
 //
 //   4 LSU agents -> 4 private L1D -> line crossbar -> directory -> L2 -> RAM
@@ -17,7 +17,7 @@
 // adapter holds an invalidate request at each real L1D until that cache
 // accepts it, then returns the directory ACK.  It never fabricates an ACK
 // before the cache invalidation handshake.
-module tb_ccx_4h_l1d_directory_l2 #(
+module tb_icx_4h_l1d_directory_l2 #(
     parameter integer RANDOM_ROUNDS = 2048,
     parameter integer ATOMIC_INTERVAL = 32
 );
@@ -73,7 +73,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
     logic [NUM_HARTS*TAG_WIDTH-1:0] next_lsu_tag;
 
     // The local RV64A engine decomposes each AMO into a marked read and
-    // marked write.  The L1D CCX adapter converts that mark into explicit
+    // marked write.  The L1D ICX adapter converts that mark into explicit
     // LR/SC home operations; no fabric lock is asserted.
     logic [NUM_HARTS-1:0] atomic_select;
     logic [NUM_HARTS-1:0] atomic_valid;
@@ -108,110 +108,110 @@ module tb_ccx_4h_l1d_directory_l2 #(
     wire [NUM_HARTS*3-1:0] atomic_state_debug;
     wire [NUM_HARTS*2-1:0] l1d_backend_state_debug;
 
-    // Private L1D to CCX line-crossbar channels.
+    // Private L1D to ICX line-crossbar channels.
     wire [NUM_HARTS-1:0] hart_req_valid;
     wire [NUM_HARTS-1:0] hart_req_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         hart_req_hart_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
         hart_req_txn_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         hart_req_source_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_OP_WIDTH-1:0] hart_req_op;
+    wire [NUM_HARTS*`OPENRV64_ICX_OP_WIDTH-1:0] hart_req_op;
     wire [NUM_HARTS-1:0] hart_req_lock;
-    wire [NUM_HARTS*`OPENRV64_CCX_ORDER_WIDTH-1:0] hart_req_order;
-    wire [NUM_HARTS*`OPENRV64_CCX_KIND_WIDTH-1:0] hart_req_kind;
-    wire [NUM_HARTS*`OPENRV64_CCX_ATTR_WIDTH-1:0] hart_req_attr;
+    wire [NUM_HARTS*`OPENRV64_ICX_ORDER_WIDTH-1:0] hart_req_order;
+    wire [NUM_HARTS*`OPENRV64_ICX_KIND_WIDTH-1:0] hart_req_kind;
+    wire [NUM_HARTS*`OPENRV64_ICX_ATTR_WIDTH-1:0] hart_req_attr;
     wire [NUM_HARTS*3-1:0] hart_req_size;
     wire [NUM_HARTS*64-1:0] hart_req_addr;
-    wire [NUM_HARTS*`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
         hart_req_burst_len;
 
     wire [NUM_HARTS-1:0] hart_wdata_valid;
     wire [NUM_HARTS-1:0] hart_wdata_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         hart_wdata_hart_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
         hart_wdata_txn_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         hart_wdata_source_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
         hart_wdata_beat_index;
     wire [NUM_HARTS-1:0] hart_wdata_last;
-    wire [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] hart_wdata;
-    wire [NUM_HARTS*`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] hart_wstrb;
+    wire [NUM_HARTS*`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] hart_wdata;
+    wire [NUM_HARTS*`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] hart_wstrb;
 
     wire [NUM_HARTS-1:0] hart_resp_valid;
-    wire [NUM_HARTS*`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         hart_resp_hart_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
         hart_resp_txn_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         hart_resp_source_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
         hart_resp_beat_index;
     wire [NUM_HARTS-1:0] hart_resp_last;
-    wire [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         hart_resp_rdata;
     wire [NUM_HARTS-1:0] hart_resp_error;
     wire [NUM_HARTS-1:0] hart_resp_sc_success;
     wire [NUM_HARTS-1:0] hart_resp_ready;
 
     // Crossbar to coherent-directory frontend.
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
 
-    wire ccx_wdata_valid;
-    wire ccx_wdata_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
-    wire ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
+    wire icx_wdata_valid;
+    wire icx_wdata_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_wdata_beat_index;
+    wire icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
 
-    wire ccx_resp_valid;
-    wire l2_ccx_resp_valid;
-    wire ccx_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index;
-    wire ccx_resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
-    wire ccx_resp_error;
-    wire ccx_resp_sc_success;
-    logic ccx_response_hold;
+    wire icx_resp_valid;
+    wire l2_icx_resp_valid;
+    wire icx_resp_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_resp_beat_index;
+    wire icx_resp_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
+    wire icx_resp_error;
+    wire icx_resp_sc_success;
+    logic icx_response_hold;
     integer delayed_fill_wait_cycles;
 
     // Coherence-home probes.
     wire [NUM_HARTS-1:0] probe_valid;
     wire [NUM_HARTS-1:0] probe_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_id;
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0]
         probe_command;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
         probe_cache_mask;
     wire [NUM_HARTS*64-1:0] probe_line_addr;
     wire [NUM_HARTS-1:0] probe_resp_valid;
     wire [NUM_HARTS-1:0] probe_resp_ready;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_ID_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0]
         probe_resp_id;
-    wire [NUM_HARTS*`OPENRV64_CCX_PROBE_RESP_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_PROBE_RESP_WIDTH-1:0]
         probe_resp_kind;
-    wire [NUM_HARTS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    wire [NUM_HARTS*`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         probe_resp_data;
     wire [NUM_HARTS-1:0] probe_resp_error;
     wire [NUM_HARTS-1:0] l1d_invalidate_valid;
@@ -226,36 +226,36 @@ module tb_ccx_4h_l1d_directory_l2 #(
     // Directory to shared L2.
     wire l2_req_valid;
     wire l2_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] l2_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] l2_req_op;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] l2_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] l2_req_op;
     wire l2_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] l2_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] l2_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] l2_req_attr;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] l2_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] l2_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] l2_req_attr;
     wire [2:0] l2_req_size;
     wire [63:0] l2_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] l2_req_burst_len;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] l2_req_burst_len;
 
     wire l2_wdata_valid;
     wire l2_wdata_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] l2_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] l2_wdata_beat_index;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] l2_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] l2_wdata_beat_index;
     wire l2_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l2_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] l2_wstrb;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l2_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] l2_wstrb;
 
     wire l2_resp_valid;
     wire l2_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] l2_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] l2_resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] l2_resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] l2_resp_beat_index;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] l2_resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] l2_resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] l2_resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] l2_resp_beat_index;
     wire l2_resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l2_resp_rdata;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l2_resp_rdata;
     wire l2_resp_error;
     wire l2_resp_sc_success;
     wire protocol_error;
@@ -266,8 +266,8 @@ module tb_ccx_4h_l1d_directory_l2 #(
     wire bus_req_write;
     wire [63:0] bus_req_addr;
     wire [2:0] bus_req_size;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
     wire bus_req_cacheable;
     wire bus_line_request_shape =
         (bus_req_size == 3'd6) && (bus_req_addr[5:0] == 6'd0);
@@ -279,9 +279,9 @@ module tb_ccx_4h_l1d_directory_l2 #(
           bus_req_addr[5:0]));
     logic bus_resp_valid;
     wire bus_resp_ready;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
     logic bus_resp_error;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_LINES-1];
     logic memory_pending;
     logic memory_pending_write;
@@ -297,23 +297,23 @@ module tb_ccx_4h_l1d_directory_l2 #(
     // Independent reads may overlap; their expected data is tracked by the
     // response identity rather than by the old serialized-home assumption.
     localparam integer HOME_ID_STRIDE =
-        1 << (`OPENRV64_CCX_SOURCE_ID_WIDTH +
-              `OPENRV64_CCX_TXN_ID_WIDTH);
+        1 << (`OPENRV64_ICX_SOURCE_ID_WIDTH +
+              `OPENRV64_ICX_TXN_ID_WIDTH);
     localparam integer HOME_READ_IDENTITIES =
         NUM_HARTS * HOME_ID_STRIDE;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         reference_memory [0:MEMORY_LINES-1];
     logic expected_home_write_valid [0:NUM_HARTS-1];
     logic [63:0] expected_home_write_addr [0:NUM_HARTS-1];
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         expected_home_write_data [0:NUM_HARTS-1];
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
         expected_home_write_strb [0:NUM_HARTS-1];
     logic home_write_active;
     integer home_write_hart;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] home_write_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] home_write_source_id;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] home_write_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] home_write_source_id;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         l2_read_expected_data [0:HOME_READ_IDENTITIES-1];
     logic [63:0]
         l2_read_expected_addr [0:HOME_READ_IDENTITIES-1];
@@ -513,7 +513,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 end
             end
 
-            openrv64_l1d_ccx #(
+            openrv64_l1d_icx #(
                 .ENABLE(1),
                 .CACHE_BYTES(1024),
                 .LINE_BYTES(64),
@@ -527,7 +527,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 .COHERENT_ATOMICS(1),
                 .REQ_TAG_WIDTH(TAG_WIDTH),
                 .REQ_DEPTH(1 << TAG_WIDTH),
-                .HART_ID(`OPENRV64_CCX_HART_ID_WIDTH'(hart))
+                .HART_ID(`OPENRV64_ICX_HART_ID_WIDTH'(hart))
             ) u_l1d (
                 .clk_i(clk),
                 .rst_ni(rst_n),
@@ -568,100 +568,100 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 .invalidate_all_i(1'b0),
                 .invalidate_addr_i(
                     l1d_invalidate_addr[hart*64 +: 64]),
-                .ccx_req_valid_o(hart_req_valid[hart]),
-                .ccx_req_ready_i(hart_req_ready[hart]),
-                .ccx_req_hart_id_o(
+                .icx_req_valid_o(hart_req_valid[hart]),
+                .icx_req_ready_i(hart_req_ready[hart]),
+                .icx_req_hart_id_o(
                     hart_req_hart_id[
-                        hart*`OPENRV64_CCX_HART_ID_WIDTH +:
-                        `OPENRV64_CCX_HART_ID_WIDTH]),
-                .ccx_req_txn_id_o(
+                        hart*`OPENRV64_ICX_HART_ID_WIDTH +:
+                        `OPENRV64_ICX_HART_ID_WIDTH]),
+                .icx_req_txn_id_o(
                     hart_req_txn_id[
-                        hart*`OPENRV64_CCX_TXN_ID_WIDTH +:
-                        `OPENRV64_CCX_TXN_ID_WIDTH]),
-                .ccx_req_source_id_o(
+                        hart*`OPENRV64_ICX_TXN_ID_WIDTH +:
+                        `OPENRV64_ICX_TXN_ID_WIDTH]),
+                .icx_req_source_id_o(
                     hart_req_source_id[
-                        hart*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
-                        `OPENRV64_CCX_SOURCE_ID_WIDTH]),
-                .ccx_req_op_o(
+                        hart*`OPENRV64_ICX_SOURCE_ID_WIDTH +:
+                        `OPENRV64_ICX_SOURCE_ID_WIDTH]),
+                .icx_req_op_o(
                     hart_req_op[
-                        hart*`OPENRV64_CCX_OP_WIDTH +:
-                        `OPENRV64_CCX_OP_WIDTH]),
-                .ccx_req_lock_o(hart_req_lock[hart]),
-                .ccx_req_order_o(
+                        hart*`OPENRV64_ICX_OP_WIDTH +:
+                        `OPENRV64_ICX_OP_WIDTH]),
+                .icx_req_lock_o(hart_req_lock[hart]),
+                .icx_req_order_o(
                     hart_req_order[
-                        hart*`OPENRV64_CCX_ORDER_WIDTH +:
-                        `OPENRV64_CCX_ORDER_WIDTH]),
-                .ccx_req_kind_o(
+                        hart*`OPENRV64_ICX_ORDER_WIDTH +:
+                        `OPENRV64_ICX_ORDER_WIDTH]),
+                .icx_req_kind_o(
                     hart_req_kind[
-                        hart*`OPENRV64_CCX_KIND_WIDTH +:
-                        `OPENRV64_CCX_KIND_WIDTH]),
-                .ccx_req_attr_o(
+                        hart*`OPENRV64_ICX_KIND_WIDTH +:
+                        `OPENRV64_ICX_KIND_WIDTH]),
+                .icx_req_attr_o(
                     hart_req_attr[
-                        hart*`OPENRV64_CCX_ATTR_WIDTH +:
-                        `OPENRV64_CCX_ATTR_WIDTH]),
-                .ccx_req_size_o(hart_req_size[hart*3 +: 3]),
-                .ccx_req_addr_o(hart_req_addr[hart*64 +: 64]),
-                .ccx_req_burst_len_o(
+                        hart*`OPENRV64_ICX_ATTR_WIDTH +:
+                        `OPENRV64_ICX_ATTR_WIDTH]),
+                .icx_req_size_o(hart_req_size[hart*3 +: 3]),
+                .icx_req_addr_o(hart_req_addr[hart*64 +: 64]),
+                .icx_req_burst_len_o(
                     hart_req_burst_len[
-                        hart*`OPENRV64_CCX_BURST_LEN_WIDTH +:
-                        `OPENRV64_CCX_BURST_LEN_WIDTH]),
-                .ccx_wdata_valid_o(hart_wdata_valid[hart]),
-                .ccx_wdata_ready_i(hart_wdata_ready[hart]),
-                .ccx_wdata_hart_id_o(
+                        hart*`OPENRV64_ICX_BURST_LEN_WIDTH +:
+                        `OPENRV64_ICX_BURST_LEN_WIDTH]),
+                .icx_wdata_valid_o(hart_wdata_valid[hart]),
+                .icx_wdata_ready_i(hart_wdata_ready[hart]),
+                .icx_wdata_hart_id_o(
                     hart_wdata_hart_id[
-                        hart*`OPENRV64_CCX_HART_ID_WIDTH +:
-                        `OPENRV64_CCX_HART_ID_WIDTH]),
-                .ccx_wdata_txn_id_o(
+                        hart*`OPENRV64_ICX_HART_ID_WIDTH +:
+                        `OPENRV64_ICX_HART_ID_WIDTH]),
+                .icx_wdata_txn_id_o(
                     hart_wdata_txn_id[
-                        hart*`OPENRV64_CCX_TXN_ID_WIDTH +:
-                        `OPENRV64_CCX_TXN_ID_WIDTH]),
-                .ccx_wdata_source_id_o(
+                        hart*`OPENRV64_ICX_TXN_ID_WIDTH +:
+                        `OPENRV64_ICX_TXN_ID_WIDTH]),
+                .icx_wdata_source_id_o(
                     hart_wdata_source_id[
-                        hart*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
-                        `OPENRV64_CCX_SOURCE_ID_WIDTH]),
-                .ccx_wdata_beat_index_o(
+                        hart*`OPENRV64_ICX_SOURCE_ID_WIDTH +:
+                        `OPENRV64_ICX_SOURCE_ID_WIDTH]),
+                .icx_wdata_beat_index_o(
                     hart_wdata_beat_index[
-                        hart*`OPENRV64_CCX_BEAT_INDEX_WIDTH +:
-                        `OPENRV64_CCX_BEAT_INDEX_WIDTH]),
-                .ccx_wdata_last_o(hart_wdata_last[hart]),
-                .ccx_wdata_o(
+                        hart*`OPENRV64_ICX_BEAT_INDEX_WIDTH +:
+                        `OPENRV64_ICX_BEAT_INDEX_WIDTH]),
+                .icx_wdata_last_o(hart_wdata_last[hart]),
+                .icx_wdata_o(
                     hart_wdata[
-                        hart*`OPENRV64_CCX_LINE_DATA_WIDTH +:
-                        `OPENRV64_CCX_LINE_DATA_WIDTH]),
-                .ccx_wstrb_o(
+                        hart*`OPENRV64_ICX_LINE_DATA_WIDTH +:
+                        `OPENRV64_ICX_LINE_DATA_WIDTH]),
+                .icx_wstrb_o(
                     hart_wstrb[
-                        hart*`OPENRV64_CCX_LINE_STRB_WIDTH +:
-                        `OPENRV64_CCX_LINE_STRB_WIDTH]),
-                .ccx_resp_valid_i(hart_resp_valid[hart]),
-                .ccx_resp_ready_o(hart_resp_ready[hart]),
-                .ccx_resp_hart_id_i(
+                        hart*`OPENRV64_ICX_LINE_STRB_WIDTH +:
+                        `OPENRV64_ICX_LINE_STRB_WIDTH]),
+                .icx_resp_valid_i(hart_resp_valid[hart]),
+                .icx_resp_ready_o(hart_resp_ready[hart]),
+                .icx_resp_hart_id_i(
                     hart_resp_hart_id[
-                        hart*`OPENRV64_CCX_HART_ID_WIDTH +:
-                        `OPENRV64_CCX_HART_ID_WIDTH]),
-                .ccx_resp_txn_id_i(
+                        hart*`OPENRV64_ICX_HART_ID_WIDTH +:
+                        `OPENRV64_ICX_HART_ID_WIDTH]),
+                .icx_resp_txn_id_i(
                     hart_resp_txn_id[
-                        hart*`OPENRV64_CCX_TXN_ID_WIDTH +:
-                        `OPENRV64_CCX_TXN_ID_WIDTH]),
-                .ccx_resp_source_id_i(
+                        hart*`OPENRV64_ICX_TXN_ID_WIDTH +:
+                        `OPENRV64_ICX_TXN_ID_WIDTH]),
+                .icx_resp_source_id_i(
                     hart_resp_source_id[
-                        hart*`OPENRV64_CCX_SOURCE_ID_WIDTH +:
-                        `OPENRV64_CCX_SOURCE_ID_WIDTH]),
-                .ccx_resp_beat_index_i(
+                        hart*`OPENRV64_ICX_SOURCE_ID_WIDTH +:
+                        `OPENRV64_ICX_SOURCE_ID_WIDTH]),
+                .icx_resp_beat_index_i(
                     hart_resp_beat_index[
-                        hart*`OPENRV64_CCX_BEAT_INDEX_WIDTH +:
-                        `OPENRV64_CCX_BEAT_INDEX_WIDTH]),
-                .ccx_resp_last_i(hart_resp_last[hart]),
-                .ccx_resp_rdata_i(
+                        hart*`OPENRV64_ICX_BEAT_INDEX_WIDTH +:
+                        `OPENRV64_ICX_BEAT_INDEX_WIDTH]),
+                .icx_resp_last_i(hart_resp_last[hart]),
+                .icx_resp_rdata_i(
                     hart_resp_rdata[
-                        hart*`OPENRV64_CCX_LINE_DATA_WIDTH +:
-                        `OPENRV64_CCX_LINE_DATA_WIDTH]),
-                .ccx_resp_error_i(hart_resp_error[hart]),
-                .ccx_resp_sc_success_i(hart_resp_sc_success[hart])
+                        hart*`OPENRV64_ICX_LINE_DATA_WIDTH +:
+                        `OPENRV64_ICX_LINE_DATA_WIDTH]),
+                .icx_resp_error_i(hart_resp_error[hart]),
+                .icx_resp_sc_success_i(hart_resp_sc_success[hart])
             );
         end
     endgenerate
 
-    openrv64_ccx_line_crossbar #(
+    openrv64_icx_line_crossbar #(
         .NUM_HARTS(NUM_HARTS),
         .HART_ID_BASE(0)
     ) u_crossbar (
@@ -680,19 +680,19 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .hart_req_size_i(hart_req_size),
         .hart_req_addr_i(hart_req_addr),
         .hart_req_burst_len_i(hart_req_burst_len),
-        .mem_req_valid_o(ccx_req_valid),
-        .mem_req_ready_i(ccx_req_ready),
-        .mem_req_hart_id_o(ccx_req_hart_id),
-        .mem_req_txn_id_o(ccx_req_txn_id),
-        .mem_req_source_id_o(ccx_req_source_id),
-        .mem_req_op_o(ccx_req_op),
-        .mem_req_lock_o(ccx_req_lock),
-        .mem_req_order_o(ccx_req_order),
-        .mem_req_kind_o(ccx_req_kind),
-        .mem_req_attr_o(ccx_req_attr),
-        .mem_req_size_o(ccx_req_size),
-        .mem_req_addr_o(ccx_req_addr),
-        .mem_req_burst_len_o(ccx_req_burst_len),
+        .mem_req_valid_o(icx_req_valid),
+        .mem_req_ready_i(icx_req_ready),
+        .mem_req_hart_id_o(icx_req_hart_id),
+        .mem_req_txn_id_o(icx_req_txn_id),
+        .mem_req_source_id_o(icx_req_source_id),
+        .mem_req_op_o(icx_req_op),
+        .mem_req_lock_o(icx_req_lock),
+        .mem_req_order_o(icx_req_order),
+        .mem_req_kind_o(icx_req_kind),
+        .mem_req_attr_o(icx_req_attr),
+        .mem_req_size_o(icx_req_size),
+        .mem_req_addr_o(icx_req_addr),
+        .mem_req_burst_len_o(icx_req_burst_len),
         .hart_wdata_valid_i(hart_wdata_valid),
         .hart_wdata_ready_o(hart_wdata_ready),
         .hart_wdata_hart_id_i(hart_wdata_hart_id),
@@ -702,25 +702,25 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .hart_wdata_last_i(hart_wdata_last),
         .hart_wdata_i(hart_wdata),
         .hart_wstrb_i(hart_wstrb),
-        .mem_wdata_valid_o(ccx_wdata_valid),
-        .mem_wdata_ready_i(ccx_wdata_ready),
-        .mem_wdata_hart_id_o(ccx_wdata_hart_id),
-        .mem_wdata_txn_id_o(ccx_wdata_txn_id),
-        .mem_wdata_source_id_o(ccx_wdata_source_id),
-        .mem_wdata_beat_index_o(ccx_wdata_beat_index),
-        .mem_wdata_last_o(ccx_wdata_last),
-        .mem_wdata_o(ccx_wdata),
-        .mem_wstrb_o(ccx_wstrb),
-        .mem_resp_valid_i(ccx_resp_valid),
-        .mem_resp_ready_o(ccx_resp_ready),
-        .mem_resp_hart_id_i(ccx_resp_hart_id),
-        .mem_resp_txn_id_i(ccx_resp_txn_id),
-        .mem_resp_source_id_i(ccx_resp_source_id),
-        .mem_resp_beat_index_i(ccx_resp_beat_index),
-        .mem_resp_last_i(ccx_resp_last),
-        .mem_resp_rdata_i(ccx_resp_rdata),
-        .mem_resp_error_i(ccx_resp_error),
-        .mem_resp_sc_success_i(ccx_resp_sc_success),
+        .mem_wdata_valid_o(icx_wdata_valid),
+        .mem_wdata_ready_i(icx_wdata_ready),
+        .mem_wdata_hart_id_o(icx_wdata_hart_id),
+        .mem_wdata_txn_id_o(icx_wdata_txn_id),
+        .mem_wdata_source_id_o(icx_wdata_source_id),
+        .mem_wdata_beat_index_o(icx_wdata_beat_index),
+        .mem_wdata_last_o(icx_wdata_last),
+        .mem_wdata_o(icx_wdata),
+        .mem_wstrb_o(icx_wstrb),
+        .mem_resp_valid_i(icx_resp_valid),
+        .mem_resp_ready_o(icx_resp_ready),
+        .mem_resp_hart_id_i(icx_resp_hart_id),
+        .mem_resp_txn_id_i(icx_resp_txn_id),
+        .mem_resp_source_id_i(icx_resp_source_id),
+        .mem_resp_beat_index_i(icx_resp_beat_index),
+        .mem_resp_last_i(icx_resp_last),
+        .mem_resp_rdata_i(icx_resp_rdata),
+        .mem_resp_error_i(icx_resp_error),
+        .mem_resp_sc_success_i(icx_resp_sc_success),
         .hart_resp_valid_o(hart_resp_valid),
         .hart_resp_ready_i(hart_resp_ready),
         .hart_resp_hart_id_o(hart_resp_hart_id),
@@ -733,7 +733,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .hart_resp_sc_success_o(hart_resp_sc_success)
     );
 
-    openrv64_ccx_l2_native #(
+    openrv64_icx_l2_native #(
         .CACHE_BYTES(256 * 1024),
         .LINE_BYTES(64),
         .WAYS(4),
@@ -750,38 +750,38 @@ module tb_ccx_4h_l1d_directory_l2 #(
     ) u_l2 (
         .clk_i(clk),
         .rst_ni(rst_n),
-        .req_valid_i(ccx_req_valid),
-        .req_ready_o(ccx_req_ready),
-        .req_hart_id_i(ccx_req_hart_id),
-        .req_txn_id_i(ccx_req_txn_id),
-        .req_source_id_i(ccx_req_source_id),
-        .req_op_i(ccx_req_op),
-        .req_lock_i(ccx_req_lock),
-        .req_order_i(ccx_req_order),
-        .req_kind_i(ccx_req_kind),
-        .req_attr_i(ccx_req_attr),
-        .req_size_i(ccx_req_size),
-        .req_addr_i(ccx_req_addr),
-        .req_burst_len_i(ccx_req_burst_len),
-        .wdata_valid_i(ccx_wdata_valid),
-        .wdata_ready_o(ccx_wdata_ready),
-        .wdata_hart_id_i(ccx_wdata_hart_id),
-        .wdata_txn_id_i(ccx_wdata_txn_id),
-        .wdata_source_id_i(ccx_wdata_source_id),
-        .wdata_beat_index_i(ccx_wdata_beat_index),
-        .wdata_last_i(ccx_wdata_last),
-        .wdata_i(ccx_wdata),
-        .wstrb_i(ccx_wstrb),
-        .resp_valid_o(l2_ccx_resp_valid),
-        .resp_ready_i(ccx_resp_ready && !ccx_response_hold),
-        .resp_hart_id_o(ccx_resp_hart_id),
-        .resp_txn_id_o(ccx_resp_txn_id),
-        .resp_source_id_o(ccx_resp_source_id),
-        .resp_beat_index_o(ccx_resp_beat_index),
-        .resp_last_o(ccx_resp_last),
-        .resp_rdata_o(ccx_resp_rdata),
-        .resp_error_o(ccx_resp_error),
-        .resp_sc_success_o(ccx_resp_sc_success),
+        .req_valid_i(icx_req_valid),
+        .req_ready_o(icx_req_ready),
+        .req_hart_id_i(icx_req_hart_id),
+        .req_txn_id_i(icx_req_txn_id),
+        .req_source_id_i(icx_req_source_id),
+        .req_op_i(icx_req_op),
+        .req_lock_i(icx_req_lock),
+        .req_order_i(icx_req_order),
+        .req_kind_i(icx_req_kind),
+        .req_attr_i(icx_req_attr),
+        .req_size_i(icx_req_size),
+        .req_addr_i(icx_req_addr),
+        .req_burst_len_i(icx_req_burst_len),
+        .wdata_valid_i(icx_wdata_valid),
+        .wdata_ready_o(icx_wdata_ready),
+        .wdata_hart_id_i(icx_wdata_hart_id),
+        .wdata_txn_id_i(icx_wdata_txn_id),
+        .wdata_source_id_i(icx_wdata_source_id),
+        .wdata_beat_index_i(icx_wdata_beat_index),
+        .wdata_last_i(icx_wdata_last),
+        .wdata_i(icx_wdata),
+        .wstrb_i(icx_wstrb),
+        .resp_valid_o(l2_icx_resp_valid),
+        .resp_ready_i(icx_resp_ready && !icx_response_hold),
+        .resp_hart_id_o(icx_resp_hart_id),
+        .resp_txn_id_o(icx_resp_txn_id),
+        .resp_source_id_o(icx_resp_source_id),
+        .resp_beat_index_o(icx_resp_beat_index),
+        .resp_last_o(icx_resp_last),
+        .resp_rdata_o(icx_resp_rdata),
+        .resp_error_o(icx_resp_error),
+        .resp_sc_success_o(icx_resp_sc_success),
         .probe_valid_o(probe_valid),
         .probe_ready_i(probe_ready),
         .probe_id_o(probe_id),
@@ -809,7 +809,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
         .bus_resp_rdata_i(bus_resp_rdata),
         .bus_resp_error_i(bus_resp_error)
     );
-    assign ccx_resp_valid = l2_ccx_resp_valid && !ccx_response_hold;
+    assign icx_resp_valid = l2_icx_resp_valid && !icx_response_hold;
 
     /*
      * The former home-to-L2 boundary is now an internal lookup-dispatch
@@ -837,17 +837,17 @@ module tb_ccx_4h_l1d_directory_l2 #(
     assign l2_req_op =
         ((l2_probe_commit ?
           u_l2.waiter_op_q[l2_probe_waiter] :
-          u_l2.lookup_op_q) == `OPENRV64_CCX_OP_LR) ?
-            `OPENRV64_CCX_OP_READ :
+          u_l2.lookup_op_q) == `OPENRV64_ICX_OP_LR) ?
+            `OPENRV64_ICX_OP_READ :
         ((l2_probe_commit ?
           u_l2.waiter_op_q[l2_probe_waiter] :
-          u_l2.lookup_op_q) == `OPENRV64_CCX_OP_SC) ?
-            `OPENRV64_CCX_OP_WRITE :
+          u_l2.lookup_op_q) == `OPENRV64_ICX_OP_SC) ?
+            `OPENRV64_ICX_OP_WRITE :
         (l2_probe_commit ?
           u_l2.waiter_op_q[l2_probe_waiter] :
           u_l2.lookup_op_q);
     assign l2_req_lock = 1'b0;
-    assign l2_req_order = `OPENRV64_CCX_ORDER_NONE;
+    assign l2_req_order = `OPENRV64_ICX_ORDER_NONE;
     assign l2_req_kind = l2_probe_commit ?
         u_l2.waiter_kind_q[l2_probe_waiter] :
         u_l2.lookup_kind_q;
@@ -862,7 +862,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
         u_l2.lookup_addr_q;
     assign l2_req_burst_len = 0;
     assign l2_wdata_valid =
-        l2_req_valid && (l2_req_op == `OPENRV64_CCX_OP_WRITE);
+        l2_req_valid && (l2_req_op == `OPENRV64_ICX_OP_WRITE);
     assign l2_wdata_ready = 1'b1;
     assign l2_wdata_hart_id = l2_req_hart_id;
     assign l2_wdata_txn_id = l2_req_txn_id;
@@ -875,31 +875,31 @@ module tb_ccx_4h_l1d_directory_l2 #(
     assign l2_wstrb = l2_probe_commit ?
         u_l2.waiter_wstrb_q[l2_probe_waiter] :
         u_l2.lookup_wstrb_q;
-    assign l2_resp_valid = ccx_resp_valid;
-    assign l2_resp_ready = ccx_resp_ready;
-    assign l2_resp_hart_id = ccx_resp_hart_id;
-    assign l2_resp_txn_id = ccx_resp_txn_id;
-    assign l2_resp_source_id = ccx_resp_source_id;
-    assign l2_resp_beat_index = ccx_resp_beat_index;
-    assign l2_resp_last = ccx_resp_last;
-    assign l2_resp_rdata = ccx_resp_rdata;
-    assign l2_resp_error = ccx_resp_error;
-    assign l2_resp_sc_success = ccx_resp_sc_success;
+    assign l2_resp_valid = icx_resp_valid;
+    assign l2_resp_ready = icx_resp_ready;
+    assign l2_resp_hart_id = icx_resp_hart_id;
+    assign l2_resp_txn_id = icx_resp_txn_id;
+    assign l2_resp_source_id = icx_resp_source_id;
+    assign l2_resp_beat_index = icx_resp_beat_index;
+    assign l2_resp_last = icx_resp_last;
+    assign l2_resp_rdata = icx_resp_rdata;
+    assign l2_resp_error = icx_resp_error;
+    assign l2_resp_sc_success = icx_resp_sc_success;
     wire [31:0] l2_req_identity =
         (32'(l2_req_hart_id) *
          HOME_ID_STRIDE) +
         (32'(l2_req_source_id) <<
-         `OPENRV64_CCX_TXN_ID_WIDTH) +
+         `OPENRV64_ICX_TXN_ID_WIDTH) +
         32'(l2_req_txn_id);
     wire [31:0] l2_resp_identity =
         (32'(l2_resp_hart_id) *
          HOME_ID_STRIDE) +
         (32'(l2_resp_source_id) <<
-         `OPENRV64_CCX_TXN_ID_WIDTH) +
+         `OPENRV64_ICX_TXN_ID_WIDTH) +
         32'(l2_resp_txn_id);
     wire l2_read_commit =
         l2_req_valid && l2_req_ready &&
-        (l2_req_op == `OPENRV64_CCX_OP_READ);
+        (l2_req_op == `OPENRV64_ICX_OP_READ);
     wire l2_read_response =
         l2_resp_valid && l2_resp_ready &&
         (l2_resp_identity < HOME_READ_IDENTITIES) &&
@@ -908,7 +908,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
     // Production four-hart probe termination.  Each endpoint owns independent
     // request/response storage and clears the local LR reservation as soon as
     // a D-cache invalidate is accepted.
-    openrv64_ccx_4h_l1d_probe_cluster #(
+    openrv64_icx_4h_l1d_probe_cluster #(
         .PROBE_TIMEOUT_CYCLES(4096)
     ) u_probe_cluster (
         .clk_i(clk),
@@ -973,7 +973,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
             memory_delay <= 0;
             bus_resp_valid <= 1'b0;
             bus_resp_rdata <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             bus_resp_error <= 1'b0;
             memory_read_count <= 0;
             memory_write_count <= 0;
@@ -996,7 +996,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                     memory_write_count <= memory_write_count + 1;
                     for (memory_byte_index = 0;
                          memory_byte_index <
-                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                             `OPENRV64_ICX_LINE_STRB_WIDTH;
                          memory_byte_index =
                              memory_byte_index + 1)
                         if (bus_req_wstrb[memory_byte_index])
@@ -1012,7 +1012,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                     memory_pending <= 1'b0;
                     bus_resp_valid <= 1'b1;
                     bus_resp_rdata <= memory_pending_write ?
-                        {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}} :
+                        {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}} :
                         memory[line_index(memory_pending_addr)];
                 end else begin
                     memory_delay <= memory_delay - 1;
@@ -1028,7 +1028,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
             last_l2_write_cycle <= -1;
         end else if (l2_req_valid && l2_req_ready) begin
             l2_command_count <= l2_command_count + 1;
-            if (l2_req_op == `OPENRV64_CCX_OP_WRITE) begin
+            if (l2_req_op == `OPENRV64_ICX_OP_WRITE) begin
                 l2_write_count <= l2_write_count + 1;
                 last_l2_write_cycle <= cycle_count;
             end
@@ -1043,9 +1043,9 @@ module tb_ccx_4h_l1d_directory_l2 #(
             home_write_active <= 1'b0;
             home_write_hart <= 0;
             home_write_txn_id <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
             home_write_source_id <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
             l2_read_expected_count <= 0;
             atomic_sc_success_count <= 0;
             atomic_lr_command_count <= 0;
@@ -1055,7 +1055,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                  home_score_identity = home_score_identity + 1) begin
                 l2_read_expected_valid[home_score_identity] <= 1'b0;
                 l2_read_expected_data[home_score_identity] <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 l2_read_expected_addr[home_score_identity] <= 64'd0;
             end
             for (home_score_hart = 0;
@@ -1064,25 +1064,25 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 expected_home_write_valid[home_score_hart] <= 1'b0;
                 expected_home_write_addr[home_score_hart] <= 64'd0;
                 expected_home_write_data[home_score_hart] <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 expected_home_write_strb[home_score_hart] <=
-                    {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
             end
         end else begin
-            if (ccx_req_valid && ccx_req_ready) begin
-                if (ccx_req_lock)
+            if (icx_req_valid && icx_req_ready) begin
+                if (icx_req_lock)
                     $fatal(1,
                         "fabric lock asserted instead of LR/SC opcode");
-                if (ccx_req_op == `OPENRV64_CCX_OP_LR)
+                if (icx_req_op == `OPENRV64_ICX_OP_LR)
                     atomic_lr_command_count <=
                         atomic_lr_command_count + 1;
-                if (ccx_req_op == `OPENRV64_CCX_OP_SC)
+                if (icx_req_op == `OPENRV64_ICX_OP_SC)
                     atomic_sc_command_count <=
                         atomic_sc_command_count + 1;
             end
 
-            if (ccx_resp_valid && ccx_resp_ready &&
-                ccx_resp_sc_success) begin
+            if (icx_resp_valid && icx_resp_ready &&
+                icx_resp_sc_success) begin
                 atomic_sc_success_count <=
                     atomic_sc_success_count + 1;
             end
@@ -1093,7 +1093,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                      (MEMORY_BASE + MEMORY_LINES*64)))
                     $fatal(1, "L2 request outside stress window addr=%016x",
                            l2_req_addr);
-                if (l2_req_op == `OPENRV64_CCX_OP_WRITE) begin
+                if (l2_req_op == `OPENRV64_ICX_OP_WRITE) begin
                     home_score_hart = l2_req_hart_id;
                     if ((home_score_hart < 0) ||
                         (home_score_hart >= NUM_HARTS))
@@ -1115,7 +1115,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                     home_write_hart <= home_score_hart;
                     home_write_txn_id <= l2_req_txn_id;
                     home_write_source_id <= l2_req_source_id;
-                end else if (l2_req_op == `OPENRV64_CCX_OP_READ) begin
+                end else if (l2_req_op == `OPENRV64_ICX_OP_READ) begin
                     if (l2_req_identity >= HOME_READ_IDENTITIES)
                         $fatal(1,
                             "home read has invalid identity hart=%0d source=%0d txn=%0d",
@@ -1145,7 +1145,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
             if (l2_wdata_valid && l2_wdata_ready) begin
                 if (!home_write_active &&
                     !(l2_req_valid && l2_req_ready &&
-                      (l2_req_op == `OPENRV64_CCX_OP_WRITE)))
+                      (l2_req_op == `OPENRV64_ICX_OP_WRITE)))
                     $fatal(1, "home write data arrived without command");
                 home_score_hart = home_write_active ?
                     home_write_hart : l2_req_hart_id;
@@ -1157,7 +1157,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                      (home_write_active ?
                       home_write_source_id : l2_req_source_id)) ||
                     (l2_wdata_beat_index !=
-                     {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
+                     {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}) ||
                     !l2_wdata_last)
                     $fatal(1, "home write data identity mismatch");
                 if (l2_wdata !==
@@ -1173,7 +1173,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                         expected_home_write_strb[home_score_hart]);
                 for (home_score_byte = 0;
                      home_score_byte <
-                         `OPENRV64_CCX_LINE_STRB_WIDTH;
+                         `OPENRV64_ICX_LINE_STRB_WIDTH;
                      home_score_byte = home_score_byte + 1)
                     if (l2_wstrb[home_score_byte])
                         reference_memory[
@@ -1323,11 +1323,11 @@ module tb_ccx_4h_l1d_directory_l2 #(
             expected_home_write_addr[selected_hart] =
                 {address[63:6], 6'b0};
             expected_home_write_data[selected_hart] =
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             expected_home_write_data[selected_hart][
                 address[5:3]*64 +: 64] = data;
             expected_home_write_strb[selected_hart] =
-                {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
             expected_home_write_strb[selected_hart][
                 address[5:3]*8 +: 8] = 8'hff;
         end
@@ -1664,7 +1664,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
             end
             if (!atomic_complete[selected_hart])
                 $fatal(1,
-                    "hart %0d atomic timeout engine=%0d mem_valid=%0b mem_write=%0b inflight=%0b l1_backend=%0d home=%0d ccx_req=%0b/%0b ccx_resp=%0b/%0b",
+                    "hart %0d atomic timeout engine=%0d mem_valid=%0b mem_write=%0b inflight=%0b l1_backend=%0d home=%0d icx_req=%0b/%0b icx_resp=%0b/%0b",
                     selected_hart,
                     atomic_state_debug[selected_hart*3 +: 3],
                     atomic_mem_valid[selected_hart],
@@ -1672,8 +1672,8 @@ module tb_ccx_4h_l1d_directory_l2 #(
                     atomic_mem_inflight[selected_hart],
                     l1d_backend_state_debug[selected_hart*2 +: 2],
                     u_l2.lookup_action_r,
-                    ccx_req_valid, ccx_req_ready,
-                    ccx_resp_valid, ccx_resp_ready);
+                    icx_req_valid, icx_req_ready,
+                    icx_resp_valid, icx_resp_ready);
             if (atomic_illegal[selected_hart] ||
                 atomic_misaligned[selected_hart] ||
                 atomic_access_fault[selected_hart] ||
@@ -1735,16 +1735,16 @@ module tb_ccx_4h_l1d_directory_l2 #(
     // per hart in strict round-robin order.
     always @(posedge clk) begin
         if (rst_n && contention_monitor_active &&
-            ccx_req_valid && ccx_req_ready &&
-            (ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
-            ({ccx_req_addr[63:6], 6'b0} ==
+            icx_req_valid && icx_req_ready &&
+            (icx_req_op == `OPENRV64_ICX_OP_WRITE) &&
+            ({icx_req_addr[63:6], 6'b0} ==
              contention_monitor_line)) begin
-            if (ccx_req_hart_id !=
-                `OPENRV64_CCX_HART_ID_WIDTH'(
+            if (icx_req_hart_id !=
+                `OPENRV64_ICX_HART_ID_WIDTH'(
                     contention_expected_hart))
                 $fatal(1,
                     "same-line arbitration order got hart=%0d expected=%0d line=%016x",
-                    ccx_req_hart_id, contention_expected_hart,
+                    icx_req_hart_id, contention_expected_hart,
                     contention_monitor_line);
             contention_grant_count = contention_grant_count + 1;
             contention_expected_hart =
@@ -1758,9 +1758,9 @@ module tb_ccx_4h_l1d_directory_l2 #(
              memory_line_index < MEMORY_LINES;
              memory_line_index = memory_line_index + 1) begin
             memory[memory_line_index] =
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             reference_memory[memory_line_index] =
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             for (memory_word_index = 0;
                  memory_word_index < 8;
                  memory_word_index = memory_word_index + 1) begin
@@ -1811,7 +1811,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
         contention_monitor_line = 64'd0;
         contention_expected_hart = 0;
         contention_grant_count = 0;
-        ccx_response_hold = 1'b0;
+        icx_response_hold = 1'b0;
 
         repeat (6) @(posedge clk);
         @(negedge clk);
@@ -1885,7 +1885,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
         // conflicting writer.  The writer must not probe before the fill is
         // delivered: an early probe would observe no private copy, after which
         // the delayed stale fill could install without directory ownership.
-        ccx_response_hold = 1'b1;
+        icx_response_hold = 1'b1;
         fork
             issue_load(
                 0, DELAYED_FILL_LINE,
@@ -1916,7 +1916,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                          (u_l2.lookup_line_addr ==
                           {DELAYED_FILL_LINE[63:6], 6'b0}) &&
                          (u_l2.lookup_op_q ==
-                          `OPENRV64_CCX_OP_WRITE)) &&
+                          `OPENRV64_ICX_OP_WRITE)) &&
                        (delayed_fill_wait_cycles < 1000)) begin
                     @(posedge clk);
                     delayed_fill_wait_cycles =
@@ -1924,10 +1924,10 @@ module tb_ccx_4h_l1d_directory_l2 #(
                 end
                 if (delayed_fill_wait_cycles >= 1000)
                     $fatal(1,
-                        "conflicting write did not reach L2 lookup lookup_valid=%0b op=%0d addr=%016x cmd_count=%0d ccx_req=%0b/%0b hart1_req=%0b/%0b l1state=%0d",
+                        "conflicting write did not reach L2 lookup lookup_valid=%0b op=%0d addr=%016x cmd_count=%0d icx_req=%0b/%0b hart1_req=%0b/%0b l1state=%0d",
                         u_l2.lookup_valid_q, u_l2.lookup_op_q,
                         u_l2.lookup_addr_q, u_l2.cmd_count_q,
-                        ccx_req_valid, ccx_req_ready,
+                        icx_req_valid, icx_req_ready,
                         hart_req_valid[1], hart_req_ready[1],
                         l1d_backend_state_debug[3:2]);
                 repeat (4) begin
@@ -1936,7 +1936,7 @@ module tb_ccx_4h_l1d_directory_l2 #(
                         $fatal(1,
                             "write crossed a pending private fill response");
                 end
-                ccx_response_hold = 1'b0;
+                icx_response_hold = 1'b0;
             end
         join
         issue_load(0, DELAYED_FILL_LINE, DELAYED_FILL_WRITE);

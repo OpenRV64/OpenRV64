@@ -7,7 +7,7 @@
 `include "complex/protocol/defs.v"
 `include "complex/bus/defs.v"
 
-// Burst-capable 256-bit AXI SRAM used behind the production CCX/L2 hierarchy.
+// Burst-capable 256-bit AXI SRAM used behind the production ICX/L2 hierarchy.
 // The 16 MiB aperture is sparse in Verilator so the generated model does not
 // materialize half a million empty 256-bit words.
 module tb_axi256_burst_sram #(
@@ -158,9 +158,9 @@ module tb_axi256_burst_sram #(
 
             if (ar_fire) begin
                 if (arburst_i != 2'b01)
-                    $fatal(1, "full-CCX SRAM requires AXI INCR reads");
+                    $fatal(1, "full-ICX SRAM requires AXI INCR reads");
                 if (arsize_i > $clog2(AXI_BYTES))
-                    $fatal(1, "full-CCX SRAM read beat is too wide");
+                    $fatal(1, "full-ICX SRAM read beat is too wide");
                 read_active_q <= 1'b1;
                 read_id_q <= arid_i;
                 read_addr_q <= araddr_i;
@@ -188,9 +188,9 @@ module tb_axi256_burst_sram #(
 
             if (aw_fire) begin
                 if (awburst_i != 2'b01)
-                    $fatal(1, "full-CCX SRAM requires AXI INCR writes");
+                    $fatal(1, "full-ICX SRAM requires AXI INCR writes");
                 if (awsize_i > $clog2(AXI_BYTES))
-                    $fatal(1, "full-CCX SRAM write beat is too wide");
+                    $fatal(1, "full-ICX SRAM write beat is too wide");
                 write_active_q <= 1'b1;
                 write_id_q <= awid_i;
                 write_addr_q <= awaddr_i;
@@ -202,7 +202,7 @@ module tb_axi256_burst_sram #(
 
             if (w_fire) begin
                 if (wlast_i != (write_beats_q == 1))
-                    $fatal(1, "full-CCX SRAM observed malformed WLAST");
+                    $fatal(1, "full-ICX SRAM observed malformed WLAST");
                 merged_write = read_word(write_addr_q);
                 for (write_byte = 0;
                      write_byte < `OPENRV64_AXI_STRB_WIDTH;
@@ -235,7 +235,7 @@ module tb_axi256_burst_sram #(
 endmodule
 
 // Performance harness:
-//   3P core + private L1I/L1D -> native one-hart CCX -> shared L2
+//   3P core + private L1I/L1D -> native one-hart ICX -> shared L2
 //       -> 512-to-256-bit generic bus adapter -> AXI SRAM or banked DDR3.
 module tb_top_3p_soc #(
     parameter integer FETCH_CAROUSEL = 1,
@@ -289,54 +289,54 @@ module tb_top_3p_soc #(
     wire core_axi_awvalid;
     wire core_axi_wvalid;
 
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire complex_ccx_req_valid;
-    wire complex_ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    wire ccx_wdata_valid;
-    wire ccx_wdata_ready;
-    wire complex_ccx_wdata_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
-    wire ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
-    wire ccx_resp_valid;
-    wire ccx_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index;
-    wire ccx_resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
-    wire ccx_resp_error;
-    wire ccx_resp_sc_success;
-    wire complex_ccx_resp_valid;
-    wire complex_ccx_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] complex_ccx_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] complex_ccx_resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        complex_ccx_resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-        complex_ccx_resp_beat_index;
-    wire complex_ccx_resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        complex_ccx_resp_rdata;
-    wire complex_ccx_resp_error;
-    wire complex_ccx_resp_sc_success;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire complex_icx_req_valid;
+    wire complex_icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    wire icx_wdata_valid;
+    wire icx_wdata_ready;
+    wire complex_icx_wdata_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_wdata_beat_index;
+    wire icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
+    wire icx_resp_valid;
+    wire icx_resp_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_resp_beat_index;
+    wire icx_resp_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
+    wire icx_resp_error;
+    wire icx_resp_sc_success;
+    wire complex_icx_resp_valid;
+    wire complex_icx_resp_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] complex_icx_resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] complex_icx_resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        complex_icx_resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+        complex_icx_resp_beat_index;
+    wire complex_icx_resp_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        complex_icx_resp_rdata;
+    wire complex_icx_resp_error;
+    wire complex_icx_resp_sc_success;
 
     /*
      * Directed Sv39 fence checker.
@@ -344,7 +344,7 @@ module tb_top_3p_soc #(
      * In +fence_check mode, selected cacheable lines and the mapped device
      * page terminate here instead of at L2.  Completion is intentionally
      * delayed.  Ordering is checked when a successor request reaches this
-     * external CCX/home boundary; dispatch or retirement state is not used as
+     * external ICX/home boundary; dispatch or retirement state is not used as
      * the ordering oracle.
      */
     localparam [63:0] FENCE_TEST_BASE = 64'h0000_0000_8001_0000;
@@ -364,33 +364,33 @@ module tb_top_3p_soc #(
     reg fence_trace_enabled_q;
     integer fence_case_q;
     wire fence_test_dcache_request =
-        ccx_req_source_id == `OPENRV64_CCX_SOURCE_DCACHE &&
-        (((ccx_req_addr >= FENCE_TEST_BASE) &&
-          (ccx_req_addr < FENCE_TEST_LIMIT)) ||
-         (ccx_req_addr == FENCE_SMC_LINE) ||
-         ((ccx_req_addr >= FENCE_DEVICE_BASE) &&
-          (ccx_req_addr < FENCE_DEVICE_LIMIT)));
+        icx_req_source_id == `OPENRV64_ICX_SOURCE_DCACHE &&
+        (((icx_req_addr >= FENCE_TEST_BASE) &&
+          (icx_req_addr < FENCE_TEST_LIMIT)) ||
+         (icx_req_addr == FENCE_SMC_LINE) ||
+         ((icx_req_addr >= FENCE_DEVICE_BASE) &&
+          (icx_req_addr < FENCE_DEVICE_LIMIT)));
     wire fence_test_icache_request =
-        (ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE) &&
-        (ccx_req_addr == FENCE_SMC_LINE);
-    wire fence_ccx_select = fence_check_enabled_q &&
+        (icx_req_source_id == `OPENRV64_ICX_SOURCE_ICACHE) &&
+        (icx_req_addr == FENCE_SMC_LINE);
+    wire fence_icx_select = fence_check_enabled_q &&
         (fence_test_dcache_request || fence_test_icache_request);
 
     reg fence_queue_valid_q [0:FENCE_QUEUE_DEPTH-1];
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         fence_queue_hart_q [0:FENCE_QUEUE_DEPTH-1];
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
         fence_queue_txn_q [0:FENCE_QUEUE_DEPTH-1];
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         fence_queue_source_q [0:FENCE_QUEUE_DEPTH-1];
-    reg [`OPENRV64_CCX_OP_WIDTH-1:0]
+    reg [`OPENRV64_ICX_OP_WIDTH-1:0]
         fence_queue_op_q [0:FENCE_QUEUE_DEPTH-1];
     reg [63:0] fence_queue_addr_q [0:FENCE_QUEUE_DEPTH-1];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         fence_queue_wdata_q [0:FENCE_QUEUE_DEPTH-1];
-    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
         fence_queue_wstrb_q [0:FENCE_QUEUE_DEPTH-1];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         fence_queue_rdata_q [0:FENCE_QUEUE_DEPTH-1];
     reg [FENCE_SHADOW_INDEX_WIDTH-1:0]
         fence_queue_shadow_q [0:FENCE_QUEUE_DEPTH-1];
@@ -404,7 +404,7 @@ module tb_top_3p_soc #(
 
     reg fence_shadow_valid_q [0:FENCE_SHADOW_DEPTH-1];
     reg [63:0] fence_shadow_addr_q [0:FENCE_SHADOW_DEPTH-1];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         fence_shadow_data_q [0:FENCE_SHADOW_DEPTH-1];
     reg fence_shadow_match_r;
     reg [FENCE_SHADOW_INDEX_WIDTH-1:0] fence_shadow_match_index_r;
@@ -415,13 +415,13 @@ module tb_top_3p_soc #(
     integer fence_shadow_write_byte;
 
     reg fence_resp_valid_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] fence_resp_hart_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] fence_resp_txn_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] fence_resp_source_q;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] fence_resp_rdata_q;
-    wire fence_resp_fire = fence_resp_valid_q && ccx_resp_ready;
-    wire fence_ccx_req_fire =
-        ccx_req_valid && ccx_req_ready && fence_ccx_select;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] fence_resp_hart_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] fence_resp_txn_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] fence_resp_source_q;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] fence_resp_rdata_q;
+    wire fence_resp_fire = fence_resp_valid_q && icx_resp_ready;
+    wire fence_icx_req_fire =
+        icx_req_valid && icx_req_ready && fence_icx_select;
 
     reg fence_ww_pred_done_q;
     reg fence_wr_pred_done_q;
@@ -449,7 +449,7 @@ module tb_top_3p_soc #(
     reg fence_final_store_done_q;
     reg [10:0] fence_order_violation_q;
     reg fence_smc_pending_valid_q;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         fence_smc_forward_data_q;
     integer fence_external_requests_q;
     integer fence_external_completions_q;
@@ -457,73 +457,73 @@ module tb_top_3p_soc #(
     integer fence_i_retired_q;
     integer sfence_vma_retired_q;
 
-    // Simulation-only, initiator-keyed CCX latency bisection.  Selected
+    // Simulation-only, initiator-keyed ICX latency bisection.  Selected
     // private-cache line reads obtain their data directly from the testbench
     // backing store; writes and narrower/uncached requests still traverse L2.
-    reg [3:0] magic_ccx_source_mask_q;
-    integer magic_ccx_source_mask_arg;
-    reg magic_ccx_resp_valid_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-        magic_ccx_resp_hart_id_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-        magic_ccx_resp_txn_id_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        magic_ccx_resp_source_id_q;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-        magic_ccx_resp_rdata_q;
-    localparam integer MAGIC_CCX_SHADOW_DEPTH = 32;
-    localparam integer MAGIC_CCX_SHADOW_INDEX_WIDTH =
-        $clog2(MAGIC_CCX_SHADOW_DEPTH);
-    reg magic_ccx_shadow_valid_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-        magic_ccx_shadow_hart_id_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-        magic_ccx_shadow_txn_id_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-        magic_ccx_shadow_source_id_q [0:MAGIC_CCX_SHADOW_DEPTH-1];
-    reg magic_ccx_shadow_space_r;
-    reg [MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0]
-        magic_ccx_shadow_free_index_r;
-    reg magic_ccx_shadow_resp_match_r;
-    reg [MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0]
-        magic_ccx_shadow_resp_index_r;
-    integer magic_ccx_shadow_free_scan;
-    integer magic_ccx_shadow_resp_scan;
-    integer magic_ccx_shadow_reset_scan;
-    integer magic_ccx_l1i_reads;
-    integer magic_ccx_l1d_reads;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] magic_ccx_read_data;
-    localparam integer MAGIC_CCX_RAM_WORDS = RAM_BYTES / 32;
-    localparam integer MAGIC_CCX_RAM_INDEX_WIDTH =
-        $clog2(MAGIC_CCX_RAM_WORDS);
-    wire [63:0] magic_ccx_local_addr =
-        ccx_req_addr - `OPENRV64_SOC_MEMORY_BASE;
-    wire [MAGIC_CCX_RAM_INDEX_WIDTH-1:0] magic_ccx_word_index =
-        magic_ccx_local_addr[
-            5 +: MAGIC_CCX_RAM_INDEX_WIDTH];
-    wire magic_ccx_ram_line =
-        (ccx_req_addr >= `OPENRV64_SOC_MEMORY_BASE) &&
-        (ccx_req_addr <=
+    reg [3:0] magic_icx_source_mask_q;
+    integer magic_icx_source_mask_arg;
+    reg magic_icx_resp_valid_q;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        magic_icx_resp_hart_id_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+        magic_icx_resp_txn_id_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        magic_icx_resp_source_id_q;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        magic_icx_resp_rdata_q;
+    localparam integer MAGIC_ICX_SHADOW_DEPTH = 32;
+    localparam integer MAGIC_ICX_SHADOW_INDEX_WIDTH =
+        $clog2(MAGIC_ICX_SHADOW_DEPTH);
+    reg magic_icx_shadow_valid_q [0:MAGIC_ICX_SHADOW_DEPTH-1];
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        magic_icx_shadow_hart_id_q [0:MAGIC_ICX_SHADOW_DEPTH-1];
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+        magic_icx_shadow_txn_id_q [0:MAGIC_ICX_SHADOW_DEPTH-1];
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        magic_icx_shadow_source_id_q [0:MAGIC_ICX_SHADOW_DEPTH-1];
+    reg magic_icx_shadow_space_r;
+    reg [MAGIC_ICX_SHADOW_INDEX_WIDTH-1:0]
+        magic_icx_shadow_free_index_r;
+    reg magic_icx_shadow_resp_match_r;
+    reg [MAGIC_ICX_SHADOW_INDEX_WIDTH-1:0]
+        magic_icx_shadow_resp_index_r;
+    integer magic_icx_shadow_free_scan;
+    integer magic_icx_shadow_resp_scan;
+    integer magic_icx_shadow_reset_scan;
+    integer magic_icx_l1i_reads;
+    integer magic_icx_l1d_reads;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] magic_icx_read_data;
+    localparam integer MAGIC_ICX_RAM_WORDS = RAM_BYTES / 32;
+    localparam integer MAGIC_ICX_RAM_INDEX_WIDTH =
+        $clog2(MAGIC_ICX_RAM_WORDS);
+    wire [63:0] magic_icx_local_addr =
+        icx_req_addr - `OPENRV64_SOC_MEMORY_BASE;
+    wire [MAGIC_ICX_RAM_INDEX_WIDTH-1:0] magic_icx_word_index =
+        magic_icx_local_addr[
+            5 +: MAGIC_ICX_RAM_INDEX_WIDTH];
+    wire magic_icx_ram_line =
+        (icx_req_addr >= `OPENRV64_SOC_MEMORY_BASE) &&
+        (icx_req_addr <=
          (`OPENRV64_SOC_MEMORY_BASE + RAM_BYTES - 64)) &&
-        (ccx_req_addr[5:0] == 6'd0);
-    wire magic_ccx_source_selected =
-        magic_ccx_source_mask_q[ccx_req_source_id];
-    wire magic_ccx_req_select =
-        magic_ccx_source_selected &&
-        (ccx_req_op == `OPENRV64_CCX_OP_READ) &&
-        (ccx_req_size == 3'd6) &&
-        (ccx_req_burst_len == 0) &&
-        |(ccx_req_attr & `OPENRV64_CCX_ATTR_CACHEABLE) &&
-        magic_ccx_ram_line;
-    wire magic_ccx_resp_fire =
-        magic_ccx_resp_valid_q && ccx_resp_ready;
-    wire magic_ccx_resp_slot_ready =
-        !magic_ccx_resp_valid_q || magic_ccx_resp_fire;
-    wire magic_ccx_req_fire =
-        ccx_req_valid && ccx_req_ready && magic_ccx_req_select;
-    wire magic_ccx_shadow_resp_fire =
-        complex_ccx_resp_valid && complex_ccx_resp_ready &&
-        magic_ccx_shadow_resp_match_r;
+        (icx_req_addr[5:0] == 6'd0);
+    wire magic_icx_source_selected =
+        magic_icx_source_mask_q[icx_req_source_id];
+    wire magic_icx_req_select =
+        magic_icx_source_selected &&
+        (icx_req_op == `OPENRV64_ICX_OP_READ) &&
+        (icx_req_size == 3'd6) &&
+        (icx_req_burst_len == 0) &&
+        |(icx_req_attr & `OPENRV64_ICX_ATTR_CACHEABLE) &&
+        magic_icx_ram_line;
+    wire magic_icx_resp_fire =
+        magic_icx_resp_valid_q && icx_resp_ready;
+    wire magic_icx_resp_slot_ready =
+        !magic_icx_resp_valid_q || magic_icx_resp_fire;
+    wire magic_icx_req_fire =
+        icx_req_valid && icx_req_ready && magic_icx_req_select;
+    wire magic_icx_shadow_resp_fire =
+        complex_icx_resp_valid && complex_icx_resp_ready &&
+        magic_icx_shadow_resp_match_r;
 
     always @* begin
         fence_queue_space_r = 1'b0;
@@ -564,7 +564,7 @@ module tb_top_3p_soc #(
             if (!fence_shadow_match_r &&
                 fence_shadow_valid_q[fence_shadow_scan] &&
                 (fence_shadow_addr_q[fence_shadow_scan] ==
-                 {ccx_req_addr[63:6], 6'b0})) begin
+                 {icx_req_addr[63:6], 6'b0})) begin
                 fence_shadow_match_r = 1'b1;
                 fence_shadow_match_index_r =
                     fence_shadow_scan[FENCE_SHADOW_INDEX_WIDTH-1:0];
@@ -578,98 +578,98 @@ module tb_top_3p_soc #(
         end
     end
 
-    wire fence_ccx_write =
-        ccx_req_op == `OPENRV64_CCX_OP_WRITE;
-    wire fence_ccx_read =
-        ccx_req_op == `OPENRV64_CCX_OP_READ;
-    wire fence_ccx_can_accept = fence_queue_space_r &&
+    wire fence_icx_write =
+        icx_req_op == `OPENRV64_ICX_OP_WRITE;
+    wire fence_icx_read =
+        icx_req_op == `OPENRV64_ICX_OP_READ;
+    wire fence_icx_can_accept = fence_queue_space_r &&
         (fence_shadow_match_r || fence_shadow_space_r) &&
-        (fence_ccx_read || fence_ccx_write) &&
-        (!fence_ccx_write || ccx_wdata_valid);
+        (fence_icx_read || fence_icx_write) &&
+        (!fence_icx_write || icx_wdata_valid);
 
     // Fence-check requests terminate in the delayed external model.  Existing
     // magic-read requests are still accepted by L2 for normal fill behavior.
-    assign ccx_req_ready = fence_ccx_select ?
-        fence_ccx_can_accept :
-        (complex_ccx_req_ready &&
-         (!magic_ccx_req_select ||
-          (magic_ccx_resp_slot_ready && magic_ccx_shadow_space_r)));
-    assign complex_ccx_req_valid =
-        ccx_req_valid && !fence_ccx_select &&
-        (!magic_ccx_req_select ||
-         (magic_ccx_resp_slot_ready && magic_ccx_shadow_space_r));
-    assign ccx_wdata_ready = fence_ccx_select ?
-        (ccx_req_valid && fence_ccx_can_accept) :
-        complex_ccx_wdata_ready;
+    assign icx_req_ready = fence_icx_select ?
+        fence_icx_can_accept :
+        (complex_icx_req_ready &&
+         (!magic_icx_req_select ||
+          (magic_icx_resp_slot_ready && magic_icx_shadow_space_r)));
+    assign complex_icx_req_valid =
+        icx_req_valid && !fence_icx_select &&
+        (!magic_icx_req_select ||
+         (magic_icx_resp_slot_ready && magic_icx_shadow_space_r));
+    assign icx_wdata_ready = fence_icx_select ?
+        (icx_req_valid && fence_icx_can_accept) :
+        complex_icx_wdata_ready;
 
-    assign ccx_resp_valid =
-        fence_resp_valid_q || magic_ccx_resp_valid_q ||
-        (complex_ccx_resp_valid && !magic_ccx_shadow_resp_match_r);
-    assign ccx_resp_hart_id = fence_resp_valid_q ?
-        fence_resp_hart_q : magic_ccx_resp_valid_q ?
-        magic_ccx_resp_hart_id_q : complex_ccx_resp_hart_id;
-    assign ccx_resp_txn_id = fence_resp_valid_q ?
-        fence_resp_txn_q : magic_ccx_resp_valid_q ?
-        magic_ccx_resp_txn_id_q : complex_ccx_resp_txn_id;
-    assign ccx_resp_source_id = fence_resp_valid_q ?
-        fence_resp_source_q : magic_ccx_resp_valid_q ?
-        magic_ccx_resp_source_id_q : complex_ccx_resp_source_id;
-    assign ccx_resp_beat_index =
-        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
-        {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}} :
-        complex_ccx_resp_beat_index;
-    assign ccx_resp_last =
-        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
-        1'b1 : complex_ccx_resp_last;
-    assign ccx_resp_rdata = fence_resp_valid_q ?
-        fence_resp_rdata_q : magic_ccx_resp_valid_q ?
-        magic_ccx_resp_rdata_q : complex_ccx_resp_rdata;
-    assign ccx_resp_error =
-        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
-        1'b0 : complex_ccx_resp_error;
-    assign ccx_resp_sc_success =
-        (fence_resp_valid_q || magic_ccx_resp_valid_q) ?
-        1'b0 : complex_ccx_resp_sc_success;
-    assign complex_ccx_resp_ready =
-        magic_ccx_shadow_resp_match_r ||
-        (ccx_resp_ready && !fence_resp_valid_q &&
-         !magic_ccx_resp_valid_q);
+    assign icx_resp_valid =
+        fence_resp_valid_q || magic_icx_resp_valid_q ||
+        (complex_icx_resp_valid && !magic_icx_shadow_resp_match_r);
+    assign icx_resp_hart_id = fence_resp_valid_q ?
+        fence_resp_hart_q : magic_icx_resp_valid_q ?
+        magic_icx_resp_hart_id_q : complex_icx_resp_hart_id;
+    assign icx_resp_txn_id = fence_resp_valid_q ?
+        fence_resp_txn_q : magic_icx_resp_valid_q ?
+        magic_icx_resp_txn_id_q : complex_icx_resp_txn_id;
+    assign icx_resp_source_id = fence_resp_valid_q ?
+        fence_resp_source_q : magic_icx_resp_valid_q ?
+        magic_icx_resp_source_id_q : complex_icx_resp_source_id;
+    assign icx_resp_beat_index =
+        (fence_resp_valid_q || magic_icx_resp_valid_q) ?
+        {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}} :
+        complex_icx_resp_beat_index;
+    assign icx_resp_last =
+        (fence_resp_valid_q || magic_icx_resp_valid_q) ?
+        1'b1 : complex_icx_resp_last;
+    assign icx_resp_rdata = fence_resp_valid_q ?
+        fence_resp_rdata_q : magic_icx_resp_valid_q ?
+        magic_icx_resp_rdata_q : complex_icx_resp_rdata;
+    assign icx_resp_error =
+        (fence_resp_valid_q || magic_icx_resp_valid_q) ?
+        1'b0 : complex_icx_resp_error;
+    assign icx_resp_sc_success =
+        (fence_resp_valid_q || magic_icx_resp_valid_q) ?
+        1'b0 : complex_icx_resp_sc_success;
+    assign complex_icx_resp_ready =
+        magic_icx_shadow_resp_match_r ||
+        (icx_resp_ready && !fence_resp_valid_q &&
+         !magic_icx_resp_valid_q);
 
     always @* begin
-        magic_ccx_shadow_space_r = 1'b0;
-        magic_ccx_shadow_free_index_r =
-            {MAGIC_CCX_SHADOW_INDEX_WIDTH{1'b0}};
-        for (magic_ccx_shadow_free_scan = 0;
-             magic_ccx_shadow_free_scan < MAGIC_CCX_SHADOW_DEPTH;
-             magic_ccx_shadow_free_scan = magic_ccx_shadow_free_scan + 1)
-            if (!magic_ccx_shadow_space_r &&
-                !magic_ccx_shadow_valid_q[magic_ccx_shadow_free_scan]) begin
-                magic_ccx_shadow_space_r = 1'b1;
-                magic_ccx_shadow_free_index_r =
-                    magic_ccx_shadow_free_scan[
-                        MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0];
+        magic_icx_shadow_space_r = 1'b0;
+        magic_icx_shadow_free_index_r =
+            {MAGIC_ICX_SHADOW_INDEX_WIDTH{1'b0}};
+        for (magic_icx_shadow_free_scan = 0;
+             magic_icx_shadow_free_scan < MAGIC_ICX_SHADOW_DEPTH;
+             magic_icx_shadow_free_scan = magic_icx_shadow_free_scan + 1)
+            if (!magic_icx_shadow_space_r &&
+                !magic_icx_shadow_valid_q[magic_icx_shadow_free_scan]) begin
+                magic_icx_shadow_space_r = 1'b1;
+                magic_icx_shadow_free_index_r =
+                    magic_icx_shadow_free_scan[
+                        MAGIC_ICX_SHADOW_INDEX_WIDTH-1:0];
             end
     end
 
     always @* begin
-        magic_ccx_shadow_resp_match_r = 1'b0;
-        magic_ccx_shadow_resp_index_r =
-            {MAGIC_CCX_SHADOW_INDEX_WIDTH{1'b0}};
-        for (magic_ccx_shadow_resp_scan = 0;
-             magic_ccx_shadow_resp_scan < MAGIC_CCX_SHADOW_DEPTH;
-             magic_ccx_shadow_resp_scan = magic_ccx_shadow_resp_scan + 1)
-            if (!magic_ccx_shadow_resp_match_r &&
-                magic_ccx_shadow_valid_q[magic_ccx_shadow_resp_scan] &&
-                (magic_ccx_shadow_hart_id_q[magic_ccx_shadow_resp_scan] ==
-                 complex_ccx_resp_hart_id) &&
-                (magic_ccx_shadow_txn_id_q[magic_ccx_shadow_resp_scan] ==
-                 complex_ccx_resp_txn_id) &&
-                (magic_ccx_shadow_source_id_q[magic_ccx_shadow_resp_scan] ==
-                 complex_ccx_resp_source_id)) begin
-                magic_ccx_shadow_resp_match_r = 1'b1;
-                magic_ccx_shadow_resp_index_r =
-                    magic_ccx_shadow_resp_scan[
-                        MAGIC_CCX_SHADOW_INDEX_WIDTH-1:0];
+        magic_icx_shadow_resp_match_r = 1'b0;
+        magic_icx_shadow_resp_index_r =
+            {MAGIC_ICX_SHADOW_INDEX_WIDTH{1'b0}};
+        for (magic_icx_shadow_resp_scan = 0;
+             magic_icx_shadow_resp_scan < MAGIC_ICX_SHADOW_DEPTH;
+             magic_icx_shadow_resp_scan = magic_icx_shadow_resp_scan + 1)
+            if (!magic_icx_shadow_resp_match_r &&
+                magic_icx_shadow_valid_q[magic_icx_shadow_resp_scan] &&
+                (magic_icx_shadow_hart_id_q[magic_icx_shadow_resp_scan] ==
+                 complex_icx_resp_hart_id) &&
+                (magic_icx_shadow_txn_id_q[magic_icx_shadow_resp_scan] ==
+                 complex_icx_resp_txn_id) &&
+                (magic_icx_shadow_source_id_q[magic_icx_shadow_resp_scan] ==
+                 complex_icx_resp_source_id)) begin
+                magic_icx_shadow_resp_match_r = 1'b1;
+                magic_icx_shadow_resp_index_r =
+                    magic_icx_shadow_resp_scan[
+                        MAGIC_ICX_SHADOW_INDEX_WIDTH-1:0];
             end
     end
 
@@ -788,11 +788,11 @@ module tb_top_3p_soc #(
     integer retired;
     integer progress_interval_cycles;
     integer progress_next_cycle;
-    integer ccx_requests;
-    integer ccx_fetch_reads;
-    integer ccx_data_reads;
-    integer ccx_data_writes;
-    integer ccx_ptw_reads;
+    integer icx_requests;
+    integer icx_fetch_reads;
+    integer icx_data_reads;
+    integer icx_data_writes;
+    integer icx_ptw_reads;
     integer dtlb_fast_loads;
     integer dtlb_fast_stores;
     integer dtlb_access_overlap_loads;
@@ -1028,9 +1028,9 @@ module tb_top_3p_soc #(
     integer l1d_wait_access;
     integer l1d_wait_run_response;
     integer l1d_wait_unknown;
-    integer ccx_request_wait;
-    integer ccx_read_request_wait;
-    integer ccx_write_request_wait;
+    integer icx_request_wait;
+    integer icx_read_request_wait;
+    integer icx_write_request_wait;
     integer l2_bus_request_wait;
     integer l2_command_full_cycles;
     integer axi_read_address_wait;
@@ -1557,10 +1557,10 @@ module tb_top_3p_soc #(
         .pair1024_resp_valid(1'b0),
         .pair1024_resp_predicted_addr(64'd0),
         .pair1024_resp_predicted_data(
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
         .pair1024_resp_unpredicted_addr(64'd0),
         .pair1024_resp_unpredicted_data(
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
         .m_axi_arvalid(core_axi_arvalid),
         .m_axi_arready(1'b0),
         .m_axi_rid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
@@ -1575,38 +1575,38 @@ module tb_top_3p_soc #(
         .m_axi_bid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
         .m_axi_bresp(2'b00),
         .m_axi_bvalid(1'b0),
-        .ccx_req_valid(ccx_req_valid),
-        .ccx_req_ready(ccx_req_ready),
-        .ccx_req_hart_id(ccx_req_hart_id),
-        .ccx_req_txn_id(ccx_req_txn_id),
-        .ccx_req_source_id(ccx_req_source_id),
-        .ccx_req_op(ccx_req_op),
-        .ccx_req_lock(ccx_req_lock),
-        .ccx_req_order(ccx_req_order),
-        .ccx_req_kind(ccx_req_kind),
-        .ccx_req_attr(ccx_req_attr),
-        .ccx_req_size(ccx_req_size),
-        .ccx_req_addr(ccx_req_addr),
-        .ccx_req_burst_len(ccx_req_burst_len),
-        .ccx_wdata_valid(ccx_wdata_valid),
-        .ccx_wdata_ready(ccx_wdata_ready),
-        .ccx_wdata_hart_id(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id(ccx_wdata_txn_id),
-        .ccx_wdata_source_id(ccx_wdata_source_id),
-        .ccx_wdata_beat_index(ccx_wdata_beat_index),
-        .ccx_wdata_last(ccx_wdata_last),
-        .ccx_wdata(ccx_wdata),
-        .ccx_wstrb(ccx_wstrb),
-        .ccx_resp_valid(ccx_resp_valid),
-        .ccx_resp_ready(ccx_resp_ready),
-        .ccx_resp_hart_id(ccx_resp_hart_id),
-        .ccx_resp_txn_id(ccx_resp_txn_id),
-        .ccx_resp_source_id(ccx_resp_source_id),
-        .ccx_resp_beat_index(ccx_resp_beat_index),
-        .ccx_resp_last(ccx_resp_last),
-        .ccx_resp_rdata(ccx_resp_rdata),
-        .ccx_resp_error(ccx_resp_error),
-        .ccx_resp_sc_success(ccx_resp_sc_success),
+        .icx_req_valid(icx_req_valid),
+        .icx_req_ready(icx_req_ready),
+        .icx_req_hart_id(icx_req_hart_id),
+        .icx_req_txn_id(icx_req_txn_id),
+        .icx_req_source_id(icx_req_source_id),
+        .icx_req_op(icx_req_op),
+        .icx_req_lock(icx_req_lock),
+        .icx_req_order(icx_req_order),
+        .icx_req_kind(icx_req_kind),
+        .icx_req_attr(icx_req_attr),
+        .icx_req_size(icx_req_size),
+        .icx_req_addr(icx_req_addr),
+        .icx_req_burst_len(icx_req_burst_len),
+        .icx_wdata_valid(icx_wdata_valid),
+        .icx_wdata_ready(icx_wdata_ready),
+        .icx_wdata_hart_id(icx_wdata_hart_id),
+        .icx_wdata_txn_id(icx_wdata_txn_id),
+        .icx_wdata_source_id(icx_wdata_source_id),
+        .icx_wdata_beat_index(icx_wdata_beat_index),
+        .icx_wdata_last(icx_wdata_last),
+        .icx_wdata(icx_wdata),
+        .icx_wstrb(icx_wstrb),
+        .icx_resp_valid(icx_resp_valid),
+        .icx_resp_ready(icx_resp_ready),
+        .icx_resp_hart_id(icx_resp_hart_id),
+        .icx_resp_txn_id(icx_resp_txn_id),
+        .icx_resp_source_id(icx_resp_source_id),
+        .icx_resp_beat_index(icx_resp_beat_index),
+        .icx_resp_last(icx_resp_last),
+        .icx_resp_rdata(icx_resp_rdata),
+        .icx_resp_error(icx_resp_error),
+        .icx_resp_sc_success(icx_resp_sc_success),
         .l1d_probe_valid_i(1'b0),
         .l1d_probe_ready_o(),
         .l1d_probe_addr_i(64'd0),
@@ -1643,38 +1643,38 @@ module tb_top_3p_soc #(
     ) u_complex (
         .clk_i(clk),
         .rst_ni(rst_n),
-        .ccx_req_valid_i(complex_ccx_req_valid),
-        .ccx_req_ready_o(complex_ccx_req_ready),
-        .ccx_req_hart_id_i(ccx_req_hart_id),
-        .ccx_req_txn_id_i(ccx_req_txn_id),
-        .ccx_req_source_id_i(ccx_req_source_id),
-        .ccx_req_op_i(ccx_req_op),
-        .ccx_req_lock_i(ccx_req_lock),
-        .ccx_req_order_i(ccx_req_order),
-        .ccx_req_kind_i(ccx_req_kind),
-        .ccx_req_attr_i(ccx_req_attr),
-        .ccx_req_size_i(ccx_req_size),
-        .ccx_req_addr_i(ccx_req_addr),
-        .ccx_req_burst_len_i(ccx_req_burst_len),
-        .ccx_wdata_valid_i(ccx_wdata_valid && !fence_ccx_select),
-        .ccx_wdata_ready_o(complex_ccx_wdata_ready),
-        .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
-        .ccx_wdata_source_id_i(ccx_wdata_source_id),
-        .ccx_wdata_beat_index_i(ccx_wdata_beat_index),
-        .ccx_wdata_last_i(ccx_wdata_last),
-        .ccx_wdata_i(ccx_wdata),
-        .ccx_wstrb_i(ccx_wstrb),
-        .ccx_resp_valid_o(complex_ccx_resp_valid),
-        .ccx_resp_ready_i(complex_ccx_resp_ready),
-        .ccx_resp_hart_id_o(complex_ccx_resp_hart_id),
-        .ccx_resp_txn_id_o(complex_ccx_resp_txn_id),
-        .ccx_resp_source_id_o(complex_ccx_resp_source_id),
-        .ccx_resp_beat_index_o(complex_ccx_resp_beat_index),
-        .ccx_resp_last_o(complex_ccx_resp_last),
-        .ccx_resp_rdata_o(complex_ccx_resp_rdata),
-        .ccx_resp_error_o(complex_ccx_resp_error),
-        .ccx_resp_sc_success_o(complex_ccx_resp_sc_success),
+        .icx_req_valid_i(complex_icx_req_valid),
+        .icx_req_ready_o(complex_icx_req_ready),
+        .icx_req_hart_id_i(icx_req_hart_id),
+        .icx_req_txn_id_i(icx_req_txn_id),
+        .icx_req_source_id_i(icx_req_source_id),
+        .icx_req_op_i(icx_req_op),
+        .icx_req_lock_i(icx_req_lock),
+        .icx_req_order_i(icx_req_order),
+        .icx_req_kind_i(icx_req_kind),
+        .icx_req_attr_i(icx_req_attr),
+        .icx_req_size_i(icx_req_size),
+        .icx_req_addr_i(icx_req_addr),
+        .icx_req_burst_len_i(icx_req_burst_len),
+        .icx_wdata_valid_i(icx_wdata_valid && !fence_icx_select),
+        .icx_wdata_ready_o(complex_icx_wdata_ready),
+        .icx_wdata_hart_id_i(icx_wdata_hart_id),
+        .icx_wdata_txn_id_i(icx_wdata_txn_id),
+        .icx_wdata_source_id_i(icx_wdata_source_id),
+        .icx_wdata_beat_index_i(icx_wdata_beat_index),
+        .icx_wdata_last_i(icx_wdata_last),
+        .icx_wdata_i(icx_wdata),
+        .icx_wstrb_i(icx_wstrb),
+        .icx_resp_valid_o(complex_icx_resp_valid),
+        .icx_resp_ready_i(complex_icx_resp_ready),
+        .icx_resp_hart_id_o(complex_icx_resp_hart_id),
+        .icx_resp_txn_id_o(complex_icx_resp_txn_id),
+        .icx_resp_source_id_o(complex_icx_resp_source_id),
+        .icx_resp_beat_index_o(complex_icx_resp_beat_index),
+        .icx_resp_last_o(complex_icx_resp_last),
+        .icx_resp_rdata_o(complex_icx_resp_rdata),
+        .icx_resp_error_o(complex_icx_resp_error),
+        .icx_resp_sc_success_o(complex_icx_resp_sc_success),
         .m_axi_arid_o(ram_arid),
         .m_axi_araddr_o(ram_araddr),
         .m_axi_arlen_o(ram_arlen),
@@ -1777,10 +1777,10 @@ module tb_top_3p_soc #(
                 .s_axi_bready_i(ram_bready)
             );
 
-            assign magic_ccx_read_data = {
+            assign magic_icx_read_data = {
                 u_ddr3.u_channel.memory_q[
-                    magic_ccx_word_index + 1'b1],
-                u_ddr3.u_channel.memory_q[magic_ccx_word_index]
+                    magic_icx_word_index + 1'b1],
+                u_ddr3.u_channel.memory_q[magic_icx_word_index]
             };
 
             assign memory_read_bursts =
@@ -1839,10 +1839,10 @@ module tb_top_3p_soc #(
             initial begin
                 if (!$value$plusargs("memh=%s", memh_path))
                     $fatal(1,
-                        "full-CCX timed-memory test requires +memh=<256-bit image>");
+                        "full-ICX timed-memory test requires +memh=<256-bit image>");
                 if (!$value$plusargs("memh_words=%d", memh_words))
                     $fatal(1,
-                        "full-CCX timed-memory test requires +memh_words=<count>");
+                        "full-ICX timed-memory test requires +memh_words=<count>");
                 if ((memh_words < 1) ||
                     (memh_words > (RAM_BYTES / 32)))
                     $fatal(1, "timed-memory memh_words=%0d exceeds RAM",
@@ -2154,9 +2154,9 @@ module tb_top_3p_soc #(
                 .bready_i(ram_bready)
             );
 
-            assign magic_ccx_read_data = {
-                u_ram.ram_q[magic_ccx_word_index + 1'b1],
-                u_ram.ram_q[magic_ccx_word_index]
+            assign magic_icx_read_data = {
+                u_ram.ram_q[magic_icx_word_index + 1'b1],
+                u_ram.ram_q[magic_icx_word_index]
             };
 
             initial begin
@@ -2165,10 +2165,10 @@ module tb_top_3p_soc #(
                 max_timing_owners = 0;
                 if (!$value$plusargs("memh=%s", memh_path))
                     $fatal(1,
-                        "full-CCX SRAM test requires +memh=<256-bit image>");
+                        "full-ICX SRAM test requires +memh=<256-bit image>");
                 if (!$value$plusargs("memh_words=%d", memh_words))
                     $fatal(1,
-                        "full-CCX SRAM test requires +memh_words=<count>");
+                        "full-ICX SRAM test requires +memh_words=<count>");
                 if ((memh_words < 1) ||
                     (memh_words > (RAM_BYTES / 32)))
                     $fatal(1, "SRAM memh_words=%0d exceeds RAM",
@@ -2179,77 +2179,77 @@ module tb_top_3p_soc #(
     endgenerate
 
     initial begin
-        magic_ccx_source_mask_q = 4'b0000;
-        magic_ccx_source_mask_arg = 0;
+        magic_icx_source_mask_q = 4'b0000;
+        magic_icx_source_mask_arg = 0;
         fence_case_q = 0;
         if (!$value$plusargs("fence_case=%d", fence_case_q))
             fence_case_q = 0;
         fence_check_enabled_q = $test$plusargs("fence_check");
         fence_trace_enabled_q = $test$plusargs("fence_trace");
         if ($test$plusargs("magic_l1i"))
-            magic_ccx_source_mask_q[`OPENRV64_CCX_SOURCE_ICACHE] = 1'b1;
+            magic_icx_source_mask_q[`OPENRV64_ICX_SOURCE_ICACHE] = 1'b1;
         if ($test$plusargs("magic_l1d"))
-            magic_ccx_source_mask_q[`OPENRV64_CCX_SOURCE_DCACHE] = 1'b1;
-        if ($value$plusargs("magic_ccx_sources=%h",
-                            magic_ccx_source_mask_arg))
-            magic_ccx_source_mask_q = magic_ccx_source_mask_arg[3:0];
+            magic_icx_source_mask_q[`OPENRV64_ICX_SOURCE_DCACHE] = 1'b1;
+        if ($value$plusargs("magic_icx_sources=%h",
+                            magic_icx_source_mask_arg))
+            magic_icx_source_mask_q = magic_icx_source_mask_arg[3:0];
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            magic_ccx_resp_valid_q <= 1'b0;
-            magic_ccx_resp_hart_id_q <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            magic_ccx_resp_txn_id_q <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            magic_ccx_resp_source_id_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
-            magic_ccx_resp_rdata_q <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-            magic_ccx_l1i_reads <= 0;
-            magic_ccx_l1d_reads <= 0;
-            for (magic_ccx_shadow_reset_scan = 0;
-                 magic_ccx_shadow_reset_scan < MAGIC_CCX_SHADOW_DEPTH;
-                 magic_ccx_shadow_reset_scan =
-                    magic_ccx_shadow_reset_scan + 1) begin
-                magic_ccx_shadow_valid_q[
-                    magic_ccx_shadow_reset_scan] <= 1'b0;
-                magic_ccx_shadow_hart_id_q[
-                    magic_ccx_shadow_reset_scan] <=
-                    {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-                magic_ccx_shadow_txn_id_q[
-                    magic_ccx_shadow_reset_scan] <=
-                    {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-                magic_ccx_shadow_source_id_q[
-                    magic_ccx_shadow_reset_scan] <=
-                    {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+            magic_icx_resp_valid_q <= 1'b0;
+            magic_icx_resp_hart_id_q <=
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            magic_icx_resp_txn_id_q <=
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            magic_icx_resp_source_id_q <=
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
+            magic_icx_resp_rdata_q <=
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+            magic_icx_l1i_reads <= 0;
+            magic_icx_l1d_reads <= 0;
+            for (magic_icx_shadow_reset_scan = 0;
+                 magic_icx_shadow_reset_scan < MAGIC_ICX_SHADOW_DEPTH;
+                 magic_icx_shadow_reset_scan =
+                    magic_icx_shadow_reset_scan + 1) begin
+                magic_icx_shadow_valid_q[
+                    magic_icx_shadow_reset_scan] <= 1'b0;
+                magic_icx_shadow_hart_id_q[
+                    magic_icx_shadow_reset_scan] <=
+                    {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+                magic_icx_shadow_txn_id_q[
+                    magic_icx_shadow_reset_scan] <=
+                    {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+                magic_icx_shadow_source_id_q[
+                    magic_icx_shadow_reset_scan] <=
+                    {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
             end
         end else begin
-            if (magic_ccx_resp_fire && !magic_ccx_req_fire)
-                magic_ccx_resp_valid_q <= 1'b0;
-            if (magic_ccx_shadow_resp_fire)
-                magic_ccx_shadow_valid_q[
-                    magic_ccx_shadow_resp_index_r] <= 1'b0;
-            if (magic_ccx_req_fire) begin
-                magic_ccx_resp_valid_q <= 1'b1;
-                magic_ccx_resp_hart_id_q <= ccx_req_hart_id;
-                magic_ccx_resp_txn_id_q <= ccx_req_txn_id;
-                magic_ccx_resp_source_id_q <= ccx_req_source_id;
-                magic_ccx_resp_rdata_q <= magic_ccx_read_data;
-                magic_ccx_shadow_valid_q[
-                    magic_ccx_shadow_free_index_r] <= 1'b1;
-                magic_ccx_shadow_hart_id_q[
-                    magic_ccx_shadow_free_index_r] <= ccx_req_hart_id;
-                magic_ccx_shadow_txn_id_q[
-                    magic_ccx_shadow_free_index_r] <= ccx_req_txn_id;
-                magic_ccx_shadow_source_id_q[
-                    magic_ccx_shadow_free_index_r] <= ccx_req_source_id;
-                if (ccx_req_source_id ==
-                    `OPENRV64_CCX_SOURCE_ICACHE)
-                    magic_ccx_l1i_reads <= magic_ccx_l1i_reads + 1;
-                else if (ccx_req_source_id ==
-                         `OPENRV64_CCX_SOURCE_DCACHE)
-                    magic_ccx_l1d_reads <= magic_ccx_l1d_reads + 1;
+            if (magic_icx_resp_fire && !magic_icx_req_fire)
+                magic_icx_resp_valid_q <= 1'b0;
+            if (magic_icx_shadow_resp_fire)
+                magic_icx_shadow_valid_q[
+                    magic_icx_shadow_resp_index_r] <= 1'b0;
+            if (magic_icx_req_fire) begin
+                magic_icx_resp_valid_q <= 1'b1;
+                magic_icx_resp_hart_id_q <= icx_req_hart_id;
+                magic_icx_resp_txn_id_q <= icx_req_txn_id;
+                magic_icx_resp_source_id_q <= icx_req_source_id;
+                magic_icx_resp_rdata_q <= magic_icx_read_data;
+                magic_icx_shadow_valid_q[
+                    magic_icx_shadow_free_index_r] <= 1'b1;
+                magic_icx_shadow_hart_id_q[
+                    magic_icx_shadow_free_index_r] <= icx_req_hart_id;
+                magic_icx_shadow_txn_id_q[
+                    magic_icx_shadow_free_index_r] <= icx_req_txn_id;
+                magic_icx_shadow_source_id_q[
+                    magic_icx_shadow_free_index_r] <= icx_req_source_id;
+                if (icx_req_source_id ==
+                    `OPENRV64_ICX_SOURCE_ICACHE)
+                    magic_icx_l1i_reads <= magic_icx_l1i_reads + 1;
+                else if (icx_req_source_id ==
+                         `OPENRV64_ICX_SOURCE_DCACHE)
+                    magic_icx_l1d_reads <= magic_icx_l1d_reads + 1;
             end
         end
     end
@@ -2258,13 +2258,13 @@ module tb_top_3p_soc #(
         if (!rst_n) begin
             fence_resp_valid_q <= 1'b0;
             fence_resp_hart_q <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
             fence_resp_txn_q <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
             fence_resp_source_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
             fence_resp_rdata_q <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             fence_ww_pred_done_q <= 1'b0;
             fence_wr_pred_done_q <= 1'b0;
             fence_rr_pred_done_q <= 1'b0;
@@ -2292,7 +2292,7 @@ module tb_top_3p_soc #(
             fence_order_violation_q <= 11'd0;
             fence_smc_pending_valid_q <= 1'b0;
             fence_smc_forward_data_q <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             fence_external_requests_q <= 0;
             fence_external_completions_q <= 0;
             for (fence_queue_reset_scan = 0;
@@ -2301,20 +2301,20 @@ module tb_top_3p_soc #(
                      fence_queue_reset_scan + 1) begin
                 fence_queue_valid_q[fence_queue_reset_scan] <= 1'b0;
                 fence_queue_hart_q[fence_queue_reset_scan] <=
-                    {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
                 fence_queue_txn_q[fence_queue_reset_scan] <=
-                    {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
                 fence_queue_source_q[fence_queue_reset_scan] <=
-                    {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
                 fence_queue_op_q[fence_queue_reset_scan] <=
-                    {`OPENRV64_CCX_OP_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_OP_WIDTH{1'b0}};
                 fence_queue_addr_q[fence_queue_reset_scan] <= 64'd0;
                 fence_queue_wdata_q[fence_queue_reset_scan] <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 fence_queue_wstrb_q[fence_queue_reset_scan] <=
-                    {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
                 fence_queue_rdata_q[fence_queue_reset_scan] <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 fence_queue_shadow_q[fence_queue_reset_scan] <=
                     {FENCE_SHADOW_INDEX_WIDTH{1'b0}};
                 fence_queue_delay_q[fence_queue_reset_scan] <= 0;
@@ -2326,7 +2326,7 @@ module tb_top_3p_soc #(
                 fence_shadow_valid_q[fence_shadow_reset_scan] <= 1'b0;
                 fence_shadow_addr_q[fence_shadow_reset_scan] <= 64'd0;
                 fence_shadow_data_q[fence_shadow_reset_scan] <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             end
         end else begin
             if (fence_resp_fire)
@@ -2369,10 +2369,10 @@ module tb_top_3p_soc #(
                     fence_external_completions_q + 1;
 
                 if (fence_queue_op_q[fence_queue_response_index_r] ==
-                    `OPENRV64_CCX_OP_WRITE) begin
+                    `OPENRV64_ICX_OP_WRITE) begin
                     for (fence_shadow_write_byte = 0;
                          fence_shadow_write_byte <
-                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                             `OPENRV64_ICX_LINE_STRB_WIDTH;
                          fence_shadow_write_byte =
                              fence_shadow_write_byte + 1)
                         if (fence_queue_wstrb_q[
@@ -2392,59 +2392,59 @@ module tb_top_3p_soc #(
                     FENCE_TEST_BASE + 64'h000:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_WRITE)
+                            `OPENRV64_ICX_OP_WRITE)
                             fence_ww_pred_done_q <= 1'b1;
                     FENCE_TEST_BASE + 64'h100:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_WRITE)
+                            `OPENRV64_ICX_OP_WRITE)
                             fence_wr_pred_done_q <= 1'b1;
                     FENCE_TEST_BASE + 64'h200:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_READ)
+                            `OPENRV64_ICX_OP_READ)
                             fence_rr_pred_done_q <= 1'b1;
                     FENCE_TEST_BASE + 64'h300:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_READ)
+                            `OPENRV64_ICX_OP_READ)
                             fence_rw_pred_done_q <= 1'b1;
                     FENCE_TEST_BASE + 64'h400:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_WRITE)
+                            `OPENRV64_ICX_OP_WRITE)
                             fence_partial_done_q <= 1'b1;
                     FENCE_TEST_BASE + 64'hd00:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_WRITE)
+                            `OPENRV64_ICX_OP_WRITE)
                             fence_final_store_done_q <= 1'b1;
                     FENCE_SMC_LINE:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_WRITE) begin
+                            `OPENRV64_ICX_OP_WRITE) begin
                             fence_smc_store_done_q <= 1'b1;
                             fence_smc_pending_valid_q <= 1'b0;
                         end
                     FENCE_DEVICE_BASE + 64'h000:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_WRITE)
+                            `OPENRV64_ICX_OP_WRITE)
                             fence_oo_pred_done_q <= 1'b1;
                     FENCE_DEVICE_BASE + 64'h100:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_WRITE)
+                            `OPENRV64_ICX_OP_WRITE)
                             fence_oi_pred_done_q <= 1'b1;
                     FENCE_DEVICE_BASE + 64'h200:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_READ)
+                            `OPENRV64_ICX_OP_READ)
                             fence_ii_pred_done_q <= 1'b1;
                     FENCE_DEVICE_BASE + 64'h300:
                         if (fence_queue_op_q[
                                 fence_queue_response_index_r] ==
-                            `OPENRV64_CCX_OP_READ)
+                            `OPENRV64_ICX_OP_READ)
                             fence_io_pred_done_q <= 1'b1;
                     default: begin
                         if ((fence_queue_addr_q[
@@ -2455,7 +2455,7 @@ module tb_top_3p_soc #(
                              FENCE_TEST_BASE + 64'hb00) &&
                             (fence_queue_op_q[
                                  fence_queue_response_index_r] ==
-                             `OPENRV64_CCX_OP_WRITE))
+                             `OPENRV64_ICX_OP_WRITE))
                             fence_pressure_done_q[
                                 (fence_queue_addr_q[
                                      fence_queue_response_index_r] -
@@ -2465,41 +2465,41 @@ module tb_top_3p_soc #(
                 endcase
             end
 
-            if (fence_ccx_req_fire) begin
+            if (fence_icx_req_fire) begin
                 if (fence_trace_enabled_q)
                     $display(
                         "FENCE_BOUNDARY request source=%0d txn=%0d op=%0d addr=%016h",
-                        ccx_req_source_id, ccx_req_txn_id,
-                        ccx_req_op, ccx_req_addr);
+                        icx_req_source_id, icx_req_txn_id,
+                        icx_req_op, icx_req_addr);
                 fence_external_requests_q <=
                     fence_external_requests_q + 1;
                 fence_queue_valid_q[fence_queue_free_index_r] <= 1'b1;
                 fence_queue_hart_q[fence_queue_free_index_r] <=
-                    ccx_req_hart_id;
+                    icx_req_hart_id;
                 fence_queue_txn_q[fence_queue_free_index_r] <=
-                    ccx_req_txn_id;
+                    icx_req_txn_id;
                 fence_queue_source_q[fence_queue_free_index_r] <=
-                    ccx_req_source_id;
-                fence_queue_op_q[fence_queue_free_index_r] <= ccx_req_op;
+                    icx_req_source_id;
+                fence_queue_op_q[fence_queue_free_index_r] <= icx_req_op;
                 fence_queue_addr_q[fence_queue_free_index_r] <=
-                    ccx_req_addr;
+                    icx_req_addr;
                 fence_queue_wdata_q[fence_queue_free_index_r] <=
-                    ccx_wdata;
+                    icx_wdata;
                 fence_queue_wstrb_q[fence_queue_free_index_r] <=
-                    ccx_wstrb;
+                    icx_wstrb;
                 fence_queue_rdata_q[fence_queue_free_index_r] <=
-                    ((ccx_req_addr == FENCE_SMC_LINE) &&
-                     (ccx_req_source_id ==
-                      `OPENRV64_CCX_SOURCE_ICACHE) &&
+                    ((icx_req_addr == FENCE_SMC_LINE) &&
+                     (icx_req_source_id ==
+                      `OPENRV64_ICX_SOURCE_ICACHE) &&
                      fence_smc_pending_valid_q) ?
                         fence_smc_forward_data_q :
                     fence_shadow_match_r ?
                         fence_shadow_data_q[
                             fence_shadow_match_index_r] :
-                        ((ccx_req_addr >= FENCE_DEVICE_BASE) &&
-                         (ccx_req_addr < FENCE_DEVICE_LIMIT)) ?
-                            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}} :
-                            magic_ccx_read_data;
+                        ((icx_req_addr >= FENCE_DEVICE_BASE) &&
+                         (icx_req_addr < FENCE_DEVICE_LIMIT)) ?
+                            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}} :
+                            magic_icx_read_data;
                 fence_queue_shadow_q[fence_queue_free_index_r] <=
                     fence_shadow_match_r ?
                         fence_shadow_match_index_r :
@@ -2512,16 +2512,16 @@ module tb_top_3p_soc #(
                         fence_shadow_free_index_r] <= 1'b1;
                     fence_shadow_addr_q[
                         fence_shadow_free_index_r] <=
-                        {ccx_req_addr[63:6], 6'b0};
+                        {icx_req_addr[63:6], 6'b0};
                     fence_shadow_data_q[
                         fence_shadow_free_index_r] <=
-                        ((ccx_req_addr >= FENCE_DEVICE_BASE) &&
-                         (ccx_req_addr < FENCE_DEVICE_LIMIT)) ?
-                            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}} :
-                            magic_ccx_read_data;
+                        ((icx_req_addr >= FENCE_DEVICE_BASE) &&
+                         (icx_req_addr < FENCE_DEVICE_LIMIT)) ?
+                            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}} :
+                            magic_icx_read_data;
                 end
 
-                if (ccx_req_addr == FENCE_TEST_BASE + 64'h040) begin
+                if (icx_req_addr == FENCE_TEST_BASE + 64'h040) begin
                     if (!fence_ww_pred_done_q) begin
                         fence_order_violation_q[0] <= 1'b1;
                         $display(
@@ -2529,7 +2529,7 @@ module tb_top_3p_soc #(
                     end
                     fence_ww_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_TEST_BASE + 64'h140) begin
+                if (icx_req_addr == FENCE_TEST_BASE + 64'h140) begin
                     if (!fence_wr_pred_done_q) begin
                         fence_order_violation_q[1] <= 1'b1;
                         $display(
@@ -2537,7 +2537,7 @@ module tb_top_3p_soc #(
                     end
                     fence_wr_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_TEST_BASE + 64'h240) begin
+                if (icx_req_addr == FENCE_TEST_BASE + 64'h240) begin
                     if (!fence_rr_pred_done_q) begin
                         fence_order_violation_q[2] <= 1'b1;
                         $display(
@@ -2545,7 +2545,7 @@ module tb_top_3p_soc #(
                     end
                     fence_rr_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_TEST_BASE + 64'h340) begin
+                if (icx_req_addr == FENCE_TEST_BASE + 64'h340) begin
                     if (!fence_rw_pred_done_q) begin
                         fence_order_violation_q[3] <= 1'b1;
                         $display(
@@ -2553,7 +2553,7 @@ module tb_top_3p_soc #(
                     end
                     fence_rw_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h040) begin
+                if (icx_req_addr == FENCE_DEVICE_BASE + 64'h040) begin
                     if (!fence_oo_pred_done_q) begin
                         fence_order_violation_q[4] <= 1'b1;
                         $display(
@@ -2561,7 +2561,7 @@ module tb_top_3p_soc #(
                     end
                     fence_oo_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h140) begin
+                if (icx_req_addr == FENCE_DEVICE_BASE + 64'h140) begin
                     if (!fence_oi_pred_done_q) begin
                         fence_order_violation_q[5] <= 1'b1;
                         $display(
@@ -2569,7 +2569,7 @@ module tb_top_3p_soc #(
                     end
                     fence_oi_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h240) begin
+                if (icx_req_addr == FENCE_DEVICE_BASE + 64'h240) begin
                     if (!fence_ii_pred_done_q) begin
                         fence_order_violation_q[6] <= 1'b1;
                         $display(
@@ -2577,7 +2577,7 @@ module tb_top_3p_soc #(
                     end
                     fence_ii_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_DEVICE_BASE + 64'h340) begin
+                if (icx_req_addr == FENCE_DEVICE_BASE + 64'h340) begin
                     if (!fence_io_pred_done_q) begin
                         fence_order_violation_q[7] <= 1'b1;
                         $display(
@@ -2585,17 +2585,17 @@ module tb_top_3p_soc #(
                     end
                     fence_io_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_TEST_BASE + 64'h400) begin
-                    if ((ccx_wstrb[15:0] != 16'hfffe) ||
-                        (|ccx_wstrb[
-                            `OPENRV64_CCX_LINE_STRB_WIDTH-1:16]) ||
-                        (ccx_wdata[127:0] !=
+                if (icx_req_addr == FENCE_TEST_BASE + 64'h400) begin
+                    if ((icx_wstrb[15:0] != 16'hfffe) ||
+                        (|icx_wstrb[
+                            `OPENRV64_ICX_LINE_STRB_WIDTH-1:16]) ||
+                        (icx_wdata[127:0] !=
                          128'hffeeddccbbaa99887766554433221100))
                         $fatal(1,
                             "partial stores did not merge at external boundary strb=%h data=%032h",
-                            ccx_wstrb, ccx_wdata[127:0]);
+                            icx_wstrb, icx_wdata[127:0]);
                 end
-                if (ccx_req_addr == FENCE_TEST_BASE + 64'h440) begin
+                if (icx_req_addr == FENCE_TEST_BASE + 64'h440) begin
                     if (!fence_partial_done_q) begin
                         fence_order_violation_q[8] <= 1'b1;
                         $display(
@@ -2603,7 +2603,7 @@ module tb_top_3p_soc #(
                     end
                     fence_partial_succ_seen_q <= 1'b1;
                 end
-                if (ccx_req_addr == FENCE_TEST_BASE + 64'hc00) begin
+                if (icx_req_addr == FENCE_TEST_BASE + 64'hc00) begin
                     if (fence_pressure_done_q != 12'hfff) begin
                         fence_order_violation_q[9] <= 1'b1;
                         $display(
@@ -2612,31 +2612,31 @@ module tb_top_3p_soc #(
                     end
                     fence_pressure_succ_seen_q <= 1'b1;
                 end
-                if ((ccx_req_addr == FENCE_SMC_LINE) &&
-                    (ccx_req_source_id ==
-                     `OPENRV64_CCX_SOURCE_DCACHE) &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE)) begin
+                if ((icx_req_addr == FENCE_SMC_LINE) &&
+                    (icx_req_source_id ==
+                     `OPENRV64_ICX_SOURCE_DCACHE) &&
+                    (icx_req_op == `OPENRV64_ICX_OP_WRITE)) begin
                     fence_smc_store_seen_q <= 1'b1;
                     fence_smc_pending_valid_q <= 1'b1;
                     fence_smc_forward_data_q <=
                         fence_shadow_match_r ?
                             fence_shadow_data_q[
                                 fence_shadow_match_index_r] :
-                            magic_ccx_read_data;
+                            magic_icx_read_data;
                     for (fence_shadow_write_byte = 0;
                          fence_shadow_write_byte <
-                             `OPENRV64_CCX_LINE_STRB_WIDTH;
+                             `OPENRV64_ICX_LINE_STRB_WIDTH;
                          fence_shadow_write_byte =
                              fence_shadow_write_byte + 1)
-                        if (ccx_wstrb[fence_shadow_write_byte])
+                        if (icx_wstrb[fence_shadow_write_byte])
                             fence_smc_forward_data_q[
                                 fence_shadow_write_byte*8 +: 8] <=
-                                ccx_wdata[
+                                icx_wdata[
                                     fence_shadow_write_byte*8 +: 8];
                 end
-                if ((ccx_req_addr == FENCE_SMC_LINE) &&
-                    (ccx_req_source_id ==
-                     `OPENRV64_CCX_SOURCE_ICACHE)) begin
+                if ((icx_req_addr == FENCE_SMC_LINE) &&
+                    (icx_req_source_id ==
+                     `OPENRV64_ICX_SOURCE_ICACHE)) begin
                     if ((fence_smc_fetches_q != 0) &&
                         !fence_smc_store_done_q) begin
                         fence_order_violation_q[10] <= 1'b1;
@@ -2704,7 +2704,7 @@ module tb_top_3p_soc #(
                     fetch_demand_trace_scan + 1) begin
                 if (fetch_demand_trace_valid_q[
                         fetch_demand_trace_scan]) begin
-                    if (dut.u_bus.g_ccx.u_bus.u_l1i
+                    if (dut.u_bus.g_icx.u_bus.u_l1i
                             .demand_mshr_any_valid_r)
                         fetch_demand_trace_external_q[
                             fetch_demand_trace_scan] =
@@ -3052,11 +3052,11 @@ module tb_top_3p_soc #(
         retired = 0;
         progress_interval_cycles = 0;
         progress_next_cycle = 0;
-        ccx_requests = 0;
-        ccx_fetch_reads = 0;
-        ccx_data_reads = 0;
-        ccx_data_writes = 0;
-        ccx_ptw_reads = 0;
+        icx_requests = 0;
+        icx_fetch_reads = 0;
+        icx_data_reads = 0;
+        icx_data_writes = 0;
+        icx_ptw_reads = 0;
         dtlb_fast_loads = 0;
         dtlb_fast_stores = 0;
         dtlb_access_overlap_loads = 0;
@@ -3243,9 +3243,9 @@ module tb_top_3p_soc #(
         l1d_wait_access = 0;
         l1d_wait_run_response = 0;
         l1d_wait_unknown = 0;
-        ccx_request_wait = 0;
-        ccx_read_request_wait = 0;
-        ccx_write_request_wait = 0;
+        icx_request_wait = 0;
+        icx_read_request_wait = 0;
+        icx_write_request_wait = 0;
         l2_bus_request_wait = 0;
         l2_command_full_cycles = 0;
         axi_read_address_wait = 0;
@@ -3521,13 +3521,13 @@ module tb_top_3p_soc #(
                 if (dut.backend_dispatch_occupancy == 6)
                     frontend_empty_dispatch_full =
                         frontend_empty_dispatch_full + 1;
-                if (dut.u_bus.g_ccx.u_bus.u_l1i
+                if (dut.u_bus.g_icx.u_bus.u_l1i
                         .demand_mshr_any_valid_r)
                     frontend_empty_l1i_external_miss =
                         frontend_empty_l1i_external_miss + 1;
                 else if (!dut.g_fetch_axi.u_fetch.consume_line_hit &&
                          (dut.g_fetch_axi.u_fetch.demand_pending_any ||
-                          (dut.u_bus.g_ccx.u_bus.fetch_count_q != 0)))
+                          (dut.u_bus.g_icx.u_bus.fetch_count_q != 0)))
                     frontend_empty_pending_no_external_miss =
                         frontend_empty_pending_no_external_miss + 1;
                 if (dut.control_flush || dut.control_redirect)
@@ -3536,7 +3536,7 @@ module tb_top_3p_soc #(
                     frontend_bp_stall = frontend_bp_stall + 1;
                 else if (!dut.g_fetch_axi.u_fetch.consume_line_hit &&
                          (dut.g_fetch_axi.u_fetch.demand_pending_any ||
-                          (dut.u_bus.g_ccx.u_bus.fetch_count_q != 0)))
+                          (dut.u_bus.g_icx.u_bus.fetch_count_q != 0)))
                     frontend_refill_wait = frontend_refill_wait + 1;
                 else if (!dut.g_fetch_axi.u_fetch.consume_line_hit)
                     frontend_no_line = frontend_no_line + 1;
@@ -3552,29 +3552,29 @@ module tb_top_3p_soc #(
                     lsu_load_request_wait =
                         lsu_load_request_wait + 1;
             end
-            if (dut.u_bus.g_ccx.u_bus.l1d_req_valid &&
-                !dut.u_bus.g_ccx.u_bus.l1d_req_ready) begin
+            if (dut.u_bus.g_icx.u_bus.l1d_req_valid &&
+                !dut.u_bus.g_icx.u_bus.l1d_req_ready) begin
                 l1d_request_wait = l1d_request_wait + 1;
-                if (dut.u_bus.g_ccx.u_bus.l1d_req_write)
+                if (dut.u_bus.g_icx.u_bus.l1d_req_write)
                     l1d_store_request_wait =
                         l1d_store_request_wait + 1;
                 else
                     l1d_load_request_wait =
                         l1d_load_request_wait + 1;
-                if (dut.u_bus.g_ccx.u_bus.u_l1d.
+                if (dut.u_bus.g_icx.u_bus.u_l1d.
                         demand_load_store_block)
                     l1d_wait_store_block =
                         l1d_wait_store_block + 1;
-                else if (!dut.u_bus.g_ccx.u_bus.u_l1d.
+                else if (!dut.u_bus.g_icx.u_bus.u_l1d.
                              lock_request_ready)
                     l1d_wait_lock_barrier =
                         l1d_wait_lock_barrier + 1;
-                else if (dut.u_bus.g_ccx.u_bus.u_l1d.
+                else if (dut.u_bus.g_icx.u_bus.u_l1d.
                              response_tag_full)
                     l1d_wait_response_tags =
                         l1d_wait_response_tags + 1;
-                else if (!dut.u_bus.g_ccx.u_bus.u_l1d.l1_req_ready) begin
-                    case (dut.u_bus.g_ccx.u_bus.u_l1d.u_l1d.u_l1.
+                else if (!dut.u_bus.g_icx.u_bus.u_l1d.l1_req_ready) begin
+                    case (dut.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
                               g_cache.u_cache.state_q)
                         2'd1:
                             l1d_wait_refill = l1d_wait_refill + 1;
@@ -3587,23 +3587,23 @@ module tb_top_3p_soc #(
                 end else
                     l1d_wait_unknown = l1d_wait_unknown + 1;
             end
-            if (dut.u_bus.g_ccx.u_bus.l1d_req_valid &&
-                dut.u_bus.g_ccx.u_bus.l1d_req_ready &&
-                !dut.u_bus.g_ccx.u_bus.l1d_req_write &&
-                dut.u_bus.g_ccx.u_bus.u_l1d.
+            if (dut.u_bus.g_icx.u_bus.l1d_req_valid &&
+                dut.u_bus.g_icx.u_bus.l1d_req_ready &&
+                !dut.u_bus.g_icx.u_bus.l1d_req_write &&
+                dut.u_bus.g_icx.u_bus.u_l1d.
                     demand_load_store_conflict_r &&
-                !dut.u_bus.g_ccx.u_bus.u_l1d.
+                !dut.u_bus.g_icx.u_bus.u_l1d.
                     demand_load_store_block)
                 l1d_dirty_snoop_accepts =
                     l1d_dirty_snoop_accepts + 1;
-            if (ccx_req_valid && !ccx_req_ready) begin
-                ccx_request_wait = ccx_request_wait + 1;
-                if (ccx_req_op == `OPENRV64_CCX_OP_WRITE)
-                    ccx_write_request_wait =
-                        ccx_write_request_wait + 1;
+            if (icx_req_valid && !icx_req_ready) begin
+                icx_request_wait = icx_request_wait + 1;
+                if (icx_req_op == `OPENRV64_ICX_OP_WRITE)
+                    icx_write_request_wait =
+                        icx_write_request_wait + 1;
                 else
-                    ccx_read_request_wait =
-                        ccx_read_request_wait + 1;
+                    icx_read_request_wait =
+                        icx_read_request_wait + 1;
             end
             if (u_complex.u_l2.bus_req_valid_o &&
                 !u_complex.u_l2.bus_req_ready_i)
@@ -3690,40 +3690,40 @@ module tb_top_3p_soc #(
             if (core_axi_arvalid || core_axi_awvalid || core_axi_wvalid)
                 $fatal(1,
                     "physical CoreMark unexpectedly used residual core AXI");
-            if (ccx_req_valid && ccx_req_ready) begin
-                ccx_requests = ccx_requests + 1;
-                if (ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE)
-                    ccx_fetch_reads = ccx_fetch_reads + 1;
-                else if (ccx_req_source_id ==
-                         `OPENRV64_CCX_SOURCE_PTW)
-                    ccx_ptw_reads = ccx_ptw_reads + 1;
-                else if (ccx_req_op == `OPENRV64_CCX_OP_READ)
-                    ccx_data_reads = ccx_data_reads + 1;
-                else if (ccx_req_op == `OPENRV64_CCX_OP_WRITE)
-                    ccx_data_writes = ccx_data_writes + 1;
-                if ((ccx_req_source_id ==
-                     `OPENRV64_CCX_SOURCE_ICACHE) &&
+            if (icx_req_valid && icx_req_ready) begin
+                icx_requests = icx_requests + 1;
+                if (icx_req_source_id == `OPENRV64_ICX_SOURCE_ICACHE)
+                    icx_fetch_reads = icx_fetch_reads + 1;
+                else if (icx_req_source_id ==
+                         `OPENRV64_ICX_SOURCE_PTW)
+                    icx_ptw_reads = icx_ptw_reads + 1;
+                else if (icx_req_op == `OPENRV64_ICX_OP_READ)
+                    icx_data_reads = icx_data_reads + 1;
+                else if (icx_req_op == `OPENRV64_ICX_OP_WRITE)
+                    icx_data_writes = icx_data_writes + 1;
+                if ((icx_req_source_id ==
+                     `OPENRV64_ICX_SOURCE_ICACHE) &&
                     (dut.csr_priv_mode == `RV64_PRIV_S) &&
-                    (ccx_req_addr >= 64'h0000_0000_8000_1000) &&
-                    (ccx_req_addr < 64'h0000_0000_8000_2000))
+                    (icx_req_addr >= 64'h0000_0000_8000_1000) &&
+                    (icx_req_addr < 64'h0000_0000_8000_2000))
                     saw_sv39_alias_fetch = 1'b1;
-                if ((ccx_req_source_id ==
-                     `OPENRV64_CCX_SOURCE_DCACHE) &&
+                if ((icx_req_source_id ==
+                     `OPENRV64_ICX_SOURCE_DCACHE) &&
                     (dut.csr_priv_mode == `RV64_PRIV_S) &&
-                    (ccx_req_addr >= 64'h0000_0000_8000_0000) &&
-                    (ccx_req_addr <
+                    (icx_req_addr >= 64'h0000_0000_8000_0000) &&
+                    (icx_req_addr <
                      (64'h0000_0000_8000_0000 + RAM_BYTES)))
                     saw_sv39_alias_data = 1'b1;
             end
-            if (dut.u_bus.g_ccx.u_bus.xlate_request_fire &&
-                dut.u_bus.g_ccx.u_bus.lsu_xlate_req_write_i &&
-                (dut.u_bus.g_ccx.u_bus.lsu_xlate_req_vaddr_i >=
+            if (dut.u_bus.g_icx.u_bus.xlate_request_fire &&
+                dut.u_bus.g_icx.u_bus.lsu_xlate_req_write_i &&
+                (dut.u_bus.g_icx.u_bus.lsu_xlate_req_vaddr_i >=
                  64'h0000_0000_4004_0000) &&
-                (dut.u_bus.g_ccx.u_bus.lsu_xlate_req_vaddr_i <
+                (dut.u_bus.g_icx.u_bus.lsu_xlate_req_vaddr_i <
                  64'h0000_0000_4008_0000))
                 zero_scatter_xlates = zero_scatter_xlates + 1;
-            if (dut.u_bus.g_ccx.u_bus.pipe_fast_request_fire &&
-                dut.u_bus.g_ccx.u_bus.lsu_pipe_req_write_i &&
+            if (dut.u_bus.g_icx.u_bus.pipe_fast_request_fire &&
+                dut.u_bus.g_icx.u_bus.lsu_pipe_req_write_i &&
                 (dut.backend_mem_effective_addr >=
                  64'h0000_0000_4004_0000) &&
                 (dut.backend_mem_effective_addr <
@@ -3742,10 +3742,10 @@ module tb_top_3p_soc #(
             end
             // The LSQ translates at admission. Count micro/main-TLB fast
             // accepts independently from later physical L1D accesses.
-            if (dut.u_bus.g_ccx.u_bus.xlate_request_fire &&
-                (dut.u_bus.g_ccx.u_bus.xlate_l1_hit ||
-                 dut.u_bus.g_ccx.u_bus.xlate_l2_hit)) begin
-                if (dut.u_bus.g_ccx.u_bus.lsu_xlate_req_write_i)
+            if (dut.u_bus.g_icx.u_bus.xlate_request_fire &&
+                (dut.u_bus.g_icx.u_bus.xlate_l1_hit ||
+                 dut.u_bus.g_icx.u_bus.xlate_l2_hit)) begin
+                if (dut.u_bus.g_icx.u_bus.lsu_xlate_req_write_i)
                     dtlb_fast_stores = dtlb_fast_stores + 1;
                 else
                     dtlb_fast_loads = dtlb_fast_loads + 1;
@@ -3753,16 +3753,16 @@ module tb_top_3p_soc #(
             // This is actual channel overlap, not a fused translation/cache
             // lookup: a younger load translation and an older physical L1D
             // request were both accepted on this cycle.
-            if (dut.u_bus.g_ccx.u_bus.xlate_request_fire &&
-                !dut.u_bus.g_ccx.u_bus.lsu_xlate_req_write_i &&
-                dut.u_bus.g_ccx.u_bus.pipe_fast_request_fire)
+            if (dut.u_bus.g_icx.u_bus.xlate_request_fire &&
+                !dut.u_bus.g_icx.u_bus.lsu_xlate_req_write_i &&
+                dut.u_bus.g_icx.u_bus.pipe_fast_request_fire)
                 dtlb_access_overlap_loads =
                     dtlb_access_overlap_loads + 1;
-            if (dut.u_bus.g_ccx.u_bus.serial_dtlb_lookup &&
-                dut.u_bus.g_ccx.u_bus.dtlb_lookup_hit &&
-                !dut.u_bus.g_ccx.u_bus.dtlb_lookup_page_fault &&
-                dut.u_bus.g_ccx.u_bus.lsu_xlate_only_q) begin
-                if (dut.u_bus.g_ccx.u_bus.lsu_write_q)
+            if (dut.u_bus.g_icx.u_bus.serial_dtlb_lookup &&
+                dut.u_bus.g_icx.u_bus.dtlb_lookup_hit &&
+                !dut.u_bus.g_icx.u_bus.dtlb_lookup_page_fault &&
+                dut.u_bus.g_icx.u_bus.lsu_xlate_only_q) begin
+                if (dut.u_bus.g_icx.u_bus.lsu_write_q)
                     dtlb_serial_stores = dtlb_serial_stores + 1;
                 else
                     dtlb_serial_loads = dtlb_serial_loads + 1;
@@ -3842,14 +3842,14 @@ module tb_top_3p_soc #(
             if (dut.l1i_next_line_prefetch)
                 l1i_next_line_hints = l1i_next_line_hints + 1;
             if (dut.l1i_next_line_prefetch &&
-                dut.u_bus.g_ccx.u_bus.u_l1i.enqueue_taken_r)
+                dut.u_bus.g_icx.u_bus.u_l1i.enqueue_taken_r)
                 l1i_next_line_enqueues = l1i_next_line_enqueues + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1i.l1_request_fire &&
-                dut.u_bus.g_ccx.u_bus.u_l1i.select_prefetch)
+            if (dut.u_bus.g_icx.u_bus.u_l1i.l1_request_fire &&
+                dut.u_bus.g_icx.u_bus.u_l1i.select_prefetch)
                 l1i_prefetch_probes = l1i_prefetch_probes + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1i.l1_mem_valid &&
-                dut.u_bus.g_ccx.u_bus.u_l1i.l1_mem_ready &&
-                dut.u_bus.g_ccx.u_bus.u_l1i.cache_prefetch_q)
+            if (dut.u_bus.g_icx.u_bus.u_l1i.l1_mem_valid &&
+                dut.u_bus.g_icx.u_bus.u_l1i.l1_mem_ready &&
+                dut.u_bus.g_icx.u_bus.u_l1i.cache_prefetch_q)
                 l1i_prefetch_miss_completions =
                     l1i_prefetch_miss_completions + 1;
             if (dut.g_fetch_axi.u_fetch.pair_saved_count >
@@ -3886,7 +3886,7 @@ module tb_top_3p_soc #(
                          L1D_PREFETCH_QUEUE_LINES;
                      l1d_prefetch_trace_scan =
                          l1d_prefetch_trace_scan + 1)
-                    if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    if (dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_candidate_valid_q[
                                 l1d_prefetch_trace_scan])
                         l1d_prefetch_trace_queue_occupancy =
@@ -3897,7 +3897,7 @@ module tb_top_3p_soc #(
                          L1D_PREFETCH_OUTSTANDING;
                      l1d_prefetch_trace_scan =
                          l1d_prefetch_trace_scan + 1)
-                    if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    if (dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_mshr_valid_q[
                                 l1d_prefetch_trace_scan])
                         l1d_prefetch_trace_mshr_occupancy =
@@ -3908,209 +3908,209 @@ module tb_top_3p_soc #(
                          L1D_PREFETCH_STREAMS;
                      l1d_prefetch_trace_scan =
                          l1d_prefetch_trace_scan + 1)
-                    if (dut.u_bus.g_ccx.u_bus.u_l1d
+                    if (dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_stream_long_q[
                                 l1d_prefetch_trace_scan])
                         l1d_prefetch_trace_long_mask =
                             l1d_prefetch_trace_long_mask |
                             (1 << l1d_prefetch_trace_scan);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                if (dut.u_bus.g_icx.u_bus.u_l1d
                         .demand_request_fire &&
-                    !dut.u_bus.g_ccx.u_bus.u_l1d.req_write_i &&
-                    dut.u_bus.g_ccx.u_bus.u_l1d.l1_req_cacheable)
+                    !dut.u_bus.g_icx.u_bus.u_l1d.req_write_i &&
+                    dut.u_bus.g_icx.u_bus.u_l1d.l1_req_cacheable)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,DEMAND,%016h,-1,0,%0d,%0d,%0d,%0h,-1,-1",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.demand_line_addr,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.demand_line_addr,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d.l1_miss_fire)
+                if (dut.u_bus.g_icx.u_bus.u_l1d.l1_miss_fire)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,MISS,%016h,-1,0,%0d,%0d,%0d,%0h,-1,-1",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.l1_miss_addr,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.l1_miss_addr,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                if (dut.u_bus.g_icx.u_bus.u_l1d
                         .prefetch_candidate_queue)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,CANDIDATE,%016h,%0d,%0d,%0d,%0d,%0d,%0h,%0d,-1",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_generate_addr_r,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_generate_stream_r,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_generate_index_r + 1,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_candidate_free_index_r);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                if (dut.u_bus.g_icx.u_bus.u_l1d
                         .prefetch_candidate_drop)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,DROP,%016h,%0d,%0d,%0d,%0d,%0d,%0h,-1,-1",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_generate_addr_r,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_generate_stream_r,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_generate_index_r + 1,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_launch)
+                if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_launch)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,LAUNCH,%016h,%0d,-1,%0d,%0d,%0d,%0h,%0d,-1",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_launch_addr_r,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_candidate_stream_q[
-                                dut.u_bus.g_ccx.u_bus.u_l1d
+                                dut.u_bus.g_icx.u_bus.u_l1d
                                     .prefetch_launch_index_r],
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_launch_index_r);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_issued_o)
+                if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_issued_o)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,ISSUE,%016h,-1,-1,%0d,%0d,%0d,%0h,-1,%0d",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.request_addr_q,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.request_addr_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.request_txn_id_q);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d.request_txn_id_q);
+                if (dut.u_bus.g_icx.u_bus.u_l1d
                         .prefetch_response_fire)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,RESPONSE,%016h,-1,-1,%0d,%0d,%0d,%0h,%0d,%0d",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_mshr_addr_q[
-                                dut.u_bus.g_ccx.u_bus.u_l1d
+                                dut.u_bus.g_icx.u_bus.u_l1d
                                     .prefetch_mshr_response_index_r],
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_mshr_response_index_r,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.ccx_resp_txn_id_i);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d.icx_resp_txn_id_i);
+                if (dut.u_bus.g_icx.u_bus.u_l1d
                         .prefetch_on_time_useful)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,USE_ON_TIME,%016h,-1,-1,%0d,%0d,%0d,%0h,-1,-1",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_useful_line_addr,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask);
-                if (dut.u_bus.g_ccx.u_bus.u_l1d
+                if (dut.u_bus.g_icx.u_bus.u_l1d
                         .prefetch_late_useful)
                     $fdisplay(
                         l1d_prefetch_trace_fd,
                         "%0d,USE_LATE,%016h,-1,-1,%0d,%0d,%0d,%0h,-1,-1",
                         cycles,
-                        dut.u_bus.g_ccx.u_bus.u_l1d
+                        dut.u_bus.g_icx.u_bus.u_l1d
                             .prefetch_useful_line_addr,
-                        dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_q,
+                        dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_q,
                         l1d_prefetch_trace_queue_occupancy,
                         l1d_prefetch_trace_mshr_occupancy,
                         l1d_prefetch_trace_long_mask);
             end
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_issued_o)
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_issued_o)
                 l1d_prefetch_issued = l1d_prefetch_issued + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_useful_o)
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_useful_o)
                 l1d_prefetch_useful = l1d_prefetch_useful + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_on_time_useful)
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_on_time_useful)
                 l1d_prefetch_on_time_useful =
                     l1d_prefetch_on_time_useful + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_late_useful)
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_late_useful)
                 l1d_prefetch_late_useful =
                     l1d_prefetch_late_useful + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_late_o)
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_late_o)
                 l1d_prefetch_late = l1d_prefetch_late + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d
+            if (dut.u_bus.g_icx.u_bus.u_l1d
                     .prefetch_queued_demand_match_r)
                 l1d_prefetch_late_queued =
                     l1d_prefetch_late_queued + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d
+            if (dut.u_bus.g_icx.u_bus.u_l1d
                     .prefetch_inflight_late_match)
                 l1d_prefetch_late_command =
                     l1d_prefetch_late_command + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d
+            if (dut.u_bus.g_icx.u_bus.u_l1d
                     .prefetch_mshr_late_match_r)
                 l1d_prefetch_late_mshr =
                     l1d_prefetch_late_mshr + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_dropped_o)
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_dropped_o)
                 l1d_prefetch_dropped = l1d_prefetch_dropped + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_useless_o)
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_useless_o)
                 l1d_prefetch_useless = l1d_prefetch_useless + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_o >
+            if (dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_o >
                 l1d_prefetch_max_depth)
                 l1d_prefetch_max_depth =
-                    dut.u_bus.g_ccx.u_bus.u_l1d.prefetch_depth_o;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d.store_poison_any_event_r)
+                    dut.u_bus.g_icx.u_bus.u_l1d.prefetch_depth_o;
+            if (dut.u_bus.g_icx.u_bus.u_l1d.store_poison_any_event_r)
                 l1d_store_poison_any_events =
                     l1d_store_poison_any_events + 1;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d
+            if (dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_prefetch_event_r)
                 l1d_store_poison_prefetch_events =
                     l1d_store_poison_prefetch_events + 1;
             l1d_store_poison_prefetch_queue =
                 l1d_store_poison_prefetch_queue +
-                dut.u_bus.g_ccx.u_bus.u_l1d
+                dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_prefetch_queue_count_r;
             l1d_store_poison_prefetch_command =
                 l1d_store_poison_prefetch_command +
-                dut.u_bus.g_ccx.u_bus.u_l1d
+                dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_prefetch_command_count_r;
             l1d_store_poison_prefetch_mshr =
                 l1d_store_poison_prefetch_mshr +
-                dut.u_bus.g_ccx.u_bus.u_l1d
+                dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_prefetch_mshr_count_r;
             l1d_store_poison_prefetch_fill =
                 l1d_store_poison_prefetch_fill +
-                dut.u_bus.g_ccx.u_bus.u_l1d
+                dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_prefetch_fill_count_r;
-            if (dut.u_bus.g_ccx.u_bus.u_l1d
+            if (dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_demand_event_r)
                 l1d_store_poison_demand_events =
                     l1d_store_poison_demand_events + 1;
             l1d_store_poison_demand_wait_prefetch =
                 l1d_store_poison_demand_wait_prefetch +
-                dut.u_bus.g_ccx.u_bus.u_l1d
+                dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_demand_wait_prefetch_count_r;
             l1d_store_poison_demand_fill =
                 l1d_store_poison_demand_fill +
-                dut.u_bus.g_ccx.u_bus.u_l1d
+                dut.u_bus.g_icx.u_bus.u_l1d
                     .store_poison_demand_fill_count_r;
             l1d_store_overlay_demand_mshr =
                 l1d_store_overlay_demand_mshr +
-                dut.u_bus.g_ccx.u_bus.u_l1d
+                dut.u_bus.g_icx.u_bus.u_l1d
                     .store_overlay_demand_mshr_count_r;
         end
 
@@ -4125,7 +4125,7 @@ module tb_top_3p_soc #(
 
         if (!run_completed_q)
             $fatal(1,
-                "full-CCX workload timeout pc=%h instr=%h retired=%0d",
+                "full-ICX workload timeout pc=%h instr=%h retired=%0d",
                 dbg_pc, dbg_instr, retired);
         if (fence_check_enabled_q)
             $display(
@@ -4139,7 +4139,7 @@ module tb_top_3p_soc #(
                 fence_order_violation_q);
         if (expected_a0_valid &&
             (dut.u_backend.u_gpr.regs[10] != expected_a0))
-            $fatal(1, "full-CCX a0=%h expected=%h",
+            $fatal(1, "full-ICX a0=%h expected=%h",
                 dut.u_backend.u_gpr.regs[10], expected_a0);
         /*
          * This is an architectural VM requirement. Translation/access
@@ -4148,30 +4148,30 @@ module tb_top_3p_soc #(
          */
         if (require_sv39 &&
             (!saw_sv39 || !saw_supervisor || !saw_sv39_alias_fetch ||
-             !saw_sv39_alias_data || (ccx_ptw_reads < 3) ||
+             !saw_sv39_alias_data || (icx_ptw_reads < 3) ||
              (dtlb_fast_loads == 0) || (dtlb_fast_stores == 0)))
             $fatal(1,
                 "Sv39 requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d dtlb_access_overlap_loads=%0d",
                 saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
-                saw_sv39_alias_data, ccx_ptw_reads, dtlb_fast_loads,
+                saw_sv39_alias_data, icx_ptw_reads, dtlb_fast_loads,
                 dtlb_fast_stores, dtlb_access_overlap_loads);
         if (require_sv39_active &&
             (!saw_sv39 || !saw_supervisor ||
-             !saw_sv39_alias_fetch || (ccx_ptw_reads < 3)))
+             !saw_sv39_alias_fetch || (icx_ptw_reads < 3)))
             $fatal(1,
                 "active Sv39 requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b ptw_reads=%0d",
                 saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
-                ccx_ptw_reads);
+                icx_ptw_reads);
         if (require_zero_scatter &&
             (!saw_sv39 || !saw_supervisor || !saw_sv39_alias_fetch ||
-             (ccx_ptw_reads < 3) ||
+             (icx_ptw_reads < 3) ||
              (zero_scatter_xlates != 32768) ||
              (zero_scatter_accesses != 32768) ||
              (zero_scatter_mapping_errors != 0)))
             $fatal(1,
                 "zero scatter requirement failed: satp=%0b supervisor=%0b alias_fetch=%0b ptw_reads=%0d xlates=%0d accesses=%0d mapping_errors=%0d",
                 saw_sv39, saw_supervisor, saw_sv39_alias_fetch,
-                ccx_ptw_reads, zero_scatter_xlates,
+                icx_ptw_reads, zero_scatter_xlates,
                 zero_scatter_accesses, zero_scatter_mapping_errors);
         if (fence_check_enabled_q) begin
             case (fence_case_q)
@@ -4301,7 +4301,7 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_CCX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
@@ -4361,19 +4361,19 @@ module tb_top_3p_soc #(
                     dut.u_backend.u_gpr.regs[11]);
         end
         $display(
-            "PERF_CCX_L2_TRAFFIC ccx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
-            ccx_requests, ccx_fetch_reads, ccx_data_reads,
-            ccx_data_writes, ccx_ptw_reads, axi_read_transactions,
+            "PERF_ICX_L2_TRAFFIC icx_requests=%0d fetch_reads=%0d data_reads=%0d data_writes=%0d ptw_reads=%0d l2_axi_reads=%0d l2_axi_read_beats=%0d l2_axi_writes=%0d l2_axi_write_beats=%0d",
+            icx_requests, icx_fetch_reads, icx_data_reads,
+            icx_data_writes, icx_ptw_reads, axi_read_transactions,
             axi_read_beats, axi_write_transactions,
             axi_write_beats);
         $display(
-            "PERF_CCX_L2_L1I_PREFETCH next_line_hints=%0d next_line_enqueues=%0d probes=%0d miss_completions=%0d",
+            "PERF_ICX_L2_L1I_PREFETCH next_line_hints=%0d next_line_enqueues=%0d probes=%0d miss_completions=%0d",
             l1i_next_line_hints, l1i_next_line_enqueues,
             l1i_prefetch_probes, l1i_prefetch_miss_completions);
         $display(
-            "PERF_CCX_L2_VM required=%0b satp_sv39=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d dtlb_access_overlap_loads=%0d dtlb_serial_loads=%0d dtlb_serial_stores=%0d cacheable_pa_base=%016h cacheable_pa_size=%016h",
+            "PERF_ICX_L2_VM required=%0b satp_sv39=%0b supervisor=%0b alias_fetch=%0b alias_data=%0b ptw_reads=%0d dtlb_fast_loads=%0d dtlb_fast_stores=%0d dtlb_access_overlap_loads=%0d dtlb_serial_loads=%0d dtlb_serial_stores=%0d cacheable_pa_base=%016h cacheable_pa_size=%016h",
             require_sv39, saw_sv39, saw_supervisor,
-            saw_sv39_alias_fetch, saw_sv39_alias_data, ccx_ptw_reads,
+            saw_sv39_alias_fetch, saw_sv39_alias_data, icx_ptw_reads,
             dtlb_fast_loads, dtlb_fast_stores,
             dtlb_access_overlap_loads,
             dtlb_serial_loads, dtlb_serial_stores,
@@ -4383,9 +4383,9 @@ module tb_top_3p_soc #(
             require_zero_scatter, zero_scatter_xlates,
             zero_scatter_accesses, zero_scatter_mapping_errors);
         $display(
-            "PERF_CCX_MAGIC source_mask=%x l1i_line_reads=%0d l1d_line_reads=%0d",
-            magic_ccx_source_mask_q, magic_ccx_l1i_reads,
-            magic_ccx_l1d_reads);
+            "PERF_ICX_MAGIC source_mask=%x l1i_line_reads=%0d l1d_line_reads=%0d",
+            magic_icx_source_mask_q, magic_icx_l1i_reads,
+            magic_icx_l1d_reads);
         if (DDR3_ENABLE != 0)
             $display(
                 "PERF_MEMORY timing_model=%0d commands=%0d max_command_queue=%0d max_timing_owners=%0d max_l2_mshrs=%0d read_queue_depth=%0d write_queue_depth=%0d command_queue_depth=%0d max_burst_train_bursts=%0d bank_row_swizzle=%0d",
@@ -4481,16 +4481,16 @@ module tb_top_3p_soc #(
                 memory_ddr_refresh_deferred_cycles);
         end
         $display(
-            "PERF_CCX_L2_FRONTEND direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d",
+            "PERF_ICX_L2_FRONTEND direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d",
             direction_corrections, target_corrections,
             lookaside_restart_hits);
         $display(
-            "PERF_CCX_L2_BP_TARGET btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d",
+            "PERF_ICX_L2_BP_TARGET btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d",
             bp_btb_lookups, bp_btb_hits, bp_btb_misses,
             bp_btb_wrong_targets, bp_ras_lookups, bp_ras_hits,
             bp_ras_misses, bp_ras_wrong_targets);
         $display(
-            "PERF_CCX_L2_LOOKASIDE pair_stack_depth=%0d eligible_restarts=%0d hits=%0d pair_overlaps=%0d pair_stack_overflows=%0d pair_stack_max_saved=%0d fills=%0d duplicate_fills=%0d free_fills=%0d evictions=%0d full_branch_allocations=%0d",
+            "PERF_ICX_L2_LOOKASIDE pair_stack_depth=%0d eligible_restarts=%0d hits=%0d pair_overlaps=%0d pair_stack_overflows=%0d pair_stack_max_saved=%0d fills=%0d duplicate_fills=%0d free_fills=%0d evictions=%0d full_branch_allocations=%0d",
             FETCH_ALT_PAIR_STACK_DEPTH,
             lookaside_eligible_restarts, lookaside_restart_hits,
             lookaside_pair_replacements, lookaside_pair_stack_overflows,
@@ -4498,7 +4498,7 @@ module tb_top_3p_soc #(
             lookaside_store_duplicate_fills, lookaside_store_free_fills,
             lookaside_store_evictions, lookaside_full_branch_allocations);
         $display(
-            "PERF_CCX_L2_SECTOR allocations=%0d predicted_free=%0d unpredicted_free=%0d response_taps=%0d predicted_taps=%0d unpredicted_taps=%0d background_requests=%0d background_deferred_cycles=%0d",
+            "PERF_ICX_L2_SECTOR allocations=%0d predicted_free=%0d unpredicted_free=%0d response_taps=%0d predicted_taps=%0d unpredicted_taps=%0d background_requests=%0d background_deferred_cycles=%0d",
             lookaside_sector_allocations,
             lookaside_sector_predicted_free,
             lookaside_sector_unpredicted_free,
@@ -4508,7 +4508,7 @@ module tb_top_3p_soc #(
             lookaside_sector_background_requests,
             lookaside_sector_background_deferred);
         $display(
-            "PERF_CCX_L2_STASH_STALL episodes=%0d completed=%0d interrupted=%0d active=%0d requested=%0d stalled=%0d completed_stalled=%0d interrupted_stalled=%0d exposed_cycles=%0d completed_stall_cycles=%0d interrupted_stall_cycles=%0d same_line_cycles=%0d next_line_cycles=%0d preview_instr=%0d request_delay_sum=%0d request_delay_max=%0d response_delay_sum=%0d response_delay_max=%0d refill_latency_sum=%0d refill_latency_max=%0d",
+            "PERF_ICX_L2_STASH_STALL episodes=%0d completed=%0d interrupted=%0d active=%0d requested=%0d stalled=%0d completed_stalled=%0d interrupted_stalled=%0d exposed_cycles=%0d completed_stall_cycles=%0d interrupted_stall_cycles=%0d same_line_cycles=%0d next_line_cycles=%0d preview_instr=%0d request_delay_sum=%0d request_delay_max=%0d response_delay_sum=%0d response_delay_max=%0d refill_latency_sum=%0d refill_latency_max=%0d",
             stash_trace_episodes, stash_trace_completed,
             stash_trace_interrupted, stash_trace_active,
             stash_trace_requested, stash_trace_stalled,
@@ -4527,7 +4527,7 @@ module tb_top_3p_soc #(
             stash_trace_refill_latency_sum,
             stash_trace_refill_latency_max);
         $display(
-            "PERF_CCX_L2_STASH_OFFSET hits=%0d,%0d,%0d,%0d stalled=%0d,%0d,%0d,%0d stall_cycles=%0d,%0d,%0d,%0d",
+            "PERF_ICX_L2_STASH_OFFSET hits=%0d,%0d,%0d,%0d stalled=%0d,%0d,%0d,%0d stall_cycles=%0d,%0d,%0d,%0d",
             stash_trace_offset_hits[0], stash_trace_offset_hits[1],
             stash_trace_offset_hits[2], stash_trace_offset_hits[3],
             stash_trace_offset_stalled[0],
@@ -4539,14 +4539,14 @@ module tb_top_3p_soc #(
             stash_trace_offset_stall_cycles[2],
             stash_trace_offset_stall_cycles[3]);
         $display(
-            "PERF_CCX_L2_STASH_SECTOR hits=%0d,%0d stalled=%0d,%0d stall_cycles=%0d,%0d",
+            "PERF_ICX_L2_STASH_SECTOR hits=%0d,%0d stalled=%0d,%0d stall_cycles=%0d,%0d",
             stash_trace_sector_hits[0], stash_trace_sector_hits[1],
             stash_trace_sector_stalled[0],
             stash_trace_sector_stalled[1],
             stash_trace_sector_stall_cycles[0],
             stash_trace_sector_stall_cycles[1]);
         $display(
-            "PERF_CCX_L2_PREFETCH enabled=%0d streams=%0d initial_depth=%0d adaptive=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d useful_pct=%0.2f on_time_useful=%0d on_time_pct=%0.2f late_useful=%0d late_useful_pct=%0.2f late=%0d late_queued=%0d late_command=%0d late_mshr=%0d dropped=%0d useless=%0d",
+            "PERF_ICX_L2_PREFETCH enabled=%0d streams=%0d initial_depth=%0d adaptive=%0d max_depth_cfg=%0d max_depth_seen=%0d outstanding=%0d reserve=%0d issued=%0d useful=%0d useful_pct=%0.2f on_time_useful=%0d on_time_pct=%0.2f late_useful=%0d late_useful_pct=%0.2f late=%0d late_queued=%0d late_command=%0d late_mshr=%0d dropped=%0d useless=%0d",
             L1D_PREFETCH_ENABLE, L1D_PREFETCH_STREAMS,
             L1D_PREFETCH_DISTANCE, L1D_PREFETCH_ADAPTIVE_ENABLE,
             L1D_PREFETCH_MAX_DISTANCE, l1d_prefetch_max_depth,
@@ -4569,7 +4569,7 @@ module tb_top_3p_soc #(
             l1d_prefetch_late_mshr,
             l1d_prefetch_dropped, l1d_prefetch_useless);
         $display(
-            "PERF_CCX_L2_STORE_POISON any_events=%0d prefetch_events=%0d prefetch_queue=%0d prefetch_command=%0d prefetch_mshr=%0d prefetch_fill=%0d demand_events=%0d demand_wait_prefetch=%0d demand_fill=%0d demand_mshr_overlays=%0d",
+            "PERF_ICX_L2_STORE_POISON any_events=%0d prefetch_events=%0d prefetch_queue=%0d prefetch_command=%0d prefetch_mshr=%0d prefetch_fill=%0d demand_events=%0d demand_wait_prefetch=%0d demand_fill=%0d demand_mshr_overlays=%0d",
             l1d_store_poison_any_events,
             l1d_store_poison_prefetch_events,
             l1d_store_poison_prefetch_queue,
@@ -4581,19 +4581,19 @@ module tb_top_3p_soc #(
             l1d_store_poison_demand_fill,
             l1d_store_overlay_demand_mshr);
         $display(
-            "PERF_CCX_L2_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
+            "PERF_ICX_L2_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
             issued, decoded,
             issue_width_0, issue_width_1, issue_width_2, issue_width_3,
             issue_width_4,
             decode_width_0, decode_width_1, decode_width_2, decode_width_3,
             retire_width_0, retire_width_1, retire_width_2, retire_width_3);
         $display(
-            "PERF_CCX_L2_BACKEND dispatch_nonempty=%0d dispatch_nonempty_no_issue=%0d dispatch_full=%0d raw_hazard=%0d waw_hazard=%0d read_port_hazard=%0d write_busy=%0d barrier=%0d",
+            "PERF_ICX_L2_BACKEND dispatch_nonempty=%0d dispatch_nonempty_no_issue=%0d dispatch_full=%0d raw_hazard=%0d waw_hazard=%0d read_port_hazard=%0d write_busy=%0d barrier=%0d",
             dispatch_nonempty, dispatch_nonempty_no_issue, dispatch_full,
             raw_hazard_cycles, waw_hazard_cycles, read_port_hazard_cycles,
             write_busy_cycles, barrier_cycles);
         $display(
-            "PERF_CCX_L2_RAW first_block=%0d pending=%0d bundle=%0d completed=%0d secondary_only=%0d rs1=%0d rs2=%0d both=%0d lane0=%0d lane1=%0d lane2=%0d blocked_alu=%0d blocked_branch=%0d blocked_jump=%0d blocked_load=%0d blocked_store=%0d",
+            "PERF_ICX_L2_RAW first_block=%0d pending=%0d bundle=%0d completed=%0d secondary_only=%0d rs1=%0d rs2=%0d both=%0d lane0=%0d lane1=%0d lane2=%0d blocked_alu=%0d blocked_branch=%0d blocked_jump=%0d blocked_load=%0d blocked_store=%0d",
             raw_first_block_cycles, raw_first_pending_cycles,
             raw_first_bundle_cycles, raw_first_completed_cycles,
             raw_secondary_only_cycles, raw_first_rs1_cycles,
@@ -4603,7 +4603,7 @@ module tb_top_3p_soc #(
             raw_first_blocked_branch, raw_first_blocked_jump,
             raw_first_blocked_load, raw_first_blocked_store);
         $display(
-            "PERF_CCX_L2_WINDOW enabled=%0d speculation=%0d nonempty_cycles=%0d no_eligible_cycles=%0d raw_stall_cycles=%0d hard_stall_cycles=%0d mem_order_stall_cycles=%0d unissued_entry_cycles=%0d operand_ready_entry_cycles=%0d eligible_entry_cycles=%0d raw_block_entry_cycles=%0d hard_block_entry_cycles=%0d mem_order_block_entry_cycles=%0d",
+            "PERF_ICX_L2_WINDOW enabled=%0d speculation=%0d nonempty_cycles=%0d no_eligible_cycles=%0d raw_stall_cycles=%0d hard_stall_cycles=%0d mem_order_stall_cycles=%0d unissued_entry_cycles=%0d operand_ready_entry_cycles=%0d eligible_entry_cycles=%0d raw_block_entry_cycles=%0d hard_block_entry_cycles=%0d mem_order_block_entry_cycles=%0d",
             ISSUE_WINDOW, SPECULATION_WINDOW, window_nonempty_cycles,
             window_no_eligible_cycles, window_raw_stall_cycles,
             window_hard_stall_cycles, window_mem_order_stall_cycles,
@@ -4614,29 +4614,29 @@ module tb_top_3p_soc #(
             window_hard_block_entry_cycles,
             window_mem_order_block_entry_cycles);
         $display(
-            "PERF_CCX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d",
+            "PERF_ICX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d",
             retire_nonempty, retire_nonempty_no_retire,
             retire_head_incomplete, retire_completed_behind_head);
         $display(
-            "PERF_CCX_L2_RETIRE_HEAD alu=%0d branch=%0d jump=%0d load=%0d store=%0d mem_lsq_absent=%0d mem_wait_xlate=%0d mem_wait_access=%0d mem_access_inflight=%0d",
+            "PERF_ICX_L2_RETIRE_HEAD alu=%0d branch=%0d jump=%0d load=%0d store=%0d mem_lsq_absent=%0d mem_wait_xlate=%0d mem_wait_access=%0d mem_access_inflight=%0d",
             retire_head_wait_alu, retire_head_wait_branch,
             retire_head_wait_jump, retire_head_wait_load,
             retire_head_wait_store, retire_head_mem_lsq_absent,
             retire_head_mem_wait_xlate, retire_head_mem_wait_access,
             retire_head_mem_access_inflight);
         $display(
-            "PERF_CCX_L2_RETIRE_HEAD_ABSENT unissued=%0d issued=%0d result=%0d complete=%0d",
+            "PERF_ICX_L2_RETIRE_HEAD_ABSENT unissued=%0d issued=%0d result=%0d complete=%0d",
             retire_head_mem_absent_unissued,
             retire_head_mem_absent_issued,
             retire_head_mem_absent_result,
             retire_head_mem_absent_complete);
         $display(
-            "PERF_CCX_L2_FETCH empty=%0d held=%0d request_wait=%0d control_empty=%0d refill_wait=%0d no_line=%0d bp_stall=%0d other_empty=%0d",
+            "PERF_ICX_L2_FETCH empty=%0d held=%0d request_wait=%0d control_empty=%0d refill_wait=%0d no_line=%0d bp_stall=%0d other_empty=%0d",
             frontend_empty, frontend_held, frontend_request_wait,
             frontend_control_empty, frontend_refill_wait, frontend_no_line,
             frontend_bp_stall, frontend_other_empty);
         $display(
-            "PERF_CCX_L2_FETCH_CAUSAL empty_backend_ready=%0d empty_dispatch_empty=%0d empty_dispatch_empty_backend_ready=%0d empty_dispatch_empty_retire_empty=%0d empty_dispatch_nonempty=%0d empty_dispatch_full=%0d empty_l1i_external_miss=%0d empty_pending_no_external_miss=%0d",
+            "PERF_ICX_L2_FETCH_CAUSAL empty_backend_ready=%0d empty_dispatch_empty=%0d empty_dispatch_empty_backend_ready=%0d empty_dispatch_empty_retire_empty=%0d empty_dispatch_nonempty=%0d empty_dispatch_full=%0d empty_l1i_external_miss=%0d empty_pending_no_external_miss=%0d",
             frontend_empty_backend_ready, frontend_empty_dispatch_empty,
             frontend_empty_dispatch_empty_backend_ready,
             frontend_empty_dispatch_empty_retire_empty,
@@ -4644,12 +4644,12 @@ module tb_top_3p_soc #(
             frontend_empty_l1i_external_miss,
             frontend_empty_pending_no_external_miss);
         $display(
-            "PERF_CCX_L2_LSU request_wait=%0d load_wait=%0d store_wait=%0d outstanding=%0d branch_resolutions=%0d conditional_branch_resolutions=%0d",
+            "PERF_ICX_L2_LSU request_wait=%0d load_wait=%0d store_wait=%0d outstanding=%0d branch_resolutions=%0d conditional_branch_resolutions=%0d",
             lsu_request_wait, lsu_load_request_wait,
             lsu_store_request_wait, lsu_outstanding_cycles,
             branch_resolutions, conditional_branch_resolutions);
         $display(
-            "PERF_CCX_L2_SPEC_LOAD alloc=%0d spec_alloc=%0d ordered_alloc=%0d xlate=%0d spec_xlate=%0d access=%0d spec_access=%0d ordered_access=%0d responses=%0d completions=%0d forwarded=%0d faults=%0d",
+            "PERF_ICX_L2_SPEC_LOAD alloc=%0d spec_alloc=%0d ordered_alloc=%0d xlate=%0d spec_xlate=%0d access=%0d spec_access=%0d ordered_access=%0d responses=%0d completions=%0d forwarded=%0d faults=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_allocations_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -4675,7 +4675,7 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_faults_q);
         $display(
-            "PERF_CCX_L2_SPEC_LOAD_WAIT alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d dependency_cycles=%0d dependency_entry_cycles=%0d forward_cycles=%0d forward_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
+            "PERF_ICX_L2_SPEC_LOAD_WAIT alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d dependency_cycles=%0d dependency_entry_cycles=%0d forward_cycles=%0d forward_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_alloc_wait_cycles_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -4699,7 +4699,7 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_max_occupancy_q);
         $display(
-            "PERF_CCX_L2_SPEC_LOAD_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
+            "PERF_ICX_L2_SPEC_LOAD_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_squashed_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -4715,17 +4715,17 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_flushed_q);
         $display(
-            "PERF_CCX_L2_SPEC_LOAD_OUTCOME retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=%0d branch_aborted=%0d flush_aborted=%0d",
+            "PERF_ICX_L2_SPEC_LOAD_OUTCOME retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=%0d branch_aborted=%0d flush_aborted=%0d",
             dut.u_backend.perf_lsq_load_retired_q,
             dut.u_backend.perf_lsq_load_spec_retired_q,
             dut.u_backend.perf_lsq_load_ordered_retired_q,
-            dut.u_bus.g_ccx.u_bus.u_l1d.perf_demand_reissues_q,
+            dut.u_bus.g_icx.u_bus.u_l1d.perf_demand_reissues_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_squashed_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_flushed_q);
         $display(
-            "PERF_CCX_L2_SPEC_STORE alloc=%0d spec_alloc=%0d ordered_alloc=%0d atomic_alloc=%0d xlate=%0d spec_xlate=%0d ordered_access=%0d posted_results=%0d done=%0d",
+            "PERF_ICX_L2_SPEC_STORE alloc=%0d spec_alloc=%0d ordered_alloc=%0d atomic_alloc=%0d xlate=%0d spec_xlate=%0d ordered_access=%0d posted_results=%0d done=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_allocations_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -4745,7 +4745,7 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_done_q);
         $display(
-            "PERF_CCX_L2_SPEC_STORE_WAIT alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d order_wait_cycles=%0d order_wait_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
+            "PERF_ICX_L2_SPEC_STORE_WAIT alloc_wait=%0d queue_full=%0d xlate_wait=%0d access_wait=%0d order_wait_cycles=%0d order_wait_entry_cycles=%0d occupancy_entry_cycles=%0d spec_occupancy_entry_cycles=%0d max_occupancy=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_alloc_wait_cycles_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -4765,7 +4765,7 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_max_occupancy_q);
         $display(
-            "PERF_CCX_L2_SPEC_STORE_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
+            "PERF_ICX_L2_SPEC_STORE_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_squashed_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -4781,7 +4781,7 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_flushed_q);
         $display(
-            "PERF_CCX_L2_SPEC_STORE_OUTCOME retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=0 branch_aborted=%0d flush_aborted=%0d untracked_retired=%0d",
+            "PERF_ICX_L2_SPEC_STORE_OUTCOME retired=%0d spec_retired=%0d ordered_retired=%0d cache_reissues=0 branch_aborted=%0d flush_aborted=%0d untracked_retired=%0d",
             dut.u_backend.perf_lsq_store_retired_q,
             dut.u_backend.perf_lsq_store_spec_retired_q,
             dut.u_backend.perf_lsq_store_ordered_retired_q,
@@ -4791,7 +4791,7 @@ module tb_top_3p_soc #(
                 .perf_store_flushed_q,
             dut.u_backend.perf_lsq_retired_untracked_q);
         $display(
-            "PERF_CCX_L2_ATOMIC starts=%0d done=%0d active_cycles=%0d",
+            "PERF_ICX_L2_ATOMIC starts=%0d done=%0d active_cycles=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_atomic_starts_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -4799,34 +4799,34 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_atomic_active_cycles_q);
         $display(
-            "PERF_CCX_L2_PREFETCH_PAGE_END boundaries_seen=%0d",
-            dut.u_bus.g_ccx.u_bus.u_l1d.perf_prefetch_page_ends_q);
+            "PERF_ICX_L2_PREFETCH_PAGE_END boundaries_seen=%0d",
+            dut.u_bus.g_icx.u_bus.u_l1d.perf_prefetch_page_ends_q);
         $display(
-            "PERF_CCX_L2_MEM_PORTS second_port_opportunities=%0d",
+            "PERF_ICX_L2_MEM_PORTS second_port_opportunities=%0d",
             lsu_second_port_opportunities);
         $display(
-            "PERF_CCX_L2_BACKPRESSURE l1d_wait=%0d l1d_load_wait=%0d l1d_store_wait=%0d ccx_wait=%0d ccx_read_wait=%0d ccx_write_wait=%0d l2_bus_wait=%0d l2_command_full=%0d axi_ar_wait=%0d axi_aw_wait=%0d axi_w_wait=%0d",
+            "PERF_ICX_L2_BACKPRESSURE l1d_wait=%0d l1d_load_wait=%0d l1d_store_wait=%0d icx_wait=%0d icx_read_wait=%0d icx_write_wait=%0d l2_bus_wait=%0d l2_command_full=%0d axi_ar_wait=%0d axi_aw_wait=%0d axi_w_wait=%0d",
             l1d_request_wait, l1d_load_request_wait,
-            l1d_store_request_wait, ccx_request_wait,
-            ccx_read_request_wait, ccx_write_request_wait,
+            l1d_store_request_wait, icx_request_wait,
+            icx_read_request_wait, icx_write_request_wait,
             l2_bus_request_wait, l2_command_full_cycles,
             axi_read_address_wait, axi_write_address_wait,
             axi_write_data_wait);
         $display(
-            "PERF_CCX_L2_L1D_WAIT store_block=%0d dirty_snoops=%0d lock_barrier=%0d response_tags=%0d refill=%0d access=%0d run_response=%0d unknown=%0d",
+            "PERF_ICX_L2_L1D_WAIT store_block=%0d dirty_snoops=%0d lock_barrier=%0d response_tags=%0d refill=%0d access=%0d run_response=%0d unknown=%0d",
             l1d_wait_store_block, l1d_dirty_snoop_accepts,
             l1d_wait_lock_barrier,
             l1d_wait_response_tags, l1d_wait_refill,
             l1d_wait_access, l1d_wait_run_response,
             l1d_wait_unknown);
         $display(
-            "PERF_CCX_L2_CONFLICT total=%0d ex0=%0d ex1=%0d mem=%0d blocked_alu=%0d blocked_branch=%0d blocked_jump=%0d blocked_load=%0d blocked_store=%0d",
+            "PERF_ICX_L2_CONFLICT total=%0d ex0=%0d ex1=%0d mem=%0d blocked_alu=%0d blocked_branch=%0d blocked_jump=%0d blocked_load=%0d blocked_store=%0d",
             pipe_conflicts, pipe_conflicts_ex0, pipe_conflicts_ex1,
             pipe_conflicts_mem, conflict_blocked_alu,
             conflict_blocked_branch, conflict_blocked_jump,
             conflict_blocked_load, conflict_blocked_store);
         $display(
-            "PERF_CCX_L2_CONFLICT_PAIR branch_alu=%0d alu_branch=%0d branch_branch=%0d alu_alu=%0d load_load=%0d store_load=%0d store_store=%0d other=%0d",
+            "PERF_ICX_L2_CONFLICT_PAIR branch_alu=%0d alu_branch=%0d branch_branch=%0d alu_alu=%0d load_load=%0d store_load=%0d store_store=%0d other=%0d",
             conflict_pair_branch_alu, conflict_pair_alu_branch,
             conflict_pair_branch_branch, conflict_pair_alu_alu,
             conflict_pair_load_load, conflict_pair_store_load,
@@ -4849,13 +4849,13 @@ module tb_top_3p_soc #(
         if (DDR3_ENABLE != 0)
             if (MEMORY_TIMING_MODEL == 1)
                 $display(
-                    "PASS: 3P L1I/L1D -> CCX -> L2 -> AXI -> magic memory");
+                    "PASS: 3P L1I/L1D -> ICX -> L2 -> AXI -> magic memory");
             else
                 $display(
-                    "PASS: 3P L1I/L1D -> CCX -> L2 -> AXI -> banked DDR3");
+                    "PASS: 3P L1I/L1D -> ICX -> L2 -> AXI -> banked DDR3");
         else
             $display(
-                "PASS: 3P L1I/L1D -> CCX -> L2 -> 16 MiB AXI SRAM");
+                "PASS: 3P L1I/L1D -> ICX -> L2 -> 16 MiB AXI SRAM");
         if (l1d_prefetch_trace_fd != 0)
             $fclose(l1d_prefetch_trace_fd);
         $finish;

@@ -11,7 +11,7 @@
 `define OPENRV64_AXI_ID_WIDTH 3
 
 // In cacheless-L1I mode AXI IDs 0-3 identify instruction-line slots. Native
-// L1D and PTW traffic use CCX; the LSU tag namespace is independent of AXI IDs
+// L1D and PTW traffic use ICX; the LSU tag namespace is independent of AXI IDs
 // and tracks up to eight outstanding operations.
 `ifndef OPENRV64_LSU_TAG_WIDTH
 `define OPENRV64_LSU_TAG_WIDTH 3

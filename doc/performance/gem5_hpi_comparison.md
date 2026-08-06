@@ -266,13 +266,13 @@ Cortex-A53 structures.
 | L1D prefetch | Two stream records; initial distance 1; adaptive max 8; queue 8; 8 outstanding; 2 demand-reserved IDs; 4 KiB probation gating | Stride prefetcher, degree 4, queue 4, 64-entry 4-way table, physical-address mode, 4 KiB page stop | This is the largest observed page-free behavior difference |
 | L2 | 256 KiB, 8-way, 64-byte lines; 8 MSHRs and 8 waiters/MSHR | 1 MiB, 16-way, 64-byte lines; 4 MSHRs, 8 targets/MSHR, 16 write buffers; tag/data latency 13, response 5 | HPI gets four times the capacity; ORV exposes twice the L2 miss concurrency |
 | Translation | Private small TLB path plus shared 256-entry 4-way L2 TLB and RTL PTW; bypassed in bare proxy | SE translation in this test; not a Linux PTW workload | Bare proxy translation results are not Linux results |
-| Core-to-L2 transport | 512-bit/64-byte CCX lines | 64-byte-wide `toL2Bus`, frontend/response latency 1 | Nominal line movement is wide in both, but protocols and arbitration differ |
+| Core-to-L2 transport | 512-bit/64-byte ICX lines | 64-byte-wide `toL2Bus`, frontend/response latency 1 | Nominal line movement is wide in both, but protocols and arbitration differ |
 | L2-to-memory transport | GenBus/AXI 256-bit; each 64-byte line is two AXI beats | gem5 memory crossbar width 16 bytes with frontend 3, forward 4, response 2 cycles | Northbound packetization and latency are not matched |
 | DDR data interface | One 64-bit channel, BL8, two ranks, eight banks/rank | Same nominal device/channel organization | Raw data width and burst size are aligned |
 | Controller queues | GenBus 8 read/8 write, AXI DDR 8/8, timing command queue 16, 8 timing owners | MemCtrl read buffer 32, write buffer 64 | HPI has deeper controller queues, but the CPU/cache path may not feed them |
 | DDR scheduling | Dependency-safe read/write reordering, independent bank preparation, shared data bus, adjacent burst trains up to 8 | FR-FCFS, open-adaptive page policy | Algorithms and command grouping differ even with matched device timings |
 | Address mapping | Reference: plain `RoRaBaCo`; experimental Linux: optional `bank ^= low_row_bits` | Plain `RoRaBaCoCh` | Reported ORV results use plain mapping; swizzled results are labeled experiments |
-| Coherence/platform | This benchmark is single-hart through local CCX/L2 RTL | One HPI CPU and classic-cache hierarchy | Neither result exercises a multicore A53 coherent cluster |
+| Coherence/platform | This benchmark is single-hart through local ICX/L2 RTL | One HPI CPU and classic-cache hierarchy | Neither result exercises a multicore A53 coherent cluster |
 
 For exact HPI functional-unit latencies and timing expressions, use the saved
 `config.ini` rather than treating the summary table as exhaustive.
@@ -418,18 +418,18 @@ make bench-pagefree \
     PAGEFREE_DDR3=1 \
     PAGEFREE_REQUIRE_ARGS=+require_timed_memory \
     PAGEFREE_L1D_PREFETCH_MAX_DISTANCE=8 \
-    CORE_3P_CCX_L2_L1D_PREFETCH_QUEUE_LINES=8 \
-    CORE_3P_CCX_L2_L1D_PREFETCH_OUTSTANDING=8 \
-    CORE_3P_CCX_L2_L1D_PREFETCH_DEMAND_RESERVE=2 \
-    CORE_3P_CCX_L2_L1D_PREFETCH_PAGE_GATING=1 \
-    CORE_3P_CCX_L2_GENBUS_READ_DEPTH=8 \
-    CORE_3P_CCX_L2_GENBUS_WRITE_DEPTH=8 \
-    CORE_3P_CCX_L2_DDR3_MAX_BURST_TRAIN_BURSTS=8 \
-    CORE_3P_CCX_L2_DDR3_BANK_ROW_SWIZZLE=0
+    CORE_3P_ICX_L2_L1D_PREFETCH_QUEUE_LINES=8 \
+    CORE_3P_ICX_L2_L1D_PREFETCH_OUTSTANDING=8 \
+    CORE_3P_ICX_L2_L1D_PREFETCH_DEMAND_RESERVE=2 \
+    CORE_3P_ICX_L2_L1D_PREFETCH_PAGE_GATING=1 \
+    CORE_3P_ICX_L2_GENBUS_READ_DEPTH=8 \
+    CORE_3P_ICX_L2_GENBUS_WRITE_DEPTH=8 \
+    CORE_3P_ICX_L2_DDR3_MAX_BURST_TRAIN_BURSTS=8 \
+    CORE_3P_ICX_L2_DDR3_BANK_ROW_SWIZZLE=0
 ```
 
 Use `PAGEFREE_RECORDS=65536` for the full proxy.  Set
-`CORE_3P_CCX_L2_DDR3_BANK_ROW_SWIZZLE=1` only for the separately labeled
+`CORE_3P_ICX_L2_DDR3_BANK_ROW_SWIZZLE=1` only for the separately labeled
 hashed-bank experiment.  Keep all other command-line variables unchanged;
 the build tag includes them to prevent accidental binary reuse.
 

@@ -58,19 +58,19 @@ module tb_compliance_platform #(
     string test_name;
     string trace_path;
 
-    logic tohost_ccx_pending_q;
-    logic tohost_ccx_wdata_seen_q;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] tohost_ccx_hart_q;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] tohost_ccx_txn_q;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] tohost_ccx_source_q;
-    logic [63:0] tohost_ccx_wdata_q;
-    logic [7:0] tohost_ccx_wstrb_q;
-    logic [63:0] tohost_ccx_value_q;
+    logic tohost_icx_pending_q;
+    logic tohost_icx_wdata_seen_q;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] tohost_icx_hart_q;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] tohost_icx_txn_q;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] tohost_icx_source_q;
+    logic [63:0] tohost_icx_wdata_q;
+    logic [7:0] tohost_icx_wstrb_q;
+    logic [63:0] tohost_icx_value_q;
     integer tohost_byte;
 
     wire [63:0] tohost_value =
         (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) ?
-        tohost_ccx_value_q : dut.u_memory.memory_q[tohost_index];
+        tohost_icx_value_q : dut.u_memory.memory_q[tohost_index];
 
     openrv64_platform #(
         .SOC_RESET_CYCLES(3),
@@ -165,14 +165,14 @@ module tb_compliance_platform #(
         end
         cycle_count = 0;
         retired_count = 0;
-        tohost_ccx_pending_q = 1'b0;
-        tohost_ccx_wdata_seen_q = 1'b0;
-        tohost_ccx_hart_q = 0;
-        tohost_ccx_txn_q = 0;
-        tohost_ccx_source_q = 0;
-        tohost_ccx_wdata_q = 0;
-        tohost_ccx_wstrb_q = 0;
-        tohost_ccx_value_q = 0;
+        tohost_icx_pending_q = 1'b0;
+        tohost_icx_wdata_seen_q = 1'b0;
+        tohost_icx_hart_q = 0;
+        tohost_icx_txn_q = 0;
+        tohost_icx_source_q = 0;
+        tohost_icx_wdata_q = 0;
+        tohost_icx_wstrb_q = 0;
+        tohost_icx_value_q = 0;
         repeat (6) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
@@ -182,48 +182,48 @@ module tb_compliance_platform #(
         if (rst_n) begin
             // The integrated L2 is write-back, so polling the backing RAM
             // cannot observe a cached ACT4 tohost store.  Track only the
-            // requested tohost word and commit it when the matching CCX write
+            // requested tohost word and commit it when the matching ICX write
             // response completes.
             if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&
-                dut.ccx_req_valid && dut.ccx_req_ready &&
-                (dut.ccx_req_op == `OPENRV64_CCX_OP_WRITE) &&
-                (dut.ccx_req_addr[63:6] == tohost_addr[63:6])) begin
-                tohost_ccx_pending_q <= 1'b1;
-                tohost_ccx_wdata_seen_q <= 1'b0;
-                tohost_ccx_hart_q <= dut.ccx_req_hart_id;
-                tohost_ccx_txn_q <= dut.ccx_req_txn_id;
-                tohost_ccx_source_q <= dut.ccx_req_source_id;
-                tohost_ccx_wdata_q <= 0;
-                tohost_ccx_wstrb_q <= 0;
+                dut.icx_req_valid && dut.icx_req_ready &&
+                (dut.icx_req_op == `OPENRV64_ICX_OP_WRITE) &&
+                (dut.icx_req_addr[63:6] == tohost_addr[63:6])) begin
+                tohost_icx_pending_q <= 1'b1;
+                tohost_icx_wdata_seen_q <= 1'b0;
+                tohost_icx_hart_q <= dut.icx_req_hart_id;
+                tohost_icx_txn_q <= dut.icx_req_txn_id;
+                tohost_icx_source_q <= dut.icx_req_source_id;
+                tohost_icx_wdata_q <= 0;
+                tohost_icx_wstrb_q <= 0;
             end
             if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&
-                tohost_ccx_pending_q &&
-                dut.ccx_wdata_valid && dut.ccx_wdata_ready &&
-                (dut.ccx_wdata_hart_id == tohost_ccx_hart_q) &&
-                (dut.ccx_wdata_txn_id == tohost_ccx_txn_q) &&
-                (dut.ccx_wdata_source_id == tohost_ccx_source_q)) begin
+                tohost_icx_pending_q &&
+                dut.icx_wdata_valid && dut.icx_wdata_ready &&
+                (dut.icx_wdata_hart_id == tohost_icx_hart_q) &&
+                (dut.icx_wdata_txn_id == tohost_icx_txn_q) &&
+                (dut.icx_wdata_source_id == tohost_icx_source_q)) begin
                 for (tohost_byte = 0; tohost_byte < 8;
                      tohost_byte = tohost_byte + 1) begin
-                    tohost_ccx_wdata_q[tohost_byte*8 +: 8] <=
-                        dut.ccx_wdata[
+                    tohost_icx_wdata_q[tohost_byte*8 +: 8] <=
+                        dut.icx_wdata[
                             (tohost_addr[5:0] + tohost_byte)*8 +: 8];
-                    tohost_ccx_wstrb_q[tohost_byte] <=
-                        dut.ccx_wstrb[tohost_addr[5:0] + tohost_byte];
+                    tohost_icx_wstrb_q[tohost_byte] <=
+                        dut.icx_wstrb[tohost_addr[5:0] + tohost_byte];
                 end
-                tohost_ccx_wdata_seen_q <= 1'b1;
+                tohost_icx_wdata_seen_q <= 1'b1;
             end
             if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&
-                tohost_ccx_pending_q && tohost_ccx_wdata_seen_q &&
-                dut.ccx_resp_valid && dut.ccx_resp_ready &&
-                (dut.ccx_resp_hart_id == tohost_ccx_hart_q) &&
-                (dut.ccx_resp_txn_id == tohost_ccx_txn_q) &&
-                (dut.ccx_resp_source_id == tohost_ccx_source_q)) begin
+                tohost_icx_pending_q && tohost_icx_wdata_seen_q &&
+                dut.icx_resp_valid && dut.icx_resp_ready &&
+                (dut.icx_resp_hart_id == tohost_icx_hart_q) &&
+                (dut.icx_resp_txn_id == tohost_icx_txn_q) &&
+                (dut.icx_resp_source_id == tohost_icx_source_q)) begin
                 for (tohost_byte = 0; tohost_byte < 8;
                      tohost_byte = tohost_byte + 1)
-                    if (tohost_ccx_wstrb_q[tohost_byte])
-                        tohost_ccx_value_q[tohost_byte*8 +: 8] <=
-                            tohost_ccx_wdata_q[tohost_byte*8 +: 8];
-                tohost_ccx_pending_q <= 1'b0;
+                    if (tohost_icx_wstrb_q[tohost_byte])
+                        tohost_icx_value_q[tohost_byte*8 +: 8] <=
+                            tohost_icx_wdata_q[tohost_byte*8 +: 8];
+                tohost_icx_pending_q <= 1'b0;
             end
 
             cycle_count <= cycle_count + 1;

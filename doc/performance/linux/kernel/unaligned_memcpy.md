@@ -45,7 +45,7 @@ This path matters for:
 ## Measured proxy result
 
 The OpenRV64 scalar sweep exercised 4 KiB copies with offsets `1:0`, `0:1`,
-and `3:5` on the native 3-pipe L1D/CCX path. Replacing the byte-at-a-time
+and `3:5` on the native 3-pipe L1D/ICX path. Replacing the byte-at-a-time
 fallback with eight independent byte loads and stores gave:
 
 | Implementation | Warm cycles | Bytes/cycle | Retired instructions | IPC |

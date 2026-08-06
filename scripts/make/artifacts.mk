@@ -12,25 +12,25 @@ L2_AXI_DDR3_SIM_BUILD := sim/l2_axi_ddr3_tb.vvp
 MESH_ROUTER_SIM_BUILD := sim/mesh_router_tile_tb.vvp
 SOC_BUS_SIM_BUILD := sim/soc_bus_decode_tb.vvp
 CORE_BUS_SIM_BUILD := sim/core_bus_tb.vvp
-CCX_PROTOCOL_1H_SIM_BUILD := sim/ccx_protocol_1h_tb.vvp
-CCX_PROTOCOL_2H_SIM_BUILD := sim/ccx_protocol_2h_tb.vvp
-CCX_PROTOCOL_4H_SIM_BUILD := sim/ccx_protocol_4h_tb.vvp
-CCX_COHERENT_2H_SIM_BUILD := sim/ccx_coherent_2h_tb.vvp
-CCX_COHERENT_4H_SIM_BUILD := sim/ccx_coherent_4h_tb.vvp
-CCX_COHERENT_PROTOCOL_2H_SIM_BUILD := \
-	sim/ccx_coherent_protocol_2h_tb.vvp
-CCX_COHERENT_PROTOCOL_4H_SIM_BUILD := \
-	sim/ccx_coherent_protocol_4h_tb.vvp
-CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD := \
-	sim/ccx_4h_l1d_directory_l2_tb.vvp
+ICX_PROTOCOL_1H_SIM_BUILD := sim/icx_protocol_1h_tb.vvp
+ICX_PROTOCOL_2H_SIM_BUILD := sim/icx_protocol_2h_tb.vvp
+ICX_PROTOCOL_4H_SIM_BUILD := sim/icx_protocol_4h_tb.vvp
+ICX_COHERENT_2H_SIM_BUILD := sim/icx_coherent_2h_tb.vvp
+ICX_COHERENT_4H_SIM_BUILD := sim/icx_coherent_4h_tb.vvp
+ICX_COHERENT_PROTOCOL_2H_SIM_BUILD := \
+	sim/icx_coherent_protocol_2h_tb.vvp
+ICX_COHERENT_PROTOCOL_4H_SIM_BUILD := \
+	sim/icx_coherent_protocol_4h_tb.vvp
+ICX_4H_L1D_DIRECTORY_L2_SIM_BUILD := \
+	sim/icx_4h_l1d_directory_l2_tb.vvp
 L1_CACHE_SIM_BUILD := sim/l1_cache_tb.vvp
 L1_SYNC_TAG_SIM_BUILD := sim/l1_sync_tag_tb.vvp
 L1D_PREFETCH_SIM_BUILD := sim/l1d_prefetch_tb.vvp
 L1D_DEMAND_MSHR_SIM_BUILD := sim/l1d_demand_mshr_tb.vvp
 L1D_STORE_ORDER_SIM_BUILD := sim/l1d_store_order_tb.vvp
 L1D_STORE_BUFFER_SIM_BUILD := sim/l1d_store_buffer_tb.vvp
-CCX_L2_SIM_BUILD := sim/ccx_l2_tb.vvp
-CCX_L2_SC_REFILL_SIM_BUILD := sim/ccx_l2_sc_refill_tb.vvp
+ICX_L2_SIM_BUILD := sim/icx_l2_tb.vvp
+ICX_L2_SC_REFILL_SIM_BUILD := sim/icx_l2_sc_refill_tb.vvp
 GENBUS_AXI_SIM_BUILD := sim/genbus_axi_tb.vvp
 GENBUS_WB_SIM_BUILD := sim/genbus_wb_tb.vvp
 GENBUS_WB_32_SIM_BUILD := sim/genbus_wb_32_tb.vvp
@@ -40,8 +40,8 @@ GENBUS_WB_512_SIM_BUILD := sim/genbus_wb_512_tb.vvp
 CORE_COMPLEX_1H_AXI_SIM_BUILD := sim/core_complex_1h_axi_tb.vvp
 CORE_COMPLEX_2H_AXI_SIM_BUILD := sim/core_complex_2h_axi_tb.vvp
 CORE_COMPLEX_4H_WB_SIM_BUILD := sim/core_complex_4h_wb_tb.vvp
-CCX_BUS_SIM_BUILD := sim/ccx_bus_tb.vvp
-CCX_L1I_SIM_BUILD := sim/ccx_l1i_tb.vvp
+ICX_BUS_SIM_BUILD := sim/icx_bus_tb.vvp
+ICX_L1I_SIM_BUILD := sim/icx_l1i_tb.vvp
 L1I_TOP_SIM_BUILD := sim/openrv64_l1i_top_tb.vvp
 TLB_SIM_BUILD := sim/tlb_tb.vvp
 MICRO_TLB_SIM_BUILD := sim/micro_tlb_tb.vvp

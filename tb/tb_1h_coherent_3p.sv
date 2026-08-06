@@ -3,7 +3,7 @@
 /*
  * One-core structural baseline for the four-port coherent platform.
  *
- * The CCX crossbar, coherent L2 and directory, probe cluster, device path,
+ * The ICX crossbar, coherent L2 and directory, probe cluster, device path,
  * generic-bus adapter, and timed DDR3 backend remain identical to
  * tb_4h_3p. Only hart 0 is instantiated; hart ports 1-3 are tied off inside
  * tb_4h_3p through CORE_INSTANCES=1.
@@ -32,7 +32,7 @@ module tb_1h_coherent_3p #(
 
     initial
         $display(
-            "1H coherent structural baseline: one core, four-port CCX/L2, timed DDR3");
+            "1H coherent structural baseline: one core, four-port ICX/L2, timed DDR3");
 
     tb_4h_3p #(
         .CORE_INSTANCES(1),

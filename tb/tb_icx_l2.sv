@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "complex/protocol/defs.v"
 
-module tb_ccx_l2;
+module tb_icx_l2;
 
     localparam integer MEMORY_LINES = 8192;
     localparam [63:0] PTE_LINE_ADDR = 64'h0000_0000_0000_1000;
@@ -11,36 +11,36 @@ module tb_ccx_l2;
 
     logic req_valid;
     wire req_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] req_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] req_source_id;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] req_op;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] req_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] req_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] req_source_id;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] req_op;
     logic req_lock;
-    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] req_order;
-    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] req_kind;
-    logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] req_attr;
+    logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] req_order;
+    logic [`OPENRV64_ICX_KIND_WIDTH-1:0] req_kind;
+    logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] req_attr;
     logic [2:0] req_size;
     logic [63:0] req_addr;
-    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] req_burst_len;
+    logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] req_burst_len;
 
     logic wdata_valid;
     wire wdata_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] wdata_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] wdata_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] wdata_source_id;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] wdata_beat_index;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] wdata_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] wdata_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] wdata_source_id;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] wdata_beat_index;
     logic wdata_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] wdata;
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] wstrb;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] wdata;
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] wstrb;
 
     wire resp_valid;
     logic resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] resp_beat_index;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] resp_beat_index;
     wire resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] resp_rdata;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] resp_rdata;
     wire resp_error;
     wire resp_sc_success;
 
@@ -49,8 +49,8 @@ module tb_ccx_l2;
     wire bus_req_write;
     wire [63:0] bus_req_addr;
     wire [2:0] bus_req_size;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
     wire bus_req_cacheable;
     wire bus_line_request_shape =
         (bus_req_size == 3'd6) && (bus_req_addr[5:0] == 6'd0);
@@ -62,26 +62,26 @@ module tb_ccx_l2;
           bus_req_addr[5:0]));
     logic bus_resp_valid;
     wire bus_resp_ready;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
 
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_LINES-1];
     logic bus_pending_q;
     logic bus_response_hold;
     logic pending_write_q;
     logic [63:0] pending_addr_q;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] pending_wdata_q;
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] pending_wstrb_q;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] pending_wdata_q;
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] pending_wstrb_q;
     integer bus_reads;
     integer bus_writes;
     logic [63:0] last_bus_write_addr;
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
         last_bus_write_strb;
     integer byte_index;
     integer memory_index;
     integer txn_counter;
 
-    openrv64_ccx_l2_native #(
+    openrv64_icx_l2_native #(
         .CACHE_BYTES(256 * 1024),
         .WAYS(8),
         .MSHR_ENTRIES(2),
@@ -134,11 +134,11 @@ module tb_ccx_l2;
         .probe_resp_valid_i(1'b0),
         .probe_resp_ready_o(),
         .probe_resp_id_i(
-            {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}}),
+            {`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}}),
         .probe_resp_kind_i(
-            {`OPENRV64_CCX_PROBE_RESP_WIDTH{1'b0}}),
+            {`OPENRV64_ICX_PROBE_RESP_WIDTH{1'b0}}),
         .probe_resp_data_i(
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
         .probe_resp_error_i(1'b0),
         .protocol_error_clear_i(1'b0),
         .protocol_error_o(),
@@ -163,7 +163,7 @@ module tb_ccx_l2;
         forever #5 clk = ~clk;
     end
 
-    function automatic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] line_pattern;
+    function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] line_pattern;
         input [63:0] seed;
         integer word_index;
         begin
@@ -217,7 +217,7 @@ module tb_ccx_l2;
                 bus_resp_rdata <= memory[memory_index];
                 if (pending_write_q) begin
                     for (byte_index = 0;
-                         byte_index < `OPENRV64_CCX_LINE_STRB_WIDTH;
+                         byte_index < `OPENRV64_ICX_LINE_STRB_WIDTH;
                          byte_index = byte_index + 1)
                         if (pending_wstrb_q[byte_index])
                             memory[memory_index][byte_index*8 +: 8] <=
@@ -230,18 +230,18 @@ module tb_ccx_l2;
     end
 
     task automatic send_command;
-        input [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] source;
-        input [`OPENRV64_CCX_OP_WIDTH-1:0] operation;
+        input [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] source;
+        input [`OPENRV64_ICX_OP_WIDTH-1:0] operation;
         input locked;
-        input [`OPENRV64_CCX_KIND_WIDTH-1:0] kind;
-        input [`OPENRV64_CCX_ATTR_WIDTH-1:0] attributes;
+        input [`OPENRV64_ICX_KIND_WIDTH-1:0] kind;
+        input [`OPENRV64_ICX_ATTR_WIDTH-1:0] attributes;
         input [2:0] size;
         input [63:0] address;
-        output [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        output [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         integer cycles;
         begin
             transaction =
-                txn_counter[`OPENRV64_CCX_TXN_ID_WIDTH-1:0];
+                txn_counter[`OPENRV64_ICX_TXN_ID_WIDTH-1:0];
             txn_counter = txn_counter + 1;
             @(negedge clk);
             req_hart_id = 0;
@@ -249,9 +249,9 @@ module tb_ccx_l2;
             req_source_id = source;
             req_op = operation;
             req_lock = locked;
-            req_order = (operation == `OPENRV64_CCX_OP_FENCE) ?
-                        `OPENRV64_CCX_ORDER_ACQ_REL :
-                        `OPENRV64_CCX_ORDER_NONE;
+            req_order = (operation == `OPENRV64_ICX_OP_FENCE) ?
+                        `OPENRV64_ICX_ORDER_ACQ_REL :
+                        `OPENRV64_ICX_ORDER_NONE;
             req_kind = kind;
             req_attr = attributes;
             req_size = size;
@@ -272,14 +272,14 @@ module tb_ccx_l2;
     endtask
 
     task automatic send_write_data_masked;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
-        input [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] strobes;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data;
+        input [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] strobes;
         integer cycles;
         begin
             wdata_hart_id = 0;
             wdata_txn_id = transaction;
-            wdata_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+            wdata_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
             wdata_beat_index = 0;
             wdata_last = 1'b1;
             wdata = data;
@@ -307,19 +307,19 @@ module tb_ccx_l2;
     endtask
 
     task automatic send_write_data;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data;
         begin
             send_write_data_masked(
                 transaction, data,
-                {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}});
+                {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}});
         end
     endtask
 
     task automatic wait_response;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
-        input [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] source;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] expected_data;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] source;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] expected_data;
         input check_data;
         integer cycles;
         begin
@@ -348,14 +348,14 @@ module tb_ccx_l2;
     endtask
 
     task automatic read_line;
-        input [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] source;
-        input [`OPENRV64_CCX_KIND_WIDTH-1:0] kind;
+        input [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] source;
+        input [`OPENRV64_ICX_KIND_WIDTH-1:0] kind;
         input [63:0] address;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] expected_data;
-        reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] expected_data;
+        reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         begin
-            send_command(source, `OPENRV64_CCX_OP_READ, 1'b0, kind,
-                         `OPENRV64_CCX_ATTR_CACHEABLE, 3'd6,
+            send_command(source, `OPENRV64_ICX_OP_READ, 1'b0, kind,
+                         `OPENRV64_ICX_ATTR_CACHEABLE, 3'd6,
                          address, transaction);
             wait_response(transaction, source, expected_data, 1'b1);
         end
@@ -363,81 +363,81 @@ module tb_ccx_l2;
 
     task automatic write_line;
         input [63:0] address;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
-        reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data;
+        reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         begin
-            send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                         `OPENRV64_CCX_OP_WRITE,
+            send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                         `OPENRV64_ICX_OP_WRITE,
                          1'b0,
-                         `OPENRV64_CCX_KIND_DATA,
-                         `OPENRV64_CCX_ATTR_CACHEABLE,
+                         `OPENRV64_ICX_KIND_DATA,
+                         `OPENRV64_ICX_ATTR_CACHEABLE,
                          3'd6, address, transaction);
             send_write_data(transaction, data);
-            wait_response(transaction, `OPENRV64_CCX_SOURCE_DCACHE,
+            wait_response(transaction, `OPENRV64_ICX_SOURCE_DCACHE,
                           512'd0, 1'b0);
         end
     endtask
 
     task automatic start_masked_write;
         input [63:0] address;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
-        input [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] strobes;
-        output [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data;
+        input [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] strobes;
+        output [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         begin
-            send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                         `OPENRV64_CCX_OP_WRITE,
+            send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                         `OPENRV64_ICX_OP_WRITE,
                          1'b0,
-                         `OPENRV64_CCX_KIND_DATA,
-                         `OPENRV64_CCX_ATTR_CACHEABLE,
+                         `OPENRV64_ICX_KIND_DATA,
+                         `OPENRV64_ICX_ATTR_CACHEABLE,
                          3'd3, address, transaction);
             send_write_data_masked(transaction, data, strobes);
         end
     endtask
 
     task automatic send_fence;
-        input [`OPENRV64_CCX_KIND_WIDTH-1:0] kind;
-        reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_KIND_WIDTH-1:0] kind;
+        reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         begin
-            send_command(`OPENRV64_CCX_SOURCE_PTW,
-                         `OPENRV64_CCX_OP_FENCE, 1'b0, kind,
-                         `OPENRV64_CCX_ATTR_NONE,
+            send_command(`OPENRV64_ICX_SOURCE_PTW,
+                         `OPENRV64_ICX_OP_FENCE, 1'b0, kind,
+                         `OPENRV64_ICX_ATTR_NONE,
                          3'd0, 64'd0, transaction);
-            wait_response(transaction, `OPENRV64_CCX_SOURCE_PTW,
+            wait_response(transaction, `OPENRV64_ICX_SOURCE_PTW,
                           512'd0, 1'b0);
         end
     endtask
 
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] old_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] new_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] dirty_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] newest_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] masked_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] masked_store_data;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] merge_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] merge_store_data_0;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] merge_store_data_1;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] scalar_response;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_0;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_1;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] merge_read_txn;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] merge_write_txn_0;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] merge_write_txn_1;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] early_txn_0;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] early_txn_1;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] locked_read_txn;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] locked_write_txn;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] early_line_0;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] early_line_1;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] old_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] new_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] dirty_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] newest_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] masked_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] masked_store_data;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] merge_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] merge_store_data_0;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] merge_store_data_1;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] scalar_response;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] masked_txn_0;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] masked_txn_1;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] merge_read_txn;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] merge_write_txn_0;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] merge_write_txn_1;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] early_txn_0;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] early_txn_1;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] locked_read_txn;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] locked_write_txn;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] early_line_0;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] early_line_1;
     integer masked_reads_before;
     integer masked_writes_before;
     integer congruent_index;
     reg [63:0] congruent_addr;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] congruent_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] snoop_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] snoop_dirty_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] snoop_evict_line;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] snoop_txn;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] snoop_evict_txn;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] congruent_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] snoop_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] snoop_dirty_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] snoop_evict_line;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] snoop_txn;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] snoop_evict_txn;
     integer snoop_wait_cycles;
     integer snoop_bus_reads_before;
     localparam [63:0] MASKED_LINE_ADDR = 64'h0000_0000_0000_2000;
@@ -500,24 +500,24 @@ module tb_ccx_l2;
         early_line_0 = line_pattern(64'h0100_0000_0000_0000);
         early_line_1 = line_pattern(64'h0200_0000_0000_0000);
         force dut.lookup_stage_ready = 1'b0;
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_WRITE, 1'b0,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_WRITE, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd6, 64'h4000, early_txn_0);
         send_write_data(early_txn_0, early_line_0);
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_WRITE, 1'b0,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_WRITE, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd6, 64'h4040, early_txn_1);
         wdata_hart_id = 0;
         wdata_txn_id = early_txn_1;
-        wdata_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
+        wdata_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
         wdata_beat_index = 0;
         wdata_last = 1'b1;
         wdata = early_line_1;
-        wstrb = {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}};
+        wstrb = {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}};
         wdata_valid = 1'b1;
         #1;
         if (!wdata_ready)
@@ -538,62 +538,62 @@ module tb_ccx_l2;
         wdata_valid = 1'b0;
         repeat (2) @(posedge clk);
         release dut.lookup_stage_ready;
-        wait_response(early_txn_0, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(early_txn_0, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
-        wait_response(early_txn_1, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(early_txn_1, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
-        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                  `OPENRV64_CCX_KIND_DATA, 64'h4000, early_line_0);
-        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                  `OPENRV64_CCX_KIND_DATA, 64'h4040, early_line_1);
+        read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                  `OPENRV64_ICX_KIND_DATA, 64'h4000, early_line_0);
+        read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                  `OPENRV64_ICX_KIND_DATA, 64'h4040, early_line_1);
         bus_reads = 0;
         bus_writes = 0;
         last_bus_write_addr = 0;
         last_bus_write_strb = 0;
 
-        read_line(`OPENRV64_CCX_SOURCE_PTW,
-                  `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, old_line);
+        read_line(`OPENRV64_ICX_SOURCE_PTW,
+                  `OPENRV64_ICX_KIND_PTE, PTE_LINE_ADDR, old_line);
         if (bus_reads != 1)
             $fatal(1, "initial PTE access did not fill exactly one line");
-        read_line(`OPENRV64_CCX_SOURCE_PTW,
-                  `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, old_line);
+        read_line(`OPENRV64_ICX_SOURCE_PTW,
+                  `OPENRV64_ICX_KIND_PTE, PTE_LINE_ADDR, old_line);
         if (bus_reads != 1)
             $fatal(1, "resident PTE line missed before shootdown");
 
         // Model a page-table store which bypassed this L2.  Without a
         // shootdown, the cached PTE line is deliberately still visible.
         memory[PTE_LINE_ADDR[18:6]] = new_line;
-        read_line(`OPENRV64_CCX_SOURCE_PTW,
-                  `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, old_line);
+        read_line(`OPENRV64_ICX_SOURCE_PTW,
+                  `OPENRV64_ICX_KIND_PTE, PTE_LINE_ADDR, old_line);
         if (bus_reads != 1)
             $fatal(1, "PTE line unexpectedly self-invalidated");
 
-        send_fence(`OPENRV64_CCX_KIND_PTE);
-        read_line(`OPENRV64_CCX_SOURCE_PTW,
-                  `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, new_line);
+        send_fence(`OPENRV64_ICX_KIND_PTE);
+        read_line(`OPENRV64_ICX_SOURCE_PTW,
+                  `OPENRV64_ICX_KIND_PTE, PTE_LINE_ADDR, new_line);
         if (bus_reads != 2)
             $fatal(1, "PTE generation shootdown did not force refill");
 
         // A stale-generation dirty match must use the matching way as its
         // victim, write it back, then refill without creating a duplicate tag.
         write_line(PTE_LINE_ADDR, dirty_line);
-        send_fence(`OPENRV64_CCX_KIND_PTE);
-        read_line(`OPENRV64_CCX_SOURCE_PTW,
-                  `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, dirty_line);
+        send_fence(`OPENRV64_ICX_KIND_PTE);
+        read_line(`OPENRV64_ICX_SOURCE_PTW,
+                  `OPENRV64_ICX_KIND_PTE, PTE_LINE_ADDR, dirty_line);
         if ((bus_reads != 3) || (bus_writes != 1) ||
             (memory[PTE_LINE_ADDR[18:6]] !== dirty_line))
             $fatal(1, "dirty stale-PTE replacement was not writeback/refill");
 
         // Ordinary fences do not advance the PTE generation.
         memory[PTE_LINE_ADDR[18:6]] = newest_line;
-        send_fence(`OPENRV64_CCX_KIND_DATA);
-        read_line(`OPENRV64_CCX_SOURCE_PTW,
-                  `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, dirty_line);
+        send_fence(`OPENRV64_ICX_KIND_DATA);
+        read_line(`OPENRV64_ICX_SOURCE_PTW,
+                  `OPENRV64_ICX_KIND_PTE, PTE_LINE_ADDR, dirty_line);
         if (bus_reads != 3)
             $fatal(1, "non-PTE fence invalidated a PTE line");
-        send_fence(`OPENRV64_CCX_KIND_PTE);
-        read_line(`OPENRV64_CCX_SOURCE_PTW,
-                  `OPENRV64_CCX_KIND_PTE, PTE_LINE_ADDR, newest_line);
+        send_fence(`OPENRV64_ICX_KIND_PTE);
+        read_line(`OPENRV64_ICX_SOURCE_PTW,
+                  `OPENRV64_ICX_KIND_PTE, PTE_LINE_ADDR, newest_line);
         if (bus_reads != 4)
             $fatal(1, "second PTE generation did not force refill");
 
@@ -610,9 +610,9 @@ module tb_ccx_l2;
         start_masked_write(
             MASKED_LINE_ADDR + 8, masked_store_data,
             64'h0000_0000_0000_ff00, masked_txn_1);
-        wait_response(masked_txn_0, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(masked_txn_0, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
-        wait_response(masked_txn_1, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(masked_txn_1, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
         if ((bus_reads != masked_reads_before) ||
             (bus_writes != masked_writes_before + 2))
@@ -622,8 +622,8 @@ module tb_ccx_l2;
                 bus_writes - masked_writes_before);
         masked_line[63:0] = 64'h0123_4567_89ab_cdef;
         masked_line[127:64] = 64'hfedc_ba98_7654_3210;
-        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                  `OPENRV64_CCX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
+        read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                  `OPENRV64_ICX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
         if (bus_reads != masked_reads_before + 1)
             $fatal(1, "read after write-around did not fill the line");
 
@@ -632,10 +632,10 @@ module tb_ccx_l2;
         // line must contain the ordered byte merges and its later eviction
         // must retain the union of the two dirty masks.
         bus_response_hold = 1'b1;
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_READ, 1'b0,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd6, MERGE_LINE_ADDR, merge_read_txn);
         while (!bus_pending_q || pending_write_q ||
                (pending_addr_q != MERGE_LINE_ADDR))
@@ -651,16 +651,16 @@ module tb_ccx_l2;
             64'h0000_0000_0000_0ff0, merge_write_txn_1);
 
         bus_response_hold = 1'b0;
-        wait_response(merge_read_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(merge_read_txn, `OPENRV64_ICX_SOURCE_DCACHE,
                       merge_line, 1'b1);
-        wait_response(merge_write_txn_0, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(merge_write_txn_0, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
-        wait_response(merge_write_txn_1, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(merge_write_txn_1, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
         merge_line[63:0] = 64'h1111_2222_3333_4444;
         merge_line[95:32] = 64'haaaa_bbbb_cccc_dddd;
-        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                  `OPENRV64_CCX_KIND_DATA, MERGE_LINE_ADDR, merge_line);
+        read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                  `OPENRV64_ICX_KIND_DATA, MERGE_LINE_ADDR, merge_line);
 
         for (congruent_index = 1; congruent_index <= 8;
              congruent_index = congruent_index + 1) begin
@@ -670,8 +670,8 @@ module tb_ccx_l2;
                 line_pattern(64'h5600_0000_0000_0000 +
                              congruent_index * 64'h100);
             memory[congruent_addr[18:6]] = congruent_line;
-            read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                      `OPENRV64_CCX_KIND_DATA,
+            read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                      `OPENRV64_ICX_KIND_DATA,
                       congruent_addr, congruent_line);
         end
         if ((last_bus_write_addr != MERGE_LINE_ADDR) ||
@@ -687,56 +687,56 @@ module tb_ccx_l2;
         // in its natural position on the 512-bit response interface.
         scalar_response = 0;
         scalar_response[255:192] = masked_line[255:192];
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_READ, 1'b1,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b1,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd3, MASKED_LINE_ADDR + 24, locked_read_txn);
-        wait_response(locked_read_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(locked_read_txn, `OPENRV64_ICX_SOURCE_DCACHE,
                       scalar_response, 1'b1);
         masked_store_data = 0;
         masked_store_data[255:192] = 64'hcafe_f00d_dead_beef;
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_WRITE, 1'b1,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_WRITE, 1'b1,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd3, MASKED_LINE_ADDR + 24, locked_write_txn);
         send_write_data_masked(
             locked_write_txn, masked_store_data,
             64'h0000_0000_ff00_0000);
-        wait_response(locked_write_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(locked_write_txn, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
         masked_line[255:192] = 64'hcafe_f00d_dead_beef;
-        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                  `OPENRV64_CCX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
+        read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                  `OPENRV64_ICX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
 
         // A 32-bit atomic at address+4 consumes the high word of an aligned
         // 64-bit memory beat.  Preserve that subword position in the scalar
-        // CCX response and in the masked write.
+        // ICX response and in the masked write.
         scalar_response = 0;
         scalar_response[319:256] = masked_line[319:256];
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_READ, 1'b1,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b1,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd2, MASKED_LINE_ADDR + 36, locked_read_txn);
-        wait_response(locked_read_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(locked_read_txn, `OPENRV64_ICX_SOURCE_DCACHE,
                       scalar_response, 1'b1);
         masked_store_data = 0;
         masked_store_data[319:288] = 32'hdead_beef;
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_WRITE, 1'b1,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_WRITE, 1'b1,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd2, MASKED_LINE_ADDR + 36, locked_write_txn);
         send_write_data_masked(
             locked_write_txn, masked_store_data,
             64'h0000_00f0_0000_0000);
-        wait_response(locked_write_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(locked_write_txn, `OPENRV64_ICX_SOURCE_DCACHE,
                       512'd0, 1'b0);
         masked_line[319:288] = 32'hdead_beef;
-        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                  `OPENRV64_CCX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
+        read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                  `OPENRV64_ICX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
 
         // The two resident scalar writes dirtied only bytes 24..31 and
         // 36..39.  Fill the remaining ways in this set, then force way zero
@@ -751,8 +751,8 @@ module tb_ccx_l2;
                 line_pattern(64'h6000_0000_0000_0000 +
                              congruent_index * 64'h100);
             memory[congruent_addr[18:6]] = congruent_line;
-            read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                      `OPENRV64_CCX_KIND_DATA,
+            read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                      `OPENRV64_ICX_KIND_DATA,
                       congruent_addr, congruent_line);
         end
         if ((last_bus_write_addr != MASKED_LINE_ADDR) ||
@@ -771,8 +771,8 @@ module tb_ccx_l2;
         snoop_dirty_line =
             line_pattern(64'h7100_0000_0000_0000);
         memory[SNOOP_LINE_ADDR[18:6]] = snoop_line;
-        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                  `OPENRV64_CCX_KIND_DATA,
+        read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                  `OPENRV64_ICX_KIND_DATA,
                   SNOOP_LINE_ADDR, snoop_line);
         write_line(SNOOP_LINE_ADDR, snoop_dirty_line);
         for (congruent_index = 1; congruent_index < 8;
@@ -783,8 +783,8 @@ module tb_ccx_l2;
                 line_pattern(64'h7200_0000_0000_0000 +
                              congruent_index * 64'h100);
             memory[congruent_addr[18:6]] = congruent_line;
-            read_line(`OPENRV64_CCX_SOURCE_DCACHE,
-                      `OPENRV64_CCX_KIND_DATA,
+            read_line(`OPENRV64_ICX_SOURCE_DCACHE,
+                      `OPENRV64_ICX_KIND_DATA,
                       congruent_addr, congruent_line);
         end
 
@@ -793,10 +793,10 @@ module tb_ccx_l2;
             line_pattern(64'h7300_0000_0000_0000);
         memory[congruent_addr[18:6]] = snoop_evict_line;
         bus_response_hold = 1'b1;
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_READ, 1'b0,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd6, congruent_addr, snoop_evict_txn);
         snoop_wait_cycles = 0;
         while ((!bus_pending_q || !pending_write_q ||
@@ -810,12 +810,12 @@ module tb_ccx_l2;
             $fatal(1, "dirty victim writeback did not enter the bus");
 
         snoop_bus_reads_before = bus_reads;
-        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
-                     `OPENRV64_CCX_OP_READ, 1'b0,
-                     `OPENRV64_CCX_KIND_DATA,
-                     `OPENRV64_CCX_ATTR_CACHEABLE,
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
                      3'd6, SNOOP_LINE_ADDR, snoop_txn);
-        wait_response(snoop_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+        wait_response(snoop_txn, `OPENRV64_ICX_SOURCE_DCACHE,
                       snoop_dirty_line, 1'b1);
         if (bus_reads != snoop_bus_reads_before)
             $fatal(1,
@@ -823,7 +823,7 @@ module tb_ccx_l2;
 
         bus_response_hold = 1'b0;
         wait_response(snoop_evict_txn,
-                      `OPENRV64_CCX_SOURCE_DCACHE,
+                      `OPENRV64_ICX_SOURCE_DCACHE,
                       snoop_evict_line, 1'b1);
         if (memory[SNOOP_LINE_ADDR[18:6]] !== snoop_dirty_line)
             $fatal(1, "dirty victim writeback lost snooped data");

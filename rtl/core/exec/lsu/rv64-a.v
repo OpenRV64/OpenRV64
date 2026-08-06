@@ -188,7 +188,7 @@ module openrv64_exec_lsu_rv64a #(
     // Mark both halves of the local AMO read/modify/write sequence, every SC,
     // and an LR when coherent reservations are enabled.  The marker drains
     // and bypasses local L1D data; it is deliberately not forwarded as a
-    // CCX/L2 lock.  SC waits for the real home response rather than being
+    // ICX/L2 lock.  SC waits for the real home response rather than being
     // acknowledged as a posted ordinary store.
     assign mem_lock_o = mem_valid_o &&
                         (op_is_amo(op_q) ||

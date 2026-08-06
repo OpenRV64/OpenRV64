@@ -19,7 +19,7 @@ module openrv64_l1i_demand_mshr_select #(
     input  wire [ENTRIES*ADDR_WIDTH-1:0] addr_i,
     input  wire [ADDR_WIDTH-1:0] miss_addr_i,
     input  wire response_for_icache_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] response_txn_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] response_txn_id_i,
 
     output reg match_found_o,
     output reg [INDEX_WIDTH-1:0] match_index_o,
@@ -87,7 +87,7 @@ module openrv64_l1i_demand_mshr_select #(
             if (!response_match_o && valid_i[scan] && issued_i[scan] &&
                 !complete_i[scan] && response_for_icache_i &&
                 (response_txn_id_i ==
-                 `OPENRV64_CCX_TXN_ID_WIDTH'(scan))) begin
+                 `OPENRV64_ICX_TXN_ID_WIDTH'(scan))) begin
                 response_match_o = 1'b1;
                 response_index_o = INDEX_WIDTH'(scan);
             end

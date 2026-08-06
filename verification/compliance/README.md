@@ -86,7 +86,7 @@ make compliance-priv \
 
 `compliance-isa` is the canonical result: it uses the integrated platform with
 boot ROM, RAM, CLINT, PLIC, UART, GPIO, and timer. The native 3-pipe target
-validates the 256-bit AXI/CCX memory path; it acknowledges ACT4 setup MMIO as
+validates the 256-bit AXI/ICX memory path; it acknowledges ACT4 setup MMIO as
 inert and must not be used as evidence for interrupt or peripheral behavior.
 The direct 1-pipe harness is intentionally limited to local and differential
 tests because ACT4's common prologue accesses CLINT state.
@@ -154,7 +154,7 @@ On 2026-07-22, with the pinned versions above:
 - ACT4 generated 93 unprivileged ELFs: 51 I, 13 M, 18 Zaamo, 4 Zalrsc,
   6 Zicsr, and 1 Zifencei;
 - all 93 unprivileged ELFs passed on the integrated platform backend;
-- all 93 unprivileged ELFs passed on the native 3-pipe AXI/CCX backend;
+- all 93 unprivileged ELFs passed on the native 3-pipe AXI/ICX backend;
 - all three generated Svbare ELFs passed on the platform backend.
 
 This is evidence for the listed executions, not a blanket RISC-V certification

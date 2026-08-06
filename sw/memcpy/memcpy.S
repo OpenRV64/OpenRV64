@@ -1,5 +1,5 @@
 /*
- * Cold, cache-line-sized memcpy benchmark for the native L1D/CCX path.
+ * Cold, cache-line-sized memcpy benchmark for the native L1D/ICX path.
  *
  * MEMCPY_BYTES is supplied by the build and is deliberately restricted to
  * the two page-copy cases used by this benchmark: 4 KiB and 64 KiB.

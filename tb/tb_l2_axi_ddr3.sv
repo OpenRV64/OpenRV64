@@ -12,40 +12,40 @@ module tb_l2_axi_ddr3;
     logic clk;
     logic rst_n;
 
-    logic ccx_req_valid;
-    wire ccx_req_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    logic ccx_req_lock;
-    logic [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    logic [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    logic [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    logic [2:0] ccx_req_size;
-    logic [63:0] ccx_req_addr;
-    logic [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
+    logic icx_req_valid;
+    wire icx_req_ready;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    logic icx_req_lock;
+    logic [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    logic [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    logic [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    logic [2:0] icx_req_size;
+    logic [63:0] icx_req_addr;
+    logic [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
 
-    logic ccx_wdata_valid;
-    wire ccx_wdata_ready;
-    logic [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
-    logic [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
-    logic [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
-    logic ccx_wdata_last;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
+    logic icx_wdata_valid;
+    wire icx_wdata_ready;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_wdata_hart_id;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_wdata_txn_id;
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id;
+    logic [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_wdata_beat_index;
+    logic icx_wdata_last;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
 
-    wire ccx_resp_valid;
-    logic ccx_resp_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_resp_beat_index;
-    wire ccx_resp_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
-    wire ccx_resp_error;
-    wire ccx_resp_sc_success;
+    wire icx_resp_valid;
+    logic icx_resp_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_resp_beat_index;
+    wire icx_resp_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
+    wire icx_resp_error;
+    wire icx_resp_sc_success;
 
     wire [AXI_ID_WIDTH-1:0] axi_arid;
     wire [63:0] axi_araddr;
@@ -126,38 +126,38 @@ module tb_l2_axi_ddr3;
     ) u_complex (
         .clk_i(clk),
         .rst_ni(rst_n),
-        .ccx_req_valid_i(ccx_req_valid),
-        .ccx_req_ready_o(ccx_req_ready),
-        .ccx_req_hart_id_i(ccx_req_hart_id),
-        .ccx_req_txn_id_i(ccx_req_txn_id),
-        .ccx_req_source_id_i(ccx_req_source_id),
-        .ccx_req_op_i(ccx_req_op),
-        .ccx_req_lock_i(ccx_req_lock),
-        .ccx_req_order_i(ccx_req_order),
-        .ccx_req_kind_i(ccx_req_kind),
-        .ccx_req_attr_i(ccx_req_attr),
-        .ccx_req_size_i(ccx_req_size),
-        .ccx_req_addr_i(ccx_req_addr),
-        .ccx_req_burst_len_i(ccx_req_burst_len),
-        .ccx_wdata_valid_i(ccx_wdata_valid),
-        .ccx_wdata_ready_o(ccx_wdata_ready),
-        .ccx_wdata_hart_id_i(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id_i(ccx_wdata_txn_id),
-        .ccx_wdata_source_id_i(ccx_wdata_source_id),
-        .ccx_wdata_beat_index_i(ccx_wdata_beat_index),
-        .ccx_wdata_last_i(ccx_wdata_last),
-        .ccx_wdata_i(ccx_wdata),
-        .ccx_wstrb_i(ccx_wstrb),
-        .ccx_resp_valid_o(ccx_resp_valid),
-        .ccx_resp_ready_i(ccx_resp_ready),
-        .ccx_resp_hart_id_o(ccx_resp_hart_id),
-        .ccx_resp_txn_id_o(ccx_resp_txn_id),
-        .ccx_resp_source_id_o(ccx_resp_source_id),
-        .ccx_resp_beat_index_o(ccx_resp_beat_index),
-        .ccx_resp_last_o(ccx_resp_last),
-        .ccx_resp_rdata_o(ccx_resp_rdata),
-        .ccx_resp_error_o(ccx_resp_error),
-        .ccx_resp_sc_success_o(ccx_resp_sc_success),
+        .icx_req_valid_i(icx_req_valid),
+        .icx_req_ready_o(icx_req_ready),
+        .icx_req_hart_id_i(icx_req_hart_id),
+        .icx_req_txn_id_i(icx_req_txn_id),
+        .icx_req_source_id_i(icx_req_source_id),
+        .icx_req_op_i(icx_req_op),
+        .icx_req_lock_i(icx_req_lock),
+        .icx_req_order_i(icx_req_order),
+        .icx_req_kind_i(icx_req_kind),
+        .icx_req_attr_i(icx_req_attr),
+        .icx_req_size_i(icx_req_size),
+        .icx_req_addr_i(icx_req_addr),
+        .icx_req_burst_len_i(icx_req_burst_len),
+        .icx_wdata_valid_i(icx_wdata_valid),
+        .icx_wdata_ready_o(icx_wdata_ready),
+        .icx_wdata_hart_id_i(icx_wdata_hart_id),
+        .icx_wdata_txn_id_i(icx_wdata_txn_id),
+        .icx_wdata_source_id_i(icx_wdata_source_id),
+        .icx_wdata_beat_index_i(icx_wdata_beat_index),
+        .icx_wdata_last_i(icx_wdata_last),
+        .icx_wdata_i(icx_wdata),
+        .icx_wstrb_i(icx_wstrb),
+        .icx_resp_valid_o(icx_resp_valid),
+        .icx_resp_ready_i(icx_resp_ready),
+        .icx_resp_hart_id_o(icx_resp_hart_id),
+        .icx_resp_txn_id_o(icx_resp_txn_id),
+        .icx_resp_source_id_o(icx_resp_source_id),
+        .icx_resp_beat_index_o(icx_resp_beat_index),
+        .icx_resp_last_o(icx_resp_last),
+        .icx_resp_rdata_o(icx_resp_rdata),
+        .icx_resp_error_o(icx_resp_error),
+        .icx_resp_sc_success_o(icx_resp_sc_success),
         .m_axi_arid_o(axi_arid),
         .m_axi_araddr_o(axi_araddr),
         .m_axi_arlen_o(axi_arlen),
@@ -313,73 +313,73 @@ module tb_l2_axi_ddr3;
     end
 
     task automatic launch_request(
-        input [`OPENRV64_CCX_OP_WIDTH-1:0] op,
-        input [`OPENRV64_CCX_ATTR_WIDTH-1:0] attr,
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn,
+        input [`OPENRV64_ICX_OP_WIDTH-1:0] op,
+        input [`OPENRV64_ICX_ATTR_WIDTH-1:0] attr,
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] txn,
         input [63:0] address,
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data
     );
         integer guard;
         begin
             @(negedge clk);
-            ccx_req_op = op;
-            ccx_req_attr = attr;
-            ccx_req_txn_id = txn;
-            ccx_req_addr = address;
-            ccx_req_valid = 1'b1;
-            if (op == `OPENRV64_CCX_OP_WRITE) begin
-                ccx_wdata_txn_id = txn;
-                ccx_wdata = data;
-                ccx_wstrb = {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b1}};
-                ccx_wdata_valid = 1'b1;
+            icx_req_op = op;
+            icx_req_attr = attr;
+            icx_req_txn_id = txn;
+            icx_req_addr = address;
+            icx_req_valid = 1'b1;
+            if (op == `OPENRV64_ICX_OP_WRITE) begin
+                icx_wdata_txn_id = txn;
+                icx_wdata = data;
+                icx_wstrb = {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}};
+                icx_wdata_valid = 1'b1;
             end
             guard = 0;
-            while ((ccx_req_valid || ccx_wdata_valid) &&
+            while ((icx_req_valid || icx_wdata_valid) &&
                    (guard < 2000)) begin
                 @(posedge clk);
-                if (ccx_req_valid && ccx_req_ready)
-                    ccx_req_valid = 1'b0;
-                if (ccx_wdata_valid && ccx_wdata_ready)
-                    ccx_wdata_valid = 1'b0;
+                if (icx_req_valid && icx_req_ready)
+                    icx_req_valid = 1'b0;
+                if (icx_wdata_valid && icx_wdata_ready)
+                    icx_wdata_valid = 1'b0;
                 guard = guard + 1;
             end
-            if (ccx_req_valid || ccx_wdata_valid)
-                $fatal(1, "CCX request admission timeout txn=%0d", txn);
+            if (icx_req_valid || icx_wdata_valid)
+                $fatal(1, "ICX request admission timeout txn=%0d", txn);
         end
     endtask
 
     task automatic expect_response(
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn,
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] txn,
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data
     );
         integer guard;
         begin
             guard = 0;
-            while (!ccx_resp_valid && (guard < 10000)) begin
+            while (!icx_resp_valid && (guard < 10000)) begin
                 @(posedge clk);
                 guard = guard + 1;
             end
-            if (!ccx_resp_valid)
-                $fatal(1, "CCX response timeout txn=%0d", txn);
-            if ((ccx_resp_hart_id !== 0) ||
-                (ccx_resp_txn_id !== txn) ||
-                (ccx_resp_source_id !==
-                 `OPENRV64_CCX_SOURCE_DCACHE) ||
-                (ccx_resp_beat_index !== 0) || !ccx_resp_last ||
-                ccx_resp_error || ccx_resp_sc_success ||
-                (ccx_resp_rdata !== data))
-                $fatal(1, "CCX response mismatch txn=%0d", txn);
+            if (!icx_resp_valid)
+                $fatal(1, "ICX response timeout txn=%0d", txn);
+            if ((icx_resp_hart_id !== 0) ||
+                (icx_resp_txn_id !== txn) ||
+                (icx_resp_source_id !==
+                 `OPENRV64_ICX_SOURCE_DCACHE) ||
+                (icx_resp_beat_index !== 0) || !icx_resp_last ||
+                icx_resp_error || icx_resp_sc_success ||
+                (icx_resp_rdata !== data))
+                $fatal(1, "ICX response mismatch txn=%0d", txn);
             @(posedge clk);
         end
     endtask
 
     task automatic transact(
-        input [`OPENRV64_CCX_OP_WIDTH-1:0] op,
-        input [`OPENRV64_CCX_ATTR_WIDTH-1:0] attr,
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn,
+        input [`OPENRV64_ICX_OP_WIDTH-1:0] op,
+        input [`OPENRV64_ICX_ATTR_WIDTH-1:0] attr,
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] txn,
         input [63:0] address,
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] write_data,
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] response_data
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] write_data,
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] response_data
     );
         begin
             launch_request(op, attr, txn, address, write_data);
@@ -388,10 +388,10 @@ module tb_l2_axi_ddr3;
     endtask
 
     task automatic expect_two_responses(
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn0,
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data0,
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] txn1,
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data1
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] txn0,
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data0,
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] txn1,
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data1
     );
         integer guard;
         reg seen0;
@@ -401,63 +401,63 @@ module tb_l2_axi_ddr3;
             seen1 = 1'b0;
             guard = 0;
             @(negedge clk);
-            ccx_resp_ready = 1'b1;
+            icx_resp_ready = 1'b1;
             while (!(seen0 && seen1) && (guard < 20000)) begin
                 @(posedge clk);
-                if (ccx_resp_valid && ccx_resp_ready) begin
-                    if (ccx_resp_error || ccx_resp_sc_success ||
-                        (ccx_resp_hart_id !== 0) ||
-                        (ccx_resp_source_id !==
-                         `OPENRV64_CCX_SOURCE_DCACHE) ||
-                        (ccx_resp_beat_index !== 0) ||
-                        !ccx_resp_last)
+                if (icx_resp_valid && icx_resp_ready) begin
+                    if (icx_resp_error || icx_resp_sc_success ||
+                        (icx_resp_hart_id !== 0) ||
+                        (icx_resp_source_id !==
+                         `OPENRV64_ICX_SOURCE_DCACHE) ||
+                        (icx_resp_beat_index !== 0) ||
+                        !icx_resp_last)
                         $fatal(1,
-                            "malformed concurrent CCX response txn=%0d",
-                            ccx_resp_txn_id);
-                    if (ccx_resp_txn_id == txn0) begin
-                        if (seen0 || (ccx_resp_rdata !== data0))
+                            "malformed concurrent ICX response txn=%0d",
+                            icx_resp_txn_id);
+                    if (icx_resp_txn_id == txn0) begin
+                        if (seen0 || (icx_resp_rdata !== data0))
                             $fatal(1,
                                 "concurrent response mismatch txn=%0d",
                                 txn0);
                         seen0 = 1'b1;
-                    end else if (ccx_resp_txn_id == txn1) begin
-                        if (seen1 || (ccx_resp_rdata !== data1))
+                    end else if (icx_resp_txn_id == txn1) begin
+                        if (seen1 || (icx_resp_rdata !== data1))
                             $fatal(1,
                                 "concurrent response mismatch txn=%0d",
                                 txn1);
                         seen1 = 1'b1;
                     end else begin
                         $fatal(1,
-                            "unexpected concurrent CCX response txn=%0d",
-                            ccx_resp_txn_id);
+                            "unexpected concurrent ICX response txn=%0d",
+                            icx_resp_txn_id);
                     end
                 end
                 guard = guard + 1;
             end
             if (!(seen0 && seen1))
-                $fatal(1, "concurrent CCX response timeout");
+                $fatal(1, "concurrent ICX response timeout");
         end
     endtask
 
-    localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_A = {
+    localparam [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] LINE_A = {
         64'h0707_0707_0707_0707, 64'h0606_0606_0606_0606,
         64'h0505_0505_0505_0505, 64'h0404_0404_0404_0404,
         64'h0303_0303_0303_0303, 64'h0202_0202_0202_0202,
         64'h0101_0101_0101_0101, 64'h0000_0000_0000_0000
     };
-    localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_B = {
+    localparam [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] LINE_B = {
         64'h1717_1717_1717_1717, 64'h1616_1616_1616_1616,
         64'h1515_1515_1515_1515, 64'h1414_1414_1414_1414,
         64'h1313_1313_1313_1313, 64'h1212_1212_1212_1212,
         64'h1111_1111_1111_1111, 64'h1010_1010_1010_1010
     };
-    localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_C = {
+    localparam [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] LINE_C = {
         8{64'hc3c3_c3c3_c3c3_c3c3}
     };
-    localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_D = {
+    localparam [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] LINE_D = {
         8{64'hd4d4_d4d4_d4d4_d4d4}
     };
-    localparam [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] LINE_E = {
+    localparam [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] LINE_E = {
         8{64'he5e5_e5e5_e5e5_e5e5}
     };
     localparam [63:0] EVICT_A = MEM_BASE + 64'h0008_0000;
@@ -470,27 +470,27 @@ module tb_l2_axi_ddr3;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
-        ccx_req_valid = 1'b0;
-        ccx_req_hart_id = 0;
-        ccx_req_txn_id = 0;
-        ccx_req_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
-        ccx_req_op = `OPENRV64_CCX_OP_READ;
-        ccx_req_lock = 1'b0;
-        ccx_req_order = `OPENRV64_CCX_ORDER_NONE;
-        ccx_req_kind = `OPENRV64_CCX_KIND_DATA;
-        ccx_req_attr = `OPENRV64_CCX_ATTR_NONE;
-        ccx_req_size = 3'd6;
-        ccx_req_addr = 0;
-        ccx_req_burst_len = 0;
-        ccx_wdata_valid = 1'b0;
-        ccx_wdata_hart_id = 0;
-        ccx_wdata_txn_id = 0;
-        ccx_wdata_source_id = `OPENRV64_CCX_SOURCE_DCACHE;
-        ccx_wdata_beat_index = 0;
-        ccx_wdata_last = 1'b1;
-        ccx_wdata = 0;
-        ccx_wstrb = 0;
-        ccx_resp_ready = 1'b1;
+        icx_req_valid = 1'b0;
+        icx_req_hart_id = 0;
+        icx_req_txn_id = 0;
+        icx_req_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
+        icx_req_op = `OPENRV64_ICX_OP_READ;
+        icx_req_lock = 1'b0;
+        icx_req_order = `OPENRV64_ICX_ORDER_NONE;
+        icx_req_kind = `OPENRV64_ICX_KIND_DATA;
+        icx_req_attr = `OPENRV64_ICX_ATTR_NONE;
+        icx_req_size = 3'd6;
+        icx_req_addr = 0;
+        icx_req_burst_len = 0;
+        icx_wdata_valid = 1'b0;
+        icx_wdata_hart_id = 0;
+        icx_wdata_txn_id = 0;
+        icx_wdata_source_id = `OPENRV64_ICX_SOURCE_DCACHE;
+        icx_wdata_beat_index = 0;
+        icx_wdata_last = 1'b1;
+        icx_wdata = 0;
+        icx_wstrb = 0;
+        icx_resp_ready = 1'b1;
         axi_read_transactions = 0;
         axi_write_transactions = 0;
         axi_read_beats = 0;
@@ -506,20 +506,20 @@ module tb_l2_axi_ddr3;
 
         // Uncached traffic proves the complete write and read paths through
         // L2 bypass, AXI burst conversion, storage, and DDR3 timing.
-        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_WRITE, `OPENRV64_ICX_ATTR_NONE,
                  4'd1, MEM_BASE, LINE_A, 512'd0);
-        transact(`OPENRV64_CCX_OP_READ, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_READ, `OPENRV64_ICX_ATTR_NONE,
                  4'd2, MEM_BASE, 512'd0, LINE_A);
 
         // The first cacheable read fills L2; the second must hit without
         // another AXI transaction or DDR3 command.
-        transact(`OPENRV64_CCX_OP_READ,
-                 `OPENRV64_CCX_ATTR_CACHEABLE,
+        transact(`OPENRV64_ICX_OP_READ,
+                 `OPENRV64_ICX_ATTR_CACHEABLE,
                  4'd3, MEM_BASE, 512'd0, LINE_A);
         reads_before_hit = axi_read_transactions;
         commands_before_hit = ddr3_commands;
-        transact(`OPENRV64_CCX_OP_READ,
-                 `OPENRV64_CCX_ATTR_CACHEABLE,
+        transact(`OPENRV64_ICX_OP_READ,
+                 `OPENRV64_ICX_ATTR_CACHEABLE,
                  4'd4, MEM_BASE, 512'd0, LINE_A);
         if ((axi_read_transactions != reads_before_hit) ||
             (ddr3_commands != commands_before_hit))
@@ -527,13 +527,13 @@ module tb_l2_axi_ddr3;
 
         // A read and write to independent banks may both enter the DDR3
         // scheduler.  Responses remain in acceptance order.
-        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_WRITE, `OPENRV64_ICX_ATTR_NONE,
                  4'd5, MEM_BASE + 64'h4000, LINE_C, 512'd0);
-        launch_request(`OPENRV64_CCX_OP_READ,
-                       `OPENRV64_CCX_ATTR_NONE,
+        launch_request(`OPENRV64_ICX_OP_READ,
+                       `OPENRV64_ICX_ATTR_NONE,
                        4'd6, MEM_BASE + 64'h4000, 512'd0);
-        launch_request(`OPENRV64_CCX_OP_WRITE,
-                       `OPENRV64_CCX_ATTR_NONE,
+        launch_request(`OPENRV64_ICX_OP_WRITE,
+                       `OPENRV64_ICX_ATTR_NONE,
                        4'd7, MEM_BASE + 64'h2000, LINE_B);
         expect_response(4'd6, LINE_C);
         expect_response(4'd7, 512'd0);
@@ -541,7 +541,7 @@ module tb_l2_axi_ddr3;
         // Seed a third bank without filling L2, then measure only the
         // same-direction interval below.  This keeps mixed read/write
         // overlap from satisfying the read-queue concurrency checks.
-        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_WRITE, `OPENRV64_ICX_ATTR_NONE,
                  4'd10, MEM_BASE + 64'h6000, LINE_D, 512'd0);
         max_active_mshrs = 0;
         max_ddr3_queued = 0;
@@ -550,14 +550,14 @@ module tb_l2_axi_ddr3;
         // Launch three cacheable misses to different-bank lines without
         // waiting between requests.  L2 and the memory channel must retain
         // all three even though AXI R responses remain in AR order.
-        launch_request(`OPENRV64_CCX_OP_READ,
-                       `OPENRV64_CCX_ATTR_CACHEABLE,
+        launch_request(`OPENRV64_ICX_OP_READ,
+                       `OPENRV64_ICX_ATTR_CACHEABLE,
                        4'd8, MEM_BASE + 64'h4000, 512'd0);
-        launch_request(`OPENRV64_CCX_OP_READ,
-                       `OPENRV64_CCX_ATTR_CACHEABLE,
+        launch_request(`OPENRV64_ICX_OP_READ,
+                       `OPENRV64_ICX_ATTR_CACHEABLE,
                        4'd9, MEM_BASE + 64'h2000, 512'd0);
-        launch_request(`OPENRV64_CCX_OP_READ,
-                       `OPENRV64_CCX_ATTR_CACHEABLE,
+        launch_request(`OPENRV64_ICX_OP_READ,
+                       `OPENRV64_ICX_ATTR_CACHEABLE,
                        4'd11, MEM_BASE + 64'h6000, 512'd0);
         expect_response(4'd8, LINE_C);
         expect_response(4'd9, LINE_B);
@@ -568,34 +568,34 @@ module tb_l2_axi_ddr3;
         // back while D fills through an independent MSHR.  A later refill
         // must recover the dirty data rather than a response from either
         // younger miss.
-        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_WRITE, `OPENRV64_ICX_ATTR_NONE,
                  4'd1, EVICT_A, LINE_A, 512'd0);
-        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_WRITE, `OPENRV64_ICX_ATTR_NONE,
                  4'd2, EVICT_B, LINE_C, 512'd0);
-        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_WRITE, `OPENRV64_ICX_ATTR_NONE,
                  4'd3, EVICT_C, LINE_D, 512'd0);
-        transact(`OPENRV64_CCX_OP_WRITE, `OPENRV64_CCX_ATTR_NONE,
+        transact(`OPENRV64_ICX_OP_WRITE, `OPENRV64_ICX_ATTR_NONE,
                  4'd4, EVICT_D, LINE_E, 512'd0);
-        transact(`OPENRV64_CCX_OP_READ,
-                 `OPENRV64_CCX_ATTR_CACHEABLE,
+        transact(`OPENRV64_ICX_OP_READ,
+                 `OPENRV64_ICX_ATTR_CACHEABLE,
                  4'd5, EVICT_A, 512'd0, LINE_A);
-        transact(`OPENRV64_CCX_OP_WRITE,
-                 `OPENRV64_CCX_ATTR_CACHEABLE,
+        transact(`OPENRV64_ICX_OP_WRITE,
+                 `OPENRV64_ICX_ATTR_CACHEABLE,
                  4'd6, EVICT_A, LINE_B, 512'd0);
-        transact(`OPENRV64_CCX_OP_READ,
-                 `OPENRV64_CCX_ATTR_CACHEABLE,
+        transact(`OPENRV64_ICX_OP_READ,
+                 `OPENRV64_ICX_ATTR_CACHEABLE,
                  4'd7, EVICT_B, 512'd0, LINE_C);
         @(negedge clk);
-        ccx_resp_ready = 1'b0;
-        launch_request(`OPENRV64_CCX_OP_READ,
-                       `OPENRV64_CCX_ATTR_CACHEABLE,
+        icx_resp_ready = 1'b0;
+        launch_request(`OPENRV64_ICX_OP_READ,
+                       `OPENRV64_ICX_ATTR_CACHEABLE,
                        4'd12, EVICT_C, 512'd0);
-        launch_request(`OPENRV64_CCX_OP_READ,
-                       `OPENRV64_CCX_ATTR_CACHEABLE,
+        launch_request(`OPENRV64_ICX_OP_READ,
+                       `OPENRV64_ICX_ATTR_CACHEABLE,
                        4'd13, EVICT_D, 512'd0);
         expect_two_responses(4'd12, LINE_D, 4'd13, LINE_E);
-        transact(`OPENRV64_CCX_OP_READ,
-                 `OPENRV64_CCX_ATTR_CACHEABLE,
+        transact(`OPENRV64_ICX_OP_READ,
+                 `OPENRV64_ICX_ATTR_CACHEABLE,
                  4'd14, EVICT_A, 512'd0, LINE_B);
 
         if (max_active_mshrs < 3)

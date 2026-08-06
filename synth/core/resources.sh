@@ -133,11 +133,11 @@ setattr -set keep_hierarchy 1 */c:g_decode*.u_decode; \
 setattr -set keep_hierarchy 1 */c:u_csrs; \
 setattr -set keep_hierarchy 1 */c:u_vector; \
 setattr -set keep_hierarchy 1 */t:*openrv64_core_bus*; \
-setattr -set keep_hierarchy 1 */t:*openrv64_core_ccx_bus*; \
+setattr -set keep_hierarchy 1 */t:*openrv64_core_icx_bus*; \
 setattr -set keep_hierarchy 1 */t:*openrv64_bus_tlb*; \
 setattr -set keep_hierarchy 1 */t:*openrv64_bus_ptw*; \
-setattr -set keep_hierarchy 1 */t:*openrv64_l1d_ccx*; \
-setattr -set keep_hierarchy 1 */t:*openrv64_l1i_ccx*; \
+setattr -set keep_hierarchy 1 */t:*openrv64_l1d_icx*; \
+setattr -set keep_hierarchy 1 */t:*openrv64_l1i_icx*; \
 setattr -set keep_hierarchy 1 */c:u_dispatch; \
 setattr -set keep_hierarchy 1 */c:u_gpr; \
 setattr -set keep_hierarchy 1 */c:u_ex0; \

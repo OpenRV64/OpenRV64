@@ -1,7 +1,7 @@
 /*
  * Single-hart RV64A architectural tests for the complete production path:
  *
- *   3P core -> L1D -> native CCX -> L2 -> AXI SRAM
+ *   3P core -> L1D -> native ICX -> L2 -> AXI SRAM
  *
  * The current implementation keeps LR/SC reservation state in the LSU and
  * performs each AMO as a locally serialized read followed by a write.  These

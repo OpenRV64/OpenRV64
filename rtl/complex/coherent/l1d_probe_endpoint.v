@@ -8,7 +8,7 @@
 // D-cache probe immediately clears the hart's LR reservation and holds the
 // addressed invalidation against L1D until the cache has revoked the line.
 // Only that real completion produces the matching probe response.
-module openrv64_ccx_l1d_probe_endpoint #(
+module openrv64_icx_l1d_probe_endpoint #(
     parameter integer PROBE_TIMEOUT_CYCLES = 1024,
     parameter integer TIMEOUT_WIDTH =
         (PROBE_TIMEOUT_CYCLES > 1) ?
@@ -19,18 +19,18 @@ module openrv64_ccx_l1d_probe_endpoint #(
 
     input  wire                         probe_valid_i,
     output wire                         probe_ready_o,
-    input  wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_id_i,
-    input  wire [`OPENRV64_CCX_PROBE_CMD_WIDTH-1:0] probe_command_i,
-    input  wire [`OPENRV64_CCX_PROBE_CACHE_WIDTH-1:0]
+    input  wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_id_i,
+    input  wire [`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0] probe_command_i,
+    input  wire [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
                                                probe_cache_mask_i,
     input  wire [63:0]                  probe_line_addr_i,
 
     output wire                         probe_resp_valid_o,
     input  wire                         probe_resp_ready_i,
-    output wire [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] probe_resp_id_o,
-    output wire [`OPENRV64_CCX_PROBE_RESP_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_resp_id_o,
+    output wire [`OPENRV64_ICX_PROBE_RESP_WIDTH-1:0]
                                                probe_resp_kind_o,
-    output wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    output wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
                                                probe_resp_data_o,
     output wire                         probe_resp_error_o,
 
@@ -48,17 +48,17 @@ module openrv64_ccx_l1d_probe_endpoint #(
 
     reg invalidate_pending_q;
     reg response_valid_q;
-    reg [`OPENRV64_CCX_PROBE_ID_WIDTH-1:0] response_id_q;
-    reg [`OPENRV64_CCX_PROBE_RESP_WIDTH-1:0] response_kind_q;
+    reg [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] response_id_q;
+    reg [`OPENRV64_ICX_PROBE_RESP_WIDTH-1:0] response_kind_q;
     reg response_error_q;
     reg [63:0] invalidate_addr_q;
     reg [TIMEOUT_WIDTH-1:0] timeout_q;
     reg protocol_error_q;
 
     wire incoming_dcache =
-        |(probe_cache_mask_i & `OPENRV64_CCX_PROBE_CACHE_D);
+        |(probe_cache_mask_i & `OPENRV64_ICX_PROBE_CACHE_D);
     wire incoming_supported =
-        probe_command_i == `OPENRV64_CCX_PROBE_INV;
+        probe_command_i == `OPENRV64_ICX_PROBE_INV;
     wire probe_fire = probe_valid_i && probe_ready_o;
     wire invalidate_fire =
         invalidate_pending_q && invalidate_ready_i;
@@ -69,7 +69,7 @@ module openrv64_ccx_l1d_probe_endpoint #(
     assign probe_resp_id_o = response_id_q;
     assign probe_resp_kind_o = response_kind_q;
     assign probe_resp_data_o =
-        {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+        {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
     assign probe_resp_error_o = response_error_q;
     assign invalidate_valid_o = invalidate_pending_q;
     assign invalidate_addr_o = invalidate_addr_q;
@@ -81,8 +81,8 @@ module openrv64_ccx_l1d_probe_endpoint #(
             invalidate_pending_q <= 1'b0;
             response_valid_q <= 1'b0;
             response_id_q <=
-                {`OPENRV64_CCX_PROBE_ID_WIDTH{1'b0}};
-            response_kind_q <= `OPENRV64_CCX_PROBE_RESP_ACK;
+                {`OPENRV64_ICX_PROBE_ID_WIDTH{1'b0}};
+            response_kind_q <= `OPENRV64_ICX_PROBE_RESP_ACK;
             response_error_q <= 1'b0;
             invalidate_addr_q <= 64'd0;
             timeout_q <= {TIMEOUT_WIDTH{1'b0}};
@@ -104,7 +104,7 @@ module openrv64_ccx_l1d_probe_endpoint #(
                 if (!incoming_supported) begin
                     response_valid_q <= 1'b1;
                     response_kind_q <=
-                        `OPENRV64_CCX_PROBE_RESP_ERROR;
+                        `OPENRV64_ICX_PROBE_RESP_ERROR;
                     response_error_q <= 1'b1;
                     protocol_error_q <= 1'b1;
                 end else if (incoming_dcache) begin
@@ -114,7 +114,7 @@ module openrv64_ccx_l1d_probe_endpoint #(
                     // therefore a clean miss here.
                     response_valid_q <= 1'b1;
                     response_kind_q <=
-                        `OPENRV64_CCX_PROBE_RESP_ACK;
+                        `OPENRV64_ICX_PROBE_RESP_ACK;
                     response_error_q <= 1'b0;
                 end
             end
@@ -122,7 +122,7 @@ module openrv64_ccx_l1d_probe_endpoint #(
             if (invalidate_fire) begin
                 invalidate_pending_q <= 1'b0;
                 response_valid_q <= 1'b1;
-                response_kind_q <= `OPENRV64_CCX_PROBE_RESP_ACK;
+                response_kind_q <= `OPENRV64_ICX_PROBE_RESP_ACK;
                 response_error_q <= 1'b0;
                 timeout_q <= {TIMEOUT_WIDTH{1'b0}};
             end else if (invalidate_pending_q) begin

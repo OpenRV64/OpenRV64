@@ -8,7 +8,7 @@
 // Core-only performance harness.  The frontend and tagged LSU use independent
 // ports on a compact 256-bit SRAM model.  Both ports accept every cycle and
 // return the corresponding read/ack one cycle later.  No cache, translation,
-// AXI fabric, CCX home, peripheral, or DRAM timing is modeled.
+// AXI fabric, ICX home, peripheral, or DRAM timing is modeled.
 module tb_core_3p_magic #(
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
@@ -42,28 +42,28 @@ module tb_core_3p_magic #(
     reg rvalid_q;
     wire rready;
 
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire ccx_wdata_valid;
-    wire ccx_wdata_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
-    reg ccx_resp_valid_q;
-    wire ccx_resp_ready;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id_q;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata_q;
-    reg ccx_resp_error_q;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire icx_wdata_valid;
+    wire icx_wdata_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
+    reg icx_resp_valid_q;
+    wire icx_resp_ready;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id_q;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata_q;
+    reg icx_resp_error_q;
 
     wire [63:0] dbg_pc;
     wire [31:0] dbg_instr;
@@ -148,19 +148,19 @@ module tb_core_3p_magic #(
     wire ar_fire = arvalid && arready;
     assign arready = rst_n && (!rvalid_q || rready);
 
-    wire ccx_in_range = (ccx_req_addr >= SRAM_BASE) &&
-                        (ccx_req_addr < (SRAM_BASE + SRAM_BYTES));
-    wire [SRAM_INDEX_WIDTH-1:0] ccx_index =
-        ccx_req_addr[SRAM_INDEX_WIDTH+4:5];
-    wire [1:0] ccx_lane = ccx_req_addr[4:3];
-    wire [63:0] ccx_read_data =
-        sram_q[ccx_index] >> {ccx_lane, 6'b000000};
-    wire ccx_write = ccx_req_op == `OPENRV64_CCX_OP_WRITE;
-    wire ccx_slot_ready =
-        rst_n && (!ccx_resp_valid_q || ccx_resp_ready);
-    assign ccx_req_ready = ccx_slot_ready;
-    assign ccx_wdata_ready = ccx_slot_ready;
-    wire ccx_fire = ccx_req_valid && ccx_req_ready;
+    wire icx_in_range = (icx_req_addr >= SRAM_BASE) &&
+                        (icx_req_addr < (SRAM_BASE + SRAM_BYTES));
+    wire [SRAM_INDEX_WIDTH-1:0] icx_index =
+        icx_req_addr[SRAM_INDEX_WIDTH+4:5];
+    wire [1:0] icx_lane = icx_req_addr[4:3];
+    wire [63:0] icx_read_data =
+        sram_q[icx_index] >> {icx_lane, 6'b000000};
+    wire icx_write = icx_req_op == `OPENRV64_ICX_OP_WRITE;
+    wire icx_slot_ready =
+        rst_n && (!icx_resp_valid_q || icx_resp_ready);
+    assign icx_req_ready = icx_slot_ready;
+    assign icx_wdata_ready = icx_slot_ready;
+    wire icx_fire = icx_req_valid && icx_req_ready;
     wire pair512_predicted_in_range =
         (pair512_req_predicted_addr >= SRAM_BASE) &&
         (pair512_req_predicted_addr < (SRAM_BASE + SRAM_BYTES));
@@ -265,32 +265,32 @@ module tb_core_3p_magic #(
         .m_axi_bid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
         .m_axi_bresp(2'b00),
         .m_axi_bvalid(1'b0),
-        .ccx_req_valid(ccx_req_valid),
-        .ccx_req_ready(ccx_req_ready),
-        .ccx_req_hart_id(ccx_req_hart_id),
-        .ccx_req_txn_id(ccx_req_txn_id),
-        .ccx_req_source_id(ccx_req_source_id),
-        .ccx_req_op(ccx_req_op),
-        .ccx_req_size(ccx_req_size),
-        .ccx_req_addr(ccx_req_addr),
-        .ccx_wdata_valid(ccx_wdata_valid),
-        .ccx_wdata_ready(ccx_wdata_ready),
-        .ccx_wdata_hart_id(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id(ccx_wdata_txn_id),
-        .ccx_wdata_source_id(ccx_wdata_source_id),
-        .ccx_wdata(ccx_wdata),
-        .ccx_wstrb(ccx_wstrb),
-        .ccx_resp_valid(ccx_resp_valid_q),
-        .ccx_resp_ready(ccx_resp_ready),
-        .ccx_resp_hart_id(ccx_resp_hart_id_q),
-        .ccx_resp_txn_id(ccx_resp_txn_id_q),
-        .ccx_resp_source_id(ccx_resp_source_id_q),
-        .ccx_resp_beat_index(
-            {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}),
-        .ccx_resp_last(1'b1),
-        .ccx_resp_rdata(ccx_resp_rdata_q),
-        .ccx_resp_error(ccx_resp_error_q),
-        .ccx_resp_sc_success(1'b0),
+        .icx_req_valid(icx_req_valid),
+        .icx_req_ready(icx_req_ready),
+        .icx_req_hart_id(icx_req_hart_id),
+        .icx_req_txn_id(icx_req_txn_id),
+        .icx_req_source_id(icx_req_source_id),
+        .icx_req_op(icx_req_op),
+        .icx_req_size(icx_req_size),
+        .icx_req_addr(icx_req_addr),
+        .icx_wdata_valid(icx_wdata_valid),
+        .icx_wdata_ready(icx_wdata_ready),
+        .icx_wdata_hart_id(icx_wdata_hart_id),
+        .icx_wdata_txn_id(icx_wdata_txn_id),
+        .icx_wdata_source_id(icx_wdata_source_id),
+        .icx_wdata(icx_wdata),
+        .icx_wstrb(icx_wstrb),
+        .icx_resp_valid(icx_resp_valid_q),
+        .icx_resp_ready(icx_resp_ready),
+        .icx_resp_hart_id(icx_resp_hart_id_q),
+        .icx_resp_txn_id(icx_resp_txn_id_q),
+        .icx_resp_source_id(icx_resp_source_id_q),
+        .icx_resp_beat_index(
+            {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}),
+        .icx_resp_last(1'b1),
+        .icx_resp_rdata(icx_resp_rdata_q),
+        .icx_resp_error(icx_resp_error_q),
+        .icx_resp_sc_success(1'b0),
         .l1d_probe_valid_i(1'b0),
         .l1d_probe_ready_o(),
         .l1d_probe_addr_i(64'd0),
@@ -395,40 +395,40 @@ module tb_core_3p_magic #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_resp_valid_q <= 1'b0;
-            ccx_resp_hart_id_q <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            ccx_resp_txn_id_q <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            ccx_resp_source_id_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
-            ccx_resp_rdata_q <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-            ccx_resp_error_q <= 1'b0;
+            icx_resp_valid_q <= 1'b0;
+            icx_resp_hart_id_q <=
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            icx_resp_txn_id_q <=
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            icx_resp_source_id_q <=
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
+            icx_resp_rdata_q <=
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+            icx_resp_error_q <= 1'b0;
         end else begin
-            if (ccx_resp_valid_q && ccx_resp_ready)
-                ccx_resp_valid_q <= 1'b0;
-            if (ccx_fire) begin
-                ccx_resp_valid_q <= 1'b1;
-                ccx_resp_hart_id_q <= ccx_req_hart_id;
-                ccx_resp_txn_id_q <= ccx_req_txn_id;
-                ccx_resp_source_id_q <= ccx_req_source_id;
-                ccx_resp_rdata_q <= ccx_write ? 512'd0 :
-                    {{(`OPENRV64_CCX_LINE_DATA_WIDTH-64){1'b0}},
-                     ccx_read_data};
-                ccx_resp_error_q <= !ccx_in_range;
-                if (ccx_write && ccx_in_range) begin
-                    if (!ccx_wdata_valid ||
-                        (ccx_wdata_hart_id != ccx_req_hart_id) ||
-                        (ccx_wdata_txn_id != ccx_req_txn_id) ||
-                        (ccx_wdata_source_id != ccx_req_source_id))
+            if (icx_resp_valid_q && icx_resp_ready)
+                icx_resp_valid_q <= 1'b0;
+            if (icx_fire) begin
+                icx_resp_valid_q <= 1'b1;
+                icx_resp_hart_id_q <= icx_req_hart_id;
+                icx_resp_txn_id_q <= icx_req_txn_id;
+                icx_resp_source_id_q <= icx_req_source_id;
+                icx_resp_rdata_q <= icx_write ? 512'd0 :
+                    {{(`OPENRV64_ICX_LINE_DATA_WIDTH-64){1'b0}},
+                     icx_read_data};
+                icx_resp_error_q <= !icx_in_range;
+                if (icx_write && icx_in_range) begin
+                    if (!icx_wdata_valid ||
+                        (icx_wdata_hart_id != icx_req_hart_id) ||
+                        (icx_wdata_txn_id != icx_req_txn_id) ||
+                        (icx_wdata_source_id != icx_req_source_id))
                         $fatal(1, "magic SRAM write identity mismatch");
                     for (write_byte = 0; write_byte < 8;
                          write_byte = write_byte + 1) begin
-                        if (ccx_wstrb[write_byte])
-                            sram_q[ccx_index][
-                                ccx_lane*64 + write_byte*8 +: 8] <=
-                                ccx_wdata[write_byte*8 +: 8];
+                        if (icx_wstrb[write_byte])
+                            sram_q[icx_index][
+                                icx_lane*64 + write_byte*8 +: 8] <=
+                                icx_wdata[write_byte*8 +: 8];
                     end
                 end
             end
@@ -632,7 +632,7 @@ module tb_core_3p_magic #(
 
         if (!dbg_halted) begin
             $display(
-                "MAGIC_TIMEOUT fetch_req=%b/%b addr=%h fetch_resp=%b/%b count=%0d r=%b/%b lsu_req=%b/%b tag=%0d write=%b ccx=%b/%b resp=%b/%b tag_state=%b/%b sp=%h",
+                "MAGIC_TIMEOUT fetch_req=%b/%b addr=%h fetch_resp=%b/%b count=%0d r=%b/%b lsu_req=%b/%b tag=%0d write=%b icx=%b/%b resp=%b/%b tag_state=%b/%b sp=%h",
                 dut.fetch_pipe_req_valid,
                 dut.fetch_pipe_req_ready,
                 dut.fetch_pipe_req_addr,
@@ -644,8 +644,8 @@ module tb_core_3p_magic #(
                 dut.backend_mem_ready,
                 dut.backend_mem_tag,
                 dut.backend_mem_write,
-                ccx_req_valid, ccx_req_ready,
-                ccx_resp_valid_q, ccx_resp_ready,
+                icx_req_valid, icx_req_ready,
+                icx_resp_valid_q, icx_resp_ready,
                 dut.u_bus.g_magic.magic_lsu_inflight_q[
                     dut.backend_mem_tag],
                 dut.u_bus.g_magic.magic_lsu_cancelled_q[

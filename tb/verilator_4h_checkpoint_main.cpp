@@ -217,44 +217,44 @@ void trace_coherence_state(const Vtb_4h_3p___024root* root,
         << ':' << root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__1__KET____DOT__u_endpoint__DOT__timeout_q
         << " l1d0=" << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__backend_state_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__backend_state_q)
         << ':'
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__store_buffer_count_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__store_buffer_count_q)
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__demand_mshr_valid_vec)
+               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__demand_mshr_valid_vec)
         << ":0x"
-        << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__request_addr_q
+        << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__request_addr_q
         << " l1d1=" << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__backend_state_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__backend_state_q)
         << ':'
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__store_buffer_count_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__store_buffer_count_q)
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__demand_mshr_valid_vec)
+               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__demand_mshr_valid_vec)
         << ":0x"
-        << root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1d__DOT__request_addr_q
+        << root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__request_addr_q
         << " l1i0=" << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__state_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__state_q)
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__demand_mshr_valid_vec)
+               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__demand_mshr_valid_vec)
         << ':' << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__response_count_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__response_count_q)
         << " l1i1="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__state_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__state_q)
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__demand_mshr_valid_vec)
+               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__demand_mshr_valid_vec)
         << ':' << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__response_count_q)
+               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__response_count_q)
         << " l2=" << std::dec
         << static_cast<unsigned>(root->tb_4h_3p__DOT__u_l2__DOT__lookup_action_r)
         << ':'
@@ -313,20 +313,20 @@ void trace_coherence_state(const Vtb_4h_3p___024root* root,
 void trace_hart0_l1i_state(const Vtb_4h_3p___024root* root,
                            uint32_t cycle) {
 #define H0_BUS(name)                                                        \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__##name
 #define H0_L1I(name)                                                       \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__##name
 #define H0_CACHE(name)                                                     \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_ccx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__##name
     std::cout
         << "L1I_REPLAY cycle=" << cycle
         << " arb="
-        << static_cast<unsigned>(H0_BUS(ccx_cmd_grant_valid_q)) << ':'
-        << static_cast<unsigned>(H0_BUS(ccx_cmd_grant_client_q)) << ':'
-        << static_cast<unsigned>(H0_BUS(ccx_cmd_last_client_q))
-        << ":req=" << static_cast<unsigned>(H0_BUS(l1d_ccx_req_valid))
-        << static_cast<unsigned>(H0_BUS(ptw_ccx_req_valid))
-        << static_cast<unsigned>(H0_BUS(l1i_ccx_req_valid))
+        << static_cast<unsigned>(H0_BUS(icx_cmd_grant_valid_q)) << ':'
+        << static_cast<unsigned>(H0_BUS(icx_cmd_grant_client_q)) << ':'
+        << static_cast<unsigned>(H0_BUS(icx_cmd_last_client_q))
+        << ":req=" << static_cast<unsigned>(H0_BUS(l1d_icx_req_valid))
+        << static_cast<unsigned>(H0_BUS(ptw_icx_req_valid))
+        << static_cast<unsigned>(H0_BUS(l1i_icx_req_valid))
         << " bus="
         << static_cast<unsigned>(H0_BUS(fetch_head_q)) << ':'
         << static_cast<unsigned>(H0_BUS(fetch_tail_q))
@@ -388,8 +388,8 @@ void trace_hart0_l1i_state(const Vtb_4h_3p___024root* root,
         << ":found="
         << static_cast<unsigned>(H0_L1I(demand_mshr_issue_found_r))
         << ':' << static_cast<unsigned>(H0_L1I(demand_mshr_issue_index_r))
-        << ":fire=" << static_cast<unsigned>(H0_L1I(ccx_issue_fire))
-        << ":ccx=" << static_cast<unsigned>(H0_BUS(l1i_ccx_req_valid))
+        << ":fire=" << static_cast<unsigned>(H0_L1I(icx_issue_fire))
+        << ":icx=" << static_cast<unsigned>(H0_BUS(l1i_icx_req_valid))
         << ":input=" << static_cast<unsigned>(H0_L1I(l1_input_valid))
         << ":miss=" << static_cast<unsigned>(H0_L1I(l1_miss_fire))
         << ":cache=" << static_cast<unsigned>(H0_CACHE(state_q))

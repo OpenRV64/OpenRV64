@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-module openrv64_ccx_snoop_filter_way #(
+module openrv64_icx_snoop_filter_way #(
     parameter integer SETS = 64,
     parameter integer SET_WIDTH = (SETS > 1) ? $clog2(SETS) : 1,
     parameter integer WORD_WIDTH = 1
@@ -40,7 +40,7 @@ endmodule
 // Clean private evictions may leave stale bits.  Before a valid victim entry
 // is reused, the coherence frontend must probe every recorded sharer and wait
 // for all responses; only then may it assert write_allocate_i for that entry.
-module openrv64_ccx_snoop_filter #(
+module openrv64_icx_snoop_filter #(
     parameter integer NUM_HARTS = 2,
     parameter integer ADDR_WIDTH = 64,
     parameter integer LINE_BYTES = 64,
@@ -172,7 +172,7 @@ module openrv64_ccx_snoop_filter #(
                 init_busy_q ? {WORD_WIDTH{1'b0}} :
                               normal_write_word;
 
-            openrv64_ccx_snoop_filter_way #(
+            openrv64_icx_snoop_filter_way #(
                 .SETS(SETS),
                 .SET_WIDTH(SET_WIDTH),
                 .WORD_WIDTH(WORD_WIDTH)
@@ -189,7 +189,7 @@ module openrv64_ccx_snoop_filter #(
         end
     endgenerate
 
-    openrv64_ccx_snoop_filter_way #(
+    openrv64_icx_snoop_filter_way #(
         .SETS(SETS),
         .SET_WIDTH(SET_WIDTH),
         .WORD_WIDTH(WAY_WIDTH)

@@ -2,14 +2,14 @@
 `include "complex/protocol/defs.v"
 `include "core/isa/rv64-priv.v"
 
-// Public composition for the 256-bit frontend view of a native 512-bit CCX
+// Public composition for the 256-bit frontend view of a native 512-bit ICX
 // instruction-cache endpoint.
 //
 // The private cache stores a complete 64-byte line in one data word.  A
 // frontend request selects either 256-bit half of that resident line.  A miss
-// emits one native CCX command and consumes one native 512-bit response beat;
+// emits one native ICX command and consumes one native 512-bit response beat;
 // it is never decomposed into scalar compatibility requests.
-module openrv64_l1i_ccx #(
+module openrv64_l1i_icx #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
     parameter integer CACHE_BYTES = 16 * 1024,
@@ -23,8 +23,8 @@ module openrv64_l1i_ccx #(
     parameter integer DIRTY_TIMESTAMP_WIDTH =
         (WRITEBACK_TIMEOUT_CYCLES < 2) ? 1 :
         $clog2(WRITEBACK_TIMEOUT_CYCLES + 1),
-    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
-        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}}
+    parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}}
 ) (
     input  wire                         clk_i,
     input  wire                         rst_ni,
@@ -81,42 +81,42 @@ module openrv64_l1i_ccx #(
     input  wire                         invalidate_all_i,
     input  wire [ADDR_WIDTH-1:0]        invalidate_addr_i,
 
-    output wire                         ccx_req_valid_o,
-    input  wire                         ccx_req_ready_i,
-    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                        ccx_req_hart_id_o,
-    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                        ccx_req_source_id_o,
-    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                        ccx_req_txn_id_o,
-    output wire [`OPENRV64_CCX_OP_WIDTH-1:0]
-                                        ccx_req_op_o,
-    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0]
-                                        ccx_req_order_o,
-    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0]
-                                        ccx_req_kind_o,
-    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0]
-                                        ccx_req_attr_o,
-    output wire [2:0]                   ccx_req_size_o,
-    output wire [ADDR_WIDTH-1:0]        ccx_req_addr_o,
-    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
-                                        ccx_req_burst_len_o,
+    output wire                         icx_req_valid_o,
+    input  wire                         icx_req_ready_i,
+    output wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                        icx_req_hart_id_o,
+    output wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                        icx_req_source_id_o,
+    output wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                        icx_req_txn_id_o,
+    output wire [`OPENRV64_ICX_OP_WIDTH-1:0]
+                                        icx_req_op_o,
+    output wire [`OPENRV64_ICX_ORDER_WIDTH-1:0]
+                                        icx_req_order_o,
+    output wire [`OPENRV64_ICX_KIND_WIDTH-1:0]
+                                        icx_req_kind_o,
+    output wire [`OPENRV64_ICX_ATTR_WIDTH-1:0]
+                                        icx_req_attr_o,
+    output wire [2:0]                   icx_req_size_o,
+    output wire [ADDR_WIDTH-1:0]        icx_req_addr_o,
+    output wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
+                                        icx_req_burst_len_o,
 
-    input  wire                         ccx_resp_valid_i,
-    output wire                         ccx_resp_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                        ccx_resp_hart_id_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                        ccx_resp_source_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                        ccx_resp_txn_id_i,
-    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-                                        ccx_resp_rdata_i,
-    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                        ccx_resp_beat_index_i,
-    input  wire                         ccx_resp_last_i,
-    input  wire                         ccx_resp_error_i,
-    input  wire                         ccx_resp_sc_success_i
+    input  wire                         icx_resp_valid_i,
+    output wire                         icx_resp_ready_o,
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                        icx_resp_hart_id_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                        icx_resp_source_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                        icx_resp_txn_id_i,
+    input  wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+                                        icx_resp_rdata_i,
+    input  wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                        icx_resp_beat_index_i,
+    input  wire                         icx_resp_last_i,
+    input  wire                         icx_resp_error_i,
+    input  wire                         icx_resp_sc_success_i
 );
 
     localparam integer PREFETCH_INDEX_WIDTH =
@@ -127,8 +127,8 @@ module openrv64_l1i_ccx #(
         $clog2(DEMAND_DEPTH + 1);
     localparam integer DEMAND_MSHR_INDEX_WIDTH =
         (DEMAND_MSHRS > 1) ? $clog2(DEMAND_MSHRS) : 1;
-    localparam integer CCX_TXN_COUNT =
-        1 << `OPENRV64_CCX_TXN_ID_WIDTH;
+    localparam integer ICX_TXN_COUNT =
+        1 << `OPENRV64_ICX_TXN_ID_WIDTH;
 
     initial begin
         if ((PREFETCH_SLOTS < 2) || (PREFETCH_SLOTS > 16))
@@ -140,9 +140,9 @@ module openrv64_l1i_ccx #(
             $fatal(1, "L1I VIPT way size exceeds the 4 KiB page offset");
         if ((DEMAND_DEPTH < 2) || (DEMAND_DEPTH > 16))
             $fatal(1, "L1I demand depth must contain 2 through 16 requests");
-        if ((DEMAND_MSHRS < 1) || (DEMAND_MSHRS > CCX_TXN_COUNT))
+        if ((DEMAND_MSHRS < 1) || (DEMAND_MSHRS > ICX_TXN_COUNT))
             $fatal(1,
-                   "L1I demand MSHRs must fit native CCX transaction IDs");
+                   "L1I demand MSHRs must fit native ICX transaction IDs");
     end
 
     reg slot_valid_q [0:PREFETCH_SLOTS-1];
@@ -288,7 +288,7 @@ module openrv64_l1i_ccx #(
     reg response_wait_mshr_q [0:DEMAND_DEPTH-1];
     reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
         response_mshr_q [0:DEMAND_DEPTH-1];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         response_data_q [0:DEMAND_DEPTH-1];
     reg response_error_q [0:DEMAND_DEPTH-1];
     reg [DEMAND_COUNT_WIDTH-1:0] response_count_q;
@@ -536,7 +536,7 @@ module openrv64_l1i_ccx #(
     wire l1_req_ready;
     wire l1_resp_valid;
     wire [DEMAND_INDEX_WIDTH-1:0] l1_resp_tag;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l1_req_rdata;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l1_req_rdata;
     wire l1_req_error;
     wire l1_miss_valid;
     wire l1_miss_ready;
@@ -546,7 +546,7 @@ module openrv64_l1i_ccx #(
     wire l1_fill_valid;
     wire l1_fill_ready;
     wire [ADDR_WIDTH-1:0] l1_fill_addr;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l1_fill_data;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l1_fill_data;
     wire l1_fill_aged;
     wire l1_invalidate_valid;
     wire l1_invalidate_ready;
@@ -554,13 +554,13 @@ module openrv64_l1i_ccx #(
     wire l1_mem_ready;
     wire l1_mem_write;
     wire [ADDR_WIDTH-1:0] l1_mem_addr;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] l1_mem_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] l1_mem_wstrb;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l1_mem_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] l1_mem_wstrb;
     wire l1_mem_error;
-    wire ccx_issue_fire;
-    wire ccx_response_ready;
+    wire icx_issue_fire;
+    wire icx_response_ready;
     wire response_fire;
-    wire ccx_response_for_icache;
+    wire icx_response_for_icache;
     wire response_geometry_error;
 
     reg demand_mshr_valid_q [0:DEMAND_MSHRS-1];
@@ -568,7 +568,7 @@ module openrv64_l1i_ccx #(
     reg demand_mshr_complete_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_fill_done_q [0:DEMAND_MSHRS-1];
     reg [ADDR_WIDTH-1:0] demand_mshr_addr_q [0:DEMAND_MSHRS-1];
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         demand_mshr_data_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_error_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_aged_q [0:DEMAND_MSHRS-1];
@@ -635,8 +635,8 @@ module openrv64_l1i_ccx #(
         .error_i(demand_mshr_error_vec),
         .addr_i(demand_mshr_addr_vec),
         .miss_addr_i(l1_miss_addr),
-        .response_for_icache_i(ccx_response_for_icache),
-        .response_txn_id_i(ccx_resp_txn_id_i),
+        .response_for_icache_i(icx_response_for_icache),
+        .response_txn_id_i(icx_resp_txn_id_i),
         .match_found_o(demand_mshr_match_found_r),
         .match_index_o(demand_mshr_match_index_r),
         .free_found_o(demand_mshr_free_found_r),
@@ -791,39 +791,39 @@ module openrv64_l1i_ccx #(
     assign next_line_sum = response_sum_q[response_pop_index];
     assign next_line_mxr = response_mxr_q[response_pop_index];
 
-    assign ccx_response_ready = demand_mshr_response_match_r;
+    assign icx_response_ready = demand_mshr_response_match_r;
 
-    openrv64_l1i_ccx_interface #(
+    openrv64_l1i_icx_interface #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .HART_ID(HART_ID)
-    ) u_ccx_interface (
+    ) u_icx_interface (
         .issue_valid_i(issue_valid),
         .issue_txn_id_i(
-            `OPENRV64_CCX_TXN_ID_WIDTH'(issue_index)),
+            `OPENRV64_ICX_TXN_ID_WIDTH'(issue_index)),
         .issue_addr_i(demand_mshr_addr_q[issue_index]),
-        .issue_fire_o(ccx_issue_fire),
-        .ccx_req_valid_o(ccx_req_valid_o),
-        .ccx_req_ready_i(ccx_req_ready_i),
-        .ccx_req_hart_id_o(ccx_req_hart_id_o),
-        .ccx_req_source_id_o(ccx_req_source_id_o),
-        .ccx_req_txn_id_o(ccx_req_txn_id_o),
-        .ccx_req_op_o(ccx_req_op_o),
-        .ccx_req_order_o(ccx_req_order_o),
-        .ccx_req_kind_o(ccx_req_kind_o),
-        .ccx_req_attr_o(ccx_req_attr_o),
-        .ccx_req_size_o(ccx_req_size_o),
-        .ccx_req_addr_o(ccx_req_addr_o),
-        .ccx_req_burst_len_o(ccx_req_burst_len_o),
-        .response_ready_i(ccx_response_ready),
-        .ccx_resp_valid_i(ccx_resp_valid_i),
-        .ccx_resp_ready_o(ccx_resp_ready_o),
-        .ccx_resp_hart_id_i(ccx_resp_hart_id_i),
-        .ccx_resp_source_id_i(ccx_resp_source_id_i),
-        .ccx_resp_beat_index_i(ccx_resp_beat_index_i),
-        .ccx_resp_last_i(ccx_resp_last_i),
-        .ccx_resp_sc_success_i(ccx_resp_sc_success_i),
+        .issue_fire_o(icx_issue_fire),
+        .icx_req_valid_o(icx_req_valid_o),
+        .icx_req_ready_i(icx_req_ready_i),
+        .icx_req_hart_id_o(icx_req_hart_id_o),
+        .icx_req_source_id_o(icx_req_source_id_o),
+        .icx_req_txn_id_o(icx_req_txn_id_o),
+        .icx_req_op_o(icx_req_op_o),
+        .icx_req_order_o(icx_req_order_o),
+        .icx_req_kind_o(icx_req_kind_o),
+        .icx_req_attr_o(icx_req_attr_o),
+        .icx_req_size_o(icx_req_size_o),
+        .icx_req_addr_o(icx_req_addr_o),
+        .icx_req_burst_len_o(icx_req_burst_len_o),
+        .response_ready_i(icx_response_ready),
+        .icx_resp_valid_i(icx_resp_valid_i),
+        .icx_resp_ready_o(icx_resp_ready_o),
+        .icx_resp_hart_id_i(icx_resp_hart_id_i),
+        .icx_resp_source_id_i(icx_resp_source_id_i),
+        .icx_resp_beat_index_i(icx_resp_beat_index_i),
+        .icx_resp_last_i(icx_resp_last_i),
+        .icx_resp_sc_success_i(icx_resp_sc_success_i),
         .response_fire_o(response_fire),
-        .response_for_icache_o(ccx_response_for_icache),
+        .response_for_icache_o(icx_response_for_icache),
         .response_geometry_error_o(response_geometry_error)
     );
 
@@ -857,11 +857,11 @@ module openrv64_l1i_ccx #(
     openrv64_l1i #(
         .ENABLE(ENABLE),
         .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(`OPENRV64_CCX_LINE_DATA_WIDTH),
+        .DATA_WIDTH(`OPENRV64_ICX_LINE_DATA_WIDTH),
         .REQ_TAG_WIDTH(DEMAND_INDEX_WIDTH),
         .DETACH_READ_MISSES(1),
         .CACHE_BYTES(CACHE_BYTES),
-        .LINE_BYTES(`OPENRV64_CCX_LINE_BYTES),
+        .LINE_BYTES(`OPENRV64_ICX_LINE_BYTES),
         .WAYS(WAYS),
         .WRITEBACK_TIMEOUT_CYCLES(WRITEBACK_TIMEOUT_CYCLES),
         .DIRTY_TIMESTAMP_WIDTH(DIRTY_TIMESTAMP_WIDTH)
@@ -905,7 +905,7 @@ module openrv64_l1i_ccx #(
         .mem_addr_o(l1_mem_addr),
         .mem_wdata_o(l1_mem_wdata),
         .mem_wstrb_o(l1_mem_wstrb),
-        .mem_rdata_i(ccx_resp_rdata_i),
+        .mem_rdata_i(icx_resp_rdata_i),
         .mem_error_i(l1_mem_error)
     );
 
@@ -979,7 +979,7 @@ module openrv64_l1i_ccx #(
                 response_mshr_q[response_reset_index] <=
                     {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
                 response_data_q[response_reset_index] <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 response_error_q[response_reset_index] <= 1'b0;
             end
         end else begin
@@ -1318,17 +1318,17 @@ module openrv64_l1i_ccx #(
                 demand_mshr_addr_q[demand_mshr_reset_index] <=
                     {ADDR_WIDTH{1'b0}};
                 demand_mshr_data_q[demand_mshr_reset_index] <=
-                    {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 demand_mshr_error_q[demand_mshr_reset_index] <= 1'b0;
                 demand_mshr_aged_q[demand_mshr_reset_index] <= 1'b0;
             end
         end else begin
             if (!issue_active_q && demand_mshr_issue_found_r &&
-                !ccx_issue_fire) begin
+                !icx_issue_fire) begin
                 issue_active_q <= 1'b1;
                 issue_mshr_q <= demand_mshr_issue_index_r;
             end
-            if (ccx_issue_fire) begin
+            if (icx_issue_fire) begin
                 issue_active_q <= 1'b0;
                 demand_mshr_issued_q[issue_index] <= 1'b1;
             end
@@ -1351,7 +1351,7 @@ module openrv64_l1i_ccx #(
                     demand_mshr_addr_q[demand_mshr_free_index_r] <=
                         l1_miss_addr;
                     demand_mshr_data_q[demand_mshr_free_index_r] <=
-                        {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
+                        {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                     demand_mshr_error_q[demand_mshr_free_index_r] <=
                         1'b0;
                     demand_mshr_aged_q[demand_mshr_free_index_r] <=
@@ -1363,10 +1363,10 @@ module openrv64_l1i_ccx #(
                 demand_mshr_complete_q[
                     demand_mshr_response_index_r] <= 1'b1;
                 demand_mshr_data_q[
-                    demand_mshr_response_index_r] <= ccx_resp_rdata_i;
+                    demand_mshr_response_index_r] <= icx_resp_rdata_i;
                 demand_mshr_error_q[
                     demand_mshr_response_index_r] <=
-                    ccx_resp_error_i || response_geometry_error;
+                    icx_resp_error_i || response_geometry_error;
             end
 
             if (l1_fill_fire)
@@ -1393,17 +1393,17 @@ module openrv64_l1i_ccx #(
 `ifndef SYNTHESIS
     always @(posedge clk_i) begin
         if (rst_ni && l1_mem_write)
-            $fatal(1, "L1I attempted a native CCX line write");
+            $fatal(1, "L1I attempted a native ICX line write");
         if (rst_ni && l1_mem_valid)
             $fatal(1,
                    "L1I used blocking memory instead of detached miss port");
         if (rst_ni && l1_resp_valid &&
             !response_valid_q[l1_resp_tag])
             $fatal(1, "L1I returned an unknown tagged hit response");
-        if (rst_ni && ccx_resp_valid_i &&
-            ccx_response_for_icache &&
+        if (rst_ni && icx_resp_valid_i &&
+            icx_response_for_icache &&
             !demand_mshr_response_match_r)
-            $fatal(1, "L1I received an unknown CCX miss response");
+            $fatal(1, "L1I received an unknown ICX miss response");
     end
 `endif
 

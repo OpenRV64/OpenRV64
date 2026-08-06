@@ -64,22 +64,22 @@ module tb_core_bus;
     wire pmp_write;
     wire pmp_exec;
 
-    wire ccx_req_valid;
-    logic ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    logic ccx_resp_valid;
-    wire ccx_resp_ready;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata;
+    wire icx_req_valid;
+    logic icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    logic icx_resp_valid;
+    wire icx_resp_ready;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
 
     openrv64_core_bus dut (
         .clk(clk),
@@ -187,30 +187,30 @@ module tb_core_bus;
         .lsu_pipe_req_translation_page_fault_o(),
         .lsu_pipe_cancel_i(1'b0),
         .lsu_pipe_resp_ready_i(1'b0),
-        .ccx_req_valid_o(ccx_req_valid),
-        .ccx_req_ready_i(ccx_req_ready),
-        .ccx_req_hart_id_o(ccx_req_hart_id),
-        .ccx_req_txn_id_o(ccx_req_txn_id),
-        .ccx_req_source_id_o(ccx_req_source_id),
-        .ccx_req_op_o(ccx_req_op),
-        .ccx_req_lock_o(ccx_req_lock),
-        .ccx_req_order_o(ccx_req_order),
-        .ccx_req_kind_o(ccx_req_kind),
-        .ccx_req_attr_o(ccx_req_attr),
-        .ccx_req_size_o(ccx_req_size),
-        .ccx_req_addr_o(ccx_req_addr),
-        .ccx_req_burst_len_o(ccx_req_burst_len),
-        .ccx_wdata_ready_i(1'b0),
-        .ccx_resp_valid_i(ccx_resp_valid),
-        .ccx_resp_ready_o(ccx_resp_ready),
-        .ccx_resp_hart_id_i(ccx_req_hart_id),
-        .ccx_resp_txn_id_i(ccx_req_txn_id),
-        .ccx_resp_source_id_i(`OPENRV64_CCX_SOURCE_PTW),
-        .ccx_resp_beat_index_i('0),
-        .ccx_resp_last_i(1'b1),
-        .ccx_resp_rdata_i(ccx_resp_rdata),
-        .ccx_resp_error_i(1'b0),
-        .ccx_resp_sc_success_i(1'b0),
+        .icx_req_valid_o(icx_req_valid),
+        .icx_req_ready_i(icx_req_ready),
+        .icx_req_hart_id_o(icx_req_hart_id),
+        .icx_req_txn_id_o(icx_req_txn_id),
+        .icx_req_source_id_o(icx_req_source_id),
+        .icx_req_op_o(icx_req_op),
+        .icx_req_lock_o(icx_req_lock),
+        .icx_req_order_o(icx_req_order),
+        .icx_req_kind_o(icx_req_kind),
+        .icx_req_attr_o(icx_req_attr),
+        .icx_req_size_o(icx_req_size),
+        .icx_req_addr_o(icx_req_addr),
+        .icx_req_burst_len_o(icx_req_burst_len),
+        .icx_wdata_ready_i(1'b0),
+        .icx_resp_valid_i(icx_resp_valid),
+        .icx_resp_ready_o(icx_resp_ready),
+        .icx_resp_hart_id_i(icx_req_hart_id),
+        .icx_resp_txn_id_i(icx_req_txn_id),
+        .icx_resp_source_id_i(`OPENRV64_ICX_SOURCE_PTW),
+        .icx_resp_beat_index_i('0),
+        .icx_resp_last_i(1'b1),
+        .icx_resp_rdata_i(icx_resp_rdata),
+        .icx_resp_error_i(1'b0),
+        .icx_resp_sc_success_i(1'b0),
         .m_axi_arready_i(1'b0),
         .m_axi_rid_i(3'd0), .m_axi_rdata_i(256'd0),
         .m_axi_rresp_i(2'd0), .m_axi_rlast_i(1'b0),
@@ -259,7 +259,7 @@ module tb_core_bus;
         begin
             cycles = 0;
             saw_pmp = 1'b0;
-            while (!ccx_req_valid && cycles < 20) begin
+            while (!icx_req_valid && cycles < 20) begin
                 @(negedge clk);
                 if (pmp_valid) begin
                     saw_pmp = 1'b1;
@@ -273,18 +273,18 @@ module tb_core_bus;
                 cycles = cycles + 1;
             end
             #1;
-            if (!ccx_req_valid || !saw_pmp ||
-                ccx_req_addr !== expected_line_addr ||
-                ccx_req_source_id !== `OPENRV64_CCX_SOURCE_PTW ||
-                ccx_req_op !== `OPENRV64_CCX_OP_READ ||
-                ccx_req_kind !== `OPENRV64_CCX_KIND_PTE ||
-                ccx_req_size !== 3'd6 ||
-                ccx_req_burst_len !== '0 || ccx_req_lock) begin
+            if (!icx_req_valid || !saw_pmp ||
+                icx_req_addr !== expected_line_addr ||
+                icx_req_source_id !== `OPENRV64_ICX_SOURCE_PTW ||
+                icx_req_op !== `OPENRV64_ICX_OP_READ ||
+                icx_req_kind !== `OPENRV64_ICX_KIND_PTE ||
+                icx_req_size !== 3'd6 ||
+                icx_req_burst_len !== '0 || icx_req_lock) begin
                 $fatal(1,
-                    "%0s: invalid PTW CCX request valid/addr/source/op/kind/size=%b/%016x/%0d/%0d/%0d/%0d",
-                    label, ccx_req_valid, ccx_req_addr,
-                    ccx_req_source_id, ccx_req_op, ccx_req_kind,
-                    ccx_req_size);
+                    "%0s: invalid PTW ICX request valid/addr/source/op/kind/size=%b/%016x/%0d/%0d/%0d/%0d",
+                    label, icx_req_valid, icx_req_addr,
+                    icx_req_source_id, icx_req_op, icx_req_kind,
+                    icx_req_size);
             end
         end
     endtask
@@ -293,20 +293,20 @@ module tb_core_bus;
         input [63:0] pte_addr;
         input [63:0] pte_data;
         begin
-            ccx_req_ready = 1'b1;
+            icx_req_ready = 1'b1;
             @(posedge clk);
             @(negedge clk);
-            ccx_req_ready = 1'b0;
-            ccx_resp_rdata = '0;
-            ccx_resp_rdata[pte_addr[5:3]*64 +: 64] = pte_data;
-            ccx_resp_valid = 1'b1;
+            icx_req_ready = 1'b0;
+            icx_resp_rdata = '0;
+            icx_resp_rdata[pte_addr[5:3]*64 +: 64] = pte_data;
+            icx_resp_valid = 1'b1;
             #1;
-            if (!ccx_resp_ready)
-                $fatal(1, "PTW did not accept its CCX response");
+            if (!icx_resp_ready)
+                $fatal(1, "PTW did not accept its ICX response");
             @(posedge clk);
             @(negedge clk);
-            ccx_resp_valid = 1'b0;
-            ccx_resp_rdata = '0;
+            icx_resp_valid = 1'b0;
+            icx_resp_rdata = '0;
         end
     endtask
 
@@ -314,32 +314,32 @@ module tb_core_bus;
         integer cycles;
         begin
             cycles = 0;
-            while (!ccx_req_valid && cycles < 40) begin
+            while (!icx_req_valid && cycles < 40) begin
                 @(negedge clk);
                 cycles = cycles + 1;
             end
             #1;
-            if (!ccx_req_valid ||
-                ccx_req_source_id !== `OPENRV64_CCX_SOURCE_PTW ||
-                ccx_req_op !== `OPENRV64_CCX_OP_FENCE ||
-                ccx_req_kind !== `OPENRV64_CCX_KIND_PTE ||
-                ccx_req_order !== `OPENRV64_CCX_ORDER_ACQ_REL ||
-                ccx_req_attr !== `OPENRV64_CCX_ATTR_NONE ||
-                ccx_req_size !== 3'd0 ||
-                ccx_req_burst_len !== '0 || ccx_req_lock)
+            if (!icx_req_valid ||
+                icx_req_source_id !== `OPENRV64_ICX_SOURCE_PTW ||
+                icx_req_op !== `OPENRV64_ICX_OP_FENCE ||
+                icx_req_kind !== `OPENRV64_ICX_KIND_PTE ||
+                icx_req_order !== `OPENRV64_ICX_ORDER_ACQ_REL ||
+                icx_req_attr !== `OPENRV64_ICX_ATTR_NONE ||
+                icx_req_size !== 3'd0 ||
+                icx_req_burst_len !== '0 || icx_req_lock)
                 $fatal(1, "invalid PTW generation shootdown request");
-            ccx_req_ready = 1'b1;
+            icx_req_ready = 1'b1;
             @(posedge clk);
             @(negedge clk);
-            ccx_req_ready = 1'b0;
-            ccx_resp_rdata = '0;
-            ccx_resp_valid = 1'b1;
+            icx_req_ready = 1'b0;
+            icx_resp_rdata = '0;
+            icx_resp_valid = 1'b1;
             #1;
-            if (!ccx_resp_ready)
+            if (!icx_resp_ready)
                 $fatal(1, "PTW did not accept shootdown response");
             @(posedge clk);
             @(negedge clk);
-            ccx_resp_valid = 1'b0;
+            icx_resp_valid = 1'b0;
         end
     endtask
 
@@ -373,9 +373,9 @@ module tb_core_bus;
         req_ready = 1'b0;
         req_rdata = 64'd0;
         req_error = 1'b0;
-        ccx_req_ready = 1'b0;
-        ccx_resp_valid = 1'b0;
-        ccx_resp_rdata = '0;
+        icx_req_ready = 1'b0;
+        icx_resp_valid = 1'b0;
+        icx_resp_rdata = '0;
 
         repeat (2) @(posedge clk);
         @(negedge clk);

@@ -55,8 +55,8 @@ OPENRV64_LINUX_SMP_RUN_INPUTS := $(sort \
 	$(OPENRV64_MAKEFILES) \
 	$(CORE_3P_AXI_SRCS) \
 	rtl/complex/protocol/line_crossbar.v \
-	$(CCX_L2_SRCS) \
-	$(CCX_COHERENT_SRCS) \
+	$(ICX_L2_SRCS) \
+	$(ICX_COHERENT_SRCS) \
 	$(COMPLEX_BUS_SRCS) \
 	$(AXI_DDR3_SRCS) \
 	$(ROM_SRCS) \

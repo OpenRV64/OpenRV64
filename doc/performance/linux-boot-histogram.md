@@ -57,7 +57,7 @@ The elaborated configuration was:
 | Prefetch outstanding | 8 |
 | Demand reserve | 2 |
 | Page gating | 4 KiB probation, setting 1 |
-| CCX bus | native, 256-bit |
+| ICX bus | native, 256-bit |
 | DDR3 | enabled |
 | DDR3 queues | 8 read / 8 write / 16 command |
 | Memory timing model | 0 |
@@ -324,7 +324,7 @@ This report is intentionally qualified:
 - Deterministic periodic sampling can alias with deterministic loops.
 - `dbg_pc` is the last retired PC, not necessarily the instruction currently
   causing a stall.
-- A function hit does not identify frontend, dependency, cache, TLB, CCX,
+- A function hit does not identify frontend, dependency, cache, TLB, ICX,
   DDR3, or retirement backpressure as the cause.
 - "Sample-equivalent cycles" are visual scale only.
 - This snapshot ends at 83.75M, before the Bash prompt.

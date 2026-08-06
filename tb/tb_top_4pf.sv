@@ -36,48 +36,48 @@ module tb_top_4pf #(
     wire wfi_sleep;
     wire trace_retire_exception;
     wire [4:0] trace_retire_cause;
-    wire ccx_req_valid;
-    wire ccx_req_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_req_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_req_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_req_source_id;
-    wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op;
-    wire ccx_req_lock;
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order;
-    wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind;
-    wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr;
-    wire [2:0] ccx_req_size;
-    wire [63:0] ccx_req_addr;
-    wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0] ccx_req_burst_len;
-    wire ccx_wdata_valid;
-    wire ccx_wdata_ready;
-    wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_wdata_hart_id;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_wdata_txn_id;
-    wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_wdata_source_id;
-    wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0] ccx_wdata_beat_index;
-    wire ccx_wdata_last;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_wstrb;
-    reg ccx_resp_valid_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_resp_hart_id_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_resp_txn_id_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_resp_source_id_q;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_resp_rdata_q;
-    reg ccx_resp_error_q;
-    wire ccx_resp_ready;
-    reg ccx_command_pending_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_command_hart_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_command_txn_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_command_source_q;
-    reg [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_command_op_q;
-    reg [2:0] ccx_command_size_q;
-    reg [63:0] ccx_command_addr_q;
-    reg ccx_data_pending_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] ccx_data_hart_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] ccx_data_txn_q;
-    reg [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0] ccx_data_source_q;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_data_q;
-    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] ccx_strb_q;
+    wire icx_req_valid;
+    wire icx_req_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_req_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
+    wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire icx_req_lock;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order;
+    wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
+    wire [2:0] icx_req_size;
+    wire [63:0] icx_req_addr;
+    wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0] icx_req_burst_len;
+    wire icx_wdata_valid;
+    wire icx_wdata_ready;
+    wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_wdata_hart_id;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_wdata_txn_id;
+    wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_wdata_source_id;
+    wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0] icx_wdata_beat_index;
+    wire icx_wdata_last;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
+    reg icx_resp_valid_q;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_resp_hart_id_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id_q;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata_q;
+    reg icx_resp_error_q;
+    wire icx_resp_ready;
+    reg icx_command_pending_q;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_command_hart_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_command_txn_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_command_source_q;
+    reg [`OPENRV64_ICX_OP_WIDTH-1:0] icx_command_op_q;
+    reg [2:0] icx_command_size_q;
+    reg [63:0] icx_command_addr_q;
+    reg icx_data_pending_q;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] icx_data_hart_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_data_txn_q;
+    reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_data_source_q;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_data_q;
+    reg [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_strb_q;
 
     reg [255:0] image [0:2047];
     reg [63:0] memory [0:8191];
@@ -117,13 +117,13 @@ module tb_top_4pf #(
     integer trace_retire_ready_block_cycles [0:4];
     integer trace_store_source_block_cycles [0:4];
     integer trace_store_source_forwardable_cycles [0:4];
-    integer ccx_icache_refills [0:4];
-    integer ccx_dcache_refills [0:4];
-    integer ccx_dcache_writes [0:4];
-    integer ccx_total_requests;
-    integer ccx_total_icache_refills;
-    integer ccx_total_dcache_refills;
-    integer ccx_total_dcache_writes;
+    integer icx_icache_refills [0:4];
+    integer icx_dcache_refills [0:4];
+    integer icx_dcache_writes [0:4];
+    integer icx_total_requests;
+    integer icx_total_icache_refills;
+    integer icx_total_dcache_refills;
+    integer icx_total_dcache_writes;
     integer fpu_first_request_cycle [0:4];
     integer fpu_last_request_cycle [0:4];
     integer fpu_phase;
@@ -199,10 +199,10 @@ module tb_top_4pf #(
         .pair1024_req_ready(1'b0), .pair1024_resp_valid(1'b0),
         .pair1024_resp_predicted_addr(64'd0),
         .pair1024_resp_predicted_data(
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
         .pair1024_resp_unpredicted_addr(64'd0),
         .pair1024_resp_unpredicted_data(
-            {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}}),
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}}),
         .m_axi_arready(1'b0),
         .m_axi_rid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
         .m_axi_rdata({`OPENRV64_AXI_DATA_WIDTH{1'b0}}),
@@ -210,31 +210,31 @@ module tb_top_4pf #(
         .m_axi_awready(1'b0), .m_axi_wready(1'b0),
         .m_axi_bid({`OPENRV64_AXI_ID_WIDTH{1'b0}}),
         .m_axi_bresp(2'b00), .m_axi_bvalid(1'b0),
-        .ccx_req_valid(ccx_req_valid), .ccx_req_ready(ccx_req_ready),
-        .ccx_req_hart_id(ccx_req_hart_id),
-        .ccx_req_txn_id(ccx_req_txn_id),
-        .ccx_req_source_id(ccx_req_source_id),
-        .ccx_req_op(ccx_req_op), .ccx_req_lock(ccx_req_lock),
-        .ccx_req_order(ccx_req_order), .ccx_req_kind(ccx_req_kind),
-        .ccx_req_attr(ccx_req_attr), .ccx_req_size(ccx_req_size),
-        .ccx_req_addr(ccx_req_addr),
-        .ccx_req_burst_len(ccx_req_burst_len),
-        .ccx_wdata_valid(ccx_wdata_valid),
-        .ccx_wdata_ready(ccx_wdata_ready),
-        .ccx_wdata_hart_id(ccx_wdata_hart_id),
-        .ccx_wdata_txn_id(ccx_wdata_txn_id),
-        .ccx_wdata_source_id(ccx_wdata_source_id),
-        .ccx_wdata_beat_index(ccx_wdata_beat_index),
-        .ccx_wdata_last(ccx_wdata_last), .ccx_wdata(ccx_wdata),
-        .ccx_wstrb(ccx_wstrb),
-        .ccx_resp_valid(ccx_resp_valid_q),
-        .ccx_resp_hart_id(ccx_resp_hart_id_q),
-        .ccx_resp_txn_id(ccx_resp_txn_id_q),
-        .ccx_resp_source_id(ccx_resp_source_id_q),
-        .ccx_resp_ready(ccx_resp_ready),
-        .ccx_resp_beat_index({`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}),
-        .ccx_resp_last(1'b1), .ccx_resp_rdata(ccx_resp_rdata_q),
-        .ccx_resp_error(ccx_resp_error_q), .ccx_resp_sc_success(1'b0),
+        .icx_req_valid(icx_req_valid), .icx_req_ready(icx_req_ready),
+        .icx_req_hart_id(icx_req_hart_id),
+        .icx_req_txn_id(icx_req_txn_id),
+        .icx_req_source_id(icx_req_source_id),
+        .icx_req_op(icx_req_op), .icx_req_lock(icx_req_lock),
+        .icx_req_order(icx_req_order), .icx_req_kind(icx_req_kind),
+        .icx_req_attr(icx_req_attr), .icx_req_size(icx_req_size),
+        .icx_req_addr(icx_req_addr),
+        .icx_req_burst_len(icx_req_burst_len),
+        .icx_wdata_valid(icx_wdata_valid),
+        .icx_wdata_ready(icx_wdata_ready),
+        .icx_wdata_hart_id(icx_wdata_hart_id),
+        .icx_wdata_txn_id(icx_wdata_txn_id),
+        .icx_wdata_source_id(icx_wdata_source_id),
+        .icx_wdata_beat_index(icx_wdata_beat_index),
+        .icx_wdata_last(icx_wdata_last), .icx_wdata(icx_wdata),
+        .icx_wstrb(icx_wstrb),
+        .icx_resp_valid(icx_resp_valid_q),
+        .icx_resp_hart_id(icx_resp_hart_id_q),
+        .icx_resp_txn_id(icx_resp_txn_id_q),
+        .icx_resp_source_id(icx_resp_source_id_q),
+        .icx_resp_ready(icx_resp_ready),
+        .icx_resp_beat_index({`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}),
+        .icx_resp_last(1'b1), .icx_resp_rdata(icx_resp_rdata_q),
+        .icx_resp_error(icx_resp_error_q), .icx_resp_sc_success(1'b0),
         .coherent_reservation_clear_i(1'b0),
         .l1d_probe_valid_i(1'b0),
         .l1d_probe_addr_i(64'd0),
@@ -250,166 +250,166 @@ module tb_top_4pf #(
     always #5 clk = ~clk;
 
     /*
-     * Native CCX RAM home for cache-backed software tests.  Command and write
+     * Native ICX RAM home for cache-backed software tests.  Command and write
      * data are held independently, as required by the protocol, and matched
      * by hart/source/transaction identity before a write is committed.
      */
-    assign ccx_req_ready = (ENABLE_L1 != 0) && !ccx_command_pending_q;
-    assign ccx_wdata_ready = (ENABLE_L1 != 0) && !ccx_data_pending_q;
-    wire ccx_command_complete = ccx_command_pending_q &&
-        ((ccx_command_op_q != `OPENRV64_CCX_OP_WRITE) ||
-         ccx_data_pending_q) &&
-        (!ccx_resp_valid_q || ccx_resp_ready);
-    wire [12:0] ccx_line_word =
-        {ccx_command_addr_q[15:6], 3'b000};
-    integer ccx_byte;
-    integer ccx_line_lane;
-    integer ccx_phase_index;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] ccx_read_line_r;
+    assign icx_req_ready = (ENABLE_L1 != 0) && !icx_command_pending_q;
+    assign icx_wdata_ready = (ENABLE_L1 != 0) && !icx_data_pending_q;
+    wire icx_command_complete = icx_command_pending_q &&
+        ((icx_command_op_q != `OPENRV64_ICX_OP_WRITE) ||
+         icx_data_pending_q) &&
+        (!icx_resp_valid_q || icx_resp_ready);
+    wire [12:0] icx_line_word =
+        {icx_command_addr_q[15:6], 3'b000};
+    integer icx_byte;
+    integer icx_line_lane;
+    integer icx_phase_index;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_read_line_r;
     always @* begin
-        ccx_read_line_r = {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-        if (ccx_command_addr_q[63:16] == RESET_VECTOR[63:16]) begin
-            for (ccx_line_lane = 0; ccx_line_lane < 8;
-                 ccx_line_lane = ccx_line_lane + 1)
-                ccx_read_line_r[ccx_line_lane*64 +: 64] =
-                    memory[ccx_line_word + ccx_line_lane];
+        icx_read_line_r = {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+        if (icx_command_addr_q[63:16] == RESET_VECTOR[63:16]) begin
+            for (icx_line_lane = 0; icx_line_lane < 8;
+                 icx_line_lane = icx_line_lane + 1)
+                icx_read_line_r[icx_line_lane*64 +: 64] =
+                    memory[icx_line_word + icx_line_lane];
         end
     end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_resp_valid_q <= 1'b0;
-            ccx_resp_hart_id_q <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            ccx_resp_txn_id_q <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            ccx_resp_source_id_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
-            ccx_resp_rdata_q <=
-                {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-            ccx_resp_error_q <= 1'b0;
-            ccx_command_pending_q <= 1'b0;
-            ccx_command_hart_q <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            ccx_command_txn_q <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            ccx_command_source_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
-            ccx_command_op_q <= {`OPENRV64_CCX_OP_WIDTH{1'b0}};
-            ccx_command_size_q <= 3'd0;
-            ccx_command_addr_q <= 64'd0;
-            ccx_data_pending_q <= 1'b0;
-            ccx_data_hart_q <=
-                {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            ccx_data_txn_q <=
-                {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            ccx_data_source_q <=
-                {`OPENRV64_CCX_SOURCE_ID_WIDTH{1'b0}};
-            ccx_data_q <= {`OPENRV64_CCX_LINE_DATA_WIDTH{1'b0}};
-            ccx_strb_q <= {`OPENRV64_CCX_LINE_STRB_WIDTH{1'b0}};
-            ccx_total_requests <= 0;
-            ccx_total_icache_refills <= 0;
-            ccx_total_dcache_refills <= 0;
-            ccx_total_dcache_writes <= 0;
-            for (ccx_phase_index = 0; ccx_phase_index < 5;
-                 ccx_phase_index = ccx_phase_index + 1) begin
-                ccx_icache_refills[ccx_phase_index] <= 0;
-                ccx_dcache_refills[ccx_phase_index] <= 0;
-                ccx_dcache_writes[ccx_phase_index] <= 0;
+            icx_resp_valid_q <= 1'b0;
+            icx_resp_hart_id_q <=
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            icx_resp_txn_id_q <=
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            icx_resp_source_id_q <=
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
+            icx_resp_rdata_q <=
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+            icx_resp_error_q <= 1'b0;
+            icx_command_pending_q <= 1'b0;
+            icx_command_hart_q <=
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            icx_command_txn_q <=
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            icx_command_source_q <=
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
+            icx_command_op_q <= {`OPENRV64_ICX_OP_WIDTH{1'b0}};
+            icx_command_size_q <= 3'd0;
+            icx_command_addr_q <= 64'd0;
+            icx_data_pending_q <= 1'b0;
+            icx_data_hart_q <=
+                {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            icx_data_txn_q <=
+                {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            icx_data_source_q <=
+                {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
+            icx_data_q <= {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+            icx_strb_q <= {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+            icx_total_requests <= 0;
+            icx_total_icache_refills <= 0;
+            icx_total_dcache_refills <= 0;
+            icx_total_dcache_writes <= 0;
+            for (icx_phase_index = 0; icx_phase_index < 5;
+                 icx_phase_index = icx_phase_index + 1) begin
+                icx_icache_refills[icx_phase_index] <= 0;
+                icx_dcache_refills[icx_phase_index] <= 0;
+                icx_dcache_writes[icx_phase_index] <= 0;
             end
         end else begin
-            if (ccx_resp_valid_q && ccx_resp_ready)
-                ccx_resp_valid_q <= 1'b0;
-            if (ccx_req_valid && ccx_req_ready) begin
-                ccx_total_requests <= ccx_total_requests + 1;
-                if ((ccx_req_source_id == `OPENRV64_CCX_SOURCE_ICACHE) &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_READ))
-                    ccx_total_icache_refills <=
-                        ccx_total_icache_refills + 1;
-                if ((ccx_req_source_id == `OPENRV64_CCX_SOURCE_DCACHE) &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_READ))
-                    ccx_total_dcache_refills <=
-                        ccx_total_dcache_refills + 1;
-                if ((ccx_req_source_id == `OPENRV64_CCX_SOURCE_DCACHE) &&
-                    (ccx_req_op == `OPENRV64_CCX_OP_WRITE))
-                    ccx_total_dcache_writes <=
-                        ccx_total_dcache_writes + 1;
-                if ($test$plusargs("trace_ccx") &&
-                    (ccx_total_requests < 64))
-                    $display("CCX: cycle=%0d source=%0d op=%0d addr=%016x s4=%0d",
-                             test_cycle, ccx_req_source_id, ccx_req_op,
-                             ccx_req_addr, dut.u_backend.u_gpr.regs[20]);
-                if ((ccx_req_burst_len != 0) || ccx_req_lock ||
-                    ((ccx_req_op != `OPENRV64_CCX_OP_READ) &&
-                     (ccx_req_op != `OPENRV64_CCX_OP_WRITE) &&
-                     (ccx_req_op != `OPENRV64_CCX_OP_FENCE)))
-                    $fatal(1, "4PF L1 test received unsupported CCX command");
-                if ((ccx_req_size == 3'd6) && (ccx_req_addr[5:0] != 0))
+            if (icx_resp_valid_q && icx_resp_ready)
+                icx_resp_valid_q <= 1'b0;
+            if (icx_req_valid && icx_req_ready) begin
+                icx_total_requests <= icx_total_requests + 1;
+                if ((icx_req_source_id == `OPENRV64_ICX_SOURCE_ICACHE) &&
+                    (icx_req_op == `OPENRV64_ICX_OP_READ))
+                    icx_total_icache_refills <=
+                        icx_total_icache_refills + 1;
+                if ((icx_req_source_id == `OPENRV64_ICX_SOURCE_DCACHE) &&
+                    (icx_req_op == `OPENRV64_ICX_OP_READ))
+                    icx_total_dcache_refills <=
+                        icx_total_dcache_refills + 1;
+                if ((icx_req_source_id == `OPENRV64_ICX_SOURCE_DCACHE) &&
+                    (icx_req_op == `OPENRV64_ICX_OP_WRITE))
+                    icx_total_dcache_writes <=
+                        icx_total_dcache_writes + 1;
+                if ($test$plusargs("trace_icx") &&
+                    (icx_total_requests < 64))
+                    $display("ICX: cycle=%0d source=%0d op=%0d addr=%016x s4=%0d",
+                             test_cycle, icx_req_source_id, icx_req_op,
+                             icx_req_addr, dut.u_backend.u_gpr.regs[20]);
+                if ((icx_req_burst_len != 0) || icx_req_lock ||
+                    ((icx_req_op != `OPENRV64_ICX_OP_READ) &&
+                     (icx_req_op != `OPENRV64_ICX_OP_WRITE) &&
+                     (icx_req_op != `OPENRV64_ICX_OP_FENCE)))
+                    $fatal(1, "4PF L1 test received unsupported ICX command");
+                if ((icx_req_size == 3'd6) && (icx_req_addr[5:0] != 0))
                     $fatal(1, "4PF L1 test received unaligned line command");
-                ccx_command_pending_q <= 1'b1;
-                ccx_command_hart_q <= ccx_req_hart_id;
-                ccx_command_txn_q <= ccx_req_txn_id;
-                ccx_command_source_q <= ccx_req_source_id;
-                ccx_command_op_q <= ccx_req_op;
-                ccx_command_size_q <= ccx_req_size;
-                ccx_command_addr_q <= ccx_req_addr;
+                icx_command_pending_q <= 1'b1;
+                icx_command_hart_q <= icx_req_hart_id;
+                icx_command_txn_q <= icx_req_txn_id;
+                icx_command_source_q <= icx_req_source_id;
+                icx_command_op_q <= icx_req_op;
+                icx_command_size_q <= icx_req_size;
+                icx_command_addr_q <= icx_req_addr;
 
                 if ((dut.u_backend.u_gpr.regs[20] >= 1) &&
                     (dut.u_backend.u_gpr.regs[20] <= 5)) begin
-                    ccx_phase_index = dut.u_backend.u_gpr.regs[20] - 1;
-                    if ((ccx_req_source_id ==
-                         `OPENRV64_CCX_SOURCE_ICACHE) &&
-                        (ccx_req_op == `OPENRV64_CCX_OP_READ))
-                        ccx_icache_refills[ccx_phase_index] <=
-                            ccx_icache_refills[ccx_phase_index] + 1;
-                    if ((ccx_req_source_id ==
-                         `OPENRV64_CCX_SOURCE_DCACHE) &&
-                        (ccx_req_op == `OPENRV64_CCX_OP_READ))
-                        ccx_dcache_refills[ccx_phase_index] <=
-                            ccx_dcache_refills[ccx_phase_index] + 1;
-                    if ((ccx_req_source_id ==
-                         `OPENRV64_CCX_SOURCE_DCACHE) &&
-                        (ccx_req_op == `OPENRV64_CCX_OP_WRITE))
-                        ccx_dcache_writes[ccx_phase_index] <=
-                            ccx_dcache_writes[ccx_phase_index] + 1;
+                    icx_phase_index = dut.u_backend.u_gpr.regs[20] - 1;
+                    if ((icx_req_source_id ==
+                         `OPENRV64_ICX_SOURCE_ICACHE) &&
+                        (icx_req_op == `OPENRV64_ICX_OP_READ))
+                        icx_icache_refills[icx_phase_index] <=
+                            icx_icache_refills[icx_phase_index] + 1;
+                    if ((icx_req_source_id ==
+                         `OPENRV64_ICX_SOURCE_DCACHE) &&
+                        (icx_req_op == `OPENRV64_ICX_OP_READ))
+                        icx_dcache_refills[icx_phase_index] <=
+                            icx_dcache_refills[icx_phase_index] + 1;
+                    if ((icx_req_source_id ==
+                         `OPENRV64_ICX_SOURCE_DCACHE) &&
+                        (icx_req_op == `OPENRV64_ICX_OP_WRITE))
+                        icx_dcache_writes[icx_phase_index] <=
+                            icx_dcache_writes[icx_phase_index] + 1;
                 end
 
             end
-            if (ccx_wdata_valid && ccx_wdata_ready) begin
-                if ((ccx_wdata_beat_index != 0) || !ccx_wdata_last)
-                    $fatal(1, "4PF L1 test received malformed CCX write data");
-                ccx_data_pending_q <= 1'b1;
-                ccx_data_hart_q <= ccx_wdata_hart_id;
-                ccx_data_txn_q <= ccx_wdata_txn_id;
-                ccx_data_source_q <= ccx_wdata_source_id;
-                ccx_data_q <= ccx_wdata;
-                ccx_strb_q <= ccx_wstrb;
+            if (icx_wdata_valid && icx_wdata_ready) begin
+                if ((icx_wdata_beat_index != 0) || !icx_wdata_last)
+                    $fatal(1, "4PF L1 test received malformed ICX write data");
+                icx_data_pending_q <= 1'b1;
+                icx_data_hart_q <= icx_wdata_hart_id;
+                icx_data_txn_q <= icx_wdata_txn_id;
+                icx_data_source_q <= icx_wdata_source_id;
+                icx_data_q <= icx_wdata;
+                icx_strb_q <= icx_wstrb;
             end
-            if (ccx_command_complete) begin
-                ccx_resp_valid_q <= 1'b1;
-                ccx_resp_hart_id_q <= ccx_command_hart_q;
-                ccx_resp_txn_id_q <= ccx_command_txn_q;
-                ccx_resp_source_id_q <= ccx_command_source_q;
-                ccx_resp_rdata_q <= ccx_read_line_r;
-                ccx_resp_error_q <=
-                    (ccx_command_op_q != `OPENRV64_CCX_OP_FENCE) &&
-                    (ccx_command_addr_q[63:16] !=
+            if (icx_command_complete) begin
+                icx_resp_valid_q <= 1'b1;
+                icx_resp_hart_id_q <= icx_command_hart_q;
+                icx_resp_txn_id_q <= icx_command_txn_q;
+                icx_resp_source_id_q <= icx_command_source_q;
+                icx_resp_rdata_q <= icx_read_line_r;
+                icx_resp_error_q <=
+                    (icx_command_op_q != `OPENRV64_ICX_OP_FENCE) &&
+                    (icx_command_addr_q[63:16] !=
                      RESET_VECTOR[63:16]);
-                ccx_command_pending_q <= 1'b0;
-                if (ccx_command_op_q == `OPENRV64_CCX_OP_WRITE) begin
-                    if ((ccx_data_hart_q != ccx_command_hart_q) ||
-                        (ccx_data_txn_q != ccx_command_txn_q) ||
-                        (ccx_data_source_q != ccx_command_source_q))
-                        $fatal(1, "4PF L1 CCX command/data mismatch");
-                    ccx_data_pending_q <= 1'b0;
-                    if (ccx_command_addr_q[63:16] ==
+                icx_command_pending_q <= 1'b0;
+                if (icx_command_op_q == `OPENRV64_ICX_OP_WRITE) begin
+                    if ((icx_data_hart_q != icx_command_hart_q) ||
+                        (icx_data_txn_q != icx_command_txn_q) ||
+                        (icx_data_source_q != icx_command_source_q))
+                        $fatal(1, "4PF L1 ICX command/data mismatch");
+                    icx_data_pending_q <= 1'b0;
+                    if (icx_command_addr_q[63:16] ==
                         RESET_VECTOR[63:16]) begin
-                        for (ccx_byte = 0; ccx_byte < 64;
-                             ccx_byte = ccx_byte + 1)
-                            if (ccx_strb_q[ccx_byte])
-                                memory[ccx_line_word + (ccx_byte >> 3)]
-                                    [(ccx_byte & 7)*8 +: 8] <=
-                                    ccx_data_q[ccx_byte*8 +: 8];
+                        for (icx_byte = 0; icx_byte < 64;
+                             icx_byte = icx_byte + 1)
+                            if (icx_strb_q[icx_byte])
+                                memory[icx_line_word + (icx_byte >> 3)]
+                                    [(icx_byte & 7)*8 +: 8] <=
+                                    icx_data_q[icx_byte*8 +: 8];
                     end
                 end
             end
@@ -742,7 +742,7 @@ module tb_top_4pf #(
         daxpy_compute_mode = $test$plusargs("daxpy_compute");
         daxpy_store_mode = $test$plusargs("daxpy_store");
         fmadd32_mode = $test$plusargs("fmadd32");
-        $display("CONFIG: 4PF l1i=%0d l1d=%0d ccx_home=tagged_ram",
+        $display("CONFIG: 4PF l1i=%0d l1d=%0d icx_home=tagged_ram",
                  ENABLE_L1, ENABLE_L1);
         if ((fault_mode + daxpy_compute_mode + daxpy_store_mode +
              fmadd32_mode) > 1)
@@ -958,16 +958,16 @@ module tb_top_4pf #(
                 if (ENABLE_L1 != 0)
                     $display("CACHE: %0s unroll=%0d l1i_refills=%0d l1d_read_refills=%0d l1d_writes=%0d",
                              perf_name, perf_unroll,
-                             ccx_icache_refills[perf_index],
-                             ccx_dcache_refills[perf_index],
-                             ccx_dcache_writes[perf_index]);
+                             icx_icache_refills[perf_index],
+                             icx_dcache_refills[perf_index],
+                             icx_dcache_writes[perf_index]);
             end
             $display("PERF: %0s total_test_cycles=%0d", perf_name, cycles);
             if (ENABLE_L1 != 0)
                 $display("CACHE: total_requests=%0d l1i_refills=%0d l1d_read_refills=%0d l1d_writes=%0d",
-                         ccx_total_requests, ccx_total_icache_refills,
-                         ccx_total_dcache_refills,
-                         ccx_total_dcache_writes);
+                         icx_total_requests, icx_total_icache_refills,
+                         icx_total_dcache_refills,
+                         icx_total_dcache_writes);
             if (daxpy_compute_mode)
                 $display("PASS: 4PF full-core compute-only DAXPY decode/FPU/retirement");
             else if (daxpy_store_mode)

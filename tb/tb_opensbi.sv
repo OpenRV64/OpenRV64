@@ -27,8 +27,8 @@ module tb_opensbi #(
     parameter integer FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
     parameter integer L1I_DEMAND_MSHRS = 4,
-    parameter integer CCX_BUS_TYPE = 0,
-    parameter integer CCX_BUS_DATA_WIDTH = 256,
+    parameter integer ICX_BUS_TYPE = 0,
+    parameter integer ICX_BUS_DATA_WIDTH = 256,
     parameter integer DDR3_ENABLE = 0,
     parameter integer DDR3_READ_QUEUE_DEPTH = 8,
     parameter integer DDR3_WRITE_QUEUE_DEPTH = 8,
@@ -126,12 +126,12 @@ module tb_opensbi #(
     integer linux_ptw_trace_count;
     integer instruction_trace_fd;
     integer lsu_trace_fd;
-    integer ccx_trace_fd;
+    integer icx_trace_fd;
     integer l1d_lock_trace_count;
     integer perf_init_index;
     string instruction_trace_path;
     string lsu_trace_path;
-    string ccx_trace_path;
+    string icx_trace_path;
     logic perf_summary_enabled;
 
     function automatic string format_ipc;
@@ -233,7 +233,7 @@ module tb_opensbi #(
     logic [63:0] perf_ptw_responses;
     logic [63:0] perf_ptw_faults;
     logic [63:0] perf_ptw_pte_cache_hits;
-    logic [63:0] perf_ptw_ccx_reads;
+    logic [63:0] perf_ptw_icx_reads;
     logic [63:0] perf_ptw_active_cycles;
 
     logic [63:0] perf_l1i_demand_requests;
@@ -349,14 +349,14 @@ module tb_opensbi #(
     wire [63:0] perf_l1d_demand_reissues;
     wire [63:0] perf_l1d_prefetch_page_ends;
 
-    logic [63:0] perf_ccx_requests;
-    logic [63:0] perf_ccx_icache_reads;
-    logic [63:0] perf_ccx_dcache_reads;
-    logic [63:0] perf_ccx_dcache_writes;
-    logic [63:0] perf_ccx_request_wait_cycles;
-    logic [63:0] perf_ccx_wdata_wait_cycles;
-    logic [63:0] perf_ccx_responses;
-    logic [63:0] perf_ccx_response_wait_cycles;
+    logic [63:0] perf_icx_requests;
+    logic [63:0] perf_icx_icache_reads;
+    logic [63:0] perf_icx_dcache_reads;
+    logic [63:0] perf_icx_dcache_writes;
+    logic [63:0] perf_icx_request_wait_cycles;
+    logic [63:0] perf_icx_wdata_wait_cycles;
+    logic [63:0] perf_icx_responses;
+    logic [63:0] perf_icx_response_wait_cycles;
 
     logic [63:0] perf_l2_hits;
     logic [63:0] perf_l2_merges;
@@ -467,7 +467,7 @@ module tb_opensbi #(
     wire [63:0] observed_lsu_resp_rdata;
     wire observed_lsu_resp_access_fault;
     wire observed_lsu_resp_page_fault;
-    wire observed_ccx_local_lock;
+    wire observed_icx_local_lock;
     wire [1:0] observed_l1d_backend_state;
     wire observed_l1d_input_valid;
     wire observed_l1d_input_ready;
@@ -477,7 +477,7 @@ module tb_opensbi #(
     wire observed_l1d_l1_req_ready;
     wire observed_l1d_mem_valid;
     wire observed_l1d_mem_write;
-    wire observed_l1d_ccx_req_valid;
+    wire observed_l1d_icx_req_valid;
 
     assign checkpoint_cycle_o = cycle_count;
     logic [4:0] previous_trap_cause;
@@ -516,8 +516,8 @@ module tb_opensbi #(
         .FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .FETCH_ALT_CONFIDENCE_GATE(FETCH_ALT_CONFIDENCE_GATE),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
-        .CCX_BUS_TYPE(CCX_BUS_TYPE),
-        .CCX_BUS_DATA_WIDTH(CCX_BUS_DATA_WIDTH),
+        .ICX_BUS_TYPE(ICX_BUS_TYPE),
+        .ICX_BUS_DATA_WIDTH(ICX_BUS_DATA_WIDTH),
         .DDR3_ENABLE(DDR3_ENABLE),
         .DDR3_READ_QUEUE_DEPTH(DDR3_READ_QUEUE_DEPTH),
         .DDR3_WRITE_QUEUE_DEPTH(DDR3_WRITE_QUEUE_DEPTH),
@@ -573,64 +573,64 @@ module tb_opensbi #(
             (BACKEND_CONFIG == `OPENRV64_BACKEND_3P)) begin :
                 g_ddr3_observe
             assign perf_ddr3_read_bursts =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_read_bursts_q;
             assign perf_ddr3_write_bursts =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_write_bursts_q;
             assign perf_ddr3_read_beats_requested =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_read_beats_requested_q;
             assign perf_ddr3_write_beats_requested =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_write_beats_requested_q;
             assign perf_ddr3_read_beats_returned =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_read_beats_returned_q;
             assign perf_ddr3_write_beats_received =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_write_beats_received_q;
             assign perf_ddr3_read_address_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_read_address_wait_cycles_q;
             assign perf_ddr3_write_address_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_write_address_wait_cycles_q;
             assign perf_ddr3_write_data_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_write_data_wait_cycles_q;
             assign perf_ddr3_read_response_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_read_response_wait_cycles_q;
             assign perf_ddr3_write_response_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_write_response_wait_cycles_q;
             assign perf_ddr3_timing_backend_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_timing_backend_wait_cycles_q;
             assign perf_ddr3_timing_owner_full =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_timing_owner_full_cycles_q;
             assign perf_ddr3_read_timing_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_read_timing_wait_cycles_q;
             assign perf_ddr3_write_timing_wait =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_write_timing_wait_cycles_q;
             assign perf_ddr3_timing_read_commands =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_timing_read_commands_q;
             assign perf_ddr3_timing_write_commands =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_timing_write_commands_q;
             assign perf_ddr3_max_read_queue =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_max_read_queue_q;
             assign perf_ddr3_max_write_queue =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_max_write_queue_q;
             assign perf_ddr3_max_timing_owners =
-                dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram.u_ddr3
+                dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3
                     .u_channel.perf_max_timing_owners_q;
         end else begin : g_no_ddr3_observe
             assign {
@@ -934,10 +934,10 @@ module tb_opensbi #(
                 dut.u_core.g_backend_3p.u_core_3p.u_backend
                     .perf_lsq_retired_untracked_q;
             assign perf_l1d_demand_reissues =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.perf_demand_reissues_q;
             assign perf_l1d_prefetch_page_ends =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.perf_prefetch_page_ends_q;
             assign observed_lsu_resp_valid =
                 dut.u_core.g_backend_3p.u_core_3p.backend_mem_resp_valid;
@@ -951,37 +951,37 @@ module tb_opensbi #(
                 dut.u_core.g_backend_3p.u_core_3p.backend_mem_access_fault;
             assign observed_lsu_resp_page_fault =
                 dut.u_core.g_backend_3p.u_core_3p.backend_mem_page_fault;
-            assign observed_ccx_local_lock = 1'b0;
+            assign observed_icx_local_lock = 1'b0;
             assign observed_l1d_backend_state =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.backend_state_q;
             assign observed_l1d_input_valid =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .l1d_req_valid;
             assign observed_l1d_input_ready =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .l1d_req_ready;
             assign observed_l1d_lock_invalidate_request =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.lock_invalidate_request;
             assign observed_l1d_lock_invalidated =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.locked_line_invalidated_q;
             assign observed_l1d_l1_req_valid =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.l1_req_valid;
             assign observed_l1d_l1_req_ready =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.l1_req_ready;
             assign observed_l1d_mem_valid =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.l1_mem_valid;
             assign observed_l1d_mem_write =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.l1_mem_write;
-            assign observed_l1d_ccx_req_valid =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
-                    .l1d_ccx_req_valid;
+            assign observed_l1d_icx_req_valid =
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
+                    .l1d_icx_req_valid;
 
             wire [2:0] perf_issued_this_cycle =
                 dut.u_core.g_backend_3p.u_core_3p.backend_issue_valid[0] +
@@ -993,11 +993,11 @@ module tb_opensbi #(
                 dut.u_core.g_backend_3p.u_core_3p.frontend_decode_fire[1] +
                 dut.u_core.g_backend_3p.u_core_3p.frontend_decode_fire[2];
             wire [2:0] perf_l1d_mshr_occupancy =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.demand_mshr_valid_q[0] +
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.demand_mshr_valid_q[1] +
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.demand_mshr_valid_q[2];
             wire perf_retire_head_mem_read =
                 dut.u_core.g_backend_3p.u_core_3p.u_backend
@@ -1091,7 +1091,7 @@ module tb_opensbi #(
                 (|{perf_retire_fence_instr[27:26],
                    perf_retire_fence_instr[23:22]});
             wire perf_l1d_posted_store_pending =
-                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx.u_bus
+                dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx.u_bus
                     .u_l1d.store_buffer_count_q != 0;
 
             always @(posedge clk) begin
@@ -1127,7 +1127,7 @@ module tb_opensbi #(
                              .fetch_pipe_req_ready)
                         perf_fetch_request_wait <=
                             perf_fetch_request_wait + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.demand_mshr_any_valid_r)
                         perf_l1i_busy_cycles <=
                             perf_l1i_busy_cycles + 1'b1;
@@ -1224,7 +1224,7 @@ module tb_opensbi #(
                             .translation_barrier_busy)
                         perf_translation_barrier_cycles <=
                             perf_translation_barrier_cycles + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.l1d_store_barrier_busy)
                         perf_store_barrier_cycles <=
                             perf_store_barrier_cycles + 1'b1;
@@ -1265,226 +1265,226 @@ module tb_opensbi #(
                         perf_bp_fetch_stall_cycles <=
                             perf_bp_fetch_stall_cycles + 1'b1;
 
-                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.fetch_lookup_valid &&
-                         !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                         !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                               .u_bus.fetch_lookup_bare &&
-                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.itlb_lookup_hit) ||
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_fetch_walk)
                         perf_itlb_demand_lookups <=
                             perf_itlb_demand_lookups + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.fetch_lookup_valid &&
-                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.fetch_lookup_bare &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.itlb_lookup_hit)
                         perf_itlb_demand_hits <=
                             perf_itlb_demand_hits + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_fetch_walk)
                         perf_itlb_demand_misses <=
                             perf_itlb_demand_misses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.fetch_lookup_valid &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.itlb_lookup_hit &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.itlb_lookup_page_fault)
                         perf_itlb_demand_faults <=
                             perf_itlb_demand_faults + 1'b1;
-                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.prefetch_xlate_lookup &&
-                         !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                         !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                               .u_bus.prefetch_xlate_bare &&
-                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.itlb_lookup_hit) ||
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_prefetch_walk)
                         perf_itlb_prefetch_lookups <=
                             perf_itlb_prefetch_lookups + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.prefetch_xlate_lookup &&
-                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.prefetch_xlate_bare &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.itlb_lookup_hit)
                         perf_itlb_prefetch_hits <=
                             perf_itlb_prefetch_hits + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_prefetch_walk)
                         perf_itlb_prefetch_misses <=
                             perf_itlb_prefetch_misses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.prefetch_xlate_lookup &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.itlb_lookup_hit &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.itlb_lookup_page_fault)
                         perf_itlb_prefetch_faults <=
                             perf_itlb_prefetch_faults + 1'b1;
 
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_is_xlate)
                         perf_dtlb_pipe_lookups <=
                             perf_dtlb_pipe_lookups + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_is_xlate &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_hit)
                         perf_dtlb_pipe_hits <= perf_dtlb_pipe_hits + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_is_xlate &&
-                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.dtlb_lookup_hit)
                         perf_dtlb_pipe_misses <=
                             perf_dtlb_pipe_misses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_is_xlate &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_hit &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_page_fault)
                         perf_dtlb_pipe_faults <=
                             perf_dtlb_pipe_faults + 1'b1;
-                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if ((dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.serial_dtlb_lookup &&
-                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                         dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.dtlb_lookup_hit) ||
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_lsu_walk)
                         perf_dtlb_serial_lookups <=
                             perf_dtlb_serial_lookups + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.serial_dtlb_lookup &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_hit)
                         perf_dtlb_serial_hits <=
                             perf_dtlb_serial_hits + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_lsu_walk)
                         perf_dtlb_serial_misses <=
                             perf_dtlb_serial_misses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.serial_dtlb_lookup &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_hit &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_lookup_page_fault)
                         perf_dtlb_serial_faults <=
                             perf_dtlb_serial_faults + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.tlbi_i)
                         perf_tlb_invalidates <=
                             perf_tlb_invalidates + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.itlb_ptw_fill_valid)
                         perf_itlb_fills <= perf_itlb_fills + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.dtlb_ptw_fill_valid)
                         perf_dtlb_fills <= perf_dtlb_fills + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l2_tlb.diag_lookup)
                         perf_l2_tlb_lookups <=
                             perf_l2_tlb_lookups + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l2_tlb.diag_hit)
                         perf_l2_tlb_hits <= perf_l2_tlb_hits + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l2_tlb.diag_miss)
                         perf_l2_tlb_misses <= perf_l2_tlb_misses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l2_tlb.diag_fill)
                         perf_l2_tlb_fills <= perf_l2_tlb_fills + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l2_tlb.diag_evict)
                         perf_l2_tlb_evictions <=
                             perf_l2_tlb_evictions + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l2_tlb.diag_superpage_fill)
                         perf_l2_tlb_superpage_bypasses <=
                             perf_l2_tlb_superpage_bypasses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_lsu_walk)
                         perf_ptw_lsu_starts <=
                             perf_ptw_lsu_starts + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_fetch_walk)
                         perf_ptw_fetch_starts <=
                             perf_ptw_fetch_starts + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.start_prefetch_walk)
                         perf_ptw_prefetch_starts <=
                             perf_ptw_prefetch_starts + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.ptw_resp_valid) begin
                         perf_ptw_responses <= perf_ptw_responses + 1'b1;
-                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.ptw_resp_page_fault ||
-                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.ptw_resp_access_fault)
                             perf_ptw_faults <= perf_ptw_faults + 1'b1;
                     end
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_ptw.pte_cache_hit_use)
                         perf_ptw_pte_cache_hits <=
                             perf_ptw_pte_cache_hits + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.ptw_ccx_req_valid &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.ptw_ccx_req_ready)
-                        perf_ptw_ccx_reads <=
-                            perf_ptw_ccx_reads + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
+                            .u_bus.ptw_icx_req_valid &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
+                            .u_bus.ptw_icx_req_ready)
+                        perf_ptw_icx_reads <=
+                            perf_ptw_icx_reads + 1'b1;
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.miss_active_q)
                         perf_ptw_active_cycles <=
                             perf_ptw_active_cycles + 1'b1;
 
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.l1_request_fire &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.select_demand)
                         perf_l1i_demand_requests <=
                             perf_l1i_demand_requests + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.l1_request_fire &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.select_prefetch)
                         perf_l1i_prefetch_requests <=
                             perf_l1i_prefetch_requests + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.resp_valid_o &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.resp_ready_i)
                         perf_l1i_demand_responses <=
                             perf_l1i_demand_responses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.response_pop &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.response_prefetch_q[
                                 dut.u_core.g_backend_3p.u_core_3p.u_bus
-                                    .g_ccx.u_bus.u_l1i
+                                    .g_icx.u_bus.u_l1i
                                     .response_pop_index])
                         perf_l1i_prefetch_responses <=
                             perf_l1i_prefetch_responses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.u_l1i.ccx_req_valid_o &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
-                            .u_bus.u_l1i.ccx_req_ready_i)
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
+                            .u_bus.u_l1i.icx_req_valid_o &&
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
+                            .u_bus.u_l1i.icx_req_ready_i)
                         perf_l1i_line_misses <=
                             perf_l1i_line_misses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1i.response_fire)
                         perf_l1i_line_responses <=
                             perf_l1i_line_responses + 1'b1;
 
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.l1d_req_valid &&
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.l1d_req_ready) begin
-                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.l1d_req_write)
                             perf_l1d_store_requests <=
                                 perf_l1d_store_requests + 1'b1;
@@ -1492,11 +1492,11 @@ module tb_opensbi #(
                             perf_l1d_load_requests <=
                                 perf_l1d_load_requests + 1'b1;
                     end
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.l1d_req_valid &&
-                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.l1d_req_ready) begin
-                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.l1d_req_write)
                             perf_l1d_store_wait_cycles <=
                                 perf_l1d_store_wait_cycles + 1'b1;
@@ -1504,10 +1504,10 @@ module tb_opensbi #(
                             perf_l1d_load_wait_cycles <=
                                 perf_l1d_load_wait_cycles + 1'b1;
                     end
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.l1_miss_fire) begin
                         perf_l1d_misses <= perf_l1d_misses + 1'b1;
-                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.u_l1d.demand_mshr_match_found_r)
                             perf_l1d_mshr_merges <=
                                 perf_l1d_mshr_merges + 1'b1;
@@ -1515,21 +1515,21 @@ module tb_opensbi #(
                             perf_l1d_mshr_allocations <=
                                 perf_l1d_mshr_allocations + 1'b1;
                     end
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.demand_mshr_response_fire)
                         perf_l1d_mshr_responses <=
                             perf_l1d_mshr_responses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.demand_mshr_any_valid_r &&
-                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        !dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                              .u_bus.u_l1d.demand_mshr_free_found_r)
                         perf_l1d_mshr_full_cycles <=
                             perf_l1d_mshr_full_cycles + 1'b1;
                     if (perf_l1d_mshr_occupancy > perf_l1d_mshr_max)
                         perf_l1d_mshr_max <= perf_l1d_mshr_occupancy;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.store_buffer_accept) begin
-                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.u_l1d.store_buffer_merge)
                             perf_l1d_store_merges <=
                                 perf_l1d_store_merges + 1'b1;
@@ -1537,146 +1537,146 @@ module tb_opensbi #(
                             perf_l1d_store_allocations <=
                                 perf_l1d_store_allocations + 1'b1;
                     end
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.store_response_fire)
                         perf_l1d_store_responses <=
                             perf_l1d_store_responses + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.store_buffer_full)
                         perf_l1d_store_full_cycles <=
                             perf_l1d_store_full_cycles + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.store_buffer_count_q >
                         perf_l1d_store_max)
                         perf_l1d_store_max <=
-                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.u_l1d.store_buffer_count_q;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_issued_o)
                         perf_l1d_prefetch_issued <=
                             perf_l1d_prefetch_issued + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_useful_o)
                         perf_l1d_prefetch_useful <=
                             perf_l1d_prefetch_useful + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_on_time_useful)
                         perf_l1d_prefetch_on_time_useful <=
                             perf_l1d_prefetch_on_time_useful + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_late_useful)
                         perf_l1d_prefetch_late_useful <=
                             perf_l1d_prefetch_late_useful + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_late_o)
                         perf_l1d_prefetch_late <=
                             perf_l1d_prefetch_late + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_queued_demand_match_r)
                         perf_l1d_prefetch_late_queued <=
                             perf_l1d_prefetch_late_queued + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_inflight_late_match)
                         perf_l1d_prefetch_late_command <=
                             perf_l1d_prefetch_late_command + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_mshr_late_match_r)
                         perf_l1d_prefetch_late_mshr <=
                             perf_l1d_prefetch_late_mshr + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_dropped_o)
                         perf_l1d_prefetch_dropped <=
                             perf_l1d_prefetch_dropped + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_useless_o)
                         perf_l1d_prefetch_useless <=
                             perf_l1d_prefetch_useless + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.prefetch_depth_o >
                         perf_l1d_prefetch_max_depth)
                         perf_l1d_prefetch_max_depth <=
-                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                            dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                                 .u_bus.u_l1d.prefetch_depth_o;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.store_poison_any_event_r)
                         perf_l1d_store_poison_any_events <=
                             perf_l1d_store_poison_any_events + 1'b1;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.store_poison_prefetch_event_r)
                         perf_l1d_store_poison_prefetch_events <=
                             perf_l1d_store_poison_prefetch_events + 1'b1;
                     perf_l1d_store_poison_prefetch_queue <=
                         perf_l1d_store_poison_prefetch_queue +
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d
                                 .store_poison_prefetch_queue_count_r;
                     perf_l1d_store_poison_prefetch_command <=
                         perf_l1d_store_poison_prefetch_command +
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d
                                 .store_poison_prefetch_command_count_r;
                     perf_l1d_store_poison_prefetch_mshr <=
                         perf_l1d_store_poison_prefetch_mshr +
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d
                                 .store_poison_prefetch_mshr_count_r;
                     perf_l1d_store_poison_prefetch_fill <=
                         perf_l1d_store_poison_prefetch_fill +
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d
                                 .store_poison_prefetch_fill_count_r;
-                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                    if (dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d.store_poison_demand_event_r)
                         perf_l1d_store_poison_demand_events <=
                             perf_l1d_store_poison_demand_events + 1'b1;
                     perf_l1d_store_poison_demand_wait_prefetch <=
                         perf_l1d_store_poison_demand_wait_prefetch +
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d
                             .store_poison_demand_wait_prefetch_count_r;
                     perf_l1d_store_poison_demand_fill <=
                         perf_l1d_store_poison_demand_fill +
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d
                                 .store_poison_demand_fill_count_r;
                     perf_l1d_store_overlay_demand_mshr <=
                         perf_l1d_store_overlay_demand_mshr +
-                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_ccx
+                        dut.u_core.g_backend_3p.u_core_3p.u_bus.g_icx
                             .u_bus.u_l1d
                                 .store_overlay_demand_mshr_count_r;
 
-                    if (dut.ccx_req_valid && dut.ccx_req_ready) begin
-                        perf_ccx_requests <= perf_ccx_requests + 1'b1;
-                        if (dut.ccx_req_source_id ==
-                                `OPENRV64_CCX_SOURCE_ICACHE)
-                            perf_ccx_icache_reads <=
-                                perf_ccx_icache_reads + 1'b1;
-                        else if (dut.ccx_req_source_id ==
-                                 `OPENRV64_CCX_SOURCE_DCACHE) begin
-                            if (dut.ccx_req_op ==
-                                    `OPENRV64_CCX_OP_WRITE)
-                                perf_ccx_dcache_writes <=
-                                    perf_ccx_dcache_writes + 1'b1;
+                    if (dut.icx_req_valid && dut.icx_req_ready) begin
+                        perf_icx_requests <= perf_icx_requests + 1'b1;
+                        if (dut.icx_req_source_id ==
+                                `OPENRV64_ICX_SOURCE_ICACHE)
+                            perf_icx_icache_reads <=
+                                perf_icx_icache_reads + 1'b1;
+                        else if (dut.icx_req_source_id ==
+                                 `OPENRV64_ICX_SOURCE_DCACHE) begin
+                            if (dut.icx_req_op ==
+                                    `OPENRV64_ICX_OP_WRITE)
+                                perf_icx_dcache_writes <=
+                                    perf_icx_dcache_writes + 1'b1;
                             else
-                                perf_ccx_dcache_reads <=
-                                    perf_ccx_dcache_reads + 1'b1;
+                                perf_icx_dcache_reads <=
+                                    perf_icx_dcache_reads + 1'b1;
                         end
                     end
-                    if (dut.ccx_req_valid && !dut.ccx_req_ready)
-                        perf_ccx_request_wait_cycles <=
-                            perf_ccx_request_wait_cycles + 1'b1;
-                    if (dut.ccx_wdata_valid && !dut.ccx_wdata_ready)
-                        perf_ccx_wdata_wait_cycles <=
-                            perf_ccx_wdata_wait_cycles + 1'b1;
-                    if (dut.ccx_resp_valid && dut.ccx_resp_ready)
-                        perf_ccx_responses <= perf_ccx_responses + 1'b1;
-                    if (dut.ccx_resp_valid && !dut.ccx_resp_ready)
-                        perf_ccx_response_wait_cycles <=
-                            perf_ccx_response_wait_cycles + 1'b1;
+                    if (dut.icx_req_valid && !dut.icx_req_ready)
+                        perf_icx_request_wait_cycles <=
+                            perf_icx_request_wait_cycles + 1'b1;
+                    if (dut.icx_wdata_valid && !dut.icx_wdata_ready)
+                        perf_icx_wdata_wait_cycles <=
+                            perf_icx_wdata_wait_cycles + 1'b1;
+                    if (dut.icx_resp_valid && dut.icx_resp_ready)
+                        perf_icx_responses <= perf_icx_responses + 1'b1;
+                    if (dut.icx_resp_valid && !dut.icx_resp_ready)
+                        perf_icx_response_wait_cycles <=
+                            perf_icx_response_wait_cycles + 1'b1;
 
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .lookup_dispatch_r) begin
-                        case (dut.g_ccx_l2_platform.u_ccx_l2.u_complex
+                        case (dut.g_icx_l2_platform.u_icx_l2.u_complex
                                   .u_l2.lookup_action_r)
                             3'd2:
                                 perf_l2_hits <= perf_l2_hits + 1'b1;
@@ -1698,45 +1698,45 @@ module tb_opensbi #(
                             end
                         endcase
                     end
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .lookup_valid_q &&
-                        !dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                        !dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                              .lookup_dispatch_r)
                         perf_l2_lookup_stall_cycles <=
                             perf_l2_lookup_stall_cycles + 1'b1;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .command_queue_full)
                         perf_l2_command_full_cycles <=
                             perf_l2_command_full_cycles + 1'b1;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .active_mshr_count_r == 8)
                         perf_l2_mshr_full_cycles <=
                             perf_l2_mshr_full_cycles + 1'b1;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .active_mshr_count_r > perf_l2_mshr_max)
                         perf_l2_mshr_max <=
-                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                                 .active_mshr_count_r;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .cmd_count_q > perf_l2_command_max)
                         perf_l2_command_max <=
-                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                                 .cmd_count_q;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .response_count_q > perf_l2_response_max)
                         perf_l2_response_max <=
-                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                                 .response_count_q;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .bus_track_count_q > perf_l2_bus_track_max)
                         perf_l2_bus_track_max <=
-                            dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                            dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                                 .bus_track_count_q;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .bus_req_valid_o &&
-                        dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                        dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .bus_req_ready_i) begin
-                        if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                        if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                                 .bus_req_write_o)
                             perf_l2_bus_writes <=
                                 perf_l2_bus_writes + 1'b1;
@@ -1744,13 +1744,13 @@ module tb_opensbi #(
                             perf_l2_bus_reads <=
                                 perf_l2_bus_reads + 1'b1;
                     end
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .bus_req_valid_o &&
-                        !dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                        !dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                              .bus_req_ready_i)
                         perf_l2_bus_wait_cycles <=
                             perf_l2_bus_wait_cycles + 1'b1;
-                    if (dut.g_ccx_l2_platform.u_ccx_l2.u_complex.u_l2
+                    if (dut.g_icx_l2_platform.u_icx_l2.u_complex.u_l2
                             .bus_response_fire)
                         perf_l2_bus_responses <=
                             perf_l2_bus_responses + 1'b1;
@@ -1807,13 +1807,13 @@ module tb_opensbi #(
             assign observed_trap_cause = dut.u_core.u_core.trap_cause;
             assign observed_trap_tval = dut.u_core.u_core.trap_tval;
             assign observed_ptw_response =
-                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.ccx_resp_fire;
+                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.icx_resp_fire;
             assign observed_ptw_level =
                 dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.level_q;
             assign observed_ptw_pte_addr =
                 dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.walk_pte_addr;
             assign observed_ptw_pte_data =
-                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.ccx_pte_data;
+                dut.u_core.u_core.u_core_bus.g_gen.u_bus.u_ptw.icx_pte_data;
             assign observed_lsu_req_valid = 1'b0;
             assign observed_lsu_req_ready = 1'b0;
             assign observed_lsu_req_tag = 0;
@@ -1898,7 +1898,7 @@ module tb_opensbi #(
             assign observed_lsu_resp_rdata = 64'd0;
             assign observed_lsu_resp_access_fault = 1'b0;
             assign observed_lsu_resp_page_fault = 1'b0;
-            assign observed_ccx_local_lock = 1'b0;
+            assign observed_icx_local_lock = 1'b0;
             assign observed_l1d_backend_state = 2'd0;
             assign observed_l1d_input_valid = 1'b0;
             assign observed_l1d_input_ready = 1'b0;
@@ -1908,7 +1908,7 @@ module tb_opensbi #(
             assign observed_l1d_l1_req_ready = 1'b0;
             assign observed_l1d_mem_valid = 1'b0;
             assign observed_l1d_mem_write = 1'b0;
-            assign observed_l1d_ccx_req_valid = 1'b0;
+            assign observed_l1d_icx_req_valid = 1'b0;
         end
     endgenerate
 
@@ -2010,12 +2010,12 @@ module tb_opensbi #(
                          perf_l2_tlb_hits, perf_l2_tlb_misses,
                          perf_l2_tlb_fills, perf_l2_tlb_evictions,
                          perf_l2_tlb_superpage_bypasses);
-                $display("PERF BROAD PTW name=%0s lsu_starts=%0d fetch_starts=%0d prefetch_starts=%0d responses=%0d faults=%0d pte_cache_hits=%0d ccx_line_reads=%0d active_cycles=%0d",
+                $display("PERF BROAD PTW name=%0s lsu_starts=%0d fetch_starts=%0d prefetch_starts=%0d responses=%0d faults=%0d pte_cache_hits=%0d icx_line_reads=%0d active_cycles=%0d",
                          name, perf_ptw_lsu_starts,
                          perf_ptw_fetch_starts,
                          perf_ptw_prefetch_starts,
                          perf_ptw_responses, perf_ptw_faults,
-                         perf_ptw_pte_cache_hits, perf_ptw_ccx_reads,
+                         perf_ptw_pte_cache_hits, perf_ptw_icx_reads,
                          perf_ptw_active_cycles);
                 $display("PERF BROAD L1I name=%0s demand_requests=%0d prefetch_requests=%0d demand_responses=%0d prefetch_responses=%0d line_misses=%0d line_responses=%0d busy_cycles=%0d",
                          name, perf_l1i_demand_requests,
@@ -2162,16 +2162,16 @@ module tb_opensbi #(
                          perf_lsq_atomic_active_cycles);
                 $display("PERF BROAD PREFETCH_PAGE_END name=%0s boundaries_seen=%0d",
                          name, perf_l1d_prefetch_page_ends);
-                $display("PERF BROAD CCX name=%0s requests=%0d icache_reads=%0d dcache_reads=%0d dcache_writes=%0d ptw_reads=%0d request_wait_cycles=%0d wdata_wait_cycles=%0d responses=%0d response_wait_cycles=%0d",
-                         name, perf_ccx_requests,
-                         perf_ccx_icache_reads,
-                         perf_ccx_dcache_reads,
-                         perf_ccx_dcache_writes,
-                         perf_ptw_ccx_reads,
-                         perf_ccx_request_wait_cycles,
-                         perf_ccx_wdata_wait_cycles,
-                         perf_ccx_responses,
-                         perf_ccx_response_wait_cycles);
+                $display("PERF BROAD ICX name=%0s requests=%0d icache_reads=%0d dcache_reads=%0d dcache_writes=%0d ptw_reads=%0d request_wait_cycles=%0d wdata_wait_cycles=%0d responses=%0d response_wait_cycles=%0d",
+                         name, perf_icx_requests,
+                         perf_icx_icache_reads,
+                         perf_icx_dcache_reads,
+                         perf_icx_dcache_writes,
+                         perf_ptw_icx_reads,
+                         perf_icx_request_wait_cycles,
+                         perf_icx_wdata_wait_cycles,
+                         perf_icx_responses,
+                         perf_icx_response_wait_cycles);
                 $display("PERF BROAD L2 name=%0s hits=%0d merges=%0d allocations=%0d bypasses=%0d write_arounds=%0d victim_hits=%0d lookup_stall_cycles=%0d command_full_cycles=%0d mshr_full_cycles=%0d mshr_max=%0d command_max=%0d response_max=%0d bus_track_max=%0d bus_reads=%0d bus_writes=%0d bus_wait_cycles=%0d bus_responses=%0d",
                          name, perf_l2_hits, perf_l2_merges,
                          perf_l2_allocations, perf_l2_bypasses,
@@ -2383,7 +2383,7 @@ module tb_opensbi #(
                              ((RAM_BASE - RAM_BASE) >> 3) +
                              TRAMPOLINE_WORDS;
                          mirror_word = mirror_word + 1)
-                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                        dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram
                             .u_ddr3.u_channel.memory_q[mirror_word >> 2]
                             [(mirror_word & 3) * 64 +: 64] =
                             dut.u_memory.memory_q[mirror_word];
@@ -2393,7 +2393,7 @@ module tb_opensbi #(
                              ((FIRMWARE_BASE - RAM_BASE) >> 3) +
                              FIRMWARE_WORDS;
                          mirror_word = mirror_word + 1)
-                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                        dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram
                             .u_ddr3.u_channel.memory_q[mirror_word >> 2]
                             [(mirror_word & 3) * 64 +: 64] =
                             dut.u_memory.memory_q[mirror_word];
@@ -2403,7 +2403,7 @@ module tb_opensbi #(
                              ((PAYLOAD_BASE - RAM_BASE) >> 3) +
                              payload_words;
                          mirror_word = mirror_word + 1)
-                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                        dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram
                             .u_ddr3.u_channel.memory_q[mirror_word >> 2]
                             [(mirror_word & 3) * 64 +: 64] =
                             dut.u_memory.memory_q[mirror_word];
@@ -2412,7 +2412,7 @@ module tb_opensbi #(
                          mirror_word <
                              ((FDT_BASE - RAM_BASE) >> 3) + FDT_WORDS;
                          mirror_word = mirror_word + 1)
-                        dut.g_ccx_l2_platform.u_ccx_l2.g_ddr3_ram
+                        dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram
                             .u_ddr3.u_channel.memory_q[mirror_word >> 2]
                             [(mirror_word & 3) * 64 +: 64] =
                             dut.u_memory.memory_q[mirror_word];
@@ -2488,11 +2488,11 @@ module tb_opensbi #(
                     observed_lsu_resp_rdata,
                     observed_lsu_resp_access_fault,
                     observed_lsu_resp_page_fault);
-            if ((lsu_trace_fd != 0) && observed_ccx_local_lock &&
+            if ((lsu_trace_fd != 0) && observed_icx_local_lock &&
                 (l1d_lock_trace_count < 256)) begin
                 l1d_lock_trace_count <= l1d_lock_trace_count + 1;
                 $fdisplay(lsu_trace_fd,
-                    "LOCK cycle=%0d input=%0d/%0d invreq=%0d invalidated=%0d l1=%0d/%0d mem=%0d/%0d backend=%0d ccx=%0d",
+                    "LOCK cycle=%0d input=%0d/%0d invreq=%0d invalidated=%0d l1=%0d/%0d mem=%0d/%0d backend=%0d icx=%0d",
                     cycle_count, observed_l1d_input_valid,
                     observed_l1d_input_ready,
                     observed_l1d_lock_invalidate_request,
@@ -2502,33 +2502,33 @@ module tb_opensbi #(
                     observed_l1d_mem_valid,
                     observed_l1d_mem_write,
                     observed_l1d_backend_state,
-                    observed_l1d_ccx_req_valid);
+                    observed_l1d_icx_req_valid);
             end
-            if ((ccx_trace_fd != 0) &&
-                dut.ccx_req_valid && dut.ccx_req_ready)
-                $fdisplay(ccx_trace_fd,
+            if ((icx_trace_fd != 0) &&
+                dut.icx_req_valid && dut.icx_req_ready)
+                $fdisplay(icx_trace_fd,
                     "CMD cycle=%0d hart=%0d txn=%0d source=%0d op=%0d lock=%0d kind=%0d attr=%02x size=%0d addr=%016x burst=%0d",
-                    cycle_count, dut.ccx_req_hart_id,
-                    dut.ccx_req_txn_id, dut.ccx_req_source_id,
-                    dut.ccx_req_op, dut.ccx_req_lock, dut.ccx_req_kind,
-                    dut.ccx_req_attr, dut.ccx_req_size,
-                    dut.ccx_req_addr, dut.ccx_req_burst_len);
-            if ((ccx_trace_fd != 0) &&
-                dut.ccx_wdata_valid && dut.ccx_wdata_ready)
-                $fdisplay(ccx_trace_fd,
+                    cycle_count, dut.icx_req_hart_id,
+                    dut.icx_req_txn_id, dut.icx_req_source_id,
+                    dut.icx_req_op, dut.icx_req_lock, dut.icx_req_kind,
+                    dut.icx_req_attr, dut.icx_req_size,
+                    dut.icx_req_addr, dut.icx_req_burst_len);
+            if ((icx_trace_fd != 0) &&
+                dut.icx_wdata_valid && dut.icx_wdata_ready)
+                $fdisplay(icx_trace_fd,
                     "WDATA cycle=%0d hart=%0d txn=%0d source=%0d beat=%0d last=%0d data=%0128x strb=%016x",
-                    cycle_count, dut.ccx_wdata_hart_id,
-                    dut.ccx_wdata_txn_id, dut.ccx_wdata_source_id,
-                    dut.ccx_wdata_beat_index, dut.ccx_wdata_last,
-                    dut.ccx_wdata, dut.ccx_wstrb);
-            if ((ccx_trace_fd != 0) &&
-                dut.ccx_resp_valid && dut.ccx_resp_ready)
-                $fdisplay(ccx_trace_fd,
+                    cycle_count, dut.icx_wdata_hart_id,
+                    dut.icx_wdata_txn_id, dut.icx_wdata_source_id,
+                    dut.icx_wdata_beat_index, dut.icx_wdata_last,
+                    dut.icx_wdata, dut.icx_wstrb);
+            if ((icx_trace_fd != 0) &&
+                dut.icx_resp_valid && dut.icx_resp_ready)
+                $fdisplay(icx_trace_fd,
                     "RESP cycle=%0d hart=%0d txn=%0d source=%0d beat=%0d last=%0d error=%0d data=%0128x",
-                    cycle_count, dut.ccx_resp_hart_id,
-                    dut.ccx_resp_txn_id, dut.ccx_resp_source_id,
-                    dut.ccx_resp_beat_index, dut.ccx_resp_last,
-                    dut.ccx_resp_error, dut.ccx_resp_rdata);
+                    cycle_count, dut.icx_resp_hart_id,
+                    dut.icx_resp_txn_id, dut.icx_resp_source_id,
+                    dut.icx_resp_beat_index, dut.icx_resp_last,
+                    dut.icx_resp_error, dut.icx_resp_rdata);
             if (linux_mode && saw_s_mode && observed_ptw_response &&
                 (linux_ptw_trace_count < 16)) begin
                 linux_ptw_trace_count <= linux_ptw_trace_count + 1;
@@ -2815,7 +2815,7 @@ module tb_opensbi #(
         payload_words = PAYLOAD_WORDS;
         instruction_trace_fd = 0;
         lsu_trace_fd = 0;
-        ccx_trace_fd = 0;
+        icx_trace_fd = 0;
         l1d_lock_trace_count = 0;
         perf_summary_enabled = $test$plusargs("perf_summary");
         for (perf_init_index = 0; perf_init_index < 5;
@@ -2870,7 +2870,7 @@ module tb_opensbi #(
             perf_ptw_lsu_starts, perf_ptw_fetch_starts,
             perf_ptw_prefetch_starts, perf_ptw_responses,
             perf_ptw_faults, perf_ptw_pte_cache_hits,
-            perf_ptw_ccx_reads, perf_ptw_active_cycles
+            perf_ptw_icx_reads, perf_ptw_active_cycles
         } = '0;
         {
             perf_l1i_demand_requests, perf_l1i_prefetch_requests,
@@ -2905,10 +2905,10 @@ module tb_opensbi #(
             perf_l1d_store_overlay_demand_mshr
         } = '0;
         {
-            perf_ccx_requests, perf_ccx_icache_reads,
-            perf_ccx_dcache_reads, perf_ccx_dcache_writes,
-            perf_ccx_request_wait_cycles, perf_ccx_wdata_wait_cycles,
-            perf_ccx_responses, perf_ccx_response_wait_cycles,
+            perf_icx_requests, perf_icx_icache_reads,
+            perf_icx_dcache_reads, perf_icx_dcache_writes,
+            perf_icx_request_wait_cycles, perf_icx_wdata_wait_cycles,
+            perf_icx_responses, perf_icx_response_wait_cycles,
             perf_l2_hits, perf_l2_merges, perf_l2_allocations,
             perf_l2_bypasses, perf_l2_write_arounds,
             perf_l2_victim_hits, perf_l2_lookup_stall_cycles,
@@ -2934,10 +2934,10 @@ module tb_opensbi #(
             if (lsu_trace_fd == 0)
                 $fatal(1, "failed to open LSU trace %s", lsu_trace_path);
         end
-        if ($value$plusargs("ccx_trace=%s", ccx_trace_path)) begin
-            ccx_trace_fd = $fopen(ccx_trace_path, "w");
-            if (ccx_trace_fd == 0)
-                $fatal(1, "failed to open CCX trace %s", ccx_trace_path);
+        if ($value$plusargs("icx_trace=%s", icx_trace_path)) begin
+            icx_trace_fd = $fopen(icx_trace_path, "w");
+            if (icx_trace_fd == 0)
+                $fatal(1, "failed to open ICX trace %s", icx_trace_path);
         end
 
         if (!$value$plusargs("payload_words=%d", payload_words))

@@ -7,7 +7,7 @@ Status: **FAIL — the tested RTL is not fence-correct**
 ## Executive summary
 
 The Sv39 fence suite ran nine independent directed cases against a delayed
-external CCX/home model. Only `load; fence r,r; load` passed. The suite
+external ICX/home model. Only `load; fence r,r; load` passed. The suite
 observed direct external-ordering violations for `fence w,r`, `fence o,i`,
 partial-line stores followed by `fence w,r`, and `FENCE.I`. Other store cases
 failed because required stores never reached the external boundary. The
@@ -31,7 +31,7 @@ This report covers:
 - I/O predecessor and successor bits against a translated device page;
 - merged partial stores;
 - twelve posted stores to distinct lines;
-- delayed L1D/CCX responses;
+- delayed L1D/ICX responses;
 - empty and back-to-back fences;
 - self-modifying code with `FENCE.I`;
 - the existing bare and Sv39 full-hierarchy atomic workloads;
@@ -91,7 +91,7 @@ translation.
 
 ## External-boundary oracle
 
-Selected physical requests terminate in a testbench CCX/home model instead of
+Selected physical requests terminate in a testbench ICX/home model instead of
 the normal L2. The model delays every selected completion by 24 cycles. A
 predecessor is complete only when the external model launches its tagged
 response. A successor request reaching that boundary earlier is an ordering
@@ -237,12 +237,12 @@ make bench-fence-sv39
 ```
 
 The case-number map is in `sw/fence/README.md`. Add `+fence_trace` to the
-underlying `sim-core-3p-ccx-l2` arguments when per-request boundary traces are
+underlying `sim-core-3p-icx-l2` arguments when per-request boundary traces are
 needed.
 
 ## Required follow-up
 
-1. Define one tagged posted-store completion contract from L1D/CCX through
+1. Define one tagged posted-store completion contract from L1D/ICX through
    the LSQ, including atomic ownership and cancellation rules.
 2. Make each ordinary `FENCE` predecessor mask wait for the relevant external
    completions before allowing matching successors to reach the home.

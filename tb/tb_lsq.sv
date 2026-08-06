@@ -612,7 +612,7 @@ module tb_lsq;
 
         reset_dut();
 
-        // Physical requests use a different contract.  The CCX bus consumes
+        // Physical requests use a different contract.  The ICX bus consumes
         // the flush as a cancellation, suppresses the old response, and keeps
         // its own copy of the tag busy until L1D drains it.  LSQ must release
         // this slot immediately instead of waiting for a response which is

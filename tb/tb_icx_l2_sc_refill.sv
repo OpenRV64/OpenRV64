@@ -5,7 +5,7 @@
 // A successful SC whose LR line has left L2 must refill the cacheline before
 // applying the scalar update.  It must never use the ordinary write-miss
 // write-around path.
-module tb_ccx_l2_sc_refill;
+module tb_icx_l2_sc_refill;
 
     localparam [63:0] ATOMIC_ADDR = 64'h0000_0000_8000_0000;
     // A one-way 256 KiB L2 has 4096 sets, so this maps to the same set.
@@ -16,21 +16,21 @@ module tb_ccx_l2_sc_refill;
 
     logic req_valid;
     wire req_ready;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] req_txn_id;
-    logic [`OPENRV64_CCX_OP_WIDTH-1:0] req_op;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] req_txn_id;
+    logic [`OPENRV64_ICX_OP_WIDTH-1:0] req_op;
     logic [2:0] req_size;
     logic [63:0] req_addr;
 
     logic wdata_valid;
     wire wdata_ready;
-    logic [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] wdata_txn_id;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] wdata;
-    logic [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] wstrb;
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] wdata_txn_id;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] wdata;
+    logic [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] wstrb;
 
     wire resp_valid;
     logic resp_ready;
-    wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] resp_txn_id;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] resp_rdata;
+    wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] resp_txn_id;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] resp_rdata;
     wire resp_error;
     wire resp_sc_success;
 
@@ -40,18 +40,18 @@ module tb_ccx_l2_sc_refill;
     wire bus_req_write;
     wire [63:0] bus_req_addr;
     wire [2:0] bus_req_size;
-    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
-    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] bus_req_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] bus_req_wstrb;
     wire bus_req_cacheable;
     logic bus_resp_valid;
     wire bus_resp_ready;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] bus_resp_rdata;
 
     logic bus_pending;
     logic [63:0] pending_addr;
     logic pending_write;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] atomic_memory;
-    logic [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] evict_memory;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] atomic_memory;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] evict_memory;
     integer bus_reads;
     integer bus_writes;
     integer byte_index;
@@ -59,7 +59,7 @@ module tb_ccx_l2_sc_refill;
     integer reads_before_sc;
     integer writes_before_sc;
 
-    openrv64_ccx_l2_native #(
+    openrv64_icx_l2_native #(
         .CACHE_BYTES(256 * 1024),
         .WAYS(1),
         .MSHR_ENTRIES(2),
@@ -78,12 +78,12 @@ module tb_ccx_l2_sc_refill;
         .req_ready_o(req_ready),
         .req_hart_id_i(4'd0),
         .req_txn_id_i(req_txn_id),
-        .req_source_id_i(`OPENRV64_CCX_SOURCE_DCACHE),
+        .req_source_id_i(`OPENRV64_ICX_SOURCE_DCACHE),
         .req_op_i(req_op),
         .req_lock_i(1'b0),
-        .req_order_i(`OPENRV64_CCX_ORDER_NONE),
-        .req_kind_i(`OPENRV64_CCX_KIND_DATA),
-        .req_attr_i(`OPENRV64_CCX_ATTR_CACHEABLE),
+        .req_order_i(`OPENRV64_ICX_ORDER_NONE),
+        .req_kind_i(`OPENRV64_ICX_KIND_DATA),
+        .req_attr_i(`OPENRV64_ICX_ATTR_CACHEABLE),
         .req_size_i(req_size),
         .req_addr_i(req_addr),
         .req_burst_len_i(8'd0),
@@ -91,7 +91,7 @@ module tb_ccx_l2_sc_refill;
         .wdata_ready_o(wdata_ready),
         .wdata_hart_id_i(4'd0),
         .wdata_txn_id_i(wdata_txn_id),
-        .wdata_source_id_i(`OPENRV64_CCX_SOURCE_DCACHE),
+        .wdata_source_id_i(`OPENRV64_ICX_SOURCE_DCACHE),
         .wdata_beat_index_i(8'd0),
         .wdata_last_i(1'b1),
         .wdata_i(wdata),
@@ -200,13 +200,13 @@ module tb_ccx_l2_sc_refill;
     end
 
     task automatic send_command;
-        input [`OPENRV64_CCX_OP_WIDTH-1:0] operation;
+        input [`OPENRV64_ICX_OP_WIDTH-1:0] operation;
         input [2:0] size;
         input [63:0] address;
-        output [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
+        output [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
         integer cycles;
         begin
-            transaction = txn_counter[`OPENRV64_CCX_TXN_ID_WIDTH-1:0];
+            transaction = txn_counter[`OPENRV64_ICX_TXN_ID_WIDTH-1:0];
             txn_counter = txn_counter + 1;
             @(negedge clk);
             req_txn_id = transaction;
@@ -228,9 +228,9 @@ module tb_ccx_l2_sc_refill;
     endtask
 
     task automatic send_write_data;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] data;
-        input [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] strobes;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data;
+        input [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] strobes;
         integer cycles;
         begin
             wdata_txn_id = transaction;
@@ -262,8 +262,8 @@ module tb_ccx_l2_sc_refill;
     endtask
 
     task automatic wait_response;
-        input [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
-        input [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] expected_data;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] expected_data;
         input expected_sc_success;
         integer cycles;
         begin
@@ -286,10 +286,10 @@ module tb_ccx_l2_sc_refill;
         end
     endtask
 
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] transaction;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] expected_line;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] scalar_data;
-    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] sc_data;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] expected_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] scalar_data;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] sc_data;
 
     initial begin
         req_valid = 1'b0;
@@ -316,11 +316,11 @@ module tb_ccx_l2_sc_refill;
 
         scalar_data = 0;
         scalar_data[63:0] = atomic_memory[63:0];
-        send_command(`OPENRV64_CCX_OP_LR, 3'd2,
+        send_command(`OPENRV64_ICX_OP_LR, 3'd2,
                      ATOMIC_ADDR, transaction);
         wait_response(transaction, scalar_data, 1'b0);
 
-        send_command(`OPENRV64_CCX_OP_READ, 3'd6,
+        send_command(`OPENRV64_ICX_OP_READ, 3'd6,
                      EVICT_ADDR, transaction);
         wait_response(transaction, evict_memory, 1'b0);
 
@@ -328,7 +328,7 @@ module tb_ccx_l2_sc_refill;
         writes_before_sc = bus_writes;
         sc_data = 0;
         sc_data[31:0] = 32'h5c5c_a7a7;
-        send_command(`OPENRV64_CCX_OP_SC, 3'd2,
+        send_command(`OPENRV64_ICX_OP_SC, 3'd2,
                      ATOMIC_ADDR, transaction);
         send_write_data(transaction, sc_data, 64'hf);
         wait_response(transaction, 512'd0, 1'b1);
@@ -345,7 +345,7 @@ module tb_ccx_l2_sc_refill;
         expected_line = atomic_memory;
         expected_line[31:0] = 32'h5c5c_a7a7;
         reads_before_sc = bus_reads;
-        send_command(`OPENRV64_CCX_OP_READ, 3'd6,
+        send_command(`OPENRV64_ICX_OP_READ, 3'd6,
                      ATOMIC_ADDR, transaction);
         wait_response(transaction, expected_line, 1'b0);
         if (bus_reads != reads_before_sc)

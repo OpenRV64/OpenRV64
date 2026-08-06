@@ -1,4 +1,4 @@
-# Coherent CCX variants
+# Coherent ICX variants
 
 ## Scope and repository boundary
 
@@ -6,15 +6,15 @@ The existing one-hart and generated transport-only complex remain unchanged.
 The coherent work is additive:
 
 ```text
-rtl/complex/2h/ccx.v       fixed two-hart variant
-rtl/complex/4h/ccx.v       fixed four-hart variant
+rtl/complex/2h/icx.v       fixed two-hart variant
+rtl/complex/4h/icx.v       fixed four-hart variant
 rtl/complex/coherent/      implementation shared by two and four harts
 ```
 
 The first implementation includes the probe control plane and a separate
 non-inclusive coherent protocol frontend.  The selected design uses an
 independently tagged snoop-filter directory in front of the existing L2.
-See `ccx-coherent-protocol.md` for the frontend/L2 boundary.
+See `icx-coherent-protocol.md` for the frontend/L2 boundary.
 
 The one-hart implementation does not use these modules.  The shared coherent
 modules reject hart counts other than two and four.
@@ -56,7 +56,7 @@ Items below are deliberately not hidden behind compatibility behavior.
 ### Private-cache endpoints
 
 - [x] Add one independent bounded probe request/response slot to each of the
-  four CCX4 L1D probe lanes.  This is production RTL, although the complete
+  four ICX4 L1D probe lanes.  This is production RTL, although the complete
   request/home/L2 wrapper integration remains pending.  ACK is withheld until
   the matching L1D invalidation completes.
 - [ ] Add the corresponding independent probe endpoint to each L1I.
@@ -174,7 +174,7 @@ Items below are deliberately not hidden behind compatibility behavior.
 - [x] Boot hart 0 through the normal ROM and OpenSBI v1.9 on the four-core
   coherent hierarchy while harts 1 through 3 remain in reset.  Require
   M-to-S handoff, SBI timer and DBCN use, supervisor payload completion, and
-  zero held-hart retirement or CCX traffic.
+  zero held-hart retirement or ICX traffic.
 - [x] Release all four harts through the normal ROM and OpenSBI v1.9 on the
   fixed-latency coherent harness.  Require the hart-0 supervisor payload and
   exact build-derived HSM WFI retirement on M-mode harts 1 through 3.
@@ -193,22 +193,22 @@ Items below are deliberately not hidden behind compatibility behavior.
 
 ## Four-L1D integration test
 
-`tb/tb_ccx_4h_l1d_directory_l2.sv` instantiates:
+`tb/tb_icx_4h_l1d_directory_l2.sv` instantiates:
 
 ```text
 four LSU-side request agents plus four local RV64A engines
-  -> four openrv64_l1d_ccx instances
-  -> openrv64_ccx_line_crossbar
-  -> openrv64_ccx_coherent_protocol
-  -> openrv64_ccx_4h_l1d_probe_cluster (reverse snoop path)
-  -> openrv64_ccx_l2_native
+  -> four openrv64_l1d_icx instances
+  -> openrv64_icx_line_crossbar
+  -> openrv64_icx_coherent_protocol
+  -> openrv64_icx_4h_l1d_probe_cluster (reverse snoop path)
+  -> openrv64_icx_l2_native
   -> fixed-latency line-memory model
 ```
 
 Run it with:
 
 ```sh
-make sim-ccx-4h-l1d-directory-l2
+make sim-icx-4h-l1d-directory-l2
 ```
 
 The directed sequence proves:
@@ -265,7 +265,7 @@ This is not yet a four-core test.  The four agents drive the LSU-side contract
 below the core memory channel; they do not instantiate decode, translation, or
 the LSQ.  The backing store is deterministic, not timed DDR3.  The L1D probe
 endpoint is production RTL in `rtl/complex/coherent/l1d_probe_endpoint.v` and
-the fixed four-way cluster is in `rtl/complex/4h/ccx.v`.  L1I still lacks the
+the fixed four-way cluster is in `rtl/complex/4h/icx.v`.  L1I still lacks the
 corresponding endpoint.
 
 The home does not probe a recorded requester for its own write.  An ordinary
@@ -283,14 +283,14 @@ Run on 2026-07-27 UTC from repository revision `fa83b59` plus the uncommitted
 changes described above:
 
 ```sh
-make sim-ccx-4h-l1d-directory-l2
+make sim-icx-4h-l1d-directory-l2
 make sim-exec-lsu-rv64-a sim-atomic-context
-make sim-core-3p-ccx-l2-vm
+make sim-core-3p-icx-l2-vm
 ```
 
 The four-L1D test passed at cycle 113,615 with 16 directed ping-pong lines,
 8,192 randomized ordinary operations, 2,113 total stores after setup and
 directed phases, and 128 AMOs.  The serialized RV64A LSU test and integrated
-atomic-context test passed.  The one-core Sv39 CCX/L2/AXI/banked-DDR3
+atomic-context test passed.  The one-core Sv39 ICX/L2/AXI/banked-DDR3
 regression passed at 55,846 cycles with the expected result
 `a0=0x000000000a277880`.

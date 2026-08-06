@@ -1,7 +1,7 @@
 /*
  * Sv39 architectural driver for external-boundary fence checking.
  *
- * The companion testbench delays selected CCX completions and rejects a
+ * The companion testbench delays selected ICX completions and rejects a
  * successor request if it becomes externally visible before its predecessor
  * completes.  Software pass/fail checks supplement that boundary checker;
  * they are not the ordering oracle.
@@ -47,7 +47,7 @@ _start:
 #if FENCE_CASE == 0 || FENCE_CASE == 1
     /*
      * W -> W: the checker delays the first line completion and rejects the
-     * second line if it reaches the CCX home first.
+     * second line if it reaches the ICX home first.
      */
     li      s0, TEST_BASE + 0x000
     li      s1, TEST_BASE + 0x040
@@ -64,7 +64,7 @@ _start:
 
 #if FENCE_CASE == 0 || FENCE_CASE == 2
     /*
-     * W -> R: the following cold-line read must not cross CCX before the
+     * W -> R: the following cold-line read must not cross ICX before the
      * older write response establishes visibility.
      */
     li      s0, TEST_BASE + 0x100

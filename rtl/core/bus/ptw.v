@@ -9,15 +9,15 @@ module openrv64_bus_ptw #(
     // Set entries to zero to disable.
     parameter integer PTE_CACHE_ENTRIES = 64,
     parameter integer PTE_CACHE_WAYS = 4,
-    // Bound a wedged CCX request or response.  Zero disables the watchdog.
+    // Bound a wedged ICX request or response.  Zero disables the watchdog.
     // An unaccepted request can be discarded directly.  An accepted request
     // leaves a response tombstone which must drain before the transaction ID
     // can be reused.
-    parameter integer CCX_TIMEOUT_CYCLES = 65536,
-    parameter [`OPENRV64_CCX_HART_ID_WIDTH-1:0] HART_ID =
-        {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}},
-    parameter [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] TXN_ID =
-        {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}}
+    parameter integer ICX_TIMEOUT_CYCLES = 65536,
+    parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
+        {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}},
+    parameter [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] TXN_ID =
+        {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}}
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -61,40 +61,40 @@ module openrv64_bus_ptw #(
     output wire [`RV64_XLEN-1:0]        pmp_addr_o,
     input  wire                         pmp_allow_i,
 
-    // Native CCX PTE client.  Requests are one aligned 64-byte cache line;
+    // Native ICX PTE client.  Requests are one aligned 64-byte cache line;
     // the selected 8-byte PTE is extracted from the returned line.
-    output wire                         ccx_req_valid_o,
-    input  wire                         ccx_req_ready_i,
-    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                        ccx_req_hart_id_o,
-    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                        ccx_req_txn_id_o,
-    output wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                        ccx_req_source_id_o,
-    output wire [`OPENRV64_CCX_OP_WIDTH-1:0] ccx_req_op_o,
-    output wire                         ccx_req_lock_o,
-    output wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] ccx_req_order_o,
-    output wire [`OPENRV64_CCX_KIND_WIDTH-1:0] ccx_req_kind_o,
-    output wire [`OPENRV64_CCX_ATTR_WIDTH-1:0] ccx_req_attr_o,
-    output wire [2:0]                   ccx_req_size_o,
-    output wire [63:0]                  ccx_req_addr_o,
-    output wire [`OPENRV64_CCX_BURST_LEN_WIDTH-1:0]
-                                        ccx_req_burst_len_o,
+    output wire                         icx_req_valid_o,
+    input  wire                         icx_req_ready_i,
+    output wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                        icx_req_hart_id_o,
+    output wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                        icx_req_txn_id_o,
+    output wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                        icx_req_source_id_o,
+    output wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op_o,
+    output wire                         icx_req_lock_o,
+    output wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] icx_req_order_o,
+    output wire [`OPENRV64_ICX_KIND_WIDTH-1:0] icx_req_kind_o,
+    output wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr_o,
+    output wire [2:0]                   icx_req_size_o,
+    output wire [63:0]                  icx_req_addr_o,
+    output wire [`OPENRV64_ICX_BURST_LEN_WIDTH-1:0]
+                                        icx_req_burst_len_o,
 
-    input  wire                         ccx_resp_valid_i,
-    output wire                         ccx_resp_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0]
-                                        ccx_resp_hart_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]
-                                        ccx_resp_txn_id_i,
-    input  wire [`OPENRV64_CCX_SOURCE_ID_WIDTH-1:0]
-                                        ccx_resp_source_id_i,
-    input  wire [`OPENRV64_CCX_BEAT_INDEX_WIDTH-1:0]
-                                        ccx_resp_beat_index_i,
-    input  wire                         ccx_resp_last_i,
-    input  wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
-                                        ccx_resp_rdata_i,
-    input  wire                         ccx_resp_error_i
+    input  wire                         icx_resp_valid_i,
+    output wire                         icx_resp_ready_o,
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+                                        icx_resp_hart_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+                                        icx_resp_txn_id_i,
+    input  wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+                                        icx_resp_source_id_i,
+    input  wire [`OPENRV64_ICX_BEAT_INDEX_WIDTH-1:0]
+                                        icx_resp_beat_index_i,
+    input  wire                         icx_resp_last_i,
+    input  wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+                                        icx_resp_rdata_i,
+    input  wire                         icx_resp_error_i
 );
 
     localparam [1:0] STATE_IDLE = 2'd0;
@@ -127,11 +127,11 @@ module openrv64_bus_ptw #(
     localparam integer PTE_CACHE_AGE_WIDTH =
         (PTE_CACHE_ACTIVE_WAYS > 1) ?
         $clog2(PTE_CACHE_ACTIVE_WAYS) : 1;
-    localparam integer CCX_TIMEOUT_COUNT_WIDTH =
-        (CCX_TIMEOUT_CYCLES > 1) ? $clog2(CCX_TIMEOUT_CYCLES) : 1;
-    localparam [CCX_TIMEOUT_COUNT_WIDTH-1:0] CCX_TIMEOUT_LAST =
-        (CCX_TIMEOUT_CYCLES > 0) ? (CCX_TIMEOUT_CYCLES - 1) :
-        {CCX_TIMEOUT_COUNT_WIDTH{1'b0}};
+    localparam integer ICX_TIMEOUT_COUNT_WIDTH =
+        (ICX_TIMEOUT_CYCLES > 1) ? $clog2(ICX_TIMEOUT_CYCLES) : 1;
+    localparam [ICX_TIMEOUT_COUNT_WIDTH-1:0] ICX_TIMEOUT_LAST =
+        (ICX_TIMEOUT_CYCLES > 0) ? (ICX_TIMEOUT_CYCLES - 1) :
+        {ICX_TIMEOUT_COUNT_WIDTH{1'b0}};
     // Sv39 PTE PPNs form 56-bit physical addresses.  PTEs are 8-byte aligned,
     // so bits [55:3] uniquely identify the cached memory object.
     localparam integer PTE_CACHE_TAG_WIDTH = 53;
@@ -140,8 +140,8 @@ module openrv64_bus_ptw #(
     reg [1:0] backend_state_q;
     reg shootdown_pending_q;
     reg shootdown_inflight_q;
-    reg [CCX_TIMEOUT_COUNT_WIDTH-1:0] ccx_timeout_count_q;
-    reg ccx_timeout_drain_q;
+    reg [ICX_TIMEOUT_COUNT_WIDTH-1:0] icx_timeout_count_q;
+    reg icx_timeout_drain_q;
     reg [`RV64_XLEN-1:0] vaddr_q;
     reg [1:0] access_q;
     reg [`RV64_PRIV_WIDTH-1:0] priv_q;
@@ -278,43 +278,43 @@ module openrv64_bus_ptw #(
     wire pte_cache_hit_use = pmp_fire && pmp_allow_i &&
                              pte_cache_hit_r;
 
-    wire walk_ccx_req_valid =
+    wire walk_icx_req_valid =
         ((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
         (backend_state_q == BACKEND_SEND);
-    wire shootdown_ccx_req_valid =
+    wire shootdown_icx_req_valid =
         (state_q == STATE_IDLE) && shootdown_pending_q &&
         !shootdown_inflight_q && shootdown_ready_i;
-    wire ccx_req_fire = ccx_req_valid_o && ccx_req_ready_i;
-    wire shootdown_req_fire = shootdown_ccx_req_valid && ccx_req_ready_i;
-    wire ccx_resp_owned =
-        ccx_resp_source_id_i == `OPENRV64_CCX_SOURCE_PTW;
-    wire ccx_resp_fire = ccx_resp_valid_i && ccx_resp_ready_o;
+    wire icx_req_fire = icx_req_valid_o && icx_req_ready_i;
+    wire shootdown_req_fire = shootdown_icx_req_valid && icx_req_ready_i;
+    wire icx_resp_owned =
+        icx_resp_source_id_i == `OPENRV64_ICX_SOURCE_PTW;
+    wire icx_resp_fire = icx_resp_valid_i && icx_resp_ready_o;
     wire walk_backend_pending =
         ((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
         ((backend_state_q == BACKEND_SEND) ||
          (backend_state_q == BACKEND_WAIT));
     wire walk_backend_progress =
-        ((backend_state_q == BACKEND_SEND) && ccx_req_fire) ||
-        ((backend_state_q == BACKEND_WAIT) && ccx_resp_fire);
+        ((backend_state_q == BACKEND_SEND) && icx_req_fire) ||
+        ((backend_state_q == BACKEND_WAIT) && icx_resp_fire);
     wire walk_backend_timeout =
-        (CCX_TIMEOUT_CYCLES != 0) && walk_backend_pending &&
+        (ICX_TIMEOUT_CYCLES != 0) && walk_backend_pending &&
         !walk_backend_progress &&
-        (ccx_timeout_count_q == CCX_TIMEOUT_LAST);
-    wire shootdown_resp_fire = ccx_resp_fire && shootdown_inflight_q;
-    wire ccx_resp_identity_error =
-        (ccx_resp_hart_id_i != HART_ID) ||
-        (ccx_resp_txn_id_i != TXN_ID) ||
-        (ccx_resp_beat_index_i !=
-         {`OPENRV64_CCX_BEAT_INDEX_WIDTH{1'b0}}) ||
-        !ccx_resp_last_i;
-    wire [`RV64_XLEN-1:0] ccx_pte_data =
-        ccx_resp_rdata_i[walk_pte_addr[5:3]*`RV64_XLEN +: `RV64_XLEN];
+        (icx_timeout_count_q == ICX_TIMEOUT_LAST);
+    wire shootdown_resp_fire = icx_resp_fire && shootdown_inflight_q;
+    wire icx_resp_identity_error =
+        (icx_resp_hart_id_i != HART_ID) ||
+        (icx_resp_txn_id_i != TXN_ID) ||
+        (icx_resp_beat_index_i !=
+         {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}}) ||
+        !icx_resp_last_i;
+    wire [`RV64_XLEN-1:0] icx_pte_data =
+        icx_resp_rdata_i[walk_pte_addr[5:3]*`RV64_XLEN +: `RV64_XLEN];
     wire [`RV64_XLEN-1:0] walk_pte_data =
-        pte_cache_hit_use ? pte_cache_hit_data_r : ccx_pte_data;
+        pte_cache_hit_use ? pte_cache_hit_data_r : icx_pte_data;
 
     // Invalidation is a completion-tracked global translation barrier.  The
     // initiating pulse is included so the core stops post-barrier traffic in
-    // the same cycle; pending/inflight retain the barrier until the CCX
+    // the same cycle; pending/inflight retain the barrier until the ICX
     // ACQ_REL fence response has been consumed.  An invalidated active walk
     // also remains covered because shootdown_pending_q cannot issue until the
     // walk has been aborted and drained back to IDLE.
@@ -322,10 +322,10 @@ module openrv64_bus_ptw #(
                                shootdown_pending_q ||
                                shootdown_inflight_q;
     wire walk_pte_ready = pmp_denied || pte_cache_hit_use ||
-                          ccx_resp_fire;
+                          icx_resp_fire;
     wire walk_pte_error = pmp_denied ||
-        (ccx_resp_fire &&
-         (ccx_resp_error_i || ccx_resp_identity_error));
+        (icx_resp_fire &&
+         (icx_resp_error_i || icx_resp_identity_error));
     wire [PTE_CACHE_AGE_WIDTH-1:0] pte_cache_hit_age =
         pte_cache_age_q[pte_cache_hit_way_r][pte_cache_set];
     wire pte_cache_victim_valid =
@@ -392,7 +392,7 @@ module openrv64_bus_ptw #(
     // invalidation branch deliberately does not capture.
     assign req_ready_o = (state_q == STATE_IDLE) && !invalidate_i &&
                          !shootdown_pending_q && !shootdown_inflight_q &&
-                         !ccx_timeout_drain_q;
+                         !icx_timeout_drain_q;
 
     // A stale response is not transferable in the shootdown cycle.  The
     // sequential invalidation path replaces it with an explicit invalidated
@@ -416,31 +416,31 @@ module openrv64_bus_ptw #(
                          !invalidate_i;
     assign pmp_addr_o = walk_pte_addr;
 
-    assign ccx_req_valid_o = shootdown_ccx_req_valid || walk_ccx_req_valid;
-    assign ccx_req_hart_id_o = HART_ID;
-    assign ccx_req_txn_id_o = TXN_ID;
-    assign ccx_req_source_id_o = `OPENRV64_CCX_SOURCE_PTW;
-    assign ccx_req_op_o = shootdown_ccx_req_valid ?
-                          `OPENRV64_CCX_OP_FENCE :
-                          `OPENRV64_CCX_OP_READ;
-    assign ccx_req_lock_o = 1'b0;
-    assign ccx_req_order_o = shootdown_ccx_req_valid ?
-                             `OPENRV64_CCX_ORDER_ACQ_REL :
-                             `OPENRV64_CCX_ORDER_NONE;
-    assign ccx_req_kind_o = `OPENRV64_CCX_KIND_PTE;
-    assign ccx_req_attr_o = shootdown_ccx_req_valid ?
-        `OPENRV64_CCX_ATTR_NONE :
-        (`OPENRV64_CCX_ATTR_CACHEABLE |
-         `OPENRV64_CCX_ATTR_IDEMPOTENT);
-    assign ccx_req_size_o = shootdown_ccx_req_valid ? 3'd0 : 3'd6;
-    assign ccx_req_addr_o = shootdown_ccx_req_valid ? 64'd0 :
+    assign icx_req_valid_o = shootdown_icx_req_valid || walk_icx_req_valid;
+    assign icx_req_hart_id_o = HART_ID;
+    assign icx_req_txn_id_o = TXN_ID;
+    assign icx_req_source_id_o = `OPENRV64_ICX_SOURCE_PTW;
+    assign icx_req_op_o = shootdown_icx_req_valid ?
+                          `OPENRV64_ICX_OP_FENCE :
+                          `OPENRV64_ICX_OP_READ;
+    assign icx_req_lock_o = 1'b0;
+    assign icx_req_order_o = shootdown_icx_req_valid ?
+                             `OPENRV64_ICX_ORDER_ACQ_REL :
+                             `OPENRV64_ICX_ORDER_NONE;
+    assign icx_req_kind_o = `OPENRV64_ICX_KIND_PTE;
+    assign icx_req_attr_o = shootdown_icx_req_valid ?
+        `OPENRV64_ICX_ATTR_NONE :
+        (`OPENRV64_ICX_ATTR_CACHEABLE |
+         `OPENRV64_ICX_ATTR_IDEMPOTENT);
+    assign icx_req_size_o = shootdown_icx_req_valid ? 3'd0 : 3'd6;
+    assign icx_req_addr_o = shootdown_icx_req_valid ? 64'd0 :
         {walk_pte_addr[`RV64_XLEN-1:6], 6'b0};
-    assign ccx_req_burst_len_o =
-        {`OPENRV64_CCX_BURST_LEN_WIDTH{1'b0}};
+    assign icx_req_burst_len_o =
+        {`OPENRV64_ICX_BURST_LEN_WIDTH{1'b0}};
 
-    assign ccx_resp_ready_o =
-        ccx_resp_owned &&
-        (ccx_timeout_drain_q || shootdown_inflight_q ||
+    assign icx_resp_ready_o =
+        icx_resp_owned &&
+        (icx_timeout_drain_q || shootdown_inflight_q ||
          (((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
           (backend_state_q == BACKEND_WAIT)));
 
@@ -449,15 +449,15 @@ module openrv64_bus_ptw #(
     // remains governed by the fabric's forward-progress contract.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ccx_timeout_count_q <=
-                {CCX_TIMEOUT_COUNT_WIDTH{1'b0}};
-        end else if ((CCX_TIMEOUT_CYCLES == 0) ||
+            icx_timeout_count_q <=
+                {ICX_TIMEOUT_COUNT_WIDTH{1'b0}};
+        end else if ((ICX_TIMEOUT_CYCLES == 0) ||
                      !walk_backend_pending || walk_backend_progress ||
                      walk_backend_timeout) begin
-            ccx_timeout_count_q <=
-                {CCX_TIMEOUT_COUNT_WIDTH{1'b0}};
+            icx_timeout_count_q <=
+                {ICX_TIMEOUT_COUNT_WIDTH{1'b0}};
         end else begin
-            ccx_timeout_count_q <= ccx_timeout_count_q + 1'b1;
+            icx_timeout_count_q <= icx_timeout_count_q + 1'b1;
         end
     end
 
@@ -521,7 +521,7 @@ module openrv64_bus_ptw #(
 
     wire pte_cache_fill = (PTE_CACHE_ENTRIES > 0) &&
         (state_q == STATE_WALK) && !pte_cache_hit_r &&
-        ccx_resp_fire && !walk_pte_error && !pte_encoding_invalid &&
+        icx_resp_fire && !walk_pte_error && !pte_encoding_invalid &&
         !pte_leaf && (level_q != `RV64_PAGE_LEVEL_4K) &&
         !pte_nonleaf_reserved;
     integer pte_cache_state_way;
@@ -604,7 +604,7 @@ module openrv64_bus_ptw #(
         if (!rst_n) begin
             state_q <= STATE_IDLE;
             backend_state_q <= BACKEND_PMP;
-            ccx_timeout_drain_q <= 1'b0;
+            icx_timeout_drain_q <= 1'b0;
             vaddr_q <= {`RV64_XLEN{1'b0}};
             access_q <= ACCESS_READ;
             priv_q <= `RV64_PRIV_M;
@@ -628,8 +628,8 @@ module openrv64_bus_ptw #(
         end else begin
             // A timed-out accepted request owns its transaction identity
             // until a possible late response has been consumed.
-            if (ccx_timeout_drain_q && ccx_resp_fire)
-                ccx_timeout_drain_q <= 1'b0;
+            if (icx_timeout_drain_q && icx_resp_fire)
+                icx_timeout_drain_q <= 1'b0;
 
             if (invalidate_i) begin
             case (state_q)
@@ -640,11 +640,11 @@ module openrv64_bus_ptw #(
                         end
                         BACKEND_SEND: begin
                             state_q <= STATE_ABORT;
-                            if (ccx_req_fire)
+                            if (icx_req_fire)
                                 backend_state_q <= BACKEND_WAIT;
                         end
                         BACKEND_WAIT: begin
-                            if (ccx_resp_fire)
+                            if (icx_resp_fire)
                                 set_invalidated_response();
                             else
                                 state_q <= STATE_ABORT;
@@ -656,10 +656,10 @@ module openrv64_bus_ptw #(
                 end
                 STATE_ABORT: begin
                     if ((backend_state_q == BACKEND_SEND) &&
-                        ccx_req_fire)
+                        icx_req_fire)
                         backend_state_q <= BACKEND_WAIT;
                     else if ((backend_state_q == BACKEND_WAIT) &&
-                             ccx_resp_fire)
+                             icx_resp_fire)
                         set_invalidated_response();
                 end
                 STATE_RESP: begin
@@ -714,12 +714,12 @@ module openrv64_bus_ptw #(
                         pmp_allow_i && !pte_cache_hit_r)
                         backend_state_q <= BACKEND_SEND;
                     else if ((backend_state_q == BACKEND_SEND) &&
-                             ccx_req_fire)
+                             icx_req_fire)
                         backend_state_q <= BACKEND_WAIT;
 
                     if (walk_backend_timeout) begin
                         if (backend_state_q == BACKEND_WAIT)
-                            ccx_timeout_drain_q <= 1'b1;
+                            icx_timeout_drain_q <= 1'b1;
                         set_fault_response(1'b0, 1'b1);
                     end else if (walk_pte_ready) begin
                         if (walk_pte_error) begin
@@ -759,13 +759,13 @@ module openrv64_bus_ptw #(
                 STATE_ABORT: begin
                     if (walk_backend_timeout) begin
                         if (backend_state_q == BACKEND_WAIT)
-                            ccx_timeout_drain_q <= 1'b1;
+                            icx_timeout_drain_q <= 1'b1;
                         set_invalidated_response();
                     end else if ((backend_state_q == BACKEND_SEND) &&
-                        ccx_req_fire)
+                        icx_req_fire)
                         backend_state_q <= BACKEND_WAIT;
                     else if ((backend_state_q == BACKEND_WAIT) &&
-                             ccx_resp_fire)
+                             icx_resp_fire)
                         set_invalidated_response();
                 end
 
@@ -787,15 +787,15 @@ module openrv64_bus_ptw #(
 `ifndef SYNTHESIS
     always @(posedge clk) begin
         if (rst_n && shootdown_resp_fire &&
-            (ccx_resp_error_i || ccx_resp_identity_error))
+            (icx_resp_error_i || icx_resp_identity_error))
             $fatal(1, "PTW L2-generation shootdown response failed");
     end
 
     initial begin
         if ((PTE_CACHE_ENTRIES < 0) || (PTE_CACHE_WAYS < 1))
             $fatal(1, "invalid non-leaf PTE cache geometry");
-        if (CCX_TIMEOUT_CYCLES < 0)
-            $fatal(1, "PTW CCX timeout must be nonnegative");
+        if (ICX_TIMEOUT_CYCLES < 0)
+            $fatal(1, "PTW ICX timeout must be nonnegative");
         if ((PTE_CACHE_ENTRIES > 0) &&
             (((PTE_CACHE_WAYS & (PTE_CACHE_WAYS - 1)) != 0) ||
              ((PTE_CACHE_ENTRIES % PTE_CACHE_WAYS) != 0) ||

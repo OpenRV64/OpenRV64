@@ -1,22 +1,22 @@
 # OpenRV64 core complex and shared L2
 
 `openrv64_core_complex_nh` is the generated 1-16-hart complex. It accepts one
-native 512-bit CCX port per hart, validates and straps each port to
+native 512-bit ICX port per hart, validates and straps each port to
 `HART_ID_BASE + hart_index`, round-robin arbitrates requests, and terminates
 them in a shared L2.
 `genbus_interface` then converts the L2 producer width to the independently
 selected AXI4 or WISHBONE Revision B.4 width and protocol.
 
 ```text
-hart 0 -- native CCX --+
-hart 1 -- native CCX --+-- line crossbar -- shared L2 -- genbus_interface
+hart 0 -- native ICX --+
+hart 1 -- native ICX --+-- line crossbar -- shared L2 -- genbus_interface
 ...                    |                                      |
-hart N -- native CCX --+                         +------------+-----------+
+hart N -- native ICX --+                         +------------+-----------+
                                                    |                      |
                                               AXI4 master        WISHBONE B.4 master
 ```
 
-The older `openrv64_ccx_protocol_wrapper_{1h,2h,4h}` modules remain cacheless
+The older `openrv64_icx_protocol_wrapper_{1h,2h,4h}` modules remain cacheless
 protocol tests and compatibility seams.  They are not aliases for the full
 core complex.
 
@@ -26,7 +26,7 @@ The defaults are:
 
 - 256 KiB, configurable to 512 KiB or 1 MiB with `L2_BYTES`;
 - eight ways, configurable with `L2_WAYS`;
-- 64-byte lines, matching the current L1 line size and the native 512-bit CCX
+- 64-byte lines, matching the current L1 line size and the native 512-bit ICX
   beat;
 - write-back and write-allocate; and
 - invalid-first, round-robin replacement.
@@ -66,7 +66,7 @@ each way's write port with fixed priority. The PTE generation is packed into
 the inferred tag SRAM; valid, dirty, reservation, and replacement state remain
 separate metadata.
 
-The northbound CCX and southbound L2 producer interfaces are fixed at 512 bits,
+The northbound ICX and southbound L2 producer interfaces are fixed at 512 bits,
 one 64-byte cache line per accepted data beat. Native cache endpoints may
 request bursts of consecutive cache lines; each line remains a separate beat
 and home operation. Width conversion occurs only below L2.
@@ -97,7 +97,7 @@ Untagged upstream responses are restored to request-acceptance order. AXI
 reads and writes may execute concurrently, but a younger request is not issued
 past an older opposite-direction request whose byte range overlaps.
 
-The current CCX/L2 instance explicitly drives southbound genbus `burst=0`.
+The current ICX/L2 instance explicitly drives southbound genbus `burst=0`.
 `BUS_DATA_WIDTH` independently selects the external width. One 512-bit L2
 request therefore becomes 16, 8, 4, 2, or 1 downstream beats on 32-, 64-, 128-,
 256-, or 512-bit AXI. The southbound adapter splits at AXI limits and 4 KiB
@@ -118,7 +118,7 @@ up to the AXI limit of 256 beats. AW and W may handshake independently. Up to
 `READ_BUFFER_DEPTH` reads and `WRITE_BUFFER_DEPTH` writes can be admitted, and
 multiple address transactions using the fixed master `AXI_ID` can be
 outstanding. AXI's same-ID ordering is therefore part of this interface
-contract. R and B IDs must match `AXI_ID`, and non-OKAY responses become CCX
+contract. R and B IDs must match `AXI_ID`, and non-OKAY responses become ICX
 errors.
 
 The optional neutral `burst` count performs explicit read coalescing. A leader
@@ -174,14 +174,14 @@ least these rules:
 
 The standalone scalar compatibility wrappers still apply one constant
 `DEFAULT_ATTR` to a whole legacy port. They are not used by this complex and
-must not be substituted for a native endpoint carrying per-request PMA/CCX
+must not be substituted for a native endpoint carrying per-request PMA/ICX
 attributes.
 
 ## Verification
 
 Focused targets are:
 
-- `make sim-ccx-l2` for the native 512-bit L2, including fills, hits, dirty
+- `make sim-icx-l2` for the native 512-bit L2, including fills, hits, dirty
   stale-PTE writeback/refill, and PTE-generation shootdown;
 - `make sim-genbus-axi sim-genbus-wb` for independent read/write buffering,
   wide-request bursts, declared read coalescing, response order, read

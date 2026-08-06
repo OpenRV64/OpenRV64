@@ -2,13 +2,13 @@
 `include "core/bus/bus-defs.v"
 `include "complex/protocol/defs.v"
 
-// Single-outstanding CCX-to-AXI4 bridge.
+// Single-outstanding ICX-to-AXI4 bridge.
 //
 // AXI is deliberately below the core-complex protocol.  This bridge consumes
-// one explicit CCX request, performs one 64-bit single-beat AXI transaction on
+// one explicit ICX request, performs one 64-bit single-beat AXI transaction on
 // the wider external data bus, and returns the completion with its original
 // hart and transaction identity.
-module openrv64_ccx_axi_master #(
+module openrv64_icx_axi_master #(
     parameter integer AXI_ADDR_WIDTH = `OPENRV64_AXI_ADDR_WIDTH,
     parameter integer AXI_DATA_WIDTH = `OPENRV64_AXI_DATA_WIDTH,
     parameter integer AXI_ID_WIDTH = `OPENRV64_AXI_ID_WIDTH,
@@ -19,12 +19,12 @@ module openrv64_ccx_axi_master #(
 
     input  wire                         req_valid_i,
     output wire                         req_ready_o,
-    input  wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] req_hart_id_i,
-    input  wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]  req_txn_id_i,
-    input  wire [`OPENRV64_CCX_OP_WIDTH-1:0]      req_op_i,
-    input  wire [`OPENRV64_CCX_ORDER_WIDTH-1:0]   req_order_i,
-    input  wire [`OPENRV64_CCX_KIND_WIDTH-1:0]    req_kind_i,
-    input  wire [`OPENRV64_CCX_ATTR_WIDTH-1:0]    req_attr_i,
+    input  wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] req_hart_id_i,
+    input  wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]  req_txn_id_i,
+    input  wire [`OPENRV64_ICX_OP_WIDTH-1:0]      req_op_i,
+    input  wire [`OPENRV64_ICX_ORDER_WIDTH-1:0]   req_order_i,
+    input  wire [`OPENRV64_ICX_KIND_WIDTH-1:0]    req_kind_i,
+    input  wire [`OPENRV64_ICX_ATTR_WIDTH-1:0]    req_attr_i,
     input  wire [2:0]                   req_size_i,
     input  wire [63:0]                  req_addr_i,
     input  wire [63:0]                  req_wdata_i,
@@ -32,8 +32,8 @@ module openrv64_ccx_axi_master #(
 
     output wire                         resp_valid_o,
     input  wire                         resp_ready_i,
-    output wire [`OPENRV64_CCX_HART_ID_WIDTH-1:0] resp_hart_id_o,
-    output wire [`OPENRV64_CCX_TXN_ID_WIDTH-1:0]  resp_txn_id_o,
+    output wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] resp_hart_id_o,
+    output wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]  resp_txn_id_o,
     output wire [63:0]                  resp_rdata_o,
     output wire                         resp_error_o,
     output wire                         resp_sc_success_o,
@@ -95,10 +95,10 @@ module openrv64_ccx_axi_master #(
     localparam [2:0] STATE_RESPONSE = 3'd5;
 
     reg [2:0] state_q;
-    reg [`OPENRV64_CCX_HART_ID_WIDTH-1:0] request_hart_id_q;
-    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] request_txn_id_q;
-    reg [`OPENRV64_CCX_KIND_WIDTH-1:0] request_kind_q;
-    reg [`OPENRV64_CCX_ATTR_WIDTH-1:0] request_attr_q;
+    reg [`OPENRV64_ICX_HART_ID_WIDTH-1:0] request_hart_id_q;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] request_txn_id_q;
+    reg [`OPENRV64_ICX_KIND_WIDTH-1:0] request_kind_q;
+    reg [`OPENRV64_ICX_ATTR_WIDTH-1:0] request_attr_q;
     reg [2:0] request_size_q;
     reg [63:0] request_addr_q;
     reg [63:0] request_wdata_q;
@@ -131,9 +131,9 @@ module openrv64_ccx_axi_master #(
         m_axi_rdata_i[lane_index * 64 +: 64];
 
     wire request_cacheable =
-        |(request_attr_q & `OPENRV64_CCX_ATTR_CACHEABLE);
+        |(request_attr_q & `OPENRV64_ICX_ATTR_CACHEABLE);
     wire request_is_fetch =
-        (request_kind_q == `OPENRV64_CCX_KIND_FETCH);
+        (request_kind_q == `OPENRV64_ICX_KIND_FETCH);
     wire read_id_match = (m_axi_rid_i == AXI_ID);
     wire write_id_match = (m_axi_bid_i == AXI_ID);
     wire read_response_error = (m_axi_rresp_i == 2'b10) ||
@@ -179,27 +179,27 @@ module openrv64_ccx_axi_master #(
     assign m_axi_wvalid_o = (state_q == STATE_WRITE_SEND) && !w_done_q;
     assign m_axi_bready_o = (state_q == STATE_WRITE_RESP) && write_id_match;
 
-    // Acquire/release is carried by CCX and consumed at a future ordering
+    // Acquire/release is carried by ICX and consumed at a future ordering
     // point.  This one-request-at-a-time bridge is already strictly ordered.
-    wire [`OPENRV64_CCX_ORDER_WIDTH-1:0] unused_request_order = req_order_i;
+    wire [`OPENRV64_ICX_ORDER_WIDTH-1:0] unused_request_order = req_order_i;
 
     initial begin
         if ((AXI_ADDR_WIDTH < 4) || (AXI_ADDR_WIDTH > 64))
-            $fatal(1, "CCX AXI address width must be from 4 through 64");
+            $fatal(1, "ICX AXI address width must be from 4 through 64");
         if ((AXI_DATA_WIDTH < 64) || ((AXI_DATA_WIDTH % 64) != 0) ||
             ((AXI_BYTES & (AXI_BYTES - 1)) != 0))
-            $fatal(1, "CCX AXI data width must be a power-of-two byte multiple of 64 bits");
+            $fatal(1, "ICX AXI data width must be a power-of-two byte multiple of 64 bits");
         if (AXI_ID_WIDTH < 1)
-            $fatal(1, "CCX AXI ID width must be positive");
+            $fatal(1, "ICX AXI ID width must be positive");
     end
 
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             state_q <= STATE_IDLE;
-            request_hart_id_q <= {`OPENRV64_CCX_HART_ID_WIDTH{1'b0}};
-            request_txn_id_q <= {`OPENRV64_CCX_TXN_ID_WIDTH{1'b0}};
-            request_kind_q <= `OPENRV64_CCX_KIND_LEGACY;
-            request_attr_q <= `OPENRV64_CCX_ATTR_NONE;
+            request_hart_id_q <= {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}};
+            request_txn_id_q <= {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            request_kind_q <= `OPENRV64_ICX_KIND_LEGACY;
+            request_attr_q <= `OPENRV64_ICX_ATTR_NONE;
             request_size_q <= 3'd3;
             request_addr_q <= 64'd0;
             request_wdata_q <= 64'd0;
@@ -224,10 +224,10 @@ module openrv64_ccx_axi_master #(
                         response_error_q <= 1'b0;
                         aw_done_q <= 1'b0;
                         w_done_q <= 1'b0;
-                        if ((req_op_i == `OPENRV64_CCX_OP_READ) &&
+                        if ((req_op_i == `OPENRV64_ICX_OP_READ) &&
                             (req_size_i == 3'd3)) begin
                             state_q <= STATE_READ_ADDR;
-                        end else if ((req_op_i == `OPENRV64_CCX_OP_WRITE) &&
+                        end else if ((req_op_i == `OPENRV64_ICX_OP_WRITE) &&
                                      (req_size_i == 3'd3)) begin
                             state_q <= STATE_WRITE_SEND;
                         end else begin

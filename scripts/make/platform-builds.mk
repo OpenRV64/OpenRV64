@@ -74,8 +74,8 @@ $(OPENSBI_3P_PLATFORM_VERILATOR_BUILD): \
 		-GL1D_PREFETCH_OUTSTANDING=$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_OUTSTANDING) \
 		-GL1D_PREFETCH_DEMAND_RESERVE=$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_DEMAND_RESERVE) \
 		-GL1D_PREFETCH_PAGE_GATING=$(OPENSBI_3P_PLATFORM_L1D_PREFETCH_PAGE_GATING) \
-		-GCCX_BUS_TYPE=$(OPENSBI_3P_PLATFORM_BUS_TYPE) \
-		-GCCX_BUS_DATA_WIDTH=$(OPENSBI_3P_PLATFORM_BUS_DATA_WIDTH) \
+		-GICX_BUS_TYPE=$(OPENSBI_3P_PLATFORM_BUS_TYPE) \
+		-GICX_BUS_DATA_WIDTH=$(OPENSBI_3P_PLATFORM_BUS_DATA_WIDTH) \
 		-GDDR3_ENABLE=$(OPENSBI_3P_PLATFORM_DDR3_ENABLE) \
 		-GDDR3_READ_QUEUE_DEPTH=$(OPENSBI_3P_PLATFORM_DDR3_READ_QUEUE_DEPTH) \
 		-GDDR3_WRITE_QUEUE_DEPTH=$(OPENSBI_3P_PLATFORM_DDR3_WRITE_QUEUE_DEPTH) \
@@ -176,72 +176,72 @@ $(CORE_BUS_SIM_BUILD): $(CORE_BUS_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(CORE_BUS_SIM_BUILD) $(BUS_SRCS) $(CORE_BUS_SIM_SRCS)
 
-$(CCX_PROTOCOL_1H_SIM_BUILD): $(CCX_PROTOCOL_1H_SIM_SRCS) $(CCX_PROTOCOL_SRCS)
+$(ICX_PROTOCOL_1H_SIM_BUILD): $(ICX_PROTOCOL_1H_SIM_SRCS) $(ICX_PROTOCOL_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_protocol_1h \
-		-o $(CCX_PROTOCOL_1H_SIM_BUILD) $(CCX_PROTOCOL_SRCS) \
-		$(CCX_PROTOCOL_1H_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -s tb_icx_protocol_1h \
+		-o $(ICX_PROTOCOL_1H_SIM_BUILD) $(ICX_PROTOCOL_SRCS) \
+		$(ICX_PROTOCOL_1H_SIM_SRCS)
 
-$(CCX_PROTOCOL_2H_SIM_BUILD): $(CCX_PROTOCOL_NH_SIM_SRCS) $(CCX_PROTOCOL_SRCS)
+$(ICX_PROTOCOL_2H_SIM_BUILD): $(ICX_PROTOCOL_NH_SIM_SRCS) $(ICX_PROTOCOL_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_protocol_nh \
-		-Ptb_ccx_protocol_nh.NUM_HARTS=2 \
-		-o $(CCX_PROTOCOL_2H_SIM_BUILD) $(CCX_PROTOCOL_SRCS) \
-		$(CCX_PROTOCOL_NH_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -s tb_icx_protocol_nh \
+		-Ptb_icx_protocol_nh.NUM_HARTS=2 \
+		-o $(ICX_PROTOCOL_2H_SIM_BUILD) $(ICX_PROTOCOL_SRCS) \
+		$(ICX_PROTOCOL_NH_SIM_SRCS)
 
-$(CCX_PROTOCOL_4H_SIM_BUILD): $(CCX_PROTOCOL_NH_SIM_SRCS) $(CCX_PROTOCOL_SRCS)
+$(ICX_PROTOCOL_4H_SIM_BUILD): $(ICX_PROTOCOL_NH_SIM_SRCS) $(ICX_PROTOCOL_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_protocol_nh \
-		-Ptb_ccx_protocol_nh.NUM_HARTS=4 \
-		-o $(CCX_PROTOCOL_4H_SIM_BUILD) $(CCX_PROTOCOL_SRCS) \
-		$(CCX_PROTOCOL_NH_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -s tb_icx_protocol_nh \
+		-Ptb_icx_protocol_nh.NUM_HARTS=4 \
+		-o $(ICX_PROTOCOL_4H_SIM_BUILD) $(ICX_PROTOCOL_SRCS) \
+		$(ICX_PROTOCOL_NH_SIM_SRCS)
 
-$(CCX_COHERENT_2H_SIM_BUILD): tb/tb_ccx_coherent_control.sv \
-		$(CCX_COHERENT_SRCS)
+$(ICX_COHERENT_2H_SIM_BUILD): tb/tb_icx_coherent_control.sv \
+		$(ICX_COHERENT_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_control \
-		-Ptb_ccx_coherent_control.NUM_HARTS=2 \
-		-o $(CCX_COHERENT_2H_SIM_BUILD) $(CCX_COHERENT_SRCS) \
-		tb/tb_ccx_coherent_control.sv
+	iverilog -g2012 -Wall -Irtl -s tb_icx_coherent_control \
+		-Ptb_icx_coherent_control.NUM_HARTS=2 \
+		-o $(ICX_COHERENT_2H_SIM_BUILD) $(ICX_COHERENT_SRCS) \
+		tb/tb_icx_coherent_control.sv
 
-$(CCX_COHERENT_4H_SIM_BUILD): tb/tb_ccx_coherent_control.sv \
-		$(CCX_COHERENT_SRCS)
+$(ICX_COHERENT_4H_SIM_BUILD): tb/tb_icx_coherent_control.sv \
+		$(ICX_COHERENT_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_control \
-		-Ptb_ccx_coherent_control.NUM_HARTS=4 \
-		-o $(CCX_COHERENT_4H_SIM_BUILD) $(CCX_COHERENT_SRCS) \
-		tb/tb_ccx_coherent_control.sv
+	iverilog -g2012 -Wall -Irtl -s tb_icx_coherent_control \
+		-Ptb_icx_coherent_control.NUM_HARTS=4 \
+		-o $(ICX_COHERENT_4H_SIM_BUILD) $(ICX_COHERENT_SRCS) \
+		tb/tb_icx_coherent_control.sv
 
-$(CCX_COHERENT_PROTOCOL_2H_SIM_BUILD): \
-		tb/tb_ccx_coherent_protocol.sv $(CCX_COHERENT_SRCS)
+$(ICX_COHERENT_PROTOCOL_2H_SIM_BUILD): \
+		tb/tb_icx_coherent_protocol.sv $(ICX_COHERENT_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_protocol \
-		-Ptb_ccx_coherent_protocol.NUM_HARTS=2 \
-		-o $(CCX_COHERENT_PROTOCOL_2H_SIM_BUILD) \
-		rtl/complex/protocol/defs.v $(CCX_COHERENT_SRCS) \
-		tb/tb_ccx_coherent_protocol.sv
+	iverilog -g2012 -Wall -Irtl -s tb_icx_coherent_protocol \
+		-Ptb_icx_coherent_protocol.NUM_HARTS=2 \
+		-o $(ICX_COHERENT_PROTOCOL_2H_SIM_BUILD) \
+		rtl/complex/protocol/defs.v $(ICX_COHERENT_SRCS) \
+		tb/tb_icx_coherent_protocol.sv
 
-$(CCX_COHERENT_PROTOCOL_4H_SIM_BUILD): \
-		tb/tb_ccx_coherent_protocol.sv $(CCX_COHERENT_SRCS)
+$(ICX_COHERENT_PROTOCOL_4H_SIM_BUILD): \
+		tb/tb_icx_coherent_protocol.sv $(ICX_COHERENT_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_coherent_protocol \
-		-Ptb_ccx_coherent_protocol.NUM_HARTS=4 \
-		-o $(CCX_COHERENT_PROTOCOL_4H_SIM_BUILD) \
-		rtl/complex/protocol/defs.v $(CCX_COHERENT_SRCS) \
-		tb/tb_ccx_coherent_protocol.sv
+	iverilog -g2012 -Wall -Irtl -s tb_icx_coherent_protocol \
+		-Ptb_icx_coherent_protocol.NUM_HARTS=4 \
+		-o $(ICX_COHERENT_PROTOCOL_4H_SIM_BUILD) \
+		rtl/complex/protocol/defs.v $(ICX_COHERENT_SRCS) \
+		tb/tb_icx_coherent_protocol.sv
 
-$(CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD): \
-		tb/tb_ccx_4h_l1d_directory_l2.sv $(L1_CACHE_SRCS) \
-		$(CCX_COHERENT_SRCS) $(CCX_L2_SRCS) \
+$(ICX_4H_L1D_DIRECTORY_L2_SIM_BUILD): \
+		tb/tb_icx_4h_l1d_directory_l2.sv $(L1_CACHE_SRCS) \
+		$(ICX_COHERENT_SRCS) $(ICX_L2_SRCS) \
 		rtl/complex/protocol/line_crossbar.v \
 		rtl/core/exec/lsu/rv64-a.v
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_4h_l1d_directory_l2 \
-		-o $(CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD) \
+	iverilog -g2012 -Wall -Irtl -s tb_icx_4h_l1d_directory_l2 \
+		-o $(ICX_4H_L1D_DIRECTORY_L2_SIM_BUILD) \
 		$(L1_CACHE_SRCS) rtl/complex/protocol/line_crossbar.v \
-		$(CCX_COHERENT_SRCS) $(CCX_L2_SRCS) \
+		$(ICX_COHERENT_SRCS) $(ICX_L2_SRCS) \
 		rtl/core/exec/lsu/rv64-a.v \
-		tb/tb_ccx_4h_l1d_directory_l2.sv
+		tb/tb_icx_4h_l1d_directory_l2.sv
 
 $(L1_CACHE_SIM_BUILD): $(L1_CACHE_SIM_SRCS) $(L1_CACHE_SRCS)
 	mkdir -p sim
@@ -278,21 +278,21 @@ $(L1D_STORE_BUFFER_SIM_BUILD): tb/tb_l1d_store_buffer.sv $(L1_CACHE_SRCS)
 		-o $(L1D_STORE_BUFFER_SIM_BUILD) $(L1_CACHE_SRCS) \
 		tb/tb_l1d_store_buffer.sv
 
-$(CCX_L2_SIM_BUILD): $(CCX_L2_SIM_SRCS) $(CCX_L2_SRCS) \
+$(ICX_L2_SIM_BUILD): $(ICX_L2_SIM_SRCS) $(ICX_L2_SRCS) \
 		rtl/complex/protocol/defs.v
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_l2 \
-		-o $(CCX_L2_SIM_BUILD) rtl/complex/protocol/defs.v \
-		$(CCX_L2_SRCS) $(CCX_L2_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -s tb_icx_l2 \
+		-o $(ICX_L2_SIM_BUILD) rtl/complex/protocol/defs.v \
+		$(ICX_L2_SRCS) $(ICX_L2_SIM_SRCS)
 
-$(CCX_L2_SC_REFILL_SIM_BUILD): $(CCX_L2_SC_REFILL_SIM_SRCS) \
-		$(CCX_L2_SRCS) $(CCX_COHERENT_SRCS) \
+$(ICX_L2_SC_REFILL_SIM_BUILD): $(ICX_L2_SC_REFILL_SIM_SRCS) \
+		$(ICX_L2_SRCS) $(ICX_COHERENT_SRCS) \
 		rtl/complex/protocol/defs.v
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_l2_sc_refill \
-		-o $(CCX_L2_SC_REFILL_SIM_BUILD) \
-		rtl/complex/protocol/defs.v $(CCX_COHERENT_SRCS) \
-		$(CCX_L2_SRCS) $(CCX_L2_SC_REFILL_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -s tb_icx_l2_sc_refill \
+		-o $(ICX_L2_SC_REFILL_SIM_BUILD) \
+		rtl/complex/protocol/defs.v $(ICX_COHERENT_SRCS) \
+		$(ICX_L2_SRCS) $(ICX_L2_SC_REFILL_SIM_SRCS)
 
 $(GENBUS_AXI_SIM_BUILD): $(GENBUS_SIM_SRCS) $(COMPLEX_BUS_SRCS)
 	mkdir -p sim
@@ -364,14 +364,14 @@ $(CORE_COMPLEX_4H_WB_SIM_BUILD): $(CORE_COMPLEX_SIM_SRCS) \
 		-o $(CORE_COMPLEX_4H_WB_SIM_BUILD) $(CORE_COMPLEX_SRCS) \
 		$(CORE_COMPLEX_SIM_SRCS)
 
-$(CCX_BUS_SIM_BUILD): $(CCX_BUS_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
+$(ICX_BUS_SIM_BUILD): $(ICX_BUS_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $(CCX_BUS_SIM_BUILD) $(BUS_SRCS) $(CCX_BUS_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -o $(ICX_BUS_SIM_BUILD) $(BUS_SRCS) $(ICX_BUS_SIM_SRCS)
 
-$(CCX_L1I_SIM_BUILD): $(CCX_L1I_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
+$(ICX_L1I_SIM_BUILD): $(ICX_L1I_SIM_SRCS) $(BUS_SRCS) $(ISA_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -s tb_ccx_l1i \
-		-o $(CCX_L1I_SIM_BUILD) $(BUS_SRCS) $(CCX_L1I_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -s tb_icx_l1i \
+		-o $(ICX_L1I_SIM_BUILD) $(BUS_SRCS) $(ICX_L1I_SIM_SRCS)
 
 $(L1I_TOP_SIM_BUILD): FORCE $(L1I_TOP_SIM_SRCS)
 	mkdir -p sim

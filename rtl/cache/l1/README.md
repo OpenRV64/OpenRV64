@@ -7,7 +7,7 @@ backpressure.  It accepts separate lookup and physical addresses: tying them
 together gives PIPT operation, while L1I uses virtual page-offset bits for its
 set/beat and the translated address for its tag and refill.  The L1I wrappers
 default to four ways, 16 KiB, and 64-byte lines; the shared cache and L1D retain
-their eight-way module defaults.  The integrated CCX core uses 16 KiB and four
+their eight-way module defaults.  The integrated ICX core uses 16 KiB and four
 ways for both L1I and L1D.  `L1I_CACHE_BYTES` and `L1D_CACHE_BYTES` expose
 those capacities at the core and production top levels.  `CACHE_BYTES`
 accepts power-of-two capacities from 1 KiB through 32 KiB.
@@ -20,7 +20,7 @@ accepts power-of-two capacities from 1 KiB through 32 KiB.
 - ordered one-entry response buffering with arbitrary response backpressure;
 - write-through and no-write-allocate;
 - successful write hits update the resident word when the lower-memory request
-  is accepted; the CCX L1D endpoint may satisfy that acceptance by reserving a
+  is accepted; the ICX L1D endpoint may satisfy that acceptance by reserving a
   byte-masked posted-store entry;
 - failed refills never validate a partial line;
 - round-robin replacement, preferring invalid ways and then retired-path lines
@@ -29,7 +29,7 @@ accepts power-of-two capacities from 1 KiB through 32 KiB.
 - `ENABLE=0` on `openrv64_l1`, `openrv64_l1i`, or `openrv64_l1d` elaborates a
   transparent wire-through path with no tag or data arrays.
 
-The line data arrays contain no dirty state.  With the CCX L1D endpoint, bytes
+The line data arrays contain no dirty state.  With the ICX L1D endpoint, bytes
 which have not reached the lower level are owned by the store FIFO rather than
 represented as Modified cache lines.
 
@@ -89,8 +89,8 @@ can select cached or cacheless builds without changing bus wiring.
 
 ## Frontend integration
 
-The 256-bit frontend instantiates `openrv64_l1i_ccx` as a VIPT cache.  A demand
-virtual address indexes L1I while the ITLB produces the physical tag and CCX
+The 256-bit frontend instantiates `openrv64_l1i_icx` as a VIPT cache.  A demand
+virtual address indexes L1I while the ITLB produces the physical tag and ICX
 address; Bare and ITLB-hit launches avoid a serialized translation state.
 Translation misses first use the shared 256-entry, four-way L2 TLB; only an L2
 miss uses the shared PTW. The L2 caches 4 KiB leaves and refills ITLB on a hit;
@@ -103,7 +103,7 @@ to L1I.
 
 The cache hit datapath is pipelined; misses, writes, and uncached operations
 still serialize the pipeline while they use the blocking lower-memory port.  A
-64-byte miss issues exactly one aligned 512-bit native CCX read with `size=6`
+64-byte miss issues exactly one aligned 512-bit native ICX read with `size=6`
 and `burst_len=0`.  The requested 256-bit frontend half is then selected from
 the resident 64-byte line.  With L1I enabled, instruction traffic does not use
 AXI.  `FENCE.I` invalidates both the L1I and the three-wide fetcher's bridge
@@ -131,20 +131,20 @@ AXI top-level path for a direct, single-request cacheless fetch path.
 
 `rtl/openrv64_l1i_top.v` is the standalone integration boundary.  It accepts
 virtual and translated physical demand addresses, exposes the private
-speculative translation service, and presents the read-only native CCX command
+speculative translation service, and presents the read-only native ICX command
 and response channels.  The standalone top and testbench parameterize cache
 capacity, associativity, and speculative slot count; their defaults are 16 KiB,
 four ways, and eight slots.  Override them with `L1I_TOP_CACHE_BYTES`,
 `L1I_TOP_WAYS`, and `L1I_TOP_PREFETCH_SLOTS` on `make sim-l1i-top`.  The target
 builds the current CoreMark-derived binary as 512-bit lines and replays a
 checked-in 128-instruction dynamic excerpt through this top twice; every
-returned instruction is checked, and the warm replay must issue no CCX fills.
+returned instruction is checked, and the warm replay must issue no ICX fills.
 
 ## Data integration
 
-The scalar LSU enters `openrv64_l1d_ccx` only after translation and PMP
+The scalar LSU enters `openrv64_l1d_icx` only after translation and PMP
 checking.  The cache retains its 64-bit internal SRAM/refill datapath, while
-the backend converts a cacheable miss into one aligned 512-bit native CCX read
+the backend converts a cacheable miss into one aligned 512-bit native ICX read
 with `size=6` and `burst_len=0`.  The returned line enters the shared cache
 through its detached full-line fill port; a CPU load returns the selected
 64-bit word after that installation is complete.
@@ -152,7 +152,7 @@ through its detached full-line fill port; a CPU load returns the selected
 `DEMAND_MSHRS` defaults to three. `FILL_BUFFER_LINES` and
 `STORE_BUFFER_LINES` both default to eight cachelines and accept values from
 one through sixteen. Each demand MSHR owns one unique aligned line, a lower-half
-CCX transaction ID, returned data, speculation epoch/replay state, and the
+ICX transaction ID, returned data, speculation epoch/replay state, and the
 aggregate older-store overlay used for installation. Same-line misses merge
 onto that entry while retaining independent requester tags, selected words,
 and per-request store snapshots. A younger same-line store updates only the
@@ -175,14 +175,14 @@ A partial newest entry stays open for further adjacent stores until it becomes
 full, ceases to be the tail, reaches `STORE_BUFFER_TIMEOUT_CYCLES` (1024 by
 default), or must drain for invalidation, an uncached same-line access, or a
 locked request.
-Each entry drains as one aligned CCX write with `size=6` and `burst_len=0`.
+Each entry drains as one aligned ICX write with `size=6` and `burst_len=0`.
 The independent `store_resp_*` channel reports drain completion and error in
 FIFO order.  The core bus retains the original LSU tags in a matching FIFO, so
 a store may retire at request admission without losing a later asynchronous
 access fault.
 
 Store draining is nonblocking with respect to earlier store responses. Each
-FIFO entry retains issued, completed, error, and CCX transaction-ID state.
+FIFO entry retains issued, completed, error, and ICX transaction-ID state.
 The drain selector may issue the oldest unissued entry while older entries
 remain in flight. Responses match by transaction ID and may arrive out of
 order, but entries are still reported and reclaimed from the FIFO head. An
@@ -234,10 +234,10 @@ L1D assigns accepted reads to an eight-bit speculation epoch. `satp` writes,
 `SFENCE.VMA`, and the first presentation of each marked AMO phase advance that
 epoch. The barrier cancels queued candidates, stops active generation, clears
 completed speculative fill-buffer entries, and marks already-issued prefetch
-MSHRs discard-on-response. CCX responses are still consumed; they simply
+MSHRs discard-on-response. ICX responses are still consumed; they simply
 cannot become cache or fill-buffer state after the cutoff.
 
-Architectural demand MSHRs are not discarded. If an MSHR's CCX read was issued
+Architectural demand MSHRs are not discarded. If an MSHR's ICX read was issued
 in an older epoch, L1D consumes the old response without installing it, releases
 that transaction-ID credit, and reissues the same line in the new epoch. An
 unissued MSHR is relabeled directly. Replay and epoch state are therefore
@@ -277,7 +277,7 @@ installing it and then reissues the line; its tagged waiters and store overlay
 remain attached.
 `#LOCK` accesses bypass and
 invalidate L1D and remain non-posted, but in the single-hart configuration the
-marker is local and is not forwarded as a CCX/L2 home lock.  Uncached/device
+marker is local and is not forwarded as a ICX/L2 home lock.  Uncached/device
 writes also remain blocking in the current RTL; the intended later policy is
 ordinary posting with software responsible for an explicit pre-barrier.  A
 device write does not implicitly perform that pre-drain.  A future CSR may
@@ -303,8 +303,8 @@ larger tag namespace or a separate deferred-fault metadata queue.
 The default one-hart AMO path uses `req_lock_i` as a local phase marker. Before
 either marked phase proceeds, L1D invalidates its resident copy of the
 addressed line. The phase then bypasses L1 lookup, speculative fill buffers,
-and allocation while retaining the original cacheable PMA attribute at CCX.
-`ccx_req_lock_o` remains tied low.
+and allocation while retaining the original cacheable PMA attribute at ICX.
+`icx_req_lock_o` remains tied low.
 
 When `COHERENT_ATOMICS` is enabled, a marked read first issues an LR to the
 coherent home to establish the reservation, then performs the ordinary cached
@@ -316,8 +316,8 @@ copy and is encoded as SC.  SC success is returned to RV64A through the marked
 write response.  These options are disabled by default so the existing
 one-hart L2 continues to receive its established protocol.
 
-The CCX4 coherent path supplies one independent invalidate-probe slot per L1D
-in `openrv64_ccx_4h_l1d_probe_cluster`.  Probe acceptance clears the hart's LR
+The ICX4 coherent path supplies one independent invalidate-probe slot per L1D
+in `openrv64_icx_4h_l1d_probe_cluster`.  Probe acceptance clears the hart's LR
 reservation immediately, but ACK is withheld until the real targeted
 tag/refill invalidation completes.  Timeout records a protocol error and never
 manufactures an ACK.  The home excludes an SC requester from its probe target
@@ -333,4 +333,4 @@ the configured store-buffer capacity. L1I may retain up to the configured
 number of untranslated, translated, or aging jobs behind its port. It adds no
 probes or coherence behavior. Scalar LSU traffic never uses AXI;
 AXI remains only for the `ENABLE_L1I=0` cacheless-fetch path. Page-table walks
-use native CCX and identify their memory object with `kind=PTE`.
+use native ICX and identify their memory object with `kind=PTE`.

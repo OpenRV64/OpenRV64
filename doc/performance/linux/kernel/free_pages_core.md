@@ -171,14 +171,14 @@ That caveat does not invalidate the throughput measurement:
 The safe claim is that retirement is slow while repeatedly executing the
 page-free call chain, with the held retirement PC usually inside
 `__free_pages_core`. The PC sample alone neither assigns the whole interval
-to that loop nor identifies which cache, LSQ, CCX, L2, or DDR state owns
+to that loop nor identifies which cache, LSQ, ICX, L2, or DDR state owns
 every stalled cycle. The 17.00M-cycle sample at
 `__free_pages_ok+0x1d4` directly exposes the preparation pass that the
 coarse PC histogram mostly hides.
 
 ## Outstanding-prefetch split
 
-The L1D has sixteen CCX transaction IDs.  With four prefetch MSHRs, the
+The L1D has sixteen ICX transaction IDs.  With four prefetch MSHRs, the
 current allocator reserves IDs 12 through 15 for prefetch and leaves twelve
 IDs for demand/store traffic.  With eight prefetch MSHRs, it leaves eight
 IDs for main traffic.
@@ -292,11 +292,11 @@ rather than several stores saturating the LSQ.
 | PTW active | 134 | 0.002% |
 | L2 MSHRs full | 0 | 0.000% |
 | L2 bus wait | 0 | 0.000% |
-| CCX request wait | 0 | 0.000% |
+| ICX request wait | 0 | 0.000% |
 | AXI AR/AW/W/R/B wait | 0 | 0.000% |
 
 There was one serial DTLB miss in the entire interval. Translation, queue
-capacity, store-buffer capacity, L1D/L2 MSHR capacity, CCX admission,
+capacity, store-buffer capacity, L1D/L2 MSHR capacity, ICX admission,
 GenBus/AXI backpressure, and barriers cannot explain a stall present for
 roughly 6.5 million cycles.
 
@@ -334,7 +334,7 @@ The direct facts are:
    cycles;
 3. younger translated stores wait for ordered-head permission for 87.49%
    of the interval;
-4. none of the translation, LSQ-capacity, cache-capacity, CCX, L2, or AXI
+4. none of the translation, LSQ-capacity, cache-capacity, ICX, L2, or AXI
    full/wait counters is active at a comparable rate; and
 5. the sequential prefetches are accurate but 46.19% late.
 
@@ -500,7 +500,7 @@ The current data rules out:
 7. **Prefetch being fundamentally unable to handle the isolated instruction
    pattern.** The isolated timed-DDR3 proxy can sustain 0.361 IPC and reports
    nearly every issued prefetch useful.
-8. **Store-buffer, MSHR, translation, CCX, L2, or AXI capacity.** Every
+8. **Store-buffer, MSHR, translation, ICX, L2, or AXI capacity.** Every
    corresponding full or admission-wait counter is below 0.06% of the
    measured call-chain interval; several are zero.
 9. **Bad prefetch recognition or accuracy.** 116,047 of 117,266 issued
@@ -533,7 +533,7 @@ Add source-matched counters or a trace for:
 
 - retirement-head age and, if exact instruction attribution is required,
   its PC and opcode while incomplete;
-- prefetch issue, CCX acceptance, L2 lookup, DDR command, response, L1D
+- prefetch issue, ICX acceptance, L2 lookup, DDR command, response, L1D
   fill, and first-demand timestamps;
 - prefetch lead in cache lines at first demand;
 - instantaneous prefetch-MSHR, L2-MSHR, GenBus, and DDR-owner occupancy;
@@ -556,7 +556,7 @@ Then run a controlled matrix from one frozen source snapshot:
 | DDR bank/row swizzle | off, on |
 | Physical array placement | proxy default, Linux `mem_map`-matched |
 
-The Sv39 proxy and Linux platform must use the same L1D, CCX/L2, GenBus,
+The Sv39 proxy and Linux platform must use the same L1D, ICX/L2, GenBus,
 DDR configuration, memory image placement, and RTL build.  Without that
 control, another fast proxy result will not explain the Linux plateau.
 
@@ -583,9 +583,9 @@ make bench-pagefree \
     PAGEFREE_DDR3=1 \
     PAGEFREE_REQUIRE_ARGS=+require_timed_memory \
     PAGEFREE_L1D_PREFETCH_MAX_DISTANCE=8 \
-    CORE_3P_CCX_L2_L1D_PREFETCH_QUEUE_LINES=8 \
-    CORE_3P_CCX_L2_L1D_PREFETCH_OUTSTANDING=4 \
-    CORE_3P_CCX_L2_L1D_PREFETCH_DEMAND_RESERVE=2 \
-    CORE_3P_CCX_L2_GENBUS_READ_DEPTH=8 \
-    CORE_3P_CCX_L2_GENBUS_WRITE_DEPTH=8
+    CORE_3P_ICX_L2_L1D_PREFETCH_QUEUE_LINES=8 \
+    CORE_3P_ICX_L2_L1D_PREFETCH_OUTSTANDING=4 \
+    CORE_3P_ICX_L2_L1D_PREFETCH_DEMAND_RESERVE=2 \
+    CORE_3P_ICX_L2_GENBUS_READ_DEPTH=8 \
+    CORE_3P_ICX_L2_GENBUS_WRITE_DEPTH=8
 ```
