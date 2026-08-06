@@ -24,6 +24,11 @@ module openrv64_l1_cache #(
     // the independent fill port, allowing the outer policy controller to own
     // multiple MSHRs while this module remains the shared tag/data array.
     parameter integer DETACH_READ_MISSES = 0,
+    // Read all way tags on the same registered boundary as the data SRAM.
+    // This mode is currently used by L1D, whose age ports are tied off.  L1I
+    // retains the asynchronous tag path until its unacknowledged age inputs
+    // are converted to a serializable interface.
+    parameter integer SYNC_TAG_LOOKUP = 0,
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
@@ -149,7 +154,11 @@ module openrv64_l1_cache #(
     // parallel.  This permits a full-line refill width without turning every
     // scalar hit into a full-line read.
     reg                      valid_q [0:TOTAL_LINES-1];
-    reg [TAG_BITS-1:0]       tag_q [0:TOTAL_LINES-1];
+    // The legacy path retains its multi-address asynchronous tag array.  The
+    // synchronous path is declared as independent per-way memories below;
+    // keeping the declarations separate prevents synthesis from combining
+    // the ways into one artificial multiported memory.
+    reg [TAG_BITS-1:0]       legacy_tag_q [0:WAYS-1][0:SETS-1];
     reg [1:0]                mesi_q [0:TOTAL_LINES-1];
     reg [DIRTY_TIMESTAMP_WIDTH-1:0]
                                dirty_timestamp_q [0:TOTAL_LINES-1];
@@ -195,6 +204,48 @@ module openrv64_l1_cache #(
     reg                  write_response_valid_q;
     reg [REQ_TAG_WIDTH-1:0] write_response_tag_q;
 
+    // Registered tag-array request.  The data banks are read on the same
+    // edge, so the hit decision and selected data are available together.
+    reg                      sync_lookup_valid_q;
+    reg                      sync_lookup_classified_q;
+    reg [REQ_TAG_WIDTH-1:0] sync_lookup_req_tag_q;
+    reg                      sync_lookup_write_q;
+    reg                      sync_lookup_cacheable_q;
+    reg                      sync_lookup_prefetch_q;
+    reg                      sync_lookup_aged_q;
+    reg                      sync_lookup_separate_write_resp_q;
+    reg [ADDR_WIDTH-1:0]     sync_lookup_addr_q;
+    reg [ADDR_WIDTH-1:0]     sync_lookup_phys_addr_q;
+    reg [DATA_WIDTH-1:0]     sync_lookup_wdata_q;
+    reg [DATA_BYTES-1:0]     sync_lookup_wstrb_q;
+    reg [SET_INDEX_WIDTH-1:0] sync_lookup_set_q;
+    reg [REFILL_INDEX_WIDTH-1:0] sync_lookup_refill_index_q;
+    reg [REFILL_WORD_INDEX_WIDTH-1:0] sync_lookup_refill_word_q;
+    reg [TAG_BITS-1:0]       sync_lookup_tag_q;
+    reg                      sync_lookup_ideal_valid_q;
+    reg [DATA_WIDTH-1:0]     sync_lookup_ideal_data_q;
+    reg [WAYS-1:0]           sync_lookup_valid_bits_q;
+    reg [WAYS-1:0]           sync_lookup_aged_bits_q;
+    reg [WAY_INDEX_WIDTH-1:0] sync_lookup_replace_q;
+    reg                      sync_lookup_hit_q;
+    reg [WAY_INDEX_WIDTH-1:0] sync_lookup_way_q;
+    reg [WAY_INDEX_WIDTH-1:0] sync_lookup_victim_way_q;
+
+    // Fill and targeted-invalidation requests use the same per-way tag SRAM
+    // read port.  Their inputs remain held until the delayed ready handshake.
+    reg                      sync_fill_probe_q;
+    reg [SET_INDEX_WIDTH-1:0] sync_fill_set_q;
+    reg [TAG_BITS-1:0]       sync_fill_tag_q;
+    reg [WAYS-1:0]           sync_fill_valid_bits_q;
+    reg [WAYS-1:0]           sync_fill_aged_bits_q;
+    reg [WAY_INDEX_WIDTH-1:0] sync_fill_replace_q;
+    reg                      sync_invalidate_probe_q;
+    reg [ADDR_WIDTH-1:0]     sync_invalidate_addr_q;
+    reg [SET_INDEX_WIDTH-1:0] sync_invalidate_set_q;
+    reg [TAG_BITS-1:0]       sync_invalidate_tag_q;
+    reg [WAYS-1:0]           sync_invalidate_valid_bits_q;
+    reg [TAG_BITS-1:0]       sync_tag_read_q [0:WAYS-1];
+
     reg [SET_INDEX_WIDTH-1:0] lookup_set;
     reg [WORD_INDEX_WIDTH-1:0] lookup_word;
     reg [REFILL_INDEX_WIDTH-1:0] lookup_refill_index;
@@ -226,6 +277,16 @@ module openrv64_l1_cache #(
     reg fill_invalid_found;
     reg fill_aged_found;
     integer fill_way_index;
+    reg sync_lookup_hit_comb;
+    reg [WAY_INDEX_WIDTH-1:0] sync_lookup_way_comb;
+    reg [WAY_INDEX_WIDTH-1:0] sync_lookup_victim_way_comb;
+    reg sync_lookup_invalid_found;
+    reg sync_lookup_aged_found;
+    reg [WAY_INDEX_WIDTH-1:0] sync_fill_way_comb;
+    reg sync_fill_hit_found;
+    reg sync_fill_invalid_found;
+    reg sync_fill_aged_found;
+    integer sync_way_index;
     wire [WAYS*WORDS_PER_REFILL*DATA_WIDTH-1:0] lookup_bank_data;
     wire [DATA_WIDTH-1:0] response_hit_data =
         lookup_bank_data[
@@ -235,7 +296,12 @@ module openrv64_l1_cache #(
         lookup_bank_data[
             (access_way_q*WORDS_PER_REFILL +
              access_refill_word_q)*DATA_WIDTH +: DATA_WIDTH];
+    wire [DATA_WIDTH-1:0] sync_lookup_hit_data =
+        lookup_bank_data[
+            (sync_lookup_way_comb*WORDS_PER_REFILL +
+             sync_lookup_refill_word_q)*DATA_WIDTH +: DATA_WIDTH];
     reg [DATA_WIDTH-1:0] access_write_value;
+    reg [DATA_WIDTH-1:0] access_resident_data_q;
     integer access_write_byte;
 
     wire refill_last_beat = (refill_index_q == LAST_REFILL);
@@ -328,8 +394,9 @@ module openrv64_l1_cache #(
             lookup_line = line_index_of(
                 lookup_set,
                 lookup_way_index[WAY_INDEX_WIDTH-1:0]);
-            if (valid_q[lookup_line] &&
-                tag_q[lookup_line] == lookup_tag) begin
+            if ((SYNC_TAG_LOOKUP == 0) && valid_q[lookup_line] &&
+                legacy_tag_q[lookup_way_index][lookup_set] ==
+                    lookup_tag) begin
                 lookup_hit = 1'b1;
                 lookup_way = lookup_way_index[WAY_INDEX_WIDTH-1:0];
             end
@@ -399,17 +466,87 @@ module openrv64_l1_cache #(
         end
         for (fill_way_index = 0; fill_way_index < WAYS;
              fill_way_index = fill_way_index + 1) begin
-            if (!fill_hit_found &&
+            if ((SYNC_TAG_LOOKUP == 0) && !fill_hit_found &&
                 valid_q[line_index_of(
                     fill_set, fill_way_index[WAY_INDEX_WIDTH-1:0])] &&
-                (tag_q[line_index_of(
-                    fill_set, fill_way_index[WAY_INDEX_WIDTH-1:0])] ==
+                (legacy_tag_q[fill_way_index][fill_set] ==
                  fill_tag)) begin
                 fill_way = fill_way_index[WAY_INDEX_WIDTH-1:0];
                 fill_hit_found = 1'b1;
             end
         end
+        if (SYNC_TAG_LOOKUP != 0) begin
+            fill_set = sync_fill_set_q;
+            fill_tag = sync_fill_tag_q;
+            fill_way = sync_fill_way_comb;
+        end
         fill_line = line_index_of(fill_set, fill_way);
+    end
+
+    // Registered tag results are interpreted against metadata sampled on the
+    // tag-read edge.  Once backpressured, classification is latched so a fill
+    // or snoop may reuse the tag read port without changing the held result.
+    always @* begin
+        sync_lookup_hit_comb = 1'b0;
+        sync_lookup_way_comb = {WAY_INDEX_WIDTH{1'b0}};
+        sync_lookup_victim_way_comb = sync_lookup_replace_q;
+        sync_lookup_aged_found = 1'b0;
+        sync_lookup_invalid_found = 1'b0;
+        for (sync_way_index = 0; sync_way_index < WAYS;
+             sync_way_index = sync_way_index + 1) begin
+            if (sync_lookup_valid_bits_q[sync_way_index] &&
+                (sync_tag_read_q[sync_way_index] == sync_lookup_tag_q)) begin
+                sync_lookup_hit_comb = 1'b1;
+                sync_lookup_way_comb =
+                    sync_way_index[WAY_INDEX_WIDTH-1:0];
+            end
+            if (!sync_lookup_aged_found &&
+                sync_lookup_valid_bits_q[sync_way_index] &&
+                sync_lookup_aged_bits_q[sync_way_index]) begin
+                sync_lookup_victim_way_comb =
+                    sync_way_index[WAY_INDEX_WIDTH-1:0];
+                sync_lookup_aged_found = 1'b1;
+            end
+            if (!sync_lookup_invalid_found &&
+                !sync_lookup_valid_bits_q[sync_way_index]) begin
+                sync_lookup_victim_way_comb =
+                    sync_way_index[WAY_INDEX_WIDTH-1:0];
+                sync_lookup_invalid_found = 1'b1;
+            end
+        end
+        if (sync_lookup_classified_q) begin
+            sync_lookup_hit_comb = sync_lookup_hit_q;
+            sync_lookup_way_comb = sync_lookup_way_q;
+            sync_lookup_victim_way_comb = sync_lookup_victim_way_q;
+        end
+
+        sync_fill_way_comb = sync_fill_replace_q;
+        sync_fill_hit_found = 1'b0;
+        sync_fill_aged_found = 1'b0;
+        sync_fill_invalid_found = 1'b0;
+        for (sync_way_index = 0; sync_way_index < WAYS;
+             sync_way_index = sync_way_index + 1) begin
+            if (!sync_fill_aged_found &&
+                sync_fill_valid_bits_q[sync_way_index] &&
+                sync_fill_aged_bits_q[sync_way_index]) begin
+                sync_fill_way_comb =
+                    sync_way_index[WAY_INDEX_WIDTH-1:0];
+                sync_fill_aged_found = 1'b1;
+            end
+            if (!sync_fill_invalid_found &&
+                !sync_fill_valid_bits_q[sync_way_index]) begin
+                sync_fill_way_comb =
+                    sync_way_index[WAY_INDEX_WIDTH-1:0];
+                sync_fill_invalid_found = 1'b1;
+            end
+            if (!sync_fill_hit_found &&
+                sync_fill_valid_bits_q[sync_way_index] &&
+                (sync_tag_read_q[sync_way_index] == sync_fill_tag_q)) begin
+                sync_fill_way_comb =
+                    sync_way_index[WAY_INDEX_WIDTH-1:0];
+                sync_fill_hit_found = 1'b1;
+            end
+        end
     end
 
     wire response_slot_available = !response_valid_q || resp_ready_i;
@@ -425,16 +562,85 @@ module openrv64_l1_cache #(
         request_write_q && request_separate_write_resp_q &&
         req_valid_i && !req_write_i && req_cacheable_i &&
         write_response_slot_available;
-    wire request_base_ready =
+    wire legacy_request_base_ready =
         ((state_q == STATE_RUN) || access_read_overlap) &&
         !invalidate_valid_i && response_slot_available &&
         !(detached_fill_enabled && fill_valid_i);
-    wire detached_miss_candidate = detached_fill_enabled && req_valid_i &&
+
+    wire legacy_detached_miss_candidate =
+        detached_fill_enabled && req_valid_i &&
         req_cacheable_i && !req_write_i && !lookup_hit &&
         !((IDEAL_REFILLS != 0) && ideal_refill_valid_i);
+
+    wire sync_lookup_hit_response = sync_lookup_valid_q &&
+        sync_lookup_cacheable_q && !sync_lookup_write_q &&
+        sync_lookup_hit_comb;
+    wire sync_lookup_ideal_response = sync_lookup_valid_q &&
+        sync_lookup_cacheable_q && !sync_lookup_write_q &&
+        !sync_lookup_hit_comb && sync_lookup_ideal_valid_q;
+    wire sync_lookup_response = sync_lookup_hit_response ||
+                                sync_lookup_ideal_response;
+    wire sync_lookup_miss = sync_lookup_valid_q &&
+        sync_lookup_cacheable_q && !sync_lookup_write_q &&
+        !sync_lookup_hit_comb && !sync_lookup_ideal_valid_q;
+    wire sync_lookup_access = sync_lookup_valid_q &&
+        (!sync_lookup_cacheable_q || sync_lookup_write_q);
+    wire sync_lookup_response_present = sync_lookup_response &&
+                                        !response_valid_q;
+    wire sync_lookup_response_fire = sync_lookup_response_present &&
+                                     resp_ready_i;
+    wire sync_lookup_response_spill = sync_lookup_response_present &&
+                                      !resp_ready_i;
+    wire sync_lookup_miss_fire = sync_lookup_miss && miss_ready_i;
+    wire sync_lookup_access_fire = sync_lookup_access &&
+        (state_q == STATE_RUN) &&
+        !(invalidate_valid_i && invalidate_ready_o) && !fill_fire;
+    wire sync_lookup_consume = sync_lookup_response_fire ||
+                               sync_lookup_response_spill ||
+                               sync_lookup_miss_fire ||
+                               sync_lookup_access_fire;
+    // Do not replace a store/uncached lookup on the same edge it enters
+    // STATE_ACCESS.  The outer L1D must see that pending write on l1_mem_* so
+    // a younger load can snapshot its dirty-byte overlay correctly.
+    wire sync_lookup_slot_available = !sync_lookup_valid_q ||
+        (sync_lookup_consume && !sync_lookup_access_fire);
+    wire sync_tag_port_available = !sync_fill_probe_q &&
+        !sync_invalidate_probe_q &&
+        (!sync_lookup_valid_q || sync_lookup_classified_q ||
+         sync_lookup_consume);
+    wire sync_invalidate_launch = (SYNC_TAG_LOOKUP != 0) &&
+        invalidate_valid_i && !invalidate_all_i &&
+        ((state_q == STATE_RUN) || (state_q == STATE_ACCESS)) &&
+        sync_tag_port_available;
+    wire sync_fill_launch = (SYNC_TAG_LOOKUP != 0) && fill_valid_i &&
+        (state_q == STATE_RUN) && !invalidate_valid_i &&
+        sync_tag_port_available;
     wire request_fire = req_valid_i && req_ready_o;
-    wire response_fire = response_valid_q && resp_ready_i;
+    wire sync_tag_read_fire = sync_invalidate_launch ||
+                              sync_fill_launch ||
+                              ((SYNC_TAG_LOOKUP != 0) && request_fire);
+    wire [SET_INDEX_WIDTH-1:0] sync_tag_read_set =
+        sync_invalidate_launch ? set_index_of(invalidate_addr_i) :
+        sync_fill_launch ? set_index_of(fill_addr_i) : accept_set;
+    wire sync_request_base_ready =
+        ((state_q == STATE_RUN) || access_read_overlap) &&
+        !invalidate_valid_i && !fill_valid_i &&
+        !sync_fill_probe_q && !sync_invalidate_probe_q &&
+        response_slot_available && sync_lookup_slot_available;
+    wire request_base_ready = (SYNC_TAG_LOOKUP != 0) ?
+                              sync_request_base_ready :
+                              legacy_request_base_ready;
+    wire detached_miss_candidate = (SYNC_TAG_LOOKUP != 0) ?
+                                   sync_lookup_miss :
+                                   legacy_detached_miss_candidate;
+    wire buffered_response_fire = response_valid_q && resp_ready_i;
     wire invalidate_quiescent = !response_valid_q || resp_ready_i;
+    wire [ADDR_WIDTH-1:0] selected_miss_phys_addr =
+        ((SYNC_TAG_LOOKUP != 0) && sync_lookup_valid_q) ?
+            sync_lookup_phys_addr_q : req_phys_addr_i;
+    wire [ADDR_WIDTH-1:0] selected_invalidate_addr =
+        (SYNC_TAG_LOOKUP != 0) ? sync_invalidate_addr_q :
+                                 invalidate_addr_i;
 
     // A held read response already contains its pre-snoop value.  Tag
     // invalidation may therefore complete without waiting for the requester
@@ -451,30 +657,50 @@ module openrv64_l1_cache #(
      *
      * Full-cache maintenance retains the quiescent STATE_RUN contract.
      */
-    assign invalidate_ready_o =
-        (state_q == STATE_RUN) ||
-        ((state_q == STATE_ACCESS) && !invalidate_all_i);
+    assign invalidate_ready_o = (SYNC_TAG_LOOKUP != 0) ?
+        (invalidate_all_i ? (state_q == STATE_RUN) :
+                            sync_invalidate_probe_q) :
+        ((state_q == STATE_RUN) ||
+         ((state_q == STATE_ACCESS) && !invalidate_all_i));
     assign req_ready_o = request_base_ready &&
                          (!req_separate_write_resp_i ||
                           write_response_slot_available) &&
-                         (!detached_miss_candidate || miss_ready_i);
-    assign resp_valid_o = response_valid_q;
-    assign resp_tag_o = response_tag_q;
-    assign req_rdata_o = response_hit_q ? response_hit_data :
-                         response_data_q;
-    assign req_error_o = response_error_q;
+                         ((SYNC_TAG_LOOKUP != 0) ?
+                          (!detached_fill_enabled || req_write_i ||
+                           !req_cacheable_i || miss_ready_i) :
+                          (!detached_miss_candidate || miss_ready_i));
+    assign resp_valid_o = response_valid_q ||
+                          ((SYNC_TAG_LOOKUP != 0) &&
+                           sync_lookup_response_present);
+    assign resp_tag_o = response_valid_q ? response_tag_q :
+                        sync_lookup_req_tag_q;
+    assign req_rdata_o = response_valid_q ?
+                         (response_hit_q ? response_hit_data :
+                          response_data_q) :
+                         (sync_lookup_hit_response ?
+                          sync_lookup_hit_data :
+                          sync_lookup_ideal_data_q);
+    assign req_error_o = response_valid_q ? response_error_q : 1'b0;
     assign write_resp_valid_o = write_response_valid_q;
     assign write_resp_tag_o = write_response_tag_q;
-    assign miss_valid_o = request_base_ready && detached_miss_candidate;
-    assign miss_tag_o = req_tag_i;
+    assign miss_valid_o = (SYNC_TAG_LOOKUP != 0) ? sync_lookup_miss :
+                          (request_base_ready &&
+                           legacy_detached_miss_candidate);
+    assign miss_tag_o = ((SYNC_TAG_LOOKUP != 0) &&
+                         sync_lookup_valid_q) ?
+                        sync_lookup_req_tag_q : req_tag_i;
     assign miss_addr_o = {
-        req_phys_addr_i[ADDR_WIDTH-1:LINE_OFFSET_BITS],
+        selected_miss_phys_addr[ADDR_WIDTH-1:LINE_OFFSET_BITS],
         {LINE_OFFSET_BITS{1'b0}}
     };
-    assign miss_aged_o = req_aged_i;
-    assign fill_ready_o = detached_fill_enabled &&
-                          (state_q == STATE_RUN) &&
-                          !invalidate_valid_i && invalidate_quiescent;
+    assign miss_aged_o = ((SYNC_TAG_LOOKUP != 0) &&
+                          sync_lookup_valid_q) ?
+                         sync_lookup_aged_q : req_aged_i;
+    assign fill_ready_o = (SYNC_TAG_LOOKUP != 0) ?
+                          (detached_fill_enabled && sync_fill_probe_q) :
+                          (detached_fill_enabled &&
+                           (state_q == STATE_RUN) &&
+                           !invalidate_valid_i && invalidate_quiescent);
 
     assign mem_valid_o = (state_q == STATE_REFILL) ||
                          (state_q == STATE_ACCESS);
@@ -492,7 +718,9 @@ module openrv64_l1_cache #(
     // the store was accepted.  Merge once, then present the same full-width
     // write data to every way; only access_way_q receives a write enable.
     always @* begin
-        access_write_value = access_resident_data;
+        access_write_value = (SYNC_TAG_LOOKUP != 0) ?
+                             access_resident_data_q :
+                             access_resident_data;
         for (access_write_byte = 0; access_write_byte < DATA_BYTES;
              access_write_byte = access_write_byte + 1) begin
             if (request_wstrb_q[access_write_byte])
@@ -500,6 +728,45 @@ module openrv64_l1_cache #(
                     request_wdata_q[8*access_write_byte +: 8];
         end
     end
+
+    genvar tag_way;
+    generate
+        if (SYNC_TAG_LOOKUP != 0) begin : g_sync_tag_storage
+            for (tag_way = 0; tag_way < WAYS;
+                 tag_way = tag_way + 1) begin : g_tag_ways
+                // Exactly one registered read port and one fill write port
+                // per way.  Detached misses guarantee that STATE_REFILL is
+                // unreachable in this configuration.
+                (* ram_style = "block", syn_ramstyle = "block_ram" *)
+                reg [TAG_BITS-1:0] tag_q [0:SETS-1];
+
+                always @(posedge clk_i) begin
+                    if (sync_tag_read_fire)
+                        sync_tag_read_q[tag_way] <=
+                            tag_q[sync_tag_read_set];
+
+                    if (fill_fire &&
+                        (fill_way == WAY_INDEX_WIDTH'(tag_way)))
+                        tag_q[fill_set] <= fill_tag;
+                end
+            end
+        end else begin : g_legacy_tag_storage
+            for (tag_way = 0; tag_way < WAYS;
+                 tag_way = tag_way + 1) begin : g_tag_ways
+                always @(posedge clk_i) begin
+                    if (fill_fire &&
+                        (fill_way == WAY_INDEX_WIDTH'(tag_way)))
+                        legacy_tag_q[tag_way][fill_set] <= fill_tag;
+
+                    if ((state_q == STATE_REFILL) && mem_ready_i &&
+                        !mem_error_i && refill_last_beat &&
+                        (refill_way_q == WAY_INDEX_WIDTH'(tag_way)))
+                        legacy_tag_q[tag_way][refill_set_q] <=
+                            refill_tag_q;
+                end
+            end
+        end
+    endgenerate
 
     genvar data_way;
     genvar data_bank;
@@ -598,6 +865,42 @@ module openrv64_l1_cache #(
             response_error_q <= 1'b0;
             write_response_valid_q <= 1'b0;
             write_response_tag_q <= {REQ_TAG_WIDTH{1'b0}};
+            access_resident_data_q <= {DATA_WIDTH{1'b0}};
+            sync_lookup_valid_q <= 1'b0;
+            sync_lookup_classified_q <= 1'b0;
+            sync_lookup_req_tag_q <= {REQ_TAG_WIDTH{1'b0}};
+            sync_lookup_write_q <= 1'b0;
+            sync_lookup_cacheable_q <= 1'b0;
+            sync_lookup_prefetch_q <= 1'b0;
+            sync_lookup_aged_q <= 1'b0;
+            sync_lookup_separate_write_resp_q <= 1'b0;
+            sync_lookup_addr_q <= {ADDR_WIDTH{1'b0}};
+            sync_lookup_phys_addr_q <= {ADDR_WIDTH{1'b0}};
+            sync_lookup_wdata_q <= {DATA_WIDTH{1'b0}};
+            sync_lookup_wstrb_q <= {DATA_BYTES{1'b0}};
+            sync_lookup_set_q <= 0;
+            sync_lookup_refill_index_q <= 0;
+            sync_lookup_refill_word_q <= 0;
+            sync_lookup_tag_q <= 0;
+            sync_lookup_ideal_valid_q <= 1'b0;
+            sync_lookup_ideal_data_q <= {DATA_WIDTH{1'b0}};
+            sync_lookup_valid_bits_q <= {WAYS{1'b0}};
+            sync_lookup_aged_bits_q <= {WAYS{1'b0}};
+            sync_lookup_replace_q <= 0;
+            sync_lookup_hit_q <= 1'b0;
+            sync_lookup_way_q <= 0;
+            sync_lookup_victim_way_q <= 0;
+            sync_fill_probe_q <= 1'b0;
+            sync_fill_set_q <= 0;
+            sync_fill_tag_q <= 0;
+            sync_fill_valid_bits_q <= {WAYS{1'b0}};
+            sync_fill_aged_bits_q <= {WAYS{1'b0}};
+            sync_fill_replace_q <= 0;
+            sync_invalidate_probe_q <= 1'b0;
+            sync_invalidate_addr_q <= {ADDR_WIDTH{1'b0}};
+            sync_invalidate_set_q <= 0;
+            sync_invalidate_tag_q <= 0;
+            sync_invalidate_valid_bits_q <= {WAYS{1'b0}};
             for (set_index = 0; set_index < SETS;
                  set_index = set_index + 1)
                 replace_q[set_index] <= 0;
@@ -610,13 +913,132 @@ module openrv64_l1_cache #(
                     {DIRTY_TIMESTAMP_WIDTH{1'b0}};
             end
         end else begin
-            if (response_fire)
+            if (buffered_response_fire)
                 response_valid_q <= 1'b0;
             if (write_response_valid_q && write_resp_ready_i)
                 write_response_valid_q <= 1'b0;
 
-            for (age_port = 0; age_port < 4;
-                 age_port = age_port + 1) begin
+            if ((SYNC_TAG_LOOKUP != 0) && sync_lookup_valid_q &&
+                !sync_lookup_classified_q && !sync_lookup_consume) begin
+                sync_lookup_classified_q <= 1'b1;
+                sync_lookup_hit_q <= sync_lookup_hit_comb;
+                sync_lookup_way_q <= sync_lookup_way_comb;
+                sync_lookup_victim_way_q <=
+                    sync_lookup_victim_way_comb;
+            end
+            if ((SYNC_TAG_LOOKUP != 0) && sync_lookup_consume)
+                sync_lookup_valid_q <= 1'b0;
+
+            // A backpressured hit is copied out of the SRAM result stage.
+            // This frees the sole tag-read port for coherence probes without
+            // changing the externally visible valid/ready behavior.
+            if ((SYNC_TAG_LOOKUP != 0) &&
+                sync_lookup_response_spill) begin
+                response_valid_q <= 1'b1;
+                response_tag_q <= sync_lookup_req_tag_q;
+                response_hit_q <= 1'b0;
+                response_data_q <= sync_lookup_hit_response ?
+                                   sync_lookup_hit_data :
+                                   sync_lookup_ideal_data_q;
+                response_error_q <= 1'b0;
+            end
+
+            if ((SYNC_TAG_LOOKUP != 0) && sync_lookup_response &&
+                sync_lookup_consume) begin
+                if (sync_lookup_hit_response) begin
+                    replace_q[sync_lookup_set_q] <=
+                        (sync_lookup_way_comb == LAST_WAY) ? 0 :
+                        sync_lookup_way_comb + 1'b1;
+                    if (!sync_lookup_prefetch_q)
+                        aged_q[line_index_of(
+                            sync_lookup_set_q,
+                            sync_lookup_way_comb)] <= 1'b0;
+                    else if (sync_lookup_aged_q)
+                        aged_q[line_index_of(
+                            sync_lookup_set_q,
+                            sync_lookup_way_comb)] <= 1'b1;
+                end
+            end
+
+            if ((SYNC_TAG_LOOKUP != 0) && request_fire) begin
+                sync_lookup_valid_q <= 1'b1;
+                sync_lookup_classified_q <= 1'b0;
+                sync_lookup_req_tag_q <= req_tag_i;
+                sync_lookup_write_q <= req_write_i;
+                sync_lookup_cacheable_q <= req_cacheable_i;
+                sync_lookup_prefetch_q <= req_prefetch_i;
+                sync_lookup_aged_q <= req_aged_i;
+                sync_lookup_separate_write_resp_q <=
+                    req_separate_write_resp_i;
+                sync_lookup_addr_q <= req_addr_i;
+                sync_lookup_phys_addr_q <= req_phys_addr_i;
+                sync_lookup_wdata_q <= req_wdata_i;
+                sync_lookup_wstrb_q <= req_wstrb_i;
+                sync_lookup_set_q <= accept_set;
+                sync_lookup_refill_index_q <= accept_refill_index;
+                sync_lookup_refill_word_q <= accept_refill_word;
+                sync_lookup_tag_q <= req_phys_addr_i[
+                    ADDR_WIDTH-1:LINE_OFFSET_BITS + SET_BITS];
+                sync_lookup_ideal_valid_q <=
+                    (IDEAL_REFILLS != 0) && ideal_refill_valid_i;
+                sync_lookup_ideal_data_q <= ideal_refill_data_i;
+                sync_lookup_replace_q <= replace_q[accept_set];
+                for (way_index = 0; way_index < WAYS;
+                     way_index = way_index + 1) begin
+                    sync_lookup_valid_bits_q[way_index] <=
+                        valid_q[line_index_of(
+                            accept_set,
+                            way_index[WAY_INDEX_WIDTH-1:0])];
+                    sync_lookup_aged_bits_q[way_index] <=
+                        aged_q[line_index_of(
+                            accept_set,
+                            way_index[WAY_INDEX_WIDTH-1:0])];
+                end
+            end
+
+            if (sync_fill_launch) begin
+                sync_fill_probe_q <= 1'b1;
+                sync_fill_set_q <= set_index_of(fill_addr_i);
+                sync_fill_tag_q <= fill_addr_i[
+                    ADDR_WIDTH-1:LINE_OFFSET_BITS + SET_BITS];
+                sync_fill_replace_q <=
+                    replace_q[set_index_of(fill_addr_i)];
+                for (way_index = 0; way_index < WAYS;
+                     way_index = way_index + 1) begin
+                    sync_fill_valid_bits_q[way_index] <=
+                        valid_q[line_index_of(
+                            set_index_of(fill_addr_i),
+                            way_index[WAY_INDEX_WIDTH-1:0])];
+                    sync_fill_aged_bits_q[way_index] <=
+                        aged_q[line_index_of(
+                            set_index_of(fill_addr_i),
+                            way_index[WAY_INDEX_WIDTH-1:0])];
+                end
+            end
+            if ((SYNC_TAG_LOOKUP != 0) && fill_fire)
+                sync_fill_probe_q <= 1'b0;
+
+            if (sync_invalidate_launch) begin
+                sync_invalidate_probe_q <= 1'b1;
+                sync_invalidate_addr_q <= invalidate_addr_i;
+                sync_invalidate_set_q <=
+                    set_index_of(invalidate_addr_i);
+                sync_invalidate_tag_q <= invalidate_addr_i[
+                    ADDR_WIDTH-1:LINE_OFFSET_BITS + SET_BITS];
+                for (way_index = 0; way_index < WAYS;
+                     way_index = way_index + 1)
+                    sync_invalidate_valid_bits_q[way_index] <=
+                        valid_q[line_index_of(
+                            set_index_of(invalidate_addr_i),
+                            way_index[WAY_INDEX_WIDTH-1:0])];
+            end
+            if ((SYNC_TAG_LOOKUP != 0) && invalidate_valid_i &&
+                invalidate_ready_o && !invalidate_all_i)
+                sync_invalidate_probe_q <= 1'b0;
+
+            if (SYNC_TAG_LOOKUP == 0) begin
+              for (age_port = 0; age_port < 4;
+                   age_port = age_port + 1) begin
                 if (age_valid_i[age_port]) begin
                     for (age_way = 0; age_way < WAYS;
                          age_way = age_way + 1) begin
@@ -624,10 +1046,8 @@ module openrv64_l1_cache #(
                                 set_index_of(age_addr_i[
                                     age_port*ADDR_WIDTH +: ADDR_WIDTH]),
                                 age_way[WAY_INDEX_WIDTH-1:0])] &&
-                            tag_q[line_index_of(
-                                set_index_of(age_addr_i[
-                                    age_port*ADDR_WIDTH +: ADDR_WIDTH]),
-                                age_way[WAY_INDEX_WIDTH-1:0])] ==
+                            legacy_tag_q[age_way][set_index_of(age_addr_i[
+                                age_port*ADDR_WIDTH +: ADDR_WIDTH])] ==
                             age_addr_i[age_port*ADDR_WIDTH +
                                        LINE_OFFSET_BITS + SET_BITS +:
                                        TAG_BITS])
@@ -637,9 +1057,9 @@ module openrv64_l1_cache #(
                                 age_way[WAY_INDEX_WIDTH-1:0])] <= 1'b1;
                     end
                 end
+              end
             end
             if (fill_fire) begin
-                tag_q[fill_line] <= fill_tag;
                 valid_q[fill_line] <= 1'b1;
                 aged_q[fill_line] <= fill_aged_i;
                 mesi_q[fill_line] <= MESI_EXCLUSIVE;
@@ -667,32 +1087,83 @@ module openrv64_l1_cache #(
                             for (way_index = 0; way_index < WAYS;
                                  way_index = way_index + 1) begin
                                 if (valid_q[line_index_of(
-                                        invalidate_set,
+                                        (SYNC_TAG_LOOKUP != 0) ?
+                                            sync_invalidate_set_q :
+                                            invalidate_set,
                                         way_index[WAY_INDEX_WIDTH-1:0])] &&
-                                    tag_q[line_index_of(
-                                        invalidate_set,
-                                        way_index[WAY_INDEX_WIDTH-1:0])] ==
-                                    invalidate_tag) begin
+                                    (((SYNC_TAG_LOOKUP != 0) &&
+                                      sync_invalidate_valid_bits_q[way_index] &&
+                                      (sync_tag_read_q[way_index] ==
+                                       sync_invalidate_tag_q)) ||
+                                     ((SYNC_TAG_LOOKUP == 0) &&
+                                      (legacy_tag_q[way_index][invalidate_set] ==
+                                       invalidate_tag)))) begin
                                     valid_q[line_index_of(
-                                        invalidate_set,
+                                        (SYNC_TAG_LOOKUP != 0) ?
+                                            sync_invalidate_set_q :
+                                            invalidate_set,
                                         way_index[WAY_INDEX_WIDTH-1:0])] <=
                                         1'b0;
                                     aged_q[line_index_of(
-                                        invalidate_set,
+                                        (SYNC_TAG_LOOKUP != 0) ?
+                                            sync_invalidate_set_q :
+                                            invalidate_set,
                                         way_index[WAY_INDEX_WIDTH-1:0])] <=
                                         1'b0;
                                     mesi_q[line_index_of(
-                                        invalidate_set,
+                                        (SYNC_TAG_LOOKUP != 0) ?
+                                            sync_invalidate_set_q :
+                                            invalidate_set,
                                         way_index[WAY_INDEX_WIDTH-1:0])] <=
                                         MESI_INVALID;
                                     dirty_timestamp_q[line_index_of(
-                                        invalidate_set,
+                                        (SYNC_TAG_LOOKUP != 0) ?
+                                            sync_invalidate_set_q :
+                                            invalidate_set,
                                         way_index[WAY_INDEX_WIDTH-1:0])] <=
                                         {DIRTY_TIMESTAMP_WIDTH{1'b0}};
                                 end
                             end
                         end
-                    end else if (request_fire) begin
+                    end else if ((SYNC_TAG_LOOKUP != 0) &&
+                                 sync_lookup_access_fire) begin
+                        request_write_q <= sync_lookup_write_q;
+                        request_tag_q <= sync_lookup_req_tag_q;
+                        request_cacheable_q <= sync_lookup_cacheable_q;
+                        request_prefetch_q <= sync_lookup_prefetch_q;
+                        request_aged_q <= sync_lookup_aged_q;
+                        request_separate_write_resp_q <=
+                            sync_lookup_separate_write_resp_q;
+                        request_addr_q <= sync_lookup_addr_q;
+                        request_phys_addr_q <= sync_lookup_phys_addr_q;
+                        request_wdata_q <= sync_lookup_wdata_q;
+                        request_wstrb_q <= sync_lookup_wstrb_q;
+                        request_refill_word_q <=
+                            sync_lookup_refill_word_q;
+                        response_hit_q <= 1'b0;
+                        access_updates_line_q <=
+                            sync_lookup_cacheable_q &&
+                            sync_lookup_write_q &&
+                            sync_lookup_hit_comb;
+                        access_set_q <= sync_lookup_set_q;
+                        access_way_q <= sync_lookup_way_comb;
+                        access_refill_index_q <=
+                            sync_lookup_refill_index_q;
+                        access_refill_word_q <=
+                            sync_lookup_refill_word_q;
+                        access_resident_data_q <= sync_lookup_hit_data;
+                        if (sync_lookup_cacheable_q &&
+                            sync_lookup_write_q &&
+                            sync_lookup_hit_comb) begin
+                            replace_q[sync_lookup_set_q] <=
+                                (sync_lookup_way_comb == LAST_WAY) ? 0 :
+                                sync_lookup_way_comb + 1'b1;
+                            aged_q[line_index_of(
+                                sync_lookup_set_q,
+                                sync_lookup_way_comb)] <= 1'b0;
+                        end
+                        state_q <= STATE_ACCESS;
+                    end else if ((SYNC_TAG_LOOKUP == 0) && request_fire) begin
                         // Capture every field needed if this operation leaves
                         // the one-cycle hit path for refill or lower memory.
                         request_write_q <= req_write_i;
@@ -792,7 +1263,6 @@ module openrv64_l1_cache #(
                                     request_refill_word_q*DATA_WIDTH +:
                                     DATA_WIDTH];
                             if (refill_last_beat) begin
-                                tag_q[refill_line_q] <= refill_tag_q;
                                 valid_q[refill_line_q] <= 1'b1;
                                 aged_q[refill_line_q] <= request_aged_q;
                                 mesi_q[refill_line_q] <= MESI_EXCLUSIVE;
@@ -817,26 +1287,39 @@ module openrv64_l1_cache #(
                         for (way_index = 0; way_index < WAYS;
                              way_index = way_index + 1) begin
                             if (valid_q[line_index_of(
-                                    invalidate_set,
+                                    (SYNC_TAG_LOOKUP != 0) ?
+                                        sync_invalidate_set_q :
+                                        invalidate_set,
                                     way_index[WAY_INDEX_WIDTH-1:0])] &&
-                                tag_q[line_index_of(
-                                    invalidate_set,
-                                    way_index[WAY_INDEX_WIDTH-1:0])] ==
-                                invalidate_tag) begin
+                                (((SYNC_TAG_LOOKUP != 0) &&
+                                  sync_invalidate_valid_bits_q[way_index] &&
+                                  (sync_tag_read_q[way_index] ==
+                                   sync_invalidate_tag_q)) ||
+                                 ((SYNC_TAG_LOOKUP == 0) &&
+                                  (legacy_tag_q[way_index][invalidate_set] ==
+                                   invalidate_tag)))) begin
                                 valid_q[line_index_of(
-                                    invalidate_set,
+                                    (SYNC_TAG_LOOKUP != 0) ?
+                                        sync_invalidate_set_q :
+                                        invalidate_set,
                                     way_index[WAY_INDEX_WIDTH-1:0])] <=
                                     1'b0;
                                 aged_q[line_index_of(
-                                    invalidate_set,
+                                    (SYNC_TAG_LOOKUP != 0) ?
+                                        sync_invalidate_set_q :
+                                        invalidate_set,
                                     way_index[WAY_INDEX_WIDTH-1:0])] <=
                                     1'b0;
                                 mesi_q[line_index_of(
-                                    invalidate_set,
+                                    (SYNC_TAG_LOOKUP != 0) ?
+                                        sync_invalidate_set_q :
+                                        invalidate_set,
                                     way_index[WAY_INDEX_WIDTH-1:0])] <=
                                     MESI_INVALID;
                                 dirty_timestamp_q[line_index_of(
-                                    invalidate_set,
+                                    (SYNC_TAG_LOOKUP != 0) ?
+                                        sync_invalidate_set_q :
+                                        invalidate_set,
                                     way_index[WAY_INDEX_WIDTH-1:0])] <=
                                     {DIRTY_TIMESTAMP_WIDTH{1'b0}};
                             end
@@ -848,7 +1331,7 @@ module openrv64_l1_cache #(
                          */
                         if (request_phys_addr_q[
                                 ADDR_WIDTH-1:LINE_OFFSET_BITS] ==
-                            invalidate_addr_i[
+                            selected_invalidate_addr[
                                 ADDR_WIDTH-1:LINE_OFFSET_BITS])
                             access_updates_line_q <= 1'b0;
                     end
@@ -872,7 +1355,7 @@ module openrv64_l1_cache #(
                     // line buffer as well as on its eventual acceptance edge.
                     // Detached misses leave through miss_valid_o; hits use
                     // the normal response register.
-                    if (request_fire) begin
+                    if ((SYNC_TAG_LOOKUP == 0) && request_fire) begin
                         request_refill_word_q <= lookup_refill_word;
                         if (detached_miss_candidate) begin
                             response_hit_q <= 1'b0;
@@ -916,6 +1399,11 @@ module openrv64_l1_cache #(
         if ((DETACH_READ_MISSES != 0) &&
             (DETACH_READ_MISSES != 1))
             $fatal(1, "L1 detached-read-miss mode must be zero or one");
+        if ((SYNC_TAG_LOOKUP != 0) && (SYNC_TAG_LOOKUP != 1))
+            $fatal(1, "L1 synchronous-tag mode must be zero or one");
+        if ((SYNC_TAG_LOOKUP != 0) && (DETACH_READ_MISSES == 0))
+            $fatal(1,
+                "L1 synchronous-tag mode currently requires detached misses");
         if ((DETACH_READ_MISSES != 0) &&
             (REFILLS_PER_LINE != 1))
             $fatal(1,
@@ -927,6 +1415,11 @@ module openrv64_l1_cache #(
             !req_write_i)
             $fatal(1,
                 "L1 separate write response requested for a read");
+
+    always @(posedge clk_i)
+        if (rst_ni && (SYNC_TAG_LOOKUP != 0) && (|age_valid_i))
+            $fatal(1,
+                "L1 synchronous-tag mode does not support parallel age ports");
 `endif
 
 endmodule

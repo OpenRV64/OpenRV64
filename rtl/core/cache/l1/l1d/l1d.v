@@ -15,6 +15,7 @@ module openrv64_l1d_ccx #(
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
+    parameter integer SYNC_TAG_LOOKUP = 1,
     parameter integer FILL_BUFFER_LINES = 8,
     parameter integer DEMAND_MSHRS = 3,
     parameter integer STORE_BUFFER_LINES = 8,
@@ -683,14 +684,19 @@ module openrv64_l1d_ccx #(
         freeloader_valid_q[FREELOADER_STAGES-1];
     wire demand_response_valid;
     wire demand_response_fire;
+    wire response_tag_available = (SYNC_TAG_LOOKUP != 0) ||
+                                  !response_tag_empty;
     wire normal_response_candidate = l1_resp_valid &&
-        !response_tag_empty;
+                                     response_tag_available;
     wire [REQ_TAG_WIDTH-1:0] normal_response_tag;
+    wire [REQ_TAG_WIDTH-1:0] response_fifo_head_tag;
+    assign normal_response_tag = (SYNC_TAG_LOOKUP != 0) ?
+                                 l1_resp_tag : response_fifo_head_tag;
     wire demand_overlay_needed =
         demand_waiter_response_found_r &&
         tag_overlay_needed_q[demand_waiter_response_tag_r];
     wire normal_overlay_needed =
-        !response_tag_empty &&
+        normal_response_candidate &&
         tag_overlay_needed_q[normal_response_tag];
     wire demand_overlay_read_match =
         tag_overlay_read_valid_q &&
@@ -744,6 +750,24 @@ module openrv64_l1d_ccx #(
     wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
         normal_overlay_strb =
         normal_overlay_data[`OPENRV64_CCX_LINE_STRB_WIDTH-1:0];
+    // In synchronous-tag mode the miss leaves the shared array one cycle
+    // after admission, when req_* may already describe a younger operation.
+    // The admission-time overlay bypass is therefore the authoritative dirty
+    // snapshot for MSHR allocation.
+    wire l1_miss_overlay_bypass_match =
+        tag_overlay_bypass_valid_q &&
+        (tag_overlay_bypass_tag_q == l1_miss_tag);
+    wire [TAG_OVERLAY_WIDTH-1:0] l1_miss_overlay_data =
+        ((SYNC_TAG_LOOKUP != 0) && l1_miss_overlay_bypass_match) ?
+        tag_overlay_bypass_data_q :
+        {demand_store_data_r, demand_store_strb_r};
+    wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
+        l1_miss_store_data =
+        l1_miss_overlay_data[TAG_OVERLAY_WIDTH-1 -:
+                             `OPENRV64_CCX_LINE_DATA_WIDTH];
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        l1_miss_store_strb =
+        l1_miss_overlay_data[`OPENRV64_CCX_LINE_STRB_WIDTH-1:0];
     wire normal_response_valid =
         normal_response_candidate && normal_overlay_ready;
     wire freeloader_response_ready =
@@ -780,7 +804,8 @@ module openrv64_l1d_ccx #(
         !store_buffer_full;
     wire l1_req_valid = req_valid_i && !freeloader_request &&
         !invalidate_valid_i &&
-        (!request_needs_normal_response || !response_tag_full) &&
+        (!request_needs_normal_response ||
+         (SYNC_TAG_LOOKUP != 0) || !response_tag_full) &&
         posted_store_admission_ready &&
         lock_request_ready &&
         posted_store_request_ready &&
@@ -794,7 +819,7 @@ module openrv64_l1d_ccx #(
     wire tag_overlay_write =
         l1_request_fire && request_overlay_needed;
     wire l1_resp_ready = resp_ready_i && !demand_response_valid &&
-        !response_tag_empty && normal_overlay_ready;
+        response_tag_available && normal_overlay_ready;
     wire l1_response_fire = l1_resp_valid && l1_resp_ready;
     wire demand_request_fire =
         l1_request_fire || freeloader_request_fire;
@@ -1485,9 +1510,15 @@ module openrv64_l1d_ccx #(
     end
 
     wire l1_miss_fire = l1_miss_valid && l1_miss_ready;
+    // The synchronous array response carries its own stable request tag, so
+    // it does not need admission-time ordering state.  This also avoids the
+    // invalid operation of trying to remove a newly classified miss from the
+    // tail of a FIFO while an older backpressured hit remains at its head.
     wire l1_response_tag_push =
-        l1_request_fire && !l1_miss_fire &&
-        request_needs_normal_response;
+        (SYNC_TAG_LOOKUP == 0) && l1_request_fire &&
+        request_needs_normal_response && !l1_miss_fire;
+    wire l1_response_tag_pop = (SYNC_TAG_LOOKUP == 0) &&
+                               l1_response_fire;
     openrv64_l1d_lsu_order #(
         .TAG_WIDTH(REQ_TAG_WIDTH),
         .DEPTH(REQ_DEPTH)
@@ -1496,10 +1527,10 @@ module openrv64_l1d_ccx #(
         .rst_ni(rst_ni),
         .push_i(l1_response_tag_push),
         .push_tag_i(req_tag_i),
-        .pop_i(l1_response_fire),
+        .pop_i(l1_response_tag_pop),
         .full_o(response_tag_full),
         .empty_o(response_tag_empty),
-        .head_tag_o(normal_response_tag),
+        .head_tag_o(response_fifo_head_tag),
         .count_o(response_tag_count_q)
     );
     assign l1_miss_ready =
@@ -1965,6 +1996,9 @@ module openrv64_l1d_ccx #(
         !speculation_barrier_event &&
         !(req_valid_i && req_lock_i) &&
         !atomic_active_q &&
+        !coherent_lr_reservation_request &&
+        !store_buffer_drain_request &&
+        !demand_mshr_issue_found_r &&
         !demand_load_store_conflict_r &&
         !l1_mem_valid &&
         !atomic_hot_match(prefetch_launch_addr_r) &&
@@ -2289,6 +2323,7 @@ module openrv64_l1d_ccx #(
         .REFILL_DATA_WIDTH(512),
         .REQ_TAG_WIDTH(REQ_TAG_WIDTH),
         .DETACH_READ_MISSES(1),
+        .SYNC_TAG_LOOKUP(SYNC_TAG_LOOKUP),
         .CACHE_BYTES(CACHE_BYTES),
         .LINE_BYTES(LINE_BYTES),
         .WAYS(WAYS),
@@ -2882,12 +2917,12 @@ module openrv64_l1d_ccx #(
                              `OPENRV64_CCX_LINE_STRB_WIDTH;
                          demand_alloc_merge_byte =
                              demand_alloc_merge_byte + 1) begin
-                        if (demand_store_strb_r[
+                        if (l1_miss_store_strb[
                                 demand_alloc_merge_byte]) begin
                             demand_mshr_store_data_q[
                                 demand_mshr_match_index_r][
                                 demand_alloc_merge_byte*8 +: 8] <=
-                                demand_store_data_r[
+                                l1_miss_store_data[
                                     demand_alloc_merge_byte*8 +: 8];
                             demand_mshr_store_strb_q[
                                 demand_mshr_match_index_r][
@@ -2934,10 +2969,10 @@ module openrv64_l1d_ccx #(
                         speculation_epoch_q;
                     demand_mshr_store_data_q[
                         demand_mshr_free_index_r] <=
-                        demand_store_data_r;
+                        l1_miss_store_data;
                     demand_mshr_store_strb_q[
                         demand_mshr_free_index_r] <=
-                        demand_store_strb_r;
+                        l1_miss_store_strb;
                     if (demand_prefetch_fill_hit_r) begin
                         fill_buffer_valid_q[
                             demand_prefetch_fill_index_r] <= 1'b0;
@@ -3929,7 +3964,7 @@ module openrv64_l1d_ccx #(
             ((request_txn_id_q >= PREFETCH_TXN_BASE) ||
              !main_txn_in_use_q[request_txn_id_q]))
             $fatal(1, "L1D main request lacks a reserved transaction ID");
-        if (rst_ni && l1_resp_valid &&
+        if (rst_ni && (SYNC_TAG_LOOKUP == 0) && l1_resp_valid &&
             !response_tag_empty &&
             (l1_resp_tag != normal_response_tag))
             $fatal(1, "L1D resident response tag/FIFO mismatch");

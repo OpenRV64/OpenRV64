@@ -24,6 +24,34 @@ An older 4H run, `linux-smp-4h-user-tests-ddr3-20260803T103513Z`, passed 11
 cases but skipped both futex and the separate pthread binary.  The completed
 `sw/Image.futex` runs supersede that coverage result.
 
+## L2-refactor regression rerun
+
+The dedicated L2-refactor matrix launched on 2026-08-05 completed cleanly.
+The 2H and 4H runs passed all 12 freestanding/futex cases, the separate pthread
+test, the wrapper checks, the literal `openrv64# ` prompt, and managed-run
+validation.  The 1H control reached the prompt after the expected SMP-suite
+skip.
+
+| Active harts | Result | Prompt cycles | Run ID |
+| ---: | --- | ---: | --- |
+| 1 | PASS; expected `SMP_THREADS_SKIP cpus=1` | 150,194,739 | `linux-l2-refactor-regression-1h-ddr3-20260805T123418Z` |
+| 2 | PASS; 12 passed, 0 failed, 0 skipped; pthread PASS | 155,251,823 | `linux-l2-refactor-regression-2h-ddr3-20260805T123418Z` |
+| 4 | PASS; 12 passed, 0 failed, 0 skipped; pthread PASS | 192,589,426 | `linux-l2-refactor-regression-4h-ddr3-20260805T123418Z` |
+
+All three prompt-cycle counts and target-side traffic counters are exactly
+equal to the preceding source-matched baseline.  This was not an accidental
+reuse of the old executable: the rerun captured `rtl/cache/l2/l2_native.v` as
+SHA-256
+`e46d572a4c8087835e1b4df8f3c72f1f78920b047b8effe27dad9d9e0642feee`,
+instead of the baseline hash
+`e3efde52b945ea3d6bdf1aa2cb788000202331df83813cf9d5f8215784990fed`.
+The rebuilt one-core simulator hash is
+`57e46512a2e37e2923237154d56d7b359529c56379e13eed27673d5ef3e8df7d`;
+the rebuilt shared 2H/4H simulator hash is
+`df7b09b3438d748853f27d3d9248e60bb908346a1346d617a31b9e38d556f0f4`.
+This establishes deterministic equivalence for these tests, not general proof
+that every L2 state transition is equivalent.
+
 ## Suite contents
 
 The freestanding test binary is

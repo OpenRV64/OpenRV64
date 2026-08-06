@@ -109,6 +109,9 @@ sim-ccx-4h-l1d-directory-l2: $(CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD)
 sim-l1-cache: $(L1_CACHE_SIM_BUILD)
 	vvp $(L1_CACHE_SIM_BUILD)
 
+sim-l1-sync-tag: $(L1_SYNC_TAG_SIM_BUILD)
+	vvp $(L1_SYNC_TAG_SIM_BUILD)
+
 sim-l1d-prefetch: $(L1D_PREFETCH_SIM_BUILD)
 	vvp $(L1D_PREFETCH_SIM_BUILD)
 

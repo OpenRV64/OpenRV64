@@ -167,10 +167,27 @@ module tb_l1d_prefetch;
                  resident_way = resident_way + 1) begin
                 resident_line = (address[7:6] * 4) + resident_way;
                 if (dut.u_l1d.u_l1.g_cache.u_cache
-                        .valid_q[resident_line] &&
-                    (dut.u_l1d.u_l1.g_cache.u_cache
-                        .tag_q[resident_line] == address[63:8]))
-                    l1_contains_line = 1'b1;
+                        .valid_q[resident_line]) begin
+                    case (resident_way)
+                        0: l1_contains_line =
+                            dut.u_l1d.u_l1.g_cache.u_cache
+                                .g_sync_tag_storage.g_tag_ways[0]
+                                .tag_q[address[7:6]] == address[63:8];
+                        1: l1_contains_line =
+                            dut.u_l1d.u_l1.g_cache.u_cache
+                                .g_sync_tag_storage.g_tag_ways[1]
+                                .tag_q[address[7:6]] == address[63:8];
+                        2: l1_contains_line =
+                            dut.u_l1d.u_l1.g_cache.u_cache
+                                .g_sync_tag_storage.g_tag_ways[2]
+                                .tag_q[address[7:6]] == address[63:8];
+                        3: l1_contains_line =
+                            dut.u_l1d.u_l1.g_cache.u_cache
+                                .g_sync_tag_storage.g_tag_ways[3]
+                                .tag_q[address[7:6]] == address[63:8];
+                        default: l1_contains_line = 1'b0;
+                    endcase
+                end
             end
         end
     endfunction

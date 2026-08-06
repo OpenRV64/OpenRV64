@@ -72,7 +72,8 @@
 	sim-opensbi-3p sim-opensbi-3p-platform \
 	sim-linux-3p-platform-checkpoint sim-linux-3p-platform-restore
 .PHONY: sim-linux
-.PHONY: sim-l1-cache sim-l1d-prefetch sim-l1d-demand-mshr \
+.PHONY: sim-l1-cache sim-l1-sync-tag sim-l1d-prefetch \
+	sim-l1d-demand-mshr \
 	sim-l1d-store-order \
 	sim-l1d-store-buffer sim-l1i-top sim-ccx-protocol-1h \
 	sim-ccx-protocol-2h sim-ccx-protocol-4h \
@@ -113,6 +114,7 @@ sim: sim-lsu-atomics
 sim: sim-lsu-misaligned
 sim: sim-zicclsm-context
 sim: sim-l1-cache
+sim: sim-l1-sync-tag
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr
 sim: sim-l1d-store-order sim-l1d-store-buffer

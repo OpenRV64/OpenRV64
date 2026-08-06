@@ -420,10 +420,11 @@ module tb_l1d_store_buffer;
         reset_dut();
 
         // Put the line in L1, then present a load immediately behind a posted
-        // store.  The store's array update and the load's SRAM lookup must
-        // occur on the same edge.  Both completion channels must be visible
-        // together, and same-word forwarding must return the new bytes even
-        // if the inferred RAM is read-before-write.
+        // store.  The registered tag stage lets the load enter as the store
+        // advances into its write-through access.  There is one lookup bubble
+        // so the outer dirty-byte overlay can observe the pending store.
+        // Same-word forwarding must then return the new bytes even if the
+        // inferred RAM is read-before-write.
         memory[BASE[9:6]][63:0] =
             64'h0123_4567_89ab_cdef;
         issue_load(BASE, 64'h0123_4567_89ab_cdef);
@@ -443,9 +444,14 @@ module tb_l1d_store_buffer;
         req_wstrb = 8'd0;
         req_tag = req_tag + 1'b1;
         #1;
+        wait_cycles = 0;
+        while (!req_ready && (wait_cycles < 4)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
         if (!req_ready)
             $fatal(1,
-                "resident load did not overlap posted-store array update");
+                "resident load did not follow posted-store lookup");
         @(posedge clk);
         @(negedge clk);
         req_valid = 1'b0;

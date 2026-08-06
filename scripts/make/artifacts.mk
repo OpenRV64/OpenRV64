@@ -24,6 +24,7 @@ CCX_COHERENT_PROTOCOL_4H_SIM_BUILD := \
 CCX_4H_L1D_DIRECTORY_L2_SIM_BUILD := \
 	sim/ccx_4h_l1d_directory_l2_tb.vvp
 L1_CACHE_SIM_BUILD := sim/l1_cache_tb.vvp
+L1_SYNC_TAG_SIM_BUILD := sim/l1_sync_tag_tb.vvp
 L1D_PREFETCH_SIM_BUILD := sim/l1d_prefetch_tb.vvp
 L1D_DEMAND_MSHR_SIM_BUILD := sim/l1d_demand_mshr_tb.vvp
 L1D_STORE_ORDER_SIM_BUILD := sim/l1d_store_order_tb.vvp
