@@ -110,6 +110,9 @@ module openrv64_ccx_l2_native #(
     localparam integer TAG_BITS = ADDR_WIDTH - LINE_OFFSET_BITS - SET_BITS;
     localparam integer SRAM_TAG_BITS =
         TAG_BITS + PTE_GENERATION_BITS;
+    localparam integer SRAM_PAYLOAD_WIDTH =
+        `OPENRV64_CCX_LINE_DATA_WIDTH +
+        `OPENRV64_CCX_LINE_STRB_WIDTH;
     localparam integer SET_INDEX_WIDTH = (SETS > 1) ? $clog2(SETS) : 1;
     localparam integer WAY_INDEX_WIDTH = (WAYS > 1) ? $clog2(WAYS) : 1;
     localparam integer MSHR_INDEX_WIDTH =
@@ -167,20 +170,18 @@ module openrv64_ccx_l2_native #(
 
     reg [WAYS-1:0] valid_q [0:SETS-1];
     reg [WAYS-1:0] dirty_q [0:SETS-1];
-    // Dirty data is tracked at byte granularity.  A resident line always has
-    // complete data, so its eventual eviction may update only the bytes that
-    // changed instead of rewriting all 64 bytes.
-    reg [WAYS*`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
-        dirty_strb_q [0:SETS-1];
+    // dirty_q is the fast summary bit.  The exact byte mask is stored beside
+    // the complete line in the data SRAM payload.
     reg [WAYS-1:0] reserved_q [0:SETS-1];
     reg [WAY_INDEX_WIDTH-1:0] replace_q [0:SETS-1];
     reg [PTE_GENERATION_BITS-1:0] pte_generation_q;
-    wire [WAYS*`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] sram_way_data;
+    wire [WAYS*SRAM_PAYLOAD_WIDTH-1:0] sram_way_payload;
     wire [WAYS*SRAM_TAG_BITS-1:0] sram_way_tag;
     reg sram_write_valid_r;
     reg [SET_INDEX_WIDTH-1:0] sram_write_set_r;
     reg [WAY_INDEX_WIDTH-1:0] sram_write_way_r;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] sram_write_data_r;
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] sram_write_strb_r;
     reg sram_write_tag_r;
     reg [SRAM_TAG_BITS-1:0] sram_write_tag_data_r;
     wire lookup_sram_write_blocked;
@@ -263,6 +264,8 @@ module openrv64_ccx_l2_native #(
         mshr_victim_strb_q [0:MSHR_ENTRIES-1];
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
         mshr_replay_data_q [0:MSHR_ENTRIES-1];
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        mshr_replay_strb_q [0:MSHR_ENTRIES-1];
     reg [WAITER_COUNT_WIDTH-1:0] mshr_waiter_count_q [0:MSHR_ENTRIES-1];
     reg [WAITER_INDEX_WIDTH-1:0] mshr_replay_q [0:MSHR_ENTRIES-1];
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0]
@@ -381,6 +384,7 @@ module openrv64_ccx_l2_native #(
     reg [MSHR_INDEX_WIDTH-1:0] replay_candidate_mshr_r;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] lookup_write_data_r;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] replay_write_data_r;
+    reg [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] replay_write_strb_r;
     reg wdata_match_found_r;
     reg wdata_match_multiple_r;
     reg [COMMAND_INDEX_WIDTH-1:0] wdata_match_index_r;
@@ -497,10 +501,15 @@ module openrv64_ccx_l2_native #(
         lookup_addr_q[LINE_OFFSET_BITS +: SET_INDEX_WIDTH];
     wire [TAG_BITS-1:0] lookup_tag =
         lookup_addr_q[ADDR_WIDTH-1:LINE_OFFSET_BITS + SET_BITS];
+    wire [SRAM_PAYLOAD_WIDTH-1:0] lookup_hit_payload =
+        sram_way_payload[
+            lookup_hit_way_r*SRAM_PAYLOAD_WIDTH +:
+            SRAM_PAYLOAD_WIDTH];
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] lookup_hit_data =
-        sram_way_data[
-            lookup_hit_way_r*`OPENRV64_CCX_LINE_DATA_WIDTH +:
-            `OPENRV64_CCX_LINE_DATA_WIDTH];
+        lookup_hit_payload[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH];
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0] lookup_hit_dirty_strb =
+        lookup_hit_payload[`OPENRV64_CCX_LINE_DATA_WIDTH +:
+                           `OPENRV64_CCX_LINE_STRB_WIDTH];
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] lookup_shifted_data =
         lookup_hit_data >> (lookup_addr_q[5:3] * 64);
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] lookup_read_data =
@@ -519,10 +528,16 @@ module openrv64_ccx_l2_native #(
             ({{448{1'b0}},
               lookup_dirty_victim_shifted_data[63:0]} <<
              (lookup_addr_q[5:3] * 64));
+    wire [SRAM_PAYLOAD_WIDTH-1:0] lookup_victim_payload =
+        sram_way_payload[
+            victim_way_r*SRAM_PAYLOAD_WIDTH +:
+            SRAM_PAYLOAD_WIDTH];
     wire [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] lookup_victim_data =
-        sram_way_data[
-            victim_way_r*`OPENRV64_CCX_LINE_DATA_WIDTH +:
-            `OPENRV64_CCX_LINE_DATA_WIDTH];
+        lookup_victim_payload[0 +: `OPENRV64_CCX_LINE_DATA_WIDTH];
+    wire [`OPENRV64_CCX_LINE_STRB_WIDTH-1:0]
+        lookup_victim_dirty_strb =
+            lookup_victim_payload[`OPENRV64_CCX_LINE_DATA_WIDTH +:
+                                  `OPENRV64_CCX_LINE_STRB_WIDTH];
     wire [TAG_BITS-1:0] lookup_victim_tag =
         sram_way_tag[victim_way_r*SRAM_TAG_BITS +: TAG_BITS];
 
@@ -1268,6 +1283,8 @@ module openrv64_ccx_l2_native #(
                     lookup_wdata_q[8*lookup_write_byte +: 8];
 
         replay_write_data_r = mshr_replay_data_q[replay_mshr];
+        replay_write_strb_r = mshr_replay_strb_q[replay_mshr] |
+            waiter_wstrb_q[replay_waiter_index];
         for (replay_write_byte = 0;
              replay_write_byte < `OPENRV64_CCX_LINE_STRB_WIDTH;
              replay_write_byte = replay_write_byte + 1)
@@ -1294,6 +1311,7 @@ module openrv64_ccx_l2_native #(
         sram_write_set_r = 0;
         sram_write_way_r = 0;
         sram_write_data_r = 0;
+        sram_write_strb_r = 0;
         sram_write_tag_r = 1'b0;
         sram_write_tag_data_r = 0;
 
@@ -1302,6 +1320,7 @@ module openrv64_ccx_l2_native #(
             sram_write_set_r = mshr_set_q[bus_response_mshr];
             sram_write_way_r = mshr_way_q[bus_response_mshr];
             sram_write_data_r = bus_resp_rdata_i;
+            sram_write_strb_r = 0;
             sram_write_tag_r = 1'b1;
             sram_write_tag_data_r = {
                 mshr_pte_generation_q[bus_response_mshr],
@@ -1312,6 +1331,7 @@ module openrv64_ccx_l2_native #(
             sram_write_set_r = mshr_set_q[replay_mshr];
             sram_write_way_r = mshr_way_q[replay_mshr];
             sram_write_data_r = replay_write_data_r;
+            sram_write_strb_r = replay_write_strb_r;
         end else if (lookup_dispatch_r &&
                      (lookup_action_r == LOOKUP_HIT) &&
                      lookup_is_write) begin
@@ -1319,6 +1339,8 @@ module openrv64_ccx_l2_native #(
             sram_write_set_r = lookup_set;
             sram_write_way_r = lookup_hit_way_r;
             sram_write_data_r = lookup_write_data_r;
+            sram_write_strb_r = lookup_hit_dirty_strb |
+                lookup_wstrb_q;
         end
     end
 
@@ -1329,21 +1351,21 @@ module openrv64_ccx_l2_native #(
             openrv64_l2_sram_way #(
                 .SETS(SETS),
                 .SET_INDEX_WIDTH(SET_INDEX_WIDTH),
-                .DATA_WIDTH(`OPENRV64_CCX_LINE_DATA_WIDTH),
+                .DATA_WIDTH(SRAM_PAYLOAD_WIDTH),
                 .TAG_WIDTH(SRAM_TAG_BITS)
             ) u_sram (
                 .clk_i(clk_i),
                 .read_enable_i(lookup_sram_read),
                 .read_set_i(lookup_sram_read_set),
-                .read_data_o(sram_way_data[
-                    sram_way*`OPENRV64_CCX_LINE_DATA_WIDTH +:
-                    `OPENRV64_CCX_LINE_DATA_WIDTH]),
+                .read_data_o(sram_way_payload[
+                    sram_way*SRAM_PAYLOAD_WIDTH +:
+                    SRAM_PAYLOAD_WIDTH]),
                 .read_tag_o(sram_way_tag[
                     sram_way*SRAM_TAG_BITS +: SRAM_TAG_BITS]),
                 .write_enable_i(sram_write_valid_r &&
                     (sram_write_way_r == WAY_INDEX_WIDTH'(sram_way))),
                 .write_set_i(sram_write_set_r),
-                .write_data_i(sram_write_data_r),
+                .write_data_i({sram_write_strb_r, sram_write_data_r}),
                 .write_tag_i(sram_write_tag_r),
                 .write_tag_data_i(sram_write_tag_data_r)
             );
@@ -1441,7 +1463,6 @@ module openrv64_ccx_l2_native #(
                  set_reset_index = set_reset_index + 1) begin
                 valid_q[set_reset_index] <= 0;
                 dirty_q[set_reset_index] <= 0;
-                dirty_strb_q[set_reset_index] <= 0;
                 reserved_q[set_reset_index] <= 0;
                 replace_q[set_reset_index] <= 0;
             end
@@ -1457,6 +1478,7 @@ module openrv64_ccx_l2_native #(
                 mshr_pte_generation_q[reset_index] <= 0;
                 mshr_bus_cacheable_q[reset_index] <= 1'b0;
                 mshr_victim_strb_q[reset_index] <= 0;
+                mshr_replay_strb_q[reset_index] <= 0;
                 mshr_coh_action_q[reset_index] <= COH_ACTION_ALLOCATE;
                 mshr_post_probe_state_q[reset_index] <= MSHR_IDLE;
                 mshr_directory_entry_q[reset_index] <= 0;
@@ -1644,15 +1666,6 @@ module openrv64_ccx_l2_native #(
                 if ((lookup_action_r == LOOKUP_HIT) &&
                     lookup_is_write) begin
                     dirty_q[lookup_set][lookup_hit_way_r] <= 1'b1;
-                    dirty_strb_q[lookup_set][
-                        lookup_hit_way_r*
-                        `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                        `OPENRV64_CCX_LINE_STRB_WIDTH] <=
-                        dirty_strb_q[lookup_set][
-                            lookup_hit_way_r*
-                            `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                            `OPENRV64_CCX_LINE_STRB_WIDTH] |
-                        lookup_wstrb_q;
                 end
             end else if (hit_enqueue) begin
                 hit_valid_q <= 1'b0;
@@ -1717,6 +1730,7 @@ module openrv64_ccx_l2_native #(
                 mshr_waiter_count_q[mshr_free_index_r] <= 1;
                 mshr_replay_q[mshr_free_index_r] <= 0;
                 mshr_error_q[mshr_free_index_r] <= 1'b0;
+                mshr_replay_strb_q[mshr_free_index_r] <= 0;
                 mshr_private_fill_q[mshr_free_index_r] <=
                     lookup_private_fill;
                 if (lookup_action_r == LOOKUP_COH_PROBE) begin
@@ -1729,6 +1743,8 @@ module openrv64_ccx_l2_native #(
                             pte_generation_q;
                         mshr_replay_data_q[mshr_free_index_r] <=
                             lookup_hit_data;
+                        mshr_replay_strb_q[mshr_free_index_r] <=
+                            lookup_hit_dirty_strb;
                         mshr_post_probe_state_q[mshr_free_index_r] <=
                             MSHR_REPLAY;
                         reserved_q[lookup_set][lookup_hit_way_r] <= 1'b1;
@@ -1744,10 +1760,7 @@ module openrv64_ccx_l2_native #(
                         mshr_victim_data_q[mshr_free_index_r] <=
                             lookup_victim_data;
                         mshr_victim_strb_q[mshr_free_index_r] <=
-                            dirty_strb_q[lookup_set][
-                                victim_way_r*
-                                `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                                `OPENRV64_CCX_LINE_STRB_WIDTH];
+                            lookup_victim_dirty_strb;
                         reserved_q[lookup_set][victim_way_r] <= 1'b1;
                         if (valid_q[lookup_set][victim_way_r] &&
                             dirty_q[lookup_set][victim_way_r])
@@ -1826,10 +1839,7 @@ module openrv64_ccx_l2_native #(
                     mshr_victim_data_q[mshr_free_index_r] <=
                         lookup_victim_data;
                     mshr_victim_strb_q[mshr_free_index_r] <=
-                        dirty_strb_q[lookup_set][
-                            victim_way_r*
-                            `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                            `OPENRV64_CCX_LINE_STRB_WIDTH];
+                        lookup_victim_dirty_strb;
                     reserved_q[lookup_set][victim_way_r] <= 1'b1;
                     if (valid_q[lookup_set][victim_way_r] &&
                         dirty_q[lookup_set][victim_way_r])
@@ -1913,10 +1923,6 @@ module openrv64_ccx_l2_native #(
                                [mshr_way_q[bus_response_mshr]] <= 1'b0;
                         dirty_q[mshr_set_q[bus_response_mshr]]
                                [mshr_way_q[bus_response_mshr]] <= 1'b0;
-                        dirty_strb_q[mshr_set_q[bus_response_mshr]][
-                            mshr_way_q[bus_response_mshr]*
-                            `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                            `OPENRV64_CCX_LINE_STRB_WIDTH] <= 0;
                         mshr_state_q[bus_response_mshr] <= MSHR_NEED_FILL;
                     end
                 end else if (bus_response_action == BUS_ACTION_FILL) begin
@@ -1926,14 +1932,11 @@ module openrv64_ccx_l2_native #(
                     end else begin
                         mshr_replay_data_q[bus_response_mshr] <=
                             bus_resp_rdata_i;
+                        mshr_replay_strb_q[bus_response_mshr] <= 0;
                         valid_q[mshr_set_q[bus_response_mshr]]
                                [mshr_way_q[bus_response_mshr]] <= 1'b1;
                         dirty_q[mshr_set_q[bus_response_mshr]]
                                [mshr_way_q[bus_response_mshr]] <= 1'b0;
-                        dirty_strb_q[mshr_set_q[bus_response_mshr]][
-                            mshr_way_q[bus_response_mshr]*
-                            `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                            `OPENRV64_CCX_LINE_STRB_WIDTH] <= 0;
                         replace_q[mshr_set_q[bus_response_mshr]] <=
                             (mshr_way_q[bus_response_mshr] ==
                              WAY_INDEX_WIDTH'(WAYS - 1)) ? 0 :
@@ -1960,17 +1963,9 @@ module openrv64_ccx_l2_native #(
 
             if (replay_cache_write) begin
                 mshr_replay_data_q[replay_mshr] <= replay_write_data_r;
+                mshr_replay_strb_q[replay_mshr] <= replay_write_strb_r;
                 dirty_q[mshr_set_q[replay_mshr]]
                        [mshr_way_q[replay_mshr]] <= 1'b1;
-                dirty_strb_q[mshr_set_q[replay_mshr]][
-                    mshr_way_q[replay_mshr]*
-                    `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                    `OPENRV64_CCX_LINE_STRB_WIDTH] <=
-                    dirty_strb_q[mshr_set_q[replay_mshr]][
-                        mshr_way_q[replay_mshr]*
-                        `OPENRV64_CCX_LINE_STRB_WIDTH +:
-                        `OPENRV64_CCX_LINE_STRB_WIDTH] |
-                    waiter_wstrb_q[replay_waiter_index];
             end
 
             if (replay_enqueue) begin

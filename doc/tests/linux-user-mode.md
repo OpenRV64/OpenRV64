@@ -9,6 +9,11 @@ futex, and pthread cases passing.  The one-hart skip-path control also
 completed: the SMP launcher deliberately refuses to run the suite with fewer
 than two online CPUs and then proceeds to the shell.
 
+This matrix is also the integrated Linux regression for L2 refactors.  The 2H
+and 4H cases are the substantive coherence checks; the 1H case is only a boot
+and non-SMP control.  A PASS here does not replace the focused L2 protocol
+tests or the eventual extended FPGA stress run.
+
 | Active harts | Suite image | Suite result | Completed coverage | Evidence |
 | ---: | --- | --- | --- | --- |
 | 1 | `sw/Image.futex` | **PASS: expected suite SKIP** | No SMP workload is possible.  This validates boot and the intentional one-CPU skip path. | `linux-coherent-1h-ddr3-20260804T130744Z` |
@@ -162,3 +167,12 @@ run/run run/cfg/linux-coherent-1h-ddr3.cfg \
 For subsequent comparisons, retain the same Linux image hash, simulator,
 DDR settings, suite mode, and completion rule.  A suite PASS is integrated
 functional evidence, not a substitute for an extended FPGA meat-grinder run.
+
+Dedicated L2-refactor regression targets run the same matrix and preserve the
+purpose in each managed run's ID and `comment.txt`:
+
+```sh
+run/run run/cfg/linux-l2-refactor-regression-1h-ddr3.cfg --rebuild
+run/run run/cfg/linux-l2-refactor-regression-2h-ddr3.cfg --rebuild
+run/run run/cfg/linux-l2-refactor-regression-4h-ddr3.cfg --rebuild
+```

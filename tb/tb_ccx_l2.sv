@@ -413,9 +413,15 @@ module tb_ccx_l2;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] newest_line;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] masked_line;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] masked_store_data;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] merge_line;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] merge_store_data_0;
+    reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] merge_store_data_1;
     reg [`OPENRV64_CCX_LINE_DATA_WIDTH-1:0] scalar_response;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_0;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] masked_txn_1;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] merge_read_txn;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] merge_write_txn_0;
+    reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] merge_write_txn_1;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] early_txn_0;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] early_txn_1;
     reg [`OPENRV64_CCX_TXN_ID_WIDTH-1:0] locked_read_txn;
@@ -436,6 +442,7 @@ module tb_ccx_l2;
     integer snoop_bus_reads_before;
     localparam [63:0] MASKED_LINE_ADDR = 64'h0000_0000_0000_2000;
     localparam [63:0] SNOOP_LINE_ADDR = 64'h0000_0000_0000_3000;
+    localparam [63:0] MERGE_LINE_ADDR = 64'h0000_0000_0000_6000;
     localparam [63:0] L2_SET_STRIDE = 64'h0000_0000_0000_8000;
 
     initial begin
@@ -473,9 +480,13 @@ module tb_ccx_l2;
         masked_line = line_pattern(64'h5000_0000_0000_0000);
         masked_line[319:256] = 64'h1122_3344_aabb_ccdd;
         masked_store_data = 0;
+        merge_line = line_pattern(64'h5500_0000_0000_0000);
+        merge_store_data_0 = 0;
+        merge_store_data_1 = 0;
         scalar_response = 0;
         memory[PTE_LINE_ADDR[18:6]] = old_line;
         memory[MASKED_LINE_ADDR[18:6]] = masked_line;
+        memory[MERGE_LINE_ADDR[18:6]] = merge_line;
 
         rst_n = 1'b0;
         repeat (3) @(posedge clk);
@@ -615,6 +626,61 @@ module tb_ccx_l2;
                   `OPENRV64_CCX_KIND_DATA, MASKED_LINE_ADDR, masked_line);
         if (bus_reads != masked_reads_before + 1)
             $fatal(1, "read after write-around did not fill the line");
+
+        // Hold a demand fill below L2, then merge two younger masked writes
+        // into its MSHR.  The second write overlaps the first.  The installed
+        // line must contain the ordered byte merges and its later eviction
+        // must retain the union of the two dirty masks.
+        bus_response_hold = 1'b1;
+        send_command(`OPENRV64_CCX_SOURCE_DCACHE,
+                     `OPENRV64_CCX_OP_READ, 1'b0,
+                     `OPENRV64_CCX_KIND_DATA,
+                     `OPENRV64_CCX_ATTR_CACHEABLE,
+                     3'd6, MERGE_LINE_ADDR, merge_read_txn);
+        while (!bus_pending_q || pending_write_q ||
+               (pending_addr_q != MERGE_LINE_ADDR))
+            @(negedge clk);
+
+        merge_store_data_0[63:0] = 64'h1111_2222_3333_4444;
+        start_masked_write(
+            MERGE_LINE_ADDR, merge_store_data_0,
+            64'h0000_0000_0000_00ff, merge_write_txn_0);
+        merge_store_data_1[95:32] = 64'haaaa_bbbb_cccc_dddd;
+        start_masked_write(
+            MERGE_LINE_ADDR + 4, merge_store_data_1,
+            64'h0000_0000_0000_0ff0, merge_write_txn_1);
+
+        bus_response_hold = 1'b0;
+        wait_response(merge_read_txn, `OPENRV64_CCX_SOURCE_DCACHE,
+                      merge_line, 1'b1);
+        wait_response(merge_write_txn_0, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        wait_response(merge_write_txn_1, `OPENRV64_CCX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        merge_line[63:0] = 64'h1111_2222_3333_4444;
+        merge_line[95:32] = 64'haaaa_bbbb_cccc_dddd;
+        read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                  `OPENRV64_CCX_KIND_DATA, MERGE_LINE_ADDR, merge_line);
+
+        for (congruent_index = 1; congruent_index <= 8;
+             congruent_index = congruent_index + 1) begin
+            congruent_addr =
+                MERGE_LINE_ADDR + congruent_index * L2_SET_STRIDE;
+            congruent_line =
+                line_pattern(64'h5600_0000_0000_0000 +
+                             congruent_index * 64'h100);
+            memory[congruent_addr[18:6]] = congruent_line;
+            read_line(`OPENRV64_CCX_SOURCE_DCACHE,
+                      `OPENRV64_CCX_KIND_DATA,
+                      congruent_addr, congruent_line);
+        end
+        if ((last_bus_write_addr != MERGE_LINE_ADDR) ||
+            (last_bus_write_strb != 64'h0000_0000_0000_0fff))
+            $fatal(1,
+                "fill-merged dirty eviction lost mask addr=%016x strb=%016x",
+                last_bus_write_addr, last_bus_write_strb);
+        if (memory[MERGE_LINE_ADDR[18:6]] !== merge_line)
+            $fatal(1, "fill-merged dirty eviction corrupted backing line");
 
         // Locked scalar traffic bypasses L1 but must still operate on the
         // current L2 copy.  Scalar reads return their addressed 64-bit lane
