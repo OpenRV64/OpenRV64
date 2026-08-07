@@ -363,10 +363,6 @@ MEMCPY_SWEEP_ELF := sw/memcpy/memcpy-sweep.elf
 MEMCPY_SWEEP_BIN := sw/memcpy/memcpy-sweep.bin
 MEMCPY_SWEEP_MAP := sw/memcpy/memcpy-sweep.map
 MEMCPY_SWEEP_DISASM := sw/memcpy/memcpy-sweep.disasm
-MEMCPY_ZICCLSM_SWEEP_ELF := sw/memcpy/memcpy-zicclsm-sweep.elf
-MEMCPY_ZICCLSM_SWEEP_BIN := sw/memcpy/memcpy-zicclsm-sweep.bin
-MEMCPY_ZICCLSM_SWEEP_MAP := sw/memcpy/memcpy-zicclsm-sweep.map
-MEMCPY_ZICCLSM_SWEEP_DISASM := sw/memcpy/memcpy-zicclsm-sweep.disasm
 MEMCPY_PASS := 4d454d4350594f4b
 MEMCPY_MEMH_BYTES := 0x20000
 MEMCPY_MEMH_WORDS := 4096
@@ -586,9 +582,6 @@ MEMCPY_4K_MEASURE_END = $(shell $(RISCV_NM) -n $(MEMCPY_4K_ELF) | \
 MEMCPY_64K_MEASURE_END = $(shell $(RISCV_NM) -n $(MEMCPY_64K_ELF) | \
 	awk '$$3 == "memcpy_measure_end" { print $$1 }')
 MEMCPY_SWEEP_REPORT_PC = $(shell $(RISCV_NM) -n $(MEMCPY_SWEEP_ELF) | \
-	awk '$$3 == "memcpy_span_report" { print $$1 }')
-MEMCPY_ZICCLSM_SWEEP_REPORT_PC = $(shell \
-	$(RISCV_NM) -n $(MEMCPY_ZICCLSM_SWEEP_ELF) | \
 	awk '$$3 == "memcpy_span_report" { print $$1 }')
 AARCH64_CC ?= aarch64-linux-gnu-gcc
 AARCH64_OBJCOPY ?= aarch64-linux-gnu-objcopy

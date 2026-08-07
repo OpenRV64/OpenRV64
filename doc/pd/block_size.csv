@@ -1,3 +1,21 @@
-block,configuration,technology,cache_bytes,ways,coherent_atomics,total_standard_cell_area_mm2,combinational_area_mm2,sequential_area_mm2,mapped_standard_cells,total_area_delta_percent,combinational_area_delta_percent,sequential_area_delta_percent,tag_bits,tag_memory_structure,sram_macro_area_included,resident_hit_array_latency_cycles,resident_hit_throughput_per_cycle,core_mem_issue_to_result_cycles,timing_status,notes
-l1d,legacy_async_tags,Nangate45_typical,16384,4,1,0.395201786,0.301279314,0.093922472,247286,0.0,0.0,0.0,13312,one_256x52_memory_with_12_async_read_ports,0,,,3,not_comparable_without_sram_macro_model,Source-matched reference; asynchronous tag structure is not a realistic commodity SRAM implementation
-l1d,registered_1r1w_tags,Nangate45_typical,16384,4,1,0.385525504,0.289953832,0.095571672,235671,-2.448441,-3.759130,1.755916,13312,four_independent_64x52_1r1w_memories,0,1,1,3,architectural_latency_verified_macro_sta_pending,Directed L1 test and focused L1D L1I two-hart and four-hart coherence regressions passed
+block,whole_chip_projected_logic_mm2,whole_chip_projected_logic_percent,private_four_hart_mm2,private_four_hart_percent,core_proper_four_hart_mm2,core_proper_four_hart_percent,l1_control_four_hart_mm2,l1_control_four_hart_percent,mmu_glue_four_hart_mm2,mmu_glue_four_hart_percent,shared_ccx_mm2,shared_ccx_percent,shared_l2_control_mm2,shared_l2_control_percent,per_instance_mm2,instance_count,evidence_status,notes
+f_d_configuration_increment,3.965078992,29.304402,3.965078992,31.965091,3.965078992,50.474817,,,,,,,,,0.991269748,4,measured_configuration_delta,Includes FPR execution control and configuration-dependent window and retirement changes
+l1d_endpoint_control_registered_tags,2.714113976,20.058992,2.714113976,21.880245,,,2.714113976,66.043692,,,,,,,0.678528494,4,projected_from_measured_delta,Previous flat L1D block map adjusted by the source-matched registered-tag delta of -0.009676282 mm2 per hart
+l1i_endpoint_control,1.395459408,10.313314,1.395459408,11.249709,,,1.395459408,33.956308,,,,,,,0.348864852,4,mapped_measurement,Legacy asynchronous tag path remains enabled
+shared_l2_controller,1.109600000,8.200635,,,,,,,,,,,1.109600000,100.000000,1.109600000,1,extrapolated_estimate,Default 256 KiB controller extrapolated from reduced post-dirty-mask-refactor maps
+issue_retirement_window,0.976672000,7.218214,0.976672000,7.873591,0.976672000,12.432877,,,,,,,,,0.244168000,4,mapped_accounting_decomposition,Direct issue selector and retire depth 16
+retirement_records_queue_commit,0.848392000,6.270145,0.848392000,6.839442,0.848392000,10.799893,,,,,,,,,0.212098000,4,mapped_accounting_decomposition,
+fetch_branch_prediction,0.682480000,5.043952,0.682480000,5.501917,0.682480000,8.687860,,,,,,,,,0.170620000,4,mapped_accounting_decomposition,
+backend_decode_lsu_integration,0.577972000,4.271573,0.577972000,4.659410,0.577972000,7.357490,,,,,,,,,0.144493000,4,mapped_accounting_decomposition,
+csr_pmp,0.411520000,3.041389,0.411520000,3.317531,0.411520000,5.238583,,,,,,,,,0.102880000,4,mapped_accounting_decomposition,
+integer_register_file,0.262368000,1.939063,0.262368000,2.115120,0.262368000,3.339902,,,,,,,,,0.065592000,4,mapped_accounting_decomposition,
+ptw,0.252628000,1.867078,0.252628000,2.036599,,,,,0.252628000,57.510656,,,,,0.063157000,4,mapped_accounting_decomposition,
+integer_ex0_ex1,0.124056000,0.916851,0.124056000,1.000096,0.124056000,1.579213,,,,,,,,,0.031014000,4,mapped_accounting_decomposition,
+l2_tlb,0.112056000,0.828164,0.112056000,0.903357,,,,,0.112056000,25.509500,,,,,0.028014000,4,mapped_accounting_decomposition,Includes leaf TLB
+per_hart_bus_glue,0.074587640,0.551249,0.074587640,0.601300,,,,,0.074587640,16.979844,,,,,0.018646910,4,residual_accounting,Memory-translation total less measured L1 endpoints PTW and L2 TLB
+four_port_ccx_crossbar,0.007434168,0.054943,,,,,,,,,0.007434168,44.633959,,,0.007434168,1,mapped_measurement,
+prefix_exception_helpers,0.007020000,0.051882,0.007020000,0.056593,0.007020000,0.089363,,,,,,,,,0.001755000,4,mapped_accounting_decomposition,
+snoop_filter_control,0.005873812,0.043411,,,,,,,,,0.005873812,35.265747,,,0.005873812,1,mapped_measurement,Directory SRAM bits are not priced
+four_probe_endpoints,0.002628612,0.019427,,,,,,,,,0.002628612,15.781909,,,0.000657153,4,mapped_measurement,Four retained endpoint instances
+probe_tracker,0.000719264,0.005316,,,,,,,,,0.000719264,4.318385,,,0.000719264,1,mapped_measurement,
+TOTAL,13.530659872,100.000000,12.404404016,100.000000,7.855558992,100.000000,4.109573384,100.000000,0.439271640,100.000000,0.016655856,100.000000,1.109600000,100.000000,,,constructed_projection,Nangate45 standard-cell logic only; not a literal die-area result; SRAM macros routing CTS power DFT pads and SoC peripherals are excluded

@@ -11,12 +11,8 @@
  *   - a byte prologue when source and destination have the same alignment,
  *   - aligned, eight-doubleword bulk iterations,
  *   - aligned doubleword and byte tails, and
- *   - the Linux kernel's byte-at-a-time fallback when source and destination
+ *   - a byte-at-a-time fallback when source and destination
  *     alignments differ.
- *
- * MEMCPY_SWEEP_LINUX instead embeds memcpy-linux.S.  Its Zicclsm benchmark
- * build selects CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS, so differing
- * alignments exercise native misaligned loads and stores.
  *
  * The testbench watches memcpy_span_report and reports the architectural
  * a0-a7 values:
@@ -89,11 +85,7 @@ _start:
     mv      a0, s9
     mv      a1, s8
     mv      a2, s4
-#ifdef MEMCPY_SWEEP_LINUX
-    jal     ra, __memcpy
-#else
     jal     ra, memcpy_scalar
-#endif
     fence   rw, rw
     csrr    t0, mcycle
     csrr    t1, minstret
@@ -171,11 +163,6 @@ memcpy_span_report:
 
 .size _start, .-_start
 
-#ifdef MEMCPY_SWEEP_LINUX
-.section .text.memcpy_linux, "ax", @progbits
-.balign 64
-#include "memcpy-linux.S"
-#else
 /*
  * void *memcpy_scalar(void *dst, const void *src, size_t bytes)
  *
@@ -261,7 +248,6 @@ memcpy_scalar:
     ret
 
 .size memcpy_scalar, .-memcpy_scalar
-#endif
 
 .section .rodata.memcpy_sweep_cases, "a", @progbits
 .balign 64

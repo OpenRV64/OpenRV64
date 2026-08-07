@@ -1,5 +1,7 @@
 /sim/
 /build/
+.Xil/
+/sw/linux/images/
 *.vcd
 *.elf
 *.map

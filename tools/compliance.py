@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""OpenRV64 architectural-compliance runner.
-
-ACT4 produces self-checking ELFs.  This runner preserves their virtual
-addresses, locates the standard tohost symbol, selects an exact OpenRV64
-configuration, and records machine-readable results.
-"""
+"""Run self-checking architectural ELFs on OpenRV64 test configurations."""
 
 from __future__ import annotations
 
@@ -301,10 +296,6 @@ def add_run_options(parser: argparse.ArgumentParser) -> None:
 
 
 def doctor(args: argparse.Namespace) -> int:
-    act4_root = args.act4_root or (
-        Path(os.environ["ACT4_ROOT"]) if "ACT4_ROOT" in os.environ else None
-    )
-    sail = args.sail or os.environ.get("SAIL_RISCV") or command_path("sail_riscv_sim")
     checks = {
         "python": sys.executable,
         "make": command_path("make"),
@@ -313,23 +304,13 @@ def doctor(args: argparse.Namespace) -> int:
         "verilator": command_path("verilator"),
         "riscv64-elf-gcc": command_path("riscv64-elf-gcc"),
         "riscv64-elf-nm": command_path("riscv64-elf-nm"),
-        "mise": command_path("mise"),
-        "uv": command_path("uv"),
-        "bundle": command_path("bundle"),
-        "sail_riscv_sim": str(sail) if sail and Path(sail).exists() else None,
-        "ACT4_ROOT": str(act4_root) if act4_root and (act4_root / "Makefile").exists() else None,
     }
     for name, value in checks.items():
         print(f"{'PASS' if value else 'MISS'} {name}: {value or 'not found'}")
     required = ("make", "iverilog", "vvp", "riscv64-elf-gcc", "riscv64-elf-nm")
     local_ok = all(checks[name] for name in required)
-    act4_runtime_ok = bool(checks["mise"] or (checks["uv"] and checks["bundle"]))
-    external_ok = bool(
-        checks["sail_riscv_sim"] and checks["ACT4_ROOT"] and act4_runtime_ok
-    )
     print(f"LOCAL {'READY' if local_ok else 'INCOMPLETE'}")
-    print(f"ACT4 {'READY' if external_ok else 'INCOMPLETE'}")
-    return 0 if local_ok and (external_ok or not args.strict) else 1
+    return 0 if local_ok else 1
 
 
 def run_subcommand(args: argparse.Namespace) -> int:
@@ -391,41 +372,6 @@ def suite_subcommand(args: argparse.Namespace) -> int:
     }
     print("SUMMARY " + " ".join(f"{key}={value}" for key, value in counts.items()))
     return 1 if counts["fail"] or counts["xpass"] else 0
-
-
-def act4_subcommand(args: argparse.Namespace) -> int:
-    act4_root = args.act4_root.resolve()
-    sail = args.sail.resolve()
-    config = (
-        ROOT
-        / "verification/compliance/act4"
-        / ("openrv64-rv64ima" if args.rv64m else "openrv64-rv64ia")
-        / "test_config.yaml"
-    )
-    workdir = args.workdir.resolve()
-    env = os.environ.copy()
-    # ACT4's Makefile treats any non-empty DEBUG/VERBOSE value as enabled.
-    # Some build environments export DEBUG=release, which otherwise conflicts
-    # with the explicit FAST=True below.
-    env.pop("DEBUG", None)
-    env.pop("VERBOSE", None)
-    env.setdefault("UV_CACHE_DIR", str(workdir / ".uv-cache"))
-    env.setdefault("XDG_CACHE_HOME", str(workdir / ".cache"))
-    env.setdefault("XDG_DATA_HOME", str(workdir / ".local/share"))
-    env["PATH"] = f"{sail.parent}:{env.get('PATH', '')}"
-    command = [
-        "make",
-        "elfs",
-        f"CONFIG_FILES={config}",
-        f"WORKDIR={workdir}",
-        f"EXTENSIONS={args.extensions}",
-        f"JOBS={args.jobs}",
-        "FAST=True",
-        "EXCLUDE_EXTENSIONS=Sm",
-    ]
-    completed = run_command(command, cwd=act4_root, env=env, timeout=args.wall_timeout)
-    print(completed.stdout, end="")
-    return completed.returncode
 
 
 def parse_sail_trace(text: str) -> list[dict[str, int]]:
@@ -511,9 +457,6 @@ def parser() -> argparse.ArgumentParser:
     sub = top.add_subparsers(dest="command", required=True)
 
     doctor_parser = sub.add_parser("doctor")
-    doctor_parser.add_argument("--act4-root", type=Path)
-    doctor_parser.add_argument("--sail", type=Path)
-    doctor_parser.add_argument("--strict", action="store_true")
     doctor_parser.set_defaults(func=doctor)
 
     run_parser = sub.add_parser("run")
@@ -526,7 +469,7 @@ def parser() -> argparse.ArgumentParser:
     add_run_options(suite_parser)
     suite_parser.add_argument(
         "--extensions",
-        help="comma-separated ACT4 extension directories to select",
+        help="comma-separated parent directories to select",
     )
     suite_parser.add_argument("--match")
     suite_parser.add_argument("--limit", type=int)
@@ -534,16 +477,6 @@ def parser() -> argparse.ArgumentParser:
     suite_parser.add_argument("--junit", type=Path)
     suite_parser.add_argument("--fail-fast", action="store_true")
     suite_parser.set_defaults(func=suite_subcommand)
-
-    act4_parser = sub.add_parser("act4")
-    act4_parser.add_argument("--act4-root", type=Path, required=True)
-    act4_parser.add_argument("--sail", type=Path, required=True)
-    act4_parser.add_argument("--workdir", type=Path, default=ROOT / "build/compliance/act4-work")
-    act4_parser.add_argument("--extensions", default="I,Zicsr,Zifencei")
-    act4_parser.add_argument("--rv64m", action=argparse.BooleanOptionalAction, default=True)
-    act4_parser.add_argument("--jobs", type=int, default=0)
-    act4_parser.add_argument("--wall-timeout", type=int, default=7200)
-    act4_parser.set_defaults(func=act4_subcommand)
 
     diff_parser = sub.add_parser("diff")
     diff_parser.add_argument("elf", type=Path)

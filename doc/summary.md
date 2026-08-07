@@ -2,6 +2,8 @@
 
 Audit date: 2026-08-06 UTC
 
+Post-audit licensing/status corrections: 2026-08-07 UTC
+
 Audited revision: `821a2c0860793a579600f8c782ab136e034b962a` plus the then-current dirty working tree
 
 ## Executive judgment
@@ -12,16 +14,15 @@ product-ready processor or SoC.
 The strongest part is the RV64 integer 3-pipeline implementation and its
 simulation environment: it boots Linux in one-, two-, and four-hart test
 harnesses, passes a useful deterministic user-mode SMP suite, has broad directed
-cache/coherence/atomic/VM testing, and has limited ACT4 compliance results. The
+cache/coherence/atomic/VM testing, and has historical limited ACT4 results. The
 repository also contains working but separate F/D and private vector paths,
-several memory-system models, performance experiments, synthesis scripts, and an
-implemented Artix-7 build.
+several memory-system models, performance experiments, and synthesis scripts.
 
 The main deficiency is not a missing isolated instruction. The repository does
 not yet define, close, or continuously validate one production configuration.
 The public tops, simulation-only coherent hierarchy, 4PF F/D top, private vector
-top, and FPGA platform expose different feature sets. The aggregate regression
-is red in the audited tree. Current physical evidence is pre-layout and excludes
+top and simulation platforms expose different feature sets. The aggregate
+regression is red in the audited tree. Current physical evidence is pre-layout and excludes
 important memories or subsystems. DFT, production debug, reliability protection,
 power/reset intent, signoff, and a documented microarchitectural side-channel
 policy are absent.
@@ -29,8 +30,8 @@ policy are absent.
 Accordingly:
 
 - **Research RTL and Linux-capable simulation:** viable.
-- **FPGA evaluation image:** partly viable; a routed image exists, but there is
-  no demonstrated board boot or complete image-loading flow.
+- **FPGA evaluation image:** no current tracked target; the prior MYIR/Artix-7
+  target was removed pending provenance and redistribution review.
 - **Deployable FPGA SoC:** no.
 - **ASIC tapeout candidate:** no.
 - **Product security or safety assurance:** no supporting closure evidence.
@@ -79,11 +80,13 @@ configuration have drifted apart.
 
 ### Retained regression evidence
 
-- ACT4 JSON summaries retain 93 passing tests for the 1P, 3P, platform-1P, and
-  platform-3P configurations, plus three privileged `Svbare` tests. The retained
-  artifacts are from 2026-07-22/23 and cover a limited I/M/A/Zicsr/Zifencei set.
-  They are not a current clean-tree full-ISA result and do not cover Sv39,
-  Zicclsm, Zbb, F/D, or the private vector implementation. See
+- Historical local ACT4 JSON summaries record 93 passing tests for the 1P, 3P,
+  platform-1P, and platform-3P configurations, plus three privileged `Svbare`
+  tests. The artifacts are from 2026-07-22/23 and cover a limited
+  I/M/A/Zicsr/Zifencei set. The adapter was removed on 2026-08-07 pending clean
+  provenance and licensing, so the current tree cannot reproduce those results.
+  They do not cover Sv39, Zicclsm, Zbb, F/D, or the private vector
+  implementation. See
   [verification/compliance/README.md](../verification/compliance/README.md).
 - Managed Linux runs retain validated one-, two-, and four-hart boots. The two-
   and four-hart L2-refactor runs ended at the literal `openrv64# ` prompt, exited
@@ -213,13 +216,9 @@ Physical evidence is not yet signoff-grade:
 - There is no supported frequency, voltage, power, thermal, die-size, or yield
   claim.
 
-The Artix-7 flow reports a routed single-hart RV64MA design with a 10 MHz core
-and 100 MHz MIG UI, positive setup/hold slack, 39,901 LUTs, and 30,999 registers.
-That establishes implementability of that FPGA configuration. It does not
-establish board operation: DDR calibration/traffic and Linux boot have not been
-demonstrated on hardware, there is no complete boot-image loader, and the
-external-memory integration rejects the 3P product path. See
-[synth/fpga/xc7a100t/README.md](../synth/fpga/xc7a100t/README.md).
+The previous MYIR/Artix-7 target was removed from tracked source on 2026-08-07
+pending provenance and redistribution review. No current FPGA build, timing, or
+board-operation result is claimed.
 
 ## Productization blockers
 
@@ -249,8 +248,9 @@ external-memory integration rejects the 3P product path. See
 ### P0: close architectural correctness
 
 1. Run a current clean-tree architectural suite over the frozen configuration,
-   including full applicable ACT4/RISCOF coverage for integer, privilege, VM,
-   A, Zicclsm/Zbb, and F/D if claimed.
+   including full applicable externally maintained ACT4/RISCOF coverage for
+   integer, privilege, VM, A, Zicclsm/Zbb, and F/D if claimed. Any local adapter
+   must have explicit origin, notices, and licensing.
 2. Add differential random instruction testing against an independent reference
    model, with interrupts, exceptions, page faults, PMP changes, self-modifying
    code, and asynchronous backpressure. Encoding-only unit tests are not enough.
@@ -324,7 +324,8 @@ external-memory integration rejects the 3P product path. See
      retains unchecked Linux/timed-DDR items superseded by later runs;
    - the compliance README's PMP description no longer matches the RTL;
    - F/D cycle counts in prose have already drifted from current execution.
-4. Pin or package toolchains, ACT4/Sail inputs, simulators, synthesis tools, Linux,
+4. Pin or package toolchains, external ACT4/Sail inputs, simulators, synthesis
+   tools, Linux,
    OpenSBI, firmware, and workload images. Network-fetched or locally assumed
    dependencies must be reproducible for a release.
 5. Complete project-wide source licensing and provenance hygiene. The top-level

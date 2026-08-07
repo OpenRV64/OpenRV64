@@ -1,183 +1,64 @@
-# OpenRV64 architectural compliance
+# OpenRV64 architectural checks
 
-This directory contains the OpenRV64 adapter for the ACT4 branch of the
-official RISC-V Architectural Tests. It is deliberately separate from the
-module-level RTL tests: an ACT4 ELF is self-checking, runs on a complete DUT
-configuration, and passes only by writing the value `1` to its `tohost`
-symbol.
+This directory contains first-party local smoke programs and test harnesses.
+They verify basic execution and the architectural trace contract; they are not
+the RISC-V Architectural Tests and do not establish RISC-V certification.
 
-The default unprivileged set is:
+## Local targets
 
-```text
-I,M,Zaamo,Zalrsc,Zicsr,Zifencei
-```
-
-The initial privileged set is `Svbare`. The machine descriptions cover the
-RV64IA and RV64IMA configurations, M/S/U privilege modes, Sv39/Svade/Svbare,
-the platform memory map, and the implemented CSR/PMP parameters.
-
-## Prerequisites
-
-Local smoke tests require Python 3, Icarus Verilog, GNU Make, and an RV64 GNU
-bare-metal toolchain (`riscv64-elf-gcc`, `riscv64-elf-nm`). Native 3-pipe
-suite runs use Verilator when it is available. ACT4 additionally requires its
-Python/Ruby/UDB environment and a Sail RISC-V simulator.
-
-The adapter was validated against these exact external versions:
-
-- `riscv/riscv-arch-test`, branch `act4`, commit
-  `619aa16960e69ac29e9b558fb907babfb937a090`
-- `sail_riscv_sim` version `0.12`
-
-The external projects are not vendored. One reproducible ACT4 setup is:
-
-```sh
-git clone --branch act4 https://github.com/riscv/riscv-arch-test.git
-git -C riscv-arch-test checkout 619aa16960e69ac29e9b558fb907babfb937a090
-mise trust riscv-arch-test/.mise.toml
-
-export ACT4_ROOT="$PWD/riscv-arch-test"
-export SAIL_RISCV=/path/to/sail_riscv_sim
-```
-
-ACT4 documents alternatives to `mise`, including `uv` plus Ruby/Bundler. Check
-the complete local and external tool state with:
-
-```sh
-python3 tools/compliance.py doctor \
-  --act4-root "$ACT4_ROOT" --sail "$SAIL_RISCV" --strict
-```
-
-## Targets
-
-The local smoke is dependency-light and exercises all three harnesses:
+The local smoke exercises the 1-pipe, native 3-pipe, platform-1-pipe, and
+platform-3-pipe harnesses:
 
 ```sh
 make compliance-smoke-local
 ```
 
-The Sail differential check compares the local no-trap program's retired PC,
-instruction, and GPR writes on both direct core paths:
-
-```sh
-make compliance-diff SAIL_RISCV="$SAIL_RISCV"
-```
-
-The trace-contract target executes the same ELF on 1-pipe, native 3-pipe, and
-platform backends, then checks ordering, lane, field-width, privilege-mode,
-and instruction-alignment invariants:
+The trace-contract target runs the local ELF on the direct backends and checks
+retirement ordering, lane, field width, privilege mode, and instruction
+alignment:
 
 ```sh
 make compliance-trace-contract
 ```
 
-Generate and run the configured official suites with:
+`make compliance-full` currently combines those two local checks. It does not
+run an external architectural suite.
+
+## ACT4 status
+
+ACT4 and Sail are external dependencies and are not vendored here. The previous
+OpenRV64 ACT4 adapter contained modified files derived from upstream examples.
+It was removed on 2026-08-07 pending a clean reimplementation with explicit
+provenance, notices, and licensing. The Make targets that generated or ran ACT4
+were removed with it.
+
+This is a provenance problem in the former adapter, not a claim that ACT4 is
+GPL-2.0. Do not describe the local smoke targets as ACT4 coverage.
+
+Historical runs on 2026-07-22 used `riscv/riscv-arch-test` branch `act4` at
+commit `619aa16960e69ac29e9b558fb907babfb937a090` and `sail_riscv_sim` 0.12.
+They recorded 93 passing unprivileged tests on the platform and native 3-pipe
+backends, plus three passing Svbare tests on the platform. Those results are
+historical evidence only: the current repository cannot reproduce them without
+a new adapter, and they are not a blanket ISA or certification claim.
+
+The generic runner can still execute self-checking ELFs produced entirely in an
+external checkout:
 
 ```sh
-make compliance-isa \
-  ACT4_ROOT="$ACT4_ROOT" SAIL_RISCV="$SAIL_RISCV"
-
-make compliance-isa-3p \
-  ACT4_ROOT="$ACT4_ROOT" SAIL_RISCV="$SAIL_RISCV"
-
-make compliance-priv \
-  ACT4_ROOT="$ACT4_ROOT" SAIL_RISCV="$SAIL_RISCV"
+python3 tools/compliance.py suite /path/to/external/elfs \
+  --backend platform --results-dir build/compliance/external-results
 ```
 
-`compliance-isa` is the canonical result: it uses the integrated platform with
-boot ROM, RAM, CLINT, PLIC, UART, GPIO, and timer. The native 3-pipe target
-validates the 256-bit AXI/ICX memory path; it acknowledges ACT4 setup MMIO as
-inert and must not be used as evidence for interrupt or peripheral behavior.
-The direct 1-pipe harness is intentionally limited to local and differential
-tests because ACT4's common prologue accesses CLINT state.
-
-The runner's default `--engine auto` policy uses Icarus for 1-pipe/platform
-and Verilator for 3-pipe, falling back to Icarus if Verilator is unavailable.
-Either engine can be forced across a Make target:
+Sail differential testing remains available when both the simulator and its
+configuration are supplied externally:
 
 ```sh
-make compliance-isa-3p COMPLIANCE_ENGINE=iverilog \
-  ACT4_ROOT="$ACT4_ROOT" SAIL_RISCV="$SAIL_RISCV"
-
-make compliance-isa COMPLIANCE_ENGINE=verilator \
-  ACT4_ROOT="$ACT4_ROOT" SAIL_RISCV="$SAIL_RISCV"
+python3 tools/compliance.py diff /path/to/test.elf \
+  --backend 1p --sail /path/to/sail_riscv_sim \
+  --sail-config /path/to/sail.json
 ```
 
-Both engines execute the same SystemVerilog harness and consume the same ELF
-image. The selected engine is recorded in every `result.json`. On the
-validation machine, Verilator reduced the 3-pipe `I-add` test from about
-33.0 seconds to 0.169 seconds after the one-time C++ build.
-
-Run every configured lane with:
-
-```sh
-make compliance-full \
-  ACT4_ROOT="$ACT4_ROOT" SAIL_RISCV="$SAIL_RISCV"
-```
-
-Override `COMPLIANCE_EXTENSIONS` or `COMPLIANCE_PRIV_EXTENSIONS` to select a
-different generated set. The runner filters the execution set by the requested
-extension directories, so ELFs left by an earlier generation cannot silently
-expand a later run.
-
-## Results and failure policy
-
-Artifacts are under `build/compliance/`:
-
-- ACT4-generated ELFs under `act4-work/<config>/elfs/`;
-- one `run.log` and `result.json` per ELF;
-- an optional `arch.csv` retirement trace;
-- a JSON summary and JUnit XML report for each suite.
-
-Simulation has both a cycle limit and a wall-clock timeout. A zero simulator
-exit code alone is insufficient: the log must contain `COMPLIANCE PASS`, which
-is emitted only for `tohost == 1`. Any other nonzero `tohost` value is a test
-failure.
-
-Known failures belong in `verification/compliance/expected_failures.tsv` as:
-
-```text
-exact-elf-stem<TAB>specific reason
-```
-
-There are no broad wildcard skips. An expected failure that starts passing is
-reported as XPASS and fails the suite, forcing the ledger to be cleaned up.
-The ledger is currently empty.
-
-## Validation snapshot
-
-On 2026-07-22, with the pinned versions above:
-
-- local 1-pipe, native 3-pipe, and platform smokes passed;
-- Sail differential comparison passed for 16 retired 1-pipe instructions and
-  15 retired 3-pipe instructions;
-- ACT4 generated 93 unprivileged ELFs: 51 I, 13 M, 18 Zaamo, 4 Zalrsc,
-  6 Zicsr, and 1 Zifencei;
-- all 93 unprivileged ELFs passed on the integrated platform backend;
-- all 93 unprivileged ELFs passed on the native 3-pipe AXI/ICX backend;
-- all three generated Svbare ELFs passed on the platform backend.
-
-This is evidence for the listed executions, not a blanket RISC-V certification
-claim. The full 3-pipe run initially exposed incorrect same-cycle `instret`
-ordering in four CSR tests; forwarding architecturally older retirement into
-the CSR read fixed the defect, after which all four passed under both Icarus
-and Verilator and both 93-test suites passed without expected failures.
-
-## Deliberate boundaries
-
-- The upstream ACT4 default exclusion for `Sm` remains in force because ACT4
-  identifies insufficient WARL configuration support for that group.
-- The platform currently has no supervisor external/software interrupt
-  injection path. ACT4 requires those model macros to exist, so they are empty;
-  a test that requires them will fail at runtime rather than being falsely
-  reported as supported.
-- UDB permits visible PMP counts of 0, 16, or 64. The configuration declares
-  16 entries with 8 usable because OpenRV64 implements eight writable entries.
-- The CSV retirement contract and Sail comparison are executable checks, but
-  they are not a full RVFI proof. The current trace lacks source-register data
-  and architectural memory address/mask/data fields required for general
-  riscv-formal checking.
-- No OOO backend is claimed here. An OOO implementation should use an FPGA
-  execution adapter once RTL simulation is no longer operationally useful,
-  while preserving the same ELF, `tohost`, timeout, JSON/JUnit, and exact-xfail
-  contracts so hardware and simulation results remain comparable.
+A replacement ACT4 integration must keep the upstream checkout outside tracked
+source, generate work products under ignored `build/`, and document the origin
+and license of every adapter file.

@@ -2,7 +2,7 @@
 `include "core/backend/backend-defs.v"
 `include "complex/protocol/defs.v"
 
-// Platform-backed ACT4 harness. Unlike the direct 1p/3p harnesses, this
+// Platform-backed architectural-test harness. Unlike the direct 1p/3p harnesses, this
 // instance includes the boot ROM, CLINT, PLIC, and MMIO peripherals required
 // by privileged architectural tests.
 module tb_compliance_platform #(
@@ -181,7 +181,7 @@ module tb_compliance_platform #(
     always @(posedge clk) begin
         if (rst_n) begin
             // The integrated L2 is write-back, so polling the backing RAM
-            // cannot observe a cached ACT4 tohost store.  Track only the
+            // cannot observe a cached external-test tohost store. Track only the
             // requested tohost word and commit it when the matching ICX write
             // response completes.
             if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&

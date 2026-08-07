@@ -246,7 +246,7 @@ module tb_compliance_3p #(
         .mem_valid_o(bus_valid),
         .mem_ready_i(bus_valid), .mem_write_o(), .mem_addr_o(),
         .mem_wdata_o(), .mem_wstrb_o(), .mem_rdata_i(64'h0),
-        // ACT4's common M-mode prologue masks platform interrupt sources
+        // External architectural tests may mask platform interrupt sources
         // before entering even unprivileged tests. The direct 3p seam has no
         // peripherals, so acknowledge those accesses as inert MMIO. Tests
         // that require real CLINT/PLIC behavior use the platform backend.
