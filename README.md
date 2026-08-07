@@ -1,8 +1,6 @@
 OpenRV64 is a 64-bit RISC-V core and SoC supporting RV64IMA (without C); its build flows use conventional `riscv64-*` toolchains. It has a 16 KiB 4-way L1I, 16 KiB 8-way write-through L1D, and 256 KiB 8-way shared L2.
 
-It boots Linux under Verilator. Historical ACT4 runs passed the documented RV64IMA subset, but the ACT4 adapter has been removed pending a clean external-only integration; this is not a current compliance or certification claim.
-
-RISC-V is the instruction-set architecture; OpenRV64 is this project's name.
+It boots Linux under Verilator.
 
 3 wide, speculative issue, in-order retire.
 
