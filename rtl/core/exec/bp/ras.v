@@ -139,6 +139,22 @@ module openrv64_exec_bp_ras #(
     end
 
 `ifndef SYNTHESIS
+    openrv64_ras_debug_stub #(
+        .DEPTH(DEPTH),
+        .INDEX_WIDTH(INDEX_WIDTH),
+        .COUNT_WIDTH(COUNT_WIDTH)
+    ) u_debug (
+        .stack_q(stack_q),
+        .sp_q(sp_q),
+        .count_q(count_q),
+        .pending_calls_q(pending_calls_q),
+        .top_index(top_index),
+        .resolve_push(resolve_push),
+        .resolve_pop(resolve_pop),
+        .pending_call_allocate(pending_call_allocate),
+        .pending_call_resolve(pending_call_resolve)
+    );
+
     initial begin
         if ((DEPTH < 2) || ((1 << INDEX_WIDTH) != DEPTH))
             $fatal(1, "RAS DEPTH must be a power of two >= 2");

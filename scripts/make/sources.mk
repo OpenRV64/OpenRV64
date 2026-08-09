@@ -18,6 +18,19 @@ VEC_REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-vec.v
 VEC_EXEC_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec.v
 VEC_LSU_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec-lsu.v
 ARITH_DEPS := rtl/core/arith/prefix-addsub.v
+CORE_DEBUG_STUB_SRCS := rtl/core/debug/stub.v
+BUS_DEBUG_STUB_SRCS := rtl/core/bus/debug/stub.v
+FETCH_DEBUG_STUB_SRCS := rtl/core/fetch/debug/stub.v
+L1_DEBUG_STUB_SRCS := rtl/cache/l1/debug/stub.v \
+	rtl/core/cache/l1/l1i/debug/stub.v \
+	rtl/core/cache/l1/l1d/debug/stub.v
+L2_DEBUG_STUB_SRCS := rtl/cache/l2/debug/stub.v
+RAS_DEBUG_STUB_SRCS := rtl/core/exec/bp/debug/stub.v
+COHERENT_DEBUG_STUB_SRCS := rtl/complex/coherent/debug/stub.v
+DEBUG_STUB_SRCS := $(CORE_DEBUG_STUB_SRCS) $(BUS_DEBUG_STUB_SRCS) \
+	$(FETCH_DEBUG_STUB_SRCS) $(L1_DEBUG_STUB_SRCS) \
+	$(L2_DEBUG_STUB_SRCS) $(RAS_DEBUG_STUB_SRCS) \
+	$(COHERENT_DEBUG_STUB_SRCS)
 CMU_SRCS := rtl/core/cmu/cmu.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
@@ -30,16 +43,19 @@ REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr.v \
 	rtl/core/regs/rv64-i-gpr_3p.v \
 	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) rtl/core/regs/rv64-i-csrs.v
 RENAME_SRCS := rtl/core/rename/identity.v
-FETCH_SRCS := rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
+FETCH_SRCS := $(FETCH_DEBUG_STUB_SRCS) \
+	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
-L1_CACHE_SRCS := rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
+L1_CACHE_SRCS := $(L1_DEBUG_STUB_SRCS) \
+	rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
 	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/icx.v \
 	rtl/core/cache/l1/l1i/frontend_if.v \
 	rtl/core/cache/l1/l1i/mshr.v rtl/core/cache/l1/l1i/l1i.v \
 	rtl/core/cache/l1/l1d/array.v rtl/core/cache/l1/l1d/icx.v \
 	rtl/core/cache/l1/l1d/lsu_if.v rtl/core/cache/l1/l1d/mshr.v \
 	rtl/core/cache/l1/l1d/l1d.v
-BUS_SRCS := rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v \
+BUS_SRCS := $(BUS_DEBUG_STUB_SRCS) \
+	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v \
 	rtl/core/bus/micro_tlb.v \
 	rtl/core/bus/tlb_l2.v rtl/core/bus/ptw.v \
 	rtl/core/bus/gen_bus.v rtl/core/bus/icx_bus.v rtl/core/bus/bus.v \
@@ -51,13 +67,15 @@ ICX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
 	rtl/complex/protocol/wrapper_2h.v rtl/complex/protocol/wrapper_4h.v
 COMPLEX_BUS_SRCS := rtl/complex/bus/defs.v \
 	rtl/complex/bus/wishbone_backend.v rtl/bus/genbus_interface.v
-ICX_L2_SRCS := rtl/cache/l2/sram_way.v rtl/cache/l2/l2_native.v
+ICX_L2_SRCS := $(L2_DEBUG_STUB_SRCS) \
+	rtl/cache/l2/sram_way.v rtl/cache/l2/l2_native.v
 CORE_COMPLEX_SRCS := rtl/complex/protocol/defs.v \
 	rtl/complex/protocol/line_crossbar.v \
 	$(ICX_L2_SRCS) \
 	$(COMPLEX_BUS_SRCS) \
 	rtl/complex/wrapper_nh.v
-ICX_COHERENT_SRCS := rtl/complex/coherent/protocol/defs.v \
+ICX_COHERENT_SRCS := $(COHERENT_DEBUG_STUB_SRCS) \
+	rtl/complex/coherent/protocol/defs.v \
 	rtl/complex/coherent/directory.v \
 	rtl/complex/coherent/snoop_filter.v \
 	rtl/complex/coherent/probe_tracker.v \
@@ -75,7 +93,8 @@ DISPATCH_SRCS := $(RENAME_SRCS) rtl/core/dispatch/reg_map.v \
 FD_DISPATCH_SRCS := rtl/core/exec/fpu/dispatch.v
 FD_UOP_HARNESS_SIM_SRCS := tb/tb_fd_uop_harness.sv
 BP_SRC := rtl/core/exec/bp/bp.v
-BP_DEPS := rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
+BP_DEPS := $(RAS_DEBUG_STUB_SRCS) \
+	rtl/core/exec/bp/defs.v rtl/core/exec/bp/stall.v \
 	rtl/core/exec/bp/always_branch.v rtl/core/exec/bp/always_decline.v \
 	rtl/core/exec/bp/repeat_last.v rtl/core/exec/bp/btfnt.v \
 	rtl/core/exec/bp/bimodal.v rtl/core/exec/bp/gshare_btb.v \
@@ -97,7 +116,8 @@ RETIRE_SRCS := rtl/core/retire/retire.v rtl/core/retire/retire_queue_3p.v \
 	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v
 TRACE_SRCS := rtl/core/trace/trace-defs.v
 BACKEND_SRCS := rtl/core/backend/backend_3p.v
-CORE_SRCS := rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
+CORE_SRCS := $(CORE_DEBUG_STUB_SRCS) \
+	rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) $(FETCH_SRCS) $(BUS_SRCS) $(DECODE_SRCS) $(REG_SRCS) \
 	$(DISPATCH_SRCS) $(EXEC_SRCS) $(RETIRE_SRCS) $(EXCEPT_SRCS) $(TRACE_SRCS)
 CORE_4PF_SRCS := rtl/core/exec/fpu/top_4pf.v \
@@ -108,8 +128,11 @@ CORE_4PF_SRCS := rtl/core/exec/fpu/top_4pf.v \
 	$(FPU_CSR_SRCS) $(FPU_DECODE_SRCS) $(FPU_SRCS) \
 	$(filter-out rtl/core/rv64_top.v rtl/core/rv64_top_3p.v \
 		rtl/core/backend/backend_3p.v,$(CORE_SRCS))
-CORE_3P_AXI_SRCS := rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
-	$(STAGE_SRCS) rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
+CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
+	rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
+	$(STAGE_SRCS) $(FETCH_DEBUG_STUB_SRCS) \
+	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
+	$(BUS_DEBUG_STUB_SRCS) \
 	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/micro_tlb.v \
 	rtl/core/bus/tlb_l2.v \
 	rtl/core/bus/ptw.v rtl/core/bus/icx_bus.v rtl/core/bus/bus.v \
@@ -190,7 +213,7 @@ GENBUS_SIM_SRCS := tb/tb_genbus_interface.sv
 CORE_COMPLEX_SIM_SRCS := tb/tb_core_complex.sv
 ICX_BUS_SIM_SRCS := tb/tb_icx_bus.sv
 ICX_L1I_SIM_SRCS := tb/tb_icx_l1i.sv
-L1I_TOP_SIM_SRCS := rtl/openrv64_l1i_top.v \
+L1I_TOP_SIM_SRCS := $(L1_DEBUG_STUB_SRCS) rtl/openrv64_l1i_top.v \
 	rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
 	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/icx.v \
 	rtl/core/cache/l1/l1i/frontend_if.v \

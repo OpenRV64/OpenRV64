@@ -137,6 +137,17 @@ module openrv64_icx_l1d_probe_endpoint #(
         end
     end
 
+`ifndef SYNTHESIS
+    openrv64_probe_endpoint_debug_stub #(
+        .TIMEOUT_WIDTH(TIMEOUT_WIDTH)
+    ) u_debug (
+        .invalidate_pending_q(invalidate_pending_q),
+        .response_valid_q(response_valid_q),
+        .response_id_q(response_id_q),
+        .timeout_q(timeout_q)
+    );
+`endif
+
     generate
         if (PROBE_TIMEOUT_CYCLES < 1) begin : g_bad_timeout
             initial

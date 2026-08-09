@@ -2305,6 +2305,50 @@ module openrv64_core_icx_bus #(
     end
 
 `ifndef SYNTHESIS
+    openrv64_bus_debug_stub #(
+        .FETCH_OUTSTANDING(FETCH_OUTSTANDING),
+        .FETCH_SLOT_WIDTH(FETCH_SLOT_WIDTH),
+        .L1D_REQ_TAG_WIDTH(L1D_REQ_TAG_WIDTH)
+    ) u_debug (
+        .lsu_pipe_req_ready(lsu_pipe_req_ready_o),
+        .lsu_pipe_req_write(lsu_pipe_req_write_i),
+        .pipe_fast_request_fire(pipe_fast_request_fire),
+        .pipe_fallback_candidate(pipe_fallback_candidate),
+        .fetch_cancelled_q(fetch_cancelled_q),
+        .fetch_demand_q(fetch_demand_q),
+        .fetch_free_found_r(fetch_free_found_r),
+        .fetch_free_slot_r(fetch_free_slot_r),
+        .fetch_head_q(fetch_head_q),
+        .fetch_l1i_launch(fetch_l1i_launch),
+        .fetch_priv_q(fetch_priv_q),
+        .fetch_stash_q(fetch_stash_q),
+        .fetch_state_q(fetch_state_q),
+        .fetch_tail_q(fetch_tail_q),
+        .fetch_vaddr_q(fetch_vaddr_q),
+        .fetch_vm_mode_q(fetch_vm_mode_q),
+        .fetch_xlate_found_r(fetch_xlate_found_r),
+        .fetch_xlate_slot_r(fetch_xlate_slot_r),
+        .icx_cmd_grant_valid_q(icx_cmd_grant_valid_q),
+        .icx_cmd_grant_client_q(icx_cmd_grant_client_q),
+        .icx_cmd_last_client_q(icx_cmd_last_client_q),
+        .l1d_icx_req_valid(l1d_icx_req_valid),
+        .l1d_req_addr(l1d_req_addr),
+        .l1d_req_rdata(l1d_req_rdata),
+        .l1d_req_size(l1d_req_size),
+        .l1d_req_tag(l1d_req_tag),
+        .l1d_req_write(l1d_req_write),
+        .l1d_request_fire(l1d_request_fire),
+        .l1i_icx_req_valid(l1i_icx_req_valid),
+        .l1i_req_active_q(l1i_req_active_q),
+        .l1i_req_fire(l1i_req_fire),
+        .l1i_req_paddr_q(l1i_req_paddr_q),
+        .l1i_req_vaddr(l1i_req_vaddr),
+        .l1i_req_valid(l1i_req_valid),
+        .l1i_resp_tag(l1i_resp_tag),
+        .l1i_resp_valid(l1i_resp_valid),
+        .ptw_icx_req_valid(ptw_icx_req_valid)
+    );
+
     integer fetch_assert_index;
     initial begin
         if (AXI_DATA_WIDTH != 256)

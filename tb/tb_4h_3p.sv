@@ -611,16 +611,16 @@ module tb_4h_3p #(
         for (hart = 0; hart < CORE_INSTANCES; hart = hart + 1) begin : g_hart
             integer pc_trace_lane;
             wire hart_done_retired =
-                (u_core.backend_retire_arch[0] &&
-                 (u_core.u_backend.queue_retire_result[
+                (u_core.u_debug.backend_retire_arch[0] &&
+                 (u_core.u_debug.queue_retire_result[
                       0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
                       RETIRE_RESULT_PC_LSB +: 64] == done_pc)) ||
-                (u_core.backend_retire_arch[1] &&
-                 (u_core.u_backend.queue_retire_result[
+                (u_core.u_debug.backend_retire_arch[1] &&
+                 (u_core.u_debug.queue_retire_result[
                       1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
                       RETIRE_RESULT_PC_LSB +: 64] == done_pc)) ||
-                (u_core.backend_retire_arch[2] &&
-                 (u_core.u_backend.queue_retire_result[
+                (u_core.u_debug.backend_retire_arch[2] &&
+                 (u_core.u_debug.queue_retire_result[
                       2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
                       RETIRE_RESULT_PC_LSB +: 64] == done_pc));
 
@@ -792,7 +792,7 @@ module tb_4h_3p #(
 
             assign hart_priv_mode[
                 hart*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH] =
-                u_core.csr_priv_mode;
+                u_core.u_debug.csr_priv_mode;
 
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
@@ -827,61 +827,61 @@ module tb_4h_3p #(
                         for (pc_trace_lane = 0;
                              pc_trace_lane < 3;
                              pc_trace_lane = pc_trace_lane + 1)
-                            if (u_core.backend_retire_arch[
+                            if (u_core.u_debug.backend_retire_arch[
                                     pc_trace_lane])
                                 $fdisplay(pc_trace_fd,
                                     "RET cycle=%0d hart=%0d lane=%0d priv=%0d pc=%016h instr=%08h",
                                     cycles, hart, pc_trace_lane,
-                                    u_core.csr_priv_mode,
-                                    u_core.u_backend.queue_retire_result[
+                                    u_core.u_debug.csr_priv_mode,
+                                    u_core.u_debug.queue_retire_result[
                                         pc_trace_lane*
                                         `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
                                         RETIRE_RESULT_PC_LSB +: 64],
-                                    u_core.u_backend.queue_retire_result[
+                                    u_core.u_debug.queue_retire_result[
                                         pc_trace_lane*
                                         `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
                                         RETIRE_RESULT_INSTR_LSB +: 32]);
-                        if (u_core.trap_enter) begin
+                        if (u_core.u_debug.trap_enter) begin
                             $fdisplay(pc_trace_fd,
                                 "TRAP cycle=%0d hart=%0d from_priv=%0d to_s=%0b interrupt=%0b cause=%0d epc=%016h vector=%016h msip=%0b mtip=%0b",
                                 cycles, hart,
-                                u_core.csr_priv_mode,
-                                u_core.csr_trap_to_s,
-                                u_core.trap_interrupt,
-                                u_core.trap_cause,
-                                u_core.trap_pc,
-                                u_core.csr_trap_vector,
+                                u_core.u_debug.csr_priv_mode,
+                                u_core.u_debug.csr_trap_to_s,
+                                u_core.u_debug.trap_interrupt,
+                                u_core.u_debug.trap_cause,
+                                u_core.u_debug.trap_pc,
+                                u_core.u_debug.csr_trap_vector,
                                 clint_msip[hart],
                                 clint_mtip[hart]);
                             $fflush(pc_trace_fd);
                         end
                     end
                     if ((opensbi_mode != 0) &&
-                        u_core.trap_enter &&
-                        u_core.trap_interrupt &&
-                        (u_core.trap_cause ==
+                        u_core.u_debug.trap_enter &&
+                        u_core.u_debug.trap_interrupt &&
+                        (u_core.u_debug.trap_cause ==
                          `RV64_IRQ_CAUSE_MACHINE_SOFTWARE)) begin
                         opensbi_msoft_interrupts[hart] <=
                             opensbi_msoft_interrupts[hart] + 1;
                         $display(
                             "OPENSBI_4H_IPI_TRAP cycle=%0d hart=%0d level=M cause=3 pc=%016h vector=%016h msip=%0b count=%0d",
-                            cycles, hart, u_core.trap_pc,
-                            u_core.csr_trap_vector,
+                            cycles, hart, u_core.u_debug.trap_pc,
+                            u_core.u_debug.csr_trap_vector,
                             clint_msip[hart],
                             opensbi_msoft_interrupts[hart] + 1);
                         $fflush();
                     end
                     if ((opensbi_mode != 0) &&
-                        u_core.trap_enter &&
-                        u_core.trap_interrupt &&
-                        (u_core.trap_cause ==
+                        u_core.u_debug.trap_enter &&
+                        u_core.u_debug.trap_interrupt &&
+                        (u_core.u_debug.trap_cause ==
                          `RV64_IRQ_CAUSE_SUPERVISOR_SOFTWARE)) begin
                         opensbi_ssoft_interrupts[hart] <=
                             opensbi_ssoft_interrupts[hart] + 1;
                         $display(
                             "OPENSBI_4H_IPI_TRAP cycle=%0d hart=%0d level=S cause=1 pc=%016h vector=%016h count=%0d",
-                            cycles, hart, u_core.trap_pc,
-                            u_core.csr_trap_vector,
+                            cycles, hart, u_core.u_debug.trap_pc,
+                            u_core.u_debug.csr_trap_vector,
                             opensbi_ssoft_interrupts[hart] + 1);
                         $fflush();
                     end
@@ -896,9 +896,9 @@ module tb_4h_3p #(
                                 ipi_msip_clears[hart] + 1;
                         if (hart_wfi_sleep[hart])
                             ipi_wfi_seen[hart] <= 1'b1;
-                        if (u_core.trap_enter &&
-                            u_core.trap_interrupt &&
-                            (u_core.trap_cause ==
+                        if (u_core.u_debug.trap_enter &&
+                            u_core.u_debug.trap_interrupt &&
+                            (u_core.u_debug.trap_cause ==
                              `RV64_IRQ_CAUSE_MACHINE_SOFTWARE))
                             ipi_interrupts[hart] <=
                                 ipi_interrupts[hart] + 1;
@@ -908,71 +908,70 @@ module tb_4h_3p #(
                         $display(
                             "ATOMIC_HART_DEBUG cycle=%0d hart=%0d active=%b irrev=%b inflight=%b engine_state=%0d engine_op=%0d atomic_addr=%h local_res=%b l1_backend=%0d l1_array=%0d l1_res_req=%b l1_res_done=%b l1_req=%b/%b home_state=%0d home_active=%b home_op=%0d home_addr=%h home_src=%0d home_hart=%0d probe_target=%b mask=%b issue=%b ack=%b lane_vr=%b/%b resp_vr=%b/%b inv_vr=%b/%b l2_cmd=%0d l2_rsp=%0d l2_mshr=%b:%0d,%b:%0d bus=%b/%b/%b/%b mem=%b:%0d",
                             cycles, hart,
-                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.active_q,
-                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.irrevocable_q,
-                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.req_inflight_q,
-                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.state_q,
-                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.op_q,
-                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.addr_q,
-                            u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.reservation_valid_q,
-                            u_core.u_bus.g_icx.u_bus.u_l1d.backend_state_q,
+                            u_core.u_debug.atomic_active,
+                            u_core.u_debug.atomic_irrevocable,
+                            u_core.u_debug.atomic_req_inflight,
+                            u_core.u_debug.atomic_state,
+                            u_core.u_debug.atomic_op,
+                            u_core.u_debug.atomic_addr,
+                            u_core.u_debug.atomic_reservation_valid,
+                            u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.backend_state,
                             u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
-                                g_cache.u_cache.state_q,
-                            u_core.u_bus.g_icx.u_bus.u_l1d.request_reservation_q,
-                            u_core.u_bus.g_icx.u_bus.u_l1d.coherent_lr_reservation_done_q,
-                            u_core.u_bus.g_icx.u_bus.u_l1d.req_valid_i,
-                            u_core.u_bus.g_icx.u_bus.u_l1d.req_ready_o,
-                            u_l2.lookup_action_r,
-                            home_request_active, u_l2.lookup_op_q,
-                            u_l2.lookup_addr_q,
-                            u_l2.lookup_source_id_q,
-                            u_l2.lookup_hart_id_q,
-                            u_l2.mshr_probe_target_q[
-                                u_l2.active_probe_mshr_q],
-                            u_l2.mshr_probe_cache_mask_q[
-                                u_l2.active_probe_mshr_q],
-                            u_l2.g_coherent_home.u_probe_tracker.
-                                issue_pending_q,
-                            u_l2.g_coherent_home.u_probe_tracker.
-                                ack_pending_q,
+                                g_cache.u_cache.u_debug.state_q,
+                            u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.request_reservation,
+                            u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.coherent_lr_reservation_done,
+                            u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.req_valid,
+                            u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.req_ready,
+                            u_l2.u_debug.lookup_action,
+                            home_request_active, u_l2.u_debug.lookup_op,
+                            u_l2.u_debug.lookup_addr,
+                            u_l2.u_debug.lookup_source_id,
+                            u_l2.u_debug.lookup_hart_id,
+                            u_l2.u_debug.mshr_probe_target[
+                                u_l2.u_debug.active_probe_mshr],
+                            u_l2.u_debug.mshr_probe_cache_mask[
+                                u_l2.u_debug.active_probe_mshr],
+                            u_l2.u_debug.probe_issue_pending,
+                            u_l2.u_debug.probe_ack_pending,
                             probe_valid, probe_ready,
                             probe_resp_valid, probe_resp_ready,
                             l1d_invalidate_valid, l1d_invalidate_ready,
-                            u_l2.cmd_count_q, u_l2.response_count_q,
-                            u_l2.mshr_valid_q[0],
-                            u_l2.mshr_state_q[0],
-                            u_l2.mshr_valid_q[1],
-                            u_l2.mshr_state_q[1],
+                            u_l2.u_debug.cmd_count,
+                            u_l2.u_debug.response_count,
+                            u_l2.u_debug.mshr_valid[0],
+                            u_l2.u_debug.mshr_state[0],
+                            u_l2.u_debug.mshr_valid[1],
+                            u_l2.u_debug.mshr_state[1],
                             bus_req_valid, bus_req_ready,
                             bus_resp_valid, bus_resp_ready,
                             memory_pending, memory_delay);
                     retired[hart] <= retired[hart] +
-                        u_core.backend_retire_arch[0] +
-                        u_core.backend_retire_arch[1] +
-                        u_core.backend_retire_arch[2];
+                        u_core.u_debug.backend_retire_arch[0] +
+                        u_core.u_debug.backend_retire_arch[1] +
+                        u_core.u_debug.backend_retire_arch[2];
                     if ((coherence_perf != 0) &&
-                        (|u_core.backend_retire_arch) &&
-                        (u_core.backend_retire_pc ==
+                        (|u_core.u_debug.backend_retire_arch) &&
+                        (u_core.u_debug.backend_retire_pc ==
                          coherence_measure_start_pc)) begin
                         coherence_measure_active[hart] <= 1'b1;
                         coherence_measure_started[hart] <= 1'b1;
                     end
                     if ((coherence_perf != 0) &&
-                        (|u_core.backend_retire_arch) &&
-                        (u_core.backend_retire_pc ==
+                        (|u_core.u_debug.backend_retire_arch) &&
+                        (u_core.u_debug.backend_retire_pc ==
                          coherence_measure_end_pc)) begin
                         coherence_measure_active[hart] <= 1'b0;
                         coherence_measure_ended[hart] <= 1'b1;
                     end
                     if ((tlbi_test != 0) &&
-                        u_core.backend_sfence_vma)
+                        u_core.u_debug.backend_sfence_vma)
                         tlbi_sfence_retired[hart] <=
                             tlbi_sfence_retired[hart] + 1;
                     if ((opensbi_smp != 0) && (hart != 0) &&
-                        (|u_core.backend_retire_arch) &&
-                        (u_core.backend_retire_pc ==
+                        (|u_core.u_debug.backend_retire_arch) &&
+                        (u_core.u_debug.backend_retire_pc ==
                          opensbi_hsm_wfi_pc) &&
-                        (u_core.backend_retire_instr ==
+                        (u_core.u_debug.backend_retire_instr ==
                          `RV64_INSTR_WFI))
                         opensbi_hsm_wfi_seen[hart] <= 1'b1;
                     if ((opensbi_smp != 0) && (hart != 0) &&
@@ -980,19 +979,23 @@ module tb_4h_3p #(
                         hart_wfi_sleep[hart])
                         opensbi_hsm_sleep_seen[hart] <= 1'b1;
                     if ((opensbi_mode != 0) &&
-                        (u_core.csr_priv_mode == `RV64_PRIV_S))
+                        (u_core.u_debug.csr_priv_mode == `RV64_PRIV_S))
                         opensbi_s_mode_hart_seen[hart] <= 1'b1;
-                    if (u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
-                        store_alloc_fire)
+                    if (u_core.u_debug.store_alloc_fire)
                         store_allocations[hart] <=
                             store_allocations[hart] + 1;
-                    if (u_core.u_bus.g_icx.u_bus.pipe_fast_request_fire &&
-                        u_core.u_bus.g_icx.u_bus.lsu_pipe_req_write_i)
+                    if (u_core.u_bus.g_icx.u_bus.u_debug.
+                            pipe_fast_request_fire &&
+                        u_core.u_bus.g_icx.u_bus.u_debug.
+                            lsu_pipe_req_write)
                         fast_store_requests[hart] <=
                             fast_store_requests[hart] + 1;
-                    if (u_core.u_bus.g_icx.u_bus.pipe_fallback_candidate &&
-                        u_core.u_bus.g_icx.u_bus.lsu_pipe_req_ready_o &&
-                        u_core.u_bus.g_icx.u_bus.lsu_pipe_req_write_i)
+                    if (u_core.u_bus.g_icx.u_bus.u_debug.
+                            pipe_fallback_candidate &&
+                        u_core.u_bus.g_icx.u_bus.u_debug.
+                            lsu_pipe_req_ready &&
+                        u_core.u_bus.g_icx.u_bus.u_debug.
+                            lsu_pipe_req_write)
                         fallback_store_requests[hart] <=
                             fallback_store_requests[hart] + 1;
                     if (hart_req_valid[hart] &&
@@ -1018,21 +1021,22 @@ module tb_4h_3p #(
                     end
                     if (opensbi_mode == 0) begin
                         if ((bare_mode != 0) &&
-                            (u_core.csr_priv_mode == `RV64_PRIV_S) &&
-                            (u_core.csr_satp_mode ==
+                            (u_core.u_debug.csr_priv_mode == `RV64_PRIV_S) &&
+                            (u_core.u_debug.csr_satp_mode ==
                              `RV64_SATP_MODE_BARE))
                             satp_seen[hart] <= 1'b1;
-                        else if ((u_core.csr_priv_mode == `RV64_PRIV_S) &&
-                                 (u_core.csr_satp_mode ==
+                        else if ((u_core.u_debug.csr_priv_mode ==
+                                  `RV64_PRIV_S) &&
+                                 (u_core.u_debug.csr_satp_mode ==
                                   `RV64_SATP_MODE_SV39)) begin
-                            if ((u_core.csr_satp_root_ppn !=
+                            if ((u_core.u_debug.csr_satp_root_ppn !=
                                  (hart_root_pa(hart) >> 12)) ||
-                                (u_core.csr_satp_asid != 0))
+                                (u_core.u_debug.csr_satp_asid != 0))
                                 $fatal(1,
                                     "hart %0d wrong SATP mode=%0d asid=%0d ppn=%h expected=%h",
-                                    hart, u_core.csr_satp_mode,
-                                    u_core.csr_satp_asid,
-                                    u_core.csr_satp_root_ppn,
+                                    hart, u_core.u_debug.csr_satp_mode,
+                                    u_core.u_debug.csr_satp_asid,
+                                    u_core.u_debug.csr_satp_root_ppn,
                                     (hart_root_pa(hart) >> 12));
                             satp_seen[hart] <= 1'b1;
                         end
@@ -1295,9 +1299,9 @@ module tb_4h_3p #(
              coherence_mshr_scan < L2_MSHRS;
              coherence_mshr_scan = coherence_mshr_scan + 1)
             if ((coherence_perf != 0) &&
-                u_l2.mshr_valid_q[coherence_mshr_scan] &&
+                u_l2.u_debug.mshr_valid[coherence_mshr_scan] &&
                 coherence_target_address(
-                    u_l2.mshr_line_addr_q[coherence_mshr_scan]))
+                    u_l2.u_debug.mshr_line_addr[coherence_mshr_scan]))
                 coherence_target_mshrs =
                     coherence_target_mshrs + 1;
     end
@@ -1307,51 +1311,51 @@ module tb_4h_3p #(
      * The coherence home now lives inside u_l2, so a lookup dispatch is the
      * equivalent accepted home operation.
      */
-    wire l2_direct_commit = u_l2.lookup_dispatch_r &&
-        (u_l2.lookup_action_r != u_l2.LOOKUP_COH_PROBE) &&
-        !u_l2.lookup_protocol_error_q &&
-        !u_l2.coherence_hart_error &&
-        !u_l2.lookup_sc_failed;
-    wire l2_probe_commit = u_l2.coherence_probe_completion;
+    wire l2_direct_commit = u_l2.u_debug.lookup_dispatch &&
+        (u_l2.u_debug.lookup_action != u_l2.u_debug.lookup_coh_probe) &&
+        !u_l2.u_debug.lookup_protocol_error &&
+        !u_l2.u_debug.coherence_hart_error &&
+        !u_l2.u_debug.lookup_sc_failed;
+    wire l2_probe_commit = u_l2.u_debug.coherence_probe_completion;
     wire [31:0] l2_probe_waiter =
-        32'(u_l2.active_probe_mshr_q) * 8;
+        32'(u_l2.u_debug.active_probe_mshr) * 8;
     assign l2_req_valid = l2_direct_commit || l2_probe_commit;
     assign l2_req_ready = 1'b1;
     assign l2_req_hart_id = l2_probe_commit ?
-        u_l2.waiter_hart_id_q[l2_probe_waiter] :
-        u_l2.lookup_hart_id_q;
+        u_l2.u_debug.waiter_hart_id[l2_probe_waiter] :
+        u_l2.u_debug.lookup_hart_id;
     assign l2_req_txn_id = l2_probe_commit ?
-        u_l2.waiter_txn_id_q[l2_probe_waiter] :
-        u_l2.lookup_txn_id_q;
+        u_l2.u_debug.waiter_txn_id[l2_probe_waiter] :
+        u_l2.u_debug.lookup_txn_id;
     assign l2_req_source_id = l2_probe_commit ?
-        u_l2.waiter_source_id_q[l2_probe_waiter] :
-        u_l2.lookup_source_id_q;
+        u_l2.u_debug.waiter_source_id[l2_probe_waiter] :
+        u_l2.u_debug.lookup_source_id;
     assign l2_req_op =
         ((l2_probe_commit ?
-          u_l2.waiter_op_q[l2_probe_waiter] :
-          u_l2.lookup_op_q) == `OPENRV64_ICX_OP_LR) ?
+          u_l2.u_debug.waiter_op[l2_probe_waiter] :
+          u_l2.u_debug.lookup_op) == `OPENRV64_ICX_OP_LR) ?
             `OPENRV64_ICX_OP_READ :
         ((l2_probe_commit ?
-          u_l2.waiter_op_q[l2_probe_waiter] :
-          u_l2.lookup_op_q) == `OPENRV64_ICX_OP_SC) ?
+          u_l2.u_debug.waiter_op[l2_probe_waiter] :
+          u_l2.u_debug.lookup_op) == `OPENRV64_ICX_OP_SC) ?
             `OPENRV64_ICX_OP_WRITE :
         (l2_probe_commit ?
-          u_l2.waiter_op_q[l2_probe_waiter] :
-          u_l2.lookup_op_q);
+          u_l2.u_debug.waiter_op[l2_probe_waiter] :
+          u_l2.u_debug.lookup_op);
     assign l2_req_lock = 1'b0;
     assign l2_req_order = `OPENRV64_ICX_ORDER_NONE;
     assign l2_req_kind = l2_probe_commit ?
-        u_l2.waiter_kind_q[l2_probe_waiter] :
-        u_l2.lookup_kind_q;
+        u_l2.u_debug.waiter_kind[l2_probe_waiter] :
+        u_l2.u_debug.lookup_kind;
     assign l2_req_attr = l2_probe_commit ?
-        u_l2.waiter_attr_q[l2_probe_waiter] :
-        u_l2.lookup_attr_q;
+        u_l2.u_debug.waiter_attr[l2_probe_waiter] :
+        u_l2.u_debug.lookup_attr;
     assign l2_req_size = l2_probe_commit ?
-        u_l2.waiter_size_q[l2_probe_waiter] :
-        u_l2.lookup_size_q;
+        u_l2.u_debug.waiter_size[l2_probe_waiter] :
+        u_l2.u_debug.lookup_size;
     assign l2_req_addr = l2_probe_commit ?
-        u_l2.waiter_addr_q[l2_probe_waiter] :
-        u_l2.lookup_addr_q;
+        u_l2.u_debug.waiter_addr[l2_probe_waiter] :
+        u_l2.u_debug.lookup_addr;
     assign l2_req_burst_len = 0;
     assign l2_wdata_valid =
         l2_req_valid && (l2_req_op == `OPENRV64_ICX_OP_WRITE);
@@ -1362,11 +1366,11 @@ module tb_4h_3p #(
     assign l2_wdata_beat_index = 0;
     assign l2_wdata_last = 1'b1;
     assign l2_wdata = l2_probe_commit ?
-        u_l2.waiter_wdata_q[l2_probe_waiter] :
-        u_l2.lookup_wdata_q;
+        u_l2.u_debug.waiter_wdata[l2_probe_waiter] :
+        u_l2.u_debug.lookup_wdata;
     assign l2_wstrb = l2_probe_commit ?
-        u_l2.waiter_wstrb_q[l2_probe_waiter] :
-        u_l2.lookup_wstrb_q;
+        u_l2.u_debug.waiter_wstrb[l2_probe_waiter] :
+        u_l2.u_debug.lookup_wstrb;
 
     openrv64_icx_4h_l1d_probe_cluster #(
         .PROBE_TIMEOUT_CYCLES(65536)
@@ -2697,16 +2701,16 @@ module tb_4h_3p #(
             cycles <= cycles + 1;
 
             if (opensbi_mode) begin
-                if ((|g_hart[0].u_core.backend_retire_arch) ||
-                    g_hart[0].u_core.backend_exception) begin
+                if ((|g_hart[0].u_core.u_debug.backend_retire_arch) ||
+                    g_hart[0].u_core.u_debug.backend_exception) begin
                     opensbi_trace_pc[opensbi_trace_write] <=
-                        g_hart[0].u_core.backend_retire_pc;
+                        g_hart[0].u_core.u_debug.backend_retire_pc;
                     opensbi_trace_instr[opensbi_trace_write] <=
-                        g_hart[0].u_core.backend_retire_instr;
+                        g_hart[0].u_core.u_debug.backend_retire_instr;
                     opensbi_trace_cause[opensbi_trace_write] <=
-                        g_hart[0].u_core.backend_cause;
+                        g_hart[0].u_core.u_debug.backend_cause;
                     opensbi_trace_exception[opensbi_trace_write] <=
-                        g_hart[0].u_core.backend_exception;
+                        g_hart[0].u_core.u_debug.backend_exception;
                     opensbi_trace_write <=
                         (opensbi_trace_write + 1) %
                         OPENSBI_TRACE_DEPTH;
@@ -2726,11 +2730,11 @@ module tb_4h_3p #(
                 if (opensbi_hang_cycles == 64) begin
                     $display(
                         "OpenSBI entered _start_hang: mcause=%016h mtval=%016h mepc=%016h mstatus=%016h priv=%0d",
-                        g_hart[0].u_core.u_csrs.mcause_q,
-                        g_hart[0].u_core.u_csrs.mtval_q,
-                        g_hart[0].u_core.u_csrs.mepc_q,
-                        g_hart[0].u_core.u_csrs.mstatus_q,
-                        g_hart[0].u_core.csr_priv_mode);
+                        g_hart[0].u_core.u_debug.csr_mcause,
+                        g_hart[0].u_core.u_debug.csr_mtval,
+                        g_hart[0].u_core.u_debug.csr_mepc,
+                        g_hart[0].u_core.u_debug.csr_mstatus,
+                        g_hart[0].u_core.u_debug.csr_priv_mode);
                     for (opensbi_trace_dump = 0;
                          opensbi_trace_dump < opensbi_trace_count;
                          opensbi_trace_dump =
@@ -2754,7 +2758,7 @@ module tb_4h_3p #(
                         "OpenSBI hart 0 parked in _start_hang before payload completion");
                 end
 
-                if (g_hart[0].u_core.csr_priv_mode ==
+                if (g_hart[0].u_core.u_debug.csr_priv_mode ==
                     `RV64_PRIV_S)
                     opensbi_s_mode_seen <= 1'b1;
 
@@ -3560,7 +3564,7 @@ module tb_4h_3p #(
                     atomic_line_probes[2], atomic_line_probes[3],
                     reservation_clears[0], reservation_clears[1],
                     reservation_clears[2], reservation_clears[3],
-                    u_l2.lookup_action_r);
+                    u_l2.u_debug.lookup_action);
             if ((cycles >= max_cycles) && (tlbi_test != 0))
                 $display(
                     "TLBI_TIMEOUT sfence=%0d,%0d,%0d,%0d pte_fence=%0d,%0d,%0d,%0d old=%0d,%0d,%0d,%0d new=%0d,%0d,%0d,%0d probes=%0d,%0d,%0d,%0d clears=%0d,%0d,%0d,%0d sc_failure=%0d,%0d,%0d,%0d sleep=%b priv=%0d,%0d,%0d,%0d home_state=%0d",
@@ -3591,7 +3595,7 @@ module tb_4h_3p #(
                         `RV64_PRIV_WIDTH],
                     hart_priv_mode[3*`RV64_PRIV_WIDTH +:
                         `RV64_PRIV_WIDTH],
-                    u_l2.lookup_action_r);
+                    u_l2.u_debug.lookup_action);
             if (cycles >= max_cycles) begin
                 if (opensbi_mode)
                     $fatal(1,

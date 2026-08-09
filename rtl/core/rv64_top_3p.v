@@ -1662,6 +1662,99 @@ module openrv64_rv64_top_3p #(
     assign trace_retire_arch = ENABLE_TRACE && (|backend_retire_arch);
     assign trace_retire_exception = ENABLE_TRACE && backend_exception;
     assign trace_retire_cause = ENABLE_TRACE ? backend_cause : 5'd0;
+
+`ifndef SYNTHESIS
+    // Stable instrumentation seam.  Keep private hierarchy out of external
+    // testbenches and generated C++ harnesses; extend the owner-local stub
+    // when another core observation is required.
+    openrv64_core_debug_stub u_debug (
+        .xlate_req_fire(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.xlate_req_fire),
+        .store_alloc_fire(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.store_alloc_fire),
+        .backend_mem_resp_ready(backend_mem_resp_ready),
+        .backend_mem_resp_valid(backend_mem_resp_valid),
+        .backend_mem_resp_tag(backend_mem_resp_tag),
+        .backend_mem_rdata(backend_mem_rdata),
+        .backend_mem_xlate_tag(backend_mem_xlate_tag),
+        .backend_mem_xlate_write(backend_mem_xlate_write),
+        .backend_mem_xlate_vaddr(backend_mem_xlate_vaddr),
+        .backend_mem_xlate_resp_valid(backend_mem_xlate_resp_valid),
+        .backend_mem_xlate_resp_ready(backend_mem_xlate_resp_ready),
+        .backend_mem_xlate_resp_tag(backend_mem_xlate_resp_tag),
+        .backend_mem_xlate_resp_paddr(backend_mem_xlate_resp_paddr),
+        .backend_mem_xlate_resp_access_fault(
+            backend_mem_xlate_resp_access_fault),
+        .backend_mem_xlate_resp_page_fault(
+            backend_mem_xlate_resp_page_fault),
+        .backend_csr_write(backend_csr_write),
+        .backend_csr_write_addr(backend_csr_write_addr),
+        .backend_csr_wdata(backend_csr_wdata),
+        .backend_cause(backend_cause),
+        .backend_exception(backend_exception),
+        .backend_retire_arch(backend_retire_arch),
+        .backend_retire_instr(backend_retire_instr),
+        .backend_retire_pc(backend_retire_pc),
+        .backend_sfence_vma(backend_sfence_vma),
+        .backend_redirect(backend_redirect),
+        .backend_redirect_target(backend_redirect_target),
+        .bp_branch_allocate(bp_branch_allocate),
+        .bp_branch_present(bp_branch_present),
+        .bp_lane(bp_lane),
+        .bp_lookup_indirect(bp_lookup_indirect),
+        .bp_lookup_rd_link(bp_lookup_rd_link),
+        .bp_predict_redirect(bp_predict_redirect),
+        .bp_predict_target(bp_predict_target),
+        .bp_prediction_taken(bp_prediction_taken),
+        .bp_prediction_target(bp_prediction_target),
+        .bp_prediction_target_valid(bp_prediction_target_valid),
+        .bp_selected_instr(bp_selected_instr),
+        .bp_selected_pc(bp_selected_pc),
+        .bp_target_mispredict(bp_target_mispredict),
+        .control_flush(control_flush),
+        .control_redirect(control_redirect),
+        .fetch3_invalidate(fetch3_invalidate),
+        .fetch3_restart(fetch3_restart),
+        .fetch3_restart_pc(fetch3_restart_pc),
+        .fetch_pipe_req_addr(fetch_pipe_req_addr),
+        .fetch_pipe_req_demand(fetch_pipe_req_demand),
+        .fetch_pipe_req_ready(fetch_pipe_req_ready),
+        .fetch_pipe_req_stash(fetch_pipe_req_stash),
+        .pc_q(pc_q),
+        .csr_priv_mode(csr_priv_mode),
+        .csr_satp_mode(csr_satp_mode),
+        .csr_satp_asid(csr_satp_asid),
+        .csr_satp_root_ppn(csr_satp_root_ppn),
+        .csr_trap_to_s(csr_trap_to_s),
+        .csr_trap_vector(csr_trap_vector),
+        .trap_enter(trap_enter),
+        .trap_interrupt(trap_interrupt),
+        .trap_cause(trap_cause),
+        .trap_pc(trap_pc),
+        .queue_retire_result(u_backend.queue_retire_result),
+        .csr_mstatus(u_csrs.mstatus_q),
+        .csr_mepc(u_csrs.mepc_q),
+        .csr_mcause(u_csrs.mcause_q),
+        .csr_mtval(u_csrs.mtval_q),
+        .csr_mip_sw(u_csrs.mip_sw_q),
+        .csr_satp(u_csrs.satp_q),
+        .atomic_active(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.active_q),
+        .atomic_irrevocable(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.irrevocable_q),
+        .atomic_req_inflight(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.req_inflight_q),
+        .atomic_state(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.state_q),
+        .atomic_op(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.op_q),
+        .atomic_addr(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.addr_q),
+        .atomic_reservation_valid(
+            u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.u_engine.
+                reservation_valid_q)
+    );
+`endif
     assign trace_retire_next_pc = ENABLE_TRACE ?
                                   backend_retire_next_pc : 64'd0;
     assign trace_retire_rd_write = ENABLE_TRACE &&

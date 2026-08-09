@@ -678,6 +678,15 @@ module openrv64_icx_l2_native #(
     wire coherence_probe_tracker_start_ready;
     wire coherence_probe_tracker_done;
     wire coherence_probe_tracker_protocol_error;
+`ifndef SYNTHESIS
+    wire [NUM_HARTS-1:0] debug_probe_issue_pending;
+    wire [NUM_HARTS-1:0] debug_probe_ack_pending;
+    wire [`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] debug_probe_id;
+    wire [`OPENRV64_ICX_PROBE_CMD_WIDTH-1:0] debug_probe_command;
+    wire [`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
+        debug_probe_cache_mask;
+    wire [63:0] debug_probe_line_addr;
+`endif
     wire [NUM_HARTS-1:0] coherence_probe_ack_valid =
         probe_resp_valid_i & ~bad_probe_response_r;
     wire coherence_probe_start_fire =
@@ -844,6 +853,16 @@ module openrv64_icx_l2_native #(
                 .protocol_error_o(
                     coherence_probe_tracker_protocol_error)
             );
+`ifndef SYNTHESIS
+            assign debug_probe_issue_pending =
+                u_probe_tracker.issue_pending_q;
+            assign debug_probe_ack_pending =
+                u_probe_tracker.ack_pending_q;
+            assign debug_probe_id = u_probe_tracker.probe_id_q;
+            assign debug_probe_command = u_probe_tracker.command_q;
+            assign debug_probe_cache_mask = u_probe_tracker.cache_mask_q;
+            assign debug_probe_line_addr = u_probe_tracker.line_addr_q;
+`endif
         end else begin : g_no_coherent_home
             assign coherence_directory_lookup_ready = 1'b1;
             assign coherence_directory_lookup_response_valid = 1'b0;
@@ -860,6 +879,14 @@ module openrv64_icx_l2_native #(
             assign coherence_probe_tracker_start_ready = 1'b0;
             assign coherence_probe_tracker_done = 1'b0;
             assign coherence_probe_tracker_protocol_error = 1'b0;
+`ifndef SYNTHESIS
+            assign debug_probe_issue_pending = 0;
+            assign debug_probe_ack_pending = 0;
+            assign debug_probe_id = 0;
+            assign debug_probe_command = 0;
+            assign debug_probe_cache_mask = 0;
+            assign debug_probe_line_addr = 0;
+`endif
             assign probe_valid_o = 0;
             assign probe_id_o = 0;
             assign probe_command_o = 0;
@@ -2034,6 +2061,115 @@ module openrv64_icx_l2_native #(
     end
 
 `ifndef SYNTHESIS
+    openrv64_l2_debug_stub #(
+        .NUM_HARTS(NUM_HARTS),
+        .MSHR_ENTRIES(MSHR_ENTRIES),
+        .WAITERS_PER_MSHR(WAITERS_PER_MSHR),
+        .COMMAND_ENTRIES(COMMAND_ENTRIES),
+        .RESPONSE_ENTRIES(RESPONSE_ENTRIES),
+        .BUS_TRACK_ENTRIES(BUS_TRACK_ENTRIES),
+        .TOTAL_WAITERS(TOTAL_WAITERS),
+        .MSHR_INDEX_WIDTH(MSHR_INDEX_WIDTH),
+        .COMMAND_COUNT_WIDTH(COMMAND_COUNT_WIDTH),
+        .RESPONSE_COUNT_WIDTH(RESPONSE_COUNT_WIDTH),
+        .TRACK_INDEX_WIDTH(TRACK_INDEX_WIDTH),
+        .WAY_INDEX_WIDTH(WAY_INDEX_WIDTH),
+        .SRAM_PAYLOAD_WIDTH(SRAM_PAYLOAD_WIDTH)
+    ) u_debug (
+        .active_probe_mshr(active_probe_mshr_q),
+        .cmd_count(cmd_count_q),
+        .coherence_hart_error(coherence_hart_error),
+        .coherence_probe_completion(coherence_probe_completion),
+        .probe_issue_pending(debug_probe_issue_pending),
+        .probe_ack_pending(debug_probe_ack_pending),
+        .lookup_action(lookup_action_r),
+        .lookup_coh_probe(LOOKUP_COH_PROBE),
+        .lookup_dispatch(lookup_dispatch_r),
+        .lookup_hart_id(lookup_hart_id_q),
+        .lookup_txn_id(lookup_txn_id_q),
+        .lookup_source_id(lookup_source_id_q),
+        .lookup_op(lookup_op_q),
+        .lookup_kind(lookup_kind_q),
+        .lookup_attr(lookup_attr_q),
+        .lookup_size(lookup_size_q),
+        .lookup_addr(lookup_addr_q),
+        .lookup_wdata(lookup_wdata_q),
+        .lookup_wstrb(lookup_wstrb_q),
+        .lookup_protocol_error(lookup_protocol_error_q),
+        .lookup_sc_failed(lookup_sc_failed),
+        .mshr_valid(mshr_valid_q),
+        .mshr_state(mshr_state_q),
+        .mshr_line_addr(mshr_line_addr_q),
+        .mshr_probe_target(mshr_probe_target_q),
+        .mshr_probe_cache_mask(mshr_probe_cache_mask_q),
+        .waiter_hart_id(waiter_hart_id_q),
+        .waiter_txn_id(waiter_txn_id_q),
+        .waiter_source_id(waiter_source_id_q),
+        .waiter_op(waiter_op_q),
+        .waiter_kind(waiter_kind_q),
+        .waiter_attr(waiter_attr_q),
+        .waiter_size(waiter_size_q),
+        .waiter_addr(waiter_addr_q),
+        .waiter_wdata(waiter_wdata_q),
+        .waiter_wstrb(waiter_wstrb_q),
+        .response_count(response_count_q),
+        .active_probe_mshr_q(active_probe_mshr_q),
+        .cmd_count_q(cmd_count_q),
+        .lookup_action_r(lookup_action_r),
+        .lookup_hart_id_q(lookup_hart_id_q),
+        .lookup_txn_id_q(lookup_txn_id_q),
+        .lookup_source_id_q(lookup_source_id_q),
+        .lookup_op_q(lookup_op_q),
+        .lookup_kind_q(lookup_kind_q),
+        .lookup_attr_q(lookup_attr_q),
+        .lookup_size_q(lookup_size_q),
+        .lookup_addr_q(lookup_addr_q),
+        .lookup_wdata_q(lookup_wdata_q),
+        .lookup_wstrb_q(lookup_wstrb_q),
+        .lookup_protocol_error_q(lookup_protocol_error_q),
+        .mshr_valid_q(mshr_valid_q),
+        .mshr_state_q(mshr_state_q),
+        .mshr_line_addr_q(mshr_line_addr_q),
+        .mshr_probe_target_q(mshr_probe_target_q),
+        .mshr_probe_cache_mask_q(mshr_probe_cache_mask_q),
+        .waiter_hart_id_q(waiter_hart_id_q),
+        .waiter_source_id_q(waiter_source_id_q),
+        .waiter_op_q(waiter_op_q),
+        .waiter_size_q(waiter_size_q),
+        .waiter_addr_q(waiter_addr_q),
+        .response_count_q(response_count_q),
+        .bus_request_fire(bus_request_fire),
+        .bus_response_fire(bus_response_fire),
+        .bus_candidate_mshr_r(bus_candidate_mshr_r),
+        .bus_candidate_action_r(bus_candidate_action_r),
+        .bus_track_head_q(bus_track_head_q),
+        .bus_track_mshr_q(bus_track_mshr_q),
+        .bus_track_action_q(bus_track_action_q),
+        .response_enqueue(response_enqueue),
+        .hit_enqueue(hit_enqueue),
+        .hit_data_q(hit_data_q),
+        .enqueue_addr(enqueue_addr),
+        .lookup_valid_q(lookup_valid_q),
+        .lookup_dispatch_r(lookup_dispatch_r),
+        .lookup_hit_r(lookup_hit_r),
+        .lookup_hit_way_r(lookup_hit_way_r),
+        .lookup_hit_payload(lookup_hit_payload),
+        .lookup_mshr_match_r(lookup_mshr_match_r),
+        .lookup_mshr_index_r(lookup_mshr_index_r),
+        .mshr_free_index_r(mshr_free_index_r),
+        .replay_candidate_mshr_r(replay_candidate_mshr_r),
+        .mshr_replay_data_q(mshr_replay_data_q),
+        .mshr_bypass_q(mshr_bypass_q),
+        .mshr_bus_cacheable_q(mshr_bus_cacheable_q),
+        .mshr_coh_action_q(mshr_coh_action_q),
+        .mshr_post_probe_state_q(mshr_post_probe_state_q),
+        .waiter_lock_q(waiter_lock_q),
+        .probe_id_q(debug_probe_id),
+        .probe_command_q(debug_probe_command),
+        .probe_cache_mask_q(debug_probe_cache_mask),
+        .probe_line_addr_q(debug_probe_line_addr)
+    );
+
     always @(posedge clk_i) begin
         if (rst_ni && command_push && req_lock_i && !lock_active_q &&
             (req_op_i != `OPENRV64_ICX_OP_READ))

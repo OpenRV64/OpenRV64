@@ -1400,6 +1400,93 @@ module openrv64_l1_cache #(
     end
 
 `ifndef SYNTHESIS
+    wire [TAG_BITS-1:0] debug_tag_mem [0:WAYS-1][0:SETS-1];
+    wire [DATA_WIDTH-1:0] debug_data_mem
+        [0:WAYS-1][0:WORDS_PER_REFILL-1][0:REFILLS_PER_WAY-1];
+    genvar debug_tag_way;
+    genvar debug_tag_set;
+    genvar debug_data_way;
+    genvar debug_data_bank;
+    genvar debug_data_index;
+    generate
+        for (debug_tag_way = 0; debug_tag_way < WAYS;
+             debug_tag_way = debug_tag_way + 1) begin : g_debug_tag_way
+            for (debug_tag_set = 0; debug_tag_set < SETS;
+                 debug_tag_set = debug_tag_set + 1) begin : g_debug_tag_set
+                if (SYNC_TAG_LOOKUP != 0)
+                    assign debug_tag_mem[debug_tag_way][debug_tag_set] =
+                        g_sync_tag_storage.g_tag_ways[
+                            debug_tag_way].tag_q[debug_tag_set];
+                else
+                    assign debug_tag_mem[debug_tag_way][debug_tag_set] =
+                        legacy_tag_q[debug_tag_way][debug_tag_set];
+            end
+        end
+        for (debug_data_way = 0; debug_data_way < WAYS;
+             debug_data_way = debug_data_way + 1) begin : g_debug_data_way
+            for (debug_data_bank = 0;
+                 debug_data_bank < WORDS_PER_REFILL;
+                 debug_data_bank = debug_data_bank + 1) begin :
+                    g_debug_data_bank
+                for (debug_data_index = 0;
+                     debug_data_index < REFILLS_PER_WAY;
+                     debug_data_index = debug_data_index + 1) begin :
+                        g_debug_data_index
+                    assign debug_data_mem[debug_data_way][debug_data_bank][
+                        debug_data_index] = g_data_ways[
+                            debug_data_way].g_refill_banks[
+                            debug_data_bank].data_q[debug_data_index];
+                end
+            end
+        end
+    endgenerate
+
+    openrv64_l1_debug_stub #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH),
+        .REFILL_DATA_WIDTH(REFILL_DATA_WIDTH),
+        .REQ_TAG_WIDTH(REQ_TAG_WIDTH),
+        .CACHE_BYTES(CACHE_BYTES),
+        .LINE_BYTES(LINE_BYTES),
+        .WAYS(WAYS),
+        .SETS(SETS),
+        .TOTAL_LINES(TOTAL_LINES),
+        .REFILLS_PER_LINE(REFILLS_PER_LINE),
+        .WORDS_PER_REFILL(WORDS_PER_REFILL),
+        .REFILLS_PER_WAY(REFILLS_PER_WAY),
+        .SET_INDEX_WIDTH(SET_INDEX_WIDTH),
+        .WAY_INDEX_WIDTH(WAY_INDEX_WIDTH),
+        .LINE_INDEX_WIDTH(LINE_INDEX_WIDTH),
+        .TAG_BITS(TAG_BITS)
+    ) u_debug (
+        .state_q(state_q),
+        .request_fire(request_fire),
+        .response_tag_q(response_tag_q),
+        .response_valid_q(response_valid_q),
+        .access_updates_line_q(access_updates_line_q),
+        .access_set_q(access_set_q),
+        .access_way_q(access_way_q),
+        .fill_fire(fill_fire),
+        .fill_set(fill_set),
+        .fill_way(fill_way),
+        .fill_line(fill_line),
+        .response_data_q(response_data_q),
+        .response_hit_q(response_hit_q),
+        .response_way_q(response_way_q),
+        .sync_lookup_valid_q(sync_lookup_valid_q),
+        .sync_lookup_hit_comb(sync_lookup_hit_comb),
+        .sync_lookup_hit_data(sync_lookup_hit_data),
+        .sync_lookup_hit_response(sync_lookup_hit_response),
+        .sync_lookup_set_q(sync_lookup_set_q),
+        .sync_lookup_tag_q(sync_lookup_tag_q),
+        .sync_lookup_valid_bits_q(sync_lookup_valid_bits_q),
+        .sync_lookup_way_comb(sync_lookup_way_comb),
+        .sync_tag_read_q(sync_tag_read_q),
+        .valid_q(valid_q),
+        .tag_mem(debug_tag_mem),
+        .data_mem(debug_data_mem)
+    );
+
     initial begin
         if (REQ_TAG_WIDTH < 1)
             $fatal(1, "L1 request tag width must be at least one bit");

@@ -2138,6 +2138,38 @@ module openrv64_fetch_3w #(
     end
 
 `ifndef SYNTHESIS
+    openrv64_fetch_debug_stub #(
+        .LINE_DEPTH(LINE_DEPTH),
+        .INGRESS_DEPTH(INGRESS_DEPTH)
+    ) u_debug (
+        .consume_pc_q(consume_pc_q),
+        .next_req_addr_q(next_req_addr_q),
+        .pending_valid_q(pending_valid_q),
+        .pending_addr_q(pending_addr_q),
+        .pair_request_select(pair_request_select),
+        .demand_request_needed(demand_request_needed),
+        .request_line_hit(request_line_hit),
+        .request_line_pending(request_line_pending),
+        .ras_req_fire(ras_req_fire),
+        .pair_req_fire(pair_req_fire),
+        .ras_line_pending_q(ras_line_pending_q),
+        .ras_line_addr_q(ras_line_addr_q),
+        .fal_line_pending_q(fal_line_pending_q),
+        .fal_line_addr_q(fal_line_addr_q),
+        .pair_predicted_valid_q(pair_predicted_valid_q),
+        .pair_predicted_addr_q(pair_predicted_addr_q),
+        .pair_unpredicted_valid_q(pair_unpredicted_valid_q),
+        .pair_unpredicted_addr_q(pair_unpredicted_addr_q),
+        .line_valid_q(line_valid_q),
+        .line_sector_valid_q(line_sector_valid_q),
+        .line_addr_q(line_addr_q),
+        .carousel_pending_valid_q(carousel_pending_valid_q),
+        .carousel_pending_addr_q(carousel_pending_addr_q),
+        .ingress_valid_q(ingress_valid_q),
+        .ingress_origin_q(ingress_origin_q),
+        .ingress_addr_q(ingress_addr_q)
+    );
+
     initial begin
         if ((!ENABLE_CAROUSEL && (LINE_DEPTH != 2)) ||
             (ENABLE_CAROUSEL && (LINE_DEPTH != 4)))

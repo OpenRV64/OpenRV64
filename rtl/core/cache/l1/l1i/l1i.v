@@ -1393,6 +1393,52 @@ module openrv64_l1i_icx #(
     end
 
 `ifndef SYNTHESIS
+    openrv64_l1i_debug_stub #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .REQ_TAG_WIDTH(REQ_TAG_WIDTH),
+        .DEMAND_DEPTH(DEMAND_DEPTH),
+        .DEMAND_MSHRS(DEMAND_MSHRS),
+        .DEMAND_INDEX_WIDTH(DEMAND_INDEX_WIDTH),
+        .DEMAND_COUNT_WIDTH(DEMAND_COUNT_WIDTH),
+        .DEMAND_MSHR_INDEX_WIDTH(DEMAND_MSHR_INDEX_WIDTH)
+    ) u_debug (
+        .icx_issue_fire(icx_issue_fire),
+        .issue_active_q(issue_active_q),
+        .issue_index(issue_index),
+        .issue_mshr_q(issue_mshr_q),
+        .l1_input_valid(l1_input_valid),
+        .l1_miss_fire(l1_miss_fire),
+        .response_pop(response_pop),
+        .response_pop_index(response_pop_index),
+        .response_valid_vec(response_valid_vec),
+        .response_complete_vec(response_complete_vec),
+        .response_prefetch_vec(response_prefetch_vec),
+        .response_count_q(response_count_q),
+        .response_free_found_r(response_free_found_r),
+        .response_free_index_r(response_free_index_r),
+        .response_complete_found_r(response_complete_found_r),
+        .response_complete_index_r(response_complete_index_r),
+        .response_valid_q(response_valid_q),
+        .response_complete_q(response_complete_q),
+        .response_prefetch_q(response_prefetch_q),
+        .response_tag_q(response_tag_q),
+        .response_vaddr_q(response_vaddr_q),
+        .response_wait_mshr_q(response_wait_mshr_q),
+        .response_mshr_q(response_mshr_q),
+        .demand_mshr_valid_vec(demand_mshr_valid_vec),
+        .demand_mshr_issued_vec(demand_mshr_issued_vec),
+        .demand_mshr_complete_vec(demand_mshr_complete_vec),
+        .demand_mshr_fill_done_vec(demand_mshr_fill_done_vec),
+        .demand_mshr_valid_q(demand_mshr_valid_q),
+        .demand_mshr_issued_q(demand_mshr_issued_q),
+        .demand_mshr_complete_q(demand_mshr_complete_q),
+        .demand_mshr_fill_done_q(demand_mshr_fill_done_q),
+        .demand_mshr_aged_q(demand_mshr_aged_q),
+        .demand_mshr_addr_q(demand_mshr_addr_q),
+        .demand_mshr_issue_found_r(demand_mshr_issue_found_r),
+        .demand_mshr_issue_index_r(demand_mshr_issue_index_r)
+    );
+
     always @(posedge clk_i) begin
         if (rst_ni && l1_mem_write)
             $fatal(1, "L1I attempted a native ICX line write");

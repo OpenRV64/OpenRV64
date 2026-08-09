@@ -145,20 +145,20 @@ class L1dWatch {
 
     void trace(const Vtb_4h_3p___024root* root, uint32_t cycle) {
 #define H0_CORE(name)                                                       \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__##name
-#define H0_LSQ(name)                                                        \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_backend__DOT__u_exec__DOT__g_3p__DOT__u_exec__DOT__u_lsu__DOT__u_lsq__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__##name
+#define H0_DEBUG(name)                                                      \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__##name
 #define H0_BUS(name)                                                        \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_debug__DOT__##name
 #define H0_L1D(name)                                                        \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_debug__DOT__##name
 #define H0_L1D_CACHE(name)                                                  \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
 #define H0_L1D_TAG_MEM(way)                                                 \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__g_sync_tag_storage__DOT__g_tag_ways__BRA__##way##__KET____DOT__tag_q
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__tag_mem[way]
 #define H0_L1D_DATA_MEM(way, bank)                                          \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__g_data_ways__BRA__##way##__KET____DOT__g_refill_banks__BRA__##bank##__KET____DOT__data_q
-        if (H0_LSQ(xlate_req_fire) &&
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__data_mem[way][bank]
+        if (H0_DEBUG(xlate_req_fire) &&
             H0_CORE(backend_mem_xlate_vaddr) == vaddr_) {
             const unsigned tag = H0_CORE(backend_mem_xlate_tag);
             xlate_pending_[tag] = true;
@@ -403,7 +403,7 @@ class L1dWatch {
         }
 
         if (H0_CORE(backend_mem_resp_valid) &&
-            H0_CORE(backend_mem_resp_ready)) {
+            H0_DEBUG(backend_mem_resp_ready)) {
             const unsigned tag = H0_CORE(backend_mem_resp_tag);
             if (response_pending_[tag]) {
                 stream_ << "BACKEND_RESPONSE cycle=" << cycle
@@ -530,11 +530,11 @@ class L1dWatch {
             }
         }
 
-        if (H0_CORE(trap_enter)) {
+        if (H0_DEBUG(trap_enter)) {
             stream_ << "TRAP cycle=" << cycle
                     << " cause="
-                    << static_cast<unsigned>(H0_CORE(trap_cause))
-                    << " epc=0x" << std::hex << H0_CORE(trap_pc)
+                    << static_cast<unsigned>(H0_DEBUG(trap_cause))
+                    << " epc=0x" << std::hex << H0_DEBUG(trap_pc)
                     << std::dec << '\n';
             stream_.flush();
         }
@@ -543,7 +543,7 @@ class L1dWatch {
 #undef H0_L1D_TAG_MEM
 #undef H0_L1D
 #undef H0_BUS
-#undef H0_LSQ
+#undef H0_DEBUG
 #undef H0_CORE
     }
 
@@ -570,8 +570,8 @@ class L1dWatch {
     void trace_mshr_path(const Vtb_4h_3p___024root* root,
                          uint32_t cycle) {
 #define H0_L1D(name)                                                        \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__##name
-#define L2(name) root->tb_4h_3p__DOT__u_l2__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_debug__DOT__##name
+#define L2(name) root->tb_4h_3p__DOT__u_l2__DOT__u_debug__DOT__##name
         if (H0_L1D(command_fire) &&
             (H0_L1D(request_demand_q) ||
              H0_L1D(request_prefetch_q))) {
@@ -801,7 +801,7 @@ class L1dWatch {
     void trace_buffers(const Vtb_4h_3p___024root* root,
                        uint32_t cycle) {
 #define H0_L1D(name)                                                        \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_debug__DOT__##name
         for (unsigned mshr = 0; mshr < 3; ++mshr) {
             if (!H0_L1D(demand_mshr_valid_q)[mshr] ||
                 !same_line(H0_L1D(demand_mshr_addr_q)[mshr]))
@@ -872,11 +872,11 @@ void trace_hart0_pc(std::ostream& stream,
     constexpr unsigned instr_lsb = 233;
     constexpr unsigned pc_lsb = 329;
     const uint8_t retire =
-        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__backend_retire_arch;
+        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__backend_retire_arch;
     const auto& results =
-        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_backend__DOT__queue_retire_result;
+        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__queue_retire_result;
     const unsigned priv =
-        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_csrs__DOT__priv_mode_q;
+        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__csr_priv_mode;
     for (unsigned lane = 0; lane < 3; ++lane) {
         if ((retire & (1U << lane)) == 0)
             continue;
@@ -891,23 +891,23 @@ void trace_hart0_pc(std::ostream& stream,
                << std::setfill(' ') << std::dec << '\n';
     }
 
-    if (root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__trap_enter) {
+    if (root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__trap_enter) {
         stream << "TRAP cycle=" << cycle
                << " hart=0 from_priv=" << priv
                << " to_s="
                << static_cast<unsigned>(
-                      root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__csr_trap_to_s)
+                      root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__csr_trap_to_s)
                << " interrupt="
                << static_cast<unsigned>(
-                      root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__trap_interrupt)
+                      root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__trap_interrupt)
                << " cause="
                << static_cast<unsigned>(
-                      root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__trap_cause)
+                      root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__trap_cause)
                << " epc=" << std::hex << std::setw(16)
                << std::setfill('0')
-               << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__trap_pc
+               << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__trap_pc
                << " vector=" << std::setw(16)
-               << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__csr_trap_vector
+               << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__csr_trap_vector
                << std::setfill(' ') << std::dec << '\n';
         stream.flush();
     }
@@ -954,12 +954,13 @@ struct HartMipSignals {
 
 void trace_l2_bus_request(const Vtb_4h_3p___024root* root,
                           uint32_t cycle) {
+#define L2_DEBUG(name) root->tb_4h_3p__DOT__u_l2__DOT__u_debug__DOT__##name
     if (!root->tb_4h_3p__DOT__bus_req_valid ||
         !root->tb_4h_3p__DOT__bus_req_ready)
         return;
 
     const unsigned mshr =
-        root->tb_4h_3p__DOT__u_l2__DOT__bus_candidate_mshr_r;
+        L2_DEBUG(bus_candidate_mshr_r);
     const unsigned waiter = mshr * 8;
     std::cout
         << "L2_BUS cycle=" << cycle
@@ -973,39 +974,40 @@ void trace_l2_bus_request(const Vtb_4h_3p___024root* root,
         << static_cast<unsigned>(root->tb_4h_3p__DOT__bus_req_cacheable)
         << " action="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__bus_candidate_action_r)
+               L2_DEBUG(bus_candidate_action_r))
         << " mshr=" << mshr
         << " state="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__mshr_state_q[mshr])
+               L2_DEBUG(mshr_state_q)[mshr])
         << " bypass="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__mshr_bypass_q[mshr])
+               L2_DEBUG(mshr_bypass_q)[mshr])
         << " mshr_cacheable="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__mshr_bus_cacheable_q[mshr])
+               L2_DEBUG(mshr_bus_cacheable_q)[mshr])
         << " waiter=" << waiter
         << " hart="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__waiter_hart_id_q[waiter])
+               L2_DEBUG(waiter_hart_id_q)[waiter])
         << " source="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__waiter_source_id_q[waiter])
+               L2_DEBUG(waiter_source_id_q)[waiter])
         << " op="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__waiter_op_q[waiter])
+               L2_DEBUG(waiter_op_q)[waiter])
         << " lock="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__waiter_lock_q[waiter])
+               L2_DEBUG(waiter_lock_q)[waiter])
         << " waiter_size="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__waiter_size_q[waiter])
+               L2_DEBUG(waiter_size_q)[waiter])
         << " waiter_addr=0x" << std::hex
-        << root->tb_4h_3p__DOT__u_l2__DOT__waiter_addr_q[waiter]
+        << L2_DEBUG(waiter_addr_q)[waiter]
         << " wstrb=0x"
         << root->tb_4h_3p__DOT__bus_req_wstrb
         << std::dec << '\n';
     std::cout.flush();
+#undef L2_DEBUG
 }
 
 void trace_coherence_state(const Vtb_4h_3p___024root* root,
@@ -1017,6 +1019,23 @@ void trace_coherence_state(const Vtb_4h_3p___024root* root,
     (void)root;
     (void)cycle;
 #else
+#define L2_DEBUG(name) root->tb_4h_3p__DOT__u_l2__DOT__u_debug__DOT__##name
+#define EP0_DEBUG(name)                                                     \
+    root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__0__KET____DOT__u_endpoint__DOT__u_debug__DOT__##name
+#define EP1_DEBUG(name)                                                     \
+    root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__1__KET____DOT__u_endpoint__DOT__u_debug__DOT__##name
+#define H0_L1D_DEBUG(name)                                                  \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_debug__DOT__##name
+#define H1_L1D_DEBUG(name)                                                  \
+    root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_debug__DOT__##name
+#define H0_L1I_DEBUG(name)                                                  \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_debug__DOT__##name
+#define H1_L1I_DEBUG(name)                                                  \
+    root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_debug__DOT__##name
+#define H0_L1I_CACHE_DEBUG(name)                                            \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
+#define H1_L1I_CACHE_DEBUG(name)                                            \
+    root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
     const uint64_t fetch_pc0 =
         static_cast<uint64_t>(root->tb_4h_3p__DOT__dbg_pc[0]) |
         (static_cast<uint64_t>(root->tb_4h_3p__DOT__dbg_pc[1]) << 32);
@@ -1029,9 +1048,9 @@ void trace_coherence_state(const Vtb_4h_3p___024root* root,
         << root->tb_4h_3p__DOT__retired[0] << ','
         << root->tb_4h_3p__DOT__retired[1]
         << " pc=0x" << std::hex
-        << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__backend_retire_pc
+        << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__backend_retire_pc
         << ",0x"
-        << root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__backend_retire_pc
+        << root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_debug__DOT__backend_retire_pc
         << " fetch=0x" << fetch_pc0 << ':'
         << root->tb_4h_3p__DOT__dbg_instr[0]
         << ",0x" << fetch_pc1 << ':'
@@ -1048,112 +1067,112 @@ void trace_coherence_state(const Vtb_4h_3p___024root* root,
         << static_cast<unsigned>(root->tb_4h_3p__DOT__l1d_invalidate_ready)
         << " probe_pending=0x"
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__g_coherent_home__DOT__u_probe_tracker__DOT__issue_pending_q)
+               L2_DEBUG(probe_issue_pending))
         << "/0x"
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__g_coherent_home__DOT__u_probe_tracker__DOT__ack_pending_q)
+               L2_DEBUG(probe_ack_pending))
         << ":" << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__g_coherent_home__DOT__u_probe_tracker__DOT__probe_id_q)
+               L2_DEBUG(probe_id_q))
         << ':' << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__g_coherent_home__DOT__u_probe_tracker__DOT__command_q)
+               L2_DEBUG(probe_command_q))
         << ':' << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_l2__DOT__g_coherent_home__DOT__u_probe_tracker__DOT__cache_mask_q)
+               L2_DEBUG(probe_cache_mask_q))
         << ":0x" << std::hex
-        << root->tb_4h_3p__DOT__u_l2__DOT__g_coherent_home__DOT__u_probe_tracker__DOT__line_addr_q
+        << L2_DEBUG(probe_line_addr_q)
         << " probe_resp=0x"
         << static_cast<unsigned>(root->tb_4h_3p__DOT__probe_resp_valid)
         << " endpoint=" << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__0__KET____DOT__u_endpoint__DOT__invalidate_pending_q)
+               EP0_DEBUG(invalidate_pending_q))
         << ':' << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__0__KET____DOT__u_endpoint__DOT__response_valid_q)
+               EP0_DEBUG(response_valid_q))
         << ':' << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__0__KET____DOT__u_endpoint__DOT__response_id_q)
-        << ':' << root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__0__KET____DOT__u_endpoint__DOT__timeout_q
+               EP0_DEBUG(response_id_q))
+        << ':' << EP0_DEBUG(timeout_q)
         << ','
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__1__KET____DOT__u_endpoint__DOT__invalidate_pending_q)
+               EP1_DEBUG(invalidate_pending_q))
         << ':' << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__1__KET____DOT__u_endpoint__DOT__response_valid_q)
+               EP1_DEBUG(response_valid_q))
         << ':' << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__1__KET____DOT__u_endpoint__DOT__response_id_q)
-        << ':' << root->tb_4h_3p__DOT__u_probe_cluster__DOT__g_endpoint__BRA__1__KET____DOT__u_endpoint__DOT__timeout_q
+               EP1_DEBUG(response_id_q))
+        << ':' << EP1_DEBUG(timeout_q)
         << " l1d0=" << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__backend_state_q)
+               H0_L1D_DEBUG(backend_state))
         << ':'
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__store_buffer_count_q)
+               H0_L1D_DEBUG(store_buffer_count))
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__demand_mshr_valid_vec)
+               H0_L1D_DEBUG(demand_mshr_valid))
         << ":0x"
-        << root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__request_addr_q
+        << H0_L1D_DEBUG(request_addr)
         << " l1d1=" << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__backend_state_q)
+               H1_L1D_DEBUG(backend_state))
         << ':'
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__store_buffer_count_q)
+               H1_L1D_DEBUG(store_buffer_count))
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__demand_mshr_valid_vec)
+               H1_L1D_DEBUG(demand_mshr_valid))
         << ":0x"
-        << root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__request_addr_q
+        << H1_L1D_DEBUG(request_addr)
         << " l1i0=" << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__state_q)
+               H0_L1I_CACHE_DEBUG(state_q))
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__demand_mshr_valid_vec)
+               H0_L1I_DEBUG(demand_mshr_valid_vec))
         << ':' << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__response_count_q)
+               H0_L1I_DEBUG(response_count_q))
         << " l1i1="
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__state_q)
+               H1_L1I_CACHE_DEBUG(state_q))
         << ":0x" << std::hex
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__demand_mshr_valid_vec)
+               H1_L1I_DEBUG(demand_mshr_valid_vec))
         << ':' << std::dec
         << static_cast<unsigned>(
-               root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__response_count_q)
+               H1_L1I_DEBUG(response_count_q))
         << " l2=" << std::dec
-        << static_cast<unsigned>(root->tb_4h_3p__DOT__u_l2__DOT__lookup_action_r)
+        << static_cast<unsigned>(L2_DEBUG(lookup_action_r))
         << ':'
-        << static_cast<unsigned>(root->tb_4h_3p__DOT__u_l2__DOT__lookup_op_q)
+        << static_cast<unsigned>(L2_DEBUG(lookup_op_q))
         << ":0x" << std::hex
-        << root->tb_4h_3p__DOT__u_l2__DOT__lookup_addr_q
+        << L2_DEBUG(lookup_addr_q)
         << " active_probe=" << std::dec
-        << static_cast<unsigned>(root->tb_4h_3p__DOT__u_l2__DOT__active_probe_mshr_q)
+        << static_cast<unsigned>(L2_DEBUG(active_probe_mshr_q))
         << " queues="
-        << static_cast<unsigned>(root->tb_4h_3p__DOT__u_l2__DOT__cmd_count_q)
+        << static_cast<unsigned>(L2_DEBUG(cmd_count_q))
         << '/'
-        << static_cast<unsigned>(root->tb_4h_3p__DOT__u_l2__DOT__response_count_q)
+        << static_cast<unsigned>(L2_DEBUG(response_count_q))
         << " mshr=";
     for (unsigned mshr = 0; mshr < 8; ++mshr) {
         if (mshr)
             std::cout << ',';
         std::cout
             << static_cast<unsigned>(
-                   root->tb_4h_3p__DOT__u_l2__DOT__mshr_valid_q[mshr])
+                   L2_DEBUG(mshr_valid_q)[mshr])
             << ':'
             << static_cast<unsigned>(
-                   root->tb_4h_3p__DOT__u_l2__DOT__mshr_state_q[mshr])
+                   L2_DEBUG(mshr_state_q)[mshr])
             << ':'
             << static_cast<unsigned>(
-                   root->tb_4h_3p__DOT__u_l2__DOT__mshr_post_probe_state_q[mshr])
+                   L2_DEBUG(mshr_post_probe_state_q)[mshr])
             << ':'
             << static_cast<unsigned>(
-                   root->tb_4h_3p__DOT__u_l2__DOT__mshr_coh_action_q[mshr])
+                   L2_DEBUG(mshr_coh_action_q)[mshr])
             << ":0x" << std::hex
-            << root->tb_4h_3p__DOT__u_l2__DOT__mshr_line_addr_q[mshr]
+            << L2_DEBUG(mshr_line_addr_q)[mshr]
             << ":0x" << std::hex
             << static_cast<unsigned>(
-                   root->tb_4h_3p__DOT__u_l2__DOT__mshr_probe_target_q[mshr])
+                   L2_DEBUG(mshr_probe_target_q)[mshr])
             << "/0x"
             << static_cast<unsigned>(
-                   root->tb_4h_3p__DOT__u_l2__DOT__mshr_probe_cache_mask_q[mshr])
+                   L2_DEBUG(mshr_probe_cache_mask_q)[mshr])
             << std::dec;
     }
     std::cout
@@ -1170,17 +1189,26 @@ void trace_coherence_state(const Vtb_4h_3p___024root* root,
         << static_cast<unsigned>(root->tb_4h_3p__DOT__ddr_outstanding)
         << '\n';
     std::cout.flush();
+#undef H1_L1I_CACHE_DEBUG
+#undef H0_L1I_CACHE_DEBUG
+#undef H1_L1I_DEBUG
+#undef H0_L1I_DEBUG
+#undef H1_L1D_DEBUG
+#undef H0_L1D_DEBUG
+#undef EP1_DEBUG
+#undef EP0_DEBUG
+#undef L2_DEBUG
 #endif
 }
 
 void trace_hart0_l1i_state(const Vtb_4h_3p___024root* root,
                            uint32_t cycle) {
 #define H0_BUS(name)                                                        \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_debug__DOT__##name
 #define H0_L1I(name)                                                       \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_debug__DOT__##name
 #define H0_CACHE(name)                                                     \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
     std::cout
         << "L1I_REPLAY cycle=" << cycle
         << " arb="
@@ -1282,22 +1310,22 @@ void trace_hart0_l1i_state(const Vtb_4h_3p___024root* root,
 void trace_hart0_fetch_path(const Vtb_4h_3p___024root* root,
                             uint32_t cycle, char phase) {
 #define H0_CORE(name)                                                      \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__##name
 #define H0_FETCH(name)                                                     \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__g_fetch_axi__DOT__u_fetch__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__g_fetch_axi__DOT__u_fetch__DOT__u_debug__DOT__##name
 #define H0_BUS(name)                                                       \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_debug__DOT__##name
 #define H0_RAS(name)                                                       \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bp__DOT__g_ras__DOT__u_ras__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bp__DOT__g_ras__DOT__u_ras__DOT__u_debug__DOT__##name
 #define H0_CSR(name)                                                       \
-    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_csrs__DOT__##name
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__##name
     const unsigned ras_top_index = H0_RAS(top_index);
-    const uint64_t satp = H0_CSR(satp_q);
+    const uint64_t satp = H0_CSR(csr_satp);
 
     std::cout
         << "FETCH_PATH cycle=" << cycle << " phase=" << phase
         << " core=0x" << std::hex << H0_CORE(pc_q)
-        << ":priv=" << std::dec << static_cast<unsigned>(H0_CSR(priv_mode_q))
+        << ":priv=" << std::dec << static_cast<unsigned>(H0_CSR(csr_priv_mode))
         << ":vm=" << static_cast<unsigned>((satp >> 60) & 0xfU)
         << " control="
         << static_cast<unsigned>(H0_CORE(control_flush))
@@ -1429,19 +1457,19 @@ HartMipSignals hart_mip_signals(const Vtb_4h_3p___024root* root,
     case 0:
         return {
             static_cast<bool>(
-                root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__backend_csr_write),
-            root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__backend_csr_write_addr,
-            root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__backend_csr_wdata,
-            root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_csrs__DOT__mip_sw_q,
+                root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__backend_csr_write),
+            root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__backend_csr_write_addr,
+            root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__backend_csr_wdata,
+            root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__csr_mip_sw,
         };
 #if OPENRV64_4H_CORE_INSTANCES >= 2
     case 1:
         return {
             static_cast<bool>(
-                root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__backend_csr_write),
-            root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__backend_csr_write_addr,
-            root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__backend_csr_wdata,
-            root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_csrs__DOT__mip_sw_q,
+                root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_debug__DOT__backend_csr_write),
+            root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_debug__DOT__backend_csr_write_addr,
+            root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_debug__DOT__backend_csr_wdata,
+            root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_debug__DOT__csr_mip_sw,
         };
 #endif
     default:

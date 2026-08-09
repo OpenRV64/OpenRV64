@@ -122,34 +122,44 @@ $(FETCH_2P_SIM_BUILD): rtl/core/fetch/fetch.v tb/tb_fetch_2p.sv
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_2P_SIM_BUILD) tb/tb_fetch_2p.sv
 
-$(FETCH_3W_SIM_BUILD): rtl/core/fetch/fetch_3w.v $(FETCH_3W_SIM_SRCS)
+$(FETCH_3W_SIM_BUILD): $(FETCH_DEBUG_STUB_SRCS) \
+		rtl/core/fetch/fetch_3w.v $(FETCH_3W_SIM_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_3W_SIM_BUILD) \
-		rtl/core/fetch/fetch_3w.v $(FETCH_3W_SIM_SRCS)
+		$(FETCH_DEBUG_STUB_SRCS) rtl/core/fetch/fetch_3w.v \
+		$(FETCH_3W_SIM_SRCS)
 
-$(FETCH_3W_CAROUSEL_SIM_BUILD): rtl/core/fetch/fetch_3w.v \
+$(FETCH_3W_CAROUSEL_SIM_BUILD): $(FETCH_DEBUG_STUB_SRCS) \
+		rtl/core/fetch/fetch_3w.v \
 		$(FETCH_3W_CAROUSEL_SIM_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_3W_CAROUSEL_SIM_BUILD) \
-		rtl/core/fetch/fetch_3w.v $(FETCH_3W_CAROUSEL_SIM_SRCS)
+		$(FETCH_DEBUG_STUB_SRCS) rtl/core/fetch/fetch_3w.v \
+		$(FETCH_3W_CAROUSEL_SIM_SRCS)
 
-$(FETCH_3W_SECTOR_SIM_BUILD): rtl/core/fetch/fetch_3w.v \
+$(FETCH_3W_SECTOR_SIM_BUILD): $(FETCH_DEBUG_STUB_SRCS) \
+		rtl/core/fetch/fetch_3w.v \
 		$(FETCH_3W_SECTOR_SIM_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_3W_SECTOR_SIM_BUILD) \
-		rtl/core/fetch/fetch_3w.v $(FETCH_3W_SECTOR_SIM_SRCS)
+		$(FETCH_DEBUG_STUB_SRCS) rtl/core/fetch/fetch_3w.v \
+		$(FETCH_3W_SECTOR_SIM_SRCS)
 
-$(FETCH_3W_PAIR512_SIM_BUILD): rtl/core/fetch/fetch_3w.v \
+$(FETCH_3W_PAIR512_SIM_BUILD): $(FETCH_DEBUG_STUB_SRCS) \
+		rtl/core/fetch/fetch_3w.v \
 		$(FETCH_3W_PAIR512_SIM_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_3W_PAIR512_SIM_BUILD) \
-		rtl/core/fetch/fetch_3w.v $(FETCH_3W_PAIR512_SIM_SRCS)
+		$(FETCH_DEBUG_STUB_SRCS) rtl/core/fetch/fetch_3w.v \
+		$(FETCH_3W_PAIR512_SIM_SRCS)
 
-$(FETCH_3W_PAIR1024_SIM_BUILD): rtl/core/fetch/fetch_3w.v \
+$(FETCH_3W_PAIR1024_SIM_BUILD): $(FETCH_DEBUG_STUB_SRCS) \
+		rtl/core/fetch/fetch_3w.v \
 		$(FETCH_3W_PAIR1024_SIM_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_3W_PAIR1024_SIM_BUILD) \
-		rtl/core/fetch/fetch_3w.v $(FETCH_3W_PAIR1024_SIM_SRCS)
+		$(FETCH_DEBUG_STUB_SRCS) rtl/core/fetch/fetch_3w.v \
+		$(FETCH_3W_PAIR1024_SIM_SRCS)
 
 $(PREFIX_ADDSUB_SIM_BUILD): $(PREFIX_ADDSUB_SIM_SRCS) rtl/core/arith/prefix-addsub.v
 	mkdir -p sim

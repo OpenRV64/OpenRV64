@@ -8,6 +8,7 @@
 `include "core/exec/bp/bimodal.v"
 `include "core/exec/bp/gshare_btb.v"
 `include "core/exec/bp/tournament_btb.v"
+`include "core/exec/bp/debug/stub.v"
 `include "core/exec/bp/ras.v"
 `timescale 1ns/1ps
 
