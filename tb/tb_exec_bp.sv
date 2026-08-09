@@ -7,6 +7,7 @@ module tb_exec_bp;
     logic clk;
     logic rst_n;
     logic flush;
+    logic ras_context_flush;
     logic lookup_valid;
     logic lookup_branch;
     logic lookup_jump;
@@ -70,6 +71,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump),
@@ -101,6 +103,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump),
@@ -132,6 +135,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump),
@@ -163,6 +167,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump),
@@ -194,6 +199,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump),
@@ -227,6 +233,7 @@ module tb_exec_bp;
         .RAS_DEPTH(4)
     ) u_btfnt_no_ras (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch), .lookup_jump_i(lookup_jump),
         .lookup_indirect_i(lookup_indirect),
@@ -256,6 +263,7 @@ module tb_exec_bp;
         .RAS_DEPTH(4)
     ) u_btfnt_ras4 (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch), .lookup_jump_i(lookup_jump),
         .lookup_indirect_i(lookup_indirect),
@@ -286,6 +294,7 @@ module tb_exec_bp;
         .BIMODAL_UPDATE_DEPTH(4)
     ) u_bimodal (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(1'b0),
+        .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch), .lookup_jump_i(lookup_jump),
         .lookup_indirect_i(lookup_indirect),
@@ -381,6 +390,7 @@ module tb_exec_bp;
 
     initial begin
         flush = 1'b0;
+        ras_context_flush = 1'b0;
         clear_lookup();
         clear_resolve();
         clear_train();
@@ -493,6 +503,36 @@ module tb_exec_bp;
                    "disabled RAS predicted return: state=%03b target_valid=%0b",
                    {no_ras_prediction, no_ras_fetch, no_ras_decode},
                    no_ras_target_valid);
+
+        // A trap/return/address-space flush must discard resolved RAS state.
+        // Otherwise a return in the new context can fetch an old virtual
+        // address as a BARE physical address.  It must instead wait for the
+        // backend to resolve the indirect target.
+        ras_context_flush = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        ras_context_flush = 1'b0;
+        check_outputs(3'b010, 3'b010, 3'b010, 3'b010, 3'b010,
+                      "architectural flush invalidates RAS context");
+        if (btfnt_target_valid || ras4_target_valid)
+            $fatal(1,
+                   "architectural flush retained RAS target: default=%0b ras4=%0b",
+                   btfnt_target_valid, ras4_target_valid);
+
+        // Restore the entry for target-mismatch and pop coverage below.
+        clear_lookup();
+        resolve_valid = 1'b1;
+        resolve_taken = 1'b1;
+        resolve_instr = 32'h0000_00ef; // JAL x1, 0
+        resolve_pc = 64'h100;
+        resolve_target = 64'h100;
+        @(posedge clk);
+        @(negedge clk);
+        clear_resolve();
+        lookup_valid = 1'b1;
+        lookup_jump = 1'b1;
+        lookup_indirect = 1'b1;
+        lookup_instr = 32'h0000_8067;
 
         lookup_allocate = 1'b1;
         @(posedge clk);

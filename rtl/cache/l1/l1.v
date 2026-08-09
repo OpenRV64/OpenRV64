@@ -696,8 +696,15 @@ module openrv64_l1_cache #(
     assign miss_aged_o = ((SYNC_TAG_LOOKUP != 0) &&
                           sync_lookup_valid_q) ?
                          sync_lookup_aged_q : req_aged_i;
+    // A detached fill and a cache-hit store both write the single data-SRAM
+    // port.  A fill probe may have launched while the store was still in the
+    // synchronous lookup stage, so do not acknowledge that fill after the
+    // store enters STATE_ACCESS.  Holding it until STATE_RUN preserves the
+    // store update instead of silently letting detached_fill_write win the
+    // data_write mux while the posted store is also acknowledged.
     assign fill_ready_o = (SYNC_TAG_LOOKUP != 0) ?
-                          (detached_fill_enabled && sync_fill_probe_q) :
+                          (detached_fill_enabled && sync_fill_probe_q &&
+                           (state_q == STATE_RUN)) :
                           (detached_fill_enabled &&
                            (state_q == STATE_RUN) &&
                            !invalidate_valid_i && invalidate_quiescent);

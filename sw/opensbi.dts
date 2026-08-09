@@ -12,6 +12,20 @@
 #error OPENRV64_HART_COUNT must be 1, 2, or 4
 #endif
 
+#if defined(OPENRV64_ZBB) && defined(OPENRV64_ZICCLSM)
+#define OPENRV64_RISCV_ISA "rv64ima_svade_zbb_zicclsm_zicsr_zifencei"
+#define OPENRV64_RISCV_ISA_EXTENSIONS "i", "m", "a", "svade", "zbb", "zicclsm", "zicsr", "zifencei"
+#elif defined(OPENRV64_ZBB)
+#define OPENRV64_RISCV_ISA "rv64ima_svade_zbb_zicsr_zifencei"
+#define OPENRV64_RISCV_ISA_EXTENSIONS "i", "m", "a", "svade", "zbb", "zicsr", "zifencei"
+#elif defined(OPENRV64_ZICCLSM)
+#define OPENRV64_RISCV_ISA "rv64ima_svade_zicclsm_zicsr_zifencei"
+#define OPENRV64_RISCV_ISA_EXTENSIONS "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei"
+#else
+#define OPENRV64_RISCV_ISA "rv64ima_svade_zicsr_zifencei"
+#define OPENRV64_RISCV_ISA_EXTENSIONS "i", "m", "a", "svade", "zicsr", "zifencei"
+#endif
+
 / {
     #address-cells = <2>;
     #size-cells = <2>;
@@ -44,15 +58,9 @@
             reg = <0>;
             status = "okay";
             compatible = "riscv";
-#ifdef OPENRV64_ZICCLSM
-            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa = OPENRV64_RISCV_ISA;
             riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
-#else
-            riscv,isa = "rv64ima_svade_zicsr_zifencei";
-            riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
-#endif
+            riscv,isa-extensions = OPENRV64_RISCV_ISA_EXTENSIONS;
             mmu-type = "riscv,sv39";
 
             cpu0_intc: interrupt-controller {
@@ -68,15 +76,9 @@
             reg = <1>;
             status = "okay";
             compatible = "riscv";
-#ifdef OPENRV64_ZICCLSM
-            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa = OPENRV64_RISCV_ISA;
             riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
-#else
-            riscv,isa = "rv64ima_svade_zicsr_zifencei";
-            riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
-#endif
+            riscv,isa-extensions = OPENRV64_RISCV_ISA_EXTENSIONS;
             mmu-type = "riscv,sv39";
 
             cpu1_intc: interrupt-controller {
@@ -93,15 +95,9 @@
             reg = <2>;
             status = "okay";
             compatible = "riscv";
-#ifdef OPENRV64_ZICCLSM
-            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa = OPENRV64_RISCV_ISA;
             riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
-#else
-            riscv,isa = "rv64ima_svade_zicsr_zifencei";
-            riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
-#endif
+            riscv,isa-extensions = OPENRV64_RISCV_ISA_EXTENSIONS;
             mmu-type = "riscv,sv39";
 
             cpu2_intc: interrupt-controller {
@@ -116,15 +112,9 @@
             reg = <3>;
             status = "okay";
             compatible = "riscv";
-#ifdef OPENRV64_ZICCLSM
-            riscv,isa = "rv64ima_svade_zicclsm_zicsr_zifencei";
+            riscv,isa = OPENRV64_RISCV_ISA;
             riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicclsm", "zicsr", "zifencei";
-#else
-            riscv,isa = "rv64ima_svade_zicsr_zifencei";
-            riscv,isa-base = "rv64i";
-            riscv,isa-extensions = "i", "m", "a", "svade", "zicsr", "zifencei";
-#endif
+            riscv,isa-extensions = OPENRV64_RISCV_ISA_EXTENSIONS;
             mmu-type = "riscv,sv39";
 
             cpu3_intc: interrupt-controller {

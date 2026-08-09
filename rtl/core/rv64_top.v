@@ -726,6 +726,11 @@ module openrv64_rv64_top #(
         .rst_n(rst_n),
         .flush_i(hard_flush_req),
         .squash_i(1'b0),
+        .ras_context_flush_i(hard_flush_trap_req ||
+                             hard_flush_irq_req ||
+                             hard_flush_mret_req ||
+                             hard_flush_sret_req ||
+                             hard_flush_restart_req),
         .lookup_valid_i(bp_branch_present),
         .lookup_branch_i(bp_lookup_branch),
         .lookup_jump_i(bp_lookup_jump),

@@ -183,6 +183,14 @@ module openrv64_l1d_icx #(
     localparam integer DEMAND_MSHR_INDEX_WIDTH =
         (DEMAND_MSHRS > 1) ? $clog2(DEMAND_MSHRS) : 1;
     localparam integer DEMAND_WAITER_COUNT = 1 << REQ_TAG_WIDTH;
+    // The LSU tag is deliberately small and may be recycled immediately
+    // after a response. Carry a separate epoch through the synchronous L1
+    // lookup so line-sized dirty-overlay state cannot be selected by numeric
+    // tag alone. The epoch is not relied upon to avoid wrap: matching bypass
+    // ownership is cleared when its response is consumed.
+    localparam integer TAG_OVERLAY_EPOCH_WIDTH = 4;
+    localparam integer L1_REQ_TAG_WIDTH =
+        REQ_TAG_WIDTH + TAG_OVERLAY_EPOCH_WIDTH;
     localparam integer PREFETCH_WINDOW_INDEX_WIDTH =
         (PREFETCH_MAX_DISTANCE > 1) ?
         $clog2(PREFETCH_MAX_DISTANCE) : 1;
@@ -220,7 +228,11 @@ module openrv64_l1d_icx #(
     wire l1_mem_error;
     wire l1_miss_valid;
     wire l1_miss_ready;
-    wire [REQ_TAG_WIDTH-1:0] l1_miss_tag;
+    wire [L1_REQ_TAG_WIDTH-1:0] l1_miss_identity;
+    wire [REQ_TAG_WIDTH-1:0] l1_miss_tag =
+        l1_miss_identity[REQ_TAG_WIDTH-1:0];
+    wire [TAG_OVERLAY_EPOCH_WIDTH-1:0] l1_miss_epoch =
+        l1_miss_identity[L1_REQ_TAG_WIDTH-1:REQ_TAG_WIDTH];
     wire [ADDR_WIDTH-1:0] l1_miss_addr;
     wire l1_miss_aged;
     wire l1_fill_valid;
@@ -228,7 +240,7 @@ module openrv64_l1d_icx #(
     wire [ADDR_WIDTH-1:0] l1_fill_addr /* verilator public_flat_rd */;
     wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l1_fill_data;
     wire l1_fill_aged;
-    wire [REQ_TAG_WIDTH-1:0] l1_resp_tag;
+    wire [L1_REQ_TAG_WIDTH-1:0] l1_resp_identity;
     wire command_fire;
     wire wdata_fire;
     wire icx_response_ready;
@@ -285,6 +297,8 @@ module openrv64_l1d_icx #(
     reg demand_waiter_valid_q [0:DEMAND_WAITER_COUNT-1];
     reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
         demand_waiter_mshr_q [0:DEMAND_WAITER_COUNT-1];
+    reg [TAG_OVERLAY_EPOCH_WIDTH-1:0]
+        demand_waiter_epoch_q [0:DEMAND_WAITER_COUNT-1];
     reg tag_reservation_error_q [0:DEMAND_WAITER_COUNT-1];
 
     // A request's older-store snapshot is owned by its global LSU tag, not by
@@ -297,14 +311,25 @@ module openrv64_l1d_icx #(
     (* ram_style = "block", syn_ramstyle = "block_ram" *)
     reg [TAG_OVERLAY_WIDTH-1:0]
         tag_overlay_mem_q [0:DEMAND_WAITER_COUNT-1];
+    reg [TAG_OVERLAY_EPOCH_WIDTH-1:0]
+        tag_overlay_mem_epoch_q [0:DEMAND_WAITER_COUNT-1];
     reg tag_overlay_needed_q [0:DEMAND_WAITER_COUNT-1];
+    reg [TAG_OVERLAY_EPOCH_WIDTH-1:0]
+        tag_overlay_owner_epoch_q [0:DEMAND_WAITER_COUNT-1];
     reg [2:0] tag_overlay_word_q [0:DEMAND_WAITER_COUNT-1];
     reg tag_overlay_read_valid_q;
     reg [REQ_TAG_WIDTH-1:0] tag_overlay_read_tag_q;
+    reg [TAG_OVERLAY_EPOCH_WIDTH-1:0]
+        tag_overlay_read_epoch_q;
+    reg [TAG_OVERLAY_EPOCH_WIDTH-1:0]
+        tag_overlay_read_mem_epoch_q;
     reg [TAG_OVERLAY_WIDTH-1:0] tag_overlay_read_data_q;
     reg tag_overlay_bypass_valid_q;
     reg [REQ_TAG_WIDTH-1:0] tag_overlay_bypass_tag_q;
+    reg [TAG_OVERLAY_EPOCH_WIDTH-1:0]
+        tag_overlay_bypass_epoch_q;
     reg [TAG_OVERLAY_WIDTH-1:0] tag_overlay_bypass_data_q;
+    reg [TAG_OVERLAY_EPOCH_WIDTH-1:0] tag_overlay_epoch_q;
 
     wire demand_mshr_match_found_r;
     wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_match_index_r;
@@ -316,6 +341,18 @@ module openrv64_l1d_icx #(
     wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_response_index_r;
     wire demand_mshr_fill_found_r;
     wire [DEMAND_MSHR_INDEX_WIDTH-1:0] demand_mshr_fill_index_r;
+    // The synchronous L1 array probes its tags before accepting a fill. Pin
+    // the selected complete MSHR across that busy cycle so a newly completed
+    // lower-index entry cannot replace the address/data under asserted valid.
+    // TODO: make fill arbitration a proper queued/reserved interface shared
+    // with the eventual unified L1/L2 MSHR machinery.
+    reg demand_mshr_fill_hold_valid_q;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0]
+        demand_mshr_fill_hold_index_q;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0]
+        demand_mshr_fill_selected_index =
+            demand_mshr_fill_hold_valid_q ?
+            demand_mshr_fill_hold_index_q : demand_mshr_fill_index_r;
     wire demand_mshr_prefetch_response_match_r;
     wire [DEMAND_MSHR_INDEX_WIDTH-1:0]
         demand_mshr_prefetch_response_index_r;
@@ -600,7 +637,7 @@ module openrv64_l1d_icx #(
     wire [63:0] l1_req_rdata;
     wire l1_req_error;
     wire l1_posted_resp_valid;
-    wire [REQ_TAG_WIDTH-1:0] l1_posted_resp_tag;
+    wire [L1_REQ_TAG_WIDTH-1:0] l1_posted_resp_identity;
     wire postable_store;
     wire store_buffer_accept;
     wire posted_store_request_ready;
@@ -688,28 +725,50 @@ module openrv64_l1d_icx #(
                                   !response_tag_empty;
     wire normal_response_candidate = l1_resp_valid &&
                                      response_tag_available;
+    wire [L1_REQ_TAG_WIDTH-1:0] normal_response_identity;
     wire [REQ_TAG_WIDTH-1:0] normal_response_tag;
-    wire [REQ_TAG_WIDTH-1:0] response_fifo_head_tag;
-    assign normal_response_tag = (SYNC_TAG_LOOKUP != 0) ?
-                                 l1_resp_tag : response_fifo_head_tag;
+    wire [TAG_OVERLAY_EPOCH_WIDTH-1:0] normal_response_epoch;
+    wire [L1_REQ_TAG_WIDTH-1:0] response_fifo_head_identity;
+    assign normal_response_identity = (SYNC_TAG_LOOKUP != 0) ?
+        l1_resp_identity : response_fifo_head_identity;
+    assign normal_response_tag =
+        normal_response_identity[REQ_TAG_WIDTH-1:0];
+    assign normal_response_epoch = normal_response_identity[
+        L1_REQ_TAG_WIDTH-1:REQ_TAG_WIDTH];
+    wire [TAG_OVERLAY_EPOCH_WIDTH-1:0] demand_overlay_epoch =
+        demand_waiter_epoch_q[demand_waiter_response_tag_r];
+    wire demand_overlay_owner_match =
+        tag_overlay_owner_epoch_q[demand_waiter_response_tag_r] ==
+        demand_overlay_epoch;
+    wire normal_overlay_owner_match =
+        tag_overlay_owner_epoch_q[normal_response_tag] ==
+        normal_response_epoch;
     wire demand_overlay_needed =
         demand_waiter_response_found_r &&
+        demand_overlay_owner_match &&
         tag_overlay_needed_q[demand_waiter_response_tag_r];
     wire normal_overlay_needed =
         normal_response_candidate &&
+        normal_overlay_owner_match &&
         tag_overlay_needed_q[normal_response_tag];
     wire demand_overlay_read_match =
         tag_overlay_read_valid_q &&
-        (tag_overlay_read_tag_q == demand_waiter_response_tag_r);
+        (tag_overlay_read_tag_q == demand_waiter_response_tag_r) &&
+        (tag_overlay_read_epoch_q == demand_overlay_epoch) &&
+        (tag_overlay_read_mem_epoch_q == demand_overlay_epoch);
     wire normal_overlay_read_match =
         tag_overlay_read_valid_q &&
-        (tag_overlay_read_tag_q == normal_response_tag);
+        (tag_overlay_read_tag_q == normal_response_tag) &&
+        (tag_overlay_read_epoch_q == normal_response_epoch) &&
+        (tag_overlay_read_mem_epoch_q == normal_response_epoch);
     wire demand_overlay_bypass_match =
         tag_overlay_bypass_valid_q &&
-        (tag_overlay_bypass_tag_q == demand_waiter_response_tag_r);
+        (tag_overlay_bypass_tag_q == demand_waiter_response_tag_r) &&
+        (tag_overlay_bypass_epoch_q == demand_overlay_epoch);
     wire normal_overlay_bypass_match =
         tag_overlay_bypass_valid_q &&
-        (tag_overlay_bypass_tag_q == normal_response_tag);
+        (tag_overlay_bypass_tag_q == normal_response_tag) &&
+        (tag_overlay_bypass_epoch_q == normal_response_epoch);
     wire demand_overlay_ready =
         !demand_overlay_needed ||
         demand_overlay_read_match ||
@@ -730,6 +789,9 @@ module openrv64_l1d_icx #(
     wire [REQ_TAG_WIDTH-1:0] tag_overlay_read_request_tag =
         tag_overlay_read_demand ?
         demand_waiter_response_tag_r : normal_response_tag;
+    wire [TAG_OVERLAY_EPOCH_WIDTH-1:0]
+        tag_overlay_read_request_epoch = tag_overlay_read_demand ?
+        demand_overlay_epoch : normal_response_epoch;
     wire [TAG_OVERLAY_WIDTH-1:0] demand_overlay_data =
         demand_overlay_bypass_match ?
         tag_overlay_bypass_data_q : tag_overlay_read_data_q;
@@ -754,13 +816,19 @@ module openrv64_l1d_icx #(
     // after admission, when req_* may already describe a younger operation.
     // The admission-time overlay bypass is therefore the authoritative dirty
     // snapshot for MSHR allocation.
+    wire l1_miss_overlay_needed =
+        tag_overlay_needed_q[l1_miss_tag] &&
+        (tag_overlay_owner_epoch_q[l1_miss_tag] == l1_miss_epoch);
     wire l1_miss_overlay_bypass_match =
-        tag_overlay_bypass_valid_q &&
-        (tag_overlay_bypass_tag_q == l1_miss_tag);
+        l1_miss_overlay_needed && tag_overlay_bypass_valid_q &&
+        (tag_overlay_bypass_tag_q == l1_miss_tag) &&
+        (tag_overlay_bypass_epoch_q == l1_miss_epoch);
     wire [TAG_OVERLAY_WIDTH-1:0] l1_miss_overlay_data =
-        ((SYNC_TAG_LOOKUP != 0) && l1_miss_overlay_bypass_match) ?
-        tag_overlay_bypass_data_q :
-        {demand_store_data_r, demand_store_strb_r};
+        (SYNC_TAG_LOOKUP != 0) ?
+            (l1_miss_overlay_bypass_match ?
+                tag_overlay_bypass_data_q :
+                {TAG_OVERLAY_WIDTH{1'b0}}) :
+            {demand_store_data_r, demand_store_strb_r};
     wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         l1_miss_store_data =
         l1_miss_overlay_data[TAG_OVERLAY_WIDTH-1 -:
@@ -813,6 +881,10 @@ module openrv64_l1d_icx #(
     wire l1_req_cacheable =
         req_cacheable_i && (!req_lock_i || coherent_atomic_read);
     wire l1_request_fire = l1_req_valid && l1_req_ready;
+    wire [TAG_OVERLAY_EPOCH_WIDTH-1:0] tag_overlay_next_epoch =
+        tag_overlay_epoch_q + 1'b1;
+    wire [L1_REQ_TAG_WIDTH-1:0] l1_request_identity =
+        {tag_overlay_next_epoch, req_tag_i};
     wire request_overlay_needed =
         !req_write_i && !req_lock_i && req_cacheable_i &&
         (|demand_store_strb_r);
@@ -836,15 +908,23 @@ module openrv64_l1d_icx #(
     // synthesis can absorb it into a synchronous SRAM port. The separate
     // last-write bypass preserves the common resident-hit latency.
     always @(posedge clk_i) begin
-        if (tag_overlay_write)
+        if (tag_overlay_write) begin
             tag_overlay_mem_q[req_tag_i] <=
                 {demand_store_data_r, demand_store_strb_r};
-        if (tag_overlay_read_request)
+            tag_overlay_mem_epoch_q[req_tag_i] <=
+                tag_overlay_next_epoch;
+        end
+        if (tag_overlay_read_request) begin
             tag_overlay_read_data_q <=
                 tag_overlay_mem_q[tag_overlay_read_request_tag];
-        if (tag_overlay_write)
+            tag_overlay_read_mem_epoch_q <=
+                tag_overlay_mem_epoch_q[tag_overlay_read_request_tag];
+        end
+        if (tag_overlay_write) begin
             tag_overlay_bypass_data_q <=
                 {demand_store_data_r, demand_store_strb_r};
+            tag_overlay_bypass_epoch_q <= tag_overlay_next_epoch;
+        end
     end
 
     always @* begin
@@ -1115,7 +1195,8 @@ module openrv64_l1d_icx #(
         (l1_req_error || tag_reservation_error_q[normal_response_tag]) :
         1'b0;
     assign posted_resp_valid_o = l1_posted_resp_valid;
-    assign posted_resp_tag_o = l1_posted_resp_tag;
+    assign posted_resp_tag_o =
+        l1_posted_resp_identity[REQ_TAG_WIDTH-1:0];
     // A targeted coherence snoop revokes the line even while unrelated
     // stores or misses remain active.  Full-cache maintenance retains the
     // old global-quiescence contract.
@@ -1476,7 +1557,7 @@ module openrv64_l1d_icx #(
                  demand_fill_waiter_scan + 1) begin
             if (demand_waiter_valid_q[demand_fill_waiter_scan] &&
                 (demand_waiter_mshr_q[demand_fill_waiter_scan] ==
-                 demand_mshr_fill_index_r))
+                 demand_mshr_fill_selected_index))
                 demand_fill_waiter_found_r = 1'b1;
         end
     end
@@ -1496,15 +1577,16 @@ module openrv64_l1d_icx #(
 
     always @* begin
         demand_fill_data_r =
-            demand_mshr_data_q[demand_mshr_fill_index_r];
+            demand_mshr_data_q[demand_mshr_fill_selected_index];
         for (demand_fill_merge_byte = 0;
              demand_fill_merge_byte < `OPENRV64_ICX_LINE_STRB_WIDTH;
              demand_fill_merge_byte = demand_fill_merge_byte + 1) begin
             if (demand_mshr_store_strb_q[
-                    demand_mshr_fill_index_r][demand_fill_merge_byte])
+                    demand_mshr_fill_selected_index][
+                        demand_fill_merge_byte])
                 demand_fill_data_r[demand_fill_merge_byte*8 +: 8] =
                     demand_mshr_store_data_q[
-                        demand_mshr_fill_index_r][
+                        demand_mshr_fill_selected_index][
                         demand_fill_merge_byte*8 +: 8];
         end
     end
@@ -1520,17 +1602,17 @@ module openrv64_l1d_icx #(
     wire l1_response_tag_pop = (SYNC_TAG_LOOKUP == 0) &&
                                l1_response_fire;
     openrv64_l1d_lsu_order #(
-        .TAG_WIDTH(REQ_TAG_WIDTH),
+        .TAG_WIDTH(L1_REQ_TAG_WIDTH),
         .DEPTH(REQ_DEPTH)
     ) u_lsu_order (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
         .push_i(l1_response_tag_push),
-        .push_tag_i(req_tag_i),
+        .push_tag_i(l1_request_identity),
         .pop_i(l1_response_tag_pop),
         .full_o(response_tag_full),
         .empty_o(response_tag_empty),
-        .head_tag_o(response_fifo_head_tag),
+        .head_tag_o(response_fifo_head_identity),
         .count_o(response_tag_count_q)
     );
     assign l1_miss_ready =
@@ -1540,9 +1622,9 @@ module openrv64_l1d_icx #(
         demand_waiter_response_found_r && demand_overlay_ready &&
         !speculation_barrier_event;
     assign demand_response_fire = demand_response_valid && resp_ready_i;
-    assign l1_fill_valid = demand_mshr_fill_found_r;
+    assign l1_fill_valid = demand_mshr_fill_hold_valid_q;
     assign l1_fill_addr =
-        demand_mshr_addr_q[demand_mshr_fill_index_r];
+        demand_mshr_addr_q[demand_mshr_fill_selected_index];
     assign l1_fill_data = demand_fill_data_r;
     assign l1_fill_aged = 1'b0;
     wire l1_fill_fire = l1_fill_valid && l1_fill_ready;
@@ -2321,7 +2403,7 @@ module openrv64_l1d_icx #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(64),
         .REFILL_DATA_WIDTH(512),
-        .REQ_TAG_WIDTH(REQ_TAG_WIDTH),
+        .REQ_TAG_WIDTH(L1_REQ_TAG_WIDTH),
         .DETACH_READ_MISSES(1),
         .SYNC_TAG_LOOKUP(SYNC_TAG_LOOKUP),
         .CACHE_BYTES(CACHE_BYTES),
@@ -2334,7 +2416,7 @@ module openrv64_l1d_icx #(
         .rst_ni(rst_ni),
         .req_valid_i(l1_req_valid),
         .req_ready_o(l1_req_ready),
-        .req_tag_i(req_tag_i),
+        .req_tag_i(l1_request_identity),
         .req_write_i(req_write_i),
         .req_posted_i(req_posted_i),
         .req_cacheable_i(l1_req_cacheable),
@@ -2343,15 +2425,15 @@ module openrv64_l1d_icx #(
         .req_wstrb_i(req_wstrb_i),
         .resp_valid_o(l1_resp_valid),
         .resp_ready_i(l1_resp_ready),
-        .resp_tag_o(l1_resp_tag),
+        .resp_tag_o(l1_resp_identity),
         .req_rdata_o(l1_req_rdata),
         .req_error_o(l1_req_error),
         .posted_resp_valid_o(l1_posted_resp_valid),
         .posted_resp_ready_i(posted_resp_ready_i),
-        .posted_resp_tag_o(l1_posted_resp_tag),
+        .posted_resp_tag_o(l1_posted_resp_identity),
         .miss_valid_o(l1_miss_valid),
         .miss_ready_i(l1_miss_ready),
-        .miss_tag_o(l1_miss_tag),
+        .miss_tag_o(l1_miss_identity),
         .miss_addr_o(l1_miss_addr),
         .miss_aged_o(l1_miss_aged),
         .fill_valid_i(l1_fill_valid),
@@ -2406,6 +2488,9 @@ module openrv64_l1d_icx #(
             wdata_sent_q <= 1'b0;
             speculation_epoch_q <=
                 {SPECULATION_EPOCH_WIDTH{1'b0}};
+            demand_mshr_fill_hold_valid_q <= 1'b0;
+            demand_mshr_fill_hold_index_q <=
+                {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
             store_buffer_head_q <=
                 {STORE_BUFFER_INDEX_WIDTH{1'b0}};
             store_buffer_tail_q <=
@@ -2447,15 +2532,24 @@ module openrv64_l1d_icx #(
                 demand_waiter_valid_q[demand_waiter_reset_index] <= 1'b0;
                 demand_waiter_mshr_q[demand_waiter_reset_index] <=
                     {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+                demand_waiter_epoch_q[demand_waiter_reset_index] <=
+                    {TAG_OVERLAY_EPOCH_WIDTH{1'b0}};
                 tag_reservation_error_q[
                     demand_waiter_reset_index] <= 1'b0;
                 tag_overlay_needed_q[demand_waiter_reset_index] <= 1'b0;
+                tag_overlay_owner_epoch_q[
+                    demand_waiter_reset_index] <=
+                    {TAG_OVERLAY_EPOCH_WIDTH{1'b0}};
                 tag_overlay_word_q[demand_waiter_reset_index] <= 3'd0;
             end
             tag_overlay_read_valid_q <= 1'b0;
             tag_overlay_read_tag_q <= {REQ_TAG_WIDTH{1'b0}};
+            tag_overlay_read_epoch_q <=
+                {TAG_OVERLAY_EPOCH_WIDTH{1'b0}};
             tag_overlay_bypass_valid_q <= 1'b0;
             tag_overlay_bypass_tag_q <= {REQ_TAG_WIDTH{1'b0}};
+            tag_overlay_epoch_q <=
+                {TAG_OVERLAY_EPOCH_WIDTH{1'b0}};
             freeloader_pending_store_valid_q <= 1'b0;
             freeloader_pending_store_posted_q <= 1'b0;
             freeloader_pending_store_addr_q <= 64'd0;
@@ -2577,6 +2671,20 @@ module openrv64_l1d_icx #(
                     {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
             end
         end else begin
+            if (l1_fill_fire) begin
+                demand_mshr_fill_hold_valid_q <= 1'b0;
+            end else if (!demand_mshr_fill_hold_valid_q &&
+                         demand_mshr_fill_found_r) begin
+                demand_mshr_fill_hold_valid_q <= 1'b1;
+                demand_mshr_fill_hold_index_q <=
+                    demand_mshr_fill_index_r;
+            end
+
+            if ((l1_response_fire && normal_overlay_bypass_match) ||
+                (demand_response_fire && demand_overlay_bypass_match) ||
+                (l1_request_fire && tag_overlay_bypass_valid_q &&
+                 (tag_overlay_bypass_tag_q == req_tag_i)))
+                tag_overlay_bypass_valid_q <= 1'b0;
             if (tag_overlay_read_request) begin
                 if (tag_overlay_write &&
                     (req_tag_i == tag_overlay_read_request_tag))
@@ -2589,6 +2697,8 @@ module openrv64_l1d_icx #(
                     tag_overlay_read_valid_q <= 1'b1;
                     tag_overlay_read_tag_q <=
                         tag_overlay_read_request_tag;
+                    tag_overlay_read_epoch_q <=
+                        tag_overlay_read_request_epoch;
                 end
             end else if (tag_overlay_write &&
                          tag_overlay_read_valid_q &&
@@ -2870,6 +2980,9 @@ module openrv64_l1d_icx #(
                 locked_line_invalidated_q <= 1'b0;
 
             if (l1_request_fire) begin
+                tag_overlay_epoch_q <= tag_overlay_next_epoch;
+                tag_overlay_owner_epoch_q[req_tag_i] <=
+                    tag_overlay_next_epoch;
                 // The shared L1 may admit cacheable reads through its SRAM
                 // read port while a posted store is held in STATE_ACCESS
                 // waiting for store-buffer space.  Those overlapping reads
@@ -2911,6 +3024,7 @@ module openrv64_l1d_icx #(
                     demand_mshr_match_found_r ?
                     demand_mshr_match_index_r :
                     demand_mshr_free_index_r;
+                demand_waiter_epoch_q[l1_miss_tag] <= l1_miss_epoch;
                 if (demand_mshr_match_found_r) begin
                     for (demand_alloc_merge_byte = 0;
                          demand_alloc_merge_byte <
@@ -3139,29 +3253,52 @@ module openrv64_l1d_icx #(
 
             if (l1_fill_fire) begin
                 demand_mshr_fill_done_q[
-                    demand_mshr_fill_index_r] <= 1'b1;
-                if (!demand_fill_waiter_found_r) begin
+                    demand_mshr_fill_selected_index] <= 1'b1;
+                // A miss accepted on this edge is not visible in the
+                // registered waiter scan yet.  Do not free the filled MSHR
+                // out from under that new waiter.
+                if (!demand_fill_waiter_found_r &&
+                    !(l1_miss_fire &&
+                      ((demand_mshr_match_found_r ?
+                        demand_mshr_match_index_r :
+                        demand_mshr_free_index_r) ==
+                       demand_mshr_fill_selected_index))) begin
                     demand_mshr_valid_q[
-                        demand_mshr_fill_index_r] <= 1'b0;
+                        demand_mshr_fill_selected_index] <= 1'b0;
                     demand_mshr_complete_q[
-                        demand_mshr_fill_index_r] <= 1'b0;
+                        demand_mshr_fill_selected_index] <= 1'b0;
                     demand_mshr_wait_prefetch_q[
-                        demand_mshr_fill_index_r] <= 1'b0;
+                        demand_mshr_fill_selected_index] <= 1'b0;
                 end
             end
 
             if (demand_response_fire) begin
-                demand_waiter_valid_q[
-                    demand_waiter_response_tag_r] <= 1'b0;
+                // A response may release an LSU tag while a new miss using
+                // that tag is admitted on the same edge. Preserve the new
+                // waiter's mapping instead of letting response cleanup win
+                // the nonblocking assignment ordering.
+                if (!(l1_miss_fire &&
+                      (l1_miss_tag ==
+                       demand_waiter_response_tag_r)))
+                    demand_waiter_valid_q[
+                        demand_waiter_response_tag_r] <= 1'b0;
                 if (!(l1_request_fire &&
                       (req_tag_i == demand_waiter_response_tag_r)))
                     tag_overlay_needed_q[
                         demand_waiter_response_tag_r] <= 1'b0;
+                // As with fill completion, the registered other-waiter scan
+                // cannot see a miss attaching on this edge. Keep the MSHR
+                // alive when that incoming waiter selects it.
                 if (!demand_waiter_other_found_r &&
+                    !(l1_miss_fire &&
+                      ((demand_mshr_match_found_r ?
+                        demand_mshr_match_index_r :
+                        demand_mshr_free_index_r) ==
+                       demand_waiter_response_mshr_r)) &&
                     (demand_mshr_fill_done_q[
                          demand_waiter_response_mshr_r] ||
                      (l1_fill_fire &&
-                      (demand_mshr_fill_index_r ==
+                      (demand_mshr_fill_selected_index ==
                        demand_waiter_response_mshr_r)))) begin
                     demand_mshr_valid_q[
                         demand_waiter_response_mshr_r] <= 1'b0;
@@ -3966,8 +4103,22 @@ module openrv64_l1d_icx #(
             $fatal(1, "L1D main request lacks a reserved transaction ID");
         if (rst_ni && (SYNC_TAG_LOOKUP == 0) && l1_resp_valid &&
             !response_tag_empty &&
-            (l1_resp_tag != normal_response_tag))
+            (l1_resp_identity != response_fifo_head_identity))
             $fatal(1, "L1D resident response tag/FIFO mismatch");
+        if (rst_ni && demand_waiter_response_found_r &&
+            tag_overlay_needed_q[demand_waiter_response_tag_r] &&
+            !demand_overlay_owner_match)
+            $fatal(1,
+                "L1D demand overlay owner epoch changed while live");
+        if (rst_ni && normal_response_candidate &&
+            tag_overlay_needed_q[normal_response_tag] &&
+            !normal_overlay_owner_match)
+            $fatal(1,
+                "L1D resident overlay owner epoch changed while live");
+        if (rst_ni && (SYNC_TAG_LOOKUP != 0) && l1_miss_fire &&
+            l1_miss_overlay_needed && !l1_miss_overlay_bypass_match)
+            $fatal(1,
+                "L1D synchronous miss lost its dirty-overlay snapshot");
         for (demand_assert_first = 0;
              demand_assert_first < DEMAND_MSHRS;
              demand_assert_first = demand_assert_first + 1) begin

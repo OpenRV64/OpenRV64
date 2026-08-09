@@ -30,6 +30,7 @@ module tb_exec_bp_tagged_speculation;
         .INFLIGHT_DEPTH(4), .ENABLE_TAGGED_RESOLUTION(1)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(squash),
+        .ras_context_flush_i(1'b0),
         .lookup_valid_i(lookup_valid), .lookup_branch_i(lookup_branch),
         .lookup_jump_i(1'b0), .lookup_indirect_i(1'b0),
         .lookup_backward_i(lookup_backward),

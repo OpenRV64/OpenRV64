@@ -44,6 +44,7 @@ module tb_exec_bp_modes78;
         .INFLIGHT_DEPTH(4), .ENABLE_TAGGED_RESOLUTION(1)
     ) dut7 (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(squash),
+        .ras_context_flush_i(1'b0),
         .lookup_valid_i(lookup_valid), .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump), .lookup_indirect_i(lookup_indirect),
         .lookup_backward_i(lookup_backward),
@@ -79,6 +80,7 @@ module tb_exec_bp_modes78;
         .INFLIGHT_DEPTH(4), .ENABLE_TAGGED_RESOLUTION(1)
     ) dut8 (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(squash),
+        .ras_context_flush_i(1'b0),
         .lookup_valid_i(lookup_valid), .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump), .lookup_indirect_i(lookup_indirect),
         .lookup_backward_i(lookup_backward),

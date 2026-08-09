@@ -525,8 +525,137 @@ module tb_l1d_demand_mshr;
         if (command_count != 5)
             $fatal(1, "resident line reissued a demand ICX read");
 
+        // A synchronous fill probe must reserve its MSHR selection. Reproduce
+        // the Linux failure: entry 1 starts the probe, then lower-index entry
+        // 0 completes before ready. Address and data must remain from entry 1
+        // through the handshake.
+        @(negedge clk);
+        rst_n = 1'b0;
+        req_valid = 1'b0;
+        resp_ready = 1'b0;
+        repeat (3) @(posedge clk);
+        @(negedge clk);
+        rst_n = 1'b1;
+        dut.demand_mshr_valid_q[0] = 1'b0;
+        dut.demand_mshr_issued_q[0] = 1'b1;
+        dut.demand_mshr_complete_q[0] = 1'b0;
+        dut.demand_mshr_fill_done_q[0] = 1'b0;
+        dut.demand_mshr_wait_prefetch_q[0] = 1'b0;
+        dut.demand_mshr_error_q[0] = 1'b0;
+        dut.demand_mshr_epoch_q[0] = 0;
+        dut.demand_mshr_addr_q[0] = MEMORY_BASE + 64'h7040;
+        dut.demand_mshr_data_q[0] =
+            memory_line(MEMORY_BASE + 64'h7040);
+        dut.demand_mshr_store_data_q[0] =
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+        dut.demand_mshr_store_strb_q[0] =
+            {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+        dut.demand_mshr_valid_q[1] = 1'b1;
+        dut.demand_mshr_issued_q[1] = 1'b1;
+        dut.demand_mshr_complete_q[1] = 1'b1;
+        dut.demand_mshr_fill_done_q[1] = 1'b0;
+        dut.demand_mshr_wait_prefetch_q[1] = 1'b0;
+        dut.demand_mshr_error_q[1] = 1'b0;
+        dut.demand_mshr_epoch_q[1] = 0;
+        dut.demand_mshr_addr_q[1] = MEMORY_BASE + 64'h8040;
+        dut.demand_mshr_data_q[1] =
+            memory_line(MEMORY_BASE + 64'h8040);
+        dut.demand_mshr_store_data_q[1] =
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+        dut.demand_mshr_store_strb_q[1] =
+            {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+        @(posedge clk);
+        #1;
+        if (!dut.demand_mshr_fill_hold_valid_q ||
+            (dut.demand_mshr_fill_hold_index_q != 1))
+            $fatal(1, "fill did not reserve initial MSHR selection");
+        @(negedge clk);
+        dut.demand_mshr_valid_q[0] = 1'b1;
+        dut.demand_mshr_complete_q[0] = 1'b1;
+        #1;
+        if (!dut.l1_fill_valid ||
+            (dut.l1_fill_addr != MEMORY_BASE + 64'h8040) ||
+            (dut.l1_fill_data !== memory_line(MEMORY_BASE + 64'h8040)))
+            $fatal(1, "younger completion replaced held fill payload");
+        while (!dut.l1_fill_fire) begin
+            @(negedge clk);
+            #1;
+            if (dut.l1_fill_addr != MEMORY_BASE + 64'h8040 ||
+                dut.l1_fill_data !== memory_line(MEMORY_BASE + 64'h8040))
+                $fatal(1, "fill payload changed while awaiting ready");
+        end
+        @(posedge clk);
+        #1;
+        if (dut.demand_mshr_fill_hold_valid_q)
+            $fatal(1, "fill reservation remained busy after handshake");
+
+        // Response retirement and a younger same-line miss can coincide.
+        // The registered other-waiter scan cannot see the waiter being
+        // attached on that edge, so response cleanup must not free its MSHR.
+        // Construct the exact internal boundary directly: the surrounding
+        // request/fill machinery is covered above, while this regression is
+        // specifically about nonblocking allocation/cleanup priority.
+        @(negedge clk);
+        rst_n = 1'b0;
+        req_valid = 1'b0;
+        resp_ready = 1'b0;
+        repeat (3) @(posedge clk);
+        @(negedge clk);
+        rst_n = 1'b1;
+        dut.demand_mshr_valid_q[0] = 1'b1;
+        dut.demand_mshr_issued_q[0] = 1'b0;
+        dut.demand_mshr_complete_q[0] = 1'b1;
+        dut.demand_mshr_fill_done_q[0] = 1'b1;
+        dut.demand_mshr_wait_prefetch_q[0] = 1'b0;
+        dut.demand_mshr_addr_q[0] = MEMORY_BASE + 64'h6040;
+        dut.demand_mshr_data_q[0] =
+            memory_line(MEMORY_BASE + 64'h6040);
+        dut.demand_mshr_store_data_q[0] =
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+        dut.demand_mshr_store_strb_q[0] =
+            {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+        dut.demand_waiter_valid_q[3] = 1'b1;
+        dut.demand_waiter_mshr_q[3] = 0;
+        dut.demand_waiter_epoch_q[3] = 0;
+        force dut.l1_miss_fire = 1'b1;
+        force dut.l1_miss_tag = TAG_WIDTH'(0);
+        force dut.l1_miss_epoch = 4'd1;
+        force dut.l1_miss_addr = MEMORY_BASE + 64'h6040;
+        force dut.l1_miss_store_data =
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+        force dut.l1_miss_store_strb =
+            {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+        force dut.demand_mshr_match_found_r = 1'b1;
+        force dut.demand_mshr_match_index_r = 0;
+        force dut.demand_response_fire = 1'b1;
+        force dut.demand_waiter_response_tag_r = TAG_WIDTH'(3);
+        force dut.demand_waiter_response_mshr_r = 0;
+        force dut.demand_waiter_other_found_r = 1'b0;
+        force dut.l1_fill_fire = 1'b0;
+        @(posedge clk);
+        #1;
+        release dut.l1_miss_fire;
+        release dut.l1_miss_tag;
+        release dut.l1_miss_epoch;
+        release dut.l1_miss_addr;
+        release dut.l1_miss_store_data;
+        release dut.l1_miss_store_strb;
+        release dut.demand_mshr_match_found_r;
+        release dut.demand_mshr_match_index_r;
+        release dut.demand_response_fire;
+        release dut.demand_waiter_response_tag_r;
+        release dut.demand_waiter_response_mshr_r;
+        release dut.demand_waiter_other_found_r;
+        release dut.l1_fill_fire;
+        if (!dut.demand_mshr_valid_q[0] ||
+            !dut.demand_waiter_valid_q[0] ||
+            (dut.demand_waiter_mshr_q[0] != 0) ||
+            dut.demand_waiter_valid_q[3])
+            $fatal(1,
+                "same-cycle response cleanup dropped incoming waiter");
+
         $display(
-            "PASS: three demand MSHRs, OOO matching, merge, store overlay, and hold");
+            "PASS: demand MSHRs, OOO matching, merge, store overlay, stable fill selection, hold, and response/attach race");
         $finish;
     end
 

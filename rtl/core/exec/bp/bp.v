@@ -41,6 +41,7 @@ module openrv64_exec_bp #(
     input  wire rst_n,
     input  wire flush_i,
     input  wire squash_i,
+    input  wire ras_context_flush_i,
 
     input  wire lookup_valid_i,
     input  wire lookup_branch_i,
@@ -93,7 +94,9 @@ module openrv64_exec_bp #(
     generate
         if (ENABLE_RAS != 0) begin : g_ras
             openrv64_exec_bp_ras #(.DEPTH(RAS_DEPTH)) u_ras (
-                .clk(clk), .rst_n(rst_n), .flush_i(flush_i || squash_i),
+                .clk(clk), .rst_n(rst_n),
+                .flush_i(ras_context_flush_i),
+                .squash_i(flush_i || squash_i),
                 .lookup_valid_i(lookup_valid_i),
                 .lookup_indirect_i(lookup_indirect_i),
                 .lookup_instr_i(lookup_instr_i),

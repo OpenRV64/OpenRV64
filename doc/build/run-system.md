@@ -125,6 +125,20 @@ run/cfg/linux-smp-4h-ddr3.cfg \
 
 `--checkpoint-cycles` remains an alias for `--checkpoint`.
 
+For an early failure whose exact arrival cycle is not yet known, save periodic
+checkpoints and stop after saving one that observes a specified hart-0 PC:
+
+```bash
+run/run run/cfg/linux-coherent-1h-ddr3.cfg \
+    --max-cycles 5000000 \
+    --checkpoint 0 \
+    --checkpoint-interval 1000000 \
+    --checkpoint-stop-pc 0x8010f370
+```
+
+Periodic snapshots are named `checkpoint-<cycle>.vls`.  The stop-PC comparison
+is made when each periodic checkpoint is saved, not on every simulated cycle.
+
 Resume a managed run's newest checkpoint with the exact simulator and input
 snapshots that created it:
 

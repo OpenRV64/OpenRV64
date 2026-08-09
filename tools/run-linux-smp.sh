@@ -39,7 +39,15 @@ Start options:
                             (default: 25000000).
   --checkpoint-cycles N     Alias for --checkpoint.
   --checkpoint-exit         Exit after saving the requested checkpoint.
+  --checkpoint-interval N   Save checkpoint-<cycle>.vls every N cycles.
+  --checkpoint-stop-pc PC   Stop after a periodic checkpoint at hart-0 PC.
   --resume CHECKPOINT|RUN   Resume an exact managed checkpoint snapshot.
+  --resume-simulator FILE   Use a model-compatible rebuilt host executable.
+  --host-pc-trace           Record hart-0 retire/trap PCs after restore.
+  --l1d-watch-vaddr ADDR    Trace this hart-0 virtual address through L1D.
+  --l1d-watch-paddr ADDR    Seed its physical address for earlier events.
+  --l1d-watch-value VALUE   Flag this aligned 64-bit value in line traffic.
+  --l1d-watch-all-mshrs     Record every outgoing L1D/L2 MSHR transaction.
   --stop-cycles N           Stop when absolute cycle N is reached.
   --monitor-seconds N       Notification interval (default: 900).
   --rebuild                 Force a source-matched rebuild with make -B.
@@ -193,7 +201,15 @@ worker() {
     # shellcheck disable=SC1090
     source "${directory}/manager.env"
     checkpoint_exit=${checkpoint_exit:-0}
+    checkpoint_interval=${checkpoint_interval:-0}
+    checkpoint_stop_pc=${checkpoint_stop_pc:-}
     resume_checkpoint=${resume_checkpoint:-}
+    resume_simulator=${resume_simulator:-}
+    host_pc_trace=${host_pc_trace:-0}
+    l1d_watch_vaddr=${l1d_watch_vaddr:-}
+    l1d_watch_paddr=${l1d_watch_paddr:-}
+    l1d_watch_value=${l1d_watch_value:-}
+    l1d_watch_all_mshrs=${l1d_watch_all_mshrs:-0}
     stop_cycles=${stop_cycles:-0}
     mapfile -t make_arguments <"${directory}/make-arguments.txt"
     local simulator_arguments=()
@@ -260,6 +276,8 @@ worker() {
         printf 'max_cycles=%s\n' "${max_cycles}"
         printf 'checkpoint_cycles=%s\n' "${checkpoint_cycles}"
         printf 'checkpoint_exit=%s\n' "${checkpoint_exit}"
+        printf 'checkpoint_interval=%s\n' "${checkpoint_interval}"
+        printf 'checkpoint_stop_pc=%s\n' "${checkpoint_stop_pc}"
         printf 'resume_checkpoint=%s\n' "${resume_checkpoint}"
         printf 'stop_cycles=%s\n' "${stop_cycles}"
         printf 'rebuild=%s\n' "${rebuild}"
@@ -307,7 +325,7 @@ worker() {
 
         mkdir -p "${input_dir}"
         local artifact
-        for artifact in opensbi_4h_checkpoint_tb Image.smp \
+        for artifact in Image.smp \
             linux-image.memh trampoline.memh fw_jump.memh fw_jump.elf \
             openrv64-3p-dtb.memh openrv64-3p.dtb hsm-wfi-pc.txt; do
             [[ -f ${resume_source_inputs}/${artifact} ]] ||
@@ -316,6 +334,15 @@ worker() {
                 "${resume_source_inputs}/${artifact}" \
                 "${input_dir}/${artifact}"
         done
+        if [[ -n ${resume_simulator} ]]; then
+            cp --reflink=auto --preserve=mode,timestamps \
+                "${resume_simulator}" \
+                "${input_dir}/opensbi_4h_checkpoint_tb"
+        else
+            cp --reflink=auto --preserve=mode,timestamps \
+                "${resume_source_inputs}/opensbi_4h_checkpoint_tb" \
+                "${input_dir}/opensbi_4h_checkpoint_tb"
+        fi
         simulator=${input_dir}/opensbi_4h_checkpoint_tb
         payload_words=$(config_value "${config_file}" LINUX_IMAGE_WORDS)
         [[ -n ${payload_words} ]] ||
@@ -329,6 +356,7 @@ worker() {
             printf 'resume_source_run=%s\n' "${resume_source_dir}"
             printf 'resume_source_checkpoint=%s\n' "${resume_checkpoint}"
             printf 'resume_snapshot=%s\n' "${resume_snapshot}"
+            printf 'resume_simulator=%s\n' "${resume_simulator}"
         } >>"${build_log}"
     else
         local make_base=(env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL
@@ -431,9 +459,32 @@ worker() {
             "+checkpoint_cycles=${checkpoint_cycles}")
         [[ ${checkpoint_exit} == 0 ]] || run_command+=(+checkpoint_exit)
     fi
+    if ((checkpoint_interval > 0)); then
+        run_command+=("+checkpoint_interval=${checkpoint_interval}"
+            "+checkpoint_prefix=${directory}/checkpoint")
+        if [[ -n ${checkpoint_stop_pc} ]]; then
+            run_command+=("+checkpoint_stop_pc=${checkpoint_stop_pc}")
+        fi
+    fi
     if [[ -n ${resume_snapshot} ]]; then
         run_command+=("+restore=${resume_snapshot}"
             "+max_cycles_override=${max_cycles}")
+    fi
+    if ((host_pc_trace == 1)); then
+        run_command+=("+host_pc_trace=${directory}/host-pc-trace.log")
+    fi
+    if [[ -n ${l1d_watch_vaddr} ]]; then
+        run_command+=("+l1d_watch_vaddr=${l1d_watch_vaddr}"
+            "+l1d_watch_trace=${directory}/l1d-watch.log")
+        if [[ -n ${l1d_watch_paddr} ]]; then
+            run_command+=("+l1d_watch_paddr=${l1d_watch_paddr}")
+        fi
+        if [[ -n ${l1d_watch_value} ]]; then
+            run_command+=("+l1d_watch_value=${l1d_watch_value}")
+        fi
+        if ((l1d_watch_all_mshrs == 1)); then
+            run_command+=(+l1d_watch_all_mshrs)
+        fi
     fi
     if ((stop_cycles > 0)); then
         run_command+=("+stop_cycles=${stop_cycles}")
@@ -462,6 +513,9 @@ worker() {
         validation=panic
     elif ((sim_result == 0 && checkpoint_exit == 1)) &&
          rg -q 'CHECKPOINT SAVED' "${run_log}"; then
+        validation=checkpoint
+    elif ((sim_result == 0 && checkpoint_interval > 0)) &&
+         rg -q 'PERIODIC CHECKPOINT STOP PC' "${run_log}"; then
         validation=checkpoint
     elif ((sim_result == 0 && stop_cycles > 0)) &&
          rg -q 'SIMULATION STOP cycle=' "${run_log}"; then
@@ -500,7 +554,15 @@ start_run() {
     local max_cycles=250000000
     local checkpoint_cycles=25000000
     local checkpoint_exit=0
+    local checkpoint_interval=0
+    local checkpoint_stop_pc=
     local resume_checkpoint=
+    local resume_simulator=
+    local host_pc_trace=0
+    local l1d_watch_vaddr=
+    local l1d_watch_paddr=
+    local l1d_watch_value=
+    local l1d_watch_all_mshrs=0
     local stop_cycles=0
     local monitor_seconds=900
     local rebuild=0
@@ -521,7 +583,17 @@ start_run() {
             --checkpoint|--checkpoint-cycles)
                 checkpoint_cycles=${2:?}; shift 2 ;;
             --checkpoint-exit) checkpoint_exit=1; shift ;;
+            --checkpoint-interval)
+                checkpoint_interval=${2:?}; shift 2 ;;
+            --checkpoint-stop-pc)
+                checkpoint_stop_pc=${2:?}; shift 2 ;;
             --resume) resume_checkpoint=${2:?}; shift 2 ;;
+            --resume-simulator) resume_simulator=${2:?}; shift 2 ;;
+            --host-pc-trace) host_pc_trace=1; shift ;;
+            --l1d-watch-vaddr) l1d_watch_vaddr=${2:?}; shift 2 ;;
+            --l1d-watch-paddr) l1d_watch_paddr=${2:?}; shift 2 ;;
+            --l1d-watch-value) l1d_watch_value=${2:?}; shift 2 ;;
+            --l1d-watch-all-mshrs) l1d_watch_all_mshrs=1; shift ;;
             --stop-cycles) stop_cycles=${2:?}; shift 2 ;;
             --monitor-seconds) monitor_seconds=${2:?}; shift 2 ;;
             --rebuild) rebuild=1; shift ;;
@@ -542,10 +614,43 @@ start_run() {
         die "--max-cycles must be positive"
     [[ ${checkpoint_cycles} =~ ^[0-9]+$ ]] ||
         die "--checkpoint must be nonnegative"
+    [[ ${checkpoint_interval} =~ ^[0-9]+$ ]] ||
+        die "--checkpoint-interval must be nonnegative"
+    if [[ -n ${checkpoint_stop_pc} &&
+          ! ${checkpoint_stop_pc} =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)$ ]]; then
+        die "--checkpoint-stop-pc must be an integer"
+    fi
+    if [[ -n ${checkpoint_stop_pc} && ${checkpoint_interval} == 0 ]]; then
+        die "--checkpoint-stop-pc requires --checkpoint-interval"
+    fi
     [[ ${stop_cycles} =~ ^[0-9]+$ ]] ||
         die "--stop-cycles must be nonnegative"
     if ((checkpoint_exit == 1 && checkpoint_cycles == 0)); then
         die "--checkpoint-exit requires a nonzero --checkpoint"
+    fi
+    if [[ -n ${resume_simulator} && -z ${resume_checkpoint} ]]; then
+        die "--resume-simulator requires --resume"
+    fi
+    if [[ -n ${l1d_watch_vaddr} &&
+          ! ${l1d_watch_vaddr} =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)$ ]]; then
+        die "--l1d-watch-vaddr must be an integer"
+    fi
+    if [[ -n ${l1d_watch_paddr} &&
+          ! ${l1d_watch_paddr} =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)$ ]]; then
+        die "--l1d-watch-paddr must be an integer"
+    fi
+    if [[ -n ${l1d_watch_paddr} && -z ${l1d_watch_vaddr} ]]; then
+        die "--l1d-watch-paddr requires --l1d-watch-vaddr"
+    fi
+    if [[ -n ${l1d_watch_value} &&
+          ! ${l1d_watch_value} =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)$ ]]; then
+        die "--l1d-watch-value must be an integer"
+    fi
+    if [[ -n ${l1d_watch_value} && -z ${l1d_watch_vaddr} ]]; then
+        die "--l1d-watch-value requires --l1d-watch-vaddr"
+    fi
+    if ((l1d_watch_all_mshrs == 1)) && [[ -z ${l1d_watch_vaddr} ]]; then
+        die "--l1d-watch-all-mshrs requires --l1d-watch-vaddr"
     fi
     [[ ${monitor_seconds} =~ ^[1-9][0-9]*$ ]] ||
         die "--monitor-seconds must be positive"
@@ -561,6 +666,11 @@ start_run() {
     image=$(realpath -m "${image}")
     if [[ -n ${resume_checkpoint} ]]; then
         resume_checkpoint=$(resolve_checkpoint "${resume_checkpoint}")
+    fi
+    if [[ -n ${resume_simulator} ]]; then
+        resume_simulator=$(realpath -m "${resume_simulator}")
+        [[ -x ${resume_simulator} ]] ||
+            die "resume simulator is not executable: ${resume_simulator}"
     fi
     local timestamp slug run_id directory tmux_session task_name
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -634,7 +744,15 @@ start_run() {
         printf 'max_cycles=%q\n' "${max_cycles}"
         printf 'checkpoint_cycles=%q\n' "${checkpoint_cycles}"
         printf 'checkpoint_exit=%q\n' "${checkpoint_exit}"
+        printf 'checkpoint_interval=%q\n' "${checkpoint_interval}"
+        printf 'checkpoint_stop_pc=%q\n' "${checkpoint_stop_pc}"
         printf 'resume_checkpoint=%q\n' "${resume_checkpoint}"
+        printf 'resume_simulator=%q\n' "${resume_simulator}"
+        printf 'host_pc_trace=%q\n' "${host_pc_trace}"
+        printf 'l1d_watch_vaddr=%q\n' "${l1d_watch_vaddr}"
+        printf 'l1d_watch_paddr=%q\n' "${l1d_watch_paddr}"
+        printf 'l1d_watch_value=%q\n' "${l1d_watch_value}"
+        printf 'l1d_watch_all_mshrs=%q\n' "${l1d_watch_all_mshrs}"
         printf 'stop_cycles=%q\n' "${stop_cycles}"
         printf 'monitor_seconds=%q\n' "${monitor_seconds}"
         printf 'rebuild=%q\n' "${rebuild}"

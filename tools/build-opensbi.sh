@@ -23,6 +23,7 @@ payload_addr=0x80200000
 fdt_addr=${OPENSBI_FDT_ADDR:-0x8ff00000}
 memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
 zicclsm=${OPENRV64_ZICCLSM:-1}
+zbb=${OPENRV64_ZBB:-1}
 hart_count=${OPENRV64_HART_COUNT:-1}
 payload_source=${OPENRV64_PAYLOAD_SOURCE:-"${repo_root}/sw/opensbi_payload.S"}
 
@@ -32,6 +33,10 @@ fi
 
 if [[ "${zicclsm}" != 0 && "${zicclsm}" != 1 ]]; then
     echo "build-opensbi.sh: OPENRV64_ZICCLSM must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "${zbb}" != 0 && "${zbb}" != 1 ]]; then
+    echo "build-opensbi.sh: OPENRV64_ZBB must be 0 or 1" >&2
     exit 2
 fi
 if [[ "${hart_count}" != 1 && "${hart_count}" != 2 &&
@@ -46,6 +51,10 @@ fi
 zicclsm_cpp_args=()
 if [[ "${zicclsm}" == 1 ]]; then
     zicclsm_cpp_args=(-DOPENRV64_ZICCLSM)
+fi
+zbb_cpp_args=()
+if [[ "${zbb}" == 1 ]]; then
+    zbb_cpp_args=(-DOPENRV64_ZBB)
 fi
 
 for tool in git make dtc python3 awk \
@@ -93,6 +102,7 @@ dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
 "${bare_cross}gcc" -E -P -x assembler-with-cpp \
     -DOPENRV64_MEMORY_SIZE="${memory_size}" \
     -DOPENRV64_HART_COUNT="${hart_count}" \
+    "${zbb_cpp_args[@]}" \
     "${zicclsm_cpp_args[@]}" \
     -o "${artifact_dir}/openrv64-3p.dts" \
     "${repo_root}/sw/opensbi.dts"

@@ -14,7 +14,7 @@ module openrv64_exec_top #(
     parameter PIPE_EX_MEM = 1,
     parameter PIPE_MEM_WB = 1,
     parameter ENABLE_RV64M = 0,
-    parameter ENABLE_RV64ZBB_3P = 0,
+    parameter ENABLE_RV64ZBB_3P = 1,
     parameter ENABLE_FORWARDING = 0,
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter integer ENABLE_LOCAL_FORWARDING_3P = 1,

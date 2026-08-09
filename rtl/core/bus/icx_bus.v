@@ -1409,7 +1409,9 @@ module openrv64_core_icx_bus #(
         .resp_tag_o(l1i_resp_tag),
         .req_rdata_o(l1i_req_rdata),
         .req_error_o(l1i_req_error),
-        .prefetch_valid_i(icache_prefetch_valid_i),
+        .prefetch_valid_i(
+            icache_prefetch_valid_i &&
+            (fetch_req_vm_mode_i == `RV64_SATP_MODE_SV39)),
         .prefetch_taken_addr_i(icache_prefetch_taken_addr_i),
         .prefetch_fallthrough_addr_i(
             icache_prefetch_fallthrough_addr_i),
@@ -1419,10 +1421,13 @@ module openrv64_core_icx_bus #(
         .prefetch_root_ppn_i(fetch_req_root_ppn_i),
         .prefetch_sum_i(fetch_req_sum_i),
         .prefetch_mxr_i(fetch_req_mxr_i),
-        .retire_age_valid_i(icache_age_valid_i),
+        .retire_age_valid_i(
+            (fetch_req_vm_mode_i == `RV64_SATP_MODE_SV39) ?
+                icache_age_valid_i : 3'b000),
         .retire_age_addr_i(icache_age_addr_i),
         .prefetch_flush_i(
-            translation_invalidate || icache_invalidate_i),
+            translation_invalidate || icache_invalidate_i ||
+            (fetch_req_vm_mode_i != `RV64_SATP_MODE_SV39)),
         .xlate_req_valid_o(l1i_xlate_req_valid),
         .xlate_req_ready_i(l1i_xlate_req_ready),
         .xlate_req_vaddr_o(l1i_xlate_req_vaddr),

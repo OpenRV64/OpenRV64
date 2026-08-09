@@ -2,6 +2,13 @@
 
 ## Correctness
 
+- [ ] Replace the temporary M-mode branch-predictor redirect suppression with
+      context-safe target speculation. The tournament BTB currently tags only
+      `PC[25:10]`, so S-mode kernel and M-mode firmware PCs with identical low
+      26 bits can alias. Before re-enabling M-mode redirects, context-tag,
+      partition, or flush target state and ensure malformed speculative
+      physical targets become squashable access faults instead of reaching L2.
+      Add a directed trap/return BTB-alias regression.
 - [ ] Do not call SMP viable until four harts run concurrently on the full
       FPGA and extended user-mode and kernel-mode meat-grinder workloads pass.
       Directed simulation, OpenSBI HSM release, and a Linux prompt are

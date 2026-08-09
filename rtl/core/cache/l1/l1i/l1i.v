@@ -778,6 +778,8 @@ module openrv64_l1i_icx #(
     assign next_line_consume = response_pop &&
         !response_prefetch_q[response_pop_index] &&
         response_cacheable_q[response_pop_index] && !req_error_o &&
+        (response_vm_mode_q[response_pop_index] ==
+            `RV64_SATP_MODE_SV39) &&
         !prefetch_flush_i && !invalidate_valid_i;
     assign next_line_vaddr =
         {response_vaddr_q[response_pop_index][ADDR_WIDTH-1:6], 6'b000000} +

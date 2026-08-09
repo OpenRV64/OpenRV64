@@ -32,7 +32,7 @@ module openrv64_exec_top_3p #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer PRODUCER_TAG_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer ENABLE_RV64M = 1,
-    parameter integer ENABLE_RV64ZBB = 0,
+    parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,

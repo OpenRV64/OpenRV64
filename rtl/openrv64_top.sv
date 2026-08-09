@@ -20,7 +20,7 @@ module openrv64_top #(
     parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
     parameter bit ENABLE_ZICCLSM = 1'b1,
     parameter bit ENABLE_RV64M = 1'b0,
-    parameter bit ENABLE_RV64ZBB = 1'b0,
+    parameter bit ENABLE_RV64ZBB = 1'b1,
     parameter bit ENABLE_RV64A = 1'b1,
     parameter int unsigned HPM_COUNTERS = 8,
     parameter bit ENABLE_FORWARDING = 1'b1,

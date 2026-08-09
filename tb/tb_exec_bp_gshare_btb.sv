@@ -42,6 +42,7 @@ module tb_exec_bp_gshare_btb;
         .BTB_ENTRIES(8), .BTB_TAG_BITS(8), .INFLIGHT_DEPTH(4)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(1'b0),
+        .ras_context_flush_i(1'b0),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch), .lookup_jump_i(lookup_jump),
         .lookup_indirect_i(lookup_indirect),

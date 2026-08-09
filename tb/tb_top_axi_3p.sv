@@ -535,6 +535,7 @@ module tb_top_axi_3p #(
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer POSTED_STORES = 1,
+    parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer FREE_BRANCHES = 0,
     parameter integer EQ_BRANCH_PAIRING = 1,
@@ -817,6 +818,7 @@ module tb_top_axi_3p #(
     integer icx_locked_writes;
     integer bp_allocations;
     integer bp_taken_predictions;
+    integer bp_applied_redirects;
     integer bp_resolutions;
     integer bp_corrections;
     integer bp_btb_lookups;
@@ -931,6 +933,7 @@ module tb_top_axi_3p #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(POSTED_STORES),
+        .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_MAX_STRIDE_LINES(
@@ -2376,6 +2379,8 @@ module tb_top_axi_3p #(
                 if (dut.u_core.bp_prediction_taken)
                     bp_taken_predictions <= bp_taken_predictions + 1;
             end
+            if (dut.u_core.bp_predict_redirect)
+                bp_applied_redirects <= bp_applied_redirects + 1;
             if (dut.u_core.u_bp.diag_btb_lookup)
                 bp_btb_lookups <= bp_btb_lookups + 1;
             if (dut.u_core.u_bp.diag_btb_hit)
@@ -2502,6 +2507,7 @@ module tb_top_axi_3p #(
         icx_locked_writes = 0;
         bp_allocations = 0;
         bp_taken_predictions = 0;
+        bp_applied_redirects = 0;
         bp_resolutions = 0;
         bp_corrections = 0;
         bp_btb_lookups = 0;
@@ -3006,10 +3012,13 @@ module tb_top_axi_3p #(
             $fatal(1,
                    "3P BP control count mismatch: allocated=%0d resolved=%0d",
                    bp_allocations, bp_resolutions);
+        if (bp_applied_redirects != 0)
+            $fatal(1, "M-mode applied %0d predictor redirects",
+                   bp_applied_redirects);
         case (BP_TYPE)
             `OPENRV64_BP_ALWAYS_BRANCH: begin
                 if ((bp_taken_predictions != bp_allocations) ||
-                    (bp_corrections != 1))
+                    (bp_corrections != 2))
                     $fatal(1, "always-taken 3P BP mismatch p=%0d c=%0d",
                            bp_taken_predictions, bp_corrections);
             end
@@ -3019,7 +3028,7 @@ module tb_top_axi_3p #(
             `OPENRV64_BP_GSHARE_BTB_512,
             `OPENRV64_BP_TOURNAMENT_BTB: begin
                 if ((bp_taken_predictions != bp_allocations) ||
-                    (bp_corrections != 1))
+                    (bp_corrections != 2))
                     $fatal(1, "BTFNT/bimodal 3P BP mismatch p=%0d c=%0d",
                            bp_taken_predictions, bp_corrections);
             end

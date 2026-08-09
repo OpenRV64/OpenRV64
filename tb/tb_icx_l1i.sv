@@ -15,6 +15,8 @@ module tb_icx_l1i;
     logic [15:0] fetch_asid;
     logic [43:0] fetch_root_ppn;
     logic fetch_cancel;
+    logic context_flush;
+    wire tlbi_busy;
     logic icache_invalidate;
     logic icache_prefetch_valid;
     logic [63:0] icache_prefetch_taken_addr;
@@ -77,6 +79,7 @@ module tb_icx_l1i;
     logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] response_source_q;
     logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] response_data_q;
     logic hold_icx_responses;
+    logic sv39_mapping_enable;
     logic held_response_valid_q [0:15];
     logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
         held_response_hart_q [0:15];
@@ -94,6 +97,25 @@ module tb_icx_l1i;
     integer held_response_reset;
     integer response_wait_cycles;
     logic [2:0] ooo_remaining_seen;
+
+    function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        sv39_pte_line;
+        input [63:0] address;
+        reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] line;
+        begin
+            line = '0;
+            case (address)
+                // Root PPN 1 -> level-one PPN 2.
+                64'h1000: line[63:0] = (64'd2 << 10) | 64'h1;
+                // Level-one PPN 2 -> level-zero PPN 3.
+                64'h2000: line[63:0] = (64'd3 << 10) | 64'h1;
+                // Map virtual page zero to physical page zero as V/R/X/A.
+                64'h3000: line[63:0] = 64'h4b;
+                default: line = '0;
+            endcase
+            sv39_pte_line = line;
+        end
+    endfunction
 
     always_comb begin
         held_response_found = 1'b0;
@@ -181,7 +203,8 @@ module tb_icx_l1i;
         .lsu_xlate_req_mxr_i(1'b0),
         .lsu_xlate_resp_ready_i(1'b1),
         .tlbi_i(1'b0),
-        .context_flush_i(1'b0),
+        .context_flush_i(context_flush),
+        .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(icache_invalidate),
         .icache_prefetch_valid_i(icache_prefetch_valid),
@@ -304,13 +327,30 @@ module tb_icx_l1i;
                     (response_pending_q || icx_resp_valid ||
                      held_response_found))
                     $fatal(1, "hart issued a second request before response");
-                if (icx_req_hart_id != 0 ||
-                    icx_req_op != `OPENRV64_ICX_OP_READ ||
-                    icx_req_order != `OPENRV64_ICX_ORDER_NONE ||
-                    icx_req_size != 3'd6 || icx_req_addr[5:0] != 0 ||
-                    icx_req_burst_len != 0)
-                    $fatal(1, "native ICX read command mismatch");
-                if (icx_req_source_id ==
+                if (icx_req_hart_id != 0 || icx_req_burst_len != 0)
+                    $fatal(1,
+                        "native ICX read command mismatch hart=%0d op=%0d order=%0d size=%0d addr=%016x burst=%0d source=%0d",
+                        icx_req_hart_id, icx_req_op, icx_req_order,
+                        icx_req_size, icx_req_addr, icx_req_burst_len,
+                        icx_req_source_id);
+                if (icx_req_source_id == `OPENRV64_ICX_SOURCE_PTW &&
+                    icx_req_op == `OPENRV64_ICX_OP_FENCE) begin
+                    if (icx_req_kind != `OPENRV64_ICX_KIND_PTE ||
+                        icx_req_order != `OPENRV64_ICX_ORDER_ACQ_REL ||
+                        icx_req_size != 0 || icx_req_addr != 0 ||
+                        icx_req_attr != `OPENRV64_ICX_ATTR_NONE)
+                        $fatal(1, "malformed PTW shootdown fence");
+                end else if (icx_req_op != `OPENRV64_ICX_OP_READ ||
+                             icx_req_order !=
+                                `OPENRV64_ICX_ORDER_NONE ||
+                             icx_req_size != 3'd6 ||
+                             icx_req_addr[5:0] != 0) begin
+                    $fatal(1,
+                        "native ICX read command mismatch hart=%0d op=%0d order=%0d size=%0d addr=%016x burst=%0d source=%0d",
+                        icx_req_hart_id, icx_req_op, icx_req_order,
+                        icx_req_size, icx_req_addr, icx_req_burst_len,
+                        icx_req_source_id);
+                end else if (icx_req_source_id ==
                     `OPENRV64_ICX_SOURCE_ICACHE) begin
                     if (icx_req_kind != `OPENRV64_ICX_KIND_FETCH ||
                         (icx_req_attr &
@@ -350,7 +390,12 @@ module tb_icx_l1i;
                     response_hart_q <= icx_req_hart_id;
                     response_txn_q <= icx_req_txn_id;
                     response_source_q <= icx_req_source_id;
-                    response_data_q <= memory[icx_req_addr[8:6]];
+                    if (sv39_mapping_enable &&
+                        (icx_req_source_id ==
+                         `OPENRV64_ICX_SOURCE_PTW))
+                        response_data_q <= sv39_pte_line(icx_req_addr);
+                    else
+                        response_data_q <= memory[icx_req_addr[8:6]];
                 end
             end
 
@@ -457,6 +502,24 @@ module tb_icx_l1i;
         end
     endtask
 
+    task automatic pulse_context_flush;
+        integer cycles;
+        begin
+            @(negedge clk);
+            context_flush = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            context_flush = 1'b0;
+            cycles = 0;
+            while (tlbi_busy && cycles < 400) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            if (tlbi_busy)
+                $fatal(1, "translation context flush did not drain");
+        end
+    endtask
+
     task automatic pulse_prefetch_pair;
         input [63:0] taken_address;
         input [63:0] fallthrough_address;
@@ -501,6 +564,7 @@ module tb_icx_l1i;
         fetch_asid = 16'd0;
         fetch_root_ppn = 44'd0;
         fetch_cancel = 1'b0;
+        context_flush = 1'b0;
         icache_invalidate = 1'b0;
         icache_prefetch_valid = 1'b0;
         icache_prefetch_taken_addr = 64'd0;
@@ -508,6 +572,7 @@ module tb_icx_l1i;
         icache_age_valid = 3'b000;
         icache_age_addr = 192'd0;
         hold_icx_responses = 1'b0;
+        sv39_mapping_enable = 1'b0;
         fetch_resp_ready = 1'b1;
         pmp_allow = 1'b1;
         icx_req_ready = 1'b1;
@@ -526,11 +591,11 @@ module tb_icx_l1i;
         before_count = icx_count_q;
         issue_fetch(64'h20, memory[0][511:256], 1'b0,
                     "upper-half cold miss");
-        wait_for_icx_count(before_count + 2,
-                           "cold demand plus next-line prefetch");
+        wait_for_icx_count(before_count + 1,
+                           "M/BARE cold demand");
         repeat (20) @(negedge clk);
-        if ((icx_count_q - before_count) != 2)
-            $fatal(1, "demand did not issue exactly one next-line prefetch");
+        if ((icx_count_q - before_count) != 1)
+            $fatal(1, "M/BARE demand issued a next-line prefetch");
         before_count = icx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "lower-half resident hit");
@@ -649,8 +714,9 @@ module tb_icx_l1i;
                           "merged miss response lower");
         expect_fetch_only(64'h20, memory[0][511:256],
                           "merged miss response upper");
-        wait_for_icx_count(before_count + 2,
-                           "merged demand next-line prefetch");
+        repeat (20) @(negedge clk);
+        if (icx_count_q != before_count + 1)
+            $fatal(1, "merged M/BARE demand issued a prefetch");
 
         // A resident hit behind an unresolved miss must bypass it all the way
         // back to fetch.  Keeping the miss response held proves this is not
@@ -659,8 +725,8 @@ module tb_icx_l1i;
         before_count = icx_count_q;
         issue_fetch(64'h100, memory[4][255:0], 1'b0,
                     "prime hit-under-miss resident line");
-        wait_for_icx_count(before_count + 2,
-                           "hit-under-miss prime and next line");
+        wait_for_icx_count(before_count + 1,
+                           "hit-under-miss M/BARE prime");
         before_count = icx_count_q;
         hold_icx_responses = 1'b1;
         push_fetch_only(64'h180);
@@ -674,15 +740,16 @@ module tb_icx_l1i;
         hold_icx_responses = 1'b0;
         expect_fetch_only(64'h180, memory[6][255:0],
                           "outstanding miss completed after bypass hit");
-        wait_for_icx_count(before_count + 2,
-                           "hit-under-miss next-line prefetch");
+        repeat (20) @(negedge clk);
+        if (icx_count_q != before_count + 1)
+            $fatal(1, "hit-under-miss M/BARE demand issued a prefetch");
 
         pulse_invalidate();
         before_count = icx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "prime pre-fence resident line");
-        wait_for_icx_count(before_count + 2,
-                           "pre-fence prime and next line");
+        wait_for_icx_count(before_count + 1,
+                           "pre-fence M/BARE prime");
         stale_lower = memory[0][255:0];
         memory[0][255:0] = 256'hface_cafe;
         before_count = icx_count_q;
@@ -693,8 +760,8 @@ module tb_icx_l1i;
         before_count = icx_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "post-fence refill");
-        wait_for_icx_count(before_count + 2,
-                           "post-fence refill plus next line");
+        wait_for_icx_count(before_count + 1,
+                           "post-fence M/BARE refill");
 
         pmp_allow = 1'b0;
         before_count = icx_count_q;
@@ -718,37 +785,68 @@ module tb_icx_l1i;
         before_count = icx_count_q;
         issue_fetch(64'h80, memory[2][255:0], 1'b0,
                     "held invalidation refetch");
+        wait_for_icx_count(before_count + 1,
+                           "held invalidation M/BARE refetch");
+
+        pulse_invalidate();
+        before_count = icx_count_q;
+        pulse_prefetch_pair(64'hffff_ffff_800f_0980,
+                            64'hffff_ffff_800f_09c0);
+        repeat (30) @(negedge clk);
+        if (icx_count_q != before_count)
+            $fatal(1, "M/BARE admitted stale high-half branch prefetch");
+
+        pulse_prefetch_pair(64'h100, 64'h180);
+        repeat (30) @(negedge clk);
+        if (icx_count_q != before_count)
+            $fatal(1, "M/BARE admitted branch-path prefetch");
+        before_count = icx_count_q;
+        issue_fetch(64'h100, memory[4][255:0], 1'b0,
+                    "taken path demand miss");
+        issue_fetch(64'h1a0, memory[6][511:256], 1'b0,
+                    "fallthrough path demand miss");
         wait_for_icx_count(before_count + 2,
-                           "held invalidation refetch plus next line");
+                           "M/BARE branch-path demand misses");
+
+        pulse_invalidate();
+        before_count = icx_count_q;
+        pulse_prefetch_pair(64'h200, 64'h220);
+        repeat (30) @(negedge clk);
+        if (icx_count_q != before_count)
+            $fatal(1, "M/BARE admitted same-line branch prefetch");
+
+        // Sv39 retains both automatic next-line and explicit branch-path
+        // prefetching.  This positive check prevents the M/BARE guards from
+        // degenerating into a global prefetch disable.
+        pulse_invalidate();
+        fetch_priv = `RV64_PRIV_S;
+        fetch_vm_mode = `RV64_SATP_MODE_SV39;
+        fetch_root_ppn = 44'd1;
+        sv39_mapping_enable = 1'b1;
+        before_count = icx_count_q;
+        memory_index = pte_count_q;
+        issue_fetch(64'h20, memory[0][511:256], 1'b0,
+                    "Sv39 demand with next-line prefetch");
+        wait_for_icx_count(before_count + 2,
+                           "Sv39 demand plus next-line prefetch");
+        if (pte_count_q != memory_index + 3)
+            $fatal(1, "Sv39 demand did not perform one three-level walk");
 
         pulse_invalidate();
         before_count = icx_count_q;
         pulse_prefetch_pair(64'h100, 64'h180);
         wait_for_icx_count(before_count + 2,
-                           "taken/fallthrough prefetch");
-        before_count = icx_count_q;
-        issue_fetch(64'h100, memory[4][255:0], 1'b0,
-                    "taken prefetch demand hit");
-        issue_fetch(64'h1a0, memory[6][511:256], 1'b0,
-                    "fallthrough prefetch demand hit");
-        wait_for_icx_count(before_count + 2,
-                           "branch-path demand next-line prefetches");
-
-        pulse_invalidate();
-        before_count = icx_count_q;
-        pulse_prefetch_pair(64'h200, 64'h220);
-        wait_for_icx_count(before_count + 1,
-                           "same-line branch prefetch collapse");
+                           "Sv39 taken/fallthrough prefetch");
         repeat (30) @(negedge clk);
-        if (icx_count_q != before_count + 1)
-            $fatal(1, "same-line branch paths issued duplicate fills");
+        if (icx_count_q != before_count + 2)
+            $fatal(1, "Sv39 branch prefetch count changed after drain");
 
         // Speculative Sv39 faults are consumed by L1I.  Their PTE lines use
         // the shared ICX path, but they neither issue I-cache line fills nor
         // create an architectural fetch response.
         pulse_invalidate();
-        fetch_priv = `RV64_PRIV_S;
-        fetch_vm_mode = `RV64_SATP_MODE_SV39;
+        pulse_context_flush();
+        sv39_mapping_enable = 1'b0;
         before_count = icx_count_q;
         memory_index = pte_count_q;
         pulse_prefetch_pair(64'h1000, 64'h2000);
@@ -764,8 +862,9 @@ module tb_icx_l1i;
             $fatal(1, "speculative translation fault became architectural");
         fetch_priv = `RV64_PRIV_M;
         fetch_vm_mode = `RV64_SATP_MODE_BARE;
+        fetch_root_ppn = 44'd0;
 
-        $display("PASS: native ICX VIPT L1I refill/hit/prefetch/PMP/FENCE.I");
+        $display("PASS: native ICX VIPT L1I refill/hit/Sv39-only-prefetch/PMP/FENCE.I");
         $finish;
     end
 

@@ -78,6 +78,7 @@ module tb_l1d_store_buffer;
     integer timeout_start_cycle;
     integer memory_byte;
     integer memory_reset_line;
+    reg [3:0] overlay_epoch_before;
     localparam integer MEMORY_LINES = 16;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_LINES-1];
@@ -465,6 +466,48 @@ module tb_l1d_store_buffer;
                 posted_resp_valid, posted_resp_tag, resp_valid, resp_tag,
                 req_rdata, req_error);
         @(posedge clk);
+
+        reset_dut();
+
+        // A dirty-overlay snapshot is indexed by the LSU request tag.  Once
+        // that request completes, reusing its tag for an unrelated miss must
+        // not attach the stale byte mask to the new line.
+        memory[BASE[9:6]][63:0] =
+            64'h0123_4567_89ab_cdef;
+        memory[BASE[9:6] + 4][63:0] =
+            64'h8877_6655_4433_2211;
+        issue_load(BASE, 64'h0123_4567_89ab_cdef);
+        issue_store(BASE, 64'hfeed_face_cafe_beef);
+        issue_load(BASE, 64'hfeed_face_cafe_beef);
+        // issue_load returns in the active region of the response edge;
+        // sample state after the DUT's nonblocking retire updates.
+        #1;
+        overlay_epoch_before =
+            dut.tag_overlay_owner_epoch_q[req_tag];
+        if (dut.tag_overlay_bypass_valid_q)
+            $fatal(1,
+                "completed dirty-overlay owner remained live tag=%0d epoch=%0d",
+                req_tag, overlay_epoch_before);
+        if (!(|dut.tag_overlay_bypass_data_q[
+                `OPENRV64_ICX_LINE_STRB_WIDTH-1:0]))
+            $fatal(1,
+                "dirty-overlay setup lost bypass payload tag=%0d strb=%016x",
+                req_tag,
+                dut.tag_overlay_bypass_data_q[
+                    `OPENRV64_ICX_LINE_STRB_WIDTH-1:0]);
+        req_tag = req_tag - 1'b1;
+        issue_load(BASE + 64'h100, 64'h8877_6655_4433_2211);
+        if (dut.tag_overlay_owner_epoch_q[req_tag] ==
+            overlay_epoch_before)
+            $fatal(1,
+                "recycled LSU tag retained overlay epoch tag=%0d epoch=%0d",
+                req_tag, overlay_epoch_before);
+        if (dut.tag_overlay_bypass_valid_q)
+            $fatal(1,
+                "clean recycled tag acquired dirty-overlay bypass tag=%0d epoch=%0d",
+                req_tag,
+                dut.tag_overlay_owner_epoch_q[req_tag]);
+        issue_load(BASE + 64'h100, 64'h8877_6655_4433_2211);
 
         reset_dut();
 

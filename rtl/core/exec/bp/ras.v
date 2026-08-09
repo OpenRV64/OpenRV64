@@ -15,6 +15,7 @@ module openrv64_exec_bp_ras #(
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         flush_i,
+    input  wire                         squash_i,
 
     input  wire                         lookup_valid_i,
     input  wire                         lookup_indirect_i,
@@ -86,8 +87,15 @@ module openrv64_exec_bp_ras #(
             for (reset_index = 0; reset_index < DEPTH;
                  reset_index = reset_index + 1)
                 stack_q[reset_index] <= {`RV64_XLEN{1'b0}};
+        end else if (flush_i) begin
+            // Architectural flushes can cross privilege or address-space
+            // contexts.  A return target from the old context is not safe to
+            // fetch in the new one, especially when the new context is BARE.
+            sp_q <= {INDEX_WIDTH{1'b0}};
+            count_q <= {COUNT_WIDTH{1'b0}};
+            pending_calls_q <= {COUNT_WIDTH{1'b0}};
         end else begin
-            if (flush_i)
+            if (squash_i)
                 pending_calls_q <= {COUNT_WIDTH{1'b0}};
             else begin
                 case ({pending_call_allocate, pending_call_resolve})

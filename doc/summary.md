@@ -107,7 +107,7 @@ configuration have drifted apart.
 | Variant | Current role | Status |
 |---|---|---|
 | `openrv64_top` | Generic 1P-by-default wrapper over the blocking memory bus; can select 3P. | Principal simple integration surface. It exposes optional Zbb. |
-| `openrv64_top_3p` | Fixed 3P native-ICX/residual-AXI top with 16-entry retirement, BP8 default, optional issue/speculation, A, optional M, and Zicclsm. | Most capable integer core surface. It does not expose the documented Zbb parameter, despite the inner 3P core supporting it. |
+| `openrv64_top_3p` | Fixed 3P native-ICX/residual-AXI top with 16-entry retirement, BP8 default, optional issue/speculation, A, optional M, Zbb, and Zicclsm. | Most capable integer core surface. Zbb is exposed and enabled by default. |
 | `soc/platform.sv` | Synthesizable single-hart platform with boot ROM, CLINT/PLIC/UART and selectable memory models. | Linux simulation vehicle. The external-memory seam is intentionally limited to 1P. |
 | `tb_4h_3p.sv` hierarchy | One-to-four real 3P cores, coherent home/directory/L2, residual AXI and platform devices. | Demonstrates SMP Linux in simulation. It is a testbench hierarchy, not a production SoC wrapper. |
 | `top_4pf.v` | Separate four-pipeline F/D-capable execution top. | Directed full-core F/D behavior works, but it is not integrated into the main 1P/3P/Linux platform. |
@@ -121,7 +121,8 @@ definition. Feature claims must name the exact top and parameter set.
 
 The integrated integer cores implement RV64I with optional M and A,
 Zicsr/Zifencei, M/S/U privilege, traps/interrupts, PMP, Sv39/Bare translation,
-and a 3P Zicclsm path. A gated Zbb implementation exists in the inner 3P path.
+and 3P Zicclsm and Zbb paths. Zbb is enabled by default throughout the supported
+3P integration surfaces.
 There is no compressed-instruction implementation. Public parameter defaults do
 not consistently describe the Linux-capable feature set: M is off in important
 tops although Linux harnesses enable it.
@@ -131,8 +132,8 @@ Material qualifications:
 - F/D support is a separate 4PF integration, not part of the public integer
   product configurations. It has useful directed execution/fault evidence but no
   corresponding full compliance campaign.
-- Zbb is default-off and is not consistently surfaced through the fixed 3P top.
-  ISA discovery/advertisement is also not a complete product contract.
+- Zbb is 3P-only, enabled by default, and advertised by the generated 3P
+  OpenSBI device tree. The 1P core neither implements nor advertises it.
 - The vector unit is a private interface and instruction path. It lacks standard
   RVV decode, architectural CSRs, restart semantics, and software ABI support.
 - `mstatus.TW` storage exists, but lower-privilege WFI interception remains an

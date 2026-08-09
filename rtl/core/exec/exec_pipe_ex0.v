@@ -13,7 +13,7 @@
 module openrv64_exec_pipe_ex0 #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer ENABLE_RV64M = 1,
-    parameter integer ENABLE_RV64ZBB = 0,
+    parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1
 ) (
     input  wire                         clk,

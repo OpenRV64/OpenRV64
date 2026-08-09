@@ -20,7 +20,7 @@ module openrv64_rv64_top_3p #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
     parameter ENABLE_RV64M = 0,
-    parameter ENABLE_RV64ZBB = 0,
+    parameter ENABLE_RV64ZBB = 1,
     parameter integer HPM_COUNTERS = 8,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
@@ -376,6 +376,10 @@ module openrv64_rv64_top_3p #(
     wire [63:0] bp_direct_target;
     wire bp_fetch_stall;
     wire bp_decode_stall;
+    wire ras_return_fetch_valid;
+    wire l1i_speculation_sv39 =
+        (csr_priv_mode != `RV64_PRIV_M) &&
+        (csr_satp_mode == `RV64_SATP_MODE_SV39);
     wire icache_branch_hint_valid;
     wire fetch_alt_pair_valid;
     wire icache_prefetch_valid;
@@ -395,7 +399,16 @@ module openrv64_rv64_top_3p #(
     reg [63:0] l1i_next_line_addr_q;
     wire [63:0] l1i_prefetch_first_addr;
     wire [63:0] l1i_prefetch_second_addr;
-    wire control_redirect = backend_redirect || bp_target_mispredict;
+    // Temporary containment: treat every M-mode control as effectively
+    // predicted not-taken.  Gating only the fetch redirect is incorrect;
+    // branch resolution must see the same effective prediction.
+    wire bp_redirects_enabled = csr_priv_mode != `RV64_PRIV_M;
+    wire bp_prediction_taken_effective = bp_redirects_enabled &&
+                                         bp_prediction_taken;
+    wire bp_target_mispredict_effective = bp_redirects_enabled &&
+                                           bp_target_mispredict;
+    wire control_redirect = backend_redirect ||
+                            bp_target_mispredict_effective;
 
     wire fetch3_restart = reset_pending_q || except_vector_valid ||
                           control_restart || control_redirect ||
@@ -748,14 +761,13 @@ module openrv64_rv64_top_3p #(
         (`RV64_RD(bp_selected_instr) == 5'd5);
     wire bp_lookup_return = bp_lookup_indirect && bp_lookup_is_jalr &&
                             bp_lookup_rs1_link && !bp_lookup_rd_link;
-    wire ras_return_fetch_valid;
 
     assign bp_branch_present = use_icx_bus &&
                                (|frontend_control_select) &&
                                !control_flush && !control_redirect &&
                                !halted_q && !wfi_sleep_q;
     assign bp_predict_redirect = bp_branch_allocate &&
-                                 bp_prediction_taken;
+                                 bp_prediction_taken_effective;
 
     openrv64_prefix_addsub u_bp_target (
         .a_i(bp_selected_pc), .b_i(bp_selected_imm), .sub_i(1'b0),
@@ -784,6 +796,7 @@ module openrv64_rv64_top_3p #(
                   (ENABLE_SPECULATION_WINDOW == 0))),
         .squash_i(control_redirect &&
                   (ENABLE_SPECULATION_WINDOW != 0)),
+        .ras_context_flush_i(control_flush),
         .lookup_valid_i(bp_branch_present),
         .lookup_branch_i(bp_lookup_branch),
         .lookup_jump_i(bp_lookup_jump),
@@ -814,7 +827,7 @@ module openrv64_rv64_top_3p #(
     );
 
     wire [2:0] bp_lane_prediction = frontend_control_select &
-                                    {3{bp_prediction_taken}};
+                                    {3{bp_prediction_taken_effective}};
 
     wire [2:0] decode_ebreak = {
         instr2 == `RV64_INSTR_EBREAK,
@@ -885,7 +898,7 @@ module openrv64_rv64_top_3p #(
     wire [2:0] backend_decode_valid = fetch_decode_valid &
         frontend_prefix_allow & {3{frontend_decode_enable}};
     wire [2:0] frontend_decode_fire = backend_decode_valid &
-                                      backend_decode_ready;
+        backend_decode_ready;
     wire [1:0] frontend_decode_count =
         {1'b0, frontend_decode_fire[0]} +
         {1'b0, frontend_decode_fire[1]} +
@@ -895,9 +908,11 @@ module openrv64_rv64_top_3p #(
     assign ras_return_fetch_valid = bp_branch_allocate &&
                                     bp_lookup_return &&
                                     bp_prediction_taken &&
-                                    bp_prediction_target_valid;
+                                    bp_prediction_target_valid &&
+                                    l1i_speculation_sv39;
     assign icache_branch_hint_valid = use_icx_bus && bp_branch_allocate &&
-                                      bp_lookup_branch;
+                                      bp_lookup_branch &&
+                                      l1i_speculation_sv39;
     // Confidence policy: 0 = all branch pairs, 1 = weak pairs plus strong
     // next-line prefetch, 2 = weak pairs without strong next-line prefetch.
     assign fetch_alt_pair_valid = icache_branch_hint_valid &&

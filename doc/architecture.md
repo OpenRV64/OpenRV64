@@ -84,9 +84,9 @@ when their parameters are enabled.
   the MEM lane; the AXI requester does not use AXI exclusive transactions.
 - RV64M is implemented by the EX0 lane but disabled by default at the public
   tops.
-- Zbb is optionally implemented by a separate iterative EX0 worker in the 3P
-  core. It shares RV64M's issue lane and tagged long-operation context, but not
-  RV64M's arithmetic RTL. The 1P core does not implement Zbb.
+- Zbb is implemented by a separate iterative EX0 worker in the 3P core and is
+  enabled by default. It shares RV64M's issue lane and tagged long-operation
+  context, but not RV64M's arithmetic RTL. The 1P core does not implement Zbb.
 - Machine, supervisor, and user privilege modes, delegated traps and
   interrupts, MRET/SRET, and the main machine/supervisor CSR state are
   implemented.
@@ -750,7 +750,7 @@ ordered WAW relaxation:
 | --- | ---: | --- |
 | `RETIRE_DEPTH` | 8 | Retirement/completion entries |
 | `ENABLE_RV64M` | 0 | Iterative M execution disabled |
-| `ENABLE_RV64ZBB` | 0 | Iterative 3P-only Zbb execution disabled |
+| `ENABLE_RV64ZBB` | 1 | Iterative 3P-only Zbb execution enabled |
 | `ENABLE_RV64A` | 1 | Serialized atomics enabled |
 | `RELAX_WAW` | 1 | Multiple ordered writers to one architectural rd allowed |
 | `RELAX_HAZARDS` | 0 | Youngest-producer result table disabled |
