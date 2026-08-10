@@ -865,6 +865,639 @@ class L1dWatch {
     std::array<uint64_t, 8> l2_line_{};
 };
 
+class TicketLockTrace {
+  public:
+    TicketLockTrace(std::ostream& stream, uint16_t ticket,
+                    bool fixed_watch_addr, uint64_t watch_addr,
+                    uint32_t retire_start, uint32_t retire_end)
+        : stream_{stream}, ticket_{ticket},
+          retire_start_{retire_start}, retire_end_{retire_end},
+          have_watch_addr_{fixed_watch_addr}, watch_addr_{watch_addr},
+          fixed_watch_addr_{fixed_watch_addr} {
+        stream_ << "# OpenRV64 ticket-lock trace ticket=0x" << std::hex
+                << ticket_;
+        if (fixed_watch_addr_)
+            stream_ << " paddr=0x" << watch_addr_;
+        stream_ << std::dec << '\n';
+    }
+
+    void trace(const Vtb_4h_3p___024root* root, uint32_t cycle) {
+        trace_hart(root, cycle, 0, hart0(root));
+#if OPENRV64_4H_CORE_INSTANCES >= 2
+        trace_hart(root, cycle, 1, hart1(root));
+#endif
+
+        if (!have_watch_addr_ && candidate_valid_[1]) {
+            provisional_addr_ = candidate_addr_[1];
+            have_provisional_addr_ = true;
+        }
+        if (!have_watch_addr_ && !have_provisional_addr_)
+            return;
+
+        const uint64_t addr = have_watch_addr_ ? watch_addr_ :
+                                                   provisional_addr_;
+        const uint64_t line = addr & ~63ULL;
+        trace_l1(root, cycle, 0, line, addr);
+#if OPENRV64_4H_CORE_INSTANCES >= 2
+        trace_l1(root, cycle, 1, line, addr);
+#endif
+        trace_l2(root, cycle, line, addr);
+        trace_cache_state(root, cycle, line, addr);
+
+        if ((cycle & 0x3fffU) == 0)
+            stream_.flush();
+    }
+
+    bool found() const { return have_watch_addr_; }
+    uint64_t watch_addr() const { return watch_addr_; }
+    uint32_t discovery_cycle() const { return discovery_cycle_; }
+
+  private:
+    static constexpr unsigned kResultWidth = 457;
+    static constexpr unsigned kDataLsb = 169;
+    static constexpr unsigned kInstrLsb = 233;
+    static constexpr unsigned kPcLsb = 329;
+    static constexpr uint64_t kAcquirePc = 0xffffffff80297e98ULL;
+
+    struct HartView {
+        uint8_t retire = 0;
+        const VlWide<43>* results = nullptr;
+        bool atomic_active = false;
+        bool atomic_irrevocable = false;
+        bool atomic_inflight = false;
+        uint8_t atomic_state = 0;
+        uint8_t atomic_op = 0;
+        uint64_t atomic_addr = 0;
+        bool request_fire = false;
+        uint64_t request_addr = 0;
+        uint8_t request_tag = 0;
+        uint8_t request_size = 0;
+        bool request_write = false;
+        bool backend_resp_fire = false;
+        uint8_t backend_resp_tag = 0;
+        uint64_t backend_rdata = 0;
+        bool l1_mem_fire = false;
+        bool l1_mem_write = false;
+        uint64_t l1_mem_addr = 0;
+        uint64_t l1_mem_wdata = 0;
+        uint8_t l1_mem_wstrb = 0;
+        const VlWide<16>* l1_mem_rdata = nullptr;
+        bool command_fire = false;
+        uint64_t command_addr = 0;
+        uint8_t command_txn = 0;
+        bool command_write = false;
+        bool response_fire = false;
+    };
+
+    static uint32_t word_at(uint64_t data, uint64_t addr) {
+        return static_cast<uint32_t>(
+            (data >> ((addr & 4ULL) ? 32 : 0)) & 0xffffffffULL);
+    }
+
+    template <std::size_t N>
+    static uint32_t line_word_at(const VlWide<N>& data, uint64_t addr,
+                                 unsigned lsb = 0) {
+        return static_cast<uint32_t>(wide_bits(
+            data, lsb + static_cast<unsigned>(addr & 63ULL) * 8, 32));
+    }
+
+    static bool same_line(uint64_t lhs, uint64_t rhs) {
+        return (lhs & ~63ULL) == (rhs & ~63ULL);
+    }
+
+    HartView hart0(const Vtb_4h_3p___024root* root) const {
+#define CORE(name)                                                          \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__##name
+#define BUS(name)                                                           \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_debug__DOT__##name
+#define L1D(name)                                                           \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_debug__DOT__##name
+        HartView view;
+        view.retire = CORE(backend_retire_arch);
+        view.results = &CORE(queue_retire_result);
+        view.atomic_active = CORE(atomic_active);
+        view.atomic_irrevocable = CORE(atomic_irrevocable);
+        view.atomic_inflight = CORE(atomic_req_inflight);
+        view.atomic_state = CORE(atomic_state);
+        view.atomic_op = CORE(atomic_op);
+        view.atomic_addr = CORE(atomic_addr);
+        view.request_fire = BUS(l1d_request_fire);
+        view.request_addr = BUS(l1d_req_addr);
+        view.request_tag = BUS(l1d_req_tag);
+        view.request_size = BUS(l1d_req_size);
+        view.request_write = BUS(l1d_req_write);
+        view.backend_resp_fire =
+            CORE(backend_mem_resp_valid) && CORE(backend_mem_resp_ready);
+        view.backend_resp_tag = CORE(backend_mem_resp_tag);
+        view.backend_rdata = CORE(backend_mem_rdata);
+        view.l1_mem_fire = L1D(l1_mem_valid) && L1D(l1_mem_ready);
+        view.l1_mem_write = L1D(l1_mem_write);
+        view.l1_mem_addr = L1D(l1_mem_addr);
+        view.l1_mem_wdata = L1D(l1_mem_wdata);
+        view.l1_mem_wstrb = L1D(l1_mem_wstrb);
+        view.l1_mem_rdata = &L1D(l1_mem_rdata);
+        view.command_fire = L1D(command_fire);
+        view.command_addr = L1D(request_addr_q);
+        view.command_txn = L1D(request_txn_id_q);
+        view.command_write = L1D(request_write_q);
+        view.response_fire = L1D(response_fire);
+#undef L1D
+#undef BUS
+#undef CORE
+        return view;
+    }
+
+#if OPENRV64_4H_CORE_INSTANCES >= 2
+    HartView hart1(const Vtb_4h_3p___024root* root) const {
+#define CORE(name)                                                          \
+    root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_debug__DOT__##name
+#define BUS(name)                                                           \
+    root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_debug__DOT__##name
+#define L1D(name)                                                           \
+    root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_debug__DOT__##name
+        HartView view;
+        view.retire = CORE(backend_retire_arch);
+        view.results = &CORE(queue_retire_result);
+        view.atomic_active = CORE(atomic_active);
+        view.atomic_irrevocable = CORE(atomic_irrevocable);
+        view.atomic_inflight = CORE(atomic_req_inflight);
+        view.atomic_state = CORE(atomic_state);
+        view.atomic_op = CORE(atomic_op);
+        view.atomic_addr = CORE(atomic_addr);
+        view.request_fire = BUS(l1d_request_fire);
+        view.request_addr = BUS(l1d_req_addr);
+        view.request_tag = BUS(l1d_req_tag);
+        view.request_size = BUS(l1d_req_size);
+        view.request_write = BUS(l1d_req_write);
+        view.backend_resp_fire =
+            CORE(backend_mem_resp_valid) && CORE(backend_mem_resp_ready);
+        view.backend_resp_tag = CORE(backend_mem_resp_tag);
+        view.backend_rdata = CORE(backend_mem_rdata);
+        view.l1_mem_fire = L1D(l1_mem_valid) && L1D(l1_mem_ready);
+        view.l1_mem_write = L1D(l1_mem_write);
+        view.l1_mem_addr = L1D(l1_mem_addr);
+        view.l1_mem_wdata = L1D(l1_mem_wdata);
+        view.l1_mem_wstrb = L1D(l1_mem_wstrb);
+        view.l1_mem_rdata = &L1D(l1_mem_rdata);
+        view.command_fire = L1D(command_fire);
+        view.command_addr = L1D(request_addr_q);
+        view.command_txn = L1D(request_txn_id_q);
+        view.command_write = L1D(request_write_q);
+        view.response_fire = L1D(response_fire);
+#undef L1D
+#undef BUS
+#undef CORE
+        return view;
+    }
+#endif
+
+    void trace_hart(const Vtb_4h_3p___024root*, uint32_t cycle,
+                    unsigned hart, const HartView& view) {
+        if (view.atomic_active &&
+            (!previous_atomic_active_[hart] ||
+             view.atomic_state != previous_atomic_state_[hart] ||
+             view.atomic_inflight != previous_atomic_inflight_[hart])) {
+            stream_ << "ATOMIC_STATE cycle=" << cycle
+                    << " hart=" << hart
+                    << " active=" << view.atomic_active
+                    << " irrev=" << view.atomic_irrevocable
+                    << " inflight=" << view.atomic_inflight
+                    << " state=" << static_cast<unsigned>(view.atomic_state)
+                    << " op=" << static_cast<unsigned>(view.atomic_op)
+                    << " vaddr=0x" << std::hex << view.atomic_addr
+                    << std::dec << '\n';
+        }
+
+        if (view.atomic_active && view.atomic_op == 15 &&
+            view.request_fire) {
+            candidate_valid_[hart] = true;
+            candidate_addr_[hart] = view.request_addr;
+            stream_ << "AMO_L1_REQUEST cycle=" << cycle
+                    << " hart=" << hart
+                    << " phase=" << (view.atomic_state == 1 ? "read" :
+                                      view.atomic_state == 2 ? "write" :
+                                                               "other")
+                    << " state=" << static_cast<unsigned>(view.atomic_state)
+                    << " tag=" << static_cast<unsigned>(view.request_tag)
+                    << " write=" << view.request_write
+                    << " size=" << static_cast<unsigned>(view.request_size)
+                    << " vaddr=0x" << std::hex << view.atomic_addr
+                    << " paddr=0x" << view.request_addr << std::dec << '\n';
+        }
+
+        if (view.atomic_active && view.atomic_op == 15 &&
+            view.backend_resp_fire) {
+            const uint32_t old_word = word_at(view.backend_rdata,
+                                              view.atomic_addr);
+            stream_ << "AMO_RESPONSE cycle=" << cycle
+                    << " hart=" << hart
+                    << " phase=" << (view.atomic_state == 1 ? "read" :
+                                      view.atomic_state == 2 ? "write" :
+                                                               "other")
+                    << " state=" << static_cast<unsigned>(view.atomic_state)
+                    << " tag=" << static_cast<unsigned>(view.backend_resp_tag)
+                    << " rdata=0x" << std::hex << view.backend_rdata
+                    << " word=0x" << old_word
+                    << " owner=0x" << (old_word & 0xffffU)
+                    << " next=0x" << ((old_word >> 16) & 0xffffU)
+                    << std::dec << '\n';
+            if (hart == 1 && view.atomic_state == 1 &&
+                ((old_word >> 16) & 0xffffU) == ticket_ &&
+                candidate_valid_[hart]) {
+                if (!fixed_watch_addr_) {
+                    have_watch_addr_ = true;
+                    watch_addr_ = candidate_addr_[hart];
+                }
+                discovery_cycle_ = cycle;
+                stream_ << (fixed_watch_addr_ ? "TICKET_MATCH cycle=" :
+                                              "TICKET_TARGET cycle=")
+                        << cycle
+                        << " hart=" << hart
+                        << " ticket=0x" << std::hex << ticket_
+                        << " old_word=0x" << old_word
+                        << " vaddr=0x" << view.atomic_addr
+                        << " paddr=0x" << watch_addr_
+                        << " line=0x" << (watch_addr_ & ~63ULL)
+                        << std::dec << '\n';
+                stream_.flush();
+            }
+        }
+
+        for (unsigned lane = 0; lane < 3; ++lane) {
+            if ((view.retire & (1U << lane)) == 0)
+                continue;
+            const uint64_t pc = wide_bits(
+                *view.results, lane * kResultWidth + kPcLsb, 64);
+            if (retire_start_ != 0 && cycle >= retire_start_ &&
+                (retire_end_ == 0 || cycle <= retire_end_)) {
+                stream_ << "RETIRE cycle=" << cycle
+                        << " hart=" << hart
+                        << " lane=" << lane
+                        << " pc=0x" << std::hex << pc
+                        << " instr=0x"
+                        << wide_bits(*view.results,
+                                     lane * kResultWidth + kInstrLsb, 32)
+                        << " result=0x"
+                        << wide_bits(*view.results,
+                                     lane * kResultWidth + kDataLsb, 64)
+                        << std::dec << '\n';
+            }
+            if (pc != kAcquirePc)
+                continue;
+            const uint64_t data = wide_bits(
+                *view.results, lane * kResultWidth + kDataLsb, 64);
+            const uint32_t word = static_cast<uint32_t>(data);
+            stream_ << "TICKET_RETIRE cycle=" << cycle
+                    << " hart=" << hart
+                    << " lane=" << lane
+                    << " pc=0x" << std::hex << pc
+                    << " instr=0x"
+                    << wide_bits(*view.results,
+                                 lane * kResultWidth + kInstrLsb, 32)
+                    << " result=0x" << data
+                    << " owner=0x" << (word & 0xffffU)
+                    << " ticket=0x" << ((word >> 16) & 0xffffU)
+                    << std::dec << '\n';
+        }
+
+        previous_atomic_active_[hart] = view.atomic_active;
+        previous_atomic_state_[hart] = view.atomic_state;
+        previous_atomic_inflight_[hart] = view.atomic_inflight;
+    }
+
+    void trace_l1(const Vtb_4h_3p___024root* root, uint32_t cycle,
+                  unsigned hart, uint64_t line, uint64_t lock_addr) {
+        const HartView view = hart == 0 ? hart0(root) : hart1(root);
+        if (view.request_fire && same_line(view.request_addr, line)) {
+            pending_[hart][view.request_tag] = true;
+            stream_ << "CORE_L1_REQUEST cycle=" << cycle
+                    << " hart=" << hart
+                    << " tag=" << static_cast<unsigned>(view.request_tag)
+                    << " write=" << view.request_write
+                    << " size=" << static_cast<unsigned>(view.request_size)
+                    << " addr=0x" << std::hex << view.request_addr
+                    << std::dec << '\n';
+        }
+        if (view.backend_resp_fire &&
+            pending_[hart][view.backend_resp_tag]) {
+            stream_ << "CORE_L1_RESPONSE cycle=" << cycle
+                    << " hart=" << hart
+                    << " tag="
+                    << static_cast<unsigned>(view.backend_resp_tag)
+                    << " rdata=0x" << std::hex << view.backend_rdata
+                    << " word=0x" << word_at(view.backend_rdata, lock_addr)
+                    << std::dec << '\n';
+            pending_[hart][view.backend_resp_tag] = false;
+        }
+        if (view.l1_mem_fire && same_line(view.l1_mem_addr, line)) {
+            stream_ << "L1_ARRAY_ACCESS cycle=" << cycle
+                    << " hart=" << hart
+                    << " write=" << view.l1_mem_write
+                    << " addr=0x" << std::hex << view.l1_mem_addr
+                    << " read_word=0x"
+                    << line_word_at(*view.l1_mem_rdata, lock_addr)
+                    << " wdata=0x" << view.l1_mem_wdata
+                    << " wstrb=0x"
+                    << static_cast<unsigned>(view.l1_mem_wstrb)
+                    << std::dec << '\n';
+        }
+        if (view.command_fire && same_line(view.command_addr, line)) {
+            l1_outstanding_valid_[hart][view.command_txn] = true;
+            l1_outstanding_addr_[hart][view.command_txn] = view.command_addr;
+            stream_ << "L1_L2_REQUEST cycle=" << cycle
+                    << " hart=" << hart
+                    << " txn=" << static_cast<unsigned>(view.command_txn)
+                    << " write=" << view.command_write
+                    << " addr=0x" << std::hex << view.command_addr
+                    << std::dec << '\n';
+        }
+        if (view.response_fire) {
+            const unsigned txn =
+                (root->tb_4h_3p__DOT__hart_resp_txn_id >> (hart * 4)) & 0xfU;
+            if (l1_outstanding_valid_[hart][txn] &&
+                same_line(l1_outstanding_addr_[hart][txn], line)) {
+                stream_ << "L2_L1_RESPONSE cycle=" << cycle
+                        << " hart=" << hart << " txn=" << txn
+                        << " word=0x" << std::hex
+                        << wide_bits(root->tb_4h_3p__DOT__hart_resp_rdata,
+                                     hart * 512 +
+                                         static_cast<unsigned>(lock_addr & 63ULL) * 8,
+                                     32)
+                        << std::dec << '\n';
+                l1_outstanding_valid_[hart][txn] = false;
+            }
+        }
+    }
+
+    void trace_l2(const Vtb_4h_3p___024root* root, uint32_t cycle,
+                  uint64_t line, uint64_t lock_addr) {
+#define L2(name) root->tb_4h_3p__DOT__u_l2__DOT__u_debug__DOT__##name
+        if (L2(lookup_dispatch_r) && L2(lookup_valid_q) &&
+            same_line(L2(lookup_addr_q), line)) {
+            stream_ << "L2_LOOKUP cycle=" << cycle
+                    << " hart="
+                    << static_cast<unsigned>(L2(lookup_hart_id_q))
+                    << " txn="
+                    << static_cast<unsigned>(L2(lookup_txn_id_q))
+                    << " source="
+                    << static_cast<unsigned>(L2(lookup_source_id_q))
+                    << " op=" << static_cast<unsigned>(L2(lookup_op_q))
+                    << " action="
+                    << static_cast<unsigned>(L2(lookup_action_r))
+                    << " hit=" << static_cast<unsigned>(L2(lookup_hit_r))
+                    << " mshr_match="
+                    << static_cast<unsigned>(L2(lookup_mshr_match_r))
+                    << " addr=0x" << std::hex << L2(lookup_addr_q)
+                    << " wstrb=0x" << L2(lookup_wstrb_q)
+                    << " write_word=0x"
+                    << line_word_at(L2(lookup_wdata_q), lock_addr)
+                    << " hit_word=0x"
+                    << line_word_at(L2(lookup_hit_payload), lock_addr)
+                    << " dir_hit=" << std::dec
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__u_l2__DOT__coherence_directory_lookup_hit)
+                    << " dir_d=0x" << std::hex
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__u_l2__DOT__coherence_directory_lookup_d_sharers)
+                    << " req_mask=0x"
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__u_l2__DOT__lookup_request_hart_mask_r)
+                    << " probe_targets=0x"
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__u_l2__DOT__coherence_write_probe_targets)
+                    << std::dec << '\n';
+        }
+        if (L2(response_enqueue) && same_line(L2(enqueue_addr), line)) {
+            stream_ << "L2_RESPONSE_ENQUEUE cycle=" << cycle
+                    << " source=" << (L2(hit_enqueue) ? "hit" : "mshr")
+                    << " addr=0x" << std::hex << L2(enqueue_addr)
+                    << " word=0x";
+            if (L2(hit_enqueue))
+                stream_ << line_word_at(L2(hit_data_q), lock_addr);
+            else
+                stream_ << line_word_at(
+                    L2(mshr_replay_data_q)[L2(replay_candidate_mshr_r)],
+                    lock_addr);
+            stream_ << std::dec << '\n';
+        }
+
+        for (unsigned mshr = 0; mshr < 8; ++mshr) {
+            const bool valid = L2(mshr_valid_q)[mshr];
+            const unsigned state = L2(mshr_state_q)[mshr];
+            const uint64_t mshr_line = L2(mshr_line_addr_q)[mshr];
+            if (l2_initialized_ &&
+                (valid != l2_valid_[mshr] || state != l2_state_[mshr] ||
+                 mshr_line != l2_line_[mshr]) &&
+                (same_line(mshr_line, line) ||
+                 same_line(l2_line_[mshr], line))) {
+                stream_ << "L2_MSHR cycle=" << cycle
+                        << " index=" << mshr
+                        << " old=" << l2_valid_[mshr] << ':'
+                        << l2_state_[mshr] << ":0x" << std::hex
+                        << l2_line_[mshr]
+                        << " new=" << std::dec << valid << ':' << state
+                        << ":0x" << std::hex << mshr_line << std::dec
+                        << '\n';
+            }
+            l2_valid_[mshr] = valid;
+            l2_state_[mshr] = state;
+            l2_line_[mshr] = mshr_line;
+        }
+        l2_initialized_ = true;
+
+        const bool probe_line_match = same_line(L2(probe_line_addr_q), line);
+        const uint32_t probe_state =
+            static_cast<uint32_t>(L2(probe_issue_pending)) |
+            (static_cast<uint32_t>(L2(probe_ack_pending)) << 4) |
+            (static_cast<uint32_t>(
+                 root->tb_4h_3p__DOT__l1d_invalidate_valid) << 8) |
+            (static_cast<uint32_t>(
+                 root->tb_4h_3p__DOT__l1d_invalidate_ready) << 12) |
+            (static_cast<uint32_t>(
+                 root->tb_4h_3p__DOT__probe_resp_valid) << 16);
+        if ((probe_line_match || previous_probe_line_match_) &&
+            (!probe_initialized_ || probe_state != previous_probe_state_ ||
+             probe_line_match != previous_probe_line_match_)) {
+            stream_ << "PROBE cycle=" << cycle
+                    << " issue=0x" << std::hex
+                    << static_cast<unsigned>(L2(probe_issue_pending))
+                    << " ack=0x"
+                    << static_cast<unsigned>(L2(probe_ack_pending))
+                    << " id=0x" << static_cast<unsigned>(L2(probe_id_q))
+                    << " command=0x"
+                    << static_cast<unsigned>(L2(probe_command_q))
+                    << " cache_mask=0x"
+                    << static_cast<unsigned>(L2(probe_cache_mask_q))
+                    << " line=0x" << L2(probe_line_addr_q)
+                    << " inv_valid=0x"
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__l1d_invalidate_valid)
+                    << " inv_ready=0x"
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__l1d_invalidate_ready)
+                    << " resp_valid=0x"
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__probe_resp_valid)
+                    << std::dec << '\n';
+        }
+
+#define H0_L1(name)                                                        \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
+        const bool h0_invalidate_active =
+            (root->tb_4h_3p__DOT__l1d_invalidate_valid & 1U) ||
+            H0_L1(sync_invalidate_launch) ||
+            H0_L1(sync_invalidate_probe_q);
+        if ((probe_line_match || previous_probe_line_match_) &&
+            h0_invalidate_active) {
+            constexpr unsigned target_set = 63;
+            stream_ << "L1_INVALIDATE_INTERNAL cycle=" << cycle
+                    << " hart=0 state="
+                    << static_cast<unsigned>(H0_L1(state_q))
+                    << " ext_valid="
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__l1d_invalidate_valid & 1U)
+                    << " ext_ready="
+                    << static_cast<unsigned>(
+                           root->tb_4h_3p__DOT__l1d_invalidate_ready & 1U)
+                    << " launch="
+                    << static_cast<unsigned>(H0_L1(sync_invalidate_launch))
+                    << " probe="
+                    << static_cast<unsigned>(H0_L1(sync_invalidate_probe_q))
+                    << " tag_read_fire="
+                    << static_cast<unsigned>(H0_L1(sync_tag_read_fire))
+                    << " tag_read_set="
+                    << static_cast<unsigned>(H0_L1(sync_tag_read_set))
+                    << " captured_addr=0x" << std::hex
+                    << H0_L1(sync_invalidate_addr_q)
+                    << " captured_set=0x"
+                    << static_cast<unsigned>(H0_L1(sync_invalidate_set_q))
+                    << " captured_tag=0x"
+                    << H0_L1(sync_invalidate_tag_q)
+                    << " captured_valid=0x"
+                    << static_cast<unsigned>(
+                           H0_L1(sync_invalidate_valid_bits_q))
+                    << " read_tags=";
+            for (unsigned way = 0; way < 4; ++way) {
+                if (way)
+                    stream_ << ',';
+                stream_ << H0_L1(sync_tag_read_q)[way];
+            }
+            stream_ << " live=";
+            for (unsigned way = 0; way < 4; ++way) {
+                if (way)
+                    stream_ << ',';
+                stream_ << static_cast<unsigned>(
+                               H0_L1(valid_q)[target_set * 4 + way])
+                        << ':' << H0_L1(tag_mem)[way][target_set];
+            }
+            stream_ << std::dec << '\n';
+        }
+#undef H0_L1
+        probe_initialized_ = true;
+        previous_probe_state_ = probe_state;
+        previous_probe_line_match_ = probe_line_match;
+#undef L2
+    }
+
+    void trace_cache_state(const Vtb_4h_3p___024root* root,
+                           uint32_t cycle, uint64_t line,
+                           uint64_t lock_addr) {
+        trace_cache_hart0(root, cycle, line, lock_addr);
+#if OPENRV64_4H_CORE_INSTANCES >= 2
+        trace_cache_hart1(root, cycle, line, lock_addr);
+#endif
+    }
+
+    void trace_cache_hart0(const Vtb_4h_3p___024root* root,
+                           uint32_t cycle, uint64_t line,
+                           uint64_t lock_addr) {
+#define CACHE(name)                                                         \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
+        trace_cache_common(cycle, 0, line, lock_addr, CACHE(valid_q),
+                           CACHE(tag_mem), CACHE(data_mem));
+#undef CACHE
+    }
+
+#if OPENRV64_4H_CORE_INSTANCES >= 2
+    void trace_cache_hart1(const Vtb_4h_3p___024root* root,
+                           uint32_t cycle, uint64_t line,
+                           uint64_t lock_addr) {
+#define CACHE(name)                                                         \
+    root->tb_4h_3p__DOT__g_hart__BRA__1__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
+        trace_cache_common(cycle, 1, line, lock_addr, CACHE(valid_q),
+                           CACHE(tag_mem), CACHE(data_mem));
+#undef CACHE
+    }
+#endif
+
+    template <typename ValidArray, typename TagArray, typename DataArray>
+    void trace_cache_common(uint32_t cycle, unsigned hart, uint64_t line,
+                            uint64_t lock_addr, const ValidArray& valid,
+                            const TagArray& tags, const DataArray& data) {
+        const unsigned set = static_cast<unsigned>((line >> 6) & 0x3fU);
+        const unsigned bank =
+            static_cast<unsigned>((lock_addr >> 3) & 0x7U);
+        bool changed = !cache_initialized_[hart];
+        for (unsigned way = 0; way < 4; ++way) {
+            const bool way_valid = valid[set * 4 + way];
+            const uint64_t tag = tags[way][set];
+            const uint64_t bank_data = data[way][bank][set];
+            changed = changed || way_valid != cache_valid_[hart][way] ||
+                tag != cache_tag_[hart][way] ||
+                bank_data != cache_data_[hart][way];
+            cache_valid_[hart][way] = way_valid;
+            cache_tag_[hart][way] = tag;
+            cache_data_[hart][way] = bank_data;
+        }
+        if (!changed)
+            return;
+        stream_ << "L1_CACHE_STATE cycle=" << cycle
+                << " hart=" << hart << " set=" << set
+                << " bank=" << bank << " valid=";
+        for (unsigned way = 0; way < 4; ++way)
+            stream_ << cache_valid_[hart][way];
+        stream_ << " entries=" << std::hex;
+        for (unsigned way = 0; way < 4; ++way) {
+            if (way)
+                stream_ << ',';
+            stream_ << cache_tag_[hart][way] << ':'
+                    << word_at(cache_data_[hart][way], lock_addr);
+        }
+        stream_ << std::dec << '\n';
+        cache_initialized_[hart] = true;
+    }
+
+    std::ostream& stream_;
+    uint16_t ticket_ = 0;
+    uint32_t retire_start_ = 0;
+    uint32_t retire_end_ = 0;
+    bool have_watch_addr_ = false;
+    uint64_t watch_addr_ = 0;
+    bool fixed_watch_addr_ = false;
+    uint32_t discovery_cycle_ = 0;
+    bool have_provisional_addr_ = false;
+    uint64_t provisional_addr_ = 0;
+    std::array<bool, 2> candidate_valid_{};
+    std::array<uint64_t, 2> candidate_addr_{};
+    std::array<bool, 2> previous_atomic_active_{};
+    std::array<unsigned, 2> previous_atomic_state_{};
+    std::array<bool, 2> previous_atomic_inflight_{};
+    std::array<std::array<bool, 8>, 2> pending_{};
+    std::array<std::array<bool, 16>, 2> l1_outstanding_valid_{};
+    std::array<std::array<uint64_t, 16>, 2> l1_outstanding_addr_{};
+    bool l2_initialized_ = false;
+    std::array<bool, 8> l2_valid_{};
+    std::array<unsigned, 8> l2_state_{};
+    std::array<uint64_t, 8> l2_line_{};
+    bool probe_initialized_ = false;
+    bool previous_probe_line_match_ = false;
+    uint32_t previous_probe_state_ = 0;
+    std::array<bool, 2> cache_initialized_{};
+    std::array<std::array<bool, 4>, 2> cache_valid_{};
+    std::array<std::array<uint64_t, 4>, 2> cache_tag_{};
+    std::array<std::array<uint64_t, 4>, 2> cache_data_{};
+};
+
 void trace_hart0_pc(std::ostream& stream,
                     const Vtb_4h_3p___024root* root,
                     uint32_t cycle) {
@@ -1549,6 +2182,20 @@ int main(int argc, char** argv) {
         plusarg_value(argc, argv, "+l1d_watch_value=");
     const bool l1d_watch_all_mshrs =
         has_plusarg(argc, argv, "+l1d_watch_all_mshrs");
+    const char* const ticket_lock_trace_path =
+        plusarg_value(argc, argv, "+ticket_lock_trace=");
+    const char* const ticket_lock_ticket_text =
+        plusarg_value(argc, argv, "+ticket_lock_ticket=");
+    const char* const ticket_lock_paddr_text =
+        plusarg_value(argc, argv, "+ticket_lock_paddr=");
+    const char* const ticket_lock_trace_start_text =
+        plusarg_value(argc, argv, "+ticket_lock_trace_start=");
+    const char* const ticket_lock_trace_end_text =
+        plusarg_value(argc, argv, "+ticket_lock_trace_end=");
+    const char* const ticket_lock_retire_start_text =
+        plusarg_value(argc, argv, "+ticket_lock_retire_start=");
+    const char* const ticket_lock_retire_end_text =
+        plusarg_value(argc, argv, "+ticket_lock_retire_end=");
 
     if ((l1d_watch_trace_path == nullptr) !=
         (l1d_watch_vaddr_text == nullptr)) {
@@ -1613,6 +2260,22 @@ int main(int argc, char** argv) {
         ? parse_cycle(fetch_path_trace_period_text,
                       "+fetch_path_trace_period")
         : 1;
+    const uint32_t ticket_lock_trace_start = ticket_lock_trace_start_text
+        ? parse_cycle(ticket_lock_trace_start_text,
+                      "+ticket_lock_trace_start")
+        : 0;
+    const uint32_t ticket_lock_trace_end = ticket_lock_trace_end_text
+        ? parse_cycle(ticket_lock_trace_end_text,
+                      "+ticket_lock_trace_end")
+        : 0;
+    const uint32_t ticket_lock_retire_start = ticket_lock_retire_start_text
+        ? parse_cycle(ticket_lock_retire_start_text,
+                      "+ticket_lock_retire_start")
+        : 0;
+    const uint32_t ticket_lock_retire_end = ticket_lock_retire_end_text
+        ? parse_cycle(ticket_lock_retire_end_text,
+                      "+ticket_lock_retire_end")
+        : 0;
     bool checkpoint_saved = false;
     uint64_t next_periodic_checkpoint = checkpoint_interval;
 
@@ -1683,6 +2346,33 @@ int main(int argc, char** argv) {
             l1d_watch_all_mshrs);
     }
 
+    std::ofstream ticket_lock_trace_file;
+    std::unique_ptr<TicketLockTrace> ticket_lock_trace;
+    if (ticket_lock_trace_path) {
+        ticket_lock_trace_file.open(ticket_lock_trace_path,
+                                    std::ios::out | std::ios::trunc);
+        if (!ticket_lock_trace_file.is_open()) {
+            std::cerr << "Unable to open ticket-lock trace: "
+                      << ticket_lock_trace_path << '\n';
+            return EXIT_FAILURE;
+        }
+        const uint64_t ticket = ticket_lock_ticket_text
+            ? parse_u64(ticket_lock_ticket_text, "+ticket_lock_ticket")
+            : 0x3b;
+        if (ticket > 0xffffU) {
+            std::cerr << "+ticket_lock_ticket exceeds 16 bits\n";
+            return EXIT_FAILURE;
+        }
+        const bool fixed_watch_addr = ticket_lock_paddr_text != nullptr;
+        const uint64_t watch_addr = fixed_watch_addr
+            ? parse_u64(ticket_lock_paddr_text, "+ticket_lock_paddr")
+            : 0;
+        ticket_lock_trace = std::make_unique<TicketLockTrace>(
+            ticket_lock_trace_file, static_cast<uint16_t>(ticket),
+            fixed_watch_addr, watch_addr,
+            ticket_lock_retire_start, ticket_lock_retire_end);
+    }
+
     uint8_t previous_clint_msip =
         top->rootp->tb_4h_3p__DOT__u_clint__DOT__msip_q;
     std::array<uint64_t, 2> previous_mip_sw{
@@ -1707,6 +2397,12 @@ int main(int argc, char** argv) {
         }
         if (l1d_watch && !top->checkpoint_clk_i)
             l1d_watch->trace(top->rootp, top->checkpoint_cycle_o);
+        if (ticket_lock_trace && !top->checkpoint_clk_i &&
+            top->checkpoint_cycle_o >= ticket_lock_trace_start &&
+            (ticket_lock_trace_end == 0 ||
+             top->checkpoint_cycle_o <= ticket_lock_trace_end))
+            ticket_lock_trace->trace(top->rootp,
+                                     top->checkpoint_cycle_o);
         if (l2_bus_trace && !top->checkpoint_clk_i)
             trace_l2_bus_request(top->rootp, top->checkpoint_cycle_o);
         context->timeInc(5);

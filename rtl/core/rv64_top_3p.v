@@ -21,6 +21,7 @@ module openrv64_rv64_top_3p #(
         `OPENRV64_BUS_GEN,
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_RV64ZBB = 1,
+    parameter integer ENABLE_WFI_SLEEP = 1,
     parameter integer HPM_COUNTERS = 8,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
@@ -331,6 +332,7 @@ module openrv64_rv64_top_3p #(
     wire [2:0] backend_retire_arch;
     wire [1:0] backend_retire_count;
     wire backend_wfi =
+        (ENABLE_WFI_SLEEP != 0) &&
         (|backend_retire_arch) &&
         (backend_retire_instr == `RV64_INSTR_WFI);
 

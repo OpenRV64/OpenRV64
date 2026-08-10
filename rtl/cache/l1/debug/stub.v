@@ -58,6 +58,19 @@ module openrv64_l1_debug_stub #(
         /* verilator public_flat_rd */,
     input wire [WAY_INDEX_WIDTH-1:0] sync_lookup_way_comb
         /* verilator public_flat_rd */,
+    input wire sync_invalidate_launch /* verilator public_flat_rd */,
+    input wire sync_invalidate_probe_q /* verilator public_flat_rd */,
+    input wire sync_tag_read_fire /* verilator public_flat_rd */,
+    input wire [SET_INDEX_WIDTH-1:0] sync_tag_read_set
+        /* verilator public_flat_rd */,
+    input wire [ADDR_WIDTH-1:0] sync_invalidate_addr_q
+        /* verilator public_flat_rd */,
+    input wire [SET_INDEX_WIDTH-1:0] sync_invalidate_set_q
+        /* verilator public_flat_rd */,
+    input wire [TAG_BITS-1:0] sync_invalidate_tag_q
+        /* verilator public_flat_rd */,
+    input wire [WAYS-1:0] sync_invalidate_valid_bits_q
+        /* verilator public_flat_rd */,
     input wire [TAG_BITS-1:0] sync_tag_read_q [0:WAYS-1]
         /* verilator public_flat_rd */,
     input wire valid_q [0:TOTAL_LINES-1]

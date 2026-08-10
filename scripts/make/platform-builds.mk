@@ -250,10 +250,12 @@ $(L1_CACHE_SIM_BUILD): $(L1_CACHE_SIM_SRCS) $(L1_CACHE_SRCS)
 	iverilog -g2012 -Wall -Irtl -s tb_l1_cache \
 		-o $(L1_CACHE_SIM_BUILD) $(L1_CACHE_SRCS) $(L1_CACHE_SIM_SRCS)
 
-$(L1_SYNC_TAG_SIM_BUILD): tb/tb_l1_sync_tag.sv rtl/cache/l1/l1.v
+$(L1_SYNC_TAG_SIM_BUILD): tb/tb_l1_sync_tag.sv rtl/cache/l1/l1.v \
+		rtl/cache/l1/debug/stub.v
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_l1_sync_tag \
-		-o $(L1_SYNC_TAG_SIM_BUILD) rtl/cache/l1/l1.v \
+		-o $(L1_SYNC_TAG_SIM_BUILD) rtl/cache/l1/debug/stub.v \
+		rtl/cache/l1/l1.v \
 		tb/tb_l1_sync_tag.sv
 
 $(L1D_PREFETCH_SIM_BUILD): tb/tb_l1d_prefetch.sv $(L1_CACHE_SRCS)
@@ -279,6 +281,13 @@ $(L1D_STORE_BUFFER_SIM_BUILD): tb/tb_l1d_store_buffer.sv $(L1_CACHE_SRCS)
 	iverilog -g2012 -Wall -Irtl -s tb_l1d_store_buffer \
 		-o $(L1D_STORE_BUFFER_SIM_BUILD) $(L1_CACHE_SRCS) \
 		tb/tb_l1d_store_buffer.sv
+
+$(L1D_INVALIDATE_ARBITER_SIM_BUILD): \
+		tb/tb_l1d_invalidate_arbiter.sv $(L1_CACHE_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_l1d_invalidate_arbiter \
+		-o $(L1D_INVALIDATE_ARBITER_SIM_BUILD) $(L1_CACHE_SRCS) \
+		tb/tb_l1d_invalidate_arbiter.sv
 
 $(ICX_L2_SIM_BUILD): $(ICX_L2_SIM_SRCS) $(ICX_L2_SRCS) \
 		rtl/complex/protocol/defs.v

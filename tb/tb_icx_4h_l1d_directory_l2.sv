@@ -358,6 +358,8 @@ module tb_icx_4h_l1d_directory_l2 #(
     integer atomic_sc_success_count;
     integer atomic_lr_command_count;
     integer atomic_sc_command_count;
+    integer icx_fence_command_count;
+    integer l2_fence_command_count;
     integer standalone_lr_count;
     integer pingpong_line;
     integer pingpong_hart;
@@ -562,6 +564,7 @@ module tb_icx_4h_l1d_directory_l2 #(
                 .prefetch_useless_o(),
                 .prefetch_depth_o(),
                 .speculation_barrier_i(speculation_barrier[hart]),
+                .completion_fence_i(speculation_barrier[hart]),
                 .store_barrier_busy_o(store_barrier_busy[hart]),
                 .invalidate_valid_i(l1d_invalidate_valid[hart]),
                 .invalidate_ready_o(l1d_invalidate_ready[hart]),
@@ -1050,6 +1053,8 @@ module tb_icx_4h_l1d_directory_l2 #(
             atomic_sc_success_count <= 0;
             atomic_lr_command_count <= 0;
             atomic_sc_command_count <= 0;
+            icx_fence_command_count <= 0;
+            l2_fence_command_count <= 0;
             for (home_score_identity = 0;
                  home_score_identity < HOME_READ_IDENTITIES;
                  home_score_identity = home_score_identity + 1) begin
@@ -1079,6 +1084,9 @@ module tb_icx_4h_l1d_directory_l2 #(
                 if (icx_req_op == `OPENRV64_ICX_OP_SC)
                     atomic_sc_command_count <=
                         atomic_sc_command_count + 1;
+                if (icx_req_op == `OPENRV64_ICX_OP_FENCE)
+                    icx_fence_command_count <=
+                        icx_fence_command_count + 1;
             end
 
             if (icx_resp_valid && icx_resp_ready &&
@@ -1088,12 +1096,19 @@ module tb_icx_4h_l1d_directory_l2 #(
             end
 
             if (l2_req_valid && l2_req_ready) begin
-                if ((l2_req_addr < MEMORY_BASE) ||
-                    (l2_req_addr >=
-                     (MEMORY_BASE + MEMORY_LINES*64)))
+                if ((l2_req_op != `OPENRV64_ICX_OP_FENCE) &&
+                    ((l2_req_addr < MEMORY_BASE) ||
+                     (l2_req_addr >=
+                      (MEMORY_BASE + MEMORY_LINES*64))))
                     $fatal(1, "L2 request outside stress window addr=%016x",
                            l2_req_addr);
-                if (l2_req_op == `OPENRV64_ICX_OP_WRITE) begin
+                if (l2_req_op == `OPENRV64_ICX_OP_FENCE) begin
+                    if ((l2_req_addr != 64'd0) ||
+                        (l2_req_size != 3'd0))
+                        $fatal(1, "malformed L2 fence request");
+                    l2_fence_command_count <=
+                        l2_fence_command_count + 1;
+                end else if (l2_req_op == `OPENRV64_ICX_OP_WRITE) begin
                     home_score_hart = l2_req_hart_id;
                     if ((home_score_hart < 0) ||
                         (home_score_hart >= NUM_HARTS))
@@ -2190,6 +2205,11 @@ module tb_icx_4h_l1d_directory_l2 #(
                 atomic_lr_command_count, atomic_sc_command_count,
                 atomic_sc_success_count, atomic_sequence,
                 standalone_lr_count);
+        if ((icx_fence_command_count == 0) ||
+            (icx_fence_command_count != l2_fence_command_count))
+            $fatal(1,
+                "fence command count mismatch ICX=%0d L2=%0d",
+                icx_fence_command_count, l2_fence_command_count);
         if (l2_write_count !=
             (3 + random_store_count + atomic_sequence))
             $fatal(1,

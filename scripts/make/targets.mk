@@ -8,7 +8,9 @@
 	sw-coremark-loop-vm \
 	sw-coremark-loop-4h-vm sim-4h-3p-sv39 \
 	sw-coremark-loop-4h-shared-vm sw-atomic-4h-shared-vm \
+	sw-ticket-lock-4h-shared-vm \
 	sw-tlbi-4h-shared-vm sw-ipi-2h-shared-vm \
+	sw-wfi-mailbox-4h-shared-vm \
 	sw-coremark-loop-4h-bare sim-4h-3p-bare \
 	sim-4h-3p-bare-configured \
 	sim-1h-coherent-3p-ddr3 sim-1h-coherent-3p-ddr3-private \
@@ -22,7 +24,9 @@
 	sim-1h-3p-coherence-suite sim-4h-3p-coherence-suite \
 	sim-4h-3p-coherence-scaling-suite sim-coherence-scaling-suite \
 	sim-4h-3p-shared-sv39 sim-4h-3p-atomic-sv39 \
+	sim-4h-3p-ticket-lock-sv39 \
 	sim-4h-3p-tlbi-sv39 sim-2h-3p-ipi-sv39 \
+	sim-4h-3p-wfi-mailbox-sv39 \
 	sim-4h-3p-shared-suite \
 	sw-zero-sv39 bench-zero-sv39 sim-zero-sv39 sw-atomic \
 	sim-atomic-soc \
@@ -72,7 +76,8 @@
 .PHONY: sim-l1-cache sim-l1-sync-tag sim-l1d-prefetch \
 	sim-l1d-demand-mshr \
 	sim-l1d-store-order \
-	sim-l1d-store-buffer sim-l1i-top sim-icx-protocol-1h \
+	sim-l1d-store-buffer sim-l1d-invalidate-arbiter \
+	sim-l1i-top sim-icx-protocol-1h \
 	sim-icx-protocol-2h sim-icx-protocol-4h \
 	sim-icx-coherent-2h sim-icx-coherent-4h \
 	sim-icx-coherent-protocol-2h sim-icx-coherent-protocol-4h \
@@ -113,6 +118,7 @@ sim: sim-l1-sync-tag
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr
 sim: sim-l1d-store-order sim-l1d-store-buffer
+sim: sim-l1d-invalidate-arbiter
 sim: sim-icx-protocol-1h
 sim: sim-icx-protocol-2h sim-icx-protocol-4h
 sim: sim-icx-coherent-2h sim-icx-coherent-4h

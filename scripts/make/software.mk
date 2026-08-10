@@ -54,6 +54,12 @@ sw-atomic-4h-shared-vm: $(ATOMIC_4H_SHARED_VM_ELF) \
 		$(ATOMIC_4H_SHARED_VM_TEMPLATE_BIN) $(ATOMIC_4H_SHARED_VM_BIN) \
 		$(ATOMIC_4H_SHARED_VM_MEMH) $(ATOMIC_4H_SHARED_VM_DISASM)
 
+sw-ticket-lock-4h-shared-vm: $(TICKET_LOCK_4H_SHARED_VM_ELF) \
+		$(TICKET_LOCK_4H_SHARED_VM_TEMPLATE_BIN) \
+		$(TICKET_LOCK_4H_SHARED_VM_BIN) \
+		$(TICKET_LOCK_4H_SHARED_VM_MEMH) \
+		$(TICKET_LOCK_4H_SHARED_VM_DISASM)
+
 sw-tlbi-4h-shared-vm: $(TLBI_4H_SHARED_VM_ELF) \
 		$(TLBI_4H_SHARED_VM_TEMPLATE_BIN) $(TLBI_4H_SHARED_VM_BIN) \
 		$(TLBI_4H_SHARED_VM_MEMH) $(TLBI_4H_SHARED_VM_DISASM)
@@ -61,6 +67,12 @@ sw-tlbi-4h-shared-vm: $(TLBI_4H_SHARED_VM_ELF) \
 sw-ipi-2h-shared-vm: $(IPI_2H_SHARED_VM_ELF) \
 		$(IPI_2H_SHARED_VM_TEMPLATE_BIN) $(IPI_2H_SHARED_VM_BIN) \
 		$(IPI_2H_SHARED_VM_MEMH) $(IPI_2H_SHARED_VM_DISASM)
+
+sw-wfi-mailbox-4h-shared-vm: $(WFI_MAILBOX_4H_SHARED_VM_ELF) \
+		$(WFI_MAILBOX_4H_SHARED_VM_TEMPLATE_BIN) \
+		$(WFI_MAILBOX_4H_SHARED_VM_BIN) \
+		$(WFI_MAILBOX_4H_SHARED_VM_MEMH) \
+		$(WFI_MAILBOX_4H_SHARED_VM_DISASM)
 
 sim-4h-3p-sv39: $(CORE_4H_3P_VERILATOR_BUILD) $(CORE_4H_VM_MEMH)
 	test -n "$(CORE_4H_VM_DONE_PC)"
@@ -270,9 +282,40 @@ sim-2h-3p-ipi-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
 		+active_harts=2 +shared_satp=1 +mailbox_stride=4096 \
 		+max_cycles=$(IPI_2H_SHARED_VM_MAX_CYCLES)
 
+sim-4h-3p-ticket-lock-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
+		$(TICKET_LOCK_4H_SHARED_VM_MEMH)
+	test -n "$(TICKET_LOCK_4H_SHARED_VM_DONE_PC)"
+	test -n "$(TICKET_LOCK_4H_SHARED_VM_MAILBOX_VA)"
+	test -n "$(TICKET_LOCK_4H_SHARED_VM_RESULT_VA)"
+	$(CORE_4H_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(TICKET_LOCK_4H_SHARED_VM_MEMH)) \
+		+memh_words=$(TICKET_LOCK_4H_SHARED_VM_MEMH_WORDS) \
+		+done_pc=$(TICKET_LOCK_4H_SHARED_VM_DONE_PC) \
+		+mailbox_va=$(TICKET_LOCK_4H_SHARED_VM_MAILBOX_VA) \
+		+result_va=$(TICKET_LOCK_4H_SHARED_VM_RESULT_VA) \
+		+result_expected=0 \
+		+active_harts=4 +shared_satp=1 +mailbox_stride=4096 \
+		+max_cycles=$(TICKET_LOCK_4H_SHARED_VM_MAX_CYCLES)
+
+sim-4h-3p-wfi-mailbox-sv39: $(CORE_4H_3P_VERILATOR_BUILD) \
+		$(WFI_MAILBOX_4H_SHARED_VM_MEMH)
+	test -n "$(WFI_MAILBOX_4H_SHARED_VM_DONE_PC)"
+	test -n "$(WFI_MAILBOX_4H_SHARED_VM_MAILBOX_VA)"
+	test -n "$(WFI_MAILBOX_4H_SHARED_VM_RESULT_VA)"
+	$(CORE_4H_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(WFI_MAILBOX_4H_SHARED_VM_MEMH)) \
+		+memh_words=$(WFI_MAILBOX_4H_SHARED_VM_MEMH_WORDS) \
+		+done_pc=$(WFI_MAILBOX_4H_SHARED_VM_DONE_PC) \
+		+mailbox_va=$(WFI_MAILBOX_4H_SHARED_VM_MAILBOX_VA) \
+		+result_va=$(WFI_MAILBOX_4H_SHARED_VM_RESULT_VA) \
+		+result_expected=$(WFI_MAILBOX_4H_SHARED_VM_ROUNDS) \
+		+ipi_test=2 +ipi_expected=$(WFI_MAILBOX_4H_SHARED_VM_ROUNDS) \
+		+active_harts=4 +shared_satp=1 +mailbox_stride=4096 \
+		+max_cycles=$(WFI_MAILBOX_4H_SHARED_VM_MAX_CYCLES)
+
 sim-4h-3p-shared-suite: sim-4h-3p-shared-sv39 \
 		sim-4h-3p-atomic-sv39 sim-4h-3p-tlbi-sv39 \
-		sim-2h-3p-ipi-sv39
+		sim-2h-3p-ipi-sv39 sim-4h-3p-wfi-mailbox-sv39
 
 sw-zero-sv39: $(ZERO_VM_ELF) $(ZERO_VM_BIN) $(ZERO_VM_MEMH) \
 		$(ZERO_VM_DISASM)

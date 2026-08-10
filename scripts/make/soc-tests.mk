@@ -124,6 +124,9 @@ sim-l1d-store-order: $(L1D_STORE_ORDER_SIM_BUILD)
 sim-l1d-store-buffer: $(L1D_STORE_BUFFER_SIM_BUILD)
 	vvp $(L1D_STORE_BUFFER_SIM_BUILD)
 
+sim-l1d-invalidate-arbiter: $(L1D_INVALIDATE_ARBITER_SIM_BUILD)
+	vvp $(L1D_INVALIDATE_ARBITER_SIM_BUILD)
+
 sim-icx-l2: $(ICX_L2_SIM_BUILD)
 	vvp $(ICX_L2_SIM_BUILD)
 

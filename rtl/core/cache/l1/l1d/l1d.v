@@ -98,9 +98,13 @@ module openrv64_l1d_icx #(
     // read epoch. Speculative reads from an older epoch are consumed and
     // discarded; an architectural read miss is consumed and reissued.
     input  wire                      speculation_barrier_i,
-    // The same barrier forces every older posted store through its ICX
-    // response. Busy covers the initiating cycle and remains asserted until
-    // no buffered or in-flight store remains.
+    // Ordinary FENCE additionally requires an acknowledged ICX/L2 fence after
+    // the local drain. Translation barriers leave this low because their PTW
+    // path issues the generation-changing fence after this drain completes.
+    input  wire                      completion_fence_i,
+    // Every barrier forces older posted stores through their ICX responses.
+    // Busy covers the initiating cycle and, when completion_fence_i is set,
+    // remains asserted until the explicit ICX fence response returns.
     output wire                      store_barrier_busy_o,
 
     input  wire                      invalidate_valid_i,
@@ -250,6 +254,7 @@ module openrv64_l1d_icx #(
 
     reg [1:0] backend_state_q;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] request_txn_id_q;
+    reg request_fence_q;
     reg request_write_q;
     reg request_lock_q;
     reg request_cacheable_q;
@@ -417,6 +422,7 @@ module openrv64_l1d_icx #(
     reg [STORE_BUFFER_COUNT_WIDTH-1:0] store_buffer_count_q;
     reg store_buffer_drain_active_q;
     reg store_barrier_active_q;
+    reg store_barrier_fence_pending_q;
     reg store_completion_valid_q;
     reg store_completion_error_q;
     reg [MAIN_TXN_COUNT-1:0] main_txn_in_use_q;
@@ -462,6 +468,14 @@ module openrv64_l1d_icx #(
     integer buffer_reset_index;
     reg locked_line_invalidated_q;
     reg lock_barrier_seen_q;
+    // The generic L1 invalidate completion is delayed.  Preserve both the
+    // request payload and its source until that completion returns; otherwise
+    // a newly-arriving coherence probe can consume a local atomic invalidate's
+    // ready pulse without ever reaching the tag array.
+    reg invalidate_txn_valid_q;
+    reg invalidate_txn_external_q;
+    reg invalidate_txn_all_q;
+    reg [ADDR_WIDTH-1:0] invalidate_txn_addr_q;
     reg coherent_lr_reservation_done_q;
     reg coherent_lr_reservation_error_q;
     reg active_req_lock_q;
@@ -679,21 +693,32 @@ module openrv64_l1d_icx #(
         !coherent_lr_reservation_done_q;
     wire lock_invalidate_request = req_valid_i && req_lock_i &&
         !coherent_atomic_read && !locked_line_invalidated_q;
-    wire lock_invalidate_fire = lock_invalidate_request &&
-        !invalidate_valid_i && !demand_mshr_any_valid_r &&
-        l1_invalidate_ready;
     wire lock_barrier_request = req_valid_i && req_lock_i &&
                                 !lock_barrier_seen_q;
     wire speculation_barrier_event =
         speculation_barrier_i || lock_barrier_request;
     wire targeted_external_invalidate =
         invalidate_valid_i && !invalidate_all_i;
-    wire l1_invalidate_valid =
-        (invalidate_valid_i || lock_invalidate_request) &&
-        (targeted_external_invalidate || !demand_mshr_any_valid_r);
-    wire l1_invalidate_all = invalidate_valid_i && invalidate_all_i;
-    wire [ADDR_WIDTH-1:0] l1_invalidate_addr = invalidate_valid_i ?
-        invalidate_addr_i : req_addr_i;
+    // A targeted snoop is permitted through unrelated traffic.  Full-cache
+    // maintenance retains the old quiescence rule.  If a full invalidate and
+    // local atomic invalidate coincide, service the local operation first so
+    // neither side waits on the other's global-quiescence condition.
+    wire external_invalidate_admissible = invalidate_valid_i &&
+        (targeted_external_invalidate ||
+         (!lock_invalidate_request && (store_buffer_count_q == 0) &&
+          !demand_mshr_any_valid_r));
+    wire capture_external_invalidate = !invalidate_txn_valid_q &&
+        external_invalidate_admissible;
+    wire capture_lock_invalidate = !invalidate_txn_valid_q &&
+        !capture_external_invalidate && lock_invalidate_request &&
+        !demand_mshr_any_valid_r;
+    wire l1_invalidate_valid = invalidate_txn_valid_q;
+    wire l1_invalidate_all = invalidate_txn_all_q;
+    wire [ADDR_WIDTH-1:0] l1_invalidate_addr = invalidate_txn_addr_q;
+    wire l1_invalidate_complete = invalidate_txn_valid_q &&
+        l1_invalidate_ready;
+    wire lock_invalidate_fire = l1_invalidate_complete &&
+        !invalidate_txn_external_q;
     wire response_tag_full;
     wire response_tag_empty;
     wire store_buffer_full =
@@ -1197,13 +1222,11 @@ module openrv64_l1d_icx #(
     assign posted_resp_valid_o = l1_posted_resp_valid;
     assign posted_resp_tag_o =
         l1_posted_resp_identity[REQ_TAG_WIDTH-1:0];
-    // A targeted coherence snoop revokes the line even while unrelated
-    // stores or misses remain active.  Full-cache maintenance retains the
-    // old global-quiescence contract.
-    assign invalidate_ready_o = l1_invalidate_ready &&
-        (targeted_external_invalidate ||
-         (!lock_invalidate_request && (store_buffer_count_q == 0) &&
-          !demand_mshr_any_valid_r));
+    // Completion is routed only to the source which owns the captured
+    // invalidate transaction.  It must never be inferred from the current
+    // value of the two request-valid inputs.
+    assign invalidate_ready_o = l1_invalidate_complete &&
+        invalidate_txn_external_q;
 
     // Apply the request's snapshotted dirty bytes to a resident-hit response.
     // The same overlay is applied to refill data below, so subsequent hits
@@ -2280,6 +2303,7 @@ module openrv64_l1d_icx #(
         .suppress_read_i(speculation_barrier_event),
         .command_sent_i(command_sent_q),
         .wdata_sent_i(wdata_sent_q),
+        .request_fence_i(request_fence_q),
         .request_write_i(request_write_q),
         .request_atomic_i(request_lock_q),
         .request_cacheable_i(request_cacheable_q),
@@ -2347,6 +2371,7 @@ module openrv64_l1d_icx #(
     assign prefetch_depth_o = prefetch_depth_q;
 
     wire main_response_reissue = main_response_fire &&
+        !request_fence_q &&
         !request_reservation_q &&
         !request_write_q &&
         (request_reissue_q ||
@@ -2361,7 +2386,7 @@ module openrv64_l1d_icx #(
           l1_miss_addr)) ||
         prefetch_slot_available;
     wire main_response_overlay_ready =
-        request_reservation_q || request_write_q ||
+        request_fence_q || request_reservation_q || request_write_q ||
         request_buffered_store_q ||
         normal_overlay_ready;
     assign icx_response_ready =
@@ -2461,6 +2486,7 @@ module openrv64_l1d_icx #(
         if (!rst_ni) begin
             backend_state_q <= BACKEND_IDLE;
             request_txn_id_q <= {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
+            request_fence_q <= 1'b0;
             request_write_q <= 1'b0;
             request_lock_q <= 1'b0;
             request_cacheable_q <= 1'b0;
@@ -2499,6 +2525,7 @@ module openrv64_l1d_icx #(
                 {STORE_BUFFER_COUNT_WIDTH{1'b0}};
             store_buffer_drain_active_q <= 1'b0;
             store_barrier_active_q <= 1'b0;
+            store_barrier_fence_pending_q <= 1'b0;
             store_completion_valid_q <= 1'b0;
             store_completion_error_q <= 1'b0;
             main_txn_in_use_q <= {MAIN_TXN_COUNT{1'b0}};
@@ -2566,6 +2593,10 @@ module openrv64_l1d_icx #(
             end
             locked_line_invalidated_q <= 1'b0;
             lock_barrier_seen_q <= 1'b0;
+            invalidate_txn_valid_q <= 1'b0;
+            invalidate_txn_external_q <= 1'b0;
+            invalidate_txn_all_q <= 1'b0;
+            invalidate_txn_addr_q <= {ADDR_WIDTH{1'b0}};
             coherent_lr_reservation_done_q <= 1'b0;
             coherent_lr_reservation_error_q <= 1'b0;
             active_req_lock_q <= 1'b0;
@@ -2713,6 +2744,22 @@ module openrv64_l1d_icx #(
                 lock_barrier_seen_q <= 1'b0;
             else if (lock_barrier_request)
                 lock_barrier_seen_q <= 1'b1;
+
+            if (!invalidate_txn_valid_q) begin
+                if (capture_external_invalidate) begin
+                    invalidate_txn_valid_q <= 1'b1;
+                    invalidate_txn_external_q <= 1'b1;
+                    invalidate_txn_all_q <= invalidate_all_i;
+                    invalidate_txn_addr_q <= invalidate_addr_i;
+                end else if (capture_lock_invalidate) begin
+                    invalidate_txn_valid_q <= 1'b1;
+                    invalidate_txn_external_q <= 1'b0;
+                    invalidate_txn_all_q <= 1'b0;
+                    invalidate_txn_addr_q <= req_addr_i;
+                end
+            end else if (l1_invalidate_complete) begin
+                invalidate_txn_valid_q <= 1'b0;
+            end
 
             if (!req_valid_i || !coherent_atomic_read) begin
                 coherent_lr_reservation_done_q <= 1'b0;
@@ -3425,14 +3472,22 @@ module openrv64_l1d_icx #(
                 !store_buffer_allocate)
                 store_buffer_drain_active_q <= 1'b0;
 
-            if (speculation_barrier_i)
+            if (main_response_fire && request_fence_q &&
+                !icx_resp_error_i && !response_protocol_error) begin
+                store_barrier_active_q <= speculation_barrier_i;
+                store_barrier_fence_pending_q <=
+                    speculation_barrier_i && completion_fence_i;
+            end else if (speculation_barrier_i) begin
                 store_barrier_active_q <= 1'b1;
-            else if (store_barrier_active_q &&
-                     (store_buffer_count_q == 0) &&
-                     !store_buffer_allocate &&
-                     !store_completion_valid_q &&
-                     (backend_state_q == BACKEND_IDLE))
+                store_barrier_fence_pending_q <= completion_fence_i;
+            end else if (store_barrier_active_q &&
+                         !store_barrier_fence_pending_q &&
+                         (store_buffer_count_q == 0) &&
+                         !store_buffer_allocate &&
+                         !store_completion_valid_q &&
+                         (backend_state_q == BACKEND_IDLE)) begin
                 store_barrier_active_q <= 1'b0;
+            end
 
             case (backend_state_q)
                 BACKEND_IDLE: begin
@@ -3502,6 +3557,38 @@ module openrv64_l1d_icx #(
                         store_buffer_txn_id_q[
                             store_buffer_issue_index_r] <=
                             main_txn_free_id_r;
+                        backend_state_q <= BACKEND_SEND;
+                    end else if (store_barrier_fence_pending_q &&
+                                 (store_buffer_count_q == 0) &&
+                                 !store_buffer_allocate &&
+                                 !store_completion_valid_q &&
+                                 main_txn_free_found_r) begin
+                        // Local queue drain is not the architectural completion
+                        // point.  Retain the barrier until an explicit fence
+                        // has crossed the coherent fabric and L2 responds.
+                        request_txn_id_q <= main_txn_free_id_r;
+                        request_fence_q <= 1'b1;
+                        request_write_q <= 1'b0;
+                        request_lock_q <= 1'b0;
+                        request_cacheable_q <= 1'b0;
+                        request_line_read_q <= 1'b0;
+                        request_size_q <= 3'd0;
+                        request_addr_q <= 64'd0;
+                        request_wdata_q <=
+                            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+                        request_wstrb_q <=
+                            {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+                        request_buffered_store_q <= 1'b0;
+                        request_demand_q <= 1'b0;
+                        request_reservation_q <= 1'b0;
+                        request_reissue_q <= 1'b0;
+                        request_epoch_q <= speculation_epoch_q;
+                        request_prefetch_q <= 1'b0;
+                        request_discard_q <= 1'b0;
+                        prefetch_late_reported_q <= 1'b0;
+                        command_sent_q <= 1'b0;
+                        wdata_sent_q <= 1'b0;
+                        main_txn_in_use_q[main_txn_free_id_r] <= 1'b1;
                         backend_state_q <= BACKEND_SEND;
                     end else if (demand_mshr_issue_found_r &&
                                  !speculation_barrier_event &&
@@ -3671,6 +3758,7 @@ module openrv64_l1d_icx #(
                             backend_state_q <= BACKEND_SEND;
                         end else begin
                             main_txn_in_use_q[request_txn_id_q] <= 1'b0;
+                            request_fence_q <= 1'b0;
                             request_reissue_q <= 1'b0;
                             backend_state_q <= BACKEND_IDLE;
                         end
@@ -4036,6 +4124,19 @@ module openrv64_l1d_icx #(
         .store_buffer_count(store_buffer_count_q),
         .demand_mshr_valid(demand_mshr_valid_vec),
         .request_addr(request_addr_q),
+        .invalidate_valid_i(invalidate_valid_i),
+        .invalidate_ready_o(invalidate_ready_o),
+        .invalidate_addr_i(invalidate_addr_i),
+        .invalidate_txn_valid_q(invalidate_txn_valid_q),
+        .invalidate_txn_external_q(invalidate_txn_external_q),
+        .invalidate_txn_all_q(invalidate_txn_all_q),
+        .invalidate_txn_addr_q(invalidate_txn_addr_q),
+        .capture_external_invalidate(capture_external_invalidate),
+        .capture_lock_invalidate(capture_lock_invalidate),
+        .lock_invalidate_request(lock_invalidate_request),
+        .lock_invalidate_fire(lock_invalidate_fire),
+        .l1_invalidate_valid(l1_invalidate_valid),
+        .l1_invalidate_ready(l1_invalidate_ready),
         .command_fire(command_fire),
         .response_fire(response_fire),
         .l1_response_fire(l1_response_fire),

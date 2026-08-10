@@ -97,6 +97,7 @@ module tb_l1d_prefetch;
     integer total_commands;
     integer demand_commands;
     integer prefetch_commands;
+    integer fence_commands;
     integer useful_prefetches;
     integer on_time_useful_prefetches;
     integer late_useful_prefetches;
@@ -257,6 +258,7 @@ module tb_l1d_prefetch;
         .prefetch_useless_o(prefetch_useless),
         .prefetch_depth_o(prefetch_depth),
         .speculation_barrier_i(speculation_barrier),
+        .completion_fence_i(1'b0),
         .invalidate_valid_i(invalidate_valid),
         .invalidate_ready_o(invalidate_ready),
         .invalidate_all_i(invalidate_all),
@@ -354,6 +356,7 @@ module tb_l1d_prefetch;
             total_commands <= 0;
             demand_commands <= 0;
             prefetch_commands <= 0;
+            fence_commands <= 0;
             useful_prefetches <= 0;
             on_time_useful_prefetches <= 0;
             late_useful_prefetches <= 0;
@@ -399,8 +402,12 @@ module tb_l1d_prefetch;
 
             if (icx_req_valid && icx_req_ready) begin
                 if (icx_req_op != `OPENRV64_ICX_OP_READ &&
-                    icx_req_op != `OPENRV64_ICX_OP_WRITE)
+                    icx_req_op != `OPENRV64_ICX_OP_WRITE &&
+                    icx_req_op != `OPENRV64_ICX_OP_FENCE)
                     $fatal(1, "unexpected ICX operation in prefetch test");
+                if ((icx_req_op == `OPENRV64_ICX_OP_FENCE) &&
+                    (icx_req_size != 3'd0 || icx_wdata_valid))
+                    $fatal(1, "malformed ICX fence in prefetch test");
                 if (dut.request_prefetch_q &&
                     (icx_req_size != 3'd6 || icx_req_addr[5:0] != 0))
                     $fatal(1, "ICX prefetch is not one aligned cacheline");
@@ -409,7 +416,9 @@ module tb_l1d_prefetch;
                 if (icx_req_source_id != `OPENRV64_ICX_SOURCE_DCACHE)
                     $fatal(1, "ICX read has wrong source");
                 total_commands <= total_commands + 1;
-                if (dut.request_prefetch_q) begin
+                if (icx_req_op == `OPENRV64_ICX_OP_FENCE) begin
+                    fence_commands <= fence_commands + 1;
+                end else if (dut.request_prefetch_q) begin
                     prefetch_commands <= prefetch_commands + 1;
                     last_prefetch_addr <= icx_req_addr;
                     prefetch_command_addr[prefetch_commands] <=

@@ -1335,6 +1335,7 @@ module openrv64_core_icx_bus #(
         .prefetch_depth_o(),
         .speculation_barrier_i(
             translation_invalidate || store_barrier_i),
+        .completion_fence_i(store_barrier_i),
         .store_barrier_busy_o(l1d_store_barrier_busy),
         .invalidate_valid_i(
             (ENABLE_L1D_COHERENCE_PROBES != 0) &&

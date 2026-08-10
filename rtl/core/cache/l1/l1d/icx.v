@@ -16,6 +16,7 @@ module openrv64_l1d_icx_interface #(
     input  wire                      suppress_read_i,
     input  wire                      command_sent_i,
     input  wire                      wdata_sent_i,
+    input  wire                      request_fence_i,
     input  wire                      request_write_i,
     input  wire                      request_atomic_i,
     input  wire                      request_cacheable_i,
@@ -82,7 +83,8 @@ module openrv64_l1d_icx_interface #(
 );
 
     assign icx_req_valid_o = send_valid_i && !command_sent_i &&
-                             !(suppress_read_i && !request_write_i);
+                             !(suppress_read_i && !request_write_i &&
+                               !request_fence_i);
     assign icx_req_hart_id_o = HART_ID;
     assign icx_req_txn_id_o = request_txn_id_i;
     assign icx_req_source_id_o = `OPENRV64_ICX_SOURCE_DCACHE;
@@ -90,17 +92,21 @@ module openrv64_l1d_icx_interface #(
     // sequence. Keep this opt-in: the single-hart native L2 still consumes
     // the established READ/WRITE compatibility encoding.
     assign icx_req_op_o =
+        request_fence_i ? `OPENRV64_ICX_OP_FENCE :
         (COHERENT_ATOMICS != 0) && request_atomic_i ?
             (request_write_i ? `OPENRV64_ICX_OP_SC :
                                `OPENRV64_ICX_OP_LR) :
             (request_write_i ? `OPENRV64_ICX_OP_WRITE :
                                `OPENRV64_ICX_OP_READ);
     assign icx_req_lock_o = 1'b0;
-    assign icx_req_order_o = `OPENRV64_ICX_ORDER_NONE;
+    assign icx_req_order_o = request_fence_i ?
+        `OPENRV64_ICX_ORDER_ACQ_REL : `OPENRV64_ICX_ORDER_NONE;
     assign icx_req_kind_o = `OPENRV64_ICX_KIND_DATA;
-    assign icx_req_attr_o = request_cacheable_i ?
+    assign icx_req_attr_o = request_fence_i ?
+        `OPENRV64_ICX_ATTR_NONE : request_cacheable_i ?
         `OPENRV64_ICX_ATTR_CACHEABLE : `OPENRV64_ICX_ATTR_DEVICE;
-    assign icx_req_size_o = request_line_read_i ? 3'd6 : request_size_i;
+    assign icx_req_size_o = request_fence_i ? 3'd0 :
+                            request_line_read_i ? 3'd6 : request_size_i;
     assign icx_req_addr_o = request_addr_i;
     assign icx_req_burst_len_o =
         {`OPENRV64_ICX_BURST_LEN_WIDTH{1'b0}};

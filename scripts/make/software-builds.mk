@@ -329,6 +329,32 @@ $(ATOMIC_4H_SHARED_VM_MEMH): $(ATOMIC_4H_SHARED_VM_BIN) tools/bin2mem.py
 $(ATOMIC_4H_SHARED_VM_DISASM): $(ATOMIC_4H_SHARED_VM_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(TICKET_LOCK_4H_SHARED_VM_ELF): $(OPENRV64_MAKEFILES) \
+		sw/ticket_lock_4h_shared_vm.S sw/openrv64-4h-shared-vm.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(ATOMIC_SOC_ASFLAGS) \
+		-DOPENRV64_TICKET_LOCK_TARGET=$(TICKET_LOCK_4H_SHARED_VM_TARGET) \
+		-Wl,--build-id=none,--gc-sections,-Map,$(TICKET_LOCK_4H_SHARED_VM_MAP) \
+		-T sw/openrv64-4h-shared-vm.ld -o $@ \
+		sw/ticket_lock_4h_shared_vm.S
+
+$(TICKET_LOCK_4H_SHARED_VM_TEMPLATE_BIN): \
+		$(TICKET_LOCK_4H_SHARED_VM_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(TICKET_LOCK_4H_SHARED_VM_BIN): \
+		$(TICKET_LOCK_4H_SHARED_VM_TEMPLATE_BIN) \
+		tools/make_shared_sv39_image.py
+	$(PYTHON) tools/make_shared_sv39_image.py $< $@
+
+$(TICKET_LOCK_4H_SHARED_VM_MEMH): $(TICKET_LOCK_4H_SHARED_VM_BIN) \
+		tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(TICKET_LOCK_4H_SHARED_VM_MEMH_BYTES) --word-bytes 64
+
+$(TICKET_LOCK_4H_SHARED_VM_DISASM): $(TICKET_LOCK_4H_SHARED_VM_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(TLBI_4H_SHARED_VM_ELF): $(OPENRV64_MAKEFILES) \
 		sw/tlbi_4h_shared_vm.S sw/openrv64-4h-shared-vm.ld
 	mkdir -p $(dir $@)
@@ -373,6 +399,32 @@ $(IPI_2H_SHARED_VM_MEMH): $(IPI_2H_SHARED_VM_BIN) tools/bin2mem.py
 		--size $(IPI_2H_SHARED_VM_MEMH_BYTES) --word-bytes 64
 
 $(IPI_2H_SHARED_VM_DISASM): $(IPI_2H_SHARED_VM_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(WFI_MAILBOX_4H_SHARED_VM_ELF): $(OPENRV64_MAKEFILES) \
+		sw/wfi_mailbox_4h_shared_vm.S sw/openrv64-4h-shared-vm.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(ATOMIC_SOC_ASFLAGS) \
+		-DOPENRV64_WFI_MAILBOX_ROUNDS=$(WFI_MAILBOX_4H_SHARED_VM_ROUNDS) \
+		-Wl,--build-id=none,--gc-sections,-Map,$(WFI_MAILBOX_4H_SHARED_VM_MAP) \
+		-T sw/openrv64-4h-shared-vm.ld -o $@ \
+		sw/wfi_mailbox_4h_shared_vm.S
+
+$(WFI_MAILBOX_4H_SHARED_VM_TEMPLATE_BIN): \
+		$(WFI_MAILBOX_4H_SHARED_VM_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(WFI_MAILBOX_4H_SHARED_VM_BIN): \
+		$(WFI_MAILBOX_4H_SHARED_VM_TEMPLATE_BIN) \
+		tools/make_shared_sv39_image.py
+	$(PYTHON) tools/make_shared_sv39_image.py $< $@
+
+$(WFI_MAILBOX_4H_SHARED_VM_MEMH): $(WFI_MAILBOX_4H_SHARED_VM_BIN) \
+		tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(WFI_MAILBOX_4H_SHARED_VM_MEMH_BYTES) --word-bytes 64
+
+$(WFI_MAILBOX_4H_SHARED_VM_DISASM): $(WFI_MAILBOX_4H_SHARED_VM_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
 $(ZERO_VM_ELF): $(OPENRV64_MAKEFILES) sw/zero/zero_sv39.S \

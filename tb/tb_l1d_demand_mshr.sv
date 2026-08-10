@@ -154,6 +154,7 @@ module tb_l1d_demand_mshr;
         .prefetch_useless_o(unused_prefetch_useless),
         .prefetch_depth_o(unused_prefetch_depth),
         .speculation_barrier_i(1'b0),
+        .completion_fence_i(1'b0),
         .store_barrier_busy_o(unused_store_barrier_busy),
         .invalidate_valid_i(1'b0),
         .invalidate_ready_o(unused_invalidate_ready),

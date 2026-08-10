@@ -52,6 +52,7 @@ module tb_l1d_store_buffer;
     reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
         response_source_q [0:RESPONSE_SLOTS-1];
     reg response_write_q [0:RESPONSE_SLOTS-1];
+    reg response_fence_q [0:RESPONSE_SLOTS-1];
     reg [63:0] response_addr_q [0:RESPONSE_SLOTS-1];
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         response_wdata_q [0:RESPONSE_SLOTS-1];
@@ -64,6 +65,7 @@ module tb_l1d_store_buffer;
     integer max_response_count_q;
     integer response_active_slot_q;
     reg hold_responses;
+    reg hold_fence_responses;
     reg response_free_found_r;
     integer response_free_slot_r;
     reg response_select_found_r;
@@ -73,6 +75,7 @@ module tb_l1d_store_buffer;
     integer cycle_count;
     integer read_count;
     integer write_count;
+    integer fence_count;
     integer wait_cycles;
     integer word_index;
     integer timeout_start_cycle;
@@ -102,6 +105,8 @@ module tb_l1d_store_buffer;
             // decreasing delay makes a four-write drain complete in reverse
             // order and exercises transaction-ID response matching.
             if (response_slot_valid_q[response_scan] &&
+                (!hold_fence_responses ||
+                 !response_fence_q[response_scan]) &&
                 (response_due_q[response_scan] <= cycle_count)) begin
                 response_select_found_r = 1'b1;
                 response_select_slot_r = response_scan;
@@ -154,6 +159,7 @@ module tb_l1d_store_buffer;
         .prefetch_useless_o(),
         .prefetch_depth_o(),
         .speculation_barrier_i(speculation_barrier),
+        .completion_fence_i(speculation_barrier),
         .store_barrier_busy_o(store_barrier_busy),
         .invalidate_valid_i(1'b0),
         .invalidate_ready_o(),
@@ -218,6 +224,7 @@ module tb_l1d_store_buffer;
                 response_txn_q[response_scan] <= 0;
                 response_source_q[response_scan] <= 0;
                 response_write_q[response_scan] <= 1'b0;
+                response_fence_q[response_scan] <= 1'b0;
                 response_addr_q[response_scan] <= 0;
                 response_wdata_q[response_scan] <= 0;
                 response_wstrb_q[response_scan] <= 0;
@@ -231,14 +238,16 @@ module tb_l1d_store_buffer;
             cycle_count <= 0;
             read_count <= 0;
             write_count <= 0;
+            fence_count <= 0;
         end else begin
             cycle_count <= cycle_count + 1;
             if (icx_req_valid) begin
                 if (!response_free_found_r)
                     $fatal(1, "store-buffer response model overflow");
-                if (icx_req_size != 3'd6)
-                    $fatal(1, "store-buffer request was not line-sized");
                 if (icx_req_op == `OPENRV64_ICX_OP_WRITE) begin
+                    if (icx_req_size != 3'd6)
+                        $fatal(1,
+                            "store-buffer write was not line-sized");
                     if (!icx_wdata_valid)
                         $fatal(1,
                             "store-buffer line write lacked write data");
@@ -250,7 +259,14 @@ module tb_l1d_store_buffer;
                     write_strb[write_count] <= icx_wstrb;
                     write_count <= write_count + 1;
                 end else if (icx_req_op == `OPENRV64_ICX_OP_READ) begin
+                    if (icx_req_size != 3'd6)
+                        $fatal(1,
+                            "store-buffer read was not line-sized");
                     read_count <= read_count + 1;
+                end else if (icx_req_op == `OPENRV64_ICX_OP_FENCE) begin
+                    if (icx_req_size != 3'd0 || icx_wdata_valid)
+                        $fatal(1, "malformed L1D fence request");
+                    fence_count <= fence_count + 1;
                 end else begin
                     $fatal(1, "unexpected ICX operation");
                 end
@@ -263,12 +279,16 @@ module tb_l1d_store_buffer;
                     icx_req_source_id;
                 response_write_q[response_free_slot_r] <=
                     icx_req_op == `OPENRV64_ICX_OP_WRITE;
+                response_fence_q[response_free_slot_r] <=
+                    icx_req_op == `OPENRV64_ICX_OP_FENCE;
                 response_addr_q[response_free_slot_r] <= icx_req_addr;
                 response_wdata_q[response_free_slot_r] <= icx_wdata;
                 response_wstrb_q[response_free_slot_r] <= icx_wstrb;
                 response_rdata_q[response_free_slot_r] <=
                     memory[icx_req_addr[9:6]];
                 response_due_q[response_free_slot_r] <=
+                    (icx_req_op == `OPENRV64_ICX_OP_FENCE) ?
+                    cycle_count + 4 :
                     cycle_count + 20 - ((write_count % 4) * 4);
             end
             if (!icx_resp_valid && !hold_responses &&
@@ -326,6 +346,7 @@ module tb_l1d_store_buffer;
             req_wstrb = 0;
             speculation_barrier = 1'b0;
             hold_responses = 1'b0;
+            hold_fence_responses = 1'b0;
             repeat (5) @(posedge clk);
             @(negedge clk);
             rst_n = 1'b1;
@@ -674,6 +695,7 @@ module tb_l1d_store_buffer;
         if ((dut.store_buffer_count_q != 1) || (write_count != 0))
             $fatal(1, "barrier setup store was not held for combining");
         timeout_start_cycle = cycle_count;
+        hold_fence_responses = 1'b1;
         @(negedge clk);
         speculation_barrier = 1'b1;
         #1;
@@ -688,6 +710,20 @@ module tb_l1d_store_buffer;
             $fatal(1, "translation barrier waited for store timeout");
         if (!store_barrier_busy)
             $fatal(1, "translation barrier completed before write response");
+        wait_cycles = 0;
+        while ((fence_count == 0) && (wait_cycles < 100)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (fence_count != 1)
+            $fatal(1, "translation barrier did not issue one ICX fence");
+        repeat (8) begin
+            @(negedge clk);
+            if (!store_barrier_busy)
+                $fatal(1,
+                    "translation barrier released before fence response");
+        end
+        hold_fence_responses = 1'b0;
         wait_cycles = 0;
         while (store_barrier_busy && (wait_cycles < 100)) begin
             @(negedge clk);

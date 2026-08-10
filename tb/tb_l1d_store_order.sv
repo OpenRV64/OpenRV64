@@ -103,6 +103,7 @@ module tb_l1d_store_order;
         .prefetch_useless_o(),
         .prefetch_depth_o(),
         .speculation_barrier_i(1'b0),
+        .completion_fence_i(1'b0),
         .invalidate_valid_i(1'b0),
         .invalidate_ready_o(),
         .invalidate_all_i(1'b0),

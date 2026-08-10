@@ -37,6 +37,21 @@ module openrv64_l1d_debug_stub #(
         /* verilator public_flat_rd */,
     input wire [ADDR_WIDTH-1:0] request_addr
         /* verilator public_flat_rd */,
+    input wire invalidate_valid_i /* verilator public_flat_rd */,
+    input wire invalidate_ready_o /* verilator public_flat_rd */,
+    input wire [ADDR_WIDTH-1:0] invalidate_addr_i
+        /* verilator public_flat_rd */,
+    input wire invalidate_txn_valid_q /* verilator public_flat_rd */,
+    input wire invalidate_txn_external_q /* verilator public_flat_rd */,
+    input wire invalidate_txn_all_q /* verilator public_flat_rd */,
+    input wire [ADDR_WIDTH-1:0] invalidate_txn_addr_q
+        /* verilator public_flat_rd */,
+    input wire capture_external_invalidate /* verilator public_flat_rd */,
+    input wire capture_lock_invalidate /* verilator public_flat_rd */,
+    input wire lock_invalidate_request /* verilator public_flat_rd */,
+    input wire lock_invalidate_fire /* verilator public_flat_rd */,
+    input wire l1_invalidate_valid /* verilator public_flat_rd */,
+    input wire l1_invalidate_ready /* verilator public_flat_rd */,
 
     // Detailed request, MSHR, overlay, and buffer state for targeted traces.
     input wire command_fire /* verilator public_flat_rd */,

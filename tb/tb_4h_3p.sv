@@ -36,6 +36,7 @@ module tb_4h_3p #(
     parameter integer MEMORY_BYTES = 32'h0032_3000,
     parameter integer ENABLE_BOOT_ROM = 0,
     parameter integer ENABLE_RV64ZBB = 1,
+    parameter integer ENABLE_WFI_SLEEP = 1,
     parameter logic [31:0] OPENSBI_FDT_BASE_LO = 32'h80f0_0000,
     parameter integer DDR3_ENABLE = 0,
     parameter integer GENBUS_READ_BUFFER_DEPTH = 8,
@@ -452,6 +453,9 @@ module tb_4h_3p #(
     integer ipi_msip_assertions [0:NUM_HARTS-1];
     integer ipi_msip_clears [0:NUM_HARTS-1];
     integer ipi_interrupts [0:NUM_HARTS-1];
+    integer ipi_worker_assertions;
+    integer ipi_worker_clears;
+    integer ipi_worker_interrupts;
     integer opensbi_msoft_interrupts [0:NUM_HARTS-1];
     integer opensbi_ssoft_interrupts [0:NUM_HARTS-1];
     logic [NUM_HARTS-1:0] ipi_msip_previous;
@@ -631,6 +635,7 @@ module tb_4h_3p #(
                 .HART_ID(`OPENRV64_ICX_HART_ID_WIDTH'(hart)),
                 .ENABLE_RV64M(1),
                 .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
+                .ENABLE_WFI_SLEEP(ENABLE_WFI_SLEEP),
                 .ENABLE_ISSUE_WINDOW(1),
                 .ENABLE_SPECULATION_WINDOW(1),
                 .ENABLE_POSTED_STORES(1),
@@ -2635,12 +2640,14 @@ module tb_4h_3p #(
             $fatal(1,
                 "TLBI workload requires shared Sv39, reservation/target/old/new addresses, and result=1");
         if (!opensbi_mode && (ipi_test != 0) &&
-            ((opensbi_active_harts != 2) ||
+            (((ipi_test != 1) && (ipi_test != 2)) ||
+             ((ipi_test == 1) && (opensbi_active_harts != 2)) ||
+             ((ipi_test == 2) && (opensbi_active_harts != 4)) ||
              (ipi_expected <= 0) || !result_va_valid ||
              (result_expected != ipi_expected) ||
              (shared_satp == 0) || (bare_mode != 0)))
             $fatal(1,
-                "IPI workload requires exactly two harts, shared Sv39, a result address, and matching positive expectations");
+                "IPI workload requires mode 1 with two harts or mode 2 with four harts, shared Sv39, a result address, and matching positive expectations");
 
         if (DDR3_ENABLE != 0) begin
             /*
@@ -3037,7 +3044,7 @@ module tb_4h_3p #(
                         end
                     end
                 end
-                if (ipi_test != 0) begin
+                if (ipi_test == 1) begin
                     for (init_hart = 0;
                          init_hart < NUM_HARTS;
                          init_hart = init_hart + 1) begin
@@ -3080,6 +3087,72 @@ module tb_4h_3p #(
                         ipi_msip_assertions[1],
                         ipi_msip_clears[0], ipi_msip_clears[1],
                         ipi_interrupts[0], ipi_interrupts[1],
+                        ipi_wfi_seen);
+                end else if (ipi_test == 2) begin
+                    ipi_worker_assertions = 0;
+                    ipi_worker_clears = 0;
+                    ipi_worker_interrupts = 0;
+                    for (init_hart = 0;
+                         init_hart < NUM_HARTS;
+                         init_hart = init_hart + 1) begin
+                        if ((ipi_msip_assertions[init_hart] !=
+                             ipi_msip_clears[init_hart]) ||
+                            (ipi_msip_assertions[init_hart] !=
+                             ipi_interrupts[init_hart]))
+                            $fatal(1,
+                                "hart %0d WFI mailbox IPI mismatch asserted=%0d cleared=%0d interrupts=%0d",
+                                init_hart,
+                                ipi_msip_assertions[init_hart],
+                                ipi_msip_clears[init_hart],
+                                ipi_interrupts[init_hart]);
+                        if (!ipi_wfi_seen[init_hart])
+                            $fatal(1,
+                                "hart %0d never slept in WFI during mailbox test",
+                                init_hart);
+                        if (init_hart == 0) begin
+                            if (ipi_interrupts[init_hart] !=
+                                (ipi_expected + 3))
+                                $fatal(1,
+                                    "coordinator IPI count=%0d expected=%0d",
+                                    ipi_interrupts[init_hart],
+                                    ipi_expected + 3);
+                        end else begin
+                            if (ipi_interrupts[init_hart] == 0)
+                                $fatal(1,
+                                    "worker hart %0d received no wakeups",
+                                    init_hart);
+                            ipi_worker_assertions =
+                                ipi_worker_assertions +
+                                ipi_msip_assertions[init_hart];
+                            ipi_worker_clears = ipi_worker_clears +
+                                ipi_msip_clears[init_hart];
+                            ipi_worker_interrupts =
+                                ipi_worker_interrupts +
+                                ipi_interrupts[init_hart];
+                        end
+                    end
+                    if ((ipi_worker_assertions != (ipi_expected + 3)) ||
+                        (ipi_worker_clears != (ipi_expected + 3)) ||
+                        (ipi_worker_interrupts != (ipi_expected + 3)))
+                        $fatal(1,
+                            "worker IPI totals asserted=%0d cleared=%0d interrupts=%0d expected=%0d",
+                            ipi_worker_assertions, ipi_worker_clears,
+                            ipi_worker_interrupts, ipi_expected + 3);
+                    if (clint_msip != {NUM_HARTS{1'b0}})
+                        $fatal(1,
+                            "WFI mailbox test completed with asserted MSIP bits=%b",
+                            clint_msip);
+                    $display(
+                        "WFI_MAILBOX_4H_SV39 rounds=%0d asserted=%0d,%0d,%0d,%0d cleared=%0d,%0d,%0d,%0d interrupts=%0d,%0d,%0d,%0d wfi=%b",
+                        ipi_expected,
+                        ipi_msip_assertions[0],
+                        ipi_msip_assertions[1],
+                        ipi_msip_assertions[2],
+                        ipi_msip_assertions[3],
+                        ipi_msip_clears[0], ipi_msip_clears[1],
+                        ipi_msip_clears[2], ipi_msip_clears[3],
+                        ipi_interrupts[0], ipi_interrupts[1],
+                        ipi_interrupts[2], ipi_interrupts[3],
                         ipi_wfi_seen);
                 end
                 if ((atomic_test != 0) &&
@@ -3371,12 +3444,14 @@ module tb_4h_3p #(
                                 requests[init_hart]);
                         if ((init_hart != 0) &&
                             (!opensbi_hsm_wfi_seen[init_hart] ||
-                             !opensbi_hsm_sleep_seen[init_hart]))
+                             ((ENABLE_WFI_SLEEP != 0) &&
+                              !opensbi_hsm_sleep_seen[init_hart])))
                             $fatal(1,
-                                "Linux SMP secondary %0d did not park before HSM wake wfi=%0b sleep=%0b",
+                                "Linux SMP secondary %0d did not reach configured WFI park behavior wfi=%0b sleep=%0b sleep_enable=%0d",
                                 init_hart,
                                 opensbi_hsm_wfi_seen[init_hart],
-                                opensbi_hsm_sleep_seen[init_hart]);
+                                opensbi_hsm_sleep_seen[init_hart],
+                                ENABLE_WFI_SLEEP);
                     end else if ((retired[init_hart] != 0) ||
                                  (requests[init_hart] != 0)) begin
                         $fatal(1,
@@ -3444,12 +3519,14 @@ module tb_4h_3p #(
                                 HART_START_ATOMIC_ITERATIONS);
                         if ((init_hart != 0) &&
                             (!opensbi_hsm_wfi_seen[init_hart] ||
-                             !opensbi_hsm_sleep_seen[init_hart]))
+                             ((ENABLE_WFI_SLEEP != 0) &&
+                              !opensbi_hsm_sleep_seen[init_hart])))
                             $fatal(1,
-                                "SBI hart_start secondary %0d did not park and sleep before wake wfi=%0b sleep=%0b",
+                                "SBI hart_start secondary %0d did not reach configured WFI park behavior wfi=%0b sleep=%0b sleep_enable=%0d",
                                 init_hart,
                                 opensbi_hsm_wfi_seen[init_hart],
-                                opensbi_hsm_sleep_seen[init_hart]);
+                                opensbi_hsm_sleep_seen[init_hart],
+                                ENABLE_WFI_SLEEP);
                     end else if ((retired[init_hart] != 0) ||
                                  (requests[init_hart] != 0)) begin
                         $fatal(1,
@@ -3505,7 +3582,8 @@ module tb_4h_3p #(
                 opensbi_s_mode_seen &&
                 opensbi_magic_seen &&
                 (&opensbi_hsm_wfi_seen[NUM_HARTS-1:1]) &&
-                (&hart_wfi_sleep[NUM_HARTS-1:1])) begin
+                ((ENABLE_WFI_SLEEP == 0) ||
+                 (&hart_wfi_sleep[NUM_HARTS-1:1]))) begin
                 if ((hart_priv_mode[
                          1*`RV64_PRIV_WIDTH +: `RV64_PRIV_WIDTH] !=
                      `RV64_PRIV_M) ||
