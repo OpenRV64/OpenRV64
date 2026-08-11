@@ -44,6 +44,7 @@ module tb_l1_sync_tag;
     integer last_accept_cycle;
     integer first_response_cycle;
     integer last_response_cycle;
+    integer store_extension_count;
 
     openrv64_l1_cache #(
         .DATA_WIDTH(64),
@@ -51,6 +52,7 @@ module tb_l1_sync_tag;
         .REQ_TAG_WIDTH(TAG_WIDTH),
         .DETACH_READ_MISSES(1),
         .SYNC_TAG_LOOKUP(1),
+        .SYNC_STORE_EXTENSION(1),
         .CACHE_BYTES(1024),
         .LINE_BYTES(64),
         .WAYS(4)
@@ -121,6 +123,7 @@ module tb_l1_sync_tag;
             last_accept_cycle <= -1;
             first_response_cycle <= -1;
             last_response_cycle <= -1;
+            store_extension_count <= 0;
         end else begin
             cycle_count <= cycle_count + 1;
             if (req_valid && req_ready) begin
@@ -149,8 +152,87 @@ module tb_l1_sync_tag;
                 end
                 response_count <= response_count + 1;
             end
+            if (dut.sync_store_extension_fire)
+                store_extension_count <= store_extension_count + 1;
         end
     end
+
+    task automatic issue_posted_store;
+        input [63:0] address;
+        input [63:0] data;
+        input [7:0] strb;
+        input [TAG_WIDTH-1:0] tag;
+        integer local_wait;
+        begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_write = 1'b1;
+            req_separate_write_resp = 1'b1;
+            req_tag = tag;
+            req_addr = address;
+            req_wdata = data;
+            req_wstrb = strb;
+            local_wait = 0;
+            while (!req_ready && local_wait < 12) begin
+                @(negedge clk);
+                local_wait = local_wait + 1;
+            end
+            if (!req_ready)
+                $fatal(1, "posted store timed out addr=%h", address);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            local_wait = 0;
+            while (!write_resp_valid && local_wait < 12) begin
+                @(negedge clk);
+                local_wait = local_wait + 1;
+            end
+            if (!write_resp_valid || (write_resp_tag != tag))
+                $fatal(1,
+                       "posted store completion failed addr=%h tag=%0d got=%0d",
+                       address, tag, write_resp_tag);
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task automatic check_resident_word;
+        input [63:0] address;
+        input [63:0] expected;
+        input [TAG_WIDTH-1:0] tag;
+        integer local_wait;
+        begin
+            req_valid = 1'b1;
+            req_write = 1'b0;
+            req_separate_write_resp = 1'b0;
+            req_tag = tag;
+            req_addr = address;
+            req_wdata = 64'd0;
+            req_wstrb = 8'd0;
+            local_wait = 0;
+            while (!req_ready && local_wait < 12) begin
+                @(negedge clk);
+                local_wait = local_wait + 1;
+            end
+            if (!req_ready)
+                $fatal(1, "resident read timed out addr=%h", address);
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            local_wait = 0;
+            while (!resp_valid && local_wait < 12) begin
+                @(negedge clk);
+                local_wait = local_wait + 1;
+            end
+            if (!resp_valid || (resp_tag != tag) ||
+                (resp_data !== expected))
+                $fatal(1,
+                       "resident word mismatch addr=%h tag=%0d data=%h expected=%h",
+                       address, tag, resp_data, expected);
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
 
     integer word_index;
     integer wait_cycles;
@@ -209,6 +291,73 @@ module tb_l1_sync_tag;
         if (first_response_cycle != first_accept_cycle + 1)
             $fatal(1, "hit latency=%0d cycles expected=1",
                    first_response_cycle - first_accept_cycle);
+
+        // A valid-hit store establishes the extension context.  Consecutive
+        // stores to other words of the same VA line reuse that context.  A
+        // fill, invalidate, or intervening load must terminate the chain.
+        mem_ready = 1'b1;
+        issue_posted_store(BASE, 64'h1111_1111_1111_1111,
+                           8'hff, 4'h8);
+        issue_posted_store(BASE + 8, 64'h2222_2222_2222_2222,
+                           8'h0f, 4'h9);
+        if (store_extension_count != 1)
+            $fatal(1, "same-line store did not extend count=%0d",
+                   store_extension_count);
+
+        fill_addr = BASE + 64'h100;
+        fill_data = {8{64'h5555_aaaa_5555_aaaa}};
+        fill_valid = 1'b1;
+        while (!fill_ready)
+            @(negedge clk);
+        @(posedge clk);
+        @(negedge clk);
+        fill_valid = 1'b0;
+        if (dut.sync_store_extension_valid_q)
+            $fatal(1, "detached fill did not break the store extension");
+        issue_posted_store(BASE + 16, 64'h3333_3333_3333_3333,
+                           8'hff, 4'ha);
+        if (store_extension_count != 1)
+            $fatal(1, "store crossed a detached-fill boundary");
+        issue_posted_store(BASE + 24, 64'h4444_4444_4444_4444,
+                           8'hff, 4'hb);
+        if (store_extension_count != 2)
+            $fatal(1, "store did not reestablish extension after fill");
+
+        invalidate_addr = BASE + 64'h100;
+        invalidate_valid = 1'b1;
+        while (!invalidate_ready)
+            @(negedge clk);
+        @(posedge clk);
+        @(negedge clk);
+        invalidate_valid = 1'b0;
+        if (dut.sync_store_extension_valid_q)
+            $fatal(1, "target invalidate did not break the store extension");
+        issue_posted_store(BASE + 32, 64'h5555_5555_5555_5555,
+                           8'hff, 4'hc);
+        if (store_extension_count != 2)
+            $fatal(1, "store crossed an invalidate boundary");
+        issue_posted_store(BASE + 40, 64'h6666_6666_6666_6666,
+                           8'hff, 4'hd);
+        if (store_extension_count != 3)
+            $fatal(1, "store did not reestablish extension after invalidate");
+
+        check_resident_word(BASE, 64'h1111_1111_1111_1111, 4'h8);
+        issue_posted_store(BASE + 48, 64'h7777_7777_7777_7777,
+                           8'hff, 4'he);
+        if (store_extension_count != 3)
+            $fatal(1, "store crossed an intervening-load boundary");
+        issue_posted_store(BASE + 56, 64'h8888_8888_8888_8888,
+                           8'hff, 4'hf);
+        if (store_extension_count != 4)
+            $fatal(1, "store did not reestablish extension after load");
+
+        check_resident_word(BASE + 8, 64'h0000_0000_2222_2222, 4'h9);
+        check_resident_word(BASE + 16, 64'h3333_3333_3333_3333, 4'ha);
+        check_resident_word(BASE + 24, 64'h4444_4444_4444_4444, 4'hb);
+        check_resident_word(BASE + 32, 64'h5555_5555_5555_5555, 4'hc);
+        check_resident_word(BASE + 40, 64'h6666_6666_6666_6666, 4'hd);
+        check_resident_word(BASE + 48, 64'h7777_7777_7777_7777, 4'he);
+        check_resident_word(BASE + 56, 64'h8888_8888_8888_8888, 4'hf);
 
         // Reproduce the write-port collision which occurs when a detached
         // fill probe launches as a synchronous posted-store lookup enters
@@ -284,6 +433,7 @@ module tb_l1_sync_tag;
         @(posedge clk);
 
         @(negedge clk);
+        invalidate_addr = BASE;
         invalidate_valid = 1'b1;
         wait_cycles = 0;
         while (!invalidate_ready && wait_cycles < 8) begin
@@ -309,7 +459,7 @@ module tb_l1_sync_tag;
             $fatal(1, "invalidated line did not become a tagged miss");
         @(posedge clk);
 
-        $display("PASS: synchronous L1 tags sustain one hit/cycle; detached fills preserve concurrent resident stores; invalidate probes pass");
+        $display("PASS: synchronous L1 hits, same-line store extension data, side-effect breaks, fill collision, and invalidation");
         $finish;
     end
 

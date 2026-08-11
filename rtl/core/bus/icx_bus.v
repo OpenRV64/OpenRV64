@@ -20,10 +20,13 @@ module openrv64_core_icx_bus #(
     parameter integer FETCH_OUTSTANDING = 4,
     parameter integer ENABLE_L1I = 1,
     parameter integer ENABLE_L1D = 1,
+    parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter integer ENABLE_L1D_COHERENCE_PROBES = 0,
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
+    parameter integer L1D_SYNC_TAG_LOOKUP = 1,
+    parameter integer L1D_SYNC_STORE_EXTENSION = 1,
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_BASE =
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
@@ -150,6 +153,7 @@ module openrv64_core_icx_bus #(
     output wire                         tlbi_busy_o,
     input  wire                         store_barrier_i,
     input  wire                         icache_invalidate_i,
+    input  wire                         m_mode_prefetch_enable_i,
     input  wire                         icache_prefetch_valid_i,
     input  wire [`RV64_XLEN-1:0]        icache_prefetch_taken_addr_i,
     input  wire [`RV64_XLEN-1:0]        icache_prefetch_fallthrough_addr_i,
@@ -1284,6 +1288,8 @@ module openrv64_core_icx_bus #(
         .CACHE_BYTES(L1D_CACHE_BYTES),
         .LINE_BYTES(64),
         .WAYS(4),
+        .SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
+        .SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
         .FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
         .DEMAND_MSHRS(L1D_DEMAND_MSHRS),
         .STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
@@ -1335,7 +1341,10 @@ module openrv64_core_icx_bus #(
         .prefetch_depth_o(),
         .speculation_barrier_i(
             translation_invalidate || store_barrier_i),
-        .completion_fence_i(store_barrier_i),
+        // A relaxed FENCE still drains the local posted-store queue.  Only
+        // the explicit ICX/L2 completion transaction is optional.
+        .completion_fence_i(
+            (ENABLE_FENCE_L2_ACK != 0) && store_barrier_i),
         .store_barrier_busy_o(l1d_store_barrier_busy),
         .invalidate_valid_i(
             (ENABLE_L1D_COHERENCE_PROBES != 0) &&
@@ -1382,6 +1391,14 @@ module openrv64_core_icx_bus #(
     // until all older posted L1D stores have completed downstream.
     assign tlbi_busy_o = l1d_store_barrier_busy || ptw_invalidate_busy;
 
+    wire l1i_m_mode_prefetch_context =
+        m_mode_prefetch_enable_i &&
+        (fetch_req_priv_i == `RV64_PRIV_M) &&
+        (fetch_req_vm_mode_i == `RV64_SATP_MODE_BARE);
+    wire l1i_prefetch_context =
+        (fetch_req_vm_mode_i == `RV64_SATP_MODE_SV39) ||
+        l1i_m_mode_prefetch_context;
+
     openrv64_l1i_icx #(
         .ENABLE(ENABLE_L1I),
         .ADDR_WIDTH(`RV64_XLEN),
@@ -1410,9 +1427,10 @@ module openrv64_core_icx_bus #(
         .resp_tag_o(l1i_resp_tag),
         .req_rdata_o(l1i_req_rdata),
         .req_error_o(l1i_req_error),
+        .m_mode_prefetch_enable_i(m_mode_prefetch_enable_i),
         .prefetch_valid_i(
             icache_prefetch_valid_i &&
-            (fetch_req_vm_mode_i == `RV64_SATP_MODE_SV39)),
+            l1i_prefetch_context),
         .prefetch_taken_addr_i(icache_prefetch_taken_addr_i),
         .prefetch_fallthrough_addr_i(
             icache_prefetch_fallthrough_addr_i),
@@ -1423,12 +1441,12 @@ module openrv64_core_icx_bus #(
         .prefetch_sum_i(fetch_req_sum_i),
         .prefetch_mxr_i(fetch_req_mxr_i),
         .retire_age_valid_i(
-            (fetch_req_vm_mode_i == `RV64_SATP_MODE_SV39) ?
+            l1i_prefetch_context ?
                 icache_age_valid_i : 3'b000),
         .retire_age_addr_i(icache_age_addr_i),
         .prefetch_flush_i(
             translation_invalidate || icache_invalidate_i ||
-            (fetch_req_vm_mode_i != `RV64_SATP_MODE_SV39)),
+            !l1i_prefetch_context),
         .xlate_req_valid_o(l1i_xlate_req_valid),
         .xlate_req_ready_i(l1i_xlate_req_ready),
         .xlate_req_vaddr_o(l1i_xlate_req_vaddr),

@@ -258,6 +258,24 @@ $(L1_SYNC_TAG_SIM_BUILD): tb/tb_l1_sync_tag.sv rtl/cache/l1/l1.v \
 		rtl/cache/l1/l1.v \
 		tb/tb_l1_sync_tag.sv
 
+$(L1_TAG_MODE_PERFORMANCE_SIM_BUILD): \
+		tb/tb_l1_tag_mode_performance.sv rtl/cache/l1/l1.v \
+		rtl/cache/l1/debug/stub.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_l1_tag_mode_performance \
+		-o $(L1_TAG_MODE_PERFORMANCE_SIM_BUILD) \
+		rtl/cache/l1/debug/stub.v rtl/cache/l1/l1.v \
+		tb/tb_l1_tag_mode_performance.sv
+
+$(LSQ_L1D_STORE_PERFORMANCE_SIM_BUILD): \
+		tb/tb_lsq_l1d_store_performance.sv $(L1_CACHE_SRCS) \
+		rtl/core/exec/lsq.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_lsq_l1d_store_performance \
+		-o $(LSQ_L1D_STORE_PERFORMANCE_SIM_BUILD) \
+		$(L1_CACHE_SRCS) rtl/core/exec/lsq.v \
+		tb/tb_lsq_l1d_store_performance.sv
+
 $(L1D_PREFETCH_SIM_BUILD): tb/tb_l1d_prefetch.sv $(L1_CACHE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_l1d_prefetch \
@@ -281,6 +299,13 @@ $(L1D_STORE_BUFFER_SIM_BUILD): tb/tb_l1d_store_buffer.sv $(L1_CACHE_SRCS)
 	iverilog -g2012 -Wall -Irtl -s tb_l1d_store_buffer \
 		-o $(L1D_STORE_BUFFER_SIM_BUILD) $(L1_CACHE_SRCS) \
 		tb/tb_l1d_store_buffer.sv
+
+$(L1D_FENCE_BEHAVIOR_SIM_BUILD): \
+		tb/tb_l1d_fence_behavior.sv $(L1_CACHE_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_l1d_fence_behavior \
+		-o $(L1D_FENCE_BEHAVIOR_SIM_BUILD) $(L1_CACHE_SRCS) \
+		tb/tb_l1d_fence_behavior.sv
 
 $(L1D_INVALIDATE_ARBITER_SIM_BUILD): \
 		tb/tb_l1d_invalidate_arbiter.sv $(L1_CACHE_SRCS)

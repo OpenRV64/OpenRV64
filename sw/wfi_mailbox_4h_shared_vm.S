@@ -28,12 +28,18 @@
 .equ PRIVATE_MAILBOX,        0
 .equ PRIVATE_RESULT,         4
 .equ PRIVATE_READY,          8
-.equ PRIVATE_RX_COUNT,       12
 .equ PRIVATE_WAKE_SEQUENCE,  16
 .equ PRIVATE_WAKE_INVERSE,   20
 .equ PRIVATE_ACK_SEQUENCE,   24
 .equ PRIVATE_ACK_HART,       28
 .equ PRIVATE_WORK_COUNT,     32
+
+/*
+ * Keep interrupt bookkeeping off the cache line carrying the publication.
+ * Otherwise the handler's RX_COUNT read-modify-write can acquire/refill the
+ * payload line after MSIP delivery and hide a stale wake or acknowledgement.
+ */
+.equ PRIVATE_RX_COUNT,       64
 
 .equ TRAP_FRAME_SHIFT,       8
 
@@ -104,13 +110,16 @@ machine_trap:
     j       machine_fail_bad_cause
 
 machine_software_interrupt:
-    /* Clear the level source before recording or acknowledging receipt. */
+    /*
+     * Clear the level source before recording receipt.  Do not place a full
+     * cache fence in this receive path: that could make the sender's payload
+     * visible and mask the ordering failure this test is intended to catch.
+     */
     csrr    t0, mhartid
     slli    t1, t0, 2
     li      t2, CLINT_MSIP_BASE
     add     t1, t1, t2
     sw      x0, 0(t1)
-    fence   iorw, iorw
 
     la      t1, wfi_mailbox_4h_private_pages
     li      t2, PHYSICAL_OFFSET
@@ -122,8 +131,6 @@ machine_software_interrupt:
     bgeu    t2, t3, machine_fail_duplicate
     addi    t2, t2, 1
     sw      t2, PRIVATE_RX_COUNT(t1)
-    /* Do not return to the waiter until receipt itself is ordered. */
-    fence   rw, rw
     j       machine_trap_return
 
 machine_send_ipi:
@@ -138,11 +145,9 @@ machine_send_ipi:
     lw      t2, 0(t0)
     bnez    t2, machine_fail_busy_target
 
-    /* Cacheable publication must be complete before MSIP is observable. */
-    fence   rw, ow
+    /* The supervisor caller fenced its cacheable publication. */
     li      t1, 1
     sw      t1, 0(t0)
-    fence   iorw, iorw
 
     csrr    t0, mepc
     addi    t0, t0, 4

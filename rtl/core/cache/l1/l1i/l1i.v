@@ -49,6 +49,7 @@ module openrv64_l1i_icx #(
 
     // Conditional-branch hints are virtual.  L1I retains both paths and
     // requests translation below; no speculative fault is architectural.
+    input  wire                         m_mode_prefetch_enable_i,
     input  wire                         prefetch_valid_i,
     input  wire [ADDR_WIDTH-1:0]        prefetch_taken_addr_i,
     input  wire [ADDR_WIDTH-1:0]        prefetch_fallthrough_addr_i,
@@ -778,8 +779,12 @@ module openrv64_l1i_icx #(
     assign next_line_consume = response_pop &&
         !response_prefetch_q[response_pop_index] &&
         response_cacheable_q[response_pop_index] && !req_error_o &&
-        (response_vm_mode_q[response_pop_index] ==
-            `RV64_SATP_MODE_SV39) &&
+        ((response_vm_mode_q[response_pop_index] ==
+            `RV64_SATP_MODE_SV39) ||
+         (m_mode_prefetch_enable_i &&
+          (response_priv_q[response_pop_index] == `RV64_PRIV_M) &&
+          (response_vm_mode_q[response_pop_index] ==
+              `RV64_SATP_MODE_BARE))) &&
         !prefetch_flush_i && !invalidate_valid_i;
     assign next_line_vaddr =
         {response_vaddr_q[response_pop_index][ADDR_WIDTH-1:6], 6'b000000} +

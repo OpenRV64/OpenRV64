@@ -139,6 +139,7 @@ module openrv64_l1i_top #(
         .resp_tag_o(l1i_response_addr),
         .req_rdata_o(l1i_demand_data),
         .req_error_o(l1i_demand_error),
+        .m_mode_prefetch_enable_i(1'b0),
         .prefetch_valid_i(prefetch_valid_i),
         .prefetch_taken_addr_i(prefetch_taken_vaddr_i),
         .prefetch_fallthrough_addr_i(prefetch_fallthrough_vaddr_i),

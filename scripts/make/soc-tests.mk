@@ -112,6 +112,12 @@ sim-l1-cache: $(L1_CACHE_SIM_BUILD)
 sim-l1-sync-tag: $(L1_SYNC_TAG_SIM_BUILD)
 	vvp $(L1_SYNC_TAG_SIM_BUILD)
 
+sim-l1-tag-mode-performance: $(L1_TAG_MODE_PERFORMANCE_SIM_BUILD)
+	vvp $(L1_TAG_MODE_PERFORMANCE_SIM_BUILD)
+
+sim-lsq-l1d-store-performance: $(LSQ_L1D_STORE_PERFORMANCE_SIM_BUILD)
+	vvp $(LSQ_L1D_STORE_PERFORMANCE_SIM_BUILD)
+
 sim-l1d-prefetch: $(L1D_PREFETCH_SIM_BUILD)
 	vvp $(L1D_PREFETCH_SIM_BUILD)
 
@@ -123,6 +129,9 @@ sim-l1d-store-order: $(L1D_STORE_ORDER_SIM_BUILD)
 
 sim-l1d-store-buffer: $(L1D_STORE_BUFFER_SIM_BUILD)
 	vvp $(L1D_STORE_BUFFER_SIM_BUILD)
+
+sim-l1d-fence-behavior: $(L1D_FENCE_BEHAVIOR_SIM_BUILD)
+	vvp $(L1D_FENCE_BEHAVIOR_SIM_BUILD)
 
 sim-l1d-invalidate-arbiter: $(L1D_INVALIDATE_ARBITER_SIM_BUILD)
 	vvp $(L1D_INVALIDATE_ARBITER_SIM_BUILD)

@@ -43,11 +43,15 @@ module openrv64_rv64_top_3p #(
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter ENABLE_RV64A = 1,
     parameter ENABLE_L1I = 1,
+    parameter integer ENABLE_M_MODE_PREFETCH = 0,
     parameter ENABLE_L1D = 1,
+    parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter ENABLE_L1D_COHERENCE_PROBES = 0,
     parameter ENABLE_COHERENT_ATOMICS = 0,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
+    parameter integer L1D_SYNC_TAG_LOOKUP = 1,
+    parameter integer L1D_SYNC_STORE_EXTENSION = 1,
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_BASE =
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
@@ -382,6 +386,9 @@ module openrv64_rv64_top_3p #(
     wire l1i_speculation_sv39 =
         (csr_priv_mode != `RV64_PRIV_M) &&
         (csr_satp_mode == `RV64_SATP_MODE_SV39);
+    wire l1i_prefetch_context = l1i_speculation_sv39 ||
+        ((ENABLE_M_MODE_PREFETCH != 0) &&
+         (csr_priv_mode == `RV64_PRIV_M));
     wire icache_branch_hint_valid;
     wire fetch_alt_pair_valid;
     wire icache_prefetch_valid;
@@ -912,9 +919,12 @@ module openrv64_rv64_top_3p #(
                                     bp_prediction_taken &&
                                     bp_prediction_target_valid &&
                                     l1i_speculation_sv39;
+    // M-mode may prefetch decoded direct conditional-branch paths without
+    // consuming a BTB or RAS target.  Predictor redirects remain separately
+    // disabled by bp_redirects_enabled, and RAS side fetches remain Sv39-only.
     assign icache_branch_hint_valid = use_icx_bus && bp_branch_allocate &&
                                       bp_lookup_branch &&
-                                      l1i_speculation_sv39;
+                                      l1i_prefetch_context;
     // Confidence policy: 0 = all branch pairs, 1 = weak pairs plus strong
     // next-line prefetch, 2 = weak pairs without strong next-line prefetch.
     assign fetch_alt_pair_valid = icache_branch_hint_valid &&
@@ -1381,12 +1391,16 @@ module openrv64_rv64_top_3p #(
         .BUS_CONFIG(BUS_CONFIG),
         .ENABLE_MAGIC_MEMORY(ENABLE_MAGIC_MEMORY),
         .ENABLE_L1I(ENABLE_L1I),
+        .ENABLE_M_MODE_PREFETCH(ENABLE_M_MODE_PREFETCH),
         .ENABLE_L1D(ENABLE_L1D),
+        .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
         .ENABLE_L1D_COHERENCE_PROBES(
             ENABLE_L1D_COHERENCE_PROBES),
         .ENABLE_COHERENT_ATOMICS(ENABLE_COHERENT_ATOMICS),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
+        .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
+        .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
         .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
         .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),

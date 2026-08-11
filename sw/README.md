@@ -468,6 +468,15 @@ make bench-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
 make sim-stream-ddr3-vm STREAM_KERNEL=triad STREAM_BYTES=65536
 ```
 
+The same-line store-extension regression uses the same non-identity Sv39
+mapping but makes sixteen lines resident before issuing 4,096 translated
+stores.  It verifies all data after the timed region and runs legacy tags,
+synchronous tags without the extension, and synchronous tags with it:
+
+```sh
+make sim-store-extension-sv39-suite
+```
+
 The DDR3 targets route private L1 traffic through the one-hart ICX complex,
 shared L2, 512-to-256-bit AXI adapter, multi-outstanding memory channel, and
 banked DDR3 scheduler. Their default core configuration is BP8, fetch

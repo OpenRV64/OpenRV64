@@ -257,6 +257,7 @@ module tb_icx_bus #(
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),
+        .m_mode_prefetch_enable_i(1'b0),
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),
         .icache_prefetch_fallthrough_addr_i(64'd0),

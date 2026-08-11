@@ -29,6 +29,10 @@ module openrv64_l1_cache #(
     // retains the asynchronous tag path until its unacknowledged age inputs
     // are converted to a serializable interface.
     parameter integer SYNC_TAG_LOOKUP = 0,
+    // A cacheable posted store which immediately follows a valid-hit store to
+    // the same virtual cache line may reuse the retained hit way.  The data
+    // SRAM still reads the new word; only the redundant tag stage is skipped.
+    parameter integer SYNC_STORE_EXTENSION = 1,
     parameter integer CACHE_BYTES = 16 * 1024,
     parameter integer LINE_BYTES = 64,
     parameter integer WAYS = 8,
@@ -194,6 +198,8 @@ module openrv64_l1_cache #(
     reg [WAY_INDEX_WIDTH-1:0] access_way_q;
     reg [REFILL_INDEX_WIDTH-1:0] access_refill_index_q;
     reg [REFILL_WORD_INDEX_WIDTH-1:0] access_refill_word_q;
+    reg                      access_use_live_read_q;
+    reg                      sync_store_extension_valid_q;
 
     reg                  response_valid_q;
     reg [REQ_TAG_WIDTH-1:0] response_tag_q;
@@ -616,6 +622,14 @@ module openrv64_l1_cache #(
         (state_q == STATE_RUN) && !invalidate_valid_i &&
         sync_tag_port_available;
     wire request_fire = req_valid_i && req_ready_o;
+    wire sync_store_extension_candidate =
+        (SYNC_TAG_LOOKUP != 0) && (SYNC_STORE_EXTENSION != 0) &&
+        sync_store_extension_valid_q && req_write_i &&
+        req_cacheable_i && req_separate_write_resp_i &&
+        (req_addr_i[ADDR_WIDTH-1:LINE_OFFSET_BITS] ==
+         request_addr_q[ADDR_WIDTH-1:LINE_OFFSET_BITS]);
+    wire sync_store_extension_fire = request_fire &&
+                                     sync_store_extension_candidate;
     wire sync_tag_read_fire = sync_invalidate_launch ||
                               sync_fill_launch ||
                               ((SYNC_TAG_LOOKUP != 0) && request_fire);
@@ -725,7 +739,8 @@ module openrv64_l1_cache #(
     // the store was accepted.  Merge once, then present the same full-width
     // write data to every way; only access_way_q receives a write enable.
     always @* begin
-        access_write_value = (SYNC_TAG_LOOKUP != 0) ?
+        access_write_value = ((SYNC_TAG_LOOKUP != 0) &&
+                              !access_use_live_read_q) ?
                              access_resident_data_q :
                              access_resident_data;
         for (access_write_byte = 0; access_write_byte < DATA_BYTES;
@@ -864,6 +879,8 @@ module openrv64_l1_cache #(
             access_way_q <= 0;
             access_refill_index_q <= 0;
             access_refill_word_q <= 0;
+            access_use_live_read_q <= 1'b0;
+            sync_store_extension_valid_q <= 1'b0;
             response_valid_q <= 1'b0;
             response_tag_q <= {REQ_TAG_WIDTH{1'b0}};
             response_hit_q <= 1'b0;
@@ -967,7 +984,8 @@ module openrv64_l1_cache #(
                 end
             end
 
-            if ((SYNC_TAG_LOOKUP != 0) && request_fire) begin
+            if ((SYNC_TAG_LOOKUP != 0) && request_fire &&
+                !sync_store_extension_fire) begin
                 sync_lookup_valid_q <= 1'b1;
                 sync_lookup_classified_q <= 1'b0;
                 sync_lookup_req_tag_q <= req_tag_i;
@@ -1042,6 +1060,23 @@ module openrv64_l1_cache #(
             if ((SYNC_TAG_LOOKUP != 0) && invalidate_valid_i &&
                 invalidate_ready_o && !invalidate_all_i)
                 sync_invalidate_probe_q <= 1'b0;
+
+            // The extension is exactly the immediately preceding resident
+            // posted store.  An ordinary demand replaces that context.  A
+            // fill or snoop can change tag ownership without a demand, so it
+            // also terminates the chain conservatively.
+            if ((SYNC_TAG_LOOKUP != 0) && request_fire)
+                sync_store_extension_valid_q <= 1'b0;
+            if ((SYNC_TAG_LOOKUP != 0) && sync_lookup_access_fire)
+                sync_store_extension_valid_q <=
+                    sync_lookup_cacheable_q && sync_lookup_write_q &&
+                    sync_lookup_separate_write_resp_q &&
+                    sync_lookup_hit_comb;
+            if (sync_store_extension_fire)
+                sync_store_extension_valid_q <= 1'b1;
+            if (sync_fill_launch || sync_invalidate_launch ||
+                (invalidate_valid_i && invalidate_ready_o))
+                sync_store_extension_valid_q <= 1'b0;
 
             if (SYNC_TAG_LOOKUP == 0) begin
               for (age_port = 0; age_port < 4;
@@ -1132,6 +1167,34 @@ module openrv64_l1_cache #(
                                 end
                             end
                         end
+                    end else if (sync_store_extension_fire) begin
+                        // Reuse the previous resident store's set and way.
+                        // request_fire has launched the new word's data-SRAM
+                        // read, whose registered output is live throughout
+                        // the following STATE_ACCESS cycle.
+                        request_write_q <= 1'b1;
+                        request_tag_q <= req_tag_i;
+                        request_cacheable_q <= 1'b1;
+                        request_prefetch_q <= req_prefetch_i;
+                        request_aged_q <= req_aged_i;
+                        request_separate_write_resp_q <= 1'b1;
+                        request_addr_q <= req_addr_i;
+                        request_phys_addr_q <= req_phys_addr_i;
+                        request_wdata_q <= req_wdata_i;
+                        request_wstrb_q <= req_wstrb_i;
+                        request_refill_word_q <= accept_refill_word;
+                        response_hit_q <= 1'b0;
+                        access_updates_line_q <= 1'b1;
+                        access_set_q <= accept_set;
+                        access_refill_index_q <= accept_refill_index;
+                        access_refill_word_q <= accept_refill_word;
+                        access_use_live_read_q <= 1'b1;
+                        replace_q[accept_set] <=
+                            (access_way_q == LAST_WAY) ? 0 :
+                            access_way_q + 1'b1;
+                        aged_q[line_index_of(
+                            accept_set, access_way_q)] <= 1'b0;
+                        state_q <= STATE_ACCESS;
                     end else if ((SYNC_TAG_LOOKUP != 0) &&
                                  sync_lookup_access_fire) begin
                         request_write_q <= sync_lookup_write_q;
@@ -1159,6 +1222,7 @@ module openrv64_l1_cache #(
                         access_refill_word_q <=
                             sync_lookup_refill_word_q;
                         access_resident_data_q <= sync_lookup_hit_data;
+                        access_use_live_read_q <= 1'b0;
                         if (sync_lookup_cacheable_q &&
                             sync_lookup_write_q &&
                             sync_lookup_hit_comb) begin
@@ -1503,6 +1567,9 @@ module openrv64_l1_cache #(
             $fatal(1, "L1 detached-read-miss mode must be zero or one");
         if ((SYNC_TAG_LOOKUP != 0) && (SYNC_TAG_LOOKUP != 1))
             $fatal(1, "L1 synchronous-tag mode must be zero or one");
+        if ((SYNC_STORE_EXTENSION != 0) &&
+            (SYNC_STORE_EXTENSION != 1))
+            $fatal(1, "L1 synchronous store extension must be zero or one");
         if ((SYNC_TAG_LOOKUP != 0) && (DETACH_READ_MISSES == 0))
             $fatal(1,
                 "L1 synchronous-tag mode currently requires detached misses");
@@ -1522,6 +1589,14 @@ module openrv64_l1_cache #(
         if (rst_ni && (SYNC_TAG_LOOKUP != 0) && (|age_valid_i))
             $fatal(1,
                 "L1 synchronous-tag mode does not support parallel age ports");
+
+    always @(posedge clk_i)
+        if (rst_ni && sync_store_extension_fire &&
+            (!sync_store_extension_valid_q || !access_updates_line_q ||
+             (accept_set != access_set_q) ||
+             !valid_q[line_index_of(access_set_q, access_way_q)]))
+            $fatal(1,
+                "L1 synchronous store extension lost its resident hit context");
 `endif
 
 endmodule

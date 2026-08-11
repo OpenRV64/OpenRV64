@@ -73,17 +73,21 @@
 	sim-opensbi-3p sim-opensbi-3p-platform \
 	sim-linux-3p-platform-checkpoint sim-linux-3p-platform-restore
 .PHONY: sim-linux
-.PHONY: sim-l1-cache sim-l1-sync-tag sim-l1d-prefetch \
+.PHONY: sim-l1-cache sim-l1-sync-tag sim-l1-tag-mode-performance \
+	sim-lsq-l1d-store-performance \
+	sim-l1d-prefetch \
 	sim-l1d-demand-mshr \
 	sim-l1d-store-order \
-	sim-l1d-store-buffer sim-l1d-invalidate-arbiter \
+	sim-l1d-store-buffer sim-l1d-fence-behavior \
+	sim-l1d-invalidate-arbiter \
 	sim-l1i-top sim-icx-protocol-1h \
 	sim-icx-protocol-2h sim-icx-protocol-4h \
 	sim-icx-coherent-2h sim-icx-coherent-4h \
 	sim-icx-coherent-protocol-2h sim-icx-coherent-protocol-4h \
 	sim-icx-4h-l1d-directory-l2
 .PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-icx-l2 \
-	sim-core-3p-icx-l2-vm
+	sim-core-3p-icx-l2-vm sim-store-extension-sv39 \
+	sim-store-extension-sv39-suite
 .PHONY: sim-icx-l2 sim-icx-l2-sc-refill
 .PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths
 .PHONY: sim-core-complex-1h-axi sim-core-complex-2h-axi \
@@ -115,9 +119,12 @@ sim: sim-lsu-misaligned
 sim: sim-zicclsm-context
 sim: sim-l1-cache
 sim: sim-l1-sync-tag
+sim: sim-l1-tag-mode-performance
+sim: sim-lsq-l1d-store-performance
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr
 sim: sim-l1d-store-order sim-l1d-store-buffer
+sim: sim-l1d-fence-behavior
 sim: sim-l1d-invalidate-arbiter
 sim: sim-icx-protocol-1h
 sim: sim-icx-protocol-2h sim-icx-protocol-4h

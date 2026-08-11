@@ -85,6 +85,17 @@ STREAM_DDR3_SPECULATION_WINDOW ?= 1
 STREAM_DDR3_POSTED_STORES ?= 1
 STREAM_MEMORY_TIMING_MODEL ?= 0
 STREAM_TIMED_REQUIRE_ARGS ?= +require_ddr3_overlap
+STORE_EXTENSION_VM_ELF := sw/store-extension/store-extension-sv39.elf
+STORE_EXTENSION_VM_BIN := sw/store-extension/store-extension-sv39.bin
+STORE_EXTENSION_VM_MAP := sw/store-extension/store-extension-sv39.map
+STORE_EXTENSION_VM_DISASM := sw/store-extension/store-extension-sv39.disasm
+STORE_EXTENSION_VM_MEMH := sim/store-extension-sv39.memh
+STORE_EXTENSION_VM_MEASURE_END = $(shell $(RISCV_NM) -n \
+	$(STORE_EXTENSION_VM_ELF) | awk \
+	'$$3 == "store_extension_measure_end" { print $$1 }')
+STORE_EXTENSION_VM_MEMH_BYTES := 0x44000
+STORE_EXTENSION_VM_MEMH_WORDS := 8704
+STORE_EXTENSION_VM_MAX_CYCLES ?= 2000000
 A53_STREAM_ELF := sim/a53/stream-$(STREAM_TAG)-se.elf
 A53_STREAM_MAP := sim/a53/stream-$(STREAM_TAG)-se.map
 A53_STREAM_DISASM := sim/a53/stream-$(STREAM_TAG)-se.disasm

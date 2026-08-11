@@ -68,7 +68,8 @@ ICX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
 COMPLEX_BUS_SRCS := rtl/complex/bus/defs.v \
 	rtl/complex/bus/wishbone_backend.v rtl/bus/genbus_interface.v
 ICX_L2_SRCS := $(L2_DEBUG_STUB_SRCS) \
-	rtl/cache/l2/sram_way.v rtl/cache/l2/l2_native.v
+	rtl/cache/l2/sram_way.v rtl/cache/l2/l2_native.v \
+	rtl/complex/coherent/probe_tracker.v
 CORE_COMPLEX_SRCS := rtl/complex/protocol/defs.v \
 	rtl/complex/protocol/line_crossbar.v \
 	$(ICX_L2_SRCS) \
@@ -78,7 +79,6 @@ ICX_COHERENT_SRCS := $(COHERENT_DEBUG_STUB_SRCS) \
 	rtl/complex/coherent/protocol/defs.v \
 	rtl/complex/coherent/directory.v \
 	rtl/complex/coherent/snoop_filter.v \
-	rtl/complex/coherent/probe_tracker.v \
 	rtl/complex/coherent/l1d_probe_endpoint.v \
 	rtl/complex/coherent/control.v \
 	rtl/complex/coherent/protocol/coherent_protocol.v \

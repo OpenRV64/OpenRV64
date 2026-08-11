@@ -18,6 +18,7 @@ module tb_icx_l1i;
     logic context_flush;
     wire tlbi_busy;
     logic icache_invalidate;
+    logic m_mode_prefetch_enable;
     logic icache_prefetch_valid;
     logic [63:0] icache_prefetch_taken_addr;
     logic [63:0] icache_prefetch_fallthrough_addr;
@@ -207,6 +208,7 @@ module tb_icx_l1i;
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(icache_invalidate),
+        .m_mode_prefetch_enable_i(m_mode_prefetch_enable),
         .icache_prefetch_valid_i(icache_prefetch_valid),
         .icache_prefetch_taken_addr_i(icache_prefetch_taken_addr),
         .icache_prefetch_fallthrough_addr_i(
@@ -566,6 +568,7 @@ module tb_icx_l1i;
         fetch_cancel = 1'b0;
         context_flush = 1'b0;
         icache_invalidate = 1'b0;
+        m_mode_prefetch_enable = 1'b0;
         icache_prefetch_valid = 1'b0;
         icache_prefetch_taken_addr = 64'd0;
         icache_prefetch_fallthrough_addr = 64'd0;
@@ -864,7 +867,29 @@ module tb_icx_l1i;
         fetch_vm_mode = `RV64_SATP_MODE_BARE;
         fetch_root_ppn = 44'd0;
 
-        $display("PASS: native ICX VIPT L1I refill/hit/Sv39-only-prefetch/PMP/FENCE.I");
+        // The opt-in path admits M/BARE prefetching while the default-off
+        // phase above continues to prove the containment behavior.
+        m_mode_prefetch_enable = 1'b1;
+        pulse_invalidate();
+        before_count = icx_count_q;
+        pulse_prefetch_pair(64'h100, 64'h180);
+        wait_for_icx_count(before_count + 2,
+                           "enabled M/BARE branch-path prefetch");
+        repeat (30) @(negedge clk);
+        if (icx_count_q != before_count + 2)
+            $fatal(1, "enabled M/BARE branch prefetch count changed");
+
+        pulse_invalidate();
+        before_count = icx_count_q;
+        issue_fetch(64'h20, memory[0][511:256], 1'b0,
+                    "enabled M/BARE demand with next-line prefetch");
+        wait_for_icx_count(before_count + 2,
+                           "enabled M/BARE demand plus next-line prefetch");
+        repeat (30) @(negedge clk);
+        if (icx_count_q != before_count + 2)
+            $fatal(1, "enabled M/BARE next-line prefetch count changed");
+
+        $display("PASS: native ICX VIPT L1I refill/hit/Sv39/opt-in-M-prefetch/PMP/FENCE.I");
         $finish;
     end
 

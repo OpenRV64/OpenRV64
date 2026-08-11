@@ -19,11 +19,15 @@ module openrv64_core_bus #(
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer ENABLE_L1I = 1,
+    parameter integer ENABLE_M_MODE_PREFETCH = 0,
     parameter integer ENABLE_L1D = 1,
+    parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter integer ENABLE_L1D_COHERENCE_PROBES = 0,
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
+    parameter integer L1D_SYNC_TAG_LOOKUP = 1,
+    parameter integer L1D_SYNC_STORE_EXTENSION = 1,
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_BASE =
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] L1D_CACHEABLE_SIZE =
@@ -999,12 +1003,15 @@ module openrv64_core_bus #(
                 .L2_TLB_WAYS(L2_TLB_WAYS),
                 .ENABLE_L1I(ENABLE_L1I),
                 .ENABLE_L1D(ENABLE_L1D),
+                .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
                 .ENABLE_L1D_COHERENCE_PROBES(
                     ENABLE_L1D_COHERENCE_PROBES),
                 .ENABLE_COHERENT_ATOMICS(
                     ENABLE_COHERENT_ATOMICS),
                 .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
                 .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
+                .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
+                .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
                 .L1D_CACHEABLE_BASE(L1D_CACHEABLE_BASE),
                 .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
                 .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
@@ -1071,6 +1078,8 @@ module openrv64_core_bus #(
                 .tlbi_busy_o(tlbi_busy_o),
                 .store_barrier_i(store_barrier_i),
                 .icache_invalidate_i(icache_invalidate_i),
+                .m_mode_prefetch_enable_i(
+                    ENABLE_M_MODE_PREFETCH != 0),
                 .icache_prefetch_valid_i(icache_prefetch_valid_i),
                 .icache_prefetch_taken_addr_i(
                     icache_prefetch_taken_addr_i),

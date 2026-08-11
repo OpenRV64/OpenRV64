@@ -36,6 +36,27 @@ $(STREAM_VM_MEMH): $(STREAM_VM_BIN)
 $(STREAM_VM_DISASM): $(STREAM_VM_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(STORE_EXTENSION_VM_ELF): $(OPENRV64_MAKEFILES) \
+		sw/store-extension/store_extension_sv39.S \
+		sw/stream/stream_vm_boot.S sw/stream/openrv64-stream-vm.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(STORE_EXTENSION_VM_MAP) \
+		-T sw/stream/openrv64-stream-vm.ld -o $@ \
+		sw/stream/stream_vm_boot.S \
+		sw/store-extension/store_extension_sv39.S
+
+$(STORE_EXTENSION_VM_BIN): $(STORE_EXTENSION_VM_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(STORE_EXTENSION_VM_MEMH): $(STORE_EXTENSION_VM_BIN)
+	mkdir -p $(dir $@)
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(STORE_EXTENSION_VM_MEMH_BYTES) --word-bytes 32
+
+$(STORE_EXTENSION_VM_DISASM): $(STORE_EXTENSION_VM_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(A53_STREAM_ELF): $(OPENRV64_MAKEFILES) sw/arm_a53/stream_se.S \
 		sw/arm_a53/coremark_loop_se.ld
 	mkdir -p $(dir $@)

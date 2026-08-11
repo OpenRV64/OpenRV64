@@ -882,10 +882,9 @@ class TicketLockTrace {
     }
 
     void trace(const Vtb_4h_3p___024root* root, uint32_t cycle) {
-        trace_hart(root, cycle, 0, hart0(root));
 #if OPENRV64_4H_CORE_INSTANCES >= 2
+        trace_hart(root, cycle, 0, hart0(root));
         trace_hart(root, cycle, 1, hart1(root));
-#endif
 
         if (!have_watch_addr_ && candidate_valid_[1]) {
             provisional_addr_ = candidate_addr_[1];
@@ -898,14 +897,16 @@ class TicketLockTrace {
                                                    provisional_addr_;
         const uint64_t line = addr & ~63ULL;
         trace_l1(root, cycle, 0, line, addr);
-#if OPENRV64_4H_CORE_INSTANCES >= 2
         trace_l1(root, cycle, 1, line, addr);
-#endif
         trace_l2(root, cycle, line, addr);
         trace_cache_state(root, cycle, line, addr);
 
         if ((cycle & 0x3fffU) == 0)
             stream_.flush();
+#else
+        (void)root;
+        (void)cycle;
+#endif
     }
 
     bool found() const { return have_watch_addr_; }
@@ -1165,6 +1166,7 @@ class TicketLockTrace {
         previous_atomic_inflight_[hart] = view.atomic_inflight;
     }
 
+#if OPENRV64_4H_CORE_INSTANCES >= 2
     void trace_l1(const Vtb_4h_3p___024root* root, uint32_t cycle,
                   unsigned hart, uint64_t line, uint64_t lock_addr) {
         const HartView view = hart == 0 ? hart0(root) : hart1(root);
@@ -1398,6 +1400,7 @@ class TicketLockTrace {
         previous_probe_line_match_ = probe_line_match;
 #undef L2
     }
+#endif
 
     void trace_cache_state(const Vtb_4h_3p___024root* root,
                            uint32_t cycle, uint64_t line,

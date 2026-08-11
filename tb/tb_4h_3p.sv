@@ -30,6 +30,7 @@ module tb_4h_3p #(
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_PREFETCH_ENABLE = 1,
+    parameter integer M_MODE_PREFETCH_ENABLE = 0,
     parameter integer L2_CACHE_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
     parameter integer L2_MSHRS = 8,
@@ -37,6 +38,7 @@ module tb_4h_3p #(
     parameter integer ENABLE_BOOT_ROM = 0,
     parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_WFI_SLEEP = 1,
+    parameter integer FENCE_L2_ACK_ENABLE = 1,
     parameter logic [31:0] OPENSBI_FDT_BASE_LO = 32'h80f0_0000,
     parameter integer DDR3_ENABLE = 0,
     parameter integer GENBUS_READ_BUFFER_DEPTH = 8,
@@ -453,6 +455,9 @@ module tb_4h_3p #(
     integer ipi_msip_assertions [0:NUM_HARTS-1];
     integer ipi_msip_clears [0:NUM_HARTS-1];
     integer ipi_interrupts [0:NUM_HARTS-1];
+    integer ipi_fence_requests [0:NUM_HARTS-1];
+    integer ipi_fence_responses [0:NUM_HARTS-1];
+    integer ipi_send_requests [0:NUM_HARTS-1];
     integer ipi_worker_assertions;
     integer ipi_worker_clears;
     integer ipi_worker_interrupts;
@@ -642,7 +647,9 @@ module tb_4h_3p #(
                 .RETIRE_DEPTH(16),
                 .PHYS_REG_COUNT(31),
                 .ENABLE_L1I(1),
+                .ENABLE_M_MODE_PREFETCH(M_MODE_PREFETCH_ENABLE),
                 .ENABLE_L1D(1),
+                .ENABLE_FENCE_L2_ACK(FENCE_L2_ACK_ENABLE),
                 .ENABLE_L1D_COHERENCE_PROBES(1),
                 .ENABLE_COHERENT_ATOMICS(1),
                 .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
@@ -1614,6 +1621,9 @@ module tb_4h_3p #(
                 tlbi_old_reads[atomic_hart] <= 0;
                 tlbi_new_reads[atomic_hart] <= 0;
                 tlbi_reservation_probes[atomic_hart] <= 0;
+                ipi_fence_requests[atomic_hart] <= 0;
+                ipi_fence_responses[atomic_hart] <= 0;
+                ipi_send_requests[atomic_hart] <= 0;
             end
         end else begin
             for (atomic_hart = 0;
@@ -1692,6 +1702,29 @@ module tb_4h_3p #(
                  coherence_max_target_mshrs))
                 coherence_max_target_mshrs <=
                     coherence_target_mshrs;
+            if ((ipi_test == 2) && l2_req_valid && l2_req_ready &&
+                (l2_req_source_id == `OPENRV64_ICX_SOURCE_DCACHE) &&
+                (l2_req_op == `OPENRV64_ICX_OP_WRITE) &&
+                (l2_req_addr >= CLINT_BASE) &&
+                (l2_req_addr < CLINT_BASE + (NUM_HARTS * 4)) &&
+                (l2_wdata[8*l2_req_addr[5:0] +: 32] == 32'd1)) begin
+                /*
+                 * Each test IPI is preceded by one publication fence.  The
+                 * one credit available before the first send is its startup
+                 * fence.  Requiring a completed, unconsumed response here
+                 * proves that wake delivery cannot overtake the L2 response.
+                 */
+                if (ipi_fence_responses[l2_req_hart_id] !=
+                    (ipi_send_requests[l2_req_hart_id] + 2))
+                    $fatal(1,
+                        "hart %0d MSIP write without current L2 fence acknowledgment fences=%0d prior_sends=%0d expected=%0d",
+                        l2_req_hart_id,
+                        ipi_fence_responses[l2_req_hart_id],
+                        ipi_send_requests[l2_req_hart_id],
+                        ipi_send_requests[l2_req_hart_id] + 2);
+                ipi_send_requests[l2_req_hart_id] <=
+                    ipi_send_requests[l2_req_hart_id] + 1;
+            end
             if (icx_request_fire) begin
                 if (icx_req_identity >= HOME_IDENTITIES)
                     $fatal(1,
@@ -1705,6 +1738,12 @@ module tb_4h_3p #(
                         icx_req_txn_id);
                 home_request_valid[icx_req_identity] <= 1'b1;
                 home_request_op[icx_req_identity] <= icx_req_op;
+                if ((ipi_test == 2) &&
+                    (icx_req_source_id ==
+                     `OPENRV64_ICX_SOURCE_DCACHE) &&
+                    (icx_req_op == `OPENRV64_ICX_OP_FENCE))
+                    ipi_fence_requests[icx_req_hart_id] <=
+                        ipi_fence_requests[icx_req_hart_id] + 1;
                 if (icx_req_op == `OPENRV64_ICX_OP_LR)
                     lr_requests[icx_req_hart_id] <=
                         lr_requests[icx_req_hart_id] + 1;
@@ -1768,6 +1807,13 @@ module tb_4h_3p #(
                         sc_failures[icx_resp_hart_id] <=
                             sc_failures[icx_resp_hart_id] + 1;
                 end
+                if ((ipi_test == 2) &&
+                    (icx_resp_source_id ==
+                     `OPENRV64_ICX_SOURCE_DCACHE) &&
+                    (home_request_op[icx_resp_identity] ==
+                     `OPENRV64_ICX_OP_FENCE))
+                    ipi_fence_responses[icx_resp_hart_id] <=
+                        ipi_fence_responses[icx_resp_hart_id] + 1;
                 home_request_valid[icx_resp_identity] <= 1'b0;
             end
 
@@ -3109,6 +3155,20 @@ module tb_4h_3p #(
                             $fatal(1,
                                 "hart %0d never slept in WFI during mailbox test",
                                 init_hart);
+                        if (ipi_fence_requests[init_hart] !=
+                            ipi_fence_responses[init_hart])
+                            $fatal(1,
+                                "hart %0d WFI mailbox fence request/response mismatch requests=%0d responses=%0d",
+                                init_hart,
+                                ipi_fence_requests[init_hart],
+                                ipi_fence_responses[init_hart]);
+                        if (ipi_fence_responses[init_hart] !=
+                            (ipi_send_requests[init_hart] + 2))
+                            $fatal(1,
+                                "hart %0d WFI mailbox fence/send mismatch fences=%0d sends=%0d expected startup and completion fences",
+                                init_hart,
+                                ipi_fence_responses[init_hart],
+                                ipi_send_requests[init_hart]);
                         if (init_hart == 0) begin
                             if (ipi_interrupts[init_hart] !=
                                 (ipi_expected + 3))
@@ -3154,6 +3214,16 @@ module tb_4h_3p #(
                         ipi_interrupts[0], ipi_interrupts[1],
                         ipi_interrupts[2], ipi_interrupts[3],
                         ipi_wfi_seen);
+                    $display(
+                        "WFI_MAILBOX_FENCE_ACK requests=%0d,%0d,%0d,%0d responses=%0d,%0d,%0d,%0d sends=%0d,%0d,%0d,%0d",
+                        ipi_fence_requests[0], ipi_fence_requests[1],
+                        ipi_fence_requests[2], ipi_fence_requests[3],
+                        ipi_fence_responses[0],
+                        ipi_fence_responses[1],
+                        ipi_fence_responses[2],
+                        ipi_fence_responses[3],
+                        ipi_send_requests[0], ipi_send_requests[1],
+                        ipi_send_requests[2], ipi_send_requests[3]);
                 end
                 if ((atomic_test != 0) &&
                     (atomic_last_value != atomic_expected))

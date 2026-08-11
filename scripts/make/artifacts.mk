@@ -25,10 +25,14 @@ ICX_4H_L1D_DIRECTORY_L2_SIM_BUILD := \
 	sim/icx_4h_l1d_directory_l2_tb.vvp
 L1_CACHE_SIM_BUILD := sim/l1_cache_tb.vvp
 L1_SYNC_TAG_SIM_BUILD := sim/l1_sync_tag_tb.vvp
+L1_TAG_MODE_PERFORMANCE_SIM_BUILD := sim/l1_tag_mode_performance_tb.vvp
+LSQ_L1D_STORE_PERFORMANCE_SIM_BUILD := \
+	sim/lsq_l1d_store_performance_tb.vvp
 L1D_PREFETCH_SIM_BUILD := sim/l1d_prefetch_tb.vvp
 L1D_DEMAND_MSHR_SIM_BUILD := sim/l1d_demand_mshr_tb.vvp
 L1D_STORE_ORDER_SIM_BUILD := sim/l1d_store_order_tb.vvp
 L1D_STORE_BUFFER_SIM_BUILD := sim/l1d_store_buffer_tb.vvp
+L1D_FENCE_BEHAVIOR_SIM_BUILD := sim/l1d_fence_behavior_tb.vvp
 L1D_INVALIDATE_ARBITER_SIM_BUILD := sim/l1d_invalidate_arbiter_tb.vvp
 ICX_L2_SIM_BUILD := sim/icx_l2_tb.vvp
 ICX_L2_SC_REFILL_SIM_BUILD := sim/icx_l2_sc_refill_tb.vvp

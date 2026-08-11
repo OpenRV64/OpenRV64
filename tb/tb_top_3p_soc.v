@@ -254,11 +254,14 @@ module tb_top_3p_soc #(
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter integer ENABLE_RV64ZBB = 1,
     parameter integer RAM_BYTES = 16 * 1024 * 1024,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
+    parameter integer L1D_SYNC_TAG_LOOKUP = 1,
+    parameter integer L1D_SYNC_STORE_EXTENSION = 1,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer L2_BYTES = 256 * 1024,
@@ -799,6 +802,7 @@ module tb_top_3p_soc #(
     integer dtlb_access_overlap_loads;
     integer dtlb_serial_loads;
     integer dtlb_serial_stores;
+    integer l1d_store_extensions;
     reg require_sv39;
     reg require_sv39_active;
     reg require_zero_scatter;
@@ -1170,6 +1174,14 @@ module tb_top_3p_soc #(
     wire run_done = dbg_halted || (done_pc_valid && done_pc_retired);
     reg run_completed_q;
 
+    always @(posedge clk) begin
+        if (!rst_n)
+            l1d_store_extensions <= 0;
+        else if (dut.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.g_cache
+                     .u_cache.sync_store_extension_fire)
+            l1d_store_extensions <= l1d_store_extensions + 1;
+    end
+
     localparam integer RETIRE_RESULT_INSTR_LSB = 233;
     wire [31:0] fence_retire_instr0 =
         dut.u_backend.queue_retire_result[
@@ -1494,6 +1506,7 @@ module tb_top_3p_soc #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_L1I(1'b1),
         .ENABLE_L1D(1'b1),
@@ -1502,6 +1515,8 @@ module tb_top_3p_soc #(
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
+        .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
+        .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
         .L1D_CACHEABLE_BASE(`OPENRV64_SOC_MEMORY_BASE),
         .L1D_CACHEABLE_SIZE(RAM_BYTES),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
@@ -4341,6 +4356,30 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[13],
                 dut.u_backend.u_gpr.regs[14],
                 dut.u_backend.u_gpr.regs[15][31:0]);
+        if ($test$plusargs("report_store_extension_sv39")) begin
+            if ((dut.u_backend.u_gpr.regs[10] == 0) ||
+                (dtlb_fast_stores == 0))
+                $fatal(1,
+                    "Sv39 store-extension result incomplete cycles=%0d fast_stores=%0d",
+                    dut.u_backend.u_gpr.regs[10], dtlb_fast_stores);
+            if ((L1D_SYNC_TAG_LOOKUP != 0) &&
+                (L1D_SYNC_STORE_EXTENSION != 0) &&
+                (l1d_store_extensions != 3584))
+                $fatal(1,
+                    "Sv39 store-extension hits=%0d expected=3584",
+                    l1d_store_extensions);
+            if (((L1D_SYNC_TAG_LOOKUP == 0) ||
+                 (L1D_SYNC_STORE_EXTENSION == 0)) &&
+                (l1d_store_extensions != 0))
+                $fatal(1,
+                    "disabled Sv39 store extension fired hits=%0d",
+                    l1d_store_extensions);
+            $display(
+                "PERF_L1D_STORE_EXTENSION_SV39 sync_tags=%0d extension=%0d iterations=4096 cycles=%0d extension_hits=%0d dtlb_fast_stores=%0d",
+                L1D_SYNC_TAG_LOOKUP, L1D_SYNC_STORE_EXTENSION,
+                dut.u_backend.u_gpr.regs[10], l1d_store_extensions,
+                dtlb_fast_stores);
+        end
         if ($test$plusargs("report_coherence_1h")) begin
             if ((dut.u_backend.u_gpr.regs[11] == 0) ||
                 (dut.u_backend.u_gpr.regs[13] == 0) ||
