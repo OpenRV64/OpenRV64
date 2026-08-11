@@ -226,6 +226,7 @@ module openrv64_l1d_icx #(
     wire l1_mem_valid;
     wire l1_mem_ready;
     wire l1_mem_write;
+    wire l1_mem_resident;
     wire [ADDR_WIDTH-1:0] l1_mem_addr;
     wire [63:0] l1_mem_wdata;
     wire [7:0] l1_mem_wstrb;
@@ -414,6 +415,10 @@ module openrv64_l1d_icx #(
     reg [STORE_BUFFER_AGE_WIDTH-1:0]
         store_buffer_age_q [0:STORE_BUFFER_LINES-1];
     reg store_buffer_issued_q [0:STORE_BUFFER_LINES-1];
+    // A cold first store may authorize immediately following stores to merge
+    // into this still-partial line without repeating tag resolution.  Any
+    // fill or coherence event revokes the carried-forward nonresident result.
+    reg store_buffer_fast_merge_q [0:STORE_BUFFER_LINES-1];
     reg store_buffer_completed_q [0:STORE_BUFFER_LINES-1];
     reg store_buffer_error_q [0:STORE_BUFFER_LINES-1];
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
@@ -653,6 +658,8 @@ module openrv64_l1d_icx #(
     wire l1_req_error;
     wire l1_posted_resp_valid;
     wire [L1_REQ_TAG_WIDTH-1:0] l1_posted_resp_identity;
+    reg fast_posted_resp_valid_q;
+    reg [REQ_TAG_WIDTH-1:0] fast_posted_resp_tag_q;
     wire postable_store;
     wire store_buffer_accept;
     wire posted_store_request_ready;
@@ -881,6 +888,53 @@ module openrv64_l1d_icx #(
     wire demand_load_store_block =
         demand_load_store_conflict_r &&
         (!req_cacheable_i || req_lock_i);
+    wire [STORE_BUFFER_INDEX_WIDTH-1:0] store_buffer_newest_index =
+        (store_buffer_tail_q == 0) ?
+        STORE_BUFFER_INDEX_WIDTH'(STORE_BUFFER_LINES - 1) :
+        store_buffer_tail_q - 1'b1;
+    wire store_buffer_force_drain =
+        demand_load_store_block ||
+        (invalidate_valid_i && invalidate_all_i) ||
+        speculation_barrier_i ||
+        store_barrier_active_q ||
+        (req_valid_i && req_lock_i);
+    wire fast_posted_resp_pop = fast_posted_resp_valid_q &&
+                                posted_resp_ready_i;
+    // An older shared-L1 response may drain on the accepting edge.  Once a
+    // fast response is queued it remains ahead of any younger shared-L1
+    // response, so do not replace it while that younger response is pending.
+    wire fast_posted_resp_slot_available =
+        (!fast_posted_resp_valid_q &&
+         (!l1_posted_resp_valid || posted_resp_ready_i)) ||
+        (fast_posted_resp_valid_q && !l1_posted_resp_valid &&
+         posted_resp_ready_i);
+    wire fast_store_match =
+        (SYNC_TAG_LOOKUP != 0) && (SYNC_STORE_EXTENSION != 0) &&
+        req_valid_i && req_write_i && req_posted_i &&
+        req_cacheable_i && !req_lock_i &&
+        (store_buffer_count_q != 0) &&
+        store_buffer_valid_q[store_buffer_newest_index] &&
+        !store_buffer_issued_q[store_buffer_newest_index] &&
+        store_buffer_fast_merge_q[store_buffer_newest_index] &&
+        (store_buffer_addr_q[store_buffer_newest_index] ==
+         {req_addr_i[63:6], 6'b0}) &&
+        (store_buffer_strb_q[store_buffer_newest_index] !=
+         {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}}) &&
+        (store_buffer_age_q[store_buffer_newest_index] !=
+         STORE_BUFFER_TIMEOUT_LAST) &&
+        !store_buffer_force_drain;
+    wire fast_store_ready = fast_posted_resp_slot_available &&
+                            !invalidate_valid_i && !l1_fill_valid &&
+                            !(l1_mem_valid && l1_mem_write);
+    wire fast_store_fire = fast_store_match && fast_store_ready;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        fast_store_line_data =
+            {{(`OPENRV64_ICX_LINE_DATA_WIDTH-64){1'b0}}, req_wdata_i}
+            << (req_addr_i[5:3] * 64);
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
+        fast_store_line_strb =
+            {{(`OPENRV64_ICX_LINE_STRB_WIDTH-8){1'b0}}, req_wstrb_i}
+            << (req_addr_i[5:3] * 8);
     wire freeloader_request_ready =
         freeloader_pipe_advance && freeloader_order_safe;
     wire freeloader_request_fire =
@@ -896,7 +950,8 @@ module openrv64_l1d_icx #(
         !(req_write_i && req_posted_i && req_cacheable_i &&
           !req_lock_i) ||
         !store_buffer_full;
-    wire l1_req_valid = req_valid_i && !freeloader_request &&
+    wire l1_req_valid = req_valid_i && !fast_store_match &&
+        !freeloader_request &&
         !invalidate_valid_i &&
         (!request_needs_normal_response ||
          (SYNC_TAG_LOOKUP != 0) || !response_tag_full) &&
@@ -1190,7 +1245,8 @@ module openrv64_l1d_icx #(
     // Completed demand misses win one response cycle.  A held resident-hit
     // response then blocks new L1 lookups, so neither side can starve the
     // other.  The simulation-only freeloader remains last priority.
-    assign req_ready_o = freeloader_request ?
+    assign req_ready_o = fast_store_match ? fast_store_ready :
+                         freeloader_request ?
                          (freeloader_request_ready &&
                           !invalidate_valid_i) :
                          (l1_req_ready &&
@@ -1220,9 +1276,13 @@ module openrv64_l1d_icx #(
         normal_response_valid ?
         (l1_req_error || tag_reservation_error_q[normal_response_tag]) :
         1'b0;
-    assign posted_resp_valid_o = l1_posted_resp_valid;
-    assign posted_resp_tag_o =
+    assign posted_resp_valid_o = fast_posted_resp_valid_q ||
+                                 l1_posted_resp_valid;
+    assign posted_resp_tag_o = fast_posted_resp_valid_q ?
+        fast_posted_resp_tag_q :
         l1_posted_resp_identity[REQ_TAG_WIDTH-1:0];
+    wire l1_posted_resp_ready = posted_resp_ready_i &&
+                                !fast_posted_resp_valid_q;
     // Completion is routed only to the source which owns the captured
     // invalidate transaction.  It must never be inferred from the current
     // value of the two request-valid inputs.
@@ -1993,10 +2053,6 @@ module openrv64_l1d_icx #(
             << (l1_mem_addr[5:3] * 8);
     wire store_completion_fire = store_completion_valid_q &&
                                  store_resp_ready_i;
-    wire [STORE_BUFFER_INDEX_WIDTH-1:0] store_buffer_newest_index =
-        (store_buffer_tail_q == 0) ?
-        STORE_BUFFER_INDEX_WIDTH'(STORE_BUFFER_LINES - 1) :
-        store_buffer_tail_q - 1'b1;
     wire store_buffer_merge = postable_store &&
         (store_buffer_count_q != 0) &&
         store_buffer_valid_q[store_buffer_newest_index] &&
@@ -2005,6 +2061,13 @@ module openrv64_l1d_icx #(
          {l1_mem_addr[63:6], 6'b0});
     wire store_buffer_allocate = postable_store && !store_buffer_merge &&
         (!store_buffer_full || store_completion_fire);
+    wire store_buffer_any_merge = store_buffer_merge || fast_store_fire;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        store_buffer_merge_data = fast_store_fire ?
+            fast_store_line_data : posted_store_line_data;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
+        store_buffer_merge_strb = fast_store_fire ?
+            fast_store_line_strb : posted_store_line_strb;
     assign store_buffer_accept =
         store_buffer_merge || store_buffer_allocate;
     // Do not retain an accepted posted store as hidden state in the shared
@@ -2028,12 +2091,6 @@ module openrv64_l1d_icx #(
         store_buffer_valid_q[store_buffer_head_q] &&
         (store_buffer_age_q[store_buffer_head_q] ==
          STORE_BUFFER_TIMEOUT_LAST);
-    wire store_buffer_force_drain =
-        demand_load_store_block ||
-        (invalidate_valid_i && invalidate_all_i) ||
-        speculation_barrier_i ||
-        store_barrier_active_q ||
-        (req_valid_i && req_lock_i);
     assign store_barrier_busy_o =
         speculation_barrier_i || store_barrier_active_q;
     // When draining catches the FIFO tail, leave a partial newest line open
@@ -2055,7 +2112,7 @@ module openrv64_l1d_icx #(
         store_buffer_issue_found_r &&
         (store_buffer_drain_active_q || store_buffer_watermark ||
          store_buffer_head_timeout || store_buffer_force_drain) &&
-        !(store_buffer_merge && store_buffer_issue_is_newest) &&
+        !(store_buffer_any_merge && store_buffer_issue_is_newest) &&
         !store_buffer_hold_partial_newest;
 
     wire main_response_identity_match =
@@ -2456,7 +2513,7 @@ module openrv64_l1d_icx #(
         .req_rdata_o(l1_req_rdata),
         .req_error_o(l1_req_error),
         .posted_resp_valid_o(l1_posted_resp_valid),
-        .posted_resp_ready_i(posted_resp_ready_i),
+        .posted_resp_ready_i(l1_posted_resp_ready),
         .posted_resp_tag_o(l1_posted_resp_identity),
         .miss_valid_o(l1_miss_valid),
         .miss_ready_i(l1_miss_ready),
@@ -2477,6 +2534,7 @@ module openrv64_l1d_icx #(
         .mem_valid_o(l1_mem_valid),
         .mem_ready_i(l1_mem_ready),
         .mem_write_o(l1_mem_write),
+        .mem_resident_o(l1_mem_resident),
         .mem_addr_o(l1_mem_addr),
         .mem_wdata_o(l1_mem_wdata),
         .mem_wstrb_o(l1_mem_wstrb),
@@ -2530,6 +2588,8 @@ module openrv64_l1d_icx #(
             store_barrier_fence_pending_q <= 1'b0;
             store_completion_valid_q <= 1'b0;
             store_completion_error_q <= 1'b0;
+            fast_posted_resp_valid_q <= 1'b0;
+            fast_posted_resp_tag_q <= {REQ_TAG_WIDTH{1'b0}};
             main_txn_in_use_q <= {MAIN_TXN_COUNT{1'b0}};
             for (demand_reset_index = 0;
                  demand_reset_index < DEMAND_MSHRS;
@@ -2698,12 +2758,26 @@ module openrv64_l1d_icx #(
                 store_buffer_age_q[buffer_reset_index] <=
                     {STORE_BUFFER_AGE_WIDTH{1'b0}};
                 store_buffer_issued_q[buffer_reset_index] <= 1'b0;
+                store_buffer_fast_merge_q[buffer_reset_index] <= 1'b0;
                 store_buffer_completed_q[buffer_reset_index] <= 1'b0;
                 store_buffer_error_q[buffer_reset_index] <= 1'b0;
                 store_buffer_txn_id_q[buffer_reset_index] <=
                     {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
             end
         end else begin
+            case ({fast_store_fire, fast_posted_resp_pop})
+                2'b10: begin
+                    fast_posted_resp_valid_q <= 1'b1;
+                    fast_posted_resp_tag_q <= req_tag_i;
+                end
+                2'b01: fast_posted_resp_valid_q <= 1'b0;
+                2'b11: begin
+                    fast_posted_resp_valid_q <= 1'b1;
+                    fast_posted_resp_tag_q <= req_tag_i;
+                end
+                default: fast_posted_resp_valid_q <=
+                    fast_posted_resp_valid_q;
+            endcase
             if (l1_fill_fire) begin
                 demand_mshr_fill_hold_valid_q <= 1'b0;
             end else if (!demand_mshr_fill_hold_valid_q &&
@@ -3381,6 +3455,7 @@ module openrv64_l1d_icx #(
                 store_buffer_age_q[store_buffer_head_q] <=
                     {STORE_BUFFER_AGE_WIDTH{1'b0}};
                 store_buffer_issued_q[store_buffer_head_q] <= 1'b0;
+                store_buffer_fast_merge_q[store_buffer_head_q] <= 1'b0;
                 store_buffer_completed_q[store_buffer_head_q] <= 1'b0;
                 store_buffer_error_q[store_buffer_head_q] <= 1'b0;
                 store_buffer_txn_id_q[store_buffer_head_q] <=
@@ -3392,21 +3467,27 @@ module openrv64_l1d_icx #(
                     store_buffer_head_q + 1'b1;
             end
 
-            if (store_buffer_merge) begin
+            if (store_buffer_any_merge) begin
                 for (store_buffer_merge_byte = 0;
                      store_buffer_merge_byte <
                          `OPENRV64_ICX_LINE_STRB_WIDTH;
                      store_buffer_merge_byte =
                          store_buffer_merge_byte + 1) begin
-                    if (posted_store_line_strb[store_buffer_merge_byte])
+                    if (store_buffer_merge_strb[store_buffer_merge_byte])
                         store_buffer_data_q[store_buffer_newest_index][
                             store_buffer_merge_byte*8 +: 8] <=
-                            posted_store_line_data[
+                            store_buffer_merge_data[
                                 store_buffer_merge_byte*8 +: 8];
                 end
                 store_buffer_strb_q[store_buffer_newest_index] <=
                     store_buffer_strb_q[store_buffer_newest_index] |
-                    posted_store_line_strb;
+                    store_buffer_merge_strb;
+                if (store_buffer_merge)
+                    store_buffer_fast_merge_q[
+                        store_buffer_newest_index] <=
+                        store_buffer_fast_merge_q[
+                            store_buffer_newest_index] &&
+                        !l1_mem_resident;
             end else if (store_buffer_allocate) begin
                 store_buffer_valid_q[store_buffer_tail_q] <= 1'b1;
                 store_buffer_addr_q[store_buffer_tail_q] <=
@@ -3418,6 +3499,10 @@ module openrv64_l1d_icx #(
                 store_buffer_age_q[store_buffer_tail_q] <=
                     {STORE_BUFFER_AGE_WIDTH{1'b0}};
                 store_buffer_issued_q[store_buffer_tail_q] <= 1'b0;
+                store_buffer_fast_merge_q[store_buffer_tail_q] <=
+                    (SYNC_TAG_LOOKUP != 0) &&
+                    (SYNC_STORE_EXTENSION != 0) &&
+                    !l1_mem_resident;
                 store_buffer_completed_q[store_buffer_tail_q] <= 1'b0;
                 store_buffer_error_q[store_buffer_tail_q] <= 1'b0;
                 store_buffer_txn_id_q[store_buffer_tail_q] <=
@@ -3428,6 +3513,17 @@ module openrv64_l1d_icx #(
                     {STORE_BUFFER_INDEX_WIDTH{1'b0}} :
                     store_buffer_tail_q + 1'b1;
             end
+
+            // A fill can make a previously absent line resident; a snoop or
+            // ordering event can similarly invalidate the carried-forward
+            // lookup result.  Revoke all cold-line shortcuts rather than
+            // depending on line-select timing across those control paths.
+            if (l1_fill_fire || capture_external_invalidate ||
+                capture_lock_invalidate || speculation_barrier_i)
+                for (buffer_reset_index = 0;
+                     buffer_reset_index < STORE_BUFFER_LINES;
+                     buffer_reset_index = buffer_reset_index + 1)
+                    store_buffer_fast_merge_q[buffer_reset_index] <= 1'b0;
 
             if (store_response_fire) begin
                 store_buffer_completed_q[store_response_index_r] <=
@@ -3556,6 +3652,8 @@ module openrv64_l1d_icx #(
                         main_txn_in_use_q[main_txn_free_id_r] <= 1'b1;
                         store_buffer_issued_q[
                             store_buffer_issue_index_r] <= 1'b1;
+                        store_buffer_fast_merge_q[
+                            store_buffer_issue_index_r] <= 1'b0;
                         store_buffer_txn_id_q[
                             store_buffer_issue_index_r] <=
                             main_txn_free_id_r;
@@ -4118,10 +4216,28 @@ module openrv64_l1d_icx #(
         .L1_REQ_TAG_WIDTH(L1_REQ_TAG_WIDTH),
         .TAG_OVERLAY_WIDTH(TAG_OVERLAY_WIDTH)
     ) u_debug (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
         .backend_state(backend_state_q),
         .coherent_lr_reservation_done(coherent_lr_reservation_done_q),
         .req_valid(req_valid_i),
         .req_ready(req_ready_o),
+        .req_write(req_write_i),
+        .l1_req_valid(l1_req_valid),
+        .l1_req_ready(l1_req_ready),
+        .l1_miss_valid(l1_miss_valid),
+        .l1_miss_ready(l1_miss_ready),
+        .l1_miss_fire(l1_miss_fire),
+        .l1_fill_valid(l1_fill_valid),
+        .l1_fill_ready(l1_fill_ready),
+        .l1_fill_fire(l1_fill_fire),
+        .fast_store_fire(fast_store_fire),
+        .normal_overlay_wait(
+            normal_response_candidate && !normal_overlay_ready),
+        .demand_overlay_wait(
+            demand_waiter_response_found_r && !demand_overlay_ready),
+        .store_buffer_block(req_valid_i && !posted_store_admission_ready),
+        .demand_load_store_block(req_valid_i && demand_load_store_block),
         .request_reservation(request_reservation_q),
         .store_buffer_count(store_buffer_count_q),
         .demand_mshr_valid(demand_mshr_valid_vec),
@@ -4317,6 +4433,23 @@ module openrv64_l1d_icx #(
             l1_miss_overlay_needed && !l1_miss_overlay_bypass_match)
             $fatal(1,
                 "L1D synchronous miss lost its dirty-overlay snapshot");
+        if (rst_ni && fast_store_fire && l1_request_fire)
+            $fatal(1,
+                "L1D fast store also entered the shared L1 lookup path");
+        if (rst_ni && fast_store_fire &&
+            (!store_buffer_valid_q[store_buffer_newest_index] ||
+             store_buffer_issued_q[store_buffer_newest_index] ||
+             !store_buffer_fast_merge_q[store_buffer_newest_index] ||
+             (store_buffer_addr_q[store_buffer_newest_index] !=
+              {req_addr_i[63:6], 6'b0}) ||
+             store_buffer_force_drain))
+            $fatal(1,
+                "L1D fast store fired without a valid same-line merge context");
+        if (rst_ni && fast_store_fire &&
+            (store_buffer_age_q[store_buffer_newest_index] ==
+             STORE_BUFFER_TIMEOUT_LAST))
+            $fatal(1,
+                "L1D fast store extended a timed-out store-buffer entry");
         for (demand_assert_first = 0;
              demand_assert_first < DEMAND_MSHRS;
              demand_assert_first = demand_assert_first + 1) begin

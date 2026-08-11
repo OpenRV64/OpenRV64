@@ -102,6 +102,7 @@ module openrv64_l1_cache #(
     output wire                      mem_valid_o,
     input  wire                      mem_ready_i,
     output wire                      mem_write_o,
+    output wire                      mem_resident_o,
     output wire [ADDR_WIDTH-1:0]     mem_addr_o,
     output wire [DATA_WIDTH-1:0]     mem_wdata_o,
     output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
@@ -726,6 +727,8 @@ module openrv64_l1_cache #(
     assign mem_valid_o = (state_q == STATE_REFILL) ||
                          (state_q == STATE_ACCESS);
     assign mem_write_o = (state_q == STATE_ACCESS) && request_write_q;
+    assign mem_resident_o = mem_valid_o && mem_write_o &&
+                            access_updates_line_q;
     assign mem_addr_o = (state_q == STATE_REFILL) ?
         refill_line_addr + (refill_index_q * REFILL_BYTES) :
         request_phys_addr_q;
@@ -1521,10 +1524,28 @@ module openrv64_l1_cache #(
         .SET_INDEX_WIDTH(SET_INDEX_WIDTH),
         .WAY_INDEX_WIDTH(WAY_INDEX_WIDTH),
         .LINE_INDEX_WIDTH(LINE_INDEX_WIDTH),
-        .TAG_BITS(TAG_BITS)
+        .TAG_BITS(TAG_BITS),
+        .SYNC_TAG_LOOKUP(SYNC_TAG_LOOKUP),
+        .SYNC_STORE_EXTENSION(SYNC_STORE_EXTENSION)
     ) u_debug (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
         .state_q(state_q),
+        .req_valid_i(req_valid_i),
+        .req_ready_o(req_ready_o),
+        .req_write_i(req_write_i),
+        .access_write(request_write_q),
         .request_fire(request_fire),
+        .response_fire(resp_valid_o && resp_ready_i),
+        .response_hit_fire(
+            resp_ready_i &&
+            ((response_valid_q && response_hit_q) ||
+             (!response_valid_q && sync_lookup_hit_response))),
+        .miss_fire(miss_valid_o && miss_ready_i),
+        .fill_valid_i(fill_valid_i),
+        .fill_ready_o(fill_ready_o),
+        .invalidate_valid_i(invalidate_valid_i),
+        .invalidate_ready_o(invalidate_ready_o),
         .response_tag_q(response_tag_q),
         .response_valid_q(response_valid_q),
         .access_updates_line_q(access_updates_line_q),
@@ -1547,6 +1568,11 @@ module openrv64_l1_cache #(
         .sync_lookup_way_comb(sync_lookup_way_comb),
         .sync_invalidate_launch(sync_invalidate_launch),
         .sync_invalidate_probe_q(sync_invalidate_probe_q),
+        .sync_fill_launch(sync_fill_launch),
+        .sync_fill_probe_q(sync_fill_probe_q),
+        .sync_store_extension_fire(sync_store_extension_fire),
+        .sync_lookup_slot_available(sync_lookup_slot_available),
+        .sync_tag_port_available(sync_tag_port_available),
         .sync_tag_read_fire(sync_tag_read_fire),
         .sync_tag_read_set(sync_tag_read_set),
         .sync_invalidate_addr_q(sync_invalidate_addr_q),

@@ -31,6 +31,8 @@ module tb_4h_3p #(
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer M_MODE_PREFETCH_ENABLE = 0,
+    parameter integer L1D_SYNC_TAG_LOOKUP = 1,
+    parameter integer L1D_SYNC_STORE_EXTENSION = 1,
     parameter integer L2_CACHE_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
     parameter integer L2_MSHRS = 8,
@@ -389,6 +391,21 @@ module tb_4h_3p #(
     integer cycles;
     integer first_done_cycle;
     logic progress_before_first_done;
+    integer debug_counter_window_enabled;
+    integer debug_counter_start_arg_seen;
+    integer debug_counter_stop_arg_seen;
+    logic [63:0] debug_counter_start_pc;
+    logic [63:0] debug_counter_stop_pc;
+    logic debug_counter_start_seen;
+    logic debug_counter_report_seen;
+    logic [63:0] debug_counter_start_cycle;
+    logic [63:0] debug_counter_start_retired;
+    logic [63:0] debug_counter_start_requests;
+    integer debug_counter_start_memory_reads;
+    integer debug_counter_start_memory_writes;
+    logic [63:0] debug_counter_start_q [0:90];
+    integer debug_counter_init_index;
+    integer debug_counter_retire_lane;
 
     logic done_seen [0:NUM_HARTS-1];
     logic mailbox_seen [0:NUM_HARTS-1];
@@ -655,6 +672,8 @@ module tb_4h_3p #(
                 .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
                 .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
                 .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
+                .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
+                .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
                 .L1D_CACHEABLE_BASE(PHYSICAL_BASE),
                 .L1D_CACHEABLE_SIZE(64'(MEMORY_BYTES))
             ) u_core (
@@ -2463,6 +2482,22 @@ module tb_4h_3p #(
         max_cycles = 800000;
         cycles = 0;
         first_done_cycle = -1;
+        debug_counter_window_enabled = 0;
+        debug_counter_start_arg_seen = 0;
+        debug_counter_stop_arg_seen = 0;
+        debug_counter_start_pc = 64'd0;
+        debug_counter_stop_pc = 64'd0;
+        debug_counter_start_seen = 1'b0;
+        debug_counter_report_seen = 1'b0;
+        debug_counter_start_cycle = 64'd0;
+        debug_counter_start_retired = 64'd0;
+        debug_counter_start_requests = 64'd0;
+        debug_counter_start_memory_reads = 0;
+        debug_counter_start_memory_writes = 0;
+        for (debug_counter_init_index = 0;
+             debug_counter_init_index < 91;
+             debug_counter_init_index = debug_counter_init_index + 1)
+            debug_counter_start_q[debug_counter_init_index] = 64'd0;
         progress_before_first_done = 1'b0;
         opensbi_s_mode_seen = 1'b0;
         opensbi_banner_seen = 1'b0;
@@ -2612,6 +2647,20 @@ module tb_4h_3p #(
         void'($value$plusargs("result_expected=%d", result_expected));
         void'($value$plusargs("perf_iterations=%d", perf_iterations));
         void'($value$plusargs("perf_name=%s", perf_name));
+        debug_counter_start_arg_seen = $value$plusargs(
+            "debug_counter_start_pc=%h", debug_counter_start_pc);
+        debug_counter_stop_arg_seen = $value$plusargs(
+            "debug_counter_stop_pc=%h", debug_counter_stop_pc);
+        if (debug_counter_start_arg_seen != debug_counter_stop_arg_seen)
+            $fatal(1,
+                "debug counter window requires both start and stop PCs");
+        debug_counter_window_enabled = debug_counter_start_arg_seen &&
+                                       debug_counter_stop_arg_seen;
+        if (debug_counter_window_enabled)
+            $display(
+                "DEBUG_COUNTER_WINDOW_CONFIG sync_tag=%0d store_extension=%0d start_pc=%016h stop_pc=%016h",
+                L1D_SYNC_TAG_LOOKUP, L1D_SYNC_STORE_EXTENSION,
+                debug_counter_start_pc, debug_counter_stop_pc);
         void'($value$plusargs("coherence_perf=%d", coherence_perf));
         void'($value$plusargs("coherence_case=%d", coherence_case));
         void'($value$plusargs("coherence_lines=%d", coherence_lines));
@@ -2748,6 +2797,506 @@ module tb_4h_3p #(
         end
     end
 `endif
+
+    task automatic capture_debug_counter_window;
+        begin
+            debug_counter_start_cycle = cycles;
+            debug_counter_start_retired = retired[0];
+            debug_counter_start_requests = requests[0];
+            debug_counter_start_memory_reads = memory_reads;
+            debug_counter_start_memory_writes = memory_writes;
+            debug_counter_start_q[0] =
+                g_hart[0].u_core.u_debug.lsq_load_allocations;
+            debug_counter_start_q[1] =
+                g_hart[0].u_core.u_debug.lsq_load_alloc_wait_cycles;
+            debug_counter_start_q[2] =
+                g_hart[0].u_core.u_debug.lsq_load_queue_full_cycles;
+            debug_counter_start_q[3] =
+                g_hart[0].u_core.u_debug.lsq_load_xlate_requests;
+            debug_counter_start_q[4] =
+                g_hart[0].u_core.u_debug.lsq_load_xlate_wait_cycles;
+            debug_counter_start_q[5] =
+                g_hart[0].u_core.u_debug.lsq_load_access_requests;
+            debug_counter_start_q[6] =
+                g_hart[0].u_core.u_debug.lsq_load_access_wait_cycles;
+            debug_counter_start_q[7] =
+                g_hart[0].u_core.u_debug.lsq_load_responses;
+            debug_counter_start_q[8] =
+                g_hart[0].u_core.u_debug.lsq_load_completions;
+            debug_counter_start_q[9] =
+                g_hart[0].u_core.u_debug.lsq_load_dependency_block_cycles;
+            debug_counter_start_q[10] = g_hart[0].u_core.u_debug.
+                lsq_load_dependency_block_entry_cycles;
+            debug_counter_start_q[11] =
+                g_hart[0].u_core.u_debug.lsq_load_occupancy_cycles;
+            debug_counter_start_q[12] =
+                g_hart[0].u_core.u_debug.lsq_store_allocations;
+            debug_counter_start_q[13] =
+                g_hart[0].u_core.u_debug.lsq_store_alloc_wait_cycles;
+            debug_counter_start_q[14] =
+                g_hart[0].u_core.u_debug.lsq_store_queue_full_cycles;
+            debug_counter_start_q[15] =
+                g_hart[0].u_core.u_debug.lsq_store_xlate_requests;
+            debug_counter_start_q[16] =
+                g_hart[0].u_core.u_debug.lsq_store_xlate_wait_cycles;
+            debug_counter_start_q[17] =
+                g_hart[0].u_core.u_debug.lsq_store_access_requests;
+            debug_counter_start_q[18] =
+                g_hart[0].u_core.u_debug.lsq_store_access_wait_cycles;
+            debug_counter_start_q[19] =
+                g_hart[0].u_core.u_debug.lsq_store_done;
+            debug_counter_start_q[20] =
+                g_hart[0].u_core.u_debug.lsq_store_order_wait_cycles;
+            debug_counter_start_q[21] = g_hart[0].u_core.u_debug.
+                lsq_store_order_wait_entry_cycles;
+            debug_counter_start_q[22] =
+                g_hart[0].u_core.u_debug.lsq_store_occupancy_cycles;
+            debug_counter_start_q[23] =
+                g_hart[0].u_core.u_debug.lsq_atomic_active_cycles;
+
+            debug_counter_start_q[24] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_req_wait_cycles_q;
+            debug_counter_start_q[25] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_read_wait_cycles_q;
+            debug_counter_start_q[26] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_write_wait_cycles_q;
+            debug_counter_start_q[27] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_l1_req_wait_cycles_q;
+            debug_counter_start_q[28] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_l1_miss_q;
+            debug_counter_start_q[29] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_l1_miss_wait_cycles_q;
+            debug_counter_start_q[30] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_l1_fill_q;
+            debug_counter_start_q[31] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_l1_fill_wait_cycles_q;
+            debug_counter_start_q[32] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_command_q;
+            debug_counter_start_q[33] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_response_q;
+            debug_counter_start_q[34] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_l1_response_q;
+            debug_counter_start_q[35] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_prefetch_response_q;
+            debug_counter_start_q[36] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_normal_overlay_wait_cycles_q;
+            debug_counter_start_q[37] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_demand_overlay_wait_cycles_q;
+            debug_counter_start_q[38] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_store_buffer_block_cycles_q;
+            debug_counter_start_q[39] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_load_store_block_cycles_q;
+            debug_counter_start_q[40] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_store_buffer_occupancy_cycles_q;
+            debug_counter_start_q[41] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_demand_mshr_occupancy_cycles_q;
+            debug_counter_start_q[42] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_demand_mshr_full_cycles_q;
+            debug_counter_start_q[43] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_invalidate_capture_q;
+            debug_counter_start_q[44] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_invalidate_hold_cycles_q;
+            debug_counter_start_q[45] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_invalidate_complete_q;
+            debug_counter_start_q[90] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_debug.perf_fast_store_merge_q;
+
+            debug_counter_start_q[46] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_request_wait_cycles_q;
+            debug_counter_start_q[47] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_read_wait_cycles_q;
+            debug_counter_start_q[48] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_write_wait_cycles_q;
+            debug_counter_start_q[49] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_request_fire_q;
+            debug_counter_start_q[50] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_read_fire_q;
+            debug_counter_start_q[51] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_write_fire_q;
+            debug_counter_start_q[52] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_response_fire_q;
+            debug_counter_start_q[53] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_hit_response_q;
+            debug_counter_start_q[54] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_miss_fire_q;
+            debug_counter_start_q[55] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_fill_fire_q;
+            debug_counter_start_q[56] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_fill_wait_cycles_q;
+            debug_counter_start_q[57] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_fill_probe_launch_q;
+            debug_counter_start_q[58] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_fill_probe_cycles_q;
+            debug_counter_start_q[59] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_invalidate_fire_q;
+            debug_counter_start_q[60] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_invalidate_wait_cycles_q;
+            debug_counter_start_q[61] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_invalidate_probe_launch_q;
+            debug_counter_start_q[62] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_invalidate_probe_cycles_q;
+            debug_counter_start_q[63] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_lookup_occupied_cycles_q;
+            debug_counter_start_q[64] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_access_cycles_q;
+            debug_counter_start_q[65] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_access_write_cycles_q;
+            debug_counter_start_q[66] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_store_extension_fire_q;
+            debug_counter_start_q[67] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_wait_fill_probe_q;
+            debug_counter_start_q[68] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_wait_invalidate_probe_q;
+            debug_counter_start_q[69] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_wait_lookup_slot_q;
+            debug_counter_start_q[70] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_wait_tag_port_q;
+            debug_counter_start_q[71] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_wait_access_state_q;
+
+            debug_counter_start_q[72] = u_l2.u_debug.perf_lookup_dispatch_q;
+            debug_counter_start_q[73] = u_l2.u_debug.perf_lookup_immediate_q;
+            debug_counter_start_q[74] = u_l2.u_debug.perf_lookup_hit_q;
+            debug_counter_start_q[75] = u_l2.u_debug.perf_lookup_merge_q;
+            debug_counter_start_q[76] = u_l2.u_debug.perf_lookup_alloc_q;
+            debug_counter_start_q[77] = u_l2.u_debug.perf_lookup_bypass_q;
+            debug_counter_start_q[78] =
+                u_l2.u_debug.perf_lookup_write_around_q;
+            debug_counter_start_q[79] =
+                u_l2.u_debug.perf_lookup_victim_hit_q;
+            debug_counter_start_q[80] = u_l2.u_debug.perf_lookup_probe_q;
+            debug_counter_start_q[81] = u_l2.u_debug.perf_bus_request_q;
+            debug_counter_start_q[82] = u_l2.u_debug.perf_bus_response_q;
+            debug_counter_start_q[83] =
+                u_l2.u_debug.perf_response_enqueue_q;
+            debug_counter_start_q[84] = u_l2.u_debug.perf_hit_enqueue_q;
+            debug_counter_start_q[85] =
+                u_l2.u_debug.perf_probe_issue_cycles_q;
+            debug_counter_start_q[86] =
+                u_l2.u_debug.perf_probe_ack_cycles_q;
+            debug_counter_start_q[87] =
+                u_l2.u_debug.perf_probe_completion_q;
+            debug_counter_start_q[88] =
+                u_l2.u_debug.perf_mshr_occupancy_cycles_q;
+            debug_counter_start_q[89] =
+                u_l2.u_debug.perf_mshr_full_cycles_q;
+        end
+    endtask
+
+    task automatic report_debug_counter_window;
+        begin
+            $display(
+                "DEBUG_COUNTER_WINDOW sync_tag=%0d store_extension=%0d start_pc=%016h stop_pc=%016h start_cycle=%0d stop_cycle=%0d cycles=%0d retired=%0d icx_req=%0d memory_reads=%0d memory_writes=%0d",
+                L1D_SYNC_TAG_LOOKUP, L1D_SYNC_STORE_EXTENSION,
+                debug_counter_start_pc, debug_counter_stop_pc,
+                debug_counter_start_cycle, cycles,
+                cycles - debug_counter_start_cycle,
+                retired[0] - debug_counter_start_retired,
+                requests[0] - debug_counter_start_requests,
+                memory_reads - debug_counter_start_memory_reads,
+                memory_writes - debug_counter_start_memory_writes);
+            $display(
+                "DEBUG_LSQ_LOAD alloc=%0d alloc_wait=%0d queue_full=%0d xlate=%0d xlate_wait=%0d access=%0d access_wait=%0d responses=%0d complete=%0d dependency_cycles=%0d dependency_entries=%0d occupancy=%0d",
+                g_hart[0].u_core.u_debug.lsq_load_allocations -
+                    debug_counter_start_q[0],
+                g_hart[0].u_core.u_debug.lsq_load_alloc_wait_cycles -
+                    debug_counter_start_q[1],
+                g_hart[0].u_core.u_debug.lsq_load_queue_full_cycles -
+                    debug_counter_start_q[2],
+                g_hart[0].u_core.u_debug.lsq_load_xlate_requests -
+                    debug_counter_start_q[3],
+                g_hart[0].u_core.u_debug.lsq_load_xlate_wait_cycles -
+                    debug_counter_start_q[4],
+                g_hart[0].u_core.u_debug.lsq_load_access_requests -
+                    debug_counter_start_q[5],
+                g_hart[0].u_core.u_debug.lsq_load_access_wait_cycles -
+                    debug_counter_start_q[6],
+                g_hart[0].u_core.u_debug.lsq_load_responses -
+                    debug_counter_start_q[7],
+                g_hart[0].u_core.u_debug.lsq_load_completions -
+                    debug_counter_start_q[8],
+                g_hart[0].u_core.u_debug.lsq_load_dependency_block_cycles -
+                    debug_counter_start_q[9],
+                g_hart[0].u_core.u_debug.
+                    lsq_load_dependency_block_entry_cycles -
+                    debug_counter_start_q[10],
+                g_hart[0].u_core.u_debug.lsq_load_occupancy_cycles -
+                    debug_counter_start_q[11]);
+            $display(
+                "DEBUG_LSQ_STORE alloc=%0d alloc_wait=%0d queue_full=%0d xlate=%0d xlate_wait=%0d access=%0d access_wait=%0d done=%0d order_cycles=%0d order_entries=%0d occupancy=%0d atomic_cycles=%0d",
+                g_hart[0].u_core.u_debug.lsq_store_allocations -
+                    debug_counter_start_q[12],
+                g_hart[0].u_core.u_debug.lsq_store_alloc_wait_cycles -
+                    debug_counter_start_q[13],
+                g_hart[0].u_core.u_debug.lsq_store_queue_full_cycles -
+                    debug_counter_start_q[14],
+                g_hart[0].u_core.u_debug.lsq_store_xlate_requests -
+                    debug_counter_start_q[15],
+                g_hart[0].u_core.u_debug.lsq_store_xlate_wait_cycles -
+                    debug_counter_start_q[16],
+                g_hart[0].u_core.u_debug.lsq_store_access_requests -
+                    debug_counter_start_q[17],
+                g_hart[0].u_core.u_debug.lsq_store_access_wait_cycles -
+                    debug_counter_start_q[18],
+                g_hart[0].u_core.u_debug.lsq_store_done -
+                    debug_counter_start_q[19],
+                g_hart[0].u_core.u_debug.lsq_store_order_wait_cycles -
+                    debug_counter_start_q[20],
+                g_hart[0].u_core.u_debug.
+                    lsq_store_order_wait_entry_cycles -
+                    debug_counter_start_q[21],
+                g_hart[0].u_core.u_debug.lsq_store_occupancy_cycles -
+                    debug_counter_start_q[22],
+                g_hart[0].u_core.u_debug.lsq_atomic_active_cycles -
+                    debug_counter_start_q[23]);
+            $display(
+                "DEBUG_L1D req_wait=%0d read_wait=%0d write_wait=%0d inner_req_wait=%0d miss=%0d miss_wait=%0d fill=%0d fill_wait=%0d commands=%0d responses=%0d resident_responses=%0d prefetch_responses=%0d fast_store_merges=%0d",
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_req_wait_cycles_q - debug_counter_start_q[24],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_read_wait_cycles_q - debug_counter_start_q[25],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_write_wait_cycles_q - debug_counter_start_q[26],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_req_wait_cycles_q - debug_counter_start_q[27],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_miss_q - debug_counter_start_q[28],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_miss_wait_cycles_q - debug_counter_start_q[29],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_fill_q - debug_counter_start_q[30],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_fill_wait_cycles_q - debug_counter_start_q[31],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_command_q - debug_counter_start_q[32],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_response_q - debug_counter_start_q[33],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_response_q - debug_counter_start_q[34],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_prefetch_response_q - debug_counter_start_q[35],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_fast_store_merge_q - debug_counter_start_q[90]);
+            $display(
+                "DEBUG_L1D_BLOCK normal_overlay=%0d demand_overlay=%0d store_buffer=%0d load_store=%0d store_buffer_occupancy=%0d demand_mshr_occupancy=%0d demand_mshr_full=%0d invalidate_capture=%0d invalidate_hold=%0d invalidate_complete=%0d",
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_normal_overlay_wait_cycles_q -
+                    debug_counter_start_q[36],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_overlay_wait_cycles_q -
+                    debug_counter_start_q[37],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_store_buffer_block_cycles_q -
+                    debug_counter_start_q[38],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_load_store_block_cycles_q -
+                    debug_counter_start_q[39],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_store_buffer_occupancy_cycles_q -
+                    debug_counter_start_q[40],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_occupancy_cycles_q -
+                    debug_counter_start_q[41],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_full_cycles_q -
+                    debug_counter_start_q[42],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_invalidate_capture_q - debug_counter_start_q[43],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_invalidate_hold_cycles_q - debug_counter_start_q[44],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_invalidate_complete_q - debug_counter_start_q[45]);
+            $display(
+                "DEBUG_L1_ARRAY req_wait=%0d read_wait=%0d write_wait=%0d req=%0d reads=%0d writes=%0d responses=%0d hits=%0d misses=%0d fills=%0d fill_wait=%0d fill_probe_launch=%0d fill_probe_cycles=%0d",
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_request_wait_cycles_q -
+                    debug_counter_start_q[46],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_read_wait_cycles_q -
+                    debug_counter_start_q[47],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_write_wait_cycles_q -
+                    debug_counter_start_q[48],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_request_fire_q -
+                    debug_counter_start_q[49],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_read_fire_q -
+                    debug_counter_start_q[50],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_write_fire_q -
+                    debug_counter_start_q[51],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_response_fire_q -
+                    debug_counter_start_q[52],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_hit_response_q -
+                    debug_counter_start_q[53],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_miss_fire_q -
+                    debug_counter_start_q[54],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_fill_fire_q -
+                    debug_counter_start_q[55],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_fill_wait_cycles_q -
+                    debug_counter_start_q[56],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_fill_probe_launch_q -
+                    debug_counter_start_q[57],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_fill_probe_cycles_q -
+                    debug_counter_start_q[58]);
+            $display(
+                "DEBUG_L1_BLOCK invalidate=%0d invalidate_wait=%0d invalidate_probe_launch=%0d invalidate_probe_cycles=%0d lookup_cycles=%0d access_cycles=%0d access_write_cycles=%0d store_extensions=%0d wait_fill_probe=%0d wait_invalidate_probe=%0d wait_lookup=%0d wait_tag_port=%0d wait_access=%0d",
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_invalidate_fire_q -
+                    debug_counter_start_q[59],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_invalidate_wait_cycles_q -
+                    debug_counter_start_q[60],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.
+                    perf_invalidate_probe_launch_q -
+                    debug_counter_start_q[61],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.
+                    perf_invalidate_probe_cycles_q -
+                    debug_counter_start_q[62],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.
+                    perf_lookup_occupied_cycles_q -
+                    debug_counter_start_q[63],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_access_cycles_q -
+                    debug_counter_start_q[64],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_access_write_cycles_q -
+                    debug_counter_start_q[65],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_store_extension_fire_q -
+                    debug_counter_start_q[66],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_wait_fill_probe_q -
+                    debug_counter_start_q[67],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.
+                    perf_wait_invalidate_probe_q -
+                    debug_counter_start_q[68],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_wait_lookup_slot_q -
+                    debug_counter_start_q[69],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_wait_tag_port_q -
+                    debug_counter_start_q[70],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_l1d.u_l1.
+                    g_cache.u_cache.u_debug.perf_wait_access_state_q -
+                    debug_counter_start_q[71]);
+            $display(
+                "DEBUG_L2 dispatch=%0d immediate=%0d hit=%0d merge=%0d alloc=%0d bypass=%0d write_around=%0d victim_hit=%0d probe=%0d bus_req=%0d bus_resp=%0d response_enqueue=%0d hit_enqueue=%0d probe_issue_cycles=%0d probe_ack_cycles=%0d probe_complete=%0d mshr_occupancy=%0d mshr_full=%0d",
+                u_l2.u_debug.perf_lookup_dispatch_q -
+                    debug_counter_start_q[72],
+                u_l2.u_debug.perf_lookup_immediate_q -
+                    debug_counter_start_q[73],
+                u_l2.u_debug.perf_lookup_hit_q -
+                    debug_counter_start_q[74],
+                u_l2.u_debug.perf_lookup_merge_q -
+                    debug_counter_start_q[75],
+                u_l2.u_debug.perf_lookup_alloc_q -
+                    debug_counter_start_q[76],
+                u_l2.u_debug.perf_lookup_bypass_q -
+                    debug_counter_start_q[77],
+                u_l2.u_debug.perf_lookup_write_around_q -
+                    debug_counter_start_q[78],
+                u_l2.u_debug.perf_lookup_victim_hit_q -
+                    debug_counter_start_q[79],
+                u_l2.u_debug.perf_lookup_probe_q -
+                    debug_counter_start_q[80],
+                u_l2.u_debug.perf_bus_request_q -
+                    debug_counter_start_q[81],
+                u_l2.u_debug.perf_bus_response_q -
+                    debug_counter_start_q[82],
+                u_l2.u_debug.perf_response_enqueue_q -
+                    debug_counter_start_q[83],
+                u_l2.u_debug.perf_hit_enqueue_q -
+                    debug_counter_start_q[84],
+                u_l2.u_debug.perf_probe_issue_cycles_q -
+                    debug_counter_start_q[85],
+                u_l2.u_debug.perf_probe_ack_cycles_q -
+                    debug_counter_start_q[86],
+                u_l2.u_debug.perf_probe_completion_q -
+                    debug_counter_start_q[87],
+                u_l2.u_debug.perf_mshr_occupancy_cycles_q -
+                    debug_counter_start_q[88],
+                u_l2.u_debug.perf_mshr_full_cycles_q -
+                    debug_counter_start_q[89]);
+        end
+    endtask
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            debug_counter_start_seen <= 1'b0;
+            debug_counter_report_seen <= 1'b0;
+        end else if (debug_counter_window_enabled) begin
+            for (debug_counter_retire_lane = 0;
+                 debug_counter_retire_lane < 3;
+                 debug_counter_retire_lane =
+                     debug_counter_retire_lane + 1) begin
+                if (!debug_counter_start_seen &&
+                    g_hart[0].u_core.u_debug.backend_retire_arch[
+                        debug_counter_retire_lane] &&
+                    (g_hart[0].u_core.u_debug.queue_retire_result[
+                        debug_counter_retire_lane *
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        RETIRE_RESULT_PC_LSB +: 64] ==
+                     debug_counter_start_pc)) begin
+                    capture_debug_counter_window();
+                    debug_counter_start_seen <= 1'b1;
+                    $display(
+                        "DEBUG_COUNTER_WINDOW_START pc=%016h cycle=%0d",
+                        debug_counter_start_pc, cycles);
+                end
+                if (debug_counter_start_seen &&
+                    !debug_counter_report_seen &&
+                    g_hart[0].u_core.u_debug.backend_retire_arch[
+                        debug_counter_retire_lane] &&
+                    (g_hart[0].u_core.u_debug.queue_retire_result[
+                        debug_counter_retire_lane *
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        RETIRE_RESULT_PC_LSB +: 64] ==
+                     debug_counter_stop_pc)) begin
+                    report_debug_counter_window();
+                    debug_counter_report_seen <= 1'b1;
+                end
+            end
+        end
+    end
 
     always @(posedge clk) begin
         if (rst_n) begin

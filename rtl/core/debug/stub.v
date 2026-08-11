@@ -98,7 +98,54 @@ module openrv64_core_debug_stub (
     input wire [`RV64_LSU_OP_WIDTH-1:0] atomic_op
         /* verilator public_flat_rd */,
     input wire [63:0] atomic_addr /* verilator public_flat_rd */,
-    input wire atomic_reservation_valid /* verilator public_flat_rd */
+    input wire atomic_reservation_valid /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_allocations /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_alloc_wait_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_queue_full_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_xlate_requests
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_xlate_wait_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_access_requests
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_access_wait_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_responses /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_completions /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_dependency_block_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_dependency_block_entry_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_occupancy_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_load_max_occupancy
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_allocations /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_alloc_wait_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_queue_full_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_xlate_requests
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_xlate_wait_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_access_requests
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_access_wait_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_done /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_order_wait_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_order_wait_entry_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_occupancy_cycles
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_store_max_occupancy
+        /* verilator public_flat_rd */,
+    input wire [63:0] lsq_atomic_active_cycles
+        /* verilator public_flat_rd */
 );
 endmodule
 /* verilator lint_on DECLFILENAME */

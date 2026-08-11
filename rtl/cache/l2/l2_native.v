@@ -2076,6 +2076,8 @@ module openrv64_icx_l2_native #(
         .WAY_INDEX_WIDTH(WAY_INDEX_WIDTH),
         .SRAM_PAYLOAD_WIDTH(SRAM_PAYLOAD_WIDTH)
     ) u_debug (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
         .active_probe_mshr(active_probe_mshr_q),
         .cmd_count(cmd_count_q),
         .coherence_hart_error(coherence_hart_error),

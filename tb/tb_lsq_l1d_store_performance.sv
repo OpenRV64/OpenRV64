@@ -5,7 +5,9 @@
 
 // Store-pressure benchmark spanning the architectural LSQ boundary and the
 // complete L1D controller.  Sparse traffic tests whether the queues hide tag
-// latency; dense traffic tests sustained ordered-store admission.
+// latency; dense traffic tests sustained ordered-store admission.  The
+// page-clear phase uses consecutive 8-byte stores into cold lines, matching
+// the kernel __memset fallback used when Zicboz is not advertised.
 module lsq_l1d_store_performance_runner #(
     parameter integer SYNC_TAG_LOOKUP = 0,
     parameter integer ITERATIONS = 4096
@@ -22,7 +24,15 @@ module lsq_l1d_store_performance_runner #(
     output integer dense_access_wait_o,
     output integer dense_queue_full_o,
     output integer dense_lsq_max_o,
-    output integer dense_store_buffer_max_o
+    output integer dense_store_buffer_max_o,
+    output integer clear_cycles_o,
+    output integer clear_access_wait_o,
+    output integer clear_queue_full_o,
+    output integer clear_lsq_max_o,
+    output integer clear_store_buffer_max_o,
+    output integer clear_store_extensions_o,
+    output integer clear_fast_merges_o,
+    output integer clear_icx_writes_o
 );
     localparam integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH;
     localparam integer TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH;
@@ -39,6 +49,7 @@ module lsq_l1d_store_performance_runner #(
     reg local_rst_n;
     wire dut_rst_n = rst_ni && local_rst_n;
     reg phase_active;
+    reg phase_page_clear;
     integer phase_gap;
     integer phase_allocated_q;
     integer phase_retired_q;
@@ -47,6 +58,7 @@ module lsq_l1d_store_performance_runner #(
     integer store_buffer_max_q;
     integer icx_write_count_q;
     integer icx_response_count_q;
+    integer page_clear_word;
 
     wire store_alloc_valid = phase_active &&
                              (phase_allocated_q < ITERATIONS) &&
@@ -56,7 +68,9 @@ module lsq_l1d_store_performance_runner #(
     wire [ID_WIDTH-1:0] store_alloc_id =
         ID_WIDTH'(phase_allocated_q);
     wire [63:0] store_alloc_addr = BASE +
-        ((phase_allocated_q & 63) * 64);
+        (phase_page_clear ?
+         (phase_allocated_q * 8) :
+         ((phase_allocated_q & 63) * 64));
     wire [63:0] store_alloc_data =
         64'h5a00_0000_0000_0000 ^ 64'(phase_allocated_q);
     wire ordered_head_valid = phase_active &&
@@ -383,6 +397,28 @@ module lsq_l1d_store_performance_runner #(
                            "mode=%0d malformed buffered store command op=%0d size=%0d wvalid=%0b strb=%h addr=%h",
                            SYNC_TAG_LOOKUP, icx_req_op, icx_req_size,
                            icx_wdata_valid, icx_wstrb, icx_req_addr);
+                if (phase_page_clear) begin
+                    if ((icx_req_addr !=
+                         BASE + icx_write_count_q * 64) ||
+                        (icx_wstrb !=
+                         {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}}))
+                        $fatal(1,
+                            "mode=%0d page-clear line geometry mismatch write=%0d addr=%h strb=%h",
+                            SYNC_TAG_LOOKUP, icx_write_count_q,
+                            icx_req_addr, icx_wstrb);
+                    for (page_clear_word = 0;
+                         page_clear_word < 8;
+                         page_clear_word = page_clear_word + 1)
+                        if (icx_wdata[page_clear_word*64 +: 64] !==
+                            (64'h5a00_0000_0000_0000 ^
+                             64'(icx_write_count_q * 8 +
+                                 page_clear_word)))
+                            $fatal(1,
+                                "mode=%0d page-clear data mismatch write=%0d word=%0d data=%h",
+                                SYNC_TAG_LOOKUP, icx_write_count_q,
+                                page_clear_word,
+                                icx_wdata[page_clear_word*64 +: 64]);
+                end
                 if (!response_free_found_r)
                     $fatal(1, "mode=%0d ICX response model overflow",
                            SYNC_TAG_LOOKUP);
@@ -419,6 +455,7 @@ module lsq_l1d_store_performance_runner #(
 
     task automatic run_phase;
         input integer gap;
+        input integer page_clear;
         output integer measured_cycles;
         output integer measured_access_wait;
         output integer measured_queue_full;
@@ -428,6 +465,7 @@ module lsq_l1d_store_performance_runner #(
         integer wait_cycles;
         begin
             phase_gap = gap;
+            phase_page_clear = page_clear != 0;
             @(negedge clk_i);
             start_cycle = cycle_count_q;
             phase_active = 1'b1;
@@ -489,20 +527,39 @@ module lsq_l1d_store_performance_runner #(
         dense_queue_full_o = 0;
         dense_lsq_max_o = 0;
         dense_store_buffer_max_o = 0;
+        clear_cycles_o = 0;
+        clear_access_wait_o = 0;
+        clear_queue_full_o = 0;
+        clear_lsq_max_o = 0;
+        clear_store_buffer_max_o = 0;
+        clear_store_extensions_o = 0;
+        clear_fast_merges_o = 0;
+        clear_icx_writes_o = 0;
         local_rst_n = 1'b0;
         phase_active = 1'b0;
+        phase_page_clear = 1'b0;
         phase_gap = 0;
         speculation_barrier = 1'b0;
 
         wait (rst_ni);
         reset_phase();
-        run_phase(SPARSE_GAP, sparse_cycles_o, sparse_access_wait_o,
+        run_phase(SPARSE_GAP, 0, sparse_cycles_o, sparse_access_wait_o,
                   sparse_queue_full_o, sparse_lsq_max_o,
                   sparse_store_buffer_max_o);
         reset_phase();
-        run_phase(0, dense_cycles_o, dense_access_wait_o,
+        run_phase(0, 0, dense_cycles_o, dense_access_wait_o,
                   dense_queue_full_o, dense_lsq_max_o,
                   dense_store_buffer_max_o);
+        reset_phase();
+        run_phase(0, 1, clear_cycles_o, clear_access_wait_o,
+                  clear_queue_full_o, clear_lsq_max_o,
+                  clear_store_buffer_max_o);
+        clear_store_extensions_o =
+            u_l1d.u_l1d.u_l1.g_cache.u_cache.u_debug.
+                perf_store_extension_fire_q;
+        clear_fast_merges_o =
+            u_l1d.u_debug.perf_fast_store_merge_q;
+        clear_icx_writes_o = icx_write_count_q;
         done_o = 1'b1;
     end
 endmodule
@@ -524,6 +581,14 @@ module tb_lsq_l1d_store_performance;
     integer legacy_dense_queue_full;
     integer legacy_dense_lsq_max;
     integer legacy_dense_store_buffer_max;
+    integer legacy_clear_cycles;
+    integer legacy_clear_access_wait;
+    integer legacy_clear_queue_full;
+    integer legacy_clear_lsq_max;
+    integer legacy_clear_store_buffer_max;
+    integer legacy_clear_store_extensions;
+    integer legacy_clear_fast_merges;
+    integer legacy_clear_icx_writes;
     integer sync_sparse_cycles;
     integer sync_sparse_access_wait;
     integer sync_sparse_queue_full;
@@ -534,6 +599,14 @@ module tb_lsq_l1d_store_performance;
     integer sync_dense_queue_full;
     integer sync_dense_lsq_max;
     integer sync_dense_store_buffer_max;
+    integer sync_clear_cycles;
+    integer sync_clear_access_wait;
+    integer sync_clear_queue_full;
+    integer sync_clear_lsq_max;
+    integer sync_clear_store_buffer_max;
+    integer sync_clear_store_extensions;
+    integer sync_clear_fast_merges;
+    integer sync_clear_icx_writes;
 
     lsq_l1d_store_performance_runner #(
         .SYNC_TAG_LOOKUP(0),
@@ -551,7 +624,15 @@ module tb_lsq_l1d_store_performance;
         .dense_access_wait_o(legacy_dense_access_wait),
         .dense_queue_full_o(legacy_dense_queue_full),
         .dense_lsq_max_o(legacy_dense_lsq_max),
-        .dense_store_buffer_max_o(legacy_dense_store_buffer_max)
+        .dense_store_buffer_max_o(legacy_dense_store_buffer_max),
+        .clear_cycles_o(legacy_clear_cycles),
+        .clear_access_wait_o(legacy_clear_access_wait),
+        .clear_queue_full_o(legacy_clear_queue_full),
+        .clear_lsq_max_o(legacy_clear_lsq_max),
+        .clear_store_buffer_max_o(legacy_clear_store_buffer_max),
+        .clear_store_extensions_o(legacy_clear_store_extensions),
+        .clear_fast_merges_o(legacy_clear_fast_merges),
+        .clear_icx_writes_o(legacy_clear_icx_writes)
     );
 
     lsq_l1d_store_performance_runner #(
@@ -570,7 +651,15 @@ module tb_lsq_l1d_store_performance;
         .dense_access_wait_o(sync_dense_access_wait),
         .dense_queue_full_o(sync_dense_queue_full),
         .dense_lsq_max_o(sync_dense_lsq_max),
-        .dense_store_buffer_max_o(sync_dense_store_buffer_max)
+        .dense_store_buffer_max_o(sync_dense_store_buffer_max),
+        .clear_cycles_o(sync_clear_cycles),
+        .clear_access_wait_o(sync_clear_access_wait),
+        .clear_queue_full_o(sync_clear_queue_full),
+        .clear_lsq_max_o(sync_clear_lsq_max),
+        .clear_store_buffer_max_o(sync_clear_store_buffer_max),
+        .clear_store_extensions_o(sync_clear_store_extensions),
+        .clear_fast_merges_o(sync_clear_fast_merges),
+        .clear_icx_writes_o(sync_clear_icx_writes)
     );
 
     always begin
@@ -612,6 +701,23 @@ module tb_lsq_l1d_store_performance;
             (sync_dense_access_wait <= legacy_dense_access_wait))
             $fatal(1,
                    "dense registered-tag store pressure was not observable");
+        if ((legacy_clear_lsq_max != STORE_QUEUE_DEPTH) ||
+            (sync_clear_lsq_max != STORE_QUEUE_DEPTH) ||
+            (legacy_clear_queue_full == 0) ||
+            (sync_clear_queue_full == 0))
+            $fatal(1, "page-clear phase did not saturate the store queue");
+        if ((legacy_clear_store_extensions != 0) ||
+            (sync_clear_store_extensions != 0))
+            $fatal(1,
+                   "cold page-clear unexpectedly used the valid-hit store extension");
+        if ((legacy_clear_fast_merges != 0) ||
+            (sync_clear_fast_merges != (ITERATIONS - ITERATIONS / 8)))
+            $fatal(1,
+                   "cold page-clear fast-merge count mismatch legacy=%0d sync=%0d",
+                   legacy_clear_fast_merges, sync_clear_fast_merges);
+        if (sync_clear_cycles > legacy_clear_cycles)
+            $fatal(1,
+                   "same-line fast path did not remove the synchronous page-clear penalty");
         $display("PERF: mode=legacy phase=sparse stores=%0d cycles=%0d access_wait=%0d queue_full=%0d lsq_max=%0d store_buffer_max=%0d",
                  ITERATIONS, legacy_sparse_cycles,
                  legacy_sparse_access_wait, legacy_sparse_queue_full,
@@ -636,7 +742,24 @@ module tb_lsq_l1d_store_performance;
                  sync_dense_cycles - legacy_dense_cycles,
                  sync_dense_access_wait - legacy_dense_access_wait,
                  sync_dense_queue_full - legacy_dense_queue_full);
-        $display("PASS: LSQ/L1D sparse and dense store behavior/performance comparison");
+        $display("PERF: mode=legacy phase=page_clear stores=%0d cycles=%0d access_wait=%0d queue_full=%0d lsq_max=%0d store_buffer_max=%0d extensions=%0d fast_merges=%0d icx_writes=%0d",
+                 ITERATIONS, legacy_clear_cycles,
+                 legacy_clear_access_wait, legacy_clear_queue_full,
+                 legacy_clear_lsq_max, legacy_clear_store_buffer_max,
+                 legacy_clear_store_extensions, legacy_clear_fast_merges,
+                 legacy_clear_icx_writes);
+        $display("PERF: mode=sync phase=page_clear stores=%0d cycles=%0d access_wait=%0d queue_full=%0d lsq_max=%0d store_buffer_max=%0d extensions=%0d fast_merges=%0d icx_writes=%0d",
+                 ITERATIONS, sync_clear_cycles,
+                 sync_clear_access_wait, sync_clear_queue_full,
+                 sync_clear_lsq_max, sync_clear_store_buffer_max,
+                 sync_clear_store_extensions, sync_clear_fast_merges,
+                 sync_clear_icx_writes);
+        $display("PERF: delta phase=page_clear cycles=%0d access_wait=%0d queue_full=%0d icx_writes=%0d",
+                 sync_clear_cycles - legacy_clear_cycles,
+                 sync_clear_access_wait - legacy_clear_access_wait,
+                 sync_clear_queue_full - legacy_clear_queue_full,
+                 sync_clear_icx_writes - legacy_clear_icx_writes);
+        $display("PASS: LSQ/L1D sparse, dense, and cold page-clear store behavior/performance comparison");
         $finish;
     end
 endmodule

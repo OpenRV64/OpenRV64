@@ -23,6 +23,8 @@ module openrv64_l2_debug_stub #(
         `OPENRV64_ICX_LINE_DATA_WIDTH +
         `OPENRV64_ICX_LINE_STRB_WIDTH
 ) (
+    input wire clk_i,
+    input wire rst_ni,
     input wire [MSHR_INDEX_WIDTH-1:0] active_probe_mshr
         /* verilator public_flat_rd */,
     input wire [COMMAND_COUNT_WIDTH-1:0] cmd_count
@@ -202,5 +204,112 @@ module openrv64_l2_debug_stub #(
         /* verilator public_flat_rd */,
     input wire [63:0] probe_line_addr_q /* verilator public_flat_rd */
 );
+    reg [63:0] perf_lookup_dispatch_q /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_immediate_q /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_hit_q /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_merge_q /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_alloc_q /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_bypass_q /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_write_around_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_victim_hit_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_probe_q /* verilator public_flat_rd */;
+    reg [63:0] perf_bus_request_q /* verilator public_flat_rd */;
+    reg [63:0] perf_bus_response_q /* verilator public_flat_rd */;
+    reg [63:0] perf_response_enqueue_q /* verilator public_flat_rd */;
+    reg [63:0] perf_hit_enqueue_q /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_issue_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_ack_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_completion_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_mshr_occupancy_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_mshr_full_cycles_q /* verilator public_flat_rd */;
+    reg [63:0] perf_mshr_max_occupancy_q
+        /* verilator public_flat_rd */;
+    integer perf_mshr_scan;
+    integer perf_mshr_occupancy_r;
+
+    always @* begin
+        perf_mshr_occupancy_r = 0;
+        for (perf_mshr_scan = 0; perf_mshr_scan < MSHR_ENTRIES;
+             perf_mshr_scan = perf_mshr_scan + 1)
+            if (mshr_valid[perf_mshr_scan])
+                perf_mshr_occupancy_r = perf_mshr_occupancy_r + 1;
+    end
+
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            perf_lookup_dispatch_q <= 64'd0;
+            perf_lookup_immediate_q <= 64'd0;
+            perf_lookup_hit_q <= 64'd0;
+            perf_lookup_merge_q <= 64'd0;
+            perf_lookup_alloc_q <= 64'd0;
+            perf_lookup_bypass_q <= 64'd0;
+            perf_lookup_write_around_q <= 64'd0;
+            perf_lookup_victim_hit_q <= 64'd0;
+            perf_lookup_probe_q <= 64'd0;
+            perf_bus_request_q <= 64'd0;
+            perf_bus_response_q <= 64'd0;
+            perf_response_enqueue_q <= 64'd0;
+            perf_hit_enqueue_q <= 64'd0;
+            perf_probe_issue_cycles_q <= 64'd0;
+            perf_probe_ack_cycles_q <= 64'd0;
+            perf_probe_completion_q <= 64'd0;
+            perf_mshr_occupancy_cycles_q <= 64'd0;
+            perf_mshr_full_cycles_q <= 64'd0;
+            perf_mshr_max_occupancy_q <= 64'd0;
+        end else begin
+            if (lookup_dispatch) begin
+                perf_lookup_dispatch_q <= perf_lookup_dispatch_q + 1'b1;
+                case (lookup_action)
+                    4'd1: perf_lookup_immediate_q <=
+                        perf_lookup_immediate_q + 1'b1;
+                    4'd2: perf_lookup_hit_q <= perf_lookup_hit_q + 1'b1;
+                    4'd3: perf_lookup_merge_q <=
+                        perf_lookup_merge_q + 1'b1;
+                    4'd4: perf_lookup_alloc_q <=
+                        perf_lookup_alloc_q + 1'b1;
+                    4'd5: perf_lookup_bypass_q <=
+                        perf_lookup_bypass_q + 1'b1;
+                    4'd6: perf_lookup_write_around_q <=
+                        perf_lookup_write_around_q + 1'b1;
+                    4'd7: perf_lookup_victim_hit_q <=
+                        perf_lookup_victim_hit_q + 1'b1;
+                    4'd8: perf_lookup_probe_q <=
+                        perf_lookup_probe_q + 1'b1;
+                    default: begin end
+                endcase
+            end
+            if (bus_request_fire)
+                perf_bus_request_q <= perf_bus_request_q + 1'b1;
+            if (bus_response_fire)
+                perf_bus_response_q <= perf_bus_response_q + 1'b1;
+            if (response_enqueue)
+                perf_response_enqueue_q <=
+                    perf_response_enqueue_q + 1'b1;
+            if (hit_enqueue)
+                perf_hit_enqueue_q <= perf_hit_enqueue_q + 1'b1;
+            if (|probe_issue_pending)
+                perf_probe_issue_cycles_q <=
+                    perf_probe_issue_cycles_q + 1'b1;
+            if (|probe_ack_pending)
+                perf_probe_ack_cycles_q <=
+                    perf_probe_ack_cycles_q + 1'b1;
+            if (coherence_probe_completion)
+                perf_probe_completion_q <=
+                    perf_probe_completion_q + 1'b1;
+            perf_mshr_occupancy_cycles_q <=
+                perf_mshr_occupancy_cycles_q + perf_mshr_occupancy_r;
+            if (perf_mshr_occupancy_r == MSHR_ENTRIES)
+                perf_mshr_full_cycles_q <=
+                    perf_mshr_full_cycles_q + 1'b1;
+            if (perf_mshr_occupancy_r > perf_mshr_max_occupancy_q)
+                perf_mshr_max_occupancy_q <= perf_mshr_occupancy_r;
+        end
+    end
 endmodule
 /* verilator lint_on DECLFILENAME */

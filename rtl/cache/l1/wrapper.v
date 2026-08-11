@@ -61,6 +61,7 @@ module openrv64_l1 #(
     output wire                      mem_valid_o,
     input  wire                      mem_ready_i,
     output wire                      mem_write_o,
+    output wire                      mem_resident_o,
     output wire [ADDR_WIDTH-1:0]     mem_addr_o,
     output wire [DATA_WIDTH-1:0]     mem_wdata_o,
     output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
@@ -126,6 +127,7 @@ module openrv64_l1 #(
                 .mem_valid_o(mem_valid_o),
                 .mem_ready_i(mem_ready_i),
                 .mem_write_o(mem_write_o),
+                .mem_resident_o(mem_resident_o),
                 .mem_addr_o(mem_addr_o),
                 .mem_wdata_o(mem_wdata_o),
                 .mem_wstrb_o(mem_wstrb_o),
@@ -166,6 +168,7 @@ module openrv64_l1 #(
                                         !response_valid_q;
             assign mem_valid_o = request_valid_q;
             assign mem_write_o = request_write_q;
+            assign mem_resident_o = 1'b0;
             assign mem_addr_o = request_addr_q;
             assign mem_wdata_o = request_wdata_q;
             assign mem_wstrb_o = request_wstrb_q;

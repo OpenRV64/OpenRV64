@@ -25,11 +25,27 @@ module openrv64_l1d_debug_stub #(
         `OPENRV64_ICX_LINE_DATA_WIDTH +
         `OPENRV64_ICX_LINE_STRB_WIDTH
 ) (
+    input wire clk_i,
+    input wire rst_ni,
     // Stable summary fields used by the common testbench.
     input wire [1:0] backend_state /* verilator public_flat_rd */,
     input wire coherent_lr_reservation_done /* verilator public_flat_rd */,
     input wire req_valid /* verilator public_flat_rd */,
     input wire req_ready /* verilator public_flat_rd */,
+    input wire req_write /* verilator public_flat_rd */,
+    input wire l1_req_valid /* verilator public_flat_rd */,
+    input wire l1_req_ready /* verilator public_flat_rd */,
+    input wire l1_miss_valid /* verilator public_flat_rd */,
+    input wire l1_miss_ready /* verilator public_flat_rd */,
+    input wire l1_miss_fire /* verilator public_flat_rd */,
+    input wire l1_fill_valid /* verilator public_flat_rd */,
+    input wire l1_fill_ready /* verilator public_flat_rd */,
+    input wire l1_fill_fire /* verilator public_flat_rd */,
+    input wire fast_store_fire /* verilator public_flat_rd */,
+    input wire normal_overlay_wait /* verilator public_flat_rd */,
+    input wire demand_overlay_wait /* verilator public_flat_rd */,
+    input wire store_buffer_block /* verilator public_flat_rd */,
+    input wire demand_load_store_block /* verilator public_flat_rd */,
     input wire request_reservation /* verilator public_flat_rd */,
     input wire [STORE_BUFFER_COUNT_WIDTH-1:0] store_buffer_count
         /* verilator public_flat_rd */,
@@ -181,5 +197,147 @@ module openrv64_l1d_debug_stub #(
         /* verilator public_flat_rd */,
     input wire prefetch_response_claim_new /* verilator public_flat_rd */
 );
+    reg [63:0] perf_req_wait_cycles_q /* verilator public_flat_rd */;
+    reg [63:0] perf_read_wait_cycles_q /* verilator public_flat_rd */;
+    reg [63:0] perf_write_wait_cycles_q /* verilator public_flat_rd */;
+    reg [63:0] perf_l1_req_wait_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_l1_miss_q /* verilator public_flat_rd */;
+    reg [63:0] perf_l1_miss_wait_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_l1_fill_q /* verilator public_flat_rd */;
+    reg [63:0] perf_l1_fill_wait_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_fast_store_merge_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_command_q /* verilator public_flat_rd */;
+    reg [63:0] perf_response_q /* verilator public_flat_rd */;
+    reg [63:0] perf_l1_response_q /* verilator public_flat_rd */;
+    reg [63:0] perf_prefetch_response_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_normal_overlay_wait_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_overlay_wait_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_store_buffer_block_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_load_store_block_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_store_buffer_occupancy_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_store_buffer_max_occupancy_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_occupancy_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_full_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_max_occupancy_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_invalidate_capture_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_invalidate_hold_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_invalidate_complete_q
+        /* verilator public_flat_rd */;
+
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            perf_req_wait_cycles_q <= 64'd0;
+            perf_read_wait_cycles_q <= 64'd0;
+            perf_write_wait_cycles_q <= 64'd0;
+            perf_l1_req_wait_cycles_q <= 64'd0;
+            perf_l1_miss_q <= 64'd0;
+            perf_l1_miss_wait_cycles_q <= 64'd0;
+            perf_l1_fill_q <= 64'd0;
+            perf_l1_fill_wait_cycles_q <= 64'd0;
+            perf_fast_store_merge_q <= 64'd0;
+            perf_command_q <= 64'd0;
+            perf_response_q <= 64'd0;
+            perf_l1_response_q <= 64'd0;
+            perf_prefetch_response_q <= 64'd0;
+            perf_normal_overlay_wait_cycles_q <= 64'd0;
+            perf_demand_overlay_wait_cycles_q <= 64'd0;
+            perf_store_buffer_block_cycles_q <= 64'd0;
+            perf_load_store_block_cycles_q <= 64'd0;
+            perf_store_buffer_occupancy_cycles_q <= 64'd0;
+            perf_store_buffer_max_occupancy_q <= 64'd0;
+            perf_demand_mshr_occupancy_cycles_q <= 64'd0;
+            perf_demand_mshr_full_cycles_q <= 64'd0;
+            perf_demand_mshr_max_occupancy_q <= 64'd0;
+            perf_invalidate_capture_q <= 64'd0;
+            perf_invalidate_hold_cycles_q <= 64'd0;
+            perf_invalidate_complete_q <= 64'd0;
+        end else begin
+            if (req_valid && !req_ready) begin
+                perf_req_wait_cycles_q <= perf_req_wait_cycles_q + 1'b1;
+                if (req_write)
+                    perf_write_wait_cycles_q <=
+                        perf_write_wait_cycles_q + 1'b1;
+                else
+                    perf_read_wait_cycles_q <=
+                        perf_read_wait_cycles_q + 1'b1;
+            end
+            if (l1_req_valid && !l1_req_ready)
+                perf_l1_req_wait_cycles_q <=
+                    perf_l1_req_wait_cycles_q + 1'b1;
+            if (l1_miss_fire)
+                perf_l1_miss_q <= perf_l1_miss_q + 1'b1;
+            if (l1_miss_valid && !l1_miss_ready)
+                perf_l1_miss_wait_cycles_q <=
+                    perf_l1_miss_wait_cycles_q + 1'b1;
+            if (l1_fill_fire)
+                perf_l1_fill_q <= perf_l1_fill_q + 1'b1;
+            if (l1_fill_valid && !l1_fill_ready)
+                perf_l1_fill_wait_cycles_q <=
+                    perf_l1_fill_wait_cycles_q + 1'b1;
+            if (fast_store_fire)
+                perf_fast_store_merge_q <=
+                    perf_fast_store_merge_q + 1'b1;
+            if (command_fire)
+                perf_command_q <= perf_command_q + 1'b1;
+            if (response_fire)
+                perf_response_q <= perf_response_q + 1'b1;
+            if (l1_response_fire)
+                perf_l1_response_q <= perf_l1_response_q + 1'b1;
+            if (prefetch_response_fire)
+                perf_prefetch_response_q <=
+                    perf_prefetch_response_q + 1'b1;
+            if (normal_overlay_wait)
+                perf_normal_overlay_wait_cycles_q <=
+                    perf_normal_overlay_wait_cycles_q + 1'b1;
+            if (demand_overlay_wait)
+                perf_demand_overlay_wait_cycles_q <=
+                    perf_demand_overlay_wait_cycles_q + 1'b1;
+            if (store_buffer_block)
+                perf_store_buffer_block_cycles_q <=
+                    perf_store_buffer_block_cycles_q + 1'b1;
+            if (demand_load_store_block)
+                perf_load_store_block_cycles_q <=
+                    perf_load_store_block_cycles_q + 1'b1;
+            perf_store_buffer_occupancy_cycles_q <=
+                perf_store_buffer_occupancy_cycles_q + store_buffer_count;
+            if (store_buffer_count > perf_store_buffer_max_occupancy_q)
+                perf_store_buffer_max_occupancy_q <= store_buffer_count;
+            perf_demand_mshr_occupancy_cycles_q <=
+                perf_demand_mshr_occupancy_cycles_q +
+                $countones(demand_mshr_valid);
+            if (&demand_mshr_valid)
+                perf_demand_mshr_full_cycles_q <=
+                    perf_demand_mshr_full_cycles_q + 1'b1;
+            if ($countones(demand_mshr_valid) >
+                perf_demand_mshr_max_occupancy_q)
+                perf_demand_mshr_max_occupancy_q <=
+                    $countones(demand_mshr_valid);
+            if (capture_external_invalidate || capture_lock_invalidate)
+                perf_invalidate_capture_q <=
+                    perf_invalidate_capture_q + 1'b1;
+            if (invalidate_txn_valid_q)
+                perf_invalidate_hold_cycles_q <=
+                    perf_invalidate_hold_cycles_q + 1'b1;
+            if (l1_invalidate_valid && l1_invalidate_ready)
+                perf_invalidate_complete_q <=
+                    perf_invalidate_complete_q + 1'b1;
+        end
+    end
 endmodule
 /* verilator lint_on DECLFILENAME */

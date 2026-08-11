@@ -18,6 +18,10 @@ module tb_l1d_store_buffer;
     reg [63:0] req_wdata;
     reg [7:0] req_wstrb;
     reg speculation_barrier;
+    reg invalidate_valid;
+    reg invalidate_all;
+    reg [63:0] invalidate_addr;
+    wire invalidate_ready;
     wire store_barrier_busy;
     wire [63:0] req_rdata;
     wire req_error;
@@ -161,10 +165,10 @@ module tb_l1d_store_buffer;
         .speculation_barrier_i(speculation_barrier),
         .completion_fence_i(speculation_barrier),
         .store_barrier_busy_o(store_barrier_busy),
-        .invalidate_valid_i(1'b0),
-        .invalidate_ready_o(),
-        .invalidate_all_i(1'b0),
-        .invalidate_addr_i(64'd0),
+        .invalidate_valid_i(invalidate_valid),
+        .invalidate_ready_o(invalidate_ready),
+        .invalidate_all_i(invalidate_all),
+        .invalidate_addr_i(invalidate_addr),
         .icx_req_valid_o(icx_req_valid),
         .icx_req_ready_i(1'b1),
         .icx_req_hart_id_o(icx_req_hart_id),
@@ -345,6 +349,9 @@ module tb_l1d_store_buffer;
             req_wdata = 0;
             req_wstrb = 0;
             speculation_barrier = 1'b0;
+            invalidate_valid = 1'b0;
+            invalidate_all = 1'b0;
+            invalidate_addr = 64'd0;
             hold_responses = 1'b0;
             hold_fence_responses = 1'b0;
             repeat (5) @(posedge clk);
@@ -439,6 +446,36 @@ module tb_l1d_store_buffer;
     endtask
 
     initial begin
+        reset_dut();
+
+        // A cold first store authorizes direct same-line merges only while
+        // the carried-forward nonresident result remains valid.  An external
+        // coherence event must revoke that authorization before it completes.
+        issue_store(BASE, 64'h1111_1111_1111_1111);
+        #1;
+        if (!dut.store_buffer_fast_merge_q[
+                dut.store_buffer_newest_index])
+            $fatal(1,
+                "cold first store did not establish fast-merge context");
+        @(negedge clk);
+        invalidate_valid = 1'b1;
+        invalidate_addr = BASE;
+        wait_cycles = 0;
+        while (!invalidate_ready && (wait_cycles < 100)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!invalidate_ready)
+            $fatal(1, "external invalidate did not complete");
+        if (dut.store_buffer_fast_merge_q[
+                dut.store_buffer_newest_index])
+            $fatal(1,
+                "external invalidate retained fast-merge context");
+        @(posedge clk);
+        @(negedge clk);
+        invalidate_valid = 1'b0;
+        invalidate_addr = 64'd0;
+
         reset_dut();
 
         // Put the line in L1, then present a load immediately behind a posted
@@ -629,9 +666,10 @@ module tb_l1d_store_buffer;
             $fatal(1, "failed to fill store buffer count=%0d",
                    dut.store_buffer_count_q);
 
-        // Even a store matching the newest unissued line must stall.  The
-        // drain arbiter may issue that entry on the accepting edge, so a
-        // prospective merge is not a stable capacity reservation.
+        // The synchronous cold-line shortcut merges directly into the newest
+        // entry on the accepting edge and suppresses a simultaneous drain of
+        // that entry.  It is therefore safe even when all FIFO slots are
+        // occupied; no hidden shared-L1 state is created.
         if (!dut.store_buffer_valid_q[dut.store_buffer_newest_index] ||
             dut.store_buffer_issued_q[dut.store_buffer_newest_index])
             $fatal(1,
@@ -645,11 +683,28 @@ module tb_l1d_store_buffer;
         req_wstrb = 8'hff;
         req_tag = req_tag + 1'b1;
         #1;
-        if (req_ready)
+        if (!req_ready || !dut.fast_store_fire)
             $fatal(1,
-                "full store buffer accepted prospective newest merge");
+                "full store buffer rejected direct newest-line merge");
+        @(posedge clk);
+        #1;
+        if ((dut.store_buffer_count_q != 8) ||
+            (dut.store_buffer_data_q[dut.store_buffer_newest_index][63:0]
+             != 64'hfeed_face_cafe_beef))
+            $fatal(1,
+                "full-buffer direct merge did not update newest entry");
 
+        // Near timeout the shortcut must stop extending the entry.  The
+        // request falls back to ordinary admission and therefore stalls while
+        // the FIFO remains full.
         @(negedge clk);
+        dut.store_buffer_age_q[dut.store_buffer_newest_index] =
+            TIMEOUT_CYCLES - 1;
+        #1;
+        if (req_ready || dut.fast_store_fire)
+            $fatal(1,
+                "timed-out newest entry accepted a fast store merge");
+
         req_addr = BASE;
         req_wdata = 64'h0000_0000_0000_00aa;
         req_wstrb = 8'h01;
