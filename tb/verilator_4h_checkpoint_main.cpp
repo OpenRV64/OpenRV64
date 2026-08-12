@@ -7,9 +7,12 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "Vtb_4h_3p.h"
 #include "Vtb_4h_3p___024root.h"
@@ -72,9 +75,154 @@ uint64_t parse_u64(const char* text, const char* option) {
     return static_cast<uint64_t>(value);
 }
 
+struct SymbolEntry {
+    uint64_t address;
+    std::string name;
+};
+
+class SymbolTable {
+public:
+    bool load(const char* path, const char* label) {
+        if (!path)
+            return true;
+
+        std::ifstream input{path};
+        if (!input.is_open()) {
+            std::cerr << "Unable to open " << label
+                      << " symbol map: " << path << '\n';
+            return false;
+        }
+
+        label_ = label;
+        std::string line;
+        std::size_t line_number = 0;
+        while (std::getline(input, line)) {
+            ++line_number;
+            std::istringstream fields{line};
+            std::string address_text;
+            std::string type;
+            std::string name;
+            if (!(fields >> address_text >> type >> name))
+                continue;
+
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long address =
+                std::strtoull(address_text.c_str(), &end, 16);
+            if (errno != 0 || !end || *end != '\0') {
+                std::cerr << "Invalid " << label << " symbol address at "
+                          << path << ':' << line_number << ": "
+                          << address_text << '\n';
+                return false;
+            }
+            entries_.push_back(
+                {static_cast<uint64_t>(address), std::move(name)});
+        }
+
+        std::stable_sort(entries_.begin(), entries_.end(),
+                         [](const SymbolEntry& left,
+                            const SymbolEntry& right) {
+                             return left.address < right.address;
+                         });
+        std::vector<SymbolEntry> unique;
+        unique.reserve(entries_.size());
+        for (SymbolEntry& entry : entries_) {
+            // System.map and nm commonly emit aliases at one address. Keep
+            // the final alias, which selects public weak names such as memcpy
+            // over their internal implementation aliases.
+            if (!unique.empty() &&
+                unique.back().address == entry.address) {
+                unique.back().name = std::move(entry.name);
+            } else {
+                unique.push_back(std::move(entry));
+            }
+        }
+        entries_ = std::move(unique);
+        if (entries_.empty()) {
+            std::cerr << "No symbols found in " << label
+                      << " symbol map: " << path << '\n';
+            return false;
+        }
+        std::cout << "PC_SYMBOL_MAP label=" << label
+                  << " path=" << path
+                  << " entries=" << entries_.size() << '\n';
+        return true;
+    }
+
+    std::string resolve(uint64_t pc) const {
+        if (entries_.empty() || pc < entries_.front().address ||
+            pc > entries_.back().address)
+            return {};
+        const auto after = std::upper_bound(
+            entries_.begin(), entries_.end(), pc,
+            [](uint64_t address, const SymbolEntry& entry) {
+                return address < entry.address;
+            });
+        if (after == entries_.begin())
+            return {};
+        const SymbolEntry& entry = *std::prev(after);
+        std::ostringstream result;
+        result << label_ << ':' << entry.name;
+        if (pc != entry.address)
+            result << "+0x" << std::hex << (pc - entry.address);
+        return result.str();
+    }
+
+private:
+    std::string label_;
+    std::vector<SymbolEntry> entries_;
+};
+
+class PcSymbolizer {
+public:
+    bool load(const char* linux_path, const char* opensbi_path) {
+        enabled_ = linux_path || opensbi_path;
+        return linux_.load(linux_path, "linux") &&
+               opensbi_.load(opensbi_path, "opensbi");
+    }
+
+    bool enabled() const { return enabled_; }
+
+    std::string resolve(uint64_t pc) const {
+        std::string result = linux_.resolve(pc);
+        if (result.empty())
+            result = opensbi_.resolve(pc);
+        return result.empty() ? std::string{"<unknown>"} : result;
+    }
+
+private:
+    bool enabled_ = false;
+    SymbolTable linux_;
+    SymbolTable opensbi_;
+};
+
+uint64_t hart_pc(const Vtb_4h_3p___024root* root, unsigned hart) {
+    return static_cast<uint64_t>(
+               root->tb_4h_3p__DOT__dbg_pc[hart * 2]) |
+           (static_cast<uint64_t>(
+                root->tb_4h_3p__DOT__dbg_pc[hart * 2 + 1]) << 32);
+}
+
 uint64_t hart0_pc(const Vtb_4h_3p___024root* root) {
-    return static_cast<uint64_t>(root->tb_4h_3p__DOT__dbg_pc[0]) |
-           (static_cast<uint64_t>(root->tb_4h_3p__DOT__dbg_pc[1]) << 32);
+    return hart_pc(root, 0);
+}
+
+void trace_pc_symbols(const Vtb_4h_3p___024root* root, uint32_t cycle,
+                      const PcSymbolizer& symbols) {
+    const uint8_t active =
+        root->tb_4h_3p__DOT__opensbi_active_hart_mask;
+    std::cout << "OPENSBI_4H_PC_SYMBOLS cycles=" << cycle << " harts=";
+    for (unsigned hart = 0; hart < 4; ++hart) {
+        if (hart)
+            std::cout << ',';
+        if ((active & (1U << hart)) == 0) {
+            std::cout << "<reset>";
+        } else {
+            std::cout << symbols.resolve(hart_pc(root, hart));
+        }
+    }
+    std::cout << '\n';
+    std::cout.flush();
 }
 
 template <std::size_t N>
@@ -212,6 +360,17 @@ class L1dWatch {
                     << " addr=0x" << std::hex << H0_BUS(l1d_req_addr)
                     << " wdata=0x" << H0_BUS(l1d_req_rdata)
                     << std::dec << '\n';
+        }
+
+        if (H0_L1D(fast_store_fire) &&
+            same_line(H0_BUS(l1d_req_addr))) {
+            stream_ << "FAST_STORE cycle=" << cycle
+                    << " tag="
+                    << static_cast<unsigned>(H0_BUS(l1d_req_tag))
+                    << " addr=0x" << std::hex << H0_BUS(l1d_req_addr)
+                    << std::dec << '\n';
+            trace_buffers(root, cycle);
+            stream_.flush();
         }
 
         const unsigned target_set =
@@ -1505,6 +1664,11 @@ void trace_hart0_pc(std::ostream& stream,
                     const Vtb_4h_3p___024root* root,
                     uint32_t cycle) {
     constexpr unsigned result_width = 457;
+    constexpr unsigned reg_write_bit = 153;
+    constexpr unsigned rd_lsb = 154;
+    constexpr unsigned rs2_lsb = 159;
+    constexpr unsigned rs1_lsb = 164;
+    constexpr unsigned data_lsb = 169;
     constexpr unsigned instr_lsb = 233;
     constexpr unsigned pc_lsb = 329;
     const uint8_t retire =
@@ -1524,6 +1688,18 @@ void trace_hart0_pc(std::ostream& stream,
                << wide_bits(results, lane * result_width + pc_lsb, 64)
                << " instr=" << std::setw(8)
                << wide_bits(results, lane * result_width + instr_lsb, 32)
+               << " regwrite=" << std::dec
+               << wide_bits(results,
+                            lane * result_width + reg_write_bit, 1)
+               << " rd="
+               << wide_bits(results, lane * result_width + rd_lsb, 5)
+               << " data=" << std::hex << std::setw(16)
+               << std::setfill('0')
+               << wide_bits(results, lane * result_width + data_lsb, 64)
+               << " rs1=" << std::dec
+               << wide_bits(results, lane * result_width + rs1_lsb, 5)
+               << " rs2="
+               << wide_bits(results, lane * result_width + rs2_lsb, 5)
                << std::setfill(' ') << std::dec << '\n';
     }
 
@@ -2150,6 +2326,10 @@ int main(int argc, char** argv) {
         plusarg_value(argc, argv, "+stop_cycles=");
     const char* const max_cycles_override_text =
         plusarg_value(argc, argv, "+max_cycles_override=");
+    const char* const linux_symbols_path =
+        plusarg_value(argc, argv, "+linux_symbols=");
+    const char* const opensbi_symbols_path =
+        plusarg_value(argc, argv, "+opensbi_symbols=");
     const bool checkpoint_exit =
         has_plusarg(argc, argv, "+checkpoint_exit");
     const bool mip_trace = has_plusarg(argc, argv, "+mip_trace");
@@ -2281,6 +2461,11 @@ int main(int argc, char** argv) {
         : 0;
     bool checkpoint_saved = false;
     uint64_t next_periodic_checkpoint = checkpoint_interval;
+    uint32_t last_symbol_progress_cycle = 0;
+
+    PcSymbolizer pc_symbols;
+    if (!pc_symbols.load(linux_symbols_path, opensbi_symbols_path))
+        return EXIT_FAILURE;
 
     if (checkpoint_interval_text && checkpoint_interval == 0) {
         std::cerr << "+checkpoint_interval must be positive\n";
@@ -2413,6 +2598,12 @@ int main(int argc, char** argv) {
         top->eval();
 
         const uint32_t cycle = top->checkpoint_cycle_o;
+        if (pc_symbols.enabled() && cycle != 0 &&
+            (cycle % 1000000) == 0 &&
+            cycle != last_symbol_progress_cycle) {
+            trace_pc_symbols(rootp, cycle, pc_symbols);
+            last_symbol_progress_cycle = cycle;
+        }
         const bool fetch_path_trace_active = fetch_path_trace
             && cycle >= fetch_path_trace_start
             && (fetch_path_trace_end == 0 || cycle <= fetch_path_trace_end);
@@ -2466,10 +2657,13 @@ int main(int argc, char** argv) {
             && cycle >= checkpoint_cycle) {
             save_model(checkpoint_path, context.get(), top.get());
             checkpoint_saved = true;
+            const uint64_t pc = hart0_pc(rootp);
             std::cout << "CHECKPOINT SAVED path=" << checkpoint_path
                       << " cycle=" << cycle
-                      << " pc=0x" << std::hex << hart0_pc(rootp)
-                      << std::dec
+                      << " pc=0x" << std::hex << pc << std::dec;
+            if (pc_symbols.enabled())
+                std::cout << " symbol=" << pc_symbols.resolve(pc);
+            std::cout
                       << " time=" << context->time() << '\n';
             std::cout.flush();
             if (checkpoint_exit)
@@ -2484,7 +2678,10 @@ int main(int argc, char** argv) {
             const uint64_t pc = hart0_pc(rootp);
             std::cout << "PERIODIC CHECKPOINT SAVED path=" << path
                       << " cycle=" << cycle
-                      << " pc=0x" << std::hex << pc << std::dec
+                      << " pc=0x" << std::hex << pc << std::dec;
+            if (pc_symbols.enabled())
+                std::cout << " symbol=" << pc_symbols.resolve(pc);
+            std::cout
                       << " time=" << context->time() << '\n';
             std::cout.flush();
             do {
@@ -2493,7 +2690,10 @@ int main(int argc, char** argv) {
 
             if (checkpoint_stop_pc_text && pc == checkpoint_stop_pc) {
                 std::cout << "PERIODIC CHECKPOINT STOP PC cycle=" << cycle
-                          << " pc=0x" << std::hex << pc << std::dec
+                          << " pc=0x" << std::hex << pc << std::dec;
+                if (pc_symbols.enabled())
+                    std::cout << " symbol=" << pc_symbols.resolve(pc);
+                std::cout
                           << " path=" << path << '\n';
                 std::cout.flush();
                 break;
@@ -2501,9 +2701,12 @@ int main(int argc, char** argv) {
         }
 
         if (stop_cycles_text && cycle >= stop_cycle) {
+            const uint64_t pc = hart0_pc(rootp);
             std::cout << "SIMULATION STOP cycle=" << cycle
-                      << " pc=0x" << std::hex << hart0_pc(rootp)
-                      << std::dec
+                      << " pc=0x" << std::hex << pc << std::dec;
+            if (pc_symbols.enabled())
+                std::cout << " symbol=" << pc_symbols.resolve(pc);
+            std::cout
                       << " time=" << context->time() << '\n';
             break;
         }

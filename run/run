@@ -101,6 +101,7 @@ launch_config() {
     RUN_HARTS=
     RUN_THREADS=
     RUN_IMAGE=
+    RUN_KERNEL_ELF=
     RUN_ZICCLSM=
     RUN_MAX_CYCLES=
     RUN_CHECKPOINT_CYCLES=
@@ -135,6 +136,9 @@ launch_config() {
         --max-cycles "${RUN_MAX_CYCLES}"
         --checkpoint "${RUN_CHECKPOINT_CYCLES}"
         --monitor-seconds "${RUN_MONITOR_SECONDS}")
+    if [[ -n ${RUN_KERNEL_ELF} ]]; then
+        backend_arguments+=(--kernel-elf "${RUN_KERNEL_ELF}")
+    fi
     [[ ${RUN_REBUILD} == 0 ]] || backend_arguments+=(--rebuild)
     local resume_requested=0
     local checkpoint_requested=0

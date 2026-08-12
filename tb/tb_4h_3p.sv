@@ -3384,8 +3384,8 @@ module tb_4h_3p #(
 
                 if ((cycles != 0) &&
                     ((cycles % 1000000) == 0)) begin
-                    $display(
-                    "OPENSBI_4H_PROGRESS cycles=%0d active=%b pc=%016h,%016h,%016h,%016h priv=%0d,%0d,%0d,%0d hsm_wfi=%b hsm_sleep=%b sleep=%b s_mode=%b banner=%0b payload=%0b magic=%0b hart_start_counter=%0d linux_online=%0b linux_threads=%0b linux_prompt=%0b linux_panic=%0b uart_bytes=%0d",
+                    $write(
+                    "OPENSBI_4H_PROGRESS cycles=%0d active=%b pc=%016h,%016h,%016h,%016h priv=%0d,%0d,%0d,%0d hsm_wfi=%b hsm_sleep=%b sleep=%b s_mode=%b uart=%0d",
                         cycles,
                         opensbi_active_hart_mask,
                         dbg_pc[0*64 +: 64],
@@ -3404,15 +3404,25 @@ module tb_4h_3p #(
                         opensbi_hsm_sleep_seen,
                         hart_wfi_sleep,
                         opensbi_s_mode_hart_seen,
-                        opensbi_banner_seen,
-                        opensbi_payload_seen,
-                        opensbi_magic_seen,
-                        hart_start_counter_last,
-                        linux_smp_online_seen,
-                        linux_smp_threads_seen,
-                        linux_prompt_seen,
-                        linux_panic_seen,
                         opensbi_uart_bytes);
+                    if (opensbi_banner_seen)
+                        $write(" banner");
+                    if (opensbi_payload_seen)
+                        $write(" payload");
+                    if (opensbi_magic_seen)
+                        $write(" magic");
+                    if (hart_start_counter_last != 0)
+                        $write(" hstart=%0d",
+                               hart_start_counter_last);
+                    if (linux_smp_online_seen)
+                        $write(" online");
+                    if (linux_smp_threads_seen)
+                        $write(" threads");
+                    if (linux_prompt_seen)
+                        $write(" prompt");
+                    if (linux_panic_seen)
+                        $write(" linux_panic=1");
+                    $write("\n");
                     if (pc_trace_fd != 0)
                         $fflush(pc_trace_fd);
                     $fflush();

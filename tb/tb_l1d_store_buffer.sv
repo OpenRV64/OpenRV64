@@ -86,6 +86,10 @@ module tb_l1d_store_buffer;
     integer memory_byte;
     integer memory_reset_line;
     reg [3:0] overlay_epoch_before;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] overlap_load_tag;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] overlap_store_tag;
+    reg overlap_mshr_found;
+    integer overlap_mshr_scan;
     localparam integer MEMORY_LINES = 16;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         memory [0:MEMORY_LINES-1];
@@ -788,6 +792,142 @@ module tb_l1d_store_buffer;
             dut.store_completion_valid_q ||
             (dut.backend_state_q != 0))
             $fatal(1, "translation barrier released with store outstanding");
+
+        // A cold store can authorize direct same-line FIFO merges without
+        // installing the line in L1.  If an intervening load allocates a
+        // demand MSHR, a later store must leave the shortcut and traverse the
+        // shared L1 path so its bytes are merged into the eventual fill.
+        // Otherwise the load response can forward the store transiently while
+        // the resident line silently retains stale backing data.
+        reset_dut();
+        memory[BASE[9:6]][191:128] =
+            64'h1122_3344_5566_7788;
+        issue_store(BASE + 56, 64'h7777_7777_7777_7777);
+        if (!dut.store_buffer_fast_merge_q[
+                dut.store_buffer_newest_index])
+            $fatal(1,
+                "cold overlap setup did not establish fast-merge context");
+
+        hold_responses = 1'b1;
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b0;
+        req_addr = BASE + 16;
+        req_wdata = 64'd0;
+        req_wstrb = 8'd0;
+        req_tag = req_tag + 1'b1;
+        overlap_load_tag = req_tag;
+        wait_cycles = 0;
+        while (!req_ready && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "overlap load acceptance timed out");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_addr = 64'd0;
+        wait_cycles = 0;
+        while (!dut.demand_mshr_any_valid_r &&
+               (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!dut.demand_mshr_any_valid_r)
+            $fatal(1, "overlap load did not allocate a demand MSHR");
+        if (!dut.store_buffer_fast_merge_q[
+                dut.store_buffer_newest_index])
+            $fatal(1,
+                "demand miss unexpectedly destroyed cold-store context");
+
+        @(negedge clk);
+        req_valid = 1'b1;
+        req_write = 1'b1;
+        req_addr = BASE + 8;
+        req_wdata = 64'hfeed_face_0123_4567;
+        req_wstrb = 8'hff;
+        req_tag = req_tag + 1'b1;
+        overlap_store_tag = req_tag;
+        #1;
+        if (!dut.fast_store_demand_mshr_match_r ||
+            dut.fast_store_fire)
+            $fatal(1,
+                "same-line demand MSHR did not exclude fast store match=%b fire=%b",
+                dut.fast_store_demand_mshr_match_r,
+                dut.fast_store_fire);
+        wait_cycles = 0;
+        while (!req_ready && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "overlap store acceptance timed out");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_write = 1'b0;
+        req_addr = 64'd0;
+        req_wdata = 64'd0;
+        req_wstrb = 8'd0;
+        wait_cycles = 0;
+        while (!posted_resp_valid && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!posted_resp_valid ||
+            (posted_resp_tag != overlap_store_tag))
+            $fatal(1, "overlap store response failed");
+
+        overlap_mshr_found = 1'b0;
+        for (overlap_mshr_scan = 0;
+             overlap_mshr_scan < 3;
+             overlap_mshr_scan = overlap_mshr_scan + 1) begin
+            if (dut.demand_mshr_valid_q[overlap_mshr_scan] &&
+                (dut.demand_mshr_addr_q[overlap_mshr_scan] == BASE)) begin
+                overlap_mshr_found = 1'b1;
+                if (dut.demand_mshr_store_strb_q[
+                        overlap_mshr_scan][15:8] != 8'hff)
+                    $fatal(1,
+                        "overlap store did not merge into demand MSHR strb=%016x",
+                        dut.demand_mshr_store_strb_q[
+                            overlap_mshr_scan]);
+            end
+        end
+        if (!overlap_mshr_found)
+            $fatal(1, "overlap demand MSHR disappeared before fill");
+
+        @(posedge clk);
+        @(negedge clk);
+        hold_responses = 1'b0;
+        wait_cycles = 0;
+        while (!resp_valid && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!resp_valid || (resp_tag != overlap_load_tag) || req_error ||
+            (req_rdata !== 64'h1122_3344_5566_7788))
+            $fatal(1,
+                "overlap load response failed tag=%0d data=%016x error=%b",
+                resp_tag, req_rdata, req_error);
+        @(posedge clk);
+
+        @(negedge clk);
+        speculation_barrier = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        speculation_barrier = 1'b0;
+        wait_cycles = 0;
+        while (store_barrier_busy && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (store_barrier_busy || (dut.store_buffer_count_q != 0))
+            $fatal(1, "overlap store did not drain");
+        issue_load(BASE + 8, 64'hfeed_face_0123_4567);
+        if (read_count != 1)
+            $fatal(1,
+                "overlap verification missed instead of hitting merged fill");
 
         // A store miss leaves authoritative dirty bytes in the posted FIFO.
         // A younger same-line load miss may consume stale backing data for

@@ -33,6 +33,8 @@ Start options:
   --comment TEXT            Purpose; defaults to NAME.
   --threads N               Verilator runtime threads (default: 1).
   --image PATH              Linux Image (default: sw/Image.smp).
+  --kernel-elf PATH         Source-matched vmlinux for PC symbols. Its
+                            arch/riscv/boot/Image must match --image.
   --zicclsm 0|1             DT ISA advertisement (default: 1).
   --max-cycles N            Simulation limit (default: 250000000).
   --checkpoint N            Save replay state at N; 0 disables it
@@ -44,6 +46,9 @@ Start options:
   --resume CHECKPOINT|RUN   Resume an exact managed checkpoint snapshot.
   --resume-simulator FILE   Use a model-compatible rebuilt host executable.
   --host-pc-trace           Record hart-0 retire/trap PCs after restore.
+  --host-pc-sample-period N Sample the held hart-0 PC every N cycles and
+                            build a function histogram without retaining the
+                            full retire trace.
   --l1d-watch-vaddr ADDR    Trace this hart-0 virtual address through L1D.
   --l1d-watch-paddr ADDR    Seed its physical address for earlier events.
   --l1d-watch-value VALUE   Flag this aligned 64-bit value in line traffic.
@@ -205,7 +210,9 @@ worker() {
     checkpoint_stop_pc=${checkpoint_stop_pc:-}
     resume_checkpoint=${resume_checkpoint:-}
     resume_simulator=${resume_simulator:-}
+    kernel_elf=${kernel_elf:-}
     host_pc_trace=${host_pc_trace:-0}
+    host_pc_sample_period=${host_pc_sample_period:-0}
     l1d_watch_vaddr=${l1d_watch_vaddr:-}
     l1d_watch_paddr=${l1d_watch_paddr:-}
     l1d_watch_value=${l1d_watch_value:-}
@@ -234,8 +241,18 @@ worker() {
     local validation=not-run
     local sim_result=
     local monitor_pid=
+    local heartbeat_pid=
+    local host_pc_sampler_pid=
     local started_utc
     started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    heartbeat_loop() {
+        local heartbeat=${directory}/heartbeat
+        while :; do
+            touch "${heartbeat}"
+            sleep 10
+        done
+    }
 
     finish_worker() {
         local result=$?
@@ -243,6 +260,14 @@ worker() {
         if [[ -n ${monitor_pid} ]]; then
             kill "${monitor_pid}" 2>/dev/null || true
             wait "${monitor_pid}" 2>/dev/null || true
+        fi
+        if [[ -n ${heartbeat_pid} ]]; then
+            kill "${heartbeat_pid}" 2>/dev/null || true
+            wait "${heartbeat_pid}" 2>/dev/null || true
+        fi
+        if [[ -n ${host_pc_sampler_pid} ]]; then
+            kill "${host_pc_sampler_pid}" 2>/dev/null || true
+            wait "${host_pc_sampler_pid}" 2>/dev/null || true
         fi
         {
             printf 'run_id=%s\n' "${run_id}"
@@ -260,6 +285,8 @@ worker() {
     trap finish_worker EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    heartbeat_loop &
+    heartbeat_pid=$!
 
     git rev-parse HEAD >"${directory}/git-head.txt"
     git status --short >"${directory}/git-status.txt"
@@ -272,6 +299,7 @@ worker() {
         printf 'harts=%s\n' "${harts}"
         printf 'threads=%s\n' "${threads}"
         printf 'image=%s\n' "${image}"
+        printf 'kernel_elf=%s\n' "${kernel_elf}"
         printf 'zicclsm=%s\n' "${zicclsm}"
         printf 'max_cycles=%s\n' "${max_cycles}"
         printf 'checkpoint_cycles=%s\n' "${checkpoint_cycles}"
@@ -280,6 +308,7 @@ worker() {
         printf 'checkpoint_stop_pc=%s\n' "${checkpoint_stop_pc}"
         printf 'resume_checkpoint=%s\n' "${resume_checkpoint}"
         printf 'stop_cycles=%s\n' "${stop_cycles}"
+        printf 'host_pc_sample_period=%s\n' "${host_pc_sample_period}"
         printf 'rebuild=%s\n' "${rebuild}"
         printf 'command=%s\n' "${recorded_command}"
     } >"${build_log}"
@@ -334,6 +363,35 @@ worker() {
                 "${resume_source_inputs}/${artifact}" \
                 "${input_dir}/${artifact}"
         done
+        for artifact in vmlinux linux-symbols.map opensbi-symbols.map; do
+            if [[ -f ${resume_source_inputs}/${artifact} ]]; then
+                cp --reflink=auto --preserve=mode,timestamps \
+                    "${resume_source_inputs}/${artifact}" \
+                    "${input_dir}/${artifact}"
+            fi
+        done
+        if [[ -n ${kernel_elf} ]]; then
+            cp --reflink=auto --preserve=mode,timestamps \
+                "${kernel_elf}" "${input_dir}/vmlinux"
+            riscv64-linux-gnu-nm -n --defined-only \
+                "${input_dir}/vmlinux" \
+                >"${input_dir}/linux-symbols.map"
+            if ! rg -Fqx -- "${kernel_elf}" "${source_manifest}"; then
+                printf '%s\n' "${kernel_elf}" >>"${source_manifest}"
+            fi
+            write_source_hashes "${source_manifest}" "${source_hashes}"
+        fi
+        if [[ ! -f ${input_dir}/opensbi-symbols.map ]]; then
+            riscv64-linux-gnu-nm -n --defined-only \
+                "${input_dir}/fw_jump.elf" \
+                >"${input_dir}/opensbi-symbols.map"
+        fi
+        if [[ -z ${kernel_elf} && -f ${input_dir}/vmlinux &&
+              ! -f ${input_dir}/linux-symbols.map ]]; then
+            riscv64-linux-gnu-nm -n --defined-only \
+                "${input_dir}/vmlinux" \
+                >"${input_dir}/linux-symbols.map"
+        fi
         if [[ -n ${resume_simulator} ]]; then
             cp --reflink=auto --preserve=mode,timestamps \
                 "${resume_simulator}" \
@@ -396,6 +454,9 @@ worker() {
         "${make_base[@]}" -f Makefile -f "${record_makefile}" \
             "${make_arguments[@]}" openrv64-linux-smp-run-inputs \
             >"${source_manifest}" 2>&1
+        if [[ -n ${kernel_elf} ]]; then
+            printf '%s\n' "${kernel_elf}" >>"${source_manifest}"
+        fi
         write_source_hashes "${source_manifest}" "${source_hashes}"
 
         phase=build
@@ -432,6 +493,16 @@ worker() {
             cp --reflink=auto --preserve=mode,timestamps \
                 "${artifact_dir}/${artifact}" "${input_dir}/${artifact}"
         done
+        riscv64-linux-gnu-nm -n --defined-only \
+            "${input_dir}/fw_jump.elf" \
+            >"${input_dir}/opensbi-symbols.map"
+        if [[ -n ${kernel_elf} ]]; then
+            cp --reflink=auto --preserve=mode,timestamps \
+                "${kernel_elf}" "${input_dir}/vmlinux"
+            riscv64-linux-gnu-nm -n --defined-only \
+                "${input_dir}/vmlinux" \
+                >"${input_dir}/linux-symbols.map"
+        fi
         sha256sum "${input_dir}"/* >"${artifact_hashes}"
         flock -u 9
         exec 9>&-
@@ -454,6 +525,12 @@ worker() {
             "+opensbi_hsm_wfi_pc=$(sed -n '1p' "${input_dir}/hsm-wfi-pc.txt")")
         [[ ${harts} == 4 ]] || run_command+=(+gate_held_hart_clocks)
     fi
+    if [[ -f ${input_dir}/linux-symbols.map ]]; then
+        run_command+=("+linux_symbols=${input_dir}/linux-symbols.map")
+    fi
+    if [[ -f ${input_dir}/opensbi-symbols.map ]]; then
+        run_command+=("+opensbi_symbols=${input_dir}/opensbi-symbols.map")
+    fi
     if ((checkpoint_cycles > 0)); then
         run_command+=("+checkpoint=${checkpoint}"
             "+checkpoint_cycles=${checkpoint_cycles}")
@@ -470,7 +547,20 @@ worker() {
         run_command+=("+restore=${resume_snapshot}"
             "+max_cycles_override=${max_cycles}")
     fi
-    if ((host_pc_trace == 1)); then
+    local host_pc_sample_fifo=
+    local host_pc_sample_file=${directory}/host-pc-samples.tsv
+    local host_pc_sample_state=${directory}/host-pc-sample.state
+    local host_pc_histogram=${directory}/host-pc-function-histogram.tsv
+    if ((host_pc_sample_period > 0)); then
+        host_pc_sample_fifo=${directory}/host-pc-trace.fifo
+        mkfifo "${host_pc_sample_fifo}"
+        gawk -v "period=${host_pc_sample_period}" \
+            -v "state_path=${host_pc_sample_state}" \
+            -f "${repo_root}/tools/host-pc-sampler.awk" \
+            <"${host_pc_sample_fifo}" >"${host_pc_sample_file}" &
+        host_pc_sampler_pid=$!
+        run_command+=("+host_pc_trace=${host_pc_sample_fifo}")
+    elif ((host_pc_trace == 1)); then
         run_command+=("+host_pc_trace=${directory}/host-pc-trace.log")
     fi
     if [[ -n ${l1d_watch_vaddr} ]]; then
@@ -506,6 +596,11 @@ worker() {
     stdbuf -oL -eL "${run_command[@]}" 2>&1 | tee -a "${run_log}"
     sim_result=${PIPESTATUS[0]}
     set -e
+    if [[ -n ${host_pc_sampler_pid} ]]; then
+        wait "${host_pc_sampler_pid}"
+        host_pc_sampler_pid=
+        rm -f "${host_pc_sample_fifo}"
+    fi
 
     if rg -q '%Fatal:|Assertion failed' "${run_log}"; then
         validation=fatal
@@ -529,6 +624,32 @@ worker() {
         validation=incomplete
     fi
 
+    if ((host_pc_sample_period > 0)); then
+        if [[ ${validation} == stopped && -f ${host_pc_sample_state} ]]; then
+            local next_sample last_pc last_event_cycle
+            next_sample=$(sed -n 's/^next_sample=//p' \
+                "${host_pc_sample_state}")
+            last_pc=$(sed -n 's/^last_pc=//p' \
+                "${host_pc_sample_state}")
+            last_event_cycle=$(sed -n 's/^last_event_cycle=//p' \
+                "${host_pc_sample_state}")
+            while [[ -n ${last_pc} && ${next_sample} -le ${stop_cycles} ]]; do
+                printf '%u\t%s\t%u\n' "${next_sample}" "${last_pc}" \
+                    "${last_event_cycle}" >>"${host_pc_sample_file}"
+                next_sample=$((next_sample + host_pc_sample_period))
+            done
+        fi
+        perl "${repo_root}/tools/pc-sample-histogram.pl" \
+            "${host_pc_sample_file}" \
+            "${input_dir}/opensbi-symbols.map" \
+            "${input_dir}/linux-symbols.map" \
+            >"${host_pc_histogram}"
+        {
+            printf 'host_pc_samples=%s\n' "${host_pc_sample_file}"
+            printf 'host_pc_histogram=%s\n' "${host_pc_histogram}"
+        } >>"${run_log}"
+    fi
+
     {
         printf 'sim_exit_code=%s\n' "${sim_result}"
         printf 'validation=%s\n' "${validation}"
@@ -550,6 +671,7 @@ start_run() {
     local comment=
     local threads=1
     local image=sw/Image.smp
+    local kernel_elf=
     local zicclsm=1
     local max_cycles=250000000
     local checkpoint_cycles=25000000
@@ -559,6 +681,7 @@ start_run() {
     local resume_checkpoint=
     local resume_simulator=
     local host_pc_trace=0
+    local host_pc_sample_period=0
     local l1d_watch_vaddr=
     local l1d_watch_paddr=
     local l1d_watch_value=
@@ -578,6 +701,7 @@ start_run() {
             --comment) comment=${2:?}; shift 2 ;;
             --threads) threads=${2:?}; shift 2 ;;
             --image) image=${2:?}; shift 2 ;;
+            --kernel-elf) kernel_elf=${2:?}; shift 2 ;;
             --zicclsm) zicclsm=${2:?}; shift 2 ;;
             --max-cycles) max_cycles=${2:?}; shift 2 ;;
             --checkpoint|--checkpoint-cycles)
@@ -590,6 +714,8 @@ start_run() {
             --resume) resume_checkpoint=${2:?}; shift 2 ;;
             --resume-simulator) resume_simulator=${2:?}; shift 2 ;;
             --host-pc-trace) host_pc_trace=1; shift ;;
+            --host-pc-sample-period)
+                host_pc_sample_period=${2:?}; shift 2 ;;
             --l1d-watch-vaddr) l1d_watch_vaddr=${2:?}; shift 2 ;;
             --l1d-watch-paddr) l1d_watch_paddr=${2:?}; shift 2 ;;
             --l1d-watch-value) l1d_watch_value=${2:?}; shift 2 ;;
@@ -625,6 +751,11 @@ start_run() {
     fi
     [[ ${stop_cycles} =~ ^[0-9]+$ ]] ||
         die "--stop-cycles must be nonnegative"
+    [[ ${host_pc_sample_period} =~ ^[0-9]+$ ]] ||
+        die "--host-pc-sample-period must be nonnegative"
+    if ((host_pc_trace == 1 && host_pc_sample_period > 0)); then
+        die "--host-pc-trace and --host-pc-sample-period are mutually exclusive"
+    fi
     if ((checkpoint_exit == 1 && checkpoint_cycles == 0)); then
         die "--checkpoint-exit requires a nonzero --checkpoint"
     fi
@@ -664,6 +795,19 @@ start_run() {
 
     cd "${repo_root}"
     image=$(realpath -m "${image}")
+    command -v riscv64-linux-gnu-nm >/dev/null 2>&1 ||
+        die "riscv64-linux-gnu-nm is required for PC symbol maps"
+    if [[ -n ${kernel_elf} ]]; then
+        kernel_elf=$(realpath -m "${kernel_elf}")
+        [[ -f ${kernel_elf} ]] ||
+            die "kernel ELF does not exist: ${kernel_elf}"
+        local kernel_build_image
+        kernel_build_image=$(dirname "${kernel_elf}")/arch/riscv/boot/Image
+        [[ -f ${kernel_build_image} ]] ||
+            die "kernel ELF lacks arch/riscv/boot/Image: ${kernel_elf}"
+        cmp -s "${image}" "${kernel_build_image}" ||
+            die "kernel ELF Image does not match --image: ${kernel_elf}"
+    fi
     if [[ -n ${resume_checkpoint} ]]; then
         resume_checkpoint=$(resolve_checkpoint "${resume_checkpoint}")
     fi
@@ -740,6 +884,7 @@ start_run() {
         printf 'harts=%q\n' "${harts}"
         printf 'threads=%q\n' "${threads}"
         printf 'image=%q\n' "${image}"
+        printf 'kernel_elf=%q\n' "${kernel_elf}"
         printf 'zicclsm=%q\n' "${zicclsm}"
         printf 'max_cycles=%q\n' "${max_cycles}"
         printf 'checkpoint_cycles=%q\n' "${checkpoint_cycles}"
@@ -749,6 +894,7 @@ start_run() {
         printf 'resume_checkpoint=%q\n' "${resume_checkpoint}"
         printf 'resume_simulator=%q\n' "${resume_simulator}"
         printf 'host_pc_trace=%q\n' "${host_pc_trace}"
+        printf 'host_pc_sample_period=%q\n' "${host_pc_sample_period}"
         printf 'l1d_watch_vaddr=%q\n' "${l1d_watch_vaddr}"
         printf 'l1d_watch_paddr=%q\n' "${l1d_watch_paddr}"
         printf 'l1d_watch_value=%q\n' "${l1d_watch_value}"

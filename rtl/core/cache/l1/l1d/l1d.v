@@ -514,6 +514,8 @@ module openrv64_l1d_icx #(
     integer demand_store_byte;
     integer l1_mem_merge_byte;
     integer normal_response_merge_byte;
+    reg fast_store_demand_mshr_match_r;
+    integer fast_store_demand_mshr_scan;
 
     // A small address-trained stream table.  Repeated accesses to a line are
     // ignored, so an ordinary scalar word loop appears as a +1-line stream.
@@ -908,6 +910,25 @@ module openrv64_l1d_icx #(
          (!l1_posted_resp_valid || posted_resp_ready_i)) ||
         (fast_posted_resp_valid_q && !l1_posted_resp_valid &&
          posted_resp_ready_i);
+    // A cacheable store which traverses the shared L1 path is folded into an
+    // active demand MSHR for the same line.  The direct store-buffer shortcut
+    // bypasses that merge point, so it is unsafe while a read fill can still
+    // install an older copy of the line.  Fall back to normal tag resolution
+    // for both an allocated MSHR and a miss being classified this cycle.
+    always @* begin
+        fast_store_demand_mshr_match_r = 1'b0;
+        for (fast_store_demand_mshr_scan = 0;
+             fast_store_demand_mshr_scan < DEMAND_MSHRS;
+             fast_store_demand_mshr_scan =
+                 fast_store_demand_mshr_scan + 1)
+            if (demand_mshr_valid_q[fast_store_demand_mshr_scan] &&
+                (demand_mshr_addr_q[fast_store_demand_mshr_scan] ==
+                 {req_addr_i[63:6], 6'b0}))
+                fast_store_demand_mshr_match_r = 1'b1;
+    end
+    wire fast_store_incoming_miss_match =
+        l1_miss_valid &&
+        (l1_miss_addr == {req_addr_i[63:6], 6'b0});
     wire fast_store_match =
         (SYNC_TAG_LOOKUP != 0) && (SYNC_STORE_EXTENSION != 0) &&
         req_valid_i && req_write_i && req_posted_i &&
@@ -922,6 +943,8 @@ module openrv64_l1d_icx #(
          {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b1}}) &&
         (store_buffer_age_q[store_buffer_newest_index] !=
          STORE_BUFFER_TIMEOUT_LAST) &&
+        !fast_store_demand_mshr_match_r &&
+        !fast_store_incoming_miss_match &&
         !store_buffer_force_drain;
     wire fast_store_ready = fast_posted_resp_slot_available &&
                             !invalidate_valid_i && !l1_fill_valid &&
