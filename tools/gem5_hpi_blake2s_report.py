@@ -51,6 +51,9 @@ def main() -> None:
     instructions = int(
         require(stats, "system.cpu_cluster.cpus.commitStats0.numInsts")
     )
+    operations = int(
+        require(stats, "system.cpu_cluster.cpus.commitStats0.numOps")
+    )
     blocks = args.calls * args.blocks_per_call
     ipc = instructions / cycles
 
@@ -63,8 +66,10 @@ def main() -> None:
         f"  total_blocks={blocks}",
         f"  cycles={cycles}",
         f"  committed_instructions={instructions}",
+        f"  committed_operations={operations}",
         f"  IPC={ipc:.6f}",
         f"  cycles_per_block={cycles / blocks:.3f}",
+        f"  operations_per_block={operations / blocks:.3f}",
     ]
     for label, name in (
         ("l1i_demand_misses", "system.cpu_cluster.cpus.icache.demandMisses::total"),

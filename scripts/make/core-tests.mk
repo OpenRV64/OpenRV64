@@ -119,8 +119,9 @@ sim-exec-alu-rv64-i: $(EXEC_ALU_RV64I_SIM_BUILD)
 sim-exec-alu-rv64-m: $(EXEC_ALU_RV64M_SIM_BUILD)
 	vvp $(EXEC_ALU_RV64M_SIM_BUILD)
 
-sim-exec-ext-zbb: $(EXEC_EXT_ZBB_SIM_BUILD)
+sim-exec-ext-zbb: $(EXEC_EXT_ZBB_SIM_BUILD) $(EXEC_ZBB_ROTATE_SIM_BUILD)
 	vvp $(EXEC_EXT_ZBB_SIM_BUILD)
+	vvp $(EXEC_ZBB_ROTATE_SIM_BUILD)
 
 sim-exec-top-3p: $(EXEC_TOP_3P_SIM_BUILD)
 	vvp $(EXEC_TOP_3P_SIM_BUILD)

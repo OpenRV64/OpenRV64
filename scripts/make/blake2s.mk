@@ -2,6 +2,7 @@
 
 BLAKE2S_CALLS ?= 16
 BLAKE2S_BLOCKS_PER_CALL ?= 1
+BLAKE2S_ZBB ?= 0
 
 ifeq ($(filter $(BLAKE2S_CALLS),1 4 16 64),)
 $(error BLAKE2S_CALLS must be 1, 4, 16, or 64)
@@ -9,9 +10,16 @@ endif
 ifeq ($(filter $(BLAKE2S_BLOCKS_PER_CALL),1 2 4 8 16),)
 $(error BLAKE2S_BLOCKS_PER_CALL must be 1, 2, 4, 8, or 16)
 endif
+ifeq ($(filter $(BLAKE2S_ZBB),0 1),)
+$(error BLAKE2S_ZBB must be 0 or 1)
+endif
 
 BLAKE2S_TAG := c$(BLAKE2S_CALLS)-b$(BLAKE2S_BLOCKS_PER_CALL)
-BLAKE2S_BUILD_DIR := build/blake2s/$(BLAKE2S_TAG)
+BLAKE2S_RISCV_TAG := $(BLAKE2S_TAG)$(if $(filter 1,$(BLAKE2S_ZBB)),-zbb,)
+BLAKE2S_BUILD_DIR := build/blake2s/$(BLAKE2S_RISCV_TAG)
+BLAKE2S_RISCV_MARCH := $(if $(filter 1,$(BLAKE2S_ZBB)),rv64i_zbb_zicsr,rv64i_zicsr)
+BLAKE2S_CFLAGS := $(filter-out -march=%,$(PREFETCH_CFLAGS)) \
+	-march=$(BLAKE2S_RISCV_MARCH)
 BLAKE2S_ELF := $(BLAKE2S_BUILD_DIR)/blake2s.elf
 BLAKE2S_BIN := $(BLAKE2S_BUILD_DIR)/blake2s.bin
 BLAKE2S_MEMH := $(BLAKE2S_BUILD_DIR)/blake2s.memh
@@ -22,9 +30,10 @@ BLAKE2S_VM_BIN := $(BLAKE2S_BUILD_DIR)/blake2s-sv39.bin
 BLAKE2S_VM_MEMH := $(BLAKE2S_BUILD_DIR)/blake2s-sv39.memh
 BLAKE2S_VM_MAP := $(BLAKE2S_BUILD_DIR)/blake2s-sv39.map
 BLAKE2S_VM_DISASM := $(BLAKE2S_BUILD_DIR)/blake2s-sv39.disasm
-A53_BLAKE2S_ELF := $(BLAKE2S_BUILD_DIR)/blake2s-a53-se.elf
-A53_BLAKE2S_MAP := $(BLAKE2S_BUILD_DIR)/blake2s-a53-se.map
-A53_BLAKE2S_DISASM := $(BLAKE2S_BUILD_DIR)/blake2s-a53-se.disasm
+A53_BLAKE2S_BUILD_DIR := build/blake2s/$(BLAKE2S_TAG)
+A53_BLAKE2S_ELF := $(A53_BLAKE2S_BUILD_DIR)/blake2s-a53-se.elf
+A53_BLAKE2S_MAP := $(A53_BLAKE2S_BUILD_DIR)/blake2s-a53-se.map
+A53_BLAKE2S_DISASM := $(A53_BLAKE2S_BUILD_DIR)/blake2s-a53-se.disasm
 A53_BLAKE2S_OUTDIR ?= sim/a53/gem5-hpi-blake2s-$(BLAKE2S_TAG)
 A53_BLAKE2S_STATS := $(A53_BLAKE2S_OUTDIR)/stats.txt
 A53_BLAKE2S_REPORT := $(A53_BLAKE2S_OUTDIR)/report.txt
@@ -56,7 +65,7 @@ $(BLAKE2S_ELF): $(OPENRV64_MAKEFILES) \
 		sw/runtime/bare.S sw/runtime/c_start.inc \
 		sw/blake2s/blake2s_start.S sw/blake2s/blake2s.c sw/openrv64.ld
 	mkdir -p $(dir $@)
-	$(RISCV_CC) $(PREFETCH_CFLAGS) -fno-strict-overflow \
+	$(RISCV_CC) $(BLAKE2S_CFLAGS) -fno-strict-overflow \
 		-fconserve-stack -mstrict-align -nostdlib -nostartfiles \
 		-DBLAKE2S_BENCH_CALLS=$(BLAKE2S_CALLS) \
 		-DBLAKE2S_BLOCKS_PER_CALL=$(BLAKE2S_BLOCKS_PER_CALL) \
@@ -80,7 +89,7 @@ $(BLAKE2S_VM_ELF): $(OPENRV64_MAKEFILES) \
 		sw/runtime/openrv64-sv39.ld sw/blake2s/blake2s_start.S \
 		sw/blake2s/blake2s.c
 	mkdir -p $(dir $@)
-	$(RISCV_CC) $(PREFETCH_CFLAGS) -fno-strict-overflow \
+	$(RISCV_CC) $(BLAKE2S_CFLAGS) -fno-strict-overflow \
 		-fconserve-stack -mstrict-align -nostdlib -nostartfiles \
 		-DBLAKE2S_BENCH_CALLS=$(BLAKE2S_CALLS) \
 		-DBLAKE2S_BLOCKS_PER_CALL=$(BLAKE2S_BLOCKS_PER_CALL) \

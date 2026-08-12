@@ -944,6 +944,96 @@ module tb_exec_top_3p #(
         complete_ready = 3'b001;
         tick();
         complete_ready = 3'b000;
+
+        // Word rotates use the dedicated two-shifter pipeline.  Two requests
+        // must be accepted on adjacent cycles and retain their own completion
+        // IDs while the single EX0 completion port is backpressured.
+        packet = packet_base(64'd108, 64'h5010, 32'h6000_503b);
+        packet[ISSUE_RS1_DATA +: 64] = 64'hffff_ffff_89ab_cdef;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd8;
+        packet[ISSUE_RD +: 5] = 5'd11;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_ZBB;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ZBB_ROR;
+        packet[ISSUE_WORD] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(8);
+        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd0;
+        issue_valid = 4'b0001;
+        #1;
+        if (!issue_ready[0]) fail("EX0 did not accept first word rotate");
+        tick();
+
+        packet = packet_base(64'd109, 64'h5014, 32'h6000_103b);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h0000_0000_1234_5678;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd4;
+        packet[ISSUE_RD +: 5] = 5'd12;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_ZBB;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ZBB_ROL;
+        packet[ISSUE_WORD] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(9);
+        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
+        #1;
+        if (!issue_ready[0])
+            fail("EX0 word rotate pipeline did not sustain II=1");
+        tick();
+        issue_valid = 4'b0000;
+        tick();
+        if (!complete_valid[0] ||
+            (complete_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(8)) ||
+            (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'hffff_ffff_ef89_abcd))
+            fail("first pipelined word rotate completion mismatch");
+        complete_ready = 3'b001;
+        tick();
+        complete_ready = 3'b000;
+        if (!complete_valid[0] ||
+            (complete_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(9)) ||
+            (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'h0000_0000_2345_6781))
+            fail("second pipelined word rotate completion mismatch");
+        complete_ready = 3'b001;
+        tick();
+        complete_ready = 3'b000;
+
+        // A 64-bit rotate reuses both 32-bit shifters for one extra cycle.
+        // This is deliberate II=2 behavior, not the old three-uop sequencer.
+        packet = packet_base(64'd110, 64'h5018, 32'h6000_5033);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h0123_4567_89ab_cdef;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd37;
+        packet[ISSUE_RD +: 5] = 5'd13;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_ZBB;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ZBB_ROR;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[0*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[0*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(10);
+        issue_slot[0*SLOT_WIDTH +: SLOT_WIDTH] = 3'd2;
+        issue_valid = 4'b0001;
+        #1;
+        if (!issue_ready[0]) fail("EX0 did not accept 64-bit rotate");
+        tick();
+        #1;
+        if (issue_ready[0])
+            fail("EX0 64-bit rotate did not reserve second shifter cycle");
+        issue_valid = 4'b0000;
+        tick();
+        wait_cycles = 0;
+        while (!complete_valid[0] && (wait_cycles < 6)) begin
+            tick();
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!complete_valid[0] ||
+            (complete_id[0*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(10)) ||
+            (complete_payload[0*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             ((64'h0123_4567_89ab_cdef >> 37) |
+              (64'h0123_4567_89ab_cdef << 27))))
+            fail("pipelined 64-bit rotate completion mismatch");
+        complete_ready = 3'b001;
+        tick();
+        complete_ready = 3'b000;
+
         flush = 1'b1;
         tick();
         flush = 1'b0;

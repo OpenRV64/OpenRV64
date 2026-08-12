@@ -113,12 +113,61 @@ copies. A Linux boot PC histogram attributed 28 of 320 samples (8.75%) to
 `blake2s_compress_generic`, equivalent to 7.00M sampled cycles. That is a
 coarse PC-sampling estimate, not exact function accounting.
 
-There is no preserved BLAKE2s result for the Cortex-A53 HPI model in the
-repository. Existing HPI artifacts cover CoreMark, STREAM, page-free, and
-pointer-chase workloads. The new `sw-blake2s-a53-gem5` image builds, and
-`sim-blake2s-a53-gem5` provides a matched measurement path, but it cannot
-produce a comparison until the configured `gem5.opt` executable is restored.
-Do not compare BLAKE2s against an HPI number from a different workload.
+The matched gem5 HPI AArch64 image measured 22,257 cycles, 23,774 committed
+architectural instructions, 24,438 committed operations, 1.0682 architectural
+IPC, and 1,391.1 cycles per block. The source-matched OpenRV64 bare result
+without Zbb takes 25,568 cycles: 3,311 cycles or 14.88% more. Its 35,758
+retired RV64 instructions are 50.4% more than the AArch64 architectural count,
+even though its within-ISA IPC is higher at 1.3985. Cross-ISA IPC is not
+directly comparable.
+
+Enabling Zbb changes both code generation and execution throughput. The table
+keeps the former serialized implementation as a measured regression control:
+
+| Environment | ISA / rotate implementation | Cycles | Instructions | IPC |
+| --- | --- | ---: | ---: | ---: |
+| Bare DDR3 | RV64I | 25,568 | 35,758 | 1.3985 |
+| Bare DDR3 | Zbb, serialized | 34,456 | 25,302 | 0.7343 |
+| Bare DDR3 | Zbb, two 32-bit shifters | 20,206 | 25,302 | 1.2522 |
+| Sv39 DDR3 | RV64I | 24,755 | 35,758 | 1.4445 |
+| Sv39 DDR3 | Zbb, serialized | 33,621 | 25,302 | 0.7526 |
+| Sv39 DDR3 | Zbb, two 32-bit shifters | 19,420 | 25,302 | 1.3029 |
+| gem5 HPI | AArch64 | 22,257 | 23,774 | 1.0682 |
+
+Zbb reduces the RV64 dynamic instruction count by 29.24% and leaves it only
+6.43% above the AArch64 architectural count, or 3.54% above HPI's committed
+operation count. The old sequencer nevertheless increased cycles by 34.77%
+bare and 35.81% under Sv39 because each `roriw` occupied EX0 for shift,
+inverse-shift, and OR micro-steps. In the bare run, retirement-head cycles
+attributed to ALU completion rose from 344 to 16,471.
+
+The replacement uses two reusable 32-bit barrel-shifter lanes and a separate
+elastic OR stage. Word rotates have initiation interval one. A 64-bit rotate
+uses both lanes for direct-half terms, reuses them on the following cycle for
+wrap terms, and therefore has initiation interval two. `clz`, `ctz`, and
+`cpop` remain sequenced. Local bit reversal normalizes left shifts into right
+shifts; an unmapped Yosys structural check reports exactly two `$shr` cells
+and no `$shl` cells. This is resource-structure evidence, not mapped area or
+timing evidence.
+
+With that datapath, Zbb is 20.97% faster than RV64I bare and 21.55% faster
+under Sv39. Relative to the serialized Zbb implementation, the reductions are
+41.36% and 42.24%. The bare result is also 9.21% fewer cycles than gem5 HPI,
+but that comparison is between different ISAs and simulation models, not a
+silicon performance claim.
+
+The AArch64 compression body contains 20 `ldp` and 13 `stp` instructions per
+compression invocation, hence 528 pair instructions across this 16-block run.
+HPI reports 664 more committed operations than architectural instructions,
+consistent with most pairs decomposing into separate backend operations.
+Load/store pairs therefore provide meaningful code-density and frontend
+savings, but do not halve memory references or LSU execution work.
+
+The HPI result is from gem5 25.1.0.1 at the repository-pinned commit
+`51edbbb9cfd37e92e9901aea2caa4a8f20eda005`. It is a two-wide in-order model,
+not measured Cortex-A53 silicon. Reproduce it with
+`make sim-blake2s-a53-gem5`; the report is written under
+`sim/a53/gem5-hpi-blake2s-c16-b1/`.
 
 ## Adding a test
 

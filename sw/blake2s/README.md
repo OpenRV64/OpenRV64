@@ -36,14 +36,24 @@ make -j8 sim-blake2s-sv39
 make -j8 bench-blake2s-sv39
 make -j8 sw-blake2s-a53-gem5
 make -j8 sim-blake2s-a53-gem5
+make -j8 bench-blake2s-ddr3 BLAKE2S_ZBB=1
+make -j8 bench-blake2s-sv39 BLAKE2S_ZBB=1
 ```
 
 Supported call counts are 1, 4, 16, and 64. Supported blocks per call are 1,
 2, 4, 8, and 16. Verification runs after the measured region using a compact,
 non-unrolled implementation and compares the complete chaining state.
+`BLAKE2S_ZBB=1` builds the RISC-V images with Zbb and uses a separate `-zbb`
+artifact directory so the baseline and Zbb binaries cannot be confused.
 
 `PERF_BLAKE2S` reports measured cycles and retired instructions, calls,
 blocks per call, total compressed blocks, and a final-state checksum.
+
+The Zbb control is also the regression for the EX0 rotate datapath. The
+two-32-bit-shifter implementation measured 20,206 cycles bare and 19,420
+cycles under Sv39 for the default 16-block run, versus 34,456 and 33,621 for
+the former serialized rotate sequencer. Word rotates accept one request per
+cycle; 64-bit rotates intentionally accept one request per two cycles.
 
 The Sv39 targets run the same measured routine in supervisor mode through a
 non-identity mapping from VA `0x40000000` to PA `0x80000000`. Both translated

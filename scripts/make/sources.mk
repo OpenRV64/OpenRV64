@@ -100,7 +100,7 @@ BP_DEPS := $(RAS_DEBUG_STUB_SRCS) \
 	rtl/core/exec/bp/bimodal.v rtl/core/exec/bp/gshare_btb.v \
 	rtl/core/exec/bp/tournament_btb.v rtl/core/exec/bp/ras.v
 EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
-	rtl/core/exec/ext/zbb.v \
+	rtl/core/exec/ext/zbb.v rtl/core/exec/ext/zbb_rotate.v \
 	rtl/core/exec/lsq.v rtl/core/exec/lsu/atomics.v \
 	rtl/core/exec/lsu/misaligned.v \
 	rtl/core/exec/exec_lsu.v \
@@ -147,7 +147,7 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v rtl/core/dispatch/dispatch.v \
 	rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
-	rtl/core/exec/ext/zbb.v \
+	rtl/core/exec/ext/zbb.v rtl/core/exec/ext/zbb_rotate.v \
 	rtl/core/exec/lsq.v rtl/core/exec/lsu/atomics.v \
 	rtl/core/exec/lsu/misaligned.v \
 	rtl/core/exec/exec_lsu.v \

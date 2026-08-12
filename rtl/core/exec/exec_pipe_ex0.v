@@ -7,9 +7,9 @@
 `include "core/decode/defs/br-defs.v"
 `include "core/except/except-defs.v"
 
-// EX0 owns a base integer ALU, the iterative RV64M worker, and an optional
-// separate iterative Zbb worker.  M and Zbb share one tagged long-operation
-// context; base operations write the completion register directly on issue.
+// EX0 owns a base integer ALU, the iterative RV64M/Zbb context, and a pipelined
+// Zbb rotate datapath.  Base and rotate operations may overlap; iterative
+// operations wait until the rotate pipeline is empty.
 module openrv64_exec_pipe_ex0 #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer ENABLE_RV64M = 1,
@@ -32,6 +32,11 @@ module openrv64_exec_pipe_ex0 #(
     output wire [RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
     output wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o
 );
+
+    localparam integer ROTATE_TAG_WIDTH =
+        `OPENRV64_INSTR_ID_WIDTH + RETIRE_SLOT_WIDTH + 64 +
+        `RV64_XLEN + `RV64_INSTR_WIDTH +
+        3*`RV64_REG_ADDR_WIDTH + 1;
 
     wire [63:0] trace_id;
     wire [`RV64_XLEN-1:0] pc;
@@ -190,6 +195,24 @@ module openrv64_exec_pipe_ex0 #(
     wire zbb_illegal;
     wire [`RV64_XLEN-1:0] zbb_result;
     wire zbb_start;
+    wire rotate_ready;
+    wire rotate_busy;
+    wire rotate_result_valid;
+    wire rotate_result_ready;
+    wire [`RV64_XLEN-1:0] rotate_result;
+    wire [ROTATE_TAG_WIDTH-1:0] rotate_result_tag;
+    wire [ROTATE_TAG_WIDTH-1:0] rotate_input_tag = {
+        issue_id_i,
+        issue_slot_i,
+        trace_id,
+        pc,
+        instr,
+        rs1_addr,
+        rs2_addr,
+        rd_addr,
+        reg_write
+    };
+    wire rotate_start;
     generate
         if (ENABLE_RV64ZBB != 0) begin : g_zbb
             openrv64_exec_ext_zbb u_zbb (
@@ -215,6 +238,26 @@ module openrv64_exec_pipe_ex0 #(
                 .illegal_o(zbb_illegal),
                 .result_o(zbb_result)
             );
+
+            openrv64_exec_zbb_rotate #(
+                .TAG_WIDTH(ROTATE_TAG_WIDTH)
+            ) u_zbb_rotate (
+                .clk(clk),
+                .rst_n(rst_n),
+                .flush_i(flush_i),
+                .valid_i(rotate_start),
+                .ready_o(rotate_ready),
+                .op_sel_i(alu_op),
+                .word_op_i(word_op),
+                .src_i(operand_rs1),
+                .amount_i(alu_src2),
+                .tag_i(rotate_input_tag),
+                .busy_o(rotate_busy),
+                .result_valid_o(rotate_result_valid),
+                .result_ready_i(rotate_result_ready),
+                .result_o(rotate_result),
+                .result_tag_o(rotate_result_tag)
+            );
         end else begin : g_no_zbb
             assign zbb_ready = 1'b0;
             assign zbb_busy = 1'b0;
@@ -226,6 +269,11 @@ module openrv64_exec_pipe_ex0 #(
             assign zbb_alu_word = 1'b0;
             assign zbb_alu_src1 = {`RV64_XLEN{1'b0}};
             assign zbb_alu_src2 = {`RV64_XLEN{1'b0}};
+            assign rotate_ready = 1'b0;
+            assign rotate_busy = 1'b0;
+            assign rotate_result_valid = 1'b0;
+            assign rotate_result = {`RV64_XLEN{1'b0}};
+            assign rotate_result_tag = {ROTATE_TAG_WIDTH{1'b0}};
         end
     endgenerate
 
@@ -235,6 +283,10 @@ module openrv64_exec_pipe_ex0 #(
                        (alu_op != `RV64_ALU_OP_INVALID);
     wire zbb_selected = (alu_ext == `RV64_ALU_EXT_ZBB) &&
                          (alu_op != `RV64_ALU_OP_INVALID);
+    wire rotate_selected = zbb_selected &&
+        ((alu_op == `RV64_ALU_OP_ZBB_ROL) ||
+         (alu_op == `RV64_ALU_OP_ZBB_ROR));
+    wire sequenced_zbb_selected = zbb_selected && !rotate_selected;
     wire base_result_illegal = illegal || !alu_valid || alu_illegal;
     wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] base_cause =
         base_result_illegal ? `RV64_EXCEPT_CAUSE_ILLEGAL_INSTR :
@@ -312,15 +364,65 @@ module openrv64_exec_pipe_ex0 #(
         {`RV64_XLEN{1'b0}}
     };
 
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] rotate_id;
+    wire [RETIRE_SLOT_WIDTH-1:0] rotate_slot;
+    wire [63:0] rotate_trace_id;
+    wire [`RV64_XLEN-1:0] rotate_pc;
+    wire [`RV64_INSTR_WIDTH-1:0] rotate_instr;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] rotate_rs1_addr;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] rotate_rs2_addr;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] rotate_rd_addr;
+    wire rotate_reg_write;
+    assign {
+        rotate_id,
+        rotate_slot,
+        rotate_trace_id,
+        rotate_pc,
+        rotate_instr,
+        rotate_rs1_addr,
+        rotate_rs2_addr,
+        rotate_rd_addr,
+        rotate_reg_write
+    } = rotate_result_tag;
+    wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+        rotate_completion_data = {
+        rotate_trace_id,
+        rotate_pc,
+        rotate_pc + 64'd4,
+        rotate_instr,
+        rotate_result,
+        rotate_rs1_addr,
+        rotate_rs2_addr,
+        rotate_rd_addr,
+        rotate_reg_write,
+        1'b0,
+        1'b0,
+        1'b0,
+        1'b0,
+        1'b0,
+        {`RV64_EXCEPT_CAUSE_WIDTH{1'b0}},
+        {`RV64_XLEN{1'b0}},
+        1'b0,
+        1'b0,
+        1'b0,
+        {`RV64_FUNCT12_WIDTH{1'b0}},
+        {`RV64_XLEN{1'b0}}
+    };
+
     wire output_available = !complete_valid_q || complete_ready_i;
-    assign issue_ready_o = !worker_pending_q && output_available &&
-                           (base_selected ||
-                            (m_selected && ENABLE_RV64M && m_ready) ||
-                            (zbb_selected && ENABLE_RV64ZBB && zbb_ready));
+    assign issue_ready_o = !worker_pending_q &&
+        ((base_selected && output_available && !rotate_result_valid) ||
+         (rotate_selected && ENABLE_RV64ZBB && rotate_ready) ||
+         (m_selected && ENABLE_RV64M && m_ready && !rotate_busy &&
+          output_available) ||
+         (sequenced_zbb_selected && ENABLE_RV64ZBB && zbb_ready &&
+          !rotate_busy && output_available));
     wire issue_fire = issue_valid_i && issue_ready_o;
     wire base_fire = issue_fire && base_selected;
     assign m_start = issue_fire && m_selected && ENABLE_RV64M;
-    assign zbb_start = issue_fire && zbb_selected && ENABLE_RV64ZBB;
+    assign zbb_start = issue_fire && sequenced_zbb_selected && ENABLE_RV64ZBB;
+    assign rotate_start = issue_fire && rotate_selected && ENABLE_RV64ZBB;
+    assign rotate_result_ready = output_available;
     assign m_result_ready = worker_pending_q && !worker_zbb_q &&
                             m_result_valid && output_available;
     assign zbb_result_ready = worker_pending_q && worker_zbb_q &&
@@ -373,7 +475,12 @@ module openrv64_exec_pipe_ex0 #(
                 worker_reg_write_q <= reg_write;
             end
 
-            if (worker_result_ready) begin
+            if (rotate_result_valid && rotate_result_ready) begin
+                complete_valid_q <= 1'b1;
+                complete_id_q <= rotate_id;
+                complete_slot_q <= rotate_slot;
+                complete_payload_q <= rotate_completion_data;
+            end else if (worker_result_ready) begin
                 worker_pending_q <= 1'b0;
                 complete_valid_q <= 1'b1;
                 complete_id_q <= worker_id_q;

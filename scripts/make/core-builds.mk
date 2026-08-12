@@ -239,6 +239,12 @@ $(EXEC_EXT_ZBB_SIM_BUILD): tb/tb_exec_ext_zbb.sv \
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_EXT_ZBB_SIM_BUILD) \
 		tb/tb_exec_ext_zbb.sv
 
+$(EXEC_ZBB_ROTATE_SIM_BUILD): tb/tb_exec_zbb_rotate.sv \
+		rtl/core/exec/ext/zbb_rotate.v rtl/core/decode/defs/alu-defs.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_ZBB_ROTATE_SIM_BUILD) \
+		rtl/core/exec/ext/zbb_rotate.v tb/tb_exec_zbb_rotate.sv
+
 $(EXEC_TOP_3P_SIM_BUILD): tb/tb_exec_top_3p.sv $(EXEC_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(STAGE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_TOP_3P_SIM_BUILD) \
