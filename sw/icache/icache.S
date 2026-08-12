@@ -42,16 +42,15 @@
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl main
+.type main, @function
 
-_start:
-    la      sp, __stack_top
+main:
     li      s0, 0
     fence.i
     csrr    s1, mcycle
     j       icache_measure_begin
-.size _start, .-_start
+.size main, .-main
 
 .section .text.icache_tape, "ax", @progbits
 .balign 64

@@ -15,11 +15,15 @@
 .equ ATOMIC_PASS,      0x41544f4d49434f4b /* "ATOMICOK" */
 .equ ATOMIC_FAIL_BASE, 0x41544f4d46410000 /* "ATOMFA\0\0" */
 
+#ifndef OPENRV64_ATOMIC_ENTRY
+#define OPENRV64_ATOMIC_ENTRY main
+#endif
+
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl OPENRV64_ATOMIC_ENTRY
+.type OPENRV64_ATOMIC_ENTRY, @function
 
 /*
  * CHECK_EQ actual, expected, case
@@ -78,8 +82,7 @@
     CHECK_EQ t2, t3, (\case + 1)
 .endm
 
-_start:
-    la      sp, __stack_top
+OPENRV64_ATOMIC_ENTRY:
 
     /*
      * SC without a reservation fails and does not modify memory.
@@ -224,15 +227,12 @@ _start:
 
     fence   rw, rw
     li      a0, ATOMIC_PASS
-    ebreak
+    ret
 
 atomic_fail:
-    ebreak
+    ret
 
-.Lhalt:
-    j       .Lhalt
-
-.size _start, .-_start
+.size OPENRV64_ATOMIC_ENTRY, .-OPENRV64_ATOMIC_ENTRY
 
 .section .data.atomic, "aw", @progbits
 .balign 64

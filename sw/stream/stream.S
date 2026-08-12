@@ -31,14 +31,17 @@
 .equ STREAM_PASS, 0x53545245414d4f4b /* "STREAMOK" */
 .equ STREAM_FAIL, 0x53545245414d4244 /* "STREAMBD" */
 
+#ifndef OPENRV64_STREAM_ENTRY
+#define OPENRV64_STREAM_ENTRY main
+#endif
+
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl OPENRV64_STREAM_ENTRY
+.type OPENRV64_STREAM_ENTRY, @function
 
-_start:
-    la      sp, __stack_top
+OPENRV64_STREAM_ENTRY:
     la      s0, stream_a
     la      s1, stream_c
     li      s2, STREAM_WORDS
@@ -196,16 +199,13 @@ stream_measure_end:
     bnez    s2, .Lverify
 
     li      a0, STREAM_PASS
-    ebreak
+    ret
 
 .Lfail:
     li      a0, STREAM_FAIL
-    ebreak
+    ret
 
-.Lhalt:
-    j       .Lhalt
-
-.size _start, .-_start
+.size OPENRV64_STREAM_ENTRY, .-OPENRV64_STREAM_ENTRY
 
 .section .rodata.stream_a, "a", @progbits
 .balign 64

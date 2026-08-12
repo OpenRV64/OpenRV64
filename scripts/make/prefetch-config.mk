@@ -70,7 +70,7 @@ STREAM_MEASURE_END = $(shell $(RISCV_NM) -n $(STREAM_ELF) | \
 STREAM_VM_MEASURE_END = $(shell $(RISCV_NM) -n $(STREAM_VM_ELF) | \
 	awk '$$3 == "stream_measure_end" { print $$1 }')
 STREAM_VM_DONE = $(shell $(RISCV_NM) -n $(STREAM_VM_ELF) | \
-	awk '$$3 == "stream_vm_done" { print $$1 }')
+	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
 STREAM_PASS := 53545245414d4f4b
 STREAM_MEMH_BYTES := 0x40000
 STREAM_MEMH_WORDS := 8192
@@ -90,9 +90,9 @@ STORE_EXTENSION_VM_BIN := sw/store-extension/store-extension-sv39.bin
 STORE_EXTENSION_VM_MAP := sw/store-extension/store-extension-sv39.map
 STORE_EXTENSION_VM_DISASM := sw/store-extension/store-extension-sv39.disasm
 STORE_EXTENSION_VM_MEMH := sim/store-extension-sv39.memh
-STORE_EXTENSION_VM_MEASURE_END = $(shell $(RISCV_NM) -n \
+STORE_EXTENSION_VM_DONE = $(shell $(RISCV_NM) -n \
 	$(STORE_EXTENSION_VM_ELF) | awk \
-	'$$3 == "store_extension_measure_end" { print $$1 }')
+	'$$3 == "openrv64_runtime_done" { print $$1 }')
 STORE_EXTENSION_VM_MEMH_BYTES := 0x44000
 STORE_EXTENSION_VM_MEMH_WORDS := 8704
 STORE_EXTENSION_VM_MAX_CYCLES ?= 2000000

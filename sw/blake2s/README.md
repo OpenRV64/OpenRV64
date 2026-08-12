@@ -32,6 +32,10 @@ make -j8 sw-blake2s
 make -j8 sim-blake2s
 make -j8 bench-blake2s
 make -j8 bench-blake2s-ddr3
+make -j8 sim-blake2s-sv39
+make -j8 bench-blake2s-sv39
+make -j8 sw-blake2s-a53-gem5
+make -j8 sim-blake2s-a53-gem5
 ```
 
 Supported call counts are 1, 4, 16, and 64. Supported blocks per call are 1,
@@ -41,6 +45,18 @@ non-unrolled implementation and compares the complete chaining state.
 `PERF_BLAKE2S` reports measured cycles and retired instructions, calls,
 blocks per call, total compressed blocks, and a final-state checksum.
 
+The Sv39 targets run the same measured routine in supervisor mode through a
+non-identity mapping from VA `0x40000000` to PA `0x80000000`. Both translated
+instruction and data accesses are required by the testbench, and timed DDR3
+is enabled so this variant matches the Linux execution environment more
+closely than the original bare-addressed target. Both images use the common
+`sw/runtime` `c_init()`/`main()` startup contract.
+
 This is an instruction-fetch and dependent-integer benchmark with small,
 cache-resident data. DDR3 selection primarily affects initial code/data fill;
 it is not a streaming-memory workload.
+
+The AArch64 target runs the same benchmark region on gem5's Cortex-A53 HPI
+model, bracketed by `m5_reset_stats` and `m5_dump_stats`. It requires the
+configured `GEM5_AARCH64` executable and does not silently substitute an
+unmatched historical HPI workload.

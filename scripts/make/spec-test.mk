@@ -22,11 +22,12 @@ SPEC_TEST_ASFLAGS := -march=rv64ima_zicsr_zifencei -mabi=lp64 \
 	bench-spec-test-spec bench-spec-test-run bench-spec-test-two-branch
 
 $(SPEC_TEST_ELF): $(OPENRV64_MAKEFILES) sw/spec_test/spec_test.S \
-		sw/openrv64-magic.ld
+		sw/runtime/bare.S sw/runtime/c_start.inc sw/openrv64-magic.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(SPEC_TEST_ASFLAGS) \
 		-Wl,--build-id=none,--gc-sections,-Map,$(SPEC_TEST_MAP) \
-		-T sw/openrv64-magic.ld -o $@ sw/spec_test/spec_test.S
+		-T sw/openrv64-magic.ld -o $@ sw/runtime/bare.S \
+		sw/spec_test/spec_test.S
 
 $(SPEC_TEST_BIN): $(SPEC_TEST_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@

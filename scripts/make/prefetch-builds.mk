@@ -1,12 +1,14 @@
 # Prefetch workload and Verilator build recipes.
 
-$(STREAM_ELF): $(OPENRV64_MAKEFILES) sw/stream/stream.S sw/openrv64.ld
+$(STREAM_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/stream/stream.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
+		-DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wa,--defsym,STREAM_KERNEL=$(STREAM_KERNEL_ID) \
 		-Wa,--defsym,STREAM_BYTES=$(STREAM_BYTES) \
 		-Wl,--build-id=none,-Map,$(STREAM_MAP) \
-		-T sw/openrv64.ld -o $@ sw/stream/stream.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/stream/stream.S
 
 $(STREAM_BIN): $(STREAM_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -15,15 +17,17 @@ $(STREAM_DISASM): $(STREAM_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
 $(STREAM_VM_ELF): $(OPENRV64_MAKEFILES) sw/stream/stream.S \
-		sw/stream/stream_vm_boot.S sw/stream/openrv64-stream-vm.ld
+		sw/runtime/sv39.S sw/runtime/c_start.inc \
+		sw/runtime/openrv64-sv39.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
+		-DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wa,--defsym,STREAM_KERNEL=$(STREAM_KERNEL_ID) \
 		-Wa,--defsym,STREAM_BYTES=$(STREAM_BYTES) \
 		-Wa,--defsym,STREAM_VM=1 \
 		-Wl,--build-id=none,-Map,$(STREAM_VM_MAP) \
-		-T sw/stream/openrv64-stream-vm.ld -o $@ \
-		sw/stream/stream_vm_boot.S sw/stream/stream.S
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S sw/stream/stream.S
 
 $(STREAM_VM_BIN): $(STREAM_VM_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -38,12 +42,13 @@ $(STREAM_VM_DISASM): $(STREAM_VM_ELF)
 
 $(STORE_EXTENSION_VM_ELF): $(OPENRV64_MAKEFILES) \
 		sw/store-extension/store_extension_sv39.S \
-		sw/stream/stream_vm_boot.S sw/stream/openrv64-stream-vm.ld
+		sw/runtime/sv39.S sw/runtime/c_start.inc \
+		sw/runtime/openrv64-sv39.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(STORE_EXTENSION_VM_MAP) \
-		-T sw/stream/openrv64-stream-vm.ld -o $@ \
-		sw/stream/stream_vm_boot.S \
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S \
 		sw/store-extension/store_extension_sv39.S
 
 $(STORE_EXTENSION_VM_BIN): $(STORE_EXTENSION_VM_ELF)
@@ -71,12 +76,14 @@ $(A53_STREAM_ELF): $(OPENRV64_MAKEFILES) sw/arm_a53/stream_se.S \
 $(A53_STREAM_DISASM): $(A53_STREAM_ELF)
 	$(AARCH64_OBJDUMP) -d $< > $@
 
-$(STRIDE_ELF): $(OPENRV64_MAKEFILES) sw/stride/stride.S sw/openrv64.ld
+$(STRIDE_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/stride/stride.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
+		-DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wa,--defsym,STRIDE_BYTES=$(STRIDE_BYTES) \
 		-Wl,--build-id=none,-Map,$(STRIDE_MAP) \
-		-T sw/openrv64.ld -o $@ sw/stride/stride.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/stride/stride.S
 
 $(STRIDE_BIN): $(STRIDE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -84,11 +91,13 @@ $(STRIDE_BIN): $(STRIDE_ELF)
 $(STRIDE_DISASM): $(STRIDE_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
-$(STENCIL_ELF): $(OPENRV64_MAKEFILES) sw/stride/stencil5.S sw/openrv64.ld
+$(STENCIL_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/stride/stencil5.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
+		-DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wl,--build-id=none,-Map,$(STENCIL_MAP) \
-		-T sw/openrv64.ld -o $@ sw/stride/stencil5.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/stride/stencil5.S
 
 $(STENCIL_BIN): $(STENCIL_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -96,13 +105,14 @@ $(STENCIL_BIN): $(STENCIL_ELF)
 $(STENCIL_DISASM): $(STENCIL_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
-$(ICACHE_ELF): $(OPENRV64_MAKEFILES) sw/icache/icache.S sw/openrv64.ld
+$(ICACHE_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/icache/icache.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_I_ASFLAGS) \
 		-Wa,--defsym,ICACHE_PATTERN=$(ICACHE_PATTERN_ID) \
 		-Wa,--defsym,ICACHE_BYTES=$(ICACHE_BYTES) \
 		-Wl,--build-id=none,-Map,$(ICACHE_MAP) \
-		-T sw/openrv64.ld -o $@ sw/icache/icache.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/icache/icache.S
 
 $(ICACHE_BIN): $(ICACHE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -111,11 +121,13 @@ $(ICACHE_DISASM): $(ICACHE_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
 $(LZ4_ELF): $(OPENRV64_MAKEFILES) sw/lz4/lz4_start.S sw/lz4/lz4.c \
-		sw/openrv64.ld
+		sw/runtime/bare.S sw/runtime/c_start.inc sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_CFLAGS) -nostdlib -nostartfiles \
+		-DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wl,--build-id=none,-Map,$(LZ4_MAP) \
-		-T sw/openrv64.ld -o $@ sw/lz4/lz4_start.S sw/lz4/lz4.c
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S \
+		sw/lz4/lz4_start.S sw/lz4/lz4.c
 
 $(LZ4_BIN): $(LZ4_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@

@@ -1,14 +1,13 @@
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl main
+.type main, @function
 
 .equ LZ4_PASS, 0x4c5a345f5f4f4b21 /* "LZ4__OK!" */
 .equ LZ4_FAIL, 0x4c5a345f5f424421 /* "LZ4__BD!" */
 
-_start:
-    la      sp, __stack_top
+main:
     fence   rw, rw
     csrr    s0, mcycle
 
@@ -40,4 +39,4 @@ lz4_measure_end:
 .Lhalt:
     j       .Lhalt
 
-.size _start, .-_start
+.size main, .-main

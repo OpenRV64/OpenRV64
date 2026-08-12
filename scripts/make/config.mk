@@ -57,11 +57,11 @@ CORE_3P_VM_BIN := sim/coremark-loop-vm.bin
 CORE_3P_VM_MEMH := sim/coremark-loop-vm.memh
 CORE_3P_VM_MAP := sim/coremark-loop-vm.map
 CORE_3P_VM_DISASM := sim/coremark-loop-vm.disasm
-CORE_3P_VM_MEMH_BYTES := 0x24000
-CORE_3P_VM_MEMH_WORDS := 4608
+CORE_3P_VM_MEMH_BYTES := 0x44000
+CORE_3P_VM_MEMH_WORDS := 8704
 CORE_3P_VM_MAX_CYCLES ?= 300000
 CORE_3P_VM_DONE_PC = $(shell $(RISCV_NM) -n $(CORE_3P_VM_ELF) | \
-	awk '$$3 == "coremark_vm_done" { print $$1 }')
+	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
 CORE_4H_VM_ELF := sim/coremark-loop-4h-vm.elf
 CORE_4H_VM_TEMPLATE_BIN := sim/coremark-loop-4h-vm-template.bin
 CORE_4H_VM_BIN := sim/coremark-loop-4h-vm.bin

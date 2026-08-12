@@ -35,7 +35,7 @@ FENCE_BENCH_MEMH := $(FENCE_BUILD_DIR)/fence-bench-sv39.memh
 FENCE_BENCH_MAP := $(FENCE_BUILD_DIR)/fence-bench-sv39.map
 FENCE_BENCH_DISASM := $(FENCE_BUILD_DIR)/fence-bench-sv39.disasm
 FENCE_BENCH_DONE = $(shell $(RISCV_NM) -n $(FENCE_BENCH_ELF) | \
-	awk '$$3 == "fence_vm_done" { print $$1 }')
+	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
 
 ATOMIC_SV39_ELF := $(FENCE_BUILD_DIR)/atomic-sv39.elf
 ATOMIC_SV39_BIN := $(FENCE_BUILD_DIR)/atomic-sv39.bin
@@ -43,7 +43,7 @@ ATOMIC_SV39_MEMH := $(FENCE_BUILD_DIR)/atomic-sv39.memh
 ATOMIC_SV39_MAP := $(FENCE_BUILD_DIR)/atomic-sv39.map
 ATOMIC_SV39_DISASM := $(FENCE_BUILD_DIR)/atomic-sv39.disasm
 ATOMIC_SV39_DONE = $(shell $(RISCV_NM) -n $(ATOMIC_SV39_ELF) | \
-	awk '$$3 == "fence_vm_done" { print $$1 }')
+	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
 
 .PHONY: sw-fence-sv39 sw-atomic-sv39 sim-fence-sv39-order \
 	sim-fence-sv39-case \
@@ -59,12 +59,13 @@ $(FENCE_CORRECT_ELF): $(OPENRV64_MAKEFILES) \
 		$(FENCE_SV39_BOOT) sw/fence/fence_correctness.S
 
 $(FENCE_BENCH_ELF): $(OPENRV64_MAKEFILES) \
-		$(FENCE_SV39_BOOT) sw/fence/fence_bench.S $(FENCE_SV39_LD)
+		sw/runtime/sv39.S sw/runtime/c_start.inc \
+		sw/runtime/openrv64-sv39.ld sw/fence/fence_bench.S
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(FENCE_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(FENCE_BENCH_MAP) \
-		-T $(FENCE_SV39_LD) -o $@ \
-		$(FENCE_SV39_BOOT) sw/fence/fence_bench.S
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S sw/fence/fence_bench.S
 
 $(FENCE_CASE_ELF): $(OPENRV64_MAKEFILES) \
 		$(FENCE_SV39_BOOT) sw/fence/fence_correctness.S $(FENCE_SV39_LD)
@@ -75,12 +76,13 @@ $(FENCE_CASE_ELF): $(OPENRV64_MAKEFILES) \
 		$(FENCE_SV39_BOOT) sw/fence/fence_correctness.S
 
 $(ATOMIC_SV39_ELF): $(OPENRV64_MAKEFILES) \
-		$(FENCE_SV39_BOOT) sw/atomic/atomic.S $(FENCE_SV39_LD)
+		sw/runtime/sv39.S sw/runtime/c_start.inc \
+		sw/runtime/openrv64-sv39.ld sw/atomic/atomic.S
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(FENCE_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(ATOMIC_SV39_MAP) \
-		-T $(FENCE_SV39_LD) -o $@ \
-		$(FENCE_SV39_BOOT) sw/atomic/atomic.S
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S sw/atomic/atomic.S
 
 $(FENCE_CORRECT_BIN): $(FENCE_CORRECT_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@

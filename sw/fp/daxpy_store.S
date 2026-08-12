@@ -95,9 +95,9 @@
 
 .section .text.startup, "ax", @progbits
 .align 3
-.globl _start
-.type _start, @function
-_start:
+.globl main
+.type main, @function
+main:
     li      t0, MSTATUS_FS_INITIAL
     csrs    mstatus, t0
     csrw    fflags, zero
@@ -198,7 +198,7 @@ daxpy_store_fail_flags:
     li      a0, DAXPY_STORE_FLAGS
     ebreak
     j       .
-.size _start, .-_start
+.size main, .-main
 
 .section .data, "aw", @progbits
 .align 3

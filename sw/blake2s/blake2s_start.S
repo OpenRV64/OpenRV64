@@ -14,23 +14,37 @@
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl c_init
+.type c_init, @function
 
-_start:
-    la      sp, __stack_top
+c_init:
+    addi    sp, sp, -16
+    sd      ra, 8(sp)
     call    blake2s_bench_reset
+    ld      ra, 8(sp)
+    addi    sp, sp, 16
+    ret
+
+.size c_init, .-c_init
+
+.globl main
+.type main, @function
+
+main:
+    addi    sp, sp, -16
+    sd      ra, 8(sp)
     fence   rw, rw
-    csrr    s0, mcycle
-    csrr    s1, minstret
+    /* Counter aliases work in M-mode and through mcounteren in S-mode. */
+    csrr    s0, cycle
+    csrr    s1, instret
 
 .globl blake2s_measure_begin
 blake2s_measure_begin:
     call    blake2s_bench_run
     mv      s2, a0
 
-    csrr    t0, mcycle
-    csrr    t1, minstret
+    csrr    t0, cycle
+    csrr    t1, instret
     sub     a0, t0, s0
     sub     a1, t1, s1
     li      a2, BLAKE2S_BENCH_CALLS
@@ -57,13 +71,14 @@ blake2s_measure_end:
     call    blake2s_bench_verify
     beqz    a0, .Lfail
     li      a0, BLAKE2S_PASS
-    ebreak
+    j       .Lreturn
 
 .Lfail:
     li      a0, BLAKE2S_FAIL
-    ebreak
 
-.Lhalt:
-    j       .Lhalt
+.Lreturn:
+    ld      ra, 8(sp)
+    addi    sp, sp, 16
+    ret
 
-.size _start, .-_start
+.size main, .-main

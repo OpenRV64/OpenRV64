@@ -14,16 +14,19 @@
  */
 
 .equ FENCE_BENCH_ITERS, 1024
-.equ BENCH_BASE,        0x40010000
+
+#ifndef OPENRV64_FENCE_BENCH_ENTRY
+#define OPENRV64_FENCE_BENCH_ENTRY main
+#endif
 
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl OPENRV64_FENCE_BENCH_ENTRY
+.type OPENRV64_FENCE_BENCH_ENTRY, @function
 
 .macro WARM_RR use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, 32
 991:
     ld      t0, 0(s0)
@@ -38,7 +41,7 @@
 
 .macro MEASURE_RR result, use_fence
     WARM_RR \use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, FENCE_BENCH_ITERS
     csrr    s2, cycle
 991:
@@ -55,7 +58,7 @@
 .endm
 
 .macro WARM_RW use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, 32
 991:
     ld      t0, 0(s0)
@@ -70,7 +73,7 @@
 
 .macro MEASURE_RW result, use_fence
     WARM_RW \use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, FENCE_BENCH_ITERS
     csrr    s2, cycle
 991:
@@ -87,7 +90,7 @@
 .endm
 
 .macro WARM_WR use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, 32
 991:
     sd      s1, 128(s0)
@@ -102,7 +105,7 @@
 
 .macro MEASURE_WR result, use_fence
     WARM_WR \use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, FENCE_BENCH_ITERS
     csrr    s2, cycle
 991:
@@ -119,7 +122,7 @@
 .endm
 
 .macro WARM_WW use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, 32
 991:
     sd      s1, 128(s0)
@@ -134,7 +137,7 @@
 
 .macro MEASURE_WW result, use_fence
     WARM_WW \use_fence
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     li      s1, FENCE_BENCH_ITERS
     csrr    s2, cycle
 991:
@@ -150,11 +153,10 @@
     fence   w, r
 .endm
 
-_start:
-    la      sp, __stack_top
+OPENRV64_FENCE_BENCH_ENTRY:
 
     /* Touch every measured line before taking counters. */
-    li      s0, BENCH_BASE
+    la      s0, fence_bench_data
     ld      t0, 0(s0)
     ld      t0, 64(s0)
     sd      zero, 128(s0)
@@ -171,11 +173,11 @@ _start:
     MEASURE_WW a7, 1
 
     fence   w, r
-    ebreak
+    ret
 
-.size _start, .-_start
+.size OPENRV64_FENCE_BENCH_ENTRY, .-OPENRV64_FENCE_BENCH_ENTRY
 
-.section .fence_test, "aw", @progbits
+.section .data.fence_test, "aw", @progbits
 .balign 4096
 .globl fence_bench_data
 fence_bench_data:

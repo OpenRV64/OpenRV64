@@ -15,11 +15,10 @@
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl main
+.type main, @function
 
-_start:
-    la      sp, __stack_top
+main:
     la      s0, stencil_source
     la      s1, stencil_output
     li      s2, STENCIL_OUTPUT_WORDS
@@ -87,7 +86,7 @@ stencil_measure_end:
 .Lhalt:
     j       .Lhalt
 
-.size _start, .-_start
+.size main, .-main
 
 .section .rodata.stencil_source, "a", @progbits
 .balign 64

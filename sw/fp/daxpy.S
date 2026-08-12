@@ -31,9 +31,9 @@
 
 .section .text.startup, "ax", @progbits
 .align 3
-.globl _start
-.type _start, @function
-_start:
+.globl main
+.type main, @function
+main:
     /* F/D instructions are illegal while mstatus.FS is Off. */
     li      t0, MSTATUS_FS_INITIAL
     csrs    mstatus, t0
@@ -144,7 +144,7 @@ daxpy_done:
     li      a0, DAXPY_PASS
     ebreak
     j       .
-.size _start, .-_start
+.size main, .-main
 
 .section .text, "ax", @progbits
 .align 3

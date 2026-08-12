@@ -161,11 +161,11 @@ sim-stream-ddr3-vm-suite:
 	$(MAKE) sim-stream-ddr3-vm STREAM_KERNEL=triad
 
 sim-store-extension-sv39: $(STORE_EXTENSION_VM_MEMH)
-	test -n "$(STORE_EXTENSION_VM_MEASURE_END)"
+	test -n "$(STORE_EXTENSION_VM_DONE)"
 	$(MAKE) sim-core-3p-icx-l2 \
 		CORE_3P_ICX_L2_MEMH=$(STORE_EXTENSION_VM_MEMH) \
 		CORE_3P_ICX_L2_MEMH_WORDS=$(STORE_EXTENSION_VM_MEMH_WORDS) \
-		CORE_3P_ICX_L2_ARGS="+done_pc=$(STORE_EXTENSION_VM_MEASURE_END) +require_sv39 +report_store_extension_sv39" \
+		CORE_3P_ICX_L2_ARGS="+done_pc=$(STORE_EXTENSION_VM_DONE) +require_sv39 +report_store_extension_sv39" \
 		CORE_3P_ICX_L2_MAX_CYCLES=$(STORE_EXTENSION_VM_MAX_CYCLES) \
 		CORE_3P_ICX_L2_MODE=3 \
 		CORE_3P_ICX_L2_RETIRE_DEPTH=16 \

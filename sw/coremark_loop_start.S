@@ -1,20 +1,16 @@
 .section .text.startup, "ax", @progbits
 .option norvc
-.globl _start
-.type _start, @function
+.globl main
+.type main, @function
 
-_start:
-    j    .Linit
-
-    /* Keep 0x80000010 off the execution path: the legacy software-trace
-       harness reserves that PC as its finite-test completion marker. */
-    .org 0x20
-.Linit:
-    li   sp, 0x80010000
-    li   tp, 0
+main:
+    addi sp, sp, -16
+    sd   ra, 8(sp)
     call coremark_loop
-    ebreak
-.Lhalt:
-    j    .Lhalt
+.globl coremark_vm_done
+coremark_vm_done:
+    ld   ra, 8(sp)
+    addi sp, sp, 16
+    ret
 
-.size _start, .-_start
+.size main, .-main

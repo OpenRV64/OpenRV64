@@ -1,7 +1,7 @@
 /*
  * Integrated same-line store-extension benchmark.
  *
- * The Sv39 boot wrapper maps supervisor VA 0x40000000 to PA 0x80000000.
+ * The shared Sv39 runtime maps supervisor VA 0x40000000 to PA 0x80000000.
  * Sixteen lines are made resident before the timed interval.  The measured
  * loop then performs 4096 translated 64-bit stores: eight adjacent stores per
  * line, sixteen lines per pass, and thirty-two passes.  The final fence keeps
@@ -13,14 +13,17 @@
 .equ STORE_EXTENSION_WORDS, (STORE_EXTENSION_LINES * 8)
 .equ STORE_EXTENSION_EXPECT, STORE_EXTENSION_PASSES
 
+#ifndef OPENRV64_STORE_EXTENSION_ENTRY
+#define OPENRV64_STORE_EXTENSION_ENTRY main
+#endif
+
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl OPENRV64_STORE_EXTENSION_ENTRY
+.type OPENRV64_STORE_EXTENSION_ENTRY, @function
 
-_start:
-    la      sp, __stack_top
+OPENRV64_STORE_EXTENSION_ENTRY:
 
     /* Demand-fill each target line before measuring valid-hit stores. */
     la      s0, store_extension_data
@@ -75,14 +78,13 @@ store_extension_measure_begin:
 .globl store_extension_measure_end
 store_extension_measure_end:
     nop
-.Lhalt:
-    j       .Lhalt
+    ret
 
 .Lfail:
     li      a0, 0x53544f5245424144 /* "STOREBAD" */
-    j       .Lfail
+    ret
 
-.size _start, .-_start
+.size OPENRV64_STORE_EXTENSION_ENTRY, .-OPENRV64_STORE_EXTENSION_ENTRY
 
 .section .data.store_extension, "aw", @progbits
 .balign 64

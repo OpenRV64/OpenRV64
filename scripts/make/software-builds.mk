@@ -56,11 +56,12 @@ $(UART_FIRMWARE_ELF): $(OPENRV64_MAKEFILES) sw/start.S sw/uart.c sw/openrv64.ld
 $(UART_FIRMWARE_BIN): $(UART_FIRMWARE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
-$(FP_DAXPY_ELF): $(OPENRV64_MAKEFILES) sw/fp/daxpy.S sw/openrv64.ld
+$(FP_DAXPY_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/fp/daxpy.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(FP_DAXPY_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(FP_DAXPY_MAP) \
-		-T sw/openrv64.ld -o $@ sw/fp/daxpy.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/fp/daxpy.S
 
 $(FP_DAXPY_BIN): $(FP_DAXPY_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -73,11 +74,12 @@ $(FP_DAXPY_MEMH): $(FP_DAXPY_BIN) tools/bin2mem.py
 		--size $(FP_DAXPY_MEMH_BYTES) --word-bytes 32
 
 $(FP_DAXPY_COMPUTE_ELF): $(OPENRV64_MAKEFILES) \
+		sw/runtime/bare.S sw/runtime/c_start.inc \
 		sw/fp/daxpy_compute.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(FP_DAXPY_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(FP_DAXPY_COMPUTE_MAP) \
-		-T sw/openrv64.ld -o $@ sw/fp/daxpy_compute.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/fp/daxpy_compute.S
 
 $(FP_DAXPY_COMPUTE_BIN): $(FP_DAXPY_COMPUTE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -90,11 +92,12 @@ $(FP_DAXPY_COMPUTE_MEMH): $(FP_DAXPY_COMPUTE_BIN) tools/bin2mem.py
 		--size $(FP_DAXPY_COMPUTE_MEMH_BYTES) --word-bytes 32
 
 $(FP_DAXPY_STORE_ELF): $(OPENRV64_MAKEFILES) \
+		sw/runtime/bare.S sw/runtime/c_start.inc \
 		sw/fp/daxpy_store.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(FP_DAXPY_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(FP_DAXPY_STORE_MAP) \
-		-T sw/openrv64.ld -o $@ sw/fp/daxpy_store.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/fp/daxpy_store.S
 
 $(FP_DAXPY_STORE_BIN): $(FP_DAXPY_STORE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -106,11 +109,12 @@ $(FP_DAXPY_STORE_MEMH): $(FP_DAXPY_STORE_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(FP_DAXPY_STORE_MEMH_BYTES) --word-bytes 32
 
-$(FP_FMADD32_ELF): $(OPENRV64_MAKEFILES) sw/fp/fmadd32.S sw/openrv64.ld
+$(FP_FMADD32_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/fp/fmadd32.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(FP_FMADD32_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(FP_FMADD32_MAP) \
-		-T sw/openrv64.ld -o $@ sw/fp/fmadd32.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/fp/fmadd32.S
 
 $(FP_FMADD32_BIN): $(FP_FMADD32_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -138,22 +142,26 @@ $(FP_FAULTS_MEMH): $(FP_FAULTS_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(FP_FAULTS_MEMH_BYTES) --word-bytes 32
 
-$(COREMARK_LOOP_ELF): $(OPENRV64_MAKEFILES) sw/coremark_loop_start.S \
+$(COREMARK_LOOP_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/coremark_loop_start.S \
 		sw/coremark_loop.c sw/openrv64.ld
 	$(RISCV_CC) $(COREMARK_LOOP_CFLAGS) -nostdlib \
 		-Wl,--build-id=none,--gc-sections,-Map,$(COREMARK_LOOP_MAP) \
-		-T sw/openrv64.ld -o $@ sw/coremark_loop_start.S \
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S \
+		sw/coremark_loop_start.S \
 		sw/coremark_loop.c
 
 $(COREMARK_LOOP_BIN): $(COREMARK_LOOP_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
-$(CORE_3P_MAGIC_ELF): $(OPENRV64_MAKEFILES) sw/coremark_loop_start.S \
+$(CORE_3P_MAGIC_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/coremark_loop_start.S \
 		sw/coremark_loop.c sw/openrv64-magic.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(COREMARK_LOOP_CFLAGS) -nostdlib \
 		-Wl,--build-id=none,--gc-sections,-Map,$(CORE_3P_MAGIC_MAP) \
-		-T sw/openrv64-magic.ld -o $@ sw/coremark_loop_start.S \
+		-T sw/openrv64-magic.ld -o $@ sw/runtime/bare.S \
+		sw/coremark_loop_start.S \
 		sw/coremark_loop.c
 
 $(CORE_3P_MAGIC_BIN): $(CORE_3P_MAGIC_ELF)
@@ -163,13 +171,14 @@ $(CORE_3P_MAGIC_MEMH): $(CORE_3P_MAGIC_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(CORE_3P_MAGIC_SRAM_BYTES) --word-bytes 32
 
-$(CORE_3P_VM_ELF): $(OPENRV64_MAKEFILES) sw/coremark_loop_vm_start.S \
-		sw/coremark_loop.c sw/openrv64-vm.ld
+$(CORE_3P_VM_ELF): $(OPENRV64_MAKEFILES) sw/runtime/sv39.S \
+		sw/runtime/c_start.inc sw/runtime/openrv64-sv39.ld \
+		sw/coremark_loop_start.S sw/coremark_loop.c
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(COREMARK_VM_CFLAGS) -nostdlib \
 		-Wl,--build-id=none,--gc-sections,-Map,$(CORE_3P_VM_MAP) \
-		-T sw/openrv64-vm.ld -o $@ sw/coremark_loop_vm_start.S \
-		sw/coremark_loop.c
+		-T sw/runtime/openrv64-sv39.ld -o $@ sw/runtime/sv39.S \
+		sw/coremark_loop_start.S sw/coremark_loop.c
 
 $(CORE_3P_VM_BIN): $(CORE_3P_VM_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -445,11 +454,12 @@ $(ZERO_VM_MEMH): $(ZERO_VM_BIN) tools/bin2mem.py
 $(ZERO_VM_DISASM): $(ZERO_VM_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
-$(ATOMIC_SOC_ELF): $(OPENRV64_MAKEFILES) sw/atomic/atomic.S sw/openrv64.ld
+$(ATOMIC_SOC_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/atomic/atomic.S sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(ATOMIC_SOC_ASFLAGS) \
 		-Wl,--build-id=none,-Map,$(ATOMIC_SOC_MAP) \
-		-T sw/openrv64.ld -o $@ sw/atomic/atomic.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/atomic/atomic.S
 
 $(ATOMIC_SOC_BIN): $(ATOMIC_SOC_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -462,12 +472,13 @@ $(ATOMIC_SOC_MEMH): $(ATOMIC_SOC_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(ATOMIC_SOC_MEMH_BYTES) --word-bytes 32
 
-$(MEMCPY_4K_ELF): $(OPENRV64_MAKEFILES) sw/memcpy/memcpy.S sw/openrv64.ld
+$(MEMCPY_4K_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/memcpy/memcpy.S sw/openrv64.ld
 	mkdir -p $(dir $@)
-	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) -DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wa,--defsym,MEMCPY_BYTES=4096 \
 		-Wl,--build-id=none,-Map,$(MEMCPY_4K_MAP) \
-		-T sw/openrv64.ld -o $@ sw/memcpy/memcpy.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/memcpy/memcpy.S
 
 $(MEMCPY_4K_BIN): $(MEMCPY_4K_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -475,12 +486,13 @@ $(MEMCPY_4K_BIN): $(MEMCPY_4K_ELF)
 $(MEMCPY_4K_DISASM): $(MEMCPY_4K_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
-$(MEMCPY_64K_ELF): $(OPENRV64_MAKEFILES) sw/memcpy/memcpy.S sw/openrv64.ld
+$(MEMCPY_64K_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/memcpy/memcpy.S sw/openrv64.ld
 	mkdir -p $(dir $@)
-	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) -DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wa,--defsym,MEMCPY_BYTES=65536 \
 		-Wl,--build-id=none,-Map,$(MEMCPY_64K_MAP) \
-		-T sw/openrv64.ld -o $@ sw/memcpy/memcpy.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/memcpy/memcpy.S
 
 $(MEMCPY_64K_BIN): $(MEMCPY_64K_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
@@ -489,11 +501,12 @@ $(MEMCPY_64K_DISASM): $(MEMCPY_64K_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
 $(MEMCPY_SWEEP_ELF): $(OPENRV64_MAKEFILES) sw/memcpy/memcpy_sweep.S \
-		sw/openrv64.ld
+		sw/runtime/bare.S sw/runtime/c_start.inc sw/openrv64.ld
 	mkdir -p $(dir $@)
-	$(RISCV_CC) $(MEMCPY_ASFLAGS) \
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) -DOPENRV64_RUNTIME_NO_BSS_CLEAR \
 		-Wl,--build-id=none,-Map,$(MEMCPY_SWEEP_MAP) \
-		-T sw/openrv64.ld -o $@ sw/memcpy/memcpy_sweep.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S \
+		sw/memcpy/memcpy_sweep.S
 
 $(MEMCPY_SWEEP_BIN): $(MEMCPY_SWEEP_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@

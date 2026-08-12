@@ -25,11 +25,10 @@
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl main
+.type main, @function
 
-_start:
-    la      sp, __stack_top
+main:
 
     /* Give every timed address a non-zero, order-sensitive value. */
     la      s0, stride_data
@@ -101,7 +100,7 @@ stride_measure_end:
 .Lhalt:
     j       .Lhalt
 
-.size _start, .-_start
+.size main, .-main
 
 .section .data.stride_results, "aw", @progbits
 .balign 8

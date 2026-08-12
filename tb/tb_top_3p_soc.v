@@ -4356,6 +4356,16 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[13],
                 dut.u_backend.u_gpr.regs[14],
                 dut.u_backend.u_gpr.regs[15][31:0]);
+        if ($test$plusargs("report_sv39_smoke"))
+            $display(
+                "PERF_SV39_SMOKE coremark_cycles=%0d blake2s_cycles=%0d stream_cycles=%0d atomic_cycles=%0d fence_cycles=%0d store_extension_cycles=%0d selected_mask=%02h",
+                dut.u_backend.u_gpr.regs[11],
+                dut.u_backend.u_gpr.regs[12],
+                dut.u_backend.u_gpr.regs[13],
+                dut.u_backend.u_gpr.regs[14],
+                dut.u_backend.u_gpr.regs[15],
+                dut.u_backend.u_gpr.regs[16],
+                dut.u_backend.u_gpr.regs[17][7:0]);
         if ($test$plusargs("report_store_extension_sv39")) begin
             if ((dut.u_backend.u_gpr.regs[10] == 0) ||
                 (dtlb_fast_stores == 0))

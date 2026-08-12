@@ -83,14 +83,15 @@ Build it with `make sw-fp-faults` or run it with
 
 ## Sv39 CoreMark-derived wrapper
 
-`coremark_loop_vm_start.S` runs the CoreMark-derived loop in supervisor mode
-through a non-identity Sv39 mapping. Machine-mode boot installs a 16 MiB PMP
-region, writes `satp`, executes `sfence.vma`, and enters S mode with `mret`.
-Three statically linked page-table pages map virtual
-`0x4000_0000-0x4001_ffff` to physical
-`0x8000_0000-0x8001_ffff`; the supervisor entry point is
-`0x4000_1000`. A/D bits are preset because the current PTW uses Svade
-semantics.
+The CoreMark-derived loop uses the shared `runtime/sv39.S` entry and
+`runtime/openrv64-sv39.ld` linker policy. Machine-mode boot installs a 16 MiB
+PMP region, enables `satp`, executes `sfence.vma`, and enters S mode with
+`mret`. Three statically linked page-table pages map virtual
+`0x4000_0000-0x4003_ffff` to physical
+`0x8000_0000-0x8003_ffff`; the supervisor entry point is `0x4000_1000`.
+A/D bits are preset because the current PTW uses Svade semantics. Other
+compatible single-hart workloads share this path; see `runtime/README.md` for
+the contract and exclusions.
 
 Run the translated workload through the BP8, fetch-lookaside-mode-3,
 16-entry-retirement, issue/speculation-window, posted-store,

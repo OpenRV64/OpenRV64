@@ -43,6 +43,7 @@ $(POINTER_CHASE_RING_S): tools/gen_multichase_ring.py $(OPENRV64_MAKEFILES)
 
 $(POINTER_CHASE_ELF): $(OPENRV64_MAKEFILES) \
 		sw/multichase/pointer_chase.S $(POINTER_CHASE_RING_S) \
+		sw/runtime/bare.S sw/runtime/c_start.inc \
 		sw/multichase/openrv64-pointer-chase.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PREFETCH_ASFLAGS) \
@@ -50,7 +51,8 @@ $(POINTER_CHASE_ELF): $(OPENRV64_MAKEFILES) \
 		-Wa,--defsym,POINTER_CHASE_STEPS=$(POINTER_CHASE_STEPS) \
 		-Wl,--build-id=none,-Map,$(POINTER_CHASE_MAP) \
 		-T sw/multichase/openrv64-pointer-chase.ld -o $@ \
-		sw/multichase/pointer_chase.S $(POINTER_CHASE_RING_S)
+		sw/runtime/bare.S sw/multichase/pointer_chase.S \
+		$(POINTER_CHASE_RING_S)
 
 $(POINTER_CHASE_BIN): $(POINTER_CHASE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@

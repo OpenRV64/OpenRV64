@@ -27,11 +27,10 @@
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl main
+.type main, @function
 
-_start:
-    la      sp, __stack_top
+main:
     la      s0, memcpy_source
     la      s1, memcpy_destination
     li      s2, MEMCPY_BYTES
@@ -104,7 +103,7 @@ memcpy_measure_end:
 .Lhalt:
     j       .Lhalt
 
-.size _start, .-_start
+.size main, .-main
 
 .section .rodata.memcpy_source, "a", @progbits
 .balign 64

@@ -43,11 +43,10 @@
 .section .text.startup, "ax", @progbits
 .option norvc
 .balign 64
-.globl _start
-.type _start, @function
+.globl main
+.type main, @function
 
-_start:
-    la      sp, __stack_top
+main:
     la      s0, memcpy_sweep_cases
     li      s1, 0                  /* case index */
     li      s2, 0                  /* packed buffer offset */
@@ -161,7 +160,7 @@ memcpy_span_report:
 .Lhalt:
     j       .Lhalt
 
-.size _start, .-_start
+.size main, .-main
 
 /*
  * void *memcpy_scalar(void *dst, const void *src, size_t bytes)

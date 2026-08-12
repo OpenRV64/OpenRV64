@@ -1,5 +1,5 @@
 OUTPUT_ARCH(riscv)
-ENTRY(stream_vm_boot)
+ENTRY(_start)
 
 PHDRS
 {
@@ -65,7 +65,7 @@ SECTIONS
     } :page_tables
 
     ASSERT(__supervisor_image_end <= 0x4003e000,
-           "STREAM supervisor image collides with its stack")
+           "Sv39 supervisor image collides with its stack")
     ASSERT(SIZEOF(.page_table.root) == 4096,
            "Sv39 root page table must be exactly 4 KiB")
     ASSERT(SIZEOF(.page_table.level1) == 4096,

@@ -57,13 +57,13 @@ PAGEFREE_DONE = $(shell $(RISCV_NM) -n $(PAGEFREE_ELF) | \
 	sim-pagefree-a53-gem5-full-suite
 
 $(PAGEFREE_ELF): $(OPENRV64_MAKEFILES) sw/pagefree/pagefree.S \
-		sw/openrv64.ld
+		sw/runtime/bare.S sw/runtime/c_start.inc sw/openrv64.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(PAGEFREE_ASFLAGS) \
 		-Wa,--defsym,PAGEFREE_KERNEL=$(PAGEFREE_KERNEL_ID) \
 		-Wa,--defsym,PAGEFREE_RECORDS=$(PAGEFREE_RECORDS) \
 		-Wl,--build-id=none,-Map,$(PAGEFREE_MAP) \
-		-T sw/openrv64.ld -o $@ sw/pagefree/pagefree.S
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S sw/pagefree/pagefree.S
 
 $(PAGEFREE_BIN): $(PAGEFREE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
