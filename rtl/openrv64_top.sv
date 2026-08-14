@@ -32,7 +32,8 @@ module openrv64_top #(
     parameter logic [63:0] L1D_CACHEABLE_BASE =
         `OPENRV64_SOC_MEMORY_BASE,
     parameter logic [63:0] L1D_CACHEABLE_SIZE =
-        `OPENRV64_SOC_MEMORY_SIZE,
+        (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) ?
+            `OPENRV64_SOC_DRAM_PMA_SIZE : `OPENRV64_SOC_MEMORY_SIZE,
     parameter int unsigned L1D_FILL_BUFFER_LINES = 8,
     parameter int unsigned L1D_DEMAND_MSHRS = 3,
     parameter int unsigned L1D_STORE_BUFFER_LINES = 8,

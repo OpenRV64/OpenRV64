@@ -8,6 +8,14 @@
 #define BLAKE2S_BLOCKS_PER_CALL 1
 #endif
 
+#ifndef BLAKE2S_INPUT_OFFSET
+#define BLAKE2S_INPUT_OFFSET 0
+#endif
+
+#ifndef BLAKE2S_USE_KERNEL_ZBB
+#define BLAKE2S_USE_KERNEL_ZBB 0
+#endif
+
 .equ BLAKE2S_PASS, 0x424c414b45324f4b /* "BLAKE2OK" */
 .equ BLAKE2S_FAIL, 0x424c414b45324244 /* "BLAKE2BD" */
 
@@ -51,6 +59,8 @@ blake2s_measure_begin:
     li      a3, BLAKE2S_BLOCKS_PER_CALL
     li      a4, BLAKE2S_BENCH_CALLS * BLAKE2S_BLOCKS_PER_CALL
     mv      a5, s2
+    li      a6, BLAKE2S_INPUT_OFFSET
+    li      a7, BLAKE2S_USE_KERNEL_ZBB
 
     /*
      * Keep the marker out of the retire group that writes the report

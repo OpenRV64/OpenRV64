@@ -144,7 +144,8 @@ managed checkpoint with `--resume RUN_OR_CHECKPOINT`; the runner must use the
 source run's snapshotted simulator and inputs, not rebuild current RTL against
 old serialized state. Add a new `run/cfg/*.cfg` file when a target needs a
 different durable configuration; command-line overrides are for deliberate
-one-off experiments, not hidden defaults.
+one-off experiments, not hidden defaults. Managed jobs default to a 72-hour
+whole-job timeout; do not bypass the runner for long background simulations.
 
 ## Inputs
 

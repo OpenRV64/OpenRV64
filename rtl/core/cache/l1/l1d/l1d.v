@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "complex/protocol/defs.v"
 `include "core/bus/bus-defs.v"
+`include "soc/bus/mem_map.v"
 
 // Native 512-bit data-cache endpoint for the core-complex protocol.
 //
@@ -984,13 +985,23 @@ module openrv64_l1d_icx #(
         !demand_load_store_block;
     wire l1_req_cacheable =
         req_cacheable_i && (!req_lock_i || coherent_atomic_read);
+    wire req_invariant =
+        ((req_addr_i - `OPENRV64_SOC_INVARIANT_BASE) <
+         `OPENRV64_SOC_INVARIANT_SIZE);
+    // Invariant stores remain cacheable at ICX/L2 so they can use the posted
+    // store path, but must not update or forward a private-cache copy.
+    wire l1_array_req_cacheable =
+        l1_req_cacheable && !(req_write_i && req_invariant);
+    wire l1_mem_invariant =
+        ((l1_mem_addr - `OPENRV64_SOC_INVARIANT_BASE) <
+         `OPENRV64_SOC_INVARIANT_SIZE);
     wire l1_request_fire = l1_req_valid && l1_req_ready;
     wire [TAG_OVERLAY_EPOCH_WIDTH-1:0] tag_overlay_next_epoch =
         tag_overlay_epoch_q + 1'b1;
     wire [L1_REQ_TAG_WIDTH-1:0] l1_request_identity =
         {tag_overlay_next_epoch, req_tag_i};
     wire request_overlay_needed =
-        !req_write_i && !req_lock_i && req_cacheable_i &&
+        !req_write_i && !req_lock_i && req_cacheable_i && !req_invariant &&
         (|demand_store_strb_r);
     wire tag_overlay_write =
         l1_request_fire && request_overlay_needed;
@@ -1004,7 +1015,8 @@ module openrv64_l1d_icx #(
     wire atomic_hot_demand_match = atomic_hot_match(demand_line_addr);
     wire prefetch_train_access = (PREFETCH_ENABLE != 0) &&
         (ENABLE != 0) && demand_request_fire && !req_write_i &&
-        l1_req_cacheable && !req_lock_i && !atomic_hot_demand_match;
+        l1_req_cacheable && !req_lock_i && !atomic_hot_demand_match &&
+        !req_invariant;
 
     // Deliberately no reset on the RAM, its read payload, or the bypass
     // payload. Resetting any of them would turn line-sized storage back into
@@ -1262,6 +1274,12 @@ module openrv64_l1d_icx #(
                     demand_store_strb_r[demand_store_byte] = 1'b1;
                 end
             end
+        end
+        if (req_invariant) begin
+            demand_store_data_r =
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+            demand_store_strb_r =
+                {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
         end
     end
 
@@ -2343,7 +2361,7 @@ module openrv64_l1d_icx #(
 
         if (l1_mem_valid && l1_mem_write && l1_mem_ready &&
             !l1_mem_error && active_req_cacheable_q &&
-            !active_req_lock_q) begin
+            !active_req_lock_q && !l1_mem_invariant) begin
             for (store_overlay_demand_scan = 0;
                  store_overlay_demand_scan < DEMAND_MSHRS;
                  store_overlay_demand_scan =
@@ -2526,7 +2544,7 @@ module openrv64_l1d_icx #(
         .req_tag_i(l1_request_identity),
         .req_write_i(req_write_i),
         .req_posted_i(req_posted_i),
-        .req_cacheable_i(l1_req_cacheable),
+        .req_cacheable_i(l1_array_req_cacheable),
         .req_addr_i(req_addr_i),
         .req_wdata_i(req_wdata_i),
         .req_wstrb_i(req_wstrb_i),
@@ -3251,7 +3269,7 @@ module openrv64_l1d_icx #(
             // admission, while non-posted stores reach it on their ICX reply.
             if (l1_mem_valid && l1_mem_write && l1_mem_ready &&
                 !l1_mem_error && active_req_cacheable_q &&
-                !active_req_lock_q) begin
+                !active_req_lock_q && !l1_mem_invariant) begin
                 for (demand_store_merge_mshr = 0;
                      demand_store_merge_mshr < DEMAND_MSHRS;
                      demand_store_merge_mshr =

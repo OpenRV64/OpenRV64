@@ -259,6 +259,42 @@ module tb_exec_zbb_rotate;
         while (result_count != 57)
             tick();
 
+        // Exhaust every architecturally visible shift amount for both widths.
+        for (index = 0; index < 64; index = index + 1) begin
+            op = index[0] ? `RV64_ALU_OP_ZBB_ROL :
+                            `RV64_ALU_OP_ZBB_ROR;
+            word_op = 1'b0;
+            src = 64'h0123_4567_89ab_cdef ^ (64'(index) << 23);
+            amount = 64'(index);
+            tag = 8'(128 + index);
+            expect_request(tag, src, amount,
+                           op == `RV64_ALU_OP_ZBB_ROL, 1'b0);
+            valid = 1'b1;
+            while (!ready)
+                tick();
+            tick();
+            valid = 1'b0;
+        end
+        while (result_count != 121)
+            tick();
+        for (index = 0; index < 32; index = index + 1) begin
+            op = index[0] ? `RV64_ALU_OP_ZBB_ROL :
+                            `RV64_ALU_OP_ZBB_ROR;
+            word_op = 1'b1;
+            src = 64'hffff_ffff_89ab_cdef ^ (64'(index) << 11);
+            amount = 64'(index);
+            tag = 8'(192 + index);
+            expect_request(tag, src, amount,
+                           op == `RV64_ALU_OP_ZBB_ROL, 1'b1);
+            valid = 1'b1;
+            while (!ready)
+                tick();
+            tick();
+            valid = 1'b0;
+        end
+        while (result_count != 153)
+            tick();
+
         // Flush must cancel a wide operation between its two shifter cycles.
         word_op = 1'b0;
         op = `RV64_ALU_OP_ZBB_ROR;

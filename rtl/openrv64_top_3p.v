@@ -41,7 +41,7 @@ module openrv64_top_3p #(
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter [63:0] L1D_CACHEABLE_BASE = `OPENRV64_SOC_MEMORY_BASE,
-    parameter [63:0] L1D_CACHEABLE_SIZE = `OPENRV64_SOC_MEMORY_SIZE,
+    parameter [63:0] L1D_CACHEABLE_SIZE = `OPENRV64_SOC_DRAM_PMA_SIZE,
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_DEMAND_MSHRS = 3,
     parameter integer L1D_STORE_BUFFER_LINES = 8,

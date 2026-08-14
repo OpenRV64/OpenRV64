@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 /*
- * BLAKE2s generic-compression microbenchmark.
+ * BLAKE2s compression microbenchmark.
  *
  * The compression core is adapted from Linux lib/crypto/blake2s.c:
  * Copyright (C) 2015-2019 Jason A. Donenfeld
  *
- * Keep the measured implementation structurally aligned with the Linux
- * generic implementation: two out-of-line memcpy calls, a fully unrolled
- * ten-round loop, and one context update per 64-byte block.  The compact
- * reference implementation below is deliberately not unrolled.
+ * The default measured implementation stays structurally aligned with the
+ * Linux generic implementation. A build may instead link Linux's optimized
+ * RISC-V compression and memcpy objects. The compact reference implementation
+ * below is deliberately independent of either measured implementation.
  */
 
 #include <stddef.h>
@@ -20,6 +20,18 @@
 
 #ifndef BLAKE2S_BLOCKS_PER_CALL
 #define BLAKE2S_BLOCKS_PER_CALL 1
+#endif
+
+#ifndef BLAKE2S_INPUT_OFFSET
+#define BLAKE2S_INPUT_OFFSET 0
+#endif
+
+#ifndef BLAKE2S_USE_KERNEL_ZBB
+#define BLAKE2S_USE_KERNEL_ZBB 0
+#endif
+
+#ifndef BLAKE2S_USE_KERNEL_GENERIC
+#define BLAKE2S_USE_KERNEL_GENERIC 0
 #endif
 
 enum {
@@ -58,6 +70,11 @@ _Static_assert(BLAKE2S_BLOCKS_PER_CALL > 0,
                "BLAKE2S_BLOCKS_PER_CALL must be positive");
 _Static_assert(BLAKE2S_BLOCKS_PER_CALL <= BLAKE2S_INPUT_BLOCKS,
                "BLAKE2S_BLOCKS_PER_CALL exceeds the input corpus");
+_Static_assert(BLAKE2S_INPUT_OFFSET >= 0 && BLAKE2S_INPUT_OFFSET <= 3,
+               "BLAKE2S_INPUT_OFFSET must be between zero and three");
+_Static_assert(BLAKE2S_USE_KERNEL_ZBB || BLAKE2S_USE_KERNEL_GENERIC ||
+               BLAKE2S_INPUT_OFFSET == 0,
+               "misaligned input requires the kernel implementation");
 _Static_assert(sizeof(struct blake2s_ctx) == 120,
                "BLAKE2s context layout differs from Linux");
 
@@ -74,11 +91,8 @@ static const uint8_t blake2s_sigma[10][16] = {
     { 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0 }
 };
 
-/*
- * The Linux RISC-V memcpy path uses a 32-bit loop for these aligned 32- and
- * 64-byte copies. Keep this out of line because the measured kernel function
- * also calls out to memcpy twice per block.
- */
+#if !BLAKE2S_USE_KERNEL_ZBB && !BLAKE2S_USE_KERNEL_GENERIC
+/* Keep the generic implementation's two copies out of line. */
 __attribute__((noinline))
 void *memcpy(void *destination, const void *source, size_t bytes)
 {
@@ -101,18 +115,41 @@ void *memcpy(void *destination, const void *source, size_t bytes)
 
     return result;
 }
+#endif
 
-static const struct blake2s_block blake2s_input[BLAKE2S_INPUT_BLOCKS]
+#define BLAKE2S_CORPUS_INITIALIZER {                                  \
+        [0 ... BLAKE2S_INPUT_BLOCKS - 1] = {                          \
+            .word = {                                                 \
+                0x6e65704fU, 0x34365652U, 0x4c422073U, 0x32656b41U,  \
+                0x6d6f6320U, 0x73657270U, 0x6e6f6973U, 0x6e656220U,  \
+                0x616d6863U, 0x30206b72U, 0x34333231U, 0x38373635U,  \
+                0x62613930U, 0x66656463U, 0x4b4f2120U, 0x5a595857U   \
+            }                                                         \
+        }                                                             \
+    }
+
+static const struct blake2s_block blake2s_reference_input[
+    BLAKE2S_INPUT_BLOCKS] __attribute__((aligned(64))) =
+    BLAKE2S_CORPUS_INITIALIZER;
+
+#if BLAKE2S_INPUT_OFFSET == 0
+#define BLAKE2S_MEASURED_DATA ((const uint8_t *)blake2s_reference_input)
+#else
+struct blake2s_misaligned_input {
+    uint8_t prefix[BLAKE2S_INPUT_OFFSET];
+    struct blake2s_block blocks[BLAKE2S_INPUT_BLOCKS];
+} __attribute__((packed));
+
+static const struct blake2s_misaligned_input blake2s_measured_input
     __attribute__((aligned(64))) = {
-        [0 ... BLAKE2S_INPUT_BLOCKS - 1] = {
-            .word = {
-                0x6e65704fU, 0x34365652U, 0x4c422073U, 0x32656b41U,
-                0x6d6f6320U, 0x73657270U, 0x6e6f6973U, 0x6e656220U,
-                0x616d6863U, 0x30206b72U, 0x34333231U, 0x38373635U,
-                0x62613930U, 0x66656463U, 0x4b4f2120U, 0x5a595857U
-            }
-        }
+        .prefix = { 0 },
+        .blocks = BLAKE2S_CORPUS_INITIALIZER
     };
+#define BLAKE2S_MEASURED_DATA                                         \
+    ((const uint8_t *)&blake2s_measured_input + BLAKE2S_INPUT_OFFSET)
+#endif
+
+#undef BLAKE2S_CORPUS_INITIALIZER
 
 static struct blake2s_ctx measured_ctx __attribute__((aligned(64)));
 
@@ -128,6 +165,7 @@ static inline void blake2s_increment_counter(struct blake2s_ctx *ctx,
     ctx->t[1] += ctx->t[0] < increment;
 }
 
+#if !BLAKE2S_USE_KERNEL_ZBB && !BLAKE2S_USE_KERNEL_GENERIC
 __attribute__((noinline))
 void blake2s_compress_generic(struct blake2s_ctx *ctx, const uint8_t *data,
                               size_t nblocks, uint32_t increment)
@@ -183,6 +221,17 @@ void blake2s_compress_generic(struct blake2s_ctx *ctx, const uint8_t *data,
         data += BLAKE2S_BLOCK_SIZE;
     } while (--nblocks > 0);
 }
+#else
+#if BLAKE2S_USE_KERNEL_ZBB
+void blake2s_compress_zbb_or_zbkb(struct blake2s_ctx *ctx,
+                                  const uint8_t *data, size_t nblocks,
+                                  uint32_t increment);
+#else
+void blake2s_compress_kernel_generic(struct blake2s_ctx *ctx,
+                                     const uint8_t *data, size_t nblocks,
+                                     uint32_t increment);
+#endif
+#endif
 
 static void blake2s_init(struct blake2s_ctx *ctx)
 {
@@ -221,9 +270,19 @@ uint32_t blake2s_bench_run(void)
 {
 #pragma GCC unroll 1
     for (unsigned int call = 0; call < BLAKE2S_BENCH_CALLS; ++call) {
-        blake2s_compress_generic(
-            &measured_ctx, (const uint8_t *)blake2s_input,
+#if BLAKE2S_USE_KERNEL_ZBB
+        blake2s_compress_zbb_or_zbkb(
+            &measured_ctx, BLAKE2S_MEASURED_DATA,
             BLAKE2S_BLOCKS_PER_CALL, BLAKE2S_BLOCK_SIZE);
+#elif BLAKE2S_USE_KERNEL_GENERIC
+        blake2s_compress_kernel_generic(
+            &measured_ctx, BLAKE2S_MEASURED_DATA,
+            BLAKE2S_BLOCKS_PER_CALL, BLAKE2S_BLOCK_SIZE);
+#else
+        blake2s_compress_generic(
+            &measured_ctx, BLAKE2S_MEASURED_DATA,
+            BLAKE2S_BLOCKS_PER_CALL, BLAKE2S_BLOCK_SIZE);
+#endif
     }
 
     return blake2s_checksum(&measured_ctx);
@@ -297,7 +356,8 @@ int blake2s_bench_verify(uint32_t measured_checksum)
 #pragma GCC unroll 1
     for (unsigned int call = 0; call < BLAKE2S_BENCH_CALLS; ++call) {
         blake2s_compress_reference(
-            &reference_ctx, blake2s_input, BLAKE2S_BLOCKS_PER_CALL);
+            &reference_ctx, blake2s_reference_input,
+            BLAKE2S_BLOCKS_PER_CALL);
     }
 
     if (measured_checksum != blake2s_checksum(&reference_ctx))

@@ -5,6 +5,8 @@ export LC_ALL=C
 export TZ=UTC
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=../run/lib/common.sh
+source "${repo_root}/run/lib/common.sh"
 run_root=$(realpath -m \
     "${OPENRV64_SMP_RUN_ROOT:-${repo_root}/build/runs/linux-smp}")
 record_makefile=scripts/make/linux-run-record.mk
@@ -43,6 +45,10 @@ Start options:
   --checkpoint-exit         Exit after saving the requested checkpoint.
   --checkpoint-interval N   Save checkpoint-<cycle>.vls every N cycles.
   --checkpoint-stop-pc PC   Stop after a periodic checkpoint at hart-0 PC.
+  --base-inputs DIR         Reuse a compatible managed run's simulator,
+                            firmware, and DTB for a fresh kernel-only run.
+  --simulator FILE          Use this compatible host executable for a fresh
+                            run instead of rebuilding the configured model.
   --resume CHECKPOINT|RUN   Resume an exact managed checkpoint snapshot.
   --resume-simulator FILE   Use a model-compatible rebuilt host executable.
   --host-pc-trace           Record hart-0 retire/trap PCs after restore.
@@ -55,6 +61,8 @@ Start options:
   --l1d-watch-all-mshrs     Record every outgoing L1D/L2 MSHR transaction.
   --stop-cycles N           Stop when absolute cycle N is reached.
   --monitor-seconds N       Notification interval (default: 900).
+  --timeout-seconds N       Whole-job wall timeout in seconds. The default is
+                            259200 (72 hours); 0 disables it.
   --rebuild                 Force a source-matched rebuild with make -B.
   --foreground              Do not detach into tmux.
   -- PLUSARG ...            Additional simulator +arguments.
@@ -210,6 +218,8 @@ worker() {
     checkpoint_stop_pc=${checkpoint_stop_pc:-}
     resume_checkpoint=${resume_checkpoint:-}
     resume_simulator=${resume_simulator:-}
+    base_inputs=${base_inputs:-}
+    simulator_override=${simulator_override:-}
     kernel_elf=${kernel_elf:-}
     host_pc_trace=${host_pc_trace:-0}
     host_pc_sample_period=${host_pc_sample_period:-0}
@@ -307,9 +317,12 @@ worker() {
         printf 'checkpoint_interval=%s\n' "${checkpoint_interval}"
         printf 'checkpoint_stop_pc=%s\n' "${checkpoint_stop_pc}"
         printf 'resume_checkpoint=%s\n' "${resume_checkpoint}"
+        printf 'base_inputs=%s\n' "${base_inputs}"
+        printf 'simulator_override=%s\n' "${simulator_override}"
         printf 'stop_cycles=%s\n' "${stop_cycles}"
         printf 'host_pc_sample_period=%s\n' "${host_pc_sample_period}"
         printf 'rebuild=%s\n' "${rebuild}"
+        printf 'timeout_seconds=%s\n' "${timeout_seconds}"
         printf 'command=%s\n' "${recorded_command}"
     } >"${build_log}"
 
@@ -454,6 +467,18 @@ worker() {
         "${make_base[@]}" -f Makefile -f "${record_makefile}" \
             "${make_arguments[@]}" openrv64-linux-smp-run-inputs \
             >"${source_manifest}" 2>&1
+        if [[ -n ${base_inputs} ]]; then
+            local base_artifact
+            for base_artifact in opensbi_4h_checkpoint_tb \
+                trampoline.memh fw_jump.memh fw_jump.elf \
+                openrv64-3p-dtb.memh openrv64-3p.dtb hsm-wfi-pc.txt; do
+                printf '%s\n' "${base_inputs}/${base_artifact}" \
+                    >>"${source_manifest}"
+            done
+        fi
+        if [[ -n ${simulator_override} ]]; then
+            printf '%s\n' "${simulator_override}" >>"${source_manifest}"
+        fi
         if [[ -n ${kernel_elf} ]]; then
             printf '%s\n' "${kernel_elf}" >>"${source_manifest}"
         fi
@@ -462,9 +487,13 @@ worker() {
         phase=build
         local build_command=("${make_base[@]}" -j8)
         [[ ${rebuild} == 0 ]] || build_command+=(-B)
-        build_command+=("${make_arguments[@]}"
-            "LINUX_IMAGE_MEMH=${linux_memh}" "${simulator}"
-            "${opensbi_target}" "${linux_memh}")
+        build_command+=("${make_arguments[@]}")
+        if [[ -z ${base_inputs} && -z ${simulator_override} ]]; then
+            build_command+=("${simulator}")
+        fi
+        if [[ -z ${base_inputs} ]]; then
+            build_command+=("${opensbi_target}")
+        fi
         printf 'build_command=%s\n' "$(shell_join "${build_command[@]}")" \
             >>"${build_log}"
 
@@ -479,14 +508,27 @@ worker() {
             exit "${build_result}"
         fi
 
+        if [[ -n ${base_inputs} ]]; then
+            simulator=${base_inputs}/opensbi_4h_checkpoint_tb
+            artifact_dir=${base_inputs}
+        elif [[ -n ${simulator_override} ]]; then
+            simulator=${simulator_override}
+        fi
+
         phase=snapshot
         mkdir -p "${input_dir}"
         cp --reflink=auto --preserve=mode,timestamps \
             "${simulator}" "${input_dir}/opensbi_4h_checkpoint_tb"
         cp --reflink=auto --preserve=mode,timestamps \
             "${image}" "${input_dir}/Image.smp"
-        cp --reflink=auto --preserve=mode,timestamps \
-            "${linux_memh}" "${input_dir}/linux-image.memh"
+        local linux_image_slot_bytes
+        linux_image_slot_bytes=$(config_value "${config_file}" \
+            LINUX_IMAGE_SLOT_BYTES)
+        [[ -n ${linux_image_slot_bytes} ]] ||
+            die "effective configuration lacks LINUX_IMAGE_SLOT_BYTES"
+        python3 tools/bin2mem.py "${image}" \
+            "${input_dir}/linux-image.memh" \
+            --size "${linux_image_slot_bytes}" >>"${build_log}"
         local artifact
         for artifact in trampoline.memh fw_jump.memh fw_jump.elf \
             openrv64-3p-dtb.memh openrv64-3p.dtb hsm-wfi-pc.txt; do
@@ -507,6 +549,22 @@ worker() {
         flock -u 9
         exec 9>&-
     fi
+
+    local runner_source
+    for runner_source in run/run run/lib/common.sh \
+        tools/run-linux-smp.sh scripts/make/linux-run-record.mk; do
+        if ! rg -Fqx -- "${runner_source}" "${source_manifest}"; then
+            printf '%s\n' "${runner_source}" >>"${source_manifest}"
+        fi
+    done
+    write_source_hashes "${source_manifest}" "${source_hashes}"
+    local infrastructure_dir=${input_dir}/run-infrastructure
+    for runner_source in run/run run/lib/common.sh \
+        tools/run-linux-smp.sh scripts/make/linux-run-record.mk; do
+        mkdir -p "${infrastructure_dir}/$(dirname "${runner_source}")"
+        cp --reflink=auto --preserve=mode,timestamps \
+            "${runner_source}" "${infrastructure_dir}/${runner_source}"
+    done
 
     phase=run
     local run_command=("${input_dir}/opensbi_4h_checkpoint_tb"
@@ -680,6 +738,8 @@ start_run() {
     local checkpoint_stop_pc=
     local resume_checkpoint=
     local resume_simulator=
+    local base_inputs=
+    local simulator_override=
     local host_pc_trace=0
     local host_pc_sample_period=0
     local l1d_watch_vaddr=
@@ -688,6 +748,7 @@ start_run() {
     local l1d_watch_all_mshrs=0
     local stop_cycles=0
     local monitor_seconds=900
+    local timeout_seconds=${OPENRV64_RUN_TIMEOUT_SECONDS:-259200}
     local rebuild=0
     local foreground=0
     local original_arguments=(start "$@")
@@ -711,6 +772,8 @@ start_run() {
                 checkpoint_interval=${2:?}; shift 2 ;;
             --checkpoint-stop-pc)
                 checkpoint_stop_pc=${2:?}; shift 2 ;;
+            --base-inputs) base_inputs=${2:?}; shift 2 ;;
+            --simulator) simulator_override=${2:?}; shift 2 ;;
             --resume) resume_checkpoint=${2:?}; shift 2 ;;
             --resume-simulator) resume_simulator=${2:?}; shift 2 ;;
             --host-pc-trace) host_pc_trace=1; shift ;;
@@ -722,6 +785,7 @@ start_run() {
             --l1d-watch-all-mshrs) l1d_watch_all_mshrs=1; shift ;;
             --stop-cycles) stop_cycles=${2:?}; shift 2 ;;
             --monitor-seconds) monitor_seconds=${2:?}; shift 2 ;;
+            --timeout-seconds) timeout_seconds=${2:?}; shift 2 ;;
             --rebuild) rebuild=1; shift ;;
             --foreground) foreground=1; shift ;;
             --) shift; simulator_arguments=("$@"); break ;;
@@ -762,6 +826,15 @@ start_run() {
     if [[ -n ${resume_simulator} && -z ${resume_checkpoint} ]]; then
         die "--resume-simulator requires --resume"
     fi
+    if [[ -n ${simulator_override} && -n ${resume_checkpoint} ]]; then
+        die "--simulator cannot be combined with --resume"
+    fi
+    if [[ -n ${base_inputs} && -n ${resume_checkpoint} ]]; then
+        die "--base-inputs cannot be combined with --resume"
+    fi
+    if [[ -n ${base_inputs} && -n ${simulator_override} ]]; then
+        die "--base-inputs and --simulator are mutually exclusive"
+    fi
     if [[ -n ${l1d_watch_vaddr} &&
           ! ${l1d_watch_vaddr} =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)$ ]]; then
         die "--l1d-watch-vaddr must be an integer"
@@ -785,6 +858,8 @@ start_run() {
     fi
     [[ ${monitor_seconds} =~ ^[1-9][0-9]*$ ]] ||
         die "--monitor-seconds must be positive"
+    [[ ${timeout_seconds} =~ ^[0-9]+$ ]] ||
+        die "--timeout-seconds must be nonnegative"
     [[ -f ${repo_root}/${image} || -f ${image} ]] ||
         die "Linux image does not exist: ${image}"
     for argument in "${simulator_arguments[@]}"; do
@@ -803,8 +878,14 @@ start_run() {
             die "kernel ELF does not exist: ${kernel_elf}"
         local kernel_build_image
         kernel_build_image=$(dirname "${kernel_elf}")/arch/riscv/boot/Image
+        if [[ ! -f ${kernel_build_image} &&
+              -f $(dirname "${kernel_elf}")/Image.smp ]]; then
+            # Managed run snapshots retain the verified image beside vmlinux
+            # rather than reproducing the kernel build-tree hierarchy.
+            kernel_build_image=$(dirname "${kernel_elf}")/Image.smp
+        fi
         [[ -f ${kernel_build_image} ]] ||
-            die "kernel ELF lacks arch/riscv/boot/Image: ${kernel_elf}"
+            die "kernel ELF lacks a source-matched Image: ${kernel_elf}"
         cmp -s "${image}" "${kernel_build_image}" ||
             die "kernel ELF Image does not match --image: ${kernel_elf}"
     fi
@@ -815,6 +896,25 @@ start_run() {
         resume_simulator=$(realpath -m "${resume_simulator}")
         [[ -x ${resume_simulator} ]] ||
             die "resume simulator is not executable: ${resume_simulator}"
+    fi
+    if [[ -n ${simulator_override} ]]; then
+        simulator_override=$(realpath -m "${simulator_override}")
+        [[ -x ${simulator_override} ]] ||
+            die "simulator is not executable: ${simulator_override}"
+    fi
+    if [[ -n ${base_inputs} ]]; then
+        base_inputs=$(realpath -m "${base_inputs}")
+        [[ -d ${base_inputs} ]] ||
+            die "base input directory does not exist: ${base_inputs}"
+        local base_artifact
+        for base_artifact in opensbi_4h_checkpoint_tb \
+            trampoline.memh fw_jump.memh fw_jump.elf \
+            openrv64-3p-dtb.memh openrv64-3p.dtb hsm-wfi-pc.txt; do
+            [[ -f ${base_inputs}/${base_artifact} ]] ||
+                die "base input directory is missing: ${base_artifact}"
+        done
+        [[ -x ${base_inputs}/opensbi_4h_checkpoint_tb ]] ||
+            die "base simulator is not executable: ${base_inputs}/opensbi_4h_checkpoint_tb"
     fi
     local timestamp slug run_id directory tmux_session task_name
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -881,6 +981,8 @@ start_run() {
     {
         printf 'run_id=%q\n' "${run_id}"
         printf 'run_dir=%q\n' "${directory}"
+        printf 'run_target=%q\n' linux-smp
+        printf 'backend=%q\n' tools/run-linux-smp.sh
         printf 'harts=%q\n' "${harts}"
         printf 'threads=%q\n' "${threads}"
         printf 'image=%q\n' "${image}"
@@ -893,6 +995,8 @@ start_run() {
         printf 'checkpoint_stop_pc=%q\n' "${checkpoint_stop_pc}"
         printf 'resume_checkpoint=%q\n' "${resume_checkpoint}"
         printf 'resume_simulator=%q\n' "${resume_simulator}"
+        printf 'base_inputs=%q\n' "${base_inputs}"
+        printf 'simulator_override=%q\n' "${simulator_override}"
         printf 'host_pc_trace=%q\n' "${host_pc_trace}"
         printf 'host_pc_sample_period=%q\n' "${host_pc_sample_period}"
         printf 'l1d_watch_vaddr=%q\n' "${l1d_watch_vaddr}"
@@ -902,6 +1006,7 @@ start_run() {
         printf 'stop_cycles=%q\n' "${stop_cycles}"
         printf 'monitor_seconds=%q\n' "${monitor_seconds}"
         printf 'rebuild=%q\n' "${rebuild}"
+        printf 'timeout_seconds=%q\n' "${timeout_seconds}"
         printf 'tmux_session=%q\n' "${tmux_session}"
         printf 'task_name=%q\n' "${task_name}"
         printf 'recorded_command=%q\n' "${recorded_command}"
@@ -910,13 +1015,15 @@ start_run() {
     } >"${directory}/manager.env"
 
     if ((foreground == 1)); then
-        worker "${directory}"
+        openrv64_run_with_timeout "${timeout_seconds}" "${directory}" \
+            "${task_name}" "${repo_root}/tools/run-linux-smp.sh" \
+            _worker "${directory}"
         return
     fi
     command -v tmux >/dev/null 2>&1 || die "tmux is not installed"
     local worker_command
     worker_command=$(shell_join env "OPENRV64_SMP_RUN_ROOT=${run_root}" \
-        "${repo_root}/tools/run-linux-smp.sh" _worker "${directory}")
+        "${repo_root}/tools/run-linux-smp.sh" _timed_worker "${directory}")
     tmux new-session -d -s "${tmux_session}" -c "${repo_root}" \
         "${worker_command}"
     notify "Started ${harts}H Linux SMP run ${run_id}; ${directory}" \
@@ -931,10 +1038,12 @@ status_run() {
     # shellcheck disable=SC1090
     source "${directory}/manager.env"
     local state=lost
-    if tmux has-session -t "=${tmux_session}" 2>/dev/null; then
-        state=active
-    elif [[ -f ${directory}/status ]]; then
+    if [[ -f ${directory}/status ]]; then
         state=finished
+    elif tmux has-session -t "=${tmux_session}" 2>/dev/null ||
+         [[ -n $(find "${directory}/heartbeat" -mmin -2 -print \
+             2>/dev/null) ]]; then
+        state=active
     fi
     printf 'run_id=%s\nstate=%s\nharts=%s\nthreads=%s\nrun_dir=%s\ntmux_session=%s\n' \
         "${run_id}" "${state}" "${harts}" "${threads}" "${directory}" \
@@ -953,10 +1062,12 @@ list_runs() {
         # shellcheck disable=SC1090
         source "${env_file}"
         state=lost
-        if tmux has-session -t "=${tmux_session}" 2>/dev/null; then
-            state=active
-        elif [[ -f ${directory}/status ]]; then
+        if [[ -f ${directory}/status ]]; then
             state=finished
+        elif tmux has-session -t "=${tmux_session}" 2>/dev/null ||
+             [[ -n $(find "${directory}/heartbeat" -mmin -2 -print \
+                 2>/dev/null) ]]; then
+            state=active
         fi
         printf '%-46s %-8s harts=%s threads=%s\n' \
             "${run_id}" "${state}" "${harts}" "${threads}"
@@ -1080,6 +1191,12 @@ main() {
         wait) wait_run "$@" ;;
         stop) stop_run "$@" ;;
         _worker) worker "$@" ;;
+        _timed_worker)
+            openrv64_run_load_manager "$1"
+            openrv64_run_with_timeout "${timeout_seconds:-259200}" "$1" \
+                "${task_name:-linux-smp}" \
+                "${repo_root}/tools/run-linux-smp.sh" _worker "$1"
+            ;;
         -h|--help|help) usage ;;
         *) die "unknown command: ${command}" ;;
     esac

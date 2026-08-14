@@ -152,9 +152,11 @@ timing evidence.
 
 With that datapath, Zbb is 20.97% faster than RV64I bare and 21.55% faster
 under Sv39. Relative to the serialized Zbb implementation, the reductions are
-41.36% and 42.24%. The bare result is also 9.21% fewer cycles than gem5 HPI,
-but that comparison is between different ISAs and simulation models, not a
-silicon performance claim.
+41.36% and 42.24%. Bare retirement-head ALU wait falls from 16,471 cycles with
+serialized Zbb to 2,187 cycles; RV64I remains lower at 344 because it exposes
+the three rotate terms as independent instructions. The bare result is also
+9.21% fewer cycles than gem5 HPI, but that comparison is between different
+ISAs and simulation models, not a silicon performance claim.
 
 The AArch64 compression body contains 20 `ldp` and 13 `stp` instructions per
 compression invocation, hence 528 pair instructions across this 16-block run.

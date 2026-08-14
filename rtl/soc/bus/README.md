@@ -12,6 +12,10 @@ peripheral contains or accepts a configurable global base address.
 | UART | `0x1000_0000` | `0x0000_0100` | physical address minus UART base |
 | GPIO | `0x1001_0000` | `0x0000_1000` | physical address minus GPIO base |
 | Timer | `0x1002_0000` | `0x0000_1000` | physical address minus timer base |
+| Invariant zero page | `0x00FF_FFFF_FF00_0000` | `0x0000_1000` | L2-generated, no downstream request |
+| Invariant one page | `0x00FF_FFFF_FF00_1000` | `0x0000_1000` | L2-generated, no downstream request |
+| Invariant pseudorandom page | `0x00FF_FFFF_FF00_2000` | `0x0000_1000` | L2-generated, no downstream request |
+| Invariant reserved RAZ/WI | `0x00FF_FFFF_FF00_3000` | `0x00FF_D000` | L2-generated, no downstream request |
 
 `openrv64_soc_bus_decode` is purely combinational. It fans out the complete
 blocking request bus, asserts at most one target valid, and returns only the
@@ -28,3 +32,19 @@ and the general-purpose timer are board-specific and occupy separate 4 KiB
 slots outside QEMU's first VirtIO aperture. Reset begins at ROM `0x1000`; its
 four-instruction stub forwards `mhartid` in `a0`, constructs RAM base
 `0x8000_0000`, and jumps there.
+
+The 16 MiB invariant aperture occupies `0x00ff_ffff_ff00_0000` through
+`0x00ff_ffff_ffff_ffff`, the top of the 56-bit physical DRAM PMA aperture.  It
+does not reduce the installed 256 MiB RAM window.  It is described separately
+in the device tree and intercepted by the shared L2 before its SRAM/miss path.
+The zero page returns all-zero cache lines.  Every 64-bit lane of the
+one page contains numeric one.  The random page advances a deterministic 64-bit
+xorshift generator once per dispatched read and expands that state into a
+64-byte response; it is useful for testing and bulk-data experiments but is
+not a cryptographic entropy source.  The remainder of the aperture reads as
+zero, reserving address space for future invariant types.  Ordinary writes
+anywhere in the aperture are acknowledged and discarded, allowing cacheable
+store-buffer entries to drain without changing invariant contents.  No part
+of the aperture allocates L2 SRAM or accesses DDR.  The core's ordinary
+translation and PMP/PMA checks still occur before the physical request reaches
+L2.

@@ -675,7 +675,7 @@ module tb_4h_3p #(
                 .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
                 .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
                 .L1D_CACHEABLE_BASE(PHYSICAL_BASE),
-                .L1D_CACHEABLE_SIZE(64'(MEMORY_BYTES))
+                .L1D_CACHEABLE_SIZE(`OPENRV64_SOC_DRAM_PMA_SIZE)
             ) u_core (
                 .clk(hart_clk[hart]),
                 .rst_n(hart_rst_n[hart]),

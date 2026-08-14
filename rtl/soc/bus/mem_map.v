@@ -12,6 +12,11 @@
 
 `define OPENRV64_SOC_MEMORY_BASE 64'h0000_0000_8000_0000
 `define OPENRV64_SOC_MEMORY_SIZE 64'h0000_0000_1000_0000
+// Sv39 PTEs carry a 44-bit PPN, so normal physical memory may extend to the
+// exclusive 56-bit physical-address limit.  MEMORY_SIZE is installed RAM;
+// DRAM_PMA_SIZE is the larger normal-memory attribute aperture.
+`define OPENRV64_SOC_DRAM_PMA_LIMIT 64'h0100_0000_0000_0000
+`define OPENRV64_SOC_DRAM_PMA_SIZE  64'h00ff_ffff_8000_0000
 `define OPENRV64_SOC_RESET_VECTOR `OPENRV64_SOC_ROM_BASE
 
 `define OPENRV64_SOC_CLINT_BASE 64'h0000_0000_0200_0000
@@ -31,6 +36,20 @@
 
 `define OPENRV64_SOC_TIMER_BASE 64'h0000_0000_1002_0000
 `define OPENRV64_SOC_TIMER_SIZE 64'h0000_0000_0000_1000
+
+// L2-resident invariant aperture.  This is the top 16 MiB of the 56-bit
+// cacheable DRAM PMA aperture, but it is completed by the shared L2 without a
+// backing-memory transaction and is not installed RAM.
+// The first three pages have defined behavior; the remainder is reserved
+// read-as-zero/write-ignored space for future invariant types.
+`define OPENRV64_SOC_INVARIANT_BASE        64'h00ff_ffff_ff00_0000
+`define OPENRV64_SOC_INVARIANT_PAGE_SIZE   64'h0000_0000_0000_1000
+`define OPENRV64_SOC_INVARIANT_ZERO_BASE   64'h00ff_ffff_ff00_0000
+`define OPENRV64_SOC_INVARIANT_ONE_BASE    64'h00ff_ffff_ff00_1000
+`define OPENRV64_SOC_INVARIANT_RANDOM_BASE 64'h00ff_ffff_ff00_2000
+`define OPENRV64_SOC_INVARIANT_RAZWI_BASE  64'h00ff_ffff_ff00_3000
+`define OPENRV64_SOC_INVARIANT_RAZWI_SIZE  64'h0000_0000_00ff_d000
+`define OPENRV64_SOC_INVARIANT_SIZE        64'h0000_0000_0100_0000
 
 // Stable PLIC source assignments made by openrv64_platform.  External source
 // input bit zero continues at architectural PLIC source ID 4.

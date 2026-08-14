@@ -102,6 +102,7 @@ dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
 "${bare_cross}gcc" -E -P -x assembler-with-cpp \
     -DOPENRV64_MEMORY_SIZE="${memory_size}" \
     -DOPENRV64_HART_COUNT="${hart_count}" \
+    -DOPENRV64_3P=1 \
     "${zbb_cpp_args[@]}" \
     "${zicclsm_cpp_args[@]}" \
     -o "${artifact_dir}/openrv64-3p.dts" \

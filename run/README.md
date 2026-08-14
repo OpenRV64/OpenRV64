@@ -1,35 +1,56 @@
-# Run configurations
+# Run infrastructure
 
-`run/cfg/` contains named, executable configurations for long-running targets.
-Invoke a configuration directly:
+`run/run` is the common entry point for builds and simulations that need a
+durable record. Configuration files under `run/cfg/` describe a workload and
+select a target backend. Backends build and execute targets; the common layer
+owns discovery, status, logs, attach/wait/stop, and the run-directory contract.
 
-```sh
-run/cfg/linux-smp-4h-ddr3.cfg
+Every launch creates:
+
+```text
+run/log/<configuration-name>-<UTC timestamp>/
 ```
 
-or pass it to the common runner:
+The directory records the configuration snapshot, exact command and Make
+arguments, effective values, Git state and dirty-tree patch, source and
+artifact hashes, snapshotted artifacts, build/run logs, heartbeat, and final
+validation status. It is the place to inspect results; workload-specific
+scripts must not invent separate log locations.
+
+## Bare-metal first
+
+The first target-neutral backend runs ordinary Make build and simulation
+targets. BLAKE2s provides baseline and Zbb configurations:
 
 ```sh
-run/run linux-smp-4h-ddr3
-run/run run/cfg/linux-smp-4h-ddr3.cfg --rebuild
-run/run linux-smp-4h-user-tests-ddr3 --rebuild
+run/run blake2s-bare-metal-generic
+run/run blake2s-bare-metal-zbb
+run/run blake2s-bare-metal-zbb --foreground
+run/run blake2s-bare-metal-zbb --manifest-only
 ```
 
-`linux-smp-4h-user-tests-ddr3` uses the separately built
-`sw/Image.smp-user-tests`.  Its initramfs runs the short Linux userspace SMP,
-atomic, cache-coherence, VA-alias, and remote-remap tests before opening the
-interactive shell.  The ordinary SMP configurations continue to use
-`sw/Image.smp`.
+The BLAKE2s configs run both the functional test and the measured workload.
+Success therefore requires the bare AXI-SRAM `PASS` marker and a
+`PERF_BLAKE2S` result, not merely a zero process exit.
 
-Each launch creates `run/log/<configuration-name>-<UTC timestamp>/`. The
-directory is self-contained: it records the selected configuration, effective
-Make values, source hashes, repository state, build and simulation logs,
-snapshotted inputs and executable, checkpoint, and final validation status.
+Bare-metal start overrides are `--jobs N`, `--rebuild`, `--foreground`,
+`--manifest-only`, `--timeout-seconds N`, and Make-style `NAME=value`
+assignments.
 
-Manage generated runs with:
+Managed jobs have a 259200-second (72-hour) wall-clock timeout covering both
+build and execution. A configuration may override it with
+`RUN_TIMEOUT_SECONDS`; `--timeout-seconds N` overrides one invocation, and
+zero explicitly disables the timeout. A timed-out record ends with
+`validation=timeout` rather than being reported as an ordinary simulator
+failure.
+
+## Control surface
+
+The same commands operate on all managed targets, including older Linux run
+directories whose metadata predates the common target fields:
 
 ```sh
-./run/run.sh status latest
+run/run status latest
 run/run list
 run/run log latest 80
 run/run tail latest
@@ -41,43 +62,40 @@ run/run wait latest
 run/run stop latest
 ```
 
-`./run/run.sh status INSTANCE` reads the managed heartbeat, completion record,
-checkpoint, and latest simulator progress directly. It does not query tmux or
-the host process table, so it also works from a restricted PID namespace. An
-exact timestamped run ID or a configuration-name prefix selects an instance.
+`latest`, an exact run ID, a configuration-name prefix, or a run-directory path
+selects a run. `run/run.sh` is only a compatibility alias for `run/run`.
 
-`log` prints a finite suffix. `tail`/`follow` follows the build and simulation
-logs. `attach` switches to the run when invoked inside tmux and attaches
-normally outside tmux. `wait` blocks until the run's session ends and then
-prints its final status.
+## Extension ladder
 
-Common start controls are:
+Target growth is intentionally staged so failures stay attributable:
+
+1. Bare-metal payload on the AXI SRAM model.
+2. The same payload on the timed DDR3 model.
+3. Sv39 execution, still without firmware or Linux.
+4. Platform/OpenSBI boot and multi-hart machinery.
+5. Full Linux build and boot validation.
+
+Only stage 1 uses the new Make backend today. `linux-smp` remains the existing
+target-specific backend in `tools/run-linux-smp.sh`; `run/run` now supplies its
+common entry point and controls. DDR3, Sv39, and OpenSBI are not claimed as
+migrated merely because their Make targets already exist.
+
+## Linux target
+
+Existing Linux configurations remain valid:
 
 ```sh
-run/cfg/linux-smp-4h-ddr3.cfg --max-cycles 80000000
-run/cfg/linux-smp-4h-ddr3.cfg --checkpoint 18000000
-run/cfg/linux-smp-4h-ddr3.cfg --checkpoint 18000000 --checkpoint-exit
-run/cfg/linux-smp-4h-ddr3.cfg --resume RUN_OR_CHECKPOINT
-run/cfg/linux-smp-4h-ddr3.cfg --resume RUN_OR_CHECKPOINT \
-    --stop-cycles 35000000
+run/run linux-smp-4h-ddr3
+run/run linux-smp-4h-ddr3 --rebuild
+run/run linux-smp-4h-ddr3 --checkpoint 18000000 --checkpoint-exit
+run/run linux-smp-4h-ddr3 --resume RUN_OR_CHECKPOINT
 ```
 
 Resume copies the source run's checkpoint, exact snapshotted simulator, and
 inputs into a new timestamped record. It does not rebuild current RTL against
-old serialized state. Unless a new `--checkpoint` is explicitly supplied,
-resume disables the configuration's normal checkpoint.
+old serialized state. Unless a new checkpoint is supplied, resume disables the
+configuration's normal checkpoint.
 
-Configurations may set `RUN_KERNEL_ELF` to the `vmlinux` matching
-`RUN_IMAGE`. The runner verifies its `arch/riscv/boot/Image` byte-for-byte,
-snapshots the ELF, generates Linux and OpenSBI symbol maps, and passes them to
-the simulator. Million-cycle progress then has a companion line such as:
-
-```text
-OPENSBI_4H_PC_SYMBOLS cycles=55000000 harts=linux:memcpy+0x8,<reset>,<reset>,<reset>
-```
-
-Raw PCs remain in `OPENSBI_4H_PROGRESS`. Harts held in reset are explicitly
-printed as `<reset>` rather than symbolizing their zero PC.
-
-`tools/run-linux-smp.sh` remains the target-specific backend. New automation
-should call a configuration rather than construct backend arguments directly.
+Configurations may set `RUN_KERNEL_ELF` to the `vmlinux` matching `RUN_IMAGE`.
+The Linux backend verifies the Image, snapshots the ELF, and generates Linux
+and OpenSBI symbol maps for progress reporting.

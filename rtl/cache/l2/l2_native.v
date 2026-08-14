@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "complex/protocol/defs.v"
 `include "complex/coherent/protocol/defs.v"
+`include "soc/bus/mem_map.v"
 
 // Native 512-bit, nonblocking shared L2.
 //
@@ -23,6 +24,7 @@ module openrv64_icx_l2_native #(
     parameter integer RESPONSE_ENTRIES = 16,
     parameter integer BUS_TRACK_ENTRIES = MSHR_ENTRIES,
     parameter integer PTE_GENERATION_BITS = 8,
+    parameter [63:0] INVARIANT_BASE = `OPENRV64_SOC_INVARIANT_BASE,
     parameter integer ENABLE_COHERENCE = 0,
     parameter integer NUM_HARTS = 1,
     parameter integer HART_ID_BASE = 0,
@@ -565,12 +567,29 @@ module openrv64_icx_l2_native #(
         (lookup_op_q == `OPENRV64_ICX_OP_WRITE) ||
         ((ENABLE_COHERENCE != 0) &&
          (lookup_op_q == `OPENRV64_ICX_OP_SC));
+
+    wire lookup_invariant_match;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] lookup_invariant_data;
+    wire lookup_invariant_read_fire;
+    openrv64_l2_invariant_pages #(
+        .BASE(INVARIANT_BASE)
+    ) u_invariant_pages (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .addr_i(lookup_addr_q),
+        .read_fire_i(lookup_invariant_read_fire),
+        .match_o(lookup_invariant_match),
+        .random_match_o(),
+        .rdata_o(lookup_invariant_data)
+    );
     wire lookup_private_fill =
-        (ENABLE_COHERENCE != 0) && lookup_cacheable && lookup_is_read &&
+        (ENABLE_COHERENCE != 0) && !lookup_invariant_match &&
+        lookup_cacheable && lookup_is_read &&
         ((lookup_source_id_q == `OPENRV64_ICX_SOURCE_ICACHE) ||
          (lookup_source_id_q == `OPENRV64_ICX_SOURCE_DCACHE));
     wire lookup_coherent_write =
-        (ENABLE_COHERENCE != 0) && lookup_cacheable && lookup_is_write;
+        (ENABLE_COHERENCE != 0) && !lookup_invariant_match &&
+        lookup_cacheable && lookup_is_write;
 
     always @* begin
         lookup_request_hart_valid_r = 1'b0;
@@ -593,6 +612,10 @@ module openrv64_icx_l2_native #(
 
     wire coherence_hart_error =
         (ENABLE_COHERENCE != 0) && !lookup_request_hart_valid_r;
+    assign lookup_invariant_read_fire = lookup_dispatch_r &&
+        lookup_invariant_match &&
+        (lookup_op_q == `OPENRV64_ICX_OP_READ) &&
+        !lookup_protocol_error_q && !coherence_hart_error;
     wire lookup_sc_failed =
         (ENABLE_COHERENCE != 0) &&
         (lookup_op_q == `OPENRV64_ICX_OP_SC) &&
@@ -1033,6 +1056,11 @@ module openrv64_icx_l2_native #(
                 if (hit_slot_ready) begin
                     lookup_base_action_r = LOOKUP_IMMEDIATE;
                 end
+            end else if (lookup_invariant_match) begin
+                // Invariant pages terminate here.  They neither consume an
+                // L2 SRAM way nor generate a backing-memory transaction.
+                if (hit_slot_ready)
+                    lookup_base_action_r = LOOKUP_IMMEDIATE;
             end else if (lookup_sc_failed) begin
                 if (hit_slot_ready)
                     lookup_base_action_r = LOOKUP_IMMEDIATE;
@@ -1674,14 +1702,21 @@ module openrv64_icx_l2_native #(
                 hit_last_q <= lookup_last_q;
                 hit_addr_q <= lookup_addr_q;
                 hit_error_q <=
-                    lookup_protocol_error_q | coherence_hart_error;
+                    lookup_protocol_error_q | coherence_hart_error |
+                    (lookup_invariant_match &&
+                     (lookup_op_q != `OPENRV64_ICX_OP_READ) &&
+                     (lookup_op_q != `OPENRV64_ICX_OP_WRITE));
                 hit_private_fill_q <= lookup_private_fill &&
                     !lookup_protocol_error_q && !coherence_hart_error;
                 hit_sc_success_q <=
                     (ENABLE_COHERENCE != 0) &&
                     (lookup_op_q == `OPENRV64_ICX_OP_SC) &&
                     lookup_sc_reservation_match_r;
-                if ((lookup_action_r == LOOKUP_HIT) &&
+                if ((lookup_action_r == LOOKUP_IMMEDIATE) &&
+                    lookup_invariant_match &&
+                    (lookup_op_q == `OPENRV64_ICX_OP_READ))
+                    hit_data_q <= lookup_invariant_data;
+                else if ((lookup_action_r == LOOKUP_HIT) &&
                     lookup_is_read)
                     hit_data_q <= lookup_read_data;
                 else if ((lookup_action_r == LOOKUP_VICTIM_HIT) &&

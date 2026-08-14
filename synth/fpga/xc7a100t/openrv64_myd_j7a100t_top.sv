@@ -117,8 +117,17 @@ module openrv64_myd_j7a100t_top (
     assign ddr3_cas_n = 1'b1;
     assign ddr3_we_n = 1'b1;
     assign ddr3_reset_n = 1'b0;
-    assign ddr3_ck_p = 1'b0;
-    assign ddr3_ck_n = 1'b0;
+    // Keep CK static, but drive the package pair through a differential output
+    // buffer.  Two independent constant OBUFs are electrically the wrong
+    // primitive and Vivado correctly rejects them for DIFF_SSTL15.
+    OBUFDS #(
+        .IOSTANDARD("DIFF_SSTL15"),
+        .SLEW("SLOW")
+    ) u_ddr3_ck_obuf (
+        .I(1'b0),
+        .O(ddr3_ck_p[0]),
+        .OB(ddr3_ck_n[0])
+    );
     assign ddr3_cke = 1'b0;
     assign ddr3_cs_n = 1'b1;
     assign ddr3_dm = 4'b0000;

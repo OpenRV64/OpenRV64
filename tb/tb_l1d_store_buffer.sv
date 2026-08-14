@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `include "complex/protocol/defs.v"
 `include "core/bus/bus-defs.v"
+`include "soc/bus/mem_map.v"
 
 module tb_l1d_store_buffer;
 
@@ -35,6 +36,7 @@ module tb_l1d_store_buffer;
     wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_req_txn_id;
     wire [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_req_source_id;
     wire [`OPENRV64_ICX_OP_WIDTH-1:0] icx_req_op;
+    wire [`OPENRV64_ICX_ATTR_WIDTH-1:0] icx_req_attr;
     wire [2:0] icx_req_size;
     wire [63:0] icx_req_addr;
     wire icx_wdata_valid;
@@ -182,7 +184,7 @@ module tb_l1d_store_buffer;
         .icx_req_lock_o(),
         .icx_req_order_o(),
         .icx_req_kind_o(),
-        .icx_req_attr_o(),
+        .icx_req_attr_o(icx_req_attr),
         .icx_req_size_o(icx_req_size),
         .icx_req_addr_o(icx_req_addr),
         .icx_req_burst_len_o(),
@@ -252,6 +254,12 @@ module tb_l1d_store_buffer;
             if (icx_req_valid) begin
                 if (!response_free_found_r)
                     $fatal(1, "store-buffer response model overflow");
+                if (((icx_req_addr - `OPENRV64_SOC_INVARIANT_BASE) <
+                     `OPENRV64_SOC_INVARIANT_SIZE) &&
+                    !(icx_req_attr & `OPENRV64_ICX_ATTR_CACHEABLE))
+                    $fatal(1,
+                        "invariant request was not marked cacheable addr=%016x attr=%0x",
+                        icx_req_addr, icx_req_attr);
                 if (icx_req_op == `OPENRV64_ICX_OP_WRITE) begin
                     if (icx_req_size != 3'd6)
                         $fatal(1,
@@ -292,8 +300,17 @@ module tb_l1d_store_buffer;
                 response_addr_q[response_free_slot_r] <= icx_req_addr;
                 response_wdata_q[response_free_slot_r] <= icx_wdata;
                 response_wstrb_q[response_free_slot_r] <= icx_wstrb;
-                response_rdata_q[response_free_slot_r] <=
-                    memory[icx_req_addr[9:6]];
+                if ((icx_req_addr - `OPENRV64_SOC_INVARIANT_BASE) <
+                    `OPENRV64_SOC_INVARIANT_SIZE) begin
+                    if (icx_req_addr[23:12] == 12'd1)
+                        response_rdata_q[response_free_slot_r] <=
+                            {8{64'd1}};
+                    else
+                        response_rdata_q[response_free_slot_r] <= 512'd0;
+                end else begin
+                    response_rdata_q[response_free_slot_r] <=
+                        memory[icx_req_addr[9:6]];
+                end
                 response_due_q[response_free_slot_r] <=
                     (icx_req_op == `OPENRV64_ICX_OP_FENCE) ?
                     cycle_count + 4 :
@@ -314,7 +331,10 @@ module tb_l1d_store_buffer;
             end
             if (icx_resp_valid && icx_resp_ready) begin
                 icx_resp_valid <= 1'b0;
-                if (response_write_q[response_active_slot_q]) begin
+                if (response_write_q[response_active_slot_q] &&
+                    !((response_addr_q[response_active_slot_q] -
+                       `OPENRV64_SOC_INVARIANT_BASE) <
+                      `OPENRV64_SOC_INVARIANT_SIZE)) begin
                     for (memory_byte = 0;
                          memory_byte <
                              `OPENRV64_ICX_LINE_STRB_WIDTH;
@@ -967,7 +987,36 @@ module tb_l1d_store_buffer;
             $fatal(1,
                 "dirty-refill verification missed instead of hitting L1");
 
-        $display("PASS: L1D store combining, independent drains, barriers, and dirty-line refill snooping");
+        // The invariant aperture is cacheable, but its writes are successful
+        // no-ops.  A resident line and the dirty-store overlay must therefore
+        // retain the home-generated value both before and after the posted
+        // store drains.
+        reset_dut();
+        issue_load(`OPENRV64_SOC_INVARIANT_RAZWI_BASE, 64'd0);
+        issue_store(`OPENRV64_SOC_INVARIANT_RAZWI_BASE,
+                    64'hfeed_face_cafe_beef);
+        issue_load(`OPENRV64_SOC_INVARIANT_RAZWI_BASE, 64'd0);
+        if (read_count != 1)
+            $fatal(1, "invariant resident read missed after dropped store");
+        @(negedge clk);
+        speculation_barrier = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        speculation_barrier = 1'b0;
+        wait_cycles = 0;
+        while (store_barrier_busy && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (store_barrier_busy || (dut.store_buffer_count_q != 0) ||
+            (write_count != 1))
+            $fatal(1,
+                "invariant dropped store did not receive a home acknowledgement");
+        issue_load(`OPENRV64_SOC_INVARIANT_RAZWI_BASE, 64'd0);
+        if (read_count != 1)
+            $fatal(1, "invariant line was displaced by dropped store");
+
+        $display("PASS: L1D store combining, invariant write dropping, independent drains, barriers, and dirty-line refill snooping");
         $finish;
     end
 

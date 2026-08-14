@@ -1518,7 +1518,7 @@ module tb_top_3p_soc #(
         .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
         .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
         .L1D_CACHEABLE_BASE(`OPENRV64_SOC_MEMORY_BASE),
-        .L1D_CACHEABLE_SIZE(RAM_BYTES),
+        .L1D_CACHEABLE_SIZE(`OPENRV64_SOC_DRAM_PMA_SIZE),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
@@ -4349,13 +4349,15 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[14]);
         if ($test$plusargs("report_blake2s"))
             $display(
-                "PERF_BLAKE2S cycles=%0d instructions=%0d calls=%0d blocks_per_call=%0d total_blocks=%0d checksum=%08h",
+                "PERF_BLAKE2S cycles=%0d instructions=%0d calls=%0d blocks_per_call=%0d total_blocks=%0d checksum=%08h input_offset=%0d kernel_zbb=%0d",
                 dut.u_backend.u_gpr.regs[10],
                 dut.u_backend.u_gpr.regs[11],
                 dut.u_backend.u_gpr.regs[12],
                 dut.u_backend.u_gpr.regs[13],
                 dut.u_backend.u_gpr.regs[14],
-                dut.u_backend.u_gpr.regs[15][31:0]);
+                dut.u_backend.u_gpr.regs[15][31:0],
+                dut.u_backend.u_gpr.regs[16],
+                dut.u_backend.u_gpr.regs[17]);
         if ($test$plusargs("report_sv39_smoke"))
             $display(
                 "PERF_SV39_SMOKE coremark_cycles=%0d blake2s_cycles=%0d stream_cycles=%0d atomic_cycles=%0d fence_cycles=%0d store_extension_cycles=%0d selected_mask=%02h",
@@ -4428,7 +4430,8 @@ module tb_top_3p_soc #(
             dtlb_fast_loads, dtlb_fast_stores,
             dtlb_access_overlap_loads,
             dtlb_serial_loads, dtlb_serial_stores,
-            `OPENRV64_SOC_MEMORY_BASE, RAM_BYTES);
+            `OPENRV64_SOC_MEMORY_BASE,
+            `OPENRV64_SOC_DRAM_PMA_SIZE);
         $display(
             "PERF_ZERO_SV39 required=%0b xlates=%0d accesses=%0d mapping_errors=%0d",
             require_zero_scatter, zero_scatter_xlates,

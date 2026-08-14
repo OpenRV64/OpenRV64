@@ -187,6 +187,12 @@ Command-line start options and Make-style `NAME=value` arguments are applied
 after configuration defaults and therefore take precedence. Additional
 simulator plusargs may follow `--`; every such argument must begin with `+`.
 
+Every managed job has a whole-job wall-clock timeout, including its build and
+simulation phases. The default is 259200 seconds (72 hours). Set
+`RUN_TIMEOUT_SECONDS` in a configuration, use `--timeout-seconds N` for one
+launch, or use zero to disable the limit explicitly. Timeout completion is
+recorded as `validation=timeout` with `timed_out=1`.
+
 ## Configuration format
 
 Configuration files are repository-controlled Bash fragments. They are both
@@ -212,6 +218,7 @@ RUN_ZICCLSM=1
 RUN_MAX_CYCLES=250000000
 RUN_CHECKPOINT_CYCLES=25000000
 RUN_MONITOR_SECONDS=900
+RUN_TIMEOUT_SECONDS=259200
 RUN_REBUILD=0
 
 RUN_MAKE_ARGUMENTS=(

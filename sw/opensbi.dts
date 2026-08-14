@@ -131,6 +131,38 @@
         reg = <0x0 0x80000000 0x0 OPENRV64_MEMORY_SIZE>;
     };
 
+#if defined(OPENRV64_3P)
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        invariant-zero@ffffffff000000 {
+            compatible = "openrv64,invariant-zero-page";
+            reg = <0x00ffffff 0xff000000 0x0 0x00001000>;
+            no-map;
+        };
+
+        invariant-one@ffffffff001000 {
+            compatible = "openrv64,invariant-one-page";
+            reg = <0x00ffffff 0xff001000 0x0 0x00001000>;
+            no-map;
+        };
+
+        invariant-random@ffffffff002000 {
+            compatible = "openrv64,invariant-pseudorandom-page";
+            reg = <0x00ffffff 0xff002000 0x0 0x00001000>;
+            no-map;
+        };
+
+        invariant-reserved@ffffffff003000 {
+            compatible = "openrv64,invariant-razwi";
+            reg = <0x00ffffff 0xff003000 0x0 0x00ffd000>;
+            no-map;
+        };
+    };
+#endif
+
     soc {
         #address-cells = <2>;
         #size-cells = <2>;

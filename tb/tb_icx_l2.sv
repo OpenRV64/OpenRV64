@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "complex/protocol/defs.v"
+`include "soc/bus/mem_map.v"
 
 module tb_icx_l2;
 
@@ -347,6 +348,32 @@ module tb_icx_l2;
         end
     endtask
 
+    task automatic wait_response_capture;
+        input [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] transaction;
+        input [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] source;
+        output [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] data;
+        integer cycles;
+        begin
+            cycles = 0;
+            while (!resp_valid && cycles < 500) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            #1;
+            if (!resp_valid || resp_hart_id != 0 ||
+                resp_txn_id != transaction || resp_source_id != source ||
+                resp_beat_index != 0 || !resp_last || resp_error ||
+                resp_sc_success)
+                $fatal(1,
+                    "native L2 captured response envelope mismatch txn=%0d/%0d source=%0d/%0d error=%0b",
+                    resp_txn_id, transaction, resp_source_id, source,
+                    resp_error);
+            data = resp_rdata;
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
     task automatic read_line;
         input [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] source;
         input [`OPENRV64_ICX_KIND_WIDTH-1:0] kind;
@@ -417,6 +444,9 @@ module tb_icx_l2;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] merge_store_data_0;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] merge_store_data_1;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] scalar_response;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] invariant_one_line;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] invariant_random_line_0;
+    reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] invariant_random_line_1;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] masked_txn_0;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] masked_txn_1;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] merge_read_txn;
@@ -426,6 +456,7 @@ module tb_icx_l2;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] early_txn_1;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] locked_read_txn;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] locked_write_txn;
+    reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] invariant_txn;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] early_line_0;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] early_line_1;
     integer masked_reads_before;
@@ -492,6 +523,113 @@ module tb_icx_l2;
         repeat (3) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        // The aperture is in the cacheable DRAM PMA but terminates at L2.  It
+        // must never issue a DDR request or occupy an L2 SRAM way.
+        invariant_one_line = {8{64'd1}};
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd6, `OPENRV64_SOC_INVARIANT_ZERO_BASE,
+                     invariant_txn);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      512'd0, 1'b1);
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd6, `OPENRV64_SOC_INVARIANT_ONE_BASE,
+                     invariant_txn);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      invariant_one_line, 1'b1);
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd3, `OPENRV64_SOC_INVARIANT_ONE_BASE + 64'd24,
+                     invariant_txn);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      invariant_one_line, 1'b1);
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd6, `OPENRV64_SOC_INVARIANT_RANDOM_BASE,
+                     invariant_txn);
+        wait_response_capture(invariant_txn,
+                              `OPENRV64_ICX_SOURCE_DCACHE,
+                              invariant_random_line_0);
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd6, `OPENRV64_SOC_INVARIANT_RANDOM_BASE,
+                     invariant_txn);
+        wait_response_capture(invariant_txn,
+                              `OPENRV64_ICX_SOURCE_DCACHE,
+                              invariant_random_line_1);
+        if ((invariant_random_line_0 == 0) ||
+            (invariant_random_line_0 === invariant_random_line_1))
+            $fatal(1, "invariant random page did not advance");
+
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd6, `OPENRV64_SOC_INVARIANT_RAZWI_BASE,
+                     invariant_txn);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      512'd0, 1'b1);
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_WRITE, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd3, `OPENRV64_SOC_INVARIANT_RAZWI_BASE,
+                     invariant_txn);
+        send_write_data_masked(invariant_txn, {8{64'hfeed_face_cafe_beef}},
+                               64'h0000_0000_0000_00ff);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd6, `OPENRV64_SOC_INVARIANT_BASE +
+                           `OPENRV64_SOC_INVARIANT_SIZE - 64'd64,
+                     invariant_txn);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      512'd0, 1'b1);
+
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_WRITE, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd3, `OPENRV64_SOC_INVARIANT_ZERO_BASE,
+                     invariant_txn);
+        send_write_data_masked(invariant_txn,
+                               {8{64'hdead_beef_1234_5678}},
+                               64'h0000_0000_0000_00ff);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      512'd0, 1'b0);
+        send_command(`OPENRV64_ICX_SOURCE_DCACHE,
+                     `OPENRV64_ICX_OP_READ, 1'b0,
+                     `OPENRV64_ICX_KIND_DATA,
+                     `OPENRV64_ICX_ATTR_CACHEABLE,
+                     3'd6, `OPENRV64_SOC_INVARIANT_ZERO_BASE,
+                     invariant_txn);
+        wait_response(invariant_txn, `OPENRV64_ICX_SOURCE_DCACHE,
+                      512'd0, 1'b1);
+        if ((bus_reads != 0) || (bus_writes != 0))
+            $fatal(1,
+                "invariant pages leaked to backing memory reads=%0d writes=%0d",
+                bus_reads, bus_writes);
+        if ((dut.valid_q[0] != 0) ||
+            (dut.valid_q[64] != 0) ||
+            (dut.valid_q[128] != 0) ||
+            (dut.valid_q[192] != 0) ||
+            (dut.valid_q[511] != 0))
+            $fatal(1, "invariant page read allocated an L2 SRAM way");
 
         // Once the current head write has buffered its data, the independent
         // write-data channel may present a future command's data.  Hold the
@@ -828,7 +966,7 @@ module tb_icx_l2;
         if (memory[SNOOP_LINE_ADDR[18:6]] !== snoop_dirty_line)
             $fatal(1, "dirty victim writeback lost snooped data");
 
-        $display("PASS: native L2 write-around, dirty-victim snooping, partial eviction, atomics, and PTE generations");
+        $display("PASS: native L2 invariant pages, write-around, dirty-victim snooping, partial eviction, atomics, and PTE generations");
         $finish;
     end
 
