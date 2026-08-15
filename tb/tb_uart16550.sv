@@ -150,6 +150,25 @@ module tb_uart16550;
         end
     endtask
 
+    task automatic send_back_to_back_zero_bytes;
+        input integer byte_count;
+        integer byte_index;
+        integer bit_index;
+        begin
+            @(negedge clk);
+            for (byte_index = 0; byte_index < byte_count;
+                 byte_index = byte_index + 1) begin
+                drive_serial_bit(1'b0);
+                for (bit_index = 0; bit_index < 8;
+                     bit_index = bit_index + 1)
+                    drive_serial_bit(1'b0);
+                drive_serial_bit(1'b1);
+            end
+            rx = 1'b1;
+            repeat (4) @(posedge clk);
+        end
+    endtask
+
     task automatic expect_transmitted_byte;
         input logic [7:0] expected;
         integer bit_index;
@@ -341,6 +360,14 @@ module tb_uart16550;
         expect_read8(3'd0, 8'h32, "FIFO preserves byte one");
         expect_read8(3'd0, 8'h33, "FIFO preserves byte two");
         expect_read8(3'd0, 8'h34, "FIFO preserves byte three");
+
+        // A full-rate stream has no idle gap beyond the configured stop bit.
+        // Receive phase must not drift by one 16x tick per character.
+        bus_write8(3'd2, 8'h07);
+        send_back_to_back_zero_bytes(12);
+        for (integer stream_byte = 0; stream_byte < 12;
+             stream_byte = stream_byte + 1)
+            expect_read8(3'd0, 8'h00, "back-to-back stream byte");
 
         // A low stop bit is attached to the affected FIFO byte and takes
         // priority over the normal received-data interrupt.

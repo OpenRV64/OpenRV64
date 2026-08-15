@@ -30,6 +30,7 @@ module openrv64_rv64_top #(
     parameter integer HPM_COUNTERS = 8,
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
+    parameter integer TLB_ENTRIES = 16,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
@@ -1244,6 +1245,7 @@ module openrv64_rv64_top #(
     openrv64_core_bus #(
         .ENABLE_L1D_COHERENCE_PROBES(1'b0),
         .ENABLE_COHERENT_ATOMICS(1'b0),
+        .TLB_ENTRIES(TLB_ENTRIES),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
         .PTW_ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID)

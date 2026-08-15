@@ -25,10 +25,16 @@ memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
 zicclsm=${OPENRV64_ZICCLSM:-1}
 zbb=${OPENRV64_ZBB:-1}
 hart_count=${OPENRV64_HART_COUNT:-1}
+timebase_frequency=${OPENRV64_TIMEBASE_FREQUENCY:-10000000}
+uart_clock_frequency=${OPENRV64_UART_CLOCK_FREQUENCY:-1843200}
 payload_source=${OPENRV64_PAYLOAD_SOURCE:-"${repo_root}/sw/opensbi_payload.S"}
+trampoline_source=${OPENRV64_TRAMPOLINE_SOURCE:-"${repo_root}/sw/opensbi_trampoline.S"}
 
 if [[ "${payload_source}" != /* ]]; then
     payload_source="${repo_root}/${payload_source}"
+fi
+if [[ "${trampoline_source}" != /* ]]; then
+    trampoline_source="${repo_root}/${trampoline_source}"
 fi
 
 if [[ "${zicclsm}" != 0 && "${zicclsm}" != 1 ]]; then
@@ -44,8 +50,20 @@ if [[ "${hart_count}" != 1 && "${hart_count}" != 2 &&
     echo "build-opensbi.sh: OPENRV64_HART_COUNT must be 1, 2, or 4" >&2
     exit 2
 fi
+if [[ ! "${timebase_frequency}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "build-opensbi.sh: OPENRV64_TIMEBASE_FREQUENCY must be a positive integer" >&2
+    exit 2
+fi
+if [[ ! "${uart_clock_frequency}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "build-opensbi.sh: OPENRV64_UART_CLOCK_FREQUENCY must be a positive integer" >&2
+    exit 2
+fi
 if [[ ! -f "${payload_source}" ]]; then
     echo "build-opensbi.sh: missing payload source: ${payload_source}" >&2
+    exit 2
+fi
+if [[ ! -f "${trampoline_source}" ]]; then
+    echo "build-opensbi.sh: missing trampoline source: ${trampoline_source}" >&2
     exit 2
 fi
 zicclsm_cpp_args=()
@@ -95,6 +113,8 @@ fi
 "${bare_cross}gcc" -E -P -x assembler-with-cpp \
     -DOPENRV64_MEMORY_SIZE="${memory_size}" \
     -DOPENRV64_HART_COUNT="${hart_count}" \
+    -DOPENRV64_TIMEBASE_FREQUENCY="${timebase_frequency}" \
+    -DOPENRV64_UART_CLOCK_FREQUENCY="${uart_clock_frequency}" \
     -o "${artifact_dir}/openrv64.dts" \
     "${repo_root}/sw/opensbi.dts"
 dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
@@ -102,6 +122,8 @@ dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
 "${bare_cross}gcc" -E -P -x assembler-with-cpp \
     -DOPENRV64_MEMORY_SIZE="${memory_size}" \
     -DOPENRV64_HART_COUNT="${hart_count}" \
+    -DOPENRV64_TIMEBASE_FREQUENCY="${timebase_frequency}" \
+    -DOPENRV64_UART_CLOCK_FREQUENCY="${uart_clock_frequency}" \
     -DOPENRV64_3P=1 \
     "${zbb_cpp_args[@]}" \
     "${zicclsm_cpp_args[@]}" \
@@ -113,9 +135,10 @@ dtc -I dts -O dtb -o "${artifact_dir}/openrv64-3p.dtb" \
 "${bare_cross}gcc" -march=rv64ima_zicsr_zifencei -mabi=lp64 \
     -mcmodel=medany -mno-relax -nostdlib -nostartfiles \
     -DOPENRV64_FDT_ADDR="${fdt_addr}" \
+    -DOPENRV64_UART_CLOCK_FREQUENCY="${uart_clock_frequency}" \
     -Wl,--build-id=none -T "${repo_root}/sw/opensbi_trampoline.ld" \
     -o "${artifact_dir}/trampoline.elf" \
-    "${repo_root}/sw/opensbi_trampoline.S"
+    "${trampoline_source}"
 "${bare_cross}objcopy" -O binary \
     "${artifact_dir}/trampoline.elf" "${artifact_dir}/trampoline.bin"
 

@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/../../.." && pwd)
+yosys_bin=${YOSYS:-yosys}
+output_dir=${OUT_DIR:-$repo_root/build/fpga/xc7a100t/opensbi-smoke}
+core_stub=${CORE_STUB:-$output_dir/openrv64_fpga_core_stub.v}
+loader_stub=${LOADER_STUB:-$output_dir/openrv64_fpga_loader_fixed_stub.v}
+output_edif=${OUTPUT_EDIF:-$output_dir/openrv64_fpga_opensbi_system.edif}
+output_json=${OUTPUT_JSON:-$output_dir/openrv64_fpga_opensbi_system.json}
+output_stub=${OUTPUT_STUB:-$output_dir/openrv64_fpga_opensbi_system_stub.v}
+output_log=${OUTPUT_LOG:-$output_dir/yosys-system.log}
+uart_linux_load_enable=${UART_LINUX_LOAD_ENABLE:-0}
+
+if ! yosys_bin=$(command -v "$yosys_bin"); then
+    echo "error: Yosys executable not found: ${YOSYS:-yosys}" >&2
+    exit 2
+fi
+for stub in "$core_stub" "$loader_stub"; do
+    if [[ ! -s "$stub" ]]; then
+        echo "error: required partition stub not found: $stub" >&2
+        exit 2
+    fi
+done
+if [[ "$uart_linux_load_enable" != 0 &&
+      "$uart_linux_load_enable" != 1 ]]; then
+    echo "error: UART_LINUX_LOAD_ENABLE must be 0 or 1" >&2
+    exit 2
+fi
+
+mkdir -p "$output_dir"
+
+sources=(
+    "$core_stub"
+    "$loader_stub"
+    "$repo_root/rtl/soc/platform.sv"
+    "$repo_root/rtl/soc/reset_sequencer.v"
+    "$repo_root/rtl/soc/bus/decode.v"
+    "$repo_root/rtl/soc/bus/rom.v"
+    "$repo_root/rtl/soc/bus/memory.v"
+    "$repo_root/rtl/clint/clint.v"
+    "$repo_root/rtl/plic/plic.v"
+    "$repo_root/rtl/periph/uart/uart.v"
+    "$repo_root/rtl/periph/gpio/gpio.v"
+    "$repo_root/rtl/periph/timer/timer.v"
+    "$script_dir/uart_banner.sv"
+    "$script_dir/uart_ddr_loader.sv"
+    "$script_dir/mig_scalar_bridge.sv"
+    "$script_dir/scalar_mem_cdc.sv"
+    "$script_dir/scalar_icx_arbiter.sv"
+    "$script_dir/opensbi_boot_uart_status.sv"
+    "$script_dir/opensbi_system.sv"
+)
+
+read_command="read_verilog -sv -defer -I$repo_root/rtl \
+    -DSYNTHESIS -DOPENRV64_FPGA_CORE_NETLIST \
+    -DOPENRV64_FPGA_LOADER_NETLIST"
+for source in "${sources[@]}"; do
+    read_command+=" \"$source\""
+done
+
+flow="$read_command; \
+chparam -set UART_LINUX_LOAD_ENABLE $uart_linux_load_enable \
+        openrv64_fpga_opensbi_system; \
+hierarchy -check -top openrv64_fpga_opensbi_system; \
+synth_xilinx -family xc7 -top openrv64_fpga_opensbi_system -flatten \
+    -noiopad -noclkbuf; \
+delete t:\$scopeinfo; \
+hierarchy -check -top openrv64_fpga_opensbi_system; \
+check -noinit; \
+write_edif -pvector bra \"$output_edif\"; \
+write_json \"$output_json\"; \
+blackbox openrv64_fpga_opensbi_system; \
+setattr -mod -set black_box 1 =openrv64_fpga_opensbi_system; \
+select =openrv64_fpga_opensbi_system; \
+write_verilog -blackboxes -selected \"$output_stub\""
+
+cd "$repo_root"
+"$yosys_bin" -q -l "$output_log" -p "$flow"
+
+test -s "$output_edif"
+test -s "$output_json"
+test -s "$output_stub"
+printf 'OpenRV64 FPGA system EDIF: %s\n' "$output_edif"

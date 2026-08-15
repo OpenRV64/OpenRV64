@@ -145,9 +145,11 @@ module openrv64_soc_memory #(
     wire [63:0] icx_local_addr = icx_cmd_addr_q - MEM_BASE;
     wire [WORD_INDEX_WIDTH-1:0] icx_word_index =
         icx_local_addr[WORD_INDEX_WIDTH+2:3];
-    wire [WORD_INDEX_WIDTH-1:0] icx_line_word_index = {
-        icx_word_index[WORD_INDEX_WIDTH-1:3], 3'b000
-    };
+    // Shifts remain well-formed for the minimum supported 64-byte memory,
+    // where WORD_INDEX_WIDTH is exactly three.  A concatenated part-select
+    // would become the invalid range [2:3] in that legal configuration.
+    wire [WORD_INDEX_WIDTH-1:0] icx_line_word_index =
+        (icx_word_index >> 3) << 3;
     wire icx_command_is_write =
         (icx_cmd_op_q == `OPENRV64_ICX_OP_WRITE);
     wire icx_command_is_read =

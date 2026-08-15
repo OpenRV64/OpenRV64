@@ -714,6 +714,23 @@ module openrv64_uart16550 (
                         if (rx_break_q) begin
                             rx_mark_count_q <= 2'd0;
                             rx_state_q <= RX_WAIT_MARK;
+                        end else if (!rx_framing_error_q && !rx_serial) begin
+                            // A legal stop bit may be followed immediately by
+                            // the next start bit.  Re-entering RX_IDLE here
+                            // would defer detection by one 16x tick on every
+                            // back-to-back character, accumulating enough
+                            // phase error to sample the next stop as data.
+                            rx_state_q <= RX_START;
+                            rx_data_index_q <= 3'd0;
+                            rx_shift_q <= 8'h00;
+                            rx_word_bits_q <= word_bits(lcr_q[1:0]);
+                            rx_parity_enable_q <= lcr_q[3];
+                            rx_even_parity_q <= lcr_q[4];
+                            rx_stick_parity_q <= lcr_q[5];
+                            rx_parity_xor_q <= 1'b0;
+                            rx_parity_error_q <= 1'b0;
+                            rx_framing_error_q <= 1'b0;
+                            rx_break_q <= 1'b0;
                         end else begin
                             rx_state_q <= RX_IDLE;
                         end

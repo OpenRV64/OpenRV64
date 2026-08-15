@@ -1,13 +1,203 @@
 # MYD-J7A100T FPGA configuration smoke test
 
-Status date: 2026-08-13 UTC
+Status date: 2026-08-15 UTC
 
-This procedure programs the current OpenRV64 **inert pad-shell** into the FPGA
-over JTAG and checks its USB-UART loopback.  It validates the programming path,
-the selected FPGA part, and two UART pins.  It does not run an OpenRV64 core or
-exercise DDR3, microSD, or Ethernet.
+This document covers three separate bitstreams.  The inert pad-shell remains
+the minimal JTAG and USB-UART-loopback baseline.  The OpenSBI smoke image adds
+the MYIR-derived MIG, a one-pipe OpenRV64 core, a ROM-to-DDR loader, OpenSBI
+v1.9, and a small S-mode Sv39/PTW and timer payload.  The Linux image extends
+that design with a pre-boot hardware UART-to-MIG loader.  Do not transfer
+claims between the three images.
 
-## Current artifact
+## Current Linux hardware-preload artifact
+
+The physically booted Linux image is:
+
+- Board: MYIR MYD-J7A100T / MYC-J7A100T-32Q512D-I
+- FPGA: `XC7A100T-2FGG484I`
+- Vivado part: `xc7a100tfgg484-2`
+- Top: `openrv64_myd_j7a100t_opensbi_top`
+- Bitstream:
+  `build/fpga/xc7a100t/linux-hw-preload-tlb4/openrv64_myd_j7a100t_linux_hw_preload.bit`
+- Size: 3,826,012 bytes
+- SHA-256:
+  `a957d2f1d1069dfb8a1e68f43101ecf8dd04942920e5b59fc709957e8b4930f8`
+- Linux Image: `sw/Image.Zicclsm`, 5,021,332 bytes
+- Linux Image SHA-256:
+  `6d7071598d68d66199ea96834538cf95b51aaa45550d6dd871c0ba1c66a450ba`
+- Linux Image CRC32: `8836c071`
+- Vivado: 2026.1 build 6511674
+- OpenSBI: v1.9, commit
+  `cbf9f6734dd85a982c63e3cb5db7ffe09da839ca`
+- Core, UART, and timebase clock: 9,216,000 Hz
+- MIG UI and loader clock: 100,000,000 Hz
+- UART: 115200 baud, 8 data bits, no parity, one stop bit
+
+The fixed loader first writes a 32-byte trampoline to `0x80000000`, OpenSBI to
+`0x80100000`, the existing small payload slot to `0x80200000`, and the DTB to
+`0x8ff00000`.  The CPU remains in reset.  The hardware UART loader then accepts
+a 16-byte header containing `ORV64LNX`, a little-endian 32-bit length, and an
+IEEE CRC-32.  It streams the raw image into aligned 256-bit native-MIG writes
+starting at `0x80200000`; the final partial line uses the MIG byte mask.  It
+releases the CPU only after receiving the complete image, matching the CRC,
+and finishing its PASS message.  The minimal trampoline then enters OpenSBI,
+which enters Linux at `0x80200000` with the DTB at `0x8ff00000`.
+
+Program volatile FPGA SRAM, ensure the UART bridge is active, then run:
+
+```sh
+/home/bill/.venv/bin/python tools/fpga-uart-linux-load.py \
+  --device /tmp/ttyACM0 --ready-timeout 120 --boot-timeout 7200 \
+  --hardware-preload sw/Image.Zicclsm
+```
+
+The required sequence is:
+
+```text
+OPENRV64 DDR LOAD READY
+OPENRV64 DDR LOAD START
+OPENRV64 DDR LOAD PASS
+OPENRV64 FPGA BOOT PASS
+OpenSBI v1.9
+...
+Linux version 7.2.0-rc4+
+...
+OPENRV64 BUSYBOX INIT
+openrv64#
+```
+
+On 2026-08-15 this exact image was programmed into the physical `xc7a100t`.
+FPGA startup completed HIGH, the hardware CRC passed, OpenSBI handed off in
+S-mode, Linux reported 251,216 KiB available from 256 MiB, BusyBox init ran,
+and the literal shell prompt was captured from the board UART.  A subsequent
+causally paced `uname -a` returned Linux 7.2.0-rc4+ on `riscv64` and the shell
+prompt returned.  The kernel reached `/init` at its timestamp 91.546 seconds.
+
+The routed design has zero routing errors, setup WNS +0.954 ns, hold WHS
++0.047 ns, 44,087 LUTs, 19,896 registers, and 68 block-RAM tiles.  Bitstream
+generation completed with zero DRC errors.  Focused simulation covers a full
+32-byte line, a masked four-byte tail, independently stalled MIG command/data
+channels, CRC32, and calibration loss.  The UART peripheral's gapless receive
+regression also passes.
+
+The five post-route DRC warnings are in generated MIG clock/DQS structures.
+The CDC report has zero unsafe endpoints but 20 endpoints classified Unknown;
+the physical boot is functional evidence, not CDC signoff.
+
+The final provenance and UART capture are under
+`run/log/fpga-linux-uart-20260815T113302Z/`; see `result.md` and
+`uart-linux-hw-preload-final.log` there.
+
+This result proves one single-hart physical boot through DDR3, OpenSBI,
+Sv39/PTW, the 16550 driver, init, and a shell prompt.  It does not prove soak
+stability, storage boot, Ethernet, SMP, or persistent configuration flash.
+At 115200 baud the 5 MB preload has a minimum wire time of 435.9 seconds, so it
+is a bring-up mechanism rather than a reasonable permanent boot path.
+An unpaced 58-byte shell-command burst caused a `ttyS0` input overrun and
+garbled input; character-at-a-time echo pacing worked.  Do not treat the
+current console RX path as robust against host bursts.
+
+## Current OpenSBI artifact
+
+The physically validated OpenSBI image is:
+
+- Board: MYIR MYD-J7A100T / MYC-J7A100T-32Q512D-I
+- FPGA: `XC7A100T-2FGG484I`
+- Vivado part: `xc7a100tfgg484-2`
+- Top: `openrv64_myd_j7a100t_opensbi_top`
+- Bitstream:
+  `build/fpga/xc7a100t/opensbi-smoke-tlb4-split/openrv64_myd_j7a100t_opensbi_top.bit`
+- Size: 3,826,012 bytes
+- SHA-256:
+  `cab65e11cff4b79f3eb2246dd5ac2cd4497d09ee2e9bdcfed5d773db8498760d`
+- Vivado: 2026.1 build 6511674
+- OpenSBI: v1.9, commit
+  `cbf9f6734dd85a982c63e3cb5db7ffe09da839ca`
+- Core, UART, and timebase clock: 9,216,000 Hz
+- UART: 115200 baud, 8 data bits, no parity, one stop bit
+
+The firmware loader writes the trampoline to `0x80000000`, OpenSBI to
+`0x80100000`, the S-mode payload to `0x80200000`, and the DTB to `0x8ff00000`.
+After programming, the required console sequence is:
+
+```text
+OPENRV64 FPGA BOOT WAIT
+OPENRV64 FPGA BOOT PASS
+
+OpenSBI v1.9
+...
+Domain0 Next Address        : 0x0000000080200000
+Domain0 Next Arg1           : 0x000000008ff00000
+Domain0 Next Mode           : S-mode
+...
+OPENRV64 SBI SV39 PTW PASS
+```
+
+On 2026-08-15 this exact image was loaded over JTAG into the detected
+`xc7a100t`, FPGA startup completed HIGH, and all of the markers above were
+captured from the physical board UART.  The routed image has zero failed nets,
+setup WNS +0.574 ns, hold WHS +0.047 ns, 42,727 LUTs, 19,060 registers, and 68
+block-RAM tiles.  The bitstream DRC has zero errors.  The remaining five DRC
+warnings are inside the generated MIG clock and DQS structures.
+
+This image proves DDR3 calibration/use, firmware population, execution from
+DDR3, OpenSBI machine-mode initialization, timer interrupt delivery, and
+S-mode handoff.  It also proves a physical three-level Sv39 walk from page
+tables created in DDR3: root, level-1, and level-0 PTEs occupy line lanes 2, 1,
+and 0; translated instruction/data execution reaches the distinct PTW PASS
+marker.  The FPGA configuration has zero optional non-leaf PTE-cache entries.
+The active one-pipe bus uses a four-entry generic unified TLB, reduced from its
+normal 16-entry default for this area-constrained boot smoke test.  This is not
+the ICX-path L2 TLB, which is not instantiated by this FPGA profile.  Four
+entries are enough for this directed payload but are not performance evidence
+for a Linux workload.  This reduction does not fix TLB SRAM inference: the
+generic TLB still resets payload fields and performs an asynchronous parallel
+read/compare across all entries.  A scalable replacement needs synchronous,
+indexed per-way payload storage and an explicit extra lookup/replay cycle.
+
+The PTW does not have a second AXI master.  A blocking core-clock-domain
+arbiter shares the existing scalar CDC/MIG bridge.  Each 64-byte ICX page-table
+line is fetched as eight serialized 64-bit reads and assembled before the ICX
+response.  Ordinary scalar traffic has priority, and a PTW fence waits until
+the shared path is idle.  This is deliberately low-complexity and slow; it is
+functionally adequate for bring-up, not a performance target.
+
+It is still not a Linux image.  The fixed boot ROM contains only the
+trampoline, OpenSBI, the 448-byte PTW payload, and DTB.  A Linux boot needs a
+separate way to place the kernel and any initramfs in DDR3, then a payload or
+boot protocol that jumps to it.  The routed device is also physically dense:
+15,398 of 15,850 slices are occupied even though paired LUT outputs reduce the
+reported LUT use to 67.39%.  Treat further logic additions as requiring area
+work, not as free use of the nominal remaining LUT count.
+
+The CDC report has no unsafe crossings but still classifies four custom
+core/MIG mailbox endpoints as Unknown; physical boot is functional evidence,
+not CDC signoff.
+
+The final build and physical validation record is under
+`run/log/fpga-genbus-tlb4-split-20260815T110016Z/`.  Its source-matched parent
+record is `run/log/fpga-genbus-tlb4-20260815T083202Z/` and includes directed
+core/PTW regressions plus the exact integrated TLB4 OpenSBI/Sv39 simulation.
+The split-flow record includes netlist provenance, Vivado logs/reports, the
+programming log, and captured physical UART markers.  Vivado's ordinary
+project flow was cancelled after spending 2:39:30 in top-level synthesis; the
+split-netlist flow reached a bitstream in about 14 minutes.  Routing was not
+the bottleneck.
+
+Program it with the checked-in batch script while UART capture is already
+active:
+
+```sh
+vivado -mode batch \
+  -source synth/fpga/xc7a100t/program_bitstream.tcl \
+  -tclargs <hw-server-host>:3121 \
+  build/fpga/xc7a100t/opensbi-smoke-tlb4-split/openrv64_myd_j7a100t_opensbi_top.bit
+```
+
+This loads volatile FPGA SRAM only.  It does not write the configuration
+flash.
+
+## Baseline inert-shell artifact
 
 The bitstream was generated with AMD Vivado 2026.1, build 6511674, for:
 

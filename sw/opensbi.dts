@@ -8,6 +8,14 @@
 #define OPENRV64_HART_COUNT 1
 #endif
 
+#ifndef OPENRV64_TIMEBASE_FREQUENCY
+#define OPENRV64_TIMEBASE_FREQUENCY 10000000
+#endif
+
+#ifndef OPENRV64_UART_CLOCK_FREQUENCY
+#define OPENRV64_UART_CLOCK_FREQUENCY 1843200
+#endif
+
 #if OPENRV64_HART_COUNT != 1 && OPENRV64_HART_COUNT != 2 && OPENRV64_HART_COUNT != 4
 #error OPENRV64_HART_COUNT must be 1, 2, or 4
 #endif
@@ -51,7 +59,7 @@
     cpus {
         #address-cells = <1>;
         #size-cells = <0>;
-        timebase-frequency = <10000000>;
+        timebase-frequency = <OPENRV64_TIMEBASE_FREQUENCY>;
 
         cpu0: cpu@0 {
             device_type = "cpu";
@@ -208,7 +216,7 @@
         serial@10000000 {
             compatible = "ns16550a";
             reg = <0x0 0x10000000 0x0 0x00000100>;
-            clock-frequency = <1843200>;
+            clock-frequency = <OPENRV64_UART_CLOCK_FREQUENCY>;
             current-speed = <115200>;
             reg-shift = <0>;
             reg-io-width = <1>;

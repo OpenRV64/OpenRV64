@@ -53,8 +53,10 @@ module openrv64_platform #(
     parameter int unsigned L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter int unsigned L1D_PREFETCH_PAGE_GATING = 1,
     parameter int unsigned L1I_DEMAND_MSHRS = 4,
+    parameter int unsigned GENBUS_TLB_ENTRIES = 16,
     parameter int unsigned L2_TLB_ENTRIES = 256,
     parameter int unsigned L2_TLB_WAYS = 4,
+    parameter int unsigned PTW_PTE_CACHE_ENTRIES = 64,
     parameter bit FETCH_CAROUSEL = 1'b1,
     parameter int unsigned FETCH_ALT_LOOKASIDE = 3,
     parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
@@ -386,6 +388,13 @@ module openrv64_platform #(
                 external_irq_sync_2_q;
     end
 
+`ifdef OPENRV64_FPGA_CORE_NETLIST
+    // The FPGA flow may replace the fixed one-pipe core with a Xilinx EDIF
+    // netlist so Vivado does not repeat its pathological monolithic RTL
+    // optimization.  Simulation and all normal builds retain the RTL path.
+    (* DONT_TOUCH = "TRUE" *)
+    openrv64_fpga_core u_core (
+`else
     openrv64_top #(
         .RESET_VECTOR(`OPENRV64_SOC_RESET_VECTOR),
         .BACKEND_CONFIG(BACKEND_CONFIG),
@@ -411,8 +420,10 @@ module openrv64_platform #(
         .L1D_PREFETCH_DEMAND_RESERVE(L1D_PREFETCH_DEMAND_RESERVE),
         .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
+        .GENBUS_TLB_ENTRIES(GENBUS_TLB_ENTRIES),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
+        .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
         .ENABLE_FETCH_CAROUSEL(FETCH_CAROUSEL),
         .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
@@ -433,6 +444,7 @@ module openrv64_platform #(
         .BP_BTB_TAG_BITS(BP_BTB_TAG_BITS),
         .BP_INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH)
     ) u_core (
+`endif
         .clk(clk_i),
         .rst_n(core_rst_no),
         .mem_valid(core_mem_valid),

@@ -2,6 +2,7 @@
 `include "core/isa/rv64-i.v"
 
 // Passive simulation visibility boundary for return-stack diagnostics.
+`ifndef SYNTHESIS
 /* verilator lint_off DECLFILENAME */
 module openrv64_ras_debug_stub #(
     parameter integer DEPTH = 8,
@@ -23,3 +24,4 @@ module openrv64_ras_debug_stub #(
 );
 endmodule
 /* verilator lint_on DECLFILENAME */
+`endif
