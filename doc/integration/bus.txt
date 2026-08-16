@@ -53,9 +53,9 @@ Physical address map
 --------------------
 
 The fixed-device base addresses follow the common QEMU RISC-V virt layout.
-GPIO and the general-purpose timer are OpenRV64-specific slots. The requested
-64 KiB boot ROM starts at QEMU's MROM base but is larger than QEMU's current
-0xF000-byte MROM aperture.
+GPIO and the general-purpose timer are OpenRV64-specific slots.  The ROM
+decoder reserves 64 KiB starting at QEMU's MROM base; the implemented boot ROM
+occupies its first 4 KiB and the remaining offsets read as zero.
 
     Target       Base                Size
     ------------ ------------------- -------------------
@@ -128,16 +128,20 @@ realistic on-chip RAM implementation.
 Boot ROM target
 ---------------
 
-openrv64_soc_rom implements 64 KiB initialized to zero except for these first
-three RV64 instructions:
+openrv64_soc_rom implements 4 KiB within the decoder's 64 KiB ROM aperture.
+It is initialized to zero except for these first four RV64 instructions:
 
+    csrr a0, mhartid      encoding 0xf1402573
     addi x1, x0, 1       encoding 0x00100093
     slli x1, x1, 31      encoding 0x01f09093
     jalr x0, 0(x1)       encoding 0x00008067
 
-The first two instructions share the first 64-bit ROM word and the third is in
-the low half of the second word. Reads are combinational. Writes are
-acknowledged but ignored.
+The first two instructions share the first 64-bit ROM word and the final two
+share the second word.  Reads are synchronous so FPGA tools can map a populated
+image to block ROM.  The target captures one request, inserts one full wait
+cycle, presents ready and data for one response cycle, and then inserts one
+recovery cycle before accepting another request.  Writes follow the same
+timing but are ignored and return zero.
 
 Core error handling
 -------------------

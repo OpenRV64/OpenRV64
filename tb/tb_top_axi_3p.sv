@@ -1676,6 +1676,8 @@ module tb_top_axi_3p #(
     );
 
     openrv64_soc_rom u_rom (
+        .clk_i(clk),
+        .rst_ni(rst_n),
         .mem_valid_i(rom_valid),
         .mem_ready_o(rom_ready),
         .mem_write_i(rom_write),

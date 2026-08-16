@@ -283,6 +283,7 @@ module tb_4h_3p #(
     logic local_resp_valid;
     logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] local_resp_rdata;
     logic local_resp_error;
+    logic rom_pending;
     wire ddr_req_valid;
     wire ddr_req_ready;
     wire ddr_resp_valid;
@@ -1490,6 +1491,8 @@ module tb_4h_3p #(
         for (genvar rom_lane = 0; rom_lane < 8;
              rom_lane = rom_lane + 1) begin : g_rom_lane
             openrv64_soc_rom u_rom (
+                .clk_i(clk),
+                .rst_ni(rst_n),
                 .mem_valid_i(
                     bus_req_valid && bus_req_ready &&
                     rom_selected),
@@ -1576,16 +1579,17 @@ module tb_4h_3p #(
      */
     assign ddr_req_valid =
         (DDR3_ENABLE != 0) && bus_req_valid && !device_selected &&
-        !local_resp_valid;
+        !local_resp_valid && !rom_pending;
     assign ddr_resp_ready = bus_resp_ready && !local_resp_valid;
     assign ddr_req_fire = ddr_req_valid && ddr_req_ready;
     assign ddr_resp_fire = ddr_resp_valid && ddr_resp_ready;
     assign bus_req_ready =
         (DDR3_ENABLE != 0) ?
             (device_selected ?
-                ((ddr_outstanding == 0) && !local_resp_valid) :
-                (ddr_req_ready && !local_resp_valid)) :
-            (!memory_pending && !local_resp_valid);
+                ((ddr_outstanding == 0) && !local_resp_valid &&
+                 !rom_pending) :
+                (ddr_req_ready && !local_resp_valid && !rom_pending)) :
+            (!memory_pending && !local_resp_valid && !rom_pending);
     assign bus_resp_valid =
         local_resp_valid ||
         ((DDR3_ENABLE != 0) && ddr_resp_valid);
@@ -1857,6 +1861,7 @@ module tb_4h_3p #(
             local_resp_rdata <=
                 {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
             local_resp_error <= 1'b0;
+            rom_pending <= 1'b0;
             ddr_outstanding <= 6'd0;
             memory_reads <= 0;
             memory_writes <= 0;
@@ -1867,27 +1872,30 @@ module tb_4h_3p #(
             if (bus_req_valid && bus_req_ready) begin
                 local_resp_error <= 1'b0;
                 if (device_selected) begin
-                    local_resp_valid <= 1'b1;
                     if (rom_selected) begin
                         if ((bus_req_size != 3'd6) ||
                             (bus_req_addr[5:0] != 6'd0))
                             $fatal(1,
                                 "malformed ROM line request addr=%h size=%0d",
                                 bus_req_addr, bus_req_size);
-                        local_resp_rdata <= rom_rdata;
+                        rom_pending <= 1'b1;
                     end
-                    else if (clint_selected)
+                    else if (clint_selected) begin
+                        local_resp_valid <= 1'b1;
                         local_resp_rdata <=
                             {448'd0, clint_rdata} <<
                             (bus_req_addr[5:3] * 64);
-                    else if (plic_selected)
+                    end else if (plic_selected) begin
+                        local_resp_valid <= 1'b1;
                         local_resp_rdata <=
                             {448'd0, plic_rdata} <<
                             (bus_req_addr[5:3] * 64);
-                    else
+                    end else begin
+                        local_resp_valid <= 1'b1;
                         local_resp_rdata <=
                             {448'd0, uart_rdata} <<
                             (bus_req_addr[5:3] * 64);
+                    end
                 end else begin
                     if (!(dram_line_request_shape ||
                           dram_scalar_write_shape) ||
@@ -1921,6 +1929,11 @@ module tb_4h_3p #(
                         memory_reads <= memory_reads + 1;
                     end
                 end
+            end else if (rom_pending && (&rom_ready)) begin
+                rom_pending <= 1'b0;
+                local_resp_valid <= 1'b1;
+                local_resp_error <= 1'b0;
+                local_resp_rdata <= rom_rdata;
             end else if ((DDR3_ENABLE == 0) && memory_pending) begin
                 if (memory_delay == 0) begin
                     memory_pending <= 1'b0;

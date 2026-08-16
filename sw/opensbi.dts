@@ -139,7 +139,9 @@
         reg = <0x0 0x80000000 0x0 OPENRV64_MEMORY_SIZE>;
     };
 
-#if defined(OPENRV64_3P)
+#if defined(OPENRV64_3P) && defined(OPENRV64_INVARIANT_RESERVED_MEMORY)
+    /* Temporarily gated while Linux boot performance is measured without
+     * synchronous early-console reporting for these reserved regions. */
     reserved-memory {
         #address-cells = <2>;
         #size-cells = <2>;

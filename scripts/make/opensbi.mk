@@ -1,5 +1,28 @@
 # OpenSBI and Linux build and simulation workflows.
 
+FPGA_SD_IMAGE ?= \
+	build/fpga/xc7a100t/sdcard/openrv64-myd-j7a100t-linux-sd.bin
+FPGA_SD_MANIFEST ?= $(FPGA_SD_IMAGE).json
+FPGA_SD_DTS ?= sw/opensbi.dts
+FPGA_SD_OPENSBI ?= build/opensbi-fpga-linux/artifacts/fw_jump.bin
+FPGA_SD_LINUX ?= sw/Image.Zicclsm
+
+$(FPGA_SD_IMAGE): tools/make-fpga-sd-image.py \
+		$(FPGA_SD_DTS) $(FPGA_SD_OPENSBI) $(FPGA_SD_LINUX)
+	python3 tools/make-fpga-sd-image.py \
+		$(FPGA_SD_DTS) $(FPGA_SD_OPENSBI) $(FPGA_SD_LINUX) $@ \
+		--manifest $(FPGA_SD_MANIFEST)
+
+fpga-sd-image: $(FPGA_SD_IMAGE)
+
+verify-fpga-sd-image: $(FPGA_SD_IMAGE)
+	python3 tools/make-fpga-sd-image.py --verify $(FPGA_SD_IMAGE)
+	@echo 'OPENRV64 FPGA SD IMAGE PASS'
+	@printf 'FPGA_SD_IMAGE_RESULT path=%s bytes=%s sha256=%s\n' \
+		'$(FPGA_SD_IMAGE)' \
+		"$$(stat -c %s '$(FPGA_SD_IMAGE)')" \
+		"$$(sha256sum '$(FPGA_SD_IMAGE)' | cut -d ' ' -f 1)"
+
 opensbi:
 	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_BUILD_DIR)) \
 		OPENSBI_SOURCE_DIR=$(abspath $(OPENSBI_SOURCE_DIR)) \

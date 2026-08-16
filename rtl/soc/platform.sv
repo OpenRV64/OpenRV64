@@ -734,6 +734,8 @@ module openrv64_platform #(
     );
 
     openrv64_soc_rom u_rom (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
         .mem_valid_i(rom_valid),
         .mem_ready_o(rom_ready),
         .mem_write_i(rom_write),

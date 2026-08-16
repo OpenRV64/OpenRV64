@@ -1,6 +1,7 @@
 # Aggregate targets and phony declarations.
 
-.PHONY: FORCE sw-uart sw-fp-daxpy sw-fp-daxpy-compute \
+.PHONY: FORCE fpga-sd-image verify-fpga-sd-image \
+	sw-uart sw-fp-daxpy sw-fp-daxpy-compute \
 	sw-fp-daxpy-store \
 	sw-fp-fmadd32 sw-fp-faults \
 	sw-smp-thread-probe sw-linux-user-tests sw-linux-user-pthread-test \

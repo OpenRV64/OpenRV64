@@ -9,7 +9,7 @@ instantiates:
 
     openrv64_top              RV64 core wrapper
     openrv64_soc_bus_decode   physical-address decode and response mux
-    openrv64_soc_rom          64 KiB boot ROM
+    openrv64_soc_rom          4 KiB synchronous boot ROM
     openrv64_soc_memory       256 MiB synchronous simulation RAM
     openrv64_clint            one machine software/timer context
     openrv64_plic             one supervisor external-interrupt context

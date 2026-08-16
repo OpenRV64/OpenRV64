@@ -631,7 +631,7 @@ The common physical map is:
 
 | Target | Base | Size |
 | --- | ---: | ---: |
-| Boot ROM | `0x0000_1000` | 64 KiB |
+| Boot ROM decode window | `0x0000_1000` | 64 KiB |
 | CLINT | `0x0200_0000` | 64 KiB |
 | PLIC | `0x0c00_0000` | 64 MiB |
 | UART | `0x1000_0000` | 256 B |
@@ -639,8 +639,9 @@ The common physical map is:
 | Timer | `0x1002_0000` | 4 KiB |
 | RAM | `0x8000_0000` | 256 MiB |
 
-The integrated generic-bus platform resets at ROM, whose three-instruction
-stub jumps to RAM at `0x8000_0000`. The AXI performance testbench normally
+The integrated generic-bus platform resets at the 4 KiB synchronous ROM, whose
+four-instruction stub jumps to RAM at `0x8000_0000`. The AXI performance
+testbench normally
 overrides reset to RAM and loads the benchmark image directly. Its native AXI
 RAM consumes the RAM aperture; non-RAM accesses are lane-adapted into the
 existing blocking SoC decoder and peripherals.

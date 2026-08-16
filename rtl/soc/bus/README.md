@@ -23,6 +23,12 @@ selected target's ready/data response. A target that holds ready low applies
 backpressure unchanged to the upstream core. An address outside every window
 is not routed; it completes immediately with `mem_error_o` asserted.
 
+The physical boot ROM occupies the first 4 KiB of its 64 KiB decode window.
+It uses a synchronous block-ROM-compatible read, one explicit wait cycle, one
+response cycle, and one recovery cycle.  It therefore never accepts requests
+back to back; offsets in the remainder of the decode window return zero with
+the same timing.
+
 The decoder's memory-window size is parameterized so reduced-capacity unit
 tests can keep the decoder and backing RAM consistent. The platform default is
 the 256 MiB aperture declared by `mem_map.v`.
