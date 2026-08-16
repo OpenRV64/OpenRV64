@@ -84,9 +84,11 @@ when their parameters are enabled.
   the MEM lane; the AXI requester does not use AXI exclusive transactions.
 - RV64M is implemented by the EX0 lane but disabled by default at the public
   tops.
-- Zbb is implemented by a separate iterative EX0 worker in the 3P core and is
-  enabled by default. It shares RV64M's issue lane and tagged long-operation
-  context, but not RV64M's arithmetic RTL. The 1P core does not implement Zbb.
+- Zbb is implemented in EX0 in the 3P core and is enabled by default. Pipelined
+  rotates use two 32-bit shifters; the remaining operations use a sequenced
+  worker. Zbb shares RV64M's issue lane, tagged long-operation context, and
+  completion port, but not RV64M's arithmetic RTL. The 1P core does not
+  implement Zbb. See [Zbb execution and performance](core/extensions/zbb.md).
 - Machine, supervisor, and user privilege modes, delegated traps and
   interrupts, MRET/SRET, and the main machine/supervisor CSR state are
   implemented.
@@ -420,9 +422,12 @@ Each physical lane has independent input readiness and a held tagged
 completion port. A long M operation or memory request does not inherently stop
 the other execution lanes from accepting unrelated work.
 
-- **EX0** implements a base integer ALU, the RV64M worker, and the optional
-  standalone Zbb worker. M and Zbb operations are iterative/variable-latency,
-  mutually exclusive, and fixed to this pipe.
+- **EX0** implements a base integer ALU, the RV64M worker, the optional
+  sequenced Zbb worker, and the pipelined Zbb rotate datapath. RV64M and Zbb
+  are fixed to this pipe and contend for its issue/completion resources. Word
+  rotates have initiation interval one; the remaining Zbb operations are
+  fixed- or variable-latency as detailed in
+  [Zbb execution and performance](core/extensions/zbb.md).
 - **EX1** implements a second base integer ALU plus branch/jump, system/CSR,
   fence, exception, and trap-producing operations. Valid aligned conditional
   branches produce their direction and redirect as they execute.
@@ -751,7 +756,7 @@ ordered WAW relaxation:
 | --- | ---: | --- |
 | `RETIRE_DEPTH` | 8 | Retirement/completion entries |
 | `ENABLE_RV64M` | 0 | Iterative M execution disabled |
-| `ENABLE_RV64ZBB` | 1 | Iterative 3P-only Zbb execution enabled |
+| `ENABLE_RV64ZBB` | 1 | 3P-only Zbb execution enabled; pipelined rotates plus sequenced remainder |
 | `ENABLE_RV64A` | 1 | Serialized atomics enabled |
 | `RELAX_WAW` | 1 | Multiple ordered writers to one architectural rd allowed |
 | `RELAX_HAZARDS` | 0 | Youngest-producer result table disabled |

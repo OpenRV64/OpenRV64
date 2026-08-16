@@ -26,6 +26,7 @@
  */
 module tb_4h_3p #(
     parameter integer CORE_INSTANCES = 4,
+    parameter integer RETIRE_DEPTH = 16,
     parameter integer MEMORY_LATENCY = 8,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
@@ -662,7 +663,7 @@ module tb_4h_3p #(
                 .ENABLE_ISSUE_WINDOW(1),
                 .ENABLE_SPECULATION_WINDOW(1),
                 .ENABLE_POSTED_STORES(1),
-                .RETIRE_DEPTH(16),
+                .RETIRE_DEPTH(RETIRE_DEPTH),
                 .PHYS_REG_COUNT(31),
                 .ENABLE_L1I(1),
                 .ENABLE_M_MODE_PREFETCH(M_MODE_PREFETCH_ENABLE),

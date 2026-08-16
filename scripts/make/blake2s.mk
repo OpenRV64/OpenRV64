@@ -121,6 +121,7 @@ BLAKE2S_PASS := 424c414b45324f4b
 BLAKE2S_DDR3 ?= 0
 BLAKE2S_MEMORY_TIMING_MODEL ?= 0
 BLAKE2S_DDR3_BANK_ROW_SWIZZLE ?= 0
+BLAKE2S_RETIRE_DEPTH ?= 32
 BLAKE2S_REQUIRE_ARGS ?=
 BLAKE2S_MEASURE_END = $(shell $(RISCV_NM) -n $(BLAKE2S_ELF) | \
 	awk '$$3 == "blake2s_measure_end" { print $$1 }')
@@ -134,6 +135,7 @@ BLAKE2S_COMPRESS_SIZE = $(shell $(RISCV_NM) -S --size-sort \
 .PHONY: sw-blake2s sw-blake2s-sv39 sim-blake2s sim-blake2s-ddr3 \
 	sim-blake2s-sv39 bench-blake2s bench-blake2s-ddr3 \
 	bench-blake2s-sv39 bench-blake2s-kernel-matrix-sv39 \
+	bench-blake2s-kernel-generic-matrix-sv39 \
 	bench-blake2s-ror32-kernel-sv39 \
 	sim-blake2s-kernel-matrix-sv39 sw-blake2s-a53-gem5 \
 	sim-blake2s-a53-gem5
@@ -271,7 +273,7 @@ sim-blake2s: $(BLAKE2S_MEMH)
 		CORE_3P_ICX_L2_FETCH_CAROUSEL=1 \
 		CORE_3P_ICX_L2_MODE=3 \
 		CORE_3P_ICX_L2_CONFIDENCE_GATE=0 \
-		CORE_3P_ICX_L2_RETIRE_DEPTH=32 \
+		CORE_3P_ICX_L2_RETIRE_DEPTH=$(BLAKE2S_RETIRE_DEPTH) \
 		CORE_3P_ICX_L2_PHYS_REG_COUNT=31 \
 		CORE_3P_ICX_L2_ISSUE_WINDOW=1 \
 		CORE_3P_ICX_L2_SPECULATION_WINDOW=1 \
@@ -293,7 +295,7 @@ bench-blake2s: $(BLAKE2S_MEMH)
 		CORE_3P_ICX_L2_FETCH_CAROUSEL=1 \
 		CORE_3P_ICX_L2_MODE=3 \
 		CORE_3P_ICX_L2_CONFIDENCE_GATE=0 \
-		CORE_3P_ICX_L2_RETIRE_DEPTH=32 \
+		CORE_3P_ICX_L2_RETIRE_DEPTH=$(BLAKE2S_RETIRE_DEPTH) \
 		CORE_3P_ICX_L2_PHYS_REG_COUNT=31 \
 		CORE_3P_ICX_L2_ISSUE_WINDOW=1 \
 		CORE_3P_ICX_L2_SPECULATION_WINDOW=1 \
@@ -323,7 +325,7 @@ sim-blake2s-sv39: $(BLAKE2S_VM_MEMH)
 		CORE_3P_ICX_L2_FETCH_CAROUSEL=1 \
 		CORE_3P_ICX_L2_MODE=3 \
 		CORE_3P_ICX_L2_CONFIDENCE_GATE=0 \
-		CORE_3P_ICX_L2_RETIRE_DEPTH=32 \
+		CORE_3P_ICX_L2_RETIRE_DEPTH=$(BLAKE2S_RETIRE_DEPTH) \
 		CORE_3P_ICX_L2_PHYS_REG_COUNT=31 \
 		CORE_3P_ICX_L2_ISSUE_WINDOW=1 \
 		CORE_3P_ICX_L2_SPECULATION_WINDOW=1 \
@@ -346,7 +348,7 @@ bench-blake2s-sv39: $(BLAKE2S_VM_MEMH)
 		CORE_3P_ICX_L2_FETCH_CAROUSEL=1 \
 		CORE_3P_ICX_L2_MODE=3 \
 		CORE_3P_ICX_L2_CONFIDENCE_GATE=0 \
-		CORE_3P_ICX_L2_RETIRE_DEPTH=32 \
+		CORE_3P_ICX_L2_RETIRE_DEPTH=$(BLAKE2S_RETIRE_DEPTH) \
 		CORE_3P_ICX_L2_PHYS_REG_COUNT=31 \
 		CORE_3P_ICX_L2_ISSUE_WINDOW=1 \
 		CORE_3P_ICX_L2_SPECULATION_WINDOW=1 \
@@ -368,6 +370,24 @@ bench-blake2s-kernel-matrix-sv39:
 		BLAKE2S_CALLS=1 BLAKE2S_BLOCKS_PER_CALL=16 \
 		BLAKE2S_INPUT_OFFSET=0
 	$(MAKE) bench-blake2s-sv39 BLAKE2S_IMPLEMENTATION=kernel-zbb \
+		BLAKE2S_CALLS=1 BLAKE2S_BLOCKS_PER_CALL=16 \
+		BLAKE2S_INPUT_OFFSET=1
+
+# Source-matched non-Zbb compressor control for the kernel-Zbb matrix cases.
+# Keep Zbb enabled in the surrounding harness so the compressor is the only
+# implementation variable.  The kernel generic function accepts an unaligned
+# byte source through its memcpy into an aligned local message array.
+bench-blake2s-kernel-generic-matrix-sv39:
+	$(MAKE) bench-blake2s-sv39 BLAKE2S_IMPLEMENTATION=kernel-generic-shift \
+		BLAKE2S_CALLS=16 BLAKE2S_BLOCKS_PER_CALL=1 \
+		BLAKE2S_INPUT_OFFSET=0
+	$(MAKE) bench-blake2s-sv39 BLAKE2S_IMPLEMENTATION=kernel-generic-shift \
+		BLAKE2S_CALLS=16 BLAKE2S_BLOCKS_PER_CALL=1 \
+		BLAKE2S_INPUT_OFFSET=1
+	$(MAKE) bench-blake2s-sv39 BLAKE2S_IMPLEMENTATION=kernel-generic-shift \
+		BLAKE2S_CALLS=1 BLAKE2S_BLOCKS_PER_CALL=16 \
+		BLAKE2S_INPUT_OFFSET=0
+	$(MAKE) bench-blake2s-sv39 BLAKE2S_IMPLEMENTATION=kernel-generic-shift \
 		BLAKE2S_CALLS=1 BLAKE2S_BLOCKS_PER_CALL=16 \
 		BLAKE2S_INPUT_OFFSET=1
 

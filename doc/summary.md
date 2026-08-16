@@ -132,8 +132,9 @@ Material qualifications:
 - F/D support is a separate 4PF integration, not part of the public integer
   product configurations. It has useful directed execution/fault evidence but no
   corresponding full compliance campaign.
-- Zbb is 3P-only, enabled by default, and advertised by the generated 3P
-  OpenSBI device tree. The 1P core neither implements nor advertises it.
+- [Zbb](core/extensions/zbb.md) is 3P-only, enabled by default, and advertised
+  by the generated 3P OpenSBI device tree. The 1P core neither implements nor
+  advertises it.
 - The vector unit is a private interface and instruction path. It lacks standard
   RVV decode, architectural CSRs, restart semantics, and software ABI support.
 - `mstatus.TW` storage exists, but lower-privilege WFI interception remains an
