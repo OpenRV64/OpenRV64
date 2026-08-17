@@ -1048,11 +1048,13 @@ module openrv64_rv64_top_4pf #(
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_tag;
     wire backend_mem_xlate_only;
     wire backend_mem_physical;
+    wire backend_mem_pmp_checked;
     wire backend_mem_xlate_valid;
     wire backend_mem_xlate_ready;
     wire backend_mem_xlate_bus_ready;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_tag;
     wire backend_mem_xlate_write;
+    wire [2:0] backend_mem_xlate_size;
     wire [63:0] backend_mem_xlate_vaddr;
     wire backend_mem_xlate_resp_valid;
     wire backend_mem_xlate_resp_ready;
@@ -1164,10 +1166,12 @@ module openrv64_rv64_top_4pf #(
         .mem_tag_o(backend_mem_tag),
         .mem_xlate_only_o(backend_mem_xlate_only),
         .mem_physical_o(backend_mem_physical),
+        .mem_pmp_checked_o(backend_mem_pmp_checked),
         .mem_xlate_valid_o(backend_mem_xlate_valid),
         .mem_xlate_ready_i(backend_mem_xlate_ready),
         .mem_xlate_tag_o(backend_mem_xlate_tag),
         .mem_xlate_write_o(backend_mem_xlate_write),
+        .mem_xlate_size_o(backend_mem_xlate_size),
         .mem_xlate_vaddr_o(backend_mem_xlate_vaddr),
         .mem_xlate_resp_valid_i(backend_mem_xlate_resp_valid),
         .mem_xlate_resp_ready_o(backend_mem_xlate_resp_ready),
@@ -1536,6 +1540,7 @@ module openrv64_rv64_top_4pf #(
         .lsu_pipe_req_tag_i(backend_mem_tag),
         .lsu_pipe_req_xlate_only_i(backend_mem_xlate_only),
         .lsu_pipe_req_physical_i(backend_mem_physical),
+        .lsu_pipe_req_pmp_checked_i(backend_mem_pmp_checked),
         .lsu_pipe_req_lock_i(backend_mem_lock),
         .lsu_pipe_req_write_i(backend_mem_write),
         .lsu_pipe_req_addr_i(backend_mem_addr),
@@ -1568,6 +1573,7 @@ module openrv64_rv64_top_4pf #(
         .lsu_xlate_req_ready_o(backend_mem_xlate_bus_ready),
         .lsu_xlate_req_tag_i(backend_mem_xlate_tag),
         .lsu_xlate_req_write_i(backend_mem_xlate_write),
+        .lsu_xlate_req_size_i(backend_mem_xlate_size),
         .lsu_xlate_req_vaddr_i(backend_mem_xlate_vaddr),
         .lsu_xlate_req_priv_i(csr_data_priv_mode),
         .lsu_xlate_req_vm_mode_i(

@@ -144,6 +144,29 @@ module tb_dispatch_barrier_3p;
         if (barrier_active)
             fail("flush did not clear barrier");
 
+        // CSR/system instructions use the same persistent barrier.  In
+        // particular, a PMP CSR write cannot retire while younger memory
+        // operations are already acquiring permission under the old state.
+        candidate_valid = 3'b111;
+        candidate_payload[0*PAYLOAD_WIDTH + 10] = 1'b1;
+        #1;
+        if ((candidate_hard != 3'b001) ||
+            (allocation_allow != 3'b001)) begin
+            fail("system instruction did not terminate allocation prefix");
+        end
+        allocation_fire = 3'b001;
+        tick();
+        clear_inputs();
+        if (!barrier_active)
+            fail("system instruction did not retain persistent barrier");
+        retire_valid = 3'b001;
+        retire_hard = 3'b001;
+        tick();
+        clear_inputs();
+        #1;
+        if (barrier_active)
+            fail("system retirement did not release persistent barrier");
+
         // A free branch is neither an issue-group terminator nor a
         // retirement barrier.  The instruction still allocates separately.
         candidate_valid = 3'b111;

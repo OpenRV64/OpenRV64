@@ -6,6 +6,29 @@ FPGA_SD_MANIFEST ?= $(FPGA_SD_IMAGE).json
 FPGA_SD_DTS ?= sw/opensbi.dts
 FPGA_SD_OPENSBI ?= build/opensbi-fpga-linux/artifacts/fw_jump.bin
 FPGA_SD_LINUX ?= sw/Image.Zicclsm
+FPGA_SD_BOOT_DIR ?= build/fpga/xc7a100t/sd-boot
+FPGA_SD_BOOT_ELF := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.elf
+FPGA_SD_BOOT_BIN := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.bin
+FPGA_SD_BOOT_MEM := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.mem
+
+$(FPGA_SD_BOOT_ELF): sw/fpga_sd_boot.S sw/fpga_sd_boot.ld
+	@mkdir -p $(dir $@)
+	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mcmodel=medany -mno-relax -nostdlib -nostartfiles -static \
+		-Wl,--build-id=none -Wl,-T,sw/fpga_sd_boot.ld -o $@ $<
+
+$(FPGA_SD_BOOT_BIN): $(FPGA_SD_BOOT_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(FPGA_SD_BOOT_MEM): $(FPGA_SD_BOOT_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ --size 4096 --word-bytes 8
+
+fpga-sd-boot-rom: $(FPGA_SD_BOOT_MEM)
+	@printf 'OPENRV64 FPGA SD BOOT ROM PASS path=%s bytes=%s\n' \
+		'$(FPGA_SD_BOOT_MEM)' "$$(stat -c %s '$(FPGA_SD_BOOT_BIN)')"
+
+fpga-sd-boot-bitstream: $(FPGA_SD_BOOT_MEM)
+	synth/fpga/xc7a100t/build_sd_boot_bitstream.sh
 
 $(FPGA_SD_IMAGE): tools/make-fpga-sd-image.py \
 		$(FPGA_SD_DTS) $(FPGA_SD_OPENSBI) $(FPGA_SD_LINUX)

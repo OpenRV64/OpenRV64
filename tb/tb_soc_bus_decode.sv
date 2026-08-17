@@ -68,6 +68,14 @@ module tb_soc_bus_decode;
     logic [7:0]  timer_wstrb;
     logic [63:0] timer_rdata;
 
+    logic        spi_valid;
+    logic        spi_ready;
+    logic        spi_write;
+    logic [63:0] spi_addr;
+    logic [63:0] spi_wdata;
+    logic [7:0]  spi_wstrb;
+    logic [63:0] spi_rdata;
+
     openrv64_soc_bus_decode dut (
         .mem_valid_i(mem_valid),
         .mem_ready_o(mem_ready),
@@ -125,12 +133,19 @@ module tb_soc_bus_decode;
         .timer_addr_o(timer_addr),
         .timer_wdata_o(timer_wdata),
         .timer_wstrb_o(timer_wstrb),
-        .timer_rdata_i(timer_rdata)
+        .timer_rdata_i(timer_rdata),
+        .spi_valid_o(spi_valid),
+        .spi_ready_i(spi_ready),
+        .spi_write_o(spi_write),
+        .spi_addr_o(spi_addr),
+        .spi_wdata_o(spi_wdata),
+        .spi_wstrb_o(spi_wstrb),
+        .spi_rdata_i(spi_rdata)
     );
 
     task automatic expect_route;
         input logic [63:0] address;
-        input logic [6:0] expected_valids;
+        input logic [7:0] expected_valids;
         input logic [63:0] expected_target_address;
         input logic [63:0] expected_read_data;
         input [8*56-1:0] label;
@@ -143,24 +158,25 @@ module tb_soc_bus_decode;
             mem_wstrb = 8'ha5;
             #1;
 
-            if ({memory_valid, rom_valid, timer_valid, gpio_valid,
+            if ({memory_valid, rom_valid, spi_valid, timer_valid, gpio_valid,
                  uart_valid, plic_valid, clint_valid} !==
                 expected_valids) begin
-                $fatal(1, "%0s: routes=%07b, expected %07b",
+                $fatal(1, "%0s: routes=%08b, expected %08b",
                        label,
-                       {memory_valid, rom_valid, timer_valid, gpio_valid,
+                       {memory_valid, rom_valid, spi_valid, timer_valid, gpio_valid,
                         uart_valid, plic_valid, clint_valid},
                        expected_valids);
             end
 
             case (expected_valids)
-                7'b0000001: actual_target_address = clint_addr;
-                7'b0000010: actual_target_address = plic_addr;
-                7'b0000100: actual_target_address = uart_addr;
-                7'b0001000: actual_target_address = gpio_addr;
-                7'b0010000: actual_target_address = timer_addr;
-                7'b0100000: actual_target_address = rom_addr;
-                7'b1000000: actual_target_address = memory_addr;
+                8'b00000001: actual_target_address = clint_addr;
+                8'b00000010: actual_target_address = plic_addr;
+                8'b00000100: actual_target_address = uart_addr;
+                8'b00001000: actual_target_address = gpio_addr;
+                8'b00010000: actual_target_address = timer_addr;
+                8'b00100000: actual_target_address = spi_addr;
+                8'b01000000: actual_target_address = rom_addr;
+                8'b10000000: actual_target_address = memory_addr;
                 default: actual_target_address = 64'hx;
             endcase
             if (actual_target_address !== expected_target_address) begin
@@ -175,24 +191,24 @@ module tb_soc_bus_decode;
             end
 
             if (!memory_write || !rom_write || !clint_write || !plic_write ||
-                !uart_write || !gpio_write || !timer_write ||
+                !uart_write || !gpio_write || !timer_write || !spi_write ||
                 memory_wdata !== mem_wdata ||
                 rom_wdata !== mem_wdata ||
                 clint_wdata !== mem_wdata || plic_wdata !== mem_wdata ||
                 uart_wdata !== mem_wdata || gpio_wdata !== mem_wdata ||
-                timer_wdata !== mem_wdata ||
+                timer_wdata !== mem_wdata || spi_wdata !== mem_wdata ||
                 memory_wstrb !== mem_wstrb ||
                 rom_wstrb !== mem_wstrb ||
                 clint_wstrb !== mem_wstrb || plic_wstrb !== mem_wstrb ||
                 uart_wstrb !== mem_wstrb || gpio_wstrb !== mem_wstrb ||
-                timer_wstrb !== mem_wstrb) begin
+                timer_wstrb !== mem_wstrb || spi_wstrb !== mem_wstrb) begin
                 $fatal(1, "%0s: request payload was not routed intact", label);
             end
 
             mem_valid = 1'b0;
             #1;
-            if ({memory_valid, rom_valid, timer_valid, gpio_valid,
-                 uart_valid, plic_valid, clint_valid} !== 7'b0000000 ||
+            if ({memory_valid, rom_valid, spi_valid, timer_valid, gpio_valid,
+                 uart_valid, plic_valid, clint_valid} !== 8'b00000000 ||
                 mem_ready || mem_error || mem_rdata !== 64'h0) begin
                 $fatal(1, "%0s: inactive upstream request leaked downstream",
                        label);
@@ -208,8 +224,8 @@ module tb_soc_bus_decode;
             mem_write = 1'b0;
             mem_addr = address;
             #1;
-            if ({memory_valid, rom_valid, timer_valid, gpio_valid,
-                 uart_valid, plic_valid, clint_valid} !== 7'b0000000) begin
+            if ({memory_valid, rom_valid, spi_valid, timer_valid, gpio_valid,
+                 uart_valid, plic_valid, clint_valid} !== 8'b00000000) begin
                 $fatal(1, "%0s: unmapped request reached a target", label);
             end
             if (!mem_ready || !mem_error || mem_rdata !== 64'h0) begin
@@ -246,66 +262,76 @@ module tb_soc_bus_decode;
         gpio_rdata = 64'h6161_6161_6161_6161;
         timer_ready = 1'b1;
         timer_rdata = 64'h7171_7171_7171_7171;
+        spi_ready = 1'b1;
+        spi_rdata = 64'h5151_5151_5151_5151;
         #1;
         if (mem_ready || mem_error || mem_rdata !== 64'h0) begin
             $fatal(1, "inactive decoder produced a response");
         end
 
         expect_route(`OPENRV64_SOC_ROM_BASE,
-                     7'b0100000, 64'h0, rom_rdata,
+                     8'b01000000, 64'h0, rom_rdata,
                      "ROM lower boundary");
         expect_route(`OPENRV64_SOC_ROM_BASE +
                      `OPENRV64_SOC_ROM_SIZE - 64'd1,
-                     7'b0100000, `OPENRV64_SOC_ROM_SIZE - 64'd1,
+                     8'b01000000, `OPENRV64_SOC_ROM_SIZE - 64'd1,
                      rom_rdata, "ROM upper boundary");
 
         expect_route(`OPENRV64_SOC_MEMORY_BASE,
-                     7'b1000000, 64'h0, memory_rdata,
+                     8'b10000000, 64'h0, memory_rdata,
                      "memory lower boundary");
         expect_route(`OPENRV64_SOC_MEMORY_BASE +
                      `OPENRV64_SOC_MEMORY_SIZE - 64'd1,
-                     7'b1000000, `OPENRV64_SOC_MEMORY_SIZE - 64'd1,
+                     8'b10000000, `OPENRV64_SOC_MEMORY_SIZE - 64'd1,
                      memory_rdata, "memory upper boundary");
 
         expect_route(`OPENRV64_SOC_CLINT_BASE + 64'h4008,
-                     7'b0000001, 64'h4008, clint_rdata,
+                     8'b00000001, 64'h4008, clint_rdata,
                      "CLINT local address translation");
         expect_route(`OPENRV64_SOC_CLINT_BASE +
                      `OPENRV64_SOC_CLINT_SIZE - 64'd1,
-                     7'b0000001, `OPENRV64_SOC_CLINT_SIZE - 64'd1,
+                     8'b00000001, `OPENRV64_SOC_CLINT_SIZE - 64'd1,
                      clint_rdata, "CLINT upper boundary");
 
         expect_route(`OPENRV64_SOC_PLIC_BASE + 64'h20_0004,
-                     7'b0000010, 64'h20_0004, plic_rdata,
+                     8'b00000010, 64'h20_0004, plic_rdata,
                      "PLIC local address translation");
         expect_route(`OPENRV64_SOC_PLIC_BASE +
                      `OPENRV64_SOC_PLIC_SIZE - 64'd1,
-                     7'b0000010, `OPENRV64_SOC_PLIC_SIZE - 64'd1,
+                     8'b00000010, `OPENRV64_SOC_PLIC_SIZE - 64'd1,
                      plic_rdata, "PLIC upper boundary");
 
         expect_route(`OPENRV64_SOC_UART_BASE,
-                     7'b0000100, 64'h0, uart_rdata,
+                     8'b00000100, 64'h0, uart_rdata,
                      "UART lower boundary");
         expect_route(`OPENRV64_SOC_UART_BASE +
                      `OPENRV64_SOC_UART_SIZE - 64'd1,
-                     7'b0000100, `OPENRV64_SOC_UART_SIZE - 64'd1, uart_rdata,
+                     8'b00000100, `OPENRV64_SOC_UART_SIZE - 64'd1, uart_rdata,
                      "UART upper boundary");
 
         expect_route(`OPENRV64_SOC_GPIO_BASE + 64'h28,
-                     7'b0001000, 64'h28, gpio_rdata,
+                     8'b00001000, 64'h28, gpio_rdata,
                      "GPIO local address translation");
         expect_route(`OPENRV64_SOC_GPIO_BASE +
                      `OPENRV64_SOC_GPIO_SIZE - 64'd1,
-                     7'b0001000, `OPENRV64_SOC_GPIO_SIZE - 64'd1,
+                     8'b00001000, `OPENRV64_SOC_GPIO_SIZE - 64'd1,
                      gpio_rdata, "GPIO upper boundary");
 
         expect_route(`OPENRV64_SOC_TIMER_BASE + 64'h20,
-                     7'b0010000, 64'h20, timer_rdata,
+                     8'b00010000, 64'h20, timer_rdata,
                      "timer local address translation");
         expect_route(`OPENRV64_SOC_TIMER_BASE +
                      `OPENRV64_SOC_TIMER_SIZE - 64'd1,
-                     7'b0010000, `OPENRV64_SOC_TIMER_SIZE - 64'd1,
+                     8'b00010000, `OPENRV64_SOC_TIMER_SIZE - 64'd1,
                      timer_rdata, "timer upper boundary");
+
+        expect_route(`OPENRV64_SOC_SPI_BASE + 64'h100,
+                     8'b00100000, 64'h100, spi_rdata,
+                     "SPI sector-buffer translation");
+        expect_route(`OPENRV64_SOC_SPI_BASE +
+                     `OPENRV64_SOC_SPI_SIZE - 64'd1,
+                     8'b00100000, `OPENRV64_SOC_SPI_SIZE - 64'd1,
+                     spi_rdata, "SPI upper boundary");
 
         expect_decode_error(64'h0000_0000_0000_0000,
                             "unmapped low address");

@@ -36,6 +36,7 @@ module tb_lsq;
     logic [TAGW-1:0] atomic_tag;
 
     wire xlate_valid, xlate_write;
+    wire [2:0] xlate_size;
     logic xlate_ready;
     wire [TAGW-1:0] xlate_tag;
     wire [63:0] xlate_vaddr;
@@ -45,7 +46,7 @@ module tb_lsq;
     logic [TAGW-1:0] xlate_resp_tag;
     logic [63:0] xlate_resp_paddr;
 
-    wire req_valid, req_write;
+    wire req_valid, req_write, req_pmp_checked;
     logic req_ready;
     wire [TAGW-1:0] req_tag;
     wire [63:0] req_addr, req_vaddr, req_wdata;
@@ -105,6 +106,7 @@ module tb_lsq;
         .xlate_req_ready_i(xlate_ready),
         .xlate_req_tag_o(xlate_tag),
         .xlate_req_write_o(xlate_write),
+        .xlate_req_size_o(xlate_size),
         .xlate_req_vaddr_o(xlate_vaddr),
         .xlate_resp_valid_i(xlate_resp_valid),
         .xlate_resp_ready_o(xlate_resp_ready),
@@ -114,6 +116,7 @@ module tb_lsq;
         .xlate_resp_page_fault_i(xlate_resp_page_fault),
         .req_valid_o(req_valid), .req_ready_i(req_ready),
         .req_tag_o(req_tag), .req_write_o(req_write),
+        .req_pmp_checked_o(req_pmp_checked),
         .req_addr_o(req_addr), .req_vaddr_o(req_vaddr),
         .req_size_o(req_size), .req_wdata_o(req_wdata),
         .req_wstrb_o(req_wstrb),
@@ -175,12 +178,33 @@ module tb_lsq;
         input [63:0] data,
         input [7:0] strb
     );
+        reg [TAGW-1:0] bare_tag;
         begin
             s_id = id; s_slot = slot; s_meta = id; s_vaddr = addr;
             s_size = size; s_wdata = data; s_wstrb = strb; s_valid = 1'b1;
             #1;
             if (!s_ready) $fatal(1, "store allocation blocked id=%0d", id);
-            tick();
+            if (translation_bypass && !s_immediate && !s_atomic &&
+                !atomic_active) begin
+                if (!xlate_valid || !xlate_write ||
+                    xlate_vaddr != addr || xlate_size != size)
+                    $fatal(1,
+                        "Bare store clearance absent id=%0d xlate=%b/%b/%h/%0d",
+                        id, xlate_valid, xlate_write,
+                        xlate_vaddr, xlate_size);
+                bare_tag = xlate_tag;
+                xlate_ready = 1'b1;
+                xlate_resp_valid = 1'b1;
+                xlate_resp_tag = bare_tag;
+                xlate_resp_paddr = addr;
+                xlate_resp_access_fault = 1'b0;
+                xlate_resp_page_fault = 1'b0;
+                tick();
+                xlate_ready = 1'b0;
+                xlate_resp_valid = 1'b0;
+            end else begin
+                tick();
+            end
             s_valid = 1'b0;
         end
     endtask
@@ -191,12 +215,32 @@ module tb_lsq;
         input [63:0] addr,
         input [2:0] size
     );
+        reg [TAGW-1:0] bare_tag;
         begin
             l_id = id; l_slot = slot; l_meta = id; l_vaddr = addr;
             l_size = size; l_valid = 1'b1;
             #1;
             if (!l_ready) $fatal(1, "load allocation blocked id=%0d", id);
-            tick();
+            if (translation_bypass && !l_immediate && !atomic_active) begin
+                if (!xlate_valid || xlate_write ||
+                    xlate_vaddr != addr || xlate_size != size)
+                    $fatal(1,
+                        "Bare load clearance absent id=%0d xlate=%b/%b/%h/%0d",
+                        id, xlate_valid, xlate_write,
+                        xlate_vaddr, xlate_size);
+                bare_tag = xlate_tag;
+                xlate_ready = 1'b1;
+                xlate_resp_valid = 1'b1;
+                xlate_resp_tag = bare_tag;
+                xlate_resp_paddr = addr;
+                xlate_resp_access_fault = 1'b0;
+                xlate_resp_page_fault = 1'b0;
+                tick();
+                xlate_ready = 1'b0;
+                xlate_resp_valid = 1'b0;
+            end else begin
+                tick();
+            end
             l_valid = 1'b0;
         end
     endtask
@@ -373,11 +417,11 @@ module tb_lsq;
         l_valid = 1'b1;
         xlate_ready = 1'b1;
         #1;
-        if (!l_ready || !xlate_valid || xlate_write ||
+        if (!l_ready || !xlate_valid || xlate_write || xlate_size != 3'd3 ||
             xlate_vaddr != 64'h1600)
             $fatal(1,
-                "allocation-time translation absent ready=%b xlate=%b/%b/%h",
-                l_ready, xlate_valid, xlate_write, xlate_vaddr);
+                "allocation-time translation absent ready=%b xlate=%b/%b/%0d/%h",
+                l_ready, xlate_valid, xlate_write, xlate_size, xlate_vaddr);
         lt = xlate_tag;
         xlate_resp_tag = lt;
         xlate_resp_paddr = 64'h2600;
@@ -389,16 +433,35 @@ module tb_lsq;
         l_valid = 1'b0;
         xlate_ready = 1'b0;
         xlate_resp_valid = 1'b0;
+        #1;
+        if (!req_pmp_checked)
+            $fatal(1, "translated request lost its PMP clearance");
         take_req(1'b0, 64'h2600, lt);
         respond_result(lt, 64'h2600, 64'ha5a5_5a5a_a5a5_5a5a,
                        IDW'(14), 0, 64'ha5a5_5a5a_a5a5_5a5a);
 
         reset_dut();
 
-        // Bare/identity translation snapshots paddr at allocation and reaches
-        // the physical access directly, without a translation-only request.
+        // PMP denial returns on the translation channel.  The LSQ turns it
+        // into the architectural access fault without ever presenting the
+        // denied physical address to the memory-access channel.
+        alloc_load(IDW'(15), 3'd7, 64'h1680, 3'd2);
+        take_xlate(1'b0, 64'h1680, lt);
+        respond_xlate(lt, 64'h2680, 1'b1, 1'b0);
+        #1;
+        if (req_valid)
+            $fatal(1, "PMP-denied translated load reached memory access");
+        take_result(IDW'(15), 1'b0, 64'd0, 1'b1, 1'b0);
+
+        reset_dut();
+
+        // Bare mode uses the address-clearance channel as an identity
+        // translation and carries its PMP verdict to the physical request.
         translation_bypass = 1'b1;
         alloc_load(IDW'(0), 3'd0, 64'h0800, 3'd3);
+        #1;
+        if (!req_pmp_checked)
+            $fatal(1, "Bare identity request lost PMP clearance");
         take_req(1'b0, 64'h0800, lt);
         respond_result(lt, 64'h0800, 64'h0123_4567_89ab_cdef,
                        IDW'(0), 0, 64'h0123_4567_89ab_cdef);
@@ -476,6 +539,8 @@ module tb_lsq;
         tick();
         atomic_done = 1'b0;
         head_valid = 1'b0;
+        take_xlate(1'b0, 64'h6000, lt);
+        respond_xlate(lt, 64'h6000, 1'b0, 1'b0);
         take_req(1'b0, 64'h6000, lt);
         respond_result(lt, 64'h6000, 64'h8877_6655_4433_2211,
                        IDW'(10), 0, 64'h8877_6655_4433_2211);

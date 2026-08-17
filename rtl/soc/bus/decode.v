@@ -79,7 +79,16 @@ module openrv64_soc_bus_decode #(
     output wire [63:0] timer_addr_o,
     output wire [63:0] timer_wdata_o,
     output wire [7:0]  timer_wstrb_o,
-    input  wire [63:0] timer_rdata_i
+    input  wire [63:0] timer_rdata_i,
+
+    // Target-local SPI boot-storage bus.
+    output wire        spi_valid_o,
+    input  wire        spi_ready_i,
+    output wire        spi_write_o,
+    output wire [63:0] spi_addr_o,
+    output wire [63:0] spi_wdata_o,
+    output wire [7:0]  spi_wstrb_o,
+    input  wire [63:0] spi_rdata_i
 );
 
     wire rom_selected =
@@ -110,9 +119,13 @@ module openrv64_soc_bus_decode #(
         (mem_addr_i >= `OPENRV64_SOC_TIMER_BASE) &&
         (mem_addr_i < (`OPENRV64_SOC_TIMER_BASE +
                        `OPENRV64_SOC_TIMER_SIZE));
+    wire spi_selected =
+        (mem_addr_i >= `OPENRV64_SOC_SPI_BASE) &&
+        (mem_addr_i < (`OPENRV64_SOC_SPI_BASE +
+                       `OPENRV64_SOC_SPI_SIZE));
     wire decode_failed = !(rom_selected || memory_selected || clint_selected ||
                            plic_selected || uart_selected ||
-                           gpio_selected || timer_selected);
+                           gpio_selected || timer_selected || spi_selected);
 
     assign rom_valid_o = mem_valid_i && rom_selected;
     assign rom_write_o = mem_write_i;
@@ -156,6 +169,12 @@ module openrv64_soc_bus_decode #(
     assign timer_wdata_o = mem_wdata_i;
     assign timer_wstrb_o = mem_wstrb_i;
 
+    assign spi_valid_o = mem_valid_i && spi_selected;
+    assign spi_write_o = mem_write_i;
+    assign spi_addr_o = mem_addr_i - `OPENRV64_SOC_SPI_BASE;
+    assign spi_wdata_o = mem_wdata_i;
+    assign spi_wstrb_o = mem_wstrb_i;
+
     // The request address is held stable until ready, so it is also the
     // stable response-mux select for the complete transaction.
     always @* begin
@@ -185,6 +204,9 @@ module openrv64_soc_bus_decode #(
             end else if (timer_selected) begin
                 mem_ready_o = timer_ready_i;
                 mem_rdata_o = timer_rdata_i;
+            end else if (spi_selected) begin
+                mem_ready_o = spi_ready_i;
+                mem_rdata_o = spi_rdata_i;
             end else if (decode_failed) begin
                 // A decode error is itself a completed response. Returning
                 // ready prevents an unmapped access from hanging the bus.

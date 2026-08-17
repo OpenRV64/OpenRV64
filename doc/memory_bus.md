@@ -2,8 +2,11 @@
 
 `rtl/core/bus/bus.v` is the core-bus geometry selector. `BUS_CONFIG` chooses
 the original 64-bit instruction/data requester in `rtl/core/bus/gen_bus.v` or
-the native cache/ICX boundary in `rtl/core/bus/icx_bus.v`. Both paths expose a
-separate native 512-bit ICX PTE client. The generic scalar path remains the
+the memory transaction layer in `rtl/core/mtl/mtl.v`. MTL owns virtual-memory
+context, TLB/PTW coordination, post-translation PMP clearance, faults, and
+ordered invalidation. Its physical L1I/L1D/PTW clients reach the native fabric
+through the policy-free arbiter in `rtl/core/bus/icx_bus.v`. Both paths expose
+a separate native 512-bit ICX PTE client. The generic scalar path remains the
 default interface used by `openrv64_platform`.
 `rtl/openrv64_top_3p.v` is the fixed three-pipe boundary: it exposes native
 512-bit ICX command/write-data/response channels plus residual 256-bit AXI,
@@ -54,17 +57,17 @@ internal request chaining, not a burst on the top-level physical bus: each
 missed 8-byte line remains a separate blocking transaction.
 
 Request ownership includes the virtual address, access payload, effective
-privilege, VM mode, ASID, and root page-table PPN. The bus captures that whole
+privilege, VM mode, ASID, and root page-table PPN. MTL captures that whole
 context when it grants ownership; an in-flight request never observes later
 CSR or requester-context changes. TLB entries are tagged by VM mode and ASID,
 with global entries matching every ASID only within their original VM mode.
 
 Bare requests use identity translation. When the effective privilege is S or
 U and `satp.MODE=Sv39`, ICX-path requests first search the separate
-fully-associative 16-entry L1 ITLB or DTLB in `rtl/core/bus/tlb.v`. An L1 miss
+fully-associative 16-entry L1 ITLB or DTLB in `rtl/core/mtl/tlb.v`. An L1 miss
 searches the shared 256-entry, four-way L2 TLB in
-`rtl/core/bus/tlb_l2.v`; only an L2 miss is sent to
-`rtl/core/bus/ptw.v`. The generic blocking bus retains one shared L1 TLB and
+`rtl/core/mtl/tlb_l2.v`; only an L2 miss is sent to
+`rtl/core/mtl/ptw.v`. The generic blocking bus retains one shared L1 TLB and
 does not instantiate the L2 TLB. TLB entries store mode, ASID/global
 ownership, page level, and leaf permission metadata. A tag hit can therefore
 complete with a page fault when the cached leaf rejects the current read,
@@ -98,10 +101,17 @@ any TLB. The initiating invalidation also suppresses an L2 hit or PTW response
 from filling either L1 on that edge and clears both L1 TLBs plus the shared L2
 TLB.
 
-PMP is enforced after translation. Final instruction/data accesses use their
-effective privilege and access type. The PTW independently probes PMP as an
-S-mode 8-byte read before issuing its ICX line request. A PMP denial becomes
-an access fault for the original operation and no PTE request is emitted.
+PMP is enforced after translation by MTL. Final instruction/data accesses use
+their effective privilege and access type. The PTW independently probes PMP
+as an S-mode 8-byte read before issuing its ICX line request. A PMP denial
+becomes an access fault for the original operation and no PTE request is
+emitted.
+
+The native ICX block does not interpret privilege, VM mode, page faults, PMP,
+or fences. It arbitrates already-formed physical commands from L1I, L1D, and
+PTW, forwards L1D write data, and routes response flow control by source ID.
+Keeping this boundary explicit prevents transport backpressure from becoming
+part of the architectural protection policy.
 
 Current VM limitations are deliberate: only Bare and Sv39 are WARL `satp`
 modes, shootdown is global rather than address/ASID selective, and A/D bits use

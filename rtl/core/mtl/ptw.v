@@ -3,6 +3,7 @@
 `include "core/isa/rv64-priv.v"
 `include "complex/protocol/defs.v"
 
+// MTL-owned Sv39 page-table walker. The legacy module name is retained.
 module openrv64_bus_ptw #(
     // The default four-way, 64-entry cache stores 7,808 state bits: 53-bit
     // physical PTE tag, 64-bit PTE, level, recency, and valid state.

@@ -68,6 +68,7 @@ module openrv64_lsq #(
     input  wire                         xlate_req_ready_i,
     output wire [TAG_WIDTH-1:0]         xlate_req_tag_o,
     output wire                         xlate_req_write_o,
+    output wire [2:0]                   xlate_req_size_o,
     output wire [`RV64_XLEN-1:0]        xlate_req_vaddr_o,
     input  wire                         xlate_resp_valid_i,
     output wire                         xlate_resp_ready_o,
@@ -80,6 +81,7 @@ module openrv64_lsq #(
     input  wire                         req_ready_i,
     output wire [TAG_WIDTH-1:0]         req_tag_o,
     output wire                         req_write_o,
+    output wire                         req_pmp_checked_o,
     output wire [`RV64_XLEN-1:0]        req_addr_o,
     output wire [`RV64_XLEN-1:0]        req_vaddr_o,
     output wire [2:0]                   req_size_o,
@@ -145,6 +147,7 @@ module openrv64_lsq #(
     reg slot_input_access_fault_q [0:DEPTH-1];
     reg slot_xlate_sent_q [0:DEPTH-1];
     reg slot_xlate_done_q [0:DEPTH-1];
+    reg slot_pmp_checked_q [0:DEPTH-1];
     reg slot_xlate_access_fault_q [0:DEPTH-1];
     reg slot_xlate_page_fault_q [0:DEPTH-1];
     reg slot_access_sent_q [0:DEPTH-1];
@@ -357,12 +360,14 @@ module openrv64_lsq #(
     // If no queued translation is older, launch translation directly from
     // the allocation port. This makes a micro-TLB hit part of LSQ admission
     // rather than imposing a mandatory queue/readback cycle.
+    // Bare mode is an identity translation, not a permission bypass.  Send
+    // ordinary Bare accesses through the same tagged clearance channel as
+    // paged accesses so the returned PMP verdict can be carried to L1D.
     wire load_alloc_needs_xlate =
-        load_alloc_fire && !translation_bypass_i &&
-        !load_alloc_immediate_i;
+        load_alloc_fire && !load_alloc_immediate_i;
     wire store_alloc_needs_xlate =
-        store_alloc_fire && !translation_bypass_i &&
-        !store_alloc_immediate_i && !store_alloc_atomic_i;
+        store_alloc_fire && !store_alloc_immediate_i &&
+        !store_alloc_atomic_i;
     wire xlate_alloc_select_load = load_alloc_needs_xlate &&
         (!store_alloc_needs_xlate ||
          id_is_younger(store_alloc_id_i, load_alloc_id_i));
@@ -383,6 +388,10 @@ module openrv64_lsq #(
     assign xlate_req_write_o = xlate_request_found_r ?
         slot_store_q[xlate_request_index_r] :
         xlate_alloc_select_store;
+    assign xlate_req_size_o = xlate_request_found_r ?
+        slot_size_q[xlate_request_index_r] :
+        xlate_alloc_select_load ? load_alloc_size_i :
+        store_alloc_size_i;
     assign xlate_req_vaddr_o = xlate_request_found_r ?
         slot_vaddr_q[xlate_request_index_r] :
         xlate_alloc_select_load ? load_alloc_vaddr_i :
@@ -432,6 +441,9 @@ module openrv64_lsq #(
                          !squash_younger_i;
     assign req_tag_o = request_index_r;
     assign req_write_o = slot_store_q[request_index_r];
+    // A successful tagged address-clearance response includes the PMP
+    // verdict.  This includes identity translations in Bare mode.
+    assign req_pmp_checked_o = slot_pmp_checked_q[request_index_r];
     assign req_addr_o = slot_paddr_q[request_index_r];
     assign req_vaddr_o = slot_vaddr_q[request_index_r];
     assign req_size_o = slot_size_q[request_index_r];
@@ -647,6 +659,7 @@ module openrv64_lsq #(
                 slot_input_access_fault_q[slot_index] <= 1'b0;
                 slot_xlate_sent_q[slot_index] <= 1'b0;
                 slot_xlate_done_q[slot_index] <= 1'b0;
+                slot_pmp_checked_q[slot_index] <= 1'b0;
                 slot_xlate_access_fault_q[slot_index] <= 1'b0;
                 slot_xlate_page_fault_q[slot_index] <= 1'b0;
                 slot_access_sent_q[slot_index] <= 1'b0;
@@ -741,7 +754,8 @@ module openrv64_lsq #(
                     load_alloc_access_fault_i;
                 slot_xlate_sent_q[load_free_index_r] <= 1'b0;
                 slot_xlate_done_q[load_free_index_r] <=
-                    translation_bypass_i;
+                    load_alloc_immediate_i;
+                slot_pmp_checked_q[load_free_index_r] <= 1'b0;
                 slot_xlate_access_fault_q[load_free_index_r] <= 1'b0;
                 slot_xlate_page_fault_q[load_free_index_r] <= 1'b0;
                 slot_access_sent_q[load_free_index_r] <= 1'b0;
@@ -770,7 +784,8 @@ module openrv64_lsq #(
                     store_alloc_access_fault_i;
                 slot_xlate_sent_q[store_free_index_r] <= 1'b0;
                 slot_xlate_done_q[store_free_index_r] <=
-                    translation_bypass_i;
+                    store_alloc_immediate_i || store_alloc_atomic_i;
+                slot_pmp_checked_q[store_free_index_r] <= 1'b0;
                 slot_xlate_access_fault_q[store_free_index_r] <= 1'b0;
                 slot_xlate_page_fault_q[store_free_index_r] <= 1'b0;
                 slot_access_sent_q[store_free_index_r] <= 1'b0;
@@ -803,6 +818,7 @@ module openrv64_lsq #(
                 end else begin
                     slot_xlate_sent_q[xlate_resp_tag_i] <= 1'b0;
                     slot_xlate_done_q[xlate_resp_tag_i] <= 1'b1;
+                    slot_pmp_checked_q[xlate_resp_tag_i] <= 1'b1;
                     slot_xlate_access_fault_q[xlate_resp_tag_i] <=
                         xlate_resp_access_fault_i;
                     slot_xlate_page_fault_q[xlate_resp_tag_i] <=

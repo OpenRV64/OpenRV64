@@ -55,8 +55,10 @@ module openrv64_cmu #(
         mhpmcounter_q [0:HPM_STORAGE_COUNTERS-1];
     reg [`RV64_XLEN-1:0]
         mhpmevent_q [0:HPM_STORAGE_COUNTERS-1];
-    reg [EVENT_INCREMENT_WIDTH-1:0]
-        hpm_increment_q [0:HPM_STORAGE_COUNTERS-1];
+    reg [EVENT_COUNT-1:0] event_capture_q;
+    reg [EVENT_COUNT-1:0] event_pulses_q;
+    reg [1:0]
+        hpm_selector_dead_q [0:HPM_STORAGE_COUNTERS-1];
 
     wire csr_is_mhpmcounter =
         (csr_addr_i >= `RV64_CSR_MHPMCOUNTER3) &&
@@ -87,7 +89,7 @@ module openrv64_cmu #(
     // Cycle is a defined event even when the integration supplies no other
     // performance pulses.
     wire [EVENT_COUNT-1:0] active_event_pulses =
-        event_pulses_i |
+        event_pulses_q |
         {{(EVENT_COUNT-1){1'b0}}, 1'b1};
 
     wire [`RV64_XLEN-1:0] minstret_read_value = minstret_q +
@@ -115,20 +117,27 @@ module openrv64_cmu #(
 
     genvar counter_index;
     generate
+        if (HPM_COUNTERS == 0) begin : g_no_hpm_counter
+            assign hpm_increment[0] =
+                {EVENT_INCREMENT_WIDTH{1'b0}};
+            assign hpm_next_value[0] = {`RV64_XLEN{1'b0}};
+            assign hpm_read_value[0] = {`RV64_XLEN{1'b0}};
+        end
         for (counter_index = 0; counter_index < HPM_COUNTERS;
              counter_index = counter_index + 1) begin : g_hpm_counter
             assign hpm_increment[counter_index] = count_events(
                 active_event_pulses &
                 mhpmevent_q[counter_index][EVENT_COUNT-1:0]);
-            // Event decode and population count terminate at increment_q.
-            // The live backend event cone no longer drives the 64-bit counter
-            // adder in the same cycle.
+            // event_capture_q terminates the live core cone with one local
+            // fanout.  event_pulses_q then drives the programmable masks and
+            // population counts from CMU-local state.  Counter updates trail
+            // the observed core event by two edges.
             assign hpm_next_value[counter_index] =
                 mhpmcounter_q[counter_index] +
                 {{(`RV64_XLEN-EVENT_INCREMENT_WIDTH){1'b0}},
-                 hpm_increment_q[counter_index]};
+                 hpm_increment[counter_index]};
             assign hpm_read_value[counter_index] =
-                hpm_next_value[counter_index];
+                mhpmcounter_q[counter_index];
         end
     endgenerate
 
@@ -214,14 +223,22 @@ module openrv64_cmu #(
             mcountinhibit_q <= {`RV64_XLEN{1'b0}};
             mcycle_q <= {`RV64_XLEN{1'b0}};
             minstret_q <= {`RV64_XLEN{1'b0}};
+            event_capture_q <= {EVENT_COUNT{1'b0}};
+            event_pulses_q <= {EVENT_COUNT{1'b0}};
             for (reset_index = 0; reset_index < HPM_COUNTERS;
                  reset_index = reset_index + 1) begin
                 mhpmcounter_q[reset_index] <= {`RV64_XLEN{1'b0}};
                 mhpmevent_q[reset_index] <= {`RV64_XLEN{1'b0}};
-                hpm_increment_q[reset_index] <=
-                    {EVENT_INCREMENT_WIDTH{1'b0}};
+                hpm_selector_dead_q[reset_index] <= 2'd0;
             end
         end else begin
+            // Performance pulses are observational and trail the core by two
+            // edges.  The first stage has only the second stage as a load, so
+            // mask selection and population counts cannot pull its placement
+            // into the CMU counter cone.
+            event_capture_q <= event_pulses_i;
+            event_pulses_q <= event_capture_q;
+
             if (!mcountinhibit_q[`RV64_MCOUNTER_CY_BIT])
                 mcycle_q <= mcycle_q + 64'd1;
             if ((retire_count_i != 2'd0) &&
@@ -231,20 +248,27 @@ module openrv64_cmu #(
 
             for (reset_index = 0; reset_index < HPM_COUNTERS;
                  reset_index = reset_index + 1) begin
-                if (hpm_increment_q[reset_index] != 0)
-                    mhpmcounter_q[reset_index] <=
-                        hpm_next_value[reset_index];
-                if (csr_write_accept && csr_is_mhpmcounter &&
+                // A selector write flushes both event-pipeline residues for
+                // the selected counter, then discards one complete live-event
+                // cycle after the write. Other counters continue normally.
+                if (csr_write_accept && csr_is_mhpmevent &&
                     csr_hpm_implemented &&
-                    (csr_hpm_index == reset_index[4:0]))
-                    hpm_increment_q[reset_index] <=
-                        {EVENT_INCREMENT_WIDTH{1'b0}};
-                else if (mcountinhibit_q[reset_index + 3])
-                    hpm_increment_q[reset_index] <=
-                        {EVENT_INCREMENT_WIDTH{1'b0}};
-                else
-                    hpm_increment_q[reset_index] <=
-                        hpm_increment[reset_index];
+                    (csr_hpm_index == reset_index[4:0])) begin
+                    hpm_selector_dead_q[reset_index] <= 2'd3;
+                end else begin
+                    if (csr_write_accept && csr_is_mhpmcounter &&
+                        csr_hpm_implemented &&
+                        (csr_hpm_index == reset_index[4:0])) begin
+                        hpm_selector_dead_q[reset_index] <= 2'd0;
+                    end else if (hpm_selector_dead_q[reset_index] != 0) begin
+                        hpm_selector_dead_q[reset_index] <=
+                            hpm_selector_dead_q[reset_index] - 1'b1;
+                    end else if (!mcountinhibit_q[reset_index + 3] &&
+                                 (hpm_increment[reset_index] != 0)) begin
+                        mhpmcounter_q[reset_index] <=
+                            hpm_next_value[reset_index];
+                    end
+                end
             end
 
             if (csr_write_accept) begin

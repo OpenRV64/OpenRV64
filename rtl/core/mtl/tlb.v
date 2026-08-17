@@ -2,6 +2,7 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 
+// MTL-owned tagged translation cache. The legacy module name is retained.
 module openrv64_bus_tlb #(
     parameter ENTRIES = 16,
     parameter ASID_WIDTH = 16

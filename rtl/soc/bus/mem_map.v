@@ -37,6 +37,11 @@
 `define OPENRV64_SOC_TIMER_BASE 64'h0000_0000_1002_0000
 `define OPENRV64_SOC_TIMER_SIZE 64'h0000_0000_0000_1000
 
+// Read-only boot-storage SPI controller.  The first page holds control and a
+// 512-byte sector buffer; the remaining aperture is reserved.
+`define OPENRV64_SOC_SPI_BASE   64'h0000_0000_1003_0000
+`define OPENRV64_SOC_SPI_SIZE   64'h0000_0000_0000_1000
+
 // L2-resident invariant aperture.  This is the top 16 MiB of the 56-bit
 // cacheable DRAM PMA aperture, but it is completed by the shared L2 without a
 // backing-memory transaction and is not installed RAM.

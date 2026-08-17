@@ -1,0 +1,75 @@
+# Source-shaped Linux/RISC-V uncontended ticket-spinlock benchmark under Sv39.
+
+LINUX_SPINLOCK_ITERS ?= 1024
+LINUX_SPINLOCK_BUILD_DIR := \
+	build/linux-spinlock/iters$(LINUX_SPINLOCK_ITERS)
+LINUX_SPINLOCK_ELF := $(LINUX_SPINLOCK_BUILD_DIR)/linux-spinlock-sv39.elf
+LINUX_SPINLOCK_BIN := $(LINUX_SPINLOCK_BUILD_DIR)/linux-spinlock-sv39.bin
+LINUX_SPINLOCK_MEMH := $(LINUX_SPINLOCK_BUILD_DIR)/linux-spinlock-sv39.memh
+LINUX_SPINLOCK_MAP := $(LINUX_SPINLOCK_BUILD_DIR)/linux-spinlock-sv39.map
+LINUX_SPINLOCK_DISASM := \
+	$(LINUX_SPINLOCK_BUILD_DIR)/linux-spinlock-sv39.disasm
+LINUX_SPINLOCK_MEMH_BYTES := 0x44000
+LINUX_SPINLOCK_MEMH_WORDS := 8704
+LINUX_SPINLOCK_MAX_CYCLES ?= 3000000
+LINUX_SPINLOCK_RETIRE_DEPTH ?= 32
+LINUX_SPINLOCK_PREFETCH_ENABLE ?= 1
+LINUX_SPINLOCK_PASS := 5350494e4f4b2121
+LINUX_SPINLOCK_DONE = $(shell $(RISCV_NM) -n $(LINUX_SPINLOCK_ELF) \
+	2>/dev/null | awk '$$3 == "openrv64_runtime_done" { print $$1 }')
+LINUX_SPINLOCK_ASFLAGS := -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+	-mcmodel=medany -mno-relax -nostdlib -nostartfiles
+
+.PHONY: sw-linux-spinlock-sv39 bench-linux-spinlock-sv39
+
+$(LINUX_SPINLOCK_ELF): $(OPENRV64_MAKEFILES) \
+		sw/runtime/sv39.S sw/runtime/c_start.inc \
+		sw/runtime/openrv64-sv39.ld \
+		sw/spinlock/linux_spinlock_bench.S
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(LINUX_SPINLOCK_ASFLAGS) \
+		-DOPENRV64_LINUX_SPINLOCK_ITERS=$(LINUX_SPINLOCK_ITERS) \
+		-Wl,--build-id=none,-Map,$(LINUX_SPINLOCK_MAP) \
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S sw/spinlock/linux_spinlock_bench.S
+
+$(LINUX_SPINLOCK_BIN): $(LINUX_SPINLOCK_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(LINUX_SPINLOCK_MEMH): $(LINUX_SPINLOCK_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(LINUX_SPINLOCK_MEMH_BYTES) --word-bytes 32
+
+$(LINUX_SPINLOCK_DISASM): $(LINUX_SPINLOCK_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+sw-linux-spinlock-sv39: $(LINUX_SPINLOCK_ELF) \
+	$(LINUX_SPINLOCK_BIN) $(LINUX_SPINLOCK_MEMH) \
+	$(LINUX_SPINLOCK_DISASM)
+
+bench-linux-spinlock-sv39: $(LINUX_SPINLOCK_MEMH) \
+		$(LINUX_SPINLOCK_DISASM)
+	test -n "$(LINUX_SPINLOCK_DONE)"
+	$(MAKE) sim-core-3p-icx-l2 \
+		CORE_3P_ICX_L2_MODE=3 \
+		CORE_3P_ICX_L2_BP_TYPE=8 \
+		CORE_3P_ICX_L2_FETCH_CAROUSEL=1 \
+		CORE_3P_ICX_L2_CONFIDENCE_GATE=0 \
+		CORE_3P_ICX_L2_RETIRE_DEPTH=$(LINUX_SPINLOCK_RETIRE_DEPTH) \
+		CORE_3P_ICX_L2_PHYS_REG_COUNT=31 \
+		CORE_3P_ICX_L2_ISSUE_WINDOW=1 \
+		CORE_3P_ICX_L2_SPECULATION_WINDOW=1 \
+		CORE_3P_ICX_L2_POSTED_STORES=1 \
+		CORE_3P_ICX_L2_FENCE_L2_ACK_ENABLE=0 \
+		CORE_3P_ICX_L2_L1D_PREFETCH_ENABLE=$(LINUX_SPINLOCK_PREFETCH_ENABLE) \
+		CORE_3P_ICX_L2_DDR3=1 \
+		CORE_3P_ICX_L2_DDR3_READ_QUEUE_DEPTH=8 \
+		CORE_3P_ICX_L2_DDR3_WRITE_QUEUE_DEPTH=8 \
+		CORE_3P_ICX_L2_DDR3_COMMAND_QUEUE_DEPTH=16 \
+		CORE_3P_ICX_L2_DDR3_MAX_BURST_TRAIN_BURSTS=8 \
+		CORE_3P_ICX_L2_DDR3_BANK_ROW_SWIZZLE=0 \
+		CORE_3P_ICX_L2_MEMORY_TIMING_MODEL=0 \
+		CORE_3P_ICX_L2_MEMH=$(LINUX_SPINLOCK_MEMH) \
+		CORE_3P_ICX_L2_MEMH_WORDS=$(LINUX_SPINLOCK_MEMH_WORDS) \
+		CORE_3P_ICX_L2_MAX_CYCLES=$(LINUX_SPINLOCK_MAX_CYCLES) \
+		CORE_3P_ICX_L2_ARGS="+expect_a0=$(LINUX_SPINLOCK_PASS) +done_pc=$(LINUX_SPINLOCK_DONE) +require_sv39 +require_timed_memory +report_linux_spinlock_sv39"

@@ -71,9 +71,13 @@ def category_for(module: str) -> tuple[str, str]:
             "Memory-system routing/AXI",
             "core-bus wrapper and external interface selection",
         ),
+        "openrv64_core_mtl": (
+            "Memory transaction layer",
+            "translation queues, TLB/PTW, PMP clearance, barriers, and cache transaction control",
+        ),
         "openrv64_core_icx_bus": (
-            "Memory-system routing/AXI",
-            "translation/request queues, PMP and ICX arbitration, and the residual 256-bit AXI path",
+            "ICX transport",
+            "physical L1I/L1D/PTW command arbitration and response routing",
         ),
         "openrv64_l1d_icx": (
             "L1D control/tags",

@@ -93,6 +93,11 @@ module lsq_l1d_store_performance_runner #(
     wire lsq_result_store;
     wire lsq_empty;
     wire result_fire = lsq_result_valid;
+    wire xlate_req_valid;
+    wire [TAG_WIDTH-1:0] xlate_req_tag;
+    wire xlate_req_write;
+    wire [2:0] xlate_req_size;
+    wire [63:0] xlate_req_vaddr;
 
     wire l1d_resp_valid;
     wire [TAG_WIDTH-1:0] l1d_resp_tag;
@@ -215,15 +220,19 @@ module lsq_l1d_store_performance_runner #(
         .atomic_tag_i({TAG_WIDTH{1'b0}}),
         .atomic_irrevocable_i(1'b0),
         .atomic_done_i(1'b0),
-        .xlate_req_valid_o(),
-        .xlate_req_ready_i(1'b0),
-        .xlate_req_tag_o(),
-        .xlate_req_write_o(),
-        .xlate_req_vaddr_o(),
-        .xlate_resp_valid_i(1'b0),
+        .xlate_req_valid_o(xlate_req_valid),
+        .xlate_req_ready_i(1'b1),
+        .xlate_req_tag_o(xlate_req_tag),
+        .xlate_req_write_o(xlate_req_write),
+        .xlate_req_size_o(xlate_req_size),
+        .xlate_req_vaddr_o(xlate_req_vaddr),
+        // Bare mode is an identity translation but still returns address
+        // clearance. Model a zero-latency PMP-allowed response here so this
+        // benchmark remains focused on LSQ/L1D store throughput.
+        .xlate_resp_valid_i(xlate_req_valid),
         .xlate_resp_ready_o(),
-        .xlate_resp_tag_i({TAG_WIDTH{1'b0}}),
-        .xlate_resp_paddr_i(64'd0),
+        .xlate_resp_tag_i(xlate_req_tag),
+        .xlate_resp_paddr_i(xlate_req_vaddr),
         .xlate_resp_access_fault_i(1'b0),
         .xlate_resp_page_fault_i(1'b0),
         .req_valid_o(lsq_req_valid),

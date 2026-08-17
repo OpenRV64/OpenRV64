@@ -10,7 +10,8 @@
 //     slli x1, x1, 31
 //     jalr x0, 0(x1)       // jr x1
 module openrv64_soc_rom #(
-    parameter integer ROM_BYTES = 4 * 1024
+    parameter integer ROM_BYTES = 4 * 1024,
+    parameter INIT_FILE = ""
 ) (
     input  wire        clk_i,
     input  wire        rst_ni,
@@ -36,6 +37,13 @@ module openrv64_soc_rom #(
     integer init_index;
 
     initial begin
+`ifdef OPENRV64_SYNTH_ROM_INIT_FILE
+        // Yosys gives the explicit fallback assignments priority over the
+        // $readmemh data even when the latter appears later in this block.
+        // Keep the synthesis initialization mutually exclusive so the BRAM
+        // has only one source of INIT contents.
+        $readmemh(`"`OPENRV64_SYNTH_ROM_INIT_FILE`", rom_q);
+`else
         for (init_index = 0; init_index < WORD_COUNT;
              init_index = init_index + 1) begin
             rom_q[init_index] = 64'h0000_0000_0000_0000;
@@ -44,6 +52,10 @@ module openrv64_soc_rom #(
         // Two little-endian 32-bit instructions per 64-bit bus word.
         rom_q[0] = 64'h0010_0093_f140_2573;
         rom_q[1] = 64'h0000_8067_01f0_9093;
+
+        if (INIT_FILE != "")
+            $readmemh(INIT_FILE, rom_q);
+`endif
     end
 
     localparam [1:0] STATE_IDLE     = 2'd0;

@@ -117,6 +117,7 @@ module openrv64_core_bus #(
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_pipe_req_tag_i,
     input  wire                         lsu_pipe_req_xlate_only_i,
     input  wire                         lsu_pipe_req_physical_i,
+    input  wire                         lsu_pipe_req_pmp_checked_i,
     input  wire                         lsu_pipe_req_lock_i,
     input  wire                         lsu_pipe_req_write_i,
     input  wire [`RV64_XLEN-1:0]        lsu_pipe_req_addr_i,
@@ -149,6 +150,7 @@ module openrv64_core_bus #(
     output wire                         lsu_xlate_req_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_req_tag_i,
     input  wire                         lsu_xlate_req_write_i,
+    input  wire [2:0]                   lsu_xlate_req_size_i,
     input  wire [`RV64_XLEN-1:0]        lsu_xlate_req_vaddr_i,
     input  wire [`RV64_PRIV_WIDTH-1:0]  lsu_xlate_req_priv_i,
     input  wire [`RV64_SATP_MODE_WIDTH-1:0] lsu_xlate_req_vm_mode_i,
@@ -997,7 +999,7 @@ module openrv64_core_bus #(
             end
 `endif
         end else begin : g_icx
-            openrv64_core_icx_bus #(
+            openrv64_core_mtl #(
                 .TLB_ENTRIES(TLB_ENTRIES),
                 .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
                 .L2_TLB_WAYS(L2_TLB_WAYS),
@@ -1095,6 +1097,8 @@ module openrv64_core_bus #(
                 .lsu_pipe_req_tag_i(lsu_pipe_req_tag_i),
                 .lsu_pipe_req_xlate_only_i(lsu_pipe_req_xlate_only_i),
                 .lsu_pipe_req_physical_i(lsu_pipe_req_physical_i),
+                .lsu_pipe_req_pmp_checked_i(
+                    lsu_pipe_req_pmp_checked_i),
                 .lsu_pipe_req_lock_i(lsu_pipe_req_lock_i),
                 .lsu_pipe_req_write_i(lsu_pipe_req_write_i),
                 .lsu_pipe_req_addr_i(lsu_pipe_req_addr_i),
@@ -1132,6 +1136,7 @@ module openrv64_core_bus #(
                 .lsu_xlate_req_ready_o(lsu_xlate_req_ready_o),
                 .lsu_xlate_req_tag_i(lsu_xlate_req_tag_i),
                 .lsu_xlate_req_write_i(lsu_xlate_req_write_i),
+                .lsu_xlate_req_size_i(lsu_xlate_req_size_i),
                 .lsu_xlate_req_vaddr_i(lsu_xlate_req_vaddr_i),
                 .lsu_xlate_req_priv_i(lsu_xlate_req_priv_i),
                 .lsu_xlate_req_vm_mode_i(lsu_xlate_req_vm_mode_i),

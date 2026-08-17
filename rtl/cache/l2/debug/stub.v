@@ -225,6 +225,13 @@ module openrv64_l2_debug_stub #(
         /* verilator public_flat_rd */;
     reg [63:0] perf_probe_completion_q
         /* verilator public_flat_rd */;
+    // Count the home reservation decision for every valid SC.  This includes
+    // both architectural SC instructions and the conditional write half of a
+    // decomposed AMO; failed AMO writes are retried by the core sequencer.
+    reg [63:0] perf_atomic_store_success_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_atomic_store_failed_q
+        /* verilator public_flat_rd */;
     reg [63:0] perf_mshr_occupancy_cycles_q
         /* verilator public_flat_rd */;
     reg [63:0] perf_mshr_full_cycles_q /* verilator public_flat_rd */;
@@ -259,6 +266,8 @@ module openrv64_l2_debug_stub #(
             perf_probe_issue_cycles_q <= 64'd0;
             perf_probe_ack_cycles_q <= 64'd0;
             perf_probe_completion_q <= 64'd0;
+            perf_atomic_store_success_q <= 64'd0;
+            perf_atomic_store_failed_q <= 64'd0;
             perf_mshr_occupancy_cycles_q <= 64'd0;
             perf_mshr_full_cycles_q <= 64'd0;
             perf_mshr_max_occupancy_q <= 64'd0;
@@ -302,6 +311,16 @@ module openrv64_l2_debug_stub #(
             if (coherence_probe_completion)
                 perf_probe_completion_q <=
                     perf_probe_completion_q + 1'b1;
+            if (lookup_dispatch &&
+                (lookup_op == `OPENRV64_ICX_OP_SC) &&
+                !lookup_protocol_error && !coherence_hart_error) begin
+                if (lookup_sc_failed)
+                    perf_atomic_store_failed_q <=
+                        perf_atomic_store_failed_q + 1'b1;
+                else
+                    perf_atomic_store_success_q <=
+                        perf_atomic_store_success_q + 1'b1;
+            end
             perf_mshr_occupancy_cycles_q <=
                 perf_mshr_occupancy_cycles_q + perf_mshr_occupancy_r;
             if (perf_mshr_occupancy_r == MSHR_ENTRIES)

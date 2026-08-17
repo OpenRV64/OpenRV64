@@ -4059,6 +4059,15 @@ module tb_4h_3p #(
                     cycles, retired[0], requests[0],
                     opensbi_uart_bytes, memory_reads,
                     memory_writes);
+                $display(
+                    "PERF_ATOMIC_STORES hart=0 core_success=%0d core_failed=%0d observed_sc_success=%0d observed_sc_failed=%0d home_sc_success=%0d home_sc_failed=%0d",
+                    g_hart[0].u_core.u_debug.
+                        perf_atomic_store_success_q,
+                    g_hart[0].u_core.u_debug.
+                        perf_atomic_store_failed_q,
+                    sc_successes[0], sc_failures[0],
+                    u_l2.u_debug.perf_atomic_store_success_q,
+                    u_l2.u_debug.perf_atomic_store_failed_q);
                 $finish;
             end
 

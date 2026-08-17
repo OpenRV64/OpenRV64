@@ -8,6 +8,7 @@
 `include "complex/protocol/defs.v"
 
 module openrv64_fpga_opensbi_system #(
+    parameter ROM_INIT_FILE        = "",
     parameter TRAMPOLINE_INIT_FILE = "",
     parameter FIRMWARE_INIT_FILE   = "",
     parameter FIRMWARE_TAIL_INIT_FILE = "",
@@ -18,6 +19,7 @@ module openrv64_fpga_opensbi_system #(
     parameter integer PAYLOAD_WORDS    = 1,
     parameter integer FDT_WORDS        = 1,
     parameter integer UART_LINUX_LOAD_ENABLE = 0,
+    parameter integer SD_ROM_BOOT_ENABLE = 0,
     parameter integer STATUS_CLOCK_HZ = 100_000_000,
     parameter integer STATUS_BAUD = 115_200,
     parameter integer STATUS_FIRST_DELAY_CYCLES = 100_000,
@@ -31,6 +33,11 @@ module openrv64_fpga_opensbi_system #(
 
     input  logic         uart_rx_i,
     output logic         uart_tx_o,
+    input  logic         spi_card_present_i,
+    output logic         spi_clk_o,
+    output logic         spi_mosi_o,
+    input  logic         spi_miso_i,
+    output logic         spi_cs_n_o,
     output logic         boot_release_o,
     output logic [63:0]  debug_pc_o,
 
@@ -69,8 +76,8 @@ module openrv64_fpga_opensbi_system #(
     logic uart_loader_active;
     logic uart_loader_done;
     logic uart_loader_failed;
-    wire boot_image_done = loader_done &&
-        (!UART_LINUX_LOAD_ENABLE || uart_loader_done);
+    wire boot_image_done = SD_ROM_BOOT_ENABLE ? calib_complete_i :
+        (loader_done && (!UART_LINUX_LOAD_ENABLE || uart_loader_done));
 
     logic [27:0] scalar_app_addr;
     logic [2:0] scalar_app_cmd;
@@ -128,37 +135,51 @@ module openrv64_fpga_opensbi_system #(
         .pass_message_done_o(pass_message_done)
     );
 
+    generate
+        if (SD_ROM_BOOT_ENABLE != 0) begin : g_no_fixed_loader
+            assign loader_app_addr = 28'd0;
+            assign loader_app_cmd = 3'd0;
+            assign loader_app_en = 1'b0;
+            assign loader_app_wdf_data = 256'd0;
+            assign loader_app_wdf_end = 1'b0;
+            assign loader_app_wdf_mask = 32'hffff_ffff;
+            assign loader_app_wdf_wren = 1'b0;
+            assign loader_done = 1'b1;
+            assign loader_failed = 1'b0;
+        end else begin : g_fixed_loader
 `ifdef OPENRV64_FPGA_LOADER_NETLIST
-    (* DONT_TOUCH = "TRUE" *)
-    openrv64_fpga_loader_fixed u_loader (
+            (* DONT_TOUCH = "TRUE" *)
+            openrv64_fpga_loader_fixed u_loader (
 `else
-    openrv64_fpga_ddr3_boot_loader #(
-        .TRAMPOLINE_INIT_FILE(TRAMPOLINE_INIT_FILE),
-        .FIRMWARE_INIT_FILE(FIRMWARE_INIT_FILE),
-        .FIRMWARE_TAIL_INIT_FILE(FIRMWARE_TAIL_INIT_FILE),
-        .PAYLOAD_INIT_FILE(PAYLOAD_INIT_FILE),
-        .FDT_INIT_FILE(FDT_INIT_FILE),
-        .TRAMPOLINE_WORDS(TRAMPOLINE_WORDS),
-        .FIRMWARE_WORDS(FIRMWARE_WORDS),
-        .PAYLOAD_WORDS(PAYLOAD_WORDS),
-        .FDT_WORDS(FDT_WORDS)
-    ) u_loader (
+            openrv64_fpga_ddr3_boot_loader #(
+                .TRAMPOLINE_INIT_FILE(TRAMPOLINE_INIT_FILE),
+                .FIRMWARE_INIT_FILE(FIRMWARE_INIT_FILE),
+                .FIRMWARE_TAIL_INIT_FILE(FIRMWARE_TAIL_INIT_FILE),
+                .PAYLOAD_INIT_FILE(PAYLOAD_INIT_FILE),
+                .FDT_INIT_FILE(FDT_INIT_FILE),
+                .TRAMPOLINE_WORDS(TRAMPOLINE_WORDS),
+                .FIRMWARE_WORDS(FIRMWARE_WORDS),
+                .PAYLOAD_WORDS(PAYLOAD_WORDS),
+                .FDT_WORDS(FDT_WORDS)
+            ) u_loader (
 `endif
-        .clk_i(ui_clk_i),
-        .reset_i(ui_reset_i),
-        .calib_complete_i(calib_complete_i),
-        .app_addr_o(loader_app_addr),
-        .app_cmd_o(loader_app_cmd),
-        .app_en_o(loader_app_en),
-        .app_rdy_i(app_rdy_i),
-        .app_wdf_data_o(loader_app_wdf_data),
-        .app_wdf_end_o(loader_app_wdf_end),
-        .app_wdf_mask_o(loader_app_wdf_mask),
-        .app_wdf_wren_o(loader_app_wdf_wren),
-        .app_wdf_rdy_i(app_wdf_rdy_i),
-        .done_o(loader_done),
-        .failed_o(loader_failed)
-    );
+                .clk_i(ui_clk_i),
+                .reset_i(ui_reset_i),
+                .calib_complete_i(calib_complete_i),
+                .app_addr_o(loader_app_addr),
+                .app_cmd_o(loader_app_cmd),
+                .app_en_o(loader_app_en),
+                .app_rdy_i(app_rdy_i),
+                .app_wdf_data_o(loader_app_wdf_data),
+                .app_wdf_end_o(loader_app_wdf_end),
+                .app_wdf_mask_o(loader_app_wdf_mask),
+                .app_wdf_wren_o(loader_app_wdf_wren),
+                .app_wdf_rdy_i(app_wdf_rdy_i),
+                .done_o(loader_done),
+                .failed_o(loader_failed)
+            );
+        end
+    endgenerate
 
     openrv64_fpga_uart_ddr_loader #(
         .CLOCK_HZ(STATUS_CLOCK_HZ),
@@ -166,7 +187,8 @@ module openrv64_fpga_opensbi_system #(
     ) u_uart_loader (
         .clk_i(ui_clk_i),
         .reset_i(ui_reset_i),
-        .start_i(loader_done && UART_LINUX_LOAD_ENABLE),
+        .start_i(!SD_ROM_BOOT_ENABLE && loader_done &&
+                 UART_LINUX_LOAD_ENABLE),
         .calib_complete_i(calib_complete_i),
         .uart_rx_i(uart_rx_i),
         .uart_tx_o(uart_loader_tx),
@@ -271,7 +293,15 @@ module openrv64_fpga_opensbi_system #(
     );
 
     always_comb begin
-        if (!loader_done) begin
+        if (SD_ROM_BOOT_ENABLE) begin
+            app_addr_o = scalar_app_addr;
+            app_cmd_o = scalar_app_cmd;
+            app_en_o = scalar_app_en;
+            app_wdf_data_o = scalar_app_wdf_data;
+            app_wdf_end_o = scalar_app_wdf_end;
+            app_wdf_mask_o = scalar_app_wdf_mask;
+            app_wdf_wren_o = scalar_app_wdf_wren;
+        end else if (!loader_done) begin
             app_addr_o = loader_app_addr;
             app_cmd_o = loader_app_cmd;
             app_en_o = loader_app_en;
@@ -372,6 +402,7 @@ module openrv64_fpga_opensbi_system #(
     openrv64_platform #(
         .GPIO_WIDTH(1),
         .MEMORY_BYTES(256 * 1024 * 1024),
+        .ROM_INIT_FILE(ROM_INIT_FILE),
         .BACKEND_CONFIG(`OPENRV64_BACKEND_1P),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64ZBB(1'b0),
@@ -397,6 +428,11 @@ module openrv64_fpga_opensbi_system #(
         .mtime_tick_i(1'b1),
         .uart_rx_i(uart_rx_i),
         .uart_tx_o(platform_uart_tx),
+        .spi_card_present_i(spi_card_present_i),
+        .spi_clk_o(spi_clk_o),
+        .spi_mosi_o(spi_mosi_o),
+        .spi_miso_i(spi_miso_i),
+        .spi_cs_n_o(spi_cs_n_o),
         .gpio_in_i(1'b0),
         .gpio_out_o(),
         .external_irq_i(29'd0),
@@ -466,7 +502,8 @@ module openrv64_fpga_opensbi_system #(
 
     assign boot_release_o = boot_release_q;
     assign uart_tx_o = boot_release_q ? platform_uart_tx :
-        ((UART_LINUX_LOAD_ENABLE && loader_done && !uart_loader_done) ?
+        ((!SD_ROM_BOOT_ENABLE && UART_LINUX_LOAD_ENABLE && loader_done &&
+          !uart_loader_done) ?
             uart_loader_tx : status_uart_tx);
 
 endmodule

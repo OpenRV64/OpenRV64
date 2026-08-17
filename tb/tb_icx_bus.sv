@@ -45,6 +45,7 @@ module tb_icx_bus #(
     logic pipe_req_lock;
     logic pipe_req_xlate_only;
     logic pipe_req_physical;
+    logic pipe_req_pmp_checked;
     wire pipe_req_ready;
     logic [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_req_tag;
     logic pipe_req_write;
@@ -77,6 +78,7 @@ module tb_icx_bus #(
     wire xlate_req_ready;
     logic [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_req_tag;
     logic xlate_req_write;
+    logic [2:0] xlate_req_size;
     logic [63:0] xlate_req_vaddr;
     logic [1:0] xlate_req_priv;
     logic [3:0] xlate_req_vm_mode;
@@ -215,7 +217,7 @@ module tb_icx_bus #(
         end
     end
 
-    openrv64_core_icx_bus #(
+    openrv64_core_mtl #(
         .ENABLE_L1I(0),
         .L1D_PREFETCH_ENABLE(0),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
@@ -268,6 +270,7 @@ module tb_icx_bus #(
         .lsu_pipe_req_tag_i(pipe_req_tag),
         .lsu_pipe_req_xlate_only_i(pipe_req_xlate_only),
         .lsu_pipe_req_physical_i(pipe_req_physical),
+        .lsu_pipe_req_pmp_checked_i(pipe_req_pmp_checked),
         .lsu_pipe_req_lock_i(pipe_req_lock),
         .lsu_pipe_req_write_i(pipe_req_write),
         .lsu_pipe_req_addr_i(pipe_req_addr),
@@ -299,6 +302,7 @@ module tb_icx_bus #(
         .lsu_xlate_req_ready_o(xlate_req_ready),
         .lsu_xlate_req_tag_i(xlate_req_tag),
         .lsu_xlate_req_write_i(xlate_req_write),
+        .lsu_xlate_req_size_i(xlate_req_size),
         .lsu_xlate_req_vaddr_i(xlate_req_vaddr),
         .lsu_xlate_req_priv_i(xlate_req_priv),
         .lsu_xlate_req_vm_mode_i(xlate_req_vm_mode),
@@ -634,17 +638,24 @@ module tb_icx_bus #(
             wait_cycles = 0;
             completed = 1'b0;
             while (!completed && wait_cycles < 100) begin
-                @(posedge clk);
-                if (pipe_req_ready)
-                    completed = 1'b1;
+                @(negedge clk);
                 #1;
+                if (pipe_req_ready) begin
+                    @(posedge clk);
+                    #1;
+                    completed = 1'b1;
+                end
                 wait_cycles = wait_cycles + 1;
             end
             if (!completed)
                 $fatal(1,
-                    "tagged LSU request timeout tag=%0d ready=%b pmp=%b icx=%b/%b",
-                    tag, pipe_req_ready, pmp_allow,
-                    icx_req_valid, icx_req_ready);
+                    "tagged LSU request timeout tag=%0d addr=%h ready=%b pmp=%b icx=%b/%b state=%0d fast=%b fallback=%b miss=%b pipe_fb=%b tag_busy=%b checked=%b",
+                    tag, addr, pipe_req_ready, pmp_allow,
+                    icx_req_valid, icx_req_ready, dut.lsu_state_q,
+                    dut.pipe_fast_candidate,
+                    dut.pipe_fallback_candidate, dut.miss_active_q,
+                    dut.pipe_fallback_active_q, dut.pipe_req_tag_busy,
+                    pipe_req_pmp_checked);
             pipe_req_valid = 1'b0;
         end
     endtask
@@ -851,6 +862,9 @@ module tb_icx_bus #(
         pipe_req_lock = 0;
         pipe_req_xlate_only = 0;
         pipe_req_physical = 0;
+        // Ordinary Bare traffic has already passed through the identity
+        // address-clearance channel. Atomic phases override this below.
+        pipe_req_pmp_checked = 1;
         pipe_req_tag = 0;
         pipe_req_write = 0;
         pipe_req_addr = 0;
@@ -869,6 +883,7 @@ module tb_icx_bus #(
         xlate_req_valid = 0;
         xlate_req_tag = 0;
         xlate_req_write = 0;
+        xlate_req_size = 3;
         xlate_req_vaddr = 0;
         xlate_req_priv = `RV64_PRIV_M;
         xlate_req_vm_mode = `RV64_SATP_MODE_BARE;
@@ -1019,10 +1034,12 @@ module tb_icx_bus #(
         // line while retaining cacheable PMA attributes at ICX.
         wait_count = icx_reads;
         icx_allow_cmd = 1'b0;
+        pipe_req_pmp_checked = 1'b0;
         pipe_req_lock = 1'b1;
         locked_old_word = icx_memory_word(64'h108);
         push_pipe_request(2'd2, 1'b0, 64'h108, 64'd0, 8'd0);
         pipe_req_lock = 1'b0;
+        pipe_req_pmp_checked = 1'b1;
         while (!icx_req_valid) tick();
         pipe_cancel = 1'b1;
         tick();
@@ -1045,13 +1062,37 @@ module tb_icx_bus #(
 
         wait_count = icx_writes;
         locked_old_word = icx_memory_word(64'h118);
+        pipe_req_pmp_checked = 1'b0;
         pipe_req_lock = 1'b1;
         push_pipe_request(2'd2, 1'b1, 64'h118,
                           64'hcafe_babe_dead_beef, 8'hff);
         pipe_req_lock = 1'b0;
+        pipe_req_pmp_checked = 1'b1;
         expect_pipe_response(2'd2, locked_old_word, 1'b0, 1'b0);
         if ((icx_writes - wait_count) != 1 || icx_locked_writes != 0)
             $fatal(1, "atomic L1D write leaked a ICX lock");
+
+        // Unchecked atomic phases are captured first, receive a dedicated PMP
+        // cycle, and only enter L1D after a successful registered verdict.
+        // A denial must therefore complete locally without asserting L1D.
+        wait_count = icx_reads;
+        pmp_allow = 1'b0;
+        pipe_req_pmp_checked = 1'b0;
+        pipe_req_lock = 1'b1;
+        push_pipe_request(2'd2, 1'b0, 64'h128, 64'd0, 8'd0);
+        pipe_req_lock = 1'b0;
+        pipe_req_pmp_checked = 1'b1;
+        while (dut.lsu_state_q != dut.LSU_PMP) tick();
+        #1;
+        if (!pmp_valid || dut.l1d_req_valid)
+            $fatal(1,
+                "atomic PMP stage leaked into L1D pmp=%b l1d=%b",
+                pmp_valid, dut.l1d_req_valid);
+        tick();
+        pmp_allow = 1'b1;
+        expect_pipe_response(2'd2, 64'd0, 1'b1, 1'b0);
+        if (icx_reads != wait_count)
+            $fatal(1, "PMP-denied atomic reached ICX");
 
         // A tagged store is irrevocable after L1 admission.  Architectural
         // completion reports that admission, not the later ICX drain result.
@@ -1169,9 +1210,11 @@ module tb_icx_bus #(
         // has reached ICX.  The marker is deliberately not forwarded as a
         // shared-home lock.
         locked_reads_before = icx_reads;
+        pipe_req_pmp_checked = 1'b0;
         pipe_req_lock = 1'b1;
         push_pipe_request(3'd0, 1'b0, 64'h108, 64'd0, 8'd0);
         pipe_req_lock = 1'b0;
+        pipe_req_pmp_checked = 1'b1;
         if (icx_reads != locked_reads_before)
             $fatal(1, "atomic read reached ICX ahead of buffered stores");
         icx_allow_cmd = 1;
@@ -1205,9 +1248,11 @@ module tb_icx_bus #(
         // unrelated traffic.  Single-hart mode intentionally does not acquire
         // a ICX/L2 home lock.
         wait_count = icx_writes;
+        pipe_req_pmp_checked = 1'b0;
         pipe_req_lock = 1'b1;
         push_pipe_request(3'd1, 1'b1, 64'h108, locked_old_word, 8'hff);
         pipe_req_lock = 1'b0;
+        pipe_req_pmp_checked = 1'b1;
         expect_pipe_response(3'd1, locked_old_word, 1'b0, 1'b0);
         if (icx_writes != wait_count + 1 || icx_locked_writes != 0)
             $fatal(1, "post-drain atomic write leaked a ICX lock");
@@ -1343,6 +1388,26 @@ module tb_icx_bus #(
                    icx_reads - wait_count);
         if (ar_count != channel_wait)
             $fatal(1, "translated PTW or L1D request escaped onto AXI");
+
+        // A fast translation hit returns the PMP verdict with its tag.  A
+        // denial is an access fault and must not require or launch L1D.
+        wait_count = icx_reads;
+        xlate_req_size = 3'd2;
+        pmp_allow = 1'b0;
+        push_xlate_request(3'd2, 1'b0, 64'h4008);
+        expect_xlate_response(3'd2, 64'h3008, 1'b1, 1'b0);
+        if ((icx_reads - wait_count) != 0)
+            $fatal(1, "PMP-denied TLB hit launched physical traffic");
+
+        // The LSQ may launch the later physical access with the captured
+        // clearance even while the live PMP input denies unrelated probes.
+        pipe_req_pmp_checked = 1'b1;
+        locked_old_word = icx_memory_word(64'h3008);
+        push_pipe_request(3'd2, 1'b0, 64'h3008, 64'd0, 8'd0);
+        expect_pipe_response(3'd2, locked_old_word, 1'b0, 1'b0);
+        pipe_req_pmp_checked = 1'b1;
+        pmp_allow = 1'b1;
+        xlate_req_size = 3'd3;
 
         /*
          * SATP selects a new current address space. It must flush the untagged

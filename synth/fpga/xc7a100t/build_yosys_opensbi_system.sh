@@ -12,6 +12,8 @@ output_json=${OUTPUT_JSON:-$output_dir/openrv64_fpga_opensbi_system.json}
 output_stub=${OUTPUT_STUB:-$output_dir/openrv64_fpga_opensbi_system_stub.v}
 output_log=${OUTPUT_LOG:-$output_dir/yosys-system.log}
 uart_linux_load_enable=${UART_LINUX_LOAD_ENABLE:-0}
+sd_rom_boot_enable=${SD_ROM_BOOT_ENABLE:-0}
+rom_init_file=${ROM_INIT_FILE:-}
 
 if ! yosys_bin=$(command -v "$yosys_bin"); then
     echo "error: Yosys executable not found: ${YOSYS:-yosys}" >&2
@@ -26,6 +28,14 @@ done
 if [[ "$uart_linux_load_enable" != 0 &&
       "$uart_linux_load_enable" != 1 ]]; then
     echo "error: UART_LINUX_LOAD_ENABLE must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$sd_rom_boot_enable" != 0 && "$sd_rom_boot_enable" != 1 ]]; then
+    echo "error: SD_ROM_BOOT_ENABLE must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$sd_rom_boot_enable" == 1 && ! -s "$rom_init_file" ]]; then
+    echo "error: SD boot ROM init file not found: $rom_init_file" >&2
     exit 2
 fi
 
@@ -44,6 +54,7 @@ sources=(
     "$repo_root/rtl/periph/uart/uart.v"
     "$repo_root/rtl/periph/gpio/gpio.v"
     "$repo_root/rtl/periph/timer/timer.v"
+    "$repo_root/rtl/periph/spi/spi.v"
     "$script_dir/uart_banner.sv"
     "$script_dir/uart_ddr_loader.sv"
     "$script_dir/mig_scalar_bridge.sv"
@@ -56,12 +67,20 @@ sources=(
 read_command="read_verilog -sv -defer -I$repo_root/rtl \
     -DSYNTHESIS -DOPENRV64_FPGA_CORE_NETLIST \
     -DOPENRV64_FPGA_LOADER_NETLIST"
+if [[ -n "$rom_init_file" ]]; then
+    # The ROM wraps this bare path in SystemVerilog macro quotes. A
+    # string-valued chparam reaches the module parameter but is not honored by
+    # Yosys $readmemh.
+    read_command+=" -DOPENRV64_SYNTH_ROM_INIT_FILE=$rom_init_file"
+fi
 for source in "${sources[@]}"; do
     read_command+=" \"$source\""
 done
 
 flow="$read_command; \
 chparam -set UART_LINUX_LOAD_ENABLE $uart_linux_load_enable \
+        -set SD_ROM_BOOT_ENABLE $sd_rom_boot_enable \
+        -set ROM_INIT_FILE \"$rom_init_file\" \
         openrv64_fpga_opensbi_system; \
 hierarchy -check -top openrv64_fpga_opensbi_system; \
 synth_xilinx -family xc7 -top openrv64_fpga_opensbi_system -flatten \
@@ -82,4 +101,7 @@ cd "$repo_root"
 test -s "$output_edif"
 test -s "$output_json"
 test -s "$output_stub"
+if [[ "$sd_rom_boot_enable" == 1 ]]; then
+    python3 "$repo_root/tools/check_yosys_rom_init.py" "$output_json"
+fi
 printf 'OpenRV64 FPGA system EDIF: %s\n' "$output_edif"

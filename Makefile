@@ -35,4 +35,5 @@ include scripts/make/sv39-smoke.mk
 include scripts/make/prefetch-suite.mk
 include scripts/make/prefetch-builds.mk
 include scripts/make/fence.mk
+include scripts/make/spinlock.mk
 include scripts/make/clean.mk

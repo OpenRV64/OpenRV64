@@ -2,7 +2,7 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 
-// Shared main translation cache. The legacy module name is retained.
+// MTL-owned shared translation cache. The legacy module name is retained.
 //
 // The main array caches final 4 KiB translations in indexed, set-associative
 // storage.  A small fully-associative sidecar retains 2 MiB and 1 GiB

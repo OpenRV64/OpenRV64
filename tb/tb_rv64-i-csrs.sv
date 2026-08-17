@@ -419,19 +419,77 @@ module tb_rv64i_csrs;
         @(posedge clk);
         @(negedge clk);
         perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
-        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
-                  "mhpmcounter registered event forwarding");
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd10,
+                  "mhpmcounter event capture stage");
+        @(posedge clk);
+        @(negedge clk);
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd10,
+                  "mhpmcounter event rebalance stage");
+        @(posedge clk);
+        @(negedge clk);
         check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
                   "mhpmcounter event commit");
-        write_csr(`RV64_CSR_MCOUNTINHIBIT,
-                  (64'd1 << `RV64_MCOUNTER_CY_BIT) |
-                  (64'd1 << 3));
-        @(negedge clk);
+
+        // Selector writes flush any pending increment for that counter and
+        // discard an event in the first complete cycle after the write. An
+        // old-selector event remains asserted throughout the serialized write
+        // to ensure no pending increment escapes the flush.
+        write_csr(`RV64_CSR_MHPMCOUNTER3, 64'd20);
         perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE0] = 1'b1;
+        write_csr(`RV64_CSR_MHPMEVENT3,
+                  64'd1 << `OPENRV64_CMU_EVENT_ISSUE_LANE1);
+        perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
+        read_csr(`RV64_CSR_MHPMCOUNTER3, counter_snapshot);
+
+        // This selected event occurs in the one-cycle post-selector dead
+        // window and must not be counted later by the input pipeline.
+        perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE1] = 1'b1;
         @(posedge clk);
         @(negedge clk);
         perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
-        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1, 64'd12,
+        repeat (3) @(posedge clk);
+        read_csr(`RV64_CSR_MHPMCOUNTER3, csr_wdata);
+        if (csr_wdata != counter_snapshot) begin
+            $fatal(1,
+                "mhpmevent selector dead-time counted event: %0d/%0d",
+                csr_wdata, counter_snapshot);
+        end
+
+        // Once dead-time expires, an event traverses the producer-local and
+        // CMU-local capture stages before it commits to the counter.
+        @(negedge clk);
+        perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE1] = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1,
+                  counter_snapshot,
+                  "mhpmcounter post-dead-time capture");
+        @(posedge clk);
+        @(negedge clk);
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1,
+                  counter_snapshot,
+                  "mhpmcounter post-dead-time rebalance");
+        @(posedge clk);
+        @(negedge clk);
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1,
+                  counter_snapshot + 64'd1,
+                  "mhpmcounter post-dead-time commit");
+
+        // Restore the value used by the later privilege-alias checks.
+        write_csr(`RV64_CSR_MHPMCOUNTER3, 64'd12);
+        write_csr(`RV64_CSR_MCOUNTINHIBIT,
+                  (64'd1 << `RV64_MCOUNTER_CY_BIT) |
+                  (64'd1 << 3));
+        read_csr(`RV64_CSR_MHPMCOUNTER3, counter_snapshot);
+        @(negedge clk);
+        perf_events[`OPENRV64_CMU_EVENT_ISSUE_LANE1] = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        perf_events = {`OPENRV64_CMU_EVENT_COUNT{1'b0}};
+        repeat (2) @(posedge clk);
+        check_csr(`RV64_CSR_MHPMCOUNTER3, 1'b1, 1'b1,
+                  counter_snapshot,
                   "mhpmcounter inhibit");
 
         write_csr(`RV64_CSR_MIP, 64'hffff_ffff_ffff_ffff);

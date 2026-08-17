@@ -492,7 +492,7 @@
   <!-- Memory subsystem -->
   <rect x="35" y="1020" width="2810" height="765" class="cluster cluster-memory"/>
   <text x="58" y="1054" class="section-title">
-    CORE MEMORY SUBSYSTEM · openrv64_core_icx_bus · translated private-cache clients + native ICX
+    MEMORY TRANSACTION LAYER · openrv64_core_mtl · translation, protection, private-cache transactions
   </text>
 
   <g id="fetch-tracker">
@@ -731,7 +731,7 @@
   </text>
   <text x="70" y="1974" class="small">
     Sources: rtl/openrv64_top_3p.v, rtl/core/rv64_top_3p.v, rtl/core/backend/backend_3p.v,
-    rtl/core/bus/icx_bus.v, rtl/core/cache/l1/l1i/l1i.v, rtl/core/cache/l1/l1d/l1d.v.
+    rtl/core/mtl/mtl.v, rtl/core/bus/icx_bus.v, rtl/core/cache/l1/l1i/l1i.v, rtl/core/cache/l1/l1d/l1d.v.
   </text>
 
   <!-- Legend -->

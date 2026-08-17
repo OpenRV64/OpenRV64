@@ -131,7 +131,7 @@ module tb_icx_l1i;
         end
     end
 
-    openrv64_core_icx_bus #(
+    openrv64_core_mtl #(
         .ENABLE_L1I(1),
         .ENABLE_L1D(1),
         .L1D_PREFETCH_ENABLE(0)
@@ -174,6 +174,7 @@ module tb_icx_l1i;
         .lsu_pipe_req_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
         .lsu_pipe_req_xlate_only_i(1'b0),
         .lsu_pipe_req_physical_i(1'b0),
+        .lsu_pipe_req_pmp_checked_i(1'b0),
         .lsu_pipe_req_lock_i(1'b0),
         .lsu_pipe_req_write_i(1'b0),
         .lsu_pipe_req_addr_i(64'd0),
@@ -195,6 +196,7 @@ module tb_icx_l1i;
         .lsu_xlate_req_valid_i(1'b0),
         .lsu_xlate_req_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
         .lsu_xlate_req_write_i(1'b0),
+        .lsu_xlate_req_size_i(3'd0),
         .lsu_xlate_req_vaddr_i(64'd0),
         .lsu_xlate_req_priv_i(`RV64_PRIV_M),
         .lsu_xlate_req_vm_mode_i(`RV64_SATP_MODE_BARE),

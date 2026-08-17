@@ -74,6 +74,7 @@ module openrv64_exec_lsu #(
     output wire [LSU_TAG_WIDTH-1:0]     mem_tag_o,
     output wire                         mem_xlate_only_o,
     output wire                         mem_physical_o,
+    output wire                         mem_pmp_checked_o,
     output wire                         mem_lock_o,
     output wire                         mem_write_o,
     output wire [`RV64_XLEN-1:0]        mem_addr_o,
@@ -87,6 +88,7 @@ module openrv64_exec_lsu #(
     input  wire                         xlate_ready_i,
     output wire [LSU_TAG_WIDTH-1:0]     xlate_tag_o,
     output wire                         xlate_write_o,
+    output wire [2:0]                   xlate_size_o,
     output wire [`RV64_XLEN-1:0]        xlate_vaddr_o,
     input  wire                         xlate_resp_valid_i,
     output wire                         xlate_resp_ready_o,
@@ -280,6 +282,7 @@ module openrv64_exec_lsu #(
     wire lsq_req_ready;
     wire [LSU_TAG_WIDTH-1:0] lsq_req_tag;
     wire lsq_req_write;
+    wire lsq_req_pmp_checked;
     wire [`RV64_XLEN-1:0] lsq_req_addr;
     wire [`RV64_XLEN-1:0] lsq_req_vaddr;
     wire [2:0] lsq_req_size;
@@ -348,6 +351,7 @@ module openrv64_exec_lsu #(
     wire misaligned_xlate_ready;
     wire [LSU_TAG_WIDTH-1:0] misaligned_xlate_tag;
     wire misaligned_xlate_write;
+    wire [2:0] misaligned_xlate_size;
     wire [`RV64_XLEN-1:0] misaligned_xlate_vaddr;
     wire misaligned_xlate_resp_ready;
     wire misaligned_mem_valid;
@@ -366,6 +370,7 @@ module openrv64_exec_lsu #(
     wire lsq_xlate_ready;
     wire [LSU_TAG_WIDTH-1:0] lsq_xlate_tag;
     wire lsq_xlate_write;
+    wire [2:0] lsq_xlate_size;
     wire [`RV64_XLEN-1:0] lsq_xlate_vaddr;
     wire lsq_xlate_resp_ready;
     wire lsq_store_done_ready;
@@ -486,6 +491,7 @@ module openrv64_exec_lsu #(
         .xlate_req_ready_i(lsq_xlate_ready),
         .xlate_req_tag_o(lsq_xlate_tag),
         .xlate_req_write_o(lsq_xlate_write),
+        .xlate_req_size_o(lsq_xlate_size),
         .xlate_req_vaddr_o(lsq_xlate_vaddr),
         .xlate_resp_valid_i(xlate_resp_valid_i && !misaligned_active),
         .xlate_resp_ready_o(lsq_xlate_resp_ready),
@@ -497,6 +503,7 @@ module openrv64_exec_lsu #(
         .req_ready_i(lsq_req_ready),
         .req_tag_o(lsq_req_tag),
         .req_write_o(lsq_req_write),
+        .req_pmp_checked_o(lsq_req_pmp_checked),
         .req_addr_o(lsq_req_addr),
         .req_vaddr_o(lsq_req_vaddr),
         .req_size_o(lsq_req_size),
@@ -575,6 +582,7 @@ module openrv64_exec_lsu #(
                 .xlate_ready_i(misaligned_xlate_ready),
                 .xlate_tag_o(misaligned_xlate_tag),
                 .xlate_write_o(misaligned_xlate_write),
+                .xlate_size_o(misaligned_xlate_size),
                 .xlate_vaddr_o(misaligned_xlate_vaddr),
                 .xlate_resp_valid_i(xlate_resp_valid_i &&
                                     misaligned_active),
@@ -654,6 +662,7 @@ module openrv64_exec_lsu #(
             assign misaligned_xlate_valid = 1'b0;
             assign misaligned_xlate_tag = {LSU_TAG_WIDTH{1'b0}};
             assign misaligned_xlate_write = 1'b0;
+            assign misaligned_xlate_size = 3'd0;
             assign misaligned_xlate_vaddr = {`RV64_XLEN{1'b0}};
             assign misaligned_xlate_resp_ready = 1'b0;
             assign misaligned_mem_valid = 1'b0;
@@ -700,6 +709,8 @@ module openrv64_exec_lsu #(
                          misaligned_xlate_tag : lsq_xlate_tag;
     assign xlate_write_o = misaligned_active ?
                            misaligned_xlate_write : lsq_xlate_write;
+    assign xlate_size_o = misaligned_active ?
+                          misaligned_xlate_size : lsq_xlate_size;
     assign xlate_vaddr_o = misaligned_active ?
                            misaligned_xlate_vaddr : lsq_xlate_vaddr;
     assign misaligned_xlate_ready = misaligned_active && xlate_ready_i;
@@ -782,6 +793,9 @@ module openrv64_exec_lsu #(
                        atomic_active ? atomic_mem_tag : lsq_req_tag;
     assign mem_xlate_only_o = 1'b0;
     assign mem_physical_o = misaligned_active || !atomic_active;
+    assign mem_pmp_checked_o = misaligned_active ?
+        !misaligned_translation_bypass_q :
+        atomic_active ? 1'b0 : lsq_req_pmp_checked;
     assign mem_lock_o = misaligned_active ? 1'b0 :
                         atomic_active ? atomic_mem_lock : 1'b0;
     assign mem_write_o = misaligned_active ? misaligned_mem_write :

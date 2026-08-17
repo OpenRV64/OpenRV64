@@ -41,6 +41,7 @@ module openrv64_lsu_misaligned #(
     input  wire                         xlate_ready_i,
     output wire [TAG_WIDTH-1:0]         xlate_tag_o,
     output wire                         xlate_write_o,
+    output wire [2:0]                   xlate_size_o,
     output wire [`RV64_XLEN-1:0]        xlate_vaddr_o,
     input  wire                         xlate_resp_valid_i,
     output wire                         xlate_resp_ready_o,
@@ -147,6 +148,7 @@ module openrv64_lsu_misaligned #(
     assign xlate_valid_o = (state_q == STATE_XLATE) && !xlate_sent_q;
     assign xlate_tag_o = {TAG_WIDTH{1'b0}};
     assign xlate_write_o = write_q;
+    assign xlate_size_o = component_size;
     assign xlate_vaddr_o = current_vaddr;
     wire xlate_fire = xlate_valid_o && xlate_ready_i;
     assign xlate_resp_ready_o = state_q == STATE_XLATE;

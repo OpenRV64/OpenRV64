@@ -5,6 +5,7 @@
 `timescale 1ns/1ps
 
 module openrv64_myd_j7a100t_opensbi_top #(
+    parameter ROM_INIT_FILE        = "",
     parameter TRAMPOLINE_INIT_FILE = "trampoline-fpga.mem",
     parameter FIRMWARE_INIT_FILE   = "fw_jump-fpga-head.mem",
     parameter FIRMWARE_TAIL_INIT_FILE = "fw_jump-fpga-tail.mem",
@@ -13,12 +14,19 @@ module openrv64_myd_j7a100t_opensbi_top #(
     parameter integer TRAMPOLINE_WORDS = 1,
     parameter integer FIRMWARE_WORDS   = 1,
     parameter integer PAYLOAD_WORDS    = 1,
-    parameter integer FDT_WORDS        = 1
+    parameter integer FDT_WORDS        = 1,
+    parameter integer SD_ROM_BOOT_ENABLE = 0
 ) (
     input  wire        sys_clk_p,
     input  wire        sys_clk_n,
     input  wire        rst_n,
     input  wire        uart_rx_i,
+
+    input  wire        sd_cd_n_i,
+    output wire        sd_clk_o,
+    output wire        sd_cmd_o,
+    input  wire        sd_dat0_i,
+    output wire        sd_dat3_o,
 
     output wire        uart_tx_o,
     output wire        eth1_phy_reset_n_o,
@@ -168,12 +176,43 @@ module openrv64_myd_j7a100t_opensbi_top #(
 
     wire boot_release;
     wire [63:0] debug_pc;
+    wire sd_cd_n_buffered;
+    wire sd_dat0_buffered;
+    wire spi_clk;
+    wire spi_mosi;
+    wire spi_cs_n;
+
+    IBUF u_sd_cd_ibuf (
+        .I(sd_cd_n_i),
+        .O(sd_cd_n_buffered)
+    );
+
+    IBUF u_sd_dat0_ibuf (
+        .I(sd_dat0_i),
+        .O(sd_dat0_buffered)
+    );
+
+    OBUF u_sd_clk_obuf (
+        .I(spi_clk),
+        .O(sd_clk_o)
+    );
+
+    OBUF u_sd_cmd_obuf (
+        .I(spi_mosi),
+        .O(sd_cmd_o)
+    );
+
+    OBUF u_sd_dat3_obuf (
+        .I(spi_cs_n),
+        .O(sd_dat3_o)
+    );
 
 `ifdef OPENRV64_FPGA_SYSTEM_NETLIST
     (* DONT_TOUCH = "TRUE" *)
     openrv64_fpga_opensbi_system u_system (
 `else
     openrv64_fpga_opensbi_system #(
+        .ROM_INIT_FILE(ROM_INIT_FILE),
         .TRAMPOLINE_INIT_FILE(TRAMPOLINE_INIT_FILE),
         .FIRMWARE_INIT_FILE(FIRMWARE_INIT_FILE),
         .FIRMWARE_TAIL_INIT_FILE(FIRMWARE_TAIL_INIT_FILE),
@@ -182,7 +221,8 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .TRAMPOLINE_WORDS(TRAMPOLINE_WORDS),
         .FIRMWARE_WORDS(FIRMWARE_WORDS),
         .PAYLOAD_WORDS(PAYLOAD_WORDS),
-        .FDT_WORDS(FDT_WORDS)
+        .FDT_WORDS(FDT_WORDS),
+        .SD_ROM_BOOT_ENABLE(SD_ROM_BOOT_ENABLE)
     ) u_system (
 `endif
         .ui_clk_i(ui_clk),
@@ -192,6 +232,11 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .core_clock_locked_i(core_clock_locked),
         .uart_rx_i(uart_rx_i),
         .uart_tx_o(uart_tx_o),
+        .spi_card_present_i(!sd_cd_n_buffered),
+        .spi_clk_o(spi_clk),
+        .spi_mosi_o(spi_mosi),
+        .spi_miso_i(sd_dat0_buffered),
+        .spi_cs_n_o(spi_cs_n),
         .boot_release_o(boot_release),
         .debug_pc_o(debug_pc),
         .app_addr_o(app_addr),

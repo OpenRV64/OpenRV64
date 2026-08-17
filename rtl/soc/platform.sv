@@ -16,6 +16,9 @@ module openrv64_platform #(
     parameter integer CORE_RESET_DELAY_CYCLES = 2,
     parameter integer GPIO_WIDTH = 32,
     parameter integer MEMORY_BYTES = `OPENRV64_SOC_MEMORY_SIZE,
+    parameter ROM_INIT_FILE = "",
+    parameter integer SPI_INIT_HALF_PERIOD_CYCLES = 12,
+    parameter integer SPI_FAST_HALF_PERIOD_CYCLES = 1,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
     parameter int unsigned RETIRE_DEPTH = 16,
@@ -84,6 +87,12 @@ module openrv64_platform #(
 
     input  logic                  uart_rx_i,
     output logic                  uart_tx_o,
+
+    input  logic                  spi_card_present_i,
+    output logic                  spi_clk_o,
+    output logic                  spi_mosi_o,
+    input  logic                  spi_miso_i,
+    output logic                  spi_cs_n_o,
 
     input  logic [GPIO_WIDTH-1:0] gpio_in_i,
     output logic [GPIO_WIDTH-1:0] gpio_out_o,
@@ -338,6 +347,14 @@ module openrv64_platform #(
     logic [63:0] timer_wdata;
     logic [7:0] timer_wstrb;
     logic [63:0] timer_rdata;
+
+    logic spi_valid;
+    logic spi_ready;
+    logic spi_write;
+    logic [63:0] spi_addr;
+    logic [63:0] spi_wdata;
+    logic [7:0] spi_wstrb;
+    logic [63:0] spi_rdata;
 
     logic [0:0] clint_msip;
     logic [0:0] clint_mtip;
@@ -730,10 +747,19 @@ module openrv64_platform #(
         .timer_addr_o(timer_addr),
         .timer_wdata_o(timer_wdata),
         .timer_wstrb_o(timer_wstrb),
-        .timer_rdata_i(timer_rdata)
+        .timer_rdata_i(timer_rdata),
+        .spi_valid_o(spi_valid),
+        .spi_ready_i(spi_ready),
+        .spi_write_o(spi_write),
+        .spi_addr_o(spi_addr),
+        .spi_wdata_o(spi_wdata),
+        .spi_wstrb_o(spi_wstrb),
+        .spi_rdata_i(spi_rdata)
     );
 
-    openrv64_soc_rom u_rom (
+    openrv64_soc_rom #(
+        .INIT_FILE(ROM_INIT_FILE)
+    ) u_rom (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
         .mem_valid_i(rom_valid),
@@ -1013,6 +1039,26 @@ module openrv64_platform #(
         .mem_wdata_i(timer_wdata),
         .mem_wstrb_i(timer_wstrb),
         .mem_rdata_o(timer_rdata)
+    );
+
+    openrv64_spi #(
+        .INIT_HALF_PERIOD_CYCLES(SPI_INIT_HALF_PERIOD_CYCLES),
+        .FAST_HALF_PERIOD_CYCLES(SPI_FAST_HALF_PERIOD_CYCLES)
+    ) u_spi (
+        .clk_i(clk_i),
+        .rst_ni(soc_rst_no),
+        .card_present_i(spi_card_present_i),
+        .spi_clk_o(spi_clk_o),
+        .spi_mosi_o(spi_mosi_o),
+        .spi_miso_i(spi_miso_i),
+        .spi_cs_n_o(spi_cs_n_o),
+        .mem_valid_i(spi_valid),
+        .mem_ready_o(spi_ready),
+        .mem_write_i(spi_write),
+        .mem_addr_i(spi_addr),
+        .mem_wdata_i(spi_wdata),
+        .mem_wstrb_i(spi_wstrb),
+        .mem_rdata_o(spi_rdata)
     );
 
 endmodule

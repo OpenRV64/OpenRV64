@@ -143,6 +143,17 @@ $(TIMER_SIM_BUILD): $(TIMER_SIM_SRCS) $(TIMER_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TIMER_SIM_BUILD) $(TIMER_SRCS) $(TIMER_SIM_SRCS)
 
+$(SPI_SIM_BUILD): $(SPI_SIM_SRCS) $(SPI_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(SPI_SIM_BUILD) $(SPI_SRCS) $(SPI_SIM_SRCS)
+
+$(FPGA_SD_BOOT_SIM_BUILD): $(FPGA_SD_BOOT_SIM_SRCS) \
+		$(FPGA_SD_BOOT_MEM) $(PLATFORM_SRCS) $(CORE_SRCS) \
+		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $@ $(CORE_SRCS) $(PLATFORM_SRCS) \
+		$(FPGA_SD_BOOT_SIM_SRCS)
+
 $(ROM_SIM_BUILD): $(ROM_SIM_SRCS) $(ROM_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(ROM_SIM_BUILD) $(ROM_SRCS) $(ROM_SIM_SRCS)
@@ -417,22 +428,22 @@ $(L1I_TOP_SIM_BUILD): FORCE $(L1I_TOP_SIM_SRCS)
 		-Ptb_openrv64_l1i_top.PREFETCH_SLOTS=$(L1I_TOP_PREFETCH_SLOTS) \
 		-o $(L1I_TOP_SIM_BUILD) $(L1I_TOP_SIM_SRCS)
 
-$(TLB_SIM_BUILD): $(TLB_SIM_SRCS) rtl/core/bus/tlb.v $(ISA_SRCS)
+$(TLB_SIM_BUILD): $(TLB_SIM_SRCS) rtl/core/mtl/tlb.v $(ISA_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $(TLB_SIM_BUILD) rtl/core/bus/tlb.v $(TLB_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -o $(TLB_SIM_BUILD) rtl/core/mtl/tlb.v $(TLB_SIM_SRCS)
 
 $(MICRO_TLB_SIM_BUILD): $(MICRO_TLB_SIM_SRCS) \
-		rtl/core/bus/micro_tlb.v $(ISA_SRCS)
+		rtl/core/mtl/micro_tlb.v $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(MICRO_TLB_SIM_BUILD) \
-		rtl/core/bus/micro_tlb.v $(MICRO_TLB_SIM_SRCS)
+		rtl/core/mtl/micro_tlb.v $(MICRO_TLB_SIM_SRCS)
 
-$(TLB_L2_SIM_BUILD): $(TLB_L2_SIM_SRCS) rtl/core/bus/tlb_l2.v \
-		rtl/core/bus/tlb.v $(ISA_SRCS)
+$(TLB_L2_SIM_BUILD): $(TLB_L2_SIM_SRCS) rtl/core/mtl/tlb_l2.v \
+		rtl/core/mtl/tlb.v $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TLB_L2_SIM_BUILD) \
-		rtl/core/bus/tlb.v rtl/core/bus/tlb_l2.v $(TLB_L2_SIM_SRCS)
+		rtl/core/mtl/tlb.v rtl/core/mtl/tlb_l2.v $(TLB_L2_SIM_SRCS)
 
-$(PTW_SIM_BUILD): $(PTW_SIM_SRCS) rtl/core/bus/ptw.v $(ISA_SRCS)
+$(PTW_SIM_BUILD): $(PTW_SIM_SRCS) rtl/core/mtl/ptw.v $(ISA_SRCS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $(PTW_SIM_BUILD) rtl/core/bus/ptw.v $(PTW_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl -o $(PTW_SIM_BUILD) rtl/core/mtl/ptw.v $(PTW_SIM_SRCS)

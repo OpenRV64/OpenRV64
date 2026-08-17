@@ -55,10 +55,11 @@ L1_CACHE_SRCS := $(L1_DEBUG_STUB_SRCS) \
 	rtl/core/cache/l1/l1d/lsu_if.v rtl/core/cache/l1/l1d/mshr.v \
 	rtl/core/cache/l1/l1d/l1d.v
 BUS_SRCS := $(BUS_DEBUG_STUB_SRCS) \
-	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v \
-	rtl/core/bus/micro_tlb.v \
-	rtl/core/bus/tlb_l2.v rtl/core/bus/ptw.v \
-	rtl/core/bus/gen_bus.v rtl/core/bus/icx_bus.v rtl/core/bus/bus.v \
+	rtl/core/bus/bus-defs.v \
+	rtl/core/mtl/tlb.v rtl/core/mtl/micro_tlb.v \
+	rtl/core/mtl/tlb_l2.v rtl/core/mtl/ptw.v rtl/core/mtl/mtl.v \
+	rtl/core/bus/gen_bus.v rtl/core/bus/icx_bus.v \
+	rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS)
 ICX_PROTOCOL_SRCS := rtl/complex/protocol/defs.v \
 	rtl/complex/protocol/hart_legacy_adapter.v \
@@ -134,9 +135,11 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	$(STAGE_SRCS) $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
 	$(BUS_DEBUG_STUB_SRCS) \
-	rtl/core/bus/bus-defs.v rtl/core/bus/tlb.v rtl/core/bus/micro_tlb.v \
-	rtl/core/bus/tlb_l2.v \
-	rtl/core/bus/ptw.v rtl/core/bus/icx_bus.v rtl/core/bus/bus.v \
+	rtl/core/bus/bus-defs.v \
+	rtl/core/mtl/tlb.v rtl/core/mtl/micro_tlb.v \
+	rtl/core/mtl/tlb_l2.v rtl/core/mtl/ptw.v rtl/core/mtl/mtl.v \
+	rtl/core/bus/icx_bus.v \
+	rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS) \
 	$(DECODE_SRCS) \
 	rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr_3p.v \
@@ -164,6 +167,7 @@ PLIC_SRCS := rtl/plic/plic.v
 UART_SRCS := rtl/periph/uart/uart.v
 GPIO_SRCS := rtl/periph/gpio/gpio.v
 TIMER_SRCS := rtl/periph/timer/timer.v
+SPI_SRCS := rtl/periph/spi/spi.v
 ROM_SRCS := rtl/soc/bus/rom.v
 MEMORY_SRCS := rtl/soc/bus/memory.v
 MEM_CHANNEL_SRCS := rtl/soc/memory/timing_dram.v \
@@ -185,7 +189,8 @@ PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
 	$(CORE_COMPLEX_SRCS) \
 	$(AXI_DDR3_SRCS) \
 	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
-	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS)
+	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \
+	$(SPI_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
 PLATFORM_SIM_SRCS := tb/tb_platform.sv
 RESET_SEQUENCER_SIM_SRCS := tb/tb_reset_sequencer.sv
@@ -198,6 +203,8 @@ PLIC_SIM_SRCS := tb/tb_plic.sv
 UART_SIM_SRCS := tb/tb_uart16550.sv
 GPIO_SIM_SRCS := tb/tb_gpio.sv
 TIMER_SIM_SRCS := tb/tb_timer.sv
+SPI_SIM_SRCS := tb/tb_spi.sv
+FPGA_SD_BOOT_SIM_SRCS := tb/tb_fpga_sd_boot.sv
 ROM_SIM_SRCS := tb/tb_soc_rom.sv
 MEMORY_SIM_SRCS := tb/tb_soc_memory.sv
 MEM_CHANNEL_SIM_SRCS := tb/tb_mem_channel.sv

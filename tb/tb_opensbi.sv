@@ -542,6 +542,11 @@ module tb_opensbi #(
         .mtime_tick_i(1'b1),
         .uart_rx_i(1'b1),
         .uart_tx_o(uart_tx),
+        .spi_card_present_i(1'b0),
+        .spi_clk_o(),
+        .spi_mosi_o(),
+        .spi_miso_i(1'b1),
+        .spi_cs_n_o(),
         .gpio_in_i(32'h0),
         .gpio_out_o(gpio_out),
         .external_irq_i(29'h0),
@@ -2102,6 +2107,10 @@ module tb_opensbi #(
                          perf_lsq_load_occupancy_entry_cycles,
                          perf_lsq_load_spec_occupancy_entry_cycles,
                          perf_lsq_load_max_occupancy);
+                $display("PERF BROAD LOAD_OLDER_STORE_STALL name=%0s cycles=%0d load_entry_cycles=%0d",
+                         name,
+                         perf_lsq_load_dependency_block_cycles,
+                         perf_lsq_load_dependency_block_entry_cycles);
                 $display("PERF BROAD SPEC_LOAD_SQUASH name=%0s branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
                          name,
                          perf_lsq_load_squashed,

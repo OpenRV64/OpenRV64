@@ -12,6 +12,8 @@
 // point that has no functional fanout out of the generated model.
 /* verilator lint_off DECLFILENAME */
 module openrv64_core_debug_stub (
+    input wire clk,
+    input wire rst_n,
     input wire xlate_req_fire /* verilator public_flat_rd */,
     input wire store_alloc_fire /* verilator public_flat_rd */,
     input wire backend_mem_resp_ready /* verilator public_flat_rd */,
@@ -99,6 +101,8 @@ module openrv64_core_debug_stub (
         /* verilator public_flat_rd */,
     input wire [63:0] atomic_addr /* verilator public_flat_rd */,
     input wire atomic_reservation_valid /* verilator public_flat_rd */,
+    input wire atomic_store_response /* verilator public_flat_rd */,
+    input wire atomic_store_success /* verilator public_flat_rd */,
     input wire [63:0] lsq_load_allocations /* verilator public_flat_rd */,
     input wire [63:0] lsq_load_alloc_wait_cycles
         /* verilator public_flat_rd */,
@@ -147,5 +151,26 @@ module openrv64_core_debug_stub (
     input wire [63:0] lsq_atomic_active_cycles
         /* verilator public_flat_rd */
 );
+    // Count completed atomic write attempts rather than architectural AMO
+    // completions.  A failed coherent AMO write is retried internally and may
+    // therefore produce several attempts for one retired instruction.
+    reg [63:0] perf_atomic_store_success_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_atomic_store_failed_q
+        /* verilator public_flat_rd */;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            perf_atomic_store_success_q <= 64'd0;
+            perf_atomic_store_failed_q <= 64'd0;
+        end else if (atomic_store_response) begin
+            if (atomic_store_success)
+                perf_atomic_store_success_q <=
+                    perf_atomic_store_success_q + 1'b1;
+            else
+                perf_atomic_store_failed_q <=
+                    perf_atomic_store_failed_q + 1'b1;
+        end
+    end
 endmodule
 /* verilator lint_on DECLFILENAME */

@@ -68,6 +68,24 @@ Unsupported upper selector bits read as zero.
 The encoding is shared with `openrv64_core_perf`; the macro definitions live
 in `rtl/core/cmu/defs.v`.
 
+## Counting pipeline
+
+Performance observation is deliberately off the live core timing path. Raw
+event pulses first enter a source-side 38-bit capture register whose only load
+is a second, CMU-local 38-bit register. Each counter applies its registered
+`mhpmeventN` mask and population-counts that CMU-local event state while
+updating the 64-bit counter. Thus a non-cycle event reaches committed counter
+state two cycles after it is sampled. Event 0 (`cycle`) is generated locally
+and needs no observation pipeline. CSR reads return only committed counter
+state; no live event or pending increment is bypassed into the read path.
+
+Writing `mhpmeventN` suppresses that counter while both event-pipeline residues
+drain and for one complete post-write event cycle. This prevents an event
+captured under the old selector from being counted under the new selector.
+Other counters continue counting. Software requiring an exact boundary while
+reprogramming a selector should inhibit the counter first, because events in
+the selected counter's flush/dead window are intentionally discarded.
+
 The 1P and 3P cores currently connect cycle, issue/retirement, empty-cycle,
 redirect, fetch, LSU, barrier, and accepted-store events where exact pulses
 already exist. Events that require new cache or retirement telemetry are tied

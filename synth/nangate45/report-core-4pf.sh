@@ -101,6 +101,7 @@ setattr -set keep_hierarchy 1 */c:u_bp_target;
 setattr -set keep_hierarchy 1 */c:u_csrs;
 setattr -set keep_hierarchy 1 */c:u_vector;
 setattr -set keep_hierarchy 1 */t:*openrv64_core_bus*;
+setattr -set keep_hierarchy 1 */t:*openrv64_core_mtl*;
 setattr -set keep_hierarchy 1 */t:*openrv64_core_icx_bus*;
 setattr -set keep_hierarchy 1 */t:*openrv64_bus_tlb*;
 setattr -set keep_hierarchy 1 */t:*openrv64_bus_ptw*;

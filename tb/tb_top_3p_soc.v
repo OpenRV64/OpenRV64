@@ -4368,6 +4368,18 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[15],
                 dut.u_backend.u_gpr.regs[16],
                 dut.u_backend.u_gpr.regs[17][7:0]);
+        if ($test$plusargs("report_linux_spinlock_sv39"))
+            $display(
+                "PERF_LINUX_SPINLOCK_SV39 iters=%0d baseline_cycles=%0d ticket_cycles=%0d raw_cycles=%0d irqsave_cycles=%0d baseline_instructions=%0d ticket_instructions=%0d raw_instructions=%0d irqsave_instructions=%0d",
+                dut.u_backend.u_gpr.regs[11],
+                dut.u_backend.u_gpr.regs[12],
+                dut.u_backend.u_gpr.regs[13],
+                dut.u_backend.u_gpr.regs[14],
+                dut.u_backend.u_gpr.regs[15],
+                dut.u_backend.u_gpr.regs[16],
+                dut.u_backend.u_gpr.regs[17],
+                dut.u_backend.u_gpr.regs[8],
+                dut.u_backend.u_gpr.regs[9]);
         if ($test$plusargs("report_store_extension_sv39")) begin
             if ((dut.u_backend.u_gpr.regs[10] == 0) ||
                 (dtlb_fast_stores == 0))
@@ -4845,13 +4857,17 @@ module tb_top_3p_soc #(
                 .perf_store_flushed_q,
             dut.u_backend.perf_lsq_retired_untracked_q);
         $display(
-            "PERF_ICX_L2_ATOMIC starts=%0d done=%0d active_cycles=%0d",
+            "PERF_ICX_L2_ATOMIC starts=%0d done=%0d active_cycles=%0d store_success=%0d store_failed=%0d home_sc_success=%0d home_sc_failed=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_atomic_starts_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_atomic_done_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
-                .perf_atomic_active_cycles_q);
+                .perf_atomic_active_cycles_q,
+            dut.u_debug.perf_atomic_store_success_q,
+            dut.u_debug.perf_atomic_store_failed_q,
+            u_complex.u_l2.u_debug.perf_atomic_store_success_q,
+            u_complex.u_l2.u_debug.perf_atomic_store_failed_q);
         $display(
             "PERF_ICX_L2_PREFETCH_PAGE_END boundaries_seen=%0d",
             dut.u_bus.g_icx.u_bus.u_l1d.perf_prefetch_page_ends_q);

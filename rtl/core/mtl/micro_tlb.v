@@ -3,7 +3,7 @@
 `include "core/isa/rv64-priv.v"
 
 /*
- * Current-address-space translation lookaside.
+ * MTL-owned current-address-space translation lookaside.
  *
  * ASID, global, and VM-mode ownership live in the tagged main TLB.  This
  * structure is flushed whenever SATP is written, so retaining those fields

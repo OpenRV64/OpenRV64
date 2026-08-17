@@ -94,6 +94,7 @@ module openrv64_exec_top #(
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_tag_o,
     output wire                         mem_xlate_only_o,
     output wire                         mem_physical_o,
+    output wire                         mem_pmp_checked_o,
     input  wire                         mem_resp_valid_i,
     output wire                         mem_resp_ready_o,
     input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag_i,
@@ -118,6 +119,7 @@ module openrv64_exec_top #(
     input  wire                         mem_xlate_ready_i,
     output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag_o,
     output wire                         mem_xlate_write_o,
+    output wire [2:0]                   mem_xlate_size_o,
     output wire [`RV64_XLEN-1:0]        mem_xlate_vaddr_o,
     input  wire                         mem_xlate_resp_valid_i,
     output wire                         mem_xlate_resp_ready_o,
@@ -266,7 +268,9 @@ module openrv64_exec_top #(
             assign mem_xlate_tag_o =
                 {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign mem_xlate_write_o = 1'b0;
+            assign mem_xlate_size_o = 3'd0;
             assign mem_xlate_vaddr_o = {`RV64_XLEN{1'b0}};
+            assign mem_pmp_checked_o = 1'b0;
             assign mem_xlate_resp_ready_o = 1'b0;
             assign mem1_valid_o = 1'b0;
             assign mem1_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
@@ -371,6 +375,7 @@ module openrv64_exec_top #(
                 .mem_tag_o(mem_tag_o),
                 .mem_xlate_only_o(mem_xlate_only_o),
                 .mem_physical_o(mem_physical_o),
+                .mem_pmp_checked_o(mem_pmp_checked_o),
                 .mem_resp_valid_i(mem_resp_valid_i),
                 .mem_resp_ready_o(mem_resp_ready_o),
                 .mem_resp_tag_i(mem_resp_tag_i),
@@ -391,6 +396,7 @@ module openrv64_exec_top #(
                 .mem_xlate_ready_i(mem_xlate_ready_i),
                 .mem_xlate_tag_o(mem_xlate_tag_o),
                 .mem_xlate_write_o(mem_xlate_write_o),
+                .mem_xlate_size_o(mem_xlate_size_o),
                 .mem_xlate_vaddr_o(mem_xlate_vaddr_o),
                 .mem_xlate_resp_valid_i(mem_xlate_resp_valid_i),
                 .mem_xlate_resp_ready_o(mem_xlate_resp_ready_o),
@@ -481,7 +487,9 @@ module openrv64_exec_top #(
             assign mem_xlate_tag_o =
                 {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign mem_xlate_write_o = 1'b0;
+            assign mem_xlate_size_o = 3'd0;
             assign mem_xlate_vaddr_o = {`RV64_XLEN{1'b0}};
+            assign mem_pmp_checked_o = 1'b0;
             assign mem_xlate_resp_ready_o = 1'b0;
             assign mem_write_o = 1'b0;
             assign mem_addr_o = {`RV64_XLEN{1'b0}};
