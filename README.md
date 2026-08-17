@@ -18,7 +18,7 @@ Next steps:
 6. OOO, but this is a ways off.
 7. We make it rain with prefetches, I have confidence gating in some branch predictors, but the whole algorithm needs tuning.
 8. satp still drains and restarts translation state but preserves the tagged main TLB; sfence.vma remains a global local-hart hammer and needs selective invalidation.
-9. l2 latency at 11 l2u is too aggressive, not viable in pd.
+9. l2 latency at 11 l2u is too aggressive, not viable in pd - Update: This is being fixed, both on the L1D side and the ICX->L2 side.
 10. 0 DFT whatsoever, we need that.
 
-Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess.
+Why no -C: It really does muck up the frontend, variable length jumps, everything. I think I don't have a choice, but I like the frontend now, it's aesthetic I guess. - Update: -C is coming, trying to minimize the frontend impact.
