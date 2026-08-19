@@ -1,6 +1,7 @@
 # Shared prefetch runner and phony declarations.
 
-.PHONY: sw-stream sw-stream-suite bench-stream bench-stream-suite sim-stream \
+.PHONY: sw-stream sw-stream-suite sw-stream-vm \
+	bench-stream bench-stream-suite sim-stream \
 	sim-stream-suite bench-stream-ddr3 sim-stream-ddr3 \
 	bench-stream-ddr3-vm bench-stream-ddr3-vm-suite \
 	sim-stream-ddr3-vm sim-stream-ddr3-vm-suite \

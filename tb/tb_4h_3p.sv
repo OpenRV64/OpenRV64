@@ -3023,6 +3023,23 @@ module tb_4h_3p #(
         end
     endtask
 
+    task automatic report_lsq_older_store_stall;
+        input string name;
+        begin
+            $display(
+                "PERF_4H_LSQ_OLDER_STORE_STALL name=%0s run_cycles=%0d blocked_cycles=%0d blocked_load_entry_cycles=%0d load_allocations=%0d load_completions=%0d load_occupancy_entry_cycles=%0d",
+                name,
+                cycles,
+                g_hart[0].u_core.u_debug.
+                    lsq_load_dependency_block_cycles,
+                g_hart[0].u_core.u_debug.
+                    lsq_load_dependency_block_entry_cycles,
+                g_hart[0].u_core.u_debug.lsq_load_allocations,
+                g_hart[0].u_core.u_debug.lsq_load_completions,
+                g_hart[0].u_core.u_debug.lsq_load_occupancy_cycles);
+        end
+    endtask
+
     task automatic report_debug_counter_window;
         begin
             $display(
@@ -3437,6 +3454,7 @@ module tb_4h_3p #(
                     if (linux_panic_seen)
                         $write(" linux_panic=1");
                     $write("\n");
+                    report_lsq_older_store_stall("progress");
                     if (pc_trace_fd != 0)
                         $fflush(pc_trace_fd);
                     $fflush();
@@ -4052,6 +4070,7 @@ module tb_4h_3p #(
                         "held harts made Linux progress retired=%0d,%0d,%0d requests=%0d,%0d,%0d",
                         retired[1], retired[2], retired[3],
                         requests[1], requests[2], requests[3]);
+                report_lsq_older_store_stall("bash");
                 $display(
                     "\nPASS: Linux reached interactive Bash on the four-hart coherent rig with harts 1-3 held in reset and omitted from the device tree");
                 $display(
@@ -4327,7 +4346,8 @@ module tb_4h_3p #(
                         `RV64_PRIV_WIDTH],
                     u_l2.u_debug.lookup_action);
             if (cycles >= max_cycles) begin
-                if (opensbi_mode)
+                if (opensbi_mode) begin
+                    report_lsq_older_store_stall("timeout");
                     $fatal(1,
                         "OpenSBI/Linux 4H timeout cycles=%0d pc=%h instr=%h priv=%0d,%0d,%0d,%0d hsm_wfi=%b banner=%0b payload=%0b s_mode=%0b magic=%0b linux_online=%0b linux_threads=%0b linux_prompt=%0b linux_panic=%0b req=%0d,%0d,%0d,%0d",
                         cycles, dbg_pc, dbg_instr,
@@ -4350,7 +4370,7 @@ module tb_4h_3p #(
                         linux_panic_seen,
                         requests[0], requests[1],
                         requests[2], requests[3]);
-                else
+                end else
                     $fatal(1,
                         "timeout cycles=%0d done=%0b%0b%0b%0b mailbox=%0b%0b%0b%0b pc=%h",
                         cycles, done_seen[3], done_seen[2],

@@ -1124,8 +1124,8 @@ struct FrontendBreakdown {
                         (fetch_pending_slot_addr(slot) >> 5) == line)
                         return true;
                 }
-                if (FE_FETCH(ras_line_pending_q) &&
-                    (FE_FETCH(ras_line_addr_q) >> 5) == line)
+                if (FE_FETCH(redirect_line_pending_q) &&
+                    (FE_FETCH(redirect_line_addr_q) >> 5) == line)
                     return true;
                 if (FE_FETCH(fal_line_pending_q) &&
                     (FE_FETCH(fal_line_addr_q) >> 5) == line)
@@ -1133,7 +1133,7 @@ struct FrontendBreakdown {
                 return false;
             };
         bool fetch_pending_any =
-            FE_FETCH(ras_line_pending_q) ||
+            FE_FETCH(redirect_line_pending_q) ||
             FE_FETCH(fal_line_pending_q);
         for (unsigned slot = 0; slot < fetch_line_depth; ++slot)
             fetch_pending_any |= fetch_pending_slot_valid(slot);
@@ -1713,7 +1713,7 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
            << ",lanes=" << static_cast<unsigned>(FETCH3P(lane_found_r))
            << ",reqfire=" << static_cast<unsigned>(
                       CORE3P(cmu_fetch_req_fire))
-           << '/' << static_cast<unsigned>(FETCH3P(ras_req_fire))
+           << '/' << static_cast<unsigned>(FETCH3P(redirect_req_fire))
            << '/' << static_cast<unsigned>(FETCH3P(pair_req_fire))
            << ",need=" << static_cast<unsigned>(
                       FETCH3P(demand_request_needed))
@@ -1731,10 +1731,10 @@ void write_pipeline_trace(std::ostream& stream, Vtb_opensbi* top) {
                       FETCH3P(pair_unpredicted_valid_q))
            << ",next=" << std::hex << std::setw(16)
            << static_cast<uint64_t>(FETCH3P(next_req_addr_q))
-           << ",ras=" << std::dec
-           << static_cast<unsigned>(FETCH3P(ras_line_pending_q))
+           << ",redirect=" << std::dec
+           << static_cast<unsigned>(FETCH3P(redirect_line_pending_q))
            << '/' << std::hex << std::setw(16)
-           << static_cast<uint64_t>(FETCH3P(ras_line_addr_q))
+           << static_cast<uint64_t>(FETCH3P(redirect_line_addr_q))
            << ",fal=" << std::dec
            << static_cast<unsigned>(FETCH3P(fal_line_pending_q))
            << '/' << std::hex << std::setw(16)

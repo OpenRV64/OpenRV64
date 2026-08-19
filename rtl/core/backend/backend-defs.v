@@ -14,6 +14,13 @@
 `define OPENRV64_EXEC_PIPE_MEM `OPENRV64_EXEC_PIPE_MEM0
 `define OPENRV64_EXEC_PIPE_COUNT 4
 
+// Experimental issue-window control frontier.  Set to zero at compile time
+// to keep every resident branch/JAL live until removal; the default releases
+// younger replayable work once the tagged control result has resolved.
+`ifndef OPENRV64_3P_RESULT_READY_CONTROL_RELEASE
+`define OPENRV64_3P_RESULT_READY_CONTROL_RELEASE 1
+`endif
+
 // Internal instruction identity used to match issue, completion, redirect,
 // and retirement state.  This is deliberately separate from the 64-bit trace
 // ID embedded in the payload.  Age comparisons are modulo this width and are

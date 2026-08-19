@@ -301,7 +301,6 @@ module openrv64_rv64_top_4pf #(
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] backend_redirect_id;
     wire [63:0] backend_redirect_target;
     wire branch_resolved;
-    wire ras_return_fetch_valid;
     wire branch_conditional;
     wire branch_taken;
     wire [63:0] branch_pc;
@@ -504,8 +503,8 @@ module openrv64_rv64_top_4pf #(
                     icache_prefetch_predicted_addr),
                 .branch_unpredicted_addr_i(
                     icache_prefetch_unpredicted_addr),
-                .ras_fetch_valid_i(ras_return_fetch_valid),
-                .ras_fetch_addr_i(bp_prediction_target),
+                .redirect_fetch_valid_i(bp_predict_redirect),
+                .redirect_fetch_addr_i(bp_predict_target),
                 .pair512_req_valid_o(pair512_req_valid),
                 .pair512_req_ready_i(pair512_req_ready),
                 .pair512_req_predicted_addr_o(
@@ -766,17 +765,6 @@ module openrv64_rv64_top_4pf #(
         !predecode_conditional[bp_lane] : decode_jump[bp_lane];
     wire bp_lookup_indirect = bp_selected_predecode ?
         1'b0 : decode_br_indirect[bp_lane];
-    wire bp_lookup_is_jalr =
-        `RV64_OPCODE(bp_selected_instr) == `RV64_OPCODE_JALR;
-    wire bp_lookup_rs1_link =
-        (`RV64_RS1(bp_selected_instr) == 5'd1) ||
-        (`RV64_RS1(bp_selected_instr) == 5'd5);
-    wire bp_lookup_rd_link =
-        (`RV64_RD(bp_selected_instr) == 5'd1) ||
-        (`RV64_RD(bp_selected_instr) == 5'd5);
-    wire bp_lookup_return = bp_lookup_indirect && bp_lookup_is_jalr &&
-                            bp_lookup_rs1_link && !bp_lookup_rd_link;
-
     assign bp_branch_present = use_icx_bus &&
                                (|frontend_control_select) &&
                                !control_flush && !control_redirect &&
@@ -924,10 +912,6 @@ module openrv64_rv64_top_4pf #(
         {1'b0, frontend_decode_fire[2]};
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
-    assign ras_return_fetch_valid = bp_branch_allocate &&
-                                    bp_lookup_return &&
-                                    bp_prediction_taken &&
-                                    bp_prediction_target_valid;
     assign icache_branch_hint_valid = use_icx_bus && bp_branch_allocate &&
                                       bp_lookup_branch;
     // Confidence policy: 0 = all branch pairs, 1 = weak pairs plus strong

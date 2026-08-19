@@ -255,9 +255,12 @@ module tb_top_3p_soc #(
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_FENCE_L2_ACK = 1,
+    parameter integer M_MODE_PREFETCH_ENABLE = 0,
     parameter integer ENABLE_RV64ZBB = 1,
     parameter integer RAM_BYTES = 16 * 1024 * 1024,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
+    parameter integer L1I_FETCH_DATA_WIDTH =
+        `OPENRV64_ICX_LINE_DATA_WIDTH,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_SYNC_TAG_LOOKUP = 1,
@@ -929,6 +932,10 @@ module tb_top_3p_soc #(
     integer window_raw_block_entry_cycles;
     integer window_hard_block_entry_cycles;
     integer window_mem_order_block_entry_cycles;
+    integer completed_control_load_candidate_cycles;
+    integer completed_control_load_gate_cycles;
+    integer completed_control_load_candidate_entry_cycles;
+    integer completed_control_load_gate_entry_cycles;
     integer waw_hazard_cycles;
     integer read_port_hazard_cycles;
     integer write_busy_cycles;
@@ -966,6 +973,50 @@ module tb_top_3p_soc #(
     integer frontend_empty_dispatch_full;
     integer frontend_empty_l1i_external_miss;
     integer frontend_empty_pending_no_external_miss;
+    integer fetch_redirect_events;
+    integer fetch_predicted_redirect_events;
+    integer fetch_correction_redirect_events;
+    integer fetch_target_correction_events;
+    integer fetch_control_restart_events;
+    integer fetch_exception_redirect_events;
+    integer fetch_other_redirect_events;
+    integer fetch_redirect_lookaside_hits;
+    integer fetch_predicted_redirect_lookaside_hits;
+    integer fetch_correction_redirect_lookaside_hits;
+    integer fetch_correction_lookaside_no_context;
+    integer fetch_correction_lookaside_context_pending;
+    integer fetch_correction_lookaside_context_not_pending;
+    integer post_redirect_completed_events;
+    integer post_redirect_superseded_events;
+    integer post_redirect_stalled_events;
+    integer post_redirect_zero_stall_events;
+    integer post_redirect_empty_cycles;
+    integer post_redirect_critical_empty_cycles;
+    integer post_redirect_current_pending_cycles;
+    integer post_redirect_other_pending_cycles;
+    integer post_redirect_no_pending_cycles;
+    integer post_redirect_external_miss_cycles;
+    integer post_redirect_request_wait_cycles;
+    integer post_redirect_predicted_empty_cycles;
+    integer post_redirect_correction_empty_cycles;
+    integer post_redirect_restart_empty_cycles;
+    integer post_redirect_other_empty_cycles;
+    integer post_redirect_lookaside_hit_empty_cycles;
+    integer post_redirect_lookaside_miss_empty_cycles;
+    integer post_redirect_lookaside_hit_stalled_events;
+    integer post_redirect_lookaside_hit_zero_stall_events;
+    integer post_redirect_lookaside_miss_stalled_events;
+    integer post_redirect_lookaside_miss_zero_stall_events;
+    integer post_redirect_correction_lookaside_hit_empty_cycles;
+    integer post_redirect_correction_no_context_empty_cycles;
+    integer post_redirect_correction_context_pending_empty_cycles;
+    integer post_redirect_correction_context_not_pending_empty_cycles;
+    integer post_redirect_episode_cycles;
+    integer post_redirect_max_empty_cycles;
+    reg post_redirect_active;
+    reg post_redirect_lookaside_hit;
+    reg [1:0] post_redirect_correction_miss_reason;
+    reg [1:0] post_redirect_kind;
     integer fetch_demand_trace_enabled;
     integer fetch_demand_trace_cycle_q;
     integer fetch_demand_trace_start_q [0:3];
@@ -1415,6 +1466,14 @@ module tb_top_3p_soc #(
     wire [4:0] trace_window_mem_order_block = (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window.trace_mem_order_block_count :
         5'd0;
+    wire [5:0] trace_completed_control_load_candidate =
+        (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_completed_control_load_candidate_count : 6'd0;
+    wire [5:0] trace_completed_control_load_gate =
+        (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_completed_control_load_gate_count : 6'd0;
     wire [2:0] trace_barrier_allow =
         dut.u_backend.u_dispatch.g_3p.u_dispatch.u_control.barrier_allow;
     wire trace_allocation_ready = dut.u_backend.allocation_ready;
@@ -1509,10 +1568,12 @@ module tb_top_3p_soc #(
         .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_L1I(1'b1),
+        .ENABLE_M_MODE_PREFETCH(M_MODE_PREFETCH_ENABLE),
         .ENABLE_L1D(1'b1),
         .ENABLE_L1D_COHERENCE_PROBES(1'b0),
         .ENABLE_COHERENT_ATOMICS(1'b0),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+        .L1I_FETCH_DATA_WIDTH(L1I_FETCH_DATA_WIDTH),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
         .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
@@ -3206,6 +3267,10 @@ module tb_top_3p_soc #(
         window_raw_block_entry_cycles = 0;
         window_hard_block_entry_cycles = 0;
         window_mem_order_block_entry_cycles = 0;
+        completed_control_load_candidate_cycles = 0;
+        completed_control_load_gate_cycles = 0;
+        completed_control_load_candidate_entry_cycles = 0;
+        completed_control_load_gate_entry_cycles = 0;
         waw_hazard_cycles = 0;
         read_port_hazard_cycles = 0;
         write_busy_cycles = 0;
@@ -3243,6 +3308,50 @@ module tb_top_3p_soc #(
         frontend_empty_dispatch_full = 0;
         frontend_empty_l1i_external_miss = 0;
         frontend_empty_pending_no_external_miss = 0;
+        fetch_redirect_events = 0;
+        fetch_predicted_redirect_events = 0;
+        fetch_correction_redirect_events = 0;
+        fetch_target_correction_events = 0;
+        fetch_control_restart_events = 0;
+        fetch_exception_redirect_events = 0;
+        fetch_other_redirect_events = 0;
+        fetch_redirect_lookaside_hits = 0;
+        fetch_predicted_redirect_lookaside_hits = 0;
+        fetch_correction_redirect_lookaside_hits = 0;
+        fetch_correction_lookaside_no_context = 0;
+        fetch_correction_lookaside_context_pending = 0;
+        fetch_correction_lookaside_context_not_pending = 0;
+        post_redirect_completed_events = 0;
+        post_redirect_superseded_events = 0;
+        post_redirect_stalled_events = 0;
+        post_redirect_zero_stall_events = 0;
+        post_redirect_empty_cycles = 0;
+        post_redirect_critical_empty_cycles = 0;
+        post_redirect_current_pending_cycles = 0;
+        post_redirect_other_pending_cycles = 0;
+        post_redirect_no_pending_cycles = 0;
+        post_redirect_external_miss_cycles = 0;
+        post_redirect_request_wait_cycles = 0;
+        post_redirect_predicted_empty_cycles = 0;
+        post_redirect_correction_empty_cycles = 0;
+        post_redirect_restart_empty_cycles = 0;
+        post_redirect_other_empty_cycles = 0;
+        post_redirect_lookaside_hit_empty_cycles = 0;
+        post_redirect_lookaside_miss_empty_cycles = 0;
+        post_redirect_lookaside_hit_stalled_events = 0;
+        post_redirect_lookaside_hit_zero_stall_events = 0;
+        post_redirect_lookaside_miss_stalled_events = 0;
+        post_redirect_lookaside_miss_zero_stall_events = 0;
+        post_redirect_correction_lookaside_hit_empty_cycles = 0;
+        post_redirect_correction_no_context_empty_cycles = 0;
+        post_redirect_correction_context_pending_empty_cycles = 0;
+        post_redirect_correction_context_not_pending_empty_cycles = 0;
+        post_redirect_episode_cycles = 0;
+        post_redirect_max_empty_cycles = 0;
+        post_redirect_active = 1'b0;
+        post_redirect_lookaside_hit = 1'b0;
+        post_redirect_correction_miss_reason = 2'd0;
+        post_redirect_kind = 2'd0;
         fetch_demand_trace_enabled =
             $test$plusargs("fetch_demand_trace");
         lsu_request_wait = 0;
@@ -3426,6 +3535,18 @@ module tb_top_3p_soc #(
                 window_mem_order_block_entry_cycles =
                     window_mem_order_block_entry_cycles +
                     trace_window_mem_order_block;
+                completed_control_load_candidate_entry_cycles =
+                    completed_control_load_candidate_entry_cycles +
+                    trace_completed_control_load_candidate;
+                completed_control_load_gate_entry_cycles =
+                    completed_control_load_gate_entry_cycles +
+                    trace_completed_control_load_gate;
+                if (trace_completed_control_load_candidate != 0)
+                    completed_control_load_candidate_cycles =
+                        completed_control_load_candidate_cycles + 1;
+                if (trace_completed_control_load_gate != 0)
+                    completed_control_load_gate_cycles =
+                        completed_control_load_gate_cycles + 1;
                 if (trace_window_unissued != 0) begin
                     window_nonempty_cycles =
                         window_nonempty_cycles + 1;
@@ -3559,6 +3680,172 @@ module tb_top_3p_soc #(
                     frontend_no_line = frontend_no_line + 1;
                 else
                     frontend_other_empty = frontend_other_empty + 1;
+            end
+            // A redirect episode begins on the fetch restart edge and ends
+            // when the redirected stream exposes its first decode bundle.
+            // A newer redirect may supersede an episode before that happens;
+            // report those separately rather than pretending they completed.
+            if (dut.fetch3_restart && !dut.reset_pending_q) begin
+                fetch_redirect_events = fetch_redirect_events + 1;
+                if (post_redirect_active)
+                    post_redirect_superseded_events =
+                        post_redirect_superseded_events + 1;
+                post_redirect_active = 1'b1;
+                post_redirect_episode_cycles = 0;
+                post_redirect_lookaside_hit = dut.fetch_alt_restart_hit;
+                post_redirect_correction_miss_reason = 2'd0;
+                if (dut.control_redirect) begin
+                    fetch_correction_redirect_events =
+                        fetch_correction_redirect_events + 1;
+                    post_redirect_kind = 2'd1;
+                    if (dut.fetch_alt_restart_hit)
+                        fetch_correction_redirect_lookaside_hits =
+                            fetch_correction_redirect_lookaside_hits + 1;
+                    else if (!dut.g_fetch_axi.u_fetch.u_debug
+                                     .alt_restart_context_match_r) begin
+                        fetch_correction_lookaside_no_context =
+                            fetch_correction_lookaside_no_context + 1;
+                        post_redirect_correction_miss_reason = 2'd1;
+                    end else if (dut.g_fetch_axi.u_fetch.u_debug
+                                      .alt_restart_target_pending_r) begin
+                        fetch_correction_lookaside_context_pending =
+                            fetch_correction_lookaside_context_pending + 1;
+                        post_redirect_correction_miss_reason = 2'd2;
+                    end else begin
+                        fetch_correction_lookaside_context_not_pending =
+                            fetch_correction_lookaside_context_not_pending + 1;
+                        post_redirect_correction_miss_reason = 2'd3;
+                    end
+                    if (dut.bp_target_mispredict_effective)
+                        fetch_target_correction_events =
+                            fetch_target_correction_events + 1;
+                end else if (dut.bp_predict_redirect) begin
+                    fetch_predicted_redirect_events =
+                        fetch_predicted_redirect_events + 1;
+                    post_redirect_kind = 2'd0;
+                    if (dut.fetch_alt_restart_hit)
+                        fetch_predicted_redirect_lookaside_hits =
+                            fetch_predicted_redirect_lookaside_hits + 1;
+                end else if (dut.control_restart) begin
+                    fetch_control_restart_events =
+                        fetch_control_restart_events + 1;
+                    post_redirect_kind = 2'd2;
+                end else if (dut.except_vector_valid) begin
+                    fetch_exception_redirect_events =
+                        fetch_exception_redirect_events + 1;
+                    post_redirect_kind = 2'd2;
+                end else begin
+                    fetch_other_redirect_events =
+                        fetch_other_redirect_events + 1;
+                    post_redirect_kind = 2'd3;
+                end
+                if (dut.fetch_alt_restart_hit)
+                    fetch_redirect_lookaside_hits =
+                        fetch_redirect_lookaside_hits + 1;
+            end else if (post_redirect_active) begin
+                // restart_i updates consume_pc_q on the restart edge.  Begin
+                // sampling here, on the following cycle, so raw decode-valid
+                // belongs to the redirected PC rather than the abandoned
+                // stream which happened to be visible during correction.
+                if (dut.fetch_decode_valid == 0) begin
+                    post_redirect_empty_cycles =
+                        post_redirect_empty_cycles + 1;
+                    post_redirect_episode_cycles =
+                        post_redirect_episode_cycles + 1;
+                    if (post_redirect_episode_cycles >
+                        post_redirect_max_empty_cycles)
+                        post_redirect_max_empty_cycles =
+                            post_redirect_episode_cycles;
+                    if (dut.backend_dispatch_occupancy == 0 &&
+                        dut.backend_decode_ready[0] &&
+                        dut.frontend_decode_enable)
+                        post_redirect_critical_empty_cycles =
+                            post_redirect_critical_empty_cycles + 1;
+                    if (dut.g_fetch_axi.u_fetch.consume_line_pending)
+                        post_redirect_current_pending_cycles =
+                            post_redirect_current_pending_cycles + 1;
+                    else if (dut.g_fetch_axi.u_fetch.demand_pending_any ||
+                             (dut.u_bus.g_icx.u_bus.fetch_count_q != 0))
+                        post_redirect_other_pending_cycles =
+                            post_redirect_other_pending_cycles + 1;
+                    else
+                        post_redirect_no_pending_cycles =
+                            post_redirect_no_pending_cycles + 1;
+                    if (dut.u_bus.g_icx.u_bus.u_l1i
+                            .demand_mshr_any_valid_r)
+                        post_redirect_external_miss_cycles =
+                            post_redirect_external_miss_cycles + 1;
+                    if (dut.fetch_pipe_req_valid &&
+                        !dut.fetch_pipe_req_ready)
+                        post_redirect_request_wait_cycles =
+                            post_redirect_request_wait_cycles + 1;
+                    if (post_redirect_lookaside_hit)
+                        post_redirect_lookaside_hit_empty_cycles =
+                            post_redirect_lookaside_hit_empty_cycles + 1;
+                    else
+                        post_redirect_lookaside_miss_empty_cycles =
+                            post_redirect_lookaside_miss_empty_cycles + 1;
+                    case (post_redirect_kind)
+                        2'd0: post_redirect_predicted_empty_cycles =
+                            post_redirect_predicted_empty_cycles + 1;
+                        2'd1: post_redirect_correction_empty_cycles =
+                            post_redirect_correction_empty_cycles + 1;
+                        2'd2: post_redirect_restart_empty_cycles =
+                            post_redirect_restart_empty_cycles + 1;
+                        default: post_redirect_other_empty_cycles =
+                            post_redirect_other_empty_cycles + 1;
+                    endcase
+                    if (post_redirect_kind == 2'd1) begin
+                        if (post_redirect_lookaside_hit)
+                            post_redirect_correction_lookaside_hit_empty_cycles =
+                                post_redirect_correction_lookaside_hit_empty_cycles +
+                                1;
+                        case (post_redirect_correction_miss_reason)
+                            2'd1:
+                                post_redirect_correction_no_context_empty_cycles =
+                                    post_redirect_correction_no_context_empty_cycles +
+                                    1;
+                            2'd2:
+                                post_redirect_correction_context_pending_empty_cycles =
+                                    post_redirect_correction_context_pending_empty_cycles +
+                                    1;
+                            2'd3:
+                                post_redirect_correction_context_not_pending_empty_cycles =
+                                    post_redirect_correction_context_not_pending_empty_cycles +
+                                    1;
+                            default: begin
+                            end
+                        endcase
+                    end
+                end else begin
+                    post_redirect_completed_events =
+                        post_redirect_completed_events + 1;
+                    if (post_redirect_episode_cycles == 0)
+                        post_redirect_zero_stall_events =
+                            post_redirect_zero_stall_events + 1;
+                    else
+                        post_redirect_stalled_events =
+                            post_redirect_stalled_events + 1;
+                    if (post_redirect_lookaside_hit) begin
+                        if (post_redirect_episode_cycles == 0)
+                            post_redirect_lookaside_hit_zero_stall_events =
+                                post_redirect_lookaside_hit_zero_stall_events +
+                                1;
+                        else
+                            post_redirect_lookaside_hit_stalled_events =
+                                post_redirect_lookaside_hit_stalled_events + 1;
+                    end else begin
+                        if (post_redirect_episode_cycles == 0)
+                            post_redirect_lookaside_miss_zero_stall_events =
+                                post_redirect_lookaside_miss_zero_stall_events +
+                                1;
+                        else
+                            post_redirect_lookaside_miss_stalled_events =
+                                post_redirect_lookaside_miss_stalled_events +
+                                1;
+                    end
+                    post_redirect_active = 1'b0;
+                end
             end
             if (dut.backend_mem_valid && !dut.backend_mem_ready) begin
                 lsu_request_wait = lsu_request_wait + 1;
@@ -4318,16 +4605,18 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d result_ready_control_release=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
-            ISSUE_WINDOW, SPECULATION_WINDOW, RETIRE_DEPTH,
+            ISSUE_WINDOW, SPECULATION_WINDOW,
+            `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
             ENABLE_POSTED_STORES, DDR3_ENABLE, MEMORY_TIMING_MODEL,
             cycles, retired, ipc,
             dut.u_backend.u_gpr.regs[10], L1I_CACHE_BYTES,
-            L1D_CACHE_BYTES, L2_BYTES, L2_WAYS, RAM_BYTES);
+            L1I_FETCH_DATA_WIDTH, L1D_CACHE_BYTES, L2_BYTES, L2_WAYS,
+            RAM_BYTES);
         if ($test$plusargs("report_a_regs"))
             $display(
                 "PERF_FENCE_SV39_RESULTS iters=1024 rr_none=%0d rr=%0d rw_none=%0d rw=%0d wr_none=%0d wr=%0d ww_none=%0d ww=%0d",
@@ -4680,6 +4969,12 @@ module tb_top_3p_soc #(
             window_hard_block_entry_cycles,
             window_mem_order_block_entry_cycles);
         $display(
+            "PERF_ICX_L2_BRANCH_GATED_LOAD candidate_cycles=%0d gated_cycles=%0d candidate_entry_cycles=%0d gated_entry_cycles=%0d",
+            completed_control_load_candidate_cycles,
+            completed_control_load_gate_cycles,
+            completed_control_load_candidate_entry_cycles,
+            completed_control_load_gate_entry_cycles);
+        $display(
             "PERF_ICX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d",
             retire_nonempty, retire_nonempty_no_retire,
             retire_head_incomplete, retire_completed_behind_head);
@@ -4709,6 +5004,77 @@ module tb_top_3p_soc #(
             frontend_empty_dispatch_nonempty, frontend_empty_dispatch_full,
             frontend_empty_l1i_external_miss,
             frontend_empty_pending_no_external_miss);
+        $display(
+            "PERF_ICX_L2_REDIRECT total=%0d predicted=%0d correction=%0d target_correction=%0d control_restart=%0d exception=%0d other=%0d lookaside_hits=%0d predicted_lookaside_hits=%0d correction_lookaside_hits=%0d completed=%0d superseded=%0d active=%0d",
+            fetch_redirect_events, fetch_predicted_redirect_events,
+            fetch_correction_redirect_events,
+            fetch_target_correction_events,
+            fetch_control_restart_events,
+            fetch_exception_redirect_events, fetch_other_redirect_events,
+            fetch_redirect_lookaside_hits,
+            fetch_predicted_redirect_lookaside_hits,
+            fetch_correction_redirect_lookaside_hits,
+            post_redirect_completed_events,
+            post_redirect_superseded_events, post_redirect_active);
+        $display(
+            "PERF_ICX_L2_POST_REDIRECT empty_cycles=%0d empty_cycles_x1000_per_redirect=%0d stalled_events=%0d zero_stall_events=%0d max_empty_cycles=%0d critical_empty_cycles=%0d predicted_empty_cycles=%0d correction_empty_cycles=%0d restart_empty_cycles=%0d other_empty_cycles=%0d",
+            post_redirect_empty_cycles,
+            (fetch_redirect_events != 0) ?
+                ((post_redirect_empty_cycles * 1000) /
+                 fetch_redirect_events) : 0,
+            post_redirect_stalled_events,
+            post_redirect_zero_stall_events,
+            post_redirect_max_empty_cycles,
+            post_redirect_critical_empty_cycles,
+            post_redirect_predicted_empty_cycles,
+            post_redirect_correction_empty_cycles,
+            post_redirect_restart_empty_cycles,
+            post_redirect_other_empty_cycles);
+        $display(
+            "PERF_ICX_L2_POST_REDIRECT_CAUSE current_pending=%0d other_pending=%0d no_pending=%0d external_miss=%0d request_wait=%0d",
+            post_redirect_current_pending_cycles,
+            post_redirect_other_pending_cycles,
+            post_redirect_no_pending_cycles,
+            post_redirect_external_miss_cycles,
+            post_redirect_request_wait_cycles);
+        $display(
+            "PERF_ICX_L2_POST_REDIRECT_LOOKASIDE hit_empty_cycles=%0d miss_empty_cycles=%0d hit_stalled_events=%0d hit_zero_stall_events=%0d miss_stalled_events=%0d miss_zero_stall_events=%0d",
+            post_redirect_lookaside_hit_empty_cycles,
+            post_redirect_lookaside_miss_empty_cycles,
+            post_redirect_lookaside_hit_stalled_events,
+            post_redirect_lookaside_hit_zero_stall_events,
+            post_redirect_lookaside_miss_stalled_events,
+            post_redirect_lookaside_miss_zero_stall_events);
+        $display(
+            "PERF_ICX_L2_CORRECTION_FAL no_context=%0d context_pending=%0d context_not_pending=%0d lookaside_hit_empty_cycles=%0d no_context_empty_cycles=%0d context_pending_empty_cycles=%0d context_not_pending_empty_cycles=%0d",
+            fetch_correction_lookaside_no_context,
+            fetch_correction_lookaside_context_pending,
+            fetch_correction_lookaside_context_not_pending,
+            post_redirect_correction_lookaside_hit_empty_cycles,
+            post_redirect_correction_no_context_empty_cycles,
+            post_redirect_correction_context_pending_empty_cycles,
+            post_redirect_correction_context_not_pending_empty_cycles);
+        if ((post_redirect_current_pending_cycles +
+             post_redirect_other_pending_cycles +
+             post_redirect_no_pending_cycles) !=
+            post_redirect_empty_cycles)
+            $fatal(1, "post-redirect empty classification mismatch");
+        if ((post_redirect_predicted_empty_cycles +
+             post_redirect_correction_empty_cycles +
+             post_redirect_restart_empty_cycles +
+             post_redirect_other_empty_cycles) !=
+            post_redirect_empty_cycles)
+            $fatal(1, "post-redirect kind classification mismatch");
+        if ((post_redirect_lookaside_hit_empty_cycles +
+             post_redirect_lookaside_miss_empty_cycles) !=
+            post_redirect_empty_cycles)
+            $fatal(1, "post-redirect lookaside classification mismatch");
+        if ((post_redirect_correction_lookaside_hit_empty_cycles +
+             post_redirect_correction_no_context_empty_cycles +
+             post_redirect_correction_context_pending_empty_cycles +
+             post_redirect_correction_context_not_pending_empty_cycles) !=
+            post_redirect_correction_empty_cycles)
+            $fatal(1, "post-redirect correction FAL classification mismatch");
         $display(
             "PERF_ICX_L2_LSU request_wait=%0d load_wait=%0d store_wait=%0d outstanding=%0d branch_resolutions=%0d conditional_branch_resolutions=%0d",
             lsu_request_wait, lsu_load_request_wait,

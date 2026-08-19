@@ -49,6 +49,8 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_L1D_COHERENCE_PROBES = 0,
     parameter ENABLE_COHERENT_ATOMICS = 0,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
+    parameter integer L1I_FETCH_DATA_WIDTH = ENABLE_L1I ?
+        `OPENRV64_ICX_LINE_DATA_WIDTH : `OPENRV64_AXI_DATA_WIDTH,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_SYNC_TAG_LOOKUP = 1,
     parameter integer L1D_SYNC_STORE_EXTENSION = 1,
@@ -285,7 +287,7 @@ module openrv64_rv64_top_3p #(
     wire fetch_pipe_resp_valid;
     wire fetch_pipe_resp_ready;
     wire [63:0] fetch_pipe_resp_addr;
-    wire [`OPENRV64_AXI_DATA_WIDTH-1:0] fetch_pipe_resp_data;
+    wire [L1I_FETCH_DATA_WIDTH-1:0] fetch_pipe_resp_data;
     wire fetch_pipe_resp_access_fault;
     wire fetch_pipe_resp_page_fault;
     wire fetch_pipe_resp_stash;
@@ -382,7 +384,6 @@ module openrv64_rv64_top_3p #(
     wire [63:0] bp_direct_target;
     wire bp_fetch_stall;
     wire bp_decode_stall;
-    wire ras_return_fetch_valid;
     wire l1i_speculation_sv39 =
         (csr_priv_mode != `RV64_PRIV_M) &&
         (csr_satp_mode == `RV64_SATP_MODE_SV39);
@@ -490,6 +491,7 @@ module openrv64_rv64_top_3p #(
         end else begin : g_fetch_axi
             openrv64_fetch_3w #(
                 .ENABLE_CAROUSEL(ENABLE_FETCH_CAROUSEL),
+                .FETCH_DATA_WIDTH(L1I_FETCH_DATA_WIDTH),
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
                 .ENABLE_ALT_LOOKASIDE(ENABLE_FETCH_ALT_LOOKASIDE),
@@ -519,8 +521,8 @@ module openrv64_rv64_top_3p #(
                     icache_prefetch_predicted_addr),
                 .branch_unpredicted_addr_i(
                     icache_prefetch_unpredicted_addr),
-                .ras_fetch_valid_i(ras_return_fetch_valid),
-                .ras_fetch_addr_i(bp_prediction_target),
+                .redirect_fetch_valid_i(bp_predict_redirect),
+                .redirect_fetch_addr_i(bp_predict_target),
                 .pair512_req_valid_o(pair512_req_valid),
                 .pair512_req_ready_i(pair512_req_ready),
                 .pair512_req_predicted_addr_o(
@@ -760,16 +762,9 @@ module openrv64_rv64_top_3p #(
         !predecode_conditional[bp_lane] : decode_jump[bp_lane];
     wire bp_lookup_indirect = bp_selected_predecode ?
         1'b0 : decode_br_indirect[bp_lane];
-    wire bp_lookup_is_jalr =
-        `RV64_OPCODE(bp_selected_instr) == `RV64_OPCODE_JALR;
-    wire bp_lookup_rs1_link =
-        (`RV64_RS1(bp_selected_instr) == 5'd1) ||
-        (`RV64_RS1(bp_selected_instr) == 5'd5);
     wire bp_lookup_rd_link =
         (`RV64_RD(bp_selected_instr) == 5'd1) ||
         (`RV64_RD(bp_selected_instr) == 5'd5);
-    wire bp_lookup_return = bp_lookup_indirect && bp_lookup_is_jalr &&
-                            bp_lookup_rs1_link && !bp_lookup_rd_link;
 
     assign bp_branch_present = use_icx_bus &&
                                (|frontend_control_select) &&
@@ -914,14 +909,9 @@ module openrv64_rv64_top_3p #(
         {1'b0, frontend_decode_fire[2]};
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
-    assign ras_return_fetch_valid = bp_branch_allocate &&
-                                    bp_lookup_return &&
-                                    bp_prediction_taken &&
-                                    bp_prediction_target_valid &&
-                                    l1i_speculation_sv39;
     // M-mode may prefetch decoded direct conditional-branch paths without
     // consuming a BTB or RAS target.  Predictor redirects remain separately
-    // disabled by bp_redirects_enabled, and RAS side fetches remain Sv39-only.
+    // disabled by bp_redirects_enabled.
     assign icache_branch_hint_valid = use_icx_bus && bp_branch_allocate &&
                                       bp_lookup_branch &&
                                       l1i_prefetch_context;
@@ -1402,6 +1392,7 @@ module openrv64_rv64_top_3p #(
             ENABLE_L1D_COHERENCE_PROBES),
         .ENABLE_COHERENT_ATOMICS(ENABLE_COHERENT_ATOMICS),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+        .L1I_FETCH_DATA_WIDTH(L1I_FETCH_DATA_WIDTH),
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
         .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
         .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),

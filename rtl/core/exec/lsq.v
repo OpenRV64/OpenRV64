@@ -1003,7 +1003,17 @@ module openrv64_lsq #(
                     if (!slot_order_match[perf_slot_index])
                         perf_load_spec_count_r =
                             perf_load_spec_count_r + 1;
-                    if (load_block_r[perf_slot_index])
+                    // Count a dependency only while it prevents the load's
+                    // first physical access.  An already-issued load may
+                    // later observe a newly allocated older store, but that
+                    // store is not stalling the in-flight load.
+                    if (load_block_r[perf_slot_index] &&
+                        !slot_atomic_q[perf_slot_index] &&
+                        !slot_immediate_q[perf_slot_index] &&
+                        !slot_input_access_fault_q[perf_slot_index] &&
+                        !slot_access_sent_q[perf_slot_index] &&
+                        (slot_cacheable[perf_slot_index] ||
+                         slot_order_match[perf_slot_index]))
                         perf_load_block_count_r =
                             perf_load_block_count_r + 1;
                     if (load_forward_r[perf_slot_index])
@@ -1243,12 +1253,14 @@ module openrv64_lsq #(
             if (perf_load_killed_response_fire)
                 perf_load_killed_responses_q <=
                     perf_load_killed_responses_q + 1'b1;
-            if (perf_load_block_count_r != 0)
-                perf_load_dependency_block_cycles_q <=
-                    perf_load_dependency_block_cycles_q + 1'b1;
-            perf_load_dependency_block_entry_cycles_q <=
-                perf_load_dependency_block_entry_cycles_q +
-                perf_load_block_count_r;
+            if (!atomic_active_i && !squash_younger_i && req_ready_i) begin
+                if (perf_load_block_count_r != 0)
+                    perf_load_dependency_block_cycles_q <=
+                        perf_load_dependency_block_cycles_q + 1'b1;
+                perf_load_dependency_block_entry_cycles_q <=
+                    perf_load_dependency_block_entry_cycles_q +
+                    perf_load_block_count_r;
+            end
             if (perf_load_forward_count_r != 0)
                 perf_load_forward_ready_cycles_q <=
                     perf_load_forward_ready_cycles_q + 1'b1;

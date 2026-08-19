@@ -207,10 +207,15 @@ format. FP32 VMAC uses the existing FP32 multiplier result as the add input,
 so it rounds after multiply and again after add. It is intentionally a MAC,
 not an IEEE-754 single-rounding binary32 FMA.
 
-The ordinary FP lane pipeline accepts one 64-bit vector slice every cycle and
-has a configurable latency, defaulting to eleven stages. The separate MAC
-lane bank also accepts one slice per cycle and defaults to 22 stages, with a
-registered boundary between its multiply and add halves.
+One unified FP lane bank accepts either an ordinary ADD/MUL slice or a MAC
+slice every cycle. The queued controller has one shared register-file feed, so
+the former separate banks could not issue concurrently and only duplicated the
+FP datapaths. Operation latency defaults to four cycles for ADD, seven for MUL,
+and eleven for MAC. MAC is the seven-cycle multiply path followed by the same
+four-cycle adder used by standalone ADD. An incoming ADD bubbles when a MAC
+reaches that shared adder, and a small completion reservation inserts a bubble
+when different operation latencies would otherwise collide on the single
+result port. Same-operation slices still issue and complete one per cycle.
 Context-plus-slice tags travel with every token, allowing slices from younger
 commands to follow an older command before its first result returns. If both
 complete input slices are positive zero, an ordinary ADD/MUL result is
@@ -220,6 +225,11 @@ exact-zero add/multiply cases and multiply-by-one use shorter combinational
 paths inside a lane but retain its fixed token latency. More general per-lane
 early completion would require merging early and pipelined lanes back into one
 tagged result slice.
+
+These cycle counts are the RTL token-latency contract. The current arithmetic
+functions remain combinational between the modeled register boundaries; the
+four- and seven-cycle settings do not by themselves prove a physical Fmax or
+partition the FP32 adder and multiplier logic across every named stage.
 
 ## Dispatch, replay, and retirement
 

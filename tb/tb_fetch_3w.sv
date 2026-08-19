@@ -27,8 +27,8 @@ module tb_fetch_3w;
     logic branch_pair_valid;
     logic [63:0] branch_predicted_addr;
     logic [63:0] branch_unpredicted_addr;
-    logic ras_fetch_valid;
-    logic [63:0] ras_fetch_addr;
+    logic redirect_fetch_valid;
+    logic [63:0] redirect_fetch_addr;
     logic [2:0] prefetch_age_valid;
     logic [191:0] prefetch_age_addr;
     wire [2:0] decode_valid;
@@ -69,8 +69,8 @@ module tb_fetch_3w;
         .branch_pair_valid_i(branch_pair_valid),
         .branch_predicted_addr_i(branch_predicted_addr),
         .branch_unpredicted_addr_i(branch_unpredicted_addr),
-        .ras_fetch_valid_i(ras_fetch_valid),
-        .ras_fetch_addr_i(ras_fetch_addr),
+        .redirect_fetch_valid_i(redirect_fetch_valid),
+        .redirect_fetch_addr_i(redirect_fetch_addr),
         .pair512_req_valid_o(), .pair512_req_ready_i(1'b0),
         .pair512_req_predicted_addr_o(),
         .pair512_req_unpredicted_addr_o(),
@@ -203,8 +203,8 @@ module tb_fetch_3w;
         branch_pair_valid = 0;
         branch_predicted_addr = 0;
         branch_unpredicted_addr = 0;
-        ras_fetch_valid = 0;
-        ras_fetch_addr = 0;
+        redirect_fetch_valid = 0;
+        redirect_fetch_addr = 0;
         prefetch_age_valid = 0;
         prefetch_age_addr = 0;
         decode_ready = 0;
@@ -258,9 +258,15 @@ module tb_fetch_3w;
         decode_ready = 0;
         replay_request_base = request_count;
         restart_pc = 64'h18;
+        redirect_fetch_addr = 64'h18;
+        redirect_fetch_valid = 1'b1;
         restart = 1;
+        #1;
+        if (req_valid)
+            $fatal(1, "resident predicted target launched a duplicate fetch");
         tick();
         restart = 0;
+        redirect_fetch_valid = 1'b0;
         if (stream_pc != 64'h18)
             $fatal(1, "resident redirect did not restore target PC");
         repeat (2) tick();
@@ -268,23 +274,23 @@ module tb_fetch_3w;
             $fatal(1, "resident redirect launched a duplicate fetch");
         expect_bundle(64'h18, 32'h106, 32'h107, 32'h108);
 
-        // A RAS target is a same-edge replacement demand. It remains
+        // A predicted target is a same-edge replacement demand. It remains
         // qualified while the redirect cancels the abandoned stream.
         restart_request_base = request_count;
         restart_pc = 64'h310;
-        ras_fetch_addr = 64'h310;
-        ras_fetch_valid = 1'b1;
+        redirect_fetch_addr = 64'h310;
+        redirect_fetch_valid = 1'b1;
         restart = 1'b1;
         #1;
         if (!req_valid || (req_addr != 64'h300) || !req_stash ||
             !req_demand || !cancel || cancel_stash)
-            $fatal(1, "RAS return did not force qualified target fetch");
+            $fatal(1, "predicted redirect did not force qualified target fetch");
         tick();
         restart = 1'b0;
-        ras_fetch_valid = 1'b0;
+        redirect_fetch_valid = 1'b0;
         if ((request_count != restart_request_base + 1) ||
             !dut.pending_valid_q || (dut.pending_addr_q != 64'h300))
-            $fatal(1, "RAS target fetch was not retained across restart");
+            $fatal(1, "redirect target fetch was not retained across restart");
         return_line(64'h300, 32'h180, 1'b1, 1'b1);
         expect_bundle(64'h310, 32'h184, 32'h185, 32'h186);
 

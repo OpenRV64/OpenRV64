@@ -25,6 +25,9 @@ module openrv64_core_bus #(
     parameter integer ENABLE_L1D_COHERENCE_PROBES = 0,
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
+    parameter integer L1I_FETCH_DATA_WIDTH =
+        (ENABLE_L1I && !ENABLE_MAGIC_MEMORY) ?
+            `OPENRV64_ICX_LINE_DATA_WIDTH : `OPENRV64_AXI_DATA_WIDTH,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_SYNC_TAG_LOOKUP = 1,
     parameter integer L1D_SYNC_STORE_EXTENSION = 1,
@@ -85,7 +88,7 @@ module openrv64_core_bus #(
     output wire                         fetch_pipe_resp_valid_o,
     input  wire                         fetch_pipe_resp_ready_i,
     output wire [`RV64_XLEN-1:0]        fetch_pipe_resp_addr_o,
-    output wire [`OPENRV64_AXI_DATA_WIDTH-1:0]
+    output wire [L1I_FETCH_DATA_WIDTH-1:0]
                                         fetch_pipe_resp_data_o,
     output wire                         fetch_pipe_resp_access_fault_o,
     output wire                         fetch_pipe_resp_page_fault_o,
@@ -1011,6 +1014,7 @@ module openrv64_core_bus #(
                 .ENABLE_COHERENT_ATOMICS(
                     ENABLE_COHERENT_ATOMICS),
                 .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+                .L1I_FETCH_DATA_WIDTH(L1I_FETCH_DATA_WIDTH),
                 .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
                 .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
                 .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),

@@ -15,6 +15,99 @@ With L1I enabled, instruction misses are exactly one 64-byte ICX transaction;
 they do not use AXI. Page-table walks are also native ICX transactions. AXI
 remains only for explicit cacheless-L1I operation.
 
+## Implemented 3P cached data flow
+
+There are two unrelated AXI boundaries in the full simulation hierarchy. The
+first is the core's residual 256-bit AXI port, which is inactive when L1I is
+enabled. The second is the shared L2's southbound AXI port. Normal cached
+fetch, LSU, and PTW traffic uses only the second one:
+
+```text
+fetch_3w --virtual fetch request--> MTL --tagged request--> L1I
+fetch_3w <--512-bit fetch line----- MTL <--512-bit line---- L1I
+                                                    \
+LSQ/LSU  --tagged scalar request--> MTL --64-bit op--> L1D \
+LSQ/LSU  <--64-bit load result----- MTL <--64-bit word-- L1D +--> ICX arbiter
+PTW      --physical PTE request------------------------------/
+
+ICX arbiter --one physical command--------------------------> ICX crossbar
+L1D        --one 512-bit write-data beat--------------------> ICX crossbar
+L1I/L1D/PTW<--one shared tagged 512-bit response beat-------- ICX crossbar
+
+ICX crossbar <== command + 512-bit write/response channels ==> shared L2
+shared L2   <== one 512-bit neutral-bus line transaction ===> GenBus
+GenBus      <== width-converted AXI4 read/write bursts =====> DDR model
+```
+
+The arrows describe ownership, not module nesting. `openrv64_core_mtl`
+instantiates L1I, L1D, the PTW, and `openrv64_core_icx_bus`; the caches are
+still separate policy and storage blocks inside that composition.
+
+The implemented widths and arbitration points are:
+
+| Boundary | Request/control | Data toward memory | Data toward core | Arbitration and conversion |
+| --- | --- | ---: | ---: | --- |
+| Fetch to MTL | virtual address, context, stash/demand tag | none | 512 bits by default | MTL has four ordered fetch slots; the legacy 256-bit response remains a build override |
+| MTL to L1I | translated/tagged cache request | none | one 512-bit resident or refill line | MTL returns the full line and `fetch_3w` selects the requested instructions |
+| LSU to MTL to L1D | tagged scalar address, size, 64-bit store data, 8 byte strobes | 64-bit scalar request into L1D | 64-bit load result | MTL translates and checks PMP; widening occurs only for cache-line traffic below L1D |
+| L1I/L1D/PTW to per-hart ICX | physical tagged commands | one 512-bit L1D write-data channel | one shared 512-bit response channel | round-robin command arbitration among L1I, L1D, and PTW; response `source_id` selects exactly one consumer |
+| Per-hart ICX to shared L2 | tagged physical commands | one 512-bit line beat | one 512-bit line beat | the complex crossbar arbitrates harts; the one-hart harness has only one active input |
+| L2 to GenBus | one neutral request per 64-byte line | 512 bits | 512 bits | L2 lookup/MSHR machinery arbitrates cache hits, fills, stores, and evictions |
+| GenBus to AXI4 in the RD32 DDR3 profile | AXI address/control | 256-bit AXI `W` | 256-bit AXI `R` | one 64-byte L2 transfer becomes a two-beat AXI burst |
+| AXI4 to DDR model | transaction-level AXI | 256-bit model input | 256-bit model output | `openrv64_axi_ddr3` models queues and DDR timing; this width is not a claim about physical DDR pins |
+
+`openrv64_core_icx_bus` does prevent separate L1I and L1D response buses from
+reaching L2. It emits one arbitrated command stream and routes one shared
+response stream. Only L1D currently supplies request-data, so that channel is
+forwarded rather than arbitrated between L1 clients.
+
+It does **not** time-multiplex request-data and response-data onto one
+bidirectional 512-bit bus. Native ICX has independent 512-bit write-data and
+512-bit response-data channels, and they may transfer in the same cycle.
+Consequently the current per-hart MTL/ICX boundary contains 1024 line-data
+wires, plus byte enables and metadata. It is not 1536 bits: L1I and L1D do not
+have separate outward response-data channels. The shared response data is
+demultiplexed by `source_id`.
+
+### Intended half-duplex ICX data path
+
+The intended physical direction is to replace the independent 512-bit ICX
+write-data and response-data paths with one shared 512-bit half-duplex line
+bus. A direction signal, provisionally `icx_data_we`, selects its owner:
+
+| `icx_data_we` | Data-bus owner | Transfer |
+| ---: | --- | --- |
+| `0` | L2/ICX response side | L2 to L1I, L1D, or PTW response |
+| `1` | Per-hart request side | L1D line write, posted-store drain, or writeback to L2 |
+
+Only one line-data transfer direction may be active in a cycle. Command and
+response identity remain on separate control fields; the shared data beat is
+associated with the granted command or response by the existing hart,
+source, transaction, and beat IDs.
+
+This requires more than asserting that today's two channels are never valid
+together. To reduce physical routing from 1024 data wires to 512, the block
+boundary itself must contain one set of line-data nets, with the source mux
+and direction control placed at that boundary. Keeping separate 512-bit RTL
+input and output ports while adding mutual exclusion would preserve the same
+wire count.
+
+The conversion needs:
+
+- arbitration between queued L1D write data and returning L2 responses;
+- explicit ownership from grant through accepted data beat;
+- response buffering so an L2 completion can wait while `_WE` selects a
+  write, without occupying or deadlocking an L2 response slot;
+- bounded fairness so sustained stores cannot starve fills and sustained
+  fills cannot prevent posted-store drain or fence completion;
+- independent command admission only when the eventual data phase has
+  reserved buffering; and
+- corresponding half-duplex arbitration in the multi-hart ICX crossbar.
+
+The current RTL does not implement this contract. It remains full-duplex until
+the ICX interface, arbiter, crossbar, L2 response/write-data queues, assertions,
+and directed contention tests are changed together.
+
 ## Generic blocking interface
 
 The generic instruction/data interface is a single 64-bit blocking memory
@@ -126,11 +219,13 @@ strobes, and 3-bit transaction IDs. Every transfer is a single-beat INCR
 transaction (`AxLEN=0`). AXI is used only by the structural `ENABLE_L1I=0`
 cacheless-fetch path. Native L1I, L1D, and PTW traffic does not use it.
 
-With L1I enabled, `fetch_3w.v` requests one 256-bit frontend half-line by
-virtual address. `openrv64_l1i_icx` is VIPT: page-offset virtual bits select
-the set/half while the ITLB supplies the physical tag and ICX address. Bare and
-ITLB-hit demands launch without a separate translation state. The cache stores
-the containing 512-bit line and turns a miss into one aligned native ICX read.
+With L1I enabled, `fetch_3w.v` requests one 512-bit frontend line by virtual
+address in the current default configuration. A 256-bit half-line mode remains
+available for controlled comparisons and cacheless compatibility.
+`openrv64_l1i_icx` is VIPT: page-offset virtual bits select the set while the
+ITLB supplies the physical tag and ICX address. Bare and ITLB-hit demands
+launch without a separate translation state. The cache stores the containing
+512-bit line and turns a miss into one aligned native ICX read.
 Predicted and
 execute-time redirects may preserve resident frontend data for replay, while
 reset, context-changing restarts, and `FENCE.I` invalidate the required state.
@@ -199,10 +294,12 @@ blocks younger memory behind an unresolved store. A full LSQ still needs PMA
 classification, translated physical addresses, load/store disambiguation,
 byte forwarding across multiple stores, and defined FENCE/atomic drain rules.
 
-The remaining AXI limits are no multi-beat bursts, caches, pipelined translated
-LSU accesses, exclusive accesses, or AXI connection in `openrv64_platform`.
-RV64A remains serialized and uses the backend's ordered request/response
-contract rather than AXI exclusives.
+The residual core AXI limits are no multi-beat bursts, caches, pipelined
+translated LSU accesses, exclusive accesses, or AXI connection in
+`openrv64_platform`. These limits do not apply to the separate L2 southbound
+AXI port, whose width adapter emits multi-beat bursts when its AXI width is
+narrower than 512 bits. RV64A remains serialized and uses the backend's ordered
+request/response contract rather than AXI exclusives.
 
 ## Generic fetch buffering and lane rules
 

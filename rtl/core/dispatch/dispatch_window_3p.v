@@ -87,6 +87,11 @@ module openrv64_dispatch_window_3p #(
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] completion_id_i,
     input  wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         completion_payload_i,
+    input  wire                         conditional_resolve_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        conditional_resolve_id_i,
+    input  wire [RETIRE_SLOT_WIDTH-1:0]
+                                        conditional_resolve_slot_i,
 
     input  wire [2:0]                   retire_valid_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] retire_id_i,
@@ -549,12 +554,20 @@ module openrv64_dispatch_window_3p #(
     reg [COUNT_WIDTH-1:0] trace_raw_block_count;
     reg [COUNT_WIDTH-1:0] trace_hard_block_count;
     reg [COUNT_WIDTH-1:0] trace_mem_order_block_count;
+    // Directed performance evidence for non-speculative read-only loads that
+    // are younger than completed control still resident in the window.  The
+    // candidate count is independent of the selected completed-control policy;
+    // the gate count records candidates actually held by older_live_control.
+    reg [COUNT_WIDTH-1:0] trace_completed_control_load_candidate_count;
+    reg [COUNT_WIDTH-1:0] trace_completed_control_load_gate_count;
     integer eligible_idx;
     integer older_idx;
     reg older_unissued_hard;
     reg older_persistent_hard;
     reg older_unissued_mem;
     reg older_live_control;
+    reg older_completed_control;
+    reg older_uncompleted_control;
     reg older_unresolved_conditional;
 
     always_comb begin
@@ -566,12 +579,17 @@ module openrv64_dispatch_window_3p #(
         trace_raw_block_count = {COUNT_WIDTH{1'b0}};
         trace_hard_block_count = {COUNT_WIDTH{1'b0}};
         trace_mem_order_block_count = {COUNT_WIDTH{1'b0}};
+        trace_completed_control_load_candidate_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_completed_control_load_gate_count = {COUNT_WIDTH{1'b0}};
         for (eligible_idx = 0; eligible_idx < DEPTH;
              eligible_idx = eligible_idx + 1) begin
             older_unissued_hard = 1'b0;
             older_persistent_hard = 1'b0;
             older_unissued_mem = 1'b0;
             older_live_control = 1'b0;
+            older_completed_control = 1'b0;
+            older_uncompleted_control = 1'b0;
             older_unresolved_conditional = 1'b0;
             for (older_idx = 0; older_idx < DEPTH;
                  older_idx = older_idx + 1) begin
@@ -591,8 +609,17 @@ module openrv64_dispatch_window_3p #(
                         is_early_conditional_branch(payload_q[older_idx]))
                         older_unresolved_conditional = 1'b1;
                     if (payload_q[older_idx][PAYLOAD_BRANCH] ||
-                        is_replayable_direct_jal(payload_q[older_idx]))
-                        older_live_control = 1'b1;
+                        is_replayable_direct_jal(payload_q[older_idx])) begin
+                        if (`OPENRV64_3P_RESULT_READY_CONTROL_RELEASE != 0)
+                            older_live_control =
+                                !result_ready_q[older_idx];
+                        else
+                            older_live_control = 1'b1;
+                        if (result_ready_q[older_idx])
+                            older_completed_control = 1'b1;
+                        else
+                            older_uncompleted_control = 1'b1;
+                    end
                 end
             end
 
@@ -632,6 +659,23 @@ module openrv64_dispatch_window_3p #(
             end
             if (is_mem(payload_q[eligible_idx]) && older_unissued_mem)
                 eligible[eligible_idx] = 1'b0;
+
+            if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                src1_ready_now[eligible_idx] &&
+                src2_ready_now[eligible_idx] &&
+                payload_q[eligible_idx][PAYLOAD_MEM_READ] &&
+                !payload_q[eligible_idx][PAYLOAD_MEM_WRITE] &&
+                !is_speculative_load_candidate(
+                    payload_q[eligible_idx],
+                    src1_data_now[eligible_idx]) &&
+                older_completed_control &&
+                !older_uncompleted_control) begin
+                trace_completed_control_load_candidate_count =
+                    trace_completed_control_load_candidate_count + 1'b1;
+                if (older_live_control)
+                    trace_completed_control_load_gate_count =
+                        trace_completed_control_load_gate_count + 1'b1;
+            end
 
             if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
                 (!src1_ready_now[eligible_idx] ||
@@ -1177,6 +1221,16 @@ module openrv64_dispatch_window_3p #(
                 end
             end
 
+            // Conditional controls do not write a GPR, so their EX1 resolve
+            // event is queued separately from the value-completion bus.  The
+            // resolving branch survives selective recovery and becomes safe
+            // for younger correct-path loads immediately after this edge.
+            if (conditional_resolve_valid_i &&
+                valid_q[conditional_resolve_slot_i] &&
+                (id_q[conditional_resolve_slot_i] ==
+                 conditional_resolve_id_i))
+                result_ready_q[conditional_resolve_slot_i] <= 1'b1;
+
             if (issue_ex0 &&
                 !id_is_younger(id_q[select_ex0], squash_id_i))
                 issued_q[select_ex0] <= 1'b1;
@@ -1244,6 +1298,15 @@ module openrv64_dispatch_window_3p #(
                     end
                 end
             end
+
+            // EX1 publishes this on the branch-resolving issue edge.  Latch
+            // it in the resident window entry so the one-cycle resolve pulse
+            // remains visible until retirement.
+            if (conditional_resolve_valid_i &&
+                valid_q[conditional_resolve_slot_i] &&
+                (id_q[conditional_resolve_slot_i] ==
+                 conditional_resolve_id_i))
+                result_ready_q[conditional_resolve_slot_i] <= 1'b1;
 
             if (issue_ex0)
                 issued_q[select_ex0] <= 1'b1;

@@ -102,13 +102,14 @@ module openrv64_l1i_top #(
     wire l1i_demand_ready;
     wire l1i_response_valid;
     wire [ADDR_WIDTH-1:0] l1i_response_addr;
-    wire [255:0] l1i_demand_data;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l1i_demand_line;
     wire l1i_demand_error;
 
     assign fetch_req_ready_o = l1i_demand_ready;
     assign fetch_resp_valid_o = l1i_response_valid;
     assign fetch_resp_addr_o = l1i_response_addr;
-    assign fetch_resp_data_o = l1i_demand_data;
+    assign fetch_resp_data_o = l1i_response_addr[5] ?
+        l1i_demand_line[511:256] : l1i_demand_line[255:0];
     assign fetch_resp_error_o = l1i_demand_error;
 
     openrv64_l1i_icx #(
@@ -137,7 +138,7 @@ module openrv64_l1i_top #(
         .resp_valid_o(l1i_response_valid),
         .resp_ready_i(fetch_resp_ready_i),
         .resp_tag_o(l1i_response_addr),
-        .req_rdata_o(l1i_demand_data),
+        .req_rdata_o(l1i_demand_line),
         .req_error_o(l1i_demand_error),
         .m_mode_prefetch_enable_i(1'b0),
         .prefetch_valid_i(prefetch_valid_i),

@@ -2,13 +2,13 @@
 `include "complex/protocol/defs.v"
 `include "core/isa/rv64-priv.v"
 
-// Public composition for the 256-bit frontend view of a native 512-bit ICX
-// instruction-cache endpoint.
+// Public composition for a native 512-bit ICX instruction-cache endpoint.
 //
 // The private cache stores a complete 64-byte line in one data word.  A
-// frontend request selects either 256-bit half of that resident line.  A miss
-// emits one native ICX command and consumes one native 512-bit response beat;
-// it is never decomposed into scalar compatibility requests.
+// frontend response returns that complete line. A narrower consumer may
+// select a half at the MTL boundary. A miss emits one native ICX command and
+// consumes one native 512-bit response beat; it is never decomposed into
+// scalar compatibility requests.
 module openrv64_l1i_icx #(
     parameter integer ENABLE = 1,
     parameter integer ADDR_WIDTH = 64,
@@ -44,7 +44,7 @@ module openrv64_l1i_icx #(
     output wire                         resp_valid_o,
     input  wire                         resp_ready_i,
     output wire [REQ_TAG_WIDTH-1:0]     resp_tag_o,
-    output wire [255:0]                 req_rdata_o,
+    output wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] req_rdata_o,
     output wire                         req_error_o,
 
     // Conditional-branch hints are virtual.  L1I retains both paths and
@@ -763,11 +763,7 @@ module openrv64_l1i_icx #(
         response_tag_q[response_complete_index_r] :
         response_tag_q[l1_resp_tag];
     assign req_rdata_o = output_stored_response ?
-        (response_upper_half_q[response_complete_index_r] ?
-         response_data_q[response_complete_index_r][511:256] :
-         response_data_q[response_complete_index_r][255:0]) :
-        (response_upper_half_q[l1_resp_tag] ?
-         l1_req_rdata[511:256] : l1_req_rdata[255:0]);
+        response_data_q[response_complete_index_r] : l1_req_rdata;
     assign req_error_o = output_stored_response ?
         response_error_q[response_complete_index_r] :
         (output_direct_response && l1_req_error);

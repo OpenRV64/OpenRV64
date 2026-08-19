@@ -2190,11 +2190,11 @@ void trace_hart0_fetch_path(const Vtb_4h_3p___024root* root,
         << static_cast<unsigned>(H0_FETCH(demand_request_needed))
         << static_cast<unsigned>(H0_FETCH(request_line_hit))
         << static_cast<unsigned>(H0_FETCH(request_line_pending))
-        << ':' << static_cast<unsigned>(H0_FETCH(ras_req_fire))
+        << ':' << static_cast<unsigned>(H0_FETCH(redirect_req_fire))
         << static_cast<unsigned>(H0_FETCH(pair_req_fire))
         << " side="
-        << static_cast<unsigned>(H0_FETCH(ras_line_pending_q))
-        << ":0x" << std::hex << H0_FETCH(ras_line_addr_q)
+        << static_cast<unsigned>(H0_FETCH(redirect_line_pending_q))
+        << ":0x" << std::hex << H0_FETCH(redirect_line_addr_q)
         << ':' << std::dec
         << static_cast<unsigned>(H0_FETCH(fal_line_pending_q))
         << ":0x" << std::hex << H0_FETCH(fal_line_addr_q)

@@ -151,6 +151,11 @@ module openrv64_dispatch #(
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] completion_id_3p_i,
     input  wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         completion_payload_3p_i,
+    input  wire                         conditional_resolve_valid_3p_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        conditional_resolve_id_3p_i,
+    input  wire [RETIRE_SLOT_WIDTH_3P-1:0]
+                                        conditional_resolve_slot_3p_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid_3p_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_3p_o,
@@ -394,6 +399,11 @@ module openrv64_dispatch #(
                 .completion_valid_i(completion_valid_3p_i),
                 .completion_id_i(completion_id_3p_i),
                 .completion_payload_i(completion_payload_3p_i),
+                .conditional_resolve_valid_i(
+                    conditional_resolve_valid_3p_i),
+                .conditional_resolve_id_i(conditional_resolve_id_3p_i),
+                .conditional_resolve_slot_i(
+                    conditional_resolve_slot_3p_i),
                 .retire_valid_i((ENABLE_ISSUE_WINDOW_3P != 0) ?
                                 retire_valid_3p_i : 3'b000),
                 .retire_id_i(retire_id_3p_i),

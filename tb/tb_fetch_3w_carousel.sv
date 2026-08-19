@@ -22,8 +22,8 @@ module tb_fetch_3w_carousel;
     logic [255:0] resp_data;
     logic resp_stash;
     logic resp_demand;
-    logic ras_fetch_valid;
-    logic [63:0] ras_fetch_addr;
+    logic redirect_fetch_valid;
+    logic [63:0] redirect_fetch_addr;
     logic [2:0] prefetch_age_valid;
     logic [191:0] prefetch_age_addr;
     wire [2:0] decode_valid;
@@ -60,8 +60,8 @@ module tb_fetch_3w_carousel;
         .branch_pair_valid_i(1'b0),
         .branch_predicted_addr_i(64'd0),
         .branch_unpredicted_addr_i(64'd0),
-        .ras_fetch_valid_i(ras_fetch_valid),
-        .ras_fetch_addr_i(ras_fetch_addr),
+        .redirect_fetch_valid_i(redirect_fetch_valid),
+        .redirect_fetch_addr_i(redirect_fetch_addr),
         .pair512_req_valid_o(), .pair512_req_ready_i(1'b0),
         .pair512_req_predicted_addr_o(),
         .pair512_req_unpredicted_addr_o(),
@@ -171,8 +171,8 @@ module tb_fetch_3w_carousel;
         resp_data = 256'd0;
         resp_stash = 1'b0;
         resp_demand = 1'b0;
-        ras_fetch_valid = 1'b0;
-        ras_fetch_addr = 64'd0;
+        redirect_fetch_valid = 1'b0;
+        redirect_fetch_addr = 64'd0;
         prefetch_age_valid = 3'b000;
         prefetch_age_addr = 192'd0;
         decode_ready = 3'b000;
@@ -214,26 +214,26 @@ module tb_fetch_3w_carousel;
         if (request_addr[4] != 64'h80)
             $fatal(1, "carousel cursor did not roll forward");
 
-        // A RAS redirect replaces the old stream on the redirect edge.
+        // A predicted redirect replaces the old stream on the redirect edge.
         decode_ready = 3'b000;
         restart_pc = 64'h310;
-        ras_fetch_addr = 64'h310;
-        ras_fetch_valid = 1'b1;
+        redirect_fetch_addr = 64'h310;
+        redirect_fetch_valid = 1'b1;
         restart = 1'b1;
         #1;
         if (!cancel || cancel_stash || !req_valid || !req_stash ||
             !req_demand || (req_addr != 64'h300))
-            $fatal(1, "carousel RAS replacement request mismatch");
+            $fatal(1, "carousel redirect replacement request mismatch");
         tick();
         restart = 1'b0;
-        ras_fetch_valid = 1'b0;
-        if (!dut.ras_line_pending_q ||
-            (dut.ras_line_addr_q != 64'h300) ||
+        redirect_fetch_valid = 1'b0;
+        if (!dut.redirect_line_pending_q ||
+            (dut.redirect_line_addr_q != 64'h300) ||
             dut.carousel_pending_valid_q[0])
-            $fatal(1, "RAS request did not use its dedicated slot");
+            $fatal(1, "redirect request did not use its dedicated slot");
 
         // A normal demand may reuse the same carousel index without stealing
-        // ownership of the outstanding RAS response.
+        // ownership of the outstanding redirect response.
         alias_request_base = request_count;
         dut.consume_pc_q = 64'h320;
         dut.next_req_addr_q = 64'h380;
@@ -241,19 +241,19 @@ module tb_fetch_3w_carousel;
         if ((request_addr[alias_request_base] != 64'h380) ||
             !dut.carousel_pending_valid_q[0] ||
             (dut.carousel_pending_addr_q[0] != 64'h380))
-            $fatal(1, "carousel did not remain independent of RAS slot");
+            $fatal(1, "carousel did not remain independent of redirect slot");
         return_qualified(64'h300, 32'h180, 1'b1, 1'b1);
-        if (dut.ras_line_pending_q ||
-            (dut.ras_line_addr_q != 64'h300) ||
+        if (dut.redirect_line_pending_q ||
+            (dut.redirect_line_addr_q != 64'h300) ||
             (ingress_slot(64'h300) < 0) ||
             (dut.ingress_origin_q[ingress_slot(64'h300)] != 2'd1) ||
             !dut.carousel_pending_valid_q[0] ||
             (dut.carousel_pending_addr_q[0] != 64'h380))
-            $fatal(1, "RAS response did not enter ingress independently");
+            $fatal(1, "redirect response did not enter ingress independently");
         dut.consume_pc_q = 64'h310;
         #1;
         if (decode_valid != 3'b111 || stream_pc != 64'h310)
-            $fatal(1, "ingress RAS target did not reach decode");
+            $fatal(1, "ingress redirect target did not reach decode");
         tick();
         if (!dut.line_valid_q[0] ||
             (dut.line_addr_q[0] != 64'h300) ||
@@ -261,7 +261,7 @@ module tb_fetch_3w_carousel;
             (dut.carousel_pending_addr_q[0] != 64'h380) ||
             (ingress_slot(64'h300) >= 0) ||
             (decode_valid != 3'b111))
-            $fatal(1, "demanded RAS ingress line was not promoted");
+            $fatal(1, "demanded redirect ingress line was not promoted");
         return_line(64'h380, 32'h1c0);
         if (!dut.line_valid_q[0] ||
             (dut.line_addr_q[0] != 64'h300) ||
@@ -484,23 +484,23 @@ module tb_fetch_3w_carousel;
         dut.fal_line_pending_q = 1'b1;
         dut.fal_line_addr_q = 64'h600;
         restart_pc = 64'h610;
-        ras_fetch_addr = 64'h610;
-        ras_fetch_valid = 1'b1;
+        redirect_fetch_addr = 64'h610;
+        redirect_fetch_valid = 1'b1;
         restart = 1'b1;
         #1;
         if (!req_valid || !req_stash || !req_demand ||
             (req_addr != 64'h600))
-            $fatal(1, "pending FAL suppressed same-line RAS demand");
+            $fatal(1, "pending FAL suppressed same-line redirect demand");
         tick();
         restart = 1'b0;
-        ras_fetch_valid = 1'b0;
-        if (!dut.ras_line_pending_q || !dut.fal_line_pending_q)
-            $fatal(1, "same-line RAS and FAL ownership was not independent");
+        redirect_fetch_valid = 1'b0;
+        if (!dut.redirect_line_pending_q || !dut.fal_line_pending_q)
+            $fatal(1, "same-line redirect and FAL ownership was not independent");
         return_qualified(64'h600, 32'h240, 1'b1, 1'b1);
-        if (dut.ras_line_pending_q || !dut.fal_line_pending_q ||
+        if (dut.redirect_line_pending_q || !dut.fal_line_pending_q ||
             (ingress_slot(64'h600) < 0) ||
             (dut.ingress_origin_q[ingress_slot(64'h600)] != 2'd1))
-            $fatal(1, "RAS demand response consumed FAL ownership");
+            $fatal(1, "redirect demand response consumed FAL ownership");
         prefetch_age_valid = 3'b001;
         prefetch_age_addr[63:0] = 64'h600;
         tick();
@@ -509,7 +509,7 @@ module tb_fetch_3w_carousel;
             !((ingress_slot(64'h600) >= 0) ||
               (dut.line_valid_q[0] &&
                (dut.line_addr_q[0] == 64'h600))))
-            $fatal(1, "FAL age damaged independent RAS ingress ownership");
+            $fatal(1, "FAL age damaged independent redirect ingress ownership");
         return_qualified(64'h600, 32'h280, 1'b1, 1'b1);
         tick();
         if (!dut.line_valid_q[0] || (dut.line_addr_q[0] != 64'h600))

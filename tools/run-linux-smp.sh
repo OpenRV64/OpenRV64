@@ -45,8 +45,9 @@ Start options:
   --checkpoint-exit         Exit after saving the requested checkpoint.
   --checkpoint-interval N   Save checkpoint-<cycle>.vls every N cycles.
   --checkpoint-stop-pc PC   Stop after a periodic checkpoint at hart-0 PC.
-  --base-inputs DIR         Reuse a compatible managed run's simulator,
-                            firmware, and DTB for a fresh kernel-only run.
+  --base-inputs DIR         Reuse a compatible managed run's firmware and
+                            DTB for a fresh kernel-only run. Its simulator is
+                            also reused unless --rebuild is specified.
   --simulator FILE          Use this compatible host executable for a fresh
                             run instead of rebuilding the configured model.
   --resume CHECKPOINT|RUN   Resume an exact managed checkpoint snapshot.
@@ -469,12 +470,16 @@ worker() {
             >"${source_manifest}" 2>&1
         if [[ -n ${base_inputs} ]]; then
             local base_artifact
-            for base_artifact in opensbi_4h_checkpoint_tb \
-                trampoline.memh fw_jump.memh fw_jump.elf \
+            for base_artifact in trampoline.memh fw_jump.memh fw_jump.elf \
                 openrv64-3p-dtb.memh openrv64-3p.dtb hsm-wfi-pc.txt; do
                 printf '%s\n' "${base_inputs}/${base_artifact}" \
                     >>"${source_manifest}"
             done
+            if ((rebuild == 0)); then
+                printf '%s\n' \
+                    "${base_inputs}/opensbi_4h_checkpoint_tb" \
+                    >>"${source_manifest}"
+            fi
         fi
         if [[ -n ${simulator_override} ]]; then
             printf '%s\n' "${simulator_override}" >>"${source_manifest}"
@@ -488,7 +493,8 @@ worker() {
         local build_command=("${make_base[@]}" -j8)
         [[ ${rebuild} == 0 ]] || build_command+=(-B)
         build_command+=("${make_arguments[@]}")
-        if [[ -z ${base_inputs} && -z ${simulator_override} ]]; then
+        if [[ -z ${simulator_override} ]] &&
+           [[ -z ${base_inputs} || ${rebuild} != 0 ]]; then
             build_command+=("${simulator}")
         fi
         if [[ -z ${base_inputs} ]]; then
@@ -509,7 +515,9 @@ worker() {
         fi
 
         if [[ -n ${base_inputs} ]]; then
-            simulator=${base_inputs}/opensbi_4h_checkpoint_tb
+            if ((rebuild == 0)); then
+                simulator=${base_inputs}/opensbi_4h_checkpoint_tb
+            fi
             artifact_dir=${base_inputs}
         elif [[ -n ${simulator_override} ]]; then
             simulator=${simulator_override}
@@ -907,14 +915,15 @@ start_run() {
         [[ -d ${base_inputs} ]] ||
             die "base input directory does not exist: ${base_inputs}"
         local base_artifact
-        for base_artifact in opensbi_4h_checkpoint_tb \
-            trampoline.memh fw_jump.memh fw_jump.elf \
+        for base_artifact in trampoline.memh fw_jump.memh fw_jump.elf \
             openrv64-3p-dtb.memh openrv64-3p.dtb hsm-wfi-pc.txt; do
             [[ -f ${base_inputs}/${base_artifact} ]] ||
                 die "base input directory is missing: ${base_artifact}"
         done
-        [[ -x ${base_inputs}/opensbi_4h_checkpoint_tb ]] ||
-            die "base simulator is not executable: ${base_inputs}/opensbi_4h_checkpoint_tb"
+        if ((rebuild == 0)); then
+            [[ -x ${base_inputs}/opensbi_4h_checkpoint_tb ]] ||
+                die "base simulator is not executable: ${base_inputs}/opensbi_4h_checkpoint_tb"
+        fi
     fi
     local timestamp slug run_id directory tmux_session task_name
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)

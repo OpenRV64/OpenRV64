@@ -61,6 +61,9 @@ module tb_dispatch_window_3p;
     reg [2:0] completion_valid;
     reg [3*IDW-1:0] completion_id;
     reg [3*OW-1:0] completion_payload;
+    reg conditional_resolve_valid;
+    reg [IDW-1:0] conditional_resolve_id;
+    reg [SW-1:0] conditional_resolve_slot;
     reg [2:0] retire_valid;
     reg [3*IDW-1:0] retire_id;
     reg [3*SW-1:0] retire_slot;
@@ -104,6 +107,9 @@ module tb_dispatch_window_3p;
         .completion_valid_i(completion_valid),
         .completion_id_i(completion_id),
         .completion_payload_i(completion_payload),
+        .conditional_resolve_valid_i(conditional_resolve_valid),
+        .conditional_resolve_id_i(conditional_resolve_id),
+        .conditional_resolve_slot_i(conditional_resolve_slot),
         .retire_valid_i(retire_valid), .retire_id_i(retire_id),
         .retire_slot_i(retire_slot), .retire_hard_i(retire_hard),
         .next_retire_id_i(next_retire_id),
@@ -174,6 +180,9 @@ module tb_dispatch_window_3p;
             completion_valid = 3'b000;
             completion_id = {3*IDW{1'b0}};
             completion_payload = {3*OW{1'b0}};
+            conditional_resolve_valid = 1'b0;
+            conditional_resolve_id = {IDW{1'b0}};
+            conditional_resolve_slot = {SW{1'b0}};
             retire_valid = 3'b000;
             retire_id = {3*IDW{1'b0}};
             retire_slot = {3*SW{1'b0}};
@@ -399,6 +408,51 @@ module tb_dispatch_window_3p;
         #1;
         if (pipe_valid[2])
             fail("Bare-mode device load passed unresolved branch");
+        tick();
+        clear_inputs();
+        translation_bypass = 1'b0;
+
+        // A non-speculative Bare-mode load remains behind an unresolved
+        // conditional
+        // branch, then becomes eligible on the cycle after EX1 publishes the
+        // tagged resolve event.  Branches have no register-write completion,
+        // so this specifically checks the control-resolution sideband.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        translation_bypass = 1'b1;
+        pipe_ready = 4'b0000;
+        allocation_id = {IDW'(0), IDW'(48), IDW'(47)};
+        allocation_slot = {4'd0, 4'd1, 4'd0};
+        next_retire_id = IDW'(47);
+        next_retire_slot = 4'd0;
+        p0 = alu_packet(64'd47, 5'd0, 5'd0, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0000_0463;
+        p0[I_IMM +: 64] = 64'd8;
+        p0[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_BEQ;
+        p0[I_BRANCH] = 1'b1;
+        p1 = alu_packet(64'd48, 5'd0, 5'd0, 5'd6);
+        p1[I_MEM_READ] = 1'b1;
+        p1[I_IMM +: 64] = 64'h0000_0000_1000_0000;
+        decode_payload = {{IW{1'b0}}, p1, p0};
+        decode_uses_rs1 = 3'b010;
+        decode_valid = 3'b011;
+        tick();
+        clear_inputs();
+        pipe_ready = 4'b1111;
+        #1;
+        if (!pipe_valid[1] ||
+            pipe_id[1*IDW +: IDW] != IDW'(47) || pipe_valid[2])
+            fail("load was not gated by unresolved conditional branch");
+        conditional_resolve_valid = 1'b1;
+        conditional_resolve_id = IDW'(47);
+        conditional_resolve_slot = 4'd0;
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[2] ||
+            pipe_id[2*IDW +: IDW] != IDW'(48))
+            fail("resolved conditional branch did not release load");
         tick();
         clear_inputs();
         translation_bypass = 1'b0;

@@ -58,6 +58,8 @@ module openrv64_core_mtl #(
         {`OPENRV64_ICX_HART_ID_WIDTH{1'b0}},
     parameter integer AXI_ADDR_WIDTH = `OPENRV64_AXI_ADDR_WIDTH,
     parameter integer AXI_DATA_WIDTH = `OPENRV64_AXI_DATA_WIDTH,
+    parameter integer L1I_FETCH_DATA_WIDTH = ENABLE_L1I ?
+        `OPENRV64_ICX_LINE_DATA_WIDTH : AXI_DATA_WIDTH,
     parameter integer AXI_ID_WIDTH = `OPENRV64_AXI_ID_WIDTH
 ) (
     input  wire                         clk,
@@ -79,7 +81,7 @@ module openrv64_core_mtl #(
     output wire                         fetch_resp_valid_o,
     input  wire                         fetch_resp_ready_i,
     output wire [`RV64_XLEN-1:0]        fetch_resp_addr_o,
-    output wire [AXI_DATA_WIDTH-1:0]    fetch_resp_data_o,
+    output wire [L1I_FETCH_DATA_WIDTH-1:0] fetch_resp_data_o,
     output wire                         fetch_resp_access_fault_o,
     output wire                         fetch_resp_page_fault_o,
     output wire                         fetch_resp_stash_o,
@@ -278,6 +280,8 @@ module openrv64_core_mtl #(
 
     localparam integer AXI_BYTES = AXI_DATA_WIDTH / 8;
     localparam integer AXI_BYTE_BITS = $clog2(AXI_BYTES);
+    localparam integer L1I_FETCH_BYTES = L1I_FETCH_DATA_WIDTH / 8;
+    localparam integer L1I_FETCH_BYTE_BITS = $clog2(L1I_FETCH_BYTES);
     localparam integer FETCH_SLOT_WIDTH =
         (FETCH_OUTSTANDING > 1) ? $clog2(FETCH_OUTSTANDING) : 1;
     localparam integer FETCH_COUNT_WIDTH =
@@ -335,7 +339,7 @@ module openrv64_core_mtl #(
     reg fetch_stash_q [0:FETCH_OUTSTANDING-1];
     reg fetch_demand_q [0:FETCH_OUTSTANDING-1];
     reg fetch_cancelled_q [0:FETCH_OUTSTANDING-1];
-    reg [AXI_DATA_WIDTH-1:0]
+    reg [L1I_FETCH_DATA_WIDTH-1:0]
         fetch_data_q [0:FETCH_OUTSTANDING-1];
     reg fetch_access_fault_q [0:FETCH_OUTSTANDING-1];
     reg fetch_page_fault_q [0:FETCH_OUTSTANDING-1];
@@ -1109,13 +1113,14 @@ module openrv64_core_mtl #(
                                !itlb_lookup_page_fault &&
                                !fetch_cancel_i;
     wire [`RV64_XLEN-1:0] fetch_axi_addr = {
-        fetch_lookup_paddr[`RV64_XLEN-1:AXI_BYTE_BITS],
-        {AXI_BYTE_BITS{1'b0}}
+        fetch_lookup_paddr[`RV64_XLEN-1:L1I_FETCH_BYTE_BITS],
+        {L1I_FETCH_BYTE_BITS{1'b0}}
     };
 
-    // The L1I accepts tagged, decoupled 256-bit frontend requests and stores
-    // native 64-byte lines.  The fetch slot is the L1I request tag, so a hit
-    // may complete while older misses remain outstanding.
+    // The L1I accepts tagged, decoupled frontend requests and stores native
+    // 64-byte lines. The selectable frontend width either retains the legacy
+    // half-line response or returns the complete cache line. The fetch slot is
+    // the L1I request tag, so a hit may complete while older misses remain.
     reg l1i_req_active_q;
     reg [`RV64_XLEN-1:0] l1i_req_vaddr_q;
     reg [`RV64_XLEN-1:0] l1i_req_paddr_q;
@@ -1128,7 +1133,8 @@ module openrv64_core_mtl #(
     wire l1i_resp_valid;
     wire l1i_resp_ready;
     wire [FETCH_SLOT_WIDTH-1:0] l1i_resp_tag;
-    wire [AXI_DATA_WIDTH-1:0] l1i_req_rdata;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] l1i_req_rdata;
+    wire [L1I_FETCH_DATA_WIDTH-1:0] l1i_fetch_rdata;
     wire l1i_req_error;
     wire axi_r_error;
     wire l1i_enabled = (ENABLE_L1I != 0);
@@ -1167,7 +1173,10 @@ module openrv64_core_mtl #(
                         prefetch_xlate_priv_q;
     assign pmp_size_o = select_lsu_probe ? lsu_size_q :
                         select_ptw_probe ? 3'd3 :
-                        select_xlate_probe ? lsu_xlate_req_size_i : 3'd5;
+                        select_xlate_probe ? lsu_xlate_req_size_i :
+                        select_fetch_probe ?
+                            ((L1I_FETCH_DATA_WIDTH == 512) ?
+                                3'd6 : 3'd5) : 3'd5;
     assign pmp_write_o = select_lsu_probe ? lsu_write_q :
                          select_xlate_probe ? lsu_xlate_req_write_i :
                          1'b0;
@@ -1193,6 +1202,17 @@ module openrv64_core_mtl #(
     wire l1i_resp_fire = l1i_resp_valid && l1i_resp_ready;
     wire [FETCH_SLOT_WIDTH-1:0] l1i_resp_slot = l1i_resp_tag;
     assign l1i_resp_ready = 1'b1;
+
+    generate
+        if (L1I_FETCH_DATA_WIDTH ==
+            `OPENRV64_ICX_LINE_DATA_WIDTH) begin : g_l1i_full_line
+            assign l1i_fetch_rdata = l1i_req_rdata;
+        end else begin : g_l1i_half_line
+            assign l1i_fetch_rdata =
+                fetch_vaddr_q[l1i_resp_slot][5] ?
+                    l1i_req_rdata[511:256] : l1i_req_rdata[255:0];
+        end
+    endgenerate
 
     wire l1d_pipe_request = pipe_fast_candidate;
     wire l1d_serial_tag_busy =
@@ -1842,7 +1862,8 @@ module openrv64_core_mtl #(
                 fetch_stash_q[fetch_index] <= 1'b0;
                 fetch_demand_q[fetch_index] <= 1'b0;
                 fetch_cancelled_q[fetch_index] <= 1'b0;
-                fetch_data_q[fetch_index] <= {AXI_DATA_WIDTH{1'b0}};
+                fetch_data_q[fetch_index] <=
+                    {L1I_FETCH_DATA_WIDTH{1'b0}};
                 fetch_access_fault_q[fetch_index] <= 1'b0;
                 fetch_page_fault_q[fetch_index] <= 1'b0;
             end
@@ -1864,8 +1885,8 @@ module openrv64_core_mtl #(
             if (fetch_accept) begin
                 fetch_state_q[fetch_free_slot_r] <= FETCH_TRANSLATE;
                 fetch_vaddr_q[fetch_free_slot_r] <= {
-                    fetch_req_addr_i[`RV64_XLEN-1:AXI_BYTE_BITS],
-                    {AXI_BYTE_BITS{1'b0}}
+                    fetch_req_addr_i[`RV64_XLEN-1:L1I_FETCH_BYTE_BITS],
+                    {L1I_FETCH_BYTE_BITS{1'b0}}
                 };
                 fetch_priv_q[fetch_free_slot_r] <= fetch_req_priv_i;
                 fetch_vm_mode_q[fetch_free_slot_r] <= fetch_req_vm_mode_i;
@@ -1878,7 +1899,7 @@ module openrv64_core_mtl #(
                 fetch_demand_q[fetch_free_slot_r] <= fetch_req_demand_i;
                 fetch_cancelled_q[fetch_free_slot_r] <= 1'b0;
                 fetch_data_q[fetch_free_slot_r] <=
-                    {AXI_DATA_WIDTH{1'b0}};
+                    {L1I_FETCH_DATA_WIDTH{1'b0}};
                 fetch_access_fault_q[fetch_free_slot_r] <= 1'b0;
                 fetch_page_fault_q[fetch_free_slot_r] <= 1'b0;
                 fetch_tail_q <= fetch_free_slot_r + 1'b1;
@@ -1976,7 +1997,7 @@ module openrv64_core_mtl #(
             end
             if (l1i_enabled && l1i_resp_fire) begin
                 fetch_state_q[l1i_resp_slot] <= FETCH_COMPLETE;
-                fetch_data_q[l1i_resp_slot] <= l1i_req_rdata;
+                fetch_data_q[l1i_resp_slot] <= l1i_fetch_rdata;
                 fetch_access_fault_q[l1i_resp_slot] <= l1i_req_error;
                 fetch_page_fault_q[l1i_resp_slot] <= 1'b0;
             end
@@ -2307,6 +2328,14 @@ module openrv64_core_mtl #(
     initial begin
         if (AXI_DATA_WIDTH != 256)
             $fatal(1, "openrv64_core_mtl currently requires 256-bit AXI");
+        if ((L1I_FETCH_DATA_WIDTH != 256) &&
+            (L1I_FETCH_DATA_WIDTH != 512))
+            $fatal(1, "L1I fetch width must be 256 or 512 bits");
+        if (L1I_FETCH_DATA_WIDTH > `OPENRV64_ICX_LINE_DATA_WIDTH)
+            $fatal(1, "L1I fetch width exceeds the native cache line");
+        if (!ENABLE_L1I && (L1I_FETCH_DATA_WIDTH != AXI_DATA_WIDTH))
+            $fatal(1,
+                "cacheless fetch width must match the external AXI width");
         if ((FETCH_OUTSTANDING < 2) ||
             ((1 << FETCH_SLOT_WIDTH) != FETCH_OUTSTANDING))
             $fatal(1, "FETCH_OUTSTANDING must be a power of two >= 2");

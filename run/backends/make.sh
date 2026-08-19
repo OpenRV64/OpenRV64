@@ -215,8 +215,9 @@ worker() {
     ((build_result == 0)) || exit "${build_result}"
 
     phase=run
-    local -a run_command=("${make_base[@]}" "${RUN_MAKE_ARGUMENTS[@]}"
-        "${RUN_RUN_TARGETS[@]}")
+    local -a run_command=("${make_base[@]}")
+    [[ ${rebuild} == 0 ]] || run_command+=(-B)
+    run_command+=("${RUN_MAKE_ARGUMENTS[@]}" "${RUN_RUN_TARGETS[@]}")
     {
         printf 'OPENRV64_BARE_METAL_RUN_RECORD_V1\n'
         printf 'run_id=%s\n' "${run_id}"

@@ -8,6 +8,9 @@ sw-stream-suite:
 	$(MAKE) sw-stream STREAM_KERNEL=add
 	$(MAKE) sw-stream STREAM_KERNEL=triad
 
+sw-stream-vm: $(STREAM_VM_ELF) $(STREAM_VM_BIN) $(STREAM_VM_MEMH) \
+		$(STREAM_VM_DISASM)
+
 bench-stream: $(STREAM_ELF)
 	test -n "$(STREAM_MEASURE_END)"
 	$(MAKE) sim-prefetch-3p-perf \

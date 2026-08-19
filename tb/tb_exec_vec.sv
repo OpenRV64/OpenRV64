@@ -52,6 +52,18 @@ module tb_exec_vec;
     wire replay;
     wire busy;
 
+    reg lane_test_valid;
+    wire lane_test_ready;
+    reg [1:0] lane_test_tag;
+    reg lane_test_multiply;
+    reg lane_test_mac;
+    reg [31:0] lane_test_src1;
+    reg [31:0] lane_test_src2;
+    reg [31:0] lane_test_src3;
+    wire lane_test_result_valid;
+    wire [1:0] lane_test_result_tag;
+    wire [31:0] lane_test_result;
+
     reg [REG_ADDR_WIDTH-1:0] test_read_addr;
     reg [SLICE_ADDR_WIDTH-1:0] test_read_slice;
     reg test_read_valid;
@@ -120,6 +132,19 @@ module tb_exec_vec;
         .rf_write_slice_o(alu_write_slice),
         .rf_write_data_o(alu_write_data),
         .replay_o(replay), .busy_o(busy)
+    );
+
+    openrv64_exec_vec_fp32_lane #(
+        .TAG_WIDTH(2), .ADD_LATENCY(4), .MUL_LATENCY(7),
+        .MAC_LATENCY(11)
+    ) u_lane_timing (
+        .clk(clk), .rst_n(rst_n), .flush_i(1'b0),
+        .valid_i(lane_test_valid), .ready_o(lane_test_ready),
+        .tag_i(lane_test_tag), .multiply_i(lane_test_multiply),
+        .mac_i(lane_test_mac), .src1_i(lane_test_src1),
+        .src2_i(lane_test_src2), .src3_i(lane_test_src3),
+        .result_valid_o(lane_test_result_valid), .result_ready_i(1'b1),
+        .result_tag_o(lane_test_result_tag), .result_o(lane_test_result)
     );
 
     initial begin
@@ -285,6 +310,47 @@ module tb_exec_vec;
         end
     endtask
 
+    task automatic check_lane_latency;
+        input multiply;
+        input mac;
+        input [1:0] tag;
+        input [31:0] expected_result;
+        input integer expected_latency;
+        integer cycles;
+        begin
+            @(negedge clk);
+            lane_test_valid = 1'b1;
+            lane_test_tag = tag;
+            lane_test_multiply = multiply;
+            lane_test_mac = mac;
+            lane_test_src1 = 32'h4000_0000;
+            lane_test_src2 = 32'h4000_0000;
+            lane_test_src3 = 32'h3f80_0000;
+            #1;
+            if (!lane_test_ready)
+                $fatal(1, "timing-test lane did not accept an idle token");
+            @(posedge clk);
+            @(negedge clk);
+            lane_test_valid = 1'b0;
+            cycles = 0;
+            while (!lane_test_result_valid && cycles < 32) begin
+                @(posedge clk);
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            if (!lane_test_result_valid)
+                $fatal(1, "timing-test lane result timed out");
+            if (cycles != expected_latency)
+                $fatal(1, "lane latency was %0d cycles, expected %0d",
+                       cycles, expected_latency);
+            if ((lane_test_result_tag !== tag) ||
+                (lane_test_result !== expected_result))
+                $fatal(1, "timing-test lane result/tag mismatch");
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
     reg [GROUP_WIDTH-1:0] group_a;
     reg [GROUP_WIDTH-1:0] group_b;
     reg [GROUP_WIDTH-1:0] group_expected;
@@ -313,6 +379,13 @@ module tb_exec_vec;
         test_write_addr = 5'd0;
         test_write_slice = 2'd0;
         test_write_data = 64'd0;
+        lane_test_valid = 1'b0;
+        lane_test_tag = 2'd0;
+        lane_test_multiply = 1'b0;
+        lane_test_mac = 1'b0;
+        lane_test_src1 = 32'd0;
+        lane_test_src2 = 32'd0;
+        lane_test_src3 = 32'd0;
         group_a = {GROUP_WIDTH{1'b0}};
         group_b = {GROUP_WIDTH{1'b0}};
         group_expected = {GROUP_WIDTH{1'b0}};
@@ -321,6 +394,10 @@ module tb_exec_vec;
         repeat (3) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        check_lane_latency(1'b0, 1'b0, 2'd1, 32'h4080_0000, 4);
+        check_lane_latency(1'b1, 1'b0, 2'd2, 32'h4080_0000, 7);
+        check_lane_latency(1'b0, 1'b1, 2'd3, 32'h40a0_0000, 11);
 
         write_vec(5'd1, {4{64'hff00_ff00_aaaa_5555}});
         write_vec(5'd2, {4{64'h0f0f_f0f0_1234_ffff}});
@@ -441,9 +518,9 @@ module tb_exec_vec;
         finish_command(8'd12, 1'b0);
         check_vec(5'd27, 256'd0, "fp32 all-zero slice bypass");
 
-        // Two independent commands must feed the shared FP lanes before the
-        // first command completes. This distinguishes a real tagged command
-        // pipeline from a queue in front of a serial execution controller.
+        // Two independent commands must both feed the shared FP lanes while
+        // both contexts remain live. A four-cycle ADD can legitimately finish
+        // before all four slices of the following MUL have entered.
         send(8'd13, `OPENRV64_VEC_OP_FADD, VTYPE_FP32_M1,
              5'd4, 5'd5, 5'd18);
         send(8'd14, `OPENRV64_VEC_OP_FMUL, VTYPE_FP32_M1,
@@ -471,8 +548,6 @@ module tb_exec_vec;
         end
         if (!(overlap_first_fed && overlap_second_fed))
             $fatal(1, "independent vector commands did not both feed");
-        if (complete_valid)
-            $fatal(1, "first command completed before overlapping feed");
         finish_command(8'd13, 1'b0);
         finish_command(8'd14, 1'b0);
         check_vec(5'd18, {8{32'h4040_0000}}, "overlapped fp32 add");
@@ -486,7 +561,7 @@ module tb_exec_vec;
         send(8'd16, `OPENRV64_VEC_OP_VMAC, VTYPE_FP32_M1,
              5'd4, 5'd5, 5'd0);
         // The accumulator recurrence blocks another accumulator command, not
-        // independent vector work. This FADD feeds while the 22-cycle VMAC is
+        // independent vector work. This FADD feeds while the 11-cycle VMAC is
         // still live and completes into its own tagged result context.
         send(8'd17, `OPENRV64_VEC_OP_FADD, VTYPE_FP32_M1,
              5'd4, 5'd5, 5'd23);
@@ -564,7 +639,7 @@ module tb_exec_vec;
         check_vec(5'd25, {64{4'h5}}, "fp4 private MAC");
 
         // Different accumulator contexts are independent recurrences. Their
-        // VMAC commands must both feed before the first 22-cycle result exits.
+        // VMAC commands must both feed before the first 11-cycle result exits.
         send_acc(8'd31, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,
                  5'd4, 5'd0, 5'd0, 1'b0);
         send_acc(8'd32, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,

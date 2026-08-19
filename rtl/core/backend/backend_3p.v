@@ -1066,6 +1066,12 @@ module openrv64_backend_3p #(
         .completion_valid_3p_i(complete_valid),
         .completion_id_3p_i(complete_id),
         .completion_payload_3p_i(complete_payload),
+        .conditional_resolve_valid_3p_i(
+            exec_branch_resolved && exec_branch_conditional),
+        // exec_redirect_{id,slot} carry the issuing EX1 control identity even
+        // when the prediction is correct and redirect_valid remains low.
+        .conditional_resolve_id_3p_i(exec_redirect_id),
+        .conditional_resolve_slot_3p_i(exec_redirect_slot),
         .pipe_valid_3p_o(pipe_valid),
         .pipe_id_3p_o(pipe_id), .pipe_slot_3p_o(pipe_slot),
         .pipe_payload_3p_o(pipe_payload),

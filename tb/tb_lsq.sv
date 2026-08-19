@@ -385,6 +385,7 @@ module tb_lsq;
     endtask
 
     reg [TAGW-1:0] st, lt;
+    reg [63:0] perf_block_before;
     initial begin
         clk = 0; rst_n = 0; flush = 0;
         squash_younger = 0; squash_id = 0;
@@ -929,6 +930,68 @@ module tb_lsq;
         result_ready = 1'b0;
         if (!empty)
             $fatal(1, "LSQ did not report empty after final response");
+
+        reset_dut();
+
+        // The dependency counter measures loads which older stores prevent
+        // from launching.  It must not count an in-flight load merely because
+        // an older store allocates after that load has already launched.
+        alloc_load(IDW'(31), 3'd7, 64'h1_1000, 3'd3);
+        take_xlate(1'b0, 64'h1_1000, lt);
+        respond_xlate(lt, 64'h2000, 0, 0);
+        take_req(1'b0, 64'h2000, lt);
+        perf_block_before = dut.perf_load_dependency_block_cycles_q;
+        alloc_store(IDW'(30), 3'd6, 64'h1_2000, 3'd3,
+                    64'h0123_4567_89ab_cdef, 8'hff);
+        #1;
+        if (!dut.load_block_r[lt])
+            $fatal(1,
+                "late older store did not exercise issued-load block predicate");
+        req_ready = 1'b1;
+        repeat (2) tick();
+        req_ready = 1'b0;
+        if (dut.perf_load_dependency_block_cycles_q != perf_block_before)
+            $fatal(1,
+                "dependency counter included already-issued load before=%0d after=%0d",
+                perf_block_before,
+                dut.perf_load_dependency_block_cycles_q);
+
+        reset_dut();
+
+        // An uncacheable load with an older store is not store-stalled until
+        // it is also the ordered head.  Before that point ordered-device
+        // eligibility is the independent reason it cannot launch.
+        alloc_store(IDW'(22), 3'd4, 64'h3000, 3'd3,
+                    64'hfeed_face_cafe_beef, 8'hff);
+        take_xlate(1'b1, 64'h3000, st);
+        respond_xlate(st, 64'h3000, 0, 0);
+        alloc_load(IDW'(23), 3'd5, 64'h1_0008, 3'd3);
+        take_xlate(1'b0, 64'h1_0008, lt);
+        respond_xlate(lt, 64'h1_0008, 0, 0);
+        #1;
+        if (!dut.load_block_r[lt])
+            $fatal(1,
+                "device load did not exercise older-store block predicate");
+        perf_block_before = dut.perf_load_dependency_block_cycles_q;
+        req_ready = 1'b1;
+        repeat (2) tick();
+        if (dut.perf_load_dependency_block_cycles_q != perf_block_before)
+            $fatal(1,
+                "dependency counter included non-head device load before=%0d after=%0d",
+                perf_block_before,
+                dut.perf_load_dependency_block_cycles_q);
+        head_valid = 1'b1;
+        head_id = IDW'(23);
+        head_slot = 3'd5;
+        tick();
+        if (dut.perf_load_dependency_block_cycles_q !=
+            perf_block_before + 1'b1)
+            $fatal(1,
+                "dependency counter missed eligible device load before=%0d after=%0d",
+                perf_block_before,
+                dut.perf_load_dependency_block_cycles_q);
+        head_valid = 1'b0;
+        req_ready = 1'b0;
 
         $display("PASS: unified LSQ ordering, physical bypass, forwarding, faults, and selective recovery");
         $finish;

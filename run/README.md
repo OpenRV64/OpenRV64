@@ -37,6 +37,10 @@ Bare-metal start overrides are `--jobs N`, `--rebuild`, `--foreground`,
 `--manifest-only`, `--timeout-seconds N`, and Make-style `NAME=value`
 assignments.
 
+`--rebuild` passes `-B` to both the build-phase and run-phase Make targets.
+This matters when a simulator executable is a dependency of the run target
+rather than an explicit build target.
+
 Managed jobs have a 259200-second (72-hour) wall-clock timeout covering both
 build and execution. A configuration may override it with
 `RUN_TIMEOUT_SECONDS`; `--timeout-seconds N` overrides one invocation, and

@@ -10,7 +10,9 @@
 // FP64 datapath in this module.
 module openrv64_exec_vec_fp32_lane #(
     parameter integer TAG_WIDTH = 2,
-    parameter integer PIPELINE_STAGES = 11
+    parameter integer ADD_LATENCY = 4,
+    parameter integer MUL_LATENCY = 7,
+    parameter integer MAC_LATENCY = ADD_LATENCY + MUL_LATENCY
 ) (
     input  wire                     clk,
     input  wire                     rst_n,
@@ -326,70 +328,144 @@ module openrv64_exec_vec_fp32_lane #(
         end
     endfunction
 
-    reg [PIPELINE_STAGES-1:0] valid_q;
-    reg [PIPELINE_STAGES-1:0] mac_mode_q;
-    reg [TAG_WIDTH-1:0] tag_q [0:PIPELINE_STAGES-1];
-    reg [31:0] result_q [0:PIPELINE_STAGES-1];
-    reg [31:0] acc_q [0:PIPELINE_STAGES-1];
-    localparam integer MAC_ADD_STAGE = PIPELINE_STAGES / 2;
+    // Stage zero captures an accepted token. Result-stage indices therefore
+    // equal accepted-token-to-result cycle latency without an off-by-one.
+    localparam integer PIPELINE_DEPTH = MAC_LATENCY + 1;
+    localparam integer ADD_RESULT_STAGE = ADD_LATENCY;
+    localparam integer MUL_RESULT_STAGE = MUL_LATENCY;
+    localparam integer MAC_RESULT_STAGE = MAC_LATENCY;
+    localparam integer MAC_ADD_STAGE = MUL_LATENCY + 1;
 
-    // A globally stalled token pipeline preserves one-slice-per-cycle
-    // throughput while keeping tags aligned. MAC tokens compute and register
-    // their product at stage zero, then cross a second registered add boundary
-    // halfway through the pipe. PIPELINE_STAGES is a timing implementation
-    // parameter, not architectural state.
-    wire pipeline_advance = !valid_q[PIPELINE_STAGES-1] || result_ready_i;
-    assign ready_o = pipeline_advance;
-    assign result_valid_o = valid_q[PIPELINE_STAGES-1];
-    assign result_tag_o = tag_q[PIPELINE_STAGES-1];
-    assign result_o = result_q[PIPELINE_STAGES-1];
+    reg [PIPELINE_DEPTH-1:0] valid_q;
+    reg [PIPELINE_DEPTH-1:0] multiply_mode_q;
+    reg [PIPELINE_DEPTH-1:0] mac_mode_q;
+    reg [PIPELINE_DEPTH-1:0] output_reservation_q;
+    reg [TAG_WIDTH-1:0] tag_q [0:PIPELINE_DEPTH-1];
+    reg [31:0] result_q [0:PIPELINE_DEPTH-1];
+    reg [31:0] acc_q [0:PIPELINE_DEPTH-1];
+
+    wire add_result_valid = valid_q[ADD_RESULT_STAGE] &&
+                            !multiply_mode_q[ADD_RESULT_STAGE] &&
+                            !mac_mode_q[ADD_RESULT_STAGE];
+    wire mul_result_valid = valid_q[MUL_RESULT_STAGE] &&
+                            multiply_mode_q[MUL_RESULT_STAGE] &&
+                            !mac_mode_q[MUL_RESULT_STAGE];
+    wire mac_result_valid = valid_q[MAC_RESULT_STAGE] &&
+                            mac_mode_q[MAC_RESULT_STAGE];
+    assign result_valid_o = add_result_valid || mul_result_valid ||
+                            mac_result_valid;
+    assign result_tag_o = add_result_valid ? tag_q[ADD_RESULT_STAGE] :
+                          mul_result_valid ? tag_q[MUL_RESULT_STAGE] :
+                          tag_q[MAC_RESULT_STAGE];
+    assign result_o = add_result_valid ? result_q[ADD_RESULT_STAGE] :
+                      mul_result_valid ? result_q[MUL_RESULT_STAGE] :
+                      result_q[MAC_RESULT_STAGE];
+
+    // Different operation latencies can otherwise target the single result
+    // port in the same cycle. Reserve completion cycles at issue and insert a
+    // feed bubble only at such a collision. Equal-latency streams retain one
+    // accepted slice per cycle.
+    wire add_completion_reserved =
+        output_reservation_q[ADD_RESULT_STAGE+1];
+    wire mul_completion_reserved =
+        output_reservation_q[MUL_RESULT_STAGE+1];
+    wire input_completion_reserved = mac_i ? 1'b0 :
+        (multiply_i ? mul_completion_reserved : add_completion_reserved);
+
+    // The multiplier and adder have independent token-latency tracks. MAC uses
+    // the multiplier first and the same adder as standalone ADD after the
+    // multiply latency. An incoming ADD stalls on that one shared-adder cycle.
+    wire mac_add_due = valid_q[MUL_RESULT_STAGE] &&
+                       mac_mode_q[MUL_RESULT_STAGE];
+    wire input_uses_adder = !multiply_i && !mac_i;
+    wire pipeline_advance = !result_valid_o || result_ready_i;
+    assign ready_o = pipeline_advance && !input_completion_reserved &&
+                     !(input_uses_adder && mac_add_due);
+    wire [31:0] shared_add_src1 = mac_add_due ?
+        acc_q[MUL_RESULT_STAGE] : src1_i;
+    wire [31:0] shared_add_src2 = mac_add_due ?
+        result_q[MUL_RESULT_STAGE] : src2_i;
+    wire [31:0] shared_add_result = add_fp32(
+        shared_add_src1, shared_add_src2);
 
     integer pipeline_index;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            valid_q <= {PIPELINE_STAGES{1'b0}};
-            mac_mode_q <= {PIPELINE_STAGES{1'b0}};
-            for (pipeline_index = 0; pipeline_index < PIPELINE_STAGES;
+            valid_q <= {PIPELINE_DEPTH{1'b0}};
+            multiply_mode_q <= {PIPELINE_DEPTH{1'b0}};
+            mac_mode_q <= {PIPELINE_DEPTH{1'b0}};
+            output_reservation_q <= {PIPELINE_DEPTH{1'b0}};
+            for (pipeline_index = 0; pipeline_index < PIPELINE_DEPTH;
                  pipeline_index = pipeline_index + 1) begin
                 tag_q[pipeline_index] <= {TAG_WIDTH{1'b0}};
                 result_q[pipeline_index] <= 32'd0;
                 acc_q[pipeline_index] <= 32'd0;
             end
         end else if (flush_i) begin
-            valid_q <= {PIPELINE_STAGES{1'b0}};
-            mac_mode_q <= {PIPELINE_STAGES{1'b0}};
+            valid_q <= {PIPELINE_DEPTH{1'b0}};
+            multiply_mode_q <= {PIPELINE_DEPTH{1'b0}};
+            mac_mode_q <= {PIPELINE_DEPTH{1'b0}};
+            output_reservation_q <= {PIPELINE_DEPTH{1'b0}};
         end else if (pipeline_advance) begin
-            for (pipeline_index = PIPELINE_STAGES - 1;
+            for (pipeline_index = 0;
+                 pipeline_index < PIPELINE_DEPTH - 1;
+                 pipeline_index = pipeline_index + 1)
+                output_reservation_q[pipeline_index] <=
+                    output_reservation_q[pipeline_index+1];
+            output_reservation_q[PIPELINE_DEPTH-1] <= 1'b0;
+            if (valid_i && ready_o) begin
+                if (mac_i)
+                    output_reservation_q[MAC_RESULT_STAGE] <= 1'b1;
+                else if (multiply_i)
+                    output_reservation_q[MUL_RESULT_STAGE] <= 1'b1;
+                else
+                    output_reservation_q[ADD_RESULT_STAGE] <= 1'b1;
+            end
+
+            for (pipeline_index = PIPELINE_DEPTH - 1;
                  pipeline_index > 0;
                  pipeline_index = pipeline_index - 1) begin
-                valid_q[pipeline_index] <= valid_q[pipeline_index-1];
+                valid_q[pipeline_index] <= valid_q[pipeline_index-1] &&
+                    !((((pipeline_index - 1) == ADD_RESULT_STAGE) &&
+                       !multiply_mode_q[pipeline_index-1] &&
+                       !mac_mode_q[pipeline_index-1]) ||
+                      (((pipeline_index - 1) == MUL_RESULT_STAGE) &&
+                       multiply_mode_q[pipeline_index-1] &&
+                       !mac_mode_q[pipeline_index-1]) ||
+                      (((pipeline_index - 1) == MAC_RESULT_STAGE) &&
+                       mac_mode_q[pipeline_index-1]));
+                multiply_mode_q[pipeline_index] <=
+                    multiply_mode_q[pipeline_index-1];
                 mac_mode_q[pipeline_index] <=
                     mac_mode_q[pipeline_index-1];
                 tag_q[pipeline_index] <= tag_q[pipeline_index-1];
                 result_q[pipeline_index] <= result_q[pipeline_index-1];
                 acc_q[pipeline_index] <= acc_q[pipeline_index-1];
             end
-            valid_q[0] <= valid_i;
-            mac_mode_q[0] <= valid_i && mac_i;
+            valid_q[0] <= valid_i && ready_o;
+            multiply_mode_q[0] <= valid_i && ready_o && multiply_i;
+            mac_mode_q[0] <= valid_i && ready_o && mac_i;
             tag_q[0] <= tag_i;
-            if (valid_i) begin
-                result_q[0] <= (mac_i || multiply_i) ?
-                    multiply_fp32(src1_i, src2_i) :
-                    add_fp32(src1_i, src2_i);
+            if (valid_i && ready_o) begin
                 acc_q[0] <= src3_i;
+                if (mac_i || multiply_i)
+                    result_q[0] <= multiply_fp32(src1_i, src2_i);
             end
-            if (valid_q[MAC_ADD_STAGE-1] &&
-                mac_mode_q[MAC_ADD_STAGE-1])
-                result_q[MAC_ADD_STAGE] <= add_fp32(
-                    acc_q[MAC_ADD_STAGE-1],
-                    result_q[MAC_ADD_STAGE-1]);
+            if (mac_add_due)
+                result_q[MAC_ADD_STAGE] <= shared_add_result;
+            else if (valid_i && ready_o && !mac_i && !multiply_i)
+                result_q[0] <= shared_add_result;
         end
     end
 
 `ifndef SYNTHESIS
     initial begin
-        if (PIPELINE_STAGES < 2)
-            $fatal(1, "FP lane pipeline must have at least two stages");
+        if (ADD_LATENCY < 1)
+            $fatal(1, "FP ADD latency must be at least one cycle");
+        if (MUL_LATENCY <= ADD_LATENCY)
+            $fatal(1, "FP MUL latency must exceed FP ADD latency");
+        if (MAC_LATENCY != (MUL_LATENCY + ADD_LATENCY))
+            $fatal(1, "FP MAC latency must equal MUL plus ADD latency");
     end
 `endif
 
@@ -408,8 +484,9 @@ module openrv64_exec_vec #(
     parameter integer NUM_REGS = 32,
     parameter integer MAX_LMUL = 8,
     parameter integer LMUL_WIDTH = 2,
-    parameter integer FP_PIPELINE_STAGES = 11,
-    parameter integer MAC_PIPELINE_STAGES = 22,
+    parameter integer ADD_LATENCY = 4,
+    parameter integer MUL_LATENCY = 7,
+    parameter integer MAC_LATENCY = ADD_LATENCY + MUL_LATENCY,
     parameter integer INFLIGHT_DEPTH = 8,
     parameter integer SLICE_ADDR_WIDTH =
         ((VLEN / DATAPATH_WIDTH) <= 1) ? 1 :
@@ -810,7 +887,7 @@ module openrv64_exec_vec #(
     wire fp_zero_early = (fp_src1_chunk == 0) && (fp_src2_chunk == 0);
     wire bit_needs_src2 = active_op_q != `OPENRV64_VEC_OP_NOT;
     assign rf_read_valid_o[0] = execution_reads &&
-        ((state_q == STATE_BIT_EXEC) || fp_zero_early || all_lane_ready);
+        ((state_q == STATE_BIT_EXEC) || all_lane_ready);
     assign rf_read_valid_o[1] = rf_read_valid_o[0] &&
         ((state_q == STATE_FP_FEED) || bit_needs_src2);
     assign rf_read_addr_o = {
@@ -842,7 +919,8 @@ module openrv64_exec_vec #(
         endcase
     end
 
-    wire fp_feed_valid = (state_q == STATE_FP_FEED) && rf_reads_ready &&
+    wire fp_feed_valid = (state_q == STATE_FP_FEED) &&
+                         rf_read_valid_o[0] && rf_reads_ready &&
                          !fp_zero_early;
     wire fp_multiply = active_op_q == `OPENRV64_VEC_OP_FMUL;
     wire [FP_LANES-1:0] lane_result_valid;
@@ -851,7 +929,8 @@ module openrv64_exec_vec #(
     wire lane_result_ready = (state_q == STATE_FP_FEED) ||
                              (state_q == STATE_FP_DRAIN);
     wire fp_lane_feed_fire = fp_feed_valid && all_lane_ready;
-    wire fp_early_fire = (state_q == STATE_FP_FEED) && rf_reads_ready &&
+    wire fp_early_fire = (state_q == STATE_FP_FEED) &&
+                         rf_read_valid_o[0] && rf_reads_ready &&
                          fp_zero_early;
     wire fp_feed_fire = fp_lane_feed_fire || fp_early_fire;
     wire fp_result_fire = lane_result_valid[0] && lane_result_ready;
@@ -875,7 +954,9 @@ module openrv64_exec_vec #(
                 fp_src2_chunk, active_fmt_q, lane_index);
             openrv64_exec_vec_fp32_lane #(
                 .TAG_WIDTH(CHUNK_INDEX_WIDTH),
-                .PIPELINE_STAGES(FP_PIPELINE_STAGES)
+                .ADD_LATENCY(ADD_LATENCY),
+                .MUL_LATENCY(MUL_LATENCY),
+                .MAC_LATENCY(MAC_LATENCY)
             ) u_lane (
                 .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
                 .valid_i(fp_feed_valid), .ready_o(lane_ready[lane_index]),
@@ -1135,7 +1216,7 @@ module openrv64_exec_vec #(
     // A command remains in its result context through tagged completion and
     // architectural writeback.  The lane token carries both the context slot
     // and slice index, allowing younger independent commands to enter while
-    // older results are still crossing the eleven-stage pipeline.
+    // older results are still crossing an operation-specific pipeline.
     localparam integer SLOT_WIDTH =
         (INFLIGHT_DEPTH <= 1) ? 1 : $clog2(INFLIGHT_DEPTH);
     localparam integer USED_WIDTH =
@@ -1334,8 +1415,6 @@ module openrv64_exec_vec #(
 
     wire [FP_LANES-1:0] lane_ready;
     wire all_lane_ready = &lane_ready;
-    wire [FP_LANES-1:0] mac_lane_ready;
-    wire all_mac_lane_ready = &mac_lane_ready;
     wire [DATAPATH_WIDTH-1:0] src1_chunk =
         rf_read_data_i[0*DATAPATH_WIDTH +: DATAPATH_WIDTH];
     wire [DATAPATH_WIDTH-1:0] src2_chunk =
@@ -1343,8 +1422,7 @@ module openrv64_exec_vec #(
     wire fp_zero_early = feed_fp_op &&
                          (src1_chunk == 0) && (src2_chunk == 0);
     wire feed_engine_ready = feed_bit_op || feed_vlda || feed_vsta ||
-        fp_zero_early || (feed_fp_op && all_lane_ready) ||
-        (feed_vmac && all_mac_lane_ready);
+        ((feed_fp_op || feed_vmac) && all_lane_ready);
     assign rf_read_valid_o[0] = execution_reads && feed_needs_src1 &&
                                 feed_engine_ready;
     assign rf_read_valid_o[1] = rf_read_valid_o[0] && feed_needs_src2;
@@ -1382,14 +1460,16 @@ module openrv64_exec_vec #(
         feed_vlda ? src1_chunk :
         acc_slice_q[slot_acc_q[feed_slot]][feed_index];
     wire fp_feed_valid = execution_reads && feed_fp_op &&
-                         rf_reads_ready && !fp_zero_early;
+                         rf_read_valid_o[0] && rf_reads_ready &&
+                         !fp_zero_early;
     wire mac_feed_valid = execution_reads && feed_vmac &&
-                          rf_reads_ready;
+                          rf_read_valid_o[0] && rf_reads_ready;
     wire fp_multiply = slot_op_q[feed_slot] == `OPENRV64_VEC_OP_FMUL;
     wire fp_lane_feed_fire = fp_feed_valid && all_lane_ready;
-    wire mac_lane_feed_fire = mac_feed_valid && all_mac_lane_ready;
+    wire mac_lane_feed_fire = mac_feed_valid && all_lane_ready;
     wire fp_early_fire = execution_reads && feed_fp_op &&
-                         rf_reads_ready && fp_zero_early;
+                         rf_read_valid_o[0] && rf_reads_ready &&
+                         fp_zero_early;
     wire feed_fire = bit_exec_fire || acc_copy_exec_fire ||
                      fp_lane_feed_fire || mac_lane_feed_fire ||
                      fp_early_fire;
@@ -1400,22 +1480,21 @@ module openrv64_exec_vec #(
     wire [FP_LANES-1:0] lane_result_valid;
     wire [TOKEN_TAG_WIDTH-1:0] lane_result_tag [0:FP_LANES-1];
     wire [31:0] lane_result [0:FP_LANES-1];
-    wire fp_result_fire = lane_result_valid[0];
-    wire [SLOT_WIDTH-1:0] fp_result_slot =
+    wire unified_result_fire = lane_result_valid[0];
+    wire [SLOT_WIDTH-1:0] unified_result_slot =
         lane_result_tag[0][TOKEN_TAG_WIDTH-1 -: SLOT_WIDTH];
-    wire [CHUNK_INDEX_WIDTH-1:0] fp_result_index =
+    wire [CHUNK_INDEX_WIDTH-1:0] unified_result_index =
         lane_result_tag[0][CHUNK_INDEX_WIDTH-1:0];
+    wire unified_result_is_mac =
+        slot_op_q[unified_result_slot] == `OPENRV64_VEC_OP_VMAC;
+    wire fp_result_fire = unified_result_fire && !unified_result_is_mac;
+    wire mac_result_fire = unified_result_fire && unified_result_is_mac;
+    wire [SLOT_WIDTH-1:0] fp_result_slot = unified_result_slot;
+    wire [CHUNK_INDEX_WIDTH-1:0] fp_result_index = unified_result_index;
+    wire [SLOT_WIDTH-1:0] mac_result_slot = unified_result_slot;
+    wire [CHUNK_INDEX_WIDTH-1:0] mac_result_index = unified_result_index;
     wire fp_lane_flush = 1'b0;
-
-    wire [FP_LANES-1:0] mac_lane_result_valid;
-    wire [TOKEN_TAG_WIDTH-1:0]
-        mac_lane_result_tag [0:FP_LANES-1];
-    wire [31:0] mac_lane_result [0:FP_LANES-1];
-    wire mac_result_fire = mac_lane_result_valid[0];
-    wire [SLOT_WIDTH-1:0] mac_result_slot =
-        mac_lane_result_tag[0][TOKEN_TAG_WIDTH-1 -: SLOT_WIDTH];
-    wire [CHUNK_INDEX_WIDTH-1:0] mac_result_index =
-        mac_lane_result_tag[0][CHUNK_INDEX_WIDTH-1:0];
+    wire unified_lane_feed_valid = fp_feed_valid || mac_feed_valid;
 
     genvar lane_index;
     generate
@@ -1431,32 +1510,20 @@ module openrv64_exec_vec #(
                 lane_index);
             openrv64_exec_vec_fp32_lane #(
                 .TAG_WIDTH(TOKEN_TAG_WIDTH),
-                .PIPELINE_STAGES(FP_PIPELINE_STAGES)
+                .ADD_LATENCY(ADD_LATENCY),
+                .MUL_LATENCY(MUL_LATENCY),
+                .MAC_LATENCY(MAC_LATENCY)
             ) u_lane (
                 .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
-                .valid_i(fp_feed_valid), .ready_o(lane_ready[lane_index]),
+                .valid_i(unified_lane_feed_valid),
+                .ready_o(lane_ready[lane_index]),
                 .tag_i(feed_token_tag), .multiply_i(fp_multiply),
-                .mac_i(1'b0), .src1_i(lane_src1), .src2_i(lane_src2),
-                .src3_i(32'd0),
+                .mac_i(feed_vmac), .src1_i(lane_src1),
+                .src2_i(lane_src2), .src3_i(lane_acc),
                 .result_valid_o(lane_result_valid[lane_index]),
                 .result_ready_i(1'b1),
                 .result_tag_o(lane_result_tag[lane_index]),
                 .result_o(lane_result[lane_index])
-            );
-            openrv64_exec_vec_fp32_lane #(
-                .TAG_WIDTH(TOKEN_TAG_WIDTH),
-                .PIPELINE_STAGES(MAC_PIPELINE_STAGES)
-            ) u_mac_lane (
-                .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
-                .valid_i(mac_feed_valid),
-                .ready_o(mac_lane_ready[lane_index]),
-                .tag_i(feed_token_tag), .multiply_i(1'b0), .mac_i(1'b1),
-                .src1_i(lane_src1), .src2_i(lane_src2),
-                .src3_i(lane_acc),
-                .result_valid_o(mac_lane_result_valid[lane_index]),
-                .result_ready_i(1'b1),
-                .result_tag_o(mac_lane_result_tag[lane_index]),
-                .result_o(mac_lane_result[lane_index])
             );
         end
     endgenerate
@@ -1504,25 +1571,25 @@ module openrv64_exec_vec #(
                 for (mac_pack_index = 0; mac_pack_index < 16;
                      mac_pack_index = mac_pack_index + 1)
                     mac_result_chunk[mac_pack_index*4 +: 4] =
-                        fp32_to_fp4(mac_lane_result[mac_pack_index]);
+                        fp32_to_fp4(lane_result[mac_pack_index]);
             end
             `OPENRV64_VEC_FMT_FP8_E4M3: begin
                 for (mac_pack_index = 0; mac_pack_index < 8;
                      mac_pack_index = mac_pack_index + 1)
                     mac_result_chunk[mac_pack_index*8 +: 8] =
-                        fp32_to_fp8(mac_lane_result[mac_pack_index]);
+                        fp32_to_fp8(lane_result[mac_pack_index]);
             end
             `OPENRV64_VEC_FMT_BF16: begin
                 for (mac_pack_index = 0; mac_pack_index < 4;
                      mac_pack_index = mac_pack_index + 1)
                     mac_result_chunk[mac_pack_index*16 +: 16] =
-                        fp32_to_bf16(mac_lane_result[mac_pack_index]);
+                        fp32_to_bf16(lane_result[mac_pack_index]);
             end
             `OPENRV64_VEC_FMT_FP32: begin
                 for (mac_pack_index = 0; mac_pack_index < 2;
                      mac_pack_index = mac_pack_index + 1)
                     mac_result_chunk[mac_pack_index*32 +: 32] =
-                        mac_lane_result[mac_pack_index];
+                        lane_result[mac_pack_index];
             end
             default:
                 mac_result_chunk = {DATAPATH_WIDTH{1'b0}};
@@ -1772,8 +1839,12 @@ module openrv64_exec_vec #(
         if ((INFLIGHT_DEPTH < 2) ||
             ((INFLIGHT_DEPTH & (INFLIGHT_DEPTH - 1)) != 0))
             $fatal(1, "vector in-flight depth must be a power of two >= 2");
-        if (MAC_PIPELINE_STAGES < 2)
-            $fatal(1, "vector MAC pipeline requires at least two stages");
+        if (ADD_LATENCY < 1)
+            $fatal(1, "vector ADD latency must be at least one cycle");
+        if (MUL_LATENCY <= ADD_LATENCY)
+            $fatal(1, "vector MUL latency must exceed ADD latency");
+        if (MAC_LATENCY != (MUL_LATENCY + ADD_LATENCY))
+            $fatal(1, "vector MAC latency must equal MUL plus ADD latency");
     end
 
     always @(posedge clk) begin
@@ -1795,9 +1866,8 @@ module openrv64_exec_vec #(
                     $fatal(1, "vector MAC result targeted a non-MAC context");
                 for (check_lane = 1; check_lane < FP_LANES;
                      check_lane = check_lane + 1) begin
-                    if (!mac_lane_result_valid[check_lane] ||
-                        (mac_lane_result_tag[check_lane] !=
-                         mac_lane_result_tag[0]))
+                    if (!lane_result_valid[check_lane] ||
+                        (lane_result_tag[check_lane] != lane_result_tag[0]))
                         $fatal(1, "vector MAC lanes lost pipeline lockstep");
                 end
             end
