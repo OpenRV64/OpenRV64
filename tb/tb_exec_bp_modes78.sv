@@ -190,23 +190,30 @@ module tb_exec_bp_modes78;
             mode8_prediction_taken || !mode8_prediction_weak)
             $fatal(1, "modes 7/8 did not preserve cold forward BTFNT");
 
-        // Force the two tournament components to disagree at PC 0x100.
-        // The weak-global chooser must select global, then move toward local
-        // when only the local component predicts the actual taken outcome.
+        // Agreement is still weak until the global entry, this branch's local
+        // history, and the selected local PHT entry are all valid.
         dut8.g_tournament.u_tournament.global_valid_q[0] = 1'b1;
-        dut8.g_tournament.u_tournament.global_counter_q[0] = 3'b000;
+        dut8.g_tournament.u_tournament.global_counter_q[0] = 3'b010;
         dut8.g_tournament.u_tournament.local_valid_q[0] = 1'b1;
         dut8.g_tournament.u_tournament.local_counter_q[0] = 3'b000;
         dut8.g_tournament.u_tournament.chooser_valid_q[0] = 1'b1;
         dut8.g_tournament.u_tournament.chooser_counter_q[0] = 2'b01;
         #1;
+        if (mode8_prediction_taken || !mode8_prediction_weak)
+            $fatal(1, "invalid local history did not report weak");
+        dut8.g_tournament.u_tournament.local_history_q[0] = 2'b00;
+        dut8.g_tournament.u_tournament.local_history_valid_q[0] = 1'b1;
+        #1;
         if (mode8_prediction_taken || mode8_prediction_weak)
             $fatal(1, "tournament agreement incorrectly reported weak");
 
+        // Force the two trained tournament components to disagree. The
+        // weak-global chooser must select global, then move toward local when
+        // only the local component predicts the actual taken outcome.
         dut8.g_tournament.u_tournament.local_counter_q[0] = 3'b111;
         #1;
         if (mode8_prediction_taken || !mode8_prediction_weak)
-            $fatal(1, "tournament weak-global selection is incorrect");
+            $fatal(1, "tournament disagreement did not report weak");
 
         allocate_branch(10'd10, 64'h100);
         resolve_branch(10'd10, 64'h100, 1'b1, 1'b1);
@@ -223,11 +230,19 @@ module tb_exec_bp_modes78;
         dut8.g_tournament.u_tournament.local_counter_q[1] = 3'b111;
         #1;
         if (!mode8_prediction_taken || !mode8_prediction_weak)
-            $fatal(1, "weak-local chooser selection is incorrect");
+            $fatal(1, "weak chooser hid component disagreement");
         dut8.g_tournament.u_tournament.chooser_counter_q[0] = 2'b11;
         #1;
+        if (!mode8_prediction_taken || !mode8_prediction_weak)
+            $fatal(1, "strong chooser hid component disagreement");
+        dut8.g_tournament.u_tournament.local_counter_q[1] = 3'b101;
+        #1;
+        if (!mode8_prediction_taken || !mode8_prediction_weak)
+            $fatal(1, "counter strength hid component disagreement");
+        dut8.g_tournament.u_tournament.global_counter_q[1] = 3'b111;
+        #1;
         if (!mode8_prediction_taken || mode8_prediction_weak)
-            $fatal(1, "strong-local chooser selection reported weak");
+            $fatal(1, "component agreement reported weak");
         lookup_valid = 1'b0;
 
         // Tagged mode must retain its older checkpoint, allow a younger

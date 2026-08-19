@@ -71,7 +71,7 @@ module openrv64_top_4pf #(
     parameter ENABLE_PREDECODE_TARGETS = 1,
     parameter ENABLE_FETCH_CAROUSEL = 1,
     parameter ENABLE_FETCH_ALT_LOOKASIDE = 3,
-    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
+    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 1,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter BP_RAS_ENABLE = 1,
     parameter integer BP_RAS_DEPTH = 8,

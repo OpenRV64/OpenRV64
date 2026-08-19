@@ -27,6 +27,19 @@ sw-linux-user-pthread-test: $(LINUX_USER_PTHREAD_BIN)
 
 sw-coremark-loop: $(COREMARK_LOOP_ELF) $(COREMARK_LOOP_BIN)
 
+sw-coremark: sw-coremark-bare
+
+sw-coremark-bare: $(COREMARK_BARE_ELF) $(COREMARK_BARE_BIN) \
+		$(COREMARK_BARE_MEMH) $(COREMARK_BARE_DISASM)
+
+sw-coremark-bare-smoke: $(COREMARK_BARE_SMOKE_ELF) \
+		$(COREMARK_BARE_SMOKE_BIN) $(COREMARK_BARE_SMOKE_MEMH) \
+		$(COREMARK_BARE_SMOKE_DISASM)
+
+sw-coremark-bare-run: $(COREMARK_BARE_RUN_ELF) \
+		$(COREMARK_BARE_RUN_BIN) $(COREMARK_BARE_RUN_MEMH) \
+		$(COREMARK_BARE_RUN_DISASM)
+
 sw-coremark-loop-vm: $(CORE_3P_VM_ELF) $(CORE_3P_VM_BIN) \
 		$(CORE_3P_VM_MEMH) $(CORE_3P_VM_DISASM)
 

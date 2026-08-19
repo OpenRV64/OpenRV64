@@ -9,6 +9,7 @@ output_edif=${OUTPUT_EDIF:-$output_dir/openrv64_fpga_core.edif}
 output_json=${OUTPUT_JSON:-$output_dir/openrv64_fpga_core.json}
 output_stub=${OUTPUT_STUB:-$output_dir/openrv64_fpga_core_stub.v}
 output_log=${OUTPUT_LOG:-$output_dir/yosys-core.log}
+rv64m_source=${RV64M_SOURCE:-rtl/core/exec/alu/rv64-m-fpga.v}
 
 if ! yosys_bin=$(command -v "$yosys_bin"); then
     echo "error: Yosys executable not found: ${YOSYS:-yosys}" >&2
@@ -17,9 +18,14 @@ fi
 
 mkdir -p "$output_dir"
 
+if [[ ! -s "$repo_root/$rv64m_source" ]]; then
+    echo "error: FPGA RV64M source not found: $rv64m_source" >&2
+    exit 2
+fi
+
 mapfile -t rtl_sources < <(
     cd "$repo_root"
-    make -pn 2>/dev/null |
+    make RV64M_EXEC_SRC="$rv64m_source" -pn 2>/dev/null |
         awk '/^(CORE_SRCS|PLATFORM_SRCS) :=/ {
             for (i = 3; i <= NF; i++)
                 if (!seen[$i]++ && $i !~ /\/debug\/stub[.]v$/)
@@ -54,6 +60,8 @@ chparam -set RESET_VECTOR 4096 \
         -set ENABLE_RV64A 1 \
         -set ENABLE_FORWARDING 1 \
         -set ENABLE_LOAD_FORWARDING 0 \
+        -set PMP_ACTIVE_ENTRIES 4 \
+        -set FPGA_GPR_LUTRAM 1 \
         -set L1D_CACHEABLE_BASE 2147483648 \
         -set L1D_CACHEABLE_SIZE 268435456 \
         -set GENBUS_TLB_ENTRIES 4 \
@@ -86,4 +94,18 @@ cd "$repo_root"
 test -s "$output_edif"
 test -s "$output_json"
 test -s "$output_stub"
+if [[ "$rv64m_source" == */rv64-m-fpga.v ]]; then
+    dsp_count=$(grep -c '"type": "DSP48E1"' "$output_json" || true)
+    if (( dsp_count == 0 )); then
+        echo "error: FPGA RV64M multiplier did not map to DSP48E1 cells" >&2
+        exit 1
+    fi
+    printf 'OpenRV64 FPGA RV64M DSP48E1 cells: %d\n' "$dsp_count"
+fi
+gpr_lutram_count=$(grep -c '"type": "RAM32M"' "$output_json" || true)
+if (( gpr_lutram_count == 0 )); then
+    echo "error: FPGA GPR did not map to RAM32M cells" >&2
+    exit 1
+fi
+printf 'OpenRV64 FPGA GPR RAM32M cells: %d\n' "$gpr_lutram_count"
 printf 'OpenRV64 FPGA core EDIF: %s\n' "$output_edif"

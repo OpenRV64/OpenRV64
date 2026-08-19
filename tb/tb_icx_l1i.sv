@@ -16,6 +16,8 @@ module tb_icx_l1i;
     logic [43:0] fetch_root_ppn;
     logic fetch_cancel;
     logic context_flush;
+    logic fetch_context_change;
+    logic pmp_update;
     wire tlbi_busy;
     logic icache_invalidate;
     logic m_mode_prefetch_enable;
@@ -97,6 +99,10 @@ module tb_icx_l1i;
     integer held_response_scan;
     integer held_response_reset;
     integer response_wait_cycles;
+    integer page_screen_accept_count_q;
+    integer page_screen_launch_count_q;
+    integer page_screen_bypass_count_q;
+    integer pmp_probe_count_q;
     logic [2:0] ooo_remaining_seen;
 
     function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
@@ -133,6 +139,7 @@ module tb_icx_l1i;
 
     openrv64_core_mtl #(
         .ENABLE_L1I(1),
+        .L1I_FETCH_DATA_WIDTH(256),
         .ENABLE_L1D(1),
         .L1D_PREFETCH_ENABLE(0)
     ) dut (
@@ -207,6 +214,8 @@ module tb_icx_l1i;
         .lsu_xlate_resp_ready_i(1'b1),
         .tlbi_i(1'b0),
         .context_flush_i(context_flush),
+        .fetch_context_change_i(fetch_context_change),
+        .pmp_update_i(pmp_update),
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(icache_invalidate),
@@ -289,6 +298,10 @@ module tb_icx_l1i;
             axi_resp_valid_q <= 1'b0;
             axi_resp_id_q <= 3'd0;
             axi_read_count_q <= 0;
+            page_screen_accept_count_q <= 0;
+            page_screen_launch_count_q <= 0;
+            page_screen_bypass_count_q <= 0;
+            pmp_probe_count_q <= 0;
             for (held_response_reset = 0;
                  held_response_reset < 16;
                  held_response_reset = held_response_reset + 1) begin
@@ -298,6 +311,17 @@ module tb_icx_l1i;
                 held_response_data_q[held_response_reset] <= '0;
             end
         end else begin
+            if (dut.fetch_page_screen_accept)
+                page_screen_accept_count_q <=
+                    page_screen_accept_count_q + 1;
+            if (dut.fetch_page_screen_launch)
+                page_screen_launch_count_q <=
+                    page_screen_launch_count_q + 1;
+            if (dut.fetch_page_screen_resp_bypass && fetch_resp_ready)
+                page_screen_bypass_count_q <=
+                    page_screen_bypass_count_q + 1;
+            if (pmp_valid)
+                pmp_probe_count_q <= pmp_probe_count_q + 1;
             if (icx_resp_valid && icx_resp_ready)
                 icx_resp_valid <= 1'b0;
 
@@ -524,6 +548,26 @@ module tb_icx_l1i;
         end
     endtask
 
+    task automatic pulse_pmp_update;
+        begin
+            @(negedge clk);
+            pmp_update = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            pmp_update = 1'b0;
+        end
+    endtask
+
+    task automatic pulse_fetch_context_change;
+        begin
+            @(negedge clk);
+            fetch_context_change = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            fetch_context_change = 1'b0;
+        end
+    endtask
+
     task automatic pulse_prefetch_pair;
         input [63:0] taken_address;
         input [63:0] fallthrough_address;
@@ -557,6 +601,10 @@ module tb_icx_l1i;
     endtask
 
     integer before_count;
+    integer screen_before_count;
+    integer screen_launch_before_count;
+    integer screen_bypass_before_count;
+    integer pmp_before_count;
     logic [255:0] stale_lower;
     initial begin
         clk = 1'b0;
@@ -569,6 +617,8 @@ module tb_icx_l1i;
         fetch_root_ppn = 44'd0;
         fetch_cancel = 1'b0;
         context_flush = 1'b0;
+        fetch_context_change = 1'b0;
+        pmp_update = 1'b0;
         icache_invalidate = 1'b0;
         m_mode_prefetch_enable = 1'b0;
         icache_prefetch_valid = 1'b0;
@@ -602,10 +652,58 @@ module tb_icx_l1i;
         if ((icx_count_q - before_count) != 1)
             $fatal(1, "M/BARE demand issued a next-line prefetch");
         before_count = icx_count_q;
+        screen_before_count = page_screen_accept_count_q;
+        screen_launch_before_count = page_screen_launch_count_q;
+        screen_bypass_before_count = page_screen_bypass_count_q;
+        pmp_before_count = pmp_probe_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
                     "lower-half resident hit");
         if (icx_count_q != before_count)
             $fatal(1, "same-line hit escaped onto ICX");
+        if (page_screen_accept_count_q != screen_before_count + 1 ||
+            page_screen_launch_count_q != screen_launch_before_count + 1 ||
+            page_screen_bypass_count_q != screen_bypass_before_count + 1)
+            $fatal(1, "resident page-screen fetch missed fast path");
+        if (pmp_probe_count_q != pmp_before_count)
+            $fatal(1, "page-screen hit entered PMP arbitration");
+
+        // Hold L1I invalidation active so a screen hit is admitted but
+        // cannot launch.  Revoking the screen proof must discard that job;
+        // it must never fall back through translation/PMP or reach fetch.
+        fetch_resp_ready = 1'b0;
+        @(negedge clk);
+        icache_invalidate = 1'b1;
+        screen_before_count = page_screen_accept_count_q;
+        pmp_before_count = pmp_probe_count_q;
+        push_fetch_only(64'h00);
+        if (page_screen_accept_count_q != screen_before_count + 1 ||
+            !dut.fetch_fast_found_r)
+            $fatal(1, "failed to queue page-screen invalidation job");
+        pulse_fetch_context_change();
+        @(negedge clk);
+        icache_invalidate = 1'b0;
+        repeat (30) @(negedge clk);
+        if (pmp_probe_count_q != pmp_before_count)
+            $fatal(1, "invalidated page-screen job entered PMP");
+        if (fetch_resp_valid || dut.fetch_count_q != 0)
+            $fatal(1, "invalidated page-screen job reached fetch");
+        fetch_resp_ready = 1'b1;
+
+        // Privilege transitions invalidate only the cheap page screen.  The
+        // resident L1I line remains usable, but the next fetch must re-enter
+        // translation/PMP before the screen is refilled at cursor zero.
+        pulse_fetch_context_change();
+        screen_before_count = page_screen_accept_count_q;
+        pmp_before_count = pmp_probe_count_q;
+        issue_fetch(64'h00, memory[0][255:0], 1'b0,
+                    "post-context-change checked resident hit");
+        if (page_screen_accept_count_q != screen_before_count)
+            $fatal(1, "context change retained a page-screen entry");
+        if (pmp_probe_count_q != pmp_before_count + 1)
+            $fatal(1, "context change did not restore PMP checking");
+        if (dut.fetch_page_write_cursor_q != 2'd1)
+            $fatal(1, "page-screen write cursor did not advance");
+        before_count = icx_count_q;
 
         // Hold frontend responses while four resident requests enter.  The
         // bus and L1I must accept all four, then preserve request order.
@@ -769,12 +867,14 @@ module tb_icx_l1i;
                            "post-fence M/BARE refill");
 
         pmp_allow = 1'b0;
+        pulse_pmp_update();
         before_count = icx_count_q;
         issue_fetch(64'h00, 256'd0, 1'b1,
                     "PMP denial on resident line");
         if (icx_count_q != before_count)
             $fatal(1, "PMP-denied hit issued ICX traffic");
         pmp_allow = 1'b1;
+        pulse_pmp_update();
 
         before_count = icx_count_q;
         fork

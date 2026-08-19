@@ -68,7 +68,8 @@ module tb_fpga_scalar_mem_cdc;
     );
 
     openrv64_fpga_mig_scalar_bridge #(
-        .MEMORY_BYTES(64'h100)
+        .MEMORY_BYTES(64'h100),
+        .CACHE_BYTES(64)
     ) u_bridge (
         .clk_i(ui_clk),
         .reset_i(ui_reset),
@@ -108,6 +109,8 @@ module tb_fpga_scalar_mem_cdc;
     logic [27:0] read_addr_q;
     integer memory_index;
     integer write_byte;
+    integer read_command_count = 0;
+    integer write_command_count = 0;
 
     always_comb begin
         app_rdy = (ui_cycle[1:0] != 2'd1);
@@ -126,6 +129,11 @@ module tb_fpga_scalar_mem_cdc;
         app_rd_data_end <= 1'b0;
         command_fire = app_en && app_rdy;
         data_fire = app_wdf_wren && app_wdf_rdy;
+
+        if (command_fire && app_cmd == 3'b001)
+            read_command_count <= read_command_count + 1;
+        if (command_fire && app_cmd == 3'b000)
+            write_command_count <= write_command_count + 1;
 
         if (command_fire && app_cmd == 3'b001) begin
             read_addr_q <= app_addr;
@@ -205,23 +213,71 @@ module tb_fpga_scalar_mem_cdc;
 
         core_access(1'b1, 64'h18, 64'h0123456789abcdef, 8'hff,
                     observed_data, observed_error);
-        if (observed_error)
+        if (observed_error || write_command_count != 1)
             $fatal(1, "full write returned an error");
         core_access(1'b0, 64'h18, 64'd0, 8'd0,
                     observed_data, observed_error);
-        if (observed_error || observed_data !== 64'h0123456789abcdef)
+        if (observed_error || observed_data !== 64'h0123456789abcdef ||
+            read_command_count != 1)
             $fatal(1, "full readback mismatch");
+
+        core_access(1'b0, 64'h18, 64'd0, 8'd0,
+                    observed_data, observed_error);
+        if (observed_error || observed_data !== 64'h0123456789abcdef ||
+            read_command_count != 1)
+            $fatal(1, "cached read issued a second MIG read");
+
+        core_access(1'b0, 64'h10, 64'd0, 8'd0,
+                    observed_data, observed_error);
+        if (observed_error || observed_data !== 64'd0 ||
+            read_command_count != 1)
+            $fatal(1, "same-line read missed the native-beat fill");
+
+        core_access(1'b1, 64'h18, 64'hfedcba9876543210, 8'hff,
+                    observed_data, observed_error);
+        if (observed_error || write_command_count != 2)
+            $fatal(1, "write-through store did not reach MIG");
+        core_access(1'b0, 64'h18, 64'd0, 8'd0,
+                    observed_data, observed_error);
+        if (observed_error || observed_data !== 64'hfedcba9876543210 ||
+            read_command_count != 2)
+            $fatal(1, "store did not invalidate its cache line");
 
         core_access(1'b1, 64'h08, 64'h0000000000aa0000, 8'h04,
                     observed_data, observed_error);
+        if (observed_error || write_command_count != 3)
+            $fatal(1, "masked store did not write through");
         core_access(1'b0, 64'h08, 64'd0, 8'd0,
                     observed_data, observed_error);
-        if (observed_error || observed_data !== 64'h0000000000aa0000)
+        if (observed_error || observed_data !== 64'h0000000000aa0000 ||
+            read_command_count != 3)
             $fatal(1, "masked write/readback mismatch");
+
+        core_access(1'b0, 64'h18, 64'd0, 8'd0,
+                    observed_data, observed_error);
+        if (observed_error || observed_data !== 64'hfedcba9876543210 ||
+            read_command_count != 3)
+            $fatal(1, "post-store line fill did not cache the full beat");
+
+        core_access(1'b1, 64'h58, 64'h1122334455667788, 8'hff,
+                    observed_data, observed_error);
+        if (observed_error || write_command_count != 4)
+            $fatal(1, "conflict-address store did not write through");
+        core_access(1'b0, 64'h58, 64'd0, 8'd0,
+                    observed_data, observed_error);
+        if (observed_error || observed_data !== 64'h1122334455667788 ||
+            read_command_count != 4)
+            $fatal(1, "conflict-address fill failed");
+        core_access(1'b0, 64'h18, 64'd0, 8'd0,
+                    observed_data, observed_error);
+        if (observed_error || observed_data !== 64'hfedcba9876543210 ||
+            read_command_count != 5)
+            $fatal(1, "direct-mapped conflict did not evict old line");
 
         core_access(1'b0, 64'h100, 64'd0, 8'd0,
                     observed_data, observed_error);
-        if (!observed_error)
+        if (!observed_error || read_command_count != 5 ||
+            write_command_count != 4)
             $fatal(1, "out-of-range request did not return an error");
 
         $display("OPENRV64 FPGA SCALAR MIG CDC PASS");

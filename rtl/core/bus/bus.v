@@ -50,6 +50,7 @@ module openrv64_core_bus #(
     parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
+    parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
@@ -170,6 +171,8 @@ module openrv64_core_bus #(
 
     input  wire                         tlbi_i,
     input  wire                         context_flush_i,
+    input  wire                         fetch_context_change_i,
+    input  wire                         pmp_update_i,
     output wire                         tlbi_busy_o,
     input  wire                         store_barrier_i,
     input  wire                         icache_invalidate_i,
@@ -1042,6 +1045,7 @@ module openrv64_core_bus #(
                     L1D_PREFETCH_PAGE_GATING),
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
                 .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
+                .ENABLE_FETCH_PAGE_SCREEN(ENABLE_FETCH_PAGE_SCREEN),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .PTW_ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID)
@@ -1081,6 +1085,8 @@ module openrv64_core_bus #(
                 .lsu_access_fault_o(lsu_access_fault_o),
                 .lsu_page_fault_o(lsu_page_fault_o), .tlbi_i(tlbi_i),
                 .context_flush_i(context_flush_i),
+                .fetch_context_change_i(fetch_context_change_i),
+                .pmp_update_i(pmp_update_i),
                 .tlbi_busy_o(tlbi_busy_o),
                 .store_barrier_i(store_barrier_i),
                 .icache_invalidate_i(icache_invalidate_i),

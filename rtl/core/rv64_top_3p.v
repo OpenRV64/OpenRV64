@@ -23,6 +23,7 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_WFI_SLEEP = 1,
     parameter integer HPM_COUNTERS = 8,
+    parameter integer PMP_ACTIVE_ENTRIES = 8,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer PHYS_REG_ADDR_WIDTH =
@@ -73,6 +74,7 @@ module openrv64_rv64_top_3p #(
     parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
+    parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -84,9 +86,10 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_PREDECODE_TARGETS = 1,
     parameter ENABLE_FETCH_CAROUSEL = 1,
     parameter ENABLE_FETCH_ALT_LOOKASIDE = 3,
-    // Optional bandwidth policy.  The default stashes every eligible
-    // alternate path; set this to one to restrict stashing to weak BP output.
-    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
+    // Default bandwidth policy: stash alternate paths only for cold predictor
+    // state or trained global/local direction disagreement. Set to zero for
+    // the ungated FAL control.
+    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 1,
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter BP_RAS_ENABLE = 1,
@@ -344,8 +347,12 @@ module openrv64_rv64_top_3p #(
 
     wire control_trap = backend_exception && !backend_halt;
     wire wfi_irq_take;
+    wire backend_pmp_update;
+    wire fetch_priv_context_change = control_trap || backend_irq ||
+        wfi_irq_take || backend_mret || backend_sret;
     wire control_restart = backend_fence_i || backend_sfence_vma ||
-                           backend_satp_write || backend_wfi;
+                           backend_satp_write || backend_pmp_update ||
+                           backend_wfi;
     wire control_flush = control_trap || backend_irq || wfi_irq_take ||
                          backend_mret || backend_sret || control_restart;
     wire fetch_invalidate = reset_pending_q || control_flush || backend_halt;
@@ -495,6 +502,8 @@ module openrv64_rv64_top_3p #(
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
                 .ENABLE_ALT_LOOKASIDE(ENABLE_FETCH_ALT_LOOKASIDE),
+                .ENABLE_ALT_ARB_PRIORITY(
+                    ENABLE_FETCH_ALT_CONFIDENCE_GATE != 0),
                 .BRANCH_PAIR_STACK_DEPTH(FETCH_ALT_PAIR_STACK_DEPTH)
             ) u_fetch (
                 .clk(clk), .rst_n(rst_n), .restart_i(fetch3_restart),
@@ -521,8 +530,9 @@ module openrv64_rv64_top_3p #(
                     icache_prefetch_predicted_addr),
                 .branch_unpredicted_addr_i(
                     icache_prefetch_unpredicted_addr),
-                .redirect_fetch_valid_i(bp_predict_redirect),
-                .redirect_fetch_addr_i(bp_predict_target),
+                .redirect_fetch_valid_i(bp_predict_redirect ||
+                                        control_redirect),
+                .redirect_fetch_addr_i(fetch3_restart_pc),
                 .pair512_req_valid_o(pair512_req_valid),
                 .pair512_req_ready_i(pair512_req_ready),
                 .pair512_req_predicted_addr_o(
@@ -1010,6 +1020,11 @@ module openrv64_rv64_top_3p #(
         backend_csr_write &&
         csr_write_ready &&
         (backend_csr_write_addr == `RV64_CSR_SATP);
+    assign backend_pmp_update = backend_csr_write && csr_write_ready &&
+        ((backend_csr_write_addr == `RV64_CSR_PMPCFG0) ||
+         (backend_csr_write_addr == `RV64_CSR_PMPCFG2) ||
+         ((backend_csr_write_addr >= `RV64_CSR_PMPADDR0) &&
+          (backend_csr_write_addr <= `RV64_CSR_PMPADDR15)));
     wire [63:0] csr_rdata;
     wire csr_valid;
     wire csr_writable;
@@ -1216,8 +1231,6 @@ module openrv64_rv64_top_3p #(
     wire [63:0] trap_tval =
         (backend_irq || wfi_irq_take) ? 64'd0 : backend_retire_tval;
 
-    wire csr_pmp_instr_allow;
-    wire csr_pmp_data_allow;
     wire csr_pmp_bus_allow;
     wire core_mem_valid;
     wire core_mem_ready;
@@ -1298,6 +1311,7 @@ module openrv64_rv64_top_3p #(
     openrv64_rv64i_csrs #(
         .ENABLE_RV64M(ENABLE_RV64M), .ENABLE_RV64A(ENABLE_RV64A),
         .HPM_COUNTERS(HPM_COUNTERS),
+        .PMP_ACTIVE_ENTRIES(PMP_ACTIVE_ENTRIES),
         .HART_ID(HART_ID)
     ) u_csrs (
         .clk(clk), .rst_n(rst_n), .csr_addr_i(csr_access_addr),
@@ -1340,14 +1354,6 @@ module openrv64_rv64_top_3p #(
         .satp_mode_o(csr_satp_mode), .satp_asid_o(csr_satp_asid),
         .satp_root_ppn_o(csr_satp_root_ppn),
         .status_sum_o(csr_status_sum), .status_mxr_o(csr_status_mxr),
-        .pmp_instr_addr_i(use_icx_bus ? fetch3_stream_pc :
-                          fetch_mem_exec_addr),
-        .pmp_instr_allow_o(csr_pmp_instr_allow),
-        .pmp_data_valid_i(backend_mem_access),
-        .pmp_data_addr_i(backend_mem_effective_addr),
-        .pmp_data_size_i(backend_mem_size),
-        .pmp_data_write_i(backend_mem_write),
-        .pmp_data_allow_o(csr_pmp_data_allow),
         .pmp_bus_valid_i(core_pmp_valid), .pmp_bus_addr_i(core_pmp_addr),
         .pmp_bus_size_i(core_pmp_size), .pmp_bus_write_i(core_pmp_write),
         .pmp_bus_exec_i(core_pmp_exec),
@@ -1416,6 +1422,7 @@ module openrv64_rv64_top_3p #(
         .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
+        .ENABLE_FETCH_PAGE_SCREEN(ENABLE_FETCH_PAGE_SCREEN),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
@@ -1528,6 +1535,8 @@ module openrv64_rv64_top_3p #(
             backend_mem_xlate_resp_page_fault),
         .tlbi_i(backend_sfence_vma),
         .context_flush_i(backend_satp_write),
+        .fetch_context_change_i(fetch_priv_context_change),
+        .pmp_update_i(backend_pmp_update),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(backend_store_barrier_request),
         .icache_invalidate_i(backend_fence_i),
@@ -1913,7 +1922,6 @@ module openrv64_rv64_top_3p #(
 
     wire unused_configuration = |{
         fetch_redirect_replay, backend_redirect_id, csr_trap_to_s,
-        csr_pmp_instr_allow, csr_pmp_data_allow,
         backend_complete_valid, backend_retire_occupancy
     };
 

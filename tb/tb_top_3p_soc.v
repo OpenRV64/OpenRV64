@@ -240,7 +240,7 @@ endmodule
 module tb_top_3p_soc #(
     parameter integer FETCH_CAROUSEL = 1,
     parameter integer FETCH_ALT_LOOKASIDE = 3,
-    parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
+    parameter integer FETCH_ALT_CONFIDENCE_GATE = 1,
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_DEFAULT,
@@ -973,6 +973,15 @@ module tb_top_3p_soc #(
     integer frontend_empty_dispatch_full;
     integer frontend_empty_l1i_external_miss;
     integer frontend_empty_pending_no_external_miss;
+    integer fetch_page_screen_requests;
+    integer fetch_page_screen_hits;
+    integer fetch_page_screen_redirect_hits;
+    integer fetch_page_screen_predicted_hits;
+    integer fetch_page_screen_correction_hits;
+    integer fetch_page_screen_fills;
+    integer fetch_page_screen_launches;
+    integer fetch_page_screen_bypasses;
+    integer fetch_page_screen_invalidates;
     integer fetch_redirect_events;
     integer fetch_predicted_redirect_events;
     integer fetch_correction_redirect_events;
@@ -1013,10 +1022,62 @@ module tb_top_3p_soc #(
     integer post_redirect_correction_context_not_pending_empty_cycles;
     integer post_redirect_episode_cycles;
     integer post_redirect_max_empty_cycles;
+    integer post_redirect_completed_empty_cycles;
+    integer post_redirect_superseded_empty_cycles;
+    integer post_redirect_hist [0:13];
+    integer post_redirect_predicted_hist [0:13];
+    integer post_redirect_correction_hist [0:13];
+    integer post_redirect_hist_bucket;
+    integer post_redirect_hist_init;
     reg post_redirect_active;
     reg post_redirect_lookaside_hit;
     reg [1:0] post_redirect_correction_miss_reason;
     reg [1:0] post_redirect_kind;
+    localparam integer REDIRECT_CYCLE_TRACE_DEPTH = 512;
+    integer redirect_cycle_trace_enabled;
+    integer redirect_cycle_trace_skip;
+    integer redirect_cycle_trace_limit;
+    integer redirect_cycle_trace_seen;
+    integer redirect_cycle_trace_captured;
+    integer redirect_cycle_trace_superseded;
+    integer redirect_cycle_trace_length;
+    integer redirect_cycle_trace_empty;
+    integer redirect_cycle_trace_start;
+    integer redirect_cycle_trace_kind;
+    integer redirect_cycle_trace_index;
+    integer redirect_cycle_trace_scan;
+    reg redirect_cycle_trace_active;
+    reg redirect_cycle_trace_truncated;
+    reg [63:0] redirect_cycle_trace_target;
+    integer redirect_cycle_trace_cycle [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg [2:0] redirect_cycle_trace_decode [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_req_valid [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_req_ready [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_req_target [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_req_stash [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_req_demand [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_mtl_match [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg [1:0] redirect_cycle_trace_mtl_slot [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg [2:0] redirect_cycle_trace_mtl_state [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg [11:0] redirect_cycle_trace_mtl_states [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_xlate [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg [1:0] redirect_cycle_trace_xlate_slot [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_pmp_fetch [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_l1_launch [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_screen_hit [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_screen_launch
+        [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_screen_bypass
+        [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_l1_req_valid [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_l1_req_fire [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_l1_resp [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_pipe_resp [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_pipe_resp_target [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_ingress_hit [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_line_hit [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_redirect_pending [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
+    reg redirect_cycle_trace_external_miss [0:REDIRECT_CYCLE_TRACE_DEPTH-1];
     integer fetch_demand_trace_enabled;
     integer fetch_demand_trace_cycle_q;
     integer fetch_demand_trace_start_q [0:3];
@@ -3119,6 +3180,150 @@ module tb_top_3p_soc #(
         end
     end
 
+    task automatic sample_redirect_cycle_trace;
+        integer sample_index;
+        integer slot_index;
+        begin
+            if (redirect_cycle_trace_active &&
+                (redirect_cycle_trace_length <
+                 REDIRECT_CYCLE_TRACE_DEPTH)) begin
+                sample_index = redirect_cycle_trace_length;
+                redirect_cycle_trace_cycle[sample_index] = cycles;
+                redirect_cycle_trace_decode[sample_index] =
+                    dut.fetch_decode_valid;
+                redirect_cycle_trace_req_valid[sample_index] =
+                    dut.fetch_pipe_req_valid;
+                redirect_cycle_trace_req_ready[sample_index] =
+                    dut.fetch_pipe_req_ready;
+                redirect_cycle_trace_req_target[sample_index] =
+                    dut.fetch_pipe_req_valid &&
+                    (dut.fetch_pipe_req_addr[63:6] ==
+                     redirect_cycle_trace_target[63:6]);
+                redirect_cycle_trace_req_stash[sample_index] =
+                    dut.fetch_pipe_req_stash;
+                redirect_cycle_trace_req_demand[sample_index] =
+                    dut.fetch_pipe_req_demand;
+                redirect_cycle_trace_mtl_match[sample_index] = 1'b0;
+                redirect_cycle_trace_mtl_slot[sample_index] = 2'd0;
+                redirect_cycle_trace_mtl_state[sample_index] = 3'd0;
+                for (slot_index = 0; slot_index < 4;
+                     slot_index = slot_index + 1) begin
+                    if (!redirect_cycle_trace_mtl_match[sample_index] &&
+                        (dut.u_bus.g_icx.u_bus.u_debug.fetch_state_q[
+                            slot_index] != 3'd0) &&
+                        (dut.u_bus.g_icx.u_bus.u_debug.fetch_vaddr_q[
+                            slot_index][63:6] ==
+                         redirect_cycle_trace_target[63:6])) begin
+                        redirect_cycle_trace_mtl_match[sample_index] = 1'b1;
+                        redirect_cycle_trace_mtl_slot[sample_index] =
+                            slot_index[1:0];
+                        redirect_cycle_trace_mtl_state[sample_index] =
+                            dut.u_bus.g_icx.u_bus.u_debug.fetch_state_q[
+                                slot_index];
+                    end
+                end
+                redirect_cycle_trace_mtl_states[sample_index] = {
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_state_q[3],
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_state_q[2],
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_state_q[1],
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_state_q[0]
+                };
+                redirect_cycle_trace_xlate[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_xlate_found_r;
+                redirect_cycle_trace_xlate_slot[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_xlate_slot_r;
+                redirect_cycle_trace_pmp_fetch[sample_index] =
+                    dut.u_bus.g_icx.u_bus.select_fetch_probe;
+                redirect_cycle_trace_l1_launch[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_l1i_launch;
+                redirect_cycle_trace_screen_hit[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug
+                        .fetch_page_screen_accept;
+                redirect_cycle_trace_screen_launch[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug
+                        .fetch_page_screen_launch;
+                redirect_cycle_trace_screen_bypass[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug
+                        .fetch_page_screen_resp_bypass;
+                redirect_cycle_trace_l1_req_valid[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug.l1i_req_valid;
+                redirect_cycle_trace_l1_req_fire[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug.l1i_req_fire;
+                redirect_cycle_trace_l1_resp[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_debug.l1i_resp_valid;
+                redirect_cycle_trace_pipe_resp[sample_index] =
+                    dut.fetch_pipe_resp_valid;
+                redirect_cycle_trace_pipe_resp_target[sample_index] =
+                    dut.fetch_pipe_resp_valid &&
+                    (dut.fetch_pipe_resp_addr[63:6] ==
+                     redirect_cycle_trace_target[63:6]);
+                redirect_cycle_trace_ingress_hit[sample_index] =
+                    dut.g_fetch_axi.u_fetch.consume_ingress_hit_r;
+                redirect_cycle_trace_line_hit[sample_index] =
+                    dut.g_fetch_axi.u_fetch.consume_line_hit;
+                redirect_cycle_trace_redirect_pending[sample_index] =
+                    dut.g_fetch_axi.u_fetch.redirect_line_pending_q;
+                redirect_cycle_trace_external_miss[sample_index] =
+                    dut.u_bus.g_icx.u_bus.u_l1i.demand_mshr_any_valid_r;
+                redirect_cycle_trace_length =
+                    redirect_cycle_trace_length + 1;
+            end else if (redirect_cycle_trace_active) begin
+                redirect_cycle_trace_truncated = 1'b1;
+            end
+        end
+    endtask
+
+    task automatic emit_redirect_cycle_trace;
+        integer sample_index;
+        begin
+            $display(
+                "TRACE_REDIRECT_EVENT capture=%0d redirect_index=%0d kind=%0d start_cycle=%0d target=%016h empty_cycles=%0d samples=%0d truncated=%0d",
+                redirect_cycle_trace_captured,
+                redirect_cycle_trace_seen,
+                redirect_cycle_trace_kind,
+                redirect_cycle_trace_start,
+                redirect_cycle_trace_target,
+                redirect_cycle_trace_empty,
+                redirect_cycle_trace_length,
+                redirect_cycle_trace_truncated);
+            for (sample_index = 0;
+                 sample_index < redirect_cycle_trace_length;
+                 sample_index = sample_index + 1) begin
+                $display(
+                    "TRACE_REDIRECT_CYCLE capture=%0d rel=%0d cycle=%0d decode=%01h req=%0d/%0d req_target=%0d stash=%0d demand=%0d mtl_match=%0d mtl_slot=%0d mtl_state=%0d mtl_states=%03h xlate=%0d/%0d pmp_fetch=%0d l1_launch=%0d screen=%0d/%0d/%0d l1_req=%0d/%0d l1_resp=%0d pipe_resp=%0d/%0d ingress_hit=%0d line_hit=%0d redirect_pending=%0d external_miss=%0d",
+                    redirect_cycle_trace_captured,
+                    sample_index,
+                    redirect_cycle_trace_cycle[sample_index],
+                    redirect_cycle_trace_decode[sample_index],
+                    redirect_cycle_trace_req_valid[sample_index],
+                    redirect_cycle_trace_req_ready[sample_index],
+                    redirect_cycle_trace_req_target[sample_index],
+                    redirect_cycle_trace_req_stash[sample_index],
+                    redirect_cycle_trace_req_demand[sample_index],
+                    redirect_cycle_trace_mtl_match[sample_index],
+                    redirect_cycle_trace_mtl_slot[sample_index],
+                    redirect_cycle_trace_mtl_state[sample_index],
+                    redirect_cycle_trace_mtl_states[sample_index],
+                    redirect_cycle_trace_xlate[sample_index],
+                    redirect_cycle_trace_xlate_slot[sample_index],
+                    redirect_cycle_trace_pmp_fetch[sample_index],
+                    redirect_cycle_trace_l1_launch[sample_index],
+                    redirect_cycle_trace_screen_hit[sample_index],
+                    redirect_cycle_trace_screen_launch[sample_index],
+                    redirect_cycle_trace_screen_bypass[sample_index],
+                    redirect_cycle_trace_l1_req_valid[sample_index],
+                    redirect_cycle_trace_l1_req_fire[sample_index],
+                    redirect_cycle_trace_l1_resp[sample_index],
+                    redirect_cycle_trace_pipe_resp[sample_index],
+                    redirect_cycle_trace_pipe_resp_target[sample_index],
+                    redirect_cycle_trace_ingress_hit[sample_index],
+                    redirect_cycle_trace_line_hit[sample_index],
+                    redirect_cycle_trace_redirect_pending[sample_index],
+                    redirect_cycle_trace_external_miss[sample_index]);
+            end
+        end
+    endtask
+
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -3308,6 +3513,15 @@ module tb_top_3p_soc #(
         frontend_empty_dispatch_full = 0;
         frontend_empty_l1i_external_miss = 0;
         frontend_empty_pending_no_external_miss = 0;
+        fetch_page_screen_requests = 0;
+        fetch_page_screen_hits = 0;
+        fetch_page_screen_redirect_hits = 0;
+        fetch_page_screen_predicted_hits = 0;
+        fetch_page_screen_correction_hits = 0;
+        fetch_page_screen_fills = 0;
+        fetch_page_screen_launches = 0;
+        fetch_page_screen_bypasses = 0;
+        fetch_page_screen_invalidates = 0;
         fetch_redirect_events = 0;
         fetch_predicted_redirect_events = 0;
         fetch_correction_redirect_events = 0;
@@ -3348,10 +3562,40 @@ module tb_top_3p_soc #(
         post_redirect_correction_context_not_pending_empty_cycles = 0;
         post_redirect_episode_cycles = 0;
         post_redirect_max_empty_cycles = 0;
+        post_redirect_completed_empty_cycles = 0;
+        post_redirect_superseded_empty_cycles = 0;
+        for (post_redirect_hist_init = 0;
+             post_redirect_hist_init < 14;
+             post_redirect_hist_init = post_redirect_hist_init + 1) begin
+            post_redirect_hist[post_redirect_hist_init] = 0;
+            post_redirect_predicted_hist[post_redirect_hist_init] = 0;
+            post_redirect_correction_hist[post_redirect_hist_init] = 0;
+        end
+        post_redirect_hist_bucket = 0;
         post_redirect_active = 1'b0;
         post_redirect_lookaside_hit = 1'b0;
         post_redirect_correction_miss_reason = 2'd0;
         post_redirect_kind = 2'd0;
+        redirect_cycle_trace_enabled =
+            $test$plusargs("redirect_cycle_trace");
+        redirect_cycle_trace_skip = 2000;
+        redirect_cycle_trace_limit = 50;
+        if (!$value$plusargs("redirect_cycle_trace_skip=%d",
+                            redirect_cycle_trace_skip)) begin
+        end
+        if (!$value$plusargs("redirect_cycle_trace_limit=%d",
+                            redirect_cycle_trace_limit)) begin
+        end
+        redirect_cycle_trace_seen = 0;
+        redirect_cycle_trace_captured = 0;
+        redirect_cycle_trace_superseded = 0;
+        redirect_cycle_trace_length = 0;
+        redirect_cycle_trace_empty = 0;
+        redirect_cycle_trace_start = 0;
+        redirect_cycle_trace_kind = 0;
+        redirect_cycle_trace_active = 1'b0;
+        redirect_cycle_trace_truncated = 1'b0;
+        redirect_cycle_trace_target = 64'd0;
         fetch_demand_trace_enabled =
             $test$plusargs("fetch_demand_trace");
         lsu_request_wait = 0;
@@ -3637,6 +3881,37 @@ module tb_top_3p_soc #(
                 frontend_held = frontend_held + 1;
             if (dut.fetch_pipe_req_valid && !dut.fetch_pipe_req_ready)
                 frontend_request_wait = frontend_request_wait + 1;
+            if (dut.fetch_pipe_req_valid && dut.fetch_pipe_req_ready)
+                fetch_page_screen_requests =
+                    fetch_page_screen_requests + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug
+                    .fetch_page_screen_accept) begin
+                fetch_page_screen_hits = fetch_page_screen_hits + 1;
+                if (dut.fetch3_restart) begin
+                    fetch_page_screen_redirect_hits =
+                        fetch_page_screen_redirect_hits + 1;
+                    if (dut.bp_predict_redirect)
+                        fetch_page_screen_predicted_hits =
+                            fetch_page_screen_predicted_hits + 1;
+                    else if (dut.control_redirect)
+                        fetch_page_screen_correction_hits =
+                            fetch_page_screen_correction_hits + 1;
+                end
+            end
+            if (dut.u_bus.g_icx.u_bus.u_debug.fetch_page_screen_fill)
+                fetch_page_screen_fills = fetch_page_screen_fills + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug.fetch_page_screen_launch)
+                fetch_page_screen_launches =
+                    fetch_page_screen_launches + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug
+                    .fetch_page_screen_resp_bypass &&
+                dut.fetch_pipe_resp_ready)
+                fetch_page_screen_bypasses =
+                    fetch_page_screen_bypasses + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug
+                    .fetch_page_screen_invalidate)
+                fetch_page_screen_invalidates =
+                    fetch_page_screen_invalidates + 1;
             if (dut.fetch_decode_valid == 0) begin
                 if (dut.backend_decode_ready[0] &&
                     dut.frontend_decode_enable)
@@ -3687,9 +3962,13 @@ module tb_top_3p_soc #(
             // report those separately rather than pretending they completed.
             if (dut.fetch3_restart && !dut.reset_pending_q) begin
                 fetch_redirect_events = fetch_redirect_events + 1;
-                if (post_redirect_active)
+                if (post_redirect_active) begin
                     post_redirect_superseded_events =
                         post_redirect_superseded_events + 1;
+                    post_redirect_superseded_empty_cycles =
+                        post_redirect_superseded_empty_cycles +
+                        post_redirect_episode_cycles;
+                end
                 post_redirect_active = 1'b1;
                 post_redirect_episode_cycles = 0;
                 post_redirect_lookaside_hit = dut.fetch_alt_restart_hit;
@@ -3820,6 +4099,36 @@ module tb_top_3p_soc #(
                 end else begin
                     post_redirect_completed_events =
                         post_redirect_completed_events + 1;
+                    post_redirect_completed_empty_cycles =
+                        post_redirect_completed_empty_cycles +
+                        post_redirect_episode_cycles;
+                    if (post_redirect_episode_cycles < 8)
+                        post_redirect_hist_bucket =
+                            post_redirect_episode_cycles;
+                    else if (post_redirect_episode_cycles < 16)
+                        post_redirect_hist_bucket = 8;
+                    else if (post_redirect_episode_cycles < 32)
+                        post_redirect_hist_bucket = 9;
+                    else if (post_redirect_episode_cycles < 64)
+                        post_redirect_hist_bucket = 10;
+                    else if (post_redirect_episode_cycles < 128)
+                        post_redirect_hist_bucket = 11;
+                    else if (post_redirect_episode_cycles < 256)
+                        post_redirect_hist_bucket = 12;
+                    else
+                        post_redirect_hist_bucket = 13;
+                    post_redirect_hist[post_redirect_hist_bucket] =
+                        post_redirect_hist[post_redirect_hist_bucket] + 1;
+                    if (post_redirect_kind == 2'd0)
+                        post_redirect_predicted_hist[
+                            post_redirect_hist_bucket] =
+                            post_redirect_predicted_hist[
+                                post_redirect_hist_bucket] + 1;
+                    else if (post_redirect_kind == 2'd1)
+                        post_redirect_correction_hist[
+                            post_redirect_hist_bucket] =
+                            post_redirect_correction_hist[
+                                post_redirect_hist_bucket] + 1;
                     if (post_redirect_episode_cycles == 0)
                         post_redirect_zero_stall_events =
                             post_redirect_zero_stall_events + 1;
@@ -3845,6 +4154,43 @@ module tb_top_3p_soc #(
                                 1;
                     end
                     post_redirect_active = 1'b0;
+                end
+            end
+            if ((redirect_cycle_trace_enabled != 0) &&
+                dut.fetch3_restart && !dut.reset_pending_q) begin
+                if (redirect_cycle_trace_active)
+                    redirect_cycle_trace_superseded =
+                        redirect_cycle_trace_superseded + 1;
+                redirect_cycle_trace_seen =
+                    redirect_cycle_trace_seen + 1;
+                redirect_cycle_trace_active =
+                    (redirect_cycle_trace_seen >
+                     redirect_cycle_trace_skip) &&
+                    (redirect_cycle_trace_captured <
+                     redirect_cycle_trace_limit);
+                if (redirect_cycle_trace_active) begin
+                    redirect_cycle_trace_length = 0;
+                    redirect_cycle_trace_empty = 0;
+                    redirect_cycle_trace_start = cycles;
+                    redirect_cycle_trace_kind =
+                        dut.control_redirect ? 1 :
+                        (dut.bp_predict_redirect ? 0 : 2);
+                    redirect_cycle_trace_target = dut.fetch3_restart_pc;
+                    redirect_cycle_trace_truncated = 1'b0;
+                    sample_redirect_cycle_trace();
+                end
+            end else if (redirect_cycle_trace_active) begin
+                if (dut.fetch_decode_valid == 0)
+                    redirect_cycle_trace_empty =
+                        redirect_cycle_trace_empty + 1;
+                sample_redirect_cycle_trace();
+                if (dut.fetch_decode_valid != 0) begin
+                    if (redirect_cycle_trace_empty != 0) begin
+                        redirect_cycle_trace_captured =
+                            redirect_cycle_trace_captured + 1;
+                        emit_redirect_cycle_trace();
+                    end
+                    redirect_cycle_trace_active = 1'b0;
                 end
             end
             if (dut.backend_mem_valid && !dut.backend_mem_ready) begin
@@ -5005,6 +5351,20 @@ module tb_top_3p_soc #(
             frontend_empty_l1i_external_miss,
             frontend_empty_pending_no_external_miss);
         $display(
+            "PERF_ICX_L2_FETCH_PAGE_SCREEN entries=4 requests=%0d hits=%0d hit_pct_x100=%0d redirect_hits=%0d predicted_hits=%0d correction_hits=%0d fills=%0d launches=%0d response_bypasses=%0d invalidates=%0d",
+            fetch_page_screen_requests,
+            fetch_page_screen_hits,
+            (fetch_page_screen_requests != 0) ?
+                ((fetch_page_screen_hits * 10000) /
+                 fetch_page_screen_requests) : 0,
+            fetch_page_screen_redirect_hits,
+            fetch_page_screen_predicted_hits,
+            fetch_page_screen_correction_hits,
+            fetch_page_screen_fills,
+            fetch_page_screen_launches,
+            fetch_page_screen_bypasses,
+            fetch_page_screen_invalidates);
+        $display(
             "PERF_ICX_L2_REDIRECT total=%0d predicted=%0d correction=%0d target_correction=%0d control_restart=%0d exception=%0d other=%0d lookaside_hits=%0d predicted_lookaside_hits=%0d correction_lookaside_hits=%0d completed=%0d superseded=%0d active=%0d",
             fetch_redirect_events, fetch_predicted_redirect_events,
             fetch_correction_redirect_events,
@@ -5031,6 +5391,60 @@ module tb_top_3p_soc #(
             post_redirect_restart_empty_cycles,
             post_redirect_other_empty_cycles);
         $display(
+            "PERF_ICX_L2_POST_REDIRECT_ACCOUNT completed_empty_cycles=%0d superseded_empty_cycles=%0d completed_x1000_per_event=%0d stalled_x1000_per_event=%0d superseded_x1000_per_event=%0d",
+            post_redirect_completed_empty_cycles,
+            post_redirect_superseded_empty_cycles,
+            (post_redirect_completed_events != 0) ?
+                ((post_redirect_completed_empty_cycles * 1000) /
+                 post_redirect_completed_events) : 0,
+            (post_redirect_stalled_events != 0) ?
+                ((post_redirect_completed_empty_cycles * 1000) /
+                 post_redirect_stalled_events) : 0,
+            (post_redirect_superseded_events != 0) ?
+                ((post_redirect_superseded_empty_cycles * 1000) /
+                 post_redirect_superseded_events) : 0);
+        $display(
+            "PERF_ICX_L2_POST_REDIRECT_HIST zero=%0d one=%0d two=%0d three=%0d four=%0d five=%0d six=%0d seven=%0d eight_to_fifteen=%0d sixteen_to_thirtyone=%0d thirtytwo_to_sixtythree=%0d sixtyfour_to_127=%0d one28_to_255=%0d two56_plus=%0d",
+            post_redirect_hist[0], post_redirect_hist[1],
+            post_redirect_hist[2], post_redirect_hist[3],
+            post_redirect_hist[4], post_redirect_hist[5],
+            post_redirect_hist[6], post_redirect_hist[7],
+            post_redirect_hist[8], post_redirect_hist[9],
+            post_redirect_hist[10], post_redirect_hist[11],
+            post_redirect_hist[12], post_redirect_hist[13]);
+        $display(
+            "PERF_ICX_L2_POST_REDIRECT_PREDICTED_HIST zero=%0d one=%0d two=%0d three=%0d four=%0d five=%0d six=%0d seven=%0d eight_to_fifteen=%0d sixteen_to_thirtyone=%0d thirtytwo_to_sixtythree=%0d sixtyfour_to_127=%0d one28_to_255=%0d two56_plus=%0d",
+            post_redirect_predicted_hist[0],
+            post_redirect_predicted_hist[1],
+            post_redirect_predicted_hist[2],
+            post_redirect_predicted_hist[3],
+            post_redirect_predicted_hist[4],
+            post_redirect_predicted_hist[5],
+            post_redirect_predicted_hist[6],
+            post_redirect_predicted_hist[7],
+            post_redirect_predicted_hist[8],
+            post_redirect_predicted_hist[9],
+            post_redirect_predicted_hist[10],
+            post_redirect_predicted_hist[11],
+            post_redirect_predicted_hist[12],
+            post_redirect_predicted_hist[13]);
+        $display(
+            "PERF_ICX_L2_POST_REDIRECT_CORRECTION_HIST zero=%0d one=%0d two=%0d three=%0d four=%0d five=%0d six=%0d seven=%0d eight_to_fifteen=%0d sixteen_to_thirtyone=%0d thirtytwo_to_sixtythree=%0d sixtyfour_to_127=%0d one28_to_255=%0d two56_plus=%0d",
+            post_redirect_correction_hist[0],
+            post_redirect_correction_hist[1],
+            post_redirect_correction_hist[2],
+            post_redirect_correction_hist[3],
+            post_redirect_correction_hist[4],
+            post_redirect_correction_hist[5],
+            post_redirect_correction_hist[6],
+            post_redirect_correction_hist[7],
+            post_redirect_correction_hist[8],
+            post_redirect_correction_hist[9],
+            post_redirect_correction_hist[10],
+            post_redirect_correction_hist[11],
+            post_redirect_correction_hist[12],
+            post_redirect_correction_hist[13]);
+        $display(
             "PERF_ICX_L2_POST_REDIRECT_CAUSE current_pending=%0d other_pending=%0d no_pending=%0d external_miss=%0d request_wait=%0d",
             post_redirect_current_pending_cycles,
             post_redirect_other_pending_cycles,
@@ -5054,6 +5468,15 @@ module tb_top_3p_soc #(
             post_redirect_correction_no_context_empty_cycles,
             post_redirect_correction_context_pending_empty_cycles,
             post_redirect_correction_context_not_pending_empty_cycles);
+        if (redirect_cycle_trace_enabled != 0)
+            $display(
+                "TRACE_REDIRECT_SUMMARY skipped=%0d redirects_seen=%0d stalled_captured=%0d limit=%0d superseded_candidates=%0d active=%0d",
+                redirect_cycle_trace_skip,
+                redirect_cycle_trace_seen,
+                redirect_cycle_trace_captured,
+                redirect_cycle_trace_limit,
+                redirect_cycle_trace_superseded,
+                redirect_cycle_trace_active);
         if ((post_redirect_current_pending_cycles +
              post_redirect_other_pending_cycles +
              post_redirect_no_pending_cycles) !=

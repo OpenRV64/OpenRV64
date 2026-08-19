@@ -7,7 +7,8 @@
 	sw-fp-daxpy-store \
 	sw-fp-fmadd32 sw-fp-faults \
 	sw-smp-thread-probe sw-linux-user-tests sw-linux-user-pthread-test \
-	sw-coremark-loop \
+	sw-coremark sw-coremark-bare sw-coremark-bare-smoke \
+	sw-coremark-bare-run sw-coremark-loop \
 	sw-coremark-loop-vm \
 	sw-coremark-loop-4h-vm sim-4h-3p-sv39 \
 	sw-coremark-loop-4h-shared-vm sw-atomic-4h-shared-vm \
@@ -44,6 +45,7 @@
 	sim-top-4pf-fmadd32 \
 	sim-top-4pf-faults
 .PHONY: sim-decode-rv64c sim-decode-rv64-fd
+.PHONY: sim-exec-alu-rv64-m-fpga
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
 	sim-vec-cache-wb-512 sim-vec-test-top \
@@ -109,6 +111,7 @@ FORCE:
 
 sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-spi sim-rom sim-memory sim-soc-bus sim-core-bus sim-icx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-top-3p-no-zicclsm sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
 sim: sim-isa-fp sim-rv64-fd-fpr sim-fpu-csrs sim-exec-fpu-rv64-fd
+sim: sim-exec-alu-rv64-m-fpga
 sim: sim-decode-rv64c sim-decode-rv64-fd
 sim: sim-fd-dispatch
 sim: sim-fd-uop-harness

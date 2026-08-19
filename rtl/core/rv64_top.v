@@ -28,8 +28,10 @@ module openrv64_rv64_top #(
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_RV64A = 1,
     parameter integer HPM_COUNTERS = 8,
+    parameter integer PMP_ACTIVE_ENTRIES = 8,
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
+    parameter FPGA_GPR_LUTRAM = 0,
     parameter integer TLB_ENTRIES = 16,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
@@ -387,16 +389,12 @@ module openrv64_rv64_top #(
     wire csr_status_sum;
     wire csr_status_mxr;
     wire csr_trap_to_s;
-    wire csr_pmp_instr_allow;
-    wire csr_pmp_data_allow;
     wire csr_pmp_bus_allow;
     wire csr_pmp_busy;
     wire csr_satp_busy;
     wire csr_hpm_busy;
     wire csr_serial_busy =
         csr_pmp_busy || csr_satp_busy || csr_hpm_busy;
-    wire unused_legacy_pmp_allow = csr_pmp_instr_allow &&
-                                   csr_pmp_data_allow;
     wire core_mem_valid;
     wire core_mem_ready;
     wire core_mem_write;
@@ -763,7 +761,9 @@ module openrv64_rv64_top #(
         .decode_stall_o(bp_decode_stall)
     );
 
-    openrv64_rv64i_gpr u_gpr (
+    openrv64_rv64i_gpr #(
+        .FPGA_LUTRAM(FPGA_GPR_LUTRAM)
+    ) u_gpr (
         .clk(clk),
         .rst_n(rst_n),
         .rs1_addr_i(dispatch_exec_rs1_addr),
@@ -823,7 +823,8 @@ module openrv64_rv64_top #(
     openrv64_rv64i_csrs #(
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(ENABLE_RV64A),
-        .HPM_COUNTERS(HPM_COUNTERS)
+        .HPM_COUNTERS(HPM_COUNTERS),
+        .PMP_ACTIVE_ENTRIES(PMP_ACTIVE_ENTRIES)
     ) u_csrs (
         .clk(clk),
         .rst_n(rst_n),
@@ -881,13 +882,6 @@ module openrv64_rv64_top #(
         .satp_root_ppn_o(csr_satp_root_ppn),
         .status_sum_o(csr_status_sum),
         .status_mxr_o(csr_status_mxr),
-        .pmp_instr_addr_i(fetch_mem_exec_addr),
-        .pmp_instr_allow_o(csr_pmp_instr_allow),
-        .pmp_data_valid_i(exec_mem_access),
-        .pmp_data_addr_i(exec_mem_effective_addr),
-        .pmp_data_size_i(exec_mem_size),
-        .pmp_data_write_i(exec_mem_write),
-        .pmp_data_allow_o(csr_pmp_data_allow),
         .pmp_bus_valid_i(core_pmp_valid),
         .pmp_bus_addr_i(core_pmp_addr),
         .pmp_bus_size_i(core_pmp_size),
@@ -1247,6 +1241,7 @@ module openrv64_rv64_top #(
     assign mem_wstrb = core_mem_wstrb;
 
     openrv64_core_bus #(
+        .ENABLE_FETCH_PAGE_SCREEN(0),
         .ENABLE_L1D_COHERENCE_PROBES(1'b0),
         .ENABLE_COHERENT_ATOMICS(1'b0),
         .TLB_ENTRIES(TLB_ENTRIES),
@@ -1332,6 +1327,8 @@ module openrv64_rv64_top #(
         .lsu_xlate_resp_ready_i(1'b1),
         .tlbi_i(retire_sfence_vma),
         .context_flush_i(retire_satp_write),
+        .fetch_context_change_i(1'b0),
+        .pmp_update_i(1'b0),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(retire_fence_i),

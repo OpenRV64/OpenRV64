@@ -11,7 +11,7 @@
 // AXI fabric, ICX home, peripheral, or DRAM timing is modeled.
 module tb_core_3p_magic #(
     parameter integer FETCH_ALT_LOOKASIDE = 3,
-    parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
+    parameter integer FETCH_ALT_CONFIDENCE_GATE = 1,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_DEFAULT,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,

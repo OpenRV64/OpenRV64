@@ -154,6 +154,102 @@ $(COREMARK_LOOP_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
 $(COREMARK_LOOP_BIN): $(COREMARK_LOOP_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
+COREMARK_BARE_UPSTREAM_SRCS := \
+	sw/coremark/upstream/core_list_join.c \
+	sw/coremark/upstream/core_matrix.c \
+	sw/coremark/upstream/core_state.c \
+	sw/coremark/upstream/core_util.c
+COREMARK_BARE_PORT_SRCS := \
+	sw/coremark/openrv64/core_main_wrapper.c \
+	sw/coremark/openrv64/core_portme.c \
+	sw/coremark/openrv64/ee_printf.c \
+	sw/coremark/openrv64/runner.c
+
+$(COREMARK_BARE_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/openrv64.ld \
+		sw/coremark/upstream/core_main.c \
+		sw/coremark/upstream/coremark.h \
+		sw/coremark/openrv64/core_portme.h \
+		$(COREMARK_BARE_UPSTREAM_SRCS) $(COREMARK_BARE_PORT_SRCS)
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(COREMARK_BARE_CFLAGS) -nostdlib \
+		-Isw/coremark/openrv64 -Isw/coremark/upstream \
+		-DTOTAL_DATA_SIZE=$(COREMARK_BARE_TOTAL_DATA_SIZE) \
+		-DITERATIONS=$(COREMARK_BARE_ITERATIONS) \
+		-DCOREMARK_CLOCKS_PER_SEC=$(COREMARK_BARE_CLOCKS_PER_SEC)UL \
+		-DCOREMARK_UART_ENABLE=$(COREMARK_BARE_UART_ENABLE) \
+		-DCOREMARK_UART_DIVISOR=$(COREMARK_BARE_UART_DIVISOR) \
+		-DFLAGS_STR='"-O2 -march=rv64im_zicsr -mabi=lp64"' \
+		-Wl,--build-id=none,--gc-sections,-Map,$(COREMARK_BARE_MAP) \
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S \
+		$(COREMARK_BARE_UPSTREAM_SRCS) $(COREMARK_BARE_PORT_SRCS)
+
+$(COREMARK_BARE_BIN): $(COREMARK_BARE_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(COREMARK_BARE_MEMH): $(COREMARK_BARE_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(COREMARK_BARE_MEMH_BYTES) --word-bytes 32
+
+$(COREMARK_BARE_DISASM): $(COREMARK_BARE_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(COREMARK_BARE_SMOKE_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/openrv64.ld \
+		sw/coremark/upstream/core_main.c \
+		sw/coremark/upstream/coremark.h \
+		sw/coremark/openrv64/core_portme.h \
+		$(COREMARK_BARE_UPSTREAM_SRCS) $(COREMARK_BARE_PORT_SRCS)
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(COREMARK_BARE_CFLAGS) -nostdlib \
+		-Isw/coremark/openrv64 -Isw/coremark/upstream \
+		-DTOTAL_DATA_SIZE=$(COREMARK_BARE_TOTAL_DATA_SIZE) \
+		-DITERATIONS=1 -DCOREMARK_CLOCKS_PER_SEC=1UL \
+		-DCOREMARK_UART_ENABLE=0 \
+		-DCOREMARK_UART_DIVISOR=$(COREMARK_BARE_UART_DIVISOR) \
+		-DFLAGS_STR='"functional-smoke-not-reportable"' \
+		-Wl,--build-id=none,--gc-sections,-Map,$(COREMARK_BARE_SMOKE_MAP) \
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S \
+		$(COREMARK_BARE_UPSTREAM_SRCS) $(COREMARK_BARE_PORT_SRCS)
+
+$(COREMARK_BARE_SMOKE_BIN): $(COREMARK_BARE_SMOKE_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(COREMARK_BARE_SMOKE_MEMH): $(COREMARK_BARE_SMOKE_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(COREMARK_BARE_MEMH_BYTES) --word-bytes 32
+
+$(COREMARK_BARE_SMOKE_DISASM): $(COREMARK_BARE_SMOKE_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(COREMARK_BARE_RUN_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
+		sw/runtime/c_start.inc sw/openrv64.ld \
+		sw/coremark/upstream/core_main.c \
+		sw/coremark/upstream/coremark.h \
+		sw/coremark/openrv64/core_portme.h \
+		$(COREMARK_BARE_UPSTREAM_SRCS) $(COREMARK_BARE_PORT_SRCS)
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(COREMARK_BARE_CFLAGS) -nostdlib \
+		-Isw/coremark/openrv64 -Isw/coremark/upstream \
+		-DTOTAL_DATA_SIZE=$(COREMARK_BARE_TOTAL_DATA_SIZE) \
+		-DITERATIONS=$(COREMARK_BARE_ITERATIONS) \
+		-DCOREMARK_CLOCKS_PER_SEC=$(COREMARK_BARE_CLOCKS_PER_SEC)UL \
+		-DCOREMARK_UART_ENABLE=0 -DCOREMARK_RETURN_REPORT=1 \
+		-DFLAGS_STR='"-O2 -march=rv64im_zicsr -mabi=lp64"' \
+		-Wl,--build-id=none,--gc-sections,-Map,$(COREMARK_BARE_RUN_MAP) \
+		-T sw/openrv64.ld -o $@ sw/runtime/bare.S \
+		$(COREMARK_BARE_UPSTREAM_SRCS) $(COREMARK_BARE_PORT_SRCS)
+
+$(COREMARK_BARE_RUN_BIN): $(COREMARK_BARE_RUN_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(COREMARK_BARE_RUN_MEMH): $(COREMARK_BARE_RUN_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(COREMARK_BARE_MEMH_BYTES) --word-bytes 32
+
+$(COREMARK_BARE_RUN_DISASM): $(COREMARK_BARE_RUN_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(CORE_3P_MAGIC_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
 		sw/runtime/c_start.inc sw/coremark_loop_start.S \
 		sw/coremark_loop.c sw/openrv64-magic.ld

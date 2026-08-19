@@ -83,9 +83,10 @@ module openrv64_rv64_top_4pf #(
     parameter ENABLE_PREDECODE_TARGETS = 1,
     parameter ENABLE_FETCH_CAROUSEL = 1,
     parameter ENABLE_FETCH_ALT_LOOKASIDE = 3,
-    // Optional bandwidth policy.  The default stashes every eligible
-    // alternate path; set this to one to restrict stashing to weak BP output.
-    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 0,
+    // Default bandwidth policy: stash alternate paths only for cold predictor
+    // state or trained global/local direction disagreement. Set to zero for
+    // the ungated FAL control.
+    parameter ENABLE_FETCH_ALT_CONFIDENCE_GATE = 1,
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE = `OPENRV64_BP_DEFAULT,
     parameter BP_RAS_ENABLE = 1,
@@ -1240,8 +1241,6 @@ module openrv64_rv64_top_4pf #(
     wire [63:0] trap_tval =
         (backend_irq || wfi_irq_take) ? 64'd0 : backend_retire_tval;
 
-    wire csr_pmp_instr_allow;
-    wire csr_pmp_data_allow;
     wire csr_pmp_bus_allow;
     wire core_mem_valid;
     wire core_mem_ready;
@@ -1392,14 +1391,6 @@ module openrv64_rv64_top_4pf #(
         .satp_mode_o(csr_satp_mode), .satp_asid_o(csr_satp_asid),
         .satp_root_ppn_o(csr_satp_root_ppn),
         .status_sum_o(csr_status_sum), .status_mxr_o(csr_status_mxr),
-        .pmp_instr_addr_i(use_icx_bus ? fetch3_stream_pc :
-                          fetch_mem_exec_addr),
-        .pmp_instr_allow_o(csr_pmp_instr_allow),
-        .pmp_data_valid_i(backend_mem_access),
-        .pmp_data_addr_i(backend_mem_effective_addr),
-        .pmp_data_size_i(backend_mem_size),
-        .pmp_data_write_i(backend_mem_write),
-        .pmp_data_allow_o(csr_pmp_data_allow),
         .pmp_bus_valid_i(core_pmp_valid), .pmp_bus_addr_i(core_pmp_addr),
         .pmp_bus_size_i(core_pmp_size), .pmp_bus_write_i(core_pmp_write),
         .pmp_bus_exec_i(core_pmp_exec),
@@ -1465,6 +1456,7 @@ module openrv64_rv64_top_4pf #(
         .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
+        .ENABLE_FETCH_PAGE_SCREEN(0),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
@@ -1577,6 +1569,8 @@ module openrv64_rv64_top_4pf #(
             backend_mem_xlate_resp_page_fault),
         .tlbi_i(backend_sfence_vma),
         .context_flush_i(backend_satp_write),
+        .fetch_context_change_i(1'b0),
+        .pmp_update_i(1'b0),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(backend_store_barrier_request),
         .icache_invalidate_i(backend_fence_i),
@@ -1783,7 +1777,6 @@ module openrv64_rv64_top_4pf #(
 
     wire unused_configuration = |{
         fetch_redirect_replay, backend_redirect_id, csr_trap_to_s,
-        csr_pmp_instr_allow, csr_pmp_data_allow,
         backend_complete_valid, backend_retire_occupancy
     };
 

@@ -2,7 +2,9 @@
 `include "core/regs/rv64-i-pmp.v"
 `timescale 1ns/1ps
 
-module tb_rv64i_pmp;
+module tb_rv64i_pmp #(
+    parameter integer PMP_ACTIVE_ENTRIES = 8
+);
 
     logic clk;
     logic rst_n;
@@ -15,13 +17,6 @@ module tb_rv64i_pmp;
     logic csr_write_ready;
     logic csr_busy;
     logic [`RV64_PRIV_WIDTH-1:0] priv_mode;
-    logic [`RV64_XLEN-1:0] instr_addr;
-    logic instr_allow;
-    logic data_valid;
-    logic [`RV64_XLEN-1:0] data_addr;
-    logic [2:0] data_size;
-    logic data_write;
-    logic data_allow;
     logic bus_valid;
     logic [`RV64_XLEN-1:0] bus_addr;
     logic [2:0] bus_size;
@@ -29,8 +24,16 @@ module tb_rv64i_pmp;
     logic bus_exec;
     logic [`RV64_PRIV_WIDTH-1:0] bus_priv_mode;
     logic bus_allow;
+    logic [`RV64_FUNCT12_WIDTH-1:0] last_active_pmpaddr_csr;
+    logic [`RV64_FUNCT12_WIDTH-1:0] last_active_pmpcfg_csr;
+    logic [`RV64_XLEN-1:0] last_active_pmpcfg_value;
+    logic [`RV64_FUNCT12_WIDTH-1:0] first_inactive_pmpaddr_csr;
+    logic [`RV64_FUNCT12_WIDTH-1:0] first_inactive_pmpcfg_csr;
+    logic [`RV64_XLEN-1:0] first_inactive_pmpcfg_value;
 
-    openrv64_rv64i_pmp dut (
+    openrv64_rv64i_pmp #(
+        .PMP_ACTIVE_ENTRIES(PMP_ACTIVE_ENTRIES)
+    ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .csr_addr_i(csr_addr),
@@ -41,15 +44,6 @@ module tb_rv64i_pmp;
         .csr_wdata_i(csr_wdata),
         .csr_write_ready_o(csr_write_ready),
         .csr_busy_o(csr_busy),
-        .instr_priv_mode_i(priv_mode),
-        .data_priv_mode_i(priv_mode),
-        .instr_addr_i(instr_addr),
-        .instr_allow_o(instr_allow),
-        .data_valid_i(data_valid),
-        .data_addr_i(data_addr),
-        .data_size_i(data_size),
-        .data_write_i(data_write),
-        .data_allow_o(data_allow),
         .bus_valid_i(bus_valid),
         .bus_addr_i(bus_addr),
         .bus_size_i(bus_size),
@@ -135,11 +129,16 @@ module tb_rv64i_pmp;
         input expected;
         input [8*48-1:0] label;
         begin
-            instr_addr = addr;
+            bus_valid = 1'b1;
+            bus_addr = addr;
+            bus_size = 3'd2;
+            bus_write = 1'b0;
+            bus_exec = 1'b1;
+            bus_priv_mode = priv_mode;
             #1;
-            if (instr_allow !== expected) begin
+            if (bus_allow !== expected) begin
                 $fatal(1, "%0s: instruction allow=%0b/%0b",
-                       label, instr_allow, expected);
+                       label, bus_allow, expected);
             end
         end
     endtask
@@ -151,14 +150,16 @@ module tb_rv64i_pmp;
         input expected;
         input [8*48-1:0] label;
         begin
-            data_valid = 1'b1;
-            data_addr = addr;
-            data_size = size;
-            data_write = is_write;
+            bus_valid = 1'b1;
+            bus_addr = addr;
+            bus_size = size;
+            bus_write = is_write;
+            bus_exec = 1'b0;
+            bus_priv_mode = priv_mode;
             #1;
-            if (data_allow !== expected) begin
+            if (bus_allow !== expected) begin
                 $fatal(1, "%0s: data allow=%0b/%0b",
-                       label, data_allow, expected);
+                       label, bus_allow, expected);
             end
         end
     endtask
@@ -192,17 +193,24 @@ module tb_rv64i_pmp;
         csr_write = 1'b0;
         csr_wdata = 64'h0;
         priv_mode = `RV64_PRIV_M;
-        instr_addr = 64'h800;
-        data_valid = 1'b1;
-        data_addr = 64'h800;
-        data_size = 3'd3;
-        data_write = 1'b0;
         bus_valid = 1'b0;
         bus_addr = 64'h0;
         bus_size = 3'd0;
         bus_write = 1'b0;
         bus_exec = 1'b0;
         bus_priv_mode = `RV64_PRIV_M;
+        last_active_pmpaddr_csr =
+            `RV64_CSR_PMPADDR0 + PMP_ACTIVE_ENTRIES - 1;
+        last_active_pmpcfg_csr = (PMP_ACTIVE_ENTRIES > 8) ?
+            `RV64_CSR_PMPCFG2 : `RV64_CSR_PMPCFG0;
+        last_active_pmpcfg_value = 64'h1d <<
+            (((PMP_ACTIVE_ENTRIES - 1) % 8) * 8);
+        first_inactive_pmpaddr_csr =
+            `RV64_CSR_PMPADDR0 + PMP_ACTIVE_ENTRIES;
+        first_inactive_pmpcfg_csr = (PMP_ACTIVE_ENTRIES >= 8) ?
+            `RV64_CSR_PMPCFG2 : `RV64_CSR_PMPCFG0;
+        first_inactive_pmpcfg_value = 64'h1d <<
+            ((PMP_ACTIVE_ENTRIES % 8) * 8);
         rst_n = 1'b0;
 
         apply_reset();
@@ -220,43 +228,59 @@ module tb_rv64i_pmp;
         check_bus(64'h800, 3'd3, 1'b0, 1'b0, `RV64_PRIV_U, 1'b0,
                   "U-mode no-match physical request");
 
-        // The implemented CSR surface is exactly 16 entries: pmpcfg0,
-        // pmpcfg2, and pmpaddr0 through pmpaddr15.
+        // The architectural CSR surface always exposes 16 entries.  Fields
+        // above the active hardware prefix are WARL read-only zero.
         priv_mode = `RV64_PRIV_M;
         check_csr(`RV64_CSR_PMPCFG0, 64'h0, "pmpcfg0 reset");
         check_csr(`RV64_CSR_PMPCFG2, 64'h0, "pmpcfg2 reset");
-        check_csr(`RV64_CSR_PMPADDR15, 64'h0, "pmpaddr15 reset");
         check_unimplemented_csr(12'h3a1, "RV64 odd pmpcfg1");
+        check_csr(`RV64_CSR_PMPADDR15, 64'h0,
+                  "architectural pmpaddr15 reset");
         check_unimplemented_csr(12'h3c0, "seventeenth PMP entry");
+        if (PMP_ACTIVE_ENTRIES < 16) begin
+            write_csr_timed(first_inactive_pmpaddr_csr,
+                            64'hffff_ffff_ffff_ffff, busy_cycles);
+            if (busy_cycles != 0)
+                $fatal(1, "inactive PMPADDR entered serial sequencer");
+            check_csr(first_inactive_pmpaddr_csr, 64'h0,
+                      "inactive pmpaddr remains zero");
+            write_csr(first_inactive_pmpcfg_csr,
+                      first_inactive_pmpcfg_value);
+            check_csr(first_inactive_pmpcfg_csr, 64'h0,
+                      "inactive pmpcfg remains zero");
+        end
+        check_csr(last_active_pmpaddr_csr, 64'h0,
+                  "last active pmpaddr reset");
 
-        // OFF-mode address reads expose 4 KiB grain by forcing pmpaddr[9:0]
-        // to zero. Entry 15 is then enabled as a 4 KiB RX NAPOT region.
-        write_csr(`RV64_CSR_PMPADDR15, 64'h11ff);
-        check_csr(`RV64_CSR_PMPADDR15, 64'h1000,
-                  "pmpaddr15 OFF grain readback");
-        write_csr(`RV64_CSR_PMPCFG2, 64'h1d00_0000_0000_0000);
-        check_csr(`RV64_CSR_PMPCFG2, 64'h1d00_0000_0000_0000,
-                  "pmpcfg2 entry 15");
-        check_csr(`RV64_CSR_PMPADDR15, 64'h11ff,
-                  "pmpaddr15 NAPOT readback");
+        // OFF-mode address reads expose 4 KiB grain by forcing
+        // pmpaddr[9:0] to zero. The final active entry is then enabled as a
+        // 4 KiB RX NAPOT region.
+        write_csr(last_active_pmpaddr_csr, 64'h11ff);
+        check_csr(last_active_pmpaddr_csr, 64'h1000,
+                  "last active pmpaddr OFF grain readback");
+        write_csr(last_active_pmpcfg_csr, last_active_pmpcfg_value);
+        check_csr(last_active_pmpcfg_csr, last_active_pmpcfg_value,
+                  "last active pmpcfg entry");
+        check_csr(last_active_pmpaddr_csr, 64'h11ff,
+                  "last active pmpaddr NAPOT readback");
         priv_mode = `RV64_PRIV_U;
-        check_instr(64'h4000, 1'b1, "entry 15 execute");
+        check_instr(64'h4000, 1'b1, "last entry execute");
         check_data(64'h4000, 3'd3, 1'b0, 1'b1,
-                   "entry 15 read");
+                   "last entry read");
         check_data(64'h4000, 3'd3, 1'b1, 1'b0,
-                   "entry 15 write denied");
+                   "last entry write denied");
         check_data(64'h5000, 3'd3, 1'b0, 1'b0,
-                   "entry 15 outside");
+                   "last entry outside");
 
         // OpenSBI probes granularity with A=OFF and an all-ones pmpaddr.
         apply_reset();
         write_csr_timed(`RV64_CSR_PMPADDR0,
                         64'hffff_ffff_ffff_ffff, busy_cycles);
-        if (busy_cycles != 119)
-            $fatal(1, "all-one serial PMPADDR latency=%0d/119",
+        if (busy_cycles != 77)
+            $fatal(1, "all-one serial PMPADDR latency=%0d/77",
                    busy_cycles);
-        check_csr(`RV64_CSR_PMPADDR0, 64'h003f_ffff_ffff_fc00,
-                  "OpenSBI 56-bit address and 4 KiB grain probe");
+        check_csr(`RV64_CSR_PMPADDR0, 64'h0000_001f_ffff_fc00,
+                  "OpenSBI 39-bit address and 4 KiB grain probe");
 
         // Unsupported TOR and NA4 encodings deterministically coerce A to
         // OFF. R/W/X remain WARL-visible; no region becomes active.
@@ -293,7 +317,7 @@ module tb_rv64i_pmp;
                    "unlocked M partial overlap denied");
 
         // Lowest-numbered overlap wins. Entry 0 denies its 4 KiB region;
-        // entry 1 grants the complete implemented 56-bit physical space.
+        // entry 1 grants the complete implemented 39-bit physical space.
         apply_reset();
         write_csr(`RV64_CSR_PMPADDR0, 64'h9ff);
         write_csr(`RV64_CSR_PMPADDR1, 64'hffff_ffff_ffff_ffff);
@@ -303,11 +327,11 @@ module tb_rv64i_pmp;
                    "lower entry deny priority");
         check_data(64'h4000, 3'd3, 1'b1, 1'b1,
                    "full-range fallback allow");
-        check_data(64'h00ff_ffff_ffff_fff8, 3'd3, 1'b0, 1'b1,
+        check_data(64'h0000_007f_ffff_fff8, 3'd3, 1'b0, 1'b1,
                    "full-range top word");
-        check_data(64'h0100_0000_0000_0000, 3'd0, 1'b0, 1'b0,
+        check_data(64'h0000_0080_0000_0000, 3'd0, 1'b0, 1'b0,
                    "outside implemented physical address");
-        check_bus(64'h0100_0000_0000_0000, 3'd0, 1'b0, 1'b0,
+        check_bus(64'h0000_0080_0000_0000, 3'd0, 1'b0, 1'b0,
                   `RV64_PRIV_M, 1'b1, "M-mode no-match above PA width");
 
         // Locked NAPOT entries apply permissions to M-mode and reject both
@@ -333,7 +357,7 @@ module tb_rv64i_pmp;
                   "locked pmpcfg");
 
         // An unlocked address write spends ten cycles scanning the minimum
-        // 4 KiB NAPOT encoding and 65 cycles adding the exclusive bound.
+        // 4 KiB NAPOT encoding and 40 cycles adding the exclusive bound.
         // Readback and permissions must expose the old tuple throughout.
         apply_reset();
         write_csr(`RV64_CSR_PMPADDR0, 64'h9ff);
@@ -364,8 +388,8 @@ module tb_rv64i_pmp;
             @(negedge clk);
             busy_cycles = busy_cycles + 1;
         end
-        if (busy_cycles != 75)
-            $fatal(1, "minimum serial PMPADDR latency=%0d/75",
+        if (busy_cycles != 50)
+            $fatal(1, "minimum serial PMPADDR latency=%0d/50",
                    busy_cycles);
         priv_mode = `RV64_PRIV_U;
         check_data(64'h2000, 3'd3, 1'b0, 1'b0,
@@ -373,7 +397,8 @@ module tb_rv64i_pmp;
         check_data(64'h4000, 3'd3, 1'b0, 1'b1,
                    "new normalized region active");
 
-        $display("PASS: serial 16-entry 4 KiB OFF/NAPOT PMP, 1-bit scan/add, atomic bounds, WARL, priorities, and locks");
+        $display("PASS: 16-entry CSR surface, %0d active single-port 39-bit serial 4 KiB OFF/NAPOT PMP, 1-bit scan/add, atomic bounds, WARL, priorities, and locks",
+                 PMP_ACTIVE_ENTRIES);
         $finish;
     end
 

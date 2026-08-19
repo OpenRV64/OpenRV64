@@ -26,7 +26,7 @@ module tb_opensbi #(
     parameter integer L2_TLB_WAYS = 4,
     parameter integer FETCH_CAROUSEL = 1,
     parameter integer FETCH_ALT_LOOKASIDE = 3,
-    parameter integer FETCH_ALT_CONFIDENCE_GATE = 0,
+    parameter integer FETCH_ALT_CONFIDENCE_GATE = 1,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer ICX_BUS_TYPE = 0,
     parameter integer ICX_BUS_DATA_WIDTH = 256,

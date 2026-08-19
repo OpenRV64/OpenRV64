@@ -256,6 +256,8 @@ module tb_icx_bus #(
         .lsu_access_fault_o(lsu_access_fault),
         .lsu_page_fault_o(lsu_page_fault), .tlbi_i(tlbi),
         .context_flush_i(context_flush),
+        .fetch_context_change_i(1'b0),
+        .pmp_update_i(1'b0),
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),

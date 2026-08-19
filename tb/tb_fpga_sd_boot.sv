@@ -46,6 +46,7 @@ module tb_fpga_sd_boot;
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64ZBB(1'b0),
         .EXTERNAL_MEMORY_ENABLE(1'b1),
+        .PMP_ACTIVE_ENTRIES(4),
         .GENBUS_TLB_ENTRIES(4),
         .PTW_PTE_CACHE_ENTRIES(0),
         .ENABLE_PREDECODE_TARGETS(1'b0),

@@ -26,12 +26,18 @@
 
 - [ ] Store buffers
 - [ ] Cache
-- [ ] Evaluate disabling FAL completely. Compare the current mode-3,
-      two-slot configuration against a true no-FAL control under the matched
+- [ ] Evaluate disabling FAL completely. Compare the current confidence-gated
+      mode-3, two-slot policy (cold predictor state or trained global/local
+      disagreement) against a true no-FAL control under the matched
       512-bit CoreMark and Linux profiles. The control must also suppress the
       mode-0 L1I two-path branch-prefetch fallback while leaving ordinary
       demand, carousel, and next-line fetching unchanged; include timing and
       area evidence as well as cycle counters.
+- [ ] Revisit the fetch page screen's 39-bit fast-path PA width if executable
+      mappings above 39 bits become a real workload. Such mappings currently
+      remain correct by taking the normal translation/PMP path; widen
+      `FETCH_PAGE_PA_WIDTH` and remeasure timing/area only when they need the
+      fast path.
 - [ ] Complete the L1I/L1D decomposition begun under
       `rtl/core/cache/l1/`: move demand-MSHR mutation, waiter/fill-buffer
       ownership, L1D posted-store query/drain/completion state, and L1I/L1D

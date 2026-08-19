@@ -2,7 +2,9 @@
 `include "core/regs/rv64-i-gpr.v"
 `timescale 1ns/1ps
 
-module tb_rv64i_gpr;
+module tb_rv64i_gpr #(
+    parameter FPGA_LUTRAM = 0
+);
 
     logic                             clk;
     logic                             rst_n;
@@ -14,7 +16,9 @@ module tb_rv64i_gpr;
     logic [`RV64_REG_ADDR_WIDTH-1:0]  rd_addr;
     logic [`RV64_XLEN-1:0]            rd_data;
 
-    openrv64_rv64i_gpr dut (
+    openrv64_rv64i_gpr #(
+        .FPGA_LUTRAM(FPGA_LUTRAM)
+    ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .rs1_addr_i(rs1_addr),
@@ -75,9 +79,15 @@ module tb_rv64i_gpr;
 
         rs1_addr = `RV64_REG_X0;
         rs2_addr = `RV64_REG_X5;
-        expect_reads(64'h0000_0000_0000_0000,
-                     64'h0000_0000_0000_0000,
-                     "reset and x0 read");
+        if (FPGA_LUTRAM == 0) begin
+            expect_reads(64'h0000_0000_0000_0000,
+                         64'h0000_0000_0000_0000,
+                         "reset and x0 read");
+        end else begin
+            #1;
+            if (rs1_data !== 64'h0000_0000_0000_0000)
+                $fatal(1, "FPGA LUTRAM x0 did not read zero");
+        end
 
         write_reg(`RV64_REG_X5, 64'h0123_4567_89ab_cdef);
         rs1_addr = `RV64_REG_X5;

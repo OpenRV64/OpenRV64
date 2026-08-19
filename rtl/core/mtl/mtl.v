@@ -52,6 +52,7 @@ module openrv64_core_mtl #(
     parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
+    parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
@@ -160,6 +161,8 @@ module openrv64_core_mtl #(
 
     input  wire                         tlbi_i,
     input  wire                         context_flush_i,
+    input  wire                         fetch_context_change_i,
+    input  wire                         pmp_update_i,
     output wire                         tlbi_busy_o,
     input  wire                         store_barrier_i,
     input  wire                         icache_invalidate_i,
@@ -292,6 +295,11 @@ module openrv64_core_mtl #(
     localparam [2:0] FETCH_WAIT_R = 3'd3;
     localparam [2:0] FETCH_COMPLETE = 3'd4;
     localparam [2:0] FETCH_WAIT_L1I = 3'd5;
+    localparam [2:0] FETCH_FAST_READY = 3'd6;
+    localparam integer FETCH_PAGE_SCREEN_ENTRIES = 4;
+    localparam integer FETCH_PAGE_VPN_WIDTH = `RV64_XLEN - 12;
+    localparam integer FETCH_PAGE_PA_WIDTH = 39;
+    localparam integer FETCH_PAGE_PPN_WIDTH = FETCH_PAGE_PA_WIDTH - 12;
 
     localparam [2:0] LSU_IDLE = 3'd0;
     localparam [2:0] LSU_TRANSLATE = 3'd1;
@@ -318,6 +326,9 @@ module openrv64_core_mtl #(
     localparam [2:0] PREFETCH_XLATE_PMP = 3'd3;
     localparam [2:0] PREFETCH_XLATE_RESP = 3'd4;
     wire translation_invalidate = tlbi_i || context_flush_i;
+    wire fetch_page_screen_invalidate = translation_invalidate ||
+                                        fetch_context_change_i ||
+                                        pmp_update_i;
     wire l2_tlb_evict_current;
     wire micro_tlbi = translation_invalidate || l2_tlb_evict_current;
 
@@ -339,6 +350,9 @@ module openrv64_core_mtl #(
     reg fetch_stash_q [0:FETCH_OUTSTANDING-1];
     reg fetch_demand_q [0:FETCH_OUTSTANDING-1];
     reg fetch_cancelled_q [0:FETCH_OUTSTANDING-1];
+    reg fetch_fast_q [0:FETCH_OUTSTANDING-1];
+    reg [FETCH_PAGE_PPN_WIDTH-1:0] fetch_fast_ppn_q
+        [0:FETCH_OUTSTANDING-1];
     reg [L1I_FETCH_DATA_WIDTH-1:0]
         fetch_data_q [0:FETCH_OUTSTANDING-1];
     reg fetch_access_fault_q [0:FETCH_OUTSTANDING-1];
@@ -349,8 +363,47 @@ module openrv64_core_mtl #(
     reg [FETCH_SLOT_WIDTH-1:0] fetch_tail_q;
     reg [FETCH_COUNT_WIDTH-1:0] fetch_count_q;
 
+    // A successful fetch translation and PMP check proves execute access for
+    // one physical 4 KiB page.  This is valid because this core implements
+    // page-granular NAPOT PMP only.  Privilege and address-space changes
+    // invalidate the whole screen, so entries need only map VPN to PPN.  The
+    // fast structure represents the low 39-bit PA space; translations above
+    // it remain architecturally valid but use the normal checked path.  Hits
+    // bypass ITLB/PTW/PMP and may launch L1I directly from the incoming fetch
+    // request.
+    reg [FETCH_PAGE_SCREEN_ENTRIES-1:0] fetch_page_valid_q;
+    reg [FETCH_PAGE_SCREEN_ENTRIES-1:0][FETCH_PAGE_VPN_WIDTH-1:0]
+        fetch_page_vpn_q;
+    reg [FETCH_PAGE_SCREEN_ENTRIES-1:0][FETCH_PAGE_PPN_WIDTH-1:0]
+        fetch_page_ppn_q;
+    reg [1:0] fetch_page_write_cursor_q;
+    reg fetch_page_hit_r;
+    reg [FETCH_PAGE_PPN_WIDTH-1:0] fetch_page_ppn_r;
+    integer fetch_page_lookup_index;
+
+    always @* begin
+        fetch_page_hit_r = 1'b0;
+        fetch_page_ppn_r = {FETCH_PAGE_PPN_WIDTH{1'b0}};
+        for (fetch_page_lookup_index = 0;
+             fetch_page_lookup_index < FETCH_PAGE_SCREEN_ENTRIES;
+             fetch_page_lookup_index = fetch_page_lookup_index + 1) begin
+            if (!fetch_page_hit_r &&
+                (ENABLE_FETCH_PAGE_SCREEN != 0) &&
+                fetch_req_valid_i && !fetch_page_screen_invalidate &&
+                fetch_page_valid_q[fetch_page_lookup_index] &&
+                (fetch_page_vpn_q[fetch_page_lookup_index] ==
+                 fetch_req_addr_i[`RV64_XLEN-1:12])) begin
+                fetch_page_hit_r = 1'b1;
+                fetch_page_ppn_r =
+                    fetch_page_ppn_q[fetch_page_lookup_index];
+            end
+        end
+    end
+
     reg fetch_xlate_found_r;
     reg [FETCH_SLOT_WIDTH-1:0] fetch_xlate_slot_r;
+    reg fetch_fast_found_r;
+    reg [FETCH_SLOT_WIDTH-1:0] fetch_fast_slot_r;
     reg fetch_free_found_r;
     reg [FETCH_SLOT_WIDTH-1:0] fetch_free_slot_r;
     reg fetch_complete_found_r;
@@ -362,6 +415,7 @@ module openrv64_core_mtl #(
     reg [FETCH_SLOT_WIDTH-1:0] fetch_free_scan_slot_r;
     reg [FETCH_SLOT_WIDTH-1:0] fetch_complete_scan_slot_r;
     integer fetch_scan;
+    integer fetch_fast_scan;
     integer fetch_free_scan;
     integer fetch_complete_scan;
     always @* begin
@@ -374,6 +428,21 @@ module openrv64_core_mtl #(
                 !fetch_cancelled_q[fetch_scan]) begin
                 fetch_xlate_found_r = 1'b1;
                 fetch_xlate_slot_r = fetch_scan[FETCH_SLOT_WIDTH-1:0];
+            end
+        end
+    end
+
+    always @* begin
+        fetch_fast_found_r = 1'b0;
+        fetch_fast_slot_r = {FETCH_SLOT_WIDTH{1'b0}};
+        for (fetch_fast_scan = 0;
+             fetch_fast_scan < FETCH_OUTSTANDING;
+             fetch_fast_scan = fetch_fast_scan + 1) begin
+            if (!fetch_fast_found_r &&
+                (fetch_state_q[fetch_fast_scan] == FETCH_FAST_READY) &&
+                !fetch_cancelled_q[fetch_fast_scan]) begin
+                fetch_fast_found_r = 1'b1;
+                fetch_fast_slot_r = fetch_fast_scan[FETCH_SLOT_WIDTH-1:0];
             end
         end
     end
@@ -436,14 +505,6 @@ module openrv64_core_mtl #(
     end
 
     wire fetch_accept = fetch_req_valid_i && fetch_req_ready_o;
-    wire [FETCH_SLOT_WIDTH-1:0] fetch_response_slot =
-        fetch_resp_hold_valid_q ? fetch_resp_hold_slot_q :
-                                  fetch_complete_slot_r;
-    wire fetch_resp_fire = fetch_resp_valid_o && fetch_resp_ready_i;
-    wire fetch_drop = fetch_drop_found_r && !fetch_resp_valid_o;
-    wire fetch_pop = fetch_drop || fetch_resp_fire;
-    wire [FETCH_SLOT_WIDTH-1:0] fetch_pop_slot =
-        fetch_resp_fire ? fetch_response_slot : fetch_drop_slot_r;
 
     // An ordinary redirect may replace the cancelled stream with one
     // qualified architectural demand on the same edge. The cancellation
@@ -455,16 +516,6 @@ module openrv64_core_mtl #(
     assign fetch_req_ready_o = rst_n &&
         (!fetch_cancel_i || fetch_redirect_replacement) &&
         fetch_free_found_r;
-    assign fetch_resp_valid_o = fetch_resp_hold_valid_q ||
-                                fetch_complete_found_r;
-    assign fetch_resp_addr_o = fetch_vaddr_q[fetch_response_slot];
-    assign fetch_resp_data_o = fetch_data_q[fetch_response_slot];
-    assign fetch_resp_access_fault_o =
-        fetch_access_fault_q[fetch_response_slot];
-    assign fetch_resp_page_fault_o =
-        fetch_page_fault_q[fetch_response_slot];
-    assign fetch_resp_stash_o = fetch_stash_q[fetch_response_slot];
-    assign fetch_resp_demand_o = fetch_demand_q[fetch_response_slot];
 
     wire itlb_lookup_hit;
     wire [`RV64_XLEN-1:0] itlb_lookup_paddr;
@@ -1138,9 +1189,37 @@ module openrv64_core_mtl #(
     wire l1i_req_error;
     wire axi_r_error;
     wire l1i_enabled = (ENABLE_L1I != 0);
+    wire fetch_page_screen_accept = fetch_accept && fetch_page_hit_r;
+    wire fetch_page_screen_incoming_select = fetch_page_screen_accept &&
+        (!fetch_fast_found_r || fetch_cancel_i);
+    wire fetch_page_screen_queued_select = fetch_fast_found_r &&
+        !fetch_page_screen_incoming_select;
+    wire fetch_page_screen_launch = l1i_enabled &&
+        !l1i_req_active_q && !l1i_invalidate_valid &&
+        !fetch_page_screen_invalidate &&
+        (fetch_page_screen_incoming_select ||
+         fetch_page_screen_queued_select);
+    wire [FETCH_SLOT_WIDTH-1:0] fetch_page_screen_launch_slot =
+        fetch_page_screen_incoming_select ? fetch_free_slot_r :
+                                            fetch_fast_slot_r;
+    wire [`RV64_XLEN-1:0] fetch_page_screen_launch_vaddr =
+        fetch_page_screen_incoming_select ?
+            {fetch_req_addr_i[`RV64_XLEN-1:L1I_FETCH_BYTE_BITS],
+             {L1I_FETCH_BYTE_BITS{1'b0}}} :
+            fetch_vaddr_q[fetch_fast_slot_r];
+    wire [`RV64_XLEN-1:0] fetch_page_screen_launch_paddr =
+        fetch_page_screen_incoming_select ?
+            {{(`RV64_XLEN-FETCH_PAGE_PPN_WIDTH-12){1'b0}},
+             fetch_page_ppn_r,
+             fetch_req_addr_i[11:L1I_FETCH_BYTE_BITS],
+             {L1I_FETCH_BYTE_BITS{1'b0}}} :
+            {{(`RV64_XLEN-FETCH_PAGE_PPN_WIDTH-12){1'b0}},
+             fetch_fast_ppn_q[fetch_fast_slot_r],
+             fetch_vaddr_q[fetch_fast_slot_r][11:0]};
     wire fetch_cache_candidate = fetch_axi_candidate &&
         (!l1i_enabled || (!l1i_req_active_q &&
-                          !l1i_invalidate_valid));
+                          !l1i_invalidate_valid &&
+                          !fetch_page_screen_launch));
 
     // A tagged translation response carries the PMP verdict into the LSQ.
     // Its later physical L1D request can launch without a live PMP result.
@@ -1190,18 +1269,87 @@ module openrv64_core_mtl #(
     wire fetch_pmp_denied = select_fetch_probe && !pmp_allow_i;
     wire prefetch_pmp_complete = select_prefetch_probe;
     wire fetch_l1i_launch = l1i_enabled && select_fetch_probe && pmp_allow_i;
+    wire fetch_page_paddr_representable =
+        !(|fetch_lookup_paddr[`RV64_XLEN-1:FETCH_PAGE_PA_WIDTH]);
+    wire fetch_page_screen_fill = (ENABLE_FETCH_PAGE_SCREEN != 0) &&
+                                  fetch_l1i_launch &&
+                                  fetch_page_paddr_representable;
+    wire l1i_req_active_usable = l1i_req_active_q &&
+        !(fetch_page_screen_invalidate &&
+          fetch_fast_q[l1i_req_slot_q]);
     wire l1i_req_valid = l1i_enabled &&
-                         (l1i_req_active_q || fetch_l1i_launch);
-    wire [`RV64_XLEN-1:0] l1i_req_vaddr = l1i_req_active_q ?
-        l1i_req_vaddr_q : fetch_lookup_vaddr;
-    wire [`RV64_XLEN-1:0] l1i_req_paddr = l1i_req_active_q ?
-        l1i_req_paddr_q : fetch_axi_addr;
-    wire [FETCH_SLOT_WIDTH-1:0] l1i_req_slot = l1i_req_active_q ?
-        l1i_req_slot_q : fetch_xlate_slot_r;
+                         (l1i_req_active_usable ||
+                          fetch_page_screen_launch ||
+                          fetch_l1i_launch);
+    wire [`RV64_XLEN-1:0] l1i_req_vaddr = l1i_req_active_usable ?
+        l1i_req_vaddr_q : fetch_page_screen_launch ?
+        fetch_page_screen_launch_vaddr : fetch_lookup_vaddr;
+    wire [`RV64_XLEN-1:0] l1i_req_paddr = l1i_req_active_usable ?
+        l1i_req_paddr_q : fetch_page_screen_launch ?
+        fetch_page_screen_launch_paddr : fetch_axi_addr;
+    wire [FETCH_SLOT_WIDTH-1:0] l1i_req_slot = l1i_req_active_usable ?
+        l1i_req_slot_q : fetch_page_screen_launch ?
+        fetch_page_screen_launch_slot : fetch_xlate_slot_r;
+    wire [`RV64_PRIV_WIDTH-1:0] l1i_req_priv =
+        fetch_page_screen_launch && fetch_page_screen_incoming_select ?
+            fetch_req_priv_i : fetch_priv_q[l1i_req_slot];
+    wire [`RV64_SATP_MODE_WIDTH-1:0] l1i_req_vm_mode =
+        fetch_page_screen_launch && fetch_page_screen_incoming_select ?
+            fetch_req_vm_mode_i : fetch_vm_mode_q[l1i_req_slot];
+    wire [`RV64_SATP_ASID_WIDTH-1:0] l1i_req_asid =
+        fetch_page_screen_launch && fetch_page_screen_incoming_select ?
+            fetch_req_asid_i : fetch_asid_q[l1i_req_slot];
+    wire [`RV64_SATP_PPN_WIDTH-1:0] l1i_req_root_ppn =
+        fetch_page_screen_launch && fetch_page_screen_incoming_select ?
+            fetch_req_root_ppn_i : fetch_root_ppn_q[l1i_req_slot];
+    wire l1i_req_sum =
+        fetch_page_screen_launch && fetch_page_screen_incoming_select ?
+            fetch_req_sum_i : fetch_sum_q[l1i_req_slot];
+    wire l1i_req_mxr =
+        fetch_page_screen_launch && fetch_page_screen_incoming_select ?
+            fetch_req_mxr_i : fetch_mxr_q[l1i_req_slot];
     wire l1i_req_fire = l1i_req_valid && l1i_req_ready;
     wire l1i_resp_fire = l1i_resp_valid && l1i_resp_ready;
     wire [FETCH_SLOT_WIDTH-1:0] l1i_resp_slot = l1i_resp_tag;
     assign l1i_resp_ready = 1'b1;
+
+    wire fetch_buffered_resp_valid = fetch_resp_hold_valid_q ||
+                                     fetch_complete_found_r;
+    wire fetch_page_screen_resp_bypass = l1i_enabled && l1i_resp_valid &&
+        !fetch_buffered_resp_valid && fetch_fast_q[l1i_resp_slot] &&
+        !fetch_cancelled_q[l1i_resp_slot] &&
+        (fetch_state_q[l1i_resp_slot] == FETCH_WAIT_L1I);
+    wire [FETCH_SLOT_WIDTH-1:0] fetch_buffered_resp_slot =
+        fetch_resp_hold_valid_q ? fetch_resp_hold_slot_q :
+                                  fetch_complete_slot_r;
+    wire [FETCH_SLOT_WIDTH-1:0] fetch_response_slot =
+        fetch_page_screen_resp_bypass ? l1i_resp_slot :
+                                        fetch_buffered_resp_slot;
+    // A screen invalidation revokes the cached translation/PMP proof.  Do
+    // not expose a screen-derived response on the invalidation edge; the
+    // slot is cancelled below and an accepted L1I request is only drained.
+    wire fetch_page_screen_resp_invalid =
+        fetch_page_screen_invalidate &&
+        fetch_fast_q[fetch_response_slot];
+    assign fetch_resp_valid_o =
+        (fetch_page_screen_resp_bypass || fetch_buffered_resp_valid) &&
+        !fetch_page_screen_resp_invalid;
+    assign fetch_resp_addr_o = fetch_vaddr_q[fetch_response_slot];
+    assign fetch_resp_data_o = fetch_page_screen_resp_bypass ?
+        l1i_fetch_rdata : fetch_data_q[fetch_response_slot];
+    assign fetch_resp_access_fault_o = fetch_page_screen_resp_bypass ?
+        l1i_req_error : fetch_access_fault_q[fetch_response_slot];
+    assign fetch_resp_page_fault_o = fetch_page_screen_resp_bypass ?
+        1'b0 : fetch_page_fault_q[fetch_response_slot];
+    assign fetch_resp_stash_o = fetch_stash_q[fetch_response_slot];
+    assign fetch_resp_demand_o = fetch_demand_q[fetch_response_slot];
+    wire fetch_resp_fire = fetch_resp_valid_o && fetch_resp_ready_i;
+    wire fetch_drop = fetch_drop_found_r && !fetch_resp_valid_o;
+    wire fetch_pop = fetch_drop || fetch_resp_fire;
+    wire [FETCH_SLOT_WIDTH-1:0] fetch_pop_slot =
+        fetch_resp_fire ? fetch_response_slot : fetch_drop_slot_r;
+    wire fetch_page_screen_resp_fire = fetch_page_screen_resp_bypass &&
+                                       fetch_resp_ready_i;
 
     generate
         if (L1I_FETCH_DATA_WIDTH ==
@@ -1441,12 +1589,12 @@ module openrv64_core_mtl #(
         .req_tag_i(l1i_req_slot),
         .req_addr_i(l1i_req_vaddr),
         .req_phys_addr_i(l1i_req_paddr),
-        .req_priv_i(fetch_priv_q[l1i_req_slot]),
-        .req_vm_mode_i(fetch_vm_mode_q[l1i_req_slot]),
-        .req_asid_i(fetch_asid_q[l1i_req_slot]),
-        .req_root_ppn_i(fetch_root_ppn_q[l1i_req_slot]),
-        .req_sum_i(fetch_sum_q[l1i_req_slot]),
-        .req_mxr_i(fetch_mxr_q[l1i_req_slot]),
+        .req_priv_i(l1i_req_priv),
+        .req_vm_mode_i(l1i_req_vm_mode),
+        .req_asid_i(l1i_req_asid),
+        .req_root_ppn_i(l1i_req_root_ppn),
+        .req_sum_i(l1i_req_sum),
+        .req_mxr_i(l1i_req_mxr),
         .resp_valid_o(l1i_resp_valid),
         .resp_ready_i(l1i_resp_ready),
         .resp_tag_o(l1i_resp_tag),
@@ -1737,19 +1885,52 @@ module openrv64_core_mtl #(
             l1i_req_slot_q <= {FETCH_SLOT_WIDTH{1'b0}};
             l1i_invalidate_pending_q <= 1'b0;
         end else begin
-            if (fetch_l1i_launch && !l1i_req_fire) begin
+            if ((fetch_page_screen_launch || fetch_l1i_launch) &&
+                !l1i_req_fire) begin
                 l1i_req_active_q <= 1'b1;
-                l1i_req_vaddr_q <= fetch_lookup_vaddr;
-                l1i_req_paddr_q <= fetch_axi_addr;
-                l1i_req_slot_q <= fetch_xlate_slot_r;
+                l1i_req_vaddr_q <= l1i_req_vaddr;
+                l1i_req_paddr_q <= l1i_req_paddr;
+                l1i_req_slot_q <= l1i_req_slot;
             end
             if (l1i_req_fire)
+                l1i_req_active_q <= 1'b0;
+            if (fetch_page_screen_invalidate && l1i_req_active_q &&
+                fetch_fast_q[l1i_req_slot_q])
                 l1i_req_active_q <= 1'b0;
 
             if (icache_invalidate_i)
                 l1i_invalidate_pending_q <= 1'b1;
             if (l1i_invalidate_valid && l1i_invalidate_ready)
                 l1i_invalidate_pending_q <= 1'b0;
+        end
+    end
+
+    integer fetch_page_reset_index;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fetch_page_valid_q <=
+                {FETCH_PAGE_SCREEN_ENTRIES{1'b0}};
+            fetch_page_write_cursor_q <= 2'd0;
+            for (fetch_page_reset_index = 0;
+                 fetch_page_reset_index < FETCH_PAGE_SCREEN_ENTRIES;
+                 fetch_page_reset_index = fetch_page_reset_index + 1) begin
+                fetch_page_vpn_q[fetch_page_reset_index] <=
+                    {FETCH_PAGE_VPN_WIDTH{1'b0}};
+                fetch_page_ppn_q[fetch_page_reset_index] <=
+                    {FETCH_PAGE_PPN_WIDTH{1'b0}};
+            end
+        end else if (fetch_page_screen_invalidate) begin
+            fetch_page_valid_q <=
+                {FETCH_PAGE_SCREEN_ENTRIES{1'b0}};
+            fetch_page_write_cursor_q <= 2'd0;
+        end else if (fetch_page_screen_fill) begin
+            fetch_page_valid_q[fetch_page_write_cursor_q] <= 1'b1;
+            fetch_page_vpn_q[fetch_page_write_cursor_q] <=
+                fetch_lookup_vaddr[`RV64_XLEN-1:12];
+            fetch_page_ppn_q[fetch_page_write_cursor_q] <=
+                fetch_lookup_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
+            fetch_page_write_cursor_q <=
+                fetch_page_write_cursor_q + 1'b1;
         end
     end
 
@@ -1862,6 +2043,9 @@ module openrv64_core_mtl #(
                 fetch_stash_q[fetch_index] <= 1'b0;
                 fetch_demand_q[fetch_index] <= 1'b0;
                 fetch_cancelled_q[fetch_index] <= 1'b0;
+                fetch_fast_q[fetch_index] <= 1'b0;
+                fetch_fast_ppn_q[fetch_index] <=
+                    {FETCH_PAGE_PPN_WIDTH{1'b0}};
                 fetch_data_q[fetch_index] <=
                     {L1I_FETCH_DATA_WIDTH{1'b0}};
                 fetch_access_fault_q[fetch_index] <= 1'b0;
@@ -1871,9 +2055,13 @@ module openrv64_core_mtl #(
             if (!fetch_resp_hold_valid_q && fetch_resp_valid_o &&
                 !fetch_resp_ready_i) begin
                 fetch_resp_hold_valid_q <= 1'b1;
-                fetch_resp_hold_slot_q <= fetch_complete_slot_r;
+                fetch_resp_hold_slot_q <= fetch_response_slot;
             end
             if (fetch_resp_fire)
+                fetch_resp_hold_valid_q <= 1'b0;
+            if (fetch_page_screen_invalidate &&
+                fetch_resp_hold_valid_q &&
+                fetch_fast_q[fetch_resp_hold_slot_q])
                 fetch_resp_hold_valid_q <= 1'b0;
 
             case ({fetch_accept, fetch_pop})
@@ -1883,7 +2071,11 @@ module openrv64_core_mtl #(
                 end
             endcase
             if (fetch_accept) begin
-                fetch_state_q[fetch_free_slot_r] <= FETCH_TRANSLATE;
+                fetch_state_q[fetch_free_slot_r] <= fetch_page_hit_r ?
+                    (fetch_page_screen_launch &&
+                     fetch_page_screen_incoming_select ?
+                        FETCH_WAIT_L1I : FETCH_FAST_READY) :
+                    FETCH_TRANSLATE;
                 fetch_vaddr_q[fetch_free_slot_r] <= {
                     fetch_req_addr_i[`RV64_XLEN-1:L1I_FETCH_BYTE_BITS],
                     {L1I_FETCH_BYTE_BITS{1'b0}}
@@ -1898,6 +2090,9 @@ module openrv64_core_mtl #(
                 fetch_stash_q[fetch_free_slot_r] <= fetch_req_stash_i;
                 fetch_demand_q[fetch_free_slot_r] <= fetch_req_demand_i;
                 fetch_cancelled_q[fetch_free_slot_r] <= 1'b0;
+                fetch_fast_q[fetch_free_slot_r] <= fetch_page_hit_r;
+                fetch_fast_ppn_q[fetch_free_slot_r] <=
+                    fetch_page_ppn_r;
                 fetch_data_q[fetch_free_slot_r] <=
                     {L1I_FETCH_DATA_WIDTH{1'b0}};
                 fetch_access_fault_q[fetch_free_slot_r] <= 1'b0;
@@ -1909,7 +2104,33 @@ module openrv64_core_mtl #(
                 fetch_stash_q[fetch_pop_slot] <= 1'b0;
                 fetch_demand_q[fetch_pop_slot] <= 1'b0;
                 fetch_cancelled_q[fetch_pop_slot] <= 1'b0;
+                fetch_fast_q[fetch_pop_slot] <= 1'b0;
                 fetch_head_q <= fetch_pop_slot + 1'b1;
+            end
+
+            if (fetch_page_screen_invalidate) begin
+                for (fetch_index = 0;
+                     fetch_index < FETCH_OUTSTANDING;
+                     fetch_index = fetch_index + 1) begin
+                    if (fetch_fast_q[fetch_index] &&
+                        (!fetch_pop ||
+                         (fetch_pop_slot !=
+                          fetch_index[FETCH_SLOT_WIDTH-1:0]))) begin
+                        // The fast-path job is inseparable from the revoked
+                        // page-screen proof.  Kill it; never feed it back to
+                        // translation.  An L1I request which already fired
+                        // remains in WAIT_L1I solely to drain its tagged
+                        // response.  A buffered, unissued request can finish
+                        // immediately because it is suppressed above.
+                        fetch_cancelled_q[fetch_index] <= 1'b1;
+                        fetch_fast_q[fetch_index] <= 1'b0;
+                        if ((fetch_state_q[fetch_index] != FETCH_WAIT_L1I) ||
+                            (l1i_req_active_q &&
+                             (l1i_req_slot_q ==
+                              fetch_index[FETCH_SLOT_WIDTH-1:0])))
+                            fetch_state_q[fetch_index] <= FETCH_COMPLETE;
+                    end
+                end
             end
 
             if (fetch_cancel_i) begin
@@ -1919,7 +2140,9 @@ module openrv64_core_mtl #(
                         (!fetch_stash_q[fetch_index] ||
                          fetch_cancel_stash_i)) begin
                         fetch_cancelled_q[fetch_index] <= 1'b1;
-                        if (fetch_state_q[fetch_index] == FETCH_TRANSLATE)
+                        if ((fetch_state_q[fetch_index] == FETCH_TRANSLATE) ||
+                            (fetch_state_q[fetch_index] ==
+                             FETCH_FAST_READY))
                             fetch_state_q[fetch_index] <= FETCH_COMPLETE;
                     end else if (fetch_state_q[fetch_index] !=
                                  FETCH_EMPTY) begin
@@ -1944,8 +2167,10 @@ module openrv64_core_mtl #(
                                 fetch_age_port*`RV64_XLEN +
                                 6 +: `RV64_XLEN-6])) begin
                             fetch_cancelled_q[fetch_index] <= 1'b1;
-                            if (fetch_state_q[fetch_index] ==
-                                FETCH_TRANSLATE)
+                            if ((fetch_state_q[fetch_index] ==
+                                 FETCH_TRANSLATE) ||
+                                (fetch_state_q[fetch_index] ==
+                                 FETCH_FAST_READY))
                                 fetch_state_q[fetch_index] <=
                                     FETCH_COMPLETE;
                         end
@@ -1965,6 +2190,10 @@ module openrv64_core_mtl #(
             end else if (direct_fetch_ar_fire) begin
                 fetch_state_q[fetch_xlate_slot_r] <= FETCH_WAIT_R;
             end
+
+            if (fetch_page_screen_launch &&
+                fetch_page_screen_queued_select)
+                fetch_state_q[fetch_fast_slot_r] <= FETCH_WAIT_L1I;
 
             if (start_fetch_walk)
                 fetch_state_q[fetch_xlate_slot_r] <= FETCH_MISS;
@@ -1995,7 +2224,8 @@ module openrv64_core_mtl #(
                 fetch_access_fault_q[r_fetch_slot] <= axi_r_error;
                 fetch_page_fault_q[r_fetch_slot] <= 1'b0;
             end
-            if (l1i_enabled && l1i_resp_fire) begin
+            if (l1i_enabled && l1i_resp_fire &&
+                !fetch_page_screen_resp_fire) begin
                 fetch_state_q[l1i_resp_slot] <= FETCH_COMPLETE;
                 fetch_data_q[l1i_resp_slot] <= l1i_fetch_rdata;
                 fetch_access_fault_q[l1i_resp_slot] <= l1i_req_error;
@@ -2295,6 +2525,11 @@ module openrv64_core_mtl #(
         .fetch_free_slot_r(fetch_free_slot_r),
         .fetch_head_q(fetch_head_q),
         .fetch_l1i_launch(fetch_l1i_launch),
+        .fetch_page_screen_accept(fetch_page_screen_accept),
+        .fetch_page_screen_fill(fetch_page_screen_fill),
+        .fetch_page_screen_invalidate(fetch_page_screen_invalidate),
+        .fetch_page_screen_launch(fetch_page_screen_launch),
+        .fetch_page_screen_resp_bypass(fetch_page_screen_resp_bypass),
         .fetch_priv_q(fetch_priv_q),
         .fetch_stash_q(fetch_stash_q),
         .fetch_state_q(fetch_state_q),
@@ -2353,6 +2588,13 @@ module openrv64_core_mtl #(
                      FETCH_TRANSLATE))
                     $fatal(1,
                         "cancelled fetch slot re-entered translation slot=%0d addr=%016x",
+                        fetch_assert_index,
+                        fetch_vaddr_q[fetch_assert_index]);
+                if (fetch_fast_q[fetch_assert_index] &&
+                    (fetch_state_q[fetch_assert_index] ==
+                     FETCH_TRANSLATE))
+                    $fatal(1,
+                        "page-screen fetch entered translation slot=%0d addr=%016x",
                         fetch_assert_index,
                         fetch_vaddr_q[fetch_assert_index]);
             end

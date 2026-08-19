@@ -10,6 +10,7 @@ module openrv64_rv64i_csrs #(
     parameter ENABLE_RV64A = 1,
     parameter ENABLE_EXTENSION = 0,
     parameter integer HPM_COUNTERS = 8,
+    parameter integer PMP_ACTIVE_ENTRIES = 8,
     parameter [`RV64_XLEN-1:0] HART_ID = {`RV64_XLEN{1'b0}}
 ) (
     input  wire                             clk,
@@ -76,13 +77,6 @@ module openrv64_rv64i_csrs #(
     output wire [`RV64_SATP_PPN_WIDTH-1:0] satp_root_ppn_o,
     output wire                             status_sum_o,
     output wire                             status_mxr_o,
-    input  wire [`RV64_XLEN-1:0]           pmp_instr_addr_i,
-    output wire                             pmp_instr_allow_o,
-    input  wire                             pmp_data_valid_i,
-    input  wire [`RV64_XLEN-1:0]           pmp_data_addr_i,
-    input  wire [2:0]                       pmp_data_size_i,
-    input  wire                             pmp_data_write_i,
-    output wire                             pmp_data_allow_o,
     input  wire                             pmp_bus_valid_i,
     input  wire [`RV64_XLEN-1:0]           pmp_bus_addr_i,
     input  wire [2:0]                       pmp_bus_size_i,
@@ -290,7 +284,9 @@ module openrv64_rv64i_csrs #(
         .event_pulses_i(perf_events_i)
     );
 
-    openrv64_rv64i_pmp u_pmp (
+    openrv64_rv64i_pmp #(
+        .PMP_ACTIVE_ENTRIES(PMP_ACTIVE_ENTRIES)
+    ) u_pmp (
         .clk(clk),
         .rst_n(rst_n),
         .csr_addr_i(csr_addr_i),
@@ -302,15 +298,6 @@ module openrv64_rv64i_csrs #(
         .csr_wdata_i(csr_write_value),
         .csr_write_ready_o(pmp_csr_write_ready),
         .csr_busy_o(pmp_csr_busy),
-        .instr_priv_mode_i(priv_mode_q),
-        .data_priv_mode_i(pmp_data_priv),
-        .instr_addr_i(pmp_instr_addr_i),
-        .instr_allow_o(pmp_instr_allow_o),
-        .data_valid_i(pmp_data_valid_i),
-        .data_addr_i(pmp_data_addr_i),
-        .data_size_i(pmp_data_size_i),
-        .data_write_i(pmp_data_write_i),
-        .data_allow_o(pmp_data_allow_o),
         .bus_valid_i(pmp_bus_valid_i),
         .bus_addr_i(pmp_bus_addr_i),
         .bus_size_i(pmp_bus_size_i),

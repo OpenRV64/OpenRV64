@@ -555,7 +555,7 @@ module tb_top_axi_3p #(
     parameter integer L1D_PREFETCH_OUTSTANDING = 4,
     parameter integer L1D_PREFETCH_DEMAND_RESERVE = 2,
     parameter integer FETCH_ALT_LOOKASIDE = 3,
-    parameter integer FETCH_ALT_CONFIDENCE_GATE = 0
+    parameter integer FETCH_ALT_CONFIDENCE_GATE = 1
 );
     localparam integer RETIRE_RESULT_PC_LSB = 329;
 

@@ -2,7 +2,9 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 
-module openrv64_rv64i_pmp (
+module openrv64_rv64i_pmp #(
+    parameter integer PMP_ACTIVE_ENTRIES = 8
+) (
     input  wire                             clk,
     input  wire                             rst_n,
 
@@ -15,16 +17,6 @@ module openrv64_rv64i_pmp (
     output wire                             csr_write_ready_o,
     output wire                             csr_busy_o,
 
-    input  wire [`RV64_PRIV_WIDTH-1:0]     instr_priv_mode_i,
-    input  wire [`RV64_PRIV_WIDTH-1:0]     data_priv_mode_i,
-    input  wire [`RV64_XLEN-1:0]           instr_addr_i,
-    output wire                             instr_allow_o,
-    input  wire                             data_valid_i,
-    input  wire [`RV64_XLEN-1:0]           data_addr_i,
-    input  wire [2:0]                       data_size_i,
-    input  wire                             data_write_i,
-    output wire                             data_allow_o,
-
     input  wire                             bus_valid_i,
     input  wire [`RV64_XLEN-1:0]           bus_addr_i,
     input  wire [2:0]                       bus_size_i,
@@ -34,28 +26,34 @@ module openrv64_rv64i_pmp (
     output wire                             bus_allow_o
 );
 
-    // The privileged architecture permits 0, 16, or 64 entries.  This core
-    // implements the minimum useful set.  RV64 PMP covers physical address
-    // bits 55:2, and this implementation deliberately chooses page-sized
-    // 4 KiB grain.  OFF and NAPOT are the only supported A-field values;
-    // TOR and NA4 writes are WARL-coerced to OFF.
-    localparam integer PMP_ENTRIES = 16;
-    localparam integer PMP_CFG_BITS = PMP_ENTRIES * 8;
-    localparam integer PMP_ADDR_WIDTH = 54;
+    // Sixteen PMP entries are architecturally visible.  Only the lowest
+    // PMP_ACTIVE_ENTRIES have storage and comparators; all higher entry fields
+    // are WARL read-only zero.  The core defaults to eight active entries and
+    // resource-constrained targets may select fewer without changing the CSR
+    // surface.  This implementation has a 39-bit byte physical-address space,
+    // so pmpaddr implements PA[38:2] and WARL reads zero above it.  It chooses
+    // 4 KiB grain and supports OFF and NAPOT; TOR and NA4 coerce to OFF.
+    localparam integer PMP_ARCH_ENTRIES = 16;
+    localparam integer PMP_CFG_BITS = PMP_ACTIVE_ENTRIES * 8;
+    localparam integer PMP_PA_WIDTH = 39;
+    localparam integer PMP_ADDR_WIDTH = PMP_PA_WIDTH - 2;
+    localparam integer PMP_BOUND_WIDTH = PMP_PA_WIDTH + 1;
     localparam integer PMP_GRAIN_LOG2 = 12;
     localparam integer PMP_GRAIN_G = PMP_GRAIN_LOG2 - 2;
     localparam integer PMP_NAPOT_FORCED_ONES = PMP_GRAIN_G - 1;
-    localparam integer PMP_REGION_LOW_BITS = PMP_ENTRIES * 64;
-    localparam integer PMP_REGION_HIGH_BITS = PMP_ENTRIES * 65;
+    localparam integer PMP_REGION_LOW_BITS =
+        PMP_ACTIVE_ENTRIES * PMP_PA_WIDTH;
+    localparam integer PMP_REGION_HIGH_BITS =
+        PMP_ACTIVE_ENTRIES * PMP_BOUND_WIDTH;
 
     reg [PMP_CFG_BITS-1:0] pmpcfg_q;
-    reg [PMP_ADDR_WIDTH-1:0] pmpaddr_q [0:PMP_ENTRIES-1];
+    reg [PMP_ADDR_WIDTH-1:0] pmpaddr_q [0:PMP_ACTIVE_ENTRIES-1];
 
     // Normalized [low, high) NAPOT bounds are generated only when pmpaddr is
     // written.  The request path consequently contains fixed comparisons and
     // first-match selection, not trailing-one scans or variable shifts.
-    reg [63:0] pmp_region_low_q [0:PMP_ENTRIES-1];
-    reg [64:0] pmp_region_high_q [0:PMP_ENTRIES-1];
+    reg [PMP_PA_WIDTH-1:0] pmp_region_low_q [0:PMP_ACTIVE_ENTRIES-1];
+    reg [PMP_BOUND_WIDTH-1:0] pmp_region_high_q [0:PMP_ACTIVE_ENTRIES-1];
     wire [PMP_REGION_LOW_BITS-1:0] pmp_region_low_state;
     wire [PMP_REGION_HIGH_BITS-1:0] pmp_region_high_state;
 
@@ -69,12 +67,12 @@ module openrv64_rv64i_pmp (
     reg [3:0] pmpaddr_entry_q;
     reg [PMP_ADDR_WIDTH-1:0] pmpaddr_pending_q;
     reg [PMP_ADDR_WIDTH-1:0] pmpaddr_scan_q;
-    reg [6:0] pmpaddr_bit_count_q;
-    reg [63:0] pmpaddr_address_q;
-    reg [63:0] pmpaddr_mask_q;
-    reg [63:0] pmpaddr_low_q;
-    reg [64:0] pmpaddr_add_source_q;
-    reg [64:0] pmpaddr_high_work_q;
+    reg [$clog2(PMP_BOUND_WIDTH)-1:0] pmpaddr_bit_count_q;
+    reg [PMP_PA_WIDTH-1:0] pmpaddr_address_q;
+    reg [PMP_PA_WIDTH-1:0] pmpaddr_mask_q;
+    reg [PMP_PA_WIDTH-1:0] pmpaddr_low_q;
+    reg [PMP_BOUND_WIDTH-1:0] pmpaddr_add_source_q;
+    reg [PMP_BOUND_WIDTH-1:0] pmpaddr_high_work_q;
     reg pmpaddr_add_carry_q;
 
     integer i;
@@ -83,11 +81,13 @@ module openrv64_rv64i_pmp (
     genvar state_entry;
     generate
         for (state_entry = 0;
-             state_entry < PMP_ENTRIES;
+             state_entry < PMP_ACTIVE_ENTRIES;
              state_entry = state_entry + 1) begin : g_region_state
-            assign pmp_region_low_state[(state_entry * 64) +: 64] =
+            assign pmp_region_low_state[
+                (state_entry * PMP_PA_WIDTH) +: PMP_PA_WIDTH] =
                 pmp_region_low_q[state_entry];
-            assign pmp_region_high_state[(state_entry * 65) +: 65] =
+            assign pmp_region_high_state[
+                (state_entry * PMP_BOUND_WIDTH) +: PMP_BOUND_WIDTH] =
                 pmp_region_high_q[state_entry];
         end
     endgenerate
@@ -132,21 +132,32 @@ module openrv64_rv64i_pmp (
         csr_wdata_i[PMP_ADDR_WIDTH-1:0];
     wire csr_pmpaddr_match =
         (csr_addr_i >= `RV64_CSR_PMPADDR0) &&
-        (csr_addr_i < (`RV64_CSR_PMPADDR0 + PMP_ENTRIES));
+        (csr_addr_i < (`RV64_CSR_PMPADDR0 + PMP_ARCH_ENTRIES));
     wire [3:0] csr_pmpaddr_entry =
         csr_addr_i - `RV64_CSR_PMPADDR0;
-    wire csr_pmpaddr_locked = csr_pmpaddr_match &&
-        pmpcfg_q[(csr_pmpaddr_entry * 8) + `RV64_PMP_CFG_L_BIT];
-    wire pmpaddr_start = csr_write_i && csr_pmpaddr_match &&
+    wire csr_pmpaddr_active = csr_pmpaddr_match &&
+        (csr_pmpaddr_entry < PMP_ACTIVE_ENTRIES);
+    reg csr_pmpaddr_locked;
+    integer lock_entry;
+    always @* begin
+        csr_pmpaddr_locked = 1'b0;
+        for (lock_entry = 0; lock_entry < PMP_ACTIVE_ENTRIES;
+             lock_entry = lock_entry + 1)
+            if (csr_pmpaddr_entry == lock_entry)
+                csr_pmpaddr_locked = pmpcfg_q[(lock_entry * 8) +
+                    `RV64_PMP_CFG_L_BIT];
+    end
+    wire pmpaddr_start = csr_write_i && csr_pmpaddr_active &&
         !csr_pmpaddr_locked && !pmpaddr_busy_q && !pmpaddr_done_q;
-    wire [63:0] pmpaddr_scan_mask_next =
-        {pmpaddr_mask_q[62:0], 1'b1};
+    wire [PMP_PA_WIDTH-1:0] pmpaddr_scan_mask_next =
+        {pmpaddr_mask_q[PMP_PA_WIDTH-2:0], 1'b1};
     wire pmpaddr_add_sum =
         pmpaddr_add_source_q[0] ^ pmpaddr_add_carry_q;
     wire pmpaddr_add_carry_next =
         pmpaddr_add_source_q[0] & pmpaddr_add_carry_q;
-    wire [64:0] pmpaddr_high_next = {
-        pmpaddr_add_sum, pmpaddr_high_work_q[64:1]
+    wire [PMP_BOUND_WIDTH-1:0] pmpaddr_high_next = {
+        pmpaddr_add_sum,
+        pmpaddr_high_work_q[PMP_BOUND_WIDTH-1:1]
     };
 
     assign csr_busy_o = pmpaddr_busy_q;
@@ -155,7 +166,7 @@ module openrv64_rv64i_pmp (
     // immediately.  The 1P pipeline separately uses csr_busy_o to hold WB.
     assign csr_write_ready_o =
         !csr_write_i ? 1'b1 :
-        (csr_pmpaddr_match && !csr_pmpaddr_locked) ?
+        (csr_pmpaddr_active && !csr_pmpaddr_locked) ?
             pmpaddr_done_q :
             !pmpaddr_busy_q;
 
@@ -168,35 +179,41 @@ module openrv64_rv64i_pmp (
         input [PMP_CFG_BITS-1:0] cfg_state;
         input [PMP_REGION_LOW_BITS-1:0] region_low_state;
         input [PMP_REGION_HIGH_BITS-1:0] region_high_state;
-        reg [64:0] access_low;
-        reg [64:0] access_high;
-        reg [64:0] region_low;
-        reg [64:0] region_high;
+        reg [PMP_BOUND_WIDTH-1:0] access_low;
+        reg [PMP_BOUND_WIDTH-1:0] access_high;
+        reg [PMP_BOUND_WIDTH-1:0] region_low;
+        reg [PMP_BOUND_WIDTH-1:0] region_high;
+        reg access_representable;
         reg [7:0] cfg;
         reg permitted;
-        reg [PMP_ENTRIES-1:0] overlap;
-        reg [PMP_ENTRIES-1:0] entry_allow;
+        // Keep the fixed 16-way priority form used by the normal core.  A
+        // reduced implementation leaves the absent upper entries clear.
+        reg [15:0] overlap;
+        reg [15:0] entry_allow;
         integer entry;
         begin
-            access_low = {1'b0, access_addr};
-            access_high =
-                access_low + (65'd1 << access_size);
-            overlap = {PMP_ENTRIES{1'b0}};
-            entry_allow = {PMP_ENTRIES{1'b0}};
+            access_low = {1'b0, access_addr[PMP_PA_WIDTH-1:0]};
+            access_high = access_low +
+                ({{(PMP_BOUND_WIDTH-1){1'b0}}, 1'b1} << access_size);
+            access_representable =
+                !(|access_addr[`RV64_XLEN-1:PMP_PA_WIDTH]);
+            overlap = 16'd0;
+            entry_allow = 16'd0;
 
-            for (entry = 0; entry < PMP_ENTRIES;
+            for (entry = 0; entry < PMP_ACTIVE_ENTRIES;
                  entry = entry + 1) begin
                 cfg = cfg_state[(entry * 8) +: 8];
-                region_low = {1'b0,
-                    region_low_state[(entry * 64) +: 64]};
-                region_high =
-                    region_high_state[(entry * 65) +: 65];
+                region_low = {1'b0, region_low_state[
+                    (entry * PMP_PA_WIDTH) +: PMP_PA_WIDTH]};
+                region_high = region_high_state[
+                    (entry * PMP_BOUND_WIDTH) +: PMP_BOUND_WIDTH];
                 permitted =
                     access_execute ? cfg[`RV64_PMP_CFG_X_BIT] :
                     access_write ? cfg[`RV64_PMP_CFG_W_BIT] :
                                    cfg[`RV64_PMP_CFG_R_BIT];
 
                 overlap[entry] =
+                    access_representable &&
                     (cfg[`RV64_PMP_CFG_A_BITS] ==
                      `RV64_PMP_A_NAPOT) &&
                     (access_low < region_high) &&
@@ -235,15 +252,6 @@ module openrv64_rv64i_pmp (
         end
     endfunction
 
-    assign instr_allow_o =
-        pmp_allow(instr_addr_i, 3'd2, 1'b0, 1'b1,
-                  instr_priv_mode_i, pmpcfg_q,
-                  pmp_region_low_state, pmp_region_high_state);
-    assign data_allow_o =
-        !data_valid_i ||
-        pmp_allow(data_addr_i, data_size_i, data_write_i, 1'b0,
-                  data_priv_mode_i, pmpcfg_q,
-                  pmp_region_low_state, pmp_region_high_state);
     assign bus_allow_o =
         !bus_valid_i ||
         pmp_allow(bus_addr_i, bus_size_i, bus_write_i, bus_exec_i,
@@ -256,23 +264,36 @@ module openrv64_rv64i_pmp (
         csr_writable_o = 1'b1;
 
         case (csr_addr_i)
-            `RV64_CSR_PMPCFG0:
-                csr_rdata_o = pmpcfg_q[63:0];
-            `RV64_CSR_PMPCFG2:
-                csr_rdata_o = pmpcfg_q[127:64];
+            `RV64_CSR_PMPCFG0: begin
+                csr_rdata_o = {`RV64_XLEN{1'b0}};
+                for (read_entry = 0;
+                     (read_entry < PMP_ACTIVE_ENTRIES) && (read_entry < 8);
+                     read_entry = read_entry + 1)
+                    csr_rdata_o[(read_entry * 8) +: 8] =
+                        pmpcfg_q[(read_entry * 8) +: 8];
+            end
+            `RV64_CSR_PMPCFG2: begin
+                csr_rdata_o = {`RV64_XLEN{1'b0}};
+                for (read_entry = 8;
+                     (read_entry < PMP_ACTIVE_ENTRIES) &&
+                     (read_entry < PMP_ARCH_ENTRIES);
+                     read_entry = read_entry + 1)
+                    csr_rdata_o[((read_entry - 8) * 8) +: 8] =
+                        pmpcfg_q[(read_entry * 8) +: 8];
+            end
             default: begin
                 csr_match_o = 1'b0;
                 csr_writable_o = 1'b0;
-                for (read_entry = 0; read_entry < PMP_ENTRIES;
-                     read_entry = read_entry + 1) begin
-                    if (csr_addr_i ==
-                        (`RV64_CSR_PMPADDR0 + read_entry)) begin
-                        csr_match_o = 1'b1;
-                        csr_writable_o = 1'b1;
-                        csr_rdata_o = pmpaddr_read_value(
-                            pmpaddr_q[read_entry],
-                            pmpcfg_q[(read_entry * 8) + 3 +: 2]);
-                    end
+                if (csr_pmpaddr_match) begin
+                    csr_match_o = 1'b1;
+                    csr_writable_o = 1'b1;
+                    for (read_entry = 0;
+                         read_entry < PMP_ACTIVE_ENTRIES;
+                         read_entry = read_entry + 1)
+                        if (csr_pmpaddr_entry == read_entry)
+                            csr_rdata_o = pmpaddr_read_value(
+                                pmpaddr_q[read_entry],
+                                pmpcfg_q[(read_entry * 8) + 3 +: 2]);
                 end
             end
         endcase
@@ -287,17 +308,17 @@ module openrv64_rv64i_pmp (
             pmpaddr_entry_q <= 4'd0;
             pmpaddr_pending_q <= {PMP_ADDR_WIDTH{1'b0}};
             pmpaddr_scan_q <= {PMP_ADDR_WIDTH{1'b0}};
-            pmpaddr_bit_count_q <= 7'd0;
-            pmpaddr_address_q <= 64'd0;
-            pmpaddr_mask_q <= 64'd0;
-            pmpaddr_low_q <= 64'd0;
-            pmpaddr_add_source_q <= 65'd0;
-            pmpaddr_high_work_q <= 65'd0;
+            pmpaddr_bit_count_q <= '0;
+            pmpaddr_address_q <= '0;
+            pmpaddr_mask_q <= '0;
+            pmpaddr_low_q <= '0;
+            pmpaddr_add_source_q <= '0;
+            pmpaddr_high_work_q <= '0;
             pmpaddr_add_carry_q <= 1'b0;
-            for (i = 0; i < PMP_ENTRIES; i = i + 1) begin
+            for (i = 0; i < PMP_ACTIVE_ENTRIES; i = i + 1) begin
                 pmpaddr_q[i] <= {PMP_ADDR_WIDTH{1'b0}};
-                pmp_region_low_q[i] <= 64'd0;
-                pmp_region_high_q[i] <= 65'd4096;
+                pmp_region_low_q[i] <= '0;
+                pmp_region_high_q[i] <= 40'd4096;
             end
         end else begin
             if (!csr_write_i || pmpaddr_done_q)
@@ -318,9 +339,9 @@ module openrv64_rv64i_pmp (
                             pmpaddr_address_q |
                             pmpaddr_scan_mask_next
                         };
-                        pmpaddr_high_work_q <= 65'd0;
+                        pmpaddr_high_work_q <= '0;
                         pmpaddr_add_carry_q <= 1'b1;
-                        pmpaddr_bit_count_q <= 7'd0;
+                        pmpaddr_bit_count_q <= '0;
                         pmpaddr_add_phase_q <= 1'b1;
                     end else begin
                         pmpaddr_scan_q <= {
@@ -331,11 +352,13 @@ module openrv64_rv64i_pmp (
                     end
                 end else begin
                     pmpaddr_add_source_q <= {
-                        1'b0, pmpaddr_add_source_q[64:1]
+                        1'b0,
+                        pmpaddr_add_source_q[PMP_BOUND_WIDTH-1:1]
                     };
                     pmpaddr_high_work_q <= pmpaddr_high_next;
                     pmpaddr_add_carry_q <= pmpaddr_add_carry_next;
-                    if (pmpaddr_bit_count_q == 7'd64) begin
+                    if (pmpaddr_bit_count_q ==
+                        (PMP_BOUND_WIDTH - 1)) begin
                         pmpaddr_q[pmpaddr_entry_q] <= pmpaddr_pending_q;
                         pmp_region_low_q[pmpaddr_entry_q] <=
                             pmpaddr_low_q;
@@ -357,15 +380,15 @@ module openrv64_rv64i_pmp (
                     csr_pmpaddr_value |
                     {{(PMP_ADDR_WIDTH-PMP_NAPOT_FORCED_ONES){1'b0}},
                      {PMP_NAPOT_FORCED_ONES{1'b1}}};
-                pmpaddr_bit_count_q <= 7'd0;
-                pmpaddr_address_q <= {
-                    {(64-PMP_ADDR_WIDTH-2){1'b0}},
-                    csr_pmpaddr_value, 2'b00
-                };
-                pmpaddr_mask_q <= 64'b11;
+                pmpaddr_bit_count_q <= '0;
+                pmpaddr_address_q <= {csr_pmpaddr_value, 2'b00};
+                pmpaddr_mask_q <=
+                    {{(PMP_PA_WIDTH-2){1'b0}}, 2'b11};
             end else if (csr_write_i && !pmpaddr_done_q &&
                          (csr_addr_i == `RV64_CSR_PMPCFG0)) begin
-                for (i = 0; i < 8; i = i + 1) begin
+                for (i = 0;
+                     (i < PMP_ACTIVE_ENTRIES) && (i < 8);
+                     i = i + 1) begin
                     if (!pmpcfg_q[(i * 8) +
                                   `RV64_PMP_CFG_L_BIT])
                         pmpcfg_q[(i * 8) +: 8] <=
@@ -373,7 +396,10 @@ module openrv64_rv64i_pmp (
                 end
             end else if (csr_write_i && !pmpaddr_done_q &&
                          (csr_addr_i == `RV64_CSR_PMPCFG2)) begin
-                for (i = 8; i < PMP_ENTRIES; i = i + 1) begin
+                for (i = 8;
+                     (i < PMP_ACTIVE_ENTRIES) &&
+                     (i < PMP_ARCH_ENTRIES);
+                     i = i + 1) begin
                     if (!pmpcfg_q[(i * 8) +
                                   `RV64_PMP_CFG_L_BIT])
                         pmpcfg_q[(i * 8) +: 8] <=
@@ -383,5 +409,14 @@ module openrv64_rv64i_pmp (
             end
         end
     end
+
+`ifndef SYNTHESIS
+    initial begin
+        if ((PMP_ACTIVE_ENTRIES < 1) ||
+            (PMP_ACTIVE_ENTRIES > PMP_ARCH_ENTRIES))
+            $fatal(1,
+                   "PMP_ACTIVE_ENTRIES must be between 1 and 16");
+    end
+`endif
 
 endmodule

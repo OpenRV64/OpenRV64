@@ -101,6 +101,7 @@ BP_DEPS := $(RAS_DEBUG_STUB_SRCS) \
 	rtl/core/exec/bp/repeat_last.v rtl/core/exec/bp/btfnt.v \
 	rtl/core/exec/bp/bimodal.v rtl/core/exec/bp/gshare_btb.v \
 	rtl/core/exec/bp/tournament_btb.v rtl/core/exec/bp/ras.v
+RV64M_EXEC_SRC ?= rtl/core/exec/alu/rv64-m.v
 EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
 	rtl/core/exec/ext/zbb.v rtl/core/exec/ext/zbb_rotate.v \
 	rtl/core/exec/lsq.v rtl/core/exec/lsu/atomics.v \
@@ -108,7 +109,7 @@ EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
 	rtl/core/exec/exec_lsu.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top_1p.v rtl/core/exec/exec_top.v \
-	rtl/core/exec/alu/rv64-i.v rtl/core/exec/alu/rv64-m.v \
+	rtl/core/exec/alu/rv64-i.v $(RV64M_EXEC_SRC) \
 	rtl/core/exec/lsu/rv64-i.v rtl/core/exec/lsu/rv64-a.v \
 	rtl/core/exec/br.v $(BP_SRC) rtl/core/exec/system/csr.v
 EXCEPT_SRCS := rtl/core/except/except-defs.v rtl/core/except/except.v \
@@ -157,7 +158,7 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/exec/exec_lsu.v \
 	rtl/core/exec/exec_pipe_mem.v rtl/core/exec/exec_top_3p.v \
 	rtl/core/exec/exec_top.v rtl/core/exec/alu/rv64-i.v \
-	rtl/core/exec/alu/rv64-m.v rtl/core/exec/lsu/rv64-i.v \
+	$(RV64M_EXEC_SRC) rtl/core/exec/lsu/rv64-i.v \
 	rtl/core/exec/lsu/rv64-a.v rtl/core/exec/br.v $(BP_SRC) \
 	rtl/core/exec/system/csr.v rtl/core/retire/retire_queue_3p.v \
 	rtl/core/retire/retire_records_3p.v \

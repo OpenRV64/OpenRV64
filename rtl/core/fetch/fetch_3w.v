@@ -21,6 +21,7 @@ module openrv64_fetch_3w #(
     parameter integer ENABLE_TRACE = 0,
     parameter integer ENABLE_PREDECODE_TARGETS = 1,
     parameter integer ENABLE_ALT_LOOKASIDE = 0,
+    parameter integer ENABLE_ALT_ARB_PRIORITY = 0,
     parameter integer BRANCH_PAIR_STACK_DEPTH = 2,
     parameter integer LINE_INDEX_WIDTH = $clog2(LINE_DEPTH),
     parameter integer LINE_COUNT_WIDTH = $clog2(LINE_DEPTH + 1),
@@ -905,7 +906,8 @@ module openrv64_fetch_3w #(
          pair_request_addr[`RV64_XLEN-1:LINE_BYTE_BITS]);
     wire pair_request_select = pair_request_valid &&
         !pair_request_coalesced && !fal_line_busy_for_pair &&
-        ((ENABLE_ALT_LOOKASIDE < 3) || !demand_request_needed ||
+        ((ENABLE_ALT_LOOKASIDE < 3) || ENABLE_ALT_ARB_PRIORITY ||
+         !demand_request_needed ||
          pair_request_is_demand);
     wire demand_request_valid = !pair_request_select &&
                                 demand_request_needed;
@@ -934,7 +936,8 @@ module openrv64_fetch_3w #(
          incoming_pair_line_hit || request_line_issued);
     wire alt_sector_background_deferred =
         (ENABLE_ALT_LOOKASIDE == 3) && pair_request_valid &&
-        demand_request_needed && !pair_request_is_demand;
+        demand_request_needed && !pair_request_is_demand &&
+        !pair_request_select;
     wire pair_predicted_after_fire = pair_predicted_valid_q &&
         !(pair_req_done && pair_predicted_valid_q);
     wire pair_unpredicted_after_fire = pair_unpredicted_valid_q &&

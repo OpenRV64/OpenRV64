@@ -1,5 +1,9 @@
 `timescale 1ns/1ps
+`ifdef OPENRV64_RV64M_FPGA
+`include "core/exec/alu/rv64-m-fpga.v"
+`else
 `include "core/exec/alu/rv64-m.v"
+`endif
 `timescale 1ns/1ps
 
 module tb_exec_rv64m;
@@ -10,6 +14,11 @@ module tb_exec_rv64m;
         (64 + MUL_BITS_PER_CYCLE - 1) / MUL_BITS_PER_CYCLE;
     localparam int unsigned DIV_ITER_CYCLES =
         (64 + DIV_BITS_PER_CYCLE - 1) / DIV_BITS_PER_CYCLE;
+`ifdef OPENRV64_RV64M_FPGA
+    localparam int unsigned FPGA_MUL_WORKER = 1;
+`else
+    localparam int unsigned FPGA_MUL_WORKER = 0;
+`endif
 
     logic clk;
     logic rst_n;
@@ -88,10 +97,11 @@ module tb_exec_rv64m;
                 exp_busy_cycles = (in_word_op &&
                                    (in_op_sel != `RV64_ALU_OP_MUL)) ?
                                   0 :
-                                  (in_word_op ?
-                                   ((32 + MUL_BITS_PER_CYCLE - 1) /
-                                    MUL_BITS_PER_CYCLE) :
-                                   MUL_ITER_CYCLES);
+                                  (FPGA_MUL_WORKER ? 1 :
+                                   (in_word_op ?
+                                    ((32 + MUL_BITS_PER_CYCLE - 1) /
+                                     MUL_BITS_PER_CYCLE) :
+                                    MUL_ITER_CYCLES));
             end else if ((in_op_sel == `RV64_ALU_OP_DIV) ||
                          (in_op_sel == `RV64_ALU_OP_DIVU) ||
                          (in_op_sel == `RV64_ALU_OP_REM) ||
@@ -430,7 +440,11 @@ module tb_exec_rv64m;
               64'd84, 64'd2,
               1'b1, 1'b0, 64'd42, "serialized divu");
 
+`ifdef OPENRV64_RV64M_FPGA
+        $display("PASS: FPGA DSP RV64M execute busy/ready");
+`else
         $display("PASS: iterative RV64M execute busy/ready");
+`endif
         $finish;
     end
 

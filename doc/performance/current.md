@@ -24,7 +24,7 @@ and conditional-branch release changes; their exceptions are identified below.
 | --- | --- |
 | Harness | one hart, non-coherent `tb_top_3p_soc` |
 | Address translation | Sv39; workload executes in supervisor mode |
-| Predictor / fetch | BP8; mode 3; carousel 1; confidence gate 0; two FAL/pair-stack slots; 512-bit L1I-to-fetch delivery; predicted redirects override sequential requests and launch a same-edge target demand |
+| Predictor / fetch | BP8; mode 3; carousel 1; confidence gate 1 (cold predictor state or global/local disagreement); two FAL/pair-stack slots; 512-bit L1I-to-fetch delivery; predicted redirects override sequential requests and launch a same-edge target demand |
 | Forwarding / hazards | completion mask 0; branch mask 1; full forwarding 0; WAW relaxation 1; general hazard relaxation 0 |
 | Issue / retirement | issue window 1; speculation 1; retirement and window depth 32; 31 physical registers |
 | Memory ordering | posted stores 1; L2 fence acknowledgment 0; `RESULT_READY_CONTROL_RELEASE=1` |
@@ -48,16 +48,20 @@ this is not a Linux userspace binary benchmark.
 
 | Cycles | Retired | IPC | Result |
 | ---: | ---: | ---: | --- |
-| **47,577** | 52,592 | **1.1054** | `a0=0x000000000a277880` |
+| **45,999** | 52,592 | **1.1433** | `a0=0x000000000a277880` |
 
 This is the current 512-bit, mode-3, two-slot baseline, including the
-generalized same-edge predicted-redirect demand path. Redirect demand has
-strict priority over the sequential request; this does not add a second fetch
-address or downstream port. The run reported
+generalized same-edge predicted-redirect demand path and confidence-gated FAL.
+The gate admits FAL when the global predictor entry, local-history entry, or
+local PHT entry is invalid, or when the trained global and local predictions
+disagree. Counter strength and chooser confidence are not used. Redirect
+demand has strict priority over the sequential request; this does not add a
+second fetch address or downstream port. The run reported
 `satp_sv39=1`, supervisor execution, passing instruction/data alias checks,
 `timed_memory=1`, and timing model 0. The corrected older-store dependency
 counter remained zero. DDR3 handled 46 read and 11 write bursts as 57 commands;
-the command queue, timing-owner set, and L2 MSHRs each reached five entries.
+the command queue and timing-owner set reached five entries, while L2 MSHRs
+reached six.
 
 The last source-matched width comparison, immediately before generalizing the
 redirect sideband, was 54,601 cycles at 256 bits versus 48,523 at 512 bits.
@@ -78,21 +82,34 @@ selection needs synthesis and physical timing evidence.
 The current baseline completed with simulator exit 0 and validation `pass`:
 
 ```text
-run_id=coremark-sv39-linux-rd32-ddr3-20260819T120611Z
+run_id=coremark-sv39-linux-rd32-ddr3-20260819T164435Z
 config=run/cfg/coremark-sv39-linux-rd32-ddr3.cfg
-log=run/log/coremark-sv39-linux-rd32-ddr3-20260819T120611Z/run.log
-git_head=2b77e300ff9354e62a9db8af094a9ff5fc95d422
-f2b5a8d4f8713d22791f5e71f48117284ef9bf7253a5576afbc51cef3ecb0afc  sim/coremark-loop-vm.elf
+log=run/log/coremark-sv39-linux-rd32-ddr3-20260819T164435Z/run.log
+git_head=4012e4b6d36f3ee62e8f33ac2c536892b91311de
+43dfd81370bcb898e1349b4d55db681a63fc84ebc8033a65d37bfe6596a7d89b  sim/coremark-loop-vm.elf
 1d4f66f6b482b4e5ea8cc1cf79b86049b8eaf45a96b658b296726233a0e7052b  sim/coremark-loop-vm.bin
 68583b052a983abd41c490210070292af85d7549a2dfd91d257b4834095660ee  sim/coremark-loop-vm.memh
 e63b426e86a2c5f1a0dbab5991051067bd5327fcc1dfe11a0c1d947de389a298  sim/coremark-loop-vm.disasm
-146a569a2177dffd5a056df9a73e5a9616034c4ac7135bc19eb0850198fd5777  core_3p_icx_l2_tb
+005e947bcc775591749bb05000e5716a2106be3468894d5c8ca60ed72488b3f1  core_3p_icx_l2_tb
 ```
 
 The worktree was dirty. The run directory captures `git-status.txt`,
 `worktree.patch`, the effective configuration, source hashes, and snapshots of
 the workload and simulator. The commit hash alone does not reproduce the
 measured RTL.
+
+The matched confidence-policy controls were:
+
+| FAL confidence policy | Cycles | IPC | FAL hits | Fetch empty | Post-redirect empty |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **Invalid state or disagreement** | **45,999** | **1.1433** | 550 | **4,507** | **3,844** |
+| Invalid state only | 46,023 | 1.1427 | 302 | 4,584 | 3,926 |
+| FAL disabled | 46,089 | 1.1411 | 0 | 4,654 | 3,995 |
+
+The runtime differences are small. The combined policy is retained because
+its frontend counters consistently beat invalid-only and no-FAL. FAL remains
+a removal candidate; `doc/TODO.md` records the required matched performance,
+timing, and area comparison.
 
 The pre-generalized-redirect, source-matched FAL mode sweep was nearly flat:
 
@@ -280,11 +297,14 @@ counters were zero. The live-until-removal and release run IDs were
 `20260818T164555Z` and `20260818T164311Z`. This confirms that speculative Sv39
 loads bypass this particular control gate; it is not a macro-plumbing test.
 
-### Current 512-bit mode-3 critical performance-counter breakdown
+### Earlier 47,577-cycle critical performance-counter breakdown
 
-All percentages in this subsection use the 47,577 reset-to-done cycles as the
-denominator unless another denominator is named. Counters are not generally
-additive. The RAW, hard-block, and memory-order window predicates overlap.
+This retained snapshot predates the current confidence-gated/page-screen
+baseline. It remains useful as a complete counter panel but must not be treated
+as the current run. All percentages in this subsection use its 47,577
+reset-to-done cycles as the denominator unless another denominator is named.
+Counters are not generally additive. The RAW, hard-block, and memory-order
+window predicates overlap.
 
 Average width was 1.3608 decoded, 1.1861 issued, and 1.1054 retired
 instructions per cycle:

@@ -84,6 +84,7 @@ FETCH_3W_PAIR1024_SIM_BUILD := sim/fetch_3w_pair1024_tb.vvp
 PREFIX_ADDSUB_SIM_BUILD := sim/prefix_addsub_tb.vvp
 EXEC_ALU_RV64I_SIM_BUILD := sim/exec_alu_rv64-i_tb.vvp
 EXEC_ALU_RV64M_SIM_BUILD := sim/exec_alu_rv64-m_tb.vvp
+EXEC_ALU_RV64M_FPGA_SIM_BUILD := sim/exec_alu_rv64-m-fpga_tb.vvp
 EXEC_EXT_ZBB_SIM_BUILD := sim/exec_ext_zbb_tb.vvp
 EXEC_ZBB_ROTATE_SIM_BUILD := sim/exec_zbb_rotate_tb.vvp
 EXEC_TOP_3P_SIM_BUILD := sim/exec_top_3p_tb.vvp

@@ -182,25 +182,14 @@ module openrv64_exec_bp_tournament_btb #(
         lookup_chooser_counter[CHOOSER_COUNTER_BITS-1];
     wire conditional_prediction =
         chooser_select_local ? local_prediction : global_prediction;
-    wire global_prediction_weak =
-        !global_valid_q[lookup_global_index] ||
-        (global_counter_q[lookup_global_index][GLOBAL_COUNTER_BITS-1] !=
-         global_counter_q[lookup_global_index][GLOBAL_COUNTER_BITS-2]);
-    wire local_prediction_weak =
-        !local_valid_q[lookup_local_pht_index] ||
-        (local_counter_q[lookup_local_pht_index][LOCAL_COUNTER_BITS-1] !=
-         local_counter_q[lookup_local_pht_index][LOCAL_COUNTER_BITS-2]);
-    wire chooser_prediction_weak =
-        lookup_chooser_counter[CHOOSER_COUNTER_BITS-1] !=
-        lookup_chooser_counter[CHOOSER_COUNTER_BITS-2];
-    // Agreement is confident whenever the common component prediction is
-    // confident; the chooser is irrelevant in that case.  On disagreement,
-    // the selected component and chooser must both be confident.
+    // FAL is useful when either direction component is cold for this branch or
+    // when the trained component predictions disagree. Counter strength and
+    // chooser confidence do not affect this signal.
     wire conditional_prediction_weak =
-        (chooser_select_local ? local_prediction_weak :
-                                global_prediction_weak) ||
-        ((global_prediction != local_prediction) &&
-         chooser_prediction_weak);
+        !global_valid_q[lookup_global_index] ||
+        !local_history_valid_q[lookup_local_history_index] ||
+        !local_valid_q[lookup_local_pht_index] ||
+        (global_prediction != local_prediction);
 
     wire [BTB_INDEX_WIDTH-1:0] lookup_btb_index =
         lookup_pc_i[BTB_INDEX_WIDTH+1:2];

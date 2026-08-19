@@ -47,13 +47,6 @@ module tb_rv64i_csrs;
     logic [`RV64_SATP_PPN_WIDTH-1:0] satp_root_ppn;
     logic status_sum;
     logic status_mxr;
-    logic [`RV64_XLEN-1:0] pmp_instr_addr;
-    logic pmp_instr_allow;
-    logic pmp_data_valid;
-    logic [`RV64_XLEN-1:0] pmp_data_addr;
-    logic [2:0] pmp_data_size;
-    logic pmp_data_write;
-    logic pmp_data_allow;
     logic pmp_bus_valid;
     logic [`RV64_XLEN-1:0] pmp_bus_addr;
     logic [2:0] pmp_bus_size;
@@ -132,13 +125,6 @@ module tb_rv64i_csrs;
         .satp_root_ppn_o(satp_root_ppn),
         .status_sum_o(status_sum),
         .status_mxr_o(status_mxr),
-        .pmp_instr_addr_i(pmp_instr_addr),
-        .pmp_instr_allow_o(pmp_instr_allow),
-        .pmp_data_valid_i(pmp_data_valid),
-        .pmp_data_addr_i(pmp_data_addr),
-        .pmp_data_size_i(pmp_data_size),
-        .pmp_data_write_i(pmp_data_write),
-        .pmp_data_allow_o(pmp_data_allow),
         .pmp_bus_valid_i(pmp_bus_valid),
         .pmp_bus_addr_i(pmp_bus_addr),
         .pmp_bus_size_i(pmp_bus_size),
@@ -302,11 +288,6 @@ module tb_rv64i_csrs;
         irq_s_software = 1'b0;
         irq_s_timer = 1'b0;
         irq_s_external = 1'b0;
-        pmp_instr_addr = 64'h0;
-        pmp_data_valid = 1'b0;
-        pmp_data_addr = 64'h0;
-        pmp_data_size = 3'd0;
-        pmp_data_write = 1'b0;
         pmp_bus_valid = 1'b0;
         pmp_bus_addr = 64'h0;
         pmp_bus_size = 3'd0;
@@ -365,7 +346,7 @@ module tb_rv64i_csrs;
         extension_mstatus_bits = 64'd0;
         extension_sstatus_bits = 64'd0;
 
-        if (priv_mode != `RV64_PRIV_M || !pmp_instr_allow) begin
+        if (priv_mode != `RV64_PRIV_M || !pmp_bus_allow) begin
             $fatal(1, "reset privilege/PMP state mismatch");
         end
 
