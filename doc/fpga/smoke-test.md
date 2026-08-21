@@ -1,13 +1,160 @@
 # MYD-J7A100T FPGA configuration smoke test
 
-Status date: 2026-08-15 UTC
+Status date: 2026-08-21 UTC
 
-This document covers three separate bitstreams.  The inert pad-shell remains
-the minimal JTAG and USB-UART-loopback baseline.  The OpenSBI smoke image adds
-the MYIR-derived MIG, a one-pipe OpenRV64 core, a ROM-to-DDR loader, OpenSBI
-v1.9, and a small S-mode Sv39/PTW and timer payload.  The Linux image extends
-that design with a pre-boot hardware UART-to-MIG loader.  Do not transfer
-claims between the three images.
+This document covers four separate bitstreams.  The cache-enabled SD-boot
+image is the current physically booted artifact.  The inert pad-shell remains
+the minimal JTAG and USB-UART-loopback baseline.  The older OpenSBI smoke image
+adds the MYIR-derived MIG, a one-pipe OpenRV64 core, a ROM-to-DDR loader,
+OpenSBI v1.9, and a small S-mode Sv39/PTW and timer payload.  The older Linux
+image extends that design with a pre-boot hardware UART-to-MIG loader.  Do not
+transfer claims between the four images.
+
+## Current cache-enabled SD-boot artifact
+
+The source-matched 2026-08-20 build is:
+
+- Board: MYIR MYD-J7A100T / MYC-J7A100T-32Q512D-I
+- FPGA: `XC7A100T-2FGG484I`
+- Vivado part: `xc7a100tfgg484-2`
+- Top: `openrv64_myd_j7a100t_opensbi_top`
+- Bitstream:
+  `build/fpga/xc7a100t/sd-boot-pmp8-cache32k-14mhz/openrv64_myd_j7a100t_sd_boot.bit`
+- Size: 3,826,012 bytes
+- SHA-256:
+  `8d37fb1eea7cc11eca93d50016da96b99a8c5af0e684e90dc9d7a7be41db7d7b`
+- Vivado: 2026.1 build 6511674
+- Core and timebase clock: 14,000,000 Hz
+- UART reference clock exposed to software: 14,745,600 Hz
+- MIG UI and scalar-cache clock: 100,000,000 Hz
+- UART: exact 115200 baud with divisor 8, 8 data bits, no parity, one stop bit
+
+This image uses the one-pipe BP5 core profile, eight active PMP entries behind
+the architecturally visible 16-entry PMP CSR surface, a four-entry generic
+unified TLB, and no optional PTW non-leaf PTE cache.  The GPR uses the FPGA
+LUTRAM implementation; the synthesis guards found 22 `RAM32M` cells.  RV64M
+uses `rtl/core/exec/alu/rv64-m-fpga.v`; Vivado has 16 inferred `DSP48E1`
+cells.  The core DCP includes the current MTL/PMP pipeline and was rebuilt from
+the current RTL before the system and board netlists were linked, so this is
+not a stale-core relink.
+
+The core really runs at 14 MHz.  The 16550 remains in that clock domain but
+uses a fractional reference prescaler: a 14.7456 MHz virtual reference makes
+the standard integer divisor of eight produce exact 115200 baud.  This does
+not add a UART clock domain.  The legacy UART regression passes, and a focused
+14 MHz fractional test counted exactly 18,432 16x-baud ticks in 140,000 input
+cycles with only seven- or eight-cycle tick intervals.
+
+The scalar DDR path now has a 32 KiB direct-mapped read cache with 1,024
+32-byte lines.  Reads allocate a complete 256-bit native-MIG beat.  Stores do
+not allocate: every store remains blocking and write-through to DDR3, and it
+invalidates the matching line.  Reset clears one tag per 100 MHz MIG UI cycle,
+so the bridge remains unavailable for 1,024 cycles, about 10.24 microseconds.
+The cache is not coherent with an independent post-boot MIG writer.  This SD
+configuration disables the fixed and UART preloaders; the ROM loads DDR
+through the cached scalar path, so its own stores invalidate lines correctly.
+Adding another live MIG master would require explicit invalidation or bypass.
+The image also includes the first 100-Mb/s RGMII Ethernet MAC candidate.  Its
+two TX and two RX packet banks consume eight additional block-RAM tiles.  The
+MAC, PHY management, and RGMII I/O have routed, but none has been validated on
+the physical board yet.
+
+Post-route physical results are:
+
+- 34,429 slice LUTs (54.30%): 33,503 logic and 926 LUTRAM
+- 16,056 slice registers (12.66%)
+- 14,064 occupied slices (88.73%)
+- 9,785 unique control sets (61.74%)
+- 18 block-RAM tiles (13.33%): ten `RAMB36` plus sixteen `RAMB18`; the scalar
+  cache accounts for eight tiles and Ethernet packet storage adds eight
+- 16 DSPs (6.67%)
+- full-design setup WNS +0.181 ns and hold WHS +0.010 ns; both are on the
+  125 MHz RGMII receive domain
+- 14 MHz core-domain setup WNS +2.138 ns and hold WHS +0.047 ns; its worst
+  data path is 68.989 ns against a 71.429 ns period
+- 60,038 of 60,038 routable nets fully routed, with zero routing errors
+- zero DRC errors at bitstream generation
+
+The remaining 131 DRC findings are 99 warnings and 32 advisories, mainly the
+generated MIG DQS input-buffer warnings, unpipelined DSP ports, and
+asynchronous BRAM control checks.  The CDC report is not signoff-clean: it
+classifies 202 core-to-MIG-clock endpoints as unsafe and several other
+endpoints as unknown.  Some of this is likely loss of synchronizer metadata
+through the Yosys/import flow, but that has not been demonstrated.  Physical
+boot is functional evidence, not CDC closure.
+
+Build-time validation completed against this RTL:
+
+- the ROM initialization guard found one initialized ROM and 66 nonzero INIT
+  segments;
+- the PMP CSR/enforcement test passed the 16-entry CSR surface, eight active
+  entries, 4 KiB grain, WARL behavior, priorities, locks, and the serial
+  address-update sequencer;
+- the registered MTL PMP arbitration/tagged-response test passed;
+- the focused scalar-MIG bridge test passed cache hits, same-line word hits,
+  read fills, store write-through/invalidation, conflict eviction, masked
+  stores, and out-of-range errors;
+- the complete behavioral raw-card/DDR boot test printed the SD `START` and
+  `PASS` markers and passed at 129,922 cycles.
+
+On 2026-08-21 this bitstream was programmed into the physical `xc7a100t` over
+the remote hardware server, and FPGA startup completed HIGH.  The UART capture
+contained the FPGA and SD `PASS` markers, OpenSBI v1.9, `Boot HART PMP Count :
+16`, Linux `/init`, `OPENRV64 BUSYBOX INIT`, and the literal `openrv64#`
+prompt.  The earlier `error: insufficient PMP entries` and hart-isolation
+failure did not recur.  OpenSBI counts the complete CSR surface; only entries
+0 through 7 have storage and enforcement comparators, while entries 8 through
+15 are WARL read-only zero.
+
+The card used in that physical run still supplied the legacy DTB: OpenSBI
+reported a 9,216,000 Hz timer and Linux reported a 9 MHz clocksource even
+though the hardware core runs at 14 MHz.  Kernel time therefore ran about
+1.52 times too fast.  This does not invalidate the PMP or boot-path result,
+but it does invalidate timekeeping and performance measurements from that
+run.  Rewrite the card with the source-matched image below before taking any
+timing data:
+
+```sh
+python3 tools/make-fpga-sd-image.py \
+  --timebase-frequency 14000000 \
+  --uart-clock-frequency 14745600 \
+  sw/opensbi.dts \
+  build/opensbi-fpga-linux/artifacts/fw_jump.bin \
+  sw/Image.Zicclsm \
+  build/fpga/xc7a100t/sdcard/openrv64-myd-j7a100t-linux-sd-14mhz.bin
+```
+
+The generated 5,295,616-byte image was independently verified by the image
+tool.  Its SHA-256 is
+`05dd62a181c993ac8459e1ba2448758b2d2ff23baedfbe7117d640242f7aa126`.
+
+Start UART capture first, then program volatile FPGA SRAM with:
+
+```sh
+/home/bill/bin/vivado -mode batch \
+  -source synth/fpga/xc7a100t/program_bitstream.tcl \
+  -tclargs TCP:<hw-server-host>:3121 \
+  build/fpga/xc7a100t/sd-boot-pmp8-cache32k-14mhz/openrv64_myd_j7a100t_sd_boot.bit
+```
+
+With a valid raw SDHC/SDXC image in the socket, the required early sequence is:
+
+```text
+OPENRV64 FPGA BOOT PASS
+OPENRV64 SD BOOT START
+OPENRV64 SD BOOT PASS
+OpenSBI v1.9
+...
+Linux version ...
+...
+openrv64#
+```
+
+The literal `openrv64#` prompt is the Linux-boot acceptance marker.  The FPGA
+and SD `PASS` lines alone prove only MIG calibration and successful raw-image
+validation, transfer, and jump.  The card format, image builder, destructive
+whole-device `dd` command, and ROM failure markers are documented in
+`doc/fpga/sd-boot-image.md`.
 
 ## Current Linux hardware-preload artifact
 

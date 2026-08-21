@@ -351,6 +351,11 @@ module openrv64_core_mtl #(
     reg fetch_demand_q [0:FETCH_OUTSTANDING-1];
     reg fetch_cancelled_q [0:FETCH_OUTSTANDING-1];
     reg fetch_fast_q [0:FETCH_OUTSTANDING-1];
+    // FETCH_WAIT_L1I covers both a buffered, not-yet-accepted request and an
+    // accepted request awaiting its tagged response.  Track the latter
+    // explicitly so invalidation can discard only work which has not crossed
+    // the L1I request interface.
+    reg fetch_l1i_inflight_q [0:FETCH_OUTSTANDING-1];
     reg [FETCH_PAGE_PPN_WIDTH-1:0] fetch_fast_ppn_q
         [0:FETCH_OUTSTANDING-1];
     reg [L1I_FETCH_DATA_WIDTH-1:0]
@@ -711,6 +716,7 @@ module openrv64_core_mtl #(
     wire ptw_pmp_valid;
     wire ptw_pmp_ready;
     wire [`RV64_XLEN-1:0] ptw_pmp_addr;
+    wire ptw_pmp_resp_allow;
     wire ptw_icx_req_valid;
     wire ptw_icx_req_ready;
     wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] ptw_icx_req_hart_id;
@@ -1069,7 +1075,7 @@ module openrv64_core_mtl #(
         .pmp_valid_o(ptw_pmp_valid),
         .pmp_ready_i(ptw_pmp_ready),
         .pmp_addr_o(ptw_pmp_addr),
-        .pmp_allow_i(pmp_allow_i),
+        .pmp_allow_i(ptw_pmp_resp_allow),
         .icx_req_valid_o(ptw_icx_req_valid),
         .icx_req_ready_i(ptw_icx_req_ready),
         .icx_req_hart_id_o(ptw_icx_req_hart_id),
@@ -1224,53 +1230,108 @@ module openrv64_core_mtl #(
     // A tagged translation response carries the PMP verdict into the LSQ.
     // Its later physical L1D request can launch without a live PMP result.
     // Unchecked serialized traffic (notably atomics and misaligned Bare
-    // accesses) gets a dedicated PMP cycle before entering LSU_ACCESS.
+    // accesses) gets a dedicated PMP transaction before entering LSU_ACCESS.
     wire xlate_pmp_candidate = xlate_fast_candidate &&
                                !xlate_lookup_page_fault;
-    wire select_lsu_probe = lsu_state_q == LSU_PMP;
-    wire select_ptw_probe = !select_lsu_probe && ptw_pmp_candidate;
-    wire select_xlate_probe = !select_lsu_probe && !select_ptw_probe &&
-                              xlate_pmp_candidate;
-    wire select_fetch_probe = !select_lsu_probe && !select_ptw_probe &&
-                              !select_xlate_probe &&
-                              fetch_cache_candidate;
-    wire select_prefetch_probe = !select_lsu_probe && !select_ptw_probe &&
-        !select_xlate_probe && !select_fetch_probe &&
-        (prefetch_xlate_state_q == PREFETCH_XLATE_PMP);
-    assign pmp_valid_o = select_lsu_probe || select_ptw_probe ||
-                         select_xlate_probe ||
-                         select_fetch_probe || select_prefetch_probe;
-    assign pmp_addr_o = select_lsu_probe ? lsu_paddr_q :
-                        select_ptw_probe ? ptw_pmp_addr :
-                        select_xlate_probe ? xlate_lookup_paddr :
-                        select_fetch_probe ? fetch_axi_addr :
-                        prefetch_xlate_paddr_q;
-    assign pmp_priv_o = select_lsu_probe ? lsu_priv_q :
-                        select_ptw_probe ? `RV64_PRIV_S :
-                        select_xlate_probe ? lsu_xlate_req_priv_i :
-                        select_fetch_probe ? fetch_lookup_priv :
-                        prefetch_xlate_priv_q;
-    assign pmp_size_o = select_lsu_probe ? lsu_size_q :
-                        select_ptw_probe ? 3'd3 :
-                        select_xlate_probe ? lsu_xlate_req_size_i :
-                        select_fetch_probe ?
-                            ((L1I_FETCH_DATA_WIDTH == 512) ?
-                                3'd6 : 3'd5) : 3'd5;
-    assign pmp_write_o = select_lsu_probe ? lsu_write_q :
-                         select_xlate_probe ? lsu_xlate_req_write_i :
-                         1'b0;
-    assign pmp_exec_o = select_fetch_probe || select_prefetch_probe;
+    wire pmp_lsu_req_ready;
+    wire pmp_lsu_resp_valid;
+    wire pmp_lsu_resp_allow;
+    wire pmp_ptw_req_ready;
+    wire pmp_ptw_resp_valid;
+    wire pmp_xlate_req_ready;
+    wire pmp_xlate_resp_valid;
+    wire pmp_xlate_resp_allow;
+    wire [`RV64_XLEN-1:0] pmp_xlate_resp_paddr;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pmp_xlate_resp_tag;
+    wire pmp_fetch_req_ready;
+    wire pmp_fetch_resp_valid;
+    wire pmp_fetch_resp_allow;
+    wire [`RV64_XLEN-1:0] pmp_fetch_resp_vaddr;
+    wire [`RV64_XLEN-1:0] pmp_fetch_resp_paddr;
+    wire [`RV64_PRIV_WIDTH-1:0] pmp_fetch_resp_priv;
+    wire [FETCH_SLOT_WIDTH-1:0] pmp_fetch_resp_tag;
+    wire pmp_prefetch_req_ready;
+    wire pmp_prefetch_resp_valid;
+    wire pmp_prefetch_resp_allow;
+    wire xlate_pmp_resp_ready = xlate_local_resp_available;
+    wire fetch_pmp_response_usable =
+        (fetch_state_q[pmp_fetch_resp_tag] == FETCH_TRANSLATE) &&
+        !fetch_cancelled_q[pmp_fetch_resp_tag] && !fetch_cancel_i;
+    wire fetch_l1i_pmp_available = !l1i_req_active_q &&
+        !l1i_invalidate_valid && !fetch_page_screen_launch;
+    wire fetch_pmp_resp_ready = !fetch_pmp_response_usable ||
+        !pmp_fetch_resp_allow ||
+        (l1i_enabled ? fetch_l1i_pmp_available : m_axi_arready_i);
 
-    wire lsu_pmp_denied = select_lsu_probe && !pmp_allow_i;
-    wire xlate_pmp_denied = select_xlate_probe && !pmp_allow_i;
+    openrv64_mtl_pmp #(
+        .XLATE_TAG_WIDTH(`OPENRV64_LSU_TAG_WIDTH),
+        .FETCH_TAG_WIDTH(FETCH_SLOT_WIDTH)
+    ) u_pmp (
+        .clk(clk), .rst_n(rst_n), .update_i(pmp_update_i),
+        .lsu_req_valid_i(lsu_state_q == LSU_PMP),
+        .lsu_req_ready_o(pmp_lsu_req_ready),
+        .lsu_req_addr_i(lsu_paddr_q), .lsu_req_priv_i(lsu_priv_q),
+        .lsu_req_size_i(lsu_size_q), .lsu_req_write_i(lsu_write_q),
+        .lsu_req_exec_i(1'b0),
+        .lsu_resp_valid_o(pmp_lsu_resp_valid),
+        .lsu_resp_ready_i(1'b1), .lsu_resp_allow_o(pmp_lsu_resp_allow),
+        .ptw_req_valid_i(ptw_pmp_candidate),
+        .ptw_req_ready_o(pmp_ptw_req_ready),
+        .ptw_req_addr_i(ptw_pmp_addr),
+        .ptw_resp_valid_o(pmp_ptw_resp_valid),
+        .ptw_resp_ready_i(1'b1), .ptw_resp_allow_o(ptw_pmp_resp_allow),
+        .xlate_req_valid_i(xlate_pmp_candidate),
+        .xlate_req_ready_o(pmp_xlate_req_ready),
+        .xlate_req_paddr_i(xlate_lookup_paddr),
+        .xlate_req_priv_i(lsu_xlate_req_priv_i),
+        .xlate_req_size_i(lsu_xlate_req_size_i),
+        .xlate_req_write_i(lsu_xlate_req_write_i),
+        .xlate_req_tag_i(lsu_xlate_req_tag_i),
+        .xlate_resp_valid_o(pmp_xlate_resp_valid),
+        .xlate_resp_ready_i(xlate_pmp_resp_ready),
+        .xlate_resp_allow_o(pmp_xlate_resp_allow),
+        .xlate_resp_paddr_o(pmp_xlate_resp_paddr),
+        .xlate_resp_tag_o(pmp_xlate_resp_tag),
+        .fetch_req_valid_i(fetch_cache_candidate),
+        .fetch_req_ready_o(pmp_fetch_req_ready),
+        .fetch_req_vaddr_i(fetch_lookup_vaddr),
+        .fetch_req_paddr_i(fetch_axi_addr),
+        .fetch_req_priv_i(fetch_lookup_priv),
+        .fetch_req_size_i((L1I_FETCH_DATA_WIDTH == 512) ? 3'd6 : 3'd5),
+        .fetch_req_tag_i(fetch_xlate_slot_r),
+        .fetch_resp_valid_o(pmp_fetch_resp_valid),
+        .fetch_resp_ready_i(fetch_pmp_resp_ready),
+        .fetch_resp_allow_o(pmp_fetch_resp_allow),
+        .fetch_resp_vaddr_o(pmp_fetch_resp_vaddr),
+        .fetch_resp_paddr_o(pmp_fetch_resp_paddr),
+        .fetch_resp_priv_o(pmp_fetch_resp_priv),
+        .fetch_resp_tag_o(pmp_fetch_resp_tag),
+        .prefetch_req_valid_i(
+            prefetch_xlate_state_q == PREFETCH_XLATE_PMP),
+        .prefetch_req_ready_o(pmp_prefetch_req_ready),
+        .prefetch_req_addr_i(prefetch_xlate_paddr_q),
+        .prefetch_req_priv_i(prefetch_xlate_priv_q),
+        .prefetch_resp_valid_o(pmp_prefetch_resp_valid),
+        .prefetch_resp_ready_i(1'b1),
+        .prefetch_resp_allow_o(pmp_prefetch_resp_allow),
+        .check_valid_o(pmp_valid_o), .check_addr_o(pmp_addr_o),
+        .check_priv_o(pmp_priv_o), .check_size_o(pmp_size_o),
+        .check_write_o(pmp_write_o), .check_exec_o(pmp_exec_o),
+        .check_allow_i(pmp_allow_i)
+    );
+
     assign xlate_fast_ready = xlate_fast_candidate &&
-        (xlate_lookup_page_fault || select_xlate_probe);
-    assign ptw_pmp_ready = select_ptw_probe;
-    wire fetch_pmp_denied = select_fetch_probe && !pmp_allow_i;
-    wire prefetch_pmp_complete = select_prefetch_probe;
-    wire fetch_l1i_launch = l1i_enabled && select_fetch_probe && pmp_allow_i;
+        (xlate_lookup_page_fault || pmp_xlate_req_ready);
+    assign ptw_pmp_ready = pmp_ptw_resp_valid;
+    wire lsu_pmp_denied = pmp_lsu_resp_valid && !pmp_lsu_resp_allow;
+    wire fetch_pmp_denied = pmp_fetch_resp_valid &&
+        fetch_pmp_response_usable && !pmp_fetch_resp_allow;
+    wire prefetch_pmp_complete = pmp_prefetch_resp_valid;
+    wire fetch_l1i_launch = l1i_enabled && pmp_fetch_resp_valid &&
+        fetch_pmp_response_usable && pmp_fetch_resp_allow &&
+        fetch_l1i_pmp_available;
     wire fetch_page_paddr_representable =
-        !(|fetch_lookup_paddr[`RV64_XLEN-1:FETCH_PAGE_PA_WIDTH]);
+        !(|pmp_fetch_resp_paddr[`RV64_XLEN-1:FETCH_PAGE_PA_WIDTH]);
     wire fetch_page_screen_fill = (ENABLE_FETCH_PAGE_SCREEN != 0) &&
                                   fetch_l1i_launch &&
                                   fetch_page_paddr_representable;
@@ -1283,13 +1344,13 @@ module openrv64_core_mtl #(
                           fetch_l1i_launch);
     wire [`RV64_XLEN-1:0] l1i_req_vaddr = l1i_req_active_usable ?
         l1i_req_vaddr_q : fetch_page_screen_launch ?
-        fetch_page_screen_launch_vaddr : fetch_lookup_vaddr;
+        fetch_page_screen_launch_vaddr : pmp_fetch_resp_vaddr;
     wire [`RV64_XLEN-1:0] l1i_req_paddr = l1i_req_active_usable ?
         l1i_req_paddr_q : fetch_page_screen_launch ?
-        fetch_page_screen_launch_paddr : fetch_axi_addr;
+        fetch_page_screen_launch_paddr : pmp_fetch_resp_paddr;
     wire [FETCH_SLOT_WIDTH-1:0] l1i_req_slot = l1i_req_active_usable ?
         l1i_req_slot_q : fetch_page_screen_launch ?
-        fetch_page_screen_launch_slot : fetch_xlate_slot_r;
+        fetch_page_screen_launch_slot : pmp_fetch_resp_tag;
     wire [`RV64_PRIV_WIDTH-1:0] l1i_req_priv =
         fetch_page_screen_launch && fetch_page_screen_incoming_select ?
             fetch_req_priv_i : fetch_priv_q[l1i_req_slot];
@@ -1349,7 +1410,7 @@ module openrv64_core_mtl #(
     wire [FETCH_SLOT_WIDTH-1:0] fetch_pop_slot =
         fetch_resp_fire ? fetch_response_slot : fetch_drop_slot_r;
     wire fetch_page_screen_resp_fire = fetch_page_screen_resp_bypass &&
-                                       fetch_resp_ready_i;
+                                       fetch_resp_fire;
 
     generate
         if (L1I_FETCH_DATA_WIDTH ==
@@ -1752,15 +1813,15 @@ module openrv64_core_mtl #(
         .debug_last_client_o(icx_cmd_last_client_q)
     );
 
-    wire direct_fetch_arvalid = !l1i_enabled && select_fetch_probe &&
-                                pmp_allow_i;
+    wire direct_fetch_arvalid = !l1i_enabled && pmp_fetch_resp_valid &&
+        fetch_pmp_response_usable && pmp_fetch_resp_allow;
     wire fetch_arvalid = direct_fetch_arvalid;
 
     assign m_axi_arvalid_o = fetch_arvalid;
     assign m_axi_arid_o =
         {{(AXI_ID_WIDTH-FETCH_SLOT_WIDTH){1'b0}},
-         fetch_xlate_slot_r};
-    assign m_axi_araddr_o = fetch_axi_addr;
+         pmp_fetch_resp_tag};
+    assign m_axi_araddr_o = pmp_fetch_resp_paddr;
     assign m_axi_arlen_o = 8'd0;
     assign m_axi_arsize_o = 3'd5;
     assign m_axi_arburst_o = 2'b01;
@@ -1769,7 +1830,7 @@ module openrv64_core_mtl #(
     assign m_axi_arprot_o = {
         1'b1,
         1'b0,
-        fetch_priv_q[fetch_xlate_slot_r] == `RV64_PRIV_U
+        pmp_fetch_resp_priv == `RV64_PRIV_U
     };
     assign m_axi_arqos_o = 4'd0;
     wire axi_ar_fire = m_axi_arvalid_o && m_axi_arready_i;
@@ -1851,31 +1912,50 @@ module openrv64_core_mtl #(
 
     wire xlate_fallback_visible =
         !xlate_local_resp_valid_q && xlate_fallback_response_pending;
-    wire xlate_fast_resp_visible =
+    wire xlate_page_fault_resp_visible =
         !xlate_local_resp_valid_q &&
         !xlate_fallback_response_pending &&
-        xlate_fast_ready;
+        xlate_fast_candidate && xlate_lookup_page_fault;
+    wire xlate_pmp_resp_visible =
+        !xlate_local_resp_valid_q &&
+        !xlate_fallback_response_pending &&
+        pmp_xlate_resp_valid;
+    wire xlate_fast_resp_visible = xlate_page_fault_resp_visible ||
+                                   xlate_pmp_resp_visible;
     wire xlate_fallback_response_fire =
         xlate_fallback_visible && lsu_xlate_resp_ready_i;
     wire xlate_fast_response_fire =
         xlate_fast_resp_visible && lsu_xlate_resp_ready_i;
+    wire xlate_pmp_response_accept = pmp_xlate_resp_valid &&
+                                     xlate_pmp_resp_ready;
+    wire xlate_page_fault_response_accept = xlate_request_fire &&
+                                             xlate_lookup_page_fault;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_fast_resp_tag =
+        xlate_pmp_resp_visible ? pmp_xlate_resp_tag :
+                                 lsu_xlate_req_tag_i;
+    wire [`RV64_XLEN-1:0] xlate_fast_resp_paddr =
+        xlate_pmp_resp_visible ? pmp_xlate_resp_paddr :
+                                 xlate_lookup_paddr;
+    wire xlate_fast_resp_access_fault = xlate_pmp_resp_visible &&
+                                         !pmp_xlate_resp_allow;
+    wire xlate_fast_resp_page_fault = xlate_page_fault_resp_visible;
     assign lsu_xlate_resp_valid_o = xlate_local_resp_valid_q ||
                                     xlate_fallback_visible ||
                                     xlate_fast_resp_visible;
     assign lsu_xlate_resp_tag_o = xlate_local_resp_valid_q ?
         xlate_local_resp_tag_q : xlate_fallback_visible ?
-        xlate_fallback_tag_q : lsu_xlate_req_tag_i;
+        xlate_fallback_tag_q : xlate_fast_resp_tag;
     assign lsu_xlate_resp_paddr_o = xlate_local_resp_valid_q ?
         xlate_local_resp_paddr_q : xlate_fallback_visible ?
-        lsu_paddr_q : xlate_lookup_paddr;
+        lsu_paddr_q : xlate_fast_resp_paddr;
     assign lsu_xlate_resp_access_fault_o =
         xlate_local_resp_valid_q ? xlate_local_resp_access_fault_q :
         xlate_fallback_visible ? lsu_access_fault_q :
-        (xlate_fast_resp_visible && xlate_pmp_denied);
+        xlate_fast_resp_access_fault;
     assign lsu_xlate_resp_page_fault_o = xlate_local_resp_valid_q ?
         xlate_local_resp_page_fault_q :
         xlate_fallback_visible ? lsu_page_fault_q :
-        (xlate_fast_resp_visible && xlate_lookup_page_fault);
+        xlate_fast_resp_page_fault;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -1926,9 +2006,9 @@ module openrv64_core_mtl #(
         end else if (fetch_page_screen_fill) begin
             fetch_page_valid_q[fetch_page_write_cursor_q] <= 1'b1;
             fetch_page_vpn_q[fetch_page_write_cursor_q] <=
-                fetch_lookup_vaddr[`RV64_XLEN-1:12];
+                pmp_fetch_resp_vaddr[`RV64_XLEN-1:12];
             fetch_page_ppn_q[fetch_page_write_cursor_q] <=
-                fetch_lookup_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
+                pmp_fetch_resp_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
             fetch_page_write_cursor_q <=
                 fetch_page_write_cursor_q + 1'b1;
         end
@@ -2003,7 +2083,8 @@ module openrv64_core_mtl #(
 
                 PREFETCH_XLATE_PMP: begin
                     if (prefetch_pmp_complete) begin
-                        prefetch_xlate_fault_q <= !pmp_allow_i;
+                        prefetch_xlate_fault_q <=
+                            !pmp_prefetch_resp_allow;
                         prefetch_xlate_state_q <= PREFETCH_XLATE_RESP;
                     end
                 end
@@ -2044,6 +2125,7 @@ module openrv64_core_mtl #(
                 fetch_demand_q[fetch_index] <= 1'b0;
                 fetch_cancelled_q[fetch_index] <= 1'b0;
                 fetch_fast_q[fetch_index] <= 1'b0;
+                fetch_l1i_inflight_q[fetch_index] <= 1'b0;
                 fetch_fast_ppn_q[fetch_index] <=
                     {FETCH_PAGE_PPN_WIDTH{1'b0}};
                 fetch_data_q[fetch_index] <=
@@ -2091,6 +2173,7 @@ module openrv64_core_mtl #(
                 fetch_demand_q[fetch_free_slot_r] <= fetch_req_demand_i;
                 fetch_cancelled_q[fetch_free_slot_r] <= 1'b0;
                 fetch_fast_q[fetch_free_slot_r] <= fetch_page_hit_r;
+                fetch_l1i_inflight_q[fetch_free_slot_r] <= 1'b0;
                 fetch_fast_ppn_q[fetch_free_slot_r] <=
                     fetch_page_ppn_r;
                 fetch_data_q[fetch_free_slot_r] <=
@@ -2105,6 +2188,7 @@ module openrv64_core_mtl #(
                 fetch_demand_q[fetch_pop_slot] <= 1'b0;
                 fetch_cancelled_q[fetch_pop_slot] <= 1'b0;
                 fetch_fast_q[fetch_pop_slot] <= 1'b0;
+                fetch_l1i_inflight_q[fetch_pop_slot] <= 1'b0;
                 fetch_head_q <= fetch_pop_slot + 1'b1;
             end
 
@@ -2125,9 +2209,7 @@ module openrv64_core_mtl #(
                         fetch_cancelled_q[fetch_index] <= 1'b1;
                         fetch_fast_q[fetch_index] <= 1'b0;
                         if ((fetch_state_q[fetch_index] != FETCH_WAIT_L1I) ||
-                            (l1i_req_active_q &&
-                             (l1i_req_slot_q ==
-                              fetch_index[FETCH_SLOT_WIDTH-1:0])))
+                            !fetch_l1i_inflight_q[fetch_index])
                             fetch_state_q[fetch_index] <= FETCH_COMPLETE;
                     end
                 end
@@ -2183,12 +2265,12 @@ module openrv64_core_mtl #(
                 fetch_state_q[fetch_xlate_slot_r] <= FETCH_COMPLETE;
                 fetch_page_fault_q[fetch_xlate_slot_r] <= 1'b1;
             end else if (fetch_pmp_denied) begin
-                fetch_state_q[fetch_xlate_slot_r] <= FETCH_COMPLETE;
-                fetch_access_fault_q[fetch_xlate_slot_r] <= 1'b1;
+                fetch_state_q[pmp_fetch_resp_tag] <= FETCH_COMPLETE;
+                fetch_access_fault_q[pmp_fetch_resp_tag] <= 1'b1;
             end else if (fetch_l1i_launch) begin
-                fetch_state_q[fetch_xlate_slot_r] <= FETCH_WAIT_L1I;
+                fetch_state_q[pmp_fetch_resp_tag] <= FETCH_WAIT_L1I;
             end else if (direct_fetch_ar_fire) begin
-                fetch_state_q[fetch_xlate_slot_r] <= FETCH_WAIT_R;
+                fetch_state_q[pmp_fetch_resp_tag] <= FETCH_WAIT_R;
             end
 
             if (fetch_page_screen_launch &&
@@ -2231,6 +2313,10 @@ module openrv64_core_mtl #(
                 fetch_access_fault_q[l1i_resp_slot] <= l1i_req_error;
                 fetch_page_fault_q[l1i_resp_slot] <= 1'b0;
             end
+            if (l1i_req_fire)
+                fetch_l1i_inflight_q[l1i_req_slot] <= 1'b1;
+            if (l1i_resp_fire)
+                fetch_l1i_inflight_q[l1i_resp_slot] <= 1'b0;
         end
     end
 
@@ -2296,14 +2382,23 @@ module openrv64_core_mtl #(
                         pipe_cancelled_q[pipe_index] <= 1'b1;
             end
 
-            if (xlate_fast_candidate && lsu_xlate_req_ready_o &&
-                !xlate_fast_response_fire) begin
+            if (xlate_pmp_response_accept &&
+                !(xlate_pmp_resp_visible &&
+                  lsu_xlate_resp_ready_i)) begin
+                xlate_local_resp_valid_q <= 1'b1;
+                xlate_local_resp_tag_q <= pmp_xlate_resp_tag;
+                xlate_local_resp_paddr_q <= pmp_xlate_resp_paddr;
+                xlate_local_resp_access_fault_q <=
+                    !pmp_xlate_resp_allow;
+                xlate_local_resp_page_fault_q <= 1'b0;
+            end else if (xlate_page_fault_response_accept &&
+                         !(xlate_page_fault_resp_visible &&
+                           lsu_xlate_resp_ready_i)) begin
                 xlate_local_resp_valid_q <= 1'b1;
                 xlate_local_resp_tag_q <= lsu_xlate_req_tag_i;
                 xlate_local_resp_paddr_q <= xlate_lookup_paddr;
-                xlate_local_resp_access_fault_q <= xlate_pmp_denied;
-                xlate_local_resp_page_fault_q <=
-                    xlate_lookup_page_fault;
+                xlate_local_resp_access_fault_q <= 1'b0;
+                xlate_local_resp_page_fault_q <= 1'b1;
             end else if (xlate_local_resp_valid_q &&
                          lsu_xlate_resp_ready_i) begin
                 xlate_local_resp_valid_q <= 1'b0;
@@ -2439,9 +2534,10 @@ module openrv64_core_mtl #(
                     if (lsu_pmp_denied) begin
                         lsu_access_fault_q <= 1'b1;
                         lsu_state_q <= LSU_RESP;
-                    end else if (select_lsu_probe && lsu_xlate_only_q) begin
+                    end else if (pmp_lsu_resp_valid &&
+                                 lsu_xlate_only_q) begin
                         lsu_state_q <= LSU_RESP;
-                    end else if (select_lsu_probe) begin
+                    end else if (pmp_lsu_resp_valid) begin
                         lsu_pmp_checked_q <= 1'b1;
                         lsu_state_q <= LSU_ACCESS;
                     end
@@ -2525,6 +2621,7 @@ module openrv64_core_mtl #(
         .fetch_free_slot_r(fetch_free_slot_r),
         .fetch_head_q(fetch_head_q),
         .fetch_l1i_launch(fetch_l1i_launch),
+        .fetch_l1i_inflight_q(fetch_l1i_inflight_q),
         .fetch_page_screen_accept(fetch_page_screen_accept),
         .fetch_page_screen_fill(fetch_page_screen_fill),
         .fetch_page_screen_invalidate(fetch_page_screen_invalidate),
@@ -2595,6 +2692,16 @@ module openrv64_core_mtl #(
                      FETCH_TRANSLATE))
                     $fatal(1,
                         "page-screen fetch entered translation slot=%0d addr=%016x",
+                        fetch_assert_index,
+                        fetch_vaddr_q[fetch_assert_index]);
+                if (fetch_cancelled_q[fetch_assert_index] &&
+                    (fetch_state_q[fetch_assert_index] == FETCH_WAIT_L1I) &&
+                    !fetch_l1i_inflight_q[fetch_assert_index] &&
+                    !(l1i_req_active_q &&
+                      (l1i_req_slot_q ==
+                       fetch_assert_index[FETCH_SLOT_WIDTH-1:0])))
+                    $fatal(1,
+                        "cancelled fetch waits without an L1I transaction slot=%0d addr=%016x",
                         fetch_assert_index,
                         fetch_vaddr_q[fetch_assert_index]);
             end

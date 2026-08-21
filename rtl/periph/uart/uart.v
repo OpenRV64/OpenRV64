@@ -6,7 +6,15 @@
 // is presented as one aligned word on the OpenRV64 64-bit blocking bus. The
 // SoC decoder presents a target-local offset; byte stores use the corresponding
 // mem_wdata_i/mem_wstrb_i lane and mem_addr_i[2:0] selects read side effects.
-module openrv64_uart16550 (
+module openrv64_uart16550 #(
+    // REFERENCE_CLOCK_HZ is the frequency exposed to software for divisor
+    // calculation.  When it differs from INPUT_CLOCK_HZ, a fractional
+    // prescaler advances the ordinary 16550 divider by zero, one, or two
+    // reference-clock ticks per input-clock cycle.  Zero keeps the original
+    // one-tick-per-cycle behavior.
+    parameter integer INPUT_CLOCK_HZ = 0,
+    parameter integer REFERENCE_CLOCK_HZ = 0
+) (
     input  wire         clk_i,
     input  wire         rst_ni,
 
@@ -75,6 +83,7 @@ module openrv64_uart16550 (
     reg       rx_overrun_q;
 
     reg [15:0] baud_counter_q;
+    reg [31:0] baud_reference_phase_q;
 
     reg [2:0] tx_state_q;
     reg [3:0] tx_phase_count_q;
@@ -247,8 +256,31 @@ module openrv64_uart16550 (
     end
 
     wire [15:0] baud_divisor = {dlm_q, dll_q};
+
+    localparam FRACTIONAL_BAUD_REFERENCE =
+        (INPUT_CLOCK_HZ > 0) && (REFERENCE_CLOCK_HZ > 0) &&
+        (INPUT_CLOCK_HZ != REFERENCE_CLOCK_HZ);
+    localparam [32:0] INPUT_CLOCK_HZ_EXT = INPUT_CLOCK_HZ;
+    localparam [32:0] REFERENCE_CLOCK_HZ_EXT = REFERENCE_CLOCK_HZ;
+
+    wire [32:0] baud_reference_sum =
+        {1'b0, baud_reference_phase_q} + REFERENCE_CLOCK_HZ_EXT;
+    wire [1:0] baud_counter_advance = !FRACTIONAL_BAUD_REFERENCE ? 2'd1 :
+        ((baud_reference_sum >= (INPUT_CLOCK_HZ_EXT << 1)) ? 2'd2 :
+         ((baud_reference_sum >= INPUT_CLOCK_HZ_EXT) ? 2'd1 : 2'd0));
+    wire [31:0] baud_reference_phase_next =
+        !FRACTIONAL_BAUD_REFERENCE ? 32'd0 :
+        ((baud_reference_sum >= (INPUT_CLOCK_HZ_EXT << 1)) ?
+            (baud_reference_sum - (INPUT_CLOCK_HZ_EXT << 1)) :
+         ((baud_reference_sum >= INPUT_CLOCK_HZ_EXT) ?
+            (baud_reference_sum - INPUT_CLOCK_HZ_EXT) :
+            baud_reference_sum[31:0]));
+
+    wire [16:0] baud_counter_sum = {1'b0, baud_counter_q} +
+                                    baud_counter_advance;
     wire baud16_tick = (baud_divisor != 16'd0) &&
-                       (baud_counter_q >= (baud_divisor - 16'd1)) &&
+                       (baud_counter_advance != 2'd0) &&
+                       (baud_counter_sum >= {1'b0, baud_divisor}) &&
                        !write_dll && !write_dlm;
 
     // Internal and physical serial paths differ in diagnostic loopback mode:
@@ -411,15 +443,21 @@ module openrv64_uart16550 (
 
     // Loading either divisor latch restarts the 16x baud divider.  A divisor
     // of zero stops both serial engines until software programs a valid rate.
+    // Preserve fractional overshoot so the average reference frequency is
+    // exact even when two reference ticks land in one input-clock cycle.
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             baud_counter_q <= 16'd0;
+            baud_reference_phase_q <= 32'd0;
         end else if (write_dll || write_dlm || (baud_divisor == 16'd0)) begin
             baud_counter_q <= 16'd0;
+            baud_reference_phase_q <= 32'd0;
         end else if (baud16_tick) begin
-            baud_counter_q <= 16'd0;
+            baud_counter_q <= baud_counter_sum - baud_divisor;
+            baud_reference_phase_q <= baud_reference_phase_next;
         end else begin
-            baud_counter_q <= baud_counter_q + 16'd1;
+            baud_counter_q <= baud_counter_sum[15:0];
+            baud_reference_phase_q <= baud_reference_phase_next;
         end
     end
 

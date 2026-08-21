@@ -46,6 +46,7 @@ module tb_4h_3p #(
     parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_WFI_SLEEP = 1,
     parameter integer FENCE_L2_ACK_ENABLE = 1,
+    parameter integer SC_EXCLUSIVE_RETAIN_ENABLE = 1,
     parameter logic [31:0] OPENSBI_FDT_BASE_LO = 32'h80f0_0000,
     parameter integer DDR3_ENABLE = 0,
     parameter integer GENBUS_READ_BUFFER_DEPTH = 8,
@@ -1266,6 +1267,7 @@ module tb_4h_3p #(
         .RESPONSE_ENTRIES(16),
         .BUS_TRACK_ENTRIES(L2_MSHRS),
         .ENABLE_COHERENCE(1),
+        .SC_EXCLUSIVE_RETAIN_ENABLE(SC_EXCLUSIVE_RETAIN_ENABLE),
         .NUM_HARTS(NUM_HARTS),
         .HART_ID_BASE(0),
         .DIRECTORY_ENTRIES(1024),
@@ -2727,7 +2729,7 @@ module tb_4h_3p #(
         if (!opensbi_mode && (coherence_perf != 0) &&
             ((shared_satp == 0) || (bare_mode != 0) ||
              !perf_results_va_valid ||
-             (coherence_case < 0) || (coherence_case > 6) ||
+             (coherence_case < 0) || (coherence_case > 22) ||
              (coherence_lines <= 0) ||
              (coherence_line_stride < 64) ||
              ((coherence_line_stride & 63) != 0) ||
@@ -3945,8 +3947,12 @@ module tb_4h_3p #(
                             $fatal(1,
                                 "private-line control generated %0d target probes",
                                 coherence_total_probes);
-                        if ((coherence_case != 0) &&
-                            (coherence_case != 6) &&
+                        if ((((coherence_case >= 1) &&
+                              (coherence_case <= 5)) ||
+                             (coherence_case == 14) ||
+                             (coherence_case == 15) ||
+                             ((coherence_case >= 17) &&
+                              (coherence_case <= 22))) &&
                             (opensbi_active_harts > 1) &&
                             (coherence_total_probes == 0))
                             $fatal(1,
@@ -3963,6 +3969,13 @@ module tb_4h_3p #(
                              coherence_operations))
                             $fatal(1,
                                 "ticket-lock successful SCs=%0d expected acquisitions=%0d",
+                                coherence_total_sc_successes,
+                                coherence_operations);
+                        if ((coherence_case == 22) &&
+                            (coherence_total_sc_successes !=
+                             coherence_operations))
+                            $fatal(1,
+                                "lock-walk successful SCs=%0d expected acquisitions=%0d",
                                 coherence_total_sc_successes,
                                 coherence_operations);
                         $display(

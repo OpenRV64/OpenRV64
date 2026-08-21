@@ -64,6 +64,9 @@ sim-timer: $(TIMER_SIM_BUILD)
 sim-spi: $(SPI_SIM_BUILD)
 	vvp $(SPI_SIM_BUILD)
 
+sim-ethernet: $(ETHERNET_SIM_BUILD)
+	vvp $(ETHERNET_SIM_BUILD)
+
 sim-fpga-sd-boot: $(FPGA_SD_BOOT_SIM_BUILD)
 	vvp $(FPGA_SD_BOOT_SIM_BUILD)
 
@@ -190,6 +193,9 @@ sim-tlb-l2: $(TLB_L2_SIM_BUILD)
 
 sim-ptw: $(PTW_SIM_BUILD)
 	vvp $(PTW_SIM_BUILD)
+
+sim-mtl-pmp: $(MTL_PMP_SIM_BUILD)
+	vvp $(MTL_PMP_SIM_BUILD)
 
 sim-ptw-context: $(PTW_CONTEXT_SIM_BUILD)
 	vvp $(PTW_CONTEXT_SIM_BUILD)

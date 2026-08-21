@@ -2,7 +2,7 @@
 
 .PHONY: FORCE fpga-sd-image verify-fpga-sd-image fpga-sd-boot-rom \
 	fpga-sd-boot-bitstream \
-	sim-fpga-sd-boot \
+	sim-fpga-sd-boot sim-ethernet \
 	sw-uart sw-fp-daxpy sw-fp-daxpy-compute \
 	sw-fp-daxpy-store \
 	sw-fp-fmadd32 sw-fp-faults \
@@ -102,6 +102,7 @@
 	sim-lsu-misaligned \
 	sim-zicclsm-context \
 	sim-exec-top-3p-no-zicclsm
+.PHONY: sim-mtl-pmp
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
 	compliance-smoke-local-3p compliance-smoke-local-platform \
 	compliance-smoke-local-platform-3p \
@@ -109,7 +110,7 @@
 
 FORCE:
 
-sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-spi sim-rom sim-memory sim-soc-bus sim-core-bus sim-icx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-top-3p-no-zicclsm sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
+sim: sim-top sim-reset-sequencer sim-platform sim-uart-firmware sim-clint sim-plic sim-uart sim-gpio sim-timer sim-spi sim-ethernet sim-rom sim-memory sim-soc-bus sim-core-bus sim-icx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-top-3p-no-zicclsm sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p
 sim: sim-isa-fp sim-rv64-fd-fpr sim-fpu-csrs sim-exec-fpu-rv64-fd
 sim: sim-exec-alu-rv64-m-fpga
 sim: sim-decode-rv64c sim-decode-rv64-fd
@@ -123,6 +124,7 @@ sim: sim-lsq
 sim: sim-lsu-atomics
 sim: sim-lsu-misaligned
 sim: sim-zicclsm-context
+sim: sim-mtl-pmp
 sim: sim-l1-cache
 sim: sim-l1-sync-tag
 sim: sim-l1-tag-mode-performance

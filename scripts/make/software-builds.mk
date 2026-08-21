@@ -412,6 +412,12 @@ $(foreach harts,$(COHERENCE_PERF_HART_COUNTS),\
 	$(foreach case,$(COHERENCE_PERF_CASES),\
 		$(eval $(call COHERENCE_PERF_BUILD,$(harts),$(case)))))
 
+$(foreach case,$(ATOMIC_LATENCY_CASES),\
+	$(eval $(call COHERENCE_PERF_BUILD,1,$(case))))
+
+$(foreach case,$(ATOMIC_LATENCY_4H_CASES),\
+	$(eval $(call COHERENCE_PERF_BUILD,4,$(case))))
+
 $(ATOMIC_4H_SHARED_VM_ELF): $(OPENRV64_MAKEFILES) \
 		sw/atomic_4h_shared_vm.S sw/openrv64-4h-shared-vm.ld
 	mkdir -p $(dir $@)

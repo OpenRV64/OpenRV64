@@ -41,19 +41,24 @@ module openrv64_rv64i_pmp #(
     localparam integer PMP_GRAIN_LOG2 = 12;
     localparam integer PMP_GRAIN_G = PMP_GRAIN_LOG2 - 2;
     localparam integer PMP_NAPOT_FORCED_ONES = PMP_GRAIN_G - 1;
+    localparam integer PMP_PAGE_WIDTH = PMP_PA_WIDTH - PMP_GRAIN_LOG2;
+    localparam integer PMP_PAGE_BOUND_WIDTH = PMP_PAGE_WIDTH + 1;
     localparam integer PMP_REGION_LOW_BITS =
-        PMP_ACTIVE_ENTRIES * PMP_PA_WIDTH;
+        PMP_ACTIVE_ENTRIES * PMP_PAGE_WIDTH;
     localparam integer PMP_REGION_HIGH_BITS =
-        PMP_ACTIVE_ENTRIES * PMP_BOUND_WIDTH;
+        PMP_ACTIVE_ENTRIES * PMP_PAGE_BOUND_WIDTH;
 
     reg [PMP_CFG_BITS-1:0] pmpcfg_q;
     reg [PMP_ADDR_WIDTH-1:0] pmpaddr_q [0:PMP_ACTIVE_ENTRIES-1];
 
-    // Normalized [low, high) NAPOT bounds are generated only when pmpaddr is
-    // written.  The request path consequently contains fixed comparisons and
-    // first-match selection, not trailing-one scans or variable shifts.
-    reg [PMP_PA_WIDTH-1:0] pmp_region_low_q [0:PMP_ACTIVE_ENTRIES-1];
-    reg [PMP_BOUND_WIDTH-1:0] pmp_region_high_q [0:PMP_ACTIVE_ENTRIES-1];
+    // Normalized 4 KiB-page [low, high) NAPOT bounds are generated only when
+    // pmpaddr is written.  The request path consequently contains fixed
+    // page-number comparisons and first-match selection, not byte-wide
+    // bounds, trailing-one scans, or variable shifts.
+    reg [PMP_PAGE_WIDTH-1:0]
+        pmp_region_low_q [0:PMP_ACTIVE_ENTRIES-1];
+    reg [PMP_PAGE_BOUND_WIDTH-1:0]
+        pmp_region_high_q [0:PMP_ACTIVE_ENTRIES-1];
     wire [PMP_REGION_LOW_BITS-1:0] pmp_region_low_state;
     wire [PMP_REGION_HIGH_BITS-1:0] pmp_region_high_state;
 
@@ -84,10 +89,11 @@ module openrv64_rv64i_pmp #(
              state_entry < PMP_ACTIVE_ENTRIES;
              state_entry = state_entry + 1) begin : g_region_state
             assign pmp_region_low_state[
-                (state_entry * PMP_PA_WIDTH) +: PMP_PA_WIDTH] =
+                (state_entry * PMP_PAGE_WIDTH) +: PMP_PAGE_WIDTH] =
                 pmp_region_low_q[state_entry];
             assign pmp_region_high_state[
-                (state_entry * PMP_BOUND_WIDTH) +: PMP_BOUND_WIDTH] =
+                (state_entry * PMP_PAGE_BOUND_WIDTH) +:
+                    PMP_PAGE_BOUND_WIDTH] =
                 pmp_region_high_q[state_entry];
         end
     endgenerate
@@ -179,10 +185,12 @@ module openrv64_rv64i_pmp #(
         input [PMP_CFG_BITS-1:0] cfg_state;
         input [PMP_REGION_LOW_BITS-1:0] region_low_state;
         input [PMP_REGION_HIGH_BITS-1:0] region_high_state;
-        reg [PMP_BOUND_WIDTH-1:0] access_low;
-        reg [PMP_BOUND_WIDTH-1:0] access_high;
-        reg [PMP_BOUND_WIDTH-1:0] region_low;
-        reg [PMP_BOUND_WIDTH-1:0] region_high;
+        reg [PMP_PAGE_BOUND_WIDTH-1:0] access_low;
+        reg [PMP_PAGE_BOUND_WIDTH-1:0] access_high;
+        reg [PMP_GRAIN_LOG2:0] access_offset_high;
+        reg access_crosses_page;
+        reg [PMP_PAGE_BOUND_WIDTH-1:0] region_low;
+        reg [PMP_PAGE_BOUND_WIDTH-1:0] region_high;
         reg access_representable;
         reg [7:0] cfg;
         reg permitted;
@@ -192,9 +200,24 @@ module openrv64_rv64i_pmp #(
         reg [15:0] entry_allow;
         integer entry;
         begin
-            access_low = {1'b0, access_addr[PMP_PA_WIDTH-1:0]};
+            access_low = {
+                1'b0,
+                access_addr[PMP_PA_WIDTH-1:PMP_GRAIN_LOG2]
+            };
+            access_offset_high = {
+                1'b0,
+                access_addr[PMP_GRAIN_LOG2-1:0]
+            } + ({{PMP_GRAIN_LOG2{1'b0}}, 1'b1} << access_size);
+            // A transfer ending exactly on a page boundary still occupies
+            // only the starting page.  A transfer ending beyond it occupies
+            // the following page too and must be contained by the same PMP
+            // entry.
+            access_crosses_page = access_offset_high[PMP_GRAIN_LOG2] &&
+                (|access_offset_high[PMP_GRAIN_LOG2-1:0]);
             access_high = access_low +
-                ({{(PMP_BOUND_WIDTH-1){1'b0}}, 1'b1} << access_size);
+                {{(PMP_PAGE_BOUND_WIDTH-1){1'b0}}, 1'b1} +
+                {{(PMP_PAGE_BOUND_WIDTH-1){1'b0}},
+                 access_crosses_page};
             access_representable =
                 !(|access_addr[`RV64_XLEN-1:PMP_PA_WIDTH]);
             overlap = 16'd0;
@@ -204,9 +227,10 @@ module openrv64_rv64i_pmp #(
                  entry = entry + 1) begin
                 cfg = cfg_state[(entry * 8) +: 8];
                 region_low = {1'b0, region_low_state[
-                    (entry * PMP_PA_WIDTH) +: PMP_PA_WIDTH]};
+                    (entry * PMP_PAGE_WIDTH) +: PMP_PAGE_WIDTH]};
                 region_high = region_high_state[
-                    (entry * PMP_BOUND_WIDTH) +: PMP_BOUND_WIDTH];
+                    (entry * PMP_PAGE_BOUND_WIDTH) +:
+                        PMP_PAGE_BOUND_WIDTH];
                 permitted =
                     access_execute ? cfg[`RV64_PMP_CFG_X_BIT] :
                     access_write ? cfg[`RV64_PMP_CFG_W_BIT] :
@@ -318,7 +342,8 @@ module openrv64_rv64i_pmp #(
             for (i = 0; i < PMP_ACTIVE_ENTRIES; i = i + 1) begin
                 pmpaddr_q[i] <= {PMP_ADDR_WIDTH{1'b0}};
                 pmp_region_low_q[i] <= '0;
-                pmp_region_high_q[i] <= 40'd4096;
+                pmp_region_high_q[i] <=
+                    {{(PMP_PAGE_BOUND_WIDTH-1){1'b0}}, 1'b1};
             end
         end else begin
             if (!csr_write_i || pmpaddr_done_q)
@@ -361,9 +386,11 @@ module openrv64_rv64i_pmp #(
                         (PMP_BOUND_WIDTH - 1)) begin
                         pmpaddr_q[pmpaddr_entry_q] <= pmpaddr_pending_q;
                         pmp_region_low_q[pmpaddr_entry_q] <=
-                            pmpaddr_low_q;
+                            pmpaddr_low_q[
+                                PMP_PA_WIDTH-1:PMP_GRAIN_LOG2];
                         pmp_region_high_q[pmpaddr_entry_q] <=
-                            pmpaddr_high_next;
+                            pmpaddr_high_next[
+                                PMP_BOUND_WIDTH-1:PMP_GRAIN_LOG2];
                         pmpaddr_busy_q <= 1'b0;
                         pmpaddr_add_phase_q <= 1'b0;
                         pmpaddr_done_q <= 1'b1;

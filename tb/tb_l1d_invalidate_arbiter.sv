@@ -7,7 +7,7 @@ module tb_l1d_invalidate_arbiter;
     localparam [63:0] TARGET_ADDR = 64'h0000_0000_8000_1000;
     localparam [63:0] ATOMIC_ADDR = 64'h0000_0000_8000_1048;
     localparam [63:0] TARGET_WORD = 64'h1122_3344_5566_7788;
-    localparam [63:0] ATOMIC_WORD = 64'h8877_6655_4433_2211;
+    localparam [63:0] ATOMIC_INITIAL = 64'h8877_6655_4433_2211;
 
     reg clk;
     reg rst_n;
@@ -24,6 +24,7 @@ module tb_l1d_invalidate_arbiter;
     wire req_error;
     wire resp_valid;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] resp_tag;
+    reg resp_ready;
 
     reg invalidate_valid;
     wire invalidate_ready;
@@ -37,6 +38,8 @@ module tb_l1d_invalidate_arbiter;
     wire [2:0] icx_req_size;
     wire [63:0] icx_req_addr;
     wire icx_wdata_valid;
+    wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_wdata;
+    wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] icx_wstrb;
 
     reg icx_resp_valid;
     wire icx_resp_ready;
@@ -44,6 +47,7 @@ module tb_l1d_invalidate_arbiter;
     reg [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
     reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
+    reg icx_resp_sc_success;
 
     reg response_pending_q;
     integer response_delay_q;
@@ -52,7 +56,15 @@ module tb_l1d_invalidate_arbiter;
     reg [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] response_source_q;
     reg [`OPENRV64_ICX_OP_WIDTH-1:0] response_op_q;
     reg [63:0] response_addr_q;
+    reg response_sc_success_q;
+    reg [`OPENRV64_ICX_SC_RESULT_WIDTH-1:0] response_sc_result_q;
+    reg next_sc_success;
+    reg [`OPENRV64_ICX_SC_RESULT_WIDTH-1:0] next_sc_result;
+    reg [63:0] atomic_word_q;
     integer target_read_commands;
+    integer atomic_read_commands;
+    integer local_invalidate_completions;
+    integer invalidations_before;
     integer wait_cycles;
 
     function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] memory_line;
@@ -64,7 +76,7 @@ module tb_l1d_invalidate_arbiter;
                 line[63:0] = TARGET_WORD;
             else if ({address[63:6], 6'b0} ==
                      {ATOMIC_ADDR[63:6], 6'b0})
-                line[127:64] = ATOMIC_WORD;
+                line[127:64] = atomic_word_q;
             memory_line = line;
         end
     endfunction
@@ -100,7 +112,7 @@ module tb_l1d_invalidate_arbiter;
         .req_rdata_o(req_rdata),
         .req_error_o(req_error),
         .resp_valid_o(resp_valid),
-        .resp_ready_i(1'b1),
+        .resp_ready_i(resp_ready),
         .resp_tag_o(resp_tag),
         .posted_resp_valid_o(),
         .posted_resp_ready_i(1'b1),
@@ -141,8 +153,8 @@ module tb_l1d_invalidate_arbiter;
         .icx_wdata_source_id_o(),
         .icx_wdata_beat_index_o(),
         .icx_wdata_last_o(),
-        .icx_wdata_o(),
-        .icx_wstrb_o(),
+        .icx_wdata_o(icx_wdata),
+        .icx_wstrb_o(icx_wstrb),
         .icx_resp_valid_i(icx_resp_valid),
         .icx_resp_ready_o(icx_resp_ready),
         .icx_resp_hart_id_i(icx_resp_hart_id),
@@ -153,7 +165,7 @@ module tb_l1d_invalidate_arbiter;
         .icx_resp_last_i(1'b1),
         .icx_resp_rdata_i(icx_resp_rdata),
         .icx_resp_error_i(1'b0),
-        .icx_resp_sc_success_i(1'b1)
+        .icx_resp_sc_success_i(icx_resp_sc_success)
     );
 
     always begin
@@ -170,6 +182,7 @@ module tb_l1d_invalidate_arbiter;
             icx_resp_txn_id <= 0;
             icx_resp_source_id <= 0;
             icx_resp_rdata <= 0;
+            icx_resp_sc_success <= 1'b0;
             response_pending_q <= 1'b0;
             response_delay_q <= 0;
             response_hart_q <= 0;
@@ -177,7 +190,12 @@ module tb_l1d_invalidate_arbiter;
             response_source_q <= 0;
             response_op_q <= 0;
             response_addr_q <= 0;
+            response_sc_success_q <= 1'b0;
+            response_sc_result_q <= `OPENRV64_ICX_SC_FAIL;
+            atomic_word_q <= ATOMIC_INITIAL;
             target_read_commands <= 0;
+            atomic_read_commands <= 0;
+            local_invalidate_completions <= 0;
         end else begin
             if (icx_req_valid) begin
                 if (response_pending_q || icx_resp_valid)
@@ -195,9 +213,26 @@ module tb_l1d_invalidate_arbiter;
                 response_source_q <= icx_req_source_id;
                 response_op_q <= icx_req_op;
                 response_addr_q <= icx_req_addr;
+                response_sc_success_q <=
+                    (icx_req_op == `OPENRV64_ICX_OP_SC) &&
+                    next_sc_success;
+                response_sc_result_q <=
+                    (icx_req_op == `OPENRV64_ICX_OP_SC) ?
+                    next_sc_result : `OPENRV64_ICX_SC_FAIL;
                 if ((icx_req_op == `OPENRV64_ICX_OP_READ) &&
                     ({icx_req_addr[63:6], 6'b0} == TARGET_ADDR))
                     target_read_commands <= target_read_commands + 1;
+                if ((icx_req_op == `OPENRV64_ICX_OP_READ) &&
+                    ({icx_req_addr[63:6], 6'b0} ==
+                     {ATOMIC_ADDR[63:6], 6'b0}))
+                    atomic_read_commands <= atomic_read_commands + 1;
+                if ((icx_req_op == `OPENRV64_ICX_OP_SC) &&
+                    next_sc_success) begin
+                    if (icx_wstrb[ATOMIC_ADDR[5:0] +: 8] != 8'hff)
+                        $fatal(1, "test SC did not carry a full word");
+                    atomic_word_q <= icx_wdata[
+                        ATOMIC_ADDR[5:3]*64 +: 64];
+                end
             end
 
             if (response_pending_q && (response_delay_q != 0))
@@ -211,18 +246,25 @@ module tb_l1d_invalidate_arbiter;
                 icx_resp_rdata <=
                     (response_op_q == `OPENRV64_ICX_OP_READ) ?
                     memory_line(response_addr_q) :
-                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+                    {{(`OPENRV64_ICX_LINE_DATA_WIDTH-
+                        `OPENRV64_ICX_SC_RESULT_WIDTH){1'b0}},
+                     response_sc_result_q};
+                icx_resp_sc_success <= response_sc_success_q;
             end
             if (icx_resp_valid && icx_resp_ready) begin
                 icx_resp_valid <= 1'b0;
                 response_pending_q <= 1'b0;
             end
+            if (dut.lock_invalidate_fire)
+                local_invalidate_completions <=
+                    local_invalidate_completions + 1;
         end
     end
 
     task automatic issue_load;
         input [63:0] address;
         input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag;
+        input [63:0] expected_data;
         integer cycles;
         begin
             @(negedge clk);
@@ -249,10 +291,56 @@ module tb_l1d_invalidate_arbiter;
             end
             #1;
             if (!resp_valid || req_error || (resp_tag != tag) ||
-                (req_rdata !== TARGET_WORD))
+                (req_rdata !== expected_data))
                 $fatal(1,
-                    "load response failed valid=%0d error=%0d tag=%0d data=%016x",
-                    resp_valid, req_error, resp_tag, req_rdata);
+                    "load response failed valid=%0d error=%0d tag=%0d data=%016x expected=%016x",
+                    resp_valid, req_error, resp_tag, req_rdata,
+                    expected_data);
+        end
+    endtask
+
+    task automatic issue_marked_write;
+        input [63:0] address;
+        input [`OPENRV64_LSU_TAG_WIDTH-1:0] tag;
+        input [63:0] data;
+        input [63:0] expected_status;
+        integer cycles;
+        begin
+            @(negedge clk);
+            req_valid = 1'b1;
+            req_tag = tag;
+            req_lock = 1'b1;
+            req_write = 1'b1;
+            req_addr = address;
+            req_wdata = data;
+            req_wstrb = 8'hff;
+            cycles = 0;
+            while (!req_ready && (cycles < 200)) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            if (!req_ready)
+                $fatal(1, "marked write request timed out");
+            @(posedge clk);
+            @(negedge clk);
+            req_valid = 1'b0;
+            req_lock = 1'b0;
+            req_write = 1'b0;
+            req_addr = 0;
+            req_wdata = 0;
+            req_wstrb = 0;
+            cycles = 0;
+            while (!resp_valid && (cycles < 200)) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            #1;
+            if (!resp_valid || req_error || (resp_tag != tag) ||
+                (req_rdata !== expected_status))
+                $fatal(1,
+                    "marked write response failed valid=%0d error=%0d tag=%0d data=%016x expected=%016x",
+                    resp_valid, req_error, resp_tag, req_rdata,
+                    expected_status);
         end
     endtask
 
@@ -267,27 +355,77 @@ module tb_l1d_invalidate_arbiter;
         req_wstrb = 0;
         invalidate_valid = 1'b0;
         invalidate_addr = 0;
+        resp_ready = 1'b1;
+        next_sc_success = 1'b0;
+        next_sc_result = `OPENRV64_ICX_SC_FAIL;
         repeat (5) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
 
-        // Install the target line.  The post-invalidate load must miss again.
-        issue_load(TARGET_ADDR, 1);
+        // Install both lines before exercising the three SC dispositions.
+        issue_load(TARGET_ADDR, 1, TARGET_WORD);
         if (target_read_commands != 1)
             $fatal(1, "initial target load did not reach ICX");
+        issue_load(ATOMIC_ADDR, 2, ATOMIC_INITIAL);
+        if (atomic_read_commands != 1)
+            $fatal(1, "initial atomic load did not reach ICX");
 
-        // Start an unrelated marked write.  Its local self-invalidate owns the
-        // generic L1 tag lookup for one cycle.  Present the external snoop only
-        // after that lookup is pending: delayed ready for the local operation
-        // must not acknowledge this newly arrived external address.
+        // Sole-owner success: no probe and no local invalidate.  The pending
+        // store must update the resident word in place.
+        invalidations_before = local_invalidate_completions;
+        next_sc_success = 1'b1;
+        next_sc_result = `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE;
+        issue_marked_write(ATOMIC_ADDR, 3,
+                           64'h1111_2222_3333_4444, 64'd0);
+        if (local_invalidate_completions != invalidations_before)
+            $fatal(1, "exclusive SC performed a local invalidate");
+        issue_load(ATOMIC_ADDR, 4, 64'h1111_2222_3333_4444);
+        if (atomic_read_commands != 1)
+            $fatal(1, "exclusive SC did not retain the resident line");
+
+        // Failed SC: preserve the resident word and do not invalidate it.
+        invalidations_before = local_invalidate_completions;
+        next_sc_success = 1'b0;
+        next_sc_result = `OPENRV64_ICX_SC_FAIL;
+        issue_marked_write(ATOMIC_ADDR, 5,
+                           64'hdead_beef_cafe_f00d, 64'd1);
+        if (local_invalidate_completions != invalidations_before)
+            $fatal(1, "failed SC performed a local invalidate");
+        issue_load(ATOMIC_ADDR, 6, 64'h1111_2222_3333_4444);
+        if (atomic_read_commands != 1)
+            $fatal(1, "failed SC discarded the resident line");
+
+        // Shared-owner success: the home has invalidated other holders, and
+        // the requester must drop its own line before releasing the response.
+        // Present an external snoop while that local invalidate is pending;
+        // its completion must not be mistaken for the external transaction.
         @(negedge clk);
+        resp_ready = 1'b0;
+        next_sc_success = 1'b1;
+        next_sc_result = `OPENRV64_ICX_SC_SUCCESS_DROP;
+        invalidations_before = local_invalidate_completions;
         req_valid = 1'b1;
-        req_tag = 2;
+        req_tag = 7;
         req_lock = 1'b1;
         req_write = 1'b1;
         req_addr = ATOMIC_ADDR;
-        req_wdata = 64'hdead_beef_cafe_f00d;
+        req_wdata = 64'haaaa_bbbb_cccc_dddd;
         req_wstrb = 8'hff;
+        wait_cycles = 0;
+        while (!req_ready && (wait_cycles < 200)) begin
+            @(negedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!req_ready)
+            $fatal(1, "shared marked write did not issue");
+        @(posedge clk);
+        @(negedge clk);
+        req_valid = 1'b0;
+        req_lock = 1'b0;
+        req_write = 1'b0;
+        req_addr = 0;
+        req_wdata = 0;
+        req_wstrb = 0;
         wait_cycles = 0;
         while (!dut.u_l1d.u_l1.g_cache.u_cache.u_debug.sync_invalidate_probe_q &&
                (wait_cycles < 100)) begin
@@ -318,37 +456,29 @@ module tb_l1d_invalidate_arbiter;
         @(negedge clk);
         invalidate_valid = 1'b0;
         invalidate_addr = 0;
-
-        wait_cycles = 0;
-        while (!req_ready && (wait_cycles < 200)) begin
-            @(negedge clk);
-            wait_cycles = wait_cycles + 1;
-        end
-        if (!req_ready)
-            $fatal(1, "marked write did not resume after snoop");
-        @(posedge clk);
-        @(negedge clk);
-        req_valid = 1'b0;
-        req_lock = 1'b0;
-        req_write = 1'b0;
-        req_addr = 0;
-        req_wdata = 0;
-        req_wstrb = 0;
+        resp_ready = 1'b1;
         wait_cycles = 0;
         while (!resp_valid && (wait_cycles < 200)) begin
             @(negedge clk);
             wait_cycles = wait_cycles + 1;
         end
-        if (!resp_valid || req_error || (resp_tag != 2))
-            $fatal(1, "marked write did not complete");
+        #1;
+        if (!resp_valid || req_error || (resp_tag != 7) ||
+            (req_rdata !== 64'd0))
+            $fatal(1, "shared marked write did not complete");
+        if (local_invalidate_completions != invalidations_before + 1)
+            $fatal(1, "shared SC did not perform exactly one local invalidate");
 
-        issue_load(TARGET_ADDR, 3);
+        issue_load(ATOMIC_ADDR, 8, 64'haaaa_bbbb_cccc_dddd);
+        if (atomic_read_commands != 2)
+            $fatal(1, "shared SC did not discard the resident line");
+        issue_load(TARGET_ADDR, 9, TARGET_WORD);
         if (target_read_commands != 2)
             $fatal(1,
                 "target line remained resident after external invalidate reads=%0d",
                 target_read_commands);
 
-        $display("PASS: external invalidate cannot consume local invalidate completion");
+        $display("PASS: SC fail/drop/exclusive dispositions and invalidate arbitration");
         $finish;
     end
 

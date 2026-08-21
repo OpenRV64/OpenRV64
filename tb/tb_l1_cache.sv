@@ -111,7 +111,8 @@ module tb_l1_cache;
         .mem_wdata_o(mem_wdata),
         .mem_wstrb_o(mem_wstrb),
         .mem_rdata_i(mem_rdata),
-        .mem_error_i(mem_error)
+        .mem_error_i(mem_error),
+        .mem_write_commit_i(1'b1)
     );
 
     // A second instance proves that ENABLE=0 is a structural pass-through.
@@ -161,7 +162,8 @@ module tb_l1_cache;
         .mem_wdata_o(bypass_mem_wdata),
         .mem_wstrb_o(bypass_mem_wstrb),
         .mem_rdata_i(64'hdead_beef_cafe_f00d),
-        .mem_error_i(bypass_mem_error)
+        .mem_error_i(bypass_mem_error),
+        .mem_write_commit_i(1'b1)
     );
 
     assign mem_ready = mem_valid && !mem_stall;

@@ -60,7 +60,7 @@ chparam -set RESET_VECTOR 4096 \
         -set ENABLE_RV64A 1 \
         -set ENABLE_FORWARDING 1 \
         -set ENABLE_LOAD_FORWARDING 0 \
-        -set PMP_ACTIVE_ENTRIES 4 \
+        -set PMP_ACTIVE_ENTRIES 8 \
         -set FPGA_GPR_LUTRAM 1 \
         -set L1D_CACHEABLE_BASE 2147483648 \
         -set L1D_CACHEABLE_SIZE 268435456 \

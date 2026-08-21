@@ -66,7 +66,8 @@ module openrv64_l1 #(
     output wire [DATA_WIDTH-1:0]     mem_wdata_o,
     output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
     input  wire [REFILL_DATA_WIDTH-1:0] mem_rdata_i,
-    input  wire                      mem_error_i
+    input  wire                      mem_error_i,
+    input  wire                      mem_write_commit_i
 );
 
     generate
@@ -132,7 +133,8 @@ module openrv64_l1 #(
                 .mem_wdata_o(mem_wdata_o),
                 .mem_wstrb_o(mem_wstrb_o),
                 .mem_rdata_i(mem_rdata_i),
-                .mem_error_i(mem_error_i)
+                .mem_error_i(mem_error_i),
+                .mem_write_commit_i(mem_write_commit_i)
             );
         end else begin : g_bypass
             reg request_valid_q;

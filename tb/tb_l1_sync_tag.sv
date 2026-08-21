@@ -103,6 +103,7 @@ module tb_l1_sync_tag;
         .mem_wstrb_o(mem_wstrb),
         .mem_rdata_i(512'd0),
         .mem_error_i(1'b0),
+        .mem_write_commit_i(1'b1),
         .ideal_refill_valid_i(1'b0),
         .ideal_refill_data_i(64'd0)
     );

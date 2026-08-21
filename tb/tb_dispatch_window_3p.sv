@@ -288,16 +288,31 @@ module tb_dispatch_window_3p;
         tick();
         clear_inputs();
 
+        // Retire all three entries while immediately reusing slot 0 for a
+        // younger writer.  The registered owner release must match by ID and
+        // must not clear that replacement on the following cycle.
+        allocation_id = {IDW'(0), IDW'(0), IDW'(13)};
+        allocation_slot = {4'd0, 4'd0, 4'd0};
+        p0 = alu_packet(64'd13, 5'd3, 5'd0, 5'd10);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
         retire_valid = 3'b111;
         retire_id = {IDW'(12), IDW'(11), IDW'(10)};
         retire_slot = {4'd2, 4'd1, 4'd0};
         tick();
         clear_inputs();
-        if (queue_count != 0 || write_busy[10] || write_busy[11])
-            fail("retirement did not release entries and current owners");
+        if (queue_count != 1 || !write_busy[10])
+            fail("retirement did not reuse the released window slot");
+        tick();
+        if (!write_busy[10] || write_busy[11])
+            fail("registered retirement cleared a younger WAW owner");
 
         // Selective recovery must reveal an older surviving WAW producer and
         // retain its completed value for instructions decoded after redirect.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
         pipe_ready = 4'b0000;
         allocation_id = {IDW'(22), IDW'(21), IDW'(20)};
         allocation_slot = {4'd2, 4'd1, 4'd0};

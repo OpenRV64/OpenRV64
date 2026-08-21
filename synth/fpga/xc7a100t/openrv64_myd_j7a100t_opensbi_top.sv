@@ -29,6 +29,14 @@ module openrv64_myd_j7a100t_opensbi_top #(
     output wire        sd_dat3_o,
 
     output wire        uart_tx_o,
+    input  wire        eth1_rgmii_rx_clk_i,
+    input  wire [3:0]  eth1_rgmii_rxd_i,
+    input  wire        eth1_rgmii_rx_dv_i,
+    output wire        eth1_rgmii_tx_clk_o,
+    output wire [3:0]  eth1_rgmii_txd_o,
+    output wire        eth1_rgmii_tx_en_o,
+    output wire        eth1_mdc_o,
+    inout  wire        eth1_mdio_io,
     output wire        eth1_phy_reset_n_o,
     output wire        eth2_phy_reset_n_o,
 
@@ -139,8 +147,8 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .sys_rst(mig_sys_rst_n)
     );
 
-    // 100 MHz / 5 * 36 / 78.125 = exactly 9.216 MHz. This gives a
-    // 108.507 ns core period and an exact integer divisor for 115200 baud.
+    // 100 MHz * 7 / 50 = exactly 14 MHz.  The platform UART uses a fractional
+    // 14.7456 MHz reference so standard divisor eight remains exact 115200.
     wire core_clock_feedback_unbuffered;
     wire core_clock_feedback;
     wire core_clock_unbuffered;
@@ -149,10 +157,10 @@ module openrv64_myd_j7a100t_opensbi_top #(
 
     MMCME2_BASE #(
         .BANDWIDTH("OPTIMIZED"),
-        .CLKFBOUT_MULT_F(36.000),
+        .CLKFBOUT_MULT_F(7.000),
         .CLKIN1_PERIOD(10.000),
-        .CLKOUT0_DIVIDE_F(78.125),
-        .DIVCLK_DIVIDE(5),
+        .CLKOUT0_DIVIDE_F(50.000),
+        .DIVCLK_DIVIDE(1),
         .STARTUP_WAIT("FALSE")
     ) u_core_mmcm (
         .CLKIN1(ui_clk),
@@ -174,6 +182,53 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .O(core_clock)
     );
 
+    // Fixed 100-Mb/s RGMII clocks.  The MAC changes data on the 0-degree
+    // 25-MHz edges.  The forwarded clock uses the 90-degree output so the PHY
+    // samples in the center of each 20-ns DDR nibble eye.
+    wire eth_clock_feedback_unbuffered;
+    wire eth_clock_feedback;
+    wire eth_tx_clock_unbuffered;
+    wire eth_tx_forward_clock_unbuffered;
+    wire eth_tx_clock;
+    wire eth_tx_forward_clock;
+    wire eth_clock_locked;
+
+    MMCME2_BASE #(
+        .BANDWIDTH("OPTIMIZED"),
+        .CLKFBOUT_MULT_F(10.000),
+        .CLKIN1_PERIOD(10.000),
+        .CLKOUT0_DIVIDE_F(40.000),
+        .CLKOUT0_PHASE(0.000),
+        .CLKOUT1_DIVIDE(40),
+        .CLKOUT1_PHASE(90.000),
+        .DIVCLK_DIVIDE(1),
+        .STARTUP_WAIT("FALSE")
+    ) u_eth_mmcm (
+        .CLKIN1(ui_clk),
+        .CLKFBIN(eth_clock_feedback),
+        .RST(ui_clk_sync_rst),
+        .PWRDWN(1'b0),
+        .CLKFBOUT(eth_clock_feedback_unbuffered),
+        .CLKOUT0(eth_tx_clock_unbuffered),
+        .CLKOUT1(eth_tx_forward_clock_unbuffered),
+        .LOCKED(eth_clock_locked)
+    );
+
+    BUFG u_eth_feedback_bufg (
+        .I(eth_clock_feedback_unbuffered),
+        .O(eth_clock_feedback)
+    );
+
+    BUFG u_eth_tx_clock_bufg (
+        .I(eth_tx_clock_unbuffered),
+        .O(eth_tx_clock)
+    );
+
+    BUFG u_eth_tx_forward_clock_bufg (
+        .I(eth_tx_forward_clock_unbuffered),
+        .O(eth_tx_forward_clock)
+    );
+
     wire boot_release;
     wire [63:0] debug_pc;
     wire sd_cd_n_buffered;
@@ -181,6 +236,17 @@ module openrv64_myd_j7a100t_opensbi_top #(
     wire spi_clk;
     wire spi_mosi;
     wire spi_cs_n;
+    wire [7:0] eth_tx_data;
+    wire eth_tx_valid;
+    wire eth_tx_error;
+    wire eth_rx_clock;
+    wire [7:0] eth_rx_data;
+    wire eth_rx_valid;
+    wire eth_rx_error;
+    wire eth_mdio_out;
+    wire eth_mdio_output_enable;
+    wire eth_mdio_in;
+    wire eth_phy_reset_n;
 
     IBUF u_sd_cd_ibuf (
         .I(sd_cd_n_i),
@@ -207,6 +273,31 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .O(sd_dat3_o)
     );
 
+    IOBUF u_eth_mdio_iobuf (
+        .I(eth_mdio_out),
+        .T(!eth_mdio_output_enable),
+        .O(eth_mdio_in),
+        .IO(eth1_mdio_io)
+    );
+
+    openrv64_series7_rgmii_io u_eth_rgmii_io (
+        .tx_clk_i(eth_tx_clock),
+        .tx_forward_clk_i(eth_tx_forward_clock),
+        .tx_data_i(eth_tx_data),
+        .tx_valid_i(eth_tx_valid),
+        .tx_error_i(eth_tx_error),
+        .rgmii_rx_clk_i(eth1_rgmii_rx_clk_i),
+        .rgmii_rxd_i(eth1_rgmii_rxd_i),
+        .rgmii_rx_ctl_i(eth1_rgmii_rx_dv_i),
+        .rgmii_tx_clk_o(eth1_rgmii_tx_clk_o),
+        .rgmii_txd_o(eth1_rgmii_txd_o),
+        .rgmii_tx_ctl_o(eth1_rgmii_tx_en_o),
+        .rx_clk_o(eth_rx_clock),
+        .rx_data_o(eth_rx_data),
+        .rx_valid_o(eth_rx_valid),
+        .rx_error_o(eth_rx_error)
+    );
+
 `ifdef OPENRV64_FPGA_SYSTEM_NETLIST
     (* DONT_TOUCH = "TRUE" *)
     openrv64_fpga_opensbi_system u_system (
@@ -229,7 +320,7 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .ui_reset_i(ui_clk_sync_rst),
         .calib_complete_i(init_calib_complete),
         .core_clk_i(core_clock),
-        .core_clock_locked_i(core_clock_locked),
+        .core_clock_locked_i(core_clock_locked && eth_clock_locked),
         .uart_rx_i(uart_rx_i),
         .uart_tx_o(uart_tx_o),
         .spi_card_present_i(!sd_cd_n_buffered),
@@ -237,6 +328,19 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .spi_mosi_o(spi_mosi),
         .spi_miso_i(sd_dat0_buffered),
         .spi_cs_n_o(spi_cs_n),
+        .eth_tx_clk_i(eth_tx_clock),
+        .eth_tx_data_o(eth_tx_data),
+        .eth_tx_valid_o(eth_tx_valid),
+        .eth_tx_error_o(eth_tx_error),
+        .eth_rx_clk_i(eth_rx_clock),
+        .eth_rx_data_i(eth_rx_data),
+        .eth_rx_valid_i(eth_rx_valid),
+        .eth_rx_error_i(eth_rx_error),
+        .eth_mdc_o(eth1_mdc_o),
+        .eth_mdio_o(eth_mdio_out),
+        .eth_mdio_oe_o(eth_mdio_output_enable),
+        .eth_mdio_i(eth_mdio_in),
+        .eth_phy_reset_no(eth_phy_reset_n),
         .boot_release_o(boot_release),
         .debug_pc_o(debug_pc),
         .app_addr_o(app_addr),
@@ -253,7 +357,7 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .app_rd_data_valid_i(app_rd_data_valid)
     );
 
-    assign eth1_phy_reset_n_o = 1'b0;
+    assign eth1_phy_reset_n_o = eth_phy_reset_n;
     assign eth2_phy_reset_n_o = 1'b0;
 
     wire unused_status = &{

@@ -63,6 +63,10 @@ sw-coherence-1h-shared-perf: $(COHERENCE_1H_PERF_ARTIFACTS)
 
 sw-coherence-4h-shared-perf: $(COHERENCE_4H_PERF_ARTIFACTS)
 
+sw-coherent-atomic-latency-sv39: $(ATOMIC_LATENCY_ARTIFACTS)
+
+sw-coherent-atomic-latency-4h-sv39: $(ATOMIC_LATENCY_4H_ARTIFACTS)
+
 sw-atomic-4h-shared-vm: $(ATOMIC_4H_SHARED_VM_ELF) \
 		$(ATOMIC_4H_SHARED_VM_TEMPLATE_BIN) $(ATOMIC_4H_SHARED_VM_BIN) \
 		$(ATOMIC_4H_SHARED_VM_MEMH) $(ATOMIC_4H_SHARED_VM_DISASM)
@@ -138,6 +142,98 @@ sim-1h-coherent-3p-ddr3-private: \
 		+coherence_measure_end_pc=$(call coherence_perf_measure_end_pc,1,private) \
 		+active_harts=1 +shared_satp=1 +mailbox_stride=4096 \
 		+max_cycles=$(COHERENCE_PERF_MAX_CYCLES)
+
+define COHERENT_ATOMIC_LATENCY_RUN
+sim-coherent-atomic-latency-sv39-$1: \
+		$(CORE_1H_COHERENT_3P_VERILATOR_BUILD) \
+		$(call coherence_perf_memh_512,1,$1)
+	test -n "$$(call coherence_perf_done_pc,1,$1)"
+	test -n "$$(call coherence_perf_measure_start_pc,1,$1)"
+	test -n "$$(call coherence_perf_measure_end_pc,1,$1)"
+	$(CORE_1H_COHERENT_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(call coherence_perf_memh_512,1,$1)) \
+		+memh_words=$(COHERENCE_PERF_512_WORDS) \
+		+done_pc=$$(call coherence_perf_done_pc,1,$1) \
+		+mailbox_va=$$(call coherence_perf_results_va,1,$1) \
+		+result_va=$$(call coherence_perf_status_va,1,$1) \
+		+result_expected=0 \
+		+perf_results_va=$$(call coherence_perf_results_va,1,$1) \
+		+perf_iterations=$(COHERENCE_PERF_ITERATIONS) \
+		+perf_name=ATOMIC_LATENCY_$1 \
+		+coherence_perf=1 \
+		+coherence_case=$(call coherence_perf_case_id,$1) \
+		+coherence_base_va=$$(call coherence_perf_base_va,1,$1) \
+		+coherence_lines=1 +coherence_line_stride=64 \
+		+coherence_operations=$(COHERENCE_PERF_ITERATIONS) \
+		+coherence_measure_start_pc=$$(call coherence_perf_measure_start_pc,1,$1) \
+		+coherence_measure_end_pc=$$(call coherence_perf_measure_end_pc,1,$1) \
+		+debug_counter_start_pc=$$(call coherence_perf_measure_start_pc,1,$1) \
+		+debug_counter_stop_pc=$$(call coherence_perf_measure_end_pc,1,$1) \
+		+active_harts=1 +shared_satp=1 +mailbox_stride=4096 \
+		+max_cycles=$(COHERENCE_PERF_MAX_CYCLES)
+endef
+
+$(foreach case,$(ATOMIC_LATENCY_CASES),\
+	$(eval $(call COHERENT_ATOMIC_LATENCY_RUN,$(case))))
+
+build-coherent-atomic-latency-sv39: \
+		$(CORE_1H_COHERENT_3P_VERILATOR_BUILD) \
+		$(ATOMIC_LATENCY_ARTIFACTS)
+
+bench-coherent-atomic-latency-sv39: $(foreach case,\
+		$(ATOMIC_LATENCY_CASES),\
+		sim-coherent-atomic-latency-sv39-$(case))
+	@echo "PASS coherent atomic latency Sv39 matrix"
+
+define COHERENT_ATOMIC_LATENCY_4H_RUN
+sim-coherent-atomic-latency-4h-sv39-$1: \
+		$(CORE_4H_3P_VERILATOR_BUILD) \
+		$(call coherence_perf_memh_512,4,$1)
+	test -n "$$(call coherence_perf_done_pc,4,$1)"
+	test -n "$$(call coherence_perf_measure_start_pc,4,$1)"
+	test -n "$$(call coherence_perf_measure_end_pc,4,$1)"
+	$(CORE_4H_3P_VERILATOR_BUILD) \
+		+memh=$(abspath $(call coherence_perf_memh_512,4,$1)) \
+		+memh_words=$(COHERENCE_PERF_512_WORDS) \
+		+done_pc=$$(call coherence_perf_done_pc,4,$1) \
+		+mailbox_va=$$(call coherence_perf_results_va,4,$1) \
+		+result_va=$$(call coherence_perf_status_va,4,$1) \
+		+result_expected=0 \
+		+perf_results_va=$$(call coherence_perf_results_va,4,$1) \
+		+perf_iterations=$(COHERENCE_PERF_ITERATIONS) \
+		+perf_name=ATOMIC_LATENCY_4H_$1 \
+		+coherence_perf=1 \
+		+coherence_case=$(call coherence_perf_case_id,$1) \
+		+coherence_base_va=$$(call coherence_perf_base_va,4,$1) \
+		+coherence_lines=$(call coherence_perf_case_lines,4,$1) \
+		+coherence_line_stride=64 \
+		+coherence_operations=$(call coherence_perf_operations,4,$1) \
+		+coherence_measure_start_pc=$$(call coherence_perf_measure_start_pc,4,$1) \
+		+coherence_measure_end_pc=$$(call coherence_perf_measure_end_pc,4,$1) \
+		+debug_counter_start_pc=$$(call coherence_perf_measure_start_pc,4,$1) \
+		+debug_counter_stop_pc=$$(call coherence_perf_measure_end_pc,4,$1) \
+		+active_harts=4 +shared_satp=1 +mailbox_stride=4096 \
+		+max_cycles=$(COHERENCE_PERF_MAX_CYCLES)
+endef
+
+$(foreach case,$(ATOMIC_LATENCY_4H_CASES),\
+	$(eval $(call COHERENT_ATOMIC_LATENCY_4H_RUN,$(case))))
+
+build-coherent-atomic-latency-4h-sv39: \
+		$(CORE_4H_3P_VERILATOR_BUILD) \
+		$(ATOMIC_LATENCY_4H_ARTIFACTS)
+
+bench-coherent-atomic-latency-4h-sv39: $(foreach case,\
+		$(ATOMIC_LATENCY_4H_CASES),\
+		sim-coherent-atomic-latency-4h-sv39-$(case))
+	@echo "PASS coherent atomic latency four-active-hart Sv39 matrix"
+
+.PHONY: sw-coherent-atomic-latency-sv39 \
+	build-coherent-atomic-latency-sv39 \
+	bench-coherent-atomic-latency-sv39 \
+	sw-coherent-atomic-latency-4h-sv39 \
+	build-coherent-atomic-latency-4h-sv39 \
+	bench-coherent-atomic-latency-4h-sv39
 
 sim-4h-3p-bare-configured: $(CORE_4H_3P_VERILATOR_BUILD) \
 		$(CORE_4H_BARE_MEMH)

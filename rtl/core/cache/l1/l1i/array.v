@@ -115,7 +115,8 @@ module openrv64_l1i #(
         .mem_wdata_o(mem_wdata_o),
         .mem_wstrb_o(mem_wstrb_o),
         .mem_rdata_i(mem_rdata_i),
-        .mem_error_i(mem_error_i)
+        .mem_error_i(mem_error_i),
+        .mem_write_commit_i(1'b1)
     );
 
 endmodule

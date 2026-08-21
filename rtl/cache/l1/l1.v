@@ -108,6 +108,10 @@ module openrv64_l1_cache #(
     output wire [DATA_WIDTH/8-1:0]   mem_wstrb_o,
     input  wire [REFILL_DATA_WIDTH-1:0] mem_rdata_i,
     input  wire                      mem_error_i,
+    // A completed downstream write may still be conditional.  Deassert this
+    // without raising mem_error_i to complete the requester while leaving a
+    // resident hit line unchanged (for example, failed or shared-owner SC).
+    input  wire                      mem_write_commit_i,
 
     input  wire                      ideal_refill_valid_i,
     input  wire [DATA_WIDTH-1:0]     ideal_refill_data_i
@@ -812,7 +816,7 @@ module openrv64_l1_cache #(
                                      WAY_INDEX_WIDTH'(data_way));
                 wire access_write = (state_q == STATE_ACCESS) &&
                                     mem_ready_i && request_write_q &&
-                                    !mem_error_i &&
+                                    !mem_error_i && mem_write_commit_i &&
                                     access_updates_line_q &&
                                     (access_way_q ==
                                      WAY_INDEX_WIDTH'(data_way)) &&

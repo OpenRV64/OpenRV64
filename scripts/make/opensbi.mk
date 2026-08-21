@@ -7,6 +7,7 @@ FPGA_SD_DTS ?= sw/opensbi.dts
 FPGA_SD_OPENSBI ?= build/opensbi-fpga-linux/artifacts/fw_jump.bin
 FPGA_SD_LINUX ?= sw/Image.Zicclsm
 FPGA_SD_BOOT_DIR ?= build/fpga/xc7a100t/sd-boot
+FPGA_SD_BOOT_UART_DIVISOR ?= 5
 FPGA_SD_BOOT_ELF := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.elf
 FPGA_SD_BOOT_BIN := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.bin
 FPGA_SD_BOOT_MEM := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.mem
@@ -15,6 +16,7 @@ $(FPGA_SD_BOOT_ELF): sw/fpga_sd_boot.S sw/fpga_sd_boot.ld
 	@mkdir -p $(dir $@)
 	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
 		-mcmodel=medany -mno-relax -nostdlib -nostartfiles -static \
+		-DFPGA_SD_BOOT_UART_DIVISOR=$(FPGA_SD_BOOT_UART_DIVISOR) \
 		-Wl,--build-id=none -Wl,-T,sw/fpga_sd_boot.ld -o $@ $<
 
 $(FPGA_SD_BOOT_BIN): $(FPGA_SD_BOOT_ELF)

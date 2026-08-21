@@ -26,6 +26,7 @@ module openrv64_icx_l2_native #(
     parameter integer PTE_GENERATION_BITS = 8,
     parameter [63:0] INVARIANT_BASE = `OPENRV64_SOC_INVARIANT_BASE,
     parameter integer ENABLE_COHERENCE = 0,
+    parameter integer SC_EXCLUSIVE_RETAIN_ENABLE = 1,
     parameter integer NUM_HARTS = 1,
     parameter integer HART_ID_BASE = 0,
     parameter integer DIRECTORY_ENTRIES = 256,
@@ -275,6 +276,7 @@ module openrv64_icx_l2_native #(
     reg mshr_bus_cacheable_q [0:MSHR_ENTRIES-1];
     reg mshr_error_q [0:MSHR_ENTRIES-1];
     reg mshr_private_fill_q [0:MSHR_ENTRIES-1];
+    reg mshr_sc_exclusive_q [0:MSHR_ENTRIES-1];
     reg mshr_coh_action_q [0:MSHR_ENTRIES-1];
     reg [3:0] mshr_post_probe_state_q [0:MSHR_ENTRIES-1];
     reg [DIRECTORY_ENTRY_WIDTH-1:0]
@@ -639,6 +641,19 @@ module openrv64_icx_l2_native #(
     wire [NUM_HARTS-1:0] coherence_write_probe_targets =
         coherence_directory_lookup_d_sharers &
         ~lookup_request_hart_mask_r;
+    // A successful SC may retain the requester's resident line only when the
+    // directory proves that it is the sole D-side holder.  This path sends no
+    // probe: there is no other observer to invalidate.  Any ambiguous state
+    // takes the conservative SUCCESS_DROP path below.
+    wire lookup_sc_exclusive =
+        (ENABLE_COHERENCE != 0) &&
+        (SC_EXCLUSIVE_RETAIN_ENABLE != 0) &&
+        (lookup_op_q == `OPENRV64_ICX_OP_SC) &&
+        lookup_sc_reservation_match_r &&
+        lookup_request_hart_valid_r &&
+        coherence_directory_lookup_hit &&
+        (coherence_directory_lookup_d_sharers ==
+         lookup_request_hart_mask_r);
     wire coherence_private_probe_needed =
         lookup_private_fill && !coherence_directory_lookup_hit &&
         coherence_directory_victim_valid &&
@@ -789,6 +804,8 @@ module openrv64_icx_l2_native #(
     wire [NUM_HARTS-1:0] coherence_directory_write_add_d =
         coherence_probe_completion ?
             mshr_directory_add_d_q[active_probe_mshr_q] :
+        lookup_sc_exclusive ?
+            lookup_request_hart_mask_r :
         (lookup_private_fill &&
          (lookup_source_id_q == `OPENRV64_ICX_SOURCE_DCACHE)) ?
             lookup_request_hart_mask_r : {NUM_HARTS{1'b0}};
@@ -796,7 +813,9 @@ module openrv64_icx_l2_native #(
         coherence_probe_completion ?
             mshr_directory_clear_d_q[active_probe_mshr_q] :
         ((lookup_op_q == `OPENRV64_ICX_OP_SC) ?
-            {NUM_HARTS{1'b1}} : {NUM_HARTS{1'b0}});
+            (lookup_sc_exclusive ?
+                {NUM_HARTS{1'b0}} : {NUM_HARTS{1'b1}}) :
+            {NUM_HARTS{1'b0}});
 
     generate
         if (ENABLE_COHERENCE != 0) begin : g_coherent_home
@@ -1312,6 +1331,13 @@ module openrv64_icx_l2_native #(
     wire response_enqueue = hit_enqueue || replay_enqueue;
     wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] replay_data =
         replay_error ? 512'd0 :
+        ((ENABLE_COHERENCE != 0) &&
+         (replay_op == `OPENRV64_ICX_OP_SC)) ?
+            {{(`OPENRV64_ICX_LINE_DATA_WIDTH-
+                `OPENRV64_ICX_SC_RESULT_WIDTH){1'b0}},
+             mshr_sc_exclusive_q[replay_mshr] ?
+                `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE :
+                `OPENRV64_ICX_SC_SUCCESS_DROP} :
         mshr_bypass_q[replay_mshr] ?
             (((replay_op == `OPENRV64_ICX_OP_READ) ||
               ((ENABLE_COHERENCE != 0) &&
@@ -1530,6 +1556,7 @@ module openrv64_icx_l2_native #(
                 mshr_replay_q[reset_index] <= 0;
                 mshr_error_q[reset_index] <= 1'b0;
                 mshr_private_fill_q[reset_index] <= 1'b0;
+                mshr_sc_exclusive_q[reset_index] <= 1'b0;
                 mshr_pte_generation_q[reset_index] <= 0;
                 mshr_bus_cacheable_q[reset_index] <= 1'b0;
                 mshr_victim_strb_q[reset_index] <= 0;
@@ -1712,7 +1739,17 @@ module openrv64_icx_l2_native #(
                     (ENABLE_COHERENCE != 0) &&
                     (lookup_op_q == `OPENRV64_ICX_OP_SC) &&
                     lookup_sc_reservation_match_r;
-                if ((lookup_action_r == LOOKUP_IMMEDIATE) &&
+                if ((ENABLE_COHERENCE != 0) &&
+                    (lookup_op_q == `OPENRV64_ICX_OP_SC))
+                    hit_data_q <=
+                        {{(`OPENRV64_ICX_LINE_DATA_WIDTH-
+                            `OPENRV64_ICX_SC_RESULT_WIDTH){1'b0}},
+                         lookup_sc_reservation_match_r ?
+                            (lookup_sc_exclusive ?
+                             `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE :
+                             `OPENRV64_ICX_SC_SUCCESS_DROP) :
+                            `OPENRV64_ICX_SC_FAIL};
+                else if ((lookup_action_r == LOOKUP_IMMEDIATE) &&
                     lookup_invariant_match &&
                     (lookup_op_q == `OPENRV64_ICX_OP_READ))
                     hit_data_q <= lookup_invariant_data;
@@ -1795,6 +1832,8 @@ module openrv64_icx_l2_native #(
                 mshr_replay_strb_q[mshr_free_index_r] <= 0;
                 mshr_private_fill_q[mshr_free_index_r] <=
                     lookup_private_fill;
+                mshr_sc_exclusive_q[mshr_free_index_r] <=
+                    lookup_sc_exclusive;
                 if (lookup_action_r == LOOKUP_COH_PROBE) begin
                     mshr_state_q[mshr_free_index_r] <= MSHR_NEED_PROBE;
                     if (lookup_base_action_r == LOOKUP_HIT) begin
@@ -2226,6 +2265,28 @@ module openrv64_icx_l2_native #(
             mshr_bus_cacheable_q[bus_candidate_mshr_r] &&
             (waiter_op_q[bus_waiter_index] == `OPENRV64_ICX_OP_SC))
             $fatal(1, "native L2 emitted a cacheable SC write-around");
+        if (rst_ni && lookup_dispatch_r && lookup_sc_exclusive &&
+            (coherence_probe_needed ||
+             (lookup_action_r == LOOKUP_COH_PROBE) ||
+             (coherence_directory_write_clear_d !=
+              {NUM_HARTS{1'b0}}) ||
+             (coherence_directory_write_add_d !=
+              lookup_request_hart_mask_r)))
+            $fatal(1,
+                "native L2 exclusive SC did not retain sole ownership");
+        if (rst_ni && response_enqueue &&
+            (ENABLE_COHERENCE != 0) &&
+            (enqueue_op == `OPENRV64_ICX_OP_SC) &&
+            !enqueue_error &&
+            ((enqueue_sc_success &&
+              (enqueue_data[`OPENRV64_ICX_SC_RESULT_WIDTH-1:0] !=
+               `OPENRV64_ICX_SC_SUCCESS_DROP) &&
+              (enqueue_data[`OPENRV64_ICX_SC_RESULT_WIDTH-1:0] !=
+               `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE)) ||
+             (!enqueue_sc_success &&
+              (enqueue_data[`OPENRV64_ICX_SC_RESULT_WIDTH-1:0] !=
+               `OPENRV64_ICX_SC_FAIL))))
+            $fatal(1, "native L2 SC success/result disagreement");
     end
 
     initial begin

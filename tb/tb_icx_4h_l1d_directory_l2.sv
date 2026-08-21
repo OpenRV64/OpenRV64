@@ -356,6 +356,9 @@ module tb_icx_4h_l1d_directory_l2 #(
     logic [63:0] atomic_random_addr;
     logic [63:0] atomic_random_operand;
     integer atomic_sc_success_count;
+    integer atomic_sc_exclusive_count;
+    integer atomic_sc_drop_count;
+    integer atomic_sc_exclusive_dispatch_count;
     integer atomic_lr_command_count;
     integer atomic_sc_command_count;
     integer icx_fence_command_count;
@@ -1051,6 +1054,9 @@ module tb_icx_4h_l1d_directory_l2 #(
                 {`OPENRV64_ICX_SOURCE_ID_WIDTH{1'b0}};
             l2_read_expected_count <= 0;
             atomic_sc_success_count <= 0;
+            atomic_sc_exclusive_count <= 0;
+            atomic_sc_drop_count <= 0;
+            atomic_sc_exclusive_dispatch_count <= 0;
             atomic_lr_command_count <= 0;
             atomic_sc_command_count <= 0;
             icx_fence_command_count <= 0;
@@ -1089,10 +1095,28 @@ module tb_icx_4h_l1d_directory_l2 #(
                         icx_fence_command_count + 1;
             end
 
+            if (u_l2.lookup_dispatch_r && u_l2.lookup_sc_exclusive)
+                atomic_sc_exclusive_dispatch_count <=
+                    atomic_sc_exclusive_dispatch_count + 1;
+
             if (icx_resp_valid && icx_resp_ready &&
                 icx_resp_sc_success) begin
                 atomic_sc_success_count <=
                     atomic_sc_success_count + 1;
+                case (icx_resp_rdata[
+                    `OPENRV64_ICX_SC_RESULT_WIDTH-1:0])
+                    `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE:
+                        atomic_sc_exclusive_count <=
+                            atomic_sc_exclusive_count + 1;
+                    `OPENRV64_ICX_SC_SUCCESS_DROP:
+                        atomic_sc_drop_count <=
+                            atomic_sc_drop_count + 1;
+                    default:
+                        $fatal(1,
+                            "successful SC returned invalid disposition=%0d",
+                            icx_resp_rdata[
+                                `OPENRV64_ICX_SC_RESULT_WIDTH-1:0]);
+                endcase
             end
 
             if (l2_req_valid && l2_req_ready) begin
@@ -2205,6 +2229,17 @@ module tb_icx_4h_l1d_directory_l2 #(
                 atomic_lr_command_count, atomic_sc_command_count,
                 atomic_sc_success_count, atomic_sequence,
                 standalone_lr_count);
+        if ((atomic_sc_exclusive_count == 0) ||
+            (atomic_sc_drop_count == 0) ||
+            (atomic_sc_exclusive_dispatch_count !=
+             atomic_sc_exclusive_count) ||
+            (atomic_sc_exclusive_count + atomic_sc_drop_count !=
+             atomic_sc_success_count))
+            $fatal(1,
+                "SC disposition counts exclusive=%0d dispatch=%0d drop=%0d success=%0d",
+                atomic_sc_exclusive_count,
+                atomic_sc_exclusive_dispatch_count,
+                atomic_sc_drop_count, atomic_sc_success_count);
         if ((icx_fence_command_count == 0) ||
             (icx_fence_command_count != l2_fence_command_count))
             $fatal(1,
@@ -2220,9 +2255,10 @@ module tb_icx_4h_l1d_directory_l2 #(
             $fatal(1, "coherent protocol failed during random stress");
 
         $display(
-            "PASS: rounds=%0d ops=%0d stores=%0d atomics=%0d sent/received verified",
+            "PASS: rounds=%0d ops=%0d stores=%0d atomics=%0d sc_exclusive=%0d sc_drop=%0d sent/received verified",
             RANDOM_ROUNDS, RANDOM_ROUNDS*NUM_HARTS,
-            random_store_count, atomic_sequence);
+            random_store_count, atomic_sequence,
+            atomic_sc_exclusive_count, atomic_sc_drop_count);
         $finish;
     end
 

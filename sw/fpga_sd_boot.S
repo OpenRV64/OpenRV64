@@ -10,7 +10,10 @@
     .equ UART_LCR,        3
     .equ UART_LSR,        5
     .equ UART_LSR_THRE,   0x20
-    .equ UART_DIVISOR,    5
+#ifndef FPGA_SD_BOOT_UART_DIVISOR
+#define FPGA_SD_BOOT_UART_DIVISOR 5
+#endif
+    .equ UART_DIVISOR,    FPGA_SD_BOOT_UART_DIVISOR
 
     .equ SPI_BASE,        0x10030000
     .equ SPI_CONTROL,     0x00

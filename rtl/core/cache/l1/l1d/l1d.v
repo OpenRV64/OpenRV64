@@ -694,16 +694,17 @@ module openrv64_l1d_icx #(
      * could pair stale resident data with a new reservation if a write
      * interleaved between the lookup and the home transaction.
      *
-     * Marked writes (SC and the write half of a decomposed AMO) still revoke
-     * the requester's clean copy before the conditional home write.
+     * Marked writes (SC and the write half of a decomposed AMO) remain held
+     * in the L1 access state until the home returns their disposition.  A
+     * sole-owner success updates the resident line; a shared-owner success
+     * revokes it before the architectural response is released.
      */
     wire coherent_atomic_read =
         (COHERENT_ATOMICS != 0) && req_lock_i && !req_write_i;
     wire coherent_lr_reservation_request =
         req_valid_i && coherent_atomic_read &&
         !coherent_lr_reservation_done_q;
-    wire lock_invalidate_request = req_valid_i && req_lock_i &&
-        !coherent_atomic_read && !locked_line_invalidated_q;
+    wire lock_invalidate_request;
     wire lock_barrier_request = req_valid_i && req_lock_i &&
                                 !lock_barrier_seen_q;
     wire speculation_barrier_event =
@@ -740,10 +741,10 @@ module openrv64_l1d_icx #(
     wire [REQ_COUNT_WIDTH-1:0] response_tag_count_q;
     wire request_needs_normal_response =
         !(req_write_i && req_posted_i);
-    // The single-hart atomic marker remains a strong local serialization
-    // point even though it no longer acquires a ICX/L2 home lock.  Invalidate
-    // early and admit the marked request only after all older stores and the
-    // current backend command have drained.
+    // The atomic marker remains a strong local serialization point.  A
+    // coherent marked write retains its private line until the home returns
+    // the SC disposition.  The legacy noncoherent marker has no such
+    // disposition and must preserve the original early-invalidate contract.
     wire lock_backend_quiescent =
         (store_buffer_count_q == 0) &&
         !store_completion_valid_q &&
@@ -752,7 +753,8 @@ module openrv64_l1d_icx #(
     wire lock_request_ready = !req_lock_i ||
         (coherent_atomic_read ?
          (coherent_lr_reservation_done_q && lock_backend_quiescent) :
-         (locked_line_invalidated_q && lock_backend_quiescent));
+         (((COHERENT_ATOMICS != 0) || locked_line_invalidated_q) &&
+          lock_backend_quiescent));
     wire freeloader_response_valid =
         freeloader_valid_q[FREELOADER_STAGES-1];
     wire demand_response_valid;
@@ -984,7 +986,8 @@ module openrv64_l1d_icx #(
         posted_store_request_ready &&
         !demand_load_store_block;
     wire l1_req_cacheable =
-        req_cacheable_i && (!req_lock_i || coherent_atomic_read);
+        req_cacheable_i &&
+        (!req_lock_i || (COHERENT_ATOMICS != 0));
     wire req_invariant =
         ((req_addr_i - `OPENRV64_SOC_INVARIANT_BASE) <
          `OPENRV64_SOC_INVARIANT_SIZE);
@@ -1995,8 +1998,8 @@ module openrv64_l1d_icx #(
     // Atomic phases never consume speculative fill-buffer data.  A coherent
     // LR establishes its home reservation before this lookup.  It may use a
     // resident clean L1 line; a miss becomes an ordinary shared read because
-    // the reservation already exists.  Marked writes bypass resident data
-    // after revoking their local copy.
+    // the reservation already exists.  Marked writes retain a resident hit
+    // pending the L2 SC disposition.
     wire refill_buffer_hit = fill_buffer_hit_r && l1_mem_valid &&
         !l1_mem_write && active_req_cacheable_q && !active_req_lock_q &&
         !speculation_barrier_event &&
@@ -2159,6 +2162,22 @@ module openrv64_l1d_icx #(
     wire main_response_identity_match =
         icx_response_for_dcache &&
         (icx_resp_txn_id_i == request_txn_id_q);
+    wire main_sc_response_pending = (COHERENT_ATOMICS != 0) &&
+        icx_resp_valid_i &&
+        (backend_state_q == BACKEND_WAIT) &&
+        main_response_identity_match && request_lock_q && request_write_q;
+    wire [`OPENRV64_ICX_SC_RESULT_WIDTH-1:0] main_sc_result =
+        icx_resp_rdata_i[`OPENRV64_ICX_SC_RESULT_WIDTH-1:0];
+    wire main_sc_success_exclusive = main_sc_response_pending &&
+        icx_resp_sc_success_i &&
+        (main_sc_result == `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE);
+    // Unknown successful dispositions are also dropped.  Only the explicit
+    // exclusive code is allowed to retain a private copy.
+    wire main_sc_success_drop = main_sc_response_pending &&
+        icx_resp_sc_success_i && !main_sc_success_exclusive;
+    assign lock_invalidate_request = !locked_line_invalidated_q &&
+        (((COHERENT_ATOMICS == 0) && req_valid_i && req_lock_i) ||
+         main_sc_success_drop);
     wire main_response_fire = response_fire &&
         (backend_state_q == BACKEND_WAIT) &&
         main_response_identity_match;
@@ -2491,7 +2510,8 @@ module openrv64_l1d_icx #(
     assign icx_response_ready =
         ((backend_state_q == BACKEND_WAIT) &&
          main_response_identity_match &&
-         main_response_overlay_ready) ||
+         main_response_overlay_ready &&
+         (!main_sc_success_drop || locked_line_invalidated_q)) ||
         demand_mshr_response_match_r ||
         store_response_match_r ||
         (prefetch_mshr_response_match_r &&
@@ -2521,6 +2541,9 @@ module openrv64_l1d_icx #(
                           !request_buffered_store_q &&
                           !main_response_reissue &&
                           (icx_resp_error_i || response_protocol_error);
+    wire l1_mem_write_commit = (COHERENT_ATOMICS == 0) ||
+        !active_req_lock_q ||
+        (main_response_fire && main_sc_success_exclusive);
 
     openrv64_l1d #(
         .ENABLE(ENABLE),
@@ -2580,7 +2603,8 @@ module openrv64_l1d_icx #(
         .mem_wdata_o(l1_mem_wdata),
         .mem_wstrb_o(l1_mem_wstrb),
         .mem_rdata_i(l1_mem_rdata),
-        .mem_error_i(l1_mem_error)
+        .mem_error_i(l1_mem_error),
+        .mem_write_commit_i(l1_mem_write_commit)
     );
 
     always @(posedge clk_i or negedge rst_ni) begin
@@ -2872,7 +2896,8 @@ module openrv64_l1d_icx #(
                     invalidate_txn_valid_q <= 1'b1;
                     invalidate_txn_external_q <= 1'b0;
                     invalidate_txn_all_q <= 1'b0;
-                    invalidate_txn_addr_q <= req_addr_i;
+                    invalidate_txn_addr_q <= (COHERENT_ATOMICS != 0) ?
+                        request_addr_q : req_addr_i;
                 end
             end else if (l1_invalidate_complete) begin
                 invalidate_txn_valid_q <= 1'b0;
@@ -3160,9 +3185,8 @@ module openrv64_l1d_icx #(
                     active_req_lock_q <=
                         req_lock_i && !coherent_atomic_read;
                     active_req_posted_q <= req_posted_i;
-                    // Marked writes bypass the private L1 after invalidating
-                    // its resident copy. Both atomic phases remain cacheable
-                    // at the coherent home.
+                    // Marked writes remain cacheable at the coherent home and
+                    // may update a resident hit after an exclusive response.
                     active_req_cacheable_q <= req_cacheable_i;
                     active_req_size_q <= req_size_i;
                 end
@@ -3321,7 +3345,7 @@ module openrv64_l1d_icx #(
                         atomic_hot_invalid_found_r ?
                         atomic_hot_invalid_index_r :
                         atomic_hot_replace_q] <=
-                        {req_addr_i[63:6], 6'b0};
+                        {l1_invalidate_addr[63:6], 6'b0};
                     atomic_hot_replace_q <=
                         ((atomic_hot_invalid_found_r ?
                           atomic_hot_invalid_index_r :
@@ -3341,7 +3365,7 @@ module openrv64_l1d_icx #(
                             prefetch_reset_stream_index] &&
                         (prefetch_last_line_q[
                              prefetch_reset_stream_index] ==
-                         {req_addr_i[63:6], 6'b0})) begin
+                         {l1_invalidate_addr[63:6], 6'b0})) begin
                         prefetch_train_valid_q[
                             prefetch_reset_stream_index] <= 1'b0;
                         prefetch_stride_valid_q[
@@ -4456,6 +4480,14 @@ module openrv64_l1d_icx #(
             ((request_txn_id_q >= PREFETCH_TXN_BASE) ||
              !main_txn_in_use_q[request_txn_id_q]))
             $fatal(1, "L1D main request lacks a reserved transaction ID");
+        if (rst_ni && main_sc_response_pending &&
+            !icx_resp_error_i && !response_protocol_error &&
+            ((icx_resp_sc_success_i &&
+              (main_sc_result != `OPENRV64_ICX_SC_SUCCESS_DROP) &&
+              (main_sc_result != `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE)) ||
+             (!icx_resp_sc_success_i &&
+              (main_sc_result != `OPENRV64_ICX_SC_FAIL))))
+            $fatal(1, "L1D SC success/result disagreement");
         if (rst_ni && (SYNC_TAG_LOOKUP == 0) && l1_resp_valid &&
             !response_tag_empty &&
             (l1_resp_identity != response_fifo_head_identity))

@@ -14,7 +14,8 @@ set_property PACKAGE_PIN R4 [get_ports sys_clk_p]
 set_property IOSTANDARD DIFF_SSTL15 [get_ports sys_clk_p]
 create_clock -name sys_clk_200m -period 5.000 [get_ports sys_clk_p]
 
-set_property PACKAGE_PIN P17 [get_ports rst_n]
+# KEY_2 is used as the active-low board reset.
+set_property PACKAGE_PIN P15 [get_ports rst_n]
 set_property IOSTANDARD LVCMOS33 [get_ports rst_n]
 set_property PULLUP true [get_ports rst_n]
 
@@ -44,8 +45,8 @@ set_property DRIVE 8 [get_ports {sd_clk_o sd_cmd_o sd_dat3_o}]
 set_property SLEW FAST [get_ports {sd_clk_o sd_cmd_o sd_dat3_o}]
 
 # In fast mode the card launches MISO after the preceding SCK falling edge and
-# the controller samples it one 9.216 MHz core cycle later.  Reserve 50 ns of
-# the 108.507 ns cycle for card clock-to-out and PCB delay.
+# the controller samples it one 14 MHz core cycle later.  Reserve 50 ns of
+# the 71.429 ns cycle for card clock-to-out and PCB delay.
 set sd_core_clock [get_clocks -quiet -of_objects \
     [get_pins u_core_mmcm/CLKOUT0]]
 set_input_delay -clock $sd_core_clock -max 50.000 \
@@ -69,6 +70,43 @@ set_property SLEW SLOW [get_ports {
     eth1_phy_reset_n_o eth2_phy_reset_n_o
 }]
 
+# Copper Ethernet port 1.  This is RGMII.  The current MAC deliberately
+# operates at 100 Mb/s; the 8 ns RX constraint covers a PHY that is still
+# emitting a 125 MHz clock during negotiation or reset.
+set_property PACKAGE_PIN W19 [get_ports eth1_rgmii_rx_clk_i]
+set_property PACKAGE_PIN U22 [get_ports {eth1_rgmii_rxd_i[0]}]
+set_property PACKAGE_PIN V22 [get_ports {eth1_rgmii_rxd_i[1]}]
+set_property PACKAGE_PIN T21 [get_ports {eth1_rgmii_rxd_i[2]}]
+set_property PACKAGE_PIN U21 [get_ports {eth1_rgmii_rxd_i[3]}]
+set_property PACKAGE_PIN V18 [get_ports eth1_rgmii_rx_dv_i]
+
+set_property PACKAGE_PIN W20 [get_ports eth1_rgmii_tx_clk_o]
+set_property PACKAGE_PIN W21 [get_ports {eth1_rgmii_txd_o[0]}]
+set_property PACKAGE_PIN W22 [get_ports {eth1_rgmii_txd_o[1]}]
+set_property PACKAGE_PIN AA20 [get_ports {eth1_rgmii_txd_o[2]}]
+set_property PACKAGE_PIN AA21 [get_ports {eth1_rgmii_txd_o[3]}]
+set_property PACKAGE_PIN U20 [get_ports eth1_rgmii_tx_en_o]
+
+set_property PACKAGE_PIN W17 [get_ports eth1_mdc_o]
+set_property PACKAGE_PIN V17 [get_ports eth1_mdio_io]
+
+set_property IOSTANDARD LVCMOS33 [get_ports {
+    eth1_rgmii_rx_clk_i eth1_rgmii_rxd_i[*] eth1_rgmii_rx_dv_i
+    eth1_rgmii_tx_clk_o eth1_rgmii_txd_o[*] eth1_rgmii_tx_en_o
+    eth1_mdc_o eth1_mdio_io
+}]
+set_property DRIVE 8 [get_ports {
+    eth1_rgmii_tx_clk_o eth1_rgmii_txd_o[*] eth1_rgmii_tx_en_o
+    eth1_mdc_o eth1_mdio_io
+}]
+set_property SLEW FAST [get_ports {
+    eth1_rgmii_tx_clk_o eth1_rgmii_txd_o[*] eth1_rgmii_tx_en_o
+}]
+set_property SLEW SLOW [get_ports {eth1_mdc_o eth1_mdio_io}]
+set_property PULLUP true [get_ports eth1_mdio_io]
+create_clock -name eth1_rgmii_rx_clk -period 8.000 \
+    [get_ports eth1_rgmii_rx_clk_i]
+
 set_false_path -from [get_ports rst_n]
 set_false_path -from [get_ports uart_rx_i]
 set_false_path -to [get_ports uart_tx_o]
@@ -78,9 +116,15 @@ set_false_path -to [get_ports sd_clk_o]
 # The MIG reset output is an asynchronous board control, not sampled data.
 set_false_path -to [get_ports ddr3_reset_n]
 
-# The 9.216 MHz core and 100 MHz MIG UI communicate only through the
+# The 14 MHz core and 100 MHz MIG UI communicate only through the
 # single-entry toggle mailbox. Its payload is held stable until the matching
 # response returns; the two toggle synchronizers carry the event ordering.
+set eth_core_clock [get_clocks -quiet -of_objects \
+    [get_pins u_core_mmcm/CLKOUT0]]
+set eth_tx_clocks [get_clocks -quiet -of_objects \
+    [get_pins {u_eth_mmcm/CLKOUT0 u_eth_mmcm/CLKOUT1}]]
 set_clock_groups -asynchronous \
-    -group [get_clocks -quiet -of_objects [get_pins u_core_mmcm/CLKOUT0]] \
-    -group [get_clocks -quiet clk_pll_i]
+    -group $eth_core_clock \
+    -group [get_clocks -quiet clk_pll_i] \
+    -group $eth_tx_clocks \
+    -group [get_clocks -quiet eth1_rgmii_rx_clk]

@@ -19,6 +19,11 @@ module openrv64_platform #(
     parameter ROM_INIT_FILE = "",
     parameter integer SPI_INIT_HALF_PERIOD_CYCLES = 12,
     parameter integer SPI_FAST_HALF_PERIOD_CYCLES = 1,
+    parameter integer UART_INPUT_CLOCK_HZ = 0,
+    parameter integer UART_REFERENCE_CLOCK_HZ = 0,
+    parameter bit ETHERNET_ENABLE = 1'b0,
+    parameter integer ETHERNET_MDC_HALF_PERIOD_CYCLES = 2,
+    parameter integer ETHERNET_PHY_RESET_CYCLES = 100000,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
     parameter int unsigned RETIRE_DEPTH = 16,
@@ -94,6 +99,20 @@ module openrv64_platform #(
     output logic                  spi_mosi_o,
     input  logic                  spi_miso_i,
     output logic                  spi_cs_n_o,
+
+    input  logic                  eth_tx_clk_i,
+    output logic [7:0]            eth_tx_data_o,
+    output logic                  eth_tx_valid_o,
+    output logic                  eth_tx_error_o,
+    input  logic                  eth_rx_clk_i,
+    input  logic [7:0]            eth_rx_data_i,
+    input  logic                  eth_rx_valid_i,
+    input  logic                  eth_rx_error_i,
+    output logic                  eth_mdc_o,
+    output logic                  eth_mdio_o,
+    output logic                  eth_mdio_oe_o,
+    input  logic                  eth_mdio_i,
+    output logic                  eth_phy_reset_no,
 
     input  logic [GPIO_WIDTH-1:0] gpio_in_i,
     output logic [GPIO_WIDTH-1:0] gpio_out_o,
@@ -357,6 +376,14 @@ module openrv64_platform #(
     logic [7:0] spi_wstrb;
     logic [63:0] spi_rdata;
 
+    logic ethernet_valid;
+    logic ethernet_ready;
+    logic ethernet_write;
+    logic [63:0] ethernet_addr;
+    logic [63:0] ethernet_wdata;
+    logic [7:0] ethernet_wstrb;
+    logic [63:0] ethernet_rdata;
+
     logic [0:0] clint_msip;
     logic [0:0] clint_mtip;
     logic [63:0] clint_mtime;
@@ -364,7 +391,8 @@ module openrv64_platform #(
     logic uart_irq;
     logic gpio_irq;
     logic timer_irq;
-    logic [31:0] plic_irq_sources;
+    logic ethernet_irq;
+    logic [32:0] plic_irq_sources;
     logic [28:0] external_irq_sync_1_q;
     logic [28:0] external_irq_sync_2_q;
 
@@ -397,13 +425,15 @@ module openrv64_platform #(
     end
 
     always_comb begin
-        plic_irq_sources = 32'h0;
+        plic_irq_sources = 33'h0;
         plic_irq_sources[`OPENRV64_SOC_PLIC_SOURCE_UART-1] = uart_irq;
         plic_irq_sources[`OPENRV64_SOC_PLIC_SOURCE_GPIO-1] = gpio_irq;
         plic_irq_sources[`OPENRV64_SOC_PLIC_SOURCE_TIMER-1] = timer_irq;
         plic_irq_sources[31:
             `OPENRV64_SOC_PLIC_SOURCE_EXTERNAL_BASE-1] =
                 external_irq_sync_2_q;
+        plic_irq_sources[`OPENRV64_SOC_PLIC_SOURCE_ETHERNET-1] =
+            ethernet_irq;
     end
 
 `ifdef OPENRV64_FPGA_CORE_NETLIST
@@ -756,7 +786,14 @@ module openrv64_platform #(
         .spi_addr_o(spi_addr),
         .spi_wdata_o(spi_wdata),
         .spi_wstrb_o(spi_wstrb),
-        .spi_rdata_i(spi_rdata)
+        .spi_rdata_i(spi_rdata),
+        .ethernet_valid_o(ethernet_valid),
+        .ethernet_ready_i(ethernet_ready),
+        .ethernet_write_o(ethernet_write),
+        .ethernet_addr_o(ethernet_addr),
+        .ethernet_wdata_o(ethernet_wdata),
+        .ethernet_wstrb_o(ethernet_wstrb),
+        .ethernet_rdata_i(ethernet_rdata)
     );
 
     openrv64_soc_rom #(
@@ -971,7 +1008,7 @@ module openrv64_platform #(
 
     openrv64_plic #(
         .NUM_HARTS(1),
-        .NUM_SOURCES(32),
+        .NUM_SOURCES(33),
         .PRIORITY_WIDTH(3)
     ) u_plic (
         .clk_i(clk_i),
@@ -987,7 +1024,10 @@ module openrv64_platform #(
         .seip_o(plic_seip)
     );
 
-    openrv64_uart16550 u_uart (
+    openrv64_uart16550 #(
+        .INPUT_CLOCK_HZ(UART_INPUT_CLOCK_HZ),
+        .REFERENCE_CLOCK_HZ(UART_REFERENCE_CLOCK_HZ)
+    ) u_uart (
         .clk_i(clk_i),
         .rst_ni(soc_rst_no),
         .rx_i(uart_rx_i),
@@ -1062,5 +1102,50 @@ module openrv64_platform #(
         .mem_wstrb_i(spi_wstrb),
         .mem_rdata_o(spi_rdata)
     );
+
+    generate
+        if (ETHERNET_ENABLE) begin : g_ethernet
+            openrv64_emaclite #(
+                .MDC_HALF_PERIOD_CYCLES(
+                    ETHERNET_MDC_HALF_PERIOD_CYCLES),
+                .PHY_RESET_CYCLES(ETHERNET_PHY_RESET_CYCLES)
+            ) u_ethernet (
+                .clk_i(clk_i),
+                .rst_ni(soc_rst_no),
+                .tx_clk_i(eth_tx_clk_i),
+                .tx_data_o(eth_tx_data_o),
+                .tx_valid_o(eth_tx_valid_o),
+                .tx_error_o(eth_tx_error_o),
+                .rx_clk_i(eth_rx_clk_i),
+                .rx_data_i(eth_rx_data_i),
+                .rx_valid_i(eth_rx_valid_i),
+                .rx_error_i(eth_rx_error_i),
+                .mdc_o(eth_mdc_o),
+                .mdio_o(eth_mdio_o),
+                .mdio_oe_o(eth_mdio_oe_o),
+                .mdio_i(eth_mdio_i),
+                .phy_reset_no(eth_phy_reset_no),
+                .irq_o(ethernet_irq),
+                .mem_valid_i(ethernet_valid),
+                .mem_ready_o(ethernet_ready),
+                .mem_write_i(ethernet_write),
+                .mem_addr_i(ethernet_addr),
+                .mem_wdata_i(ethernet_wdata),
+                .mem_wstrb_i(ethernet_wstrb),
+                .mem_rdata_o(ethernet_rdata)
+            );
+        end else begin : g_no_ethernet
+            assign eth_tx_data_o = 8'd0;
+            assign eth_tx_valid_o = 1'b0;
+            assign eth_tx_error_o = 1'b0;
+            assign eth_mdc_o = 1'b0;
+            assign eth_mdio_o = 1'b0;
+            assign eth_mdio_oe_o = 1'b0;
+            assign eth_phy_reset_no = 1'b0;
+            assign ethernet_irq = 1'b0;
+            assign ethernet_ready = ethernet_valid;
+            assign ethernet_rdata = 64'd0;
+        end
+    endgenerate
 
 endmodule

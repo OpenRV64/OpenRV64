@@ -24,6 +24,7 @@ fdt_addr=${OPENSBI_FDT_ADDR:-0x8ff00000}
 memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
 zicclsm=${OPENRV64_ZICCLSM:-1}
 zbb=${OPENRV64_ZBB:-1}
+ethernet=${OPENRV64_ETHERNET:-0}
 hart_count=${OPENRV64_HART_COUNT:-1}
 timebase_frequency=${OPENRV64_TIMEBASE_FREQUENCY:-10000000}
 uart_clock_frequency=${OPENRV64_UART_CLOCK_FREQUENCY:-1843200}
@@ -43,6 +44,10 @@ if [[ "${zicclsm}" != 0 && "${zicclsm}" != 1 ]]; then
 fi
 if [[ "${zbb}" != 0 && "${zbb}" != 1 ]]; then
     echo "build-opensbi.sh: OPENRV64_ZBB must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "${ethernet}" != 0 && "${ethernet}" != 1 ]]; then
+    echo "build-opensbi.sh: OPENRV64_ETHERNET must be 0 or 1" >&2
     exit 2
 fi
 if [[ "${hart_count}" != 1 && "${hart_count}" != 2 &&
@@ -73,6 +78,10 @@ fi
 zbb_cpp_args=()
 if [[ "${zbb}" == 1 ]]; then
     zbb_cpp_args=(-DOPENRV64_ZBB)
+fi
+ethernet_cpp_args=()
+if [[ "${ethernet}" == 1 ]]; then
+    ethernet_cpp_args=(-DOPENRV64_ETHERNET)
 fi
 
 for tool in git make dtc python3 awk \
@@ -115,6 +124,7 @@ fi
     -DOPENRV64_HART_COUNT="${hart_count}" \
     -DOPENRV64_TIMEBASE_FREQUENCY="${timebase_frequency}" \
     -DOPENRV64_UART_CLOCK_FREQUENCY="${uart_clock_frequency}" \
+    "${ethernet_cpp_args[@]}" \
     -o "${artifact_dir}/openrv64.dts" \
     "${repo_root}/sw/opensbi.dts"
 dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
@@ -127,6 +137,7 @@ dtc -I dts -O dtb -o "${artifact_dir}/openrv64.dtb" \
     -DOPENRV64_3P=1 \
     "${zbb_cpp_args[@]}" \
     "${zicclsm_cpp_args[@]}" \
+    "${ethernet_cpp_args[@]}" \
     -o "${artifact_dir}/openrv64-3p.dts" \
     "${repo_root}/sw/opensbi.dts"
 dtc -I dts -O dtb -o "${artifact_dir}/openrv64-3p.dtb" \

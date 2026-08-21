@@ -29,6 +29,7 @@ flow="read_verilog -lib -specify +/xilinx/cells_sim.v; \
 read_verilog -lib +/xilinx/cells_xtra.v; \
 read_verilog -sv -defer -DSYNTHESIS -DOPENRV64_FPGA_SYSTEM_NETLIST \
     \"$system_stub\" \"$mig_stub\" \
+    \"$script_dir/rgmii_io.sv\" \
     \"$script_dir/openrv64_myd_j7a100t_opensbi_top.sv\"; \
 hierarchy -check -top openrv64_myd_j7a100t_opensbi_top; \
 synth_xilinx -family xc7 -top openrv64_myd_j7a100t_opensbi_top -flatten \

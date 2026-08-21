@@ -126,14 +126,27 @@ CORE_4H_3P_FENCE_L2_ACK_ENABLE ?= 1
 ifeq ($(filter $(CORE_4H_3P_FENCE_L2_ACK_ENABLE),0 1),)
 $(error CORE_4H_3P_FENCE_L2_ACK_ENABLE must be 0 or 1)
 endif
+CORE_4H_3P_SC_EXCLUSIVE_RETAIN_ENABLE ?= 1
+ifeq ($(filter $(CORE_4H_3P_SC_EXCLUSIVE_RETAIN_ENABLE),0 1),)
+$(error CORE_4H_3P_SC_EXCLUSIVE_RETAIN_ENABLE must be 0 or 1)
+endif
+CORE_4H_3P_DDR3_ENABLE ?= 0
+ifeq ($(filter $(CORE_4H_3P_DDR3_ENABLE),0 1),)
+$(error CORE_4H_3P_DDR3_ENABLE must be 0 or 1)
+endif
 CORE_4H_3P_VERILATOR_THREADS ?= 4
 CORE_4H_3P_VERILATOR_DIR := \
-	build/verilator/core-4h-3p-t$(CORE_4H_3P_VERILATOR_THREADS)-pf$(CORE_4H_3P_L1D_PREFETCH_ENABLE)-mpf$(CORE_4H_3P_M_MODE_PREFETCH_ENABLE)-st$(CORE_4H_3P_L1D_SYNC_TAG_LOOKUP)-se$(CORE_4H_3P_L1D_SYNC_STORE_EXTENSION)-fack$(CORE_4H_3P_FENCE_L2_ACK_ENABLE)
+	build/verilator/core-4h-3p-t$(CORE_4H_3P_VERILATOR_THREADS)-pf$(CORE_4H_3P_L1D_PREFETCH_ENABLE)-mpf$(CORE_4H_3P_M_MODE_PREFETCH_ENABLE)-st$(CORE_4H_3P_L1D_SYNC_TAG_LOOKUP)-se$(CORE_4H_3P_L1D_SYNC_STORE_EXTENSION)-fack$(CORE_4H_3P_FENCE_L2_ACK_ENABLE)-scx$(CORE_4H_3P_SC_EXCLUSIVE_RETAIN_ENABLE)-ddr$(CORE_4H_3P_DDR3_ENABLE)
 CORE_4H_3P_VERILATOR_BUILD := \
 	$(CORE_4H_3P_VERILATOR_DIR)/core_4h_3p_tb
 CORE_1H_COHERENT_3P_VERILATOR_THREADS ?= 1
+CORE_1H_COHERENT_3P_RETIRE_DEPTH ?= 32
+CORE_1H_COHERENT_3P_FENCE_L2_ACK_ENABLE ?= 0
+ifeq ($(filter $(CORE_1H_COHERENT_3P_FENCE_L2_ACK_ENABLE),0 1),)
+$(error CORE_1H_COHERENT_3P_FENCE_L2_ACK_ENABLE must be 0 or 1)
+endif
 CORE_1H_COHERENT_3P_VERILATOR_DIR := \
-	build/verilator/core-1h-coherent-3p-ddr3-t$(CORE_1H_COHERENT_3P_VERILATOR_THREADS)-pf$(CORE_4H_3P_L1D_PREFETCH_ENABLE)-mpf$(CORE_4H_3P_M_MODE_PREFETCH_ENABLE)-st$(CORE_4H_3P_L1D_SYNC_TAG_LOOKUP)-se$(CORE_4H_3P_L1D_SYNC_STORE_EXTENSION)
+	build/verilator/core-1h-coherent-3p-ddr3-t$(CORE_1H_COHERENT_3P_VERILATOR_THREADS)-rd$(CORE_1H_COHERENT_3P_RETIRE_DEPTH)-pf$(CORE_4H_3P_L1D_PREFETCH_ENABLE)-mpf$(CORE_4H_3P_M_MODE_PREFETCH_ENABLE)-st$(CORE_4H_3P_L1D_SYNC_TAG_LOOKUP)-se$(CORE_4H_3P_L1D_SYNC_STORE_EXTENSION)-fack$(CORE_1H_COHERENT_3P_FENCE_L2_ACK_ENABLE)
 CORE_1H_COHERENT_3P_VERILATOR_BUILD := \
 	$(CORE_1H_COHERENT_3P_VERILATOR_DIR)/core_1h_coherent_3p_tb
 CORE_4H_SHARED_VM_ELF := sim/coremark-loop-4h-shared-vm.elf
@@ -184,19 +197,45 @@ CORE_4H_BARE_PERF_STATUS_PA = $(shell $(RISCV_NM) -n \
 	awk '$$3 == "coremark_4h_bare_perf_status" { print $$1 }')
 COHERENCE_PERF_CASES := private different_lines same_line same_page \
 	different_pages lrsc ticket
+ATOMIC_LATENCY_CASES := ctrl3 ctrl4 ctrl6 fence_acquire fence_release \
+	fence_full load_d store_d store_release lr_d lrsc_d lrsc_acquire \
+	amoadd_d release_amoadd_d rwsem_write
+ATOMIC_LATENCY_4H_CASES := $(ATOMIC_LATENCY_CASES) lock_walk
 COHERENCE_PERF_HART_COUNTS := 1 2 3 4
 COHERENCE_PERF_ITERATIONS ?= 64
 COHERENCE_PERF_MEMH_BYTES := 0x23000
 COHERENCE_PERF_512_WORDS := 2240
 COHERENCE_PERF_256_WORDS := 4480
 COHERENCE_PERF_MAX_CYCLES ?= 2000000
-coherence_perf_case_id = $(if $(filter private,$1),0,$(if \
-	$(filter same_line,$1),1,$(if $(filter same_page,$1),2,$(if \
-	$(filter different_pages,$1),3,$(if $(filter lrsc,$1),4,$(if \
-	$(filter ticket,$1),5,6))))))
+coherence_perf_case_id_private := 0
+coherence_perf_case_id_same_line := 1
+coherence_perf_case_id_same_page := 2
+coherence_perf_case_id_different_pages := 3
+coherence_perf_case_id_lrsc := 4
+coherence_perf_case_id_ticket := 5
+coherence_perf_case_id_different_lines := 6
+coherence_perf_case_id_ctrl3 := 7
+coherence_perf_case_id_ctrl4 := 8
+coherence_perf_case_id_ctrl6 := 9
+coherence_perf_case_id_fence_acquire := 10
+coherence_perf_case_id_fence_release := 11
+coherence_perf_case_id_fence_full := 12
+coherence_perf_case_id_load_d := 13
+coherence_perf_case_id_store_d := 14
+coherence_perf_case_id_store_release := 15
+coherence_perf_case_id_lr_d := 16
+coherence_perf_case_id_lrsc_d := 17
+coherence_perf_case_id_lrsc_acquire := 18
+coherence_perf_case_id_amoadd_d := 19
+coherence_perf_case_id_release_amoadd_d := 20
+coherence_perf_case_id_rwsem_write := 21
+coherence_perf_case_id_lock_walk := 22
+coherence_perf_case_id = $(coherence_perf_case_id_$1)
 coherence_perf_case_lines = $(if $(filter private different_lines,$2),$1,$(if \
-	$(filter same_page different_pages,$2),8,$(if $(filter ticket,$2),3,1)))
-coherence_perf_operation_lines = $(if $(filter same_page different_pages,$1),8,1)
+	$(filter same_page different_pages,$2),8,$(if $(filter ticket,$2),3,$(if \
+	$(filter lock_walk,$2),4,1))))
+coherence_perf_operation_lines = $(if $(filter same_page different_pages,$1),8,$(if \
+	$(filter lock_walk,$1),4,1))
 coherence_perf_line_stride = $(if $(filter private different_pages,$1),4096,$(if \
 	$(filter different_lines,$1),1024,64))
 coherence_perf_operations = $(shell expr \
@@ -216,17 +255,23 @@ coherence_perf_memh_512 = $(call coherence_perf_stem,$1,$2)-512.memh
 coherence_perf_memh_256 = $(call coherence_perf_stem,$1,$2)-256.memh
 coherence_perf_map = $(call coherence_perf_stem,$1,$2).map
 coherence_perf_disasm = $(call coherence_perf_stem,$1,$2).disasm
+coherence_perf_case_artifacts = \
+	$(call coherence_perf_elf,$1,$2) \
+	$(call coherence_perf_template_bin,$1,$2) \
+	$(call coherence_perf_bin,$1,$2) \
+	$(call coherence_perf_memh_512,$1,$2) \
+	$(call coherence_perf_memh_256,$1,$2) \
+	$(call coherence_perf_disasm,$1,$2)
 coherence_perf_artifacts = $(foreach case,$(COHERENCE_PERF_CASES),\
-	$(call coherence_perf_elf,$1,$(case)) \
-	$(call coherence_perf_template_bin,$1,$(case)) \
-	$(call coherence_perf_bin,$1,$(case)) \
-	$(call coherence_perf_memh_512,$1,$(case)) \
-	$(call coherence_perf_memh_256,$1,$(case)) \
-	$(call coherence_perf_disasm,$1,$(case)))
+	$(call coherence_perf_case_artifacts,$1,$(case)))
 COHERENCE_PERF_ARTIFACTS := $(foreach harts,$(COHERENCE_PERF_HART_COUNTS),\
 	$(call coherence_perf_artifacts,$(harts)))
 COHERENCE_1H_PERF_ARTIFACTS := $(call coherence_perf_artifacts,1)
 COHERENCE_4H_PERF_ARTIFACTS := $(call coherence_perf_artifacts,4)
+ATOMIC_LATENCY_ARTIFACTS := $(foreach case,$(ATOMIC_LATENCY_CASES),\
+	$(call coherence_perf_case_artifacts,1,$(case)))
+ATOMIC_LATENCY_4H_ARTIFACTS := $(foreach case,$(ATOMIC_LATENCY_4H_CASES),\
+	$(call coherence_perf_case_artifacts,4,$(case)))
 coherence_perf_symbol = $(shell $(RISCV_NM) -n \
 	$(call coherence_perf_elf,$1,$2) | \
 	awk '$$3 == "$3" { print $$1 }')

@@ -40,7 +40,7 @@ file mkdir $image_dir
 file delete -force $output_bit
 
 # Build a single-hart, cacheless/one-pipe firmware description matching the
-# exact 9.216 MHz FPGA platform clock. Reuse an existing pinned OpenSBI source
+# exact 14 MHz FPGA platform clock. Reuse an existing pinned OpenSBI source
 # checkout when present; build-opensbi.sh still verifies the v1.9 commit.
 puts "Preparing FPGA OpenSBI firmware and compact boot ROM images"
 set old_directory [pwd]
@@ -50,10 +50,11 @@ set opensbi_output [exec env \
     OPENSBI_SOURCE_DIR=$opensbi_source_dir \
     OPENRV64_HART_COUNT=1 \
     OPENRV64_MEMORY_SIZE=0x10000000 \
-    OPENRV64_TIMEBASE_FREQUENCY=9216000 \
-    OPENRV64_UART_CLOCK_FREQUENCY=9216000 \
+    OPENRV64_TIMEBASE_FREQUENCY=14000000 \
+    OPENRV64_UART_CLOCK_FREQUENCY=14745600 \
     OPENRV64_ZBB=0 \
     OPENRV64_ZICCLSM=1 \
+    OPENRV64_ETHERNET=1 \
     OPENRV64_PAYLOAD_SOURCE=sw/opensbi_payload_sv39.S \
     [file join $repo_root tools build-opensbi.sh] 2>@1]
 cd $old_directory
@@ -209,7 +210,7 @@ create_project -force opensbi_smoke $project_dir -part $part_name
 set_param general.maxThreads 8
 # The core is already structurally hierarchical. Flattening it together with
 # the firmware XPMs causes Vivado 2026.1 to spend hours in RTL elaboration and
-# grow beyond 12 GiB without reaching the mapping phase. The 9.216 MHz target
+# grow beyond 12 GiB without reaching the mapping phase. The 11 MHz target
 # has ample timing margin, so preserve hierarchy and keep synthesis tractable.
 set_property strategy Flow_RuntimeOptimized [get_runs synth_1]
 set_property STEPS.SYNTH_DESIGN.ARGS.FLATTEN_HIERARCHY none [get_runs synth_1]
@@ -253,7 +254,10 @@ foreach relative_source [list \
     rtl/plic/plic.v \
     rtl/periph/uart/uart.v \
     rtl/periph/gpio/gpio.v \
-    rtl/periph/timer/timer.v] {
+    rtl/periph/timer/timer.v \
+    rtl/periph/spi/spi.v \
+    rtl/periph/ethernet/packet_ram.sv \
+    rtl/periph/ethernet/emaclite.sv] {
     lappend rtl_files [file normalize [file join $repo_root $relative_source]]
 }
 add_files -norecurse $rtl_files
@@ -262,13 +266,16 @@ add_files -norecurse $loader_stub
 set_property file_type SystemVerilog [get_files $rtl_files]
 set_property include_dirs [list [file join $repo_root rtl]] [current_fileset]
 set_property verilog_define [list OPENRV64_FPGA_CORE_NETLIST \
-    OPENRV64_FPGA_LOADER_NETLIST] [current_fileset]
+    OPENRV64_FPGA_LOADER_NETLIST \
+    OPENRV64_XILINX_PACKET_RAM] [current_fileset]
 
 set fpga_files [list \
     [file join $script_dir uart_banner.sv] \
+    [file join $script_dir uart_ddr_loader.sv] \
     [file join $script_dir mig_scalar_bridge.sv] \
     [file join $script_dir scalar_mem_cdc.sv] \
     [file join $script_dir scalar_icx_arbiter.sv] \
+    [file join $script_dir rgmii_io.sv] \
     [file join $script_dir opensbi_boot_uart_status.sv] \
     [file join $script_dir opensbi_system.sv] \
     [file join $script_dir ${top_name}.sv]]

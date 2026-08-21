@@ -15,6 +15,7 @@ module tb_icx_l1i;
     logic [15:0] fetch_asid;
     logic [43:0] fetch_root_ppn;
     logic fetch_cancel;
+    logic tlbi;
     logic context_flush;
     logic fetch_context_change;
     logic pmp_update;
@@ -212,7 +213,7 @@ module tb_icx_l1i;
         .lsu_xlate_req_sum_i(1'b0),
         .lsu_xlate_req_mxr_i(1'b0),
         .lsu_xlate_resp_ready_i(1'b1),
-        .tlbi_i(1'b0),
+        .tlbi_i(tlbi),
         .context_flush_i(context_flush),
         .fetch_context_change_i(fetch_context_change),
         .pmp_update_i(pmp_update),
@@ -548,6 +549,24 @@ module tb_icx_l1i;
         end
     endtask
 
+    task automatic pulse_tlbi;
+        integer cycles;
+        begin
+            @(negedge clk);
+            tlbi = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            tlbi = 1'b0;
+            cycles = 0;
+            while (tlbi_busy && cycles < 400) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+            if (tlbi_busy)
+                $fatal(1, "SFENCE.VMA translation invalidation did not drain");
+        end
+    endtask
+
     task automatic pulse_pmp_update;
         begin
             @(negedge clk);
@@ -616,6 +635,7 @@ module tb_icx_l1i;
         fetch_asid = 16'd0;
         fetch_root_ppn = 44'd0;
         fetch_cancel = 1'b0;
+        tlbi = 1'b0;
         context_flush = 1'b0;
         fetch_context_change = 1'b0;
         pmp_update = 1'b0;
@@ -679,7 +699,7 @@ module tb_icx_l1i;
         if (page_screen_accept_count_q != screen_before_count + 1 ||
             !dut.fetch_fast_found_r)
             $fatal(1, "failed to queue page-screen invalidation job");
-        pulse_fetch_context_change();
+        pulse_tlbi();
         @(negedge clk);
         icache_invalidate = 1'b0;
         repeat (30) @(negedge clk);
@@ -704,6 +724,35 @@ module tb_icx_l1i;
         if (dut.fetch_page_write_cursor_q != 2'd1)
             $fatal(1, "page-screen write cursor did not advance");
         before_count = icx_count_q;
+
+        // Revoke the page-screen proof on the exact cycle that a resident
+        // fast-path response returns.  The L1I response must be consumed as
+        // a cancelled completion; it must not strand the fetch slot in
+        // WAIT_L1I after the response transaction is gone.
+        push_fetch_only(64'h00);
+        word_index = 0;
+        while (!(dut.l1i_resp_valid &&
+                 dut.fetch_page_screen_resp_bypass) &&
+               word_index < 100) begin
+            @(negedge clk);
+            word_index = word_index + 1;
+        end
+        if (!(dut.l1i_resp_valid &&
+              dut.fetch_page_screen_resp_bypass))
+            $fatal(1, "did not observe resident page-screen response");
+        tlbi = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        tlbi = 1'b0;
+        word_index = 0;
+        while (tlbi_busy && word_index < 400) begin
+            @(negedge clk);
+            word_index = word_index + 1;
+        end
+        repeat (10) @(negedge clk);
+        if (tlbi_busy || dut.fetch_count_q != 0)
+            $fatal(1,
+                "coincident SFENCE/page-screen response stranded fetch");
 
         // Hold frontend responses while four resident requests enter.  The
         // bus and L1I must accept all four, then preserve request order.

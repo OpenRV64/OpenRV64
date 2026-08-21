@@ -42,6 +42,12 @@
 `define OPENRV64_SOC_SPI_BASE   64'h0000_0000_1003_0000
 `define OPENRV64_SOC_SPI_SIZE   64'h0000_0000_0000_1000
 
+// Programmed-I/O Ethernet MAC.  The first 8 KiB retain the Xilinx EmacLite
+// register/buffer layout; the remainder exposes OpenRV64's deeper packet RAM
+// aliases and leaves room for compatible extensions.
+`define OPENRV64_SOC_ETHERNET_BASE 64'h0000_0000_1004_0000
+`define OPENRV64_SOC_ETHERNET_SIZE 64'h0000_0000_0001_0000
+
 // L2-resident invariant aperture.  This is the top 16 MiB of the 56-bit
 // cacheable DRAM PMA aperture, but it is completed by the shared L2 without a
 // backing-memory transaction and is not installed RAM.
@@ -62,5 +68,6 @@
 `define OPENRV64_SOC_PLIC_SOURCE_GPIO  2
 `define OPENRV64_SOC_PLIC_SOURCE_TIMER 3
 `define OPENRV64_SOC_PLIC_SOURCE_EXTERNAL_BASE 4
+`define OPENRV64_SOC_PLIC_SOURCE_ETHERNET 33
 
 `endif

@@ -147,6 +147,11 @@ $(SPI_SIM_BUILD): $(SPI_SIM_SRCS) $(SPI_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(SPI_SIM_BUILD) $(SPI_SRCS) $(SPI_SIM_SRCS)
 
+$(ETHERNET_SIM_BUILD): $(ETHERNET_SIM_SRCS) $(ETHERNET_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_emaclite -o $@ \
+		$(ETHERNET_SRCS) $(ETHERNET_SIM_SRCS)
+
 $(FPGA_SD_BOOT_SIM_BUILD): $(FPGA_SD_BOOT_SIM_SRCS) \
 		$(FPGA_SD_BOOT_MEM) $(PLATFORM_SRCS) $(CORE_SRCS) \
 		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
@@ -447,3 +452,9 @@ $(TLB_L2_SIM_BUILD): $(TLB_L2_SIM_SRCS) rtl/core/mtl/tlb_l2.v \
 $(PTW_SIM_BUILD): $(PTW_SIM_SRCS) rtl/core/mtl/ptw.v $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PTW_SIM_BUILD) rtl/core/mtl/ptw.v $(PTW_SIM_SRCS)
+
+$(MTL_PMP_SIM_BUILD): $(MTL_PMP_SIM_SRCS) rtl/core/mtl/pmp.v \
+		$(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_mtl_pmp \
+		-o $(MTL_PMP_SIM_BUILD) rtl/core/mtl/pmp.v $(MTL_PMP_SIM_SRCS)

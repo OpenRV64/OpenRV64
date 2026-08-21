@@ -88,7 +88,16 @@ module openrv64_soc_bus_decode #(
     output wire [63:0] spi_addr_o,
     output wire [63:0] spi_wdata_o,
     output wire [7:0]  spi_wstrb_o,
-    input  wire [63:0] spi_rdata_i
+    input  wire [63:0] spi_rdata_i,
+
+    // Target-local programmed-I/O Ethernet bus.
+    output wire        ethernet_valid_o,
+    input  wire        ethernet_ready_i,
+    output wire        ethernet_write_o,
+    output wire [63:0] ethernet_addr_o,
+    output wire [63:0] ethernet_wdata_o,
+    output wire [7:0]  ethernet_wstrb_o,
+    input  wire [63:0] ethernet_rdata_i
 );
 
     wire rom_selected =
@@ -123,9 +132,14 @@ module openrv64_soc_bus_decode #(
         (mem_addr_i >= `OPENRV64_SOC_SPI_BASE) &&
         (mem_addr_i < (`OPENRV64_SOC_SPI_BASE +
                        `OPENRV64_SOC_SPI_SIZE));
+    wire ethernet_selected =
+        (mem_addr_i >= `OPENRV64_SOC_ETHERNET_BASE) &&
+        (mem_addr_i < (`OPENRV64_SOC_ETHERNET_BASE +
+                       `OPENRV64_SOC_ETHERNET_SIZE));
     wire decode_failed = !(rom_selected || memory_selected || clint_selected ||
                            plic_selected || uart_selected ||
-                           gpio_selected || timer_selected || spi_selected);
+                           gpio_selected || timer_selected || spi_selected ||
+                           ethernet_selected);
 
     assign rom_valid_o = mem_valid_i && rom_selected;
     assign rom_write_o = mem_write_i;
@@ -175,6 +189,12 @@ module openrv64_soc_bus_decode #(
     assign spi_wdata_o = mem_wdata_i;
     assign spi_wstrb_o = mem_wstrb_i;
 
+    assign ethernet_valid_o = mem_valid_i && ethernet_selected;
+    assign ethernet_write_o = mem_write_i;
+    assign ethernet_addr_o = mem_addr_i - `OPENRV64_SOC_ETHERNET_BASE;
+    assign ethernet_wdata_o = mem_wdata_i;
+    assign ethernet_wstrb_o = mem_wstrb_i;
+
     // The request address is held stable until ready, so it is also the
     // stable response-mux select for the complete transaction.
     always @* begin
@@ -207,6 +227,9 @@ module openrv64_soc_bus_decode #(
             end else if (spi_selected) begin
                 mem_ready_o = spi_ready_i;
                 mem_rdata_o = spi_rdata_i;
+            end else if (ethernet_selected) begin
+                mem_ready_o = ethernet_ready_i;
+                mem_rdata_o = ethernet_rdata_i;
             end else if (decode_failed) begin
                 // A decode error is itself a completed response. Returning
                 // ready prevents an unmapped access from hanging the bus.

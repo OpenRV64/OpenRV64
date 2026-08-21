@@ -55,6 +55,8 @@ sources=(
     "$repo_root/rtl/periph/gpio/gpio.v"
     "$repo_root/rtl/periph/timer/timer.v"
     "$repo_root/rtl/periph/spi/spi.v"
+    "$repo_root/rtl/periph/ethernet/packet_ram.sv"
+    "$repo_root/rtl/periph/ethernet/emaclite.sv"
     "$script_dir/uart_banner.sv"
     "$script_dir/uart_ddr_loader.sv"
     "$script_dir/mig_scalar_bridge.sv"
@@ -66,7 +68,8 @@ sources=(
 
 read_command="read_verilog -sv -defer -I$repo_root/rtl \
     -DSYNTHESIS -DOPENRV64_FPGA_CORE_NETLIST \
-    -DOPENRV64_FPGA_LOADER_NETLIST"
+    -DOPENRV64_FPGA_LOADER_NETLIST \
+    -DOPENRV64_XILINX_PACKET_RAM"
 if [[ -n "$rom_init_file" ]]; then
     # The ROM wraps this bare path in SystemVerilog macro quotes. A
     # string-valued chparam reaches the module parameter but is not honored by
@@ -77,7 +80,8 @@ for source in "${sources[@]}"; do
     read_command+=" \"$source\""
 done
 
-flow="$read_command; \
+flow="read_verilog -lib +/xilinx/cells_sim.v; \
+$read_command; \
 chparam -set UART_LINUX_LOAD_ENABLE $uart_linux_load_enable \
         -set SD_ROM_BOOT_ENABLE $sd_rom_boot_enable \
         -set ROM_INIT_FILE \"$rom_init_file\" \

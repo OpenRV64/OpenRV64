@@ -15,8 +15,8 @@
 #define OPENRV64_COHERENCE_HARTS 4
 #endif
 
-#if OPENRV64_COHERENCE_CASE < 0 || OPENRV64_COHERENCE_CASE > 6
-#error OPENRV64_COHERENCE_CASE must be 0 through 6
+#if OPENRV64_COHERENCE_CASE < 0 || OPENRV64_COHERENCE_CASE > 22
+#error OPENRV64_COHERENCE_CASE must be 0 through 22
 #endif
 
 #if OPENRV64_COHERENCE_ITERATIONS < 1
@@ -39,6 +39,12 @@
  *   4: one LR/SC token line, strict ownership handoff;
  *   5: a ticket lock protecting a separate shared counter;
  *   6: disjoint per-hart lines 1 KiB apart in one shared page.
+ *   7-21: one-to-four-hart controls, loads/stores, fences, LR/SC, AMO, and a
+ *         Linux-shaped rwsem writer pair. The one-hart form is uncontended;
+ *         multiple harts deliberately contend on the same cacheline.
+ *   22: four harts repeatedly walk four cacheline-separated locks using
+ *       hand-over-hand locking. Each hart acquires the next lock before
+ *       releasing the previous lock; no hart-number ordering is imposed.
  *
  * Every hart installs the same Sv39 root. Shared benchmark lines therefore
  * have identical VA and PA on all harts. Only the result/stack page is selected
@@ -75,9 +81,12 @@
     .equ CONTROL_BYTES,           0x40
     .equ COHERENCE_LINE_BYTES,    64
     .equ COHERENCE_LINES,         8
+    .equ LOCK_WALK_LOCKS,         4
     .equ PERF_ITERATIONS,         OPENRV64_COHERENCE_ITERATIONS
 #if OPENRV64_COHERENCE_CASE == 2 || OPENRV64_COHERENCE_CASE == 3
     .equ PERF_OPERATIONS,         PERF_ITERATIONS * HART_COUNT * COHERENCE_LINES
+#elif OPENRV64_COHERENCE_CASE == 22
+    .equ PERF_OPERATIONS,         PERF_ITERATIONS * HART_COUNT * LOCK_WALK_LOCKS
 #else
     .equ PERF_OPERATIONS,         PERF_ITERATIONS * HART_COUNT
 #endif
@@ -182,14 +191,19 @@ supervisor_start:
     slli    t0, tp, TEST_LINE_SHIFT
     add     t0, s4, t0
     ld      t1, 0(t0)
-#elif OPENRV64_COHERENCE_CASE == 2 || OPENRV64_COHERENCE_CASE == 3
+#elif OPENRV64_COHERENCE_CASE == 2 || OPENRV64_COHERENCE_CASE == 3 || \
+      OPENRV64_COHERENCE_CASE == 22
     li      t0, 0
 .Lwarm_shared_lines:
     slli    t1, t0, TEST_LINE_SHIFT
     add     t1, s4, t1
     ld      t2, 0(t1)
     addi    t0, t0, 1
+#if OPENRV64_COHERENCE_CASE == 22
+    li      t1, LOCK_WALK_LOCKS
+#else
     li      t1, COHERENCE_LINES
+#endif
     bltu    t0, t1, .Lwarm_shared_lines
 #elif OPENRV64_COHERENCE_CASE != 5
     ld      t0, 0(s4)
@@ -303,7 +317,7 @@ coherence_4h_perf_measure_start:
     addi    s3, s3, -1
     bnez    s3, .Llrsc1_retry
 
-#else
+#elif OPENRV64_COHERENCE_CASE == 5
     /*
      * Ticket lock: AMOADD allocates a unique ticket, an acquire spin waits on
      * the serving line, and the lock protects an ordinary shared counter on a
@@ -326,6 +340,181 @@ coherence_4h_perf_measure_start:
     sd      t0, 0(s6)
     addi    s3, s3, -1
     bnez    s3, .Lticket_acquire
+
+#elif OPENRV64_COHERENCE_CASE == 7
+    /* Three-instruction loop control for load/store/LR/AMO cases. */
+    li      s3, PERF_ITERATIONS
+.Latomic_ctrl3_loop:
+    addi    x0, x0, 0
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_ctrl3_loop
+
+#elif OPENRV64_COHERENCE_CASE == 8
+    /* Four-instruction loop control for fence+memory cases. */
+    li      s3, PERF_ITERATIONS
+.Latomic_ctrl4_loop:
+    addi    x0, x0, 0
+    addi    x0, x0, 0
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_ctrl4_loop
+
+#elif OPENRV64_COHERENCE_CASE == 9
+    /* Six-instruction loop control for a successful LR/SC attempt. */
+    li      s3, PERF_ITERATIONS
+.Latomic_ctrl6_loop:
+    addi    x0, x0, 0
+    addi    x0, x0, 0
+    addi    x0, x0, 0
+    addi    x0, x0, 0
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_ctrl6_loop
+
+#elif OPENRV64_COHERENCE_CASE == 10
+    li      s3, PERF_ITERATIONS
+.Latomic_fence_acquire_loop:
+    fence   r, rw
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_fence_acquire_loop
+
+#elif OPENRV64_COHERENCE_CASE == 11
+    li      s3, PERF_ITERATIONS
+.Latomic_fence_release_loop:
+    fence   rw, w
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_fence_release_loop
+
+#elif OPENRV64_COHERENCE_CASE == 12
+    li      s3, PERF_ITERATIONS
+.Latomic_fence_full_loop:
+    fence   rw, rw
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_fence_full_loop
+
+#elif OPENRV64_COHERENCE_CASE == 13
+    li      s3, PERF_ITERATIONS
+.Latomic_load_loop:
+    ld      t0, 0(s4)
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_load_loop
+
+#elif OPENRV64_COHERENCE_CASE == 14
+    li      s3, PERF_ITERATIONS
+.Latomic_store_loop:
+    sd      s3, 0(s4)
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_store_loop
+
+#elif OPENRV64_COHERENCE_CASE == 15
+    li      s3, PERF_ITERATIONS
+.Latomic_store_release_loop:
+    sd      s3, 0(s4)
+    fence   rw, w
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_store_release_loop
+
+#elif OPENRV64_COHERENCE_CASE == 16
+    li      s3, PERF_ITERATIONS
+.Latomic_lr_loop:
+    lr.d    t0, (s4)
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_lr_loop
+
+#elif OPENRV64_COHERENCE_CASE == 17 || OPENRV64_COHERENCE_CASE == 18
+    li      s3, PERF_ITERATIONS
+.Latomic_lrsc_loop:
+    lr.d    t0, (s4)
+    addi    t1, t0, 1
+    sc.d    t2, t1, (s4)
+    bnez    t2, .Latomic_lrsc_loop
+#if OPENRV64_COHERENCE_CASE == 18
+    fence   r, rw
+#endif
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_lrsc_loop
+
+#elif OPENRV64_COHERENCE_CASE == 19
+    li      s3, PERF_ITERATIONS
+    li      t1, 1
+.Latomic_amoadd_loop:
+    amoadd.d t0, t1, (s4)
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_amoadd_loop
+
+#elif OPENRV64_COHERENCE_CASE == 20
+    li      s3, PERF_ITERATIONS
+    li      t1, 1
+.Latomic_release_amoadd_loop:
+    fence   rw, w
+    amoadd.d t0, t1, (s4)
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_release_amoadd_loop
+
+#elif OPENRV64_COHERENCE_CASE == 21
+    /*
+     * Uncontended Linux writer-rwsem shape:
+     *   down_write: LR.D/SC.D, acquire fence, owner store
+     *   up_write:   owner clear, release fence, AMOADD.D(-1)
+     * The owner and count fields deliberately occupy the same cache line.
+     */
+    li      s3, PERF_ITERATIONS
+    li      s7, 1
+    li      s8, -1
+.Latomic_rwsem_loop:
+    lr.d    t0, (s4)
+#if OPENRV64_COHERENCE_HARTS == 1
+    bnez    t0, .Lperf_failure
+#else
+    bnez    t0, .Latomic_rwsem_loop
+#endif
+    sc.d    t1, s7, (s4)
+    bnez    t1, .Latomic_rwsem_loop
+    fence   r, rw
+    sd      s0, 8(s4)
+    sd      zero, 8(s4)
+    fence   rw, w
+    amoadd.d t2, s8, (s4)
+    bne     t2, s7, .Lperf_failure
+    addi    s3, s3, -1
+    bnez    s3, .Latomic_rwsem_loop
+
+#else
+    /*
+     * Four cacheline-separated locks, traversed in one global order so the
+     * hand-over-hand protocol cannot form a lock-order cycle. All harts enter
+     * at lock 0 and contention determines their order through the pipeline.
+     */
+    li      s3, PERF_ITERATIONS
+    li      s7, 1
+.Llock_walk_pass:
+    mv      s6, s4
+.Llock_walk_acquire_first:
+    lr.d    t0, (s6)
+    bnez    t0, .Llock_walk_acquire_first
+    sc.d    t1, s7, (s6)
+    bnez    t1, .Llock_walk_acquire_first
+    fence   r, rw
+
+    li      s8, 1
+.Llock_walk_next:
+    slli    t2, s8, 6
+    add     t2, s4, t2
+.Llock_walk_acquire_next:
+    lr.d    t0, (t2)
+    bnez    t0, .Llock_walk_acquire_next
+    sc.d    t1, s7, (t2)
+    bnez    t1, .Llock_walk_acquire_next
+    fence   r, rw
+    fence   rw, w
+    sd      zero, 0(s6)
+    mv      s6, t2
+    addi    s8, s8, 1
+    li      t3, LOCK_WALK_LOCKS
+    bltu    s8, t3, .Llock_walk_next
+
+    fence   rw, w
+    sd      zero, 0(s6)
+    addi    s3, s3, -1
+    bnez    s3, .Llock_walk_pass
 #endif
 
     /* Include architectural and coherent completion of every measured store. */
@@ -414,7 +603,7 @@ coherence_4h_perf_measure_end:
     li      t2, PERF_ITERATIONS * HART_COUNT
     bne     t1, t2, .Lperf_failure
     li      t6, 0x434f48314c525343
-#else
+#elif OPENRV64_COHERENCE_CASE == 5
     li      t2, PERF_OPERATIONS
     ld      t1, 0(s4)
     bne     t1, t2, .Lperf_failure
@@ -423,6 +612,38 @@ coherence_4h_perf_measure_end:
     ld      t1, 2*COHERENCE_LINE_BYTES(s4)
     bne     t1, t2, .Lperf_failure
     li      t6, 0x434f485449434b54
+#elif OPENRV64_COHERENCE_CASE == 14 || OPENRV64_COHERENCE_CASE == 15
+    ld      t1, 0(s4)
+    li      t2, 1
+    bne     t1, t2, .Lperf_failure
+    li      t6, 0x41544f4d00000000 + OPENRV64_COHERENCE_CASE
+#elif OPENRV64_COHERENCE_CASE >= 17 && OPENRV64_COHERENCE_CASE <= 20
+    ld      t1, 0(s4)
+    li      t2, PERF_OPERATIONS
+    bne     t1, t2, .Lperf_failure
+    li      t6, 0x41544f4d00000000 + OPENRV64_COHERENCE_CASE
+#elif OPENRV64_COHERENCE_CASE == 21
+    ld      t1, 0(s4)
+    bnez    t1, .Lperf_failure
+    ld      t1, 8(s4)
+    bnez    t1, .Lperf_failure
+    li      t6, 0x41544f4d00000000 + OPENRV64_COHERENCE_CASE
+#elif OPENRV64_COHERENCE_CASE == 22
+    li      t2, 0
+.Lvalidate_lock_walk:
+    slli    t0, t2, 6
+    add     t0, s4, t0
+    ld      t1, 0(t0)
+    bnez    t1, .Lperf_failure
+    addi    t2, t2, 1
+    li      t0, LOCK_WALK_LOCKS
+    bltu    t2, t0, .Lvalidate_lock_walk
+    li      t6, 0x41544f4d00000000 + OPENRV64_COHERENCE_CASE
+#else
+    /* Controls, fences, ordinary loads, and LR-only leave data unchanged. */
+    ld      t1, 0(s4)
+    bnez    t1, .Lperf_failure
+    li      t6, 0x41544f4d00000000 + OPENRV64_COHERENCE_CASE
 #endif
 
     sw      zero, RESULT_STATUS(s0)

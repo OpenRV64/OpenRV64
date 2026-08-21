@@ -2,9 +2,10 @@
 `include "complex/protocol/defs.v"
 `include "complex/coherent/protocol/defs.v"
 
-// A successful SC whose LR line has left L2 must refill the cacheline before
-// applying the scalar update.  It must never use the ordinary write-miss
-// write-around path.
+// A successful SC whose LR line has left the L2 data array must refill the
+// cacheline before applying the scalar update.  The separate directory still
+// proves the requester is the sole D-side holder, so the refill response must
+// retain that exclusive disposition and never use write-around.
 module tb_icx_l2_sc_refill;
 
     localparam [63:0] ATOMIC_ADDR = 64'h0000_0000_8000_0000;
@@ -331,7 +332,10 @@ module tb_icx_l2_sc_refill;
         send_command(`OPENRV64_ICX_OP_SC, 3'd2,
                      ATOMIC_ADDR, transaction);
         send_write_data(transaction, sc_data, 64'hf);
-        wait_response(transaction, 512'd0, 1'b1);
+        wait_response(transaction,
+            {{(`OPENRV64_ICX_LINE_DATA_WIDTH-
+                `OPENRV64_ICX_SC_RESULT_WIDTH){1'b0}},
+             `OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE}, 1'b1);
 
         if ((bus_reads != reads_before_sc + 1) ||
             (bus_writes != writes_before_sc))
@@ -351,7 +355,7 @@ module tb_icx_l2_sc_refill;
         if (bus_reads != reads_before_sc)
             $fatal(1, "post-SC line was not resident in L2");
 
-        $display("PASS: successful SC miss refilled, modified, and retained the L2 line");
+        $display("PASS: exclusive SC miss refilled L2 and retained private ownership");
         $finish;
     end
 

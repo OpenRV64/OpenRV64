@@ -154,6 +154,30 @@ module openrv64_dispatch_window_3p #(
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] owner_id_q [0:31];
     reg [`RV64_XLEN-1:0]                owner_data_q [0:31];
 
+    // Retirement acceptance includes the retirement-record read and the
+    // architectural exception/CSR checks.  Feeding that result directly back
+    // into the owner update put the complete retirement-head cone in front of
+    // every owner register.  Register only the producer IDs that ownership
+    // needs.  Slot validity and occupancy still consume retirement
+    // immediately below; ownership may remain visible for one extra cycle,
+    // which is safe because a retiring producer is complete and retains the
+    // same value that was written to the architectural GPR.  Exact ID matching
+    // prevents the delayed release from clearing a younger WAW producer.
+    reg [2:0] owner_release_valid_q;
+    reg [3*`OPENRV64_INSTR_ID_WIDTH-1:0] owner_release_id_q;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            owner_release_valid_q <= 3'b000;
+        end else if (flush_i || squash_frontend_i) begin
+            owner_release_valid_q <= 3'b000;
+        end else begin
+            owner_release_valid_q <= retire_valid_i;
+            if (retire_valid_i != 3'b000)
+                owner_release_id_q <= retire_id_i;
+        end
+    end
+
     function automatic is_hard;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
@@ -401,12 +425,12 @@ module openrv64_dispatch_window_3p #(
         end
 
         for (view_lane = 0; view_lane < 3; view_lane = view_lane + 1) begin
-            view_id = retire_id_i[
+            view_id = owner_release_id_q[
                 view_lane*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH];
             for (owner_idx = 1; owner_idx < 32;
                  owner_idx = owner_idx + 1) begin
-                if (retire_valid_i[view_lane] &&
+                if (owner_release_valid_q[view_lane] &&
                     owner_valid_view[owner_idx] &&
                     (owner_id_view[owner_idx] == view_id)) begin
                     owner_valid_view[owner_idx] = 1'b0;

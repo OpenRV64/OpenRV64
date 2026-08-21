@@ -57,7 +57,8 @@ L1_CACHE_SRCS := $(L1_DEBUG_STUB_SRCS) \
 BUS_SRCS := $(BUS_DEBUG_STUB_SRCS) \
 	rtl/core/bus/bus-defs.v \
 	rtl/core/mtl/tlb.v rtl/core/mtl/micro_tlb.v \
-	rtl/core/mtl/tlb_l2.v rtl/core/mtl/ptw.v rtl/core/mtl/mtl.v \
+	rtl/core/mtl/tlb_l2.v rtl/core/mtl/ptw.v rtl/core/mtl/pmp.v \
+	rtl/core/mtl/mtl.v \
 	rtl/core/bus/gen_bus.v rtl/core/bus/icx_bus.v \
 	rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS)
@@ -138,7 +139,8 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	$(BUS_DEBUG_STUB_SRCS) \
 	rtl/core/bus/bus-defs.v \
 	rtl/core/mtl/tlb.v rtl/core/mtl/micro_tlb.v \
-	rtl/core/mtl/tlb_l2.v rtl/core/mtl/ptw.v rtl/core/mtl/mtl.v \
+	rtl/core/mtl/tlb_l2.v rtl/core/mtl/ptw.v rtl/core/mtl/pmp.v \
+	rtl/core/mtl/mtl.v \
 	rtl/core/bus/icx_bus.v \
 	rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS) \
@@ -169,6 +171,8 @@ UART_SRCS := rtl/periph/uart/uart.v
 GPIO_SRCS := rtl/periph/gpio/gpio.v
 TIMER_SRCS := rtl/periph/timer/timer.v
 SPI_SRCS := rtl/periph/spi/spi.v
+ETHERNET_SRCS := rtl/periph/ethernet/packet_ram.sv \
+	rtl/periph/ethernet/emaclite.sv
 ROM_SRCS := rtl/soc/bus/rom.v
 MEMORY_SRCS := rtl/soc/bus/memory.v
 MEM_CHANNEL_SRCS := rtl/soc/memory/timing_dram.v \
@@ -191,7 +195,7 @@ PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
 	$(AXI_DDR3_SRCS) \
 	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
 	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \
-	$(SPI_SRCS)
+	$(SPI_SRCS) $(ETHERNET_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
 PLATFORM_SIM_SRCS := tb/tb_platform.sv
 RESET_SEQUENCER_SIM_SRCS := tb/tb_reset_sequencer.sv
@@ -205,6 +209,7 @@ UART_SIM_SRCS := tb/tb_uart16550.sv
 GPIO_SIM_SRCS := tb/tb_gpio.sv
 TIMER_SIM_SRCS := tb/tb_timer.sv
 SPI_SIM_SRCS := tb/tb_spi.sv
+ETHERNET_SIM_SRCS := tb/tb_emaclite.sv
 FPGA_SD_BOOT_SIM_SRCS := tb/tb_fpga_sd_boot.sv
 ROM_SIM_SRCS := tb/tb_soc_rom.sv
 MEMORY_SIM_SRCS := tb/tb_soc_memory.sv
@@ -232,6 +237,7 @@ TLB_SIM_SRCS := tb/tb_tlb.sv
 MICRO_TLB_SIM_SRCS := tb/tb_micro_tlb.sv
 TLB_L2_SIM_SRCS := tb/tb_tlb_l2.sv
 PTW_SIM_SRCS := tb/tb_ptw.sv
+MTL_PMP_SIM_SRCS := tb/tb_mtl_pmp.sv
 PTW_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_ptw_context.sv
 DECODE_EARLY_SIM_SRCS := tb/tb_decode_early.sv
 DECODE_TOP_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \

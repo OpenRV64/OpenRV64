@@ -15,6 +15,7 @@ mig_stub=${MIG_STUB:-$mig_dir/mig_7series_0_stub.v}
 mig_dcp=${MIG_DCP:-$mig_dir/mig_7series_0.dcp}
 mig_xdc=${MIG_XDC:-$mig_dir/mig_7series_0/user_design/constraints/mig_7series_0.xdc}
 board_xdc=${BOARD_XDC:-$script_dir/opensbi_smoke.xdc}
+rom_uart_divisor=${FPGA_SD_BOOT_UART_DIVISOR:-8}
 
 system_edif=$output_dir/openrv64_fpga_opensbi_system.edif
 system_json=$output_dir/openrv64_fpga_opensbi_system.json
@@ -41,7 +42,8 @@ fi
 
 mkdir -p "$output_dir" "$report_dir"
 cd "$repo_root"
-make FPGA_SD_BOOT_DIR="$output_dir" fpga-sd-boot-rom
+make FPGA_SD_BOOT_DIR="$output_dir" \
+    FPGA_SD_BOOT_UART_DIVISOR="$rom_uart_divisor" fpga-sd-boot-rom
 
 env OUT_DIR="$output_dir" CORE_STUB="$core_stub" \
     LOADER_STUB="$loader_stub" ROM_INIT_FILE="$rom_mem" \

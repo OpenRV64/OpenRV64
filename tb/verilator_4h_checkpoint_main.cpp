@@ -2040,6 +2040,8 @@ void trace_hart0_l1i_state(const Vtb_4h_3p___024root* root,
         std::cout
             << static_cast<unsigned>(H0_BUS(fetch_state_q)[slot])
             << ':' << static_cast<unsigned>(H0_BUS(fetch_cancelled_q)[slot])
+            << ':' << static_cast<unsigned>(
+                H0_BUS(fetch_l1i_inflight_q)[slot])
             << ":0x" << std::hex << H0_BUS(fetch_vaddr_q)[slot]
             << std::dec;
     }

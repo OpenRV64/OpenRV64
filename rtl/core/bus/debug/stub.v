@@ -23,6 +23,8 @@ module openrv64_bus_debug_stub #(
     input wire [FETCH_SLOT_WIDTH-1:0] fetch_head_q
         /* verilator public_flat_rd */,
     input wire fetch_l1i_launch /* verilator public_flat_rd */,
+    input wire fetch_l1i_inflight_q [0:FETCH_OUTSTANDING-1]
+        /* verilator public_flat_rd */,
     input wire fetch_page_screen_accept /* verilator public_flat_rd */,
     input wire fetch_page_screen_fill /* verilator public_flat_rd */,
     input wire fetch_page_screen_invalidate /* verilator public_flat_rd */,

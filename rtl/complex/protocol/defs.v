@@ -48,6 +48,16 @@
 `define OPENRV64_ICX_OP_AMOMAXU    4'd12
 `define OPENRV64_ICX_OP_FENCE      4'd13
 
+// SC responses carry an internal coherence disposition in resp_rdata[1:0].
+// The architectural success bit remains on resp_sc_success for compatibility;
+// SUCCESS_EXCLUSIVE additionally tells the requesting private D-cache that
+// the home proved it was the sole D-side holder and retained its directory
+// bit, so the resident line may be updated without a local invalidate.
+`define OPENRV64_ICX_SC_RESULT_WIDTH             2
+`define OPENRV64_ICX_SC_FAIL                     2'b00
+`define OPENRV64_ICX_SC_SUCCESS_DROP             2'b01
+`define OPENRV64_ICX_SC_SUCCESS_EXCLUSIVE        2'b10
+
 `define OPENRV64_ICX_ORDER_NONE    2'd0
 `define OPENRV64_ICX_ORDER_ACQUIRE 2'd1
 `define OPENRV64_ICX_ORDER_RELEASE 2'd2

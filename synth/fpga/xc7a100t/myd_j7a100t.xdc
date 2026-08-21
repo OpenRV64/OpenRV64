@@ -28,8 +28,8 @@ set_property PACKAGE_PIN R4 [get_ports sys_clk_p]
 set_property IOSTANDARD DIFF_SSTL15 [get_ports sys_clk_p]
 create_clock -name sys_clk_200m -period 5.000 [get_ports sys_clk_p]
 
-# KEY_0 is used as the active-low board reset.
-set_property PACKAGE_PIN P17 [get_ports rst_n]
+# KEY_2 is used as the active-low board reset.
+set_property PACKAGE_PIN P15 [get_ports rst_n]
 set_property IOSTANDARD LVCMOS33 [get_ports rst_n]
 set_property PULLUP true [get_ports rst_n]
 
@@ -226,4 +226,3 @@ set_property IOSTANDARD DIFF_SSTL15 [get_ports {
     ddr3_ck_p[*] ddr3_ck_n[*] ddr3_dqs_p[*] ddr3_dqs_n[*]
 }]
 set_property IOSTANDARD LVCMOS15 [get_ports ddr3_reset_n]
-
