@@ -70,12 +70,14 @@ def compile_dts(args: argparse.Namespace) -> tuple[bytes, bytes]:
     except OSError as exc:
         raise ValueError(f"cannot read {args.dts}: {exc}") from exc
 
-    definitions = (
+    definitions = [
         f"OPENRV64_MEMORY_SIZE={args.memory_size:#x}",
         f"OPENRV64_HART_COUNT={args.hart_count}",
         f"OPENRV64_TIMEBASE_FREQUENCY={args.timebase_frequency}",
         f"OPENRV64_UART_CLOCK_FREQUENCY={args.uart_clock_frequency}",
-    )
+    ]
+    if args.ethernet:
+        definitions.append("OPENRV64_ETHERNET=1")
     with tempfile.TemporaryDirectory(prefix="openrv64-sd-image-") as directory:
         preprocessed = Path(directory) / "openrv64.dts"
         dtb = Path(directory) / "openrv64.dtb"
@@ -322,6 +324,11 @@ def main() -> int:
     parser.add_argument("--hart-count", type=int, default=1)
     parser.add_argument("--timebase-frequency", type=int, default=9_216_000)
     parser.add_argument("--uart-clock-frequency", type=int, default=9_216_000)
+    parser.add_argument(
+        "--ethernet",
+        action="store_true",
+        help="include the conditional Ethernet clock, reserved MMIO, and EmacLite nodes",
+    )
     parser.add_argument("--cpp", default="cpp")
     parser.add_argument("--dtc", default="dtc")
 

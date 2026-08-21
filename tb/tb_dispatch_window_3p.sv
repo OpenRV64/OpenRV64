@@ -250,9 +250,9 @@ module tb_dispatch_window_3p;
 
         // A flush starts a fresh WAW test.  The consumer must follow the
         // youngest writer, not whichever writer happens to complete first.
-        squash = 1'b1;
+        flush = 1'b1;
         tick();
-        squash = 1'b0;
+        flush = 1'b0;
         allocation_id = {IDW'(12), IDW'(11), IDW'(10)};
         allocation_slot = {4'd2, 4'd1, 4'd0};
         next_retire_id = IDW'(10);
@@ -325,12 +325,21 @@ module tb_dispatch_window_3p;
         decode_valid = 3'b111;
         tick();
         clear_inputs();
+        pipe_ready = 4'b1111;
         squash_id = IDW'(20);
         squash = 1'b1;
+        #1;
+        if (|decode_ready || |pipe_valid)
+            fail("redirect did not immediately inhibit dispatch and issue");
         tick();
         squash = 1'b0;
+        #1;
+        if (queue_count != 3 || !write_busy[12] ||
+            |decode_ready || |pipe_valid)
+            fail("redirect edge did not hold state for recovery task");
+        tick();
         if (queue_count != 1 || !write_busy[10] || write_busy[12])
-            fail("selective squash did not rebuild surviving WAW owner");
+            fail("deferred recovery did not rebuild surviving WAW owner");
 
         completion_valid = 3'b001;
         completion_id[0 +: IDW] = IDW'(20);
@@ -573,10 +582,20 @@ module tb_dispatch_window_3p;
         if (!pipe_valid[1] ||
             pipe_id[1*IDW +: IDW] != IDW'(62))
             fail("younger conditional branch did not issue after older resolve");
+        squash_id = IDW'(62);
+        squash = 1'b1;
+        #1;
+        if ((pipe_valid != 4'b0010) ||
+            (pipe_id[1*IDW +: IDW] != IDW'(62)))
+            fail("redirect cancelled its own EX1 issue handshake");
         tick();
+        squash = 1'b0;
         clear_inputs();
 
-        // Modular age ordering must treat ID 0 as younger than 1023.
+        // Modular age ordering must treat ID 0 as younger than 1023.  Begin
+        // recovery at ID 0, then preempt it on the cleanup cycle with the older
+        // ID 1023.  Cleanup must restart rather than committing the younger
+        // cut, and the bulk window state must remain held for that extra cycle.
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -593,12 +612,24 @@ module tb_dispatch_window_3p;
         decode_valid = 3'b111;
         tick();
         clear_inputs();
-        squash_id = IDW'(1023);
+        pipe_ready = 4'b1111;
+        squash_id = IDW'(0);
         squash = 1'b1;
+        #1;
+        if (|pipe_valid)
+            fail("wraparound redirect did not inhibit issue immediately");
+        tick();
+        squash_id = IDW'(1023);
+        #1;
+        if (queue_count != 3 || |pipe_valid)
+            fail("first recovery cut changed state before cleanup cycle");
         tick();
         squash = 1'b0;
+        if (queue_count != 3)
+            fail("older redirect did not preempt pending recovery");
+        tick();
         if (queue_count != 2 || write_busy[7])
-            fail("dispatch window misordered modular IDs at wrap");
+            fail("preempted recovery misordered modular IDs at wrap");
 
         // A single memory operation must obey the same fixed-lane contract as
         // strict dispatch before testing paired admission below.

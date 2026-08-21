@@ -12,7 +12,11 @@ module openrv64_exec_vec_fp32_lane #(
     parameter integer TAG_WIDTH = 2,
     parameter integer ADD_LATENCY = 4,
     parameter integer MUL_LATENCY = 7,
-    parameter integer MAC_LATENCY = ADD_LATENCY + MUL_LATENCY
+    parameter integer MAC_LATENCY = ADD_LATENCY + MUL_LATENCY,
+    // Narrow-only lanes need only the high bits of the normalized FP32
+    // significand. Legal values are 2 (FP4), 4 (FP8), 8 (BF16), and 24
+    // (FP32). The product is realigned to the ordinary 24x24 result position.
+    parameter integer MUL_SIG_BITS = 24
 ) (
     input  wire                     clk,
     input  wire                     rst_n,
@@ -232,6 +236,98 @@ module openrv64_exec_vec_fp32_lane #(
         end
     endfunction
 
+    // Regular 2x2 building blocks provide a deliberately simple first
+    // implementation of a width-composable significand multiplier. The
+    // hierarchy exposes the intended physical structure instead of relying on
+    // one full-width '*' in every lane. It is not yet a compressor tree.
+    function automatic [3:0] multiply_u2;
+        input [1:0] a;
+        input [1:0] b;
+        begin
+            multiply_u2 = a * b;
+        end
+    endfunction
+
+    function automatic [7:0] multiply_u4;
+        input [3:0] a;
+        input [3:0] b;
+        reg [7:0] product_00;
+        reg [7:0] product_01;
+        reg [7:0] product_10;
+        reg [7:0] product_11;
+        begin
+            product_00 = {4'd0, multiply_u2(a[1:0], b[1:0])};
+            product_01 = {4'd0, multiply_u2(a[1:0], b[3:2])};
+            product_10 = {4'd0, multiply_u2(a[3:2], b[1:0])};
+            product_11 = {4'd0, multiply_u2(a[3:2], b[3:2])};
+            multiply_u4 = product_00 + (product_01 << 2) +
+                (product_10 << 2) + (product_11 << 4);
+        end
+    endfunction
+
+    function automatic [15:0] multiply_u8;
+        input [7:0] a;
+        input [7:0] b;
+        reg [15:0] product_00;
+        reg [15:0] product_01;
+        reg [15:0] product_10;
+        reg [15:0] product_11;
+        begin
+            product_00 = {8'd0, multiply_u4(a[3:0], b[3:0])};
+            product_01 = {8'd0, multiply_u4(a[3:0], b[7:4])};
+            product_10 = {8'd0, multiply_u4(a[7:4], b[3:0])};
+            product_11 = {8'd0, multiply_u4(a[7:4], b[7:4])};
+            multiply_u8 = product_00 + (product_01 << 4) +
+                (product_10 << 4) + (product_11 << 8);
+        end
+    endfunction
+
+    function automatic [47:0] multiply_u24;
+        input [23:0] a;
+        input [23:0] b;
+        reg [47:0] product_00;
+        reg [47:0] product_01;
+        reg [47:0] product_02;
+        reg [47:0] product_10;
+        reg [47:0] product_11;
+        reg [47:0] product_12;
+        reg [47:0] product_20;
+        reg [47:0] product_21;
+        reg [47:0] product_22;
+        begin
+            product_00 = {32'd0, multiply_u8(a[7:0], b[7:0])};
+            product_01 = {32'd0, multiply_u8(a[7:0], b[15:8])};
+            product_02 = {32'd0, multiply_u8(a[7:0], b[23:16])};
+            product_10 = {32'd0, multiply_u8(a[15:8], b[7:0])};
+            product_11 = {32'd0, multiply_u8(a[15:8], b[15:8])};
+            product_12 = {32'd0, multiply_u8(a[15:8], b[23:16])};
+            product_20 = {32'd0, multiply_u8(a[23:16], b[7:0])};
+            product_21 = {32'd0, multiply_u8(a[23:16], b[15:8])};
+            product_22 = {32'd0, multiply_u8(a[23:16], b[23:16])};
+            multiply_u24 = product_00 +
+                (product_01 << 8) + (product_10 << 8) +
+                (product_02 << 16) + (product_11 << 16) +
+                (product_20 << 16) + (product_12 << 24) +
+                (product_21 << 24) + (product_22 << 32);
+        end
+    endfunction
+
+    function automatic [47:0] multiply_significands;
+        input [23:0] a;
+        input [23:0] b;
+        begin
+            case (MUL_SIG_BITS)
+                2: multiply_significands =
+                    {multiply_u2(a[23:22], b[23:22]), 44'd0};
+                4: multiply_significands =
+                    {multiply_u4(a[23:20], b[23:20]), 40'd0};
+                8: multiply_significands =
+                    {multiply_u8(a[23:16], b[23:16]), 32'd0};
+                default: multiply_significands = multiply_u24(a, b);
+            endcase
+        end
+    endfunction
+
     function automatic [31:0] multiply_fp32;
         input [31:0] a;
         input [31:0] b;
@@ -313,7 +409,8 @@ module openrv64_exec_vec_fp32_lane #(
                     sig_b = {8'd0, 1'b1, fraction_b};
                 end
 
-                product = sig_a * sig_b;
+                product = {16'd0,
+                           multiply_significands(sig_a[23:0], sig_b[23:0])};
                 if (product[47]) begin
                     exponent = exp_a + exp_b + 1;
                     shift_distance = 21;
@@ -466,6 +563,9 @@ module openrv64_exec_vec_fp32_lane #(
             $fatal(1, "FP MUL latency must exceed FP ADD latency");
         if (MAC_LATENCY != (MUL_LATENCY + ADD_LATENCY))
             $fatal(1, "FP MAC latency must equal MUL plus ADD latency");
+        if ((MUL_SIG_BITS != 2) && (MUL_SIG_BITS != 4) &&
+            (MUL_SIG_BITS != 8) && (MUL_SIG_BITS != 24))
+            $fatal(1, "FP multiplier significand width must be 2, 4, 8, or 24");
     end
 `endif
 
@@ -948,6 +1048,10 @@ module openrv64_exec_vec #(
     generate
         for (lane_index = 0; lane_index < FP_LANES;
              lane_index = lane_index + 1) begin : g_fp_lane
+            localparam integer LANE_MUL_SIG_BITS =
+                (lane_index < 2) ? 24 :
+                (lane_index < 4) ? 8 :
+                (lane_index < 8) ? 4 : 2;
             wire [31:0] lane_src1 = lane_to_fp32(
                 fp_src1_chunk, active_fmt_q, lane_index);
             wire [31:0] lane_src2 = lane_to_fp32(
@@ -956,7 +1060,8 @@ module openrv64_exec_vec #(
                 .TAG_WIDTH(CHUNK_INDEX_WIDTH),
                 .ADD_LATENCY(ADD_LATENCY),
                 .MUL_LATENCY(MUL_LATENCY),
-                .MAC_LATENCY(MAC_LATENCY)
+                .MAC_LATENCY(MAC_LATENCY),
+                .MUL_SIG_BITS(LANE_MUL_SIG_BITS)
             ) u_lane (
                 .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
                 .valid_i(fp_feed_valid), .ready_o(lane_ready[lane_index]),
@@ -1500,6 +1605,10 @@ module openrv64_exec_vec #(
     generate
         for (lane_index = 0; lane_index < FP_LANES;
              lane_index = lane_index + 1) begin : g_fp_lane
+            localparam integer LANE_MUL_SIG_BITS =
+                (lane_index < 2) ? 24 :
+                (lane_index < 4) ? 8 :
+                (lane_index < 8) ? 4 : 2;
             wire [31:0] lane_src1 = lane_to_fp32(
                 src1_chunk, slot_fmt_q[feed_slot], lane_index);
             wire [31:0] lane_src2 = lane_to_fp32(
@@ -1512,7 +1621,8 @@ module openrv64_exec_vec #(
                 .TAG_WIDTH(TOKEN_TAG_WIDTH),
                 .ADD_LATENCY(ADD_LATENCY),
                 .MUL_LATENCY(MUL_LATENCY),
-                .MAC_LATENCY(MAC_LATENCY)
+                .MAC_LATENCY(MAC_LATENCY),
+                .MUL_SIG_BITS(LANE_MUL_SIG_BITS)
             ) u_lane (
                 .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
                 .valid_i(unified_lane_feed_valid),

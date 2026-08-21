@@ -166,6 +166,16 @@ module openrv64_dispatch_window_3p #(
     reg [2:0] owner_release_valid_q;
     reg [3*`OPENRV64_INSTR_ID_WIDTH-1:0] owner_release_id_q;
 
+    // A redirect must inhibit allocation and issue immediately, but the
+    // depth-wide survivor/owner reconstruction does not need to complete on
+    // that same edge.  Capture the recovery cut and run the existing cleanup
+    // as a dedicated dispatch task on the following cycle.  If an older cut
+    // arrives while cleanup is pending, it monotonically supersedes the first
+    // cut; state discarded by the younger cut would also be discarded by the
+    // older one, so the partial recovery never needs to be undone.
+    reg recovery_pending_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_cut_id_q;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             owner_release_valid_q <= 3'b000;
@@ -337,6 +347,39 @@ module openrv64_dispatch_window_3p #(
         end
     endfunction
 
+    wire selective_recovery_request = squash_frontend_i &&
+                                      (ENABLE_SPECULATION != 0);
+    // id_is_younger(active, incoming) means the incoming cut is older.
+    wire recovery_preempt = recovery_pending_q &&
+                            selective_recovery_request &&
+                            id_is_younger(recovery_cut_id_q, squash_id_i);
+    wire selective_recovery_apply = recovery_pending_q &&
+                                    !recovery_preempt;
+    wire recovery_inhibit = selective_recovery_request ||
+                            recovery_pending_q;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            recovery_pending_q <= 1'b0;
+            recovery_cut_id_q <=
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        end else if (flush_i ||
+                     (squash_frontend_i &&
+                      (ENABLE_SPECULATION == 0))) begin
+            recovery_pending_q <= 1'b0;
+        end else if (!recovery_pending_q) begin
+            if (selective_recovery_request) begin
+                recovery_pending_q <= 1'b1;
+                recovery_cut_id_q <= squash_id_i;
+            end
+        end else if (recovery_preempt) begin
+            recovery_pending_q <= 1'b1;
+            recovery_cut_id_q <= squash_id_i;
+        end else begin
+            recovery_pending_q <= 1'b0;
+        end
+    end
+
     // GPR values are sampled at decode admission.  Three same-cycle decode
     // lanes still see one another through the temporary owner view below.
     genvar read_lane;
@@ -356,7 +399,7 @@ module openrv64_dispatch_window_3p #(
     endgenerate
 
     wire [COUNT_WIDTH:0] free_count = DEPTH - count_q;
-    assign decode_ready_o[0] = !flush_i && !squash_frontend_i &&
+    assign decode_ready_o[0] = !flush_i && !recovery_inhibit &&
                                allocation_ready_i && (free_count >= 1);
     assign decode_ready_o[1] = decode_ready_o[0] && (free_count >= 2);
     assign decode_ready_o[2] = decode_ready_o[1] && (free_count >= 3);
@@ -1026,6 +1069,21 @@ module openrv64_dispatch_window_3p #(
             pipe_ready_i[selected_mem_pipe] &&
             pipe_ready_i[selected_mem2_pipe])
             pipe_valid_o[selected_mem2_pipe] = 1'b1;
+
+        if (recovery_pending_q) begin
+            pipe_valid_o = {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        end else if (selective_recovery_request) begin
+            // EX1 may be the branch whose accepted issue is producing the raw
+            // redirect.  Cancelling that handshake makes redirect and valid
+            // combinationally negate one another.  Preserve only that exact
+            // resolving branch; inhibit every unrelated issue immediately.
+            pipe_valid_o[0] = 1'b0;
+            pipe_valid_o[2] = 1'b0;
+            pipe_valid_o[3] = 1'b0;
+            if (!select_ex1_valid ||
+                (id_q[select_ex1] != squash_id_i))
+                pipe_valid_o[1] = 1'b0;
+        end
     end
 
     wire issue_ex0 = pipe_valid_o[0] && pipe_ready_i[0];
@@ -1060,9 +1118,6 @@ module openrv64_dispatch_window_3p #(
     integer survivor_lane;
     integer survivor_port;
 
-    wire selective_squash = squash_frontend_i &&
-                            (ENABLE_SPECULATION != 0);
-
     // Recovery rebuilds the rename/ownership view from the entries retained
     // through the mispredicted branch.  Per-entry completion data is kept for
     // exactly this purpose: a squashed younger WAW must reveal the older live
@@ -1089,7 +1144,7 @@ module openrv64_dispatch_window_3p #(
                     survivor_retiring = 1'b1;
             end
             if (valid_q[survivor_idx] && !survivor_retiring &&
-                !id_is_younger(id_q[survivor_idx], squash_id_i)) begin
+                !id_is_younger(id_q[survivor_idx], recovery_cut_id_q)) begin
                 survivor_count = survivor_count + 1'b1;
                 survivor_rd = payload_q[survivor_idx][
                     PAYLOAD_RD +: `RV64_REG_ADDR_WIDTH];
@@ -1172,7 +1227,7 @@ module openrv64_dispatch_window_3p #(
                 valid_q[entry_idx] <= 1'b0;
                 issued_q[entry_idx] <= 1'b0;
             end
-        end else if (selective_squash) begin
+        end else if (selective_recovery_apply) begin
             count_q <= survivor_count;
             owner_valid_q <= survivor_owner_valid;
             owner_ready_q <= survivor_owner_ready;
@@ -1198,7 +1253,7 @@ module openrv64_dispatch_window_3p #(
                         recover_retiring = 1'b1;
                 end
                 if (!valid_q[entry_idx] || recover_retiring ||
-                    id_is_younger(id_q[entry_idx], squash_id_i)) begin
+                    id_is_younger(id_q[entry_idx], recovery_cut_id_q)) begin
                     valid_q[entry_idx] <= 1'b0;
                     issued_q[entry_idx] <= 1'b0;
                     result_ready_q[entry_idx] <= 1'b0;
@@ -1256,16 +1311,16 @@ module openrv64_dispatch_window_3p #(
                 result_ready_q[conditional_resolve_slot_i] <= 1'b1;
 
             if (issue_ex0 &&
-                !id_is_younger(id_q[select_ex0], squash_id_i))
+                !id_is_younger(id_q[select_ex0], recovery_cut_id_q))
                 issued_q[select_ex0] <= 1'b1;
             if (issue_ex1 &&
-                !id_is_younger(id_q[select_ex1], squash_id_i))
+                !id_is_younger(id_q[select_ex1], recovery_cut_id_q))
                 issued_q[select_ex1] <= 1'b1;
             if (issue_mem_primary &&
-                !id_is_younger(id_q[select_mem], squash_id_i))
+                !id_is_younger(id_q[select_mem], recovery_cut_id_q))
                 issued_q[select_mem] <= 1'b1;
             if (issue_mem_secondary &&
-                !id_is_younger(id_q[select_mem2], squash_id_i))
+                !id_is_younger(id_q[select_mem2], recovery_cut_id_q))
                 issued_q[select_mem2] <= 1'b1;
         end else begin
             count_q <= count_q + decode_count - retire_count;
@@ -1413,7 +1468,7 @@ module openrv64_dispatch_window_3p #(
     end
 
     always @(posedge clk) begin
-        if (rst_n && !flush_i && !squash_frontend_i) begin
+        if (rst_n && !flush_i && !recovery_inhibit) begin
             if ((decode_valid_i != 3'b000) &&
                 (decode_valid_i != 3'b001) &&
                 (decode_valid_i != 3'b011) &&

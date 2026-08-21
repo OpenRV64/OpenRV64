@@ -2622,6 +2622,7 @@ module openrv64_core_mtl #(
         .fetch_head_q(fetch_head_q),
         .fetch_l1i_launch(fetch_l1i_launch),
         .fetch_l1i_inflight_q(fetch_l1i_inflight_q),
+        .fetch_pmp_resp_valid(pmp_fetch_resp_valid),
         .fetch_page_screen_accept(fetch_page_screen_accept),
         .fetch_page_screen_fill(fetch_page_screen_fill),
         .fetch_page_screen_invalidate(fetch_page_screen_invalidate),

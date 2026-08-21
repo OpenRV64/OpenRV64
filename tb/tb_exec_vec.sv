@@ -687,6 +687,23 @@ module tb_exec_vec;
         check_vec(5'd26, {8{32'h4040_0000}}, "dual MAC acc0");
         check_vec(5'd27, {8{32'h40c0_0000}}, "dual MAC acc1");
 
+        // Exercise the tapered FP8 and FP4 significand multipliers without
+        // hitting the lane's exact multiply-by-one bypass. 1.5 * 1.5 is 2.25;
+        // FP8 represents it exactly and FP4 rounds it to 2.0.
+        write_vec(5'd10, {32{8'h3c}});
+        write_vec(5'd11, {32{8'h3c}});
+        send(8'd37, `OPENRV64_VEC_OP_FMUL, VTYPE_FP8_M1,
+             5'd10, 5'd11, 5'd12);
+        finish_command(8'd37, 1'b0);
+        check_vec(5'd12, {32{8'h41}}, "fp8 tapered multiply");
+
+        write_vec(5'd13, {64{4'h3}});
+        write_vec(5'd14, {64{4'h3}});
+        send(8'd38, `OPENRV64_VEC_OP_FMUL, VTYPE_FP4_M1,
+             5'd13, 5'd14, 5'd15);
+        finish_command(8'd38, 1'b0);
+        check_vec(5'd15, {64{4'h4}}, "fp4 tapered multiply");
+
         $display("PASS: overlapping vector arithmetic and dual private MAC");
         $finish;
     end

@@ -10,6 +10,11 @@ OpenSBI v1.9, and a small S-mode Sv39/PTW and timer payload.  The older Linux
 image extends that design with a pre-boot hardware UART-to-MIG loader.  Do not
 transfer claims between the four images.
 
+An otherwise identical KEY_2-reset candidate was built and programmed on
+2026-08-21, but has not yet had its UART boot or push-button behavior observed.
+It is recorded separately below and does not replace the physically booted
+artifact until that check passes.
+
 ## Current cache-enabled SD-boot artifact
 
 The source-matched 2026-08-20 build is:
@@ -155,6 +160,35 @@ and SD `PASS` lines alone prove only MIG calibration and successful raw-image
 validation, transfer, and jump.  The card format, image builder, destructive
 whole-device `dd` command, and ROM failure markers are documented in
 `doc/fpga/sd-boot-image.md`.
+
+### KEY_2 reset candidate
+
+The candidate bitstream is:
+
+- Bitstream:
+  `build/fpga/xc7a100t/sd-boot-pmp8-cache32k-14mhz-key2-reset/openrv64_myd_j7a100t_sd_boot.bit`
+- SHA-256:
+  `bbcadd73701f726026859ec42b58d9ac49ce5c1687553228357b41f038a9f4b1`
+- Full-design setup WNS +0.513 ns and hold WHS +0.014 ns
+- Fully routed with zero failed nets and zero bitstream-generation DRC errors
+
+This build maps the top-level active-low `rst_n` input to `KEY_2` on package
+pin P15 as LVCMOS33 with an internal pull-up.  The implemented I/O report
+confirms P15, `rst_n`, LVCMOS33, and `PULLUP`.  Pressing the button is therefore
+expected to assert reset if the board switch shorts P15 to ground; that board
+switch polarity still requires physical observation.
+
+Configuration startup remains independent of this user-I/O reset.  Xilinx
+configuration initializes the 16-bit reset-hold register to zero; a later
+falling edge on `rst_n` asynchronously clears the same register.  After either
+event, MIG remains reset until the register saturates after 65,535 cycles of
+the 200 MHz input clock.  P17 is `KEY_0` in the vendor constraints, not an
+identified CPLD reset input, and is not claimed by this candidate.
+
+Remote JTAG programming completed with startup HIGH.  That proves the released
+P15 level did not hold FPGA startup in reset, but no UART bounce was available
+to this build host.  Normal boot and reset-on-press/reset-on-release therefore
+remain pending physical observation.
 
 ## Current Linux hardware-preload artifact
 

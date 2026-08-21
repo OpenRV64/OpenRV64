@@ -3233,7 +3233,7 @@ module tb_top_3p_soc #(
                 redirect_cycle_trace_xlate_slot[sample_index] =
                     dut.u_bus.g_icx.u_bus.u_debug.fetch_xlate_slot_r;
                 redirect_cycle_trace_pmp_fetch[sample_index] =
-                    dut.u_bus.g_icx.u_bus.select_fetch_probe;
+                    dut.u_bus.g_icx.u_bus.u_debug.fetch_pmp_resp_valid;
                 redirect_cycle_trace_l1_launch[sample_index] =
                     dut.u_bus.g_icx.u_bus.u_debug.fetch_l1i_launch;
                 redirect_cycle_trace_screen_hit[sample_index] =

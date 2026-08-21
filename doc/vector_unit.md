@@ -210,12 +210,19 @@ not an IEEE-754 single-rounding binary32 FMA.
 One unified FP lane bank accepts either an ordinary ADD/MUL slice or a MAC
 slice every cycle. The queued controller has one shared register-file feed, so
 the former separate banks could not issue concurrently and only duplicated the
-FP datapaths. Operation latency defaults to four cycles for ADD, seven for MUL,
-and eleven for MAC. MAC is the seven-cycle multiply path followed by the same
-four-cycle adder used by standalone ADD. An incoming ADD bubbles when a MAC
-reaches that shared adder, and a small completion reservation inserts a bubble
-when different operation latencies would otherwise collide on the single
-result port. Same-operation slices still issue and complete one per cycle.
+FP datapaths. The multiplier capacity is tapered by lane index: lanes 0--1
+compose 2-bit partial multipliers into a 24-bit FP32 significand multiplier,
+lanes 2--3 stop at 8 bits for BF16, lanes 4--7 stop at 4 bits for FP8, and lanes
+8--15 retain only a 2-bit FP4 significand multiplier. This is a regular
+correctness-first composition tree, not a compressor-tree or pooled-partial-
+product implementation. The FP32 add path remains present in every lane.
+
+Operation latency defaults to four cycles for ADD, seven for MUL, and eleven
+for MAC. MAC is the seven-cycle multiply path followed by the same four-cycle
+adder used by standalone ADD. An incoming ADD bubbles when a MAC reaches that
+shared adder, and a small completion reservation inserts a bubble when
+different operation latencies would otherwise collide on the single result
+port. Same-operation slices still issue and complete one per cycle.
 Context-plus-slice tags travel with every token, allowing slices from younger
 commands to follow an older command before its first result returns. If both
 complete input slices are positive zero, an ordinary ADD/MUL result is
