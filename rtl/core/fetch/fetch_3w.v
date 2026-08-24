@@ -465,7 +465,10 @@ module openrv64_fetch_3w #(
         {CACHE_LINE_BYTE_BITS{1'b0}}
     };
     assign cancel_o = restart_i || invalidate_i || flush_i;
-    assign cancel_stash_o = invalidate_i || flush_i;
+    // A redirect changes the owner of every request already below fetch.
+    // Kill old stash traffic as well as ordinary demand traffic; the selected
+    // redirect target is admitted independently as a same-edge replacement.
+    assign cancel_stash_o = restart_i || invalidate_i || flush_i;
     assign resp_ready_o = 1'b1;
     assign stream_pc_o = consume_pc_q;
 
@@ -2219,7 +2222,8 @@ module openrv64_fetch_3w #(
     openrv64_fetch_debug_stub #(
         .LINE_DEPTH(LINE_DEPTH),
         .INGRESS_DEPTH(INGRESS_DEPTH),
-        .FETCH_SECTORS(FETCH_SECTORS)
+        .FETCH_SECTORS(FETCH_SECTORS),
+        .FETCH_DATA_WIDTH(FETCH_DATA_WIDTH)
     ) u_debug (
         .consume_pc_q(consume_pc_q),
         .next_req_addr_q(next_req_addr_q),
@@ -2241,6 +2245,31 @@ module openrv64_fetch_3w #(
         .pair_predicted_addr_q(pair_predicted_addr_q),
         .pair_unpredicted_valid_q(pair_unpredicted_valid_q),
         .pair_unpredicted_addr_q(pair_unpredicted_addr_q),
+        .lane_found_r(lane_found_r),
+        .lane_instr_r(lane_instr_r),
+        .consume_live_sector_valid(consume_live_sector_valid),
+        .consume_ingress_sector_valid(consume_ingress_sector_valid),
+        .consume_alt_sector_valid(consume_alt_sector_valid),
+        .consume_ingress_select(consume_ingress_select),
+        .consume_alt_select(consume_alt_select),
+        .consume_fetch_select(consume_fetch_select),
+        .consume_sector_valid(consume_sector_valid),
+        .resp_valid_i(resp_valid_i),
+        .resp_addr_i(resp_addr_i),
+        .resp_data_i(resp_data_i),
+        .resp_stash_i(resp_stash_i),
+        .resp_demand_i(resp_demand_i),
+        .resp_match(resp_match),
+        .carousel_resp_match(carousel_resp_match),
+        .redirect_resp_match(redirect_resp_match),
+        .fal_resp_match(fal_resp_match),
+        .orphan_forced_demand_in_window(
+            orphan_forced_demand_in_window),
+        .alt_prefetch_aged_r(alt_prefetch_aged_r),
+        .alt_sector_response_tap_r(alt_sector_response_tap_r),
+        .alt_sector_predicted_tap_r(alt_sector_predicted_tap_r),
+        .alt_sector_unpredicted_tap_r(
+            alt_sector_unpredicted_tap_r),
         .line_valid_q(line_valid_q),
         .line_sector_valid_q(line_sector_valid_q),
         .line_addr_q(line_addr_q),

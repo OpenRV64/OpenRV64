@@ -25,9 +25,8 @@ module openrv64_l1_cache #(
     // multiple MSHRs while this module remains the shared tag/data array.
     parameter integer DETACH_READ_MISSES = 0,
     // Read all way tags on the same registered boundary as the data SRAM.
-    // This mode is currently used by L1D, whose age ports are tied off.  L1I
-    // retains the asynchronous tag path until its unacknowledged age inputs
-    // are converted to a serializable interface.
+    // The unacknowledged parallel age inputs cannot share this single read
+    // port and must be tied off or serialized by the caller.
     parameter integer SYNC_TAG_LOOKUP = 0,
     // A cacheable posted store which immediately follows a valid-hit store to
     // the same virtual cache line may reuse the retained hit way.  The data
@@ -91,6 +90,8 @@ module openrv64_l1_cache #(
     // ignores invalidate_addr_i and clears the entire L1.
     input  wire                      invalidate_valid_i,
     output wire                      invalidate_ready_o,
+    output wire                      invalidate_hit_o,
+    output wire                      quiescent_o,
     input  wire                      invalidate_all_i,
     input  wire [ADDR_WIDTH-1:0]     invalidate_addr_i,
 
@@ -273,6 +274,7 @@ module openrv64_l1_cache #(
     reg aged_way_found;
     reg [SET_INDEX_WIDTH-1:0] invalidate_set;
     reg [TAG_BITS-1:0] invalidate_tag;
+    reg invalidate_hit_r;
     reg [LINE_INDEX_WIDTH-1:0] lookup_line;
     integer set_index;
     integer line_index;
@@ -280,6 +282,8 @@ module openrv64_l1_cache #(
     integer lookup_way_index;
     integer age_port;
     integer age_way;
+    integer invalidate_hit_way;
+    integer invalidate_hit_line;
     reg [SET_INDEX_WIDTH-1:0] fill_set;
     reg [TAG_BITS-1:0] fill_tag;
     reg [WAY_INDEX_WIDTH-1:0] fill_way;
@@ -661,6 +665,35 @@ module openrv64_l1_cache #(
         (SYNC_TAG_LOOKUP != 0) ? sync_invalidate_addr_q :
                                  invalidate_addr_i;
 
+    // Completion and presence are separate facts.  A coherence probe to a
+    // stale snoop-filter sharer bit still completes successfully, but only a
+    // matching valid tag is a hit and is allowed to wake a sleeping core.
+    always @* begin
+        invalidate_hit_r = 1'b0;
+        if (invalidate_all_i)
+            for (invalidate_hit_line = 0;
+                 invalidate_hit_line < TOTAL_LINES;
+                 invalidate_hit_line = invalidate_hit_line + 1)
+                if (valid_q[invalidate_hit_line])
+                    invalidate_hit_r = 1'b1;
+        for (invalidate_hit_way = 0;
+             invalidate_hit_way < WAYS;
+             invalidate_hit_way = invalidate_hit_way + 1) begin
+            if (!invalidate_all_i && (SYNC_TAG_LOOKUP != 0)) begin
+                if (sync_invalidate_valid_bits_q[invalidate_hit_way] &&
+                    (sync_tag_read_q[invalidate_hit_way] ==
+                     sync_invalidate_tag_q))
+                    invalidate_hit_r = 1'b1;
+            end else if (!invalidate_all_i && valid_q[line_index_of(
+                             invalidate_set,
+                             invalidate_hit_way[WAY_INDEX_WIDTH-1:0])] &&
+                         (legacy_tag_q[invalidate_hit_way][invalidate_set] ==
+                          invalidate_tag)) begin
+                invalidate_hit_r = 1'b1;
+            end
+        end
+    end
+
     // A held read response already contains its pre-snoop value.  Tag
     // invalidation may therefore complete without waiting for the requester
     // to consume that response.  This keeps coherence progress independent
@@ -681,6 +714,15 @@ module openrv64_l1_cache #(
                             sync_invalidate_probe_q) :
         ((state_q == STATE_RUN) ||
          ((state_q == STATE_ACCESS) && !invalidate_all_i));
+    assign invalidate_hit_o = invalidate_valid_i &&
+                              invalidate_ready_o &&
+                              invalidate_hit_r;
+    assign quiescent_o = (state_q == STATE_RUN) &&
+                         !sync_lookup_valid_q &&
+                         !sync_fill_probe_q &&
+                         !sync_invalidate_probe_q &&
+                         !response_valid_q &&
+                         !write_response_valid_q;
     assign req_ready_o = request_base_ready &&
                          (!req_separate_write_resp_i ||
                           write_response_slot_available) &&

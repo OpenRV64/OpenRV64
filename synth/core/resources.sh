@@ -61,13 +61,16 @@ mkdir -p "$out_dir"
 mapfile -t core_sources < <(
     cd "$source_root"
     rg --files rtl/core -g '*.v' \
+        -g '!rtl/core/**/debug/stub.v' \
         -g '!rtl/core/exec/vec/**' \
+        -g '!rtl/core/exec/alu/rv64-m-fpga.v' \
         -g '!rtl/core/regs/rv64-i-vec.v' |
         sort
 )
 mapfile -t cache_sources < <(
     cd "$source_root"
-    rg --files rtl/cache/l1 -g '*.v' | sort
+    rg --files rtl/cache/l1 -g '*.v' \
+        -g '!rtl/cache/l1/**/debug/stub.v' | sort
 )
 source_args=("$source_root/rtl/openrv64_top_3p.v")
 for source in "${core_sources[@]}" "${cache_sources[@]}"; do

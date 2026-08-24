@@ -111,6 +111,7 @@ module openrv64_core_gen_bus #(
     localparam [1:0] STATE_IDLE = 2'd0;
     localparam [1:0] STATE_TRANSLATE = 2'd1;
     localparam [1:0] STATE_ACCESS = 2'd2;
+    localparam [1:0] STATE_TLB_RESULT = 2'd3;
 
     localparam OWNER_FETCH = 1'b0;
     localparam OWNER_LSU = 1'b1;
@@ -136,8 +137,13 @@ module openrv64_core_gen_bus #(
     reg walk_invalidated_q;
 
     wire owner_is_fetch = (owner_q == OWNER_FETCH);
-    wire fetch_cancelled = owner_is_fetch &&
-                           (cancelled_q || fetch_cancel_i);
+    // Fetch cancellation is sampled at this bus boundary.  Do not feed the
+    // external restart pulse through translation/completion control and back
+    // into the frontend in the same cycle.  Instruction reads are speculative
+    // and discardable; cancelled_q suppresses their result on the following
+    // cycle.  The direct input remains only on narrow request-admission and
+    // successor-state decisions below.
+    wire fetch_cancelled = owner_is_fetch && cancelled_q;
 
     wire ptw_req_valid;
     wire ptw_req_ready;
@@ -165,14 +171,17 @@ module openrv64_core_gen_bus #(
     wire [`RV64_XLEN-1:0] tlb_lookup_paddr;
     wire tlb_lookup_page_fault;
     wire tlb_fill_valid;
+    reg tlb_result_hit_q;
+    reg [`RV64_XLEN-1:0] tlb_result_paddr_q;
+    reg tlb_result_page_fault_q;
 
     wire translation_fault = ptw_resp_page_fault ||
                              ptw_resp_access_fault;
-    wire ptw_translation_complete = (state_q == STATE_TRANSLATE) &&
-                                    ptw_resp_valid;
-    wire tlb_fault_complete = (state_q == STATE_TRANSLATE) &&
-                              tlb_lookup_hit &&
-                              tlb_lookup_page_fault;
+    wire ptw_translation_complete = (state_q == STATE_TLB_RESULT) &&
+                                    !tlb_result_hit_q && ptw_resp_valid;
+    wire tlb_fault_complete = (state_q == STATE_TLB_RESULT) &&
+                              tlb_result_hit_q &&
+                              tlb_result_page_fault_q;
     wire ptw_response_usable = ptw_translation_complete &&
                                !walk_invalidated_q &&
                                !ptw_resp_invalidated && !tlbi_i;
@@ -185,9 +194,9 @@ module openrv64_core_gen_bus #(
     wire owner_completion = translation_page_fault ||
                             translation_access_fault;
 
-    assign ptw_req_valid = (state_q == STATE_TRANSLATE) &&
-                           !translation_bare &&
-                           !tlb_lookup_hit;
+    assign ptw_req_valid = (state_q == STATE_TLB_RESULT) &&
+                           !tlb_result_hit_q && !fetch_cancelled &&
+                           !tlbi_i;
     assign tlb_fill_valid = ptw_response_usable &&
                             !translation_fault &&
                             !fetch_cancelled;
@@ -272,6 +281,7 @@ module openrv64_core_gen_bus #(
 
     openrv64_bus_ptw #(
         .PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .ENABLE_ICX_SHOOTDOWN(0),
         .ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
         .HART_ID(HART_ID)
     ) u_ptw (
@@ -291,7 +301,7 @@ module openrv64_core_gen_bus #(
         .req_sum_i(sum_q),
         .req_mxr_i(mxr_q),
         .resp_valid_o(ptw_resp_valid),
-        .resp_ready_i(state_q == STATE_TRANSLATE),
+        .resp_ready_i(state_q == STATE_TLB_RESULT),
         .resp_paddr_o(ptw_resp_paddr),
         .resp_page_fault_o(ptw_resp_page_fault),
         .resp_access_fault_o(ptw_resp_access_fault),
@@ -350,18 +360,23 @@ module openrv64_core_gen_bus #(
             sum_q <= 1'b0;
             mxr_q <= 1'b0;
             walk_invalidated_q <= 1'b0;
+            tlb_result_hit_q <= 1'b0;
+            tlb_result_paddr_q <= {`RV64_XLEN{1'b0}};
+            tlb_result_page_fault_q <= 1'b0;
         end else begin
             if ((state_q != STATE_IDLE) && owner_is_fetch &&
                 fetch_cancel_i) begin
                 cancelled_q <= 1'b1;
             end
-            // A post-shootdown request is a fresh walk.  This also covers the
-            // case where TLBI arrived while the PTW was idle: req_ready is
-            // suppressed during TLBI, then the first real handshake clears
-            // the marker.
+            // A post-invalidation request is a fresh walk.  This also covers
+            // the case where TLBI arrived while the PTW was idle: req_ready is
+            // suppressed during the local pulse, then the first real handshake
+            // clears the marker.  The generic single-hart bus emits no ICX
+            // shootdown transaction.
             if (ptw_req_valid && ptw_req_ready)
                 walk_invalidated_q <= 1'b0;
-            if (tlbi_i && (state_q == STATE_TRANSLATE)) begin
+            if (tlbi_i && ((state_q == STATE_TRANSLATE) ||
+                           (state_q == STATE_TLB_RESULT))) begin
                 walk_invalidated_q <= 1'b1;
             end
 
@@ -410,11 +425,34 @@ module openrv64_core_gen_bus #(
                             paddr_q <= vaddr_q;
                             state_q <= STATE_ACCESS;
                         end
-                    end else if (tlb_lookup_hit) begin
-                        if (fetch_cancelled || tlb_lookup_page_fault) begin
+                    end else if (!tlbi_i) begin
+                        // The asynchronous CAM and permission result terminate
+                        // here.  State transitions, PTW admission, and fault
+                        // delivery consume only these registered values on the
+                        // following cycle.
+                        tlb_result_hit_q <= tlb_lookup_hit;
+                        tlb_result_paddr_q <= tlb_lookup_paddr;
+                        tlb_result_page_fault_q <=
+                            tlb_lookup_page_fault;
+                        state_q <= STATE_TLB_RESULT;
+                    end
+                end
+
+                STATE_TLB_RESULT: begin
+                    // Local invalidation discards a hit captured on the
+                    // preceding edge.  Return to lookup after the TLB has been
+                    // cleared; PTW admission resumes after the pulse drops.
+                    if (tlbi_i) begin
+                        tlb_result_hit_q <= 1'b0;
+                        tlb_result_page_fault_q <= 1'b0;
+                        state_q <= STATE_TRANSLATE;
+                    end else if (fetch_cancelled) begin
+                        state_q <= STATE_IDLE;
+                    end else if (tlb_result_hit_q) begin
+                        if (tlb_result_page_fault_q) begin
                             state_q <= STATE_IDLE;
                         end else begin
-                            paddr_q <= tlb_lookup_paddr;
+                            paddr_q <= tlb_result_paddr_q;
                             state_q <= STATE_ACCESS;
                         end
                     end else if (ptw_resp_valid) begin
@@ -456,6 +494,7 @@ module openrv64_core_gen_bus #(
                             state_q <= STATE_TRANSLATE;
                         end else if (owner_is_fetch &&
                                      !fetch_cancelled &&
+                                     !fetch_cancel_i &&
                                      fetch_next_valid_i) begin
                             owner_q <= OWNER_FETCH;
                             write_q <= 1'b0;

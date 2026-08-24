@@ -6,7 +6,13 @@
 `include "core/isa/rv64-priv.v"
 `include "core/except/except-defs.v"
 
-module tb_openrv64_top;
+module tb_openrv64_top #(
+    parameter bit PIPE_1P_MEM_4_STAGE = 1'b0,
+    parameter bit PIPE_1P_DECODE_QUEUE = 1'b0,
+    parameter bit FPGA_GPR_LUTRAM = 1'b0,
+    parameter int unsigned MEM_RESPONSE_DELAY_CYCLES = 0,
+    parameter bit REQUIRE_BP_COVERAGE = 1'b1
+);
 
     localparam logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0100;
     localparam int unsigned RESET_INSTR_INDEX = RESET_VECTOR >> 2;
@@ -51,12 +57,33 @@ module tb_openrv64_top;
     logic        saw_pmp_trap;
     logic        saw_bp_stall;
     logic        saw_bp_branch_stall;
+    logic        saw_csr_serial_start_inhibit;
+    logic        saw_csr_serial_tail_cycle;
+    logic        csr_serial_busy_raw_prev_q;
+    logic        issue_inhibit_latch_set_prev_q;
+    logic        issue_inhibit_immediate_prev_q;
+    logic        issue_inhibit_owner_active_prev_q;
+    logic        global_issue_inhibit_prev_q;
+    logic        saw_global_issue_tail;
     logic        mem_addr_in_range;
+    logic        memory_response_active_q;
+    integer      memory_response_count_q;
     integer      trace_arch_count;
     integer      trace_exception_count;
+    integer      mem_request_stage_count;
+    integer      mem_response_stage_count;
+    integer      mem_completion_stage_count;
+    integer      mem_resume_stage_count;
+    logic        stalled_request_q;
+    logic        stalled_write_q;
+    logic [63:0] stalled_addr_q;
+    logic [63:0] stalled_wdata_q;
+    logic [7:0]  stalled_wstrb_q;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
-    assign mem_ready = mem_valid;
+    assign mem_ready = (MEM_RESPONSE_DELAY_CYCLES == 0) ? mem_valid :
+                       (mem_valid && memory_response_active_q &&
+                        (memory_response_count_q == 0));
     assign mem_rdata = (mem_valid && mem_addr_in_range) ?
                        memory[mem_addr[8:3]] :
                        64'h0000_0000_0000_0000;
@@ -64,7 +91,10 @@ module tb_openrv64_top;
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
         .ENABLE_RV64M(1'b1),
-        .ENABLE_TRACE(1'b1)
+        .ENABLE_TRACE(1'b1),
+        .PIPE_1P_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
+        .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE),
+        .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -132,6 +162,95 @@ module tb_openrv64_top;
         clk = 1'b0;
         forever #5 clk = ~clk;
     end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            memory_response_active_q <= 1'b0;
+            memory_response_count_q <= 0;
+        end else if (MEM_RESPONSE_DELAY_CYCLES == 0) begin
+            memory_response_active_q <= 1'b0;
+            memory_response_count_q <= 0;
+        end else if (!mem_valid || mem_ready) begin
+            memory_response_active_q <= 1'b0;
+            memory_response_count_q <= 0;
+        end else if (!memory_response_active_q) begin
+            memory_response_active_q <= 1'b1;
+            memory_response_count_q <= MEM_RESPONSE_DELAY_CYCLES - 1;
+        end else if (memory_response_count_q != 0) begin
+            memory_response_count_q <= memory_response_count_q - 1;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            stalled_request_q <= 1'b0;
+            stalled_write_q <= 1'b0;
+            stalled_addr_q <= 64'd0;
+            stalled_wdata_q <= 64'd0;
+            stalled_wstrb_q <= 8'd0;
+        end else if (mem_valid && !mem_ready) begin
+            if (stalled_request_q &&
+                ({mem_write, mem_addr, mem_wdata, mem_wstrb} !==
+                 {stalled_write_q, stalled_addr_q,
+                  stalled_wdata_q, stalled_wstrb_q}))
+                $fatal(1, "memory request changed while target was not ready");
+            stalled_request_q <= 1'b1;
+            stalled_write_q <= mem_write;
+            stalled_addr_q <= mem_addr;
+            stalled_wdata_q <= mem_wdata;
+            stalled_wstrb_q <= mem_wstrb;
+        end else begin
+            stalled_request_q <= 1'b0;
+        end
+    end
+
+    generate
+        if (PIPE_1P_MEM_4_STAGE) begin : g_check_mem_4_stage
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    mem_request_stage_count <= 0;
+                    mem_response_stage_count <= 0;
+                    mem_completion_stage_count <= 0;
+                    mem_resume_stage_count <= 0;
+                end else begin
+                    if (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                        request_valid_q)
+                        mem_request_stage_count <=
+                            mem_request_stage_count + 1;
+                    if (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                        response_valid_q)
+                        mem_response_stage_count <=
+                            mem_response_stage_count + 1;
+                    if (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                        completion_valid_q)
+                        mem_completion_stage_count <=
+                            mem_completion_stage_count + 1;
+                    if (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                        resume_valid_q)
+                        mem_resume_stage_count <= mem_resume_stage_count + 1;
+                    if ((dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                         request_valid_q &&
+                         (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                          response_valid_q ||
+                          dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                          completion_valid_q ||
+                          dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                          resume_valid_q)) ||
+                        (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                         response_valid_q &&
+                         (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                          completion_valid_q ||
+                          dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                          resume_valid_q)) ||
+                        (dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                         completion_valid_q &&
+                         dut.u_core.u_core_bus.g_gen.g_pipe_mem_4_stage.
+                         resume_valid_q))
+                        $fatal(1, "1P memory pipeline stages overlap");
+                end
+            end
+        end
+    endgenerate
 
     task automatic put_instr;
         input int unsigned instr_index;
@@ -281,6 +400,14 @@ module tb_openrv64_top;
             saw_pmp_trap <= 1'b0;
             saw_bp_stall <= 1'b0;
             saw_bp_branch_stall <= 1'b0;
+            saw_csr_serial_start_inhibit <= 1'b0;
+            saw_csr_serial_tail_cycle <= 1'b0;
+            csr_serial_busy_raw_prev_q <= 1'b0;
+            issue_inhibit_latch_set_prev_q <= 1'b0;
+            issue_inhibit_immediate_prev_q <= 1'b0;
+            issue_inhibit_owner_active_prev_q <= 1'b0;
+            global_issue_inhibit_prev_q <= 1'b0;
+            saw_global_issue_tail <= 1'b0;
             trace_arch_count <= 0;
             trace_exception_count <= 0;
         end else if (dut.u_core.hard_flush_trap_req &&
@@ -289,7 +416,7 @@ module tb_openrv64_top;
             saw_pmp_trap <= 1'b1;
         end else if (dut.u_core.hard_flush_restart_req) begin
             saw_fence_i_restart <= 1'b1;
-        end else if (mem_valid && mem_write) begin
+        end else if (mem_valid && mem_ready && mem_write) begin
             int lane;
 
             if (mem_addr == 64'h0000_0000_0000_0080) begin
@@ -309,6 +436,72 @@ module tb_openrv64_top;
         end
 
         if (rst_n) begin
+            if (dut.u_core.u_exec.g_1p.u_exec.csr_busy_i !== 1'b0)
+                $fatal(1, "CSR busy leaked into execute ready control");
+            if (dut.u_core.issue_inhibit_immediate !==
+                (dut.u_core.hard_flush_trap_req ||
+                 dut.u_core.hard_flush_irq_req)) begin
+                $fatal(1,
+                       "owned slow control leaked into immediate issue inhibit");
+            end
+            if (dut.u_core.csr_serial_busy_q !==
+                csr_serial_busy_raw_prev_q) begin
+                $fatal(1,
+                       "CSR serial busy was not delayed exactly one cycle");
+            end
+            csr_serial_busy_raw_prev_q <=
+                dut.u_core.csr_serial_busy_raw;
+
+            if (dut.u_core.global_issue_inhibit_q !==
+                (issue_inhibit_latch_set_prev_q ||
+                 issue_inhibit_immediate_prev_q ||
+                 (global_issue_inhibit_prev_q &&
+                  issue_inhibit_owner_active_prev_q))) begin
+                $fatal(1,
+                       "global issue-inhibit latch violated set/hold/release");
+            end
+            issue_inhibit_latch_set_prev_q <=
+                dut.u_core.issue_inhibit_latch_set;
+            issue_inhibit_immediate_prev_q <=
+                dut.u_core.issue_inhibit_immediate;
+            issue_inhibit_owner_active_prev_q <=
+                dut.u_core.issue_inhibit_owner_active;
+            global_issue_inhibit_prev_q <=
+                dut.u_core.global_issue_inhibit_q;
+            if (dut.u_core.global_issue_inhibit_q &&
+                !dut.u_core.control_event_inhibit)
+                saw_global_issue_tail <= 1'b1;
+
+            if (dut.u_core.csr_serial_busy_raw &&
+                !dut.u_core.csr_serial_busy_q) begin
+                saw_csr_serial_start_inhibit <= 1'b1;
+                if (!dut.u_core.global_issue_inhibit ||
+                    dut.u_core.dispatch_exec_issue_valid ||
+                    dut.u_core.dispatch_exec_clear) begin
+                    $fatal(1,
+                           "CSR serial start cycle did not inhibit issue");
+                end
+            end
+
+            if (!dut.u_core.csr_serial_busy_raw &&
+                dut.u_core.csr_serial_busy_q) begin
+                saw_csr_serial_tail_cycle <= 1'b1;
+            end
+
+            if (dut.u_core.global_issue_inhibit &&
+                (dut.u_core.dispatch_exec_issue_valid ||
+                 dut.u_core.dispatch_exec_clear)) begin
+                $fatal(1, "global issue inhibit leaked an issue handshake");
+            end
+
+            if (dut.u_core.icache_invalidate_q) begin
+                if (!dut.u_core.global_issue_inhibit_q ||
+                    dut.u_core.fetch_pc_valid ||
+                    dut.u_core.invalidate_fetch ||
+                    !dut.u_core.restart_fetch_req)
+                    $fatal(1, "FENCE.I did not hold invalidate before restart");
+            end
+
             if (dut.u_core.bp_decode_stall) begin
                 saw_bp_stall <= 1'b1;
             end
@@ -428,11 +621,23 @@ module tb_openrv64_top;
                 $fatal(1, "FENCE.I did not issue a frontend restart");
             end
 
-            if (!saw_bp_stall) begin
+            if (!saw_csr_serial_start_inhibit) begin
+                $fatal(1, "CSR serial start-cycle inhibit was not observed");
+            end
+
+            if (!saw_csr_serial_tail_cycle) begin
+                $fatal(1, "CSR serial extra tail cycle was not observed");
+            end
+
+            if (!saw_global_issue_tail) begin
+                $fatal(1, "next-cycle global issue inhibit was not observed");
+            end
+
+            if (REQUIRE_BP_COVERAGE && !saw_bp_stall) begin
                 $fatal(1, "branch predictor stall was never observed");
             end
 
-            if (!saw_bp_branch_stall) begin
+            if (REQUIRE_BP_COVERAGE && !saw_bp_branch_stall) begin
                 $fatal(1, "conditional-branch predictor stall was never observed");
             end
 
@@ -444,6 +649,18 @@ module tb_openrv64_top;
             if (trace_arch_count != 18 || trace_exception_count != 1) begin
                 $fatal(1, "trace retire counts mismatch: arch=%0d exception=%0d",
                        trace_arch_count, trace_exception_count);
+            end
+
+            if (PIPE_1P_MEM_4_STAGE &&
+                (MEM_RESPONSE_DELAY_CYCLES == 0) &&
+                ((mem_request_stage_count == 0) ||
+                 (mem_request_stage_count != mem_response_stage_count) ||
+                 (mem_request_stage_count != mem_completion_stage_count) ||
+                 (mem_request_stage_count != mem_resume_stage_count))) begin
+                $fatal(1,
+                       "1P four-stage memory counts mismatch: request=%0d response=%0d completion=%0d resume=%0d",
+                       mem_request_stage_count, mem_response_stage_count,
+                       mem_completion_stage_count, mem_resume_stage_count);
             end
 
             if (dut.u_core.u_csrs.u_cmu.mcycle_q <=
@@ -491,7 +708,7 @@ module tb_openrv64_top;
     end
 
     initial begin
-        repeat (480) @(posedge clk);
+        repeat (800) @(posedge clk);
         $fatal(1, "timeout waiting for halt");
     end
 

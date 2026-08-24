@@ -1,8 +1,13 @@
 # Aggregate targets and phony declarations.
 
-.PHONY: FORCE fpga-sd-image verify-fpga-sd-image fpga-sd-boot-rom \
-	fpga-sd-boot-bitstream \
-	sim-fpga-sd-boot sim-ethernet \
+.PHONY: FORCE fpga-sd-image verify-fpga-sd-image fpga-opensbi-core-dcp \
+	fpga-sd-boot-rom \
+	fpga-sd-boot-bitstream fpga-sd-boot-bitstream-check \
+	fpga-program-bitstream \
+	fpga-jtag-snoop \
+	fpga-sd-boot-core-timing-report \
+	fpga-sd-boot-core-timing-report-check \
+	sim-fpga-sd-boot sim-fpga-jtag-snoop sim-ethernet \
 	sw-uart sw-fp-daxpy sw-fp-daxpy-compute \
 	sw-fp-daxpy-store \
 	sw-fp-fmadd32 sw-fp-faults \
@@ -37,7 +42,7 @@
 	sw-memcpy sw-memcpy-4k sw-memcpy-64k sw-memcpy-sweep \
 	sim-memcpy sim-memcpy-4k sim-memcpy-64k sim-memcpy-sweep \
 	bench-memcpy bench-memcpy-4k bench-memcpy-64k bench-memcpy-sweep \
-	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-spi sim-rom sim-memory sim-soc-bus sim-core-bus sim-icx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
+	sw-coremark-loop-a53 sw-coremark-loop-a53-gem5 sw-vector-matmul sw-matmul-bf16 sim-coremark-loop-a53-qemu sim-coremark-loop-a53-gem5 opensbi sim-opensbi sim-opensbi-icarus sim sim-top sim-platform sim-reset-sequencer sim-uart-firmware sim-uart-firmware-perf sim-top-trace sim-sw-trace trace-report sim-clint sim-plic sim-uart sim-gpio sim-timer sim-spi sim-rom sim-memory sim-soc-bus sim-core-bus sim-icx-bus sim-tlb sim-micro-tlb sim-tlb-l2 sim-ptw sim-ptw-context sim-decode-early sim-decode-top sim-decode-imm sim-decode-alu sim-decode-lsu sim-decode-reg-alu sim-decode-reg-lsu sim-decode-br sim-isa-bitmanip sim-stage sim-rv64-i-gpr sim-rv64-i-gpr-3p sim-rv64-i-csrs sim-rv64-i-pmp sim-fetch sim-fetch-2p sim-fetch-3w sim-prefix-addsub sim-dispatch sim-dispatch-barrier-3p sim-dispatch-issue-3p sim-dispatch-window-3p sim-dispatch-3p sim-reg-map-3p sim-exec-alu-rv64-i sim-exec-alu-rv64-m sim-exec-top-3p sim-exec-pipe-mem-timeout sim-exec-lsu-rv64-i sim-exec-lsu-rv64-a sim-atomic-context sim-recursive-lock-context sim-wfi-context sim-exec-br sim-exec-bp sim-bp-context sim-bp-context-always-branch sim-bp-context-no-predecode sim-bp-context-always-decline sim-bp-context-repeat-last sim-bp-context-btfnt sim-bp-context-bimodal sim-except sim-exec-system-csr sim-trap-context sim-priv-context sim-irq-context sim-load-use-context sim-reg-owner sim-retire-queue-3p sim-retire-3p sim-backend-3p sim-top-3p sim-top-axi-3p sim-top-axi-3p-bp sim-top-axi-3p-perf sky130-liberty yosys-timing-alu yosys-timing-alu-rv64i yosys-timing-alu-rv64m yosys-timing-alu-rv64i-sky130 yosys-timing-frontend yosys-timing-frontend-sky130 clean
 .PHONY: sim-isa-fp sim-rv64-fd-fpr sim-fpu-csrs sim-exec-ext-zbb \
 	sim-exec-fpu-rv64-fd sim-exec-fpu-rv64-fd-compact-mul \
 	sim-fd-dispatch sim-fd-uop-harness sim-fd-uop-harness-compact-mul \
@@ -56,7 +61,7 @@
 	$(foreach case,$(COHERENCE_PERF_CASES),\
 	sim-4h-3p-coherence-$(harts)h-$(case)))
 .PHONY: sim-bp-context-gshare-btb sim-bp-context-gshare-btb-512 \
-	sim-bp-context-tournament-btb
+	sim-bp-context-tournament-btb sim-bp-context-fpga-queue
 .PHONY: yosys-resources-core-sky130
 .PHONY: nangate45-liberty yosys-timing-alu-rv64i-nangate45 \
 	yosys-timing-frontend-nangate45 \

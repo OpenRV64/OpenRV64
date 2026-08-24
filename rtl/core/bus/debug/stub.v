@@ -11,6 +11,13 @@ module openrv64_bus_debug_stub #(
 ) (
     input wire lsu_pipe_req_ready /* verilator public_flat_rd */,
     input wire lsu_pipe_req_write /* verilator public_flat_rd */,
+    input wire lsu_xlate_accept /* verilator public_flat_rd */,
+    input wire lsu_xlate_write_accept /* verilator public_flat_rd */,
+    input wire lsu_page_screen_accept /* verilator public_flat_rd */,
+    input wire lsu_page_screen_write_accept
+        /* verilator public_flat_rd */,
+    input wire lsu_page_screen_fill /* verilator public_flat_rd */,
+    input wire lsu_page_screen_invalidate /* verilator public_flat_rd */,
     input wire pipe_fast_request_fire /* verilator public_flat_rd */,
     input wire pipe_fallback_candidate /* verilator public_flat_rd */,
     input wire fetch_cancelled_q [0:FETCH_OUTSTANDING-1]

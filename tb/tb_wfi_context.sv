@@ -218,6 +218,35 @@ module tb_wfi_context;
         end
     endtask
 
+    task automatic wake_probe_hit_once;
+        begin
+            wait_for_sleep();
+            count_before =
+                dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[2];
+            @(negedge clk);
+            force dut.g_backend_3p.u_core_3p.l1d_probe_hit = 1'b1;
+            @(posedge clk);
+            #1;
+            if (wfi_sleep)
+                $fatal(1, "successful L1D probe did not wake WFI");
+            @(negedge clk);
+            release dut.g_backend_3p.u_core_3p.l1d_probe_hit;
+
+            wait_cycles = 0;
+            while ((dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[2] !=
+                    (count_before + 64'd1)) &&
+                   (wait_cycles < 300)) begin
+                @(posedge clk);
+                #1;
+                wait_cycles = wait_cycles + 1;
+            end
+            if (dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[2] !=
+                (count_before + 64'd1))
+                $fatal(1,
+                    "successful L1D probe woke but PC+4 did not retire");
+        end
+    endtask
+
     initial begin
         for (test_index = 0; test_index < MEM_WORDS;
              test_index = test_index + 1)
@@ -294,6 +323,7 @@ module tb_wfi_context;
         for (test_index = 0; test_index < 6;
              test_index = test_index + 1)
             wake_once(test_index);
+        wake_probe_hit_once();
 
         wait_for_sleep();
         if (dbg_halted)
@@ -349,7 +379,7 @@ module tb_wfi_context;
                 dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[4],
                 dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[5]);
         $display(
-            "PASS: WFI entry race, disabled IRQ hold, all local wake sources, and interrupt trap at WFI+4");
+            "PASS: WFI entry race, IRQ/probe wake, clock gating, and interrupt trap at WFI+4");
         $finish;
     end
 

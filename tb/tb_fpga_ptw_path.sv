@@ -82,6 +82,7 @@ module tb_fpga_ptw_path;
         // constant-folded @* cache block no sensitivity list. Verilator uses
         // the FPGA system's exact zero-entry configuration.
         .PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
+        .ENABLE_ICX_SHOOTDOWN(0),
         .ICX_TIMEOUT_CYCLES(1000),
         .HART_ID(4'd0),
         .TXN_ID(4'd0)
@@ -274,16 +275,36 @@ module tb_fpga_ptw_path;
                    memory_request_count);
         @(posedge clk);
 
-        // The invalidation fence must traverse the same endpoint but must not
-        // generate a DDR transaction after all blocking reads have completed.
+        // Start another walk and invalidate it in BACKEND_PMP.  PMP remains
+        // live in parallel, while sequential invalidation discards its result.
+        ptw_req_valid = 1'b1;
+        while (!ptw_req_ready)
+            @(negedge clk);
+        @(posedge clk);
+        #1;
+        ptw_req_valid = 1'b0;
+        wait (pmp_valid);
         invalidate = 1'b1;
+        #1;
+        if (!pmp_valid)
+            $fatal(1, "local invalidation suppressed parallel PMP probe");
+        if (!invalidate_busy)
+            $fatal(1, "local invalidation did not assert busy for its pulse");
+        if (icx_req_valid &&
+            (icx_req_op == `OPENRV64_ICX_OP_FENCE))
+            $fatal(1, "noncoherent PTW emitted an ICX shootdown");
         @(posedge clk);
         #1;
         invalidate = 1'b0;
-        wait (invalidate_busy);
-        wait (!invalidate_busy);
+        #1;
+        if (invalidate_busy)
+            $fatal(1, "local invalidation extended past its pulse");
+        wait (ptw_resp_valid);
+        if (!ptw_resp_invalidated || ptw_resp_page_fault ||
+            ptw_resp_access_fault)
+            $fatal(1, "invalidated PMP-stage walk published a fault/result");
         if (memory_request_count != 24)
-            $fatal(1, "shootdown fence touched DDR");
+            $fatal(1, "PMP-stage invalidation touched DDR");
 
         $display("OPENRV64 FPGA PTW PATH PASS");
         $finish;

@@ -14,6 +14,11 @@ output_log=${OUTPUT_LOG:-$output_dir/yosys-system.log}
 uart_linux_load_enable=${UART_LINUX_LOAD_ENABLE:-0}
 sd_rom_boot_enable=${SD_ROM_BOOT_ENABLE:-0}
 rom_init_file=${ROM_INIT_FILE:-}
+core_clock_hz=${FPGA_CORE_CLOCK_HZ:-14000000}
+uart_reference_clock_hz=${FPGA_UART_REFERENCE_CLOCK_HZ:-14745600}
+spi_fast_half_period_cycles=${FPGA_SPI_FAST_HALF_PERIOD_CYCLES:-1}
+ethernet_mdc_half_period_cycles=${FPGA_ETHERNET_MDC_HALF_PERIOD_CYCLES:-3}
+ethernet_phy_reset_cycles=${FPGA_ETHERNET_PHY_RESET_CYCLES:-110000}
 
 if ! yosys_bin=$(command -v "$yosys_bin"); then
     echo "error: Yosys executable not found: ${YOSYS:-yosys}" >&2
@@ -38,6 +43,16 @@ if [[ "$sd_rom_boot_enable" == 1 && ! -s "$rom_init_file" ]]; then
     echo "error: SD boot ROM init file not found: $rom_init_file" >&2
     exit 2
 fi
+for value_name in core_clock_hz uart_reference_clock_hz \
+                  spi_fast_half_period_cycles \
+                  ethernet_mdc_half_period_cycles \
+                  ethernet_phy_reset_cycles; do
+    value=${!value_name}
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: $value_name must be a positive integer" >&2
+        exit 2
+    fi
+done
 
 mkdir -p "$output_dir"
 
@@ -62,6 +77,7 @@ sources=(
     "$script_dir/mig_scalar_bridge.sv"
     "$script_dir/scalar_mem_cdc.sv"
     "$script_dir/scalar_icx_arbiter.sv"
+    "$script_dir/jtag_snoop.sv"
     "$script_dir/opensbi_boot_uart_status.sv"
     "$script_dir/opensbi_system.sv"
 )
@@ -81,9 +97,15 @@ for source in "${sources[@]}"; do
 done
 
 flow="read_verilog -lib +/xilinx/cells_sim.v; \
+read_verilog -lib +/xilinx/cells_xtra.v; \
 $read_command; \
 chparam -set UART_LINUX_LOAD_ENABLE $uart_linux_load_enable \
         -set SD_ROM_BOOT_ENABLE $sd_rom_boot_enable \
+        -set CORE_CLOCK_HZ $core_clock_hz \
+        -set UART_REFERENCE_CLOCK_HZ $uart_reference_clock_hz \
+        -set SPI_FAST_HALF_PERIOD_CYCLES $spi_fast_half_period_cycles \
+        -set ETHERNET_MDC_HALF_PERIOD_CYCLES $ethernet_mdc_half_period_cycles \
+        -set ETHERNET_PHY_RESET_CYCLES $ethernet_phy_reset_cycles \
         -set ROM_INIT_FILE \"$rom_init_file\" \
         openrv64_fpga_opensbi_system; \
 hierarchy -check -top openrv64_fpga_opensbi_system; \

@@ -746,15 +746,6 @@ module openrv64_l1i_icx #(
          (retire_age_valid_i[2] &&
           same_line(slot_vaddr_q[fill_slot_r],
                     retire_age_addr_i[2*ADDR_WIDTH +: ADDR_WIDTH])));
-    wire prefetch_complete_age = l1_response_prefetch &&
-        (cache_aged_q || cache_age_match_now);
-    wire [3:0] l1_age_valid = {2'b00, prefetch_complete_age,
-                               age_slot_found_r};
-    wire [4*ADDR_WIDTH-1:0] l1_age_addr = {
-        {2*ADDR_WIDTH{1'b0}}, cache_paddr_q,
-        slot_paddr_q[age_slot_r]
-    };
-
     assign req_ready_o = l1_req_ready && response_free_found_r &&
                          !invalidate_valid_i;
     assign resp_valid_o = output_stored_response ||
@@ -900,8 +891,11 @@ module openrv64_l1i_icx #(
         .invalidate_ready_o(l1_invalidate_ready),
         .invalidate_all_i(invalidate_all_i),
         .invalidate_addr_i(invalidate_addr_i),
-        .age_valid_i(l1_age_valid),
-        .age_addr_i(l1_age_addr),
+        // Age-at-request and age-at-fill remain supported.  Retroactive age
+        // hints for already-resident lines are best-effort replacement policy,
+        // and are dropped rather than adding another tag-RAM read port.
+        .age_valid_i(4'b0000),
+        .age_addr_i({4*ADDR_WIDTH{1'b0}}),
         .mem_valid_o(l1_mem_valid),
         .mem_ready_i(l1_mem_ready),
         .mem_write_o(l1_mem_write),
@@ -1013,15 +1007,26 @@ module openrv64_l1i_icx #(
                     select_demand && req_mxr_i;
                 response_upper_half_q[response_free_index_r] <=
                     select_demand ? req_addr_i[5] : cache_vaddr_q[5];
-                response_wait_mshr_q[response_free_index_r] <=
-                    l1_miss_fire;
+                response_wait_mshr_q[response_free_index_r] <= 1'b0;
                 response_mshr_q[response_free_index_r] <=
-                    demand_mshr_match_found_r ?
-                    demand_mshr_match_index_r :
-                    demand_mshr_free_index_r;
+                    {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
                 response_error_q[response_free_index_r] <= 1'b0;
                 if (select_prefetch)
                     l1_request_sent_q <= 1'b1;
+            end
+
+            // A synchronous tag lookup reports a detached miss one cycle
+            // after the request reserves its response slot.  Bind that slot
+            // to the selected MSHR from the tagged miss handshake rather than
+            // assuming miss classification coincides with request acceptance.
+            // This block intentionally follows request allocation so the
+            // same-cycle asynchronous-tag case retains the miss binding.
+            if (l1_miss_fire) begin
+                response_wait_mshr_q[l1_miss_tag] <= 1'b1;
+                response_mshr_q[l1_miss_tag] <=
+                    demand_mshr_match_found_r ?
+                    demand_mshr_match_index_r :
+                    demand_mshr_free_index_r;
             end
 
             if (l1_response_fire) begin
@@ -1401,7 +1406,8 @@ module openrv64_l1i_icx #(
         .DEMAND_MSHRS(DEMAND_MSHRS),
         .DEMAND_INDEX_WIDTH(DEMAND_INDEX_WIDTH),
         .DEMAND_COUNT_WIDTH(DEMAND_COUNT_WIDTH),
-        .DEMAND_MSHR_INDEX_WIDTH(DEMAND_MSHR_INDEX_WIDTH)
+        .DEMAND_MSHR_INDEX_WIDTH(DEMAND_MSHR_INDEX_WIDTH),
+        .LINE_DATA_WIDTH(`OPENRV64_ICX_LINE_DATA_WIDTH)
     ) u_debug (
         .icx_issue_fire(icx_issue_fire),
         .issue_active_q(issue_active_q),
@@ -1419,6 +1425,12 @@ module openrv64_l1i_icx #(
         .response_free_index_r(response_free_index_r),
         .response_complete_found_r(response_complete_found_r),
         .response_complete_index_r(response_complete_index_r),
+        .output_stored_response(output_stored_response),
+        .output_direct_response(output_direct_response),
+        .l1_resp_valid(l1_resp_valid),
+        .l1_resp_tag(l1_resp_tag),
+        .l1_req_rdata(l1_req_rdata),
+        .req_rdata_o(req_rdata_o),
         .response_valid_q(response_valid_q),
         .response_complete_q(response_complete_q),
         .response_prefetch_q(response_prefetch_q),

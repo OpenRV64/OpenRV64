@@ -31,6 +31,8 @@ module openrv64_rv64_top #(
     parameter integer PMP_ACTIVE_ENTRIES = 8,
     parameter ENABLE_FORWARDING = 1,
     parameter ENABLE_LOAD_FORWARDING = 0,
+    parameter PIPE_1P_MEM_4_STAGE = 0,
+    parameter PIPE_1P_DECODE_QUEUE = 0,
     parameter FPGA_GPR_LUTRAM = 0,
     parameter integer TLB_ENTRIES = 16,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -141,7 +143,21 @@ module openrv64_rv64_top #(
     reg wfi_sleep_q;
     reg halt_pending_q;
     reg reset_pending_q;
-    reg redirect_dispatch_flush_q;
+    reg redirect_pending_q;
+    reg redirect_direction_pending_q;
+    reg redirect_target_mispredict_pending_q;
+    reg [`RV64_XLEN-1:0] redirect_target_q;
+    reg csr_serial_busy_q;
+    reg restart_fetch_q;
+    reg global_issue_inhibit_q;
+    reg serial_control_inflight_q;
+    reg store_inflight_q;
+    reg sfence_vma_inflight_q;
+    reg satp_write_inflight_q;
+    reg pmp_write_inflight_q;
+    reg translation_invalidate_q;
+    reg icache_invalidate_q;
+    reg pmp_invalidate_q;
     reg [63:0] trace_cycle_q;
     reg [63:0] trace_next_id_q;
 
@@ -393,7 +409,7 @@ module openrv64_rv64_top #(
     wire csr_pmp_busy;
     wire csr_satp_busy;
     wire csr_hpm_busy;
-    wire csr_serial_busy =
+    wire csr_serial_busy_raw =
         csr_pmp_busy || csr_satp_busy || csr_hpm_busy;
     wire core_mem_valid;
     wire core_mem_ready;
@@ -430,7 +446,10 @@ module openrv64_rv64_top #(
     wire hard_flush_sret_req;
     wire hard_flush_restart_req;
     wire hard_flush_req;
+    wire redirect_decision_req;
+    wire redirect_capture_req;
     wire flush_fetch;
+    wire restart_fetch_req;
     wire invalidate_fetch;
     wire redirect_fetch;
     wire flush_if_id;
@@ -438,6 +457,23 @@ module openrv64_rv64_top #(
     wire flush_ex_mem;
     wire flush_mem_wb;
     wire drain_fetch_req;
+    wire control_event_inhibit;
+    wire issue_inhibit_immediate;
+    wire issue_inhibit_latch_set;
+    wire issue_inhibit_owner_active;
+    wire global_issue_inhibit;
+    wire dispatch_exec_issue_valid;
+    wire dispatch_exec_clear;
+    wire exec_mem_issue_valid;
+    wire instruction_issue_fire;
+    wire serial_control_issue;
+    wire store_issue;
+    wire sfence_vma_issue;
+    wire satp_write_issue;
+    wire pmp_write_issue;
+    wire store_memory_complete;
+    wire maintenance_invalidate_event;
+    wire maintenance_invalidate_active;
 
     wire decode_ebreak = (if_id_instr == `RV64_INSTR_EBREAK);
     wire decode_ecall = (if_id_instr == `RV64_INSTR_ECALL);
@@ -464,28 +500,51 @@ module openrv64_rv64_top #(
     wire retire_fence_i = retire_fence &&
                           (`RV64_FUNCT3(exec_wb_instr) ==
                            `RV64_ZIFENCEI_FUNCT3_FENCE_I);
-    wire retire_sfence_vma = retire_accept &&
-                             !exec_wb_exception &&
-                             `RV64_IS_SFENCE_VMA(exec_wb_instr);
-    wire retire_csr_write_required =
-        (`RV64_FUNCT3(exec_wb_instr) == `RV64_ZICSR_FUNCT3_CSRRW) ||
-        (`RV64_FUNCT3(exec_wb_instr) == `RV64_ZICSR_FUNCT3_CSRRWI) ||
-        (((`RV64_FUNCT3(exec_wb_instr) ==
-           `RV64_ZICSR_FUNCT3_CSRRS) ||
-          (`RV64_FUNCT3(exec_wb_instr) ==
-           `RV64_ZICSR_FUNCT3_CSRRC) ||
-          (`RV64_FUNCT3(exec_wb_instr) ==
-           `RV64_ZICSR_FUNCT3_CSRRSI) ||
-          (`RV64_FUNCT3(exec_wb_instr) ==
-           `RV64_ZICSR_FUNCT3_CSRRCI)) &&
-         (`RV64_RS1(exec_wb_instr) != `RV64_REG_X0));
-    wire retire_satp_write = retire_csr &&
-                             !exec_wb_exception &&
-                             retire_csr_write_required &&
-                             (`RV64_CSR(exec_wb_instr) ==
-                              `RV64_CSR_SATP);
+    // Translation-control instructions already drain the 1P pipe before
+    // issue.  Classify them once at that boundary and retain the result while
+    // execute's serializing state prevents younger issue.  Retirement then
+    // consumes a registered bit instead of decoding the full WB instruction
+    // through the frontend-restart cone.
+    assign instruction_issue_fire = dispatch_exec_issue_valid && exec_clear;
+    assign serial_control_issue = instruction_issue_fire &&
+                                  (dispatch_exec_system ||
+                                   dispatch_exec_fence ||
+                                   dispatch_exec_illegal ||
+                                   dispatch_exec_instr_fault ||
+                                   dispatch_exec_instr_page_fault);
+    assign store_issue = instruction_issue_fire &&
+                         dispatch_exec_mem_write;
+    assign sfence_vma_issue = instruction_issue_fire &&
+                              dispatch_exec_system &&
+                              `RV64_IS_SFENCE_VMA(dispatch_exec_instr);
+    assign satp_write_issue = exec_csr_write &&
+                              (exec_csr_addr == `RV64_CSR_SATP);
+    assign pmp_write_issue = exec_csr_write &&
+        (((exec_csr_addr == `RV64_CSR_PMPCFG0) ||
+          (exec_csr_addr == `RV64_CSR_PMPCFG2)) ||
+         ((exec_csr_addr >= `RV64_CSR_PMPADDR0) &&
+          (exec_csr_addr <= `RV64_CSR_PMPADDR15)));
+    wire retire_sfence_vma = retire_arch && sfence_vma_inflight_q;
+    wire retire_satp_write = retire_arch && satp_write_inflight_q;
+    wire retire_pmp_write = retire_arch && pmp_write_inflight_q;
     wire retire_translation_fence =
         retire_sfence_vma || retire_satp_write;
+    // All explicit maintenance invalidations use the same registered flow.
+    // Trap/return and branch redirects are control transfers, not maintenance
+    // invalidations, and retain their lower-latency paths.
+    assign maintenance_invalidate_event =
+        retire_translation_fence || retire_fence_i || retire_pmp_write;
+    assign maintenance_invalidate_active =
+        translation_invalidate_q || icache_invalidate_q ||
+        pmp_invalidate_q;
+    // The owning STORE/AMO is the only instruction allowed into EX/MEM while
+    // store_inflight_q is set.  Release on that stage's completion handshake,
+    // after translation, PMP, memory response, and fault classification have
+    // all completed.  This avoids both an unsafe arbitrary-retire release and
+    // a redundant WB opcode decode.
+    assign store_memory_complete = store_inflight_q &&
+                                   exec_trace_mem_valid &&
+                                   exec_trace_mem_clear;
     wire wfi_irq_take = wfi_sleep_q && csr_irq_pending;
     wire irq_take = wfi_irq_take ||
                     (csr_irq_pending &&
@@ -504,39 +563,107 @@ module openrv64_rv64_top #(
     wire [`RV64_XLEN-1:0] trap_tval =
         irq_take ? 64'd0 : exec_wb_tval;
 
-    assign hard_flush_redirect_req = exec_redirect_valid ||
-                                     bp_target_mispredict;
     assign hard_flush_trap_req = retire_exception && !exec_wb_halt;
     assign hard_flush_irq_req = irq_take;
     assign hard_flush_mret_req = retire_mret;
     assign hard_flush_sret_req = retire_sret;
     assign hard_flush_restart_req =
-        retire_fence_i || retire_translation_fence || retire_wfi;
+        maintenance_invalidate_event || retire_wfi;
     assign hard_flush_req = except_vector_valid;
 
-    assign flush_if_id = hard_flush_req;
+    // Retirement control events become architectural flushes at the clock
+    // edge.  During the decision cycle, inhibit younger execution and memory
+    // launch without combinationally changing registered pipeline payloads.
+    assign control_event_inhibit = hard_flush_trap_req ||
+                                   hard_flush_irq_req ||
+                                   hard_flush_mret_req ||
+                                   hard_flush_sret_req ||
+                                   hard_flush_restart_req;
+    // Resolve locally in execute, then perform the global redirect one cycle
+    // later.  An older retirement control event supersedes the younger branch
+    // correction instead of leaving a stale redirect pending behind it.
+    assign redirect_decision_req = exec_redirect_valid ||
+                                   bp_target_mispredict;
+    assign redirect_capture_req = redirect_decision_req &&
+                                  !control_event_inhibit;
+    assign hard_flush_redirect_req = redirect_pending_q;
+    // One owned latch is the scalar issue choke point.  System/fence/faulting
+    // controls and stores acquire it when they issue.  Controls release at
+    // retirement; stores release only after EX/MEM has classified the memory
+    // result.  Redirect, CSR, and translation owners keep the same latch set
+    // until their registered work completes.  Only traps and interrupts are
+    // truly sudden retirement events; they acquire the latch immediately and
+    // retain one conservative tail cycle.
+    //
+    // Do not gate the LSU request with this latch: a store owns the latch
+    // precisely so translation, PMP, and the memory response can run while no
+    // younger instruction issues.
+    // Slow CSR busy is deliberately absent here.  The issuing serial control
+    // sets global_issue_inhibit_q at the edge, then raw/registered CSR busy
+    // may only retain that flop.  This removes the PMP/CSR sequencer from the
+    // same-cycle issue-clear cone.
+    assign issue_inhibit_immediate = hard_flush_trap_req ||
+                                     hard_flush_irq_req;
+    assign issue_inhibit_latch_set = serial_control_issue ||
+                                     store_issue ||
+                                     redirect_capture_req;
+    assign issue_inhibit_owner_active =
+        serial_control_inflight_q ||
+        store_inflight_q ||
+        redirect_pending_q ||
+        csr_serial_busy_raw ||
+        csr_serial_busy_q ||
+        translation_barrier_busy ||
+        maintenance_invalidate_active;
+    assign global_issue_inhibit = issue_inhibit_immediate ||
+                                  global_issue_inhibit_q;
+    assign dispatch_exec_issue_valid = dispatch_exec_valid &&
+                                       !global_issue_inhibit;
+    assign dispatch_exec_clear = exec_clear && !global_issue_inhibit;
+    assign exec_mem_issue_valid = exec_mem_valid &&
+                                  !translation_barrier_busy &&
+                                  !control_event_inhibit;
+
+    // The retirement redirect clears IF/ID first.  Keep it empty while the
+    // registered maintenance invalidation and delayed fetch restart drain any
+    // speculative response that was already in flight.
+    assign flush_if_id = hard_flush_req ||
+                         redirect_fetch ||
+                         maintenance_invalidate_active ||
+                         restart_fetch_q;
     assign flush_id_ex = hard_flush_trap_req ||
                          hard_flush_irq_req ||
                          hard_flush_mret_req ||
                          hard_flush_sret_req ||
                          hard_flush_restart_req ||
-                         redirect_dispatch_flush_q;
+                         redirect_pending_q;
     assign flush_ex_mem = hard_flush_trap_req ||
                           hard_flush_irq_req ||
                           hard_flush_mret_req ||
                           hard_flush_sret_req;
-    assign flush_mem_wb = 1'b0;
+    // MEM/WB still presents and retires the current instruction in the event
+    // cycle.  Synchronous flush prevents a younger EX/MEM entry from replacing
+    // it at the edge.
+    assign flush_mem_wb = control_event_inhibit;
     assign drain_fetch_req = decode_ebreak_accept || halted_q;
     // Control-flow redirects discard only the unread fetch stream.  Resident
     // tagged lines survive for address-matched replay.  Context-changing
     // events and FENCE.I/SFENCE.VMA still invalidate the complete window.
+    // Maintenance invalidation is presented for one full registered cycle.
+    // Fetch restart follows on the next cycle.  WFI has no cache/TLB state to
+    // invalidate and therefore retains its direct registered restart.
+    assign restart_fetch_req = maintenance_invalidate_active || retire_wfi;
+    // Serial restart events inhibit issue immediately.  Fetch is speculative
+    // and may be replayed, so delay only that restart cancellation by one
+    // cycle.  Reset, trap, interrupt, and privilege-return cancellation remain
+    // immediate; they are not part of the slow-CSR completion cone.
     assign invalidate_fetch = reset_pending_q ||
                               drain_fetch_req ||
                               hard_flush_trap_req ||
                               hard_flush_irq_req ||
                               hard_flush_mret_req ||
                               hard_flush_sret_req ||
-                              hard_flush_restart_req;
+                              restart_fetch_q;
     assign redirect_fetch = hard_flush_redirect_req ||
                             bp_predict_redirect;
     assign flush_fetch = invalidate_fetch || redirect_fetch;
@@ -548,6 +675,7 @@ module openrv64_rv64_top #(
                             !decode_ebreak_accept &&
                             !bp_fetch_stall &&
                             !hard_flush_req &&
+                            !maintenance_invalidate_active &&
                             !translation_barrier_busy;
     assign fetch_decode_clear = if_id_in_clear && !bp_fetch_stall;
 
@@ -590,20 +718,38 @@ module openrv64_rv64_top #(
 
     assign if_id_out_clear = dispatch_decode_clear && !bp_decode_stall;
 
-    openrv64_stage #(
-        .WIDTH(IF_ID_WIDTH),
-        .REGISTERED(PIPE_IF_ID)
-    ) u_if_id (
-        .clk(clk),
-        .rst_n(rst_n),
-        .flush_i(flush_if_id),
-        .in_valid_i(fetch_decode_valid && !bp_fetch_stall),
-        .in_clear_o(if_id_in_clear),
-        .in_data_i({fetch_trace_id, fetch_decode_bus}),
-        .out_valid_o(if_id_out_valid),
-        .out_clear_i(if_id_out_clear),
-        .out_data_o(if_id_out_data)
-    );
+    generate
+        if (PIPE_1P_DECODE_QUEUE != 0) begin : g_if_id_elastic
+            openrv64_elastic_buffer #(
+                .WIDTH(IF_ID_WIDTH)
+            ) u_if_id (
+                .clk(clk),
+                .rst_n(rst_n),
+                .flush_i(flush_if_id),
+                .in_valid_i(fetch_decode_valid && !bp_fetch_stall),
+                .in_clear_o(if_id_in_clear),
+                .in_data_i({fetch_trace_id, fetch_decode_bus}),
+                .out_valid_o(if_id_out_valid),
+                .out_clear_i(if_id_out_clear),
+                .out_data_o(if_id_out_data)
+            );
+        end else begin : g_if_id_stage
+            openrv64_stage #(
+                .WIDTH(IF_ID_WIDTH),
+                .REGISTERED(PIPE_IF_ID)
+            ) u_if_id (
+                .clk(clk),
+                .rst_n(rst_n),
+                .flush_i(flush_if_id),
+                .in_valid_i(fetch_decode_valid && !bp_fetch_stall),
+                .in_clear_o(if_id_in_clear),
+                .in_data_i({fetch_trace_id, fetch_decode_bus}),
+                .out_valid_o(if_id_out_valid),
+                .out_clear_i(if_id_out_clear),
+                .out_data_o(if_id_out_data)
+            );
+        end
+    endgenerate
 
     assign {
         if_id_trace_id,
@@ -775,7 +921,7 @@ module openrv64_rv64_top #(
         .rd_data_i(wb_rd_data)
     );
 
-    wire cmu_issue_fire = dispatch_exec_valid && exec_clear;
+    wire cmu_issue_fire = dispatch_exec_issue_valid && exec_clear;
     wire cmu_fetch_fire = fetch_mem_valid && fetch_mem_ready;
     wire cmu_lsu_fire = exec_mem_valid && exec_mem_ready;
     wire [`OPENRV64_CMU_EVENT_COUNT-1:0] cmu_perf_events = {
@@ -799,8 +945,8 @@ module openrv64_rv64_top #(
         flush_fetch,                               // 20 fetch cancellation
         cmu_fetch_fire,                            // 19 fetch response
         cmu_fetch_fire,                            // 18 fetch request
-        bp_target_mispredict,                      // 17 target mispredict
-        exec_redirect_valid,                       // 16 direction mispredict
+        redirect_target_mispredict_pending_q,      // 17 target mispredict
+        redirect_direction_pending_q,              // 16 direction mispredict
         1'b0,                                      // 15 redirect recovery
         hard_flush_redirect_req,                   // 14 redirect
         dispatch_exec_valid && !exec_clear,        // 13 pipe busy stall
@@ -905,7 +1051,7 @@ module openrv64_rv64_top #(
         .mepc_i(csr_mepc),
         .sepc_i(csr_sepc),
         .restart_target_i(exec_wb_next_pc),
-        .redirect_target_i(exec_redirect_target),
+        .redirect_target_i(redirect_target_q),
         .vector_valid_o(except_vector_valid),
         .vector_target_o(except_vector_target)
     );
@@ -917,7 +1063,8 @@ module openrv64_rv64_top #(
     openrv64_dispatch #(
         .BACKEND_CONFIG(BACKEND_CONFIG),
         .REGISTERED(PIPE_ID_EX),
-        .ENABLE_FORWARDING(ENABLE_FORWARDING)
+        .ENABLE_FORWARDING(ENABLE_FORWARDING),
+        .DECODE_STAGE_1P(PIPE_1P_DECODE_QUEUE)
     ) u_dispatch (
         .clk(clk),
         .rst_n(rst_n),
@@ -956,7 +1103,7 @@ module openrv64_rv64_top #(
             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .conditional_resolve_slot_3p_i(3'd0),
         .exec_valid_o(dispatch_exec_valid),
-        .exec_clear_i(exec_clear),
+        .exec_clear_i(dispatch_exec_clear),
         .exec_alu_ready_i(exec_alu_ready),
         .exec_lsu_ready_i(exec_lsu_ready),
         .exec_br_ready_i(exec_br_ready),
@@ -1045,7 +1192,7 @@ module openrv64_rv64_top #(
     ) u_exec (
         .clk(clk),
         .rst_n(rst_n),
-        .valid_i(dispatch_exec_valid),
+        .valid_i(dispatch_exec_issue_valid),
         .clear_o(exec_clear),
         .alu_ready_o(exec_alu_ready),
         .lsu_ready_o(exec_lsu_ready),
@@ -1091,7 +1238,10 @@ module openrv64_rv64_top #(
         .csr_rdata_i(exec_csr_rdata),
         .csr_valid_i(exec_csr_valid),
         .csr_writable_i(exec_csr_writable),
-        .csr_busy_i(csr_serial_busy),
+        // Slow CSR sequencers are owned by the global issue inhibit and the
+        // WB retirement hold.  Execute does not need a second copy of the
+        // interlock in every local ready path.
+        .csr_busy_i(1'b0),
         .csr_write_o(exec_csr_write),
         .csr_wdata_o(exec_csr_wdata),
         .mem_valid_o(exec_mem_valid),
@@ -1202,7 +1352,7 @@ module openrv64_rv64_top #(
     // Deliberately slow PMPADDR and SATP writes have already left execute when
     // their sequencers start.  Hold retirement and younger issue until their
     // atomic commits complete.
-    assign exec_wb_clear = !csr_serial_busy;
+    assign exec_wb_clear = !csr_serial_busy_q;
 
     openrv64_retire u_retire (
         .valid_i(exec_wb_valid),
@@ -1241,7 +1391,9 @@ module openrv64_rv64_top #(
     assign mem_wstrb = core_mem_wstrb;
 
     openrv64_core_bus #(
+        .PIPE_GEN_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
         .ENABLE_FETCH_PAGE_SCREEN(0),
+        .ENABLE_LSU_PAGE_SCREEN(0),
         .ENABLE_L1D_COHERENCE_PROBES(1'b0),
         .ENABLE_COHERENT_ATOMICS(1'b0),
         .TLB_ENTRIES(TLB_ENTRIES),
@@ -1276,7 +1428,7 @@ module openrv64_rv64_top #(
         .fetch_pipe_req_sum_i(1'b0), .fetch_pipe_req_mxr_i(1'b0),
         .fetch_pipe_resp_ready_i(1'b0),
         .fetch_pipe_cancel_stash_i(1'b1),
-        .lsu_valid_i(exec_mem_valid && !translation_barrier_busy),
+        .lsu_valid_i(exec_mem_issue_valid),
         .lsu_lock_i(exec_mem_lock),
         .lsu_write_i(exec_mem_write),
         .lsu_addr_i(exec_mem_addr),
@@ -1325,13 +1477,17 @@ module openrv64_rv64_top #(
         .lsu_xlate_req_sum_i(1'b0),
         .lsu_xlate_req_mxr_i(1'b0),
         .lsu_xlate_resp_ready_i(1'b1),
-        .tlbi_i(retire_sfence_vma),
-        .context_flush_i(retire_satp_write),
+        // All 1P translation-context changes use one fixed local sequence:
+        // retirement latches the request, the following cycle invalidates the
+        // TLB/PTW state, one inhibited restart cycle follows, then issue may
+        // resume.  There is no coherent ICX shootdown in this bus mode.
+        .tlbi_i(translation_invalidate_q),
+        .context_flush_i(1'b0),
         .fetch_context_change_i(1'b0),
-        .pmp_update_i(1'b0),
+        .pmp_update_i(pmp_invalidate_q),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(1'b0),
-        .icache_invalidate_i(retire_fence_i),
+        .icache_invalidate_i(icache_invalidate_q),
         .icache_prefetch_valid_i(1'b0),
         .icache_prefetch_taken_addr_i(64'd0),
         .icache_prefetch_fallthrough_addr_i(64'd0),
@@ -1340,6 +1496,8 @@ module openrv64_rv64_top #(
         .l1d_probe_valid_i(1'b0),
         .l1d_probe_ready_o(),
         .l1d_probe_addr_i(64'd0),
+        .l1d_sleep_i(wfi_sleep_q),
+        .l1d_probe_hit_o(),
         .req_valid_o(core_mem_valid),
         .req_ready_i(core_mem_ready),
         .req_write_o(core_mem_write),
@@ -1533,9 +1691,87 @@ module openrv64_rv64_top #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            redirect_dispatch_flush_q <= 1'b0;
+            csr_serial_busy_q <= 1'b0;
+            restart_fetch_q <= 1'b0;
+            global_issue_inhibit_q <= 1'b0;
+            serial_control_inflight_q <= 1'b0;
+            store_inflight_q <= 1'b0;
+            sfence_vma_inflight_q <= 1'b0;
+            satp_write_inflight_q <= 1'b0;
+            pmp_write_inflight_q <= 1'b0;
+            translation_invalidate_q <= 1'b0;
+            icache_invalidate_q <= 1'b0;
+            pmp_invalidate_q <= 1'b0;
         end else begin
-            redirect_dispatch_flush_q <= hard_flush_redirect_req;
+            csr_serial_busy_q <= csr_serial_busy_raw;
+            restart_fetch_q <= restart_fetch_req;
+            // Latch each maintenance kind at retirement.  All kinds share
+            // the issue-inhibit, one-cycle invalidation, and following-cycle
+            // fetch-restart sequence.
+            translation_invalidate_q <= retire_translation_fence;
+            icache_invalidate_q <= retire_fence_i;
+            pmp_invalidate_q <= retire_pmp_write;
+            global_issue_inhibit_q <= issue_inhibit_latch_set ||
+                issue_inhibit_immediate ||
+                (global_issue_inhibit_q && issue_inhibit_owner_active);
+            if (retire_accept) begin
+                serial_control_inflight_q <= 1'b0;
+                sfence_vma_inflight_q <= 1'b0;
+                satp_write_inflight_q <= 1'b0;
+                pmp_write_inflight_q <= 1'b0;
+            end
+            if (store_memory_complete || flush_ex_mem)
+                store_inflight_q <= 1'b0;
+            if (serial_control_issue)
+                serial_control_inflight_q <= 1'b1;
+            if (store_issue)
+                store_inflight_q <= 1'b1;
+            if (sfence_vma_issue)
+                sfence_vma_inflight_q <= 1'b1;
+            if (satp_write_issue)
+                satp_write_inflight_q <= 1'b1;
+            if (pmp_write_issue)
+                pmp_write_inflight_q <= 1'b1;
+        end
+    end
+
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (rst_n && sfence_vma_issue && satp_write_issue)
+            $fatal(1, "one instruction classified as SFENCE.VMA and SATP write");
+        if (rst_n &&
+            (serial_control_inflight_q || store_inflight_q) &&
+            dispatch_exec_issue_valid)
+            $fatal(1, "younger issue escaped owned issue inhibit");
+        if (rst_n && translation_invalidate_q &&
+            !global_issue_inhibit_q)
+            $fatal(1, "translation invalidation lost serial issue ownership");
+        if (rst_n && icache_invalidate_q &&
+            !global_issue_inhibit_q)
+            $fatal(1, "instruction-cache invalidation lost serial issue ownership");
+        if (rst_n && pmp_invalidate_q &&
+            !global_issue_inhibit_q)
+            $fatal(1, "PMP invalidation lost serial issue ownership");
+        if (rst_n && maintenance_invalidate_active && invalidate_fetch)
+            $fatal(1, "maintenance invalidation and fetch restart overlapped");
+    end
+`endif
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            redirect_pending_q <= 1'b0;
+            redirect_direction_pending_q <= 1'b0;
+            redirect_target_mispredict_pending_q <= 1'b0;
+            redirect_target_q <= {`RV64_XLEN{1'b0}};
+        end else begin
+            redirect_pending_q <= redirect_capture_req;
+            redirect_direction_pending_q <= exec_redirect_valid &&
+                                            !control_event_inhibit;
+            redirect_target_mispredict_pending_q <=
+                bp_target_mispredict && !control_event_inhibit;
+            // Avoid making the correction decision a 64-way clock enable.
+            // The target is ignored unless redirect_pending_q is asserted.
+            redirect_target_q <= exec_redirect_target;
         end
     end
 

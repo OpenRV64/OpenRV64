@@ -10,6 +10,18 @@ output_json=${OUTPUT_JSON:-$output_dir/openrv64_fpga_core.json}
 output_stub=${OUTPUT_STUB:-$output_dir/openrv64_fpga_core_stub.v}
 output_log=${OUTPUT_LOG:-$output_dir/yosys-core.log}
 rv64m_source=${RV64M_SOURCE:-rtl/core/exec/alu/rv64-m-fpga.v}
+pipe_1p_mem_4_stage=${PIPE_1P_MEM_4_STAGE:-1}
+pipe_1p_decode_queue=${PIPE_1P_DECODE_QUEUE:-1}
+
+if [[ "$pipe_1p_mem_4_stage" != 0 && "$pipe_1p_mem_4_stage" != 1 ]]; then
+    echo "error: PIPE_1P_MEM_4_STAGE must be 0 or 1" >&2
+    exit 2
+fi
+
+if [[ "$pipe_1p_decode_queue" != 0 && "$pipe_1p_decode_queue" != 1 ]]; then
+    echo "error: PIPE_1P_DECODE_QUEUE must be 0 or 1" >&2
+    exit 2
+fi
 
 if ! yosys_bin=$(command -v "$yosys_bin"); then
     echo "error: Yosys executable not found: ${YOSYS:-yosys}" >&2
@@ -60,6 +72,8 @@ chparam -set RESET_VECTOR 4096 \
         -set ENABLE_RV64A 1 \
         -set ENABLE_FORWARDING 1 \
         -set ENABLE_LOAD_FORWARDING 0 \
+        -set PIPE_1P_MEM_4_STAGE $pipe_1p_mem_4_stage \
+        -set PIPE_1P_DECODE_QUEUE $pipe_1p_decode_queue \
         -set PMP_ACTIVE_ENTRIES 8 \
         -set FPGA_GPR_LUTRAM 1 \
         -set L1D_CACHEABLE_BASE 2147483648 \

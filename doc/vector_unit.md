@@ -207,22 +207,37 @@ format. FP32 VMAC uses the existing FP32 multiplier result as the add input,
 so it rounds after multiply and again after add. It is intentionally a MAC,
 not an IEEE-754 single-rounding binary32 FMA.
 
-One unified FP lane bank accepts either an ordinary ADD/MUL slice or a MAC
-slice every cycle. The queued controller has one shared register-file feed, so
-the former separate banks could not issue concurrently and only duplicated the
-FP datapaths. The multiplier capacity is tapered by lane index: lanes 0--1
-compose 2-bit partial multipliers into a 24-bit FP32 significand multiplier,
-lanes 2--3 stop at 8 bits for BF16, lanes 4--7 stop at 4 bits for FP8, and lanes
-8--15 retain only a 2-bit FP4 significand multiplier. This is a regular
-correctness-first composition tree, not a compressor-tree or pooled-partial-
-product implementation. The FP32 add path remains present in every lane.
+One unified FP bank contains a single pool of 64 physical 2x2 unsigned
+multiplier tiles. A 64-bit slice presents two FP32, four BF16, eight FP8, or
+sixteen packed FP4 operations. The corresponding significand work is 288,
+64, 32, or 16 tile operations per slice: each FP4 product uses one tile, FP8
+uses four, BF16 uses sixteen, and FP32 uses 144. Narrow multiply and MAC slices
+therefore consume one tile phase and can enter every cycle. An FP32 multiply or
+MAC slice consumes five phases and has an initiation interval of five cycles.
+This is a pooled partial-product implementation; it does not instantiate a
+separate full multiplier for every logical lane.
+
+The add side remains sixteen add-only FP32 lanes, one for every FP4 element
+position. ADD can enter every cycle except when a completed MAC product has
+priority for the shared add path. This preserves the short four-cycle add
+contract, but it also means the add hardware remains deliberately
+overprovisioned for FP32 and BF16. The current work removes the gross
+multiplier duplication; it does not yet provide a width-composed shared adder.
+
+The controller snapshots source and accumulator data into a 32-entry queue in
+native 64-bit slice form before expansion. This lets register-file reads
+continue at one slice per cycle while the FP32 multiplier drains at one slice
+per five cycles, and prevents a later vector write from changing operands that
+have already been read. The queue is a local arithmetic-feed decoupler, not a
+substitute for a system-wide vector-register dependency scoreboard.
 
 Operation latency defaults to four cycles for ADD, seven for MUL, and eleven
 for MAC. MAC is the seven-cycle multiply path followed by the same four-cycle
 adder used by standalone ADD. An incoming ADD bubbles when a MAC reaches that
-shared adder, and a small completion reservation inserts a bubble when
-different operation latencies would otherwise collide on the single result
-port. Same-operation slices still issue and complete one per cycle.
+shared adder. If an ADD/MAC result and a standalone MUL result reach the single
+result port together, the multiplier result is held until the add result
+leaves. ADD and narrow-format MUL/MAC slices can issue every cycle; FP32
+MUL/MAC slices issue every five cycles.
 Context-plus-slice tags travel with every token, allowing slices from younger
 commands to follow an older command before its first result returns. If both
 complete input slices are positive zero, an ordinary ADD/MUL result is

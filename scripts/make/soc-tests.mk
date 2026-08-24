@@ -70,6 +70,9 @@ sim-ethernet: $(ETHERNET_SIM_BUILD)
 sim-fpga-sd-boot: $(FPGA_SD_BOOT_SIM_BUILD)
 	vvp $(FPGA_SD_BOOT_SIM_BUILD)
 
+sim-fpga-jtag-snoop: $(FPGA_JTAG_SNOOP_SIM_BUILD)
+	vvp $(FPGA_JTAG_SNOOP_SIM_BUILD)
+
 sim-rom: $(ROM_SIM_BUILD)
 	vvp $(ROM_SIM_BUILD)
 

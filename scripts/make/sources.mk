@@ -19,6 +19,7 @@ VEC_EXEC_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec.v
 VEC_LSU_SRCS := $(VEC_DEFS) rtl/core/exec/vec/rv64-vec-lsu.v
 ARITH_DEPS := rtl/core/arith/prefix-addsub.v
 CORE_DEBUG_STUB_SRCS := rtl/core/debug/stub.v
+CLOCK_GATE_SRC := rtl/core/clock_gate.v
 BUS_DEBUG_STUB_SRCS := rtl/core/bus/debug/stub.v
 FETCH_DEBUG_STUB_SRCS := rtl/core/fetch/debug/stub.v
 L1_DEBUG_STUB_SRCS := rtl/cache/l1/debug/stub.v \
@@ -54,7 +55,7 @@ L1_CACHE_SRCS := $(L1_DEBUG_STUB_SRCS) \
 	rtl/core/cache/l1/l1d/array.v rtl/core/cache/l1/l1d/icx.v \
 	rtl/core/cache/l1/l1d/lsu_if.v rtl/core/cache/l1/l1d/mshr.v \
 	rtl/core/cache/l1/l1d/l1d.v
-BUS_SRCS := $(BUS_DEBUG_STUB_SRCS) \
+BUS_SRCS := $(CLOCK_GATE_SRC) $(BUS_DEBUG_STUB_SRCS) \
 	rtl/core/bus/bus-defs.v \
 	rtl/core/mtl/tlb.v rtl/core/mtl/micro_tlb.v \
 	rtl/core/mtl/tlb_l2.v rtl/core/mtl/ptw.v rtl/core/mtl/pmp.v \
@@ -115,7 +116,7 @@ EXEC_SRCS := rtl/core/exec/exec_pipe_ex0.v rtl/core/exec/exec_pipe_ex1.v \
 	rtl/core/exec/br.v $(BP_SRC) rtl/core/exec/system/csr.v
 EXCEPT_SRCS := rtl/core/except/except-defs.v rtl/core/except/except.v \
 	rtl/core/except/vector.v
-STAGE_SRCS := rtl/core/stage/stage.v
+STAGE_SRCS := rtl/core/stage/stage.v rtl/core/stage/elastic_buffer.v
 RETIRE_SRCS := rtl/core/retire/retire.v rtl/core/retire/retire_queue_3p.v \
 	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v
 TRACE_SRCS := rtl/core/trace/trace-defs.v
@@ -133,7 +134,7 @@ CORE_4PF_SRCS := rtl/core/exec/fpu/top_4pf.v \
 	$(filter-out rtl/core/rv64_top.v rtl/core/rv64_top_3p.v \
 		rtl/core/backend/backend_3p.v,$(CORE_SRCS))
 CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
-	rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
+	$(CLOCK_GATE_SRC) rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
 	$(BUS_DEBUG_STUB_SRCS) \
@@ -285,6 +286,8 @@ LSU_ATOMICS_SIM_SRCS := tb/tb_lsu_atomics.sv
 EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
 EXEC_LSU_RV64A_SIM_SRCS := tb/tb_exec_lsu_rv64-a.sv
 ATOMIC_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_atomic_context.sv
+RECURSIVE_LOCK_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv \
+	tb/tb_recursive_lock_context.sv
 WFI_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_wfi_context.sv
 EXEC_BR_SIM_SRCS := tb/tb_exec_br.sv
 EXEC_BP_SIM_SRCS := tb/tb_exec_bp.sv

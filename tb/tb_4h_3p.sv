@@ -45,6 +45,7 @@ module tb_4h_3p #(
     parameter integer ENABLE_BOOT_ROM = 0,
     parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_WFI_SLEEP = 1,
+    parameter integer ENABLE_WFI_CLOCK_GATING = 1,
     parameter integer FENCE_L2_ACK_ENABLE = 1,
     parameter integer SC_EXCLUSIVE_RETAIN_ENABLE = 1,
     parameter logic [31:0] OPENSBI_FDT_BASE_LO = 32'h80f0_0000,
@@ -458,6 +459,12 @@ module tb_4h_3p #(
     integer store_allocations [0:NUM_HARTS-1];
     integer fast_store_requests [0:NUM_HARTS-1];
     integer fallback_store_requests [0:NUM_HARTS-1];
+    integer backend_clock_gated_cycles [0:NUM_HARTS-1];
+    integer l1d_clock_gated_cycles [0:NUM_HARTS-1];
+    integer wfi_probe_completions [0:NUM_HARTS-1];
+    integer wfi_probe_hits [0:NUM_HARTS-1];
+    integer wfi_irq_wakes [0:NUM_HARTS-1];
+    logic wfi_probe_hit_previous [0:NUM_HARTS-1];
 
     logic l2_write_active;
     logic [63:0] l2_write_addr;
@@ -665,6 +672,7 @@ module tb_4h_3p #(
                 .ENABLE_RV64M(1),
                 .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
                 .ENABLE_WFI_SLEEP(ENABLE_WFI_SLEEP),
+                .ENABLE_WFI_CLOCK_GATING(ENABLE_WFI_CLOCK_GATING),
                 .ENABLE_ISSUE_WINDOW(1),
                 .ENABLE_SPECULATION_WINDOW(1),
                 .ENABLE_POSTED_STORES(1),
@@ -863,8 +871,38 @@ module tb_4h_3p #(
                     coherence_measure_active[hart] <= 1'b0;
                     coherence_measure_started[hart] <= 1'b0;
                     coherence_measure_ended[hart] <= 1'b0;
+                    backend_clock_gated_cycles[hart] <= 0;
+                    l1d_clock_gated_cycles[hart] <= 0;
+                    wfi_probe_completions[hart] <= 0;
+                    wfi_probe_hits[hart] <= 0;
+                    wfi_irq_wakes[hart] <= 0;
+                    wfi_probe_hit_previous[hart] <= 1'b0;
                 end else begin
                     ipi_msip_previous[hart] <= clint_msip[hart];
+                    wfi_probe_hit_previous[hart] <=
+                        hart_wfi_sleep[hart] && u_core.l1d_probe_hit;
+                    if (wfi_probe_hit_previous[hart] &&
+                        hart_wfi_sleep[hart])
+                        $fatal(1,
+                            "hart %0d remained in WFI after an L1D probe hit",
+                            hart);
+                    if (!u_core.backend_clock_enable_q)
+                        backend_clock_gated_cycles[hart] <=
+                            backend_clock_gated_cycles[hart] + 1;
+                    if (!u_core.u_bus.g_icx.u_bus.l1d_clock_enable_q)
+                        l1d_clock_gated_cycles[hart] <=
+                            l1d_clock_gated_cycles[hart] + 1;
+                    if (hart_wfi_sleep[hart] &&
+                        l1d_invalidate_valid[hart] &&
+                        l1d_invalidate_ready[hart])
+                        wfi_probe_completions[hart] <=
+                            wfi_probe_completions[hart] + 1;
+                    if (hart_wfi_sleep[hart] && u_core.l1d_probe_hit)
+                        wfi_probe_hits[hart] <=
+                            wfi_probe_hits[hart] + 1;
+                    if (hart_wfi_sleep[hart] && u_core.csr_wfi_wake)
+                        wfi_irq_wakes[hart] <=
+                            wfi_irq_wakes[hart] + 1;
                     if ((pc_trace_fd != 0) &&
                         pc_trace_mask[hart]) begin
                         for (pc_trace_lane = 0;
@@ -3465,6 +3503,25 @@ module tb_4h_3p #(
                     if (linux_panic_seen)
                         $write(" linux_panic=1");
                     $write("\n");
+                    $display(
+                        "WFI_GATE_PROGRESS cycles=%0d backend_gated=%0d,%0d,%0d,%0d l1d_gated=%0d,%0d,%0d,%0d probe_done=%0d,%0d,%0d,%0d probe_hit=%0d,%0d,%0d,%0d irq_wake=%0d,%0d,%0d,%0d",
+                        cycles,
+                        backend_clock_gated_cycles[0],
+                        backend_clock_gated_cycles[1],
+                        backend_clock_gated_cycles[2],
+                        backend_clock_gated_cycles[3],
+                        l1d_clock_gated_cycles[0],
+                        l1d_clock_gated_cycles[1],
+                        l1d_clock_gated_cycles[2],
+                        l1d_clock_gated_cycles[3],
+                        wfi_probe_completions[0],
+                        wfi_probe_completions[1],
+                        wfi_probe_completions[2],
+                        wfi_probe_completions[3],
+                        wfi_probe_hits[0], wfi_probe_hits[1],
+                        wfi_probe_hits[2], wfi_probe_hits[3],
+                        wfi_irq_wakes[0], wfi_irq_wakes[1],
+                        wfi_irq_wakes[2], wfi_irq_wakes[3]);
                     report_lsq_older_store_stall("progress");
                     if (pc_trace_fd != 0)
                         $fflush(pc_trace_fd);
@@ -3826,6 +3883,24 @@ module tb_4h_3p #(
                         ipi_fence_responses[3],
                         ipi_send_requests[0], ipi_send_requests[1],
                         ipi_send_requests[2], ipi_send_requests[3]);
+                    $display(
+                        "WFI_CLOCK_WAKE backend_gated=%0d,%0d,%0d,%0d l1d_gated=%0d,%0d,%0d,%0d probe_done=%0d,%0d,%0d,%0d probe_hit=%0d,%0d,%0d,%0d irq_wake=%0d,%0d,%0d,%0d",
+                        backend_clock_gated_cycles[0],
+                        backend_clock_gated_cycles[1],
+                        backend_clock_gated_cycles[2],
+                        backend_clock_gated_cycles[3],
+                        l1d_clock_gated_cycles[0],
+                        l1d_clock_gated_cycles[1],
+                        l1d_clock_gated_cycles[2],
+                        l1d_clock_gated_cycles[3],
+                        wfi_probe_completions[0],
+                        wfi_probe_completions[1],
+                        wfi_probe_completions[2],
+                        wfi_probe_completions[3],
+                        wfi_probe_hits[0], wfi_probe_hits[1],
+                        wfi_probe_hits[2], wfi_probe_hits[3],
+                        wfi_irq_wakes[0], wfi_irq_wakes[1],
+                        wfi_irq_wakes[2], wfi_irq_wakes[3]);
                 end
                 if ((atomic_test != 0) &&
                     (atomic_last_value != atomic_expected))

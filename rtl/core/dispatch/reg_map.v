@@ -188,7 +188,14 @@ module openrv64_dispatch_reg_map #(
                           (ENABLE_FORWARDING ?
                            (rd_write_count_after_retire == WRITE_COUNT_MAX) :
                            (rd_write_count_after_retire != 4'd0));
-    assign read_full_hazard_o = alloc_valid_i &&
+    // With forwarding enabled, operand reads are consumed in issue order and
+    // have no later architectural ownership.  WAR checking is consequently
+    // disabled above, so retaining read counters only to detect their
+    // saturation is both unnecessary and expensive: it feeds retirement
+    // release through a count decrement, indexed comparison, and decode
+    // backpressure in one cycle.  Keep read accounting only for the
+    // conservative non-forwarding configuration.
+    assign read_full_hazard_o = !ENABLE_FORWARDING && alloc_valid_i &&
                                 ((alloc_reads_rs1 &&
                                   ({1'b0, rs1_read_count_after_retire} +
                                    {3'b000, rs1_alloc_read_add}) >

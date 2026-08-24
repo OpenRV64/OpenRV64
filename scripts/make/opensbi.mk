@@ -6,11 +6,55 @@ FPGA_SD_MANIFEST ?= $(FPGA_SD_IMAGE).json
 FPGA_SD_DTS ?= sw/opensbi.dts
 FPGA_SD_OPENSBI ?= build/opensbi-fpga-linux/artifacts/fw_jump.bin
 FPGA_SD_LINUX ?= sw/Image.Zicclsm
+FPGA_SD_TIMEBASE_FREQUENCY ?= 9216000
+FPGA_SD_UART_CLOCK_FREQUENCY ?= 9216000
+FPGA_SD_ETHERNET ?= 0
 FPGA_SD_BOOT_DIR ?= build/fpga/xc7a100t/sd-boot
+FPGA_SD_BOOT_OUTPUT_DIR ?= \
+	$(if $(OUT_DIR),$(OUT_DIR),build/fpga/xc7a100t/sd-boot)
+FPGA_SD_BOOT_BITSTREAM := \
+	$(FPGA_SD_BOOT_OUTPUT_DIR)/openrv64_myd_j7a100t_sd_boot.bit
+FPGA_SD_BOOT_TIMING_REPORT := \
+	$(FPGA_SD_BOOT_OUTPUT_DIR)/reports/timing_summary.rpt
+FPGA_SD_BOOT_POST_ROUTE_DCP := \
+	$(FPGA_SD_BOOT_OUTPUT_DIR)/reports/post_route.dcp
+FPGA_SD_BOOT_CORE_TIMING_MAX_PATHS ?= 10
+FPGA_SD_BOOT_CORE_TIMING_REPORT_NAME ?= timing_strict_core.rpt
+FPGA_SD_BOOT_CORE_TIMING_REPORT := \
+	$(FPGA_SD_BOOT_OUTPUT_DIR)/reports/$(FPGA_SD_BOOT_CORE_TIMING_REPORT_NAME)
 FPGA_SD_BOOT_UART_DIVISOR ?= 5
 FPGA_SD_BOOT_ELF := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.elf
 FPGA_SD_BOOT_BIN := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.bin
 FPGA_SD_BOOT_MEM := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.mem
+FPGA_VIVADO ?= /home/bill/bin/vivado
+FPGA_HW_SERVER_URL ?= TCP:10.1.6.21:3121
+FPGA_JTAG_SNOOP ?= tools/fpga-jtag-snoop
+FPGA_JTAG_SNOOP_ARGS ?= status
+FPGA_OPENSBI_CORE_OUTPUT_DIR ?= \
+	build/fpga/xc7a100t/opensbi-core
+FPGA_OPENSBI_CORE_EDIF := \
+	$(FPGA_OPENSBI_CORE_OUTPUT_DIR)/openrv64_fpga_core.edif
+FPGA_OPENSBI_CORE_JSON := \
+	$(FPGA_OPENSBI_CORE_OUTPUT_DIR)/openrv64_fpga_core.json
+FPGA_OPENSBI_CORE_STUB := \
+	$(FPGA_OPENSBI_CORE_OUTPUT_DIR)/openrv64_fpga_core_stub.v
+FPGA_OPENSBI_CORE_DCP := \
+	$(FPGA_OPENSBI_CORE_OUTPUT_DIR)/openrv64_fpga_core.dcp
+
+fpga-opensbi-core-dcp:
+	OUT_DIR='$(FPGA_OPENSBI_CORE_OUTPUT_DIR)' \
+		OUTPUT_EDIF='$(FPGA_OPENSBI_CORE_EDIF)' \
+		OUTPUT_JSON='$(FPGA_OPENSBI_CORE_JSON)' \
+		OUTPUT_STUB='$(FPGA_OPENSBI_CORE_STUB)' \
+		synth/fpga/xc7a100t/build_yosys_opensbi_core.sh
+	$(FPGA_VIVADO) -mode batch -nojournal -nolog \
+		-source synth/fpga/xc7a100t/build_vivado_opensbi_core_dcp.tcl \
+		-tclargs '$(FPGA_OPENSBI_CORE_EDIF)' \
+		'$(FPGA_OPENSBI_CORE_DCP)'
+	@test -s '$(FPGA_OPENSBI_CORE_STUB)'
+	@test -s '$(FPGA_OPENSBI_CORE_DCP)'
+	@printf 'OPENRV64 FPGA CORE DCP PASS path=%s\n' \
+		'$(FPGA_OPENSBI_CORE_DCP)'
 
 $(FPGA_SD_BOOT_ELF): sw/fpga_sd_boot.S sw/fpga_sd_boot.ld
 	@mkdir -p $(dir $@)
@@ -32,9 +76,47 @@ fpga-sd-boot-rom: $(FPGA_SD_BOOT_MEM)
 fpga-sd-boot-bitstream: $(FPGA_SD_BOOT_MEM)
 	synth/fpga/xc7a100t/build_sd_boot_bitstream.sh
 
+fpga-sd-boot-bitstream-check:
+	@test -s '$(FPGA_SD_BOOT_BITSTREAM)'
+	@test -s '$(FPGA_SD_BOOT_TIMING_REPORT)'
+	@rg -q '^All user specified timing constraints are met\.$$' \
+		'$(FPGA_SD_BOOT_TIMING_REPORT)'
+	@printf 'OPENRV64 FPGA SD BOOT BITSTREAM CHECK PASS path=%s sha256=%s\n' \
+		'$(FPGA_SD_BOOT_BITSTREAM)' \
+		"$$(sha256sum '$(FPGA_SD_BOOT_BITSTREAM)' | cut -d ' ' -f 1)"
+
+fpga-program-bitstream: fpga-sd-boot-bitstream-check
+	$(FPGA_VIVADO) -mode batch -nojournal -nolog \
+		-source synth/fpga/xc7a100t/program_bitstream.tcl \
+		-tclargs '$(FPGA_HW_SERVER_URL)' '$(FPGA_SD_BOOT_BITSTREAM)'
+
+fpga-jtag-snoop:
+	FPGA_HW_SERVER_URL='$(FPGA_HW_SERVER_URL)' \
+		$(FPGA_JTAG_SNOOP) $(FPGA_JTAG_SNOOP_ARGS)
+
+fpga-sd-boot-core-timing-report:
+	@test -s '$(FPGA_SD_BOOT_POST_ROUTE_DCP)'
+	$(FPGA_VIVADO) -mode batch -nojournal -nolog \
+		-source synth/fpga/xc7a100t/report_vivado_core_timing.tcl \
+		-tclargs '$(FPGA_SD_BOOT_POST_ROUTE_DCP)' \
+		'$(FPGA_SD_BOOT_OUTPUT_DIR)/reports' \
+		'$(FPGA_SD_BOOT_CORE_TIMING_MAX_PATHS)' \
+		'$(FPGA_SD_BOOT_CORE_TIMING_REPORT_NAME)'
+	@test -s '$(FPGA_SD_BOOT_CORE_TIMING_REPORT)'
+
+fpga-sd-boot-core-timing-report-check:
+	@test -s '$(FPGA_SD_BOOT_CORE_TIMING_REPORT)'
+	@rg -q '^Slack \((MET|VIOLATED)\)' \
+		'$(FPGA_SD_BOOT_CORE_TIMING_REPORT)'
+	@printf 'OPENRV64 FPGA CORE TIMING REPORT CHECK PASS path=%s\n' \
+		'$(FPGA_SD_BOOT_CORE_TIMING_REPORT)'
+
 $(FPGA_SD_IMAGE): tools/make-fpga-sd-image.py \
 		$(FPGA_SD_DTS) $(FPGA_SD_OPENSBI) $(FPGA_SD_LINUX)
 	python3 tools/make-fpga-sd-image.py \
+		--timebase-frequency $(FPGA_SD_TIMEBASE_FREQUENCY) \
+		--uart-clock-frequency $(FPGA_SD_UART_CLOCK_FREQUENCY) \
+		$(if $(filter 1,$(FPGA_SD_ETHERNET)),--ethernet) \
 		$(FPGA_SD_DTS) $(FPGA_SD_OPENSBI) $(FPGA_SD_LINUX) $@ \
 		--manifest $(FPGA_SD_MANIFEST)
 

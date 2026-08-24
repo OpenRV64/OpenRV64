@@ -72,6 +72,7 @@ module openrv64_rv64_top_4pf #(
     parameter integer L1D_PREFETCH_PAGE_GATING = 1,
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
+    parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -326,6 +327,7 @@ module openrv64_rv64_top_4pf #(
     wire backend_fence_i;
     wire backend_sfence_vma;
     wire backend_satp_write;
+    wire backend_pmp_update;
     wire backend_store_barrier_request;
     wire [4:0] backend_cause;
     wire [63:0] backend_retire_pc;
@@ -344,7 +346,8 @@ module openrv64_rv64_top_4pf #(
     wire control_trap = backend_exception && !backend_halt;
     wire wfi_irq_take;
     wire control_restart = backend_fence_i || backend_sfence_vma ||
-                           backend_satp_write || backend_wfi;
+                           backend_satp_write || backend_pmp_update ||
+                           backend_wfi;
     wire control_flush = control_trap || backend_irq || wfi_irq_take ||
                          backend_mret || backend_sret || control_restart;
     wire fetch_invalidate = reset_pending_q || control_flush || backend_halt;
@@ -1011,6 +1014,11 @@ module openrv64_rv64_top_4pf #(
         backend_csr_write &&
         csr_write_ready &&
         (backend_csr_write_addr == `RV64_CSR_SATP);
+    assign backend_pmp_update = backend_csr_write && csr_write_ready &&
+        ((backend_csr_write_addr == `RV64_CSR_PMPCFG0) ||
+         (backend_csr_write_addr == `RV64_CSR_PMPCFG2) ||
+         ((backend_csr_write_addr >= `RV64_CSR_PMPADDR0) &&
+          (backend_csr_write_addr <= `RV64_CSR_PMPADDR15)));
     wire [63:0] csr_rdata;
     wire csr_valid;
     wire csr_writable;
@@ -1457,6 +1465,7 @@ module openrv64_rv64_top_4pf #(
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .ENABLE_FETCH_PAGE_SCREEN(0),
+        .ENABLE_LSU_PAGE_SCREEN(ENABLE_LSU_PAGE_SCREEN),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
@@ -1498,6 +1507,8 @@ module openrv64_rv64_top_4pf #(
         .l1d_probe_valid_i(l1d_probe_valid_i),
         .l1d_probe_ready_o(l1d_probe_ready_o),
         .l1d_probe_addr_i(l1d_probe_addr_i),
+        .l1d_sleep_i(wfi_sleep_q),
+        .l1d_probe_hit_o(),
         .lsu_valid_i(1'b0), .lsu_lock_i(1'b0), .lsu_write_i(1'b0),
         .lsu_addr_i(64'd0), .lsu_wdata_i(64'd0),
         .lsu_wstrb_i(8'd0), .lsu_size_i(3'd0),
@@ -1569,8 +1580,11 @@ module openrv64_rv64_top_4pf #(
             backend_mem_xlate_resp_page_fault),
         .tlbi_i(backend_sfence_vma),
         .context_flush_i(backend_satp_write),
-        .fetch_context_change_i(1'b0),
-        .pmp_update_i(1'b0),
+        .fetch_context_change_i(control_trap || backend_irq ||
+                                wfi_irq_take || backend_mret ||
+                                backend_sret ||
+                                (backend_csr_write && csr_write_ready)),
+        .pmp_update_i(backend_pmp_update),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(backend_store_barrier_request),
         .icache_invalidate_i(backend_fence_i),

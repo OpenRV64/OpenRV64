@@ -196,8 +196,13 @@ module tb_openrv64_vec_matmul;
             memory[8'ha4] !== 64'h450c_7000_4520_8000 ||
             memory[8'ha5] !== 64'h44c8_a000_44f0_c000 ||
             memory[8'ha6] !== 64'h4470_c000_44a0_8000 ||
-            memory[8'ha7] !== 64'h43a0_8000_4420_8000)
+            memory[8'ha7] !== 64'h43a0_8000_4420_8000) begin
+            $display("row0 actual: %h %h %h %h %h %h %h %h",
+                     memory[8'ha0], memory[8'ha1], memory[8'ha2],
+                     memory[8'ha3], memory[8'ha4], memory[8'ha5],
+                     memory[8'ha6], memory[8'ha7]);
             $fatal(1, "matmul C row zero mismatch");
+        end
 
         /* C row one, forward and reversed eight-column blocks. */
         if (memory[8'ha8] !== 64'h44a3_8000_4423_8000 ||

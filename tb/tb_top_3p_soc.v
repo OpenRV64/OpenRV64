@@ -265,6 +265,7 @@ module tb_top_3p_soc #(
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_SYNC_TAG_LOOKUP = 1,
     parameter integer L1D_SYNC_STORE_EXTENSION = 1,
+    parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer L2_BYTES = 256 * 1024,
@@ -982,6 +983,12 @@ module tb_top_3p_soc #(
     integer fetch_page_screen_launches;
     integer fetch_page_screen_bypasses;
     integer fetch_page_screen_invalidates;
+    integer lsu_page_screen_requests;
+    integer lsu_page_screen_store_requests;
+    integer lsu_page_screen_hits;
+    integer lsu_page_screen_store_hits;
+    integer lsu_page_screen_fills;
+    integer lsu_page_screen_invalidates;
     integer fetch_redirect_events;
     integer fetch_predicted_redirect_events;
     integer fetch_correction_redirect_events;
@@ -1639,6 +1646,7 @@ module tb_top_3p_soc #(
         .L1D_CACHE_BYTES(L1D_CACHE_BYTES),
         .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
         .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
+        .ENABLE_LSU_PAGE_SCREEN(ENABLE_LSU_PAGE_SCREEN),
         .L1D_CACHEABLE_BASE(`OPENRV64_SOC_MEMORY_BASE),
         .L1D_CACHEABLE_SIZE(`OPENRV64_SOC_DRAM_PMA_SIZE),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
@@ -3522,6 +3530,12 @@ module tb_top_3p_soc #(
         fetch_page_screen_launches = 0;
         fetch_page_screen_bypasses = 0;
         fetch_page_screen_invalidates = 0;
+        lsu_page_screen_requests = 0;
+        lsu_page_screen_store_requests = 0;
+        lsu_page_screen_hits = 0;
+        lsu_page_screen_store_hits = 0;
+        lsu_page_screen_fills = 0;
+        lsu_page_screen_invalidates = 0;
         fetch_redirect_events = 0;
         fetch_predicted_redirect_events = 0;
         fetch_correction_redirect_events = 0;
@@ -3912,6 +3926,23 @@ module tb_top_3p_soc #(
                     .fetch_page_screen_invalidate)
                 fetch_page_screen_invalidates =
                     fetch_page_screen_invalidates + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug.lsu_xlate_accept)
+                lsu_page_screen_requests = lsu_page_screen_requests + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug.lsu_xlate_write_accept)
+                lsu_page_screen_store_requests =
+                    lsu_page_screen_store_requests + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug.lsu_page_screen_accept)
+                lsu_page_screen_hits = lsu_page_screen_hits + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug
+                    .lsu_page_screen_write_accept)
+                lsu_page_screen_store_hits =
+                    lsu_page_screen_store_hits + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug.lsu_page_screen_fill)
+                lsu_page_screen_fills = lsu_page_screen_fills + 1;
+            if (dut.u_bus.g_icx.u_bus.u_debug
+                    .lsu_page_screen_invalidate)
+                lsu_page_screen_invalidates =
+                    lsu_page_screen_invalidates + 1;
             if (dut.fetch_decode_valid == 0) begin
                 if (dut.backend_decode_ready[0] &&
                     dut.frontend_decode_enable)
@@ -5364,6 +5395,18 @@ module tb_top_3p_soc #(
             fetch_page_screen_launches,
             fetch_page_screen_bypasses,
             fetch_page_screen_invalidates);
+        $display(
+            "PERF_ICX_L2_LSU_PAGE_SCREEN enabled=%0d entries=4 requests=%0d store_requests=%0d hits=%0d store_hits=%0d hit_pct_x100=%0d fills=%0d invalidates=%0d",
+            ENABLE_LSU_PAGE_SCREEN,
+            lsu_page_screen_requests,
+            lsu_page_screen_store_requests,
+            lsu_page_screen_hits,
+            lsu_page_screen_store_hits,
+            (lsu_page_screen_requests != 0) ?
+                ((lsu_page_screen_hits * 10000) /
+                 lsu_page_screen_requests) : 0,
+            lsu_page_screen_fills,
+            lsu_page_screen_invalidates);
         $display(
             "PERF_ICX_L2_REDIRECT total=%0d predicted=%0d correction=%0d target_correction=%0d control_restart=%0d exception=%0d other=%0d lookaside_hits=%0d predicted_lookaside_hits=%0d correction_lookaside_hits=%0d completed=%0d superseded=%0d active=%0d",
             fetch_redirect_events, fetch_predicted_redirect_events,

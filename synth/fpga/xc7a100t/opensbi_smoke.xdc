@@ -44,11 +44,15 @@ set_property PULLUP true [get_ports {
 set_property DRIVE 8 [get_ports {sd_clk_o sd_cmd_o sd_dat3_o}]
 set_property SLEW FAST [get_ports {sd_clk_o sd_cmd_o sd_dat3_o}]
 
-# In fast mode the card launches MISO after the preceding SCK falling edge and
-# the controller samples it one 14 MHz core cycle later.  Reserve 50 ns of
-# the 71.429 ns cycle for card clock-to-out and PCB delay.
+# In fast mode the card launches MISO after the preceding SCK falling edge.
+# Preserve at least the original 71.429 ns launch-to-sample interval as the
+# core clock rises: one cycle at 14 MHz, two at 20 MHz.  The system build uses
+# the same ratio for SPI_FAST_HALF_PERIOD_CYCLES.  Reserve 50 ns within that
+# interval for card clock-to-out and PCB delay.
 set sd_core_clock [get_clocks -quiet -of_objects \
     [get_pins u_core_mmcm/CLKOUT0]]
+set sd_core_period [get_property PERIOD $sd_core_clock]
+set sd_io_cycles [expr {int(ceil(71.429 / $sd_core_period))}]
 set_input_delay -clock $sd_core_clock -max 50.000 \
     [get_ports sd_dat0_i]
 set_input_delay -clock $sd_core_clock -min 0.000 \
@@ -57,6 +61,14 @@ set_output_delay -clock $sd_core_clock -max 50.000 \
     [get_ports {sd_cmd_o sd_dat3_o}]
 set_output_delay -clock $sd_core_clock -min 0.000 \
     [get_ports {sd_cmd_o sd_dat3_o}]
+set_multicycle_path -setup $sd_io_cycles \
+    -from [get_ports sd_dat0_i]
+set_multicycle_path -hold [expr {$sd_io_cycles - 1}] \
+    -from [get_ports sd_dat0_i]
+set_multicycle_path -setup $sd_io_cycles \
+    -to [get_ports {sd_cmd_o sd_dat3_o}]
+set_multicycle_path -hold [expr {$sd_io_cycles - 1}] \
+    -to [get_ports {sd_cmd_o sd_dat3_o}]
 
 set_property PACKAGE_PIN Y22 [get_ports eth1_phy_reset_n_o]
 set_property PACKAGE_PIN AB20 [get_ports eth2_phy_reset_n_o]

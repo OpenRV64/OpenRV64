@@ -34,7 +34,7 @@ Start options:
   --name NAME               Required run label.
   --comment TEXT            Purpose; defaults to NAME.
   --threads N               Verilator runtime threads (default: 1).
-  --image PATH              Linux Image (default: sw/Image.smp).
+  --image PATH              Linux Image (default: sw/linux/kernels/Image.zbb2).
   --kernel-elf PATH         Source-matched vmlinux for PC symbols. Its
                             arch/riscv/boot/Image must match --image.
   --zicclsm 0|1             DT ISA advertisement (default: 1).
@@ -60,6 +60,8 @@ Start options:
   --l1d-watch-paddr ADDR    Seed its physical address for earlier events.
   --l1d-watch-value VALUE   Flag this aligned 64-bit value in line traffic.
   --l1d-watch-all-mshrs     Record every outgoing L1D/L2 MSHR transaction.
+  --ticket-lock-paddr ADDR  Trace one physical ticket-lock line through the
+                            core, L1D, and L2 into ticket-lock.log.
   --stop-cycles N           Stop when absolute cycle N is reached.
   --monitor-seconds N       Notification interval (default: 900).
   --timeout-seconds N       Whole-job wall timeout in seconds. The default is
@@ -228,6 +230,7 @@ worker() {
     l1d_watch_paddr=${l1d_watch_paddr:-}
     l1d_watch_value=${l1d_watch_value:-}
     l1d_watch_all_mshrs=${l1d_watch_all_mshrs:-0}
+    ticket_lock_paddr=${ticket_lock_paddr:-}
     stop_cycles=${stop_cycles:-0}
     mapfile -t make_arguments <"${directory}/make-arguments.txt"
     local simulator_arguments=()
@@ -322,6 +325,7 @@ worker() {
         printf 'simulator_override=%s\n' "${simulator_override}"
         printf 'stop_cycles=%s\n' "${stop_cycles}"
         printf 'host_pc_sample_period=%s\n' "${host_pc_sample_period}"
+        printf 'ticket_lock_paddr=%s\n' "${ticket_lock_paddr}"
         printf 'rebuild=%s\n' "${rebuild}"
         printf 'timeout_seconds=%s\n' "${timeout_seconds}"
         printf 'command=%s\n' "${recorded_command}"
@@ -377,34 +381,21 @@ worker() {
                 "${resume_source_inputs}/${artifact}" \
                 "${input_dir}/${artifact}"
         done
-        for artifact in vmlinux linux-symbols.map opensbi-symbols.map; do
-            if [[ -f ${resume_source_inputs}/${artifact} ]]; then
-                cp --reflink=auto --preserve=mode,timestamps \
-                    "${resume_source_inputs}/${artifact}" \
-                    "${input_dir}/${artifact}"
-            fi
-        done
+        # Symbol maps are derived artifacts.  Retain the ELF across resume,
+        # but regenerate maps below for every new run instead of copying a
+        # potentially stale map from the checkpoint source.
+        if [[ -f ${resume_source_inputs}/vmlinux ]]; then
+            cp --reflink=auto --preserve=mode,timestamps \
+                "${resume_source_inputs}/vmlinux" \
+                "${input_dir}/vmlinux"
+        fi
         if [[ -n ${kernel_elf} ]]; then
             cp --reflink=auto --preserve=mode,timestamps \
                 "${kernel_elf}" "${input_dir}/vmlinux"
-            riscv64-linux-gnu-nm -n --defined-only \
-                "${input_dir}/vmlinux" \
-                >"${input_dir}/linux-symbols.map"
             if ! rg -Fqx -- "${kernel_elf}" "${source_manifest}"; then
                 printf '%s\n' "${kernel_elf}" >>"${source_manifest}"
             fi
             write_source_hashes "${source_manifest}" "${source_hashes}"
-        fi
-        if [[ ! -f ${input_dir}/opensbi-symbols.map ]]; then
-            riscv64-linux-gnu-nm -n --defined-only \
-                "${input_dir}/fw_jump.elf" \
-                >"${input_dir}/opensbi-symbols.map"
-        fi
-        if [[ -z ${kernel_elf} && -f ${input_dir}/vmlinux &&
-              ! -f ${input_dir}/linux-symbols.map ]]; then
-            riscv64-linux-gnu-nm -n --defined-only \
-                "${input_dir}/vmlinux" \
-                >"${input_dir}/linux-symbols.map"
         fi
         if [[ -n ${resume_simulator} ]]; then
             cp --reflink=auto --preserve=mode,timestamps \
@@ -422,6 +413,18 @@ worker() {
         resume_snapshot=${directory}/resume.vls
         cp --reflink=auto --preserve=mode,timestamps \
             "${resume_checkpoint}" "${resume_snapshot}"
+        riscv64-linux-gnu-nm -n --defined-only \
+            "${input_dir}/fw_jump.elf" \
+            >"${input_dir}/opensbi-symbols.map"
+        if [[ -f ${input_dir}/vmlinux ]]; then
+            riscv64-linux-gnu-nm -n --defined-only \
+                "${input_dir}/vmlinux" \
+                >"${input_dir}/linux-symbols.map"
+        else
+            printf '%s\n' \
+                'Linux PC symbols unavailable: source-matched vmlinux was not supplied' \
+                >>"${build_log}"
+        fi
         sha256sum "${input_dir}"/* "${resume_snapshot}" \
             >"${artifact_hashes}"
         {
@@ -543,15 +546,21 @@ worker() {
             cp --reflink=auto --preserve=mode,timestamps \
                 "${artifact_dir}/${artifact}" "${input_dir}/${artifact}"
         done
-        riscv64-linux-gnu-nm -n --defined-only \
-            "${input_dir}/fw_jump.elf" \
-            >"${input_dir}/opensbi-symbols.map"
         if [[ -n ${kernel_elf} ]]; then
             cp --reflink=auto --preserve=mode,timestamps \
                 "${kernel_elf}" "${input_dir}/vmlinux"
+        fi
+        riscv64-linux-gnu-nm -n --defined-only \
+            "${input_dir}/fw_jump.elf" \
+            >"${input_dir}/opensbi-symbols.map"
+        if [[ -f ${input_dir}/vmlinux ]]; then
             riscv64-linux-gnu-nm -n --defined-only \
                 "${input_dir}/vmlinux" \
                 >"${input_dir}/linux-symbols.map"
+        else
+            printf '%s\n' \
+                'Linux PC symbols unavailable: source-matched vmlinux was not supplied' \
+                >>"${build_log}"
         fi
         sha256sum "${input_dir}"/* >"${artifact_hashes}"
         flock -u 9
@@ -641,6 +650,11 @@ worker() {
         if ((l1d_watch_all_mshrs == 1)); then
             run_command+=(+l1d_watch_all_mshrs)
         fi
+    fi
+    if [[ -n ${ticket_lock_paddr} ]]; then
+        run_command+=(
+            "+ticket_lock_trace=${directory}/ticket-lock.log"
+            "+ticket_lock_paddr=${ticket_lock_paddr}")
     fi
     if ((stop_cycles > 0)); then
         run_command+=("+stop_cycles=${stop_cycles}")
@@ -736,7 +750,7 @@ start_run() {
     local name=
     local comment=
     local threads=1
-    local image=sw/Image.smp
+    local image=sw/linux/kernels/Image.zbb2
     local kernel_elf=
     local zicclsm=1
     local max_cycles=250000000
@@ -754,6 +768,7 @@ start_run() {
     local l1d_watch_paddr=
     local l1d_watch_value=
     local l1d_watch_all_mshrs=0
+    local ticket_lock_paddr=
     local stop_cycles=0
     local monitor_seconds=900
     local timeout_seconds=${OPENRV64_RUN_TIMEOUT_SECONDS:-259200}
@@ -791,6 +806,7 @@ start_run() {
             --l1d-watch-paddr) l1d_watch_paddr=${2:?}; shift 2 ;;
             --l1d-watch-value) l1d_watch_value=${2:?}; shift 2 ;;
             --l1d-watch-all-mshrs) l1d_watch_all_mshrs=1; shift ;;
+            --ticket-lock-paddr) ticket_lock_paddr=${2:?}; shift 2 ;;
             --stop-cycles) stop_cycles=${2:?}; shift 2 ;;
             --monitor-seconds) monitor_seconds=${2:?}; shift 2 ;;
             --timeout-seconds) timeout_seconds=${2:?}; shift 2 ;;
@@ -825,6 +841,10 @@ start_run() {
         die "--stop-cycles must be nonnegative"
     [[ ${host_pc_sample_period} =~ ^[0-9]+$ ]] ||
         die "--host-pc-sample-period must be nonnegative"
+    if [[ -n ${ticket_lock_paddr} &&
+          ! ${ticket_lock_paddr} =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)$ ]]; then
+        die "--ticket-lock-paddr must be an integer"
+    fi
     if ((host_pc_trace == 1 && host_pc_sample_period > 0)); then
         die "--host-pc-trace and --host-pc-sample-period are mutually exclusive"
     fi
@@ -1012,6 +1032,7 @@ start_run() {
         printf 'l1d_watch_paddr=%q\n' "${l1d_watch_paddr}"
         printf 'l1d_watch_value=%q\n' "${l1d_watch_value}"
         printf 'l1d_watch_all_mshrs=%q\n' "${l1d_watch_all_mshrs}"
+        printf 'ticket_lock_paddr=%q\n' "${ticket_lock_paddr}"
         printf 'stop_cycles=%q\n' "${stop_cycles}"
         printf 'monitor_seconds=%q\n' "${monitor_seconds}"
         printf 'rebuild=%q\n' "${rebuild}"

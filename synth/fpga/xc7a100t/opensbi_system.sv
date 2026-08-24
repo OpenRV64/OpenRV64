@@ -20,6 +20,11 @@ module openrv64_fpga_opensbi_system #(
     parameter integer FDT_WORDS        = 1,
     parameter integer UART_LINUX_LOAD_ENABLE = 0,
     parameter integer SD_ROM_BOOT_ENABLE = 0,
+    parameter integer CORE_CLOCK_HZ = 14_000_000,
+    parameter integer UART_REFERENCE_CLOCK_HZ = 14_745_600,
+    parameter integer SPI_FAST_HALF_PERIOD_CYCLES = 1,
+    parameter integer ETHERNET_MDC_HALF_PERIOD_CYCLES = 3,
+    parameter integer ETHERNET_PHY_RESET_CYCLES = 110_000,
     parameter integer STATUS_CLOCK_HZ = 100_000_000,
     parameter integer STATUS_BAUD = 115_200,
     parameter integer STATUS_FIRST_DELAY_CYCLES = 100_000,
@@ -54,6 +59,10 @@ module openrv64_fpga_opensbi_system #(
     output logic         eth_mdio_oe_o,
     input  logic         eth_mdio_i,
     output logic         eth_phy_reset_no,
+
+    input  logic         debug_clock_halted_i,
+    output logic         debug_halt_request_o,
+    output logic         debug_resume_toggle_o,
 
     output logic [27:0]  app_addr_o,
     output logic [2:0]   app_cmd_o,
@@ -413,12 +422,33 @@ module openrv64_fpga_opensbi_system #(
         .mem_error_i(shared_mem_error)
     );
 
+    openrv64_fpga_jtag_snoop #(
+        .MEMORY_BASE(64'h0000_0000_8000_0000)
+    ) u_jtag_snoop (
+        .core_clk_i(core_clk_i),
+        .core_reset_i(!platform_reset_n),
+        .clock_halted_i(debug_clock_halted_i),
+        .debug_pc_i(debug_pc_o),
+        .mem_valid_i(shared_mem_valid),
+        .mem_ready_i(shared_mem_ready),
+        .mem_write_i(shared_mem_write),
+        .mem_addr_i(shared_mem_addr),
+        .mem_wdata_i(shared_mem_wdata),
+        .mem_wstrb_i(shared_mem_wstrb),
+        .mem_rdata_i(shared_mem_rdata),
+        .mem_error_i(shared_mem_error),
+        .mem_scalar_i(core_mem_valid && core_mem_ready),
+        .halt_request_o(debug_halt_request_o),
+        .resume_toggle_o(debug_resume_toggle_o)
+    );
+
     openrv64_platform #(
         .GPIO_WIDTH(1),
         .MEMORY_BYTES(256 * 1024 * 1024),
         .ROM_INIT_FILE(ROM_INIT_FILE),
-        .UART_INPUT_CLOCK_HZ(14_000_000),
-        .UART_REFERENCE_CLOCK_HZ(14_745_600),
+        .SPI_FAST_HALF_PERIOD_CYCLES(SPI_FAST_HALF_PERIOD_CYCLES),
+        .UART_INPUT_CLOCK_HZ(CORE_CLOCK_HZ),
+        .UART_REFERENCE_CLOCK_HZ(UART_REFERENCE_CLOCK_HZ),
         .BACKEND_CONFIG(`OPENRV64_BACKEND_1P),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64ZBB(1'b0),
@@ -426,8 +456,9 @@ module openrv64_fpga_opensbi_system #(
         .ENABLE_ZICCLSM(1'b1),
         .EXTERNAL_MEMORY_ENABLE(1'b1),
         .ETHERNET_ENABLE(1'b1),
-        .ETHERNET_MDC_HALF_PERIOD_CYCLES(3),
-        .ETHERNET_PHY_RESET_CYCLES(110000),
+        .ETHERNET_MDC_HALF_PERIOD_CYCLES(
+            ETHERNET_MDC_HALF_PERIOD_CYCLES),
+        .ETHERNET_PHY_RESET_CYCLES(ETHERNET_PHY_RESET_CYCLES),
         // The one-pipe generic bus has one fully associative translation
         // cache, not the ICX path's L2 TLB. Four entries are enough for
         // bring-up; misses take the normal PTW path.

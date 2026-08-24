@@ -36,7 +36,8 @@ module tb_priv_context;
 
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
-        .ENABLE_RV64M(1'b0)
+        .ENABLE_RV64M(1'b0),
+        .PIPE_1P_DECODE_QUEUE(1'b1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

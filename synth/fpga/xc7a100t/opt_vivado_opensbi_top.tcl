@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: CERN-OHL-P-2.0
 
-if {$argc != 5} {
-    error "usage: opt_vivado_opensbi_top.tcl <input.dcp> <mig.xdc> <board.xdc> <output.dcp> <report-dir>"
+if {$argc != 6} {
+    error "usage: opt_vivado_opensbi_top.tcl <input.dcp> <mig.xdc> <board.xdc> <jtag.xdc> <output.dcp> <report-dir>"
 }
 
 set input_dcp [file normalize [lindex $argv 0]]
 set mig_xdc [file normalize [lindex $argv 1]]
 set board_xdc [file normalize [lindex $argv 2]]
-set output_dcp [file normalize [lindex $argv 3]]
-set report_dir [file normalize [lindex $argv 4]]
+set jtag_xdc [file normalize [lindex $argv 3]]
+set output_dcp [file normalize [lindex $argv 4]]
+set report_dir [file normalize [lindex $argv 5]]
 
-foreach artifact [list $input_dcp $mig_xdc $board_xdc] {
+foreach artifact [list $input_dcp $mig_xdc $board_xdc $jtag_xdc] {
     if {![file isfile $artifact] || ([file size $artifact] == 0)} {
         error "required OpenSBI optimization artifact not found: $artifact"
     }
@@ -50,6 +51,7 @@ close $mig_scalar_file
 
 read_xdc $mig_scalar_xdc
 read_xdc $board_xdc
+read_xdc $jtag_xdc
 
 set odt_pin [get_pins -quiet {u_mig/ddr3_odt[0]}]
 set odt_port [get_ports -quiet ddr3_odt]

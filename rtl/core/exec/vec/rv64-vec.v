@@ -13,9 +13,8 @@ module openrv64_exec_vec_fp32_lane #(
     parameter integer ADD_LATENCY = 4,
     parameter integer MUL_LATENCY = 7,
     parameter integer MAC_LATENCY = ADD_LATENCY + MUL_LATENCY,
-    // Narrow-only lanes need only the high bits of the normalized FP32
-    // significand. Legal values are 2 (FP4), 4 (FP8), 8 (BF16), and 24
-    // (FP32). The product is realigned to the ordinary 24x24 result position.
+    // Zero builds an add-only lane for the shared multiplier bank. Other legal
+    // values retain the standalone lane's composed test multiplier.
     parameter integer MUL_SIG_BITS = 24
 ) (
     input  wire                     clk,
@@ -425,6 +424,15 @@ module openrv64_exec_vec_fp32_lane #(
         end
     endfunction
 
+    wire [31:0] multiply_result;
+    generate
+        if (MUL_SIG_BITS == 0) begin : g_no_local_multiplier
+            assign multiply_result = 32'd0;
+        end else begin : g_local_multiplier
+            assign multiply_result = multiply_fp32(src1_i, src2_i);
+        end
+    endgenerate
+
     // Stage zero captures an accepted token. Result-stage indices therefore
     // equal accepted-token-to-result cycle latency without an off-by-one.
     localparam integer PIPELINE_DEPTH = MAC_LATENCY + 1;
@@ -546,7 +554,7 @@ module openrv64_exec_vec_fp32_lane #(
             if (valid_i && ready_o) begin
                 acc_q[0] <= src3_i;
                 if (mac_i || multiply_i)
-                    result_q[0] <= multiply_fp32(src1_i, src2_i);
+                    result_q[0] <= multiply_result;
             end
             if (mac_add_due)
                 result_q[MAC_ADD_STAGE] <= shared_add_result;
@@ -563,9 +571,931 @@ module openrv64_exec_vec_fp32_lane #(
             $fatal(1, "FP MUL latency must exceed FP ADD latency");
         if (MAC_LATENCY != (MUL_LATENCY + ADD_LATENCY))
             $fatal(1, "FP MAC latency must equal MUL plus ADD latency");
-        if ((MUL_SIG_BITS != 2) && (MUL_SIG_BITS != 4) &&
+        if ((MUL_SIG_BITS != 0) && (MUL_SIG_BITS != 2) &&
+            (MUL_SIG_BITS != 4) &&
             (MUL_SIG_BITS != 8) && (MUL_SIG_BITS != 24))
-            $fatal(1, "FP multiplier significand width must be 2, 4, 8, or 24");
+            $fatal(1, "FP multiplier significand width must be 0, 2, 4, 8, or 24");
+    end
+`endif
+
+endmodule
+
+// Raw-slice operand staging decouples the one-slice-per-cycle register-file
+// read from the format-dependent multiplier initiation interval. Keeping data
+// in its native 64-bit slice form avoids a 16x expansion in the queue.
+module openrv64_exec_vec_fp_operand_queue #(
+    parameter integer TAG_WIDTH = 8,
+    parameter integer DEPTH = 32
+) (
+    input  wire                         clk,
+    input  wire                         rst_n,
+    input  wire                         flush_i,
+    input  wire                         valid_i,
+    output wire                         ready_o,
+    input  wire [TAG_WIDTH-1:0]         tag_i,
+    input  wire [`OPENRV64_VEC_FMT_WIDTH-1:0] fmt_i,
+    input  wire                         multiply_i,
+    input  wire                         mac_i,
+    input  wire [63:0]                  src1_i,
+    input  wire [63:0]                  src2_i,
+    input  wire [63:0]                  acc_i,
+    output wire                         valid_o,
+    input  wire                         ready_i,
+    output wire [TAG_WIDTH-1:0]         tag_o,
+    output wire [`OPENRV64_VEC_FMT_WIDTH-1:0] fmt_o,
+    output wire                         multiply_o,
+    output wire                         mac_o,
+    output wire [63:0]                  src1_o,
+    output wire [63:0]                  src2_o,
+    output wire [63:0]                  acc_o
+);
+
+    localparam integer POINTER_WIDTH =
+        (DEPTH <= 1) ? 1 : $clog2(DEPTH);
+    localparam integer COUNT_WIDTH =
+        (DEPTH <= 1) ? 1 : $clog2(DEPTH + 1);
+
+    reg [TAG_WIDTH-1:0] tag_q [0:DEPTH-1];
+    reg [`OPENRV64_VEC_FMT_WIDTH-1:0] fmt_q [0:DEPTH-1];
+    reg multiply_q [0:DEPTH-1];
+    reg mac_q [0:DEPTH-1];
+    reg [63:0] src1_q [0:DEPTH-1];
+    reg [63:0] src2_q [0:DEPTH-1];
+    reg [63:0] acc_q [0:DEPTH-1];
+    reg [POINTER_WIDTH-1:0] read_pointer_q;
+    reg [POINTER_WIDTH-1:0] write_pointer_q;
+    reg [COUNT_WIDTH-1:0] used_count_q;
+
+    assign valid_o = used_count_q != 0;
+    wire pop = valid_o && ready_i;
+    assign ready_o = (used_count_q < DEPTH) || pop;
+    wire push = valid_i && ready_o;
+
+    assign tag_o = tag_q[read_pointer_q];
+    assign fmt_o = fmt_q[read_pointer_q];
+    assign multiply_o = multiply_q[read_pointer_q];
+    assign mac_o = mac_q[read_pointer_q];
+    assign src1_o = src1_q[read_pointer_q];
+    assign src2_o = src2_q[read_pointer_q];
+    assign acc_o = acc_q[read_pointer_q];
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            read_pointer_q <= {POINTER_WIDTH{1'b0}};
+            write_pointer_q <= {POINTER_WIDTH{1'b0}};
+            used_count_q <= {COUNT_WIDTH{1'b0}};
+        end else if (flush_i) begin
+            read_pointer_q <= {POINTER_WIDTH{1'b0}};
+            write_pointer_q <= {POINTER_WIDTH{1'b0}};
+            used_count_q <= {COUNT_WIDTH{1'b0}};
+        end else begin
+            if (push) begin
+                tag_q[write_pointer_q] <= tag_i;
+                fmt_q[write_pointer_q] <= fmt_i;
+                multiply_q[write_pointer_q] <= multiply_i;
+                mac_q[write_pointer_q] <= mac_i;
+                src1_q[write_pointer_q] <= src1_i;
+                src2_q[write_pointer_q] <= src2_i;
+                acc_q[write_pointer_q] <= acc_i;
+                write_pointer_q <= write_pointer_q + 1'b1;
+            end
+            if (pop)
+                read_pointer_q <= read_pointer_q + 1'b1;
+            case ({push, pop})
+                2'b10: used_count_q <= used_count_q + 1'b1;
+                2'b01: used_count_q <= used_count_q - 1'b1;
+                default: used_count_q <= used_count_q;
+            endcase
+        end
+    end
+
+`ifndef SYNTHESIS
+    initial begin
+        if ((DEPTH < 2) || ((DEPTH & (DEPTH - 1)) != 0))
+            $fatal(1, "FP operand queue depth must be a power of two >= 2");
+    end
+`endif
+
+endmodule
+
+// One 64-entry pool of 2x2 unsigned multiplier tiles. A 64-bit slice consumes
+// 16 tiles for FP4, 32 for FP8, 64 for BF16, and five phases (288 tile
+// operations) for its two FP32 products. Products hand off one cycle before
+// MUL_LATENCY so a standalone multiply can use a final output register while a
+// MAC enters the four-cycle adder and still completes in MUL+ADD cycles.
+module openrv64_exec_vec_shared_multiplier #(
+    parameter integer TAG_WIDTH = 8,
+    parameter integer MUL_LATENCY = 7
+) (
+    input  wire                         clk,
+    input  wire                         rst_n,
+    input  wire                         flush_i,
+    input  wire                         valid_i,
+    output wire                         ready_o,
+    input  wire [TAG_WIDTH-1:0]         tag_i,
+    input  wire [`OPENRV64_VEC_FMT_WIDTH-1:0] fmt_i,
+    input  wire                         mac_i,
+    input  wire [16*32-1:0]             src1_i,
+    input  wire [16*32-1:0]             src2_i,
+    input  wire [16*32-1:0]             acc_i,
+    output wire                         result_valid_o,
+    input  wire                         result_ready_i,
+    output wire [TAG_WIDTH-1:0]         result_tag_o,
+    output wire                         result_mac_o,
+    output wire [16*32-1:0]             result_o,
+    output wire [16*32-1:0]             result_acc_o
+);
+
+    localparam integer FP_LANES = 16;
+    localparam integer TILE_COUNT = 64;
+    localparam integer HANDOFF_STAGE = MUL_LATENCY - 1;
+
+    function automatic [63:0] shift_right_jam;
+        input [63:0] value;
+        input integer distance;
+        reg [63:0] mask;
+        reg sticky;
+        begin
+            if (distance <= 0) begin
+                shift_right_jam = value;
+            end else if (distance >= 64) begin
+                shift_right_jam = {63'd0, |value};
+            end else begin
+                mask = ({64{1'b1}} >> (64 - distance));
+                sticky = |(value & mask);
+                shift_right_jam = value >> distance;
+                shift_right_jam[0] = shift_right_jam[0] | sticky;
+            end
+        end
+    endfunction
+
+    function automatic [31:0] round_pack;
+        input sign;
+        input integer exponent_in;
+        input [63:0] sig_ext_in;
+        integer exponent;
+        integer distance;
+        integer biased_exponent;
+        reg [63:0] work;
+        reg [31:0] main_sig;
+        reg guard_bit;
+        reg round_bit;
+        reg sticky_bit;
+        reg increment;
+        reg tiny;
+        begin
+            exponent = exponent_in;
+            work = sig_ext_in;
+            if (work == 0) begin
+                round_pack = {sign, 31'd0};
+            end else begin
+                if (exponent < -126) begin
+                    distance = -126 - exponent;
+                    work = shift_right_jam(work, distance);
+                    exponent = -126;
+                end
+                main_sig = work >> 3;
+                guard_bit = work[2];
+                round_bit = work[1];
+                sticky_bit = work[0];
+                increment = guard_bit &&
+                    (round_bit || sticky_bit || main_sig[0]);
+                if (increment)
+                    main_sig = main_sig + 1'b1;
+                if (main_sig[24]) begin
+                    main_sig = main_sig >> 1;
+                    exponent = exponent + 1;
+                end
+                if (exponent > 127) begin
+                    round_pack = {sign, 8'hff, 23'd0};
+                end else begin
+                    tiny = (exponent == -126) && !main_sig[23];
+                    biased_exponent = exponent + 127;
+                    round_pack = {sign,
+                                  tiny ? 8'd0 : biased_exponent[7:0],
+                                  main_sig[22:0]};
+                end
+            end
+        end
+    endfunction
+
+    function automatic [23:0] normalized_significand;
+        input [31:0] value;
+        integer normalize_index;
+        reg [23:0] significand;
+        begin
+            if (value[30:23] == 0) begin
+                significand = {1'b0, value[22:0]};
+                for (normalize_index = 0; normalize_index < 24;
+                     normalize_index = normalize_index + 1)
+                    if ((significand != 0) && !significand[23])
+                        significand = significand << 1;
+            end else begin
+                significand = {1'b1, value[22:0]};
+            end
+            normalized_significand = significand;
+        end
+    endfunction
+
+    function automatic [31:0] finish_multiply;
+        input [31:0] a;
+        input [31:0] b;
+        input [47:0] product_in;
+        integer exp_a;
+        integer exp_b;
+        integer exponent;
+        integer shift_distance;
+        integer normalize_index;
+        reg sign_result;
+        reg [7:0] field_a;
+        reg [7:0] field_b;
+        reg [22:0] fraction_a;
+        reg [22:0] fraction_b;
+        reg [23:0] sig_a;
+        reg [23:0] sig_b;
+        reg [63:0] ext_result;
+        reg nan_a;
+        reg nan_b;
+        reg inf_a;
+        reg inf_b;
+        reg zero_a;
+        reg zero_b;
+        begin
+            sign_result = a[31] ^ b[31];
+            field_a = a[30:23];
+            field_b = b[30:23];
+            fraction_a = a[22:0];
+            fraction_b = b[22:0];
+            nan_a = (&field_a) && (fraction_a != 0);
+            nan_b = (&field_b) && (fraction_b != 0);
+            inf_a = (&field_a) && (fraction_a == 0);
+            inf_b = (&field_b) && (fraction_b == 0);
+            zero_a = (field_a == 0) && (fraction_a == 0);
+            zero_b = (field_b == 0) && (fraction_b == 0);
+
+            if (nan_a || nan_b ||
+                ((inf_a && zero_b) || (inf_b && zero_a))) begin
+                finish_multiply = 32'h7fc0_0000;
+            end else if (inf_a || inf_b) begin
+                finish_multiply = {sign_result, 8'hff, 23'd0};
+            end else if (zero_a || zero_b) begin
+                finish_multiply = {sign_result, 31'd0};
+            end else if (a == 32'h3f80_0000) begin
+                finish_multiply = b;
+            end else if (b == 32'h3f80_0000) begin
+                finish_multiply = a;
+            end else if (a == 32'hbf80_0000) begin
+                finish_multiply = {~b[31], b[30:0]};
+            end else if (b == 32'hbf80_0000) begin
+                finish_multiply = {~a[31], a[30:0]};
+            end else begin
+                if (field_a == 0) begin
+                    exp_a = -126;
+                    sig_a = {1'b0, fraction_a};
+                    for (normalize_index = 0; normalize_index < 24;
+                         normalize_index = normalize_index + 1)
+                        if ((sig_a != 0) && !sig_a[23]) begin
+                            sig_a = sig_a << 1;
+                            exp_a = exp_a - 1;
+                        end
+                end else begin
+                    exp_a = field_a - 127;
+                end
+                if (field_b == 0) begin
+                    exp_b = -126;
+                    sig_b = {1'b0, fraction_b};
+                    for (normalize_index = 0; normalize_index < 24;
+                         normalize_index = normalize_index + 1)
+                        if ((sig_b != 0) && !sig_b[23]) begin
+                            sig_b = sig_b << 1;
+                            exp_b = exp_b - 1;
+                        end
+                end else begin
+                    exp_b = field_b - 127;
+                end
+                if (product_in[47]) begin
+                    exponent = exp_a + exp_b + 1;
+                    shift_distance = 21;
+                end else begin
+                    exponent = exp_a + exp_b;
+                    shift_distance = 20;
+                end
+                ext_result = shift_right_jam({16'd0, product_in},
+                                             shift_distance);
+                finish_multiply = round_pack(sign_result, exponent,
+                                             ext_result);
+            end
+        end
+    endfunction
+
+    reg [HANDOFF_STAGE:0] valid_q;
+    reg [HANDOFF_STAGE:0] fp32_q;
+    reg [HANDOFF_STAGE:0] mac_q;
+    reg [TAG_WIDTH-1:0] tag_q [0:HANDOFF_STAGE];
+    reg [FP_LANES*32-1:0] result_q [0:HANDOFF_STAGE];
+    reg [FP_LANES*32-1:0] acc_q [0:HANDOFF_STAGE];
+    reg [63:0] src1_fp32_q [0:HANDOFF_STAGE];
+    reg [63:0] src2_fp32_q [0:HANDOFF_STAGE];
+    reg [47:0] product0_q [0:HANDOFF_STAGE];
+    reg [47:0] product1_q [0:HANDOFF_STAGE];
+
+    assign result_valid_o = valid_q[HANDOFF_STAGE];
+    assign result_tag_o = tag_q[HANDOFF_STAGE];
+    assign result_mac_o = mac_q[HANDOFF_STAGE];
+    assign result_o = result_q[HANDOFF_STAGE];
+    assign result_acc_o = acc_q[HANDOFF_STAGE];
+    wire pipeline_advance = !result_valid_o || result_ready_i;
+
+    integer busy_index;
+    reg fp32_pool_busy;
+    always @* begin
+        fp32_pool_busy = 1'b0;
+        for (busy_index = 0; busy_index < 4;
+             busy_index = busy_index + 1)
+            if (valid_q[busy_index] && fp32_q[busy_index])
+                fp32_pool_busy = 1'b1;
+    end
+    assign ready_o = pipeline_advance && !fp32_pool_busy;
+    wire accept = valid_i && ready_o;
+
+    reg work_valid;
+    reg [2:0] work_phase;
+    reg [`OPENRV64_VEC_FMT_WIDTH-1:0] work_fmt;
+    reg [FP_LANES*32-1:0] work_src1;
+    reg [FP_LANES*32-1:0] work_src2;
+    reg [47:0] work_product0;
+    reg [47:0] work_product1;
+    always @* begin
+        work_valid = 1'b0;
+        work_phase = 3'd0;
+        work_fmt = fmt_i;
+        work_src1 = src1_i;
+        work_src2 = src2_i;
+        work_product0 = 48'd0;
+        work_product1 = 48'd0;
+        if (valid_q[3] && fp32_q[3]) begin
+            work_valid = 1'b1;
+            work_phase = 3'd4;
+            work_fmt = `OPENRV64_VEC_FMT_FP32;
+            work_src1 = {448'd0, src1_fp32_q[3]};
+            work_src2 = {448'd0, src2_fp32_q[3]};
+            work_product0 = product0_q[3];
+            work_product1 = product1_q[3];
+        end else if (valid_q[2] && fp32_q[2]) begin
+            work_valid = 1'b1;
+            work_phase = 3'd3;
+            work_fmt = `OPENRV64_VEC_FMT_FP32;
+            work_src1 = {448'd0, src1_fp32_q[2]};
+            work_src2 = {448'd0, src2_fp32_q[2]};
+            work_product0 = product0_q[2];
+            work_product1 = product1_q[2];
+        end else if (valid_q[1] && fp32_q[1]) begin
+            work_valid = 1'b1;
+            work_phase = 3'd2;
+            work_fmt = `OPENRV64_VEC_FMT_FP32;
+            work_src1 = {448'd0, src1_fp32_q[1]};
+            work_src2 = {448'd0, src2_fp32_q[1]};
+            work_product0 = product0_q[1];
+            work_product1 = product1_q[1];
+        end else if (valid_q[0] && fp32_q[0]) begin
+            work_valid = 1'b1;
+            work_phase = 3'd1;
+            work_fmt = `OPENRV64_VEC_FMT_FP32;
+            work_src1 = {448'd0, src1_fp32_q[0]};
+            work_src2 = {448'd0, src2_fp32_q[0]};
+            work_product0 = product0_q[0];
+            work_product1 = product1_q[0];
+        end else if (accept) begin
+            work_valid = 1'b1;
+            work_phase = 3'd0;
+        end
+    end
+
+    reg [23:0] work_sig_a [0:FP_LANES-1];
+    reg [23:0] work_sig_b [0:FP_LANES-1];
+    integer sig_lane;
+    always @* begin
+        for (sig_lane = 0; sig_lane < FP_LANES;
+             sig_lane = sig_lane + 1) begin
+            work_sig_a[sig_lane] = normalized_significand(
+                work_src1[sig_lane*32 +: 32]);
+            work_sig_b[sig_lane] = normalized_significand(
+                work_src2[sig_lane*32 +: 32]);
+        end
+    end
+
+    reg [1:0] tile_a [0:TILE_COUNT-1];
+    reg [1:0] tile_b [0:TILE_COUNT-1];
+    wire [3:0] tile_product [0:TILE_COUNT-1];
+    genvar tile_generate_index;
+    generate
+        for (tile_generate_index = 0; tile_generate_index < TILE_COUNT;
+             tile_generate_index = tile_generate_index + 1) begin : g_tile
+            assign tile_product[tile_generate_index] =
+                tile_a[tile_generate_index] * tile_b[tile_generate_index];
+        end
+    endgenerate
+
+    integer map_tile;
+    integer map_lane;
+    integer map_a;
+    integer map_b;
+    always @* begin
+        for (map_tile = 0; map_tile < TILE_COUNT;
+             map_tile = map_tile + 1) begin
+            tile_a[map_tile] = 2'd0;
+            tile_b[map_tile] = 2'd0;
+        end
+        if (work_valid) begin
+            case (work_fmt)
+                `OPENRV64_VEC_FMT_FP4_E2M1: begin
+                    for (map_lane = 0; map_lane < 16;
+                         map_lane = map_lane + 1) begin
+                        tile_a[map_lane] = work_sig_a[map_lane][23:22];
+                        tile_b[map_lane] = work_sig_b[map_lane][23:22];
+                    end
+                end
+                `OPENRV64_VEC_FMT_FP8_E4M3: begin
+                    for (map_lane = 0; map_lane < 8;
+                         map_lane = map_lane + 1)
+                        for (map_a = 0; map_a < 2; map_a = map_a + 1)
+                            for (map_b = 0; map_b < 2; map_b = map_b + 1) begin
+                                map_tile = map_lane*4 + map_a*2 + map_b;
+                                tile_a[map_tile] =
+                                    work_sig_a[map_lane][(10+map_a)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[map_lane][(10+map_b)*2 +: 2];
+                            end
+                end
+                `OPENRV64_VEC_FMT_BF16: begin
+                    for (map_lane = 0; map_lane < 4;
+                         map_lane = map_lane + 1)
+                        for (map_a = 0; map_a < 4; map_a = map_a + 1)
+                            for (map_b = 0; map_b < 4; map_b = map_b + 1) begin
+                                map_tile = map_lane*16 + map_a*4 + map_b;
+                                tile_a[map_tile] =
+                                    work_sig_a[map_lane][(8+map_a)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[map_lane][(8+map_b)*2 +: 2];
+                            end
+                end
+                `OPENRV64_VEC_FMT_FP32: begin
+                    case (work_phase)
+                        3'd0: begin
+                            for (map_tile = 0; map_tile < 64;
+                                 map_tile = map_tile + 1) begin
+                                tile_a[map_tile] =
+                                    work_sig_a[0][
+                                        (map_tile / 12)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[0][
+                                        (map_tile % 12)*2 +: 2];
+                            end
+                        end
+                        3'd1: begin
+                            for (map_tile = 0; map_tile < 64;
+                                 map_tile = map_tile + 1) begin
+                                tile_a[map_tile] =
+                                    work_sig_a[0][
+                                        ((64 + map_tile) / 12)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[0][
+                                        ((64 + map_tile) % 12)*2 +: 2];
+                            end
+                        end
+                        3'd2: begin
+                            for (map_tile = 0; map_tile < 16;
+                                 map_tile = map_tile + 1) begin
+                                tile_a[map_tile] =
+                                    work_sig_a[0][
+                                        ((128 + map_tile) / 12)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[0][
+                                        ((128 + map_tile) % 12)*2 +: 2];
+                            end
+                            for (map_tile = 16; map_tile < 64;
+                                 map_tile = map_tile + 1) begin
+                                tile_a[map_tile] =
+                                    work_sig_a[1][
+                                        ((map_tile - 16) / 12)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[1][
+                                        ((map_tile - 16) % 12)*2 +: 2];
+                            end
+                        end
+                        3'd3: begin
+                            for (map_tile = 0; map_tile < 64;
+                                 map_tile = map_tile + 1) begin
+                                tile_a[map_tile] =
+                                    work_sig_a[1][
+                                        ((48 + map_tile) / 12)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[1][
+                                        ((48 + map_tile) % 12)*2 +: 2];
+                            end
+                        end
+                        3'd4: begin
+                            for (map_tile = 0; map_tile < 32;
+                                 map_tile = map_tile + 1) begin
+                                tile_a[map_tile] =
+                                    work_sig_a[1][
+                                        ((112 + map_tile) / 12)*2 +: 2];
+                                tile_b[map_tile] =
+                                    work_sig_b[1][
+                                        ((112 + map_tile) % 12)*2 +: 2];
+                            end
+                        end
+                        default: begin
+                        end
+                    endcase
+                end
+                default: begin
+                end
+            endcase
+        end
+    end
+
+    reg [47:0] phase_product [0:FP_LANES-1];
+    integer reduce_lane;
+    integer reduce_a;
+    integer reduce_b;
+    integer reduce_tile;
+    always @* begin
+        for (reduce_lane = 0; reduce_lane < FP_LANES;
+             reduce_lane = reduce_lane + 1)
+            phase_product[reduce_lane] = 48'd0;
+        case (work_fmt)
+            `OPENRV64_VEC_FMT_FP4_E2M1: begin
+                for (reduce_lane = 0; reduce_lane < 16;
+                     reduce_lane = reduce_lane + 1)
+                    phase_product[reduce_lane] =
+                        {tile_product[reduce_lane], 44'd0};
+            end
+            `OPENRV64_VEC_FMT_FP8_E4M3: begin
+                for (reduce_lane = 0; reduce_lane < 8;
+                     reduce_lane = reduce_lane + 1)
+                    for (reduce_a = 0; reduce_a < 2;
+                         reduce_a = reduce_a + 1)
+                        for (reduce_b = 0; reduce_b < 2;
+                             reduce_b = reduce_b + 1) begin
+                            reduce_tile = reduce_lane*4 +
+                                          reduce_a*2 + reduce_b;
+                            phase_product[reduce_lane] =
+                                phase_product[reduce_lane] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (40 + 2*(reduce_a + reduce_b)));
+                        end
+            end
+            `OPENRV64_VEC_FMT_BF16: begin
+                for (reduce_lane = 0; reduce_lane < 4;
+                     reduce_lane = reduce_lane + 1)
+                    for (reduce_a = 0; reduce_a < 4;
+                         reduce_a = reduce_a + 1)
+                        for (reduce_b = 0; reduce_b < 4;
+                             reduce_b = reduce_b + 1) begin
+                            reduce_tile = reduce_lane*16 +
+                                          reduce_a*4 + reduce_b;
+                            phase_product[reduce_lane] =
+                                phase_product[reduce_lane] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (32 + 2*(reduce_a + reduce_b)));
+                        end
+            end
+            `OPENRV64_VEC_FMT_FP32: begin
+                case (work_phase)
+                    3'd0: begin
+                        for (reduce_tile = 0; reduce_tile < 64;
+                             reduce_tile = reduce_tile + 1) begin
+                            phase_product[0] = phase_product[0] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (2*((reduce_tile / 12) +
+                                     (reduce_tile % 12))));
+                        end
+                    end
+                    3'd1: begin
+                        for (reduce_tile = 0; reduce_tile < 64;
+                             reduce_tile = reduce_tile + 1) begin
+                            phase_product[0] = phase_product[0] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (2*(((64 + reduce_tile) / 12) +
+                                     ((64 + reduce_tile) % 12))));
+                        end
+                    end
+                    3'd2: begin
+                        for (reduce_tile = 0; reduce_tile < 16;
+                             reduce_tile = reduce_tile + 1) begin
+                            phase_product[0] = phase_product[0] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (2*(((128 + reduce_tile) / 12) +
+                                     ((128 + reduce_tile) % 12))));
+                        end
+                        for (reduce_tile = 16; reduce_tile < 64;
+                             reduce_tile = reduce_tile + 1) begin
+                            phase_product[1] = phase_product[1] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (2*(((reduce_tile - 16) / 12) +
+                                     ((reduce_tile - 16) % 12))));
+                        end
+                    end
+                    3'd3: begin
+                        for (reduce_tile = 0; reduce_tile < 64;
+                             reduce_tile = reduce_tile + 1) begin
+                            phase_product[1] = phase_product[1] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (2*(((48 + reduce_tile) / 12) +
+                                     ((48 + reduce_tile) % 12))));
+                        end
+                    end
+                    3'd4: begin
+                        for (reduce_tile = 0; reduce_tile < 32;
+                             reduce_tile = reduce_tile + 1) begin
+                            phase_product[1] = phase_product[1] +
+                                ({44'd0, tile_product[reduce_tile]} <<
+                                 (2*(((112 + reduce_tile) / 12) +
+                                     ((112 + reduce_tile) % 12))));
+                        end
+                    end
+                    default: begin
+                    end
+                endcase
+            end
+            default: begin
+            end
+        endcase
+    end
+
+    reg [FP_LANES*32-1:0] narrow_result;
+    reg [FP_LANES*32-1:0] fp32_result;
+    integer finish_lane;
+    always @* begin
+        for (finish_lane = 0; finish_lane < FP_LANES;
+             finish_lane = finish_lane + 1)
+            narrow_result[finish_lane*32 +: 32] = finish_multiply(
+                work_src1[finish_lane*32 +: 32],
+                work_src2[finish_lane*32 +: 32],
+                phase_product[finish_lane]);
+        fp32_result = {FP_LANES*32{1'b0}};
+        fp32_result[0*32 +: 32] = finish_multiply(
+            work_src1[0*32 +: 32], work_src2[0*32 +: 32],
+            work_product0 + phase_product[0]);
+        fp32_result[1*32 +: 32] = finish_multiply(
+            work_src1[1*32 +: 32], work_src2[1*32 +: 32],
+            work_product1 + phase_product[1]);
+    end
+
+    integer pipeline_index;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            valid_q <= {(HANDOFF_STAGE+1){1'b0}};
+            fp32_q <= {(HANDOFF_STAGE+1){1'b0}};
+            mac_q <= {(HANDOFF_STAGE+1){1'b0}};
+            for (pipeline_index = 0; pipeline_index <= HANDOFF_STAGE;
+                 pipeline_index = pipeline_index + 1) begin
+                tag_q[pipeline_index] <= {TAG_WIDTH{1'b0}};
+                result_q[pipeline_index] <= {FP_LANES*32{1'b0}};
+                acc_q[pipeline_index] <= {FP_LANES*32{1'b0}};
+                src1_fp32_q[pipeline_index] <= 64'd0;
+                src2_fp32_q[pipeline_index] <= 64'd0;
+                product0_q[pipeline_index] <= 48'd0;
+                product1_q[pipeline_index] <= 48'd0;
+            end
+        end else if (flush_i) begin
+            valid_q <= {(HANDOFF_STAGE+1){1'b0}};
+            fp32_q <= {(HANDOFF_STAGE+1){1'b0}};
+            mac_q <= {(HANDOFF_STAGE+1){1'b0}};
+        end else if (pipeline_advance) begin
+            for (pipeline_index = HANDOFF_STAGE; pipeline_index > 0;
+                 pipeline_index = pipeline_index - 1) begin
+                valid_q[pipeline_index] <= valid_q[pipeline_index-1];
+                fp32_q[pipeline_index] <= fp32_q[pipeline_index-1];
+                mac_q[pipeline_index] <= mac_q[pipeline_index-1];
+                tag_q[pipeline_index] <= tag_q[pipeline_index-1];
+                result_q[pipeline_index] <= result_q[pipeline_index-1];
+                acc_q[pipeline_index] <= acc_q[pipeline_index-1];
+                src1_fp32_q[pipeline_index] <=
+                    src1_fp32_q[pipeline_index-1];
+                src2_fp32_q[pipeline_index] <=
+                    src2_fp32_q[pipeline_index-1];
+                product0_q[pipeline_index] <=
+                    product0_q[pipeline_index-1];
+                product1_q[pipeline_index] <=
+                    product1_q[pipeline_index-1];
+            end
+            valid_q[0] <= accept;
+            fp32_q[0] <= accept && (fmt_i == `OPENRV64_VEC_FMT_FP32);
+            mac_q[0] <= accept && mac_i;
+            tag_q[0] <= tag_i;
+            result_q[0] <= {FP_LANES*32{1'b0}};
+            acc_q[0] <= acc_i;
+            src1_fp32_q[0] <= src1_i[63:0];
+            src2_fp32_q[0] <= src2_i[63:0];
+            product0_q[0] <= 48'd0;
+            product1_q[0] <= 48'd0;
+            if (accept) begin
+                if (fmt_i == `OPENRV64_VEC_FMT_FP32) begin
+                    product0_q[0] <= phase_product[0];
+                    product1_q[0] <= phase_product[1];
+                end else begin
+                    result_q[0] <= narrow_result;
+                end
+            end
+            if (valid_q[0] && fp32_q[0]) begin
+                product0_q[1] <= product0_q[0] + phase_product[0];
+                product1_q[1] <= product1_q[0] + phase_product[1];
+            end
+            if (valid_q[1] && fp32_q[1]) begin
+                product0_q[2] <= product0_q[1] + phase_product[0];
+                product1_q[2] <= product1_q[1] + phase_product[1];
+            end
+            if (valid_q[2] && fp32_q[2]) begin
+                product0_q[3] <= product0_q[2] + phase_product[0];
+                product1_q[3] <= product1_q[2] + phase_product[1];
+            end
+            if (valid_q[3] && fp32_q[3]) begin
+                product0_q[4] <= product0_q[3] + phase_product[0];
+                product1_q[4] <= product1_q[3] + phase_product[1];
+                result_q[4] <= fp32_result;
+            end
+        end
+    end
+
+`ifndef SYNTHESIS
+    initial begin
+        if (MUL_LATENCY < 5)
+            $fatal(1, "shared FP32 multiplier needs at least five cycles");
+    end
+    always @(posedge clk) begin
+        if (rst_n && $test$plusargs("trace_shared_multiplier")) begin
+            if (accept)
+                $display("shared-mul accept tag=%h fmt=%0d mac=%0b a=%h,%h b=%h,%h acc=%h,%h",
+                         tag_i, fmt_i, mac_i, src1_i[31:0], src1_i[63:32],
+                         src2_i[31:0], src2_i[63:32],
+                         acc_i[31:0], acc_i[63:32]);
+            if (result_valid_o && result_ready_i)
+                $display("shared-mul handoff tag=%h mac=%0b product=%h,%h acc=%h,%h",
+                         result_tag_o, result_mac_o,
+                         result_o[31:0], result_o[63:32],
+                         result_acc_o[31:0], result_acc_o[63:32]);
+        end
+    end
+`endif
+
+endmodule
+
+// Unified slice bank: one add-only lane per FP4 element slot plus the shared
+// multiplier above. MAC products enter the same four-cycle adder used by ADD.
+module openrv64_exec_vec_fp_bank #(
+    parameter integer TAG_WIDTH = 8,
+    parameter integer ADD_LATENCY = 4,
+    parameter integer MUL_LATENCY = 7,
+    parameter integer MAC_LATENCY = ADD_LATENCY + MUL_LATENCY
+) (
+    input  wire                         clk,
+    input  wire                         rst_n,
+    input  wire                         flush_i,
+    input  wire                         valid_i,
+    output wire                         ready_o,
+    input  wire [TAG_WIDTH-1:0]         tag_i,
+    input  wire [`OPENRV64_VEC_FMT_WIDTH-1:0] fmt_i,
+    input  wire                         multiply_i,
+    input  wire                         mac_i,
+    input  wire [16*32-1:0]             src1_i,
+    input  wire [16*32-1:0]             src2_i,
+    input  wire [16*32-1:0]             acc_i,
+    output wire                         result_valid_o,
+    input  wire                         result_ready_i,
+    output wire [TAG_WIDTH-1:0]         result_tag_o,
+    output wire [16*32-1:0]             result_o
+);
+
+    localparam integer FP_LANES = 16;
+    wire input_is_add = !multiply_i && !mac_i;
+
+    wire mul_ready;
+    wire mul_result_valid;
+    wire mul_result_ready;
+    wire [TAG_WIDTH-1:0] mul_result_tag;
+    wire mul_result_mac;
+    wire [FP_LANES*32-1:0] mul_result;
+    wire [FP_LANES*32-1:0] mul_result_acc;
+
+    wire [FP_LANES-1:0] add_lane_ready;
+    wire all_add_lane_ready = &add_lane_ready;
+    wire [FP_LANES-1:0] add_lane_result_valid;
+    wire [TAG_WIDTH-1:0] add_lane_result_tag [0:FP_LANES-1];
+    wire [31:0] add_lane_result [0:FP_LANES-1];
+    wire add_result_valid = add_lane_result_valid[0];
+    wire mac_add_issue = mul_result_valid && mul_result_mac &&
+                         all_add_lane_ready;
+    wire external_add_ready = all_add_lane_ready &&
+                              !(mul_result_valid && mul_result_mac);
+    assign ready_o = input_is_add ? external_add_ready : mul_ready;
+    wire external_add_issue = valid_i && input_is_add && ready_o;
+    wire add_issue = mac_add_issue || external_add_issue;
+    wire [TAG_WIDTH-1:0] add_issue_tag = mac_add_issue ?
+        mul_result_tag : tag_i;
+    wire [FP_LANES*32-1:0] add_src1 = mac_add_issue ?
+        mul_result_acc : src1_i;
+    wire [FP_LANES*32-1:0] add_src2 = mac_add_issue ?
+        mul_result : src2_i;
+
+    reg mul_final_valid_q;
+    reg [TAG_WIDTH-1:0] mul_final_tag_q;
+    reg [FP_LANES*32-1:0] mul_final_result_q;
+    wire mul_final_consumed = mul_final_valid_q && !add_result_valid &&
+                              result_ready_i;
+    wire mul_final_slot_ready = !mul_final_valid_q || mul_final_consumed;
+    wire mul_final_capture = mul_result_valid && !mul_result_mac &&
+                             mul_final_slot_ready;
+    assign mul_result_ready = mul_result_mac ? all_add_lane_ready :
+                              mul_final_slot_ready;
+
+    openrv64_exec_vec_shared_multiplier #(
+        .TAG_WIDTH(TAG_WIDTH),
+        .MUL_LATENCY(MUL_LATENCY)
+    ) u_shared_multiplier (
+        .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+        .valid_i(valid_i && !input_is_add), .ready_o(mul_ready),
+        .tag_i(tag_i), .fmt_i(fmt_i), .mac_i(mac_i),
+        .src1_i(src1_i), .src2_i(src2_i), .acc_i(acc_i),
+        .result_valid_o(mul_result_valid),
+        .result_ready_i(mul_result_ready),
+        .result_tag_o(mul_result_tag), .result_mac_o(mul_result_mac),
+        .result_o(mul_result), .result_acc_o(mul_result_acc)
+    );
+
+    genvar add_lane_index;
+    generate
+        for (add_lane_index = 0; add_lane_index < FP_LANES;
+             add_lane_index = add_lane_index + 1) begin : g_add_lane
+            openrv64_exec_vec_fp32_lane #(
+                .TAG_WIDTH(TAG_WIDTH),
+                .ADD_LATENCY(ADD_LATENCY),
+                .MUL_LATENCY(MUL_LATENCY),
+                .MAC_LATENCY(MAC_LATENCY),
+                .MUL_SIG_BITS(0)
+            ) u_add_lane (
+                .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+                .valid_i(add_issue),
+                .ready_o(add_lane_ready[add_lane_index]),
+                .tag_i(add_issue_tag), .multiply_i(1'b0), .mac_i(1'b0),
+                .src1_i(add_src1[add_lane_index*32 +: 32]),
+                .src2_i(add_src2[add_lane_index*32 +: 32]),
+                .src3_i(32'd0),
+                .result_valid_o(add_lane_result_valid[add_lane_index]),
+                .result_ready_i(result_ready_i),
+                .result_tag_o(add_lane_result_tag[add_lane_index]),
+                .result_o(add_lane_result[add_lane_index])
+            );
+            assign result_o[add_lane_index*32 +: 32] = add_result_valid ?
+                add_lane_result[add_lane_index] :
+                mul_final_result_q[add_lane_index*32 +: 32];
+        end
+    endgenerate
+
+    assign result_valid_o = add_result_valid || mul_final_valid_q;
+    assign result_tag_o = add_result_valid ? add_lane_result_tag[0] :
+                          mul_final_tag_q;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mul_final_valid_q <= 1'b0;
+            mul_final_tag_q <= {TAG_WIDTH{1'b0}};
+            mul_final_result_q <= {FP_LANES*32{1'b0}};
+        end else if (flush_i) begin
+            mul_final_valid_q <= 1'b0;
+        end else begin
+            if (mul_final_consumed)
+                mul_final_valid_q <= 1'b0;
+            if (mul_final_capture) begin
+                mul_final_valid_q <= 1'b1;
+                mul_final_tag_q <= mul_result_tag;
+                mul_final_result_q <= mul_result;
+            end
+        end
+    end
+
+`ifndef SYNTHESIS
+    integer check_lane;
+    always @(posedge clk) begin
+        if (rst_n && add_result_valid)
+            for (check_lane = 1; check_lane < FP_LANES;
+                 check_lane = check_lane + 1)
+                if (!add_lane_result_valid[check_lane] ||
+                    (add_lane_result_tag[check_lane] !=
+                     add_lane_result_tag[0]))
+                    $fatal(1, "shared FP add lanes lost lockstep");
+        if (rst_n && $test$plusargs("trace_shared_multiplier")) begin
+            if (mac_add_issue)
+                $display("shared-mac add tag=%h product=%h,%h acc=%h,%h",
+                         mul_result_tag, mul_result[31:0],
+                         mul_result[63:32], mul_result_acc[31:0],
+                         mul_result_acc[63:32]);
+            if (add_result_valid && result_ready_i)
+                $display("shared-add result tag=%h result=%h,%h",
+                         add_lane_result_tag[0], add_lane_result[0],
+                         add_lane_result[1]);
+        end
     end
 `endif
 
@@ -976,8 +1906,8 @@ module openrv64_exec_vec #(
     wire execution_reads = (state_q == STATE_BIT_EXEC) ||
                            (state_q == STATE_FP_FEED);
 
-    wire [FP_LANES-1:0] lane_ready;
-    wire all_lane_ready = &lane_ready;
+    wire fp_operand_ready;
+    wire fp_bank_ready;
     wire [DATAPATH_WIDTH-1:0] fp_src1_chunk =
         rf_read_data_i[0*DATAPATH_WIDTH +: DATAPATH_WIDTH];
     wire [DATAPATH_WIDTH-1:0] fp_src2_chunk =
@@ -987,7 +1917,7 @@ module openrv64_exec_vec #(
     wire fp_zero_early = (fp_src1_chunk == 0) && (fp_src2_chunk == 0);
     wire bit_needs_src2 = active_op_q != `OPENRV64_VEC_OP_NOT;
     assign rf_read_valid_o[0] = execution_reads &&
-        ((state_q == STATE_BIT_EXEC) || all_lane_ready);
+        ((state_q == STATE_BIT_EXEC) || fp_operand_ready);
     assign rf_read_valid_o[1] = rf_read_valid_o[0] &&
         ((state_q == STATE_FP_FEED) || bit_needs_src2);
     assign rf_read_addr_o = {
@@ -1023,17 +1953,28 @@ module openrv64_exec_vec #(
                          rf_read_valid_o[0] && rf_reads_ready &&
                          !fp_zero_early;
     wire fp_multiply = active_op_q == `OPENRV64_VEC_OP_FMUL;
-    wire [FP_LANES-1:0] lane_result_valid;
-    wire [CHUNK_INDEX_WIDTH-1:0] lane_result_tag [0:FP_LANES-1];
+    wire [FP_LANES*32-1:0] fp_lane_src1_bus;
+    wire [FP_LANES*32-1:0] fp_lane_src2_bus;
+    wire fp_operand_valid;
+    wire [CHUNK_INDEX_WIDTH-1:0] fp_operand_tag;
+    wire [`OPENRV64_VEC_FMT_WIDTH-1:0] fp_operand_fmt;
+    wire fp_operand_multiply;
+    wire fp_operand_mac;
+    wire [DATAPATH_WIDTH-1:0] fp_operand_src1;
+    wire [DATAPATH_WIDTH-1:0] fp_operand_src2;
+    wire [DATAPATH_WIDTH-1:0] fp_operand_acc;
+    wire [FP_LANES*32-1:0] fp_bank_result_bus;
+    wire fp_bank_result_valid;
+    wire [CHUNK_INDEX_WIDTH-1:0] fp_bank_result_tag;
     wire [31:0] lane_result [0:FP_LANES-1];
     wire lane_result_ready = (state_q == STATE_FP_FEED) ||
                              (state_q == STATE_FP_DRAIN);
-    wire fp_lane_feed_fire = fp_feed_valid && all_lane_ready;
+    wire fp_lane_feed_fire = fp_feed_valid && fp_operand_ready;
     wire fp_early_fire = (state_q == STATE_FP_FEED) &&
                          rf_read_valid_o[0] && rf_reads_ready &&
                          fp_zero_early;
     wire fp_feed_fire = fp_lane_feed_fire || fp_early_fire;
-    wire fp_result_fire = lane_result_valid[0] && lane_result_ready;
+    wire fp_result_fire = fp_bank_result_valid && lane_result_ready;
     wire fp_last_feed = fp_feed_fire &&
         (feed_index_q == active_chunk_count - 1'b1);
     wire [1:0] fp_completion_events = fp_early_fire + fp_result_fire;
@@ -1047,34 +1988,50 @@ module openrv64_exec_vec #(
     genvar lane_index;
     generate
         for (lane_index = 0; lane_index < FP_LANES;
-             lane_index = lane_index + 1) begin : g_fp_lane
-            localparam integer LANE_MUL_SIG_BITS =
-                (lane_index < 2) ? 24 :
-                (lane_index < 4) ? 8 :
-                (lane_index < 8) ? 4 : 2;
-            wire [31:0] lane_src1 = lane_to_fp32(
-                fp_src1_chunk, active_fmt_q, lane_index);
-            wire [31:0] lane_src2 = lane_to_fp32(
-                fp_src2_chunk, active_fmt_q, lane_index);
-            openrv64_exec_vec_fp32_lane #(
-                .TAG_WIDTH(CHUNK_INDEX_WIDTH),
-                .ADD_LATENCY(ADD_LATENCY),
-                .MUL_LATENCY(MUL_LATENCY),
-                .MAC_LATENCY(MAC_LATENCY),
-                .MUL_SIG_BITS(LANE_MUL_SIG_BITS)
-            ) u_lane (
-                .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
-                .valid_i(fp_feed_valid), .ready_o(lane_ready[lane_index]),
-                .tag_i(feed_index_q), .multiply_i(fp_multiply),
-                .mac_i(1'b0), .src1_i(lane_src1), .src2_i(lane_src2),
-                .src3_i(32'd0),
-                .result_valid_o(lane_result_valid[lane_index]),
-                .result_ready_i(lane_result_ready),
-                .result_tag_o(lane_result_tag[lane_index]),
-                .result_o(lane_result[lane_index])
-            );
+            lane_index = lane_index + 1) begin : g_fp_bank_lane
+            assign fp_lane_src1_bus[lane_index*32 +: 32] = lane_to_fp32(
+                fp_operand_src1, fp_operand_fmt, lane_index);
+            assign fp_lane_src2_bus[lane_index*32 +: 32] = lane_to_fp32(
+                fp_operand_src2, fp_operand_fmt, lane_index);
+            assign lane_result[lane_index] =
+                fp_bank_result_bus[lane_index*32 +: 32];
         end
     endgenerate
+
+    openrv64_exec_vec_fp_operand_queue #(
+        .TAG_WIDTH(CHUNK_INDEX_WIDTH),
+        .DEPTH(CHUNKS)
+    ) u_fp_operand_queue (
+        .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
+        .valid_i(fp_feed_valid), .ready_o(fp_operand_ready),
+        .tag_i(feed_index_q), .fmt_i(active_fmt_q),
+        .multiply_i(fp_multiply), .mac_i(1'b0),
+        .src1_i(fp_src1_chunk), .src2_i(fp_src2_chunk),
+        .acc_i({DATAPATH_WIDTH{1'b0}}),
+        .valid_o(fp_operand_valid), .ready_i(fp_bank_ready),
+        .tag_o(fp_operand_tag), .fmt_o(fp_operand_fmt),
+        .multiply_o(fp_operand_multiply), .mac_o(fp_operand_mac),
+        .src1_o(fp_operand_src1), .src2_o(fp_operand_src2),
+        .acc_o(fp_operand_acc)
+    );
+
+    openrv64_exec_vec_fp_bank #(
+        .TAG_WIDTH(CHUNK_INDEX_WIDTH),
+        .ADD_LATENCY(ADD_LATENCY),
+        .MUL_LATENCY(MUL_LATENCY),
+        .MAC_LATENCY(MAC_LATENCY)
+    ) u_fp_bank (
+        .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
+        .valid_i(fp_operand_valid), .ready_o(fp_bank_ready),
+        .tag_i(fp_operand_tag), .fmt_i(fp_operand_fmt),
+        .multiply_i(fp_operand_multiply), .mac_i(fp_operand_mac),
+        .src1_i(fp_lane_src1_bus), .src2_i(fp_lane_src2_bus),
+        .acc_i({FP_LANES*32{1'b0}}),
+        .result_valid_o(fp_bank_result_valid),
+        .result_ready_i(lane_result_ready),
+        .result_tag_o(fp_bank_result_tag),
+        .result_o(fp_bank_result_bus)
+    );
 
     reg [DATAPATH_WIDTH-1:0] fp_result_chunk;
     integer pack_index;
@@ -1270,7 +2227,7 @@ module openrv64_exec_vec #(
                     result_slice_q[feed_index_q] <=
                         {DATAPATH_WIDTH{1'b0}};
                 if (fp_result_fire) begin
-                    result_slice_q[lane_result_tag[0]] <= fp_result_chunk;
+                    result_slice_q[fp_bank_result_tag] <= fp_result_chunk;
                 end
                 if (fp_completion_events != 0)
                     fp_result_count_q <= fp_result_count_next;
@@ -1290,7 +2247,6 @@ module openrv64_exec_vec #(
     end
 
 `ifndef SYNTHESIS
-    integer check_lane;
     initial begin
         if (DATAPATH_WIDTH != 64)
             $fatal(1, "initial vector datapath supports exactly 64 bits/cycle");
@@ -1302,14 +2258,6 @@ module openrv64_exec_vec #(
 
     always @(posedge clk) begin
         if (rst_n) begin
-            if (fp_result_fire) begin
-                for (check_lane = 1; check_lane < FP_LANES;
-                     check_lane = check_lane + 1) begin
-                    if (!lane_result_valid[check_lane] ||
-                        (lane_result_tag[check_lane] != lane_result_tag[0]))
-                        $fatal(1, "vector FP lanes lost pipeline lockstep");
-                end
-            end
             if (retire_valid_i && !retire_kill_i &&
                 ((retire_tag_i == pending_tag_q) && pending_valid_q))
                 $fatal(1, "pending vector command cannot commit before completion");
@@ -1518,8 +2466,8 @@ module openrv64_exec_vec #(
     wire execution_reads = feed_found && operands_ready_i &&
                            !feed_killed_now;
 
-    wire [FP_LANES-1:0] lane_ready;
-    wire all_lane_ready = &lane_ready;
+    wire fp_operand_ready;
+    wire fp_bank_ready;
     wire [DATAPATH_WIDTH-1:0] src1_chunk =
         rf_read_data_i[0*DATAPATH_WIDTH +: DATAPATH_WIDTH];
     wire [DATAPATH_WIDTH-1:0] src2_chunk =
@@ -1527,7 +2475,7 @@ module openrv64_exec_vec #(
     wire fp_zero_early = feed_fp_op &&
                          (src1_chunk == 0) && (src2_chunk == 0);
     wire feed_engine_ready = feed_bit_op || feed_vlda || feed_vsta ||
-        ((feed_fp_op || feed_vmac) && all_lane_ready);
+        ((feed_fp_op || feed_vmac) && fp_operand_ready);
     assign rf_read_valid_o[0] = execution_reads && feed_needs_src1 &&
                                 feed_engine_ready;
     assign rf_read_valid_o[1] = rf_read_valid_o[0] && feed_needs_src2;
@@ -1570,8 +2518,8 @@ module openrv64_exec_vec #(
     wire mac_feed_valid = execution_reads && feed_vmac &&
                           rf_read_valid_o[0] && rf_reads_ready;
     wire fp_multiply = slot_op_q[feed_slot] == `OPENRV64_VEC_OP_FMUL;
-    wire fp_lane_feed_fire = fp_feed_valid && all_lane_ready;
-    wire mac_lane_feed_fire = mac_feed_valid && all_lane_ready;
+    wire fp_lane_feed_fire = fp_feed_valid && fp_operand_ready;
+    wire mac_lane_feed_fire = mac_feed_valid && fp_operand_ready;
     wire fp_early_fire = execution_reads && feed_fp_op &&
                          rf_read_valid_o[0] && rf_reads_ready &&
                          fp_zero_early;
@@ -1582,14 +2530,26 @@ module openrv64_exec_vec #(
     wire [TOKEN_TAG_WIDTH-1:0] feed_token_tag =
         {feed_slot, feed_index};
 
-    wire [FP_LANES-1:0] lane_result_valid;
-    wire [TOKEN_TAG_WIDTH-1:0] lane_result_tag [0:FP_LANES-1];
+    wire [FP_LANES*32-1:0] fp_lane_src1_bus;
+    wire [FP_LANES*32-1:0] fp_lane_src2_bus;
+    wire [FP_LANES*32-1:0] fp_lane_acc_bus;
+    wire fp_operand_valid;
+    wire [TOKEN_TAG_WIDTH-1:0] fp_operand_tag;
+    wire [`OPENRV64_VEC_FMT_WIDTH-1:0] fp_operand_fmt;
+    wire fp_operand_multiply;
+    wire fp_operand_mac;
+    wire [DATAPATH_WIDTH-1:0] fp_operand_src1;
+    wire [DATAPATH_WIDTH-1:0] fp_operand_src2;
+    wire [DATAPATH_WIDTH-1:0] fp_operand_acc;
+    wire [FP_LANES*32-1:0] fp_bank_result_bus;
+    wire fp_bank_result_valid;
+    wire [TOKEN_TAG_WIDTH-1:0] fp_bank_result_tag;
     wire [31:0] lane_result [0:FP_LANES-1];
-    wire unified_result_fire = lane_result_valid[0];
+    wire unified_result_fire = fp_bank_result_valid;
     wire [SLOT_WIDTH-1:0] unified_result_slot =
-        lane_result_tag[0][TOKEN_TAG_WIDTH-1 -: SLOT_WIDTH];
+        fp_bank_result_tag[TOKEN_TAG_WIDTH-1 -: SLOT_WIDTH];
     wire [CHUNK_INDEX_WIDTH-1:0] unified_result_index =
-        lane_result_tag[0][CHUNK_INDEX_WIDTH-1:0];
+        fp_bank_result_tag[CHUNK_INDEX_WIDTH-1:0];
     wire unified_result_is_mac =
         slot_op_q[unified_result_slot] == `OPENRV64_VEC_OP_VMAC;
     wire fp_result_fire = unified_result_fire && !unified_result_is_mac;
@@ -1599,44 +2559,57 @@ module openrv64_exec_vec #(
     wire [SLOT_WIDTH-1:0] mac_result_slot = unified_result_slot;
     wire [CHUNK_INDEX_WIDTH-1:0] mac_result_index = unified_result_index;
     wire fp_lane_flush = 1'b0;
-    wire unified_lane_feed_valid = fp_feed_valid || mac_feed_valid;
+    wire unified_lane_feed_valid = fp_operand_valid;
 
     genvar lane_index;
     generate
         for (lane_index = 0; lane_index < FP_LANES;
-             lane_index = lane_index + 1) begin : g_fp_lane
-            localparam integer LANE_MUL_SIG_BITS =
-                (lane_index < 2) ? 24 :
-                (lane_index < 4) ? 8 :
-                (lane_index < 8) ? 4 : 2;
-            wire [31:0] lane_src1 = lane_to_fp32(
-                src1_chunk, slot_fmt_q[feed_slot], lane_index);
-            wire [31:0] lane_src2 = lane_to_fp32(
-                src2_chunk, slot_fmt_q[feed_slot], lane_index);
-            wire [31:0] lane_acc = lane_to_fp32(
-                acc_slice_q[slot_acc_q[feed_slot]][feed_index],
-                slot_fmt_q[feed_slot],
-                lane_index);
-            openrv64_exec_vec_fp32_lane #(
-                .TAG_WIDTH(TOKEN_TAG_WIDTH),
-                .ADD_LATENCY(ADD_LATENCY),
-                .MUL_LATENCY(MUL_LATENCY),
-                .MAC_LATENCY(MAC_LATENCY),
-                .MUL_SIG_BITS(LANE_MUL_SIG_BITS)
-            ) u_lane (
-                .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
-                .valid_i(unified_lane_feed_valid),
-                .ready_o(lane_ready[lane_index]),
-                .tag_i(feed_token_tag), .multiply_i(fp_multiply),
-                .mac_i(feed_vmac), .src1_i(lane_src1),
-                .src2_i(lane_src2), .src3_i(lane_acc),
-                .result_valid_o(lane_result_valid[lane_index]),
-                .result_ready_i(1'b1),
-                .result_tag_o(lane_result_tag[lane_index]),
-                .result_o(lane_result[lane_index])
-            );
+            lane_index = lane_index + 1) begin : g_fp_bank_lane
+            assign fp_lane_src1_bus[lane_index*32 +: 32] = lane_to_fp32(
+                fp_operand_src1, fp_operand_fmt, lane_index);
+            assign fp_lane_src2_bus[lane_index*32 +: 32] = lane_to_fp32(
+                fp_operand_src2, fp_operand_fmt, lane_index);
+            assign fp_lane_acc_bus[lane_index*32 +: 32] = lane_to_fp32(
+                fp_operand_acc, fp_operand_fmt, lane_index);
+            assign lane_result[lane_index] =
+                fp_bank_result_bus[lane_index*32 +: 32];
         end
     endgenerate
+
+    openrv64_exec_vec_fp_operand_queue #(
+        .TAG_WIDTH(TOKEN_TAG_WIDTH),
+        .DEPTH(CHUNKS)
+    ) u_fp_operand_queue (
+        .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
+        .valid_i(fp_feed_valid || mac_feed_valid),
+        .ready_o(fp_operand_ready),
+        .tag_i(feed_token_tag), .fmt_i(slot_fmt_q[feed_slot]),
+        .multiply_i(fp_multiply), .mac_i(feed_vmac),
+        .src1_i(src1_chunk), .src2_i(src2_chunk),
+        .acc_i(acc_slice_q[slot_acc_q[feed_slot]][feed_index]),
+        .valid_o(fp_operand_valid), .ready_i(fp_bank_ready),
+        .tag_o(fp_operand_tag), .fmt_o(fp_operand_fmt),
+        .multiply_o(fp_operand_multiply), .mac_o(fp_operand_mac),
+        .src1_o(fp_operand_src1), .src2_o(fp_operand_src2),
+        .acc_o(fp_operand_acc)
+    );
+
+    openrv64_exec_vec_fp_bank #(
+        .TAG_WIDTH(TOKEN_TAG_WIDTH),
+        .ADD_LATENCY(ADD_LATENCY),
+        .MUL_LATENCY(MUL_LATENCY),
+        .MAC_LATENCY(MAC_LATENCY)
+    ) u_fp_bank (
+        .clk(clk), .rst_n(rst_n), .flush_i(fp_lane_flush),
+        .valid_i(unified_lane_feed_valid), .ready_o(fp_bank_ready),
+        .tag_i(fp_operand_tag), .fmt_i(fp_operand_fmt),
+        .multiply_i(fp_operand_multiply), .mac_i(fp_operand_mac),
+        .src1_i(fp_lane_src1_bus), .src2_i(fp_lane_src2_bus),
+        .acc_i(fp_lane_acc_bus),
+        .result_valid_o(fp_bank_result_valid), .result_ready_i(1'b1),
+        .result_tag_o(fp_bank_result_tag),
+        .result_o(fp_bank_result_bus)
+    );
 
     reg [DATAPATH_WIDTH-1:0] fp_result_chunk;
     integer pack_index;
@@ -1936,7 +2909,6 @@ module openrv64_exec_vec #(
     end
 
 `ifndef SYNTHESIS
-    integer check_lane;
     integer tag_check;
     initial begin
         if (DATAPATH_WIDTH != 64)
@@ -1962,24 +2934,12 @@ module openrv64_exec_vec #(
             if (fp_result_fire) begin
                 if (!slot_valid_q[fp_result_slot])
                     $fatal(1, "vector FP result targeted a free context");
-                for (check_lane = 1; check_lane < FP_LANES;
-                     check_lane = check_lane + 1) begin
-                    if (!lane_result_valid[check_lane] ||
-                        (lane_result_tag[check_lane] != lane_result_tag[0]))
-                        $fatal(1, "vector FP lanes lost pipeline lockstep");
-                end
             end
             if (mac_result_fire) begin
                 if (!slot_valid_q[mac_result_slot])
                     $fatal(1, "vector MAC result targeted a free context");
                 if (slot_op_q[mac_result_slot] != `OPENRV64_VEC_OP_VMAC)
                     $fatal(1, "vector MAC result targeted a non-MAC context");
-                for (check_lane = 1; check_lane < FP_LANES;
-                     check_lane = check_lane + 1) begin
-                    if (!lane_result_valid[check_lane] ||
-                        (lane_result_tag[check_lane] != lane_result_tag[0]))
-                        $fatal(1, "vector MAC lanes lost pipeline lockstep");
-                end
             end
             if (dispatch_fire) begin
                 for (tag_check = 0; tag_check < INFLIGHT_DEPTH;

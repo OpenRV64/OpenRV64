@@ -22,6 +22,7 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_WFI_SLEEP = 1,
+    parameter integer ENABLE_WFI_CLOCK_GATING = 1,
     parameter integer HPM_COUNTERS = 8,
     parameter integer PMP_ACTIVE_ENTRIES = 8,
     parameter integer RETIRE_DEPTH = 16,
@@ -75,6 +76,7 @@ module openrv64_rv64_top_3p #(
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
+    parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -248,19 +250,23 @@ module openrv64_rv64_top_3p #(
     reg [31:0] dbg_instr_q;
     reg halted_q;
     reg wfi_sleep_q;
-    reg backend_clock_enable_q;
+    wire backend_clock_enable_q;
     reg reset_pending_q;
-    wire backend_clk = clk & backend_clock_enable_q;
+    wire backend_clk;
+    wire backend_island_active =
+        (ENABLE_WFI_CLOCK_GATING == 0) || !wfi_sleep_q;
 
-    // Keep the CSR, cache, PTW, and ICX domains on the ungated clock. The
-    // enable latch only changes while clk is low, avoiding a shortened pulse
-    // when an interrupt wakes the backend.
-    always_latch begin
-        if (!rst_n)
-            backend_clock_enable_q <= 1'b1;
-        else if (!clk)
-            backend_clock_enable_q <= !wfi_sleep_q;
-    end
+    // Keep the frontend clocked so its decoupled MTL traffic can drain without
+    // inventing a second clock-domain protocol. WFI gates the backend. MTL,
+    // PTW, and L1I remain always-on; L1D has a separate quiescent gate.
+    openrv64_clock_gate u_backend_clock_gate (
+        .clk_i(clk),
+        .rst_ni(rst_n),
+        .enable_i(backend_island_active),
+        .test_enable_i(1'b0),
+        .clk_o(backend_clk),
+        .enable_latched_o(backend_clock_enable_q)
+    );
 
     wire fetch_pc_ready;
     wire translation_barrier_busy;
@@ -444,7 +450,8 @@ module openrv64_rv64_top_3p #(
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
                 .DECODE_WIDTH(2)
             ) u_fetch (
-                .clk(clk), .rst_n(rst_n), .flush_i(fetch_invalidate),
+                .clk(clk), .rst_n(rst_n),
+                .flush_i(fetch_invalidate),
                 .redirect_i(control_redirect), .redirect_replay_i(1'b0),
                 .redirect_pc_i(backend_redirect_target),
                 .redirect_replay_o(fetch_redirect_replay),
@@ -506,7 +513,8 @@ module openrv64_rv64_top_3p #(
                     ENABLE_FETCH_ALT_CONFIDENCE_GATE != 0),
                 .BRANCH_PAIR_STACK_DEPTH(FETCH_ALT_PAIR_STACK_DEPTH)
             ) u_fetch (
-                .clk(clk), .rst_n(rst_n), .restart_i(fetch3_restart),
+                .clk(clk), .rst_n(rst_n),
+                .restart_i(fetch3_restart),
                 .restart_pc_i(fetch3_restart_pc),
                 .invalidate_i(fetch3_invalidate),
                 .stall_i(bp_fetch_stall || translation_barrier_busy),
@@ -1375,6 +1383,7 @@ module openrv64_rv64_top_3p #(
     wire fetch_bus_ready;
     wire fetch_bus_access_fault;
     wire fetch_bus_page_fault;
+    wire l1d_probe_hit;
     assign fetch_mem_ready = fetch_bus_ready;
     assign fetch_mem_fault = fetch_bus_access_fault;
     assign fetch_mem_page_fault = fetch_bus_page_fault;
@@ -1423,6 +1432,7 @@ module openrv64_rv64_top_3p #(
         .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .ENABLE_FETCH_PAGE_SCREEN(ENABLE_FETCH_PAGE_SCREEN),
+        .ENABLE_LSU_PAGE_SCREEN(ENABLE_LSU_PAGE_SCREEN),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
@@ -1464,6 +1474,8 @@ module openrv64_rv64_top_3p #(
         .l1d_probe_valid_i(l1d_probe_valid_i),
         .l1d_probe_ready_o(l1d_probe_ready_o),
         .l1d_probe_addr_i(l1d_probe_addr_i),
+        .l1d_sleep_i((ENABLE_WFI_CLOCK_GATING != 0) && wfi_sleep_q),
+        .l1d_probe_hit_o(l1d_probe_hit),
         .lsu_valid_i(1'b0), .lsu_lock_i(1'b0), .lsu_write_i(1'b0),
         .lsu_addr_i(64'd0), .lsu_wdata_i(64'd0),
         .lsu_wstrb_i(8'd0), .lsu_size_i(3'd0),
@@ -1477,7 +1489,8 @@ module openrv64_rv64_top_3p #(
         .lsu_access_fault_o(unused_legacy_lsu_access_fault),
         .lsu_page_fault_o(unused_legacy_lsu_page_fault),
         .lsu_pipe_req_valid_i(backend_mem_valid &&
-                              !translation_barrier_busy),
+                              !translation_barrier_busy &&
+                              backend_island_active),
         .lsu_pipe_req_ready_o(backend_mem_bus_ready),
         .lsu_pipe_req_tag_i(backend_mem_tag),
         .lsu_pipe_req_xlate_only_i(backend_mem_xlate_only),
@@ -1499,19 +1512,22 @@ module openrv64_rv64_top_3p #(
         .lsu_pipe_req_translation_hit_o(),
         .lsu_pipe_req_translation_paddr_o(),
         .lsu_pipe_req_translation_page_fault_o(),
-        .lsu_pipe_cancel_i(control_flush),
+        .lsu_pipe_cancel_i(control_flush && backend_island_active),
         .lsu_pipe_resp_valid_o(backend_mem_resp_valid),
-        .lsu_pipe_resp_ready_i(backend_mem_resp_ready),
+        .lsu_pipe_resp_ready_i(backend_mem_resp_ready &&
+                               backend_island_active),
         .lsu_pipe_resp_tag_o(backend_mem_resp_tag),
         .lsu_pipe_store_done_valid_o(backend_mem_store_done_valid),
-        .lsu_pipe_store_done_ready_i(backend_mem_store_done_ready),
+        .lsu_pipe_store_done_ready_i(backend_mem_store_done_ready &&
+                                     backend_island_active),
         .lsu_pipe_store_done_tag_o(backend_mem_store_done_tag),
         .lsu_pipe_resp_paddr_o(backend_mem_resp_paddr),
         .lsu_pipe_resp_rdata_o(backend_mem_rdata),
         .lsu_pipe_resp_access_fault_o(backend_mem_access_fault),
         .lsu_pipe_resp_page_fault_o(backend_mem_page_fault),
         .lsu_xlate_req_valid_i(backend_mem_xlate_valid &&
-                               !translation_barrier_busy),
+                               !translation_barrier_busy &&
+                               backend_island_active),
         .lsu_xlate_req_ready_o(backend_mem_xlate_bus_ready),
         .lsu_xlate_req_tag_i(backend_mem_xlate_tag),
         .lsu_xlate_req_write_i(backend_mem_xlate_write),
@@ -1526,7 +1542,8 @@ module openrv64_rv64_top_3p #(
         .lsu_xlate_req_sum_i(csr_status_sum),
         .lsu_xlate_req_mxr_i(csr_status_mxr),
         .lsu_xlate_resp_valid_o(backend_mem_xlate_resp_valid),
-        .lsu_xlate_resp_ready_i(backend_mem_xlate_resp_ready),
+        .lsu_xlate_resp_ready_i(backend_mem_xlate_resp_ready &&
+                                backend_island_active),
         .lsu_xlate_resp_tag_o(backend_mem_xlate_resp_tag),
         .lsu_xlate_resp_paddr_o(backend_mem_xlate_resp_paddr),
         .lsu_xlate_resp_access_fault_o(
@@ -1535,7 +1552,11 @@ module openrv64_rv64_top_3p #(
             backend_mem_xlate_resp_page_fault),
         .tlbi_i(backend_sfence_vma),
         .context_flush_i(backend_satp_write),
-        .fetch_context_change_i(fetch_priv_context_change),
+        // The page screens are untagged current-context proof caches.  CSR
+        // writes are rare, so conservatively discard them on every accepted
+        // CSR update instead of duplicating privilege/translation tags.
+        .fetch_context_change_i(fetch_priv_context_change ||
+                                (backend_csr_write && csr_write_ready)),
         .pmp_update_i(backend_pmp_update),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(backend_store_barrier_request),
@@ -1735,6 +1756,19 @@ module openrv64_rv64_top_3p #(
         .bp_selected_instr(bp_selected_instr),
         .bp_selected_pc(bp_selected_pc),
         .bp_target_mispredict(bp_target_mispredict),
+        .fetch_decode_valid(fetch_decode_valid),
+        .fetch_decode_ready(fetch_decode_ready),
+        .backend_decode_valid(backend_decode_valid),
+        .backend_decode_ready(backend_decode_ready),
+        .frontend_decode_fire(frontend_decode_fire),
+        .decode_valid(decode_valid),
+        .decode_illegal(decode_illegal),
+        .instr0(instr0),
+        .instr1(instr1),
+        .instr2(instr2),
+        .decode_pc0(decode_pc0),
+        .decode_pc1(decode_pc1),
+        .decode_pc2(decode_pc2),
         .control_flush(control_flush),
         .control_redirect(control_redirect),
         .fetch3_invalidate(fetch3_invalidate),
@@ -1884,9 +1918,10 @@ module openrv64_rv64_top_3p #(
         end else begin
             reset_pending_q <= 1'b0;
             if (wfi_sleep_q) begin
-                if (csr_wfi_wake)
+                if (csr_wfi_wake || l1d_probe_hit)
                     wfi_sleep_q <= 1'b0;
-            end else if (backend_wfi && !csr_wfi_wake) begin
+            end else if (backend_wfi && !csr_wfi_wake &&
+                         !l1d_probe_hit) begin
                 wfi_sleep_q <= 1'b1;
             end
             if (except_vector_valid)

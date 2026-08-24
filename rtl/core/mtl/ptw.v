@@ -10,6 +10,10 @@ module openrv64_bus_ptw #(
     // Set entries to zero to disable.
     parameter integer PTE_CACHE_ENTRIES = 64,
     parameter integer PTE_CACHE_WAYS = 4,
+    // Coherent MTL instances emit an ordered ICX fence after invalidating
+    // local translation state.  The generic single-hart bus has no coherent
+    // peer and disables this transaction; its barrier is a fixed local pulse.
+    parameter integer ENABLE_ICX_SHOOTDOWN = 1,
     // Bound a wedged ICX request or response.  Zero disables the watchdog.
     // An unaccepted request can be discarded directly.  An accepted request
     // leaves a response tombstone which must drain before the transaction ID
@@ -282,7 +286,7 @@ module openrv64_bus_ptw #(
     wire walk_icx_req_valid =
         ((state_q == STATE_WALK) || (state_q == STATE_ABORT)) &&
         (backend_state_q == BACKEND_SEND);
-    wire shootdown_icx_req_valid =
+    wire shootdown_icx_req_valid = ENABLE_ICX_SHOOTDOWN &&
         (state_q == STATE_IDLE) && shootdown_pending_q &&
         !shootdown_inflight_q && shootdown_ready_i;
     wire icx_req_fire = icx_req_valid_o && icx_req_ready_i;
@@ -313,15 +317,14 @@ module openrv64_bus_ptw #(
     wire [`RV64_XLEN-1:0] walk_pte_data =
         pte_cache_hit_use ? pte_cache_hit_data_r : icx_pte_data;
 
-    // Invalidation is a completion-tracked global translation barrier.  The
-    // initiating pulse is included so the core stops post-barrier traffic in
-    // the same cycle; pending/inflight retain the barrier until the ICX
-    // ACQ_REL fence response has been consumed.  An invalidated active walk
-    // also remains covered because shootdown_pending_q cannot issue until the
-    // walk has been aborted and drained back to IDLE.
+    // Local invalidation is always visible for its initiating cycle.  Coherent
+    // MTL instances retain the barrier through their ordered ICX shootdown;
+    // the noncoherent generic bus deliberately completes after the local
+    // pulse.  An old speculative walk may drain, but cannot publish a stale
+    // response or extend the core-wide issue stall.
     assign invalidate_busy_o = invalidate_i ||
-                               shootdown_pending_q ||
-                               shootdown_inflight_q;
+        (ENABLE_ICX_SHOOTDOWN &&
+         (shootdown_pending_q || shootdown_inflight_q));
     wire walk_pte_ready = pmp_denied || pte_cache_hit_use ||
                           icx_resp_fire;
     wire walk_pte_error = pmp_denied ||
@@ -413,8 +416,7 @@ module openrv64_bus_ptw #(
     assign resp_dirty_o = resp_dirty_q;
 
     assign pmp_valid_o = (state_q == STATE_WALK) &&
-                         (backend_state_q == BACKEND_PMP) &&
-                         !invalidate_i;
+                         (backend_state_q == BACKEND_PMP);
     assign pmp_addr_o = walk_pte_addr;
 
     assign icx_req_valid_o = shootdown_icx_req_valid || walk_icx_req_valid;
@@ -477,7 +479,7 @@ module openrv64_bus_ptw #(
             end
             if (shootdown_resp_fire)
                 shootdown_inflight_q <= 1'b0;
-            if (invalidate_i)
+            if (invalidate_i && ENABLE_ICX_SHOOTDOWN)
                 shootdown_pending_q <= 1'b1;
         end
     end
@@ -797,6 +799,9 @@ module openrv64_bus_ptw #(
             $fatal(1, "invalid non-leaf PTE cache geometry");
         if (ICX_TIMEOUT_CYCLES < 0)
             $fatal(1, "PTW ICX timeout must be nonnegative");
+        if ((ENABLE_ICX_SHOOTDOWN != 0) &&
+            (ENABLE_ICX_SHOOTDOWN != 1))
+            $fatal(1, "PTW ICX shootdown enable must be boolean");
         if ((PTE_CACHE_ENTRIES > 0) &&
             (((PTE_CACHE_WAYS & (PTE_CACHE_WAYS - 1)) != 0) ||
              ((PTE_CACHE_ENTRIES % PTE_CACHE_WAYS) != 0) ||

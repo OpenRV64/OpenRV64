@@ -53,6 +53,7 @@ module openrv64_core_mtl #(
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
+    parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
@@ -178,6 +179,8 @@ module openrv64_core_mtl #(
     input  wire                         l1d_probe_valid_i,
     output wire                         l1d_probe_ready_o,
     input  wire [`RV64_XLEN-1:0]        l1d_probe_addr_i,
+    input  wire                         l1d_sleep_i,
+    output wire                         l1d_probe_hit_o,
 
     // One physical protection probe is presented for the transaction which
     // would be launched this cycle.  Denials complete locally as access
@@ -296,10 +299,15 @@ module openrv64_core_mtl #(
     localparam [2:0] FETCH_COMPLETE = 3'd4;
     localparam [2:0] FETCH_WAIT_L1I = 3'd5;
     localparam [2:0] FETCH_FAST_READY = 3'd6;
+    localparam [2:0] FETCH_WAIT_PMP = 3'd7;
     localparam integer FETCH_PAGE_SCREEN_ENTRIES = 4;
     localparam integer FETCH_PAGE_VPN_WIDTH = `RV64_XLEN - 12;
     localparam integer FETCH_PAGE_PA_WIDTH = 39;
     localparam integer FETCH_PAGE_PPN_WIDTH = FETCH_PAGE_PA_WIDTH - 12;
+    localparam integer LSU_PAGE_SCREEN_ENTRIES = 4;
+    localparam integer LSU_PAGE_VPN_WIDTH = `RV64_XLEN - 12;
+    localparam integer LSU_PAGE_PA_WIDTH = 39;
+    localparam integer LSU_PAGE_PPN_WIDTH = LSU_PAGE_PA_WIDTH - 12;
 
     localparam [2:0] LSU_IDLE = 3'd0;
     localparam [2:0] LSU_TRANSLATE = 3'd1;
@@ -308,6 +316,7 @@ module openrv64_core_mtl #(
     localparam [2:0] LSU_WAIT = 3'd4;
     localparam [2:0] LSU_RESP = 3'd5;
     localparam [2:0] LSU_PMP = 3'd6;
+    localparam [2:0] LSU_WAIT_PMP = 3'd7;
 
     localparam [1:0] OWNER_FETCH = 2'd0;
     localparam [1:0] OWNER_LSU = 2'd1;
@@ -325,10 +334,26 @@ module openrv64_core_mtl #(
     localparam [2:0] PREFETCH_XLATE_MISS = 3'd2;
     localparam [2:0] PREFETCH_XLATE_PMP = 3'd3;
     localparam [2:0] PREFETCH_XLATE_RESP = 3'd4;
+    localparam [2:0] PREFETCH_XLATE_WAIT_PMP = 3'd5;
     wire translation_invalidate = tlbi_i || context_flush_i;
     wire fetch_page_screen_invalidate = translation_invalidate ||
                                         fetch_context_change_i ||
                                         pmp_update_i;
+    // Clearing the untagged screen does not by itself invalidate work which
+    // was accepted while its proof was current.  In particular, the 3P top
+    // clears the screen conservatively on ordinary CSR retirement.  Revoke
+    // accepted jobs only for a translation/PMP change, or when the frontend
+    // is simultaneously cancelling work for an actual context change.
+    wire fetch_page_screen_revoke = translation_invalidate ||
+                                    pmp_update_i ||
+                                    (fetch_context_change_i &&
+                                     fetch_cancel_i);
+    // The data screen is deliberately untagged.  It represents only the
+    // current execution context, so every context, translation, or PMP change
+    // discards all four proofs.
+    wire lsu_page_screen_invalidate = translation_invalidate ||
+                                      fetch_context_change_i ||
+                                      pmp_update_i;
     wire l2_tlb_evict_current;
     wire micro_tlbi = translation_invalidate || l2_tlb_evict_current;
 
@@ -404,6 +429,52 @@ module openrv64_core_mtl #(
             end
         end
     end
+
+    // A successful translation plus PMP check proves access to one physical
+    // 4 KiB page.  The core's PMP implementation is page-granular, so a
+    // four-entry VPN->PPN screen can bypass both TLB and PMP lookup in the
+    // current context.  A read proof cannot authorize a store; an allowed
+    // store upgrades the matching entry with write permission.
+    reg [LSU_PAGE_SCREEN_ENTRIES-1:0] lsu_page_valid_q;
+    reg [LSU_PAGE_SCREEN_ENTRIES-1:0][LSU_PAGE_VPN_WIDTH-1:0]
+        lsu_page_vpn_q;
+    reg [LSU_PAGE_SCREEN_ENTRIES-1:0][LSU_PAGE_PPN_WIDTH-1:0]
+        lsu_page_ppn_q;
+    reg [LSU_PAGE_SCREEN_ENTRIES-1:0] lsu_page_write_q;
+    reg [1:0] lsu_page_write_cursor_q;
+    reg lsu_page_fill_match_r;
+    reg [1:0] lsu_page_fill_match_index_r;
+    reg lsu_page_hit_r;
+    reg [LSU_PAGE_PPN_WIDTH-1:0] lsu_page_ppn_r;
+    integer lsu_page_lookup_index;
+    wire [12:0] lsu_page_access_end =
+        {1'b0, lsu_xlate_req_vaddr_i[11:0]} +
+        (13'd1 << lsu_xlate_req_size_i);
+    wire lsu_page_access_crosses = lsu_page_access_end[12] &&
+                                   (|lsu_page_access_end[11:0]);
+    always @* begin
+        lsu_page_hit_r = 1'b0;
+        lsu_page_ppn_r = {LSU_PAGE_PPN_WIDTH{1'b0}};
+        for (lsu_page_lookup_index = 0;
+             lsu_page_lookup_index < LSU_PAGE_SCREEN_ENTRIES;
+             lsu_page_lookup_index = lsu_page_lookup_index + 1) begin
+            if (!lsu_page_hit_r &&
+                (ENABLE_LSU_PAGE_SCREEN != 0) &&
+                lsu_xlate_req_valid_i && !lsu_page_access_crosses &&
+                !lsu_page_screen_invalidate &&
+                lsu_page_valid_q[lsu_page_lookup_index] &&
+                (!lsu_xlate_req_write_i ||
+                 lsu_page_write_q[lsu_page_lookup_index]) &&
+                (lsu_page_vpn_q[lsu_page_lookup_index] ==
+                 lsu_xlate_req_vaddr_i[`RV64_XLEN-1:12])) begin
+                lsu_page_hit_r = 1'b1;
+                lsu_page_ppn_r = lsu_page_ppn_q[lsu_page_lookup_index];
+            end
+        end
+    end
+    wire [`RV64_XLEN-1:0] lsu_page_paddr =
+        {{(`RV64_XLEN-LSU_PAGE_PA_WIDTH){1'b0}},
+         lsu_page_ppn_r, lsu_xlate_req_vaddr_i[11:0]};
 
     reg fetch_xlate_found_r;
     reg [FETCH_SLOT_WIDTH-1:0] fetch_xlate_slot_r;
@@ -516,8 +587,7 @@ module openrv64_core_mtl #(
     // loop observes pre-edge slot validity, so it cancels older entries
     // while leaving a newly allocated replacement intact.
     wire fetch_redirect_replacement = fetch_cancel_i &&
-        !fetch_cancel_stash_i && fetch_req_stash_i &&
-        fetch_req_demand_i;
+        fetch_req_stash_i && fetch_req_demand_i;
     assign fetch_req_ready_o = rst_n &&
         (!fetch_cancel_i || fetch_redirect_replacement) &&
         fetch_free_found_r;
@@ -640,6 +710,7 @@ module openrv64_core_mtl #(
     wire serial_dtlb_lookup = (lsu_state_q == LSU_TRANSLATE) &&
                               !lsu_xlate_bare;
     wire xlate_dtlb_lookup = lsu_xlate_req_valid_i &&
+                             !lsu_page_hit_r &&
                              !xlate_req_bare && !translation_invalidate &&
                              !tlbi_busy_o;
     wire dtlb_lookup_is_xlate = xlate_dtlb_lookup &&
@@ -1130,11 +1201,13 @@ module openrv64_core_mtl #(
     wire xlate_l2_hit = l2_tlb_select_xlate && l2_tlb_lookup_hit;
     wire xlate_lookup_hit = xlate_l1_hit || xlate_l2_hit;
     wire [`RV64_XLEN-1:0] xlate_lookup_paddr =
+        lsu_page_hit_r ? lsu_page_paddr :
         xlate_req_bare ? lsu_xlate_req_vaddr_i :
         xlate_l1_hit ? dtlb_lookup_paddr : l2_tlb_lookup_paddr;
     wire xlate_lookup_page_fault =
-        (xlate_l1_hit && dtlb_lookup_page_fault) ||
-        (xlate_l2_hit && l2_tlb_lookup_page_fault);
+        !lsu_page_hit_r &&
+        ((xlate_l1_hit && dtlb_lookup_page_fault) ||
+         (xlate_l2_hit && l2_tlb_lookup_page_fault));
     wire xlate_fallback_response_pending =
         xlate_fallback_active_q && (lsu_state_q == LSU_RESP);
     // A fast hit is returned combinationally when no older response occupies
@@ -1149,7 +1222,7 @@ module openrv64_core_mtl #(
     wire xlate_fast_candidate = lsu_xlate_req_valid_i &&
         !translation_invalidate && !tlbi_busy_o &&
         xlate_local_resp_available &&
-        (xlate_req_bare || xlate_lookup_hit);
+        (lsu_page_hit_r || xlate_req_bare || xlate_lookup_hit);
     wire xlate_fallback_candidate = lsu_xlate_req_valid_i &&
         !translation_invalidate && !tlbi_busy_o &&
         !xlate_req_bare && dtlb_lookup_is_xlate &&
@@ -1164,7 +1237,11 @@ module openrv64_core_mtl #(
     wire xlate_request_fire =
         lsu_xlate_req_valid_i && lsu_xlate_req_ready_o;
 
-    wire ptw_pmp_candidate = ptw_pmp_valid;
+    // PTW holds its request valid until the verdict is returned.  Convert
+    // that response-coupled interface into one request pulse for the
+    // pipelined PMP arbiter.
+    reg ptw_pmp_inflight_q;
+    wire ptw_pmp_candidate = ptw_pmp_valid && !ptw_pmp_inflight_q;
 
     wire fetch_axi_candidate = fetch_xlate_found_r && fetch_lookup_ready &&
                                !itlb_lookup_page_fault &&
@@ -1231,7 +1308,7 @@ module openrv64_core_mtl #(
     // Its later physical L1D request can launch without a live PMP result.
     // Unchecked serialized traffic (notably atomics and misaligned Bare
     // accesses) gets a dedicated PMP transaction before entering LSU_ACCESS.
-    wire xlate_pmp_candidate = xlate_fast_candidate &&
+    wire xlate_pmp_candidate = xlate_fast_candidate && !lsu_page_hit_r &&
                                !xlate_lookup_page_fault;
     wire pmp_lsu_req_ready;
     wire pmp_lsu_resp_valid;
@@ -1241,6 +1318,8 @@ module openrv64_core_mtl #(
     wire pmp_xlate_req_ready;
     wire pmp_xlate_resp_valid;
     wire pmp_xlate_resp_allow;
+    wire pmp_xlate_resp_write;
+    wire [`RV64_XLEN-1:0] pmp_xlate_resp_vaddr;
     wire [`RV64_XLEN-1:0] pmp_xlate_resp_paddr;
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pmp_xlate_resp_tag;
     wire pmp_fetch_req_ready;
@@ -1254,8 +1333,9 @@ module openrv64_core_mtl #(
     wire pmp_prefetch_resp_valid;
     wire pmp_prefetch_resp_allow;
     wire xlate_pmp_resp_ready = xlate_local_resp_available;
-    wire fetch_pmp_response_usable =
-        (fetch_state_q[pmp_fetch_resp_tag] == FETCH_TRANSLATE) &&
+    wire fetch_pmp_response_pending =
+        (fetch_state_q[pmp_fetch_resp_tag] == FETCH_WAIT_PMP);
+    wire fetch_pmp_response_usable = fetch_pmp_response_pending &&
         !fetch_cancelled_q[pmp_fetch_resp_tag] && !fetch_cancel_i;
     wire fetch_l1i_pmp_available = !l1i_req_active_q &&
         !l1i_invalidate_valid && !fetch_page_screen_launch;
@@ -1286,10 +1366,13 @@ module openrv64_core_mtl #(
         .xlate_req_priv_i(lsu_xlate_req_priv_i),
         .xlate_req_size_i(lsu_xlate_req_size_i),
         .xlate_req_write_i(lsu_xlate_req_write_i),
+        .xlate_req_vaddr_i(lsu_xlate_req_vaddr_i),
         .xlate_req_tag_i(lsu_xlate_req_tag_i),
         .xlate_resp_valid_o(pmp_xlate_resp_valid),
         .xlate_resp_ready_i(xlate_pmp_resp_ready),
         .xlate_resp_allow_o(pmp_xlate_resp_allow),
+        .xlate_resp_write_o(pmp_xlate_resp_write),
+        .xlate_resp_vaddr_o(pmp_xlate_resp_vaddr),
         .xlate_resp_paddr_o(pmp_xlate_resp_paddr),
         .xlate_resp_tag_o(pmp_xlate_resp_tag),
         .fetch_req_valid_i(fetch_cache_candidate),
@@ -1320,8 +1403,36 @@ module openrv64_core_mtl #(
         .check_allow_i(pmp_allow_i)
     );
 
+    // A screen hit completes in the request cycle.  Do not accept one beside
+    // an older PMP verdict because the translation response port carries only
+    // one event per cycle.
     assign xlate_fast_ready = xlate_fast_candidate &&
-        (xlate_lookup_page_fault || pmp_xlate_req_ready);
+        (lsu_page_hit_r ? !pmp_xlate_resp_valid :
+         (xlate_lookup_page_fault || pmp_xlate_req_ready));
+    wire lsu_page_paddr_representable =
+        !(|pmp_xlate_resp_paddr[`RV64_XLEN-1:LSU_PAGE_PA_WIDTH]);
+    integer lsu_page_fill_lookup_index;
+    always @* begin
+        lsu_page_fill_match_r = 1'b0;
+        lsu_page_fill_match_index_r = 2'd0;
+        for (lsu_page_fill_lookup_index = 0;
+             lsu_page_fill_lookup_index < LSU_PAGE_SCREEN_ENTRIES;
+             lsu_page_fill_lookup_index =
+                 lsu_page_fill_lookup_index + 1) begin
+            if (!lsu_page_fill_match_r &&
+                lsu_page_valid_q[lsu_page_fill_lookup_index] &&
+                (lsu_page_vpn_q[lsu_page_fill_lookup_index] ==
+                 pmp_xlate_resp_vaddr[`RV64_XLEN-1:12])) begin
+                lsu_page_fill_match_r = 1'b1;
+                lsu_page_fill_match_index_r =
+                    lsu_page_fill_lookup_index[1:0];
+            end
+        end
+    end
+    wire lsu_page_screen_fill = (ENABLE_LSU_PAGE_SCREEN != 0) &&
+        pmp_xlate_resp_valid && xlate_pmp_resp_ready &&
+        pmp_xlate_resp_allow &&
+        lsu_page_paddr_representable && !lsu_page_screen_invalidate;
     assign ptw_pmp_ready = pmp_ptw_resp_valid;
     wire lsu_pmp_denied = pmp_lsu_resp_valid && !pmp_lsu_resp_allow;
     wire fetch_pmp_denied = pmp_fetch_resp_valid &&
@@ -1330,13 +1441,24 @@ module openrv64_core_mtl #(
     wire fetch_l1i_launch = l1i_enabled && pmp_fetch_resp_valid &&
         fetch_pmp_response_usable && pmp_fetch_resp_allow &&
         fetch_l1i_pmp_available;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            ptw_pmp_inflight_q <= 1'b0;
+        else begin
+            if (ptw_pmp_candidate && pmp_ptw_req_ready)
+                ptw_pmp_inflight_q <= 1'b1;
+            if (pmp_ptw_resp_valid)
+                ptw_pmp_inflight_q <= 1'b0;
+        end
+    end
     wire fetch_page_paddr_representable =
         !(|pmp_fetch_resp_paddr[`RV64_XLEN-1:FETCH_PAGE_PA_WIDTH]);
     wire fetch_page_screen_fill = (ENABLE_FETCH_PAGE_SCREEN != 0) &&
                                   fetch_l1i_launch &&
                                   fetch_page_paddr_representable;
     wire l1i_req_active_usable = l1i_req_active_q &&
-        !(fetch_page_screen_invalidate &&
+        !(fetch_page_screen_revoke &&
           fetch_fast_q[l1i_req_slot_q]);
     wire l1i_req_valid = l1i_enabled &&
                          (l1i_req_active_usable ||
@@ -1386,11 +1508,11 @@ module openrv64_core_mtl #(
     wire [FETCH_SLOT_WIDTH-1:0] fetch_response_slot =
         fetch_page_screen_resp_bypass ? l1i_resp_slot :
                                         fetch_buffered_resp_slot;
-    // A screen invalidation revokes the cached translation/PMP proof.  Do
-    // not expose a screen-derived response on the invalidation edge; the
-    // slot is cancelled below and an accepted L1I request is only drained.
+    // A proof revocation must not expose a screen-derived response.  A
+    // clear-only event may temporarily empty the lookup screen while work
+    // accepted under the old proof continues normally.
     wire fetch_page_screen_resp_invalid =
-        fetch_page_screen_invalidate &&
+        fetch_page_screen_revoke &&
         fetch_fast_q[fetch_response_slot];
     assign fetch_resp_valid_o =
         (fetch_page_screen_resp_bypass || fetch_buffered_resp_valid) &&
@@ -1471,9 +1593,31 @@ module openrv64_core_mtl #(
     wire l1d_store_resp_valid;
     wire l1d_store_resp_error;
     wire l1d_invalidate_ready;
+    wire l1d_invalidate_hit;
+    wire l1d_quiescent;
+    wire l1d_clk;
+    wire l1d_clock_enable_q;
+    wire l1d_probe_wake =
+        (ENABLE_L1D_COHERENCE_PROBES != 0) && l1d_probe_valid_i;
     assign l1d_probe_ready_o =
         (ENABLE_L1D_COHERENCE_PROBES != 0) &&
         l1d_invalidate_ready;
+    assign l1d_probe_hit_o =
+        (ENABLE_L1D_COHERENCE_PROBES != 0) &&
+        l1d_invalidate_hit;
+
+    // WFI permits the L1D controller to drain all autonomous work and then
+    // stop.  A held probe valid is an always-on wake request.  A probe hit is
+    // reported separately so the hart controller can choose whether to leave
+    // architectural WFI; a stale-directory miss wakes only this island.
+    openrv64_clock_gate u_l1d_clock_gate (
+        .clk_i(clk),
+        .rst_ni(rst_n),
+        .enable_i(!l1d_sleep_i || l1d_probe_wake || !l1d_quiescent),
+        .test_enable_i(1'b0),
+        .clk_o(l1d_clk),
+        .enable_latched_o(l1d_clock_enable_q)
+    );
 
     wire l1d_icx_req_valid;
     wire l1d_icx_req_ready;
@@ -1543,7 +1687,7 @@ module openrv64_core_mtl #(
         .REQ_DEPTH(`OPENRV64_LSU_OUTSTANDING),
         .HART_ID(HART_ID)
     ) u_l1d (
-        .clk_i(clk),
+        .clk_i(l1d_clk),
         .rst_ni(rst_n),
         .req_valid_i(l1d_req_valid),
         .req_ready_o(l1d_req_ready),
@@ -1584,6 +1728,8 @@ module openrv64_core_mtl #(
             (ENABLE_L1D_COHERENCE_PROBES != 0) &&
             l1d_probe_valid_i),
         .invalidate_ready_o(l1d_invalidate_ready),
+        .invalidate_hit_o(l1d_invalidate_hit),
+        .quiescent_o(l1d_quiescent),
         .invalidate_all_i(1'b0),
         .invalidate_addr_i(l1d_probe_addr_i),
         .icx_req_valid_o(l1d_icx_req_valid),
@@ -1916,11 +2062,16 @@ module openrv64_core_mtl #(
         !xlate_local_resp_valid_q &&
         !xlate_fallback_response_pending &&
         xlate_fast_candidate && xlate_lookup_page_fault;
+    wire xlate_page_screen_resp_visible =
+        !xlate_local_resp_valid_q &&
+        !xlate_fallback_response_pending &&
+        xlate_request_fire && lsu_page_hit_r;
     wire xlate_pmp_resp_visible =
         !xlate_local_resp_valid_q &&
         !xlate_fallback_response_pending &&
         pmp_xlate_resp_valid;
-    wire xlate_fast_resp_visible = xlate_page_fault_resp_visible ||
+    wire xlate_fast_resp_visible = xlate_page_screen_resp_visible ||
+                                   xlate_page_fault_resp_visible ||
                                    xlate_pmp_resp_visible;
     wire xlate_fallback_response_fire =
         xlate_fallback_visible && lsu_xlate_resp_ready_i;
@@ -1974,7 +2125,7 @@ module openrv64_core_mtl #(
             end
             if (l1i_req_fire)
                 l1i_req_active_q <= 1'b0;
-            if (fetch_page_screen_invalidate && l1i_req_active_q &&
+            if (fetch_page_screen_revoke && l1i_req_active_q &&
                 fetch_fast_q[l1i_req_slot_q])
                 l1i_req_active_q <= 1'b0;
 
@@ -2011,6 +2162,45 @@ module openrv64_core_mtl #(
                 pmp_fetch_resp_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
             fetch_page_write_cursor_q <=
                 fetch_page_write_cursor_q + 1'b1;
+        end
+    end
+
+    integer lsu_page_reset_index;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            lsu_page_valid_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
+            lsu_page_write_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
+            lsu_page_write_cursor_q <= 2'd0;
+            for (lsu_page_reset_index = 0;
+                 lsu_page_reset_index < LSU_PAGE_SCREEN_ENTRIES;
+                 lsu_page_reset_index = lsu_page_reset_index + 1) begin
+                lsu_page_vpn_q[lsu_page_reset_index] <=
+                    {LSU_PAGE_VPN_WIDTH{1'b0}};
+                lsu_page_ppn_q[lsu_page_reset_index] <=
+                    {LSU_PAGE_PPN_WIDTH{1'b0}};
+            end
+        end else if (lsu_page_screen_invalidate) begin
+            lsu_page_valid_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
+            lsu_page_write_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
+            lsu_page_write_cursor_q <= 2'd0;
+        end else if (lsu_page_screen_fill) begin
+            if (lsu_page_fill_match_r) begin
+                lsu_page_write_q[lsu_page_fill_match_index_r] <=
+                    lsu_page_write_q[lsu_page_fill_match_index_r] |
+                    pmp_xlate_resp_write;
+                lsu_page_ppn_q[lsu_page_fill_match_index_r] <=
+                    pmp_xlate_resp_paddr[LSU_PAGE_PPN_WIDTH+11:12];
+            end else begin
+                lsu_page_valid_q[lsu_page_write_cursor_q] <= 1'b1;
+                lsu_page_write_q[lsu_page_write_cursor_q] <=
+                    pmp_xlate_resp_write;
+                lsu_page_vpn_q[lsu_page_write_cursor_q] <=
+                    pmp_xlate_resp_vaddr[`RV64_XLEN-1:12];
+                lsu_page_ppn_q[lsu_page_write_cursor_q] <=
+                    pmp_xlate_resp_paddr[LSU_PAGE_PPN_WIDTH+11:12];
+                lsu_page_write_cursor_q <=
+                    lsu_page_write_cursor_q + 1'b1;
+            end
         end
     end
 
@@ -2082,6 +2272,12 @@ module openrv64_core_mtl #(
                 end
 
                 PREFETCH_XLATE_PMP: begin
+                    if (pmp_prefetch_req_ready)
+                        prefetch_xlate_state_q <=
+                            PREFETCH_XLATE_WAIT_PMP;
+                end
+
+                PREFETCH_XLATE_WAIT_PMP: begin
                     if (prefetch_pmp_complete) begin
                         prefetch_xlate_fault_q <=
                             !pmp_prefetch_resp_allow;
@@ -2141,7 +2337,7 @@ module openrv64_core_mtl #(
             end
             if (fetch_resp_fire)
                 fetch_resp_hold_valid_q <= 1'b0;
-            if (fetch_page_screen_invalidate &&
+            if (fetch_page_screen_revoke &&
                 fetch_resp_hold_valid_q &&
                 fetch_fast_q[fetch_resp_hold_slot_q])
                 fetch_resp_hold_valid_q <= 1'b0;
@@ -2192,7 +2388,7 @@ module openrv64_core_mtl #(
                 fetch_head_q <= fetch_pop_slot + 1'b1;
             end
 
-            if (fetch_page_screen_invalidate) begin
+            if (fetch_page_screen_revoke) begin
                 for (fetch_index = 0;
                      fetch_index < FETCH_OUTSTANDING;
                      fetch_index = fetch_index + 1) begin
@@ -2260,7 +2456,15 @@ module openrv64_core_mtl #(
                 end
             end
 
-            if (fetch_xlate_found_r && fetch_lookup_ready &&
+            if (fetch_cache_candidate && pmp_fetch_req_ready)
+                fetch_state_q[fetch_xlate_slot_r] <= FETCH_WAIT_PMP;
+
+            if (pmp_fetch_resp_valid && fetch_pmp_response_pending &&
+                !fetch_pmp_response_usable) begin
+                // A redirect may cancel the slot after its PMP request has
+                // fired.  Drain the tagged verdict before recycling it.
+                fetch_state_q[pmp_fetch_resp_tag] <= FETCH_COMPLETE;
+            end else if (fetch_xlate_found_r && fetch_lookup_ready &&
                 itlb_lookup_page_fault) begin
                 fetch_state_q[fetch_xlate_slot_r] <= FETCH_COMPLETE;
                 fetch_page_fault_q[fetch_xlate_slot_r] <= 1'b1;
@@ -2391,14 +2595,17 @@ module openrv64_core_mtl #(
                 xlate_local_resp_access_fault_q <=
                     !pmp_xlate_resp_allow;
                 xlate_local_resp_page_fault_q <= 1'b0;
-            end else if (xlate_page_fault_response_accept &&
-                         !(xlate_page_fault_resp_visible &&
+            end else if ((xlate_page_fault_response_accept ||
+                          (xlate_request_fire && lsu_page_hit_r)) &&
+                         !((xlate_page_fault_resp_visible ||
+                            xlate_page_screen_resp_visible) &&
                            lsu_xlate_resp_ready_i)) begin
                 xlate_local_resp_valid_q <= 1'b1;
                 xlate_local_resp_tag_q <= lsu_xlate_req_tag_i;
                 xlate_local_resp_paddr_q <= xlate_lookup_paddr;
                 xlate_local_resp_access_fault_q <= 1'b0;
-                xlate_local_resp_page_fault_q <= 1'b1;
+                xlate_local_resp_page_fault_q <=
+                    xlate_page_fault_response_accept;
             end else if (xlate_local_resp_valid_q &&
                          lsu_xlate_resp_ready_i) begin
                 xlate_local_resp_valid_q <= 1'b0;
@@ -2531,6 +2738,11 @@ module openrv64_core_mtl #(
                 end
 
                 LSU_PMP: begin
+                    if (pmp_lsu_req_ready)
+                        lsu_state_q <= LSU_WAIT_PMP;
+                end
+
+                LSU_WAIT_PMP: begin
                     if (lsu_pmp_denied) begin
                         lsu_access_fault_q <= 1'b1;
                         lsu_state_q <= LSU_RESP;
@@ -2613,6 +2825,16 @@ module openrv64_core_mtl #(
     ) u_debug (
         .lsu_pipe_req_ready(lsu_pipe_req_ready_o),
         .lsu_pipe_req_write(lsu_pipe_req_write_i),
+        .lsu_xlate_accept(xlate_request_fire),
+        .lsu_xlate_write_accept(xlate_request_fire &&
+                                lsu_xlate_req_write_i),
+        .lsu_page_screen_accept(xlate_request_fire &&
+                                lsu_page_hit_r),
+        .lsu_page_screen_write_accept(xlate_request_fire &&
+                                      lsu_page_hit_r &&
+                                      lsu_xlate_req_write_i),
+        .lsu_page_screen_fill(lsu_page_screen_fill),
+        .lsu_page_screen_invalidate(lsu_page_screen_invalidate),
         .pipe_fast_request_fire(pipe_fast_request_fire),
         .pipe_fallback_candidate(pipe_fallback_candidate),
         .fetch_cancelled_q(fetch_cancelled_q),

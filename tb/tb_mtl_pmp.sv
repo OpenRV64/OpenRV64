@@ -29,11 +29,15 @@ module tb_mtl_pmp;
     reg [`RV64_PRIV_WIDTH-1:0] xlate_priv;
     reg [2:0] xlate_size;
     reg xlate_write;
+    reg [63:0] xlate_vaddr;
     reg [2:0] xlate_tag;
     wire xlate_resp_valid;
     wire xlate_resp_allow;
+    wire xlate_resp_write;
+    wire [63:0] xlate_resp_vaddr;
     wire [63:0] xlate_resp_paddr;
     wire [2:0] xlate_resp_tag;
+    reg xlate_resp_ready;
 
     reg fetch_valid;
     wire fetch_ready;
@@ -62,7 +66,8 @@ module tb_mtl_pmp;
     wire [2:0] check_size;
     wire check_write;
     wire check_exec;
-    wire check_allow = check_addr[12];
+    reg allow_invert;
+    wire check_allow = check_addr[12] ^ allow_invert;
 
     openrv64_mtl_pmp #(
         .XLATE_TAG_WIDTH(3),
@@ -82,10 +87,14 @@ module tb_mtl_pmp;
         .xlate_req_ready_o(xlate_ready),
         .xlate_req_paddr_i(xlate_paddr),
         .xlate_req_priv_i(xlate_priv), .xlate_req_size_i(xlate_size),
-        .xlate_req_write_i(xlate_write), .xlate_req_tag_i(xlate_tag),
+        .xlate_req_write_i(xlate_write),
+        .xlate_req_vaddr_i(xlate_vaddr),
+        .xlate_req_tag_i(xlate_tag),
         .xlate_resp_valid_o(xlate_resp_valid),
-        .xlate_resp_ready_i(1'b1),
+        .xlate_resp_ready_i(xlate_resp_ready),
         .xlate_resp_allow_o(xlate_resp_allow),
+        .xlate_resp_write_o(xlate_resp_write),
+        .xlate_resp_vaddr_o(xlate_resp_vaddr),
         .xlate_resp_paddr_o(xlate_resp_paddr),
         .xlate_resp_tag_o(xlate_resp_tag),
         .fetch_req_valid_i(fetch_valid),
@@ -147,7 +156,9 @@ module tb_mtl_pmp;
         xlate_priv = `RV64_PRIV_U;
         xlate_size = 3'd2;
         xlate_write = 1'b0;
+        xlate_vaddr = 64'hffff_ffff_4000_0120;
         xlate_tag = 3'd5;
+        xlate_resp_ready = 1'b1;
         fetch_valid = 1'b0;
         fetch_vaddr = 64'hffff_ffff_8000_0000;
         fetch_paddr = 64'h2000;
@@ -157,38 +168,38 @@ module tb_mtl_pmp;
         prefetch_valid = 1'b0;
         prefetch_addr = 64'h4000;
         prefetch_priv = `RV64_PRIV_S;
+        allow_invert = 1'b0;
 
         repeat (2) step();
         rst_n = 1'b1;
         step();
 
-        // LSU wins fixed priority and no checker result is in its accept path.
+        // LSU wins fixed priority, but the lower-priority fetch may enter the
+        // check stage on the following cycle while LSU advances to response.
         lsu_valid = 1'b1;
         fetch_valid = 1'b1;
         #1;
         check(lsu_ready && !fetch_ready, "LSU did not win PMP priority");
         step();
         lsu_valid = 1'b0;
+        #1;
         check(check_valid, "registered LSU check did not start");
         check(check_addr == 64'h1000 && check_write && !check_exec,
                "LSU check metadata changed");
+        check(fetch_ready,
+              "elastic PMP check stage did not accept the pending fetch");
         step();
+        fetch_valid = 1'b0;
         check(lsu_resp_valid && lsu_resp_allow,
                "registered LSU verdict missing");
+        check(check_valid && check_exec && (check_addr == 64'h2000),
+              "fetch did not overlap the LSU response stage");
         step();
-        check(lsu_resp_valid && !check_valid,
-               "LSU response did not hold under backpressure");
+        check(lsu_resp_valid && check_valid,
+              "elastic stages changed under LSU response backpressure");
         lsu_resp_ready = 1'b1;
         step();
         check(!lsu_resp_valid, "accepted LSU response did not retire");
-
-        // The lower-priority fetch was not consumed and is accepted next.
-        check(fetch_ready, "pending fetch was not accepted after LSU");
-        step();
-        fetch_valid = 1'b0;
-        check(check_valid && check_exec && (check_addr == 64'h2000),
-               "fetch check metadata changed");
-        step();
         check(fetch_resp_valid && !fetch_resp_allow,
                "fetch deny verdict missing");
         check((fetch_resp_vaddr == 64'hffff_ffff_8000_0000) &&
@@ -196,39 +207,96 @@ module tb_mtl_pmp;
                (fetch_resp_tag == 2'd2),
                "fetch response metadata was not retained");
         step();
+        check(!fetch_resp_valid, "accepted fetch response did not retire");
 
-        // Tagged translation clearance is returned independently of input.
+        // Two tagged translation checks are accepted and completed in
+        // consecutive cycles.
         xlate_valid = 1'b1;
+        xlate_paddr = 64'h3000;
+        xlate_tag = 3'd5;
         #1;
-        check(xlate_ready, "xlate request was not accepted");
+        check(xlate_ready, "first xlate request was not accepted");
+        step();
+        check(check_valid && (check_addr == 64'h3000),
+              "first xlate check did not use captured paddr");
+        xlate_paddr = 64'h2000;
+        xlate_tag = 3'd6;
+        #1;
+        check(xlate_ready,
+              "PMP pipeline did not accept a consecutive xlate request");
         step();
         xlate_valid = 1'b0;
-        check(check_valid && (check_addr == 64'h3000),
-               "xlate check did not use captured paddr");
-        step();
         check(xlate_resp_valid && xlate_resp_allow &&
                (xlate_resp_tag == 3'd5) &&
-               (xlate_resp_paddr == 64'h3000),
-               "tagged xlate verdict was not retained");
+               (xlate_resp_paddr == 64'h3000) &&
+               !xlate_resp_write &&
+               (xlate_resp_vaddr == 64'hffff_ffff_4000_0120),
+              "first pipelined xlate verdict was not retained");
+        check(check_valid && (check_addr == 64'h2000),
+              "second xlate check did not follow consecutively");
+        step();
+        check(xlate_resp_valid && !xlate_resp_allow &&
+              (xlate_resp_tag == 3'd6) &&
+              (xlate_resp_paddr == 64'h2000),
+              "second pipelined xlate verdict was not retained");
         step();
 
-        // A programming event while checking delays and restarts the sample.
+        // A programming event with both stages occupied suppresses the stale
+        // response and rechecks both requests in age order.  Change the
+        // checker result on the update edge to detect stale verdict leakage.
+        xlate_resp_ready = 1'b0;
+        xlate_valid = 1'b1;
+        xlate_paddr = 64'h1000;
+        xlate_tag = 3'd1;
+        #1;
+        check(xlate_ready, "update test first request was not accepted");
+        step();
+        xlate_paddr = 64'h2000;
+        xlate_tag = 3'd2;
+        #1;
+        check(xlate_ready, "update test second request was not accepted");
+        step();
+        xlate_valid = 1'b0;
+        check(xlate_resp_valid && xlate_resp_allow &&
+              (xlate_resp_tag == 3'd1),
+              "update test did not fill both pipeline stages");
+        allow_invert = 1'b1;
+        update = 1'b1;
+        #1;
+        check(!xlate_resp_valid,
+              "PMP update exposed a response from the old configuration");
+        step();
+        check(check_valid && (check_addr == 64'h1000) &&
+              !xlate_resp_valid,
+              "PMP update did not restart the older response first");
+        update = 1'b0;
+        step();
+        check(xlate_resp_valid && !xlate_resp_allow &&
+              (xlate_resp_tag == 3'd1),
+              "older xlate retained its stale pre-update verdict");
+        check(check_valid && (check_addr == 64'h2000),
+              "younger xlate was lost during PMP update replay");
+        xlate_resp_ready = 1'b1;
+        step();
+        check(xlate_resp_valid && xlate_resp_allow &&
+              (xlate_resp_tag == 3'd2),
+              "younger xlate retained its stale pre-update verdict");
+        step();
+
+        allow_invert = 1'b0;
         ptw_valid = 1'b1;
         #1;
         check(ptw_ready, "PTW request was not accepted");
         step();
         ptw_valid = 1'b0;
-        update = 1'b1;
-        step();
-        check(check_valid && !ptw_resp_valid,
-               "PMP update leaked a stale verdict");
-        update = 1'b0;
+        check(check_valid && (check_addr == 64'h5000),
+              "PTW check metadata changed");
         step();
         check(ptw_resp_valid && ptw_resp_allow,
-               "PTW verdict missing after update restart");
+              "PTW verdict missing from PMP pipeline");
         step();
 
-        $display("PASS: registered MTL PMP arbitration and tagged responses");
+        $display("PASS: pipelined MTL PMP arbitration and tagged responses");
         $finish;
     end
 endmodule

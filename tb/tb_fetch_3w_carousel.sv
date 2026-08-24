@@ -221,7 +221,7 @@ module tb_fetch_3w_carousel;
         redirect_fetch_valid = 1'b1;
         restart = 1'b1;
         #1;
-        if (!cancel || cancel_stash || !req_valid || !req_stash ||
+        if (!cancel || !cancel_stash || !req_valid || !req_stash ||
             !req_demand || (req_addr != 64'h300))
             $fatal(1, "carousel redirect replacement request mismatch");
         tick();

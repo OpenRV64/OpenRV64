@@ -1,7 +1,11 @@
 `timescale 1ns/1ps
 `include "core/exec/bp/defs.v"
 
-module tb_fpga_sd_boot;
+module tb_fpga_sd_boot #(
+    parameter bit PIPE_1P_MEM_4_STAGE = 1'b1,
+    parameter bit PIPE_1P_DECODE_QUEUE = 1'b1,
+    parameter bit FPGA_GPR_LUTRAM = 1'b1
+);
     reg clk;
     reg rst_n;
     wire uart_tx;
@@ -43,10 +47,16 @@ module tb_fpga_sd_boot;
         .SPI_INIT_HALF_PERIOD_CYCLES(1),
         .SPI_FAST_HALF_PERIOD_CYCLES(1),
         .BACKEND_CONFIG(`OPENRV64_BACKEND_1P),
+        .PHYS_REG_COUNT(31),
         .ENABLE_RV64M(1'b1),
         .ENABLE_RV64ZBB(1'b0),
+        .PIPE_1P_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
+        .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE),
+        .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
+        .UART_INPUT_CLOCK_HZ(30_000_000),
+        .UART_REFERENCE_CLOCK_HZ(14_745_600),
         .EXTERNAL_MEMORY_ENABLE(1'b1),
-        .PMP_ACTIVE_ENTRIES(4),
+        .PMP_ACTIVE_ENTRIES(8),
         .GENBUS_TLB_ENTRIES(4),
         .PTW_PTE_CACHE_ENTRIES(0),
         .ENABLE_PREDECODE_TARGETS(1'b0),
@@ -307,9 +317,45 @@ module tb_fpga_sd_boot;
 
     integer init_index;
     integer cycle_count;
+    integer uart_byte_count;
+
+    function automatic [7:0] expected_uart_byte;
+        input integer index;
+        begin
+            case (index)
+                0: expected_uart_byte = "O";
+                1: expected_uart_byte = "P";
+                2: expected_uart_byte = "E";
+                3: expected_uart_byte = "N";
+                4: expected_uart_byte = "R";
+                5: expected_uart_byte = "V";
+                6: expected_uart_byte = "6";
+                7: expected_uart_byte = "4";
+                8: expected_uart_byte = " ";
+                9: expected_uart_byte = "S";
+                10: expected_uart_byte = "D";
+                11: expected_uart_byte = " ";
+                12: expected_uart_byte = "B";
+                13: expected_uart_byte = "O";
+                14: expected_uart_byte = "O";
+                15: expected_uart_byte = "T";
+                16: expected_uart_byte = " ";
+                17: expected_uart_byte = "S";
+                18: expected_uart_byte = "T";
+                19: expected_uart_byte = "A";
+                20: expected_uart_byte = "R";
+                21: expected_uart_byte = "T";
+                22: expected_uart_byte = 8'h0d;
+                23: expected_uart_byte = 8'h0a;
+                default: expected_uart_byte = 8'hxx;
+            endcase
+        end
+    endfunction
+
     initial begin
         clk = 0;
         rst_n = 0;
+        uart_byte_count = 0;
         spi_miso = 1;
         card_ready = 0;
         ddr[0] = 0;
@@ -358,8 +404,17 @@ module tb_fpga_sd_boot;
     end
 
     always @(posedge clk) begin
-        if (dut.uart_valid && dut.uart_write && (dut.uart_addr == 0))
-            $write("%c", dut.uart_wdata[7:0]);
+        if (dut.u_uart.write_thr) begin
+            if (uart_byte_count < 24 &&
+                dut.u_uart.thr_write_data !==
+                    expected_uart_byte(uart_byte_count))
+                $fatal(1,
+                       "UART MMIO byte %0d: got %02x expected %02x pc=%016x",
+                       uart_byte_count, dut.u_uart.thr_write_data,
+                       expected_uart_byte(uart_byte_count), dbg_pc);
+            $write("%c", dut.u_uart.thr_write_data);
+            uart_byte_count = uart_byte_count + 1;
+        end
     end
 
 endmodule

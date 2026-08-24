@@ -26,15 +26,19 @@ module tb_ptw_context;
     logic [63:0] memory [0:MEM_WORDS-1];
     logic mem_addr_in_range;
     logic saw_ptw_read;
-    logic saw_ptw_shootdown;
     logic saw_satp_restart;
-    logic saw_satp_shootdown;
     logic saw_satp_barrier_busy;
     logic saw_satp_barrier_release;
     logic satp_barrier_active;
     integer satp_barrier_cycles;
     logic saw_translated_fetch;
     logic saw_sfence;
+    logic saw_registered_sfence_invalidate;
+    logic saw_registered_satp_invalidate;
+    logic saw_sfence_restart_tail;
+    logic saw_satp_restart_tail;
+    logic saw_sfence_issue_hold;
+    logic saw_satp_issue_hold;
     logic saw_load_page_fault;
     logic [63:0] load_page_fault_tval;
     logic block_ptw;
@@ -57,7 +61,6 @@ module tb_ptw_context;
     logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_resp_txn_id;
     logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_resp_source_id;
     logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_resp_rdata;
-    logic [2:0] fence_response_delay;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
     assign mem_ready = mem_valid;
@@ -189,11 +192,9 @@ module tb_ptw_context;
     endfunction
 
     integer lane;
-    // The timeout phase blocks page-table reads, not maintenance traffic.
-    // SATP retirement now issues a ICX fence before the first translated
-    // fetch, and that fence must remain serviceable.
-    assign icx_req_ready = !icx_resp_valid && (fence_response_delay == 0) &&
-        (!block_ptw || (icx_req_op == `OPENRV64_ICX_OP_FENCE));
+    // The timeout phase blocks page-table reads.  The noncoherent 1P bus has
+    // no ICX maintenance transaction to bypass this gate.
+    assign icx_req_ready = !icx_resp_valid && !block_ptw;
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -202,17 +203,11 @@ module tb_ptw_context;
             icx_resp_txn_id <= '0;
             icx_resp_source_id <= '0;
             icx_resp_rdata <= '0;
-            fence_response_delay <= 3'd0;
             satp_barrier_active <= 1'b0;
             satp_barrier_cycles <= 0;
         end else begin
             if (icx_resp_valid && icx_resp_ready)
                 icx_resp_valid <= 1'b0;
-            if (fence_response_delay != 0) begin
-                fence_response_delay <= fence_response_delay - 1'b1;
-                if (fence_response_delay == 1)
-                    icx_resp_valid <= 1'b1;
-            end
             if (icx_req_valid && icx_req_ready) begin
                 if (icx_req_source_id != `OPENRV64_ICX_SOURCE_PTW ||
                     icx_req_kind != `OPENRV64_ICX_KIND_PTE ||
@@ -221,32 +216,15 @@ module tb_ptw_context;
                 if ((icx_req_op == `OPENRV64_ICX_OP_READ) &&
                     (icx_req_size != 3'd6))
                     $fatal(1, "invalid PTW line read");
-                if ((icx_req_op == `OPENRV64_ICX_OP_FENCE) &&
-                    (icx_req_size != 3'd0))
-                    $fatal(1, "invalid PTW shootdown request");
-                if ((icx_req_op == `OPENRV64_ICX_OP_FENCE) &&
-                    (icx_req_order != `OPENRV64_ICX_ORDER_ACQ_REL))
-                    $fatal(1, "PTW shootdown is not an ACQ_REL fence");
-                if ((icx_req_op != `OPENRV64_ICX_OP_READ) &&
-                    (icx_req_op != `OPENRV64_ICX_OP_FENCE))
-                    $fatal(1, "unexpected PTW operation");
+                if (icx_req_op != `OPENRV64_ICX_OP_READ)
+                    $fatal(1, "noncoherent 1P PTW emitted maintenance traffic");
                 icx_resp_hart_id <= icx_req_hart_id;
                 icx_resp_txn_id <= icx_req_txn_id;
                 icx_resp_source_id <= icx_req_source_id;
-                if (icx_req_op == `OPENRV64_ICX_OP_READ) begin
-                    icx_resp_valid <= 1'b1;
-                    for (lane = 0; lane < 8; lane = lane + 1)
-                        icx_resp_rdata[lane * 64 +: 64] <=
-                            memory[icx_req_addr[13:3] + lane];
-                end else begin
-                    icx_resp_rdata <= '0;
-                    // Hold the fence response long enough to prove that a
-                    // Bare-mode fetch cannot escape after the SATP write.
-                    fence_response_delay <= 3'd4;
-                    saw_ptw_shootdown <= 1'b1;
-                    if (!saw_sfence)
-                        saw_satp_shootdown <= 1'b1;
-                end
+                icx_resp_valid <= 1'b1;
+                for (lane = 0; lane < 8; lane = lane + 1)
+                    icx_resp_rdata[lane * 64 +: 64] <=
+                        memory[icx_req_addr[13:3] + lane];
             end
         end
 
@@ -272,15 +250,66 @@ module tb_ptw_context;
             saw_translated_fetch <= 1'b1;
         end
         if (rst_n && dut.u_core.retire_sfence_vma) begin
+            if (!dut.u_core.sfence_vma_inflight_q)
+                $fatal(1, "SFENCE.VMA retirement lost issue classification");
+            if (dut.u_core.translation_invalidate_q)
+                $fatal(1, "SFENCE.VMA invalidation was not registered");
+            if (dut.u_core.restart_fetch_req || dut.u_core.invalidate_fetch)
+                $fatal(1, "SFENCE.VMA maintenance flow was not registered");
             saw_sfence <= 1'b1;
         end
+        if (rst_n && dut.u_core.translation_invalidate_q) begin
+            if (!saw_sfence && !saw_satp_restart)
+                $fatal(1, "translation invalidation preceded retirement");
+            if (!dut.u_core.global_issue_inhibit_q)
+                $fatal(1, "translation invalidation lost serial issue owner");
+            if (!dut.u_core.translation_barrier_busy)
+                $fatal(1, "registered invalidation did not start local barrier");
+            if (!dut.u_core.restart_fetch_req ||
+                dut.u_core.invalidate_fetch)
+                $fatal(1, "fetch restart did not follow invalidation");
+            if (dut.u_core.dispatch_exec_issue_valid ||
+                dut.u_core.fetch_pc_valid)
+                $fatal(1, "traffic escaped during registered invalidation");
+            if (saw_sfence)
+                saw_registered_sfence_invalidate <= 1'b1;
+            else
+                saw_registered_satp_invalidate <= 1'b1;
+        end
+        if (rst_n && dut.u_core.restart_fetch_q &&
+            !dut.u_core.translation_invalidate_q) begin
+            if (!dut.u_core.invalidate_fetch ||
+                !dut.u_core.global_issue_inhibit_q ||
+                dut.u_core.dispatch_exec_issue_valid)
+                $fatal(1, "translation restart tail lost issue inhibit");
+            if (saw_registered_sfence_invalidate &&
+                !saw_sfence_restart_tail)
+                saw_sfence_restart_tail <= 1'b1;
+            else if (saw_registered_satp_invalidate)
+                saw_satp_restart_tail <= 1'b1;
+        end
         if (rst_n && dut.u_core.retire_satp_write) begin
+            if (!dut.u_core.satp_write_inflight_q)
+                $fatal(1, "SATP retirement lost issue classification");
             if (!dut.u_core.hard_flush_restart_req)
                 $fatal(1, "retiring satp write did not restart frontend");
-            if (!dut.u_core.translation_barrier_busy)
-                $fatal(1, "satp retirement did not start translation barrier");
+            if (dut.u_core.translation_invalidate_q ||
+                dut.u_core.translation_barrier_busy)
+                $fatal(1, "SATP invalidation was not registered");
             saw_satp_restart <= 1'b1;
             satp_barrier_active <= 1'b1;
+        end
+        if (rst_n && dut.u_core.sfence_vma_inflight_q &&
+            !dut.u_core.retire_accept) begin
+            if (dut.u_core.dispatch_exec_issue_valid)
+                $fatal(1, "younger instruction issued behind SFENCE.VMA");
+            saw_sfence_issue_hold <= 1'b1;
+        end
+        if (rst_n && dut.u_core.satp_write_inflight_q &&
+            !dut.u_core.retire_accept) begin
+            if (dut.u_core.dispatch_exec_issue_valid)
+                $fatal(1, "younger instruction issued behind SATP write");
+            saw_satp_issue_hold <= 1'b1;
         end
         if (rst_n && satp_barrier_active) begin
             if (dut.u_core.translation_barrier_busy) begin
@@ -291,6 +320,9 @@ module tb_ptw_context;
                 if (dut.u_core.exec_mem_valid && dut.u_core.exec_mem_ready)
                     $fatal(1, "LSU escaped before SATP fence completion");
             end else begin
+                if (!dut.u_core.global_issue_inhibit_q ||
+                    dut.u_core.dispatch_exec_issue_valid)
+                    $fatal(1, "SATP invalidation lost its restart tail cycle");
                 saw_satp_barrier_release <= 1'b1;
                 satp_barrier_active <= 1'b0;
             end
@@ -358,15 +390,19 @@ module tb_ptw_context;
         memory[64'h110 >> 3] = 64'h0000_0000_0000_0800;
 
         saw_ptw_read = 1'b0;
-        saw_ptw_shootdown = 1'b0;
         saw_satp_restart = 1'b0;
-        saw_satp_shootdown = 1'b0;
         saw_satp_barrier_busy = 1'b0;
         saw_satp_barrier_release = 1'b0;
         satp_barrier_active = 1'b0;
         satp_barrier_cycles = 0;
         saw_translated_fetch = 1'b0;
         saw_sfence = 1'b0;
+        saw_registered_sfence_invalidate = 1'b0;
+        saw_registered_satp_invalidate = 1'b0;
+        saw_sfence_restart_tail = 1'b0;
+        saw_satp_restart_tail = 1'b0;
+        saw_sfence_issue_hold = 1'b0;
+        saw_satp_issue_hold = 1'b0;
         saw_load_page_fault = 1'b0;
         load_page_fault_tval = 64'hffff_ffff_ffff_ffff;
         block_ptw = 1'b0;
@@ -388,19 +424,25 @@ module tb_ptw_context;
             $fatal(1, "Sv39 context program timed out at pc=%016x instr=%08x",
                    dbg_pc, dbg_instr);
         end
-        if (!saw_ptw_read || !saw_ptw_shootdown ||
-            !saw_satp_restart || !saw_satp_shootdown ||
+        if (!saw_ptw_read || !saw_satp_restart ||
             !saw_satp_barrier_busy || !saw_satp_barrier_release ||
-            !saw_translated_fetch || !saw_sfence) begin
+            !saw_translated_fetch || !saw_sfence ||
+            !saw_registered_sfence_invalidate ||
+            !saw_registered_satp_invalidate ||
+            !saw_sfence_restart_tail || !saw_satp_restart_tail ||
+            !saw_sfence_issue_hold || !saw_satp_issue_hold) begin
             $fatal(1,
-                   "missing PTW/shootdown/satp-restart/satp-shootdown/barrier-busy/barrier-release/fetch/SFENCE observations: %0b/%0b/%0b/%0b/%0b/%0b/%0b/%0b",
-                   saw_ptw_read, saw_ptw_shootdown,
-                   saw_satp_restart, saw_satp_shootdown,
+                   "missing PTW/satp-restart/barrier-busy/barrier-release/fetch/SFENCE/registered-SFENCE/registered-SATP/SFENCE-restart/SATP-restart/SFENCE-hold/SATP-hold observations: %0b/%0b/%0b/%0b/%0b/%0b/%0b/%0b/%0b/%0b/%0b/%0b",
+                   saw_ptw_read, saw_satp_restart,
                    saw_satp_barrier_busy, saw_satp_barrier_release,
-                   saw_translated_fetch, saw_sfence);
+                   saw_translated_fetch, saw_sfence,
+                   saw_registered_sfence_invalidate,
+                   saw_registered_satp_invalidate,
+                   saw_sfence_restart_tail, saw_satp_restart_tail,
+                   saw_sfence_issue_hold, saw_satp_issue_hold);
         end
-        if (satp_barrier_cycles < 4)
-            $fatal(1, "SATP barrier released before delayed fence response");
+        if (satp_barrier_cycles != 1)
+            $fatal(1, "SATP local invalidation was not exactly one cycle");
         if (memory[64'h3000 >> 3] != 64'd42) begin
             $fatal(1, "translated supervisor store mismatch: %016x",
                    memory[64'h3000 >> 3]);

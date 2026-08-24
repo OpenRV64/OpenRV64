@@ -146,6 +146,11 @@ module tb_icx_l1i;
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
+        .l1d_sleep_i(1'b0),
+        .l1d_probe_hit_o(),
+        .l1d_probe_valid_i(1'b0),
+        .l1d_probe_ready_o(),
+        .l1d_probe_addr_i(64'd0),
         .fetch_req_valid_i(fetch_req_valid),
         .fetch_req_ready_o(fetch_req_ready),
         .fetch_req_addr_i(fetch_req_addr),
@@ -687,6 +692,38 @@ module tb_icx_l1i;
         if (pmp_probe_count_q != pmp_before_count)
             $fatal(1, "page-screen hit entered PMP arbitration");
 
+        // Ordinary CSR retirement conservatively clears the untagged screen,
+        // but it does not redirect fetch.  A fast response already accepted
+        // under the old proof must retain its ownership and remain visible;
+        // silently dropping it strands the frontend's pending-line bit.
+        fetch_resp_ready = 1'b0;
+        push_fetch_only(64'h00);
+        word_index = 0;
+        while (!dut.fetch_resp_hold_valid_q && word_index < 100) begin
+            @(negedge clk);
+            word_index = word_index + 1;
+        end
+        if (!dut.fetch_resp_hold_valid_q)
+            $fatal(1, "failed to hold page-screen response before CSR clear");
+        pulse_fetch_context_change();
+        if (!dut.fetch_resp_hold_valid_q || dut.fetch_count_q != 1)
+            $fatal(1,
+                "CSR screen clear dropped accepted fetch hold=%b count=%0d",
+                dut.fetch_resp_hold_valid_q, dut.fetch_count_q);
+        fetch_resp_ready = 1'b1;
+        expect_fetch_only(64'h00, memory[0][255:0],
+                          "accepted fetch across CSR screen clear");
+
+        // The accepted job survives, but the screen entry itself does not.
+        // Refill it through the checked path for the revocation test below.
+        screen_before_count = page_screen_accept_count_q;
+        pmp_before_count = pmp_probe_count_q;
+        issue_fetch(64'h00, memory[0][255:0], 1'b0,
+                    "post-CSR-clear checked resident hit");
+        if (page_screen_accept_count_q != screen_before_count ||
+            pmp_probe_count_q != pmp_before_count + 1)
+            $fatal(1, "CSR clear retained lookup proof");
+
         // Hold L1I invalidation active so a screen hit is admitted but
         // cannot launch.  Revoking the screen proof must discard that job;
         // it must never fall back through translation/PMP or reach fetch.
@@ -720,7 +757,9 @@ module tb_icx_l1i;
         if (page_screen_accept_count_q != screen_before_count)
             $fatal(1, "context change retained a page-screen entry");
         if (pmp_probe_count_q != pmp_before_count + 1)
-            $fatal(1, "context change did not restore PMP checking");
+            $fatal(1,
+                   "context change PMP probes before=%0d after=%0d",
+                   pmp_before_count, pmp_probe_count_q);
         if (dut.fetch_page_write_cursor_q != 2'd1)
             $fatal(1, "page-screen write cursor did not advance");
         before_count = icx_count_q;

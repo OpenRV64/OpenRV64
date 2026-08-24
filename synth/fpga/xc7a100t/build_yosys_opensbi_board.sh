@@ -11,6 +11,24 @@ mig_stub=${MIG_STUB:-$project_dir/generated-ip/mig_7series_0/mig_7series_0_stub.
 output_edif=${OUTPUT_EDIF:-$output_dir/openrv64_myd_j7a100t_opensbi_top.edif}
 output_json=${OUTPUT_JSON:-$output_dir/openrv64_myd_j7a100t_opensbi_top.json}
 output_log=${OUTPUT_LOG:-$output_dir/yosys-board.log}
+core_clock_multiply=${FPGA_CORE_CLOCK_MULTIPLY:-7}
+core_clock_divide=${FPGA_CORE_CLOCK_DIVIDE:-50}
+
+for value_name in core_clock_multiply core_clock_divide; do
+    value=${!value_name}
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: $value_name must be a positive integer" >&2
+        exit 2
+    fi
+done
+if (( core_clock_multiply < 6 || core_clock_multiply > 12 )); then
+    echo "error: FPGA_CORE_CLOCK_MULTIPLY must be 6..12 for the 100 MHz MMCM input" >&2
+    exit 2
+fi
+if (( core_clock_divide < 1 || core_clock_divide > 128 )); then
+    echo "error: FPGA_CORE_CLOCK_DIVIDE must be 1..128" >&2
+    exit 2
+fi
 
 if ! yosys_bin=$(command -v "$yosys_bin"); then
     echo "error: Yosys executable not found: ${YOSYS:-yosys}" >&2
@@ -31,6 +49,9 @@ read_verilog -sv -defer -DSYNTHESIS -DOPENRV64_FPGA_SYSTEM_NETLIST \
     \"$system_stub\" \"$mig_stub\" \
     \"$script_dir/rgmii_io.sv\" \
     \"$script_dir/openrv64_myd_j7a100t_opensbi_top.sv\"; \
+chparam -set CORE_CLOCK_MULTIPLY $core_clock_multiply \
+        -set CORE_CLOCK_DIVIDE $core_clock_divide \
+        openrv64_myd_j7a100t_opensbi_top; \
 hierarchy -check -top openrv64_myd_j7a100t_opensbi_top; \
 synth_xilinx -family xc7 -top openrv64_myd_j7a100t_opensbi_top -flatten \
     -noiopad -noclkbuf; \

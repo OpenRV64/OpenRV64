@@ -64,6 +64,7 @@ module openrv64_l1i #(
         .DATA_WIDTH(DATA_WIDTH),
         .REQ_TAG_WIDTH(REQ_TAG_WIDTH),
         .DETACH_READ_MISSES(DETACH_READ_MISSES),
+        .SYNC_TAG_LOOKUP(1),
         .CACHE_BYTES(CACHE_BYTES),
         .LINE_BYTES(LINE_BYTES),
         .WAYS(WAYS),

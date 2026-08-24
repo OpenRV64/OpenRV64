@@ -6,7 +6,8 @@
 module openrv64_fetch_debug_stub #(
     parameter integer LINE_DEPTH = 4,
     parameter integer INGRESS_DEPTH = 4,
-    parameter integer FETCH_SECTORS = 2
+    parameter integer FETCH_SECTORS = 2,
+    parameter integer FETCH_DATA_WIDTH = FETCH_SECTORS * 128
 ) (
     input wire [`RV64_XLEN-1:0] consume_pc_q
         /* verilator public_flat_rd */,
@@ -36,6 +37,43 @@ module openrv64_fetch_debug_stub #(
         /* verilator public_flat_rd */,
     input wire pair_unpredicted_valid_q /* verilator public_flat_rd */,
     input wire [`RV64_XLEN-1:0] pair_unpredicted_addr_q
+        /* verilator public_flat_rd */,
+    input wire [2:0] lane_found_r /* verilator public_flat_rd */,
+    input wire [3*`RV64_INSTR_WIDTH-1:0] lane_instr_r
+        /* verilator public_flat_rd */,
+    input wire [FETCH_SECTORS-1:0] consume_live_sector_valid
+        /* verilator public_flat_rd */,
+    input wire [FETCH_SECTORS-1:0] consume_ingress_sector_valid
+        /* verilator public_flat_rd */,
+    input wire [FETCH_SECTORS-1:0] consume_alt_sector_valid
+        /* verilator public_flat_rd */,
+    input wire [FETCH_SECTORS-1:0] consume_ingress_select
+        /* verilator public_flat_rd */,
+    input wire [FETCH_SECTORS-1:0] consume_alt_select
+        /* verilator public_flat_rd */,
+    input wire [FETCH_SECTORS-1:0] consume_fetch_select
+        /* verilator public_flat_rd */,
+    input wire [FETCH_SECTORS-1:0] consume_sector_valid
+        /* verilator public_flat_rd */,
+    input wire resp_valid_i /* verilator public_flat_rd */,
+    input wire [`RV64_XLEN-1:0] resp_addr_i
+        /* verilator public_flat_rd */,
+    input wire [FETCH_DATA_WIDTH-1:0] resp_data_i
+        /* verilator public_flat_rd */,
+    input wire resp_stash_i /* verilator public_flat_rd */,
+    input wire resp_demand_i /* verilator public_flat_rd */,
+    input wire resp_match /* verilator public_flat_rd */,
+    input wire carousel_resp_match /* verilator public_flat_rd */,
+    input wire redirect_resp_match /* verilator public_flat_rd */,
+    input wire fal_resp_match /* verilator public_flat_rd */,
+    input wire orphan_forced_demand_in_window
+        /* verilator public_flat_rd */,
+    input wire alt_prefetch_aged_r /* verilator public_flat_rd */,
+    input wire alt_sector_response_tap_r
+        /* verilator public_flat_rd */,
+    input wire alt_sector_predicted_tap_r
+        /* verilator public_flat_rd */,
+    input wire alt_sector_unpredicted_tap_r
         /* verilator public_flat_rd */,
     input wire line_valid_q [0:LINE_DEPTH-1]
         /* verilator public_flat_rd */,

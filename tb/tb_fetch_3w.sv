@@ -283,7 +283,7 @@ module tb_fetch_3w;
         restart = 1'b1;
         #1;
         if (!req_valid || (req_addr != 64'h300) || !req_stash ||
-            !req_demand || !cancel || cancel_stash)
+            !req_demand || !cancel || !cancel_stash)
             $fatal(1, "predicted redirect did not force qualified target fetch");
         tick();
         restart = 1'b0;
@@ -333,8 +333,8 @@ module tb_fetch_3w;
         #1;
         if (!alt_restart_hit)
             $fatal(1, "alternate-path redirect did not hit lookaside");
-        if (cancel_stash)
-            $fatal(1, "ordinary redirect canceled stash requests");
+        if (!cancel_stash)
+            $fatal(1, "ordinary redirect preserved incoming stash requests");
         tick();
         restart = 1'b0;
         if (line_count != 1)

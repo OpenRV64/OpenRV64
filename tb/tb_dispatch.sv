@@ -480,7 +480,8 @@ module tb_dispatch;
         check_dispatch(1'b0, 1'b1, 1'b1, 1'b0, "held x3 blocks consumer");
 
         flush = 1'b1;
-        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0, "flush clears active dispatch");
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0,
+                       "flush inhibits without same-cycle valid change");
         @(posedge clk);
         @(negedge clk);
         flush = 1'b0;

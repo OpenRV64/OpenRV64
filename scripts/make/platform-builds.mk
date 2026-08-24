@@ -2,7 +2,8 @@
 
 $(TOP_SIM_BUILD): $(TOP_SIM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $(TOP_SIM_BUILD) $(CORE_SRCS) $(TOP_SIM_SRCS)
+	iverilog -g2012 -Wall -Irtl $(TOP_SIM_EXTRA_FLAGS) \
+		-o $(TOP_SIM_BUILD) $(CORE_SRCS) $(TOP_SIM_SRCS)
 
 $(PLATFORM_SIM_BUILD): $(PLATFORM_SIM_SRCS) $(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
@@ -156,8 +157,16 @@ $(FPGA_SD_BOOT_SIM_BUILD): $(FPGA_SD_BOOT_SIM_SRCS) \
 		$(FPGA_SD_BOOT_MEM) $(PLATFORM_SRCS) $(CORE_SRCS) \
 		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
-	iverilog -g2012 -Wall -Irtl -o $@ $(CORE_SRCS) $(PLATFORM_SRCS) \
+	iverilog -g2012 -Wall -Irtl $(FPGA_SD_BOOT_SIM_EXTRA_FLAGS) \
+		-o $@ $(CORE_SRCS) $(PLATFORM_SRCS) \
 		$(FPGA_SD_BOOT_SIM_SRCS)
+
+$(FPGA_JTAG_SNOOP_SIM_BUILD): tb/tb_fpga_jtag_snoop.sv \
+		synth/fpga/xc7a100t/jtag_snoop.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -s tb_fpga_jtag_snoop -o $@ \
+		synth/fpga/xc7a100t/jtag_snoop.sv \
+		tb/tb_fpga_jtag_snoop.sv
 
 $(ROM_SIM_BUILD): $(ROM_SIM_SRCS) $(ROM_SRCS)
 	mkdir -p sim

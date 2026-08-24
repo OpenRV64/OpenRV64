@@ -378,17 +378,19 @@ class L1dWatch {
         const std::array<uint64_t, 4> target_set_tags = {
             H0_L1D_TAG_MEM(0)[target_set], H0_L1D_TAG_MEM(1)[target_set],
             H0_L1D_TAG_MEM(2)[target_set], H0_L1D_TAG_MEM(3)[target_set]};
-        const std::array<uint64_t, 4> target_set_word7 = {
-            H0_L1D_DATA_MEM(0, 7)[target_set],
-            H0_L1D_DATA_MEM(1, 7)[target_set],
-            H0_L1D_DATA_MEM(2, 7)[target_set],
-            H0_L1D_DATA_MEM(3, 7)[target_set]};
+        const unsigned target_bank =
+            static_cast<unsigned>((paddr_line_ >> 3) & 0x7U);
+        const std::array<uint64_t, 4> target_set_bank_data = {
+            H0_L1D_DATA_MEM(0, target_bank)[target_set],
+            H0_L1D_DATA_MEM(1, target_bank)[target_set],
+            H0_L1D_DATA_MEM(2, target_bank)[target_set],
+            H0_L1D_DATA_MEM(3, target_bank)[target_set]};
         std::array<bool, 4> target_set_valid{};
         for (unsigned way = 0; way < 4; ++way)
             target_set_valid[way] = H0_L1D_CACHE(valid_q)[target_set * 4 + way];
         if (!target_set_state_initialized_ ||
             target_set_tags != target_set_tags_ ||
-            target_set_word7 != target_set_word7_ ||
+            target_set_bank_data != target_set_bank_data_ ||
             target_set_valid != target_set_valid_) {
             stream_ << "CACHE_TARGET_SET cycle=" << cycle
                     << " valid=";
@@ -397,9 +399,12 @@ class L1dWatch {
             stream_ << " tags=" << std::hex
                     << target_set_tags[0] << ',' << target_set_tags[1] << ','
                     << target_set_tags[2] << ',' << target_set_tags[3]
-                    << " word7="
-                    << target_set_word7[0] << ',' << target_set_word7[1] << ','
-                    << target_set_word7[2] << ',' << target_set_word7[3]
+                    << " bank=" << std::dec << target_bank
+                    << " bank_data=" << std::hex
+                    << target_set_bank_data[0] << ','
+                    << target_set_bank_data[1] << ','
+                    << target_set_bank_data[2] << ','
+                    << target_set_bank_data[3]
                     << " fill_fire=" << std::dec
                     << static_cast<unsigned>(H0_L1D_CACHE(fill_fire))
                     << " fill_addr=0x" << std::hex << H0_L1D(l1_fill_addr)
@@ -408,7 +413,7 @@ class L1dWatch {
                     << '\n';
             target_set_state_initialized_ = true;
             target_set_tags_ = target_set_tags;
-            target_set_word7_ = target_set_word7;
+            target_set_bank_data_ = target_set_bank_data;
             target_set_valid_ = target_set_valid;
         }
         const bool l1_access_target = same_line(H0_L1D(l1_mem_addr));
@@ -1016,7 +1021,7 @@ class L1dWatch {
     bool target_set_state_initialized_ = false;
     std::array<bool, 4> target_set_valid_{};
     std::array<uint64_t, 4> target_set_tags_{};
-    std::array<uint64_t, 4> target_set_word7_{};
+    std::array<uint64_t, 4> target_set_bank_data_{};
     std::array<OutstandingMshr, 16> l1_outstanding_{};
     bool l2_state_initialized_ = false;
     std::array<bool, 8> l2_valid_{};
@@ -1725,6 +1730,24 @@ void trace_hart0_pc(std::ostream& stream,
     }
 }
 
+void dump_hart0_gprs(std::ostream& stream,
+                     const Vtb_4h_3p___024root* root,
+                     uint32_t cycle) {
+    const auto& bank =
+        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_backend__DOT__u_gpr__DOT__u_prf__DOT__g_storage_bank__BRA__0__KET____DOT__bank_q;
+
+    stream << "GPR_SNAPSHOT cycle=" << cycle << '\n';
+    stream << std::hex << std::setfill('0');
+    stream << "x0=0000000000000000\n";
+    for (unsigned reg = 1; reg < 32; ++reg) {
+        stream << 'x' << std::dec << reg << "=0x" << std::hex
+               << std::setw(16)
+               << wide_bits(bank, (reg - 1) * 64, 64) << '\n';
+    }
+    stream << std::dec << std::setfill(' ');
+    stream.flush();
+}
+
 std::string periodic_checkpoint_path(const char* prefix, uint32_t cycle) {
     return std::string{prefix} + '-' + std::to_string(cycle) + ".vls";
 }
@@ -2129,6 +2152,8 @@ void trace_hart0_fetch_path(const Vtb_4h_3p___024root* root,
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__g_fetch_axi__DOT__u_fetch__DOT__u_debug__DOT__##name
 #define H0_BUS(name)                                                       \
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_debug__DOT__##name
+#define H0_L1I(name)                                                       \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_debug__DOT__##name
 #define H0_RAS(name)                                                       \
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bp__DOT__g_ras__DOT__u_ras__DOT__u_debug__DOT__##name
 #define H0_CSR(name)                                                       \
@@ -2257,9 +2282,91 @@ void trace_hart0_fetch_path(const Vtb_4h_3p___024root* root,
             << ":0x" << std::hex << H0_BUS(fetch_vaddr_q)[slot];
     }
     std::cout << std::dec << '\n';
+
+    std::cout
+        << "FETCH_DECODE cycle=" << cycle << " phase=" << phase
+        << " fetch=" << std::hex
+        << static_cast<unsigned>(H0_CORE(fetch_decode_valid))
+        << static_cast<unsigned>(H0_CORE(fetch_decode_ready))
+        << ":backend="
+        << static_cast<unsigned>(H0_CORE(backend_decode_valid))
+        << static_cast<unsigned>(H0_CORE(backend_decode_ready))
+        << ":fire="
+        << static_cast<unsigned>(H0_CORE(frontend_decode_fire))
+        << ":decode="
+        << static_cast<unsigned>(H0_CORE(decode_valid))
+        << static_cast<unsigned>(H0_CORE(decode_illegal))
+        << ":found="
+        << static_cast<unsigned>(H0_FETCH(lane_found_r))
+        << ":sectors="
+        << static_cast<unsigned>(H0_FETCH(consume_live_sector_valid))
+        << static_cast<unsigned>(H0_FETCH(consume_ingress_sector_valid))
+        << static_cast<unsigned>(H0_FETCH(consume_alt_sector_valid))
+        << ':' << static_cast<unsigned>(H0_FETCH(consume_ingress_select))
+        << static_cast<unsigned>(H0_FETCH(consume_alt_select))
+        << static_cast<unsigned>(H0_FETCH(consume_fetch_select))
+        << static_cast<unsigned>(H0_FETCH(consume_sector_valid))
+        << " lanes=0x" << H0_CORE(decode_pc0)
+        << ":0x" << H0_CORE(instr0)
+        << ",0x" << H0_CORE(decode_pc1)
+        << ":0x" << H0_CORE(instr1)
+        << ",0x" << H0_CORE(decode_pc2)
+        << ":0x" << H0_CORE(instr2)
+        << ":raw=0x" << wide_bits(H0_FETCH(lane_instr_r), 0, 32)
+        << ",0x" << wide_bits(H0_FETCH(lane_instr_r), 32, 32)
+        << ",0x" << wide_bits(H0_FETCH(lane_instr_r), 64, 32)
+        << std::dec << '\n';
+
+    std::cout
+        << "FETCH_RESPONSE cycle=" << cycle << " phase=" << phase
+        << " resp=" << std::dec
+        << static_cast<unsigned>(H0_FETCH(resp_valid_i))
+        << static_cast<unsigned>(H0_FETCH(resp_stash_i))
+        << static_cast<unsigned>(H0_FETCH(resp_demand_i))
+        << ":0x" << std::hex << H0_FETCH(resp_addr_i)
+        << ":match=" << std::dec
+        << static_cast<unsigned>(H0_FETCH(resp_match))
+        << static_cast<unsigned>(H0_FETCH(carousel_resp_match))
+        << static_cast<unsigned>(H0_FETCH(redirect_resp_match))
+        << static_cast<unsigned>(H0_FETCH(fal_resp_match))
+        << static_cast<unsigned>(H0_FETCH(orphan_forced_demand_in_window))
+        << ":tap="
+        << static_cast<unsigned>(H0_FETCH(alt_prefetch_aged_r))
+        << static_cast<unsigned>(H0_FETCH(alt_sector_response_tap_r))
+        << static_cast<unsigned>(H0_FETCH(alt_sector_predicted_tap_r))
+        << static_cast<unsigned>(H0_FETCH(alt_sector_unpredicted_tap_r))
+        << ":data=";
+    for (unsigned word = 0; word < 8; ++word) {
+        if (word)
+            std::cout << ',';
+        std::cout << "0x" << std::hex
+                  << wide_bits(H0_FETCH(resp_data_i), word * 32, 32);
+    }
+    std::cout
+        << ":l1i=" << std::dec
+        << static_cast<unsigned>(H0_L1I(l1_resp_valid))
+        << ':' << static_cast<unsigned>(H0_L1I(l1_resp_tag))
+        << ':' << static_cast<unsigned>(H0_L1I(output_stored_response))
+        << static_cast<unsigned>(H0_L1I(output_direct_response))
+        << ":raw=";
+    for (unsigned word = 0; word < 16; ++word) {
+        if (word)
+            std::cout << ',';
+        std::cout << "0x" << std::hex
+                  << wide_bits(H0_L1I(l1_req_rdata), word * 32, 32);
+    }
+    std::cout << ":out=";
+    for (unsigned word = 0; word < 16; ++word) {
+        if (word)
+            std::cout << ',';
+        std::cout << "0x" << std::hex
+                  << wide_bits(H0_L1I(req_rdata_o), word * 32, 32);
+    }
+    std::cout << std::dec << '\n';
     std::cout.flush();
 #undef H0_CSR
 #undef H0_RAS
+#undef H0_L1I
 #undef H0_BUS
 #undef H0_FETCH
 #undef H0_CORE
@@ -2343,6 +2450,7 @@ int main(int argc, char** argv) {
         has_plusarg(argc, argv, "+coherence_atomic_debug");
     const bool fetch_path_trace =
         has_plusarg(argc, argv, "+fetch_path_trace");
+    const bool gpr_snapshot = has_plusarg(argc, argv, "+gpr_snapshot");
     const char* const coherence_trace_start_text =
         plusarg_value(argc, argv, "+coherence_trace_start=");
     const char* const coherence_trace_end_text =
@@ -2504,6 +2612,10 @@ int main(int argc, char** argv) {
         top->checkpoint_clk_i = 0;
         top->eval();
     }
+
+    if (gpr_snapshot)
+        dump_hart0_gprs(std::cout, top->rootp,
+                        top->checkpoint_cycle_o);
 
     std::ofstream host_pc_trace;
     if (host_pc_trace_path) {

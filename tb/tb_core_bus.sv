@@ -5,6 +5,9 @@
 
 module tb_core_bus;
 
+    localparam [1:0] GEN_STATE_TRANSLATE = 2'd1;
+    localparam [1:0] GEN_STATE_TLB_RESULT = 2'd3;
+
     logic clk;
     logic rst_n;
 
@@ -314,39 +317,6 @@ module tb_core_bus;
         end
     endtask
 
-    task automatic respond_ptw_shootdown;
-        integer cycles;
-        begin
-            cycles = 0;
-            while (!icx_req_valid && cycles < 40) begin
-                @(negedge clk);
-                cycles = cycles + 1;
-            end
-            #1;
-            if (!icx_req_valid ||
-                icx_req_source_id !== `OPENRV64_ICX_SOURCE_PTW ||
-                icx_req_op !== `OPENRV64_ICX_OP_FENCE ||
-                icx_req_kind !== `OPENRV64_ICX_KIND_PTE ||
-                icx_req_order !== `OPENRV64_ICX_ORDER_ACQ_REL ||
-                icx_req_attr !== `OPENRV64_ICX_ATTR_NONE ||
-                icx_req_size !== 3'd0 ||
-                icx_req_burst_len !== '0 || icx_req_lock)
-                $fatal(1, "invalid PTW generation shootdown request");
-            icx_req_ready = 1'b1;
-            @(posedge clk);
-            @(negedge clk);
-            icx_req_ready = 1'b0;
-            icx_resp_rdata = '0;
-            icx_resp_valid = 1'b1;
-            #1;
-            if (!icx_resp_ready)
-                $fatal(1, "PTW did not accept shootdown response");
-            @(posedge clk);
-            @(negedge clk);
-            icx_resp_valid = 1'b0;
-        end
-    endtask
-
     initial begin
         rst_n = 1'b0;
         fetch_valid = 1'b0;
@@ -513,22 +483,30 @@ module tb_core_bus;
         req_ready = 1'b0;
         fetch_valid = 1'b0;
 
-        // A cancelled fetch is drained from the external bus but its response
-        // is not delivered to a newer fetch request.
+        // Fetch cancel is captured at the bus boundary.  A response already
+        // present on that edge may complete speculatively; the simultaneously
+        // flushed frontend discards it.  No successor from the cancelled
+        // stream may be admitted, and the registered cancel suppresses any
+        // later response.
         fetch_valid = 1'b1;
         fetch_addr = 64'h0000_0000_0000_4000;
         wait_for_request(1'b0, 64'h4000, 64'd0, 8'h00,
                          "cancelled fetch");
         fetch_cancel = 1'b1;
+        fetch_next_valid = 1'b1;
+        fetch_next_addr = 64'h0000_0000_0000_4008;
         req_ready = 1'b1;
         req_rdata = 64'hdead_beef_dead_beef;
         #1;
-        if (fetch_ready) begin
-            $fatal(1, "cancelled fetch consumed a response");
-        end
+        if (!fetch_ready)
+            $fatal(1, "fetch cancel remained in same-cycle response cone");
         @(posedge clk);
         @(negedge clk);
+        if (dut.g_gen.u_bus.state_q != 2'd0 || fetch_ready ||
+            !dut.g_gen.u_bus.cancelled_q)
+            $fatal(1, "registered fetch cancel admitted a successor/result");
         fetch_valid = 1'b0;
+        fetch_next_valid = 1'b0;
         fetch_cancel = 1'b0;
         req_ready = 1'b0;
 
@@ -569,6 +547,14 @@ module tb_core_bus;
         lsu_vm_mode = `RV64_SATP_MODE_SV39;
         lsu_asid = 16'h4321;
         lsu_root_ppn = 44'd1;
+        @(posedge clk);
+        @(negedge clk);
+        if (dut.g_gen.u_bus.state_q != GEN_STATE_TRANSLATE || req_valid)
+            $fatal(1, "TLB hit skipped registered lookup input state");
+        @(posedge clk);
+        @(negedge clk);
+        if (dut.g_gen.u_bus.state_q != GEN_STATE_TLB_RESULT || req_valid)
+            $fatal(1, "TLB hit did not stop at registered result state");
         wait_for_request(1'b0, 64'h0000_0001_0000_1234,
                          64'd0, 8'h00, "TLB-hit data access");
         req_ready = 1'b1;
@@ -581,19 +567,47 @@ module tb_core_bus;
         req_ready = 1'b0;
         lsu_valid = 1'b0;
 
+        // Invalidate a hit after the asynchronous lookup has been captured but
+        // before the registered result is consumed.  The staged hit must not
+        // reach ACCESS; the held LSU request must miss and restart through PTW
+        // after the local invalidation pulse.
+        lsu_valid = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        if (dut.g_gen.u_bus.state_q != GEN_STATE_TRANSLATE)
+            $fatal(1, "staged-hit TLBI test did not enter lookup");
+        @(posedge clk);
+        @(negedge clk);
+        if (dut.g_gen.u_bus.state_q != GEN_STATE_TLB_RESULT)
+            $fatal(1, "staged-hit TLBI test did not capture result");
         tlbi = 1'b1;
         @(posedge clk);
         @(negedge clk);
+        if (dut.g_gen.u_bus.state_q != GEN_STATE_TRANSLATE ||
+            req_valid || lsu_ready)
+            $fatal(1, "TLBI did not discard staged TLB hit");
         tlbi = 1'b0;
-        respond_ptw_shootdown();
 
-        lsu_valid = 1'b1;
+        // The restarted walk's PMP probe is discardable.  Local invalidation
+        // must not suppress PMP combinationally or emit an ICX fence.
+        while (!dut.g_gen.u_bus.ptw_pmp_valid)
+            @(negedge clk);
+        tlbi = 1'b1;
+        #1;
+        if (!dut.g_gen.u_bus.ptw_pmp_valid)
+            $fatal(1, "TLBI suppressed parallel PTW PMP probe");
+        if (icx_req_valid &&
+            (icx_req_op == `OPENRV64_ICX_OP_FENCE))
+            $fatal(1, "noncoherent generic bus emitted ICX shootdown");
+        @(posedge clk);
+        @(negedge clk);
+        tlbi = 1'b0;
+
         wait_for_ptw_request(64'h1000, 64'h1008,
                              "post-TLBI root PTE read");
         tlbi = 1'b1;
         respond_ptw_line(64'h1008, 64'h0000_0000_4000_00c3);
         tlbi = 1'b0;
-        respond_ptw_shootdown();
 
         wait_for_ptw_request(64'h1000, 64'h1008,
                              "TLBI restarts active walk");

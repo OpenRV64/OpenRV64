@@ -7,7 +7,8 @@ module tb_bp_context #(
         `OPENRV64_BP_ALWAYS_BRANCH,
     parameter bit ENABLE_PREDECODE_TARGETS = 1'b1,
     parameter bit BP_RAS_ENABLE = 1'b1,
-    parameter int unsigned BP_RAS_DEPTH = 8
+    parameter int unsigned BP_RAS_DEPTH = 8,
+    parameter bit PIPE_1P_DECODE_QUEUE = 1'b0
 );
 
     localparam logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0100;
@@ -28,6 +29,8 @@ module tb_bp_context #(
     logic dbg_halted;
     logic [63:0] memory [0:MEM_WORDS-1];
     logic saw_result_store;
+    logic expected_redirect_q;
+    logic [63:0] expected_redirect_target_q;
     integer prediction_count;
     integer correction_count;
 
@@ -41,7 +44,8 @@ module tb_bp_context #(
         .BP_TYPE(BP_TYPE),
         .BP_RAS_ENABLE(BP_RAS_ENABLE),
         .BP_RAS_DEPTH(BP_RAS_DEPTH),
-        .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS)
+        .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
+        .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -196,9 +200,31 @@ module tb_bp_context #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             saw_result_store <= 1'b0;
+            expected_redirect_q <= 1'b0;
+            expected_redirect_target_q <= 64'd0;
             prediction_count <= 0;
             correction_count <= 0;
         end else begin
+            if (dut.u_core.hard_flush_redirect_req !==
+                expected_redirect_q) begin
+                $fatal(1,
+                       "BP type %0d redirect latency mismatch: got=%0b expected=%0b",
+                       BP_TYPE, dut.u_core.hard_flush_redirect_req,
+                       expected_redirect_q);
+            end
+            if (dut.u_core.hard_flush_redirect_req &&
+                dut.u_core.redirect_target_q !==
+                expected_redirect_target_q) begin
+                $fatal(1,
+                       "BP type %0d delayed redirect target mismatch: got=%016x expected=%016x",
+                       BP_TYPE, dut.u_core.redirect_target_q,
+                       expected_redirect_target_q);
+            end
+
+            expected_redirect_q <= dut.u_core.redirect_capture_req;
+            if (dut.u_core.redirect_capture_req)
+                expected_redirect_target_q <= dut.u_core.exec_redirect_target;
+
             if (dut.u_core.bp_branch_allocate) begin
                 if (dut.u_core.if_id_pc == 64'h104 &&
                     (dut.u_core.bp_predict_target !== 64'hfc ||
@@ -209,7 +235,8 @@ module tb_bp_context #(
                            BP_TYPE, dut.u_core.if_id_predecode_offset,
                            dut.u_core.bp_predict_target);
                 end
-                if (dut.u_core.bp_prediction_taken !==
+                if (!PIPE_1P_DECODE_QUEUE &&
+                    dut.u_core.bp_prediction_taken !==
                     expected_prediction(dut.u_core.if_id_pc)) begin
                     $fatal(1,
                            "BP type %0d prediction mismatch at pc=%016x: got=%0b expected=%0b",
@@ -249,13 +276,20 @@ module tb_bp_context #(
             end
 
             if (dbg_halted) begin
-                if (!saw_result_store || prediction_count != 4 ||
-                    correction_count !=
+                // The FPGA decode pipeline can allocate two speculative
+                // wrong-path branches before the delayed redirect flushes
+                // its frontend queue.  They must not retire or alter the
+                // architectural result, but they are real predictor lookups.
+                if (!saw_result_store ||
+                    (!PIPE_1P_DECODE_QUEUE && prediction_count != 4) ||
+                    (PIPE_1P_DECODE_QUEUE && prediction_count != 6) ||
+                    (!PIPE_1P_DECODE_QUEUE && correction_count !=
                         (((BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
                           (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ||
                           (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB)) ? 4 :
                          (((BP_TYPE == `OPENRV64_BP_BTFNT) ||
-                           (BP_TYPE == `OPENRV64_BP_BIMODAL)) ? 3 : 2))) begin
+                           (BP_TYPE == `OPENRV64_BP_BIMODAL)) ? 3 : 2))) ||
+                    (PIPE_1P_DECODE_QUEUE && correction_count != 4)) begin
                     $fatal(1,
                            "BP type %0d summary mismatch: store=%0b predictions=%0d corrections=%0d",
                            BP_TYPE, saw_result_store,

@@ -37,6 +37,9 @@ module openrv64_platform #(
     parameter bit ENABLE_ZICCLSM = 1'b1,
     parameter bit ENABLE_FORWARDING = 1'b1,
     parameter bit ENABLE_LOAD_FORWARDING = 1'b0,
+    parameter bit PIPE_1P_MEM_4_STAGE = 1'b0,
+    parameter bit PIPE_1P_DECODE_QUEUE = 1'b0,
+    parameter bit FPGA_GPR_LUTRAM = 1'b0,
     parameter int unsigned L2_BYTES = 256 * 1024,
     parameter int unsigned L2_WAYS = 8,
     parameter int unsigned L2_MERGE_ENTRIES = 8,
@@ -388,6 +391,9 @@ module openrv64_platform #(
     logic [0:0] clint_mtip;
     logic [63:0] clint_mtime;
     logic [0:0] plic_seip;
+    logic clint_msip_core_q;
+    logic clint_mtip_core_q;
+    logic plic_seip_core_q;
     logic uart_irq;
     logic gpio_irq;
     logic timer_irq;
@@ -421,6 +427,21 @@ module openrv64_platform #(
         end else begin
             external_irq_sync_1_q <= external_irq_i;
             external_irq_sync_2_q <= external_irq_sync_1_q;
+        end
+    end
+
+    // Interrupt delivery is not an architectural same-cycle path.  Register
+    // the CLINT and PLIC levels at the core boundary so timer comparison and
+    // PLIC selection cannot feed redirect and bus cancellation combinationally.
+    always_ff @(posedge clk_i or negedge soc_rst_no) begin
+        if (!soc_rst_no) begin
+            clint_msip_core_q <= 1'b0;
+            clint_mtip_core_q <= 1'b0;
+            plic_seip_core_q <= 1'b0;
+        end else begin
+            clint_msip_core_q <= clint_msip[0];
+            clint_mtip_core_q <= clint_mtip[0];
+            plic_seip_core_q <= plic_seip[0];
         end
     end
 
@@ -479,6 +500,9 @@ module openrv64_platform #(
             FETCH_ALT_CONFIDENCE_GATE),
         .ENABLE_FORWARDING(ENABLE_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
+        .PIPE_1P_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
+        .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE),
+        .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
         .BP_TYPE(BP_TYPE),
@@ -544,12 +568,12 @@ module openrv64_platform #(
         .icx_resp_rdata(icx_resp_rdata),
         .icx_resp_error(icx_resp_error),
         .icx_resp_sc_success(icx_resp_sc_success),
-        .irq_m_software(clint_msip[0]),
-        .irq_m_timer(clint_mtip[0]),
+        .irq_m_software(clint_msip_core_q),
+        .irq_m_timer(clint_mtip_core_q),
         .irq_m_external(1'b0),
         .irq_s_software(1'b0),
         .irq_s_timer(1'b0),
-        .irq_s_external(plic_seip[0]),
+        .irq_s_external(plic_seip_core_q),
         .dbg_pc(dbg_pc),
         .dbg_instr(dbg_instr),
         .dbg_halted(dbg_halted),

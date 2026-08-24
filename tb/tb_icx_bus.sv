@@ -29,6 +29,11 @@ module tb_icx_bus #(
     wire fetch_resp_demand;
     logic [2:0] icache_age_valid;
     logic [3*64-1:0] icache_age_addr;
+    logic l1d_sleep;
+    logic l1d_probe_valid;
+    wire l1d_probe_ready;
+    logic [63:0] l1d_probe_addr;
+    wire l1d_probe_hit;
 
     logic lsu_valid;
     logic lsu_write;
@@ -62,6 +67,8 @@ module tb_icx_bus #(
     wire pipe_req_translation_page_fault;
     logic tlbi;
     logic context_flush;
+    logic context_change;
+    logic pmp_update;
     logic [`RV64_SATP_ASID_WIDTH-1:0] current_asid;
     wire tlbi_busy;
     wire pipe_resp_valid;
@@ -189,10 +196,12 @@ module tb_icx_bus #(
     integer channel_wait;
     integer ptw_wait;
     integer cancel_fetch_slot;
+    integer replacement_fetch_slot;
     integer locked_reads_before;
     integer fences_before;
     integer translated_fast_fires;
     integer translated_fast_store_fires;
+    integer xlate_pmp_requests;
     integer l2_tlb_hits;
     integer l2_tlb_way;
     integer l2_tlb_set;
@@ -204,6 +213,7 @@ module tb_icx_bus #(
         if (!rst_n) begin
             translated_fast_fires <= 0;
             translated_fast_store_fires <= 0;
+            xlate_pmp_requests <= 0;
             l2_tlb_hits <= 0;
         end else begin
             if (dut.pipe_fast_request_fire) begin
@@ -214,16 +224,21 @@ module tb_icx_bus #(
             end
             if (dut.u_l2_tlb.diag_hit)
                 l2_tlb_hits <= l2_tlb_hits + 1;
+            if (dut.xlate_pmp_candidate && dut.pmp_xlate_req_ready)
+                xlate_pmp_requests <= xlate_pmp_requests + 1;
         end
     end
 
     openrv64_core_mtl #(
         .ENABLE_L1I(0),
+        .ENABLE_L1D_COHERENCE_PROBES(1),
         .L1D_PREFETCH_ENABLE(0),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
         .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES)
     ) dut (
         .clk(clk), .rst_n(rst_n),
+        .l1d_sleep_i(l1d_sleep),
+        .l1d_probe_hit_o(l1d_probe_hit),
         .fetch_req_valid_i(fetch_req_valid),
         .fetch_req_ready_o(fetch_req_ready),
         .fetch_req_addr_i(fetch_req_addr),
@@ -256,8 +271,8 @@ module tb_icx_bus #(
         .lsu_access_fault_o(lsu_access_fault),
         .lsu_page_fault_o(lsu_page_fault), .tlbi_i(tlbi),
         .context_flush_i(context_flush),
-        .fetch_context_change_i(1'b0),
-        .pmp_update_i(1'b0),
+        .fetch_context_change_i(context_change),
+        .pmp_update_i(pmp_update),
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),
@@ -267,6 +282,9 @@ module tb_icx_bus #(
         .icache_prefetch_fallthrough_addr_i(64'd0),
         .icache_age_valid_i(icache_age_valid),
         .icache_age_addr_i(icache_age_addr),
+        .l1d_probe_valid_i(l1d_probe_valid),
+        .l1d_probe_ready_o(l1d_probe_ready),
+        .l1d_probe_addr_i(l1d_probe_addr),
         .lsu_pipe_req_valid_i(pipe_req_valid),
         .lsu_pipe_req_ready_o(pipe_req_ready),
         .lsu_pipe_req_tag_i(pipe_req_tag),
@@ -879,6 +897,8 @@ module tb_icx_bus #(
         pipe_cancel = 0;
         tlbi = 0;
         context_flush = 0;
+        context_change = 0;
+        pmp_update = 0;
         current_asid = 0;
         pipe_resp_ready = 1;
         pipe_store_done_ready = 1;
@@ -917,6 +937,9 @@ module tb_icx_bus #(
         icx_allow_wdata = 1;
         icache_age_valid = 3'b000;
         icache_age_addr = 192'd0;
+        l1d_sleep = 1'b0;
+        l1d_probe_valid = 1'b0;
+        l1d_probe_addr = 64'd0;
         for (icx_index = 0; icx_index < 256;
              icx_index = icx_index + 1) begin
             for (icx_word_index = 0; icx_word_index < 8;
@@ -986,7 +1009,11 @@ module tb_icx_bus #(
         pmp_allow = 0;
         fetch_resp_ready = 0;
         push_fetch(64'h0080);
-        repeat (2) tick();
+        wait_count = 0;
+        while (!fetch_resp_valid && (wait_count < 10)) begin
+            tick();
+            wait_count = wait_count + 1;
+        end
         if (ar_count != 4 || !fetch_resp_valid ||
             !fetch_resp_access_fault || fetch_resp_addr != 64'h80)
             $fatal(1, "fetch PMP denial did not become a local fault");
@@ -1013,6 +1040,63 @@ module tb_icx_bus #(
             $finish;
         end
 
+        // Hold an old stash at its PMP response, then redirect while
+        // presenting the new target.  Redirect cancellation must kill the
+        // pre-edge stash, but the replacement allocation on this edge must
+        // survive and become the only AXI fetch.
+        arready = 1'b0;
+        fetch_req_stash = 1'b1;
+        fetch_req_demand = 1'b1;
+        push_fetch(64'h00e0);
+        wait_count = 0;
+        while (!(dut.pmp_fetch_resp_valid &&
+                 dut.fetch_pmp_response_pending) &&
+               (wait_count < 30)) begin
+            tick();
+            wait_count = wait_count + 1;
+        end
+        if (!(dut.pmp_fetch_resp_valid &&
+              dut.fetch_pmp_response_pending))
+            $fatal(1, "stash redirect race did not reach PMP response");
+        cancel_fetch_slot = dut.pmp_fetch_resp_tag;
+
+        fetch_req_addr = 64'h0120;
+        fetch_req_valid = 1'b1;
+        fetch_cancel = 1'b1;
+        #1;
+        if (!fetch_req_ready)
+            $fatal(1,
+                   "redirect did not admit same-edge replacement target");
+        replacement_fetch_slot = dut.fetch_free_slot_r;
+        tick();
+        fetch_req_valid = 1'b0;
+        fetch_cancel = 1'b0;
+        fetch_req_stash = 1'b0;
+
+        if (!dut.fetch_cancelled_q[cancel_fetch_slot] ||
+            (dut.fetch_state_q[cancel_fetch_slot] != 4))
+            $fatal(1,
+                   "redirect preserved old stash state=%0d cancelled=%b",
+                   dut.fetch_state_q[cancel_fetch_slot],
+                   dut.fetch_cancelled_q[cancel_fetch_slot]);
+        if (dut.fetch_cancelled_q[replacement_fetch_slot] ||
+            (dut.fetch_state_q[replacement_fetch_slot] == 0))
+            $fatal(1,
+                   "redirect cancelled new replacement state=%0d cancelled=%b",
+                   dut.fetch_state_q[replacement_fetch_slot],
+                   dut.fetch_cancelled_q[replacement_fetch_slot]);
+
+        tick();
+        if (fetch_resp_valid)
+            $fatal(1, "cancelled stash escaped as a fetch response");
+        arready = 1'b1;
+        while (ar_count != 6) tick();
+        if (seen_addr[5] != 64'h0120)
+            $fatal(1, "replacement target AXI address mismatch addr=%h",
+                   seen_addr[5]);
+        send_read_response(seen_id[5], 256'h6666, 2'b00);
+        expect_fetch(64'h0120, 256'h6666, 1'b0, 1'b1, 1'b1);
+
         // A miss is one native 512-bit ICX line read.  A second word in that
         // line is a local hit; scalar data must not leak onto AXI.
         wait_count = icx_reads;
@@ -1029,8 +1113,75 @@ module tb_icx_bus #(
         expect_pipe_response(2'd1, locked_old_word, 1'b0, 1'b0);
         if (icx_reads != wait_count)
             $fatal(1, "L1D hit unexpectedly reached ICX");
-        if (ar_count != 5 || awvalid || wvalid)
+        if (ar_count != 6 || awvalid || wvalid)
             $fatal(1, "scalar LSU traffic leaked onto AXI");
+
+        // WFI gates an idle L1D independently from the core.  A probe miss
+        // wakes only the L1D island and reports no hit; a probe to the
+        // resident line reports the tag hit which the hart uses as a WFI
+        // wake source.
+        channel_wait = 0;
+        while (!dut.l1d_quiescent && (channel_wait < 100)) begin
+            tick();
+            channel_wait = channel_wait + 1;
+        end
+        if (!dut.l1d_quiescent)
+            $fatal(1, "L1D did not become quiescent before WFI gate");
+        @(negedge clk);
+        l1d_sleep = 1'b1;
+        repeat (2) tick();
+        if (dut.l1d_clock_enable_q)
+            $fatal(1, "quiescent L1D clock remained enabled in WFI");
+
+        @(negedge clk);
+        l1d_probe_addr = 64'h140;
+        l1d_probe_valid = 1'b1;
+        channel_wait = 0;
+        while (!l1d_probe_ready && (channel_wait < 20)) begin
+            tick();
+            if (l1d_probe_hit)
+                $fatal(1, "nonresident L1D probe reported a hit");
+            channel_wait = channel_wait + 1;
+        end
+        if (!l1d_probe_ready || l1d_probe_hit)
+            $fatal(1,
+                "L1D probe miss failed ready=%b hit=%b",
+                l1d_probe_ready, l1d_probe_hit);
+        @(negedge clk);
+        l1d_probe_valid = 1'b0;
+        repeat (2) tick();
+        if (dut.l1d_clock_enable_q)
+            $fatal(1, "probe-miss L1D did not return to sleep");
+
+        @(negedge clk);
+        l1d_probe_addr = 64'h100;
+        l1d_probe_valid = 1'b1;
+        channel_wait = 0;
+        while (!l1d_probe_ready && (channel_wait < 20)) begin
+            tick();
+            channel_wait = channel_wait + 1;
+        end
+        if (!l1d_probe_ready || !l1d_probe_hit)
+            $fatal(1,
+                "resident L1D probe failed ready=%b hit=%b",
+                l1d_probe_ready, l1d_probe_hit);
+        @(negedge clk);
+        l1d_probe_valid = 1'b0;
+        repeat (2) tick();
+        if (dut.l1d_clock_enable_q)
+            $fatal(1, "probe-hit L1D did not return to sleep");
+        @(negedge clk);
+        l1d_sleep = 1'b0;
+        tick();
+
+        // Restore the line so the following atomic test still proves that
+        // its own locked access, rather than this probe, invalidates it.
+        wait_count = icx_reads;
+        locked_old_word = icx_memory_word(64'h108);
+        push_pipe_request(2'd1, 1'b0, 64'h108, 64'd0, 8'd0);
+        expect_pipe_response(2'd1, locked_old_word, 1'b0, 1'b0);
+        if ((icx_reads - wait_count) != 1)
+            $fatal(1, "post-probe L1D refill did not use one ICX read");
 
         // A bring-up AMO phase must bypass and invalidate a resident L1D
         // line while retaining cacheable PMA attributes at ICX.
@@ -1085,6 +1236,11 @@ module tb_icx_bus #(
         pipe_req_lock = 1'b0;
         pipe_req_pmp_checked = 1'b1;
         while (dut.lsu_state_q != dut.LSU_PMP) tick();
+        channel_wait = 0;
+        while (!pmp_valid && (channel_wait < 10)) begin
+            tick();
+            channel_wait = channel_wait + 1;
+        end
         #1;
         if (!pmp_valid || dut.l1d_req_valid)
             $fatal(1,
@@ -1391,10 +1547,55 @@ module tb_icx_bus #(
         if (ar_count != channel_wait)
             $fatal(1, "translated PTW or L1D request escaped onto AXI");
 
+        // The page-walk fallback fills the DTLB.  The next approved TLB-hit
+        // load fills the four-entry current-context screen, after which a
+        // same-page load must return without another TLB/PMP transaction.
+        wait_count = xlate_pmp_requests;
+        push_xlate_request(3'd1, 1'b0, 64'h4008);
+        expect_xlate_response(3'd1, 64'h3008, 1'b0, 1'b0);
+        if ((xlate_pmp_requests - wait_count) != 1)
+            $fatal(1, "TLB-hit load did not fill page screen through PMP");
+        wait_count = xlate_pmp_requests;
+        push_xlate_request(3'd0, 1'b0, 64'h4010);
+        expect_xlate_response(3'd0, 64'h3010, 1'b0, 1'b0);
+        if ((xlate_pmp_requests - wait_count) != 0)
+            $fatal(1, "load page-screen hit reissued PMP");
+
+        // Read clearance cannot authorize a store.  The first same-page
+        // store must pass PMP and upgrade the matching entry; the next store
+        // may consume that write proof directly.
+        wait_count = xlate_pmp_requests;
+        push_xlate_request(3'd1, 1'b1, 64'h4018);
+        expect_xlate_response(3'd1, 64'h3018, 1'b0, 1'b0);
+        if ((xlate_pmp_requests - wait_count) != 1)
+            $fatal(1, "read page proof authorized first store");
+        wait_count = xlate_pmp_requests;
+        push_xlate_request(3'd0, 1'b1, 64'h4020);
+        expect_xlate_response(3'd0, 64'h3020, 1'b0, 1'b0);
+        if ((xlate_pmp_requests - wait_count) != 0)
+            $fatal(1, "write page proof reissued PMP");
+
+        // PMP updates revoke the proof.  A denied store must not install a
+        // new one: both attempts must reach PMP and fault.
+        pmp_update = 1'b1;
+        tick();
+        pmp_update = 1'b0;
+        pmp_allow = 1'b0;
+        wait_count = xlate_pmp_requests;
+        push_xlate_request(3'd1, 1'b1, 64'h4028);
+        expect_xlate_response(3'd1, 64'h3028, 1'b1, 1'b0);
+        push_xlate_request(3'd0, 1'b1, 64'h4028);
+        expect_xlate_response(3'd0, 64'h3028, 1'b1, 1'b0);
+        if ((xlate_pmp_requests - wait_count) != 2)
+            $fatal(1, "denied store populated page-screen write proof");
+
         // A fast translation hit returns the PMP verdict with its tag.  A
         // denial is an access fault and must not require or launch L1D.
         wait_count = icx_reads;
         xlate_req_size = 3'd2;
+        pmp_update = 1'b1;
+        tick();
+        pmp_update = 1'b0;
         pmp_allow = 1'b0;
         push_xlate_request(3'd2, 1'b0, 64'h4008);
         expect_xlate_response(3'd2, 64'h3008, 1'b1, 1'b0);
@@ -1408,6 +1609,9 @@ module tb_icx_bus #(
         push_pipe_request(3'd2, 1'b0, 64'h3008, 64'd0, 8'd0);
         expect_pipe_response(3'd2, locked_old_word, 1'b0, 1'b0);
         pipe_req_pmp_checked = 1'b1;
+        pmp_update = 1'b1;
+        tick();
+        pmp_update = 1'b0;
         pmp_allow = 1'b1;
         xlate_req_size = 3'd3;
 
@@ -1449,6 +1653,9 @@ module tb_icx_bus #(
         // LSU wins the first indexed lookup, fetch wins the next, and neither
         // request may start another page walk.  L2 replacement is deliberately
         // independent of micro replacement.
+        context_change = 1'b1;
+        tick();
+        context_change = 1'b0;
         @(negedge clk);
         dut.u_itlb.valid_q = 0;
         dut.u_dtlb.valid_q = 0;
@@ -1524,6 +1731,13 @@ module tb_icx_bus #(
         if (!xlate_req_ready || !dut.xlate_l2_hit)
             $fatal(1, "L2-hit store translation did not fast-path");
         tick();
+        xlate_req_tag = 3'd6;
+        xlate_req_vaddr = 64'h4018;
+        #1;
+        if (!xlate_req_ready || !dut.xlate_l1_hit)
+            $fatal(1,
+                   "L1-hit store translation did not accept behind check");
+        tick();
         if (!xlate_resp_valid || xlate_resp_tag != 3'd5 ||
             xlate_resp_paddr != 64'h3010 ||
             xlate_resp_access_fault || xlate_resp_page_fault)
@@ -1531,12 +1745,6 @@ module tb_icx_bus #(
                 "L2-hit translation-only response mismatch tag=%0d paddr=%h faults=%b/%b",
                 xlate_resp_tag, xlate_resp_paddr,
                 xlate_resp_access_fault, xlate_resp_page_fault);
-        xlate_req_tag = 3'd6;
-        xlate_req_vaddr = 64'h4018;
-        #1;
-        if (!xlate_req_ready || !dut.xlate_l1_hit)
-            $fatal(1,
-                   "L1-hit store translation did not accept behind response");
         tick();
         xlate_req_valid = 1'b0;
         if (!xlate_resp_valid || xlate_resp_tag != 3'd6 ||
@@ -1555,11 +1763,11 @@ module tb_icx_bus #(
                 "translation-only stores serialized or touched memory l2_hits=%0d state=%0d",
                 l2_tlb_hits - fences_before, dut.lsu_state_q);
 
-        // The completed walk populated DTLB and L1D state.  Hold an unrelated
-        // instruction walk at ICX, then require translated load and store hits
-        // to pass it through the native tagged path without consuming the
-        // serial LSU slot.  The following load also proves that dirty-store
-        // overlay remains visible before the posted store can drain.
+        // The completed translations populated a page-screen write proof and
+        // L1D state.  Hold an unrelated instruction walk at ICX, then require
+        // translated load and store screen hits to pass it without consuming
+        // the walker or serial LSU slot.  The following load also proves that
+        // dirty-store overlay remains visible before the posted store drains.
         icx_memory[64'h2040 >> 6][0*64 +: 64] = 64'd0;
         fetch_req_priv = `RV64_PRIV_S;
         fetch_req_vm_mode = `RV64_SATP_MODE_SV39;
@@ -1584,6 +1792,7 @@ module tb_icx_bus #(
         wait_count = translated_fast_fires;
         channel_wait = translated_fast_store_fires;
         fences_before = l2_tlb_hits;
+        locked_reads_before = xlate_pmp_requests;
         push_xlate_request(3'd4, 1'b0, 64'h4008);
         expect_xlate_response(3'd4, 64'h3008, 1'b0, 1'b0);
         push_pipe_request(3'd4, 1'b0, 64'h3008, 64'd0, 8'd0);
@@ -1601,13 +1810,15 @@ module tb_icx_bus #(
                              1'b0, 1'b0);
         if ((translated_fast_fires - wait_count) != 3 ||
             (translated_fast_store_fires - channel_wait) != 1 ||
-            (l2_tlb_hits - fences_before) != 1 ||
+            (l2_tlb_hits - fences_before) != 0 ||
+            (xlate_pmp_requests - locked_reads_before) != 0 ||
             !dut.miss_active_q)
             $fatal(1,
-                "L1/L2 DTLB hits did not pass active PTW fast=%0d stores=%0d l2=%0d miss=%b state=%0d",
+                "page-screen hits did not pass active PTW fast=%0d stores=%0d l2=%0d pmp=%0d miss=%b state=%0d",
                 translated_fast_fires - wait_count,
                 translated_fast_store_fires - channel_wait,
                 l2_tlb_hits - fences_before,
+                xlate_pmp_requests - locked_reads_before,
                 dut.miss_active_q, dut.lsu_state_q);
 
         icx_allow_cmd = 1;
@@ -1659,6 +1870,9 @@ module tb_icx_bus #(
         // must suppress that hit/fill, capture the held request on the
         // fallback path, clear both L1s and L2, then walk to the replacement
         // physical page.
+        context_change = 1'b1;
+        tick();
+        context_change = 1'b0;
         @(negedge clk);
         dut.u_dtlb.valid_q = 0;
         xlate_resp_ready = 0;

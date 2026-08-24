@@ -11,6 +11,13 @@
 module openrv64_core_bus #(
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
+    // Optional four-cycle generic-bus pipeline used by the 1P FPGA build.
+    // Final fetch and LSU accesses pass through registered request, response,
+    // completion, and resume stages.  PMP and the external request launch are
+    // contained between the request and response registers.  If the external
+    // target is not ready, the registered request remains stable indefinitely.
+    // The path is inert for ICX.
+    parameter integer PIPE_GEN_MEM_4_STAGE = 0,
     // Simulation-only core performance seam.  Fetch and tagged LSU traffic
     // bypass translation/caches and use the external AXI-read and ICX ports as
     // independent one-cycle testbench SRAM ports.
@@ -51,6 +58,7 @@ module openrv64_core_bus #(
     parameter integer L1I_FILL_BUFFER_LINES = 8,
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
+    parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
@@ -186,6 +194,8 @@ module openrv64_core_bus #(
     input  wire                         l1d_probe_valid_i,
     output wire                         l1d_probe_ready_o,
     input  wire [`RV64_XLEN-1:0]        l1d_probe_addr_i,
+    input  wire                         l1d_sleep_i,
+    output wire                         l1d_probe_hit_o,
 
     // Generic physical request port.  It is active only in BUS_GEN mode.
     output wire                         req_valid_o,
@@ -302,11 +312,11 @@ module openrv64_core_bus #(
     generate
         if (BUS_CONFIG == `OPENRV64_BUS_GEN) begin : g_gen
             assign l1d_probe_ready_o = 1'b0;
+            assign l1d_probe_hit_o = 1'b0;
             wire raw_req_valid;
-            wire raw_req_ready = (raw_req_valid && !pmp_allow_i) ||
-                                 req_ready_i;
-            wire raw_req_error = (raw_req_valid && !pmp_allow_i) ||
-                                 req_error_i;
+            wire raw_req_ready;
+            wire raw_req_error;
+            wire [`RV64_XLEN-1:0] raw_req_rdata;
             wire raw_req_write;
             wire [`RV64_XLEN-1:0] raw_req_addr;
             wire [`RV64_XLEN-1:0] raw_req_pmp_addr;
@@ -315,6 +325,12 @@ module openrv64_core_bus #(
             wire raw_req_exec;
             wire [`RV64_XLEN-1:0] raw_req_wdata;
             wire [7:0] raw_req_wstrb;
+            wire raw_pmp_valid;
+            wire [`RV64_XLEN-1:0] raw_pmp_addr;
+            wire [`RV64_PRIV_WIDTH-1:0] raw_pmp_priv;
+            wire [2:0] raw_pmp_size;
+            wire raw_pmp_write;
+            wire raw_pmp_exec;
 
             reg pipe_active_q;
             reg pipe_resp_valid_q;
@@ -398,14 +414,14 @@ module openrv64_core_bus #(
                 .req_pmp_addr_o(raw_req_pmp_addr),
                 .req_priv_o(raw_req_priv), .req_size_o(raw_req_size),
                 .req_exec_o(raw_req_exec), .req_wdata_o(raw_req_wdata),
-                .req_wstrb_o(raw_req_wstrb), .req_rdata_i(req_rdata_i),
+                .req_wstrb_o(raw_req_wstrb), .req_rdata_i(raw_req_rdata),
                 .req_error_i(raw_req_error),
-                .pmp_valid_o(pmp_valid_o),
-                .pmp_addr_o(pmp_addr_o),
-                .pmp_priv_o(pmp_priv_o),
-                .pmp_size_o(pmp_size_o),
-                .pmp_write_o(pmp_write_o),
-                .pmp_exec_o(pmp_exec_o),
+                .pmp_valid_o(raw_pmp_valid),
+                .pmp_addr_o(raw_pmp_addr),
+                .pmp_priv_o(raw_pmp_priv),
+                .pmp_size_o(raw_pmp_size),
+                .pmp_write_o(raw_pmp_write),
+                .pmp_exec_o(raw_pmp_exec),
                 .pmp_allow_i(pmp_allow_i),
                 .icx_req_valid_o(icx_req_valid_o),
                 .icx_req_ready_i(icx_req_ready_i),
@@ -433,15 +449,139 @@ module openrv64_core_bus #(
                 .fetch_next_addr_i(fetch_next_addr_i)
             );
 
-            assign req_valid_o = raw_req_valid && pmp_allow_i;
-            assign req_write_o = raw_req_write;
-            assign req_addr_o = raw_req_addr;
-            assign req_pmp_addr_o = raw_req_pmp_addr;
-            assign req_priv_o = raw_req_priv;
-            assign req_size_o = raw_req_size;
-            assign req_exec_o = raw_req_exec;
-            assign req_wdata_o = raw_req_wdata;
-            assign req_wstrb_o = raw_req_wstrb;
+            if (PIPE_GEN_MEM_4_STAGE != 0) begin : g_pipe_mem_4_stage
+                reg request_valid_q;
+                reg request_write_q;
+                reg request_exec_q;
+                reg [`RV64_XLEN-1:0] request_addr_q;
+                reg [`RV64_XLEN-1:0] request_pmp_addr_q;
+                reg [`RV64_PRIV_WIDTH-1:0] request_priv_q;
+                reg [2:0] request_size_q;
+                reg [`RV64_XLEN-1:0] request_wdata_q;
+                reg [7:0] request_wstrb_q;
+                reg response_valid_q;
+                reg [`RV64_XLEN-1:0] response_rdata_q;
+                reg response_error_q;
+                reg completion_valid_q;
+                reg [`RV64_XLEN-1:0] completion_rdata_q;
+                reg completion_error_q;
+                reg resume_valid_q;
+                reg [`RV64_XLEN-1:0] resume_rdata_q;
+                reg resume_error_q;
+
+                wire pipeline_empty = !request_valid_q &&
+                                      !response_valid_q &&
+                                      !completion_valid_q && !resume_valid_q;
+                wire request_capture = raw_req_valid && pipeline_empty;
+                wire request_complete = request_valid_q &&
+                    (!pmp_allow_i || req_ready_i);
+
+                assign raw_req_ready = resume_valid_q;
+                assign raw_req_error = resume_valid_q && resume_error_q;
+                assign raw_req_rdata = resume_rdata_q;
+
+                assign req_valid_o = request_valid_q && pmp_allow_i;
+                assign req_write_o = request_write_q;
+                assign req_addr_o = request_addr_q;
+                assign req_pmp_addr_o = request_pmp_addr_q;
+                assign req_priv_o = request_priv_q;
+                assign req_size_o = request_size_q;
+                assign req_exec_o = request_exec_q;
+                assign req_wdata_o = request_wdata_q;
+                assign req_wstrb_o = request_wstrb_q;
+
+                // PTW probes occur while the final-access pipeline is empty
+                // and raw_req_valid is low.  Final accesses are checked only
+                // from registered request state.
+                assign pmp_valid_o = request_valid_q ||
+                    (pipeline_empty && !raw_req_valid && raw_pmp_valid);
+                assign pmp_addr_o = request_valid_q ? request_pmp_addr_q :
+                                    raw_pmp_addr;
+                assign pmp_priv_o = request_valid_q ? request_priv_q :
+                                    raw_pmp_priv;
+                assign pmp_size_o = request_valid_q ? request_size_q :
+                                    raw_pmp_size;
+                assign pmp_write_o = request_valid_q ? request_write_q :
+                                     raw_pmp_write;
+                assign pmp_exec_o = request_valid_q ? request_exec_q :
+                                    raw_pmp_exec;
+
+                always @(posedge clk or negedge rst_n) begin
+                    if (!rst_n) begin
+                        request_valid_q <= 1'b0;
+                        request_write_q <= 1'b0;
+                        request_exec_q <= 1'b0;
+                        request_addr_q <= {`RV64_XLEN{1'b0}};
+                        request_pmp_addr_q <= {`RV64_XLEN{1'b0}};
+                        request_priv_q <= `RV64_PRIV_M;
+                        request_size_q <= 3'b0;
+                        request_wdata_q <= {`RV64_XLEN{1'b0}};
+                        request_wstrb_q <= 8'b0;
+                        response_valid_q <= 1'b0;
+                        response_rdata_q <= {`RV64_XLEN{1'b0}};
+                        response_error_q <= 1'b0;
+                        completion_valid_q <= 1'b0;
+                        completion_rdata_q <= {`RV64_XLEN{1'b0}};
+                        completion_error_q <= 1'b0;
+                        resume_valid_q <= 1'b0;
+                        resume_rdata_q <= {`RV64_XLEN{1'b0}};
+                        resume_error_q <= 1'b0;
+                    end else begin
+                        if (resume_valid_q)
+                            resume_valid_q <= 1'b0;
+                        if (completion_valid_q) begin
+                            completion_valid_q <= 1'b0;
+                            resume_valid_q <= 1'b1;
+                            resume_rdata_q <= completion_rdata_q;
+                            resume_error_q <= completion_error_q;
+                        end
+                        if (response_valid_q) begin
+                            response_valid_q <= 1'b0;
+                            completion_valid_q <= 1'b1;
+                            completion_rdata_q <= response_rdata_q;
+                            completion_error_q <= response_error_q;
+                        end
+                        if (request_complete) begin
+                            request_valid_q <= 1'b0;
+                            response_valid_q <= 1'b1;
+                            response_rdata_q <= req_rdata_i;
+                            response_error_q <= !pmp_allow_i || req_error_i;
+                        end
+                        if (request_capture) begin
+                            request_valid_q <= 1'b1;
+                            request_write_q <= raw_req_write;
+                            request_exec_q <= raw_req_exec;
+                            request_addr_q <= raw_req_addr;
+                            request_pmp_addr_q <= raw_req_pmp_addr;
+                            request_priv_q <= raw_req_priv;
+                            request_size_q <= raw_req_size;
+                            request_wdata_q <= raw_req_wdata;
+                            request_wstrb_q <= raw_req_wstrb;
+                        end
+                    end
+                end
+            end else begin : g_direct_pmp_verdict
+                assign raw_req_ready =
+                    (raw_req_valid && !pmp_allow_i) || req_ready_i;
+                assign raw_req_error =
+                    (raw_req_valid && !pmp_allow_i) || req_error_i;
+                assign raw_req_rdata = req_rdata_i;
+                assign req_valid_o = raw_req_valid && pmp_allow_i;
+                assign req_write_o = raw_req_write;
+                assign req_addr_o = raw_req_addr;
+                assign req_pmp_addr_o = raw_req_pmp_addr;
+                assign req_priv_o = raw_req_priv;
+                assign req_size_o = raw_req_size;
+                assign req_exec_o = raw_req_exec;
+                assign req_wdata_o = raw_req_wdata;
+                assign req_wstrb_o = raw_req_wstrb;
+                assign pmp_valid_o = raw_pmp_valid;
+                assign pmp_addr_o = raw_pmp_addr;
+                assign pmp_priv_o = raw_pmp_priv;
+                assign pmp_size_o = raw_pmp_size;
+                assign pmp_write_o = raw_pmp_write;
+                assign pmp_exec_o = raw_pmp_exec;
+            end
             assign fetch_pipe_req_ready_o = 1'b0;
             assign fetch_pipe_resp_valid_o = 1'b0;
             assign fetch_pipe_resp_addr_o = {`RV64_XLEN{1'b0}};
@@ -629,6 +769,7 @@ module openrv64_core_bus #(
             // restart logic still observes the initiating barrier.
             assign tlbi_busy_o = tlbi_i || context_flush_i;
             assign l1d_probe_ready_o = 1'b0;
+            assign l1d_probe_hit_o = 1'b0;
             localparam integer MAGIC_FETCH_DEPTH = 4;
             localparam integer MAGIC_FETCH_PTR_WIDTH =
                 $clog2(MAGIC_FETCH_DEPTH);
@@ -1046,6 +1187,7 @@ module openrv64_core_bus #(
                 .L1I_FILL_BUFFER_LINES(L1I_FILL_BUFFER_LINES),
                 .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
                 .ENABLE_FETCH_PAGE_SCREEN(ENABLE_FETCH_PAGE_SCREEN),
+                .ENABLE_LSU_PAGE_SCREEN(ENABLE_LSU_PAGE_SCREEN),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .PTW_ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID)
@@ -1102,6 +1244,8 @@ module openrv64_core_bus #(
                 .l1d_probe_valid_i(l1d_probe_valid_i),
                 .l1d_probe_ready_o(l1d_probe_ready_o),
                 .l1d_probe_addr_i(l1d_probe_addr_i),
+                .l1d_sleep_i(l1d_sleep_i),
+                .l1d_probe_hit_o(l1d_probe_hit_o),
                 .lsu_pipe_req_valid_i(lsu_pipe_req_valid_i),
                 .lsu_pipe_req_ready_o(lsu_pipe_req_ready_o),
                 .lsu_pipe_req_tag_i(lsu_pipe_req_tag_i),

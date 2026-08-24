@@ -28,7 +28,8 @@ module tb_load_use_context;
     openrv64_top #(
         .RESET_VECTOR(64'h0),
         .ENABLE_FORWARDING(1'b1),
-        .ENABLE_LOAD_FORWARDING(1'b0)
+        .ENABLE_LOAD_FORWARDING(1'b0),
+        .PIPE_1P_DECODE_QUEUE(1'b1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

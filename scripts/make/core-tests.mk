@@ -166,6 +166,9 @@ sim-exec-lsu-rv64-a: $(EXEC_LSU_RV64A_SIM_BUILD)
 sim-atomic-context: $(ATOMIC_CONTEXT_SIM_BUILD)
 	vvp $(ATOMIC_CONTEXT_SIM_BUILD)
 
+sim-recursive-lock-context: $(RECURSIVE_LOCK_CONTEXT_SIM_BUILD)
+	vvp $(RECURSIVE_LOCK_CONTEXT_SIM_BUILD)
+
 sim-wfi-context: $(WFI_CONTEXT_SIM_BUILD)
 	vvp $(WFI_CONTEXT_SIM_BUILD)
 
@@ -255,6 +258,9 @@ sim-bp-context-gshare-btb-512: $(BP_CONTEXT_GSHARE_BTB_512_SIM_BUILD)
 
 sim-bp-context-tournament-btb: $(BP_CONTEXT_TOURNAMENT_BTB_SIM_BUILD)
 	vvp $(BP_CONTEXT_TOURNAMENT_BTB_SIM_BUILD)
+
+sim-bp-context-fpga-queue: $(BP_CONTEXT_FPGA_QUEUE_SIM_BUILD)
+	vvp $(BP_CONTEXT_FPGA_QUEUE_SIM_BUILD)
 
 sim-except: $(EXCEPT_SIM_BUILD)
 	vvp $(EXCEPT_SIM_BUILD)

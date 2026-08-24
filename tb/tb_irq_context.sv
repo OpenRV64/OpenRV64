@@ -25,6 +25,8 @@ module tb_irq_context;
     logic mem_addr_in_range;
     logic irq_armed;
     logic saw_irq_take;
+    logic saw_irq_inhibit;
+    logic saw_next_cycle_flush;
 
     assign mem_addr_in_range = (mem_addr[63:3] < MEM_WORDS);
     assign mem_ready = mem_valid;
@@ -33,7 +35,8 @@ module tb_irq_context;
 
     openrv64_top #(
         .RESET_VECTOR(RESET_VECTOR),
-        .ENABLE_RV64M(1'b0)
+        .ENABLE_RV64M(1'b0),
+        .PIPE_1P_DECODE_QUEUE(1'b1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -155,6 +158,8 @@ module tb_irq_context;
         irq_m_external = 1'b0;
         irq_armed = 1'b0;
         saw_irq_take = 1'b0;
+        saw_irq_inhibit = 1'b0;
+        saw_next_cycle_flush = 1'b0;
 
         rst_n = 1'b0;
         repeat (4) @(posedge clk);
@@ -169,6 +174,29 @@ module tb_irq_context;
             irq_armed = 1'b1;
         end else if (saw_irq_take) begin
             irq_m_external = 1'b0;
+        end
+    end
+
+    // The interrupt decision cycle is an inhibit, not an asynchronous payload
+    // flush.  Registered pipeline valid bits become clear only after the edge.
+    always @(posedge clk) begin
+        if (rst_n && dut.u_core.hard_flush_irq_req) begin
+            saw_irq_inhibit = 1'b1;
+            if (!dut.u_core.control_event_inhibit)
+                $fatal(1, "IRQ decision did not assert issue inhibit");
+            if (dut.u_core.dispatch_exec_issue_valid)
+                $fatal(1, "IRQ decision allowed dispatch issue");
+            if (dut.u_core.exec_mem_issue_valid)
+                $fatal(1, "IRQ decision allowed LSU issue");
+
+            // State updates from this edge must make the flushed stages empty
+            // in the following cycle, not alter their pre-edge payloads.
+            #1;
+            if (dut.u_core.dispatch_exec_valid)
+                $fatal(1, "ID/EX remained valid after IRQ flush edge");
+            if (dut.u_core.exec_mem_valid)
+                $fatal(1, "EX/MEM remained valid after IRQ flush edge");
+            saw_next_cycle_flush = 1'b1;
         end
     end
 
@@ -203,7 +231,8 @@ module tb_irq_context;
         if (rst_n && dbg_halted) begin
             #1;
 
-            if (!irq_armed || !saw_irq_take) begin
+            if (!irq_armed || !saw_irq_take || !saw_irq_inhibit ||
+                !saw_next_cycle_flush) begin
                 $fatal(1, "machine external interrupt was not taken");
             end
             if (memory[32] != 64'h40) begin

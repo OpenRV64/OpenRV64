@@ -10,6 +10,7 @@ module openrv64_dispatch #(
         `OPENRV64_BACKEND_1P,
     parameter REGISTERED = 1,
     parameter ENABLE_FORWARDING = 0,
+    parameter DECODE_STAGE_1P = 0,
     parameter integer QUEUE_DEPTH_3P = 6,
     parameter integer RETIRE_SLOT_WIDTH_3P = 3,
     parameter integer MAX_READS_PER_REG_3P = 2,
@@ -198,7 +199,8 @@ module openrv64_dispatch #(
         if (BACKEND_CONFIG == `OPENRV64_BACKEND_1P) begin : g_1p
             openrv64_dispatch_1p #(
                 .REGISTERED(REGISTERED),
-                .ENABLE_FORWARDING(ENABLE_FORWARDING)
+                .ENABLE_FORWARDING(ENABLE_FORWARDING),
+                .DECODE_STAGE(DECODE_STAGE_1P)
             ) u_dispatch (.*);
             assign decode_ready_3p_o = 3'b000;
             assign gpr_read_addr_3p_o =

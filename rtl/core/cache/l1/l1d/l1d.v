@@ -111,6 +111,8 @@ module openrv64_l1d_icx #(
 
     input  wire                      invalidate_valid_i,
     output wire                      invalidate_ready_o,
+    output wire                      invalidate_hit_o,
+    output wire                      quiescent_o,
     input  wire                      invalidate_all_i,
     input  wire [ADDR_WIDTH-1:0]     invalidate_addr_i,
 
@@ -640,6 +642,12 @@ module openrv64_l1d_icx #(
     integer demand_load_store_scan;
     integer prefetch_reset_index;
     integer prefetch_mshr_scan;
+    reg background_work_r;
+    integer quiescent_fill_scan;
+    integer quiescent_waiter_scan;
+    integer quiescent_prefetch_queue_scan;
+    integer quiescent_prefetch_mshr_scan;
+    integer quiescent_freeloader_scan;
 
     function automatic atomic_hot_match;
         input [63:0] address;
@@ -671,6 +679,8 @@ module openrv64_l1d_icx #(
     wire [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0]
         posted_store_line_strb;
     wire l1_invalidate_ready;
+    wire l1_invalidate_hit;
+    wire l1_array_quiescent;
     wire freeloader_oracle_valid;
     wire [63:0] freeloader_oracle_data;
     generate
@@ -1332,6 +1342,8 @@ module openrv64_l1d_icx #(
     // value of the two request-valid inputs.
     assign invalidate_ready_o = l1_invalidate_complete &&
         invalidate_txn_external_q;
+    assign invalidate_hit_o = invalidate_ready_o &&
+                              l1_invalidate_hit;
 
     // Apply the request's snapshotted dirty bytes to a resident-hit response.
     // The same overlay is applied to refill data below, so subsequent hits
@@ -2545,6 +2557,53 @@ module openrv64_l1d_icx #(
         !active_req_lock_q ||
         (main_response_fire && main_sc_success_exclusive);
 
+    // Clock-gating is permitted only after every controller which can make
+    // autonomous progress has drained.  Resident cache lines and predictor
+    // metadata are state, not work, and deliberately do not keep the clock
+    // running.  Incoming probes are handled by the parent gate controller.
+    always @* begin
+        background_work_r = 1'b0;
+        for (quiescent_fill_scan = 0;
+             quiescent_fill_scan < FILL_BUFFER_LINES;
+             quiescent_fill_scan = quiescent_fill_scan + 1)
+            if (fill_buffer_valid_q[quiescent_fill_scan])
+                background_work_r = 1'b1;
+        for (quiescent_waiter_scan = 0;
+             quiescent_waiter_scan < DEMAND_WAITER_COUNT;
+             quiescent_waiter_scan = quiescent_waiter_scan + 1)
+            if (demand_waiter_valid_q[quiescent_waiter_scan])
+                background_work_r = 1'b1;
+        for (quiescent_prefetch_queue_scan = 0;
+             quiescent_prefetch_queue_scan < PREFETCH_QUEUE_LINES;
+             quiescent_prefetch_queue_scan =
+                 quiescent_prefetch_queue_scan + 1)
+            if (prefetch_candidate_valid_q[
+                    quiescent_prefetch_queue_scan])
+                background_work_r = 1'b1;
+        for (quiescent_prefetch_mshr_scan = 0;
+             quiescent_prefetch_mshr_scan < PREFETCH_OUTSTANDING;
+             quiescent_prefetch_mshr_scan =
+                 quiescent_prefetch_mshr_scan + 1)
+            if (prefetch_mshr_valid_q[quiescent_prefetch_mshr_scan])
+                background_work_r = 1'b1;
+        for (quiescent_freeloader_scan = 0;
+             quiescent_freeloader_scan < FREELOADER_STAGES;
+             quiescent_freeloader_scan = quiescent_freeloader_scan + 1)
+            if (freeloader_valid_q[quiescent_freeloader_scan])
+                background_work_r = 1'b1;
+    end
+
+    assign quiescent_o = l1_array_quiescent &&
+        (backend_state_q == BACKEND_IDLE) &&
+        !req_valid_i && !resp_valid_o && !posted_resp_valid_o &&
+        !store_resp_valid_o && !l1_mem_valid && !l1_miss_valid &&
+        !l1_fill_valid && !invalidate_txn_valid_q &&
+        !demand_mshr_any_valid_r && !demand_mshr_fill_hold_valid_q &&
+        (store_buffer_count_q == 0) && !store_buffer_drain_active_q &&
+        !store_barrier_active_q && !store_barrier_fence_pending_q &&
+        (main_txn_in_use_q == 0) && !freeloader_pending_store_valid_q &&
+        !background_work_r;
+
     openrv64_l1d #(
         .ENABLE(ENABLE),
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -2591,6 +2650,8 @@ module openrv64_l1d_icx #(
         .fill_aged_i(l1_fill_aged),
         .invalidate_valid_i(l1_invalidate_valid),
         .invalidate_ready_o(l1_invalidate_ready),
+        .invalidate_hit_o(l1_invalidate_hit),
+        .quiescent_o(l1_array_quiescent),
         .invalidate_all_i(l1_invalidate_all),
         .invalidate_addr_i(l1_invalidate_addr),
         .age_valid_i(4'b0000),

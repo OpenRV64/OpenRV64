@@ -51,6 +51,15 @@ module tb_platform;
     logic saw_timer_access;
     logic saw_irq_take;
     logic gpio_edge_issued;
+    logic expected_clint_msip_core;
+    logic expected_clint_mtip_core;
+    logic expected_plic_seip_core;
+    logic saw_clint_msip_pipeline_assert;
+    logic saw_clint_msip_pipeline_deassert;
+    logic saw_clint_mtip_pipeline_assert;
+    logic saw_clint_mtip_pipeline_deassert;
+    logic saw_plic_irq_pipeline_assert;
+    logic saw_plic_irq_pipeline_deassert;
     integer plic_claim_reads;
 
     openrv64_platform #(
@@ -554,6 +563,59 @@ module tb_platform;
         end
     end
 
+    // Core-facing interrupt levels must be exactly one registered cycle behind
+    // the raw controller outputs.  Check after NBA updates to avoid races.
+    always @(posedge clk or negedge soc_rst_n) begin
+        if (!soc_rst_n) begin
+            expected_clint_msip_core <= 1'b0;
+            expected_clint_mtip_core <= 1'b0;
+            expected_plic_seip_core <= 1'b0;
+        end else begin
+            expected_clint_msip_core <= dut.clint_msip[0];
+            expected_clint_mtip_core <= dut.clint_mtip[0];
+            expected_plic_seip_core <= dut.plic_seip[0];
+        end
+    end
+
+    always @(negedge clk or negedge soc_rst_n) begin
+        if (!soc_rst_n) begin
+            saw_clint_msip_pipeline_assert <= 1'b0;
+            saw_clint_msip_pipeline_deassert <= 1'b0;
+            saw_clint_mtip_pipeline_assert <= 1'b0;
+            saw_clint_mtip_pipeline_deassert <= 1'b0;
+            saw_plic_irq_pipeline_assert <= 1'b0;
+            saw_plic_irq_pipeline_deassert <= 1'b0;
+        end else begin
+            if ({dut.plic_seip_core_q, dut.clint_mtip_core_q,
+                 dut.clint_msip_core_q} !==
+                {expected_plic_seip_core, expected_clint_mtip_core,
+                 expected_clint_msip_core}) begin
+                $fatal(1,
+                    "core interrupts are not one cycle delayed: raw=%b expected=%b actual=%b",
+                    {dut.plic_seip[0], dut.clint_mtip[0], dut.clint_msip[0]},
+                    {expected_plic_seip_core, expected_clint_mtip_core,
+                     expected_clint_msip_core},
+                    {dut.plic_seip_core_q, dut.clint_mtip_core_q,
+                     dut.clint_msip_core_q});
+            end
+            if (dut.clint_msip_core_q) begin
+                saw_clint_msip_pipeline_assert <= 1'b1;
+            end else if (saw_clint_msip_pipeline_assert) begin
+                saw_clint_msip_pipeline_deassert <= 1'b1;
+            end
+            if (dut.clint_mtip_core_q) begin
+                saw_clint_mtip_pipeline_assert <= 1'b1;
+            end else if (saw_clint_mtip_pipeline_assert) begin
+                saw_clint_mtip_pipeline_deassert <= 1'b1;
+            end
+            if (dut.plic_seip_core_q) begin
+                saw_plic_irq_pipeline_assert <= 1'b1;
+            end else if (saw_plic_irq_pipeline_assert) begin
+                saw_plic_irq_pipeline_deassert <= 1'b1;
+            end
+        end
+    end
+
     always @(posedge clk) begin
         if (core_rst_n && dbg_halted) begin
             #1;
@@ -573,6 +635,15 @@ module tb_platform;
             end
             if (!saw_irq_take || !gpio_edge_issued) begin
                 $fatal(1, "interrupt delivery was not exercised");
+            end
+            if (!saw_clint_msip_pipeline_assert ||
+                !saw_clint_msip_pipeline_deassert ||
+                !saw_clint_mtip_pipeline_assert ||
+                !saw_clint_mtip_pipeline_deassert ||
+                !saw_plic_irq_pipeline_assert ||
+                !saw_plic_irq_pipeline_deassert) begin
+                $fatal(1,
+                    "registered controller interrupts did not all assert and deassert");
             end
 
             if (ram_word('h338) !== 64'h55) begin
@@ -607,7 +678,10 @@ module tb_platform;
                        ram_word('h330));
             end
             if (dut.clint_msip !== 1'b0 || dut.clint_mtip !== 1'b0 ||
-                dut.plic_seip !== 1'b0 || dut.gpio_irq !== 1'b0 ||
+                dut.plic_seip !== 1'b0 ||
+                dut.clint_msip_core_q !== 1'b0 ||
+                dut.clint_mtip_core_q !== 1'b0 ||
+                dut.plic_seip_core_q !== 1'b0 || dut.gpio_irq !== 1'b0 ||
                 dut.timer_irq !== 1'b0) begin
                 $fatal(1,
                     "interrupt source not quiescent msip=%b mtip=%b seip=%b gpio=%b timer=%b",

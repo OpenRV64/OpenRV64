@@ -54,6 +54,8 @@ module openrv64_l1 #(
     input  wire                      fill_aged_i,
     input  wire                      invalidate_valid_i,
     output wire                      invalidate_ready_o,
+    output wire                      invalidate_hit_o,
+    output wire                      quiescent_o,
     input  wire                      invalidate_all_i,
     input  wire [ADDR_WIDTH-1:0]     invalidate_addr_i,
     input  wire [3:0]                age_valid_i,
@@ -121,6 +123,8 @@ module openrv64_l1 #(
                 .fill_aged_i(fill_aged_i),
                 .invalidate_valid_i(invalidate_valid_i),
                 .invalidate_ready_o(invalidate_ready_o),
+                .invalidate_hit_o(invalidate_hit_o),
+                .quiescent_o(quiescent_o),
                 .invalidate_all_i(invalidate_all_i),
                 .invalidate_addr_i(invalidate_addr_i),
                 .age_valid_i(age_valid_i),
@@ -168,6 +172,10 @@ module openrv64_l1 #(
             assign fill_ready_o = 1'b0;
             assign invalidate_ready_o = !request_valid_q &&
                                         !response_valid_q;
+            assign invalidate_hit_o = 1'b0;
+            assign quiescent_o = !request_valid_q &&
+                                 !response_valid_q &&
+                                 !write_response_valid_q;
             assign mem_valid_o = request_valid_q;
             assign mem_write_o = request_write_q;
             assign mem_resident_o = 1'b0;

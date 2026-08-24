@@ -55,6 +55,7 @@ module tb_exec_vec;
     reg lane_test_valid;
     wire lane_test_ready;
     reg [1:0] lane_test_tag;
+    reg [`OPENRV64_VEC_FMT_WIDTH-1:0] lane_test_fmt;
     reg lane_test_multiply;
     reg lane_test_mac;
     reg [31:0] lane_test_src1;
@@ -62,7 +63,8 @@ module tb_exec_vec;
     reg [31:0] lane_test_src3;
     wire lane_test_result_valid;
     wire [1:0] lane_test_result_tag;
-    wire [31:0] lane_test_result;
+    wire [16*32-1:0] lane_test_result_bus;
+    wire [31:0] lane_test_result = lane_test_result_bus[31:0];
 
     reg [REG_ADDR_WIDTH-1:0] test_read_addr;
     reg [SLICE_ADDR_WIDTH-1:0] test_read_slice;
@@ -134,17 +136,20 @@ module tb_exec_vec;
         .replay_o(replay), .busy_o(busy)
     );
 
-    openrv64_exec_vec_fp32_lane #(
+    openrv64_exec_vec_fp_bank #(
         .TAG_WIDTH(2), .ADD_LATENCY(4), .MUL_LATENCY(7),
         .MAC_LATENCY(11)
     ) u_lane_timing (
         .clk(clk), .rst_n(rst_n), .flush_i(1'b0),
         .valid_i(lane_test_valid), .ready_o(lane_test_ready),
-        .tag_i(lane_test_tag), .multiply_i(lane_test_multiply),
-        .mac_i(lane_test_mac), .src1_i(lane_test_src1),
-        .src2_i(lane_test_src2), .src3_i(lane_test_src3),
+        .tag_i(lane_test_tag), .fmt_i(lane_test_fmt),
+        .multiply_i(lane_test_multiply), .mac_i(lane_test_mac),
+        .src1_i({16{lane_test_src1}}),
+        .src2_i({16{lane_test_src2}}),
+        .acc_i({16{lane_test_src3}}),
         .result_valid_o(lane_test_result_valid), .result_ready_i(1'b1),
-        .result_tag_o(lane_test_result_tag), .result_o(lane_test_result)
+        .result_tag_o(lane_test_result_tag),
+        .result_o(lane_test_result_bus)
     );
 
     initial begin
@@ -310,7 +315,7 @@ module tb_exec_vec;
         end
     endtask
 
-    task automatic check_lane_latency;
+    task automatic check_bank_latency;
         input multiply;
         input mac;
         input [1:0] tag;
@@ -321,6 +326,7 @@ module tb_exec_vec;
             @(negedge clk);
             lane_test_valid = 1'b1;
             lane_test_tag = tag;
+            lane_test_fmt = `OPENRV64_VEC_FMT_FP32;
             lane_test_multiply = multiply;
             lane_test_mac = mac;
             lane_test_src1 = 32'h4000_0000;
@@ -328,7 +334,7 @@ module tb_exec_vec;
             lane_test_src3 = 32'h3f80_0000;
             #1;
             if (!lane_test_ready)
-                $fatal(1, "timing-test lane did not accept an idle token");
+                $fatal(1, "timing-test bank did not accept an idle token");
             @(posedge clk);
             @(negedge clk);
             lane_test_valid = 1'b0;
@@ -339,13 +345,98 @@ module tb_exec_vec;
                 cycles = cycles + 1;
             end
             if (!lane_test_result_valid)
-                $fatal(1, "timing-test lane result timed out");
+                $fatal(1, "timing-test bank result timed out");
             if (cycles != expected_latency)
-                $fatal(1, "lane latency was %0d cycles, expected %0d",
+                $fatal(1, "bank latency was %0d cycles, expected %0d",
                        cycles, expected_latency);
             if ((lane_test_result_tag !== tag) ||
                 (lane_test_result !== expected_result))
-                $fatal(1, "timing-test lane result/tag mismatch");
+                $fatal(1, "timing-test bank result/tag mismatch");
+            @(posedge clk);
+            @(negedge clk);
+        end
+    endtask
+
+    task automatic check_multiplier_initiation_intervals;
+        integer phase;
+        integer results;
+        begin
+            // An FP32 slice uses 288 tile operations: four unavailable
+            // cycles after the first accept, then a second accept on cycle 5.
+            @(negedge clk);
+            lane_test_valid = 1'b1;
+            lane_test_tag = 2'd0;
+            lane_test_fmt = `OPENRV64_VEC_FMT_FP32;
+            lane_test_multiply = 1'b1;
+            lane_test_mac = 1'b0;
+            lane_test_src1 = 32'h4000_0000;
+            lane_test_src2 = 32'h4000_0000;
+            lane_test_src3 = 32'd0;
+            #1;
+            if (!lane_test_ready)
+                $fatal(1, "shared multiplier did not accept idle FP32");
+            @(posedge clk);
+            @(negedge clk);
+            lane_test_tag = 2'd1;
+            for (phase = 0; phase < 4; phase = phase + 1) begin
+                if (lane_test_ready)
+                    $fatal(1, "shared multiplier accepted FP32 before phase 5");
+                @(posedge clk);
+                if (phase != 3)
+                    @(negedge clk);
+            end
+            @(negedge clk);
+            if (!lane_test_ready)
+                $fatal(1, "shared multiplier FP32 initiation interval exceeded 5");
+            @(posedge clk);
+            @(negedge clk);
+            lane_test_valid = 1'b0;
+
+            results = 0;
+            while (results < 2) begin
+                if (lane_test_result_valid) begin
+                    if ((lane_test_result_tag !== results[1:0]) ||
+                        (lane_test_result !== 32'h4080_0000))
+                        $fatal(1, "FP32 initiation test result mismatch");
+                    results = results + 1;
+                end
+                if (results < 2) begin
+                    @(posedge clk);
+                    @(negedge clk);
+                end
+            end
+
+            // BF16 consumes all 64 tiles in one phase and therefore accepts
+            // consecutive slices on consecutive cycles.
+            @(negedge clk);
+            lane_test_valid = 1'b1;
+            lane_test_tag = 2'd0;
+            lane_test_fmt = `OPENRV64_VEC_FMT_BF16;
+            #1;
+            if (!lane_test_ready)
+                $fatal(1, "shared multiplier did not accept idle BF16");
+            @(posedge clk);
+            @(negedge clk);
+            lane_test_tag = 2'd1;
+            if (!lane_test_ready)
+                $fatal(1, "shared multiplier BF16 initiation interval was not 1");
+            @(posedge clk);
+            @(negedge clk);
+            lane_test_valid = 1'b0;
+
+            results = 0;
+            while (results < 2) begin
+                if (lane_test_result_valid) begin
+                    if ((lane_test_result_tag !== results[1:0]) ||
+                        (lane_test_result !== 32'h4080_0000))
+                        $fatal(1, "BF16 initiation test result mismatch");
+                    results = results + 1;
+                end
+                if (results < 2) begin
+                    @(posedge clk);
+                    @(negedge clk);
+                end
+            end
             @(posedge clk);
             @(negedge clk);
         end
@@ -381,6 +472,7 @@ module tb_exec_vec;
         test_write_data = 64'd0;
         lane_test_valid = 1'b0;
         lane_test_tag = 2'd0;
+        lane_test_fmt = `OPENRV64_VEC_FMT_FP32;
         lane_test_multiply = 1'b0;
         lane_test_mac = 1'b0;
         lane_test_src1 = 32'd0;
@@ -395,9 +487,10 @@ module tb_exec_vec;
         @(negedge clk);
         rst_n = 1'b1;
 
-        check_lane_latency(1'b0, 1'b0, 2'd1, 32'h4080_0000, 4);
-        check_lane_latency(1'b1, 1'b0, 2'd2, 32'h4080_0000, 7);
-        check_lane_latency(1'b0, 1'b1, 2'd3, 32'h40a0_0000, 11);
+        check_bank_latency(1'b0, 1'b0, 2'd1, 32'h4080_0000, 4);
+        check_bank_latency(1'b1, 1'b0, 2'd2, 32'h4080_0000, 7);
+        check_bank_latency(1'b0, 1'b1, 2'd3, 32'h40a0_0000, 11);
+        check_multiplier_initiation_intervals();
 
         write_vec(5'd1, {4{64'hff00_ff00_aaaa_5555}});
         write_vec(5'd2, {4{64'h0f0f_f0f0_1234_ffff}});
@@ -638,8 +731,9 @@ module tb_exec_vec;
         finish_command(8'd30, 1'b0);
         check_vec(5'd25, {64{4'h5}}, "fp4 private MAC");
 
-        // Different accumulator contexts are independent recurrences. Their
-        // VMAC commands must both feed before the first 11-cycle result exits.
+        // Different accumulator contexts remain independent recurrences. The
+        // shared 64-tile multiplier serializes FP32 partial-product phases, so
+        // the first command may complete before both commands finish feeding.
         send_acc(8'd31, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,
                  5'd4, 5'd0, 5'd0, 1'b0);
         send_acc(8'd32, `OPENRV64_VEC_OP_VLDA, VTYPE_FP32_M1,
@@ -674,8 +768,6 @@ module tb_exec_vec;
         end
         if (!(overlap_first_fed && overlap_second_fed))
             $fatal(1, "dual accumulator VMACs did not overlap");
-        if (complete_valid)
-            $fatal(1, "dual accumulator VMAC completed before both fed");
         finish_command(8'd33, 1'b0);
         finish_command(8'd34, 1'b0);
         send_acc(8'd35, `OPENRV64_VEC_OP_VSTA, VTYPE_FP32_M1,

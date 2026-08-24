@@ -12,7 +12,8 @@ module openrv64_l1i_debug_stub #(
         (DEMAND_DEPTH > 1) ? $clog2(DEMAND_DEPTH) : 1,
     parameter integer DEMAND_COUNT_WIDTH = $clog2(DEMAND_DEPTH + 1),
     parameter integer DEMAND_MSHR_INDEX_WIDTH =
-        (DEMAND_MSHRS > 1) ? $clog2(DEMAND_MSHRS) : 1
+        (DEMAND_MSHRS > 1) ? $clog2(DEMAND_MSHRS) : 1,
+    parameter integer LINE_DATA_WIDTH = `OPENRV64_ICX_LINE_DATA_WIDTH
 ) (
     input wire icx_issue_fire /* verilator public_flat_rd */,
     input wire issue_active_q /* verilator public_flat_rd */,
@@ -38,6 +39,15 @@ module openrv64_l1i_debug_stub #(
         /* verilator public_flat_rd */,
     input wire response_complete_found_r /* verilator public_flat_rd */,
     input wire [DEMAND_INDEX_WIDTH-1:0] response_complete_index_r
+        /* verilator public_flat_rd */,
+    input wire output_stored_response /* verilator public_flat_rd */,
+    input wire output_direct_response /* verilator public_flat_rd */,
+    input wire l1_resp_valid /* verilator public_flat_rd */,
+    input wire [DEMAND_INDEX_WIDTH-1:0] l1_resp_tag
+        /* verilator public_flat_rd */,
+    input wire [LINE_DATA_WIDTH-1:0] l1_req_rdata
+        /* verilator public_flat_rd */,
+    input wire [LINE_DATA_WIDTH-1:0] req_rdata_o
         /* verilator public_flat_rd */,
     input wire response_valid_q [0:DEMAND_DEPTH-1]
         /* verilator public_flat_rd */,

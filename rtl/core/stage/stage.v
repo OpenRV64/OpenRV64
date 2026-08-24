@@ -22,9 +22,13 @@ module openrv64_stage #(
             reg             active_q;
             reg [WIDTH-1:0] data_q;
 
-            assign in_clear_o = flush_i || !active_q || out_clear_i;
-            assign out_valid_o = active_q && !flush_i;
-            assign out_data_o = out_valid_o ? data_q : {WIDTH{1'b0}};
+            assign in_clear_o = !active_q || out_clear_i;
+            // A registered stage flush is a clock-edge operation.  Do not
+            // poison the current-cycle payload or validity combinationally;
+            // control-event logic inhibits irreversible issue during that
+            // cycle, and active_q becomes clear after the edge.
+            assign out_valid_o = active_q;
+            assign out_data_o = data_q;
 
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
