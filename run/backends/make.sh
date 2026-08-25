@@ -21,6 +21,7 @@ load_config() {
     RUN_TIMEOUT_SECONDS=259200
     RUN_REBUILD=0
     RUN_FOREGROUND=0
+    RUN_BUILD_LOCK_NAME=${OPENRV64_RUN_BUILD_LOCK_NAME:-verilator-build.lock}
     RUN_BUILD_TARGETS=()
     RUN_RUN_TARGETS=()
     RUN_MAKE_ARGUMENTS=()
@@ -45,6 +46,8 @@ load_config() {
         openrv64_run_die 'RUN_TIMEOUT_SECONDS must be nonnegative'
     [[ ${RUN_REBUILD} == 0 || ${RUN_REBUILD} == 1 ]] ||
         openrv64_run_die 'RUN_REBUILD must be 0 or 1'
+    [[ ${RUN_BUILD_LOCK_NAME} =~ ^[A-Za-z0-9._-]+$ ]] ||
+        openrv64_run_die 'RUN_BUILD_LOCK_NAME contains invalid characters'
     ((${#RUN_BUILD_TARGETS[@]})) ||
         openrv64_run_die 'RUN_BUILD_TARGETS must not be empty'
     ((${#RUN_RUN_TARGETS[@]})) ||
@@ -147,6 +150,7 @@ worker() {
         printf 'rebuild=%s\n' "${rebuild}"
         printf 'jobs=%s\n' "${jobs}"
         printf 'timeout_seconds=%s\n' "${timeout_seconds}"
+        printf 'build_lock_name=%s\n' "${RUN_BUILD_LOCK_NAME}"
         printf 'manifest_only=%s\n' "${manifest_only}"
         printf 'command=%s\n' "${recorded_command}"
     } >"${build_log}"
@@ -199,8 +203,12 @@ worker() {
     fi
 
     mkdir -p "${log_root}"
-    exec 9>"${log_root}/build.lock"
+    exec 9>"${log_root}/${RUN_BUILD_LOCK_NAME}"
+    printf 'build_lock_wait_started_utc=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"${build_log}"
     flock 9
+    printf 'build_lock_acquired_utc=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"${build_log}"
 
     phase=build
     local -a build_command=("${make_base[@]}" "-j${jobs}")
@@ -235,6 +243,8 @@ worker() {
         "${RUN_MAKE_ARGUMENTS[@]}"
     flock -u 9
     exec 9>&-
+    printf 'build_lock_released_utc=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"${build_log}"
 
     phase=validate
     if rg -q '%Fatal:|Assertion failed' "${run_log}"; then

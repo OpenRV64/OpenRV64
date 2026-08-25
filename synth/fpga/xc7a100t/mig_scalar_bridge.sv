@@ -9,6 +9,7 @@
 
 module openrv64_fpga_mig_scalar_bridge #(
     parameter logic [63:0] MEMORY_BYTES = 64'h0000_0000_1000_0000,
+    parameter integer CACHE_ENABLE = 1,
     parameter integer CACHE_BYTES = 32 * 1024
 ) (
     input  logic         clk_i,
@@ -38,7 +39,18 @@ module openrv64_fpga_mig_scalar_bridge #(
     input  logic         app_wdf_rdy_i,
     input  logic [255:0] app_rd_data_i,
     input  logic         app_rd_data_end_i,
-    input  logic         app_rd_data_valid_i
+    input  logic         app_rd_data_valid_i,
+
+    // Non-intrusive indexed cache inspection. Functional lookups have
+    // priority; a debug request waits for the bridge to become idle and then
+    // reuses the cache's existing synchronous read port.
+    input  logic [9:0]   debug_cache_index_i,
+    input  logic         debug_cache_req_toggle_i,
+    output logic         debug_cache_ack_toggle_o,
+    output logic [9:0]   debug_cache_result_index_o,
+    output logic         debug_cache_valid_o,
+    output logic [63:0]  debug_cache_tag_o,
+    output logic [255:0] debug_cache_data_o
 );
 
     localparam integer CACHE_LINE_BYTES = 32;
@@ -77,6 +89,13 @@ module openrv64_fpga_mig_scalar_bridge #(
     logic cache_meta_write_en;
     logic [CACHE_INDEX_BITS-1:0] cache_meta_write_index;
     logic [CACHE_TAG_BITS:0] cache_meta_write_data;
+    (* ASYNC_REG = "TRUE" *) logic debug_req_meta_q;
+    (* ASYNC_REG = "TRUE" *) logic debug_req_sync_q;
+    logic debug_req_seen_q;
+    logic [CACHE_INDEX_BITS-1:0] debug_index_meta_q;
+    logic [CACHE_INDEX_BITS-1:0] debug_index_sync_q;
+    logic [CACHE_INDEX_BITS-1:0] debug_index_read_q;
+    logic debug_read_pending_q;
 
     wire request_in_range = req_addr_i < MEMORY_BYTES;
     wire [CACHE_INDEX_BITS-1:0] request_cache_index =
@@ -85,16 +104,23 @@ module openrv64_fpga_mig_scalar_bridge #(
         addr_q[CACHE_OFFSET_BITS +: CACHE_INDEX_BITS];
     wire [CACHE_TAG_BITS-1:0] saved_cache_tag =
         addr_q[MEMORY_ADDR_BITS-1 -: CACHE_TAG_BITS];
-    wire cache_hit = cache_read_meta_q[CACHE_TAG_BITS] &&
+    wire cache_hit = (CACHE_ENABLE != 0) &&
+                     cache_read_meta_q[CACHE_TAG_BITS] &&
                      (cache_read_meta_q[CACHE_TAG_BITS-1:0] ==
                       saved_cache_tag);
     wire command_fire = app_en_o && app_rdy_i;
     wire data_fire = app_wdf_wren_o && app_wdf_rdy_i;
     wire write_complete = (command_sent_q || command_fire) &&
                           (data_sent_q || data_fire);
-    wire cache_lookup_start = (state_q == STATE_IDLE) && req_valid_i &&
+    wire cache_lookup_start = (CACHE_ENABLE != 0) &&
+                              (state_q == STATE_IDLE) && req_valid_i &&
                               request_in_range && calib_complete_i &&
                               !req_write_i;
+    wire debug_cache_lookup_start = (state_q == STATE_IDLE) &&
+        !cache_lookup_start && (debug_req_sync_q != debug_req_seen_q);
+    wire cache_read_start = cache_lookup_start || debug_cache_lookup_start;
+    wire [CACHE_INDEX_BITS-1:0] cache_read_index = cache_lookup_start ?
+        request_cache_index : debug_index_sync_q;
 
     function automatic logic [63:0] select_cache_word(
         input logic [255:0] line,
@@ -151,11 +177,13 @@ module openrv64_fpga_mig_scalar_bridge #(
         if (state_q == STATE_CLEAR) begin
             cache_meta_write_en = 1'b1;
             cache_meta_write_index = clear_index_q;
-        end else if ((state_q == STATE_IDLE) && req_valid_i &&
+        end else if ((CACHE_ENABLE != 0) &&
+                     (state_q == STATE_IDLE) && req_valid_i &&
                      request_in_range && calib_complete_i && req_write_i) begin
             cache_meta_write_en = 1'b1;
             cache_meta_write_index = request_cache_index;
-        end else if ((state_q == STATE_READ_DATA) &&
+        end else if ((CACHE_ENABLE != 0) &&
+                     (state_q == STATE_READ_DATA) &&
                      app_rd_data_valid_i && app_rd_data_end_i) begin
             cache_meta_write_en = 1'b1;
             cache_meta_write_index = saved_cache_index;
@@ -171,11 +199,12 @@ module openrv64_fpga_mig_scalar_bridge #(
             cache_read_data_q <= 256'd0;
             cache_read_meta_q <= '0;
         end else begin
-            if (cache_lookup_start) begin
-                cache_read_data_q <= cache_data[request_cache_index];
-                cache_read_meta_q <= cache_meta[request_cache_index];
+            if (cache_read_start) begin
+                cache_read_data_q <= cache_data[cache_read_index];
+                cache_read_meta_q <= cache_meta[cache_read_index];
             end
-            if ((state_q == STATE_READ_DATA) && app_rd_data_valid_i &&
+            if ((CACHE_ENABLE != 0) &&
+                (state_q == STATE_READ_DATA) && app_rd_data_valid_i &&
                 app_rd_data_end_i)
                 cache_data[saved_cache_index] <= app_rd_data_i;
             if (cache_meta_write_en)
@@ -183,9 +212,50 @@ module openrv64_fpga_mig_scalar_bridge #(
         end
     end
 
+    // The index is stable before the request toggle changes. Synchronizing it
+    // as a bus is sufficient for this manually paced debug interface; the
+    // double-flopped toggle establishes when the synchronized index is used.
     always_ff @(posedge clk_i) begin
         if (reset_i) begin
-            state_q <= STATE_CLEAR;
+            debug_req_meta_q <= 1'b0;
+            debug_req_sync_q <= 1'b0;
+            debug_req_seen_q <= 1'b0;
+            debug_index_meta_q <= '0;
+            debug_index_sync_q <= '0;
+            debug_index_read_q <= '0;
+            debug_read_pending_q <= 1'b0;
+            debug_cache_ack_toggle_o <= 1'b0;
+            debug_cache_result_index_o <= 10'd0;
+            debug_cache_valid_o <= 1'b0;
+            debug_cache_tag_o <= 64'd0;
+            debug_cache_data_o <= 256'd0;
+        end else begin
+            debug_req_meta_q <= debug_cache_req_toggle_i;
+            debug_req_sync_q <= debug_req_meta_q;
+            debug_index_meta_q <= debug_cache_index_i[CACHE_INDEX_BITS-1:0];
+            debug_index_sync_q <= debug_index_meta_q;
+
+            if (debug_cache_lookup_start) begin
+                debug_req_seen_q <= debug_req_sync_q;
+                debug_index_read_q <= debug_index_sync_q;
+                debug_read_pending_q <= 1'b1;
+            end else if (debug_read_pending_q) begin
+                debug_read_pending_q <= 1'b0;
+                debug_cache_ack_toggle_o <= debug_req_seen_q;
+                debug_cache_result_index_o <=
+                    {{(10-CACHE_INDEX_BITS){1'b0}}, debug_index_read_q};
+                debug_cache_valid_o <= cache_read_meta_q[CACHE_TAG_BITS];
+                debug_cache_tag_o <=
+                    {{(64-CACHE_TAG_BITS){1'b0}},
+                     cache_read_meta_q[CACHE_TAG_BITS-1:0]};
+                debug_cache_data_o <= cache_read_data_q;
+            end
+        end
+    end
+
+    always_ff @(posedge clk_i) begin
+        if (reset_i) begin
+            state_q <= (CACHE_ENABLE != 0) ? STATE_CLEAR : STATE_IDLE;
             addr_q <= 64'd0;
             wdata_q <= 64'd0;
             wstrb_q <= 8'd0;
@@ -219,8 +289,10 @@ module openrv64_fpga_mig_scalar_bridge #(
                             state_q <= STATE_RESPONSE;
                         end else if (req_write_i) begin
                             state_q <= STATE_WRITE;
-                        end else begin
+                        end else if (CACHE_ENABLE != 0) begin
                             state_q <= STATE_CACHE_LOOKUP;
+                        end else begin
+                            state_q <= STATE_READ_CMD;
                         end
                     end
                 end
@@ -288,6 +360,8 @@ module openrv64_fpga_mig_scalar_bridge #(
 
 `ifndef SYNTHESIS
     initial begin
+        if (CACHE_ENABLE != 0 && CACHE_ENABLE != 1)
+            $fatal(1, "CACHE_ENABLE must be 0 or 1");
         if (CACHE_BYTES < 2 * CACHE_LINE_BYTES)
             $fatal(1, "CACHE_BYTES must contain at least two cache lines");
         if ((CACHE_BYTES % CACHE_LINE_BYTES) != 0 ||

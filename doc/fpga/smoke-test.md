@@ -1,14 +1,256 @@
 # MYD-J7A100T FPGA configuration smoke test
 
-Status date: 2026-08-21 UTC
+Status date: 2026-08-24 UTC
 
-This document covers four separate bitstreams.  The cache-enabled SD-boot
+## JTAG-triggered M-mode debug workspace
+
+The FPGA-debug configuration now reserves two BRAM-backed regions inside the
+otherwise unused PLIC aperture:
+
+- `0x0c300000..0x0c300fff`: 4 KiB OpenSBI trap snapshot;
+- `0x0c304000..0x0c307fff`: 16 KiB executable M-mode workspace.
+
+The workspace is a true dual-port `2048 x 64` array. The CPU port supports
+instruction reads, data reads, and byte-enabled writes. CPU writes are gated
+by the asserted JTAG debug-trigger level: they work while the M-mode handler
+or stub owns the hart and are ignored during ordinary S-mode execution. This
+prevents Linux from replacing code that will later execute in M-mode despite
+the unified platform bus lacking a privilege sideband. USER1 JTAG owns the
+other port and performs paced 64-bit reads or writes. Standalone XC7 synthesis
+maps it to exactly four `RAMB36E1` blocks. A directed full-core test has also
+executed code from `0x0c304000`, returned to normal RAM, and preserved the
+stub's return value. Those are simulation and synthesis results; they are not
+yet a physical-board execution result.
+
+USER1 protocol version 4 adds `read-stub`, `write-stub`, `dump-stub`,
+`load-stub`, and `clear-stub`:
+
+```sh
+tools/fpga-jtag-snoop load-stub path/to/stub.bin 0
+tools/fpga-jtag-snoop read-stub 0
+tools/fpga-jtag-snoop dump-stub 0 16
+tools/fpga-jtag-snoop arm-pc 0xffffffff803e2c18
+tools/fpga-jtag-snoop dump-snapshot
+tools/fpga-jtag-snoop resume
+```
+
+USER1 protocol version 5 added a 16 KiB rolling capture of bytes that
+actually begin transmission through the platform NS16550 UART. A 64-bit
+counter records the total number of transmitted bytes since SoC reset; its low
+14 bits select the next byte to overwrite. The buffer therefore retains the
+most recent `min(counter, 16384)` bytes. It is a `2048 x 64` dual-port array
+and maps to exactly four additional `RAMB36E1` blocks.
+
+Protocol version 14 reads an aligned 32-byte burst. The ring remains one
+`2048 x 64` BRAM: the core-clock side issues four sequential synchronous reads
+and holds the resulting 256-bit snapshot until the next request. Read one
+burst and its accompanying producer counter with:
+
+```sh
+tools/fpga-jtag-snoop read-uart 0
+```
+
+The argument is a 64-bit word index and must be a multiple of four. XSDB's
+Tcl integer arithmetic truncates shifts at 64 bits, so the tool captures the
+960-bit USER1 result as raw hexadecimal text and extracts the 32 UART bytes
+without wide-integer arithmetic. `uart_bytes` is printed in increasing memory
+address order. The physical version-14 test returned:
+
+```text
+uart_bytes=0x4f50454e5256363420534420424f4f542053544152540d0a4f50454e52563634
+```
+
+which is `OPENRV64 SD BOOT START\r\nOPENRV64`. A complete 6,022-byte retained
+ring dump covered 189 unique aligned bursts, then re-read burst zero to verify
+that the producer count had not changed. It reproduced the OpenSBI banner and
+Linux panic without corruption.
+
+Reconstruct the retained bytes in chronological order into a raw file with:
+
+```sh
+tools/fpga-jtag-snoop dump-uart build/fpga/uart-console.bin
+```
+
+Continuously poll the producer count and print newly retained bytes with:
+
+```sh
+tools/fpga-jtag-uart-tail --from retained
+tools/fpga-jtag-uart-tail --from retained \
+  --until 'SBI HSM extension detected' --timeout-seconds 300
+tools/fpga-jtag-uart-tail --from 3848
+```
+
+`--from retained` first prints everything still present in the ring;
+`--from new` starts at the current producer position; a numeric value resumes
+at that absolute producer byte. The tail detects a SoC counter reset and
+restarts at the new generation. If the producer laps the reader by more than
+16 KiB, it reports the exact dropped-byte count and continues at the oldest
+retained byte.
+
+`dump-uart` checks the counter throughout the read and refuses to emit a
+mixed-generation file if UART output continues during the dump. Trigger the
+M-mode debug interrupt or otherwise quiesce console output before dumping a
+full buffer. The ring records platform-UART TX only: it does not record RX
+input, and it does not include the separate pre-core FPGA boot-status
+transmitter used before `boot_release`.
+
+USER1 protocol version 6 adds a board-reset command:
+
+```sh
+tools/fpga-jtag-snoop reset
+```
+
+This is not a core-only reset. It clears the existing 200 MHz reset-hold
+counter, restarts MIG calibration, reruns the SD boot loader, and then releases
+the complete SoC. FPGA configuration and JTAG-domain trigger settings remain
+intact, so the intended debug sequence is `arm-pc` followed by `reset`.
+`tools/fpga-jtag-snoop wait-hit 300` keeps one XSDB connection open and polls
+until the trigger or M-mode debug wait becomes visible.
+
+`load-stub` accepts a raw little-endian RV64 binary of 1 through 16,368
+bytes. It first invalidates the descriptor, uploads and zero-pads the final
+64-bit word, writes metadata, then writes the magic word last. This is a
+commit protocol: the OpenSBI handler cannot execute a partially uploaded
+image. The final two workspace words are reserved:
+
+| Word | Byte offset | Meaning |
+|---:|---:|---|
+| 2046 | `0x3ff0` | magic `0x4f52563653545542` (`ORV6STUB`) |
+| 2047 | `0x3ff8` | payload bytes `[63:32]`, ABI version `[31:16]`, entry byte offset `[15:0]` |
+
+ABI version 1 calls the entry point as an ordinary RV64 LP64 function:
+
+```c
+unsigned long stub(volatile unsigned long *snapshot, /* a0, 0x0c300000 */
+                   unsigned long snapshot_bytes,     /* a1, 0x0ff0 */
+                   volatile unsigned long *workspace,/* a2, 0x0c304000 */
+                   unsigned long workspace_bytes,    /* a3, 0x3ff0 */
+                   unsigned long hwirq);              /* a4, 32 */
+```
+
+Link absolute code at `0x0c304000` or make it fully position-independent. A
+minimal freestanding build is, for example:
+
+```sh
+riscv64-elf-gcc -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+  -mcmodel=medany -mno-relax -nostdlib -nostartfiles \
+  -Wl,--build-id=none -Wl,-Ttext=0x0c304000 \
+  -o stub.elf stub.S
+riscv64-elf-objcopy -O binary stub.elf stub.bin
+tools/fpga-jtag-snoop load-stub stub.bin 0
+```
+
+Returning stubs must obey the normal callee-saved-register and stack ABI. The
+OpenSBI stack remains active in DDR; a raw stub that takes over permanently
+does not need to return.
+
+The entry offset must be four-byte aligned and lie inside the committed
+payload. OpenSBI snapshots the interrupted context first, validates the
+descriptor, executes `fence rw,rw; fence.i`, and calls the stub. If it returns,
+the return value is stored in snapshot word 55 and the hart waits for the
+normal JTAG `resume` command. Snapshot version 2 adds:
+
+| Word | Meaning |
+|---:|---|
+| 52 | stub state: 0 absent, 1 invalid, 2 running, 3 returned |
+| 53 | entry byte offset |
+| 54 | payload byte count |
+| 55 | stub return value |
+| 56 | observed descriptor magic |
+
+An absent or invalid descriptor retains snapshot-only behavior. A stub that
+does not return deliberately takes ownership of the hart. There is no fault
+sandbox: an illegal instruction, bad M-mode memory access, stack corruption,
+or ABI violation can strand or reset OpenSBI. The snapshot is a copy of the
+trap frame; modifying it does not modify the live register context that will
+be resumed. Upload only while no stub is executing. Use the workspace after
+the loaded payload as result storage when bulk JTAG readback is needed.
+
+The current source-matched USER1 version-14 30 MHz candidate is:
+
+- Bitstream:
+  `build/fpga/xc7a100t/experiments/1p-jtag-uart-burst-v14-30mhz/openrv64_myd_j7a100t_sd_boot.bit`
+- Size: 3,826,012 bytes
+- SHA-256:
+  `6b26ea8e36526f6b581114f49ccdb98b8a0bddd7cf7437b901cac2a14643373f`
+- Linux SD image:
+  `build/fpga/xc7a100t/sdcard/openrv64-myd-j7a100t-linux-debug-30mhz.bin`
+- SD-image size: 7,449,088 bytes
+- SD-image SHA-256:
+  `d56cdf42d8ff3002beafeec072991521dd8bb6e140f4042ce4a00bfbd4ea4811`
+
+The version-14 bitstream was built, programmed through
+`TCP:10.1.6.21:3121`, and reached FPGA startup HIGH on 2026-08-24. It meets
+timing with setup WNS +0.096 ns and hold WHS +0.043 ns. It uses 36,183 slice
+LUTs, 20,635 slice registers, 13,543 slices, 28 block-RAM tiles, and 16 DSPs.
+All routed nets completed and bitstream DRC reported zero errors.
+
+The SD image above is physically present and boots through the same
+`smpboot.c:153` Linux panic. Its embedded OpenSBI SHA-256 is
+`63218ea2e31cc372c57d5c55d3a8ba8cb77e2257cd58f9d4e8d936e64c6bbce9`.
+The version-14 PC trigger hit Linux `0xffffffff8028326c` at core cycle
+1,767,877,858, but the machine-mode snapshot remained all zero. Two earlier
+triggers proved that the physical debug firmware did execute
+`openrv64_debug_platform_init` at `0x8010fb94` and
+`openrv64_debug_final_init` at `0x8010fbe8`; retargeting the asserted source
+to `openrv64_debug_irq` at `0x8010f8ac` then timed out. Therefore the uploaded
+DTB probe has not executed. Current evidence places the blocker after the
+OpenSBI source-32 registration path and before entry to its handler, most
+likely in PLIC configuration/output or the core machine-external interrupt
+path. Snapshot BRAM zeros do not establish which of those is at fault.
+
+The prior source-matched USER1 version-6 30 MHz candidate was:
+
+- Bitstream:
+  `build/fpga/xc7a100t/experiments/1p-jtag-reset-uart-trace-final-30mhz/openrv64_myd_j7a100t_sd_boot.bit`
+- Size: 3,826,012 bytes
+- SHA-256:
+  `c858b76f7e94620258e372352870ad55dadca9856afaa45d65760dc834c8b63d`
+- Linux SD image:
+  `build/fpga/xc7a100t/sdcard/openrv64-myd-j7a100t-linux-debug-30mhz.bin`
+- SD-image size: 7,449,088 bytes
+- SD-image SHA-256:
+  `d56cdf42d8ff3002beafeec072991521dd8bb6e140f4042ce4a00bfbd4ea4811`
+
+The routed version-6 bitstream meets timing with overall setup WNS +0.486 ns
+and hold WHS +0.052 ns. The 30 MHz core domain has setup WNS +3.254 ns. It
+uses 35,678 slice LUTs, 20,056 slice registers, 13,519 occupied slices, 28
+block-RAM tiles, and 16 DSPs. All 63,212 routable nets are routed with zero
+routing errors. Bitstream generation completed with zero DRC errors. Ethernet
+inputs and outputs remain incompletely delay-constrained. This exact artifact
+was programmed on 2026-08-24 through the remote hardware server; FPGA startup
+was HIGH, the reset command initiated a complete SD reload, and the persistent
+PC trigger hit `0xffffffff8028326c` with instruction `0x0c050463`, immediately
+after Linux returned from `of_get_property(node, "reg", &len)` in
+`of_get_cpu_hwid()`.
+
+The original version-6 diagnosis blamed `sbi_exit()` clearing `MIE.MEIE`.
+That diagnosis was incomplete: the cold-boot hart enters Linux through
+`sbi_hsm_hart_start_finish()`, not `sbi_exit()`. The replacement image's
+`final_exit` hook is therefore irrelevant to this cold-boot failure. The
+version-14 handler-entry experiment above supersedes that explanation.
+
+The preceding version-5 artifact was also physically programmed on 2026-08-24.
+Its USER1 reads recovered the UART stream from byte zero through the Linux
+failure with no ring overrun or dropped bytes. The first tail stopped at
+absolute byte 3,848 after
+`SBI HSM extension detected`; a resumed tail then recovered the existing
+`hartid=1668314368` report and `smpboot.c:153` kernel panic. This validates the
+physical UART capture/readback path, not successful Linux boot. The bogus
+decimal hart ID is `0x63707500`, the four DT property bytes `"cpu\0"` from the
+CPU node's `device_type` value. OpenSBI and Linux's initial boot line both
+reported hart 0. The failure therefore points at Linux receiving the wrong DT
+property data during CPU enumeration, not at an `mhartid` value of
+1668314368; whether the cause is DT traversal, a stale cache line, or another
+memory-path corruption is not established yet.
+
+This document covers several separate bitstreams.  The cache-enabled SD-boot
 image is the current physically booted artifact.  The inert pad-shell remains
 the minimal JTAG and USB-UART-loopback baseline.  The older OpenSBI smoke image
 adds the MYIR-derived MIG, a one-pipe OpenRV64 core, a ROM-to-DDR loader,
 OpenSBI v1.9, and a small S-mode Sv39/PTW and timer payload.  The older Linux
 image extends that design with a pre-boot hardware UART-to-MIG loader.  Do not
-transfer claims between the four images.
+transfer claims between the images.
 
 An otherwise identical KEY_2-reset candidate was built and programmed on
 2026-08-21, but has not yet had its UART boot or push-button behavior observed.

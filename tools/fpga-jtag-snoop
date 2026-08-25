@@ -4,4 +4,4 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 xsdb_bin=${XSDB:-/home/bill/AMDDesignTools/2026.1/Vivado/bin/xsdb}
 
-exec "$xsdb_bin" "$script_dir/fpga-jtag-snoop.tcl" "$@"
+exec "$xsdb_bin" "$script_dir/fpga-jtag-snoop.tcl" "$@" </dev/null

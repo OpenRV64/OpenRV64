@@ -36,6 +36,7 @@ module openrv64_dispatch #(
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         flush_i,
+    input  wire                         scoreboard_clear_1p_i,
 
     input  wire                         decode_valid_i,
     output wire                         decode_clear_o,
@@ -201,7 +202,10 @@ module openrv64_dispatch #(
                 .REGISTERED(REGISTERED),
                 .ENABLE_FORWARDING(ENABLE_FORWARDING),
                 .DECODE_STAGE(DECODE_STAGE_1P)
-            ) u_dispatch (.*);
+            ) u_dispatch (
+                .scoreboard_clear_i(scoreboard_clear_1p_i),
+                .*
+            );
             assign decode_ready_3p_o = 3'b000;
             assign gpr_read_addr_3p_o =
                 {6*PHYS_REG_ADDR_WIDTH_3P{1'b0}};

@@ -6,6 +6,8 @@ module tb_uart16550;
     logic rst_n;
     logic rx;
     logic tx;
+    logic tx_byte_valid;
+    logic [7:0] tx_byte;
     logic cts_n;
     logic dsr_n;
     logic ri_n;
@@ -22,12 +24,16 @@ module tb_uart16550;
     logic [7:0] mem_wstrb;
     logic [63:0] mem_rdata;
     logic irq;
+    integer tx_tap_count;
+    logic [7:0] tx_tap_last;
 
     openrv64_uart16550 dut (
         .clk_i(clk),
         .rst_ni(rst_n),
         .rx_i(rx),
         .tx_o(tx),
+        .tx_byte_valid_o(tx_byte_valid),
+        .tx_byte_o(tx_byte),
         .cts_ni(cts_n),
         .dsr_ni(dsr_n),
         .ri_ni(ri_n),
@@ -49,6 +55,16 @@ module tb_uart16550;
     initial begin
         clk = 1'b0;
         forever #5 clk = ~clk;
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            tx_tap_count <= 0;
+            tx_tap_last <= 8'd0;
+        end else if (tx_byte_valid) begin
+            tx_tap_count <= tx_tap_count + 1;
+            tx_tap_last <= tx_byte;
+        end
     end
 
     task automatic bus_write8;
@@ -305,6 +321,10 @@ module tb_uart16550;
                 bus_write8(3'd0, 8'ha5);
             end
         join
+        if (tx_tap_count != 1 || tx_tap_last !== 8'ha5) begin
+            $fatal(1, "TX observation tap count=%0d data=%02x",
+                   tx_tap_count, tx_tap_last);
+        end
         wait_for_irq(64, "THRE after FIFO drains");
         bus_read8(3'd5, read_data);
         if (read_data[5] !== 1'b1) begin

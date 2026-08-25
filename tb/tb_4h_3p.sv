@@ -229,7 +229,8 @@ module tb_4h_3p #(
     wire [NUM_HARTS*`OPENRV64_ICX_PROBE_CACHE_WIDTH-1:0]
         probe_cache_mask;
     wire [NUM_HARTS*64-1:0] probe_line_addr;
-    wire [NUM_HARTS-1:0] probe_resp_valid;
+    wire [NUM_HARTS-1:0] probe_resp_valid
+        /* verilator public_flat_rd */;
     wire [NUM_HARTS-1:0] probe_resp_ready;
     wire [NUM_HARTS*`OPENRV64_ICX_PROBE_ID_WIDTH-1:0] probe_resp_id;
     wire [NUM_HARTS*`OPENRV64_ICX_PROBE_RESP_WIDTH-1:0]
@@ -411,7 +412,7 @@ module tb_4h_3p #(
     logic [63:0] debug_counter_start_requests;
     integer debug_counter_start_memory_reads;
     integer debug_counter_start_memory_writes;
-    logic [63:0] debug_counter_start_q [0:90];
+    logic [63:0] debug_counter_start_q [0:138];
     integer debug_counter_init_index;
     integer debug_counter_retire_lane;
 
@@ -464,6 +465,10 @@ module tb_4h_3p #(
     integer wfi_probe_completions [0:NUM_HARTS-1];
     integer wfi_probe_hits [0:NUM_HARTS-1];
     integer wfi_irq_wakes [0:NUM_HARTS-1];
+    logic [63:0] wfi_sleep_cycles [0:NUM_HARTS-1];
+    logic [63:0] wfi_sleep_entries [0:NUM_HARTS-1];
+    logic [63:0] wfi_sleep_exits [0:NUM_HARTS-1];
+    logic wfi_sleep_previous [0:NUM_HARTS-1];
     logic wfi_probe_hit_previous [0:NUM_HARTS-1];
 
     logic l2_write_active;
@@ -876,11 +881,27 @@ module tb_4h_3p #(
                     wfi_probe_completions[hart] <= 0;
                     wfi_probe_hits[hart] <= 0;
                     wfi_irq_wakes[hart] <= 0;
+                    wfi_sleep_cycles[hart] <= 64'd0;
+                    wfi_sleep_entries[hart] <= 64'd0;
+                    wfi_sleep_exits[hart] <= 64'd0;
+                    wfi_sleep_previous[hart] <= 1'b0;
                     wfi_probe_hit_previous[hart] <= 1'b0;
                 end else begin
                     ipi_msip_previous[hart] <= clint_msip[hart];
+                    wfi_sleep_previous[hart] <= hart_wfi_sleep[hart];
                     wfi_probe_hit_previous[hart] <=
                         hart_wfi_sleep[hart] && u_core.l1d_probe_hit;
+                    if (hart_wfi_sleep[hart])
+                        wfi_sleep_cycles[hart] <=
+                            wfi_sleep_cycles[hart] + 1'b1;
+                    if (hart_wfi_sleep[hart] &&
+                        !wfi_sleep_previous[hart])
+                        wfi_sleep_entries[hart] <=
+                            wfi_sleep_entries[hart] + 1'b1;
+                    if (!hart_wfi_sleep[hart] &&
+                        wfi_sleep_previous[hart])
+                        wfi_sleep_exits[hart] <=
+                            wfi_sleep_exits[hart] + 1'b1;
                     if (wfi_probe_hit_previous[hart] &&
                         hart_wfi_sleep[hart])
                         $fatal(1,
@@ -1216,6 +1237,14 @@ module tb_4h_3p #(
                 opensbi_ssoft_interrupts[tied_hart] = 0;
                 ipi_msip_previous[tied_hart] = 1'b0;
                 ipi_wfi_seen[tied_hart] = 1'b0;
+                wfi_sleep_cycles[tied_hart] = 64'd0;
+                wfi_sleep_entries[tied_hart] = 64'd0;
+                wfi_sleep_exits[tied_hart] = 64'd0;
+                wfi_sleep_previous[tied_hart] = 1'b0;
+                wfi_probe_completions[tied_hart] = 0;
+                wfi_probe_hits[tied_hart] = 0;
+                wfi_irq_wakes[tied_hart] = 0;
+                wfi_probe_hit_previous[tied_hart] = 1'b0;
                 coherence_measure_active[tied_hart] = 1'b0;
                 coherence_measure_started[tied_hart] = 1'b0;
                 coherence_measure_ended[tied_hart] = 1'b0;
@@ -2558,7 +2587,7 @@ module tb_4h_3p #(
         debug_counter_start_memory_reads = 0;
         debug_counter_start_memory_writes = 0;
         for (debug_counter_init_index = 0;
-             debug_counter_init_index < 91;
+             debug_counter_init_index < 139;
              debug_counter_init_index = debug_counter_init_index + 1)
             debug_counter_start_q[debug_counter_init_index] = 64'd0;
         progress_before_first_done = 1'b0;
@@ -3069,6 +3098,103 @@ module tb_4h_3p #(
                 u_l2.u_debug.perf_mshr_occupancy_cycles_q;
             debug_counter_start_q[89] =
                 u_l2.u_debug.perf_mshr_full_cycles_q;
+            debug_counter_start_q[91] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_lookup_q;
+            debug_counter_start_q[92] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_hit_q;
+            debug_counter_start_q[93] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_fill_q;
+            debug_counter_start_q[94] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_evict_q;
+            debug_counter_start_q[95] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_flush_q;
+            debug_counter_start_q[96] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_flush_entries_q;
+            debug_counter_start_q[97] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_flush_sfence_q;
+            debug_counter_start_q[98] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_flush_satp_q;
+            debug_counter_start_q[99] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_flush_pmp_q;
+            debug_counter_start_q[100] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.
+                perf_fetch_page_screen_flush_csr_q;
+            debug_counter_start_q[101] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_lookup_q;
+            debug_counter_start_q[102] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_read_lookup_q;
+            debug_counter_start_q[103] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_write_lookup_q;
+            debug_counter_start_q[104] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_hit_q;
+            debug_counter_start_q[105] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_read_hit_q;
+            debug_counter_start_q[106] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_write_hit_q;
+            debug_counter_start_q[107] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_fill_q;
+            debug_counter_start_q[108] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_fill_update_q;
+            debug_counter_start_q[109] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_evict_q;
+            debug_counter_start_q[110] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_flush_q;
+            debug_counter_start_q[111] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_flush_entries_q;
+            debug_counter_start_q[112] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_flush_sfence_q;
+            debug_counter_start_q[113] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_flush_satp_q;
+            debug_counter_start_q[114] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_flush_pmp_q;
+            debug_counter_start_q[115] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_flush_csr_q;
+            debug_counter_start_q[116] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_flush_context_q;
+            debug_counter_start_q[117] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_flush_context_q;
+            debug_counter_start_q[118] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_hit_cursor_q;
+            debug_counter_start_q[119] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_fill_duplicate_q;
+            debug_counter_start_q[120] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_hit_cursor_q;
+            debug_counter_start_q[121] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_miss_q;
+            debug_counter_start_q[122] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_miss_disabled_q;
+            debug_counter_start_q[123] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_miss_invalidate_q;
+            debug_counter_start_q[124] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_miss_empty_q;
+            debug_counter_start_q[125] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_miss_partial_q;
+            debug_counter_start_q[126] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_miss_full_q;
+            debug_counter_start_q[127] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_evict_duplicate_q;
+            debug_counter_start_q[128] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_fetch_page_screen_evict_unique_q;
+            debug_counter_start_q[129] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_q;
+            debug_counter_start_q[130] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_disabled_q;
+            debug_counter_start_q[131] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_invalidate_q;
+            debug_counter_start_q[132] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_cross_page_q;
+            debug_counter_start_q[133] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_permission_q;
+            debug_counter_start_q[134] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_empty_q;
+            debug_counter_start_q[135] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_partial_q;
+            debug_counter_start_q[136] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_miss_full_q;
+            debug_counter_start_q[137] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_evict_writable_q;
+            debug_counter_start_q[138] = g_hart[0].u_core.u_bus.g_icx.
+                u_bus.u_debug.perf_lsu_page_screen_evict_read_only_q;
         end
     endtask
 
@@ -3086,6 +3212,223 @@ module tb_4h_3p #(
                 g_hart[0].u_core.u_debug.lsq_load_allocations,
                 g_hart[0].u_core.u_debug.lsq_load_completions,
                 g_hart[0].u_core.u_debug.lsq_load_occupancy_cycles);
+        end
+    endtask
+
+    task automatic report_cache_mshr_snoop_counters;
+        input string name;
+        begin
+            $display(
+                "PERF_WFI name=%0s hart=0 sleep_cycles=%0d entries=%0d exits=%0d irq_wakes=%0d probe_wakes=%0d probe_completions=%0d",
+                name, wfi_sleep_cycles[0], wfi_sleep_entries[0],
+                wfi_sleep_exits[0], wfi_irq_wakes[0],
+                wfi_probe_hits[0], wfi_probe_completions[0]);
+            $display(
+                "PERF_L1I_MSHR name=%0s alloc=%0d merge=%0d miss_wait=%0d occupancy=%0d full=%0d max_occupancy=%0d issue=%0d lower_response=%0d fill=%0d fill_wait=%0d finalize=%0d",
+                name,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_alloc_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_merge_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_miss_wait_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_occupancy_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_full_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_max_occupancy_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_issue_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_lower_response_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_fill_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_fill_wait_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_mshr_finalize_q);
+            $display(
+                "PERF_L1I_INVALIDATE name=%0s external_wait=%0d launch=%0d inner_wait=%0d complete=%0d",
+                name,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_invalidate_wait_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_invalidate_launch_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_invalidate_inner_wait_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1i.u_debug.
+                    perf_invalidate_complete_q);
+            $display(
+                "PERF_L1D_MSHR name=%0s alloc=%0d merge=%0d miss_wait=%0d occupancy=%0d full=%0d max_occupancy=%0d issue=%0d lower_response=%0d waiter_response=%0d fill=%0d fill_wait=%0d",
+                name,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_alloc_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_merge_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_miss_wait_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_occupancy_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_full_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_max_occupancy_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_issue_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_lower_response_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_demand_mshr_waiter_response_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_fill_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_l1_fill_wait_cycles_q);
+            $display(
+                "PERF_L1D_SNOOP name=%0s external_capture=%0d external_wait=%0d lock_capture=%0d lock_wait=%0d transaction_hold=%0d complete=%0d",
+                name,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_external_invalidate_capture_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_external_invalidate_wait_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_lock_invalidate_capture_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_lock_invalidate_wait_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_invalidate_hold_cycles_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_l1d.u_debug.
+                    perf_invalidate_complete_q);
+            $display(
+                "PERF_L2_MSHR name=%0s alloc=%0d merge=%0d complete=%0d occupancy=%0d full=%0d max_occupancy=%0d lookup_stall=%0d no_free_stall=%0d cache_alloc=%0d bypass=%0d write_around=%0d probe_alloc=%0d",
+                name,
+                u_l2.u_debug.perf_mshr_alloc_q,
+                u_l2.u_debug.perf_lookup_merge_q,
+                u_l2.u_debug.perf_mshr_complete_q,
+                u_l2.u_debug.perf_mshr_occupancy_cycles_q,
+                u_l2.u_debug.perf_mshr_full_cycles_q,
+                u_l2.u_debug.perf_mshr_max_occupancy_q,
+                u_l2.u_debug.perf_lookup_stall_cycles_q,
+                u_l2.u_debug.perf_mshr_no_free_stall_cycles_q,
+                u_l2.u_debug.perf_lookup_alloc_q,
+                u_l2.u_debug.perf_lookup_bypass_q,
+                u_l2.u_debug.perf_lookup_write_around_q,
+                u_l2.u_debug.perf_lookup_probe_q);
+            $display(
+                "PERF_L2_SNOOP name=%0s start=%0d targets=%0d send=%0d send_wait_entries=%0d ack=%0d ack_wait_entries=%0d complete=%0d error=%0d issue_pending_cycles=%0d ack_pending_cycles=%0d",
+                name,
+                u_l2.u_debug.perf_probe_start_q,
+                u_l2.u_debug.perf_probe_target_q,
+                u_l2.u_debug.perf_probe_send_q,
+                u_l2.u_debug.perf_probe_send_wait_entry_cycles_q,
+                u_l2.u_debug.perf_probe_ack_q,
+                u_l2.u_debug.perf_probe_ack_wait_entry_cycles_q,
+                u_l2.u_debug.perf_probe_completion_q,
+                u_l2.u_debug.perf_probe_error_q,
+                u_l2.u_debug.perf_probe_issue_cycles_q,
+                u_l2.u_debug.perf_probe_ack_cycles_q);
+            $display(
+                "PERF_MTL_FETCH_SCREEN name=%0s lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d fills=%0d fill_duplicates=%0d evictions=%0d evict_duplicate=%0d evict_unique=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                name,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_lookup_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_hit_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_disabled_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_invalidate_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_empty_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_partial_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_full_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_hit_cursor_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_fill_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_fill_duplicate_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_evict_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_evict_duplicate_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_evict_unique_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_entries_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_sfence_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_satp_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_pmp_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_csr_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_context_q);
+            $display(
+                "PERF_MTL_LSU_SCREEN name=%0s lookups=%0d read_lookups=%0d write_lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_cross_page=%0d miss_permission=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d read_hits=%0d write_hits=%0d fills=%0d fill_updates=%0d evictions=%0d evict_writable=%0d evict_read_only=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                name,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_lookup_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_read_lookup_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_write_lookup_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_hit_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_disabled_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_invalidate_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_cross_page_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_permission_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_empty_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_partial_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_full_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_hit_cursor_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_read_hit_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_write_hit_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_fill_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_fill_update_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_evict_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_evict_writable_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_evict_read_only_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_entries_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_sfence_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_satp_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_pmp_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_csr_q,
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_context_q);
         end
     endtask
 
@@ -3336,6 +3679,154 @@ module tb_4h_3p #(
                     debug_counter_start_q[88],
                 u_l2.u_debug.perf_mshr_full_cycles_q -
                     debug_counter_start_q[89]);
+            $display(
+                "DEBUG_MTL_FETCH_SCREEN lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d fills=%0d fill_duplicates=%0d evictions=%0d evict_duplicate=%0d evict_unique=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_lookup_q -
+                    debug_counter_start_q[91],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_hit_q -
+                    debug_counter_start_q[92],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_q -
+                    debug_counter_start_q[121],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_disabled_q -
+                    debug_counter_start_q[122],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_invalidate_q -
+                    debug_counter_start_q[123],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_empty_q -
+                    debug_counter_start_q[124],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_partial_q -
+                    debug_counter_start_q[125],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_miss_full_q -
+                    debug_counter_start_q[126],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_hit_cursor_q -
+                    debug_counter_start_q[118],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_fill_q -
+                    debug_counter_start_q[93],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_fill_duplicate_q -
+                    debug_counter_start_q[119],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_evict_q -
+                    debug_counter_start_q[94],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_evict_duplicate_q -
+                    debug_counter_start_q[127],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_evict_unique_q -
+                    debug_counter_start_q[128],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_q -
+                    debug_counter_start_q[95],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_entries_q -
+                    debug_counter_start_q[96],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_sfence_q -
+                    debug_counter_start_q[97],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_satp_q -
+                    debug_counter_start_q[98],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_pmp_q -
+                    debug_counter_start_q[99],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_csr_q -
+                    debug_counter_start_q[100],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_fetch_page_screen_flush_context_q -
+                    debug_counter_start_q[116]);
+            $display(
+                "DEBUG_MTL_LSU_SCREEN lookups=%0d read_lookups=%0d write_lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_cross_page=%0d miss_permission=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d read_hits=%0d write_hits=%0d fills=%0d fill_updates=%0d evictions=%0d evict_writable=%0d evict_read_only=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_lookup_q -
+                    debug_counter_start_q[101],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_read_lookup_q -
+                    debug_counter_start_q[102],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_write_lookup_q -
+                    debug_counter_start_q[103],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_hit_q -
+                    debug_counter_start_q[104],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_q -
+                    debug_counter_start_q[129],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_disabled_q -
+                    debug_counter_start_q[130],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_invalidate_q -
+                    debug_counter_start_q[131],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_cross_page_q -
+                    debug_counter_start_q[132],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_permission_q -
+                    debug_counter_start_q[133],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_empty_q -
+                    debug_counter_start_q[134],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_partial_q -
+                    debug_counter_start_q[135],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_miss_full_q -
+                    debug_counter_start_q[136],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_hit_cursor_q -
+                    debug_counter_start_q[120],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_read_hit_q -
+                    debug_counter_start_q[105],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_write_hit_q -
+                    debug_counter_start_q[106],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_fill_q -
+                    debug_counter_start_q[107],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_fill_update_q -
+                    debug_counter_start_q[108],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_evict_q -
+                    debug_counter_start_q[109],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_evict_writable_q -
+                    debug_counter_start_q[137],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_evict_read_only_q -
+                    debug_counter_start_q[138],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_q -
+                    debug_counter_start_q[110],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_entries_q -
+                    debug_counter_start_q[111],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_sfence_q -
+                    debug_counter_start_q[112],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_satp_q -
+                    debug_counter_start_q[113],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_pmp_q -
+                    debug_counter_start_q[114],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_csr_q -
+                    debug_counter_start_q[115],
+                g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
+                    perf_lsu_page_screen_flush_context_q -
+                    debug_counter_start_q[117]);
         end
     endtask
 
@@ -3767,7 +4258,8 @@ module tb_4h_3p #(
                                     ipi_msip_clears[init_hart],
                                     ipi_interrupts[init_hart],
                                     ipi_expected);
-                            if (!ipi_wfi_seen[init_hart])
+                            if ((ENABLE_WFI_SLEEP != 0) &&
+                                !ipi_wfi_seen[init_hart])
                                 $fatal(1,
                                     "hart %0d never slept in WFI while awaiting an IPI",
                                     init_hart);
@@ -3810,9 +4302,15 @@ module tb_4h_3p #(
                                 ipi_msip_assertions[init_hart],
                                 ipi_msip_clears[init_hart],
                                 ipi_interrupts[init_hart]);
-                        if (!ipi_wfi_seen[init_hart])
+                        if ((ENABLE_WFI_SLEEP != 0) &&
+                            !ipi_wfi_seen[init_hart])
                             $fatal(1,
                                 "hart %0d never slept in WFI during mailbox test",
+                                init_hart);
+                        if ((ENABLE_WFI_SLEEP == 0) &&
+                            ipi_wfi_seen[init_hart])
+                            $fatal(1,
+                                "hart %0d entered WFI sleep with WFI configured as a no-op",
                                 init_hart);
                         if (ipi_fence_requests[init_hart] !=
                             ipi_fence_responses[init_hart])
@@ -4168,6 +4666,7 @@ module tb_4h_3p #(
                         retired[1], retired[2], retired[3],
                         requests[1], requests[2], requests[3]);
                 report_lsq_older_store_stall("bash");
+                report_cache_mshr_snoop_counters("bash");
                 $display(
                     "\nPASS: Linux reached interactive Bash on the four-hart coherent rig with harts 1-3 held in reset and omitted from the device tree");
                 $display(
@@ -4251,13 +4750,16 @@ module tb_4h_3p #(
                         ddr_read_commands, ddr_write_commands,
                         ddr_max_command_queue,
                         ddr_max_timing_owners);
+                report_cache_mshr_snoop_counters("bash-smp");
                 $finish;
             end
 
-            if ((linux_mode != 0) && linux_panic_seen)
+            if ((linux_mode != 0) && linux_panic_seen) begin
+                report_cache_mshr_snoop_counters("panic");
                 $fatal(1,
                     "Linux kernel panic on coherent OpenSBI rig active_harts=%0d",
                     opensbi_active_harts);
+            end
 
             if ((opensbi_hart_start != 0) &&
                 opensbi_banner_seen &&

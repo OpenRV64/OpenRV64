@@ -163,6 +163,7 @@ module openrv64_core_mtl #(
     input  wire                         tlbi_i,
     input  wire                         context_flush_i,
     input  wire                         fetch_context_change_i,
+    input  wire                         page_screen_csr_clear_i,
     input  wire                         pmp_update_i,
     output wire                         tlbi_busy_o,
     input  wire                         store_barrier_i,
@@ -339,20 +340,20 @@ module openrv64_core_mtl #(
     wire fetch_page_screen_invalidate = translation_invalidate ||
                                         fetch_context_change_i ||
                                         pmp_update_i;
-    // Clearing the untagged screen does not by itself invalidate work which
-    // was accepted while its proof was current.  In particular, the 3P top
-    // clears the screen conservatively on ordinary CSR retirement.  Revoke
-    // accepted jobs only for a translation/PMP change, or when the frontend
-    // is simultaneously cancelling work for an actual context change.
+    // Status fields such as SUM, MXR, MPRV, and MPP affect data accesses, not
+    // instruction fetch.  Revoke accepted fetch work only for a translation
+    // or PMP change, or when the frontend is simultaneously cancelling work
+    // for an actual privilege-context change.
     wire fetch_page_screen_revoke = translation_invalidate ||
                                     pmp_update_i ||
                                     (fetch_context_change_i &&
                                      fetch_cancel_i);
     // The data screen is deliberately untagged.  It represents only the
-    // current execution context, so every context, translation, or PMP change
-    // discards all four proofs.
+    // current execution context, so every context, translation, PMP, or
+    // data-access permission change discards all four proofs.
     wire lsu_page_screen_invalidate = translation_invalidate ||
                                       fetch_context_change_i ||
+                                      page_screen_csr_clear_i ||
                                       pmp_update_i;
     wire l2_tlb_evict_current;
     wire micro_tlbi = translation_invalidate || l2_tlb_evict_current;
@@ -408,11 +409,13 @@ module openrv64_core_mtl #(
         fetch_page_ppn_q;
     reg [1:0] fetch_page_write_cursor_q;
     reg fetch_page_hit_r;
+    reg [1:0] fetch_page_hit_index_r;
     reg [FETCH_PAGE_PPN_WIDTH-1:0] fetch_page_ppn_r;
     integer fetch_page_lookup_index;
 
     always @* begin
         fetch_page_hit_r = 1'b0;
+        fetch_page_hit_index_r = 2'd0;
         fetch_page_ppn_r = {FETCH_PAGE_PPN_WIDTH{1'b0}};
         for (fetch_page_lookup_index = 0;
              fetch_page_lookup_index < FETCH_PAGE_SCREEN_ENTRIES;
@@ -424,6 +427,7 @@ module openrv64_core_mtl #(
                 (fetch_page_vpn_q[fetch_page_lookup_index] ==
                  fetch_req_addr_i[`RV64_XLEN-1:12])) begin
                 fetch_page_hit_r = 1'b1;
+                fetch_page_hit_index_r = fetch_page_lookup_index[1:0];
                 fetch_page_ppn_r =
                     fetch_page_ppn_q[fetch_page_lookup_index];
             end
@@ -445,6 +449,7 @@ module openrv64_core_mtl #(
     reg lsu_page_fill_match_r;
     reg [1:0] lsu_page_fill_match_index_r;
     reg lsu_page_hit_r;
+    reg [1:0] lsu_page_hit_index_r;
     reg [LSU_PAGE_PPN_WIDTH-1:0] lsu_page_ppn_r;
     integer lsu_page_lookup_index;
     wire [12:0] lsu_page_access_end =
@@ -454,6 +459,7 @@ module openrv64_core_mtl #(
                                    (|lsu_page_access_end[11:0]);
     always @* begin
         lsu_page_hit_r = 1'b0;
+        lsu_page_hit_index_r = 2'd0;
         lsu_page_ppn_r = {LSU_PAGE_PPN_WIDTH{1'b0}};
         for (lsu_page_lookup_index = 0;
              lsu_page_lookup_index < LSU_PAGE_SCREEN_ENTRIES;
@@ -468,6 +474,7 @@ module openrv64_core_mtl #(
                 (lsu_page_vpn_q[lsu_page_lookup_index] ==
                  lsu_xlate_req_vaddr_i[`RV64_XLEN-1:12])) begin
                 lsu_page_hit_r = 1'b1;
+                lsu_page_hit_index_r = lsu_page_lookup_index[1:0];
                 lsu_page_ppn_r = lsu_page_ppn_q[lsu_page_lookup_index];
             end
         end
@@ -475,6 +482,48 @@ module openrv64_core_mtl #(
     wire [`RV64_XLEN-1:0] lsu_page_paddr =
         {{(`RV64_XLEN-LSU_PAGE_PA_WIDTH){1'b0}},
          lsu_page_ppn_r, lsu_xlate_req_vaddr_i[11:0]};
+
+    wire [2:0] fetch_page_screen_valid_count =
+        {2'd0, fetch_page_valid_q[0]} +
+        {2'd0, fetch_page_valid_q[1]} +
+        {2'd0, fetch_page_valid_q[2]} +
+        {2'd0, fetch_page_valid_q[3]};
+    wire [2:0] lsu_page_screen_valid_count =
+        {2'd0, lsu_page_valid_q[0]} +
+        {2'd0, lsu_page_valid_q[1]} +
+        {2'd0, lsu_page_valid_q[2]} +
+        {2'd0, lsu_page_valid_q[3]};
+    wire fetch_page_screen_flush = fetch_page_screen_invalidate &&
+                                   (|fetch_page_valid_q);
+    wire lsu_page_screen_flush = lsu_page_screen_invalidate &&
+                                 (|lsu_page_valid_q);
+    // Attribute each effective flush once.  Translation and PMP changes take
+    // priority over context and status-permission changes.
+    wire fetch_page_screen_flush_sfence =
+        fetch_page_screen_flush && tlbi_i;
+    wire fetch_page_screen_flush_satp =
+        fetch_page_screen_flush && !tlbi_i && context_flush_i;
+    wire fetch_page_screen_flush_pmp =
+        fetch_page_screen_flush && !tlbi_i && !context_flush_i &&
+        pmp_update_i;
+    wire fetch_page_screen_flush_csr = 1'b0;
+    wire fetch_page_screen_flush_context =
+        fetch_page_screen_flush && !tlbi_i && !context_flush_i &&
+        !pmp_update_i && fetch_context_change_i;
+    wire lsu_page_screen_flush_sfence =
+        lsu_page_screen_flush && tlbi_i;
+    wire lsu_page_screen_flush_satp =
+        lsu_page_screen_flush && !tlbi_i && context_flush_i;
+    wire lsu_page_screen_flush_pmp =
+        lsu_page_screen_flush && !tlbi_i && !context_flush_i &&
+        pmp_update_i;
+    wire lsu_page_screen_flush_csr =
+        lsu_page_screen_flush && !tlbi_i && !context_flush_i &&
+        !pmp_update_i && page_screen_csr_clear_i;
+    wire lsu_page_screen_flush_context =
+        lsu_page_screen_flush && !tlbi_i && !context_flush_i &&
+        !pmp_update_i && !page_screen_csr_clear_i &&
+        fetch_context_change_i;
 
     reg fetch_xlate_found_r;
     reg [FETCH_SLOT_WIDTH-1:0] fetch_xlate_slot_r;
@@ -1236,6 +1285,9 @@ module openrv64_core_mtl #(
         xlate_fast_ready || xlate_fallback_candidate;
     wire xlate_request_fire =
         lsu_xlate_req_valid_i && lsu_xlate_req_ready_o;
+    wire lsu_page_screen_accept = xlate_request_fire && lsu_page_hit_r;
+    wire lsu_page_screen_hit_cursor = lsu_page_screen_accept &&
+        (lsu_page_hit_index_r == lsu_page_write_cursor_q);
 
     // PTW holds its request valid until the verdict is returned.  Convert
     // that response-coupled interface into one request pulse for the
@@ -1273,6 +1325,8 @@ module openrv64_core_mtl #(
     wire axi_r_error;
     wire l1i_enabled = (ENABLE_L1I != 0);
     wire fetch_page_screen_accept = fetch_accept && fetch_page_hit_r;
+    wire fetch_page_screen_hit_cursor = fetch_page_screen_accept &&
+        (fetch_page_hit_index_r == fetch_page_write_cursor_q);
     wire fetch_page_screen_incoming_select = fetch_page_screen_accept &&
         (!fetch_fast_found_r || fetch_cancel_i);
     wire fetch_page_screen_queued_select = fetch_fast_found_r &&
@@ -1433,6 +1487,13 @@ module openrv64_core_mtl #(
         pmp_xlate_resp_valid && xlate_pmp_resp_ready &&
         pmp_xlate_resp_allow &&
         lsu_page_paddr_representable && !lsu_page_screen_invalidate;
+    wire lsu_page_screen_fill_update = lsu_page_screen_fill &&
+                                       lsu_page_fill_match_r;
+    wire [1:0] lsu_page_fill_index = lsu_page_screen_hit_cursor ?
+        (lsu_page_write_cursor_q + 1'b1) : lsu_page_write_cursor_q;
+    wire lsu_page_screen_evict = lsu_page_screen_fill &&
+        !lsu_page_fill_match_r &&
+        lsu_page_valid_q[lsu_page_fill_index];
     assign ptw_pmp_ready = pmp_ptw_resp_valid;
     wire lsu_pmp_denied = pmp_lsu_resp_valid && !pmp_lsu_resp_allow;
     wire fetch_pmp_denied = pmp_fetch_resp_valid &&
@@ -1457,6 +1518,25 @@ module openrv64_core_mtl #(
     wire fetch_page_screen_fill = (ENABLE_FETCH_PAGE_SCREEN != 0) &&
                                   fetch_l1i_launch &&
                                   fetch_page_paddr_representable;
+    wire fetch_page_screen_fill_duplicate = fetch_page_screen_fill &&
+        ((fetch_page_valid_q[0] &&
+          (fetch_page_vpn_q[0] ==
+           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])) ||
+         (fetch_page_valid_q[1] &&
+          (fetch_page_vpn_q[1] ==
+           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])) ||
+         (fetch_page_valid_q[2] &&
+          (fetch_page_vpn_q[2] ==
+           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])) ||
+         (fetch_page_valid_q[3] &&
+          (fetch_page_vpn_q[3] ==
+           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])));
+    wire [1:0] fetch_page_fill_index = fetch_page_screen_hit_cursor ?
+        (fetch_page_write_cursor_q + 1'b1) : fetch_page_write_cursor_q;
+    wire fetch_page_screen_evict = fetch_page_screen_fill &&
+        fetch_page_valid_q[fetch_page_fill_index] &&
+        (fetch_page_vpn_q[fetch_page_fill_index] !=
+         pmp_fetch_resp_vaddr[`RV64_XLEN-1:12]);
     wire l1i_req_active_usable = l1i_req_active_q &&
         !(fetch_page_screen_revoke &&
           fetch_fast_q[l1i_req_slot_q]);
@@ -2155,11 +2235,17 @@ module openrv64_core_mtl #(
                 {FETCH_PAGE_SCREEN_ENTRIES{1'b0}};
             fetch_page_write_cursor_q <= 2'd0;
         end else if (fetch_page_screen_fill) begin
-            fetch_page_valid_q[fetch_page_write_cursor_q] <= 1'b1;
-            fetch_page_vpn_q[fetch_page_write_cursor_q] <=
+            fetch_page_valid_q[fetch_page_fill_index] <= 1'b1;
+            fetch_page_vpn_q[fetch_page_fill_index] <=
                 pmp_fetch_resp_vaddr[`RV64_XLEN-1:12];
-            fetch_page_ppn_q[fetch_page_write_cursor_q] <=
+            fetch_page_ppn_q[fetch_page_fill_index] <=
                 pmp_fetch_resp_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
+            fetch_page_write_cursor_q <=
+                fetch_page_fill_index + 1'b1;
+        end else if (fetch_page_screen_hit_cursor) begin
+            // Give a just-referenced entry one round of protection from the
+            // next fill.  This is a one-bit clock/second-chance policy with
+            // no per-entry replacement state.
             fetch_page_write_cursor_q <=
                 fetch_page_write_cursor_q + 1'b1;
         end
@@ -2190,17 +2276,23 @@ module openrv64_core_mtl #(
                     pmp_xlate_resp_write;
                 lsu_page_ppn_q[lsu_page_fill_match_index_r] <=
                     pmp_xlate_resp_paddr[LSU_PAGE_PPN_WIDTH+11:12];
+                if (lsu_page_screen_hit_cursor)
+                    lsu_page_write_cursor_q <=
+                        lsu_page_write_cursor_q + 1'b1;
             end else begin
-                lsu_page_valid_q[lsu_page_write_cursor_q] <= 1'b1;
-                lsu_page_write_q[lsu_page_write_cursor_q] <=
+                lsu_page_valid_q[lsu_page_fill_index] <= 1'b1;
+                lsu_page_write_q[lsu_page_fill_index] <=
                     pmp_xlate_resp_write;
-                lsu_page_vpn_q[lsu_page_write_cursor_q] <=
+                lsu_page_vpn_q[lsu_page_fill_index] <=
                     pmp_xlate_resp_vaddr[`RV64_XLEN-1:12];
-                lsu_page_ppn_q[lsu_page_write_cursor_q] <=
+                lsu_page_ppn_q[lsu_page_fill_index] <=
                     pmp_xlate_resp_paddr[LSU_PAGE_PPN_WIDTH+11:12];
                 lsu_page_write_cursor_q <=
-                    lsu_page_write_cursor_q + 1'b1;
+                    lsu_page_fill_index + 1'b1;
             end
+        end else if (lsu_page_screen_hit_cursor) begin
+            lsu_page_write_cursor_q <=
+                lsu_page_write_cursor_q + 1'b1;
         end
     end
 
@@ -2818,23 +2910,131 @@ module openrv64_core_mtl #(
     end
 
 `ifndef SYNTHESIS
+    wire fetch_page_screen_lookup_debug = fetch_accept &&
+        (fetch_req_vm_mode_i != `RV64_SATP_MODE_BARE);
+    wire fetch_page_screen_miss_debug = fetch_page_screen_lookup_debug &&
+        !fetch_page_hit_r;
+    wire fetch_page_screen_miss_disabled_debug =
+        fetch_page_screen_miss_debug && (ENABLE_FETCH_PAGE_SCREEN == 0);
+    wire fetch_page_screen_miss_invalidate_debug =
+        fetch_page_screen_miss_debug && (ENABLE_FETCH_PAGE_SCREEN != 0) &&
+        fetch_page_screen_invalidate;
+    wire fetch_page_screen_miss_empty_debug =
+        fetch_page_screen_miss_debug && (ENABLE_FETCH_PAGE_SCREEN != 0) &&
+        !fetch_page_screen_invalidate && !(|fetch_page_valid_q);
+    wire fetch_page_screen_miss_full_debug =
+        fetch_page_screen_miss_debug && (ENABLE_FETCH_PAGE_SCREEN != 0) &&
+        !fetch_page_screen_invalidate && (&fetch_page_valid_q);
+    wire fetch_page_screen_miss_partial_debug =
+        fetch_page_screen_miss_debug && (ENABLE_FETCH_PAGE_SCREEN != 0) &&
+        !fetch_page_screen_invalidate && (|fetch_page_valid_q) &&
+        !(&fetch_page_valid_q);
+    wire fetch_page_screen_evict_duplicate_debug =
+        fetch_page_screen_evict && fetch_page_screen_fill_duplicate;
+    wire fetch_page_screen_evict_unique_debug =
+        fetch_page_screen_evict && !fetch_page_screen_fill_duplicate;
+
+    reg lsu_page_screen_vpn_match_debug_r;
+    integer lsu_page_screen_debug_index;
+    always @* begin
+        lsu_page_screen_vpn_match_debug_r = 1'b0;
+        for (lsu_page_screen_debug_index = 0;
+             lsu_page_screen_debug_index < LSU_PAGE_SCREEN_ENTRIES;
+             lsu_page_screen_debug_index =
+                 lsu_page_screen_debug_index + 1) begin
+            if (lsu_page_valid_q[lsu_page_screen_debug_index] &&
+                (lsu_page_vpn_q[lsu_page_screen_debug_index] ==
+                 lsu_xlate_req_vaddr_i[`RV64_XLEN-1:12]))
+                lsu_page_screen_vpn_match_debug_r = 1'b1;
+        end
+    end
+    wire lsu_page_screen_lookup_debug = xlate_request_fire &&
+        !xlate_req_bare;
+    wire lsu_page_screen_miss_debug = lsu_page_screen_lookup_debug &&
+        !lsu_page_hit_r;
+    wire lsu_page_screen_miss_disabled_debug =
+        lsu_page_screen_miss_debug && (ENABLE_LSU_PAGE_SCREEN == 0);
+    wire lsu_page_screen_miss_invalidate_debug =
+        lsu_page_screen_miss_debug && (ENABLE_LSU_PAGE_SCREEN != 0) &&
+        lsu_page_screen_invalidate;
+    wire lsu_page_screen_miss_cross_page_debug =
+        lsu_page_screen_miss_debug && (ENABLE_LSU_PAGE_SCREEN != 0) &&
+        !lsu_page_screen_invalidate && lsu_page_access_crosses;
+    wire lsu_page_screen_miss_permission_debug =
+        lsu_page_screen_miss_debug && (ENABLE_LSU_PAGE_SCREEN != 0) &&
+        !lsu_page_screen_invalidate && !lsu_page_access_crosses &&
+        lsu_xlate_req_write_i && lsu_page_screen_vpn_match_debug_r;
+    wire lsu_page_screen_miss_empty_debug =
+        lsu_page_screen_miss_debug && (ENABLE_LSU_PAGE_SCREEN != 0) &&
+        !lsu_page_screen_invalidate && !lsu_page_access_crosses &&
+        !(lsu_xlate_req_write_i && lsu_page_screen_vpn_match_debug_r) &&
+        !(|lsu_page_valid_q);
+    wire lsu_page_screen_miss_full_debug =
+        lsu_page_screen_miss_debug && (ENABLE_LSU_PAGE_SCREEN != 0) &&
+        !lsu_page_screen_invalidate && !lsu_page_access_crosses &&
+        !(lsu_xlate_req_write_i && lsu_page_screen_vpn_match_debug_r) &&
+        (&lsu_page_valid_q);
+    wire lsu_page_screen_miss_partial_debug =
+        lsu_page_screen_miss_debug && (ENABLE_LSU_PAGE_SCREEN != 0) &&
+        !lsu_page_screen_invalidate && !lsu_page_access_crosses &&
+        !(lsu_xlate_req_write_i && lsu_page_screen_vpn_match_debug_r) &&
+        (|lsu_page_valid_q) && !(&lsu_page_valid_q);
+    wire lsu_page_screen_evict_writable_debug = lsu_page_screen_evict &&
+        lsu_page_write_q[lsu_page_fill_index];
+    wire lsu_page_screen_evict_read_only_debug = lsu_page_screen_evict &&
+        !lsu_page_write_q[lsu_page_fill_index];
+
     openrv64_bus_debug_stub #(
         .FETCH_OUTSTANDING(FETCH_OUTSTANDING),
         .FETCH_SLOT_WIDTH(FETCH_SLOT_WIDTH),
         .L1D_REQ_TAG_WIDTH(L1D_REQ_TAG_WIDTH)
     ) u_debug (
+        .clk(clk),
+        .rst_n(rst_n),
         .lsu_pipe_req_ready(lsu_pipe_req_ready_o),
         .lsu_pipe_req_write(lsu_pipe_req_write_i),
         .lsu_xlate_accept(xlate_request_fire),
         .lsu_xlate_write_accept(xlate_request_fire &&
                                 lsu_xlate_req_write_i),
-        .lsu_page_screen_accept(xlate_request_fire &&
-                                lsu_page_hit_r),
+        .lsu_page_screen_accept(lsu_page_screen_accept),
+        .lsu_page_screen_hit_cursor(lsu_page_screen_hit_cursor),
         .lsu_page_screen_write_accept(xlate_request_fire &&
                                       lsu_page_hit_r &&
                                       lsu_xlate_req_write_i),
         .lsu_page_screen_fill(lsu_page_screen_fill),
+        .lsu_page_screen_fill_update(lsu_page_screen_fill_update),
+        .lsu_page_screen_evict(lsu_page_screen_evict),
+        .lsu_page_screen_evict_writable(
+            lsu_page_screen_evict_writable_debug),
+        .lsu_page_screen_evict_read_only(
+            lsu_page_screen_evict_read_only_debug),
         .lsu_page_screen_invalidate(lsu_page_screen_invalidate),
+        .lsu_page_screen_lookup(lsu_page_screen_lookup_debug),
+        .lsu_page_screen_miss(lsu_page_screen_miss_debug),
+        .lsu_page_screen_miss_disabled(
+            lsu_page_screen_miss_disabled_debug),
+        .lsu_page_screen_miss_invalidate(
+            lsu_page_screen_miss_invalidate_debug),
+        .lsu_page_screen_miss_cross_page(
+            lsu_page_screen_miss_cross_page_debug),
+        .lsu_page_screen_miss_permission(
+            lsu_page_screen_miss_permission_debug),
+        .lsu_page_screen_miss_empty(lsu_page_screen_miss_empty_debug),
+        .lsu_page_screen_miss_partial(lsu_page_screen_miss_partial_debug),
+        .lsu_page_screen_miss_full(lsu_page_screen_miss_full_debug),
+        .lsu_page_screen_read_lookup(xlate_request_fire &&
+                                     !xlate_req_bare &&
+                                     !lsu_xlate_req_write_i),
+        .lsu_page_screen_write_lookup(xlate_request_fire &&
+                                      !xlate_req_bare &&
+                                      lsu_xlate_req_write_i),
+        .lsu_page_screen_flush(lsu_page_screen_flush),
+        .lsu_page_screen_flush_entries(lsu_page_screen_valid_count),
+        .lsu_page_screen_flush_sfence(lsu_page_screen_flush_sfence),
+        .lsu_page_screen_flush_satp(lsu_page_screen_flush_satp),
+        .lsu_page_screen_flush_pmp(lsu_page_screen_flush_pmp),
+        .lsu_page_screen_flush_csr(lsu_page_screen_flush_csr),
+        .lsu_page_screen_flush_context(lsu_page_screen_flush_context),
         .pipe_fast_request_fire(pipe_fast_request_fire),
         .pipe_fallback_candidate(pipe_fallback_candidate),
         .fetch_cancelled_q(fetch_cancelled_q),
@@ -2846,8 +3046,36 @@ module openrv64_core_mtl #(
         .fetch_l1i_inflight_q(fetch_l1i_inflight_q),
         .fetch_pmp_resp_valid(pmp_fetch_resp_valid),
         .fetch_page_screen_accept(fetch_page_screen_accept),
+        .fetch_page_screen_hit_cursor(fetch_page_screen_hit_cursor),
         .fetch_page_screen_fill(fetch_page_screen_fill),
+        .fetch_page_screen_fill_duplicate(
+            fetch_page_screen_fill_duplicate),
+        .fetch_page_screen_evict(fetch_page_screen_evict),
+        .fetch_page_screen_evict_duplicate(
+            fetch_page_screen_evict_duplicate_debug),
+        .fetch_page_screen_evict_unique(
+            fetch_page_screen_evict_unique_debug),
         .fetch_page_screen_invalidate(fetch_page_screen_invalidate),
+        .fetch_page_screen_lookup(fetch_page_screen_lookup_debug),
+        .fetch_page_screen_miss(fetch_page_screen_miss_debug),
+        .fetch_page_screen_miss_disabled(
+            fetch_page_screen_miss_disabled_debug),
+        .fetch_page_screen_miss_invalidate(
+            fetch_page_screen_miss_invalidate_debug),
+        .fetch_page_screen_miss_empty(fetch_page_screen_miss_empty_debug),
+        .fetch_page_screen_miss_partial(
+            fetch_page_screen_miss_partial_debug),
+        .fetch_page_screen_miss_full(fetch_page_screen_miss_full_debug),
+        .fetch_page_screen_flush(fetch_page_screen_flush),
+        .fetch_page_screen_flush_entries(
+            fetch_page_screen_valid_count),
+        .fetch_page_screen_flush_sfence(
+            fetch_page_screen_flush_sfence),
+        .fetch_page_screen_flush_satp(fetch_page_screen_flush_satp),
+        .fetch_page_screen_flush_pmp(fetch_page_screen_flush_pmp),
+        .fetch_page_screen_flush_csr(fetch_page_screen_flush_csr),
+        .fetch_page_screen_flush_context(
+            fetch_page_screen_flush_context),
         .fetch_page_screen_launch(fetch_page_screen_launch),
         .fetch_page_screen_resp_bypass(fetch_page_screen_resp_bypass),
         .fetch_priv_q(fetch_priv_q),

@@ -31,6 +31,19 @@ module openrv64_l2_debug_stub #(
         /* verilator public_flat_rd */,
     input wire coherence_hart_error /* verilator public_flat_rd */,
     input wire coherence_probe_completion /* verilator public_flat_rd */,
+    input wire coherence_probe_start_fire /* verilator public_flat_rd */,
+    input wire [NUM_HARTS-1:0] coherence_probe_start_target
+        /* verilator public_flat_rd */,
+    input wire [NUM_HARTS-1:0] probe_valid_o
+        /* verilator public_flat_rd */,
+    input wire [NUM_HARTS-1:0] probe_ready_i
+        /* verilator public_flat_rd */,
+    input wire [NUM_HARTS-1:0] probe_resp_valid_i
+        /* verilator public_flat_rd */,
+    input wire [NUM_HARTS-1:0] probe_resp_ready_o
+        /* verilator public_flat_rd */,
+    input wire [NUM_HARTS-1:0] probe_resp_error_i
+        /* verilator public_flat_rd */,
     input wire [NUM_HARTS-1:0] probe_issue_pending
         /* verilator public_flat_rd */,
     input wire [NUM_HARTS-1:0] probe_ack_pending
@@ -38,6 +51,8 @@ module openrv64_l2_debug_stub #(
     input wire [3:0] lookup_action /* verilator public_flat_rd */,
     input wire [3:0] lookup_coh_probe /* verilator public_flat_rd */,
     input wire lookup_dispatch /* verilator public_flat_rd */,
+    input wire lookup_stall /* verilator public_flat_rd */,
+    input wire mshr_free_found_r /* verilator public_flat_rd */,
     input wire [`OPENRV64_ICX_HART_ID_WIDTH-1:0] lookup_hart_id
         /* verilator public_flat_rd */,
     input wire [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] lookup_txn_id
@@ -166,6 +181,8 @@ module openrv64_l2_debug_stub #(
         /* verilator public_flat_rd */,
     input wire response_enqueue /* verilator public_flat_rd */,
     input wire hit_enqueue /* verilator public_flat_rd */,
+    input wire replay_enqueue /* verilator public_flat_rd */,
+    input wire replay_final /* verilator public_flat_rd */,
     input wire [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] hit_data_q
         /* verilator public_flat_rd */,
     input wire [63:0] enqueue_addr /* verilator public_flat_rd */,
@@ -225,6 +242,15 @@ module openrv64_l2_debug_stub #(
         /* verilator public_flat_rd */;
     reg [63:0] perf_probe_completion_q
         /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_start_q /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_target_q /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_send_q /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_send_wait_entry_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_ack_q /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_ack_wait_entry_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_probe_error_q /* verilator public_flat_rd */;
     // Count the home reservation decision for every valid SC.  This includes
     // both architectural SC instructions and the conditional write half of a
     // decomposed AMO; failed AMO writes are retried by the core sequencer.
@@ -236,6 +262,12 @@ module openrv64_l2_debug_stub #(
         /* verilator public_flat_rd */;
     reg [63:0] perf_mshr_full_cycles_q /* verilator public_flat_rd */;
     reg [63:0] perf_mshr_max_occupancy_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_mshr_alloc_q /* verilator public_flat_rd */;
+    reg [63:0] perf_mshr_complete_q /* verilator public_flat_rd */;
+    reg [63:0] perf_lookup_stall_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_mshr_no_free_stall_cycles_q
         /* verilator public_flat_rd */;
     integer perf_mshr_scan;
     integer perf_mshr_occupancy_r;
@@ -266,11 +298,22 @@ module openrv64_l2_debug_stub #(
             perf_probe_issue_cycles_q <= 64'd0;
             perf_probe_ack_cycles_q <= 64'd0;
             perf_probe_completion_q <= 64'd0;
+            perf_probe_start_q <= 64'd0;
+            perf_probe_target_q <= 64'd0;
+            perf_probe_send_q <= 64'd0;
+            perf_probe_send_wait_entry_cycles_q <= 64'd0;
+            perf_probe_ack_q <= 64'd0;
+            perf_probe_ack_wait_entry_cycles_q <= 64'd0;
+            perf_probe_error_q <= 64'd0;
             perf_atomic_store_success_q <= 64'd0;
             perf_atomic_store_failed_q <= 64'd0;
             perf_mshr_occupancy_cycles_q <= 64'd0;
             perf_mshr_full_cycles_q <= 64'd0;
             perf_mshr_max_occupancy_q <= 64'd0;
+            perf_mshr_alloc_q <= 64'd0;
+            perf_mshr_complete_q <= 64'd0;
+            perf_lookup_stall_cycles_q <= 64'd0;
+            perf_mshr_no_free_stall_cycles_q <= 64'd0;
         end else begin
             if (lookup_dispatch) begin
                 perf_lookup_dispatch_q <= perf_lookup_dispatch_q + 1'b1;
@@ -311,6 +354,24 @@ module openrv64_l2_debug_stub #(
             if (coherence_probe_completion)
                 perf_probe_completion_q <=
                     perf_probe_completion_q + 1'b1;
+            if (coherence_probe_start_fire) begin
+                perf_probe_start_q <= perf_probe_start_q + 1'b1;
+                perf_probe_target_q <= perf_probe_target_q +
+                    $countones(coherence_probe_start_target);
+            end
+            perf_probe_send_q <= perf_probe_send_q +
+                $countones(probe_valid_o & probe_ready_i);
+            perf_probe_send_wait_entry_cycles_q <=
+                perf_probe_send_wait_entry_cycles_q +
+                $countones(probe_valid_o & ~probe_ready_i);
+            perf_probe_ack_q <= perf_probe_ack_q +
+                $countones(probe_resp_valid_i & probe_resp_ready_o);
+            perf_probe_ack_wait_entry_cycles_q <=
+                perf_probe_ack_wait_entry_cycles_q +
+                $countones(probe_resp_valid_i & ~probe_resp_ready_o);
+            perf_probe_error_q <= perf_probe_error_q +
+                $countones(probe_resp_valid_i & probe_resp_ready_o &
+                           probe_resp_error_i);
             if (lookup_dispatch &&
                 (lookup_op == `OPENRV64_ICX_OP_SC) &&
                 !lookup_protocol_error && !coherence_hart_error) begin
@@ -328,6 +389,20 @@ module openrv64_l2_debug_stub #(
                     perf_mshr_full_cycles_q + 1'b1;
             if (perf_mshr_occupancy_r > perf_mshr_max_occupancy_q)
                 perf_mshr_max_occupancy_q <= perf_mshr_occupancy_r;
+            if (lookup_dispatch &&
+                ((lookup_action == 4'd4) ||
+                 (lookup_action == 4'd5) ||
+                 (lookup_action == 4'd6) ||
+                 (lookup_action == 4'd8)))
+                perf_mshr_alloc_q <= perf_mshr_alloc_q + 1'b1;
+            if (replay_enqueue && replay_final)
+                perf_mshr_complete_q <= perf_mshr_complete_q + 1'b1;
+            if (lookup_stall)
+                perf_lookup_stall_cycles_q <=
+                    perf_lookup_stall_cycles_q + 1'b1;
+            if (lookup_stall && !mshr_free_found_r)
+                perf_mshr_no_free_stall_cycles_q <=
+                    perf_mshr_no_free_stall_cycles_q + 1'b1;
         end
     end
 endmodule

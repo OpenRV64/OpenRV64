@@ -596,6 +596,15 @@ module openrv64_l1i_icx #(
     wire [DEMAND_MSHR_INDEX_WIDTH-1:0] issue_index =
         issue_active_q ? issue_mshr_q : demand_mshr_issue_index_r;
 
+    // The synchronous L1 array accepts a fill probe one cycle before it
+    // raises fill_ready.  Hold the selected MSHR across that interval; a
+    // newly completed lower-index entry must not replace the address/data
+    // belonging to the in-flight probe.
+    reg fill_owner_valid_q;
+    reg [DEMAND_MSHR_INDEX_WIDTH-1:0] fill_owner_q;
+    wire [DEMAND_MSHR_INDEX_WIDTH-1:0] l1_fill_index =
+        fill_owner_valid_q ? fill_owner_q : demand_mshr_fill_index_r;
+
     wire [DEMAND_MSHRS-1:0] demand_mshr_valid_vec;
     wire [DEMAND_MSHRS-1:0] demand_mshr_issued_vec;
     wire [DEMAND_MSHRS-1:0] demand_mshr_complete_vec;
@@ -826,13 +835,14 @@ module openrv64_l1i_icx #(
           (demand_mshr_match_index_r ==
            demand_mshr_finalize_index_r)) :
         demand_mshr_free_found_r;
-    assign l1_fill_valid = demand_mshr_fill_found_r;
+    assign l1_fill_valid = fill_owner_valid_q ||
+                           demand_mshr_fill_found_r;
     assign l1_fill_addr =
-        demand_mshr_addr_q[demand_mshr_fill_index_r];
+        demand_mshr_addr_q[l1_fill_index];
     assign l1_fill_data =
-        demand_mshr_data_q[demand_mshr_fill_index_r];
+        demand_mshr_data_q[l1_fill_index];
     assign l1_fill_aged =
-        demand_mshr_aged_q[demand_mshr_fill_index_r];
+        demand_mshr_aged_q[l1_fill_index];
 
     wire l1_fill_fire = l1_fill_valid && l1_fill_ready;
     wire wrapper_quiescent = !demand_mshr_any_valid_r &&
@@ -1315,6 +1325,8 @@ module openrv64_l1i_icx #(
         if (!rst_ni) begin
             issue_active_q <= 1'b0;
             issue_mshr_q <= {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
+            fill_owner_valid_q <= 1'b0;
+            fill_owner_q <= {DEMAND_MSHR_INDEX_WIDTH{1'b0}};
             for (demand_mshr_reset_index = 0;
                  demand_mshr_reset_index < DEMAND_MSHRS;
                  demand_mshr_reset_index =
@@ -1331,6 +1343,14 @@ module openrv64_l1i_icx #(
                 demand_mshr_aged_q[demand_mshr_reset_index] <= 1'b0;
             end
         end else begin
+            if (l1_fill_fire) begin
+                fill_owner_valid_q <= 1'b0;
+            end else if (!fill_owner_valid_q &&
+                         demand_mshr_fill_found_r) begin
+                fill_owner_valid_q <= 1'b1;
+                fill_owner_q <= demand_mshr_fill_index_r;
+            end
+
             if (!issue_active_q && demand_mshr_issue_found_r &&
                 !icx_issue_fire) begin
                 issue_active_q <= 1'b1;
@@ -1379,7 +1399,7 @@ module openrv64_l1i_icx #(
 
             if (l1_fill_fire)
                 demand_mshr_fill_done_q[
-                    demand_mshr_fill_index_r] <= 1'b1;
+                    l1_fill_index] <= 1'b1;
 
             if (demand_mshr_finalize_found_r) begin
                 demand_mshr_valid_q[
@@ -1409,12 +1429,26 @@ module openrv64_l1i_icx #(
         .DEMAND_MSHR_INDEX_WIDTH(DEMAND_MSHR_INDEX_WIDTH),
         .LINE_DATA_WIDTH(`OPENRV64_ICX_LINE_DATA_WIDTH)
     ) u_debug (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
         .icx_issue_fire(icx_issue_fire),
         .issue_active_q(issue_active_q),
         .issue_index(issue_index),
         .issue_mshr_q(issue_mshr_q),
         .l1_input_valid(l1_input_valid),
+        .l1_miss_valid(l1_miss_valid),
+        .l1_miss_ready(l1_miss_ready),
         .l1_miss_fire(l1_miss_fire),
+        .demand_mshr_match_found_r(demand_mshr_match_found_r),
+        .response_fire(response_fire),
+        .l1_fill_valid(l1_fill_valid),
+        .l1_fill_ready(l1_fill_ready),
+        .l1_fill_fire(l1_fill_fire),
+        .demand_mshr_finalize_found_r(demand_mshr_finalize_found_r),
+        .invalidate_valid_i(invalidate_valid_i),
+        .invalidate_ready_o(invalidate_ready_o),
+        .l1_invalidate_valid(l1_invalidate_valid),
+        .l1_invalidate_ready(l1_invalidate_ready),
         .response_pop(response_pop),
         .response_pop_index(response_pop_index),
         .response_valid_vec(response_valid_vec),

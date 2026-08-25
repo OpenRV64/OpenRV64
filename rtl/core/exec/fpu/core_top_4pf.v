@@ -1022,6 +1022,7 @@ module openrv64_rv64_top_4pf #(
     wire [63:0] csr_rdata;
     wire csr_valid;
     wire csr_writable;
+    wire csr_data_access_context_change;
     wire fp_csr_selected;
     wire fp_csr_valid;
     wire fp_csr_writable;
@@ -1399,6 +1400,7 @@ module openrv64_rv64_top_4pf #(
         .satp_mode_o(csr_satp_mode), .satp_asid_o(csr_satp_asid),
         .satp_root_ppn_o(csr_satp_root_ppn),
         .status_sum_o(csr_status_sum), .status_mxr_o(csr_status_mxr),
+        .data_access_context_change_o(csr_data_access_context_change),
         .pmp_bus_valid_i(core_pmp_valid), .pmp_bus_addr_i(core_pmp_addr),
         .pmp_bus_size_i(core_pmp_size), .pmp_bus_write_i(core_pmp_write),
         .pmp_bus_exec_i(core_pmp_exec),
@@ -1582,8 +1584,8 @@ module openrv64_rv64_top_4pf #(
         .context_flush_i(backend_satp_write),
         .fetch_context_change_i(control_trap || backend_irq ||
                                 wfi_irq_take || backend_mret ||
-                                backend_sret ||
-                                (backend_csr_write && csr_write_ready)),
+                                backend_sret),
+        .page_screen_csr_clear_i(csr_data_access_context_change),
         .pmp_update_i(backend_pmp_update),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(backend_store_barrier_request),

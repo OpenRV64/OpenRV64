@@ -14,3 +14,12 @@ sw/initramfs.cpio
 
 __pycache__/
 *.pyc
+
+# FPGA tool spill files. Managed runs keep their logs under run/log/.
+abc.history
+clockInfo.txt
+hs_err_pid*.log
+tight_setup_hold_pins.txt
+vivado*.jou
+vivado*.log
+xvlog.pb

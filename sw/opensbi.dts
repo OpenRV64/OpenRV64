@@ -37,7 +37,11 @@
 / {
     #address-cells = <2>;
     #size-cells = <2>;
+#ifdef OPENRV64_FPGA_DEBUG
+    compatible = "openrv64,fpga-debug", "openrv64,platform";
+#else
     compatible = "openrv64,platform";
+#endif
 #if OPENRV64_HART_COUNT == 4
     model = "OpenRV64 four-hart platform";
 #elif OPENRV64_HART_COUNT == 2
@@ -215,7 +219,10 @@
 #else
             riscv,ndev = <32>;
 #endif
-#if OPENRV64_HART_COUNT == 4
+#ifdef OPENRV64_FPGA_DEBUG
+            /* Context zero is M mode; context one remains Linux S mode. */
+            interrupts-extended = <&cpu0_intc 11>, <&cpu0_intc 9>;
+#elif OPENRV64_HART_COUNT == 4
             interrupts-extended =
                 <&cpu0_intc 9>, <&cpu1_intc 9>,
                 <&cpu2_intc 9>, <&cpu3_intc 9>;

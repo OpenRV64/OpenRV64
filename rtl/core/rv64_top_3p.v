@@ -1036,6 +1036,7 @@ module openrv64_rv64_top_3p #(
     wire [63:0] csr_rdata;
     wire csr_valid;
     wire csr_writable;
+    wire csr_data_access_context_change;
     wire backend_mem_valid;
     wire backend_mem_ready;
     wire backend_mem_bus_ready;
@@ -1362,6 +1363,7 @@ module openrv64_rv64_top_3p #(
         .satp_mode_o(csr_satp_mode), .satp_asid_o(csr_satp_asid),
         .satp_root_ppn_o(csr_satp_root_ppn),
         .status_sum_o(csr_status_sum), .status_mxr_o(csr_status_mxr),
+        .data_access_context_change_o(csr_data_access_context_change),
         .pmp_bus_valid_i(core_pmp_valid), .pmp_bus_addr_i(core_pmp_addr),
         .pmp_bus_size_i(core_pmp_size), .pmp_bus_write_i(core_pmp_write),
         .pmp_bus_exec_i(core_pmp_exec),
@@ -1552,11 +1554,11 @@ module openrv64_rv64_top_3p #(
             backend_mem_xlate_resp_page_fault),
         .tlbi_i(backend_sfence_vma),
         .context_flush_i(backend_satp_write),
-        // The page screens are untagged current-context proof caches.  CSR
-        // writes are rare, so conservatively discard them on every accepted
-        // CSR update instead of duplicating privilege/translation tags.
-        .fetch_context_change_i(fetch_priv_context_change ||
-                                (backend_csr_write && csr_write_ready)),
+        // The page screens are untagged current-context proof caches.
+        // Privilege transitions revoke both screens; status writes revoke the
+        // LSU screen only when SUM/MXR/MPRV/MPP actually change.
+        .fetch_context_change_i(fetch_priv_context_change),
+        .page_screen_csr_clear_i(csr_data_access_context_change),
         .pmp_update_i(backend_pmp_update),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(backend_store_barrier_request),
@@ -1796,6 +1798,7 @@ module openrv64_rv64_top_3p #(
         .csr_mtval(u_csrs.mtval_q),
         .csr_mip_sw(u_csrs.mip_sw_q),
         .csr_satp(u_csrs.satp_q),
+        .gpr_debug_regs(u_backend.u_gpr.prf_debug_regs),
         .atomic_active(
             u_backend.u_exec.g_3p.u_exec.u_lsu.u_atomics.active_q),
         .atomic_irrevocable(

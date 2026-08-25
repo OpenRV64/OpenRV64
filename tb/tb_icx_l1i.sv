@@ -18,6 +18,7 @@ module tb_icx_l1i;
     logic tlbi;
     logic context_flush;
     logic fetch_context_change;
+    logic page_screen_csr_clear;
     logic pmp_update;
     wire tlbi_busy;
     logic icache_invalidate;
@@ -221,6 +222,7 @@ module tb_icx_l1i;
         .tlbi_i(tlbi),
         .context_flush_i(context_flush),
         .fetch_context_change_i(fetch_context_change),
+        .page_screen_csr_clear_i(page_screen_csr_clear),
         .pmp_update_i(pmp_update),
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
@@ -592,6 +594,16 @@ module tb_icx_l1i;
         end
     endtask
 
+    task automatic pulse_page_screen_csr_clear;
+        begin
+            @(negedge clk);
+            page_screen_csr_clear = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            page_screen_csr_clear = 1'b0;
+        end
+    endtask
+
     task automatic pulse_prefetch_pair;
         input [63:0] taken_address;
         input [63:0] fallthrough_address;
@@ -643,6 +655,7 @@ module tb_icx_l1i;
         tlbi = 1'b0;
         context_flush = 1'b0;
         fetch_context_change = 1'b0;
+        page_screen_csr_clear = 1'b0;
         pmp_update = 1'b0;
         icache_invalidate = 1'b0;
         m_mode_prefetch_enable = 1'b0;
@@ -692,10 +705,20 @@ module tb_icx_l1i;
         if (pmp_probe_count_q != pmp_before_count)
             $fatal(1, "page-screen hit entered PMP arbitration");
 
-        // Ordinary CSR retirement conservatively clears the untagged screen,
-        // but it does not redirect fetch.  A fast response already accepted
-        // under the old proof must retain its ownership and remain visible;
-        // silently dropping it strands the frontend's pending-line bit.
+        // A hit on the entry selected for the next replacement gives that
+        // entry one round of second-chance protection.
+        @(negedge clk);
+        dut.fetch_page_write_cursor_q = 2'd0;
+        screen_before_count = page_screen_accept_count_q;
+        issue_fetch(64'h00, memory[0][255:0], 1'b0,
+                    "fetch page-screen cursor hit");
+        if (page_screen_accept_count_q != screen_before_count + 1 ||
+            dut.fetch_page_write_cursor_q != 2'd1)
+            $fatal(1, "fetch page-screen cursor did not advance on hit");
+
+        // A data-access permission change clears only the LSU screen.  A fast
+        // fetch response already accepted under the current instruction-side
+        // proof remains visible, and the fetch proof itself remains cached.
         fetch_resp_ready = 1'b0;
         push_fetch_only(64'h00);
         word_index = 0;
@@ -705,24 +728,23 @@ module tb_icx_l1i;
         end
         if (!dut.fetch_resp_hold_valid_q)
             $fatal(1, "failed to hold page-screen response before CSR clear");
-        pulse_fetch_context_change();
+        pulse_page_screen_csr_clear();
         if (!dut.fetch_resp_hold_valid_q || dut.fetch_count_q != 1)
             $fatal(1,
-                "CSR screen clear dropped accepted fetch hold=%b count=%0d",
+                "data-permission clear dropped accepted fetch hold=%b count=%0d",
                 dut.fetch_resp_hold_valid_q, dut.fetch_count_q);
         fetch_resp_ready = 1'b1;
         expect_fetch_only(64'h00, memory[0][255:0],
                           "accepted fetch across CSR screen clear");
 
-        // The accepted job survives, but the screen entry itself does not.
-        // Refill it through the checked path for the revocation test below.
+        // The fetch screen is unaffected by SUM/MXR/MPRV/MPP changes.
         screen_before_count = page_screen_accept_count_q;
         pmp_before_count = pmp_probe_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
-                    "post-CSR-clear checked resident hit");
-        if (page_screen_accept_count_q != screen_before_count ||
-            pmp_probe_count_q != pmp_before_count + 1)
-            $fatal(1, "CSR clear retained lookup proof");
+                    "post-data-permission-change resident hit");
+        if (page_screen_accept_count_q != screen_before_count + 1 ||
+            pmp_probe_count_q != pmp_before_count)
+            $fatal(1, "data permission change revoked fetch proof");
 
         // Hold L1I invalidation active so a screen hit is admitted but
         // cannot launch.  Revoking the screen proof must discard that job;

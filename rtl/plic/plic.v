@@ -3,7 +3,10 @@
 module openrv64_plic #(
     parameter integer NUM_HARTS = 1,
     parameter integer NUM_SOURCES = 32,
-    parameter integer PRIORITY_WIDTH = 3
+    parameter integer PRIORITY_WIDTH = 3,
+    // The base platform historically exposed only one S-mode context per
+    // hart. FPGA machine-mode debug enables the conventional M,S pair.
+    parameter integer M_CONTEXT_ENABLE = 0
 ) (
     input  wire                         clk_i,
     input  wire                         rst_ni,
@@ -22,7 +25,9 @@ module openrv64_plic #(
     input  wire [7:0]                   mem_wstrb_i,
     output reg  [63:0]                  mem_rdata_o,
 
-    // One supervisor-mode interrupt context is implemented for each hart.
+    // When M_CONTEXT_ENABLE is set, context 2*hart is machine mode and
+    // context 2*hart+1 is supervisor mode. Otherwise context hart is S mode.
+    output wire [NUM_HARTS-1:0]         meip_o,
     output wire [NUM_HARTS-1:0]         seip_o
 );
 
@@ -34,18 +39,20 @@ module openrv64_plic #(
     localparam [63:0] CONTEXT_STRIDE      = 64'h0000_0000_0000_1000;
     localparam [63:0] THRESHOLD_OFFSET    = 64'h0000_0000_0000_0000;
     localparam [63:0] CLAIM_OFFSET        = 64'h0000_0000_0000_0004;
+    localparam integer CONTEXTS_PER_HART = M_CONTEXT_ENABLE ? 2 : 1;
+    localparam integer NUM_CONTEXTS = NUM_HARTS * CONTEXTS_PER_HART;
 
     reg [(NUM_SOURCES*PRIORITY_WIDTH)-1:0] priority_q;
     reg [NUM_SOURCES-1:0] pending_q;
     reg [NUM_SOURCES-1:0] in_service_q;
-    reg [(NUM_HARTS*NUM_SOURCES)-1:0] enable_q;
-    reg [(NUM_HARTS*PRIORITY_WIDTH)-1:0] threshold_q;
+    reg [(NUM_CONTEXTS*NUM_SOURCES)-1:0] enable_q;
+    reg [(NUM_CONTEXTS*PRIORITY_WIDTH)-1:0] threshold_q;
 
     wire [63:0] addr_offset = mem_addr_i;
     wire read_accept = mem_valid_i && !mem_write_i;
     wire write_accept = mem_valid_i && mem_write_i;
 
-    wire [(NUM_HARTS*32)-1:0] selected_id;
+    wire [(NUM_CONTEXTS*32)-1:0] selected_id;
 
     integer read_source_index;
     integer read_hart_index;
@@ -90,7 +97,7 @@ module openrv64_plic #(
     generate
         genvar target_index;
         for (target_index = 0;
-             target_index < NUM_HARTS;
+             target_index < NUM_CONTEXTS;
              target_index = target_index + 1) begin : gen_targets
             assign selected_id[32*target_index +: 32] =
                 select_interrupt(
@@ -99,8 +106,21 @@ module openrv64_plic #(
                     priority_q,
                     threshold_q[PRIORITY_WIDTH*target_index +:
                                 PRIORITY_WIDTH]);
-            assign seip_o[target_index] =
-                |selected_id[32*target_index +: 32];
+        end
+
+        for (target_index = 0;
+             target_index < NUM_HARTS;
+             target_index = target_index + 1) begin : gen_hart_outputs
+            if (M_CONTEXT_ENABLE != 0) begin : gen_machine_context
+                assign meip_o[target_index] =
+                    |selected_id[32*(2*target_index) +: 32];
+                assign seip_o[target_index] =
+                    |selected_id[32*((2*target_index)+1) +: 32];
+            end else begin : gen_supervisor_only_context
+                assign meip_o[target_index] = 1'b0;
+                assign seip_o[target_index] =
+                    |selected_id[32*target_index +: 32];
+            end
         end
     endgenerate
 
@@ -133,7 +153,7 @@ module openrv64_plic #(
         end
 
         for (read_hart_index = 0;
-             read_hart_index < NUM_HARTS;
+             read_hart_index < NUM_CONTEXTS;
              read_hart_index = read_hart_index + 1) begin
             for (read_source_index = 0;
                  read_source_index < NUM_SOURCES;
@@ -169,8 +189,8 @@ module openrv64_plic #(
             priority_q <= {(NUM_SOURCES*PRIORITY_WIDTH){1'b0}};
             pending_q <= {NUM_SOURCES{1'b0}};
             in_service_q <= {NUM_SOURCES{1'b0}};
-            enable_q <= {(NUM_HARTS*NUM_SOURCES){1'b0}};
-            threshold_q <= {(NUM_HARTS*PRIORITY_WIDTH){1'b0}};
+            enable_q <= {(NUM_CONTEXTS*NUM_SOURCES){1'b0}};
+            threshold_q <= {(NUM_CONTEXTS*PRIORITY_WIDTH){1'b0}};
         end else begin
             // A level-sensitive gateway records one request and will not
             // forward the same source again until software completes it.
@@ -189,7 +209,7 @@ module openrv64_plic #(
             // completion write is accepted.
             if (read_accept) begin
                 for (write_hart_index = 0;
-                     write_hart_index < NUM_HARTS;
+                     write_hart_index < NUM_CONTEXTS;
                      write_hart_index = write_hart_index + 1) begin
                     if (addr_offset[63:2] ==
                         ((CONTEXT_OFFSET +
@@ -226,7 +246,7 @@ module openrv64_plic #(
                 end
 
                 for (write_hart_index = 0;
-                     write_hart_index < NUM_HARTS;
+                     write_hart_index < NUM_CONTEXTS;
                      write_hart_index = write_hart_index + 1) begin
                     for (write_source_index = 0;
                          write_source_index < NUM_SOURCES;

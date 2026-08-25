@@ -308,9 +308,20 @@ Important files are:
 - `resume.vls`: private copy or reflink of the checkpoint consumed by a resumed
   run.
 
-The shared build lock covers configuration-dependent compilation and input
-snapshotting. It is released before simulation, so already-snapshotted runs
-may execute in parallel without racing a later build.
+Build locks cover configuration-dependent compilation and input snapshotting.
+Normal software and simulation configurations default to
+`verilator-build.lock`; FPGA configurations whose names begin with `fpga-`
+default to `fpga-build.lock`.
+This keeps long synthesis and implementation jobs from blocking unrelated
+Verilator or software builds while continuing to serialize FPGA jobs against
+one another. A configuration may set `RUN_BUILD_LOCK_NAME` explicitly when it
+uses a narrower shared output tree or a live hardware resource.
+
+The Linux backend releases its lock after taking a private input snapshot, so
+the resulting simulation may execute in parallel without racing a later
+build. The generic Make backend retains its selected lock through its run and
+artifact-snapshot phases because those targets may consume unsnapshotted build
+outputs.
 
 ## Status and lifecycle commands
 

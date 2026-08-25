@@ -9,8 +9,12 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "${repo_root}/run/lib/common.sh"
 run_root=$(realpath -m \
     "${OPENRV64_SMP_RUN_ROOT:-${repo_root}/build/runs/linux-smp}")
+build_lock_name=${OPENRV64_RUN_BUILD_LOCK_NAME:-verilator-build.lock}
 record_makefile=scripts/make/linux-run-record.mk
 sendify=${OPENRV64_SENDIFY:-/home/bill/bin/sendify.py}
+
+[[ ${build_lock_name} =~ ^[A-Za-z0-9._-]+$ ]] ||
+    openrv64_run_die 'OPENRV64_RUN_BUILD_LOCK_NAME contains invalid characters'
 
 usage() {
     cat <<'EOF'
@@ -328,6 +332,7 @@ worker() {
         printf 'ticket_lock_paddr=%s\n' "${ticket_lock_paddr}"
         printf 'rebuild=%s\n' "${rebuild}"
         printf 'timeout_seconds=%s\n' "${timeout_seconds}"
+        printf 'build_lock_name=%s\n' "${build_lock_name}"
         printf 'command=%s\n' "${recorded_command}"
     } >"${build_log}"
 
@@ -494,27 +499,41 @@ worker() {
 
         phase=build
         local build_command=("${make_base[@]}" -j8)
+        local build_required=0
         [[ ${rebuild} == 0 ]] || build_command+=(-B)
         build_command+=("${make_arguments[@]}")
         if [[ -z ${simulator_override} ]] &&
            [[ -z ${base_inputs} || ${rebuild} != 0 ]]; then
             build_command+=("${simulator}")
+            build_required=1
         fi
         if [[ -z ${base_inputs} ]]; then
             build_command+=("${opensbi_target}")
+            build_required=1
         fi
-        printf 'build_command=%s\n' "$(shell_join "${build_command[@]}")" \
-            >>"${build_log}"
+        if ((build_required != 0)); then
+            printf 'build_command=%s\n' \
+                "$(shell_join "${build_command[@]}")" >>"${build_log}"
+        else
+            printf 'build_command=reuse-base-inputs-no-build\n' \
+                >>"${build_log}"
+        fi
 
         mkdir -p "${run_root}"
-        exec 9>"${run_root}/build.lock"
+        exec 9>"${run_root}/${build_lock_name}"
+        printf 'build_lock_wait_started_utc=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"${build_log}"
         flock 9
-        set +e
-        "${build_command[@]}" 2>&1 | tee -a "${build_log}"
-        local build_result=${PIPESTATUS[0]}
-        set -e
-        if ((build_result != 0)); then
-            exit "${build_result}"
+        printf 'build_lock_acquired_utc=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"${build_log}"
+        if ((build_required != 0)); then
+            set +e
+            "${build_command[@]}" 2>&1 | tee -a "${build_log}"
+            local build_result=${PIPESTATUS[0]}
+            set -e
+            if ((build_result != 0)); then
+                exit "${build_result}"
+            fi
         fi
 
         if [[ -n ${base_inputs} ]]; then
@@ -565,6 +584,8 @@ worker() {
         sha256sum "${input_dir}"/* >"${artifact_hashes}"
         flock -u 9
         exec 9>&-
+        printf 'build_lock_released_utc=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"${build_log}"
     fi
 
     local runner_source

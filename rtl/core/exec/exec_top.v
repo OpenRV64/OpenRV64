@@ -145,6 +145,8 @@ module openrv64_exec_top #(
     output wire [`RV64_XLEN-1:0]        wb_next_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] wb_instr_o,
     output wire [`RV64_XLEN-1:0]        wb_data_o,
+    output wire [`RV64_XLEN-1:0]        wb_rs1_data_o,
+    output wire [`RV64_XLEN-1:0]        wb_rs2_data_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] wb_rs1_addr_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] wb_rs2_addr_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] wb_rd_addr_o,
@@ -432,6 +434,8 @@ module openrv64_exec_top #(
             assign wb_next_pc_o = {`RV64_XLEN{1'b0}};
             assign wb_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
             assign wb_data_o = {`RV64_XLEN{1'b0}};
+            assign wb_rs1_data_o = {`RV64_XLEN{1'b0}};
+            assign wb_rs2_data_o = {`RV64_XLEN{1'b0}};
             assign wb_rs1_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
             assign wb_rs2_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
             assign wb_rd_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
@@ -503,6 +507,8 @@ module openrv64_exec_top #(
             assign wb_next_pc_o = {`RV64_XLEN{1'b0}};
             assign wb_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
             assign wb_data_o = {`RV64_XLEN{1'b0}};
+            assign wb_rs1_data_o = {`RV64_XLEN{1'b0}};
+            assign wb_rs2_data_o = {`RV64_XLEN{1'b0}};
             assign wb_rs1_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
             assign wb_rs2_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
             assign wb_rd_addr_o = {`RV64_REG_ADDR_WIDTH{1'b0}};

@@ -13,6 +13,8 @@ output_stub=${OUTPUT_STUB:-$output_dir/openrv64_fpga_opensbi_system_stub.v}
 output_log=${OUTPUT_LOG:-$output_dir/yosys-system.log}
 uart_linux_load_enable=${UART_LINUX_LOAD_ENABLE:-0}
 sd_rom_boot_enable=${SD_ROM_BOOT_ENABLE:-0}
+mig_scalar_cache_enable=${FPGA_MIG_SCALAR_CACHE_ENABLE:-1}
+mig_scalar_cache_bytes=${FPGA_MIG_SCALAR_CACHE_BYTES:-32768}
 rom_init_file=${ROM_INIT_FILE:-}
 core_clock_hz=${FPGA_CORE_CLOCK_HZ:-14000000}
 uart_reference_clock_hz=${FPGA_UART_REFERENCE_CLOCK_HZ:-14745600}
@@ -39,6 +41,18 @@ if [[ "$sd_rom_boot_enable" != 0 && "$sd_rom_boot_enable" != 1 ]]; then
     echo "error: SD_ROM_BOOT_ENABLE must be 0 or 1" >&2
     exit 2
 fi
+if [[ "$mig_scalar_cache_enable" != 0 &&
+      "$mig_scalar_cache_enable" != 1 ]]; then
+    echo "error: FPGA_MIG_SCALAR_CACHE_ENABLE must be 0 or 1" >&2
+    exit 2
+fi
+if [[ ! "$mig_scalar_cache_bytes" =~ ^[1-9][0-9]*$ ]] ||
+   (( mig_scalar_cache_bytes < 64 ||
+      (mig_scalar_cache_bytes % 32) != 0 ||
+      (mig_scalar_cache_bytes & (mig_scalar_cache_bytes - 1)) != 0 )); then
+    echo "error: FPGA_MIG_SCALAR_CACHE_BYTES must be a power of two >= 64" >&2
+    exit 2
+fi
 if [[ "$sd_rom_boot_enable" == 1 && ! -s "$rom_init_file" ]]; then
     echo "error: SD boot ROM init file not found: $rom_init_file" >&2
     exit 2
@@ -60,6 +74,9 @@ sources=(
     "$core_stub"
     "$loader_stub"
     "$repo_root/rtl/soc/platform.sv"
+    "$repo_root/rtl/soc/debug/snapshot_mem.sv"
+    "$repo_root/rtl/soc/debug/stub_mem.sv"
+    "$repo_root/rtl/soc/debug/uart_trace_mem.sv"
     "$repo_root/rtl/soc/reset_sequencer.v"
     "$repo_root/rtl/soc/bus/decode.v"
     "$repo_root/rtl/soc/bus/rom.v"
@@ -101,6 +118,8 @@ read_verilog -lib +/xilinx/cells_xtra.v; \
 $read_command; \
 chparam -set UART_LINUX_LOAD_ENABLE $uart_linux_load_enable \
         -set SD_ROM_BOOT_ENABLE $sd_rom_boot_enable \
+        -set MIG_SCALAR_CACHE_ENABLE $mig_scalar_cache_enable \
+        -set MIG_SCALAR_CACHE_BYTES $mig_scalar_cache_bytes \
         -set CORE_CLOCK_HZ $core_clock_hz \
         -set UART_REFERENCE_CLOCK_HZ $uart_reference_clock_hz \
         -set SPI_FAST_HALF_PERIOD_CYCLES $spi_fast_half_period_cycles \

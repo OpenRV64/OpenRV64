@@ -70,4 +70,23 @@
 `define OPENRV64_SOC_PLIC_SOURCE_EXTERNAL_BASE 4
 `define OPENRV64_SOC_PLIC_SOURCE_ETHERNET 33
 
+// FPGA debug temporarily consumes the last external PLIC input. External
+// input 29 is vector bit 28 and architectural PLIC source ID 32.
+`define OPENRV64_SOC_PLIC_SOURCE_FPGA_DEBUG 32
+
+// Vendor debug snapshot RAM occupies one otherwise-reserved page inside the
+// platform PLIC MMIO window. It is not part of the architectural PLIC map.
+`define OPENRV64_SOC_FPGA_DEBUG_SNAPSHOT_OFFSET 64'h0000_0000_0030_0000
+`define OPENRV64_SOC_FPGA_DEBUG_SNAPSHOT_SIZE   64'h0000_0000_0000_1000
+`define OPENRV64_SOC_FPGA_DEBUG_SNAPSHOT_BASE \
+    (`OPENRV64_SOC_PLIC_BASE + `OPENRV64_SOC_FPGA_DEBUG_SNAPSHOT_OFFSET)
+
+// FPGA-debug executable workspace. USER1 JTAG owns the second BRAM port so a
+// raw M-mode stub can be uploaded without relying on the running CPU. The
+// final 16 bytes are reserved for the upload descriptor/commit record.
+`define OPENRV64_SOC_FPGA_DEBUG_STUB_OFFSET 64'h0000_0000_0030_4000
+`define OPENRV64_SOC_FPGA_DEBUG_STUB_SIZE   64'h0000_0000_0000_4000
+`define OPENRV64_SOC_FPGA_DEBUG_STUB_BASE \
+    (`OPENRV64_SOC_PLIC_BASE + `OPENRV64_SOC_FPGA_DEBUG_STUB_OFFSET)
+
 `endif

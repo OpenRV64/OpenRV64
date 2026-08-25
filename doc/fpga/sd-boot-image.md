@@ -5,9 +5,10 @@ microSD socket. It is not a filesystem and has no partition table. Write the
 image to the whole card, not to a partition.
 
 The FPGA implementation uses the socket in SPI mode. It supports SD v2
-block-addressed SDHC/SDXC cards, single-sector `CMD17` reads, and no writes.
-SDSC byte addressing, native one/four-bit SD mode, filesystems, partitions,
-multi-block reads, and error recovery are not implemented.
+block-addressed SDHC/SDXC cards, a single-sector `CMD17` header read,
+multi-sector `CMD18` payload streams stopped by `CMD12`, and no writes. SDSC
+byte addressing, native one/four-bit SD mode, filesystems, partitions, and
+error recovery are not implemented.
 
 ## Hardware and ROM flow
 
@@ -17,28 +18,85 @@ The 4 KiB boot ROM then:
 1. initializes the 115200 8N1 UART and SD card;
 2. reads and validates the CRC-protected sector-zero header;
 3. preserves its four 32-byte load descriptors in DDR stack scratch;
-4. reads one 512-byte sector at a time into the SPI controller's inferred
-   block RAM, copies exact payload bytes to DDR, and validates each CRC32;
-5. executes `fence`, `fence.i`, and jumps to the trampoline at `0x80000000`.
+4. opens one `CMD18` stream per load entry and programs its sector count into
+   the SPI controller's autonomous receiver;
+5. drains alternating 512-byte block-RAM banks to DDR while the controller
+   fills the other bank, then stops the stream with `CMD12`;
+6. copies aligned full words, handles the exact-length tail bytewise, and
+   validates each payload with a table-driven CRC32;
+7. executes `fence`, `fence.i`, and jumps to the trampoline at `0x80000000`.
 
-The complete routed design uses two RAMB36 tiles: one for the 4 KiB ROM and one
-for the 512-byte sector buffer. The SPI engine starts at approximately 384 kHz
-and switches to 4.608 MHz after card initialization. The current ROM is
-read-only and deliberately simple; a failed check prints a stage-specific
-message and stops in `wfi`. The XDC reserves 50 ns of the 108.507 ns fast-mode
-MISO cycle for card clock-to-out and PCB delay.
+Focused XC7 synthesis maps the two sector arrays to two separate `RAMB36E1`
+primitives. This is standalone controller evidence, not a routed-system result;
+a new full bitstream has not yet proved total device utilization or timing. The
+current build rule selects a fast SPI half-period of
+`ceil(core_clock / 20 MHz)` core cycles, which keeps SCK at or below 10 MHz.
+That produces a 7 MHz SCK at a 14 MHz core, 10 MHz at 20 MHz, and 7.5 MHz at
+30 MHz. The integer divider cannot generate exactly 10 MHz from every core
+clock. At 10 MHz, a 7.45 MB image has an unavoidable approximately 6.0-second
+data wire time before token, command, copy, or CRC overhead.
 
-Build the ROM and run the behavioral card/DDR integration test with:
+The receiver keeps SCK running through token search, 512 data bytes, and the
+card's two CRC bytes. It pauses only when both banks are full, leaving CS
+asserted, and resumes when software releases the next bank. A programmed block
+count prevents it from clocking into an extra block before firmware sends
+`CMD12`. The ROM is read-only; a failed check prints a stage-specific message
+and stops in `wfi`. The XDC preserves at least a 50 ns launch-to-sample interval
+and reserves 25 ns for card clock-to-out and PCB delay.
+
+### Double-buffer MMIO
+
+The SPI controller is based at `0x10030000`. Existing command transfers and
+bank 0 remain compatible. The stream additions are:
+
+| Offset | Access | Meaning |
+| ---: | :---: | --- |
+| `0x038` | W | Start autonomous receive; low 32 bits are the nonzero block count. CS must already be active. |
+| `0x040` | R | Bit 0 active, bit 1 bank 0 ready, bit 2 bank 1 ready, bit 3 stream error, bit 4 current fill bank, bits 63:32 blocks not yet completed. |
+| `0x048` | W | Release drained banks; write bit 0 for bank 0 and bit 1 for bank 1. |
+| `0x100..0x2ff` | R | Synchronous 512-byte bank 0. |
+| `0x300..0x4ff` | R | Synchronous 512-byte bank 1. |
+
+Software must not release a bank until its copy and CRC update are complete.
+Blocking transfers are rejected while the stream engine is active.
+
+Build the ROM and run the behavioral card/DDR integration test through the
+managed runner with:
 
 ```sh
-make fpga-sd-boot-rom sim-fpga-sd-boot
+run/run run/cfg/fpga-sd-boot-core-profile.cfg
 ```
 
-Build the physical bitstream with:
+The test uses multi-sector, non-eight-byte payload lengths. It checks exact DDR
+contents and untouched padding, payload CRCs, and the expected command mix of
+one header `CMD17` plus four `CMD18`/`CMD12` payload pairs. It also requires
+bank 1 use, a both-banks-full backpressure event, and DDR writes overlapping an
+active SPI receive.
+
+The source-recorded 30 MHz-profile integration result is 314,810 cycles for
+eight payload sectors. The immediately preceding single-buffer `CMD18`
+baseline was 365,953 cycles, so the double buffer removes 51,143 cycles
+(14.0%) in this focused model. A current CMD17-per-sector control is 357,130
+cycles. These are behavioral integration measurements, not card or board
+wall-clock measurements; the model has no real-card command latency.
+
+The corresponding records are
+`run/log/fpga-sd-boot-core-profile-20260825T190635Z/`,
+`run/log/fpga-sd-boot-core-profile-20260825T183853Z/`, and
+`run/log/fpga-sd-boot-single-block-control-20260825T190949Z/`. The focused
+mapping record is
+`run/log/fpga-spi-double-buffer-synth-20260825T190834Z/`.
+
+Verify the two-bank XC7 mapping separately with:
 
 ```sh
-make fpga-sd-boot-bitstream
+run/run run/cfg/fpga-spi-double-buffer-synth.cfg
 ```
+
+Build physical bitstreams through the corresponding managed FPGA experiment
+configuration. Those configurations invoke the underlying
+`fpga-sd-boot-bitstream` target and record the source state, bitstream, and
+timing reports.
 
 That split-netlist build reuses the existing core and MIG checkpoints under
 `build/fpga/xc7a100t/opensbi-smoke/` and writes the result and reports under

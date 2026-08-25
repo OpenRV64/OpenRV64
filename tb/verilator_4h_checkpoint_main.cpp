@@ -1730,11 +1730,54 @@ void trace_hart0_pc(std::ostream& stream,
     }
 }
 
+void trace_hart0_m_illegal(const Vtb_4h_3p___024root* root,
+                           uint32_t cycle) {
+#define H0_DEBUG(name)                                                      \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__##name
+    constexpr unsigned machine_privilege = 3;
+    constexpr unsigned illegal_instruction_cause = 2;
+    const unsigned privilege = H0_DEBUG(csr_priv_mode);
+
+    if (!H0_DEBUG(trap_enter) || H0_DEBUG(trap_interrupt) ||
+        H0_DEBUG(csr_trap_to_s) ||
+        H0_DEBUG(trap_cause) != illegal_instruction_cause ||
+        privilege != machine_privilege) {
+        return;
+    }
+
+    std::cout
+        << "HOST_M_ILLEGAL cycle=" << cycle
+        << " trap_pc=0x" << std::hex << H0_DEBUG(trap_pc)
+        << " backend_pc=0x" << H0_DEBUG(backend_retire_pc)
+        << " backend_instr=0x" << std::setw(8) << std::setfill('0')
+        << H0_DEBUG(backend_retire_instr)
+        << " backend_exception=" << std::dec
+        << static_cast<unsigned>(H0_DEBUG(backend_exception))
+        << " backend_cause="
+        << static_cast<unsigned>(H0_DEBUG(backend_cause))
+        << " decode_valid=0x" << std::hex
+        << static_cast<unsigned>(H0_DEBUG(decode_valid))
+        << " decode_illegal=0x"
+        << static_cast<unsigned>(H0_DEBUG(decode_illegal))
+        << " decode0=0x" << H0_DEBUG(decode_pc0)
+        << ":0x" << std::setw(8) << H0_DEBUG(instr0)
+        << " decode1=0x" << H0_DEBUG(decode_pc1)
+        << ":0x" << std::setw(8) << H0_DEBUG(instr1)
+        << " decode2=0x" << H0_DEBUG(decode_pc2)
+        << ":0x" << std::setw(8) << H0_DEBUG(instr2)
+        << " csr_mepc_before=0x" << H0_DEBUG(csr_mepc)
+        << " csr_mcause_before=0x" << H0_DEBUG(csr_mcause)
+        << " csr_mtval_before=0x" << H0_DEBUG(csr_mtval)
+        << std::setfill(' ') << std::dec << '\n';
+    std::cout.flush();
+#undef H0_DEBUG
+}
+
 void dump_hart0_gprs(std::ostream& stream,
                      const Vtb_4h_3p___024root* root,
                      uint32_t cycle) {
-    const auto& bank =
-        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_backend__DOT__u_gpr__DOT__u_prf__DOT__g_storage_bank__BRA__0__KET____DOT__bank_q;
+    const auto& regs =
+        root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_debug__DOT__gpr_debug_regs;
 
     stream << "GPR_SNAPSHOT cycle=" << cycle << '\n';
     stream << std::hex << std::setfill('0');
@@ -1742,7 +1785,7 @@ void dump_hart0_gprs(std::ostream& stream,
     for (unsigned reg = 1; reg < 32; ++reg) {
         stream << 'x' << std::dec << reg << "=0x" << std::hex
                << std::setw(16)
-               << wide_bits(bank, (reg - 1) * 64, 64) << '\n';
+               << wide_bits(regs, (reg - 1) * 64, 64) << '\n';
     }
     stream << std::dec << std::setfill(' ');
     stream.flush();
@@ -2154,6 +2197,12 @@ void trace_hart0_fetch_path(const Vtb_4h_3p___024root* root,
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_debug__DOT__##name
 #define H0_L1I(name)                                                       \
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_debug__DOT__##name
+#define H0_L1I_TOP(name)                                                   \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__##name
+#define H0_L1(name)                                                        \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__##name
+#define H0_L1_TOP(name)                                                    \
+    root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1i__DOT__u_l1i__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__##name
 #define H0_RAS(name)                                                       \
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bp__DOT__g_ras__DOT__u_ras__DOT__u_debug__DOT__##name
 #define H0_CSR(name)                                                       \
@@ -2363,9 +2412,47 @@ void trace_hart0_fetch_path(const Vtb_4h_3p___024root* root,
                   << wide_bits(H0_L1I(req_rdata_o), word * 32, 32);
     }
     std::cout << std::dec << '\n';
+
+    const unsigned fill_index = H0_L1I_TOP(demand_mshr_fill_index_r);
+    std::cout
+        << "FETCH_L1I cycle=" << cycle << " phase=" << phase
+        << " fill=" << std::dec
+        << static_cast<unsigned>(H0_L1I_TOP(demand_mshr_fill_found_r))
+        << ':' << fill_index
+        << ":0x" << std::hex << H0_L1I(demand_mshr_addr_q)[fill_index]
+        << ":0x" << wide_bits(H0_L1I_TOP(demand_mshr_data_q)[fill_index],
+                               0, 32)
+        << " mshr=" << std::dec
+        << static_cast<unsigned>(H0_L1I(demand_mshr_valid_vec))
+        << ':' << static_cast<unsigned>(H0_L1I(demand_mshr_complete_vec))
+        << ':' << static_cast<unsigned>(H0_L1I(demand_mshr_fill_done_vec));
+    for (unsigned slot = 0; slot < 4; ++slot) {
+        std::cout
+            << (slot ? ',' : ':') << slot
+            << ":0x" << std::hex << H0_L1I(demand_mshr_addr_q)[slot]
+            << ":0x" << wide_bits(H0_L1I_TOP(demand_mshr_data_q)[slot],
+                                   0, 32);
+    }
+    std::cout
+        << " array=" << std::dec
+        << static_cast<unsigned>(H0_L1(sync_fill_launch))
+        << static_cast<unsigned>(H0_L1(sync_fill_probe_q))
+        << static_cast<unsigned>(H0_L1(fill_fire))
+        << ':' << static_cast<unsigned>(H0_L1_TOP(sync_fill_set_q))
+        << ':' << static_cast<unsigned>(H0_L1_TOP(fill_set))
+        << ':' << static_cast<unsigned>(H0_L1_TOP(fill_way))
+        << " lookup="
+        << static_cast<unsigned>(H0_L1(request_fire))
+        << static_cast<unsigned>(H0_L1_TOP(sync_lookup_valid_q))
+        << ':' << static_cast<unsigned>(H0_L1_TOP(sync_lookup_set_q))
+        << ':' << static_cast<unsigned>(H0_L1_TOP(sync_lookup_way_comb))
+        << std::dec << '\n';
     std::cout.flush();
 #undef H0_CSR
 #undef H0_RAS
+#undef H0_L1_TOP
+#undef H0_L1
+#undef H0_L1I_TOP
 #undef H0_L1I
 #undef H0_BUS
 #undef H0_FETCH
@@ -2691,6 +2778,9 @@ int main(int argc, char** argv) {
     }
 
     while (VL_LIKELY(!context->gotFinish())) {
+        if (!top->checkpoint_clk_i)
+            trace_hart0_m_illegal(top->rootp,
+                                  top->checkpoint_cycle_o);
         if (host_pc_trace.is_open() && !top->checkpoint_clk_i) {
             trace_hart0_pc(host_pc_trace, top->rootp,
                            top->checkpoint_cycle_o);

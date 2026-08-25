@@ -12,6 +12,7 @@ include scripts/make/targets.mk
 include scripts/make/compliance.mk
 include scripts/make/software.mk
 include scripts/make/opensbi.mk
+include scripts/make/spi-synth.mk
 include scripts/make/soc-tests.mk
 include scripts/make/core-tests.mk
 include scripts/make/performance.mk

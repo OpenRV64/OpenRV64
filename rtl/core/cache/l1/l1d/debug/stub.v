@@ -38,6 +38,9 @@ module openrv64_l1d_debug_stub #(
     input wire l1_miss_valid /* verilator public_flat_rd */,
     input wire l1_miss_ready /* verilator public_flat_rd */,
     input wire l1_miss_fire /* verilator public_flat_rd */,
+    input wire demand_mshr_match_found_r /* verilator public_flat_rd */,
+    input wire demand_mshr_response_fire /* verilator public_flat_rd */,
+    input wire demand_response_fire /* verilator public_flat_rd */,
     input wire l1_fill_valid /* verilator public_flat_rd */,
     input wire l1_fill_ready /* verilator public_flat_rd */,
     input wire l1_fill_fire /* verilator public_flat_rd */,
@@ -233,7 +236,25 @@ module openrv64_l1d_debug_stub #(
         /* verilator public_flat_rd */;
     reg [63:0] perf_demand_mshr_max_occupancy_q
         /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_alloc_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_merge_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_issue_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_lower_response_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_demand_mshr_waiter_response_q
+        /* verilator public_flat_rd */;
     reg [63:0] perf_invalidate_capture_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_external_invalidate_capture_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_lock_invalidate_capture_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_external_invalidate_wait_cycles_q
+        /* verilator public_flat_rd */;
+    reg [63:0] perf_lock_invalidate_wait_cycles_q
         /* verilator public_flat_rd */;
     reg [63:0] perf_invalidate_hold_cycles_q
         /* verilator public_flat_rd */;
@@ -264,7 +285,16 @@ module openrv64_l1d_debug_stub #(
             perf_demand_mshr_occupancy_cycles_q <= 64'd0;
             perf_demand_mshr_full_cycles_q <= 64'd0;
             perf_demand_mshr_max_occupancy_q <= 64'd0;
+            perf_demand_mshr_alloc_q <= 64'd0;
+            perf_demand_mshr_merge_q <= 64'd0;
+            perf_demand_mshr_issue_q <= 64'd0;
+            perf_demand_mshr_lower_response_q <= 64'd0;
+            perf_demand_mshr_waiter_response_q <= 64'd0;
             perf_invalidate_capture_q <= 64'd0;
+            perf_external_invalidate_capture_q <= 64'd0;
+            perf_lock_invalidate_capture_q <= 64'd0;
+            perf_external_invalidate_wait_cycles_q <= 64'd0;
+            perf_lock_invalidate_wait_cycles_q <= 64'd0;
             perf_invalidate_hold_cycles_q <= 64'd0;
             perf_invalidate_complete_q <= 64'd0;
         end else begin
@@ -328,9 +358,36 @@ module openrv64_l1d_debug_stub #(
                 perf_demand_mshr_max_occupancy_q)
                 perf_demand_mshr_max_occupancy_q <=
                     $countones(demand_mshr_valid);
+            if (l1_miss_fire && demand_mshr_match_found_r)
+                perf_demand_mshr_merge_q <=
+                    perf_demand_mshr_merge_q + 1'b1;
+            if (l1_miss_fire && !demand_mshr_match_found_r)
+                perf_demand_mshr_alloc_q <=
+                    perf_demand_mshr_alloc_q + 1'b1;
+            if (command_fire && request_demand_q)
+                perf_demand_mshr_issue_q <=
+                    perf_demand_mshr_issue_q + 1'b1;
+            if (demand_mshr_response_fire)
+                perf_demand_mshr_lower_response_q <=
+                    perf_demand_mshr_lower_response_q + 1'b1;
+            if (demand_response_fire)
+                perf_demand_mshr_waiter_response_q <=
+                    perf_demand_mshr_waiter_response_q + 1'b1;
             if (capture_external_invalidate || capture_lock_invalidate)
                 perf_invalidate_capture_q <=
                     perf_invalidate_capture_q + 1'b1;
+            if (capture_external_invalidate)
+                perf_external_invalidate_capture_q <=
+                    perf_external_invalidate_capture_q + 1'b1;
+            if (capture_lock_invalidate)
+                perf_lock_invalidate_capture_q <=
+                    perf_lock_invalidate_capture_q + 1'b1;
+            if (invalidate_valid_i && !invalidate_ready_o)
+                perf_external_invalidate_wait_cycles_q <=
+                    perf_external_invalidate_wait_cycles_q + 1'b1;
+            if (lock_invalidate_request && !lock_invalidate_fire)
+                perf_lock_invalidate_wait_cycles_q <=
+                    perf_lock_invalidate_wait_cycles_q + 1'b1;
             if (invalidate_txn_valid_q)
                 perf_invalidate_hold_cycles_q <=
                     perf_invalidate_hold_cycles_q + 1'b1;

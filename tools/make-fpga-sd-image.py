@@ -78,6 +78,8 @@ def compile_dts(args: argparse.Namespace) -> tuple[bytes, bytes]:
     ]
     if args.ethernet:
         definitions.append("OPENRV64_ETHERNET=1")
+    if args.fpga_debug:
+        definitions.append("OPENRV64_FPGA_DEBUG=1")
     with tempfile.TemporaryDirectory(prefix="openrv64-sd-image-") as directory:
         preprocessed = Path(directory) / "openrv64.dts"
         dtb = Path(directory) / "openrv64.dtb"
@@ -329,6 +331,11 @@ def main() -> int:
         action="store_true",
         help="include the conditional Ethernet clock, reserved MMIO, and EmacLite nodes",
     )
+    parser.add_argument(
+        "--fpga-debug",
+        action="store_true",
+        help="include the OpenRV64 FPGA M-mode debug PLIC context",
+    )
     parser.add_argument("--cpp", default="cpp")
     parser.add_argument("--dtc", default="dtc")
 
@@ -343,6 +350,8 @@ def main() -> int:
             parser.error("DTS, OpenSBI, Linux, and output paths are required")
         if args.memory_size <= 0 or args.hart_count not in (1, 2, 4):
             parser.error("memory-size must be positive and hart-count must be 1, 2, or 4")
+        if args.fpga_debug and args.hart_count != 1:
+            parser.error("fpga-debug currently requires hart-count 1")
         if args.timebase_frequency <= 0 or args.uart_clock_frequency <= 0:
             parser.error("clock frequencies must be positive")
         args.action = build

@@ -23,6 +23,10 @@
     .equ SPI_TX_HI,       0x20
     .equ SPI_RX_LO,       0x28
     .equ SPI_RX_HI,       0x30
+    .equ SPI_STREAM_START, 0x38
+    .equ SPI_STREAM_STATUS, 0x40
+    .equ SPI_STREAM_RELEASE, 0x48
+    .equ SPI_STREAM_CRC32, 0x50
     .equ SPI_BUFFER,      0x100
 
     .equ IMAGE_ENTRY,     0x40
@@ -161,9 +165,9 @@ _start:
     bne     a0, t0, header_fail
 
     /*
-     * CMD17 reuses the only sector buffer, so preserve the descriptor table
-     * in initialized DDR before the first payload read overwrites sector 0.
-     * Subroutine frames grow below this allocation and cannot alias it.
+     * Sector reads reuse the only sector buffer, so preserve the descriptor
+     * table in initialized DDR before the first payload read overwrites sector
+     * zero. Subroutine frames grow below this allocation and cannot alias it.
      */
     addi    t0, s4, IMAGE_ENTRY
     addi    sp, sp, -(IMAGE_ENTRY_SIZE * IMAGE_ENTRY_COUNT)
@@ -210,27 +214,71 @@ _start:
     bgtu    t1, t0, header_fail
     li      s10, -1                /* IEEE CRC-32 initial state */
 
+#ifndef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
+    /* Fill two SPI BRAM banks while software drains the preceding bank. */
+    mv      a0, s6
+    mv      a1, s7
+    mv      a2, s9
+    call    sd_read_start
+    bnez    a0, read_fail
+    li      s6, 0                   /* next ping-pong bank to consume */
+#endif
+
 .Lsector:
+    beqz    s7, header_fail
+#ifdef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
     mv      a0, s6
     call    sd_read_sector
     bnez    a0, read_fail
+#else
+    mv      a0, s6
+    call    sd_read_block
+    bnez    a0, .Lread_abort
+#endif
     li      a1, 512
     bgeu    s9, a1, .Lcopy
     mv      a1, s9
 .Lcopy:
     mv      a0, s8
+#ifdef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
     mv      a2, s10
+#endif
+#ifndef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
+    mv      a3, s6
+#endif
     call    copy_sector
     sub     s9, s9, a2             /* a2 returns copied byte count */
     mv      s8, a0
+#ifdef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
     mv      s10, a1
+#endif
+#ifdef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
     addi    s6, s6, 1
+#else
+    li      t0, 1
+    sll     t0, t0, s6
+    sd      t0, SPI_STREAM_RELEASE(s2)
+    xori    s6, s6, 1
+#endif
     addi    s7, s7, -1
     bnez    s9, .Lsector
+#ifndef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
+    call    sd_read_stop
+    bnez    a0, read_fail
+    j       .Lstream_stopped
+.Lread_abort:
+    call    sd_read_stop
+    j       read_fail
+.Lstream_stopped:
+#endif
     bnez    s7, header_fail
+#ifdef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
     not     s10, s10
     slli    s10, s10, 32
     srli    s10, s10, 32
+#else
+    ld      s10, SPI_STREAM_CRC32(s2)
+#endif
     bne     s10, s11, crc_fail
     addi    s4, s4, IMAGE_ENTRY_SIZE
     addi    s5, s5, -1
@@ -277,9 +325,13 @@ spi_xfer:
 
 /* a0=command, a1=big-endian command argument, a2=CRC; returns R1. */
 sd_command:
-    addi    sp, sp, -16
-    sd      ra, 8(sp)
-    sd      s10, 0(sp)
+    addi    sp, sp, -32
+    sd      ra, 24(sp)
+    sd      s10, 16(sp)
+    li      t0, 12
+    xor     t0, t0, a0
+    seqz    t0, t0
+    sd      t0, 8(sp)              /* CMD12 has one stuff byte before R1 */
     andi    t0, a0, 0x3f
     ori     t0, t0, 0x40
     srli    t1, a1, 24
@@ -305,22 +357,27 @@ sd_command:
     sd      t0, SPI_TX_HI(s2)
     li      a0, 6
     call    spi_xfer
+    ld      t0, 8(sp)
+    beqz    t0, 1f
+    li      a0, 1
+    call    spi_xfer               /* discard CMD12's mandatory stuff byte */
+1:
     li      t0, -1
     sd      t0, SPI_TX_LO(s2)
     li      s10, 65536
-1:
+2:
     li      a0, 1
     call    spi_xfer
     andi    a0, a0, 0xff
     andi    t0, a0, 0x80
-    beqz    t0, 2f
+    beqz    t0, 3f
     addi    s10, s10, -1
-    bnez    s10, 1b
+    bnez    s10, 2b
     li      a0, -1
-2:
-    ld      s10, 0(sp)
-    ld      ra, 8(sp)
-    addi    sp, sp, 16
+3:
+    ld      s10, 16(sp)
+    ld      ra, 24(sp)
+    addi    sp, sp, 32
     ret
 
 /* Deassert CS and provide the required trailing clocks. */
@@ -334,7 +391,7 @@ sd_end:
     addi    sp, sp, 16
     ret
 
-/* a0=LBA; read one SDHC sector into the inferred 512-byte BRAM. */
+/* a0=LBA; read one SDHC sector into the inferred 512-byte BRAM with CMD17. */
 sd_read_sector:
     addi    sp, sp, -16
     sd      ra, 8(sp)
@@ -346,7 +403,54 @@ sd_read_sector:
     mv      a1, t2
     li      a2, 0xff
     call    sd_command
-    bnez    a0, 3f
+    bnez    a0, 1f
+    call    sd_receive_block
+    mv      s10, a0
+    j       2f
+1:
+    li      s10, -1
+2:
+    call    sd_end
+    mv      a0, s10
+    ld      s10, 0(sp)
+    ld      ra, 8(sp)
+    addi    sp, sp, 16
+    ret
+
+/* a0=first LBA, a1=block count, a2=exact bytes; start buffered CMD18. */
+sd_read_start:
+    addi    sp, sp, -32
+    sd      ra, 24(sp)
+    sd      s10, 16(sp)
+    sd      s11, 8(sp)
+    mv      t2, a0
+    slli    s11, a2, 32
+    or      s11, s11, a1
+    ori     t0, s3, 1
+    sd      t0, SPI_CONTROL(s2)
+    li      a0, 18
+    mv      a1, t2
+    li      a2, 0xff
+    call    sd_command
+    mv      s10, a0
+    bnez    s10, 1f
+    sd      s11, SPI_STREAM_START(s2)
+    j       2f
+1:
+    call    sd_end
+2:
+    mv      a0, s10
+    ld      s11, 8(sp)
+    ld      s10, 16(sp)
+    ld      ra, 24(sp)
+    addi    sp, sp, 32
+    ret
+
+/* Receive a block through blocking transfers for CMD17 and legacy controls. */
+sd_receive_block:
+    addi    sp, sp, -16
+    sd      ra, 8(sp)
+    sd      s10, 0(sp)
     li      s10, 65536
 1:
     li      a0, 1
@@ -369,6 +473,58 @@ sd_read_sector:
 3:
     li      s10, -1
 4:
+    mv      a0, s10
+    ld      s10, 0(sp)
+    ld      ra, 8(sp)
+    addi    sp, sp, 16
+    ret
+
+/* a0=bank index; wait until the autonomous receiver publishes that bank. */
+sd_read_block:
+    li      t2, 65536
+    li      t1, 2
+    sll     t1, t1, a0
+1:
+    ld      t0, SPI_STREAM_STATUS(s2)
+    andi    t3, t0, 8
+    bnez    t3, 2f
+    and     t3, t0, t1
+    bnez    t3, 3f
+    addi    t2, t2, -1
+    bnez    t2, 1b
+2:
+    li      a0, -1
+    ret
+3:
+    li      a0, 0
+    ret
+
+/* Stop a CMD18 stream with CMD12/R1b, then release chip select. */
+sd_read_stop:
+    addi    sp, sp, -16
+    sd      ra, 8(sp)
+    sd      s10, 0(sp)
+    li      a0, 12
+    li      a1, 0
+    li      a2, 0xff
+    call    sd_command
+    bnez    a0, 3f
+    li      s10, 65536
+1:
+    li      a0, 1
+    call    spi_xfer
+    andi    t0, a0, 0xff
+    li      t1, 0xff
+    beq     t0, t1, 2f
+    addi    s10, s10, -1
+    bnez    s10, 1b
+    j       3f
+2:
+    li      s10, 0
+    j       4f
+3:
+    li      s10, -1
+4:
     call    sd_end
     mv      a0, s10
     ld      s10, 0(sp)
@@ -377,6 +533,7 @@ sd_read_sector:
     ret
 
 /* a0=buffer, a1=length; return zlib-compatible CRC-32 in a0. */
+#ifdef FPGA_SD_BOOT_LEGACY_COPY_CRC
 crc32_bytes:
     li      t0, -1
     li      t6, 0xedb88320
@@ -402,9 +559,13 @@ crc32_bytes:
     srli    a0, a0, 32
     ret
 
-/* a0=DDR destination, a1=count, a2=CRC state; returns dest, CRC, count. */
+/* Legacy byte-copy path retained only for source-matched A/B measurement. */
 copy_sector:
     addi    t0, s2, SPI_BUFFER
+#ifndef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
+    slli    t1, a3, 9
+    add     t0, t0, t1
+#endif
     mv      t3, a1
     li      t6, 0xedb88320
 1:
@@ -429,6 +590,113 @@ copy_sector:
     mv      a1, a2
     mv      a2, t3
     ret
+#else
+crc32_bytes:
+    li      t0, -1
+    la      t6, crc32_table
+1:
+    beqz    a1, 2f
+    lbu     t1, 0(a0)
+    xor     t1, t0, t1
+    andi    t1, t1, 0xff
+    slli    t1, t1, 2
+    add     t1, t6, t1
+    lwu     t1, 0(t1)
+    srliw   t0, t0, 8
+    xor     t0, t0, t1
+    addi    a0, a0, 1
+    addi    a1, a1, -1
+    j       1b
+2:
+    not     t0, t0
+    slli    a0, t0, 32
+    srli    a0, a0, 32
+    ret
+
+/* a0=DDR destination, a1=count, a2=CRC state; returns dest, CRC, count. */
+copy_sector:
+    addi    t0, s2, SPI_BUFFER
+#ifndef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
+    slli    t1, a3, 9
+    add     t0, t0, t1
+#endif
+    mv      t3, a1
+    la      t6, crc32_table
+    or      t4, t0, a0
+    andi    t4, t4, 7
+    bnez    t4, 3f
+1:
+    li      t4, 8
+    bltu    a1, t4, 3f
+    ld      t5, 0(t0)
+    sd      t5, 0(a0)
+    li      t2, 8
+2:
+    xor     t1, a2, t5
+    andi    t1, t1, 0xff
+    slli    t1, t1, 2
+    add     t1, t6, t1
+    lwu     t1, 0(t1)
+    srliw   a2, a2, 8
+    xor     a2, a2, t1
+    srli    t5, t5, 8
+    addi    t2, t2, -1
+    bnez    t2, 2b
+    addi    t0, t0, 8
+    addi    a0, a0, 8
+    addi    a1, a1, -8
+    j       1b
+3:
+    beqz    a1, 5f
+    lbu     t5, 0(t0)
+    sb      t5, 0(a0)
+    xor     t1, a2, t5
+    andi    t1, t1, 0xff
+    slli    t1, t1, 2
+    add     t1, t6, t1
+    lwu     t1, 0(t1)
+    srliw   a2, a2, 8
+    xor     a2, a2, t1
+    addi    t0, t0, 1
+    addi    a0, a0, 1
+    addi    a1, a1, -1
+    j       3b
+5:
+    mv      a1, a2
+    mv      a2, t3
+    ret
+#else
+/* Hardware-CRC path: copy exact bytes using wide accesses where aligned. */
+copy_sector:
+    addi    t0, s2, SPI_BUFFER
+    slli    t1, a3, 9
+    add     t0, t0, t1
+    mv      t3, a1
+    or      t4, t0, a0
+    andi    t4, t4, 7
+    bnez    t4, 3f
+1:
+    li      t4, 8
+    bltu    a1, t4, 3f
+    ld      t5, 0(t0)
+    sd      t5, 0(a0)
+    addi    t0, t0, 8
+    addi    a0, a0, 8
+    addi    a1, a1, -8
+    j       1b
+3:
+    beqz    a1, 5f
+    lbu     t5, 0(t0)
+    sb      t5, 0(a0)
+    addi    t0, t0, 1
+    addi    a0, a0, 1
+    addi    a1, a1, -1
+    j       3b
+5:
+    mv      a2, t3
+    ret
+#endif
+#endif
 
 uart_init:
     sb      zero, UART_IER(s1)
@@ -483,5 +751,27 @@ read_fail_message:
     .asciz  "OPENRV64 SD BOOT READ FAIL\r\n"
 crc_fail_message:
     .asciz  "OPENRV64 SD BOOT CRC FAIL\r\n"
+
+#ifndef FPGA_SD_BOOT_LEGACY_COPY_CRC
+    /* Generated at assembly time; polynomial 0xedb88320, reflected form. */
+    .balign 4
+crc32_table:
+    .macro crc32_table_entry index
+        .set crc32_value, \index
+        .rept 8
+            .if (crc32_value & 1)
+                .set crc32_value, (crc32_value >> 1) ^ 0xedb88320
+            .else
+                .set crc32_value, crc32_value >> 1
+            .endif
+        .endr
+        .word crc32_value
+    .endm
+    .set crc32_index, 0
+    .rept 256
+        crc32_table_entry crc32_index
+        .set crc32_index, crc32_index + 1
+    .endr
+#endif
 
     .size _start, . - _start

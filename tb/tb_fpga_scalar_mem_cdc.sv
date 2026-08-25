@@ -1,6 +1,8 @@
 `timescale 1ns/1ps
 
-module tb_fpga_scalar_mem_cdc;
+module tb_fpga_scalar_mem_cdc #(
+    parameter integer CACHE_ENABLE = 1
+);
 
     logic core_clk = 1'b0;
     logic ui_clk = 1'b0;
@@ -41,6 +43,13 @@ module tb_fpga_scalar_mem_cdc;
     logic [255:0] app_rd_data = 256'd0;
     logic app_rd_data_end = 1'b0;
     logic app_rd_data_valid = 1'b0;
+    logic [9:0] debug_cache_index = 10'd0;
+    logic debug_cache_req_toggle = 1'b0;
+    logic debug_cache_ack_toggle;
+    logic [9:0] debug_cache_result_index;
+    logic debug_cache_valid;
+    logic [63:0] debug_cache_tag;
+    logic [255:0] debug_cache_data;
 
     openrv64_fpga_scalar_mem_cdc u_cdc (
         .core_clk_i(core_clk),
@@ -69,6 +78,7 @@ module tb_fpga_scalar_mem_cdc;
 
     openrv64_fpga_mig_scalar_bridge #(
         .MEMORY_BYTES(64'h100),
+        .CACHE_ENABLE(CACHE_ENABLE),
         .CACHE_BYTES(64)
     ) u_bridge (
         .clk_i(ui_clk),
@@ -95,7 +105,14 @@ module tb_fpga_scalar_mem_cdc;
         .app_wdf_rdy_i(app_wdf_rdy),
         .app_rd_data_i(app_rd_data),
         .app_rd_data_end_i(app_rd_data_end),
-        .app_rd_data_valid_i(app_rd_data_valid)
+        .app_rd_data_valid_i(app_rd_data_valid),
+        .debug_cache_index_i(debug_cache_index),
+        .debug_cache_req_toggle_i(debug_cache_req_toggle),
+        .debug_cache_ack_toggle_o(debug_cache_ack_toggle),
+        .debug_cache_result_index_o(debug_cache_result_index),
+        .debug_cache_valid_o(debug_cache_valid),
+        .debug_cache_tag_o(debug_cache_tag),
+        .debug_cache_data_o(debug_cache_data)
     );
 
     logic [255:0] memory [0:31];
@@ -224,13 +241,26 @@ module tb_fpga_scalar_mem_cdc;
         core_access(1'b0, 64'h18, 64'd0, 8'd0,
                     observed_data, observed_error);
         if (observed_error || observed_data !== 64'h0123456789abcdef ||
-            read_command_count != 1)
+            read_command_count != (CACHE_ENABLE ? 1 : 2))
             $fatal(1, "cached read issued a second MIG read");
+
+        // The debug read reuses the bridge cache's synchronous read port and
+        // must return while the core-facing side is idle.
+        debug_cache_index = 10'd0;
+        debug_cache_req_toggle = 1'b1;
+        wait (debug_cache_ack_toggle == debug_cache_req_toggle);
+        @(posedge ui_clk);
+        if (debug_cache_result_index !== 10'd0 ||
+            (CACHE_ENABLE &&
+             (!debug_cache_valid || debug_cache_tag !== 64'd0 ||
+              debug_cache_data[255:192] !== 64'h0123456789abcdef)) ||
+            (!CACHE_ENABLE && debug_cache_valid))
+            $fatal(1, "indexed bridge-cache debug readback mismatch");
 
         core_access(1'b0, 64'h10, 64'd0, 8'd0,
                     observed_data, observed_error);
         if (observed_error || observed_data !== 64'd0 ||
-            read_command_count != 1)
+            read_command_count != (CACHE_ENABLE ? 1 : 3))
             $fatal(1, "same-line read missed the native-beat fill");
 
         core_access(1'b1, 64'h18, 64'hfedcba9876543210, 8'hff,
@@ -240,7 +270,7 @@ module tb_fpga_scalar_mem_cdc;
         core_access(1'b0, 64'h18, 64'd0, 8'd0,
                     observed_data, observed_error);
         if (observed_error || observed_data !== 64'hfedcba9876543210 ||
-            read_command_count != 2)
+            read_command_count != (CACHE_ENABLE ? 2 : 4))
             $fatal(1, "store did not invalidate its cache line");
 
         core_access(1'b1, 64'h08, 64'h0000000000aa0000, 8'h04,
@@ -250,13 +280,13 @@ module tb_fpga_scalar_mem_cdc;
         core_access(1'b0, 64'h08, 64'd0, 8'd0,
                     observed_data, observed_error);
         if (observed_error || observed_data !== 64'h0000000000aa0000 ||
-            read_command_count != 3)
+            read_command_count != (CACHE_ENABLE ? 3 : 5))
             $fatal(1, "masked write/readback mismatch");
 
         core_access(1'b0, 64'h18, 64'd0, 8'd0,
                     observed_data, observed_error);
         if (observed_error || observed_data !== 64'hfedcba9876543210 ||
-            read_command_count != 3)
+            read_command_count != (CACHE_ENABLE ? 3 : 6))
             $fatal(1, "post-store line fill did not cache the full beat");
 
         core_access(1'b1, 64'h58, 64'h1122334455667788, 8'hff,
@@ -266,17 +296,18 @@ module tb_fpga_scalar_mem_cdc;
         core_access(1'b0, 64'h58, 64'd0, 8'd0,
                     observed_data, observed_error);
         if (observed_error || observed_data !== 64'h1122334455667788 ||
-            read_command_count != 4)
+            read_command_count != (CACHE_ENABLE ? 4 : 7))
             $fatal(1, "conflict-address fill failed");
         core_access(1'b0, 64'h18, 64'd0, 8'd0,
                     observed_data, observed_error);
         if (observed_error || observed_data !== 64'hfedcba9876543210 ||
-            read_command_count != 5)
+            read_command_count != (CACHE_ENABLE ? 5 : 8))
             $fatal(1, "direct-mapped conflict did not evict old line");
 
         core_access(1'b0, 64'h100, 64'd0, 8'd0,
                     observed_data, observed_error);
-        if (!observed_error || read_command_count != 5 ||
+        if (!observed_error ||
+            read_command_count != (CACHE_ENABLE ? 5 : 8) ||
             write_command_count != 4)
             $fatal(1, "out-of-range request did not return an error");
 

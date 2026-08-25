@@ -8,6 +8,8 @@ output_dir="${build_root}/out"
 artifact_dir="${build_root}/artifacts"
 defconfig_name=openrv64_defconfig
 defconfig_path="${source_dir}/platform/generic/configs/${defconfig_name}"
+fpga_debug_overlay_source="${repo_root}/sw/opensbi-fpga-debug"
+fpga_debug_overlay_dir="${source_dir}/platform/generic/openrv64"
 
 opensbi_ref=${OPENSBI_REF:-v1.9}
 opensbi_v19_commit=cbf9f6734dd85a982c63e3cb5db7ffe09da839ca
@@ -25,6 +27,7 @@ memory_size=${OPENSBI_MEMORY_SIZE:-0x10000000}
 zicclsm=${OPENRV64_ZICCLSM:-1}
 zbb=${OPENRV64_ZBB:-1}
 ethernet=${OPENRV64_ETHERNET:-0}
+fpga_debug=${OPENRV64_FPGA_DEBUG:-0}
 hart_count=${OPENRV64_HART_COUNT:-1}
 timebase_frequency=${OPENRV64_TIMEBASE_FREQUENCY:-10000000}
 uart_clock_frequency=${OPENRV64_UART_CLOCK_FREQUENCY:-1843200}
@@ -50,9 +53,17 @@ if [[ "${ethernet}" != 0 && "${ethernet}" != 1 ]]; then
     echo "build-opensbi.sh: OPENRV64_ETHERNET must be 0 or 1" >&2
     exit 2
 fi
+if [[ "${fpga_debug}" != 0 && "${fpga_debug}" != 1 ]]; then
+    echo "build-opensbi.sh: OPENRV64_FPGA_DEBUG must be 0 or 1" >&2
+    exit 2
+fi
 if [[ "${hart_count}" != 1 && "${hart_count}" != 2 &&
       "${hart_count}" != 4 ]]; then
     echo "build-opensbi.sh: OPENRV64_HART_COUNT must be 1, 2, or 4" >&2
+    exit 2
+fi
+if [[ "${fpga_debug}" == 1 && "${hart_count}" != 1 ]]; then
+    echo "build-opensbi.sh: FPGA debug currently supports one hart" >&2
     exit 2
 fi
 if [[ ! "${timebase_frequency}" =~ ^[1-9][0-9]*$ ]]; then
@@ -83,6 +94,10 @@ ethernet_cpp_args=()
 if [[ "${ethernet}" == 1 ]]; then
     ethernet_cpp_args=(-DOPENRV64_ETHERNET)
 fi
+fpga_debug_cpp_args=()
+if [[ "${fpga_debug}" == 1 ]]; then
+    fpga_debug_cpp_args=(-DOPENRV64_FPGA_DEBUG)
+fi
 
 for tool in git make dtc python3 awk \
             "${opensbi_cross}gcc" "${opensbi_cross}objcopy" \
@@ -110,7 +125,24 @@ else
 fi
 
 cp "${repo_root}/sw/opensbi_defconfig" "${defconfig_path}"
-trap 'rm -f "${defconfig_path}"' EXIT
+
+cleanup_generated_source() {
+    rm -f "${defconfig_path}"
+    if [[ "${fpga_debug}" == 1 ]]; then
+        rm -f "${fpga_debug_overlay_dir}/debug.c" \
+            "${fpga_debug_overlay_dir}/objects.mk"
+        rmdir "${fpga_debug_overlay_dir}" 2>/dev/null || true
+    fi
+}
+trap cleanup_generated_source EXIT
+
+if [[ "${fpga_debug}" == 1 ]]; then
+    mkdir -p "${fpga_debug_overlay_dir}"
+    cp "${fpga_debug_overlay_source}/debug.c" \
+        "${fpga_debug_overlay_dir}/debug.c"
+    cp "${fpga_debug_overlay_source}/objects.mk" \
+        "${fpga_debug_overlay_dir}/objects.mk"
+fi
 
 actual_commit=$(git -C "${source_dir}" rev-parse HEAD)
 if [[ "${opensbi_ref}" == v1.9 && \
@@ -124,6 +156,7 @@ fi
     -DOPENRV64_HART_COUNT="${hart_count}" \
     -DOPENRV64_TIMEBASE_FREQUENCY="${timebase_frequency}" \
     -DOPENRV64_UART_CLOCK_FREQUENCY="${uart_clock_frequency}" \
+    "${fpga_debug_cpp_args[@]}" \
     "${ethernet_cpp_args[@]}" \
     -o "${artifact_dir}/openrv64.dts" \
     "${repo_root}/sw/opensbi.dts"
@@ -258,6 +291,7 @@ echo "  payload    ${payload_addr}"
 echo "  FDT        ${fdt_addr}"
 echo "  memory     ${memory_size}"
 echo "  HARTs      ${hart_count}"
+echo "  FPGA debug ${fpga_debug} (external input 29, PLIC source 32)"
 echo "  payload    ${payload_source}"
 echo "  HSM WFI PC ${hsm_wfi_pc}"
 echo "  artifacts  ${artifact_dir}"

@@ -21,6 +21,12 @@ module openrv64_uart16550 #(
     input  wire         rx_i,
     output wire         tx_o,
 
+    // One-cycle observation pulse when a queued character begins
+    // transmission. FPGA-only diagnostic storage uses this passive tap; it
+    // does not alter FIFO admission, flow control, or serializer timing.
+    output wire         tx_byte_valid_o,
+    output wire [7:0]   tx_byte_o,
+
     // Modem signals use the polarity of the original 16550 pins.  Tie the
     // active-low inputs high when modem control is not used.
     input  wire         cts_ni,
@@ -313,6 +319,9 @@ module openrv64_uart16550 #(
                   ((tx_state_q == TX_IDLE) || tx_last_stop_tick);
     wire tx_push = write_thr &&
                    ((tx_count_q < fifo_capacity) || tx_pop);
+
+    assign tx_byte_valid_o = tx_pop;
+    assign tx_byte_o = tx_fifo_q[tx_read_pointer_q];
 
     wire rx_pop = read_rbr && (rx_count_q != 5'd0);
     wire rx_complete = baud16_tick && (rx_state_q == RX_STOP) &&

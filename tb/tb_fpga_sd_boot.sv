@@ -26,7 +26,8 @@ module tb_fpga_sd_boot #(
 
     localparam integer DDR_BYTES = 2 * 1024 * 1024;
     reg [63:0] ddr [0:(DDR_BYTES / 8) - 1];
-    reg [7:0] card [0:6143];
+    localparam integer CARD_BYTES = 17 * 512;
+    reg [7:0] card [0:CARD_BYTES-1];
     reg [7:0] command_bytes [0:5];
     reg [7:0] response_bytes [0:519];
     reg [7:0] command_shift;
@@ -36,6 +37,14 @@ module tb_fpga_sd_boot #(
     integer response_index;
     integer response_bit;
     integer card_ready;
+    integer multi_read_active;
+    integer multi_read_lba;
+    integer cmd17_count;
+    integer cmd18_count;
+    integer cmd12_count;
+    integer overlap_seen;
+    integer bank1_ready_seen;
+    integer both_banks_ready_seen;
 
     openrv64_platform #(
         .SOC_RESET_CYCLES(2),
@@ -193,16 +202,65 @@ module tb_fpga_sd_boot #(
         input integer index;
         input [63:0] tag;
         input [31:0] lba;
+        input [31:0] sector_count;
         input [63:0] destination;
+        input [31:0] byte_length;
         integer entry_offset;
         begin
             entry_offset = 64 + 32 * index;
             put_u64(entry_offset, tag);
             put_u32(entry_offset + 8, lba);
-            put_u32(entry_offset + 12, 1);
+            put_u32(entry_offset + 12, sector_count);
             put_u64(entry_offset + 16, destination);
-            put_u32(entry_offset + 24, 4);
-            put_u32(entry_offset + 28, card_crc32(lba * 512, 4));
+            put_u32(entry_offset + 24, byte_length);
+            put_u32(entry_offset + 28,
+                    card_crc32(lba * 512, byte_length));
+        end
+    endtask
+
+    task automatic check_payload;
+        input integer ddr_offset;
+        input integer lba;
+        input integer byte_length;
+        integer byte_index;
+        reg [7:0] actual;
+        begin
+            for (byte_index = 0; byte_index < byte_length;
+                 byte_index = byte_index + 1) begin
+                actual = ddr[(ddr_offset + byte_index) >> 3]
+                            [8*((ddr_offset + byte_index) & 7) +: 8];
+                if (actual !== card[lba * 512 + byte_index])
+                    $fatal(1,
+                           "DDR payload mismatch ddr=%0x lba=%0d byte=%0d got=%02x expected=%02x",
+                           ddr_offset, lba, byte_index, actual,
+                           card[lba * 512 + byte_index]);
+            end
+            actual = ddr[(ddr_offset + byte_length) >> 3]
+                        [8*((ddr_offset + byte_length) & 7) +: 8];
+            if (actual !== 8'ha5)
+                $fatal(1,
+                       "payload padding was copied ddr=%0x length=%0d got=%02x",
+                       ddr_offset, byte_length, actual);
+        end
+    endtask
+
+    task automatic queue_data_block;
+        input integer lba;
+        integer data_index;
+        integer lba_offset;
+        begin
+            lba_offset = lba * 512;
+            response_bytes[0] = 8'hff;
+            response_bytes[1] = 8'hfe;
+            for (data_index = 0; data_index < 512;
+                 data_index = data_index + 1)
+                response_bytes[2 + data_index] =
+                    card[lba_offset + data_index];
+            response_bytes[514] = 8'hff;
+            response_bytes[515] = 8'hff;
+            response_count = 516;
+            response_index = 0;
+            response_bit = 7;
         end
     endtask
 
@@ -249,6 +307,7 @@ module tb_fpga_sd_boot #(
                     response_count = 5;
                 end
                 17: begin
+                    cmd17_count = cmd17_count + 1;
                     response_bytes[0] = 8'h00;
                     response_bytes[1] = 8'hff;
                     response_bytes[2] = 8'hfe;
@@ -260,6 +319,26 @@ module tb_fpga_sd_boot #(
                     response_bytes[515] = 8'hff;
                     response_bytes[516] = 8'hff;
                     response_count = 517;
+                end
+                18: begin
+                    cmd18_count = cmd18_count + 1;
+                    response_bytes[0] = 8'h00;
+                    response_count = 1;
+                    multi_read_active = 1;
+                    multi_read_lba = argument;
+                end
+                12: begin
+                    cmd12_count = cmd12_count + 1;
+                    multi_read_active = 0;
+                    /*
+                     * CMD12 has one unspecified stuff byte before R1.  Keep
+                     * bit 7 clear so generic R1 polling cannot accidentally
+                     * accept the stuff byte as the response.
+                     */
+                    response_bytes[0] = 8'h3f;
+                    response_bytes[1] = 8'h00;
+                    response_bytes[2] = 8'hff;
+                    response_count = 3;
                 end
                 default: begin
                     response_bytes[0] = 8'h04;
@@ -280,28 +359,43 @@ module tb_fpga_sd_boot #(
         spi_miso = 1'b1;
     end
 
-    always @(posedge spi_cs_n)
+    always @(posedge spi_cs_n) begin
+        multi_read_active = 0;
         spi_miso = 1'b1;
+    end
 
     always @(posedge spi_clk) begin : capture_card_command
         reg [7:0] assembled_byte;
-        if (!spi_cs_n && response_count == 0 &&
-            command_byte_count < 6) begin
+        if (!spi_cs_n) begin
             assembled_byte = {command_shift[6:0], spi_mosi};
             command_shift = assembled_byte;
             command_bit_count = command_bit_count + 1;
             if (command_bit_count == 8) begin
-                command_bytes[command_byte_count] = assembled_byte;
                 command_bit_count = 0;
                 command_shift = 0;
-                command_byte_count = command_byte_count + 1;
-                if (command_byte_count == 6)
-                    queue_command_response();
+                if (command_byte_count == 0) begin
+                    if (assembled_byte[7:6] == 2'b01) begin
+                        command_bytes[0] = assembled_byte;
+                        command_byte_count = 1;
+                    end
+                end else begin
+                    command_bytes[command_byte_count] = assembled_byte;
+                    command_byte_count = command_byte_count + 1;
+                    if (command_byte_count == 6) begin
+                        queue_command_response();
+                        command_byte_count = 0;
+                    end
+                end
             end
         end
     end
 
     always @(negedge spi_clk) begin
+        if (!spi_cs_n && response_index >= response_count &&
+            multi_read_active && command_byte_count == 0) begin
+            queue_data_block(multi_read_lba);
+            multi_read_lba = multi_read_lba + 1;
+        end
         if (!spi_cs_n && response_index < response_count) begin
             spi_miso = response_bytes[response_index][response_bit];
             if (response_bit == 0) begin
@@ -358,44 +452,91 @@ module tb_fpga_sd_boot #(
         uart_byte_count = 0;
         spi_miso = 1;
         card_ready = 0;
-        ddr[0] = 0;
-        ddr[16'h1000 >> 3] = 0;
-        ddr[16'h2000 >> 3] = 0;
-        ddr[16'h3000 >> 3] = 0;
-        for (init_index = 0; init_index < 6144; init_index = init_index + 1)
+        multi_read_active = 0;
+        multi_read_lba = 0;
+        cmd17_count = 0;
+        cmd18_count = 0;
+        cmd12_count = 0;
+        overlap_seen = 0;
+        bank1_ready_seen = 0;
+        both_banks_ready_seen = 0;
+        for (init_index = 0; init_index < 2048 / 8;
+             init_index = init_index + 1) begin
+            ddr[init_index] = 64'ha5a5_a5a5_a5a5_a5a5;
+            ddr[(16'h1000 >> 3) + init_index] =
+                64'ha5a5_a5a5_a5a5_a5a5;
+            ddr[(16'h2000 >> 3) + init_index] =
+                64'ha5a5_a5a5_a5a5_a5a5;
+            ddr[(16'h3000 >> 3) + init_index] =
+                64'ha5a5_a5a5_a5a5_a5a5;
+        end
+        for (init_index = 0; init_index < CARD_BYTES;
+             init_index = init_index + 1)
             card[init_index] = 0;
 
-        /* Four tiny payloads in sectors 8..11. */
+        /* Four payloads, including exact-length multi-sector entries. */
+        for (init_index = 0; init_index < 32; init_index = init_index + 1)
+            card[8 * 512 + init_index] = init_index ^ 8'h35;
         put_u32(8 * 512, 32'h0000006f); /* jal zero, 0 */
-        put_u32(9 * 512, 32'h11223344);
-        put_u32(10 * 512, 32'h55667788);
-        put_u32(11 * 512, 32'h99aabbcc);
+        for (init_index = 0; init_index < 700; init_index = init_index + 1)
+            card[9 * 512 + init_index] = (init_index * 3) ^ 8'h51;
+        for (init_index = 0; init_index < 1300; init_index = init_index + 1)
+            card[11 * 512 + init_index] = (init_index * 5) ^ 8'ha7;
+        for (init_index = 0; init_index < 777; init_index = init_index + 1)
+            card[14 * 512 + init_index] = (init_index * 7) ^ 8'hc3;
 
         put_u64(0, 64'h314453343656524f); /* ORV64SD1 */
         put_u32(8, 1);
         put_u32(12, 512);
         put_u32(16, 32);
         put_u32(20, 4);
-        put_u64(24, 6144);
-        make_entry(0, 64'h000000504d415254, 8, 64'h80000000);
-        make_entry(1, 64'h000000004942534f, 9, 64'h80001000);
-        make_entry(2, 64'h00000058554e494c, 10, 64'h80002000);
-        make_entry(3, 64'h0000000000544446, 11, 64'h80003000);
+        put_u64(24, 16 * 512);
+        make_entry(0, 64'h000000504d415254, 8, 1,
+                   64'h80000000, 32);
+        make_entry(1, 64'h000000004942534f, 9, 2,
+                   64'h80001000, 700);
+        make_entry(2, 64'h00000058554e494c, 11, 3,
+                   64'h80002000, 1300);
+        make_entry(3, 64'h0000000000544446, 14, 2,
+                   64'h80003000, 777);
         put_u32(508, card_crc32(0, 508));
 
         repeat (8) @(posedge clk);
         rst_n = 1;
 
-        for (cycle_count = 0; cycle_count < 500_000;
+        for (cycle_count = 0; cycle_count < 1_000_000;
              cycle_count = cycle_count + 1) begin
             @(posedge clk);
             if (dbg_pc == 64'h80000000) begin
-                if (ddr[0][31:0] !== 32'h0000006f ||
-                    ddr[16'h1000 >> 3][31:0] !== 32'h11223344 ||
-                    ddr[16'h2000 >> 3][31:0] !== 32'h55667788 ||
-                    ddr[16'h3000 >> 3][31:0] !== 32'h99aabbcc)
-                    $fatal(1, "DDR payload mismatch after SD boot");
-                $display("tb_fpga_sd_boot: PASS cycles=%0d", cycle_count);
+                check_payload(16'h0000, 8, 32);
+                check_payload(16'h1000, 9, 700);
+                check_payload(16'h2000, 11, 1300);
+                check_payload(16'h3000, 14, 777);
+`ifdef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
+                if (cmd17_count != 9 || cmd18_count != 0 ||
+                    cmd12_count != 0)
+                    $fatal(1,
+                           "bad SD command counts CMD17=%0d CMD18=%0d CMD12=%0d",
+                           cmd17_count, cmd18_count, cmd12_count);
+                $display("tb_fpga_sd_boot: PASS mode=legacy cycles=%0d sectors=8 CMD17=%0d CMD18=%0d CMD12=%0d",
+                         cycle_count, cmd17_count, cmd18_count, cmd12_count);
+`else
+                if (cmd17_count != 1 || cmd18_count != 4 ||
+                    cmd12_count != 4)
+                    $fatal(1,
+                           "bad SD command counts CMD17=%0d CMD18=%0d CMD12=%0d",
+                           cmd17_count, cmd18_count, cmd12_count);
+                if (!overlap_seen || !bank1_ready_seen ||
+                    !both_banks_ready_seen)
+                    $fatal(1,
+                           "double-buffer coverage missing overlap=%0d bank1=%0d both_ready=%0d",
+                           overlap_seen, bank1_ready_seen,
+                           both_banks_ready_seen);
+                $display("tb_fpga_sd_boot: PASS mode=double-buffer cycles=%0d sectors=8 CMD17=%0d CMD18=%0d CMD12=%0d overlap=%0d bank1=%0d both_ready=%0d",
+                         cycle_count, cmd17_count, cmd18_count, cmd12_count,
+                         overlap_seen, bank1_ready_seen,
+                         both_banks_ready_seen);
+`endif
                 $finish;
             end
         end
@@ -404,6 +545,14 @@ module tb_fpga_sd_boot #(
     end
 
     always @(posedge clk) begin
+        if (rst_n) begin
+            if (dut.u_spi.stream_active_q && ext_mem_valid && ext_mem_write)
+                overlap_seen = 1;
+            if (dut.u_spi.stream_ready_q[1])
+                bank1_ready_seen = 1;
+            if (dut.u_spi.stream_ready_q == 2'b11)
+                both_banks_ready_seen = 1;
+        end
         if (dut.u_uart.write_thr) begin
             if (uart_byte_count < 24 &&
                 dut.u_uart.thr_write_data !==

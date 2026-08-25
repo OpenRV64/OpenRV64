@@ -106,6 +106,8 @@ module openrv64_core_debug_stub (
     input wire [63:0] csr_mtval /* verilator public_flat_rd */,
     input wire [63:0] csr_mip_sw /* verilator public_flat_rd */,
     input wire [63:0] csr_satp /* verilator public_flat_rd */,
+    input wire [31*64-1:0] gpr_debug_regs
+        /* verilator public_flat_rd */,
     input wire atomic_active /* verilator public_flat_rd */,
     input wire atomic_irrevocable /* verilator public_flat_rd */,
     input wire atomic_req_inflight /* verilator public_flat_rd */,

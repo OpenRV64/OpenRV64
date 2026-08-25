@@ -9,6 +9,33 @@ FPGA_SD_LINUX ?= sw/Image.Zicclsm
 FPGA_SD_TIMEBASE_FREQUENCY ?= 9216000
 FPGA_SD_UART_CLOCK_FREQUENCY ?= 9216000
 FPGA_SD_ETHERNET ?= 0
+FPGA_SD_DEBUG ?= 0
+FPGA_OPENSBI_BUILD_DIR ?= build/opensbi-fpga-linux
+FPGA_OPENSBI_SOURCE_DIR ?= build/opensbi/src
+FPGA_OPENSBI_FW_JUMP_BIN := \
+	$(FPGA_OPENSBI_BUILD_DIR)/artifacts/fw_jump.bin
+FPGA_OPENSBI_FW_JUMP_ELF := \
+	$(FPGA_OPENSBI_BUILD_DIR)/artifacts/fw_jump.elf
+FPGA_OPENSBI_DTS := $(FPGA_OPENSBI_BUILD_DIR)/artifacts/openrv64.dts
+FPGA_OPENSBI_NM ?= riscv64-linux-gnu-nm
+FPGA_DEBUG_SNAPSHOT_SYNTH_DIR ?= \
+	build/fpga/xc7a100t/debug-snapshot-synth
+FPGA_DEBUG_SNAPSHOT_SYNTH_JSON := \
+	$(FPGA_DEBUG_SNAPSHOT_SYNTH_DIR)/snapshot.json
+FPGA_DEBUG_SNAPSHOT_SYNTH_LOG := \
+	$(FPGA_DEBUG_SNAPSHOT_SYNTH_DIR)/yosys.log
+FPGA_DEBUG_STUB_SYNTH_DIR ?= \
+	build/fpga/xc7a100t/debug-stub-synth
+FPGA_DEBUG_STUB_SYNTH_JSON := \
+	$(FPGA_DEBUG_STUB_SYNTH_DIR)/stub.json
+FPGA_DEBUG_STUB_SYNTH_LOG := \
+	$(FPGA_DEBUG_STUB_SYNTH_DIR)/yosys.log
+FPGA_DEBUG_UART_TRACE_SYNTH_DIR ?= \
+	build/fpga/xc7a100t/debug-uart-trace-synth
+FPGA_DEBUG_UART_TRACE_SYNTH_JSON := \
+	$(FPGA_DEBUG_UART_TRACE_SYNTH_DIR)/uart-trace.json
+FPGA_DEBUG_UART_TRACE_SYNTH_LOG := \
+	$(FPGA_DEBUG_UART_TRACE_SYNTH_DIR)/yosys.log
 FPGA_SD_BOOT_DIR ?= build/fpga/xc7a100t/sd-boot
 FPGA_SD_BOOT_OUTPUT_DIR ?= \
 	$(if $(OUT_DIR),$(OUT_DIR),build/fpga/xc7a100t/sd-boot)
@@ -23,6 +50,7 @@ FPGA_SD_BOOT_CORE_TIMING_REPORT_NAME ?= timing_strict_core.rpt
 FPGA_SD_BOOT_CORE_TIMING_REPORT := \
 	$(FPGA_SD_BOOT_OUTPUT_DIR)/reports/$(FPGA_SD_BOOT_CORE_TIMING_REPORT_NAME)
 FPGA_SD_BOOT_UART_DIVISOR ?= 5
+FPGA_SD_BOOT_CPPFLAGS ?=
 FPGA_SD_BOOT_ELF := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.elf
 FPGA_SD_BOOT_BIN := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.bin
 FPGA_SD_BOOT_MEM := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.mem
@@ -30,6 +58,22 @@ FPGA_VIVADO ?= /home/bill/bin/vivado
 FPGA_HW_SERVER_URL ?= TCP:10.1.6.21:3121
 FPGA_JTAG_SNOOP ?= tools/fpga-jtag-snoop
 FPGA_JTAG_SNOOP_ARGS ?= status
+FPGA_DEBUG_DTB_PROBE_DIR ?= build/fpga/xc7a100t/debug-dtb-probe
+FPGA_DEBUG_DTB_PROBE_ELF := $(FPGA_DEBUG_DTB_PROBE_DIR)/dtb-probe.elf
+FPGA_DEBUG_DTB_PROBE_BIN := $(FPGA_DEBUG_DTB_PROBE_DIR)/dtb-probe.bin
+FPGA_DEBUG_DTB_PROBE_DIS := $(FPGA_DEBUG_DTB_PROBE_DIR)/dtb-probe.dis
+FPGA_DEBUG_STRCMP_PROBE_DIR ?= build/fpga/xc7a100t/debug-strcmp-probe
+FPGA_DEBUG_STRCMP_PROBE_ELF := $(FPGA_DEBUG_STRCMP_PROBE_DIR)/strcmp-probe.elf
+FPGA_DEBUG_STRCMP_PROBE_BIN := $(FPGA_DEBUG_STRCMP_PROBE_DIR)/strcmp-probe.bin
+FPGA_DEBUG_STRCMP_PROBE_DIS := $(FPGA_DEBUG_STRCMP_PROBE_DIR)/strcmp-probe.dis
+FPGA_DEBUG_MEMBLOCK_PROBE_DIR ?= build/fpga/xc7a100t/debug-memblock-probe
+FPGA_DEBUG_MEMBLOCK_PROBE_ELF := $(FPGA_DEBUG_MEMBLOCK_PROBE_DIR)/memblock-probe.elf
+FPGA_DEBUG_MEMBLOCK_PROBE_BIN := $(FPGA_DEBUG_MEMBLOCK_PROBE_DIR)/memblock-probe.bin
+FPGA_DEBUG_MEMBLOCK_PROBE_DIS := $(FPGA_DEBUG_MEMBLOCK_PROBE_DIR)/memblock-probe.dis
+FPGA_DEBUG_PING_DIR ?= build/fpga/xc7a100t/debug-ping
+FPGA_DEBUG_PING_ELF := $(FPGA_DEBUG_PING_DIR)/ping.elf
+FPGA_DEBUG_PING_BIN := $(FPGA_DEBUG_PING_DIR)/ping.bin
+FPGA_DEBUG_PING_DIS := $(FPGA_DEBUG_PING_DIR)/ping.dis
 FPGA_OPENSBI_CORE_OUTPUT_DIR ?= \
 	build/fpga/xc7a100t/opensbi-core
 FPGA_OPENSBI_CORE_EDIF := \
@@ -40,12 +84,18 @@ FPGA_OPENSBI_CORE_STUB := \
 	$(FPGA_OPENSBI_CORE_OUTPUT_DIR)/openrv64_fpga_core_stub.v
 FPGA_OPENSBI_CORE_DCP := \
 	$(FPGA_OPENSBI_CORE_OUTPUT_DIR)/openrv64_fpga_core.dcp
+FPGA_OPENSBI_BP_TYPE ?= 5
+FPGA_OPENSBI_ENABLE_TRACE ?= 0
+FPGA_OPENSBI_DEBUG_SERIALIZE_ALL_1P ?= 0
 
 fpga-opensbi-core-dcp:
 	OUT_DIR='$(FPGA_OPENSBI_CORE_OUTPUT_DIR)' \
 		OUTPUT_EDIF='$(FPGA_OPENSBI_CORE_EDIF)' \
 		OUTPUT_JSON='$(FPGA_OPENSBI_CORE_JSON)' \
 		OUTPUT_STUB='$(FPGA_OPENSBI_CORE_STUB)' \
+		BP_TYPE='$(FPGA_OPENSBI_BP_TYPE)' \
+		ENABLE_TRACE='$(FPGA_OPENSBI_ENABLE_TRACE)' \
+		DEBUG_SERIALIZE_ALL_1P='$(FPGA_OPENSBI_DEBUG_SERIALIZE_ALL_1P)' \
 		synth/fpga/xc7a100t/build_yosys_opensbi_core.sh
 	$(FPGA_VIVADO) -mode batch -nojournal -nolog \
 		-source synth/fpga/xc7a100t/build_vivado_opensbi_core_dcp.tcl \
@@ -56,11 +106,57 @@ fpga-opensbi-core-dcp:
 	@printf 'OPENRV64 FPGA CORE DCP PASS path=%s\n' \
 		'$(FPGA_OPENSBI_CORE_DCP)'
 
+$(FPGA_DEBUG_SNAPSHOT_SYNTH_JSON): rtl/soc/debug/snapshot_mem.sv
+	@mkdir -p '$(FPGA_DEBUG_SNAPSHOT_SYNTH_DIR)'
+	yosys -q -l '$(FPGA_DEBUG_SNAPSHOT_SYNTH_LOG)' -p \
+		'read_verilog -sv $<; hierarchy -check -top openrv64_soc_debug_snapshot_mem; synth_xilinx -family xc7 -top openrv64_soc_debug_snapshot_mem; stat; write_json $@'
+
+fpga-debug-snapshot-synth: $(FPGA_DEBUG_SNAPSHOT_SYNTH_JSON)
+
+verify-fpga-debug-snapshot-synth:
+	@test -s '$(FPGA_DEBUG_SNAPSHOT_SYNTH_JSON)'
+	@rg -q '"type": "RAMB(18|36)E1"' \
+		'$(FPGA_DEBUG_SNAPSHOT_SYNTH_JSON)'
+	@printf 'OPENRV64 FPGA DEBUG SNAPSHOT BRAM PASS path=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_SNAPSHOT_SYNTH_JSON)' \
+		"$$(sha256sum '$(FPGA_DEBUG_SNAPSHOT_SYNTH_JSON)' | cut -d ' ' -f 1)"
+
+$(FPGA_DEBUG_STUB_SYNTH_JSON): rtl/soc/debug/stub_mem.sv
+	@mkdir -p '$(FPGA_DEBUG_STUB_SYNTH_DIR)'
+	yosys -q -l '$(FPGA_DEBUG_STUB_SYNTH_LOG)' -p \
+		'read_verilog -sv $<; hierarchy -check -top openrv64_soc_debug_stub_mem; synth_xilinx -family xc7 -top openrv64_soc_debug_stub_mem; stat; write_json $@'
+
+fpga-debug-stub-synth: $(FPGA_DEBUG_STUB_SYNTH_JSON)
+
+verify-fpga-debug-stub-synth:
+	@test -s '$(FPGA_DEBUG_STUB_SYNTH_JSON)'
+	@test "$$(rg -c '"type": "RAMB36E1"' \
+		'$(FPGA_DEBUG_STUB_SYNTH_JSON)')" -eq 5
+	@printf 'OPENRV64 FPGA DEBUG STUB BRAM PASS path=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_STUB_SYNTH_JSON)' \
+		"$$(sha256sum '$(FPGA_DEBUG_STUB_SYNTH_JSON)' | cut -d ' ' -f 1)"
+
+$(FPGA_DEBUG_UART_TRACE_SYNTH_JSON): rtl/soc/debug/uart_trace_mem.sv
+	@mkdir -p '$(FPGA_DEBUG_UART_TRACE_SYNTH_DIR)'
+	yosys -q -l '$(FPGA_DEBUG_UART_TRACE_SYNTH_LOG)' -p \
+		'read_verilog -sv $<; hierarchy -check -top openrv64_soc_debug_uart_trace_mem; synth_xilinx -family xc7 -top openrv64_soc_debug_uart_trace_mem; stat; write_json $@'
+
+fpga-debug-uart-trace-synth: $(FPGA_DEBUG_UART_TRACE_SYNTH_JSON)
+
+verify-fpga-debug-uart-trace-synth:
+	@test -s '$(FPGA_DEBUG_UART_TRACE_SYNTH_JSON)'
+	@test "$$(rg -c '"type": "RAMB36E1"' \
+		'$(FPGA_DEBUG_UART_TRACE_SYNTH_JSON)')" -eq 4
+	@printf 'OPENRV64 FPGA DEBUG UART TRACE BRAM PASS path=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_UART_TRACE_SYNTH_JSON)' \
+		"$$(sha256sum '$(FPGA_DEBUG_UART_TRACE_SYNTH_JSON)' | cut -d ' ' -f 1)"
+
 $(FPGA_SD_BOOT_ELF): sw/fpga_sd_boot.S sw/fpga_sd_boot.ld
 	@mkdir -p $(dir $@)
 	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
 		-mcmodel=medany -mno-relax -nostdlib -nostartfiles -static \
 		-DFPGA_SD_BOOT_UART_DIVISOR=$(FPGA_SD_BOOT_UART_DIVISOR) \
+		$(FPGA_SD_BOOT_CPPFLAGS) \
 		-Wl,--build-id=none -Wl,-T,sw/fpga_sd_boot.ld -o $@ $<
 
 $(FPGA_SD_BOOT_BIN): $(FPGA_SD_BOOT_ELF)
@@ -90,9 +186,100 @@ fpga-program-bitstream: fpga-sd-boot-bitstream-check
 		-source synth/fpga/xc7a100t/program_bitstream.tcl \
 		-tclargs '$(FPGA_HW_SERVER_URL)' '$(FPGA_SD_BOOT_BITSTREAM)'
 
+fpga-jtag-live-tools-check:
+	@test -x '$(FPGA_JTAG_SNOOP)'
+	@test -r tools/fpga-jtag-snoop.tcl
+	@printf 'OPENRV64 FPGA JTAG LIVE TOOLS CHECK PASS wrapper=%s\n' \
+		'$(FPGA_JTAG_SNOOP)'
+
 fpga-jtag-snoop:
 	FPGA_HW_SERVER_URL='$(FPGA_HW_SERVER_URL)' \
 		$(FPGA_JTAG_SNOOP) $(FPGA_JTAG_SNOOP_ARGS)
+
+$(FPGA_DEBUG_DTB_PROBE_BIN): tools/fpga-debug-dtb-probe.S
+	@mkdir -p '$(FPGA_DEBUG_DTB_PROBE_DIR)'
+	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mcmodel=medany -mno-relax -nostdlib -nostartfiles \
+		-Wl,--build-id=none -Wl,-Ttext=0x0c304000 \
+		-o '$(FPGA_DEBUG_DTB_PROBE_ELF)' $<
+	$(RISCV_OBJCOPY) -O binary '$(FPGA_DEBUG_DTB_PROBE_ELF)' $@
+	$(RISCV_OBJDUMP) -d '$(FPGA_DEBUG_DTB_PROBE_ELF)' > \
+		'$(FPGA_DEBUG_DTB_PROBE_DIS)'
+	@test "$$(stat -c %s '$@')" -le 16368
+
+fpga-debug-dtb-probe: $(FPGA_DEBUG_DTB_PROBE_BIN)
+	@printf 'OPENRV64 FPGA DEBUG DTB PROBE PASS path=%s bytes=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_DTB_PROBE_BIN)' \
+		"$$(stat -c %s '$(FPGA_DEBUG_DTB_PROBE_BIN)')" \
+		"$$(sha256sum '$(FPGA_DEBUG_DTB_PROBE_BIN)' | cut -d ' ' -f 1)"
+
+fpga-debug-dtb-probe-read:
+	FPGA_HW_SERVER_URL='$(FPGA_HW_SERVER_URL)' \
+		tools/fpga-debug-dtb-probe.py
+
+$(FPGA_DEBUG_STRCMP_PROBE_BIN): tools/fpga-debug-strcmp-probe.S
+	@mkdir -p '$(FPGA_DEBUG_STRCMP_PROBE_DIR)'
+	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mcmodel=medany -mno-relax -nostdlib -nostartfiles \
+		-Wl,--build-id=none -Wl,-Ttext=0x0c304000 \
+		-o '$(FPGA_DEBUG_STRCMP_PROBE_ELF)' $<
+	$(RISCV_OBJCOPY) -O binary '$(FPGA_DEBUG_STRCMP_PROBE_ELF)' $@
+	$(RISCV_OBJDUMP) -d '$(FPGA_DEBUG_STRCMP_PROBE_ELF)' > \
+		'$(FPGA_DEBUG_STRCMP_PROBE_DIS)'
+	@test "$$(stat -c %s '$@')" -le 16368
+
+.PHONY: fpga-debug-strcmp-probe
+fpga-debug-strcmp-probe: $(FPGA_DEBUG_STRCMP_PROBE_BIN)
+	@printf 'OPENRV64 FPGA DEBUG STRCMP PROBE PASS path=%s bytes=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_STRCMP_PROBE_BIN)' \
+		"$$(stat -c %s '$(FPGA_DEBUG_STRCMP_PROBE_BIN)')" \
+		"$$(sha256sum '$(FPGA_DEBUG_STRCMP_PROBE_BIN)' | cut -d ' ' -f 1)"
+
+.PHONY: fpga-debug-strcmp-probe-read
+fpga-debug-strcmp-probe-read:
+	FPGA_HW_SERVER_URL='$(FPGA_HW_SERVER_URL)' \
+		tools/fpga-debug-strcmp-probe.py
+
+$(FPGA_DEBUG_MEMBLOCK_PROBE_BIN): tools/fpga-debug-memblock-probe.S
+	@mkdir -p '$(FPGA_DEBUG_MEMBLOCK_PROBE_DIR)'
+	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mcmodel=medany -mno-relax -nostdlib -nostartfiles \
+		-Wl,--build-id=none -Wl,-Ttext=0x0c304000 \
+		-o '$(FPGA_DEBUG_MEMBLOCK_PROBE_ELF)' $<
+	$(RISCV_OBJCOPY) -O binary '$(FPGA_DEBUG_MEMBLOCK_PROBE_ELF)' $@
+	$(RISCV_OBJDUMP) -d '$(FPGA_DEBUG_MEMBLOCK_PROBE_ELF)' > \
+		'$(FPGA_DEBUG_MEMBLOCK_PROBE_DIS)'
+	@test "$$(stat -c %s '$@')" -le 16368
+
+.PHONY: fpga-debug-memblock-probe
+fpga-debug-memblock-probe: $(FPGA_DEBUG_MEMBLOCK_PROBE_BIN)
+	@printf 'OPENRV64 FPGA DEBUG MEMBLOCK PROBE PASS path=%s bytes=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_MEMBLOCK_PROBE_BIN)' \
+		"$$(stat -c %s '$(FPGA_DEBUG_MEMBLOCK_PROBE_BIN)')" \
+		"$$(sha256sum '$(FPGA_DEBUG_MEMBLOCK_PROBE_BIN)' | cut -d ' ' -f 1)"
+
+.PHONY: fpga-debug-memblock-probe-read
+fpga-debug-memblock-probe-read:
+	FPGA_HW_SERVER_URL='$(FPGA_HW_SERVER_URL)' \
+		tools/fpga-debug-memblock-probe.py
+
+$(FPGA_DEBUG_PING_BIN): tools/fpga-debug-ping.S
+	@mkdir -p '$(FPGA_DEBUG_PING_DIR)'
+	$(RISCV_CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 \
+		-mcmodel=medany -mno-relax -nostdlib -nostartfiles \
+		-Wl,--build-id=none -Wl,-Ttext=0x0c304000 \
+		-o '$(FPGA_DEBUG_PING_ELF)' $<
+	$(RISCV_OBJCOPY) -O binary '$(FPGA_DEBUG_PING_ELF)' $@
+	$(RISCV_OBJDUMP) -d '$(FPGA_DEBUG_PING_ELF)' > \
+		'$(FPGA_DEBUG_PING_DIS)'
+	@test "$$(stat -c %s '$@')" -le 16368
+
+.PHONY: fpga-debug-ping
+fpga-debug-ping: $(FPGA_DEBUG_PING_BIN)
+	@printf 'OPENRV64 FPGA DEBUG PING PASS path=%s bytes=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_PING_BIN)' \
+		"$$(stat -c %s '$(FPGA_DEBUG_PING_BIN)')" \
+		"$$(sha256sum '$(FPGA_DEBUG_PING_BIN)' | cut -d ' ' -f 1)"
 
 fpga-sd-boot-core-timing-report:
 	@test -s '$(FPGA_SD_BOOT_POST_ROUTE_DCP)'
@@ -117,6 +304,7 @@ $(FPGA_SD_IMAGE): tools/make-fpga-sd-image.py \
 		--timebase-frequency $(FPGA_SD_TIMEBASE_FREQUENCY) \
 		--uart-clock-frequency $(FPGA_SD_UART_CLOCK_FREQUENCY) \
 		$(if $(filter 1,$(FPGA_SD_ETHERNET)),--ethernet) \
+		$(if $(filter 1,$(FPGA_SD_DEBUG)),--fpga-debug) \
 		$(FPGA_SD_DTS) $(FPGA_SD_OPENSBI) $(FPGA_SD_LINUX) $@ \
 		--manifest $(FPGA_SD_MANIFEST)
 
@@ -138,6 +326,35 @@ opensbi:
 		OPENRV64_ZBB=$(OPENSBI_3P_ADVERTISE_ZBB) \
 		OPENRV64_ZICCLSM=$(OPENSBI_3P_ADVERTISE_ZICCLSM) \
 		tools/build-opensbi.sh
+
+opensbi-fpga-linux-debug:
+	OPENSBI_BUILD_DIR=$(abspath $(FPGA_OPENSBI_BUILD_DIR)) \
+		OPENSBI_SOURCE_DIR=$(abspath $(FPGA_OPENSBI_SOURCE_DIR)) \
+		OPENSBI_MEMORY_SIZE=0x10000000 \
+		OPENSBI_FDT_ADDR=0x8ff00000 \
+		OPENRV64_HART_COUNT=1 \
+		OPENRV64_FPGA_DEBUG=1 \
+		OPENRV64_ETHERNET=$(FPGA_SD_ETHERNET) \
+		OPENRV64_TIMEBASE_FREQUENCY=$(FPGA_SD_TIMEBASE_FREQUENCY) \
+		OPENRV64_UART_CLOCK_FREQUENCY=$(FPGA_SD_UART_CLOCK_FREQUENCY) \
+		OPENRV64_ZBB=0 OPENRV64_ZICCLSM=1 \
+		tools/build-opensbi.sh
+
+verify-opensbi-fpga-linux-debug:
+	@test -s '$(FPGA_OPENSBI_FW_JUMP_BIN)'
+	@test -s '$(FPGA_OPENSBI_FW_JUMP_ELF)'
+	@test -s '$(FPGA_OPENSBI_DTS)'
+	@$(FPGA_OPENSBI_NM) -a '$(FPGA_OPENSBI_FW_JUMP_ELF)' | \
+		rg -q '[[:space:]]openrv64_debug_irq$$'
+	@$(FPGA_OPENSBI_NM) -a '$(FPGA_OPENSBI_FW_JUMP_ELF)' | \
+		rg -q '[[:space:]]openrv64_debug_final_exit$$'
+	@rg -q 'compatible = "openrv64,fpga-debug", "openrv64,platform";' \
+		'$(FPGA_OPENSBI_DTS)'
+	@rg -q 'interrupts-extended = <&cpu0_intc 11>, <&cpu0_intc 9>;' \
+		'$(FPGA_OPENSBI_DTS)'
+	@printf 'OPENRV64 FPGA DEBUG OPENSBI PASS source=32 path=%s sha256=%s\n' \
+		'$(FPGA_OPENSBI_FW_JUMP_BIN)' \
+		"$$(sha256sum '$(FPGA_OPENSBI_FW_JUMP_BIN)' | cut -d ' ' -f 1)"
 
 opensbi-4h-held:
 	OPENSBI_BUILD_DIR=$(abspath $(OPENSBI_4H_HELD_BUILD_DIR)) \

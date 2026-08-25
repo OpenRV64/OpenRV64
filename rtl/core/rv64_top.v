@@ -34,6 +34,7 @@ module openrv64_rv64_top #(
     parameter PIPE_1P_MEM_4_STAGE = 0,
     parameter PIPE_1P_DECODE_QUEUE = 0,
     parameter FPGA_GPR_LUTRAM = 0,
+    parameter DEBUG_SERIALIZE_ALL_1P = 0,
     parameter integer TLB_ENTRIES = 16,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
@@ -110,6 +111,8 @@ module openrv64_rv64_top #(
 
     output wire [63:0] dbg_pc,
     output wire [31:0] dbg_instr,
+    output wire [63:0] dbg_rs1_data,
+    output wire [63:0] dbg_rs2_data,
     output wire        dbg_halted,
     output wire        wfi_sleep_o,
 
@@ -139,6 +142,8 @@ module openrv64_rv64_top #(
     reg [`RV64_XLEN-1:0] pc_q;
     reg [`RV64_XLEN-1:0] dbg_pc_q;
     reg [`RV64_INSTR_WIDTH-1:0] dbg_instr_q;
+    reg [`RV64_XLEN-1:0] dbg_rs1_data_q;
+    reg [`RV64_XLEN-1:0] dbg_rs2_data_q;
     reg halted_q;
     reg wfi_sleep_q;
     reg halt_pending_q;
@@ -150,6 +155,8 @@ module openrv64_rv64_top #(
     reg csr_serial_busy_q;
     reg restart_fetch_q;
     reg global_issue_inhibit_q;
+    reg debug_serial_inflight_q;
+    reg debug_serial_retired_q;
     reg serial_control_inflight_q;
     reg store_inflight_q;
     reg sfence_vma_inflight_q;
@@ -290,6 +297,7 @@ module openrv64_rv64_top #(
     wire dispatch_raw_hazard;
     wire dispatch_waw_hazard;
     wire dispatch_scoreboard_stall;
+    wire dispatch_scoreboard_clear;
     wire dispatch_decode_valid;
     wire [TRACE_ID_WIDTH-1:0] dispatch_exec_trace_id;
     wire unused_dispatch_hazards = |{
@@ -339,6 +347,8 @@ module openrv64_rv64_top #(
     wire [`RV64_XLEN-1:0] exec_wb_next_pc;
     wire [`RV64_INSTR_WIDTH-1:0] exec_wb_instr;
     wire [`RV64_XLEN-1:0] exec_wb_data;
+    wire [`RV64_XLEN-1:0] exec_wb_rs1_data;
+    wire [`RV64_XLEN-1:0] exec_wb_rs2_data;
     wire [`RV64_REG_ADDR_WIDTH-1:0] exec_wb_rs1_addr;
     wire [`RV64_REG_ADDR_WIDTH-1:0] exec_wb_rs2_addr;
     wire [`RV64_REG_ADDR_WIDTH-1:0] exec_wb_rd_addr;
@@ -364,6 +374,7 @@ module openrv64_rv64_top #(
     wire bp_branch_allocate;
     wire bp_branch_resolve;
     wire bp_prediction_taken;
+    wire bp_prediction_taken_effective;
     wire bp_prediction_weak;
     wire bp_prediction_target_valid;
     wire [`RV64_XLEN-1:0] bp_prediction_target;
@@ -461,6 +472,7 @@ module openrv64_rv64_top #(
     wire issue_inhibit_immediate;
     wire issue_inhibit_latch_set;
     wire issue_inhibit_owner_active;
+    wire debug_serial_issue_block;
     wire global_issue_inhibit;
     wire dispatch_exec_issue_valid;
     wire dispatch_exec_clear;
@@ -586,7 +598,12 @@ module openrv64_rv64_top #(
                                    bp_target_mispredict;
     assign redirect_capture_req = redirect_decision_req &&
                                   !control_event_inhibit;
-    assign hard_flush_redirect_req = redirect_pending_q;
+    // The all-instruction serializer deliberately delays a resolved redirect
+    // until the retiring control instruction has also vacated WB.  Otherwise
+    // the redirected fetch response can be flushed while dispatch remains
+    // backpressured, losing the first target instruction.
+    assign hard_flush_redirect_req = redirect_pending_q &&
+        (!DEBUG_SERIALIZE_ALL_1P || !debug_serial_issue_block);
     // One owned latch is the scalar issue choke point.  System/fence/faulting
     // controls and stores acquire it when they issue.  Controls release at
     // retirement; stores release only after EX/MEM has classified the memory
@@ -615,11 +632,16 @@ module openrv64_rv64_top #(
         csr_serial_busy_q ||
         translation_barrier_busy ||
         maintenance_invalidate_active;
+    assign debug_serial_issue_block = DEBUG_SERIALIZE_ALL_1P &&
+                                      debug_serial_inflight_q;
     assign global_issue_inhibit = issue_inhibit_immediate ||
                                   global_issue_inhibit_q;
     assign dispatch_exec_issue_valid = dispatch_exec_valid &&
-                                       !global_issue_inhibit;
-    assign dispatch_exec_clear = exec_clear && !global_issue_inhibit;
+                                       !global_issue_inhibit &&
+                                       !debug_serial_issue_block;
+    assign dispatch_exec_clear = exec_clear &&
+                                 !global_issue_inhibit &&
+                                 !debug_serial_issue_block;
     assign exec_mem_issue_valid = exec_mem_valid &&
                                   !translation_barrier_busy &&
                                   !control_event_inhibit;
@@ -637,6 +659,15 @@ module openrv64_rv64_top #(
                          hard_flush_sret_req ||
                          hard_flush_restart_req ||
                          redirect_pending_q;
+    // Ordinary control-flow redirects discard only younger frontend and
+    // dispatch state.  Clearing the complete 1P scoreboard here would also
+    // release older EX/MEM and MEM/WB producers (notably strcmp's result just
+    // before RET).  Only architectural pipeline flushes discard every owner.
+    assign dispatch_scoreboard_clear = hard_flush_trap_req ||
+                                       hard_flush_irq_req ||
+                                       hard_flush_mret_req ||
+                                       hard_flush_sret_req ||
+                                       hard_flush_restart_req;
     assign flush_ex_mem = hard_flush_trap_req ||
                           hard_flush_irq_req ||
                           hard_flush_mret_req ||
@@ -646,9 +677,11 @@ module openrv64_rv64_top #(
     // it at the edge.
     assign flush_mem_wb = control_event_inhibit;
     assign drain_fetch_req = decode_ebreak_accept || halted_q;
-    // Control-flow redirects discard only the unread fetch stream.  Resident
-    // tagged lines survive for address-matched replay.  Context-changing
-    // events and FENCE.I/SFENCE.VMA still invalidate the complete window.
+    // Control-flow redirects normally discard only the unread fetch stream.
+    // The all-instruction FPGA diagnostic invalidates resident lines as an
+    // A/B check for stale redirect-target replay; normal 1P operation keeps
+    // the address-matched resident replay path.  Context-changing events and
+    // FENCE.I/SFENCE.VMA still invalidate the complete window.
     // Maintenance invalidation is presented for one full registered cycle.
     // Fetch restart follows on the next cycle.  WFI has no cache/TLB state to
     // invalidate and therefore retains its direct registered restart.
@@ -663,7 +696,9 @@ module openrv64_rv64_top #(
                               hard_flush_irq_req ||
                               hard_flush_mret_req ||
                               hard_flush_sret_req ||
-                              restart_fetch_q;
+                              restart_fetch_q ||
+                              (DEBUG_SERIALIZE_ALL_1P &&
+                               hard_flush_redirect_req);
     assign redirect_fetch = hard_flush_redirect_req ||
                             bp_predict_redirect;
     assign flush_fetch = invalidate_fetch || redirect_fetch;
@@ -838,8 +873,14 @@ module openrv64_rv64_top #(
                                 decode_branch || decode_jump);
     assign bp_branch_allocate = bp_branch_present && if_id_out_clear;
     assign bp_branch_resolve = exec_branch_resolved;
+    // Debug serialization uses the resolved-control path exclusively.  A
+    // speculative predictor redirect can arrive while the sole issued branch
+    // still owns the pipe and is intentionally not replay-safe under this
+    // diagnostic mode.
+    assign bp_prediction_taken_effective = DEBUG_SERIALIZE_ALL_1P ?
+                                           1'b0 : bp_prediction_taken;
     assign bp_predict_redirect = bp_branch_allocate &&
-                                 bp_prediction_taken;
+                                 bp_prediction_taken_effective;
     assign bp_fast_predict_redirect = bp_predict_redirect &&
                                       if_id_predecode_valid;
     assign bp_predict_target = bp_prediction_target_valid ?
@@ -1028,6 +1069,7 @@ module openrv64_rv64_top #(
         .satp_root_ppn_o(csr_satp_root_ppn),
         .status_sum_o(csr_status_sum),
         .status_mxr_o(csr_status_mxr),
+        .data_access_context_change_o(),
         .pmp_bus_valid_i(core_pmp_valid),
         .pmp_bus_addr_i(core_pmp_addr),
         .pmp_bus_size_i(core_pmp_size),
@@ -1069,6 +1111,7 @@ module openrv64_rv64_top #(
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush_id_ex),
+        .scoreboard_clear_1p_i(dispatch_scoreboard_clear),
         .decode_valid_i(dispatch_decode_valid),
         .decode_clear_o(dispatch_decode_clear),
         .decode_pc_i(if_id_pc),
@@ -1089,7 +1132,7 @@ module openrv64_rv64_top #(
         .decode_mem_write_i(decode_mem_write),
         .decode_branch_i(decode_branch),
         .decode_jump_i(decode_jump),
-        .decode_predicted_taken_i(bp_prediction_taken),
+        .decode_predicted_taken_i(bp_prediction_taken_effective),
         .decode_word_op_i(decode_word_op),
         .decode_system_i(decode_system),
         .decode_fence_i(decode_fence),
@@ -1286,6 +1329,8 @@ module openrv64_rv64_top #(
         .wb_next_pc_o(exec_wb_next_pc),
         .wb_instr_o(exec_wb_instr),
         .wb_data_o(exec_wb_data),
+        .wb_rs1_data_o(exec_wb_rs1_data),
+        .wb_rs2_data_o(exec_wb_rs2_data),
         .wb_rs1_addr_o(exec_wb_rs1_addr),
         .wb_rs2_addr_o(exec_wb_rs2_addr),
         .wb_rd_addr_o(exec_wb_rd_addr),
@@ -1484,6 +1529,7 @@ module openrv64_rv64_top #(
         .tlbi_i(translation_invalidate_q),
         .context_flush_i(1'b0),
         .fetch_context_change_i(1'b0),
+        .page_screen_csr_clear_i(1'b0),
         .pmp_update_i(pmp_invalidate_q),
         .tlbi_busy_o(translation_barrier_busy),
         .store_barrier_i(1'b0),
@@ -1563,6 +1609,8 @@ module openrv64_rv64_top #(
 
     assign dbg_pc = dbg_pc_q;
     assign dbg_instr = dbg_instr_q;
+    assign dbg_rs1_data = dbg_rs1_data_q;
+    assign dbg_rs2_data = dbg_rs2_data_q;
     assign dbg_halted = halted_q;
     assign wfi_sleep_o = wfi_sleep_q;
 
@@ -1694,6 +1742,8 @@ module openrv64_rv64_top #(
             csr_serial_busy_q <= 1'b0;
             restart_fetch_q <= 1'b0;
             global_issue_inhibit_q <= 1'b0;
+            debug_serial_inflight_q <= 1'b0;
+            debug_serial_retired_q <= 1'b0;
             serial_control_inflight_q <= 1'b0;
             store_inflight_q <= 1'b0;
             sfence_vma_inflight_q <= 1'b0;
@@ -1714,6 +1764,29 @@ module openrv64_rv64_top #(
             global_issue_inhibit_q <= issue_inhibit_latch_set ||
                 issue_inhibit_immediate ||
                 (global_issue_inhibit_q && issue_inhibit_owner_active);
+            if (DEBUG_SERIALIZE_ALL_1P) begin
+                // A WB payload may remain valid after its first acceptance.
+                // Do not release younger issue on retire_accept itself: wait
+                // until the accepted payload has visibly left WB, creating a
+                // complete empty boundary between debug-serialized
+                // instructions.
+                if (instruction_issue_fire) begin
+                    debug_serial_inflight_q <= 1'b1;
+                    debug_serial_retired_q <= 1'b0;
+                end else if (debug_serial_inflight_q) begin
+                    if (retire_accept)
+                        debug_serial_retired_q <= 1'b1;
+                    if (debug_serial_retired_q && !exec_wb_valid) begin
+                        debug_serial_inflight_q <= 1'b0;
+                        debug_serial_retired_q <= 1'b0;
+                    end
+                end else begin
+                    debug_serial_retired_q <= 1'b0;
+                end
+            end else begin
+                debug_serial_inflight_q <= 1'b0;
+                debug_serial_retired_q <= 1'b0;
+            end
             if (retire_accept) begin
                 serial_control_inflight_q <= 1'b0;
                 sfence_vma_inflight_q <= 1'b0;
@@ -1764,14 +1837,30 @@ module openrv64_rv64_top #(
             redirect_target_mispredict_pending_q <= 1'b0;
             redirect_target_q <= {`RV64_XLEN{1'b0}};
         end else begin
-            redirect_pending_q <= redirect_capture_req;
-            redirect_direction_pending_q <= exec_redirect_valid &&
-                                            !control_event_inhibit;
-            redirect_target_mispredict_pending_q <=
-                bp_target_mispredict && !control_event_inhibit;
-            // Avoid making the correction decision a 64-way clock enable.
-            // The target is ignored unless redirect_pending_q is asserted.
-            redirect_target_q <= exec_redirect_target;
+            if (DEBUG_SERIALIZE_ALL_1P) begin
+                if (redirect_pending_q && debug_serial_issue_block)
+                    redirect_pending_q <= 1'b1;
+                else
+                    redirect_pending_q <= redirect_capture_req;
+                if (redirect_capture_req) begin
+                    redirect_direction_pending_q <= exec_redirect_valid;
+                    redirect_target_mispredict_pending_q <=
+                        bp_target_mispredict;
+                    redirect_target_q <= exec_redirect_target;
+                end else if (hard_flush_redirect_req) begin
+                    redirect_direction_pending_q <= 1'b0;
+                    redirect_target_mispredict_pending_q <= 1'b0;
+                end
+            end else begin
+                redirect_pending_q <= redirect_capture_req;
+                redirect_direction_pending_q <= exec_redirect_valid &&
+                                                !control_event_inhibit;
+                redirect_target_mispredict_pending_q <=
+                    bp_target_mispredict && !control_event_inhibit;
+                // Avoid making the correction decision a 64-way clock enable.
+                // The target is ignored unless redirect_pending_q is asserted.
+                redirect_target_q <= exec_redirect_target;
+            end
         end
     end
 
@@ -1797,6 +1886,8 @@ module openrv64_rv64_top #(
             pc_q           <= {`RV64_XLEN{1'b0}};
             dbg_pc_q       <= {`RV64_XLEN{1'b0}};
             dbg_instr_q    <= `RV64_INSTR_NOP;
+            dbg_rs1_data_q <= {`RV64_XLEN{1'b0}};
+            dbg_rs2_data_q <= {`RV64_XLEN{1'b0}};
             halted_q       <= 1'b0;
             wfi_sleep_q    <= 1'b0;
             halt_pending_q <= 1'b0;
@@ -1836,6 +1927,8 @@ module openrv64_rv64_top #(
             if (exec_wb_valid) begin
                 dbg_pc_q    <= exec_wb_pc;
                 dbg_instr_q <= exec_wb_instr;
+                dbg_rs1_data_q <= exec_wb_rs1_data;
+                dbg_rs2_data_q <= exec_wb_rs2_data;
 
                 if (exec_wb_halt) begin
                     halted_q       <= 1'b1;

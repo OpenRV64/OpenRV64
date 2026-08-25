@@ -24,6 +24,8 @@ uart_reference_clock_hz=${FPGA_UART_REFERENCE_CLOCK_HZ:-14745600}
 spi_fast_half_period_cycles=${FPGA_SPI_FAST_HALF_PERIOD_CYCLES:-}
 ethernet_mdc_half_period_cycles=${FPGA_ETHERNET_MDC_HALF_PERIOD_CYCLES:-}
 ethernet_phy_reset_cycles=${FPGA_ETHERNET_PHY_RESET_CYCLES:-}
+mig_scalar_cache_enable=${FPGA_MIG_SCALAR_CACHE_ENABLE:-1}
+mig_scalar_cache_bytes=${FPGA_MIG_SCALAR_CACHE_BYTES:-32768}
 
 for value_name in core_clock_hz core_clock_multiply core_clock_divide \
                   uart_reference_clock_hz; do
@@ -49,7 +51,9 @@ if (( core_clock_divide < 1 || core_clock_divide > 128 )); then
     echo "error: FPGA_CORE_CLOCK_DIVIDE must be 1..128" >&2
     exit 2
 fi
-minimum_spi_half_period_cycles=$(((core_clock_hz + 13999999) / 14000000))
+# Keep fast-mode SCK at or below 10 MHz.  The divider is expressed in whole
+# core-clock half-periods, so some core clocks produce a lower exact rate.
+minimum_spi_half_period_cycles=$(((core_clock_hz + 19999999) / 20000000))
 if [[ -z "$spi_fast_half_period_cycles" ]]; then
     spi_fast_half_period_cycles=$minimum_spi_half_period_cycles
 elif [[ ! "$spi_fast_half_period_cycles" =~ ^[1-9][0-9]*$ ]] ||
@@ -63,6 +67,14 @@ fi
 if [[ -z "$ethernet_phy_reset_cycles" ]]; then
     # Preserve the existing 110,000-cycle reset interval at 14 MHz.
     ethernet_phy_reset_cycles=$(((core_clock_hz * 110000 + 13999999) / 14000000))
+fi
+
+if [[ ${FPGA_SD_BOOT_PRINT_CLOCK_CONFIG:-0} == 1 ]]; then
+    spi_fast_clock_hz=$((core_clock_hz / (2 * spi_fast_half_period_cycles)))
+    printf 'core_clock_hz=%s spi_fast_half_period_cycles=%s spi_fast_clock_hz=%s\n' \
+        "$core_clock_hz" "$spi_fast_half_period_cycles" \
+        "$spi_fast_clock_hz"
+    exit 0
 fi
 
 system_edif=$output_dir/openrv64_fpga_opensbi_system.edif
@@ -101,6 +113,8 @@ env OUT_DIR="$output_dir" CORE_STUB="$core_stub" \
     FPGA_SPI_FAST_HALF_PERIOD_CYCLES="$spi_fast_half_period_cycles" \
     FPGA_ETHERNET_MDC_HALF_PERIOD_CYCLES="$ethernet_mdc_half_period_cycles" \
     FPGA_ETHERNET_PHY_RESET_CYCLES="$ethernet_phy_reset_cycles" \
+    FPGA_MIG_SCALAR_CACHE_ENABLE="$mig_scalar_cache_enable" \
+    FPGA_MIG_SCALAR_CACHE_BYTES="$mig_scalar_cache_bytes" \
     SD_ROM_BOOT_ENABLE=1 UART_LINUX_LOAD_ENABLE=0 \
     OUTPUT_EDIF="$system_edif" OUTPUT_JSON="$system_json" \
     OUTPUT_STUB="$system_stub" OUTPUT_LOG="$output_dir/yosys-system.log" \

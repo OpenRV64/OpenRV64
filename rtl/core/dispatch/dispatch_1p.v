@@ -12,6 +12,7 @@ module openrv64_dispatch_1p #(
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         flush_i,
+    input  wire                         scoreboard_clear_i,
 
     input  wire                         decode_valid_i,
     output wire                         decode_clear_o,
@@ -354,7 +355,11 @@ module openrv64_dispatch_1p #(
             ) u_reg_map (
                 .clk(clk),
                 .rst_n(rst_n),
-                .clear_i(flush_i),
+                // A direction/target redirect squashes only the younger
+                // registered dispatch entry.  Older producers can still be
+                // in EX/MEM or MEM/WB and must retain their ownership until
+                // retirement.  Full architectural flushes clear all owners.
+                .clear_i(scoreboard_clear_i),
                 .alloc_valid_i(candidate_valid && !flush_i),
                 .alloc_fire_i(capture),
                 .alloc_uses_rs1_i(candidate_uses_rs1),
@@ -374,7 +379,8 @@ module openrv64_dispatch_1p #(
                 .retire_rs2_addr_i(retire_rs2_addr_i),
                 .retire_reg_write_i(retire_reg_write_i),
                 .retire_rd_addr_i(retire_rd_addr_i),
-                .rollback_valid_i(flush_i && active_q),
+                .rollback_valid_i(flush_i && active_q &&
+                                  !scoreboard_clear_i),
                 .rollback_uses_rs1_i(active_uses_rs1_q),
                 .rollback_uses_rs2_i(active_uses_rs2_q),
                 .rollback_rs1_addr_i(active_rs1_addr_q),
@@ -487,7 +493,7 @@ module openrv64_dispatch_1p #(
             ) u_reg_map (
                 .clk(clk),
                 .rst_n(rst_n),
-                .clear_i(flush_i),
+                .clear_i(scoreboard_clear_i),
                 .alloc_valid_i(candidate_valid && !flush_i),
                 .alloc_fire_i(issue_accept),
                 .alloc_uses_rs1_i(candidate_uses_rs1),

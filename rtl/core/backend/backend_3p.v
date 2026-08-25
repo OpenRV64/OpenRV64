@@ -1011,6 +1011,7 @@ module openrv64_backend_3p #(
         .COUNT_WIDTH_3P(DISPATCH_COUNT_WIDTH)
     ) u_dispatch (
         .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+        .scoreboard_clear_1p_i(1'b0),
         .decode_valid_i(1'b0), .decode_pc_i(64'd0),
         .decode_instr_i(32'd0), .decode_imm_i(64'd0),
         .decode_uses_rs1_i(1'b0), .decode_uses_rs2_i(1'b0),

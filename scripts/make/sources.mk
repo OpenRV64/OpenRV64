@@ -168,6 +168,8 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/retire/retire_3p.v $(EXCEPT_SRCS) $(TRACE_SRCS)
 CLINT_SRCS := rtl/clint/clint.v
 PLIC_SRCS := rtl/plic/plic.v
+DEBUG_SNAPSHOT_SRCS := rtl/soc/debug/snapshot_mem.sv \
+	rtl/soc/debug/stub_mem.sv rtl/soc/debug/uart_trace_mem.sv
 UART_SRCS := rtl/periph/uart/uart.v
 GPIO_SRCS := rtl/periph/gpio/gpio.v
 TIMER_SRCS := rtl/periph/timer/timer.v
@@ -196,7 +198,7 @@ PLATFORM_SRCS := rtl/soc/platform.sv rtl/openrv64_top.sv \
 	$(AXI_DDR3_SRCS) \
 	$(RESET_SEQUENCER_SRCS) $(SOC_BUS_SRCS) $(ROM_SRCS) $(MEMORY_SRCS) \
 	$(CLINT_SRCS) $(PLIC_SRCS) $(UART_SRCS) $(GPIO_SRCS) $(TIMER_SRCS) \
-	$(SPI_SRCS) $(ETHERNET_SRCS)
+	$(SPI_SRCS) $(ETHERNET_SRCS) $(DEBUG_SNAPSHOT_SRCS)
 TOP_SIM_SRCS := rtl/openrv64_top.sv tb/openrv64_cycle_trace.sv tb/tb_openrv64_top.sv
 PLATFORM_SIM_SRCS := tb/tb_platform.sv
 RESET_SEQUENCER_SIM_SRCS := tb/tb_reset_sequencer.sv

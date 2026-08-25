@@ -77,6 +77,7 @@ module openrv64_rv64i_csrs #(
     output wire [`RV64_SATP_PPN_WIDTH-1:0] satp_root_ppn_o,
     output wire                             status_sum_o,
     output wire                             status_mxr_o,
+    output wire                             data_access_context_change_o,
     input  wire                             pmp_bus_valid_i,
     input  wire [`RV64_XLEN-1:0]           pmp_bus_addr_i,
     input  wire [2:0]                       pmp_bus_size_i,
@@ -191,6 +192,33 @@ module openrv64_rv64i_csrs #(
     wire [`RV64_XLEN-1:0] csr_write_value = csr_op_set ?
         (csr_rdata_o | csr_wdata_i) :
         csr_op_clear ? (csr_rdata_o & ~csr_wdata_i) : csr_wdata_i;
+    wire [`RV64_PRIV_WIDTH-1:0] csr_write_mpp =
+        ((csr_write_value[`RV64_MSTATUS_MPP_BITS] == `RV64_PRIV_U) ||
+         (csr_write_value[`RV64_MSTATUS_MPP_BITS] == `RV64_PRIV_S) ||
+         (csr_write_value[`RV64_MSTATUS_MPP_BITS] == `RV64_PRIV_M)) ?
+        csr_write_value[`RV64_MSTATUS_MPP_BITS] : `RV64_PRIV_U;
+    wire sstatus_data_access_change =
+        (csr_addr_i == `RV64_CSR_SSTATUS) &&
+        ((csr_write_value[`RV64_MSTATUS_SUM_BIT] !=
+          mstatus_q[`RV64_MSTATUS_SUM_BIT]) ||
+         (csr_write_value[`RV64_MSTATUS_MXR_BIT] !=
+          mstatus_q[`RV64_MSTATUS_MXR_BIT]));
+    wire mstatus_data_access_change =
+        (csr_addr_i == `RV64_CSR_MSTATUS) &&
+        ((csr_write_value[`RV64_MSTATUS_MPRV_BIT] !=
+          mstatus_q[`RV64_MSTATUS_MPRV_BIT]) ||
+         (csr_write_value[`RV64_MSTATUS_SUM_BIT] !=
+          mstatus_q[`RV64_MSTATUS_SUM_BIT]) ||
+         (csr_write_value[`RV64_MSTATUS_MXR_BIT] !=
+          mstatus_q[`RV64_MSTATUS_MXR_BIT]) ||
+         (csr_write_mpp != mstatus_q[`RV64_MSTATUS_MPP_BITS]));
+    // This pulse is deliberately narrower than "status CSR written".  Only
+    // fields which can alter an LSU translation or permission result revoke
+    // current-context access proofs.  Interrupt enables and pending bits do
+    // not change those proofs.
+    assign data_access_context_change_o = csr_write_i && csr_valid_o &&
+        csr_writable_o && csr_write_ready_o &&
+        (sstatus_data_access_change || mstatus_data_access_change);
     wire [`RV64_XLEN-1:0] enabled_pending = mie_q & mip_value;
     wire trap_delegated = (priv_mode_q != `RV64_PRIV_M) &&
                            (trap_interrupt_i ? mideleg_q[trap_cause_i] :

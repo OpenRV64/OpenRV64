@@ -124,6 +124,7 @@ launch_linux_smp() {
     OPENRV64_RUN_CONFIG_PATH=${config_path} \
     OPENRV64_RUN_RECORDED_COMMAND=${recorded_command} \
     OPENRV64_RUN_TIMEOUT_SECONDS=${RUN_TIMEOUT_SECONDS} \
+    OPENRV64_RUN_BUILD_LOCK_NAME=${RUN_BUILD_LOCK_NAME} \
     OPENRV64_SMP_RUN_ROOT=${log_root} \
     OPENRV64_SMP_RUN_ID=${run_id} \
     OPENRV64_SMP_TMUX_SESSION=${tmux_session} \
@@ -158,6 +159,7 @@ launch_config() {
     RUN_HOST_PC_SAMPLE_PERIOD=0
     RUN_TIMEOUT_SECONDS=259200
     RUN_REBUILD=0
+    RUN_BUILD_LOCK_NAME=
     RUN_MAKE_ARGUMENTS=()
     # shellcheck disable=SC1090
     source "${config_path}"
@@ -172,6 +174,15 @@ launch_config() {
     [[ ${RUN_HOST_PC_SAMPLE_PERIOD} =~ ^[0-9]+$ ]] ||
         openrv64_run_die \
             "${config_filename}: RUN_HOST_PC_SAMPLE_PERIOD must be nonnegative"
+    if [[ -z ${RUN_BUILD_LOCK_NAME} ]]; then
+        case "${config_name}" in
+            fpga-*) RUN_BUILD_LOCK_NAME=fpga-build.lock ;;
+            *) RUN_BUILD_LOCK_NAME=verilator-build.lock ;;
+        esac
+    fi
+    [[ ${RUN_BUILD_LOCK_NAME} =~ ^[A-Za-z0-9._-]+$ ]] ||
+        openrv64_run_die \
+            "${config_filename}: RUN_BUILD_LOCK_NAME contains invalid characters"
 
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
     run_id=${config_name}-${timestamp}
@@ -190,6 +201,7 @@ launch_config() {
             OPENRV64_RUN_CONFIG_PATH=${config_path} \
             OPENRV64_RUN_RECORDED_COMMAND=${recorded_command} \
             OPENRV64_RUN_TIMEOUT_SECONDS=${RUN_TIMEOUT_SECONDS} \
+            OPENRV64_RUN_BUILD_LOCK_NAME=${RUN_BUILD_LOCK_NAME} \
                 exec "${repo_root}/run/backends/make.sh" start "$@"
             ;;
         linux-smp)

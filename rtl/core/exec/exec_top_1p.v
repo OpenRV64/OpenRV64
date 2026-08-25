@@ -90,6 +90,8 @@ module openrv64_exec_top_1p #(
     output wire [`RV64_XLEN-1:0]        wb_next_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] wb_instr_o,
     output wire [`RV64_XLEN-1:0]        wb_data_o,
+    output wire [`RV64_XLEN-1:0]        wb_rs1_data_o,
+    output wire [`RV64_XLEN-1:0]        wb_rs2_data_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] wb_rs1_addr_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] wb_rs2_addr_o,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] wb_rd_addr_o,
@@ -121,7 +123,7 @@ module openrv64_exec_top_1p #(
 );
 
     localparam EX_MEM_WIDTH = 581;
-    localparam MEM_WB_WIDTH = 380;
+    localparam MEM_WB_WIDTH = 508;
 
     wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(instr_i);
     wire [`RV64_XLEN-1:0] forwarded_rs1_data;
@@ -744,6 +746,8 @@ module openrv64_exec_top_1p #(
         ex_mem_next_pc,
         ex_mem_instr,
         memory_result,
+        ex_mem_lsu_base,
+        ex_mem_lsu_store_data,
         ex_mem_rs1_addr,
         ex_mem_rs2_addr,
         ex_mem_rd_addr,
@@ -782,6 +786,8 @@ module openrv64_exec_top_1p #(
         wb_next_pc_o,
         wb_instr_o,
         wb_data_o,
+        wb_rs1_data_o,
+        wb_rs2_data_o,
         wb_rs1_addr_o,
         wb_rs2_addr_o,
         wb_rd_addr_o,

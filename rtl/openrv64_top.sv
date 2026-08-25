@@ -29,6 +29,7 @@ module openrv64_top #(
     parameter bit PIPE_1P_MEM_4_STAGE = 1'b0,
     parameter bit PIPE_1P_DECODE_QUEUE = 1'b0,
     parameter bit FPGA_GPR_LUTRAM = 1'b0,
+    parameter bit DEBUG_SERIALIZE_ALL_1P = 1'b0,
     parameter bit ENABLE_L1I = 1'b1,
     parameter bit ENABLE_L1D = 1'b1,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
@@ -177,6 +178,8 @@ module openrv64_top #(
 
     output logic [63:0] dbg_pc,
     output logic [31:0] dbg_instr,
+    output logic [63:0] dbg_rs1_data,
+    output logic [63:0] dbg_rs2_data,
     output logic        dbg_halted,
     output logic        wfi_sleep,
 
@@ -233,6 +236,8 @@ module openrv64_top #(
     wire legacy_icx_resp_ready;
     wire [63:0] legacy_dbg_pc;
     wire [31:0] legacy_dbg_instr;
+    wire [63:0] legacy_dbg_rs1_data;
+    wire [63:0] legacy_dbg_rs2_data;
     wire legacy_dbg_halted;
     wire legacy_wfi_sleep;
     wire [63:0] legacy_trace_cycle;
@@ -261,6 +266,8 @@ module openrv64_top #(
     wire [7:0] three_mem_wstrb;
     wire [63:0] three_dbg_pc;
     wire [31:0] three_dbg_instr;
+    wire [63:0] three_dbg_rs1_data;
+    wire [63:0] three_dbg_rs2_data;
     wire three_dbg_halted;
     wire three_wfi_sleep;
     wire [63:0] three_trace_cycle;
@@ -341,6 +348,7 @@ module openrv64_top #(
         .PIPE_1P_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
         .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE),
         .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
+        .DEBUG_SERIALIZE_ALL_1P(DEBUG_SERIALIZE_ALL_1P),
         .TLB_ENTRIES(GENBUS_TLB_ENTRIES),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
         .PTW_ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
@@ -408,6 +416,8 @@ module openrv64_top #(
         .irq_s_timer(use_3p ? 1'b0 : irq_s_timer),
         .irq_s_external(use_3p ? 1'b0 : irq_s_external),
         .dbg_pc(legacy_dbg_pc), .dbg_instr(legacy_dbg_instr),
+        .dbg_rs1_data(legacy_dbg_rs1_data),
+        .dbg_rs2_data(legacy_dbg_rs2_data),
         .dbg_halted(legacy_dbg_halted),
         .wfi_sleep_o(legacy_wfi_sleep),
         .trace_cycle(legacy_trace_cycle), .trace_valid(legacy_trace_valid),
@@ -428,6 +438,8 @@ module openrv64_top #(
 
     generate
         if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_backend_3p
+            assign three_dbg_rs1_data = 64'd0;
+            assign three_dbg_rs2_data = 64'd0;
             openrv64_rv64_top_3p #(
                 .RESET_VECTOR(RESET_VECTOR), .ENABLE_RV64M(ENABLE_RV64M),
                 .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
@@ -647,6 +659,8 @@ module openrv64_top #(
             assign three_trace_retire_rd_write = 1'b0;
             assign three_trace_retire_rd = 5'd0;
             assign three_trace_retire_wdata = 64'd0;
+            assign three_dbg_rs1_data = 64'd0;
+            assign three_dbg_rs2_data = 64'd0;
             assign three_axi_arid = '0;
             assign three_axi_araddr = '0;
             assign three_axi_arlen = '0;
@@ -769,6 +783,8 @@ module openrv64_top #(
                                      legacy_icx_resp_ready;
     assign dbg_pc = use_3p ? three_dbg_pc : legacy_dbg_pc;
     assign dbg_instr = use_3p ? three_dbg_instr : legacy_dbg_instr;
+    assign dbg_rs1_data = use_3p ? three_dbg_rs1_data : legacy_dbg_rs1_data;
+    assign dbg_rs2_data = use_3p ? three_dbg_rs2_data : legacy_dbg_rs2_data;
     assign dbg_halted = use_3p ? three_dbg_halted : legacy_dbg_halted;
     assign wfi_sleep = use_3p ? three_wfi_sleep : legacy_wfi_sleep;
     assign trace_cycle = use_3p ? three_trace_cycle : legacy_trace_cycle;

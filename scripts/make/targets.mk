@@ -1,13 +1,25 @@
 # Aggregate targets and phony declarations.
 
 .PHONY: FORCE fpga-sd-image verify-fpga-sd-image fpga-opensbi-core-dcp \
+	opensbi-fpga-linux-debug verify-opensbi-fpga-linux-debug \
+	fpga-debug-snapshot-synth verify-fpga-debug-snapshot-synth \
+	fpga-debug-stub-synth verify-fpga-debug-stub-synth \
+	fpga-debug-uart-trace-synth verify-fpga-debug-uart-trace-synth \
 	fpga-sd-boot-rom \
 	fpga-sd-boot-bitstream fpga-sd-boot-bitstream-check \
 	fpga-program-bitstream \
 	fpga-jtag-snoop \
+	fpga-debug-dtb-probe \
+	fpga-debug-dtb-probe-read \
+	fpga-debug-strcmp-probe \
+	fpga-debug-strcmp-probe-read \
+	fpga-debug-memblock-probe \
+	fpga-debug-memblock-probe-read \
 	fpga-sd-boot-core-timing-report \
 	fpga-sd-boot-core-timing-report-check \
-	sim-fpga-sd-boot sim-fpga-jtag-snoop sim-ethernet \
+	sim-fpga-sd-boot sim-fpga-jtag-snoop sim-fpga-debug-stub \
+	sim-fpga-debug-uart-trace \
+	sim-fpga-debug-exec sim-ethernet \
 	sw-uart sw-fp-daxpy sw-fp-daxpy-compute \
 	sw-fp-daxpy-store \
 	sw-fp-fmadd32 sw-fp-faults \
@@ -90,7 +102,7 @@
 	sim-l1d-store-order \
 	sim-l1d-store-buffer sim-l1d-fence-behavior \
 	sim-l1d-invalidate-arbiter \
-	sim-l1i-top sim-icx-protocol-1h \
+	sim-l1i-top sim-l1i-fill-owner sim-icx-protocol-1h \
 	sim-icx-protocol-2h sim-icx-protocol-4h \
 	sim-icx-coherent-2h sim-icx-coherent-4h \
 	sim-icx-coherent-protocol-2h sim-icx-coherent-protocol-4h \

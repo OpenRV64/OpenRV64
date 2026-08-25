@@ -47,6 +47,7 @@ module tb_rv64i_csrs;
     logic [`RV64_SATP_PPN_WIDTH-1:0] satp_root_ppn;
     logic status_sum;
     logic status_mxr;
+    logic data_access_context_change;
     logic pmp_bus_valid;
     logic [`RV64_XLEN-1:0] pmp_bus_addr;
     logic [2:0] pmp_bus_size;
@@ -125,6 +126,7 @@ module tb_rv64i_csrs;
         .satp_root_ppn_o(satp_root_ppn),
         .status_sum_o(status_sum),
         .status_mxr_o(status_mxr),
+        .data_access_context_change_o(data_access_context_change),
         .pmp_bus_valid_i(pmp_bus_valid),
         .pmp_bus_addr_i(pmp_bus_addr),
         .pmp_bus_size_i(pmp_bus_size),
@@ -213,6 +215,33 @@ module tb_rv64i_csrs;
             csr_op = op;
             write_csr(addr, operand);
             csr_op = `RV64_ZICSR_FUNCT3_CSRRW;
+        end
+    endtask
+
+    task automatic expect_data_access_context_write;
+        input [`RV64_FUNCT12_WIDTH-1:0] addr;
+        input [`RV64_FUNCT3_WIDTH-1:0] op;
+        input [`RV64_XLEN-1:0] operand;
+        input expected_change;
+        input [8*48-1:0] label;
+        begin
+            @(negedge clk);
+            csr_addr = addr;
+            csr_op = op;
+            csr_wdata = operand;
+            csr_write = 1'b1;
+            #1;
+            if (data_access_context_change !== expected_change)
+                $fatal(1, "%0s: context change=%0b/%0b", label,
+                       data_access_context_change, expected_change);
+            @(posedge clk);
+            @(negedge clk);
+            csr_write = 1'b0;
+            csr_addr = 12'd0;
+            csr_op = `RV64_ZICSR_FUNCT3_CSRRW;
+            #1;
+            if (data_access_context_change)
+                $fatal(1, "%0s: context change did not drop", label);
         end
     endtask
 
@@ -314,6 +343,64 @@ module tb_rv64i_csrs;
         check_csr(`RV64_CSR_PMPADDR15, 1'b1, 1'b1, 64'h0,
                   "pmpaddr15 reset");
         check_csr(12'hfff, 1'b0, 1'b0, 64'h0, "unimplemented csr");
+
+        // External interrupt-pending changes and interrupt/status-only CSR
+        // writes do not invalidate translation/permission proofs.
+        irq_external = 1'b1;
+        irq_software = 1'b1;
+        #1;
+        if (data_access_context_change)
+            $fatal(1, "MEIP/MSIP input change invalidated data context");
+        irq_external = 1'b0;
+        irq_software = 1'b0;
+        expect_data_access_context_write(
+            `RV64_CSR_MIP, `RV64_ZICSR_FUNCT3_CSRRW,
+            64'd1 << `RV64_MIP_SSIP_BIT, 1'b0, "MIP pending-only write");
+        expect_data_access_context_write(
+            `RV64_CSR_SSTATUS, `RV64_ZICSR_FUNCT3_CSRRS,
+            64'd1 << `RV64_MSTATUS_SIE_BIT, 1'b0,
+            "sstatus SIE set");
+        expect_data_access_context_write(
+            `RV64_CSR_SSTATUS, `RV64_ZICSR_FUNCT3_CSRRC,
+            64'd1 << `RV64_MSTATUS_SIE_BIT, 1'b0,
+            "sstatus SIE clear");
+
+        // SUM/MXR/MPRV/MPP are different: they alter LSU translation or
+        // permission semantics and therefore must revoke cached proofs.
+        expect_data_access_context_write(
+            `RV64_CSR_SSTATUS, `RV64_ZICSR_FUNCT3_CSRRS,
+            64'd1 << `RV64_MSTATUS_SUM_BIT, 1'b1,
+            "sstatus SUM set");
+        expect_data_access_context_write(
+            `RV64_CSR_SSTATUS, `RV64_ZICSR_FUNCT3_CSRRS,
+            64'd1 << `RV64_MSTATUS_SUM_BIT, 1'b0,
+            "sstatus SUM no-op set");
+        expect_data_access_context_write(
+            `RV64_CSR_SSTATUS, `RV64_ZICSR_FUNCT3_CSRRC,
+            64'd1 << `RV64_MSTATUS_SUM_BIT, 1'b1,
+            "sstatus SUM clear");
+        expect_data_access_context_write(
+            `RV64_CSR_SSTATUS, `RV64_ZICSR_FUNCT3_CSRRS,
+            64'd1 << `RV64_MSTATUS_MXR_BIT, 1'b1,
+            "sstatus MXR set");
+        expect_data_access_context_write(
+            `RV64_CSR_SSTATUS, `RV64_ZICSR_FUNCT3_CSRRC,
+            64'd1 << `RV64_MSTATUS_MXR_BIT, 1'b1,
+            "sstatus MXR clear");
+        expect_data_access_context_write(
+            `RV64_CSR_MSTATUS, `RV64_ZICSR_FUNCT3_CSRRS,
+            64'd1 << `RV64_MSTATUS_MPRV_BIT, 1'b1,
+            "mstatus MPRV set");
+        expect_data_access_context_write(
+            `RV64_CSR_MSTATUS, `RV64_ZICSR_FUNCT3_CSRRC,
+            64'd1 << `RV64_MSTATUS_MPRV_BIT, 1'b1,
+            "mstatus MPRV clear");
+        expect_data_access_context_write(
+            `RV64_CSR_MSTATUS, `RV64_ZICSR_FUNCT3_CSRRC,
+            64'd2 << 11, 1'b1, "mstatus MPP M-to-S");
+        expect_data_access_context_write(
+            `RV64_CSR_MSTATUS, `RV64_ZICSR_FUNCT3_CSRRS,
+            64'd2 << 11, 1'b1, "mstatus MPP S-to-M");
 
         check_csr(12'h7c0, 1'b1, 1'b1,
                   64'h0123_4567_89ab_cdef,

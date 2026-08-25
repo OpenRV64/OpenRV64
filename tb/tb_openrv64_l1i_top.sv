@@ -78,9 +78,30 @@ module tb_openrv64_l1i_top #(
     logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0] icx_pending_source_q;
     logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0] icx_pending_txn_q;
     logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] icx_pending_data_q;
+    logic fill_owner_directed_q;
+    logic [`OPENRV64_ICX_HART_ID_WIDTH-1:0]
+        directed_pending_hart_q [0:3];
+    logic [`OPENRV64_ICX_SOURCE_ID_WIDTH-1:0]
+        directed_pending_source_q [0:3];
+    logic [`OPENRV64_ICX_TXN_ID_WIDTH-1:0]
+        directed_pending_txn_q [0:3];
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        directed_pending_data_q [0:3];
+    logic [2:0] directed_request_count_q;
+    logic directed_batch_q;
+    logic [1:0] directed_response_index_q;
     logic [MEMORY_LINES-1:0] filled_lines_q;
     integer icx_fill_count_q;
     integer branch_hint_count_q;
+    integer fill_preemption_count_q;
+    logic fill_payload_held_q;
+    logic [1:0] fill_hold_index_q;
+    logic [63:0] fill_hold_addr_q;
+    logic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] fill_hold_data_q;
+    integer directed_reset_index;
+
+    initial fill_owner_directed_q =
+        $test$plusargs("fill_owner_directed");
 
     openrv64_l1i_top #(
         .CACHE_BYTES(CACHE_BYTES),
@@ -154,7 +175,9 @@ module tb_openrv64_l1i_top #(
     always #5 clk = ~clk;
 
     assign xlate_req_ready = !xlate_resp_valid;
-    assign icx_req_ready = !icx_pending_q && !icx_resp_valid;
+    assign icx_req_ready = fill_owner_directed_q ?
+        (!directed_batch_q && (directed_request_count_q < 4)) :
+        (!icx_pending_q && !icx_resp_valid);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -175,6 +198,63 @@ module tb_openrv64_l1i_top #(
         end
     end
 
+    // The generic synchronous array probes a fill one cycle before accepting
+    // it.  Exercise the case where another completed MSHR becomes the
+    // arbiter's preferred entry during that hold interval, and require the
+    // wrapper's address/data payload to remain stable.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fill_preemption_count_q <= 0;
+            fill_payload_held_q <= 1'b0;
+            fill_hold_index_q <= 2'd0;
+            fill_hold_addr_q <= 64'd0;
+            fill_hold_data_q <= '0;
+        end else begin
+            if ($test$plusargs("l1i_fill_trace") &&
+                (dut.u_l1i_icx.l1_fill_valid ||
+                 dut.u_l1i_icx.demand_mshr_any_valid_r))
+                $display(
+                    "L1I_FILL_TRACE t=%0t valid=%b ready=%b owner=%b:%0d arb=%b:%0d addr=%h mshr=%b complete=%b done=%b",
+                    $time, dut.u_l1i_icx.l1_fill_valid,
+                    dut.u_l1i_icx.l1_fill_ready,
+                    dut.u_l1i_icx.fill_owner_valid_q,
+                    dut.u_l1i_icx.fill_owner_q,
+                    dut.u_l1i_icx.demand_mshr_fill_found_r,
+                    dut.u_l1i_icx.demand_mshr_fill_index_r,
+                    dut.u_l1i_icx.l1_fill_addr,
+                    dut.u_l1i_icx.demand_mshr_valid_vec,
+                    dut.u_l1i_icx.demand_mshr_complete_vec,
+                    dut.u_l1i_icx.demand_mshr_fill_done_vec);
+            if (fill_payload_held_q &&
+                dut.u_l1i_icx.demand_mshr_fill_found_r &&
+                (dut.u_l1i_icx.demand_mshr_fill_index_r !=
+                 fill_hold_index_q))
+                fill_preemption_count_q <= fill_preemption_count_q + 1;
+
+            if (dut.u_l1i_icx.l1_fill_valid) begin
+                if (fill_payload_held_q &&
+                    ((dut.u_l1i_icx.l1_fill_addr != fill_hold_addr_q) ||
+                     (dut.u_l1i_icx.l1_fill_data != fill_hold_data_q)))
+                    $fatal(1,
+                        "L1I fill payload changed before acceptance: held=%h now=%h",
+                        fill_hold_addr_q, dut.u_l1i_icx.l1_fill_addr);
+
+                if (!dut.u_l1i_icx.l1_fill_ready &&
+                    !fill_payload_held_q) begin
+                    fill_payload_held_q <= 1'b1;
+                    fill_hold_index_q <=
+                        dut.u_l1i_icx.demand_mshr_fill_index_r;
+                    fill_hold_addr_q <= dut.u_l1i_icx.l1_fill_addr;
+                    fill_hold_data_q <= dut.u_l1i_icx.l1_fill_data;
+                end else if (dut.u_l1i_icx.l1_fill_ready) begin
+                    fill_payload_held_q <= 1'b0;
+                end
+            end else begin
+                fill_payload_held_q <= 1'b0;
+            end
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             icx_pending_q <= 1'b0;
@@ -182,6 +262,16 @@ module tb_openrv64_l1i_top #(
             icx_pending_source_q <= '0;
             icx_pending_txn_q <= '0;
             icx_pending_data_q <= '0;
+            directed_request_count_q <= 3'd0;
+            directed_batch_q <= 1'b0;
+            directed_response_index_q <= 2'd0;
+            for (directed_reset_index = 0; directed_reset_index < 4;
+                 directed_reset_index = directed_reset_index + 1) begin
+                directed_pending_hart_q[directed_reset_index] <= '0;
+                directed_pending_source_q[directed_reset_index] <= '0;
+                directed_pending_txn_q[directed_reset_index] <= '0;
+                directed_pending_data_q[directed_reset_index] <= '0;
+            end
             icx_resp_valid <= 1'b0;
             icx_resp_hart_id <= '0;
             icx_resp_source_id <= '0;
@@ -190,16 +280,39 @@ module tb_openrv64_l1i_top #(
             filled_lines_q <= '0;
             icx_fill_count_q <= 0;
         end else begin
-            if (icx_resp_valid && icx_resp_ready)
-                icx_resp_valid <= 1'b0;
+            if (fill_owner_directed_q) begin
+                if (icx_resp_valid && icx_resp_ready)
+                    icx_resp_valid <= 1'b0;
+                if (directed_batch_q &&
+                    (!icx_resp_valid || icx_resp_ready)) begin
+                    icx_resp_valid <= 1'b1;
+                    icx_resp_hart_id <= directed_pending_hart_q[
+                        directed_response_index_q];
+                    icx_resp_source_id <= directed_pending_source_q[
+                        directed_response_index_q];
+                    icx_resp_txn_id <= directed_pending_txn_q[
+                        directed_response_index_q];
+                    icx_resp_rdata <= directed_pending_data_q[
+                        directed_response_index_q];
+                    if (directed_response_index_q == 0)
+                        directed_batch_q <= 1'b0;
+                    else
+                        directed_response_index_q <=
+                            directed_response_index_q - 1'b1;
+                end
+            end else begin
+                if (icx_resp_valid && icx_resp_ready)
+                    icx_resp_valid <= 1'b0;
 
-            if (icx_pending_q && (!icx_resp_valid || icx_resp_ready)) begin
-                icx_pending_q <= 1'b0;
-                icx_resp_valid <= 1'b1;
-                icx_resp_hart_id <= icx_pending_hart_q;
-                icx_resp_source_id <= icx_pending_source_q;
-                icx_resp_txn_id <= icx_pending_txn_q;
-                icx_resp_rdata <= icx_pending_data_q;
+                if (icx_pending_q &&
+                    (!icx_resp_valid || icx_resp_ready)) begin
+                    icx_pending_q <= 1'b0;
+                    icx_resp_valid <= 1'b1;
+                    icx_resp_hart_id <= icx_pending_hart_q;
+                    icx_resp_source_id <= icx_pending_source_q;
+                    icx_resp_txn_id <= icx_pending_txn_q;
+                    icx_resp_rdata <= icx_pending_data_q;
+                end
             end
 
             if (icx_req_valid && icx_req_ready) begin
@@ -222,11 +335,29 @@ module tb_openrv64_l1i_top #(
                 if (filled_lines_q[icx_req_addr[10:6]])
                     $fatal(1, "duplicate CoreMark line refill: %h",
                            icx_req_addr);
-                icx_pending_q <= 1'b1;
-                icx_pending_hart_q <= icx_req_hart_id;
-                icx_pending_source_q <= icx_req_source_id;
-                icx_pending_txn_q <= icx_req_txn_id;
-                icx_pending_data_q <= memory[icx_req_addr[10:6]];
+                if (fill_owner_directed_q) begin
+                    directed_pending_hart_q[
+                        directed_request_count_q[1:0]] <= icx_req_hart_id;
+                    directed_pending_source_q[
+                        directed_request_count_q[1:0]] <= icx_req_source_id;
+                    directed_pending_txn_q[
+                        directed_request_count_q[1:0]] <= icx_req_txn_id;
+                    directed_pending_data_q[
+                        directed_request_count_q[1:0]] <=
+                        memory[icx_req_addr[10:6]];
+                    directed_request_count_q <=
+                        directed_request_count_q + 1'b1;
+                    if (directed_request_count_q == 3) begin
+                        directed_batch_q <= 1'b1;
+                        directed_response_index_q <= 2'd3;
+                    end
+                end else begin
+                    icx_pending_q <= 1'b1;
+                    icx_pending_hart_q <= icx_req_hart_id;
+                    icx_pending_source_q <= icx_req_source_id;
+                    icx_pending_txn_q <= icx_req_txn_id;
+                    icx_pending_data_q <= memory[icx_req_addr[10:6]];
+                end
                 filled_lines_q[icx_req_addr[10:6]] <= 1'b1;
                 icx_fill_count_q <= icx_fill_count_q + 1;
             end
@@ -282,6 +413,23 @@ module tb_openrv64_l1i_top #(
                     pc, returned_instruction, expected_instruction);
             @(posedge clk);
             @(negedge clk);
+        end
+    endtask
+
+    task automatic launch_fetch;
+        input [63:0] pc;
+        begin
+            @(negedge clk);
+            while (!fetch_req_ready)
+                @(negedge clk);
+            fetch_req_valid = 1'b1;
+            fetch_req_vaddr = pc;
+            fetch_req_paddr = pc;
+            @(posedge clk);
+            @(negedge clk);
+            fetch_req_valid = 1'b0;
+            fetch_req_vaddr = 64'd0;
+            fetch_req_paddr = 64'd0;
         end
     endtask
 
@@ -352,6 +500,8 @@ module tb_openrv64_l1i_top #(
     integer cold_fills;
     integer warm_start_fills;
     integer next_line_wait_cycles;
+    integer directed_line;
+    integer directed_wait_cycles;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -377,6 +527,45 @@ module tb_openrv64_l1i_top #(
         repeat (4) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        if ($test$plusargs("fill_owner_directed")) begin
+            // Keep demand/MSHR traffic flowing while the synchronous array
+            // consumes fills.  Reuse of low MSHR indices forces the arbiter
+            // to prefer a new completion while an older fill is held.
+            for (directed_line = 0; directed_line < 4;
+                 directed_line = directed_line + 1)
+                launch_fetch(IMAGE_BASE + 64'(directed_line * 64));
+
+            directed_wait_cycles = 0;
+            while (dut.u_l1i_icx.demand_mshr_any_valid_r &&
+                   directed_wait_cycles < 1000) begin
+                @(posedge clk);
+                directed_wait_cycles = directed_wait_cycles + 1;
+            end
+            if (dut.u_l1i_icx.demand_mshr_any_valid_r ||
+                icx_fill_count_q != 4)
+                $fatal(1,
+                    "L1I directed fills did not drain: fills=%0d mshr=%b",
+                    icx_fill_count_q,
+                    dut.u_l1i_icx.demand_mshr_valid_vec);
+            if (fill_preemption_count_q == 0)
+                $fatal(1,
+                    "L1I directed test did not exercise fill-owner preemption");
+
+            for (directed_line = 0; directed_line < 4;
+                 directed_line = directed_line + 1)
+                issue_fetch(IMAGE_BASE + 64'(directed_line * 64),
+                    memory[directed_line][31:0]);
+            if (icx_fill_count_q != 4)
+                $fatal(1,
+                    "L1I warm verification caused a refill: fills=%0d",
+                    icx_fill_count_q);
+
+            $display(
+                "PASS: L1I fill-owner directed lines=4 fill_preemptions=%0d warm_refills=0",
+                fill_preemption_count_q);
+            $finish;
+        end
 
         // A consumed demand for the first half of line zero must warm the
         // following 64-byte line without a branch hint.  Replaying line zero
@@ -405,7 +594,6 @@ module tb_openrv64_l1i_top #(
             $fatal(1,
                 "warm CoreMark replay missed: before=%0d after=%0d",
                 warm_start_fills, icx_fill_count_q);
-
         $display(
             "PASS: L1I bytes=%0d ways=%0d prefetch_slots=%0d next_line_prefetch=1 CoreMark excerpt_length=%0d replays=2 checked_instructions=%0d branch_pairs=%0d cold_line_fills=%0d warm_line_fills=0",
             CACHE_BYTES, WAYS, PREFETCH_SLOTS, EXCERPT_LENGTH,

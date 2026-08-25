@@ -25,6 +25,22 @@ write_checkpoint -force [file join $report_dir post_place.dcp]
 phys_opt_design -directive AggressiveExplore
 route_design -directive Explore
 
+# Explore occasionally leaves a single marginal setup endpoint on this dense
+# 7-series image even though incremental placement has created positive
+# estimated slack. Give that placed/routed result one physical-repair pass
+# before rejecting it. This does not relax the timing constraint; the final
+# setup and hold checks below still gate bitstream generation.
+set initial_setup_path [get_timing_paths -quiet -delay_type max -max_paths 1]
+if {[llength $initial_setup_path] == 0} {
+    error "missing setup timing path after initial route"
+}
+set initial_setup_slack [get_property SLACK [lindex $initial_setup_path 0]]
+if {$initial_setup_slack < 0.0} {
+    puts "OPENRV64 VIVADO ROUTE REPAIR: initial WNS=$initial_setup_slack ns"
+    phys_opt_design -directive AggressiveExplore
+    route_design -directive Explore
+}
+
 report_route_status -file [file join $report_dir route_status.rpt]
 report_timing_summary -delay_type min_max -report_unconstrained \
     -check_timing_verbose -file [file join $report_dir timing_summary.rpt]

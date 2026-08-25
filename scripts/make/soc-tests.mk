@@ -73,6 +73,21 @@ sim-fpga-sd-boot: $(FPGA_SD_BOOT_SIM_BUILD)
 sim-fpga-jtag-snoop: $(FPGA_JTAG_SNOOP_SIM_BUILD)
 	vvp $(FPGA_JTAG_SNOOP_SIM_BUILD)
 
+sim-fpga-scalar-mem-cdc: $(FPGA_SCALAR_MEM_CDC_SIM_BUILD)
+	vvp $(FPGA_SCALAR_MEM_CDC_SIM_BUILD)
+
+sim-fpga-debug-snapshot: $(FPGA_DEBUG_SNAPSHOT_SIM_BUILD)
+	vvp $(FPGA_DEBUG_SNAPSHOT_SIM_BUILD)
+
+sim-fpga-debug-stub: $(FPGA_DEBUG_STUB_SIM_BUILD)
+	vvp $(FPGA_DEBUG_STUB_SIM_BUILD)
+
+sim-fpga-debug-uart-trace: $(FPGA_DEBUG_UART_TRACE_SIM_BUILD)
+	vvp $(FPGA_DEBUG_UART_TRACE_SIM_BUILD)
+
+sim-fpga-debug-exec: $(FPGA_DEBUG_EXEC_SIM_BUILD)
+	vvp $(FPGA_DEBUG_EXEC_SIM_BUILD)
+
 sim-rom: $(ROM_SIM_BUILD)
 	vvp $(ROM_SIM_BUILD)
 
@@ -184,6 +199,10 @@ sim-icx-bus: $(ICX_BUS_SIM_BUILD) $(ICX_L1I_SIM_BUILD)
 
 sim-l1i-top: $(L1I_TOP_SIM_BUILD) $(L1I_COREMARK_MEMH)
 	vvp $(L1I_TOP_SIM_BUILD) +memh=$(L1I_COREMARK_MEMH)
+
+sim-l1i-fill-owner: $(L1I_TOP_SIM_BUILD) $(L1I_COREMARK_MEMH)
+	vvp $(L1I_TOP_SIM_BUILD) +memh=$(L1I_COREMARK_MEMH) \
+		+fill_owner_directed
 
 sim-tlb: $(TLB_SIM_BUILD)
 	vvp $(TLB_SIM_BUILD)

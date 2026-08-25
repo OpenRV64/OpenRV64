@@ -24,6 +24,7 @@ module openrv64_platform #(
     parameter bit ETHERNET_ENABLE = 1'b0,
     parameter integer ETHERNET_MDC_HALF_PERIOD_CYCLES = 2,
     parameter integer ETHERNET_PHY_RESET_CYCLES = 100000,
+    parameter bit FPGA_DEBUG_ENABLE = 1'b0,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
     parameter int unsigned RETIRE_DEPTH = 16,
@@ -40,6 +41,7 @@ module openrv64_platform #(
     parameter bit PIPE_1P_MEM_4_STAGE = 1'b0,
     parameter bit PIPE_1P_DECODE_QUEUE = 1'b0,
     parameter bit FPGA_GPR_LUTRAM = 1'b0,
+    parameter bit DEBUG_SERIALIZE_ALL_1P = 1'b0,
     parameter int unsigned L2_BYTES = 256 * 1024,
     parameter int unsigned L2_WAYS = 8,
     parameter int unsigned L2_MERGE_ENTRIES = 8,
@@ -124,6 +126,32 @@ module openrv64_platform #(
     // 1..3 are reserved for UART, GPIO, and the general-purpose timer.
     input  logic [28:0]           external_irq_i,
 
+    // FPGA USER1 access to the machine-mode snapshot BRAM. These ports are
+    // inert unless FPGA_DEBUG_ENABLE is set.
+    input  logic [8:0]            debug_snapshot_read_index_i,
+    input  logic                  debug_snapshot_read_req_toggle_i,
+    output logic                  debug_snapshot_read_ack_toggle_o,
+    output logic [63:0]           debug_snapshot_read_data_o,
+    input  logic                  debug_snapshot_resume_toggle_i,
+    output logic                  debug_snapshot_trigger_ack_o,
+    output logic                  debug_snapshot_resume_pending_o,
+
+    // FPGA USER1 access to the executable M-mode debug workspace BRAM.
+    input  logic [10:0]           debug_stub_index_i,
+    input  logic                  debug_stub_write_i,
+    input  logic                  debug_stub_trace_read_i,
+    input  logic [63:0]           debug_stub_wdata_i,
+    input  logic                  debug_stub_req_toggle_i,
+    output logic                  debug_stub_ack_toggle_o,
+    output logic [63:0]           debug_stub_rdata_o,
+
+    // FPGA USER1 readback of the rolling platform-UART transmit log.
+    input  logic [10:0]           debug_uart_trace_index_i,
+    input  logic                  debug_uart_trace_req_toggle_i,
+    output logic                  debug_uart_trace_ack_toggle_o,
+    output logic [255:0]          debug_uart_trace_rdata_o,
+    output logic [63:0]           debug_uart_trace_byte_count_o,
+
     output logic                  ext_mem_valid_o,
     input  logic                  ext_mem_ready_i,
     output logic                  ext_mem_write_o,
@@ -189,6 +217,8 @@ module openrv64_platform #(
 
     output logic [63:0]           dbg_pc,
     output logic [31:0]           dbg_instr,
+    output logic [63:0]           dbg_rs1_data,
+    output logic [63:0]           dbg_rs2_data,
     output logic                  dbg_halted,
 
     output logic [63:0]           trace_cycle,
@@ -346,6 +376,21 @@ module openrv64_platform #(
     logic [63:0] plic_wdata;
     logic [7:0] plic_wstrb;
     logic [63:0] plic_rdata;
+    logic plic_regs_valid;
+    logic plic_regs_ready;
+    logic [63:0] plic_regs_rdata;
+    logic debug_snapshot_ready;
+    logic [63:0] debug_snapshot_rdata;
+    logic debug_stub_ready;
+    logic [63:0] debug_stub_rdata;
+    wire debug_snapshot_selected = FPGA_DEBUG_ENABLE &&
+        (plic_addr >= `OPENRV64_SOC_FPGA_DEBUG_SNAPSHOT_OFFSET) &&
+        (plic_addr < (`OPENRV64_SOC_FPGA_DEBUG_SNAPSHOT_OFFSET +
+                      `OPENRV64_SOC_FPGA_DEBUG_SNAPSHOT_SIZE));
+    wire debug_stub_selected = FPGA_DEBUG_ENABLE &&
+        (plic_addr >= `OPENRV64_SOC_FPGA_DEBUG_STUB_OFFSET) &&
+        (plic_addr < (`OPENRV64_SOC_FPGA_DEBUG_STUB_OFFSET +
+                      `OPENRV64_SOC_FPGA_DEBUG_STUB_SIZE));
 
     logic uart_valid;
     logic uart_ready;
@@ -390,9 +435,11 @@ module openrv64_platform #(
     logic [0:0] clint_msip;
     logic [0:0] clint_mtip;
     logic [63:0] clint_mtime;
+    logic [0:0] plic_meip;
     logic [0:0] plic_seip;
     logic clint_msip_core_q;
     logic clint_mtip_core_q;
+    logic plic_meip_core_q;
     logic plic_seip_core_q;
     logic uart_irq;
     logic gpio_irq;
@@ -406,6 +453,8 @@ module openrv64_platform #(
     logic uart_rts_n;
     logic uart_out1_n;
     logic uart_out2_n;
+    logic uart_tx_byte_valid;
+    logic [7:0] uart_tx_byte;
 
     openrv64_reset_sequencer #(
         .SOC_HOLD_CYCLES(SOC_RESET_CYCLES),
@@ -437,10 +486,12 @@ module openrv64_platform #(
         if (!soc_rst_no) begin
             clint_msip_core_q <= 1'b0;
             clint_mtip_core_q <= 1'b0;
+            plic_meip_core_q <= 1'b0;
             plic_seip_core_q <= 1'b0;
         end else begin
             clint_msip_core_q <= clint_msip[0];
             clint_mtip_core_q <= clint_mtip[0];
+            plic_meip_core_q <= plic_meip[0];
             plic_seip_core_q <= plic_seip[0];
         end
     end
@@ -503,6 +554,7 @@ module openrv64_platform #(
         .PIPE_1P_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
         .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE),
         .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
+        .DEBUG_SERIALIZE_ALL_1P(DEBUG_SERIALIZE_ALL_1P),
         .ENABLE_TRACE(ENABLE_TRACE),
         .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
         .BP_TYPE(BP_TYPE),
@@ -570,12 +622,14 @@ module openrv64_platform #(
         .icx_resp_sc_success(icx_resp_sc_success),
         .irq_m_software(clint_msip_core_q),
         .irq_m_timer(clint_mtip_core_q),
-        .irq_m_external(1'b0),
+        .irq_m_external(plic_meip_core_q),
         .irq_s_software(1'b0),
         .irq_s_timer(1'b0),
         .irq_s_external(plic_seip_core_q),
         .dbg_pc(dbg_pc),
         .dbg_instr(dbg_instr),
+        .dbg_rs1_data(dbg_rs1_data),
+        .dbg_rs2_data(dbg_rs2_data),
         .dbg_halted(dbg_halted),
         .trace_cycle(trace_cycle),
         .trace_valid(trace_valid),
@@ -1033,20 +1087,118 @@ module openrv64_platform #(
     openrv64_plic #(
         .NUM_HARTS(1),
         .NUM_SOURCES(33),
-        .PRIORITY_WIDTH(3)
+        .PRIORITY_WIDTH(3),
+        .M_CONTEXT_ENABLE(FPGA_DEBUG_ENABLE)
     ) u_plic (
         .clk_i(clk_i),
         .rst_ni(soc_rst_no),
         .irq_sources_i(plic_irq_sources),
-        .mem_valid_i(plic_valid),
-        .mem_ready_o(plic_ready),
+        .mem_valid_i(plic_regs_valid),
+        .mem_ready_o(plic_regs_ready),
         .mem_write_i(plic_write),
         .mem_addr_i(plic_addr),
         .mem_wdata_i(plic_wdata),
         .mem_wstrb_i(plic_wstrb),
-        .mem_rdata_o(plic_rdata),
+        .mem_rdata_o(plic_regs_rdata),
+        .meip_o(plic_meip),
         .seip_o(plic_seip)
     );
+
+    generate
+        if (FPGA_DEBUG_ENABLE) begin : g_fpga_debug
+            assign plic_regs_valid = plic_valid &&
+                                     !debug_snapshot_selected &&
+                                     !debug_stub_selected;
+
+            assign plic_ready = debug_snapshot_selected ?
+                debug_snapshot_ready :
+                (debug_stub_selected ? debug_stub_ready : plic_regs_ready);
+            assign plic_rdata = debug_snapshot_selected ?
+                debug_snapshot_rdata :
+                (debug_stub_selected ? debug_stub_rdata : plic_regs_rdata);
+
+            openrv64_soc_debug_snapshot_mem u_snapshot_mem (
+                .clk_i(clk_i),
+                .rst_ni(soc_rst_no),
+                .mem_valid_i(plic_valid && debug_snapshot_selected),
+                .mem_ready_o(debug_snapshot_ready),
+                .mem_write_i(plic_write),
+                .mem_addr_i(plic_addr[11:0]),
+                .mem_wdata_i(plic_wdata),
+                .mem_wstrb_i(plic_wstrb),
+                .mem_rdata_o(debug_snapshot_rdata),
+                .jtag_read_index_i(debug_snapshot_read_index_i),
+                .jtag_read_req_toggle_i(
+                    debug_snapshot_read_req_toggle_i),
+                .jtag_read_ack_toggle_o(
+                    debug_snapshot_read_ack_toggle_o),
+                .jtag_read_data_o(debug_snapshot_read_data_o),
+                .jtag_resume_toggle_i(debug_snapshot_resume_toggle_i),
+                .trigger_active_i(external_irq_sync_2_q[28]),
+                .trigger_ack_o(debug_snapshot_trigger_ack_o),
+                .resume_pending_o(debug_snapshot_resume_pending_o)
+            );
+
+            openrv64_soc_debug_stub_mem u_stub_mem (
+                .clk_i(clk_i),
+                .rst_ni(soc_rst_no),
+                .mem_valid_i(plic_valid && debug_stub_selected),
+                .mem_ready_o(debug_stub_ready),
+                .mem_write_i(plic_write),
+                .cpu_write_enable_i(external_irq_sync_2_q[28]),
+                .mem_addr_i(plic_addr[13:0]),
+                .mem_wdata_i(plic_wdata),
+                .mem_wstrb_i(plic_wstrb),
+                .mem_rdata_o(debug_stub_rdata),
+                .jtag_index_i(debug_stub_index_i),
+                .jtag_write_i(debug_stub_write_i),
+                .jtag_trace_read_i(debug_stub_trace_read_i),
+                .jtag_wdata_i(debug_stub_wdata_i),
+                .jtag_req_toggle_i(debug_stub_req_toggle_i),
+                .jtag_ack_toggle_o(debug_stub_ack_toggle_o),
+                .jtag_rdata_o(debug_stub_rdata_o),
+                // FPGA debug A/B: record the instruction exactly where fetch
+                // advances into IF/ID.  Reuse the existing 64-bit trace record
+                // as {pc[31:0], instr[31:0]} so no new memory is required.
+                .trace_valid_i(trace_valid[0] && trace_advance[0] &&
+                               (trace_instrs[31:0] != 32'd0)),
+                .trace_freeze_i(external_irq_sync_2_q[28]),
+                .trace_pc_i(trace_pcs[0*64 +: 64]),
+                .trace_rd_write_i(trace_instrs[31]),
+                .trace_rd_i(trace_instrs[26 +: 5]),
+                .trace_wdata_i({38'd0, trace_instrs[0 +: 26]})
+            );
+
+            openrv64_soc_debug_uart_trace_mem u_uart_trace_mem (
+                .clk_i(clk_i),
+                .rst_ni(soc_rst_no),
+                .uart_byte_valid_i(uart_tx_byte_valid),
+                .uart_byte_i(uart_tx_byte),
+                .jtag_index_i(debug_uart_trace_index_i),
+                .jtag_req_toggle_i(debug_uart_trace_req_toggle_i),
+                .jtag_ack_toggle_o(debug_uart_trace_ack_toggle_o),
+                .jtag_rdata_o(debug_uart_trace_rdata_o),
+                .jtag_byte_count_o(debug_uart_trace_byte_count_o)
+            );
+        end else begin : g_no_fpga_debug
+            assign plic_regs_valid = plic_valid;
+            assign plic_ready = plic_regs_ready;
+            assign plic_rdata = plic_regs_rdata;
+            assign debug_snapshot_ready = 1'b0;
+            assign debug_snapshot_rdata = 64'd0;
+            assign debug_snapshot_read_ack_toggle_o = 1'b0;
+            assign debug_snapshot_read_data_o = 64'd0;
+            assign debug_snapshot_trigger_ack_o = 1'b0;
+            assign debug_snapshot_resume_pending_o = 1'b0;
+            assign debug_stub_ready = 1'b0;
+            assign debug_stub_rdata = 64'd0;
+            assign debug_stub_ack_toggle_o = 1'b0;
+            assign debug_stub_rdata_o = 64'd0;
+            assign debug_uart_trace_ack_toggle_o = 1'b0;
+            assign debug_uart_trace_rdata_o = 256'd0;
+            assign debug_uart_trace_byte_count_o = 64'd0;
+        end
+    endgenerate
 
     openrv64_uart16550 #(
         .INPUT_CLOCK_HZ(UART_INPUT_CLOCK_HZ),
@@ -1056,6 +1208,8 @@ module openrv64_platform #(
         .rst_ni(soc_rst_no),
         .rx_i(uart_rx_i),
         .tx_o(uart_tx_o),
+        .tx_byte_valid_o(uart_tx_byte_valid),
+        .tx_byte_o(uart_tx_byte),
         .cts_ni(1'b1),
         .dsr_ni(1'b1),
         .ri_ni(1'b1),

@@ -132,6 +132,7 @@ module tb_core_bus;
         .tlbi_i(tlbi),
         .context_flush_i(context_flush),
         .fetch_context_change_i(1'b0),
+        .page_screen_csr_clear_i(1'b0),
         .pmp_update_i(1'b0),
         .store_barrier_i(1'b0),
         .icache_invalidate_i(1'b0),

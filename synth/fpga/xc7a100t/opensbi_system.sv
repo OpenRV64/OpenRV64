@@ -20,6 +20,8 @@ module openrv64_fpga_opensbi_system #(
     parameter integer FDT_WORDS        = 1,
     parameter integer UART_LINUX_LOAD_ENABLE = 0,
     parameter integer SD_ROM_BOOT_ENABLE = 0,
+    parameter integer MIG_SCALAR_CACHE_ENABLE = 1,
+    parameter integer MIG_SCALAR_CACHE_BYTES = 32 * 1024,
     parameter integer CORE_CLOCK_HZ = 14_000_000,
     parameter integer UART_REFERENCE_CLOCK_HZ = 14_745_600,
     parameter integer SPI_FAST_HALF_PERIOD_CYCLES = 1,
@@ -60,9 +62,7 @@ module openrv64_fpga_opensbi_system #(
     input  logic         eth_mdio_i,
     output logic         eth_phy_reset_no,
 
-    input  logic         debug_clock_halted_i,
-    output logic         debug_halt_request_o,
-    output logic         debug_resume_toggle_o,
+    output logic         debug_reset_toggle_o,
 
     output logic [27:0]  app_addr_o,
     output logic [2:0]   app_cmd_o,
@@ -109,6 +109,37 @@ module openrv64_fpga_opensbi_system #(
     logic scalar_app_wdf_end;
     logic [31:0] scalar_app_wdf_mask;
     logic scalar_app_wdf_wren;
+
+    logic [31:0] debug_instr;
+    logic [63:0] debug_rs1_data;
+    logic [63:0] debug_rs2_data;
+    logic [9:0] debug_cache_index;
+    logic debug_cache_req_toggle;
+    logic debug_cache_ack_toggle;
+    logic [9:0] debug_cache_result_index;
+    logic debug_cache_valid;
+    logic [63:0] debug_cache_tag;
+    logic [255:0] debug_cache_data;
+    logic [8:0] debug_snapshot_index;
+    logic debug_snapshot_req_toggle;
+    logic debug_snapshot_ack_toggle;
+    logic [63:0] debug_snapshot_data;
+    logic debug_snapshot_resume_toggle;
+    logic debug_snapshot_resume_pending;
+    logic debug_snapshot_trigger_ack;
+    logic [10:0] debug_stub_index;
+    logic debug_stub_write;
+    logic debug_stub_trace_read;
+    logic [63:0] debug_stub_wdata;
+    logic debug_stub_req_toggle;
+    logic debug_stub_ack_toggle;
+    logic [63:0] debug_stub_rdata;
+    logic [10:0] debug_uart_trace_index;
+    logic debug_uart_trace_req_toggle;
+    logic debug_uart_trace_ack_toggle;
+    logic [255:0] debug_uart_trace_rdata;
+    logic [63:0] debug_uart_trace_byte_count;
+    logic debug_trigger_irq;
 
     logic [1:0] boot_status;
     logic status_uart_tx;
@@ -286,7 +317,9 @@ module openrv64_fpga_opensbi_system #(
     );
 
     openrv64_fpga_mig_scalar_bridge #(
-        .MEMORY_BYTES(64'h0000_0000_1000_0000)
+        .MEMORY_BYTES(64'h0000_0000_1000_0000),
+        .CACHE_ENABLE(MIG_SCALAR_CACHE_ENABLE),
+        .CACHE_BYTES(MIG_SCALAR_CACHE_BYTES)
     ) u_scalar_bridge (
         .clk_i(ui_clk_i),
         .reset_i(bridge_ui_reset),
@@ -312,7 +345,14 @@ module openrv64_fpga_opensbi_system #(
         .app_wdf_rdy_i(app_wdf_rdy_i),
         .app_rd_data_i(app_rd_data_i),
         .app_rd_data_end_i(app_rd_data_end_i),
-        .app_rd_data_valid_i(app_rd_data_valid_i)
+        .app_rd_data_valid_i(app_rd_data_valid_i),
+        .debug_cache_index_i(debug_cache_index),
+        .debug_cache_req_toggle_i(debug_cache_req_toggle),
+        .debug_cache_ack_toggle_o(debug_cache_ack_toggle),
+        .debug_cache_result_index_o(debug_cache_result_index),
+        .debug_cache_valid_o(debug_cache_valid),
+        .debug_cache_tag_o(debug_cache_tag),
+        .debug_cache_data_o(debug_cache_data)
     );
 
     always_comb begin
@@ -427,8 +467,36 @@ module openrv64_fpga_opensbi_system #(
     ) u_jtag_snoop (
         .core_clk_i(core_clk_i),
         .core_reset_i(!platform_reset_n),
-        .clock_halted_i(debug_clock_halted_i),
         .debug_pc_i(debug_pc_o),
+        .debug_instr_i(debug_instr),
+        .debug_rs1_data_i(debug_rs1_data),
+        .debug_rs2_data_i(debug_rs2_data),
+        .debug_cache_index_o(debug_cache_index),
+        .debug_cache_req_toggle_o(debug_cache_req_toggle),
+        .debug_cache_ack_toggle_i(debug_cache_ack_toggle),
+        .debug_cache_result_index_i(debug_cache_result_index),
+        .debug_cache_valid_i(debug_cache_valid),
+        .debug_cache_tag_i(debug_cache_tag),
+        .debug_cache_data_i(debug_cache_data),
+        .debug_snapshot_index_o(debug_snapshot_index),
+        .debug_snapshot_req_toggle_o(debug_snapshot_req_toggle),
+        .debug_snapshot_ack_toggle_i(debug_snapshot_ack_toggle),
+        .debug_snapshot_data_i(debug_snapshot_data),
+        .debug_snapshot_resume_pending_i(
+            debug_snapshot_resume_pending),
+        .debug_snapshot_trigger_ack_i(debug_snapshot_trigger_ack),
+        .debug_stub_index_o(debug_stub_index),
+        .debug_stub_write_o(debug_stub_write),
+        .debug_stub_trace_read_o(debug_stub_trace_read),
+        .debug_stub_wdata_o(debug_stub_wdata),
+        .debug_stub_req_toggle_o(debug_stub_req_toggle),
+        .debug_stub_ack_toggle_i(debug_stub_ack_toggle),
+        .debug_stub_rdata_i(debug_stub_rdata),
+        .debug_uart_trace_index_o(debug_uart_trace_index),
+        .debug_uart_trace_req_toggle_o(debug_uart_trace_req_toggle),
+        .debug_uart_trace_ack_toggle_i(debug_uart_trace_ack_toggle),
+        .debug_uart_trace_rdata_i(debug_uart_trace_rdata),
+        .debug_uart_trace_byte_count_i(debug_uart_trace_byte_count),
         .mem_valid_i(shared_mem_valid),
         .mem_ready_i(shared_mem_ready),
         .mem_write_i(shared_mem_write),
@@ -438,8 +506,9 @@ module openrv64_fpga_opensbi_system #(
         .mem_rdata_i(shared_mem_rdata),
         .mem_error_i(shared_mem_error),
         .mem_scalar_i(core_mem_valid && core_mem_ready),
-        .halt_request_o(debug_halt_request_o),
-        .resume_toggle_o(debug_resume_toggle_o)
+        .debug_irq_o(debug_trigger_irq),
+        .resume_toggle_o(debug_snapshot_resume_toggle),
+        .reset_toggle_o(debug_reset_toggle_o)
     );
 
     openrv64_platform #(
@@ -459,6 +528,7 @@ module openrv64_fpga_opensbi_system #(
         .ETHERNET_MDC_HALF_PERIOD_CYCLES(
             ETHERNET_MDC_HALF_PERIOD_CYCLES),
         .ETHERNET_PHY_RESET_CYCLES(ETHERNET_PHY_RESET_CYCLES),
+        .FPGA_DEBUG_ENABLE(1'b1),
         // The one-pipe generic bus has one fully associative translation
         // cache, not the ICX path's L2 TLB. Four entries are enough for
         // bring-up; misses take the normal PTW path.
@@ -467,7 +537,10 @@ module openrv64_fpga_opensbi_system #(
         // PTE cache. The FPGA Sv39 payload deliberately validates this exact
         // zero-entry configuration; Linux should revisit the performance cost.
         .PTW_PTE_CACHE_ENTRIES(0),
-        .ENABLE_TRACE(1'b0),
+        // The FPGA debug image retains a passive retirement ring. It is
+        // frozen by the existing trigger line and read through USER1; it has
+        // no architectural control path back into the core.
+        .ENABLE_TRACE(1'b1),
         .ENABLE_PREDECODE_TARGETS(1'b0),
         .BP_TYPE(`OPENRV64_BP_BIMODAL),
         .BP_RAS_ENABLE(1'b0),
@@ -498,7 +571,27 @@ module openrv64_fpga_opensbi_system #(
         .eth_phy_reset_no(eth_phy_reset_no),
         .gpio_in_i(1'b0),
         .gpio_out_o(),
-        .external_irq_i(29'd0),
+        .external_irq_i({debug_trigger_irq, 28'd0}),
+        .debug_snapshot_read_index_i(debug_snapshot_index),
+        .debug_snapshot_read_req_toggle_i(debug_snapshot_req_toggle),
+        .debug_snapshot_read_ack_toggle_o(debug_snapshot_ack_toggle),
+        .debug_snapshot_read_data_o(debug_snapshot_data),
+        .debug_snapshot_resume_toggle_i(debug_snapshot_resume_toggle),
+        .debug_snapshot_trigger_ack_o(debug_snapshot_trigger_ack),
+        .debug_snapshot_resume_pending_o(
+            debug_snapshot_resume_pending),
+        .debug_stub_index_i(debug_stub_index),
+        .debug_stub_write_i(debug_stub_write),
+        .debug_stub_trace_read_i(debug_stub_trace_read),
+        .debug_stub_wdata_i(debug_stub_wdata),
+        .debug_stub_req_toggle_i(debug_stub_req_toggle),
+        .debug_stub_ack_toggle_o(debug_stub_ack_toggle),
+        .debug_stub_rdata_o(debug_stub_rdata),
+        .debug_uart_trace_index_i(debug_uart_trace_index),
+        .debug_uart_trace_req_toggle_i(debug_uart_trace_req_toggle),
+        .debug_uart_trace_ack_toggle_o(debug_uart_trace_ack_toggle),
+        .debug_uart_trace_rdata_o(debug_uart_trace_rdata),
+        .debug_uart_trace_byte_count_o(debug_uart_trace_byte_count),
         .ext_mem_valid_o(core_mem_valid),
         .ext_mem_ready_i(core_mem_ready),
         .ext_mem_write_o(core_mem_write),
@@ -541,7 +634,9 @@ module openrv64_fpga_opensbi_system #(
         .soc_rst_no(),
         .core_rst_no(),
         .dbg_pc(debug_pc_o),
-        .dbg_instr(),
+        .dbg_instr(debug_instr),
+        .dbg_rs1_data(debug_rs1_data),
+        .dbg_rs2_data(debug_rs2_data),
         .dbg_halted(),
         .trace_cycle(),
         .trace_valid(),

@@ -79,12 +79,27 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .O(sys_clk_200m)
     );
 
+    wire debug_reset_toggle;
+    (* ASYNC_REG = "TRUE" *) logic debug_reset_meta_q = 1'b0;
+    (* ASYNC_REG = "TRUE" *) logic debug_reset_sync_q = 1'b0;
+    logic debug_reset_seen_q = 1'b0;
     logic [15:0] reset_hold_q = 16'h0000;
     always_ff @(posedge sys_clk_200m or negedge rst_n) begin
-        if (!rst_n)
+        if (!rst_n) begin
+            debug_reset_meta_q <= 1'b0;
+            debug_reset_sync_q <= 1'b0;
+            debug_reset_seen_q <= 1'b0;
             reset_hold_q <= 16'h0000;
-        else if (!(&reset_hold_q))
-            reset_hold_q <= reset_hold_q + 16'd1;
+        end else begin
+            debug_reset_meta_q <= debug_reset_toggle;
+            debug_reset_sync_q <= debug_reset_meta_q;
+            if (debug_reset_sync_q != debug_reset_seen_q) begin
+                debug_reset_seen_q <= debug_reset_sync_q;
+                reset_hold_q <= 16'h0000;
+            end else if (!(&reset_hold_q)) begin
+                reset_hold_q <= reset_hold_q + 16'd1;
+            end
+        end
     end
 
     wire mig_sys_rst_n = &reset_hold_q;
@@ -156,7 +171,6 @@ module openrv64_myd_j7a100t_opensbi_top #(
     wire core_clock_feedback_unbuffered;
     wire core_clock_feedback;
     wire core_clock_unbuffered;
-    wire core_debug_clock;
     wire core_clock;
     wire core_clock_locked;
 
@@ -182,54 +196,8 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .O(core_clock_feedback)
     );
 
-    // Keep an ungated copy alive for the debug clock controller. The SoC copy
-    // can then be restarted from JTAG after it has stopped itself.
-    BUFG u_core_debug_clock_bufg (
+    BUFG u_core_clock_bufg (
         .I(core_clock_unbuffered),
-        .O(core_debug_clock)
-    );
-
-    logic debug_halt_request;
-    logic debug_resume_toggle;
-    (* ASYNC_REG = "TRUE" *) logic [1:0] debug_halt_sync_q;
-    (* ASYNC_REG = "TRUE" *) logic [1:0] debug_resume_sync_q;
-    logic debug_resume_seen_q;
-    logic debug_clock_halted_q;
-    logic [2:0] debug_resume_holdoff_q;
-
-    always_ff @(posedge core_debug_clock or posedge ui_clk_sync_rst) begin
-        if (ui_clk_sync_rst) begin
-            debug_halt_sync_q <= 2'b00;
-            debug_resume_sync_q <= 2'b00;
-            debug_resume_seen_q <= 1'b0;
-            debug_clock_halted_q <= 1'b0;
-            debug_resume_holdoff_q <= 3'd0;
-        end else begin
-            debug_halt_sync_q <= {debug_halt_sync_q[0],
-                                  debug_halt_request};
-            debug_resume_sync_q <= {debug_resume_sync_q[0],
-                                    debug_resume_toggle};
-            if (debug_resume_sync_q[1] != debug_resume_seen_q) begin
-                debug_resume_seen_q <= debug_resume_sync_q[1];
-                debug_clock_halted_q <= 1'b0;
-                // Allow the restarted domain to consume the clear toggle and
-                // synchronized replacement trigger before honoring a new hit.
-                // A count, rather than waiting for halt_request to go low,
-                // also supports an immediate PC-to-next-memory re-arm.
-                debug_resume_holdoff_q <= 3'd5;
-            end else if (debug_resume_holdoff_q != 0) begin
-                debug_resume_holdoff_q <= debug_resume_holdoff_q - 3'd1;
-            end else if (debug_halt_sync_q[1]) begin
-                debug_clock_halted_q <= 1'b1;
-            end
-        end
-    end
-
-    BUFGCE #(
-        .CE_TYPE("SYNC")
-    ) u_core_clock_bufg (
-        .I(core_clock_unbuffered),
-        .CE(!debug_clock_halted_q),
         .O(core_clock)
     );
 
@@ -392,9 +360,7 @@ module openrv64_myd_j7a100t_opensbi_top #(
         .eth_mdio_oe_o(eth_mdio_output_enable),
         .eth_mdio_i(eth_mdio_in),
         .eth_phy_reset_no(eth_phy_reset_n),
-        .debug_clock_halted_i(debug_clock_halted_q),
-        .debug_halt_request_o(debug_halt_request),
-        .debug_resume_toggle_o(debug_resume_toggle),
+        .debug_reset_toggle_o(debug_reset_toggle),
         .boot_release_o(boot_release),
         .debug_pc_o(debug_pc),
         .app_addr_o(app_addr),

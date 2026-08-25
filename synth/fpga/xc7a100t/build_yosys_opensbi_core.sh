@@ -12,6 +12,9 @@ output_log=${OUTPUT_LOG:-$output_dir/yosys-core.log}
 rv64m_source=${RV64M_SOURCE:-rtl/core/exec/alu/rv64-m-fpga.v}
 pipe_1p_mem_4_stage=${PIPE_1P_MEM_4_STAGE:-1}
 pipe_1p_decode_queue=${PIPE_1P_DECODE_QUEUE:-1}
+bp_type=${BP_TYPE:-5}
+enable_trace=${ENABLE_TRACE:-0}
+debug_serialize_all_1p=${DEBUG_SERIALIZE_ALL_1P:-0}
 
 if [[ "$pipe_1p_mem_4_stage" != 0 && "$pipe_1p_mem_4_stage" != 1 ]]; then
     echo "error: PIPE_1P_MEM_4_STAGE must be 0 or 1" >&2
@@ -20,6 +23,22 @@ fi
 
 if [[ "$pipe_1p_decode_queue" != 0 && "$pipe_1p_decode_queue" != 1 ]]; then
     echo "error: PIPE_1P_DECODE_QUEUE must be 0 or 1" >&2
+    exit 2
+fi
+
+if [[ ! "$bp_type" =~ ^[0-8]$ ]]; then
+    echo "error: BP_TYPE must be in the range 0..8" >&2
+    exit 2
+fi
+
+if [[ "$enable_trace" != 0 && "$enable_trace" != 1 ]]; then
+    echo "error: ENABLE_TRACE must be 0 or 1" >&2
+    exit 2
+fi
+
+if [[ "$debug_serialize_all_1p" != 0 &&
+      "$debug_serialize_all_1p" != 1 ]]; then
+    echo "error: DEBUG_SERIALIZE_ALL_1P must be 0 or 1" >&2
     exit 2
 fi
 
@@ -76,13 +95,14 @@ chparam -set RESET_VECTOR 4096 \
         -set PIPE_1P_DECODE_QUEUE $pipe_1p_decode_queue \
         -set PMP_ACTIVE_ENTRIES 8 \
         -set FPGA_GPR_LUTRAM 1 \
+        -set DEBUG_SERIALIZE_ALL_1P $debug_serialize_all_1p \
         -set L1D_CACHEABLE_BASE 2147483648 \
         -set L1D_CACHEABLE_SIZE 268435456 \
         -set GENBUS_TLB_ENTRIES 4 \
         -set PTW_PTE_CACHE_ENTRIES 0 \
-        -set ENABLE_TRACE 0 \
+        -set ENABLE_TRACE $enable_trace \
         -set ENABLE_PREDECODE_TARGETS 0 \
-        -set BP_TYPE 5 \
+        -set BP_TYPE $bp_type \
         -set BP_RAS_ENABLE 0 \
         -set BP_RAS_DEPTH 8 \
         -set BP_BIMODAL_ENTRIES 32 \

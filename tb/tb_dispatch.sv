@@ -11,6 +11,7 @@ module tb_dispatch;
     logic clk;
     logic rst_n;
     logic flush;
+    logic scoreboard_clear;
 
     logic decode_valid;
     logic decode_clear;
@@ -90,6 +91,7 @@ module tb_dispatch;
         .clk(clk),
         .rst_n(rst_n),
         .flush_i(flush),
+        .scoreboard_clear_1p_i(scoreboard_clear),
         .decode_valid_i(decode_valid),
         .decode_clear_o(decode_clear),
         .decode_pc_i(decode_pc),
@@ -388,6 +390,7 @@ module tb_dispatch;
 
     initial begin
         flush = 1'b0;
+        scoreboard_clear = 1'b0;
         exec_clear = 1'b1;
         exec_alu_ready = 1'b1;
         exec_lsu_ready = 1'b1;
@@ -495,6 +498,54 @@ module tb_dispatch;
         flush = 1'b1;
         @(posedge clk);
         @(negedge clk);
+        flush = 1'b0;
+
+        // A normal branch/jump redirect rolls back the younger registered
+        // dispatch entry, but an older producer may still be downstream.  In
+        // particular, SUB a0 followed by RET must keep a0 busy until SUB
+        // retires so the caller cannot observe the old return value.
+        drive_alu_write(5'd10);
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0,
+                       "accept older redirect producer x10");
+        @(posedge clk);
+        @(negedge clk);
+
+        drive_alu_write(5'd11);
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0,
+                       "accept younger redirect victim x11");
+        @(posedge clk);
+        @(negedge clk);
+
+        clear_decode();
+        flush = 1'b1;
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0,
+                       "redirect holds current valid through flush edge");
+        @(posedge clk);
+        @(negedge clk);
+        flush = 1'b0;
+
+        drive_alu_read(5'd10);
+        check_dispatch(1'b0, 1'b0, 1'b1, 1'b0,
+                       "redirect preserves older x10 ownership");
+        retire_write(5'd10);
+        check_dispatch(1'b1, 1'b0, 1'b0, 1'b0,
+                       "x10 consumer releases only at retirement");
+        @(posedge clk);
+        @(negedge clk);
+        clear_retire();
+
+        drive_alu_read(5'd11);
+        check_dispatch(1'b1, 1'b1, 1'b0, 1'b0,
+                       "redirect rolls back younger x11 ownership");
+        @(posedge clk);
+        @(negedge clk);
+
+        clear_decode();
+        scoreboard_clear = 1'b1;
+        flush = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        scoreboard_clear = 1'b0;
         flush = 1'b0;
 
         drive_csr();

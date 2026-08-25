@@ -272,6 +272,7 @@ module tb_icx_bus #(
         .lsu_page_fault_o(lsu_page_fault), .tlbi_i(tlbi),
         .context_flush_i(context_flush),
         .fetch_context_change_i(context_change),
+        .page_screen_csr_clear_i(1'b0),
         .pmp_update_i(pmp_update),
         .tlbi_busy_o(tlbi_busy),
         .store_barrier_i(1'b0),
@@ -1555,11 +1556,15 @@ module tb_icx_bus #(
         expect_xlate_response(3'd1, 64'h3008, 1'b0, 1'b0);
         if ((xlate_pmp_requests - wait_count) != 1)
             $fatal(1, "TLB-hit load did not fill page screen through PMP");
+        @(negedge clk);
+        dut.lsu_page_write_cursor_q = 2'd0;
         wait_count = xlate_pmp_requests;
         push_xlate_request(3'd0, 1'b0, 64'h4010);
         expect_xlate_response(3'd0, 64'h3010, 1'b0, 1'b0);
         if ((xlate_pmp_requests - wait_count) != 0)
             $fatal(1, "load page-screen hit reissued PMP");
+        if (dut.lsu_page_write_cursor_q != 2'd1)
+            $fatal(1, "LSU page-screen cursor did not advance on hit");
 
         // Read clearance cannot authorize a store.  The first same-page
         // store must pass PMP and upgrade the matching entry; the next store

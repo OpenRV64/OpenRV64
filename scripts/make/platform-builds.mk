@@ -168,6 +168,42 @@ $(FPGA_JTAG_SNOOP_SIM_BUILD): tb/tb_fpga_jtag_snoop.sv \
 		synth/fpga/xc7a100t/jtag_snoop.sv \
 		tb/tb_fpga_jtag_snoop.sv
 
+$(FPGA_SCALAR_MEM_CDC_SIM_BUILD): tb/tb_fpga_scalar_mem_cdc.sv \
+		synth/fpga/xc7a100t/scalar_mem_cdc.sv \
+		synth/fpga/xc7a100t/mig_scalar_bridge.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -s tb_fpga_scalar_mem_cdc \
+		-Ptb_fpga_scalar_mem_cdc.CACHE_ENABLE=$(FPGA_MIG_SCALAR_CACHE_ENABLE) \
+		-o $@ \
+		synth/fpga/xc7a100t/scalar_mem_cdc.sv \
+		synth/fpga/xc7a100t/mig_scalar_bridge.sv \
+		tb/tb_fpga_scalar_mem_cdc.sv
+
+$(FPGA_DEBUG_SNAPSHOT_SIM_BUILD): tb/tb_fpga_debug_snapshot.sv \
+		rtl/plic/plic.v rtl/soc/debug/snapshot_mem.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_fpga_debug_snapshot -o $@ \
+		rtl/plic/plic.v rtl/soc/debug/snapshot_mem.sv \
+		tb/tb_fpga_debug_snapshot.sv
+
+$(FPGA_DEBUG_STUB_SIM_BUILD): tb/tb_fpga_debug_stub.sv \
+		rtl/soc/debug/stub_mem.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -s tb_fpga_debug_stub -o $@ \
+		rtl/soc/debug/stub_mem.sv tb/tb_fpga_debug_stub.sv
+
+$(FPGA_DEBUG_UART_TRACE_SIM_BUILD): tb/tb_fpga_uart_trace.sv \
+		rtl/soc/debug/uart_trace_mem.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -s tb_fpga_uart_trace -o $@ \
+		rtl/soc/debug/uart_trace_mem.sv tb/tb_fpga_uart_trace.sv
+
+$(FPGA_DEBUG_EXEC_SIM_BUILD): tb/tb_fpga_debug_exec.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_fpga_debug_exec -o $@ \
+		$(CORE_SRCS) $(PLATFORM_SRCS) tb/tb_fpga_debug_exec.sv
+
 $(ROM_SIM_BUILD): $(ROM_SIM_SRCS) $(ROM_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(ROM_SIM_BUILD) $(ROM_SRCS) $(ROM_SIM_SRCS)

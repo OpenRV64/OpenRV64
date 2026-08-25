@@ -33,12 +33,27 @@ module BSCANE2 #(
 endmodule
 
 module tb_fpga_jtag_snoop;
-    localparam integer SCAN_BITS = 832;
+    localparam integer SCAN_BITS = 960;
 
     logic clk;
     logic reset;
-    logic clock_halted;
     logic [63:0] debug_pc;
+    logic [31:0] debug_instr;
+    logic [63:0] debug_rs1_data;
+    logic [63:0] debug_rs2_data;
+    logic [9:0] debug_cache_index;
+    logic debug_cache_req_toggle;
+    logic [8:0] debug_snapshot_index;
+    logic debug_snapshot_req_toggle;
+    logic debug_snapshot_resume_pending;
+    logic debug_snapshot_trigger_ack;
+    logic [10:0] debug_stub_index;
+    logic debug_stub_write;
+    logic debug_stub_trace_read;
+    logic [63:0] debug_stub_wdata;
+    logic debug_stub_req_toggle;
+    logic [10:0] debug_uart_trace_index;
+    logic debug_uart_trace_req_toggle;
     logic mem_valid;
     logic mem_ready;
     logic mem_write;
@@ -48,15 +63,50 @@ module tb_fpga_jtag_snoop;
     logic [63:0] mem_rdata;
     logic mem_error;
     logic mem_scalar;
-    logic halt_request;
+    logic debug_irq;
     logic resume_toggle;
+    logic reset_toggle;
     logic [SCAN_BITS-1:0] jtag_command;
 
     openrv64_fpga_jtag_snoop dut (
         .core_clk_i(clk),
         .core_reset_i(reset),
-        .clock_halted_i(clock_halted),
         .debug_pc_i(debug_pc),
+        .debug_instr_i(debug_instr),
+        .debug_rs1_data_i(debug_rs1_data),
+        .debug_rs2_data_i(debug_rs2_data),
+        .debug_cache_index_o(debug_cache_index),
+        .debug_cache_req_toggle_o(debug_cache_req_toggle),
+        .debug_cache_ack_toggle_i(1'b1),
+        .debug_cache_result_index_i(10'd16),
+        .debug_cache_valid_i(1'b1),
+        .debug_cache_tag_i(64'h1fe0),
+        .debug_cache_data_i({64'h3333_3333_3333_3333,
+                             64'h2222_2222_2222_2222,
+                             64'h1111_1111_1111_1111,
+                             64'h0000_0000_0000_0000}),
+        .debug_snapshot_index_o(debug_snapshot_index),
+        .debug_snapshot_req_toggle_o(debug_snapshot_req_toggle),
+        .debug_snapshot_ack_toggle_i(1'b1),
+        .debug_snapshot_data_i(64'hfeed_face_dead_beef),
+        .debug_snapshot_resume_pending_i(
+            debug_snapshot_resume_pending),
+        .debug_snapshot_trigger_ack_i(debug_snapshot_trigger_ack),
+        .debug_stub_index_o(debug_stub_index),
+        .debug_stub_write_o(debug_stub_write),
+        .debug_stub_trace_read_o(debug_stub_trace_read),
+        .debug_stub_wdata_o(debug_stub_wdata),
+        .debug_stub_req_toggle_o(debug_stub_req_toggle),
+        .debug_stub_ack_toggle_i(1'b1),
+        .debug_stub_rdata_i(64'h0123_4567_89ab_cdef),
+        .debug_uart_trace_index_o(debug_uart_trace_index),
+        .debug_uart_trace_req_toggle_o(debug_uart_trace_req_toggle),
+        .debug_uart_trace_ack_toggle_i(1'b1),
+        .debug_uart_trace_rdata_i({64'h1f1e_1d1c_1b1a_1918,
+                                   64'h1716_1514_1312_1110,
+                                   64'h0f0e_0d0c_0b0a_0908,
+                                   64'h0706_0504_0302_0100}),
+        .debug_uart_trace_byte_count_i(64'd20000),
         .mem_valid_i(mem_valid),
         .mem_ready_i(mem_ready),
         .mem_write_i(mem_write),
@@ -66,8 +116,9 @@ module tb_fpga_jtag_snoop;
         .mem_rdata_i(mem_rdata),
         .mem_error_i(mem_error),
         .mem_scalar_i(mem_scalar),
-        .halt_request_o(halt_request),
-        .resume_toggle_o(resume_toggle)
+        .debug_irq_o(debug_irq),
+        .resume_toggle_o(resume_toggle),
+        .reset_toggle_o(reset_toggle)
     );
 
     initial clk = 1'b0;
@@ -80,8 +131,12 @@ module tb_fpga_jtag_snoop;
 
     initial begin
         reset = 1'b1;
-        clock_halted = 1'b0;
         debug_pc = 64'h0000_0000_8000_1000;
+        debug_instr = 32'h0000_0013;
+        debug_rs1_data = 64'h1111_2222_3333_4444;
+        debug_rs2_data = 64'haaaa_bbbb_cccc_dddd;
+        debug_snapshot_resume_pending = 1'b0;
+        debug_snapshot_trigger_ack = 1'b0;
         mem_valid = 1'b0;
         mem_ready = 1'b0;
         mem_write = 1'b0;
@@ -107,14 +162,110 @@ module tb_fpga_jtag_snoop;
         jtag_command[36] = 1'b1;
         jtag_command[127:64] = 64'h0000_0000_8010_0008;
         jtag_command[191:128] = 64'hffff_ffff_ffff_fff8;
+        jtag_command[41] = 1'b1;
+        jtag_command[409:400] = 10'd16;
+        jtag_command[411:410] = 2'd2;
         force dut.shift_q = jtag_command;
         force dut.bscan_sel = 1'b1;
         force dut.bscan_update = 1'b0;
         #1 force dut.bscan_update = 1'b1;
         #1 force dut.bscan_update = 1'b0;
         if (!dut.cfg_armed_jtag_q || !dut.cfg_read_jtag_q ||
-            dut.cfg_mem_addr_jtag_q !== 64'h0000_0000_8010_0008)
+            dut.cfg_mem_addr_jtag_q !== 64'h0000_0000_8010_0008 ||
+            debug_cache_index !== 10'd16 || !debug_cache_req_toggle ||
+            dut.status_value[895:832] !== 64'h2222_2222_2222_2222)
             $fatal(1, "Update-DR command did not latch");
+
+        // An indexed snapshot read is observational. It must not disarm or
+        // rewrite the live trigger configuration.
+        jtag_command = '0;
+        jtag_command[31:0] = 32'h4f52_5636;
+        jtag_command[42] = 1'b1;
+        jtag_command[424:416] = 9'd10;
+        force dut.shift_q = jtag_command;
+        #1 force dut.bscan_update = 1'b1;
+        #1 force dut.bscan_update = 1'b0;
+        if (!dut.cfg_armed_jtag_q || !dut.cfg_read_jtag_q ||
+            dut.cfg_mem_addr_jtag_q !== 64'h0000_0000_8010_0008 ||
+            debug_snapshot_index !== 9'd10 ||
+            !debug_snapshot_req_toggle)
+            $fatal(1, "indexed read rewrote the trigger configuration");
+
+        // Stub reads and writes use the same paced USER1 port. The command
+        // data overlaps status-only hit fields but must not alter the trigger.
+        jtag_command = '0;
+        jtag_command[31:0] = 32'h4f52_5636;
+        jtag_command[43] = 1'b1;
+        jtag_command[426:416] = 11'd1298;
+        force dut.shift_q = jtag_command;
+        #1 force dut.bscan_update = 1'b1;
+        #1 force dut.bscan_update = 1'b0;
+        if (debug_stub_index !== 11'd1298 || debug_stub_write ||
+            !debug_stub_req_toggle || dut.status_value[817:816] !== 2'd2 ||
+            dut.status_value[895:832] !== 64'h0123_4567_89ab_cdef)
+            $fatal(1, "stub indexed read command did not latch");
+
+        jtag_command = '0;
+        jtag_command[31:0] = 32'h4f52_5636;
+        jtag_command[44] = 1'b1;
+        jtag_command[426:416] = 11'd2046;
+        jtag_command[511:448] = 64'h4f52_5636_5354_5542;
+        force dut.shift_q = jtag_command;
+        #1 force dut.bscan_update = 1'b1;
+        #1 force dut.bscan_update = 1'b0;
+        if (debug_stub_index !== 11'd2046 || !debug_stub_write ||
+            debug_stub_wdata !== 64'h4f52_5636_5354_5542 ||
+            debug_stub_req_toggle)
+            $fatal(1, "stub indexed write command did not latch");
+
+        // UART capture uses readback source three and carries the total-byte
+        // count in the extension above the common indexed-read record.
+        jtag_command = '0;
+        jtag_command[31:0] = 32'h4f52_5636;
+        jtag_command[45] = 1'b1;
+        jtag_command[426:416] = 11'd77;
+        force dut.shift_q = jtag_command;
+        #1 force dut.bscan_update = 1'b1;
+        #1 force dut.bscan_update = 1'b0;
+        if (debug_uart_trace_index !== 11'd77 ||
+            !debug_uart_trace_req_toggle ||
+            dut.status_value[39:32] !== 8'd17 ||
+            dut.status_value[817:816] !== 2'd3 ||
+            dut.status_value[895:832] !== 64'h0706_0504_0302_0100 ||
+            dut.status_value[639:384] !== {
+                64'h1f1e_1d1c_1b1a_1918,
+                64'h1716_1514_1312_1110,
+                64'h0f0e_0d0c_0b0a_0908,
+                64'h0706_0504_0302_0100} ||
+            dut.status_value[959:896] !== 64'd20000)
+            $fatal(1, "UART trace indexed read command did not latch");
+
+        // Bit 47 selects the passive retirement ring while retaining the
+        // existing stub readback source and request/acknowledgement path.
+        jtag_command = '0;
+        jtag_command[31:0] = 32'h4f52_5636;
+        jtag_command[43] = 1'b1;
+        jtag_command[47] = 1'b1;
+        jtag_command[426:416] = 11'd17;
+        force dut.shift_q = jtag_command;
+        #1 force dut.bscan_update = 1'b1;
+        #1 force dut.bscan_update = 1'b0;
+        if (debug_stub_index !== 11'd17 || debug_stub_write ||
+            !debug_stub_trace_read || !debug_stub_req_toggle)
+            $fatal(1, "retire trace indexed read command did not latch");
+
+        // Reset is a persistent JTAG-domain toggle. It must not disarm or
+        // otherwise rewrite the trigger that will be used after reboot.
+        jtag_command = '0;
+        jtag_command[31:0] = 32'h4f52_5636;
+        jtag_command[46] = 1'b1;
+        force dut.shift_q = jtag_command;
+        #1 force dut.bscan_update = 1'b1;
+        #1 force dut.bscan_update = 1'b0;
+        if (!reset_toggle || !dut.cfg_armed_jtag_q ||
+            dut.cfg_mem_addr_jtag_q !== 64'h0000_0000_8010_0008)
+            $fatal(1, "reset command rewrote the trigger configuration");
+
         force dut.bscan_reset = 1'b1;
         #1 force dut.bscan_reset = 1'b0;
         if (!dut.cfg_armed_jtag_q || !dut.cfg_read_jtag_q)
@@ -154,17 +305,18 @@ module tb_fpga_jtag_snoop;
         #1;
         mem_valid = 1'b0;
         mem_ready = 1'b0;
-        if (!halt_request || !dut.hit_scalar_q || dut.hit_ptw_q)
+        if (!debug_irq || !dut.hit_scalar_q || dut.hit_ptw_q)
             $fatal(1, "scalar memory trigger did not latch");
         if (dut.hit_mem_addr_q !== 64'h0000_0000_8010_000b ||
             dut.hit_pc_value_q !== debug_pc ||
-            dut.hit_mem_rdata_q !== mem_rdata)
+            dut.hit_mem_rdata_q !== mem_rdata ||
+            dut.hit_instr_value_q !== debug_instr)
             $fatal(1, "scalar memory trigger captured the wrong record");
 
         // Clear uses a toggle so it is safe to transport from JTAG.
         force dut.clear_toggle_jtag_q = 1'b1;
         wait_cycles(3);
-        if (halt_request)
+        if (debug_irq)
             $fatal(1, "clear toggle did not release the captured hit");
 
         // PC match has its own mask and still records the common cycle field.
@@ -174,25 +326,65 @@ module tb_fpga_jtag_snoop;
         wait_cycles(3);
         debug_pc = 64'hffff_ffff_803e_2c18;
         wait_cycles(1);
-        if (!halt_request || !dut.hit_pc_q ||
-            dut.hit_pc_value_q !== debug_pc)
+        if (!debug_irq || !dut.hit_pc_q ||
+            dut.hit_pc_value_q !== debug_pc ||
+            dut.hit_mem_rdata_q !== debug_rs1_data ||
+            dut.hit_mem_wdata_q !== debug_rs2_data)
             $fatal(1, "PC trigger did not capture");
 
-        force dut.clear_toggle_jtag_q = 1'b0;
+        // The OpenSBI handler acknowledges through the snapshot MMIO control
+        // register before returning from the PLIC callback. The JTAG resume
+        // command disarms the comparator before that acknowledgement arrives.
         force dut.cfg_pc_jtag_q = 1'b0;
         wait_cycles(3);
-        if (halt_request)
-            $fatal(1, "second clear toggle did not release PC hit");
+        debug_snapshot_trigger_ack = 1'b1;
+        wait_cycles(1);
+        debug_snapshot_trigger_ack = 1'b0;
+        wait_cycles(1);
+        if (debug_irq)
+            $fatal(1, "handler acknowledgement did not release PC hit");
+
+        force dut.clear_toggle_jtag_q = 1'b0;
+        wait_cycles(3);
+
+        // PC+cycle mode uses the PC match only as an epoch marker. It must
+        // wait the configured number of core cycles before raising the IRQ.
+        force dut.cfg_pc_jtag_q = 1'b1;
+        force dut.cfg_cycle_enable_jtag_q = 1'b1;
+        force dut.cfg_cycle_target_jtag_q = 64'd10;
+        force dut.cfg_pc_addr_jtag_q = 64'hffff_ffff_803e_5000;
+        debug_pc = 64'hffff_ffff_803e_4000;
+        wait_cycles(3);
+        debug_pc = 64'hffff_ffff_803e_5000;
+        wait_cycles(1);
+        if (debug_irq || !dut.pc_delay_started_q)
+            $fatal(1, "PC-relative cycle delay fired at the epoch PC");
+        wait (debug_irq);
+        #1;
+        if (!dut.hit_cycle_q || dut.hit_pc_q ||
+            dut.hit_cycle_count_q !== dut.pc_delay_target_q)
+            $fatal(1, "PC-relative cycle delay captured the wrong count");
+
+        force dut.clear_toggle_jtag_q = 1'b1;
+        wait_cycles(3);
+        if (debug_irq)
+            $fatal(1, "clear did not release PC-relative cycle hit");
 
         // Absolute cycle trigger is optional. The same counter is captured by
         // memory and PC triggers even when cycle triggering is disabled.
+        force dut.cfg_pc_jtag_q = 1'b0;
         force dut.cfg_cycle_target_jtag_q = dut.cycle_count_q + 64'd10;
         force dut.cfg_cycle_enable_jtag_q = 1'b1;
-        wait (halt_request);
+        wait (debug_irq);
         #1;
         if (!dut.hit_cycle_q ||
             dut.hit_cycle_count_q !== dut.cfg_cycle_target_sync_q)
             $fatal(1, "cycle trigger captured the wrong count");
+
+        debug_snapshot_resume_pending = 1'b1;
+        #1;
+        if (!dut.status_value[41])
+            $fatal(1, "snapshot resume-pending status was not reported");
 
         $display("tb_fpga_jtag_snoop: PASS cycle=%0d",
                  dut.hit_cycle_count_q);
