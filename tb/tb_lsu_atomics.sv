@@ -7,11 +7,6 @@
 module tb_lsu_atomics;
     localparam integer RETIRE_SLOT_WIDTH = 3;
     localparam integer META_WIDTH = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
-    localparam integer I_LSU_OP = 22;
-    localparam integer I_IMM = 40;
-    localparam integer I_RS2_DATA = 104;
-    localparam integer I_RS1_DATA = 168;
-    localparam integer I_INSTR = 242;
 
     logic clk;
     logic rst_n;
@@ -22,6 +17,10 @@ module tb_lsu_atomics;
     logic [`OPENRV64_INSTR_ID_WIDTH-1:0] start_id;
     logic [RETIRE_SLOT_WIDTH-1:0] start_slot;
     logic [META_WIDTH-1:0] start_meta;
+    logic [`RV64_LSU_OP_WIDTH-1:0] start_op;
+    logic [`RV64_XLEN-1:0] start_addr;
+    logic [2:0] start_size;
+    logic [`RV64_XLEN-1:0] start_wdata;
     logic start_access_allowed;
     logic clear_reservation;
 
@@ -73,6 +72,10 @@ module tb_lsu_atomics;
         .start_id_i(start_id),
         .start_slot_i(start_slot),
         .start_meta_i(start_meta),
+        .start_op_i(start_op),
+        .start_addr_i(start_addr),
+        .start_size_i(start_size),
+        .start_wdata_i(start_wdata),
         .start_access_allowed_i(start_access_allowed),
         .clear_reservation_i(clear_reservation),
         .active_o(active),
@@ -125,12 +128,11 @@ module tb_lsu_atomics;
             if (!start_ready)
                 $fatal(1, "atomic start was not ready");
             start_meta = {META_WIDTH{1'b0}};
-            start_meta[I_LSU_OP +: `RV64_LSU_OP_WIDTH] = op;
-            start_meta[I_IMM +: `RV64_XLEN] = 64'd0;
-            start_meta[I_RS2_DATA +: `RV64_XLEN] = operand;
-            start_meta[I_RS1_DATA +: `RV64_XLEN] = addr;
-            start_meta[I_INSTR + 12 +: `RV64_LSU_SIZE_WIDTH] =
-                `RV64_LSU_SIZE_DWORD;
+            start_meta[7:0] = id[7:0];
+            start_op = op;
+            start_addr = addr;
+            start_size = {1'b0, `RV64_LSU_SIZE_DWORD};
+            start_wdata = operand;
             start_tag = tag;
             start_id = id;
             start_slot = slot;
@@ -185,6 +187,10 @@ module tb_lsu_atomics;
         start_id = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         start_slot = {RETIRE_SLOT_WIDTH{1'b0}};
         start_meta = {META_WIDTH{1'b0}};
+        start_op = {`RV64_LSU_OP_WIDTH{1'b0}};
+        start_addr = {`RV64_XLEN{1'b0}};
+        start_size = 3'd0;
+        start_wdata = {`RV64_XLEN{1'b0}};
         start_access_allowed = 1'b1;
         clear_reservation = 1'b0;
         mem_ready = 1'b0;

@@ -326,7 +326,6 @@ module tb_backend_3p #(
     reg saw_store_wait;
     reg saw_local_forward_issue;
     reg saw_local_forward_retire;
-    reg saw_general_forward_issue;
     reg saw_general_forward_retire;
     reg saw_ordered_waw_store;
     reg saw_posted_store_retire;
@@ -401,7 +400,6 @@ module tb_backend_3p #(
         saw_store_wait = 0;
         saw_local_forward_issue = 0;
         saw_local_forward_retire = 0;
-        saw_general_forward_issue = 0;
         saw_general_forward_retire = 0;
         saw_ordered_waw_store = 0;
         saw_posted_store_retire = 0;
@@ -588,9 +586,9 @@ module tb_backend_3p #(
         if (write_busy != 0 || retire_occupancy != 0)
             fail("forwarded ALU pair leaked ownership or retirement state");
 
-        // Keep an older load unresolved, complete x11 behind it, and issue a
-        // younger dependent load through MEM.  This requires both persistence
-        // beyond the one-cycle ALU bypass and an EX-to-MEM data path.
+        // Keep an older load unresolved and complete x11 behind it.  Once x11
+        // forwards, the independent younger load must launch without waiting
+        // for the unrelated older memory response.
         mem_ready = 1'b1;
         send2(load_packet(8, 0, 20, 64'h100),
               addi_packet(9, 0, 11, 64), 2'b01, 2'b00);
@@ -614,28 +612,22 @@ module tb_backend_3p #(
 
         for (cycles = 0; cycles < 20 &&
              !(mem_valid && mem_physical && mem_addr == 64'd72);
-             cycles = cycles + 1) begin
-            #1;
-            if (issue_valid[2] && dut.full_forward_valid[11])
-                saw_general_forward_issue = 1'b1;
-            tick();
-        end
+             cycles = cycles + 1) tick();
         if (!mem_valid || !mem_physical || mem_addr != 64'd72)
-            fail("general forwarding did not issue EX-to-MEM dependent load");
-        if (!saw_general_forward_issue)
-            fail("dependent MEM issue did not coincide with completion map");
+            fail("dependent load waited for unrelated older load response");
         dependent_load_tag = mem_tag;
+        if (dependent_load_tag == old_load_tag)
+            fail("two outstanding loads shared a memory tag");
         tick();
         mem_ready = 1'b0;
 
-        // Return the younger request first.  It may complete out of order,
-        // but cannot retire before the older load and x11 producer.
+        // Return the younger load first.  Its result may complete internally,
+        // but retirement remains ordered behind the unresolved older load.
         mem_resp_valid = 1'b1;
         mem_resp_tag = dependent_load_tag;
         mem_rdata = 64'h55;
         tick();
         mem_resp_valid = 1'b0;
-        tick();
         mem_resp_valid = 1'b1;
         mem_resp_tag = old_load_tag;
         mem_rdata = 64'haa;

@@ -70,7 +70,7 @@ module tb_lsq;
     openrv64_lsq #(
         .RETIRE_SLOT_WIDTH(3),
         .META_WIDTH(METAW),
-        .LOAD_QUEUE_DEPTH(2),
+        .LOAD_QUEUE_DEPTH(4),
         .STORE_QUEUE_DEPTH(2),
         .TAG_WIDTH(TAGW),
         .CACHEABLE_BASE(64'h0),
@@ -385,6 +385,10 @@ module tb_lsq;
     endtask
 
     reg [TAGW-1:0] st, lt;
+    reg [TAGW-1:0] load_xlate_tags [0:3];
+    reg [TAGW-1:0] load_request_tags [0:3];
+    integer load_test_index;
+    integer load_compare_index;
     reg [63:0] perf_block_before;
     initial begin
         clk = 0; rst_n = 0; flush = 0;
@@ -655,9 +659,9 @@ module tb_lsq;
 
         reset_dut();
 
-        // A full flush cannot reuse an accepted translation tag until the
-        // stale response returns.  Otherwise that response can translate a
-        // new instruction which happens to allocate the same slot.
+        // Translation generations live in exec_lsu, above this raw slot-tag
+        // interface.  A flushed load therefore releases its slot at once;
+        // the wrapper filters the stale old-generation response.
         alloc_load(IDW'(40), 3'd0, 64'h8000, 3'd3);
         take_xlate(1'b0, 64'h8000, lt);
         flush = 1'b1;
@@ -665,12 +669,9 @@ module tb_lsq;
         flush = 1'b0;
         alloc_load(IDW'(41), 3'd1, 64'h9000, 3'd3);
         take_xlate(1'b0, 64'h9000, st);
-        if (st == lt)
-            $fatal(1, "full flush reused outstanding xlate tag=%0d", lt);
-        respond_xlate(lt, 64'ha000, 0, 0);
-        #1;
-        if (result_valid)
-            $fatal(1, "flushed translation produced a result");
+        if (st != lt)
+            $fatal(1, "flushed load did not reuse released tag=%0d/%0d",
+                   st, lt);
         respond_xlate(st, 64'hb000, 0, 0);
         take_req(1'b0, 64'hb000, st);
         respond_result(st, 64'hb000, 64'h1234_5678_9abc_def0,
@@ -737,33 +738,65 @@ module tb_lsq;
 
         reset_dut();
 
-        // Translation admission and physical L1D access are independent.
-        // A younger translation must issue in the same cycle as an older
-        // already-translated load reaches the data cache.
-        alloc_load(IDW'(12), 3'd4, 64'h14_000, 3'd3);
-        take_xlate(1'b0, 64'h14_000, st);
-        respond_xlate(st, 64'h4000, 0, 0);
-        alloc_load(IDW'(13), 3'd5, 64'h15_000, 3'd3);
+        // All four compact load records translate and access memory
+        // independently.  No translation or memory response is returned
+        // until every slot has launched, so this catches accidental scalar
+        // serialization in either half of the path.
+        for (load_test_index = 0; load_test_index < 4;
+             load_test_index = load_test_index + 1)
+            alloc_load(IDW'(12 + load_test_index),
+                       load_test_index[2:0],
+                       64'h14_000 + load_test_index * 64'h1000, 3'd3);
+
+        l_id = IDW'(16); l_slot = 3'd4; l_meta = IDW'(16);
+        l_vaddr = 64'h18_000; l_size = 3'd3; l_valid = 1'b1;
         #1;
-        if (!req_valid || req_write || req_addr != 64'h4000 ||
-            !xlate_valid || xlate_write || xlate_vaddr != 64'h15_000)
+        if (l_ready)
             $fatal(1,
-                "translation/access overlap absent req=%b/%b/%h xlate=%b/%b/%h",
-                req_valid, req_write, req_addr,
-                xlate_valid, xlate_write, xlate_vaddr);
-        st = req_tag;
-        lt = xlate_tag;
-        req_ready = 1'b1;
-        xlate_ready = 1'b1;
-        tick();
-        req_ready = 1'b0;
-        xlate_ready = 1'b0;
-        respond_xlate(lt, 64'h5000, 0, 0);
-        respond_result(st, 64'h4000, 64'h1111_2222_3333_4444,
-                       IDW'(12), 0, 64'h1111_2222_3333_4444);
-        take_req(1'b0, 64'h5000, lt);
-        respond_result(lt, 64'h5000, 64'h5555_6666_7777_8888,
-                       IDW'(13), 0, 64'h5555_6666_7777_8888);
+                "four-entry load table admitted a fifth load");
+        l_valid = 1'b0;
+
+        for (load_test_index = 0; load_test_index < 4;
+             load_test_index = load_test_index + 1)
+            take_xlate(1'b0,
+                       64'h14_000 + load_test_index * 64'h1000,
+                       load_xlate_tags[load_test_index]);
+        for (load_test_index = 0; load_test_index < 4;
+             load_test_index = load_test_index + 1)
+            for (load_compare_index = load_test_index + 1;
+                 load_compare_index < 4;
+                 load_compare_index = load_compare_index + 1)
+                if (load_xlate_tags[load_test_index] ==
+                    load_xlate_tags[load_compare_index])
+                    $fatal(1,
+                        "concurrent loads shared translation tag %0d",
+                        load_xlate_tags[load_test_index]);
+
+        for (load_test_index = 0; load_test_index < 4;
+             load_test_index = load_test_index + 1)
+            respond_xlate(load_xlate_tags[load_test_index],
+                          64'h4000 + load_test_index * 64'h1000,
+                          0, 0);
+        for (load_test_index = 0; load_test_index < 4;
+             load_test_index = load_test_index + 1) begin
+            take_req(1'b0,
+                     64'h4000 + load_test_index * 64'h1000,
+                     load_request_tags[load_test_index]);
+            if (load_request_tags[load_test_index] !=
+                load_xlate_tags[load_test_index])
+                $fatal(1,
+                    "load tag changed between translation and access %0d/%0d",
+                    load_request_tags[load_test_index],
+                    load_xlate_tags[load_test_index]);
+        end
+
+        for (load_test_index = 3; load_test_index >= 0;
+             load_test_index = load_test_index - 1)
+            respond_result(load_request_tags[load_test_index],
+                           64'h4000 + load_test_index * 64'h1000,
+                           64'h1111_0000_0000_0000 + load_test_index,
+                           IDW'(12 + load_test_index), 0,
+                           64'h1111_0000_0000_0000 + load_test_index);
 
         reset_dut();
 
@@ -789,12 +822,20 @@ module tb_lsq;
 
         reset_dut();
 
-        // A cacheable load may pass an older translated store when the byte
-        // ranges are disjoint, even if both addresses occupy one cache line.
+        // A cache-line guard is intentionally coarser than byte forwarding.
+        // Same-line disjoint words wait until the older store drains.
         translation_bypass = 1'b1;
         alloc_store(IDW'(4), 3'd4, 64'h7000, 3'd3,
                     64'h1111_2222_3333_4444, 8'hff);
         alloc_load(IDW'(5), 3'd5, 64'h7008, 3'd3);
+        #1;
+        if (req_valid && !req_write)
+            $fatal(1, "same-line load passed store guard");
+        head_valid = 1'b1; head_id = IDW'(4); head_slot = 3'd4;
+        take_req(1'b1, 64'h7000, st);
+        take_result(IDW'(4), 1, 0, 0, 0);
+        complete_store(st);
+        head_valid = 1'b0;
         take_req(1'b0, 64'h7008, lt);
         respond_result(lt, 64'h7008, 64'h0123_4567_89ab_cdef,
                        IDW'(5), 0, 64'h0123_4567_89ab_cdef);
@@ -803,7 +844,8 @@ module tb_lsq;
 
         reset_dut();
 
-        // A fully-covered same-word load forwards without physical access.
+        // Same-word accesses use the same guard flow.  This cut contains no
+        // byte-owner matrix and no store-to-load forwarding path.
         alloc_store(IDW'(6), 3'd6, 64'h8002, 3'd2,
                     64'h0000_aabb_ccdd_0000, 8'h3c);
         alloc_load(IDW'(7), 3'd7, 64'h8002, 3'd2);
@@ -813,8 +855,15 @@ module tb_lsq;
         respond_xlate(lt, 64'h8002, 0, 0);
         #1;
         if (req_valid && !req_write)
-            $fatal(1, "forwarded load issued physical read");
-        take_result(IDW'(7), 0, 64'h0000_aabb_ccdd_0000, 0, 0);
+            $fatal(1, "same-word load passed store guard");
+        head_valid = 1'b1; head_id = IDW'(6); head_slot = 3'd6;
+        take_req(1'b1, 64'h8002, st);
+        take_result(IDW'(6), 1, 0, 0, 0);
+        complete_store(st);
+        head_valid = 1'b0;
+        take_req(1'b0, 64'h8002, lt);
+        respond_result(lt, 64'h8002, 64'h0000_aabb_ccdd_0000,
+                       IDW'(7), 0, 64'h0000_aabb_ccdd_0000);
         flush = 1; tick(); flush = 0;
 
         reset_dut();
@@ -852,9 +901,9 @@ module tb_lsq;
 
         reset_dut();
 
-        // Selective recovery quarantines an accepted younger request until its
-        // response returns.  The stale tag must not be reused or complete a
-        // newly allocated instruction.
+        // An xlate-only selective squash releases its load slot immediately.
+        // exec_lsu's generation filter consumes the stale response above this
+        // interface before the reused raw tag can observe it.
         alloc_load(IDW'(10), 3'd2, 64'ha000, 3'd3);
         take_xlate(1'b0, 64'ha000, lt);
         squash_id = IDW'(9);
@@ -863,12 +912,9 @@ module tb_lsq;
         squash_younger = 1'b0;
         alloc_load(IDW'(11), 3'd3, 64'hb000, 3'd3);
         take_xlate(1'b0, 64'hb000, st);
-        if (st == lt)
-            $fatal(1, "selective squash reused quarantined tag=%0d", lt);
-        respond_xlate(lt, 64'hc000, 0, 0);
-        #1;
-        if (result_valid)
-            $fatal(1, "killed translation produced a result");
+        if (st != lt)
+            $fatal(1, "selective squash did not reuse load tag=%0d/%0d",
+                   st, lt);
         respond_xlate(st, 64'hd000, 0, 0);
         take_req(1'b0, 64'hd000, st);
         respond_result(st, 64'hd000, 64'h1122_3344_5566_7788,
@@ -876,8 +922,8 @@ module tb_lsq;
 
         reset_dut();
 
-        // A killed physical response may coincide with a valid local result.
-        // Consume the stale response, but complete the live local instruction.
+        // A killed physical request owns only its tagged load slot until the
+        // raw response drains.  Other load slots remain independently usable.
         alloc_load(IDW'(30), 3'd6, 64'h10_000, 3'd3);
         take_xlate(1'b0, 64'h10_000, lt);
         respond_xlate(lt, 64'h3000, 0, 0);
@@ -889,20 +935,12 @@ module tb_lsq;
         l_immediate = 1'b1;
         alloc_load(IDW'(31), 3'd7, 64'h12_000, 3'd3);
         l_immediate = 1'b0;
-        resp_tag = lt;
-        resp_paddr = 64'h3000;
-        resp_rdata = 64'hdead_beef_dead_beef;
-        resp_valid = 1'b1;
-        result_ready = 1'b1;
-        #1;
-        if (!resp_ready || !result_valid || result_id != IDW'(31) ||
-            result_rdata != 64'd0)
-            $fatal(1,
-                "killed response displaced local result id=%0d data=%h",
-                result_id, result_rdata);
-        tick();
-        resp_valid = 1'b0;
-        result_ready = 1'b0;
+        take_result(IDW'(31), 0, 64'd0, 0, 0);
+        if (!dut.load_valid_q[lt] || !dut.load_killed_q[lt])
+            $fatal(1, "killed physical load lost response ownership");
+        respond(lt, 64'h3000, 64'hdead_beef_dead_beef, 0, 0);
+        if (!empty)
+            $fatal(1, "killed physical load did not drain independently");
 
         reset_dut();
 
@@ -993,7 +1031,7 @@ module tb_lsq;
         head_valid = 1'b0;
         req_ready = 1'b0;
 
-        $display("PASS: unified LSQ ordering, physical bypass, forwarding, faults, and selective recovery");
+        $display("PASS: four-load table, hashed store guards, ordering, faults, and selective recovery");
         $finish;
     end
 

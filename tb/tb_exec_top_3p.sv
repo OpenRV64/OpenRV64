@@ -716,8 +716,9 @@ module tb_exec_top_3p #(
         if (complete_valid[2])
             fail("posted MEM store response completed the store twice");
 
-        // Fill the fixed-role physical LSU queues while the native request
-        // port is stalled.
+        // Fill the fixed-role physical LSU state while the native request port
+        // is stalled.  MEM0 owns four independent load transactions; MEM1
+        // keeps the configured four persistent store guards.
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -1741,7 +1742,7 @@ module tb_exec_top_3p #(
         complete_ready = 3'b000;
         mem_xlate_auto_response = 1'b1;
 
-        $display("PASS: 3p local forwarding, fixed-EX0 M/Zbb, load/store queues, four-bit xlate generations, ordered component-serial Zicclsm, EX1 ordering, and irrevocable AMO");
+        $display("PASS: 3p local forwarding, fixed-EX0 M/Zbb, four-load/store-guard LSU, four-bit xlate generations, ordered component-serial Zicclsm, EX1 ordering, and irrevocable AMO");
         $finish;
     end
 

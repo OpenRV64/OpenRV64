@@ -103,6 +103,7 @@
       "source": "rtl/core/exec/lsq.v",
       "parameters": {
         "RETIRE_SLOT_WIDTH": "5",
+        "META_WIDTH": "116",
         "LOAD_QUEUE_DEPTH": "4",
         "STORE_QUEUE_DEPTH": "4",
         "TAG_WIDTH": "3",

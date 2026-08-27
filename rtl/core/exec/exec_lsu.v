@@ -133,6 +133,24 @@ module openrv64_exec_lsu #(
     localparam integer I_PC = 274;
     localparam integer I_TRACE = 338;
 
+    // The retirement slot already owns PC/instruction/trace/register-source
+    // identity.  LSQ state keeps only fields needed to route the transaction,
+    // format its result, and construct a precise exception.
+    localparam integer LSQ_M_PRIV = 0;
+    localparam integer LSQ_M_INSTR_PAGE_FAULT = 2;
+    localparam integer LSQ_M_INSTR_ACCESS_FAULT = 3;
+    localparam integer LSQ_M_ECALL = 4;
+    localparam integer LSQ_M_EBREAK = 5;
+    localparam integer LSQ_M_ILLEGAL = 6;
+    localparam integer LSQ_M_MEM_WRITE = 7;
+    localparam integer LSQ_M_MEM_READ = 8;
+    localparam integer LSQ_M_REG_WRITE = 9;
+    localparam integer LSQ_M_LSU_OP = 10;
+    localparam integer LSQ_M_RD = 15;
+    localparam integer LSQ_M_INSTR = 20;
+    localparam integer LSQ_M_PC = 52;
+    localparam integer LSQ_META_WIDTH = 116;
+
     function automatic payload_is_atomic;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         reg [`RV64_INSTR_WIDTH-1:0] instr;
@@ -296,7 +314,8 @@ module openrv64_exec_lsu #(
     wire lsq_result_ready;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lsq_result_id;
     wire [RETIRE_SLOT_WIDTH-1:0] lsq_result_slot;
-    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] lsq_result_meta;
+    wire [LSQ_META_WIDTH-1:0] lsq_result_meta;
+    wire [`RV64_XLEN-1:0] lsq_result_vaddr;
     wire [`RV64_XLEN-1:0] lsq_result_rdata;
     wire lsq_result_access_fault;
     wire lsq_result_page_fault;
@@ -310,7 +329,10 @@ module openrv64_exec_lsu #(
     wire [LSU_TAG_WIDTH-1:0] atomic_start_tag;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] atomic_start_id;
     wire [RETIRE_SLOT_WIDTH-1:0] atomic_start_slot;
-    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] atomic_start_meta;
+    wire [LSQ_META_WIDTH-1:0] atomic_start_meta;
+    wire [`RV64_XLEN-1:0] atomic_start_vaddr;
+    wire [2:0] atomic_start_size;
+    wire [`RV64_XLEN-1:0] atomic_start_wdata;
     wire atomic_start_access_allowed;
     wire atomic_start_ready;
     wire atomic_active;
@@ -334,7 +356,7 @@ module openrv64_exec_lsu #(
     wire atomic_result_ready;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] atomic_result_id;
     wire [RETIRE_SLOT_WIDTH-1:0] atomic_result_slot;
-    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] atomic_result_meta;
+    wire [LSQ_META_WIDTH-1:0] atomic_result_meta;
     wire [`RV64_XLEN-1:0] atomic_result;
     wire atomic_illegal;
     wire atomic_misaligned;
@@ -438,9 +460,40 @@ module openrv64_exec_lsu #(
         load_issue_payload_i[I_RD +: `RV64_REG_ADDR_WIDTH];
     assign load_assignment_size_o = {1'b0, load_instr[13:12]};
 
+    wire [LSQ_META_WIDTH-1:0] load_lsq_meta = {
+        load_issue_payload_i[I_PC +: `RV64_XLEN],
+        load_issue_payload_i[I_INSTR +: `RV64_INSTR_WIDTH],
+        load_issue_payload_i[I_RD +: `RV64_REG_ADDR_WIDTH],
+        load_issue_payload_i[I_LSU_OP +: `RV64_LSU_OP_WIDTH],
+        load_issue_payload_i[I_REG_WRITE],
+        load_issue_payload_i[I_MEM_READ],
+        load_issue_payload_i[I_MEM_WRITE],
+        load_issue_payload_i[I_ILLEGAL],
+        load_issue_payload_i[I_EBREAK],
+        load_issue_payload_i[I_ECALL],
+        load_issue_payload_i[I_INSTR_ACCESS_FAULT],
+        load_issue_payload_i[I_INSTR_PAGE_FAULT],
+        load_issue_payload_i[I_PRIV +: `RV64_PRIV_WIDTH]
+    };
+    wire [LSQ_META_WIDTH-1:0] store_lsq_meta = {
+        store_issue_payload_i[I_PC +: `RV64_XLEN],
+        store_issue_payload_i[I_INSTR +: `RV64_INSTR_WIDTH],
+        store_issue_payload_i[I_RD +: `RV64_REG_ADDR_WIDTH],
+        store_issue_payload_i[I_LSU_OP +: `RV64_LSU_OP_WIDTH],
+        store_issue_payload_i[I_REG_WRITE],
+        store_issue_payload_i[I_MEM_READ],
+        store_issue_payload_i[I_MEM_WRITE],
+        store_issue_payload_i[I_ILLEGAL],
+        store_issue_payload_i[I_EBREAK],
+        store_issue_payload_i[I_ECALL],
+        store_issue_payload_i[I_INSTR_ACCESS_FAULT],
+        store_issue_payload_i[I_INSTR_PAGE_FAULT],
+        store_issue_payload_i[I_PRIV +: `RV64_PRIV_WIDTH]
+    };
+
     openrv64_lsq #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
-        .META_WIDTH(`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH),
+        .META_WIDTH(LSQ_META_WIDTH),
         .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .TAG_WIDTH(LSU_TAG_WIDTH),
@@ -461,7 +514,7 @@ module openrv64_exec_lsu #(
         .load_alloc_ready_o(lsq_load_alloc_ready),
         .load_alloc_id_i(load_issue_id_i),
         .load_alloc_slot_i(load_issue_slot_i),
-        .load_alloc_meta_i(load_issue_payload_i),
+        .load_alloc_meta_i(load_lsq_meta),
         .load_alloc_immediate_i(load_immediate),
         // Translation and PMP status belongs to the tagged response.  There
         // is no valid access verdict at LSQ allocation time.
@@ -476,14 +529,15 @@ module openrv64_exec_lsu #(
         .store_alloc_ready_o(lsq_store_alloc_ready),
         .store_alloc_id_i(store_issue_id_i),
         .store_alloc_slot_i(store_issue_slot_i),
-        .store_alloc_meta_i(store_issue_payload_i),
+        .store_alloc_meta_i(store_lsq_meta),
         .store_alloc_immediate_i(store_immediate),
         .store_alloc_access_fault_i(1'b0),
         .store_alloc_atomic_i(store_is_atomic),
         .store_alloc_vaddr_i(store_is_atomic ?
                              store_effective_addr : store_bus_addr),
         .store_alloc_size_i({1'b0, store_instr[13:12]}),
-        .store_alloc_wdata_i(store_bus_wdata),
+        .store_alloc_wdata_i(store_is_atomic ?
+                             store_rs2_data : store_bus_wdata),
         .store_alloc_wstrb_i(store_bus_wstrb),
         .ordered_head_valid_i(ordered_head_valid_i),
         .ordered_head_id_i(ordered_head_id_i),
@@ -493,6 +547,9 @@ module openrv64_exec_lsu #(
         .atomic_start_id_o(atomic_start_id),
         .atomic_start_slot_o(atomic_start_slot),
         .atomic_start_meta_o(atomic_start_meta),
+        .atomic_start_vaddr_o(atomic_start_vaddr),
+        .atomic_start_size_o(atomic_start_size),
+        .atomic_start_wdata_o(atomic_start_wdata),
         .atomic_start_access_allowed_o(atomic_start_access_allowed),
         .atomic_active_i(atomic_active),
         .atomic_tag_i(atomic_tag),
@@ -536,6 +593,7 @@ module openrv64_exec_lsu #(
         .result_id_o(lsq_result_id),
         .result_slot_o(lsq_result_slot),
         .result_meta_o(lsq_result_meta),
+        .result_vaddr_o(lsq_result_vaddr),
         .result_rdata_o(lsq_result_rdata),
         .result_access_fault_o(lsq_result_access_fault),
         .result_page_fault_o(lsq_result_page_fault),
@@ -785,7 +843,7 @@ module openrv64_exec_lsu #(
     openrv64_lsu_atomics #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
         .LSU_TAG_WIDTH(LSU_TAG_WIDTH),
-        .META_WIDTH(`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH),
+        .META_WIDTH(LSQ_META_WIDTH),
         .COHERENT_ATOMICS(COHERENT_ATOMICS)
     ) u_atomics (
         .clk(clk),
@@ -797,6 +855,11 @@ module openrv64_exec_lsu #(
         .start_id_i(atomic_start_id),
         .start_slot_i(atomic_start_slot),
         .start_meta_i(atomic_start_meta),
+        .start_op_i(atomic_start_meta[
+            LSQ_M_LSU_OP +: `RV64_LSU_OP_WIDTH]),
+        .start_addr_i(atomic_start_vaddr),
+        .start_size_i(atomic_start_size),
+        .start_wdata_i(atomic_start_wdata),
         .start_access_allowed_i(atomic_start_access_allowed),
         .clear_reservation_i(clear_atomic_reservation),
         .active_o(atomic_active),
@@ -888,12 +951,56 @@ module openrv64_exec_lsu #(
                               !misaligned_result_valid;
     wire lsq_result_fire = lsq_result_valid && lsq_result_ready;
 
-    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] completion_source =
-        atomic_result_valid ? atomic_result_meta :
-        misaligned_result_valid ? misaligned_meta_q : lsq_result_meta;
     wire completion_is_atomic = atomic_result_valid;
     wire completion_is_misaligned =
         !completion_is_atomic && misaligned_result_valid;
+    wire [LSQ_META_WIDTH-1:0] compact_completion_meta =
+        completion_is_atomic ? atomic_result_meta : lsq_result_meta;
+    wire [`RV64_XLEN-1:0] compact_completion_vaddr =
+        completion_is_atomic ? atomic_effective_addr : lsq_result_vaddr;
+    reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        compact_completion_source_r;
+    always @* begin
+        compact_completion_source_r =
+            {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+        compact_completion_source_r[I_PRIV +: `RV64_PRIV_WIDTH] =
+            compact_completion_meta[LSQ_M_PRIV +: `RV64_PRIV_WIDTH];
+        compact_completion_source_r[I_INSTR_PAGE_FAULT] =
+            compact_completion_meta[LSQ_M_INSTR_PAGE_FAULT];
+        compact_completion_source_r[I_INSTR_ACCESS_FAULT] =
+            compact_completion_meta[LSQ_M_INSTR_ACCESS_FAULT];
+        compact_completion_source_r[I_ECALL] =
+            compact_completion_meta[LSQ_M_ECALL];
+        compact_completion_source_r[I_EBREAK] =
+            compact_completion_meta[LSQ_M_EBREAK];
+        compact_completion_source_r[I_ILLEGAL] =
+            compact_completion_meta[LSQ_M_ILLEGAL];
+        compact_completion_source_r[I_MEM_WRITE] =
+            compact_completion_meta[LSQ_M_MEM_WRITE];
+        compact_completion_source_r[I_MEM_READ] =
+            compact_completion_meta[LSQ_M_MEM_READ];
+        compact_completion_source_r[I_REG_WRITE] =
+            compact_completion_meta[LSQ_M_REG_WRITE];
+        compact_completion_source_r[I_LSU_OP +: `RV64_LSU_OP_WIDTH] =
+            compact_completion_meta[
+                LSQ_M_LSU_OP +: `RV64_LSU_OP_WIDTH];
+        compact_completion_source_r[I_RD +: `RV64_REG_ADDR_WIDTH] =
+            compact_completion_meta[LSQ_M_RD +: `RV64_REG_ADDR_WIDTH];
+        compact_completion_source_r[I_INSTR +: `RV64_INSTR_WIDTH] =
+            compact_completion_meta[LSQ_M_INSTR +: `RV64_INSTR_WIDTH];
+        compact_completion_source_r[I_PC +: `RV64_XLEN] =
+            compact_completion_meta[LSQ_M_PC +: `RV64_XLEN];
+        // Reuse the effective-address field as base+zero.  The LSU completion
+        // decoder needs the address for misalignment and tval, not the
+        // original operand decomposition.
+        compact_completion_source_r[I_RS1_DATA +: `RV64_XLEN] =
+            compact_completion_vaddr;
+        compact_completion_source_r[I_IMM +: `RV64_XLEN] =
+            {`RV64_XLEN{1'b0}};
+    end
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] completion_source =
+        completion_is_misaligned ? misaligned_meta_q :
+                                   compact_completion_source_r;
     wire [`RV64_INSTR_WIDTH-1:0] completion_instr =
         completion_source[I_INSTR +: `RV64_INSTR_WIDTH];
     wire [`RV64_XLEN-1:0] completion_pc =

@@ -27,6 +27,10 @@ module openrv64_lsu_atomics #(
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] start_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] start_slot_i,
     input  wire [META_WIDTH-1:0]        start_meta_i,
+    input  wire [`RV64_LSU_OP_WIDTH-1:0] start_op_i,
+    input  wire [`RV64_XLEN-1:0]        start_addr_i,
+    input  wire [2:0]                   start_size_i,
+    input  wire [`RV64_XLEN-1:0]        start_wdata_i,
     input  wire                         start_access_allowed_i,
     input  wire                         clear_reservation_i,
 
@@ -66,12 +70,6 @@ module openrv64_lsu_atomics #(
     output wire                         done_o
 );
 
-    localparam integer I_LSU_OP = 22;
-    localparam integer I_IMM = 40;
-    localparam integer I_RS2_DATA = 104;
-    localparam integer I_RS1_DATA = 168;
-    localparam integer I_INSTR = 242;
-
     reg active_q;
     reg irrevocable_q;
     reg req_inflight_q;
@@ -79,21 +77,16 @@ module openrv64_lsu_atomics #(
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] slot_q;
     reg [META_WIDTH-1:0] meta_q;
+    reg [`RV64_LSU_OP_WIDTH-1:0] op_q;
+    reg [`RV64_XLEN-1:0] addr_q;
+    reg [2:0] size_q;
+    reg [`RV64_XLEN-1:0] wdata_q;
     reg access_allowed_q;
 
-    wire [`RV64_LSU_OP_WIDTH-1:0] lsu_op =
-        meta_q[I_LSU_OP +: `RV64_LSU_OP_WIDTH];
-    wire [`RV64_XLEN-1:0] rs1_data =
-        meta_q[I_RS1_DATA +: `RV64_XLEN];
-    wire [`RV64_XLEN-1:0] rs2_data =
-        meta_q[I_RS2_DATA +: `RV64_XLEN];
-    wire [`RV64_XLEN-1:0] imm =
-        meta_q[I_IMM +: `RV64_XLEN];
-    wire [`RV64_XLEN-1:0] effective_addr = rs1_data + imm;
-    wire [2:0] access_size = {
-        1'b0,
-        meta_q[I_INSTR + 12 +: `RV64_LSU_SIZE_WIDTH]
-    };
+    wire [`RV64_LSU_OP_WIDTH-1:0] lsu_op = op_q;
+    wire [`RV64_XLEN-1:0] effective_addr = addr_q;
+    wire [`RV64_XLEN-1:0] rs2_data = wdata_q;
+    wire [2:0] access_size = size_q;
 
     wire engine_complete;
     wire engine_illegal;
@@ -190,6 +183,10 @@ module openrv64_lsu_atomics #(
             id_q <= {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             meta_q <= {META_WIDTH{1'b0}};
+            op_q <= {`RV64_LSU_OP_WIDTH{1'b0}};
+            addr_q <= {`RV64_XLEN{1'b0}};
+            size_q <= 3'd0;
+            wdata_q <= {`RV64_XLEN{1'b0}};
             access_allowed_q <= 1'b1;
         end else if (flush_i) begin
             if (!irrevocable_q) begin
@@ -219,6 +216,10 @@ module openrv64_lsu_atomics #(
                 id_q <= start_id_i;
                 slot_q <= start_slot_i;
                 meta_q <= start_meta_i;
+                op_q <= start_op_i;
+                addr_q <= start_addr_i;
+                size_q <= start_size_i;
+                wdata_q <= start_wdata_i;
                 access_allowed_q <= start_access_allowed_i;
             end
             if (mem_request_fire) begin
