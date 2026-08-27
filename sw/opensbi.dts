@@ -261,9 +261,13 @@
                 #address-cells = <1>;
                 #size-cells = <0>;
 
-                /* Provisional until the populated PHY and straps are read. */
-                ethernet_phy: ethernet-phy@1 {
-                    reg = <1>;
+                /*
+                 * The MYD-J7A100T uses a Motorcomm YT8531SH.  The PHY
+                 * responds at address zero by default independently of its
+                 * strapped unicast address.
+                 */
+                ethernet_phy: ethernet-phy@0 {
+                    reg = <0>;
                 };
             };
         };

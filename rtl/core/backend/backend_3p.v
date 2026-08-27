@@ -102,13 +102,15 @@ module openrv64_backend_3p #(
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
     output wire                         mem_xlate_valid_o,
     input  wire                         mem_xlate_ready_i,
-    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag_o,
+    output wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        mem_xlate_tag_o,
     output wire                         mem_xlate_write_o,
     output wire [2:0]                   mem_xlate_size_o,
     output wire [`RV64_XLEN-1:0]        mem_xlate_vaddr_o,
     input  wire                         mem_xlate_resp_valid_i,
     output wire                         mem_xlate_resp_ready_o,
-    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag_i,
+    input  wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        mem_xlate_resp_tag_i,
     input  wire [`RV64_XLEN-1:0]        mem_xlate_resp_paddr_i,
     input  wire                         mem_xlate_resp_access_fault_i,
     input  wire                         mem_xlate_resp_page_fault_i,

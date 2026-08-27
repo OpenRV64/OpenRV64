@@ -19,8 +19,10 @@ rom_init_file=${ROM_INIT_FILE:-}
 core_clock_hz=${FPGA_CORE_CLOCK_HZ:-14000000}
 uart_reference_clock_hz=${FPGA_UART_REFERENCE_CLOCK_HZ:-14745600}
 spi_fast_half_period_cycles=${FPGA_SPI_FAST_HALF_PERIOD_CYCLES:-1}
-ethernet_mdc_half_period_cycles=${FPGA_ETHERNET_MDC_HALF_PERIOD_CYCLES:-3}
-ethernet_phy_reset_cycles=${FPGA_ETHERNET_PHY_RESET_CYCLES:-110000}
+ethernet_mdc_half_period_cycles=${FPGA_ETHERNET_MDC_HALF_PERIOD_CYCLES:-$(((core_clock_hz + 4999999) / 5000000))}
+ethernet_phy_reset_cycles=${FPGA_ETHERNET_PHY_RESET_CYCLES:-$(((core_clock_hz * 15 + 999) / 1000))}
+large_trace_enable=${FPGA_LARGE_TRACE_ENABLE:-0}
+wave_trace_enable=${FPGA_WAVE_TRACE_ENABLE:-0}
 
 if ! yosys_bin=$(command -v "$yosys_bin"); then
     echo "error: Yosys executable not found: ${YOSYS:-yosys}" >&2
@@ -44,6 +46,18 @@ fi
 if [[ "$mig_scalar_cache_enable" != 0 &&
       "$mig_scalar_cache_enable" != 1 ]]; then
     echo "error: FPGA_MIG_SCALAR_CACHE_ENABLE must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$large_trace_enable" != 0 && "$large_trace_enable" != 1 ]]; then
+    echo "error: FPGA_LARGE_TRACE_ENABLE must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$wave_trace_enable" != 0 && "$wave_trace_enable" != 1 ]]; then
+    echo "error: FPGA_WAVE_TRACE_ENABLE must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$wave_trace_enable" == 1 && "$large_trace_enable" != 1 ]]; then
+    echo "error: FPGA_WAVE_TRACE_ENABLE requires FPGA_LARGE_TRACE_ENABLE=1" >&2
     exit 2
 fi
 if [[ ! "$mig_scalar_cache_bytes" =~ ^[1-9][0-9]*$ ]] ||
@@ -103,6 +117,12 @@ read_command="read_verilog -sv -defer -I$repo_root/rtl \
     -DSYNTHESIS -DOPENRV64_FPGA_CORE_NETLIST \
     -DOPENRV64_FPGA_LOADER_NETLIST \
     -DOPENRV64_XILINX_PACKET_RAM"
+if [[ "$large_trace_enable" == 1 ]]; then
+    read_command+=" -DOPENRV64_FPGA_LARGE_TRACE"
+fi
+if [[ "$wave_trace_enable" == 1 ]]; then
+    read_command+=" -DOPENRV64_FPGA_WAVE_TRACE"
+fi
 if [[ -n "$rom_init_file" ]]; then
     # The ROM wraps this bare path in SystemVerilog macro quotes. A
     # string-valued chparam reaches the module parameter but is not honored by

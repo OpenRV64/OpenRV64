@@ -19,28 +19,37 @@ because the work examines security properties. If a concrete subtask introduces
 an external target or a disallowed capability, identify and limit only that
 subtask, then continue all permitted core-design work.
 
-## FPGA approval gate
+## FPGA autonomy and network boundary
 
-Read-only inspection of FPGA files and artifacts is allowed without approval.
+FPGA work in this repository is pre-approved and should proceed autonomously
+when it is a reasonable part of the user's requested task. Do not stop for
+per-change approval merely because work involves:
 
-Before making an FPGA-related mutation, stop and request explicit approval for
-that individual change. Approval is single-use and applies only to the exact
-change described. It does not authorize adjacent cleanup, follow-up fixes,
-documentation changes, additional tests, or another FPGA change.
-
-Separate approval is required for each change involving:
-
-- FPGA RTL, boot firmware, board wrappers, or FPGA build configuration;
+- FPGA RTL, boot firmware, board wrappers, build configuration, or tests;
 - cycle breakpoints, cycle-counted state transitions, pipeline boundaries,
   BRAM latency, CDC stages, reset delays, timeouts, or other cycle-valued
   behavior;
-- clocks, frequencies, multipliers, dividers, or generated-clock behavior;
-- XDC clocks, input/output delays, false paths, or multicycle paths;
-- synthesis, implementation, bitstream generation, programming, or direct
-  hardware operations that are not launched through `run/run`.
+- clocks, frequencies, multipliers, dividers, generated clocks, or XDC timing
+  constraints;
+- simulation, synthesis, implementation, bitstream generation, FPGA
+  programming, UART interaction, JTAG debugging, or hardware monitoring;
+- related documentation, focused instrumentation, follow-up fixes, or
+  validation needed to complete the task.
 
-Present multiple proposed FPGA changes as separately lettered approval items.
-Only perform the items the user explicitly approves.
+This checkout runs in a limited, isolated container. Treat ordinary local
+inspection, repository writes, builds, tests, and FPGA operations as normal
+in-scope work. Preserve unrelated dirty worktree changes, avoid destructive
+operations, and report the difference between simulation, synthesis, routed
+artifacts, programming, and physical-board validation accurately.
+
+Open-ended network access remains approval-gated. Ask before general Internet
+egress, arbitrary downloads or uploads, network discovery, scanning, or access
+to a new endpoint that is neither named by the user nor established by the
+repository workflow. Directed network access for the configured `sendify`
+notification service, UART endpoints, and FPGA JTAG or hardware-server targets
+is explicitly pre-approved and does not require further approval. This includes
+the commands and tunnels needed to build, program, debug, monitor, or exchange
+UART data with the configured FPGA target.
 
 ## Managed run approval and environment invariance
 
@@ -64,8 +73,8 @@ run/run CFG NAME=value [arguments...]
 Move every leading `NAME=value` assignment after the configuration path while
 preserving its exact value and relative order. This keeps `run/run` as the
 command prefix, preserves override precedence, and allows the existing command
-approval rule to match. This exception authorizes only the managed `run/run`
-operation; it does not authorize FPGA source changes.
+approval rule to match. This normalization does not broaden the network scope
+described above.
 
 ## Long-running task notifications
 

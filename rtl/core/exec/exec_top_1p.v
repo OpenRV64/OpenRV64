@@ -119,7 +119,17 @@ module openrv64_exec_top_1p #(
     output wire [`RV64_XLEN-1:0]        trace_mem_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] trace_mem_instr_o,
     output wire [63:0]                  trace_wb_id_o,
-    output wire                         trace_serializing_o
+    output wire                         trace_serializing_o,
+    output wire                         trace_load_valid_o,
+    output wire [`RV64_XLEN-1:0]        trace_load_pc_o,
+    output wire [`RV64_XLEN-1:0]        trace_load_addr_o,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0] trace_load_rd_o,
+    output wire [`RV64_XLEN-1:0]        trace_load_data_o,
+    output wire                         trace_store_valid_o,
+    output wire [`RV64_XLEN-1:0]        trace_store_pc_o,
+    output wire [`RV64_XLEN-1:0]        trace_store_addr_o,
+    output wire [`RV64_XLEN-1:0]        trace_store_data_o,
+    output wire [7:0]                   trace_store_wstrb_o
 );
 
     localparam EX_MEM_WIDTH = 581;
@@ -813,5 +823,29 @@ module openrv64_exec_top_1p #(
                                  csr_busy_i ||
                                  (valid_i && ex_requires_drain &&
                                   !serial_issue_ready);
+
+    // Capture the formatted LSU result where an in-order 1P load enters
+    // MEM/WB. This is before retirement and register-file writeback, allowing
+    // the FPGA load and retire rings to localize later data corruption.
+    assign trace_load_valid_o = mem_wb_in_valid && ex_mem_mem_read &&
+                                !exception_valid;
+    assign trace_load_pc_o = ex_mem_pc;
+    // The debug trace already correlates through the retirement PC. Preserve
+    // the translated memory address here rather than duplicating the virtual
+    // effective address; the FPGA trace ring stores its low 32 bits.
+    assign trace_load_addr_o = lsu_mem_addr;
+    assign trace_load_rd_o = ex_mem_rd_addr;
+    assign trace_load_data_o = memory_result;
+
+    // Record the payload of each successful store transaction once, on the
+    // memory response handshake. This is deliberately separate from the load
+    // ring so store traffic cannot evict the ordered register-load history.
+    assign trace_store_valid_o = mem_valid_o && mem_ready_i && mem_write_o &&
+                                 !mem_error_i && !mem_page_fault_i &&
+                                 !exception_valid;
+    assign trace_store_pc_o = ex_mem_pc;
+    assign trace_store_addr_o = mem_addr_o;
+    assign trace_store_data_o = mem_wdata_o;
+    assign trace_store_wstrb_o = mem_wstrb_o;
 
 endmodule

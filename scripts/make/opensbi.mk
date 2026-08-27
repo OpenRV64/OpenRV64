@@ -30,6 +30,12 @@ FPGA_DEBUG_STUB_SYNTH_JSON := \
 	$(FPGA_DEBUG_STUB_SYNTH_DIR)/stub.json
 FPGA_DEBUG_STUB_SYNTH_LOG := \
 	$(FPGA_DEBUG_STUB_SYNTH_DIR)/yosys.log
+FPGA_DEBUG_STUB_BASE_SYNTH_DIR ?= \
+	build/fpga/xc7a100t/debug-stub-base-synth
+FPGA_DEBUG_STUB_BASE_SYNTH_JSON := \
+	$(FPGA_DEBUG_STUB_BASE_SYNTH_DIR)/stub.json
+FPGA_DEBUG_STUB_BASE_SYNTH_LOG := \
+	$(FPGA_DEBUG_STUB_BASE_SYNTH_DIR)/yosys.log
 FPGA_DEBUG_UART_TRACE_SYNTH_DIR ?= \
 	build/fpga/xc7a100t/debug-uart-trace-synth
 FPGA_DEBUG_UART_TRACE_SYNTH_JSON := \
@@ -49,6 +55,14 @@ FPGA_SD_BOOT_CORE_TIMING_MAX_PATHS ?= 10
 FPGA_SD_BOOT_CORE_TIMING_REPORT_NAME ?= timing_strict_core.rpt
 FPGA_SD_BOOT_CORE_TIMING_REPORT := \
 	$(FPGA_SD_BOOT_OUTPUT_DIR)/reports/$(FPGA_SD_BOOT_CORE_TIMING_REPORT_NAME)
+FPGA_DEBUG_NET_INVENTORY ?= \
+	$(FPGA_SD_BOOT_OUTPUT_DIR)/reports/debug_net_inventory.txt
+FPGA_WAVE_CSV ?= \
+	$(FPGA_SD_BOOT_OUTPUT_DIR)/fetch-wave.csv
+FPGA_WAVE_VCD ?= \
+	$(FPGA_SD_BOOT_OUTPUT_DIR)/fetch-wave.vcd
+FPGA_WAVE_EXTRA_CSV ?=
+FPGA_WAVE_PERIOD_NS ?= 50
 FPGA_SD_BOOT_UART_DIVISOR ?= 5
 FPGA_SD_BOOT_CPPFLAGS ?=
 FPGA_SD_BOOT_ELF := $(FPGA_SD_BOOT_DIR)/fpga-sd-boot.elf
@@ -124,7 +138,7 @@ verify-fpga-debug-snapshot-synth:
 $(FPGA_DEBUG_STUB_SYNTH_JSON): rtl/soc/debug/stub_mem.sv
 	@mkdir -p '$(FPGA_DEBUG_STUB_SYNTH_DIR)'
 	yosys -q -l '$(FPGA_DEBUG_STUB_SYNTH_LOG)' -p \
-		'read_verilog -sv $<; hierarchy -check -top openrv64_soc_debug_stub_mem; synth_xilinx -family xc7 -top openrv64_soc_debug_stub_mem; stat; write_json $@'
+		'read_verilog -sv -DOPENRV64_FPGA_LARGE_TRACE $<; hierarchy -check -top openrv64_soc_debug_stub_mem; synth_xilinx -family xc7 -top openrv64_soc_debug_stub_mem; stat; write_json $@'
 
 fpga-debug-stub-synth: $(FPGA_DEBUG_STUB_SYNTH_JSON)
 
@@ -135,6 +149,21 @@ verify-fpga-debug-stub-synth:
 	@printf 'OPENRV64 FPGA DEBUG STUB BRAM PASS path=%s sha256=%s\n' \
 		'$(FPGA_DEBUG_STUB_SYNTH_JSON)' \
 		"$$(sha256sum '$(FPGA_DEBUG_STUB_SYNTH_JSON)' | cut -d ' ' -f 1)"
+
+$(FPGA_DEBUG_STUB_BASE_SYNTH_JSON): rtl/soc/debug/stub_mem.sv
+	@mkdir -p '$(FPGA_DEBUG_STUB_BASE_SYNTH_DIR)'
+	yosys -q -l '$(FPGA_DEBUG_STUB_BASE_SYNTH_LOG)' -p \
+		'read_verilog -sv $<; hierarchy -check -top openrv64_soc_debug_stub_mem; synth_xilinx -family xc7 -top openrv64_soc_debug_stub_mem; stat; write_json $@'
+
+fpga-debug-stub-base-synth: $(FPGA_DEBUG_STUB_BASE_SYNTH_JSON)
+
+verify-fpga-debug-stub-base-synth:
+	@test -s '$(FPGA_DEBUG_STUB_BASE_SYNTH_JSON)'
+	@test "$$(rg -c '"type": "RAMB36E1"' \
+		'$(FPGA_DEBUG_STUB_BASE_SYNTH_JSON)')" -eq 4
+	@printf 'OPENRV64 FPGA DEBUG STUB BASE PASS trace_bram=0 path=%s sha256=%s\n' \
+		'$(FPGA_DEBUG_STUB_BASE_SYNTH_JSON)' \
+		"$$(sha256sum '$(FPGA_DEBUG_STUB_BASE_SYNTH_JSON)' | cut -d ' ' -f 1)"
 
 $(FPGA_DEBUG_UART_TRACE_SYNTH_JSON): rtl/soc/debug/uart_trace_mem.sv
 	@mkdir -p '$(FPGA_DEBUG_UART_TRACE_SYNTH_DIR)'
@@ -297,6 +326,40 @@ fpga-sd-boot-core-timing-report-check:
 		'$(FPGA_SD_BOOT_CORE_TIMING_REPORT)'
 	@printf 'OPENRV64 FPGA CORE TIMING REPORT CHECK PASS path=%s\n' \
 		'$(FPGA_SD_BOOT_CORE_TIMING_REPORT)'
+
+.PHONY: fpga-debug-net-inventory
+fpga-debug-net-inventory:
+	@test -s '$(FPGA_SD_BOOT_OUTPUT_DIR)/openrv64_sd_boot_post_opt.dcp'
+	$(FPGA_VIVADO) -mode batch -nojournal -nolog \
+		-source synth/fpga/xc7a100t/inventory_vivado_debug_nets.tcl \
+		-tclargs \
+		'$(FPGA_SD_BOOT_OUTPUT_DIR)/openrv64_sd_boot_post_opt.dcp' \
+		'$(FPGA_DEBUG_NET_INVENTORY)'
+	@test -s '$(FPGA_DEBUG_NET_INVENTORY)'
+
+.PHONY: fpga-debug-net-inventory-check
+fpga-debug-net-inventory-check:
+	@test -s '$(FPGA_DEBUG_NET_INVENTORY)'
+	@rg -q '^NET ' '$(FPGA_DEBUG_NET_INVENTORY)'
+	@printf 'OPENRV64 FPGA DEBUG NET INVENTORY CHECK PASS path=%s\n' \
+		'$(FPGA_DEBUG_NET_INVENTORY)'
+
+.PHONY: fpga-wave-vcd
+fpga-wave-vcd:
+	@test -s '$(FPGA_WAVE_CSV)'
+	@mkdir -p '$(@D)' '$(dir $(FPGA_WAVE_VCD))'
+	python3 tools/fpga-wave-csv-to-vcd.py \
+		'$(FPGA_WAVE_CSV)' '$(FPGA_WAVE_VCD)' \
+		$(foreach path,$(FPGA_WAVE_EXTRA_CSV),--extra-input '$(path)') \
+		--period-ns '$(FPGA_WAVE_PERIOD_NS)'
+	@test -s '$(FPGA_WAVE_VCD)'
+
+.PHONY: fpga-wave-vcd-check
+fpga-wave-vcd-check:
+	@test -s '$(FPGA_WAVE_CSV)'
+	@test -s '$(FPGA_WAVE_VCD)'
+	@printf 'OPENRV64 FPGA WAVE VCD CHECK PASS path=%s bytes=%s\n' \
+		'$(FPGA_WAVE_VCD)' "$$(stat -c %s '$(FPGA_WAVE_VCD)')"
 
 $(FPGA_SD_IMAGE): tools/make-fpga-sd-image.py \
 		$(FPGA_SD_DTS) $(FPGA_SD_OPENSBI) $(FPGA_SD_LINUX)

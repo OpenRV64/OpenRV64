@@ -18,6 +18,17 @@ module openrv64_fpga_jtag_snoop #(
     input  logic [63:0] debug_rs1_data_i,
     input  logic [63:0] debug_rs2_data_i,
 
+    // Retirement-exact probes.  The legacy debug PC/operand registers update
+    // independently of the retirement handshake and are useful only as a
+    // passive last-WB snapshot.  PC breakpoints must use one coherent retire
+    // record or a chained debug interrupt can pair the PC with stale data.
+    input  logic        retire_valid_i,
+    input  logic [63:0] retire_pc_i,
+    input  logic [31:0] retire_instr_i,
+    input  logic        retire_rd_write_i,
+    input  logic [4:0]  retire_rd_i,
+    input  logic [63:0] retire_wdata_i,
+
     // Indexed readback of the always-clocked DDR bridge cache. The request
     // and acknowledgement are toggles because USER1 and ui_clk are unrelated.
     output logic [9:0]  debug_cache_index_o,
@@ -37,13 +48,15 @@ module openrv64_fpga_jtag_snoop #(
     input  logic        debug_snapshot_trigger_ack_i,
 
     // Full-word upload/readback port for the executable M-mode debug BRAM.
-    output logic [10:0] debug_stub_index_o,
+    output logic [15:0] debug_stub_index_o,
     output logic        debug_stub_write_o,
     output logic        debug_stub_trace_read_o,
+    output logic        debug_stub_wave_burst_o,
     output logic [63:0] debug_stub_wdata_o,
     output logic        debug_stub_req_toggle_o,
     input  logic        debug_stub_ack_toggle_i,
     input  logic [63:0] debug_stub_rdata_i,
+    input  logic [255:0] debug_stub_wave_rdata_i,
 
     // Indexed readback of the rolling 16 KiB UART transmit capture.
     output logic [10:0] debug_uart_trace_index_o,
@@ -66,6 +79,10 @@ module openrv64_fpga_jtag_snoop #(
     input  logic        mem_scalar_i,
 
     output logic        debug_irq_o,
+    // Unlike debug_irq_o, this remains asserted after the M-mode handler
+    // acknowledges the PLIC source. It keeps trace storage immutable until
+    // JTAG explicitly resumes the saved architectural context.
+    output logic        debug_trace_freeze_o,
     output logic        resume_toggle_o,
     // Toggle transported to the board's 200 MHz reset controller. This
     // restarts MIG calibration and the complete boot flow while preserving
@@ -75,6 +92,16 @@ module openrv64_fpga_jtag_snoop #(
 
     localparam integer SCAN_BITS = 960;
     localparam logic [31:0] COMMAND_KEY = 32'h4f52_5636; // "ORV6"
+`ifdef OPENRV64_FPGA_WAVE_TRACE
+    localparam bit LARGE_TRACE_ENABLE = 1'b1;
+    localparam logic [7:0] PROTOCOL_VERSION = 8'd23;
+`elsif OPENRV64_FPGA_LARGE_TRACE
+    localparam bit LARGE_TRACE_ENABLE = 1'b1;
+    localparam logic [7:0] PROTOCOL_VERSION = 8'd22;
+`else
+    localparam bit LARGE_TRACE_ENABLE = 1'b0;
+    localparam logic [7:0] PROTOCOL_VERSION = 8'd19;
+`endif
 
     logic bscan_capture;
     logic bscan_drck;
@@ -114,6 +141,7 @@ module openrv64_fpga_jtag_snoop #(
     logic cfg_ptw_jtag_q;
     logic cfg_pc_jtag_q;
     logic cfg_cycle_enable_jtag_q;
+    logic cfg_trace_window_jtag_q;
     logic [63:0] cfg_mem_addr_jtag_q;
     logic [63:0] cfg_mem_mask_jtag_q;
     logic [63:0] cfg_pc_addr_jtag_q;
@@ -123,9 +151,10 @@ module openrv64_fpga_jtag_snoop #(
     logic [1:0] cfg_cache_word_jtag_q;
     logic cfg_cache_tag_jtag_q;
     logic [8:0] cfg_snapshot_index_jtag_q;
-    logic [10:0] cfg_stub_index_jtag_q;
+    logic [15:0] cfg_stub_index_jtag_q;
     logic cfg_stub_write_jtag_q;
     logic cfg_stub_trace_read_jtag_q;
+    logic cfg_stub_wave_burst_jtag_q;
     logic [63:0] cfg_stub_wdata_jtag_q;
     logic [10:0] cfg_uart_trace_index_jtag_q;
     logic [1:0] readback_source_jtag_q;
@@ -149,6 +178,7 @@ module openrv64_fpga_jtag_snoop #(
         cfg_ptw_jtag_q = 1'b1;
         cfg_pc_jtag_q = 1'b0;
         cfg_cycle_enable_jtag_q = 1'b0;
+        cfg_trace_window_jtag_q = 1'b0;
         cfg_mem_addr_jtag_q = 64'd0;
         cfg_mem_mask_jtag_q = 64'hffff_ffff_ffff_ffff;
         cfg_pc_addr_jtag_q = 64'd0;
@@ -161,6 +191,7 @@ module openrv64_fpga_jtag_snoop #(
         cfg_stub_index_jtag_q = 11'd0;
         cfg_stub_write_jtag_q = 1'b0;
         cfg_stub_trace_read_jtag_q = 1'b0;
+        cfg_stub_wave_burst_jtag_q = 1'b0;
         cfg_stub_wdata_jtag_q = 64'd0;
         cfg_uart_trace_index_jtag_q = 11'd0;
         readback_source_jtag_q = 2'd0;
@@ -187,6 +218,8 @@ module openrv64_fpga_jtag_snoop #(
                 cfg_ptw_jtag_q <= shift_q[36];
                 cfg_pc_jtag_q <= shift_q[37];
                 cfg_cycle_enable_jtag_q <= shift_q[38];
+                cfg_trace_window_jtag_q <=
+                    LARGE_TRACE_ENABLE && shift_q[58];
                 cfg_mem_addr_jtag_q <= shift_q[127:64];
                 cfg_mem_mask_jtag_q <= shift_q[191:128];
                 cfg_pc_addr_jtag_q <= shift_q[255:192];
@@ -197,7 +230,7 @@ module openrv64_fpga_jtag_snoop #(
             cfg_cache_word_jtag_q <= shift_q[411:410];
             cfg_cache_tag_jtag_q <= shift_q[412];
             cfg_snapshot_index_jtag_q <= shift_q[424:416];
-            cfg_stub_index_jtag_q <= shift_q[426:416];
+            cfg_stub_index_jtag_q <= shift_q[431:416];
             cfg_uart_trace_index_jtag_q <= shift_q[426:416];
             if (shift_q[41]) begin
                 cache_req_toggle_jtag_q <= ~cache_req_toggle_jtag_q;
@@ -209,8 +242,9 @@ module openrv64_fpga_jtag_snoop #(
                 readback_source_jtag_q <= 2'd1;
             end
             if (shift_q[43] || shift_q[44]) begin
-            cfg_stub_write_jtag_q <= shift_q[44];
-            cfg_stub_trace_read_jtag_q <= shift_q[47];
+                cfg_stub_write_jtag_q <= shift_q[44];
+                cfg_stub_trace_read_jtag_q <= shift_q[47];
+                cfg_stub_wave_burst_jtag_q <= shift_q[48];
                 cfg_stub_wdata_jtag_q <= shift_q[511:448];
                 stub_req_toggle_jtag_q <= ~stub_req_toggle_jtag_q;
                 readback_source_jtag_q <= 2'd2;
@@ -238,6 +272,7 @@ module openrv64_fpga_jtag_snoop #(
     assign debug_stub_index_o = cfg_stub_index_jtag_q;
     assign debug_stub_write_o = cfg_stub_write_jtag_q;
     assign debug_stub_trace_read_o = cfg_stub_trace_read_jtag_q;
+    assign debug_stub_wave_burst_o = cfg_stub_wave_burst_jtag_q;
     assign debug_stub_wdata_o = cfg_stub_wdata_jtag_q;
     assign debug_stub_req_toggle_o = stub_req_toggle_jtag_q;
     assign debug_uart_trace_index_o = cfg_uart_trace_index_jtag_q;
@@ -257,8 +292,12 @@ module openrv64_fpga_jtag_snoop #(
     (* ASYNC_REG = "TRUE" *) logic cfg_pc_sync_q;
     (* ASYNC_REG = "TRUE" *) logic cfg_cycle_enable_meta_q;
     (* ASYNC_REG = "TRUE" *) logic cfg_cycle_enable_sync_q;
+    (* ASYNC_REG = "TRUE" *) logic cfg_trace_window_meta_q;
+    (* ASYNC_REG = "TRUE" *) logic cfg_trace_window_sync_q;
     (* ASYNC_REG = "TRUE" *) logic clear_toggle_meta_q;
     (* ASYNC_REG = "TRUE" *) logic clear_toggle_sync_q;
+    (* ASYNC_REG = "TRUE" *) logic resume_toggle_meta_q;
+    (* ASYNC_REG = "TRUE" *) logic resume_toggle_sync_q;
 
     logic [63:0] cfg_mem_addr_meta_q;
     logic [63:0] cfg_mem_addr_sync_q;
@@ -278,6 +317,7 @@ module openrv64_fpga_jtag_snoop #(
     logic hit_ptw_q;
     logic hit_pc_q;
     logic hit_cycle_q;
+    logic hit_trace_q;
     logic hit_write_q;
     logic hit_error_q;
     logic [63:0] hit_cycle_count_q;
@@ -289,6 +329,10 @@ module openrv64_fpga_jtag_snoop #(
     logic [7:0] hit_mem_wstrb_q;
     logic pc_delay_started_q;
     logic [63:0] pc_delay_target_q;
+    logic cfg_trace_window_seen_q;
+    logic resume_toggle_seen_q;
+    logic trace_window_active_q;
+    logic [15:0] trace_window_retire_count_q;
 
     wire [63:0] mem_phys_addr = MEMORY_BASE + mem_addr_i;
     wire mem_access = mem_valid_i && mem_ready_i;
@@ -301,8 +345,8 @@ module openrv64_fpga_jtag_snoop #(
          (cfg_mem_addr_sync_q & cfg_mem_mask_sync_q));
     wire memory_trigger = mem_access && mem_direction_match &&
                           mem_source_match && mem_address_match;
-    wire pc_address_match =
-        ((debug_pc_i & cfg_pc_mask_sync_q) ==
+    wire pc_address_match = retire_valid_i &&
+        ((retire_pc_i & cfg_pc_mask_sync_q) ==
          (cfg_pc_addr_sync_q & cfg_pc_mask_sync_q));
     wire pc_delay_mode = cfg_pc_sync_q && cfg_cycle_enable_sync_q;
     wire pc_trigger = cfg_pc_sync_q && !cfg_cycle_enable_sync_q &&
@@ -312,6 +356,11 @@ module openrv64_fpga_jtag_snoop #(
     wire delayed_cycle_trigger = pc_delay_started_q &&
         (cycle_count_q == pc_delay_target_q);
     wire cycle_trigger = absolute_cycle_trigger || delayed_cycle_trigger;
+    wire [15:0] trace_window_limit = cfg_cycle_target_sync_q[15:0];
+    wire trace_window_trigger = LARGE_TRACE_ENABLE &&
+        trace_window_active_q && retire_valid_i &&
+        (trace_window_limit != 16'd0) &&
+        (trace_window_retire_count_q + 16'd1 >= trace_window_limit);
 
     always_ff @(posedge core_clk_i) begin
         if (core_reset_i) begin
@@ -329,8 +378,12 @@ module openrv64_fpga_jtag_snoop #(
             cfg_pc_sync_q <= 1'b0;
             cfg_cycle_enable_meta_q <= 1'b0;
             cfg_cycle_enable_sync_q <= 1'b0;
+            cfg_trace_window_meta_q <= 1'b0;
+            cfg_trace_window_sync_q <= 1'b0;
             clear_toggle_meta_q <= 1'b0;
             clear_toggle_sync_q <= 1'b0;
+            resume_toggle_meta_q <= 1'b0;
+            resume_toggle_sync_q <= 1'b0;
             cfg_mem_addr_meta_q <= 64'd0;
             cfg_mem_addr_sync_q <= 64'd0;
             cfg_mem_mask_meta_q <= 64'd0;
@@ -356,8 +409,12 @@ module openrv64_fpga_jtag_snoop #(
             cfg_pc_sync_q <= cfg_pc_meta_q;
             cfg_cycle_enable_meta_q <= cfg_cycle_enable_jtag_q;
             cfg_cycle_enable_sync_q <= cfg_cycle_enable_meta_q;
+            cfg_trace_window_meta_q <= cfg_trace_window_jtag_q;
+            cfg_trace_window_sync_q <= cfg_trace_window_meta_q;
             clear_toggle_meta_q <= clear_toggle_jtag_q;
             clear_toggle_sync_q <= clear_toggle_meta_q;
+            resume_toggle_meta_q <= resume_toggle_jtag_q;
+            resume_toggle_sync_q <= resume_toggle_meta_q;
             cfg_mem_addr_meta_q <= cfg_mem_addr_jtag_q;
             cfg_mem_addr_sync_q <= cfg_mem_addr_meta_q;
             cfg_mem_mask_meta_q <= cfg_mem_mask_jtag_q;
@@ -380,6 +437,7 @@ module openrv64_fpga_jtag_snoop #(
             hit_ptw_q <= 1'b0;
             hit_pc_q <= 1'b0;
             hit_cycle_q <= 1'b0;
+            hit_trace_q <= 1'b0;
             hit_write_q <= 1'b0;
             hit_error_q <= 1'b0;
             hit_cycle_count_q <= 64'd0;
@@ -391,8 +449,37 @@ module openrv64_fpga_jtag_snoop #(
             hit_mem_wstrb_q <= 8'd0;
             pc_delay_started_q <= 1'b0;
             pc_delay_target_q <= 64'd0;
+            cfg_trace_window_seen_q <= 1'b0;
+            resume_toggle_seen_q <= 1'b0;
+            trace_window_active_q <= 1'b0;
+            trace_window_retire_count_q <= 16'd0;
+`ifdef OPENRV64_FPGA_LARGE_TRACE
+            debug_trace_freeze_o <= 1'b0;
+`endif
         end else begin
             cycle_count_q <= cycle_count_q + 64'd1;
+            cfg_trace_window_seen_q <= cfg_trace_window_sync_q;
+            resume_toggle_seen_q <= resume_toggle_sync_q;
+`ifdef OPENRV64_FPGA_LARGE_TRACE
+            if (resume_toggle_sync_q != resume_toggle_seen_q)
+                debug_trace_freeze_o <= 1'b0;
+`endif
+
+            if (!cfg_armed_sync_q || !cfg_trace_window_sync_q) begin
+                trace_window_active_q <= 1'b0;
+                trace_window_retire_count_q <= 16'd0;
+            end else if ((cfg_trace_window_sync_q &&
+                          !cfg_trace_window_seen_q) ||
+                         (resume_toggle_sync_q != resume_toggle_seen_q)) begin
+                trace_window_active_q <= 1'b1;
+                trace_window_retire_count_q <= 16'd0;
+            end else if (trace_window_trigger) begin
+                trace_window_active_q <= 1'b0;
+            end else if (trace_window_active_q && retire_valid_i) begin
+                trace_window_retire_count_q <=
+                    trace_window_retire_count_q + 16'd1;
+            end
+
             if ((clear_toggle_sync_q != clear_toggle_seen_q) ||
                 debug_snapshot_trigger_ack_i) begin
                 clear_toggle_seen_q <= clear_toggle_sync_q;
@@ -401,6 +488,7 @@ module openrv64_fpga_jtag_snoop #(
                 hit_ptw_q <= 1'b0;
                 hit_pc_q <= 1'b0;
                 hit_cycle_q <= 1'b0;
+                hit_trace_q <= 1'b0;
                 hit_write_q <= 1'b0;
                 hit_error_q <= 1'b0;
                 pc_delay_started_q <= 1'b0;
@@ -421,6 +509,9 @@ module openrv64_fpga_jtag_snoop #(
 
                 if (!hit_valid_q && cfg_armed_sync_q && memory_trigger) begin
                     hit_valid_q <= 1'b1;
+`ifdef OPENRV64_FPGA_LARGE_TRACE
+                    debug_trace_freeze_o <= 1'b1;
+`endif
                     hit_scalar_q <= mem_scalar_i;
                     hit_ptw_q <= !mem_scalar_i;
                     hit_write_q <= mem_write_i;
@@ -435,21 +526,28 @@ module openrv64_fpga_jtag_snoop #(
                 end else if (!hit_valid_q && cfg_armed_sync_q &&
                              pc_trigger) begin
                     hit_valid_q <= 1'b1;
+`ifdef OPENRV64_FPGA_LARGE_TRACE
+                    debug_trace_freeze_o <= 1'b1;
+`endif
                     hit_pc_q <= 1'b1;
+                    hit_write_q <= retire_rd_write_i;
                     hit_cycle_count_q <= cycle_count_q;
-                    hit_pc_value_q <= debug_pc_i;
-                    hit_instr_value_q <= debug_instr_i;
-                    hit_mem_addr_q <= 64'd0;
-                    // For PC triggers these existing status words carry the
-                    // exact forwarded source operands used by the matching
-                    // WB instruction. The registered debug PC/instruction and
-                    // operand probes are captured together in the core.
-                    hit_mem_rdata_q <= debug_rs1_data_i;
-                    hit_mem_wdata_q <= debug_rs2_data_i;
+                    hit_pc_value_q <= retire_pc_i;
+                    hit_instr_value_q <= retire_instr_i;
+                    // Reuse the memory-record fields for a coherent retire
+                    // record: address[4:0]=rd and rdata=writeback value.
+                    // Operand capture needs new core ports and is intentionally
+                    // not inferred from the lagging legacy debug registers.
+                    hit_mem_addr_q <= {59'd0, retire_rd_i};
+                    hit_mem_rdata_q <= retire_wdata_i;
+                    hit_mem_wdata_q <= 64'd0;
                     hit_mem_wstrb_q <= 8'd0;
                 end else if (!hit_valid_q && cfg_armed_sync_q &&
                              cycle_trigger) begin
                     hit_valid_q <= 1'b1;
+`ifdef OPENRV64_FPGA_LARGE_TRACE
+                    debug_trace_freeze_o <= 1'b1;
+`endif
                     hit_cycle_q <= 1'b1;
                     hit_cycle_count_q <= cycle_count_q;
                     hit_pc_value_q <= debug_pc_i;
@@ -458,12 +556,30 @@ module openrv64_fpga_jtag_snoop #(
                     hit_mem_rdata_q <= 64'd0;
                     hit_mem_wdata_q <= 64'd0;
                     hit_mem_wstrb_q <= 8'd0;
+                end else if (!hit_valid_q && cfg_armed_sync_q &&
+                             cfg_trace_window_sync_q &&
+                             trace_window_trigger) begin
+                    hit_valid_q <= 1'b1;
+`ifdef OPENRV64_FPGA_LARGE_TRACE
+                    debug_trace_freeze_o <= 1'b1;
+`endif
+                    hit_trace_q <= 1'b1;
+                    hit_cycle_count_q <= cycle_count_q;
+                    hit_pc_value_q <= retire_pc_i;
+                    hit_instr_value_q <= retire_instr_i;
+                    hit_mem_addr_q <= {48'd0, trace_window_retire_count_q};
+                    hit_mem_rdata_q <= {48'd0, trace_window_limit};
+                    hit_mem_wdata_q <= 64'd0;
+                    hit_mem_wstrb_q <= 8'd0;
                 end
             end
         end
     end
 
     assign debug_irq_o = hit_valid_q;
+`ifndef OPENRV64_FPGA_LARGE_TRACE
+    assign debug_trace_freeze_o = 1'b0;
+`endif
 
     wire [63:0] selected_cache_word = cfg_cache_tag_jtag_q ?
         debug_cache_tag_i :
@@ -484,17 +600,17 @@ module openrv64_fpga_jtag_snoop #(
         ((readback_source_jtag_q == 2'd2) ? debug_stub_rdata_i :
          ((readback_source_jtag_q == 2'd1) ?
           debug_snapshot_data_i : selected_cache_word));
-    wire [10:0] selected_read_index =
+    wire [15:0] selected_read_index =
         (readback_source_jtag_q == 2'd3) ? cfg_uart_trace_index_jtag_q :
         ((readback_source_jtag_q == 2'd2) ? cfg_stub_index_jtag_q :
          ((readback_source_jtag_q == 2'd1) ?
-          {2'd0, cfg_snapshot_index_jtag_q} :
-          {1'b0, debug_cache_result_index_i}));
+          {7'd0, cfg_snapshot_index_jtag_q} :
+          {6'd0, debug_cache_result_index_i}));
 
     always_comb begin
         status_value = '0;
         status_value[31:0] = COMMAND_KEY;
-        status_value[39:32] = 8'd17;
+        status_value[39:32] = PROTOCOL_VERSION;
         status_value[40] = cfg_armed_jtag_q;
         status_value[41] = debug_snapshot_resume_pending_i;
         status_value[42] = hit_valid_q;
@@ -513,6 +629,8 @@ module openrv64_fpga_jtag_snoop #(
         status_value[55] = cfg_cache_tag_jtag_q;
         status_value[57:56] = cfg_cache_word_jtag_q;
         status_value[59] = pc_delay_started_q;
+        status_value[58] = LARGE_TRACE_ENABLE && cfg_trace_window_jtag_q;
+        status_value[60] = LARGE_TRACE_ENABLE && hit_trace_q;
         status_value[127:64] = cfg_mem_addr_jtag_q;
         status_value[191:128] = cfg_mem_mask_jtag_q;
         status_value[255:192] = cfg_pc_addr_jtag_q;
@@ -531,6 +649,12 @@ module openrv64_fpga_jtag_snoop #(
             status_value[511:448] = debug_uart_trace_rdata_i[127:64];
             status_value[575:512] = debug_uart_trace_rdata_i[191:128];
             status_value[639:576] = debug_uart_trace_rdata_i[255:192];
+        end else if ((readback_source_jtag_q == 2'd2) &&
+                     cfg_stub_wave_burst_jtag_q) begin
+            status_value[447:384] = debug_stub_wave_rdata_i[63:0];
+            status_value[511:448] = debug_stub_wave_rdata_i[127:64];
+            status_value[575:512] = debug_stub_wave_rdata_i[191:128];
+            status_value[639:576] = debug_stub_wave_rdata_i[255:192];
         end else begin
             status_value[447:384] = hit_cycle_count_q;
             status_value[511:448] = hit_pc_value_q;
@@ -545,7 +669,8 @@ module openrv64_fpga_jtag_snoop #(
         status_value[818] = selected_read_req_toggle;
         status_value[819] = selected_read_ack_toggle;
         status_value[820] = debug_cache_valid_i;
-        status_value[831:821] = selected_read_index;
+        status_value[831:821] = selected_read_index[10:0];
+        status_value[716:712] = selected_read_index[15:11];
         status_value[895:832] = selected_read_data;
         status_value[959:896] = (readback_source_jtag_q == 2'd3) ?
             debug_uart_trace_byte_count_i : 64'd0;

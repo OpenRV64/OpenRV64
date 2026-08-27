@@ -511,6 +511,64 @@ module tb_core_bus;
         fetch_cancel = 1'b0;
         req_ready = 1'b0;
 
+        // Cancelling a fetch with an accepted PTW walk must drain that
+        // untagged response before admitting the redirect target.  The two
+        // virtual addresses deliberately share a page: rebinding the old
+        // response would preserve its stale c360 page offset and fetch the
+        // wrong instruction for c4f0.
+        fetch_valid = 1'b1;
+        fetch_addr = 64'h0000_0000_4000_c360;
+        fetch_priv = `RV64_PRIV_S;
+        fetch_vm_mode = `RV64_SATP_MODE_SV39;
+        fetch_asid = 16'h4321;
+        fetch_root_ppn = 44'd1;
+        wait_for_ptw_request(64'h1000, 64'h1008,
+                             "cancelled fetch PTW request");
+        icx_req_ready = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        icx_req_ready = 1'b0;
+
+        fetch_cancel = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        fetch_cancel = 1'b0;
+        fetch_addr = 64'h0000_0000_4000_c4f0;
+
+        icx_resp_rdata = '0;
+        icx_resp_rdata[1*64 +: 64] = 64'h0000_0000_4000_00cb;
+        icx_resp_valid = 1'b1;
+        while (!icx_resp_ready)
+            @(negedge clk);
+        @(posedge clk);
+        @(negedge clk);
+        icx_resp_valid = 1'b0;
+        icx_resp_rdata = '0;
+
+        wait_for_ptw_request(64'h1000, 64'h1008,
+                             "redirect fetch fresh PTW request");
+        respond_ptw_line(64'h1008, 64'h0000_0000_4000_00cb);
+        wait_for_request(1'b0, 64'h0000_0001_0000_c4f0,
+                         64'd0, 8'h00,
+                         "redirect fetch after cancelled PTW");
+        req_rdata = 64'hf9df_f06f_fff0_0c93;
+        req_ready = 1'b1;
+        #1;
+        if (!fetch_ready || fetch_rdata !== 64'hf9df_f06f_fff0_0c93)
+            $fatal(1, "redirect fetch received stale PTW result/data");
+        @(posedge clk);
+        @(negedge clk);
+        req_ready = 1'b0;
+        fetch_valid = 1'b0;
+        fetch_priv = `RV64_PRIV_M;
+        fetch_vm_mode = `RV64_SATP_MODE_BARE;
+        fetch_asid = 16'd0;
+        fetch_root_ppn = 44'd0;
+        tlbi = 1'b1;
+        @(posedge clk);
+        @(negedge clk);
+        tlbi = 1'b0;
+
         // A successful walk fills the TLB. The next matching request bypasses
         // the root PTE read, while TLBI turns that entry back into a miss.
         lsu_valid = 1'b1;

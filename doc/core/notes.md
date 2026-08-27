@@ -1,5 +1,19 @@
 # Core design notes
 
+## Deferred: LSU translation-generation wrap
+
+The 3P LSU translation cookie is currently `{generation[3:0], lsq_slot}`.
+Squash and flush release an LSQ entry immediately; a response whose generation
+does not match the current request for that raw slot is consumed as stale.
+
+This deliberately has no live-generation bitmap or collision backpressure. A
+two-bit generation was observed to wrap in Linux while a killed translation of
+VA `0x60` remained in the MTL and the same raw LSQ slot issued four newer
+translations. The generation was consequently widened to four bits. One
+translation surviving sixteen newer translations on the same raw slot can
+still alias its old response; add explicit lifetime tracking if that case is
+observed or becomes reachable under the final translation-latency contract.
+
 ## Deferred: 4PF FPU branch-token reuse
 
 The current selective-recovery scheme carries a four-bit unresolved-branch

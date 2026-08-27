@@ -25,6 +25,7 @@ module tb_irq_context;
     logic mem_addr_in_range;
     logic irq_armed;
     logic saw_irq_take;
+    integer irq_take_count;
     logic saw_irq_inhibit;
     logic saw_next_cycle_flush;
 
@@ -158,6 +159,7 @@ module tb_irq_context;
         irq_m_external = 1'b0;
         irq_armed = 1'b0;
         saw_irq_take = 1'b0;
+        irq_take_count = 0;
         saw_irq_inhibit = 1'b0;
         saw_next_cycle_flush = 1'b0;
 
@@ -172,8 +174,6 @@ module tb_irq_context;
             dut.u_core.exec_wb_pc == 64'h1c) begin
             irq_m_external = 1'b1;
             irq_armed = 1'b1;
-        end else if (saw_irq_take) begin
-            irq_m_external = 1'b0;
         end
     end
 
@@ -205,7 +205,11 @@ module tb_irq_context;
             int lane;
 
             if (dut.u_core.hard_flush_irq_req) begin
+                if (saw_irq_take)
+                    $fatal(1,
+                        "level interrupt retriggered while M-mode MIE was clear");
                 saw_irq_take <= 1'b1;
+                irq_take_count <= irq_take_count + 1;
             end
 
             if (mem_valid) begin
@@ -235,6 +239,9 @@ module tb_irq_context;
                 !saw_next_cycle_flush) begin
                 $fatal(1, "machine external interrupt was not taken");
             end
+            if (irq_take_count != 1)
+                $fatal(1, "machine external interrupt count mismatch: %0d",
+                       irq_take_count);
             if (memory[32] != 64'h40) begin
                 $fatal(1, "interrupt MEPC is not JAL target: %016x",
                        memory[32]);
@@ -251,7 +258,15 @@ module tb_irq_context;
 
     initial begin
         repeat (768) @(posedge clk);
-        $fatal(1, "timeout waiting for interrupt handler");
+        $fatal(1,
+            "timeout waiting for interrupt handler pc=%016x instr=%08x irq_takes=%0d mstatus=%016x priv=%0d serial_inflight=%0d serial_retired=%0d wb_valid=%0d wb_pc=%016x",
+            dbg_pc, dbg_instr, irq_take_count,
+            dut.u_core.u_csrs.mstatus_q,
+            dut.u_core.u_csrs.priv_mode_q,
+            dut.u_core.debug_serial_inflight_q,
+            dut.u_core.debug_serial_retired_q,
+            dut.u_core.exec_wb_valid,
+            dut.u_core.exec_wb_pc);
     end
 
 endmodule

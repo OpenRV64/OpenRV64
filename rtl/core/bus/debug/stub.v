@@ -7,6 +7,8 @@
 module openrv64_bus_debug_stub #(
     parameter integer FETCH_OUTSTANDING = 4,
     parameter integer FETCH_SLOT_WIDTH = $clog2(FETCH_OUTSTANDING),
+    parameter integer FETCH_PAGE_SCREEN_COUNT_WIDTH = 3,
+    parameter integer LSU_PAGE_SCREEN_COUNT_WIDTH = 3,
     parameter integer L1D_REQ_TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH
 ) (
     input wire clk,
@@ -50,7 +52,8 @@ module openrv64_bus_debug_stub #(
     input wire lsu_page_screen_write_lookup
         /* verilator public_flat_rd */,
     input wire lsu_page_screen_flush /* verilator public_flat_rd */,
-    input wire [2:0] lsu_page_screen_flush_entries
+    input wire [LSU_PAGE_SCREEN_COUNT_WIDTH-1:0]
+        lsu_page_screen_flush_entries
         /* verilator public_flat_rd */,
     input wire lsu_page_screen_flush_sfence
         /* verilator public_flat_rd */,
@@ -102,7 +105,8 @@ module openrv64_bus_debug_stub #(
     input wire fetch_page_screen_miss_full
         /* verilator public_flat_rd */,
     input wire fetch_page_screen_flush /* verilator public_flat_rd */,
-    input wire [2:0] fetch_page_screen_flush_entries
+    input wire [FETCH_PAGE_SCREEN_COUNT_WIDTH-1:0]
+        fetch_page_screen_flush_entries
         /* verilator public_flat_rd */,
     input wire fetch_page_screen_flush_sfence
         /* verilator public_flat_rd */,

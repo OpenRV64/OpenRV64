@@ -25,8 +25,10 @@ module openrv64_fpga_opensbi_system #(
     parameter integer CORE_CLOCK_HZ = 14_000_000,
     parameter integer UART_REFERENCE_CLOCK_HZ = 14_745_600,
     parameter integer SPI_FAST_HALF_PERIOD_CYCLES = 1,
-    parameter integer ETHERNET_MDC_HALF_PERIOD_CYCLES = 3,
-    parameter integer ETHERNET_PHY_RESET_CYCLES = 110_000,
+    parameter integer ETHERNET_MDC_HALF_PERIOD_CYCLES =
+        (CORE_CLOCK_HZ + 4_999_999) / 5_000_000,
+    parameter integer ETHERNET_PHY_RESET_CYCLES =
+        (CORE_CLOCK_HZ * 15 + 999) / 1_000,
     parameter integer STATUS_CLOCK_HZ = 100_000_000,
     parameter integer STATUS_BAUD = 115_200,
     parameter integer STATUS_FIRST_DELAY_CYCLES = 100_000,
@@ -113,6 +115,12 @@ module openrv64_fpga_opensbi_system #(
     logic [31:0] debug_instr;
     logic [63:0] debug_rs1_data;
     logic [63:0] debug_rs2_data;
+    logic [319:0] core_trace_pcs;
+    logic [159:0] core_trace_instrs;
+    logic core_trace_retire_valid;
+    logic core_trace_retire_rd_write;
+    logic [4:0] core_trace_retire_rd;
+    logic [63:0] core_trace_retire_wdata;
     logic [9:0] debug_cache_index;
     logic debug_cache_req_toggle;
     logic debug_cache_ack_toggle;
@@ -127,19 +135,22 @@ module openrv64_fpga_opensbi_system #(
     logic debug_snapshot_resume_toggle;
     logic debug_snapshot_resume_pending;
     logic debug_snapshot_trigger_ack;
-    logic [10:0] debug_stub_index;
+    logic [15:0] debug_stub_index;
     logic debug_stub_write;
     logic debug_stub_trace_read;
+    logic debug_stub_wave_burst;
     logic [63:0] debug_stub_wdata;
     logic debug_stub_req_toggle;
     logic debug_stub_ack_toggle;
     logic [63:0] debug_stub_rdata;
+    logic [255:0] debug_stub_wave_rdata;
     logic [10:0] debug_uart_trace_index;
     logic debug_uart_trace_req_toggle;
     logic debug_uart_trace_ack_toggle;
     logic [255:0] debug_uart_trace_rdata;
     logic [63:0] debug_uart_trace_byte_count;
     logic debug_trigger_irq;
+    logic debug_trace_freeze;
 
     logic [1:0] boot_status;
     logic status_uart_tx;
@@ -471,6 +482,12 @@ module openrv64_fpga_opensbi_system #(
         .debug_instr_i(debug_instr),
         .debug_rs1_data_i(debug_rs1_data),
         .debug_rs2_data_i(debug_rs2_data),
+        .retire_valid_i(core_trace_retire_valid),
+        .retire_pc_i(core_trace_pcs[319:256]),
+        .retire_instr_i(core_trace_instrs[159:128]),
+        .retire_rd_write_i(core_trace_retire_rd_write),
+        .retire_rd_i(core_trace_retire_rd),
+        .retire_wdata_i(core_trace_retire_wdata),
         .debug_cache_index_o(debug_cache_index),
         .debug_cache_req_toggle_o(debug_cache_req_toggle),
         .debug_cache_ack_toggle_i(debug_cache_ack_toggle),
@@ -488,10 +505,12 @@ module openrv64_fpga_opensbi_system #(
         .debug_stub_index_o(debug_stub_index),
         .debug_stub_write_o(debug_stub_write),
         .debug_stub_trace_read_o(debug_stub_trace_read),
+        .debug_stub_wave_burst_o(debug_stub_wave_burst),
         .debug_stub_wdata_o(debug_stub_wdata),
         .debug_stub_req_toggle_o(debug_stub_req_toggle),
         .debug_stub_ack_toggle_i(debug_stub_ack_toggle),
         .debug_stub_rdata_i(debug_stub_rdata),
+        .debug_stub_wave_rdata_i(debug_stub_wave_rdata),
         .debug_uart_trace_index_o(debug_uart_trace_index),
         .debug_uart_trace_req_toggle_o(debug_uart_trace_req_toggle),
         .debug_uart_trace_ack_toggle_i(debug_uart_trace_ack_toggle),
@@ -507,6 +526,7 @@ module openrv64_fpga_opensbi_system #(
         .mem_error_i(shared_mem_error),
         .mem_scalar_i(core_mem_valid && core_mem_ready),
         .debug_irq_o(debug_trigger_irq),
+        .debug_trace_freeze_o(debug_trace_freeze),
         .resume_toggle_o(debug_snapshot_resume_toggle),
         .reset_toggle_o(debug_reset_toggle_o)
     );
@@ -580,13 +600,16 @@ module openrv64_fpga_opensbi_system #(
         .debug_snapshot_trigger_ack_o(debug_snapshot_trigger_ack),
         .debug_snapshot_resume_pending_o(
             debug_snapshot_resume_pending),
+        .debug_trace_freeze_i(debug_trace_freeze),
         .debug_stub_index_i(debug_stub_index),
         .debug_stub_write_i(debug_stub_write),
         .debug_stub_trace_read_i(debug_stub_trace_read),
+        .debug_stub_wave_burst_i(debug_stub_wave_burst),
         .debug_stub_wdata_i(debug_stub_wdata),
         .debug_stub_req_toggle_i(debug_stub_req_toggle),
         .debug_stub_ack_toggle_o(debug_stub_ack_toggle),
         .debug_stub_rdata_o(debug_stub_rdata),
+        .debug_stub_wave_rdata_o(debug_stub_wave_rdata),
         .debug_uart_trace_index_i(debug_uart_trace_index),
         .debug_uart_trace_req_toggle_i(debug_uart_trace_req_toggle),
         .debug_uart_trace_ack_toggle_o(debug_uart_trace_ack_toggle),
@@ -644,18 +667,18 @@ module openrv64_fpga_opensbi_system #(
         .trace_flush(),
         .trace_advance(),
         .trace_ids(),
-        .trace_pcs(),
-        .trace_instrs(),
+        .trace_pcs(core_trace_pcs),
+        .trace_instrs(core_trace_instrs),
         .trace_events(),
         .trace_stall_causes(),
-        .trace_retire_valid(),
+        .trace_retire_valid(core_trace_retire_valid),
         .trace_retire_arch(),
         .trace_retire_exception(),
         .trace_retire_cause(),
         .trace_retire_next_pc(),
-        .trace_retire_rd_write(),
-        .trace_retire_rd(),
-        .trace_retire_wdata()
+        .trace_retire_rd_write(core_trace_retire_rd_write),
+        .trace_retire_rd(core_trace_retire_rd),
+        .trace_retire_wdata(core_trace_retire_wdata)
     );
 
     assign boot_release_o = boot_release_q;

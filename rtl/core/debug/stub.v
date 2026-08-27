@@ -21,14 +21,16 @@ module openrv64_core_debug_stub (
     input wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_resp_tag
         /* verilator public_flat_rd */,
     input wire [63:0] backend_mem_rdata /* verilator public_flat_rd */,
-    input wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_tag
+    input wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+        backend_mem_xlate_tag
         /* verilator public_flat_rd */,
     input wire backend_mem_xlate_write /* verilator public_flat_rd */,
     input wire [63:0] backend_mem_xlate_vaddr
         /* verilator public_flat_rd */,
     input wire backend_mem_xlate_resp_valid /* verilator public_flat_rd */,
     input wire backend_mem_xlate_resp_ready /* verilator public_flat_rd */,
-    input wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_resp_tag
+    input wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+        backend_mem_xlate_resp_tag
         /* verilator public_flat_rd */,
     input wire [63:0] backend_mem_xlate_resp_paddr
         /* verilator public_flat_rd */,

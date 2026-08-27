@@ -164,7 +164,9 @@ $(FPGA_SD_BOOT_SIM_BUILD): $(FPGA_SD_BOOT_SIM_SRCS) \
 $(FPGA_JTAG_SNOOP_SIM_BUILD): tb/tb_fpga_jtag_snoop.sv \
 		synth/fpga/xc7a100t/jtag_snoop.sv
 	mkdir -p sim
-	iverilog -g2012 -Wall -s tb_fpga_jtag_snoop -o $@ \
+	iverilog -g2012 -Wall -DOPENRV64_FPGA_LARGE_TRACE \
+		-DOPENRV64_FPGA_WAVE_TRACE \
+		-s tb_fpga_jtag_snoop -o $@ \
 		synth/fpga/xc7a100t/jtag_snoop.sv \
 		tb/tb_fpga_jtag_snoop.sv
 
@@ -189,7 +191,9 @@ $(FPGA_DEBUG_SNAPSHOT_SIM_BUILD): tb/tb_fpga_debug_snapshot.sv \
 $(FPGA_DEBUG_STUB_SIM_BUILD): tb/tb_fpga_debug_stub.sv \
 		rtl/soc/debug/stub_mem.sv
 	mkdir -p sim
-	iverilog -g2012 -Wall -s tb_fpga_debug_stub -o $@ \
+	iverilog -g2012 -Wall -DOPENRV64_FPGA_LARGE_TRACE \
+		-DOPENRV64_FPGA_WAVE_TRACE \
+		-s tb_fpga_debug_stub -o $@ \
 		rtl/soc/debug/stub_mem.sv tb/tb_fpga_debug_stub.sv
 
 $(FPGA_DEBUG_UART_TRACE_SIM_BUILD): tb/tb_fpga_uart_trace.sv \

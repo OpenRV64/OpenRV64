@@ -128,15 +128,14 @@ set_false_path -to [get_ports sd_clk_o]
 # The MIG reset output is an asynchronous board control, not sampled data.
 set_false_path -to [get_ports ddr3_reset_n]
 
-# The 14 MHz core and 100 MHz MIG UI communicate only through the
-# single-entry toggle mailbox. Its payload is held stable until the matching
-# response returns; the two toggle synchronizers carry the event ordering.
-set eth_core_clock [get_clocks -quiet -of_objects \
-    [get_pins u_core_mmcm/CLKOUT0]]
+# The core clock is generated from the MIG UI clock. Keep those clocks in one
+# synchronous group so the mailbox payload capture paths remain timed. Only
+# the Ethernet clocks are asynchronous to the processor/MIG clock family.
+set processor_clocks [get_clocks -quiet \
+    {core_clock_unbuffered clk_pll_i}]
 set eth_tx_clocks [get_clocks -quiet -of_objects \
     [get_pins {u_eth_mmcm/CLKOUT0 u_eth_mmcm/CLKOUT1}]]
 set_clock_groups -asynchronous \
-    -group $eth_core_clock \
-    -group [get_clocks -quiet clk_pll_i] \
+    -group $processor_clocks \
     -group $eth_tx_clocks \
     -group [get_clocks -quiet eth1_rgmii_rx_clk]

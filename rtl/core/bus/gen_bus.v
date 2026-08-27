@@ -105,7 +105,13 @@ module openrv64_core_gen_bus #(
     // unavoidable trip through IDLE; fetch_valid_i still describes the
     // currently active fetch request until that completion edge.
     input  wire                         fetch_next_valid_i,
-    input  wire [`RV64_XLEN-1:0]        fetch_next_addr_i
+    input  wire [`RV64_XLEN-1:0]        fetch_next_addr_i,
+
+    // Passive visibility for the FPGA response-correlation trace.
+    output wire [1:0]                   debug_state_o,
+    output wire                         debug_owner_fetch_o,
+    output wire                         debug_fetch_cancelled_o,
+    output wire [`RV64_XLEN-1:0]        debug_vaddr_o
 );
 
     localparam [1:0] STATE_IDLE = 2'd0;
@@ -135,8 +141,17 @@ module openrv64_core_gen_bus #(
     reg sum_q;
     reg mxr_q;
     reg walk_invalidated_q;
+    // A cancelled fetch may already own an untagged PTW transaction.  Keep
+    // the generic-bus slot until that response has been drained; otherwise a
+    // replacement fetch can consume the old walk result as its own physical
+    // address when both requests miss in the same virtual page.
+    reg walk_outstanding_q;
 
     wire owner_is_fetch = (owner_q == OWNER_FETCH);
+    assign debug_state_o = state_q;
+    assign debug_owner_fetch_o = owner_is_fetch;
+    assign debug_fetch_cancelled_o = owner_is_fetch && cancelled_q;
+    assign debug_vaddr_o = vaddr_q;
     // Fetch cancellation is sampled at this bus boundary.  Do not feed the
     // external restart pulse through translation/completion control and back
     // into the frontend in the same cycle.  Instruction reads are speculative
@@ -360,6 +375,7 @@ module openrv64_core_gen_bus #(
             sum_q <= 1'b0;
             mxr_q <= 1'b0;
             walk_invalidated_q <= 1'b0;
+            walk_outstanding_q <= 1'b0;
             tlb_result_hit_q <= 1'b0;
             tlb_result_paddr_q <= {`RV64_XLEN{1'b0}};
             tlb_result_page_fault_q <= 1'b0;
@@ -375,6 +391,10 @@ module openrv64_core_gen_bus #(
             // shootdown transaction.
             if (ptw_req_valid && ptw_req_ready)
                 walk_invalidated_q <= 1'b0;
+            if (ptw_req_valid && ptw_req_ready)
+                walk_outstanding_q <= 1'b1;
+            if (ptw_resp_valid && (state_q == STATE_TLB_RESULT))
+                walk_outstanding_q <= 1'b0;
             if (tlbi_i && ((state_q == STATE_TRANSLATE) ||
                            (state_q == STATE_TLB_RESULT))) begin
                 walk_invalidated_q <= 1'b1;
@@ -447,7 +467,11 @@ module openrv64_core_gen_bus #(
                         tlb_result_page_fault_q <= 1'b0;
                         state_q <= STATE_TRANSLATE;
                     end else if (fetch_cancelled) begin
-                        state_q <= STATE_IDLE;
+                        // PTW responses carry no requester tag.  Do not admit
+                        // the redirected fetch until an accepted walk for the
+                        // cancelled address has returned and been discarded.
+                        if (!walk_outstanding_q || ptw_resp_valid)
+                            state_q <= STATE_IDLE;
                     end else if (tlb_result_hit_q) begin
                         if (tlb_result_page_fault_q) begin
                             state_q <= STATE_IDLE;

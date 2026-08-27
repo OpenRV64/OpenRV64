@@ -64,16 +64,18 @@ module openrv64_rename_identity #(
             wire [PHYS_ADDR_WIDTH-1:0] identity = {
                 {(PHYS_ADDR_WIDTH-ARCH_ADDR_WIDTH){1'b0}}, arch
             };
-            wire [PHYS_ADDR_WIDTH-1:0] selected =
-                destination_valid_i[lane] ? identity :
-                {PHYS_ADDR_WIDTH{1'b0}};
 
             assign destination_new_phys_o[
-                lane*PHYS_ADDR_WIDTH +: PHYS_ADDR_WIDTH] = selected;
+                lane*PHYS_ADDR_WIDTH +: PHYS_ADDR_WIDTH] = identity;
             assign destination_old_phys_o[
-                lane*PHYS_ADDR_WIDTH +: PHYS_ADDR_WIDTH] = selected;
+                lane*PHYS_ADDR_WIDTH +: PHYS_ADDR_WIDTH] = identity;
         end
     endgenerate
+
+    // Keep destination validity in the replacement-renamer interface, but do
+    // not gate identity tags with it. Allocation validity already qualifies
+    // every consumer; gating here only synthesizes a mux per lane.
+    wire unused_destination_valid = |destination_valid_i;
 
 endmodule
 

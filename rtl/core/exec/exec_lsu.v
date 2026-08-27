@@ -86,13 +86,15 @@ module openrv64_exec_lsu #(
 
     output wire                         xlate_valid_o,
     input  wire                         xlate_ready_i,
-    output wire [LSU_TAG_WIDTH-1:0]     xlate_tag_o,
+    output wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        xlate_tag_o,
     output wire                         xlate_write_o,
     output wire [2:0]                   xlate_size_o,
     output wire [`RV64_XLEN-1:0]        xlate_vaddr_o,
     input  wire                         xlate_resp_valid_i,
     output wire                         xlate_resp_ready_o,
-    input  wire [LSU_TAG_WIDTH-1:0]     xlate_resp_tag_i,
+    input  wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        xlate_resp_tag_i,
     input  wire [`RV64_XLEN-1:0]        xlate_resp_paddr_i,
     input  wire                         xlate_resp_access_fault_i,
     input  wire                         xlate_resp_page_fault_i,
@@ -374,6 +376,15 @@ module openrv64_exec_lsu #(
     wire [`RV64_XLEN-1:0] lsq_xlate_vaddr;
     wire lsq_xlate_resp_ready;
     wire lsq_store_done_ready;
+    wire [LSU_TAG_WIDTH-1:0] xlate_resp_slot =
+        xlate_resp_tag_i[LSU_TAG_WIDTH-1:0];
+    wire [`OPENRV64_LSU_XLATE_GENERATION_WIDTH-1:0]
+        xlate_resp_generation =
+            xlate_resp_tag_i[`OPENRV64_LSU_XLATE_TAG_WIDTH-1 -:
+                             `OPENRV64_LSU_XLATE_GENERATION_WIDTH];
+    wire xlate_resp_generation_match;
+    wire xlate_resp_filtered_valid =
+        xlate_resp_valid_i && xlate_resp_generation_match;
 
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] misaligned_id_q;
     wire [RETIRE_SLOT_WIDTH-1:0] misaligned_slot_q;
@@ -493,9 +504,10 @@ module openrv64_exec_lsu #(
         .xlate_req_write_o(lsq_xlate_write),
         .xlate_req_size_o(lsq_xlate_size),
         .xlate_req_vaddr_o(lsq_xlate_vaddr),
-        .xlate_resp_valid_i(xlate_resp_valid_i && !misaligned_active),
+        .xlate_resp_valid_i(xlate_resp_filtered_valid &&
+                            !misaligned_active),
         .xlate_resp_ready_o(lsq_xlate_resp_ready),
-        .xlate_resp_tag_i(xlate_resp_tag_i),
+        .xlate_resp_tag_i(xlate_resp_slot),
         .xlate_resp_paddr_i(xlate_resp_paddr_i),
         .xlate_resp_access_fault_i(xlate_resp_access_fault_i),
         .xlate_resp_page_fault_i(xlate_resp_page_fault_i),
@@ -584,10 +596,10 @@ module openrv64_exec_lsu #(
                 .xlate_write_o(misaligned_xlate_write),
                 .xlate_size_o(misaligned_xlate_size),
                 .xlate_vaddr_o(misaligned_xlate_vaddr),
-                .xlate_resp_valid_i(xlate_resp_valid_i &&
+                .xlate_resp_valid_i(xlate_resp_filtered_valid &&
                                     misaligned_active),
                 .xlate_resp_ready_o(misaligned_xlate_resp_ready),
-                .xlate_resp_tag_i(xlate_resp_tag_i),
+                .xlate_resp_tag_i(xlate_resp_slot),
                 .xlate_resp_paddr_i(xlate_resp_paddr_i),
                 .xlate_resp_access_fault_i(xlate_resp_access_fault_i),
                 .xlate_resp_page_fault_i(xlate_resp_page_fault_i),
@@ -702,11 +714,18 @@ module openrv64_exec_lsu #(
 
     wire lsq_launch_enable =
         !misaligned_pending_q && !misaligned_active;
+    wire [LSU_TAG_WIDTH-1:0] xlate_request_slot =
+        misaligned_active ? misaligned_xlate_tag : lsq_xlate_tag;
+    reg [`OPENRV64_LSU_XLATE_GENERATION_WIDTH-1:0]
+        xlate_generation_q [0:(1 << LSU_TAG_WIDTH)-1];
+    reg [`OPENRV64_LSU_XLATE_GENERATION_WIDTH-1:0]
+        xlate_expected_generation_q [0:(1 << LSU_TAG_WIDTH)-1];
+    wire [`OPENRV64_LSU_XLATE_GENERATION_WIDTH-1:0]
+        xlate_request_generation = xlate_generation_q[xlate_request_slot];
     assign xlate_valid_o = misaligned_active ?
                            misaligned_xlate_valid :
                            (lsq_launch_enable && lsq_xlate_valid);
-    assign xlate_tag_o = misaligned_active ?
-                         misaligned_xlate_tag : lsq_xlate_tag;
+    assign xlate_tag_o = {xlate_request_generation, xlate_request_slot};
     assign xlate_write_o = misaligned_active ?
                            misaligned_xlate_write : lsq_xlate_write;
     assign xlate_size_o = misaligned_active ?
@@ -715,8 +734,44 @@ module openrv64_exec_lsu #(
                            misaligned_xlate_vaddr : lsq_xlate_vaddr;
     assign misaligned_xlate_ready = misaligned_active && xlate_ready_i;
     assign lsq_xlate_ready = lsq_launch_enable && xlate_ready_i;
-    assign xlate_resp_ready_o = misaligned_active ?
+    wire xlate_request_fire = xlate_valid_o && xlate_ready_i;
+    // Prefer the generation on a currently presented same-slot request.  This
+    // handles a zero-cycle screen response and prevents an older response from
+    // matching a newly reused slot while that request is backpressured.
+    wire xlate_response_matches_presented_request = xlate_valid_o &&
+        (xlate_resp_slot == xlate_request_slot);
+    wire [`OPENRV64_LSU_XLATE_GENERATION_WIDTH-1:0]
+        xlate_response_expected_generation =
+            xlate_response_matches_presented_request ?
+                xlate_request_generation :
+                xlate_expected_generation_q[xlate_resp_slot];
+    assign xlate_resp_generation_match =
+        xlate_resp_generation == xlate_response_expected_generation;
+    wire selected_xlate_resp_ready = misaligned_active ?
         misaligned_xlate_resp_ready : lsq_xlate_resp_ready;
+    // Generation-mismatched responses are stale and are consumed locally.
+    assign xlate_resp_ready_o =
+        (xlate_resp_valid_i && !xlate_resp_generation_match) ?
+            1'b1 : selected_xlate_resp_ready;
+
+    integer xlate_generation_index;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (xlate_generation_index = 0;
+                 xlate_generation_index < (1 << LSU_TAG_WIDTH);
+                 xlate_generation_index = xlate_generation_index + 1) begin
+                xlate_generation_q[xlate_generation_index] <=
+                    {`OPENRV64_LSU_XLATE_GENERATION_WIDTH{1'b0}};
+                xlate_expected_generation_q[xlate_generation_index] <=
+                    {`OPENRV64_LSU_XLATE_GENERATION_WIDTH{1'b0}};
+            end
+        end else if (xlate_request_fire) begin
+            xlate_expected_generation_q[xlate_request_slot] <=
+                xlate_request_generation;
+            xlate_generation_q[xlate_request_slot] <=
+                xlate_request_generation + 1'b1;
+        end
+    end
 
     assign store_pending_o = lsq_store_pending ||
         ((misaligned_pending_q || misaligned_active) &&

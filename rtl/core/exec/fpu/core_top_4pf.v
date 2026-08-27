@@ -1046,13 +1046,15 @@ module openrv64_rv64_top_4pf #(
     wire backend_mem_xlate_valid;
     wire backend_mem_xlate_ready;
     wire backend_mem_xlate_bus_ready;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+        backend_mem_xlate_tag;
     wire backend_mem_xlate_write;
     wire [2:0] backend_mem_xlate_size;
     wire [63:0] backend_mem_xlate_vaddr;
     wire backend_mem_xlate_resp_valid;
     wire backend_mem_xlate_resp_ready;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_resp_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+        backend_mem_xlate_resp_tag;
     wire [63:0] backend_mem_xlate_resp_paddr;
     wire backend_mem_xlate_resp_access_fault;
     wire backend_mem_xlate_resp_page_fault;

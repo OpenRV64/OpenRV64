@@ -50,6 +50,12 @@ module openrv64_fpga_scalar_mem_cdc (
     (* ASYNC_REG = "TRUE" *) logic response_toggle_core_sync_q;
 
     logic request_seen_ui_q;
+    logic request_pending_ui_q;
+    logic request_pending_toggle_ui_q;
+    logic request_write_ui_q;
+    logic [63:0] request_addr_ui_q;
+    logic [63:0] request_wdata_ui_q;
+    logic [7:0] request_wstrb_ui_q;
     logic [63:0] response_rdata_core_q;
     logic response_error_core_q;
 
@@ -57,12 +63,16 @@ module openrv64_fpga_scalar_mem_cdc (
     assign core_mem_rdata_o = response_rdata_core_q;
     assign core_mem_error_o = response_error_core_q;
 
-    assign ui_req_valid_o =
-        (request_toggle_ui_sync_q != request_seen_ui_q);
-    assign ui_req_write_o = request_write_core_q;
-    assign ui_req_addr_o = request_addr_core_q;
-    assign ui_req_wdata_o = request_wdata_core_q;
-    assign ui_req_wstrb_o = request_wstrb_core_q;
+    // Capture the held multi-bit payload into the UI domain one cycle after
+    // the synchronized request toggle is observed.  The bridge only sees
+    // these UI-clocked registers, never the live cross-domain payload.  The
+    // source remains in CORE_WAIT until the response returns, so the payload
+    // is stable throughout both toggle synchronization and this capture.
+    assign ui_req_valid_o = request_pending_ui_q;
+    assign ui_req_write_o = request_write_ui_q;
+    assign ui_req_addr_o = request_addr_ui_q;
+    assign ui_req_wdata_o = request_wdata_ui_q;
+    assign ui_req_wstrb_o = request_wstrb_ui_q;
     assign ui_resp_ready_o =
         (response_toggle_ui_q != request_seen_ui_q);
 
@@ -126,12 +136,30 @@ module openrv64_fpga_scalar_mem_cdc (
     always_ff @(posedge ui_clk_i) begin
         if (ui_reset_i) begin
             request_seen_ui_q <= 1'b0;
+            request_pending_ui_q <= 1'b0;
+            request_pending_toggle_ui_q <= 1'b0;
+            request_write_ui_q <= 1'b0;
+            request_addr_ui_q <= 64'd0;
+            request_wdata_ui_q <= 64'd0;
+            request_wstrb_ui_q <= 8'd0;
             response_toggle_ui_q <= 1'b0;
             response_rdata_ui_q <= 64'd0;
             response_error_ui_q <= 1'b0;
         end else begin
-            if (ui_req_valid_o && ui_req_ready_i)
-                request_seen_ui_q <= request_toggle_ui_sync_q;
+            if (!request_pending_ui_q &&
+                (request_toggle_ui_sync_q != request_seen_ui_q)) begin
+                request_pending_ui_q <= 1'b1;
+                request_pending_toggle_ui_q <= request_toggle_ui_sync_q;
+                request_write_ui_q <= request_write_core_q;
+                request_addr_ui_q <= request_addr_core_q;
+                request_wdata_ui_q <= request_wdata_core_q;
+                request_wstrb_ui_q <= request_wstrb_core_q;
+            end
+
+            if (ui_req_valid_o && ui_req_ready_i) begin
+                request_pending_ui_q <= 1'b0;
+                request_seen_ui_q <= request_pending_toggle_ui_q;
+            end
 
             if (ui_resp_valid_i && ui_resp_ready_o) begin
                 response_rdata_ui_q <= ui_resp_rdata_i;

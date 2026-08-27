@@ -11,18 +11,36 @@ set stub_magic 0x4f52563653545542
 set stub_abi_version 1
 set uart_trace_words 2048
 set uart_trace_bytes 16384
+set retire_trace_depth 8192
+set load_trace_depth 4096
+set store_trace_depth 4096
+set fetch_trace_depth 2048
+set retire_trace_meta_base 16384
+set load_trace_base 16386
+set load_trace_meta_base 24578
+set store_trace_base 24580
+set store_trace_meta_base 32772
+set fetch_trace_base 32774
+set fetch_trace_meta_base 36870
+set wave_trace_depth 1024
+set wave_trace_base 36872
+set wave_trace_meta_base 40968
 
 proc usage {} {
-    puts stderr "usage: fpga-jtag-snoop <status|wait-hit|reset|resume|resume-pc|resume-mem|walk-pc-add-range|walk-pc-reg-ne|walk-pc-reg-eq|clear|arm-mem|arm-pc|arm-pc-delay|sample-pc-delay|arm-cycle|trigger-cycle|read-cache|read-snapshot|dump-snapshot|read-stub|write-stub|dump-stub|dump-retire-trace|load-stub|clear-stub|read-uart|read-uart-lane|dump-uart|follow-uart> ?arguments?"
+    puts stderr "usage: fpga-jtag-snoop <status|wait-hit|reset|resume|resume-pc|resume-mem|arm-trace-window|resume-trace-window|walk-trace-windows|walk-pc-add-range|walk-pc-reg-ne|walk-pc-reg-eq|walk-pc-reg-value-ne|clear|arm-mem|arm-pc|arm-pc-delay|sample-pc-delay|arm-cycle|trigger-cycle|read-cache|read-snapshot|dump-snapshot|read-stub|write-stub|dump-stub|read-instr-trace|read-load-trace|read-store-trace|read-fetch-trace|read-wave-trace|wave-status|dump-wave-trace|dump-instr-trace|dump-load-trace|dump-store-trace|dump-fetch-trace|dump-retire-trace|load-stub|clear-stub|read-uart|read-uart-lane|dump-uart|follow-uart> ?arguments?"
     puts stderr "  status"
     puts stderr "  wait-hit ?timeout-seconds?"
     puts stderr "  reset"
     puts stderr "  resume"
     puts stderr "  resume-pc <pc> ?mask?"
     puts stderr "  resume-mem <address> ?mask? ?read|write|rw? ?scalar|ptw|all?"
+    puts stderr "  arm-trace-window <retire-records>"
+    puts stderr "  resume-trace-window <retire-records>"
+    puts stderr "  walk-trace-windows <windows> <retire-records> ?timeout-seconds?"
     puts stderr "  walk-pc-add-range <pc> <start> <end> <max-hits> ?timeout-seconds?"
     puts stderr "  walk-pc-reg-ne <pc> <reg-a> <reg-b> <max-hits> ?timeout-seconds?"
     puts stderr "  walk-pc-reg-eq <pc> <reg> <value> <max-hits> ?timeout-seconds?"
+    puts stderr "  walk-pc-reg-value-ne <pc> <reg> <value> <max-hits> ?timeout-seconds?"
     puts stderr "  clear"
     puts stderr "  arm-mem <address> ?mask? ?read|write|rw? ?scalar|ptw|all?"
     puts stderr "  arm-pc <pc> ?mask?"
@@ -36,7 +54,18 @@ proc usage {} {
     puts stderr "  read-stub <0..2047>"
     puts stderr "  write-stub <0..2047> <64-bit-value>"
     puts stderr "  dump-stub ?start-word? ?word-count?"
-    puts stderr "  dump-retire-trace ?max-records?"
+    puts stderr "  dump-instr-trace ?max-records?"
+    puts stderr "  dump-load-trace ?max-records?"
+    puts stderr "  dump-store-trace ?max-records?"
+    puts stderr "  dump-fetch-trace ?max-records?"
+    puts stderr "  read-instr-trace RECORD"
+    puts stderr "  read-load-trace RECORD"
+    puts stderr "  read-store-trace RECORD"
+    puts stderr "  read-fetch-trace RECORD"
+    puts stderr "  read-wave-trace RECORD"
+    puts stderr "  wave-status"
+    puts stderr "  dump-wave-trace <output.csv> ?start-sample sample-count?"
+    puts stderr "  dump-retire-trace ?max-records?  (legacy alias)"
     puts stderr "  load-stub <raw-binary> ?entry-byte-offset?"
     puts stderr "  clear-stub"
     puts stderr "  read-uart <0..2044, multiple of 4>"
@@ -125,8 +154,9 @@ proc write_command {args} {
     global command_key mask64
     array set options {
         arm 0 read 0 write 0 scalar 0 ptw 0 pc 0 cycle 0 reset 0
+        trace_window 0
         resume 0 clear 0 cache_read 0 snapshot_read 0
-        stub_read 0 stub_write 0 uart_read 0 retire_trace_read 0
+        stub_read 0 stub_write 0 uart_read 0 retire_trace_read 0 wave_burst 0
         mem_addr 0 mem_mask 0 pc_addr 0 pc_mask 0 cycle_target 0
         cache_index 0 cache_word 0 cache_tag 0 snapshot_index 0
         stub_index 0 stub_wdata 0 uart_index 0
@@ -146,7 +176,8 @@ proc write_command {args} {
         arm 32 read 33 write 34 scalar 35 ptw 36 pc 37 cycle 38
         resume 39 clear 40 cache_read 41 snapshot_read 42
         stub_read 43 stub_write 44 uart_read 45 reset 46
-        retire_trace_read 47
+        retire_trace_read 47 wave_burst 48
+        trace_window 58
     } {
         if {$options($name)} {
             set value [expr {$value | (1 << $index)}]
@@ -162,7 +193,7 @@ proc write_command {args} {
         (($options(cache_word) & 0x3) << 410) |
         (($options(cache_tag) & 0x1) << 412) |
         (($options(snapshot_index) & 0x1ff) << 416) |
-        (($options(stub_index) & 0x7ff) << 416) |
+        (($options(stub_index) & 0xffff) << 416) |
         (($options(uart_index) & 0x7ff) << 416) |
         (($options(stub_wdata) & $mask64) << 448)}]
     scan_user1 $value 0
@@ -210,9 +241,11 @@ proc validate_readback {value source expected_index} {
     if {[field $value 816 2] != $source} {
         error "USER1 returned the wrong indexed-read source"
     }
-    if {[field $value 821 11] != $expected_index} {
+    set observed_index [expr {[field $value 821 11] |
+                              ([field $value 712 5] << 11)}]
+    if {$observed_index != $expected_index} {
         error [format "USER1 indexed-read mismatch: got %d expected %d" \
-               [field $value 821 11] $expected_index]
+               $observed_index $expected_index]
     }
     if {[bit $value 818] != [bit $value 819]} {
         error "USER1 indexed read did not acknowledge"
@@ -245,14 +278,237 @@ proc read_stub_word {index} {
     return [field [wait_readback 2 $index] 832 64]
 }
 
-proc read_retire_trace_word {index} {
+proc read_retire_trace_word_raw {index} {
     write_command stub_read 1 retire_trace_read 1 stub_index $index
     return [field [wait_readback 2 $index] 832 64]
+}
+
+proc read_retire_trace_word {index} {
+    # Trace storage is synchronous BRAM.  The USER1 acknowledgement can reach
+    # the host while the first result still reflects the preceding BRAM
+    # address, especially when consecutive requests select different words.
+    # Frozen trace data is immutable, so require a repeated value before using
+    # it.  Equal adjacent records are harmless: the value is still correct.
+    for {set attempt 0} {$attempt < 8} {incr attempt} {
+        set first [read_retire_trace_word_raw $index]
+        set second [read_retire_trace_word_raw $index]
+        if {$first == $second} {
+            return $first
+        }
+        after 2
+    }
+    error [format "trace word %d did not produce a stable read" $index]
+}
+
+proc read_load_trace_word {record word} {
+    global load_trace_base
+    return [read_retire_trace_word \
+        [expr {$load_trace_base + 2 * $record + $word}]]
+}
+
+proc read_store_trace_word {record word} {
+    global store_trace_base
+    return [read_retire_trace_word \
+        [expr {$store_trace_base + 2 * $record + $word}]]
+}
+
+proc read_fetch_trace_word {record word} {
+    global fetch_trace_base
+    return [read_retire_trace_word \
+        [expr {$fetch_trace_base + 2 * $record + $word}]]
+}
+
+proc read_wave_trace_raw {record} {
+    write_command stub_read 1 retire_trace_read 1 wave_burst 1 \
+        stub_index $record
+    set status [wait_readback 2 $record]
+    return [list \
+        [field $status 384 64] [field $status 448 64] \
+        [field $status 512 64] [field $status 576 64]]
+}
+
+proc read_wave_trace {record} {
+    # The four banks are synchronous BRAMs in the core clock domain.  Require
+    # two identical burst reads so the first cross-domain sample cannot expose
+    # the preceding address.
+    for {set attempt 0} {$attempt < 8} {incr attempt} {
+        set first [read_wave_trace_raw $record]
+        set second [read_wave_trace_raw $record]
+        if {$first eq $second} {
+            return $first
+        }
+        after 2
+    }
+    error [format "wave trace record %d did not produce a stable read" $record]
+}
+
+proc read_wave_status {} {
+    global wave_trace_depth wave_trace_meta_base
+    set total [read_retire_trace_word $wave_trace_meta_base]
+    set meta [read_retire_trace_word [expr {$wave_trace_meta_base + 1}]]
+    set write_index [field $meta 0 10]
+    set trigger_index [field $meta 10 10]
+    set triggered [bit $meta 20]
+    set frozen [bit $meta 21]
+    set post_count [field $meta 22 10]
+    set retained [expr {$total < $wave_trace_depth ?
+                        $total : $wave_trace_depth}]
+    return [list $total $retained $write_index $trigger_index \
+                 $triggered $frozen $post_count]
+}
+
+proc print_wave_status {} {
+    lassign [read_wave_status] total retained write_index trigger_index \
+        triggered frozen post_count
+    puts [format "wave_trace total=%d retained=%d write_index=%d trigger_index=%d triggered=%s frozen=%s post_count=%d" \
+          $total $retained $write_index $trigger_index \
+          [yesno $triggered] [yesno $frozen] $post_count]
+}
+
+proc dump_wave_trace_csv {path {start_sample 0} {sample_count -1}} {
+    global wave_trace_depth
+    lassign [read_wave_status] total retained write_index trigger_index \
+        triggered frozen post_count
+    if {!$triggered} {
+        error "wave trace has not triggered"
+    }
+    if {!$frozen} {
+        error [format "wave trace is still capturing post-trigger samples (%d)" \
+               $post_count]
+    }
+    set oldest [expr {$total >= $wave_trace_depth ? $write_index : 0}]
+    set trigger_sample [expr {($trigger_index - $oldest) &
+                              ($wave_trace_depth - 1)}]
+    if {$start_sample < 0 || $start_sample >= $retained} {
+        error [format "wave trace start sample must be in 0..%d" \
+               [expr {$retained - 1}]]
+    }
+    if {$sample_count < 0} {
+        set sample_count [expr {$retained - $start_sample}]
+    }
+    if {$sample_count < 1 || $start_sample + $sample_count > $retained} {
+        error [format "wave trace range start=%d count=%d exceeds %d retained samples" \
+               $start_sample $sample_count $retained]
+    }
+    set end_sample [expr {$start_sample + $sample_count}]
+
+    set output [open $path w]
+    puts $output "sample,physical,relative,pc,instr,fetch_valid,fetch_meta,fetch_data,mem_addr,mem_valid,mem_ready,mem_write,trace_valid,trace_stall,trace_flush,trace_advance,trace_events"
+    for {set sample $start_sample} {$sample < $end_sample} {incr sample} {
+        set physical [expr {($oldest + $sample) & ($wave_trace_depth - 1)}]
+        lassign [read_wave_trace $physical] word0 word1 word2 word3
+        puts $output [format "%d,%d,%d,0x%08x,0x%08x,%d,0x%016x,0x%016x,0x%08x,%d,%d,%d,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x" \
+            $sample $physical [expr {$sample - $trigger_sample}] \
+            [field $word0 32 32] [field $word0 0 32] \
+            [bit $word3 32] $word1 $word2 [field $word3 0 32] \
+            [bit $word3 33] [bit $word3 34] [bit $word3 35] \
+            [field $word3 36 5] [field $word3 41 5] \
+            [field $word3 46 5] [field $word3 51 5] \
+            [field $word3 56 8]]
+        set range_progress [expr {$sample - $start_sample + 1}]
+        if {($range_progress & 0xff) == 0} {
+            puts [format "read %d/%d waveform samples (range start=%d)" \
+                  $range_progress $sample_count $start_sample]
+        }
+    }
+    close $output
+    puts [format "OPENRV64 FPGA WAVE TRACE PASS path=%s samples=%d start=%d trigger_sample=%d pre=%d post=%d" \
+          [file normalize $path] $sample_count $start_sample $trigger_sample \
+          $trigger_sample [expr {$retained - $trigger_sample - 1}]]
 }
 
 proc write_stub_word {index value} {
     write_command stub_write 1 stub_index $index stub_wdata $value
     wait_readback 2 $index
+}
+
+proc print_retire_record {sequence} {
+    global retire_trace_depth
+    set index [expr {$sequence & ($retire_trace_depth - 1)}]
+    set record [read_retire_trace_word [expr {2 * $index}]]
+    set wdata [read_retire_trace_word [expr {2 * $index + 1}]]
+    set stored_pc [field $record 32 32]
+    set instr [field $record 0 32]
+    set pc_low [expr {$stored_pc & 0xfffffffc}]
+    set predicted [expr {($stored_pc >> 1) & 1}]
+    set taken [expr {$stored_pc & 1}]
+    set rd [field $instr 7 5]
+    puts [format "RETIRE seq=%d slot=%04x pc_low=0x%08x instr=0x%08x rd=x%d wdata=0x%016x pred=%d taken=%d" \
+          $sequence $index $pc_low $instr $rd $wdata $predicted $taken]
+}
+
+proc print_load_record {sequence} {
+    global load_trace_depth protocol_version
+    set index [expr {$sequence & ($load_trace_depth - 1)}]
+    set meta [read_load_trace_word $index 0]
+    set data [read_load_trace_word $index 1]
+    if {$protocol_version >= 21} {
+        puts [format "LOAD seq=%d slot=%04x vaddr_low=0x%08x paddr_low=0x%08x data=0x%016x" \
+              $sequence $index [field $meta 0 32] [field $meta 32 32] \
+              $data]
+    } else {
+        set addr_low [field $meta 0 32]
+        set rd [field $meta 32 5]
+        set pc_low [expr {[field $meta 37 24] << 2}]
+        puts [format "LOAD seq=%d slot=%04x pc_low=0x%08x addr_low=0x%08x rd=x%d data=0x%016x" \
+              $sequence $index $pc_low $addr_low $rd $data]
+    }
+}
+
+proc print_store_record {sequence} {
+    global store_trace_depth protocol_version
+    set index [expr {$sequence & ($store_trace_depth - 1)}]
+    set meta [read_store_trace_word $index 0]
+    set data [read_store_trace_word $index 1]
+    if {$protocol_version >= 21} {
+        puts [format "STORE seq=%d slot=%04x vaddr_low=0x%08x paddr_low=0x%08x data=0x%016x" \
+              $sequence $index [field $meta 0 32] [field $meta 32 32] \
+              $data]
+    } else {
+        set addr_low [field $meta 0 32]
+        set wstrb [field $meta 32 8]
+        set pc_low [expr {[field $meta 40 24] << 2}]
+        puts [format "STORE seq=%d slot=%04x pc_low=0x%08x addr_low=0x%08x wstrb=0x%02x data=0x%016x" \
+              $sequence $index $pc_low $addr_low $wstrb $data]
+    }
+}
+
+proc print_fetch_record {sequence} {
+    global fetch_trace_depth
+    set index [expr {$sequence & ($fetch_trace_depth - 1)}]
+    set pc [read_fetch_trace_word $index 0]
+    set data [read_fetch_trace_word $index 1]
+    if {[field $pc 48 16] == 0xb057} {
+        set state [field $pc 46 2]
+        set owner_fetch [bit $pc 45]
+        set cancelled [bit $pc 44]
+        set vaddr [field $pc 0 44]
+        set state_name [lindex {idle translate access tlb-result} $state]
+        puts [format "FETCH_CANCEL seq=%d slot=%04x state=%d/%s owner_fetch=%d cancelled=%d gen_vaddr=0x%011x frontend_addr=0x%016x" \
+              $sequence $index $state $state_name $owner_fetch $cancelled \
+              $vaddr $data]
+    } elseif {[field $pc 48 16] == 0xb055} {
+        set stage [field $pc 44 2]
+        set cancel_now [bit $pc 47]
+        set cancelled [bit $pc 46]
+        set addr [field $pc 0 44]
+        set stage_name [lindex {capture response completion resume} $stage]
+        set addr_name [expr {$stage == 3 ? "vaddr" : "paddr"}]
+        puts [format "FETCH_PIPE seq=%d slot=%04x stage=%d/%s %s=0x%011x cancel_now=%d cancelled=%d data=0x%016x" \
+              $sequence $index $stage $stage_name $addr_name $addr \
+              $cancel_now $cancelled $data]
+    } else {
+        puts [format "FETCH seq=%d slot=%04x pc=0x%016x data=0x%016x" \
+              $sequence $index $pc $data]
+    }
+}
+
+proc read_trace_totals {} {
+    global retire_trace_meta_base load_trace_meta_base store_trace_meta_base
+    return [list \
+        [read_retire_trace_word $retire_trace_meta_base] \
+        [read_retire_trace_word $load_trace_meta_base] \
+        [read_retire_trace_word $store_trace_meta_base]]
 }
 
 proc read_uart_burst {index} {
@@ -531,7 +787,7 @@ proc print_status {value} {
     set signature [field $value 0 32]
     set hit_valid [bit $value 42]
     set reasons {}
-    foreach {label index} {scalar 43 ptw 44 pc 45 cycle 46} {
+    foreach {label index} {scalar 43 ptw 44 pc 45 cycle 46 trace 60} {
         if {[bit $value $index]} {
             lappend reasons $label
         }
@@ -551,7 +807,8 @@ proc print_status {value} {
           [yesno [bit $value 49]] [yesno [bit $value 50]] \
           [yesno [bit $value 51]] [yesno [bit $value 52]] \
           [yesno [bit $value 53]] [yesno [bit $value 54]]]
-    puts [format "pc_delay_started=%s" [yesno [bit $value 59]]]
+    puts [format "pc_delay_started=%s trace_window=%s" \
+          [yesno [bit $value 59]] [yesno [bit $value 58]]]
     puts [format "mem_target=0x%016x mem_mask=0x%016x" \
           [field $value 64 64] [field $value 128 64]]
     puts [format "pc_target=0x%016x pc_mask=0x%016x" \
@@ -566,8 +823,14 @@ proc print_status {value} {
               [field $value 512 64] [yesno [bit $value 47]] \
               [yesno [bit $value 48]]]
         if {[bit $value 45]} {
-            puts [format "hit_rs1_data=0x%016x hit_rs2_data=0x%016x" \
-                  [field $value 576 64] [field $value 640 64]]
+            if {[field $value 32 8] >= 18} {
+                puts [format "hit_retire_write=%s hit_retire_rd=%d hit_retire_wdata=0x%016x" \
+                      [yesno [bit $value 47]] [field $value 512 5] \
+                      [field $value 576 64]]
+            } else {
+                puts [format "hit_rs1_data=0x%016x hit_rs2_data=0x%016x" \
+                      [field $value 576 64] [field $value 640 64]]
+            }
         } else {
             puts [format "hit_rdata=0x%016x hit_wdata=0x%016x hit_wstrb=0x%02x" \
                   [field $value 576 64] [field $value 640 64] \
@@ -587,7 +850,8 @@ proc print_status {value} {
         2 { set source stub }
         3 { set source uart }
     }
-    set index [field $value 821 11]
+    set index [expr {[field $value 821 11] |
+                     ([field $value 712 5] << 11)}]
     puts [format "readback source=%s request_toggle=%d ack_toggle=%d index=%d data=0x%016x" \
           $source [bit $value 818] [bit $value 819] $index \
           [field $value 832 64]]
@@ -617,6 +881,7 @@ set server_url [expr {[info exists ::env(FPGA_HW_SERVER_URL)] ?
     $::env(FPGA_HW_SERVER_URL) : "tcp:10.1.6.21:3121"}]
 connect -url $server_url
 jtag targets -set -filter {name =~ "*xc7a100t*"}
+set protocol_version [field [capture_status] 32 8]
 set jtag_frequency [expr {[info exists ::env(FPGA_JTAG_FREQUENCY)] ?
     $::env(FPGA_JTAG_FREQUENCY) : 1000000}]
 if {$jtag_frequency <= 0 || $jtag_frequency > 10000000} {
@@ -685,6 +950,101 @@ switch -- $command {
         after 20
         set status_value [capture_status]
     }
+    arm-trace-window {
+        if {$argc != 2} { usage }
+        set records [parse_int [lindex $argv 1] retire-records]
+        if {$records < 1 || $records > 4000} {
+            error "trace window must contain 1..4000 retire records"
+        }
+        set before [capture_status]
+        if {[field $before 32 8] < 20} {
+            error "trace record watermarks require USER1 version 20 or newer"
+        }
+        write_command arm 1 trace_window 1 clear 1 \
+            cycle_target $records
+        after 20
+        set status_value [capture_status]
+    }
+    resume-trace-window {
+        if {$argc != 2} { usage }
+        set records [parse_int [lindex $argv 1] retire-records]
+        if {$records < 1 || $records > 4000} {
+            error "trace window must contain 1..4000 retire records"
+        }
+        set before [capture_status]
+        if {[field $before 32 8] < 20} {
+            error "trace record watermarks require USER1 version 20 or newer"
+        }
+        write_command arm 1 trace_window 1 clear 1 resume 1 \
+            cycle_target $records
+        after 20
+        set status_value [capture_status]
+    }
+    walk-trace-windows {
+        if {$argc < 3 || $argc > 4} { usage }
+        set windows [parse_int [lindex $argv 1] windows]
+        set records [parse_int [lindex $argv 2] retire-records]
+        set timeout [expr {$argc == 4 ?
+            [parse_int [lindex $argv 3] timeout] : 300}]
+        if {$windows < 1} {
+            error "trace window count must be positive"
+        }
+        if {$records < 1 || $records > 4000} {
+            error "trace window must contain 1..4000 retire records"
+        }
+        set status_value [capture_status]
+        if {[field $status_value 32 8] < 20} {
+            error "trace record watermarks require USER1 version 20 or newer"
+        }
+        if {![bit $status_value 42]} {
+            error "walk-trace-windows must start from a frozen debug hit"
+        }
+        lassign [read_trace_totals] retire_start load_start store_start
+        puts [format "TRACE_WALK_START windows=%d records=%d retire=%d load=%d store=%d" \
+              $windows $records $retire_start $load_start $store_start]
+        for {set window 0} {$window < $windows} {incr window} {
+            write_command arm 1 trace_window 1 clear 1 resume 1 \
+                cycle_target $records
+            set status_value [wait_for_hit $timeout]
+            if {![bit $status_value 60]} {
+                error [format "window %d stopped for a non-trace trigger" \
+                       $window]
+            }
+            lassign [read_trace_totals] retire_end load_end store_end
+            set retire_delta [expr {$retire_end - $retire_start}]
+            set load_delta [expr {$load_end - $load_start}]
+            set store_delta [expr {$store_end - $store_start}]
+            if {$retire_delta < $records || $retire_delta > 8192 ||
+                $load_delta < 0 || $load_delta > 4096 ||
+                $store_delta < 0 || $store_delta > 4096} {
+                error [format "window %d trace discontinuity retire=%d load=%d store=%d" \
+                       $window $retire_delta $load_delta $store_delta]
+            }
+            puts [format "TRACE_WINDOW_BEGIN window=%d hit_cycle=%d retire=%d..%d load=%d..%d store=%d..%d" \
+                  $window [field $status_value 384 64] \
+                  $retire_start $retire_end $load_start $load_end \
+                  $store_start $store_end]
+            for {set sequence $retire_start} {$sequence < $retire_end} \
+                {incr sequence} {
+                print_retire_record $sequence
+            }
+            for {set sequence $load_start} {$sequence < $load_end} \
+                {incr sequence} {
+                print_load_record $sequence
+            }
+            for {set sequence $store_start} {$sequence < $store_end} \
+                {incr sequence} {
+                print_store_record $sequence
+            }
+            puts [format "TRACE_WINDOW_END window=%d retire_delta=%d load_delta=%d store_delta=%d" \
+                  $window $retire_delta $load_delta $store_delta]
+            set retire_start $retire_end
+            set load_start $load_end
+            set store_start $store_end
+        }
+        puts [format "TRACE_WALK_PASS windows=%d retire=%d load=%d store=%d" \
+              $windows $retire_start $load_start $store_start]
+    }
     walk-pc-add-range {
         if {$argc < 5 || $argc > 6} { usage }
         set address [parse_int [lindex $argv 1] pc]
@@ -711,14 +1071,27 @@ switch -- $command {
                 error [format "hit %d is not the requested PC 0x%016x" \
                        $hit $address]
             }
-            set current [field $status_value 576 64]
-            set step [field $status_value 640 64]
+            if {$protocol_version >= 18} {
+                # USER1 v18 replaced the retired instruction's source
+                # operands in the status payload with destination writeback
+                # data.  The M-mode snapshot still holds the architectural
+                # a2/a3 mapping operands at words 32/33.
+                set current [read_snapshot_word_stable 32]
+                set step [read_snapshot_word_stable 33]
+            } else {
+                set current [field $status_value 576 64]
+                set step [field $status_value 640 64]
+            }
             set next [expr {$current + $step}]
             puts [format "map_hit=%d current=0x%016x step=0x%016x next=0x%016x" \
                   $hit $current $step $next]
             if {$current != $expected} {
                 error [format "MAP RANGE DISCONTINUITY hit=%d expected=0x%016x observed=0x%016x" \
                        $hit $expected $current]
+            }
+            if {($current & 0xfff) != 0} {
+                error [format "MAP RANGE MISALIGNED hit=%d current=0x%016x" \
+                       $hit $current]
             }
             if {$step != 0x1000 && $step != 0x200000 &&
                 $step != 0x40000000} {
@@ -764,11 +1137,11 @@ switch -- $command {
             write_command arm 1 pc 1 resume 1 \
                 pc_addr $address pc_mask 0xfffffffffffffffc
             set status_value [wait_for_hit $timeout]
-            set value_a [read_snapshot_word [expr {20 + $reg_a}]]
-            set value_b [read_snapshot_word [expr {20 + $reg_b}]]
-            set mepc [read_snapshot_word 10]
-            set a0 [read_snapshot_word 30]
-            set a1 [read_snapshot_word 31]
+            set value_a [read_snapshot_word_stable [expr {20 + $reg_a}]]
+            set value_b [read_snapshot_word_stable [expr {20 + $reg_b}]]
+            set mepc [read_snapshot_word_stable 10]
+            set a0 [read_snapshot_word_stable 30]
+            set a1 [read_snapshot_word_stable 31]
             puts [format "hit=%d mepc=0x%016x x%d=0x%016x x%d=0x%016x a0=0x%016x a1=0x%016x" \
                   $hit $mepc $reg_a $value_a $reg_b $value_b $a0 $a1]
             if {$value_a != $value_b} {
@@ -801,12 +1174,12 @@ switch -- $command {
             write_command arm 1 pc 1 resume 1 \
                 pc_addr $address pc_mask 0xfffffffffffffffc
             set status_value [wait_for_hit $timeout]
-            set observed [read_snapshot_word [expr {20 + $reg}]]
-            set mepc [read_snapshot_word 10]
-            set a0 [read_snapshot_word 30]
-            set a1 [read_snapshot_word 31]
-            set s0 [read_snapshot_word 28]
-            set s1 [read_snapshot_word 29]
+            set observed [read_snapshot_word_stable [expr {20 + $reg}]]
+            set mepc [read_snapshot_word_stable 10]
+            set a0 [read_snapshot_word_stable 30]
+            set a1 [read_snapshot_word_stable 31]
+            set s0 [read_snapshot_word_stable 28]
+            set s1 [read_snapshot_word_stable 29]
             puts [format "hit=%d mepc=0x%016x x%d=0x%016x a0=0x%016x a1=0x%016x s0=0x%016x s1=0x%016x" \
                   $hit $mepc $reg $observed $a0 $a1 $s0 $s1]
             if {$observed == $expected} {
@@ -817,6 +1190,49 @@ switch -- $command {
         }
         if {!$found} {
             error [format "x%d did not equal 0x%016x within %d hits" \
+                   $reg $expected $max_hits]
+        }
+    }
+    walk-pc-reg-value-ne {
+        if {$argc < 5 || $argc > 6} { usage }
+        set address [parse_int [lindex $argv 1] pc]
+        set reg [parse_int [lindex $argv 2] reg]
+        set expected [parse_int [lindex $argv 3] value]
+        set max_hits [parse_int [lindex $argv 4] max-hits]
+        set timeout [expr {$argc == 6 ?
+            [parse_int [lindex $argv 5] timeout] : 300}]
+        if {$reg > 31} {
+            error "walk-pc-reg-value-ne register must be in the range 0..31"
+        }
+        if {$max_hits < 1} {
+            error "walk-pc-reg-value-ne max-hits must be positive"
+        }
+        set found 0
+        for {set hit 1} {$hit <= $max_hits} {incr hit} {
+            write_command arm 1 pc 1 resume 1 \
+                pc_addr $address pc_mask 0xfffffffffffffffc
+            set status_value [wait_for_hit $timeout]
+            set observed [read_snapshot_word_stable [expr {20 + $reg}]]
+            if {$observed != $expected} {
+                set mepc [read_snapshot_word_stable 10]
+                set a0 [read_snapshot_word_stable 30]
+                set a1 [read_snapshot_word_stable 31]
+                set s0 [read_snapshot_word_stable 28]
+                set s1 [read_snapshot_word_stable 29]
+                puts [format "hit=%d mepc=0x%016x x%d=0x%016x a0=0x%016x a1=0x%016x s0=0x%016x s1=0x%016x" \
+                      $hit $mepc $reg $observed $a0 $a1 $s0 $s1]
+                puts [format "REGISTER VALUE MISMATCH AFTER %d HITS: x%d expected=0x%016x observed=0x%016x" \
+                      $hit $reg $expected $observed]
+                set found 1
+                break
+            }
+            if {$hit == 1 || ($hit & 15) == 0} {
+                puts [format "hit=%d x%d=0x%016x (still expected)" \
+                      $hit $reg $observed]
+            }
+        }
+        if {!$found} {
+            error [format "x%d remained equal to 0x%016x for %d hits" \
                    $reg $expected $max_hits]
         }
     }
@@ -998,17 +1414,17 @@ switch -- $command {
         }
         for {set index 0} {$index < [llength $labels]} {incr index} {
             puts [format "%02d %-8s 0x%016x" $index \
-                  [lindex $labels $index] [read_snapshot_word $index]]
+                  [lindex $labels $index] [read_snapshot_word_stable $index]]
         }
         for {set reg 0} {$reg < 32} {incr reg} {
             set index [expr {20 + $reg}]
             puts [format "%02d x%-7d 0x%016x" $index $reg \
-                  [read_snapshot_word $index]]
+                  [read_snapshot_word_stable $index]]
         }
         set index 52
         foreach label {stub_state stub_entry stub_bytes stub_result stub_magic} {
             puts [format "%02d %-10s 0x%016x" $index $label \
-                  [read_snapshot_word $index]]
+                  [read_snapshot_word_stable $index]]
             incr index
         }
     }
@@ -1045,37 +1461,207 @@ switch -- $command {
                   [expr {$index * 8}] [read_stub_word $index]]
         }
     }
+    read-instr-trace {
+        global retire_trace_depth
+        if {$argc != 2} { usage }
+        set index [parse_int [lindex $argv 1] record]
+        if {$index >= $retire_trace_depth} {
+            error [format "instruction trace record must be in 0..%d" \
+                   [expr {$retire_trace_depth - 1}]]
+        }
+        set record [read_retire_trace_word [expr {2 * $index}]]
+        set wdata [read_retire_trace_word [expr {2 * $index + 1}]]
+        set stored_pc [field $record 32 32]
+        set instr [field $record 0 32]
+        puts [format "%04x pc_low=0x%08x instr=0x%08x rd=x%d wdata=0x%016x pred=%d taken=%d" \
+            $index [expr {$stored_pc & 0xfffffffc}] $instr \
+            [field $instr 7 5] $wdata [bit $stored_pc 1] \
+            [bit $stored_pc 0]]
+    }
+    read-load-trace {
+        global load_trace_depth protocol_version
+        if {$argc != 2} { usage }
+        set index [parse_int [lindex $argv 1] record]
+        if {$index >= $load_trace_depth} {
+            error [format "load trace record must be in 0..%d" \
+                   [expr {$load_trace_depth - 1}]]
+        }
+        set meta [read_load_trace_word $index 0]
+        set data [read_load_trace_word $index 1]
+        if {$protocol_version >= 21} {
+            puts [format "%04x vaddr_low=0x%08x paddr_low=0x%08x data=0x%016x" \
+                $index [field $meta 0 32] [field $meta 32 32] $data]
+        } else {
+            puts [format "%04x pc_low=0x%08x addr_low=0x%08x rd=x%d data=0x%016x" \
+                $index [expr {[field $meta 37 24] << 2}] \
+                [field $meta 0 32] [field $meta 32 5] $data]
+        }
+    }
+    read-store-trace {
+        global store_trace_depth protocol_version
+        if {$argc != 2} { usage }
+        set index [parse_int [lindex $argv 1] record]
+        if {$index >= $store_trace_depth} {
+            error [format "store trace record must be in 0..%d" \
+                   [expr {$store_trace_depth - 1}]]
+        }
+        set meta [read_store_trace_word $index 0]
+        set data [read_store_trace_word $index 1]
+        if {$protocol_version >= 21} {
+            puts [format "%04x vaddr_low=0x%08x paddr_low=0x%08x data=0x%016x" \
+                $index [field $meta 0 32] [field $meta 32 32] $data]
+        } else {
+            puts [format "%04x pc_low=0x%08x addr_low=0x%08x wstrb=0x%02x data=0x%016x" \
+                $index [expr {[field $meta 40 24] << 2}] \
+                [field $meta 0 32] [field $meta 32 8] $data]
+        }
+    }
+    read-fetch-trace {
+        global fetch_trace_depth
+        if {$argc != 2} { usage }
+        set index [parse_int [lindex $argv 1] record]
+        if {$index >= $fetch_trace_depth} {
+            error [format "fetch trace record must be in 0..%d" \
+                   [expr {$fetch_trace_depth - 1}]]
+        }
+        set pc [read_fetch_trace_word $index 0]
+        set data [read_fetch_trace_word $index 1]
+        puts [format "%04x pc=0x%016x data=0x%016x" $index $pc $data]
+    }
+    read-wave-trace {
+        global protocol_version wave_trace_depth
+        if {$argc != 2} { usage }
+        if {$protocol_version < 23} {
+            error "wave trace readback requires USER1 protocol version 23"
+        }
+        set index [parse_int [lindex $argv 1] record]
+        if {$index >= $wave_trace_depth} {
+            error [format "wave trace record must be in 0..%d" \
+                   [expr {$wave_trace_depth - 1}]]
+        }
+        lassign [read_wave_trace $index] word0 word1 word2 word3
+        puts [format "%04x word0=0x%016x word1=0x%016x word2=0x%016x word3=0x%016x" \
+              $index $word0 $word1 $word2 $word3]
+    }
+    wave-status {
+        global protocol_version
+        if {$argc != 1} { usage }
+        if {$protocol_version < 23} {
+            error "wave trace status requires USER1 protocol version 23"
+        }
+        print_wave_status
+    }
+    dump-wave-trace {
+        global protocol_version
+        if {$argc != 2 && $argc != 4} { usage }
+        if {$protocol_version < 23} {
+            error "wave trace dump requires USER1 protocol version 23"
+        }
+        set start_sample [expr {$argc == 4 ?
+            [parse_int [lindex $argv 2] start-sample] : 0}]
+        set sample_count [expr {$argc == 4 ?
+            [parse_int [lindex $argv 3] sample-count] : -1}]
+        dump_wave_trace_csv [lindex $argv 1] $start_sample $sample_count
+    }
+    dump-instr-trace -
     dump-retire-trace {
+        global retire_trace_depth retire_trace_meta_base
         if {$argc > 2} { usage }
         set max_records [expr {$argc == 2 ?
             [parse_int [lindex $argv 1] max-records] : 64}]
-        if {$max_records < 1 || $max_records > 256} {
-            error "retire trace record count must be in 1..256"
+        if {$max_records < 1 || $max_records > $retire_trace_depth} {
+            error [format "retire trace record count must be in 1..%d" \
+                   $retire_trace_depth]
         }
-        set total [read_retire_trace_word 256]
-        set meta [read_retire_trace_word 257]
-        set write_index [field $meta 0 8]
-        set frozen [bit $meta 8]
-        set retained [expr {$total < 256 ? $total : 256}]
+        set total [read_retire_trace_word $retire_trace_meta_base]
+        set meta [read_retire_trace_word [expr {$retire_trace_meta_base + 1}]]
+        set write_index [field $meta 0 13]
+        set frozen [bit $meta 13]
+        set retained [expr {$total < $retire_trace_depth ?
+                            $total : $retire_trace_depth}]
         set selected [expr {$retained < $max_records ?
             $retained : $max_records}]
-        set oldest [expr {$total < 256 ? 0 : $write_index}]
         set skip [expr {$retained - $selected}]
-        puts [format "retire_trace total=%d retained=%d selected=%d write_index=%d frozen=%s" \
+        puts [format "instr_trace total=%d retained=%d selected=%d write_index=%d frozen=%s" \
             $total $retained $selected $write_index [yesno $frozen]]
-        for {set offset 0} {$offset < $selected} {incr offset} {
-            set logical [expr {$skip + $offset}]
-            set index [expr {($oldest + $logical) & 0xff}]
-            set record [read_retire_trace_word $index]
-            set pc_low [field $record 32 32]
-            set rd_write [bit $record 31]
-            set rd [field $record 26 5]
-            set wdata [field $record 0 26]
-            set signed_wdata [expr {($wdata & (1 << 25)) ?
-                $wdata - (1 << 26) : $wdata}]
-            puts [format "%03d seq=%d pc_low=0x%08x rd_write=%s rd=x%d wdata_low26=0x%07x signed=%d" \
-                $index [expr {$total - $selected + $offset}] \
-                $pc_low [yesno $rd_write] $rd $wdata $signed_wdata]
+        for {set sequence [expr {$total - $selected}]} \
+            {$sequence < $total} {incr sequence} {
+            print_retire_record $sequence
+        }
+    }
+    dump-load-trace {
+        global load_trace_depth load_trace_meta_base
+        if {$argc > 2} { usage }
+        set max_records [expr {$argc == 2 ?
+            [parse_int [lindex $argv 1] max-records] : 64}]
+        if {$max_records < 1 || $max_records > $load_trace_depth} {
+            error [format "load trace record count must be in 1..%d" \
+                   $load_trace_depth]
+        }
+        set total [read_retire_trace_word $load_trace_meta_base]
+        set meta [read_retire_trace_word [expr {$load_trace_meta_base + 1}]]
+        set write_index [field $meta 0 12]
+        set frozen [bit $meta 12]
+        set retained [expr {$total < $load_trace_depth ?
+                            $total : $load_trace_depth}]
+        set selected [expr {$retained < $max_records ?
+            $retained : $max_records}]
+        puts [format "load_trace total=%d retained=%d selected=%d write_index=%d frozen=%s" \
+            $total $retained $selected $write_index [yesno $frozen]]
+        for {set sequence [expr {$total - $selected}]} \
+            {$sequence < $total} {incr sequence} {
+            print_load_record $sequence
+        }
+    }
+    dump-store-trace {
+        global store_trace_depth store_trace_meta_base
+        if {$argc > 2} { usage }
+        set max_records [expr {$argc == 2 ?
+            [parse_int [lindex $argv 1] max-records] : 64}]
+        if {$max_records < 1 || $max_records > $store_trace_depth} {
+            error [format "store trace record count must be in 1..%d" \
+                   $store_trace_depth]
+        }
+        set total [read_retire_trace_word $store_trace_meta_base]
+        set meta [read_retire_trace_word [expr {$store_trace_meta_base + 1}]]
+        set write_index [field $meta 0 12]
+        set frozen [bit $meta 12]
+        set retained [expr {$total < $store_trace_depth ?
+                            $total : $store_trace_depth}]
+        set selected [expr {$retained < $max_records ?
+            $retained : $max_records}]
+        puts [format "store_trace total=%d retained=%d selected=%d write_index=%d frozen=%s" \
+            $total $retained $selected $write_index [yesno $frozen]]
+        for {set sequence [expr {$total - $selected}]} \
+            {$sequence < $total} {incr sequence} {
+            print_store_record $sequence
+        }
+    }
+    dump-fetch-trace {
+        global fetch_trace_depth fetch_trace_meta_base protocol_version
+        if {$argc > 2} { usage }
+        if {$protocol_version < 22} {
+            error "fetch trace readback requires USER1 protocol version 22"
+        }
+        set max_records [expr {$argc == 2 ?
+            [parse_int [lindex $argv 1] max-records] : 64}]
+        if {$max_records < 1 || $max_records > $fetch_trace_depth} {
+            error [format "fetch trace record count must be in 1..%d" \
+                   $fetch_trace_depth]
+        }
+        set total [read_retire_trace_word $fetch_trace_meta_base]
+        set meta [read_retire_trace_word [expr {$fetch_trace_meta_base + 1}]]
+        set write_index [field $meta 0 11]
+        set frozen [bit $meta 11]
+        set retained [expr {$total < $fetch_trace_depth ?
+                            $total : $fetch_trace_depth}]
+        set selected [expr {$retained < $max_records ?
+            $retained : $max_records}]
+        puts [format "fetch_trace total=%d retained=%d selected=%d write_index=%d frozen=%s" \
+            $total $retained $selected $write_index [yesno $frozen]]
+        for {set sequence [expr {$total - $selected}]} \
+            {$sequence < $total} {incr sequence} {
+            print_fetch_record $sequence
         }
     }
     load-stub {

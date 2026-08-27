@@ -211,7 +211,11 @@ void trace_pc_symbols(const Vtb_4h_3p___024root* root, uint32_t cycle,
                       const PcSymbolizer& symbols) {
     const uint8_t active =
         root->tb_4h_3p__DOT__opensbi_active_hart_mask;
-    std::cout << "OPENSBI_4H_PC_SYMBOLS cycles=" << cycle << " harts=";
+    uint64_t retired_total = 0;
+    for (unsigned hart = 0; hart < 4; ++hart)
+        retired_total += root->tb_4h_3p__DOT__retired[hart];
+    std::cout << "OPENSBI_4H_PC_SYMBOLS cycles=" << cycle
+              << " retired=" << retired_total << " harts=";
     for (unsigned hart = 0; hart < 4; ++hart) {
         if (hart)
             std::cout << ',';
@@ -270,9 +274,12 @@ class L1dWatch {
   public:
     L1dWatch(std::ostream& stream, uint64_t vaddr,
              const char* paddr_text, const char* value_text,
-             bool trace_all_mshrs)
+             bool trace_all_mshrs, uint32_t xlate_trace_start,
+             uint32_t xlate_trace_end)
         : stream_{stream}, vaddr_{vaddr},
-          trace_all_mshrs_{trace_all_mshrs} {
+          trace_all_mshrs_{trace_all_mshrs},
+          xlate_trace_start_{xlate_trace_start},
+          xlate_trace_end_{xlate_trace_end} {
         if (paddr_text) {
             paddr_line_ = parse_u64(paddr_text, "+l1d_watch_paddr") & ~63ULL;
             have_paddr_ = true;
@@ -288,6 +295,9 @@ class L1dWatch {
         if (have_watch_value_)
             stream_ << " value=0x" << watch_value_;
         stream_ << " trace_all_mshrs=" << std::dec << trace_all_mshrs_;
+        if (xlate_trace_start_ <= xlate_trace_end_)
+            stream_ << " xlate_trace=" << xlate_trace_start_
+                    << '-' << xlate_trace_end_;
         stream_ << std::dec << '\n';
     }
 
@@ -306,21 +316,57 @@ class L1dWatch {
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__tag_mem[way]
 #define H0_L1D_DATA_MEM(way, bank)                                          \
     root->tb_4h_3p__DOT__g_hart__BRA__0__KET____DOT__u_core__DOT__u_bus__DOT__g_icx__DOT__u_bus__DOT__u_l1d__DOT__u_l1d__DOT__u_l1__DOT__g_cache__DOT__u_cache__DOT__u_debug__DOT__data_mem[way][bank]
-        if (H0_DEBUG(xlate_req_fire) &&
-            H0_CORE(backend_mem_xlate_vaddr) == vaddr_) {
+        const bool trace_xlate = cycle >= xlate_trace_start_ &&
+                                 cycle <= xlate_trace_end_;
+        if (H0_DEBUG(xlate_req_fire)) {
             const unsigned tag = H0_CORE(backend_mem_xlate_tag);
-            xlate_pending_[tag] = true;
-            stream_ << "XLATE_REQ cycle=" << cycle
-                    << " tag=" << tag
-                    << " write="
-                    << static_cast<unsigned>(H0_CORE(backend_mem_xlate_write))
-                    << " vaddr=0x" << std::hex << vaddr_ << std::dec
-                    << '\n';
+            const uint64_t request_vaddr =
+                H0_CORE(backend_mem_xlate_vaddr);
+            const bool watched_request = request_vaddr == vaddr_;
+            if (trace_xlate) {
+                stream_ << "XLATE_REQ_ALL cycle=" << cycle
+                        << " tag=" << tag
+                        << " write="
+                        << static_cast<unsigned>(
+                               H0_CORE(backend_mem_xlate_write))
+                        << " vaddr=0x" << std::hex << request_vaddr
+                        << std::dec << '\n';
+            }
+            if (xlate_pending_[tag] && !watched_request) {
+                stream_ << "XLATE_TAG_REUSE cycle=" << cycle
+                        << " tag=" << tag
+                        << " vaddr=0x" << std::hex << request_vaddr
+                        << std::dec << '\n';
+            }
+            xlate_pending_[tag] = watched_request;
+            if (watched_request) {
+                stream_ << "XLATE_REQ cycle=" << cycle
+                        << " tag=" << tag
+                        << " write="
+                        << static_cast<unsigned>(
+                               H0_CORE(backend_mem_xlate_write))
+                        << " vaddr=0x" << std::hex << vaddr_ << std::dec
+                        << '\n';
+            }
         }
 
         if (H0_CORE(backend_mem_xlate_resp_valid) &&
             H0_CORE(backend_mem_xlate_resp_ready)) {
             const unsigned tag = H0_CORE(backend_mem_xlate_resp_tag);
+            if (trace_xlate) {
+                stream_ << "XLATE_RESP_ALL cycle=" << cycle
+                        << " tag=" << tag
+                        << " paddr=0x" << std::hex
+                        << H0_CORE(backend_mem_xlate_resp_paddr)
+                        << std::dec
+                        << " page_fault="
+                        << static_cast<unsigned>(
+                               H0_CORE(backend_mem_xlate_resp_page_fault))
+                        << " access_fault="
+                        << static_cast<unsigned>(
+                               H0_CORE(backend_mem_xlate_resp_access_fault))
+                        << '\n';
+            }
             if (xlate_pending_[tag]) {
                 const uint64_t paddr =
                     H0_CORE(backend_mem_xlate_resp_paddr);
@@ -1016,7 +1062,9 @@ class L1dWatch {
     bool have_paddr_ = false;
     bool have_watch_value_ = false;
     bool trace_all_mshrs_ = false;
-    std::array<bool, 8> xlate_pending_{};
+    uint32_t xlate_trace_start_ = 1;
+    uint32_t xlate_trace_end_ = 0;
+    std::array<bool, 128> xlate_pending_{};
     std::array<bool, 8> response_pending_{};
     bool target_set_state_initialized_ = false;
     std::array<bool, 4> target_set_valid_{};
@@ -2560,6 +2608,10 @@ int main(int argc, char** argv) {
         plusarg_value(argc, argv, "+l1d_watch_paddr=");
     const char* const l1d_watch_value_text =
         plusarg_value(argc, argv, "+l1d_watch_value=");
+    const char* const l1d_watch_xlate_start_text =
+        plusarg_value(argc, argv, "+l1d_watch_xlate_start=");
+    const char* const l1d_watch_xlate_end_text =
+        plusarg_value(argc, argv, "+l1d_watch_xlate_end=");
     const bool l1d_watch_all_mshrs =
         has_plusarg(argc, argv, "+l1d_watch_all_mshrs");
     const char* const ticket_lock_trace_path =
@@ -2580,6 +2632,15 @@ int main(int argc, char** argv) {
     if ((l1d_watch_trace_path == nullptr) !=
         (l1d_watch_vaddr_text == nullptr)) {
         std::cerr << "+l1d_watch_trace and +l1d_watch_vaddr are required together\n";
+        return EXIT_FAILURE;
+    }
+    if ((l1d_watch_xlate_start_text == nullptr) !=
+        (l1d_watch_xlate_end_text == nullptr)) {
+        std::cerr << "+l1d_watch_xlate_start and +l1d_watch_xlate_end are required together\n";
+        return EXIT_FAILURE;
+    }
+    if (l1d_watch_xlate_start_text && !l1d_watch_trace_path) {
+        std::cerr << "+l1d_watch_xlate_start requires +l1d_watch_trace\n";
         return EXIT_FAILURE;
     }
 
@@ -2640,6 +2701,14 @@ int main(int argc, char** argv) {
         ? parse_cycle(fetch_path_trace_period_text,
                       "+fetch_path_trace_period")
         : 1;
+    const uint32_t l1d_watch_xlate_start = l1d_watch_xlate_start_text
+        ? parse_cycle(l1d_watch_xlate_start_text,
+                      "+l1d_watch_xlate_start")
+        : 1;
+    const uint32_t l1d_watch_xlate_end = l1d_watch_xlate_end_text
+        ? parse_cycle(l1d_watch_xlate_end_text,
+                      "+l1d_watch_xlate_end")
+        : 0;
     const uint32_t ticket_lock_trace_start = ticket_lock_trace_start_text
         ? parse_cycle(ticket_lock_trace_start_text,
                       "+ticket_lock_trace_start")
@@ -2732,7 +2801,8 @@ int main(int argc, char** argv) {
             l1d_watch_trace,
             parse_u64(l1d_watch_vaddr_text, "+l1d_watch_vaddr"),
             l1d_watch_paddr_text, l1d_watch_value_text,
-            l1d_watch_all_mshrs);
+            l1d_watch_all_mshrs, l1d_watch_xlate_start,
+            l1d_watch_xlate_end);
     }
 
     std::ofstream ticket_lock_trace_file;

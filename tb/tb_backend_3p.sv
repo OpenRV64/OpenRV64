@@ -74,12 +74,12 @@ module tb_backend_3p #(
     reg [63:0] mem_rdata;
     wire mem_xlate_valid;
     wire mem_xlate_ready = 1'b1;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] mem_xlate_tag;
     wire mem_xlate_write;
     wire [63:0] mem_xlate_vaddr;
     reg xlate_resp_valid_q;
     reg auto_xlate_enable;
-    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_resp_tag_q;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] xlate_resp_tag_q;
     reg [63:0] xlate_resp_paddr_q;
     reg xlate_resp_access_fault_q;
     reg xlate_resp_page_fault_q;
@@ -341,6 +341,7 @@ module tb_backend_3p #(
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] old_load_tag;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] dependent_load_tag;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] posted_store_tag;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] posted_xlate_tag;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] younger_load_tag;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] aggressive_load_tag;
 
@@ -765,9 +766,9 @@ module tb_backend_3p #(
         mem_ready = 1'b1;
         while (!(mem_xlate_valid && mem_xlate_write &&
                  mem_xlate_vaddr == 64'h180)) tick();
-        posted_store_tag = mem_xlate_tag;
+        posted_xlate_tag = mem_xlate_tag;
         tick();
-        xlate_resp_tag_q = posted_store_tag;
+        xlate_resp_tag_q = posted_xlate_tag;
         xlate_resp_paddr_q = 64'h180;
         xlate_resp_page_fault_q = 1'b1;
         xlate_resp_valid_q = 1'b1;
@@ -839,9 +840,9 @@ module tb_backend_3p #(
         decode_uses_rs2 = 0;
         while (!(mem_xlate_valid && mem_xlate_write &&
                  mem_xlate_vaddr == 64'h1c0)) tick();
-        posted_store_tag = mem_xlate_tag;
+        posted_xlate_tag = mem_xlate_tag;
         tick();
-        xlate_resp_tag_q = posted_store_tag;
+        xlate_resp_tag_q = posted_xlate_tag;
         xlate_resp_paddr_q = 64'h1c0;
         xlate_resp_access_fault_q = 1'b1;
         xlate_resp_valid_q = 1'b1;

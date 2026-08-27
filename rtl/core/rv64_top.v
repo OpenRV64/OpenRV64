@@ -133,7 +133,20 @@ module openrv64_rv64_top #(
     output wire [63:0]  trace_retire_next_pc,
     output wire         trace_retire_rd_write,
     output wire [`RV64_REG_ADDR_WIDTH-1:0] trace_retire_rd,
-    output wire [63:0]  trace_retire_wdata
+    output wire [63:0]  trace_retire_wdata,
+    output wire         trace_fetch_valid,
+    output wire [63:0]  trace_fetch_pc,
+    output wire [63:0]  trace_fetch_data,
+    output wire         trace_load_valid,
+    output wire [63:0]  trace_load_pc,
+    output wire [63:0]  trace_load_addr,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0] trace_load_rd,
+    output wire [63:0]  trace_load_data,
+    output wire         trace_store_valid,
+    output wire [63:0]  trace_store_pc,
+    output wire [63:0]  trace_store_addr,
+    output wire [63:0]  trace_store_data,
+    output wire [7:0]   trace_store_wstrb
 );
 
     localparam TRACE_ID_WIDTH = 64;
@@ -184,6 +197,15 @@ module openrv64_rv64_top #(
     wire fetch_bus_ready;
     wire fetch_bus_access_fault;
     wire fetch_bus_page_fault;
+    wire debug_gen_pipe_event_valid;
+    wire [1:0] debug_gen_pipe_event_stage;
+    wire [`RV64_XLEN-1:0] debug_gen_pipe_event_addr;
+    wire [`RV64_XLEN-1:0] debug_gen_pipe_event_data;
+    wire debug_gen_pipe_cancel_now;
+    wire debug_gen_pipe_cancelled;
+    wire [1:0] debug_gen_state;
+    wire debug_gen_owner_fetch;
+    wire [`RV64_XLEN-1:0] debug_gen_pipe_vaddr;
     wire fetch_decode_valid;
     wire fetch_decode_clear;
     wire [`RV64_FETCH_DECODE_BUS_WIDTH-1:0] fetch_decode_bus;
@@ -370,6 +392,16 @@ module openrv64_rv64_top #(
     wire [`RV64_INSTR_WIDTH-1:0] exec_trace_mem_instr;
     wire [TRACE_ID_WIDTH-1:0] exec_trace_wb_id;
     wire exec_trace_serializing;
+    wire exec_trace_load_valid;
+    wire [`RV64_XLEN-1:0] exec_trace_load_pc;
+    wire [`RV64_XLEN-1:0] exec_trace_load_addr;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] exec_trace_load_rd;
+    wire [`RV64_XLEN-1:0] exec_trace_load_data;
+    wire exec_trace_store_valid;
+    wire [`RV64_XLEN-1:0] exec_trace_store_pc;
+    wire [`RV64_XLEN-1:0] exec_trace_store_addr;
+    wire [`RV64_XLEN-1:0] exec_trace_store_data;
+    wire [7:0] exec_trace_store_wstrb;
     wire bp_branch_present;
     wire bp_branch_allocate;
     wire bp_branch_resolve;
@@ -1315,7 +1347,8 @@ module openrv64_rv64_top #(
         .mem_xlate_vaddr_o(),
         .mem_xlate_resp_valid_i(1'b0),
         .mem_xlate_resp_ready_o(),
-        .mem_xlate_resp_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .mem_xlate_resp_tag_i(
+            {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}}),
         .mem_xlate_resp_paddr_i({`RV64_XLEN{1'b0}}),
         .mem_xlate_resp_access_fault_i(1'b0),
         .mem_xlate_resp_page_fault_i(1'b0),
@@ -1356,6 +1389,16 @@ module openrv64_rv64_top #(
         .trace_mem_instr_o(exec_trace_mem_instr),
         .trace_wb_id_o(exec_trace_wb_id),
         .trace_serializing_o(exec_trace_serializing),
+        .trace_load_valid_o(exec_trace_load_valid),
+        .trace_load_pc_o(exec_trace_load_pc),
+        .trace_load_addr_o(exec_trace_load_addr),
+        .trace_load_rd_o(exec_trace_load_rd),
+        .trace_load_data_o(exec_trace_load_data),
+        .trace_store_valid_o(exec_trace_store_valid),
+        .trace_store_pc_o(exec_trace_store_pc),
+        .trace_store_addr_o(exec_trace_store_addr),
+        .trace_store_data_o(exec_trace_store_data),
+        .trace_store_wstrb_o(exec_trace_store_wstrb),
         .flush_3p_i(1'b0),
         .squash_younger_3p_i(1'b0),
         .squash_id_3p_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
@@ -1511,7 +1554,8 @@ module openrv64_rv64_top #(
         .lsu_pipe_cancel_i(1'b0), .lsu_pipe_resp_ready_i(1'b0),
         .lsu_pipe_store_done_ready_i(1'b1),
         .lsu_xlate_req_valid_i(1'b0),
-        .lsu_xlate_req_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .lsu_xlate_req_tag_i(
+            {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}}),
         .lsu_xlate_req_write_i(1'b0),
         .lsu_xlate_req_size_i(3'd0),
         .lsu_xlate_req_vaddr_i(64'd0),
@@ -1558,6 +1602,15 @@ module openrv64_rv64_top #(
         .req_error_i(core_mem_error),
         .fetch_next_valid_i(fetch_mem_next_valid),
         .fetch_next_addr_i(pc_q),
+        .debug_gen_pipe_event_valid_o(debug_gen_pipe_event_valid),
+        .debug_gen_pipe_event_stage_o(debug_gen_pipe_event_stage),
+        .debug_gen_pipe_event_addr_o(debug_gen_pipe_event_addr),
+        .debug_gen_pipe_event_data_o(debug_gen_pipe_event_data),
+        .debug_gen_pipe_cancel_now_o(debug_gen_pipe_cancel_now),
+        .debug_gen_pipe_cancelled_o(debug_gen_pipe_cancelled),
+        .debug_gen_state_o(debug_gen_state),
+        .debug_gen_owner_fetch_o(debug_gen_owner_fetch),
+        .debug_gen_pipe_vaddr_o(debug_gen_pipe_vaddr),
         .pmp_valid_o(core_pmp_valid), .pmp_addr_o(core_pmp_addr),
         .pmp_priv_o(core_pmp_priv), .pmp_size_o(core_pmp_size),
         .pmp_write_o(core_pmp_write), .pmp_exec_o(core_pmp_exec),
@@ -1736,6 +1789,42 @@ module openrv64_rv64_top #(
     assign trace_retire_rd = ENABLE_TRACE ? exec_wb_rd_addr :
                              {`RV64_REG_ADDR_WIDTH{1'b0}};
     assign trace_retire_wdata = ENABLE_TRACE ? exec_wb_data : 64'd0;
+    // Capture the exact fetch response accepted by the fetch unit.  The
+    // execution address is the request's virtual PC; rdata is the complete
+    // 64-bit bus response presented on the same completion edge.
+    assign trace_fetch_valid = ENABLE_TRACE &&
+        (flush_fetch || debug_gen_pipe_event_valid ||
+         (fetch_mem_valid && fetch_mem_ready));
+    // Debug pipeline records are self-identifying: b055 in bits 63:48,
+    // current/latched cancellation in bits 47:46, stage in bits 45:44,
+    // and an address in bits 43:0. Stages 0..2 report the physical request;
+    // stage 3 reports the gen-bus logical address at the response handoff.
+    // They share the existing fetch ring only in large-trace FPGA builds.
+    assign trace_fetch_pc = ENABLE_TRACE ?
+        (flush_fetch ?
+         {16'hb057, debug_gen_state, debug_gen_owner_fetch,
+          debug_gen_pipe_cancelled, debug_gen_pipe_vaddr[43:0]} :
+         debug_gen_pipe_event_valid ?
+         {16'hb055, debug_gen_pipe_cancel_now, debug_gen_pipe_cancelled,
+          debug_gen_pipe_event_stage,
+          (debug_gen_pipe_event_stage == 2'd3 ?
+           debug_gen_pipe_vaddr[43:0] : debug_gen_pipe_event_addr[43:0])} :
+         fetch_mem_exec_addr) : 64'd0;
+    assign trace_fetch_data = ENABLE_TRACE ?
+        (flush_fetch ? fetch_mem_exec_addr :
+         debug_gen_pipe_event_valid ? debug_gen_pipe_event_data :
+                                      fetch_mem_rdata) : 64'd0;
+    assign trace_load_valid = ENABLE_TRACE && exec_trace_load_valid;
+    assign trace_load_pc = ENABLE_TRACE ? exec_trace_load_pc : 64'd0;
+    assign trace_load_addr = ENABLE_TRACE ? exec_trace_load_addr : 64'd0;
+    assign trace_load_rd = ENABLE_TRACE ? exec_trace_load_rd :
+                           {`RV64_REG_ADDR_WIDTH{1'b0}};
+    assign trace_load_data = ENABLE_TRACE ? exec_trace_load_data : 64'd0;
+    assign trace_store_valid = ENABLE_TRACE && exec_trace_store_valid;
+    assign trace_store_pc = ENABLE_TRACE ? exec_trace_store_pc : 64'd0;
+    assign trace_store_addr = ENABLE_TRACE ? exec_trace_store_addr : 64'd0;
+    assign trace_store_data = ENABLE_TRACE ? exec_trace_store_data : 64'd0;
+    assign trace_store_wstrb = ENABLE_TRACE ? exec_trace_store_wstrb : 8'd0;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

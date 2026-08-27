@@ -613,6 +613,7 @@ crc32_bytes:
     srli    a0, a0, 32
     ret
 
+#ifdef FPGA_SD_BOOT_LEGACY_SINGLE_BLOCK
 /* a0=DDR destination, a1=count, a2=CRC state; returns dest, CRC, count. */
 copy_sector:
     addi    t0, s2, SPI_BUFFER

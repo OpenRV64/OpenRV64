@@ -83,7 +83,7 @@ module tb_icx_bus #(
     wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pipe_store_done_tag;
     logic xlate_req_valid;
     wire xlate_req_ready;
-    logic [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_req_tag;
+    logic [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] xlate_req_tag;
     logic xlate_req_write;
     logic [2:0] xlate_req_size;
     logic [63:0] xlate_req_vaddr;
@@ -92,7 +92,7 @@ module tb_icx_bus #(
     logic [43:0] xlate_req_root_ppn;
     wire xlate_resp_valid;
     logic xlate_resp_ready;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_resp_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] xlate_resp_tag;
     wire [63:0] xlate_resp_paddr;
     wire xlate_resp_access_fault;
     wire xlate_resp_page_fault;
@@ -1557,14 +1557,18 @@ module tb_icx_bus #(
         if ((xlate_pmp_requests - wait_count) != 1)
             $fatal(1, "TLB-hit load did not fill page screen through PMP");
         @(negedge clk);
-        dut.lsu_page_write_cursor_q = 2'd0;
+        dut.lsu_page_plru_q = 3'b000;
         wait_count = xlate_pmp_requests;
         push_xlate_request(3'd0, 1'b0, 64'h4010);
         expect_xlate_response(3'd0, 64'h3010, 1'b0, 1'b0);
         if ((xlate_pmp_requests - wait_count) != 0)
             $fatal(1, "load page-screen hit reissued PMP");
-        if (dut.lsu_page_write_cursor_q != 2'd1)
-            $fatal(1, "LSU page-screen cursor did not advance on hit");
+        if (dut.lsu_page_plru_q != 3'b011 ||
+            dut.lsu_page_plru_victim_index != 2'd2)
+            $fatal(1,
+                   "LSU page-screen PLRU did not update state=%b victim=%0d",
+                   dut.lsu_page_plru_q,
+                   dut.lsu_page_plru_victim_index);
 
         // Read clearance cannot authorize a store.  The first same-page
         // store must pass PMP and upgrade the matching entry; the next store

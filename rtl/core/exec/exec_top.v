@@ -117,13 +117,15 @@ module openrv64_exec_top #(
     input  wire [`RV64_XLEN-1:0]        mem_rdata_i,
     output wire                         mem_xlate_valid_o,
     input  wire                         mem_xlate_ready_i,
-    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag_o,
+    output wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        mem_xlate_tag_o,
     output wire                         mem_xlate_write_o,
     output wire [2:0]                   mem_xlate_size_o,
     output wire [`RV64_XLEN-1:0]        mem_xlate_vaddr_o,
     input  wire                         mem_xlate_resp_valid_i,
     output wire                         mem_xlate_resp_ready_o,
-    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag_i,
+    input  wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        mem_xlate_resp_tag_i,
     input  wire [`RV64_XLEN-1:0]        mem_xlate_resp_paddr_i,
     input  wire                         mem_xlate_resp_access_fault_i,
     input  wire                         mem_xlate_resp_page_fault_i,
@@ -175,6 +177,16 @@ module openrv64_exec_top #(
     output wire [`RV64_INSTR_WIDTH-1:0] trace_mem_instr_o,
     output wire [63:0]                  trace_wb_id_o,
     output wire                         trace_serializing_o,
+    output wire                         trace_load_valid_o,
+    output wire [`RV64_XLEN-1:0]        trace_load_pc_o,
+    output wire [`RV64_XLEN-1:0]        trace_load_addr_o,
+    output wire [`RV64_REG_ADDR_WIDTH-1:0] trace_load_rd_o,
+    output wire [`RV64_XLEN-1:0]        trace_load_data_o,
+    output wire                         trace_store_valid_o,
+    output wire [`RV64_XLEN-1:0]        trace_store_pc_o,
+    output wire [`RV64_XLEN-1:0]        trace_store_addr_o,
+    output wire [`RV64_XLEN-1:0]        trace_store_data_o,
+    output wire [7:0]                   trace_store_wstrb_o,
 
     input  wire                         flush_3p_i,
     input  wire                         squash_younger_3p_i,
@@ -268,7 +280,7 @@ module openrv64_exec_top #(
             assign mem_store_done_ready_o = 1'b0;
             assign mem_xlate_valid_o = 1'b0;
             assign mem_xlate_tag_o =
-                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
             assign mem_xlate_write_o = 1'b0;
             assign mem_xlate_size_o = 3'd0;
             assign mem_xlate_vaddr_o = {`RV64_XLEN{1'b0}};
@@ -461,6 +473,16 @@ module openrv64_exec_top #(
             assign trace_mem_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
             assign trace_wb_id_o = 64'd0;
             assign trace_serializing_o = 1'b0;
+            assign trace_load_valid_o = 1'b0;
+            assign trace_load_pc_o = {`RV64_XLEN{1'b0}};
+            assign trace_load_addr_o = {`RV64_XLEN{1'b0}};
+            assign trace_load_rd_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
+            assign trace_load_data_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_valid_o = 1'b0;
+            assign trace_store_pc_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_addr_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_data_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_wstrb_o = 8'd0;
         end else begin : g_unsupported
             initial begin
                 $error("openrv64_exec_top: backend configuration is not implemented");
@@ -489,7 +511,7 @@ module openrv64_exec_top #(
             assign mem_store_done_ready_o = 1'b0;
             assign mem_xlate_valid_o = 1'b0;
             assign mem_xlate_tag_o =
-                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
             assign mem_xlate_write_o = 1'b0;
             assign mem_xlate_size_o = 3'd0;
             assign mem_xlate_vaddr_o = {`RV64_XLEN{1'b0}};
@@ -534,6 +556,16 @@ module openrv64_exec_top #(
             assign trace_mem_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
             assign trace_wb_id_o = 64'd0;
             assign trace_serializing_o = 1'b0;
+            assign trace_load_valid_o = 1'b0;
+            assign trace_load_pc_o = {`RV64_XLEN{1'b0}};
+            assign trace_load_addr_o = {`RV64_XLEN{1'b0}};
+            assign trace_load_rd_o = {`RV64_REG_ADDR_WIDTH{1'b0}};
+            assign trace_load_data_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_valid_o = 1'b0;
+            assign trace_store_pc_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_addr_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_data_o = {`RV64_XLEN{1'b0}};
+            assign trace_store_wstrb_o = 8'd0;
             assign load_assignment_valid_3p_o = 1'b0;
             assign load_assignment_id_3p_o =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};

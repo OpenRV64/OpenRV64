@@ -124,13 +124,17 @@ module tb_exec_top_3p #(
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_store_done_tag;
     wire mem_xlate_valid;
     reg mem_xlate_ready;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] mem_xlate_tag;
     wire mem_xlate_write;
     wire [`RV64_XLEN-1:0] mem_xlate_vaddr;
     reg mem_xlate_resp_valid;
     wire mem_xlate_resp_ready;
-    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_xlate_resp_tag;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] mem_xlate_resp_tag;
     reg [`RV64_XLEN-1:0] mem_xlate_resp_paddr;
+    reg mem_xlate_auto_response;
+    reg mem_xlate_inject_valid;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] mem_xlate_inject_tag;
+    reg [`RV64_XLEN-1:0] mem_xlate_inject_paddr;
     reg inject_xlate_page_fault;
     reg [`RV64_XLEN-1:0] inject_xlate_fault_addr;
     wire mem1_valid;
@@ -248,12 +252,19 @@ module tb_exec_top_3p #(
         if (!rst_n) begin
             mem_xlate_resp_valid <= 1'b0;
             mem_xlate_resp_tag <=
-                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
             mem_xlate_resp_paddr <= {`RV64_XLEN{1'b0}};
         end else begin
             if (mem_xlate_resp_valid && mem_xlate_resp_ready)
                 mem_xlate_resp_valid <= 1'b0;
-            if (mem_xlate_valid && mem_xlate_ready) begin
+            if (mem_xlate_inject_valid) begin
+                if (mem_xlate_resp_valid && !mem_xlate_resp_ready)
+                    $fatal(1, "translation response model overflow");
+                mem_xlate_resp_valid <= 1'b1;
+                mem_xlate_resp_tag <= mem_xlate_inject_tag;
+                mem_xlate_resp_paddr <= mem_xlate_inject_paddr;
+            end else if (mem_xlate_auto_response &&
+                         mem_xlate_valid && mem_xlate_ready) begin
                 mem_xlate_resp_valid <= 1'b1;
                 mem_xlate_resp_tag <= mem_xlate_tag;
                 mem_xlate_resp_paddr <= mem_xlate_vaddr;
@@ -297,7 +308,10 @@ module tb_exec_top_3p #(
     integer wait_cycles;
     integer depth_index;
     integer misaligned_component;
+    integer xlate_reuse;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] saved_mem_tag;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] stale_xlate_tag;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] current_xlate_tag;
     reg [`RV64_XLEN-1:0] expected_component_addr;
     reg [2:0] expected_component_size;
     reg [`RV64_XLEN-1:0] expected_component_data;
@@ -333,6 +347,11 @@ module tb_exec_top_3p #(
         csr_writable = 1'b1;
         mem_ready = 1'b1;
         mem_xlate_ready = 1'b1;
+        mem_xlate_auto_response = 1'b1;
+        mem_xlate_inject_valid = 1'b0;
+        mem_xlate_inject_tag =
+            {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
+        mem_xlate_inject_paddr = {`RV64_XLEN{1'b0}};
         mem_resp_valid = 1'b0;
         mem_resp_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
         mem_resp_paddr = {`RV64_XLEN{1'b0}};
@@ -1597,8 +1616,132 @@ module tb_exec_top_3p #(
             (complete_payload[2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
              64'd11))
             fail("AMO completion after flush mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
 
-        $display("PASS: 3p local forwarding, fixed-EX0 M/Zbb, load/store queues, ordered component-serial Zicclsm, EX1 ordering, and irrevocable AMO");
+        // A killed translation must not retain its LSQ slot.  Reuse that raw
+        // slot four times so a two-bit generation would wrap, return the
+        // original stale response first, and verify that only the current
+        // four-bit generation reaches the new load.
+        mem_xlate_auto_response = 1'b0;
+        packet = packet_base(64'd109, 64'h6100, 32'h0000_b283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'h9000;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(9);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd1;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2] || !mem_xlate_valid)
+            fail("first generation load did not issue translation");
+        stale_xlate_tag = mem_xlate_tag;
+        tick();
+        issue_valid = 4'b0000;
+
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+
+        for (xlate_reuse = 0; xlate_reuse < 3;
+             xlate_reuse = xlate_reuse + 1) begin
+            packet = packet_base(64'd110 + xlate_reuse,
+                64'h6104 + (xlate_reuse * 4), 32'h0000_b283);
+            packet[ISSUE_RS1_DATA +: 64] =
+                64'ha000 + (xlate_reuse * 64'h1000);
+            packet[ISSUE_RD +: 5] = 5'd6 + xlate_reuse;
+            packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+            packet[ISSUE_MEM_READ] = 1'b1;
+            packet[ISSUE_REG_WRITE] = 1'b1;
+            issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+            issue_id[2*ID_WIDTH +: ID_WIDTH] =
+                ID_WIDTH'(10 + xlate_reuse);
+            issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd2;
+            issue_valid = 4'b0100;
+            #1;
+            if (!issue_ready[2] || !mem_xlate_valid)
+                fail("intermediate generation did not issue translation");
+            if (mem_xlate_tag[`OPENRV64_LSU_TAG_WIDTH-1:0] !=
+                stale_xlate_tag[`OPENRV64_LSU_TAG_WIDTH-1:0])
+                fail("intermediate generation changed raw LSQ slot");
+            tick();
+            issue_valid = 4'b0000;
+
+            flush = 1'b1;
+            tick();
+            flush = 1'b0;
+        end
+
+        packet = packet_base(64'd113, 64'h6110, 32'h0000_b283);
+        packet[ISSUE_RS1_DATA +: 64] = 64'he000;
+        packet[ISSUE_RD +: 5] = 5'd9;
+        packet[ISSUE_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+        packet[ISSUE_MEM_READ] = 1'b1;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(13);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd2;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2] || !mem_xlate_valid)
+            fail("reused generation load did not issue translation");
+        current_xlate_tag = mem_xlate_tag;
+        if (current_xlate_tag[`OPENRV64_LSU_TAG_WIDTH-1:0] !=
+            stale_xlate_tag[`OPENRV64_LSU_TAG_WIDTH-1:0])
+            fail("killed translation did not release its raw LSQ slot");
+        if (current_xlate_tag[`OPENRV64_LSU_XLATE_TAG_WIDTH-1 -:
+                              `OPENRV64_LSU_XLATE_GENERATION_WIDTH] ==
+            stale_xlate_tag[`OPENRV64_LSU_XLATE_TAG_WIDTH-1 -:
+                            `OPENRV64_LSU_XLATE_GENERATION_WIDTH])
+            fail("reused translation did not advance generation");
+        if (current_xlate_tag[`OPENRV64_LSU_TAG_WIDTH +: 2] !=
+            stale_xlate_tag[`OPENRV64_LSU_TAG_WIDTH +: 2])
+            fail("four reuses did not reproduce the two-bit ABA pattern");
+        tick();
+        issue_valid = 4'b0000;
+
+        mem_xlate_inject_tag = stale_xlate_tag;
+        mem_xlate_inject_paddr = 64'h9000;
+        mem_xlate_inject_valid = 1'b1;
+        tick();
+        mem_xlate_inject_valid = 1'b0;
+        if (!mem_xlate_resp_valid || !mem_xlate_resp_ready)
+            fail("stale translation response was not drainable");
+        tick();
+        if (mem_valid || complete_valid[2])
+            fail("stale translation response completed reused load");
+
+        mem_xlate_inject_tag = current_xlate_tag;
+        mem_xlate_inject_paddr = 64'hb000;
+        mem_xlate_inject_valid = 1'b1;
+        tick();
+        mem_xlate_inject_valid = 1'b0;
+        if (!mem_xlate_resp_valid || !mem_xlate_resp_ready)
+            fail("current translation response was not accepted");
+        tick();
+        if (!mem_valid || mem_write || (mem_addr != 64'hb000))
+            fail("current translation response did not launch reused load");
+        saved_mem_tag = mem_tag;
+        tick();
+        mem_rdata = 64'h1234_5678_9abc_def0;
+        mem_resp_paddr = 64'hb000;
+        mem_resp_tag = saved_mem_tag;
+        mem_resp_valid = 1'b1;
+        tick();
+        mem_resp_valid = 1'b0;
+        while (!complete_valid[2]) tick();
+        if (complete_payload[2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+            64'h1234_5678_9abc_def0)
+            fail("generation-matched reused load data mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+        mem_xlate_auto_response = 1'b1;
+
+        $display("PASS: 3p local forwarding, fixed-EX0 M/Zbb, load/store queues, four-bit xlate generations, ordered component-serial Zicclsm, EX1 ordering, and irrevocable AMO");
         $finish;
     end
 

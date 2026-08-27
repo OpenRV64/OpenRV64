@@ -95,6 +95,7 @@ worker() {
     [[ -f ${directory}/manager.env ]] ||
         openrv64_run_die "missing manager.env: ${directory}"
     openrv64_run_load_manager "${directory}"
+    export OPENRV64_RUN_ID="${run_id}"
     # shellcheck disable=SC1090
     source "${directory}/backend.env"
     load_config "${config_snapshot}"

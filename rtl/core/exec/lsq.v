@@ -691,19 +691,11 @@ module openrv64_lsq #(
                              (atomic_tag_i ==
                               slot_index[TAG_WIDTH-1:0])) begin
                     slot_valid_q[slot_index] <= 1'b1;
-                end else if (slot_valid_q[slot_index] &&
-                             slot_xlate_sent_q[slot_index] &&
-                             !((xlate_resp_fire &&
-                                (xlate_resp_tag_i ==
-                                 slot_index[TAG_WIDTH-1:0])))) begin
-                    // The translation channel has no cancellation input.
-                    // Retain its tag until the stale response is consumed.
-                    // Physical accesses are different: the ICX bus consumes
-                    // the architectural cancel, suppresses the response, and
-                    // keeps the physical tag busy until the L1D drains it.
-                    slot_valid_q[slot_index] <= 1'b1;
-                    slot_killed_q[slot_index] <= 1'b1;
                 end else begin
+                    // Translation responses carry a generation in addition to
+                    // this slot tag, so a killed translation does not retain
+                    // LSQ storage.  A later stale response is discarded before
+                    // it reaches this raw-tag interface.
                     slot_valid_q[slot_index] <= 1'b0;
                     slot_xlate_sent_q[slot_index] <= 1'b0;
                     slot_access_sent_q[slot_index] <= 1'b0;
@@ -877,16 +869,15 @@ module openrv64_lsq #(
                 slot_valid_q[atomic_tag_i] <= 1'b0;
 
             // Selective branch recovery removes younger memory operations.
-            // An entry with an accepted request retains its tag as a killed
-            // quarantine slot until that response is consumed; immediate reuse
-            // would let the stale response complete a new instruction.
+            // Physical accesses still retain their raw tag until cancellation
+            // drains.  Translation generations allow an xlate-only entry to be
+            // released immediately without accepting its stale response.
             if (squash_younger_i) begin
                 for (slot_index = 0; slot_index < DEPTH;
                      slot_index = slot_index + 1) begin
                     if (slot_valid_q[slot_index] &&
                         id_is_younger(slot_id_q[slot_index], squash_id_i)) begin
-                        if ((slot_xlate_sent_q[slot_index] ||
-                             slot_access_sent_q[slot_index]) &&
+                        if (slot_access_sent_q[slot_index] &&
                             !((resp_fire &&
                                (resp_tag_i ==
                                 slot_index[TAG_WIDTH-1:0])) ||

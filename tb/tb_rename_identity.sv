@@ -59,13 +59,20 @@ module tb_rename_identity;
         if ((destination_new_phys[0 +:
                 `OPENRV64_PHYS_REG_ADDR_WIDTH] != 6'd4) ||
             (destination_new_phys[`OPENRV64_PHYS_REG_ADDR_WIDTH +:
-                `OPENRV64_PHYS_REG_ADDR_WIDTH] != 6'd0) ||
+                `OPENRV64_PHYS_REG_ADDR_WIDTH] != 6'd12) ||
             (destination_new_phys[2*`OPENRV64_PHYS_REG_ADDR_WIDTH +:
                 `OPENRV64_PHYS_REG_ADDR_WIDTH] != 6'd27)) begin
-            fail("destination validity or identity mapping is wrong");
+            fail("destination identity mapping changed the register number");
         end
         if (destination_old_phys != destination_new_phys) begin
             fail("identity old and new physical mappings diverged");
+        end
+
+        destination_valid = 3'b010;
+        #1;
+        if ((destination_new_phys != {5'd27, 5'd12, 5'd4}) ||
+            (destination_old_phys != {5'd27, 5'd12, 5'd4})) begin
+            fail("destination validity synthesized into identity mapping");
         end
 
         $display("PASS: identity rename source and destination tags");

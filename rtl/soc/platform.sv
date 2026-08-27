@@ -135,15 +135,18 @@ module openrv64_platform #(
     input  logic                  debug_snapshot_resume_toggle_i,
     output logic                  debug_snapshot_trigger_ack_o,
     output logic                  debug_snapshot_resume_pending_o,
+    input  logic                  debug_trace_freeze_i,
 
     // FPGA USER1 access to the executable M-mode debug workspace BRAM.
-    input  logic [10:0]           debug_stub_index_i,
+    input  logic [15:0]           debug_stub_index_i,
     input  logic                  debug_stub_write_i,
     input  logic                  debug_stub_trace_read_i,
+    input  logic                  debug_stub_wave_burst_i,
     input  logic [63:0]           debug_stub_wdata_i,
     input  logic                  debug_stub_req_toggle_i,
     output logic                  debug_stub_ack_toggle_o,
     output logic [63:0]           debug_stub_rdata_o,
+    output logic [255:0]          debug_stub_wave_rdata_o,
 
     // FPGA USER1 readback of the rolling platform-UART transmit log.
     input  logic [10:0]           debug_uart_trace_index_i,
@@ -248,7 +251,41 @@ module openrv64_platform #(
     logic [63:0] core_mem_wdata;
     logic [7:0] core_mem_wstrb;
     logic [63:0] core_mem_rdata;
+    logic core_trace_load_valid;
+    logic [63:0] core_trace_load_pc;
+    logic [63:0] core_trace_load_addr;
+    logic [4:0] core_trace_load_rd;
+    logic [63:0] core_trace_load_data;
+    logic core_trace_store_valid;
+    logic [63:0] core_trace_store_pc;
+    logic [63:0] core_trace_store_addr;
+    logic [63:0] core_trace_store_data;
+    logic [7:0] core_trace_store_wstrb;
+    logic core_trace_fetch_valid;
+    logic [63:0] core_trace_fetch_pc;
+    logic [63:0] core_trace_fetch_data;
     logic core_mem_error;
+    logic [255:0] wave_trace_data;
+
+    // License-free, FPGA-only logic-analyzer sample.  The four words are kept
+    // on natural 64-bit boundaries so host decoding and BRAM banking agree.
+    assign wave_trace_data[63:0] = {
+        trace_pcs[4*64 +: 32], trace_instrs[4*32 +: 32]
+    };
+    assign wave_trace_data[127:64] = core_trace_fetch_pc;
+    assign wave_trace_data[191:128] = core_trace_fetch_data;
+    assign wave_trace_data[255:192] = {
+        trace_events,
+        trace_advance,
+        trace_flush,
+        trace_stall,
+        trace_valid,
+        core_mem_write,
+        core_mem_ready,
+        core_mem_valid,
+        core_trace_fetch_valid,
+        core_mem_addr[31:0]
+    };
 
     logic platform_mem_valid;
     logic platform_mem_ready;
@@ -648,7 +685,20 @@ module openrv64_platform #(
         .trace_retire_next_pc(trace_retire_next_pc),
         .trace_retire_rd_write(trace_retire_rd_write),
         .trace_retire_rd(trace_retire_rd),
-        .trace_retire_wdata(trace_retire_wdata)
+        .trace_retire_wdata(trace_retire_wdata),
+        .trace_fetch_valid(core_trace_fetch_valid),
+        .trace_fetch_pc(core_trace_fetch_pc),
+        .trace_fetch_data(core_trace_fetch_data),
+        .trace_load_valid(core_trace_load_valid),
+        .trace_load_pc(core_trace_load_pc),
+        .trace_load_addr(core_trace_load_addr),
+        .trace_load_rd(core_trace_load_rd),
+        .trace_load_data(core_trace_load_data),
+        .trace_store_valid(core_trace_store_valid),
+        .trace_store_pc(core_trace_store_pc),
+        .trace_store_addr(core_trace_store_addr),
+        .trace_store_data(core_trace_store_data),
+        .trace_store_wstrb(core_trace_store_wstrb)
     );
 
     generate
@@ -1153,20 +1203,42 @@ module openrv64_platform #(
                 .jtag_index_i(debug_stub_index_i),
                 .jtag_write_i(debug_stub_write_i),
                 .jtag_trace_read_i(debug_stub_trace_read_i),
+                .jtag_wave_burst_i(debug_stub_wave_burst_i),
                 .jtag_wdata_i(debug_stub_wdata_i),
                 .jtag_req_toggle_i(debug_stub_req_toggle_i),
                 .jtag_ack_toggle_o(debug_stub_ack_toggle_o),
                 .jtag_rdata_o(debug_stub_rdata_o),
-                // FPGA debug A/B: record the instruction exactly where fetch
-                // advances into IF/ID.  Reuse the existing 64-bit trace record
-                // as {pc[31:0], instr[31:0]} so no new memory is required.
-                .trace_valid_i(trace_valid[0] && trace_advance[0] &&
-                               (trace_instrs[31:0] != 32'd0)),
-                .trace_freeze_i(external_irq_sync_2_q[28]),
-                .trace_pc_i(trace_pcs[0*64 +: 64]),
-                .trace_rd_write_i(trace_instrs[31]),
-                .trace_rd_i(trace_instrs[26 +: 5]),
-                .trace_wdata_i({38'd0, trace_instrs[0 +: 26]})
+                .jtag_wave_rdata_o(debug_stub_wave_rdata_o),
+                // Two independent ordered histories: architectural retirement
+                // and the pre-WB formatted result of each 1P register load.
+                .trace_valid_i(trace_retire_valid),
+                .trace_freeze_i(debug_trace_freeze_i),
+                .trace_pc_i(trace_pcs[4*64 +: 64]),
+                .trace_instr_i(trace_instrs[4*32 +: 32]),
+                .trace_next_pc_i(trace_retire_next_pc),
+                .trace_rd_write_i(trace_retire_rd_write),
+                .trace_wdata_i(trace_retire_wdata),
+                .fetch_trace_valid_i(core_trace_fetch_valid),
+                .fetch_trace_pc_i(core_trace_fetch_pc),
+                .fetch_trace_data_i(core_trace_fetch_data),
+                .load_trace_valid_i(core_trace_load_valid),
+                .load_trace_pc_i(core_trace_load_pc),
+                .load_trace_addr_i(core_trace_load_addr),
+                .load_trace_paddr_i(core_mem_addr),
+                .load_trace_rd_i(core_trace_load_rd),
+                .load_trace_data_i(core_trace_load_data),
+                .store_trace_valid_i(core_trace_store_valid),
+                .store_trace_pc_i(core_trace_store_pc),
+                .store_trace_addr_i(core_trace_store_addr),
+                .store_trace_paddr_i(core_mem_addr),
+                .store_trace_data_i(core_trace_store_data),
+                .store_trace_wstrb_i(core_trace_store_wstrb),
+                .wave_trace_trigger_i(trace_retire_valid &&
+                    (trace_pcs[4*64 +: 64] ==
+                     64'hffff_ffff_8011_c344) &&
+                    (trace_retire_next_pc ==
+                     64'hffff_ffff_8011_c4f0)),
+                .wave_trace_data_i(wave_trace_data)
             );
 
             openrv64_soc_debug_uart_trace_mem u_uart_trace_mem (
@@ -1194,6 +1266,7 @@ module openrv64_platform #(
             assign debug_stub_rdata = 64'd0;
             assign debug_stub_ack_toggle_o = 1'b0;
             assign debug_stub_rdata_o = 64'd0;
+            assign debug_stub_wave_rdata_o = 256'd0;
             assign debug_uart_trace_ack_toggle_o = 1'b0;
             assign debug_uart_trace_rdata_o = 256'd0;
             assign debug_uart_trace_byte_count_o = 64'd0;

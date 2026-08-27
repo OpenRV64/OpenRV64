@@ -705,16 +705,79 @@ module tb_icx_l1i;
         if (pmp_probe_count_q != pmp_before_count)
             $fatal(1, "page-screen hit entered PMP arbitration");
 
-        // A hit on the entry selected for the next replacement gives that
-        // entry one round of second-chance protection.
+        // A resident hit marks its tree path most-recently-used.  With all
+        // tree bits clear, entry zero is initially the victim; touching it
+        // redirects replacement into entry two's subtree.
         @(negedge clk);
-        dut.fetch_page_write_cursor_q = 2'd0;
+        dut.fetch_page_plru_q = 3'b000;
         screen_before_count = page_screen_accept_count_q;
         issue_fetch(64'h00, memory[0][255:0], 1'b0,
-                    "fetch page-screen cursor hit");
+                    "fetch page-screen PLRU hit");
         if (page_screen_accept_count_q != screen_before_count + 1 ||
-            dut.fetch_page_write_cursor_q != 2'd1)
-            $fatal(1, "fetch page-screen cursor did not advance on hit");
+            dut.fetch_page_plru_q != 3'b011 ||
+            dut.fetch_page_plru_victim_index != 2'd2)
+            $fatal(1,
+                   "fetch page-screen PLRU did not update state=%b victim=%0d",
+                   dut.fetch_page_plru_q,
+                   dut.fetch_page_plru_victim_index);
+
+        // A later translation/PMP response for an already resident VPN can
+        // occur when multiple fetch slots missed before the first proof was
+        // installed.  It must refresh the matching entry, not consume the
+        // replacement cursor and create a duplicate.
+        @(negedge clk);
+        dut.fetch_page_valid_q = 4'b0001;
+        dut.fetch_page_vpn_q[0] = 52'd0;
+        dut.fetch_page_ppn_q[0] = 27'd0;
+        dut.fetch_page_plru_q = 3'b000;
+        force dut.fetch_page_screen_fill = 1'b1;
+        force dut.pmp_fetch_resp_vaddr = 64'd0;
+        force dut.pmp_fetch_resp_paddr = 64'd0;
+        @(posedge clk);
+        @(negedge clk);
+        release dut.fetch_page_screen_fill;
+        release dut.pmp_fetch_resp_vaddr;
+        release dut.pmp_fetch_resp_paddr;
+        if (dut.fetch_page_valid_q != 4'b0001 ||
+            dut.fetch_page_ppn_q[0] != 27'd0 ||
+            dut.fetch_page_plru_q != 3'b011)
+            $fatal(1,
+                   "duplicate fetch proof allocated slot valid=%b ppn=%h plru=%b",
+                   dut.fetch_page_valid_q, dut.fetch_page_ppn_q[0],
+                   dut.fetch_page_plru_q);
+
+        // Invalid entries have priority over PLRU.  Once full, a hit on the
+        // old victim must redirect a simultaneous-later replacement away
+        // from that entry.  Entry two is the resulting victim here.
+        @(negedge clk);
+        dut.fetch_page_valid_q = 4'b1111;
+        dut.fetch_page_vpn_q[0] = 52'd0;
+        dut.fetch_page_vpn_q[1] = 52'd1;
+        dut.fetch_page_vpn_q[2] = 52'd2;
+        dut.fetch_page_vpn_q[3] = 52'd3;
+        dut.fetch_page_ppn_q[0] = 27'd0;
+        dut.fetch_page_ppn_q[1] = 27'd1;
+        dut.fetch_page_ppn_q[2] = 27'd2;
+        dut.fetch_page_ppn_q[3] = 27'd3;
+        dut.fetch_page_plru_q = 3'b000;
+        issue_fetch(64'h00, memory[0][255:0], 1'b0,
+                    "fetch page-screen PLRU protection");
+        force dut.fetch_page_screen_fill = 1'b1;
+        force dut.pmp_fetch_resp_vaddr = 64'h4000;
+        force dut.pmp_fetch_resp_paddr = 64'h4000;
+        @(posedge clk);
+        @(negedge clk);
+        release dut.fetch_page_screen_fill;
+        release dut.pmp_fetch_resp_vaddr;
+        release dut.pmp_fetch_resp_paddr;
+        if (dut.fetch_page_valid_q != 4'b1111 ||
+            dut.fetch_page_vpn_q[0] != 52'd0 ||
+            dut.fetch_page_vpn_q[2] != 52'd4 ||
+            dut.fetch_page_plru_q != 3'b110)
+            $fatal(1,
+                   "fetch page-screen PLRU replacement valid=%b vpn0=%h vpn2=%h plru=%b",
+                   dut.fetch_page_valid_q, dut.fetch_page_vpn_q[0],
+                   dut.fetch_page_vpn_q[2], dut.fetch_page_plru_q);
 
         // A data-access permission change clears only the LSU screen.  A fast
         // fetch response already accepted under the current instruction-side
@@ -782,8 +845,11 @@ module tb_icx_l1i;
             $fatal(1,
                    "context change PMP probes before=%0d after=%0d",
                    pmp_before_count, pmp_probe_count_q);
-        if (dut.fetch_page_write_cursor_q != 2'd1)
-            $fatal(1, "page-screen write cursor did not advance");
+        if (dut.fetch_page_valid_q != 4'b0001 ||
+            dut.fetch_page_plru_q != 3'b011)
+            $fatal(1,
+                   "page-screen refill did not update PLRU valid=%b state=%b",
+                   dut.fetch_page_valid_q, dut.fetch_page_plru_q);
         before_count = icx_count_q;
 
         // Revoke the page-screen proof on the exact cycle that a resident

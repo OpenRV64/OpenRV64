@@ -202,7 +202,20 @@ module openrv64_top #(
     output logic [63:0]  trace_retire_next_pc,
     output logic         trace_retire_rd_write,
     output logic [4:0]   trace_retire_rd,
-    output logic [63:0]  trace_retire_wdata
+    output logic [63:0]  trace_retire_wdata,
+    output logic         trace_fetch_valid,
+    output logic [63:0]  trace_fetch_pc,
+    output logic [63:0]  trace_fetch_data,
+    output logic         trace_load_valid,
+    output logic [63:0]  trace_load_pc,
+    output logic [63:0]  trace_load_addr,
+    output logic [4:0]   trace_load_rd,
+    output logic [63:0]  trace_load_data,
+    output logic         trace_store_valid,
+    output logic [63:0]  trace_store_pc,
+    output logic [63:0]  trace_store_addr,
+    output logic [63:0]  trace_store_data,
+    output logic [7:0]   trace_store_wstrb
 );
 
     wire use_3p = (BACKEND_CONFIG == `OPENRV64_BACKEND_3P);
@@ -258,6 +271,19 @@ module openrv64_top #(
     wire legacy_trace_retire_rd_write;
     wire [4:0] legacy_trace_retire_rd;
     wire [63:0] legacy_trace_retire_wdata;
+    wire legacy_trace_fetch_valid;
+    wire [63:0] legacy_trace_fetch_pc;
+    wire [63:0] legacy_trace_fetch_data;
+    wire legacy_trace_load_valid;
+    wire [63:0] legacy_trace_load_pc;
+    wire [63:0] legacy_trace_load_addr;
+    wire [4:0] legacy_trace_load_rd;
+    wire [63:0] legacy_trace_load_data;
+    wire legacy_trace_store_valid;
+    wire [63:0] legacy_trace_store_pc;
+    wire [63:0] legacy_trace_store_addr;
+    wire [63:0] legacy_trace_store_data;
+    wire [7:0] legacy_trace_store_wstrb;
 
     wire three_mem_valid;
     wire three_mem_write;
@@ -433,7 +459,20 @@ module openrv64_top #(
         .trace_retire_next_pc(legacy_trace_retire_next_pc),
         .trace_retire_rd_write(legacy_trace_retire_rd_write),
         .trace_retire_rd(legacy_trace_retire_rd),
-        .trace_retire_wdata(legacy_trace_retire_wdata)
+        .trace_retire_wdata(legacy_trace_retire_wdata),
+        .trace_fetch_valid(legacy_trace_fetch_valid),
+        .trace_fetch_pc(legacy_trace_fetch_pc),
+        .trace_fetch_data(legacy_trace_fetch_data),
+        .trace_load_valid(legacy_trace_load_valid),
+        .trace_load_pc(legacy_trace_load_pc),
+        .trace_load_addr(legacy_trace_load_addr),
+        .trace_load_rd(legacy_trace_load_rd),
+        .trace_load_data(legacy_trace_load_data),
+        .trace_store_valid(legacy_trace_store_valid),
+        .trace_store_pc(legacy_trace_store_pc),
+        .trace_store_addr(legacy_trace_store_addr),
+        .trace_store_data(legacy_trace_store_data),
+        .trace_store_wstrb(legacy_trace_store_wstrb)
     );
 
     generate
@@ -814,6 +853,19 @@ module openrv64_top #(
                                      legacy_trace_retire_rd;
     assign trace_retire_wdata = use_3p ? three_trace_retire_wdata :
                                         legacy_trace_retire_wdata;
+    assign trace_fetch_valid = use_3p ? 1'b0 : legacy_trace_fetch_valid;
+    assign trace_fetch_pc = use_3p ? 64'd0 : legacy_trace_fetch_pc;
+    assign trace_fetch_data = use_3p ? 64'd0 : legacy_trace_fetch_data;
+    assign trace_load_valid = use_3p ? 1'b0 : legacy_trace_load_valid;
+    assign trace_load_pc = use_3p ? 64'd0 : legacy_trace_load_pc;
+    assign trace_load_addr = use_3p ? 64'd0 : legacy_trace_load_addr;
+    assign trace_load_rd = use_3p ? 5'd0 : legacy_trace_load_rd;
+    assign trace_load_data = use_3p ? 64'd0 : legacy_trace_load_data;
+    assign trace_store_valid = use_3p ? 1'b0 : legacy_trace_store_valid;
+    assign trace_store_pc = use_3p ? 64'd0 : legacy_trace_store_pc;
+    assign trace_store_addr = use_3p ? 64'd0 : legacy_trace_store_addr;
+    assign trace_store_data = use_3p ? 64'd0 : legacy_trace_store_data;
+    assign trace_store_wstrb = use_3p ? 8'd0 : legacy_trace_store_wstrb;
 
 `ifndef SYNTHESIS
     initial begin

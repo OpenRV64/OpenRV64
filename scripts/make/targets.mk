@@ -1,6 +1,10 @@
 # Aggregate targets and phony declarations.
 
 .PHONY: FORCE fpga-sd-image verify-fpga-sd-image fpga-opensbi-core-dcp \
+	fpga-xc7k480t-3p-yosys fpga-xc7k480t-3p-yosys-check \
+	fpga-xc7k480t-module-stats fpga-xc7k480t-module-stats-check \
+	fpga-xc7k480t-3p-utilization \
+	fpga-xc7k480t-3p-utilization-check \
 	opensbi-fpga-linux-debug verify-opensbi-fpga-linux-debug \
 	fpga-debug-snapshot-synth verify-fpga-debug-snapshot-synth \
 	fpga-debug-stub-synth verify-fpga-debug-stub-synth \

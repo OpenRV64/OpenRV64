@@ -54,6 +54,8 @@ module openrv64_core_mtl #(
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
     parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
+    parameter integer FETCH_PAGE_SCREEN_ENTRIES = 4,
+    parameter integer LSU_PAGE_SCREEN_ENTRIES = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
@@ -143,7 +145,8 @@ module openrv64_core_mtl #(
 
     input  wire                         lsu_xlate_req_valid_i,
     output wire                         lsu_xlate_req_ready_o,
-    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_req_tag_i,
+    input  wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        lsu_xlate_req_tag_i,
     input  wire                         lsu_xlate_req_write_i,
     input  wire [2:0]                   lsu_xlate_req_size_i,
     input  wire [`RV64_XLEN-1:0]        lsu_xlate_req_vaddr_i,
@@ -155,7 +158,8 @@ module openrv64_core_mtl #(
     input  wire                         lsu_xlate_req_mxr_i,
     output wire                         lsu_xlate_resp_valid_o,
     input  wire                         lsu_xlate_resp_ready_i,
-    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_resp_tag_o,
+    output wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        lsu_xlate_resp_tag_o,
     output wire [`RV64_XLEN-1:0]        lsu_xlate_resp_paddr_o,
     output wire                         lsu_xlate_resp_access_fault_o,
     output wire                         lsu_xlate_resp_page_fault_o,
@@ -301,11 +305,31 @@ module openrv64_core_mtl #(
     localparam [2:0] FETCH_WAIT_L1I = 3'd5;
     localparam [2:0] FETCH_FAST_READY = 3'd6;
     localparam [2:0] FETCH_WAIT_PMP = 3'd7;
-    localparam integer FETCH_PAGE_SCREEN_ENTRIES = 4;
+    localparam integer FETCH_PAGE_SCREEN_INDEX_WIDTH =
+        (FETCH_PAGE_SCREEN_ENTRIES > 1) ?
+            $clog2(FETCH_PAGE_SCREEN_ENTRIES) : 1;
+    localparam integer FETCH_PAGE_SCREEN_COUNT_WIDTH =
+        $clog2(FETCH_PAGE_SCREEN_ENTRIES + 1);
+    localparam integer FETCH_PAGE_SCREEN_LEVELS =
+        (FETCH_PAGE_SCREEN_ENTRIES > 1) ?
+            $clog2(FETCH_PAGE_SCREEN_ENTRIES) : 0;
+    localparam integer FETCH_PAGE_SCREEN_PLRU_BITS =
+        (FETCH_PAGE_SCREEN_ENTRIES > 1) ?
+            FETCH_PAGE_SCREEN_ENTRIES - 1 : 1;
     localparam integer FETCH_PAGE_VPN_WIDTH = `RV64_XLEN - 12;
     localparam integer FETCH_PAGE_PA_WIDTH = 39;
     localparam integer FETCH_PAGE_PPN_WIDTH = FETCH_PAGE_PA_WIDTH - 12;
-    localparam integer LSU_PAGE_SCREEN_ENTRIES = 4;
+    localparam integer LSU_PAGE_SCREEN_INDEX_WIDTH =
+        (LSU_PAGE_SCREEN_ENTRIES > 1) ?
+            $clog2(LSU_PAGE_SCREEN_ENTRIES) : 1;
+    localparam integer LSU_PAGE_SCREEN_COUNT_WIDTH =
+        $clog2(LSU_PAGE_SCREEN_ENTRIES + 1);
+    localparam integer LSU_PAGE_SCREEN_LEVELS =
+        (LSU_PAGE_SCREEN_ENTRIES > 1) ?
+            $clog2(LSU_PAGE_SCREEN_ENTRIES) : 0;
+    localparam integer LSU_PAGE_SCREEN_PLRU_BITS =
+        (LSU_PAGE_SCREEN_ENTRIES > 1) ?
+            LSU_PAGE_SCREEN_ENTRIES - 1 : 1;
     localparam integer LSU_PAGE_VPN_WIDTH = `RV64_XLEN - 12;
     localparam integer LSU_PAGE_PA_WIDTH = 39;
     localparam integer LSU_PAGE_PPN_WIDTH = LSU_PAGE_PA_WIDTH - 12;
@@ -407,15 +431,62 @@ module openrv64_core_mtl #(
         fetch_page_vpn_q;
     reg [FETCH_PAGE_SCREEN_ENTRIES-1:0][FETCH_PAGE_PPN_WIDTH-1:0]
         fetch_page_ppn_q;
-    reg [1:0] fetch_page_write_cursor_q;
+    // Breadth-first binary-tree pseudo-LRU.  Each internal-node bit selects
+    // the subtree containing the current replacement candidate.  A touch
+    // points every node on the accessed path toward the opposite subtree.
+    reg [FETCH_PAGE_SCREEN_PLRU_BITS-1:0] fetch_page_plru_q;
     reg fetch_page_hit_r;
-    reg [1:0] fetch_page_hit_index_r;
+    reg [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0] fetch_page_hit_index_r;
     reg [FETCH_PAGE_PPN_WIDTH-1:0] fetch_page_ppn_r;
     integer fetch_page_lookup_index;
 
+    function automatic [FETCH_PAGE_SCREEN_PLRU_BITS-1:0]
+        fetch_page_plru_touch;
+        input [FETCH_PAGE_SCREEN_PLRU_BITS-1:0] state_i;
+        input [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0] index_i;
+        integer level;
+        integer node;
+        begin
+            fetch_page_plru_touch = state_i;
+            node = 0;
+            for (level = 0; level < FETCH_PAGE_SCREEN_LEVELS;
+                 level = level + 1) begin
+                fetch_page_plru_touch[node] =
+                    ~index_i[FETCH_PAGE_SCREEN_INDEX_WIDTH-1-level];
+                if (index_i[FETCH_PAGE_SCREEN_INDEX_WIDTH-1-level])
+                    node = (node * 2) + 2;
+                else
+                    node = (node * 2) + 1;
+            end
+        end
+    endfunction
+
+    function automatic [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0]
+        fetch_page_plru_victim;
+        input [FETCH_PAGE_SCREEN_PLRU_BITS-1:0] state_i;
+        integer level;
+        integer node;
+        begin
+            fetch_page_plru_victim =
+                {FETCH_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
+            node = 0;
+            for (level = 0; level < FETCH_PAGE_SCREEN_LEVELS;
+                 level = level + 1) begin
+                fetch_page_plru_victim[
+                    FETCH_PAGE_SCREEN_INDEX_WIDTH-1-level] =
+                        state_i[node];
+                if (state_i[node])
+                    node = (node * 2) + 2;
+                else
+                    node = (node * 2) + 1;
+            end
+        end
+    endfunction
+
     always @* begin
         fetch_page_hit_r = 1'b0;
-        fetch_page_hit_index_r = 2'd0;
+        fetch_page_hit_index_r =
+            {FETCH_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
         fetch_page_ppn_r = {FETCH_PAGE_PPN_WIDTH{1'b0}};
         for (fetch_page_lookup_index = 0;
              fetch_page_lookup_index < FETCH_PAGE_SCREEN_ENTRIES;
@@ -427,7 +498,9 @@ module openrv64_core_mtl #(
                 (fetch_page_vpn_q[fetch_page_lookup_index] ==
                  fetch_req_addr_i[`RV64_XLEN-1:12])) begin
                 fetch_page_hit_r = 1'b1;
-                fetch_page_hit_index_r = fetch_page_lookup_index[1:0];
+                fetch_page_hit_index_r =
+                    fetch_page_lookup_index[
+                        FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0];
                 fetch_page_ppn_r =
                     fetch_page_ppn_q[fetch_page_lookup_index];
             end
@@ -445,13 +518,56 @@ module openrv64_core_mtl #(
     reg [LSU_PAGE_SCREEN_ENTRIES-1:0][LSU_PAGE_PPN_WIDTH-1:0]
         lsu_page_ppn_q;
     reg [LSU_PAGE_SCREEN_ENTRIES-1:0] lsu_page_write_q;
-    reg [1:0] lsu_page_write_cursor_q;
+    reg [LSU_PAGE_SCREEN_PLRU_BITS-1:0] lsu_page_plru_q;
     reg lsu_page_fill_match_r;
-    reg [1:0] lsu_page_fill_match_index_r;
+    reg [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0]
+        lsu_page_fill_match_index_r;
     reg lsu_page_hit_r;
-    reg [1:0] lsu_page_hit_index_r;
+    reg [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0] lsu_page_hit_index_r;
     reg [LSU_PAGE_PPN_WIDTH-1:0] lsu_page_ppn_r;
     integer lsu_page_lookup_index;
+
+    function automatic [LSU_PAGE_SCREEN_PLRU_BITS-1:0]
+        lsu_page_plru_touch;
+        input [LSU_PAGE_SCREEN_PLRU_BITS-1:0] state_i;
+        input [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0] index_i;
+        integer level;
+        integer node;
+        begin
+            lsu_page_plru_touch = state_i;
+            node = 0;
+            for (level = 0; level < LSU_PAGE_SCREEN_LEVELS;
+                 level = level + 1) begin
+                lsu_page_plru_touch[node] =
+                    ~index_i[LSU_PAGE_SCREEN_INDEX_WIDTH-1-level];
+                if (index_i[LSU_PAGE_SCREEN_INDEX_WIDTH-1-level])
+                    node = (node * 2) + 2;
+                else
+                    node = (node * 2) + 1;
+            end
+        end
+    endfunction
+
+    function automatic [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0]
+        lsu_page_plru_victim;
+        input [LSU_PAGE_SCREEN_PLRU_BITS-1:0] state_i;
+        integer level;
+        integer node;
+        begin
+            lsu_page_plru_victim =
+                {LSU_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
+            node = 0;
+            for (level = 0; level < LSU_PAGE_SCREEN_LEVELS;
+                 level = level + 1) begin
+                lsu_page_plru_victim[
+                    LSU_PAGE_SCREEN_INDEX_WIDTH-1-level] = state_i[node];
+                if (state_i[node])
+                    node = (node * 2) + 2;
+                else
+                    node = (node * 2) + 1;
+            end
+        end
+    endfunction
     wire [12:0] lsu_page_access_end =
         {1'b0, lsu_xlate_req_vaddr_i[11:0]} +
         (13'd1 << lsu_xlate_req_size_i);
@@ -459,7 +575,7 @@ module openrv64_core_mtl #(
                                    (|lsu_page_access_end[11:0]);
     always @* begin
         lsu_page_hit_r = 1'b0;
-        lsu_page_hit_index_r = 2'd0;
+        lsu_page_hit_index_r = {LSU_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
         lsu_page_ppn_r = {LSU_PAGE_PPN_WIDTH{1'b0}};
         for (lsu_page_lookup_index = 0;
              lsu_page_lookup_index < LSU_PAGE_SCREEN_ENTRIES;
@@ -474,7 +590,9 @@ module openrv64_core_mtl #(
                 (lsu_page_vpn_q[lsu_page_lookup_index] ==
                  lsu_xlate_req_vaddr_i[`RV64_XLEN-1:12])) begin
                 lsu_page_hit_r = 1'b1;
-                lsu_page_hit_index_r = lsu_page_lookup_index[1:0];
+                lsu_page_hit_index_r =
+                    lsu_page_lookup_index[
+                        LSU_PAGE_SCREEN_INDEX_WIDTH-1:0];
                 lsu_page_ppn_r = lsu_page_ppn_q[lsu_page_lookup_index];
             end
         end
@@ -483,16 +601,32 @@ module openrv64_core_mtl #(
         {{(`RV64_XLEN-LSU_PAGE_PA_WIDTH){1'b0}},
          lsu_page_ppn_r, lsu_xlate_req_vaddr_i[11:0]};
 
-    wire [2:0] fetch_page_screen_valid_count =
-        {2'd0, fetch_page_valid_q[0]} +
-        {2'd0, fetch_page_valid_q[1]} +
-        {2'd0, fetch_page_valid_q[2]} +
-        {2'd0, fetch_page_valid_q[3]};
-    wire [2:0] lsu_page_screen_valid_count =
-        {2'd0, lsu_page_valid_q[0]} +
-        {2'd0, lsu_page_valid_q[1]} +
-        {2'd0, lsu_page_valid_q[2]} +
-        {2'd0, lsu_page_valid_q[3]};
+    reg [FETCH_PAGE_SCREEN_COUNT_WIDTH-1:0]
+        fetch_page_screen_valid_count_r;
+    reg [LSU_PAGE_SCREEN_COUNT_WIDTH-1:0]
+        lsu_page_screen_valid_count_r;
+    integer fetch_page_count_index;
+    integer lsu_page_count_index;
+    always @* begin
+        fetch_page_screen_valid_count_r =
+            {FETCH_PAGE_SCREEN_COUNT_WIDTH{1'b0}};
+        for (fetch_page_count_index = 0;
+             fetch_page_count_index < FETCH_PAGE_SCREEN_ENTRIES;
+             fetch_page_count_index = fetch_page_count_index + 1)
+            fetch_page_screen_valid_count_r =
+                fetch_page_screen_valid_count_r +
+                fetch_page_valid_q[fetch_page_count_index];
+    end
+    always @* begin
+        lsu_page_screen_valid_count_r =
+            {LSU_PAGE_SCREEN_COUNT_WIDTH{1'b0}};
+        for (lsu_page_count_index = 0;
+             lsu_page_count_index < LSU_PAGE_SCREEN_ENTRIES;
+             lsu_page_count_index = lsu_page_count_index + 1)
+            lsu_page_screen_valid_count_r =
+                lsu_page_screen_valid_count_r +
+                lsu_page_valid_q[lsu_page_count_index];
+    end
     wire fetch_page_screen_flush = fetch_page_screen_invalidate &&
                                    (|fetch_page_valid_q);
     wire lsu_page_screen_flush = lsu_page_screen_invalidate &&
@@ -726,12 +860,13 @@ module openrv64_core_mtl #(
     reg pipe_cancelled_q [0:`OPENRV64_LSU_OUTSTANDING-1];
     reg pipe_write_q [0:`OPENRV64_LSU_OUTSTANDING-1];
     reg xlate_local_resp_valid_q;
-    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_local_resp_tag_q;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+        xlate_local_resp_tag_q;
     reg [`RV64_XLEN-1:0] xlate_local_resp_paddr_q;
     reg xlate_local_resp_access_fault_q;
     reg xlate_local_resp_page_fault_q;
     reg xlate_fallback_active_q;
-    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_fallback_tag_q;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] xlate_fallback_tag_q;
     integer pipe_index;
 
     wire pipe_req_tag_valid =
@@ -1286,8 +1421,9 @@ module openrv64_core_mtl #(
     wire xlate_request_fire =
         lsu_xlate_req_valid_i && lsu_xlate_req_ready_o;
     wire lsu_page_screen_accept = xlate_request_fire && lsu_page_hit_r;
-    wire lsu_page_screen_hit_cursor = lsu_page_screen_accept &&
-        (lsu_page_hit_index_r == lsu_page_write_cursor_q);
+    // Retain the old debug seam as a count of hit-driven replacement-state
+    // updates.  There is no replacement cursor under tree PLRU.
+    wire lsu_page_screen_hit_cursor = lsu_page_screen_accept;
 
     // PTW holds its request valid until the verdict is returned.  Convert
     // that response-coupled interface into one request pulse for the
@@ -1325,8 +1461,7 @@ module openrv64_core_mtl #(
     wire axi_r_error;
     wire l1i_enabled = (ENABLE_L1I != 0);
     wire fetch_page_screen_accept = fetch_accept && fetch_page_hit_r;
-    wire fetch_page_screen_hit_cursor = fetch_page_screen_accept &&
-        (fetch_page_hit_index_r == fetch_page_write_cursor_q);
+    wire fetch_page_screen_hit_cursor = fetch_page_screen_accept;
     wire fetch_page_screen_incoming_select = fetch_page_screen_accept &&
         (!fetch_fast_found_r || fetch_cancel_i);
     wire fetch_page_screen_queued_select = fetch_fast_found_r &&
@@ -1375,7 +1510,7 @@ module openrv64_core_mtl #(
     wire pmp_xlate_resp_write;
     wire [`RV64_XLEN-1:0] pmp_xlate_resp_vaddr;
     wire [`RV64_XLEN-1:0] pmp_xlate_resp_paddr;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] pmp_xlate_resp_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] pmp_xlate_resp_tag;
     wire pmp_fetch_req_ready;
     wire pmp_fetch_resp_valid;
     wire pmp_fetch_resp_allow;
@@ -1398,7 +1533,7 @@ module openrv64_core_mtl #(
         (l1i_enabled ? fetch_l1i_pmp_available : m_axi_arready_i);
 
     openrv64_mtl_pmp #(
-        .XLATE_TAG_WIDTH(`OPENRV64_LSU_TAG_WIDTH),
+        .XLATE_TAG_WIDTH(`OPENRV64_LSU_XLATE_TAG_WIDTH),
         .FETCH_TAG_WIDTH(FETCH_SLOT_WIDTH)
     ) u_pmp (
         .clk(clk), .rst_n(rst_n), .update_i(pmp_update_i),
@@ -1468,7 +1603,8 @@ module openrv64_core_mtl #(
     integer lsu_page_fill_lookup_index;
     always @* begin
         lsu_page_fill_match_r = 1'b0;
-        lsu_page_fill_match_index_r = 2'd0;
+        lsu_page_fill_match_index_r =
+            {LSU_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
         for (lsu_page_fill_lookup_index = 0;
              lsu_page_fill_lookup_index < LSU_PAGE_SCREEN_ENTRIES;
              lsu_page_fill_lookup_index =
@@ -1479,7 +1615,8 @@ module openrv64_core_mtl #(
                  pmp_xlate_resp_vaddr[`RV64_XLEN-1:12])) begin
                 lsu_page_fill_match_r = 1'b1;
                 lsu_page_fill_match_index_r =
-                    lsu_page_fill_lookup_index[1:0];
+                    lsu_page_fill_lookup_index[
+                        LSU_PAGE_SCREEN_INDEX_WIDTH-1:0];
             end
         end
     end
@@ -1489,8 +1626,42 @@ module openrv64_core_mtl #(
         lsu_page_paddr_representable && !lsu_page_screen_invalidate;
     wire lsu_page_screen_fill_update = lsu_page_screen_fill &&
                                        lsu_page_fill_match_r;
-    wire [1:0] lsu_page_fill_index = lsu_page_screen_hit_cursor ?
-        (lsu_page_write_cursor_q + 1'b1) : lsu_page_write_cursor_q;
+    reg lsu_page_invalid_found_r;
+    reg [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0] lsu_page_invalid_index_r;
+    integer lsu_page_invalid_lookup_index;
+    always @* begin
+        lsu_page_invalid_found_r = 1'b0;
+        lsu_page_invalid_index_r =
+            {LSU_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
+        for (lsu_page_invalid_lookup_index = 0;
+             lsu_page_invalid_lookup_index < LSU_PAGE_SCREEN_ENTRIES;
+             lsu_page_invalid_lookup_index =
+                 lsu_page_invalid_lookup_index + 1) begin
+            if (!lsu_page_invalid_found_r &&
+                !lsu_page_valid_q[lsu_page_invalid_lookup_index]) begin
+                lsu_page_invalid_found_r = 1'b1;
+                lsu_page_invalid_index_r =
+                    lsu_page_invalid_lookup_index[
+                        LSU_PAGE_SCREEN_INDEX_WIDTH-1:0];
+            end
+        end
+    end
+    // A request accepted beside a proof fill is newer than the PLRU snapshot
+    // used by the fill.  Apply that hit before victim selection so the fill
+    // cannot immediately evict the page which was just used.
+    wire [LSU_PAGE_SCREEN_PLRU_BITS-1:0]
+        lsu_page_plru_replacement_state = lsu_page_screen_accept ?
+            lsu_page_plru_touch(lsu_page_plru_q,
+                                lsu_page_hit_index_r) :
+            lsu_page_plru_q;
+    wire [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0] lsu_page_plru_victim_index =
+        lsu_page_plru_victim(lsu_page_plru_replacement_state);
+    wire [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0] lsu_page_fill_index =
+        lsu_page_invalid_found_r ? lsu_page_invalid_index_r :
+                                   lsu_page_plru_victim_index;
+    wire [LSU_PAGE_SCREEN_INDEX_WIDTH-1:0] lsu_page_fill_touch_index =
+        lsu_page_fill_match_r ? lsu_page_fill_match_index_r :
+                                lsu_page_fill_index;
     wire lsu_page_screen_evict = lsu_page_screen_fill &&
         !lsu_page_fill_match_r &&
         lsu_page_valid_q[lsu_page_fill_index];
@@ -1518,22 +1689,67 @@ module openrv64_core_mtl #(
     wire fetch_page_screen_fill = (ENABLE_FETCH_PAGE_SCREEN != 0) &&
                                   fetch_l1i_launch &&
                                   fetch_page_paddr_representable;
+    reg fetch_page_fill_match_r;
+    reg [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0]
+        fetch_page_fill_match_index_r;
+    integer fetch_page_fill_lookup_index;
+    always @* begin
+        fetch_page_fill_match_r = 1'b0;
+        fetch_page_fill_match_index_r =
+            {FETCH_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
+        for (fetch_page_fill_lookup_index = 0;
+             fetch_page_fill_lookup_index < FETCH_PAGE_SCREEN_ENTRIES;
+             fetch_page_fill_lookup_index =
+                 fetch_page_fill_lookup_index + 1) begin
+            if (!fetch_page_fill_match_r &&
+                fetch_page_valid_q[fetch_page_fill_lookup_index] &&
+                (fetch_page_vpn_q[fetch_page_fill_lookup_index] ==
+                 pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])) begin
+                fetch_page_fill_match_r = 1'b1;
+                fetch_page_fill_match_index_r =
+                    fetch_page_fill_lookup_index[
+                        FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0];
+            end
+        end
+    end
     wire fetch_page_screen_fill_duplicate = fetch_page_screen_fill &&
-        ((fetch_page_valid_q[0] &&
-          (fetch_page_vpn_q[0] ==
-           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])) ||
-         (fetch_page_valid_q[1] &&
-          (fetch_page_vpn_q[1] ==
-           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])) ||
-         (fetch_page_valid_q[2] &&
-          (fetch_page_vpn_q[2] ==
-           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])) ||
-         (fetch_page_valid_q[3] &&
-          (fetch_page_vpn_q[3] ==
-           pmp_fetch_resp_vaddr[`RV64_XLEN-1:12])));
-    wire [1:0] fetch_page_fill_index = fetch_page_screen_hit_cursor ?
-        (fetch_page_write_cursor_q + 1'b1) : fetch_page_write_cursor_q;
+        fetch_page_fill_match_r;
+    reg fetch_page_invalid_found_r;
+    reg [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0] fetch_page_invalid_index_r;
+    integer fetch_page_invalid_lookup_index;
+    always @* begin
+        fetch_page_invalid_found_r = 1'b0;
+        fetch_page_invalid_index_r =
+            {FETCH_PAGE_SCREEN_INDEX_WIDTH{1'b0}};
+        for (fetch_page_invalid_lookup_index = 0;
+             fetch_page_invalid_lookup_index < FETCH_PAGE_SCREEN_ENTRIES;
+             fetch_page_invalid_lookup_index =
+                 fetch_page_invalid_lookup_index + 1) begin
+            if (!fetch_page_invalid_found_r &&
+                !fetch_page_valid_q[fetch_page_invalid_lookup_index]) begin
+                fetch_page_invalid_found_r = 1'b1;
+                fetch_page_invalid_index_r =
+                    fetch_page_invalid_lookup_index[
+                        FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0];
+            end
+        end
+    end
+    wire [FETCH_PAGE_SCREEN_PLRU_BITS-1:0]
+        fetch_page_plru_replacement_state = fetch_page_screen_accept ?
+            fetch_page_plru_touch(fetch_page_plru_q,
+                                  fetch_page_hit_index_r) :
+            fetch_page_plru_q;
+    wire [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0]
+        fetch_page_plru_victim_index =
+            fetch_page_plru_victim(fetch_page_plru_replacement_state);
+    wire [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0] fetch_page_fill_index =
+        fetch_page_invalid_found_r ? fetch_page_invalid_index_r :
+                                     fetch_page_plru_victim_index;
+    wire [FETCH_PAGE_SCREEN_INDEX_WIDTH-1:0] fetch_page_fill_touch_index =
+        fetch_page_fill_match_r ? fetch_page_fill_match_index_r :
+                                  fetch_page_fill_index;
     wire fetch_page_screen_evict = fetch_page_screen_fill &&
+        !fetch_page_fill_match_r &&
         fetch_page_valid_q[fetch_page_fill_index] &&
         (fetch_page_vpn_q[fetch_page_fill_index] !=
          pmp_fetch_resp_vaddr[`RV64_XLEN-1:12]);
@@ -2161,7 +2377,7 @@ module openrv64_core_mtl #(
                                      xlate_pmp_resp_ready;
     wire xlate_page_fault_response_accept = xlate_request_fire &&
                                              xlate_lookup_page_fault;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] xlate_fast_resp_tag =
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] xlate_fast_resp_tag =
         xlate_pmp_resp_visible ? pmp_xlate_resp_tag :
                                  lsu_xlate_req_tag_i;
     wire [`RV64_XLEN-1:0] xlate_fast_resp_paddr =
@@ -2221,7 +2437,8 @@ module openrv64_core_mtl #(
         if (!rst_n) begin
             fetch_page_valid_q <=
                 {FETCH_PAGE_SCREEN_ENTRIES{1'b0}};
-            fetch_page_write_cursor_q <= 2'd0;
+            fetch_page_plru_q <=
+                {FETCH_PAGE_SCREEN_PLRU_BITS{1'b0}};
             for (fetch_page_reset_index = 0;
                  fetch_page_reset_index < FETCH_PAGE_SCREEN_ENTRIES;
                  fetch_page_reset_index = fetch_page_reset_index + 1) begin
@@ -2233,21 +2450,40 @@ module openrv64_core_mtl #(
         end else if (fetch_page_screen_invalidate) begin
             fetch_page_valid_q <=
                 {FETCH_PAGE_SCREEN_ENTRIES{1'b0}};
-            fetch_page_write_cursor_q <= 2'd0;
+            fetch_page_plru_q <=
+                {FETCH_PAGE_SCREEN_PLRU_BITS{1'b0}};
         end else if (fetch_page_screen_fill) begin
-            fetch_page_valid_q[fetch_page_fill_index] <= 1'b1;
-            fetch_page_vpn_q[fetch_page_fill_index] <=
-                pmp_fetch_resp_vaddr[`RV64_XLEN-1:12];
-            fetch_page_ppn_q[fetch_page_fill_index] <=
-                pmp_fetch_resp_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
-            fetch_page_write_cursor_q <=
-                fetch_page_fill_index + 1'b1;
-        end else if (fetch_page_screen_hit_cursor) begin
-            // Give a just-referenced entry one round of protection from the
-            // next fill.  This is a one-bit clock/second-chance policy with
-            // no per-entry replacement state.
-            fetch_page_write_cursor_q <=
-                fetch_page_write_cursor_q + 1'b1;
+            if (fetch_page_fill_match_r) begin
+                // Multiple fetch slots may miss the same VPN before the first
+                // translation/PMP response installs its proof.  Later
+                // responses refresh that proof instead of consuming another
+                // replacement slot.
+                fetch_page_valid_q[fetch_page_fill_match_index_r] <= 1'b1;
+                fetch_page_vpn_q[fetch_page_fill_match_index_r] <=
+                    pmp_fetch_resp_vaddr[`RV64_XLEN-1:12];
+                fetch_page_ppn_q[fetch_page_fill_match_index_r] <=
+                    pmp_fetch_resp_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
+            end else begin
+                fetch_page_valid_q[fetch_page_fill_index] <= 1'b1;
+                fetch_page_vpn_q[fetch_page_fill_index] <=
+                    pmp_fetch_resp_vaddr[`RV64_XLEN-1:12];
+                fetch_page_ppn_q[fetch_page_fill_index] <=
+                    pmp_fetch_resp_paddr[FETCH_PAGE_PPN_WIDTH+11:12];
+            end
+            // The accepted request is the newest same-cycle reference.  A
+            // duplicate proof refresh and a newly allocated proof are both
+            // touches, so neither is left as the immediate PLRU victim.
+            if (fetch_page_screen_accept)
+                fetch_page_plru_q <= fetch_page_plru_touch(
+                    fetch_page_plru_touch(fetch_page_plru_q,
+                                          fetch_page_fill_touch_index),
+                    fetch_page_hit_index_r);
+            else
+                fetch_page_plru_q <= fetch_page_plru_touch(
+                    fetch_page_plru_q, fetch_page_fill_touch_index);
+        end else if (fetch_page_screen_accept) begin
+            fetch_page_plru_q <= fetch_page_plru_touch(
+                fetch_page_plru_q, fetch_page_hit_index_r);
         end
     end
 
@@ -2256,7 +2492,7 @@ module openrv64_core_mtl #(
         if (!rst_n) begin
             lsu_page_valid_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
             lsu_page_write_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
-            lsu_page_write_cursor_q <= 2'd0;
+            lsu_page_plru_q <= {LSU_PAGE_SCREEN_PLRU_BITS{1'b0}};
             for (lsu_page_reset_index = 0;
                  lsu_page_reset_index < LSU_PAGE_SCREEN_ENTRIES;
                  lsu_page_reset_index = lsu_page_reset_index + 1) begin
@@ -2268,7 +2504,7 @@ module openrv64_core_mtl #(
         end else if (lsu_page_screen_invalidate) begin
             lsu_page_valid_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
             lsu_page_write_q <= {LSU_PAGE_SCREEN_ENTRIES{1'b0}};
-            lsu_page_write_cursor_q <= 2'd0;
+            lsu_page_plru_q <= {LSU_PAGE_SCREEN_PLRU_BITS{1'b0}};
         end else if (lsu_page_screen_fill) begin
             if (lsu_page_fill_match_r) begin
                 lsu_page_write_q[lsu_page_fill_match_index_r] <=
@@ -2276,9 +2512,6 @@ module openrv64_core_mtl #(
                     pmp_xlate_resp_write;
                 lsu_page_ppn_q[lsu_page_fill_match_index_r] <=
                     pmp_xlate_resp_paddr[LSU_PAGE_PPN_WIDTH+11:12];
-                if (lsu_page_screen_hit_cursor)
-                    lsu_page_write_cursor_q <=
-                        lsu_page_write_cursor_q + 1'b1;
             end else begin
                 lsu_page_valid_q[lsu_page_fill_index] <= 1'b1;
                 lsu_page_write_q[lsu_page_fill_index] <=
@@ -2287,12 +2520,18 @@ module openrv64_core_mtl #(
                     pmp_xlate_resp_vaddr[`RV64_XLEN-1:12];
                 lsu_page_ppn_q[lsu_page_fill_index] <=
                     pmp_xlate_resp_paddr[LSU_PAGE_PPN_WIDTH+11:12];
-                lsu_page_write_cursor_q <=
-                    lsu_page_fill_index + 1'b1;
             end
-        end else if (lsu_page_screen_hit_cursor) begin
-            lsu_page_write_cursor_q <=
-                lsu_page_write_cursor_q + 1'b1;
+            if (lsu_page_screen_accept)
+                lsu_page_plru_q <= lsu_page_plru_touch(
+                    lsu_page_plru_touch(lsu_page_plru_q,
+                                        lsu_page_fill_touch_index),
+                    lsu_page_hit_index_r);
+            else
+                lsu_page_plru_q <= lsu_page_plru_touch(
+                    lsu_page_plru_q, lsu_page_fill_touch_index);
+        end else if (lsu_page_screen_accept) begin
+            lsu_page_plru_q <= lsu_page_plru_touch(
+                lsu_page_plru_q, lsu_page_hit_index_r);
         end
     end
 
@@ -2644,13 +2883,13 @@ module openrv64_core_mtl #(
                 {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             xlate_local_resp_valid_q <= 1'b0;
             xlate_local_resp_tag_q <=
-                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
             xlate_local_resp_paddr_q <= {`RV64_XLEN{1'b0}};
             xlate_local_resp_access_fault_q <= 1'b0;
             xlate_local_resp_page_fault_q <= 1'b0;
             xlate_fallback_active_q <= 1'b0;
             xlate_fallback_tag_q <=
-                {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
             for (pipe_index = 0;
                  pipe_index < `OPENRV64_LSU_OUTSTANDING;
                  pipe_index = pipe_index + 1) begin
@@ -2987,6 +3226,9 @@ module openrv64_core_mtl #(
     openrv64_bus_debug_stub #(
         .FETCH_OUTSTANDING(FETCH_OUTSTANDING),
         .FETCH_SLOT_WIDTH(FETCH_SLOT_WIDTH),
+        .FETCH_PAGE_SCREEN_COUNT_WIDTH(
+            FETCH_PAGE_SCREEN_COUNT_WIDTH),
+        .LSU_PAGE_SCREEN_COUNT_WIDTH(LSU_PAGE_SCREEN_COUNT_WIDTH),
         .L1D_REQ_TAG_WIDTH(L1D_REQ_TAG_WIDTH)
     ) u_debug (
         .clk(clk),
@@ -3029,7 +3271,7 @@ module openrv64_core_mtl #(
                                       !xlate_req_bare &&
                                       lsu_xlate_req_write_i),
         .lsu_page_screen_flush(lsu_page_screen_flush),
-        .lsu_page_screen_flush_entries(lsu_page_screen_valid_count),
+        .lsu_page_screen_flush_entries(lsu_page_screen_valid_count_r),
         .lsu_page_screen_flush_sfence(lsu_page_screen_flush_sfence),
         .lsu_page_screen_flush_satp(lsu_page_screen_flush_satp),
         .lsu_page_screen_flush_pmp(lsu_page_screen_flush_pmp),
@@ -3068,7 +3310,7 @@ module openrv64_core_mtl #(
         .fetch_page_screen_miss_full(fetch_page_screen_miss_full_debug),
         .fetch_page_screen_flush(fetch_page_screen_flush),
         .fetch_page_screen_flush_entries(
-            fetch_page_screen_valid_count),
+            fetch_page_screen_valid_count_r),
         .fetch_page_screen_flush_sfence(
             fetch_page_screen_flush_sfence),
         .fetch_page_screen_flush_satp(fetch_page_screen_flush_satp),
@@ -3122,6 +3364,16 @@ module openrv64_core_mtl #(
         if ((FETCH_OUTSTANDING < 2) ||
             ((1 << FETCH_SLOT_WIDTH) != FETCH_OUTSTANDING))
             $fatal(1, "FETCH_OUTSTANDING must be a power of two >= 2");
+        if ((FETCH_PAGE_SCREEN_ENTRIES < 1) ||
+            ((FETCH_PAGE_SCREEN_ENTRIES &
+              (FETCH_PAGE_SCREEN_ENTRIES - 1)) != 0))
+            $fatal(1,
+                "FETCH_PAGE_SCREEN_ENTRIES must be a positive power of two");
+        if ((LSU_PAGE_SCREEN_ENTRIES < 1) ||
+            ((LSU_PAGE_SCREEN_ENTRIES &
+              (LSU_PAGE_SCREEN_ENTRIES - 1)) != 0))
+            $fatal(1,
+                "LSU_PAGE_SCREEN_ENTRIES must be a positive power of two");
         if (AXI_ID_WIDTH < FETCH_SLOT_WIDTH)
             $fatal(1, "AXI ID width cannot encode every fetch slot");
     end
@@ -3167,6 +3419,7 @@ module openrv64_core_mtl #(
             l1d_serial_tag_busy)
             $fatal(1, "L1D serial request reused an active global LSU tag");
     end
+
 `endif
 
 endmodule

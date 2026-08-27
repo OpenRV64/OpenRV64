@@ -38,6 +38,8 @@ module tb_4h_3p #(
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
     parameter integer L1D_SYNC_TAG_LOOKUP = 1,
     parameter integer L1D_SYNC_STORE_EXTENSION = 1,
+    parameter integer FETCH_PAGE_SCREEN_ENTRIES = 4,
+    parameter integer LSU_PAGE_SCREEN_ENTRIES = 4,
     parameter integer L2_CACHE_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
     parameter integer L2_MSHRS = 8,
@@ -699,6 +701,8 @@ module tb_4h_3p #(
                 .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
                 .L1D_SYNC_TAG_LOOKUP(L1D_SYNC_TAG_LOOKUP),
                 .L1D_SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
+                .FETCH_PAGE_SCREEN_ENTRIES(FETCH_PAGE_SCREEN_ENTRIES),
+                .LSU_PAGE_SCREEN_ENTRIES(LSU_PAGE_SCREEN_ENTRIES),
                 .L1D_CACHEABLE_BASE(PHYSICAL_BASE),
                 .L1D_CACHEABLE_SIZE(`OPENRV64_SOC_DRAM_PMA_SIZE)
             ) u_core (
@@ -3328,8 +3332,8 @@ module tb_4h_3p #(
                 u_l2.u_debug.perf_probe_issue_cycles_q,
                 u_l2.u_debug.perf_probe_ack_cycles_q);
             $display(
-                "PERF_MTL_FETCH_SCREEN name=%0s lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d fills=%0d fill_duplicates=%0d evictions=%0d evict_duplicate=%0d evict_unique=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
-                name,
+                "PERF_MTL_FETCH_SCREEN name=%0s entries=%0d lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d plru_hit_updates=%0d fills=%0d fill_duplicates=%0d evictions=%0d evict_duplicate=%0d evict_unique=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                name, FETCH_PAGE_SCREEN_ENTRIES,
                 g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
                     perf_fetch_page_screen_lookup_q,
                 g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
@@ -3373,8 +3377,8 @@ module tb_4h_3p #(
                 g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
                     perf_fetch_page_screen_flush_context_q);
             $display(
-                "PERF_MTL_LSU_SCREEN name=%0s lookups=%0d read_lookups=%0d write_lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_cross_page=%0d miss_permission=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d read_hits=%0d write_hits=%0d fills=%0d fill_updates=%0d evictions=%0d evict_writable=%0d evict_read_only=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
-                name,
+                "PERF_MTL_LSU_SCREEN name=%0s entries=%0d lookups=%0d read_lookups=%0d write_lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_cross_page=%0d miss_permission=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d plru_hit_updates=%0d read_hits=%0d write_hits=%0d fills=%0d fill_updates=%0d evictions=%0d evict_writable=%0d evict_read_only=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                name, LSU_PAGE_SCREEN_ENTRIES,
                 g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
                     perf_lsu_page_screen_lookup_q,
                 g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
@@ -3680,7 +3684,7 @@ module tb_4h_3p #(
                 u_l2.u_debug.perf_mshr_full_cycles_q -
                     debug_counter_start_q[89]);
             $display(
-                "DEBUG_MTL_FETCH_SCREEN lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d fills=%0d fill_duplicates=%0d evictions=%0d evict_duplicate=%0d evict_unique=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                "DEBUG_MTL_FETCH_SCREEN lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d plru_hit_updates=%0d fills=%0d fill_duplicates=%0d evictions=%0d evict_duplicate=%0d evict_unique=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
                 g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
                     perf_fetch_page_screen_lookup_q -
                     debug_counter_start_q[91],
@@ -3745,7 +3749,7 @@ module tb_4h_3p #(
                     perf_fetch_page_screen_flush_context_q -
                     debug_counter_start_q[116]);
             $display(
-                "DEBUG_MTL_LSU_SCREEN lookups=%0d read_lookups=%0d write_lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_cross_page=%0d miss_permission=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d hit_cursor=%0d read_hits=%0d write_hits=%0d fills=%0d fill_updates=%0d evictions=%0d evict_writable=%0d evict_read_only=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
+                "DEBUG_MTL_LSU_SCREEN lookups=%0d read_lookups=%0d write_lookups=%0d hits=%0d misses=%0d miss_disabled=%0d miss_invalidate=%0d miss_cross_page=%0d miss_permission=%0d miss_empty=%0d miss_partial=%0d miss_full=%0d plru_hit_updates=%0d read_hits=%0d write_hits=%0d fills=%0d fill_updates=%0d evictions=%0d evict_writable=%0d evict_read_only=%0d flushes=%0d flush_entries=%0d flush_sfence=%0d flush_satp=%0d flush_pmp=%0d flush_csr=%0d flush_context=%0d",
                 g_hart[0].u_core.u_bus.g_icx.u_bus.u_debug.
                     perf_lsu_page_screen_lookup_q -
                     debug_counter_start_q[101],

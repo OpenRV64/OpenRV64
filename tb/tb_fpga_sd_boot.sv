@@ -484,6 +484,18 @@ module tb_fpga_sd_boot #(
             card[11 * 512 + init_index] = (init_index * 5) ^ 8'ha7;
         for (init_index = 0; init_index < 777; init_index = init_index + 1)
             card[14 * 512 + init_index] = (init_index * 7) ^ 8'hc3;
+        /* Nonzero sector padding catches CRC engines that ignore byte_length. */
+        for (init_index = 32; init_index < 512; init_index = init_index + 1)
+            card[8 * 512 + init_index] = 8'hd1;
+        for (init_index = 700; init_index < 2 * 512;
+             init_index = init_index + 1)
+            card[9 * 512 + init_index] = 8'hd2;
+        for (init_index = 1300; init_index < 3 * 512;
+             init_index = init_index + 1)
+            card[11 * 512 + init_index] = 8'hd3;
+        for (init_index = 777; init_index < 2 * 512;
+             init_index = init_index + 1)
+            card[14 * 512 + init_index] = 8'hd4;
 
         put_u64(0, 64'h314453343656524f); /* ORV64SD1 */
         put_u32(8, 1);
@@ -526,16 +538,25 @@ module tb_fpga_sd_boot #(
                     $fatal(1,
                            "bad SD command counts CMD17=%0d CMD18=%0d CMD12=%0d",
                            cmd17_count, cmd18_count, cmd12_count);
-                if (!overlap_seen || !bank1_ready_seen ||
-                    !both_banks_ready_seen)
+                if (!overlap_seen || !bank1_ready_seen)
                     $fatal(1,
-                           "double-buffer coverage missing overlap=%0d bank1=%0d both_ready=%0d",
-                           overlap_seen, bank1_ready_seen,
-                           both_banks_ready_seen);
-                $display("tb_fpga_sd_boot: PASS mode=double-buffer cycles=%0d sectors=8 CMD17=%0d CMD18=%0d CMD12=%0d overlap=%0d bank1=%0d both_ready=%0d",
+                           "double-buffer coverage missing overlap=%0d bank1=%0d",
+                           overlap_seen, bank1_ready_seen);
+                if (both_banks_ready_seen)
+                    $fatal(1,
+                           "hardware-CRC copy path stalled with both banks ready");
+                if (dut.u_spi.stream_crc_bytes_remaining_q != 32'd0 ||
+                    ~dut.u_spi.stream_crc32_q !==
+                    card_crc32(14 * 512, 777))
+                    $fatal(1,
+                           "hardware CRC mismatch got=%08x remaining=%0d expected=%08x",
+                           ~dut.u_spi.stream_crc32_q,
+                           dut.u_spi.stream_crc_bytes_remaining_q,
+                           card_crc32(14 * 512, 777));
+                $display("tb_fpga_sd_boot: PASS mode=double-buffer cycles=%0d sectors=8 CMD17=%0d CMD18=%0d CMD12=%0d overlap=%0d bank1=%0d both_ready=%0d hardware_crc=%08x",
                          cycle_count, cmd17_count, cmd18_count, cmd12_count,
                          overlap_seen, bank1_ready_seen,
-                         both_banks_ready_seen);
+                         both_banks_ready_seen, ~dut.u_spi.stream_crc32_q);
 `endif
                 $finish;
             end

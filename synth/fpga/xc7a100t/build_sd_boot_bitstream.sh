@@ -26,6 +26,8 @@ ethernet_mdc_half_period_cycles=${FPGA_ETHERNET_MDC_HALF_PERIOD_CYCLES:-}
 ethernet_phy_reset_cycles=${FPGA_ETHERNET_PHY_RESET_CYCLES:-}
 mig_scalar_cache_enable=${FPGA_MIG_SCALAR_CACHE_ENABLE:-1}
 mig_scalar_cache_bytes=${FPGA_MIG_SCALAR_CACHE_BYTES:-32768}
+large_trace_enable=${FPGA_LARGE_TRACE_ENABLE:-0}
+wave_trace_enable=${FPGA_WAVE_TRACE_ENABLE:-0}
 
 for value_name in core_clock_hz core_clock_multiply core_clock_divide \
                   uart_reference_clock_hz; do
@@ -65,8 +67,9 @@ if [[ -z "$ethernet_mdc_half_period_cycles" ]]; then
     ethernet_mdc_half_period_cycles=$(((core_clock_hz + 4999999) / 5000000))
 fi
 if [[ -z "$ethernet_phy_reset_cycles" ]]; then
-    # Preserve the existing 110,000-cycle reset interval at 14 MHz.
-    ethernet_phy_reset_cycles=$(((core_clock_hz * 110000 + 13999999) / 14000000))
+    # YT8531SH requires at least 10 ms low after power is stable.  Hold reset
+    # for 15 ms so clock rounding and board power sequencing retain margin.
+    ethernet_phy_reset_cycles=$(((core_clock_hz * 15 + 999) / 1000))
 fi
 
 if [[ ${FPGA_SD_BOOT_PRINT_CLOCK_CONFIG:-0} == 1 ]]; then
@@ -115,6 +118,8 @@ env OUT_DIR="$output_dir" CORE_STUB="$core_stub" \
     FPGA_ETHERNET_PHY_RESET_CYCLES="$ethernet_phy_reset_cycles" \
     FPGA_MIG_SCALAR_CACHE_ENABLE="$mig_scalar_cache_enable" \
     FPGA_MIG_SCALAR_CACHE_BYTES="$mig_scalar_cache_bytes" \
+    FPGA_LARGE_TRACE_ENABLE="$large_trace_enable" \
+    FPGA_WAVE_TRACE_ENABLE="$wave_trace_enable" \
     SD_ROM_BOOT_ENABLE=1 UART_LINUX_LOAD_ENABLE=0 \
     OUTPUT_EDIF="$system_edif" OUTPUT_JSON="$system_json" \
     OUTPUT_STUB="$system_stub" OUTPUT_LOG="$output_dir/yosys-system.log" \

@@ -59,6 +59,8 @@ module openrv64_core_bus #(
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
     parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
+    parameter integer FETCH_PAGE_SCREEN_ENTRIES = 4,
+    parameter integer LSU_PAGE_SCREEN_ENTRIES = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
     parameter integer PTW_ICX_TIMEOUT_CYCLES = 65536,
     parameter [`OPENRV64_ICX_HART_ID_WIDTH-1:0] HART_ID =
@@ -160,7 +162,8 @@ module openrv64_core_bus #(
 
     input  wire                         lsu_xlate_req_valid_i,
     output wire                         lsu_xlate_req_ready_o,
-    input  wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_req_tag_i,
+    input  wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        lsu_xlate_req_tag_i,
     input  wire                         lsu_xlate_req_write_i,
     input  wire [2:0]                   lsu_xlate_req_size_i,
     input  wire [`RV64_XLEN-1:0]        lsu_xlate_req_vaddr_i,
@@ -172,7 +175,8 @@ module openrv64_core_bus #(
     input  wire                         lsu_xlate_req_mxr_i,
     output wire                         lsu_xlate_resp_valid_o,
     input  wire                         lsu_xlate_resp_ready_i,
-    output wire [`OPENRV64_LSU_TAG_WIDTH-1:0] lsu_xlate_resp_tag_o,
+    output wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                                        lsu_xlate_resp_tag_o,
     output wire [`RV64_XLEN-1:0]        lsu_xlate_resp_paddr_o,
     output wire                         lsu_xlate_resp_access_fault_o,
     output wire                         lsu_xlate_resp_page_fault_o,
@@ -213,6 +217,20 @@ module openrv64_core_bus #(
     input  wire                         req_error_i,
     input  wire                         fetch_next_valid_i,
     input  wire [`RV64_XLEN-1:0]        fetch_next_addr_i,
+
+    // Debug-only visibility for the FPGA generic-memory response pipeline.
+    // The event sequence is external capture (0), response (1), completion
+    // (2), and resume/gen_bus handoff (3).  Functional users may leave these
+    // outputs unconnected.
+    output wire                         debug_gen_pipe_event_valid_o,
+    output wire [1:0]                   debug_gen_pipe_event_stage_o,
+    output wire [`RV64_XLEN-1:0]        debug_gen_pipe_event_addr_o,
+    output wire [`RV64_XLEN-1:0]        debug_gen_pipe_event_data_o,
+    output wire                         debug_gen_pipe_cancel_now_o,
+    output wire                         debug_gen_pipe_cancelled_o,
+    output wire [1:0]                   debug_gen_state_o,
+    output wire                         debug_gen_owner_fetch_o,
+    output wire [`RV64_XLEN-1:0]        debug_gen_pipe_vaddr_o,
 
     // Post-translation PMP probe shared by both bus implementations.
     output wire                         pmp_valid_o,
@@ -332,6 +350,10 @@ module openrv64_core_bus #(
             wire [2:0] raw_pmp_size;
             wire raw_pmp_write;
             wire raw_pmp_exec;
+            wire [1:0] debug_gen_state;
+            wire debug_gen_owner_fetch;
+            wire debug_gen_fetch_cancelled;
+            wire [`RV64_XLEN-1:0] debug_gen_vaddr;
 
             reg pipe_active_q;
             reg pipe_resp_valid_q;
@@ -353,7 +375,8 @@ module openrv64_core_bus #(
             reg pipe_resp_page_fault_q;
             reg [`RV64_XLEN-1:0] pipe_resp_paddr_q;
             reg gen_xlate_resp_valid_q;
-            reg [`OPENRV64_LSU_TAG_WIDTH-1:0] gen_xlate_resp_tag_q;
+            reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+                gen_xlate_resp_tag_q;
             reg [`RV64_XLEN-1:0] gen_xlate_resp_paddr_q;
             reg gen_xlate_resp_access_fault_q;
             wire gen_lsu_valid = pipe_active_q || lsu_valid_i;
@@ -447,8 +470,18 @@ module openrv64_core_bus #(
                 .icx_resp_rdata_i(icx_resp_rdata_i),
                 .icx_resp_error_i(icx_resp_error_i),
                 .fetch_next_valid_i(fetch_next_valid_i),
-                .fetch_next_addr_i(fetch_next_addr_i)
+                .fetch_next_addr_i(fetch_next_addr_i),
+                .debug_state_o(debug_gen_state),
+                .debug_owner_fetch_o(debug_gen_owner_fetch),
+                .debug_fetch_cancelled_o(debug_gen_fetch_cancelled),
+                .debug_vaddr_o(debug_gen_vaddr)
             );
+
+            assign debug_gen_pipe_cancel_now_o = fetch_cancel_i;
+            assign debug_gen_pipe_cancelled_o = debug_gen_fetch_cancelled;
+            assign debug_gen_state_o = debug_gen_state;
+            assign debug_gen_owner_fetch_o = debug_gen_owner_fetch;
+            assign debug_gen_pipe_vaddr_o = debug_gen_vaddr;
 
             if (PIPE_GEN_MEM_4_STAGE != 0) begin : g_pipe_mem_4_stage
                 reg request_valid_q;
@@ -480,6 +513,16 @@ module openrv64_core_bus #(
                 assign raw_req_ready = resume_valid_q;
                 assign raw_req_error = resume_valid_q && resume_error_q;
                 assign raw_req_rdata = resume_rdata_q;
+
+                assign debug_gen_pipe_event_valid_o = request_complete ||
+                    response_valid_q || completion_valid_q || resume_valid_q;
+                assign debug_gen_pipe_event_stage_o = request_complete ? 2'd0 :
+                    response_valid_q ? 2'd1 :
+                    completion_valid_q ? 2'd2 : 2'd3;
+                assign debug_gen_pipe_event_addr_o = request_addr_q;
+                assign debug_gen_pipe_event_data_o = request_complete ?
+                    req_rdata_i : response_valid_q ? response_rdata_q :
+                    completion_valid_q ? completion_rdata_q : resume_rdata_q;
 
                 assign req_valid_o = request_valid_q && pmp_allow_i;
                 assign req_write_o = request_write_q;
@@ -567,6 +610,10 @@ module openrv64_core_bus #(
                 assign raw_req_error =
                     (raw_req_valid && !pmp_allow_i) || req_error_i;
                 assign raw_req_rdata = req_rdata_i;
+                assign debug_gen_pipe_event_valid_o = 1'b0;
+                assign debug_gen_pipe_event_stage_o = 2'd0;
+                assign debug_gen_pipe_event_addr_o = {`RV64_XLEN{1'b0}};
+                assign debug_gen_pipe_event_data_o = {`RV64_XLEN{1'b0}};
                 assign req_valid_o = raw_req_valid && pmp_allow_i;
                 assign req_write_o = raw_req_write;
                 assign req_addr_o = raw_req_addr;
@@ -648,7 +695,7 @@ module openrv64_core_bus #(
                     pipe_resp_paddr_q <= {`RV64_XLEN{1'b0}};
                     gen_xlate_resp_valid_q <= 1'b0;
                     gen_xlate_resp_tag_q <=
-                        {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                        {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
                     gen_xlate_resp_paddr_q <= {`RV64_XLEN{1'b0}};
                     gen_xlate_resp_access_fault_q <= 1'b0;
                 end else begin
@@ -768,6 +815,15 @@ module openrv64_core_bus #(
             // Magic memory deliberately has no translation/cache hierarchy.
             // Preserve the serialization contract for one cycle so core-side
             // restart logic still observes the initiating barrier.
+            assign debug_gen_pipe_event_valid_o = 1'b0;
+            assign debug_gen_pipe_event_stage_o = 2'd0;
+            assign debug_gen_pipe_event_addr_o = {`RV64_XLEN{1'b0}};
+            assign debug_gen_pipe_event_data_o = {`RV64_XLEN{1'b0}};
+            assign debug_gen_pipe_cancel_now_o = 1'b0;
+            assign debug_gen_pipe_cancelled_o = 1'b0;
+            assign debug_gen_state_o = 2'd0;
+            assign debug_gen_owner_fetch_o = 1'b0;
+            assign debug_gen_pipe_vaddr_o = {`RV64_XLEN{1'b0}};
             assign tlbi_busy_o = tlbi_i || context_flush_i;
             assign l1d_probe_ready_o = 1'b0;
             assign l1d_probe_hit_o = 1'b0;
@@ -900,7 +956,7 @@ module openrv64_core_bus #(
             reg [`OPENRV64_LSU_TAG_WIDTH-1:0] magic_xlate_resp_tag_q;
             reg [`RV64_XLEN-1:0] magic_xlate_resp_paddr_q;
             reg magic_dedicated_xlate_resp_valid_q;
-            reg [`OPENRV64_LSU_TAG_WIDTH-1:0]
+            reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
                 magic_dedicated_xlate_resp_tag_q;
             reg [`RV64_XLEN-1:0] magic_dedicated_xlate_resp_paddr_q;
             reg magic_dedicated_xlate_resp_access_fault_q;
@@ -1026,7 +1082,7 @@ module openrv64_core_bus #(
                     magic_xlate_resp_paddr_q <= {`RV64_XLEN{1'b0}};
                     magic_dedicated_xlate_resp_valid_q <= 1'b0;
                     magic_dedicated_xlate_resp_tag_q <=
-                        {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+                        {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
                     magic_dedicated_xlate_resp_paddr_q <=
                         {`RV64_XLEN{1'b0}};
                     magic_dedicated_xlate_resp_access_fault_q <= 1'b0;
@@ -1147,6 +1203,15 @@ module openrv64_core_bus #(
             end
 `endif
         end else begin : g_icx
+            assign debug_gen_pipe_event_valid_o = 1'b0;
+            assign debug_gen_pipe_event_stage_o = 2'd0;
+            assign debug_gen_pipe_event_addr_o = {`RV64_XLEN{1'b0}};
+            assign debug_gen_pipe_event_data_o = {`RV64_XLEN{1'b0}};
+            assign debug_gen_pipe_cancel_now_o = 1'b0;
+            assign debug_gen_pipe_cancelled_o = 1'b0;
+            assign debug_gen_state_o = 2'd0;
+            assign debug_gen_owner_fetch_o = 1'b0;
+            assign debug_gen_pipe_vaddr_o = {`RV64_XLEN{1'b0}};
             openrv64_core_mtl #(
                 .TLB_ENTRIES(TLB_ENTRIES),
                 .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
@@ -1189,6 +1254,8 @@ module openrv64_core_bus #(
                 .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
                 .ENABLE_FETCH_PAGE_SCREEN(ENABLE_FETCH_PAGE_SCREEN),
                 .ENABLE_LSU_PAGE_SCREEN(ENABLE_LSU_PAGE_SCREEN),
+                .FETCH_PAGE_SCREEN_ENTRIES(FETCH_PAGE_SCREEN_ENTRIES),
+                .LSU_PAGE_SCREEN_ENTRIES(LSU_PAGE_SCREEN_ENTRIES),
                 .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
                 .PTW_ICX_TIMEOUT_CYCLES(PTW_ICX_TIMEOUT_CYCLES),
                 .HART_ID(HART_ID)

@@ -77,6 +77,8 @@ module openrv64_rv64_top_3p #(
     parameter integer L1I_DEMAND_MSHRS = 4,
     parameter integer ENABLE_FETCH_PAGE_SCREEN = 1,
     parameter integer ENABLE_LSU_PAGE_SCREEN = 1,
+    parameter integer FETCH_PAGE_SCREEN_ENTRIES = 4,
+    parameter integer LSU_PAGE_SCREEN_ENTRIES = 4,
     parameter integer L2_TLB_ENTRIES = 256,
     parameter integer L2_TLB_WAYS = 4,
     parameter integer PTW_PTE_CACHE_ENTRIES = 64,
@@ -1047,13 +1049,15 @@ module openrv64_rv64_top_3p #(
     wire backend_mem_xlate_valid;
     wire backend_mem_xlate_ready;
     wire backend_mem_xlate_bus_ready;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+        backend_mem_xlate_tag;
     wire backend_mem_xlate_write;
     wire [2:0] backend_mem_xlate_size;
     wire [63:0] backend_mem_xlate_vaddr;
     wire backend_mem_xlate_resp_valid;
     wire backend_mem_xlate_resp_ready;
-    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] backend_mem_xlate_resp_tag;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0]
+        backend_mem_xlate_resp_tag;
     wire [63:0] backend_mem_xlate_resp_paddr;
     wire backend_mem_xlate_resp_access_fault;
     wire backend_mem_xlate_resp_page_fault;
@@ -1435,6 +1439,8 @@ module openrv64_rv64_top_3p #(
         .L1I_DEMAND_MSHRS(L1I_DEMAND_MSHRS),
         .ENABLE_FETCH_PAGE_SCREEN(ENABLE_FETCH_PAGE_SCREEN),
         .ENABLE_LSU_PAGE_SCREEN(ENABLE_LSU_PAGE_SCREEN),
+        .FETCH_PAGE_SCREEN_ENTRIES(FETCH_PAGE_SCREEN_ENTRIES),
+        .LSU_PAGE_SCREEN_ENTRIES(LSU_PAGE_SCREEN_ENTRIES),
         .L2_TLB_ENTRIES(L2_TLB_ENTRIES),
         .L2_TLB_WAYS(L2_TLB_WAYS),
         .PTW_PTE_CACHE_ENTRIES(PTW_PTE_CACHE_ENTRIES),
