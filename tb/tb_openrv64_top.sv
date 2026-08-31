@@ -9,9 +9,12 @@
 module tb_openrv64_top #(
     parameter bit PIPE_1P_MEM_4_STAGE = 1'b0,
     parameter bit PIPE_1P_DECODE_QUEUE = 1'b0,
+    parameter bit BANKED_GPR = 1'b1,
     parameter bit FPGA_GPR_LUTRAM = 1'b0,
     parameter int unsigned MEM_RESPONSE_DELAY_CYCLES = 0,
-    parameter bit REQUIRE_BP_COVERAGE = 1'b1
+    // Banked bring-up disables fast predecode-target replay, so its timing
+    // does not promise the predictor-stall coverage checked by this test.
+    parameter bit REQUIRE_BP_COVERAGE = !BANKED_GPR
 );
 
     localparam logic [63:0] RESET_VECTOR = 64'h0000_0000_0000_0100;
@@ -94,6 +97,7 @@ module tb_openrv64_top #(
         .ENABLE_TRACE(1'b1),
         .PIPE_1P_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
         .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE),
+        .BANKED_GPR(BANKED_GPR),
         .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM)
     ) dut (
         .clk(clk),

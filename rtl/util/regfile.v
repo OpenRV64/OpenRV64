@@ -18,39 +18,61 @@ module cmn_reg_file #(
     parameter integer READ_PORT_BITS  =
         (READ_PORTS > 1) ? $clog2(READ_PORTS) : 1,
     parameter integer WRITE_PORT_BITS =
-        (WRITE_PORTS > 1) ? $clog2(WRITE_PORTS) : 1
+        (WRITE_PORTS > 1) ? $clog2(WRITE_PORTS) : 1,
+    parameter integer FPGA_LUTRAM = 0
 ) (
     input  wire                      clk,
     input  wire                      rst_n,
 
-    input  wire [ADDR_WIDTH-1:0]     rp_addr_i  [READ_PORTS-1:0],
-    output wire [REG_WIDTH-1:0]      rp_data_o  [READ_PORTS-1:0],
-    input  wire                      rp_req_i   [READ_PORTS-1:0],
-    output wire                      rp_valid_o [READ_PORTS-1:0],
+    input  wire [READ_PORTS-1:0][ADDR_WIDTH-1:0] rp_addr_i,
+    output wire [READ_PORTS-1:0][REG_WIDTH-1:0]  rp_data_o,
+    input  wire [READ_PORTS-1:0]                 rp_req_i,
+    output wire [READ_PORTS-1:0]                 rp_valid_o,
 
-    input  wire [ADDR_WIDTH-1:0]     wp_addr_i  [WRITE_PORTS-1:0],
-    input  wire [REG_WIDTH-1:0]      wp_data_i  [WRITE_PORTS-1:0],
-    input  wire                      wp_req_i   [WRITE_PORTS-1:0],
-    output wire                      wp_valid_o [WRITE_PORTS-1:0]
+    input  wire [WRITE_PORTS-1:0][ADDR_WIDTH-1:0] wp_addr_i,
+    input  wire [WRITE_PORTS-1:0][REG_WIDTH-1:0]  wp_data_i,
+    input  wire [WRITE_PORTS-1:0]                 wp_req_i,
+    output wire [WRITE_PORTS-1:0]                 wp_valid_o
 );
 
     wire [REG_WIDTH-1:0] bank_read_data [NUM_BANKS-1:0];
     reg [BANK_REG_BITS-1:0] bank_read_sel [NUM_BANKS-1:0];
     reg bank_read_req [NUM_BANKS-1:0];
 
+    wire [ADDR_WIDTH-1:0] read_port_addr [READ_PORTS-1:0];
+    wire [ADDR_WIDTH-1:0] write_port_addr [WRITE_PORTS-1:0];
+    wire [REG_WIDTH-1:0] write_port_data [WRITE_PORTS-1:0];
+
     reg [REG_WIDTH-1:0] bank_write_data [NUM_BANKS-1:0];
     reg [BANK_REG_BITS-1:0] bank_write_sel [NUM_BANKS-1:0];
     reg bank_write_req [NUM_BANKS-1:0];
 
     genvar bank_id;
+    genvar input_read_port;
+    genvar input_write_port;
     generate
+        for (input_read_port = 0; input_read_port < READ_PORTS;
+             input_read_port = input_read_port + 1) begin : g_read_inputs
+            assign read_port_addr[input_read_port] =
+                rp_addr_i[input_read_port];
+        end
+
+        for (input_write_port = 0; input_write_port < WRITE_PORTS;
+             input_write_port = input_write_port + 1) begin : g_write_inputs
+            assign write_port_addr[input_write_port] =
+                wp_addr_i[input_write_port];
+            assign write_port_data[input_write_port] =
+                wp_data_i[input_write_port];
+        end
+
         for (bank_id = 0; bank_id < NUM_BANKS;
              bank_id = bank_id + 1) begin : g_banks
             cmn_reg_bank #(
                 .REG_WIDTH(REG_WIDTH),
                 .REG_NUM(BANK_SIZE),
                 .READ_PORTS(1),
-                .WRITE_PORTS(1)
+                .WRITE_PORTS(1),
+                .FPGA_LUTRAM(FPGA_LUTRAM)
             ) bank (
                 .clk(clk),
                 .read_val_o(bank_read_data[bank_id]),
@@ -104,12 +126,12 @@ module cmn_reg_file #(
 
             if (rst_n && rp_req_i[read_candidate] &&
                 !read_valid_q[read_candidate]) begin
-                selected_read_bank = rp_addr_i[read_candidate]
+                selected_read_bank = read_port_addr[read_candidate]
                     [BANK_SEL_BITS-1:0];
                 if (!bank_read_req[selected_read_bank]) begin
                     bank_read_req[selected_read_bank] = 1'b1;
                     bank_read_sel[selected_read_bank] =
-                        rp_addr_i[read_candidate]
+                        read_port_addr[read_candidate]
                             [ADDR_WIDTH-1:BANK_SEL_BITS];
                     read_grant[read_candidate] = 1'b1;
                 end
@@ -140,15 +162,15 @@ module cmn_reg_file #(
 
             if (rst_n && wp_req_i[write_candidate] &&
                 !write_valid_q[write_candidate]) begin
-                selected_write_bank = wp_addr_i[write_candidate]
+                selected_write_bank = write_port_addr[write_candidate]
                     [BANK_SEL_BITS-1:0];
                 if (!bank_write_req[selected_write_bank]) begin
                     bank_write_req[selected_write_bank] = 1'b1;
                     bank_write_sel[selected_write_bank] =
-                        wp_addr_i[write_candidate]
+                        write_port_addr[write_candidate]
                             [ADDR_WIDTH-1:BANK_SEL_BITS];
                     bank_write_data[selected_write_bank] =
-                        wp_data_i[write_candidate];
+                        write_port_data[write_candidate];
                     write_grant[write_candidate] = 1'b1;
                 end
             end
@@ -198,7 +220,7 @@ module cmn_reg_file #(
                  state_read_port = state_read_port + 1) begin
                 if (read_grant[state_read_port]) begin
                     read_response_bank_q[state_read_port] <=
-                        rp_addr_i[state_read_port][BANK_SEL_BITS-1:0];
+                        read_port_addr[state_read_port][BANK_SEL_BITS-1:0];
                 end
             end
 
@@ -213,6 +235,26 @@ module cmn_reg_file #(
             end
         end
     end
+
+`ifndef SYNTHESIS
+    // Stable hierarchy-visible view used by core-level simulation and trace
+    // code. Address zero is omitted so element zero represents physical p1,
+    // matching the existing PRF debug-vector convention.
+    wire [REG_WIDTH-1:0] regs [1:REG_COUNT-1];
+    wire [(REG_COUNT-1)*REG_WIDTH-1:0] prf_debug_regs;
+    genvar debug_reg;
+    generate
+        for (debug_reg = 1; debug_reg < REG_COUNT;
+             debug_reg = debug_reg + 1) begin : g_debug_reg
+            localparam integer DEBUG_BANK = debug_reg % NUM_BANKS;
+            localparam integer DEBUG_ROW = debug_reg / NUM_BANKS;
+
+            assign regs[debug_reg] =
+                g_banks[DEBUG_BANK].bank.read_lines[DEBUG_ROW];
+            assign prf_debug_regs[
+                (debug_reg-1)*REG_WIDTH +: REG_WIDTH] = regs[debug_reg];
+        end
+    endgenerate
 
     integer hazard_bank;
     always @(posedge clk or negedge rst_n) begin
@@ -248,5 +290,6 @@ module cmn_reg_file #(
         if ((BANK_SIZE & (BANK_SIZE - 1)) != 0)
             $fatal(1, "cmn_reg_file: BANK_SIZE must be a power of two.");
     end
+`endif
 
 endmodule

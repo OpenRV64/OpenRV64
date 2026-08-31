@@ -14,15 +14,15 @@ module tb_regfile;
     reg clk;
     reg rst_n;
 
-    reg  [ADDR_WIDTH-1:0] rp_addr [READ_PORTS-1:0];
-    wire [REG_WIDTH-1:0] rp_data [READ_PORTS-1:0];
-    reg                  rp_req [READ_PORTS-1:0];
-    wire                 rp_valid [READ_PORTS-1:0];
+    reg  [READ_PORTS-1:0][ADDR_WIDTH-1:0] rp_addr;
+    wire [READ_PORTS-1:0][REG_WIDTH-1:0] rp_data;
+    reg  [READ_PORTS-1:0] rp_req;
+    wire [READ_PORTS-1:0] rp_valid;
 
-    reg  [ADDR_WIDTH-1:0] wp_addr [WRITE_PORTS-1:0];
-    reg  [REG_WIDTH-1:0] wp_data [WRITE_PORTS-1:0];
-    reg                  wp_req [WRITE_PORTS-1:0];
-    wire                 wp_valid [WRITE_PORTS-1:0];
+    reg  [WRITE_PORTS-1:0][ADDR_WIDTH-1:0] wp_addr;
+    reg  [WRITE_PORTS-1:0][REG_WIDTH-1:0] wp_data;
+    reg  [WRITE_PORTS-1:0] wp_req;
+    wire [WRITE_PORTS-1:0] wp_valid;
 
     cmn_reg_file #(
         .REG_WIDTH(REG_WIDTH),

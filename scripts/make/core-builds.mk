@@ -86,6 +86,11 @@ $(RV64I_GPR_SIM_BUILD): $(RV64I_GPR_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_GPR_SIM_BUILD) $(RV64I_GPR_SIM_SRCS)
 
+$(RV64I_GPR_BANKED_SIM_BUILD): $(RV64I_GPR_BANKED_SIM_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_rv64i_gpr_banked \
+		-o $(RV64I_GPR_BANKED_SIM_BUILD) $(RV64I_GPR_BANKED_SIM_SRCS)
+
 $(RV64I_GPR_3P_SIM_BUILD): rtl/core/regs/prf.v \
 		rtl/core/regs/rv64-i-gpr_3p.v tb/tb_rv64-i-gpr_3p.sv
 	mkdir -p sim
@@ -195,6 +200,12 @@ $(DISPATCH_3P_SIM_BUILD): rtl/core/dispatch/dispatch_3p.v \
 		rtl/core/dispatch/dispatch_issue_3p.v \
 		rtl/core/dispatch/dispatch_control_3p.v \
 		rtl/core/dispatch/dispatch_3p.v tb/tb_dispatch_3p.sv
+
+$(DISPATCH_3P_BANKED_SIM_BUILD): $(DISPATCH_3P_BANKED_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_dispatch_3p_banked \
+		-o $(DISPATCH_3P_BANKED_SIM_BUILD) \
+		$(DISPATCH_3P_BANKED_SIM_SRCS)
 
 $(FD_DISPATCH_SIM_BUILD): $(FD_DISPATCH_SRCS) tb/tb_fd_dispatch.sv
 	mkdir -p sim

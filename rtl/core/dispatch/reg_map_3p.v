@@ -163,31 +163,40 @@ module openrv64_dispatch_reg_map_3p #(
         candidate_pipe_i[2*`OPENRV64_EXEC_PIPE_WIDTH +:
                          `OPENRV64_EXEC_PIPE_WIDTH];
 
-    integer port_idx;
+    integer retire_port_idx;
     reg [31:0] retire_write_hot;
-    reg [31:0] allocation_write_hot;
-    reg [`RV64_REG_ADDR_WIDTH-1:0] port_addr;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] retire_port_addr;
     always @* begin
         retire_write_hot = 32'd0;
+
+        for (retire_port_idx = 0; retire_port_idx < 3;
+             retire_port_idx = retire_port_idx + 1) begin
+            retire_port_addr = retire_rd_addr_i[
+                retire_port_idx*`RV64_REG_ADDR_WIDTH +:
+                `RV64_REG_ADDR_WIDTH];
+            if (retire_valid_i[retire_port_idx] &&
+                retire_reg_write_i[retire_port_idx] &&
+                (retire_port_addr != `RV64_REG_X0)) begin
+                retire_write_hot[retire_port_addr] = 1'b1;
+            end
+        end
+    end
+
+    integer allocation_port_idx;
+    reg [31:0] allocation_write_hot;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] allocation_port_addr;
+    always @* begin
         allocation_write_hot = 32'd0;
 
-        for (port_idx = 0; port_idx < 3; port_idx = port_idx + 1) begin
-            port_addr = retire_rd_addr_i[
-                port_idx*`RV64_REG_ADDR_WIDTH +:
+        for (allocation_port_idx = 0; allocation_port_idx < 3;
+             allocation_port_idx = allocation_port_idx + 1) begin
+            allocation_port_addr = candidate_rd_addr_i[
+                allocation_port_idx*`RV64_REG_ADDR_WIDTH +:
                 `RV64_REG_ADDR_WIDTH];
-            if (retire_valid_i[port_idx] &&
-                retire_reg_write_i[port_idx] &&
-                (port_addr != `RV64_REG_X0)) begin
-                retire_write_hot[port_addr] = 1'b1;
-            end
-
-            port_addr = candidate_rd_addr_i[
-                port_idx*`RV64_REG_ADDR_WIDTH +:
-                `RV64_REG_ADDR_WIDTH];
-            if (allocation_fire_i[port_idx] &&
-                candidate_reg_write_i[port_idx] &&
-                (port_addr != `RV64_REG_X0)) begin
-                allocation_write_hot[port_addr] = 1'b1;
+            if (allocation_fire_i[allocation_port_idx] &&
+                candidate_reg_write_i[allocation_port_idx] &&
+                (allocation_port_addr != `RV64_REG_X0)) begin
+                allocation_write_hot[allocation_port_addr] = 1'b1;
             end
         end
     end

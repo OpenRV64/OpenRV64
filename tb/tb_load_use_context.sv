@@ -3,7 +3,8 @@
 `include "core/exec/bp/defs.v"
 
 module tb_load_use_context #(
-    parameter bit DEBUG_SERIALIZE_ALL_1P = 1'b0
+    parameter bit DEBUG_SERIALIZE_ALL_1P = 1'b0,
+    parameter bit BANKED_GPR = 1'b1
 );
 
 `ifdef OPENRV64_LOAD_USE_NETLIST
@@ -78,7 +79,8 @@ module tb_load_use_context #(
         .ENABLE_LOAD_FORWARDING(1'b0),
         .PIPE_1P_MEM_4_STAGE(1'b1),
         .PIPE_1P_DECODE_QUEUE(1'b1),
-        .FPGA_GPR_LUTRAM(1'b1),
+        .BANKED_GPR(BANKED_GPR),
+        .FPGA_GPR_LUTRAM(!BANKED_GPR),
         .DEBUG_SERIALIZE_ALL_1P(DEBUG_SERIALIZE_ALL_1P),
         .ENABLE_TRACE(1'b1),
         .L1D_CACHEABLE_BASE(DATA_MEMORY_BASE),

@@ -105,11 +105,28 @@ $(BACKEND_3P_SIM_BUILD): tb/tb_backend_3p.sv $(BACKEND_SRCS) \
 		$(BACKEND_SRCS) $(DISPATCH_SRCS) $(REG_SRCS) $(EXEC_SRCS) \
 		$(RETIRE_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) tb/tb_backend_3p.sv
 
+$(BACKEND_3P_BANKED_SIM_BUILD): tb/tb_backend_3p_banked.sv \
+	$(BACKEND_SRCS) $(DISPATCH_SRCS) $(REG_SRCS) $(EXEC_SRCS) \
+	$(RETIRE_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_backend_3p_banked \
+		-o $(BACKEND_3P_BANKED_SIM_BUILD) \
+		$(BACKEND_SRCS) $(DISPATCH_SRCS) $(REG_SRCS) $(EXEC_SRCS) \
+		$(RETIRE_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) \
+		tb/tb_backend_3p_banked.sv
+
 $(TOP_3P_SIM_BUILD): tb/tb_top_3p.sv rtl/openrv64_top.sv $(CORE_SRCS) \
 	$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(TOP_3P_SIM_BUILD) \
 		rtl/openrv64_top.sv $(CORE_SRCS) tb/tb_top_3p.sv
+
+$(TOP_3P_BANKED_SIM_BUILD): tb/tb_top_3p_banked.sv \
+	rtl/openrv64_top.sv $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -DOPENRV64_3P_BANKED_BACKEND \
+		-s tb_top_3p_banked -o $(TOP_3P_BANKED_SIM_BUILD) \
+		rtl/openrv64_top.sv $(CORE_SRCS) tb/tb_top_3p_banked.sv
 
 $(TOP_4PF_SIM_BUILD): tb/tb_top_4pf.sv $(CORE_4PF_SRCS) \
 		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)

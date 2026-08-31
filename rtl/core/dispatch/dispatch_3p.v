@@ -16,6 +16,7 @@ module openrv64_dispatch_3p #(
     parameter integer RELAX_HAZARDS = 0,
     parameter integer FREE_BRANCHES = 0,
     parameter integer ENABLE_EQ_BRANCH_PAIRING = 1,
+    parameter integer MAX_ISSUE_LANES = 3,
     parameter integer COUNT_WIDTH = $clog2(QUEUE_DEPTH + 1)
 ) (
     input  wire                         clk,
@@ -92,9 +93,9 @@ module openrv64_dispatch_3p #(
     reg [COUNT_WIDTH-1:0] count_q;
 
     wire [2:0] candidate_valid = {
-        (count_q > 2),
-        (count_q > 1),
-        (count_q > 0)
+        (MAX_ISSUE_LANES > 2) && (count_q > 2),
+        (MAX_ISSUE_LANES > 1) && (count_q > 1),
+        (MAX_ISSUE_LANES > 0) && (count_q > 0)
     };
     wire [2:0] candidate_uses_rs1 = {
         (count_q > 2) ? uses_rs1_q[2] : 1'b0,
@@ -753,6 +754,11 @@ module openrv64_dispatch_3p #(
     };
 
 `ifndef SYNTHESIS
+    initial begin
+        if ((MAX_ISSUE_LANES < 1) || (MAX_ISSUE_LANES > 3))
+            $fatal(1, "3p dispatch issue width must be between one and three");
+    end
+
     always @(posedge clk) begin
         if (rst_n && !flush_i && !squash_frontend_i) begin
             if ((decode_valid_i != 3'b000) &&

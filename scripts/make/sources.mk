@@ -40,10 +40,13 @@ DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v
 	rtl/core/decode/imm.v rtl/core/decode/alu.v \
 	rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v rtl/core/decode/fence.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v rtl/core/decode/reg/system.v
-REG_SRCS := rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr.v \
+REG_SRCS := rtl/util/regfile.v \
+	rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr.v \
+	rtl/core/regs/rv64-i-gpr-banked.v \
 	rtl/core/regs/rv64-i-gpr_3p.v \
 	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) rtl/core/regs/rv64-i-csrs.v
-RENAME_SRCS := rtl/core/rename/identity.v
+RENAME_SRCS := rtl/core/rename/identity.v \
+	rtl/core/rename/identity_banked.v
 FETCH_SRCS := $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
@@ -89,6 +92,7 @@ ICX_COHERENT_SRCS := $(COHERENT_DEBUG_STUB_SRCS) \
 	rtl/complex/2h/icx.v rtl/complex/4h/icx.v
 DISPATCH_SRCS := $(RENAME_SRCS) rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_3p.v \
+	rtl/core/dispatch/dispatch_3p_banked.v \
 	rtl/core/dispatch/dispatch_window_3p.v \
 	rtl/core/dispatch/dispatch_barrier_3p.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
@@ -118,9 +122,11 @@ EXCEPT_SRCS := rtl/core/except/except-defs.v rtl/core/except/except.v \
 	rtl/core/except/vector.v
 STAGE_SRCS := rtl/core/stage/stage.v rtl/core/stage/elastic_buffer.v
 RETIRE_SRCS := rtl/core/retire/retire.v rtl/core/retire/retire_queue_3p.v \
-	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v
+	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v \
+	rtl/core/retire/retire_3p_banked.v
 TRACE_SRCS := rtl/core/trace/trace-defs.v
-BACKEND_SRCS := rtl/core/backend/backend_3p.v
+BACKEND_SRCS := rtl/core/backend/backend_3p.v \
+	rtl/core/backend/backend_3p_banked.v
 CORE_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) $(FETCH_SRCS) $(BUS_SRCS) $(DECODE_SRCS) $(REG_SRCS) \
@@ -150,7 +156,9 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) \
 	rtl/core/regs/rv64-i-csrs.v $(RENAME_SRCS) \
 	rtl/core/dispatch/reg_map_3p.v \
-	rtl/core/dispatch/dispatch_3p.v rtl/core/dispatch/dispatch_window_3p.v \
+	rtl/core/dispatch/dispatch_3p.v \
+	rtl/core/dispatch/dispatch_3p_banked.v \
+	rtl/core/dispatch/dispatch_window_3p.v \
 	rtl/core/dispatch/dispatch_barrier_3p.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v rtl/core/dispatch/dispatch.v \
@@ -165,7 +173,8 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/exec/lsu/rv64-a.v rtl/core/exec/br.v $(BP_SRC) \
 	rtl/core/exec/system/csr.v rtl/core/retire/retire_queue_3p.v \
 	rtl/core/retire/retire_records_3p.v \
-	rtl/core/retire/retire_3p.v $(EXCEPT_SRCS) $(TRACE_SRCS)
+	rtl/core/retire/retire_3p.v rtl/core/retire/retire_3p_banked.v \
+	$(EXCEPT_SRCS) $(TRACE_SRCS)
 CLINT_SRCS := rtl/clint/clint.v
 PLIC_SRCS := rtl/plic/plic.v
 DEBUG_SNAPSHOT_SRCS := rtl/soc/debug/snapshot_mem.sv \
@@ -274,6 +283,17 @@ ISA_BITMANIP_SIM_SRCS := tb/tb_isa_bitmanip.sv
 ISA_FP_SIM_SRCS := tb/tb_isa_fp.sv
 STAGE_SIM_SRCS := tb/tb_stage.sv
 RV64I_GPR_SIM_SRCS := tb/tb_rv64-i-gpr.sv
+RV64I_GPR_BANKED_SIM_SRCS := rtl/util/regfile.v \
+	rtl/core/regs/rv64-i-gpr.v \
+	rtl/core/regs/rv64-i-gpr-banked.v tb/tb_rv64-i-gpr-banked.sv
+DISPATCH_3P_BANKED_SIM_SRCS := rtl/util/regfile.v \
+	rtl/core/dispatch/reg_map_3p.v \
+	rtl/core/dispatch/dispatch_barrier_3p.v \
+	rtl/core/dispatch/dispatch_issue_3p.v \
+	rtl/core/dispatch/dispatch_control_3p.v \
+	rtl/core/dispatch/dispatch_3p.v \
+	rtl/core/dispatch/dispatch_3p_banked.v \
+	tb/tb_dispatch_3p_banked.sv
 RV64I_CSRS_SIM_SRCS := tb/tb_rv64-i-csrs.sv
 RV64I_PMP_SIM_SRCS := tb/tb_rv64-i-pmp.sv
 FETCH_SIM_SRCS := tb/tb_fetch.sv

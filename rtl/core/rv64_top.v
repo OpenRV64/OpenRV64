@@ -33,6 +33,7 @@ module openrv64_rv64_top #(
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter PIPE_1P_MEM_4_STAGE = 0,
     parameter PIPE_1P_DECODE_QUEUE = 0,
+    parameter BANKED_GPR = 1,
     parameter FPGA_GPR_LUTRAM = 0,
     parameter DEBUG_SERIALIZE_ALL_1P = 0,
     parameter integer TLB_ENTRIES = 16,
@@ -151,6 +152,20 @@ module openrv64_rv64_top #(
 
     localparam TRACE_ID_WIDTH = 64;
     localparam IF_ID_WIDTH = `RV64_FETCH_DECODE_BUS_WIDTH + TRACE_ID_WIDTH;
+    // The initial banked bring-up waits for architectural writeback rather
+    // than trying to extend the old one-cycle bypass paths across a read
+    // response.  Fast predecode-target replay likewise cannot yet tolerate
+    // the new dispatch backpressure.
+    localparam GPR_FORWARDING = ENABLE_FORWARDING && !BANKED_GPR;
+    localparam GPR_PREDECODE_TARGETS =
+        ENABLE_PREDECODE_TARGETS && !BANKED_GPR;
+
+`ifndef SYNTHESIS
+    initial begin
+        if (BANKED_GPR && !PIPE_ID_EX)
+            $fatal(1, "Banked 1P GPR requires registered dispatch.");
+    end
+`endif
 
     reg [`RV64_XLEN-1:0] pc_q;
     reg [`RV64_XLEN-1:0] dbg_pc_q;
@@ -290,6 +305,8 @@ module openrv64_rv64_top #(
 
     wire [`RV64_XLEN-1:0] gpr_rs1_data;
     wire [`RV64_XLEN-1:0] gpr_rs2_data;
+    wire gpr_read_ready;
+    wire gpr_write_ready;
     wire wb_write;
     wire [`RV64_REG_ADDR_WIDTH-1:0] wb_rd_addr;
     wire [`RV64_XLEN-1:0] wb_rd_data;
@@ -673,9 +690,11 @@ module openrv64_rv64_top #(
     assign global_issue_inhibit = issue_inhibit_immediate ||
                                   global_issue_inhibit_q;
     assign dispatch_exec_issue_valid = dispatch_exec_valid &&
+                                       gpr_read_ready &&
                                        !global_issue_inhibit &&
                                        !debug_serial_issue_block;
     assign dispatch_exec_clear = exec_clear &&
+                                 gpr_read_ready &&
                                  !global_issue_inhibit &&
                                  !debug_serial_issue_block;
     assign exec_mem_issue_valid = exec_mem_valid &&
@@ -752,7 +771,7 @@ module openrv64_rv64_top #(
 
     openrv64_fetch #(
         .ENABLE_TRACE(ENABLE_TRACE),
-        .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS)
+        .ENABLE_PREDECODE_TARGETS(GPR_PREDECODE_TARGETS)
     ) u_fetch (
         .clk(clk),
         .rst_n(rst_n),
@@ -986,16 +1005,23 @@ module openrv64_rv64_top #(
         .decode_stall_o(bp_decode_stall)
     );
 
-    openrv64_rv64i_gpr #(
+    openrv64_rv64i_gpr_1p #(
+        .BANKED(BANKED_GPR),
         .FPGA_LUTRAM(FPGA_GPR_LUTRAM)
     ) u_gpr (
         .clk(clk),
         .rst_n(rst_n),
+        .read_valid_i(dispatch_exec_valid),
+        .read_clear_i(instruction_issue_fire),
+        .read_flush_i(flush_id_ex),
+        .read_ready_o(gpr_read_ready),
         .rs1_addr_i(dispatch_exec_rs1_addr),
         .rs1_data_o(gpr_rs1_data),
         .rs2_addr_i(dispatch_exec_rs2_addr),
         .rs2_data_o(gpr_rs2_data),
         .rd_write_i(wb_write),
+        .rd_clear_i(retire_accept),
+        .rd_ready_o(gpr_write_ready),
         .rd_addr_i(wb_rd_addr),
         .rd_data_i(wb_rd_data)
     );
@@ -1143,7 +1169,7 @@ module openrv64_rv64_top #(
     openrv64_dispatch #(
         .BACKEND_CONFIG(BACKEND_CONFIG),
         .REGISTERED(PIPE_ID_EX),
-        .ENABLE_FORWARDING(ENABLE_FORWARDING),
+        .ENABLE_FORWARDING(GPR_FORWARDING),
         .DECODE_STAGE_1P(PIPE_1P_DECODE_QUEUE)
     ) u_dispatch (
         .clk(clk),
@@ -1268,7 +1294,7 @@ module openrv64_rv64_top #(
         .PIPE_EX_MEM(PIPE_EX_MEM),
         .PIPE_MEM_WB(PIPE_MEM_WB),
         .ENABLE_RV64M(ENABLE_RV64M),
-        .ENABLE_FORWARDING(ENABLE_FORWARDING),
+        .ENABLE_FORWARDING(GPR_FORWARDING),
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING)
     ) u_exec (
         .clk(clk),
@@ -1446,7 +1472,7 @@ module openrv64_rv64_top #(
     // Deliberately slow PMPADDR and SATP writes have already left execute when
     // their sequencers start.  Hold retirement and younger issue until their
     // atomic commits complete.
-    assign exec_wb_clear = !csr_serial_busy_q;
+    assign exec_wb_clear = !csr_serial_busy_q && gpr_write_ready;
 
     openrv64_retire u_retire (
         .valid_i(exec_wb_valid),

@@ -427,9 +427,9 @@ module openrv64_exec_lsu #(
     wire misaligned_accept =
         misaligned_load_accept || misaligned_store_accept;
     wire misaligned_load_candidate =
-        load_issue_valid_i && load_requires_misaligned && load_order_match;
+        load_requires_misaligned && load_order_match;
     wire misaligned_store_candidate =
-        store_issue_valid_i && store_requires_misaligned && store_order_match;
+        store_requires_misaligned && store_order_match;
     wire misaligned_can_start = misaligned_pending_q && lsq_quiescent &&
                                 !atomic_active && !misaligned_active;
     wire misaligned_start_valid = misaligned_can_start;

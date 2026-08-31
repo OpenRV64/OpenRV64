@@ -54,6 +54,9 @@ sim-rename-identity: $(RENAME_IDENTITY_SIM_BUILD)
 sim-rv64-i-gpr: $(RV64I_GPR_SIM_BUILD)
 	vvp $(RV64I_GPR_SIM_BUILD)
 
+sim-rv64-i-gpr-banked: $(RV64I_GPR_BANKED_SIM_BUILD)
+	vvp $(RV64I_GPR_BANKED_SIM_BUILD)
+
 sim-rv64-i-gpr-3p: $(RV64I_GPR_3P_SIM_BUILD)
 	vvp $(RV64I_GPR_3P_SIM_BUILD)
 
@@ -98,6 +101,9 @@ sim-dispatch-window-3p: $(DISPATCH_WINDOW_3P_SIM_BUILD)
 
 sim-dispatch-3p: $(DISPATCH_3P_SIM_BUILD)
 	vvp $(DISPATCH_3P_SIM_BUILD)
+
+sim-dispatch-3p-banked: $(DISPATCH_3P_BANKED_SIM_BUILD)
+	vvp $(DISPATCH_3P_BANKED_SIM_BUILD)
 
 sim-fd-dispatch: $(FD_DISPATCH_SIM_BUILD)
 	vvp $(FD_DISPATCH_SIM_BUILD)
@@ -295,8 +301,14 @@ sim-retire-3p: $(RETIRE_3P_SIM_BUILD)
 sim-backend-3p: $(BACKEND_3P_SIM_BUILD)
 	vvp $(BACKEND_3P_SIM_BUILD)
 
+sim-backend-3p-banked: $(BACKEND_3P_BANKED_SIM_BUILD)
+	vvp $(BACKEND_3P_BANKED_SIM_BUILD)
+
 sim-top-3p: $(TOP_3P_SIM_BUILD)
 	vvp $(TOP_3P_SIM_BUILD)
+
+sim-top-3p-banked: $(TOP_3P_BANKED_SIM_BUILD)
+	vvp $(TOP_3P_BANKED_SIM_BUILD)
 
 sim-top-4pf: $(TOP_4PF_SIM_BUILD) $(FP_DAXPY_MEMH)
 	vvp $(TOP_4PF_SIM_BUILD)

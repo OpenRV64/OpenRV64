@@ -93,6 +93,7 @@ chparam -set RESET_VECTOR 4096 \
         -set ENABLE_LOAD_FORWARDING 0 \
         -set PIPE_1P_MEM_4_STAGE $pipe_1p_mem_4_stage \
         -set PIPE_1P_DECODE_QUEUE $pipe_1p_decode_queue \
+        -set BANKED_GPR 0 \
         -set PMP_ACTIVE_ENTRIES 8 \
         -set FPGA_GPR_LUTRAM 1 \
         -set DEBUG_SERIALIZE_ALL_1P $debug_serialize_all_1p \
