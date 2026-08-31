@@ -709,6 +709,7 @@ module openrv64_rv64_top_3p #(
                 .illegal_o(decode_illegal[decode_lane]),
                 .opcode_o(), .funct3_o(), .funct7_o(), .funct12_o(),
                 .class_sel_o(), .format_sel_o(),
+                .compressed_o(), .instr_bytes_o(),
                 .uses_rs1_o(decode_uses_rs1[decode_lane]),
                 .uses_rs2_o(decode_uses_rs2[decode_lane]), .uses_rd_o(),
                 .rs1_addr_o(decode_rs1[decode_lane*5 +: 5]),

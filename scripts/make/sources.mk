@@ -244,11 +244,13 @@ MTL_PMP_SIM_SRCS := tb/tb_mtl_pmp.sv
 PTW_CONTEXT_SIM_SRCS := rtl/openrv64_top.sv tb/tb_ptw_context.sv
 DECODE_EARLY_SIM_SRCS := tb/tb_decode_early.sv
 DECODE_TOP_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
+	rtl/core/decode/rv64-c.v \
 	rtl/core/decode/alu.v rtl/core/decode/lsu.v rtl/core/decode/br.v rtl/core/decode/system.v rtl/core/decode/fence.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v \
 	rtl/core/decode/reg/system.v \
 	tb/tb_decode_top.sv
 DECODE_RV64FD_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
+	rtl/core/decode/rv64-c.v \
 	rtl/core/decode/alu.v rtl/core/decode/lsu.v rtl/core/decode/br.v \
 	rtl/core/decode/system.v rtl/core/decode/fence.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v \

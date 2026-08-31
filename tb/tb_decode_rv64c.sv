@@ -12,6 +12,8 @@ module tb_decode_rv64c;
 
     wire decode_valid;
     wire decode_illegal;
+    wire top_compressed;
+    wire [2:0] top_instr_bytes;
     wire uses_rs1;
     wire uses_rs2;
     wire uses_rd;
@@ -41,8 +43,10 @@ module tb_decode_rv64c;
         .instr_bytes_o(instr_bytes)
     );
 
-    openrv64_decode_top u_decode (
-        .instr_i(canonical_instr),
+    openrv64_decode_top #(
+        .ENABLE_RV64C(1)
+    ) u_decode (
+        .instr_i(instr_window),
         .extension_selected_i(1'b0),
         .extension_valid_i(1'b0),
         .extension_illegal_i(1'b0),
@@ -66,6 +70,8 @@ module tb_decode_rv64c;
         .extension_payload_i(1'b0),
         .valid_o(decode_valid),
         .illegal_o(decode_illegal),
+        .compressed_o(top_compressed),
+        .instr_bytes_o(top_instr_bytes),
         .uses_rs1_o(uses_rs1),
         .uses_rs2_o(uses_rs2),
         .uses_rd_o(uses_rd),
@@ -121,6 +127,20 @@ module tb_decode_rv64c;
                     expected_illegal,
                     c_illegal,
                     decode_illegal);
+            end
+
+            if (top_compressed !== expected_compressed ||
+                top_instr_bytes !== expected_bytes ||
+                decode_illegal !== expected_illegal) begin
+                $fatal(1,
+                    "%0s: integrated decode compressed=%0b/%0b bytes=%0d/%0d illegal=%0b/%0b",
+                    label,
+                    top_compressed,
+                    expected_compressed,
+                    top_instr_bytes,
+                    expected_bytes,
+                    decode_illegal,
+                    expected_illegal);
             end
 
             if (!expected_illegal && (!decode_valid || decode_illegal)) begin
@@ -363,6 +383,12 @@ module tb_decode_rv64c;
                         canonical_instr,
                         decode_valid,
                         decode_illegal);
+                end
+                if (top_compressed !== compressed ||
+                    top_instr_bytes !== instr_bytes) begin
+                    $fatal(1,
+                        "integrated decode handoff diverged raw=%04x",
+                        halfword[15:0]);
                 end
                 if (c_illegal && canonical_instr != `RV64_INSTR_NOP) begin
                     $fatal(1,

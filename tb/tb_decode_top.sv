@@ -361,12 +361,14 @@ module tb_decode_top;
         if (valid || !illegal || (alu_ext == `RV64_ALU_EXT_ZBB))
             $fatal(1, "default/1P decode accepted Zbb CPOP");
 
+        // A compressed parcel is flagged with the C format by early decode,
+        // but stays illegal while ENABLE_RV64C is off (the default here).
         instr = 32'h0000_0000;
-        check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_INVALID,
+        check_common(1'b0, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_C,
                      1'b0, 1'b0, 1'b0, `RV64_REG_X0, `RV64_REG_X0, `RV64_REG_X0, 1'b0,
                      1'b0, 64'h0, 1'b0, 1'b0, 1'b0, 1'b0,
                      `RV64_ALU_OP_INVALID, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
-                     "invalid opcode");
+                     "compressed parcel without rv64c");
 
         $display("PASS: decode top routing");
         $finish;

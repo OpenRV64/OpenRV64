@@ -265,6 +265,8 @@ module openrv64_rv64_top #(
     wire decode_br_indirect;
     wire unused_decode_subdecode_needed;
     wire unused_decode_extension_possible;
+    wire unused_decode_compressed;
+    wire [2:0] unused_decode_instr_bytes;
     wire unused_decode_summary = |{
         decode_class_sel,
         decode_format_sel,
@@ -281,7 +283,9 @@ module openrv64_rv64_top #(
         unused_decode_lsu_unsigned,
         unused_decode_br_link,
         unused_decode_subdecode_needed,
-        unused_decode_extension_possible
+        unused_decode_extension_possible,
+        unused_decode_compressed,
+        unused_decode_instr_bytes
     };
 
     wire [`RV64_XLEN-1:0] gpr_rs1_data;
@@ -863,6 +867,8 @@ module openrv64_rv64_top #(
         .funct12_o(unused_decode_funct12),
         .class_sel_o(decode_class_sel),
         .format_sel_o(decode_format_sel),
+        .compressed_o(unused_decode_compressed),
+        .instr_bytes_o(unused_decode_instr_bytes),
         .uses_rs1_o(decode_uses_rs1),
         .uses_rs2_o(decode_uses_rs2),
         .uses_rd_o(decode_uses_rd),

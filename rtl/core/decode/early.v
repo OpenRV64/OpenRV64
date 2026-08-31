@@ -41,152 +41,162 @@ module openrv64_decode_early (
         subdecode_needed_o          = 1'b0;
         extension_decode_possible_o = 1'b0;
 
-        case (opcode_i)
-            `RV64_OPCODE_LUI,
-            `RV64_OPCODE_AUIPC: begin
-                valid_o      = 1'b1;
-                class_sel_o  = `RV64_EARLY_CLASS_ALU;
-                format_sel_o = `RV64_EARLY_FORMAT_U;
-                uses_rd_o    = 1'b1;
-                reg_write_o  = 1'b1;
-            end
+        // A compressed parcel is selected ahead of the major-opcode case
+        // because the low pair alone decides it.  Mirroring the extension
+        // offer below: class, operand format, and register usage are
+        // unknowable until the parcel is expanded, so the C format flag
+        // routes the instruction to the RVC expansion path instead.
+        if (opcode_i[1:0] != 2'b11) begin
+            valid_o            = 1'b1;
+            format_sel_o       = `RV64_EARLY_FORMAT_C;
+            subdecode_needed_o = 1'b1;
+        end else begin
+            case (opcode_i)
+                `RV64_OPCODE_LUI,
+                `RV64_OPCODE_AUIPC: begin
+                    valid_o      = 1'b1;
+                    class_sel_o  = `RV64_EARLY_CLASS_ALU;
+                    format_sel_o = `RV64_EARLY_FORMAT_U;
+                    uses_rd_o    = 1'b1;
+                    reg_write_o  = 1'b1;
+                end
 
-            `RV64_OPCODE_JAL: begin
-                valid_o      = 1'b1;
-                class_sel_o  = `RV64_EARLY_CLASS_JUMP;
-                format_sel_o = `RV64_EARLY_FORMAT_J;
-                uses_rd_o    = 1'b1;
-                reg_write_o  = 1'b1;
-                jump_o       = 1'b1;
-            end
+                `RV64_OPCODE_JAL: begin
+                    valid_o      = 1'b1;
+                    class_sel_o  = `RV64_EARLY_CLASS_JUMP;
+                    format_sel_o = `RV64_EARLY_FORMAT_J;
+                    uses_rd_o    = 1'b1;
+                    reg_write_o  = 1'b1;
+                    jump_o       = 1'b1;
+                end
 
-            `RV64_OPCODE_JALR: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_JUMP;
-                format_sel_o       = `RV64_EARLY_FORMAT_I;
-                uses_rs1_o         = 1'b1;
-                uses_rd_o          = 1'b1;
-                reg_write_o        = 1'b1;
-                jump_o             = 1'b1;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_JALR: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_JUMP;
+                    format_sel_o       = `RV64_EARLY_FORMAT_I;
+                    uses_rs1_o         = 1'b1;
+                    uses_rd_o          = 1'b1;
+                    reg_write_o        = 1'b1;
+                    jump_o             = 1'b1;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_BRANCH: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_BRANCH;
-                format_sel_o       = `RV64_EARLY_FORMAT_B;
-                uses_rs1_o         = 1'b1;
-                uses_rs2_o         = 1'b1;
-                branch_o           = 1'b1;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_BRANCH: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_BRANCH;
+                    format_sel_o       = `RV64_EARLY_FORMAT_B;
+                    uses_rs1_o         = 1'b1;
+                    uses_rs2_o         = 1'b1;
+                    branch_o           = 1'b1;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_LOAD: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_MEM;
-                format_sel_o       = `RV64_EARLY_FORMAT_I;
-                uses_rs1_o         = 1'b1;
-                uses_rd_o          = 1'b1;
-                reg_write_o        = 1'b1;
-                mem_read_o         = 1'b1;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_LOAD: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_MEM;
+                    format_sel_o       = `RV64_EARLY_FORMAT_I;
+                    uses_rs1_o         = 1'b1;
+                    uses_rd_o          = 1'b1;
+                    reg_write_o        = 1'b1;
+                    mem_read_o         = 1'b1;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_STORE: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_MEM;
-                format_sel_o       = `RV64_EARLY_FORMAT_S;
-                uses_rs1_o         = 1'b1;
-                uses_rs2_o         = 1'b1;
-                mem_write_o        = 1'b1;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_STORE: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_MEM;
+                    format_sel_o       = `RV64_EARLY_FORMAT_S;
+                    uses_rs1_o         = 1'b1;
+                    uses_rs2_o         = 1'b1;
+                    mem_write_o        = 1'b1;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_AMO: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_MEM;
-                format_sel_o       = `RV64_EARLY_FORMAT_R;
-                uses_rs1_o         = 1'b1;
-                uses_rs2_o         = 1'b1;
-                uses_rd_o          = 1'b1;
-                reg_write_o        = 1'b1;
-                mem_read_o         = 1'b1;
-                mem_write_o        = 1'b1;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_AMO: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_MEM;
+                    format_sel_o       = `RV64_EARLY_FORMAT_R;
+                    uses_rs1_o         = 1'b1;
+                    uses_rs2_o         = 1'b1;
+                    uses_rd_o          = 1'b1;
+                    reg_write_o        = 1'b1;
+                    mem_read_o         = 1'b1;
+                    mem_write_o        = 1'b1;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_OP_IMM: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_ALU;
-                format_sel_o       = `RV64_EARLY_FORMAT_I;
-                uses_rs1_o         = 1'b1;
-                uses_rd_o          = 1'b1;
-                reg_write_o        = 1'b1;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_OP_IMM: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_ALU;
+                    format_sel_o       = `RV64_EARLY_FORMAT_I;
+                    uses_rs1_o         = 1'b1;
+                    uses_rd_o          = 1'b1;
+                    reg_write_o        = 1'b1;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_OP_IMM_32: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_ALU;
-                format_sel_o       = `RV64_EARLY_FORMAT_I;
-                uses_rs1_o         = 1'b1;
-                uses_rd_o          = 1'b1;
-                reg_write_o        = 1'b1;
-                word_op_o          = 1'b1;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_OP_IMM_32: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_ALU;
+                    format_sel_o       = `RV64_EARLY_FORMAT_I;
+                    uses_rs1_o         = 1'b1;
+                    uses_rd_o          = 1'b1;
+                    reg_write_o        = 1'b1;
+                    word_op_o          = 1'b1;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_OP: begin
-                valid_o                     = 1'b1;
-                class_sel_o                 = `RV64_EARLY_CLASS_ALU;
-                format_sel_o                = `RV64_EARLY_FORMAT_R;
-                uses_rs1_o                  = 1'b1;
-                uses_rs2_o                  = 1'b1;
-                uses_rd_o                   = 1'b1;
-                reg_write_o                 = 1'b1;
-                subdecode_needed_o          = 1'b1;
-                extension_decode_possible_o = 1'b1;
-            end
+                `RV64_OPCODE_OP: begin
+                    valid_o                     = 1'b1;
+                    class_sel_o                 = `RV64_EARLY_CLASS_ALU;
+                    format_sel_o                = `RV64_EARLY_FORMAT_R;
+                    uses_rs1_o                  = 1'b1;
+                    uses_rs2_o                  = 1'b1;
+                    uses_rd_o                   = 1'b1;
+                    reg_write_o                 = 1'b1;
+                    subdecode_needed_o          = 1'b1;
+                    extension_decode_possible_o = 1'b1;
+                end
 
-            `RV64_OPCODE_OP_32: begin
-                valid_o                     = 1'b1;
-                class_sel_o                 = `RV64_EARLY_CLASS_ALU;
-                format_sel_o                = `RV64_EARLY_FORMAT_R;
-                uses_rs1_o                  = 1'b1;
-                uses_rs2_o                  = 1'b1;
-                uses_rd_o                   = 1'b1;
-                reg_write_o                 = 1'b1;
-                word_op_o                   = 1'b1;
-                subdecode_needed_o          = 1'b1;
-                extension_decode_possible_o = 1'b1;
-            end
+                `RV64_OPCODE_OP_32: begin
+                    valid_o                     = 1'b1;
+                    class_sel_o                 = `RV64_EARLY_CLASS_ALU;
+                    format_sel_o                = `RV64_EARLY_FORMAT_R;
+                    uses_rs1_o                  = 1'b1;
+                    uses_rs2_o                  = 1'b1;
+                    uses_rd_o                   = 1'b1;
+                    reg_write_o                 = 1'b1;
+                    word_op_o                   = 1'b1;
+                    subdecode_needed_o          = 1'b1;
+                    extension_decode_possible_o = 1'b1;
+                end
 
-            `RV64_OPCODE_MISC_MEM: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_FENCE;
-                format_sel_o       = `RV64_EARLY_FORMAT_I;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_MISC_MEM: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_FENCE;
+                    format_sel_o       = `RV64_EARLY_FORMAT_I;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            `RV64_OPCODE_SYSTEM: begin
-                valid_o            = 1'b1;
-                class_sel_o        = `RV64_EARLY_CLASS_SYSTEM;
-                format_sel_o       = `RV64_EARLY_FORMAT_I;
-                subdecode_needed_o = 1'b1;
-            end
+                `RV64_OPCODE_SYSTEM: begin
+                    valid_o            = 1'b1;
+                    class_sel_o        = `RV64_EARLY_CLASS_SYSTEM;
+                    format_sel_o       = `RV64_EARLY_FORMAT_I;
+                    subdecode_needed_o = 1'b1;
+                end
 
-            default: begin
-                // Any otherwise-unowned 32-bit major opcode is offered to
-                // extension decoders.  This stage deliberately does not know
-                // which extension, operand format, or register domain owns it.
-                if (opcode_i[1:0] == 2'b11) begin
+                default: begin
+                    // Any otherwise-unowned 32-bit major opcode is offered
+                    // to extension decoders.  This stage deliberately does
+                    // not know which extension, operand format, or register
+                    // domain owns it.
                     valid_o                     = 1'b1;
                     class_sel_o                 = `RV64_EARLY_CLASS_EXTENSION;
                     subdecode_needed_o          = 1'b1;
                     extension_decode_possible_o = 1'b1;
                 end
-            end
-        endcase
+            endcase
+        end
     end
 
 endmodule

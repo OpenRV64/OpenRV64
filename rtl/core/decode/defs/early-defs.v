@@ -19,5 +19,6 @@
 `define RV64_EARLY_FORMAT_B 3'd4
 `define RV64_EARLY_FORMAT_U 3'd5
 `define RV64_EARLY_FORMAT_J 3'd6
+`define RV64_EARLY_FORMAT_C 3'd7
 
 `endif

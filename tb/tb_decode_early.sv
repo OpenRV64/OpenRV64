@@ -128,8 +128,14 @@ module tb_decode_early;
               `RV64_EARLY_FORMAT_INVALID,
               1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b1, 1'b1);
 
-        check(7'b0000000, 1'b0, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_INVALID,
-              1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0);
+        // A compressed parcel is flagged with the C format only: class,
+        // operand format, and register usage wait for RVC expansion.
+        check(7'b0000000, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_C,
+              1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b1, 1'b0);
+        check(7'b1110101, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_C,
+              1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b1, 1'b0);
+        check(7'b0011110, 1'b1, `RV64_EARLY_CLASS_INVALID, `RV64_EARLY_FORMAT_C,
+              1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b0, 1'b1, 1'b0);
 
         $display("PASS: early decoder opcode classification");
         $finish;

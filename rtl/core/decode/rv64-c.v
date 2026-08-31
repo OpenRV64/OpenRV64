@@ -3,6 +3,7 @@
 
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
+`include "core/isa/rv64-c.v"
 
 // RV64C integer decompressor.
 //
@@ -29,8 +30,8 @@ module openrv64_decode_rv64c (
 
     wire [15:0] c_instr = instr_i[15:0];
     wire [4:0] c_rd = c_instr[11:7];
-    wire [4:0] c_rs1_prime = {2'b01, c_instr[9:7]};
-    wire [4:0] c_rs2_prime = {2'b01, c_instr[4:2]};
+    wire [4:0] c_rs1_prime = `RV64_C_REG_PRIME(c_instr[9:7]);
+    wire [4:0] c_rs2_prime = `RV64_C_REG_PRIME(c_instr[4:2]);
 
     reg [11:0] imm12;
     reg [12:0] imm13;
@@ -127,13 +128,13 @@ module openrv64_decode_rv64c (
         imm20 = 20'd0;
         imm21 = 21'd0;
 
-        if (instr_i[1:0] != 2'b11) begin
+        if (`RV64_INSTR_IS_C(instr_i)) begin
             compressed_o = 1'b1;
             instr_bytes_o = 3'd2;
 
-            case (instr_i[1:0])
-                2'b00: begin
-                    case (c_instr[15:13])
+            case (`RV64_C_QUADRANT(instr_i))
+                `RV64_C_QUADRANT_0: begin
+                    case (`RV64_C_FUNCT3(c_instr))
                         3'b000: begin // C.ADDI4SPN
                             imm12 = {
                                 2'b00,
@@ -227,8 +228,8 @@ module openrv64_decode_rv64c (
                     endcase
                 end
 
-                2'b01: begin
-                    case (c_instr[15:13])
+                `RV64_C_QUADRANT_1: begin
+                    case (`RV64_C_FUNCT3(c_instr))
                         3'b000: begin // C.NOP / C.ADDI / HINT
                             imm12 = {
                                 {6{c_instr[12]}},
@@ -483,8 +484,8 @@ module openrv64_decode_rv64c (
                     endcase
                 end
 
-                2'b10: begin
-                    case (c_instr[15:13])
+                `RV64_C_QUADRANT_2: begin
+                    case (`RV64_C_FUNCT3(c_instr))
                         3'b000: begin // C.SLLI / HINT
                             imm12 = {
                                 `RV64_FUNCT6_SLLI,

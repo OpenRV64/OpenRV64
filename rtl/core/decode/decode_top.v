@@ -9,6 +9,7 @@ module openrv64_decode_top #(
     parameter ENABLE_RV64M = 1,
     parameter ENABLE_RV64ZBB = 0,
     parameter ENABLE_RV64A = 1,
+    parameter ENABLE_RV64C = 0,
     parameter ENABLE_EXTENSION = 0,
     parameter integer EXTENSION_PAYLOAD_WIDTH = 1
 ) (
@@ -47,6 +48,14 @@ module openrv64_decode_top #(
     output wire [`RV64_EARLY_CLASS_WIDTH-1:0] class_sel_o,
     output wire [`RV64_EARLY_FORMAT_WIDTH-1:0] format_sel_o,
 
+    // Every field of the decode result describes the canonical 32-bit
+    // instruction.  When ENABLE_RV64C expands a compressed parcel, the
+    // consumer must carry compressed_o/instr_bytes_o with the result:
+    // sequential PCs and link values advance by the parcel length, not
+    // by the canonical instruction's four bytes.
+    output wire                         compressed_o,
+    output wire [2:0]                   instr_bytes_o,
+
     output wire                         uses_rs1_o,
     output wire                         uses_rs2_o,
     output wire                         uses_rd_o,
@@ -83,11 +92,6 @@ module openrv64_decode_top #(
     output wire [EXTENSION_PAYLOAD_WIDTH-1:0] extension_payload_o
 );
 
-    wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(instr_i);
-    wire [`RV64_FUNCT3_WIDTH-1:0] funct3 = `RV64_FUNCT3(instr_i);
-    wire [`RV64_FUNCT7_WIDTH-1:0] funct7 = `RV64_FUNCT7(instr_i);
-    wire [`RV64_FUNCT12_WIDTH-1:0] funct12 = `RV64_FUNCT12(instr_i);
-
     wire early_valid;
     wire [`RV64_EARLY_CLASS_WIDTH-1:0] early_class_sel;
     wire [`RV64_EARLY_FORMAT_WIDTH-1:0] early_format_sel;
@@ -102,6 +106,66 @@ module openrv64_decode_top #(
     wire early_word_op;
     wire early_subdecode_needed;
     wire early_extension_decode_possible;
+
+    // Early flags a compressed parcel with the C format on the raw opcode.
+    // That flag routes decode through the RVC expander: the canonical word
+    // is classified by a second early pass and feeds every subdecoder, so
+    // nothing below this point knows about compressed encodings.
+    wire rvc_candidate = early_valid &&
+                         (early_format_sel == `RV64_EARLY_FORMAT_C);
+    wire rvc_selected = (ENABLE_RV64C != 0) && rvc_candidate;
+
+    wire [`RV64_INSTR_WIDTH-1:0] rvc_canonical;
+    wire rvc_compressed;
+    wire rvc_illegal;
+    wire [2:0] rvc_instr_bytes;
+    wire rvc_early_valid;
+    wire [`RV64_EARLY_CLASS_WIDTH-1:0] rvc_class_sel;
+    wire [`RV64_EARLY_FORMAT_WIDTH-1:0] rvc_format_sel;
+    wire rvc_uses_rs1;
+    wire rvc_uses_rs2;
+    wire rvc_uses_rd;
+    wire rvc_reg_write;
+    wire rvc_mem_read;
+    wire rvc_mem_write;
+    wire rvc_branch;
+    wire rvc_jump;
+    wire rvc_word_op;
+    wire rvc_subdecode_needed;
+
+    // The expander's illegal report also covers 48-bit-or-longer prefixes,
+    // which it rejects because ILEN is 32.
+    wire rvc_reject = (ENABLE_RV64C != 0) && rvc_illegal;
+
+    wire [`RV64_INSTR_WIDTH-1:0] canonical_instr = rvc_selected ?
+                                                   rvc_canonical : instr_i;
+
+    wire eff_valid = rvc_selected ? rvc_early_valid :
+                     (early_valid && !rvc_candidate);
+    wire [`RV64_EARLY_CLASS_WIDTH-1:0] eff_class_sel =
+        rvc_selected ? rvc_class_sel : early_class_sel;
+    wire [`RV64_EARLY_FORMAT_WIDTH-1:0] eff_format_sel =
+        rvc_selected ? rvc_format_sel : early_format_sel;
+    wire eff_uses_rs1 = rvc_selected ? rvc_uses_rs1 : early_uses_rs1;
+    wire eff_uses_rs2 = rvc_selected ? rvc_uses_rs2 : early_uses_rs2;
+    wire eff_uses_rd = rvc_selected ? rvc_uses_rd : early_uses_rd;
+    wire eff_reg_write = rvc_selected ? rvc_reg_write : early_reg_write;
+    wire eff_mem_read = rvc_selected ? rvc_mem_read : early_mem_read;
+    wire eff_mem_write = rvc_selected ? rvc_mem_write : early_mem_write;
+    wire eff_branch = rvc_selected ? rvc_branch : early_branch;
+    wire eff_jump = rvc_selected ? rvc_jump : early_jump;
+    wire eff_word_op = rvc_selected ? rvc_word_op : early_word_op;
+    wire eff_subdecode_needed = rvc_selected ? rvc_subdecode_needed :
+                                early_subdecode_needed;
+    // Expanded parcels are always base RV64I, and extension decoders see the
+    // raw instruction word, so a routed parcel is never offered to them.
+    wire eff_extension_decode_possible = !rvc_selected &&
+                                         early_extension_decode_possible;
+
+    wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(canonical_instr);
+    wire [`RV64_FUNCT3_WIDTH-1:0] funct3 = `RV64_FUNCT3(canonical_instr);
+    wire [`RV64_FUNCT7_WIDTH-1:0] funct7 = `RV64_FUNCT7(canonical_instr);
+    wire [`RV64_FUNCT12_WIDTH-1:0] funct12 = `RV64_FUNCT12(canonical_instr);
 
     wire imm_decode_valid;
     wire imm_decode_has_imm;
@@ -176,15 +240,16 @@ module openrv64_decode_top #(
         system_mret
     };
 
-    wire class_is_alu = (early_class_sel == `RV64_EARLY_CLASS_ALU);
-    wire class_is_mem = (early_class_sel == `RV64_EARLY_CLASS_MEM);
-    wire class_is_branch = (early_class_sel == `RV64_EARLY_CLASS_BRANCH);
-    wire class_is_jump = (early_class_sel == `RV64_EARLY_CLASS_JUMP);
+    wire class_is_alu = (eff_class_sel == `RV64_EARLY_CLASS_ALU);
+    wire class_is_mem = (eff_class_sel == `RV64_EARLY_CLASS_MEM);
+    wire class_is_branch = (eff_class_sel == `RV64_EARLY_CLASS_BRANCH);
+    wire class_is_jump = (eff_class_sel == `RV64_EARLY_CLASS_JUMP);
     wire class_is_brjump = class_is_branch || class_is_jump;
-    wire class_is_system = (early_class_sel == `RV64_EARLY_CLASS_SYSTEM);
-    wire class_is_fence = (early_class_sel == `RV64_EARLY_CLASS_FENCE);
-    wire extension_candidate = early_valid &&
-                               early_extension_decode_possible;
+    wire class_is_system = (eff_class_sel == `RV64_EARLY_CLASS_SYSTEM);
+    wire class_is_fence = (eff_class_sel == `RV64_EARLY_CLASS_FENCE);
+    wire extension_candidate = eff_valid &&
+                               eff_extension_decode_possible &&
+                               !rvc_reject;
     wire extension_selected = (ENABLE_EXTENSION != 0) ?
         (extension_candidate && extension_selected_i) : 1'b0;
 
@@ -199,7 +264,7 @@ module openrv64_decode_top #(
     reg [`RV64_REG_ADDR_WIDTH-1:0] selected_rd_addr;
 
     openrv64_decode_early u_early (
-        .opcode_i(opcode),
+        .opcode_i(`RV64_OPCODE(instr_i)),
         .valid_o(early_valid),
         .class_sel_o(early_class_sel),
         .format_sel_o(early_format_sel),
@@ -216,9 +281,67 @@ module openrv64_decode_top #(
         .extension_decode_possible_o(early_extension_decode_possible)
     );
 
+    generate
+        if (ENABLE_RV64C != 0) begin : g_rvc
+            wire rvc_unsupported_length;
+            wire rvc_extension_decode_possible;
+            // instr_bytes_o already reports an unsupported length as zero
+            // bytes, and the expander folds it into its illegal report.
+            wire unused_rvc = |{
+                rvc_unsupported_length,
+                rvc_extension_decode_possible
+            };
+
+            openrv64_decode_rv64c u_rvc (
+                .instr_i(instr_i),
+                .instr_o(rvc_canonical),
+                .compressed_o(rvc_compressed),
+                .illegal_o(rvc_illegal),
+                .unsupported_length_o(rvc_unsupported_length),
+                .instr_bytes_o(rvc_instr_bytes)
+            );
+
+            openrv64_decode_early u_early_rvc (
+                .opcode_i(`RV64_OPCODE(rvc_canonical)),
+                .valid_o(rvc_early_valid),
+                .class_sel_o(rvc_class_sel),
+                .format_sel_o(rvc_format_sel),
+                .uses_rs1_o(rvc_uses_rs1),
+                .uses_rs2_o(rvc_uses_rs2),
+                .uses_rd_o(rvc_uses_rd),
+                .reg_write_o(rvc_reg_write),
+                .mem_read_o(rvc_mem_read),
+                .mem_write_o(rvc_mem_write),
+                .branch_o(rvc_branch),
+                .jump_o(rvc_jump),
+                .word_op_o(rvc_word_op),
+                .subdecode_needed_o(rvc_subdecode_needed),
+                .extension_decode_possible_o(rvc_extension_decode_possible)
+            );
+        end else begin : g_no_rvc
+            assign rvc_canonical = instr_i;
+            assign rvc_compressed = 1'b0;
+            assign rvc_illegal = 1'b0;
+            assign rvc_instr_bytes = 3'd4;
+            assign rvc_early_valid = 1'b0;
+            assign rvc_class_sel = `RV64_EARLY_CLASS_INVALID;
+            assign rvc_format_sel = `RV64_EARLY_FORMAT_INVALID;
+            assign rvc_uses_rs1 = 1'b0;
+            assign rvc_uses_rs2 = 1'b0;
+            assign rvc_uses_rd = 1'b0;
+            assign rvc_reg_write = 1'b0;
+            assign rvc_mem_read = 1'b0;
+            assign rvc_mem_write = 1'b0;
+            assign rvc_branch = 1'b0;
+            assign rvc_jump = 1'b0;
+            assign rvc_word_op = 1'b0;
+            assign rvc_subdecode_needed = 1'b0;
+        end
+    endgenerate
+
     openrv64_decode_imm u_imm (
-        .instr_i(instr_i),
-        .format_sel_i(early_format_sel),
+        .instr_i(canonical_instr),
+        .format_sel_i(eff_format_sel),
         .valid_o(imm_decode_valid),
         .has_imm_o(imm_decode_has_imm),
         .imm_o(imm_decode_value),
@@ -247,7 +370,7 @@ module openrv64_decode_top #(
     openrv64_decode_lsu #(
         .ENABLE_RV64A(ENABLE_RV64A)
     ) u_lsu (
-        .instr_i(instr_i),
+        .instr_i(canonical_instr),
         .valid_o(lsu_valid),
         .illegal_o(lsu_illegal),
         .op_sel_o(lsu_op_sel),
@@ -270,7 +393,7 @@ module openrv64_decode_top #(
     );
 
     openrv64_decode_system u_system (
-        .instr_i(instr_i),
+        .instr_i(canonical_instr),
         .valid_o(system_valid),
         .illegal_o(system_illegal),
         .csr_o(system_csr),
@@ -288,7 +411,7 @@ module openrv64_decode_top #(
     );
 
     openrv64_decode_reg_alu u_reg_alu (
-        .instr_i(instr_i),
+        .instr_i(canonical_instr),
         .valid_o(reg_alu_valid),
         .uses_rs1_o(reg_alu_uses_rs1),
         .uses_rs2_o(reg_alu_uses_rs2),
@@ -299,7 +422,7 @@ module openrv64_decode_top #(
     );
 
     openrv64_decode_reg_lsu u_reg_lsu (
-        .instr_i(instr_i),
+        .instr_i(canonical_instr),
         .valid_o(reg_lsu_valid),
         .uses_rs1_o(reg_lsu_uses_rs1),
         .uses_rs2_o(reg_lsu_uses_rs2),
@@ -310,7 +433,7 @@ module openrv64_decode_top #(
     );
 
     openrv64_decode_reg_system u_reg_system (
-        .instr_i(instr_i),
+        .instr_i(canonical_instr),
         .valid_o(reg_system_valid),
         .uses_rs1_o(reg_system_uses_rs1),
         .uses_rs2_o(reg_system_uses_rs2),
@@ -324,12 +447,15 @@ module openrv64_decode_top #(
         selected_decode_valid   = 1'b1;
         selected_decode_illegal = 1'b0;
         selected_reg_valid      = 1'b1;
-        selected_uses_rs1       = early_uses_rs1;
-        selected_uses_rs2       = early_uses_rs2;
-        selected_uses_rd        = early_uses_rd;
-        selected_rs1_addr       = early_uses_rs1 ? `RV64_RS1(instr_i) : `RV64_REG_X0;
-        selected_rs2_addr       = early_uses_rs2 ? `RV64_RS2(instr_i) : `RV64_REG_X0;
-        selected_rd_addr        = early_uses_rd ? `RV64_RD(instr_i) : `RV64_REG_X0;
+        selected_uses_rs1       = eff_uses_rs1;
+        selected_uses_rs2       = eff_uses_rs2;
+        selected_uses_rd        = eff_uses_rd;
+        selected_rs1_addr       = eff_uses_rs1 ?
+                                  `RV64_RS1(canonical_instr) : `RV64_REG_X0;
+        selected_rs2_addr       = eff_uses_rs2 ?
+                                  `RV64_RS2(canonical_instr) : `RV64_REG_X0;
+        selected_rd_addr        = eff_uses_rd ?
+                                  `RV64_RD(canonical_instr) : `RV64_REG_X0;
 
         if (class_is_alu) begin
             selected_decode_valid   = alu_valid;
@@ -375,21 +501,26 @@ module openrv64_decode_top #(
     assign funct7_o = funct7;
     assign funct12_o = funct12;
     assign class_sel_o = extension_selected ? extension_class_sel_i :
-                         early_class_sel;
+                         eff_class_sel;
     assign format_sel_o = extension_selected ? extension_format_sel_i :
-                          early_format_sel;
+                          eff_format_sel;
+
+    assign compressed_o = rvc_compressed;
+    assign instr_bytes_o = rvc_instr_bytes;
 
     assign imm_valid_o = extension_selected ? extension_imm_valid_i :
-                         (early_valid && imm_decode_valid);
-    assign illegal_o = extension_selected ? extension_illegal_i :
-                       (!early_valid ||
-                        !imm_decode_valid ||
-                        !selected_decode_valid ||
-                        selected_decode_illegal ||
-                        !selected_reg_valid);
-    assign valid_o = extension_selected ?
-                     (extension_valid_i && !extension_illegal_i) :
-                     (early_valid && imm_decode_valid && !illegal_o);
+                         (eff_valid && imm_decode_valid);
+    assign illegal_o = rvc_reject ||
+                       (extension_selected ? extension_illegal_i :
+                        (!eff_valid ||
+                         !imm_decode_valid ||
+                         !selected_decode_valid ||
+                         selected_decode_illegal ||
+                         !selected_reg_valid));
+    assign valid_o = !rvc_reject &&
+                     (extension_selected ?
+                      (extension_valid_i && !extension_illegal_i) :
+                      (eff_valid && imm_decode_valid && !illegal_o));
 
     assign uses_rs1_o = valid_o &&
                         (extension_selected ? extension_uses_rs1_i :
@@ -414,7 +545,7 @@ module openrv64_decode_top #(
                         `RV64_REG_X0;
     assign reg_write_o = valid_o &&
                          (extension_selected ? extension_reg_write_i :
-                          (class_is_system ? reg_system_uses_rd : early_reg_write));
+                          (class_is_system ? reg_system_uses_rd : eff_reg_write));
 
     assign has_imm_o = imm_valid_o &&
                        (extension_selected ? extension_has_imm_i :
@@ -426,16 +557,16 @@ module openrv64_decode_top #(
 
     assign mem_read_o  = valid_o &&
                          (extension_selected ? extension_mem_read_i :
-                          (class_is_mem && lsu_load && early_mem_read));
+                          (class_is_mem && lsu_load && eff_mem_read));
     assign mem_write_o = valid_o &&
                          (extension_selected ? extension_mem_write_i :
-                          (class_is_mem && lsu_store && early_mem_write));
+                          (class_is_mem && lsu_store && eff_mem_write));
     assign branch_o    = valid_o && !extension_selected && class_is_branch &&
-                         br_branch && early_branch;
+                         br_branch && eff_branch;
     assign jump_o      = valid_o && !extension_selected && class_is_jump &&
-                         br_jump && early_jump;
+                         br_jump && eff_jump;
     assign word_op_o   = valid_o && !extension_selected && class_is_alu &&
-                         alu_word_op && early_word_op;
+                         alu_word_op && eff_word_op;
     assign system_o    = valid_o && !extension_selected && class_is_system;
     assign fence_o     = valid_o && !extension_selected && class_is_fence;
 
@@ -462,7 +593,7 @@ module openrv64_decode_top #(
                            class_is_brjump && br_indirect;
 
     assign subdecode_needed_o = extension_selected ? 1'b1 :
-                                (early_valid && early_subdecode_needed);
+                                (eff_valid && eff_subdecode_needed);
     assign extension_decode_possible_o = extension_candidate;
     assign extension_candidate_o = extension_candidate;
     assign extension_instr_o = valid_o && extension_selected;
