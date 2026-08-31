@@ -76,6 +76,7 @@ DECODE_REG_LSU_SIM_BUILD := sim/decode_reg_lsu_tb.vvp
 DECODE_BR_SIM_BUILD := sim/decode_br_tb.vvp
 ISA_BITMANIP_SIM_BUILD := sim/isa_bitmanip_tb.vvp
 STAGE_SIM_BUILD := sim/stage_tb.vvp
+REGFILE_SIM_BUILD := sim/regfile_tb.vvp
 PRF_SIM_BUILD := sim/prf_tb.vvp
 RENAME_IDENTITY_SIM_BUILD := sim/rename_identity_tb.vvp
 RV64I_GPR_SIM_BUILD := sim/rv64-i-gpr_tb.vvp

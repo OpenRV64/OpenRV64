@@ -281,6 +281,7 @@ DECODE_BR_SIM_SRCS := tb/tb_decode_br.sv
 ISA_BITMANIP_SIM_SRCS := tb/tb_isa_bitmanip.sv
 ISA_FP_SIM_SRCS := tb/tb_isa_fp.sv
 STAGE_SIM_SRCS := tb/tb_stage.sv
+REGFILE_SIM_SRCS := tb/tb_regfile.sv
 RV64I_GPR_SIM_SRCS := tb/tb_rv64-i-gpr.sv
 RV64I_GPR_BANKED_SIM_SRCS := rtl/util/regfile.v \
 	rtl/core/regs/rv64-i-gpr.v \

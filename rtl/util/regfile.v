@@ -2,8 +2,10 @@
 `include "util/reg_bank.v"
 
 // Banked register file.  The low address bits select a bank and the remaining
-// bits select a register within that bank.  Requesters must hold req, address,
-// and write data stable until the corresponding valid output is asserted.
+// bits select a register within that bank.  Ack is the address-phase grant.
+// Requesters hold req, address, and write data stable until ack, and may
+// present the next transaction on the following cycle.  Read data and valid
+// return one cycle after the corresponding read ack.
 
 module cmn_reg_file #(
     parameter integer REG_WIDTH       = 64,
@@ -27,11 +29,13 @@ module cmn_reg_file #(
     input  wire [READ_PORTS-1:0][ADDR_WIDTH-1:0] rp_addr_i,
     output wire [READ_PORTS-1:0][REG_WIDTH-1:0]  rp_data_o,
     input  wire [READ_PORTS-1:0]                 rp_req_i,
+    output wire [READ_PORTS-1:0]                 rp_ack_o,
     output wire [READ_PORTS-1:0]                 rp_valid_o,
 
     input  wire [WRITE_PORTS-1:0][ADDR_WIDTH-1:0] wp_addr_i,
     input  wire [WRITE_PORTS-1:0][REG_WIDTH-1:0]  wp_data_i,
     input  wire [WRITE_PORTS-1:0]                 wp_req_i,
+    output wire [WRITE_PORTS-1:0]                 wp_ack_o,
     output wire [WRITE_PORTS-1:0]                 wp_valid_o,
 
     // True when no accepted transaction remains inside the file.  A caller's
@@ -135,8 +139,7 @@ module cmn_reg_file #(
             read_candidate = READ_PORT_BITS'(wrapped_index(
                 32'(read_priority_q), read_scan, READ_PORTS));
 
-            if (rst_n && rp_req_i[read_candidate] &&
-                !read_valid_q[read_candidate]) begin
+            if (rst_n && rp_req_i[read_candidate]) begin
                 selected_read_bank = read_port_addr[read_candidate]
                     [BANK_SEL_BITS-1:0];
                 if (!bank_read_req[selected_read_bank]) begin
@@ -199,8 +202,7 @@ module cmn_reg_file #(
             write_candidate = WRITE_PORT_BITS'(wrapped_index(
                 32'(write_priority_q), write_scan, WRITE_PORTS));
 
-            if (rst_n && wp_req_i[write_candidate] &&
-                !write_valid_q[write_candidate]) begin
+            if (rst_n && wp_req_i[write_candidate]) begin
                 selected_write_bank = write_port_addr[write_candidate]
                     [BANK_SEL_BITS-1:0];
                 if (!bank_write_req[selected_write_bank]) begin
@@ -221,6 +223,8 @@ module cmn_reg_file #(
     generate
         for (response_read_port = 0; response_read_port < READ_PORTS;
              response_read_port = response_read_port + 1) begin : g_read_response
+            assign rp_ack_o[response_read_port] =
+                read_grant[response_read_port];
             assign rp_valid_o[response_read_port] =
                 read_valid_q[response_read_port];
             assign rp_data_o[response_read_port] =
@@ -234,6 +238,8 @@ module cmn_reg_file #(
 
         for (response_write_port = 0; response_write_port < WRITE_PORTS;
              response_write_port = response_write_port + 1) begin : g_write_response
+            assign wp_ack_o[response_write_port] =
+                write_grant[response_write_port];
             assign wp_valid_o[response_write_port] =
                 write_valid_q[response_write_port];
         end

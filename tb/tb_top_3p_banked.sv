@@ -259,15 +259,13 @@ module tb_top_3p_banked;
             if (dut.g_backend_3p.u_core_3p.backend_write_busy[0])
                 fail("x0 became busy");
 
-            if ((|dut.g_backend_3p.u_core_3p.u_backend.gpr_read_valid) &&
-                ((dut.g_backend_3p.u_core_3p.u_backend.gpr_read_valid &
-                  dut.g_backend_3p.u_core_3p.u_backend.gpr_read_req) !=
-                 dut.g_backend_3p.u_core_3p.u_backend.gpr_read_req))
+            if (|(dut.g_backend_3p.u_core_3p.u_backend.gpr_read_req[3:0] &
+                  ~dut.g_backend_3p.u_core_3p.u_backend.gpr_read_ack[3:0]))
                 saw_read_bank_retry = 1'b1;
             if ((dut.g_backend_3p.u_core_3p.u_backend.gpr_write == 2'b11) &&
-                ((dut.g_backend_3p.u_core_3p.u_backend.gpr_write_ready[1:0] ==
+                ((dut.g_backend_3p.u_core_3p.u_backend.gpr_write_ack[1:0] ==
                   2'b01) ||
-                 (dut.g_backend_3p.u_core_3p.u_backend.gpr_write_ready[1:0] ==
+                 (dut.g_backend_3p.u_core_3p.u_backend.gpr_write_ack[1:0] ==
                   2'b10)))
                 saw_write_bank_retry = 1'b1;
             if ((dut.g_backend_3p.u_core_3p

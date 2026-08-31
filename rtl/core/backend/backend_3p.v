@@ -186,8 +186,10 @@ module openrv64_backend_3p #(
     wire [6*`RV64_XLEN-1:0] gpr_read_data;
     wire [6*`RV64_XLEN-1:0] dispatch_gpr_read_data;
     wire [5:0] gpr_read_req;
+    wire [5:0] gpr_read_ack;
     wire [5:0] gpr_read_valid;
     wire [2:0] gpr_write;
+    wire [2:0] gpr_write_ack;
     wire [2:0] gpr_write_ready;
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] gpr_write_addr;
     wire [3*`RV64_XLEN-1:0] gpr_write_data;
@@ -1088,20 +1090,22 @@ module openrv64_backend_3p #(
         youngest_forward_data_raw :
         {32*`RV64_XLEN{1'b0}};
 
-    // The banked file returns at most one read per bank per cycle.  Hold the
-    // four operands for the oldest two strict-dispatch candidates until every
-    // nonzero, non-busy source has responded.  The legacy PRF remains a
-    // combinational six-read interface and bypasses this state entirely.
+    // The banked file accepts at most one read per bank per cycle.  Ack marks
+    // the accepted address phase; data and valid return one cycle later.  Hold
+    // only unacknowledged requests stable and qualify each response with the
+    // requester's registered ack rather than treating a bare valid as owned.
+    // The legacy PRF remains combinational and bypasses this state entirely.
     reg [3:0] banked_read_done_q;
     reg [4*`RV64_XLEN-1:0] banked_read_data_q;
     reg [3:0] banked_read_pending_q;
     reg [4*PHYS_REG_ADDR_WIDTH-1:0] banked_read_addr_q;
+    reg [3:0] banked_read_ack_q;
     wire [3:0] banked_read_ready;
 
-    // Redirects discard the requester's association with outstanding reads,
-    // but they do not cancel a transaction.  Every asserted request and its
-    // address remain stable until its response.  Stop issuing until those old
-    // responses have been discarded and the register file is quiescent.
+    // Redirects discard the requester's association with outstanding reads.
+    // An unacknowledged request is still held until ack; an acknowledged read
+    // is allowed to produce its delayed, poisoned response.  Stop issuing
+    // until both classes have drained and the register file is quiescent.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             banked_gpr_drain_q <= 1'b0;
@@ -1127,7 +1131,8 @@ module openrv64_backend_3p #(
                 !flush_i && !squash_frontend_i && !banked_gpr_drain_q &&
                 !read_zero && !read_blocked &&
                 !banked_read_done_q[banked_read_port] &&
-                !banked_read_pending_q[banked_read_port];
+                !banked_read_pending_q[banked_read_port] &&
+                !banked_read_ack_q[banked_read_port];
 
             assign gpr_read_req[banked_read_port] =
                 banked_read_pending_q[banked_read_port] || read_start;
@@ -1141,7 +1146,8 @@ module openrv64_backend_3p #(
             assign banked_read_ready[banked_read_port] = read_zero ||
                 (!read_blocked &&
                  (banked_read_done_q[banked_read_port] ||
-                  gpr_read_valid[banked_read_port]));
+                  (banked_read_ack_q[banked_read_port] &&
+                   gpr_read_valid[banked_read_port])));
             assign dispatch_gpr_read_data[
                 banked_read_port*`RV64_XLEN +: `RV64_XLEN] =
                 (BANKED_GPR == 0) ? gpr_read_data[
@@ -1149,8 +1155,10 @@ module openrv64_backend_3p #(
                 banked_read_done_q[banked_read_port] ?
                     banked_read_data_q[
                         banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
-                gpr_read_valid[banked_read_port] ? gpr_read_data[
-                    banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
+                (banked_read_ack_q[banked_read_port] &&
+                 gpr_read_valid[banked_read_port]) ?
+                    gpr_read_data[
+                        banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
                 {`RV64_XLEN{1'b0}};
         end
     endgenerate
@@ -1174,16 +1182,17 @@ module openrv64_backend_3p #(
             banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
             banked_read_pending_q <= 4'b0000;
             banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
+            banked_read_ack_q <= 4'b0000;
         end else if (flush_i || squash_frontend_i || banked_gpr_drain_q ||
                      (|allocation_valid)) begin
             banked_read_done_q <= 4'b0000;
             banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
+            banked_read_ack_q <= gpr_read_ack[3:0];
             for (banked_response_port = 0; banked_response_port < 4;
                  banked_response_port = banked_response_port + 1) begin
-                if (gpr_read_valid[banked_response_port])
+                if (gpr_read_ack[banked_response_port]) begin
                     banked_read_pending_q[banked_response_port] <= 1'b0;
-                else if (!banked_read_pending_q[banked_response_port] &&
-                         gpr_read_req[banked_response_port]) begin
+                end else if (gpr_read_req[banked_response_port]) begin
                     banked_read_pending_q[banked_response_port] <= 1'b1;
                     banked_read_addr_q[
                         banked_response_port*PHYS_REG_ADDR_WIDTH +:
@@ -1193,17 +1202,21 @@ module openrv64_backend_3p #(
                 end
             end
         end else if (BANKED_GPR != 0) begin
+            banked_read_ack_q <= gpr_read_ack[3:0];
             for (banked_response_port = 0; banked_response_port < 4;
                  banked_response_port = banked_response_port + 1) begin
-                if (gpr_read_valid[banked_response_port]) begin
-                    banked_read_pending_q[banked_response_port] <= 1'b0;
+                if (banked_read_ack_q[banked_response_port] &&
+                    gpr_read_valid[banked_response_port]) begin
                     banked_read_done_q[banked_response_port] <= 1'b1;
                     banked_read_data_q[
                         banked_response_port*`RV64_XLEN +: `RV64_XLEN] <=
                         gpr_read_data[
                             banked_response_port*`RV64_XLEN +: `RV64_XLEN];
-                end else if (!banked_read_pending_q[banked_response_port] &&
-                             gpr_read_req[banked_response_port]) begin
+                end
+
+                if (gpr_read_ack[banked_response_port]) begin
+                    banked_read_pending_q[banked_response_port] <= 1'b0;
+                end else if (gpr_read_req[banked_response_port]) begin
                     banked_read_pending_q[banked_response_port] <= 1'b1;
                     banked_read_addr_q[
                         banked_response_port*PHYS_REG_ADDR_WIDTH +:
@@ -1215,6 +1228,7 @@ module openrv64_backend_3p #(
         end else begin
             banked_read_pending_q <= 4'b0000;
             banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
+            banked_read_ack_q <= 4'b0000;
         end
     end
 
@@ -1346,9 +1360,11 @@ module openrv64_backend_3p #(
     ) u_gpr (
         .clk(clk), .rst_n(rst_n),
         .read_addr_i(gpr_storage_read_addr), .read_data_o(gpr_read_data),
-        .read_req_i(gpr_read_req), .read_valid_o(gpr_read_valid),
+        .read_req_i(gpr_read_req), .read_ack_o(gpr_read_ack),
+        .read_valid_o(gpr_read_valid),
         .write_valid_i(gpr_write), .write_addr_i(gpr_write_addr),
         .write_data_i(gpr_write_data),
+        .write_ack_o(gpr_write_ack),
         .write_ready_o(gpr_write_ready),
         .quiescent_o(gpr_quiescent)
     );
@@ -1690,7 +1706,7 @@ module openrv64_backend_3p #(
                 .gpr_write_o(banked_gpr_write),
                 .gpr_rd_addr_o(banked_gpr_write_addr),
                 .gpr_rd_data_o(banked_gpr_write_data),
-                .gpr_write_valid_i(gpr_write_ready[1:0]),
+                .gpr_write_ack_i(gpr_write_ack[1:0]),
                 .csr_write_o(csr_write_o),
                 .csr_addr_o(csr_write_addr_o),
                 .csr_op_o(csr_op_o), .csr_wdata_o(csr_wdata_o),
@@ -2012,7 +2028,7 @@ module openrv64_backend_3p #(
                  banked_read_watch_port < 4;
                  banked_read_watch_port = banked_read_watch_port + 1) begin
                 if (!gpr_read_req[banked_read_watch_port] ||
-                    gpr_read_valid[banked_read_watch_port]) begin
+                    gpr_read_ack[banked_read_watch_port]) begin
                     banked_gpr_read_wait_q[banked_read_watch_port] <= 7'd0;
                 end else if (banked_gpr_read_wait_q[
                                  banked_read_watch_port] ==
@@ -2036,7 +2052,7 @@ module openrv64_backend_3p #(
                  banked_write_watch_port < 2;
                  banked_write_watch_port = banked_write_watch_port + 1) begin
                 if (!gpr_write[banked_write_watch_port] ||
-                    gpr_write_ready[banked_write_watch_port]) begin
+                    gpr_write_ack[banked_write_watch_port]) begin
                     banked_gpr_write_wait_q[banked_write_watch_port] <=
                         7'd0;
                 end else if (banked_gpr_write_wait_q[
@@ -2070,7 +2086,7 @@ module openrv64_backend_3p #(
 
     // The redirect drain bounds the whole abandoned group as well as the
     // per-port request watchdogs above.  It also covers the registered
-    // response cycle after the final held request completes.
+    // response cycle after the final held request is acknowledged.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n || (BANKED_GPR == 0) || !banked_gpr_drain_q ||
             !gpr_access_pending) begin
@@ -2113,6 +2129,10 @@ module openrv64_backend_3p #(
     end
 
     always @(posedge clk) begin
+        if (rst_n && (BANKED_GPR != 0) &&
+            (banked_read_ack_q != gpr_read_valid[3:0]))
+            $fatal(1,
+                   "banked 3P GPR read response did not match the requester ack pipeline");
         if (rst_n && (BANKED_GPR != 0) && banked_gpr_drain_q &&
             (gpr_read_req[3:0] != banked_read_pending_q))
             $fatal(1,

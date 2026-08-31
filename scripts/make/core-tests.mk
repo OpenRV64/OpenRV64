@@ -45,6 +45,9 @@ sim-fpu-csrs: $(FPU_CSRS_SIM_BUILD)
 sim-stage: $(STAGE_SIM_BUILD)
 	vvp $(STAGE_SIM_BUILD)
 
+sim-regfile: $(REGFILE_SIM_BUILD)
+	vvp $(REGFILE_SIM_BUILD)
+
 sim-prf: $(PRF_SIM_BUILD)
 	vvp $(PRF_SIM_BUILD)
 

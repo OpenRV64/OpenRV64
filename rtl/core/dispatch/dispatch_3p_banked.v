@@ -28,6 +28,7 @@ module openrv64_dispatch_3p_banked #(
 
     output wire [4*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr_o,
     output wire [3:0]                   gpr_read_req_o,
+    input  wire [3:0]                   gpr_read_ack_i,
     input  wire [3:0]                   gpr_read_valid_i,
     input  wire [4*`RV64_XLEN-1:0]      gpr_read_data_i,
 
@@ -80,10 +81,13 @@ module openrv64_dispatch_3p_banked #(
 
     reg [3:0] read_done_q;
     reg [4*`RV64_XLEN-1:0] read_data_q;
+    reg [3:0] read_pending_q;
+    reg [3:0] read_pending_poison_q;
+    reg [3:0] read_ack_q;
+    reg [3:0] read_poison_q;
+    reg [4*`RV64_REG_ADDR_WIDTH-1:0] read_addr_q;
     wire [3:0] read_ready;
 
-    assign gpr_read_addr_o = inner_gpr_read_addr[
-        0 +: 4*`RV64_REG_ADDR_WIDTH];
     assign inner_gpr_read_data[4*`RV64_XLEN +: 2*`RV64_XLEN] =
         {2*`RV64_XLEN{1'b0}};
 
@@ -92,23 +96,37 @@ module openrv64_dispatch_3p_banked #(
         for (read_port = 0; read_port < 4;
              read_port = read_port + 1) begin : g_read_port
             wire [`RV64_REG_ADDR_WIDTH-1:0] read_addr =
-                gpr_read_addr_o[
+                inner_gpr_read_addr[
                     read_port*`RV64_REG_ADDR_WIDTH +:
                     `RV64_REG_ADDR_WIDTH];
             wire read_zero = (read_addr == `RV64_REG_X0);
             wire read_blocked = !read_zero && write_busy_o[read_addr];
+            wire read_start = !flush_i && !squash_frontend_i &&
+                !read_zero && !read_blocked &&
+                !read_done_q[read_port] &&
+                !read_pending_q[read_port] && !read_ack_q[read_port];
 
             assign gpr_read_req_o[read_port] =
-                !flush_i && !squash_frontend_i &&
-                !read_zero && !read_blocked && !read_done_q[read_port];
+                read_pending_q[read_port] || read_start;
+            assign gpr_read_addr_o[
+                read_port*`RV64_REG_ADDR_WIDTH +:
+                `RV64_REG_ADDR_WIDTH] = read_pending_q[read_port] ?
+                read_addr_q[
+                    read_port*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH] : read_addr;
             assign read_ready[read_port] = read_zero ||
                 (!read_blocked &&
-                 (read_done_q[read_port] || gpr_read_valid_i[read_port]));
+                 (read_done_q[read_port] ||
+                  (read_ack_q[read_port] &&
+                   !read_poison_q[read_port] &&
+                   gpr_read_valid_i[read_port])));
             assign inner_gpr_read_data[
                 read_port*`RV64_XLEN +: `RV64_XLEN] =
                 read_done_q[read_port] ? read_data_q[
                     read_port*`RV64_XLEN +: `RV64_XLEN] :
-                gpr_read_valid_i[read_port] ? gpr_read_data_i[
+                (read_ack_q[read_port] &&
+                 !read_poison_q[read_port] &&
+                 gpr_read_valid_i[read_port]) ? gpr_read_data_i[
                     read_port*`RV64_XLEN +: `RV64_XLEN] :
                 {`RV64_XLEN{1'b0}};
         end
@@ -147,19 +165,52 @@ module openrv64_dispatch_3p_banked #(
         if (!rst_n) begin
             read_done_q <= 4'b0000;
             read_data_q <= {4*`RV64_XLEN{1'b0}};
+            read_pending_q <= 4'b0000;
+            read_pending_poison_q <= 4'b0000;
+            read_ack_q <= 4'b0000;
+            read_poison_q <= 4'b0000;
+            read_addr_q <=
+                {4*`RV64_REG_ADDR_WIDTH{1'b0}};
         end else if (flush_i || squash_frontend_i ||
                      (|allocation_valid_o)) begin
             read_done_q <= 4'b0000;
             read_data_q <= {4*`RV64_XLEN{1'b0}};
+            read_ack_q <= gpr_read_ack_i;
+            read_poison_q <= (flush_i || squash_frontend_i) ?
+                             gpr_read_ack_i :
+                             (gpr_read_ack_i & read_pending_poison_q);
         end else begin
+            read_ack_q <= gpr_read_ack_i;
+            read_poison_q <= gpr_read_ack_i & read_pending_poison_q;
             for (response_port = 0; response_port < 4;
                  response_port = response_port + 1) begin
-                if (gpr_read_valid_i[response_port]) begin
+                if (read_ack_q[response_port] &&
+                    !read_poison_q[response_port] &&
+                    gpr_read_valid_i[response_port]) begin
                     read_done_q[response_port] <= 1'b1;
                     read_data_q[
                         response_port*`RV64_XLEN +: `RV64_XLEN] <=
                         gpr_read_data_i[
                             response_port*`RV64_XLEN +: `RV64_XLEN];
+                end
+            end
+        end
+
+        if (rst_n) begin
+            for (response_port = 0; response_port < 4;
+                 response_port = response_port + 1) begin
+                if (gpr_read_ack_i[response_port]) begin
+                    read_pending_q[response_port] <= 1'b0;
+                    read_pending_poison_q[response_port] <= 1'b0;
+                end else if (gpr_read_req_o[response_port]) begin
+                    read_pending_q[response_port] <= 1'b1;
+                    if (flush_i || squash_frontend_i)
+                        read_pending_poison_q[response_port] <= 1'b1;
+                    read_addr_q[
+                        response_port*`RV64_REG_ADDR_WIDTH +:
+                        `RV64_REG_ADDR_WIDTH] <= gpr_read_addr_o[
+                            response_port*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH];
                 end
             end
         end

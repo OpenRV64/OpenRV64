@@ -4,7 +4,8 @@
 `include "core/except/except-defs.v"
 
 // Initial banked retirement boundary.  At most two queue entries retire, and
-// their GPR writes are held until the two logical write ports report valid.
+// their GPR writes are held until the two logical write ports acknowledge the
+// accepted write address/data phase.
 // The underlying retirement module still owns exceptions, CSRs, trace, and
 // architectural release; this wrapper only delays its acceptance boundary.
 module openrv64_retire_3p_banked #(
@@ -53,7 +54,7 @@ module openrv64_retire_3p_banked #(
     output wire [1:0]                   gpr_write_o,
     output wire [2*PHYS_REG_ADDR_WIDTH-1:0] gpr_rd_addr_o,
     output wire [2*`RV64_XLEN-1:0]      gpr_rd_data_o,
-    input  wire [1:0]                   gpr_write_valid_i,
+    input  wire [1:0]                   gpr_write_ack_i,
 
     output wire                         csr_write_o,
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
@@ -166,7 +167,7 @@ module openrv64_retire_3p_banked #(
     assign gpr_rd_data_o = write_data_q;
 
     wire writes_complete = write_active_q &&
-        &((~write_mask_q) | write_done_q | gpr_write_valid_i);
+        &((~write_mask_q) | write_done_q | gpr_write_ack_i);
     wire commit_ready = write_active_q ? writes_complete :
                         !(|write_mask_now);
 
@@ -260,8 +261,8 @@ module openrv64_retire_3p_banked #(
         end else if (write_active_q) begin
             // A flush discards the queue association, not an already asserted
             // storage transaction.  Keep every request, address, and datum
-            // stable until its response, then release the abandoned group.
-            write_done_q <= write_done_q | gpr_write_valid_i;
+            // stable until its ack, then release the abandoned group.
+            write_done_q <= write_done_q | gpr_write_ack_i;
             if (flush_i)
                 write_discard_q <= 1'b1;
             if ((write_discard_q || flush_i) && writes_complete) begin

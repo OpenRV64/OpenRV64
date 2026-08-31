@@ -13,6 +13,18 @@ module tb_rv64i_gpr_3p #(
     reg [3*`RV64_REG_ADDR_WIDTH-1:0] write_addr;
     reg [3*`RV64_XLEN-1:0] write_data;
 
+    reg [6*`RV64_REG_ADDR_WIDTH-1:0] banked_read_addr;
+    wire [6*`RV64_XLEN-1:0] banked_read_data;
+    reg [5:0] banked_read_req;
+    wire [5:0] banked_read_ack;
+    wire [5:0] banked_read_valid;
+    reg [2:0] banked_write_valid;
+    reg [3*`RV64_REG_ADDR_WIDTH-1:0] banked_write_addr;
+    reg [3*`RV64_XLEN-1:0] banked_write_data;
+    wire [2:0] banked_write_ack;
+    wire [2:0] banked_write_response;
+    wire banked_quiescent;
+
     openrv64_rv64i_gpr_3p #(
         .ALLOW_DUPLICATE_WRITES(ALLOW_DUPLICATE_WRITES)
     ) dut (
@@ -27,6 +39,24 @@ module tb_rv64i_gpr_3p #(
         .write_data_i(write_data),
         .write_ready_o(),
         .quiescent_o()
+    );
+
+    openrv64_rv64i_gpr_3p #(
+        .BANKED(1)
+    ) banked_dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .read_req_i(banked_read_req),
+        .read_addr_i(banked_read_addr),
+        .read_data_o(banked_read_data),
+        .read_ack_o(banked_read_ack),
+        .read_valid_o(banked_read_valid),
+        .write_valid_i(banked_write_valid),
+        .write_addr_i(banked_write_addr),
+        .write_data_i(banked_write_data),
+        .write_ack_o(banked_write_ack),
+        .write_ready_o(banked_write_response),
+        .quiescent_o(banked_quiescent)
     );
 
     always #5 clk = ~clk;
@@ -53,6 +83,11 @@ module tb_rv64i_gpr_3p #(
         write_valid = 3'b000;
         write_addr = {3*`RV64_REG_ADDR_WIDTH{1'b0}};
         write_data = {3*`RV64_XLEN{1'b0}};
+        banked_read_addr = {6*`RV64_REG_ADDR_WIDTH{1'b0}};
+        banked_read_req = 6'b000000;
+        banked_write_valid = 3'b000;
+        banked_write_addr = {3*`RV64_REG_ADDR_WIDTH{1'b0}};
+        banked_write_data = {3*`RV64_XLEN{1'b0}};
 
         repeat (3) tick();
         rst_n = 1'b1;
@@ -126,6 +161,59 @@ module tb_rv64i_gpr_3p #(
         #1;
         if (read_data[0*64 +: 64] != 64'd0)
             fail("x0 did not remain zero");
+
+        // The banked interface separates address ack from the following data
+        // phase.  Exercise back-to-back nonzero/x0/nonzero transactions so
+        // response data cannot accidentally follow the current address.
+        @(negedge clk);
+        banked_write_valid[0] = 1'b1;
+        banked_write_addr[0*5 +: 5] = 5'd1;
+        banked_write_data[0*64 +: 64] = 64'h1111_2222_3333_4444;
+        #1;
+        if (!banked_write_ack[0])
+            fail("banked p1 write was not acknowledged");
+        @(posedge clk);
+        #1;
+        banked_write_valid[0] = 1'b0;
+
+        @(negedge clk);
+        banked_read_req[0] = 1'b1;
+        banked_read_addr[0*5 +: 5] = 5'd1;
+        #1;
+        if (!banked_read_ack[0])
+            fail("banked p1 read was not acknowledged");
+        @(posedge clk);
+        #1;
+        if (!banked_read_valid[0] ||
+            (banked_read_data[0*64 +: 64] !==
+             64'h1111_2222_3333_4444))
+            fail("banked p1 data phase was incorrect");
+
+        banked_read_addr[0*5 +: 5] = 5'd0;
+        #1;
+        if (!banked_read_ack[0])
+            fail("banked p0 read was not acknowledged");
+        @(posedge clk);
+        #1;
+        if (!banked_read_valid[0] ||
+            (banked_read_data[0*64 +: 64] !== 64'd0))
+            fail("banked p0 data phase was not zero");
+
+        banked_read_addr[0*5 +: 5] = 5'd1;
+        #1;
+        if (!banked_read_ack[0])
+            fail("second banked p1 read was not acknowledged");
+        @(posedge clk);
+        #1;
+        if (!banked_read_valid[0] ||
+            (banked_read_data[0*64 +: 64] !==
+             64'h1111_2222_3333_4444))
+            fail("banked p1 response after p0 was incorrect");
+        banked_read_req[0] = 1'b0;
+        @(posedge clk);
+        #1;
+        if (banked_read_valid[0] || !banked_quiescent)
+            fail("banked read pipeline did not become quiescent");
 
         $display("PASS: six-read three-write GPR bank");
         $finish;

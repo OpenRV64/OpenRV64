@@ -34,6 +34,7 @@ module tb_dispatch_3p_banked;
 
     wire [4*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr;
     wire [3:0] gpr_read_req;
+    wire [3:0] gpr_read_ack;
     wire [3:0] gpr_read_valid;
     wire [4*`RV64_XLEN-1:0] gpr_read_data;
 
@@ -74,6 +75,7 @@ module tb_dispatch_3p_banked;
     reg [2*`RV64_REG_ADDR_WIDTH-1:0] file_write_addr;
     reg [2*`RV64_XLEN-1:0] file_write_data;
     reg [1:0] file_write_req;
+    wire [1:0] file_write_ack;
     wire [1:0] file_write_valid;
 
     openrv64_dispatch_3p_banked #(
@@ -92,6 +94,7 @@ module tb_dispatch_3p_banked;
         .decode_uses_rs2_i(decode_uses_rs2),
         .gpr_read_addr_o(gpr_read_addr),
         .gpr_read_req_o(gpr_read_req),
+        .gpr_read_ack_i(gpr_read_ack),
         .gpr_read_valid_i(gpr_read_valid),
         .gpr_read_data_i(gpr_read_data),
         .allocation_ready_i(allocation_ready),
@@ -137,10 +140,12 @@ module tb_dispatch_3p_banked;
         .rp_addr_i(gpr_read_addr),
         .rp_data_o(gpr_read_data),
         .rp_req_i(gpr_read_req),
+        .rp_ack_o(gpr_read_ack),
         .rp_valid_o(gpr_read_valid),
         .wp_addr_i(file_write_addr),
         .wp_data_i(file_write_data),
         .wp_req_i(file_write_req),
+        .wp_ack_o(file_write_ack),
         .wp_valid_o(file_write_valid),
         .quiescent_o()
     );
@@ -211,11 +216,11 @@ module tb_dispatch_3p_banked;
             file_write_data[0 +: `RV64_XLEN] = data;
             file_write_req[0] = 1'b1;
             wait_cycles = 0;
-            while (!file_write_valid[0] && (wait_cycles < 8)) begin
+            while (!file_write_ack[0] && (wait_cycles < 8)) begin
                 tick();
                 wait_cycles = wait_cycles + 1;
             end
-            if (!file_write_valid[0])
+            if (!file_write_ack[0])
                 fail("register-file preload timed out");
             file_write_req[0] = 1'b0;
             tick();

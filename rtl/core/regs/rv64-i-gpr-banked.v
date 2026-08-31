@@ -38,49 +38,68 @@ module openrv64_rv64i_gpr_1p #(
             wire [2*`RV64_REG_ADDR_WIDTH-1:0] read_addr;
             wire [2*`RV64_XLEN-1:0] read_data;
             wire [1:0] read_req;
+            wire [1:0] read_ack;
             wire [1:0] read_valid;
 
             wire [`RV64_REG_ADDR_WIDTH-1:0] write_addr;
             wire [`RV64_XLEN-1:0] write_data;
             wire [0:0] write_req;
+            wire [0:0] write_ack;
             wire [0:0] write_valid;
 
             reg rs1_done_q;
             reg rs2_done_q;
             reg [`RV64_XLEN-1:0] rs1_data_q;
             reg [`RV64_XLEN-1:0] rs2_data_q;
+            reg [1:0] read_pending_q;
+            reg [1:0] read_pending_poison_q;
+            reg [1:0] read_ack_q;
+            reg [1:0] read_poison_q;
+            reg [2*`RV64_REG_ADDR_WIDTH-1:0] read_addr_q;
             reg write_done_q;
 
             wire rs1_zero = (rs1_addr_i == `RV64_REG_X0);
             wire rs2_zero = (rs2_addr_i == `RV64_REG_X0);
-            wire rs1_ready = rs1_zero || rs1_done_q || read_valid[0];
-            wire rs2_ready = rs2_zero || rs2_done_q || read_valid[1];
+            wire rs1_ready = rs1_zero || rs1_done_q ||
+                (read_ack_q[0] && !read_poison_q[0] && read_valid[0]);
+            wire rs2_ready = rs2_zero || rs2_done_q ||
+                (read_ack_q[1] && !read_poison_q[1] && read_valid[1]);
             wire write_required = rd_write_i &&
                                   (rd_addr_i != `RV64_REG_X0);
 
             assign read_addr[0*`RV64_REG_ADDR_WIDTH +:
-                             `RV64_REG_ADDR_WIDTH] = rs1_addr_i;
+                             `RV64_REG_ADDR_WIDTH] = read_pending_q[0] ?
+                read_addr_q[0*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] : rs1_addr_i;
             assign read_addr[1*`RV64_REG_ADDR_WIDTH +:
-                             `RV64_REG_ADDR_WIDTH] = rs2_addr_i;
-            assign read_req[0] = read_valid_i && !read_flush_i &&
-                                 !rs1_zero && !rs1_done_q;
-            assign read_req[1] = read_valid_i && !read_flush_i &&
-                                 !rs2_zero && !rs2_done_q;
+                             `RV64_REG_ADDR_WIDTH] = read_pending_q[1] ?
+                read_addr_q[1*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] : rs2_addr_i;
+            assign read_req[0] = read_pending_q[0] ||
+                (read_valid_i && !read_flush_i && !rs1_zero &&
+                 !rs1_done_q && !read_ack_q[0]);
+            assign read_req[1] = read_pending_q[1] ||
+                (read_valid_i && !read_flush_i && !rs2_zero &&
+                 !rs2_done_q && !read_ack_q[1]);
 
             assign read_ready_o = !read_flush_i &&
                                   rs1_ready && rs2_ready;
             assign rs1_data_o = rs1_zero ? {`RV64_XLEN{1'b0}} :
                                 rs1_done_q ? rs1_data_q :
-                                read_data[0*`RV64_XLEN +: `RV64_XLEN];
+                                (read_ack_q[0] && !read_poison_q[0]) ?
+                                read_data[0*`RV64_XLEN +: `RV64_XLEN] :
+                                {`RV64_XLEN{1'b0}};
             assign rs2_data_o = rs2_zero ? {`RV64_XLEN{1'b0}} :
                                 rs2_done_q ? rs2_data_q :
-                                read_data[1*`RV64_XLEN +: `RV64_XLEN];
+                                (read_ack_q[1] && !read_poison_q[1]) ?
+                                read_data[1*`RV64_XLEN +: `RV64_XLEN] :
+                                {`RV64_XLEN{1'b0}};
 
             assign write_addr = rd_addr_i;
             assign write_data = rd_data_i;
             assign write_req[0] = write_required && !write_done_q;
             assign rd_ready_o = !write_required ||
-                                write_done_q || write_valid[0];
+                                write_done_q || write_ack[0];
 
             cmn_reg_file #(
                 .REG_WIDTH(`RV64_XLEN),
@@ -96,10 +115,12 @@ module openrv64_rv64i_gpr_1p #(
                 .rp_addr_i(read_addr),
                 .rp_data_o(read_data),
                 .rp_req_i(read_req),
+                .rp_ack_o(read_ack),
                 .rp_valid_o(read_valid),
                 .wp_addr_i(write_addr),
                 .wp_data_i(write_data),
                 .wp_req_i(write_req),
+                .wp_ack_o(write_ack),
                 .wp_valid_o(write_valid),
                 .quiescent_o()
             );
@@ -110,22 +131,61 @@ module openrv64_rv64i_gpr_1p #(
                     rs2_done_q <= 1'b0;
                     rs1_data_q <= {`RV64_XLEN{1'b0}};
                     rs2_data_q <= {`RV64_XLEN{1'b0}};
+                    read_pending_q <= 2'b00;
+                    read_pending_poison_q <= 2'b00;
+                    read_ack_q <= 2'b00;
+                    read_poison_q <= 2'b00;
+                    read_addr_q <=
+                        {2*`RV64_REG_ADDR_WIDTH{1'b0}};
                 end else if (read_flush_i || read_clear_i) begin
                     rs1_done_q <= 1'b0;
                     rs2_done_q <= 1'b0;
                     rs1_data_q <= {`RV64_XLEN{1'b0}};
                     rs2_data_q <= {`RV64_XLEN{1'b0}};
+                    read_ack_q <= read_ack;
+                    read_poison_q <= read_ack;
                 end else begin
-                    if (read_valid[0]) begin
+                    read_ack_q <= read_ack;
+                    read_poison_q <= read_ack & read_pending_poison_q;
+                    if (read_ack_q[0] && !read_poison_q[0] &&
+                        read_valid[0]) begin
                         rs1_done_q <= 1'b1;
                         rs1_data_q <= read_data[
                             0*`RV64_XLEN +: `RV64_XLEN];
                     end
 
-                    if (read_valid[1]) begin
+                    if (read_ack_q[1] && !read_poison_q[1] &&
+                        read_valid[1]) begin
                         rs2_done_q <= 1'b1;
                         rs2_data_q <= read_data[
                             1*`RV64_XLEN +: `RV64_XLEN];
+                    end
+                end
+
+                if (rst_n) begin
+                    if (read_ack[0]) begin
+                        read_pending_q[0] <= 1'b0;
+                        read_pending_poison_q[0] <= 1'b0;
+                    end else if (read_req[0]) begin
+                        read_pending_q[0] <= 1'b1;
+                        if (read_flush_i || read_clear_i)
+                            read_pending_poison_q[0] <= 1'b1;
+                        read_addr_q[0*`RV64_REG_ADDR_WIDTH +:
+                                    `RV64_REG_ADDR_WIDTH] <= read_addr[
+                            0*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH];
+                    end
+                    if (read_ack[1]) begin
+                        read_pending_q[1] <= 1'b0;
+                        read_pending_poison_q[1] <= 1'b0;
+                    end else if (read_req[1]) begin
+                        read_pending_q[1] <= 1'b1;
+                        if (read_flush_i || read_clear_i)
+                            read_pending_poison_q[1] <= 1'b1;
+                        read_addr_q[1*`RV64_REG_ADDR_WIDTH +:
+                                    `RV64_REG_ADDR_WIDTH] <= read_addr[
+                            1*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH];
                     end
                 end
             end
@@ -135,7 +195,7 @@ module openrv64_rv64i_gpr_1p #(
                     write_done_q <= 1'b0;
                 else if (rd_clear_i)
                     write_done_q <= 1'b0;
-                else if (write_valid[0])
+                else if (write_ack[0])
                     write_done_q <= 1'b1;
             end
 

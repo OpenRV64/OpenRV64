@@ -63,7 +63,7 @@ module tb_retire_3p_banked;
         .gpr_write_o(gpr_write),
         .gpr_rd_addr_o(gpr_addr),
         .gpr_rd_data_o(gpr_data),
-        .gpr_write_valid_i(gpr_write_valid),
+        .gpr_write_ack_i(gpr_write_valid),
         .csr_write_o(csr_write),
         .csr_addr_o(csr_addr),
         .csr_op_o(csr_op),

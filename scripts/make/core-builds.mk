@@ -70,6 +70,11 @@ $(STAGE_SIM_BUILD): $(STAGE_SIM_SRCS) $(STAGE_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(STAGE_SIM_BUILD) $(STAGE_SIM_SRCS)
 
+$(REGFILE_SIM_BUILD): rtl/util/regfile.v $(REGFILE_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_regfile \
+		-o $(REGFILE_SIM_BUILD) $(REGFILE_SIM_SRCS)
+
 $(PRF_SIM_BUILD): rtl/core/regs/prf.v tb/tb_prf.sv
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -s tb_prf -o $(PRF_SIM_BUILD) \
@@ -92,10 +97,12 @@ $(RV64I_GPR_BANKED_SIM_BUILD): $(RV64I_GPR_BANKED_SIM_SRCS) $(ISA_SRCS)
 		-o $(RV64I_GPR_BANKED_SIM_BUILD) $(RV64I_GPR_BANKED_SIM_SRCS)
 
 $(RV64I_GPR_3P_SIM_BUILD): rtl/core/regs/prf.v \
-		rtl/core/regs/rv64-i-gpr_3p.v tb/tb_rv64-i-gpr_3p.sv
+		rtl/util/regfile.v rtl/core/regs/rv64-i-gpr_3p.v \
+		tb/tb_rv64-i-gpr_3p.sv
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_GPR_3P_SIM_BUILD) \
-		rtl/core/regs/rv64-i-gpr_3p.v tb/tb_rv64-i-gpr_3p.sv
+		rtl/util/regfile.v rtl/core/regs/rv64-i-gpr_3p.v \
+		tb/tb_rv64-i-gpr_3p.sv
 
 $(RV64I_CSRS_SIM_BUILD): $(RV64I_CSRS_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS) $(EXCEPT_SRCS)
 	mkdir -p sim

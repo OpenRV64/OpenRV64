@@ -28,11 +28,18 @@ therefore do not require reset initialization for x0 correctness.
 
 ## Request contract
 
-Each requester holds request, address, and write data stable until its valid
-response.  Arbitration may grant only one read and one write per bank per
-cycle.  Responses are registered.  `quiescent_o` means that no accepted read
-or write remains in the file; a complete caller-side busy predicate also
-includes requests still being presented:
+Each requester holds request, address, and write data stable until its
+combinational `ack`.  Ack is the accepted address phase.  On the following
+cycle the requester may present a different address while the acknowledged
+read's registered data and valid return as the data phase.  The requester
+registers ack and uses that bit to associate the next-cycle response; a bare
+valid is not ownership metadata.  There is no per-port response bubble, so a
+logical port can accept one transaction per cycle when its bank wins.
+
+Arbitration may acknowledge only one read and one write per bank per cycle.
+A conflict simply withholds ack, causing the loser to retry its held address.
+`quiescent_o` means that no accepted response remains in the file; a complete
+caller-side busy predicate also includes requests still being presented:
 
 ```text
 busy = any_request || !quiescent_o
@@ -47,10 +54,10 @@ is busy.  Consequently, a dependent load consumer follows this sequence:
 
 1. the load completes into its retirement record;
 2. retirement holds the GPR write until the file accepts it;
-3. the storage update occurs at the write-grant edge;
-4. the registered write response permits architectural retirement;
-5. the scoreboard clears; and
-6. the consumer obtains a registered GPR read response and may issue.
+3. the storage update and write ack occur at the write-grant edge;
+4. the ack permits architectural retirement and the scoreboard clears; and
+5. the consumer obtains an acknowledged address phase followed by a registered
+   GPR read data phase and may issue.
 
 The same-address register-file bypass is therefore a correctness definition
 for an independently granted collision, not a load-completion forwarding
@@ -60,16 +67,15 @@ path.
 
 A redirect enters a drain state.  New GPR reads and allocation remain blocked
 until all presented requests and registered responses have cleared.  An
-ungranted request keeps its latched address (and write data, for retirement)
-stable through the redirect until its response; the redirect cancels the
-requester's association, not the register-file transaction.  Responses from
-pre-redirect reads are discarded rather than captured as operands for the
-redirected instruction stream.
+unacknowledged request keeps its latched address (and write data, for
+retirement) stable through the redirect until ack.  An acknowledged read is
+already irrevocable and its following data phase is poisoned and discarded,
+rather than captured as an operand for the redirected instruction stream.
 
 Simulation contains a 100-cycle watchdog for every held logical read and
-write request.  The watchdog is excluded from synthesis and reports the port
-and physical address on timeout.  A separate 100-cycle watchdog covers the
-redirect drain after the requester has intentionally dropped those requests.
+write request waiting for ack.  The watchdog is excluded from synthesis and
+reports the port and physical address on timeout.  A separate 100-cycle
+watchdog covers redirect drain through the final poisoned data phase.
 
 ## Retirement boundary
 
@@ -88,7 +94,7 @@ wrapper's still-pending GPR result from a `csrrw` instruction.
 
 If an unrelated redirect arrives while a retirement write is waiting on a
 bank, the wrapper retains the captured mask, addresses, and data until every
-write response arrives.  It then discards the flushed queue association.
+write ack arrives.  It then discards the flushed queue association.
 
 CSR requests use the same transaction rule.  The wrapper latches the CSR
 address, operation, and data, holds the request independently of a redirect,

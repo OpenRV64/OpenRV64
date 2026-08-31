@@ -24,11 +24,13 @@ module openrv64_rv64i_gpr_3p #(
     input  wire [6*REG_ADDR_WIDTH-1:0]  read_addr_i,
     output wire [6*`RV64_XLEN-1:0]      read_data_o,
     input  wire [5:0]                   read_req_i,
+    output wire [5:0]                   read_ack_o,
     output wire [5:0]                   read_valid_o,
 
     input  wire [2:0]                   write_valid_i,
     input  wire [3*REG_ADDR_WIDTH-1:0]  write_addr_i,
     input  wire [3*`RV64_XLEN-1:0]      write_data_i,
+    output wire [2:0]                   write_ack_o,
     output wire [2:0]                   write_ready_o,
     output wire                         quiescent_o
 );
@@ -36,7 +38,9 @@ module openrv64_rv64i_gpr_3p #(
     wire [NUM_REGS*`RV64_XLEN-1:0] prf_debug_regs;
     generate
         if (BANKED != 0) begin : g_banked
+            wire [3:0] banked_read_ack;
             wire [3:0] banked_read_valid;
+            wire [1:0] banked_write_ack;
             wire [1:0] banked_write_valid;
             wire [3:0] banked_read_req;
             wire [1:0] banked_write_req;
@@ -44,6 +48,9 @@ module openrv64_rv64i_gpr_3p #(
             wire [1:0] banked_write_zero;
             wire [4*`RV64_XLEN-1:0] banked_read_data_raw;
             wire [4*`RV64_XLEN-1:0] banked_read_data;
+            wire banked_file_quiescent;
+            reg [3:0] banked_read_zero_q;
+            reg [1:0] banked_write_zero_q;
 
             genvar banked_read_port;
             for (banked_read_port = 0; banked_read_port < 4;
@@ -57,7 +64,7 @@ module openrv64_rv64i_gpr_3p #(
                     !banked_read_zero[banked_read_port];
                 assign banked_read_data[
                     banked_read_port*`RV64_XLEN +: `RV64_XLEN] =
-                    banked_read_zero[banked_read_port] ?
+                    banked_read_zero_q[banked_read_port] ?
                     {`RV64_XLEN{1'b0}} : banked_read_data_raw[
                         banked_read_port*`RV64_XLEN +: `RV64_XLEN];
             end
@@ -88,25 +95,51 @@ module openrv64_rv64i_gpr_3p #(
                 .rp_addr_i(read_addr_i[4*REG_ADDR_WIDTH-1:0]),
                 .rp_data_o(banked_read_data_raw),
                 .rp_req_i(banked_read_req),
+                .rp_ack_o(banked_read_ack),
                 .rp_valid_o(banked_read_valid),
                 .wp_addr_i(write_addr_i[2*REG_ADDR_WIDTH-1:0]),
                 .wp_data_i(write_data_i[2*`RV64_XLEN-1:0]),
                 .wp_req_i(banked_write_req),
+                .wp_ack_o(banked_write_ack),
                 .wp_valid_o(banked_write_valid),
-                .quiescent_o(quiescent_o)
+                .quiescent_o(banked_file_quiescent)
             );
+
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    banked_read_zero_q <= 4'b0000;
+                    banked_write_zero_q <= 2'b00;
+                end else begin
+                    banked_read_zero_q <= read_req_i[3:0] &
+                                          banked_read_zero;
+                    banked_write_zero_q <= write_valid_i[1:0] &
+                                           banked_write_zero;
+                end
+            end
 
             assign read_data_o = {
                 {2*`RV64_XLEN{1'b0}}, banked_read_data
             };
+            assign read_ack_o = {
+                2'b00,
+                banked_read_ack | (read_req_i[3:0] & banked_read_zero)
+            };
             assign read_valid_o = {
-                2'b00, banked_read_valid
+                2'b00, banked_read_valid | banked_read_zero_q
+            };
+            assign write_ack_o = {
+                1'b0,
+                banked_write_ack |
+                    (write_valid_i[1:0] & banked_write_zero)
             };
             assign write_ready_o = {
                 1'b0,
                 banked_write_valid |
-                    (write_valid_i[1:0] & banked_write_zero)
+                    banked_write_zero_q
             };
+            assign quiescent_o = banked_file_quiescent &&
+                                 !(|banked_read_zero_q) &&
+                                 !(|banked_write_zero_q);
 
 `ifndef SYNTHESIS
             assign prf_debug_regs = u_reg_file.prf_debug_regs;
@@ -178,7 +211,9 @@ module openrv64_rv64i_gpr_3p #(
             );
 
             assign read_valid_o = 6'b11_1111;
+            assign read_ack_o = read_req_i;
             assign write_ready_o = 3'b111;
+            assign write_ack_o = write_valid_i;
             assign quiescent_o = 1'b1;
         end
     endgenerate

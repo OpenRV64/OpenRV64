@@ -370,13 +370,11 @@ module tb_backend_3p_banked;
                  (dut.gpr_write_addr[5 +: 5] == `RV64_REG_X0)))
                 fail("retirement sent an x0 write to the register file");
 
-            if ((|dut.gpr_read_valid) &&
-                ((dut.gpr_read_valid & dut.gpr_read_req) !=
-                 dut.gpr_read_req))
+            if (|(dut.gpr_read_req[3:0] & ~dut.gpr_read_ack[3:0]))
                 saw_read_bank_retry = 1'b1;
             if (dut.gpr_write == 2'b11 &&
-                ((dut.gpr_write_ready[1:0] == 2'b01) ||
-                 (dut.gpr_write_ready[1:0] == 2'b10)))
+                ((dut.gpr_write_ack[1:0] == 2'b01) ||
+                 (dut.gpr_write_ack[1:0] == 2'b10)))
                 saw_write_bank_retry = 1'b1;
             if ((dispatch_occupancy != 0) && (write_busy != 0) &&
                 (issue_count == 0))
@@ -505,10 +503,10 @@ module tb_backend_3p_banked;
         rst_n = 1'b1;
         tick();
 
-        // Put two same-bank operands behind the request interface, then
-        // redirect on the exact edge that accepts the first read.  The old
-        // response must become visible while the backend is draining, must
-        // not be captured as a live operand, and must not allocate work.
+        // Put two same-bank operands behind the request interface.  Redirect
+        // while the first accepted read is returning and the conflicting read
+        // is still presented.  The latter must remain stable through ack; both
+        // delayed responses are poisoned and must not allocate work.
         decode_payload = {3*IW{1'b0}};
         decode_payload[0 +: IW] = reg_packet(
             0, 2, 4, 31, `RV64_ALU_OP_ADD, 1'b0);
@@ -531,21 +529,22 @@ module tb_backend_3p_banked;
         if (!(|dut.u_gpr.g_banked.u_reg_file.read_grant))
             fail("redirect probe never obtained a GPR read grant");
 
-        // Accept the combinational grant first.  The response is now live,
-        // but no state-changing edge has occurred at which it could allocate.
+        // Accept the combinational grant first.  Its data returns now, while
+        // the same-bank loser remains a held address-phase request.
         tick();
         if (!(|dut.gpr_read_valid[3:0]))
             fail("redirect probe grant did not produce a delayed response");
-        redirect_delayed_reads = dut.banked_read_pending_q &
-                                 ~dut.gpr_read_valid[3:0];
+        if (dut.banked_read_ack_q != dut.gpr_read_valid[3:0])
+            fail("read response was not associated with the ack pipeline");
+        redirect_delayed_reads = dut.banked_read_pending_q;
         if (!(|redirect_delayed_reads))
             fail("redirect probe did not leave a bank-conflicting read pending");
 
         squash = 1'b1;
         #1;
-        if (((dut.gpr_read_req[3:0] & redirect_delayed_reads) !=
-             redirect_delayed_reads) || !(|dut.gpr_read_valid[3:0]))
-            fail("redirect did not hold the delayed read through its response");
+        if ((dut.gpr_read_req[3:0] & redirect_delayed_reads) !=
+            redirect_delayed_reads)
+            fail("redirect dropped an unacknowledged read request");
         tick();
         if (!dut.banked_gpr_drain_q ||
             (dut.banked_read_done_q != 4'b0000))
