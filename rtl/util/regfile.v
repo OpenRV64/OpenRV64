@@ -12,6 +12,7 @@ module cmn_reg_file #(
     parameter integer REG_COUNT       = 32,
     parameter integer READ_PORTS      = 2,
     parameter integer WRITE_PORTS     = 1,
+    parameter integer READ_PORTS_PER_BANK = 1,
     parameter integer BANK_SIZE       = 16,
     parameter integer NUM_BANKS       = (REG_COUNT / BANK_SIZE),
     parameter integer BANK_REG_BITS   = $clog2(BANK_SIZE),
@@ -21,6 +22,8 @@ module cmn_reg_file #(
         (READ_PORTS > 1) ? $clog2(READ_PORTS) : 1,
     parameter integer WRITE_PORT_BITS =
         (WRITE_PORTS > 1) ? $clog2(WRITE_PORTS) : 1,
+    parameter integer READ_SLOT_BITS =
+        (READ_PORTS_PER_BANK > 1) ? $clog2(READ_PORTS_PER_BANK) : 1,
     parameter integer FPGA_LUTRAM = 0
 ) (
     input  wire                      clk,
@@ -44,9 +47,12 @@ module cmn_reg_file #(
     output wire                                   quiescent_o
 );
 
-    wire [REG_WIDTH-1:0] bank_read_data [NUM_BANKS-1:0];
-    reg [BANK_REG_BITS-1:0] bank_read_sel [NUM_BANKS-1:0];
-    reg bank_read_req [NUM_BANKS-1:0];
+    wire [READ_PORTS_PER_BANK-1:0][REG_WIDTH-1:0]
+        bank_read_data [NUM_BANKS-1:0];
+    reg [READ_PORTS_PER_BANK-1:0][BANK_REG_BITS-1:0]
+        bank_read_sel [NUM_BANKS-1:0];
+    reg [READ_PORTS_PER_BANK-1:0]
+        bank_read_req [NUM_BANKS-1:0];
 
     wire [ADDR_WIDTH-1:0] read_port_addr [READ_PORTS-1:0];
     wire [ADDR_WIDTH-1:0] write_port_addr [WRITE_PORTS-1:0];
@@ -79,7 +85,7 @@ module cmn_reg_file #(
             cmn_reg_bank #(
                 .REG_WIDTH(REG_WIDTH),
                 .REG_NUM(BANK_SIZE),
-                .READ_PORTS(1),
+                .READ_PORTS(READ_PORTS_PER_BANK),
                 .WRITE_PORTS(1),
                 .FPGA_LUTRAM(FPGA_LUTRAM)
             ) bank (
@@ -101,6 +107,8 @@ module cmn_reg_file #(
     reg [READ_PORTS-1:0] read_valid_q;
     reg [WRITE_PORTS-1:0] write_valid_q;
     reg [BANK_SEL_BITS-1:0] read_response_bank_q [READ_PORTS-1:0];
+    reg [READ_SLOT_BITS-1:0] read_response_slot_q [READ_PORTS-1:0];
+    reg [READ_SLOT_BITS-1:0] read_grant_slot [READ_PORTS-1:0];
     reg [READ_PORTS-1:0] read_bypass;
     reg [REG_WIDTH-1:0] read_bypass_data [READ_PORTS-1:0];
     reg [READ_PORTS-1:0] read_bypass_q;
@@ -120,18 +128,33 @@ module cmn_reg_file #(
     endfunction
 
     integer clear_read_bank;
+    integer clear_read_slot;
+    integer clear_read_port;
     integer read_scan;
+    integer read_slot;
     reg [READ_PORT_BITS-1:0] read_candidate;
     reg [BANK_SEL_BITS-1:0] selected_read_bank;
+    reg read_slot_found;
     always @* begin
         read_grant = {READ_PORTS{1'b0}};
         read_candidate = 0;
         selected_read_bank = {BANK_SEL_BITS{1'b0}};
+        read_slot_found = 1'b0;
+
+        for (clear_read_port = 0; clear_read_port < READ_PORTS;
+             clear_read_port = clear_read_port + 1) begin
+            read_grant_slot[clear_read_port] = {READ_SLOT_BITS{1'b0}};
+        end
 
         for (clear_read_bank = 0; clear_read_bank < NUM_BANKS;
              clear_read_bank = clear_read_bank + 1) begin
-            bank_read_sel[clear_read_bank] = {BANK_REG_BITS{1'b0}};
-            bank_read_req[clear_read_bank] = 1'b0;
+            for (clear_read_slot = 0;
+                 clear_read_slot < READ_PORTS_PER_BANK;
+                 clear_read_slot = clear_read_slot + 1) begin
+                bank_read_sel[clear_read_bank][clear_read_slot] =
+                    {BANK_REG_BITS{1'b0}};
+                bank_read_req[clear_read_bank][clear_read_slot] = 1'b0;
+            end
         end
 
         for (read_scan = 0; read_scan < READ_PORTS;
@@ -142,12 +165,21 @@ module cmn_reg_file #(
             if (rst_n && rp_req_i[read_candidate]) begin
                 selected_read_bank = read_port_addr[read_candidate]
                     [BANK_SEL_BITS-1:0];
-                if (!bank_read_req[selected_read_bank]) begin
-                    bank_read_req[selected_read_bank] = 1'b1;
-                    bank_read_sel[selected_read_bank] =
-                        read_port_addr[read_candidate]
-                            [ADDR_WIDTH-1:BANK_SEL_BITS];
-                    read_grant[read_candidate] = 1'b1;
+                read_slot_found = 1'b0;
+                for (read_slot = 0;
+                     read_slot < READ_PORTS_PER_BANK;
+                     read_slot = read_slot + 1) begin
+                    if (!read_slot_found &&
+                        !bank_read_req[selected_read_bank][read_slot]) begin
+                        bank_read_req[selected_read_bank][read_slot] = 1'b1;
+                        bank_read_sel[selected_read_bank][read_slot] =
+                            read_port_addr[read_candidate]
+                                [ADDR_WIDTH-1:BANK_SEL_BITS];
+                        read_grant[read_candidate] = 1'b1;
+                        read_grant_slot[read_candidate] =
+                            READ_SLOT_BITS'(read_slot);
+                        read_slot_found = 1'b1;
+                    end
                 end
             end
         end
@@ -232,7 +264,8 @@ module cmn_reg_file #(
                 (read_bypass_q[response_read_port] ?
                  read_bypass_data_q[response_read_port] :
                  bank_read_data[
-                    read_response_bank_q[response_read_port]]) :
+                    read_response_bank_q[response_read_port]][
+                    read_response_slot_q[response_read_port]]) :
                 {REG_WIDTH{1'b0}};
         end
 
@@ -259,6 +292,8 @@ module cmn_reg_file #(
                  state_read_port = state_read_port + 1) begin
                 read_response_bank_q[state_read_port] <=
                     {BANK_SEL_BITS{1'b0}};
+                read_response_slot_q[state_read_port] <=
+                    {READ_SLOT_BITS{1'b0}};
                 read_bypass_data_q[state_read_port] <=
                     {REG_WIDTH{1'b0}};
             end
@@ -273,6 +308,8 @@ module cmn_reg_file #(
                 if (read_grant[state_read_port]) begin
                     read_response_bank_q[state_read_port] <=
                         read_port_addr[state_read_port][BANK_SEL_BITS-1:0];
+                    read_response_slot_q[state_read_port] <=
+                        read_grant_slot[state_read_port];
                     read_bypass_data_q[state_read_port] <=
                         read_bypass_data[state_read_port];
                 end
@@ -340,6 +377,10 @@ module cmn_reg_file #(
             $fatal(1, "cmn_reg_file: READ_PORTS must be at least one.");
         if (WRITE_PORTS < 1)
             $fatal(1, "cmn_reg_file: WRITE_PORTS must be at least one.");
+        if ((READ_PORTS_PER_BANK < 1) ||
+            (READ_PORTS_PER_BANK > READ_PORTS))
+            $fatal(1,
+                   "cmn_reg_file: invalid physical read ports per bank.");
         if (NUM_BANKS < 2)
             $fatal(1, "cmn_reg_file: NUM_BANKS must be at least two.");
         if (BANK_SIZE < 2)

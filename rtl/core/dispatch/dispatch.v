@@ -135,6 +135,7 @@ module openrv64_dispatch #(
     output wire [6*PHYS_REG_ADDR_WIDTH_3P-1:0]
                                         gpr_read_addr_3p_o,
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_3p_i,
+    input  wire [5:0]                   candidate_operand_ready_3p_i,
     input  wire                         allocation_ready_3p_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] allocation_slot_3p_i,
@@ -293,6 +294,8 @@ module openrv64_dispatch #(
                 .decode_uses_rs2_i(decode_uses_rs2_3p_i),
                 .gpr_read_addr_o(strict_gpr_read_addr),
                 .gpr_read_data_i(gpr_read_data_3p_i),
+                .candidate_operand_ready_i(
+                    candidate_operand_ready_3p_i),
                 .allocation_ready_i(allocation_ready_3p_i),
                 .allocation_id_i(allocation_id_3p_i),
                 .allocation_slot_i(allocation_slot_3p_i),

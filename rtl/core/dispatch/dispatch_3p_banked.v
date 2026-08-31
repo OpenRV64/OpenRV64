@@ -147,6 +147,7 @@ module openrv64_dispatch_3p_banked #(
     ) u_dispatch (
         .gpr_read_addr_o(inner_gpr_read_addr),
         .gpr_read_data_i(inner_gpr_read_data),
+        .candidate_operand_ready_i({2'b00, read_done_q}),
         .allocation_ready_i(allocation_ready_i && operands_ready),
         .forward_valid_i(2'b00),
         .forward_rd_addr_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),

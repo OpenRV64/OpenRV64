@@ -26,6 +26,10 @@ module openrv64_dispatch_reg_map_3p #(
     input  wire [2:0]                   candidate_uses_rs2_i,
     input  wire [3*`RV64_REG_ADDR_WIDTH-1:0] candidate_rs1_addr_i,
     input  wire [3*`RV64_REG_ADDR_WIDTH-1:0] candidate_rs2_addr_i,
+    // Packed rs1,rs2 readiness for candidates 0,1,2.  A set bit means the
+    // caller has already captured the exact operand value for this stable
+    // queue entry, so an outstanding architectural writer cannot block it.
+    input  wire [5:0]                   candidate_operand_ready_i,
     input  wire [2:0]                   candidate_reg_write_i,
     input  wire [3*`RV64_REG_ADDR_WIDTH-1:0] candidate_rd_addr_i,
     input  wire [3*`OPENRV64_EXEC_PIPE_WIDTH-1:0] candidate_pipe_i,
@@ -245,7 +249,8 @@ module openrv64_dispatch_reg_map_3p #(
     wire reads_rs20 = candidate_valid_i[0] && candidate_uses_rs2_i[0] &&
                       (rs2_addr0 != `RV64_REG_X0);
     wire forward_rs10 = reads_rs10 &&
-        ((candidate_branch_i[0] &&
+        (candidate_operand_ready_i[0] ||
+         (candidate_branch_i[0] &&
           completion_forward_match(rs1_addr0,
               branch_completion_forward_valid_i,
               completion_forward_rd_addr_i)) ||
@@ -258,7 +263,8 @@ module openrv64_dispatch_reg_map_3p #(
            same_pipe_forward(candidate_pipe0, rs1_addr0,
                              forward_valid_i, forward_rd_addr_i))));
     wire forward_rs20 = reads_rs20 &&
-        ((candidate_branch_i[0] &&
+        (candidate_operand_ready_i[1] ||
+         (candidate_branch_i[0] &&
           completion_forward_match(rs2_addr0,
               branch_completion_forward_valid_i,
               completion_forward_rd_addr_i)) ||
@@ -299,7 +305,8 @@ module openrv64_dispatch_reg_map_3p #(
     wire reads_rs21 = candidate_valid_i[1] && candidate_uses_rs2_i[1] &&
                       (rs2_addr1 != `RV64_REG_X0);
     wire forward_rs11 = reads_rs11 &&
-        ((candidate_branch_i[1] &&
+        (candidate_operand_ready_i[2] ||
+         (candidate_branch_i[1] &&
           completion_forward_match(rs1_addr1,
               branch_completion_forward_valid_i,
               completion_forward_rd_addr_i)) ||
@@ -312,7 +319,8 @@ module openrv64_dispatch_reg_map_3p #(
            same_pipe_forward(candidate_pipe1, rs1_addr1,
                              forward_valid_i, forward_rd_addr_i))));
     wire forward_rs21 = reads_rs21 &&
-        ((candidate_branch_i[1] &&
+        (candidate_operand_ready_i[3] ||
+         (candidate_branch_i[1] &&
           completion_forward_match(rs2_addr1,
               branch_completion_forward_valid_i,
               completion_forward_rd_addr_i)) ||
@@ -357,7 +365,8 @@ module openrv64_dispatch_reg_map_3p #(
     wire reads_rs22 = candidate_valid_i[2] && candidate_uses_rs2_i[2] &&
                       (rs2_addr2 != `RV64_REG_X0);
     wire forward_rs12 = reads_rs12 &&
-        ((candidate_branch_i[2] &&
+        (candidate_operand_ready_i[4] ||
+         (candidate_branch_i[2] &&
           completion_forward_match(rs1_addr2,
               branch_completion_forward_valid_i,
               completion_forward_rd_addr_i)) ||
@@ -370,7 +379,8 @@ module openrv64_dispatch_reg_map_3p #(
            same_pipe_forward(candidate_pipe2, rs1_addr2,
                              forward_valid_i, forward_rd_addr_i))));
     wire forward_rs22 = reads_rs22 &&
-        ((candidate_branch_i[2] &&
+        (candidate_operand_ready_i[5] ||
+         (candidate_branch_i[2] &&
           completion_forward_match(rs2_addr2,
               branch_completion_forward_valid_i,
               completion_forward_rd_addr_i)) ||

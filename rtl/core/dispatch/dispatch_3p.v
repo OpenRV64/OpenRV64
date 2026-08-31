@@ -33,6 +33,7 @@ module openrv64_dispatch_3p #(
 
     output wire [6*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr_o,
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_i,
+    input  wire [5:0]                   candidate_operand_ready_i,
 
     input  wire                         allocation_ready_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_i,
@@ -582,6 +583,7 @@ module openrv64_dispatch_3p #(
         .candidate_uses_rs2_i(reg_map_uses_rs2),
         .candidate_rs1_addr_i(candidate_rs1_addr),
         .candidate_rs2_addr_i(candidate_rs2_addr),
+        .candidate_operand_ready_i(candidate_operand_ready_i),
         .candidate_reg_write_i(candidate_reg_write),
         .candidate_rd_addr_i(candidate_rd_addr),
         .candidate_pipe_i(candidate_pipe),

@@ -10,6 +10,7 @@ module tb_compliance_platform #(
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
     parameter bit BANKED_GPR_3P = 1'b0,
+    parameter logic [2:0] COMPLETION_FORWARD_MASK_3P = 3'b000,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer L2_BYTES = 256 * 1024,
@@ -85,6 +86,7 @@ module tb_compliance_platform #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BANKED_GPR_3P(BANKED_GPR_3P),
+        .COMPLETION_FORWARD_MASK_3P(COMPLETION_FORWARD_MASK_3P),
         .L2_BYTES(L2_BYTES),
         .L2_WAYS(L2_WAYS),
         .DDR3_ENABLE(DDR3_ENABLE),

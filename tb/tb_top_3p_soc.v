@@ -253,6 +253,7 @@ module tb_top_3p_soc #(
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer BANKED_GPR = 0,
     parameter integer FPGA_GPR_LUTRAM = 0,
+    parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ENABLE_POSTED_STORES = 1,
@@ -942,6 +943,46 @@ module tb_top_3p_soc #(
     integer waw_hazard_cycles;
     integer read_port_hazard_cycles;
     integer write_busy_cycles;
+    integer banked_bank_conflict_cycles;
+    integer banked_read_bank_conflict_cycles;
+    integer banked_write_bank_conflict_cycles;
+    integer banked_read_write_conflict_cycles;
+    integer banked_read_write_conflict_events;
+    integer banked_blocked_on_reads_cycles;
+    integer banked_blocked_by_writes_cycles;
+    integer banked_exu_forward_cycles;
+    integer banked_exu_forward_operands;
+    integer banked_mem_forward_cycles;
+    integer banked_mem_forward_operands;
+    integer banked_read_accept_cycles;
+    integer banked_read_accept_events;
+    integer banked_read_conflict_events;
+    integer banked_writer_load_incomplete_cycles;
+    integer banked_writer_load_incomplete_operands;
+    integer banked_writer_load_ready_cycles;
+    integer banked_writer_load_ready_operands;
+    integer banked_writer_other_incomplete_cycles;
+    integer banked_writer_other_incomplete_operands;
+    integer banked_writer_other_ready_cycles;
+    integer banked_writer_other_ready_operands;
+    integer banked_writer_ready_write_not_active_cycles;
+    integer banked_writer_ready_write_granted_cycles;
+    integer banked_writer_ready_write_denied_cycles;
+    integer banked_no_issue_writer_only;
+    integer banked_no_issue_writer_read_mixed;
+    integer banked_no_issue_read_latency_only;
+    integer banked_no_issue_read_conflict_only;
+    integer banked_no_issue_read_mixed;
+    integer banked_no_issue_read_other;
+    integer banked_no_issue_gpr_ready_other;
+    integer banked_mem_forward_captures;
+    integer banked_mem_stage_wait_cycles;
+    integer banked_mem_stage_wait_operands;
+    integer banked_mem_forward_issue_cycles;
+    integer banked_mem_forward_issue_operands;
+    integer banked_write_request_cycles;
+    integer banked_write_accept_events;
+    integer banked_write_denied_events;
     integer barrier_cycles;
     integer retire_nonempty;
     integer retire_nonempty_no_retire;
@@ -1636,6 +1677,8 @@ module tb_top_3p_soc #(
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BANKED_GPR(BANKED_GPR),
         .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
+        .BANKED_GPR_READ_PORTS_PER_BANK(
+            BANKED_GPR_READ_PORTS_PER_BANK),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
@@ -3491,6 +3534,46 @@ module tb_top_3p_soc #(
         waw_hazard_cycles = 0;
         read_port_hazard_cycles = 0;
         write_busy_cycles = 0;
+        banked_bank_conflict_cycles = 0;
+        banked_read_bank_conflict_cycles = 0;
+        banked_write_bank_conflict_cycles = 0;
+        banked_read_write_conflict_cycles = 0;
+        banked_read_write_conflict_events = 0;
+        banked_blocked_on_reads_cycles = 0;
+        banked_blocked_by_writes_cycles = 0;
+        banked_exu_forward_cycles = 0;
+        banked_exu_forward_operands = 0;
+        banked_mem_forward_cycles = 0;
+        banked_mem_forward_operands = 0;
+        banked_read_accept_cycles = 0;
+        banked_read_accept_events = 0;
+        banked_read_conflict_events = 0;
+        banked_writer_load_incomplete_cycles = 0;
+        banked_writer_load_incomplete_operands = 0;
+        banked_writer_load_ready_cycles = 0;
+        banked_writer_load_ready_operands = 0;
+        banked_writer_other_incomplete_cycles = 0;
+        banked_writer_other_incomplete_operands = 0;
+        banked_writer_other_ready_cycles = 0;
+        banked_writer_other_ready_operands = 0;
+        banked_writer_ready_write_not_active_cycles = 0;
+        banked_writer_ready_write_granted_cycles = 0;
+        banked_writer_ready_write_denied_cycles = 0;
+        banked_no_issue_writer_only = 0;
+        banked_no_issue_writer_read_mixed = 0;
+        banked_no_issue_read_latency_only = 0;
+        banked_no_issue_read_conflict_only = 0;
+        banked_no_issue_read_mixed = 0;
+        banked_no_issue_read_other = 0;
+        banked_no_issue_gpr_ready_other = 0;
+        banked_mem_forward_captures = 0;
+        banked_mem_stage_wait_cycles = 0;
+        banked_mem_stage_wait_operands = 0;
+        banked_mem_forward_issue_cycles = 0;
+        banked_mem_forward_issue_operands = 0;
+        banked_write_request_cycles = 0;
+        banked_write_accept_events = 0;
+        banked_write_denied_events = 0;
         barrier_cycles = 0;
         retire_nonempty = 0;
         retire_nonempty_no_retire = 0;
@@ -3833,6 +3916,188 @@ module tb_top_3p_soc #(
                 read_port_hazard_cycles = read_port_hazard_cycles + 1;
             if (dut.backend_write_busy != 0)
                 write_busy_cycles = write_busy_cycles + 1;
+            if (dut.u_backend.banked_bank_conflict)
+                banked_bank_conflict_cycles =
+                    banked_bank_conflict_cycles + 1;
+            if (dut.u_backend.banked_read_bank_conflict)
+                banked_read_bank_conflict_cycles =
+                    banked_read_bank_conflict_cycles + 1;
+            if (dut.u_backend.banked_write_bank_conflict)
+                banked_write_bank_conflict_cycles =
+                    banked_write_bank_conflict_cycles + 1;
+            if (dut.u_backend.banked_read_write_conflict) begin
+                banked_read_write_conflict_cycles =
+                    banked_read_write_conflict_cycles + 1;
+                banked_read_write_conflict_events =
+                    banked_read_write_conflict_events +
+                    dut.u_backend.banked_read_write_conflict_pairs[0] +
+                    dut.u_backend.banked_read_write_conflict_pairs[1] +
+                    dut.u_backend.banked_read_write_conflict_pairs[2] +
+                    dut.u_backend.banked_read_write_conflict_pairs[3] +
+                    dut.u_backend.banked_read_write_conflict_pairs[4] +
+                    dut.u_backend.banked_read_write_conflict_pairs[5] +
+                    dut.u_backend.banked_read_write_conflict_pairs[6] +
+                    dut.u_backend.banked_read_write_conflict_pairs[7];
+            end
+            if (dut.u_backend.banked_blocked_on_reads)
+                banked_blocked_on_reads_cycles =
+                    banked_blocked_on_reads_cycles + 1;
+            if (dut.u_backend.banked_blocked_by_writes)
+                banked_blocked_by_writes_cycles =
+                    banked_blocked_by_writes_cycles + 1;
+            if (|dut.u_backend.banked_read_exu_forward_valid) begin
+                banked_exu_forward_cycles =
+                    banked_exu_forward_cycles + 1;
+                banked_exu_forward_operands =
+                    banked_exu_forward_operands +
+                    dut.u_backend.banked_read_exu_forward_valid[0] +
+                    dut.u_backend.banked_read_exu_forward_valid[1] +
+                    dut.u_backend.banked_read_exu_forward_valid[2] +
+                    dut.u_backend.banked_read_exu_forward_valid[3];
+            end
+            if (|dut.u_backend.banked_read_mem_forward_valid) begin
+                banked_mem_forward_cycles =
+                    banked_mem_forward_cycles + 1;
+                banked_mem_forward_operands =
+                    banked_mem_forward_operands +
+                    dut.u_backend.banked_read_mem_forward_valid[0] +
+                    dut.u_backend.banked_read_mem_forward_valid[1] +
+                    dut.u_backend.banked_read_mem_forward_valid[2] +
+                    dut.u_backend.banked_read_mem_forward_valid[3];
+            end
+            if (|dut.u_backend.banked_read_address_accept_wait) begin
+                banked_read_accept_cycles = banked_read_accept_cycles + 1;
+                banked_read_accept_events = banked_read_accept_events +
+                    dut.u_backend.banked_read_address_accept_wait[0] +
+                    dut.u_backend.banked_read_address_accept_wait[1] +
+                    dut.u_backend.banked_read_address_accept_wait[2] +
+                    dut.u_backend.banked_read_address_accept_wait[3];
+            end
+            if (|dut.u_backend.banked_read_address_conflict_wait)
+                banked_read_conflict_events = banked_read_conflict_events +
+                    dut.u_backend.banked_read_address_conflict_wait[0] +
+                    dut.u_backend.banked_read_address_conflict_wait[1] +
+                    dut.u_backend.banked_read_address_conflict_wait[2] +
+                    dut.u_backend.banked_read_address_conflict_wait[3];
+            if (|dut.u_backend.banked_writer_wait_load_incomplete) begin
+                banked_writer_load_incomplete_cycles =
+                    banked_writer_load_incomplete_cycles + 1;
+                banked_writer_load_incomplete_operands =
+                    banked_writer_load_incomplete_operands +
+                    dut.u_backend.banked_writer_wait_load_incomplete[0] +
+                    dut.u_backend.banked_writer_wait_load_incomplete[1] +
+                    dut.u_backend.banked_writer_wait_load_incomplete[2] +
+                    dut.u_backend.banked_writer_wait_load_incomplete[3];
+            end
+            if (|dut.u_backend.banked_writer_wait_load_ready) begin
+                banked_writer_load_ready_cycles =
+                    banked_writer_load_ready_cycles + 1;
+                banked_writer_load_ready_operands =
+                    banked_writer_load_ready_operands +
+                    dut.u_backend.banked_writer_wait_load_ready[0] +
+                    dut.u_backend.banked_writer_wait_load_ready[1] +
+                    dut.u_backend.banked_writer_wait_load_ready[2] +
+                    dut.u_backend.banked_writer_wait_load_ready[3];
+            end
+            if (|dut.u_backend.banked_writer_wait_other_incomplete) begin
+                banked_writer_other_incomplete_cycles =
+                    banked_writer_other_incomplete_cycles + 1;
+                banked_writer_other_incomplete_operands =
+                    banked_writer_other_incomplete_operands +
+                    dut.u_backend.banked_writer_wait_other_incomplete[0] +
+                    dut.u_backend.banked_writer_wait_other_incomplete[1] +
+                    dut.u_backend.banked_writer_wait_other_incomplete[2] +
+                    dut.u_backend.banked_writer_wait_other_incomplete[3];
+            end
+            if (|dut.u_backend.banked_writer_wait_other_ready) begin
+                banked_writer_other_ready_cycles =
+                    banked_writer_other_ready_cycles + 1;
+                banked_writer_other_ready_operands =
+                    banked_writer_other_ready_operands +
+                    dut.u_backend.banked_writer_wait_other_ready[0] +
+                    dut.u_backend.banked_writer_wait_other_ready[1] +
+                    dut.u_backend.banked_writer_wait_other_ready[2] +
+                    dut.u_backend.banked_writer_wait_other_ready[3];
+            end
+            if (|dut.u_backend.banked_writer_ready_write_not_active)
+                banked_writer_ready_write_not_active_cycles =
+                    banked_writer_ready_write_not_active_cycles + 1;
+            if (|dut.u_backend.banked_writer_ready_write_granted)
+                banked_writer_ready_write_granted_cycles =
+                    banked_writer_ready_write_granted_cycles + 1;
+            if (|dut.u_backend.banked_writer_ready_write_denied)
+                banked_writer_ready_write_denied_cycles =
+                    banked_writer_ready_write_denied_cycles + 1;
+
+            // Mutually exclusive attribution for cycles where dispatch has a
+            // candidate but the backend issues nothing.  Mixed writer/read
+            // cycles are kept separate instead of assigning them to either
+            // overlapping aggregate.
+            if ((BANKED_GPR != 0) &&
+                (dut.backend_dispatch_occupancy != 0) &&
+                (issued_this_cycle == 0)) begin
+                if (dut.u_backend.banked_blocked_by_writes) begin
+                    if (dut.u_backend.banked_blocked_on_reads)
+                        banked_no_issue_writer_read_mixed =
+                            banked_no_issue_writer_read_mixed + 1;
+                    else
+                        banked_no_issue_writer_only =
+                            banked_no_issue_writer_only + 1;
+                end else if ((|dut.u_backend.
+                                  banked_read_address_accept_wait) &&
+                             (|dut.u_backend.
+                                  banked_read_address_conflict_wait)) begin
+                    banked_no_issue_read_mixed =
+                        banked_no_issue_read_mixed + 1;
+                end else if (|dut.u_backend.
+                                 banked_read_address_conflict_wait) begin
+                    banked_no_issue_read_conflict_only =
+                        banked_no_issue_read_conflict_only + 1;
+                end else if (|dut.u_backend.
+                                 banked_read_address_accept_wait) begin
+                    banked_no_issue_read_latency_only =
+                        banked_no_issue_read_latency_only + 1;
+                end else if (!dut.u_backend.banked_operands_ready) begin
+                    banked_no_issue_read_other =
+                        banked_no_issue_read_other + 1;
+                end else begin
+                    banked_no_issue_gpr_ready_other =
+                        banked_no_issue_gpr_ready_other + 1;
+                end
+            end
+
+            if (dut.u_backend.banked_mem_forward_capture)
+                banked_mem_forward_captures =
+                    banked_mem_forward_captures + 1;
+            if (|dut.u_backend.banked_mem_stage_wait_operand) begin
+                banked_mem_stage_wait_cycles =
+                    banked_mem_stage_wait_cycles + 1;
+                banked_mem_stage_wait_operands =
+                    banked_mem_stage_wait_operands +
+                    dut.u_backend.banked_mem_stage_wait_operand[0] +
+                    dut.u_backend.banked_mem_stage_wait_operand[1] +
+                    dut.u_backend.banked_mem_stage_wait_operand[2] +
+                    dut.u_backend.banked_mem_stage_wait_operand[3];
+            end
+            if (|dut.u_backend.banked_mem_forward_issue_operand) begin
+                banked_mem_forward_issue_cycles =
+                    banked_mem_forward_issue_cycles + 1;
+                banked_mem_forward_issue_operands =
+                    banked_mem_forward_issue_operands +
+                    dut.u_backend.banked_mem_forward_issue_operand[0] +
+                    dut.u_backend.banked_mem_forward_issue_operand[1] +
+                    dut.u_backend.banked_mem_forward_issue_operand[2] +
+                    dut.u_backend.banked_mem_forward_issue_operand[3];
+            end
+            if (dut.u_backend.banked_write_request)
+                banked_write_request_cycles =
+                    banked_write_request_cycles + 1;
+            banked_write_accept_events = banked_write_accept_events +
+                dut.u_backend.banked_write_accept[0] +
+                dut.u_backend.banked_write_accept[1];
+            banked_write_denied_events = banked_write_denied_events +
+                dut.u_backend.banked_write_denied[0] +
+                dut.u_backend.banked_write_denied[1];
             if (dut.backend_barrier)
                 barrier_cycles = barrier_cycles + 1;
             if (dut.backend_retire_occupancy != 0) begin
@@ -4986,12 +5251,13 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d result_ready_control_release=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d banked_gpr=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
             ISSUE_WINDOW, SPECULATION_WINDOW,
+            BANKED_GPR, BANKED_GPR_READ_PORTS_PER_BANK,
             `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
             ENABLE_POSTED_STORES, DDR3_ENABLE, MEMORY_TIMING_MODEL,
             cycles, retired, ipc,
@@ -5328,6 +5594,60 @@ module tb_top_3p_soc #(
             dispatch_nonempty, dispatch_nonempty_no_issue, dispatch_full,
             raw_hazard_cycles, waw_hazard_cycles, read_port_hazard_cycles,
             write_busy_cycles, barrier_cycles);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR enabled=%0d read_ports_per_bank=%0d bank_conflict_cycles=%0d read_bank_conflict_cycles=%0d write_bank_conflict_cycles=%0d read_write_conflict_cycles=%0d read_write_conflict_events=%0d blocked_on_reads_cycles=%0d blocked_by_writes_cycles=%0d exu_forward_cycles=%0d exu_forward_operands=%0d mem_forward_cycles=%0d mem_forward_operands=%0d",
+            BANKED_GPR, BANKED_GPR_READ_PORTS_PER_BANK,
+            banked_bank_conflict_cycles,
+            banked_read_bank_conflict_cycles,
+            banked_write_bank_conflict_cycles,
+            banked_read_write_conflict_cycles,
+            banked_read_write_conflict_events,
+            banked_blocked_on_reads_cycles,
+            banked_blocked_by_writes_cycles,
+            banked_exu_forward_cycles,
+            banked_exu_forward_operands,
+            banked_mem_forward_cycles,
+            banked_mem_forward_operands);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_READ accept_cycles=%0d accept_events=%0d conflict_events=%0d",
+            banked_read_accept_cycles, banked_read_accept_events,
+            banked_read_conflict_events);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_WRITER_WAIT load_incomplete_cycles=%0d load_incomplete_operands=%0d load_ready_cycles=%0d load_ready_operands=%0d other_incomplete_cycles=%0d other_incomplete_operands=%0d other_ready_cycles=%0d other_ready_operands=%0d",
+            banked_writer_load_incomplete_cycles,
+            banked_writer_load_incomplete_operands,
+            banked_writer_load_ready_cycles,
+            banked_writer_load_ready_operands,
+            banked_writer_other_incomplete_cycles,
+            banked_writer_other_incomplete_operands,
+            banked_writer_other_ready_cycles,
+            banked_writer_other_ready_operands);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_READY_WRITE not_active_cycles=%0d granted_cycles=%0d denied_cycles=%0d",
+            banked_writer_ready_write_not_active_cycles,
+            banked_writer_ready_write_granted_cycles,
+            banked_writer_ready_write_denied_cycles);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_NO_ISSUE writer_only=%0d writer_read_mixed=%0d read_latency_only=%0d read_conflict_only=%0d read_mixed=%0d read_other=%0d gpr_ready_other=%0d",
+            banked_no_issue_writer_only,
+            banked_no_issue_writer_read_mixed,
+            banked_no_issue_read_latency_only,
+            banked_no_issue_read_conflict_only,
+            banked_no_issue_read_mixed,
+            banked_no_issue_read_other,
+            banked_no_issue_gpr_ready_other);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_MEM_FORWARD captures=%0d stage_wait_cycles=%0d stage_wait_operands=%0d issue_cycles=%0d issue_operands=%0d",
+            banked_mem_forward_captures,
+            banked_mem_stage_wait_cycles,
+            banked_mem_stage_wait_operands,
+            banked_mem_forward_issue_cycles,
+            banked_mem_forward_issue_operands);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_WRITE request_cycles=%0d accept_events=%0d denied_events=%0d",
+            banked_write_request_cycles,
+            banked_write_accept_events,
+            banked_write_denied_events);
         $display(
             "PERF_ICX_L2_RAW first_block=%0d pending=%0d bundle=%0d completed=%0d secondary_only=%0d rs1=%0d rs2=%0d both=%0d lane0=%0d lane1=%0d lane2=%0d blocked_alu=%0d blocked_branch=%0d blocked_jump=%0d blocked_load=%0d blocked_store=%0d",
             raw_first_block_cycles, raw_first_pending_cycles,

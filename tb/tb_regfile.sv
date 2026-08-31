@@ -5,7 +5,7 @@ module tb_regfile;
 
     localparam integer REG_WIDTH = 16;
     localparam integer REG_COUNT = 8;
-    localparam integer READ_PORTS = 2;
+    localparam integer READ_PORTS = 3;
     localparam integer WRITE_PORTS = 2;
     localparam integer NUM_BANKS = 2;
     localparam integer BANK_SIZE = REG_COUNT / NUM_BANKS;
@@ -26,11 +26,15 @@ module tb_regfile;
     wire [WRITE_PORTS-1:0] wp_ack;
     wire [WRITE_PORTS-1:0] wp_valid;
 
+    reg [READ_PORTS-1:0] triple_first_ack;
+    reg [READ_PORTS-1:0] triple_second_ack;
+
     cmn_reg_file #(
         .REG_WIDTH(REG_WIDTH),
         .REG_COUNT(REG_COUNT),
         .READ_PORTS(READ_PORTS),
         .WRITE_PORTS(WRITE_PORTS),
+        .READ_PORTS_PER_BANK(2),
         .BANK_SIZE(BANK_SIZE),
         .NUM_BANKS(NUM_BANKS)
     ) dut (
@@ -68,8 +72,7 @@ module tb_regfile;
         integer cycles;
         begin
             @(negedge clk);
-            rp_req[0] = 1'b0;
-            rp_req[1] = 1'b0;
+            rp_req = {READ_PORTS{1'b0}};
             wp_addr[0] = address_0;
             wp_data[0] = value_0;
             wp_addr[1] = address_1;
@@ -145,6 +148,7 @@ module tb_regfile;
             wp_req[1] = 1'b0;
             rp_addr[0] = address_0;
             rp_addr[1] = address_1;
+            rp_req = {READ_PORTS{1'b0}};
             rp_req[0] = 1'b1;
             rp_req[1] = 1'b1;
 
@@ -154,7 +158,7 @@ module tb_regfile;
 
             while ((!seen_0 || !seen_1) && (cycles < 6)) begin
                 #1;
-                accepted = rp_ack;
+                accepted = rp_ack[1:0];
                 if ((cycles == 0) && expect_same_cycle &&
                     (accepted != 2'b11)) begin
                     $fatal(1,
@@ -170,7 +174,7 @@ module tb_regfile;
 
                 @(posedge clk);
                 #1;
-                if (rp_valid !== accepted)
+                if (rp_valid[1:0] !== accepted)
                     $fatal(1, "%0s: read valid was not delayed ack", label);
 
                 if (accepted[0] && !seen_0) begin
@@ -200,17 +204,15 @@ module tb_regfile;
 
             @(posedge clk);
             #1;
-            if (rp_valid[0] || rp_valid[1])
+            if (|rp_valid)
                 $fatal(1, "%0s: read valid did not clear", label);
         end
     endtask
 
     initial begin
         rst_n = 1'b0;
-        rp_addr[0] = {ADDR_WIDTH{1'b0}};
-        rp_addr[1] = {ADDR_WIDTH{1'b0}};
-        rp_req[0] = 1'b0;
-        rp_req[1] = 1'b0;
+        rp_addr = {READ_PORTS*ADDR_WIDTH{1'b0}};
+        rp_req = {READ_PORTS{1'b0}};
         wp_addr[0] = {ADDR_WIDTH{1'b0}};
         wp_addr[1] = {ADDR_WIDTH{1'b0}};
         wp_data[0] = {REG_WIDTH{1'b0}};
@@ -246,13 +248,12 @@ module tb_regfile;
             1'b1,
             "different-bank reads");
 
-        // Registers 0 and 6 both map to bank 0.  The loser remains asserted
-        // until it receives its completion on the following cycle.
+        // Registers 0 and 6 both map to bank 0 and fit in its two read slots.
         read_pair_and_expect(
             3'd0, 16'h1000,
             3'd6, 16'h1006,
-            1'b0,
-            "same-bank read conflict");
+            1'b1,
+            "two reads in one bank");
 
         // Exercise the corresponding write arbitration, then read both
         // locations back through the same bank.
@@ -264,8 +265,54 @@ module tb_regfile;
         read_pair_and_expect(
             3'd4, 16'h4444,
             3'd6, 16'h6666,
-            1'b0,
+            1'b1,
             "same-bank writeback verification");
+
+        // Three requests to bank 0 must consume the two physical read slots
+        // in the first address phase and leave exactly one request for retry.
+        @(negedge clk);
+        rp_addr[0] = 3'd0;
+        rp_addr[1] = 3'd2;
+        rp_addr[2] = 3'd6;
+        rp_req = 3'b111;
+        #1;
+        triple_first_ack = rp_ack;
+        if ((triple_first_ack == 3'b000) ||
+            (triple_first_ack == 3'b001) ||
+            (triple_first_ack == 3'b010) ||
+            (triple_first_ack == 3'b100) ||
+            (triple_first_ack == 3'b111))
+            $fatal(1, "three same-bank reads did not grant exactly two slots");
+        @(posedge clk);
+        #1;
+        if (rp_valid !== triple_first_ack)
+            $fatal(1, "first two-slot response mask did not match ack");
+        if (triple_first_ack[0] && (rp_data[0] !== 16'h1000))
+            $fatal(1, "three-read response on port 0 was incorrect");
+        if (triple_first_ack[1] && (rp_data[1] !== 16'h1002))
+            $fatal(1, "three-read response on port 1 was incorrect");
+        if (triple_first_ack[2] && (rp_data[2] !== 16'h6666))
+            $fatal(1, "three-read response on port 2 was incorrect");
+        rp_req = rp_req & ~triple_first_ack;
+        #1;
+        triple_second_ack = rp_ack;
+        if (triple_second_ack !== (3'b111 & ~triple_first_ack))
+            $fatal(1, "withheld same-bank read was not acknowledged next");
+        @(posedge clk);
+        #1;
+        if (rp_valid !== triple_second_ack)
+            $fatal(1, "retried same-bank response mask did not match ack");
+        if (triple_second_ack[0] && (rp_data[0] !== 16'h1000))
+            $fatal(1, "retried response on port 0 was incorrect");
+        if (triple_second_ack[1] && (rp_data[1] !== 16'h1002))
+            $fatal(1, "retried response on port 1 was incorrect");
+        if (triple_second_ack[2] && (rp_data[2] !== 16'h6666))
+            $fatal(1, "retried response on port 2 was incorrect");
+        rp_req = 3'b000;
+        @(posedge clk);
+        #1;
+        if (|rp_valid)
+            $fatal(1, "three-read response pipeline did not clear");
 
         @(negedge clk);
         wp_req = 2'b01;
@@ -302,7 +349,7 @@ module tb_regfile;
         // ack.  The prior transaction's data must still return in that cycle,
         // and the second response must follow on the next cycle.
         @(negedge clk);
-        rp_req = 2'b01;
+        rp_req = 3'b001;
         rp_addr[0] = 3'd2;
         #1;
         if (!rp_ack[0])

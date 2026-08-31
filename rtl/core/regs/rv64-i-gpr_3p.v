@@ -14,6 +14,7 @@ module openrv64_rv64i_gpr_3p #(
     parameter ALLOW_DUPLICATE_WRITES = 0,
     parameter BANKED = 0,
     parameter FPGA_LUTRAM = 0,
+    parameter integer BANKED_READ_PORTS_PER_BANK = 2,
     parameter integer NUM_REGS = 31,
     parameter integer REG_ADDR_WIDTH =
         (NUM_REGS < 1) ? 1 : $clog2(NUM_REGS + 1)
@@ -86,6 +87,7 @@ module openrv64_rv64i_gpr_3p #(
                 .REG_COUNT(32),
                 .READ_PORTS(4),
                 .WRITE_PORTS(2),
+                .READ_PORTS_PER_BANK(BANKED_READ_PORTS_PER_BANK),
                 .BANK_SIZE(16),
                 .NUM_BANKS(2),
                 .FPGA_LUTRAM(FPGA_LUTRAM)
@@ -238,6 +240,10 @@ module openrv64_rv64i_gpr_3p #(
         if ((BANKED != 0) &&
             ((NUM_REGS != 31) || (REG_ADDR_WIDTH != 5)))
             $fatal(1, "banked 3P GPR requires architectural p0-p31 tags");
+        if ((BANKED != 0) &&
+            ((BANKED_READ_PORTS_PER_BANK < 1) ||
+             (BANKED_READ_PORTS_PER_BANK > 4)))
+            $fatal(1, "banked 3P GPR has invalid bank read-port count");
     end
 `endif
 

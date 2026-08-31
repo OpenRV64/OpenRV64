@@ -38,6 +38,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter integer BANKED_GPR = 0,
     parameter integer FPGA_GPR_LUTRAM = 0,
+    parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
@@ -194,6 +195,33 @@ module openrv64_backend_3p #(
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] gpr_write_addr;
     wire [3*`RV64_XLEN-1:0] gpr_write_data;
     wire gpr_quiescent;
+    wire [31:0] dispatch_write_busy;
+    reg [31:0] banked_write_ack_hot;
+    reg [PHYS_REG_ADDR_WIDTH-1:0] banked_write_ack_addr;
+    integer banked_write_ack_lane;
+    always @* begin
+        banked_write_ack_hot = 32'd0;
+        banked_write_ack_addr = {PHYS_REG_ADDR_WIDTH{1'b0}};
+        for (banked_write_ack_lane = 0; banked_write_ack_lane < 2;
+             banked_write_ack_lane = banked_write_ack_lane + 1) begin
+            banked_write_ack_addr = gpr_write_addr[
+                banked_write_ack_lane*PHYS_REG_ADDR_WIDTH +:
+                PHYS_REG_ADDR_WIDTH];
+            if (gpr_write[banked_write_ack_lane] &&
+                gpr_write_ack[banked_write_ack_lane] &&
+                (banked_write_ack_addr != {PHYS_REG_ADDR_WIDTH{1'b0}}))
+                banked_write_ack_hot[banked_write_ack_addr] = 1'b1;
+        end
+    end
+
+    // A banked write ack is the storage commit edge.  Publish that destination
+    // as no longer busy in the same cycle; a simultaneous dependent read is
+    // safe because the register file carries the accepted write data through
+    // its registered read-response bypass.  Dispatch keeps its registered
+    // retire feedback internally, so WAW allocation is not relaxed here.
+    assign write_busy_o = (BANKED_GPR != 0) ?
+        (dispatch_write_busy & ~banked_write_ack_hot) :
+        dispatch_write_busy;
     wire gpr_access_pending = (|gpr_read_req) || (|gpr_write) ||
         !gpr_quiescent;
     reg banked_gpr_drain_q;
@@ -824,6 +852,7 @@ module openrv64_backend_3p #(
     // still in order and the architectural GPR remains committed state.
     reg [31:0] youngest_owner_valid_q;
     reg [31:0] youngest_owner_ready_q;
+    reg [31:0] youngest_owner_load_q;
     reg [32*`OPENRV64_INSTR_ID_WIDTH-1:0] youngest_owner_id_q;
     reg [32*SLOT_WIDTH-1:0] youngest_owner_slot_q;
     reg [32*`RV64_XLEN-1:0] youngest_owner_data_q;
@@ -834,10 +863,12 @@ module openrv64_backend_3p #(
         if (!rst_n) begin
             youngest_owner_valid_q <= 32'd0;
             youngest_owner_ready_q <= 32'd0;
+            youngest_owner_load_q <= 32'd0;
         end else if (flush_i ||
                      ((ENABLE_ISSUE_WINDOW != 0) && squash_frontend_i)) begin
             youngest_owner_valid_q <= 32'd0;
             youngest_owner_ready_q <= 32'd0;
+            youngest_owner_load_q <= 32'd0;
         end else begin
             // Retirement clears ownership only when the retiring instruction's
             // live queue slot is still the youngest writer.  An older WAW
@@ -857,6 +888,7 @@ module openrv64_backend_3p #(
                          youngest_owner_lane*SLOT_WIDTH +: SLOT_WIDTH])) begin
                     youngest_owner_valid_q[youngest_owner_rd] <= 1'b0;
                     youngest_owner_ready_q[youngest_owner_rd] <= 1'b0;
+                    youngest_owner_load_q[youngest_owner_rd] <= 1'b0;
                 end
             end
 
@@ -908,6 +940,9 @@ module openrv64_backend_3p #(
                     (youngest_owner_rd != `RV64_REG_X0)) begin
                     youngest_owner_valid_q[youngest_owner_rd] <= 1'b1;
                     youngest_owner_ready_q[youngest_owner_rd] <= 1'b0;
+                    youngest_owner_load_q[youngest_owner_rd] <=
+                        allocation_meta[
+                            youngest_owner_lane*RETIRE_META_WIDTH + 16];
                     youngest_owner_id_q[
                         youngest_owner_rd*`OPENRV64_INSTR_ID_WIDTH +:
                         `OPENRV64_INSTR_ID_WIDTH] <= allocation_id[
@@ -923,6 +958,7 @@ module openrv64_backend_3p #(
 
             youngest_owner_valid_q[`RV64_REG_X0] <= 1'b0;
             youngest_owner_ready_q[`RV64_REG_X0] <= 1'b0;
+            youngest_owner_load_q[`RV64_REG_X0] <= 1'b0;
         end
     end
 
@@ -962,12 +998,13 @@ module openrv64_backend_3p #(
                          `OPENRV64_COMPLETE_RD_LSB +:
                          `RV64_REG_ADDR_WIDTH];
 
-    // Limited forwarding option: only values physically present on this
-    // cycle's registered completion ports may bypass.  The source mask makes
-    // MEM-only (3'b100), ALU-only (3'b011), and all-live-port (3'b111)
-    // experiments possible without retaining any retirement-queue result.
-    // This is three tagged 64-bit sources, not the 32-register completion map
-    // used by the full-forwarding upper bound below.
+    // Limited forwarding option.  EX0/EX1 values physically present on this
+    // cycle's registered completion ports may bypass; a load on MEM0 is
+    // captured into the one-entry stage below before it becomes an operand
+    // source.  The source mask makes MEM-only (3'b100), ALU-only (3'b011), and
+    // combined (3'b111) experiments possible without retaining any
+    // retirement-queue result.  This is three tagged 64-bit sources, not the
+    // 32-register completion map used by the full-forwarding upper bound.
     wire [2:0] completion_forward_valid_raw;
     wire [3*`RV64_REG_ADDR_WIDTH-1:0] completion_forward_rd_addr;
     wire [3*`RV64_XLEN-1:0] completion_forward_data;
@@ -1005,6 +1042,125 @@ module openrv64_backend_3p #(
     endgenerate
     wire [2:0] completion_forward_valid = !flush_i ?
         (completion_forward_valid_raw & COMPLETION_FORWARD_MASK) : 3'b000;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] banked_mem_complete_rd =
+        completion_forward_rd_addr[
+            2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH];
+    wire banked_mem_complete_is_load =
+        youngest_owner_valid_q[banked_mem_complete_rd] &&
+        youngest_owner_load_q[banked_mem_complete_rd] &&
+        (youngest_owner_id_q[
+             banked_mem_complete_rd*`OPENRV64_INSTR_ID_WIDTH +:
+             `OPENRV64_INSTR_ID_WIDTH] ==
+         complete_id[2*`OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH]);
+    wire banked_mem_forward_capture = (BANKED_GPR != 0) &&
+        !flush_i && !squash_frontend_i &&
+        completion_forward_valid_raw[2] &&
+        COMPLETION_FORWARD_MASK[2] && banked_mem_complete_is_load;
+
+    // MEM0 completion is combinational with the tagged LSU response.  Feeding
+    // that response directly back into strict dispatch can make a new memory
+    // issue affect the response-ready path in the same active region.  Keep
+    // EX0/EX1 live, but pipeline MEM0 by one cycle before presenting it as an
+    // operand source.  This is a one-entry forwarding stage, not retirement
+    // state: producer identity is rechecked against the current owner below.
+    reg banked_mem_forward_valid_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] banked_mem_forward_id_q;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] banked_mem_forward_rd_q;
+    reg [`RV64_XLEN-1:0] banked_mem_forward_data_q;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || (BANKED_GPR == 0)) begin
+            banked_mem_forward_valid_q <= 1'b0;
+            banked_mem_forward_id_q <=
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_mem_forward_rd_q <= `RV64_REG_X0;
+            banked_mem_forward_data_q <= {`RV64_XLEN{1'b0}};
+        end else if (flush_i || squash_frontend_i) begin
+            banked_mem_forward_valid_q <= 1'b0;
+        end else if (banked_mem_forward_capture) begin
+                banked_mem_forward_valid_q <= 1'b1;
+                banked_mem_forward_id_q <= complete_id[
+                    2*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
+                banked_mem_forward_rd_q <= completion_forward_rd_addr[
+                    2*`RV64_REG_ADDR_WIDTH +: `RV64_REG_ADDR_WIDTH];
+                banked_mem_forward_data_q <= completion_forward_data[
+                    2*`RV64_XLEN +: `RV64_XLEN];
+        end else if (!youngest_owner_valid_q[banked_mem_forward_rd_q] ||
+                     !youngest_owner_load_q[banked_mem_forward_rd_q] ||
+                     (youngest_owner_id_q[
+                          banked_mem_forward_rd_q*
+                          `OPENRV64_INSTR_ID_WIDTH +:
+                          `OPENRV64_INSTR_ID_WIDTH] !=
+                      banked_mem_forward_id_q)) begin
+            banked_mem_forward_valid_q <= 1'b0;
+        end
+    end
+
+    wire [3:0] banked_read_mem_forward_valid;
+    reg [3:0] banked_read_mem_forwarded_q;
+    wire banked_mem_issue_phase =
+        (|banked_read_mem_forward_valid) ||
+        (|banked_read_mem_forwarded_q);
+
+    // A banked operand may outlive the single cycle in which its producer is
+    // present on an EXU completion port.  Qualify the architectural rd with
+    // the exact youngest producer ID before the gather latch accepts it.  This
+    // prevents a stale completion from an older WAW writer (or abandoned
+    // redirect work) from satisfying the new head operands.
+    wire [1:0] banked_exu_forward_valid;
+    genvar banked_forward_lane;
+    generate
+        for (banked_forward_lane = 0; banked_forward_lane < 2;
+             banked_forward_lane = banked_forward_lane + 1) begin :
+                g_banked_completion_forward
+            wire [`RV64_REG_ADDR_WIDTH-1:0] banked_forward_rd =
+                completion_forward_rd_addr[
+                    banked_forward_lane*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH];
+            assign banked_exu_forward_valid[banked_forward_lane] =
+                (BANKED_GPR != 0) && !squash_frontend_i &&
+                !banked_mem_issue_phase &&
+                completion_forward_valid[banked_forward_lane] &&
+                youngest_owner_valid_q[banked_forward_rd] &&
+                (youngest_owner_id_q[
+                     banked_forward_rd*`OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 complete_id[
+                     banked_forward_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH]);
+        end
+    endgenerate
+    // Keep MEM0 physically separate from the live EXU vector.  Combining the
+    // registered load result with EXU valids lets Verilator regularize them as
+    // one feedback signal and recreates the LSU issue/response active-region
+    // cycle even though the MEM0 bit itself is registered.
+    wire banked_mem_forward_valid = (BANKED_GPR != 0) &&
+        banked_mem_forward_valid_q &&
+        youngest_owner_valid_q[banked_mem_forward_rd_q] &&
+        (youngest_owner_id_q[
+             banked_mem_forward_rd_q*`OPENRV64_INSTR_ID_WIDTH +:
+             `OPENRV64_INSTR_ID_WIDTH] == banked_mem_forward_id_q);
+
+    // MEM0 is a registered banked-operand source below.  Do not feed it into
+    // strict dispatch's live completion path: the LSU response-ready logic and
+    // new memory issue decision otherwise share a combinational cycle.
+    wire [2:0] dispatch_completion_forward_valid =
+        (BANKED_GPR != 0) ?
+            {1'b0, banked_exu_forward_valid} :
+            completion_forward_valid;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0]
+        dispatch_completion_forward_rd_addr =
+            (BANKED_GPR != 0) ?
+                {`RV64_REG_X0,
+                 completion_forward_rd_addr[
+                     0 +: 2*`RV64_REG_ADDR_WIDTH]} :
+                completion_forward_rd_addr;
+    wire [3*`RV64_XLEN-1:0] dispatch_completion_forward_data =
+        (BANKED_GPR != 0) ?
+            {{`RV64_XLEN{1'b0}},
+             completion_forward_data[0 +: 2*`RV64_XLEN]} :
+            completion_forward_data;
 
     // Cheap branch-only bypass.  Retain the youngest-owner check as the
     // qualification used by strict dispatch, whose same-cycle forwarding is
@@ -1090,17 +1246,25 @@ module openrv64_backend_3p #(
         youngest_forward_data_raw :
         {32*`RV64_XLEN{1'b0}};
 
-    // The banked file accepts at most one read per bank per cycle.  Ack marks
-    // the accepted address phase; data and valid return one cycle later.  Hold
-    // only unacknowledged requests stable and qualify each response with the
-    // requester's registered ack rather than treating a bare valid as owned.
-    // The legacy PRF remains combinational and bypasses this state entirely.
+    // The banked file accepts at most BANK_READ_PORTS reads per bank per cycle.
+    // Ack marks the accepted address phase; data and valid return one cycle
+    // later.  Hold only unacknowledged requests stable and qualify each
+    // response with the requester's registered ack rather than treating a bare
+    // valid as owned.  The legacy PRF remains combinational and bypasses this
+    // state entirely.
     reg [3:0] banked_read_done_q;
+    reg [3:0] banked_read_forwarded_q;
     reg [4*`RV64_XLEN-1:0] banked_read_data_q;
     reg [3:0] banked_read_pending_q;
     reg [4*PHYS_REG_ADDR_WIDTH-1:0] banked_read_addr_q;
     reg [3:0] banked_read_ack_q;
     wire [3:0] banked_read_ready;
+    wire [3:0] banked_read_forward_valid;
+    wire [3:0] banked_read_exu_forward_valid;
+    wire [4*`RV64_XLEN-1:0] banked_read_forward_data;
+    wire [3:0] banked_read_waiting;
+    wire [3:0] banked_read_blocked_by_write;
+    wire [3:0] banked_read_write_ack_release;
 
     // Redirects discard the requester's association with outstanding reads.
     // An unacknowledged request is still held until ack; an acknowledged read
@@ -1126,13 +1290,80 @@ module openrv64_backend_3p #(
                     banked_read_port*PHYS_REG_ADDR_WIDTH +:
                     PHYS_REG_ADDR_WIDTH];
             wire read_zero = read_addr == {PHYS_REG_ADDR_WIDTH{1'b0}};
-            wire read_blocked = !read_zero && write_busy_o[read_addr];
+            reg read_forward_valid;
+            reg [`RV64_XLEN-1:0] read_forward_data;
+            integer read_forward_lane;
+            always @* begin
+                read_forward_valid = 1'b0;
+                read_forward_data = {`RV64_XLEN{1'b0}};
+                for (read_forward_lane = 0; read_forward_lane < 2;
+                     read_forward_lane = read_forward_lane + 1) begin
+                    if (!read_forward_valid &&
+                        banked_exu_forward_valid[
+                            read_forward_lane] &&
+                        (completion_forward_rd_addr[
+                            read_forward_lane*`RV64_REG_ADDR_WIDTH +:
+                            `RV64_REG_ADDR_WIDTH] == read_addr)) begin
+                        read_forward_valid = 1'b1;
+                        read_forward_data = completion_forward_data[
+                            read_forward_lane*`RV64_XLEN +: `RV64_XLEN];
+                    end
+                end
+            end
+            reg read_write_ack_match;
+            integer read_write_ack_lane;
+            always @* begin
+                read_write_ack_match = 1'b0;
+                for (read_write_ack_lane = 0; read_write_ack_lane < 2;
+                     read_write_ack_lane = read_write_ack_lane + 1) begin
+                    if (gpr_write[read_write_ack_lane] &&
+                        gpr_write_ack[read_write_ack_lane] &&
+                        (gpr_write_addr[
+                             read_write_ack_lane*PHYS_REG_ADDR_WIDTH +:
+                             PHYS_REG_ADDR_WIDTH] == read_addr))
+                        read_write_ack_match = 1'b1;
+                end
+            end
+            wire read_mem_forward_valid =
+                banked_mem_forward_valid &&
+                (banked_mem_forward_rd_q == read_addr);
+            wire [`RV64_XLEN-1:0] read_capture_data =
+                read_forward_valid ? read_forward_data :
+                banked_mem_forward_data_q;
+            wire read_capture_valid = read_forward_valid ||
+                                      read_mem_forward_valid;
+            wire read_response_now =
+                banked_read_ack_q[banked_read_port] &&
+                gpr_read_valid[banked_read_port];
+            wire read_blocked = !read_zero &&
+                write_busy_o[read_addr] &&
+                !banked_read_done_q[banked_read_port] &&
+                !read_capture_valid && !read_write_ack_match;
             wire read_start = (BANKED_GPR != 0) &&
                 !flush_i && !squash_frontend_i && !banked_gpr_drain_q &&
                 !read_zero && !read_blocked &&
+                !read_capture_valid &&
                 !banked_read_done_q[banked_read_port] &&
                 !banked_read_pending_q[banked_read_port] &&
                 !banked_read_ack_q[banked_read_port];
+
+            assign banked_read_forward_valid[banked_read_port] =
+                read_forward_valid;
+            assign banked_read_mem_forward_valid[banked_read_port] =
+                read_mem_forward_valid;
+            assign banked_read_forward_data[
+                banked_read_port*`RV64_XLEN +: `RV64_XLEN] =
+                read_capture_data;
+            assign banked_read_blocked_by_write[banked_read_port] =
+                read_blocked;
+            assign banked_read_write_ack_release[banked_read_port] =
+                read_write_ack_match && !read_zero &&
+                !banked_read_done_q[banked_read_port] &&
+                !read_capture_valid;
+            assign banked_read_waiting[banked_read_port] =
+                !read_zero && !read_blocked &&
+                !banked_read_done_q[banked_read_port] &&
+                !read_response_now && !read_capture_valid;
 
             assign gpr_read_req[banked_read_port] =
                 banked_read_pending_q[banked_read_port] || read_start;
@@ -1144,10 +1375,9 @@ module openrv64_backend_3p #(
                     banked_read_port*PHYS_REG_ADDR_WIDTH +:
                     PHYS_REG_ADDR_WIDTH] : read_addr;
             assign banked_read_ready[banked_read_port] = read_zero ||
-                (!read_blocked &&
-                 (banked_read_done_q[banked_read_port] ||
-                  (banked_read_ack_q[banked_read_port] &&
-                   gpr_read_valid[banked_read_port])));
+                banked_read_done_q[banked_read_port] ||
+                read_response_now || read_forward_valid ||
+                read_mem_forward_valid;
             assign dispatch_gpr_read_data[
                 banked_read_port*`RV64_XLEN +: `RV64_XLEN] =
                 (BANKED_GPR == 0) ? gpr_read_data[
@@ -1155,13 +1385,128 @@ module openrv64_backend_3p #(
                 banked_read_done_q[banked_read_port] ?
                     banked_read_data_q[
                         banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
-                (banked_read_ack_q[banked_read_port] &&
-                 gpr_read_valid[banked_read_port]) ?
+                read_response_now ?
                     gpr_read_data[
                         banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
+                read_capture_valid ? read_capture_data :
                 {`RV64_XLEN{1'b0}};
         end
     endgenerate
+
+    // Source-split simulation probes keep MEM0 load forwarding from being
+    // reported as EXU forwarding in the performance harness.
+    assign banked_read_exu_forward_valid = banked_read_forward_valid;
+
+    // Performance probes split the register-gather delay by immediate cause.
+    // Accepted address phases expose the fixed registered-read latency;
+    // denied phases expose bank capacity.  Writer classes use the exact
+    // youngest-owner record, so "ready" means the result has completed but
+    // architectural ownership has not yet cleared at retirement.
+    wire [3:0] banked_read_address_accept_wait =
+        banked_read_waiting & gpr_read_req[3:0] & gpr_read_ack[3:0];
+    wire [3:0] banked_read_address_conflict_wait =
+        banked_read_waiting & gpr_read_req[3:0] & ~gpr_read_ack[3:0];
+    reg [3:0] banked_writer_wait_load_incomplete;
+    reg [3:0] banked_writer_wait_load_ready;
+    reg [3:0] banked_writer_wait_other_incomplete;
+    reg [3:0] banked_writer_wait_other_ready;
+    reg [3:0] banked_writer_ready_write_not_active;
+    reg [3:0] banked_writer_ready_write_granted;
+    reg [3:0] banked_writer_ready_write_denied;
+    reg [3:0] banked_mem_stage_wait_operand;
+    integer banked_wait_class_port;
+    integer banked_wait_write_port;
+    always @* begin
+        banked_writer_wait_load_incomplete = 4'b0000;
+        banked_writer_wait_load_ready = 4'b0000;
+        banked_writer_wait_other_incomplete = 4'b0000;
+        banked_writer_wait_other_ready = 4'b0000;
+        banked_writer_ready_write_not_active = 4'b0000;
+        banked_writer_ready_write_granted = 4'b0000;
+        banked_writer_ready_write_denied = 4'b0000;
+        banked_mem_stage_wait_operand = 4'b0000;
+        for (banked_wait_class_port = 0; banked_wait_class_port < 4;
+             banked_wait_class_port = banked_wait_class_port + 1) begin
+            if (banked_read_blocked_by_write[banked_wait_class_port]) begin
+                if (youngest_owner_load_q[
+                        gpr_read_addr[
+                            banked_wait_class_port*PHYS_REG_ADDR_WIDTH +:
+                            PHYS_REG_ADDR_WIDTH]]) begin
+                    if (youngest_owner_ready_q[
+                            gpr_read_addr[
+                                banked_wait_class_port*PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH]])
+                        banked_writer_wait_load_ready[
+                            banked_wait_class_port] = 1'b1;
+                    else
+                        banked_writer_wait_load_incomplete[
+                            banked_wait_class_port] = 1'b1;
+                end else if (youngest_owner_ready_q[
+                                 gpr_read_addr[
+                                     banked_wait_class_port*
+                                     PHYS_REG_ADDR_WIDTH +:
+                                     PHYS_REG_ADDR_WIDTH]]) begin
+                    banked_writer_wait_other_ready[
+                        banked_wait_class_port] = 1'b1;
+                end else begin
+                    banked_writer_wait_other_incomplete[
+                        banked_wait_class_port] = 1'b1;
+                end
+
+                if (youngest_owner_ready_q[
+                        gpr_read_addr[
+                            banked_wait_class_port*PHYS_REG_ADDR_WIDTH +:
+                            PHYS_REG_ADDR_WIDTH]]) begin
+                    banked_writer_ready_write_not_active[
+                        banked_wait_class_port] = 1'b1;
+                    for (banked_wait_write_port = 0;
+                         banked_wait_write_port < 2;
+                         banked_wait_write_port =
+                             banked_wait_write_port + 1) begin
+                        if (gpr_write[banked_wait_write_port] &&
+                            (gpr_write_addr[
+                                 banked_wait_write_port*
+                                 PHYS_REG_ADDR_WIDTH +:
+                                 PHYS_REG_ADDR_WIDTH] ==
+                             gpr_read_addr[
+                                 banked_wait_class_port*
+                                 PHYS_REG_ADDR_WIDTH +:
+                                 PHYS_REG_ADDR_WIDTH])) begin
+                            banked_writer_ready_write_not_active[
+                                banked_wait_class_port] = 1'b0;
+                            if (gpr_write_ack[banked_wait_write_port])
+                                banked_writer_ready_write_granted[
+                                    banked_wait_class_port] = 1'b1;
+                            else
+                                banked_writer_ready_write_denied[
+                                    banked_wait_class_port] = 1'b1;
+                        end
+                    end
+                end
+
+                // This is the precise exposed cycle introduced by registering
+                // MEM0: the matching load completes now, but its operand value
+                // cannot be selected until the forwarding latch updates.
+                if (banked_mem_forward_capture &&
+                    (gpr_read_addr[
+                         banked_wait_class_port*PHYS_REG_ADDR_WIDTH +:
+                         PHYS_REG_ADDR_WIDTH] == banked_mem_complete_rd))
+                    banked_mem_stage_wait_operand[
+                        banked_wait_class_port] = 1'b1;
+            end
+        end
+    end
+
+    wire [3:0] banked_mem_operand_source =
+        banked_read_mem_forwarded_q | banked_read_mem_forward_valid;
+    wire [3:0] banked_mem_forward_issue_operand =
+        banked_mem_operand_source &
+        {{2{allocation_valid[1]}}, {2{allocation_valid[0]}}};
+    wire banked_write_request = (BANKED_GPR != 0) && (|gpr_write[1:0]);
+    wire [1:0] banked_write_accept =
+        gpr_write[1:0] & gpr_write_ack[1:0];
+    wire [1:0] banked_write_denied =
+        gpr_write[1:0] & ~gpr_write_ack[1:0];
 
     assign gpr_read_req[5:4] = 2'b00;
     assign gpr_storage_read_addr[
@@ -1173,12 +1518,70 @@ module openrv64_backend_3p #(
             {2*`RV64_XLEN{1'b0}};
 
     wire banked_operands_ready = !banked_gpr_drain_q &&
-        (&banked_read_ready);
+        !(|banked_read_pending_q) && (&banked_read_ready);
+    // The queue head is stable until allocation.  These bits therefore name
+    // exact candidate operands, not merely architectural registers.  Retained
+    // values cover downstream backpressure after a one-cycle completion; the
+    // registered MEM0 source becomes usable without re-entering LSU control.
+    wire [5:0] banked_candidate_operand_ready = {
+        2'b00, banked_read_forwarded_q | banked_read_mem_forward_valid
+    };
+
+    // Simulation performance probes.  A bank conflict is an address phase
+    // withheld by finite per-bank port capacity.  A read/write conflict is a
+    // same-word read and write accepted together and resolved by the register
+    // file's write-data bypass.  The operand predicates are intentionally
+    // non-exclusive: different operands can wait on storage and a producer in
+    // the same cycle.
+    wire banked_read_bank_conflict = (BANKED_GPR != 0) &&
+        (|(gpr_read_req[3:0] & ~gpr_read_ack[3:0]));
+    wire banked_write_bank_conflict = (BANKED_GPR != 0) &&
+        (|(gpr_write[1:0] & ~gpr_write_ack[1:0]));
+    wire banked_bank_conflict = banked_read_bank_conflict ||
+        banked_write_bank_conflict;
+    wire banked_blocked_on_reads = (BANKED_GPR != 0) &&
+        !banked_gpr_drain_q && (dispatch_occupancy_o != 0) &&
+        (|banked_read_waiting);
+    wire banked_blocked_by_writes = (BANKED_GPR != 0) &&
+        !banked_gpr_drain_q && (dispatch_occupancy_o != 0) &&
+        (|banked_read_blocked_by_write);
+    reg [7:0] banked_read_write_conflict_pairs;
+    integer banked_conflict_read_port;
+    integer banked_conflict_write_port;
+    always @* begin
+        banked_read_write_conflict_pairs = 8'd0;
+        for (banked_conflict_read_port = 0;
+             banked_conflict_read_port < 4;
+             banked_conflict_read_port =
+                 banked_conflict_read_port + 1) begin
+            for (banked_conflict_write_port = 0;
+                 banked_conflict_write_port < 2;
+                 banked_conflict_write_port =
+                     banked_conflict_write_port + 1) begin
+                banked_read_write_conflict_pairs[
+                    banked_conflict_read_port*2 +
+                    banked_conflict_write_port] =
+                    (BANKED_GPR != 0) &&
+                    gpr_read_ack[banked_conflict_read_port] &&
+                    gpr_write_ack[banked_conflict_write_port] &&
+                    (gpr_storage_read_addr[
+                        banked_conflict_read_port*PHYS_REG_ADDR_WIDTH +:
+                        PHYS_REG_ADDR_WIDTH] ==
+                     gpr_write_addr[
+                        banked_conflict_write_port*PHYS_REG_ADDR_WIDTH +:
+                        PHYS_REG_ADDR_WIDTH]);
+            end
+        end
+    end
+    wire banked_read_write_conflict =
+        |banked_read_write_conflict_pairs;
 
     integer banked_response_port;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             banked_read_done_q <= 4'b0000;
+            banked_read_forwarded_q <= 4'b0000;
+            banked_read_mem_forwarded_q <= 4'b0000;
             banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
             banked_read_pending_q <= 4'b0000;
             banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
@@ -1186,6 +1589,8 @@ module openrv64_backend_3p #(
         end else if (flush_i || squash_frontend_i || banked_gpr_drain_q ||
                      (|allocation_valid)) begin
             banked_read_done_q <= 4'b0000;
+            banked_read_forwarded_q <= 4'b0000;
+            banked_read_mem_forwarded_q <= 4'b0000;
             banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
             banked_read_ack_q <= gpr_read_ack[3:0];
             for (banked_response_port = 0; banked_response_port < 4;
@@ -1208,10 +1613,30 @@ module openrv64_backend_3p #(
                 if (banked_read_ack_q[banked_response_port] &&
                     gpr_read_valid[banked_response_port]) begin
                     banked_read_done_q[banked_response_port] <= 1'b1;
+                    banked_read_forwarded_q[banked_response_port] <= 1'b0;
+                    banked_read_mem_forwarded_q[
+                        banked_response_port] <= 1'b0;
                     banked_read_data_q[
                         banked_response_port*`RV64_XLEN +: `RV64_XLEN] <=
                         gpr_read_data[
                             banked_response_port*`RV64_XLEN +: `RV64_XLEN];
+                end
+
+                // Completion forwarding has priority over an impossible but
+                // defensively handled simultaneous stale storage response.
+                if (banked_read_forward_valid[banked_response_port] ||
+                    banked_read_mem_forward_valid[banked_response_port]) begin
+                    banked_read_done_q[banked_response_port] <= 1'b1;
+                    banked_read_forwarded_q[banked_response_port] <= 1'b1;
+                    banked_read_mem_forwarded_q[
+                        banked_response_port] <=
+                        banked_read_mem_forward_valid[
+                            banked_response_port];
+                    banked_read_data_q[
+                        banked_response_port*`RV64_XLEN +: `RV64_XLEN] <=
+                        banked_read_forward_data[
+                            banked_response_port*`RV64_XLEN +:
+                            `RV64_XLEN];
                 end
 
                 if (gpr_read_ack[banked_response_port]) begin
@@ -1229,6 +1654,8 @@ module openrv64_backend_3p #(
             banked_read_pending_q <= 4'b0000;
             banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_read_ack_q <= 4'b0000;
+            banked_read_forwarded_q <= 4'b0000;
+            banked_read_mem_forwarded_q <= 4'b0000;
         end
     end
 
@@ -1300,6 +1727,8 @@ module openrv64_backend_3p #(
         .decode_uses_rs2_3p_i(decode_uses_rs2_i),
         .gpr_read_addr_3p_o(gpr_read_addr),
         .gpr_read_data_3p_i(dispatch_gpr_read_data),
+        .candidate_operand_ready_3p_i(
+            (BANKED_GPR != 0) ? banked_candidate_operand_ready : 6'b000000),
         .allocation_ready_3p_i(allocation_ready &&
             ((BANKED_GPR == 0) || banked_operands_ready)),
         .allocation_id_3p_i(allocation_id),
@@ -1309,9 +1738,12 @@ module openrv64_backend_3p #(
         .pipe_ready_3p_i(pipe_ready),
         .forward_valid_3p_i(local_forward_valid),
         .forward_rd_addr_3p_i(local_forward_rd_addr),
-        .completion_forward_valid_3p_i(completion_forward_valid),
-        .completion_forward_rd_addr_3p_i(completion_forward_rd_addr),
-        .completion_forward_data_3p_i(completion_forward_data),
+        .completion_forward_valid_3p_i(
+            dispatch_completion_forward_valid),
+        .completion_forward_rd_addr_3p_i(
+            dispatch_completion_forward_rd_addr),
+        .completion_forward_data_3p_i(
+            dispatch_completion_forward_data),
         .branch_completion_forward_valid_3p_i(
             branch_completion_forward_valid),
         .forward_map_valid_3p_i(full_forward_valid),
@@ -1347,7 +1779,7 @@ module openrv64_backend_3p #(
         .barrier_active_3p_o(barrier_active_o),
         .raw_hazard_3p_o(raw_hazard), .waw_hazard_3p_o(waw_hazard),
         .read_port_hazard_3p_o(read_port_hazard),
-        .write_busy_3p_o(write_busy_o),
+        .write_busy_3p_o(dispatch_write_busy),
         .queue_count_3p_o(dispatch_occupancy_o)
     );
 
@@ -1355,6 +1787,7 @@ module openrv64_backend_3p #(
         .ALLOW_DUPLICATE_WRITES(RELAX_WAW),
         .BANKED(BANKED_GPR),
         .FPGA_LUTRAM(FPGA_GPR_LUTRAM),
+        .BANKED_READ_PORTS_PER_BANK(BANKED_GPR_READ_PORTS_PER_BANK),
         .NUM_REGS(PHYS_REG_COUNT),
         .REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH)
     ) u_gpr (
@@ -2119,10 +2552,10 @@ module openrv64_backend_3p #(
             ((RELAX_WAW != 0) || (RELAX_HAZARDS != 0)))
             $fatal(1, "banked 3P requires conservative hazards");
         if ((BANKED_GPR != 0) &&
-            ((COMPLETION_FORWARD_MASK != 3'b000) ||
-             (BRANCH_COMPLETION_FORWARD_MASK != 3'b000) ||
+            ((BRANCH_COMPLETION_FORWARD_MASK != 3'b000) ||
              (ENABLE_FULL_FORWARDING != 0)))
-            $fatal(1, "banked 3P does not support forwarding");
+            $fatal(1,
+                   "banked 3P supports live EX0/EX1 plus registered load-only MEM0 forwarding, not branch/full forwarding");
         if ((BANKED_GPR != 0) &&
             ((PHYS_REG_COUNT != 31) || (PHYS_REG_ADDR_WIDTH != 5)))
             $fatal(1, "banked 3P requires architectural p0-p31 tags");

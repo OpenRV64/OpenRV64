@@ -3,6 +3,7 @@
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/lsu-defs.v"
 
 module tb_backend_3p_banked;
     localparam integer RETIRE_DEPTH = 16;
@@ -12,7 +13,9 @@ module tb_backend_3p_banked;
     localparam integer INSTRUCTION_COUNT = 27;
 
     localparam integer I_PRIV = 2;
+    localparam integer I_MEM_READ = 16;
     localparam integer I_REG_WRITE = 17;
+    localparam integer I_LSU_OP = 22;
     localparam integer I_ALU_OP = 27;
     localparam integer I_ALU_EXT = 32;
     localparam integer I_RD = 35;
@@ -34,7 +37,21 @@ module tb_backend_3p_banked;
     reg [2:0] decode_uses_rs2;
 
     wire mem_valid;
+    reg mem_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_tag;
+    wire mem_physical;
+    reg mem_resp_valid;
+    wire mem_resp_ready;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag;
+    wire [63:0] mem_addr;
+    reg [63:0] mem_rdata;
     wire mem_xlate_valid;
+    wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] mem_xlate_tag;
+    wire [63:0] mem_xlate_vaddr;
+    reg mem_xlate_resp_valid_q;
+    wire mem_xlate_resp_ready;
+    reg [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] mem_xlate_resp_tag_q;
+    reg [63:0] mem_xlate_resp_paddr_q;
     wire mem1_valid;
     wire redirect_valid;
     wire [2:0] retire_arch;
@@ -63,7 +80,7 @@ module tb_backend_3p_banked;
         .PHYS_REG_COUNT(31),
         .PHYS_REG_ADDR_WIDTH(5),
         .ENABLE_TRACE(1),
-        .COMPLETION_FORWARD_MASK(3'b000),
+        .COMPLETION_FORWARD_MASK(3'b111),
         .BRANCH_COMPLETION_FORWARD_MASK(3'b000),
         .ENABLE_FULL_FORWARDING(0),
         .RELAX_WAW(0),
@@ -96,14 +113,14 @@ module tb_backend_3p_banked;
         .csr_op_o(),
         .csr_wdata_o(),
         .mem_valid_o(mem_valid),
-        .mem_ready_i(1'b0),
-        .mem_tag_o(),
+        .mem_ready_i(mem_ready),
+        .mem_tag_o(mem_tag),
         .mem_xlate_only_o(),
-        .mem_physical_o(),
+        .mem_physical_o(mem_physical),
         .mem_pmp_checked_o(),
-        .mem_resp_valid_i(1'b0),
-        .mem_resp_ready_o(),
-        .mem_resp_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .mem_resp_valid_i(mem_resp_valid),
+        .mem_resp_ready_o(mem_resp_ready),
+        .mem_resp_tag_i(mem_resp_tag),
         .mem_resp_paddr_i(64'd0),
         .mem_error_i(1'b0),
         .mem_page_fault_i(1'b0),
@@ -115,24 +132,23 @@ module tb_backend_3p_banked;
         .mem_access_allowed_i(1'b1),
         .mem_lock_o(),
         .mem_write_o(),
-        .mem_addr_o(),
+        .mem_addr_o(mem_addr),
         .mem_wdata_o(),
         .mem_wstrb_o(),
         .mem_access_o(),
         .mem_effective_addr_o(),
         .mem_size_o(),
-        .mem_rdata_i(64'd0),
+        .mem_rdata_i(mem_rdata),
         .mem_xlate_valid_o(mem_xlate_valid),
-        .mem_xlate_ready_i(1'b0),
-        .mem_xlate_tag_o(),
+        .mem_xlate_ready_i(1'b1),
+        .mem_xlate_tag_o(mem_xlate_tag),
         .mem_xlate_write_o(),
         .mem_xlate_size_o(),
-        .mem_xlate_vaddr_o(),
-        .mem_xlate_resp_valid_i(1'b0),
-        .mem_xlate_resp_ready_o(),
-        .mem_xlate_resp_tag_i(
-            {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}}),
-        .mem_xlate_resp_paddr_i(64'd0),
+        .mem_xlate_vaddr_o(mem_xlate_vaddr),
+        .mem_xlate_resp_valid_i(mem_xlate_resp_valid_q),
+        .mem_xlate_resp_ready_o(mem_xlate_resp_ready),
+        .mem_xlate_resp_tag_i(mem_xlate_resp_tag_q),
+        .mem_xlate_resp_paddr_i(mem_xlate_resp_paddr_q),
         .mem_xlate_resp_access_fault_i(1'b0),
         .mem_xlate_resp_page_fault_i(1'b0),
         .mem1_valid_o(mem1_valid),
@@ -191,6 +207,28 @@ module tb_backend_3p_banked;
 
     always #5 clk = ~clk;
 
+    // Tagged one-cycle Bare-translation model.  The LSQ still uses the
+    // translation response to carry PMP/access status when address bypass is
+    // enabled.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mem_xlate_resp_valid_q <= 1'b0;
+            mem_xlate_resp_tag_q <=
+                {`OPENRV64_LSU_XLATE_TAG_WIDTH{1'b0}};
+            mem_xlate_resp_paddr_q <= 64'd0;
+        end else begin
+            if (mem_xlate_resp_valid_q && mem_xlate_resp_ready)
+                mem_xlate_resp_valid_q <= 1'b0;
+            if (mem_xlate_valid) begin
+                if (mem_xlate_resp_valid_q && !mem_xlate_resp_ready)
+                    $fatal(1, "banked backend translation model overflow");
+                mem_xlate_resp_valid_q <= 1'b1;
+                mem_xlate_resp_tag_q <= mem_xlate_tag;
+                mem_xlate_resp_paddr_q <= mem_xlate_vaddr;
+            end
+        end
+    end
+
     function automatic [IW-1:0] base_packet;
         input [63:0] trace;
         input [31:0] instr;
@@ -202,6 +240,26 @@ module tb_backend_3p_banked;
             packet[I_INSTR +: 32] = instr;
             packet[I_PRIV +: 2] = `RV64_PRIV_M;
             base_packet = packet;
+        end
+    endfunction
+
+    function automatic [IW-1:0] load_packet;
+        input [63:0] trace;
+        input [4:0] rs1;
+        input [4:0] rd;
+        input [63:0] immediate;
+        reg [IW-1:0] packet;
+        begin
+            packet = base_packet(
+                trace,
+                {immediate[11:0], rs1, 3'b011, rd, `RV64_OPCODE_LOAD});
+            packet[I_RS1 +: 5] = rs1;
+            packet[I_RD +: 5] = rd;
+            packet[I_IMM +: 64] = immediate;
+            packet[I_LSU_OP +: 5] = `RV64_LSU_OP_LD;
+            packet[I_MEM_READ] = 1'b1;
+            packet[I_REG_WRITE] = 1'b1;
+            load_packet = packet;
         end
     endfunction
 
@@ -326,6 +384,11 @@ module tb_backend_3p_banked;
     reg saw_read_bank_retry;
     reg saw_write_bank_retry;
     reg saw_dependency_wait;
+    reg saw_exu_forward_while_busy;
+    reg saw_mem_forward_while_busy;
+    reg saw_write_ack_read_overlap;
+    reg memory_probe_active;
+    integer memory_probe_retired;
 
     always @(negedge clk) begin
         if (rst_n) begin
@@ -342,7 +405,7 @@ module tb_backend_3p_banked;
             if (retire_count == 2)
                 saw_two_wide_retire = 1'b1;
 
-            if (retire_count != 0) begin
+            if ((retire_count != 0) && !memory_probe_active) begin
                 expected_last_trace = retired_total + retire_count;
                 if (retire_trace_id !== expected_last_trace)
                     fail("instructions retired out of order");
@@ -355,9 +418,12 @@ module tb_backend_3p_banked;
                 if (retire_wdata !== expected_result[expected_last_trace-1])
                     fail("retired arithmetic result was incorrect");
                 retired_total = expected_last_trace;
+            end else if ((retire_count != 0) && memory_probe_active) begin
+                memory_probe_retired = memory_probe_retired + retire_count;
             end
 
-            if (mem_valid || mem_xlate_valid || mem1_valid)
+            if (!memory_probe_active &&
+                (mem_valid || mem_xlate_valid || mem1_valid))
                 fail("non-memory instruction stream accessed memory");
             if (redirect_valid || exception || halt || irq || mret || sret ||
                 fence_i || sfence_vma)
@@ -379,6 +445,28 @@ module tb_backend_3p_banked;
             if ((dispatch_occupancy != 0) && (write_busy != 0) &&
                 (issue_count == 0))
                 saw_dependency_wait = 1'b1;
+            if ((dut.banked_read_forward_valid[0] &&
+                 write_busy[dut.gpr_read_addr[0*5 +: 5]]) ||
+                (dut.banked_read_forward_valid[1] &&
+                 write_busy[dut.gpr_read_addr[1*5 +: 5]]) ||
+                (dut.banked_read_forward_valid[2] &&
+                 write_busy[dut.gpr_read_addr[2*5 +: 5]]) ||
+                (dut.banked_read_forward_valid[3] &&
+                 write_busy[dut.gpr_read_addr[3*5 +: 5]])) begin
+                // Forwarded operands are accepted while architectural
+                // ownership remains busy.  The gather's write-block vector
+                // excludes the qualified completion by construction.
+                saw_exu_forward_while_busy = 1'b1;
+            end
+            if (dut.banked_mem_forward_valid &&
+                (|dut.banked_read_mem_forward_valid)) begin
+                if (!write_busy[dut.banked_mem_forward_rd_q])
+                    fail("MEM0 forwarding bypassed a non-busy owner");
+                saw_mem_forward_while_busy = 1'b1;
+            end
+            if (|(dut.banked_read_write_ack_release &
+                  dut.gpr_read_ack[3:0]))
+                saw_write_ack_read_overlap = 1'b1;
         end
     end
 
@@ -388,6 +476,7 @@ module tb_backend_3p_banked;
     integer cycles;
     reg [2:0] send_mask;
     reg [3:0] redirect_delayed_reads;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] probe_load_tag;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -397,6 +486,10 @@ module tb_backend_3p_banked;
         decode_payload = {3*IW{1'b0}};
         decode_uses_rs1 = 3'b000;
         decode_uses_rs2 = 3'b000;
+        mem_ready = 1'b0;
+        mem_resp_valid = 1'b0;
+        mem_resp_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+        mem_rdata = 64'd0;
         retired_total = 0;
         saw_three_wide_input = 1'b0;
         saw_two_wide_issue = 1'b0;
@@ -404,6 +497,11 @@ module tb_backend_3p_banked;
         saw_read_bank_retry = 1'b0;
         saw_write_bank_retry = 1'b0;
         saw_dependency_wait = 1'b0;
+        saw_exu_forward_while_busy = 1'b0;
+        saw_mem_forward_while_busy = 1'b0;
+        saw_write_ack_read_overlap = 1'b0;
+        memory_probe_active = 1'b0;
+        memory_probe_retired = 0;
 
         instruction_stream[0] = addi_packet(1, 0, 1, 64'd5, 1'b0);
         instruction_stream[1] = addi_packet(2, 0, 3, -64'd4, 1'b0);
@@ -503,17 +601,20 @@ module tb_backend_3p_banked;
         rst_n = 1'b1;
         tick();
 
-        // Put two same-bank operands behind the request interface.  Redirect
-        // while the first accepted read is returning and the conflicting read
-        // is still presented.  The latter must remain stable through ack; both
-        // delayed responses are poisoned and must not allocate work.
+        // Put four same-bank operands behind the two-slot bank interface.
+        // Redirect while the first two accepted reads are returning and the
+        // oversubscribed reads are still presented.  The latter must remain
+        // stable through ack; all delayed responses are poisoned and must not
+        // allocate work.
         decode_payload = {3*IW{1'b0}};
         decode_payload[0 +: IW] = reg_packet(
             0, 2, 4, 31, `RV64_ALU_OP_ADD, 1'b0);
-        decode_uses_rs1 = 3'b001;
-        decode_uses_rs2 = 3'b001;
-        decode_valid = 3'b001;
-        while (!decode_ready[0])
+        decode_payload[IW +: IW] = reg_packet(
+            0, 6, 8, 30, `RV64_ALU_OP_ADD, 1'b0);
+        decode_uses_rs1 = 3'b011;
+        decode_uses_rs2 = 3'b011;
+        decode_valid = 3'b011;
+        while (decode_ready[1:0] != 2'b11)
             tick();
         tick();
         decode_valid = 3'b000;
@@ -529,8 +630,8 @@ module tb_backend_3p_banked;
         if (!(|dut.u_gpr.g_banked.u_reg_file.read_grant))
             fail("redirect probe never obtained a GPR read grant");
 
-        // Accept the combinational grant first.  Its data returns now, while
-        // the same-bank loser remains a held address-phase request.
+        // Accept the combinational grants first.  Their data returns now,
+        // while the same-bank losers remain held address-phase requests.
         tick();
         if (!(|dut.gpr_read_valid[3:0]))
             fail("redirect probe grant did not produce a delayed response");
@@ -611,6 +712,71 @@ module tb_backend_3p_banked;
             fail("test never exercised a write-bank retry");
         if (!saw_dependency_wait)
             fail("test never observed conservative dependency waiting");
+        if (!saw_exu_forward_while_busy)
+            fail("test never consumed an EXU completion before retirement");
+        if (!saw_write_ack_read_overlap)
+            fail("test never overlapped a dependent read with write ack");
+
+        // A returned load occupies MEM0's completion lane.  Keep its direct
+        // consumer waiting on x27 until the tagged response arrives; the
+        // registered forwarding stage must supply it before retirement writes
+        // x27.
+        memory_probe_active = 1'b1;
+        decode_payload = {3*IW{1'b0}};
+        decode_payload[0 +: IW] = load_packet(28, 0, 27, 64'h100);
+        decode_payload[IW +: IW] =
+            addi_packet(29, 27, 28, 64'd1, 1'b0);
+        decode_uses_rs1 = 3'b011;
+        decode_uses_rs2 = 3'b000;
+        decode_valid = 3'b011;
+        while (decode_ready[1:0] != 2'b11)
+            tick();
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        decode_uses_rs1 = 3'b000;
+
+        for (cycles = 0; (cycles < 40) && !mem_valid;
+             cycles = cycles + 1)
+            tick();
+        if (!mem_valid || !mem_physical || (mem_addr != 64'h100)) begin
+            $display("MEM0 probe state: valid=%0b physical=%0b addr=%h dispatch=%0d retire=%0d busy27=%0b issue=%b",
+                     mem_valid, mem_physical, mem_addr,
+                     dispatch_occupancy, retire_occupancy,
+                     write_busy[27], issue_valid);
+            fail("MEM0 forwarding probe did not launch its load");
+        end
+        probe_load_tag = mem_tag;
+        mem_ready = 1'b1;
+        tick();
+        mem_ready = 1'b0;
+
+        mem_resp_tag = probe_load_tag;
+        mem_rdata = 64'h1122_3344_5566_7788;
+        mem_resp_valid = 1'b1;
+        for (cycles = 0; (cycles < 20) && !mem_resp_ready;
+             cycles = cycles + 1)
+            tick();
+        if (!mem_resp_ready)
+            fail("MEM0 forwarding probe response was not accepted");
+        tick();
+        mem_resp_valid = 1'b0;
+
+        for (cycles = 0;
+             (cycles < 100) && ((memory_probe_retired < 2) ||
+                                (dispatch_occupancy != 0) ||
+                                (retire_occupancy != 0));
+             cycles = cycles + 1)
+            tick();
+        repeat (2) tick();
+        if (memory_probe_retired != 2)
+            fail("MEM0 forwarding probe did not retire both instructions");
+        if (!saw_mem_forward_while_busy)
+            fail("load result was not consumed from MEM0 completion");
+        if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
+            (write_busy != 0))
+            fail("MEM0 forwarding probe did not drain cleanly");
+        memory_probe_active = 1'b0;
 
         if (dut.u_gpr.regs[1] !== 64'd5 ||
             dut.u_gpr.regs[2] !== 64'd9 ||
@@ -637,10 +803,12 @@ module tb_backend_3p_banked;
             dut.u_gpr.regs[23] !== 64'h0000_0000_1234_805c ||
             dut.u_gpr.regs[24] !== 64'hffff_ffff_ffff_fffd ||
             dut.u_gpr.regs[25] !== 64'h0000_0000_1234_4ffc ||
-            dut.u_gpr.regs[26] !== {64{1'b1}})
+            dut.u_gpr.regs[26] !== {64{1'b1}} ||
+            dut.u_gpr.regs[27] !== 64'h1122_3344_5566_7788 ||
+            dut.u_gpr.regs[28] !== 64'h1122_3344_5566_7789)
             fail("final architectural register state was incorrect");
 
-        $display("PASS: banked 3p backend processed 27 ordered non-memory instructions with held bank retries and conservative dependencies");
+        $display("PASS: banked 3p backend processed ordered arithmetic plus a MEM0-forwarded load/use with held bank retries and conservative dependencies");
         $finish;
     end
 

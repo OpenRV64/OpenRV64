@@ -132,6 +132,7 @@ module tb_dispatch_3p_banked;
         .REG_COUNT(32),
         .READ_PORTS(4),
         .WRITE_PORTS(2),
+        .READ_PORTS_PER_BANK(2),
         .BANK_SIZE(16),
         .NUM_BANKS(2)
     ) u_gpr (
@@ -363,8 +364,8 @@ module tb_dispatch_3p_banked;
             fail("single-source packet received the wrong value");
         tick();
 
-        // Two reads per bank complete over two cycles.  Partial responses are
-        // retained and both independent instructions issue together.
+        // Two reads per bank fit in one address phase.  Both independent
+        // instructions issue together after the shared data phase.
         p0 = alu_packet(64'd10, 5'd1, 5'd2, `RV64_REG_X0);
         p1 = alu_packet(64'd11, 5'd3, 5'd4, `RV64_REG_X0);
         enqueue2(p0, p1, 2'b11, 2'b11);
@@ -382,9 +383,9 @@ module tb_dispatch_3p_banked;
                 response_peak = responses_this_cycle;
             cycles = cycles + 1;
         end
-        if ((response_count != 4) || (response_cycles != 2) ||
-            (response_peak != 2))
-            fail("different-bank reads did not complete two per cycle");
+        if ((response_count != 4) || (response_cycles != 1) ||
+            (response_peak != 4))
+            fail("2R banks did not complete four distributed reads together");
         if ((allocation_valid != 3'b011) ||
             (pipe_valid[1:0] != 2'b11))
             fail("two banked-read candidates did not issue together");
@@ -395,8 +396,8 @@ module tb_dispatch_3p_banked;
             fail("two-wide issue captured incorrect banked operands");
         tick();
 
-        // Four requests to one bank serialize one per cycle.  No candidate is
-        // allowed to issue with only a partial operand set.
+        // Four requests to one bank consume two slots per cycle.  No candidate
+        // is allowed to issue with only a partial operand set.
         p0 = alu_packet(64'd20, 5'd5, 5'd7, `RV64_REG_X0);
         p1 = alu_packet(64'd21, 5'd9, 5'd11, `RV64_REG_X0);
         enqueue2(p0, p1, 2'b11, 2'b11);
@@ -416,9 +417,9 @@ module tb_dispatch_3p_banked;
                 fail("same-bank group issued with partial operands");
             cycles = cycles + 1;
         end
-        if ((response_count != 4) || (response_cycles != 4) ||
-            (response_peak != 1))
-            fail("same-bank reads were not serialized");
+        if ((response_count != 4) || (response_cycles != 2) ||
+            (response_peak != 2))
+            fail("same-bank reads did not use two slots per cycle");
         if (allocation_valid != 3'b011)
             fail("same-bank group never issued after all responses");
         tick();
@@ -487,11 +488,13 @@ module tb_dispatch_3p_banked;
             fail("consumer did not receive the retired producer value");
         tick();
 
-        // Flush discards both a queued candidate and any partial response.
+        // Flush discards queued candidates and a partial two-slot response
+        // from four reads oversubscribing one bank.
         p0 = alu_packet(64'd50, 5'd15, 5'd17, `RV64_REG_X0);
-        enqueue1(p0, 1'b1, 1'b1);
+        p1 = alu_packet(64'd51, 5'd19, 5'd21, `RV64_REG_X0);
+        enqueue2(p0, p1, 2'b11, 2'b11);
         tick();
-        if ((valid_count(gpr_read_valid) != 1) ||
+        if ((valid_count(gpr_read_valid) != 2) ||
             (allocation_valid != 3'b000))
             fail("flush test did not establish a partial response");
         flush = 1'b1;
@@ -501,7 +504,7 @@ module tb_dispatch_3p_banked;
         if ((queue_count != 0) || (dut.read_done_q != 4'b0000) ||
             (allocation_valid != 3'b000))
             fail("flush retained queued or partial read state");
-        p0 = alu_packet(64'd51, 5'd16, 5'd18, `RV64_REG_X0);
+        p0 = alu_packet(64'd52, 5'd16, 5'd18, `RV64_REG_X0);
         enqueue1(p0, 1'b1, 1'b1);
         cycles = 0;
         while ((allocation_valid == 3'b000) && (cycles < 12)) begin

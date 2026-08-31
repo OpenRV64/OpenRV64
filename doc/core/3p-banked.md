@@ -3,23 +3,28 @@
 The banked 3P profile is a functional variant of the normal 3P backend.  It
 uses the shared decode, execution, memory, exception, and retirement-record
 paths, but replaces the combinational multiported integer GPR storage with a
-request/response banked file.  The initial profile deliberately limits issue
-and retirement to two instructions and disables policies that assume
-combinational operands or retained completion forwarding.
+request/response banked file.  The current profile deliberately limits issue
+and retirement to two instructions.  It optionally captures producer-qualified
+live results from EX0 and EX1; it still disables policies requiring retained
+completion history or speculative operand state.
 
 This is functional parity work, not performance parity.  In particular, a
-dependent instruction waits for its producer to write the GPR file and for a
-subsequent registered read response.
+dependent load waits for its producer to write the GPR file and for a
+subsequent registered read response.  An ALU dependency can now be satisfied
+by a selected live EXU completion before architectural retirement.
 
 ## Profile
 
 The conservative configuration uses:
 
 - four logical read ports and two logical write ports;
-- two single-read/single-write banks covering physical registers p0-p31;
+- two banks covering physical registers p0-p31, with the parity track using
+  two physical read ports and one write port per bank;
 - at most two issue lanes and two retirement lanes;
-- no completion-forward mask, branch-completion forwarding, full forwarding,
-  relaxed WAW handling, issue window, or speculation window;
+- optional EX0/EX1 live completion forwarding, qualified by the current
+  producer instruction ID and latched independently for each operand;
+- no MEM or branch-completion forwarding, full forwarding, relaxed WAW
+  handling, issue window, or speculation window;
 - the existing 32-entry retirement queue and p1-p31 architectural storage.
 
 Physical p0 is structural: reads return zero without issuing a bank request,
@@ -36,8 +41,9 @@ registers ack and uses that bit to associate the next-cycle response; a bare
 valid is not ownership metadata.  There is no per-port response bubble, so a
 logical port can accept one transaction per cycle when its bank wins.
 
-Arbitration may acknowledge only one read and one write per bank per cycle.
-A conflict simply withholds ack, causing the loser to retry its held address.
+Arbitration may acknowledge only the configured physical read-port count and
+one write per bank per cycle.  A conflict simply withholds ack, causing the
+loser to retry its held address.
 `quiescent_o` means that no accepted response remains in the file; a complete
 caller-side busy predicate also includes requests still being presented:
 
@@ -62,6 +68,15 @@ is busy.  Consequently, a dependent load consumer follows this sequence:
 The same-address register-file bypass is therefore a correctness definition
 for an independently granted collision, not a load-completion forwarding
 path.
+
+For an enabled EX0/EX1 completion, the backend checks both architectural `rd`
+and the current youngest-owner instruction ID.  A matching operand either
+issues from the live value in that cycle or captures it in the existing
+per-operand output latch while other reads finish.  Redirect and frontend
+squash prevent new captures; the ordinary drain rule still disposes of any
+already accepted storage response.  Architectural ownership remains busy
+until retirement, so this changes operand availability without weakening WAW
+or precise-state rules.
 
 ## Redirect handling
 
@@ -112,6 +127,14 @@ include the storage acknowledgement cycle.
 
 The following managed runs passed on 2026-08-31:
 
+- `3p-banked-directed-20260831T202004Z`: the 2R1W directed suite after
+  enabling producer-qualified EX0/EX1 completion forwarding.  A dependent
+  operand was observed consuming a live completion while its architectural
+  scoreboard owner remained busy; the held-retry and redirect-drain cases
+  also passed.
+- `compliance-act4-platform-3p-banked-ddr3-20260831T202921Z`: all 93 preserved
+  RV64IMA ACT4 ELFs passed with 2R1W banks and EX0/EX1 forwarding enabled on
+  the integrated L2/timed-DDR3 platform.
 - `3p-banked-directed-20260831T184810Z`: register-file arbitration and
   collision bypass, p0 semantics, held requests, redirect draining, the
   late-ready retirement case, GPR-before-CSR side-effect ordering, a CSR

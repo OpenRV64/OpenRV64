@@ -23,6 +23,8 @@ module tb_core_3p_magic #(
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
+    parameter integer BANKED_GPR = 0,
+    parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
     parameter integer SRAM_BYTES = 64 * 1024
 );
     localparam integer SRAM_WORDS = SRAM_BYTES / 32;
@@ -198,6 +200,9 @@ module tb_core_3p_magic #(
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .BANKED_GPR(BANKED_GPR),
+        .BANKED_GPR_READ_PORTS_PER_BANK(
+            BANKED_GPR_READ_PORTS_PER_BANK),
         .ENABLE_L1D_COHERENCE_PROBES(1'b0),
         .ENABLE_COHERENT_ATOMICS(1'b0),
         .L1D_CACHEABLE_BASE(SRAM_BASE),

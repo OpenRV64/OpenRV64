@@ -1209,6 +1209,7 @@ module openrv64_rv64_top #(
         .conditional_resolve_id_3p_i(
             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .conditional_resolve_slot_3p_i(3'd0),
+        .candidate_operand_ready_3p_i(6'b000000),
         .exec_valid_o(dispatch_exec_valid),
         .exec_clear_i(dispatch_exec_clear),
         .exec_alu_ready_i(exec_alu_ready),
