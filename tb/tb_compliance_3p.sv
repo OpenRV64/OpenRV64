@@ -5,6 +5,7 @@
 
 module tb_compliance_3p #(
     parameter bit ENABLE_RV64M = 1'b1,
+    parameter bit BANKED_GPR = 1'b0,
     parameter integer RAM_BYTES = 1 * 1024 * 1024,
     parameter integer DEFAULT_MAX_CYCLES = 2_000_000
 );
@@ -126,6 +127,9 @@ module tb_compliance_3p #(
     openrv64_top_3p #(
         .RESET_VECTOR(RAM_BASE),
         .ENABLE_RV64M(ENABLE_RV64M),
+        .BANKED_GPR(BANKED_GPR),
+        .BRANCH_COMPLETION_FORWARD_MASK(BANKED_GPR ? 3'b000 : 3'b001),
+        .RELAX_WAW(BANKED_GPR ? 1'b0 : 1'b1),
         .ENABLE_RV64A(1'b1),
         .ENABLE_POSTED_STORES(1'b0),
         .ENABLE_L1I(1'b0),

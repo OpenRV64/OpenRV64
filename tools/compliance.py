@@ -93,7 +93,13 @@ def safe_name(path: Path) -> str:
 def resolve_engine(backend: str, engine: str) -> str:
     if engine != "auto":
         return engine
-    if backend in ("3p", "platform-3p") and command_path("verilator"):
+    if backend in (
+        "3p",
+        "3p-banked",
+        "platform-3p",
+        "platform-3p-ddr3",
+        "platform-3p-banked-ddr3",
+    ) and command_path("verilator"):
         return "verilator"
     return "iverilog"
 
@@ -103,11 +109,18 @@ def simulator(backend: str, rv64m: bool, engine: str) -> tuple[str, Path, int]:
     if engine == "verilator":
         top = (
             "tb_compliance_platform"
-            if backend in ("platform", "platform-3p")
+            if backend.startswith("platform")
+            else "tb_compliance_3p"
+            if backend == "3p-banked"
             else f"tb_compliance_{backend}"
         )
         target = f"build/compliance/sim/verilator/{backend}_{suffix}/V{top}"
-        word_bytes = 32 if backend == "3p" else 8
+        word_bytes = 32 if backend in (
+            "3p",
+            "3p-banked",
+            "platform-3p-ddr3",
+            "platform-3p-banked-ddr3",
+        ) else 8
         return target, ROOT / target, word_bytes
     if backend == "1p":
         return (
@@ -121,19 +134,35 @@ def simulator(backend: str, rv64m: bool, engine: str) -> tuple[str, Path, int]:
             ROOT / f"build/compliance/sim/compliance_3p_{suffix}.vvp",
             32,
         )
+    if backend == "3p-banked":
+        return (
+            f"build/compliance/sim/compliance_3p_banked_{suffix}.vvp",
+            ROOT / f"build/compliance/sim/compliance_3p_banked_{suffix}.vvp",
+            32,
+        )
     if backend == "platform":
         return (
             f"build/compliance/sim/compliance_platform_{suffix}.vvp",
             ROOT / f"build/compliance/sim/compliance_platform_{suffix}.vvp",
             8,
         )
-    if backend == "platform-3p":
-        raise ValueError("platform-3p requires the Verilator engine")
+    if backend in (
+        "platform-3p",
+        "platform-3p-ddr3",
+        "platform-3p-banked-ddr3",
+    ):
+        raise ValueError(f"{backend} requires the Verilator engine")
     raise ValueError(f"unsupported backend {backend!r}")
 
 
 def build_simulator(target: str) -> None:
-    completed = run_command(["make", target])
+    # This runner is itself commonly called from a Make recipe.  Do not let a
+    # parent's -B/--always-make flag rebuild the complete Verilator model once
+    # per ELF in a suite.
+    env = os.environ.copy()
+    for variable in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL"):
+        env.pop(variable, None)
+    completed = run_command(["make", target], env=env)
     if completed.returncode:
         raise RuntimeError(f"simulator build failed:\n{completed.stdout}")
 
@@ -278,7 +307,15 @@ def write_junit(results: list[Result], path: Path) -> None:
 def add_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--backend",
-        choices=("1p", "3p", "platform", "platform-3p"),
+        choices=(
+            "1p",
+            "3p",
+            "3p-banked",
+            "platform",
+            "platform-3p",
+            "platform-3p-ddr3",
+            "platform-3p-banked-ddr3",
+        ),
         default="1p",
     )
     parser.add_argument(

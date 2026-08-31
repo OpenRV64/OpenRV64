@@ -41,7 +41,8 @@ module tb_regfile;
         .wp_addr_i(wp_addr),
         .wp_data_i(wp_data),
         .wp_req_i(wp_req),
-        .wp_valid_o(wp_valid)
+        .wp_valid_o(wp_valid),
+        .quiescent_o()
     );
 
     initial begin
@@ -264,8 +265,9 @@ module tb_regfile;
         $finish;
     end
 
-    // Same-address read/write behavior is intentionally not exercised here;
-    // dispatch is expected to forbid that hazard.
+    // The architectural banked-GPR test owns the same-address read/write
+    // collision case; this lower-level test concentrates on arbitration and
+    // held-request behavior.
 
     initial begin
         #2000;

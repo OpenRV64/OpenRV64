@@ -50,6 +50,27 @@ python3 tools/compliance.py suite /path/to/external/elfs \
   --backend platform --results-dir build/compliance/external-results
 ```
 
+The conservative banked 3-pipe backend is selected explicitly with
+`--backend 3p-banked` for the direct cacheless harness, or with
+`--backend platform-3p-banked-ddr3` for the one-hart integrated L2 and
+timed-DDR3 platform.  Each uses a separate simulator artifact so it cannot
+silently reuse the normal 3-pipe elaboration.
+
+When the preserved ACT4 work products are present under the ignored
+`build/compliance/act4-work` tree, `make compliance-act4-3p-banked` runs the
+RV64IMA ELF set through the direct backend.  The preferred banked platform
+run, matching the timed-memory structure used by the Linux simulations, is:
+
+```sh
+run/run run/cfg/compliance-act4-platform-3p-banked-ddr3.cfg
+```
+
+The corresponding current-3P control is
+`run/cfg/compliance-act4-platform-3p-ddr3.cfg`.  Both platform harnesses reject
+a nominal pass unless the timed-DDR3 endpoint accepted a read command.  These
+targets do not regenerate or validate the provenance of the preserved
+external-suite binaries.
+
 Sail differential testing remains available when both the simulator and its
 configuration are supplied externally:
 

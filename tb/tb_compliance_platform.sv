@@ -9,11 +9,13 @@ module tb_compliance_platform #(
     parameter bit ENABLE_RV64M = 1'b1,
     parameter logic [`OPENRV64_BACKEND_CONFIG_WIDTH-1:0] BACKEND_CONFIG =
         `OPENRV64_BACKEND_1P,
+    parameter bit BANKED_GPR_3P = 1'b0,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer L2_BYTES = 256 * 1024,
     parameter integer L2_WAYS = 8,
     parameter integer RAM_BYTES = 1 * 1024 * 1024,
+    parameter bit DDR3_ENABLE = 1'b0,
     parameter integer DEFAULT_MAX_CYCLES = 2_000_000
 );
     localparam logic [63:0] RAM_BASE = 64'h0000_0000_8000_0000;
@@ -67,6 +69,9 @@ module tb_compliance_platform #(
     logic [7:0] tohost_icx_wstrb_q;
     logic [63:0] tohost_icx_value_q;
     integer tohost_byte;
+    logic ddr3_read_seen_q;
+    logic [63:0] ddr3_read_commands_q;
+    logic [63:0] ddr3_write_commands_q;
 
     wire [63:0] tohost_value =
         (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) ?
@@ -79,8 +84,11 @@ module tb_compliance_platform #(
         .BACKEND_CONFIG(BACKEND_CONFIG),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .BANKED_GPR_3P(BANKED_GPR_3P),
         .L2_BYTES(L2_BYTES),
         .L2_WAYS(L2_WAYS),
+        .DDR3_ENABLE(DDR3_ENABLE),
+        .DDR3_BANK_ROW_SWIZZLE(1'b0),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64A(1'b1),
         .ENABLE_TRACE(1'b1)
@@ -133,6 +141,58 @@ module tb_compliance_platform #(
         end
     endgenerate
 
+    generate
+        if ((BACKEND_CONFIG == `OPENRV64_BACKEND_3P) &&
+            DDR3_ENABLE) begin : g_compliance_ddr3
+            initial begin
+                string ddr3_memh_path;
+                if (!$value$plusargs("memh=%s", ddr3_memh_path))
+                    $fatal(1, "COMPLIANCE FAIL missing +memh=<path>");
+                #1;
+                $readmemh(ddr3_memh_path,
+                    dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.u_ddr3.
+                    u_channel.memory_q);
+            end
+
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    ddr3_read_seen_q <= 1'b0;
+                    ddr3_read_commands_q <= 64'd0;
+                    ddr3_write_commands_q <= 64'd0;
+                end else if (dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.
+                             u_ddr3.
+                             timing_cmd_valid &&
+                             dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.
+                             u_ddr3.
+                             timing_cmd_ready) begin
+                    if (dut.g_icx_l2_platform.u_icx_l2.g_ddr3_ram.
+                        u_ddr3.timing_cmd_write)
+                        ddr3_write_commands_q <=
+                            ddr3_write_commands_q + 1'b1;
+                    else begin
+                        ddr3_read_seen_q <= 1'b1;
+                        ddr3_read_commands_q <=
+                            ddr3_read_commands_q + 1'b1;
+                    end
+                end
+            end
+        end else begin : g_compliance_sram
+            initial begin
+                string sram_memh_path;
+                if (!$value$plusargs("memh=%s", sram_memh_path))
+                    $fatal(1, "COMPLIANCE FAIL missing +memh=<path>");
+                #1;
+                $readmemh(sram_memh_path, dut.u_memory.memory_q);
+            end
+
+            always @(*) begin
+                ddr3_read_seen_q = 1'b0;
+                ddr3_read_commands_q = 64'd0;
+                ddr3_write_commands_q = 64'd0;
+            end
+        end
+    endgenerate
+
     initial begin
         clk = 1'b0;
         forever #5 clk = ~clk;
@@ -155,10 +215,6 @@ module tb_compliance_platform #(
             $fatal(1, "COMPLIANCE FAIL invalid tohost address 0x%016x",
                    tohost_addr);
         tohost_index = (tohost_addr - RAM_BASE) >> 3;
-
-        // Let the RAM model's zero-fill initial block finish first.
-        #1;
-        $readmemh(memh_path, dut.u_memory.memory_q);
 
         trace_fd = 0;
         if ($value$plusargs("arch_trace=%s", trace_path)) begin
@@ -248,11 +304,18 @@ module tb_compliance_platform #(
 
             if (core_rst_n && tohost_value != 64'h0) begin
                 if (tohost_value == 64'h1) begin
+                    if (DDR3_ENABLE && !ddr3_read_seen_q)
+                        $fatal(1,
+                            "COMPLIANCE FAIL no timed DDR3 read command");
                     $display("COMPLIANCE PASS test=%s backend=platform-%s cycles=%0d retired=%0d",
                              test_name,
                              (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) ?
                              "3p" : "1p",
                              cycle_count, retired_count);
+                    if (DDR3_ENABLE)
+                        $display("DDR3 commands read=%0d write=%0d",
+                                 ddr3_read_commands_q,
+                                 ddr3_write_commands_q);
                     if (trace_fd != 0)
                         $fclose(trace_fd);
                     $finish;

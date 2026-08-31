@@ -100,7 +100,8 @@ module openrv64_rv64i_gpr_1p #(
                 .wp_addr_i(write_addr),
                 .wp_data_i(write_data),
                 .wp_req_i(write_req),
-                .wp_valid_o(write_valid)
+                .wp_valid_o(write_valid),
+                .quiescent_o()
             );
 
             always @(posedge clk or negedge rst_n) begin

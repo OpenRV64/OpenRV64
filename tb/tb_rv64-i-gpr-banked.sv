@@ -186,6 +186,35 @@ module tb_rv64i_gpr_banked #(
                   64'h2222_2222_2222_2222,
                   64'h4444_4444_4444_4444, 2, 0);
 
+        // Same-edge write/read of one architectural register must return the
+        // new value, not the array's read-before-write value.
+        @(negedge clk);
+        rs1_addr = 5'd2;
+        rs2_addr = 5'd0;
+        read_valid = 1'b1;
+        rd_addr = 5'd2;
+        rd_data = 64'haaaa_bbbb_cccc_dddd;
+        rd_write = 1'b1;
+        @(posedge clk);
+        #1;
+        if (!read_ready || !rd_ready ||
+            (rs1_data !== 64'haaaa_bbbb_cccc_dddd) ||
+            (rs2_data !== 64'd0))
+            $fatal(1, "same-edge GPR write/read did not bypass new data");
+        @(negedge clk);
+        read_clear = 1'b1;
+        rd_clear = 1'b1;
+        @(posedge clk);
+        #1;
+        @(negedge clk);
+        read_valid = 1'b0;
+        read_clear = 1'b0;
+        rd_write = 1'b0;
+        rd_clear = 1'b0;
+
+        read_pair(5'd2, 5'd0,
+                  64'haaaa_bbbb_cccc_dddd, 64'd0, 1, 0);
+
         read_pair(5'd0, 5'd1,
                   64'd0, 64'h1111_1111_1111_1111, 1, 0);
         read_pair(5'd0, 5'd0, 64'd0, 64'd0, 0, 0);

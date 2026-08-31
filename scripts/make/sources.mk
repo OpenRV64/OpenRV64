@@ -45,8 +45,7 @@ REG_SRCS := rtl/util/regfile.v \
 	rtl/core/regs/rv64-i-gpr-banked.v \
 	rtl/core/regs/rv64-i-gpr_3p.v \
 	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) rtl/core/regs/rv64-i-csrs.v
-RENAME_SRCS := rtl/core/rename/identity.v \
-	rtl/core/rename/identity_banked.v
+RENAME_SRCS := rtl/core/rename/identity.v
 FETCH_SRCS := $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
@@ -125,8 +124,7 @@ RETIRE_SRCS := rtl/core/retire/retire.v rtl/core/retire/retire_queue_3p.v \
 	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v \
 	rtl/core/retire/retire_3p_banked.v
 TRACE_SRCS := rtl/core/trace/trace-defs.v
-BACKEND_SRCS := rtl/core/backend/backend_3p.v \
-	rtl/core/backend/backend_3p_banked.v
+BACKEND_SRCS := rtl/core/backend/backend_3p.v
 CORE_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) $(FETCH_SRCS) $(BUS_SRCS) $(DECODE_SRCS) $(REG_SRCS) \
@@ -152,7 +150,8 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/bus/bus.v \
 	$(L1_CACHE_SRCS) \
 	$(DECODE_SRCS) \
-	rtl/core/regs/prf.v rtl/core/regs/rv64-i-gpr_3p.v \
+	rtl/util/regfile.v rtl/core/regs/prf.v \
+	rtl/core/regs/rv64-i-gpr_3p.v \
 	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) \
 	rtl/core/regs/rv64-i-csrs.v $(RENAME_SRCS) \
 	rtl/core/dispatch/reg_map_3p.v \

@@ -32,7 +32,12 @@ module cmn_reg_file #(
     input  wire [WRITE_PORTS-1:0][ADDR_WIDTH-1:0] wp_addr_i,
     input  wire [WRITE_PORTS-1:0][REG_WIDTH-1:0]  wp_data_i,
     input  wire [WRITE_PORTS-1:0]                 wp_req_i,
-    output wire [WRITE_PORTS-1:0]                 wp_valid_o
+    output wire [WRITE_PORTS-1:0]                 wp_valid_o,
+
+    // True when no accepted transaction remains inside the file.  A caller's
+    // complete busy predicate is (|req_i) || !quiescent_o: req_i covers work
+    // still being presented, while this output covers accepted work.
+    output wire                                   quiescent_o
 );
 
     wire [REG_WIDTH-1:0] bank_read_data [NUM_BANKS-1:0];
@@ -92,6 +97,12 @@ module cmn_reg_file #(
     reg [READ_PORTS-1:0] read_valid_q;
     reg [WRITE_PORTS-1:0] write_valid_q;
     reg [BANK_SEL_BITS-1:0] read_response_bank_q [READ_PORTS-1:0];
+    reg [READ_PORTS-1:0] read_bypass;
+    reg [REG_WIDTH-1:0] read_bypass_data [READ_PORTS-1:0];
+    reg [READ_PORTS-1:0] read_bypass_q;
+    reg [REG_WIDTH-1:0] read_bypass_data_q [READ_PORTS-1:0];
+
+    assign quiescent_o = !(|read_valid_q) && !(|write_valid_q);
 
     function automatic integer wrapped_index;
         input integer start_index;
@@ -134,6 +145,34 @@ module cmn_reg_file #(
                         read_port_addr[read_candidate]
                             [ADDR_WIDTH-1:BANK_SEL_BITS];
                     read_grant[read_candidate] = 1'b1;
+                end
+            end
+        end
+    end
+
+    // The storage arrays are read-before-write at a shared clock edge.  When
+    // independently granted read and write transactions name the same word,
+    // carry the granted write value through the existing response latch.
+    // At most one write per bank can be granted, so an address has at most one
+    // bypass source in a cycle.
+    integer bypass_read_port;
+    integer bypass_write_port;
+    always @* begin
+        read_bypass = {READ_PORTS{1'b0}};
+        for (bypass_read_port = 0;
+             bypass_read_port < READ_PORTS;
+             bypass_read_port = bypass_read_port + 1) begin
+            read_bypass_data[bypass_read_port] = {REG_WIDTH{1'b0}};
+            for (bypass_write_port = 0;
+                 bypass_write_port < WRITE_PORTS;
+                 bypass_write_port = bypass_write_port + 1) begin
+                if (read_grant[bypass_read_port] &&
+                    write_grant[bypass_write_port] &&
+                    (read_port_addr[bypass_read_port] ==
+                     write_port_addr[bypass_write_port])) begin
+                    read_bypass[bypass_read_port] = 1'b1;
+                    read_bypass_data[bypass_read_port] =
+                        write_port_data[bypass_write_port];
                 end
             end
         end
@@ -186,7 +225,10 @@ module cmn_reg_file #(
                 read_valid_q[response_read_port];
             assign rp_data_o[response_read_port] =
                 read_valid_q[response_read_port] ?
-                bank_read_data[read_response_bank_q[response_read_port]] :
+                (read_bypass_q[response_read_port] ?
+                 read_bypass_data_q[response_read_port] :
+                 bank_read_data[
+                    read_response_bank_q[response_read_port]]) :
                 {REG_WIDTH{1'b0}};
         end
 
@@ -204,16 +246,20 @@ module cmn_reg_file #(
             write_priority_q <= {WRITE_PORT_BITS{1'b0}};
             read_valid_q <= {READ_PORTS{1'b0}};
             write_valid_q <= {WRITE_PORTS{1'b0}};
+            read_bypass_q <= {READ_PORTS{1'b0}};
 
             for (state_read_port = 0;
                  state_read_port < READ_PORTS;
                  state_read_port = state_read_port + 1) begin
                 read_response_bank_q[state_read_port] <=
                     {BANK_SEL_BITS{1'b0}};
+                read_bypass_data_q[state_read_port] <=
+                    {REG_WIDTH{1'b0}};
             end
         end else begin
             read_valid_q <= read_grant;
             write_valid_q <= write_grant;
+            read_bypass_q <= read_bypass;
 
             for (state_read_port = 0;
                  state_read_port < READ_PORTS;
@@ -221,6 +267,8 @@ module cmn_reg_file #(
                 if (read_grant[state_read_port]) begin
                     read_response_bank_q[state_read_port] <=
                         read_port_addr[state_read_port][BANK_SEL_BITS-1:0];
+                    read_bypass_data_q[state_read_port] <=
+                        read_bypass_data[state_read_port];
                 end
             end
 
@@ -256,19 +304,26 @@ module cmn_reg_file #(
         end
     endgenerate
 
-    integer hazard_bank;
+    integer hazard_read_port;
+    integer hazard_write_port;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            hazard_bank = 0;
+            hazard_read_port = 0;
+            hazard_write_port = 0;
         end else begin
-            for (hazard_bank = 0; hazard_bank < NUM_BANKS;
-                 hazard_bank = hazard_bank + 1) begin
-                if (bank_read_req[hazard_bank] &&
-                    bank_write_req[hazard_bank] &&
-                    (bank_read_sel[hazard_bank] ==
-                     bank_write_sel[hazard_bank])) begin
-                    $fatal(1,
-                           "cmn_reg_file: simultaneous read/write hazard.");
+            for (hazard_read_port = 0;
+                 hazard_read_port < READ_PORTS;
+                 hazard_read_port = hazard_read_port + 1) begin
+                for (hazard_write_port = 0;
+                     hazard_write_port < WRITE_PORTS;
+                     hazard_write_port = hazard_write_port + 1) begin
+                    if (read_grant[hazard_read_port] &&
+                        write_grant[hazard_write_port] &&
+                        (read_port_addr[hazard_read_port] ==
+                         write_port_addr[hazard_write_port]) &&
+                        !read_bypass[hazard_read_port])
+                        $fatal(1,
+                               "cmn_reg_file: same-address read/write was not bypassed");
                 end
             end
         end

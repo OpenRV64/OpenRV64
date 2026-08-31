@@ -18,11 +18,15 @@ module tb_rv64i_gpr_3p #(
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
+        .read_req_i(6'b000000),
         .read_addr_i(read_addr),
         .read_data_o(read_data),
+        .read_valid_o(),
         .write_valid_i(write_valid),
         .write_addr_i(write_addr),
-        .write_data_i(write_data)
+        .write_data_i(write_data),
+        .write_ready_o(),
+        .quiescent_o()
     );
 
     always #5 clk = ~clk;

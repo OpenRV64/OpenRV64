@@ -952,6 +952,8 @@ module openrv64_core_bus #(
                 [0:`OPENRV64_LSU_OUTSTANDING-1];
             reg magic_lsu_write_q
                 [0:`OPENRV64_LSU_OUTSTANDING-1];
+            reg [2:0] magic_lsu_word_q
+                [0:`OPENRV64_LSU_OUTSTANDING-1];
             reg magic_xlate_resp_valid_q;
             reg [`OPENRV64_LSU_TAG_WIDTH-1:0] magic_xlate_resp_tag_q;
             reg [`RV64_XLEN-1:0] magic_xlate_resp_paddr_q;
@@ -995,7 +997,9 @@ module openrv64_core_bus #(
                 magic_xlate_resp_paddr_q : {`RV64_XLEN{1'b0}};
             assign lsu_pipe_resp_rdata_o =
                 magic_xlate_resp_valid_q ? {`RV64_XLEN{1'b0}} :
-                icx_resp_rdata_i[`RV64_XLEN-1:0];
+                icx_resp_rdata_i[
+                    magic_lsu_word_q[magic_lsu_resp_tag]*`RV64_XLEN +:
+                    `RV64_XLEN];
             assign lsu_pipe_resp_access_fault_o =
                 magic_xlate_resp_valid_q ? 1'b0 : icx_resp_error_i;
             assign lsu_pipe_resp_page_fault_o = 1'b0;
@@ -1060,14 +1064,14 @@ module openrv64_core_bus #(
             assign icx_wdata_beat_index_o =
                 {`OPENRV64_ICX_BEAT_INDEX_WIDTH{1'b0}};
             assign icx_wdata_last_o = 1'b1;
-            assign icx_wdata_o = {
-                {(`OPENRV64_ICX_LINE_DATA_WIDTH-`RV64_XLEN){1'b0}},
-                lsu_pipe_req_wdata_i
-            };
-            assign icx_wstrb_o = {
-                {(`OPENRV64_ICX_LINE_STRB_WIDTH-8){1'b0}},
-                lsu_pipe_req_wstrb_i
-            };
+            assign icx_wdata_o = {{
+                (`OPENRV64_ICX_LINE_DATA_WIDTH-`RV64_XLEN){1'b0}},
+                lsu_pipe_req_wdata_i} <<
+                (lsu_pipe_req_addr_i[5:3]*`RV64_XLEN);
+            assign icx_wstrb_o = {{
+                (`OPENRV64_ICX_LINE_STRB_WIDTH-8){1'b0}},
+                lsu_pipe_req_wstrb_i} <<
+                (lsu_pipe_req_addr_i[5:3]*8);
             assign icx_resp_ready_o =
                 !magic_xlate_resp_valid_q &&
                 (!magic_lsu_resp ||
@@ -1092,6 +1096,7 @@ module openrv64_core_bus #(
                         magic_lsu_inflight_q[magic_lsu_index] <= 1'b0;
                         magic_lsu_cancelled_q[magic_lsu_index] <= 1'b0;
                         magic_lsu_write_q[magic_lsu_index] <= 1'b0;
+                        magic_lsu_word_q[magic_lsu_index] <= 3'b000;
                     end
                 end else begin
                     if (lsu_xlate_req_valid_i &&
@@ -1123,6 +1128,8 @@ module openrv64_core_bus #(
                         magic_lsu_cancelled_q[lsu_pipe_req_tag_i] <= 1'b0;
                         magic_lsu_write_q[lsu_pipe_req_tag_i] <=
                             lsu_pipe_req_write_i;
+                        magic_lsu_word_q[lsu_pipe_req_tag_i] <=
+                            lsu_pipe_req_addr_i[5:3];
                     end
                     if (lsu_pipe_cancel_i) begin
                         for (magic_lsu_index = 0;
@@ -1139,6 +1146,7 @@ module openrv64_core_bus #(
                         magic_lsu_inflight_q[magic_lsu_resp_tag] <= 1'b0;
                         magic_lsu_cancelled_q[magic_lsu_resp_tag] <= 1'b0;
                         magic_lsu_write_q[magic_lsu_resp_tag] <= 1'b0;
+                        magic_lsu_word_q[magic_lsu_resp_tag] <= 3'b000;
                     end
                 end
             end

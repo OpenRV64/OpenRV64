@@ -141,7 +141,8 @@ module tb_dispatch_3p_banked;
         .wp_addr_i(file_write_addr),
         .wp_data_i(file_write_data),
         .wp_req_i(file_write_req),
-        .wp_valid_o(file_write_valid)
+        .wp_valid_o(file_write_valid),
+        .quiescent_o()
     );
 
     always #5 clk = ~clk;

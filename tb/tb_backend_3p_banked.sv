@@ -57,7 +57,7 @@ module tb_backend_3p_banked;
     wire [RCW-1:0] retire_occupancy;
     wire [DCW-1:0] dispatch_occupancy;
 
-    openrv64_backend_3p_banked #(
+    openrv64_backend_3p #(
         .RETIRE_DEPTH(RETIRE_DEPTH),
         .DISPATCH_DEPTH(6),
         .PHYS_REG_COUNT(31),
@@ -70,7 +70,8 @@ module tb_backend_3p_banked;
         .RELAX_HAZARDS(0),
         .ENABLE_ISSUE_WINDOW(0),
         .ENABLE_SPECULATION_WINDOW(0),
-        .FPGA_LUTRAM(0)
+        .BANKED_GPR(1),
+        .FPGA_GPR_LUTRAM(0)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -374,8 +375,8 @@ module tb_backend_3p_banked;
                  dut.gpr_read_req))
                 saw_read_bank_retry = 1'b1;
             if (dut.gpr_write == 2'b11 &&
-                ((dut.gpr_write_valid == 2'b01) ||
-                 (dut.gpr_write_valid == 2'b10)))
+                ((dut.gpr_write_ready[1:0] == 2'b01) ||
+                 (dut.gpr_write_ready[1:0] == 2'b10)))
                 saw_write_bank_retry = 1'b1;
             if ((dispatch_occupancy != 0) && (write_busy != 0) &&
                 (issue_count == 0))
@@ -388,6 +389,7 @@ module tb_backend_3p_banked;
     integer lane_count;
     integer cycles;
     reg [2:0] send_mask;
+    reg [3:0] redirect_delayed_reads;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -502,6 +504,61 @@ module tb_backend_3p_banked;
         repeat (4) tick();
         rst_n = 1'b1;
         tick();
+
+        // Put two same-bank operands behind the request interface, then
+        // redirect on the exact edge that accepts the first read.  The old
+        // response must become visible while the backend is draining, must
+        // not be captured as a live operand, and must not allocate work.
+        decode_payload = {3*IW{1'b0}};
+        decode_payload[0 +: IW] = reg_packet(
+            0, 2, 4, 31, `RV64_ALU_OP_ADD, 1'b0);
+        decode_uses_rs1 = 3'b001;
+        decode_uses_rs2 = 3'b001;
+        decode_valid = 3'b001;
+        while (!decode_ready[0])
+            tick();
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        decode_uses_rs1 = 3'b000;
+        decode_uses_rs2 = 3'b000;
+
+        for (cycles = 0;
+             (cycles < 20) &&
+             !(|dut.u_gpr.g_banked.u_reg_file.read_grant);
+             cycles = cycles + 1)
+            tick();
+        if (!(|dut.u_gpr.g_banked.u_reg_file.read_grant))
+            fail("redirect probe never obtained a GPR read grant");
+
+        // Accept the combinational grant first.  The response is now live,
+        // but no state-changing edge has occurred at which it could allocate.
+        tick();
+        if (!(|dut.gpr_read_valid[3:0]))
+            fail("redirect probe grant did not produce a delayed response");
+        redirect_delayed_reads = dut.banked_read_pending_q &
+                                 ~dut.gpr_read_valid[3:0];
+        if (!(|redirect_delayed_reads))
+            fail("redirect probe did not leave a bank-conflicting read pending");
+
+        squash = 1'b1;
+        #1;
+        if (((dut.gpr_read_req[3:0] & redirect_delayed_reads) !=
+             redirect_delayed_reads) || !(|dut.gpr_read_valid[3:0]))
+            fail("redirect did not hold the delayed read through its response");
+        tick();
+        if (!dut.banked_gpr_drain_q ||
+            (dut.banked_read_done_q != 4'b0000))
+            fail("redirect drain reused a stale GPR response");
+        squash = 1'b0;
+
+        for (cycles = 0;
+             (cycles < 10) && dut.banked_gpr_drain_q;
+             cycles = cycles + 1)
+            tick();
+        if (dut.banked_gpr_drain_q || !dut.gpr_quiescent ||
+            (dispatch_occupancy != 0) || (retire_occupancy != 0))
+            fail("redirected GPR access did not drain cleanly");
 
         next_instruction = 0;
         while (next_instruction < INSTRUCTION_COUNT) begin

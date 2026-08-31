@@ -41,6 +41,7 @@ module openrv64_platform #(
     parameter bit PIPE_1P_MEM_4_STAGE = 1'b0,
     parameter bit PIPE_1P_DECODE_QUEUE = 1'b0,
     parameter bit FPGA_GPR_LUTRAM = 1'b0,
+    parameter bit BANKED_GPR_3P = 1'b0,
     parameter bit DEBUG_SERIALIZE_ALL_1P = 1'b0,
     parameter int unsigned L2_BYTES = 256 * 1024,
     parameter int unsigned L2_WAYS = 8,
@@ -590,6 +591,10 @@ module openrv64_platform #(
         .ENABLE_LOAD_FORWARDING(ENABLE_LOAD_FORWARDING),
         .PIPE_1P_MEM_4_STAGE(PIPE_1P_MEM_4_STAGE),
         .PIPE_1P_DECODE_QUEUE(PIPE_1P_DECODE_QUEUE),
+        .BANKED_GPR_3P(BANKED_GPR_3P),
+        .BRANCH_COMPLETION_FORWARD_MASK_3P(
+            BANKED_GPR_3P ? 3'b000 : 3'b001),
+        .RELAX_WAW_3P(BANKED_GPR_3P ? 1'b0 : 1'b1),
         .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
         .DEBUG_SERIALIZE_ALL_1P(DEBUG_SERIALIZE_ALL_1P),
         .ENABLE_TRACE(ENABLE_TRACE),

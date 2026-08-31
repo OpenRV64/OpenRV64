@@ -36,6 +36,8 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
+    parameter integer BANKED_GPR = 0,
+    parameter integer FPGA_GPR_LUTRAM = 0,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
@@ -180,10 +182,19 @@ module openrv64_backend_3p #(
         `OPENRV64_RETIRE_RESULT_WIDTH;
 
     wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_read_addr;
+    wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_storage_read_addr;
     wire [6*`RV64_XLEN-1:0] gpr_read_data;
+    wire [6*`RV64_XLEN-1:0] dispatch_gpr_read_data;
+    wire [5:0] gpr_read_req;
+    wire [5:0] gpr_read_valid;
     wire [2:0] gpr_write;
+    wire [2:0] gpr_write_ready;
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] gpr_write_addr;
     wire [3*`RV64_XLEN-1:0] gpr_write_data;
+    wire gpr_quiescent;
+    wire gpr_access_pending = (|gpr_read_req) || (|gpr_write) ||
+        !gpr_quiescent;
+    reg banked_gpr_drain_q;
 
     wire allocation_ready;
     wire queue_allocation_ready;
@@ -446,9 +457,101 @@ module openrv64_backend_3p #(
     wire [2:0] release_reg_write;
     wire [3*`RV64_REG_ADDR_WIDTH-1:0] release_rd_addr;
     wire [2:0] retire_hard;
+    reg [2:0] banked_dispatch_retire_valid_q;
+    reg [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_dispatch_retire_id_q;
+    reg [3*SLOT_WIDTH-1:0] banked_dispatch_retire_slot_q;
+    reg [2:0] banked_dispatch_retire_uses_rs1_q;
+    reg [2:0] banked_dispatch_retire_uses_rs2_q;
+    reg [3*`RV64_REG_ADDR_WIDTH-1:0]
+        banked_dispatch_retire_rs1_addr_q;
+    reg [3*`RV64_REG_ADDR_WIDTH-1:0]
+        banked_dispatch_retire_rs2_addr_q;
+    reg [2:0] banked_dispatch_retire_reg_write_q;
+    reg [3*`RV64_REG_ADDR_WIDTH-1:0]
+        banked_dispatch_retire_rd_addr_q;
+    reg [2:0] banked_dispatch_retire_hard_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_dispatch_next_retire_id_q;
+    reg [SLOT_WIDTH-1:0] banked_dispatch_next_retire_slot_q;
     wire [2:0] raw_hazard;
     wire [2:0] waw_hazard;
     wire [2:0] read_port_hazard;
+
+    // The legacy path deliberately clears scoreboard ownership in the same
+    // cycle as retirement.  On the conservative banked path that creates a
+    // long retire -> issue -> memory-ready -> retire combinational loop and
+    // also permits a consumer to launch on the write-response edge.  Delay
+    // only the feedback into dispatch by one cycle.  Architectural retirement
+    // and all other retire side effects remain on their original edge.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || flush_i) begin
+            banked_dispatch_retire_valid_q <= 3'b000;
+            banked_dispatch_retire_id_q <=
+                {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_dispatch_retire_slot_q <= {3*SLOT_WIDTH{1'b0}};
+            banked_dispatch_retire_uses_rs1_q <= 3'b000;
+            banked_dispatch_retire_uses_rs2_q <= 3'b000;
+            banked_dispatch_retire_rs1_addr_q <=
+                {3*`RV64_REG_ADDR_WIDTH{1'b0}};
+            banked_dispatch_retire_rs2_addr_q <=
+                {3*`RV64_REG_ADDR_WIDTH{1'b0}};
+            banked_dispatch_retire_reg_write_q <= 3'b000;
+            banked_dispatch_retire_rd_addr_q <=
+                {3*`RV64_REG_ADDR_WIDTH{1'b0}};
+            banked_dispatch_retire_hard_q <= 3'b000;
+            banked_dispatch_next_retire_id_q <=
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_dispatch_next_retire_slot_q <=
+                {SLOT_WIDTH{1'b0}};
+        end else if (BANKED_GPR != 0) begin
+            banked_dispatch_retire_valid_q <= release_valid;
+            banked_dispatch_retire_id_q <= queue_retire_id;
+            banked_dispatch_retire_slot_q <= window_retire_slot;
+            banked_dispatch_retire_uses_rs1_q <= release_uses_rs1;
+            banked_dispatch_retire_uses_rs2_q <= release_uses_rs2;
+            banked_dispatch_retire_rs1_addr_q <= release_rs1_addr;
+            banked_dispatch_retire_rs2_addr_q <= release_rs2_addr;
+            banked_dispatch_retire_reg_write_q <= release_reg_write;
+            banked_dispatch_retire_rd_addr_q <= release_rd_addr;
+            banked_dispatch_retire_hard_q <= retire_hard;
+            banked_dispatch_next_retire_id_q <= next_retire_id;
+            banked_dispatch_next_retire_slot_q <= next_retire_slot;
+        end else begin
+            banked_dispatch_retire_valid_q <= 3'b000;
+        end
+    end
+
+    wire [2:0] dispatch_retire_valid = (BANKED_GPR != 0) ?
+        banked_dispatch_retire_valid_q : release_valid;
+    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] dispatch_retire_id =
+        (BANKED_GPR != 0) ? banked_dispatch_retire_id_q : queue_retire_id;
+    wire [3*SLOT_WIDTH-1:0] dispatch_retire_slot =
+        (BANKED_GPR != 0) ? banked_dispatch_retire_slot_q :
+        window_retire_slot;
+    wire [2:0] dispatch_retire_uses_rs1 = (BANKED_GPR != 0) ?
+        banked_dispatch_retire_uses_rs1_q : release_uses_rs1;
+    wire [2:0] dispatch_retire_uses_rs2 = (BANKED_GPR != 0) ?
+        banked_dispatch_retire_uses_rs2_q : release_uses_rs2;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] dispatch_retire_rs1_addr =
+        (BANKED_GPR != 0) ? banked_dispatch_retire_rs1_addr_q :
+        release_rs1_addr;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] dispatch_retire_rs2_addr =
+        (BANKED_GPR != 0) ? banked_dispatch_retire_rs2_addr_q :
+        release_rs2_addr;
+    wire [2:0] dispatch_retire_reg_write = (BANKED_GPR != 0) ?
+        banked_dispatch_retire_reg_write_q : release_reg_write;
+    wire [3*`RV64_REG_ADDR_WIDTH-1:0] dispatch_retire_rd_addr =
+        (BANKED_GPR != 0) ? banked_dispatch_retire_rd_addr_q :
+        release_rd_addr;
+    wire [2:0] dispatch_retire_hard = (BANKED_GPR != 0) ?
+        banked_dispatch_retire_hard_q : retire_hard;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] dispatch_next_retire_id =
+        (BANKED_GPR != 0) ? banked_dispatch_next_retire_id_q :
+        next_retire_id;
+    wire [SLOT_WIDTH-1:0] dispatch_next_retire_slot =
+        (BANKED_GPR != 0) ? banked_dispatch_next_retire_slot_q :
+        next_retire_slot;
 
     // The non-speculative issue window may execute conditional branches before
     // the retirement head, but publishes resolution only when the branch
@@ -985,19 +1088,151 @@ module openrv64_backend_3p #(
         youngest_forward_data_raw :
         {32*`RV64_XLEN{1'b0}};
 
+    // The banked file returns at most one read per bank per cycle.  Hold the
+    // four operands for the oldest two strict-dispatch candidates until every
+    // nonzero, non-busy source has responded.  The legacy PRF remains a
+    // combinational six-read interface and bypasses this state entirely.
+    reg [3:0] banked_read_done_q;
+    reg [4*`RV64_XLEN-1:0] banked_read_data_q;
+    reg [3:0] banked_read_pending_q;
+    reg [4*PHYS_REG_ADDR_WIDTH-1:0] banked_read_addr_q;
+    wire [3:0] banked_read_ready;
+
+    // Redirects discard the requester's association with outstanding reads,
+    // but they do not cancel a transaction.  Every asserted request and its
+    // address remain stable until its response.  Stop issuing until those old
+    // responses have been discarded and the register file is quiescent.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            banked_gpr_drain_q <= 1'b0;
+        else if (BANKED_GPR == 0)
+            banked_gpr_drain_q <= 1'b0;
+        else if (flush_i || squash_frontend_i)
+            banked_gpr_drain_q <= 1'b1;
+        else if (banked_gpr_drain_q && !gpr_access_pending)
+            banked_gpr_drain_q <= 1'b0;
+    end
+
+    genvar banked_read_port;
+    generate
+        for (banked_read_port = 0; banked_read_port < 4;
+             banked_read_port = banked_read_port + 1) begin : g_banked_read
+            wire [PHYS_REG_ADDR_WIDTH-1:0] read_addr =
+                gpr_read_addr[
+                    banked_read_port*PHYS_REG_ADDR_WIDTH +:
+                    PHYS_REG_ADDR_WIDTH];
+            wire read_zero = read_addr == {PHYS_REG_ADDR_WIDTH{1'b0}};
+            wire read_blocked = !read_zero && write_busy_o[read_addr];
+            wire read_start = (BANKED_GPR != 0) &&
+                !flush_i && !squash_frontend_i && !banked_gpr_drain_q &&
+                !read_zero && !read_blocked &&
+                !banked_read_done_q[banked_read_port] &&
+                !banked_read_pending_q[banked_read_port];
+
+            assign gpr_read_req[banked_read_port] =
+                banked_read_pending_q[banked_read_port] || read_start;
+            assign gpr_storage_read_addr[
+                banked_read_port*PHYS_REG_ADDR_WIDTH +:
+                PHYS_REG_ADDR_WIDTH] =
+                banked_read_pending_q[banked_read_port] ?
+                banked_read_addr_q[
+                    banked_read_port*PHYS_REG_ADDR_WIDTH +:
+                    PHYS_REG_ADDR_WIDTH] : read_addr;
+            assign banked_read_ready[banked_read_port] = read_zero ||
+                (!read_blocked &&
+                 (banked_read_done_q[banked_read_port] ||
+                  gpr_read_valid[banked_read_port]));
+            assign dispatch_gpr_read_data[
+                banked_read_port*`RV64_XLEN +: `RV64_XLEN] =
+                (BANKED_GPR == 0) ? gpr_read_data[
+                    banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
+                banked_read_done_q[banked_read_port] ?
+                    banked_read_data_q[
+                        banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
+                gpr_read_valid[banked_read_port] ? gpr_read_data[
+                    banked_read_port*`RV64_XLEN +: `RV64_XLEN] :
+                {`RV64_XLEN{1'b0}};
+        end
+    endgenerate
+
+    assign gpr_read_req[5:4] = 2'b00;
+    assign gpr_storage_read_addr[
+        6*PHYS_REG_ADDR_WIDTH-1:4*PHYS_REG_ADDR_WIDTH] =
+        gpr_read_addr[6*PHYS_REG_ADDR_WIDTH-1:4*PHYS_REG_ADDR_WIDTH];
+    assign dispatch_gpr_read_data[6*`RV64_XLEN-1:4*`RV64_XLEN] =
+        (BANKED_GPR == 0) ?
+            gpr_read_data[6*`RV64_XLEN-1:4*`RV64_XLEN] :
+            {2*`RV64_XLEN{1'b0}};
+
+    wire banked_operands_ready = !banked_gpr_drain_q &&
+        (&banked_read_ready);
+
+    integer banked_response_port;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            banked_read_done_q <= 4'b0000;
+            banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
+            banked_read_pending_q <= 4'b0000;
+            banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
+        end else if (flush_i || squash_frontend_i || banked_gpr_drain_q ||
+                     (|allocation_valid)) begin
+            banked_read_done_q <= 4'b0000;
+            banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
+            for (banked_response_port = 0; banked_response_port < 4;
+                 banked_response_port = banked_response_port + 1) begin
+                if (gpr_read_valid[banked_response_port])
+                    banked_read_pending_q[banked_response_port] <= 1'b0;
+                else if (!banked_read_pending_q[banked_response_port] &&
+                         gpr_read_req[banked_response_port]) begin
+                    banked_read_pending_q[banked_response_port] <= 1'b1;
+                    banked_read_addr_q[
+                        banked_response_port*PHYS_REG_ADDR_WIDTH +:
+                        PHYS_REG_ADDR_WIDTH] <= gpr_storage_read_addr[
+                            banked_response_port*PHYS_REG_ADDR_WIDTH +:
+                            PHYS_REG_ADDR_WIDTH];
+                end
+            end
+        end else if (BANKED_GPR != 0) begin
+            for (banked_response_port = 0; banked_response_port < 4;
+                 banked_response_port = banked_response_port + 1) begin
+                if (gpr_read_valid[banked_response_port]) begin
+                    banked_read_pending_q[banked_response_port] <= 1'b0;
+                    banked_read_done_q[banked_response_port] <= 1'b1;
+                    banked_read_data_q[
+                        banked_response_port*`RV64_XLEN +: `RV64_XLEN] <=
+                        gpr_read_data[
+                            banked_response_port*`RV64_XLEN +: `RV64_XLEN];
+                end else if (!banked_read_pending_q[banked_response_port] &&
+                             gpr_read_req[banked_response_port]) begin
+                    banked_read_pending_q[banked_response_port] <= 1'b1;
+                    banked_read_addr_q[
+                        banked_response_port*PHYS_REG_ADDR_WIDTH +:
+                        PHYS_REG_ADDR_WIDTH] <= gpr_storage_read_addr[
+                            banked_response_port*PHYS_REG_ADDR_WIDTH +:
+                            PHYS_REG_ADDR_WIDTH];
+                end
+            end
+        end else begin
+            banked_read_pending_q <= 4'b0000;
+            banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
+        end
+    end
+
     // Deliberately conservative capacity gate: issue resumes with room for a
-    // complete three-entry group.  This breaks the alloc-valid/ready loop and
+    // complete issue group.  This breaks the alloc-valid/ready loop and
     // leaves exact-width admission as a later timing optimization.
-    // Occupancy <= DEPTH-3 proves room for the largest possible group, so
-    // consulting the queue's alloc-count-dependent ready here is redundant
+    // Occupancy <= DEPTH-width proves room for the largest active issue group,
+    // so consulting the queue's alloc-count-dependent ready here is redundant
     // and would recreate an alloc_valid <-> alloc_ready combinational loop.
-    assign allocation_ready = (retire_occupancy_o <= RETIRE_DEPTH - 3);
+    assign allocation_ready = (retire_occupancy_o <=
+        RETIRE_DEPTH - ((BANKED_GPR != 0) ? 2 : 3));
 
     openrv64_dispatch #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
         .QUEUE_DEPTH_3P(DISPATCH_DEPTH),
         .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH),
         .MAX_READS_PER_REG_3P(MAX_READS_PER_REG),
+        .MAX_ISSUE_LANES_3P((BANKED_GPR != 0) ? 2 : 3),
         .RELAX_WAW_3P(RELAX_WAW),
         .RELAX_HAZARDS_3P(RELAX_HAZARDS),
         .FREE_BRANCHES_3P(FREE_BRANCHES),
@@ -1050,8 +1285,9 @@ module openrv64_backend_3p #(
         .decode_uses_rs1_3p_i(decode_uses_rs1_i),
         .decode_uses_rs2_3p_i(decode_uses_rs2_i),
         .gpr_read_addr_3p_o(gpr_read_addr),
-        .gpr_read_data_3p_i(gpr_read_data),
-        .allocation_ready_3p_i(allocation_ready),
+        .gpr_read_data_3p_i(dispatch_gpr_read_data),
+        .allocation_ready_3p_i(allocation_ready &&
+            ((BANKED_GPR == 0) || banked_operands_ready)),
         .allocation_id_3p_i(allocation_id),
         .allocation_slot_3p_i(allocation_slot),
         .allocation_valid_3p_o(allocation_valid),
@@ -1082,18 +1318,18 @@ module openrv64_backend_3p #(
         .pipe_src1_producer_id_3p_o(pipe_src1_producer_id),
         .pipe_src2_producer_valid_3p_o(pipe_src2_producer_valid),
         .pipe_src2_producer_id_3p_o(pipe_src2_producer_id),
-        .retire_valid_3p_i(release_valid),
-        .retire_id_3p_i(queue_retire_id),
-        .retire_slot_3p_i(window_retire_slot),
-        .retire_uses_rs1_3p_i(release_uses_rs1),
-        .retire_uses_rs2_3p_i(release_uses_rs2),
-        .retire_rs1_addr_3p_i(release_rs1_addr),
-        .retire_rs2_addr_3p_i(release_rs2_addr),
-        .retire_reg_write_3p_i(release_reg_write),
-        .retire_rd_addr_3p_i(release_rd_addr),
-        .retire_hard_3p_i(retire_hard),
-        .next_retire_id_3p_i(next_retire_id),
-        .next_retire_slot_3p_i(next_retire_slot),
+        .retire_valid_3p_i(dispatch_retire_valid),
+        .retire_id_3p_i(dispatch_retire_id),
+        .retire_slot_3p_i(dispatch_retire_slot),
+        .retire_uses_rs1_3p_i(dispatch_retire_uses_rs1),
+        .retire_uses_rs2_3p_i(dispatch_retire_uses_rs2),
+        .retire_rs1_addr_3p_i(dispatch_retire_rs1_addr),
+        .retire_rs2_addr_3p_i(dispatch_retire_rs2_addr),
+        .retire_reg_write_3p_i(dispatch_retire_reg_write),
+        .retire_rd_addr_3p_i(dispatch_retire_rd_addr),
+        .retire_hard_3p_i(dispatch_retire_hard),
+        .next_retire_id_3p_i(dispatch_next_retire_id),
+        .next_retire_slot_3p_i(dispatch_next_retire_slot),
         .barrier_active_3p_o(barrier_active_o),
         .raw_hazard_3p_o(raw_hazard), .waw_hazard_3p_o(waw_hazard),
         .read_port_hazard_3p_o(read_port_hazard),
@@ -1103,31 +1339,48 @@ module openrv64_backend_3p #(
 
     openrv64_rv64i_gpr_3p #(
         .ALLOW_DUPLICATE_WRITES(RELAX_WAW),
+        .BANKED(BANKED_GPR),
+        .FPGA_LUTRAM(FPGA_GPR_LUTRAM),
         .NUM_REGS(PHYS_REG_COUNT),
         .REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH)
     ) u_gpr (
         .clk(clk), .rst_n(rst_n),
-        .read_addr_i(gpr_read_addr), .read_data_o(gpr_read_data),
+        .read_addr_i(gpr_storage_read_addr), .read_data_o(gpr_read_data),
+        .read_req_i(gpr_read_req), .read_valid_o(gpr_read_valid),
         .write_valid_i(gpr_write), .write_addr_i(gpr_write_addr),
-        .write_data_i(gpr_write_data)
+        .write_data_i(gpr_write_data),
+        .write_ready_o(gpr_write_ready),
+        .quiescent_o(gpr_quiescent)
     );
 
-    // The queue supplies the three contiguous head selectors directly.  The
-    // GPR bank has same-edge retirement bypass, so dependent work may still
-    // issue beside the older retiring prefix.
-    wire ordered_head_valid = !flush_i &&
-        (queue_post_retire_valid || (dispatch_occupancy_o != 0));
+    // The legacy path uses the combinational post-retirement head to recover
+    // a cycle of ordered-memory bandwidth.  That selector depends on the
+    // current retire accept.  In banked mode it closes a loop through
+    // retire -> ordered head -> LSQ -> translation ready -> retire.
+    //
+    // Banked mode instead presents the queue's current registered head.  The
+    // next ordered request waits until the cycle after its predecessor
+    // retires.  This is deliberately conservative and also keeps a dependent
+    // load consumer behind physical GPR storage and scoreboard release.
+    wire banked_ordered_head_valid =
+        (retire_occupancy_o != 0) || (dispatch_occupancy_o != 0);
+    wire ordered_head_valid = !flush_i && ((BANKED_GPR != 0) ?
+        banked_ordered_head_valid :
+        (queue_post_retire_valid || (dispatch_occupancy_o != 0)));
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id =
-        queue_post_retire_valid ? queue_post_retire_id :
-        allocation_id[0 +: `OPENRV64_INSTR_ID_WIDTH];
-    wire [SLOT_WIDTH-1:0] ordered_head_slot = queue_post_retire_valid ?
-        queue_post_retire_slot : allocation_slot[0 +: SLOT_WIDTH];
+        (BANKED_GPR != 0) ? next_retire_id :
+        (queue_post_retire_valid ? queue_post_retire_id :
+         allocation_id[0 +: `OPENRV64_INSTR_ID_WIDTH]);
+    wire [SLOT_WIDTH-1:0] ordered_head_slot = (BANKED_GPR != 0) ?
+        next_retire_slot : (queue_post_retire_valid ?
+        queue_post_retire_slot : allocation_slot[0 +: SLOT_WIDTH]);
 
     openrv64_exec_top #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
         .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH), .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64ZBB_3P(ENABLE_RV64ZBB),
-        .ENABLE_LOCAL_FORWARDING_3P(ENABLE_ISSUE_WINDOW == 0),
+        .ENABLE_LOCAL_FORWARDING_3P(
+            (BANKED_GPR == 0) && (ENABLE_ISSUE_WINDOW == 0)),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),
         .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
@@ -1171,14 +1424,19 @@ module openrv64_backend_3p #(
         .issue_unsupported_3p_o(pipe_unsupported),
         .issue_id_3p_i(pipe_id), .issue_slot_3p_i(pipe_slot),
         .issue_payload_3p_i(pipe_payload),
-        .branch_forward_valid_3p_i(
+        .branch_forward_valid_3p_i((BANKED_GPR == 0) &&
             branch_completion_forward_valid[0]),
         .branch_forward_tag_3p_i(
-            complete_id[0 +: `OPENRV64_INSTR_ID_WIDTH]),
+            (BANKED_GPR == 0) ?
+                complete_id[0 +: `OPENRV64_INSTR_ID_WIDTH] :
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .branch_forward_rd_addr_3p_i(
-            completion_forward_rd_addr[0 +: `RV64_REG_ADDR_WIDTH]),
+            (BANKED_GPR == 0) ? completion_forward_rd_addr[
+                0 +: `RV64_REG_ADDR_WIDTH] : `RV64_REG_X0),
         .branch_forward_data_3p_i(
-            completion_forward_data[0 +: `RV64_XLEN]),
+            (BANKED_GPR == 0) ?
+                completion_forward_data[0 +: `RV64_XLEN] :
+                {`RV64_XLEN{1'b0}}),
         .issue_src1_producer_valid_3p_i(pipe_src1_producer_valid),
         .issue_src1_producer_tag_3p_i(pipe_src1_producer_id),
         .issue_src2_producer_valid_3p_i(pipe_src2_producer_valid),
@@ -1383,48 +1641,119 @@ module openrv64_backend_3p #(
     // imprecise abort.
     wire [2:0] retire_queue_valid = async_store_fault_pending_q ?
                                     3'b000 : queue_retire_valid;
-    openrv64_retire_3p #(
-        .PHYS_REG_COUNT(PHYS_REG_COUNT),
-        .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
-        .META_WIDTH(RETIRE_RECORD_WIDTH),
-        .RESULT_WIDTH(RETIRE_RESULT_WIDTH)
-    ) u_retire (
-        .queue_valid_i(retire_queue_valid),
-        .queue_meta_i(queue_retire_record),
-        .queue_result_i(queue_retire_commit),
-        .queue_trace_id_i(queue_retire_trace),
-        .queue_accept_o(queue_retire_accept),
-        .extension_ready_i(3'b111),
-        .extension_gpr_result_valid_i(3'b000),
-        .extension_gpr_result_i({3*`RV64_XLEN{1'b0}}),
-        .extension_exception_i(3'b000),
-        .extension_cause_i({3*`RV64_EXCEPT_CAUSE_WIDTH{1'b0}}),
-        .extension_tval_i({3*`RV64_XLEN{1'b0}}),
-        .csr_write_ready_i(csr_write_ready_i),
-        .irq_pending_i(irq_pending_i), .irq_cause_i(irq_cause_i),
-        .retire_arch_o(retire_arch_o), .retire_count_o(retire_count_o),
-        .retire_hard_o(retire_hard),
-        .release_valid_o(release_valid),
-        .release_uses_rs1_o(release_uses_rs1),
-        .release_uses_rs2_o(release_uses_rs2),
-        .release_rs1_addr_o(release_rs1_addr),
-        .release_rs2_addr_o(release_rs2_addr),
-        .release_reg_write_o(release_reg_write),
-        .release_rd_addr_o(release_rd_addr),
-        .gpr_write_o(gpr_write), .gpr_rd_addr_o(gpr_write_addr),
-        .gpr_rd_data_o(gpr_write_data),
-        .csr_write_o(csr_write_o), .csr_addr_o(csr_write_addr_o),
-        .csr_op_o(csr_op_o),
-        .csr_wdata_o(csr_wdata_o),
-        .exception_o(retire_exception), .halt_o(retire_halt),
-        .irq_o(retire_irq), .mret_o(retire_mret), .sret_o(retire_sret),
-        .fence_i_o(retire_fence_i), .sfence_vma_o(retire_sfence_vma),
-        .cause_o(retire_cause), .pc_o(retire_pc),
-        .next_pc_o(retire_next_pc), .tval_o(retire_tval),
-        .trace_id_o(retire_trace_id), .instr_o(retire_instr),
-        .trace_rd_o(retire_rd_o),
-        .trace_wdata_o(retire_wdata_o)
-    );
+    generate
+        if (BANKED_GPR != 0) begin : g_banked_retire
+            wire [1:0] banked_gpr_write;
+            wire [2*PHYS_REG_ADDR_WIDTH-1:0] banked_gpr_write_addr;
+            wire [2*`RV64_XLEN-1:0] banked_gpr_write_data;
+
+            assign gpr_write = {1'b0, banked_gpr_write};
+            assign gpr_write_addr = {
+                {PHYS_REG_ADDR_WIDTH{1'b0}}, banked_gpr_write_addr
+            };
+            assign gpr_write_data = {
+                {`RV64_XLEN{1'b0}}, banked_gpr_write_data
+            };
+
+            openrv64_retire_3p_banked #(
+                .PHYS_REG_COUNT(PHYS_REG_COUNT),
+                .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
+                .META_WIDTH(RETIRE_RECORD_WIDTH),
+                .RESULT_WIDTH(RETIRE_RESULT_WIDTH)
+            ) u_retire (
+                .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+                .queue_valid_i(retire_queue_valid),
+                .queue_meta_i(queue_retire_record),
+                .queue_result_i(queue_retire_commit),
+                .queue_trace_id_i(queue_retire_trace),
+                .queue_accept_o(queue_retire_accept),
+                .extension_ready_i(3'b111),
+                .extension_gpr_result_valid_i(3'b000),
+                .extension_gpr_result_i({3*`RV64_XLEN{1'b0}}),
+                .extension_exception_i(3'b000),
+                .extension_cause_i(
+                    {3*`RV64_EXCEPT_CAUSE_WIDTH{1'b0}}),
+                .extension_tval_i({3*`RV64_XLEN{1'b0}}),
+                .csr_write_ready_i(csr_write_ready_i),
+                .irq_pending_i(irq_pending_i),
+                .irq_cause_i(irq_cause_i),
+                .retire_arch_o(retire_arch_o),
+                .retire_count_o(retire_count_o),
+                .retire_hard_o(retire_hard),
+                .release_valid_o(release_valid),
+                .release_uses_rs1_o(release_uses_rs1),
+                .release_uses_rs2_o(release_uses_rs2),
+                .release_rs1_addr_o(release_rs1_addr),
+                .release_rs2_addr_o(release_rs2_addr),
+                .release_reg_write_o(release_reg_write),
+                .release_rd_addr_o(release_rd_addr),
+                .gpr_write_o(banked_gpr_write),
+                .gpr_rd_addr_o(banked_gpr_write_addr),
+                .gpr_rd_data_o(banked_gpr_write_data),
+                .gpr_write_valid_i(gpr_write_ready[1:0]),
+                .csr_write_o(csr_write_o),
+                .csr_addr_o(csr_write_addr_o),
+                .csr_op_o(csr_op_o), .csr_wdata_o(csr_wdata_o),
+                .exception_o(retire_exception), .halt_o(retire_halt),
+                .irq_o(retire_irq), .mret_o(retire_mret),
+                .sret_o(retire_sret), .fence_i_o(retire_fence_i),
+                .sfence_vma_o(retire_sfence_vma),
+                .cause_o(retire_cause), .pc_o(retire_pc),
+                .next_pc_o(retire_next_pc), .tval_o(retire_tval),
+                .trace_id_o(retire_trace_id), .instr_o(retire_instr),
+                .trace_rd_o(retire_rd_o),
+                .trace_wdata_o(retire_wdata_o)
+            );
+        end else begin : g_legacy_retire
+            openrv64_retire_3p #(
+                .PHYS_REG_COUNT(PHYS_REG_COUNT),
+                .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
+                .META_WIDTH(RETIRE_RECORD_WIDTH),
+                .RESULT_WIDTH(RETIRE_RESULT_WIDTH)
+            ) u_retire (
+                .queue_valid_i(retire_queue_valid),
+                .queue_meta_i(queue_retire_record),
+                .queue_result_i(queue_retire_commit),
+                .queue_trace_id_i(queue_retire_trace),
+                .queue_accept_o(queue_retire_accept),
+                .extension_ready_i(3'b111),
+                .extension_gpr_result_valid_i(3'b000),
+                .extension_gpr_result_i({3*`RV64_XLEN{1'b0}}),
+                .extension_exception_i(3'b000),
+                .extension_cause_i(
+                    {3*`RV64_EXCEPT_CAUSE_WIDTH{1'b0}}),
+                .extension_tval_i({3*`RV64_XLEN{1'b0}}),
+                .csr_write_ready_i(csr_write_ready_i),
+                .irq_pending_i(irq_pending_i),
+                .irq_cause_i(irq_cause_i),
+                .retire_arch_o(retire_arch_o),
+                .retire_count_o(retire_count_o),
+                .retire_hard_o(retire_hard),
+                .release_valid_o(release_valid),
+                .release_uses_rs1_o(release_uses_rs1),
+                .release_uses_rs2_o(release_uses_rs2),
+                .release_rs1_addr_o(release_rs1_addr),
+                .release_rs2_addr_o(release_rs2_addr),
+                .release_reg_write_o(release_reg_write),
+                .release_rd_addr_o(release_rd_addr),
+                .gpr_write_o(gpr_write),
+                .gpr_rd_addr_o(gpr_write_addr),
+                .gpr_rd_data_o(gpr_write_data),
+                .csr_write_o(csr_write_o),
+                .csr_addr_o(csr_write_addr_o),
+                .csr_op_o(csr_op_o), .csr_wdata_o(csr_wdata_o),
+                .exception_o(retire_exception), .halt_o(retire_halt),
+                .irq_o(retire_irq), .mret_o(retire_mret),
+                .sret_o(retire_sret), .fence_i_o(retire_fence_i),
+                .sfence_vma_o(retire_sfence_vma),
+                .cause_o(retire_cause), .pc_o(retire_pc),
+                .next_pc_o(retire_next_pc), .tval_o(retire_tval),
+                .trace_id_o(retire_trace_id), .instr_o(retire_instr),
+                .trace_rd_o(retire_rd_o),
+                .trace_wdata_o(retire_wdata_o)
+            );
+        end
+    endgenerate
 
 `ifndef SYNTHESIS
     /*
@@ -1661,6 +1990,101 @@ module openrv64_backend_3p #(
     };
 
 `ifndef SYNTHESIS
+    localparam integer BANKED_GPR_ACCESS_TIMEOUT = 100;
+    reg [6:0] banked_gpr_read_wait_q [0:3];
+    reg [6:0] banked_gpr_write_wait_q [0:1];
+    reg [6:0] banked_gpr_drain_wait_q;
+    integer banked_read_watch_port;
+    integer banked_write_watch_port;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (banked_read_watch_port = 0;
+                 banked_read_watch_port < 4;
+                 banked_read_watch_port = banked_read_watch_port + 1)
+                banked_gpr_read_wait_q[banked_read_watch_port] <= 7'd0;
+            for (banked_write_watch_port = 0;
+                 banked_write_watch_port < 2;
+                 banked_write_watch_port = banked_write_watch_port + 1)
+                banked_gpr_write_wait_q[banked_write_watch_port] <= 7'd0;
+        end else if (BANKED_GPR != 0) begin
+            for (banked_read_watch_port = 0;
+                 banked_read_watch_port < 4;
+                 banked_read_watch_port = banked_read_watch_port + 1) begin
+                if (!gpr_read_req[banked_read_watch_port] ||
+                    gpr_read_valid[banked_read_watch_port]) begin
+                    banked_gpr_read_wait_q[banked_read_watch_port] <= 7'd0;
+                end else if (banked_gpr_read_wait_q[
+                                 banked_read_watch_port] ==
+                             BANKED_GPR_ACCESS_TIMEOUT - 1) begin
+                    $fatal(1,
+                           "banked 3P GPR read port %0d timed out after %0d cycles (addr=%0d)",
+                           banked_read_watch_port,
+                           BANKED_GPR_ACCESS_TIMEOUT,
+                           gpr_storage_read_addr[
+                               banked_read_watch_port*
+                               PHYS_REG_ADDR_WIDTH +:
+                               PHYS_REG_ADDR_WIDTH]);
+                end else begin
+                    banked_gpr_read_wait_q[banked_read_watch_port] <=
+                        banked_gpr_read_wait_q[banked_read_watch_port] +
+                        7'd1;
+                end
+            end
+
+            for (banked_write_watch_port = 0;
+                 banked_write_watch_port < 2;
+                 banked_write_watch_port = banked_write_watch_port + 1) begin
+                if (!gpr_write[banked_write_watch_port] ||
+                    gpr_write_ready[banked_write_watch_port]) begin
+                    banked_gpr_write_wait_q[banked_write_watch_port] <=
+                        7'd0;
+                end else if (banked_gpr_write_wait_q[
+                                 banked_write_watch_port] ==
+                             BANKED_GPR_ACCESS_TIMEOUT - 1) begin
+                    $fatal(1,
+                           "banked 3P GPR write port %0d timed out after %0d cycles (addr=%0d)",
+                           banked_write_watch_port,
+                           BANKED_GPR_ACCESS_TIMEOUT,
+                           gpr_write_addr[
+                               banked_write_watch_port*
+                               PHYS_REG_ADDR_WIDTH +:
+                               PHYS_REG_ADDR_WIDTH]);
+                end else begin
+                    banked_gpr_write_wait_q[banked_write_watch_port] <=
+                        banked_gpr_write_wait_q[banked_write_watch_port] +
+                        7'd1;
+                end
+            end
+        end else begin
+            for (banked_read_watch_port = 0;
+                 banked_read_watch_port < 4;
+                 banked_read_watch_port = banked_read_watch_port + 1)
+                banked_gpr_read_wait_q[banked_read_watch_port] <= 7'd0;
+            for (banked_write_watch_port = 0;
+                 banked_write_watch_port < 2;
+                 banked_write_watch_port = banked_write_watch_port + 1)
+                banked_gpr_write_wait_q[banked_write_watch_port] <= 7'd0;
+        end
+    end
+
+    // The redirect drain bounds the whole abandoned group as well as the
+    // per-port request watchdogs above.  It also covers the registered
+    // response cycle after the final held request completes.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || (BANKED_GPR == 0) || !banked_gpr_drain_q ||
+            !gpr_access_pending) begin
+            banked_gpr_drain_wait_q <= 7'd0;
+        end else if (banked_gpr_drain_wait_q ==
+                     BANKED_GPR_ACCESS_TIMEOUT - 1) begin
+            $fatal(1,
+                   "banked 3P GPR redirect drain timed out after %0d cycles",
+                   BANKED_GPR_ACCESS_TIMEOUT);
+        end else begin
+            banked_gpr_drain_wait_q <= banked_gpr_drain_wait_q + 7'd1;
+        end
+    end
+
     initial begin
         if ((FREE_BRANCHES != 0) &&
             (ENABLE_ISSUE_WINDOW != 0))
@@ -1671,9 +2095,28 @@ module openrv64_backend_3p #(
         if ((ENABLE_SPECULATION_WINDOW != 0) &&
             (ENABLE_ISSUE_WINDOW == 0))
             $fatal(1, "speculation window requires issue window");
+        if ((BANKED_GPR != 0) && (ENABLE_ISSUE_WINDOW != 0))
+            $fatal(1, "banked 3P does not support the issue window");
+        if ((BANKED_GPR != 0) && (ENABLE_SPECULATION_WINDOW != 0))
+            $fatal(1, "banked 3P does not support speculative issue");
+        if ((BANKED_GPR != 0) &&
+            ((RELAX_WAW != 0) || (RELAX_HAZARDS != 0)))
+            $fatal(1, "banked 3P requires conservative hazards");
+        if ((BANKED_GPR != 0) &&
+            ((COMPLETION_FORWARD_MASK != 3'b000) ||
+             (BRANCH_COMPLETION_FORWARD_MASK != 3'b000) ||
+             (ENABLE_FULL_FORWARDING != 0)))
+            $fatal(1, "banked 3P does not support forwarding");
+        if ((BANKED_GPR != 0) &&
+            ((PHYS_REG_COUNT != 31) || (PHYS_REG_ADDR_WIDTH != 5)))
+            $fatal(1, "banked 3P requires architectural p0-p31 tags");
     end
 
     always @(posedge clk) begin
+        if (rst_n && (BANKED_GPR != 0) && banked_gpr_drain_q &&
+            (gpr_read_req[3:0] != banked_read_pending_q))
+            $fatal(1,
+                   "banked 3P GPR redirect drain started or dropped a read request");
         if (rst_n && !flush_i && free_branch_resolved &&
             exec_branch_resolved)
             $fatal(1, "free and EX1 branch resolutions collided");

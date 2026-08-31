@@ -32,6 +32,26 @@ $(COMPLIANCE_3P_I_BUILD): tb/tb_compliance_3p.sv tb/tb_top_axi_3p.sv \
 		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
 		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
 
+$(COMPLIANCE_3P_BANKED_M_BUILD): tb/tb_compliance_3p.sv \
+		tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
+		$(CORE_3P_AXI_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_3p \
+		-Ptb_compliance_3p.ENABLE_RV64M=1 \
+		-Ptb_compliance_3p.BANKED_GPR=1 -o $@ \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
+$(COMPLIANCE_3P_BANKED_I_BUILD): tb/tb_compliance_3p.sv \
+		tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
+		$(CORE_3P_AXI_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	iverilog -g2012 -Wall -Irtl -s tb_compliance_3p \
+		-Ptb_compliance_3p.ENABLE_RV64M=0 \
+		-Ptb_compliance_3p.BANKED_GPR=1 -o $@ \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
 $(COMPLIANCE_PLATFORM_M_BUILD): tb/tb_compliance_platform.sv \
 		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p $(dir $@)
@@ -80,6 +100,26 @@ $(COMPLIANCE_3P_I_VLT_BUILD): tb/tb_compliance_3p.sv tb/tb_top_axi_3p.sv \
 		--Mdir $(dir $@) rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
 		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
 
+$(COMPLIANCE_3P_BANKED_M_VLT_BUILD): tb/tb_compliance_3p.sv \
+		tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
+		$(CORE_3P_AXI_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_3p -GENABLE_RV64M=1 \
+		-GBANKED_GPR=1 --Mdir $(dir $@) \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
+$(COMPLIANCE_3P_BANKED_I_VLT_BUILD): tb/tb_compliance_3p.sv \
+		tb/tb_top_axi_3p.sv rtl/openrv64_top_3p.v \
+		$(CORE_3P_AXI_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_3p -GENABLE_RV64M=0 \
+		-GBANKED_GPR=1 --Mdir $(dir $@) \
+		rtl/openrv64_top_3p.v $(CORE_3P_AXI_SRCS) \
+		tb/tb_top_axi_3p.sv tb/tb_compliance_3p.sv
+
 $(COMPLIANCE_PLATFORM_M_VLT_BUILD): tb/tb_compliance_platform.sv \
 		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p $(dir $@)
@@ -113,6 +153,28 @@ $(COMPLIANCE_PLATFORM_3P_I_VLT_BUILD): tb/tb_compliance_platform.sv \
 		--top-module tb_compliance_platform -GENABLE_RV64M=0 \
 		-GBACKEND_CONFIG=2 -GISSUE_WINDOW=1 -GSPECULATION_WINDOW=1 \
 		-GL2_BYTES=262144 -GL2_WAYS=8 \
+		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
+		tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_PLATFORM_3P_DDR3_M_VLT_BUILD): tb/tb_compliance_platform.sv \
+		$(PLATFORM_SRCS) $(CORE_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_platform -GENABLE_RV64M=1 \
+		-GBACKEND_CONFIG=2 -GISSUE_WINDOW=1 -GSPECULATION_WINDOW=1 \
+		-GDDR3_ENABLE=1 -GL2_BYTES=262144 -GL2_WAYS=8 \
+		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
+		tb/tb_compliance_platform.sv
+
+$(COMPLIANCE_PLATFORM_3P_BANKED_DDR3_M_VLT_BUILD): \
+		tb/tb_compliance_platform.sv $(PLATFORM_SRCS) $(CORE_SRCS) \
+		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_platform -GENABLE_RV64M=1 \
+		-GBACKEND_CONFIG=2 -GBANKED_GPR_3P=1 \
+		-GISSUE_WINDOW=0 -GSPECULATION_WINDOW=0 \
+		-GDDR3_ENABLE=1 -GL2_BYTES=262144 -GL2_WAYS=8 \
 		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
 		tb/tb_compliance_platform.sv
 

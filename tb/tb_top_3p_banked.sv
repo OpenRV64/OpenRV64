@@ -4,7 +4,7 @@
 `include "core/isa/rv64-i.v"
 
 module tb_top_3p_banked;
-    localparam integer INSTRUCTION_COUNT = 27;
+    localparam integer INSTRUCTION_COUNT = 70;
 
     reg clk;
     reg rst_n;
@@ -33,13 +33,31 @@ module tb_top_3p_banked;
     reg pending_q;
     reg [63:0] pending_addr_q;
     integer byte_index;
+    integer retired_total;
+    integer issue_count;
+    integer initialize_index;
+    integer cycles;
+    reg saw_two_decode;
+    reg saw_two_issue;
+    reg saw_two_retire;
+    reg saw_read_bank_retry;
+    reg saw_write_bank_retry;
+    reg saw_dependency_wait;
+    reg saw_redirect_drain;
 
     openrv64_top #(
         .RESET_VECTOR(64'd0),
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
-        .ENABLE_RV64M(0),
+        .ENABLE_RV64M(1),
         .ENABLE_RV64ZBB(1),
         .ENABLE_TRACE(1),
+        .BANKED_GPR_3P(1),
+        .FPGA_GPR_LUTRAM_3P(0),
+        .COMPLETION_FORWARD_MASK_3P(3'b000),
+        .BRANCH_COMPLETION_FORWARD_MASK_3P(3'b000),
+        .ENABLE_FULL_FORWARDING_3P(0),
+        .RELAX_WAW_3P(0),
+        .RELAX_HAZARDS_3P(0),
         .ENABLE_ISSUE_WINDOW(0),
         .ENABLE_SPECULATION_WINDOW(0),
         .ENABLE_L1I(0),
@@ -167,6 +185,30 @@ module tb_top_3p_banked;
         end
     endfunction
 
+    function automatic [31:0] encode_s;
+        input [11:0] immediate;
+        input [4:0] rs2;
+        input [4:0] rs1;
+        input [2:0] funct3;
+        input [6:0] opcode;
+        begin
+            encode_s = {immediate[11:5], rs2, rs1, funct3,
+                        immediate[4:0], opcode};
+        end
+    endfunction
+
+    function automatic [31:0] encode_b;
+        input [12:0] immediate;
+        input [4:0] rs2;
+        input [4:0] rs1;
+        input [2:0] funct3;
+        begin
+            encode_b = {immediate[12], immediate[10:5], rs2, rs1,
+                        funct3, immediate[4:1], immediate[11],
+                        `RV64_OPCODE_BRANCH};
+        end
+    endfunction
+
     task automatic put_instruction;
         input integer instruction_index;
         input [31:0] instruction;
@@ -193,17 +235,6 @@ module tb_top_3p_banked;
         end
     endtask
 
-    integer retired_total;
-    integer issue_count;
-    integer initialize_index;
-    integer cycles;
-    reg saw_two_decode;
-    reg saw_two_issue;
-    reg saw_two_retire;
-    reg saw_read_bank_retry;
-    reg saw_write_bank_retry;
-    reg saw_dependency_wait;
-
     always @(negedge clk) begin
         if (rst_n && !dbg_halted) begin
             issue_count =
@@ -225,10 +256,6 @@ module tb_top_3p_banked;
             retired_total = retired_total +
                 dut.g_backend_3p.u_core_3p.backend_retire_count;
 
-            if (dut.g_backend_3p.u_core_3p.backend_mem_valid)
-                fail("non-memory program issued a data-memory operation");
-            if (mem_write)
-                fail("non-memory program wrote the external bus");
             if (dut.g_backend_3p.u_core_3p.backend_write_busy[0])
                 fail("x0 became busy");
 
@@ -238,9 +265,9 @@ module tb_top_3p_banked;
                  dut.g_backend_3p.u_core_3p.u_backend.gpr_read_req))
                 saw_read_bank_retry = 1'b1;
             if ((dut.g_backend_3p.u_core_3p.u_backend.gpr_write == 2'b11) &&
-                ((dut.g_backend_3p.u_core_3p.u_backend.gpr_write_valid ==
+                ((dut.g_backend_3p.u_core_3p.u_backend.gpr_write_ready[1:0] ==
                   2'b01) ||
-                 (dut.g_backend_3p.u_core_3p.u_backend.gpr_write_valid ==
+                 (dut.g_backend_3p.u_core_3p.u_backend.gpr_write_ready[1:0] ==
                   2'b10)))
                 saw_write_bank_retry = 1'b1;
             if ((dut.g_backend_3p.u_core_3p
@@ -248,6 +275,9 @@ module tb_top_3p_banked;
                 (dut.g_backend_3p.u_core_3p.backend_write_busy != 0) &&
                 (issue_count == 0))
                 saw_dependency_wait = 1'b1;
+            if (dut.g_backend_3p.u_core_3p.u_backend.banked_gpr_drain_q) begin
+                saw_redirect_drain = 1'b1;
+            end
         end
     end
 
@@ -262,6 +292,7 @@ module tb_top_3p_banked;
         saw_read_bank_retry = 1'b0;
         saw_write_bank_retry = 1'b0;
         saw_dependency_wait = 1'b0;
+        saw_redirect_drain = 1'b0;
         for (initialize_index = 0; initialize_index < 128;
              initialize_index = initialize_index + 1)
             memory[initialize_index] = 64'h0000_0013_0000_0013;
@@ -318,7 +349,67 @@ module tb_top_3p_banked;
                                      `RV64_OPCODE_OP_32));
         put_instruction(26, encode_r(7'b0100000, 1, 3, 3'b101, 26,
                                      `RV64_OPCODE_OP_32));
-        put_instruction(27, 32'h0010_0073);
+        put_instruction(27, encode_i(12'h200, 0, 3'b000, 27,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(28, encode_i(12'h055, 0, 3'b000, 28,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(29, encode_s(12'd0, 28, 27, 3'b011,
+                                     `RV64_OPCODE_STORE));
+        put_instruction(30, encode_i(12'd0, 27, 3'b011, 29,
+                                     `RV64_OPCODE_LOAD));
+        put_instruction(31, encode_i(12'd1, 29, 3'b000, 30,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(32, encode_s(12'd8, 30, 27, 3'b011,
+                                     `RV64_OPCODE_STORE));
+        put_instruction(33, encode_i(12'd8, 27, 3'b011, 31,
+                                     `RV64_OPCODE_LOAD));
+        put_instruction(34, encode_i(12'd5, 0, 3'b000, 31,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(35, encode_i(12'd0, 0, 3'b000, 30,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(36, encode_i(12'd1, 30, 3'b000, 30,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(37, encode_i(12'hfff, 31, 3'b000, 31,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(38, encode_b(13'h1ff8, 0, 31, 3'b001));
+        put_instruction(39, encode_i(12'd7, 0, 3'b000, 28,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(40, encode_i(12'd9, 0, 3'b000, 29,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(41, encode_r(7'b0000001, 29, 28, 3'b000, 30,
+                                     `RV64_OPCODE_OP));
+        put_instruction(42, encode_r(7'b0000001, 29, 28, 3'b001, 31,
+                                     `RV64_OPCODE_OP));
+        put_instruction(43, encode_i(12'd2000, 0, 3'b000, 28,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(44, {20'h000cd, 5'd29, `RV64_OPCODE_LUI});
+        put_instruction(45, encode_i(12'hccd, 29, 3'b000, 29,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(46, encode_i(12'h020, 28, 3'b001, 28,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(47, encode_i(12'h00c, 29, 3'b001, 29,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(48, encode_i(12'hccd, 29, 3'b000, 29,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(49, encode_i(12'h020, 28, 3'b101, 28,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(50, encode_r(7'b0000001, 29, 28, 3'b000, 28,
+                                     `RV64_OPCODE_OP));
+        put_instruction(51, encode_i(12'h024, 28, 3'b101, 28,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(52, encode_i(12'hffe, 28, 3'b000, 28,
+                                     `RV64_OPCODE_OP_IMM_32));
+        put_instruction(53, encode_i(12'd2000, 0, 3'b000, 28,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(54, encode_i(12'd3, 0, 3'b000, 29,
+                                     `RV64_OPCODE_OP_IMM));
+        put_instruction(55, encode_r(7'b0000001, 29, 28, 3'b101, 30,
+                                     `RV64_OPCODE_OP_32));
+        put_instruction(56, encode_s(12'd16, 30, 27, 3'b010,
+                                     `RV64_OPCODE_STORE));
+        put_instruction(57, encode_i(12'd16, 27, 3'b010, 29,
+                                     `RV64_OPCODE_LOAD));
+        put_instruction(58, 32'h0010_0073);
 
         repeat (5) @(posedge clk);
         rst_n = 1'b1;
@@ -330,7 +421,7 @@ module tb_top_3p_banked;
         end
         if (!dbg_halted)
             fail("banked 3P core did not reach EBREAK");
-        if ((dbg_pc != 64'h6c) || (dbg_instr != 32'h0010_0073))
+        if ((dbg_pc != 64'he8) || (dbg_instr != 32'h0010_0073))
             fail("banked 3P core halted at the wrong instruction");
         repeat (3) @(posedge clk);
 
@@ -342,6 +433,8 @@ module tb_top_3p_banked;
             fail("end-to-end program did not exercise both bank retries");
         if (!saw_dependency_wait)
             fail("end-to-end program did not wait for a dependency");
+        if (!saw_redirect_drain)
+            fail("branch redirect did not enter the GPR drain state");
         if (dut.g_backend_3p.u_core_3p.backend_write_busy != 0)
             fail("banked core halted with an outstanding register writer");
 
@@ -377,10 +470,23 @@ module tb_top_3p_banked;
             dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[25] !==
                 64'h0000_0000_1234_4ffc ||
             dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[26] !==
-                {64{1'b1}})
+                {64{1'b1}} ||
+            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[27] !==
+                64'h0000_0000_0000_0200 ||
+            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[28] !==
+                64'h0000_0000_0000_07d0 ||
+            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[29] !==
+                64'h0000_0000_0000_029a ||
+            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[30] !==
+                64'h0000_0000_0000_029a ||
+            dut.g_backend_3p.u_core_3p.u_backend.u_gpr.regs[31] !==
+                64'h0000_0000_0000_0000 ||
+            memory[64] !== 64'h0000_0000_0000_0055 ||
+            memory[65] !== 64'h0000_0000_0000_0056 ||
+            memory[66] !== 64'h0000_0013_0000_029a)
             fail("end-to-end architectural register state was incorrect");
 
-        $display("PASS: fetch/decode/banked-dispatch/execute/retire processed 27 non-memory instructions end to end");
+        $display("PASS: banked 3P top processed arithmetic, memory, and dependent branch loop end to end");
         $finish;
     end
 

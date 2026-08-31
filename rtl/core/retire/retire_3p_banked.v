@@ -102,20 +102,22 @@ module openrv64_retire_3p_banked #(
     wire exception1 = queue_result_i[
         1*RESULT_WIDTH + RESULT_EXCEPTION] || extension_exception[1];
     wire halt0 = queue_result_i[0*RESULT_WIDTH + RESULT_HALT];
-    wire csr_pending0 = queue_valid_i[0] && !exception0 &&
-        queue_result_i[0*RESULT_WIDTH + RESULT_CSR_WRITE];
-    wire csr_pending1 = queue_valid_i[1] && !exception1 &&
-        queue_result_i[1*RESULT_WIDTH + RESULT_CSR_WRITE];
-
     reg csr_done_q;
-    wire csr_ready = csr_done_q || csr_write_ready_i;
+    // A live CSR response must not make this group retire combinationally.
+    // Retirement can redirect the frontend (interrupt, trap, PMP/SATP), whose
+    // translation-ready path can otherwise feed back into csr_write_ready_i.
+    // Capture the response at the edge, suppress the held request, and expose
+    // readiness to the inner retire block on the following cycle.
+    wire csr_ready = csr_done_q;
 
-    wire candidate0 = queue_valid_i[0] && extension_ready[0] &&
-                      (!csr_pending0 || csr_ready);
+    // Capture the ordered group without waiting for its CSR side effect.  A
+    // side-effecting CSR can assert the core control flush on its completion
+    // edge (PMP and SATP writes do this).  Therefore every GPR result in the
+    // group must reach storage before the CSR request is exposed.
+    wire candidate0 = queue_valid_i[0] && extension_ready[0];
     wire candidate1 = queue_valid_i[1] && candidate0 &&
                       !exception0 && !halt0 && !hard0 &&
-                      extension_ready[1] &&
-                      (!csr_pending1 || csr_ready);
+                      extension_ready[1];
 
     wire issue_reg_write0 = queue_meta_i[
         0*META_WIDTH + `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT];
@@ -150,6 +152,8 @@ module openrv64_retire_3p_banked #(
     };
 
     reg write_active_q;
+    reg write_discard_q;
+    reg [1:0] retire_mask_q;
     reg [1:0] write_mask_q;
     reg [1:0] write_done_q;
     reg [2*PHYS_REG_ADDR_WIDTH-1:0] write_addr_q;
@@ -166,7 +170,15 @@ module openrv64_retire_3p_banked #(
     wire commit_ready = write_active_q ? writes_complete :
                         !(|write_mask_now);
 
-    wire [2:0] inner_queue_valid = {1'b0, queue_valid_i[1:0]};
+    // Freeze the retirement group when its banked writes are captured.  A
+    // younger result may become ready while those writes drain; it was not
+    // included in write_mask_q and therefore must wait for the next group.
+    // Without this mask the inner retire block can accept that late-ready
+    // lane without ever writing its destination register.
+    wire [1:0] inner_queue_mask = write_active_q ? retire_mask_q : 2'b11;
+    wire [2:0] inner_queue_valid = {
+        1'b0, queue_valid_i[1:0] & inner_queue_mask
+    };
     wire [2:0] inner_extension_ready =
         extension_ready & {3{commit_ready}};
     wire [2:0] inner_extension_result_valid = extension_result_valid;
@@ -182,11 +194,27 @@ module openrv64_retire_3p_banked #(
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] unused_inner_gpr_addr;
     wire [3*`RV64_XLEN-1:0] unused_inner_gpr_data;
     wire inner_csr_write;
+    wire [`RV64_FUNCT12_WIDTH-1:0] inner_csr_addr;
+    wire [`RV64_FUNCT3_WIDTH-1:0] inner_csr_op;
+    wire [`RV64_XLEN-1:0] inner_csr_wdata;
 
-    // A CSR request may complete before the banked GPR writes.  Remember that
-    // completion and suppress repeated CSR side effects while the write group
-    // drains; the inner retire block sees the remembered completion as ready.
-    assign csr_write_o = inner_csr_write && !csr_done_q;
+    reg csr_active_q;
+    reg csr_discard_q;
+    reg [`RV64_FUNCT12_WIDTH-1:0] csr_addr_q;
+    reg [`RV64_FUNCT3_WIDTH-1:0] csr_op_q;
+    reg [`RV64_XLEN-1:0] csr_wdata_q;
+
+    // Do not expose a side-effecting CSR request until every banked GPR write
+    // in its retirement group has completed.  PMP/SATP completion can flush
+    // this wrapper immediately; by then the architectural GPR result is safe.
+    // csr_done_q still suppresses a repeated side effect if an extension holds
+    // the final acceptance boundary beyond the CSR response.
+    wire csr_start = inner_csr_write && !csr_done_q && commit_ready &&
+                     !write_discard_q && !flush_i;
+    assign csr_write_o = csr_active_q;
+    assign csr_addr_o = csr_addr_q;
+    assign csr_op_o = csr_op_q;
+    assign csr_wdata_o = csr_wdata_q;
 
     openrv64_retire_3p #(
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
@@ -206,40 +234,91 @@ module openrv64_retire_3p_banked #(
         .gpr_rd_addr_o(unused_inner_gpr_addr),
         .gpr_rd_data_o(unused_inner_gpr_data),
         .csr_write_o(inner_csr_write),
+        .csr_addr_o(inner_csr_addr),
+        .csr_op_o(inner_csr_op),
+        .csr_wdata_o(inner_csr_wdata),
         .*
     );
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             write_active_q <= 1'b0;
+            write_discard_q <= 1'b0;
+            retire_mask_q <= 2'b00;
             write_mask_q <= 2'b00;
             write_done_q <= 2'b00;
             write_addr_q <= {2*PHYS_REG_ADDR_WIDTH{1'b0}};
             write_data_q <= {2*`RV64_XLEN{1'b0}};
-        end else if (flush_i || (|queue_accept_o)) begin
+        end else if (|queue_accept_o) begin
             write_active_q <= 1'b0;
+            write_discard_q <= 1'b0;
+            retire_mask_q <= 2'b00;
             write_mask_q <= 2'b00;
             write_done_q <= 2'b00;
             write_addr_q <= {2*PHYS_REG_ADDR_WIDTH{1'b0}};
             write_data_q <= {2*`RV64_XLEN{1'b0}};
-        end else if (!write_active_q && (|write_mask_now)) begin
+        end else if (write_active_q) begin
+            // A flush discards the queue association, not an already asserted
+            // storage transaction.  Keep every request, address, and datum
+            // stable until its response, then release the abandoned group.
+            write_done_q <= write_done_q | gpr_write_valid_i;
+            if (flush_i)
+                write_discard_q <= 1'b1;
+            if ((write_discard_q || flush_i) && writes_complete) begin
+                write_active_q <= 1'b0;
+                write_discard_q <= 1'b0;
+                retire_mask_q <= 2'b00;
+                write_mask_q <= 2'b00;
+                write_done_q <= 2'b00;
+                write_addr_q <= {2*PHYS_REG_ADDR_WIDTH{1'b0}};
+                write_data_q <= {2*`RV64_XLEN{1'b0}};
+            end
+        end else if (flush_i) begin
+            write_active_q <= 1'b0;
+            write_discard_q <= 1'b0;
+            retire_mask_q <= 2'b00;
+            write_mask_q <= 2'b00;
+            write_done_q <= 2'b00;
+            write_addr_q <= {2*PHYS_REG_ADDR_WIDTH{1'b0}};
+            write_data_q <= {2*`RV64_XLEN{1'b0}};
+        end else if (|write_mask_now) begin
             write_active_q <= 1'b1;
+            write_discard_q <= 1'b0;
+            retire_mask_q <= {candidate1, candidate0};
             write_mask_q <= write_mask_now;
             write_done_q <= 2'b00;
             write_addr_q <= write_addr_now;
             write_data_q <= write_data_now;
-        end else if (write_active_q) begin
-            write_done_q <= write_done_q | gpr_write_valid_i;
         end
     end
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
+        if (!rst_n) begin
             csr_done_q <= 1'b0;
-        else if (flush_i || (|queue_accept_o))
-            csr_done_q <= 1'b0;
-        else if (csr_write_o && csr_write_ready_i)
-            csr_done_q <= 1'b1;
+            csr_active_q <= 1'b0;
+            csr_discard_q <= 1'b0;
+            csr_addr_q <= {`RV64_FUNCT12_WIDTH{1'b0}};
+            csr_op_q <= {`RV64_FUNCT3_WIDTH{1'b0}};
+            csr_wdata_q <= {`RV64_XLEN{1'b0}};
+        end else if (csr_active_q) begin
+            if (flush_i)
+                csr_discard_q <= 1'b1;
+            if (csr_write_ready_i) begin
+                csr_active_q <= 1'b0;
+                csr_discard_q <= 1'b0;
+                csr_done_q <= !(csr_discard_q || flush_i);
+            end
+        end else begin
+            if (flush_i || (|queue_accept_o))
+                csr_done_q <= 1'b0;
+            if (csr_start) begin
+                csr_active_q <= 1'b1;
+                csr_discard_q <= 1'b0;
+                csr_addr_q <= inner_csr_addr;
+                csr_op_q <= inner_csr_op;
+                csr_wdata_q <= inner_csr_wdata;
+            end
+        end
     end
 
 `ifndef SYNTHESIS
@@ -249,6 +328,10 @@ module openrv64_retire_3p_banked #(
                 $fatal(1, "banked retirement accepted a third lane");
             if (write_active_q && (write_mask_q == 2'b00))
                 $fatal(1, "banked retirement has an empty write group");
+            if (write_active_q &&
+                (|(queue_accept_o[1:0] & ~retire_mask_q)))
+                $fatal(1,
+                       "banked retirement accepted a lane outside its captured group");
         end
     end
 `endif

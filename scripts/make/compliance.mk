@@ -47,3 +47,54 @@ compliance-trace-contract: $(COMPLIANCE_SMOKE_ELF)
 compliance-quick: compliance-smoke-local
 
 compliance-full: compliance-smoke-local compliance-trace-contract
+
+compliance-act4-trace-3p-ab: $(COMPLIANCE_3P_M_VLT_BUILD) \
+		$(COMPLIANCE_3P_BANKED_M_VLT_BUILD)
+	@test -f "$(COMPLIANCE_ACT4_TRACE_ELF)" || \
+		{ echo "missing ACT4 trace ELF $(COMPLIANCE_ACT4_TRACE_ELF)"; exit 1; }
+	-$(PYTHON) -u tools/compliance.py run \
+		"$(COMPLIANCE_ACT4_TRACE_ELF)" \
+		--backend 3p --engine verilator --trace \
+		--results-dir "$(COMPLIANCE_ACT4_TRACE_RESULTS_DIR)"
+	-$(PYTHON) -u tools/compliance.py run \
+		"$(COMPLIANCE_ACT4_TRACE_ELF)" \
+		--backend 3p-banked --engine verilator --trace \
+		--results-dir "$(COMPLIANCE_ACT4_TRACE_RESULTS_DIR)"
+
+compliance-act4-3p: $(COMPLIANCE_3P_M_VLT_BUILD)
+	@test -n "$(strip $(COMPLIANCE_ACT4_RV64IMA_ELFS))" || \
+		{ echo "missing preserved ACT4 ELFs under $(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)"; exit 1; }
+	$(PYTHON) -u tools/compliance.py suite \
+		"$(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)" \
+		--backend 3p --engine verilator \
+		--results-dir "$(COMPLIANCE_3P_RESULTS_DIR)" \
+		--junit "$(COMPLIANCE_3P_JUNIT)"
+
+compliance-act4-3p-banked: $(COMPLIANCE_3P_BANKED_M_VLT_BUILD)
+	@test -n "$(strip $(COMPLIANCE_ACT4_RV64IMA_ELFS))" || \
+		{ echo "missing preserved ACT4 ELFs under $(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)"; exit 1; }
+	$(PYTHON) -u tools/compliance.py suite \
+		"$(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)" \
+		--backend 3p-banked --engine verilator \
+		--results-dir "$(COMPLIANCE_3P_BANKED_RESULTS_DIR)" \
+		--junit "$(COMPLIANCE_3P_BANKED_JUNIT)"
+
+compliance-act4-platform-3p-ddr3: \
+		$(COMPLIANCE_PLATFORM_3P_DDR3_M_VLT_BUILD)
+	@test -n "$(strip $(COMPLIANCE_ACT4_RV64IMA_ELFS))" || \
+		{ echo "missing preserved ACT4 ELFs under $(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)"; exit 1; }
+	$(PYTHON) -u tools/compliance.py suite \
+		"$(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)" \
+		--backend platform-3p-ddr3 --engine verilator \
+		--results-dir "$(COMPLIANCE_PLATFORM_3P_DDR3_RESULTS_DIR)" \
+		--junit "$(COMPLIANCE_PLATFORM_3P_DDR3_JUNIT)"
+
+compliance-act4-platform-3p-banked-ddr3: \
+		$(COMPLIANCE_PLATFORM_3P_BANKED_DDR3_M_VLT_BUILD)
+	@test -n "$(strip $(COMPLIANCE_ACT4_RV64IMA_ELFS))" || \
+		{ echo "missing preserved ACT4 ELFs under $(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)"; exit 1; }
+	$(PYTHON) -u tools/compliance.py suite \
+		"$(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)" \
+		--backend platform-3p-banked-ddr3 --engine verilator \
+		--results-dir "$(COMPLIANCE_PLATFORM_3P_BANKED_DDR3_RESULTS_DIR)" \
+		--junit "$(COMPLIANCE_PLATFORM_3P_BANKED_DDR3_JUNIT)"

@@ -16,6 +16,7 @@ module openrv64_dispatch #(
     parameter integer MAX_READS_PER_REG_3P = 2,
     parameter integer RELAX_WAW_3P = 1,
     parameter integer RELAX_HAZARDS_3P = 0,
+    parameter integer MAX_ISSUE_LANES_3P = 3,
     parameter integer FREE_BRANCHES_3P = 0,
     parameter integer ENABLE_EQ_BRANCH_PAIRING_3P = 1,
     parameter integer ENABLE_ISSUE_WINDOW_3P = 0,
@@ -278,6 +279,7 @@ module openrv64_dispatch #(
                 .MAX_READS_PER_REG(MAX_READS_PER_REG_3P),
                 .RELAX_WAW(RELAX_WAW_3P),
                 .RELAX_HAZARDS(RELAX_HAZARDS_3P),
+                .MAX_ISSUE_LANES(MAX_ISSUE_LANES_3P),
                 .FREE_BRANCHES(FREE_BRANCHES_3P),
                 .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING_3P)
             ) u_dispatch (

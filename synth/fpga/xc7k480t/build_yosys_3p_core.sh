@@ -16,8 +16,12 @@ rv64m_source=${RV64M_SOURCE:-rtl/core/exec/alu/rv64-m-fpga.v}
 # defaults.
 retire_depth=${RETIRE_DEPTH:-32}
 phys_reg_count=${PHYS_REG_COUNT:-31}
+banked_gpr=${BANKED_GPR:-0}
+fpga_gpr_lutram=${FPGA_GPR_LUTRAM:-0}
 issue_window=${ISSUE_WINDOW:-1}
 speculation_window=${SPECULATION_WINDOW:-1}
+branch_completion_forward_mask=${BRANCH_COMPLETION_FORWARD_MASK:-1}
+relax_waw=${RELAX_WAW:-1}
 store_queue_depth=${STORE_QUEUE_DEPTH:-4}
 l1i_cache_bytes=${L1I_CACHE_BYTES:-16384}
 l1d_cache_bytes=${L1D_CACHE_BYTES:-16384}
@@ -68,10 +72,12 @@ chparam -set RESET_VECTOR 2147483648 \
         -set HPM_COUNTERS 8 \
         -set RETIRE_DEPTH $retire_depth \
         -set PHYS_REG_COUNT $phys_reg_count \
+        -set BANKED_GPR $banked_gpr \
+        -set FPGA_GPR_LUTRAM $fpga_gpr_lutram \
         -set COMPLETION_FORWARD_MASK 0 \
-        -set BRANCH_COMPLETION_FORWARD_MASK 1 \
+        -set BRANCH_COMPLETION_FORWARD_MASK $branch_completion_forward_mask \
         -set ENABLE_FULL_FORWARDING 0 \
-        -set RELAX_WAW 1 \
+        -set RELAX_WAW $relax_waw \
         -set RELAX_HAZARDS 0 \
         -set FREE_BRANCHES 0 \
         -set ENABLE_EQ_BRANCH_PAIRING 1 \

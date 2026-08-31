@@ -298,6 +298,9 @@ sim-retire-queue-3p: $(RETIRE_QUEUE_3P_SIM_BUILD)
 sim-retire-3p: $(RETIRE_3P_SIM_BUILD)
 	vvp $(RETIRE_3P_SIM_BUILD)
 
+sim-retire-3p-banked: $(RETIRE_3P_BANKED_SIM_BUILD)
+	vvp $(RETIRE_3P_BANKED_SIM_BUILD)
+
 sim-backend-3p: $(BACKEND_3P_SIM_BUILD)
 	vvp $(BACKEND_3P_SIM_BUILD)
 

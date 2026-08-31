@@ -67,7 +67,7 @@
 	sim-top-4pf-faults
 .PHONY: sim-decode-rv64c sim-decode-rv64-fd
 .PHONY: sim-exec-alu-rv64-m-fpga
-.PHONY: sim-backend-3p-banked
+.PHONY: sim-retire-3p-banked sim-backend-3p-banked
 .PHONY: sim-top-3p-banked
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
@@ -129,7 +129,10 @@
 .PHONY: compliance-doctor compliance-smoke-local compliance-smoke-local-1p \
 	compliance-smoke-local-3p compliance-smoke-local-platform \
 	compliance-smoke-local-platform-3p \
-	compliance-trace-contract compliance-quick compliance-full
+	compliance-trace-contract compliance-quick compliance-full \
+	compliance-act4-trace-3p-ab compliance-act4-3p \
+	compliance-act4-3p-banked compliance-act4-platform-3p-ddr3 \
+	compliance-act4-platform-3p-banked-ddr3
 
 FORCE:
 

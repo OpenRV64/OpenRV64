@@ -1424,7 +1424,8 @@ module openrv64_backend_4pf #(
         .clk(clk), .rst_n(rst_n),
         .read_addr_i(gpr_read_addr), .read_data_o(gpr_read_data),
         .write_valid_i(gpr_write), .write_addr_i(gpr_write_addr),
-        .write_data_i(gpr_write_data)
+        .write_data_i(gpr_write_data),
+        .quiescent_o()
     );
 
     wire [2:0] fp_arch_private_write =

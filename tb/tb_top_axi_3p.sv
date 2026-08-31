@@ -361,8 +361,12 @@ module tb_axi256_soc_fabric #(
             if (icx_req_fire) begin
                 if ((icx_req_burst_len_i != 0) ||
                     ((icx_req_op_i != `OPENRV64_ICX_OP_READ) &&
-                     (icx_req_op_i != `OPENRV64_ICX_OP_WRITE)))
-                    $fatal(1, "unsupported native ICX command");
+                     (icx_req_op_i != `OPENRV64_ICX_OP_WRITE) &&
+                     (icx_req_op_i != `OPENRV64_ICX_OP_FENCE)))
+                    $fatal(1,
+                           "unsupported native ICX command op=%0d burst=%0d addr=%016x",
+                           icx_req_op_i, icx_req_burst_len_i,
+                           icx_req_addr_i);
                 if ((icx_req_size_i == 3'd6) &&
                     (icx_req_addr_i[5:0] != 0))
                     $fatal(1, "native ICX line request is not aligned");
