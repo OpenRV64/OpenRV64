@@ -65,6 +65,7 @@ module openrv64_rv64_top_3p #(
         {`RV64_XLEN{1'b1}},
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_DEMAND_MSHRS = 3,
+    parameter integer L1D_RETIRED_STORE_MSHR_CANONICAL = 0,
     parameter integer L1D_STORE_BUFFER_LINES = 8,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
@@ -1431,6 +1432,8 @@ module openrv64_rv64_top_3p #(
         .L1D_CACHEABLE_SIZE(L1D_CACHEABLE_SIZE),
         .L1D_FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
         .L1D_DEMAND_MSHRS(L1D_DEMAND_MSHRS),
+        .L1D_RETIRED_STORE_MSHR_CANONICAL(
+            L1D_RETIRED_STORE_MSHR_CANONICAL),
         .L1D_STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
         .L1D_PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .L1D_PREFETCH_MAX_STRIDE_LINES(

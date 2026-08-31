@@ -188,7 +188,11 @@ module tb_retire_3p_banked;
         queue_valid = 3'b001;
         #1;
         if (queue_accept != 3'b000)
-            fail("write-bearing lane retired before its write was captured");
+            fail("unacknowledged direct write retired");
+        if ((gpr_write != 2'b01) ||
+            (gpr_addr[0 +: PHYS_WIDTH] != PHYS_WIDTH'(10)) ||
+            (gpr_data[0 +: 64] != 64'h1111))
+            fail("ready head did not drive a direct write request");
         tick();
 
         if ((gpr_write != 2'b01) ||
@@ -231,6 +235,34 @@ module tb_retire_3p_banked;
             fail("second write group did not retire after its response");
         tick();
 
+        // A fully acknowledged head must retire directly without entering the
+        // retry skid.  After the queue advances, its next head may present a
+        // fresh request immediately in the following cycle.
+        queue_valid = 3'b000;
+        queue_meta = {3*META_WIDTH{1'b0}};
+        queue_result = {3*RESULT_WIDTH{1'b0}};
+        queue_trace = 192'd0;
+        gpr_write_valid = 2'b01;
+        set_lane(0, 5'd14, PHYS_WIDTH'(14), 64'h1414);
+        queue_valid = 3'b001;
+        #1;
+        if ((gpr_write != 2'b01) || (queue_accept != 3'b001) ||
+            (retire_arch != 3'b001) || dut.write_active_q)
+            fail("fully acknowledged head did not retire directly");
+        tick();
+
+        queue_meta = {3*META_WIDTH{1'b0}};
+        queue_result = {3*RESULT_WIDTH{1'b0}};
+        queue_trace = 192'd0;
+        set_lane(0, 5'd15, PHYS_WIDTH'(15), 64'h1515);
+        queue_valid = 3'b001;
+        #1;
+        if ((gpr_write != 2'b01) ||
+            (gpr_addr[0 +: PHYS_WIDTH] != PHYS_WIDTH'(15)) ||
+            (queue_accept != 3'b001) || dut.write_active_q)
+            fail("next ready head did not fill the following write cycle");
+        tick();
+
         // A side-effecting CSR may flush the backend on its completion edge.
         // Its GPR result must therefore complete first; only then may the CSR
         // request become visible and be held until ready.
@@ -245,8 +277,8 @@ module tb_retire_3p_banked;
         queue_valid = 3'b001;
         #1;
         if (csr_write || (queue_accept != 3'b000) ||
-            (gpr_write != 2'b00))
-            fail("CSR request escaped before its GPR write was captured");
+            (gpr_write != 2'b01))
+            fail("CSR request escaped before its direct GPR write completed");
         tick();
 
         if (csr_write || (gpr_write != 2'b01) ||

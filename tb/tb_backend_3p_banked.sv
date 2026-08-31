@@ -460,8 +460,14 @@ module tb_backend_3p_banked;
             end
             if (dut.banked_mem_forward_valid &&
                 (|dut.banked_read_mem_forward_valid)) begin
-                if (!write_busy[dut.banked_mem_forward_rd_q])
-                    fail("MEM0 forwarding bypassed a non-busy owner");
+                // Direct retirement may acknowledge the producer's write in
+                // this same cycle.  That clears public write_busy
+                // combinationally, while the exact owner-qualified MEM0 value
+                // remains a valid operand source until the retirement edge.
+                if (!write_busy[dut.banked_mem_forward_rd_q] &&
+                    !dut.banked_write_ack_hot[
+                        dut.banked_mem_forward_rd_q])
+                    fail("MEM0 forwarding bypassed an unowned producer");
                 saw_mem_forward_while_busy = 1'b1;
             end
             if (|(dut.banked_read_write_ack_release &

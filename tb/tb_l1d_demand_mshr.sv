@@ -2,7 +2,9 @@
 `include "complex/protocol/defs.v"
 `include "core/bus/bus-defs.v"
 
-module tb_l1d_demand_mshr;
+module tb_l1d_demand_mshr #(
+    parameter integer RETIRED_STORE_MSHR_CANONICAL = 0
+);
 
     localparam [63:0] MEMORY_BASE = 64'h0000_0000_8000_0000;
     localparam integer DEMAND_MSHRS = 3;
@@ -118,6 +120,8 @@ module tb_l1d_demand_mshr;
         .WAYS(4),
         .FILL_BUFFER_LINES(4),
         .DEMAND_MSHRS(DEMAND_MSHRS),
+        .RETIRED_STORE_MSHR_CANONICAL(
+            RETIRED_STORE_MSHR_CANONICAL),
         .STORE_BUFFER_LINES(2),
         .PREFETCH_ENABLE(0),
         .REQ_TAG_WIDTH(TAG_WIDTH),
@@ -414,6 +418,126 @@ module tb_l1d_demand_mshr;
         end
     endtask
 
+    task check_retired_store_mshr_canonical;
+        reg [63:0] line_addr;
+        reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] initial_overlay;
+        reg [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] initial_strb;
+        reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] expected_line;
+        begin
+            line_addr = MEMORY_BASE + 64'ha040;
+            initial_overlay =
+                {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+            initial_overlay[2*64 +: 64] = OVERLAY_STORE_DATA;
+            initial_strb =
+                {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+            initial_strb[2*8 +: 8] = 8'hff;
+            expected_line = memory_line(line_addr);
+            expected_line[2*64 +: 64] = OVERLAY_STORE_DATA;
+
+            // Model a load miss behind an older retirement-authorized store.
+            // The store-buffer snapshot is folded into the newly allocated
+            // MSHR while the lower response remains outstanding.
+            resp_ready = 1'b0;
+            force dut.l1_fill_fire = 1'b0;
+            force dut.l1_miss_fire = 1'b1;
+            force dut.l1_miss_tag = TAG_WIDTH'(0);
+            force dut.l1_miss_epoch = 0;
+            force dut.l1_miss_addr = line_addr;
+            force dut.l1_miss_store_data = initial_overlay;
+            force dut.l1_miss_store_strb = initial_strb;
+            force dut.demand_mshr_match_found_r = 1'b0;
+            force dut.demand_mshr_free_index_r = 0;
+            force dut.demand_prefetch_fill_hit_r = 1'b0;
+            force dut.prefetch_response_claim_new = 1'b0;
+            @(posedge clk);
+            #1;
+            release dut.l1_miss_fire;
+            release dut.l1_miss_tag;
+            release dut.l1_miss_epoch;
+            release dut.l1_miss_addr;
+            release dut.l1_miss_store_data;
+            release dut.l1_miss_store_strb;
+            release dut.demand_mshr_match_found_r;
+            release dut.demand_mshr_free_index_r;
+            release dut.demand_prefetch_fill_hit_r;
+            release dut.prefetch_response_claim_new;
+            if (!dut.demand_mshr_valid_q[0] ||
+                (dut.demand_mshr_data_q[0][2*64 +: 64] !==
+                 OVERLAY_STORE_DATA) ||
+                (dut.demand_mshr_store_strb_q[0] !== initial_strb))
+                $fatal(1,
+                    "canonical MSHR allocation lost the older-store snapshot");
+
+            // The already-authorized store can have reached the L1 write stage
+            // before the load but complete there after the miss allocation.
+            // That delayed fragment must update the canonical MSHR payload,
+            // not allocate another line-sized overlay.
+            dut.active_req_cacheable_q = 1'b1;
+            dut.active_req_lock_q = 1'b0;
+            force dut.l1_mem_valid = 1'b1;
+            force dut.l1_mem_write = 1'b1;
+            force dut.l1_mem_ready = 1'b1;
+            force dut.l1_mem_error = 1'b0;
+            force dut.l1_mem_addr = line_addr + 64'd24;
+            force dut.l1_mem_wdata = 64'h0123_4567_89ab_cdef;
+            force dut.l1_mem_wstrb = 8'hff;
+            @(posedge clk);
+            #1;
+            release dut.l1_mem_valid;
+            release dut.l1_mem_write;
+            release dut.l1_mem_ready;
+            release dut.l1_mem_error;
+            release dut.l1_mem_addr;
+            release dut.l1_mem_wdata;
+            release dut.l1_mem_wstrb;
+            initial_strb[3*8 +: 8] = 8'hff;
+            expected_line[3*64 +: 64] = 64'h0123_4567_89ab_cdef;
+            if ((dut.demand_mshr_data_q[0][3*64 +: 64] !==
+                 64'h0123_4567_89ab_cdef) ||
+                (dut.demand_mshr_store_strb_q[0] !== initial_strb))
+                $fatal(1,
+                    "delayed retired store did not update canonical MSHR state");
+
+            // A stale lower line must preserve both captured store words and
+            // consume the temporary byte-valid mask exactly once.
+            icx_resp_rdata = memory_line(line_addr);
+            dut.demand_mshr_issued_q[0] = 1'b1;
+            dut.demand_mshr_reissue_q[0] = 1'b0;
+            dut.demand_mshr_epoch_q[0] = dut.speculation_epoch_q;
+            dut.demand_mshr_txn_id_q[0] = 0;
+            dut.main_txn_in_use_q[0] = 1'b1;
+            force dut.demand_mshr_response_fire = 1'b1;
+            force dut.demand_mshr_response_index_r = 0;
+            @(posedge clk);
+            #1;
+            release dut.demand_mshr_response_fire;
+            release dut.demand_mshr_response_index_r;
+            if (!dut.demand_mshr_complete_q[0] ||
+                (dut.demand_mshr_data_q[0] !== expected_line) ||
+                (dut.demand_mshr_store_strb_q[0] !== 0))
+                $fatal(1,
+                    "canonical MSHR lower-response merge was incorrect");
+
+            dut.demand_mshr_fill_done_q[0] = 1'b1;
+            dut.tag_overlay_word_q[0] = 3'd2;
+            #1;
+            if (!dut.demand_response_valid ||
+                dut.demand_overlay_needed ||
+                (req_rdata !== OVERLAY_STORE_DATA))
+                $fatal(1,
+                    "canonical MSHR response still depended on per-waiter overlay");
+            dut.tag_overlay_word_q[0] = 3'd3;
+            #1;
+            if ((req_rdata !== 64'h0123_4567_89ab_cdef))
+                $fatal(1,
+                    "canonical MSHR response lost the delayed store word");
+
+            release dut.l1_fill_fire;
+            $display(
+                "PASS: retirement-authorized stores use one canonical MSHR data line");
+        end
+    endtask
+
     initial begin
         rst_n = 1'b0;
         req_valid = 1'b0;
@@ -432,6 +556,11 @@ module tb_l1d_demand_mshr;
         repeat (4) @(posedge clk);
         @(negedge clk);
         rst_n = 1'b1;
+
+        if (RETIRED_STORE_MSHR_CANONICAL != 0) begin
+            check_retired_store_mshr_canonical();
+            $finish;
+        end
 
         // Three independent lines allocate all three demand MSHRs before any
         // lower-level response returns.

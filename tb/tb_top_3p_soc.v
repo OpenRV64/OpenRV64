@@ -983,6 +983,48 @@ module tb_top_3p_soc #(
     integer banked_write_request_cycles;
     integer banked_write_accept_events;
     integer banked_write_denied_events;
+    integer banked_writer_noissue_consumer_alu;
+    integer banked_writer_noissue_consumer_branch;
+    integer banked_writer_noissue_consumer_jump;
+    integer banked_writer_noissue_consumer_load;
+    integer banked_writer_noissue_consumer_store;
+    integer banked_writer_operand_consumer_alu;
+    integer banked_writer_operand_consumer_branch;
+    integer banked_writer_operand_consumer_jump;
+    integer banked_writer_operand_consumer_load;
+    integer banked_writer_operand_consumer_store;
+    integer banked_writer_distance_1;
+    integer banked_writer_distance_2;
+    integer banked_writer_distance_3_4;
+    integer banked_writer_distance_5_8;
+    integer banked_writer_distance_9_plus;
+    integer banked_load_wait_stage;
+    integer banked_load_wait_xlate;
+    integer banked_load_wait_access;
+    integer banked_load_wait_inflight;
+    integer banked_load_wait_post_lsq;
+    integer banked_load_wait_launch;
+    integer banked_load_wait_selected;
+    integer banked_load_wait_arbitration;
+    integer banked_load_wait_guard;
+    integer banked_load_wait_order;
+    integer banked_load_wait_other;
+    integer banked_writer_probe_port;
+    integer banked_writer_probe_lsq;
+    integer banked_writer_probe_distance;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] banked_writer_probe_addr;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] banked_writer_probe_producer_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] banked_writer_probe_consumer_id;
+    reg banked_writer_probe_lsq_found;
+    reg banked_writer_probe_xlate_done;
+    reg banked_writer_probe_access_sent;
+    reg banked_writer_probe_guard_block;
+    reg banked_writer_probe_cacheable;
+    reg banked_writer_probe_order_match;
+    integer banked_retire_ready_direct_wait;
+    integer banked_retire_ready_retry_wait;
+    integer banked_retire_ready_write_complete;
+    integer banked_retire_ready_no_write;
     integer barrier_cycles;
     integer retire_nonempty;
     integer retire_nonempty_no_retire;
@@ -1252,6 +1294,24 @@ module tb_top_3p_soc #(
                 perf_op_class = PERF_OP_STORE;
             else
                 perf_op_class = PERF_OP_ALU;
+        end
+    endfunction
+
+    // Dispatch candidates carry the execution issue payload, whose control
+    // bits are not at the retirement-record offsets used by perf_op_class.
+    function automatic [2:0] perf_issue_op_class;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            if (payload[14])
+                perf_issue_op_class = PERF_OP_BRANCH;
+            else if (payload[13])
+                perf_issue_op_class = PERF_OP_JUMP;
+            else if (payload[16] && !payload[15])
+                perf_issue_op_class = PERF_OP_LOAD;
+            else if (payload[15])
+                perf_issue_op_class = PERF_OP_STORE;
+            else
+                perf_issue_op_class = PERF_OP_ALU;
         end
     endfunction
 
@@ -1558,7 +1618,7 @@ module tb_top_3p_soc #(
             trace_candidate_payload[
                 2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
-    wire [2:0] raw_first_op = perf_op_class(raw_first_payload);
+    wire [2:0] raw_first_op = perf_issue_op_class(raw_first_payload);
     wire [4:0] trace_window_unissued = (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window.trace_unissued_count :
         5'd0;
@@ -1643,9 +1703,9 @@ module tb_top_3p_soc #(
                     0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
     wire [2:0] trace_conflict_blocked_op =
-        perf_op_class(trace_conflict_blocked_payload);
+        perf_issue_op_class(trace_conflict_blocked_payload);
     wire [2:0] trace_conflict_older_op =
-        perf_op_class(trace_conflict_older_payload);
+        perf_issue_op_class(trace_conflict_older_payload);
 
     wire [`OPENRV64_LSU_OUTSTANDING-1:0] trace_lsu_sent;
     genvar trace_lsu_index;
@@ -3574,6 +3634,36 @@ module tb_top_3p_soc #(
         banked_write_request_cycles = 0;
         banked_write_accept_events = 0;
         banked_write_denied_events = 0;
+        banked_writer_noissue_consumer_alu = 0;
+        banked_writer_noissue_consumer_branch = 0;
+        banked_writer_noissue_consumer_jump = 0;
+        banked_writer_noissue_consumer_load = 0;
+        banked_writer_noissue_consumer_store = 0;
+        banked_writer_operand_consumer_alu = 0;
+        banked_writer_operand_consumer_branch = 0;
+        banked_writer_operand_consumer_jump = 0;
+        banked_writer_operand_consumer_load = 0;
+        banked_writer_operand_consumer_store = 0;
+        banked_writer_distance_1 = 0;
+        banked_writer_distance_2 = 0;
+        banked_writer_distance_3_4 = 0;
+        banked_writer_distance_5_8 = 0;
+        banked_writer_distance_9_plus = 0;
+        banked_load_wait_stage = 0;
+        banked_load_wait_xlate = 0;
+        banked_load_wait_access = 0;
+        banked_load_wait_inflight = 0;
+        banked_load_wait_post_lsq = 0;
+        banked_load_wait_launch = 0;
+        banked_load_wait_selected = 0;
+        banked_load_wait_arbitration = 0;
+        banked_load_wait_guard = 0;
+        banked_load_wait_order = 0;
+        banked_load_wait_other = 0;
+        banked_retire_ready_direct_wait = 0;
+        banked_retire_ready_retry_wait = 0;
+        banked_retire_ready_write_complete = 0;
+        banked_retire_ready_no_write = 0;
         barrier_cycles = 0;
         retire_nonempty = 0;
         retire_nonempty_no_retire = 0;
@@ -4029,6 +4119,164 @@ module tb_top_3p_soc #(
                 banked_writer_ready_write_denied_cycles =
                     banked_writer_ready_write_denied_cycles + 1;
 
+            // Attribute each blocked operand to the consumer opcode and its
+            // dynamic distance from the exact youngest producer.  Load waits
+            // are additionally split by the producer's live LSQ phase.  These
+            // are operand-events, not mutually exclusive cycle counters.
+            for (banked_writer_probe_port = 0;
+                 banked_writer_probe_port < 4;
+                 banked_writer_probe_port = banked_writer_probe_port + 1) begin
+                if (dut.u_backend.banked_writer_wait_load_incomplete[
+                        banked_writer_probe_port] ||
+                    dut.u_backend.banked_writer_wait_load_ready[
+                        banked_writer_probe_port] ||
+                    dut.u_backend.banked_writer_wait_other_incomplete[
+                        banked_writer_probe_port] ||
+                    dut.u_backend.banked_writer_wait_other_ready[
+                        banked_writer_probe_port]) begin
+                    case (perf_issue_op_class(trace_candidate_payload[
+                              (banked_writer_probe_port / 2) *
+                              `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                              `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                        PERF_OP_BRANCH:
+                            banked_writer_operand_consumer_branch =
+                                banked_writer_operand_consumer_branch + 1;
+                        PERF_OP_JUMP:
+                            banked_writer_operand_consumer_jump =
+                                banked_writer_operand_consumer_jump + 1;
+                        PERF_OP_LOAD:
+                            banked_writer_operand_consumer_load =
+                                banked_writer_operand_consumer_load + 1;
+                        PERF_OP_STORE:
+                            banked_writer_operand_consumer_store =
+                                banked_writer_operand_consumer_store + 1;
+                        default:
+                            banked_writer_operand_consumer_alu =
+                                banked_writer_operand_consumer_alu + 1;
+                    endcase
+
+                    banked_writer_probe_addr = dut.u_backend.gpr_read_addr[
+                        banked_writer_probe_port*`RV64_REG_ADDR_WIDTH +:
+                        `RV64_REG_ADDR_WIDTH];
+                    banked_writer_probe_producer_id =
+                        dut.u_backend.youngest_owner_id_q[
+                            banked_writer_probe_addr*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                    banked_writer_probe_consumer_id =
+                        dut.u_backend.allocation_id[
+                            (banked_writer_probe_port / 2)*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                    banked_writer_probe_distance =
+                        (banked_writer_probe_consumer_id -
+                         banked_writer_probe_producer_id) &
+                        ((1 << `OPENRV64_INSTR_ID_WIDTH) - 1);
+                    if (banked_writer_probe_distance <= 1)
+                        banked_writer_distance_1 =
+                            banked_writer_distance_1 + 1;
+                    else if (banked_writer_probe_distance == 2)
+                        banked_writer_distance_2 =
+                            banked_writer_distance_2 + 1;
+                    else if (banked_writer_probe_distance <= 4)
+                        banked_writer_distance_3_4 =
+                            banked_writer_distance_3_4 + 1;
+                    else if (banked_writer_probe_distance <= 8)
+                        banked_writer_distance_5_8 =
+                            banked_writer_distance_5_8 + 1;
+                    else
+                        banked_writer_distance_9_plus =
+                            banked_writer_distance_9_plus + 1;
+                end
+
+                if (dut.u_backend.banked_writer_wait_load_incomplete[
+                        banked_writer_probe_port]) begin
+                    banked_writer_probe_lsq_found = 1'b0;
+                    banked_writer_probe_xlate_done = 1'b0;
+                    banked_writer_probe_access_sent = 1'b0;
+                    banked_writer_probe_guard_block = 1'b0;
+                    banked_writer_probe_cacheable = 1'b0;
+                    banked_writer_probe_order_match = 1'b0;
+                    for (banked_writer_probe_lsq = 0;
+                         banked_writer_probe_lsq < `OPENRV64_LSU_OUTSTANDING;
+                         banked_writer_probe_lsq =
+                             banked_writer_probe_lsq + 1) begin
+                        if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                .slot_valid_q[banked_writer_probe_lsq] &&
+                            (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                 .slot_id_q[banked_writer_probe_lsq] ==
+                             banked_writer_probe_producer_id)) begin
+                            banked_writer_probe_lsq_found = 1'b1;
+                            banked_writer_probe_xlate_done =
+                                dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                    .slot_xlate_done_q[
+                                        banked_writer_probe_lsq];
+                            banked_writer_probe_access_sent =
+                                dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                    .slot_access_sent_q[
+                                        banked_writer_probe_lsq];
+                            if (banked_writer_probe_lsq <
+                                (`OPENRV64_LSU_OUTSTANDING / 2)) begin
+                                banked_writer_probe_guard_block =
+                                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                        .u_lsq.load_guard_block_r[
+                                            banked_writer_probe_lsq];
+                                banked_writer_probe_cacheable =
+                                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                        .u_lsq.load_cacheable[
+                                            banked_writer_probe_lsq];
+                                banked_writer_probe_order_match =
+                                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                        .u_lsq.load_order_match[
+                                            banked_writer_probe_lsq];
+                            end
+                        end
+                    end
+                    if (dut.u_backend.banked_mem_stage_wait_operand[
+                            banked_writer_probe_port])
+                        banked_load_wait_stage = banked_load_wait_stage + 1;
+                    else if (!banked_writer_probe_lsq_found)
+                        banked_load_wait_post_lsq =
+                            banked_load_wait_post_lsq + 1;
+                    else if (!banked_writer_probe_xlate_done)
+                        banked_load_wait_xlate = banked_load_wait_xlate + 1;
+                    else if (!banked_writer_probe_access_sent) begin
+                        banked_load_wait_access = banked_load_wait_access + 1;
+                        if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                .request_found_r &&
+                            !dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                .request_store_r &&
+                            (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                 .request_id_r ==
+                             banked_writer_probe_producer_id)) begin
+                            if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                    .req_fire)
+                                banked_load_wait_launch =
+                                    banked_load_wait_launch + 1;
+                            else
+                                banked_load_wait_selected =
+                                    banked_load_wait_selected + 1;
+                        end else if (banked_writer_probe_guard_block)
+                            banked_load_wait_guard =
+                                banked_load_wait_guard + 1;
+                        else if (!banked_writer_probe_cacheable &&
+                                 !banked_writer_probe_order_match)
+                            banked_load_wait_order =
+                                banked_load_wait_order + 1;
+                        else if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                     .request_found_r)
+                            banked_load_wait_arbitration =
+                                banked_load_wait_arbitration + 1;
+                        else
+                            banked_load_wait_other =
+                                banked_load_wait_other + 1;
+                    end
+                    else
+                        banked_load_wait_inflight =
+                            banked_load_wait_inflight + 1;
+                end
+            end
+
             // Mutually exclusive attribution for cycles where dispatch has a
             // candidate but the backend issues nothing.  Mixed writer/read
             // cycles are kept separate instead of assigning them to either
@@ -4037,6 +4285,24 @@ module tb_top_3p_soc #(
                 (dut.backend_dispatch_occupancy != 0) &&
                 (issued_this_cycle == 0)) begin
                 if (dut.u_backend.banked_blocked_by_writes) begin
+                    case (perf_issue_op_class(trace_candidate_payload[
+                              0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                        PERF_OP_BRANCH:
+                            banked_writer_noissue_consumer_branch =
+                                banked_writer_noissue_consumer_branch + 1;
+                        PERF_OP_JUMP:
+                            banked_writer_noissue_consumer_jump =
+                                banked_writer_noissue_consumer_jump + 1;
+                        PERF_OP_LOAD:
+                            banked_writer_noissue_consumer_load =
+                                banked_writer_noissue_consumer_load + 1;
+                        PERF_OP_STORE:
+                            banked_writer_noissue_consumer_store =
+                                banked_writer_noissue_consumer_store + 1;
+                        default:
+                            banked_writer_noissue_consumer_alu =
+                                banked_writer_noissue_consumer_alu + 1;
+                    endcase
                     if (dut.u_backend.banked_blocked_on_reads)
                         banked_no_issue_writer_read_mixed =
                             banked_no_issue_writer_read_mixed + 1;
@@ -4155,6 +4421,24 @@ module tb_top_3p_soc #(
                             retire_head_mem_access_inflight =
                                 retire_head_mem_access_inflight + 1;
                     end
+                end else if ((BANKED_GPR != 0) &&
+                             (dut.backend_retire_count == 0)) begin
+                    if (!dut.u_backend.g_banked_retire.u_retire
+                            .write_active_q) begin
+                        if (|dut.u_backend.g_banked_retire.u_retire
+                                .write_mask_now)
+                            banked_retire_ready_direct_wait =
+                                banked_retire_ready_direct_wait + 1;
+                        else
+                            banked_retire_ready_no_write =
+                                banked_retire_ready_no_write + 1;
+                    end else if (!dut.u_backend.g_banked_retire.u_retire
+                                      .writes_complete)
+                        banked_retire_ready_retry_wait =
+                            banked_retire_ready_retry_wait + 1;
+                    else
+                        banked_retire_ready_write_complete =
+                            banked_retire_ready_write_complete + 1;
                 end
             end
             if (dut.fetch_decode_valid == 0)
@@ -5649,6 +5933,33 @@ module tb_top_3p_soc #(
             banked_write_accept_events,
             banked_write_denied_events);
         $display(
+            "PERF_ICX_L2_BANKED_GPR_WRITER_CONSUMER noissue_alu=%0d noissue_branch=%0d noissue_jump=%0d noissue_load=%0d noissue_store=%0d operand_alu=%0d operand_branch=%0d operand_jump=%0d operand_load=%0d operand_store=%0d",
+            banked_writer_noissue_consumer_alu,
+            banked_writer_noissue_consumer_branch,
+            banked_writer_noissue_consumer_jump,
+            banked_writer_noissue_consumer_load,
+            banked_writer_noissue_consumer_store,
+            banked_writer_operand_consumer_alu,
+            banked_writer_operand_consumer_branch,
+            banked_writer_operand_consumer_jump,
+            banked_writer_operand_consumer_load,
+            banked_writer_operand_consumer_store);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_WRITER_DISTANCE distance1=%0d distance2=%0d distance3_4=%0d distance5_8=%0d distance9_plus=%0d",
+            banked_writer_distance_1, banked_writer_distance_2,
+            banked_writer_distance_3_4, banked_writer_distance_5_8,
+            banked_writer_distance_9_plus);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_LOAD_WAIT stage=%0d xlate=%0d access=%0d inflight=%0d post_lsq=%0d",
+            banked_load_wait_stage, banked_load_wait_xlate,
+            banked_load_wait_access, banked_load_wait_inflight,
+            banked_load_wait_post_lsq);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_LOAD_LAUNCH launch=%0d selected_wait=%0d arbitration=%0d guard=%0d order=%0d other=%0d",
+            banked_load_wait_launch, banked_load_wait_selected,
+            banked_load_wait_arbitration, banked_load_wait_guard,
+            banked_load_wait_order, banked_load_wait_other);
+        $display(
             "PERF_ICX_L2_RAW first_block=%0d pending=%0d bundle=%0d completed=%0d secondary_only=%0d rs1=%0d rs2=%0d both=%0d lane0=%0d lane1=%0d lane2=%0d blocked_alu=%0d blocked_branch=%0d blocked_jump=%0d blocked_load=%0d blocked_store=%0d",
             raw_first_block_cycles, raw_first_pending_cycles,
             raw_first_bundle_cycles, raw_first_completed_cycles,
@@ -5679,6 +5990,12 @@ module tb_top_3p_soc #(
             "PERF_ICX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d",
             retire_nonempty, retire_nonempty_no_retire,
             retire_head_incomplete, retire_completed_behind_head);
+        $display(
+            "PERF_ICX_L2_BANKED_RETIRE_READY direct_wait=%0d retry_wait=%0d write_complete=%0d no_write=%0d",
+            banked_retire_ready_direct_wait,
+            banked_retire_ready_retry_wait,
+            banked_retire_ready_write_complete,
+            banked_retire_ready_no_write);
         $display(
             "PERF_ICX_L2_RETIRE_HEAD alu=%0d branch=%0d jump=%0d load=%0d store=%0d mem_lsq_absent=%0d mem_wait_xlate=%0d mem_wait_access=%0d mem_access_inflight=%0d",
             retire_head_wait_alu, retire_head_wait_branch,

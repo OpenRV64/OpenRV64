@@ -105,6 +105,7 @@
 	sim-lsq-l1d-store-performance \
 	sim-l1d-prefetch \
 	sim-l1d-demand-mshr \
+	sim-l1d-retired-store-mshr \
 	sim-l1d-store-order \
 	sim-l1d-store-buffer sim-l1d-fence-behavior \
 	sim-l1d-invalidate-arbiter \
@@ -159,6 +160,7 @@ sim: sim-l1-tag-mode-performance
 sim: sim-lsq-l1d-store-performance
 sim: sim-l1d-prefetch
 sim: sim-l1d-demand-mshr
+sim: sim-l1d-retired-store-mshr
 sim: sim-l1d-store-order sim-l1d-store-buffer
 sim: sim-l1d-fence-behavior
 sim: sim-l1d-invalidate-arbiter

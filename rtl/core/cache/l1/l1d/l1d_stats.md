@@ -6,6 +6,214 @@ Do not treat structural depth as physical timing.
 
 <!-- module-statistics-entries: newest-first -->
 
+<!-- module-statistics-entry:start id=fpga-xc7k480t-module-stats-20260831T225718Z:openrv64_l1d_icx -->
+## 2026-08-31T22:57:18+00:00 — `fpga-xc7k480t-module-stats-20260831T225718Z`
+
+| Build field | Value |
+|---|---|
+| Status | **mapped** |
+| Module | `openrv64_l1d_icx` |
+| RTL source | `rtl/core/cache/l1/l1d/l1d.v` |
+| Profile | `xc7k480t-3p-linux` — Standalone module-local XC7 mappings for the full single-hart 3P Linux profile. |
+| Synthesis boundary | This module is the standalone top; only logic below this boundary is flattened. |
+| Target | Generic Xilinx 7-series primitives (`xc7`); no part-specific placement or routing |
+| Git commit | `06f58bc8763814008eac2e32306a633e67c24e33` |
+| Worktree | `dirty` |
+| RTL input SHA-256 | `a14569aad3822940e447e58edc323e1393143f2035b7fe83ee355b189bd24980` |
+| Tool | `Yosys 0.66 (git sha1 86f2ddebc-dirty, g++ 16.1.1 -march=x86-64 -mtune=generic -O2 -fno-plt -fexceptions -fstack-clash-protection -fcf-protection -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=/build/yosys/src=/usr/src/debug/yosys -fPIC -O3) [startdir/yosys at makepkg]` |
+| Elapsed | 689.7 s |
+| Build log | `build/fpga/xc7k480t/module-stats-l1d-retired-on/l1d_icx/yosys.log` |
+
+### Effective parameters
+
+| Parameter | Value |
+|---|---:|
+| `ADDR_WIDTH` | 64 |
+| `ATOMIC_HOT_LINES` | 16 |
+| `CACHE_BYTES` | 16384 |
+| `COHERENT_ATOMICS` | 0 |
+| `DEMAND_MSHRS` | 3 |
+| `DIRTY_TIMESTAMP_WIDTH` | 8 |
+| `ENABLE` | 1 |
+| `FILL_BUFFER_LINES` | 8 |
+| `FREELOADER` | 0 |
+| `FREELOADER_LATENCY` | 3 |
+| `HART_ID` | 0 |
+| `LINE_BYTES` | 64 |
+| `PREFETCH_ADAPTIVE_ENABLE` | 1 |
+| `PREFETCH_CACHEABLE_BASE` | `64'h0000000080000000` |
+| `PREFETCH_CACHEABLE_SIZE` | `64'h00ffffff80000000` |
+| `PREFETCH_DEMAND_RESERVE` | 2 |
+| `PREFETCH_DISTANCE` | 1 |
+| `PREFETCH_ENABLE` | 1 |
+| `PREFETCH_MAX_DISTANCE` | 4 |
+| `PREFETCH_MAX_STRIDE_LINES` | 64 |
+| `PREFETCH_OUTSTANDING` | 4 |
+| `PREFETCH_PAGE_GATING` | 1 |
+| `PREFETCH_QUEUE_LINES` | 4 |
+| `PREFETCH_STREAMS` | 2 |
+| `REQ_DEPTH` | 8 |
+| `REQ_TAG_WIDTH` | 3 |
+| `RETIRED_STORE_MSHR_CANONICAL` | 1 |
+| `SPECULATION_EPOCH_WIDTH` | 8 |
+| `STORE_BUFFER_DRAIN_WATERMARK` | 4 |
+| `STORE_BUFFER_LINES` | 8 |
+| `STORE_BUFFER_TIMEOUT_CYCLES` | 1024 |
+| `SYNC_STORE_EXTENSION` | 1 |
+| `SYNC_TAG_LOOKUP` | 1 |
+| `WAYS` | 4 |
+| `WRITEBACK_TIMEOUT_CYCLES` | 128 |
+
+### Resources
+
+| Metric | Count |
+|---|---:|
+| Estimated logic cells | 70,686 |
+| LUT primitives | 95,103 |
+| Flip-flops | 16,638 |
+| Latches | 0 |
+| CARRY4 | 548 |
+| MUXF7/8/9 | 10,394 |
+| DSP48E1 | 8 |
+| RAMB36E1 | 44 |
+| RAMB18E1 | 0 |
+| Distributed-RAM primitives | 1 |
+| SRL primitives | 0 |
+| Total mapped cells | 137,701 |
+
+Raw nonzero primitive counts:
+
+| Primitive | Count |
+|---|---:|
+| `CARRY4` | 548 |
+| `DSP48E1` | 8 |
+| `FDCE` | 14,512 |
+| `FDPE` | 6 |
+| `FDRE` | 2,120 |
+| `INV` | 14,965 |
+| `LUT1` | 2,476 |
+| `LUT2` | 23,437 |
+| `LUT3` | 13,570 |
+| `LUT4` | 6,875 |
+| `LUT5` | 10,162 |
+| `LUT6` | 38,583 |
+| `MUXF7` | 8,200 |
+| `MUXF8` | 2,194 |
+| `RAM32M` | 1 |
+| `RAMB36E1` | 44 |
+
+### Timing and diagnostics
+
+- Longest mapped topological path: **1450 netlist cells** (`ltp -noff`).
+- Physical delay, WNS, and Fmax: **not measured**. These require part-specific implementation and are not inferable from topological depth.
+- Logic-loop warnings: **0**; ABC loop cuts: **0**.
+- Total Yosys warnings: **1643399**.
+
+<!-- module-statistics-entry:end id=fpga-xc7k480t-module-stats-20260831T225718Z:openrv64_l1d_icx -->
+<!-- module-statistics-entry:start id=fpga-xc7k480t-module-stats-20260831T224455Z:openrv64_l1d_icx -->
+## 2026-08-31T22:44:56+00:00 — `fpga-xc7k480t-module-stats-20260831T224455Z`
+
+| Build field | Value |
+|---|---|
+| Status | **mapped** |
+| Module | `openrv64_l1d_icx` |
+| RTL source | `rtl/core/cache/l1/l1d/l1d.v` |
+| Profile | `xc7k480t-3p-linux` — Standalone module-local XC7 mappings for the full single-hart 3P Linux profile. |
+| Synthesis boundary | This module is the standalone top; only logic below this boundary is flattened. |
+| Target | Generic Xilinx 7-series primitives (`xc7`); no part-specific placement or routing |
+| Git commit | `06f58bc8763814008eac2e32306a633e67c24e33` |
+| Worktree | `dirty` |
+| RTL input SHA-256 | `5efb3fa312f65dccefa72ae08f4e98254f037834446641c67b66594f9c1a1db3` |
+| Tool | `Yosys 0.66 (git sha1 86f2ddebc-dirty, g++ 16.1.1 -march=x86-64 -mtune=generic -O2 -fno-plt -fexceptions -fstack-clash-protection -fcf-protection -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=/build/yosys/src=/usr/src/debug/yosys -fPIC -O3) [startdir/yosys at makepkg]` |
+| Elapsed | 719.5 s |
+| Build log | `build/fpga/xc7k480t/module-stats-l1d-retired-off/l1d_icx/yosys.log` |
+
+### Effective parameters
+
+| Parameter | Value |
+|---|---:|
+| `ADDR_WIDTH` | 64 |
+| `ATOMIC_HOT_LINES` | 16 |
+| `CACHE_BYTES` | 16384 |
+| `COHERENT_ATOMICS` | 0 |
+| `DEMAND_MSHRS` | 3 |
+| `DIRTY_TIMESTAMP_WIDTH` | 8 |
+| `ENABLE` | 1 |
+| `FILL_BUFFER_LINES` | 8 |
+| `FREELOADER` | 0 |
+| `FREELOADER_LATENCY` | 3 |
+| `HART_ID` | 0 |
+| `LINE_BYTES` | 64 |
+| `PREFETCH_ADAPTIVE_ENABLE` | 1 |
+| `PREFETCH_CACHEABLE_BASE` | `64'h0000000080000000` |
+| `PREFETCH_CACHEABLE_SIZE` | `64'h00ffffff80000000` |
+| `PREFETCH_DEMAND_RESERVE` | 2 |
+| `PREFETCH_DISTANCE` | 1 |
+| `PREFETCH_ENABLE` | 1 |
+| `PREFETCH_MAX_DISTANCE` | 4 |
+| `PREFETCH_MAX_STRIDE_LINES` | 64 |
+| `PREFETCH_OUTSTANDING` | 4 |
+| `PREFETCH_PAGE_GATING` | 1 |
+| `PREFETCH_QUEUE_LINES` | 4 |
+| `PREFETCH_STREAMS` | 2 |
+| `REQ_DEPTH` | 8 |
+| `REQ_TAG_WIDTH` | 3 |
+| `RETIRED_STORE_MSHR_CANONICAL` | 0 |
+| `SPECULATION_EPOCH_WIDTH` | 8 |
+| `STORE_BUFFER_DRAIN_WATERMARK` | 4 |
+| `STORE_BUFFER_LINES` | 8 |
+| `STORE_BUFFER_TIMEOUT_CYCLES` | 1024 |
+| `SYNC_STORE_EXTENSION` | 1 |
+| `SYNC_TAG_LOOKUP` | 1 |
+| `WAYS` | 4 |
+| `WRITEBACK_TIMEOUT_CYCLES` | 128 |
+
+### Resources
+
+| Metric | Count |
+|---|---:|
+| Estimated logic cells | 72,468 |
+| LUT primitives | 96,210 |
+| Flip-flops | 18,174 |
+| Latches | 0 |
+| CARRY4 | 548 |
+| MUXF7/8/9 | 11,320 |
+| DSP48E1 | 8 |
+| RAMB36E1 | 44 |
+| RAMB18E1 | 0 |
+| Distributed-RAM primitives | 1 |
+| SRL primitives | 0 |
+| Total mapped cells | 144,342 |
+
+Raw nonzero primitive counts:
+
+| Primitive | Count |
+|---|---:|
+| `CARRY4` | 548 |
+| `DSP48E1` | 8 |
+| `FDCE` | 17,584 |
+| `FDPE` | 6 |
+| `FDRE` | 584 |
+| `INV` | 18,037 |
+| `LUT1` | 2,373 |
+| `LUT2` | 21,369 |
+| `LUT3` | 15,368 |
+| `LUT4` | 7,426 |
+| `LUT5` | 9,467 |
+| `LUT6` | 40,207 |
+| `MUXF7` | 8,154 |
+| `MUXF8` | 3,166 |
+| `RAM32M` | 1 |
+| `RAMB36E1` | 44 |
+
+### Timing and diagnostics
+
+- Longest mapped topological path: **1409 netlist cells** (`ltp -noff`).
+- Physical delay, WNS, and Fmax: **not measured**. These require part-specific implementation and are not inferable from topological depth.
+- Logic-loop warnings: **0**; ABC loop cuts: **0**.
+- Total Yosys warnings: **1610543**.
+
+<!-- module-statistics-entry:end id=fpga-xc7k480t-module-stats-20260831T224455Z:openrv64_l1d_icx -->
 <!-- module-statistics-entry:start id=fpga-xc7k480t-module-stats-20260827T032508Z:openrv64_l1d_icx -->
 ## 2026-08-27T03:25:09+00:00 — `fpga-xc7k480t-module-stats-20260827T032508Z`
 

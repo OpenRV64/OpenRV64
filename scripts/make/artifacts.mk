@@ -40,6 +40,8 @@ LSQ_L1D_STORE_PERFORMANCE_SIM_BUILD := \
 	sim/lsq_l1d_store_performance_tb.vvp
 L1D_PREFETCH_SIM_BUILD := sim/l1d_prefetch_tb.vvp
 L1D_DEMAND_MSHR_SIM_BUILD := sim/l1d_demand_mshr_tb.vvp
+L1D_RETIRED_STORE_MSHR_SIM_BUILD := \
+	sim/l1d_retired_store_mshr_tb.vvp
 L1D_STORE_ORDER_SIM_BUILD := sim/l1d_store_order_tb.vvp
 L1D_STORE_BUFFER_SIM_BUILD := sim/l1d_store_buffer_tb.vvp
 L1D_FENCE_BEHAVIOR_SIM_BUILD := sim/l1d_fence_behavior_tb.vvp

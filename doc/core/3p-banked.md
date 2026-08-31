@@ -5,13 +5,14 @@ uses the shared decode, execution, memory, exception, and retirement-record
 paths, but replaces the combinational multiported integer GPR storage with a
 request/response banked file.  The current profile deliberately limits issue
 and retirement to two instructions.  It optionally captures producer-qualified
-live results from EX0 and EX1; it still disables policies requiring retained
-completion history or speculative operand state.
+live results from EX0 and EX1 and registered load-only results from MEM0; it
+still disables policies requiring broader retained completion history or
+speculative operand state.
 
-This is functional parity work, not performance parity.  In particular, a
-dependent load waits for its producer to write the GPR file and for a
-subsequent registered read response.  An ALU dependency can now be satisfied
-by a selected live EXU completion before architectural retirement.
+This is functional parity work, not performance parity.  An ALU dependency can
+be satisfied by a selected live EXU completion before architectural retirement.
+A load dependency can use the registered MEM0 forwarding latch after the load
+completes, without waiting for the architectural GPR write.
 
 ## Profile
 
@@ -23,8 +24,10 @@ The conservative configuration uses:
 - at most two issue lanes and two retirement lanes;
 - optional EX0/EX1 live completion forwarding, qualified by the current
   producer instruction ID and latched independently for each operand;
-- no MEM or branch-completion forwarding, full forwarding, relaxed WAW
-  handling, issue window, or speculation window;
+- optional registered load-only MEM0 forwarding, qualified by the exact
+  youngest producer instruction ID and retained independently per operand;
+- no branch-completion forwarding, full retained-result forwarding, relaxed
+  WAW handling, issue window, or speculation window;
 - the existing 32-entry retirement queue and p1-p31 architectural storage.
 
 Physical p0 is structural: reads return zero without issuing a bank request,
@@ -55,19 +58,23 @@ An independently granted read and write to the same physical word returns the
 new write data through the read-response latch.  This defines the storage
 collision rather than depending on inferred RAM read-during-write behavior.
 
-The backend blocks a normal operand read while the architectural destination
-is busy.  Consequently, a dependent load consumer follows this sequence:
+The backend normally blocks an operand read while the architectural destination
+is busy.  Without a matching EXU or MEM0 forwarding result, a dependent
+consumer follows this sequence:
 
 1. the load completes into its retirement record;
 2. retirement holds the GPR write until the file accepts it;
 3. the storage update and write ack occur at the write-grant edge;
-4. the ack permits architectural retirement and the scoreboard clears; and
-5. the consumer obtains an acknowledged address phase followed by a registered
-   GPR read data phase and may issue.
+4. on the ack cycle, the destination is removed combinationally from the
+   externally visible `write_busy_o` mask;
+5. a matching consumer read may therefore be accepted on that same cycle; and
+6. its registered response receives the acknowledged write data through the
+   same-word bypass and may then issue.
 
-The same-address register-file bypass is therefore a correctness definition
-for an independently granted collision, not a load-completion forwarding
-path.
+The physical write request remains asserted until ack.  Internal dispatch WAW
+allocation remains conservative and observes registered retirement feedback;
+the shortened public busy window does not allow a younger writer to allocate
+early.
 
 For an enabled EX0/EX1 completion, the backend checks both architectural `rd`
 and the current youngest-owner instruction ID.  A matching operand either
@@ -77,6 +84,15 @@ squash prevent new captures; the ordinary drain rule still disposes of any
 already accepted storage response.  Architectural ownership remains busy
 until retirement, so this changes operand availability without weakening WAW
 or precise-state rules.
+
+MEM0 forwarding uses the same ownership rule but only accepts a completed load
+whose instruction ID is the exact youngest owner of the source register.  The
+result enters a one-entry registered latch.  A matching operand can issue from
+that latch or retain the value in its per-operand output latch while its other
+sources finish.  Ordinary memory-stage responses are not treated as producer
+results.  When an issue group consumes a direct or retained MEM0 operand, live
+EX0/EX1 forwarding is suppressed for that issue phase to avoid an LSU
+issue/response combinational loop.
 
 ## Redirect handling
 
@@ -127,6 +143,17 @@ include the storage acknowledgement cycle.
 
 The following managed runs passed on 2026-08-31:
 
+- `3p-banked-directed-20260831T221616Z`: the final 2R1W directed suite with
+  EX0/EX1 and registered load-only MEM0 forwarding.  It additionally requires
+  a dependent read address to be accepted on its producer's write-ack cycle
+  and verifies the following registered bypass response.
+- `compliance-act4-platform-3p-banked-ddr3-20260831T221753Z`: all 93 preserved
+  RV64IMA ACT4 ELFs passed with the final forwarding and write-busy behavior on
+  the integrated L2/timed-DDR3 platform.
+- `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260831T221634Z`: the
+  compact supervisor Sv39 CoreMark extract passed its checksum, translation,
+  alias, PTW, and timed-memory checks in 116,383 cycles for 52,589 retired
+  instructions (0.4519 IPC).
 - `3p-banked-directed-20260831T202004Z`: the 2R1W directed suite after
   enabling producer-qualified EX0/EX1 completion forwarding.  A dependent
   operand was observed consuming a live completion while its architectural

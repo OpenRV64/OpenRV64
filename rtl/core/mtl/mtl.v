@@ -39,6 +39,7 @@ module openrv64_core_mtl #(
         {`RV64_XLEN{1'b1}},
     parameter integer L1D_FILL_BUFFER_LINES = 8,
     parameter integer L1D_DEMAND_MSHRS = 3,
+    parameter integer L1D_RETIRED_STORE_MSHR_CANONICAL = 0,
     parameter integer L1D_STORE_BUFFER_LINES = 8,
     parameter integer L1D_PREFETCH_ENABLE = 1,
     parameter integer L1D_PREFETCH_MAX_STRIDE_LINES = 64,
@@ -1966,6 +1967,8 @@ module openrv64_core_mtl #(
         .SYNC_STORE_EXTENSION(L1D_SYNC_STORE_EXTENSION),
         .FILL_BUFFER_LINES(L1D_FILL_BUFFER_LINES),
         .DEMAND_MSHRS(L1D_DEMAND_MSHRS),
+        .RETIRED_STORE_MSHR_CANONICAL(
+            L1D_RETIRED_STORE_MSHR_CANONICAL),
         .STORE_BUFFER_LINES(L1D_STORE_BUFFER_LINES),
         .PREFETCH_ENABLE(L1D_PREFETCH_ENABLE),
         .PREFETCH_CACHEABLE_BASE(L1D_CACHEABLE_BASE),

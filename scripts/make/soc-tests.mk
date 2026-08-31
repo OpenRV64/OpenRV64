@@ -151,6 +151,9 @@ sim-l1d-prefetch: $(L1D_PREFETCH_SIM_BUILD)
 sim-l1d-demand-mshr: $(L1D_DEMAND_MSHR_SIM_BUILD)
 	vvp $(L1D_DEMAND_MSHR_SIM_BUILD)
 
+sim-l1d-retired-store-mshr: $(L1D_RETIRED_STORE_MSHR_SIM_BUILD)
+	vvp $(L1D_RETIRED_STORE_MSHR_SIM_BUILD)
+
 sim-l1d-store-order: $(L1D_STORE_ORDER_SIM_BUILD)
 	vvp $(L1D_STORE_ORDER_SIM_BUILD)
 

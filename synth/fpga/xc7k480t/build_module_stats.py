@@ -140,7 +140,9 @@ def load_manifest(path: Path) -> tuple[str, str, list[Unit]]:
     return profile, description, units
 
 
-def source_digest(sources: list[Path], manifest: Path) -> str:
+def source_digest(
+    sources: list[Path], manifest: Path, units: list[Unit]
+) -> str:
     digest = hashlib.sha256()
     for path in [manifest, *sources]:
         relative = path.relative_to(ROOT)
@@ -148,6 +150,14 @@ def source_digest(sources: list[Path], manifest: Path) -> str:
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
+    for unit in sorted(units, key=lambda item: item.module):
+        digest.update(unit.module.encode())
+        digest.update(b"\0")
+        for key, value in sorted(unit.parameters.items()):
+            digest.update(key.encode())
+            digest.update(b"=")
+            digest.update(value.encode())
+            digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -520,6 +530,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--module", action="append", default=[])
+    parser.add_argument("--parameter", action="append", default=[])
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--yosys", default=os.environ.get("YOSYS", "yosys"))
     args = parser.parse_args()
@@ -533,6 +544,35 @@ def main() -> int:
         missing = selected - {unit.module for unit in units}
         if missing:
             parser.error("unknown modules: " + ", ".join(sorted(missing)))
+    if args.parameter:
+        if len(units) != 1:
+            parser.error("--parameter requires exactly one selected module")
+        overrides: dict[str, str] = {}
+        for assignment in args.parameter:
+            if "=" not in assignment:
+                parser.error(
+                    f"parameter override must be NAME=VALUE: {assignment}"
+                )
+            name, value = assignment.split("=", 1)
+            if not name or not value:
+                parser.error(
+                    f"parameter override must be NAME=VALUE: {assignment}"
+                )
+            if name not in units[0].parameters:
+                parser.error(
+                    f"parameter {name} is absent from the manifest entry for "
+                    f"{units[0].module}"
+                )
+            overrides[name] = value
+        unit = units[0]
+        units = [
+            Unit(
+                unit.module,
+                unit.source,
+                unit.report,
+                {**unit.parameters, **overrides},
+            )
+        ]
     if args.list:
         for unit in units:
             print(f"{unit.module}\t{unit.source.relative_to(ROOT)}\t{unit.report.relative_to(ROOT)}")
@@ -542,7 +582,7 @@ def main() -> int:
 
     output.mkdir(parents=True, exist_ok=True)
     sources = core_sources()
-    digest = source_digest(sources, manifest)
+    digest = source_digest(sources, manifest, units)
     commit = run_text(["git", "rev-parse", "HEAD"])
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=no"],

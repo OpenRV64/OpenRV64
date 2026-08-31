@@ -20,6 +20,12 @@ module openrv64_l1d_icx #(
     parameter integer SYNC_STORE_EXTENSION = 1,
     parameter integer FILL_BUFFER_LINES = 8,
     parameter integer DEMAND_MSHRS = 3,
+    // The caller guarantees that every accepted store is authorized by the
+    // retirement head.  Once such a store reaches an extant demand MSHR, all
+    // remaining/future waiters are younger and may observe it.  This permits
+    // the MSHR data line itself to absorb dirty bytes instead of retaining a
+    // second line-sized store payload.  Keep disabled for generic clients.
+    parameter integer RETIRED_STORE_MSHR_CANONICAL = 0,
     parameter integer STORE_BUFFER_LINES = 8,
     parameter integer STORE_BUFFER_DRAIN_WATERMARK =
         (STORE_BUFFER_LINES < 4) ? STORE_BUFFER_LINES : 4,
@@ -167,6 +173,23 @@ module openrv64_l1d_icx #(
     input  wire                      icx_resp_sc_success_i
 );
 
+    function automatic [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
+        merge_line_bytes;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] base_line;
+        input [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0] overlay_line;
+        input [`OPENRV64_ICX_LINE_STRB_WIDTH-1:0] overlay_strb;
+        integer merge_byte;
+        begin
+            merge_line_bytes = base_line;
+            for (merge_byte = 0;
+                 merge_byte < `OPENRV64_ICX_LINE_STRB_WIDTH;
+                 merge_byte = merge_byte + 1)
+                if (overlay_strb[merge_byte])
+                    merge_line_bytes[merge_byte*8 +: 8] =
+                        overlay_line[merge_byte*8 +: 8];
+        end
+    endfunction
+
     localparam [1:0] BACKEND_IDLE = 2'd0;
     localparam [1:0] BACKEND_SEND = 2'd1;
     localparam [1:0] BACKEND_WAIT = 2'd2;
@@ -280,8 +303,11 @@ module openrv64_l1d_icx #(
 
     // Demand MSHRs own detached cacheable read misses.  Each unique line gets
     // one ICX transaction and any same-line loads become tagged waiters.  The
-    // aggregate overlay is used only for line installation; every waiter also
-    // retains its own older-store snapshot for architecturally correct data.
+    // aggregate overlay is used only for line installation in generic mode;
+    // every waiter also retains its own older-store snapshot for
+    // architecturally correct data.  With RETIRED_STORE_MSHR_CANONICAL, the
+    // data line absorbs store bytes and the strobe only protects those bytes
+    // while the lower response is pending.
     reg demand_mshr_valid_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_issued_q [0:DEMAND_MSHRS-1];
     reg demand_mshr_complete_q [0:DEMAND_MSHRS-1];
@@ -792,6 +818,7 @@ module openrv64_l1d_icx #(
         tag_overlay_owner_epoch_q[normal_response_tag] ==
         normal_response_epoch;
     wire demand_overlay_needed =
+        (RETIRED_STORE_MSHR_CANONICAL == 0) &&
         demand_waiter_response_found_r &&
         demand_overlay_owner_match &&
         tag_overlay_needed_q[demand_waiter_response_tag_r];
@@ -1708,10 +1735,12 @@ module openrv64_l1d_icx #(
         for (demand_merge_byte = 0;
              demand_merge_byte < `OPENRV64_ICX_LINE_STRB_WIDTH;
              demand_merge_byte = demand_merge_byte + 1) begin
-            if (demand_overlay_needed &&
-                demand_overlay_strb[demand_merge_byte])
-                demand_response_data_r[demand_merge_byte*8 +: 8] =
-                    demand_overlay_line[demand_merge_byte*8 +: 8];
+            if (RETIRED_STORE_MSHR_CANONICAL == 0) begin
+                if (demand_overlay_needed &&
+                    demand_overlay_strb[demand_merge_byte])
+                    demand_response_data_r[demand_merge_byte*8 +: 8] =
+                        demand_overlay_line[demand_merge_byte*8 +: 8];
+            end
         end
     end
 
@@ -1721,13 +1750,15 @@ module openrv64_l1d_icx #(
         for (demand_fill_merge_byte = 0;
              demand_fill_merge_byte < `OPENRV64_ICX_LINE_STRB_WIDTH;
              demand_fill_merge_byte = demand_fill_merge_byte + 1) begin
-            if (demand_mshr_store_strb_q[
-                    demand_mshr_fill_selected_index][
-                        demand_fill_merge_byte])
-                demand_fill_data_r[demand_fill_merge_byte*8 +: 8] =
-                    demand_mshr_store_data_q[
+            if (RETIRED_STORE_MSHR_CANONICAL == 0) begin
+                if (demand_mshr_store_strb_q[
                         demand_mshr_fill_selected_index][
-                        demand_fill_merge_byte*8 +: 8];
+                            demand_fill_merge_byte])
+                    demand_fill_data_r[demand_fill_merge_byte*8 +: 8] =
+                        demand_mshr_store_data_q[
+                            demand_mshr_fill_selected_index][
+                            demand_fill_merge_byte*8 +: 8];
+            end
         end
     end
 
@@ -2730,13 +2761,15 @@ module openrv64_l1d_icx #(
                 demand_mshr_addr_q[demand_reset_index] <= 64'd0;
                 demand_mshr_txn_id_q[demand_reset_index] <=
                     {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
-                demand_mshr_data_q[demand_reset_index] <=
-                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+                if (RETIRED_STORE_MSHR_CANONICAL == 0)
+                    demand_mshr_data_q[demand_reset_index] <=
+                        {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 demand_mshr_error_q[demand_reset_index] <= 1'b0;
                 demand_mshr_epoch_q[demand_reset_index] <=
                     {SPECULATION_EPOCH_WIDTH{1'b0}};
-                demand_mshr_store_data_q[demand_reset_index] <=
-                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+                if (RETIRED_STORE_MSHR_CANONICAL == 0)
+                    demand_mshr_store_data_q[demand_reset_index] <=
+                        {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                 demand_mshr_store_strb_q[demand_reset_index] <=
                     {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
             end
@@ -3275,21 +3308,23 @@ module openrv64_l1d_icx #(
                     demand_mshr_free_index_r;
                 demand_waiter_epoch_q[l1_miss_tag] <= l1_miss_epoch;
                 if (demand_mshr_match_found_r) begin
-                    for (demand_alloc_merge_byte = 0;
-                         demand_alloc_merge_byte <
-                             `OPENRV64_ICX_LINE_STRB_WIDTH;
-                         demand_alloc_merge_byte =
-                             demand_alloc_merge_byte + 1) begin
-                        if (l1_miss_store_strb[
-                                demand_alloc_merge_byte]) begin
-                            demand_mshr_store_data_q[
-                                demand_mshr_match_index_r][
-                                demand_alloc_merge_byte*8 +: 8] <=
-                                l1_miss_store_data[
-                                    demand_alloc_merge_byte*8 +: 8];
-                            demand_mshr_store_strb_q[
-                                demand_mshr_match_index_r][
-                                demand_alloc_merge_byte] <= 1'b1;
+                    if (RETIRED_STORE_MSHR_CANONICAL == 0) begin
+                        for (demand_alloc_merge_byte = 0;
+                             demand_alloc_merge_byte <
+                                 `OPENRV64_ICX_LINE_STRB_WIDTH;
+                             demand_alloc_merge_byte =
+                                 demand_alloc_merge_byte + 1) begin
+                            if (l1_miss_store_strb[
+                                    demand_alloc_merge_byte]) begin
+                                demand_mshr_store_data_q[
+                                    demand_mshr_match_index_r][
+                                    demand_alloc_merge_byte*8 +: 8] <=
+                                    l1_miss_store_data[
+                                        demand_alloc_merge_byte*8 +: 8];
+                                demand_mshr_store_strb_q[
+                                    demand_mshr_match_index_r][
+                                    demand_alloc_merge_byte] <= 1'b1;
+                            end
                         end
                     end
                 end else begin
@@ -3319,12 +3354,22 @@ module openrv64_l1d_icx #(
                         {`OPENRV64_ICX_TXN_ID_WIDTH{1'b0}};
                     demand_mshr_data_q[
                         demand_mshr_free_index_r] <=
-                        demand_prefetch_fill_hit_r ?
-                        fill_buffer_data_q[
-                            demand_prefetch_fill_index_r] :
-                        prefetch_response_claim_new ?
-                        icx_resp_rdata_i :
-                        {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+                        (RETIRED_STORE_MSHR_CANONICAL != 0) ?
+                            merge_line_bytes(
+                                demand_prefetch_fill_hit_r ?
+                                    fill_buffer_data_q[
+                                        demand_prefetch_fill_index_r] :
+                                prefetch_response_claim_new ?
+                                    icx_resp_rdata_i :
+                                    {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}},
+                                l1_miss_store_data,
+                                l1_miss_store_strb) :
+                            demand_prefetch_fill_hit_r ?
+                            fill_buffer_data_q[
+                                demand_prefetch_fill_index_r] :
+                            prefetch_response_claim_new ?
+                            icx_resp_rdata_i :
+                            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
                     demand_mshr_error_q[
                         demand_mshr_free_index_r] <= 1'b0;
                     demand_mshr_epoch_q[
@@ -3332,6 +3377,8 @@ module openrv64_l1d_icx #(
                         speculation_epoch_q;
                     demand_mshr_store_data_q[
                         demand_mshr_free_index_r] <=
+                        (RETIRED_STORE_MSHR_CANONICAL != 0) ?
+                        {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}} :
                         l1_miss_store_data;
                     demand_mshr_store_strb_q[
                         demand_mshr_free_index_r] <=
@@ -3341,48 +3388,6 @@ module openrv64_l1d_icx #(
                             demand_prefetch_fill_index_r] <= 1'b0;
                         fill_buffer_prefetch_q[
                             demand_prefetch_fill_index_r] <= 1'b0;
-                    end
-                end
-            end
-
-            // A store admitted after an older same-line miss must not alter
-            // that older waiter's captured response, but it must be present
-            // in the line eventually installed by the MSHR. Merge only when
-            // the shared L1 completes the cacheable store against its lower
-            // memory path; before that point the store is not yet committed
-            // to this cache endpoint. Posted stores reach this point at FIFO
-            // admission, while non-posted stores reach it on their ICX reply.
-            if (l1_mem_valid && l1_mem_write && l1_mem_ready &&
-                !l1_mem_error && active_req_cacheable_q &&
-                !active_req_lock_q && !l1_mem_invariant) begin
-                for (demand_store_merge_mshr = 0;
-                     demand_store_merge_mshr < DEMAND_MSHRS;
-                     demand_store_merge_mshr =
-                         demand_store_merge_mshr + 1) begin
-                    if (demand_mshr_valid_q[
-                            demand_store_merge_mshr] &&
-                        (demand_mshr_addr_q[
-                             demand_store_merge_mshr] ==
-                         {l1_mem_addr[63:6], 6'b0})) begin
-                        for (demand_store_merge_byte = 0;
-                             demand_store_merge_byte < 8;
-                             demand_store_merge_byte =
-                                 demand_store_merge_byte + 1) begin
-                            if (l1_mem_wstrb[
-                                    demand_store_merge_byte]) begin
-                                demand_mshr_store_data_q[
-                                    demand_store_merge_mshr][
-                                    (l1_mem_addr[5:3] * 64) +
-                                    (demand_store_merge_byte * 8) +:
-                                    8] <= l1_mem_wdata[
-                                        demand_store_merge_byte*8 +:
-                                        8];
-                                demand_mshr_store_strb_q[
-                                    demand_store_merge_mshr][
-                                    (l1_mem_addr[5:3] * 8) +
-                                    demand_store_merge_byte] <= 1'b1;
-                            end
-                        end
                     end
                 end
             end
@@ -3490,7 +3495,18 @@ module openrv64_l1d_icx #(
                         demand_mshr_response_index_r] <= 1'b1;
                     demand_mshr_data_q[
                         demand_mshr_response_index_r] <=
-                        icx_resp_rdata_i;
+                        (RETIRED_STORE_MSHR_CANONICAL != 0) ?
+                            merge_line_bytes(
+                                icx_resp_rdata_i,
+                                demand_mshr_data_q[
+                                    demand_mshr_response_index_r],
+                                demand_mshr_store_strb_q[
+                                    demand_mshr_response_index_r]) :
+                            icx_resp_rdata_i;
+                    if (RETIRED_STORE_MSHR_CANONICAL != 0)
+                        demand_mshr_store_strb_q[
+                            demand_mshr_response_index_r] <=
+                            {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
                     demand_mshr_error_q[
                         demand_mshr_response_index_r] <=
                         icx_resp_error_i || response_protocol_error;
@@ -4013,7 +4029,18 @@ module openrv64_l1d_icx #(
                             1'b1;
                         demand_mshr_data_q[
                             demand_mshr_prefetch_response_index_r] <=
-                            icx_resp_rdata_i;
+                            (RETIRED_STORE_MSHR_CANONICAL != 0) ?
+                                merge_line_bytes(
+                                    icx_resp_rdata_i,
+                                    demand_mshr_data_q[
+                                        demand_mshr_prefetch_response_index_r],
+                                    demand_mshr_store_strb_q[
+                                        demand_mshr_prefetch_response_index_r]) :
+                                icx_resp_rdata_i;
+                        if (RETIRED_STORE_MSHR_CANONICAL != 0)
+                            demand_mshr_store_strb_q[
+                                demand_mshr_prefetch_response_index_r] <=
+                                {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
                         demand_mshr_error_q[
                             demand_mshr_prefetch_response_index_r] <=
                             1'b0;
@@ -4051,6 +4078,57 @@ module openrv64_l1d_icx #(
                     if (!prefetch_response_uses_free)
                         fill_buffer_prefetch_replace_q <=
                             next_fill_buffer_prefetch_replace;
+                end
+            end
+
+            // Generic clients retain a separate aggregate fill overlay because
+            // a store may be younger than a live waiter. Retirement-authorized
+            // clients cannot have such a waiter, so store bytes become part of
+            // the canonical MSHR line and the line-sized overlay is eliminated.
+            // This update is deliberately ordered after lower-response capture:
+            // an older store and the adopted/read response may complete on the
+            // same edge, and the store bytes must win that overlap.
+            if (l1_mem_valid && l1_mem_write && l1_mem_ready &&
+                !l1_mem_error && active_req_cacheable_q &&
+                !active_req_lock_q && !l1_mem_invariant) begin
+                for (demand_store_merge_mshr = 0;
+                     demand_store_merge_mshr < DEMAND_MSHRS;
+                     demand_store_merge_mshr =
+                         demand_store_merge_mshr + 1) begin
+                    if (demand_mshr_valid_q[
+                            demand_store_merge_mshr] &&
+                        (demand_mshr_addr_q[
+                             demand_store_merge_mshr] ==
+                         {l1_mem_addr[63:6], 6'b0})) begin
+                        for (demand_store_merge_byte = 0;
+                             demand_store_merge_byte < 8;
+                             demand_store_merge_byte =
+                                 demand_store_merge_byte + 1) begin
+                            if (l1_mem_wstrb[
+                                    demand_store_merge_byte]) begin
+                                if (RETIRED_STORE_MSHR_CANONICAL != 0)
+                                    demand_mshr_data_q[
+                                        demand_store_merge_mshr][
+                                        (l1_mem_addr[5:3] * 64) +
+                                        (demand_store_merge_byte * 8) +:
+                                        8] <= l1_mem_wdata[
+                                            demand_store_merge_byte*8 +:
+                                            8];
+                                else
+                                    demand_mshr_store_data_q[
+                                        demand_store_merge_mshr][
+                                        (l1_mem_addr[5:3] * 64) +
+                                        (demand_store_merge_byte * 8) +:
+                                        8] <= l1_mem_wdata[
+                                            demand_store_merge_byte*8 +:
+                                            8];
+                                demand_mshr_store_strb_q[
+                                    demand_store_merge_mshr][
+                                    (l1_mem_addr[5:3] * 8) +
+                                    demand_store_merge_byte] <= 1'b1;
+                            end
+                        end
+                    end
                 end
             end
 

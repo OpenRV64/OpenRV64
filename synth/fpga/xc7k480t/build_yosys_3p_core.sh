@@ -25,6 +25,7 @@ relax_waw=${RELAX_WAW:-1}
 store_queue_depth=${STORE_QUEUE_DEPTH:-4}
 l1i_cache_bytes=${L1I_CACHE_BYTES:-16384}
 l1d_cache_bytes=${L1D_CACHE_BYTES:-16384}
+l1d_retired_store_mshr_canonical=${L1D_RETIRED_STORE_MSHR_CANONICAL:-0}
 l2_tlb_entries=${L2_TLB_ENTRIES:-256}
 l2_tlb_ways=${L2_TLB_WAYS:-4}
 ptw_pte_cache_entries=${PTW_PTE_CACHE_ENTRIES:-64}
@@ -91,6 +92,7 @@ chparam -set RESET_VECTOR 2147483648 \
         -set ENABLE_L1D 1 \
         -set L1I_CACHE_BYTES $l1i_cache_bytes \
         -set L1D_CACHE_BYTES $l1d_cache_bytes \
+        -set L1D_RETIRED_STORE_MSHR_CANONICAL $l1d_retired_store_mshr_canonical \
         -set L2_TLB_ENTRIES $l2_tlb_entries \
         -set L2_TLB_WAYS $l2_tlb_ways \
         -set PTW_PTE_CACHE_ENTRIES $ptw_pte_cache_entries \

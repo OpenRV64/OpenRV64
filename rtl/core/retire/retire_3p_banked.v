@@ -160,16 +160,24 @@ module openrv64_retire_3p_banked #(
     reg [2*PHYS_REG_ADDR_WIDTH-1:0] write_addr_q;
     reg [2*`RV64_XLEN-1:0] write_data_q;
 
-    assign gpr_write_o = write_mask_q &
-                         ~write_done_q &
-                         {2{write_active_q}};
-    assign gpr_rd_addr_o = write_addr_q;
-    assign gpr_rd_data_o = write_data_q;
+    // Keep the write boundary work-conserving.  A new ready retirement group
+    // drives the address phase directly; the registers below are a retry skid
+    // used only when a lane was not acknowledged or when a completed write
+    // group must remain associated with a pending CSR side effect.
+    wire direct_write_offer = !write_active_q && !flush_i;
+    assign gpr_write_o = write_active_q ?
+        (write_mask_q & ~write_done_q) :
+        (write_mask_now & {2{direct_write_offer}});
+    assign gpr_rd_addr_o = write_active_q ? write_addr_q : write_addr_now;
+    assign gpr_rd_data_o = write_active_q ? write_data_q : write_data_now;
 
     wire writes_complete = write_active_q &&
         &((~write_mask_q) | write_done_q | gpr_write_ack_i);
+    wire direct_writes_complete = !(|write_mask_now) ||
+        (direct_write_offer &&
+         &((~write_mask_now) | gpr_write_ack_i));
     wire commit_ready = write_active_q ? writes_complete :
-                        !(|write_mask_now);
+                        direct_writes_complete;
 
     // Freeze the retirement group when its banked writes are captured.  A
     // younger result may become ready while those writes drain; it was not
@@ -287,7 +295,10 @@ module openrv64_retire_3p_banked #(
             write_discard_q <= 1'b0;
             retire_mask_q <= {candidate1, candidate0};
             write_mask_q <= write_mask_now;
-            write_done_q <= 2'b00;
+            // Acked direct lanes committed at this edge.  Retain only their
+            // completion bits so they are never replayed while a denied lane
+            // or ordered CSR side effect keeps the group active.
+            write_done_q <= write_mask_now & gpr_write_ack_i;
             write_addr_q <= write_addr_now;
             write_data_q <= write_data_now;
         end
