@@ -5,11 +5,15 @@
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 
-module tb_backend_3p_banked;
+module tb_backend_3p_banked #(
+    parameter integer ISSUE_WINDOW = 0,
+    parameter integer SPECULATION_WINDOW = ISSUE_WINDOW
+);
     localparam integer RETIRE_DEPTH = 16;
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer RCW = $clog2(RETIRE_DEPTH + 1);
-    localparam integer DCW = $clog2(6 + 1);
+    localparam integer DCW = $clog2(
+        ((ISSUE_WINDOW != 0) ? RETIRE_DEPTH : 6) + 1);
     localparam integer INSTRUCTION_COUNT = 27;
 
     localparam integer I_PRIV = 2;
@@ -83,10 +87,11 @@ module tb_backend_3p_banked;
         .COMPLETION_FORWARD_MASK(3'b111),
         .BRANCH_COMPLETION_FORWARD_MASK(3'b000),
         .ENABLE_FULL_FORWARDING(0),
-        .RELAX_WAW(0),
+        .RELAX_WAW(1),
         .RELAX_HAZARDS(0),
-        .ENABLE_ISSUE_WINDOW(0),
-        .ENABLE_SPECULATION_WINDOW(0),
+        .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .ISSUE_WINDOW_DEPTH(RETIRE_DEPTH),
         .BANKED_GPR(1),
         .FPGA_GPR_LUTRAM(0)
     ) dut (
@@ -387,6 +392,10 @@ module tb_backend_3p_banked;
     reg saw_exu_forward_while_busy;
     reg saw_mem_forward_while_busy;
     reg saw_write_ack_read_overlap;
+    reg saw_regload_address_issue_overlap;
+    reg saw_back_to_back_issue;
+    reg saw_base_alu_reroute;
+    reg prior_cycle_issued;
     reg memory_probe_active;
     integer memory_probe_retired;
 
@@ -398,6 +407,14 @@ module tb_backend_3p_banked;
                 fail("banked backend issued more than two instructions");
             if (issue_count == 2)
                 saw_two_wide_issue = 1'b1;
+            if ((issue_count != 0) && prior_cycle_issued)
+                saw_back_to_back_issue = 1'b1;
+            prior_cycle_issued = (issue_count != 0);
+            if ((issue_count != 0) && (|dut.gpr_read_ack[3:0]))
+                saw_regload_address_issue_overlap = 1'b1;
+            if (dut.banked_regload_lane0_reroute ||
+                dut.banked_regload_lane1_reroute)
+                saw_base_alu_reroute = 1'b1;
             if (decode_valid == 3'b111 && decode_ready == 3'b111)
                 saw_three_wide_input = 1'b1;
             if (retire_arch[2])
@@ -506,6 +523,10 @@ module tb_backend_3p_banked;
         saw_exu_forward_while_busy = 1'b0;
         saw_mem_forward_while_busy = 1'b0;
         saw_write_ack_read_overlap = 1'b0;
+        saw_regload_address_issue_overlap = 1'b0;
+        saw_back_to_back_issue = 1'b0;
+        saw_base_alu_reroute = 1'b0;
+        prior_cycle_issued = 1'b0;
         memory_probe_active = 1'b0;
         memory_probe_retired = 0;
 
@@ -637,7 +658,10 @@ module tb_backend_3p_banked;
             fail("redirect probe never obtained a GPR read grant");
 
         // Accept the combinational grants first.  Their data returns now,
-        // while the same-bank losers remain held address-phase requests.
+        // while the same-bank losers remain held address-phase requests.  The
+        // redirect asserted below may coincide with the registered output
+        // offer.  Selective recovery, not combinational valid suppression,
+        // poisons that packet while the RF requester drains its context.
         tick();
         if (!(|dut.gpr_read_valid[3:0]))
             fail("redirect probe grant did not produce a delayed response");
@@ -652,25 +676,41 @@ module tb_backend_3p_banked;
         if ((dut.gpr_read_req[3:0] & redirect_delayed_reads) !=
             redirect_delayed_reads)
             fail("redirect dropped an unacknowledged read request");
+        // These synthetic packets have no resolving control identity, so they
+        // cannot drive the issue window's selective-recovery ID contract.
+        // After checking the held request above, use a whole-backend flush to
+        // abandon their state while exercising the same GPR drain.
+        if (ISSUE_WINDOW != 0) begin
+            squash = 1'b0;
+            flush = 1'b1;
+        end
         tick();
         if (!dut.banked_gpr_drain_q ||
             (dut.banked_read_done_q != 4'b0000))
             fail("redirect drain reused a stale GPR response");
         squash = 1'b0;
+        flush = 1'b0;
 
         for (cycles = 0;
              (cycles < 10) && dut.banked_gpr_drain_q;
              cycles = cycles + 1)
             tick();
         if (dut.banked_gpr_drain_q || !dut.gpr_quiescent ||
-            (dispatch_occupancy != 0) || (retire_occupancy != 0))
+            (dispatch_occupancy != 0) || (retire_occupancy != 0)) begin
+            $display("redirect drain state drain=%b quiescent=%b pending=%b req=%b ack=%b valid=%b dispatch=%0d retire=%0d regload=%b",
+                     dut.banked_gpr_drain_q, dut.gpr_quiescent,
+                     dut.banked_read_pending_q, dut.gpr_read_req[3:0],
+                     dut.gpr_read_ack[3:0], dut.gpr_read_valid[3:0],
+                     dispatch_occupancy, retire_occupancy,
+                     dut.banked_regload_valid_q);
             fail("redirected GPR access did not drain cleanly");
+        end
 
         next_instruction = 0;
         while (next_instruction < INSTRUCTION_COUNT) begin
             lane_count = INSTRUCTION_COUNT - next_instruction;
-            if (lane_count > 3)
-                lane_count = 3;
+            if (lane_count > ((ISSUE_WINDOW != 0) ? 2 : 3))
+                lane_count = (ISSUE_WINDOW != 0) ? 2 : 3;
             send_mask = (1 << lane_count) - 1;
             while ((decode_ready & send_mask) != send_mask)
                 tick();
@@ -706,7 +746,7 @@ module tb_backend_3p_banked;
         if ((retire_occupancy != 0) || (dispatch_occupancy != 0) ||
             (write_busy != 0) || barrier_active)
             fail("banked backend did not drain cleanly");
-        if (!saw_three_wide_input)
+        if ((ISSUE_WINDOW == 0) && !saw_three_wide_input)
             fail("test never exercised three-wide decode acceptance");
         if (!saw_two_wide_issue)
             fail("test never exercised two-wide issue");
@@ -718,10 +758,46 @@ module tb_backend_3p_banked;
             fail("test never exercised a write-bank retry");
         if (!saw_dependency_wait)
             fail("test never observed conservative dependency waiting");
-        if (!saw_exu_forward_while_busy)
+        if ((ISSUE_WINDOW == 0) && !saw_exu_forward_while_busy)
             fail("test never consumed an EXU completion before retirement");
-        if (!saw_write_ack_read_overlap)
+        if ((ISSUE_WINDOW == 0) && !saw_write_ack_read_overlap)
             fail("test never overlapped a dependent read with write ack");
+        if (!saw_regload_address_issue_overlap)
+            fail("test never overlapped register address and issue phases");
+        if (!saw_back_to_back_issue)
+            fail("test never issued in back-to-back cycles");
+
+        // Isolate the steering probe from the throughput/conflict coverage
+        // above.  The normal ready signal is payload-qualified, so force only
+        // the new structural-capacity sideband: EX0 unavailable, EX1 free.
+        // Execution's real ready/valid handshake still checks and accepts the
+        // retargeted packet.
+        memory_probe_active = 1'b1;
+        memory_probe_retired = 0;
+        force dut.base_alu_available = 2'b10;
+        decode_payload = {3*IW{1'b0}};
+        decode_payload[0 +: IW] = addi_packet(28, 0, 29, 64'd42, 1'b0);
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
+        while (!decode_ready[0])
+            tick();
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = {3*IW{1'b0}};
+        decode_uses_rs1 = 3'b000;
+        for (cycles = 0;
+             (cycles < 20) && (!saw_base_alu_reroute ||
+                               (memory_probe_retired == 0));
+             cycles = cycles + 1)
+            tick();
+        release dut.base_alu_available;
+        if (!saw_base_alu_reroute)
+            fail("base ALU did not retarget from unavailable EX0 to EX1");
+        if ((memory_probe_retired != 1) ||
+            (dut.u_gpr.regs[29] !== 64'd42))
+            fail("retargeted base ALU did not retire the correct result");
+        memory_probe_active = 1'b0;
+        memory_probe_retired = 0;
 
         // A returned load occupies MEM0's completion lane.  Keep its direct
         // consumer waiting on x27 until the tagged response arrives; the
@@ -777,7 +853,7 @@ module tb_backend_3p_banked;
         repeat (2) tick();
         if (memory_probe_retired != 2)
             fail("MEM0 forwarding probe did not retire both instructions");
-        if (!saw_mem_forward_while_busy)
+        if ((ISSUE_WINDOW == 0) && !saw_mem_forward_while_busy)
             fail("load result was not consumed from MEM0 completion");
         if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
             (write_busy != 0))
@@ -814,7 +890,10 @@ module tb_backend_3p_banked;
             dut.u_gpr.regs[28] !== 64'h1122_3344_5566_7789)
             fail("final architectural register state was incorrect");
 
-        $display("PASS: banked 3p backend processed ordered arithmetic plus a MEM0-forwarded load/use with held bank retries and conservative dependencies");
+        if (ISSUE_WINDOW != 0)
+            $display("PASS: banked 3p issue window processed post-selection register loads, ordered arithmetic, load/use, and held bank retries");
+        else
+            $display("PASS: banked 3p backend processed ordered arithmetic plus a MEM0-forwarded load/use with held bank retries and conservative dependencies");
         $finish;
     end
 

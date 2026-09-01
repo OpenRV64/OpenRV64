@@ -12,6 +12,7 @@ module openrv64_dispatch_3p_banked #(
     parameter integer MAX_READS_PER_REG = 2,
     parameter integer FREE_BRANCHES = 0,
     parameter integer ENABLE_EQ_BRANCH_PAIRING = 1,
+    parameter integer DEFER_EQ_BRANCH_PAIRING = 0,
     parameter integer COUNT_WIDTH = $clog2(QUEUE_DEPTH + 1)
 ) (
     input  wire                         clk,
@@ -142,6 +143,7 @@ module openrv64_dispatch_3p_banked #(
         .RELAX_HAZARDS(0),
         .FREE_BRANCHES(FREE_BRANCHES),
         .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING),
+        .DEFER_EQ_BRANCH_PAIRING(DEFER_EQ_BRANCH_PAIRING),
         .MAX_ISSUE_LANES(2),
         .COUNT_WIDTH(COUNT_WIDTH)
     ) u_dispatch (
@@ -158,6 +160,9 @@ module openrv64_dispatch_3p_banked #(
         .branch_completion_forward_valid_i(3'b000),
         .forward_map_valid_i(32'b0),
         .forward_map_data_i({32*`RV64_XLEN{1'b0}}),
+        .recovery_valid_i(1'b0),
+        .recovery_reg_write_i(1'b0),
+        .recovery_rd_addr_i(`RV64_REG_X0),
         .*
     );
 

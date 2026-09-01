@@ -44,6 +44,7 @@ module tb_top_3p_banked;
     reg saw_write_bank_retry;
     reg saw_dependency_wait;
     reg saw_redirect_drain;
+    reg saw_regload_pending;
 
     openrv64_top #(
         .RESET_VECTOR(64'd0),
@@ -246,6 +247,11 @@ module tb_top_3p_banked;
                 fail("banked core issued more than two instructions");
             if (issue_count == 2)
                 saw_two_issue = 1'b1;
+            if (dut.g_backend_3p.u_core_3p.u_backend
+                    .banked_regload_valid_q &&
+                dut.g_backend_3p.u_core_3p.u_backend
+                    .banked_regload_pending_valid_q)
+                saw_regload_pending = 1'b1;
             if ((dut.g_backend_3p.u_core_3p.backend_decode_valid[1:0] ==
                  2'b11) &&
                 (dut.g_backend_3p.u_core_3p.backend_decode_ready[1:0] ==
@@ -291,6 +297,7 @@ module tb_top_3p_banked;
         saw_write_bank_retry = 1'b0;
         saw_dependency_wait = 1'b0;
         saw_redirect_drain = 1'b0;
+        saw_regload_pending = 1'b0;
         for (initialize_index = 0; initialize_index < 128;
              initialize_index = initialize_index + 1)
             memory[initialize_index] = 64'h0000_0013_0000_0013;
@@ -433,6 +440,8 @@ module tb_top_3p_banked;
             fail("end-to-end program did not wait for a dependency");
         if (!saw_redirect_drain)
             fail("branch redirect did not enter the GPR drain state");
+        if (!saw_regload_pending)
+            fail("regload pending credit was never exercised");
         if (dut.g_backend_3p.u_core_3p.backend_write_busy != 0)
             fail("banked core halted with an outstanding register writer");
 

@@ -127,7 +127,12 @@ module openrv64_rv64i_gpr_3p #(
                 banked_read_ack | (read_req_i[3:0] & banked_read_zero)
             };
             assign read_valid_o = {
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+                2'b00, banked_read_valid |
+                    (read_req_i[3:0] & banked_read_zero)
+`else
                 2'b00, banked_read_valid | banked_read_zero_q
+`endif
             };
             assign write_ack_o = {
                 1'b0,
@@ -140,7 +145,9 @@ module openrv64_rv64i_gpr_3p #(
                     banked_write_zero_q
             };
             assign quiescent_o = banked_file_quiescent &&
+`ifndef OPENRV64_BANKED_GPR_MAGIC_READS
                                  !(|banked_read_zero_q) &&
+`endif
                                  !(|banked_write_zero_q);
 
 `ifndef SYNTHESIS

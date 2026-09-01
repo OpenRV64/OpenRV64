@@ -175,6 +175,18 @@ module openrv64_backend_3p #(
     output wire [DISPATCH_COUNT_WIDTH-1:0] dispatch_occupancy_o
 );
 
+    // Free branches complete at dispatch using dispatch-time operand data.
+    // Banked mode deliberately defers real operand capture to regload, so the
+    // two features cannot be composed without moving free-branch evaluation.
+    generate
+        if ((BANKED_GPR != 0) && (FREE_BRANCHES != 0)) begin :
+                g_invalid_banked_free_branches
+            initial begin
+                $fatal(1,
+                    "BANKED_GPR requires FREE_BRANCHES=0 until branch evaluation moves to regload");
+            end
+        end
+    endgenerate
     localparam integer RETIRE_META_WIDTH =
         `OPENRV64_DISPATCH_META_WIDTH + 2*PHYS_REG_ADDR_WIDTH;
     localparam integer RETIRE_RECORD_WIDTH =
@@ -183,6 +195,7 @@ module openrv64_backend_3p #(
         `OPENRV64_RETIRE_RESULT_WIDTH;
 
     wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_read_addr;
+    wire [6*PHYS_REG_ADDR_WIDTH-1:0] dispatch_gpr_read_addr;
     wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_storage_read_addr;
     wire [6*`RV64_XLEN-1:0] gpr_read_data;
     wire [6*`RV64_XLEN-1:0] dispatch_gpr_read_data;
@@ -244,6 +257,7 @@ module openrv64_backend_3p #(
     assign decode_allocation_slot_o = allocation_slot;
 
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready;
+    wire [1:0] base_alu_available;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid;
     wire [`OPENRV64_EXEC_PIPE_COUNT*
           `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id;
@@ -256,6 +270,26 @@ module openrv64_backend_3p #(
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_src2_producer_valid;
     wire [`OPENRV64_EXEC_PIPE_COUNT*
           `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_src2_producer_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_INSTR_ID_WIDTH-1:0] dispatch_pipe_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
+        dispatch_pipe_slot;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        dispatch_pipe_payload;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_uses_rs1;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_uses_rs2;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        dispatch_pipe_src1_producer_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_INSTR_ID_WIDTH-1:0]
+        dispatch_pipe_src1_producer_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        dispatch_pipe_src2_producer_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*
+          `OPENRV64_INSTR_ID_WIDTH-1:0]
+        dispatch_pipe_src2_producer_id;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_unsupported;
 
     wire [2:0] complete_valid;
@@ -858,6 +892,13 @@ module openrv64_backend_3p #(
     reg [32*`RV64_XLEN-1:0] youngest_owner_data_q;
     integer youngest_owner_lane;
     reg [`RV64_REG_ADDR_WIDTH-1:0] youngest_owner_rd;
+    wire banked_deferred_pair_recovery;
+    wire banked_deferred_follower_reg_write;
+    wire [`RV64_REG_ADDR_WIDTH-1:0] banked_deferred_follower_rd;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_deferred_follower_id;
+    wire banked_regload_lane0_fire;
+    wire banked_regload_branch_correct_now;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -890,6 +931,26 @@ module openrv64_backend_3p #(
                     youngest_owner_ready_q[youngest_owner_rd] <= 1'b0;
                     youngest_owner_load_q[youngest_owner_rd] <= 1'b0;
                 end
+            end
+
+            // The deferred branch follower is allocated so its register
+            // addresses can be gathered, but it is never offered to execute
+            // until the branch prediction is proved.  A wrong prediction
+            // therefore removes exactly this unexecuted owner.  Conservative
+            // WAW exclusion guarantees there is no hidden older owner of the
+            // same architectural destination to restore.
+            if (banked_deferred_pair_recovery &&
+                banked_deferred_follower_reg_write &&
+                (banked_deferred_follower_rd != `RV64_REG_X0) &&
+                youngest_owner_valid_q[banked_deferred_follower_rd] &&
+                (youngest_owner_id_q[
+                     banked_deferred_follower_rd*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 banked_deferred_follower_id)) begin
+                youngest_owner_valid_q[banked_deferred_follower_rd] <= 1'b0;
+                youngest_owner_ready_q[banked_deferred_follower_rd] <= 1'b0;
+                youngest_owner_load_q[banked_deferred_follower_rd] <= 1'b0;
             end
 
             // A completion publishes only if it belongs to the youngest live
@@ -1258,13 +1319,354 @@ module openrv64_backend_3p #(
     reg [3:0] banked_read_pending_q;
     reg [4*PHYS_REG_ADDR_WIDTH-1:0] banked_read_addr_q;
     reg [3:0] banked_read_ack_q;
+    reg [3:0] banked_read_response_to_input_q;
+    reg [3:0] banked_read_response_to_regload_q;
+    reg [3:0] banked_read_response_to_pending_q;
     wire [3:0] banked_read_ready;
+    wire [3:0] banked_read_address_ready;
     wire [3:0] banked_read_forward_valid;
     wire [3:0] banked_read_exu_forward_valid;
     wire [4*`RV64_XLEN-1:0] banked_read_forward_data;
     wire [3:0] banked_read_waiting;
     wire [3:0] banked_read_blocked_by_write;
     wire [3:0] banked_read_write_ack_release;
+
+    // The register-load stage decouples the address-gathering dispatch head
+    // from the group consuming returned operands at execution.  The register
+    // file itself is already pipelined; this state gives its per-port ack
+    // pipeline somewhere stable to deliver data while dispatch advances to
+    // the next independent group.
+    reg banked_regload_valid_q;
+    reg [1:0] banked_regload_lane_valid_q;
+    reg [2*`OPENRV64_INSTR_ID_WIDTH-1:0] banked_regload_lane_id_q;
+    reg [3:0] banked_regload_operand_done_q;
+    reg [4*`RV64_XLEN-1:0] banked_regload_operand_data_q;
+    reg [3:0] banked_regload_mem_forwarded_q;
+    reg banked_regload_hard_q;
+    reg banked_regload_branch_pair_q;
+    reg banked_regload_branch_resolved_q;
+    reg banked_regload_branch_correct_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] banked_regload_pipe_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_pipe_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
+        banked_regload_pipe_slot_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*
+         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        banked_regload_pipe_payload_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_src1_producer_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_src1_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_src2_producer_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_src2_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pipe_uses_rs1_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pipe_uses_rs2_q;
+
+    // One queued group absorbs dispatch while the execution-facing regload
+    // group is stalled.  This is a real credit buffer: allocation readiness
+    // depends on this registered valid bit, never on combinational pipe ready.
+    reg banked_regload_pending_valid_q;
+    reg [1:0] banked_regload_pending_lane_valid_q;
+    reg [2*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_pending_lane_id_q;
+    reg [3:0] banked_regload_pending_operand_done_q;
+    reg [4*`RV64_XLEN-1:0] banked_regload_pending_operand_data_q;
+    reg [3:0] banked_regload_pending_mem_forwarded_q;
+    reg banked_regload_pending_hard_q;
+    reg banked_regload_pending_branch_pair_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pending_pipe_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_pending_pipe_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
+        banked_regload_pending_pipe_slot_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*
+         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        banked_regload_pending_pipe_payload_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pending_src1_producer_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_pending_src1_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pending_src2_producer_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_pending_src2_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pending_pipe_uses_rs1_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pending_pipe_uses_rs2_q;
+
+    wire banked_window_regload = (BANKED_GPR != 0) &&
+        (ENABLE_ISSUE_WINDOW != 0);
+
+    // Compact the issue window's at-most-two accepted physical-pipe packets
+    // into the regload stage's two age-ordered lanes.  The full physical-pipe
+    // vectors remain intact so execution routing does not need to be rebuilt.
+    reg [1:0] banked_regload_ingress_lane_valid;
+    reg [2*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_ingress_lane_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_ingress_pipe_ready;
+    wire banked_regload_ingress_capacity;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_ingress_first_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_ingress_second_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_ingress_id_difference;
+    integer banked_regload_ingress_pipe;
+    always @* begin
+        banked_regload_ingress_lane_valid = 2'b00;
+        banked_regload_ingress_lane_id =
+            {2*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        banked_regload_ingress_first_id =
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        banked_regload_ingress_second_id =
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        banked_regload_ingress_id_difference =
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        for (banked_regload_ingress_pipe = 0;
+             banked_regload_ingress_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+             banked_regload_ingress_pipe =
+                 banked_regload_ingress_pipe + 1) begin
+            if (dispatch_pipe_valid[banked_regload_ingress_pipe]) begin
+                if (!banked_regload_ingress_lane_valid[0]) begin
+                    banked_regload_ingress_lane_valid[0] = 1'b1;
+                    banked_regload_ingress_first_id = dispatch_pipe_id[
+                        banked_regload_ingress_pipe*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH];
+                end else begin
+                    banked_regload_ingress_lane_valid[1] = 1'b1;
+                    banked_regload_ingress_second_id = dispatch_pipe_id[
+                        banked_regload_ingress_pipe*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH];
+                end
+            end
+        end
+        // IDs are monotonically allocated and the live window is smaller than
+        // half the ID space.  A positive modular first-minus-second distance
+        // means the first collected packet is younger; swap in that case.
+        banked_regload_ingress_id_difference =
+            banked_regload_ingress_first_id -
+            banked_regload_ingress_second_id;
+        if (banked_regload_ingress_lane_valid[1] &&
+            (banked_regload_ingress_id_difference !=
+             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+            !banked_regload_ingress_id_difference[
+                `OPENRV64_INSTR_ID_WIDTH-1]) begin
+            banked_regload_ingress_lane_id[
+                0 +: `OPENRV64_INSTR_ID_WIDTH] =
+                banked_regload_ingress_second_id;
+            banked_regload_ingress_lane_id[
+                `OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] =
+                banked_regload_ingress_first_id;
+        end else begin
+            banked_regload_ingress_lane_id[
+                0 +: `OPENRV64_INSTR_ID_WIDTH] =
+                banked_regload_ingress_first_id;
+            banked_regload_ingress_lane_id[
+                `OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH] =
+                banked_regload_ingress_second_id;
+        end
+    end
+
+    reg [4*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_regload_active_read_addr;
+    reg [3:0] banked_regload_ingress_operand_done;
+    reg [4*`RV64_XLEN-1:0]
+        banked_regload_ingress_operand_data;
+    integer banked_regload_operand_lane;
+    integer banked_regload_operand_source;
+    integer banked_regload_operand_pipe;
+    reg banked_regload_operand_use;
+    reg banked_regload_operand_producer;
+    reg [PHYS_REG_ADDR_WIDTH-1:0] banked_regload_operand_addr;
+    always @* begin
+        banked_regload_active_read_addr =
+            {4*PHYS_REG_ADDR_WIDTH{1'b0}};
+        banked_regload_ingress_operand_done = 4'b1111;
+        banked_regload_ingress_operand_data =
+            {4*`RV64_XLEN{1'b0}};
+        banked_regload_operand_lane = 0;
+        banked_regload_operand_source = 0;
+        banked_regload_operand_use = 1'b0;
+        banked_regload_operand_producer = 1'b0;
+        banked_regload_operand_addr =
+            {PHYS_REG_ADDR_WIDTH{1'b0}};
+
+        for (banked_regload_operand_lane = 0;
+             banked_regload_operand_lane < 2;
+             banked_regload_operand_lane =
+                 banked_regload_operand_lane + 1) begin
+            for (banked_regload_operand_source = 0;
+                 banked_regload_operand_source < 2;
+                 banked_regload_operand_source =
+                     banked_regload_operand_source + 1) begin
+                for (banked_regload_operand_pipe = 0;
+                     banked_regload_operand_pipe <
+                         `OPENRV64_EXEC_PIPE_COUNT;
+                     banked_regload_operand_pipe =
+                         banked_regload_operand_pipe + 1) begin
+                    if (banked_regload_valid_q &&
+                        banked_regload_lane_valid_q[
+                            banked_regload_operand_lane] &&
+                        banked_regload_pipe_valid_q[
+                            banked_regload_operand_pipe] &&
+                        (banked_regload_pipe_id_q[
+                             banked_regload_operand_pipe*
+                             `OPENRV64_INSTR_ID_WIDTH +:
+                             `OPENRV64_INSTR_ID_WIDTH] ==
+                         banked_regload_lane_id_q[
+                             banked_regload_operand_lane*
+                             `OPENRV64_INSTR_ID_WIDTH +:
+                             `OPENRV64_INSTR_ID_WIDTH])) begin
+                        banked_regload_operand_use =
+                            (banked_regload_operand_source == 0) ?
+                            banked_regload_pipe_uses_rs1_q[
+                                banked_regload_operand_pipe] :
+                            banked_regload_pipe_uses_rs2_q[
+                                banked_regload_operand_pipe];
+                        banked_regload_operand_producer =
+                            (banked_regload_operand_source == 0) ?
+                            banked_regload_src1_producer_valid_q[
+                                banked_regload_operand_pipe] :
+                            banked_regload_src2_producer_valid_q[
+                                banked_regload_operand_pipe];
+                        banked_regload_operand_addr =
+                            banked_regload_pipe_payload_q[
+                                banked_regload_operand_pipe*
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                ((banked_regload_operand_source == 0) ?
+                                 237 : 232) +:
+                                PHYS_REG_ADDR_WIDTH];
+                        if (banked_regload_operand_use &&
+                            !banked_regload_operand_producer)
+                            banked_regload_active_read_addr[
+                                (banked_regload_operand_lane*2 +
+                                 banked_regload_operand_source)*
+                                PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH] =
+                                banked_regload_operand_addr;
+                    end
+
+                    if (banked_regload_ingress_lane_valid[
+                            banked_regload_operand_lane] &&
+                        dispatch_pipe_valid[
+                            banked_regload_operand_pipe] &&
+                        (dispatch_pipe_id[
+                             banked_regload_operand_pipe*
+                             `OPENRV64_INSTR_ID_WIDTH +:
+                             `OPENRV64_INSTR_ID_WIDTH] ==
+                         banked_regload_ingress_lane_id[
+                             banked_regload_operand_lane*
+                             `OPENRV64_INSTR_ID_WIDTH +:
+                             `OPENRV64_INSTR_ID_WIDTH])) begin
+                        banked_regload_operand_use =
+                            (banked_regload_operand_source == 0) ?
+                            dispatch_pipe_uses_rs1[
+                                banked_regload_operand_pipe] :
+                            dispatch_pipe_uses_rs2[
+                                banked_regload_operand_pipe];
+                        banked_regload_operand_producer =
+                            (banked_regload_operand_source == 0) ?
+                            dispatch_pipe_src1_producer_valid[
+                                banked_regload_operand_pipe] :
+                            dispatch_pipe_src2_producer_valid[
+                                banked_regload_operand_pipe];
+                        banked_regload_operand_addr = dispatch_pipe_payload[
+                            banked_regload_operand_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                            ((banked_regload_operand_source == 0) ?
+                             237 : 232) +: PHYS_REG_ADDR_WIDTH];
+                        if (banked_regload_operand_use &&
+                            (banked_regload_operand_addr !=
+                             {PHYS_REG_ADDR_WIDTH{1'b0}}) &&
+                            !banked_regload_operand_producer) begin
+                            banked_regload_ingress_operand_done[
+                                banked_regload_operand_lane*2 +
+                                banked_regload_operand_source] = 1'b0;
+                        end else begin
+                            banked_regload_ingress_operand_done[
+                                banked_regload_operand_lane*2 +
+                                banked_regload_operand_source] = 1'b1;
+                            if (banked_regload_operand_producer)
+                                banked_regload_ingress_operand_data[
+                                    (banked_regload_operand_lane*2 +
+                                     banked_regload_operand_source)*
+                                    `RV64_XLEN +: `RV64_XLEN] =
+                                    dispatch_pipe_payload[
+                                        banked_regload_operand_pipe*
+                                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                        ((banked_regload_operand_source == 0) ?
+                                         168 : 104) +:
+                                        `RV64_XLEN];
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    assign gpr_read_addr = banked_window_regload ?
+        {{2*PHYS_REG_ADDR_WIDTH{1'b0}},
+         banked_regload_active_read_addr} :
+        dispatch_gpr_read_addr;
+
+    reg banked_deferred_follower_reg_write_r;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] banked_deferred_follower_rd_r;
+    integer banked_deferred_follower_pipe;
+    always @* begin
+        banked_deferred_follower_reg_write_r = 1'b0;
+        banked_deferred_follower_rd_r = `RV64_REG_X0;
+        for (banked_deferred_follower_pipe = 0;
+             banked_deferred_follower_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+             banked_deferred_follower_pipe =
+                 banked_deferred_follower_pipe + 1) begin
+            if (banked_regload_pipe_valid_q[
+                    banked_deferred_follower_pipe] &&
+                (banked_regload_pipe_id_q[
+                     banked_deferred_follower_pipe*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 banked_regload_lane_id_q[
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH])) begin
+                banked_deferred_follower_reg_write_r =
+                    banked_regload_pipe_payload_q[
+                        banked_deferred_follower_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 17];
+                banked_deferred_follower_rd_r =
+                    banked_regload_pipe_payload_q[
+                        banked_deferred_follower_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 35 +:
+                        `RV64_REG_ADDR_WIDTH];
+            end
+        end
+    end
+    assign banked_deferred_follower_reg_write =
+        banked_deferred_follower_reg_write_r;
+    assign banked_deferred_follower_rd =
+        banked_deferred_follower_rd_r;
+    assign banked_deferred_follower_id = banked_regload_lane_id_q[
+        `OPENRV64_INSTR_ID_WIDTH +: `OPENRV64_INSTR_ID_WIDTH];
+    assign banked_deferred_pair_recovery = (BANKED_GPR != 0) &&
+        squash_frontend_i && banked_regload_valid_q &&
+        banked_regload_lane_valid_q[1] &&
+        banked_regload_branch_pair_q &&
+        ((banked_regload_branch_resolved_q &&
+          !banked_regload_branch_correct_q) ||
+         (!banked_regload_branch_resolved_q &&
+          banked_regload_lane0_fire &&
+          !banked_regload_branch_correct_now));
 
     // Redirects discard the requester's association with outstanding reads.
     // An unacknowledged request is still held until ack; an acknowledged read
@@ -1280,6 +1682,27 @@ module openrv64_backend_3p #(
         else if (banked_gpr_drain_q && !gpr_access_pending)
             banked_gpr_drain_q <= 1'b0;
     end
+
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+    // Experimental upper bound: the grant and data phase coincide.  Reads
+    // retained at the dispatch input are captured there; reads allocated to
+    // the stage or its pending credit are captured by the allocation edge.
+    wire [3:0] banked_magic_response_now =
+        gpr_read_ack[3:0] & gpr_read_valid[3:0];
+    wire [3:0] banked_input_response_now = banked_magic_response_now &
+        {4{!banked_window_regload && !(|allocation_valid) && !flush_i &&
+            !squash_frontend_i && !banked_gpr_drain_q}};
+    wire [3:0] banked_regload_response_now =
+        banked_window_regload ? banked_magic_response_now : 4'b0000;
+    wire [3:0] banked_regload_pending_response_now = 4'b0000;
+`else
+    wire [3:0] banked_input_response_now = banked_read_ack_q &
+        gpr_read_valid[3:0] & banked_read_response_to_input_q;
+    wire [3:0] banked_regload_response_now = banked_read_ack_q &
+        gpr_read_valid[3:0] & banked_read_response_to_regload_q;
+    wire [3:0] banked_regload_pending_response_now = banked_read_ack_q &
+        gpr_read_valid[3:0] & banked_read_response_to_pending_q;
+`endif
 
     genvar banked_read_port;
     generate
@@ -1299,6 +1722,7 @@ module openrv64_backend_3p #(
                 for (read_forward_lane = 0; read_forward_lane < 2;
                      read_forward_lane = read_forward_lane + 1) begin
                     if (!read_forward_valid &&
+                        !banked_window_regload &&
                         banked_exu_forward_valid[
                             read_forward_lane] &&
                         (completion_forward_rd_addr[
@@ -1325,7 +1749,7 @@ module openrv64_backend_3p #(
                 end
             end
             wire read_mem_forward_valid =
-                banked_mem_forward_valid &&
+                !banked_window_regload && banked_mem_forward_valid &&
                 (banked_mem_forward_rd_q == read_addr);
             wire [`RV64_XLEN-1:0] read_capture_data =
                 read_forward_valid ? read_forward_data :
@@ -1333,9 +1757,12 @@ module openrv64_backend_3p #(
             wire read_capture_valid = read_forward_valid ||
                                       read_mem_forward_valid;
             wire read_response_now =
-                banked_read_ack_q[banked_read_port] &&
-                gpr_read_valid[banked_read_port];
-            wire read_blocked = !read_zero &&
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+                banked_magic_response_now[banked_read_port];
+`else
+                banked_input_response_now[banked_read_port];
+`endif
+            wire read_blocked = !banked_window_regload && !read_zero &&
                 write_busy_o[read_addr] &&
                 !banked_read_done_q[banked_read_port] &&
                 !read_capture_valid && !read_write_ack_match;
@@ -1345,7 +1772,10 @@ module openrv64_backend_3p #(
                 !read_capture_valid &&
                 !banked_read_done_q[banked_read_port] &&
                 !banked_read_pending_q[banked_read_port] &&
-                !banked_read_ack_q[banked_read_port];
+                !(banked_window_regload &&
+                  banked_read_ack_q[banked_read_port]) &&
+                !(banked_read_ack_q[banked_read_port] &&
+                  banked_read_response_to_input_q[banked_read_port]);
 
             assign banked_read_forward_valid[banked_read_port] =
                 read_forward_valid;
@@ -1378,6 +1808,9 @@ module openrv64_backend_3p #(
                 banked_read_done_q[banked_read_port] ||
                 read_response_now || read_forward_valid ||
                 read_mem_forward_valid;
+            assign banked_read_address_ready[banked_read_port] =
+                banked_read_ready[banked_read_port] ||
+                gpr_read_ack[banked_read_port];
             assign dispatch_gpr_read_data[
                 banked_read_port*`RV64_XLEN +: `RV64_XLEN] =
                 (BANKED_GPR == 0) ? gpr_read_data[
@@ -1392,6 +1825,519 @@ module openrv64_backend_3p #(
                 {`RV64_XLEN{1'b0}};
         end
     endgenerate
+
+    wire [3:0] banked_regload_operand_ready =
+        banked_regload_operand_done_q | banked_regload_response_now;
+    wire [1:0] banked_regload_lane_operands_ready = {
+        &banked_regload_operand_ready[3:2],
+        &banked_regload_operand_ready[1:0]
+    };
+
+    // Issue each independent lane as soon as its operands and selected pipe
+    // are ready, rather than waiting for the whole captured group atomically.
+    // Retirement still enforces architectural order, and dispatch has already
+    // rejected same-group dependencies and control-barrier followers.  This is
+    // also necessary when an ordered MEM lane is retained behind an older ALU:
+    // making either lane's valid depend on the other's ready creates a
+    // combinational ready/valid loop through the execution pipes.
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_lane0_pipe_mask;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_lane1_pipe_mask;
+    genvar banked_regload_map_pipe;
+    generate
+        for (banked_regload_map_pipe = 0;
+             banked_regload_map_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+             banked_regload_map_pipe =
+                 banked_regload_map_pipe + 1) begin :
+                g_banked_regload_pipe_map
+            assign banked_regload_lane0_pipe_mask[
+                banked_regload_map_pipe] =
+                banked_regload_pipe_valid_q[banked_regload_map_pipe] &&
+                (banked_regload_pipe_id_q[
+                     banked_regload_map_pipe*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 banked_regload_lane_id_q[
+                     0 +: `OPENRV64_INSTR_ID_WIDTH]);
+            assign banked_regload_lane1_pipe_mask[
+                banked_regload_map_pipe] =
+                banked_regload_pipe_valid_q[banked_regload_map_pipe] &&
+                (banked_regload_pipe_id_q[
+                     banked_regload_map_pipe*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 banked_regload_lane_id_q[
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH]);
+        end
+    endgenerate
+    wire [1:0] banked_regload_lane_pipe_present = {
+        |banked_regload_lane1_pipe_mask,
+        |banked_regload_lane0_pipe_mask
+    };
+    // This is a registered valid/data boundary.  Do not make valid depend on
+    // redirect or execution ready: a resolving branch would otherwise feed
+    // its own redirect back into issue, and a MEM offer would feed LSU ready
+    // back into valid.  Selective recovery poisons younger issued work on the
+    // redirect edge; the state update below clears the stage and drains every
+    // acknowledged or held RF request before the context can be reused.
+    wire banked_regload_lane0_offer_eligible = (BANKED_GPR != 0) &&
+        banked_regload_valid_q && banked_regload_lane_valid_q[0] &&
+        banked_regload_lane_operands_ready[0] &&
+        banked_regload_lane_pipe_present[0] &&
+        !flush_i && !banked_gpr_drain_q;
+    wire banked_regload_lane1_offer_eligible = (BANKED_GPR != 0) &&
+        banked_regload_valid_q && banked_regload_lane_valid_q[1] &&
+        banked_regload_lane_operands_ready[1] &&
+        banked_regload_lane_pipe_present[1] &&
+        !flush_i && !banked_gpr_drain_q;
+    wire banked_regload_complete;
+    wire banked_gather_addresses_ready = !banked_gpr_drain_q &&
+        (&banked_read_address_ready);
+    assign banked_regload_ingress_capacity =
+        banked_window_regload && !banked_gpr_drain_q &&
+        !banked_regload_pending_valid_q &&
+        (!banked_regload_valid_q || !banked_regload_hard_q) &&
+        !flush_i && !squash_frontend_i;
+    assign banked_regload_ingress_pipe_ready =
+        {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_ingress_capacity}};
+    wire banked_regload_window_capture = banked_window_regload &&
+        (|(dispatch_pipe_valid & banked_regload_ingress_pipe_ready));
+    wire banked_regload_capture_valid = banked_window_regload ?
+        banked_regload_window_capture : (|allocation_valid);
+    wire [1:0] banked_regload_capture_lane_valid =
+        banked_window_regload ? banked_regload_ingress_lane_valid :
+        allocation_valid[1:0];
+    wire [2*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_capture_lane_id = banked_window_regload ?
+            banked_regload_ingress_lane_id :
+            allocation_id[2*`OPENRV64_INSTR_ID_WIDTH-1:0];
+    // Do not feed execution readiness back into dispatch admission.  A free
+    // pending slot is the credit for one complete two-lane group.  A hard
+    // execution group blocks younger allocation until its resolution is
+    // visible on the following cycle.
+    wire banked_dispatch_allocation_ready = allocation_ready &&
+        !banked_regload_pending_valid_q &&
+        (!banked_regload_valid_q || !banked_regload_hard_q) &&
+        banked_gather_addresses_ready &&
+        !flush_i && !squash_frontend_i;
+    wire banked_regload_allocation_to_stage =
+        banked_regload_capture_valid &&
+        (!banked_regload_valid_q ||
+         (banked_regload_complete && !banked_regload_hard_q));
+    wire banked_regload_allocation_to_pending =
+        banked_regload_capture_valid &&
+        !banked_regload_allocation_to_stage;
+    wire banked_regload_promote_pending =
+        banked_regload_pending_valid_q &&
+        (!banked_regload_valid_q || banked_regload_complete) &&
+        !banked_regload_hard_q;
+    wire banked_read_context_replace = banked_window_regload ?
+        (banked_regload_allocation_to_stage ||
+         banked_regload_promote_pending) :
+        (|allocation_valid);
+
+    wire [4*`RV64_XLEN-1:0] banked_regload_operand_data;
+    genvar banked_regload_operand;
+    generate
+        for (banked_regload_operand = 0; banked_regload_operand < 4;
+             banked_regload_operand = banked_regload_operand + 1) begin :
+                g_banked_regload_operand
+            assign banked_regload_operand_data[
+                banked_regload_operand*`RV64_XLEN +: `RV64_XLEN] =
+                banked_regload_operand_done_q[banked_regload_operand] ?
+                banked_regload_operand_data_q[
+                    banked_regload_operand*`RV64_XLEN +: `RV64_XLEN] :
+                banked_regload_response_now[banked_regload_operand] ?
+                gpr_read_data[
+                    banked_regload_operand*`RV64_XLEN +: `RV64_XLEN] :
+                {`RV64_XLEN{1'b0}};
+        end
+    endgenerate
+
+    wire [3:0] banked_regload_pending_operand_ready =
+        banked_regload_pending_operand_done_q |
+        banked_regload_pending_response_now;
+    wire [4*`RV64_XLEN-1:0] banked_regload_pending_operand_data;
+    genvar banked_regload_pending_operand;
+    generate
+        for (banked_regload_pending_operand = 0;
+             banked_regload_pending_operand < 4;
+             banked_regload_pending_operand =
+                 banked_regload_pending_operand + 1) begin :
+                g_banked_regload_pending_operand
+            assign banked_regload_pending_operand_data[
+                banked_regload_pending_operand*`RV64_XLEN +:
+                `RV64_XLEN] =
+                banked_regload_pending_operand_done_q[
+                    banked_regload_pending_operand] ?
+                banked_regload_pending_operand_data_q[
+                    banked_regload_pending_operand*`RV64_XLEN +:
+                    `RV64_XLEN] :
+                banked_regload_pending_response_now[
+                    banked_regload_pending_operand] ?
+                gpr_read_data[
+                    banked_regload_pending_operand*`RV64_XLEN +:
+                    `RV64_XLEN] :
+                {`RV64_XLEN{1'b0}};
+        end
+    endgenerate
+
+    reg [`OPENRV64_EXEC_PIPE_COUNT*
+         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        banked_regload_pipe_payload;
+    integer banked_regload_patch_pipe;
+    integer banked_regload_patch_lane;
+    always @* begin
+        banked_regload_pipe_payload = banked_regload_pipe_payload_q;
+        for (banked_regload_patch_pipe = 0;
+             banked_regload_patch_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+             banked_regload_patch_pipe = banked_regload_patch_pipe + 1) begin
+            for (banked_regload_patch_lane = 0;
+                 banked_regload_patch_lane < 2;
+                 banked_regload_patch_lane =
+                     banked_regload_patch_lane + 1) begin
+                if (banked_regload_lane_valid_q[
+                        banked_regload_patch_lane] &&
+                    (banked_regload_pipe_id_q[
+                         banked_regload_patch_pipe*
+                         `OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH] ==
+                     banked_regload_lane_id_q[
+                         banked_regload_patch_lane*
+                         `OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH])) begin
+                    banked_regload_pipe_payload[
+                        banked_regload_patch_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 168 +:
+                        `RV64_XLEN] = banked_regload_operand_data[
+                            (banked_regload_patch_lane*2+0)*
+                            `RV64_XLEN +: `RV64_XLEN];
+                    banked_regload_pipe_payload[
+                        banked_regload_patch_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 104 +:
+                        `RV64_XLEN] = banked_regload_operand_data[
+                            (banked_regload_patch_lane*2+1)*
+                            `RV64_XLEN +: `RV64_XLEN];
+                end
+            end
+        end
+    end
+
+    // Dispatch chooses a provisional physical lane before the registered
+    // operands return.  Once this stage owns the transaction, an ordinary
+    // base ALU instruction can use either EX0 or EX1.  Retarget it when the
+    // selected ALU has no base-operation capacity and the peer does.  The
+    // separate availability sideband is payload-independent; pipe_ready is
+    // not, and using pipe_ready for this decision would create a route ->
+    // payload -> ready -> route combinational loop.
+    function automatic banked_base_alu_payload;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            banked_base_alu_payload =
+                (payload[34:32] == `RV64_ALU_EXT_BASE) &&
+                (payload[31:27] != `RV64_ALU_OP_INVALID) &&
+                !payload[16] && !payload[15] && !payload[14] &&
+                !payload[13] && !payload[10] && !payload[9] &&
+                !payload[8] && !payload[7] && !payload[6] &&
+                !payload[5] && !payload[4];
+        end
+    endfunction
+
+    function automatic banked_pairable_eq_payload;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_BR_OP_WIDTH-1:0] branch_op;
+        begin
+            branch_op = payload[18 +: `RV64_BR_OP_WIDTH];
+            banked_pairable_eq_payload =
+                (ENABLE_EQ_BRANCH_PAIRING != 0) &&
+                payload[14] && !payload[8] && !payload[5] &&
+                !payload[4] && !payload[41] &&
+                ((branch_op == `RV64_BR_OP_BEQ) ||
+                 (branch_op == `RV64_BR_OP_BNE));
+        end
+    endfunction
+
+    function automatic banked_hard_payload;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            banked_hard_payload =
+                payload[14] || payload[13] || payload[10] ||
+                payload[9] || payload[8] || payload[7] ||
+                payload[6] || payload[5] || payload[4];
+        end
+    endfunction
+
+    wire banked_regload_allocation_branch_pair =
+        !banked_window_regload && allocation_valid[1] &&
+        dispatch_pipe_valid[1] &&
+        (dispatch_pipe_id[
+             1*`OPENRV64_INSTR_ID_WIDTH +:
+             `OPENRV64_INSTR_ID_WIDTH] ==
+         allocation_id[0 +: `OPENRV64_INSTR_ID_WIDTH]) &&
+        banked_pairable_eq_payload(dispatch_pipe_payload[
+            1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]) &&
+        // The barrier scoreboard is a single bit, not a hard-instruction
+        // count.  Do not provisionally place a second hard operation behind
+        // the branch; otherwise retiring the branch could release that
+        // follower's persistent ordering state one cycle early.
+        !banked_hard_payload(allocation_meta[
+            1*RETIRE_META_WIDTH +:
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
+
+    reg banked_regload_window_capture_hard;
+    integer banked_regload_window_hard_pipe;
+    always @* begin
+        banked_regload_window_capture_hard = 1'b0;
+        for (banked_regload_window_hard_pipe = 0;
+             banked_regload_window_hard_pipe <
+                 `OPENRV64_EXEC_PIPE_COUNT;
+             banked_regload_window_hard_pipe =
+                 banked_regload_window_hard_pipe + 1) begin
+            if (dispatch_pipe_valid[banked_regload_window_hard_pipe] &&
+                banked_hard_payload(dispatch_pipe_payload[
+                    banked_regload_window_hard_pipe*
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                banked_regload_window_capture_hard = 1'b1;
+        end
+    end
+
+    wire banked_regload_lane0_flexible =
+        (banked_regload_lane0_pipe_mask[0] &&
+         banked_base_alu_payload(banked_regload_pipe_payload[
+             0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH])) ||
+        (banked_regload_lane0_pipe_mask[1] &&
+         banked_base_alu_payload(banked_regload_pipe_payload[
+             1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]));
+    wire banked_regload_lane1_flexible =
+        (banked_regload_lane1_pipe_mask[0] &&
+         banked_base_alu_payload(banked_regload_pipe_payload[
+             0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH])) ||
+        (banked_regload_lane1_pipe_mask[1] &&
+         banked_base_alu_payload(banked_regload_pipe_payload[
+             1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]));
+    wire [1:0] banked_regload_lane0_alu_source =
+        banked_regload_lane0_pipe_mask[1:0];
+    wire [1:0] banked_regload_lane1_alu_source =
+        banked_regload_lane1_pipe_mask[1:0];
+    wire [1:0] banked_regload_lane0_alu_alternate =
+        {banked_regload_lane0_alu_source[0],
+         banked_regload_lane0_alu_source[1]};
+    wire [1:0] banked_regload_lane1_alu_alternate =
+        {banked_regload_lane1_alu_source[0],
+         banked_regload_lane1_alu_source[1]};
+    wire banked_regload_lane0_reroute =
+        banked_regload_lane0_offer_eligible &&
+        banked_regload_lane0_flexible &&
+        !(|(banked_regload_lane0_alu_source & base_alu_available)) &&
+        (|(banked_regload_lane0_alu_alternate & base_alu_available));
+    wire banked_regload_lane1_reroute =
+        banked_regload_lane1_offer_eligible &&
+        banked_regload_lane1_flexible &&
+        !(|(banked_regload_lane1_alu_source & base_alu_available)) &&
+        (|(banked_regload_lane1_alu_alternate & base_alu_available));
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_lane0_target_mask =
+            banked_regload_lane0_reroute ?
+                {{(`OPENRV64_EXEC_PIPE_COUNT-2){1'b0}},
+                 banked_regload_lane0_alu_alternate} :
+                banked_regload_lane0_pipe_mask;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_lane1_target_mask =
+            banked_regload_lane1_reroute ?
+                {{(`OPENRV64_EXEC_PIPE_COUNT-2){1'b0}},
+                 banked_regload_lane1_alu_alternate} :
+                banked_regload_lane1_pipe_mask;
+
+    wire [`RV64_BR_OP_WIDTH-1:0] banked_regload_branch_op =
+        banked_regload_pipe_payload[
+            1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 18 +:
+            `RV64_BR_OP_WIDTH];
+    wire banked_regload_branch_taken =
+        (banked_regload_branch_op == `RV64_BR_OP_BEQ) ?
+            (banked_regload_operand_data[0 +: `RV64_XLEN] ==
+             banked_regload_operand_data[`RV64_XLEN +: `RV64_XLEN]) :
+            (banked_regload_operand_data[0 +: `RV64_XLEN] !=
+             banked_regload_operand_data[`RV64_XLEN +: `RV64_XLEN]);
+    assign banked_regload_branch_correct_now =
+        banked_regload_lane_operands_ready[0] &&
+        (banked_regload_branch_taken ==
+         banked_regload_pipe_payload[
+             1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 12]);
+
+    // Oldest lane wins if retargeting makes both lanes claim one ALU.  The
+    // younger lane remains resident and retries after the older handshake.
+    wire banked_regload_lane0_offer =
+        banked_regload_lane0_offer_eligible;
+    wire banked_regload_lane1_target_conflict =
+        banked_regload_lane0_offer &&
+        (|(banked_regload_lane0_target_mask &
+           banked_regload_lane1_target_mask));
+    // A branch-paired follower waits for the registered resolution.  Letting
+    // it issue on the branch handshake makes its valid depend on lane0 ready;
+    // a MEM follower then closes a ready/valid loop through LSU translation.
+    wire banked_regload_branch_follower_allowed =
+        !banked_regload_branch_pair_q ||
+        (banked_regload_branch_resolved_q &&
+         banked_regload_branch_correct_q);
+    wire banked_regload_lane1_offer =
+        banked_regload_lane1_offer_eligible &&
+        !banked_regload_lane1_target_conflict &&
+        banked_regload_branch_follower_allowed;
+    assign banked_regload_lane0_fire = banked_regload_lane0_offer &&
+        (|(banked_regload_lane0_target_mask & pipe_ready));
+    wire banked_regload_lane1_fire = banked_regload_lane1_offer &&
+        (|(banked_regload_lane1_target_mask & pipe_ready));
+    wire [1:0] banked_regload_lane_fire = {
+        banked_regload_lane1_fire, banked_regload_lane0_fire
+    };
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pipe_offer_mask =
+            (banked_regload_lane0_target_mask &
+             {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_lane0_offer}}) |
+            (banked_regload_lane1_target_mask &
+             {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_lane1_offer}});
+    // State is still stored under its provisional source pipe.  Clear that
+    // source on a successful retargeted handshake, not the transient target.
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pipe_fire_mask =
+            (banked_regload_lane0_pipe_mask &
+             {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_lane0_fire}}) |
+            (banked_regload_lane1_pipe_mask &
+             {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_lane1_fire}});
+    wire banked_regload_issue = |banked_regload_lane_fire;
+    assign banked_regload_complete = banked_regload_valid_q &&
+        (|(banked_regload_lane_valid_q)) &&
+        ((banked_regload_lane_valid_q &
+          ~banked_regload_lane_fire) == 2'b00);
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_issue_pipe_id;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
+        banked_regload_issue_pipe_slot;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*
+         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        banked_regload_issue_pipe_payload;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_issue_src1_producer_valid;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_issue_src1_producer_id;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_issue_src2_producer_valid;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_regload_issue_src2_producer_id;
+    integer banked_regload_route_source;
+    integer banked_regload_route_target;
+    always @* begin
+        banked_regload_issue_pipe_id =
+            {`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        banked_regload_issue_pipe_slot =
+            {`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH{1'b0}};
+        banked_regload_issue_pipe_payload =
+            {`OPENRV64_EXEC_PIPE_COUNT*
+             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+        banked_regload_issue_src1_producer_valid =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_regload_issue_src1_producer_id =
+            {`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        banked_regload_issue_src2_producer_valid =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_regload_issue_src2_producer_id =
+            {`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        for (banked_regload_route_target = 0;
+             banked_regload_route_target < `OPENRV64_EXEC_PIPE_COUNT;
+             banked_regload_route_target =
+                 banked_regload_route_target + 1) begin
+            for (banked_regload_route_source = 0;
+                 banked_regload_route_source < `OPENRV64_EXEC_PIPE_COUNT;
+                 banked_regload_route_source =
+                     banked_regload_route_source + 1) begin
+                if ((banked_regload_lane0_target_mask[
+                         banked_regload_route_target] &&
+                     banked_regload_lane0_pipe_mask[
+                         banked_regload_route_source]) ||
+                    (banked_regload_lane1_target_mask[
+                         banked_regload_route_target] &&
+                     banked_regload_lane1_pipe_mask[
+                         banked_regload_route_source] &&
+                     !banked_regload_lane1_target_conflict)) begin
+                    banked_regload_issue_pipe_id[
+                        banked_regload_route_target*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] =
+                        banked_regload_pipe_id_q[
+                            banked_regload_route_source*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                    banked_regload_issue_pipe_slot[
+                        banked_regload_route_target*SLOT_WIDTH +:
+                        SLOT_WIDTH] = banked_regload_pipe_slot_q[
+                            banked_regload_route_source*SLOT_WIDTH +:
+                            SLOT_WIDTH];
+                    banked_regload_issue_pipe_payload[
+                        banked_regload_route_target*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] =
+                        banked_regload_pipe_payload[
+                            banked_regload_route_source*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+                    banked_regload_issue_src1_producer_valid[
+                        banked_regload_route_target] =
+                        banked_regload_src1_producer_valid_q[
+                            banked_regload_route_source];
+                    banked_regload_issue_src1_producer_id[
+                        banked_regload_route_target*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] =
+                        banked_regload_src1_producer_id_q[
+                            banked_regload_route_source*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                    banked_regload_issue_src2_producer_valid[
+                        banked_regload_route_target] =
+                        banked_regload_src2_producer_valid_q[
+                            banked_regload_route_source];
+                    banked_regload_issue_src2_producer_id[
+                        banked_regload_route_target*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] =
+                        banked_regload_src2_producer_id_q[
+                            banked_regload_route_source*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                end
+            end
+        end
+    end
+
+    assign pipe_valid = (BANKED_GPR != 0) ?
+        banked_regload_pipe_offer_mask :
+        dispatch_pipe_valid;
+    assign pipe_id = (BANKED_GPR != 0) ? banked_regload_issue_pipe_id :
+                     dispatch_pipe_id;
+    assign pipe_slot = (BANKED_GPR != 0) ? banked_regload_issue_pipe_slot :
+                       dispatch_pipe_slot;
+    assign pipe_payload = (BANKED_GPR != 0) ?
+        banked_regload_issue_pipe_payload : dispatch_pipe_payload;
+    assign pipe_src1_producer_valid = (BANKED_GPR != 0) ?
+        banked_regload_issue_src1_producer_valid :
+        dispatch_pipe_src1_producer_valid;
+    assign pipe_src1_producer_id = (BANKED_GPR != 0) ?
+        banked_regload_issue_src1_producer_id :
+        dispatch_pipe_src1_producer_id;
+    assign pipe_src2_producer_valid = (BANKED_GPR != 0) ?
+        banked_regload_issue_src2_producer_valid :
+        dispatch_pipe_src2_producer_valid;
+    assign pipe_src2_producer_id = (BANKED_GPR != 0) ?
+        banked_regload_issue_src2_producer_id :
+        dispatch_pipe_src2_producer_id;
 
     // Source-split simulation probes keep MEM0 load forwarding from being
     // reported as EXU forwarding in the performance harness.
@@ -1497,11 +2443,10 @@ module openrv64_backend_3p #(
         end
     end
 
-    wire [3:0] banked_mem_operand_source =
-        banked_read_mem_forwarded_q | banked_read_mem_forward_valid;
     wire [3:0] banked_mem_forward_issue_operand =
-        banked_mem_operand_source &
-        {{2{allocation_valid[1]}}, {2{allocation_valid[0]}}};
+        banked_regload_mem_forwarded_q &
+        {{2{banked_regload_lane1_fire}},
+         {2{banked_regload_lane0_fire}}};
     wire banked_write_request = (BANKED_GPR != 0) && (|gpr_write[1:0]);
     wire [1:0] banked_write_accept =
         gpr_write[1:0] & gpr_write_ack[1:0];
@@ -1576,6 +2521,28 @@ module openrv64_backend_3p #(
     wire banked_read_write_conflict =
         |banked_read_write_conflict_pairs;
 
+    wire [1:0] banked_regload_allocation_hard;
+    genvar banked_regload_hard_lane;
+    generate
+        for (banked_regload_hard_lane = 0;
+             banked_regload_hard_lane < 2;
+             banked_regload_hard_lane =
+                 banked_regload_hard_lane + 1) begin :
+                g_banked_regload_hard
+            wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+                allocation_payload = allocation_meta[
+                    banked_regload_hard_lane*RETIRE_META_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+            assign banked_regload_allocation_hard[
+                banked_regload_hard_lane] = allocation_valid[
+                    banked_regload_hard_lane] &&
+                banked_hard_payload(allocation_payload);
+        end
+    endgenerate
+    wire banked_regload_capture_hard = banked_window_regload ?
+        banked_regload_window_capture_hard :
+        (|banked_regload_allocation_hard);
+
     integer banked_response_port;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -1586,32 +2553,49 @@ module openrv64_backend_3p #(
             banked_read_pending_q <= 4'b0000;
             banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_read_ack_q <= 4'b0000;
-        end else if (flush_i || squash_frontend_i || banked_gpr_drain_q ||
-                     (|allocation_valid)) begin
-            banked_read_done_q <= 4'b0000;
-            banked_read_forwarded_q <= 4'b0000;
-            banked_read_mem_forwarded_q <= 4'b0000;
-            banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
-            banked_read_ack_q <= gpr_read_ack[3:0];
-            for (banked_response_port = 0; banked_response_port < 4;
-                 banked_response_port = banked_response_port + 1) begin
-                if (gpr_read_ack[banked_response_port]) begin
-                    banked_read_pending_q[banked_response_port] <= 1'b0;
-                end else if (gpr_read_req[banked_response_port]) begin
-                    banked_read_pending_q[banked_response_port] <= 1'b1;
-                    banked_read_addr_q[
-                        banked_response_port*PHYS_REG_ADDR_WIDTH +:
-                        PHYS_REG_ADDR_WIDTH] <= gpr_storage_read_addr[
-                            banked_response_port*PHYS_REG_ADDR_WIDTH +:
-                            PHYS_REG_ADDR_WIDTH];
-                end
-            end
+            banked_read_response_to_input_q <= 4'b0000;
+            banked_read_response_to_regload_q <= 4'b0000;
+            banked_read_response_to_pending_q <= 4'b0000;
         end else if (BANKED_GPR != 0) begin
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+            banked_read_ack_q <= 4'b0000;
+            banked_read_response_to_input_q <= 4'b0000;
+            banked_read_response_to_regload_q <= 4'b0000;
+            banked_read_response_to_pending_q <= 4'b0000;
+`else
             banked_read_ack_q <= gpr_read_ack[3:0];
+            if (banked_window_regload) begin
+                banked_read_response_to_input_q <= 4'b0000;
+                banked_read_response_to_regload_q <= gpr_read_ack[3:0];
+                banked_read_response_to_pending_q <= 4'b0000;
+            end else begin
+                banked_read_response_to_input_q <= gpr_read_ack[3:0] &
+                    {4{!(|allocation_valid) && !flush_i &&
+                        !squash_frontend_i && !banked_gpr_drain_q}};
+                banked_read_response_to_regload_q <= gpr_read_ack[3:0] &
+                    {{2{allocation_valid[1]}},
+                     {2{allocation_valid[0]}}} &
+                    {4{banked_regload_allocation_to_stage}};
+                banked_read_response_to_pending_q <= gpr_read_ack[3:0] &
+                    {{2{allocation_valid[1]}},
+                     {2{allocation_valid[0]}}} &
+                    {4{banked_regload_allocation_to_pending}};
+            end
+`endif
+
+            if (flush_i || squash_frontend_i || banked_gpr_drain_q ||
+                banked_read_context_replace) begin
+                banked_read_done_q <= 4'b0000;
+                banked_read_forwarded_q <= 4'b0000;
+                banked_read_mem_forwarded_q <= 4'b0000;
+                banked_read_data_q <= {4*`RV64_XLEN{1'b0}};
+            end
+
             for (banked_response_port = 0; banked_response_port < 4;
                  banked_response_port = banked_response_port + 1) begin
-                if (banked_read_ack_q[banked_response_port] &&
-                    gpr_read_valid[banked_response_port]) begin
+                if (!(flush_i || squash_frontend_i || banked_gpr_drain_q ||
+                      banked_read_context_replace) &&
+                    banked_input_response_now[banked_response_port]) begin
                     banked_read_done_q[banked_response_port] <= 1'b1;
                     banked_read_forwarded_q[banked_response_port] <= 1'b0;
                     banked_read_mem_forwarded_q[
@@ -1624,8 +2608,10 @@ module openrv64_backend_3p #(
 
                 // Completion forwarding has priority over an impossible but
                 // defensively handled simultaneous stale storage response.
-                if (banked_read_forward_valid[banked_response_port] ||
-                    banked_read_mem_forward_valid[banked_response_port]) begin
+                if (!(flush_i || squash_frontend_i || banked_gpr_drain_q ||
+                      banked_read_context_replace) &&
+                    (banked_read_forward_valid[banked_response_port] ||
+                     banked_read_mem_forward_valid[banked_response_port])) begin
                     banked_read_done_q[banked_response_port] <= 1'b1;
                     banked_read_forwarded_q[banked_response_port] <= 1'b1;
                     banked_read_mem_forwarded_q[
@@ -1639,7 +2625,9 @@ module openrv64_backend_3p #(
                             `RV64_XLEN];
                 end
 
-                if (gpr_read_ack[banked_response_port]) begin
+                if (banked_read_context_replace) begin
+                    banked_read_pending_q[banked_response_port] <= 1'b0;
+                end else if (gpr_read_ack[banked_response_port]) begin
                     banked_read_pending_q[banked_response_port] <= 1'b0;
                 end else if (gpr_read_req[banked_response_port]) begin
                     banked_read_pending_q[banked_response_port] <= 1'b1;
@@ -1654,8 +2642,390 @@ module openrv64_backend_3p #(
             banked_read_pending_q <= 4'b0000;
             banked_read_addr_q <= {4*PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_read_ack_q <= 4'b0000;
+            banked_read_response_to_input_q <= 4'b0000;
+            banked_read_response_to_regload_q <= 4'b0000;
+            banked_read_response_to_pending_q <= 4'b0000;
             banked_read_forwarded_q <= 4'b0000;
             banked_read_mem_forwarded_q <= 4'b0000;
+        end
+    end
+
+    integer banked_regload_state_port;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            banked_regload_valid_q <= 1'b0;
+            banked_regload_lane_valid_q <= 2'b00;
+            banked_regload_lane_id_q <=
+                {2*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_operand_done_q <= 4'b0000;
+            banked_regload_operand_data_q <= {4*`RV64_XLEN{1'b0}};
+            banked_regload_mem_forwarded_q <= 4'b0000;
+            banked_regload_hard_q <= 1'b0;
+            banked_regload_branch_pair_q <= 1'b0;
+            banked_regload_branch_resolved_q <= 1'b0;
+            banked_regload_branch_correct_q <= 1'b0;
+            banked_regload_pipe_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pipe_id_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_pipe_slot_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH{1'b0}};
+            banked_regload_pipe_payload_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+            banked_regload_src1_producer_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_src1_producer_id_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_src2_producer_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_src2_producer_id_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_pipe_uses_rs1_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pipe_uses_rs2_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        end else if ((BANKED_GPR == 0) || flush_i ||
+                     squash_frontend_i) begin
+            banked_regload_valid_q <= 1'b0;
+            banked_regload_lane_valid_q <= 2'b00;
+            banked_regload_operand_done_q <= 4'b0000;
+            banked_regload_mem_forwarded_q <= 4'b0000;
+            banked_regload_hard_q <= 1'b0;
+            banked_regload_branch_pair_q <= 1'b0;
+            banked_regload_branch_resolved_q <= 1'b0;
+            banked_regload_branch_correct_q <= 1'b0;
+            banked_regload_pipe_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pipe_uses_rs1_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pipe_uses_rs2_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        end else begin
+            if (banked_regload_branch_pair_q &&
+                !banked_regload_branch_resolved_q &&
+                banked_regload_lane0_fire) begin
+                banked_regload_branch_resolved_q <= 1'b1;
+                banked_regload_branch_correct_q <=
+                    banked_regload_branch_correct_now;
+            end
+
+            // Capture a returned operand even if the older lane issues this
+            // cycle and the younger lane remains under pipe backpressure.
+            for (banked_regload_state_port = 0;
+                 banked_regload_state_port < 4;
+                 banked_regload_state_port =
+                     banked_regload_state_port + 1) begin
+                if (banked_regload_response_now[
+                        banked_regload_state_port]) begin
+                    banked_regload_operand_done_q[
+                        banked_regload_state_port] <= 1'b1;
+                    banked_regload_operand_data_q[
+                        banked_regload_state_port*`RV64_XLEN +:
+                        `RV64_XLEN] <= gpr_read_data[
+                            banked_regload_state_port*`RV64_XLEN +:
+                            `RV64_XLEN];
+                end
+            end
+
+            if (banked_regload_issue) begin
+                banked_regload_lane_valid_q <=
+                    banked_regload_lane_valid_q &
+                    ~banked_regload_lane_fire;
+                banked_regload_pipe_valid_q <=
+                    banked_regload_pipe_valid_q &
+                    ~banked_regload_pipe_fire_mask;
+            end
+
+            if (banked_regload_complete) begin
+                banked_regload_valid_q <= 1'b0;
+                banked_regload_lane_valid_q <= 2'b00;
+                banked_regload_operand_done_q <= 4'b0000;
+                banked_regload_mem_forwarded_q <= 4'b0000;
+                banked_regload_hard_q <= 1'b0;
+                banked_regload_branch_pair_q <= 1'b0;
+                banked_regload_branch_resolved_q <= 1'b0;
+                banked_regload_branch_correct_q <= 1'b0;
+                banked_regload_pipe_valid_q <=
+                    {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            end
+
+            // Promotion has priority over clearing the group that leaves at
+            // this edge.  Include a same-cycle pending response in the
+            // promoted operand image.
+            if (banked_regload_promote_pending) begin
+                banked_regload_valid_q <= 1'b1;
+                banked_regload_lane_valid_q <=
+                    banked_regload_pending_lane_valid_q;
+                banked_regload_lane_id_q <=
+                    banked_regload_pending_lane_id_q;
+                banked_regload_operand_done_q <=
+                    banked_regload_pending_operand_ready;
+                banked_regload_operand_data_q <=
+                    banked_regload_pending_operand_data;
+                banked_regload_mem_forwarded_q <=
+                    banked_regload_pending_mem_forwarded_q;
+                banked_regload_hard_q <=
+                    banked_regload_pending_hard_q;
+                banked_regload_branch_pair_q <=
+                    banked_regload_pending_branch_pair_q;
+                banked_regload_branch_resolved_q <= 1'b0;
+                banked_regload_branch_correct_q <= 1'b0;
+                banked_regload_pipe_valid_q <=
+                    banked_regload_pending_pipe_valid_q;
+                banked_regload_pipe_id_q <=
+                    banked_regload_pending_pipe_id_q;
+                banked_regload_pipe_slot_q <=
+                    banked_regload_pending_pipe_slot_q;
+                banked_regload_pipe_payload_q <=
+                    banked_regload_pending_pipe_payload_q;
+                banked_regload_src1_producer_valid_q <=
+                    banked_regload_pending_src1_producer_valid_q;
+                banked_regload_src1_producer_id_q <=
+                    banked_regload_pending_src1_producer_id_q;
+                banked_regload_src2_producer_valid_q <=
+                    banked_regload_pending_src2_producer_valid_q;
+                banked_regload_src2_producer_id_q <=
+                    banked_regload_pending_src2_producer_id_q;
+                banked_regload_pipe_uses_rs1_q <=
+                    banked_regload_pending_pipe_uses_rs1_q;
+                banked_regload_pipe_uses_rs2_q <=
+                    banked_regload_pending_pipe_uses_rs2_q;
+            end
+
+            // A new allocation may directly replace a non-hard group that
+            // completes at this edge.  When the old group stalls, the same
+            // allocation is captured by the pending-credit block below.
+            if (banked_regload_allocation_to_stage) begin
+                banked_regload_valid_q <= 1'b1;
+                banked_regload_lane_valid_q <=
+                    banked_regload_capture_lane_valid;
+                banked_regload_lane_id_q <=
+                    banked_regload_capture_lane_id;
+                banked_regload_hard_q <= banked_regload_capture_hard;
+                banked_regload_branch_pair_q <=
+                    banked_regload_allocation_branch_pair;
+                banked_regload_branch_resolved_q <= 1'b0;
+                banked_regload_branch_correct_q <= 1'b0;
+                banked_regload_pipe_valid_q <= dispatch_pipe_valid;
+                banked_regload_pipe_id_q <= dispatch_pipe_id;
+                banked_regload_pipe_slot_q <= dispatch_pipe_slot;
+                banked_regload_pipe_payload_q <= dispatch_pipe_payload;
+                banked_regload_src1_producer_valid_q <=
+                    dispatch_pipe_src1_producer_valid;
+                banked_regload_src1_producer_id_q <=
+                    dispatch_pipe_src1_producer_id;
+                banked_regload_src2_producer_valid_q <=
+                    dispatch_pipe_src2_producer_valid;
+                banked_regload_src2_producer_id_q <=
+                    dispatch_pipe_src2_producer_id;
+                banked_regload_pipe_uses_rs1_q <=
+                    dispatch_pipe_uses_rs1;
+                banked_regload_pipe_uses_rs2_q <=
+                    dispatch_pipe_uses_rs2;
+                for (banked_regload_state_port = 0;
+                     banked_regload_state_port < 4;
+                     banked_regload_state_port =
+                         banked_regload_state_port + 1) begin
+                    if (banked_window_regload) begin
+                        banked_regload_operand_done_q[
+                            banked_regload_state_port] <=
+                            banked_regload_ingress_operand_done[
+                                banked_regload_state_port];
+                        banked_regload_operand_data_q[
+                            banked_regload_state_port*`RV64_XLEN +:
+                            `RV64_XLEN] <=
+                            banked_regload_ingress_operand_data[
+                                banked_regload_state_port*`RV64_XLEN +:
+                                `RV64_XLEN];
+                        banked_regload_mem_forwarded_q[
+                            banked_regload_state_port] <= 1'b0;
+                    end else if (!allocation_valid[
+                                     banked_regload_state_port / 2]) begin
+                        banked_regload_operand_done_q[
+                            banked_regload_state_port] <= 1'b1;
+                        banked_regload_operand_data_q[
+                            banked_regload_state_port*`RV64_XLEN +:
+                            `RV64_XLEN] <= {`RV64_XLEN{1'b0}};
+                        banked_regload_mem_forwarded_q[
+                            banked_regload_state_port] <= 1'b0;
+                    end else begin
+                        banked_regload_operand_done_q[
+                            banked_regload_state_port] <=
+                            banked_read_ready[
+                                banked_regload_state_port];
+                        banked_regload_operand_data_q[
+                            banked_regload_state_port*`RV64_XLEN +:
+                            `RV64_XLEN] <= dispatch_gpr_read_data[
+                                banked_regload_state_port*`RV64_XLEN +:
+                                `RV64_XLEN];
+                        banked_regload_mem_forwarded_q[
+                            banked_regload_state_port] <=
+                            banked_read_mem_forwarded_q[
+                                banked_regload_state_port] ||
+                            banked_read_mem_forward_valid[
+                                banked_regload_state_port];
+                    end
+                end
+            end
+        end
+    end
+
+    integer banked_regload_pending_state_port;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            banked_regload_pending_valid_q <= 1'b0;
+            banked_regload_pending_lane_valid_q <= 2'b00;
+            banked_regload_pending_lane_id_q <=
+                {2*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_pending_operand_done_q <= 4'b0000;
+            banked_regload_pending_operand_data_q <=
+                {4*`RV64_XLEN{1'b0}};
+            banked_regload_pending_mem_forwarded_q <= 4'b0000;
+            banked_regload_pending_hard_q <= 1'b0;
+            banked_regload_pending_branch_pair_q <= 1'b0;
+            banked_regload_pending_pipe_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pending_pipe_id_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_pending_pipe_slot_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH{1'b0}};
+            banked_regload_pending_pipe_payload_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+            banked_regload_pending_src1_producer_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pending_src1_producer_id_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_pending_src2_producer_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pending_src2_producer_id_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_pending_pipe_uses_rs1_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pending_pipe_uses_rs2_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        end else if ((BANKED_GPR == 0) || flush_i ||
+                     squash_frontend_i) begin
+            banked_regload_pending_valid_q <= 1'b0;
+            banked_regload_pending_lane_valid_q <= 2'b00;
+            banked_regload_pending_operand_done_q <= 4'b0000;
+            banked_regload_pending_mem_forwarded_q <= 4'b0000;
+            banked_regload_pending_hard_q <= 1'b0;
+            banked_regload_pending_branch_pair_q <= 1'b0;
+            banked_regload_pending_pipe_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pending_pipe_uses_rs1_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_regload_pending_pipe_uses_rs2_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        end else begin
+            for (banked_regload_pending_state_port = 0;
+                 banked_regload_pending_state_port < 4;
+                 banked_regload_pending_state_port =
+                     banked_regload_pending_state_port + 1) begin
+                if (banked_regload_pending_response_now[
+                        banked_regload_pending_state_port]) begin
+                    banked_regload_pending_operand_done_q[
+                        banked_regload_pending_state_port] <= 1'b1;
+                    banked_regload_pending_operand_data_q[
+                        banked_regload_pending_state_port*`RV64_XLEN +:
+                        `RV64_XLEN] <= gpr_read_data[
+                            banked_regload_pending_state_port*`RV64_XLEN +:
+                            `RV64_XLEN];
+                end
+            end
+
+            if (banked_regload_promote_pending) begin
+                banked_regload_pending_valid_q <= 1'b0;
+                banked_regload_pending_lane_valid_q <= 2'b00;
+                banked_regload_pending_operand_done_q <= 4'b0000;
+                banked_regload_pending_mem_forwarded_q <= 4'b0000;
+                banked_regload_pending_hard_q <= 1'b0;
+                banked_regload_pending_branch_pair_q <= 1'b0;
+                banked_regload_pending_pipe_valid_q <=
+                    {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            end
+
+            if (banked_regload_allocation_to_pending) begin
+                banked_regload_pending_valid_q <= 1'b1;
+                banked_regload_pending_lane_valid_q <=
+                    banked_regload_capture_lane_valid;
+                banked_regload_pending_lane_id_q <=
+                    banked_regload_capture_lane_id;
+                banked_regload_pending_hard_q <=
+                    banked_regload_capture_hard;
+                banked_regload_pending_branch_pair_q <=
+                    banked_regload_allocation_branch_pair;
+                banked_regload_pending_pipe_valid_q <=
+                    dispatch_pipe_valid;
+                banked_regload_pending_pipe_id_q <= dispatch_pipe_id;
+                banked_regload_pending_pipe_slot_q <= dispatch_pipe_slot;
+                banked_regload_pending_pipe_payload_q <=
+                    dispatch_pipe_payload;
+                banked_regload_pending_src1_producer_valid_q <=
+                    dispatch_pipe_src1_producer_valid;
+                banked_regload_pending_src1_producer_id_q <=
+                    dispatch_pipe_src1_producer_id;
+                banked_regload_pending_src2_producer_valid_q <=
+                    dispatch_pipe_src2_producer_valid;
+                banked_regload_pending_src2_producer_id_q <=
+                    dispatch_pipe_src2_producer_id;
+                banked_regload_pending_pipe_uses_rs1_q <=
+                    dispatch_pipe_uses_rs1;
+                banked_regload_pending_pipe_uses_rs2_q <=
+                    dispatch_pipe_uses_rs2;
+                for (banked_regload_pending_state_port = 0;
+                     banked_regload_pending_state_port < 4;
+                     banked_regload_pending_state_port =
+                         banked_regload_pending_state_port + 1) begin
+                    if (banked_window_regload) begin
+                        banked_regload_pending_operand_done_q[
+                            banked_regload_pending_state_port] <=
+                            banked_regload_ingress_operand_done[
+                                banked_regload_pending_state_port];
+                        banked_regload_pending_operand_data_q[
+                            banked_regload_pending_state_port*`RV64_XLEN +:
+                            `RV64_XLEN] <=
+                            banked_regload_ingress_operand_data[
+                                banked_regload_pending_state_port*`RV64_XLEN +:
+                                `RV64_XLEN];
+                        banked_regload_pending_mem_forwarded_q[
+                            banked_regload_pending_state_port] <= 1'b0;
+                    end else if (!allocation_valid[
+                                     banked_regload_pending_state_port / 2]) begin
+                        banked_regload_pending_operand_done_q[
+                            banked_regload_pending_state_port] <= 1'b1;
+                        banked_regload_pending_operand_data_q[
+                            banked_regload_pending_state_port*`RV64_XLEN +:
+                            `RV64_XLEN] <= {`RV64_XLEN{1'b0}};
+                        banked_regload_pending_mem_forwarded_q[
+                            banked_regload_pending_state_port] <= 1'b0;
+                    end else begin
+                        banked_regload_pending_operand_done_q[
+                            banked_regload_pending_state_port] <=
+                            banked_read_ready[
+                                banked_regload_pending_state_port];
+                        banked_regload_pending_operand_data_q[
+                            banked_regload_pending_state_port*`RV64_XLEN +:
+                            `RV64_XLEN] <= dispatch_gpr_read_data[
+                                banked_regload_pending_state_port*`RV64_XLEN +:
+                                `RV64_XLEN];
+                        banked_regload_pending_mem_forwarded_q[
+                            banked_regload_pending_state_port] <=
+                            banked_read_mem_forwarded_q[
+                                banked_regload_pending_state_port] ||
+                            banked_read_mem_forward_valid[
+                                banked_regload_pending_state_port];
+                    end
+                end
+            end
         end
     end
 
@@ -1678,8 +3048,14 @@ module openrv64_backend_3p #(
         .RELAX_HAZARDS_3P(RELAX_HAZARDS),
         .FREE_BRANCHES_3P(FREE_BRANCHES),
         .ENABLE_EQ_BRANCH_PAIRING_3P(ENABLE_EQ_BRANCH_PAIRING),
+        // Banked dispatch admits a safe BEQ/BNE pair provisionally.  The
+        // register-load stage compares the returned operands before it lets
+        // the follower issue.
+        .DEFER_EQ_BRANCH_PAIRING_3P(BANKED_GPR != 0),
         .ENABLE_ISSUE_WINDOW_3P(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW_3P(ENABLE_SPECULATION_WINDOW),
+        .DEFER_WINDOW_GPR_READ_3P(BANKED_GPR != 0),
+        .MAX_WINDOW_ISSUE_LANES_3P((BANKED_GPR != 0) ? 2 : 4),
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
         .CACHEABLE_BASE_3P(CACHEABLE_BASE),
         .CACHEABLE_SIZE_3P(CACHEABLE_SIZE),
@@ -1725,17 +3101,21 @@ module openrv64_backend_3p #(
         .decode_payload_3p_i(decode_payload_i),
         .decode_uses_rs1_3p_i(decode_uses_rs1_i),
         .decode_uses_rs2_3p_i(decode_uses_rs2_i),
-        .gpr_read_addr_3p_o(gpr_read_addr),
+        .gpr_read_addr_3p_o(dispatch_gpr_read_addr),
         .gpr_read_data_3p_i(dispatch_gpr_read_data),
         .candidate_operand_ready_3p_i(
             (BANKED_GPR != 0) ? banked_candidate_operand_ready : 6'b000000),
-        .allocation_ready_3p_i(allocation_ready &&
-            ((BANKED_GPR == 0) || banked_operands_ready)),
+        .allocation_ready_3p_i(banked_window_regload ? allocation_ready :
+            ((BANKED_GPR != 0) ? banked_dispatch_allocation_ready :
+             allocation_ready)),
         .allocation_id_3p_i(allocation_id),
         .allocation_slot_3p_i(allocation_slot),
         .allocation_valid_3p_o(allocation_valid),
         .allocation_meta_3p_o(allocation_meta),
-        .pipe_ready_3p_i(pipe_ready),
+        .pipe_ready_3p_i(banked_window_regload ?
+            banked_regload_ingress_pipe_ready :
+            ((BANKED_GPR != 0) ?
+             {`OPENRV64_EXEC_PIPE_COUNT{1'b1}} : pipe_ready)),
         .forward_valid_3p_i(local_forward_valid),
         .forward_rd_addr_3p_i(local_forward_rd_addr),
         .completion_forward_valid_3p_i(
@@ -1757,13 +3137,18 @@ module openrv64_backend_3p #(
         // when the prediction is correct and redirect_valid remains low.
         .conditional_resolve_id_3p_i(exec_redirect_id),
         .conditional_resolve_slot_3p_i(exec_redirect_slot),
-        .pipe_valid_3p_o(pipe_valid),
-        .pipe_id_3p_o(pipe_id), .pipe_slot_3p_o(pipe_slot),
-        .pipe_payload_3p_o(pipe_payload),
-        .pipe_src1_producer_valid_3p_o(pipe_src1_producer_valid),
-        .pipe_src1_producer_id_3p_o(pipe_src1_producer_id),
-        .pipe_src2_producer_valid_3p_o(pipe_src2_producer_valid),
-        .pipe_src2_producer_id_3p_o(pipe_src2_producer_id),
+        .pipe_valid_3p_o(dispatch_pipe_valid),
+        .pipe_id_3p_o(dispatch_pipe_id),
+        .pipe_slot_3p_o(dispatch_pipe_slot),
+        .pipe_payload_3p_o(dispatch_pipe_payload),
+        .pipe_uses_rs1_3p_o(dispatch_pipe_uses_rs1),
+        .pipe_uses_rs2_3p_o(dispatch_pipe_uses_rs2),
+        .pipe_src1_producer_valid_3p_o(
+            dispatch_pipe_src1_producer_valid),
+        .pipe_src1_producer_id_3p_o(dispatch_pipe_src1_producer_id),
+        .pipe_src2_producer_valid_3p_o(
+            dispatch_pipe_src2_producer_valid),
+        .pipe_src2_producer_id_3p_o(dispatch_pipe_src2_producer_id),
         .retire_valid_3p_i(dispatch_retire_valid),
         .retire_id_3p_i(dispatch_retire_id),
         .retire_slot_3p_i(dispatch_retire_slot),
@@ -1774,6 +3159,10 @@ module openrv64_backend_3p #(
         .retire_reg_write_3p_i(dispatch_retire_reg_write),
         .retire_rd_addr_3p_i(dispatch_retire_rd_addr),
         .retire_hard_3p_i(dispatch_retire_hard),
+        .recovery_valid_3p_i(banked_deferred_pair_recovery),
+        .recovery_reg_write_3p_i(
+            banked_deferred_follower_reg_write),
+        .recovery_rd_addr_3p_i(banked_deferred_follower_rd),
         .next_retire_id_3p_i(dispatch_next_retire_id),
         .next_retire_slot_3p_i(dispatch_next_retire_slot),
         .barrier_active_3p_o(barrier_active_o),
@@ -1870,6 +3259,7 @@ module openrv64_backend_3p #(
         .sret_allowed_i(1'b0), .sfence_vma_allowed_i(1'b0),
         .wb_clear_i(1'b0), .trace_id_i(64'd0),
         .issue_valid_3p_i(pipe_valid), .issue_ready_3p_o(pipe_ready),
+        .base_alu_available_3p_o(base_alu_available),
         .issue_unsupported_3p_o(pipe_unsupported),
         .issue_id_3p_i(pipe_id), .issue_slot_3p_i(pipe_slot),
         .issue_payload_3p_i(pipe_payload),
@@ -1969,7 +3359,9 @@ module openrv64_backend_3p #(
                  ((ENABLE_ISSUE_WINDOW != 0) &&
                   (ENABLE_SPECULATION_WINDOW == 0) &&
                   squash_frontend_i)),
-        .squash_younger_i(speculative_window && squash_frontend_i),
+        .squash_younger_i(
+            (speculative_window && squash_frontend_i) ||
+            banked_deferred_pair_recovery),
         .squash_id_i(exec_redirect_id),
         .squash_slot_i(exec_redirect_slot),
         .alloc_valid_i(allocation_valid),
@@ -2544,13 +3936,15 @@ module openrv64_backend_3p #(
         if ((ENABLE_SPECULATION_WINDOW != 0) &&
             (ENABLE_ISSUE_WINDOW == 0))
             $fatal(1, "speculation window requires issue window");
-        if ((BANKED_GPR != 0) && (ENABLE_ISSUE_WINDOW != 0))
-            $fatal(1, "banked 3P does not support the issue window");
-        if ((BANKED_GPR != 0) && (ENABLE_SPECULATION_WINDOW != 0))
-            $fatal(1, "banked 3P does not support speculative issue");
-        if ((BANKED_GPR != 0) &&
-            ((RELAX_WAW != 0) || (RELAX_HAZARDS != 0)))
-            $fatal(1, "banked 3P requires conservative hazards");
+        if ((BANKED_GPR != 0) && (FREE_BRANCHES != 0))
+            $fatal(1,
+                   "banked 3P must resolve branches in the register-load stage");
+        // The issue-window youngest-owner map already permits ordered WAW
+        // writers.  The banked register file serializes conflicting write
+        // address phases and retirement preserves program order, so only the
+        // broader raw/read-hazard relaxation remains unsupported here.
+        if ((BANKED_GPR != 0) && (RELAX_HAZARDS != 0))
+            $fatal(1, "banked 3P requires conservative RAW/read hazards");
         if ((BANKED_GPR != 0) &&
             ((BRANCH_COMPLETION_FORWARD_MASK != 3'b000) ||
              (ENABLE_FULL_FORWARDING != 0)))
@@ -2563,7 +3957,11 @@ module openrv64_backend_3p #(
 
     always @(posedge clk) begin
         if (rst_n && (BANKED_GPR != 0) &&
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+            (gpr_read_ack[3:0] != gpr_read_valid[3:0]))
+`else
             (banked_read_ack_q != gpr_read_valid[3:0]))
+`endif
             $fatal(1,
                    "banked 3P GPR read response did not match the requester ack pipeline");
         if (rst_n && (BANKED_GPR != 0) && banked_gpr_drain_q &&
@@ -2573,6 +3971,15 @@ module openrv64_backend_3p #(
         if (rst_n && !flush_i && free_branch_resolved &&
             exec_branch_resolved)
             $fatal(1, "free and EX1 branch resolutions collided");
+        if (rst_n && (BANKED_GPR != 0) &&
+            banked_regload_branch_pair_q &&
+            banked_regload_lane1_fire &&
+            !(banked_regload_branch_resolved_q ?
+                  banked_regload_branch_correct_q :
+                  (banked_regload_branch_correct_now &&
+                   banked_regload_lane0_fire)))
+            $fatal(1,
+                   "banked 3P issued a deferred branch follower before proving the prediction");
     end
 `endif
 

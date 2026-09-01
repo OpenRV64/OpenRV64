@@ -50,6 +50,13 @@ module openrv64_dispatch_reg_map_3p #(
     input  wire [2:0]                   retire_reg_write_i,
     input  wire [3*`RV64_REG_ADDR_WIDTH-1:0] retire_rd_addr_i,
 
+    // Precise removal of one allocated-but-never-issued instruction.  The
+    // conservative banked backend uses this only for the follower of a
+    // deferred equality branch whose prediction proved wrong.
+    input  wire                         recovery_valid_i,
+    input  wire                         recovery_reg_write_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] recovery_rd_addr_i,
+
     output wire [31:0]                  write_busy_o
 );
 
@@ -241,6 +248,10 @@ module openrv64_dispatch_reg_map_3p #(
 
     wire [31:0] busy_after_retire = (RELAX_WAW != 0) ?
         count_busy_after_retire : (write_busy_q & ~retire_write_hot);
+    wire [31:0] recovery_write_hot =
+        (recovery_valid_i && recovery_reg_write_i &&
+         (recovery_rd_addr_i != `RV64_REG_X0)) ?
+            (32'h0000_0001 << recovery_rd_addr_i) : 32'd0;
 
     wire writes0 = candidate_valid_i[0] && candidate_reg_write_i[0] &&
                    (rd_addr0 != `RV64_REG_X0);
@@ -466,16 +477,19 @@ module openrv64_dispatch_reg_map_3p #(
                 end
                 writer_count_q[writer_reg_idx] <=
                     writer_count_q[writer_reg_idx] + writer_alloc_count -
-                    writer_retire_count;
+                    writer_retire_count - recovery_write_hot[writer_reg_idx];
                 write_busy_q[writer_reg_idx] <=
                     (writer_count_q[writer_reg_idx] + writer_alloc_count -
-                     writer_retire_count) != 0;
+                     writer_retire_count -
+                     recovery_write_hot[writer_reg_idx]) != 0;
             end
             writer_count_q[`RV64_REG_X0] <=
                 {WRITER_COUNT_WIDTH{1'b0}};
             write_busy_q[`RV64_REG_X0] <= 1'b0;
         end else begin
-            write_busy_q <= busy_after_retire | allocation_write_hot;
+            write_busy_q <=
+                (busy_after_retire & ~recovery_write_hot) |
+                allocation_write_hot;
             write_busy_q[`RV64_REG_X0] <= 1'b0;
         end
     end
@@ -494,6 +508,12 @@ module openrv64_dispatch_reg_map_3p #(
                 (allocation_fire_i != 3'b011) &&
                 (allocation_fire_i != 3'b111))
                 $fatal(1, "3p register allocation must be a contiguous prefix");
+
+            if (recovery_valid_i && recovery_reg_write_i &&
+                (recovery_rd_addr_i != `RV64_REG_X0) &&
+                !write_busy_q[recovery_rd_addr_i])
+                $fatal(1,
+                       "3p register recovery removed an unowned writer");
 
             if (RELAX_WAW != 0) begin
                 for (assert_writer_reg = 1; assert_writer_reg < 32;

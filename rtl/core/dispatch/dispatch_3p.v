@@ -16,6 +16,10 @@ module openrv64_dispatch_3p #(
     parameter integer RELAX_HAZARDS = 0,
     parameter integer FREE_BRANCHES = 0,
     parameter integer ENABLE_EQ_BRANCH_PAIRING = 1,
+    // Admit a pairable BEQ/BNE follower without comparing placeholder
+    // operands.  A downstream registered operand stage must prove the
+    // prediction before it allows that follower to issue.
+    parameter integer DEFER_EQ_BRANCH_PAIRING = 0,
     parameter integer MAX_ISSUE_LANES = 3,
     parameter integer COUNT_WIDTH = $clog2(QUEUE_DEPTH + 1)
 ) (
@@ -78,6 +82,9 @@ module openrv64_dispatch_3p #(
     input  wire [2:0]                   retire_reg_write_i,
     input  wire [3*`RV64_REG_ADDR_WIDTH-1:0] retire_rd_addr_i,
     input  wire [2:0]                   retire_hard_i,
+    input  wire                         recovery_valid_i,
+    input  wire                         recovery_reg_write_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] recovery_rd_addr_i,
 
     output wire                         barrier_active_o,
     output wire [2:0]                   raw_hazard_o,
@@ -514,17 +521,20 @@ module openrv64_dispatch_3p #(
     // is not represented in candidate_payload.  Keep the ordinary branch
     // barrier in that case so stale GPR data cannot admit younger work.
     wire pair_eq0 = candidate_valid[0] && !free0 &&
-        (forward_match0 == 2'b00) &&
         is_pairable_eq_branch(payload0) &&
-        (branch_taken(payload0) == payload0[12]);
+        ((DEFER_EQ_BRANCH_PAIRING != 0) ||
+         ((forward_match0 == 2'b00) &&
+          (branch_taken(payload0) == payload0[12])));
     wire pair_eq1 = candidate_valid[1] && !free1 &&
-        (forward_match1 == 2'b00) &&
         is_pairable_eq_branch(payload1) &&
-        (branch_taken(payload1) == payload1[12]);
+        ((DEFER_EQ_BRANCH_PAIRING != 0) ||
+         ((forward_match1 == 2'b00) &&
+          (branch_taken(payload1) == payload1[12])));
     wire pair_eq2 = candidate_valid[2] && !free2 &&
-        (forward_match2 == 2'b00) &&
         is_pairable_eq_branch(payload2) &&
-        (branch_taken(payload2) == payload2[12]);
+        ((DEFER_EQ_BRANCH_PAIRING != 0) ||
+         ((forward_match2 == 2'b00) &&
+          (branch_taken(payload2) == payload2[12])));
     wire [2:0] candidate_barrier_free = {pair_eq2, pair_eq1, pair_eq0};
     wire forward_preferred0 = (forward_match0 == 2'b01) ||
                               (forward_match0 == 2'b10);
@@ -602,6 +612,9 @@ module openrv64_dispatch_3p #(
         .retire_valid_i(retire_valid_i),
         .retire_reg_write_i(retire_reg_write_i),
         .retire_rd_addr_i(retire_rd_addr_i),
+        .recovery_valid_i(recovery_valid_i),
+        .recovery_reg_write_i(recovery_reg_write_i),
+        .recovery_rd_addr_i(recovery_rd_addr_i),
         .write_busy_o(write_busy_o)
     );
 

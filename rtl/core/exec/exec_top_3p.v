@@ -54,6 +54,9 @@ module openrv64_exec_top_3p #(
 
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready_o,
+    // Capacity for a base integer ALU operation on {EX1, EX0}, independent
+    // of the payload currently routed to either pipe.
+    output wire [1:0]                   base_alu_available_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_unsupported_o,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
@@ -375,6 +378,7 @@ module openrv64_exec_top_3p #(
     wire mem0_issue_valid = issue_valid_i[2] && mem0_supported;
     wire mem1_issue_valid = issue_valid_i[3] && mem1_supported;
     wire ex0_issue_ready;
+    wire ex0_base_available;
     wire ex1_issue_ready;
     wire mem0_issue_ready;
     wire mem1_issue_ready;
@@ -406,6 +410,7 @@ module openrv64_exec_top_3p #(
                               ex1_order_ready;
     assign issue_ready_o[2] = mem0_issue_ready && mem0_supported;
     assign issue_ready_o[3] = mem1_issue_ready && mem1_supported;
+    assign base_alu_available_o = {ex1_issue_ready, ex0_base_available};
     assign issue_unsupported_o = {
         issue_valid_i[3] && !mem1_supported,
         issue_valid_i[2] && !mem0_supported,
@@ -424,6 +429,7 @@ module openrv64_exec_top_3p #(
         .flush_i(flush_i),
         .issue_valid_i(ex0_issue_valid),
         .issue_ready_o(ex0_issue_ready),
+        .base_available_o(ex0_base_available),
         .issue_id_i(issue_id_i[
             0*`OPENRV64_INSTR_ID_WIDTH +:
             `OPENRV64_INSTR_ID_WIDTH]),

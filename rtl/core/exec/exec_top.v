@@ -195,6 +195,7 @@ module openrv64_exec_top #(
     input  wire                         translation_bypass_3p_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_3p_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready_3p_o,
+    output wire [1:0]                   base_alu_available_3p_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_unsupported_3p_o,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_3p_i,
@@ -259,6 +260,7 @@ module openrv64_exec_top #(
             ) u_exec (.*);
             assign issue_ready_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign base_alu_available_3p_o = 2'b00;
             assign issue_unsupported_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign complete_valid_3p_o = 3'b000;
@@ -338,6 +340,7 @@ module openrv64_exec_top #(
                 .translation_bypass_i(translation_bypass_3p_i),
                 .issue_valid_i(issue_valid_3p_i),
                 .issue_ready_o(issue_ready_3p_o),
+                .base_alu_available_o(base_alu_available_3p_o),
                 .issue_unsupported_o(issue_unsupported_3p_o),
                 .issue_id_i(issue_id_3p_i),
                 .issue_slot_i(issue_slot_3p_i),
@@ -489,6 +492,7 @@ module openrv64_exec_top #(
             end
 
             assign clear_o = 1'b0;
+            assign base_alu_available_3p_o = 2'b00;
             assign alu_ready_o = 1'b0;
             assign lsu_ready_o = 1'b0;
             assign br_ready_o = 1'b0;

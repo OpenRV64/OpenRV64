@@ -114,7 +114,13 @@ module cmn_reg_file #(
     reg [READ_PORTS-1:0] read_bypass_q;
     reg [REG_WIDTH-1:0] read_bypass_data_q [READ_PORTS-1:0];
 
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+    // Experimental simulation upper bound: an accepted read has no data
+    // phase, so only delayed writes can keep the file non-quiescent.
+    assign quiescent_o = !(|write_valid_q);
+`else
     assign quiescent_o = !(|read_valid_q) && !(|write_valid_q);
+`endif
 
     function automatic integer wrapped_index;
         input integer start_index;
@@ -250,6 +256,31 @@ module cmn_reg_file #(
         end
     end
 
+`ifndef SYNTHESIS
+    // Stable hierarchy-visible view used by core-level simulation and trace
+    // code. Address zero is omitted so element zero represents physical p1,
+    // matching the existing PRF debug-vector convention.  The magic-read
+    // experiment also uses this view for an asynchronous same-cycle read.
+    wire [REG_WIDTH-1:0] regs [1:REG_COUNT-1];
+    wire [REG_WIDTH-1:0] magic_regs [0:REG_COUNT-1];
+    wire [(REG_COUNT-1)*REG_WIDTH-1:0] prf_debug_regs;
+    assign magic_regs[0] = {REG_WIDTH{1'b0}};
+    genvar debug_reg;
+    generate
+        for (debug_reg = 1; debug_reg < REG_COUNT;
+             debug_reg = debug_reg + 1) begin : g_debug_reg
+            localparam integer DEBUG_BANK = debug_reg % NUM_BANKS;
+            localparam integer DEBUG_ROW = debug_reg / NUM_BANKS;
+
+            assign regs[debug_reg] =
+                g_banks[DEBUG_BANK].bank.read_lines[DEBUG_ROW];
+            assign magic_regs[debug_reg] = regs[debug_reg];
+            assign prf_debug_regs[
+                (debug_reg-1)*REG_WIDTH +: REG_WIDTH] = regs[debug_reg];
+        end
+    endgenerate
+`endif
+
     genvar response_read_port;
     genvar response_write_port;
     generate
@@ -257,6 +288,16 @@ module cmn_reg_file #(
              response_read_port = response_read_port + 1) begin : g_read_response
             assign rp_ack_o[response_read_port] =
                 read_grant[response_read_port];
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+            assign rp_valid_o[response_read_port] =
+                read_grant[response_read_port];
+            assign rp_data_o[response_read_port] =
+                read_grant[response_read_port] ?
+                (read_bypass[response_read_port] ?
+                 read_bypass_data[response_read_port] :
+                 magic_regs[read_port_addr[response_read_port]]) :
+                {REG_WIDTH{1'b0}};
+`else
             assign rp_valid_o[response_read_port] =
                 read_valid_q[response_read_port];
             assign rp_data_o[response_read_port] =
@@ -267,6 +308,7 @@ module cmn_reg_file #(
                     read_response_bank_q[response_read_port]][
                     read_response_slot_q[response_read_port]]) :
                 {REG_WIDTH{1'b0}};
+`endif
         end
 
         for (response_write_port = 0; response_write_port < WRITE_PORTS;
@@ -298,9 +340,14 @@ module cmn_reg_file #(
                     {REG_WIDTH{1'b0}};
             end
         end else begin
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+            read_valid_q <= {READ_PORTS{1'b0}};
+            read_bypass_q <= {READ_PORTS{1'b0}};
+`else
             read_valid_q <= read_grant;
-            write_valid_q <= write_grant;
             read_bypass_q <= read_bypass;
+`endif
+            write_valid_q <= write_grant;
 
             for (state_read_port = 0;
                  state_read_port < READ_PORTS;
@@ -328,25 +375,6 @@ module cmn_reg_file #(
     end
 
 `ifndef SYNTHESIS
-    // Stable hierarchy-visible view used by core-level simulation and trace
-    // code. Address zero is omitted so element zero represents physical p1,
-    // matching the existing PRF debug-vector convention.
-    wire [REG_WIDTH-1:0] regs [1:REG_COUNT-1];
-    wire [(REG_COUNT-1)*REG_WIDTH-1:0] prf_debug_regs;
-    genvar debug_reg;
-    generate
-        for (debug_reg = 1; debug_reg < REG_COUNT;
-             debug_reg = debug_reg + 1) begin : g_debug_reg
-            localparam integer DEBUG_BANK = debug_reg % NUM_BANKS;
-            localparam integer DEBUG_ROW = debug_reg / NUM_BANKS;
-
-            assign regs[debug_reg] =
-                g_banks[DEBUG_BANK].bank.read_lines[DEBUG_ROW];
-            assign prf_debug_regs[
-                (debug_reg-1)*REG_WIDTH +: REG_WIDTH] = regs[debug_reg];
-        end
-    endgenerate
-
     integer hazard_read_port;
     integer hazard_write_port;
     always @(posedge clk or negedge rst_n) begin

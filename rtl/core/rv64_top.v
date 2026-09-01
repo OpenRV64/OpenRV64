@@ -1287,7 +1287,10 @@ module openrv64_rv64_top #(
         .retire_rs2_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
         .retire_reg_write_3p_i(3'b000),
         .retire_rd_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
-        .retire_hard_3p_i(3'b000)
+        .retire_hard_3p_i(3'b000),
+        .recovery_valid_3p_i(1'b0),
+        .recovery_reg_write_3p_i(1'b0),
+        .recovery_rd_addr_3p_i(`RV64_REG_X0)
     );
 
     openrv64_exec_top #(

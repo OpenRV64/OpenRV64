@@ -19,8 +19,11 @@ module openrv64_dispatch #(
     parameter integer MAX_ISSUE_LANES_3P = 3,
     parameter integer FREE_BRANCHES_3P = 0,
     parameter integer ENABLE_EQ_BRANCH_PAIRING_3P = 1,
+    parameter integer DEFER_EQ_BRANCH_PAIRING_3P = 0,
     parameter integer ENABLE_ISSUE_WINDOW_3P = 0,
     parameter integer ENABLE_SPECULATION_WINDOW_3P = 0,
+    parameter integer DEFER_WINDOW_GPR_READ_3P = 0,
+    parameter integer MAX_WINDOW_ISSUE_LANES_3P = 4,
     parameter integer ISSUE_WINDOW_DEPTH_3P = 16,
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE_3P =
         {`RV64_XLEN{1'b0}},
@@ -169,6 +172,10 @@ module openrv64_dispatch #(
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_3p_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_uses_rs1_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_uses_rs2_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         pipe_src1_producer_valid_3p_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH-1:0]
@@ -188,6 +195,9 @@ module openrv64_dispatch #(
     input  wire [2:0]                   retire_reg_write_3p_i,
     input  wire [3*`RV64_REG_ADDR_WIDTH-1:0] retire_rd_addr_3p_i,
     input  wire [2:0]                   retire_hard_3p_i,
+    input  wire                         recovery_valid_3p_i,
+    input  wire                         recovery_reg_write_3p_i,
+    input  wire [`RV64_REG_ADDR_WIDTH-1:0] recovery_rd_addr_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] next_retire_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] next_retire_slot_3p_i,
     output wire                         barrier_active_3p_o,
@@ -224,6 +234,10 @@ module openrv64_dispatch #(
             assign pipe_payload_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+            assign pipe_uses_rs1_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign pipe_uses_rs2_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_src1_producer_valid_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_src1_producer_id_3p_o =
@@ -282,7 +296,8 @@ module openrv64_dispatch #(
                 .RELAX_HAZARDS(RELAX_HAZARDS_3P),
                 .MAX_ISSUE_LANES(MAX_ISSUE_LANES_3P),
                 .FREE_BRANCHES(FREE_BRANCHES_3P),
-                .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING_3P)
+                .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING_3P),
+                .DEFER_EQ_BRANCH_PAIRING(DEFER_EQ_BRANCH_PAIRING_3P)
             ) u_dispatch (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_frontend_i(squash_frontend_3p_i),
@@ -332,6 +347,9 @@ module openrv64_dispatch #(
                 .retire_reg_write_i(retire_reg_write_3p_i),
                 .retire_rd_addr_i(retire_rd_addr_3p_i),
                 .retire_hard_i(retire_hard_3p_i),
+                .recovery_valid_i(recovery_valid_3p_i),
+                .recovery_reg_write_i(recovery_reg_write_3p_i),
+                .recovery_rd_addr_i(recovery_rd_addr_3p_i),
                 .barrier_active_o(strict_barrier),
                 .raw_hazard_o(strict_raw_hazard),
                 .waw_hazard_o(strict_waw_hazard),
@@ -354,6 +372,10 @@ module openrv64_dispatch #(
                   `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                 window_pipe_payload;
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                window_pipe_uses_rs1;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                window_pipe_uses_rs2;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                 window_pipe_src1_producer_valid;
             wire [`OPENRV64_EXEC_PIPE_COUNT*
                   `OPENRV64_INSTR_ID_WIDTH-1:0]
@@ -373,6 +395,8 @@ module openrv64_dispatch #(
             openrv64_dispatch_window_3p #(
                 .ENABLE(ENABLE_ISSUE_WINDOW_3P),
                 .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW_3P),
+                .DEFER_GPR_READ(DEFER_WINDOW_GPR_READ_3P),
+                .MAX_ISSUE_LANES(MAX_WINDOW_ISSUE_LANES_3P),
                 .DEPTH(ISSUE_WINDOW_DEPTH_3P),
                 .CACHEABLE_BASE(CACHEABLE_BASE_3P),
                 .CACHEABLE_SIZE(CACHEABLE_SIZE_3P),
@@ -401,6 +425,8 @@ module openrv64_dispatch #(
                 .pipe_id_o(window_pipe_id),
                 .pipe_slot_o(window_pipe_slot),
                 .pipe_payload_o(window_pipe_payload),
+                .pipe_uses_rs1_o(window_pipe_uses_rs1),
+                .pipe_uses_rs2_o(window_pipe_uses_rs2),
                 .pipe_src1_producer_valid_o(
                     window_pipe_src1_producer_valid),
                 .pipe_src1_producer_id_o(window_pipe_src1_producer_id),
@@ -527,6 +553,12 @@ module openrv64_dispatch #(
                 window_pipe_slot : strict_pipe_slot;
             assign pipe_payload_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_pipe_payload : strict_pipe_payload;
+            assign pipe_uses_rs1_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_uses_rs1 :
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign pipe_uses_rs2_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_uses_rs2 :
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_src1_producer_valid_3p_o =
                 (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_pipe_src1_producer_valid :

@@ -151,6 +151,7 @@ RETIRE_3P_SIM_BUILD := sim/retire_3p_tb.vvp
 RETIRE_3P_BANKED_SIM_BUILD := sim/retire_3p_banked_tb.vvp
 BACKEND_3P_SIM_BUILD := sim/backend_3p_tb.vvp
 BACKEND_3P_BANKED_SIM_BUILD := sim/backend_3p_banked_tb.vvp
+BACKEND_3P_BANKED_WINDOW_SIM_BUILD := sim/backend_3p_banked_window_tb.vvp
 TOP_3P_SIM_BUILD := sim/top_3p_tb.vvp
 TOP_3P_BANKED_SIM_BUILD := sim/top_3p_banked_tb.vvp
 TOP_4PF_SIM_BUILD := sim/top_4pf_tb.vvp

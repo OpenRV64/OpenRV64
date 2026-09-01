@@ -123,6 +123,18 @@ $(BACKEND_3P_BANKED_SIM_BUILD): tb/tb_backend_3p_banked.sv \
 		$(RETIRE_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) \
 		tb/tb_backend_3p_banked.sv
 
+$(BACKEND_3P_BANKED_WINDOW_SIM_BUILD): tb/tb_backend_3p_banked.sv \
+	$(BACKEND_SRCS) $(DISPATCH_SRCS) $(REG_SRCS) $(EXEC_SRCS) \
+	$(RETIRE_SRCS) $(EXCEPT_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_backend_3p_banked \
+		-Ptb_backend_3p_banked.ISSUE_WINDOW=1 \
+		-Ptb_backend_3p_banked.SPECULATION_WINDOW=1 \
+		-o $(BACKEND_3P_BANKED_WINDOW_SIM_BUILD) \
+		$(BACKEND_SRCS) $(DISPATCH_SRCS) $(REG_SRCS) $(EXEC_SRCS) \
+		$(RETIRE_SRCS) $(EXCEPT_SRCS) $(ARITH_DEPS) \
+		tb/tb_backend_3p_banked.sv
+
 $(TOP_3P_SIM_BUILD): tb/tb_top_3p.sv rtl/openrv64_top.sv $(CORE_SRCS) \
 	$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p sim

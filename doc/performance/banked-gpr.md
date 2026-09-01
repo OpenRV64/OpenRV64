@@ -348,3 +348,344 @@ They remain useful secondary evidence but are not the primary comparison.
 For the longer bare smoke, 2R1W saves 72,818 cycles (4.91%) relative to the
 1R1W address/data-phase baseline.  A matching 2R1W Sv39 rerun was intentionally
 not started after the benchmark clarification.
+
+## Registered operand-load stage
+
+The 2026-09-01 change makes the banked register access an explicit pipeline
+stage instead of forcing dispatch to retain the queue head until every read
+data phase returns.  The interface and requester now have the following cycle
+contract:
+
+| Cycle | Register path action |
+|---|---|
+| N, address | Dispatch presents up to four operand addresses and holds each request until its per-port ack.  The ack allocates that transaction to either the execution-facing operand group or its one-group pending credit. |
+| N+1, data | Data for the acked addresses returns with the prior-cycle ack as its ownership token.  The group captures each operand independently.  If the pending credit is free, dispatch may submit the next group's address phase in this same cycle. |
+| N+1 or later, issue | Each lane may issue independently after both operands are captured and its selected pipe accepts it.  A completed active group promotes the pending group without returning through dispatch. |
+
+An unacknowledged request remains asserted with a stable address.  Redirect
+poisons accepted responses, continues holding denied requests until ack, and
+blocks new traffic until `(|req) || !quiescent` becomes false.  Simulation
+fails a read, write, or redirect drain that remains pending for 100 cycles.
+Same-cycle read/write collisions return the acknowledged write data.  Reads
+of x0 are synthesized as zero and never enter bank storage; writes to x0 are
+suppressed.
+
+The stage also retains producer-qualified EX0/EX1 and registered load-only
+MEM0 forwarding.  A payload-independent EX0/EX1 capacity sideband permits an
+ordinary base-ALU packet to switch to the peer ALU after operand capture;
+using payload-dependent `ready` for that decision would create a route/ready
+combinational loop.
+
+Equality-branch pairing is resolved in the operand stage.  A BEQ/BNE and one
+non-hard follower may allocate together, but the follower is not offered to
+execution until the following cycle's registered branch resolution proves the
+prediction correct.  The extra branch-pair cycle keeps output valid independent
+of execution ready; allowing same-edge follower issue closed a ready/valid loop
+through a MEM follower and LSU translation.  Hard followers remain serialized
+because the barrier scoreboard is not counted.  On a wrong prediction, the
+follower has had no execution side effects:
+selective recovery removes its retirement entry, its conservative scoreboard
+writer, and its youngest-owner tag.  This rollback relies on banked 3P's
+required strict WAW mode; it is not a general speculative recovery mechanism.
+
+### Stage performance checkpoints
+
+All rows use the matched Sv39 RD32, 2R1W, EX0/EX1 plus registered load-only
+MEM0 forwarding, fall-through banked retirement, BP8, and timed-DDR3 setup.
+
+| Change | Cycles | Retired | IPC | Delta from preceding row | Managed run |
+|---|---:|---:|---:|---:|---|
+| Pre-stage fall-through-retire control | 105,835 | 52,589 | 0.4969 | baseline | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260831T230824Z` |
+| Explicit operand-load stage, branch pairing disabled | 117,971 | 52,589 | 0.4458 | +12,136 (+11.47%) | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T000239Z` |
+| Add post-capture EX0/EX1 retargeting | 117,971 | 52,589 | 0.4458 | 0 (0.00%) | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T001126Z` |
+| Add deferred equality-branch pairing and precise follower recovery | 115,913 | 52,589 | 0.4537 | -2,058 (-1.74%) | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T004012Z` |
+| Simulation-only same-cycle magic register reads | 115,913 | 52,589 | 0.4537 | 0 (0.00%) | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T011731Z` |
+
+The first stage run did not simply add one read-latency cycle to every group.
+Pure registered-read-latency no-issue cycles fell from 24,823 to 3,307 because
+address and data work overlap, but `gpr_ready_other` rose from 12,199 to
+43,534.  Total cycles consequently regressed by 12,136.  The stage changed
+when instructions become allocated and exposed the old rule that a hard
+branch cannot carry a following instruction through the new stage.  There are
+10,786 conditional branch resolutions in this workload, which made deferred
+branch pairing the first structural follow-up.  ALU retargeting's exact
+zero-cycle result rules out provisional EX0/EX1 placement as the cause of the
+regression.  Deferred branch pairing recovers 2,058 cycles, but the registered
+stage remains 10,078 cycles (9.52%) slower than the pre-stage control.  In the
+final run, dispatch is nonempty without issue for 76,159 cycles; the banked
+breakdown attributes 27,373 of those to writer-only blocking, 2,283 to mixed
+writer/read blocking, 3,979 to registered read latency, and 42,000 to
+`gpr_ready_other`.  This is aggregate attribution, not proof of one root cause.
+
+`OPENRV64_BANKED_GPR_MAGIC_READS` replaces the acknowledged register read's
+one-cycle data phase with an asynchronous simulation read.  It deliberately
+retains the two 2R1W banks, arbitration, bank conflicts, write blocking,
+forwarding, and the explicit regload stage.  This changed
+`blocked_on_reads_cycles` from 34,298 to 1,267 and classified zero cycles as
+`read_latency_only`, but total cycles and every top-level issue/retirement
+count were identical.  The apparent stall reductions were reclassified into
+other overlapping predicates, including `gpr_ready_other` rising from 42,000
+to 49,470.  The normal registered response is therefore already consumed in
+the first cycle that the allocated regload group can issue; removing its data
+latency does not shorten this workload's schedule.  This experiment only
+isolates the storage data phase behind the new stage.  It does **not** emulate
+the old 3P direct-read/direct-issue path and therefore cannot answer whether
+that path is the missing performance.
+
+### Corrected direct-path controls
+
+The initial magic-read comparison tested the wrong boundary.  The following
+controls distinguish storage latency from the mandatory regload stage and from
+the other current-normal-3P scheduler controls.
+
+These banked measurements use the conservative bring-up topology, not the
+intended post-issue-selection register-load stage.  The configuration forces
+`ISSUE_WINDOW=0`, the backend rejects `BANKED_GPR` combined with the issue
+window, and regload capture currently keys from `allocation_valid`.  Allocation
+and selected execution issue are the same event only on the strict dispatch
+path.  In the normal windowed path, retirement/rename allocation and selection
+of any dependency-cleared instruction are separate events.  Consequently,
+these results must not be interpreted as the cost of adding one pipeline stage
+after the current normal-3P scheduler.
+
+| Path and controls | Cycles | Retired | IPC | Managed run |
+|---|---:|---:|---:|---|
+| Banked regload stage with registered bank reads | 115,913 | 52,589 | 0.4537 | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T004012Z` |
+| Same regload stage with simulation-only asynchronous bank reads | 115,913 | 52,589 | 0.4537 | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T011731Z` |
+| Strict configuration using the old six-read/direct-issue path | 66,437 | 52,592 | 0.7916 | `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T012746Z` |
+| Current normal 3P configuration | 47,439 | 52,592 | 1.1086 | `coremark-sv39-linux-rd32-ddr3-20260901T012937Z` |
+
+Selecting the old direct path recovered 49,476 cycles from the staged magic
+run.  That is within six cycles of the magic run's 49,470-cycle
+`gpr_ready_other` bucket.  The near identity ties that bucket to the banked
+regload mode bundle, not physical register-bank data latency.  It does not
+isolate the stage register itself: the same `BANKED_GPR` parameter also changes
+maximum allocation/issue width from three lanes to two, selects two-wide
+banked retirement, enables the active-plus-pending group controller and its
+hard-group gate, and changes writer ownership/forwarding behavior.
+
+The 66,437-cycle point is an upper-bound isolation control, not a pure
+"banked writes plus magic reads" configuration: overriding `BANKED_GPR=0`
+also selects normal retirement.  It retains the strict banked experiment's
+disabled branch forwarding, strict WAW, disabled merged issue window, and
+disabled speculation window.  The current normal 3P point enables those
+features and takes another 18,998 cycles off.  That second delta is a combined
+configuration effect; these aggregate runs do not attribute it among the
+individual controls.  A clean banked-write/direct-magic-read measurement
+requires splitting storage/retirement selection from regload/issue-path
+selection.
+
+### Stage-local attribution
+
+Stage-local counters remove an ambiguity in the earlier dispatch-input
+`gpr_ready_other` classification.  Registered and magic-read runs produced the
+same schedule and the same stage state:
+
+| Stage state or event | Cycles/events |
+|---|---:|
+| Active group resident | 38,075 cycles |
+| Pending group resident | 0 cycles |
+| Active and pending groups resident | 0 cycles |
+| Allocate into active | 35,818 events |
+| Allocate into pending | 0 events |
+| Promote pending to active | 0 events |
+| Issue active and allocate its replacement together | 2,649 cycles |
+| No issue: stage empty, selection captured this cycle | 33,169 cycles |
+| No issue: stage empty, no selection available | 42,990 cycles |
+| No issue: active operands incomplete | 0 cycles |
+| No issue: execution pipe unavailable | 0 cycles |
+| No issue: deferred branch gate | 0 cycles |
+| No issue: stage output backpressured | 0 cycles |
+
+Thus an active group issues on its first eligible cycle; the pending credit is
+never used by this workload.  The explicit stage does not stall while full.
+It inserts a selection/capture edge before execution, which lengthens short
+dependency chains because a consumer can become selectable only after its
+producer result is known.  The historical A/B measurement attributes 10,078
+net cycles to that boundary: 105,835 before the explicit stage versus 115,913
+after it.  The other 39,398 cycles between the 66,437-cycle old direct path and
+the 105,835-cycle pre-stage banked path already existed in the banked
+dependency, read-gather, write, and retirement machinery.  Those 39,398 cycles
+cannot be charged to the new pipeline register.
+
+A rejected experiment made live EX0/EX1 forwarding satisfy the dispatch-side
+candidate-ready hint in addition to the retained forwarded-result bit.  Both
+the registered-read and magic-read configurations remained exactly 115,913
+cycles, 52,589 retired instructions, and 0.4537 IPC, with every stage-local
+counter above unchanged.  The managed runs were
+`coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T014850Z-3071629`
+and `coremark-sv39-3p-banked-2r1w-exu-mem-forward-ddr3-20260901T014850Z`.
+The RTL experiment was reverted; the existing local-forward path already
+covered the live result for scheduling purposes.
+
+### Post-issue-window register loads
+
+The intended topology now defers architectural GPR reads until after the
+merged issue window selects dependency-cleared work:
+
+`dispatch metadata and producer tags -> issue selection -> banked register
+load -> execution`
+
+The window admits at most two selected packets into the register-load stage.
+Producer-owned operands retain their qualified completion data; only unowned
+architectural operands consume the four banked read requesters.  The active
+plus pending group credit lets address phases continue while the preceding
+group waits for its registered data phase.  Hard/control work is selected
+alone so it cannot provisionally admit younger side effects behind a branch.
+
+| Configuration | Cycles | Retired | IPC | Versus explicit strict stage | Versus current normal 3P |
+|---|---:|---:|---:|---:|---:|
+| Explicit regload stage before a strict dispatcher | 115,913 | 52,589 | 0.4537 | baseline | 2.444x cycles |
+| Banked 2R1W regload after issue-window selection | **87,228** | 52,588 | **0.6029** | **-28,685 (-24.75%)** | **1.839x cycles** |
+| Current normal 3P matched control | **47,439** | 52,592 | **1.1086** | not configuration-matched | baseline |
+
+Final managed runs, both with Sv39 and timed DDR3 required:
+
+- banked post-window:
+  `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T023047Z`;
+- current normal 3P:
+  `coremark-sv39-linux-rd32-ddr3-20260901T023222Z`.
+
+The remembered approximately 95,000-cycle old-3P result was collected during
+early bring-up.  It is not a matched current-tree control and is deliberately
+excluded from the parity calculation.  The current parity gap is 39,789 cycles
+(83.87% over normal), not a comparison against that historical point.
+
+The final banked run's focused counters are:
+
+| State or event | Cycles/events |
+|---|---:|
+| Read-bank-conflict cycles / events | 0 / 0 |
+| Write-bank-conflict cycles / denied events | 4,453 / 4,453 |
+| Same-word read/write conflict cycles / events | 0 / 0 |
+| Blocked-on-read cycles | 15,064 |
+| No issue from registered read latency alone | 5,057 |
+| Regload active / pending / both active-and-pending | 50,214 / 5,248 / 5,248 cycles |
+| Allocate active / allocate pending / promote pending | 37,335 / 5,039 / 5,039 events |
+| Issue and allocate replacement together | 25,965 cycles |
+| Stage empty while allocating / empty with no selection | 22,230 / 14,140 cycles |
+| Window nonempty with no eligible instruction | 26,304 cycles |
+| Window RAW / hard / memory-order stall predicates | 26,129 / 23,211 / 17,485 cycles |
+| Retirement nonempty with no retirement / incomplete head | 48,425 / 43,859 cycles |
+| GPR write request cycles / accepts / denials | 32,001 / 37,364 / 4,453 |
+
+These predicates overlap and are not an additive decomposition.  The zero
+read-conflict result establishes that this workload's remaining gap is not
+caused by 2R1W read arbitration.  The 5,057 fixed response-latency cycles are
+real but explain only a minority of the 39,789-cycle gap.  The banked run also
+uses strict WAW, no branch completion forwarding, conservative hard ordering,
+and banked retirement; its window reports roughly twice the normal run's
+no-eligible, RAW, hard, and memory-order cycle predicates.  Those ratios are
+diagnostic, not causal proof, because the banked run is longer and the
+predicates overlap.
+
+#### Window dependency, WAW, and wakeup counters
+
+The window now reports actual overlapping-writer admission, resident older
+writers shadowed by the youngest-owner map, same-cycle completion wakeups, and
+the phase of every unavailable producer-tagged operand.  The harness trace
+widths are derived from `RETIRE_DEPTH`; the former fixed five-bit window wires
+could represent only 0 through 31 and would alias a full 32-entry count to
+zero.
+
+The matched instrumented runs are:
+
+- banked post-window:
+  `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T024307Z`;
+- current normal 3P:
+  `coremark-sv39-linux-rd32-ddr3-20260901T024446Z`.
+
+Both passed with the same 87,228-cycle and 47,439-cycle schedules reported
+above.  The final focused regression is
+`3p-banked-directed-20260901T024243Z` (`validation=pass`).
+
+| Window event or state | Banked post-window | Current normal 3P |
+|---|---:|---:|
+| WAW admissions over a live prior owner | 47,302 | 41,385 |
+| Prior owner ready / unready at admission | 5,527 / 41,775 | 7,827 / 33,558 |
+| Resident / same-decode-bundle WAW admission | 43,605 / 3,697 | 35,786 / 5,599 |
+| Shadowed older-writer entry-cycles | 1,099,575 | 478,312 |
+| Shadowed ready-writer entry-cycles | 278,321 | 136,639 |
+| Completion-woken operand events | 49,132 | 44,664 |
+| Wakeups from EX0 / EX1 / MEM0 | 25,534 / 6,307 / 17,291 | 21,473 / 6,486 / 16,705 |
+| Completion-woken entry events | 48,974 | 43,999 |
+| Woken entries eligible in the same cycle | 28,494 | 28,081 |
+
+The legacy `waw_hazard_o` result is zero by construction in window mode.  It
+does not mean that the workload lacks WAWs.  The youngest-owner map already
+admits a younger writer and replaces ownership without waiting for the older
+writer to retire, even when the top-level configuration prints
+`relax_waw=0`.  Consequently, merely toggling the legacy `RELAX_WAW` parameter
+is not a meaningful next performance experiment for this window.  The WAW
+policy is already relaxed and is heavily exercised: 41,775 of the banked
+run's 47,302 overlapping-writer admissions saw an unready prior owner.
+
+The stale banked-backend parameter check was then narrowed so it rejects only
+the still-unsupported broad `RELAX_HAZARDS` mode.  The persistent banked-window
+configuration now sets `RELAX_WAW=1`, making the printed configuration agree
+with the owner-map behavior.  Managed run
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T025052Z` passed at exactly
+87,228 cycles, 52,588 retired instructions, and 0.6029 IPC; every focused
+counter was unchanged.  This was the expected null result, not a performance
+gain.  The corresponding focused regression was
+`3p-banked-directed-20260901T025041Z` (`validation=pass`).
+
+Unavailable producer-tagged operands were classified each cycle as follows.
+These are operand-cycle snapshots, not disjoint retired-instruction counts;
+speculative entries that are later squashed are included.
+
+| Producer phase for unavailable operand | Banked post-window | Current normal 3P |
+|---|---:|---:|
+| Producer not issued, load-class | 443,021 | 187,267 |
+| Producer not issued, other | 787,220 | 319,498 |
+| Producer issued but incomplete, load-class | 63,430 | 45,876 |
+| Producer issued but incomplete, other | 39,241 | 0 |
+| Producer already complete but operand still unavailable | 0 | 0 |
+| Producer tag absent from the resident window | 0 | 0 |
+| **Total unavailable producer operand-cycles** | **1,332,912** | **552,641** |
+
+For the banked run, 1,230,241 operand-cycles, or 92.30%, wait for a producer
+that has not issued.  Only 102,671, or 7.70%, wait for an issued producer to
+return a result.  Unissued producers also account for 92.72% of the 780,271
+operand-cycle excess over current normal 3P.  This rejects the simple model
+that the remaining performance gap is primarily the one-cycle completion
+latency.  The 39,241 banked-only in-flight non-load operand-cycles are
+consistent with the added post-selection register-load boundary, but they are
+only 2.94% of the banked total and the configurations differ in other policy
+controls, so this counter is not a pure stage-latency measurement.
+
+Completion-to-window forwarding is already active in the scheduling cycle:
+28,494 banked entries became eligible in the same cycle that a matching
+completion woke an operand, almost identical in absolute count to the normal
+control's 28,081.  A useful forwarding follow-up therefore has to attack
+producer-to-consumer chaining before the producer is marked issued, or remove
+the extra banked execution-launch interval.  Adding another ordinary
+completion bypass is unlikely to recover the dominant 92.30% unissued-producer
+bucket.
+
+Redirect handling uses poison rather than combinational valid suppression.
+The registered regload output keeps `valid` independent of redirect and
+execution `ready`; selective recovery discards younger issued state, the LSQ
+kills or refuses younger memory work, and the regfile requester continues to
+hold every denied address until ack before draining accepted responses.  New
+traffic remains blocked until the regfile is quiescent.  This removed the two
+new regload-stage combinational loops reported by Verilator without changing
+the 87,228-cycle schedule.  Pre-existing `UNOPTFLAT` warnings remain in the
+platform translation/control and retirement paths; this work does not claim
+to remove them.
+
+The final focused regression is
+`3p-banked-directed-20260901T023036Z` (`validation=pass`).  It includes the new
+issue-window/backend case, held bank retries, delayed-response redirect drain,
+arithmetic and load/use dependencies, plus the strict banked top-level branch
+loop.  The persistent benchmark configuration is
+`run/cfg/coremark-sv39-3p-banked-window-2r1w-ddr3.cfg`.
+
+Final focused validation after branch recovery is
+`3p-banked-directed-20260901T002704Z`.  It covers held bank retries,
+address/issue overlap, back-to-back issue, pending-group promotion, EXU and
+MEM0 forwarding, redirect drain, wrong-prediction follower removal, and a
+correctly predicted branch/follower issue.  The final timed-DDR3 ACT4 result
+is `compliance-act4-platform-3p-banked-ddr3-20260901T003018Z`: 93 passed, zero
+failed, `validation=pass`, after a forced Verilator regeneration.  The final
+CoreMark run above was also forced-regenerated and ended `validation=pass`.

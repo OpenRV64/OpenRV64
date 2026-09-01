@@ -32,6 +32,8 @@
 module openrv64_dispatch_window_3p #(
     parameter integer ENABLE = 1,
     parameter integer ENABLE_SPECULATION = 0,
+    parameter integer DEFER_GPR_READ = 0,
+    parameter integer MAX_ISSUE_LANES = 4,
     parameter integer DEPTH = 16,
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE =
         {`RV64_XLEN{1'b0}},
@@ -72,6 +74,10 @@ module openrv64_dispatch_window_3p #(
     output reg  [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         pipe_payload_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_uses_rs1_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_uses_rs2_o,
     output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         pipe_src1_producer_valid_o,
     output reg  [`OPENRV64_EXEC_PIPE_COUNT*
@@ -129,6 +135,8 @@ module openrv64_dispatch_window_3p #(
     localparam integer PAYLOAD_ECALL = 6;
     localparam integer PAYLOAD_INSTR_FAULT = 5;
     localparam integer PAYLOAD_INSTR_PAGE_FAULT = 4;
+    localparam integer OPERAND_COUNT_WIDTH = $clog2((2 * DEPTH) + 1);
+    localparam integer SPEC_CROSS_COUNT_WIDTH = COUNT_WIDTH + 2;
 
     reg                                 valid_q [0:DEPTH-1];
     reg                                 issued_q [0:DEPTH-1];
@@ -401,8 +409,10 @@ module openrv64_dispatch_window_3p #(
     wire [COUNT_WIDTH:0] free_count = DEPTH - count_q;
     assign decode_ready_o[0] = !flush_i && !recovery_inhibit &&
                                allocation_ready_i && (free_count >= 1);
-    assign decode_ready_o[1] = decode_ready_o[0] && (free_count >= 2);
-    assign decode_ready_o[2] = decode_ready_o[1] && (free_count >= 3);
+    assign decode_ready_o[1] = (MAX_ISSUE_LANES > 1) &&
+                               decode_ready_o[0] && (free_count >= 2);
+    assign decode_ready_o[2] = (MAX_ISSUE_LANES > 2) &&
+                               decode_ready_o[1] && (free_count >= 3);
     wire decode_fire0 = decode_valid_i[0] && decode_ready_o[0];
     wire decode_fire1 = decode_valid_i[1] && decode_ready_o[1] && decode_fire0;
     wire decode_fire2 = decode_valid_i[2] && decode_ready_o[2] && decode_fire1;
@@ -430,18 +440,39 @@ module openrv64_dispatch_window_3p #(
     reg admit_src2_ready [0:2];
     reg [`RV64_XLEN-1:0] admit_src1_data [0:2];
     reg [`RV64_XLEN-1:0] admit_src2_data [0:2];
+    // WAW is deliberately relaxed in the issue-window owner map: a new
+    // writer replaces the youngest owner without waiting for older writers to
+    // retire.  The legacy waw_hazard_o output is therefore zero by
+    // construction.  These simulation-visible counters expose the real WAW
+    // opportunities and the older writers hidden behind the youngest owner.
+    reg [COUNT_WIDTH-1:0] trace_waw_admit_count;
+    reg [COUNT_WIDTH-1:0] trace_waw_admit_ready_count;
+    reg [COUNT_WIDTH-1:0] trace_waw_admit_unready_count;
+    reg [COUNT_WIDTH-1:0] trace_waw_admit_same_bundle_count;
+    reg [COUNT_WIDTH-1:0] trace_waw_admit_resident_count;
+    reg [COUNT_WIDTH-1:0] trace_waw_shadowed_writer_count;
+    reg [COUNT_WIDTH-1:0] trace_waw_shadowed_ready_count;
+    reg [31:0] admit_writer_hot;
     integer owner_idx;
     integer view_lane;
     integer view_port;
+    integer waw_idx;
     reg [`RV64_REG_ADDR_WIDTH-1:0] view_rs1;
     reg [`RV64_REG_ADDR_WIDTH-1:0] view_rs2;
     reg [`RV64_REG_ADDR_WIDTH-1:0] view_rd;
+    reg [`RV64_REG_ADDR_WIDTH-1:0] waw_rd;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] view_id;
     reg [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] view_completion;
 
     always_comb begin
         owner_valid_view = owner_valid_q;
         owner_ready_view = owner_ready_q;
+        trace_waw_admit_count = {COUNT_WIDTH{1'b0}};
+        trace_waw_admit_ready_count = {COUNT_WIDTH{1'b0}};
+        trace_waw_admit_unready_count = {COUNT_WIDTH{1'b0}};
+        trace_waw_admit_same_bundle_count = {COUNT_WIDTH{1'b0}};
+        trace_waw_admit_resident_count = {COUNT_WIDTH{1'b0}};
+        admit_writer_hot = 32'b0;
         for (owner_idx = 0; owner_idx < 32; owner_idx = owner_idx + 1) begin
             owner_id_view[owner_idx] = owner_id_q[owner_idx];
             owner_data_view[owner_idx] = owner_data_q[owner_idx];
@@ -511,7 +542,7 @@ module openrv64_dispatch_window_3p #(
                     admit_src1_tag[view_lane] = owner_id_view[view_rs1];
                     admit_src1_ready[view_lane] = owner_ready_view[view_rs1];
                     admit_src1_data[view_lane] = owner_data_view[view_rs1];
-                end else begin
+                end else if (DEFER_GPR_READ == 0) begin
                     admit_src1_data[view_lane] = gpr_read_data_i[
                         (view_lane*2+0)*`RV64_XLEN +: `RV64_XLEN];
                 end
@@ -523,7 +554,7 @@ module openrv64_dispatch_window_3p #(
                     admit_src2_tag[view_lane] = owner_id_view[view_rs2];
                     admit_src2_ready[view_lane] = owner_ready_view[view_rs2];
                     admit_src2_data[view_lane] = owner_data_view[view_rs2];
-                end else begin
+                end else if (DEFER_GPR_READ == 0) begin
                     admit_src2_data[view_lane] = gpr_read_data_i[
                         (view_lane*2+1)*`RV64_XLEN +: `RV64_XLEN];
                 end
@@ -539,6 +570,22 @@ module openrv64_dispatch_window_3p #(
             if (decode_fire[view_lane] &&
                 admit_payload[view_lane][PAYLOAD_REG_WRITE] &&
                 (view_rd != `RV64_REG_X0)) begin
+                if (owner_valid_view[view_rd]) begin
+                    trace_waw_admit_count = trace_waw_admit_count + 1'b1;
+                    if (owner_ready_view[view_rd])
+                        trace_waw_admit_ready_count =
+                            trace_waw_admit_ready_count + 1'b1;
+                    else
+                        trace_waw_admit_unready_count =
+                            trace_waw_admit_unready_count + 1'b1;
+                    if (admit_writer_hot[view_rd])
+                        trace_waw_admit_same_bundle_count =
+                            trace_waw_admit_same_bundle_count + 1'b1;
+                    else
+                        trace_waw_admit_resident_count =
+                            trace_waw_admit_resident_count + 1'b1;
+                end
+                admit_writer_hot[view_rd] = 1'b1;
                 owner_valid_view[view_rd] = 1'b1;
                 owner_ready_view[view_rd] = 1'b0;
                 owner_id_view[view_rd] = allocation_id_i[
@@ -549,6 +596,29 @@ module openrv64_dispatch_window_3p #(
         end
         owner_valid_view[`RV64_REG_X0] = 1'b0;
         owner_ready_view[`RV64_REG_X0] = 1'b0;
+    end
+
+    // Count resident writer entries that are no longer the architectural
+    // youngest owner for their destination.  These are the older WAW writers
+    // that a strict scoreboard would keep on the critical path.
+    always_comb begin
+        trace_waw_shadowed_writer_count = {COUNT_WIDTH{1'b0}};
+        trace_waw_shadowed_ready_count = {COUNT_WIDTH{1'b0}};
+        for (waw_idx = 0; waw_idx < DEPTH; waw_idx = waw_idx + 1) begin
+            waw_rd = payload_q[waw_idx][
+                PAYLOAD_RD +: `RV64_REG_ADDR_WIDTH];
+            if (valid_q[waw_idx] &&
+                payload_q[waw_idx][PAYLOAD_REG_WRITE] &&
+                (waw_rd != `RV64_REG_X0) &&
+                owner_valid_q[waw_rd] &&
+                (owner_id_q[waw_rd] != id_q[waw_idx])) begin
+                trace_waw_shadowed_writer_count =
+                    trace_waw_shadowed_writer_count + 1'b1;
+                if (result_ready_q[waw_idx])
+                    trace_waw_shadowed_ready_count =
+                        trace_waw_shadowed_ready_count + 1'b1;
+            end
+        end
     end
 
     generate
@@ -566,6 +636,10 @@ module openrv64_dispatch_window_3p #(
 
     reg src1_ready_now [0:DEPTH-1];
     reg src2_ready_now [0:DEPTH-1];
+    reg src1_wakeup_now [0:DEPTH-1];
+    reg src2_wakeup_now [0:DEPTH-1];
+    reg [2:0] src1_wakeup_port_now [0:DEPTH-1];
+    reg [2:0] src2_wakeup_port_now [0:DEPTH-1];
     reg [`RV64_XLEN-1:0] src1_data_now [0:DEPTH-1];
     reg [`RV64_XLEN-1:0] src2_data_now [0:DEPTH-1];
     integer ready_idx;
@@ -577,6 +651,10 @@ module openrv64_dispatch_window_3p #(
         for (ready_idx = 0; ready_idx < DEPTH; ready_idx = ready_idx + 1) begin
             src1_ready_now[ready_idx] = src1_ready_q[ready_idx];
             src2_ready_now[ready_idx] = src2_ready_q[ready_idx];
+            src1_wakeup_now[ready_idx] = 1'b0;
+            src2_wakeup_now[ready_idx] = 1'b0;
+            src1_wakeup_port_now[ready_idx] = 3'b000;
+            src2_wakeup_port_now[ready_idx] = 3'b000;
             src1_data_now[ready_idx] = payload_q[ready_idx][
                 PAYLOAD_RS1_DATA +: `RV64_XLEN];
             src2_data_now[ready_idx] = payload_q[ready_idx][
@@ -594,6 +672,8 @@ module openrv64_dispatch_window_3p #(
                     !src1_ready_now[ready_idx] &&
                     (src1_tag_q[ready_idx] == ready_id)) begin
                     src1_ready_now[ready_idx] = 1'b1;
+                    src1_wakeup_now[ready_idx] = 1'b1;
+                    src1_wakeup_port_now[ready_idx][ready_port] = 1'b1;
                     src1_data_now[ready_idx] = ready_completion[
                         `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
                 end
@@ -602,6 +682,8 @@ module openrv64_dispatch_window_3p #(
                     !src2_ready_now[ready_idx] &&
                     (src2_tag_q[ready_idx] == ready_id)) begin
                     src2_ready_now[ready_idx] = 1'b1;
+                    src2_wakeup_now[ready_idx] = 1'b1;
+                    src2_wakeup_port_now[ready_idx][ready_port] = 1'b1;
                     src2_data_now[ready_idx] = ready_completion[
                         `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
                 end
@@ -627,8 +709,46 @@ module openrv64_dispatch_window_3p #(
     // the gate count records candidates actually held by older_live_control.
     reg [COUNT_WIDTH-1:0] trace_completed_control_load_candidate_count;
     reg [COUNT_WIDTH-1:0] trace_completed_control_load_gate_count;
+    // Branch-specific speculation accounting.  LSQ "speculative" means
+    // merely "not the ordered retirement head" and cannot establish that an
+    // operation crossed an unresolved branch.  Keep that distinction exact
+    // by tagging each selectable entry with the number of older, unissued
+    // conditional branches it is crossing in this cycle.
+    reg [COUNT_WIDTH-1:0] trace_unresolved_conditional_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_ready_behind_unresolved_conditional_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_eligible_behind_unresolved_conditional_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_unresolved_conditional_depth [0:DEPTH-1];
+    reg [COUNT_WIDTH-1:0] trace_branch_spec_issue_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_spec_issue_alu_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_spec_issue_load_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_spec_issue_store_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_spec_issue_control_count;
+    reg [SPEC_CROSS_COUNT_WIDTH-1:0]
+        trace_branch_spec_issue_crossing_count;
+    reg trace_conditional_resolve_valid;
+    reg [COUNT_WIDTH-1:0] trace_resolve_younger_valid_count;
+    reg [COUNT_WIDTH-1:0] trace_resolve_younger_issued_count;
+    reg [COUNT_WIDTH-1:0] trace_resolve_younger_completed_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_completion_wakeup_operand_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_completion_wakeup_ex0_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_completion_wakeup_ex1_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_completion_wakeup_mem0_count;
+    reg [COUNT_WIDTH-1:0] trace_completion_wakeup_entry_count;
+    reg [COUNT_WIDTH-1:0] trace_completion_wakeup_eligible_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_unissued_load_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_unissued_other_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_inflight_load_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_inflight_other_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_completed_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_missing_count;
     integer eligible_idx;
     integer older_idx;
+    integer wait_idx;
+    integer producer_idx;
+    reg wait_found;
     reg older_unissued_hard;
     reg older_persistent_hard;
     reg older_unissued_mem;
@@ -649,8 +769,25 @@ module openrv64_dispatch_window_3p #(
         trace_completed_control_load_candidate_count =
             {COUNT_WIDTH{1'b0}};
         trace_completed_control_load_gate_count = {COUNT_WIDTH{1'b0}};
+        trace_unresolved_conditional_count = {COUNT_WIDTH{1'b0}};
+        trace_ready_behind_unresolved_conditional_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_eligible_behind_unresolved_conditional_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_completion_wakeup_operand_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_completion_wakeup_ex0_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_completion_wakeup_ex1_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_completion_wakeup_mem0_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_completion_wakeup_entry_count = {COUNT_WIDTH{1'b0}};
+        trace_completion_wakeup_eligible_count = {COUNT_WIDTH{1'b0}};
         for (eligible_idx = 0; eligible_idx < DEPTH;
              eligible_idx = eligible_idx + 1) begin
+            trace_unresolved_conditional_depth[eligible_idx] =
+                {COUNT_WIDTH{1'b0}};
             older_unissued_hard = 1'b0;
             older_persistent_hard = 1'b0;
             older_unissued_mem = 1'b0;
@@ -673,8 +810,12 @@ module openrv64_dispatch_window_3p #(
                     if (!issued_q[older_idx] && is_mem(payload_q[older_idx]))
                         older_unissued_mem = 1'b1;
                     if (!issued_q[older_idx] &&
-                        is_early_conditional_branch(payload_q[older_idx]))
+                        is_early_conditional_branch(payload_q[older_idx])) begin
                         older_unresolved_conditional = 1'b1;
+                        trace_unresolved_conditional_depth[eligible_idx] =
+                            trace_unresolved_conditional_depth[eligible_idx] +
+                            1'b1;
+                    end
                     if (payload_q[older_idx][PAYLOAD_BRANCH] ||
                         is_replayable_direct_jal(payload_q[older_idx])) begin
                         if (`OPENRV64_3P_RESULT_READY_CONTROL_RELEASE != 0)
@@ -693,6 +834,10 @@ module openrv64_dispatch_window_3p #(
             if (valid_q[eligible_idx] &&
                 is_persistent_hard(payload_q[eligible_idx]))
                 barrier_active_o = 1'b1;
+            if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                is_early_conditional_branch(payload_q[eligible_idx]))
+                trace_unresolved_conditional_count =
+                    trace_unresolved_conditional_count + 1'b1;
 
             eligible[eligible_idx] = valid_q[eligible_idx] &&
                 !issued_q[eligible_idx] && src1_ready_now[eligible_idx] &&
@@ -730,6 +875,18 @@ module openrv64_dispatch_window_3p #(
             if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
                 src1_ready_now[eligible_idx] &&
                 src2_ready_now[eligible_idx] &&
+                (trace_unresolved_conditional_depth[eligible_idx] != 0)) begin
+                trace_ready_behind_unresolved_conditional_count =
+                    trace_ready_behind_unresolved_conditional_count + 1'b1;
+                if (eligible[eligible_idx])
+                    trace_eligible_behind_unresolved_conditional_count =
+                        trace_eligible_behind_unresolved_conditional_count +
+                        1'b1;
+            end
+
+            if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                src1_ready_now[eligible_idx] &&
+                src2_ready_now[eligible_idx] &&
                 payload_q[eligible_idx][PAYLOAD_MEM_READ] &&
                 !payload_q[eligible_idx][PAYLOAD_MEM_WRITE] &&
                 !is_speculative_load_candidate(
@@ -750,6 +907,40 @@ module openrv64_dispatch_window_3p #(
                 raw_hazard_o[0] = 1'b1;
 
             if (valid_q[eligible_idx] && !issued_q[eligible_idx]) begin
+                if (src1_wakeup_now[eligible_idx] ||
+                    src2_wakeup_now[eligible_idx]) begin
+                    trace_completion_wakeup_entry_count =
+                        trace_completion_wakeup_entry_count + 1'b1;
+                    if (eligible[eligible_idx])
+                        trace_completion_wakeup_eligible_count =
+                            trace_completion_wakeup_eligible_count + 1'b1;
+                end
+                if (src1_wakeup_now[eligible_idx]) begin
+                    trace_completion_wakeup_operand_count =
+                        trace_completion_wakeup_operand_count + 1'b1;
+                    if (src1_wakeup_port_now[eligible_idx][0])
+                        trace_completion_wakeup_ex0_count =
+                            trace_completion_wakeup_ex0_count + 1'b1;
+                    if (src1_wakeup_port_now[eligible_idx][1])
+                        trace_completion_wakeup_ex1_count =
+                            trace_completion_wakeup_ex1_count + 1'b1;
+                    if (src1_wakeup_port_now[eligible_idx][2])
+                        trace_completion_wakeup_mem0_count =
+                            trace_completion_wakeup_mem0_count + 1'b1;
+                end
+                if (src2_wakeup_now[eligible_idx]) begin
+                    trace_completion_wakeup_operand_count =
+                        trace_completion_wakeup_operand_count + 1'b1;
+                    if (src2_wakeup_port_now[eligible_idx][0])
+                        trace_completion_wakeup_ex0_count =
+                            trace_completion_wakeup_ex0_count + 1'b1;
+                    if (src2_wakeup_port_now[eligible_idx][1])
+                        trace_completion_wakeup_ex1_count =
+                            trace_completion_wakeup_ex1_count + 1'b1;
+                    if (src2_wakeup_port_now[eligible_idx][2])
+                        trace_completion_wakeup_mem0_count =
+                            trace_completion_wakeup_mem0_count + 1'b1;
+                end
                 trace_unissued_count = trace_unissued_count + 1'b1;
                 if (src1_ready_now[eligible_idx] &&
                     src2_ready_now[eligible_idx])
@@ -783,6 +974,87 @@ module openrv64_dispatch_window_3p #(
         end
     end
 
+    // Snapshot each unavailable producer-tagged operand by producer phase.
+    // A same-cycle completion is intentionally absent here because the
+    // readiness view above has already woken that operand.
+    always_comb begin
+        trace_wait_unissued_load_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_wait_unissued_other_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_wait_inflight_load_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_wait_inflight_other_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_wait_completed_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_wait_missing_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        wait_found = 1'b0;
+        for (wait_idx = 0; wait_idx < DEPTH; wait_idx = wait_idx + 1) begin
+            if (valid_q[wait_idx] && !issued_q[wait_idx] &&
+                src1_producer_valid_q[wait_idx] &&
+                !src1_ready_now[wait_idx]) begin
+                wait_found = 1'b0;
+                for (producer_idx = 0; producer_idx < DEPTH;
+                     producer_idx = producer_idx + 1) begin
+                    if (valid_q[producer_idx] &&
+                        (id_q[producer_idx] == src1_tag_q[wait_idx])) begin
+                        wait_found = 1'b1;
+                        if (!issued_q[producer_idx]) begin
+                            if (payload_q[producer_idx][PAYLOAD_MEM_READ])
+                                trace_wait_unissued_load_count =
+                                    trace_wait_unissued_load_count + 1'b1;
+                            else
+                                trace_wait_unissued_other_count =
+                                    trace_wait_unissued_other_count + 1'b1;
+                        end else if (!result_ready_q[producer_idx]) begin
+                            if (payload_q[producer_idx][PAYLOAD_MEM_READ])
+                                trace_wait_inflight_load_count =
+                                    trace_wait_inflight_load_count + 1'b1;
+                            else
+                                trace_wait_inflight_other_count =
+                                    trace_wait_inflight_other_count + 1'b1;
+                        end else begin
+                            trace_wait_completed_count =
+                                trace_wait_completed_count + 1'b1;
+                        end
+                    end
+                end
+                if (!wait_found)
+                    trace_wait_missing_count =
+                        trace_wait_missing_count + 1'b1;
+            end
+            if (valid_q[wait_idx] && !issued_q[wait_idx] &&
+                src2_producer_valid_q[wait_idx] &&
+                !src2_ready_now[wait_idx]) begin
+                wait_found = 1'b0;
+                for (producer_idx = 0; producer_idx < DEPTH;
+                     producer_idx = producer_idx + 1) begin
+                    if (valid_q[producer_idx] &&
+                        (id_q[producer_idx] == src2_tag_q[wait_idx])) begin
+                        wait_found = 1'b1;
+                        if (!issued_q[producer_idx]) begin
+                            if (payload_q[producer_idx][PAYLOAD_MEM_READ])
+                                trace_wait_unissued_load_count =
+                                    trace_wait_unissued_load_count + 1'b1;
+                            else
+                                trace_wait_unissued_other_count =
+                                    trace_wait_unissued_other_count + 1'b1;
+                        end else if (!result_ready_q[producer_idx]) begin
+                            if (payload_q[producer_idx][PAYLOAD_MEM_READ])
+                                trace_wait_inflight_load_count =
+                                    trace_wait_inflight_load_count + 1'b1;
+                            else
+                                trace_wait_inflight_other_count =
+                                    trace_wait_inflight_other_count + 1'b1;
+                        end else begin
+                            trace_wait_completed_count =
+                                trace_wait_completed_count + 1'b1;
+                        end
+                    end
+                end
+                if (!wait_found)
+                    trace_wait_missing_count =
+                        trace_wait_missing_count + 1'b1;
+            end
+        end
+    end
+
     reg select_ex0_valid;
     reg select_ex1_valid;
     reg select_mem_valid;
@@ -791,11 +1063,20 @@ module openrv64_dispatch_window_3p #(
     reg [RETIRE_SLOT_WIDTH-1:0] select_ex1;
     reg [RETIRE_SLOT_WIDTH-1:0] select_mem;
     reg [RETIRE_SLOT_WIDTH-1:0] select_mem2;
+    reg select_ex0_admit;
+    reg select_ex1_admit;
+    reg select_mem_admit;
+    reg select_mem2_admit;
     integer select_offset;
     integer select_slot;
     integer selected_idx;
     integer selected_mem_pipe;
     integer selected_mem2_pipe;
+    integer selected_age_rank;
+    integer select_ex0_rank;
+    integer select_ex1_rank;
+    integer select_mem_rank;
+    integer select_mem2_rank;
     reg past_selected_mem;
     reg checked_next_mem;
     reg [2:0] trace_pipe_uses_rs1;
@@ -810,11 +1091,19 @@ module openrv64_dispatch_window_3p #(
         select_ex1 = {RETIRE_SLOT_WIDTH{1'b0}};
         select_mem = {RETIRE_SLOT_WIDTH{1'b0}};
         select_mem2 = {RETIRE_SLOT_WIDTH{1'b0}};
+        select_ex0_admit = 1'b0;
+        select_ex1_admit = 1'b0;
+        select_mem_admit = 1'b0;
+        select_mem2_admit = 1'b0;
         selected_idx = 0;
         selected_mem_pipe = `OPENRV64_EXEC_PIPE_MEM0;
         selected_mem2_pipe = `OPENRV64_EXEC_PIPE_MEM0;
         past_selected_mem = 1'b0;
         checked_next_mem = 1'b0;
+        select_ex0_rank = 0;
+        select_ex1_rank = 0;
+        select_mem_rank = 0;
+        select_mem2_rank = 0;
 
         // Reserve fixed-capability work first, in age order.
         for (select_offset = 0; select_offset < DEPTH;
@@ -905,6 +1194,116 @@ module openrv64_dispatch_window_3p #(
         if (select_mem2_valid &&
             is_mem1_op(payload_q[select_mem2]))
             selected_mem2_pipe = `OPENRV64_EXEC_PIPE_MEM1;
+
+        // The banked register-load interface has four operand read ports and
+        // therefore accepts at most two two-source instructions per cycle.
+        // Rank the already capability-selected packets by dynamic age rather
+        // than by physical pipe so a continuously busy ALU cannot starve an
+        // older memory operation.  The ordinary window keeps its four-packet
+        // behavior through the default parameter value.
+        selected_age_rank = 0;
+        if (select_ex0_valid) begin
+            selected_age_rank = 0;
+            if (select_ex1_valid &&
+                id_is_younger(id_q[select_ex0], id_q[select_ex1]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_mem_valid &&
+                id_is_younger(id_q[select_ex0], id_q[select_mem]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_mem2_valid &&
+                id_is_younger(id_q[select_ex0], id_q[select_mem2]))
+                selected_age_rank = selected_age_rank + 1;
+            select_ex0_rank = selected_age_rank;
+            select_ex0_admit = selected_age_rank < MAX_ISSUE_LANES;
+        end
+        if (select_ex1_valid) begin
+            selected_age_rank = 0;
+            if (select_ex0_valid &&
+                id_is_younger(id_q[select_ex1], id_q[select_ex0]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_mem_valid &&
+                id_is_younger(id_q[select_ex1], id_q[select_mem]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_mem2_valid &&
+                id_is_younger(id_q[select_ex1], id_q[select_mem2]))
+                selected_age_rank = selected_age_rank + 1;
+            select_ex1_rank = selected_age_rank;
+            select_ex1_admit = selected_age_rank < MAX_ISSUE_LANES;
+        end
+        if (select_mem_valid) begin
+            selected_age_rank = 0;
+            if (select_ex0_valid &&
+                id_is_younger(id_q[select_mem], id_q[select_ex0]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_ex1_valid &&
+                id_is_younger(id_q[select_mem], id_q[select_ex1]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_mem2_valid &&
+                id_is_younger(id_q[select_mem], id_q[select_mem2]))
+                selected_age_rank = selected_age_rank + 1;
+            select_mem_rank = selected_age_rank;
+            select_mem_admit = selected_age_rank < MAX_ISSUE_LANES;
+        end
+        if (select_mem2_valid) begin
+            selected_age_rank = 0;
+            if (select_ex0_valid &&
+                id_is_younger(id_q[select_mem2], id_q[select_ex0]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_ex1_valid &&
+                id_is_younger(id_q[select_mem2], id_q[select_ex1]))
+                selected_age_rank = selected_age_rank + 1;
+            if (select_mem_valid &&
+                id_is_younger(id_q[select_mem2], id_q[select_mem]))
+                selected_age_rank = selected_age_rank + 1;
+            select_mem2_rank = selected_age_rank;
+            select_mem2_admit = selected_age_rank < MAX_ISSUE_LANES;
+        end
+
+        // A deferred-read control does not resolve on the selector edge.  Do
+        // not let younger work enter the register-load stage beside it.  If a
+        // control is not the oldest selected packet, defer that control; if it
+        // is oldest, make it the sole accepted packet.  This makes a redirect
+        // able to discard the stage without losing an older packet that the
+        // window has already marked issued.
+        if (DEFER_GPR_READ != 0) begin
+            if (select_ex0_valid && is_hard(payload_q[select_ex0])) begin
+                if (select_ex0_rank == 0) begin
+                    select_ex1_admit = 1'b0;
+                    select_mem_admit = 1'b0;
+                    select_mem2_admit = 1'b0;
+                end else begin
+                    select_ex0_admit = 1'b0;
+                end
+            end
+            if (select_ex1_valid && is_hard(payload_q[select_ex1])) begin
+                if (select_ex1_rank == 0) begin
+                    select_ex0_admit = 1'b0;
+                    select_mem_admit = 1'b0;
+                    select_mem2_admit = 1'b0;
+                end else begin
+                    select_ex1_admit = 1'b0;
+                end
+            end
+            if (select_mem_valid && is_hard(payload_q[select_mem])) begin
+                if (select_mem_rank == 0) begin
+                    select_ex0_admit = 1'b0;
+                    select_ex1_admit = 1'b0;
+                    select_mem2_admit = 1'b0;
+                end else begin
+                    select_mem_admit = 1'b0;
+                end
+            end
+            if (select_mem2_valid && is_hard(payload_q[select_mem2])) begin
+                if (select_mem2_rank == 0) begin
+                    select_ex0_admit = 1'b0;
+                    select_ex1_admit = 1'b0;
+                    select_mem_admit = 1'b0;
+                end else begin
+                    select_mem2_admit = 1'b0;
+                end
+            end
+        end
+
         pipe_id_o =
             {`OPENRV64_EXEC_PIPE_COUNT*
              `OPENRV64_INSTR_ID_WIDTH{1'b0}};
@@ -913,6 +1312,8 @@ module openrv64_dispatch_window_3p #(
         pipe_payload_o =
             {`OPENRV64_EXEC_PIPE_COUNT*
              `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+        pipe_uses_rs1_o = {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        pipe_uses_rs2_o = {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
         pipe_src1_producer_valid_o =
             {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
         pipe_src1_producer_id_o =
@@ -954,6 +1355,8 @@ module openrv64_dispatch_window_3p #(
                 `OPENRV64_INSTR_ID_WIDTH] = src2_tag_q[selected_idx];
             trace_pipe_uses_rs1[0] = uses_rs1_q[selected_idx];
             trace_pipe_uses_rs2[0] = uses_rs2_q[selected_idx];
+            pipe_uses_rs1_o[0] = uses_rs1_q[selected_idx];
+            pipe_uses_rs2_o[0] = uses_rs2_q[selected_idx];
         end
         if (select_ex1_valid) begin
             selected_idx = select_ex1;
@@ -983,6 +1386,8 @@ module openrv64_dispatch_window_3p #(
                 `OPENRV64_INSTR_ID_WIDTH] = src2_tag_q[selected_idx];
             trace_pipe_uses_rs1[1] = uses_rs1_q[selected_idx];
             trace_pipe_uses_rs2[1] = uses_rs2_q[selected_idx];
+            pipe_uses_rs1_o[1] = uses_rs1_q[selected_idx];
+            pipe_uses_rs2_o[1] = uses_rs2_q[selected_idx];
         end
         if (select_mem_valid) begin
             pipe_id_o[
@@ -1014,6 +1419,8 @@ module openrv64_dispatch_window_3p #(
                 `OPENRV64_INSTR_ID_WIDTH] = src2_tag_q[select_mem];
             trace_pipe_uses_rs1[2] = uses_rs1_q[select_mem];
             trace_pipe_uses_rs2[2] = uses_rs2_q[select_mem];
+            pipe_uses_rs1_o[selected_mem_pipe] = uses_rs1_q[select_mem];
+            pipe_uses_rs2_o[selected_mem_pipe] = uses_rs2_q[select_mem];
         end
         if (select_mem2_valid) begin
             pipe_id_o[
@@ -1047,6 +1454,8 @@ module openrv64_dispatch_window_3p #(
                 uses_rs1_q[select_mem] | uses_rs1_q[select_mem2];
             trace_pipe_uses_rs2[2] =
                 uses_rs2_q[select_mem] | uses_rs2_q[select_mem2];
+            pipe_uses_rs1_o[selected_mem2_pipe] = uses_rs1_q[select_mem2];
+            pipe_uses_rs2_o[selected_mem2_pipe] = uses_rs2_q[select_mem2];
         end
     end
 
@@ -1057,15 +1466,15 @@ module openrv64_dispatch_window_3p #(
     always @* begin
         pipe_valid_o = {
             2'b00,
-            select_ex1_valid,
-            select_ex0_valid
+            select_ex1_admit,
+            select_ex0_admit
         };
-        if (select_mem_valid)
+        if (select_mem_admit)
             pipe_valid_o[selected_mem_pipe] = 1'b1;
         // Coupled acceptance is required: allowing the younger operation to
         // enter its queue alone would hide the still-unissued older operation
         // from the cross-queue memory-order gate.
-        if (select_mem2_valid &&
+        if (select_mem2_admit && select_mem_admit &&
             pipe_ready_i[selected_mem_pipe] &&
             pipe_ready_i[selected_mem2_pipe])
             pipe_valid_o[selected_mem2_pipe] = 1'b1;
@@ -1094,6 +1503,111 @@ module openrv64_dispatch_window_3p #(
         (is_mem1_op(payload_q[select_mem]) ? issue_mem1 : issue_mem0);
     wire issue_mem_secondary = select_mem2_valid &&
         (is_mem1_op(payload_q[select_mem2]) ? issue_mem1 : issue_mem0);
+
+    // Count only actual execution handshakes whose selected resident entry is
+    // younger than an older conditional branch that has not issued yet.  The
+    // crossing total counts relationships, so one instruction crossing two
+    // branches contributes one issue event and two crossings.
+    always_comb begin
+        trace_branch_spec_issue_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_spec_issue_alu_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_spec_issue_load_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_spec_issue_store_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_spec_issue_control_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_spec_issue_crossing_count =
+            {SPEC_CROSS_COUNT_WIDTH{1'b0}};
+
+        if (issue_ex0 &&
+            (trace_unresolved_conditional_depth[select_ex0] != 0)) begin
+            trace_branch_spec_issue_count =
+                trace_branch_spec_issue_count + 1'b1;
+            trace_branch_spec_issue_crossing_count =
+                trace_branch_spec_issue_crossing_count +
+                trace_unresolved_conditional_depth[select_ex0];
+            if (is_hard(payload_q[select_ex0]))
+                trace_branch_spec_issue_control_count =
+                    trace_branch_spec_issue_control_count + 1'b1;
+            else
+                trace_branch_spec_issue_alu_count =
+                    trace_branch_spec_issue_alu_count + 1'b1;
+        end
+        if (issue_ex1 &&
+            (trace_unresolved_conditional_depth[select_ex1] != 0)) begin
+            trace_branch_spec_issue_count =
+                trace_branch_spec_issue_count + 1'b1;
+            trace_branch_spec_issue_crossing_count =
+                trace_branch_spec_issue_crossing_count +
+                trace_unresolved_conditional_depth[select_ex1];
+            if (is_hard(payload_q[select_ex1]))
+                trace_branch_spec_issue_control_count =
+                    trace_branch_spec_issue_control_count + 1'b1;
+            else
+                trace_branch_spec_issue_alu_count =
+                    trace_branch_spec_issue_alu_count + 1'b1;
+        end
+        if (issue_mem_primary &&
+            (trace_unresolved_conditional_depth[select_mem] != 0)) begin
+            trace_branch_spec_issue_count =
+                trace_branch_spec_issue_count + 1'b1;
+            trace_branch_spec_issue_crossing_count =
+                trace_branch_spec_issue_crossing_count +
+                trace_unresolved_conditional_depth[select_mem];
+            if (payload_q[select_mem][PAYLOAD_MEM_WRITE])
+                trace_branch_spec_issue_store_count =
+                    trace_branch_spec_issue_store_count + 1'b1;
+            else
+                trace_branch_spec_issue_load_count =
+                    trace_branch_spec_issue_load_count + 1'b1;
+        end
+        if (issue_mem_secondary &&
+            (trace_unresolved_conditional_depth[select_mem2] != 0)) begin
+            trace_branch_spec_issue_count =
+                trace_branch_spec_issue_count + 1'b1;
+            trace_branch_spec_issue_crossing_count =
+                trace_branch_spec_issue_crossing_count +
+                trace_unresolved_conditional_depth[select_mem2];
+            if (payload_q[select_mem2][PAYLOAD_MEM_WRITE])
+                trace_branch_spec_issue_store_count =
+                    trace_branch_spec_issue_store_count + 1'b1;
+            else
+                trace_branch_spec_issue_load_count =
+                    trace_branch_spec_issue_load_count + 1'b1;
+        end
+    end
+
+    // Snapshot the work exposed to each resolving conditional.  Issued
+    // younger entries are the speculative work preserved on a correct
+    // prediction or discarded on a correction.  "Completed" deliberately
+    // means the result was already resident before this resolve pulse; a
+    // simultaneous younger completion may be counted one cycle late and is
+    // therefore excluded from this conservative snapshot.
+    integer trace_resolve_idx;
+    always_comb begin
+        trace_conditional_resolve_valid = conditional_resolve_valid_i &&
+            valid_q[conditional_resolve_slot_i] &&
+            (id_q[conditional_resolve_slot_i] ==
+             conditional_resolve_id_i);
+        trace_resolve_younger_valid_count = {COUNT_WIDTH{1'b0}};
+        trace_resolve_younger_issued_count = {COUNT_WIDTH{1'b0}};
+        trace_resolve_younger_completed_count = {COUNT_WIDTH{1'b0}};
+        if (trace_conditional_resolve_valid) begin
+            for (trace_resolve_idx = 0; trace_resolve_idx < DEPTH;
+                 trace_resolve_idx = trace_resolve_idx + 1) begin
+                if (valid_q[trace_resolve_idx] &&
+                    id_is_younger(id_q[trace_resolve_idx],
+                                  conditional_resolve_id_i)) begin
+                    trace_resolve_younger_valid_count =
+                        trace_resolve_younger_valid_count + 1'b1;
+                    if (issued_q[trace_resolve_idx])
+                        trace_resolve_younger_issued_count =
+                            trace_resolve_younger_issued_count + 1'b1;
+                    if (result_ready_q[trace_resolve_idx])
+                        trace_resolve_younger_completed_count =
+                            trace_resolve_younger_completed_count + 1'b1;
+                end
+            end
+        end
+    end
 
     integer entry_idx;
     integer completion_port;

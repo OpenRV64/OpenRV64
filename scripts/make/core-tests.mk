@@ -310,6 +310,9 @@ sim-backend-3p: $(BACKEND_3P_SIM_BUILD)
 sim-backend-3p-banked: $(BACKEND_3P_BANKED_SIM_BUILD)
 	vvp $(BACKEND_3P_BANKED_SIM_BUILD)
 
+sim-backend-3p-banked-window: $(BACKEND_3P_BANKED_WINDOW_SIM_BUILD)
+	vvp $(BACKEND_3P_BANKED_WINDOW_SIM_BUILD)
+
 sim-top-3p: $(TOP_3P_SIM_BUILD)
 	vvp $(TOP_3P_SIM_BUILD)
 

@@ -22,6 +22,10 @@ module openrv64_exec_pipe_ex0 #(
 
     input  wire                         issue_valid_i,
     output wire                         issue_ready_o,
+    // Payload-independent capacity for an ordinary base-ALU operation.
+    // The top-level issue_ready_o is deliberately payload-qualified and is
+    // therefore unsuitable for steering an operation onto an idle lane.
+    output wire                         base_available_o,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
@@ -410,6 +414,8 @@ module openrv64_exec_pipe_ex0 #(
     };
 
     wire output_available = !complete_valid_q || complete_ready_i;
+    assign base_available_o = !worker_pending_q && output_available &&
+                              !rotate_result_valid;
     assign issue_ready_o = !worker_pending_q &&
         ((base_selected && output_available && !rotate_result_valid) ||
          (rotate_selected && ENABLE_RV64ZBB && rotate_ready) ||

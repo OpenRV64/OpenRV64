@@ -65,6 +65,9 @@ module tb_reg_map_3p #(
         .retire_valid_i(retire_valid),
         .retire_reg_write_i(retire_reg_write),
         .retire_rd_addr_i(retire_rd_addr),
+        .recovery_valid_i(1'b0),
+        .recovery_reg_write_i(1'b0),
+        .recovery_rd_addr_i(`RV64_REG_X0),
         .write_busy_o(write_busy)
     );
 
