@@ -17,6 +17,7 @@ module openrv64_retire_3p_banked #(
         `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + 2*PHYS_REG_ADDR_WIDTH,
     parameter integer RESULT_WIDTH = `OPENRV64_RETIRE_RESULT_WIDTH,
     parameter integer ENABLE_EXTENSION = 0,
+    parameter integer BYPASS_GPR_WRITE = 0,
     parameter integer GPR_BANK_COUNT = 4,
     parameter integer GPR_BANK_SEL_BITS =
         (GPR_BANK_COUNT > 1) ? $clog2(GPR_BANK_COUNT) : 1
@@ -146,12 +147,14 @@ module openrv64_retire_3p_banked #(
         1*META_WIDTH + `OPENRV64_RETIRE_ALLOC_RD_LSB +:
         `RV64_REG_ADDR_WIDTH];
 
-    wire [1:0] write_mask_now = {
+    wire [1:0] architectural_write_mask = {
         candidate1 && !exception1 && issue_reg_write1 &&
             (issue_rd1 != `RV64_REG_X0),
         candidate0 && !exception0 && issue_reg_write0 &&
             (issue_rd0 != `RV64_REG_X0)
     };
+    wire [1:0] write_mask_now = (BYPASS_GPR_WRITE != 0) ?
+        2'b00 : architectural_write_mask;
     wire [2*PHYS_REG_ADDR_WIDTH-1:0] write_addr_now = {
         queue_meta_i[1*META_WIDTH + META_NEW_PHYS +:
                      PHYS_REG_ADDR_WIDTH],

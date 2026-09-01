@@ -179,6 +179,21 @@ $(COMPLIANCE_PLATFORM_3P_BANKED_DDR3_M_VLT_BUILD): \
 		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
 		tb/tb_compliance_platform.sv
 
+$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_M_VLT_BUILD): \
+		tb/tb_compliance_platform.sv $(PLATFORM_SRCS) $(CORE_SRCS) \
+		$(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
+	mkdir -p $(dir $@)
+	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		--top-module tb_compliance_platform -GENABLE_RV64M=1 \
+		-GBACKEND_CONFIG=2 -GBANKED_GPR_3P=1 \
+		-GCOMPLETION_FORWARD_MASK_3P=7 \
+		-GRETIRE_DEPTH=64 -GISSUE_WINDOW_DEPTH=32 \
+		-GPHYS_REG_COUNT=63 -GRENAME_MODE=1 \
+		-GISSUE_WINDOW=1 -GSPECULATION_WINDOW=1 \
+		-GDDR3_ENABLE=1 -GL2_BYTES=262144 -GL2_WAYS=8 \
+		--Mdir $(dir $@) $(CORE_SRCS) $(PLATFORM_SRCS) \
+		tb/tb_compliance_platform.sv
+
 $(COMPLIANCE_SMOKE_ELF): verification/compliance/smoke/smoke.S \
 		verification/compliance/smoke/link.ld
 	mkdir -p $(dir $@)

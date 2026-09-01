@@ -50,21 +50,21 @@ module openrv64_rv64i_gpr_3p #(
                 $clog2(BANKED_REG_COUNT);
             wire [5:0] banked_read_ack;
             wire [5:0] banked_read_valid;
-            wire [1:0] banked_write_ack;
-            wire [1:0] banked_write_valid;
+            wire [2:0] banked_write_ack;
+            wire [2:0] banked_write_valid;
             wire [5:0] banked_read_req;
-            wire [1:0] banked_write_req;
+            wire [2:0] banked_write_req;
             wire [5:0] banked_read_zero;
-            wire [1:0] banked_write_zero;
+            wire [2:0] banked_write_zero;
             wire [6*`RV64_XLEN-1:0] banked_read_data_raw;
             wire [6*`RV64_XLEN-1:0] banked_read_data;
             wire [6*BANKED_ADDR_WIDTH-1:0]
                 banked_storage_read_addr;
-            wire [2*BANKED_ADDR_WIDTH-1:0]
+            wire [3*BANKED_ADDR_WIDTH-1:0]
                 banked_storage_write_addr;
             wire banked_file_quiescent;
             reg [5:0] banked_read_zero_q;
-            reg [1:0] banked_write_zero_q;
+            reg [2:0] banked_write_zero_q;
 
             genvar banked_read_port;
             for (banked_read_port = 0; banked_read_port < 6;
@@ -92,7 +92,7 @@ module openrv64_rv64i_gpr_3p #(
             end
 
             genvar banked_write_port;
-            for (banked_write_port = 0; banked_write_port < 2;
+            for (banked_write_port = 0; banked_write_port < 3;
                  banked_write_port = banked_write_port + 1) begin : g_write_zero
                 assign banked_write_zero[banked_write_port] =
                     write_addr_i[
@@ -113,12 +113,11 @@ module openrv64_rv64i_gpr_3p #(
 
             cmn_reg_file #(
                 .REG_WIDTH(`RV64_XLEN),
-                // Keep architectural p0-p31 tags while spreading them over
-                // the selected bank count.  The upper 32 storage slots are
-                // reserved for a future wider physical-tag space.
+                // The banked storage covers the complete p0-p63 Tomasulo tag
+                // space.  Identity mode still addresses only p0-p31.
                 .REG_COUNT(BANKED_REG_COUNT),
                 .READ_PORTS(6),
-                .WRITE_PORTS(2),
+                .WRITE_PORTS(3),
                 .READ_PORTS_PER_BANK(BANKED_READ_PORTS_PER_BANK),
                 // Retirement write port zero is the older instruction.
                 .FIXED_WRITE_PRIORITY(1),
@@ -135,7 +134,7 @@ module openrv64_rv64i_gpr_3p #(
                 .rp_ack_o(banked_read_ack),
                 .rp_valid_o(banked_read_valid),
                 .wp_addr_i(banked_storage_write_addr),
-                .wp_data_i(write_data_i[2*`RV64_XLEN-1:0]),
+                .wp_data_i(write_data_i),
                 .wp_req_i(banked_write_req),
                 .wp_ack_o(banked_write_ack),
                 .wp_valid_o(banked_write_valid),
@@ -148,11 +147,11 @@ module openrv64_rv64i_gpr_3p #(
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
                     banked_read_zero_q <= 6'b000000;
-                    banked_write_zero_q <= 2'b00;
+                    banked_write_zero_q <= 3'b000;
                 end else begin
                     banked_read_zero_q <= read_req_i &
                                           banked_read_zero;
-                    banked_write_zero_q <= write_valid_i[1:0] &
+                    banked_write_zero_q <= write_valid_i &
                                            banked_write_zero;
                 end
             end
@@ -166,16 +165,10 @@ module openrv64_rv64i_gpr_3p #(
 `else
                 banked_read_valid | banked_read_zero_q;
 `endif
-            assign write_ack_o = {
-                1'b0,
-                banked_write_ack |
-                    (write_valid_i[1:0] & banked_write_zero)
-            };
-            assign write_ready_o = {
-                1'b0,
-                banked_write_valid |
-                    banked_write_zero_q
-            };
+            assign write_ack_o = banked_write_ack |
+                (write_valid_i & banked_write_zero);
+            assign write_ready_o = banked_write_valid |
+                banked_write_zero_q;
             assign quiescent_o = banked_file_quiescent &&
 `ifndef OPENRV64_BANKED_GPR_MAGIC_READS
                                  !(|banked_read_zero_q) &&

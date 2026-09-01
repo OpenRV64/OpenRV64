@@ -26,9 +26,11 @@ module openrv64_rv64_top_3p #(
     parameter integer HPM_COUNTERS = 8,
     parameter integer PMP_ACTIVE_ENTRIES = 8,
     parameter integer RETIRE_DEPTH = 16,
+    parameter integer ISSUE_WINDOW_DEPTH = RETIRE_DEPTH,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer PHYS_REG_ADDR_WIDTH =
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
+    parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter ENABLE_FULL_FORWARDING = 0,
@@ -1106,7 +1108,9 @@ module openrv64_rv64_top_3p #(
     wire backend_barrier;
     localparam integer RETIRE_COUNT_WIDTH = $clog2(RETIRE_DEPTH + 1);
     localparam integer DISPATCH_COUNT_WIDTH = $clog2(
-        ((ENABLE_ISSUE_WINDOW != 0) ? RETIRE_DEPTH : 6) + 1);
+        (((ENABLE_ISSUE_WINDOW != 0) ||
+          (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) ?
+         ISSUE_WINDOW_DEPTH : 6) + 1);
     wire [RETIRE_COUNT_WIDTH-1:0] backend_retire_occupancy;
     wire [DISPATCH_COUNT_WIDTH-1:0] backend_dispatch_occupancy;
 
@@ -1114,6 +1118,7 @@ module openrv64_rv64_top_3p #(
         .RETIRE_DEPTH(RETIRE_DEPTH),
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
+        .RENAME_MODE(RENAME_MODE),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_TRACE(ENABLE_TRACE),
@@ -1127,7 +1132,7 @@ module openrv64_rv64_top_3p #(
         .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING),
         .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
-        .ISSUE_WINDOW_DEPTH(RETIRE_DEPTH),
+        .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),

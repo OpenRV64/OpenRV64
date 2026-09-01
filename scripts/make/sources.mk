@@ -95,6 +95,7 @@ DISPATCH_SRCS := $(RENAME_SRCS) rtl/core/dispatch/reg_map.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_3p.v \
 	rtl/core/dispatch/dispatch_3p_banked.v \
 	rtl/core/dispatch/dispatch_window_3p.v \
+	rtl/core/dispatch/dispatch_3p_tomasulo.v \
 	rtl/core/dispatch/dispatch_barrier_3p.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v \
@@ -160,6 +161,7 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/dispatch/dispatch_3p.v \
 	rtl/core/dispatch/dispatch_3p_banked.v \
 	rtl/core/dispatch/dispatch_window_3p.v \
+	rtl/core/dispatch/dispatch_3p_tomasulo.v \
 	rtl/core/dispatch/dispatch_barrier_3p.v \
 	rtl/core/dispatch/dispatch_issue_3p.v \
 	rtl/core/dispatch/dispatch_control_3p.v rtl/core/dispatch/dispatch.v \

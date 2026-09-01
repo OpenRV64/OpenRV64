@@ -21,6 +21,7 @@ module tb_core_3p_magic #(
     parameter integer RELAX_HAZARDS = 0,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
     parameter integer BANKED_GPR = 0,
@@ -198,6 +199,7 @@ module tb_core_3p_magic #(
         .RELAX_HAZARDS(RELAX_HAZARDS),
         .RETIRE_DEPTH(RETIRE_DEPTH),
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .RENAME_MODE(RENAME_MODE),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BANKED_GPR(BANKED_GPR),
@@ -661,10 +663,10 @@ module tb_core_3p_magic #(
                    dbg_instr);
         end
         if (expected_a0_valid &&
-            (dut.u_backend.u_gpr.regs[10] !=
+            (dut.u_backend.debug_arch_a0 !=
              expected_a0))
             $fatal(1, "magic core a0=%h expected=%h",
-                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.debug_arch_a0,
                 expected_a0);
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
@@ -674,7 +676,7 @@ module tb_core_3p_magic #(
             "PERF_MAGIC mode=%0d confidence_gate=%0d bp=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h branches=%0d conditional_branches=%0d direction_corrections=%0d target_corrections=%0d lookaside_restart_hits=%0d weak_branch_pairs=%0d stashed_pair_halves_suppressed=%0d fetch_requests=%0d pair_fetch_requests=%0d pair512_requests=%0d pair1024_requests=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             cycles, retired, ipc,
-            dut.u_backend.u_gpr.regs[10],
+            dut.u_backend.debug_arch_a0,
             resolved_branches, resolved_conditional_branches,
             direction_corrections, target_corrections,
             lookaside_restart_hits, weak_branch_pairs,

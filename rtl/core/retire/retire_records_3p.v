@@ -35,7 +35,13 @@ module openrv64_retire_records_3p #(
     input  wire [3*SLOT_WIDTH-1:0]      read_slot_i,
     output wire [3*ALLOC_WIDTH-1:0]     read_record_o,
     output wire [3*RESULT_WIDTH-1:0]    read_result_o,
-    output wire [3*64-1:0]              read_trace_o
+    output wire [3*64-1:0]              read_trace_o,
+
+    // Completion-side allocation-record lookup.  The physical-writeback
+    // path uses the ROB-qualified completion slot to recover its destination
+    // tag without widening every execution packet.
+    input  wire [3*SLOT_WIDTH-1:0]      complete_read_slot_i,
+    output wire [3*ALLOC_WIDTH-1:0]     complete_read_record_o
 );
 
     // The current interface is three asynchronous reads and up to three
@@ -89,6 +95,20 @@ module openrv64_retire_records_3p #(
             assign read_result_o[
                 read_port*RESULT_WIDTH +: RESULT_WIDTH] =
                 result_q[read_slot];
+        end
+    endgenerate
+
+    genvar complete_read_port;
+    generate
+        for (complete_read_port = 0; complete_read_port < 3;
+             complete_read_port = complete_read_port + 1) begin :
+                g_complete_read
+            wire [SLOT_WIDTH-1:0] complete_read_slot =
+                complete_read_slot_i[
+                    complete_read_port*SLOT_WIDTH +: SLOT_WIDTH];
+            assign complete_read_record_o[
+                complete_read_port*ALLOC_WIDTH +: ALLOC_WIDTH] =
+                alloc_q[complete_read_slot];
         end
     endgenerate
 

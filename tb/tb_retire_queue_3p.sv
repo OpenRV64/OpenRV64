@@ -72,6 +72,7 @@ module tb_retire_queue_3p #(
         .complete_valid_i(complete_valid),
         .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
+        .complete_match_o(),
         .complete_accept_o(complete_accept),
         .extension_complete_valid_i(extension_complete_valid),
         .extension_complete_id_i(extension_complete_id),
@@ -105,7 +106,9 @@ module tb_retire_queue_3p #(
         .read_slot_i(retire_slot),
         .read_record_o(retire_meta),
         .read_result_o(retire_result),
-        .read_trace_o(retire_trace)
+        .read_trace_o(retire_trace),
+        .complete_read_slot_i({3*INDEX_WIDTH{1'b0}}),
+        .complete_read_record_o()
     );
 
     always #5 clk = ~clk;

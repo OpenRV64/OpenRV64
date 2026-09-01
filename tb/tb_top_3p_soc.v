@@ -256,7 +256,9 @@ module tb_top_3p_soc #(
     parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
     parameter integer BANKED_GPR_NUM_BANKS = 4,
     parameter integer RETIRE_DEPTH = 16,
+    parameter integer ISSUE_WINDOW_DEPTH = RETIRE_DEPTH,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter integer M_MODE_PREFETCH_ENABLE = 0,
@@ -371,10 +373,11 @@ module tb_top_3p_soc #(
     localparam integer FENCE_SHADOW_INDEX_WIDTH =
         $clog2(FENCE_SHADOW_DEPTH);
     localparam integer FENCE_RESPONSE_DELAY = 24;
-    localparam integer WINDOW_COUNT_WIDTH = $clog2(RETIRE_DEPTH + 1);
+    localparam integer WINDOW_COUNT_WIDTH =
+        $clog2(ISSUE_WINDOW_DEPTH + 1);
     localparam integer WINDOW_SPEC_CROSS_WIDTH = WINDOW_COUNT_WIDTH + 2;
     localparam integer WINDOW_OPERAND_COUNT_WIDTH =
-        $clog2((2 * RETIRE_DEPTH) + 1);
+        $clog2((2 * ISSUE_WINDOW_DEPTH) + 1);
 
     reg fence_check_enabled_q;
     reg fence_trace_enabled_q;
@@ -943,6 +946,31 @@ module tb_top_3p_soc #(
     integer window_raw_block_entry_cycles;
     integer window_hard_block_entry_cycles;
     integer window_mem_order_block_entry_cycles;
+    integer tomasulo_window_nonempty_cycles;
+    integer tomasulo_window_no_eligible_cycles;
+    integer tomasulo_window_unissued_entry_cycles;
+    integer tomasulo_window_operand_ready_entry_cycles;
+    integer tomasulo_window_eligible_entry_cycles;
+    integer tomasulo_window_raw_block_entry_cycles;
+    integer tomasulo_window_hard_block_entry_cycles;
+    integer tomasulo_window_mem_order_block_entry_cycles;
+    integer tomasulo_window_fire_cycles;
+    integer tomasulo_window_fire_events;
+    integer tomasulo_branch_crossings;
+    integer tomasulo_branch_resolutions;
+    integer tomasulo_branch_resolutions_with_younger_issued;
+    integer tomasulo_branch_resolutions_with_younger_completed;
+    integer tomasulo_branch_correct_resolutions;
+    integer tomasulo_branch_correct_younger_issued;
+    integer tomasulo_branch_correct_younger_completed;
+    integer tomasulo_branch_corrected_resolutions;
+    integer tomasulo_branch_corrected_younger_issued;
+    integer tomasulo_branch_corrected_younger_completed;
+    integer tomasulo_rename_blocked_cycles;
+    integer tomasulo_rename_tag_blocked_cycles;
+    integer tomasulo_rename_downstream_blocked_cycles;
+    integer tomasulo_rename_empty_cycles;
+    integer tomasulo_min_free;
     integer pipeline_window_empty_cycles;
     integer pipeline_window_no_eligible_cycles;
     integer pipeline_window_eligible_no_offer_cycles;
@@ -1538,14 +1566,28 @@ module tb_top_3p_soc #(
             end
         end
         for (trace_retire_head_window_index = 0;
-             trace_retire_head_window_index < RETIRE_DEPTH;
+             trace_retire_head_window_index < ISSUE_WINDOW_DEPTH;
              trace_retire_head_window_index =
                  trace_retire_head_window_index + 1) begin
-            if (dut.u_backend.u_dispatch.g_3p.u_window
-                    .valid_q[trace_retire_head_window_index] &&
-                (dut.u_backend.u_dispatch.g_3p.u_window
-                    .id_q[trace_retire_head_window_index] ==
-                 trace_retire_head_id)) begin
+            if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin
+                if (dut.u_backend.u_dispatch.g_3p.u_tomasulo_window
+                        .u_window.valid_q[
+                            trace_retire_head_window_index] &&
+                    (dut.u_backend.u_dispatch.g_3p.u_tomasulo_window
+                        .u_window.id_q[
+                            trace_retire_head_window_index] ==
+                     trace_retire_head_id)) begin
+                    trace_retire_head_window_valid = 1'b1;
+                    trace_retire_head_window_issued =
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window
+                            .u_window.issued_q[
+                                trace_retire_head_window_index];
+                end
+            end else if (dut.u_backend.u_dispatch.g_3p.u_window
+                         .valid_q[trace_retire_head_window_index] &&
+                         (dut.u_backend.u_dispatch.g_3p.u_window
+                          .id_q[trace_retire_head_window_index] ==
+                          trace_retire_head_id)) begin
                 trace_retire_head_window_valid = 1'b1;
                 trace_retire_head_window_issued =
                     dut.u_backend.u_dispatch.g_3p.u_window.issued_q[
@@ -1845,6 +1887,56 @@ module tb_top_3p_soc #(
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_window_fire =
         trace_window_offer & trace_window_accept_ready;
 
+    // The legacy counter block below names the identity-window hierarchy.
+    // Tomasulo is a distinct wrapper and therefore needs explicit aliases;
+    // otherwise a live physical scheduler is reported as an empty window.
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_unissued =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_unissued_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_operand_ready =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_operand_ready_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_eligible =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_eligible_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_raw_block =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_raw_block_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_hard_block =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_hard_block_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_mem_order_block =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_mem_order_block_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_SPEC_CROSS_WIDTH-1:0] trace_tomasulo_branch_crossing =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_branch_spec_issue_crossing_count :
+        {WINDOW_SPEC_CROSS_WIDTH{1'b0}};
+    wire trace_tomasulo_conditional_resolve =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_conditional_resolve_valid;
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_younger_issued =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_resolve_younger_issued_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_younger_completed =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_resolve_younger_completed_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [5:0] trace_tomasulo_free_count =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.g_tomasulo.rename_free_count : 6'd0;
+
     // Classify the producer named by an unavailable window operand.  The
     // window's issued bit changes only on the scheduler handshake, so an
     // unissued producer can be split cleanly into ineligible, eligible but
@@ -1963,7 +2055,7 @@ module tb_top_3p_soc #(
 
         if (ISSUE_WINDOW != 0) begin
             for (trace_window_wait_consumer = 0;
-                 trace_window_wait_consumer < RETIRE_DEPTH;
+                 trace_window_wait_consumer < ISSUE_WINDOW_DEPTH;
                  trace_window_wait_consumer =
                      trace_window_wait_consumer + 1) begin
                 for (trace_window_wait_source = 0;
@@ -1998,7 +2090,8 @@ module tb_top_3p_soc #(
 
                     if (trace_window_wait_source_blocked) begin
                         for (trace_window_wait_producer_index = 0;
-                             trace_window_wait_producer_index < RETIRE_DEPTH;
+                             trace_window_wait_producer_index <
+                                 ISSUE_WINDOW_DEPTH;
                              trace_window_wait_producer_index =
                                  trace_window_wait_producer_index + 1) begin
                             if (!trace_window_wait_producer_found &&
@@ -2389,7 +2482,9 @@ module tb_top_3p_soc #(
         .RELAX_WAW(RELAX_WAW),
         .RELAX_HAZARDS(RELAX_HAZARDS),
         .RETIRE_DEPTH(RETIRE_DEPTH),
+        .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .RENAME_MODE(RENAME_MODE),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BANKED_GPR(BANKED_GPR),
@@ -4245,6 +4340,31 @@ module tb_top_3p_soc #(
         window_raw_block_entry_cycles = 0;
         window_hard_block_entry_cycles = 0;
         window_mem_order_block_entry_cycles = 0;
+        tomasulo_window_nonempty_cycles = 0;
+        tomasulo_window_no_eligible_cycles = 0;
+        tomasulo_window_unissued_entry_cycles = 0;
+        tomasulo_window_operand_ready_entry_cycles = 0;
+        tomasulo_window_eligible_entry_cycles = 0;
+        tomasulo_window_raw_block_entry_cycles = 0;
+        tomasulo_window_hard_block_entry_cycles = 0;
+        tomasulo_window_mem_order_block_entry_cycles = 0;
+        tomasulo_window_fire_cycles = 0;
+        tomasulo_window_fire_events = 0;
+        tomasulo_branch_crossings = 0;
+        tomasulo_branch_resolutions = 0;
+        tomasulo_branch_resolutions_with_younger_issued = 0;
+        tomasulo_branch_resolutions_with_younger_completed = 0;
+        tomasulo_branch_correct_resolutions = 0;
+        tomasulo_branch_correct_younger_issued = 0;
+        tomasulo_branch_correct_younger_completed = 0;
+        tomasulo_branch_corrected_resolutions = 0;
+        tomasulo_branch_corrected_younger_issued = 0;
+        tomasulo_branch_corrected_younger_completed = 0;
+        tomasulo_rename_blocked_cycles = 0;
+        tomasulo_rename_tag_blocked_cycles = 0;
+        tomasulo_rename_downstream_blocked_cycles = 0;
+        tomasulo_rename_empty_cycles = 0;
+        tomasulo_min_free = 63;
         pipeline_window_empty_cycles = 0;
         pipeline_window_no_eligible_cycles = 0;
         pipeline_window_eligible_no_offer_cycles = 0;
@@ -4662,11 +4782,18 @@ module tb_top_3p_soc #(
                 (cycles < pipeline_trace_start_cycle +
                           pipeline_trace_cycle_count))
                 $display(
-                    "PIPELINE_TRACE cycle=%0d retire_head=%0d/%0d op=%0d retire_valid=%b window=%b/%b regload=%b/%b hard=%b control=%b active_ids=%0d,%0d pending_ids=%0d,%0d offer=%b offer_ids=%0d,%0d,%0d,%0d issue=%b squash=%b/%0d",
-                    cycles, trace_retire_head_id,
+                    "PIPELINE_TRACE cycle=%0d pc=%016h retire_head=%0d/%0d op=%0d retire_valid=%b rocc=%0d wcount=%0d free=%0d rename_req=%b rename_ready=%b window=%b/%b regload=%b/%b hard=%b control=%b active_ids=%0d,%0d pending_ids=%0d,%0d offer=%b offer_ids=%0d,%0d,%0d,%0d issue=%b squash=%b/%0d target=%016h fetch=%b/%b decode=%b/%b enable=%b",
+                    cycles, dut.pc_q, trace_retire_head_id,
                     dut.u_backend.next_retire_slot,
                     trace_retire_head_op,
                     dut.u_backend.queue_retire_valid[0],
+                    dut.backend_retire_occupancy,
+                    dut.backend_dispatch_occupancy,
+                    dut.u_backend.u_dispatch.g_3p.g_tomasulo
+                        .rename_free_count,
+                    dut.u_backend.u_dispatch.g_3p
+                        .tomasulo_destination_request,
+                    dut.u_backend.u_dispatch.g_3p.rename_allocation_ready,
                     trace_retire_head_window_valid,
                     trace_retire_head_window_issued,
                     dut.u_backend.banked_regload_valid_q,
@@ -4697,7 +4824,11 @@ module tb_top_3p_soc #(
                         `OPENRV64_INSTR_ID_WIDTH],
                     dut.backend_issue_valid,
                     dut.u_backend.squash_frontend_i,
-                    dut.u_backend.exec_redirect_id);
+                    dut.u_backend.exec_redirect_id,
+                    dut.backend_redirect_target,
+                    dut.fetch_decode_valid, dut.fetch_decode_ready,
+                    dut.backend_decode_valid, dut.backend_decode_ready,
+                    dut.frontend_decode_enable);
             retired = retired + dut.backend_retire_count;
             if ((progress_interval_cycles > 0) &&
                 ((cycles + 1) >= progress_next_cycle)) begin
@@ -4749,6 +4880,90 @@ module tb_top_3p_soc #(
             end
             if (dut.backend_dispatch_occupancy == 6)
                 dispatch_full = dispatch_full + 1;
+            if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin
+                tomasulo_window_unissued_entry_cycles =
+                    tomasulo_window_unissued_entry_cycles +
+                    trace_tomasulo_unissued;
+                tomasulo_window_operand_ready_entry_cycles =
+                    tomasulo_window_operand_ready_entry_cycles +
+                    trace_tomasulo_operand_ready;
+                tomasulo_window_eligible_entry_cycles =
+                    tomasulo_window_eligible_entry_cycles +
+                    trace_tomasulo_eligible;
+                tomasulo_window_raw_block_entry_cycles =
+                    tomasulo_window_raw_block_entry_cycles +
+                    trace_tomasulo_raw_block;
+                tomasulo_window_hard_block_entry_cycles =
+                    tomasulo_window_hard_block_entry_cycles +
+                    trace_tomasulo_hard_block;
+                tomasulo_window_mem_order_block_entry_cycles =
+                    tomasulo_window_mem_order_block_entry_cycles +
+                    trace_tomasulo_mem_order_block;
+                if (trace_tomasulo_unissued != 0) begin
+                    tomasulo_window_nonempty_cycles =
+                        tomasulo_window_nonempty_cycles + 1;
+                    if (trace_tomasulo_eligible == 0)
+                        tomasulo_window_no_eligible_cycles =
+                            tomasulo_window_no_eligible_cycles + 1;
+                end
+                if (|trace_window_fire) begin
+                    tomasulo_window_fire_cycles =
+                        tomasulo_window_fire_cycles + 1;
+                    tomasulo_window_fire_events =
+                        tomasulo_window_fire_events +
+                        trace_window_fire[0] + trace_window_fire[1] +
+                        trace_window_fire[2] + trace_window_fire[3];
+                end
+                tomasulo_branch_crossings = tomasulo_branch_crossings +
+                    trace_tomasulo_branch_crossing;
+                if (trace_tomasulo_conditional_resolve) begin
+                    tomasulo_branch_resolutions =
+                        tomasulo_branch_resolutions + 1;
+                    if (trace_tomasulo_younger_issued != 0)
+                        tomasulo_branch_resolutions_with_younger_issued =
+                            tomasulo_branch_resolutions_with_younger_issued + 1;
+                    if (trace_tomasulo_younger_completed != 0)
+                        tomasulo_branch_resolutions_with_younger_completed =
+                            tomasulo_branch_resolutions_with_younger_completed + 1;
+                    if (dut.u_backend.exec_redirect_valid) begin
+                        tomasulo_branch_corrected_resolutions =
+                            tomasulo_branch_corrected_resolutions + 1;
+                        if (trace_tomasulo_younger_issued != 0)
+                            tomasulo_branch_corrected_younger_issued =
+                                tomasulo_branch_corrected_younger_issued + 1;
+                        if (trace_tomasulo_younger_completed != 0)
+                            tomasulo_branch_corrected_younger_completed =
+                                tomasulo_branch_corrected_younger_completed + 1;
+                    end else begin
+                        tomasulo_branch_correct_resolutions =
+                            tomasulo_branch_correct_resolutions + 1;
+                        if (trace_tomasulo_younger_issued != 0)
+                            tomasulo_branch_correct_younger_issued =
+                                tomasulo_branch_correct_younger_issued + 1;
+                        if (trace_tomasulo_younger_completed != 0)
+                            tomasulo_branch_correct_younger_completed =
+                                tomasulo_branch_correct_younger_completed + 1;
+                    end
+                end
+                if ((|dut.u_backend.u_dispatch.g_3p
+                         .tomasulo_destination_request) &&
+                    !dut.u_backend.u_dispatch.g_3p.rename_allocation_ready) begin
+                    tomasulo_rename_blocked_cycles =
+                        tomasulo_rename_blocked_cycles + 1;
+                    if (!dut.u_backend.u_dispatch.g_3p.g_tomasulo
+                             .rename_destination_ready)
+                        tomasulo_rename_tag_blocked_cycles =
+                            tomasulo_rename_tag_blocked_cycles + 1;
+                    else
+                        tomasulo_rename_downstream_blocked_cycles =
+                            tomasulo_rename_downstream_blocked_cycles + 1;
+                end
+                if (trace_tomasulo_free_count == 0)
+                    tomasulo_rename_empty_cycles =
+                        tomasulo_rename_empty_cycles + 1;
+                if (trace_tomasulo_free_count < tomasulo_min_free)
+                    tomasulo_min_free = trace_tomasulo_free_count;
+            end
             if (dut.u_backend.raw_hazard != 0)
                 raw_hazard_cycles = raw_hazard_cycles + 1;
             if ((ISSUE_WINDOW == 0) && raw_first_block) begin
@@ -6774,9 +6989,9 @@ module tb_top_3p_soc #(
                 fence_smc_fetches_q, 12,
                 fence_order_violation_q);
         if (expected_a0_valid &&
-            (dut.u_backend.u_gpr.regs[10] != expected_a0))
+            (dut.u_backend.debug_arch_a0 != expected_a0))
             $fatal(1, "full-ICX a0=%h expected=%h",
-                dut.u_backend.u_gpr.regs[10], expected_a0);
+                dut.u_backend.debug_arch_a0, expected_a0);
         /*
          * This is an architectural VM requirement. Translation/access
          * overlap is a timing optimization and remains reported separately;
@@ -6937,24 +7152,26 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
+            RENAME_MODE, PHYS_REG_COUNT,
             ISSUE_WINDOW, SPECULATION_WINDOW,
             BANKED_GPR, BANKED_GPR_NUM_BANKS,
             BANKED_GPR_READ_PORTS_PER_BANK,
             `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
+            ISSUE_WINDOW_DEPTH,
             ENABLE_POSTED_STORES, DDR3_ENABLE, MEMORY_TIMING_MODEL,
             cycles, retired, ipc,
-            dut.u_backend.u_gpr.regs[10], L1I_CACHE_BYTES,
+            dut.u_backend.debug_arch_a0, L1I_CACHE_BYTES,
             L1I_FETCH_DATA_WIDTH, L1D_CACHE_BYTES, L2_BYTES, L2_WAYS,
             RAM_BYTES);
         if ($test$plusargs("report_a_regs"))
             $display(
                 "PERF_FENCE_SV39_RESULTS iters=1024 rr_none=%0d rr=%0d rw_none=%0d rw=%0d wr_none=%0d wr=%0d ww_none=%0d ww=%0d",
-                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.debug_arch_a0,
                 dut.u_backend.u_gpr.regs[11],
                 dut.u_backend.u_gpr.regs[12],
                 dut.u_backend.u_gpr.regs[13],
@@ -6965,7 +7182,7 @@ module tb_top_3p_soc #(
         if ($test$plusargs("report_pagefree"))
             $display(
                 "PERF_PAGEFREE kernel=%0d loop_cycles=%0d loop_instructions=%0d records=%0d drain_cycles=%0d",
-                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.debug_arch_a0,
                 dut.u_backend.u_gpr.regs[11],
                 dut.u_backend.u_gpr.regs[12],
                 dut.u_backend.u_gpr.regs[13],
@@ -6973,7 +7190,7 @@ module tb_top_3p_soc #(
         if ($test$plusargs("report_blake2s"))
             $display(
                 "PERF_BLAKE2S cycles=%0d instructions=%0d calls=%0d blocks_per_call=%0d total_blocks=%0d checksum=%08h input_offset=%0d kernel_zbb=%0d",
-                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.debug_arch_a0,
                 dut.u_backend.u_gpr.regs[11],
                 dut.u_backend.u_gpr.regs[12],
                 dut.u_backend.u_gpr.regs[13],
@@ -7004,11 +7221,11 @@ module tb_top_3p_soc #(
                 dut.u_backend.u_gpr.regs[8],
                 dut.u_backend.u_gpr.regs[9]);
         if ($test$plusargs("report_store_extension_sv39")) begin
-            if ((dut.u_backend.u_gpr.regs[10] == 0) ||
+            if ((dut.u_backend.debug_arch_a0 == 0) ||
                 (dtlb_fast_stores == 0))
                 $fatal(1,
                     "Sv39 store-extension result incomplete cycles=%0d fast_stores=%0d",
-                    dut.u_backend.u_gpr.regs[10], dtlb_fast_stores);
+                    dut.u_backend.debug_arch_a0, dtlb_fast_stores);
             if ((L1D_SYNC_TAG_LOOKUP != 0) &&
                 (L1D_SYNC_STORE_EXTENSION != 0) &&
                 (l1d_store_extensions != 3584))
@@ -7024,7 +7241,7 @@ module tb_top_3p_soc #(
             $display(
                 "PERF_L1D_STORE_EXTENSION_SV39 sync_tags=%0d extension=%0d iterations=4096 cycles=%0d extension_hits=%0d dtlb_fast_stores=%0d",
                 L1D_SYNC_TAG_LOOKUP, L1D_SYNC_STORE_EXTENSION,
-                dut.u_backend.u_gpr.regs[10], l1d_store_extensions,
+                dut.u_backend.debug_arch_a0, l1d_store_extensions,
                 dtlb_fast_stores);
         end
         if ($test$plusargs("report_coherence_1h")) begin
@@ -7039,7 +7256,7 @@ module tb_top_3p_soc #(
             $display(
                 "COHERENCE_1H case=%0d signature=%h operations=%0d cycles=%0d operations_per_kcycle=%0d instret=%0d ipc_x1000=%0d",
                 dut.u_backend.u_gpr.regs[15],
-                dut.u_backend.u_gpr.regs[10],
+                dut.u_backend.debug_arch_a0,
                 dut.u_backend.u_gpr.regs[13],
                 dut.u_backend.u_gpr.regs[11],
                 (dut.u_backend.u_gpr.regs[13] * 1000) /
@@ -7443,6 +7660,32 @@ module tb_top_3p_soc #(
             window_raw_block_entry_cycles,
             window_hard_block_entry_cycles,
             window_mem_order_block_entry_cycles);
+        $display(
+            "PERF_ICX_L2_TOMASULO_WINDOW enabled=%0d speculation=%0d nonempty_cycles=%0d no_eligible_cycles=%0d unissued_entry_cycles=%0d operand_ready_entry_cycles=%0d eligible_entry_cycles=%0d raw_block_entry_cycles=%0d hard_block_entry_cycles=%0d mem_order_block_entry_cycles=%0d fire_cycles=%0d fire_events=%0d branch_crossings=%0d branch_resolutions=%0d branch_younger_issued=%0d branch_younger_completed=%0d branch_correct=%0d branch_correct_younger_issued=%0d branch_correct_younger_completed=%0d branch_corrected=%0d branch_corrected_younger_issued=%0d branch_corrected_younger_completed=%0d rename_blocked=%0d rename_tag_blocked=%0d rename_downstream_blocked=%0d free_empty=%0d min_free=%0d",
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO),
+            SPECULATION_WINDOW, tomasulo_window_nonempty_cycles,
+            tomasulo_window_no_eligible_cycles,
+            tomasulo_window_unissued_entry_cycles,
+            tomasulo_window_operand_ready_entry_cycles,
+            tomasulo_window_eligible_entry_cycles,
+            tomasulo_window_raw_block_entry_cycles,
+            tomasulo_window_hard_block_entry_cycles,
+            tomasulo_window_mem_order_block_entry_cycles,
+            tomasulo_window_fire_cycles, tomasulo_window_fire_events,
+            tomasulo_branch_crossings, tomasulo_branch_resolutions,
+            tomasulo_branch_resolutions_with_younger_issued,
+            tomasulo_branch_resolutions_with_younger_completed,
+            tomasulo_branch_correct_resolutions,
+            tomasulo_branch_correct_younger_issued,
+            tomasulo_branch_correct_younger_completed,
+            tomasulo_branch_corrected_resolutions,
+            tomasulo_branch_corrected_younger_issued,
+            tomasulo_branch_corrected_younger_completed,
+            tomasulo_rename_blocked_cycles,
+            tomasulo_rename_tag_blocked_cycles,
+            tomasulo_rename_downstream_blocked_cycles,
+            tomasulo_rename_empty_cycles,
+            tomasulo_min_free);
         $display(
             "PERF_ICX_L2_PIPE_WINDOW empty=%0d no_eligible=%0d eligible_no_offer=%0d offer_replay=%0d fire=%0d fire_events=%0d",
             pipeline_window_empty_cycles,

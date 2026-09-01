@@ -48,7 +48,9 @@ module openrv64_backend_3p #(
     parameter integer SLOT_WIDTH = $clog2(RETIRE_DEPTH),
     parameter integer RETIRE_COUNT_WIDTH = $clog2(RETIRE_DEPTH + 1),
     parameter integer DISPATCH_COUNT_WIDTH = $clog2(
-        ((ENABLE_ISSUE_WINDOW != 0) ? ISSUE_WINDOW_DEPTH : DISPATCH_DEPTH) + 1)
+        (((ENABLE_ISSUE_WINDOW != 0) ||
+          (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) ?
+         ISSUE_WINDOW_DEPTH : DISPATCH_DEPTH) + 1)
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -310,6 +312,13 @@ module openrv64_backend_3p #(
     wire [`OPENRV64_EXEC_PIPE_COUNT*
           `OPENRV64_INSTR_ID_WIDTH-1:0]
         dispatch_pipe_src2_producer_id;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        dispatch_pipe_src1_phys;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        dispatch_pipe_src2_phys;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        dispatch_pipe_destination_phys;
+    wire [32*PHYS_REG_ADDR_WIDTH-1:0] rename_committed_map;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_unsupported;
 
     wire [2:0] complete_valid;
@@ -318,6 +327,16 @@ module openrv64_backend_3p #(
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         complete_payload;
     wire [3*RETIRE_RESULT_WIDTH-1:0] complete_retire_result;
+    wire [2:0] completion_prf_write_req;
+    wire [3*PHYS_REG_ADDR_WIDTH-1:0] completion_prf_write_tag;
+    wire [3*`RV64_XLEN-1:0] completion_prf_write_data;
+    reg [2:0] completion_prf_sorted_req;
+    reg [3*PHYS_REG_ADDR_WIDTH-1:0] completion_prf_sorted_tag;
+    reg [3*`RV64_XLEN-1:0] completion_prf_sorted_data;
+    reg [3*2-1:0] completion_prf_sorted_owner;
+    reg [2:0] completion_prf_write_ack_r;
+    wire [2:0] completion_writeback_fire;
+    wire [2:0] exec_complete_ready;
     wire exec_redirect_valid;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] exec_redirect_id;
     wire [SLOT_WIDTH-1:0] exec_redirect_slot;
@@ -512,6 +531,151 @@ module openrv64_backend_3p #(
     wire [3*SLOT_WIDTH-1:0] queue_retire_slot;
     wire [2:0] queue_alloc_accept;
     wire [2:0] queue_complete_accept;
+    wire [2:0] queue_complete_match;
+    wire [3*RETIRE_RECORD_WIDTH-1:0] queue_complete_record;
+    wire [2:0] completion_storage_ready;
+    wire [2:0] completion_fire;
+
+    function automatic completion_id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            completion_id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
+        end
+    endfunction
+
+    // The physical completion ports are execution-resource lanes, not age
+    // lanes.  Sort live PRF writes oldest-first before presenting them to the
+    // fixed-priority bank arbiter, then return each grant to its originating
+    // completion lane.  This preserves the architectural oldest-wins policy
+    // without coupling unrelated banks or serializing the writeback fabric.
+    integer completion_sort_rank;
+    integer completion_sort_candidate;
+    integer completion_sort_other;
+    integer completion_sort_selected;
+    reg [2:0] completion_sort_remaining;
+    reg completion_sort_candidate_oldest;
+    always @* begin
+        completion_prf_sorted_req = 3'b000;
+        completion_prf_sorted_tag =
+            {3*PHYS_REG_ADDR_WIDTH{1'b0}};
+        completion_prf_sorted_data = {3*`RV64_XLEN{1'b0}};
+        completion_prf_sorted_owner = 6'b000000;
+        completion_sort_remaining = completion_prf_write_req;
+        completion_sort_selected = -1;
+        completion_sort_candidate_oldest = 1'b0;
+        for (completion_sort_rank = 0; completion_sort_rank < 3;
+             completion_sort_rank = completion_sort_rank + 1) begin
+            completion_sort_selected = -1;
+            for (completion_sort_candidate = 0;
+                 completion_sort_candidate < 3;
+                 completion_sort_candidate = completion_sort_candidate + 1) begin
+                completion_sort_candidate_oldest =
+                    completion_sort_remaining[completion_sort_candidate];
+                for (completion_sort_other = 0;
+                     completion_sort_other < 3;
+                     completion_sort_other = completion_sort_other + 1) begin
+                    if (completion_sort_remaining[completion_sort_other] &&
+                        (completion_sort_other != completion_sort_candidate) &&
+                        completion_id_is_younger(
+                            complete_id[
+                                completion_sort_candidate*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH],
+                            complete_id[
+                                completion_sort_other*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH]))
+                        completion_sort_candidate_oldest = 1'b0;
+                end
+                if ((completion_sort_selected < 0) &&
+                    completion_sort_candidate_oldest)
+                    completion_sort_selected = completion_sort_candidate;
+            end
+            if (completion_sort_selected >= 0) begin
+                completion_prf_sorted_req[completion_sort_rank] = 1'b1;
+                completion_prf_sorted_tag[
+                    completion_sort_rank*PHYS_REG_ADDR_WIDTH +:
+                    PHYS_REG_ADDR_WIDTH] = completion_prf_write_tag[
+                        completion_sort_selected*PHYS_REG_ADDR_WIDTH +:
+                        PHYS_REG_ADDR_WIDTH];
+                completion_prf_sorted_data[
+                    completion_sort_rank*`RV64_XLEN +: `RV64_XLEN] =
+                    completion_prf_write_data[
+                        completion_sort_selected*`RV64_XLEN +:
+                        `RV64_XLEN];
+                completion_prf_sorted_owner[
+                    completion_sort_rank*2 +: 2] =
+                    completion_sort_selected[1:0];
+                completion_sort_remaining[completion_sort_selected] = 1'b0;
+            end
+        end
+
+        completion_prf_write_ack_r = 3'b000;
+        for (completion_sort_rank = 0; completion_sort_rank < 3;
+             completion_sort_rank = completion_sort_rank + 1) begin
+            if (completion_prf_sorted_req[completion_sort_rank])
+                completion_prf_write_ack_r[
+                    completion_prf_sorted_owner[
+                        completion_sort_rank*2 +: 2]] =
+                    gpr_write_ack[completion_sort_rank];
+        end
+    end
+
+    genvar completion_write_lane;
+    generate
+        for (completion_write_lane = 0; completion_write_lane < 3;
+             completion_write_lane = completion_write_lane + 1) begin :
+                g_completion_prf_write
+            wire [RETIRE_RECORD_WIDTH-1:0] completion_record =
+                queue_complete_record[
+                    completion_write_lane*RETIRE_RECORD_WIDTH +:
+                    RETIRE_RECORD_WIDTH];
+            wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
+                completion_packet = complete_payload[
+                    completion_write_lane*
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
+            assign completion_prf_write_tag[
+                completion_write_lane*PHYS_REG_ADDR_WIDTH +:
+                PHYS_REG_ADDR_WIDTH] = completion_record[
+                    `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +:
+                    PHYS_REG_ADDR_WIDTH];
+            assign completion_prf_write_data[
+                completion_write_lane*`RV64_XLEN +: `RV64_XLEN] =
+                completion_packet[
+                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+            assign completion_prf_write_req[completion_write_lane] =
+                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                complete_valid[completion_write_lane] &&
+                queue_complete_match[completion_write_lane] &&
+                completion_record[
+                    `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT] &&
+                (completion_prf_write_tag[
+                    completion_write_lane*PHYS_REG_ADDR_WIDTH +:
+                    PHYS_REG_ADDR_WIDTH] !=
+                 {PHYS_REG_ADDR_WIDTH{1'b0}}) &&
+                !completion_packet[`OPENRV64_COMPLETE_ILLEGAL_BIT] &&
+                !completion_packet[`OPENRV64_COMPLETE_EXCEPTION_BIT];
+            assign completion_storage_ready[completion_write_lane] =
+                !completion_prf_write_req[completion_write_lane] ||
+                completion_prf_write_ack_r[completion_write_lane];
+            assign completion_fire[completion_write_lane] =
+                complete_valid[completion_write_lane] &&
+                completion_storage_ready[completion_write_lane];
+            assign completion_writeback_fire[completion_write_lane] =
+                completion_prf_write_req[completion_write_lane] &&
+                completion_prf_write_ack_r[completion_write_lane];
+            assign exec_complete_ready[completion_write_lane] =
+                !complete_valid[completion_write_lane] ||
+                !queue_complete_match[completion_write_lane] ||
+                completion_storage_ready[completion_write_lane];
+        end
+    endgenerate
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] next_retire_id;
     wire [SLOT_WIDTH-1:0] next_retire_slot;
     wire queue_post_retire_valid;
@@ -540,7 +704,29 @@ module openrv64_backend_3p #(
     wire [3*`RV64_REG_ADDR_WIDTH-1:0] release_rs2_addr;
     wire [2:0] release_reg_write;
     wire [3*`RV64_REG_ADDR_WIDTH-1:0] release_rd_addr;
+    wire [2:0] rename_commit_valid;
+    wire [3*PHYS_REG_ADDR_WIDTH-1:0] rename_commit_phys;
     wire [2:0] retire_hard;
+    genvar rename_commit_lane;
+    generate
+        for (rename_commit_lane = 0; rename_commit_lane < 3;
+             rename_commit_lane = rename_commit_lane + 1) begin :
+                g_rename_commit
+            assign rename_commit_valid[rename_commit_lane] =
+                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                retire_arch_o[rename_commit_lane] &&
+                release_reg_write[rename_commit_lane] &&
+                (release_rd_addr[
+                    rename_commit_lane*`RV64_REG_ADDR_WIDTH +:
+                    `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0);
+            assign rename_commit_phys[
+                rename_commit_lane*PHYS_REG_ADDR_WIDTH +:
+                PHYS_REG_ADDR_WIDTH] = queue_retire_record[
+                    rename_commit_lane*RETIRE_RECORD_WIDTH +
+                    `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +:
+                    PHYS_REG_ADDR_WIDTH];
+        end
+    endgenerate
     reg [2:0] banked_dispatch_retire_valid_q;
     reg [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
         banked_dispatch_retire_id_q;
@@ -1383,6 +1569,10 @@ module openrv64_backend_3p #(
         banked_regload_src2_producer_valid_q;
     reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
         banked_regload_src2_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_regload_src1_phys_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_regload_src2_phys_q;
     reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_regload_pipe_uses_rs1_q;
     reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
@@ -1418,13 +1608,23 @@ module openrv64_backend_3p #(
         banked_regload_pending_src2_producer_valid_q;
     reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
         banked_regload_pending_src2_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_regload_pending_src1_phys_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_regload_pending_src2_phys_q;
     reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_regload_pending_pipe_uses_rs1_q;
     reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_regload_pending_pipe_uses_rs2_q;
 
+    // Physical rename always uses the six-port, per-requester register-load
+    // path.  The legacy four-port gather is coupled to architectural dispatch
+    // allocation and cannot safely replace its context while a denied address
+    // remains held.  Tomasulo allocation is deliberately decoupled from that
+    // architectural gather, even when the issue window is configured strict.
     wire banked_window_regload = (BANKED_GPR != 0) &&
-        (ENABLE_ISSUE_WINDOW != 0);
+        ((ENABLE_ISSUE_WINDOW != 0) ||
+         (RENAME_MODE == `OPENRV64_RENAME_TOMASULO));
 
     // Compact the issue window's at-most-two accepted physical-pipe packets
     // into the regload stage's two age-ordered lanes.  The full physical-pipe
@@ -1564,6 +1764,17 @@ module openrv64_backend_3p #(
                             banked_regload_src2_producer_valid_q[
                                 banked_regload_operand_pipe];
                         banked_regload_operand_addr =
+                            (RENAME_MODE ==
+                             `OPENRV64_RENAME_TOMASULO) ?
+                            ((banked_regload_operand_source == 0) ?
+                             banked_regload_src1_phys_q[
+                                banked_regload_operand_pipe*
+                                PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH] :
+                             banked_regload_src2_phys_q[
+                                banked_regload_operand_pipe*
+                                PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH]) :
                             banked_regload_pipe_payload_q[
                                 banked_regload_operand_pipe*
                                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
@@ -1604,11 +1815,23 @@ module openrv64_backend_3p #(
                                 banked_regload_operand_pipe] :
                             dispatch_pipe_src2_producer_valid[
                                 banked_regload_operand_pipe];
-                        banked_regload_operand_addr = dispatch_pipe_payload[
-                            banked_regload_operand_pipe*
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                        banked_regload_operand_addr =
+                            (RENAME_MODE ==
+                             `OPENRV64_RENAME_TOMASULO) ?
                             ((banked_regload_operand_source == 0) ?
-                             237 : 232) +: PHYS_REG_ADDR_WIDTH];
+                             dispatch_pipe_src1_phys[
+                                banked_regload_operand_pipe*
+                                PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH] :
+                             dispatch_pipe_src2_phys[
+                                banked_regload_operand_pipe*
+                                PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH]) :
+                            dispatch_pipe_payload[
+                                banked_regload_operand_pipe*
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                ((banked_regload_operand_source == 0) ?
+                                 237 : 232) +: PHYS_REG_ADDR_WIDTH];
                         if (banked_regload_operand_use &&
                             (banked_regload_operand_addr !=
                              {PHYS_REG_ADDR_WIDTH{1'b0}}) &&
@@ -2341,14 +2564,24 @@ module openrv64_backend_3p #(
                         banked_independent_candidate_group_scan[1:0];
                 end
             end
-            banked_independent_candidate_rs1 = dispatch_pipe_payload[
-                banked_independent_candidate_pipe*
-                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 237 +:
-                PHYS_REG_ADDR_WIDTH];
-            banked_independent_candidate_rs2 = dispatch_pipe_payload[
-                banked_independent_candidate_pipe*
-                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 232 +:
-                PHYS_REG_ADDR_WIDTH];
+            banked_independent_candidate_rs1 =
+                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+                dispatch_pipe_src1_phys[
+                    banked_independent_candidate_pipe*
+                    PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH] :
+                dispatch_pipe_payload[
+                    banked_independent_candidate_pipe*
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 237 +:
+                    PHYS_REG_ADDR_WIDTH];
+            banked_independent_candidate_rs2 =
+                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+                dispatch_pipe_src2_phys[
+                    banked_independent_candidate_pipe*
+                    PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH] :
+                dispatch_pipe_payload[
+                    banked_independent_candidate_pipe*
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 232 +:
+                    PHYS_REG_ADDR_WIDTH];
 
             if (banked_independent_candidate_enabled[
                     banked_independent_candidate_pipe] &&
@@ -2862,6 +3095,16 @@ module openrv64_backend_3p #(
                          banked_independent_state_operand =
                              banked_independent_state_operand + 1) begin
                         banked_independent_state_source_addr =
+                            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+                            ((banked_independent_state_operand == 0) ?
+                             dispatch_pipe_src1_phys[
+                                banked_independent_state_pipe*
+                                PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH] :
+                             dispatch_pipe_src2_phys[
+                                banked_independent_state_pipe*
+                                PHYS_REG_ADDR_WIDTH +:
+                                PHYS_REG_ADDR_WIDTH]) :
                             dispatch_pipe_payload[
                                 banked_independent_state_pipe*
                                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
@@ -3749,6 +3992,12 @@ module openrv64_backend_3p #(
             banked_regload_src2_producer_id_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_src1_phys_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 PHYS_REG_ADDR_WIDTH{1'b0}};
+            banked_regload_src2_phys_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_regload_pipe_uses_rs1_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_regload_pipe_uses_rs2_q <=
@@ -3890,6 +4139,10 @@ module openrv64_backend_3p #(
                     banked_regload_pending_src2_producer_valid_q;
                 banked_regload_src2_producer_id_q <=
                     banked_regload_pending_src2_producer_id_q;
+                banked_regload_src1_phys_q <=
+                    banked_regload_pending_src1_phys_q;
+                banked_regload_src2_phys_q <=
+                    banked_regload_pending_src2_phys_q;
                 banked_regload_pipe_uses_rs1_q <=
                     banked_regload_pending_pipe_uses_rs1_q;
                 banked_regload_pipe_uses_rs2_q <=
@@ -3924,6 +4177,10 @@ module openrv64_backend_3p #(
                     dispatch_pipe_src2_producer_valid;
                 banked_regload_src2_producer_id_q <=
                     dispatch_pipe_src2_producer_id;
+                banked_regload_src1_phys_q <=
+                    dispatch_pipe_src1_phys;
+                banked_regload_src2_phys_q <=
+                    dispatch_pipe_src2_phys;
                 banked_regload_pipe_uses_rs1_q <=
                     dispatch_pipe_uses_rs1;
                 banked_regload_pipe_uses_rs2_q <=
@@ -4010,6 +4267,12 @@ module openrv64_backend_3p #(
             banked_regload_pending_src2_producer_id_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_regload_pending_src1_phys_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 PHYS_REG_ADDR_WIDTH{1'b0}};
+            banked_regload_pending_src2_phys_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*
+                 PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_regload_pending_pipe_uses_rs1_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_regload_pending_pipe_uses_rs2_q <=
@@ -4115,6 +4378,10 @@ module openrv64_backend_3p #(
                     dispatch_pipe_src2_producer_valid;
                 banked_regload_pending_src2_producer_id_q <=
                     dispatch_pipe_src2_producer_id;
+                banked_regload_pending_src1_phys_q <=
+                    dispatch_pipe_src1_phys;
+                banked_regload_pending_src2_phys_q <=
+                    dispatch_pipe_src2_phys;
                 banked_regload_pending_pipe_uses_rs1_q <=
                     dispatch_pipe_uses_rs1;
                 banked_regload_pending_pipe_uses_rs2_q <=
@@ -4170,11 +4437,15 @@ module openrv64_backend_3p #(
     // Deliberately conservative capacity gate: issue resumes with room for a
     // complete issue group.  This breaks the alloc-valid/ready loop and
     // leaves exact-width admission as a later timing optimization.
-    // Occupancy <= DEPTH-width proves room for the largest active issue group,
+    // Occupancy <= DEPTH-width proves room for the largest active decode group,
     // so consulting the queue's alloc-count-dependent ready here is redundant
     // and would recreate an alloc_valid <-> alloc_ready combinational loop.
+    // The legacy banked dispatcher admits at most two lanes.  The independent
+    // window/Tomasulo path admits three, even though register-load ownership is
+    // transferred at at most two instructions per cycle.
     assign allocation_ready = (retire_occupancy_o <=
-        RETIRE_DEPTH - ((BANKED_GPR != 0) ? 2 : 3));
+        RETIRE_DEPTH - (((BANKED_GPR != 0) && !banked_window_regload) ?
+                        2 : 3));
 
     openrv64_dispatch #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
@@ -4233,7 +4504,8 @@ module openrv64_backend_3p #(
         .retire_rs2_addr_i(5'd0), .retire_reg_write_i(1'b0),
         .retire_rd_addr_i(5'd0), .decode_trace_id_i(64'd0),
         .squash_frontend_3p_i(squash_frontend_i),
-        .squash_id_3p_i(exec_redirect_id),
+        .squash_id_3p_i(redirect_id_o),
+        .squash_slot_3p_i(branch_slot_o),
         .translation_bypass_3p_i(translation_bypass_i),
         .decode_valid_3p_i(decode_valid_i),
         .decode_ready_3p_o(decode_ready_o),
@@ -4254,10 +4526,11 @@ module openrv64_backend_3p #(
              allocation_ready)),
         .rename_free_valid_3p_i(rename_free_valid),
         .rename_free_tag_3p_i(rename_free_tag),
-        .rename_write_valid_3p_i(
-            gpr_write[1:0] & gpr_write_ack[1:0]),
-        .rename_write_tag_3p_i(
-            gpr_write_addr[2*PHYS_REG_ADDR_WIDTH-1:0]),
+        .rename_write_valid_3p_i(completion_writeback_fire),
+        .rename_write_tag_3p_i(completion_prf_write_tag),
+        .rename_commit_valid_3p_i(rename_commit_valid),
+        .rename_commit_arch_3p_i(release_rd_addr),
+        .rename_commit_phys_3p_i(rename_commit_phys),
         .allocation_id_3p_i(allocation_id),
         .allocation_slot_3p_i(allocation_slot),
         .allocation_valid_3p_o(allocation_valid),
@@ -4280,7 +4553,7 @@ module openrv64_backend_3p #(
             branch_completion_forward_valid),
         .forward_map_valid_3p_i(full_forward_valid),
         .forward_map_data_3p_i(full_forward_data),
-        .completion_valid_3p_i(complete_valid),
+        .completion_valid_3p_i(queue_complete_accept),
         .completion_id_3p_i(complete_id),
         .completion_payload_3p_i(complete_payload),
         .conditional_resolve_valid_3p_i(
@@ -4301,6 +4574,9 @@ module openrv64_backend_3p #(
         .pipe_src2_producer_valid_3p_o(
             dispatch_pipe_src2_producer_valid),
         .pipe_src2_producer_id_3p_o(dispatch_pipe_src2_producer_id),
+        .pipe_src1_phys_3p_o(dispatch_pipe_src1_phys),
+        .pipe_src2_phys_3p_o(dispatch_pipe_src2_phys),
+        .pipe_destination_phys_3p_o(dispatch_pipe_destination_phys),
         .retire_valid_3p_i(dispatch_retire_valid),
         .retire_id_3p_i(dispatch_retire_id),
         .retire_slot_3p_i(dispatch_retire_slot),
@@ -4321,7 +4597,8 @@ module openrv64_backend_3p #(
         .raw_hazard_3p_o(raw_hazard), .waw_hazard_3p_o(waw_hazard),
         .read_port_hazard_3p_o(read_port_hazard),
         .write_busy_3p_o(dispatch_write_busy),
-        .queue_count_3p_o(dispatch_occupancy_o)
+        .queue_count_3p_o(dispatch_occupancy_o),
+        .committed_map_3p_o(rename_committed_map)
     );
 
     openrv64_rv64i_gpr_3p #(
@@ -4346,6 +4623,21 @@ module openrv64_backend_3p #(
         .trace_read_group_partial_o(gpr_trace_read_group_partial),
         .trace_read_early_accept_o(gpr_trace_read_early_accept)
     );
+
+    // Simulation-visible architectural a0.  Under physical renaming the
+    // stable u_gpr.regs[10] alias names p10, not x10; software-result checks
+    // must follow the committed RRAT mapping instead.
+    wire [PHYS_REG_ADDR_WIDTH-1:0] debug_arch_a0_phys =
+        rename_committed_map[
+            10*PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH];
+`ifndef SYNTHESIS
+    wire [`RV64_XLEN-1:0] debug_arch_a0 =
+        (debug_arch_a0_phys == {PHYS_REG_ADDR_WIDTH{1'b0}}) ?
+        {`RV64_XLEN{1'b0}} : u_gpr.prf_debug_regs[
+            (debug_arch_a0_phys-1)*`RV64_XLEN +: `RV64_XLEN];
+`else
+    wire [`RV64_XLEN-1:0] debug_arch_a0 = {`RV64_XLEN{1'b0}};
+`endif
 
     // The legacy path uses the combinational post-retirement head to recover
     // a cycle of ordered-memory bandwidth.  That selector depends on the
@@ -4390,11 +4682,15 @@ module openrv64_backend_3p #(
         // retirement entries, while the resolving EX1 branch must still
         // publish its own completion on the following cycle.
         .flush_3p_i(flush_i ||
-                    ((ENABLE_ISSUE_WINDOW != 0) &&
+                    ((RENAME_MODE == `OPENRV64_RENAME_IDENTITY) &&
+                     (ENABLE_ISSUE_WINDOW != 0) &&
                      (ENABLE_SPECULATION_WINDOW == 0) &&
                      squash_frontend_i)),
-        .squash_younger_3p_i(speculative_window && squash_frontend_i),
-        .squash_id_3p_i(exec_redirect_id),
+        .squash_younger_3p_i(
+            (speculative_window ||
+             (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) &&
+            squash_frontend_i),
+        .squash_id_3p_i(redirect_id_o),
         .coherent_reservation_clear_3p_i(
             coherent_reservation_clear_i),
         .translation_bypass_3p_i(translation_bypass_i),
@@ -4442,7 +4738,7 @@ module openrv64_backend_3p #(
         .store_barrier_request_3p_o(store_barrier_request_o),
         .store_barrier_busy_3p_i(store_barrier_busy_i),
         .complete_valid_3p_o(complete_valid),
-        .complete_ready_3p_i(3'b111),
+        .complete_ready_3p_i(exec_complete_ready),
         .complete_id_3p_o(complete_id),
         .complete_slot_3p_o(complete_slot),
         .complete_payload_3p_o(complete_payload),
@@ -4512,22 +4808,26 @@ module openrv64_backend_3p #(
     ) u_retire_queue (
         .clk(clk), .rst_n(rst_n),
         .flush_i(flush_i ||
-                 ((ENABLE_ISSUE_WINDOW != 0) &&
+                 ((RENAME_MODE == `OPENRV64_RENAME_IDENTITY) &&
+                  (ENABLE_ISSUE_WINDOW != 0) &&
                   (ENABLE_SPECULATION_WINDOW == 0) &&
                   squash_frontend_i)),
         .squash_younger_i(
-            (speculative_window && squash_frontend_i) ||
+            (((speculative_window ||
+               (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) &&
+              squash_frontend_i)) ||
             banked_deferred_pair_recovery),
-        .squash_id_i(exec_redirect_id),
-        .squash_slot_i(exec_redirect_slot),
+        .squash_id_i(redirect_id_o),
+        .squash_slot_i(branch_slot_o),
         .alloc_valid_i(allocation_valid),
         .alloc_ready_o(queue_allocation_ready),
         .alloc_accept_o(queue_alloc_accept),
         .alloc_complete_i(allocation_complete),
         .alloc_id_o(allocation_id),
         .alloc_slot_o(allocation_slot),
-        .complete_valid_i(complete_valid), .complete_id_i(complete_id),
+        .complete_valid_i(completion_fire), .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
+        .complete_match_o(queue_complete_match),
         .complete_accept_o(queue_complete_accept),
         .extension_complete_valid_i(1'b0),
         .extension_complete_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
@@ -4567,7 +4867,9 @@ module openrv64_backend_3p #(
         .read_slot_i(queue_retire_slot),
         .read_record_o(queue_retire_record),
         .read_result_o(queue_retire_commit),
-        .read_trace_o(queue_retire_trace)
+        .read_trace_o(queue_retire_trace),
+        .complete_read_slot_i(complete_slot),
+        .complete_read_record_o(queue_complete_record)
     );
 
 `ifndef SYNTHESIS
@@ -4646,19 +4948,27 @@ module openrv64_backend_3p #(
             wire [1:0] banked_free_valid;
             wire [2*PHYS_REG_ADDR_WIDTH-1:0] banked_free_tag;
 
-            assign gpr_write = {1'b0, banked_gpr_write};
-            assign gpr_write_addr = {
-                {PHYS_REG_ADDR_WIDTH{1'b0}}, banked_gpr_write_addr
-            };
-            assign gpr_write_data = {
-                {`RV64_XLEN{1'b0}}, banked_gpr_write_data
-            };
+            assign gpr_write =
+                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+                completion_prf_sorted_req : {1'b0, banked_gpr_write};
+            assign gpr_write_addr =
+                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+                completion_prf_sorted_tag : {
+                    {PHYS_REG_ADDR_WIDTH{1'b0}}, banked_gpr_write_addr
+                };
+            assign gpr_write_data =
+                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+                completion_prf_sorted_data : {
+                    {`RV64_XLEN{1'b0}}, banked_gpr_write_data
+                };
 
             openrv64_retire_3p_banked #(
                 .PHYS_REG_COUNT(PHYS_REG_COUNT),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
                 .META_WIDTH(RETIRE_RECORD_WIDTH),
                 .RESULT_WIDTH(RETIRE_RESULT_WIDTH),
+                .BYPASS_GPR_WRITE(
+                    RENAME_MODE == `OPENRV64_RENAME_TOMASULO),
                 .GPR_BANK_COUNT(BANKED_GPR_NUM_BANKS)
             ) u_retire (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
@@ -5029,8 +5339,16 @@ module openrv64_backend_3p #(
                           banked_hold_watch_port*PHYS_REG_ADDR_WIDTH +:
                           PHYS_REG_ADDR_WIDTH])))
                     $fatal(1,
-                           "banked 3P GPR read port %0d changed before address ack",
-                           banked_hold_watch_port);
+                           "banked 3P GPR read port %0d changed before address ack: prev_addr=%0d req=%b ack=%b addr=%0d",
+                           banked_hold_watch_port,
+                           banked_gpr_read_held_addr_q[
+                               banked_hold_watch_port*PHYS_REG_ADDR_WIDTH +:
+                               PHYS_REG_ADDR_WIDTH],
+                           gpr_read_req[banked_hold_watch_port],
+                           gpr_read_ack[banked_hold_watch_port],
+                           gpr_storage_read_addr[
+                               banked_hold_watch_port*PHYS_REG_ADDR_WIDTH +:
+                               PHYS_REG_ADDR_WIDTH]);
             end
             banked_gpr_read_held_q <= gpr_read_req & ~gpr_read_ack;
             banked_gpr_read_held_addr_q <= gpr_storage_read_addr;
@@ -5130,8 +5448,10 @@ module openrv64_backend_3p #(
             (ENABLE_ISSUE_WINDOW != 0))
             $fatal(1, "free branches require strict dispatch path");
         if ((ENABLE_ISSUE_WINDOW != 0) &&
+            (RENAME_MODE != `OPENRV64_RENAME_TOMASULO) &&
             (ISSUE_WINDOW_DEPTH != RETIRE_DEPTH))
-            $fatal(1, "issue-window depth must equal retirement depth");
+            $fatal(1,
+                   "identity issue-window depth must equal retirement depth");
         if ((ENABLE_SPECULATION_WINDOW != 0) &&
             (ENABLE_ISSUE_WINDOW == 0))
             $fatal(1, "speculation window requires issue window");
@@ -5157,10 +5477,6 @@ module openrv64_backend_3p #(
             (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
             ((PHYS_REG_COUNT != 63) || (PHYS_REG_ADDR_WIDTH != 6)))
             $fatal(1, "renamed banked 3P requires p0-p63 tags");
-        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
-            (ENABLE_ISSUE_WINDOW != 0))
-            $fatal(1,
-                   "tomasulo rename bring-up supports strict issue only");
         if ((RENAME_MODE != `OPENRV64_RENAME_IDENTITY) &&
             (RENAME_MODE != `OPENRV64_RENAME_TOMASULO))
             $fatal(1, "unsupported integer rename mode");

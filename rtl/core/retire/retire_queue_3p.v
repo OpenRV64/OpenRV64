@@ -25,6 +25,7 @@ module openrv64_retire_queue_3p #(
     input  wire [2:0]                   complete_valid_i,
     input  wire [3*ID_WIDTH-1:0]        complete_id_i,
     input  wire [3*INDEX_WIDTH-1:0]     complete_slot_i,
+    output wire [2:0]                   complete_match_o,
     output wire [2:0]                   complete_accept_o,
 
     // Optional sparse extension-completion port.  It carries identity only;
@@ -139,12 +140,14 @@ module openrv64_retire_queue_3p #(
                 complete_port*INDEX_WIDTH +: INDEX_WIDTH];
             wire [ID_WIDTH-1:0] completion_id = complete_id_i[
                 complete_port*ID_WIDTH +: ID_WIDTH];
-            assign complete_accept_o[complete_port] =
-                complete_valid_i[complete_port] &&
+            assign complete_match_o[complete_port] =
                 (!squash_younger_i ||
                  !id_is_younger(completion_id, squash_id_i)) &&
                 valid_q[completion_slot] &&
                 (id_q[completion_slot] == completion_id);
+            assign complete_accept_o[complete_port] =
+                complete_valid_i[complete_port] &&
+                complete_match_o[complete_port];
         end
     endgenerate
 

@@ -8,13 +8,15 @@
 module tb_backend_3p_banked #(
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = ISSUE_WINDOW,
-    parameter integer RENAME_MODE = 0
+    parameter integer RENAME_MODE = 0,
+    parameter integer RETIRE_DEPTH = 16,
+    parameter integer SCHEDULER_DEPTH = RETIRE_DEPTH
 );
-    localparam integer RETIRE_DEPTH = 16;
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
     localparam integer RCW = $clog2(RETIRE_DEPTH + 1);
     localparam integer DCW = $clog2(
-        ((ISSUE_WINDOW != 0) ? RETIRE_DEPTH : 6) + 1);
+        (((ISSUE_WINDOW != 0) || (RENAME_MODE != 0)) ?
+         SCHEDULER_DEPTH : 6) + 1);
     localparam integer INSTRUCTION_COUNT = 27;
     localparam integer PHYS_REG_COUNT = (RENAME_MODE != 0) ? 63 : 31;
     localparam integer PHYS_REG_ADDR_WIDTH =
@@ -98,7 +100,7 @@ module tb_backend_3p_banked #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .RENAME_MODE(RENAME_MODE),
-        .ISSUE_WINDOW_DEPTH(RETIRE_DEPTH),
+        .ISSUE_WINDOW_DEPTH(SCHEDULER_DEPTH),
         .BANKED_GPR(1),
         .FPGA_GPR_LUTRAM(0)
     ) dut (
@@ -409,6 +411,8 @@ module tb_backend_3p_banked #(
     reg [63:0] memory_probe_last_wdata;
     reg saw_physical_free;
     reg saw_nonidentity_phys;
+    reg saw_scheduler_release_before_retire;
+    reg saw_scheduler_slot_reuse_before_retire;
     integer rename_monitor_lane;
     wire [6:0] observed_rename_free_count;
 
@@ -417,6 +421,89 @@ module tb_backend_3p_banked #(
                 g_observe_tomasulo
             assign observed_rename_free_count =
                 dut.u_dispatch.g_3p.g_tomasulo.rename_free_count;
+
+            reg [RETIRE_DEPTH-1:0] scheduler_slot_seen;
+            reg [$clog2(RETIRE_DEPTH)-1:0]
+                prior_rob_slot [0:RETIRE_DEPTH-1];
+            reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                prior_id [0:RETIRE_DEPTH-1];
+            integer monitor_lane;
+            integer monitor_slot;
+            integer monitor_init;
+            wire [2:0] monitor_decode_fire =
+                dut.u_dispatch.g_3p
+                    .u_tomasulo_window.u_window.decode_fire;
+            wire [3:0] monitor_alloc_slot0 =
+                dut.u_dispatch.g_3p
+                    .u_tomasulo_window.u_window.scheduler_alloc_slot[0];
+            wire [3:0] monitor_alloc_slot1 =
+                dut.u_dispatch.g_3p
+                    .u_tomasulo_window.u_window.scheduler_alloc_slot[1];
+            wire [3:0] monitor_alloc_slot2 =
+                dut.u_dispatch.g_3p
+                    .u_tomasulo_window.u_window.scheduler_alloc_slot[2];
+            wire [3*$clog2(RETIRE_DEPTH)-1:0] monitor_allocation_slot =
+                dut.u_dispatch.g_3p
+                    .u_tomasulo_window.u_window.allocation_slot_i;
+            wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                monitor_allocation_id =
+                    dut.u_dispatch.g_3p
+                        .u_tomasulo_window.u_window.allocation_id_i;
+
+            always @(posedge clk) begin
+                if (!rst_n || flush) begin
+                    scheduler_slot_seen = {RETIRE_DEPTH{1'b0}};
+                    for (monitor_init = 0; monitor_init < RETIRE_DEPTH;
+                         monitor_init = monitor_init + 1) begin
+                        prior_rob_slot[monitor_init] = 0;
+                        prior_id[monitor_init] = 0;
+                    end
+                end else begin
+                    if (retire_occupancy > dispatch_occupancy)
+                        saw_scheduler_release_before_retire = 1'b1;
+                    for (monitor_lane = 0; monitor_lane < 3;
+                         monitor_lane = monitor_lane + 1) begin
+                        if (monitor_decode_fire[monitor_lane]) begin
+                            case (monitor_lane)
+                                0: monitor_slot = monitor_alloc_slot0;
+                                1: monitor_slot = monitor_alloc_slot1;
+                                default: monitor_slot = monitor_alloc_slot2;
+                            endcase
+                            if (scheduler_slot_seen[monitor_slot] &&
+                                dut.u_retire_queue.valid_q[
+                                    prior_rob_slot[monitor_slot]] &&
+                                (dut.u_retire_queue.id_q[
+                                    prior_rob_slot[monitor_slot]] ==
+                                 prior_id[monitor_slot]) &&
+                                !((dut.queue_retire_accept[0] &&
+                                   (dut.queue_retire_id[
+                                      0*`OPENRV64_INSTR_ID_WIDTH +:
+                                      `OPENRV64_INSTR_ID_WIDTH] ==
+                                    prior_id[monitor_slot])) ||
+                                  (dut.queue_retire_accept[1] &&
+                                   (dut.queue_retire_id[
+                                      1*`OPENRV64_INSTR_ID_WIDTH +:
+                                      `OPENRV64_INSTR_ID_WIDTH] ==
+                                    prior_id[monitor_slot])) ||
+                                  (dut.queue_retire_accept[2] &&
+                                   (dut.queue_retire_id[
+                                      2*`OPENRV64_INSTR_ID_WIDTH +:
+                                      `OPENRV64_INSTR_ID_WIDTH] ==
+                                    prior_id[monitor_slot]))))
+                                saw_scheduler_slot_reuse_before_retire = 1'b1;
+                            scheduler_slot_seen[monitor_slot] = 1'b1;
+                            prior_rob_slot[monitor_slot] =
+                                monitor_allocation_slot[
+                                    monitor_lane*$clog2(RETIRE_DEPTH) +:
+                                    $clog2(RETIRE_DEPTH)];
+                            prior_id[monitor_slot] =
+                                monitor_allocation_id[
+                                    monitor_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                                    `OPENRV64_INSTR_ID_WIDTH];
+                        end
+                    end
+                end
+            end
         end else begin : g_observe_identity
             assign observed_rename_free_count = 7'd0;
         end
@@ -426,7 +513,8 @@ module tb_backend_3p_banked #(
         if (rst_n) begin
             issue_count = issue_valid[0] + issue_valid[1] +
                           issue_valid[2] + issue_valid[3];
-            if (issue_count > ((ISSUE_WINDOW != 0) ? 3 : 2))
+            if (issue_count > (((ISSUE_WINDOW != 0) ||
+                                (RENAME_MODE != 0)) ? 3 : 2))
                 fail("banked backend exceeded register-load issue width");
             if (issue_count == 2)
                 saw_two_wide_issue = 1'b1;
@@ -582,6 +670,8 @@ module tb_backend_3p_banked #(
         memory_probe_last_wdata = 64'd0;
         saw_physical_free = 1'b0;
         saw_nonidentity_phys = 1'b0;
+        saw_scheduler_release_before_retire = 1'b0;
+        saw_scheduler_slot_reuse_before_retire = 1'b0;
 
         instruction_stream[0] = addi_packet(1, 0, 1, 64'd5, 1'b0);
         // p1 and p29 share four-bank bank 1.  These two independent leading
@@ -687,7 +777,8 @@ module tb_backend_3p_banked #(
         // Keep the older lane and its response, but discard the younger lane
         // and its response owner.  This directly seeds only the independent
         // register-load state so the test does not depend on selector timing.
-        if (ISSUE_WINDOW != 0) begin
+        if ((ISSUE_WINDOW != 0) &&
+            (RENAME_MODE == `OPENRV64_RENAME_IDENTITY)) begin
             dut.banked_independent_valid_q = 4'b0011;
             dut.banked_independent_id_q = {40{1'b0}};
             dut.banked_independent_id_q[0 +: 10] = 10'd79;
@@ -878,7 +969,8 @@ module tb_backend_3p_banked #(
             fail("test never exercised a read-bank retry");
         if ((RENAME_MODE == 0) && !saw_write_bank_retry)
             fail("test never exercised a sliding same-bank write pair");
-        if (!saw_dependency_wait)
+        if ((RENAME_MODE == `OPENRV64_RENAME_IDENTITY) &&
+            !saw_dependency_wait)
             fail("test never observed conservative dependency waiting");
         if ((ISSUE_WINDOW == 0) && (RENAME_MODE == 0) &&
             !saw_exu_forward_while_busy)
@@ -896,13 +988,19 @@ module tb_backend_3p_banked #(
         if ((RENAME_MODE != 0) &&
             (observed_rename_free_count != 32))
             fail("renamed stream did not restore free-tag conservation");
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            !saw_scheduler_release_before_retire)
+            fail("scheduler entries were not released before ROB retirement");
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            !saw_scheduler_slot_reuse_before_retire)
+            fail("scheduler slot was not reused before prior ROB retirement");
 
         // Isolate the steering probe from the throughput/conflict coverage
         // above.  The normal ready signal is payload-qualified, so force only
         // the new structural-capacity sideband: EX0 unavailable, EX1 free.
         // Execution's real ready/valid handshake still checks and accepts the
         // retargeted packet.
-        if (ISSUE_WINDOW == 0) begin
+        if ((ISSUE_WINDOW == 0) && (RENAME_MODE == 0)) begin
         memory_probe_active = 1'b1;
         memory_probe_retired = 0;
         memory_probe_last_rd = 5'd0;
@@ -1045,6 +1143,20 @@ module tb_backend_3p_banked #(
 
     initial begin
         #100000;
+        $display("timeout state reset=%b flush=%b squash=%b decode_valid=%b decode_ready=%b dispatch=%0d retire=%0d issue=%b complete=%b alloc=%b alloc_ready=%b rename_ready=%b recovery=%b window_count=%0d window_free=%0d regload_valid=%b independent_valid=%b independent_done=%h read_req=%b read_ack=%b read_valid=%b drain=%b free=%0d",
+                 rst_n, flush, squash, decode_valid, decode_ready,
+                 dispatch_occupancy,
+                 retire_occupancy, issue_valid, complete_valid,
+                 dut.allocation_valid, dut.allocation_ready,
+                 dut.u_dispatch.g_3p.rename_allocation_ready,
+                 dut.u_dispatch.g_3p.u_tomasulo_window.u_window.recovery_inhibit,
+                 dut.u_dispatch.g_3p.u_tomasulo_window.u_window.count_q,
+                 dut.u_dispatch.g_3p.u_tomasulo_window.u_window.free_count,
+                 dut.banked_regload_valid_q,
+                 dut.banked_independent_valid_q,
+                 dut.banked_independent_operand_done_q,
+                 dut.gpr_read_req, dut.gpr_read_ack, dut.gpr_read_valid,
+                 dut.banked_gpr_drain_q, observed_rename_free_count);
         $fatal(1, "tb_backend_3p_banked: timeout");
     end
 endmodule

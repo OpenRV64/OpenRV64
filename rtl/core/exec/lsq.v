@@ -280,9 +280,16 @@ module openrv64_lsq #(
                 store_free_array_index_r = free_scan;
             end
     end
-    assign load_alloc_ready_o = load_free_found_r && !squash_younger_i;
+    // A selective redirect only invalidates younger work.  An older memory
+    // operation may be presented by another issue pipe in the same cycle as
+    // the resolving branch and must still cross the allocation handshake.
+    wire load_alloc_squashed = squash_younger_i &&
+        id_is_younger(load_alloc_id_i, squash_id_i);
+    wire store_alloc_squashed = squash_younger_i &&
+        id_is_younger(store_alloc_id_i, squash_id_i);
+    assign load_alloc_ready_o = load_free_found_r && !load_alloc_squashed;
     wire load_alloc_fire = load_alloc_valid_i && load_alloc_ready_o;
-    assign store_alloc_ready_o = store_free_found_r && !squash_younger_i;
+    assign store_alloc_ready_o = store_free_found_r && !store_alloc_squashed;
     wire store_alloc_fire = store_alloc_valid_i && store_alloc_ready_o;
 
     // Each translated load probes only store guards older than itself.

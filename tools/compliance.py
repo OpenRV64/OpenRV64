@@ -99,6 +99,7 @@ def resolve_engine(backend: str, engine: str) -> str:
         "platform-3p",
         "platform-3p-ddr3",
         "platform-3p-banked-ddr3",
+        "platform-3p-tomasulo-ddr3",
     ) and command_path("verilator"):
         return "verilator"
     return "iverilog"
@@ -120,6 +121,7 @@ def simulator(backend: str, rv64m: bool, engine: str) -> tuple[str, Path, int]:
             "3p-banked",
             "platform-3p-ddr3",
             "platform-3p-banked-ddr3",
+            "platform-3p-tomasulo-ddr3",
         ) else 8
         return target, ROOT / target, word_bytes
     if backend == "1p":
@@ -150,6 +152,7 @@ def simulator(backend: str, rv64m: bool, engine: str) -> tuple[str, Path, int]:
         "platform-3p",
         "platform-3p-ddr3",
         "platform-3p-banked-ddr3",
+        "platform-3p-tomasulo-ddr3",
     ):
         raise ValueError(f"{backend} requires the Verilator engine")
     raise ValueError(f"unsupported backend {backend!r}")
@@ -315,6 +318,7 @@ def add_run_options(parser: argparse.ArgumentParser) -> None:
             "platform-3p",
             "platform-3p-ddr3",
             "platform-3p-banked-ddr3",
+            "platform-3p-tomasulo-ddr3",
         ),
         default="1p",
     )

@@ -6,6 +6,11 @@
 module tb_compliance_3p #(
     parameter bit ENABLE_RV64M = 1'b1,
     parameter bit BANKED_GPR = 1'b0,
+    parameter integer RETIRE_DEPTH = 16,
+    parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
+    parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
+    parameter integer ISSUE_WINDOW = 0,
+    parameter integer SPECULATION_WINDOW = 0,
     parameter integer RAM_BYTES = 1 * 1024 * 1024,
     parameter integer DEFAULT_MAX_CYCLES = 2_000_000
 );
@@ -128,6 +133,11 @@ module tb_compliance_3p #(
         .RESET_VECTOR(RAM_BASE),
         .ENABLE_RV64M(ENABLE_RV64M),
         .BANKED_GPR(BANKED_GPR),
+        .RETIRE_DEPTH(RETIRE_DEPTH),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .RENAME_MODE(RENAME_MODE),
+        .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
+        .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BRANCH_COMPLETION_FORWARD_MASK(BANKED_GPR ? 3'b000 : 3'b001),
         .RELAX_WAW(BANKED_GPR ? 1'b0 : 1'b1),
         .ENABLE_RV64A(1'b1),

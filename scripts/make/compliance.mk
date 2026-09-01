@@ -98,3 +98,13 @@ compliance-act4-platform-3p-banked-ddr3: \
 		--backend platform-3p-banked-ddr3 --engine verilator \
 		--results-dir "$(COMPLIANCE_PLATFORM_3P_BANKED_DDR3_RESULTS_DIR)" \
 		--junit "$(COMPLIANCE_PLATFORM_3P_BANKED_DDR3_JUNIT)"
+
+compliance-act4-platform-3p-tomasulo-ddr3: \
+		$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_M_VLT_BUILD)
+	@test -n "$(strip $(COMPLIANCE_ACT4_RV64IMA_ELFS))" || \
+		{ echo "missing preserved ACT4 ELFs under $(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)"; exit 1; }
+	$(PYTHON) -u tools/compliance.py suite \
+		"$(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)" \
+		--backend platform-3p-tomasulo-ddr3 --engine verilator \
+		--results-dir "$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_RESULTS_DIR)" \
+		--junit "$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_JUNIT)"

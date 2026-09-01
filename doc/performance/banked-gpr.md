@@ -1581,3 +1581,168 @@ Validation after the change:
 - `compliance-act4-platform-3p-banked-ddr3-20260901T110445Z` passed all 93
   preserved RV64IMA ACT4 tests with the platform target corrected to enable
   the banked issue and speculation windows.
+
+## Tomasulo physical-register bring-up
+
+The first physical-register configuration uses p0-p63, four banks with two
+read ports and one write port per bank, completion-time PRF writes, retirement
+RRAT commit/free, and the independent six-read address/data pipeline.  These
+runs deliberately disable the older architectural completion and branch
+forwarding knobs.  They use the compact bare-metal CoreMark-derived loop
+through L1, ICX, L2, and timed DDR3; they are correctness and relative-cycle
+measurements, not official CoreMark scores.
+
+| Tomasulo configuration | Cycles | Retired | IPC | Managed run |
+|---|---:|---:|---:|---|
+| Strict, depth 16, speculation disabled | 101,699 | 52,563 | 0.5168 | `coremarks-compact-3p-tomasulo-strict-ddr3-20260901T201554Z` |
+| Window 16, speculation enabled | 102,372 | 52,563 | 0.5135 | `coremarks-compact-3p-tomasulo-window16-ddr3-20260901T201652Z` |
+| Window 32, speculation enabled | 101,604 | 52,563 | 0.5173 | `coremarks-compact-3p-tomasulo-window32-ddr3-20260901T203100Z` |
+
+All three runs reached the expected `a0=0x0a277880` result.  Window depth and
+control speculation do not improve this unforwarded configuration: depth 32
+is only 95 cycles faster than strict and depth 16 is 673 cycles slower.  That
+is a measured result, not evidence that the speculative machinery is idle.
+The corrected depth-32 counters record 60,752 crossings of unresolved
+conditional branches; 10,471 of 10,785 resolutions had younger issued work,
+and 9,198 had younger completed work.
+
+Against the source-matched normal-3P compact control above, depth-32 Tomasulo
+adds 22,286 cycles (101,604 versus 79,318).  Normal 3P issues 52,565
+instructions for 52,563 retired; Tomasulo issues 74,835 for the same 52,563
+retired.  The 22,270-event increase in issued-minus-retired exposure nearly
+equals the runtime increase, while zero-retire cycles increase by 22,357
+(64,709 versus 42,352).  This is discarded/speculative work, not direct proof
+that every extra issue costs one cycle.  In fact the strict Tomasulo control
+takes 101,699 cycles while issuing only 52,910 instructions, so it rules out
+discarded work as the cause of the base 22-thousand-cycle regression.  The
+depth-32 result instead shows that current speculation consumes otherwise idle
+issue capacity without hiding the older-head latency.  The
+incomplete-head population rises from 38,765 to 64,446 cycles and completed
+work behind that head rises from 9,039 to 39,263 cycles.  Completion/load
+forwarding is disabled in these first runs, and the banked path adds the
+register-load stage; those are stronger immediate suspects than PRF capacity.
+
+The depth-32 physical free pool reached a minimum of two tags but never became
+empty.  A split counter records zero destination-offer stalls from physical-tag
+shortage and 4,647 from downstream allocation backpressure.  In this path that
+downstream gate is the conservative retirement-queue capacity check, which
+stops admission above 30 occupied entries so a complete two-instruction group
+still fits.  The current result therefore does not support attributing the
+slowdown to the 32 spare physical tags.  The register count remains tight in
+principle, but the ROB capacity gate fires first.  Other current depth-32
+counters are 2,910 bank-conflict cycles (556 read, 2,364 write), 652 denied
+atomic source-pair cycles, 42,677 cycles with register-read activity, and
+64,446 incomplete retirement-head cycles.  These populations overlap and are
+not additive.
+
+Selective recovery required more than a RAT and free-bitmap snapshot.  A tag
+can be busy at a branch checkpoint, retire and become free while the branch is
+live, then be reused by younger work.  Recovery now tracks all allocations
+after each live checkpoint, reclaiming that recycled tag as well.  The focused
+renamer test explicitly exercises this sequence in addition to same-bundle
+WAW mapping, two-wide retirement recycling, and RRAT-based full flush.
+
+The dedicated DDR3 ACT4 target passed all 93 preserved RV64IMA tests in
+`compliance-act4-platform-3p-tomasulo-ddr3-20260901T202115Z`.  The existing
+identity-renamed banked dispatch, backend, and top smoke controls also passed
+in `3p-banked-smoke-20260901T202942Z`.
+
+#### Sv39 branch-survival correction
+
+The compact bare-metal measurements above execute in M-mode.  They are valid
+register-pipeline measurements, but they are the wrong experiment for judging
+branch speculation: `rv64_top_3p.v` deliberately makes M-mode controls
+effectively predicted not-taken because the current partial-tag indirect BTB
+is not context-safe across translated S-mode and physical M-mode addresses.
+Taken loop branches therefore correct and discard their sequential followers
+even when the direction predictor learned the loop.  No M-mode predictor
+relaxation is included in the implementation.
+
+The source-matched rerun uses the finite CoreMark-derived Sv39 workload and
+requires both `satp_sv39=1` and supervisor execution.  All cases use the same
+four-bank 2R1W file, BP8 frontend, cache hierarchy, and timed-DDR3 platform.
+
+| Sv39 configuration | Cycles | Retired | IPC | Managed run |
+|---|---:|---:|---:|---|
+| Tomasulo, speculative issue disabled | 91,690 | 52,589 | 0.5736 | `coremark-sv39-3p-tomasulo-strict-ddr3-20260901T211509Z` |
+| Tomasulo, 32-entry speculative window | 68,364 | 52,589 | 0.7692 | `coremark-sv39-3p-tomasulo-window32-ddr3-20260901T210750Z` |
+| Identity rename, banked speculative window | 69,991 | 52,589 | 0.7514 | `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T110127Z` |
+| Normal 3P, direct GPR, window disabled | 63,716 | 52,592 | 0.8254 | `coremark-sv39-3p-magic-gpr-nospec-ddr3-20260901T110658Z` |
+
+Speculative Tomasulo saves 23,326 cycles, or 25.44%, against its strict Sv39
+control.  It is also 1,627 cycles faster than the identity-renamed banked
+window.  The remaining gap to the normal direct-GPR/window-disabled control is
+4,648 cycles; that comparison still includes the registered register-load
+stage and two-wide banked retirement ceiling.
+
+The branch counters directly reject the hypothesis that correct speculative
+work is discarded when a branch retires:
+
+| Conditional-resolution outcome | Strict | Speculative |
+|---|---:|---:|
+| Correct | 9,903 | 9,911 |
+| Correct with younger issued work | 5 | 9,824 |
+| Correct with younger completed work | 0 | 9,356 |
+| Corrected | 883 | 875 |
+| Corrected with younger issued work | 0 | 863 |
+| Corrected with younger completed work | 0 | 818 |
+
+Thus 99.12% of correctly predicted conditional resolutions have younger issued
+work and 94.40% have younger completed work.  Correct resolution merely marks
+the resident branch complete; it does not drive `squash_frontend_i`.  A real
+direction or target correction drives selective recovery, preserving the
+resolving control and older IDs while discarding only younger IDs.
+
+The cycle effect is correspondingly large.  With speculation enabled,
+nonempty/no-retire cycles fall from 53,718 to 33,465 and incomplete-head cycles
+fall from 53,605 to 33,352.  Scheduler fire events rise from 53,659 to 61,286,
+so this is useful overlap rather than an apparent gain from doing less work.
+The Sv39 data supports selective branch survival; the earlier M-mode near-null
+result was an execution-context artifact.
+
+#### Scheduler/ROB lifetime split
+
+The Tomasulo issue scheduler and retirement queue now have independent storage
+lifetimes and independently configurable depths.  A scheduler entry is freed
+when its selected operation is accepted by the downstream execution or
+register-load path.  The corresponding retirement record remains in its ROB
+slot until architectural retirement.  Scheduler entries therefore carry an
+explicit ROB-slot tag, free-slot allocation no longer aliases the ROB ring,
+and oldest-first selection compares instruction IDs rather than scheduler-slot
+positions.  Issued hard barriers retain a separate token until retirement so
+releasing their scheduler entries does not accidentally relax serialization.
+The public 3P core, top-level wrappers, platform, testbench, and managed build
+parameters expose `ISSUE_WINDOW_DEPTH` separately from `RETIRE_DEPTH`.
+
+The focused Tomasulo stream test was also run with a 16-entry ROB and an
+8-entry scheduler.  It requires both scheduler occupancy below ROB occupancy
+and exact reuse of a scheduler slot while that slot's prior instruction is
+still live in a different ROB record.  That check passed in
+`3p-banked-tomasulo-window-stream-20260901T225950Z`; it is direct evidence of
+the intended lifetime split rather than an inference from aggregate counts.
+The equal-depth Tomasulo and identity controls passed in
+`3p-banked-tomasulo-window-stream-20260901T225234Z` and
+`3p-banked-window-focused-20260901T225303Z`, respectively.
+
+The source-matched Sv39 result is deliberately negative on performance:
+
+| ROB entries | Scheduler entries | Cycles | Retired | IPC | Rename blocked: tags / downstream | Managed run |
+|---:|---:|---:|---:|---:|---:|---|
+| 32 | 32 | 68,396 | 52,589 | 0.7689 | 0 / 23,010 | `coremark-sv39-3p-tomasulo-window32-ddr3-20260901T225452Z` |
+| 64 | 32 | 68,386 | 52,589 | 0.7690 | 5,393 / 0 | `coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260901T230125Z` |
+
+Increasing only the ROB saves 10 cycles, or 0.015%.  It moves the allocation
+limit from ROB capacity to the 63-entry physical-register pool: the 64/32 run
+records 3,853 cycles with no free physical tag and a minimum free count of
+zero.  Scheduler fire events rise from 61,143 to 63,686, but incomplete
+retirement-head cycles barely move (33,379 to 33,275).  Thus the split works,
+but a deeper ROB alone does not hide the current head latency or approach the
+normal-3P target.  More physical registers are required to exercise a 64-entry
+ROB fully; even that is a capacity experiment, not evidence that retirement
+latency will improve.
+
+The platform ACT4 target now instantiates the geometry it already described:
+64 ROB entries and 32 scheduler entries, rather than the former accidental
+32/32 configuration.  All 93 preserved RV64IMA tests passed through L2 and
+timed DDR3 in
+`compliance-act4-platform-3p-tomasulo-ddr3-20260901T230726Z`.

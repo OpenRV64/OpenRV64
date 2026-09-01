@@ -1653,6 +1653,7 @@ module openrv64_backend_4pf #(
         .alloc_slot_o(allocation_slot),
         .complete_valid_i(complete_valid), .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
+        .complete_match_o(),
         .complete_accept_o(queue_complete_accept),
         .extension_complete_valid_i(extension_completion_valid),
         .extension_complete_id_i(extension_completion_id),
@@ -1693,7 +1694,9 @@ module openrv64_backend_4pf #(
         .read_slot_i(queue_retire_slot),
         .read_record_o(queue_retire_record),
         .read_result_o(queue_retire_commit),
-        .read_trace_o(queue_retire_trace)
+        .read_trace_o(queue_retire_trace),
+        .complete_read_slot_i({3*SLOT_WIDTH{1'b0}}),
+        .complete_read_record_o()
     );
 
 `ifndef SYNTHESIS

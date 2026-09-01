@@ -1260,6 +1260,7 @@ module openrv64_rv64_top #(
         .scoreboard_stall_o(dispatch_scoreboard_stall),
         .squash_frontend_3p_i(1'b0),
         .squash_id_3p_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .squash_slot_3p_i(3'd0),
         .translation_bypass_3p_i(1'b0),
         .decode_valid_3p_i(3'b000),
         .decode_payload_3p_i({3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
@@ -1270,9 +1271,14 @@ module openrv64_rv64_top #(
         .rename_free_valid_3p_i(2'b00),
         .rename_free_tag_3p_i(
             {2*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
-        .rename_write_valid_3p_i(2'b00),
+        .rename_write_valid_3p_i(3'b000),
         .rename_write_tag_3p_i(
-            {2*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
+            {3*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
+        .rename_commit_valid_3p_i(3'b000),
+        .rename_commit_arch_3p_i(
+            {3*`RV64_REG_ADDR_WIDTH{1'b0}}),
+        .rename_commit_phys_3p_i(
+            {3*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
         .allocation_id_3p_i(
             {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .allocation_slot_3p_i(9'd0),
@@ -1287,7 +1293,15 @@ module openrv64_rv64_top #(
         .completion_forward_data_3p_i({3*`RV64_XLEN{1'b0}}),
         .forward_map_valid_3p_i(32'd0),
         .forward_map_data_3p_i({32*`RV64_XLEN{1'b0}}),
+        .completion_valid_3p_i(3'b000),
+        .completion_id_3p_i(
+            {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .completion_payload_3p_i(
+            {3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}}),
         .retire_valid_3p_i(3'b000),
+        .retire_id_3p_i(
+            {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .retire_slot_3p_i(9'd0),
         .retire_uses_rs1_3p_i(3'b000),
         .retire_uses_rs2_3p_i(3'b000),
         .retire_rs1_addr_3p_i({3*`RV64_REG_ADDR_WIDTH{1'b0}}),
@@ -1297,7 +1311,10 @@ module openrv64_rv64_top #(
         .retire_hard_3p_i(3'b000),
         .recovery_valid_3p_i(1'b0),
         .recovery_reg_write_3p_i(1'b0),
-        .recovery_rd_addr_3p_i(`RV64_REG_X0)
+        .recovery_rd_addr_3p_i(`RV64_REG_X0),
+        .next_retire_id_3p_i(
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .next_retire_slot_3p_i(3'd0)
     );
 
     openrv64_exec_top #(
@@ -1371,6 +1388,10 @@ module openrv64_rv64_top #(
         .mem_resp_ready_o(),
         .mem_resp_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
         .mem_resp_paddr_i({`RV64_XLEN{1'b0}}),
+        .mem_store_done_valid_i(1'b0),
+        .mem_store_done_ready_o(),
+        .mem_store_done_tag_i(
+            {`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
         .mem_error_i(exec_mem_error),
         .mem_page_fault_i(exec_mem_page_fault),
         .mem_access_allowed_i(1'b1),
@@ -1477,6 +1498,7 @@ module openrv64_rv64_top #(
         .ordered_head_id_3p_i(
             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ordered_head_slot_3p_i(3'd0),
+        .store_barrier_busy_3p_i(1'b0),
         .complete_ready_3p_i(3'b000)
     );
 

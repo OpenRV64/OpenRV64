@@ -12,9 +12,11 @@ module openrv64_top #(
     parameter logic [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
         `OPENRV64_BUS_GEN,
     parameter int unsigned RETIRE_DEPTH = 16,
+    parameter int unsigned ISSUE_WINDOW_DEPTH = RETIRE_DEPTH,
     parameter int unsigned PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter int unsigned PHYS_REG_ADDR_WIDTH =
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1),
+    parameter int unsigned RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
     parameter int unsigned STORE_QUEUE_DEPTH = 4,
     parameter bit ENABLE_ISSUE_WINDOW = 1'b0,
     parameter bit ENABLE_SPECULATION_WINDOW = 1'b0,
@@ -545,8 +547,10 @@ module openrv64_top #(
                 .RELAX_WAW(RELAX_WAW_3P),
                 .RELAX_HAZARDS(RELAX_HAZARDS_3P),
                 .RETIRE_DEPTH(RETIRE_DEPTH),
+                .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
                 .PHYS_REG_COUNT(PHYS_REG_COUNT),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
+                .RENAME_MODE(RENAME_MODE),
                 .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
                 .ENABLE_MAGIC_MEMORY(ENABLE_MAGIC_MEMORY),
                 .ENABLE_TRACE(ENABLE_TRACE),
