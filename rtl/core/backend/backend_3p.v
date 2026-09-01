@@ -4610,6 +4610,8 @@ module openrv64_backend_3p #(
             wire [1:0] banked_gpr_write;
             wire [2*PHYS_REG_ADDR_WIDTH-1:0] banked_gpr_write_addr;
             wire [2*`RV64_XLEN-1:0] banked_gpr_write_data;
+            wire [1:0] banked_free_valid;
+            wire [2*PHYS_REG_ADDR_WIDTH-1:0] banked_free_tag;
 
             assign gpr_write = {1'b0, banked_gpr_write};
             assign gpr_write_addr = {
@@ -4656,6 +4658,8 @@ module openrv64_backend_3p #(
                 .gpr_rd_addr_o(banked_gpr_write_addr),
                 .gpr_rd_data_o(banked_gpr_write_data),
                 .gpr_write_ack_i(gpr_write_ack[1:0]),
+                .free_valid_o(banked_free_valid),
+                .free_tag_o(banked_free_tag),
                 .csr_write_o(csr_write_o),
                 .csr_addr_o(csr_write_addr_o),
                 .csr_op_o(csr_op_o), .csr_wdata_o(csr_wdata_o),
@@ -4671,6 +4675,30 @@ module openrv64_backend_3p #(
             );
             assign banked_retire_write_pair_conflict =
                 u_retire.direct_write_pair_conflict;
+
+            // Dead tags released by retirement accumulate here for the
+            // future tomasulo renamer.  Nothing pops yet, so under identity
+            // rename the list saturates and drops harmlessly.
+            wire [2:0] freelist_pop_valid_unused;
+            wire [3*PHYS_REG_ADDR_WIDTH-1:0] freelist_pop_tag_unused;
+            openrv64_rename_freelist #(
+                .TAG_WIDTH(PHYS_REG_ADDR_WIDTH),
+                .DEPTH(64),
+                .PUSH_PORTS(2),
+                .POP_PORTS(3)
+            ) u_freelist (
+                .clk(clk),
+                .rst_n(rst_n),
+                .push_valid_i(banked_free_valid),
+                .push_tag_i(banked_free_tag),
+                .pop_req_i(3'b000),
+                .pop_valid_o(freelist_pop_valid_unused),
+                .pop_tag_o(freelist_pop_tag_unused),
+                .count_o()
+            );
+            wire unused_freelist_pop = |{
+                freelist_pop_valid_unused, freelist_pop_tag_unused
+            };
         end else begin : g_legacy_retire
             assign banked_retire_write_pair_conflict = 1'b0;
             openrv64_retire_3p #(

@@ -60,6 +60,15 @@ module openrv64_retire_3p_banked #(
     output wire [2*`RV64_XLEN-1:0]      gpr_rd_data_o,
     input  wire [1:0]                   gpr_write_ack_i,
 
+    // Dead-tag release toward the rename free list.  A retiring lane that
+    // allocated a destination returns exactly one tag: the replaced (old)
+    // mapping when the write became architectural, or the never-live new
+    // tag when the lane retired on an exception.  Under identity rename
+    // both tags equal rd; the free list saturates harmlessly until real
+    // allocation pops it.
+    output wire [1:0]                   free_valid_o,
+    output wire [2*PHYS_REG_ADDR_WIDTH-1:0] free_tag_o,
+
     output wire                         csr_write_o,
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     output wire [`RV64_FUNCT3_WIDTH-1:0] csr_op_o,
@@ -86,6 +95,8 @@ module openrv64_retire_3p_banked #(
     localparam integer META_HARD = `OPENRV64_RETIRE_ALLOC_HARD_BIT;
     localparam integer META_NEW_PHYS =
         `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB;
+    localparam integer META_OLD_PHYS =
+        `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB + PHYS_REG_ADDR_WIDTH;
     localparam integer RESULT_CSR_WRITE =
         `OPENRV64_RETIRE_RESULT_CSR_WRITE_BIT;
     localparam integer RESULT_HALT = `OPENRV64_RETIRE_RESULT_HALT_BIT;
@@ -155,6 +166,33 @@ module openrv64_retire_3p_banked #(
             0*`RV64_XLEN +: `RV64_XLEN] : queue_result_i[
             0*RESULT_WIDTH + RESULT_DATA +: `RV64_XLEN]
     };
+
+    genvar free_lane;
+    generate
+        for (free_lane = 0; free_lane < 2;
+             free_lane = free_lane + 1) begin : g_free
+            wire lane_reg_write = queue_meta_i[
+                free_lane*META_WIDTH +
+                `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT];
+            wire [`RV64_REG_ADDR_WIDTH-1:0] lane_rd = queue_meta_i[
+                free_lane*META_WIDTH + `OPENRV64_RETIRE_ALLOC_RD_LSB +:
+                `RV64_REG_ADDR_WIDTH];
+            wire [PHYS_REG_ADDR_WIDTH-1:0] lane_new_phys = queue_meta_i[
+                free_lane*META_WIDTH + META_NEW_PHYS +:
+                PHYS_REG_ADDR_WIDTH];
+            wire [PHYS_REG_ADDR_WIDTH-1:0] lane_old_phys = queue_meta_i[
+                free_lane*META_WIDTH + META_OLD_PHYS +:
+                PHYS_REG_ADDR_WIDTH];
+
+            assign free_valid_o[free_lane] =
+                queue_accept_o[free_lane] && lane_reg_write &&
+                (lane_rd != `RV64_REG_X0);
+            assign free_tag_o[
+                free_lane*PHYS_REG_ADDR_WIDTH +:
+                PHYS_REG_ADDR_WIDTH] = retire_arch_o[free_lane] ?
+                lane_old_phys : lane_new_phys;
+        end
+    endgenerate
 
     reg write_active_q;
     reg write_discard_q;

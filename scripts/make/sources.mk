@@ -45,7 +45,9 @@ REG_SRCS := rtl/util/regfile.v \
 	rtl/core/regs/rv64-i-gpr-banked.v \
 	rtl/core/regs/rv64-i-gpr_3p.v \
 	rtl/core/regs/rv64-i-pmp.v $(CMU_SRCS) rtl/core/regs/rv64-i-csrs.v
-RENAME_SRCS := rtl/core/rename/identity.v
+RENAME_SRCS := rtl/core/rename/identity.v \
+	rtl/core/rename/freelist.v \
+	rtl/core/rename/tomasulo.v
 FETCH_SRCS := $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v
