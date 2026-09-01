@@ -280,8 +280,10 @@ module openrv64_rv64i_gpr_3p #(
         if ((1 << REG_ADDR_WIDTH) <= NUM_REGS)
             $fatal(1, "3P physical tag width cannot address pNUM_REGS");
         if ((BANKED != 0) &&
-            ((NUM_REGS != 31) || (REG_ADDR_WIDTH != 5)))
-            $fatal(1, "banked 3P GPR requires architectural p0-p31 tags");
+            !(((NUM_REGS == 31) && (REG_ADDR_WIDTH == 5)) ||
+              ((NUM_REGS == 63) && (REG_ADDR_WIDTH == 6))))
+            $fatal(1,
+                   "banked 3P GPR requires p0-p31 or p0-p63 tags");
         if ((BANKED != 0) &&
             ((BANKED_READ_PORTS_PER_BANK < 1) ||
              (BANKED_READ_PORTS_PER_BANK > 4)))

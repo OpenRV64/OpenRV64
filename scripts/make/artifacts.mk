@@ -81,6 +81,7 @@ STAGE_SIM_BUILD := sim/stage_tb.vvp
 REGFILE_SIM_BUILD := sim/regfile_tb.vvp
 PRF_SIM_BUILD := sim/prf_tb.vvp
 RENAME_IDENTITY_SIM_BUILD := sim/rename_identity_tb.vvp
+RENAME_TOMASULO_SIM_BUILD := sim/rename_tomasulo_tb.vvp
 RV64I_GPR_SIM_BUILD := sim/rv64-i-gpr_tb.vvp
 RV64I_GPR_BANKED_SIM_BUILD := sim/rv64-i-gpr-banked_tb.vvp
 RV64I_CSRS_SIM_BUILD := sim/rv64-i-csrs_tb.vvp
@@ -151,6 +152,8 @@ RETIRE_3P_SIM_BUILD := sim/retire_3p_tb.vvp
 RETIRE_3P_BANKED_SIM_BUILD := sim/retire_3p_banked_tb.vvp
 BACKEND_3P_SIM_BUILD := sim/backend_3p_tb.vvp
 BACKEND_3P_BANKED_SIM_BUILD := sim/backend_3p_banked_tb.vvp
+BACKEND_3P_BANKED_TOMASULO_SIM_BUILD := \
+	sim/backend_3p_banked_tomasulo_tb.vvp
 BACKEND_3P_BANKED_WINDOW_SIM_BUILD := sim/backend_3p_banked_window_tb.vvp
 TOP_3P_SIM_BUILD := sim/top_3p_tb.vvp
 TOP_3P_BANKED_SIM_BUILD := sim/top_3p_banked_tb.vvp

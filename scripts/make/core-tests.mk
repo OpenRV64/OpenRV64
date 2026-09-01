@@ -54,6 +54,9 @@ sim-prf: $(PRF_SIM_BUILD)
 sim-rename-identity: $(RENAME_IDENTITY_SIM_BUILD)
 	vvp $(RENAME_IDENTITY_SIM_BUILD)
 
+sim-rename-tomasulo: $(RENAME_TOMASULO_SIM_BUILD)
+	vvp $(RENAME_TOMASULO_SIM_BUILD)
+
 sim-rv64-i-gpr: $(RV64I_GPR_SIM_BUILD)
 	vvp $(RV64I_GPR_SIM_BUILD)
 
@@ -309,6 +312,9 @@ sim-backend-3p: $(BACKEND_3P_SIM_BUILD)
 
 sim-backend-3p-banked: $(BACKEND_3P_BANKED_SIM_BUILD)
 	vvp $(BACKEND_3P_BANKED_SIM_BUILD)
+
+sim-backend-3p-banked-tomasulo: $(BACKEND_3P_BANKED_TOMASULO_SIM_BUILD)
+	vvp $(BACKEND_3P_BANKED_TOMASULO_SIM_BUILD)
 
 sim-backend-3p-banked-window: $(BACKEND_3P_BANKED_WINDOW_SIM_BUILD)
 	vvp $(BACKEND_3P_BANKED_WINDOW_SIM_BUILD)

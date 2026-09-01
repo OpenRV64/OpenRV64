@@ -7,7 +7,8 @@
 
 module tb_backend_3p_banked #(
     parameter integer ISSUE_WINDOW = 0,
-    parameter integer SPECULATION_WINDOW = ISSUE_WINDOW
+    parameter integer SPECULATION_WINDOW = ISSUE_WINDOW,
+    parameter integer RENAME_MODE = 0
 );
     localparam integer RETIRE_DEPTH = 16;
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
@@ -15,6 +16,11 @@ module tb_backend_3p_banked #(
     localparam integer DCW = $clog2(
         ((ISSUE_WINDOW != 0) ? RETIRE_DEPTH : 6) + 1);
     localparam integer INSTRUCTION_COUNT = 27;
+    localparam integer PHYS_REG_COUNT = (RENAME_MODE != 0) ? 63 : 31;
+    localparam integer PHYS_REG_ADDR_WIDTH =
+        (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1);
+    localparam integer RETIRE_META_WIDTH =
+        `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + 2*PHYS_REG_ADDR_WIDTH;
 
     localparam integer I_PRIV = 2;
     localparam integer I_MEM_READ = 16;
@@ -81,8 +87,8 @@ module tb_backend_3p_banked #(
     openrv64_backend_3p #(
         .RETIRE_DEPTH(RETIRE_DEPTH),
         .DISPATCH_DEPTH(6),
-        .PHYS_REG_COUNT(31),
-        .PHYS_REG_ADDR_WIDTH(5),
+        .PHYS_REG_COUNT(PHYS_REG_COUNT),
+        .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
         .ENABLE_TRACE(1),
         .COMPLETION_FORWARD_MASK(3'b111),
         .BRANCH_COMPLETION_FORWARD_MASK(3'b000),
@@ -91,6 +97,7 @@ module tb_backend_3p_banked #(
         .RELAX_HAZARDS(0),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .RENAME_MODE(RENAME_MODE),
         .ISSUE_WINDOW_DEPTH(RETIRE_DEPTH),
         .BANKED_GPR(1),
         .FPGA_GPR_LUTRAM(0)
@@ -398,6 +405,22 @@ module tb_backend_3p_banked #(
     reg prior_cycle_issued;
     reg memory_probe_active;
     integer memory_probe_retired;
+    reg [4:0] memory_probe_last_rd;
+    reg [63:0] memory_probe_last_wdata;
+    reg saw_physical_free;
+    reg saw_nonidentity_phys;
+    integer rename_monitor_lane;
+    wire [6:0] observed_rename_free_count;
+
+    generate
+        if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin :
+                g_observe_tomasulo
+            assign observed_rename_free_count =
+                dut.u_dispatch.g_3p.g_tomasulo.rename_free_count;
+        end else begin : g_observe_identity
+            assign observed_rename_free_count = 7'd0;
+        end
+    endgenerate
 
     always @(negedge clk) begin
         if (rst_n) begin
@@ -432,11 +455,32 @@ module tb_backend_3p_banked #(
                     fail("retired instruction did not match its trace ID");
                 if (retire_rd !== expected_rd[expected_last_trace-1])
                     fail("retired destination register was incorrect");
-                if (retire_wdata !== expected_result[expected_last_trace-1])
+                if (retire_wdata !== expected_result[expected_last_trace-1]) begin
+                    $display("retire mismatch trace=%0d rd=%0d actual=%h expected=%h free=%0d",
+                             retire_trace_id, retire_rd, retire_wdata,
+                             expected_result[expected_last_trace-1],
+                             observed_rename_free_count);
                     fail("retired arithmetic result was incorrect");
+                end
                 retired_total = expected_last_trace;
             end else if ((retire_count != 0) && memory_probe_active) begin
                 memory_probe_retired = memory_probe_retired + retire_count;
+                memory_probe_last_rd = retire_rd;
+                memory_probe_last_wdata = retire_wdata;
+            end
+
+            if (RENAME_MODE != 0) begin
+                if (|dut.rename_free_valid)
+                    saw_physical_free = 1'b1;
+                for (rename_monitor_lane = 0; rename_monitor_lane < 3;
+                     rename_monitor_lane = rename_monitor_lane + 1) begin
+                    if (dut.allocation_valid[rename_monitor_lane] &&
+                        (dut.allocation_meta[
+                            rename_monitor_lane*RETIRE_META_WIDTH +
+                            `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +:
+                            PHYS_REG_ADDR_WIDTH] > 31))
+                        saw_nonidentity_phys = 1'b1;
+                end
             end
 
             if (!memory_probe_active &&
@@ -448,9 +492,12 @@ module tb_backend_3p_banked #(
             if (write_busy[0])
                 fail("x0 became busy");
             if ((dut.gpr_write[0] &&
-                 (dut.gpr_write_addr[0 +: 5] == `RV64_REG_X0)) ||
+                 (dut.gpr_write_addr[0 +: PHYS_REG_ADDR_WIDTH] ==
+                  `RV64_REG_X0)) ||
                 (dut.gpr_write[1] &&
-                 (dut.gpr_write_addr[5 +: 5] == `RV64_REG_X0)))
+                 (dut.gpr_write_addr[PHYS_REG_ADDR_WIDTH +:
+                                     PHYS_REG_ADDR_WIDTH] ==
+                  `RV64_REG_X0)))
                 fail("retirement sent an x0 write to the register file");
 
             if (|(dut.gpr_read_req[5:0] & ~dut.gpr_read_ack[5:0]))
@@ -463,14 +510,15 @@ module tb_backend_3p_banked #(
             if ((dispatch_occupancy != 0) && (write_busy != 0) &&
                 (issue_count == 0))
                 saw_dependency_wait = 1'b1;
-            if ((dut.banked_read_forward_valid[0] &&
+            if ((RENAME_MODE == 0) &&
+                ((dut.banked_read_forward_valid[0] &&
                  write_busy[dut.gpr_read_addr[0*5 +: 5]]) ||
                 (dut.banked_read_forward_valid[1] &&
                  write_busy[dut.gpr_read_addr[1*5 +: 5]]) ||
                 (dut.banked_read_forward_valid[2] &&
                  write_busy[dut.gpr_read_addr[2*5 +: 5]]) ||
                 (dut.banked_read_forward_valid[3] &&
-                 write_busy[dut.gpr_read_addr[3*5 +: 5]])) begin
+                 write_busy[dut.gpr_read_addr[3*5 +: 5]]))) begin
                 // Forwarded operands are accepted while architectural
                 // ownership remains busy.  The gather's write-block vector
                 // excludes the qualified completion by construction.
@@ -530,6 +578,10 @@ module tb_backend_3p_banked #(
         prior_cycle_issued = 1'b0;
         memory_probe_active = 1'b0;
         memory_probe_retired = 0;
+        memory_probe_last_rd = 5'd0;
+        memory_probe_last_wdata = 64'd0;
+        saw_physical_free = 1'b0;
+        saw_nonidentity_phys = 1'b0;
 
         instruction_stream[0] = addi_packet(1, 0, 1, 64'd5, 1'b0);
         // p1 and p29 share four-bank bank 1.  These two independent leading
@@ -692,7 +744,7 @@ module tb_backend_3p_banked #(
         // oversubscribed reads are still presented.  The latter must remain
         // stable through ack; all delayed responses are poisoned and must not
         // allocate work.
-        if (ISSUE_WINDOW == 0) begin
+        if ((ISSUE_WINDOW == 0) && (RENAME_MODE == 0)) begin
         decode_payload = {3*IW{1'b0}};
         decode_payload[0 +: IW] = reg_packet(
             0, 4, 8, 31, `RV64_ALU_OP_ADD, 1'b0);
@@ -714,8 +766,16 @@ module tb_backend_3p_banked #(
              !(|dut.u_gpr.g_banked.u_reg_file.read_grant);
              cycles = cycles + 1)
             tick();
-        if (!(|dut.u_gpr.g_banked.u_reg_file.read_grant))
+        if (!(|dut.u_gpr.g_banked.u_reg_file.read_grant)) begin
+            $display("redirect grant state rename=%0d alloc=%b req=%b ack=%b addr=%h pending=%b drain=%b quiescent=%b free=%0d",
+                     RENAME_MODE, dut.allocation_valid,
+                     dut.gpr_read_req[3:0], dut.gpr_read_ack[3:0],
+                     dut.gpr_read_addr[4*PHYS_REG_ADDR_WIDTH-1:0],
+                     dut.banked_read_pending_q, dut.banked_gpr_drain_q,
+                     dut.gpr_quiescent,
+                     observed_rename_free_count);
             fail("redirect probe never obtained a GPR read grant");
+        end
 
         // Accept the combinational grants first.  Their data returns now,
         // while the same-bank losers remain held address-phase requests.  The
@@ -813,20 +873,29 @@ module tb_backend_3p_banked #(
             fail("test never exercised two-wide issue");
         if (!saw_two_wide_retire)
             fail("test never exercised two-wide retirement");
-        if ((ISSUE_WINDOW == 0) && !saw_read_bank_retry)
+        if ((ISSUE_WINDOW == 0) && (RENAME_MODE == 0) &&
+            !saw_read_bank_retry)
             fail("test never exercised a read-bank retry");
-        if (!saw_write_bank_retry)
+        if ((RENAME_MODE == 0) && !saw_write_bank_retry)
             fail("test never exercised a sliding same-bank write pair");
         if (!saw_dependency_wait)
             fail("test never observed conservative dependency waiting");
-        if ((ISSUE_WINDOW == 0) && !saw_exu_forward_while_busy)
+        if ((ISSUE_WINDOW == 0) && (RENAME_MODE == 0) &&
+            !saw_exu_forward_while_busy)
             fail("test never consumed an EXU completion before retirement");
-        if ((ISSUE_WINDOW == 0) && !saw_write_ack_read_overlap)
+        if ((ISSUE_WINDOW == 0) && (RENAME_MODE == 0) &&
+            !saw_write_ack_read_overlap)
             fail("test never overlapped a dependent read with write ack");
         if (!saw_regload_address_issue_overlap)
             fail("test never overlapped register address and issue phases");
         if (!saw_back_to_back_issue)
             fail("test never issued in back-to-back cycles");
+        if ((RENAME_MODE != 0) &&
+            (!saw_nonidentity_phys || !saw_physical_free))
+            fail("renamed stream did not allocate and free physical tags");
+        if ((RENAME_MODE != 0) &&
+            (observed_rename_free_count != 32))
+            fail("renamed stream did not restore free-tag conservation");
 
         // Isolate the steering probe from the throughput/conflict coverage
         // above.  The normal ready signal is payload-qualified, so force only
@@ -836,6 +905,8 @@ module tb_backend_3p_banked #(
         if (ISSUE_WINDOW == 0) begin
         memory_probe_active = 1'b1;
         memory_probe_retired = 0;
+        memory_probe_last_rd = 5'd0;
+        memory_probe_last_wdata = 64'd0;
         force dut.base_alu_available = 2'b10;
         decode_payload = {3*IW{1'b0}};
         decode_payload[0 +: IW] = addi_packet(28, 0, 29, 64'd42, 1'b0);
@@ -856,7 +927,9 @@ module tb_backend_3p_banked #(
         if (!saw_base_alu_reroute)
             fail("base ALU did not retarget from unavailable EX0 to EX1");
         if ((memory_probe_retired != 1) ||
-            (dut.u_gpr.regs[29] !== 64'd42))
+            (memory_probe_last_rd != 5'd29) ||
+            (memory_probe_last_wdata != 64'd42) ||
+            ((RENAME_MODE == 0) && (dut.u_gpr.regs[29] !== 64'd42)))
             fail("retargeted base ALU did not retire the correct result");
         memory_probe_active = 1'b0;
         memory_probe_retired = 0;
@@ -867,6 +940,8 @@ module tb_backend_3p_banked #(
         // registered forwarding stage must supply it before retirement writes
         // x27.
         memory_probe_active = 1'b1;
+        memory_probe_last_rd = 5'd0;
+        memory_probe_last_wdata = 64'd0;
         decode_payload = {3*IW{1'b0}};
         decode_payload[0 +: IW] = load_packet(28, 0, 27, 64'h100);
         decode_payload[IW +: IW] =
@@ -916,14 +991,19 @@ module tb_backend_3p_banked #(
         repeat (2) tick();
         if (memory_probe_retired != 2)
             fail("MEM0 forwarding probe did not retire both instructions");
-        if ((ISSUE_WINDOW == 0) && !saw_mem_forward_while_busy)
+        if ((ISSUE_WINDOW == 0) && (RENAME_MODE == 0) &&
+            !saw_mem_forward_while_busy)
             fail("load result was not consumed from MEM0 completion");
+        if ((memory_probe_last_rd != 5'd28) ||
+            (memory_probe_last_wdata != 64'h1122_3344_5566_7789))
+            fail("load consumer retired an incorrect renamed result");
         if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
             (write_busy != 0))
             fail("MEM0 forwarding probe did not drain cleanly");
         memory_probe_active = 1'b0;
 
-        if (dut.u_gpr.regs[1] !== 64'd5 ||
+        if ((RENAME_MODE == 0) &&
+            (dut.u_gpr.regs[1] !== 64'd5 ||
             dut.u_gpr.regs[2] !== 64'd9 ||
             dut.u_gpr.regs[4] !== 64'd14 ||
             dut.u_gpr.regs[5] !== 64'd4 ||
@@ -951,11 +1031,13 @@ module tb_backend_3p_banked #(
             dut.u_gpr.regs[27] !== 64'h1122_3344_5566_7788 ||
             dut.u_gpr.regs[28] !== 64'h1122_3344_5566_7789 ||
             dut.u_gpr.regs[29] !== ((ISSUE_WINDOW == 0) ?
-                                    64'd42 : -64'd4))
+                                    64'd42 : -64'd4)))
             fail("final architectural register state was incorrect");
 
         if (ISSUE_WINDOW != 0)
             $display("PASS: banked 3p issue window processed post-selection register loads, ordered arithmetic, load/use, and held bank retries");
+        else if (RENAME_MODE != 0)
+            $display("PASS: banked 3p backend instruction stream allocated, executed, retired, and freed physical registers");
         else
             $display("PASS: banked 3p backend processed ordered arithmetic plus a MEM0-forwarded load/use with held bank retries and conservative dependencies");
         $finish;

@@ -25,6 +25,7 @@ module openrv64_dispatch #(
     parameter integer DEFER_WINDOW_GPR_READ_3P = 0,
     parameter integer MAX_WINDOW_ISSUE_LANES_3P = 4,
     parameter integer ISSUE_WINDOW_DEPTH_3P = 16,
+    parameter integer RENAME_MODE_3P = 0,
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE_3P =
         {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE_3P =
@@ -137,9 +138,17 @@ module openrv64_dispatch #(
     input  wire [2:0]                   decode_uses_rs2_3p_i,
     output wire [6*PHYS_REG_ADDR_WIDTH_3P-1:0]
                                         gpr_read_addr_3p_o,
+    output wire [5:0]                   gpr_read_ready_3p_o,
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_3p_i,
     input  wire [5:0]                   candidate_operand_ready_3p_i,
+    input  wire [2:0]                   candidate_address_ready_3p_i,
     input  wire                         allocation_ready_3p_i,
+    input  wire [1:0]                   rename_free_valid_3p_i,
+    input  wire [2*PHYS_REG_ADDR_WIDTH_3P-1:0]
+                                        rename_free_tag_3p_i,
+    input  wire [1:0]                   rename_write_valid_3p_i,
+    input  wire [2*PHYS_REG_ADDR_WIDTH_3P-1:0]
+                                        rename_write_tag_3p_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0] allocation_slot_3p_i,
     output wire [2:0]                   allocation_valid_3p_o,
@@ -225,6 +234,7 @@ module openrv64_dispatch #(
             assign decode_ready_3p_o = 3'b000;
             assign gpr_read_addr_3p_o =
                 {6*PHYS_REG_ADDR_WIDTH_3P{1'b0}};
+            assign gpr_read_ready_3p_o = 6'b111111;
             assign allocation_valid_3p_o = 3'b000;
             assign allocation_meta_3p_o =
                 {3*RETIRE_META_WIDTH_3P{1'b0}};
@@ -263,6 +273,7 @@ module openrv64_dispatch #(
             assign write_busy_3p_o = 32'd0;
             assign queue_count_3p_o = {COUNT_WIDTH_3P{1'b0}};
         end else if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_3p
+            wire rename_allocation_ready;
             wire [2:0] strict_decode_ready;
             wire [6*`RV64_REG_ADDR_WIDTH-1:0] strict_gpr_read_addr;
             wire [2:0] strict_allocation_valid;
@@ -292,6 +303,7 @@ module openrv64_dispatch #(
             wire [2:0] strict_read_port_hazard;
             wire [31:0] strict_write_busy;
             wire [COUNT_WIDTH_3P-1:0] strict_queue_count;
+            wire [2:0] strict_rename_destination_request;
 
             // Keep the original instance and hierarchy present regardless of
             // selection.  Existing testbench probes and the default behavior
@@ -305,7 +317,9 @@ module openrv64_dispatch #(
                 .MAX_ISSUE_LANES(MAX_ISSUE_LANES_3P),
                 .FREE_BRANCHES(FREE_BRANCHES_3P),
                 .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING_3P),
-                .DEFER_EQ_BRANCH_PAIRING(DEFER_EQ_BRANCH_PAIRING_3P)
+                .DEFER_EQ_BRANCH_PAIRING(DEFER_EQ_BRANCH_PAIRING_3P),
+                .ENABLE_CANDIDATE_ADDRESS_READY(
+                    RENAME_MODE_3P == `OPENRV64_RENAME_TOMASULO)
             ) u_dispatch (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_frontend_i(squash_frontend_3p_i),
@@ -316,10 +330,14 @@ module openrv64_dispatch #(
                 .decode_uses_rs1_i(decode_uses_rs1_3p_i),
                 .decode_uses_rs2_i(decode_uses_rs2_3p_i),
                 .gpr_read_addr_o(strict_gpr_read_addr),
+                .rename_destination_request_o(
+                    strict_rename_destination_request),
                 .gpr_read_data_i(gpr_read_data_3p_i),
                 .candidate_operand_ready_i(
                     candidate_operand_ready_3p_i),
-                .allocation_ready_i(allocation_ready_3p_i),
+                .candidate_address_ready_i(
+                    candidate_address_ready_3p_i),
+                .allocation_ready_i(rename_allocation_ready),
                 .allocation_id_i(allocation_id_3p_i),
                 .allocation_slot_i(allocation_slot_3p_i),
                 .allocation_valid_o(strict_allocation_valid),
@@ -427,7 +445,7 @@ module openrv64_dispatch #(
                 .decode_uses_rs2_i(decode_uses_rs2_3p_i),
                 .gpr_read_addr_o(window_gpr_read_addr),
                 .gpr_read_data_i(gpr_read_data_3p_i),
-                .allocation_ready_i(allocation_ready_3p_i),
+                .allocation_ready_i(rename_allocation_ready),
                 .allocation_id_i(allocation_id_3p_i),
                 .allocation_slot_i(allocation_slot_3p_i),
                 .allocation_valid_o(window_allocation_valid),
@@ -525,21 +543,61 @@ module openrv64_dispatch #(
                 rename_destination_new_phys;
             wire [3*PHYS_REG_ADDR_WIDTH_3P-1:0]
                 rename_destination_old_phys;
-            openrv64_rename_identity #(
-                .ARCH_ADDR_WIDTH(`RV64_REG_ADDR_WIDTH),
-                .ARCH_REG_COUNT(32),
-                .PHYS_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
-                .PHYS_REG_COUNT(PHYS_REG_COUNT_3P),
-                .LANES(3),
-                .SOURCES_PER_LANE(2)
-            ) u_rename (
-                .source_arch_i(selected_gpr_read_addr),
-                .source_phys_o(gpr_read_addr_3p_o),
-                .destination_valid_i(rename_destination_valid),
-                .destination_arch_i(rename_destination_arch),
-                .destination_new_phys_o(rename_destination_new_phys),
-                .destination_old_phys_o(rename_destination_old_phys)
-            );
+            wire [5:0] rename_source_ready;
+            if (RENAME_MODE_3P == `OPENRV64_RENAME_IDENTITY) begin :
+                    g_identity
+                    assign rename_allocation_ready = allocation_ready_3p_i;
+                    assign rename_source_ready = 6'b111111;
+                    openrv64_rename_identity #(
+                        .ARCH_ADDR_WIDTH(`RV64_REG_ADDR_WIDTH),
+                        .ARCH_REG_COUNT(32),
+                        .PHYS_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
+                        .PHYS_REG_COUNT(PHYS_REG_COUNT_3P),
+                        .LANES(3),
+                        .SOURCES_PER_LANE(2)
+                    ) u_rename (
+                        .source_arch_i(selected_gpr_read_addr),
+                        .source_phys_o(gpr_read_addr_3p_o),
+                        .destination_valid_i(rename_destination_valid),
+                        .destination_arch_i(rename_destination_arch),
+                        .destination_new_phys_o(rename_destination_new_phys),
+                        .destination_old_phys_o(rename_destination_old_phys)
+                    );
+            end else begin : g_tomasulo
+                    wire rename_destination_ready;
+                    wire [6:0] rename_free_count;
+                    assign rename_allocation_ready =
+                        allocation_ready_3p_i && rename_destination_ready;
+                    openrv64_rename_tomasulo #(
+                        .ARCH_ADDR_WIDTH(`RV64_REG_ADDR_WIDTH),
+                        .ARCH_REG_COUNT(32),
+                        .PHYS_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
+                        .PHYS_REG_COUNT(PHYS_REG_COUNT_3P),
+                        .LANES(3),
+                        .SOURCES_PER_LANE(2),
+                        .FREE_PORTS(2)
+                    ) u_rename (
+                        .clk(clk),
+                        .rst_n(rst_n),
+                        .source_arch_i(selected_gpr_read_addr),
+                        .source_phys_o(gpr_read_addr_3p_o),
+                    .source_ready_o(rename_source_ready),
+                    .destination_request_i(
+                        strict_rename_destination_request),
+                        .destination_valid_i(rename_destination_valid),
+                        .destination_arch_i(rename_destination_arch),
+                        .destination_ready_o(rename_destination_ready),
+                        .destination_new_phys_o(rename_destination_new_phys),
+                        .destination_old_phys_o(rename_destination_old_phys),
+                        .free_valid_i(rename_free_valid_3p_i),
+                        .free_tag_i(rename_free_tag_3p_i),
+                        .write_valid_i(rename_write_valid_3p_i),
+                        .write_tag_i(rename_write_tag_3p_i),
+                        .free_count_o(rename_free_count)
+                    );
+            end
+
+            assign gpr_read_ready_3p_o = rename_source_ready;
 
             assign allocation_valid_3p_o = selected_allocation_valid;
             genvar rename_lane;

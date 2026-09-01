@@ -87,6 +87,14 @@ $(RENAME_IDENTITY_SIM_BUILD): rtl/core/rename/identity.v \
 		-o $(RENAME_IDENTITY_SIM_BUILD) \
 		rtl/core/rename/identity.v tb/tb_rename_identity.sv
 
+$(RENAME_TOMASULO_SIM_BUILD): rtl/core/rename/freelist.v \
+		rtl/core/rename/tomasulo.v tb/tb_rename_tomasulo.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_rename_tomasulo \
+		-o $(RENAME_TOMASULO_SIM_BUILD) \
+		rtl/core/rename/freelist.v rtl/core/rename/tomasulo.v \
+		tb/tb_rename_tomasulo.sv
+
 $(RV64I_GPR_SIM_BUILD): $(RV64I_GPR_SIM_SRCS) $(REG_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(RV64I_GPR_SIM_BUILD) $(RV64I_GPR_SIM_SRCS)

@@ -68,7 +68,7 @@
 .PHONY: sim-decode-rv64c sim-decode-rv64-fd
 .PHONY: sim-exec-alu-rv64-m-fpga
 .PHONY: sim-regfile sim-retire-3p-banked sim-backend-3p-banked \
-	sim-backend-3p-banked-window
+	sim-backend-3p-banked-tomasulo sim-backend-3p-banked-window
 .PHONY: sim-top-3p-banked
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \
 	sim-vec-cache sim-vec-cache-axi sim-vec-cache-wb \
@@ -123,7 +123,7 @@
 .PHONY: sim-core-complex-1h-axi sim-core-complex-2h-axi \
 	sim-core-complex-4h-wb
 .PHONY: sim-mem-channel sim-l2-axi-ddr3 sim-mesh-router
-.PHONY: sim-prf sim-rename-identity sim-lsq sim-lsu-atomics \
+.PHONY: sim-prf sim-rename-identity sim-rename-tomasulo sim-lsq sim-lsu-atomics \
 	sim-lsu-misaligned \
 	sim-zicclsm-context \
 	sim-exec-top-3p-no-zicclsm
@@ -150,6 +150,7 @@ sim: sim-atomic-soc
 sim: sim-vec
 sim: sim-prf
 sim: sim-rename-identity
+sim: sim-rename-tomasulo
 sim: sim-lsq
 sim: sim-lsu-atomics
 sim: sim-lsu-misaligned

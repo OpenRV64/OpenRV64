@@ -21,6 +21,7 @@ module openrv64_dispatch_3p #(
     // prediction before it allows that follower to issue.
     parameter integer DEFER_EQ_BRANCH_PAIRING = 0,
     parameter integer MAX_ISSUE_LANES = 3,
+    parameter integer ENABLE_CANDIDATE_ADDRESS_READY = 0,
     parameter integer COUNT_WIDTH = $clog2(QUEUE_DEPTH + 1)
 ) (
     input  wire                         clk,
@@ -36,8 +37,10 @@ module openrv64_dispatch_3p #(
     input  wire [2:0]                   decode_uses_rs2_i,
 
     output wire [6*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr_o,
+    output wire [2:0]                   rename_destination_request_o,
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_i,
     input  wire [5:0]                   candidate_operand_ready_i,
+    input  wire [2:0]                   candidate_address_ready_i,
 
     input  wire                         allocation_ready_i,
     input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id_i,
@@ -304,6 +307,15 @@ module openrv64_dispatch_3p #(
         candidate_payload[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 17],
         candidate_payload[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 17]
     };
+    assign rename_destination_request_o = candidate_valid &
+        candidate_reg_write & {
+            (candidate_rd_addr[2*`RV64_REG_ADDR_WIDTH +:
+                `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0),
+            (candidate_rd_addr[`RV64_REG_ADDR_WIDTH +:
+                `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0),
+            (candidate_rd_addr[0 +: `RV64_REG_ADDR_WIDTH] !=
+                `RV64_REG_X0)
+        };
     wire [2:0] candidate_hazard_free;
     wire [2:0] candidate_fire;
 
@@ -621,9 +633,15 @@ module openrv64_dispatch_3p #(
     wire [2:0] candidate_hard;
     wire [2:0] candidate_hazard_free_effective = {
         candidate_hazard_free[2] &&
-            !free_mispredict0 && !free_mispredict1,
-        candidate_hazard_free[1] && !free_mispredict0,
-        candidate_hazard_free[0]
+            !free_mispredict0 && !free_mispredict1 &&
+            ((ENABLE_CANDIDATE_ADDRESS_READY == 0) ||
+             candidate_address_ready_i[2]),
+        candidate_hazard_free[1] && !free_mispredict0 &&
+            ((ENABLE_CANDIDATE_ADDRESS_READY == 0) ||
+             candidate_address_ready_i[1]),
+        candidate_hazard_free[0] &&
+            ((ENABLE_CANDIDATE_ADDRESS_READY == 0) ||
+             candidate_address_ready_i[0])
     };
     openrv64_dispatch_control_3p #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH)

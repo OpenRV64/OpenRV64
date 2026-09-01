@@ -32,6 +32,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_ISSUE_WINDOW = 0,
     parameter integer ENABLE_SPECULATION_WINDOW = 0,
     parameter integer ISSUE_WINDOW_DEPTH = 16,
+    parameter integer RENAME_MODE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
@@ -197,6 +198,7 @@ module openrv64_backend_3p #(
 
     wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_read_addr;
     wire [6*PHYS_REG_ADDR_WIDTH-1:0] dispatch_gpr_read_addr;
+    wire [5:0] dispatch_gpr_read_ready;
     wire [6*PHYS_REG_ADDR_WIDTH-1:0] gpr_storage_read_addr;
     wire [6*`RV64_XLEN-1:0] gpr_read_data;
     wire [6*`RV64_XLEN-1:0] dispatch_gpr_read_data;
@@ -230,7 +232,8 @@ module openrv64_backend_3p #(
             banked_write_ack_addr = gpr_write_addr[
                 banked_write_ack_lane*PHYS_REG_ADDR_WIDTH +:
                 PHYS_REG_ADDR_WIDTH];
-            if (gpr_write[banked_write_ack_lane] &&
+            if ((RENAME_MODE == `OPENRV64_RENAME_IDENTITY) &&
+                gpr_write[banked_write_ack_lane] &&
                 gpr_write_ack[banked_write_ack_lane] &&
                 (banked_write_ack_addr != {PHYS_REG_ADDR_WIDTH{1'b0}}))
                 banked_write_ack_hot[banked_write_ack_addr] = 1'b1;
@@ -242,7 +245,8 @@ module openrv64_backend_3p #(
     // safe because the register file carries the accepted write data through
     // its registered read-response bypass.  Dispatch keeps its registered
     // retire feedback internally, so WAW allocation is not relaxed here.
-    assign write_busy_o = (BANKED_GPR != 0) ?
+    assign write_busy_o = ((BANKED_GPR != 0) &&
+        (RENAME_MODE == `OPENRV64_RENAME_IDENTITY)) ?
         (dispatch_write_busy & ~banked_write_ack_hot) :
         dispatch_write_busy;
     wire gpr_access_pending = (|gpr_read_req) || (|gpr_write) ||
@@ -255,6 +259,8 @@ module openrv64_backend_3p #(
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id;
     wire [3*SLOT_WIDTH-1:0] allocation_slot;
     wire [3*RETIRE_META_WIDTH-1:0] allocation_meta;
+    wire [1:0] rename_free_valid;
+    wire [2*PHYS_REG_ADDR_WIDTH-1:0] rename_free_tag;
     wire [3*RETIRE_RECORD_WIDTH-1:0] allocation_record;
     wire [2:0] allocation_complete;
     wire [2:0] allocation_mispredict;
@@ -1729,26 +1735,35 @@ module openrv64_backend_3p #(
                     banked_read_port*PHYS_REG_ADDR_WIDTH +:
                     PHYS_REG_ADDR_WIDTH];
             wire read_zero = read_addr == {PHYS_REG_ADDR_WIDTH{1'b0}};
-            reg read_forward_valid;
-            reg [`RV64_XLEN-1:0] read_forward_data;
-            integer read_forward_lane;
-            always @* begin
-                read_forward_valid = 1'b0;
-                read_forward_data = {`RV64_XLEN{1'b0}};
-                for (read_forward_lane = 0; read_forward_lane < 2;
-                     read_forward_lane = read_forward_lane + 1) begin
-                    if (!read_forward_valid &&
-                        !banked_window_regload &&
-                        banked_exu_forward_valid[
-                            read_forward_lane] &&
-                        (completion_forward_rd_addr[
-                            read_forward_lane*`RV64_REG_ADDR_WIDTH +:
-                            `RV64_REG_ADDR_WIDTH] == read_addr)) begin
-                        read_forward_valid = 1'b1;
-                        read_forward_data = completion_forward_data[
-                            read_forward_lane*`RV64_XLEN +: `RV64_XLEN];
+            wire read_forward_valid;
+            wire [`RV64_XLEN-1:0] read_forward_data;
+            if (RENAME_MODE == `OPENRV64_RENAME_IDENTITY) begin :
+                    g_arch_forward
+                reg forward_valid_r;
+                reg [`RV64_XLEN-1:0] forward_data_r;
+                integer read_forward_lane;
+                always @* begin
+                    forward_valid_r = 1'b0;
+                    forward_data_r = {`RV64_XLEN{1'b0}};
+                    for (read_forward_lane = 0; read_forward_lane < 2;
+                         read_forward_lane = read_forward_lane + 1) begin
+                        if (!forward_valid_r && !banked_window_regload &&
+                            banked_exu_forward_valid[read_forward_lane] &&
+                            (completion_forward_rd_addr[
+                                read_forward_lane*`RV64_REG_ADDR_WIDTH +:
+                                `RV64_REG_ADDR_WIDTH] == read_addr)) begin
+                            forward_valid_r = 1'b1;
+                            forward_data_r = completion_forward_data[
+                                read_forward_lane*`RV64_XLEN +:
+                                `RV64_XLEN];
+                        end
                     end
                 end
+                assign read_forward_valid = forward_valid_r;
+                assign read_forward_data = forward_data_r;
+            end else begin : g_phys_forward
+                assign read_forward_valid = 1'b0;
+                assign read_forward_data = {`RV64_XLEN{1'b0}};
             end
             reg read_write_ack_match;
             integer read_write_ack_lane;
@@ -1765,7 +1780,9 @@ module openrv64_backend_3p #(
                 end
             end
             wire read_mem_forward_valid =
-                !banked_window_regload && banked_mem_forward_valid &&
+                (RENAME_MODE == `OPENRV64_RENAME_IDENTITY) &&
+                !banked_window_regload &&
+                banked_mem_forward_valid &&
                 (banked_mem_forward_rd_q == read_addr);
             wire [`RV64_XLEN-1:0] read_capture_data =
                 read_forward_valid ? read_forward_data :
@@ -1779,9 +1796,12 @@ module openrv64_backend_3p #(
                 banked_input_response_now[banked_read_port];
 `endif
             wire read_blocked = !banked_window_regload && !read_zero &&
-                write_busy_o[read_addr] &&
                 !banked_read_done_q[banked_read_port] &&
-                !read_capture_valid && !read_write_ack_match;
+                !read_capture_valid && !read_write_ack_match &&
+                (((RENAME_MODE == `OPENRV64_RENAME_IDENTITY) &&
+                  write_busy_o[read_addr]) ||
+                 ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                  !dispatch_gpr_read_ready[banked_read_port]));
             wire read_start = (BANKED_GPR != 0) &&
                 !flush_i && !squash_frontend_i && !banked_gpr_drain_q &&
                 !read_zero && !read_blocked &&
@@ -1939,7 +1959,8 @@ module openrv64_backend_3p #(
     wire banked_dispatch_allocation_ready = allocation_ready &&
         !banked_regload_pending_valid_q &&
         (!banked_regload_valid_q || !banked_regload_hard_q) &&
-        banked_gather_addresses_ready &&
+        ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ||
+         banked_gather_addresses_ready) &&
         !flush_i && !squash_frontend_i;
     wire banked_regload_allocation_to_stage =
         banked_regload_capture_valid &&
@@ -4174,6 +4195,7 @@ module openrv64_backend_3p #(
         .DEFER_WINDOW_GPR_READ_3P(BANKED_GPR != 0),
         .MAX_WINDOW_ISSUE_LANES_3P((BANKED_GPR != 0) ? 3 : 4),
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
+        .RENAME_MODE_3P(RENAME_MODE),
         .CACHEABLE_BASE_3P(CACHEABLE_BASE),
         .CACHEABLE_SIZE_3P(CACHEABLE_SIZE),
         .PHYS_REG_COUNT_3P(PHYS_REG_COUNT),
@@ -4219,12 +4241,23 @@ module openrv64_backend_3p #(
         .decode_uses_rs1_3p_i(decode_uses_rs1_i),
         .decode_uses_rs2_3p_i(decode_uses_rs2_i),
         .gpr_read_addr_3p_o(dispatch_gpr_read_addr),
+        .gpr_read_ready_3p_o(dispatch_gpr_read_ready),
         .gpr_read_data_3p_i(dispatch_gpr_read_data),
         .candidate_operand_ready_3p_i(
             (BANKED_GPR != 0) ? banked_candidate_operand_ready : 6'b000000),
+        .candidate_address_ready_3p_i(
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+            {1'b0, &banked_read_address_ready[3:2],
+             &banked_read_address_ready[1:0]} : 3'b111),
         .allocation_ready_3p_i(banked_window_regload ? allocation_ready :
             ((BANKED_GPR != 0) ? banked_dispatch_allocation_ready :
              allocation_ready)),
+        .rename_free_valid_3p_i(rename_free_valid),
+        .rename_free_tag_3p_i(rename_free_tag),
+        .rename_write_valid_3p_i(
+            gpr_write[1:0] & gpr_write_ack[1:0]),
+        .rename_write_tag_3p_i(
+            gpr_write_addr[2*PHYS_REG_ADDR_WIDTH-1:0]),
         .allocation_id_3p_i(allocation_id),
         .allocation_slot_3p_i(allocation_slot),
         .allocation_valid_3p_o(allocation_valid),
@@ -4675,32 +4708,13 @@ module openrv64_backend_3p #(
             );
             assign banked_retire_write_pair_conflict =
                 u_retire.direct_write_pair_conflict;
-
-            // Dead tags released by retirement accumulate here for the
-            // future tomasulo renamer.  Nothing pops yet, so under identity
-            // rename the list saturates and drops harmlessly.
-            wire [2:0] freelist_pop_valid_unused;
-            wire [3*PHYS_REG_ADDR_WIDTH-1:0] freelist_pop_tag_unused;
-            openrv64_rename_freelist #(
-                .TAG_WIDTH(PHYS_REG_ADDR_WIDTH),
-                .DEPTH(64),
-                .PUSH_PORTS(2),
-                .POP_PORTS(3)
-            ) u_freelist (
-                .clk(clk),
-                .rst_n(rst_n),
-                .push_valid_i(banked_free_valid),
-                .push_tag_i(banked_free_tag),
-                .pop_req_i(3'b000),
-                .pop_valid_o(freelist_pop_valid_unused),
-                .pop_tag_o(freelist_pop_tag_unused),
-                .count_o()
-            );
-            wire unused_freelist_pop = |{
-                freelist_pop_valid_unused, freelist_pop_tag_unused
-            };
+            assign rename_free_valid = banked_free_valid;
+            assign rename_free_tag = banked_free_tag;
         end else begin : g_legacy_retire
             assign banked_retire_write_pair_conflict = 1'b0;
+            assign rename_free_valid = 2'b00;
+            assign rename_free_tag =
+                {2*PHYS_REG_ADDR_WIDTH{1'b0}};
             openrv64_retire_3p #(
                 .PHYS_REG_COUNT(PHYS_REG_COUNT),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
@@ -5136,8 +5150,20 @@ module openrv64_backend_3p #(
             $fatal(1,
                    "banked 3P supports live EX0/EX1 plus registered load-only MEM0 forwarding, not branch/full forwarding");
         if ((BANKED_GPR != 0) &&
+            (RENAME_MODE == `OPENRV64_RENAME_IDENTITY) &&
             ((PHYS_REG_COUNT != 31) || (PHYS_REG_ADDR_WIDTH != 5)))
-            $fatal(1, "banked 3P requires architectural p0-p31 tags");
+            $fatal(1, "identity banked 3P requires p0-p31 tags");
+        if ((BANKED_GPR != 0) &&
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            ((PHYS_REG_COUNT != 63) || (PHYS_REG_ADDR_WIDTH != 6)))
+            $fatal(1, "renamed banked 3P requires p0-p63 tags");
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (ENABLE_ISSUE_WINDOW != 0))
+            $fatal(1,
+                   "tomasulo rename bring-up supports strict issue only");
+        if ((RENAME_MODE != `OPENRV64_RENAME_IDENTITY) &&
+            (RENAME_MODE != `OPENRV64_RENAME_TOMASULO))
+            $fatal(1, "unsupported integer rename mode");
     end
 
     always @(posedge clk) begin

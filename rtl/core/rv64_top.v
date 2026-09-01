@@ -1210,6 +1210,7 @@ module openrv64_rv64_top #(
             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .conditional_resolve_slot_3p_i(3'd0),
         .candidate_operand_ready_3p_i(6'b000000),
+        .candidate_address_ready_3p_i(3'b111),
         .exec_valid_o(dispatch_exec_valid),
         .exec_clear_i(dispatch_exec_clear),
         .exec_alu_ready_i(exec_alu_ready),
@@ -1266,6 +1267,12 @@ module openrv64_rv64_top #(
         .decode_uses_rs2_3p_i(3'b000),
         .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
         .allocation_ready_3p_i(1'b0),
+        .rename_free_valid_3p_i(2'b00),
+        .rename_free_tag_3p_i(
+            {2*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
+        .rename_write_valid_3p_i(2'b00),
+        .rename_write_tag_3p_i(
+            {2*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
         .allocation_id_3p_i(
             {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .allocation_slot_3p_i(9'd0),
