@@ -803,6 +803,8 @@ module tb_top_3p_soc #(
     integer retired;
     integer progress_interval_cycles;
     integer progress_next_cycle;
+    integer pipeline_trace_start_cycle;
+    integer pipeline_trace_cycle_count;
     integer icx_requests;
     integer icx_fetch_reads;
     integer icx_data_reads;
@@ -940,6 +942,18 @@ module tb_top_3p_soc #(
     integer window_raw_block_entry_cycles;
     integer window_hard_block_entry_cycles;
     integer window_mem_order_block_entry_cycles;
+    integer pipeline_window_empty_cycles;
+    integer pipeline_window_no_eligible_cycles;
+    integer pipeline_window_eligible_no_offer_cycles;
+    integer pipeline_window_offer_replay_cycles;
+    integer pipeline_window_fire_cycles;
+    integer pipeline_window_fire_events;
+    integer pipeline_window_replay_pending_full_cycles;
+    integer pipeline_window_replay_hard_branch_cycles;
+    integer pipeline_window_replay_hard_jump_cycles;
+    integer pipeline_window_replay_hard_other_cycles;
+    integer pipeline_window_replay_redirect_drain_cycles;
+    integer pipeline_window_replay_other_cycles;
     integer window_waw_admit_events;
     integer window_waw_admit_ready_events;
     integer window_waw_admit_unready_events;
@@ -953,6 +967,19 @@ module tb_top_3p_soc #(
     integer window_wakeup_mem0_operand_events;
     integer window_wakeup_entry_events;
     integer window_wakeup_eligible_entry_events;
+    integer branch_forward_wakeup_operand_events;
+    integer branch_forward_wakeup_ex0_operand_events;
+    integer branch_forward_wakeup_ex1_operand_events;
+    integer branch_forward_wakeup_mem0_operand_events;
+    integer branch_forward_wakeup_entry_events;
+    integer branch_forward_wakeup_eligible_entry_events;
+    integer branch_forward_selected_events;
+    integer branch_forward_offer_events;
+    integer branch_forward_release_events;
+    integer branch_forward_release_operand_events;
+    integer branch_forward_release_ex0_operand_events;
+    integer branch_forward_release_ex1_operand_events;
+    integer branch_forward_release_mem0_operand_events;
     integer window_wait_unissued_load_operand_cycles;
     integer window_wait_unissued_other_operand_cycles;
     integer window_wait_inflight_load_operand_cycles;
@@ -978,13 +1005,18 @@ module tb_top_3p_soc #(
     integer branch_spec_correct_resolutions;
     integer branch_spec_corrected_resolutions;
     integer branch_spec_resolutions_with_younger_issued;
+    integer branch_spec_resolutions_with_younger_completed;
     integer branch_spec_correct_with_younger_issued;
     integer branch_spec_corrected_with_younger_issued;
+    integer branch_spec_correct_with_younger_completed;
+    integer branch_spec_corrected_with_younger_completed;
     integer branch_spec_resolve_younger_valid;
     integer branch_spec_resolve_younger_issued;
     integer branch_spec_resolve_younger_completed;
     integer branch_spec_correct_younger_issued;
     integer branch_spec_corrected_younger_issued;
+    integer branch_spec_correct_younger_completed;
+    integer branch_spec_corrected_younger_completed;
     integer branch_spec_max_younger_issued;
     integer waw_hazard_cycles;
     integer read_port_hazard_cycles;
@@ -1036,6 +1068,23 @@ module tb_top_3p_soc #(
     integer banked_stage_allocate_pending_events;
     integer banked_stage_promote_events;
     integer banked_stage_issue_allocate_cycles;
+    integer pipeline_regload_empty_cycles;
+    integer pipeline_regload_fire0_cycles;
+    integer pipeline_regload_fire1_single_cycles;
+    integer pipeline_regload_fire1_replay_cycles;
+    integer pipeline_regload_fire2_cycles;
+    integer pipeline_regload_zero_operand_wait_cycles;
+    integer pipeline_regload_zero_pipe_missing_cycles;
+    integer pipeline_regload_zero_branch_gate_cycles;
+    integer pipeline_regload_zero_exec_backpressure_cycles;
+    integer pipeline_regload_zero_redirect_drain_cycles;
+    integer pipeline_regload_zero_other_cycles;
+    integer pipeline_regload_replay_operand_wait_cycles;
+    integer pipeline_regload_replay_pipe_missing_cycles;
+    integer pipeline_regload_replay_target_conflict_cycles;
+    integer pipeline_regload_replay_branch_gate_cycles;
+    integer pipeline_regload_replay_exec_backpressure_cycles;
+    integer pipeline_regload_replay_other_cycles;
     integer banked_mem_forward_captures;
     integer banked_mem_stage_wait_cycles;
     integer banked_mem_stage_wait_operands;
@@ -1086,6 +1135,7 @@ module tb_top_3p_soc #(
     integer banked_retire_ready_retry_wait;
     integer banked_retire_ready_write_complete;
     integer banked_retire_ready_no_write;
+    integer retire_gpr_write_blocked_cycles;
     wire banked_retire_probe_write_active;
     wire [1:0] banked_retire_probe_write_mask;
     wire banked_retire_probe_writes_complete;
@@ -1121,6 +1171,18 @@ module tb_top_3p_soc #(
     integer retire_head_mem_wait_xlate;
     integer retire_head_mem_wait_access;
     integer retire_head_mem_access_inflight;
+    integer pipeline_retire_zero_queue_empty_cycles;
+    integer pipeline_retire_zero_head_unissued_cycles;
+    integer pipeline_retire_zero_head_regload_active_cycles;
+    integer pipeline_retire_zero_head_regload_pending_cycles;
+    integer pipeline_retire_zero_head_mem_xlate_cycles;
+    integer pipeline_retire_zero_head_mem_access_cycles;
+    integer pipeline_retire_zero_head_mem_inflight_cycles;
+    integer pipeline_retire_zero_head_mem_transient_cycles;
+    integer pipeline_retire_zero_head_exec_wait_cycles;
+    integer pipeline_retire_zero_head_unknown_cycles;
+    integer pipeline_retire_zero_head_write_blocked_cycles;
+    integer pipeline_retire_zero_head_ready_other_cycles;
     integer frontend_empty;
     integer frontend_held;
     integer frontend_request_wait;
@@ -1407,14 +1469,19 @@ module tb_top_3p_soc #(
     reg trace_retire_head_lsq_access_sent;
     reg trace_retire_head_window_valid;
     reg trace_retire_head_window_issued;
+    reg trace_retire_head_regload_active;
+    reg trace_retire_head_regload_pending;
     integer trace_retire_head_lsq_index;
     integer trace_retire_head_window_index;
+    integer trace_retire_head_regload_lane;
     always @* begin
         trace_retire_head_lsq_valid = 1'b0;
         trace_retire_head_lsq_xlate_done = 1'b0;
         trace_retire_head_lsq_access_sent = 1'b0;
         trace_retire_head_window_valid = 1'b0;
         trace_retire_head_window_issued = 1'b0;
+        trace_retire_head_regload_active = 1'b0;
+        trace_retire_head_regload_pending = 1'b0;
         for (trace_retire_head_lsq_index = 0;
              trace_retire_head_lsq_index < `OPENRV64_LSU_OUTSTANDING;
              trace_retire_head_lsq_index =
@@ -1434,7 +1501,7 @@ module tb_top_3p_soc #(
             end
         end
         for (trace_retire_head_window_index = 0;
-             trace_retire_head_window_index < 16;
+             trace_retire_head_window_index < RETIRE_DEPTH;
              trace_retire_head_window_index =
                  trace_retire_head_window_index + 1) begin
             if (dut.u_backend.u_dispatch.g_3p.u_window
@@ -1447,6 +1514,29 @@ module tb_top_3p_soc #(
                     dut.u_backend.u_dispatch.g_3p.u_window.issued_q[
                         trace_retire_head_window_index];
             end
+        end
+        for (trace_retire_head_regload_lane = 0;
+             trace_retire_head_regload_lane < 2;
+             trace_retire_head_regload_lane =
+                 trace_retire_head_regload_lane + 1) begin
+            if (dut.u_backend.banked_regload_valid_q &&
+                dut.u_backend.banked_regload_lane_valid_q[
+                    trace_retire_head_regload_lane] &&
+                (dut.u_backend.banked_regload_lane_id_q[
+                     trace_retire_head_regload_lane*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 trace_retire_head_id))
+                trace_retire_head_regload_active = 1'b1;
+            if (dut.u_backend.banked_regload_pending_valid_q &&
+                dut.u_backend.banked_regload_pending_lane_valid_q[
+                    trace_retire_head_regload_lane] &&
+                (dut.u_backend.banked_regload_pending_lane_id_q[
+                     trace_retire_head_regload_lane*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 trace_retire_head_id))
+                trace_retire_head_regload_pending = 1'b1;
         end
     end
     wire trace_retire_head_lsq_result =
@@ -1709,6 +1799,36 @@ module tb_top_3p_soc #(
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window.trace_eligible_count :
         {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_window_offer =
+        dut.u_backend.dispatch_pipe_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_window_accept_ready =
+        (BANKED_GPR != 0) ?
+            dut.u_backend.banked_regload_ingress_pipe_ready :
+            dut.u_backend.pipe_ready;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_window_fire =
+        trace_window_offer & trace_window_accept_ready;
+    reg trace_regload_active_has_branch;
+    reg trace_regload_active_has_jump;
+    integer trace_regload_active_pipe;
+    always @* begin
+        trace_regload_active_has_branch = 1'b0;
+        trace_regload_active_has_jump = 1'b0;
+        for (trace_regload_active_pipe = 0;
+             trace_regload_active_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+             trace_regload_active_pipe = trace_regload_active_pipe + 1) begin
+            if (dut.u_backend.banked_regload_pipe_valid_q[
+                    trace_regload_active_pipe]) begin
+                if (dut.u_backend.banked_regload_pipe_payload_q[
+                        trace_regload_active_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 14])
+                    trace_regload_active_has_branch = 1'b1;
+                if (dut.u_backend.banked_regload_pipe_payload_q[
+                        trace_regload_active_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 13])
+                    trace_regload_active_has_jump = 1'b1;
+            end
+        end
+    end
     wire [WINDOW_COUNT_WIDTH-1:0] trace_window_raw_block =
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window.trace_raw_block_count :
@@ -1782,6 +1902,10 @@ module tb_top_3p_soc #(
     wire trace_conditional_resolve = (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_conditional_resolve_valid : 1'b0;
+    wire trace_conditional_resolve_predicted_taken =
+        (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_conditional_resolve_predicted_taken : 1'b0;
     wire [WINDOW_COUNT_WIDTH-1:0] trace_resolve_younger_valid =
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
@@ -1856,6 +1980,71 @@ module tb_top_3p_soc #(
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_completion_wakeup_eligible_count :
         {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_wakeup_operands = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_operand_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_wakeup_ex0 = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_ex0_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_wakeup_ex1 = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_ex1_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_wakeup_mem0 = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_mem0_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_branch_forward_wakeup_entries = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_entry_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_branch_forward_wakeup_eligible = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_eligible_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_branch_forward_selected = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_selected_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_branch_forward_offer = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_offer_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_branch_forward_release = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_release_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_release_operands = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_release_operand_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_release_ex0 = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_release_ex0_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_release_ex1 = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_release_ex1_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_forward_release_mem0 = (ISSUE_WINDOW != 0) ?
+        dut.u_backend.u_dispatch.g_3p.u_window
+            .trace_branch_wakeup_release_mem0_count :
+        {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
     wire [WINDOW_OPERAND_COUNT_WIDTH-1:0] trace_window_wait_unissued_load =
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
@@ -3827,6 +4016,18 @@ module tb_top_3p_soc #(
         window_raw_block_entry_cycles = 0;
         window_hard_block_entry_cycles = 0;
         window_mem_order_block_entry_cycles = 0;
+        pipeline_window_empty_cycles = 0;
+        pipeline_window_no_eligible_cycles = 0;
+        pipeline_window_eligible_no_offer_cycles = 0;
+        pipeline_window_offer_replay_cycles = 0;
+        pipeline_window_fire_cycles = 0;
+        pipeline_window_fire_events = 0;
+        pipeline_window_replay_pending_full_cycles = 0;
+        pipeline_window_replay_hard_branch_cycles = 0;
+        pipeline_window_replay_hard_jump_cycles = 0;
+        pipeline_window_replay_hard_other_cycles = 0;
+        pipeline_window_replay_redirect_drain_cycles = 0;
+        pipeline_window_replay_other_cycles = 0;
         window_waw_admit_events = 0;
         window_waw_admit_ready_events = 0;
         window_waw_admit_unready_events = 0;
@@ -3840,6 +4041,19 @@ module tb_top_3p_soc #(
         window_wakeup_mem0_operand_events = 0;
         window_wakeup_entry_events = 0;
         window_wakeup_eligible_entry_events = 0;
+        branch_forward_wakeup_operand_events = 0;
+        branch_forward_wakeup_ex0_operand_events = 0;
+        branch_forward_wakeup_ex1_operand_events = 0;
+        branch_forward_wakeup_mem0_operand_events = 0;
+        branch_forward_wakeup_entry_events = 0;
+        branch_forward_wakeup_eligible_entry_events = 0;
+        branch_forward_selected_events = 0;
+        branch_forward_offer_events = 0;
+        branch_forward_release_events = 0;
+        branch_forward_release_operand_events = 0;
+        branch_forward_release_ex0_operand_events = 0;
+        branch_forward_release_ex1_operand_events = 0;
+        branch_forward_release_mem0_operand_events = 0;
         window_wait_unissued_load_operand_cycles = 0;
         window_wait_unissued_other_operand_cycles = 0;
         window_wait_inflight_load_operand_cycles = 0;
@@ -3865,13 +4079,18 @@ module tb_top_3p_soc #(
         branch_spec_correct_resolutions = 0;
         branch_spec_corrected_resolutions = 0;
         branch_spec_resolutions_with_younger_issued = 0;
+        branch_spec_resolutions_with_younger_completed = 0;
         branch_spec_correct_with_younger_issued = 0;
         branch_spec_corrected_with_younger_issued = 0;
+        branch_spec_correct_with_younger_completed = 0;
+        branch_spec_corrected_with_younger_completed = 0;
         branch_spec_resolve_younger_valid = 0;
         branch_spec_resolve_younger_issued = 0;
         branch_spec_resolve_younger_completed = 0;
         branch_spec_correct_younger_issued = 0;
         branch_spec_corrected_younger_issued = 0;
+        branch_spec_correct_younger_completed = 0;
+        branch_spec_corrected_younger_completed = 0;
         branch_spec_max_younger_issued = 0;
         waw_hazard_cycles = 0;
         read_port_hazard_cycles = 0;
@@ -3923,6 +4142,23 @@ module tb_top_3p_soc #(
         banked_stage_allocate_pending_events = 0;
         banked_stage_promote_events = 0;
         banked_stage_issue_allocate_cycles = 0;
+        pipeline_regload_empty_cycles = 0;
+        pipeline_regload_fire0_cycles = 0;
+        pipeline_regload_fire1_single_cycles = 0;
+        pipeline_regload_fire1_replay_cycles = 0;
+        pipeline_regload_fire2_cycles = 0;
+        pipeline_regload_zero_operand_wait_cycles = 0;
+        pipeline_regload_zero_pipe_missing_cycles = 0;
+        pipeline_regload_zero_branch_gate_cycles = 0;
+        pipeline_regload_zero_exec_backpressure_cycles = 0;
+        pipeline_regload_zero_redirect_drain_cycles = 0;
+        pipeline_regload_zero_other_cycles = 0;
+        pipeline_regload_replay_operand_wait_cycles = 0;
+        pipeline_regload_replay_pipe_missing_cycles = 0;
+        pipeline_regload_replay_target_conflict_cycles = 0;
+        pipeline_regload_replay_branch_gate_cycles = 0;
+        pipeline_regload_replay_exec_backpressure_cycles = 0;
+        pipeline_regload_replay_other_cycles = 0;
         banked_mem_forward_captures = 0;
         banked_mem_stage_wait_cycles = 0;
         banked_mem_stage_wait_operands = 0;
@@ -3961,6 +4197,7 @@ module tb_top_3p_soc #(
         banked_retire_ready_retry_wait = 0;
         banked_retire_ready_write_complete = 0;
         banked_retire_ready_no_write = 0;
+        retire_gpr_write_blocked_cycles = 0;
         barrier_cycles = 0;
         retire_nonempty = 0;
         retire_nonempty_no_retire = 0;
@@ -3979,6 +4216,18 @@ module tb_top_3p_soc #(
         retire_head_mem_wait_xlate = 0;
         retire_head_mem_wait_access = 0;
         retire_head_mem_access_inflight = 0;
+        pipeline_retire_zero_queue_empty_cycles = 0;
+        pipeline_retire_zero_head_unissued_cycles = 0;
+        pipeline_retire_zero_head_regload_active_cycles = 0;
+        pipeline_retire_zero_head_regload_pending_cycles = 0;
+        pipeline_retire_zero_head_mem_xlate_cycles = 0;
+        pipeline_retire_zero_head_mem_access_cycles = 0;
+        pipeline_retire_zero_head_mem_inflight_cycles = 0;
+        pipeline_retire_zero_head_mem_transient_cycles = 0;
+        pipeline_retire_zero_head_exec_wait_cycles = 0;
+        pipeline_retire_zero_head_unknown_cycles = 0;
+        pipeline_retire_zero_head_write_blocked_cycles = 0;
+        pipeline_retire_zero_head_ready_other_cycles = 0;
         frontend_empty = 0;
         frontend_held = 0;
         frontend_request_wait = 0;
@@ -4139,6 +4388,14 @@ module tb_top_3p_soc #(
                             progress_interval_cycles) &&
             (progress_interval_cycles > 0))
             progress_next_cycle = progress_interval_cycles;
+        pipeline_trace_start_cycle = -1;
+        pipeline_trace_cycle_count = 0;
+        if (!$value$plusargs("pipeline_trace_start=%d",
+                            pipeline_trace_start_cycle)) begin
+        end
+        if (!$value$plusargs("pipeline_trace_cycles=%d",
+                            pipeline_trace_cycle_count)) begin
+        end
 
         repeat (5) @(posedge clk);
         rst_n = 1'b1;
@@ -4146,6 +4403,47 @@ module tb_top_3p_soc #(
              cycles = cycles + 1) begin
             @(posedge clk);
             #1;
+            if ((pipeline_trace_start_cycle >= 0) &&
+                (cycles >= pipeline_trace_start_cycle) &&
+                (cycles < pipeline_trace_start_cycle +
+                          pipeline_trace_cycle_count))
+                $display(
+                    "PIPELINE_TRACE cycle=%0d retire_head=%0d/%0d op=%0d retire_valid=%b window=%b/%b regload=%b/%b hard=%b control=%b active_ids=%0d,%0d pending_ids=%0d,%0d offer=%b offer_ids=%0d,%0d,%0d,%0d issue=%b squash=%b/%0d",
+                    cycles, trace_retire_head_id,
+                    dut.u_backend.next_retire_slot,
+                    trace_retire_head_op,
+                    dut.u_backend.queue_retire_valid[0],
+                    trace_retire_head_window_valid,
+                    trace_retire_head_window_issued,
+                    dut.u_backend.banked_regload_valid_q,
+                    dut.u_backend.banked_regload_pending_valid_q,
+                    dut.u_backend.banked_regload_hard_q,
+                    dut.u_backend.banked_regload_control_q,
+                    dut.u_backend.banked_regload_lane_id_q[
+                        0 +: `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.banked_regload_lane_id_q[
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.banked_regload_pending_lane_id_q[
+                        0 +: `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.banked_regload_pending_lane_id_q[
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.dispatch_pipe_valid,
+                    dut.u_backend.dispatch_pipe_id[
+                        0 +: `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.dispatch_pipe_id[
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.dispatch_pipe_id[
+                        2*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.dispatch_pipe_id[
+                        3*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.backend_issue_valid,
+                    dut.u_backend.squash_frontend_i,
+                    dut.u_backend.exec_redirect_id);
             retired = retired + dut.backend_retire_count;
             if ((progress_interval_cycles > 0) &&
                 ((cycles + 1) >= progress_next_cycle)) begin
@@ -4305,6 +4603,45 @@ module tb_top_3p_soc #(
                 window_wakeup_eligible_entry_events =
                     window_wakeup_eligible_entry_events +
                     trace_window_wakeup_eligible;
+                branch_forward_wakeup_operand_events =
+                    branch_forward_wakeup_operand_events +
+                    trace_branch_forward_wakeup_operands;
+                branch_forward_wakeup_ex0_operand_events =
+                    branch_forward_wakeup_ex0_operand_events +
+                    trace_branch_forward_wakeup_ex0;
+                branch_forward_wakeup_ex1_operand_events =
+                    branch_forward_wakeup_ex1_operand_events +
+                    trace_branch_forward_wakeup_ex1;
+                branch_forward_wakeup_mem0_operand_events =
+                    branch_forward_wakeup_mem0_operand_events +
+                    trace_branch_forward_wakeup_mem0;
+                branch_forward_wakeup_entry_events =
+                    branch_forward_wakeup_entry_events +
+                    trace_branch_forward_wakeup_entries;
+                branch_forward_wakeup_eligible_entry_events =
+                    branch_forward_wakeup_eligible_entry_events +
+                    trace_branch_forward_wakeup_eligible;
+                branch_forward_selected_events =
+                    branch_forward_selected_events +
+                    trace_branch_forward_selected;
+                branch_forward_offer_events =
+                    branch_forward_offer_events +
+                    trace_branch_forward_offer;
+                branch_forward_release_events =
+                    branch_forward_release_events +
+                    trace_branch_forward_release;
+                branch_forward_release_operand_events =
+                    branch_forward_release_operand_events +
+                    trace_branch_forward_release_operands;
+                branch_forward_release_ex0_operand_events =
+                    branch_forward_release_ex0_operand_events +
+                    trace_branch_forward_release_ex0;
+                branch_forward_release_ex1_operand_events =
+                    branch_forward_release_ex1_operand_events +
+                    trace_branch_forward_release_ex1;
+                branch_forward_release_mem0_operand_events =
+                    branch_forward_release_mem0_operand_events +
+                    trace_branch_forward_release_mem0;
                 window_wait_unissued_load_operand_cycles =
                     window_wait_unissued_load_operand_cycles +
                     trace_window_wait_unissued_load;
@@ -4385,24 +4722,43 @@ module tb_top_3p_soc #(
                     if (trace_resolve_younger_issued != 0)
                         branch_spec_resolutions_with_younger_issued =
                             branch_spec_resolutions_with_younger_issued + 1;
-                    if (dut.u_backend.exec_redirect_valid) begin
+                    if (trace_resolve_younger_completed != 0)
+                        branch_spec_resolutions_with_younger_completed =
+                            branch_spec_resolutions_with_younger_completed +
+                            1;
+                    if (dut.u_backend.exec_branch_taken !=
+                        trace_conditional_resolve_predicted_taken) begin
                         branch_spec_corrected_resolutions =
                             branch_spec_corrected_resolutions + 1;
                         branch_spec_corrected_younger_issued =
                             branch_spec_corrected_younger_issued +
                             trace_resolve_younger_issued;
+                        branch_spec_corrected_younger_completed =
+                            branch_spec_corrected_younger_completed +
+                            trace_resolve_younger_completed;
                         if (trace_resolve_younger_issued != 0)
                             branch_spec_corrected_with_younger_issued =
                                 branch_spec_corrected_with_younger_issued + 1;
+                        if (trace_resolve_younger_completed != 0)
+                            branch_spec_corrected_with_younger_completed =
+                                branch_spec_corrected_with_younger_completed +
+                                1;
                     end else begin
                         branch_spec_correct_resolutions =
                             branch_spec_correct_resolutions + 1;
                         branch_spec_correct_younger_issued =
                             branch_spec_correct_younger_issued +
                             trace_resolve_younger_issued;
+                        branch_spec_correct_younger_completed =
+                            branch_spec_correct_younger_completed +
+                            trace_resolve_younger_completed;
                         if (trace_resolve_younger_issued != 0)
                             branch_spec_correct_with_younger_issued =
                                 branch_spec_correct_with_younger_issued + 1;
+                        if (trace_resolve_younger_completed != 0)
+                            branch_spec_correct_with_younger_completed =
+                                branch_spec_correct_with_younger_completed +
+                                1;
                     end
                 end
                 if (trace_window_unissued != 0) begin
@@ -4421,6 +4777,55 @@ module tb_top_3p_soc #(
                             window_mem_order_stall_cycles =
                                 window_mem_order_stall_cycles + 1;
                     end
+                end
+                // Exclusive address-phase state.  These five buckets sum to
+                // every issue-window cycle.  "Replay" means the selector
+                // presented at least one transaction but the downstream
+                // address stage withheld every acknowledgement.
+                if (trace_window_unissued == 0)
+                    pipeline_window_empty_cycles =
+                        pipeline_window_empty_cycles + 1;
+                else if (trace_window_eligible == 0)
+                    pipeline_window_no_eligible_cycles =
+                        pipeline_window_no_eligible_cycles + 1;
+                else if (!(|trace_window_offer))
+                    pipeline_window_eligible_no_offer_cycles =
+                        pipeline_window_eligible_no_offer_cycles + 1;
+                else if (!(|trace_window_fire)) begin
+                    pipeline_window_offer_replay_cycles =
+                        pipeline_window_offer_replay_cycles + 1;
+                    if ((BANKED_GPR != 0) && dut.u_backend.
+                            banked_regload_pending_valid_q)
+                        pipeline_window_replay_pending_full_cycles =
+                            pipeline_window_replay_pending_full_cycles + 1;
+                    else if ((BANKED_GPR != 0) && dut.u_backend.
+                                 banked_regload_valid_q &&
+                             dut.u_backend.banked_regload_hard_q) begin
+                        if (trace_regload_active_has_branch)
+                            pipeline_window_replay_hard_branch_cycles =
+                                pipeline_window_replay_hard_branch_cycles + 1;
+                        else if (trace_regload_active_has_jump)
+                            pipeline_window_replay_hard_jump_cycles =
+                                pipeline_window_replay_hard_jump_cycles + 1;
+                        else
+                            pipeline_window_replay_hard_other_cycles =
+                                pipeline_window_replay_hard_other_cycles + 1;
+                    end else if ((BANKED_GPR != 0) &&
+                                 (dut.u_backend.flush_i ||
+                                  dut.u_backend.squash_frontend_i ||
+                                  dut.u_backend.banked_gpr_drain_q))
+                        pipeline_window_replay_redirect_drain_cycles =
+                            pipeline_window_replay_redirect_drain_cycles + 1;
+                    else
+                        pipeline_window_replay_other_cycles =
+                            pipeline_window_replay_other_cycles + 1;
+                end else begin
+                    pipeline_window_fire_cycles =
+                        pipeline_window_fire_cycles + 1;
+                    pipeline_window_fire_events =
+                        pipeline_window_fire_events +
+                        trace_window_fire[0] + trace_window_fire[1] +
+                        trace_window_fire[2] + trace_window_fire[3];
                 end
             end
             if (dut.u_backend.waw_hazard != 0)
@@ -4835,6 +5240,120 @@ module tb_top_3p_soc #(
                     (|dut.u_backend.allocation_valid))
                     banked_stage_issue_allocate_cycles =
                         banked_stage_issue_allocate_cycles + 1;
+
+                // Exclusive data-phase state.  The top-level buckets sum to
+                // all cycles: empty, zero fires, one fire from a singleton,
+                // one fire while retaining the peer for replay, or two fires.
+                if (!dut.u_backend.banked_regload_valid_q)
+                    pipeline_regload_empty_cycles =
+                        pipeline_regload_empty_cycles + 1;
+                else if (dut.u_backend.banked_regload_lane0_fire &&
+                         dut.u_backend.banked_regload_lane1_fire)
+                    pipeline_regload_fire2_cycles =
+                        pipeline_regload_fire2_cycles + 1;
+                else if (dut.u_backend.banked_regload_lane0_fire ||
+                         dut.u_backend.banked_regload_lane1_fire) begin
+                    if (dut.u_backend.banked_regload_lane_valid_q ==
+                        2'b11) begin
+                        pipeline_regload_fire1_replay_cycles =
+                            pipeline_regload_fire1_replay_cycles + 1;
+                        if (dut.u_backend.banked_regload_lane0_fire) begin
+                            if (!dut.u_backend.
+                                    banked_regload_lane_operands_ready[1])
+                                pipeline_regload_replay_operand_wait_cycles =
+                                    pipeline_regload_replay_operand_wait_cycles +
+                                    1;
+                            else if (!dut.u_backend.
+                                         banked_regload_lane_pipe_present[1])
+                                pipeline_regload_replay_pipe_missing_cycles =
+                                    pipeline_regload_replay_pipe_missing_cycles +
+                                    1;
+                            else if (dut.u_backend.
+                                         banked_regload_branch_pair_q &&
+                                     !dut.u_backend.
+                                         banked_regload_branch_follower_allowed)
+                                pipeline_regload_replay_branch_gate_cycles =
+                                    pipeline_regload_replay_branch_gate_cycles +
+                                    1;
+                            else if (dut.u_backend.
+                                         banked_regload_lane1_target_conflict)
+                                pipeline_regload_replay_target_conflict_cycles =
+                                    pipeline_regload_replay_target_conflict_cycles +
+                                    1;
+                            else if (dut.u_backend.
+                                         banked_regload_lane1_offer)
+                                pipeline_regload_replay_exec_backpressure_cycles =
+                                    pipeline_regload_replay_exec_backpressure_cycles +
+                                    1;
+                            else
+                                pipeline_regload_replay_other_cycles =
+                                    pipeline_regload_replay_other_cycles + 1;
+                        end else begin
+                            if (!dut.u_backend.
+                                    banked_regload_lane_operands_ready[0])
+                                pipeline_regload_replay_operand_wait_cycles =
+                                    pipeline_regload_replay_operand_wait_cycles +
+                                    1;
+                            else if (!dut.u_backend.
+                                         banked_regload_lane_pipe_present[0])
+                                pipeline_regload_replay_pipe_missing_cycles =
+                                    pipeline_regload_replay_pipe_missing_cycles +
+                                    1;
+                            else if (dut.u_backend.
+                                         banked_regload_lane0_offer)
+                                pipeline_regload_replay_exec_backpressure_cycles =
+                                    pipeline_regload_replay_exec_backpressure_cycles +
+                                    1;
+                            else
+                                pipeline_regload_replay_other_cycles =
+                                    pipeline_regload_replay_other_cycles + 1;
+                        end
+                    end else
+                        pipeline_regload_fire1_single_cycles =
+                            pipeline_regload_fire1_single_cycles + 1;
+                end else begin
+                    pipeline_regload_fire0_cycles =
+                        pipeline_regload_fire0_cycles + 1;
+                    if (dut.u_backend.flush_i ||
+                        dut.u_backend.banked_gpr_drain_q)
+                        pipeline_regload_zero_redirect_drain_cycles =
+                            pipeline_regload_zero_redirect_drain_cycles + 1;
+                    else if (dut.u_backend.banked_regload_lane0_offer ||
+                             dut.u_backend.banked_regload_lane1_offer)
+                        pipeline_regload_zero_exec_backpressure_cycles =
+                            pipeline_regload_zero_exec_backpressure_cycles + 1;
+                    else if ((dut.u_backend.
+                                  banked_regload_lane_valid_q[0] &&
+                              !dut.u_backend.
+                                  banked_regload_lane_operands_ready[0]) ||
+                             (dut.u_backend.
+                                  banked_regload_lane_valid_q[1] &&
+                              !dut.u_backend.
+                                  banked_regload_lane_operands_ready[1]))
+                        pipeline_regload_zero_operand_wait_cycles =
+                            pipeline_regload_zero_operand_wait_cycles + 1;
+                    else if ((dut.u_backend.
+                                  banked_regload_lane_valid_q[0] &&
+                              !dut.u_backend.
+                                  banked_regload_lane_pipe_present[0]) ||
+                             (dut.u_backend.
+                                  banked_regload_lane_valid_q[1] &&
+                              !dut.u_backend.
+                                  banked_regload_lane_pipe_present[1]))
+                        pipeline_regload_zero_pipe_missing_cycles =
+                            pipeline_regload_zero_pipe_missing_cycles + 1;
+                    else if (dut.u_backend.
+                                 banked_regload_branch_pair_q &&
+                             dut.u_backend.
+                                 banked_regload_lane_valid_q[1] &&
+                             !dut.u_backend.
+                                 banked_regload_branch_follower_allowed)
+                        pipeline_regload_zero_branch_gate_cycles =
+                            pipeline_regload_zero_branch_gate_cycles + 1;
+                    else
+                        pipeline_regload_zero_other_cycles =
+                            pipeline_regload_zero_other_cycles + 1;
+                end
             end
 
             if (dut.u_backend.banked_mem_forward_capture)
@@ -4929,19 +5448,78 @@ module tb_top_3p_soc #(
                 end else if ((BANKED_GPR != 0) &&
                              (dut.backend_retire_count == 0)) begin
                     if (!banked_retire_probe_write_active) begin
-                        if (|banked_retire_probe_write_mask)
+                        if (|banked_retire_probe_write_mask) begin
                             banked_retire_ready_direct_wait =
                                 banked_retire_ready_direct_wait + 1;
-                        else
+                            retire_gpr_write_blocked_cycles =
+                                retire_gpr_write_blocked_cycles + 1;
+                        end else
                             banked_retire_ready_no_write =
                                 banked_retire_ready_no_write + 1;
-                    end else if (!banked_retire_probe_writes_complete)
+                    end else if (!banked_retire_probe_writes_complete) begin
                         banked_retire_ready_retry_wait =
                             banked_retire_ready_retry_wait + 1;
-                    else
+                        retire_gpr_write_blocked_cycles =
+                            retire_gpr_write_blocked_cycles + 1;
+                    end else
                         banked_retire_ready_write_complete =
                             banked_retire_ready_write_complete + 1;
                 end
+            end
+
+            // Exclusive attribution for every zero-retire cycle.  This is
+            // deliberately a state locator, not an overlapping list of
+            // symptoms: the buckets sum exactly to retire_width_0.
+            if (dut.backend_retire_count == 0) begin
+                if (dut.backend_retire_occupancy == 0)
+                    pipeline_retire_zero_queue_empty_cycles =
+                        pipeline_retire_zero_queue_empty_cycles + 1;
+                else if (!dut.u_backend.queue_retire_valid[0]) begin
+                    if (trace_retire_head_regload_active)
+                        pipeline_retire_zero_head_regload_active_cycles =
+                            pipeline_retire_zero_head_regload_active_cycles +
+                            1;
+                    else if (trace_retire_head_regload_pending)
+                        pipeline_retire_zero_head_regload_pending_cycles =
+                            pipeline_retire_zero_head_regload_pending_cycles +
+                            1;
+                    else if (trace_retire_head_window_valid &&
+                             !trace_retire_head_window_issued)
+                        pipeline_retire_zero_head_unissued_cycles =
+                            pipeline_retire_zero_head_unissued_cycles + 1;
+                    else if ((trace_retire_head_op == PERF_OP_LOAD) ||
+                             (trace_retire_head_op == PERF_OP_STORE)) begin
+                        if (!trace_retire_head_lsq_valid)
+                            pipeline_retire_zero_head_mem_transient_cycles =
+                                pipeline_retire_zero_head_mem_transient_cycles +
+                                1;
+                        else if (!trace_retire_head_lsq_xlate_done)
+                            pipeline_retire_zero_head_mem_xlate_cycles =
+                                pipeline_retire_zero_head_mem_xlate_cycles + 1;
+                        else if (!trace_retire_head_lsq_access_sent)
+                            pipeline_retire_zero_head_mem_access_cycles =
+                                pipeline_retire_zero_head_mem_access_cycles + 1;
+                        else
+                            pipeline_retire_zero_head_mem_inflight_cycles =
+                                pipeline_retire_zero_head_mem_inflight_cycles +
+                                1;
+                    end else if (trace_retire_head_window_valid &&
+                                 trace_retire_head_window_issued)
+                        pipeline_retire_zero_head_exec_wait_cycles =
+                            pipeline_retire_zero_head_exec_wait_cycles + 1;
+                    else
+                        pipeline_retire_zero_head_unknown_cycles =
+                            pipeline_retire_zero_head_unknown_cycles + 1;
+                end else if ((BANKED_GPR != 0) &&
+                             ((!banked_retire_probe_write_active &&
+                               (|banked_retire_probe_write_mask)) ||
+                              (banked_retire_probe_write_active &&
+                               !banked_retire_probe_writes_complete)))
+                    pipeline_retire_zero_head_write_blocked_cycles =
+                        pipeline_retire_zero_head_write_blocked_cycles + 1;
+                else
+                    pipeline_retire_zero_head_ready_other_cycles =
+                        pipeline_retire_zero_head_ready_other_cycles + 1;
             end
             if (dut.fetch_decode_valid == 0)
                 frontend_empty = frontend_empty + 1;
@@ -6376,6 +6954,11 @@ module tb_top_3p_soc #(
             decode_width_0, decode_width_1, decode_width_2, decode_width_3,
             retire_width_0, retire_width_1, retire_width_2, retire_width_3);
         $display(
+            "PERF_ICX_L2_PIPE_DECODE total=%0d progress=%0d no_decode=%0d fetch_empty=%0d backend_held=%0d unaccounted=%0d",
+            cycles, cycles - decode_width_0, decode_width_0,
+            frontend_empty, frontend_held,
+            decode_width_0 - frontend_empty - frontend_held);
+        $display(
             "PERF_ICX_L2_BACKEND dispatch_nonempty=%0d dispatch_nonempty_no_issue=%0d dispatch_full=%0d raw_hazard=%0d waw_hazard=%0d read_port_hazard=%0d write_busy=%0d barrier=%0d",
             dispatch_nonempty, dispatch_nonempty_no_issue, dispatch_full,
             raw_hazard_cycles, waw_hazard_cycles, read_port_hazard_cycles,
@@ -6442,6 +7025,27 @@ module tb_top_3p_soc #(
             banked_stage_promote_events,
             banked_stage_issue_allocate_cycles);
         $display(
+            "PERF_ICX_L2_PIPE_REGLOAD empty=%0d fire0=%0d fire1_single=%0d fire1_replay=%0d fire2=%0d zero_operand_wait=%0d zero_pipe_missing=%0d zero_branch_gate=%0d zero_exec_backpressure=%0d zero_redirect_drain=%0d zero_other=%0d",
+            pipeline_regload_empty_cycles,
+            pipeline_regload_fire0_cycles,
+            pipeline_regload_fire1_single_cycles,
+            pipeline_regload_fire1_replay_cycles,
+            pipeline_regload_fire2_cycles,
+            pipeline_regload_zero_operand_wait_cycles,
+            pipeline_regload_zero_pipe_missing_cycles,
+            pipeline_regload_zero_branch_gate_cycles,
+            pipeline_regload_zero_exec_backpressure_cycles,
+            pipeline_regload_zero_redirect_drain_cycles,
+            pipeline_regload_zero_other_cycles);
+        $display(
+            "PERF_ICX_L2_PIPE_REGLOAD_REPLAY operand_wait=%0d pipe_missing=%0d target_conflict=%0d branch_gate=%0d exec_backpressure=%0d other=%0d",
+            pipeline_regload_replay_operand_wait_cycles,
+            pipeline_regload_replay_pipe_missing_cycles,
+            pipeline_regload_replay_target_conflict_cycles,
+            pipeline_regload_replay_branch_gate_cycles,
+            pipeline_regload_replay_exec_backpressure_cycles,
+            pipeline_regload_replay_other_cycles);
+        $display(
             "PERF_ICX_L2_BANKED_GPR_MEM_FORWARD captures=%0d stage_wait_cycles=%0d stage_wait_operands=%0d issue_cycles=%0d issue_operands=%0d",
             banked_mem_forward_captures,
             banked_mem_stage_wait_cycles,
@@ -6502,6 +7106,22 @@ module tb_top_3p_soc #(
             window_hard_block_entry_cycles,
             window_mem_order_block_entry_cycles);
         $display(
+            "PERF_ICX_L2_PIPE_WINDOW empty=%0d no_eligible=%0d eligible_no_offer=%0d offer_replay=%0d fire=%0d fire_events=%0d",
+            pipeline_window_empty_cycles,
+            pipeline_window_no_eligible_cycles,
+            pipeline_window_eligible_no_offer_cycles,
+            pipeline_window_offer_replay_cycles,
+            pipeline_window_fire_cycles,
+            pipeline_window_fire_events);
+        $display(
+            "PERF_ICX_L2_PIPE_WINDOW_REPLAY pending_full=%0d hard_branch=%0d hard_jump=%0d hard_other=%0d redirect_drain=%0d other=%0d",
+            pipeline_window_replay_pending_full_cycles,
+            pipeline_window_replay_hard_branch_cycles,
+            pipeline_window_replay_hard_jump_cycles,
+            pipeline_window_replay_hard_other_cycles,
+            pipeline_window_replay_redirect_drain_cycles,
+            pipeline_window_replay_other_cycles);
+        $display(
             "PERF_ICX_L2_WINDOW_WAW admit_events=%0d prior_ready=%0d prior_unready=%0d resident=%0d same_bundle=%0d shadowed_writer_entry_cycles=%0d shadowed_ready_entry_cycles=%0d",
             window_waw_admit_events, window_waw_admit_ready_events,
             window_waw_admit_unready_events,
@@ -6518,6 +7138,21 @@ module tb_top_3p_soc #(
             window_wakeup_entry_events,
             window_wakeup_eligible_entry_events);
         $display(
+            "PERF_ICX_L2_BRANCH_FORWARD wakeup_operands=%0d wakeup_ex0=%0d wakeup_ex1=%0d wakeup_mem0=%0d wakeup_entries=%0d wakeup_eligible=%0d selected=%0d offered=%0d release_events=%0d release_operands=%0d release_ex0=%0d release_ex1=%0d release_mem0=%0d",
+            branch_forward_wakeup_operand_events,
+            branch_forward_wakeup_ex0_operand_events,
+            branch_forward_wakeup_ex1_operand_events,
+            branch_forward_wakeup_mem0_operand_events,
+            branch_forward_wakeup_entry_events,
+            branch_forward_wakeup_eligible_entry_events,
+            branch_forward_selected_events,
+            branch_forward_offer_events,
+            branch_forward_release_events,
+            branch_forward_release_operand_events,
+            branch_forward_release_ex0_operand_events,
+            branch_forward_release_ex1_operand_events,
+            branch_forward_release_mem0_operand_events);
+        $display(
             "PERF_ICX_L2_WINDOW_WAIT unissued_load_operand_cycles=%0d unissued_other_operand_cycles=%0d inflight_load_operand_cycles=%0d inflight_other_operand_cycles=%0d completed_operand_cycles=%0d missing_operand_cycles=%0d",
             window_wait_unissued_load_operand_cycles,
             window_wait_unissued_other_operand_cycles,
@@ -6532,7 +7167,7 @@ module tb_top_3p_soc #(
             completed_control_load_candidate_entry_cycles,
             completed_control_load_gate_entry_cycles);
         $display(
-            "PERF_ICX_L2_BRANCH_SPEC unresolved_cycles=%0d unresolved_branch_entry_cycles=%0d ready_behind_entry_cycles=%0d eligible_behind_entry_cycles=%0d issue_cycles=%0d issue_events=%0d branch_crossings=%0d alu=%0d load=%0d store=%0d control=%0d",
+            "PERF_ICX_L2_BRANCH_SPEC unresolved_cycles=%0d unresolved_branch_entry_cycles=%0d ready_behind_entry_cycles=%0d eligible_behind_entry_cycles=%0d release_cycles=%0d release_events=%0d branch_crossings=%0d alu=%0d load=%0d store=%0d control=%0d",
             branch_spec_unresolved_cycles,
             branch_spec_unresolved_entry_cycles,
             branch_spec_ready_behind_entry_cycles,
@@ -6545,23 +7180,43 @@ module tb_top_3p_soc #(
             branch_spec_issue_store,
             branch_spec_issue_control);
         $display(
-            "PERF_ICX_L2_BRANCH_SPEC_RESOLVE total=%0d correct=%0d corrected=%0d with_younger_issued=%0d correct_with_younger_issued=%0d corrected_with_younger_issued=%0d younger_valid=%0d younger_issued=%0d younger_completed=%0d correct_younger_issued=%0d corrected_younger_issued=%0d max_younger_issued=%0d",
+            "PERF_ICX_L2_BRANCH_SPEC_RESOLVE total=%0d correct=%0d corrected=%0d with_younger_released=%0d with_younger_completed=%0d correct_with_younger_released=%0d corrected_with_younger_released=%0d correct_with_younger_completed=%0d corrected_with_younger_completed=%0d younger_valid=%0d younger_released=%0d younger_completed=%0d correct_younger_released=%0d corrected_younger_released=%0d correct_younger_completed=%0d corrected_younger_completed=%0d max_younger_released=%0d",
             branch_spec_resolutions,
             branch_spec_correct_resolutions,
             branch_spec_corrected_resolutions,
             branch_spec_resolutions_with_younger_issued,
+            branch_spec_resolutions_with_younger_completed,
             branch_spec_correct_with_younger_issued,
             branch_spec_corrected_with_younger_issued,
+            branch_spec_correct_with_younger_completed,
+            branch_spec_corrected_with_younger_completed,
             branch_spec_resolve_younger_valid,
             branch_spec_resolve_younger_issued,
             branch_spec_resolve_younger_completed,
             branch_spec_correct_younger_issued,
             branch_spec_corrected_younger_issued,
+            branch_spec_correct_younger_completed,
+            branch_spec_corrected_younger_completed,
             branch_spec_max_younger_issued);
         $display(
-            "PERF_ICX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d",
+            "PERF_ICX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d gpr_write_blocked=%0d",
             retire_nonempty, retire_nonempty_no_retire,
-            retire_head_incomplete, retire_completed_behind_head);
+            retire_head_incomplete, retire_completed_behind_head,
+            retire_gpr_write_blocked_cycles);
+        $display(
+            "PERF_ICX_L2_PIPE_RETIRE_ZERO queue_empty=%0d head_unissued=%0d head_regload_active=%0d head_regload_pending=%0d head_mem_xlate=%0d head_mem_access=%0d head_mem_inflight=%0d head_mem_transient=%0d head_exec_wait=%0d head_unknown=%0d head_write_blocked=%0d head_ready_other=%0d",
+            pipeline_retire_zero_queue_empty_cycles,
+            pipeline_retire_zero_head_unissued_cycles,
+            pipeline_retire_zero_head_regload_active_cycles,
+            pipeline_retire_zero_head_regload_pending_cycles,
+            pipeline_retire_zero_head_mem_xlate_cycles,
+            pipeline_retire_zero_head_mem_access_cycles,
+            pipeline_retire_zero_head_mem_inflight_cycles,
+            pipeline_retire_zero_head_mem_transient_cycles,
+            pipeline_retire_zero_head_exec_wait_cycles,
+            pipeline_retire_zero_head_unknown_cycles,
+            pipeline_retire_zero_head_write_blocked_cycles,
+            pipeline_retire_zero_head_ready_other_cycles);
         $display(
             "PERF_ICX_L2_BANKED_RETIRE_READY direct_wait=%0d retry_wait=%0d write_complete=%0d no_write=%0d",
             banked_retire_ready_direct_wait,

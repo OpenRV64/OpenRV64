@@ -1710,12 +1710,18 @@ module openrv64_lsq #(
                         slot_timeout_age_q[timeout_index] + 1;
                     if (slot_timeout_age_q[timeout_index] >= TIMEOUT_CYCLES)
                         $fatal(1,
-                            "LSQ state %0d timed out id=%0d store=%b xlate=%b access=%b block=%b",
+                            "LSQ state %0d timed out id=%0d retire=%0d store=%b killed=%b xlate=%b access=%b block=%b order=%b head_valid=%b head_id=%0d head_slot=%0d squash=%b squash_id=%0d",
                             timeout_index, slot_id_q[timeout_index],
+                            slot_retire_q[timeout_index],
                             slot_store_q[timeout_index],
+                            slot_killed_q[timeout_index],
                             slot_xlate_sent_q[timeout_index],
                             slot_access_sent_q[timeout_index],
-                            load_block_r[timeout_index]);
+                            load_block_r[timeout_index],
+                            slot_order_match[timeout_index],
+                            ordered_head_valid_i, ordered_head_id_i,
+                            ordered_head_slot_i, squash_younger_i,
+                            squash_id_i);
                 end
             end
         end

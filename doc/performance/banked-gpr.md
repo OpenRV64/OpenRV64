@@ -663,6 +663,134 @@ the extra banked execution-launch interval.  Adding another ordinary
 completion bypass is unlikely to recover the dominant 92.30% unissued-producer
 bucket.
 
+#### Conditional-branch speculation and retirement write blocking
+
+The LSQ's `spec_alloc` count is not a branch-speculation counter: it means that
+an operation allocated before becoming the ordered retirement head.  New
+window counters therefore track younger scheduler releases across an actually
+unresolved conditional branch and snapshot younger completed work when that
+branch resolves.  In the banked configuration, a scheduler release transfers
+ownership into the registered operand-load stage; it does not necessarily mean
+that execution occurred.  The completion snapshot is the stronger measure and
+conservatively excludes same-cycle completions.
+
+The final matched runs with these counters and the explicit retirement
+`gpr_write_blocked` aggregate are:
+
+- banked post-window:
+  `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T032931Z`;
+- current normal 3P:
+  `coremark-sv39-linux-rd32-ddr3-20260901T033058Z`.
+
+Both passed and retained the 87,228-cycle and 47,439-cycle schedules.  Focused
+banked validation is `3p-banked-directed-20260901T031259Z`
+(`validation=pass`).
+
+The normal control sets its legacy branch-completion-forward mask to one while
+the banked configuration sets it to zero.  Normal-3P ablation
+`coremark-sv39-linux-rd32-ddr3-20260901T031854Z` disabled that mask and still
+ran in exactly 47,439 cycles with every branch-speculation counter unchanged.
+The legacy mask is therefore inert for this workload under the issue window;
+porting it alone is not a supported performance target.
+
+| Conditional-branch event or state | Banked post-window | Current normal 3P |
+|---|---:|---:|
+| Conditional resolutions | 10,786 | 10,786 |
+| Correct / corrected direction | 9,936 / 850 | 9,902 / 884 |
+| Correct direction | 92.12% | 91.80% |
+| Cycles with an unresolved conditional | 80,074 | 41,927 |
+| Scheduler release cycles / events | 15,662 / 21,870 | 18,212 / 23,282 |
+| Instruction-branch release relationships | 70,616 | 65,928 |
+| Resolutions with younger completed work | 9,764 (90.52%) | 8,474 (78.56%) |
+| Younger-completed instruction-branch relationships | 53,666 | 35,210 |
+| Completed behind correct / corrected branches | 50,016 / 3,650 | 32,566 / 2,644 |
+| Retained / discarded share of completed relationships | 93.20% / 6.80% | 92.49% / 7.51% |
+| Maximum younger scheduler releases at resolution | 15 | 12 |
+| Incomplete branch at retirement-head cycles | 3,072 | 4 |
+| Correction post-redirect empty cycles | 539 | 385 |
+| Retirement cycles blocked by GPR writes | 4,453 | 0 |
+| Direct-address / retry write-blocked cycles | 4,453 / 0 | 0 / 0 |
+
+Relationship totals are not unique instruction counts.  One instruction can
+be younger than multiple unresolved branches and is then counted once for each
+branch.  Direction correctness compares the resolved conditional outcome with
+the predicted-taken bit stored in that branch's resident window entry.  It is
+therefore narrower than the frontend's total direction-correction count, which
+also includes other control-flow cases.
+
+Branch speculation is active and reasonably effective.  In the banked run,
+90.52% of conditional resolutions already observe completed younger work, and
+93.20% of all such completed relationships are retained behind a correct
+prediction.  The banked core's larger speculative depth is not evidence that
+it schedules better: branches remain unresolved for almost twice as many
+cycles, while its scheduler releases only 0.251 instructions per runtime cycle
+across an unresolved branch versus 0.491 for normal 3P.  The extra 154
+correction-recovery empty cycles are negligible beside the 39,789-cycle total
+performance gap.  Increasing speculative reach or changing the predictor is
+therefore not the leading banked-GPR optimization.
+
+The 3,072 banked cycles with an incomplete branch at the retirement head do
+show that the post-selection branch execution path is late; normal 3P reports
+only four.  This is a narrower launch/resolution-latency problem, not evidence
+that the window refuses to speculate past branches.  It bounds a meaningful
+branch fast path, but it is still much smaller than the total parity gap and
+the normal branch-forward-mask ablation shows that simply enabling the old
+bypass does not implement that fast path.
+
+The write-block result is also bounded.  All 4,453 blocked cycles are the
+initial write address phase; there are no multi-cycle retry waits.  That is
+5.11% of banked runtime and only 11.19% of the gap to normal 3P.  Removing the
+retirement write bubble could help, but cannot explain or repair the dominant
+loss.  The stronger next target remains the post-window operand-load launch
+interval.  A branch-specific fast path can share that fall-through machinery
+to shorten resolution, but it should follow the general already-materialized
+ALU/operand path rather than replace it.
+
+#### EXU/MEM0 completion forwarding into conditional branches
+
+Branch-consumer counters confirm that the issue window's generic completion
+bus, not the legacy branch-forward mask, forwards both EXU and MEM0 results.
+An exact producer-ID match makes the operand ready and patches the selected
+payload from the completion data in the same cycle.  If downstream admission
+is blocked, the window persists that completion data for a later release.
+
+| Conditional-branch forwarding event | Banked post-window | Current normal 3P |
+|---|---:|---:|
+| Woken branch operands | 18,605 | 17,662 |
+| Woken by EX0 / EX1 / MEM0 | 9,889 / 1,943 / 6,773 | 8,219 / 2,969 / 6,474 |
+| Woken branch entries | 18,511 | 17,088 |
+| Eligible on the wakeup edge | 8,183 | 8,285 |
+| Selected on the wakeup edge | 8,182 | 8,285 |
+| Offered on the wakeup edge | 5,400 | 8,285 |
+| Accepted on the wakeup edge | 4,241 | 8,285 |
+| Accepted forwarded operands | 4,322 | 8,795 |
+| Accepted EXU / MEM0 operands | 2,385 / 1,937 | 4,278 / 4,517 |
+
+These are dynamic speculative events, not unique retired branches; wrong-path
+entries are included.  Source counts are operand counts, so an event can
+include two forwarded operands.  In normal 3P, `accepted` is the EX1 execution
+handshake.  In banked mode it is only capture by the registered operand-load
+stage; branch execution and resolution remain later.
+
+The forwarding is meaningful.  The banked core accepts 4,241 branches on the
+same edge that supplies a missing result, split almost evenly between EXU and
+MEM0 sources.  It works even with `branch_forward_mask=0`, consistent with the
+normal-mask ablation above: issue-window completion wakeup supersedes that old
+special-case path.
+
+It is not delivering normal-3P latency.  Selection loses essentially nothing
+(8,182 of 8,183 eligible entries), but window offer/admission gates suppress
+2,782 selected offers and regload readiness withholds another 1,159 accepted
+transfers.  The current counters do not split the former between two-lane age
+rank, deferred hard-control, and recovery suppression.  Only 51.83% of selected
+wakeup-edge branches
+therefore leave the window on that edge, versus 100% in normal 3P.  The delayed
+cases remain correct and retain their forwarded data, but lose the same-cycle
+latency benefit.  Even accepted banked branches still cross regload before EX1.
+This supports a general regload fall-through/acceptance improvement and,
+secondarily, a branch fast path when every used operand is already materialized;
+adding the legacy branch-forward mask would not address the bottleneck.
+
 Redirect handling uses poison rather than combinational valid suppression.
 The registered regload output keeps `valid` independent of redirect and
 execution `ready`; selective recovery discards younger issued state, the LSQ
@@ -681,6 +809,142 @@ arithmetic and load/use dependencies, plus the strict banked top-level branch
 loop.  The persistent benchmark configuration is
 `run/cfg/coremark-sv39-3p-banked-window-2r1w-ddr3.cfg`.
 
+#### Full exclusive pipeline partition and hard-control admission barrier
+
+The previous aggregate counters overlapped and therefore did not close the
+runtime gap.  The following results add mutually exclusive per-cycle
+partitions at decode, issue-window address admission, the banked register-load
+data stage, and zero-width retirement.  The final matched Sv39/DDR3 runs are:
+
+- banked post-window 2R1W:
+  `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T043133Z`;
+- current normal 3P:
+  `coremark-sv39-linux-rd32-ddr3-20260901T043316Z`.
+
+Both passed.  The banked run took 87,228 cycles for 52,588 retired
+instructions; normal 3P took 47,439 cycles for 52,592.  The measured runtime
+gap is therefore 39,789 cycles, not approximately 20,000.
+
+The issue-window output is an address-phase offer.  A `fire` below is an offer
+accepted by the downstream ready/ack vector; `offer replay` means that the
+window selected work but downstream withheld every relevant ack.
+
+| Exclusive issue-window state | Banked post-window | Current normal 3P | Delta |
+|---|---:|---:|---:|
+| Window empty | 1,570 | 1,467 | +103 |
+| Nonempty, no eligible entry | 26,304 | 13,228 | +13,076 |
+| Eligible, but no output offer | 1,656 | 862 | +794 |
+| Output offer replayed by downstream | 15,324 | 420 | +14,904 |
+| At least one address-phase fire | 42,374 | 31,462 | +10,912 |
+| **Total cycles** | **87,228** | **47,439** | **+39,789** |
+| Address-phase fire events | 56,860 | 56,560 | +300 |
+
+The positive delta in fire cycles is not a gain.  Almost the same number of
+speculative instruction offers is accepted in both runs, but the banked path
+spreads them over 10,912 more address-admission cycles because its register-load
+group has at most two lanes and often contains only one usable lane.
+
+The 15,324 banked offer-replay cycles split exactly as follows:
+
+| Downstream reason for replaying a selected window offer | Cycles |
+|---|---:|
+| Pending regload group already occupied | 3,730 |
+| Active hard group contains a conditional branch | 10,053 |
+| Active hard group contains a jump | 475 |
+| Active hard group contains another hard operation | 0 |
+| Redirect/flush regfile drain | 1,066 |
+| Unclassified | 0 |
+| **Total** | **15,324** |
+
+This is the missing serialization.  `banked_regload_hard_q` closes the whole
+window-to-regload ready/ack vector while an active hard group is resident.  It
+also prevents use of the pending-group credit.  A branch or jump is therefore
+fully blocking at this interface: the issue window can select younger eligible
+work, but cannot transfer its address phase until the hard group leaves.  For
+the common ready branch this is approximately one lost admission cycle per
+conditional branch.  It is not register-file port saturation.  With two read
+ports per bank, accepted reads saw zero read-bank conflicts and zero read/write
+conflicts in this run.
+
+The banked register-load data phase itself partitions all 87,228 cycles:
+
+| Exclusive banked regload state | Cycles |
+|---|---:|
+| Empty | 37,014 |
+| Active, zero fires | 5,281 |
+| Active single-lane group, one fire | 30,447 |
+| Active two-lane group, one fire and one replay | 2,559 |
+| Active two-lane group, two fires | 11,927 |
+| **Total cycles** | **87,228** |
+| Execution fire events | 56,860 |
+
+The 5,281 zero-fire cycles are 5,057 operand-return waits and 224 execution
+backpressure cycles.  The 2,559 partial-fire cycles are 2,457 operand-return
+waits and 102 execution-backpressure cycles.  There are zero target conflicts,
+branch-follower gates, missing-pipe mappings, or unexplained cycles in these
+partitions.  Thus the one-cycle register read affects 7,514 active stage
+cycles, but only 5,057 of them produce no execution fire.  The larger width
+effect is visible by comparing 44,933 banked execution-fire cycles against
+31,462 normal window-fire cycles for nearly identical event counts.  The
+13,471-cycle difference is not independently additive to the runtime gap,
+because address admission, dependencies, and retirement overlap it.
+
+Decode also closes independently:
+
+| Exclusive decode state | Banked post-window | Current normal 3P | Delta |
+|---|---:|---:|---:|
+| Decode progress | 51,490 | 29,119 | +22,371 |
+| No decode: fetch empty | 5,072 | 4,494 | +578 |
+| No decode: backend held | 30,666 | 13,826 | +16,840 |
+| **Total cycles** | **87,228** | **47,439** | **+39,789** |
+
+The large positive progress-cycle delta is again a throughput loss: the banked
+backend consumes more cycles to admit the same program, so frontend work is
+distributed over a longer schedule.
+
+Finally, every zero-retirement cycle is assigned to one state of the oldest
+retirement entry.  The trace scans all 32 configured window slots; an earlier
+diagnostic version accidentally scanned only 16 and its `unknown` sub-bucket
+was discarded.
+
+| Exclusive zero-retirement state | Banked post-window | Current normal 3P | Delta |
+|---|---:|---:|---:|
+| Retirement queue empty | 648 | 612 | +36 |
+| Head still unissued in the window | 7,664 | 3,106 | +4,558 |
+| Head resident in active regload group | 8,963 | 0 | +8,963 |
+| Head resident in pending regload group | 556 | 0 | +556 |
+| Head load/store waiting for translation | 74 | 72 | +2 |
+| Head load/store waiting to send access | 5,395 | 1,455 | +3,940 |
+| Head load/store access in flight | 7,096 | 6,643 | +453 |
+| Head memory op transiently absent from LSQ | 3,662 | 3,711 | -49 |
+| Head issued non-memory op waiting to complete | 10,449 | 2,602 | +7,847 |
+| Head state unknown | 0 | 0 | 0 |
+| Head complete but GPR write ack withheld | 4,453 | 0 | +4,453 |
+| Head otherwise ready | 113 | 99 | +14 |
+| **Total zero-retirement cycles** | **49,073** | **18,300** | **+30,773** |
+
+The remaining 9,016 cycles of the total runtime gap are positive-width retire
+cycles: 38,155 banked versus 29,139 normal.  As with the issue partition, this
+means the same retirement work is spread across more cycles, not that these
+cycles are a separate stall source.
+
+The hard-control result changes the previous priority.  The issue window does
+speculate around branches, but the post-window register-load adapter defeats
+part of that speculation by refusing the next address phase whenever a branch
+or jump occupies its active group.  The directly observed offer-replay portion
+is 10,528 hard-control cycles, plus 3,730 cycles where its single pending slot
+is already full.  Removing or narrowing this barrier is ahead of another
+forwarding bypass.  Correct recovery must poison younger active/pending groups
+on redirect while continuing to drain every acknowledged register read; it
+must not cancel a held request before ack.
+
+A speculation-disabled ablation was attempted as managed run
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T042900Z`.  It does not
+provide a performance number: with `SPECULATION_WINDOW=0`, the existing issue
+window asserted `issue window overflow` at cycle 795 and validation ended
+`fatal`.  The structural replay split above is therefore the valid evidence
+for the hard-control barrier; no result is inferred from the failed ablation.
+
 Final focused validation after branch recovery is
 `3p-banked-directed-20260901T002704Z`.  It covers held bank retries,
 address/issue overlap, back-to-back issue, pending-group promotion, EXU and
@@ -689,3 +953,93 @@ correctly predicted branch/follower issue.  The final timed-DDR3 ACT4 result
 is `compliance-act4-platform-3p-banked-ddr3-20260901T003018Z`: 93 passed, zero
 failed, `validation=pass`, after a forced Verilator regeneration.  The final
 CoreMark run above was also forced-regenerated and ended `validation=pass`.
+
+#### Pipelined control admission and selective redirect recovery
+
+The hard-control barrier was relaxed for issue-window traffic by allowing one
+younger register-load group to occupy the pending credit while an active branch
+or jump crosses the operand-read stage.  This is speculation of register reads
+only.  GPR writes remain retirement-only, and a younger instruction cannot
+write architectural register state from either the active or pending group.
+
+Simply opening the credit was not correct.  Both the initial broad experiment
+and the narrower control-only experiment reached the same LSQ timeout at cycle
+15,047.  The final diagnostic run was
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T044856Z` and reported a
+store with ID 99 waiting behind retirement head ID 79.  Its pipeline trace
+showed the actual cause two cycles earlier:
+
+| Trace cycle | Active group | Pending group | Redirect |
+|---:|---|---|---|
+| 5,027 | control ID 81 | empty | none |
+| 5,028 | control ID 81 | IDs 79 and 84 | ID 81 |
+| 5,029, before the fix | empty | empty | recovery |
+
+The pending group straddled the redirect cut: ID 79 was older than the
+resolving branch and ID 84 was younger.  Clearing the complete group discarded
+the still-live older instruction, so retirement could never pass ID 79.  The
+later store timeout was only the symptom.
+
+Redirect recovery now filters active and pending state per lane using modular
+instruction-ID age.  It preserves older lanes that did not issue on the
+redirect edge, removes the resolving and younger lanes, filters their physical
+pipe metadata, and recomputes the surviving hard/control classification.
+Already acknowledged or held register-file requests are still poisoned and
+drained to `quiescent`; preserved lanes with incomplete operands issue fresh
+reads only after that drain.  This is required because the read response has a
+fixed port association, whereas architectural writes need no rollback because
+they occur only at retirement.
+
+The final Sv39/DDR3 CoreMark run is
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T045452Z` and passed:
+
+| Metric | Hard-control barrier | Selective control admission | Change |
+|---|---:|---:|---:|
+| Cycles | 87,228 | 79,225 | -8,003 (-9.17%) |
+| Retired instructions | 52,588 | 52,588 | 0 |
+| IPC | 0.6029 | 0.6638 | +10.10% |
+| Gap to normal 3P (47,439 cycles) | 39,789 | 31,786 | -8,003 |
+| Issue-window offer-replay cycles | 15,324 | 6,311 | -9,013 |
+| Pending-credit-full replay | 3,730 | 3,634 | -96 |
+| Hard branch / jump replay | 10,053 / 475 | 0 / 0 | -10,528 |
+| Redirect RF-drain replay | 1,066 | 2,677 | +1,611 |
+| Read-bank / read-write conflicts | 0 / 0 | 0 / 0 | 0 |
+
+The 8,003-cycle runtime reduction closes 20.11% of the old 39,789-cycle gap to
+normal 3P.  It is smaller than the 9,013-cycle replay reduction because the
+new overlap changes downstream scheduling and increases redirect drain time.
+The drain increase is expected from allowing more speculative read address
+phases across control operations; it is now the complete residual control-side
+replay bucket, rather than hidden hard-control serialization.
+
+The zero-retirement partition changed as follows:
+
+| Zero-retirement state | Before | After | Change |
+|---|---:|---:|---:|
+| Queue empty | 648 | 667 | +19 |
+| Head unissued | 7,664 | 8,052 | +388 |
+| Head in active regload | 8,963 | 7,585 | -1,378 |
+| Head in pending regload | 556 | 592 | +36 |
+| Memory translation / access / inflight | 74 / 5,395 / 7,096 | 74 / 5,183 / 6,808 | 0 / -212 / -288 |
+| Memory transient | 3,662 | 3,140 | -522 |
+| Issued non-memory execution wait | 10,449 | 7,317 | -3,132 |
+| GPR write ack withheld at retirement | 4,453 | 5,119 | +666 |
+| Otherwise ready | 113 | 113 | 0 |
+| **Total zero-retirement cycles** | **49,073** | **44,650** | **-4,423** |
+
+The main retirement improvement is no longer waiting for a non-memory head to
+cross the serialized control/regload path.  Retirement-side write arbitration
+became worse by 666 cycles and is still independent of speculative reads; it
+remains a separate optimization target.
+
+Focused validation is `3p-banked-directed-20260901T050426Z`
+(`validation=pass`).  It directly seeds the observed pending IDs 79 and 84,
+redirects at live retirement ID 81, and checks that all lane, operand, pipe,
+producer, and use-valid metadata for only ID 79 survives.  Timed-DDR3 ACT4
+validation is
+`compliance-act4-platform-3p-banked-ddr3-20260901T045622Z`: 93 passed and zero
+failed.  That ACT4 platform target currently has `ISSUE_WINDOW=0`, so it proves
+the banked legacy/platform and DDR3 paths were not regressed; it does not cover
+the new selective window recovery.  The passing Sv39 CoreMark run is the
+end-to-end validation of the relaxed window path and reproduces the workload
+that exposed the orphaned older lane before the fix.

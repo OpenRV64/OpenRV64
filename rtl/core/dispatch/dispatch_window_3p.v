@@ -127,6 +127,7 @@ module openrv64_dispatch_window_3p #(
     localparam integer PAYLOAD_MEM_READ = 16;
     localparam integer PAYLOAD_MEM_WRITE = 15;
     localparam integer PAYLOAD_BRANCH = 14;
+    localparam integer PAYLOAD_PREDICTED_TAKEN = 12;
     localparam integer PAYLOAD_JUMP = 13;
     localparam integer PAYLOAD_SYSTEM = 10;
     localparam integer PAYLOAD_FENCE = 9;
@@ -712,8 +713,8 @@ module openrv64_dispatch_window_3p #(
     // Branch-specific speculation accounting.  LSQ "speculative" means
     // merely "not the ordered retirement head" and cannot establish that an
     // operation crossed an unresolved branch.  Keep that distinction exact
-    // by tagging each selectable entry with the number of older, unissued
-    // conditional branches it is crossing in this cycle.
+    // by tagging each resident entry with the number of older conditional
+    // branches whose result has not resolved yet.
     reg [COUNT_WIDTH-1:0] trace_unresolved_conditional_count;
     reg [COUNT_WIDTH-1:0]
         trace_ready_behind_unresolved_conditional_count;
@@ -729,6 +730,7 @@ module openrv64_dispatch_window_3p #(
     reg [SPEC_CROSS_COUNT_WIDTH-1:0]
         trace_branch_spec_issue_crossing_count;
     reg trace_conditional_resolve_valid;
+    reg trace_conditional_resolve_predicted_taken;
     reg [COUNT_WIDTH-1:0] trace_resolve_younger_valid_count;
     reg [COUNT_WIDTH-1:0] trace_resolve_younger_issued_count;
     reg [COUNT_WIDTH-1:0] trace_resolve_younger_completed_count;
@@ -738,6 +740,23 @@ module openrv64_dispatch_window_3p #(
     reg [OPERAND_COUNT_WIDTH-1:0] trace_completion_wakeup_mem0_count;
     reg [COUNT_WIDTH-1:0] trace_completion_wakeup_entry_count;
     reg [COUNT_WIDTH-1:0] trace_completion_wakeup_eligible_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_branch_wakeup_operand_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_branch_wakeup_ex0_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_branch_wakeup_ex1_count;
+    reg [OPERAND_COUNT_WIDTH-1:0] trace_branch_wakeup_mem0_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_wakeup_entry_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_wakeup_eligible_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_wakeup_selected_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_wakeup_offer_count;
+    reg [COUNT_WIDTH-1:0] trace_branch_wakeup_release_count;
+    reg [OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_wakeup_release_operand_count;
+    reg [OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_wakeup_release_ex0_count;
+    reg [OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_wakeup_release_ex1_count;
+    reg [OPERAND_COUNT_WIDTH-1:0]
+        trace_branch_wakeup_release_mem0_count;
     reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_unissued_load_count;
     reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_unissued_other_count;
     reg [OPERAND_COUNT_WIDTH-1:0] trace_wait_inflight_load_count;
@@ -784,6 +803,13 @@ module openrv64_dispatch_window_3p #(
             {OPERAND_COUNT_WIDTH{1'b0}};
         trace_completion_wakeup_entry_count = {COUNT_WIDTH{1'b0}};
         trace_completion_wakeup_eligible_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_operand_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_ex0_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_ex1_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_mem0_count = {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_entry_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_eligible_count = {COUNT_WIDTH{1'b0}};
         for (eligible_idx = 0; eligible_idx < DEPTH;
              eligible_idx = eligible_idx + 1) begin
             trace_unresolved_conditional_depth[eligible_idx] =
@@ -810,8 +836,10 @@ module openrv64_dispatch_window_3p #(
                     if (!issued_q[older_idx] && is_mem(payload_q[older_idx]))
                         older_unissued_mem = 1'b1;
                     if (!issued_q[older_idx] &&
-                        is_early_conditional_branch(payload_q[older_idx])) begin
+                        is_early_conditional_branch(payload_q[older_idx]))
                         older_unresolved_conditional = 1'b1;
+                    if (!result_ready_q[older_idx] &&
+                        is_early_conditional_branch(payload_q[older_idx])) begin
                         trace_unresolved_conditional_depth[eligible_idx] =
                             trace_unresolved_conditional_depth[eligible_idx] +
                             1'b1;
@@ -834,7 +862,7 @@ module openrv64_dispatch_window_3p #(
             if (valid_q[eligible_idx] &&
                 is_persistent_hard(payload_q[eligible_idx]))
                 barrier_active_o = 1'b1;
-            if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+            if (valid_q[eligible_idx] && !result_ready_q[eligible_idx] &&
                 is_early_conditional_branch(payload_q[eligible_idx]))
                 trace_unresolved_conditional_count =
                     trace_unresolved_conditional_count + 1'b1;
@@ -940,6 +968,43 @@ module openrv64_dispatch_window_3p #(
                     if (src2_wakeup_port_now[eligible_idx][2])
                         trace_completion_wakeup_mem0_count =
                             trace_completion_wakeup_mem0_count + 1'b1;
+                end
+                if (is_early_conditional_branch(
+                        payload_q[eligible_idx])) begin
+                    if (src1_wakeup_now[eligible_idx] ||
+                        src2_wakeup_now[eligible_idx]) begin
+                        trace_branch_wakeup_entry_count =
+                            trace_branch_wakeup_entry_count + 1'b1;
+                        if (eligible[eligible_idx])
+                            trace_branch_wakeup_eligible_count =
+                                trace_branch_wakeup_eligible_count + 1'b1;
+                    end
+                    if (src1_wakeup_now[eligible_idx]) begin
+                        trace_branch_wakeup_operand_count =
+                            trace_branch_wakeup_operand_count + 1'b1;
+                        if (src1_wakeup_port_now[eligible_idx][0])
+                            trace_branch_wakeup_ex0_count =
+                                trace_branch_wakeup_ex0_count + 1'b1;
+                        if (src1_wakeup_port_now[eligible_idx][1])
+                            trace_branch_wakeup_ex1_count =
+                                trace_branch_wakeup_ex1_count + 1'b1;
+                        if (src1_wakeup_port_now[eligible_idx][2])
+                            trace_branch_wakeup_mem0_count =
+                                trace_branch_wakeup_mem0_count + 1'b1;
+                    end
+                    if (src2_wakeup_now[eligible_idx]) begin
+                        trace_branch_wakeup_operand_count =
+                            trace_branch_wakeup_operand_count + 1'b1;
+                        if (src2_wakeup_port_now[eligible_idx][0])
+                            trace_branch_wakeup_ex0_count =
+                                trace_branch_wakeup_ex0_count + 1'b1;
+                        if (src2_wakeup_port_now[eligible_idx][1])
+                            trace_branch_wakeup_ex1_count =
+                                trace_branch_wakeup_ex1_count + 1'b1;
+                        if (src2_wakeup_port_now[eligible_idx][2])
+                            trace_branch_wakeup_mem0_count =
+                                trace_branch_wakeup_mem0_count + 1'b1;
+                    end
                 end
                 trace_unissued_count = trace_unissued_count + 1'b1;
                 if (src1_ready_now[eligible_idx] &&
@@ -1504,10 +1569,73 @@ module openrv64_dispatch_window_3p #(
     wire issue_mem_secondary = select_mem2_valid &&
         (is_mem1_op(payload_q[select_mem2]) ? issue_mem1 : issue_mem0);
 
-    // Count only actual execution handshakes whose selected resident entry is
-    // younger than an older conditional branch that has not issued yet.  The
-    // crossing total counts relationships, so one instruction crossing two
-    // branches contributes one issue event and two crossings.
+    // A wakeup is genuine producer-to-branch forwarding: src*_data_now is
+    // patched directly from the matching completion payload.  Count both all
+    // resident branch wakeups and the subset whose branch leaves the scheduler
+    // on that same edge.  In banked mode the latter is admission to regload,
+    // not yet the EX1 execution edge.
+    always_comb begin
+        trace_branch_wakeup_selected_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_offer_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_release_count = {COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_release_operand_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_release_ex0_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_release_ex1_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        trace_branch_wakeup_release_mem0_count =
+            {OPERAND_COUNT_WIDTH{1'b0}};
+        if (select_ex1_valid &&
+            is_early_conditional_branch(payload_q[select_ex1]) &&
+            (src1_wakeup_now[select_ex1] ||
+             src2_wakeup_now[select_ex1])) begin
+            trace_branch_wakeup_selected_count = 1'b1;
+            if (pipe_valid_o[1])
+                trace_branch_wakeup_offer_count = 1'b1;
+            if (issue_ex1)
+                trace_branch_wakeup_release_count = 1'b1;
+        end
+        if (issue_ex1 && select_ex1_valid &&
+            is_early_conditional_branch(payload_q[select_ex1]) &&
+            (src1_wakeup_now[select_ex1] ||
+             src2_wakeup_now[select_ex1])) begin
+            if (src1_wakeup_now[select_ex1]) begin
+                trace_branch_wakeup_release_operand_count =
+                    trace_branch_wakeup_release_operand_count + 1'b1;
+                if (src1_wakeup_port_now[select_ex1][0])
+                    trace_branch_wakeup_release_ex0_count =
+                        trace_branch_wakeup_release_ex0_count + 1'b1;
+                if (src1_wakeup_port_now[select_ex1][1])
+                    trace_branch_wakeup_release_ex1_count =
+                        trace_branch_wakeup_release_ex1_count + 1'b1;
+                if (src1_wakeup_port_now[select_ex1][2])
+                    trace_branch_wakeup_release_mem0_count =
+                        trace_branch_wakeup_release_mem0_count + 1'b1;
+            end
+            if (src2_wakeup_now[select_ex1]) begin
+                trace_branch_wakeup_release_operand_count =
+                    trace_branch_wakeup_release_operand_count + 1'b1;
+                if (src2_wakeup_port_now[select_ex1][0])
+                    trace_branch_wakeup_release_ex0_count =
+                        trace_branch_wakeup_release_ex0_count + 1'b1;
+                if (src2_wakeup_port_now[select_ex1][1])
+                    trace_branch_wakeup_release_ex1_count =
+                        trace_branch_wakeup_release_ex1_count + 1'b1;
+                if (src2_wakeup_port_now[select_ex1][2])
+                    trace_branch_wakeup_release_mem0_count =
+                        trace_branch_wakeup_release_mem0_count + 1'b1;
+            end
+        end
+    end
+
+    // Count scheduler-release handshakes whose selected resident entry is
+    // younger than an unresolved conditional branch.  With deferred banked
+    // reads this handshake transfers ownership to the register-load stage;
+    // it is not necessarily an execution handshake.  Resolution snapshots
+    // below separately count work that has actually completed.  The crossing
+    // total counts relationships, so one release crossing two branches
+    // contributes one event and two crossings.
     always_comb begin
         trace_branch_spec_issue_count = {COUNT_WIDTH{1'b0}};
         trace_branch_spec_issue_alu_count = {COUNT_WIDTH{1'b0}};
@@ -1587,10 +1715,14 @@ module openrv64_dispatch_window_3p #(
             valid_q[conditional_resolve_slot_i] &&
             (id_q[conditional_resolve_slot_i] ==
              conditional_resolve_id_i);
+        trace_conditional_resolve_predicted_taken = 1'b0;
         trace_resolve_younger_valid_count = {COUNT_WIDTH{1'b0}};
         trace_resolve_younger_issued_count = {COUNT_WIDTH{1'b0}};
         trace_resolve_younger_completed_count = {COUNT_WIDTH{1'b0}};
         if (trace_conditional_resolve_valid) begin
+            trace_conditional_resolve_predicted_taken =
+                payload_q[conditional_resolve_slot_i]
+                    [PAYLOAD_PREDICTED_TAKEN];
             for (trace_resolve_idx = 0; trace_resolve_idx < DEPTH;
                  trace_resolve_idx = trace_resolve_idx + 1) begin
                 if (valid_q[trace_resolve_idx] &&

@@ -1343,6 +1343,7 @@ module openrv64_backend_3p #(
     reg [4*`RV64_XLEN-1:0] banked_regload_operand_data_q;
     reg [3:0] banked_regload_mem_forwarded_q;
     reg banked_regload_hard_q;
+    reg banked_regload_control_q;
     reg banked_regload_branch_pair_q;
     reg banked_regload_branch_resolved_q;
     reg banked_regload_branch_correct_q;
@@ -1378,6 +1379,7 @@ module openrv64_backend_3p #(
     reg [4*`RV64_XLEN-1:0] banked_regload_pending_operand_data_q;
     reg [3:0] banked_regload_pending_mem_forwarded_q;
     reg banked_regload_pending_hard_q;
+    reg banked_regload_pending_control_q;
     reg banked_regload_pending_branch_pair_q;
     reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_regload_pending_pipe_valid_q;
@@ -1880,8 +1882,8 @@ module openrv64_backend_3p #(
     // redirect or execution ready: a resolving branch would otherwise feed
     // its own redirect back into issue, and a MEM offer would feed LSU ready
     // back into valid.  Selective recovery poisons younger issued work on the
-    // redirect edge; the state update below clears the stage and drains every
-    // acknowledged or held RF request before the context can be reused.
+    // redirect edge, preserves older unissued lanes, and drains every
+    // acknowledged or held RF request before any preserved context is reused.
     wire banked_regload_lane0_offer_eligible = (BANKED_GPR != 0) &&
         banked_regload_valid_q && banked_regload_lane_valid_q[0] &&
         banked_regload_lane_operands_ready[0] &&
@@ -1898,7 +1900,8 @@ module openrv64_backend_3p #(
     assign banked_regload_ingress_capacity =
         banked_window_regload && !banked_gpr_drain_q &&
         !banked_regload_pending_valid_q &&
-        (!banked_regload_valid_q || !banked_regload_hard_q) &&
+        (!banked_regload_valid_q || !banked_regload_hard_q ||
+         (banked_window_regload && banked_regload_control_q)) &&
         !flush_i && !squash_frontend_i;
     assign banked_regload_ingress_pipe_ready =
         {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_ingress_capacity}};
@@ -1914,9 +1917,10 @@ module openrv64_backend_3p #(
             banked_regload_ingress_lane_id :
             allocation_id[2*`OPENRV64_INSTR_ID_WIDTH-1:0];
     // Do not feed execution readiness back into dispatch admission.  A free
-    // pending slot is the credit for one complete two-lane group.  A hard
-    // execution group blocks younger allocation until its resolution is
-    // visible on the following cycle.
+    // pending slot is the credit for one complete two-lane group.  The legacy
+    // non-window path keeps hard operations strict; the speculative issue
+    // window admits younger read-only operand gathers and poisons them on a
+    // redirect.  Architectural GPR writes occur only at retirement.
     wire banked_dispatch_allocation_ready = allocation_ready &&
         !banked_regload_pending_valid_q &&
         (!banked_regload_valid_q || !banked_regload_hard_q) &&
@@ -1925,14 +1929,18 @@ module openrv64_backend_3p #(
     wire banked_regload_allocation_to_stage =
         banked_regload_capture_valid &&
         (!banked_regload_valid_q ||
-         (banked_regload_complete && !banked_regload_hard_q));
+         (banked_regload_complete &&
+          (!banked_regload_hard_q ||
+           (banked_window_regload && banked_regload_control_q))));
     wire banked_regload_allocation_to_pending =
         banked_regload_capture_valid &&
         !banked_regload_allocation_to_stage;
     wire banked_regload_promote_pending =
         banked_regload_pending_valid_q &&
-        (!banked_regload_valid_q || banked_regload_complete) &&
-        !banked_regload_hard_q;
+        (!banked_regload_valid_q ||
+         (banked_regload_complete &&
+          (!banked_regload_hard_q ||
+           (banked_window_regload && banked_regload_control_q))));
     wire banked_read_context_replace = banked_window_regload ?
         (banked_regload_allocation_to_stage ||
          banked_regload_promote_pending) :
@@ -2069,6 +2077,28 @@ module openrv64_backend_3p #(
         end
     endfunction
 
+    function automatic banked_control_payload;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            banked_control_payload = payload[14] || payload[13];
+        end
+    endfunction
+
+    // True when candidate is later than reference in the modular instruction
+    // ID space.  The live backend is much smaller than half the namespace, so
+    // the sign bit of candidate-reference disambiguates wraparound.
+    function automatic banked_id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            banked_id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
+        end
+    endfunction
+
     wire banked_regload_allocation_branch_pair =
         !banked_window_regload && allocation_valid[1] &&
         dispatch_pipe_valid[1] &&
@@ -2088,9 +2118,11 @@ module openrv64_backend_3p #(
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]);
 
     reg banked_regload_window_capture_hard;
+    reg banked_regload_window_capture_control;
     integer banked_regload_window_hard_pipe;
     always @* begin
         banked_regload_window_capture_hard = 1'b0;
+        banked_regload_window_capture_control = 1'b0;
         for (banked_regload_window_hard_pipe = 0;
              banked_regload_window_hard_pipe <
                  `OPENRV64_EXEC_PIPE_COUNT;
@@ -2102,6 +2134,162 @@ module openrv64_backend_3p #(
                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
                 banked_regload_window_capture_hard = 1'b1;
+            if (dispatch_pipe_valid[banked_regload_window_hard_pipe] &&
+                banked_control_payload(dispatch_pipe_payload[
+                    banked_regload_window_hard_pipe*
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                banked_regload_window_capture_control = 1'b1;
+        end
+    end
+
+    wire [1:0] banked_regload_lane_fire;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pipe_fire_mask;
+
+    // A redirect can split either two-lane group: an older instruction may
+    // share it with the resolving branch or with younger speculative work.
+    // Keep only older, not-already-issued lanes.  The resolving instruction
+    // itself has fired in order to produce the redirect, so it must not be
+    // replayed.  Register reads are speculative; architectural GPR writes
+    // remain retirement-only.
+    wire banked_regload_lane0_redirect_survivor =
+        banked_regload_lane_valid_q[0] &&
+        !banked_regload_lane_fire[0] &&
+        (banked_regload_lane_id_q[
+             0 +: `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+        !banked_id_is_younger(
+            banked_regload_lane_id_q[
+                0 +: `OPENRV64_INSTR_ID_WIDTH],
+            exec_redirect_id);
+    wire banked_regload_lane1_redirect_survivor =
+        banked_regload_lane_valid_q[1] &&
+        !banked_regload_lane_fire[1] &&
+        (banked_regload_lane_id_q[
+             `OPENRV64_INSTR_ID_WIDTH +:
+             `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+        !banked_id_is_younger(
+            banked_regload_lane_id_q[
+                `OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH],
+            exec_redirect_id);
+    wire [1:0] banked_regload_redirect_lane_survivor = {
+        banked_regload_lane1_redirect_survivor,
+        banked_regload_lane0_redirect_survivor
+    };
+    wire [3:0] banked_regload_redirect_operand_survivor = {
+        {2{banked_regload_lane1_redirect_survivor}},
+        {2{banked_regload_lane0_redirect_survivor}}
+    };
+
+    wire banked_regload_pending_lane0_redirect_survivor =
+        banked_regload_pending_lane_valid_q[0] &&
+        (banked_regload_pending_lane_id_q[
+             0 +: `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+        !banked_id_is_younger(
+            banked_regload_pending_lane_id_q[
+                0 +: `OPENRV64_INSTR_ID_WIDTH],
+            exec_redirect_id);
+    wire banked_regload_pending_lane1_redirect_survivor =
+        banked_regload_pending_lane_valid_q[1] &&
+        (banked_regload_pending_lane_id_q[
+             `OPENRV64_INSTR_ID_WIDTH +:
+             `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+        !banked_id_is_younger(
+            banked_regload_pending_lane_id_q[
+                `OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH],
+            exec_redirect_id);
+    wire [1:0] banked_regload_pending_redirect_lane_survivor = {
+        banked_regload_pending_lane1_redirect_survivor,
+        banked_regload_pending_lane0_redirect_survivor
+    };
+    wire [3:0] banked_regload_pending_redirect_operand_survivor = {
+        {2{banked_regload_pending_lane1_redirect_survivor}},
+        {2{banked_regload_pending_lane0_redirect_survivor}}
+    };
+
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_redirect_pipe_survivor;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_regload_pending_redirect_pipe_survivor;
+    genvar banked_regload_redirect_pipe;
+    generate
+        for (banked_regload_redirect_pipe = 0;
+             banked_regload_redirect_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+             banked_regload_redirect_pipe =
+                 banked_regload_redirect_pipe + 1) begin :
+                g_banked_regload_redirect_pipe
+            wire [`OPENRV64_INSTR_ID_WIDTH-1:0] active_id =
+                banked_regload_pipe_id_q[
+                    banked_regload_redirect_pipe*
+                    `OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
+            wire [`OPENRV64_INSTR_ID_WIDTH-1:0] pending_id =
+                banked_regload_pending_pipe_id_q[
+                    banked_regload_redirect_pipe*
+                    `OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
+            assign banked_regload_redirect_pipe_survivor[
+                banked_regload_redirect_pipe] =
+                banked_regload_pipe_valid_q[
+                    banked_regload_redirect_pipe] &&
+                !banked_regload_pipe_fire_mask[
+                    banked_regload_redirect_pipe] &&
+                (active_id != exec_redirect_id) &&
+                !banked_id_is_younger(active_id, exec_redirect_id);
+            assign banked_regload_pending_redirect_pipe_survivor[
+                banked_regload_redirect_pipe] =
+                banked_regload_pending_pipe_valid_q[
+                    banked_regload_redirect_pipe] &&
+                (pending_id != exec_redirect_id) &&
+                !banked_id_is_younger(pending_id, exec_redirect_id);
+        end
+    endgenerate
+
+    reg banked_regload_redirect_hard;
+    reg banked_regload_redirect_control;
+    reg banked_regload_pending_redirect_hard;
+    reg banked_regload_pending_redirect_control;
+    integer banked_regload_redirect_class_pipe;
+    always @* begin
+        banked_regload_redirect_hard = 1'b0;
+        banked_regload_redirect_control = 1'b0;
+        banked_regload_pending_redirect_hard = 1'b0;
+        banked_regload_pending_redirect_control = 1'b0;
+        for (banked_regload_redirect_class_pipe = 0;
+             banked_regload_redirect_class_pipe <
+                 `OPENRV64_EXEC_PIPE_COUNT;
+             banked_regload_redirect_class_pipe =
+                 banked_regload_redirect_class_pipe + 1) begin
+            if (banked_regload_redirect_pipe_survivor[
+                    banked_regload_redirect_class_pipe]) begin
+                if (banked_hard_payload(banked_regload_pipe_payload_q[
+                        banked_regload_redirect_class_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                    banked_regload_redirect_hard = 1'b1;
+                if (banked_control_payload(banked_regload_pipe_payload_q[
+                        banked_regload_redirect_class_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                    banked_regload_redirect_control = 1'b1;
+            end
+            if (banked_regload_pending_redirect_pipe_survivor[
+                    banked_regload_redirect_class_pipe]) begin
+                if (banked_hard_payload(
+                        banked_regload_pending_pipe_payload_q[
+                            banked_regload_redirect_class_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                    banked_regload_pending_redirect_hard = 1'b1;
+                if (banked_control_payload(
+                        banked_regload_pending_pipe_payload_q[
+                            banked_regload_redirect_class_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]))
+                    banked_regload_pending_redirect_control = 1'b1;
+            end
         end
     end
 
@@ -2195,7 +2383,7 @@ module openrv64_backend_3p #(
         (|(banked_regload_lane0_target_mask & pipe_ready));
     wire banked_regload_lane1_fire = banked_regload_lane1_offer &&
         (|(banked_regload_lane1_target_mask & pipe_ready));
-    wire [1:0] banked_regload_lane_fire = {
+    assign banked_regload_lane_fire = {
         banked_regload_lane1_fire, banked_regload_lane0_fire
     };
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
@@ -2206,8 +2394,7 @@ module openrv64_backend_3p #(
              {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_lane1_offer}});
     // State is still stored under its provisional source pipe.  Clear that
     // source on a successful retargeted handshake, not the transient target.
-    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
-        banked_regload_pipe_fire_mask =
+    assign banked_regload_pipe_fire_mask =
             (banked_regload_lane0_pipe_mask &
              {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_lane0_fire}}) |
             (banked_regload_lane1_pipe_mask &
@@ -2542,6 +2729,8 @@ module openrv64_backend_3p #(
     wire banked_regload_capture_hard = banked_window_regload ?
         banked_regload_window_capture_hard :
         (|banked_regload_allocation_hard);
+    wire banked_regload_capture_control = banked_window_regload &&
+        banked_regload_window_capture_control;
 
     integer banked_response_port;
     always @(posedge clk or negedge rst_n) begin
@@ -2661,6 +2850,7 @@ module openrv64_backend_3p #(
             banked_regload_operand_data_q <= {4*`RV64_XLEN{1'b0}};
             banked_regload_mem_forwarded_q <= 4'b0000;
             banked_regload_hard_q <= 1'b0;
+            banked_regload_control_q <= 1'b0;
             banked_regload_branch_pair_q <= 1'b0;
             banked_regload_branch_resolved_q <= 1'b0;
             banked_regload_branch_correct_q <= 1'b0;
@@ -2689,12 +2879,14 @@ module openrv64_backend_3p #(
             banked_regload_pipe_uses_rs2_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
         end else if ((BANKED_GPR == 0) || flush_i ||
-                     squash_frontend_i) begin
+                     (squash_frontend_i &&
+                      !banked_window_regload)) begin
             banked_regload_valid_q <= 1'b0;
             banked_regload_lane_valid_q <= 2'b00;
             banked_regload_operand_done_q <= 4'b0000;
             banked_regload_mem_forwarded_q <= 4'b0000;
             banked_regload_hard_q <= 1'b0;
+            banked_regload_control_q <= 1'b0;
             banked_regload_branch_pair_q <= 1'b0;
             banked_regload_branch_resolved_q <= 1'b0;
             banked_regload_branch_correct_q <= 1'b0;
@@ -2704,6 +2896,36 @@ module openrv64_backend_3p #(
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_regload_pipe_uses_rs2_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        end else if (squash_frontend_i) begin
+            banked_regload_valid_q <=
+                |banked_regload_redirect_lane_survivor;
+            banked_regload_lane_valid_q <=
+                banked_regload_redirect_lane_survivor;
+            banked_regload_operand_done_q <=
+                banked_regload_operand_done_q &
+                banked_regload_redirect_operand_survivor;
+            banked_regload_mem_forwarded_q <=
+                banked_regload_mem_forwarded_q &
+                banked_regload_redirect_operand_survivor;
+            banked_regload_hard_q <= banked_regload_redirect_hard;
+            banked_regload_control_q <= banked_regload_redirect_control;
+            banked_regload_branch_pair_q <= 1'b0;
+            banked_regload_branch_resolved_q <= 1'b0;
+            banked_regload_branch_correct_q <= 1'b0;
+            banked_regload_pipe_valid_q <=
+                banked_regload_redirect_pipe_survivor;
+            banked_regload_src1_producer_valid_q <=
+                banked_regload_src1_producer_valid_q &
+                banked_regload_redirect_pipe_survivor;
+            banked_regload_src2_producer_valid_q <=
+                banked_regload_src2_producer_valid_q &
+                banked_regload_redirect_pipe_survivor;
+            banked_regload_pipe_uses_rs1_q <=
+                banked_regload_pipe_uses_rs1_q &
+                banked_regload_redirect_pipe_survivor;
+            banked_regload_pipe_uses_rs2_q <=
+                banked_regload_pipe_uses_rs2_q &
+                banked_regload_redirect_pipe_survivor;
         end else begin
             if (banked_regload_branch_pair_q &&
                 !banked_regload_branch_resolved_q &&
@@ -2746,6 +2968,7 @@ module openrv64_backend_3p #(
                 banked_regload_operand_done_q <= 4'b0000;
                 banked_regload_mem_forwarded_q <= 4'b0000;
                 banked_regload_hard_q <= 1'b0;
+                banked_regload_control_q <= 1'b0;
                 banked_regload_branch_pair_q <= 1'b0;
                 banked_regload_branch_resolved_q <= 1'b0;
                 banked_regload_branch_correct_q <= 1'b0;
@@ -2770,6 +2993,8 @@ module openrv64_backend_3p #(
                     banked_regload_pending_mem_forwarded_q;
                 banked_regload_hard_q <=
                     banked_regload_pending_hard_q;
+                banked_regload_control_q <=
+                    banked_regload_pending_control_q;
                 banked_regload_branch_pair_q <=
                     banked_regload_pending_branch_pair_q;
                 banked_regload_branch_resolved_q <= 1'b0;
@@ -2806,6 +3031,8 @@ module openrv64_backend_3p #(
                 banked_regload_lane_id_q <=
                     banked_regload_capture_lane_id;
                 banked_regload_hard_q <= banked_regload_capture_hard;
+                banked_regload_control_q <=
+                    banked_regload_capture_control;
                 banked_regload_branch_pair_q <=
                     banked_regload_allocation_branch_pair;
                 banked_regload_branch_resolved_q <= 1'b0;
@@ -2886,6 +3113,7 @@ module openrv64_backend_3p #(
                 {4*`RV64_XLEN{1'b0}};
             banked_regload_pending_mem_forwarded_q <= 4'b0000;
             banked_regload_pending_hard_q <= 1'b0;
+            banked_regload_pending_control_q <= 1'b0;
             banked_regload_pending_branch_pair_q <= 1'b0;
             banked_regload_pending_pipe_valid_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
@@ -2912,12 +3140,14 @@ module openrv64_backend_3p #(
             banked_regload_pending_pipe_uses_rs2_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
         end else if ((BANKED_GPR == 0) || flush_i ||
-                     squash_frontend_i) begin
+                     (squash_frontend_i &&
+                      !banked_window_regload)) begin
             banked_regload_pending_valid_q <= 1'b0;
             banked_regload_pending_lane_valid_q <= 2'b00;
             banked_regload_pending_operand_done_q <= 4'b0000;
             banked_regload_pending_mem_forwarded_q <= 4'b0000;
             banked_regload_pending_hard_q <= 1'b0;
+            banked_regload_pending_control_q <= 1'b0;
             banked_regload_pending_branch_pair_q <= 1'b0;
             banked_regload_pending_pipe_valid_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
@@ -2925,6 +3155,36 @@ module openrv64_backend_3p #(
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_regload_pending_pipe_uses_rs2_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        end else if (squash_frontend_i) begin
+            banked_regload_pending_valid_q <=
+                |banked_regload_pending_redirect_lane_survivor;
+            banked_regload_pending_lane_valid_q <=
+                banked_regload_pending_redirect_lane_survivor;
+            banked_regload_pending_operand_done_q <=
+                banked_regload_pending_operand_done_q &
+                banked_regload_pending_redirect_operand_survivor;
+            banked_regload_pending_mem_forwarded_q <=
+                banked_regload_pending_mem_forwarded_q &
+                banked_regload_pending_redirect_operand_survivor;
+            banked_regload_pending_hard_q <=
+                banked_regload_pending_redirect_hard;
+            banked_regload_pending_control_q <=
+                banked_regload_pending_redirect_control;
+            banked_regload_pending_branch_pair_q <= 1'b0;
+            banked_regload_pending_pipe_valid_q <=
+                banked_regload_pending_redirect_pipe_survivor;
+            banked_regload_pending_src1_producer_valid_q <=
+                banked_regload_pending_src1_producer_valid_q &
+                banked_regload_pending_redirect_pipe_survivor;
+            banked_regload_pending_src2_producer_valid_q <=
+                banked_regload_pending_src2_producer_valid_q &
+                banked_regload_pending_redirect_pipe_survivor;
+            banked_regload_pending_pipe_uses_rs1_q <=
+                banked_regload_pending_pipe_uses_rs1_q &
+                banked_regload_pending_redirect_pipe_survivor;
+            banked_regload_pending_pipe_uses_rs2_q <=
+                banked_regload_pending_pipe_uses_rs2_q &
+                banked_regload_pending_redirect_pipe_survivor;
         end else begin
             for (banked_regload_pending_state_port = 0;
                  banked_regload_pending_state_port < 4;
@@ -2948,6 +3208,7 @@ module openrv64_backend_3p #(
                 banked_regload_pending_operand_done_q <= 4'b0000;
                 banked_regload_pending_mem_forwarded_q <= 4'b0000;
                 banked_regload_pending_hard_q <= 1'b0;
+                banked_regload_pending_control_q <= 1'b0;
                 banked_regload_pending_branch_pair_q <= 1'b0;
                 banked_regload_pending_pipe_valid_q <=
                     {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
@@ -2961,6 +3222,8 @@ module openrv64_backend_3p #(
                     banked_regload_capture_lane_id;
                 banked_regload_pending_hard_q <=
                     banked_regload_capture_hard;
+                banked_regload_pending_control_q <=
+                    banked_regload_capture_control;
                 banked_regload_pending_branch_pair_q <=
                     banked_regload_allocation_branch_pair;
                 banked_regload_pending_pipe_valid_q <=

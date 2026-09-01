@@ -628,6 +628,65 @@ module tb_backend_3p_banked #(
         rst_n = 1'b1;
         tick();
 
+        // Exercise the exact recovery shape that exposed the CoreMark
+        // deadlock: one pending register-load group straddles the redirect
+        // cut.  ID 79 is older than the resolving ID 81 and must survive;
+        // ID 84 is younger and must be removed.  This directly seeds only
+        // the adapter state so the test does not depend on scheduler timing.
+        if (ISSUE_WINDOW != 0) begin
+            dut.banked_regload_pending_valid_q = 1'b1;
+            dut.banked_regload_pending_lane_valid_q = 2'b11;
+            dut.banked_regload_pending_lane_id_q = {10'd84, 10'd79};
+            dut.banked_regload_pending_operand_done_q = 4'b1111;
+            dut.banked_regload_pending_mem_forwarded_q = 4'b1111;
+            dut.banked_regload_pending_hard_q = 1'b0;
+            dut.banked_regload_pending_control_q = 1'b0;
+            dut.banked_regload_pending_branch_pair_q = 1'b0;
+            dut.banked_regload_pending_pipe_valid_q = 4'b0011;
+            dut.banked_regload_pending_pipe_id_q = {40{1'b0}};
+            dut.banked_regload_pending_pipe_id_q[0 +: 10] = 10'd79;
+            dut.banked_regload_pending_pipe_id_q[10 +: 10] = 10'd84;
+            dut.banked_regload_pending_src1_producer_valid_q = 4'b0011;
+            dut.banked_regload_pending_src2_producer_valid_q = 4'b0011;
+            dut.banked_regload_pending_pipe_uses_rs1_q = 4'b0011;
+            dut.banked_regload_pending_pipe_uses_rs2_q = 4'b0011;
+            // The selective-squash contract requires the redirecting ID and
+            // slot to name a live retirement entry.
+            dut.u_retire_queue.valid_q[0] = 1'b1;
+            dut.u_retire_queue.complete_q[0] = 1'b0;
+            dut.u_retire_queue.id_q[0] = 10'd81;
+            force dut.exec_redirect_id = 10'd81;
+            force dut.exec_redirect_slot = 4'd0;
+            squash = 1'b1;
+            tick();
+            release dut.exec_redirect_id;
+            release dut.exec_redirect_slot;
+            squash = 1'b0;
+            if (!dut.banked_regload_pending_valid_q ||
+                (dut.banked_regload_pending_lane_valid_q != 2'b01) ||
+                (dut.banked_regload_pending_operand_done_q != 4'b0011) ||
+                (dut.banked_regload_pending_mem_forwarded_q != 4'b0011) ||
+                (dut.banked_regload_pending_pipe_valid_q != 4'b0001) ||
+                (dut.banked_regload_pending_src1_producer_valid_q !=
+                     4'b0001) ||
+                (dut.banked_regload_pending_src2_producer_valid_q !=
+                     4'b0001) ||
+                (dut.banked_regload_pending_pipe_uses_rs1_q != 4'b0001) ||
+                (dut.banked_regload_pending_pipe_uses_rs2_q != 4'b0001))
+                fail("redirect did not preserve only the older pending lane");
+
+            flush = 1'b1;
+            tick();
+            flush = 1'b0;
+            for (cycles = 0;
+                 (cycles < 10) && dut.banked_gpr_drain_q;
+                 cycles = cycles + 1)
+                tick();
+            if (dut.banked_gpr_drain_q ||
+                dut.banked_regload_pending_valid_q)
+                fail("selective-recovery probe did not flush cleanly");
+        end
+
         // Put four same-bank operands behind the two-slot bank interface.
         // Redirect while the first two accepted reads are returning and the
         // oversubscribed reads are still presented.  The latter must remain
