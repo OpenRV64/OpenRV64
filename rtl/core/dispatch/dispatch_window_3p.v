@@ -1329,14 +1329,15 @@ module openrv64_dispatch_window_3p #(
             select_mem2_admit = selected_age_rank < MAX_ISSUE_LANES;
         end
 
-        // A deferred-read control does not resolve on the selector edge.  Do
-        // not let younger work enter the register-load stage beside it.  If a
-        // control is not the oldest selected packet, defer that control; if it
-        // is oldest, make it the sole accepted packet.  This makes a redirect
-        // able to discard the stage without losing an older packet that the
-        // window has already marked issued.
+        // Persistent hard operations still enter the deferred-read boundary
+        // alone.  Early conditional branches and deterministic direct jumps
+        // are deliberately excluded: the independent requester retains older
+        // accepted packets by instruction ID and poisons younger responses on
+        // redirect, so forcing an early control to be the oldest selected
+        // packet only serializes otherwise independent address phases.
         if (DEFER_GPR_READ != 0) begin
-            if (select_ex0_valid && is_hard(payload_q[select_ex0])) begin
+            if (select_ex0_valid &&
+                is_persistent_hard(payload_q[select_ex0])) begin
                 if (select_ex0_rank == 0) begin
                     select_ex1_admit = 1'b0;
                     select_mem_admit = 1'b0;
@@ -1345,7 +1346,8 @@ module openrv64_dispatch_window_3p #(
                     select_ex0_admit = 1'b0;
                 end
             end
-            if (select_ex1_valid && is_hard(payload_q[select_ex1])) begin
+            if (select_ex1_valid &&
+                is_persistent_hard(payload_q[select_ex1])) begin
                 if (select_ex1_rank == 0) begin
                     select_ex0_admit = 1'b0;
                     select_mem_admit = 1'b0;
@@ -1354,7 +1356,8 @@ module openrv64_dispatch_window_3p #(
                     select_ex1_admit = 1'b0;
                 end
             end
-            if (select_mem_valid && is_hard(payload_q[select_mem])) begin
+            if (select_mem_valid &&
+                is_persistent_hard(payload_q[select_mem])) begin
                 if (select_mem_rank == 0) begin
                     select_ex0_admit = 1'b0;
                     select_ex1_admit = 1'b0;
@@ -1363,7 +1366,8 @@ module openrv64_dispatch_window_3p #(
                     select_mem_admit = 1'b0;
                 end
             end
-            if (select_mem2_valid && is_hard(payload_q[select_mem2])) begin
+            if (select_mem2_valid &&
+                is_persistent_hard(payload_q[select_mem2])) begin
                 if (select_mem2_rank == 0) begin
                     select_ex0_admit = 1'b0;
                     select_ex1_admit = 1'b0;

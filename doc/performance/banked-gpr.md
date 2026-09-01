@@ -1240,7 +1240,7 @@ bank.  It passed the same compact Sv39 CoreMark workload on timed DDR3.
 | Cycles | 73,090 | 72,047 | +1,043 (+1.45%) |
 | Retired instructions | 52,588 | 52,588 | 0 |
 | IPC | 0.7195 | 0.7299 | -1.42% |
-| Read-bank conflict cycles | 10 | 1 | +9 |
+| Legacy four-port read-conflict probe (incomplete) | 10 | 1 | +9 |
 | Write-bank capacity events | 6,313 | 2,052 | +4,261 |
 | Both write ports acknowledged | 6,672 | 9,637 | -2,965 |
 | Pre-arbitrated younger deferrals | 6,313 | 2,052 | +4,261 |
@@ -1255,10 +1255,329 @@ lane retired, the younger lane slid forward, and neither the aggregate
 `gpr_write_blocked` counter nor the head-specific `head_write_blocked` counter
 recorded a cycle.  Different-bank pairs still received two acknowledgments.
 
-The two-bank penalty is therefore not a read-port effect: only nine additional
-read-conflict cycles occurred.  The dominant measured change is 4,261 more
+The read-conflict delta is not usable evidence for the independent requester.
+That requester uses six RF ports and its own per-port held/response state, but
+the probe still observes only `gpr_read_req[3:0]` and the legacy four-port
+`banked_read_waiting` controller.  A read-side contribution to the two-bank
+penalty therefore remains unmeasured.  The valid visible change is 4,261 more
 same-bank dual-write opportunities.  Sliding absorbs those conflicts without
 a zero-retirement write stall, but shifts useful retirement from two-wide to
 one-wide.  Schedule changes also reduce zero-wide retirement by 1,168 cycles,
-so the end-to-end penalty is 1,043 cycles rather than the raw conflict-count
+so the end-to-end penalty is 1,043 cycles rather than the raw write-conflict
 delta.
+
+#### Direct-GPR baseline without issue-window speculation
+
+The current direct/asynchronous six-read GPR path was run with the same BP8,
+completion forwarding, relaxed WAW, Sv39, cache, and timed-DDR3 controls.  The
+non-speculative baseline disables both the issue window and its speculation
+window.  This means no *issue-window* speculation; frontend prediction and
+the LSU's internal speculative classifications remain enabled.
+
+| Direct-GPR control | Cycles | Retired | IPC | Managed run |
+|---|---:|---:|---:|---|
+| Issue and speculation windows enabled | 47,439 | 52,592 | 1.1086 | `coremark-sv39-3p-magic-gpr-window-ddr3-20260901T074342Z` |
+| Issue and speculation windows disabled | 63,716 | 52,592 | 0.8254 | `coremark-sv39-3p-magic-gpr-nospec-ddr3-20260901T074712Z` |
+
+The strict non-windowed baseline is 16,277 cycles slower.  This delta combines
+the issue scheduler and issue-window speculation because the intermediate
+configuration is currently broken: run
+`coremark-sv39-3p-magic-gpr-window-nospec-ddr3-20260901T074512Z`, with the issue
+window retained and only `SPECULATION_WINDOW=0`, failed at cycle 1,134 with
+`LSQ received unexpected store completion tag=5`.  It is not a benchmark
+result and must not be used as an A/B data point.
+
+Against the usable 63,716-cycle direct-GPR baseline, the speculative four-bank
+banked result is 8,331 cycles slower and the speculative two-bank result is
+9,374 cycles slower.  Those are useful system-level bounds, not isolated RF
+latencies: `BANKED_GPR` also selects the registered operand-load path and
+two-wide banked retirement, while the direct path has asynchronous reads and
+three-wide normal retirement.
+
+#### Counter decomposition against direct GPR
+
+The apparent 8,331-cycle gap to the non-windowed direct-GPR baseline is the net
+of two larger effects.  Enabling the direct-path issue-window package reduces
+runtime by 16,277 cycles, from 63,716 to 47,439.  Selecting the four-bank GPR
+path under those window controls then adds 24,608 cycles, to 72,047.  The first
+delta cannot be split between scheduling and branch-crossing speculation
+because the issue-window/no-speculation intermediate configuration fails the
+LSQ assertion documented above.
+
+The final source-matched counter runs are:
+
+- direct asynchronous GPR with issue/speculation windows:
+  `coremark-sv39-3p-magic-gpr-window-ddr3-20260901T102811Z`;
+- four-bank 2R1W GPR with the same window controls:
+  `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T101224Z`.
+
+Both passed the Sv39 timed-DDR3 CoreMark-derived check and reproduce 47,439
+and 72,047 cycles respectively.
+
+The issue-window counters give an exact, exclusive partition of the 24,608
+cycle BANKED_GPR-path penalty:
+
+| Issue-window state | Direct GPR | Four-bank GPR | Delta |
+|---|---:|---:|---:|
+| Empty | 1,467 | 1,592 | +125 |
+| No eligible instruction | 13,228 | 24,390 | +11,162 |
+| Eligible, no offer | 862 | 1,654 | +792 |
+| Offer replayed | 420 | 2,229 | +1,809 |
+| At least one instruction issued | 31,462 | 42,182 | +10,720 |
+| Issued instruction events | 56,560 | 58,122 | +1,562 |
+| Instructions per issuing cycle | 1.798 | 1.378 | -0.420 |
+
+Those are window address-phase events.  Physical execution issue width shows
+that banked issue is not limited to two, but it is substantially less dense:
+
+| Physical issue width | Direct GPR | Four-bank GPR | Delta |
+|---|---:|---:|---:|
+| Zero | 15,557 | 29,861 | +14,304 |
+| One | 12,323 | 29,293 | +16,970 |
+| Two | 14,441 | 9,777 | -4,664 |
+| Three | 4,635 | 3,116 | -1,519 |
+| Four | 483 | 0 | -483 |
+| Physical issue events | 57,042 | 58,195 | +1,153 |
+| Instructions per physical-issue cycle | 1.789 | 1.379 | -0.410 |
+
+The direct issue window can release four physical pipes even though decode is
+three-wide; the banked requester is capped at three.  The larger loss is not
+the absence of three-wide issue but the shift of 16,970 cycles into one-wide
+issue.
+
+The additional no-eligible cycles have overlapping predicates: RAW rises by
+11,318 cycles, hard blocking by 10,271, and memory-order blocking by 9,930.
+Those values cannot be added.  The replay increase is redirect drain: the
+four-bank run records 2,229 redirect-drain replays, while the direct run's 420
+replays are classified as other.  It is not a bank-conflict count.
+
+Retirement exposes where the longer dependency and issue schedule becomes
+architecturally visible.  The four-bank path has 17,229 additional zero-retire
+cycles, partitioned exactly as follows:
+
+| Additional zero-retire state | Cycles |
+|---|---:|
+| Issued head waiting for execution result | 7,918 |
+| Head present but not issued | 4,781 |
+| Memory head translated but access not sent | 3,671 |
+| Memory head transiently absent from LSQ | 495 |
+| Memory access inflight | 307 |
+| Empty retirement queue | 41 |
+| Other classified states | 16 |
+| GPR write blocked | 0 |
+
+The direct speculative path retires three-wide in 7,888 cycles; banked
+retirement is capped at two.  That lost width is material, but 7,888 is not an
+additive cycle penalty because the queue schedule and the one-/two-wide counts
+change simultaneously.  Register writes are not the exposed bottleneck:
+sliding retirement records zero head-write-blocked cycles.
+
+The complete retirement-width distribution closes the 24,608-cycle runtime
+delta without overlap:
+
+| Retirement width | Direct GPR | Four-bank GPR | Delta |
+|---|---:|---:|---:|
+| Zero | 18,300 | 35,529 | +17,229 |
+| One | 13,574 | 20,448 | +6,874 |
+| Two | 7,677 | 16,070 | +8,393 |
+| Three | 7,888 | 0 | -7,888 |
+| At least one retirement | 29,139 | 36,518 | +7,379 |
+
+Thus the banked two-wide retirement cap and changed queue schedule expose
+7,379 more positive-retirement cycles.  The larger component remains the
+17,229-cycle increase in zero-retirement cycles.  Of the latter, incomplete
+head cycles rise from 17,589 to 34,763.  Their opcode split is:
+
+| Incomplete retirement-head opcode | Direct GPR | Four-bank GPR | Delta |
+|---|---:|---:|---:|
+| ALU | 1,961 | 8,501 | +6,540 |
+| Branch | 4 | 1,933 | +1,929 |
+| Jump | 2,924 | 5,847 | +2,923 |
+| Load | 8,674 | 11,007 | +2,333 |
+| Store | 4,026 | 7,475 | +3,449 |
+| **Total** | **17,589** | **34,763** | **+17,174** |
+
+`head_unissued` means the oldest retirement entry is still resident in the
+issue window with `issued_q=0`; it does not mean that every execution pipe is
+empty.  The scheduler may issue younger eligible entries around it.  The
+aggregate evidence is strong but not a direct cross-tab: on 19,552 of the
+banked run's 34,763 incomplete-head cycles at least one younger entry was
+already complete, versus 11,135 of 17,589 on the direct path.  A dedicated
+`head_unissued` by current issue width/completed-behind cross-tab is still
+needed to divide those 7,887 cycles exactly.
+
+The matched speculative control also corrects the misleading comparison to
+the non-windowed run.  Physical issued-minus-retired exposure is 4,450 events
+on direct GPR and 5,607 on banked GPR, a difference of 1,157 rather than 5,607.
+The banked run does not have materially more corrected conditional branches
+(868 versus 884).  It keeps younger work exposed behind them for longer:
+corrected-branch younger-release relationships rise from 3,966 to 5,159 and
+younger-completed relationships rise from 2,644 to 4,363.  These are
+branch-entry relationships, not unique wrong-path instructions.  The cause is
+greater speculative depth across roughly the same misprediction population,
+not an observed loss of predictor accuracy.
+
+The direct-path issue-window package gain also has clear high-level evidence:
+dispatch-full cycles fall from 52,168 to 857, backend-held cycles fall by
+8,386, zero-retire cycles fall by 9,831, execution-port conflict cycles fall
+from 4,200 to zero.  Separately, 23,282 issue releases occur behind at least
+one unresolved conditional branch.  The larger 51,277 released and 35,210
+completed resolution totals count branch-entry relationships, not unique
+instructions.  These counters establish that the window is doing substantial
+work, but do not isolate branch speculation from scheduler capacity.
+
+Several older GPR-detail counters must be rewired before they can attribute the
+remaining banked penalty.  `banked_read_bank_conflict`, read accept/conflict,
+`blocked_on_reads`, writer-distance, and the stage-local no-issue split still
+observe the legacy four-port/grouped controller.  The current six-port,
+three-pair requester needs request/ack/response counters and per-requester held,
+data-wait, output-backpressure, redirect-poison, and issue-fire states.  Until
+that rerun exists, the valid conclusion is limited: the remaining banked cost
+is concentrated in lower issue density, dependency no-eligibility, execution
+completion latency at the retire head, memory-access launch delay, and the
+two-wide retirement ceiling; the present counters do not separate their RF
+causes reliably.
+
+#### Atomic source-pair admission measurement
+
+The register-file arbiter still grants each instruction's `rs1`/`rs2` requests
+as an atomic pair.  Non-functional probes now replay every denied pair as two
+independent requests at the exact arbitration point, against the slots already
+consumed by older admitted pairs.  `partial_groups` counts denied pairs where
+at least one source could have been accepted; `early_accept_operands` counts
+those independently serviceable sources.  This is a conservative local
+measurement: it identifies directly suppressed address phases but does not
+predict how a different arbitration history would change later requests.
+
+| Banks, ports per bank | Cycles | Denied pair cycles | Partial-opportunity cycles | Early source accepts | Held-pair cycles | Managed run |
+|---|---:|---:|---:|---:|---:|---|
+| 4 banks, 2R | 72,047 | 1 | 0 | 0 | 1 | `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T101224Z` |
+| 2 banks, 2R | 73,090 | 15 | 0 | 0 | 15 | `coremark-sv39-3p-banked-window-2r1w-2bank-ddr3-20260901T100922Z` |
+
+Atomic pairing therefore exposes no independently serviceable source in this
+CoreMark trace.  The denied-pair incidence is 0.0014% of four-bank cycles and
+0.0205% of two-bank cycles.  This does not make atomic admission a good general
+interface: it prevents retained partial operand progress and will behave worse
+under denser six-read traffic.  It does show that removing it cannot explain
+the current CoreMark gap.  In the same runs, reducing the file from four banks
+to two raises denied write events from 2,052 to 6,313 while total runtime rises
+by 1,043 cycles; those counts overlap pipeline effects and are not additive.
+
+#### EX1 read-priority experiment
+
+A source-matched experiment gave EX1 first consideration in the register-file
+address arbiter whenever its selected requester needed at least one storage
+read.  It changed only address-phase group order; response ownership and the
+remaining requesters' age order were unchanged.  The experiment passed the
+managed banked directed suite in
+`3p-banked-directed-20260901T104736Z` and the Sv39 timed-DDR3 CoreMark-derived
+run in
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T104832Z`.
+
+| Four-bank 2R1W case | Cycles | Retired | EX1 read-request cycles | EX1 accepted | EX1 accepted during contention |
+|---|---:|---:|---:|---:|---:|
+| Rotating pair order | 72,047 | 52,588 | n/a | n/a | n/a |
+| EX1-first pair order | 72,048 | 52,588 | 1,810 | 1,810 | 1 |
+
+The result is null: runtime worsened by one cycle, and EX1 priority affected at
+most the sole cycle in which any read pair was denied.  Physical issue events
+were unchanged at 58,195; issue-window fire events changed from 58,122 to
+58,123; incomplete retirement-head cycles changed from 34,763 to 34,765.  Such
+one- or two-event schedule movement is not a performance signal.
+
+The priority interface and arbiter override were therefore reverted after the
+measurement.  EX1 priority cannot address the present branch selected-to-offer
+loss either: that filtering occurs before register-file arbitration.  A future
+workload with sustained read oversubscription could justify reconsidering
+pipe-aware arbitration, but this CoreMark trace does not.
+
+#### Removing the deferred early-control issue barrier
+
+The post-selection register-load conversion originally classified every
+conditional branch and jump as a hard issue-group barrier.  An early control
+could enter the deferred-read boundary only when it was the oldest selected
+packet, and then entered alone.  This was stricter than the normal 3P issue
+contract.  The independent requester now preserves accepted packets older than
+the redirecting instruction by ID and poisons younger or stale RF responses,
+so early branches and deterministic direct jumps no longer use that barrier.
+Persistent hard operations such as faults, fences, and system instructions
+remain isolated.
+
+The source-matched Sv39 timed-DDR3 CoreMark-derived result is:
+
+| Four-bank 2R1W issue-window case | Cycles | Retired | IPC | Managed run |
+|---|---:|---:|---:|---|
+| Early controls isolated | 72,047 | 52,588 | 0.7299 | `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T101224Z` |
+| Early controls issue normally | 69,991 | 52,589 | 0.7514 | `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T110127Z` |
+
+This recovers 2,056 cycles, or 2.85% of the previous runtime.  Branch
+completion-wakeup selection now reaches the scheduler offer on 7,795 of 7,961
+events (97.91%), versus 5,273 of 7,644 (68.98%).  Same-edge branch releases
+increase by 2,522.  The remaining 166 selected-to-offer losses can come from
+the three-wide age cap or active redirect recovery; they are not RF denials.
+Every one of the 7,795 offered wakeup-edge branches was accepted.
+
+The fresh normal-3P, direct-GPR, issue-window-disabled control is
+`coremark-sv39-3p-magic-gpr-nospec-ddr3-20260901T110658Z`.  It reproduces
+63,716 cycles, 52,592 retired instructions, and 0.8254 IPC.  The remaining
+banked gap is therefore 6,275 cycles (9.85%), down from 8,331 cycles.
+
+The retirement-width partition closes that gap exactly:
+
+| Retirement width | Normal 3P, window 0 | Banked window | Delta |
+|---|---:|---:|---:|
+| Zero | 28,131 | 33,858 | +5,727 |
+| One | 21,491 | 19,677 | -1,814 |
+| Two | 11,181 | 16,456 | +5,275 |
+| Three | 2,913 | 0 | -2,913 |
+| At least one retirement | 35,585 | 36,133 | +548 |
+
+Thus 5,727 cycles of the 6,275-cycle runtime delta are extra zero-retire
+cycles.  The remaining 548 cycles are extra productive cycles required by the
+changed width distribution, including the banked two-wide retirement ceiling.
+Within the zero-retire delta, empty-queue cycles improve by 2,157 while
+nonempty/no-retire cycles worsen by 7,884.  The latter divides into 7,870
+additional incomplete-head cycles and 14 other ready-head cycles.  Neither run
+records a retirement-head GPR-write stall.
+
+The incomplete retirement-head opcode partition is:
+
+| Head opcode | Normal 3P, window 0 | Banked window | Delta |
+|---|---:|---:|---:|
+| ALU | 1,408 | 7,273 | +5,865 |
+| Conditional branch | 2,015 | 1,343 | -672 |
+| Jump | 1,462 | 5,847 | +4,385 |
+| Load | 14,192 | 11,350 | -2,842 |
+| Store | 6,152 | 7,286 | +1,134 |
+| **Total** | **25,229** | **33,099** | **+7,870** |
+
+Branch-head delay is now better than the strict control; it is no longer the
+remaining deficit.  The positive excess is ALU completion exposure, jump
+completion exposure, and stores, partly offset by lower branch and load head
+waits.  The state-specific `head_exec_wait` and `head_unissued` fields are not
+directly comparable because the strict path lacks issue-window state and
+classifies 4,885 cycles as unknown; the opcode partition is comparable.
+
+Physical issue also shows the different speculation model.  The banked window
+issues 59,378 instructions for 52,589 retired, while strict normal 3P issues
+52,593 for 52,592 retired.  The 6,788-event difference in issued-minus-retired
+exposure is speculative or otherwise discarded work, not an additive cycle
+penalty.  It accompanies 2,254 more redirects, including 320 more corrections.
+Despite that, post-redirect empty time rises by only 365 cycles and normalized
+empty time improves from 523 to 437 cycles per thousand redirects.  LSU request
+wait falls from 1,494 to 1,022 cycles, execution-port conflicts fall from 4,200
+to zero, and the banked RF records only one denied read pair.  These counters
+rule out branch-head delay, LSU request backpressure, execution-port conflicts,
+and RF read-bank conflicts as the dominant remainder; they do not by themselves
+separate the extra register-load latency from retirement width and speculative
+schedule effects.
+
+Validation after the change:
+
+- `3p-banked-window-focused-20260901T110115Z` passed the independent requester
+  and redirect-survivor regression;
+- `3p-banked-directed-20260901T110413Z` passed the complete managed banked
+  directed suite;
+- `compliance-act4-platform-3p-banked-ddr3-20260901T110445Z` passed all 93
+  preserved RV64IMA ACT4 tests with the platform target corrected to enable
+  the banked issue and speculation windows.

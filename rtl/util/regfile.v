@@ -55,7 +55,15 @@ module cmn_reg_file #(
     // True when no accepted transaction remains inside the file.  A caller's
     // complete busy predicate is (|req_i) || !quiescent_o: req_i covers work
     // still being presented, while this output covers accepted work.
-    output wire                                   quiescent_o
+    output wire                                   quiescent_o,
+
+    // Combinational simulation/performance probes for atomic read grouping.
+    // A partial opportunity is a denied group for which ordinary per-port
+    // arbitration could accept at least one member at the exact point the
+    // group was considered.  These signals do not affect arbitration.
+    output reg [7:0]                              trace_read_group_denied_o,
+    output reg [7:0]                              trace_read_group_partial_o,
+    output reg [7:0]                              trace_read_early_accept_o
 );
 
     wire [READ_PORTS_PER_BANK-1:0][REG_WIDTH-1:0]
@@ -152,6 +160,8 @@ module cmn_reg_file #(
     integer read_group_bank;
     integer read_group_used [NUM_BANKS-1:0];
     integer read_group_need [NUM_BANKS-1:0];
+    integer read_independent_used [NUM_BANKS-1:0];
+    integer read_group_early_accept;
     integer read_slot;
     reg [READ_GROUP_BITS-1:0] read_group_candidate;
     reg [READ_PORT_BITS-1:0] read_group_port;
@@ -170,6 +180,10 @@ module cmn_reg_file #(
         selected_read_bank = {BANK_SEL_BITS{1'b0}};
         read_group_fits = 1'b0;
         read_slot_found = 1'b0;
+        trace_read_group_denied_o = 8'd0;
+        trace_read_group_partial_o = 8'd0;
+        trace_read_early_accept_o = 8'd0;
+        read_group_early_accept = 0;
 
         for (clear_read_port = 0; clear_read_port < READ_PORTS;
              clear_read_port = clear_read_port + 1) begin
@@ -178,6 +192,7 @@ module cmn_reg_file #(
 
         for (clear_read_bank = 0; clear_read_bank < NUM_BANKS;
              clear_read_bank = clear_read_bank + 1) begin
+            read_independent_used[clear_read_bank] = 0;
             for (clear_read_slot = 0;
                  clear_read_slot < READ_PORTS_PER_BANK;
                  clear_read_slot = clear_read_slot + 1) begin
@@ -235,6 +250,48 @@ module cmn_reg_file #(
                      read_group_need[read_group_bank]) >
                     READ_PORTS_PER_BANK)
                     read_group_fits = 1'b0;
+            end
+
+            // Measure the work suppressed solely by all-or-nothing group
+            // admission.  Replay the denied group's members against the bank
+            // slots already consumed by older admitted groups, but do not
+            // alter the real grant state.  The requester would need retained
+            // per-operand ownership to exploit these early accepts.
+            if (!read_group_fits) begin
+                trace_read_group_denied_o =
+                    trace_read_group_denied_o + 1'b1;
+                read_group_early_accept = 0;
+                for (read_group_bank = 0;
+                     read_group_bank < NUM_BANKS;
+                     read_group_bank = read_group_bank + 1)
+                    read_independent_used[read_group_bank] =
+                        read_group_used[read_group_bank];
+
+                for (read_group_member = 0;
+                     read_group_member < READ_GROUP_SIZE;
+                     read_group_member = read_group_member + 1) begin
+                    read_group_port = READ_PORT_BITS'(
+                        read_group_candidate * READ_GROUP_SIZE +
+                        read_group_member);
+                    if (rp_req_i[read_group_port]) begin
+                        selected_read_bank = read_port_addr[read_group_port]
+                            [BANK_SEL_BITS-1:0];
+                        if (read_independent_used[selected_read_bank] <
+                            READ_PORTS_PER_BANK) begin
+                            read_independent_used[selected_read_bank] =
+                                read_independent_used[selected_read_bank] + 1;
+                            read_group_early_accept =
+                                read_group_early_accept + 1;
+                        end
+                    end
+                end
+                if (read_group_early_accept != 0) begin
+                    trace_read_group_partial_o =
+                        trace_read_group_partial_o + 1'b1;
+                    trace_read_early_accept_o =
+                        trace_read_early_accept_o +
+                        read_group_early_accept[7:0];
+                end
             end
 
             if (read_group_fits) begin

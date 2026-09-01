@@ -206,6 +206,9 @@ module openrv64_backend_3p #(
     wire [2:0] gpr_write;
     wire [2:0] gpr_write_ack;
     wire [2:0] gpr_write_ready;
+    wire [7:0] gpr_trace_read_group_denied;
+    wire [7:0] gpr_trace_read_group_partial;
+    wire [7:0] gpr_trace_read_early_accept;
     wire banked_retire_write_pair_conflict;
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] gpr_write_addr;
     wire [3*`RV64_XLEN-1:0] gpr_write_data;
@@ -3494,6 +3497,7 @@ module openrv64_backend_3p #(
         banked_independent_read_req : banked_legacy_read_req;
     assign gpr_storage_read_addr = banked_window_regload ?
         banked_independent_read_addr : banked_legacy_storage_read_addr;
+
     assign dispatch_gpr_read_data[6*`RV64_XLEN-1:4*`RV64_XLEN] =
         (BANKED_GPR == 0) ?
             gpr_read_data[6*`RV64_XLEN-1:4*`RV64_XLEN] :
@@ -4304,7 +4308,10 @@ module openrv64_backend_3p #(
         .write_data_i(gpr_write_data),
         .write_ack_o(gpr_write_ack),
         .write_ready_o(gpr_write_ready),
-        .quiescent_o(gpr_quiescent)
+        .quiescent_o(gpr_quiescent),
+        .trace_read_group_denied_o(gpr_trace_read_group_denied),
+        .trace_read_group_partial_o(gpr_trace_read_group_partial),
+        .trace_read_early_accept_o(gpr_trace_read_early_accept)
     );
 
     // The legacy path uses the combinational post-retirement head to recover

@@ -1061,6 +1061,12 @@ module tb_top_3p_soc #(
     integer banked_read_accept_cycles;
     integer banked_read_accept_events;
     integer banked_read_conflict_events;
+    integer banked_atomic_denied_cycles;
+    integer banked_atomic_denied_groups;
+    integer banked_atomic_partial_cycles;
+    integer banked_atomic_partial_groups;
+    integer banked_atomic_early_accept_operands;
+    integer banked_atomic_held_pair_cycles;
     integer banked_writer_load_incomplete_cycles;
     integer banked_writer_load_incomplete_operands;
     integer banked_writer_load_ready_cycles;
@@ -4346,6 +4352,12 @@ module tb_top_3p_soc #(
         banked_read_accept_cycles = 0;
         banked_read_accept_events = 0;
         banked_read_conflict_events = 0;
+        banked_atomic_denied_cycles = 0;
+        banked_atomic_denied_groups = 0;
+        banked_atomic_partial_cycles = 0;
+        banked_atomic_partial_groups = 0;
+        banked_atomic_early_accept_operands = 0;
+        banked_atomic_held_pair_cycles = 0;
         banked_writer_load_incomplete_cycles = 0;
         banked_writer_load_incomplete_operands = 0;
         banked_writer_load_ready_cycles = 0;
@@ -5136,6 +5148,28 @@ module tb_top_3p_soc #(
             if (dut.u_backend.banked_blocked_by_writes)
                 banked_blocked_by_writes_cycles =
                     banked_blocked_by_writes_cycles + 1;
+            if (dut.u_backend.gpr_trace_read_group_denied != 0) begin
+                banked_atomic_denied_cycles =
+                    banked_atomic_denied_cycles + 1;
+                banked_atomic_denied_groups =
+                    banked_atomic_denied_groups +
+                    dut.u_backend.gpr_trace_read_group_denied;
+            end
+            if (dut.u_backend.gpr_trace_read_group_partial != 0) begin
+                banked_atomic_partial_cycles =
+                    banked_atomic_partial_cycles + 1;
+                banked_atomic_partial_groups =
+                    banked_atomic_partial_groups +
+                    dut.u_backend.gpr_trace_read_group_partial;
+                banked_atomic_early_accept_operands =
+                    banked_atomic_early_accept_operands +
+                    dut.u_backend.gpr_trace_read_early_accept;
+            end
+            banked_atomic_held_pair_cycles =
+                banked_atomic_held_pair_cycles +
+                dut.u_backend.banked_independent_held_valid_q[0] +
+                dut.u_backend.banked_independent_held_valid_q[1] +
+                dut.u_backend.banked_independent_held_valid_q[2];
             if (|dut.u_backend.banked_read_exu_forward_valid) begin
                 banked_exu_forward_cycles =
                     banked_exu_forward_cycles + 1;
@@ -7270,6 +7304,14 @@ module tb_top_3p_soc #(
             "PERF_ICX_L2_BANKED_GPR_READ accept_cycles=%0d accept_events=%0d conflict_events=%0d",
             banked_read_accept_cycles, banked_read_accept_events,
             banked_read_conflict_events);
+        $display(
+            "PERF_ICX_L2_BANKED_GPR_ATOMIC denied_cycles=%0d denied_groups=%0d partial_cycles=%0d partial_groups=%0d early_accept_operands=%0d held_pair_cycles=%0d",
+            banked_atomic_denied_cycles,
+            banked_atomic_denied_groups,
+            banked_atomic_partial_cycles,
+            banked_atomic_partial_groups,
+            banked_atomic_early_accept_operands,
+            banked_atomic_held_pair_cycles);
         $display(
             "PERF_ICX_L2_BANKED_GPR_WRITER_WAIT load_incomplete_cycles=%0d load_incomplete_operands=%0d load_ready_cycles=%0d load_ready_operands=%0d other_incomplete_cycles=%0d other_incomplete_operands=%0d other_ready_cycles=%0d other_ready_operands=%0d",
             banked_writer_load_incomplete_cycles,

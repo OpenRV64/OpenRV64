@@ -34,7 +34,10 @@ module openrv64_rv64i_gpr_3p #(
     input  wire [3*`RV64_XLEN-1:0]      write_data_i,
     output wire [2:0]                   write_ack_o,
     output wire [2:0]                   write_ready_o,
-    output wire                         quiescent_o
+    output wire                         quiescent_o,
+    output wire [7:0]                   trace_read_group_denied_o,
+    output wire [7:0]                   trace_read_group_partial_o,
+    output wire [7:0]                   trace_read_early_accept_o
 );
 
     wire [NUM_REGS*`RV64_XLEN-1:0] prf_debug_regs;
@@ -136,7 +139,10 @@ module openrv64_rv64i_gpr_3p #(
                 .wp_req_i(banked_write_req),
                 .wp_ack_o(banked_write_ack),
                 .wp_valid_o(banked_write_valid),
-                .quiescent_o(banked_file_quiescent)
+                .quiescent_o(banked_file_quiescent),
+                .trace_read_group_denied_o(trace_read_group_denied_o),
+                .trace_read_group_partial_o(trace_read_group_partial_o),
+                .trace_read_early_accept_o(trace_read_early_accept_o)
             );
 
             always @(posedge clk or negedge rst_n) begin
@@ -250,6 +256,9 @@ module openrv64_rv64i_gpr_3p #(
             assign write_ready_o = 3'b111;
             assign write_ack_o = write_valid_i;
             assign quiescent_o = 1'b1;
+            assign trace_read_group_denied_o = 8'd0;
+            assign trace_read_group_partial_o = 8'd0;
+            assign trace_read_early_accept_o = 8'd0;
         end
     endgenerate
 
