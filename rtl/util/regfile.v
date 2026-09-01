@@ -13,6 +13,14 @@ module cmn_reg_file #(
     parameter integer READ_PORTS      = 2,
     parameter integer WRITE_PORTS     = 1,
     parameter integer READ_PORTS_PER_BANK = 1,
+    // When set, lower-numbered write ports win same-bank conflicts.  This is
+    // used by age-ordered retirement interfaces where port zero is oldest.
+    // Otherwise conflicts retain round-robin fairness.
+    parameter integer FIXED_WRITE_PRIORITY = 0,
+    // Consecutive logical ports in a group are granted atomically.  A value
+    // of one preserves ordinary per-port arbitration.  The 3P GPR uses pairs
+    // so an instruction never consumes only one of its two source reads.
+    parameter integer READ_GROUP_SIZE = 1,
     parameter integer BANK_SIZE       = 16,
     parameter integer NUM_BANKS       = (REG_COUNT / BANK_SIZE),
     parameter integer BANK_REG_BITS   = $clog2(BANK_SIZE),
@@ -20,6 +28,9 @@ module cmn_reg_file #(
     parameter integer ADDR_WIDTH      = BANK_SEL_BITS + BANK_REG_BITS,
     parameter integer READ_PORT_BITS  =
         (READ_PORTS > 1) ? $clog2(READ_PORTS) : 1,
+    parameter integer READ_GROUP_COUNT = READ_PORTS / READ_GROUP_SIZE,
+    parameter integer READ_GROUP_BITS =
+        (READ_GROUP_COUNT > 1) ? $clog2(READ_GROUP_COUNT) : 1,
     parameter integer WRITE_PORT_BITS =
         (WRITE_PORTS > 1) ? $clog2(WRITE_PORTS) : 1,
     parameter integer READ_SLOT_BITS =
@@ -100,7 +111,7 @@ module cmn_reg_file #(
         end
     endgenerate
 
-    reg [READ_PORT_BITS-1:0] read_priority_q;
+    reg [READ_GROUP_BITS-1:0] read_priority_q;
     reg [WRITE_PORT_BITS-1:0] write_priority_q;
     reg [READ_PORTS-1:0] read_grant;
     reg [WRITE_PORTS-1:0] write_grant;
@@ -136,15 +147,28 @@ module cmn_reg_file #(
     integer clear_read_bank;
     integer clear_read_slot;
     integer clear_read_port;
-    integer read_scan;
+    integer read_group_scan;
+    integer read_group_member;
+    integer read_group_bank;
+    integer read_group_used [NUM_BANKS-1:0];
+    integer read_group_need [NUM_BANKS-1:0];
     integer read_slot;
-    reg [READ_PORT_BITS-1:0] read_candidate;
+    reg [READ_GROUP_BITS-1:0] read_group_candidate;
+    reg [READ_PORT_BITS-1:0] read_group_port;
     reg [BANK_SEL_BITS-1:0] selected_read_bank;
+    reg read_group_fits;
     reg read_slot_found;
-    always @* begin
+    // SystemVerilog always_comb deliberately excludes variables written by
+    // this block from its inferred sensitivity list.  The group-demand and
+    // group-used arrays are procedural temporaries: including them (as @*
+    // does in Icarus) can retrigger this block forever as each evaluation
+    // clears and rebuilds the temporary counts.
+    always_comb begin
         read_grant = {READ_PORTS{1'b0}};
-        read_candidate = 0;
+        read_group_candidate = 0;
+        read_group_port = 0;
         selected_read_bank = {BANK_SEL_BITS{1'b0}};
+        read_group_fits = 1'b0;
         read_slot_found = 1'b0;
 
         for (clear_read_port = 0; clear_read_port < READ_PORTS;
@@ -163,28 +187,84 @@ module cmn_reg_file #(
             end
         end
 
-        for (read_scan = 0; read_scan < READ_PORTS;
-             read_scan = read_scan + 1) begin
-            read_candidate = READ_PORT_BITS'(wrapped_index(
-                32'(read_priority_q), read_scan, READ_PORTS));
+        // Greedily admit complete requester groups in rotating group order.
+        // First count the group's demand per bank against slots consumed by
+        // older admitted groups, then assign physical slots only if every
+        // requested member fits.  This prevents a denied second source from
+        // leaving an instruction with a half-accepted address phase.
+        for (read_group_scan = 0;
+             read_group_scan < READ_GROUP_COUNT;
+             read_group_scan = read_group_scan + 1) begin
+            read_group_candidate = READ_GROUP_BITS'(wrapped_index(
+                32'(read_priority_q), read_group_scan,
+                READ_GROUP_COUNT));
+            read_group_fits = rst_n;
 
-            if (rst_n && rp_req_i[read_candidate]) begin
-                selected_read_bank = read_port_addr[read_candidate]
-                    [BANK_SEL_BITS-1:0];
-                read_slot_found = 1'b0;
+            for (read_group_bank = 0;
+                 read_group_bank < NUM_BANKS;
+                 read_group_bank = read_group_bank + 1) begin
+                read_group_used[read_group_bank] = 0;
+                read_group_need[read_group_bank] = 0;
                 for (read_slot = 0;
                      read_slot < READ_PORTS_PER_BANK;
                      read_slot = read_slot + 1) begin
-                    if (!read_slot_found &&
-                        !bank_read_req[selected_read_bank][read_slot]) begin
-                        bank_read_req[selected_read_bank][read_slot] = 1'b1;
-                        bank_read_sel[selected_read_bank][read_slot] =
-                            read_port_addr[read_candidate]
-                                [ADDR_WIDTH-1:BANK_SEL_BITS];
-                        read_grant[read_candidate] = 1'b1;
-                        read_grant_slot[read_candidate] =
-                            READ_SLOT_BITS'(read_slot);
-                        read_slot_found = 1'b1;
+                    if (bank_read_req[read_group_bank][read_slot])
+                        read_group_used[read_group_bank] =
+                            read_group_used[read_group_bank] + 1;
+                end
+            end
+
+            for (read_group_member = 0;
+                 read_group_member < READ_GROUP_SIZE;
+                 read_group_member = read_group_member + 1) begin
+                read_group_port = READ_PORT_BITS'(
+                    read_group_candidate * READ_GROUP_SIZE +
+                    read_group_member);
+                if (rp_req_i[read_group_port]) begin
+                    selected_read_bank = read_port_addr[read_group_port]
+                        [BANK_SEL_BITS-1:0];
+                    read_group_need[selected_read_bank] =
+                        read_group_need[selected_read_bank] + 1;
+                end
+            end
+
+            for (read_group_bank = 0;
+                 read_group_bank < NUM_BANKS;
+                 read_group_bank = read_group_bank + 1) begin
+                if ((read_group_used[read_group_bank] +
+                     read_group_need[read_group_bank]) >
+                    READ_PORTS_PER_BANK)
+                    read_group_fits = 1'b0;
+            end
+
+            if (read_group_fits) begin
+                for (read_group_member = 0;
+                     read_group_member < READ_GROUP_SIZE;
+                     read_group_member = read_group_member + 1) begin
+                    read_group_port = READ_PORT_BITS'(
+                        read_group_candidate * READ_GROUP_SIZE +
+                        read_group_member);
+                    if (rp_req_i[read_group_port]) begin
+                        selected_read_bank = read_port_addr[read_group_port]
+                            [BANK_SEL_BITS-1:0];
+                        read_slot_found = 1'b0;
+                        for (read_slot = 0;
+                             read_slot < READ_PORTS_PER_BANK;
+                             read_slot = read_slot + 1) begin
+                            if (!read_slot_found &&
+                                !bank_read_req[selected_read_bank]
+                                              [read_slot]) begin
+                                bank_read_req[selected_read_bank]
+                                             [read_slot] = 1'b1;
+                                bank_read_sel[selected_read_bank][read_slot] =
+                                    read_port_addr[read_group_port]
+                                        [ADDR_WIDTH-1:BANK_SEL_BITS];
+                                read_grant[read_group_port] = 1'b1;
+                                read_grant_slot[read_group_port] =
+                                    READ_SLOT_BITS'(read_slot);
+                                read_slot_found = 1'b1;
+                            end
+                        end
                     end
                 end
             end
@@ -237,8 +317,11 @@ module cmn_reg_file #(
 
         for (write_scan = 0; write_scan < WRITE_PORTS;
              write_scan = write_scan + 1) begin
-            write_candidate = WRITE_PORT_BITS'(wrapped_index(
-                32'(write_priority_q), write_scan, WRITE_PORTS));
+            if (FIXED_WRITE_PRIORITY != 0)
+                write_candidate = WRITE_PORT_BITS'(write_scan);
+            else
+                write_candidate = WRITE_PORT_BITS'(wrapped_index(
+                    32'(write_priority_q), write_scan, WRITE_PORTS));
 
             if (rst_n && wp_req_i[write_candidate]) begin
                 selected_write_bank = write_port_addr[write_candidate]
@@ -323,7 +406,7 @@ module cmn_reg_file #(
     integer state_read_port;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            read_priority_q <= {READ_PORT_BITS{1'b0}};
+            read_priority_q <= {READ_GROUP_BITS{1'b0}};
             write_priority_q <= {WRITE_PORT_BITS{1'b0}};
             read_valid_q <= {READ_PORTS{1'b0}};
             write_valid_q <= {WRITE_PORTS{1'b0}};
@@ -363,8 +446,8 @@ module cmn_reg_file #(
             end
 
             if (|read_grant) begin
-                read_priority_q <= READ_PORT_BITS'(wrapped_index(
-                    32'(read_priority_q), 1, READ_PORTS));
+                read_priority_q <= READ_GROUP_BITS'(wrapped_index(
+                    32'(read_priority_q), 1, READ_GROUP_COUNT));
             end
 
             if (|write_grant) begin
@@ -409,6 +492,10 @@ module cmn_reg_file #(
             (READ_PORTS_PER_BANK > READ_PORTS))
             $fatal(1,
                    "cmn_reg_file: invalid physical read ports per bank.");
+        if ((READ_GROUP_SIZE < 1) ||
+            (READ_GROUP_SIZE > READ_PORTS) ||
+            ((READ_PORTS % READ_GROUP_SIZE) != 0))
+            $fatal(1, "cmn_reg_file: invalid atomic read group size.");
         if (NUM_BANKS < 2)
             $fatal(1, "cmn_reg_file: NUM_BANKS must be at least two.");
         if (BANK_SIZE < 2)

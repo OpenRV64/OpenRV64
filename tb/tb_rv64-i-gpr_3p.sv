@@ -24,6 +24,11 @@ module tb_rv64i_gpr_3p #(
     wire [2:0] banked_write_ack;
     wire [2:0] banked_write_response;
     wire banked_quiescent;
+    reg [5:0] grouped_seen;
+    reg [5:0] grouped_ack;
+    integer grouped_init;
+    integer grouped_cycle;
+    integer grouped_port;
 
     openrv64_rv64i_gpr_3p #(
         .ALLOW_DUPLICATE_WRITES(ALLOW_DUPLICATE_WRITES)
@@ -162,6 +167,43 @@ module tb_rv64i_gpr_3p #(
         if (read_data[0*64 +: 64] != 64'd0)
             fail("x0 did not remain zero");
 
+        // Write ports are independent across banks; unlike an atomic read
+        // pair, one write requester must not gate the other's grant.
+        @(negedge clk);
+        banked_write_valid[1:0] = 2'b11;
+        banked_write_addr[0*5 +: 5] = 5'd1;
+        banked_write_addr[1*5 +: 5] = 5'd2;
+        banked_write_data[0*64 +: 64] = 64'h1111;
+        banked_write_data[1*64 +: 64] = 64'h2222;
+        #1;
+        if (banked_write_ack[1:0] != 2'b11)
+            fail("different-bank write ports were not independently granted");
+        @(posedge clk);
+        #1;
+        banked_write_valid[1:0] = 2'b00;
+
+        // Same-bank retirement writes must serialize oldest first.  Port zero
+        // is the older lane; granting port one here would unnecessarily hold
+        // an otherwise-retirable older instruction behind its younger peer.
+        @(negedge clk);
+        banked_write_valid[1:0] = 2'b11;
+        banked_write_addr[0*5 +: 5] = 5'd1;
+        banked_write_addr[1*5 +: 5] = 5'd5;
+        banked_write_data[0*64 +: 64] = 64'h1111;
+        banked_write_data[1*64 +: 64] = 64'h5555;
+        #1;
+        if (banked_write_ack[1:0] != 2'b01)
+            fail("same-bank write did not prioritize the older lane");
+        @(posedge clk);
+        #1;
+        banked_write_valid[0] = 1'b0;
+        #1;
+        if (!banked_write_ack[1])
+            fail("younger same-bank write did not advance after older ack");
+        @(posedge clk);
+        #1;
+        banked_write_valid[1] = 1'b0;
+
         // The banked interface separates address ack from the following data
         // phase.  Exercise back-to-back nonzero/x0/nonzero transactions so
         // response data cannot accidentally follow the current address.
@@ -214,6 +256,67 @@ module tb_rv64i_gpr_3p #(
         #1;
         if (banked_read_valid[0] || !banked_quiescent)
             fail("banked read pipeline did not become quiescent");
+
+        // Six logical read ports form three independent two-source
+        // requesters.  Put every source in four-bank bank 0: only one complete
+        // pair may be acknowledged per cycle, and no requester may be half
+        // accepted.
+        for (grouped_init = 0; grouped_init < 6;
+             grouped_init = grouped_init + 1) begin
+            @(negedge clk);
+            banked_write_valid[0] = 1'b1;
+            banked_write_addr[0*5 +: 5] = 5'(4 + grouped_init*4);
+            banked_write_data[0*64 +: 64] = 64'h2000 + grouped_init;
+            #1;
+            if (!banked_write_ack[0])
+                fail("grouped-read initialization write was not acknowledged");
+            @(posedge clk);
+            #1;
+            banked_write_valid[0] = 1'b0;
+        end
+
+        @(negedge clk);
+        for (grouped_port = 0; grouped_port < 6;
+             grouped_port = grouped_port + 1)
+            banked_read_addr[grouped_port*5 +: 5] =
+                5'(4 + grouped_port*4);
+        banked_read_req = 6'b111111;
+        grouped_seen = 6'b000000;
+        for (grouped_cycle = 0; grouped_cycle < 3;
+             grouped_cycle = grouped_cycle + 1) begin
+            #1;
+            grouped_ack = banked_read_ack;
+            if ((grouped_ack[0] != grouped_ack[1]) ||
+                (grouped_ack[2] != grouped_ack[3]) ||
+                (grouped_ack[4] != grouped_ack[5]) ||
+                ((grouped_ack[0] + grouped_ack[1] +
+                  grouped_ack[2] + grouped_ack[3] +
+                  grouped_ack[4] + grouped_ack[5]) != 2))
+                fail("six-port arbitration did not acknowledge one atomic pair");
+            if (|(grouped_ack & grouped_seen))
+                fail("six-port arbitration reacknowledged a completed pair");
+            @(posedge clk);
+            #1;
+            if (banked_read_valid !== grouped_ack)
+                fail("six-port response valid did not follow pair ack");
+            for (grouped_port = 0; grouped_port < 6;
+                 grouped_port = grouped_port + 1) begin
+                if (grouped_ack[grouped_port] &&
+                    (banked_read_data[grouped_port*64 +: 64] !==
+                     (64'h2000 + grouped_port)))
+                    fail("six-port pair response data was incorrect");
+            end
+            grouped_seen = grouped_seen | grouped_ack;
+            banked_read_req = banked_read_req & ~grouped_ack;
+            if (grouped_cycle != 2)
+                @(negedge clk);
+        end
+        if (grouped_seen != 6'b111111)
+            fail("six-port arbitration did not service all requester pairs");
+        @(posedge clk);
+        #1;
+        if ((banked_read_valid != 6'b000000) || !banked_quiescent)
+            fail("six-port read pipeline did not become quiescent");
 
         $display("PASS: six-read three-write GPR bank");
         $finish;

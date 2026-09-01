@@ -3,9 +3,10 @@
 `include "core/isa/rv64-i.v"
 `include "core/except/except-defs.v"
 
-// Initial banked retirement boundary.  At most two queue entries retire, and
-// their GPR writes are held until the two logical write ports acknowledge the
-// accepted write address/data phase.
+// Banked retirement boundary.  At most two queue entries retire.  Different-
+// bank GPR writes issue together; a same-bank pair issues and retires its older
+// lane first so the younger entry slides to the head on the following cycle.
+// Unexpectedly withheld requests are retained in a retry skid.
 // The underlying retirement module still owns exceptions, CSRs, trace, and
 // architectural release; this wrapper only delays its acceptance boundary.
 module openrv64_retire_3p_banked #(
@@ -15,7 +16,10 @@ module openrv64_retire_3p_banked #(
     parameter integer META_WIDTH =
         `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + 2*PHYS_REG_ADDR_WIDTH,
     parameter integer RESULT_WIDTH = `OPENRV64_RETIRE_RESULT_WIDTH,
-    parameter integer ENABLE_EXTENSION = 0
+    parameter integer ENABLE_EXTENSION = 0,
+    parameter integer GPR_BANK_COUNT = 4,
+    parameter integer GPR_BANK_SEL_BITS =
+        (GPR_BANK_COUNT > 1) ? $clog2(GPR_BANK_COUNT) : 1
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -160,6 +164,19 @@ module openrv64_retire_3p_banked #(
     reg [2*PHYS_REG_ADDR_WIDTH-1:0] write_addr_q;
     reg [2*`RV64_XLEN-1:0] write_data_q;
 
+    // Do not issue a request that is known to lose the one-write-per-bank
+    // arbitration.  Lane zero is older.  Suppressing the conflicting younger
+    // address phase lets lane zero retire now; after the queue advances, that
+    // younger instruction becomes lane zero and may issue alongside the next
+    // ready instruction.  This also preserves the per-port contract: no
+    // unacknowledged request is moved to a different logical write port.
+    wire direct_write_pair_conflict = write_mask_now[0] &&
+        write_mask_now[1] &&
+        (write_addr_now[0 +: GPR_BANK_SEL_BITS] ==
+         write_addr_now[PHYS_REG_ADDR_WIDTH +: GPR_BANK_SEL_BITS]);
+    wire [1:0] direct_write_mask = write_mask_now &
+        {~direct_write_pair_conflict, 1'b1};
+
     // Keep the write boundary work-conserving.  A new ready retirement group
     // drives the address phase directly; the registers below are a retry skid
     // used only when a lane was not acknowledged or when a completed write
@@ -167,15 +184,15 @@ module openrv64_retire_3p_banked #(
     wire direct_write_offer = !write_active_q && !flush_i;
     assign gpr_write_o = write_active_q ?
         (write_mask_q & ~write_done_q) :
-        (write_mask_now & {2{direct_write_offer}});
+        (direct_write_mask & {2{direct_write_offer}});
     assign gpr_rd_addr_o = write_active_q ? write_addr_q : write_addr_now;
     assign gpr_rd_data_o = write_active_q ? write_data_q : write_data_now;
 
     wire writes_complete = write_active_q &&
         &((~write_mask_q) | write_done_q | gpr_write_ack_i);
-    wire direct_writes_complete = !(|write_mask_now) ||
-        (direct_write_offer &&
-         &((~write_mask_now) | gpr_write_ack_i));
+    wire [1:0] direct_lane_writes_complete = (~write_mask_now) |
+        (gpr_write_ack_i & direct_write_mask & {2{direct_write_offer}});
+    wire direct_writes_complete = &direct_lane_writes_complete;
     wire commit_ready = write_active_q ? writes_complete :
                         direct_writes_complete;
 
@@ -188,8 +205,12 @@ module openrv64_retire_3p_banked #(
     wire [2:0] inner_queue_valid = {
         1'b0, queue_valid_i[1:0] & inner_queue_mask
     };
-    wire [2:0] inner_extension_ready =
-        extension_ready & {3{commit_ready}};
+    wire [1:0] lane_write_ready = write_active_q ?
+        {2{writes_complete}} : direct_lane_writes_complete;
+    wire [2:0] inner_extension_ready = {
+        1'b0,
+        extension_ready[1:0] & lane_write_ready
+    };
     wire [2:0] inner_extension_result_valid = extension_result_valid;
     wire [2:0] inner_extension_exception = extension_exception;
     wire [3*`RV64_EXCEPT_CAUSE_WIDTH-1:0] inner_extension_cause =
@@ -344,6 +365,10 @@ module openrv64_retire_3p_banked #(
                 (|(queue_accept_o[1:0] & ~retire_mask_q)))
                 $fatal(1,
                        "banked retirement accepted a lane outside its captured group");
+            if (!write_active_q && queue_accept_o[0] &&
+                !queue_accept_o[1] && gpr_write_o[1])
+                $fatal(1,
+                       "banked retirement shifted an unacknowledged younger write request");
         end
     end
 `endif

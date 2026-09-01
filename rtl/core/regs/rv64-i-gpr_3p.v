@@ -15,6 +15,7 @@ module openrv64_rv64i_gpr_3p #(
     parameter BANKED = 0,
     parameter FPGA_LUTRAM = 0,
     parameter integer BANKED_READ_PORTS_PER_BANK = 2,
+    parameter integer BANKED_NUM_BANKS = 4,
     parameter integer NUM_REGS = 31,
     parameter integer REG_ADDR_WIDTH =
         (NUM_REGS < 1) ? 1 : $clog2(NUM_REGS + 1)
@@ -39,22 +40,31 @@ module openrv64_rv64i_gpr_3p #(
     wire [NUM_REGS*`RV64_XLEN-1:0] prf_debug_regs;
     generate
         if (BANKED != 0) begin : g_banked
-            wire [3:0] banked_read_ack;
-            wire [3:0] banked_read_valid;
+            localparam integer BANKED_REG_COUNT = 64;
+            localparam integer BANKED_BANK_SIZE =
+                BANKED_REG_COUNT / BANKED_NUM_BANKS;
+            localparam integer BANKED_ADDR_WIDTH =
+                $clog2(BANKED_REG_COUNT);
+            wire [5:0] banked_read_ack;
+            wire [5:0] banked_read_valid;
             wire [1:0] banked_write_ack;
             wire [1:0] banked_write_valid;
-            wire [3:0] banked_read_req;
+            wire [5:0] banked_read_req;
             wire [1:0] banked_write_req;
-            wire [3:0] banked_read_zero;
+            wire [5:0] banked_read_zero;
             wire [1:0] banked_write_zero;
-            wire [4*`RV64_XLEN-1:0] banked_read_data_raw;
-            wire [4*`RV64_XLEN-1:0] banked_read_data;
+            wire [6*`RV64_XLEN-1:0] banked_read_data_raw;
+            wire [6*`RV64_XLEN-1:0] banked_read_data;
+            wire [6*BANKED_ADDR_WIDTH-1:0]
+                banked_storage_read_addr;
+            wire [2*BANKED_ADDR_WIDTH-1:0]
+                banked_storage_write_addr;
             wire banked_file_quiescent;
-            reg [3:0] banked_read_zero_q;
+            reg [5:0] banked_read_zero_q;
             reg [1:0] banked_write_zero_q;
 
             genvar banked_read_port;
-            for (banked_read_port = 0; banked_read_port < 4;
+            for (banked_read_port = 0; banked_read_port < 6;
                  banked_read_port = banked_read_port + 1) begin : g_read_zero
                 assign banked_read_zero[banked_read_port] =
                     read_addr_i[
@@ -63,6 +73,14 @@ module openrv64_rv64i_gpr_3p #(
                 assign banked_read_req[banked_read_port] =
                     read_req_i[banked_read_port] &&
                     !banked_read_zero[banked_read_port];
+                assign banked_storage_read_addr[
+                    banked_read_port*BANKED_ADDR_WIDTH +:
+                    BANKED_ADDR_WIDTH] = {
+                        {(BANKED_ADDR_WIDTH-REG_ADDR_WIDTH){1'b0}},
+                        read_addr_i[
+                            banked_read_port*REG_ADDR_WIDTH +:
+                            REG_ADDR_WIDTH]
+                    };
                 assign banked_read_data[
                     banked_read_port*`RV64_XLEN +: `RV64_XLEN] =
                     banked_read_zero_q[banked_read_port] ?
@@ -80,26 +98,40 @@ module openrv64_rv64i_gpr_3p #(
                 assign banked_write_req[banked_write_port] =
                     write_valid_i[banked_write_port] &&
                     !banked_write_zero[banked_write_port];
+                assign banked_storage_write_addr[
+                    banked_write_port*BANKED_ADDR_WIDTH +:
+                    BANKED_ADDR_WIDTH] = {
+                        {(BANKED_ADDR_WIDTH-REG_ADDR_WIDTH){1'b0}},
+                        write_addr_i[
+                            banked_write_port*REG_ADDR_WIDTH +:
+                            REG_ADDR_WIDTH]
+                    };
             end
 
             cmn_reg_file #(
                 .REG_WIDTH(`RV64_XLEN),
-                .REG_COUNT(32),
-                .READ_PORTS(4),
+                // Keep architectural p0-p31 tags while spreading them over
+                // the selected bank count.  The upper 32 storage slots are
+                // reserved for a future wider physical-tag space.
+                .REG_COUNT(BANKED_REG_COUNT),
+                .READ_PORTS(6),
                 .WRITE_PORTS(2),
                 .READ_PORTS_PER_BANK(BANKED_READ_PORTS_PER_BANK),
-                .BANK_SIZE(16),
-                .NUM_BANKS(2),
+                // Retirement write port zero is the older instruction.
+                .FIXED_WRITE_PRIORITY(1),
+                .READ_GROUP_SIZE(2),
+                .BANK_SIZE(BANKED_BANK_SIZE),
+                .NUM_BANKS(BANKED_NUM_BANKS),
                 .FPGA_LUTRAM(FPGA_LUTRAM)
             ) u_reg_file (
                 .clk(clk),
                 .rst_n(rst_n),
-                .rp_addr_i(read_addr_i[4*REG_ADDR_WIDTH-1:0]),
+                .rp_addr_i(banked_storage_read_addr),
                 .rp_data_o(banked_read_data_raw),
                 .rp_req_i(banked_read_req),
                 .rp_ack_o(banked_read_ack),
                 .rp_valid_o(banked_read_valid),
-                .wp_addr_i(write_addr_i[2*REG_ADDR_WIDTH-1:0]),
+                .wp_addr_i(banked_storage_write_addr),
                 .wp_data_i(write_data_i[2*`RV64_XLEN-1:0]),
                 .wp_req_i(banked_write_req),
                 .wp_ack_o(banked_write_ack),
@@ -109,31 +141,25 @@ module openrv64_rv64i_gpr_3p #(
 
             always @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
-                    banked_read_zero_q <= 4'b0000;
+                    banked_read_zero_q <= 6'b000000;
                     banked_write_zero_q <= 2'b00;
                 end else begin
-                    banked_read_zero_q <= read_req_i[3:0] &
+                    banked_read_zero_q <= read_req_i &
                                           banked_read_zero;
                     banked_write_zero_q <= write_valid_i[1:0] &
                                            banked_write_zero;
                 end
             end
 
-            assign read_data_o = {
-                {2*`RV64_XLEN{1'b0}}, banked_read_data
-            };
-            assign read_ack_o = {
-                2'b00,
-                banked_read_ack | (read_req_i[3:0] & banked_read_zero)
-            };
-            assign read_valid_o = {
+            assign read_data_o = banked_read_data;
+            assign read_ack_o =
+                banked_read_ack | (read_req_i & banked_read_zero);
+            assign read_valid_o =
 `ifdef OPENRV64_BANKED_GPR_MAGIC_READS
-                2'b00, banked_read_valid |
-                    (read_req_i[3:0] & banked_read_zero)
+                banked_read_valid | (read_req_i & banked_read_zero);
 `else
-                2'b00, banked_read_valid | banked_read_zero_q
+                banked_read_valid | banked_read_zero_q;
 `endif
-            };
             assign write_ack_o = {
                 1'b0,
                 banked_write_ack |

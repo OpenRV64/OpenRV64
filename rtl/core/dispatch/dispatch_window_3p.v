@@ -66,6 +66,11 @@ module openrv64_dispatch_window_3p #(
     output wire [3*`OPENRV64_DISPATCH_META_WIDTH-1:0] allocation_meta_o,
 
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_i,
+    // Pre-handshake candidates and their age ranks.  The banked register-load
+    // requester uses these stable sidebands to arbitrate six read addresses
+    // without feeding register-file grants back into candidate generation.
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_candidate_valid_o,
+    output reg  [`OPENRV64_EXEC_PIPE_COUNT*2-1:0] pipe_age_rank_o,
     output reg  [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid_o,
     output reg  [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_id_o,
@@ -1529,35 +1534,60 @@ module openrv64_dispatch_window_3p #(
     // combined ready -> valid -> payload process forms a false combinational
     // loop in synthesis even though the payload selection itself is stable.
     always @* begin
-        pipe_valid_o = {
+        pipe_candidate_valid_o = {
             2'b00,
             select_ex1_admit,
             select_ex0_admit
         };
+        pipe_age_rank_o =
+            {`OPENRV64_EXEC_PIPE_COUNT*2{1'b0}};
+        if (select_ex0_admit)
+            pipe_age_rank_o[0*2 +: 2] = select_ex0_rank[1:0];
+        if (select_ex1_admit)
+            pipe_age_rank_o[1*2 +: 2] = select_ex1_rank[1:0];
         if (select_mem_admit)
-            pipe_valid_o[selected_mem_pipe] = 1'b1;
-        // Coupled acceptance is required: allowing the younger operation to
-        // enter its queue alone would hide the still-unissued older operation
-        // from the cross-queue memory-order gate.
-        if (select_mem2_admit && select_mem_admit &&
-            pipe_ready_i[selected_mem_pipe] &&
-            pipe_ready_i[selected_mem2_pipe])
-            pipe_valid_o[selected_mem2_pipe] = 1'b1;
+            begin
+                pipe_candidate_valid_o[selected_mem_pipe] = 1'b1;
+                pipe_age_rank_o[selected_mem_pipe*2 +: 2] =
+                    select_mem_rank[1:0];
+            end
+        if (select_mem2_admit && select_mem_admit) begin
+            pipe_candidate_valid_o[selected_mem2_pipe] = 1'b1;
+            pipe_age_rank_o[selected_mem2_pipe*2 +: 2] =
+                select_mem2_rank[1:0];
+        end
 
         if (recovery_pending_q) begin
-            pipe_valid_o = {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            pipe_candidate_valid_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
         end else if (selective_recovery_request) begin
             // EX1 may be the branch whose accepted issue is producing the raw
             // redirect.  Cancelling that handshake makes redirect and valid
             // combinationally negate one another.  Preserve only that exact
             // resolving branch; inhibit every unrelated issue immediately.
-            pipe_valid_o[0] = 1'b0;
-            pipe_valid_o[2] = 1'b0;
-            pipe_valid_o[3] = 1'b0;
+            pipe_candidate_valid_o[0] = 1'b0;
+            pipe_candidate_valid_o[2] = 1'b0;
+            pipe_candidate_valid_o[3] = 1'b0;
             if (!select_ex1_valid ||
-                (id_q[select_ex1] != squash_id_i))
-                pipe_valid_o[1] = 1'b0;
+                (id_q[select_ex1] != squash_id_i)) begin
+                pipe_candidate_valid_o[1] = 1'b0;
+            end
         end
+    end
+
+    // Candidate selection is ready-independent.  Keep the actual handshake
+    // valid in a separate process because the secondary-memory contract reads
+    // ready.  Combining these outputs in one process makes candidate valid
+    // appear ready-dependent and closes a false RF request/ack loop.
+    always @* begin
+        pipe_valid_o = pipe_candidate_valid_o;
+        // Coupled acceptance is required: allowing the younger operation to
+        // enter its queue alone would hide the still-unissued older operation
+        // from the cross-queue memory-order gate.
+        if (select_mem2_admit && select_mem_admit &&
+            !(pipe_ready_i[selected_mem_pipe] &&
+              pipe_ready_i[selected_mem2_pipe]))
+            pipe_valid_o[selected_mem2_pipe] = 1'b0;
     end
 
     wire issue_ex0 = pipe_valid_o[0] && pipe_ready_i[0];

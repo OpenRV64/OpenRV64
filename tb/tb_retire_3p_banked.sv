@@ -263,6 +263,47 @@ module tb_retire_3p_banked;
             fail("next ready head did not fill the following write cycle");
         tick();
 
+        // Two same-bank writes must retire as a sliding prefix.  Suppress the
+        // younger address phase, consume the acknowledged older lane, then
+        // move the former younger lane to port zero and fill port one with the
+        // next ready instruction.
+        queue_valid = 3'b000;
+        queue_meta = {3*META_WIDTH{1'b0}};
+        queue_result = {3*RESULT_WIDTH{1'b0}};
+        queue_trace = 192'd0;
+        gpr_write_valid = 2'b00;
+        set_lane(0, 5'd10, PHYS_WIDTH'(10), 64'h1010);
+        set_lane(1, 5'd14, PHYS_WIDTH'(14), 64'h1414);
+        queue_valid = 3'b011;
+        #1;
+        if ((gpr_write != 2'b01) ||
+            !dut.direct_write_pair_conflict ||
+            (queue_accept != 3'b000))
+            fail("same-bank pair did not suppress its younger address phase");
+
+        gpr_write_valid = 2'b01;
+        #1;
+        if ((queue_accept != 3'b001) || (retire_arch != 3'b001))
+            fail("same-bank pair did not retire its acknowledged older lane");
+        tick();
+
+        // Model the queue's one-entry shift and expose a new second lane.
+        queue_meta[0 +: META_WIDTH] =
+            queue_meta[1*META_WIDTH +: META_WIDTH];
+        queue_result[0 +: RESULT_WIDTH] =
+            queue_result[1*RESULT_WIDTH +: RESULT_WIDTH];
+        queue_trace[0 +: 64] = queue_trace[64 +: 64];
+        set_lane(1, 5'd11, PHYS_WIDTH'(11), 64'h1111);
+        queue_valid = 3'b011;
+        gpr_write_valid = 2'b11;
+        #1;
+        if ((gpr_write != 2'b11) ||
+            (gpr_addr[0 +: PHYS_WIDTH] != PHYS_WIDTH'(14)) ||
+            (gpr_addr[PHYS_WIDTH +: PHYS_WIDTH] != PHYS_WIDTH'(11)) ||
+            (queue_accept != 3'b011) || (retire_arch != 3'b011))
+            fail("shifted younger write did not fill retirement with its new peer");
+        tick();
+
         // A side-effecting CSR may flush the backend on its completion edge.
         // Its GPR result must therefore complete first; only then may the CSR
         // request become visible and be held until ready.

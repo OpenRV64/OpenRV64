@@ -145,6 +145,10 @@ module openrv64_dispatch #(
     output wire [2:0]                   allocation_valid_3p_o,
     output wire [3*RETIRE_META_WIDTH_3P-1:0] allocation_meta_3p_o,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_3p_i,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_candidate_valid_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
+                                        pipe_age_rank_3p_o,
     input  wire [1:0]                   forward_valid_3p_i,
     input  wire [2*`RV64_REG_ADDR_WIDTH-1:0] forward_rd_addr_3p_i,
     input  wire [2:0]                   completion_forward_valid_3p_i,
@@ -226,6 +230,10 @@ module openrv64_dispatch #(
                 {3*RETIRE_META_WIDTH_3P{1'b0}};
             assign pipe_valid_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign pipe_candidate_valid_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign pipe_age_rank_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT*2{1'b0}};
             assign pipe_id_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_INSTR_ID_WIDTH{1'b0}};
@@ -364,6 +372,10 @@ module openrv64_dispatch #(
             wire [3*`OPENRV64_DISPATCH_META_WIDTH-1:0]
                 window_allocation_meta;
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] window_pipe_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                window_pipe_candidate_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
+                window_pipe_age_rank;
             wire [`OPENRV64_EXEC_PIPE_COUNT*
                   `OPENRV64_INSTR_ID_WIDTH-1:0] window_pipe_id;
             wire [`OPENRV64_EXEC_PIPE_COUNT*RETIRE_SLOT_WIDTH_3P-1:0]
@@ -421,6 +433,8 @@ module openrv64_dispatch #(
                 .allocation_valid_o(window_allocation_valid),
                 .allocation_meta_o(window_allocation_meta),
                 .pipe_ready_i(pipe_ready_3p_i),
+                .pipe_candidate_valid_o(window_pipe_candidate_valid),
+                .pipe_age_rank_o(window_pipe_age_rank),
                 .pipe_valid_o(window_pipe_valid),
                 .pipe_id_o(window_pipe_id),
                 .pipe_slot_o(window_pipe_slot),
@@ -547,6 +561,13 @@ module openrv64_dispatch #(
             end
             assign pipe_valid_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_pipe_valid : strict_pipe_valid;
+            assign pipe_candidate_valid_3p_o =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_candidate_valid : strict_pipe_valid;
+            assign pipe_age_rank_3p_o =
+                (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_age_rank :
+                {`OPENRV64_EXEC_PIPE_COUNT*2{1'b0}};
             assign pipe_id_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_pipe_id : strict_pipe_id;
             assign pipe_slot_3p_o = (ENABLE_ISSUE_WINDOW_3P != 0) ?

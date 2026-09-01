@@ -39,6 +39,7 @@ module openrv64_backend_3p #(
     parameter integer BANKED_GPR = 0,
     parameter integer FPGA_GPR_LUTRAM = 0,
     parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
+    parameter integer BANKED_GPR_NUM_BANKS = 4,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
@@ -205,9 +206,15 @@ module openrv64_backend_3p #(
     wire [2:0] gpr_write;
     wire [2:0] gpr_write_ack;
     wire [2:0] gpr_write_ready;
+    wire banked_retire_write_pair_conflict;
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] gpr_write_addr;
     wire [3*`RV64_XLEN-1:0] gpr_write_data;
     wire gpr_quiescent;
+    wire [5:0] banked_legacy_read_req;
+    wire [6*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_legacy_storage_read_addr;
+    reg [6*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_independent_read_addr;
     wire [31:0] dispatch_write_busy;
     reg [31:0] banked_write_ack_hot;
     reg [PHYS_REG_ADDR_WIDTH-1:0] banked_write_ack_addr;
@@ -271,6 +278,10 @@ module openrv64_backend_3p #(
     wire [`OPENRV64_EXEC_PIPE_COUNT*
           `OPENRV64_INSTR_ID_WIDTH-1:0] pipe_src2_producer_id;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        dispatch_pipe_candidate_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
+        dispatch_pipe_age_rank;
     wire [`OPENRV64_EXEC_PIPE_COUNT*
           `OPENRV64_INSTR_ID_WIDTH-1:0] dispatch_pipe_id;
     wire [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
@@ -1619,8 +1630,7 @@ module openrv64_backend_3p #(
     end
 
     assign gpr_read_addr = banked_window_regload ?
-        {{2*PHYS_REG_ADDR_WIDTH{1'b0}},
-         banked_regload_active_read_addr} :
+        banked_independent_read_addr :
         dispatch_gpr_read_addr;
 
     reg banked_deferred_follower_reg_write_r;
@@ -1670,10 +1680,11 @@ module openrv64_backend_3p #(
           banked_regload_lane0_fire &&
           !banked_regload_branch_correct_now));
 
-    // Redirects discard the requester's association with outstanding reads.
-    // An unacknowledged request is still held until ack; an acknowledged read
-    // is allowed to produce its delayed, poisoned response.  Stop issuing
-    // until both classes have drained and the register file is quiescent.
+    // Redirects stop new address phases.  The legacy grouped requester holds
+    // an unacknowledged request until ack.  The issue-window requesters may
+    // cancel an unaccepted candidate; accepted reads retain per-port owner
+    // state and return one cycle later.  Stop issuing until the register file
+    // itself is quiescent.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             banked_gpr_drain_q <= 1'b0;
@@ -1797,9 +1808,9 @@ module openrv64_backend_3p #(
                 !banked_read_done_q[banked_read_port] &&
                 !read_response_now && !read_capture_valid;
 
-            assign gpr_read_req[banked_read_port] =
+            assign banked_legacy_read_req[banked_read_port] =
                 banked_read_pending_q[banked_read_port] || read_start;
-            assign gpr_storage_read_addr[
+            assign banked_legacy_storage_read_addr[
                 banked_read_port*PHYS_REG_ADDR_WIDTH +:
                 PHYS_REG_ADDR_WIDTH] =
                 banked_read_pending_q[banked_read_port] ?
@@ -1905,8 +1916,9 @@ module openrv64_backend_3p #(
         !flush_i && !squash_frontend_i;
     assign banked_regload_ingress_pipe_ready =
         {`OPENRV64_EXEC_PIPE_COUNT{banked_regload_ingress_capacity}};
-    wire banked_regload_window_capture = banked_window_regload &&
-        (|(dispatch_pipe_valid & banked_regload_ingress_pipe_ready));
+    // The issue-window path is owned by the independent requester below.
+    // Keep this legacy group state exclusively for the non-window backend.
+    wire banked_regload_window_capture = 1'b0;
     wire banked_regload_capture_valid = banked_window_regload ?
         banked_regload_window_capture : (|allocation_valid);
     wire [1:0] banked_regload_capture_lane_valid =
@@ -2098,6 +2110,824 @@ module openrv64_backend_3p #(
                 !distance[`OPENRV64_INSTR_ID_WIDTH-1];
         end
     endfunction
+
+    // Independent issue-window register-load pipeline.
+    //
+    // Each selected instruction owns one atomic pair of logical RF ports for
+    // its address phase.  The pair number is the selector's age rank, so up to
+    // three instructions can arbitrate six reads without a shared group-valid
+    // credit.  Once both required reads are granted, scheduler ready is the
+    // instruction-level ack.  Metadata is retained per execution pipe while
+    // the corresponding data returns one cycle later.  An occupied execution
+    // pipe backpressures only a new instruction targeting that pipe.
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_independent_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*SLOT_WIDTH-1:0]
+        banked_independent_slot_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*
+         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        banked_independent_payload_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_src1_producer_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_independent_src1_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_src2_producer_valid_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_independent_src2_producer_id_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_uses_rs1_q;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_uses_rs2_q;
+    reg [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_operand_done_q;
+    reg [2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN-1:0]
+        banked_independent_operand_data_q;
+
+    // An accepted RF address carries its execution-pipe and instruction-ID
+    // ownership through the delayed data phase.  ID qualification makes a
+    // poisoned redirect response harmless even if its physical port is
+    // immediately reused after the file becomes quiescent.
+    reg [5:0] banked_independent_response_owner_valid_q;
+    reg [6*2-1:0] banked_independent_response_owner_pipe_q;
+    reg [6*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_independent_response_owner_id_q;
+    reg [5:0] banked_independent_response_poison_q;
+
+    // A withheld address phase is retained per atomic requester pair.  This
+    // is a retry skid, not a global group lock: other pairs remain free to
+    // accept one transaction per cycle.
+    reg [2:0] banked_independent_held_valid_q;
+    reg [5:0] banked_independent_held_req_q;
+    reg [6*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_independent_held_addr_q;
+    reg [3*2-1:0] banked_independent_held_pipe_q;
+    reg [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_independent_held_id_q;
+
+    reg [5:0] banked_independent_read_req;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_candidate_enabled;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_candidate_need_rs1;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_candidate_need_rs2;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_pipe_ready;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_pair_accepted;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_candidate_request_valid;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_candidate_from_held;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
+        banked_independent_candidate_group;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_accept = dispatch_pipe_valid &
+                                    banked_independent_pipe_ready;
+
+    reg [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_response_now;
+    reg [2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN-1:0]
+        banked_independent_response_data;
+    wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_operand_ready =
+            banked_independent_operand_done_q |
+            banked_independent_response_now;
+    reg [2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN-1:0]
+        banked_independent_operand_data;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*
+         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        banked_independent_issue_payload;
+    reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_pipe_offer;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_pipe_fire =
+            banked_independent_pipe_offer & pipe_ready;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_output_capacity =
+            ~banked_independent_valid_q |
+            banked_independent_pipe_fire;
+
+    integer banked_independent_candidate_pipe;
+    integer banked_independent_candidate_rank;
+    integer banked_independent_candidate_group_scan;
+    reg [PHYS_REG_ADDR_WIDTH-1:0]
+        banked_independent_candidate_rs1;
+    reg [PHYS_REG_ADDR_WIDTH-1:0]
+        banked_independent_candidate_rs2;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        banked_independent_candidate_id;
+    always @* begin
+        banked_independent_read_req = 6'b000000;
+        banked_independent_read_addr =
+            {6*PHYS_REG_ADDR_WIDTH{1'b0}};
+        banked_independent_candidate_enabled =
+            dispatch_pipe_candidate_valid;
+        banked_independent_candidate_need_rs1 =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_independent_candidate_need_rs2 =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_independent_candidate_request_valid =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_independent_candidate_from_held =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_independent_candidate_group =
+            {`OPENRV64_EXEC_PIPE_COUNT*2{1'b0}};
+        banked_independent_candidate_rank = 0;
+        banked_independent_candidate_rs1 =
+            {PHYS_REG_ADDR_WIDTH{1'b0}};
+        banked_independent_candidate_rs2 =
+            {PHYS_REG_ADDR_WIDTH{1'b0}};
+        banked_independent_candidate_id =
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+
+        // Retained, unacknowledged transactions own their physical pair until
+        // grant.  They continue through redirect drain; a killed transaction
+        // is poisoned when its address is finally accepted.
+        for (banked_independent_candidate_group_scan = 0;
+             banked_independent_candidate_group_scan < 3;
+             banked_independent_candidate_group_scan =
+                 banked_independent_candidate_group_scan + 1) begin
+            if (banked_independent_held_valid_q[
+                    banked_independent_candidate_group_scan]) begin
+                banked_independent_read_req[
+                    banked_independent_candidate_group_scan*2 +: 2] =
+                    banked_independent_held_req_q[
+                        banked_independent_candidate_group_scan*2 +: 2];
+                banked_independent_read_addr[
+                    (banked_independent_candidate_group_scan*2)*
+                    PHYS_REG_ADDR_WIDTH +: 2*PHYS_REG_ADDR_WIDTH] =
+                    banked_independent_held_addr_q[
+                        (banked_independent_candidate_group_scan*2)*
+                        PHYS_REG_ADDR_WIDTH +: 2*PHYS_REG_ADDR_WIDTH];
+            end
+        end
+
+        // The issue window's secondary-memory valid is intentionally coupled
+        // to the primary memory ready.  Do not launch its RF transaction
+        // speculatively; it becomes the primary candidate on the next cycle.
+        // EX0, EX1, and one memory instruction still admit three-wide.
+        if (dispatch_pipe_candidate_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
+            dispatch_pipe_candidate_valid[`OPENRV64_EXEC_PIPE_MEM1]) begin
+            if (dispatch_pipe_age_rank[
+                    `OPENRV64_EXEC_PIPE_MEM0*2 +: 2] <
+                dispatch_pipe_age_rank[
+                    `OPENRV64_EXEC_PIPE_MEM1*2 +: 2])
+                banked_independent_candidate_enabled[
+                    `OPENRV64_EXEC_PIPE_MEM1] = 1'b0;
+            else
+                banked_independent_candidate_enabled[
+                    `OPENRV64_EXEC_PIPE_MEM0] = 1'b0;
+        end
+
+        // Drive address requests independently of their combinational grants.
+        // This is what breaks the previous ready -> group-valid feedback loop.
+        for (banked_independent_candidate_pipe = 0;
+             banked_independent_candidate_pipe <
+                 `OPENRV64_EXEC_PIPE_COUNT;
+             banked_independent_candidate_pipe =
+                 banked_independent_candidate_pipe + 1) begin
+            banked_independent_candidate_rank = dispatch_pipe_age_rank[
+                banked_independent_candidate_pipe*2 +: 2];
+            banked_independent_candidate_id = dispatch_pipe_id[
+                banked_independent_candidate_pipe*
+                `OPENRV64_INSTR_ID_WIDTH +:
+                `OPENRV64_INSTR_ID_WIDTH];
+            banked_independent_candidate_group[
+                banked_independent_candidate_pipe*2 +: 2] =
+                banked_independent_candidate_rank[1:0];
+            for (banked_independent_candidate_group_scan = 0;
+                 banked_independent_candidate_group_scan < 3;
+                 banked_independent_candidate_group_scan =
+                     banked_independent_candidate_group_scan + 1) begin
+                if (banked_independent_held_valid_q[
+                        banked_independent_candidate_group_scan] &&
+                    (banked_independent_held_id_q[
+                         banked_independent_candidate_group_scan*
+                         `OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH] ==
+                     banked_independent_candidate_id)) begin
+                    banked_independent_candidate_from_held[
+                        banked_independent_candidate_pipe] = 1'b1;
+                    banked_independent_candidate_group[
+                        banked_independent_candidate_pipe*2 +: 2] =
+                        banked_independent_candidate_group_scan[1:0];
+                end
+            end
+            banked_independent_candidate_rs1 = dispatch_pipe_payload[
+                banked_independent_candidate_pipe*
+                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 237 +:
+                PHYS_REG_ADDR_WIDTH];
+            banked_independent_candidate_rs2 = dispatch_pipe_payload[
+                banked_independent_candidate_pipe*
+                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 232 +:
+                PHYS_REG_ADDR_WIDTH];
+
+            if (banked_independent_candidate_enabled[
+                    banked_independent_candidate_pipe] &&
+                banked_independent_output_capacity[
+                    banked_independent_candidate_pipe] &&
+                !banked_gpr_drain_q && !flush_i &&
+                !squash_frontend_i) begin
+                if (banked_independent_candidate_from_held[
+                        banked_independent_candidate_pipe]) begin
+                    banked_independent_candidate_request_valid[
+                        banked_independent_candidate_pipe] = 1'b1;
+                end else if (!banked_independent_held_valid_q[
+                                 banked_independent_candidate_rank]) begin
+                    banked_independent_candidate_request_valid[
+                        banked_independent_candidate_pipe] = 1'b1;
+                    banked_independent_candidate_need_rs1[
+                        banked_independent_candidate_pipe] =
+                        dispatch_pipe_uses_rs1[
+                            banked_independent_candidate_pipe] &&
+                        !dispatch_pipe_src1_producer_valid[
+                            banked_independent_candidate_pipe] &&
+                        (banked_independent_candidate_rs1 !=
+                         {PHYS_REG_ADDR_WIDTH{1'b0}});
+                    banked_independent_candidate_need_rs2[
+                        banked_independent_candidate_pipe] =
+                        dispatch_pipe_uses_rs2[
+                            banked_independent_candidate_pipe] &&
+                        !dispatch_pipe_src2_producer_valid[
+                            banked_independent_candidate_pipe] &&
+                        (banked_independent_candidate_rs2 !=
+                         {PHYS_REG_ADDR_WIDTH{1'b0}});
+                    banked_independent_read_addr[
+                        (banked_independent_candidate_rank*2+0)*
+                        PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH] =
+                        banked_independent_candidate_rs1;
+                    banked_independent_read_addr[
+                        (banked_independent_candidate_rank*2+1)*
+                        PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH] =
+                        banked_independent_candidate_rs2;
+                    banked_independent_read_req[
+                        banked_independent_candidate_rank*2+0] =
+                        banked_independent_candidate_need_rs1[
+                            banked_independent_candidate_pipe];
+                    banked_independent_read_req[
+                        banked_independent_candidate_rank*2+1] =
+                        banked_independent_candidate_need_rs2[
+                            banked_independent_candidate_pipe];
+                end
+            end
+        end
+
+    end
+
+    // Keep address presentation and grant consumption in separate
+    // combinational processes.  The request process above must be wholly
+    // independent of ack; otherwise an SRAM-style combinational grant creates
+    // a request -> grant -> request cycle even when procedural ordering makes
+    // the intended dataflow look feed-forward.
+    integer banked_independent_ready_pipe;
+    integer banked_independent_ready_rank;
+    always @* begin
+        banked_independent_pipe_ready =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_independent_pair_accepted =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_independent_ready_rank = 0;
+
+        // The register file grants both requested members of a pair or
+        // neither.  No-source and fully-forwarded instructions synthesize an
+        // immediate address-phase ack without consuming a bank port.
+        for (banked_independent_ready_pipe = 0;
+             banked_independent_ready_pipe <
+                 `OPENRV64_EXEC_PIPE_COUNT;
+             banked_independent_ready_pipe =
+                 banked_independent_ready_pipe + 1) begin
+            banked_independent_ready_rank =
+                banked_independent_candidate_group[
+                    banked_independent_ready_pipe*2 +: 2];
+            if (banked_independent_candidate_enabled[
+                    banked_independent_ready_pipe] &&
+                banked_independent_candidate_request_valid[
+                    banked_independent_ready_pipe] &&
+                banked_independent_output_capacity[
+                    banked_independent_ready_pipe] &&
+                !banked_gpr_drain_q && !flush_i &&
+                !squash_frontend_i) begin
+                banked_independent_pair_accepted[
+                    banked_independent_ready_pipe] =
+                    (!banked_independent_read_req[
+                         banked_independent_ready_rank*2+0] ||
+                     gpr_read_ack[
+                         banked_independent_ready_rank*2+0]) &&
+                    (!banked_independent_read_req[
+                         banked_independent_ready_rank*2+1] ||
+                     gpr_read_ack[
+                         banked_independent_ready_rank*2+1]);
+                banked_independent_pipe_ready[
+                    banked_independent_ready_pipe] =
+                    banked_independent_pair_accepted[
+                        banked_independent_ready_pipe];
+            end
+        end
+    end
+
+    integer banked_independent_held_state_group;
+    integer banked_independent_held_state_pipe;
+    integer banked_independent_held_state_port;
+    integer banked_independent_held_state_candidate_group;
+    reg banked_independent_held_state_accepted;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || (BANKED_GPR == 0)) begin
+            banked_independent_held_valid_q <= 3'b000;
+            banked_independent_held_req_q <= 6'b000000;
+            banked_independent_held_addr_q <=
+                {6*PHYS_REG_ADDR_WIDTH{1'b0}};
+            banked_independent_held_pipe_q <= 6'b000000;
+            banked_independent_held_id_q <=
+                {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            banked_independent_response_poison_q <= 6'b000000;
+        end else begin
+            banked_independent_response_poison_q <=
+                banked_independent_response_poison_q & ~gpr_read_valid;
+
+            for (banked_independent_held_state_group = 0;
+                 banked_independent_held_state_group < 3;
+                 banked_independent_held_state_group =
+                     banked_independent_held_state_group + 1) begin
+                if (banked_independent_held_valid_q[
+                        banked_independent_held_state_group]) begin
+                    banked_independent_held_state_accepted = 1'b0;
+                    for (banked_independent_held_state_pipe = 0;
+                         banked_independent_held_state_pipe <
+                             `OPENRV64_EXEC_PIPE_COUNT;
+                         banked_independent_held_state_pipe =
+                             banked_independent_held_state_pipe + 1) begin
+                        if (banked_independent_accept[
+                                banked_independent_held_state_pipe] &&
+                            banked_independent_candidate_from_held[
+                                banked_independent_held_state_pipe] &&
+                            (banked_independent_candidate_group[
+                                 banked_independent_held_state_pipe*2 +: 2] ==
+                             banked_independent_held_state_group[1:0]))
+                            banked_independent_held_state_accepted = 1'b1;
+                    end
+                    if ((banked_independent_held_req_q[
+                             banked_independent_held_state_group*2 +: 2] !=
+                         2'b00) &&
+                        ((banked_independent_held_req_q[
+                              banked_independent_held_state_group*2 +: 2] &
+                          gpr_read_ack[
+                              banked_independent_held_state_group*2 +: 2]) ==
+                         banked_independent_held_req_q[
+                             banked_independent_held_state_group*2 +: 2])) begin
+                        banked_independent_held_valid_q[
+                            banked_independent_held_state_group] <= 1'b0;
+                        if (!banked_independent_held_state_accepted)
+                            banked_independent_response_poison_q[
+                                banked_independent_held_state_group*2 +: 2] <=
+                                banked_independent_held_req_q[
+                                    banked_independent_held_state_group*2 +: 2];
+                    end
+                end else begin
+                    // Capture a newly withheld pair at the same edge that
+                    // would otherwise allow the selector to change its port.
+                    for (banked_independent_held_state_pipe = 0;
+                         banked_independent_held_state_pipe <
+                             `OPENRV64_EXEC_PIPE_COUNT;
+                         banked_independent_held_state_pipe =
+                             banked_independent_held_state_pipe + 1) begin
+                        banked_independent_held_state_candidate_group =
+                            banked_independent_candidate_group[
+                                banked_independent_held_state_pipe*2 +: 2];
+                        if (banked_independent_candidate_request_valid[
+                                banked_independent_held_state_pipe] &&
+                            !banked_independent_candidate_from_held[
+                                banked_independent_held_state_pipe] &&
+                            (banked_independent_held_state_candidate_group ==
+                             banked_independent_held_state_group) &&
+                            (banked_independent_read_req[
+                                 banked_independent_held_state_group*2 +: 2] !=
+                             2'b00) &&
+                            !banked_independent_pair_accepted[
+                                banked_independent_held_state_pipe]) begin
+                            banked_independent_held_valid_q[
+                                banked_independent_held_state_group] <= 1'b1;
+                            banked_independent_held_req_q[
+                                banked_independent_held_state_group*2 +: 2] <=
+                                banked_independent_read_req[
+                                    banked_independent_held_state_group*2 +: 2];
+                            banked_independent_held_addr_q[
+                                (banked_independent_held_state_group*2)*
+                                PHYS_REG_ADDR_WIDTH +:
+                                2*PHYS_REG_ADDR_WIDTH] <=
+                                banked_independent_read_addr[
+                                    (banked_independent_held_state_group*2)*
+                                    PHYS_REG_ADDR_WIDTH +:
+                                    2*PHYS_REG_ADDR_WIDTH];
+                            banked_independent_held_pipe_q[
+                                banked_independent_held_state_group*2 +: 2] <=
+                                banked_independent_held_state_pipe[1:0];
+                            banked_independent_held_id_q[
+                                banked_independent_held_state_group*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH] <= dispatch_pipe_id[
+                                    banked_independent_held_state_pipe*
+                                    `OPENRV64_INSTR_ID_WIDTH +:
+                                    `OPENRV64_INSTR_ID_WIDTH];
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    integer banked_independent_response_port;
+    integer banked_independent_response_pipe;
+    integer banked_independent_response_operand;
+    always @* begin
+        banked_independent_response_now =
+            {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        banked_independent_response_data =
+            {2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN{1'b0}};
+        banked_independent_response_pipe = 0;
+        banked_independent_response_operand = 0;
+        for (banked_independent_response_port = 0;
+             banked_independent_response_port < 6;
+             banked_independent_response_port =
+                 banked_independent_response_port + 1) begin
+            banked_independent_response_pipe =
+                banked_independent_response_owner_pipe_q[
+                    banked_independent_response_port*2 +: 2];
+            banked_independent_response_operand =
+                banked_independent_response_pipe*2 +
+                (banked_independent_response_port & 1);
+            if (gpr_read_valid[banked_independent_response_port] &&
+                banked_independent_response_owner_valid_q[
+                    banked_independent_response_port] &&
+                banked_independent_valid_q[
+                    banked_independent_response_pipe] &&
+                (banked_independent_id_q[
+                     banked_independent_response_pipe*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH] ==
+                 banked_independent_response_owner_id_q[
+                     banked_independent_response_port*
+                     `OPENRV64_INSTR_ID_WIDTH +:
+                     `OPENRV64_INSTR_ID_WIDTH])) begin
+                banked_independent_response_now[
+                    banked_independent_response_operand] = 1'b1;
+                banked_independent_response_data[
+                    banked_independent_response_operand*`RV64_XLEN +:
+                    `RV64_XLEN] = gpr_read_data[
+                        banked_independent_response_port*`RV64_XLEN +:
+                        `RV64_XLEN];
+            end
+        end
+    end
+
+    integer banked_independent_data_operand;
+    integer banked_independent_offer_pipe;
+    always @* begin
+        banked_independent_operand_data =
+            banked_independent_operand_data_q;
+        for (banked_independent_data_operand = 0;
+             banked_independent_data_operand <
+                 2*`OPENRV64_EXEC_PIPE_COUNT;
+             banked_independent_data_operand =
+                 banked_independent_data_operand + 1) begin
+            if (!banked_independent_operand_done_q[
+                    banked_independent_data_operand] &&
+                banked_independent_response_now[
+                    banked_independent_data_operand])
+                banked_independent_operand_data[
+                    banked_independent_data_operand*`RV64_XLEN +:
+                    `RV64_XLEN] = banked_independent_response_data[
+                        banked_independent_data_operand*`RV64_XLEN +:
+                        `RV64_XLEN];
+        end
+
+        banked_independent_issue_payload =
+            banked_independent_payload_q;
+        banked_independent_pipe_offer =
+            {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+        for (banked_independent_offer_pipe = 0;
+             banked_independent_offer_pipe <
+                 `OPENRV64_EXEC_PIPE_COUNT;
+             banked_independent_offer_pipe =
+                 banked_independent_offer_pipe + 1) begin
+            banked_independent_issue_payload[
+                banked_independent_offer_pipe*
+                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 168 +:
+                `RV64_XLEN] = banked_independent_operand_data[
+                    (banked_independent_offer_pipe*2+0)*`RV64_XLEN +:
+                    `RV64_XLEN];
+            banked_independent_issue_payload[
+                banked_independent_offer_pipe*
+                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 104 +:
+                `RV64_XLEN] = banked_independent_operand_data[
+                    (banked_independent_offer_pipe*2+1)*`RV64_XLEN +:
+                    `RV64_XLEN];
+            banked_independent_pipe_offer[
+                banked_independent_offer_pipe] =
+                banked_independent_valid_q[
+                    banked_independent_offer_pipe] &&
+                banked_independent_operand_ready[
+                    banked_independent_offer_pipe*2+0] &&
+                banked_independent_operand_ready[
+                    banked_independent_offer_pipe*2+1] &&
+                !banked_gpr_drain_q && !flush_i;
+        end
+    end
+
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_redirect_survivor;
+    genvar banked_independent_survivor_pipe;
+    generate
+        for (banked_independent_survivor_pipe = 0;
+             banked_independent_survivor_pipe <
+                 `OPENRV64_EXEC_PIPE_COUNT;
+             banked_independent_survivor_pipe =
+                 banked_independent_survivor_pipe + 1) begin :
+                g_banked_independent_survivor
+            wire [`OPENRV64_INSTR_ID_WIDTH-1:0] state_id =
+                banked_independent_id_q[
+                    banked_independent_survivor_pipe*
+                    `OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
+            assign banked_independent_redirect_survivor[
+                banked_independent_survivor_pipe] =
+                banked_independent_valid_q[
+                    banked_independent_survivor_pipe] &&
+                !banked_independent_pipe_fire[
+                    banked_independent_survivor_pipe] &&
+                (state_id != exec_redirect_id) &&
+                !banked_id_is_younger(state_id, exec_redirect_id);
+        end
+    endgenerate
+
+    integer banked_independent_state_pipe;
+    integer banked_independent_state_port;
+    integer banked_independent_owner_port;
+    integer banked_independent_state_operand;
+    integer banked_independent_state_rank;
+    reg [PHYS_REG_ADDR_WIDTH-1:0]
+        banked_independent_state_source_addr;
+    reg banked_independent_state_source_use;
+    reg banked_independent_state_source_forwarded;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            banked_independent_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_operand_done_q <=
+                {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_operand_data_q <=
+                {2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN{1'b0}};
+            banked_independent_response_owner_valid_q <= 6'b000000;
+        end else if ((BANKED_GPR == 0) || flush_i) begin
+            banked_independent_valid_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_operand_done_q <=
+                {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_response_owner_valid_q <= 6'b000000;
+        end else if (squash_frontend_i) begin
+            banked_independent_valid_q <=
+                banked_independent_redirect_survivor;
+            for (banked_independent_state_pipe = 0;
+                 banked_independent_state_pipe <
+                     `OPENRV64_EXEC_PIPE_COUNT;
+                 banked_independent_state_pipe =
+                     banked_independent_state_pipe + 1) begin
+                for (banked_independent_state_operand = 0;
+                     banked_independent_state_operand < 2;
+                     banked_independent_state_operand =
+                         banked_independent_state_operand + 1) begin
+                    if (banked_independent_redirect_survivor[
+                            banked_independent_state_pipe]) begin
+                        banked_independent_operand_done_q[
+                            banked_independent_state_pipe*2 +
+                            banked_independent_state_operand] <=
+                            banked_independent_operand_ready[
+                                banked_independent_state_pipe*2 +
+                                banked_independent_state_operand];
+                        if (banked_independent_response_now[
+                                banked_independent_state_pipe*2 +
+                                banked_independent_state_operand])
+                            banked_independent_operand_data_q[
+                                (banked_independent_state_pipe*2 +
+                                 banked_independent_state_operand)*
+                                `RV64_XLEN +: `RV64_XLEN] <=
+                                banked_independent_response_data[
+                                    (banked_independent_state_pipe*2 +
+                                     banked_independent_state_operand)*
+                                    `RV64_XLEN +: `RV64_XLEN];
+                    end else begin
+                        banked_independent_operand_done_q[
+                            banked_independent_state_pipe*2 +
+                            banked_independent_state_operand] <= 1'b0;
+                    end
+                end
+            end
+            for (banked_independent_state_port = 0;
+                 banked_independent_state_port < 6;
+                 banked_independent_state_port =
+                     banked_independent_state_port + 1) begin
+                if (gpr_read_valid[banked_independent_state_port] ||
+                    (banked_independent_response_owner_id_q[
+                         banked_independent_state_port*
+                         `OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH] == exec_redirect_id) ||
+                    banked_id_is_younger(
+                        banked_independent_response_owner_id_q[
+                            banked_independent_state_port*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH],
+                        exec_redirect_id))
+                    banked_independent_response_owner_valid_q[
+                        banked_independent_state_port] <= 1'b0;
+            end
+        end else begin
+            // Retain a returned operand if its execution pipe cannot consume
+            // the instruction on the response cycle.
+            for (banked_independent_state_operand = 0;
+                 banked_independent_state_operand <
+                     2*`OPENRV64_EXEC_PIPE_COUNT;
+                 banked_independent_state_operand =
+                     banked_independent_state_operand + 1) begin
+                if (banked_independent_response_now[
+                        banked_independent_state_operand]) begin
+                    banked_independent_operand_done_q[
+                        banked_independent_state_operand] <= 1'b1;
+                    banked_independent_operand_data_q[
+                        banked_independent_state_operand*`RV64_XLEN +:
+                        `RV64_XLEN] <= banked_independent_response_data[
+                            banked_independent_state_operand*`RV64_XLEN +:
+                            `RV64_XLEN];
+                end
+            end
+
+            for (banked_independent_state_pipe = 0;
+                 banked_independent_state_pipe <
+                     `OPENRV64_EXEC_PIPE_COUNT;
+                 banked_independent_state_pipe =
+                     banked_independent_state_pipe + 1) begin
+                if (banked_independent_pipe_fire[
+                        banked_independent_state_pipe]) begin
+                    banked_independent_valid_q[
+                        banked_independent_state_pipe] <= 1'b0;
+                    banked_independent_operand_done_q[
+                        banked_independent_state_pipe*2 +: 2] <= 2'b00;
+                end
+
+                if (banked_independent_accept[
+                        banked_independent_state_pipe]) begin
+                    banked_independent_valid_q[
+                        banked_independent_state_pipe] <= 1'b1;
+                    banked_independent_id_q[
+                        banked_independent_state_pipe*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] <= dispatch_pipe_id[
+                            banked_independent_state_pipe*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                    banked_independent_slot_q[
+                        banked_independent_state_pipe*SLOT_WIDTH +:
+                        SLOT_WIDTH] <= dispatch_pipe_slot[
+                            banked_independent_state_pipe*SLOT_WIDTH +:
+                            SLOT_WIDTH];
+                    banked_independent_payload_q[
+                        banked_independent_state_pipe*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <=
+                        dispatch_pipe_payload[
+                            banked_independent_state_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+                    banked_independent_src1_producer_valid_q[
+                        banked_independent_state_pipe] <=
+                        dispatch_pipe_src1_producer_valid[
+                            banked_independent_state_pipe];
+                    banked_independent_src1_producer_id_q[
+                        banked_independent_state_pipe*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] <=
+                        dispatch_pipe_src1_producer_id[
+                            banked_independent_state_pipe*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                    banked_independent_src2_producer_valid_q[
+                        banked_independent_state_pipe] <=
+                        dispatch_pipe_src2_producer_valid[
+                            banked_independent_state_pipe];
+                    banked_independent_src2_producer_id_q[
+                        banked_independent_state_pipe*
+                        `OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH] <=
+                        dispatch_pipe_src2_producer_id[
+                            banked_independent_state_pipe*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+                    banked_independent_uses_rs1_q[
+                        banked_independent_state_pipe] <=
+                        dispatch_pipe_uses_rs1[
+                            banked_independent_state_pipe];
+                    banked_independent_uses_rs2_q[
+                        banked_independent_state_pipe] <=
+                        dispatch_pipe_uses_rs2[
+                            banked_independent_state_pipe];
+
+                    for (banked_independent_state_operand = 0;
+                         banked_independent_state_operand < 2;
+                         banked_independent_state_operand =
+                             banked_independent_state_operand + 1) begin
+                        banked_independent_state_source_addr =
+                            dispatch_pipe_payload[
+                                banked_independent_state_pipe*
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                ((banked_independent_state_operand == 0) ?
+                                 237 : 232) +: PHYS_REG_ADDR_WIDTH];
+                        banked_independent_state_source_use =
+                            (banked_independent_state_operand == 0) ?
+                            dispatch_pipe_uses_rs1[
+                                banked_independent_state_pipe] :
+                            dispatch_pipe_uses_rs2[
+                                banked_independent_state_pipe];
+                        banked_independent_state_source_forwarded =
+                            (banked_independent_state_operand == 0) ?
+                            dispatch_pipe_src1_producer_valid[
+                                banked_independent_state_pipe] :
+                            dispatch_pipe_src2_producer_valid[
+                                banked_independent_state_pipe];
+                        banked_independent_operand_done_q[
+                            banked_independent_state_pipe*2 +
+                            banked_independent_state_operand] <=
+                            !banked_independent_state_source_use ||
+                            banked_independent_state_source_forwarded ||
+                            (banked_independent_state_source_addr ==
+                             {PHYS_REG_ADDR_WIDTH{1'b0}});
+                        banked_independent_operand_data_q[
+                            (banked_independent_state_pipe*2 +
+                             banked_independent_state_operand)*`RV64_XLEN +:
+                            `RV64_XLEN] <=
+                            banked_independent_state_source_forwarded ?
+                            dispatch_pipe_payload[
+                                banked_independent_state_pipe*
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                ((banked_independent_state_operand == 0) ?
+                                 168 : 104) +: `RV64_XLEN] :
+                            {`RV64_XLEN{1'b0}};
+                    end
+                end
+            end
+
+            // Consume old responses and install same-cycle address ownership
+            // for the next data phase.  The later assignment intentionally
+            // wins when one port returns old data and accepts a new address.
+            for (banked_independent_state_port = 0;
+                 banked_independent_state_port < 6;
+                 banked_independent_state_port =
+                     banked_independent_state_port + 1) begin
+                if (gpr_read_valid[banked_independent_state_port])
+                    banked_independent_response_owner_valid_q[
+                        banked_independent_state_port] <= 1'b0;
+            end
+            for (banked_independent_state_pipe = 0;
+                 banked_independent_state_pipe <
+                     `OPENRV64_EXEC_PIPE_COUNT;
+                 banked_independent_state_pipe =
+                     banked_independent_state_pipe + 1) begin
+                if (banked_independent_accept[
+                        banked_independent_state_pipe]) begin
+                    banked_independent_state_rank =
+                        banked_independent_candidate_group[
+                            banked_independent_state_pipe*2 +: 2];
+                    for (banked_independent_state_operand = 0;
+                         banked_independent_state_operand < 2;
+                         banked_independent_state_operand =
+                             banked_independent_state_operand + 1) begin
+                        banked_independent_owner_port =
+                            banked_independent_state_rank*2 +
+                            banked_independent_state_operand;
+                        if (banked_independent_read_req[
+                                banked_independent_owner_port] &&
+                            gpr_read_ack[
+                                banked_independent_owner_port]) begin
+                            banked_independent_response_owner_valid_q[
+                                banked_independent_owner_port] <= 1'b1;
+                            banked_independent_response_owner_pipe_q[
+                                banked_independent_owner_port*2 +: 2] <=
+                                banked_independent_state_pipe[1:0];
+                            banked_independent_response_owner_id_q[
+                                banked_independent_owner_port*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH] <=
+                                dispatch_pipe_id[
+                                    banked_independent_state_pipe*
+                                    `OPENRV64_INSTR_ID_WIDTH +:
+                                    `OPENRV64_INSTR_ID_WIDTH];
+                        end
+                    end
+                end
+            end
+        end
+    end
 
     wire banked_regload_allocation_branch_pair =
         !banked_window_regload && allocation_valid[1] &&
@@ -2505,25 +3335,37 @@ module openrv64_backend_3p #(
     end
 
     assign pipe_valid = (BANKED_GPR != 0) ?
-        banked_regload_pipe_offer_mask :
+        (banked_window_regload ? banked_independent_pipe_offer :
+         banked_regload_pipe_offer_mask) :
         dispatch_pipe_valid;
-    assign pipe_id = (BANKED_GPR != 0) ? banked_regload_issue_pipe_id :
+    assign pipe_id = (BANKED_GPR != 0) ?
+                     (banked_window_regload ? banked_independent_id_q :
+                      banked_regload_issue_pipe_id) :
                      dispatch_pipe_id;
-    assign pipe_slot = (BANKED_GPR != 0) ? banked_regload_issue_pipe_slot :
+    assign pipe_slot = (BANKED_GPR != 0) ?
+                       (banked_window_regload ? banked_independent_slot_q :
+                        banked_regload_issue_pipe_slot) :
                        dispatch_pipe_slot;
     assign pipe_payload = (BANKED_GPR != 0) ?
-        banked_regload_issue_pipe_payload : dispatch_pipe_payload;
+        (banked_window_regload ? banked_independent_issue_payload :
+         banked_regload_issue_pipe_payload) : dispatch_pipe_payload;
     assign pipe_src1_producer_valid = (BANKED_GPR != 0) ?
-        banked_regload_issue_src1_producer_valid :
+        (banked_window_regload ?
+         banked_independent_src1_producer_valid_q :
+         banked_regload_issue_src1_producer_valid) :
         dispatch_pipe_src1_producer_valid;
     assign pipe_src1_producer_id = (BANKED_GPR != 0) ?
-        banked_regload_issue_src1_producer_id :
+        (banked_window_regload ? banked_independent_src1_producer_id_q :
+         banked_regload_issue_src1_producer_id) :
         dispatch_pipe_src1_producer_id;
     assign pipe_src2_producer_valid = (BANKED_GPR != 0) ?
-        banked_regload_issue_src2_producer_valid :
+        (banked_window_regload ?
+         banked_independent_src2_producer_valid_q :
+         banked_regload_issue_src2_producer_valid) :
         dispatch_pipe_src2_producer_valid;
     assign pipe_src2_producer_id = (BANKED_GPR != 0) ?
-        banked_regload_issue_src2_producer_id :
+        (banked_window_regload ? banked_independent_src2_producer_id_q :
+         banked_regload_issue_src2_producer_id) :
         dispatch_pipe_src2_producer_id;
 
     // Source-split simulation probes keep MEM0 load forwarding from being
@@ -2637,13 +3479,21 @@ module openrv64_backend_3p #(
     wire banked_write_request = (BANKED_GPR != 0) && (|gpr_write[1:0]);
     wire [1:0] banked_write_accept =
         gpr_write[1:0] & gpr_write_ack[1:0];
+    // Sliding retirement suppresses a known-losing younger same-bank request
+    // before it reaches the register file.  Preserve that capacity event in
+    // the performance view even though it is no longer a held transaction.
     wire [1:0] banked_write_denied =
-        gpr_write[1:0] & ~gpr_write_ack[1:0];
+        (gpr_write[1:0] & ~gpr_write_ack[1:0]) |
+        {banked_retire_write_pair_conflict, 1'b0};
 
-    assign gpr_read_req[5:4] = 2'b00;
-    assign gpr_storage_read_addr[
+    assign banked_legacy_read_req[5:4] = 2'b00;
+    assign banked_legacy_storage_read_addr[
         6*PHYS_REG_ADDR_WIDTH-1:4*PHYS_REG_ADDR_WIDTH] =
         gpr_read_addr[6*PHYS_REG_ADDR_WIDTH-1:4*PHYS_REG_ADDR_WIDTH];
+    assign gpr_read_req = banked_window_regload ?
+        banked_independent_read_req : banked_legacy_read_req;
+    assign gpr_storage_read_addr = banked_window_regload ?
+        banked_independent_read_addr : banked_legacy_storage_read_addr;
     assign dispatch_gpr_read_data[6*`RV64_XLEN-1:4*`RV64_XLEN] =
         (BANKED_GPR == 0) ?
             gpr_read_data[6*`RV64_XLEN-1:4*`RV64_XLEN] :
@@ -2668,7 +3518,7 @@ module openrv64_backend_3p #(
     wire banked_read_bank_conflict = (BANKED_GPR != 0) &&
         (|(gpr_read_req[3:0] & ~gpr_read_ack[3:0]));
     wire banked_write_bank_conflict = (BANKED_GPR != 0) &&
-        (|(gpr_write[1:0] & ~gpr_write_ack[1:0]));
+        (|banked_write_denied);
     wire banked_bank_conflict = banked_read_bank_conflict ||
         banked_write_bank_conflict;
     wire banked_blocked_on_reads = (BANKED_GPR != 0) &&
@@ -3318,7 +4168,7 @@ module openrv64_backend_3p #(
         .ENABLE_ISSUE_WINDOW_3P(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW_3P(ENABLE_SPECULATION_WINDOW),
         .DEFER_WINDOW_GPR_READ_3P(BANKED_GPR != 0),
-        .MAX_WINDOW_ISSUE_LANES_3P((BANKED_GPR != 0) ? 2 : 4),
+        .MAX_WINDOW_ISSUE_LANES_3P((BANKED_GPR != 0) ? 3 : 4),
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
         .CACHEABLE_BASE_3P(CACHEABLE_BASE),
         .CACHEABLE_SIZE_3P(CACHEABLE_SIZE),
@@ -3376,9 +4226,11 @@ module openrv64_backend_3p #(
         .allocation_valid_3p_o(allocation_valid),
         .allocation_meta_3p_o(allocation_meta),
         .pipe_ready_3p_i(banked_window_regload ?
-            banked_regload_ingress_pipe_ready :
+            banked_independent_pipe_ready :
             ((BANKED_GPR != 0) ?
              {`OPENRV64_EXEC_PIPE_COUNT{1'b1}} : pipe_ready)),
+        .pipe_candidate_valid_3p_o(dispatch_pipe_candidate_valid),
+        .pipe_age_rank_3p_o(dispatch_pipe_age_rank),
         .forward_valid_3p_i(local_forward_valid),
         .forward_rd_addr_3p_i(local_forward_rd_addr),
         .completion_forward_valid_3p_i(
@@ -3440,6 +4292,7 @@ module openrv64_backend_3p #(
         .BANKED(BANKED_GPR),
         .FPGA_LUTRAM(FPGA_GPR_LUTRAM),
         .BANKED_READ_PORTS_PER_BANK(BANKED_GPR_READ_PORTS_PER_BANK),
+        .BANKED_NUM_BANKS(BANKED_GPR_NUM_BANKS),
         .NUM_REGS(PHYS_REG_COUNT),
         .REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH)
     ) u_gpr (
@@ -3763,7 +4616,8 @@ module openrv64_backend_3p #(
                 .PHYS_REG_COUNT(PHYS_REG_COUNT),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
                 .META_WIDTH(RETIRE_RECORD_WIDTH),
-                .RESULT_WIDTH(RETIRE_RESULT_WIDTH)
+                .RESULT_WIDTH(RETIRE_RESULT_WIDTH),
+                .GPR_BANK_COUNT(BANKED_GPR_NUM_BANKS)
             ) u_retire (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .queue_valid_i(retire_queue_valid),
@@ -3808,7 +4662,10 @@ module openrv64_backend_3p #(
                 .trace_rd_o(retire_rd_o),
                 .trace_wdata_o(retire_wdata_o)
             );
+            assign banked_retire_write_pair_conflict =
+                u_retire.direct_write_pair_conflict;
         end else begin : g_legacy_retire
+            assign banked_retire_write_pair_conflict = 1'b0;
             openrv64_retire_3p #(
                 .PHYS_REG_COUNT(PHYS_REG_COUNT),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),
@@ -4095,16 +4952,46 @@ module openrv64_backend_3p #(
 
 `ifndef SYNTHESIS
     localparam integer BANKED_GPR_ACCESS_TIMEOUT = 100;
-    reg [6:0] banked_gpr_read_wait_q [0:3];
+    reg [6:0] banked_gpr_read_wait_q [0:5];
     reg [6:0] banked_gpr_write_wait_q [0:1];
     reg [6:0] banked_gpr_drain_wait_q;
+    reg [5:0] banked_gpr_read_held_q;
+    reg [6*PHYS_REG_ADDR_WIDTH-1:0] banked_gpr_read_held_addr_q;
     integer banked_read_watch_port;
     integer banked_write_watch_port;
+    integer banked_hold_watch_port;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || (BANKED_GPR == 0) || flush_i ||
+            squash_frontend_i) begin
+            banked_gpr_read_held_q <= 6'b000000;
+            banked_gpr_read_held_addr_q <=
+                {6*PHYS_REG_ADDR_WIDTH{1'b0}};
+        end else begin
+            for (banked_hold_watch_port = 0;
+                 banked_hold_watch_port < 6;
+                 banked_hold_watch_port = banked_hold_watch_port + 1) begin
+                if (banked_gpr_read_held_q[banked_hold_watch_port] &&
+                    (!gpr_read_req[banked_hold_watch_port] ||
+                     (gpr_storage_read_addr[
+                          banked_hold_watch_port*PHYS_REG_ADDR_WIDTH +:
+                          PHYS_REG_ADDR_WIDTH] !=
+                      banked_gpr_read_held_addr_q[
+                          banked_hold_watch_port*PHYS_REG_ADDR_WIDTH +:
+                          PHYS_REG_ADDR_WIDTH])))
+                    $fatal(1,
+                           "banked 3P GPR read port %0d changed before address ack",
+                           banked_hold_watch_port);
+            end
+            banked_gpr_read_held_q <= gpr_read_req & ~gpr_read_ack;
+            banked_gpr_read_held_addr_q <= gpr_storage_read_addr;
+        end
+    end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (banked_read_watch_port = 0;
-                 banked_read_watch_port < 4;
+                 banked_read_watch_port < 6;
                  banked_read_watch_port = banked_read_watch_port + 1)
                 banked_gpr_read_wait_q[banked_read_watch_port] <= 7'd0;
             for (banked_write_watch_port = 0;
@@ -4113,7 +5000,7 @@ module openrv64_backend_3p #(
                 banked_gpr_write_wait_q[banked_write_watch_port] <= 7'd0;
         end else if (BANKED_GPR != 0) begin
             for (banked_read_watch_port = 0;
-                 banked_read_watch_port < 4;
+                 banked_read_watch_port < 6;
                  banked_read_watch_port = banked_read_watch_port + 1) begin
                 if (!gpr_read_req[banked_read_watch_port] ||
                     gpr_read_ack[banked_read_watch_port]) begin
@@ -4162,7 +5049,7 @@ module openrv64_backend_3p #(
             end
         end else begin
             for (banked_read_watch_port = 0;
-                 banked_read_watch_port < 4;
+                 banked_read_watch_port < 6;
                  banked_read_watch_port = banked_read_watch_port + 1)
                 banked_gpr_read_wait_q[banked_read_watch_port] <= 7'd0;
             for (banked_write_watch_port = 0;
@@ -4219,15 +5106,25 @@ module openrv64_backend_3p #(
     end
 
     always @(posedge clk) begin
-        if (rst_n && (BANKED_GPR != 0) &&
+        if (rst_n && (BANKED_GPR != 0) && banked_window_regload &&
+`ifdef OPENRV64_BANKED_GPR_MAGIC_READS
+            (gpr_read_ack != gpr_read_valid))
+`else
+            ((banked_independent_response_owner_valid_q |
+              banked_independent_response_poison_q) != gpr_read_valid))
+`endif
+            $fatal(1,
+                   "banked 3P GPR read response did not match the requester ack pipeline");
+        if (rst_n && (BANKED_GPR != 0) && !banked_window_regload &&
 `ifdef OPENRV64_BANKED_GPR_MAGIC_READS
             (gpr_read_ack[3:0] != gpr_read_valid[3:0]))
 `else
             (banked_read_ack_q != gpr_read_valid[3:0]))
 `endif
             $fatal(1,
-                   "banked 3P GPR read response did not match the requester ack pipeline");
-        if (rst_n && (BANKED_GPR != 0) && banked_gpr_drain_q &&
+                   "banked 3P legacy GPR response did not match the requester ack pipeline");
+        if (rst_n && (BANKED_GPR != 0) && !banked_window_regload &&
+            banked_gpr_drain_q &&
             (gpr_read_req[3:0] != banked_read_pending_q))
             $fatal(1,
                    "banked 3P GPR redirect drain started or dropped a read request");

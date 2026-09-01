@@ -53,6 +53,7 @@ module openrv64_rv64_top_3p #(
     parameter BANKED_GPR = 0,
     parameter FPGA_GPR_LUTRAM = 0,
     parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
+    parameter integer BANKED_GPR_NUM_BANKS = 4,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1I_FETCH_DATA_WIDTH = ENABLE_L1I ?
         `OPENRV64_ICX_LINE_DATA_WIDTH : `OPENRV64_AXI_DATA_WIDTH,
@@ -1135,6 +1136,7 @@ module openrv64_rv64_top_3p #(
         .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
         .BANKED_GPR_READ_PORTS_PER_BANK(
             BANKED_GPR_READ_PORTS_PER_BANK),
+        .BANKED_GPR_NUM_BANKS(BANKED_GPR_NUM_BANKS),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
         .CACHEABLE_BASE(L1D_CACHEABLE_BASE),

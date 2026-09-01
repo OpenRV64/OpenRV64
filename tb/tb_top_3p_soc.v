@@ -254,6 +254,7 @@ module tb_top_3p_soc #(
     parameter integer BANKED_GPR = 0,
     parameter integer FPGA_GPR_LUTRAM = 0,
     parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
+    parameter integer BANKED_GPR_NUM_BANKS = 4,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer ENABLE_POSTED_STORES = 1,
@@ -986,6 +987,31 @@ module tb_top_3p_soc #(
     integer window_wait_inflight_other_operand_cycles;
     integer window_wait_completed_operand_cycles;
     integer window_wait_missing_operand_cycles;
+    // Unavailable source operands cross-tabulated by the exact state of
+    // their producer.  Counts are operand-cycles, not mutually exclusive
+    // pipeline cycles.  Keep both the complete population and the subset
+    // sampled when the issue window has no eligible entry.
+    localparam [3:0] WINDOW_PRODUCER_UNISSUED_INELIGIBLE = 4'd0;
+    localparam [3:0] WINDOW_PRODUCER_UNISSUED_NO_OFFER = 4'd1;
+    localparam [3:0] WINDOW_PRODUCER_UNISSUED_REPLAY = 4'd2;
+    localparam [3:0] WINDOW_PRODUCER_UNISSUED_FIRE = 4'd3;
+    localparam [3:0] WINDOW_PRODUCER_REGLOAD_PENDING = 4'd4;
+    localparam [3:0] WINDOW_PRODUCER_REGLOAD_ACTIVE = 4'd5;
+    localparam [3:0] WINDOW_PRODUCER_EXECUTION = 4'd6;
+    localparam [3:0] WINDOW_PRODUCER_COMPLETED = 4'd7;
+    localparam integer WINDOW_PRODUCER_STATE_COUNT = 8;
+    localparam integer WINDOW_PRODUCER_OTHER = 0;
+    localparam integer WINDOW_PRODUCER_LOAD = 1;
+    integer window_wait_producer_all [0:WINDOW_PRODUCER_STATE_COUNT-1]
+                                             [0:1];
+    integer window_wait_producer_noeligible
+        [0:WINDOW_PRODUCER_STATE_COUNT-1][0:1];
+    integer trace_window_wait_producer
+        [0:WINDOW_PRODUCER_STATE_COUNT-1][0:1];
+    integer window_producer_init_state;
+    integer window_producer_init_kind;
+    integer window_producer_accum_state;
+    integer window_producer_accum_kind;
     integer completed_control_load_candidate_cycles;
     integer completed_control_load_gate_cycles;
     integer completed_control_load_candidate_entry_cycles;
@@ -1093,6 +1119,11 @@ module tb_top_3p_soc #(
     integer banked_write_request_cycles;
     integer banked_write_accept_events;
     integer banked_write_denied_events;
+    integer banked_write_pair_both_acked;
+    integer banked_write_pair_older_only_acked;
+    integer banked_write_pair_younger_only_acked;
+    integer banked_write_pair_neither_acked;
+    integer banked_write_pair_prearbitrated;
     integer banked_writer_noissue_consumer_alu;
     integer banked_writer_noissue_consumer_branch;
     integer banked_writer_noissue_consumer_jump;
@@ -1807,6 +1838,197 @@ module tb_top_3p_soc #(
             dut.u_backend.pipe_ready;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] trace_window_fire =
         trace_window_offer & trace_window_accept_ready;
+
+    // Classify the producer named by an unavailable window operand.  The
+    // window's issued bit changes only on the scheduler handshake, so an
+    // unissued producer can be split cleanly into ineligible, eligible but
+    // unselected, offered-but-replayed, and accepted-this-cycle states.
+    // Issued producers are then located in the two registered operand-gather
+    // groups before the remaining population is called execution latency.
+    function automatic [3:0] perf_window_producer_state;
+        input integer producer_index;
+        integer producer_pipe;
+        integer producer_lane;
+        reg producer_offered;
+        reg producer_fired;
+        reg producer_regload_pending;
+        reg producer_regload_active;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] producer_id;
+        begin
+            producer_offered = 1'b0;
+            producer_fired = 1'b0;
+            producer_regload_pending = 1'b0;
+            producer_regload_active = 1'b0;
+            producer_id = dut.u_backend.u_dispatch.g_3p.u_window.id_q[
+                producer_index];
+
+            for (producer_pipe = 0;
+                 producer_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+                 producer_pipe = producer_pipe + 1) begin
+                if (trace_window_offer[producer_pipe] &&
+                    (dut.u_backend.dispatch_pipe_id[
+                         producer_pipe*`OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH] == producer_id)) begin
+                    producer_offered = 1'b1;
+                    if (trace_window_fire[producer_pipe])
+                        producer_fired = 1'b1;
+                end
+            end
+
+            for (producer_lane = 0; producer_lane < 2;
+                 producer_lane = producer_lane + 1) begin
+                if (dut.u_backend.banked_regload_pending_valid_q &&
+                    dut.u_backend.banked_regload_pending_lane_valid_q[
+                        producer_lane] &&
+                    (dut.u_backend.banked_regload_pending_lane_id_q[
+                         producer_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH] == producer_id))
+                    producer_regload_pending = 1'b1;
+                if (dut.u_backend.banked_regload_valid_q &&
+                    dut.u_backend.banked_regload_lane_valid_q[
+                        producer_lane] &&
+                    (dut.u_backend.banked_regload_lane_id_q[
+                         producer_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                         `OPENRV64_INSTR_ID_WIDTH] == producer_id))
+                    producer_regload_active = 1'b1;
+            end
+
+            if (!dut.u_backend.u_dispatch.g_3p.u_window.issued_q[
+                    producer_index]) begin
+                if (producer_fired)
+                    perf_window_producer_state =
+                        WINDOW_PRODUCER_UNISSUED_FIRE;
+                else if (producer_offered)
+                    perf_window_producer_state =
+                        WINDOW_PRODUCER_UNISSUED_REPLAY;
+                else if (dut.u_backend.u_dispatch.g_3p.u_window.eligible[
+                             producer_index])
+                    perf_window_producer_state =
+                        WINDOW_PRODUCER_UNISSUED_NO_OFFER;
+                else
+                    perf_window_producer_state =
+                        WINDOW_PRODUCER_UNISSUED_INELIGIBLE;
+            end else if (dut.u_backend.u_dispatch.g_3p.u_window.result_ready_q[
+                             producer_index]) begin
+                perf_window_producer_state = WINDOW_PRODUCER_COMPLETED;
+            end else if (producer_regload_pending) begin
+                perf_window_producer_state =
+                    WINDOW_PRODUCER_REGLOAD_PENDING;
+            end else if (producer_regload_active) begin
+                perf_window_producer_state =
+                    WINDOW_PRODUCER_REGLOAD_ACTIVE;
+            end else begin
+                perf_window_producer_state = WINDOW_PRODUCER_EXECUTION;
+            end
+        end
+    endfunction
+
+    integer trace_window_wait_consumer;
+    integer trace_window_wait_source;
+    integer trace_window_wait_producer_index;
+    integer trace_window_wait_state;
+    integer trace_window_wait_state_init;
+    integer trace_window_wait_kind_init;
+    reg trace_window_wait_source_blocked;
+    reg trace_window_wait_producer_found;
+    reg trace_window_wait_producer_load;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_window_wait_producer_id;
+    always @* begin
+        for (trace_window_wait_state_init = 0;
+             trace_window_wait_state_init < WINDOW_PRODUCER_STATE_COUNT;
+             trace_window_wait_state_init =
+                 trace_window_wait_state_init + 1) begin
+            for (trace_window_wait_kind_init = 0;
+                 trace_window_wait_kind_init < 2;
+                 trace_window_wait_kind_init =
+                     trace_window_wait_kind_init + 1)
+                trace_window_wait_producer[
+                    trace_window_wait_state_init]
+                    [trace_window_wait_kind_init] = 0;
+        end
+
+        trace_window_wait_source_blocked = 1'b0;
+        trace_window_wait_producer_found = 1'b0;
+        trace_window_wait_producer_load = 1'b0;
+        trace_window_wait_producer_id =
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        trace_window_wait_state = WINDOW_PRODUCER_COMPLETED;
+
+        if (ISSUE_WINDOW != 0) begin
+            for (trace_window_wait_consumer = 0;
+                 trace_window_wait_consumer < RETIRE_DEPTH;
+                 trace_window_wait_consumer =
+                     trace_window_wait_consumer + 1) begin
+                for (trace_window_wait_source = 0;
+                     trace_window_wait_source < 2;
+                     trace_window_wait_source =
+                         trace_window_wait_source + 1) begin
+                    trace_window_wait_source_blocked =
+                        dut.u_backend.u_dispatch.g_3p.u_window.valid_q[
+                            trace_window_wait_consumer] &&
+                        !dut.u_backend.u_dispatch.g_3p.u_window.issued_q[
+                            trace_window_wait_consumer] &&
+                        ((trace_window_wait_source == 0) ?
+                         (dut.u_backend.u_dispatch.g_3p.u_window
+                              .src1_producer_valid_q[
+                                  trace_window_wait_consumer] &&
+                          !dut.u_backend.u_dispatch.g_3p.u_window
+                              .src1_ready_now[
+                                  trace_window_wait_consumer]) :
+                         (dut.u_backend.u_dispatch.g_3p.u_window
+                              .src2_producer_valid_q[
+                                  trace_window_wait_consumer] &&
+                          !dut.u_backend.u_dispatch.g_3p.u_window
+                              .src2_ready_now[
+                                  trace_window_wait_consumer]));
+                    trace_window_wait_producer_id =
+                        (trace_window_wait_source == 0) ?
+                        dut.u_backend.u_dispatch.g_3p.u_window.src1_tag_q[
+                            trace_window_wait_consumer] :
+                        dut.u_backend.u_dispatch.g_3p.u_window.src2_tag_q[
+                            trace_window_wait_consumer];
+                    trace_window_wait_producer_found = 1'b0;
+
+                    if (trace_window_wait_source_blocked) begin
+                        for (trace_window_wait_producer_index = 0;
+                             trace_window_wait_producer_index < RETIRE_DEPTH;
+                             trace_window_wait_producer_index =
+                                 trace_window_wait_producer_index + 1) begin
+                            if (!trace_window_wait_producer_found &&
+                                dut.u_backend.u_dispatch.g_3p.u_window
+                                    .valid_q[
+                                        trace_window_wait_producer_index] &&
+                                (dut.u_backend.u_dispatch.g_3p.u_window.id_q[
+                                     trace_window_wait_producer_index] ==
+                                 trace_window_wait_producer_id)) begin
+                                trace_window_wait_producer_found = 1'b1;
+                                trace_window_wait_producer_load =
+                                    dut.u_backend.u_dispatch.g_3p.u_window
+                                        .payload_q[
+                                            trace_window_wait_producer_index]
+                                        [16];
+                                trace_window_wait_state =
+                                    perf_window_producer_state(
+                                        trace_window_wait_producer_index);
+                                trace_window_wait_producer[
+                                    trace_window_wait_state]
+                                    [trace_window_wait_producer_load ?
+                                     WINDOW_PRODUCER_LOAD :
+                                     WINDOW_PRODUCER_OTHER] =
+                                    trace_window_wait_producer[
+                                        trace_window_wait_state]
+                                        [trace_window_wait_producer_load ?
+                                         WINDOW_PRODUCER_LOAD :
+                                         WINDOW_PRODUCER_OTHER] + 1;
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     reg trace_regload_active_has_branch;
     reg trace_regload_active_has_jump;
     integer trace_regload_active_pipe;
@@ -2168,6 +2390,7 @@ module tb_top_3p_soc #(
         .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
         .BANKED_GPR_READ_PORTS_PER_BANK(
             BANKED_GPR_READ_PORTS_PER_BANK),
+        .BANKED_GPR_NUM_BANKS(BANKED_GPR_NUM_BANKS),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
@@ -4060,6 +4283,20 @@ module tb_top_3p_soc #(
         window_wait_inflight_other_operand_cycles = 0;
         window_wait_completed_operand_cycles = 0;
         window_wait_missing_operand_cycles = 0;
+        for (window_producer_init_state = 0;
+             window_producer_init_state < WINDOW_PRODUCER_STATE_COUNT;
+             window_producer_init_state = window_producer_init_state + 1) begin
+            for (window_producer_init_kind = 0;
+                 window_producer_init_kind < 2;
+                 window_producer_init_kind =
+                     window_producer_init_kind + 1) begin
+                window_wait_producer_all[window_producer_init_state]
+                    [window_producer_init_kind] = 0;
+                window_wait_producer_noeligible[
+                    window_producer_init_state]
+                    [window_producer_init_kind] = 0;
+            end
+        end
         completed_control_load_candidate_cycles = 0;
         completed_control_load_gate_cycles = 0;
         completed_control_load_candidate_entry_cycles = 0;
@@ -4167,6 +4404,11 @@ module tb_top_3p_soc #(
         banked_write_request_cycles = 0;
         banked_write_accept_events = 0;
         banked_write_denied_events = 0;
+        banked_write_pair_both_acked = 0;
+        banked_write_pair_older_only_acked = 0;
+        banked_write_pair_younger_only_acked = 0;
+        banked_write_pair_neither_acked = 0;
+        banked_write_pair_prearbitrated = 0;
         banked_writer_noissue_consumer_alu = 0;
         banked_writer_noissue_consumer_branch = 0;
         banked_writer_noissue_consumer_jump = 0;
@@ -4660,6 +4902,37 @@ module tb_top_3p_soc #(
                 window_wait_missing_operand_cycles =
                     window_wait_missing_operand_cycles +
                     trace_window_wait_missing;
+                for (window_producer_accum_state = 0;
+                     window_producer_accum_state <
+                         WINDOW_PRODUCER_STATE_COUNT;
+                     window_producer_accum_state =
+                         window_producer_accum_state + 1) begin
+                    for (window_producer_accum_kind = 0;
+                         window_producer_accum_kind < 2;
+                         window_producer_accum_kind =
+                             window_producer_accum_kind + 1) begin
+                        window_wait_producer_all[
+                            window_producer_accum_state]
+                            [window_producer_accum_kind] =
+                            window_wait_producer_all[
+                                window_producer_accum_state]
+                                [window_producer_accum_kind] +
+                            trace_window_wait_producer[
+                                window_producer_accum_state]
+                                [window_producer_accum_kind];
+                        if ((trace_window_unissued != 0) &&
+                            (trace_window_eligible == 0))
+                            window_wait_producer_noeligible[
+                                window_producer_accum_state]
+                                [window_producer_accum_kind] =
+                                window_wait_producer_noeligible[
+                                    window_producer_accum_state]
+                                    [window_producer_accum_kind] +
+                                trace_window_wait_producer[
+                                    window_producer_accum_state]
+                                    [window_producer_accum_kind];
+                    end
+                end
                 completed_control_load_candidate_entry_cycles =
                     completed_control_load_candidate_entry_cycles +
                     trace_completed_control_load_candidate;
@@ -5388,6 +5661,21 @@ module tb_top_3p_soc #(
             banked_write_denied_events = banked_write_denied_events +
                 dut.u_backend.banked_write_denied[0] +
                 dut.u_backend.banked_write_denied[1];
+            if (dut.u_backend.banked_retire_write_pair_conflict) begin
+                banked_write_pair_prearbitrated =
+                    banked_write_pair_prearbitrated + 1;
+            end else if (dut.u_backend.gpr_write[1:0] == 2'b11) begin
+                case (dut.u_backend.gpr_write_ack[1:0])
+                    2'b11: banked_write_pair_both_acked =
+                        banked_write_pair_both_acked + 1;
+                    2'b01: banked_write_pair_older_only_acked =
+                        banked_write_pair_older_only_acked + 1;
+                    2'b10: banked_write_pair_younger_only_acked =
+                        banked_write_pair_younger_only_acked + 1;
+                    default: banked_write_pair_neither_acked =
+                        banked_write_pair_neither_acked + 1;
+                endcase
+            end
             if (dut.backend_barrier)
                 barrier_cycles = barrier_cycles + 1;
             if (dut.backend_retire_occupancy != 0) begin
@@ -6615,13 +6903,14 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d banked_gpr=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d issue_window=%0d speculation_window=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
             ISSUE_WINDOW, SPECULATION_WINDOW,
-            BANKED_GPR, BANKED_GPR_READ_PORTS_PER_BANK,
+            BANKED_GPR, BANKED_GPR_NUM_BANKS,
+            BANKED_GPR_READ_PORTS_PER_BANK,
             `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
             ENABLE_POSTED_STORES, DDR3_ENABLE, MEMORY_TIMING_MODEL,
             cycles, retired, ipc,
@@ -7058,6 +7347,13 @@ module tb_top_3p_soc #(
             banked_write_accept_events,
             banked_write_denied_events);
         $display(
+            "PERF_ICX_L2_BANKED_GPR_WRITE_PAIR both_acked=%0d older_only_acked=%0d younger_only_acked=%0d neither_acked=%0d prearbitrated=%0d",
+            banked_write_pair_both_acked,
+            banked_write_pair_older_only_acked,
+            banked_write_pair_younger_only_acked,
+            banked_write_pair_neither_acked,
+            banked_write_pair_prearbitrated);
+        $display(
             "PERF_ICX_L2_BANKED_GPR_WRITER_CONSUMER noissue_alu=%0d noissue_branch=%0d noissue_jump=%0d noissue_load=%0d noissue_store=%0d operand_alu=%0d operand_branch=%0d operand_jump=%0d operand_load=%0d operand_store=%0d",
             banked_writer_noissue_consumer_alu,
             banked_writer_noissue_consumer_branch,
@@ -7160,6 +7456,78 @@ module tb_top_3p_soc #(
             window_wait_inflight_other_operand_cycles,
             window_wait_completed_operand_cycles,
             window_wait_missing_operand_cycles);
+        $display(
+            "PERF_ICX_L2_WINDOW_PRODUCER_ALL_LOAD unissued_ineligible=%0d unissued_no_offer=%0d unissued_replay=%0d unissued_fire=%0d regload_pending=%0d regload_active=%0d execution=%0d completed=%0d",
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_INELIGIBLE][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_NO_OFFER][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_REPLAY][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_FIRE][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_REGLOAD_PENDING][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_REGLOAD_ACTIVE][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_EXECUTION][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_COMPLETED][WINDOW_PRODUCER_LOAD]);
+        $display(
+            "PERF_ICX_L2_WINDOW_PRODUCER_ALL_OTHER unissued_ineligible=%0d unissued_no_offer=%0d unissued_replay=%0d unissued_fire=%0d regload_pending=%0d regload_active=%0d execution=%0d completed=%0d",
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_INELIGIBLE][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_NO_OFFER][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_REPLAY][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_UNISSUED_FIRE][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_REGLOAD_PENDING][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_REGLOAD_ACTIVE][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_EXECUTION][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_all[
+                WINDOW_PRODUCER_COMPLETED][WINDOW_PRODUCER_OTHER]);
+        $display(
+            "PERF_ICX_L2_WINDOW_PRODUCER_NOELIG_LOAD unissued_ineligible=%0d unissued_no_offer=%0d unissued_replay=%0d unissued_fire=%0d regload_pending=%0d regload_active=%0d execution=%0d completed=%0d",
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_INELIGIBLE][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_NO_OFFER][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_REPLAY][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_FIRE][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_REGLOAD_PENDING][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_REGLOAD_ACTIVE][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_EXECUTION][WINDOW_PRODUCER_LOAD],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_COMPLETED][WINDOW_PRODUCER_LOAD]);
+        $display(
+            "PERF_ICX_L2_WINDOW_PRODUCER_NOELIG_OTHER unissued_ineligible=%0d unissued_no_offer=%0d unissued_replay=%0d unissued_fire=%0d regload_pending=%0d regload_active=%0d execution=%0d completed=%0d",
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_INELIGIBLE][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_NO_OFFER][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_REPLAY][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_UNISSUED_FIRE][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_REGLOAD_PENDING][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_REGLOAD_ACTIVE][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_EXECUTION][WINDOW_PRODUCER_OTHER],
+            window_wait_producer_noeligible[
+                WINDOW_PRODUCER_COMPLETED][WINDOW_PRODUCER_OTHER]);
         $display(
             "PERF_ICX_L2_BRANCH_GATED_LOAD candidate_cycles=%0d gated_cycles=%0d candidate_entry_cycles=%0d gated_entry_cycles=%0d",
             completed_control_load_candidate_cycles,

@@ -1043,3 +1043,222 @@ the banked legacy/platform and DDR3 paths were not regressed; it does not cover
 the new selective window recovery.  The passing Sv39 CoreMark run is the
 end-to-end validation of the relaxed window path and reproduces the workload
 that exposed the orphaned older lane before the fix.
+
+#### Blocked-operand producer cross-tab
+
+The scheduler-to-regload rejection was split from register-file arbitration by
+classifying every unavailable window source operand by the current state of its
+producer.  These are operand-cycle counts: several consumers and both operands
+can contribute in one core cycle.  `unissued no offer` means the producer was
+eligible but not selected, `unissued replay` means it was offered but the
+post-window stage withheld its handshake, and `unissued fire` means it was
+accepted on the sampled edge.  `regload pending` and `regload active` are the
+two registered gather groups; `execution` is issued but not in either group and
+not complete.
+
+The source-matched runs are:
+
+- banked: `coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T053508Z`,
+  79,225 cycles, 52,588 retired, IPC 0.6638;
+- normal 3P: `coremark-sv39-linux-rd32-ddr3-20260901T053746Z`,
+  47,439 cycles, 52,592 retired, IPC 1.1086.
+
+Both passed the Sv39 timed-DDR3 CoreMark check.  The banked register file
+accepted 8,715 reads in 7,143 cycles and reported **zero read-grant conflict
+events**.  Consequently, the 6,311 banked `offer_replay` cycles are not read
+bank conflicts: 3,634 had the single pending group occupied and 2,677 were
+redirect/quiescent drains.
+
+| Producer state, all blocked operands | Banked load | Banked other | Normal load | Normal other |
+|---|---:|---:|---:|---:|
+| Unissued, ineligible | 366,884 | 596,342 | 170,866 | 282,235 |
+| Unissued, eligible but not offered | 7,128 | 36,436 | 316 | 12,697 |
+| Unissued, offered but replayed | 2,063 | 4,146 | 130 | 0 |
+| Unissued, accepted this cycle | 16,678 | 29,111 | 15,955 | 24,566 |
+| Regload pending group | 1,703 | 5,222 | 0 | 0 |
+| Regload active group | 20,820 | 34,463 | 0 | 0 |
+| Execution | 43,518 | 16 | 45,876 | 0 |
+| Complete but operand unavailable | 0 | 0 | 0 | 0 |
+| **Total** | **458,794** | **705,736** | **233,143** | **319,498** |
+
+The banked run has 1,164,530 blocked operand-cycles, 22.144 per retired
+instruction, versus 552,641 and 10.508 for normal 3P.  The direct issued
+producer population is 105,742 banked versus 45,876 normal.  Of the banked
+population, 62,208 operand-cycles are in the active or pending register-load
+groups; execution itself is slightly lower than normal (43,534 versus 45,876).
+The much larger difference is downstream magnification: unissued producers
+account for 1,058,788 banked operand-cycles versus 506,765 normal.
+
+The same cross-tab restricted to cycles with a nonempty window and no eligible
+instruction makes that structure explicit:
+
+| Producer state, no-eligible cycles | Banked load | Banked other | Normal load | Normal other |
+|---|---:|---:|---:|---:|
+| Unissued, ineligible | 202,623 | 288,672 | 78,684 | 116,576 |
+| Regload pending group | 342 | 2,160 | 0 | 0 |
+| Regload active group | 2,184 | 10,163 | 0 | 0 |
+| Execution | 12,038 | 1 | 8,910 | 0 |
+| **Total** | **217,187** | **300,996** | **87,594** | **116,576** |
+
+Unissued/ineligible producers are 491,295 of 518,183 blocked operand-cycles on
+banked no-eligible cycles (94.81%).  Active and pending regload groups are
+14,849 (2.87%), and execution is 12,039 (2.32%).  Normal 3P is also dominated
+by an unissued first-hop producer (95.64%), but at a lower density: 15.435
+blocked operands per no-eligible cycle versus 18.996 banked.
+
+This is not proof that the register-load stage causes only 2.87% of the stall.
+The cross-tab follows one dependency edge.  A consumer often waits for an
+unissued producer which is itself waiting on another producer, so added gather
+latency is amplified down dependency chains and migrates into the
+`unissued/ineligible` bucket.  The next diagnostic needs to follow each chain to
+its issued root, rather than treating this first-hop state as a causal
+partition.
+
+#### Independent request pairs and four-bank geometry
+
+The shared two-instruction register-load group was replaced by three
+independent atomic two-source requesters.  Each requester holds an address
+phase stable until the register file acknowledges the complete pair, retains
+delayed response ownership by execution pipe and instruction ID, and latches
+returned operands until its execution pipe accepts them.  A denied pair uses a
+private retry skid; it does not reserve or block the other two requester pairs.
+Redirect recovery preserves older output-latch state and drains or poisons
+acknowledged and held younger transactions before trusting `quiescent`.
+
+The source-matched two-bank run is
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T063649Z`.  It passed Sv39
+CoreMark on timed DDR3 in 74,088 cycles at 0.7098 IPC.  Relative to the grouped
+run at 79,225 cycles, this saves 5,137 cycles (6.48%).  Window replay fell from
+6,311 to 3,239 cycles; the old pending-full bucket fell from 3,634 to zero.
+The remaining 3,239 replay cycles were redirect/quiescent drain.  The new path
+also issued three instructions in 3,020 cycles; the grouped path never issued
+three-wide.
+
+The banked storage geometry was then changed from 32 slots in two 16-entry
+banks to 64 slots in four 16-entry banks.  Architectural tags remain p0-p31;
+the upper 32 storage slots are reserved and currently unreachable.  Explicit
+per-port zero extension preserves packed address boundaries as the internal
+storage address widens from five to six bits.
+
+The four-bank run is
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T064627Z` and passed the same
+Sv39 timed-DDR3 check.  Focused validation is
+`3p-banked-directed-20260901T064617Z` (`validation=pass`).  The RF test
+deliberately oversubscribes one four-bank read bank, and the backend test
+deliberately retires p1 and p29 into the same write bank; both verify retry and
+forward progress instead of depending on incidental two-bank collisions.
+
+| Metric | Two banks | Four banks | Change |
+|---|---:|---:|---:|
+| Cycles | 74,088 | 72,189 | -1,899 (-2.56%) |
+| Retired instructions | 52,588 | 52,588 | 0 |
+| IPC | 0.7098 | 0.7285 | +2.63% |
+| Gap to normal 3P (47,439 cycles) | 26,649 | 24,750 | -1,899 |
+| All bank-conflict cycles | 5,285 | 2,054 | -3,231 |
+| Read-bank conflict cycles | 11 | 1 | -10 |
+| Write-bank denied events | 5,274 | 2,053 | -3,221 |
+| Write-request cycles | 31,511 | 28,476 | -3,035 |
+| Accepted write events | 37,364 | 37,364 | 0 |
+| Window redirect-drain replay | 3,239 | 2,303 | -936 |
+
+The 5,274 two-bank write denials were real arbitration events, but they were not
+5,274 independently exposed runtime cycles.  Four banks removed 3,221 denial
+events while runtime improved by 1,899 cycles.  The zero-retirement partition
+shows why: head write blocking fell by 3,221 cycles, but head execution wait
+increased by 1,048 and memory-inflight wait increased by 192 as scheduling
+shifted.  The net zero-retirement reduction was 2,125 cycles; changes in
+one-wide and two-wide retirement cycles reduce the final runtime improvement
+to 1,899.  Aggregate stall counters identify occupied states, not independent
+causes, so subtracting a conflict count directly from runtime is invalid.
+
+#### Oldest-first sliding write retirement
+
+The initial four-bank write arbitration rotated priority between the two
+retirement ports.  Instrumented run
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T065240Z` split its 2,053
+same-bank dual-write cycles into 1,045 older-only grants and 1,008 younger-only
+grants.  Different-bank pairs received both grants in 8,888 cycles and no pair
+received neither grant.  This confirmed that the physical write ports were
+independent, but also exposed inappropriate age rotation at the in-order
+retirement boundary.
+
+Register-file run `3p-banked-directed-20260901T065226Z` explicitly requested
+simultaneous writes through ports zero and one to different banks and required
+both acknowledgments in the same cycle.  It also checks that a same-bank pair
+grants port zero, the older lane, before port one.  Fixed-priority CoreMark run
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T065544Z` reproduced exactly
+the prior 72,189-cycle result while moving all 2,053 collisions into the
+older-only bucket.  Priority alone therefore corrected policy but did not
+remove the all-or-nothing retirement grouping.
+
+The retirement wrapper now pre-arbitrates a known same-bank pair.  It presents
+only the older address phase, accepts that instruction on its acknowledgment,
+and leaves the unrequested younger instruction in the retirement queue.  The
+queue advances at the edge, so the former younger instruction becomes port
+zero and can issue alongside the newly exposed second entry next cycle.  The
+younger request is suppressed before presentation rather than moved after a
+withheld acknowledgment; this preserves the per-port requirement that request,
+address, and data remain stable until acknowledgment.  Suppressed transactions
+remain counted as write-bank capacity events.
+
+Source-matched sliding run
+`coremark-sv39-3p-banked-window-2r1w-ddr3-20260901T070211Z` passed Sv39
+CoreMark on timed DDR3.  Focused run
+`3p-banked-directed-20260901T070201Z` also passed, including an explicit
+same-bank older-only retirement followed by a shifted two-wide retirement.
+
+| Metric | Fixed priority, grouped | Oldest-first sliding | Change |
+|---|---:|---:|---:|
+| Cycles | 72,189 | 72,047 | -142 (-0.20%) |
+| Retired instructions | 52,588 | 52,588 | 0 |
+| IPC | 0.7285 | 0.7299 | +0.19% |
+| Same-bank write capacity events | 2,053 | 2,052 | -1 |
+| Both write ports acknowledged | 8,888 | 9,637 | +749 |
+| Older-only acknowledgments | 2,053 | 0 | -2,053 |
+| Pre-arbitrated younger deferrals | 0 | 2,052 | +2,052 |
+| Zero-retire cycles blocked by GPR writes | 2,053 | 0 | -2,053 |
+| Zero-wide retirement cycles | 37,583 | 35,529 | -2,054 |
+| One-wide retirement cycles | 16,624 | 20,448 | +3,824 |
+| Two-wide retirement cycles | 17,982 | 16,070 | -1,912 |
+
+The result is correct but small.  Removing 2,053 zero-retire write stalls does
+not remove 2,053 total cycles: it converts the retirement-width distribution,
+and the changed queue timing shifts issue, branch, fetch, and memory overlap.
+The one-event conflict delta is likewise schedule drift, not evidence that the
+physical bank geometry changed.  The measured end-to-end gain is 142 cycles;
+the remaining CoreMark gap is not a grouped write-port bottleneck.
+
+#### Two-bank sliding-retirement confirmation
+
+Run `coremark-sv39-3p-banked-window-2r1w-2bank-ddr3-20260901T070857Z`
+reduced the same 64 storage slots from four 16-entry banks to two 32-entry
+banks.  The read bandwidth remained 2R per bank and the write bandwidth 1W per
+bank.  It passed the same compact Sv39 CoreMark workload on timed DDR3.
+
+| Metric | Two banks, sliding | Four banks, sliding | Two-bank delta |
+|---|---:|---:|---:|
+| Cycles | 73,090 | 72,047 | +1,043 (+1.45%) |
+| Retired instructions | 52,588 | 52,588 | 0 |
+| IPC | 0.7195 | 0.7299 | -1.42% |
+| Read-bank conflict cycles | 10 | 1 | +9 |
+| Write-bank capacity events | 6,313 | 2,052 | +4,261 |
+| Both write ports acknowledged | 6,672 | 9,637 | -2,965 |
+| Pre-arbitrated younger deferrals | 6,313 | 2,052 | +4,261 |
+| Zero-retire cycles blocked by GPR writes | 0 | 0 | 0 |
+| Zero-wide retirement cycles | 34,361 | 35,529 | -1,168 |
+| One-wide retirement cycles | 24,870 | 20,448 | +4,422 |
+| Two-wide retirement cycles | 13,859 | 16,070 | -2,211 |
+
+This confirms that the write ports are not subject to the former grouped
+handshake.  Every same-bank pair was pre-arbitrated before request: the older
+lane retired, the younger lane slid forward, and neither the aggregate
+`gpr_write_blocked` counter nor the head-specific `head_write_blocked` counter
+recorded a cycle.  Different-bank pairs still received two acknowledgments.
+
+The two-bank penalty is therefore not a read-port effect: only nine additional
+read-conflict cycles occurred.  The dominant measured change is 4,261 more
+same-bank dual-write opportunities.  Sliding absorbs those conflicts without
+a zero-retirement write stall, but shifts useful retirement from two-wide to
+one-wide.  Schedule changes also reduce zero-wide retirement by 1,168 cycles,
+so the end-to-end penalty is 1,043 cycles rather than the raw conflict-count
+delta.

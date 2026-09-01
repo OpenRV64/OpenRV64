@@ -403,14 +403,14 @@ module tb_backend_3p_banked #(
         if (rst_n) begin
             issue_count = issue_valid[0] + issue_valid[1] +
                           issue_valid[2] + issue_valid[3];
-            if (issue_count > 2)
-                fail("banked backend issued more than two instructions");
+            if (issue_count > ((ISSUE_WINDOW != 0) ? 3 : 2))
+                fail("banked backend exceeded register-load issue width");
             if (issue_count == 2)
                 saw_two_wide_issue = 1'b1;
             if ((issue_count != 0) && prior_cycle_issued)
                 saw_back_to_back_issue = 1'b1;
             prior_cycle_issued = (issue_count != 0);
-            if ((issue_count != 0) && (|dut.gpr_read_ack[3:0]))
+            if ((issue_count != 0) && (|dut.gpr_read_ack[5:0]))
                 saw_regload_address_issue_overlap = 1'b1;
             if (dut.banked_regload_lane0_reroute ||
                 dut.banked_regload_lane1_reroute)
@@ -453,11 +453,12 @@ module tb_backend_3p_banked #(
                  (dut.gpr_write_addr[5 +: 5] == `RV64_REG_X0)))
                 fail("retirement sent an x0 write to the register file");
 
-            if (|(dut.gpr_read_req[3:0] & ~dut.gpr_read_ack[3:0]))
+            if (|(dut.gpr_read_req[5:0] & ~dut.gpr_read_ack[5:0]))
                 saw_read_bank_retry = 1'b1;
-            if (dut.gpr_write == 2'b11 &&
-                ((dut.gpr_write_ack[1:0] == 2'b01) ||
-                 (dut.gpr_write_ack[1:0] == 2'b10)))
+            if (dut.g_banked_retire.u_retire
+                    .direct_write_pair_conflict &&
+                (dut.gpr_write[1:0] == 2'b01) &&
+                dut.gpr_write_ack[0])
                 saw_write_bank_retry = 1'b1;
             if ((dispatch_occupancy != 0) && (write_busy != 0) &&
                 (issue_count == 0))
@@ -531,7 +532,9 @@ module tb_backend_3p_banked #(
         memory_probe_retired = 0;
 
         instruction_stream[0] = addi_packet(1, 0, 1, 64'd5, 1'b0);
-        instruction_stream[1] = addi_packet(2, 0, 3, -64'd4, 1'b0);
+        // p1 and p29 share four-bank bank 1.  These two independent leading
+        // writes deliberately exercise oldest-first sliding retirement.
+        instruction_stream[1] = addi_packet(2, 0, 29, -64'd4, 1'b0);
         instruction_stream[2] = addi_packet(3, 0, 2, 64'd9, 1'b0);
         instruction_stream[3] = reg_packet(
             4, 1, 2, 4, `RV64_ALU_OP_ADD, 1'b0);
@@ -548,11 +551,11 @@ module tb_backend_3p_banked #(
         instruction_stream[9] = reg_packet(
             10, 9, 1, 10, `RV64_ALU_OP_SRL, 1'b0);
         instruction_stream[10] = reg_packet(
-            11, 3, 1, 11, `RV64_ALU_OP_SRA, 1'b0);
+            11, 29, 1, 11, `RV64_ALU_OP_SRA, 1'b0);
         instruction_stream[11] = reg_packet(
-            12, 3, 1, 12, `RV64_ALU_OP_SLT, 1'b0);
+            12, 29, 1, 12, `RV64_ALU_OP_SLT, 1'b0);
         instruction_stream[12] = reg_packet(
-            13, 3, 1, 13, `RV64_ALU_OP_SLTU, 1'b0);
+            13, 29, 1, 13, `RV64_ALU_OP_SLTU, 1'b0);
         instruction_stream[13] = addi_packet(
             14, 13, 14, 64'd123, 1'b0);
         instruction_stream[14] = reg_packet(
@@ -561,7 +564,7 @@ module tb_backend_3p_banked #(
         instruction_stream[16] = addi_packet(17, 0, 16, 64'd16, 1'b0);
         instruction_stream[17] = addi_packet(18, 0, 17, 64'd17, 1'b0);
         instruction_stream[18] = reg_packet(
-            19, 1, 3, 18, `RV64_ALU_OP_ADD, 1'b0);
+            19, 1, 29, 18, `RV64_ALU_OP_ADD, 1'b0);
         instruction_stream[19] = reg_packet(
             20, 2, 4, 19, `RV64_ALU_OP_ADD, 1'b0);
         instruction_stream[20] = reg_packet(
@@ -572,11 +575,11 @@ module tb_backend_3p_banked #(
             23, 22, 64'h0000_2000, 1'b1);
         instruction_stream[23] = reg_packet(
             24, 21, 22, 23, `RV64_ALU_OP_ADD, 1'b0);
-        instruction_stream[24] = addi_packet(25, 3, 24, 64'd1, 1'b1);
+        instruction_stream[24] = addi_packet(25, 29, 24, 64'd1, 1'b1);
         instruction_stream[25] = reg_packet(
-            26, 21, 3, 25, `RV64_ALU_OP_ADD, 1'b1);
+            26, 21, 29, 25, `RV64_ALU_OP_ADD, 1'b1);
         instruction_stream[26] = reg_packet(
-            27, 3, 1, 26, `RV64_ALU_OP_SRA, 1'b1);
+            27, 29, 1, 26, `RV64_ALU_OP_SRA, 1'b1);
 
         for (lane = 0; lane < INSTRUCTION_COUNT; lane = lane + 1) begin
             program_uses_rs1[lane] = 1'b1;
@@ -628,28 +631,23 @@ module tb_backend_3p_banked #(
         rst_n = 1'b1;
         tick();
 
-        // Exercise the exact recovery shape that exposed the CoreMark
-        // deadlock: one pending register-load group straddles the redirect
-        // cut.  ID 79 is older than the resolving ID 81 and must survive;
-        // ID 84 is younger and must be removed.  This directly seeds only
-        // the adapter state so the test does not depend on scheduler timing.
+        // An accepted address can return while a redirect is being resolved.
+        // Keep the older lane and its response, but discard the younger lane
+        // and its response owner.  This directly seeds only the independent
+        // register-load state so the test does not depend on selector timing.
         if (ISSUE_WINDOW != 0) begin
-            dut.banked_regload_pending_valid_q = 1'b1;
-            dut.banked_regload_pending_lane_valid_q = 2'b11;
-            dut.banked_regload_pending_lane_id_q = {10'd84, 10'd79};
-            dut.banked_regload_pending_operand_done_q = 4'b1111;
-            dut.banked_regload_pending_mem_forwarded_q = 4'b1111;
-            dut.banked_regload_pending_hard_q = 1'b0;
-            dut.banked_regload_pending_control_q = 1'b0;
-            dut.banked_regload_pending_branch_pair_q = 1'b0;
-            dut.banked_regload_pending_pipe_valid_q = 4'b0011;
-            dut.banked_regload_pending_pipe_id_q = {40{1'b0}};
-            dut.banked_regload_pending_pipe_id_q[0 +: 10] = 10'd79;
-            dut.banked_regload_pending_pipe_id_q[10 +: 10] = 10'd84;
-            dut.banked_regload_pending_src1_producer_valid_q = 4'b0011;
-            dut.banked_regload_pending_src2_producer_valid_q = 4'b0011;
-            dut.banked_regload_pending_pipe_uses_rs1_q = 4'b0011;
-            dut.banked_regload_pending_pipe_uses_rs2_q = 4'b0011;
+            dut.banked_independent_valid_q = 4'b0011;
+            dut.banked_independent_id_q = {40{1'b0}};
+            dut.banked_independent_id_q[0 +: 10] = 10'd79;
+            dut.banked_independent_id_q[10 +: 10] = 10'd84;
+            dut.banked_independent_operand_done_q = 8'b00000000;
+            dut.banked_independent_response_owner_valid_q = 6'b000101;
+            dut.banked_independent_response_owner_pipe_q = 12'b0;
+            dut.banked_independent_response_owner_pipe_q[0 +: 2] = 2'd0;
+            dut.banked_independent_response_owner_pipe_q[4 +: 2] = 2'd1;
+            dut.banked_independent_response_owner_id_q = {60{1'b0}};
+            dut.banked_independent_response_owner_id_q[0 +: 10] = 10'd79;
+            dut.banked_independent_response_owner_id_q[20 +: 10] = 10'd84;
             // The selective-squash contract requires the redirecting ID and
             // slot to name a live retirement entry.
             dut.u_retire_queue.valid_q[0] = 1'b1;
@@ -657,23 +655,25 @@ module tb_backend_3p_banked #(
             dut.u_retire_queue.id_q[0] = 10'd81;
             force dut.exec_redirect_id = 10'd81;
             force dut.exec_redirect_slot = 4'd0;
+            force dut.pipe_ready = 4'b0000;
+            force dut.gpr_read_valid = 6'b000101;
+            force dut.gpr_read_data = {
+                64'd0, 64'd0, 64'd0, 64'h8484, 64'd0, 64'h7979
+            };
             squash = 1'b1;
             tick();
             release dut.exec_redirect_id;
             release dut.exec_redirect_slot;
+            release dut.pipe_ready;
+            release dut.gpr_read_valid;
+            release dut.gpr_read_data;
             squash = 1'b0;
-            if (!dut.banked_regload_pending_valid_q ||
-                (dut.banked_regload_pending_lane_valid_q != 2'b01) ||
-                (dut.banked_regload_pending_operand_done_q != 4'b0011) ||
-                (dut.banked_regload_pending_mem_forwarded_q != 4'b0011) ||
-                (dut.banked_regload_pending_pipe_valid_q != 4'b0001) ||
-                (dut.banked_regload_pending_src1_producer_valid_q !=
-                     4'b0001) ||
-                (dut.banked_regload_pending_src2_producer_valid_q !=
-                     4'b0001) ||
-                (dut.banked_regload_pending_pipe_uses_rs1_q != 4'b0001) ||
-                (dut.banked_regload_pending_pipe_uses_rs2_q != 4'b0001))
-                fail("redirect did not preserve only the older pending lane");
+            if ((dut.banked_independent_valid_q != 4'b0001) ||
+                !dut.banked_independent_operand_done_q[0] ||
+                (dut.banked_independent_operand_data_q[0 +: 64] !=
+                 64'h7979) ||
+                (dut.banked_independent_response_owner_valid_q != 6'b0))
+                fail("redirect did not preserve only the older returned lane");
 
             flush = 1'b1;
             tick();
@@ -683,7 +683,7 @@ module tb_backend_3p_banked #(
                  cycles = cycles + 1)
                 tick();
             if (dut.banked_gpr_drain_q ||
-                dut.banked_regload_pending_valid_q)
+                (dut.banked_independent_valid_q != 4'b0000))
                 fail("selective-recovery probe did not flush cleanly");
         end
 
@@ -692,11 +692,12 @@ module tb_backend_3p_banked #(
         // oversubscribed reads are still presented.  The latter must remain
         // stable through ack; all delayed responses are poisoned and must not
         // allocate work.
+        if (ISSUE_WINDOW == 0) begin
         decode_payload = {3*IW{1'b0}};
         decode_payload[0 +: IW] = reg_packet(
-            0, 2, 4, 31, `RV64_ALU_OP_ADD, 1'b0);
+            0, 4, 8, 31, `RV64_ALU_OP_ADD, 1'b0);
         decode_payload[IW +: IW] = reg_packet(
-            0, 6, 8, 30, `RV64_ALU_OP_ADD, 1'b0);
+            0, 12, 16, 30, `RV64_ALU_OP_ADD, 1'b0);
         decode_uses_rs1 = 3'b011;
         decode_uses_rs2 = 3'b011;
         decode_valid = 3'b011;
@@ -764,12 +765,13 @@ module tb_backend_3p_banked #(
                      dut.banked_regload_valid_q);
             fail("redirected GPR access did not drain cleanly");
         end
+        end
 
         next_instruction = 0;
         while (next_instruction < INSTRUCTION_COUNT) begin
             lane_count = INSTRUCTION_COUNT - next_instruction;
-            if (lane_count > ((ISSUE_WINDOW != 0) ? 2 : 3))
-                lane_count = (ISSUE_WINDOW != 0) ? 2 : 3;
+            if (lane_count > 3)
+                lane_count = 3;
             send_mask = (1 << lane_count) - 1;
             while ((decode_ready & send_mask) != send_mask)
                 tick();
@@ -811,10 +813,10 @@ module tb_backend_3p_banked #(
             fail("test never exercised two-wide issue");
         if (!saw_two_wide_retire)
             fail("test never exercised two-wide retirement");
-        if (!saw_read_bank_retry)
+        if ((ISSUE_WINDOW == 0) && !saw_read_bank_retry)
             fail("test never exercised a read-bank retry");
         if (!saw_write_bank_retry)
-            fail("test never exercised a write-bank retry");
+            fail("test never exercised a sliding same-bank write pair");
         if (!saw_dependency_wait)
             fail("test never observed conservative dependency waiting");
         if ((ISSUE_WINDOW == 0) && !saw_exu_forward_while_busy)
@@ -831,6 +833,7 @@ module tb_backend_3p_banked #(
         // the new structural-capacity sideband: EX0 unavailable, EX1 free.
         // Execution's real ready/valid handshake still checks and accepts the
         // retargeted packet.
+        if (ISSUE_WINDOW == 0) begin
         memory_probe_active = 1'b1;
         memory_probe_retired = 0;
         force dut.base_alu_available = 2'b10;
@@ -857,6 +860,7 @@ module tb_backend_3p_banked #(
             fail("retargeted base ALU did not retire the correct result");
         memory_probe_active = 1'b0;
         memory_probe_retired = 0;
+        end
 
         // A returned load occupies MEM0's completion lane.  Keep its direct
         // consumer waiting on x27 until the tagged response arrives; the
@@ -921,7 +925,6 @@ module tb_backend_3p_banked #(
 
         if (dut.u_gpr.regs[1] !== 64'd5 ||
             dut.u_gpr.regs[2] !== 64'd9 ||
-            dut.u_gpr.regs[3] !== -64'd4 ||
             dut.u_gpr.regs[4] !== 64'd14 ||
             dut.u_gpr.regs[5] !== 64'd4 ||
             dut.u_gpr.regs[6] !== 64'd10 ||
@@ -946,7 +949,9 @@ module tb_backend_3p_banked #(
             dut.u_gpr.regs[25] !== 64'h0000_0000_1234_4ffc ||
             dut.u_gpr.regs[26] !== {64{1'b1}} ||
             dut.u_gpr.regs[27] !== 64'h1122_3344_5566_7788 ||
-            dut.u_gpr.regs[28] !== 64'h1122_3344_5566_7789)
+            dut.u_gpr.regs[28] !== 64'h1122_3344_5566_7789 ||
+            dut.u_gpr.regs[29] !== ((ISSUE_WINDOW == 0) ?
+                                    64'd42 : -64'd4))
             fail("final architectural register state was incorrect");
 
         if (ISSUE_WINDOW != 0)
