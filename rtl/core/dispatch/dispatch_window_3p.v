@@ -191,6 +191,12 @@ module openrv64_dispatch_window_3p #(
     // it blocks every younger hard or ordinary operation from issue.
     reg                                 persistent_barrier_valid_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] persistent_barrier_id_q;
+    // Simulation attribution for the persistent token.  In modes where JALR
+    // remains ordered, the ID alone does not retain its class after the
+    // scheduler entry is released.
+    reg                                 persistent_barrier_jalr_q;
+    wire trace_jalr_persistent_barrier =
+        persistent_barrier_valid_q && persistent_barrier_jalr_q;
 
     // Youngest architectural producer at decode admission.  Values are
     // retained after completion so a later decode does not wait for retire.
@@ -265,6 +271,30 @@ module openrv64_dispatch_window_3p #(
         end
     endfunction
 
+    function automatic is_jalr;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            is_jalr = payload[PAYLOAD_JUMP] &&
+                (payload[PAYLOAD_BR_OP +: `RV64_BR_OP_WIDTH] ==
+                 `RV64_BR_OP_JALR);
+        end
+    endfunction
+
+    function automatic is_speculative_jalr;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            // Tomasulo has a post-rename checkpoint for every jump and
+            // selective ID/ROB-slot recovery.  JALR may therefore resolve
+            // before retirement; a target correction discards younger work.
+            // Keep malformed or fetch-faulted packets ordered.
+            is_speculative_jalr = (PHYSICAL_RENAME != 0) &&
+                (ENABLE_SPECULATION != 0) && is_jalr(payload) &&
+                !payload[PAYLOAD_ILLEGAL] &&
+                !payload[PAYLOAD_INSTR_FAULT] &&
+                !payload[PAYLOAD_INSTR_PAGE_FAULT];
+        end
+    endfunction
+
     function automatic is_early_conditional_branch;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
@@ -284,6 +314,7 @@ module openrv64_dispatch_window_3p #(
             // arrive after younger replayable instructions have executed.
             may_speculate_past_unissued_control =
                 is_replayable_direct_jal(payload) ||
+                is_speculative_jalr(payload) ||
                 ((ENABLE_SPECULATION != 0) &&
                  is_early_conditional_branch(payload));
         end
@@ -298,7 +329,8 @@ module openrv64_dispatch_window_3p #(
             // has no direction or target uncertainty once decoded.
             is_persistent_hard = is_hard(payload) &&
                 !is_early_conditional_branch(payload) &&
-                !is_replayable_direct_jal(payload);
+                !is_replayable_direct_jal(payload) &&
+                !is_speculative_jalr(payload);
         end
     endfunction
 
@@ -833,6 +865,26 @@ module openrv64_dispatch_window_3p #(
     reg [COUNT_WIDTH-1:0] trace_raw_block_count;
     reg [COUNT_WIDTH-1:0] trace_hard_block_count;
     reg [COUNT_WIDTH-1:0] trace_mem_order_block_count;
+    // JALR policy attribution.  Tomasulo speculation permits a legal JALR to
+    // resolve before the ROB head; other modes retain the persistent barrier.
+    // Younger-ready/eligible counts expose whether useful work crosses the
+    // unresolved indirect control.
+    reg [COUNT_WIDTH-1:0] trace_jalr_unissued_count;
+    reg [COUNT_WIDTH-1:0] trace_jalr_operand_ready_count;
+    reg [COUNT_WIDTH-1:0] trace_jalr_head_ready_count;
+    reg [COUNT_WIDTH-1:0] trace_jalr_not_head_ready_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_behind_unissued_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_ready_behind_unissued_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_eligible_behind_unissued_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_behind_persistent_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_ready_behind_persistent_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_eligible_behind_persistent_count;
     // Per-entry, simulation-visible causal state.  These arrays are not part
     // of the architectural interface and have no functional fanout.  The SoC
     // trace writer samples them through hierarchy so it can name the exact
@@ -841,6 +893,8 @@ module openrv64_dispatch_window_3p #(
     reg [7:0] trace_entry_block_reason [0:DEPTH-1];
     reg [7:0] trace_entry_pipe [0:DEPTH-1];
     reg trace_entry_blocker_valid [0:DEPTH-1];
+    reg trace_entry_older_unissued_jalr [0:DEPTH-1];
+    reg trace_entry_older_persistent_jalr [0:DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         trace_entry_blocker_id [0:DEPTH-1];
     // Directed performance evidence for non-speculative read-only loads that
@@ -914,11 +968,14 @@ module openrv64_dispatch_window_3p #(
     reg older_completed_control;
     reg older_uncompleted_control;
     reg older_unresolved_conditional;
+    reg older_unissued_jalr;
+    reg older_unresolved_jalr;
     reg trace_older_unissued_hard_valid;
     reg trace_older_persistent_hard_valid;
     reg trace_older_unissued_mem_valid;
     reg trace_older_live_control_valid;
     reg trace_older_unresolved_conditional_valid;
+    reg trace_older_unresolved_jalr_valid;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         trace_older_unissued_hard_id;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
@@ -929,6 +986,8 @@ module openrv64_dispatch_window_3p #(
         trace_older_live_control_id;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         trace_older_unresolved_conditional_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_older_unresolved_jalr_id;
 
     always_comb begin
         barrier_active_o = persistent_barrier_valid_q;
@@ -939,6 +998,22 @@ module openrv64_dispatch_window_3p #(
         trace_raw_block_count = {COUNT_WIDTH{1'b0}};
         trace_hard_block_count = {COUNT_WIDTH{1'b0}};
         trace_mem_order_block_count = {COUNT_WIDTH{1'b0}};
+        trace_jalr_unissued_count = {COUNT_WIDTH{1'b0}};
+        trace_jalr_operand_ready_count = {COUNT_WIDTH{1'b0}};
+        trace_jalr_head_ready_count = {COUNT_WIDTH{1'b0}};
+        trace_jalr_not_head_ready_count = {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_behind_unissued_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_ready_behind_unissued_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_eligible_behind_unissued_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_behind_persistent_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_ready_behind_persistent_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_eligible_behind_persistent_count =
+            {COUNT_WIDTH{1'b0}};
         trace_completed_control_load_candidate_count =
             {COUNT_WIDTH{1'b0}};
         trace_completed_control_load_gate_count = {COUNT_WIDTH{1'b0}};
@@ -975,11 +1050,14 @@ module openrv64_dispatch_window_3p #(
             older_completed_control = 1'b0;
             older_uncompleted_control = 1'b0;
             older_unresolved_conditional = 1'b0;
+            older_unissued_jalr = 1'b0;
+            older_unresolved_jalr = 1'b0;
             trace_older_unissued_hard_valid = 1'b0;
             trace_older_persistent_hard_valid = 1'b0;
             trace_older_unissued_mem_valid = 1'b0;
             trace_older_live_control_valid = 1'b0;
             trace_older_unresolved_conditional_valid = 1'b0;
+            trace_older_unresolved_jalr_valid = 1'b0;
             trace_older_unissued_hard_id =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             trace_older_persistent_hard_id =
@@ -990,9 +1068,13 @@ module openrv64_dispatch_window_3p #(
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             trace_older_unresolved_conditional_id =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            trace_older_unresolved_jalr_id =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             trace_entry_gate_reason[eligible_idx] =
                 `OPENRV64_TTRACE_REASON_NONE;
             trace_entry_blocker_valid[eligible_idx] = 1'b0;
+            trace_entry_older_unissued_jalr[eligible_idx] = 1'b0;
+            trace_entry_older_persistent_jalr[eligible_idx] = 1'b0;
             trace_entry_blocker_id[eligible_idx] =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             for (older_idx = 0; older_idx < DEPTH;
@@ -1012,6 +1094,9 @@ module openrv64_dispatch_window_3p #(
                             trace_older_unissued_hard_id = id_q[older_idx];
                         end
                     end
+                    if (!issued_q[older_idx] &&
+                        is_jalr(payload_q[older_idx]))
+                        older_unissued_jalr = 1'b1;
                     if (is_persistent_hard(payload_q[older_idx])) begin
                         older_persistent_hard = 1'b1;
                         if (!trace_older_persistent_hard_valid ||
@@ -1050,12 +1135,24 @@ module openrv64_dispatch_window_3p #(
                             trace_unresolved_conditional_depth[eligible_idx] +
                             1'b1;
                     end
+                    if (!result_ready_q[older_idx] &&
+                        is_speculative_jalr(payload_q[older_idx])) begin
+                        older_unresolved_jalr = 1'b1;
+                        if (!trace_older_unresolved_jalr_valid ||
+                            id_is_younger(trace_older_unresolved_jalr_id,
+                                          id_q[older_idx])) begin
+                            trace_older_unresolved_jalr_valid = 1'b1;
+                            trace_older_unresolved_jalr_id = id_q[older_idx];
+                        end
+                    end
                     if (payload_q[older_idx][PAYLOAD_BRANCH] ||
+                        is_speculative_jalr(payload_q[older_idx]) ||
                         is_replayable_direct_jal(payload_q[older_idx])) begin
-                        if (`OPENRV64_3P_RESULT_READY_CONTROL_RELEASE != 0)
-                            older_live_control =
-                                !result_ready_q[older_idx];
-                        else
+                        // Accumulate across every older control.  A later
+                        // completed control must not erase an earlier live
+                        // one and accidentally release a store across it.
+                        if ((`OPENRV64_3P_RESULT_READY_CONTROL_RELEASE == 0) ||
+                            !result_ready_q[older_idx])
                             older_live_control = 1'b1;
                         if ((!`OPENRV64_3P_RESULT_READY_CONTROL_RELEASE ||
                              !result_ready_q[older_idx]) &&
@@ -1083,6 +1180,12 @@ module openrv64_dispatch_window_3p #(
                         persistent_barrier_id_q;
                 end
             end
+            trace_entry_older_unissued_jalr[eligible_idx] =
+                older_unissued_jalr;
+            trace_entry_older_persistent_jalr[eligible_idx] =
+                trace_jalr_persistent_barrier &&
+                id_is_younger(id_q[eligible_idx],
+                              persistent_barrier_id_q);
 
             if (valid_q[eligible_idx] &&
                 is_persistent_hard(payload_q[eligible_idx]))
@@ -1099,13 +1202,14 @@ module openrv64_dispatch_window_3p #(
             if (is_persistent_hard(payload_q[eligible_idx]) &&
                 (id_q[eligible_idx] != next_retire_id_i))
                 eligible[eligible_idx] = 1'b0;
-            // Data work may cross several predicted branches, but conditional
-            // branches themselves resolve in program order.  This prevents a
-            // younger wrong-path branch from redirecting or training the
-            // predictor before an older unresolved branch is known correct.
+            // Data work may cross predicted controls, but unresolved
+            // conditional branches and JALRs resolve in program order.  This
+            // prevents a younger wrong-path control from redirecting or
+            // training before the older target/direction is known correct.
             if ((ENABLE_SPECULATION != 0) &&
-                is_early_conditional_branch(payload_q[eligible_idx]) &&
-                older_unresolved_conditional)
+                (is_early_conditional_branch(payload_q[eligible_idx]) ||
+                 is_speculative_jalr(payload_q[eligible_idx])) &&
+                (older_unresolved_conditional || older_unresolved_jalr))
                 eligible[eligible_idx] = 1'b0;
             // Preserve all non-memory ordering and control checks separately
             // from the older-memory check.  The selector may use this view
@@ -1124,6 +1228,50 @@ module openrv64_dispatch_window_3p #(
             end
             if (is_mem(payload_q[eligible_idx]) && older_unissued_mem)
                 eligible[eligible_idx] = 1'b0;
+
+            if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                is_jalr(payload_q[eligible_idx])) begin
+                trace_jalr_unissued_count =
+                    trace_jalr_unissued_count + 1'b1;
+                if (src1_ready_now[eligible_idx] &&
+                    src2_ready_now[eligible_idx]) begin
+                    trace_jalr_operand_ready_count =
+                        trace_jalr_operand_ready_count + 1'b1;
+                    if (id_q[eligible_idx] == next_retire_id_i)
+                        trace_jalr_head_ready_count =
+                            trace_jalr_head_ready_count + 1'b1;
+                    else
+                        trace_jalr_not_head_ready_count =
+                            trace_jalr_not_head_ready_count + 1'b1;
+                end
+            end
+            if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                trace_entry_older_unissued_jalr[eligible_idx]) begin
+                trace_jalr_younger_behind_unissued_count =
+                    trace_jalr_younger_behind_unissued_count + 1'b1;
+                if (src1_ready_now[eligible_idx] &&
+                    src2_ready_now[eligible_idx])
+                    trace_jalr_younger_ready_behind_unissued_count =
+                        trace_jalr_younger_ready_behind_unissued_count + 1'b1;
+                if (eligible[eligible_idx])
+                    trace_jalr_younger_eligible_behind_unissued_count =
+                        trace_jalr_younger_eligible_behind_unissued_count +
+                        1'b1;
+            end
+            if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                trace_entry_older_persistent_jalr[eligible_idx]) begin
+                trace_jalr_younger_behind_persistent_count =
+                    trace_jalr_younger_behind_persistent_count + 1'b1;
+                if (src1_ready_now[eligible_idx] &&
+                    src2_ready_now[eligible_idx])
+                    trace_jalr_younger_ready_behind_persistent_count =
+                        trace_jalr_younger_ready_behind_persistent_count +
+                        1'b1;
+                if (eligible[eligible_idx])
+                    trace_jalr_younger_eligible_behind_persistent_count =
+                        trace_jalr_younger_eligible_behind_persistent_count +
+                        1'b1;
+            end
 
             // Preserve the exact first gate for the resident entry.  Pipe
             // selection and downstream readiness are appended after the
@@ -1175,15 +1323,27 @@ module openrv64_dispatch_window_3p #(
                     trace_entry_blocker_id[eligible_idx] =
                         trace_older_persistent_hard_id;
                 end else if ((ENABLE_SPECULATION != 0) &&
-                             is_early_conditional_branch(
-                                 payload_q[eligible_idx]) &&
-                             older_unresolved_conditional) begin
+                             (is_early_conditional_branch(
+                                  payload_q[eligible_idx]) ||
+                              is_speculative_jalr(
+                                  payload_q[eligible_idx])) &&
+                             (older_unresolved_conditional ||
+                              older_unresolved_jalr)) begin
                     trace_entry_gate_reason[eligible_idx] =
                         `OPENRV64_TTRACE_REASON_BRANCH_ORDER;
-                    trace_entry_blocker_valid[eligible_idx] =
-                        trace_older_unresolved_conditional_valid;
-                    trace_entry_blocker_id[eligible_idx] =
-                        trace_older_unresolved_conditional_id;
+                    if (trace_older_unresolved_conditional_valid &&
+                        (!trace_older_unresolved_jalr_valid ||
+                         id_is_younger(trace_older_unresolved_jalr_id,
+                                       trace_older_unresolved_conditional_id))) begin
+                        trace_entry_blocker_valid[eligible_idx] = 1'b1;
+                        trace_entry_blocker_id[eligible_idx] =
+                            trace_older_unresolved_conditional_id;
+                    end else begin
+                        trace_entry_blocker_valid[eligible_idx] =
+                            trace_older_unresolved_jalr_valid;
+                        trace_entry_blocker_id[eligible_idx] =
+                            trace_older_unresolved_jalr_id;
+                    end
                 end else if (is_mem(payload_q[eligible_idx]) &&
                              older_live_control &&
                              !is_speculative_load_candidate(
@@ -1336,9 +1496,12 @@ module openrv64_dispatch_window_3p #(
                             trace_mem_order_block_count + 1'b1;
                     else if (older_unissued_hard || older_persistent_hard ||
                              ((ENABLE_SPECULATION != 0) &&
-                              is_early_conditional_branch(
-                                  payload_q[eligible_idx]) &&
-                              older_unresolved_conditional) ||
+                              (is_early_conditional_branch(
+                                   payload_q[eligible_idx]) ||
+                               is_speculative_jalr(
+                                   payload_q[eligible_idx])) &&
+                              (older_unresolved_conditional ||
+                               older_unresolved_jalr)) ||
                              (is_persistent_hard(payload_q[eligible_idx]) &&
                               (id_q[eligible_idx] != next_retire_id_i)))
                         trace_hard_block_count =
@@ -2016,6 +2179,11 @@ module openrv64_dispatch_window_3p #(
                             issue_persistent_ex1 ||
                             issue_persistent_mem ||
                             issue_persistent_mem2;
+    wire issue_persistent_jalr =
+        (issue_persistent_ex0 && is_jalr(payload_q[select_ex0])) ||
+        (issue_persistent_ex1 && is_jalr(payload_q[select_ex1])) ||
+        (issue_persistent_mem && is_jalr(payload_q[select_mem])) ||
+        (issue_persistent_mem2 && is_jalr(payload_q[select_mem2]));
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] issue_persistent_id =
         issue_persistent_ex0 ? id_q[select_ex0] :
         issue_persistent_ex1 ? id_q[select_ex1] :
@@ -2034,20 +2202,84 @@ module openrv64_dispatch_window_3p #(
                       `OPENRV64_INSTR_ID_WIDTH] ==
           persistent_barrier_id_q));
 
+    reg [COUNT_WIDTH-1:0] trace_jalr_issue_count;
+    reg [COUNT_WIDTH-1:0] trace_jalr_issue_before_head_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_issue_behind_unissued_count;
+    reg [COUNT_WIDTH-1:0]
+        trace_jalr_younger_issue_behind_persistent_count;
+    always_comb begin
+        trace_jalr_issue_count = {COUNT_WIDTH{1'b0}};
+        trace_jalr_issue_before_head_count = {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_issue_behind_unissued_count =
+            {COUNT_WIDTH{1'b0}};
+        trace_jalr_younger_issue_behind_persistent_count =
+            {COUNT_WIDTH{1'b0}};
+        if (issue_ex0 && select_ex0_valid) begin
+            if (is_jalr(payload_q[select_ex0])) begin
+                trace_jalr_issue_count = trace_jalr_issue_count + 1'b1;
+                if (id_q[select_ex0] != next_retire_id_i)
+                    trace_jalr_issue_before_head_count =
+                        trace_jalr_issue_before_head_count + 1'b1;
+            end
+            if (trace_entry_older_unissued_jalr[select_ex0])
+                trace_jalr_younger_issue_behind_unissued_count =
+                    trace_jalr_younger_issue_behind_unissued_count + 1'b1;
+            if (trace_entry_older_persistent_jalr[select_ex0])
+                trace_jalr_younger_issue_behind_persistent_count =
+                    trace_jalr_younger_issue_behind_persistent_count + 1'b1;
+        end
+        if (issue_ex1 && select_ex1_valid) begin
+            if (is_jalr(payload_q[select_ex1])) begin
+                trace_jalr_issue_count = trace_jalr_issue_count + 1'b1;
+                if (id_q[select_ex1] != next_retire_id_i)
+                    trace_jalr_issue_before_head_count =
+                        trace_jalr_issue_before_head_count + 1'b1;
+            end
+            if (trace_entry_older_unissued_jalr[select_ex1])
+                trace_jalr_younger_issue_behind_unissued_count =
+                    trace_jalr_younger_issue_behind_unissued_count + 1'b1;
+            if (trace_entry_older_persistent_jalr[select_ex1])
+                trace_jalr_younger_issue_behind_persistent_count =
+                    trace_jalr_younger_issue_behind_persistent_count + 1'b1;
+        end
+        if (issue_mem_primary && select_mem_valid) begin
+            if (trace_entry_older_unissued_jalr[select_mem])
+                trace_jalr_younger_issue_behind_unissued_count =
+                    trace_jalr_younger_issue_behind_unissued_count + 1'b1;
+            if (trace_entry_older_persistent_jalr[select_mem])
+                trace_jalr_younger_issue_behind_persistent_count =
+                    trace_jalr_younger_issue_behind_persistent_count + 1'b1;
+        end
+        if (issue_mem_secondary && select_mem2_valid) begin
+            if (trace_entry_older_unissued_jalr[select_mem2])
+                trace_jalr_younger_issue_behind_unissued_count =
+                    trace_jalr_younger_issue_behind_unissued_count + 1'b1;
+            if (trace_entry_older_persistent_jalr[select_mem2])
+                trace_jalr_younger_issue_behind_persistent_count =
+                    trace_jalr_younger_issue_behind_persistent_count + 1'b1;
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n || flush_i) begin
             persistent_barrier_valid_q <= 1'b0;
+            persistent_barrier_jalr_q <= 1'b0;
             persistent_barrier_id_q <=
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         end else if (PHYSICAL_RENAME != 0) begin
-            if (persistent_retire_match)
+            if (persistent_retire_match) begin
                 persistent_barrier_valid_q <= 1'b0;
+                persistent_barrier_jalr_q <= 1'b0;
+            end
             if (issue_persistent) begin
                 persistent_barrier_valid_q <= 1'b1;
+                persistent_barrier_jalr_q <= issue_persistent_jalr;
                 persistent_barrier_id_q <= issue_persistent_id;
             end
         end else begin
             persistent_barrier_valid_q <= 1'b0;
+            persistent_barrier_jalr_q <= 1'b0;
         end
     end
 

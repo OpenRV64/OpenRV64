@@ -4,6 +4,7 @@
 `include "core/isa/rv64-priv.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
+`include "core/decode/defs/br-defs.v"
 
 module tb_backend_3p_banked #(
     parameter integer ISSUE_WINDOW = 0,
@@ -26,7 +27,10 @@ module tb_backend_3p_banked #(
 
     localparam integer I_PRIV = 2;
     localparam integer I_MEM_READ = 16;
+    localparam integer I_JUMP = 13;
+    localparam integer I_PREDICTED = 12;
     localparam integer I_REG_WRITE = 17;
+    localparam integer I_BR_OP = 18;
     localparam integer I_LSU_OP = 22;
     localparam integer I_ALU_OP = 27;
     localparam integer I_ALU_EXT = 32;
@@ -301,6 +305,28 @@ module tb_backend_3p_banked #(
         end
     endfunction
 
+    function automatic [IW-1:0] jalr_packet;
+        input [63:0] trace;
+        input [4:0] rs1;
+        input [4:0] rd;
+        input [63:0] immediate;
+        reg [IW-1:0] packet;
+        begin
+            packet = base_packet(
+                trace,
+                {immediate[11:0], rs1, 3'b000, rd,
+                 `RV64_OPCODE_JALR});
+            packet[I_RS1 +: 5] = rs1;
+            packet[I_RD +: 5] = rd;
+            packet[I_IMM +: 64] = immediate;
+            packet[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_JALR;
+            packet[I_JUMP] = 1'b1;
+            packet[I_PREDICTED] = 1'b1;
+            packet[I_REG_WRITE] = (rd != 0);
+            jalr_packet = packet;
+        end
+    endfunction
+
     function automatic [IW-1:0] reg_packet;
         input [63:0] trace;
         input [4:0] rs1;
@@ -413,6 +439,10 @@ module tb_backend_3p_banked #(
     reg saw_nonidentity_phys;
     reg saw_scheduler_release_before_retire;
     reg saw_scheduler_slot_reuse_before_retire;
+    reg saw_jalr_resolve_before_head;
+    reg saw_jalr_younger_issue;
+    reg saw_jalr_resolve;
+    integer jalr_probe_pipe;
     integer rename_monitor_lane;
     wire [6:0] observed_rename_free_count;
 
@@ -532,6 +562,25 @@ module tb_backend_3p_banked #(
                 fail("banked backend retired a third lane");
             if (retire_count == 2)
                 saw_two_wide_retire = 1'b1;
+
+            // This is execution acceptance, not scheduler release.  The
+            // directed probe below leaves an older load at the ROB head and
+            // requires both the JALR and younger ALU packet to reach EX.
+            for (jalr_probe_pipe = 0;
+                 jalr_probe_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+                 jalr_probe_pipe = jalr_probe_pipe + 1) begin
+                if (issue_valid[jalr_probe_pipe] &&
+                    (dut.pipe_payload[
+                        jalr_probe_pipe*IW + I_TRACE +: 64] == 64'd42))
+                    saw_jalr_younger_issue = 1'b1;
+            end
+            if (dut.exec_branch_resolved &&
+                (`RV64_OPCODE(dut.exec_branch_instr) ==
+                 `RV64_OPCODE_JALR)) begin
+                saw_jalr_resolve = 1'b1;
+                if (dut.exec_redirect_id != dut.ordered_head_id)
+                    saw_jalr_resolve_before_head = 1'b1;
+            end
 
             if ((retire_count != 0) && !memory_probe_active) begin
                 expected_last_trace = retired_total + retire_count;
@@ -672,6 +721,9 @@ module tb_backend_3p_banked #(
         saw_nonidentity_phys = 1'b0;
         saw_scheduler_release_before_retire = 1'b0;
         saw_scheduler_slot_reuse_before_retire = 1'b0;
+        saw_jalr_resolve_before_head = 1'b0;
+        saw_jalr_younger_issue = 1'b0;
+        saw_jalr_resolve = 1'b0;
 
         instruction_stream[0] = addi_packet(1, 0, 1, 64'd5, 1'b0);
         // p1 and p29 share four-bank bank 1.  These two independent leading
@@ -1099,6 +1151,87 @@ module tb_backend_3p_banked #(
             (write_busy != 0))
             fail("MEM0 forwarding probe did not drain cleanly");
         memory_probe_active = 1'b0;
+
+        // Tomasulo JALR is a recoverable speculative cut, not a retirement
+        // barrier.  Keep an older load incomplete, then require the JALR to
+        // resolve before the ROB head and a younger independent ALU packet to
+        // enter execution.  A predicted-taken packet avoids manufacturing a
+        // direction redirect in this backend-only test.
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (SPECULATION_WINDOW != 0)) begin
+            memory_probe_active = 1'b1;
+            memory_probe_retired = 0;
+            memory_probe_last_rd = 5'd0;
+            memory_probe_last_wdata = 64'd0;
+            saw_jalr_resolve_before_head = 1'b0;
+            saw_jalr_younger_issue = 1'b0;
+            saw_jalr_resolve = 1'b0;
+
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                load_packet(40, 0, 30, 64'h180);
+            decode_payload[IW +: IW] =
+                jalr_packet(41, 0, 31, 64'h200);
+            decode_payload[2*IW +: IW] =
+                addi_packet(42, 0, 29, 64'd99, 1'b0);
+            decode_uses_rs1 = 3'b111;
+            decode_uses_rs2 = 3'b000;
+            decode_valid = 3'b111;
+            while (decode_ready != 3'b111)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+
+            for (cycles = 0;
+                 (cycles < 80) &&
+                 (!mem_valid || !saw_jalr_resolve ||
+                  !saw_jalr_younger_issue);
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || !mem_physical || (mem_addr != 64'h180))
+                fail("JALR speculation probe did not hold its older load");
+            if (!saw_jalr_resolve)
+                fail("JALR speculation probe never resolved the JALR");
+            if (!saw_jalr_resolve_before_head)
+                fail("JALR did not resolve before the older ROB head");
+            if (!saw_jalr_younger_issue)
+                fail("younger ALU work did not execute across unresolved JALR");
+
+            probe_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+            mem_resp_tag = probe_load_tag;
+            mem_rdata = 64'h55;
+            mem_resp_valid = 1'b1;
+            for (cycles = 0; (cycles < 20) && !mem_resp_ready;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_resp_ready)
+                fail("JALR speculation probe load response was not accepted");
+            tick();
+            mem_resp_valid = 1'b0;
+
+            for (cycles = 0;
+                 (cycles < 100) &&
+                 ((memory_probe_retired < 3) ||
+                  (dispatch_occupancy != 0) ||
+                  (retire_occupancy != 0));
+                 cycles = cycles + 1)
+                tick();
+            repeat (2) tick();
+            if (memory_probe_retired != 3)
+                fail("JALR speculation probe did not retire all packets");
+            if ((memory_probe_last_rd != 5'd29) ||
+                (memory_probe_last_wdata != 64'd99))
+                fail("JALR speculation probe retired incorrect younger data");
+            if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
+                (write_busy != 0) || barrier_active)
+                fail("JALR speculation probe did not drain cleanly");
+            memory_probe_active = 1'b0;
+        end
 
         if ((RENAME_MODE == 0) &&
             (dut.u_gpr.regs[1] !== 64'd5 ||

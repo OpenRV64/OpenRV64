@@ -853,6 +853,16 @@ module tb_top_3p_soc #(
     integer bp_ras_hits;
     integer bp_ras_misses;
     integer bp_ras_wrong_targets;
+    integer jalr_resolutions;
+    integer jalr_direction_corrections;
+    integer jalr_target_corrections;
+    integer jalr_resolutions_with_younger_valid;
+    integer jalr_resolutions_with_younger_completed;
+    integer jalr_resolve_younger_valid_entries;
+    integer jalr_resolve_younger_completed_entries;
+    integer jalr_resolve_probe_slot;
+    integer jalr_resolve_younger_valid_now;
+    integer jalr_resolve_younger_completed_now;
     integer lookaside_restart_hits;
     integer lookaside_eligible_restarts;
     integer lookaside_pair_replacements;
@@ -975,6 +985,22 @@ module tb_top_3p_soc #(
     integer tomasulo_rename_downstream_blocked_cycles;
     integer tomasulo_rename_empty_cycles;
     integer tomasulo_min_free;
+    integer tomasulo_jalr_unissued_cycles;
+    integer tomasulo_jalr_unissued_entry_cycles;
+    integer tomasulo_jalr_operand_ready_entry_cycles;
+    integer tomasulo_jalr_head_ready_entry_cycles;
+    integer tomasulo_jalr_not_head_ready_entry_cycles;
+    integer tomasulo_jalr_scheduler_release_events;
+    integer tomasulo_jalr_release_before_head_events;
+    integer tomasulo_jalr_persistent_barrier_cycles;
+    integer tomasulo_jalr_younger_unissued_entry_cycles;
+    integer tomasulo_jalr_younger_ready_entry_cycles;
+    integer tomasulo_jalr_younger_eligible_entry_cycles;
+    integer tomasulo_jalr_younger_release_events;
+    integer tomasulo_jalr_younger_persistent_entry_cycles;
+    integer tomasulo_jalr_younger_persistent_ready_entry_cycles;
+    integer tomasulo_jalr_younger_persistent_eligible_entry_cycles;
+    integer tomasulo_jalr_younger_persistent_release_events;
     integer pipeline_window_empty_cycles;
     integer pipeline_window_no_eligible_cycles;
     integer pipeline_window_eligible_no_offer_cycles;
@@ -1586,6 +1612,18 @@ module tb_top_3p_soc #(
         end
     endfunction
 
+    function automatic perf_id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            perf_id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
+        end
+    endfunction
+
     wire [`OPENRV64_RETIRE_ALLOC_WIDTH-1:0]
         trace_retire_head_payload =
             dut.u_backend.queue_retire_record[
@@ -2007,6 +2045,84 @@ module tb_top_3p_soc #(
     wire [5:0] trace_tomasulo_free_count =
         (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
         dut.u_backend.u_dispatch.g_3p.g_tomasulo.rename_free_count : 6'd0;
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_jalr_unissued =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_unissued_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_jalr_ready =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_operand_ready_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_jalr_head_ready =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_head_ready_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_jalr_not_head_ready =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_not_head_ready_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0] trace_tomasulo_jalr_release =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_issue_count : {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_release_before_head =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_issue_before_head_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire trace_tomasulo_jalr_persistent =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_persistent_barrier;
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_unissued =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_behind_unissued_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_ready =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_ready_behind_unissued_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_eligible =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_eligible_behind_unissued_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_release =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_issue_behind_unissued_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_persistent =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_behind_persistent_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_persistent_ready =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_ready_behind_persistent_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_persistent_eligible =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_eligible_behind_persistent_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
+    wire [WINDOW_COUNT_WIDTH-1:0]
+        trace_tomasulo_jalr_younger_persistent_release =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_jalr_younger_issue_behind_persistent_count :
+        {WINDOW_COUNT_WIDTH{1'b0}};
 
     // Classify the producer named by an unavailable window operand.  The
     // window's issued bit changes only on the scheduler handshake, so an
@@ -4311,6 +4427,15 @@ module tb_top_3p_soc #(
         bp_ras_hits = 0;
         bp_ras_misses = 0;
         bp_ras_wrong_targets = 0;
+        jalr_resolutions = 0;
+        jalr_direction_corrections = 0;
+        jalr_target_corrections = 0;
+        jalr_resolutions_with_younger_valid = 0;
+        jalr_resolutions_with_younger_completed = 0;
+        jalr_resolve_younger_valid_entries = 0;
+        jalr_resolve_younger_completed_entries = 0;
+        jalr_resolve_younger_valid_now = 0;
+        jalr_resolve_younger_completed_now = 0;
         lookaside_restart_hits = 0;
         lookaside_eligible_restarts = 0;
         lookaside_pair_replacements = 0;
@@ -4440,6 +4565,22 @@ module tb_top_3p_soc #(
         tomasulo_rename_downstream_blocked_cycles = 0;
         tomasulo_rename_empty_cycles = 0;
         tomasulo_min_free = 63;
+        tomasulo_jalr_unissued_cycles = 0;
+        tomasulo_jalr_unissued_entry_cycles = 0;
+        tomasulo_jalr_operand_ready_entry_cycles = 0;
+        tomasulo_jalr_head_ready_entry_cycles = 0;
+        tomasulo_jalr_not_head_ready_entry_cycles = 0;
+        tomasulo_jalr_scheduler_release_events = 0;
+        tomasulo_jalr_release_before_head_events = 0;
+        tomasulo_jalr_persistent_barrier_cycles = 0;
+        tomasulo_jalr_younger_unissued_entry_cycles = 0;
+        tomasulo_jalr_younger_ready_entry_cycles = 0;
+        tomasulo_jalr_younger_eligible_entry_cycles = 0;
+        tomasulo_jalr_younger_release_events = 0;
+        tomasulo_jalr_younger_persistent_entry_cycles = 0;
+        tomasulo_jalr_younger_persistent_ready_entry_cycles = 0;
+        tomasulo_jalr_younger_persistent_eligible_entry_cycles = 0;
+        tomasulo_jalr_younger_persistent_release_events = 0;
         pipeline_window_empty_cycles = 0;
         pipeline_window_no_eligible_cycles = 0;
         pipeline_window_eligible_no_offer_cycles = 0;
@@ -5053,6 +5194,54 @@ module tb_top_3p_soc #(
                         tomasulo_rename_empty_cycles + 1;
                 if (trace_tomasulo_free_count < tomasulo_min_free)
                     tomasulo_min_free = trace_tomasulo_free_count;
+                if (trace_tomasulo_jalr_unissued != 0)
+                    tomasulo_jalr_unissued_cycles =
+                        tomasulo_jalr_unissued_cycles + 1;
+                tomasulo_jalr_unissued_entry_cycles =
+                    tomasulo_jalr_unissued_entry_cycles +
+                    trace_tomasulo_jalr_unissued;
+                tomasulo_jalr_operand_ready_entry_cycles =
+                    tomasulo_jalr_operand_ready_entry_cycles +
+                    trace_tomasulo_jalr_ready;
+                tomasulo_jalr_head_ready_entry_cycles =
+                    tomasulo_jalr_head_ready_entry_cycles +
+                    trace_tomasulo_jalr_head_ready;
+                tomasulo_jalr_not_head_ready_entry_cycles =
+                    tomasulo_jalr_not_head_ready_entry_cycles +
+                    trace_tomasulo_jalr_not_head_ready;
+                tomasulo_jalr_scheduler_release_events =
+                    tomasulo_jalr_scheduler_release_events +
+                    trace_tomasulo_jalr_release;
+                tomasulo_jalr_release_before_head_events =
+                    tomasulo_jalr_release_before_head_events +
+                    trace_tomasulo_jalr_release_before_head;
+                if (trace_tomasulo_jalr_persistent)
+                    tomasulo_jalr_persistent_barrier_cycles =
+                        tomasulo_jalr_persistent_barrier_cycles + 1;
+                tomasulo_jalr_younger_unissued_entry_cycles =
+                    tomasulo_jalr_younger_unissued_entry_cycles +
+                    trace_tomasulo_jalr_younger_unissued;
+                tomasulo_jalr_younger_ready_entry_cycles =
+                    tomasulo_jalr_younger_ready_entry_cycles +
+                    trace_tomasulo_jalr_younger_ready;
+                tomasulo_jalr_younger_eligible_entry_cycles =
+                    tomasulo_jalr_younger_eligible_entry_cycles +
+                    trace_tomasulo_jalr_younger_eligible;
+                tomasulo_jalr_younger_release_events =
+                    tomasulo_jalr_younger_release_events +
+                    trace_tomasulo_jalr_younger_release;
+                tomasulo_jalr_younger_persistent_entry_cycles =
+                    tomasulo_jalr_younger_persistent_entry_cycles +
+                    trace_tomasulo_jalr_younger_persistent;
+                tomasulo_jalr_younger_persistent_ready_entry_cycles =
+                    tomasulo_jalr_younger_persistent_ready_entry_cycles +
+                    trace_tomasulo_jalr_younger_persistent_ready;
+                tomasulo_jalr_younger_persistent_eligible_entry_cycles =
+                    tomasulo_jalr_younger_persistent_eligible_entry_cycles +
+                    trace_tomasulo_jalr_younger_persistent_eligible;
+                tomasulo_jalr_younger_persistent_release_events =
+                    tomasulo_jalr_younger_persistent_release_events +
+                    trace_tomasulo_jalr_younger_persistent_release;
             end
             if (dut.u_backend.raw_hazard != 0)
                 raw_hazard_cycles = raw_hazard_cycles + 1;
@@ -6763,6 +6952,48 @@ module tb_top_3p_soc #(
                 bp_ras_misses = bp_ras_misses + 1;
             if (dut.u_bp.diag_ras_wrong_target)
                 bp_ras_wrong_targets = bp_ras_wrong_targets + 1;
+            if (dut.branch_resolved &&
+                (`RV64_OPCODE(dut.branch_instr) == `RV64_OPCODE_JALR)) begin
+                jalr_resolutions = jalr_resolutions + 1;
+                if (dut.backend_redirect)
+                    jalr_direction_corrections =
+                        jalr_direction_corrections + 1;
+                if (dut.bp_target_mispredict)
+                    jalr_target_corrections =
+                        jalr_target_corrections + 1;
+                jalr_resolve_younger_valid_now = 0;
+                jalr_resolve_younger_completed_now = 0;
+                for (jalr_resolve_probe_slot = 0;
+                     jalr_resolve_probe_slot < RETIRE_DEPTH;
+                     jalr_resolve_probe_slot =
+                         jalr_resolve_probe_slot + 1) begin
+                    if (dut.u_backend.u_retire_queue.valid_q[
+                            jalr_resolve_probe_slot] &&
+                        perf_id_is_younger(
+                            dut.u_backend.u_retire_queue.id_q[
+                                jalr_resolve_probe_slot],
+                            dut.branch_id)) begin
+                        jalr_resolve_younger_valid_now =
+                            jalr_resolve_younger_valid_now + 1;
+                        if (dut.u_backend.u_retire_queue.complete_q[
+                                jalr_resolve_probe_slot])
+                            jalr_resolve_younger_completed_now =
+                                jalr_resolve_younger_completed_now + 1;
+                    end
+                end
+                jalr_resolve_younger_valid_entries =
+                    jalr_resolve_younger_valid_entries +
+                    jalr_resolve_younger_valid_now;
+                jalr_resolve_younger_completed_entries =
+                    jalr_resolve_younger_completed_entries +
+                    jalr_resolve_younger_completed_now;
+                if (jalr_resolve_younger_valid_now != 0)
+                    jalr_resolutions_with_younger_valid =
+                        jalr_resolutions_with_younger_valid + 1;
+                if (jalr_resolve_younger_completed_now != 0)
+                    jalr_resolutions_with_younger_completed =
+                        jalr_resolutions_with_younger_completed + 1;
+            end
             if (dut.fetch_alt_restart_hit)
                 lookaside_restart_hits = lookaside_restart_hits + 1;
             if (dut.fetch3_restart &&
@@ -7517,6 +7748,16 @@ module tb_top_3p_soc #(
             bp_btb_wrong_targets, bp_ras_lookups, bp_ras_hits,
             bp_ras_misses, bp_ras_wrong_targets);
         $display(
+            "PERF_ICX_L2_JALR_PREDICT resolutions=%0d direction_corrections=%0d target_corrections=%0d btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d resolve_with_younger_valid=%0d resolve_with_younger_completed=%0d resolve_younger_valid_entries=%0d resolve_younger_completed_entries=%0d",
+            jalr_resolutions, jalr_direction_corrections,
+            jalr_target_corrections, bp_btb_lookups, bp_btb_hits,
+            bp_btb_misses, bp_btb_wrong_targets, bp_ras_lookups,
+            bp_ras_hits, bp_ras_misses, bp_ras_wrong_targets,
+            jalr_resolutions_with_younger_valid,
+            jalr_resolutions_with_younger_completed,
+            jalr_resolve_younger_valid_entries,
+            jalr_resolve_younger_completed_entries);
+        $display(
             "PERF_ICX_L2_LOOKASIDE pair_stack_depth=%0d eligible_restarts=%0d hits=%0d pair_overlaps=%0d pair_stack_overflows=%0d pair_stack_max_saved=%0d fills=%0d duplicate_fills=%0d free_fills=%0d evictions=%0d full_branch_allocations=%0d",
             FETCH_ALT_PAIR_STACK_DEPTH,
             lookaside_eligible_restarts, lookaside_restart_hits,
@@ -7807,6 +8048,26 @@ module tb_top_3p_soc #(
             tomasulo_rename_downstream_blocked_cycles,
             tomasulo_rename_empty_cycles,
             tomasulo_min_free);
+        $display(
+            "PERF_ICX_L2_TOMASULO_JALR unissued_cycles=%0d unissued_entry_cycles=%0d ready_entry_cycles=%0d head_ready_entry_cycles=%0d not_head_ready_entry_cycles=%0d scheduler_release_events=%0d release_before_head_events=%0d persistent_barrier_cycles=%0d",
+            tomasulo_jalr_unissued_cycles,
+            tomasulo_jalr_unissued_entry_cycles,
+            tomasulo_jalr_operand_ready_entry_cycles,
+            tomasulo_jalr_head_ready_entry_cycles,
+            tomasulo_jalr_not_head_ready_entry_cycles,
+            tomasulo_jalr_scheduler_release_events,
+            tomasulo_jalr_release_before_head_events,
+            tomasulo_jalr_persistent_barrier_cycles);
+        $display(
+            "PERF_ICX_L2_TOMASULO_JALR_YOUNGER behind_unissued_entry_cycles=%0d ready_behind_unissued_entry_cycles=%0d eligible_behind_unissued_entry_cycles=%0d release_behind_unissued_events=%0d behind_persistent_entry_cycles=%0d ready_behind_persistent_entry_cycles=%0d eligible_behind_persistent_entry_cycles=%0d release_behind_persistent_events=%0d",
+            tomasulo_jalr_younger_unissued_entry_cycles,
+            tomasulo_jalr_younger_ready_entry_cycles,
+            tomasulo_jalr_younger_eligible_entry_cycles,
+            tomasulo_jalr_younger_release_events,
+            tomasulo_jalr_younger_persistent_entry_cycles,
+            tomasulo_jalr_younger_persistent_ready_entry_cycles,
+            tomasulo_jalr_younger_persistent_eligible_entry_cycles,
+            tomasulo_jalr_younger_persistent_release_events);
         $display(
             "PERF_ICX_L2_PIPE_WINDOW empty=%0d no_eligible=%0d eligible_no_offer=%0d offer_replay=%0d fire=%0d fire_events=%0d",
             pipeline_window_empty_cycles,

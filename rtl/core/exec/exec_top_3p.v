@@ -34,6 +34,7 @@ module openrv64_exec_top_3p #(
     parameter integer ENABLE_RV64M = 1,
     parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
+    parameter integer ENABLE_SPECULATIVE_JALR = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer LOAD_QUEUE_DEPTH = 4,
@@ -319,8 +320,16 @@ module openrv64_exec_top_3p #(
                          !ex1_instr_page_fault &&
                          !issue_payload_i[
                              1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 41];
+    // The Tomasulo backend checkpoints every jump and selectively squashes
+    // younger IDs on a target correction.  In that mode a legal JALR has no
+    // architectural side effect at issue and need not wait for the ROB head.
+    // Target alignment faults remain buffered in its completion record.
+    wire ex1_early_jalr = (ENABLE_SPECULATIVE_JALR != 0) && ex1_jump &&
+                          (ex1_br_op == `RV64_BR_OP_JALR) &&
+                          !ex1_illegal && !ex1_instr_access_fault &&
+                          !ex1_instr_page_fault;
     wire ex1_requires_order = ex1_control && !ex1_early_branch &&
-                              !ex1_early_jal;
+                              !ex1_early_jal && !ex1_early_jalr;
     wire [`RV64_INSTR_WIDTH-1:0] ex1_instr =
         issue_payload_i[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +:
                         `RV64_INSTR_WIDTH];

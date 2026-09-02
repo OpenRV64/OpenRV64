@@ -57,6 +57,42 @@
       }
     },
     {
+      "module": "openrv64_backend_3p",
+      "source": "rtl/core/backend/backend_3p.v",
+      "parameters": {
+        "RETIRE_DEPTH": "32",
+        "DISPATCH_DEPTH": "6",
+        "PHYS_REG_COUNT": "31",
+        "PHYS_REG_ADDR_WIDTH": "5",
+        "ENABLE_RV64M": "1",
+        "ENABLE_RV64ZBB": "1",
+        "ENABLE_TRACE": "0",
+        "COMPLETION_FORWARD_MASK": "3'b111",
+        "BRANCH_COMPLETION_FORWARD_MASK": "3'b000",
+        "ENABLE_FULL_FORWARDING": "0",
+        "RELAX_WAW": "1",
+        "RELAX_HAZARDS": "0",
+        "FREE_BRANCHES": "0",
+        "ENABLE_EQ_BRANCH_PAIRING": "1",
+        "ENABLE_ISSUE_WINDOW": "1",
+        "ENABLE_SPECULATION_WINDOW": "1",
+        "ISSUE_WINDOW_DEPTH": "32",
+        "RENAME_MODE": "0",
+        "ENABLE_POSTED_STORES": "1",
+        "ENABLE_ZICCLSM": "1",
+        "STORE_QUEUE_DEPTH": "4",
+        "ENABLE_COHERENT_ATOMICS": "0",
+        "BANKED_GPR": "1",
+        "FPGA_GPR_LUTRAM": "0",
+        "BANKED_GPR_READ_PORTS_PER_BANK": "2",
+        "BANKED_GPR_NUM_BANKS": "4",
+        "STORE_FORWARD_BASE": "64'h0000000080000000",
+        "STORE_FORWARD_SIZE": "64'h00ffffff80000000",
+        "CACHEABLE_BASE": "64'h0000000080000000",
+        "CACHEABLE_SIZE": "64'h00ffffff80000000"
+      }
+    },
+    {
       "module": "openrv64_rv64i_gpr_3p",
       "source": "rtl/core/regs/rv64-i-gpr_3p.v",
       "parameters": {
