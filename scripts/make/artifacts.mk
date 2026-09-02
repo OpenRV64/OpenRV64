@@ -117,6 +117,7 @@ EXEC_BP_SIM_BUILD := sim/exec_bp_tb.vvp
 EXEC_BP_GSHARE_BTB_SIM_BUILD := sim/exec_bp_gshare_btb_tb.vvp
 EXEC_BP_TAGGED_SPEC_SIM_BUILD := sim/exec_bp_tagged_speculation_tb.vvp
 EXEC_BP_MODES78_SIM_BUILD := sim/exec_bp_modes78_tb.vvp
+EXEC_BP_TAGE_SIM_BUILD := sim/exec_bp_tage_tb.vvp
 BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD := sim/bp_context_always_branch_tb.vvp
 BP_CONTEXT_NOPREDECODE_SIM_BUILD := sim/bp_context_nopredecode_tb.vvp
 BP_CONTEXT_ALWAYS_DECLINE_SIM_BUILD := sim/bp_context_always_decline_tb.vvp
@@ -126,6 +127,9 @@ BP_CONTEXT_BIMODAL_SIM_BUILD := sim/bp_context_bimodal_tb.vvp
 BP_CONTEXT_GSHARE_BTB_SIM_BUILD := sim/bp_context_gshare_btb_tb.vvp
 BP_CONTEXT_GSHARE_BTB_512_SIM_BUILD := sim/bp_context_gshare_btb_512_tb.vvp
 BP_CONTEXT_TOURNAMENT_BTB_SIM_BUILD := sim/bp_context_tournament_btb_tb.vvp
+BP_CONTEXT_TAGE_BTB_SIM_BUILD := sim/bp_context_tage_btb_tb.vvp
+BP_CONTEXT_TAGE_BTB_NOPREDECODE_SIM_BUILD := \
+	sim/bp_context_tage_btb_nopredecode_tb.vvp
 BP_CONTEXT_FPGA_QUEUE_SIM_BUILD := sim/bp_context_fpga_queue_tb.vvp
 EXCEPT_SIM_BUILD := sim/except_tb.vvp
 EXEC_SYSTEM_CSR_SIM_BUILD := sim/exec_system_csr_tb.vvp

@@ -22,6 +22,7 @@ module openrv64_dispatch #(
     parameter integer DEFER_EQ_BRANCH_PAIRING_3P = 0,
     parameter integer ENABLE_ISSUE_WINDOW_3P = 0,
     parameter integer ENABLE_SPECULATION_WINDOW_3P = 0,
+    parameter integer ENABLE_ALU2_3P = 0,
     parameter integer DEFER_WINDOW_GPR_READ_3P = 0,
     parameter integer MAX_WINDOW_ISSUE_LANES_3P = 4,
     parameter integer ISSUE_WINDOW_DEPTH_3P = 16,
@@ -144,8 +145,8 @@ module openrv64_dispatch #(
     input  wire [5:0]                   candidate_operand_ready_3p_i,
     input  wire [2:0]                   candidate_address_ready_3p_i,
     input  wire                         allocation_ready_3p_i,
-    input  wire [1:0]                   rename_free_valid_3p_i,
-    input  wire [2*PHYS_REG_ADDR_WIDTH_3P-1:0]
+    input  wire [2:0]                   rename_free_valid_3p_i,
+    input  wire [3*PHYS_REG_ADDR_WIDTH_3P-1:0]
                                         rename_free_tag_3p_i,
     input  wire [2:0]                   rename_write_valid_3p_i,
     input  wire [3*PHYS_REG_ADDR_WIDTH_3P-1:0]
@@ -162,6 +163,8 @@ module openrv64_dispatch #(
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_3p_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         pipe_candidate_valid_3p_o,
+    output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        pipe_squashed_3p_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
                                         pipe_age_rank_3p_o,
     input  wire [1:0]                   forward_valid_3p_i,
@@ -255,6 +258,8 @@ module openrv64_dispatch #(
             assign pipe_valid_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_candidate_valid_3p_o =
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            assign pipe_squashed_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_age_rank_3p_o =
                 {`OPENRV64_EXEC_PIPE_COUNT*2{1'b0}};
@@ -421,6 +426,8 @@ module openrv64_dispatch #(
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] window_pipe_valid;
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                 window_pipe_candidate_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                window_pipe_squashed;
             wire [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
                 window_pipe_age_rank;
             wire [`OPENRV64_EXEC_PIPE_COUNT*
@@ -491,6 +498,7 @@ module openrv64_dispatch #(
                 .rename_source_ready_i(6'b111111),
                 .rename_destination_phys_i(
                     {3*PHYS_REG_ADDR_WIDTH_3P{1'b0}}),
+                .physical_forward_valid_i(3'b000),
                 .physical_writeback_valid_i(3'b000),
                 .physical_writeback_tag_i(
                     {3*PHYS_REG_ADDR_WIDTH_3P{1'b0}}),
@@ -502,6 +510,7 @@ module openrv64_dispatch #(
                 .allocation_meta_o(window_allocation_meta),
                 .pipe_ready_i(pipe_ready_3p_i),
                 .pipe_candidate_valid_o(window_pipe_candidate_valid),
+                .pipe_squashed_o(window_pipe_squashed),
                 .pipe_age_rank_o(window_pipe_age_rank),
                 .pipe_valid_o(window_pipe_valid),
                 .pipe_id_o(window_pipe_id),
@@ -559,6 +568,8 @@ module openrv64_dispatch #(
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] tomasulo_pipe_valid;
             wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                 tomasulo_pipe_candidate_valid;
+            wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                tomasulo_pipe_squashed;
             wire [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
                 tomasulo_pipe_age_rank;
             wire [`OPENRV64_EXEC_PIPE_COUNT*
@@ -629,6 +640,7 @@ module openrv64_dispatch #(
                     `RV64_REG_ADDR_WIDTH];
 
             wire [2:0] rename_destination_valid;
+            wire [2:0] rename_destination_prefix_ready;
             wire [2:0] tomasulo_destination_request;
             genvar tomasulo_request_lane;
             for (tomasulo_request_lane = 0; tomasulo_request_lane < 3;
@@ -676,6 +688,7 @@ module openrv64_dispatch #(
             wire [5:0] rename_source_ready;
             wire [5:0] rename_source_phys_ready;
             wire [2:0] rename_checkpoint_valid;
+            wire [2:0] rename_checkpoint_before;
             genvar checkpoint_lane;
             for (checkpoint_lane = 0; checkpoint_lane < 3;
                  checkpoint_lane = checkpoint_lane + 1) begin :
@@ -685,11 +698,28 @@ module openrv64_dispatch #(
                     (selected_allocation_meta[
                         checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 14] ||
                      selected_allocation_meta[
-                        checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 13]);
+                        checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 13] ||
+                     ((RENAME_MODE_3P == `OPENRV64_RENAME_TOMASULO) &&
+                      (ENABLE_SPECULATION_WINDOW_3P != 0) &&
+                      (selected_allocation_meta[
+                        checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 15] ||
+                       (selected_allocation_meta[
+                            checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 16] &&
+                        !selected_allocation_meta[
+                            checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 15]))));
+                assign rename_checkpoint_before[checkpoint_lane] =
+                    selected_allocation_valid[checkpoint_lane] &&
+                    (RENAME_MODE_3P == `OPENRV64_RENAME_TOMASULO) &&
+                    (ENABLE_SPECULATION_WINDOW_3P != 0) &&
+                    selected_allocation_meta[
+                        checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 16] &&
+                    !selected_allocation_meta[
+                        checkpoint_lane*`OPENRV64_DISPATCH_META_WIDTH + 15];
             end
             if (RENAME_MODE_3P == `OPENRV64_RENAME_IDENTITY) begin :
                     g_identity
                     assign rename_allocation_ready = allocation_ready_3p_i;
+                    assign rename_destination_prefix_ready = 3'b111;
                     assign rename_source_ready = 6'b111111;
                     assign rename_source_phys_ready = 6'b111111;
                     genvar identity_arch;
@@ -720,7 +750,8 @@ module openrv64_dispatch #(
                     wire rename_destination_ready;
                     wire [5:0] rename_free_count;
                     assign rename_allocation_ready =
-                        allocation_ready_3p_i && rename_destination_ready;
+                        allocation_ready_3p_i &&
+                        rename_destination_prefix_ready[0];
                     openrv64_rename_tomasulo #(
                         .ARCH_ADDR_WIDTH(`RV64_REG_ADDR_WIDTH),
                         .ARCH_REG_COUNT(32),
@@ -728,7 +759,7 @@ module openrv64_dispatch #(
                         .PHYS_REG_COUNT(PHYS_REG_COUNT_3P),
                         .LANES(3),
                         .SOURCES_PER_LANE(2),
-                        .FREE_PORTS(2),
+                        .FREE_PORTS(3),
                         .WRITE_PORTS(3),
                         .COMMIT_PORTS(3),
                         .CHECKPOINT_DEPTH(1 << RETIRE_SLOT_WIDTH_3P),
@@ -744,6 +775,8 @@ module openrv64_dispatch #(
                         .destination_valid_i(rename_destination_valid),
                         .destination_arch_i(rename_destination_arch),
                         .destination_ready_o(rename_destination_ready),
+                        .destination_prefix_ready_o(
+                            rename_destination_prefix_ready),
                         .destination_new_phys_o(rename_destination_new_phys),
                         .destination_old_phys_o(rename_destination_old_phys),
                         .free_valid_i(rename_free_valid_3p_i),
@@ -754,6 +787,7 @@ module openrv64_dispatch #(
                         .commit_arch_i(rename_commit_arch_3p_i),
                         .commit_phys_i(rename_commit_phys_3p_i),
                         .checkpoint_valid_i(rename_checkpoint_valid),
+                        .checkpoint_before_i(rename_checkpoint_before),
                         .checkpoint_slot_i(allocation_slot_3p_i),
                         .recovery_valid_i(squash_frontend_3p_i),
                         .recovery_slot_i(squash_slot_3p_i),
@@ -765,6 +799,7 @@ module openrv64_dispatch #(
 
             openrv64_dispatch_3p_tomasulo #(
                 .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW_3P),
+                .ENABLE_ALU2(ENABLE_ALU2_3P),
                 .MAX_ISSUE_LANES(MAX_WINDOW_ISSUE_LANES_3P),
                 .DEPTH(ISSUE_WINDOW_DEPTH_3P),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
@@ -787,17 +822,22 @@ module openrv64_dispatch #(
                 .rename_source_phys_i(gpr_read_addr_3p_o),
                 .rename_source_ready_i(rename_source_phys_ready),
                 .rename_destination_phys_i(rename_destination_new_phys),
+                .physical_forward_valid_i(
+                    completion_forward_valid_3p_i),
                 .physical_writeback_valid_i(rename_write_valid_3p_i),
                 .physical_writeback_tag_i(rename_write_tag_3p_i),
                 .physical_writeback_data_i(
                     completion_forward_data_3p_i),
-                .allocation_ready_i(rename_allocation_ready),
+                .allocation_ready_i(
+                    {3{allocation_ready_3p_i}} &
+                    rename_destination_prefix_ready),
                 .allocation_id_i(allocation_id_3p_i),
                 .allocation_slot_i(allocation_slot_3p_i),
                 .allocation_valid_o(tomasulo_allocation_valid),
                 .allocation_meta_o(tomasulo_allocation_meta),
                 .pipe_ready_i(pipe_ready_3p_i),
                 .pipe_candidate_valid_o(tomasulo_pipe_candidate_valid),
+                .pipe_squashed_o(tomasulo_pipe_squashed),
                 .pipe_age_rank_o(tomasulo_pipe_age_rank),
                 .pipe_valid_o(tomasulo_pipe_valid),
                 .pipe_id_o(tomasulo_pipe_id),
@@ -868,6 +908,10 @@ module openrv64_dispatch #(
                 use_tomasulo_window ? tomasulo_pipe_candidate_valid :
                 (ENABLE_ISSUE_WINDOW_3P != 0) ?
                 window_pipe_candidate_valid : strict_pipe_valid;
+            assign pipe_squashed_3p_o = use_tomasulo_window ?
+                tomasulo_pipe_squashed : (ENABLE_ISSUE_WINDOW_3P != 0) ?
+                window_pipe_squashed :
+                {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             assign pipe_age_rank_3p_o =
                 use_tomasulo_window ? tomasulo_pipe_age_rank :
                 (ENABLE_ISSUE_WINDOW_3P != 0) ?

@@ -50,8 +50,14 @@
       "source": "rtl/core/dispatch/dispatch_window_3p.v",
       "parameters": {
         "ENABLE": "1",
+        "PHYSICAL_RENAME": "0",
+        "PHYS_REG_ADDR_WIDTH": "5",
         "ENABLE_SPECULATION": "1",
+        "DEFER_GPR_READ": "1",
+        "MAX_ISSUE_LANES": "3",
         "DEPTH": "32",
+        "RETIRE_SLOT_WIDTH": "5",
+        "COUNT_WIDTH": "6",
         "CACHEABLE_BASE": "64'h0000000080000000",
         "CACHEABLE_SIZE": "64'h00ffffff80000000"
       }
@@ -90,6 +96,23 @@
         "STORE_FORWARD_SIZE": "64'h00ffffff80000000",
         "CACHEABLE_BASE": "64'h0000000080000000",
         "CACHEABLE_SIZE": "64'h00ffffff80000000"
+      }
+    },
+    {
+      "module": "openrv64_rename_tomasulo",
+      "source": "rtl/core/rename/tomasulo.v",
+      "parameters": {
+        "ARCH_ADDR_WIDTH": "5",
+        "ARCH_REG_COUNT": "32",
+        "PHYS_ADDR_WIDTH": "6",
+        "PHYS_REG_COUNT": "63",
+        "LANES": "3",
+        "SOURCES_PER_LANE": "2",
+        "FREE_PORTS": "2",
+        "WRITE_PORTS": "3",
+        "COMMIT_PORTS": "3",
+        "CHECKPOINT_DEPTH": "32",
+        "CHECKPOINT_SLOT_WIDTH": "5"
       }
     },
     {

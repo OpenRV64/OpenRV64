@@ -80,7 +80,9 @@
 	$(foreach case,$(COHERENCE_PERF_CASES),\
 	sim-4h-3p-coherence-$(harts)h-$(case)))
 .PHONY: sim-bp-context-gshare-btb sim-bp-context-gshare-btb-512 \
-	sim-bp-context-tournament-btb sim-bp-context-fpga-queue
+	sim-bp-context-tournament-btb sim-bp-context-tage-btb \
+	sim-bp-context-tage-btb-nopredecode sim-bp-context-fpga-queue \
+	sim-exec-bp-basic sim-exec-bp-tage
 .PHONY: yosys-resources-core-sky130
 .PHONY: nangate45-liberty yosys-timing-alu-rv64i-nangate45 \
 	yosys-timing-frontend-nangate45 \
@@ -116,7 +118,9 @@
 	sim-icx-coherent-protocol-2h sim-icx-coherent-protocol-4h \
 	sim-icx-4h-l1d-directory-l2
 .PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-icx-l2 \
-	sim-core-3p-icx-l2-vm check-core-3p-pipeline-state-trace \
+	sim-core-3p-icx-l2-vm generate-core-3p-branch-oracle \
+	compress-core-3p-pipeline-state-trace \
+	check-core-3p-pipeline-state-trace \
 	sim-store-extension-sv39 \
 	sim-store-extension-sv39-suite
 .PHONY: sim-icx-l2 sim-icx-l2-sc-refill

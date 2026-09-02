@@ -31,6 +31,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_EQ_BRANCH_PAIRING = 1,
     parameter integer ENABLE_ISSUE_WINDOW = 0,
     parameter integer ENABLE_SPECULATION_WINDOW = 0,
+    parameter integer ENABLE_ALU2 = 0,
     parameter integer ISSUE_WINDOW_DEPTH = 16,
     parameter integer RENAME_MODE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
@@ -58,6 +59,7 @@ module openrv64_backend_3p #(
     input  wire                         squash_frontend_i,
     input  wire                         coherent_reservation_clear_i,
     input  wire                         translation_bypass_i,
+    input  wire                         inhibit_load_speculation_i,
 
     input  wire [2:0]                   decode_valid_i,
     output wire [2:0]                   decode_ready_o,
@@ -139,6 +141,7 @@ module openrv64_backend_3p #(
     output wire                         redirect_valid_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_o,
     output wire [`RV64_XLEN-1:0]        redirect_target_o,
+    output wire                         redirect_memory_replay_o,
     output wire                         branch_resolved_o,
     output wire                         branch_conditional_o,
     output wire                         branch_taken_o,
@@ -261,8 +264,8 @@ module openrv64_backend_3p #(
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] allocation_id;
     wire [3*SLOT_WIDTH-1:0] allocation_slot;
     wire [3*RETIRE_META_WIDTH-1:0] allocation_meta;
-    wire [1:0] rename_free_valid;
-    wire [2*PHYS_REG_ADDR_WIDTH-1:0] rename_free_tag;
+    wire [2:0] rename_free_valid;
+    wire [3*PHYS_REG_ADDR_WIDTH-1:0] rename_free_tag;
     wire [3*RETIRE_RECORD_WIDTH-1:0] allocation_record;
     wire [2:0] allocation_complete;
     wire [2:0] allocation_mispredict;
@@ -291,6 +294,7 @@ module openrv64_backend_3p #(
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_valid;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
         dispatch_pipe_candidate_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_squashed;
     wire [`OPENRV64_EXEC_PIPE_COUNT*2-1:0]
         dispatch_pipe_age_rank;
     wire [`OPENRV64_EXEC_PIPE_COUNT*
@@ -346,6 +350,18 @@ module openrv64_backend_3p #(
     wire exec_branch_taken;
     wire [`RV64_XLEN-1:0] exec_branch_pc;
     wire [`RV64_INSTR_WIDTH-1:0] exec_branch_instr;
+    wire exec_load_access_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] exec_load_access_id;
+    wire [SLOT_WIDTH-1:0] exec_load_access_slot;
+    wire [`RV64_XLEN-1:0] exec_load_access_pc;
+    wire [`RV64_XLEN-1:0] exec_load_access_paddr;
+    wire exec_store_address_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] exec_store_address_id;
+    wire [SLOT_WIDTH-1:0] exec_store_address_slot;
+    wire [`RV64_XLEN-1:0] exec_store_address_pc;
+    wire exec_store_address_compressed;
+    wire [`RV64_XLEN-1:0] exec_store_address_paddr;
+    wire exec_store_address_cacheable;
     wire async_store_fault;
     wire async_store_page_fault;
     wire [`RV64_XLEN-1:0] async_store_fault_pc;
@@ -376,6 +392,31 @@ module openrv64_backend_3p #(
                 `RV64_BR_OP_BGEU: free_branch_taken = (src1 >= src2);
                 default:          free_branch_taken = 1'b0;
             endcase
+        end
+    endfunction
+
+    function automatic memory_id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            memory_id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
+        end
+    endfunction
+
+    function automatic [RETIRE_COUNT_WIDTH-1:0] memory_slot_distance;
+        input [SLOT_WIDTH-1:0] candidate;
+        input [SLOT_WIDTH-1:0] reference;
+        integer distance;
+        begin
+            if (candidate >= reference)
+                distance = candidate - reference;
+            else
+                distance = RETIRE_DEPTH - reference + candidate;
+            memory_slot_distance = distance[RETIRE_COUNT_WIDTH-1:0];
         end
     endfunction
 
@@ -956,13 +997,387 @@ module openrv64_backend_3p #(
             free_mispredict_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
 
+    // Loads may leave the compact LSQ long before an older, data-blocked
+    // store reaches address translation.  Retain only the physical 8-byte
+    // granule, PC, and global ID in the load's ROB slot.  A later older-store
+    // translation compares against these watches and replays the oldest
+    // colliding load plus its younger suffix.  In-order retirement guarantees
+    // that load cannot commit before the older store reaches this check.
+    localparam integer MEMORY_WATCH_DEPTH = RETIRE_DEPTH;
+    wire memory_disambiguation_enabled =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+        (ENABLE_SPECULATION_WINDOW != 0);
+    reg [MEMORY_WATCH_DEPTH-1:0] memory_load_watch_valid_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        memory_load_watch_id_q [0:MEMORY_WATCH_DEPTH-1];
+    reg [`RV64_XLEN-1:3]
+        memory_load_watch_granule_q [0:MEMORY_WATCH_DEPTH-1];
+    reg [`RV64_XLEN-1:0]
+        memory_load_watch_pc_q [0:MEMORY_WATCH_DEPTH-1];
+    // A selective load replay must not pass an older unresolved control.
+    // Otherwise the replay can win redirect arbitration in the exact cycle
+    // that the older control resolves, preserving its wrong-path suffix while
+    // discarding the control's one-shot redirect.  Track only incomplete
+    // control records; completion is the ordering edge that makes a later
+    // replay safe.
+    reg [MEMORY_WATCH_DEPTH-1:0] memory_control_watch_valid_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        memory_control_watch_id_q [0:MEMORY_WATCH_DEPTH-1];
+    reg memory_replay_pending_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] memory_replay_id_q;
+    reg [SLOT_WIDTH-1:0] memory_replay_slot_q;
+    reg [`RV64_XLEN-1:0] memory_replay_target_q;
+    reg memory_replay_older_control_pending_r;
+    integer memory_control_scan;
+    always @* begin
+        memory_replay_older_control_pending_r = 1'b0;
+        for (memory_control_scan = 0;
+             memory_control_scan < MEMORY_WATCH_DEPTH;
+             memory_control_scan = memory_control_scan + 1)
+            if (memory_control_watch_valid_q[memory_control_scan] &&
+                memory_id_is_younger(
+                    memory_replay_id_q,
+                    memory_control_watch_id_q[memory_control_scan]))
+                memory_replay_older_control_pending_r = 1'b1;
+    end
+    wire memory_replay_valid = memory_disambiguation_enabled &&
+        memory_replay_pending_q &&
+        !memory_replay_older_control_pending_r;
+    integer memory_watch_scan;
+    integer memory_watch_state_scan;
+    integer memory_watch_lane;
+    reg memory_store_violation_r;
+    reg memory_store_collision_r;
+    reg memory_store_device_order_r;
+    reg memory_store_survives_squash_r;
+    reg memory_watch_survives_squash_r;
+    reg memory_violation_load_found_r;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] memory_violation_load_id_r;
+    reg [SLOT_WIDTH-1:0] memory_violation_load_slot_r;
+    reg [`RV64_XLEN-1:0] memory_violation_load_pc_r;
+    always @* begin
+        memory_store_violation_r = 1'b0;
+        memory_store_collision_r = 1'b0;
+        memory_store_device_order_r = 1'b0;
+        memory_violation_load_found_r = 1'b0;
+        memory_violation_load_id_r =
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        memory_violation_load_slot_r = {SLOT_WIDTH{1'b0}};
+        memory_violation_load_pc_r = {`RV64_XLEN{1'b0}};
+        memory_store_survives_squash_r =
+            !squash_frontend_i ||
+            !memory_id_is_younger(exec_store_address_id,
+                                  redirect_id_o);
+        for (memory_watch_scan = 0;
+             memory_watch_scan < MEMORY_WATCH_DEPTH;
+             memory_watch_scan = memory_watch_scan + 1) begin
+            memory_watch_survives_squash_r =
+                !squash_frontend_i ||
+                (!(memory_replay_valid &&
+                   (memory_load_watch_id_q[memory_watch_scan] ==
+                    redirect_id_o)) &&
+                 !memory_id_is_younger(
+                    memory_load_watch_id_q[memory_watch_scan],
+                    redirect_id_o));
+            if (memory_load_watch_valid_q[memory_watch_scan] &&
+                memory_watch_survives_squash_r &&
+                memory_id_is_younger(
+                    memory_load_watch_id_q[memory_watch_scan],
+                    exec_store_address_id) &&
+                (!exec_store_address_cacheable ||
+                 (memory_load_watch_granule_q[memory_watch_scan] ==
+                  exec_store_address_paddr[`RV64_XLEN-1:3]))) begin
+                if (!exec_store_address_cacheable)
+                    memory_store_device_order_r = 1'b1;
+                else
+                    memory_store_collision_r = 1'b1;
+                if (!memory_violation_load_found_r ||
+                    memory_id_is_younger(memory_violation_load_id_r,
+                        memory_load_watch_id_q[memory_watch_scan])) begin
+                    memory_violation_load_found_r = 1'b1;
+                    memory_violation_load_id_r =
+                        memory_load_watch_id_q[memory_watch_scan];
+                    memory_violation_load_slot_r = memory_watch_scan;
+                    memory_violation_load_pc_r =
+                        memory_load_watch_pc_q[memory_watch_scan];
+                end
+            end
+        end
+        // Translation and a younger physical-load launch are independent
+        // channels and may complete together.  Include the unregistered
+        // address-phase event so that boundary cannot evade the watch table.
+        if (exec_load_access_valid &&
+            (!squash_frontend_i ||
+             (!(memory_replay_valid &&
+                (exec_load_access_id == redirect_id_o)) &&
+              !memory_id_is_younger(exec_load_access_id, redirect_id_o))) &&
+            memory_id_is_younger(exec_load_access_id,
+                                 exec_store_address_id) &&
+            (!exec_store_address_cacheable ||
+             (exec_load_access_paddr[`RV64_XLEN-1:3] ==
+              exec_store_address_paddr[`RV64_XLEN-1:3]))) begin
+            if (!exec_store_address_cacheable)
+                memory_store_device_order_r = 1'b1;
+            else
+                memory_store_collision_r = 1'b1;
+            if (!memory_violation_load_found_r ||
+                memory_id_is_younger(memory_violation_load_id_r,
+                                     exec_load_access_id)) begin
+                memory_violation_load_found_r = 1'b1;
+                memory_violation_load_id_r = exec_load_access_id;
+                memory_violation_load_slot_r = exec_load_access_slot;
+                memory_violation_load_pc_r = exec_load_access_pc;
+            end
+        end
+        memory_store_violation_r = memory_store_collision_r ||
+                                   memory_store_device_order_r;
+    end
+
+    // Do not qualify a registered replay with the live branch-resolution
+    // network: redirect feeds recovery, recovery feeds execution readiness,
+    // and execution readiness feeds branch resolution.  The registered
+    // incomplete-control watch above breaks that loop while ensuring an older
+    // branch or jump completes (and publishes any redirect) before replay.
+    reg [63:0] perf_memory_load_watches_q;
+    reg [63:0] perf_memory_store_address_checks_q;
+    reg [63:0] perf_memory_store_violations_q;
+    reg [63:0] perf_memory_store_collisions_q;
+    reg [63:0] perf_memory_store_device_replays_q;
+    reg [63:0] perf_memory_replays_q;
+    reg [63:0] perf_memory_replay_preserved_entries_q;
+    reg [63:0] perf_memory_replay_distance_1_q;
+    reg [63:0] perf_memory_replay_distance_2_q;
+    reg [63:0] perf_memory_replay_distance_3_4_q;
+    reg [63:0] perf_memory_replay_distance_5_8_q;
+    reg [63:0] perf_memory_replay_distance_9_plus_q;
+    reg [63:0] perf_memory_replay_control_wait_cycles_q;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || !memory_disambiguation_enabled) begin
+            memory_load_watch_valid_q <= {MEMORY_WATCH_DEPTH{1'b0}};
+            memory_replay_pending_q <= 1'b0;
+            memory_replay_id_q <=
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            memory_replay_slot_q <= {SLOT_WIDTH{1'b0}};
+            memory_replay_target_q <= {`RV64_XLEN{1'b0}};
+            perf_memory_load_watches_q <= 64'd0;
+            perf_memory_store_address_checks_q <= 64'd0;
+            perf_memory_store_violations_q <= 64'd0;
+            perf_memory_store_collisions_q <= 64'd0;
+            perf_memory_store_device_replays_q <= 64'd0;
+            perf_memory_replays_q <= 64'd0;
+            perf_memory_replay_preserved_entries_q <= 64'd0;
+            perf_memory_replay_distance_1_q <= 64'd0;
+            perf_memory_replay_distance_2_q <= 64'd0;
+            perf_memory_replay_distance_3_4_q <= 64'd0;
+            perf_memory_replay_distance_5_8_q <= 64'd0;
+            perf_memory_replay_distance_9_plus_q <= 64'd0;
+            perf_memory_replay_control_wait_cycles_q <= 64'd0;
+            for (memory_watch_state_scan = 0;
+                 memory_watch_state_scan < MEMORY_WATCH_DEPTH;
+                 memory_watch_state_scan = memory_watch_state_scan + 1) begin
+                memory_load_watch_id_q[memory_watch_state_scan] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+                memory_load_watch_granule_q[memory_watch_state_scan] <=
+                    {(`RV64_XLEN-3){1'b0}};
+                memory_load_watch_pc_q[memory_watch_state_scan] <=
+                    {`RV64_XLEN{1'b0}};
+            end
+        end else if (flush_i) begin
+            memory_load_watch_valid_q <= {MEMORY_WATCH_DEPTH{1'b0}};
+            memory_replay_pending_q <= 1'b0;
+        end else begin
+            if (memory_replay_pending_q &&
+                memory_replay_older_control_pending_r)
+                perf_memory_replay_control_wait_cycles_q <=
+                    perf_memory_replay_control_wait_cycles_q + 1'b1;
+            if (memory_replay_valid) begin
+                memory_replay_pending_q <= 1'b0;
+                perf_memory_replays_q <= perf_memory_replays_q + 1'b1;
+            end
+
+            for (memory_watch_lane = 0; memory_watch_lane < 3;
+                 memory_watch_lane = memory_watch_lane + 1) begin
+                if (queue_alloc_accept[memory_watch_lane])
+                    memory_load_watch_valid_q[
+                        allocation_slot[
+                            memory_watch_lane*SLOT_WIDTH +: SLOT_WIDTH]] <=
+                        1'b0;
+                if (queue_retire_accept[memory_watch_lane])
+                    memory_load_watch_valid_q[
+                        queue_retire_slot[
+                            memory_watch_lane*SLOT_WIDTH +: SLOT_WIDTH]] <=
+                        1'b0;
+            end
+
+            if (squash_frontend_i) begin
+                for (memory_watch_state_scan = 0;
+                     memory_watch_state_scan < MEMORY_WATCH_DEPTH;
+                     memory_watch_state_scan = memory_watch_state_scan + 1)
+                    if (memory_load_watch_valid_q[memory_watch_state_scan] &&
+                        ((memory_replay_valid &&
+                          (memory_load_watch_id_q[memory_watch_state_scan] ==
+                           redirect_id_o)) ||
+                         memory_id_is_younger(
+                            memory_load_watch_id_q[memory_watch_state_scan],
+                            redirect_id_o)))
+                        memory_load_watch_valid_q[memory_watch_state_scan] <=
+                            1'b0;
+                if (memory_replay_pending_q &&
+                    memory_id_is_younger(memory_replay_id_q,
+                                         redirect_id_o))
+                    memory_replay_pending_q <= 1'b0;
+            end
+
+            if (exec_load_access_valid &&
+                (!squash_frontend_i ||
+                 (!(memory_replay_valid &&
+                    (exec_load_access_id == redirect_id_o)) &&
+                  !memory_id_is_younger(exec_load_access_id,
+                                        redirect_id_o)))) begin
+                memory_load_watch_valid_q[exec_load_access_slot] <= 1'b1;
+                memory_load_watch_id_q[exec_load_access_slot] <=
+                    exec_load_access_id;
+                memory_load_watch_granule_q[exec_load_access_slot] <=
+                    exec_load_access_paddr[`RV64_XLEN-1:3];
+                memory_load_watch_pc_q[exec_load_access_slot] <=
+                    exec_load_access_pc;
+                perf_memory_load_watches_q <=
+                    perf_memory_load_watches_q + 1'b1;
+            end
+
+            if (exec_store_address_valid &&
+                memory_store_survives_squash_r) begin
+                perf_memory_store_address_checks_q <=
+                    perf_memory_store_address_checks_q + 1'b1;
+                if (memory_store_violation_r) begin
+                    perf_memory_store_violations_q <=
+                        perf_memory_store_violations_q + 1'b1;
+                    if (!memory_replay_pending_q || memory_replay_valid ||
+                        memory_id_is_younger(memory_replay_id_q,
+                                             memory_violation_load_id_r)) begin
+                        memory_replay_pending_q <= 1'b1;
+                        memory_replay_id_q <= memory_violation_load_id_r;
+                        memory_replay_slot_q <= memory_violation_load_slot_r;
+                        memory_replay_target_q <= memory_violation_load_pc_r;
+                        perf_memory_replay_preserved_entries_q <=
+                            perf_memory_replay_preserved_entries_q +
+                            memory_slot_distance(memory_violation_load_slot_r,
+                                                 exec_store_address_slot) -
+                            1'b1;
+                        case (memory_violation_load_id_r -
+                              exec_store_address_id)
+                            1: perf_memory_replay_distance_1_q <=
+                                perf_memory_replay_distance_1_q + 1'b1;
+                            2: perf_memory_replay_distance_2_q <=
+                                perf_memory_replay_distance_2_q + 1'b1;
+                            3, 4: perf_memory_replay_distance_3_4_q <=
+                                perf_memory_replay_distance_3_4_q + 1'b1;
+                            5, 6, 7, 8:
+                                perf_memory_replay_distance_5_8_q <=
+                                    perf_memory_replay_distance_5_8_q + 1'b1;
+                            default: perf_memory_replay_distance_9_plus_q <=
+                                perf_memory_replay_distance_9_plus_q + 1'b1;
+                        endcase
+                    end
+                end
+                if (memory_store_device_order_r)
+                    perf_memory_store_device_replays_q <=
+                        perf_memory_store_device_replays_q + 1'b1;
+                if (memory_store_collision_r)
+                    perf_memory_store_collisions_q <=
+                        perf_memory_store_collisions_q + 1'b1;
+            end
+        end
+    end
+
+    integer memory_control_state_scan;
+    integer memory_control_lane;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || !memory_disambiguation_enabled) begin
+            memory_control_watch_valid_q <=
+                {MEMORY_WATCH_DEPTH{1'b0}};
+            for (memory_control_state_scan = 0;
+                 memory_control_state_scan < MEMORY_WATCH_DEPTH;
+                 memory_control_state_scan = memory_control_state_scan + 1)
+                memory_control_watch_id_q[memory_control_state_scan] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        end else if (flush_i) begin
+            memory_control_watch_valid_q <=
+                {MEMORY_WATCH_DEPTH{1'b0}};
+        end else begin
+            for (memory_control_lane = 0; memory_control_lane < 3;
+                 memory_control_lane = memory_control_lane + 1) begin
+                if (queue_retire_accept[memory_control_lane])
+                    memory_control_watch_valid_q[
+                        queue_retire_slot[
+                            memory_control_lane*SLOT_WIDTH +:
+                            SLOT_WIDTH]] <= 1'b0;
+                if (queue_complete_accept[memory_control_lane] &&
+                    (queue_complete_record[
+                         memory_control_lane*RETIRE_RECORD_WIDTH +
+                         WINDOW_META_BRANCH] ||
+                     queue_complete_record[
+                         memory_control_lane*RETIRE_RECORD_WIDTH +
+                         WINDOW_META_JUMP]))
+                    memory_control_watch_valid_q[
+                        complete_slot[
+                            memory_control_lane*SLOT_WIDTH +:
+                            SLOT_WIDTH]] <= 1'b0;
+            end
+
+            if (squash_frontend_i)
+                for (memory_control_state_scan = 0;
+                     memory_control_state_scan < MEMORY_WATCH_DEPTH;
+                     memory_control_state_scan =
+                         memory_control_state_scan + 1)
+                    if (memory_control_watch_valid_q[
+                            memory_control_state_scan] &&
+                        ((memory_replay_valid &&
+                          (memory_control_watch_id_q[
+                               memory_control_state_scan] == redirect_id_o)) ||
+                         memory_id_is_younger(
+                            memory_control_watch_id_q[
+                                memory_control_state_scan],
+                            redirect_id_o)))
+                        memory_control_watch_valid_q[
+                            memory_control_state_scan] <= 1'b0;
+
+            // Allocation is last so same-cycle circular-slot reuse replaces
+            // the retiring record.  Allocation-complete free branches never
+            // enter the incomplete-control set.
+            for (memory_control_lane = 0; memory_control_lane < 3;
+                 memory_control_lane = memory_control_lane + 1)
+                if (queue_alloc_accept[memory_control_lane]) begin
+                    memory_control_watch_valid_q[
+                        allocation_slot[
+                            memory_control_lane*SLOT_WIDTH +:
+                            SLOT_WIDTH]] <=
+                        (allocation_record[
+                             memory_control_lane*RETIRE_RECORD_WIDTH +
+                             WINDOW_META_BRANCH] ||
+                         allocation_record[
+                             memory_control_lane*RETIRE_RECORD_WIDTH +
+                             WINDOW_META_JUMP]) &&
+                        !allocation_complete[memory_control_lane];
+                    memory_control_watch_id_q[
+                        allocation_slot[
+                            memory_control_lane*SLOT_WIDTH +:
+                            SLOT_WIDTH]] <= allocation_id[
+                        memory_control_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH];
+                end
+        end
+    end
+
     wire speculative_window = (ENABLE_ISSUE_WINDOW != 0) &&
                               (ENABLE_SPECULATION_WINDOW != 0);
-    assign redirect_valid_o = free_branch_mispredict ? 1'b1 :
+    assign redirect_valid_o = memory_replay_valid ? 1'b1 :
+        free_branch_mispredict ? 1'b1 :
         speculative_window ? exec_redirect_valid :
         (ENABLE_ISSUE_WINDOW != 0) ? window_direction_mispredict :
                                      exec_redirect_valid;
-    assign redirect_id_o = free_branch_mispredict ?
+    assign redirect_id_o = memory_replay_valid ? memory_replay_id_q :
+        free_branch_mispredict ?
         allocation_id[
             free_mispredict_lane*`OPENRV64_INSTR_ID_WIDTH +:
             `OPENRV64_INSTR_ID_WIDTH] :
@@ -971,11 +1386,13 @@ module openrv64_backend_3p #(
             queue_retire_id[
                 window_resolve_lane*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] : exec_redirect_id;
-    assign redirect_target_o = free_branch_mispredict ?
+    assign redirect_target_o = memory_replay_valid ? memory_replay_target_q :
+        free_branch_mispredict ?
         free_mispredict_result[COMPLETE_RESULT_NEXT_PC +: `RV64_XLEN] :
         speculative_window ? exec_redirect_target :
         (ENABLE_ISSUE_WINDOW != 0) ? window_branch_next_pc :
                                      exec_redirect_target;
+    assign redirect_memory_replay_o = memory_replay_valid;
     assign branch_resolved_o = free_branch_resolved ? 1'b1 :
         speculative_window ? exec_branch_resolved :
         (ENABLE_ISSUE_WINDOW != 0) ? window_branch_resolved :
@@ -1007,7 +1424,8 @@ module openrv64_backend_3p #(
             queue_retire_id[
                 window_resolve_lane*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] : exec_redirect_id;
-    assign branch_slot_o = free_branch_resolved ?
+    assign branch_slot_o = memory_replay_valid ? memory_replay_slot_q :
+        free_branch_resolved ?
         allocation_slot[free_branch_lane*SLOT_WIDTH +: SLOT_WIDTH] :
         speculative_window ? exec_redirect_slot :
         (ENABLE_ISSUE_WINDOW != 0) ?
@@ -1409,10 +1827,66 @@ module openrv64_backend_3p #(
              banked_mem_forward_rd_q*`OPENRV64_INSTR_ID_WIDTH +:
              `OPENRV64_INSTR_ID_WIDTH] == banked_mem_forward_id_q);
 
+    function automatic is_alu_forward_instruction;
+        input [`RV64_INSTR_WIDTH-1:0] instr;
+        reg [`RV64_OPCODE_WIDTH-1:0] opcode;
+        begin
+            opcode = `RV64_OPCODE(instr);
+            is_alu_forward_instruction =
+                (opcode == `RV64_OPCODE_LUI) ||
+                (opcode == `RV64_OPCODE_AUIPC) ||
+                (opcode == `RV64_OPCODE_OP_IMM) ||
+                (opcode == `RV64_OPCODE_OP_IMM_32) ||
+                (opcode == `RV64_OPCODE_OP) ||
+                (opcode == `RV64_OPCODE_OP_32);
+        end
+    endfunction
+
+    wire [`RV64_INSTR_WIDTH-1:0] completion_forward_instr0 =
+        complete_payload[
+            0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            COMPLETE_RESULT_INSTR +: `RV64_INSTR_WIDTH];
+    wire [`RV64_INSTR_WIDTH-1:0] completion_forward_instr1 =
+        complete_payload[
+            1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            COMPLETE_RESULT_INSTR +: `RV64_INSTR_WIDTH];
+    wire [`RV64_INSTR_WIDTH-1:0] completion_forward_instr2 =
+        complete_payload[
+            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+            COMPLETE_RESULT_INSTR +: `RV64_INSTR_WIDTH];
+    // Completion is the first cycle in which the one-cycle ALU result is
+    // stable.  This broadcast is deliberately independent of PRF write ack:
+    // the scheduler captures it by physical tag while rename keeps the tag
+    // unavailable to newly decoded instructions until storage succeeds.
+    wire [1:0] tomasulo_alu_forward_valid = {
+        !flush_i && !squash_frontend_i && completion_prf_write_req[1] &&
+            is_alu_forward_instruction(completion_forward_instr1),
+        !flush_i && !squash_frontend_i && completion_prf_write_req[0] &&
+            is_alu_forward_instruction(completion_forward_instr0)
+    };
+    // MEM0 completion is registered by either exec_lsu or ALU2.  A normal
+    // load or restricted ALU2 result may therefore wake resident consumers as
+    // soon as that completion is visible, without waiting for its PRF bank
+    // grant.  AMOs and stores remain excluded.
+    wire tomasulo_load_forward_valid =
+        !flush_i && !squash_frontend_i && completion_prf_write_req[2] &&
+        (`RV64_OPCODE(completion_forward_instr2) == `RV64_OPCODE_LOAD);
+    wire tomasulo_alu2_forward_valid =
+        !flush_i && !squash_frontend_i && completion_prf_write_req[2] &&
+        is_alu_forward_instruction(completion_forward_instr2);
+    wire tomasulo_mem0_forward_valid = tomasulo_load_forward_valid ||
+                                       tomasulo_alu2_forward_valid;
+    wire [2:0] tomasulo_completion_forward_valid = {
+        tomasulo_mem0_forward_valid,
+        tomasulo_alu_forward_valid
+    };
+
     // MEM0 is a registered banked-operand source below.  Do not feed it into
     // strict dispatch's live completion path: the LSU response-ready logic and
     // new memory issue decision otherwise share a combinational cycle.
     wire [2:0] dispatch_completion_forward_valid =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+            tomasulo_completion_forward_valid :
         (BANKED_GPR != 0) ?
             {1'b0, banked_exu_forward_valid} :
             completion_forward_valid;
@@ -1424,6 +1898,8 @@ module openrv64_backend_3p #(
                      0 +: 2*`RV64_REG_ADDR_WIDTH]} :
                 completion_forward_rd_addr;
     wire [3*`RV64_XLEN-1:0] dispatch_completion_forward_data =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+            completion_forward_data :
         (BANKED_GPR != 0) ?
             {{`RV64_XLEN{1'b0}},
              completion_forward_data[0 +: 2*`RV64_XLEN]} :
@@ -1912,15 +2388,18 @@ module openrv64_backend_3p #(
           banked_regload_lane0_fire &&
           !banked_regload_branch_correct_now));
 
-    // Redirects stop new address phases.  The legacy grouped requester holds
-    // an unacknowledged request until ack.  The issue-window requesters may
-    // cancel an unaccepted candidate; accepted reads retain per-port owner
-    // state and return one cycle later.  Stop issuing until the register file
-    // itself is quiescent.
+    // The legacy grouped requester has no per-transaction identity after its
+    // shared context is replaced, so redirect must drain it to quiescence.
+    // The issue-window requester is different: every held address and every
+    // accepted data phase carries an instruction ID, and its redirect path
+    // filters those owners.  Draining that path globally would needlessly
+    // block independent surviving instructions behind wrong-path reads.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             banked_gpr_drain_q <= 1'b0;
         else if (BANKED_GPR == 0)
+            banked_gpr_drain_q <= 1'b0;
+        else if (banked_window_regload)
             banked_gpr_drain_q <= 1'b0;
         else if (flush_i || squash_frontend_i)
             banked_gpr_drain_q <= 1'b1;
@@ -2518,7 +2997,19 @@ module openrv64_backend_3p #(
         // speculatively; it becomes the primary candidate on the next cycle.
         // EX0, EX1, and one memory instruction still admit three-wide.
         if (dispatch_pipe_candidate_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
-            dispatch_pipe_candidate_valid[`OPENRV64_EXEC_PIPE_MEM1]) begin
+            dispatch_pipe_candidate_valid[`OPENRV64_EXEC_PIPE_MEM1] &&
+            (dispatch_pipe_payload[
+                 `OPENRV64_EXEC_PIPE_MEM0*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 16] ||
+             dispatch_pipe_payload[
+                 `OPENRV64_EXEC_PIPE_MEM0*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15]) &&
+            (dispatch_pipe_payload[
+                 `OPENRV64_EXEC_PIPE_MEM1*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 16] ||
+             dispatch_pipe_payload[
+                 `OPENRV64_EXEC_PIPE_MEM1*
+                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15])) begin
             if (dispatch_pipe_age_rank[
                     `OPENRV64_EXEC_PIPE_MEM0*2 +: 2] <
                 dispatch_pipe_age_rank[
@@ -2599,6 +3090,8 @@ module openrv64_backend_3p #(
                         banked_independent_candidate_pipe] = 1'b1;
                     banked_independent_candidate_need_rs1[
                         banked_independent_candidate_pipe] =
+                        !dispatch_pipe_squashed[
+                            banked_independent_candidate_pipe] &&
                         dispatch_pipe_uses_rs1[
                             banked_independent_candidate_pipe] &&
                         !dispatch_pipe_src1_producer_valid[
@@ -2607,6 +3100,8 @@ module openrv64_backend_3p #(
                          {PHYS_REG_ADDR_WIDTH{1'b0}});
                     banked_independent_candidate_need_rs2[
                         banked_independent_candidate_pipe] =
+                        !dispatch_pipe_squashed[
+                            banked_independent_candidate_pipe] &&
                         dispatch_pipe_uses_rs2[
                             banked_independent_candidate_pipe] &&
                         !dispatch_pipe_src2_producer_valid[
@@ -2702,6 +3197,11 @@ module openrv64_backend_3p #(
                 {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             banked_independent_response_poison_q <= 6'b000000;
         end else begin
+            // Recovery inhibits new candidates, but an address phase already
+            // retained here must still obey req-until-ack.  Continue retrying
+            // it through the drain.  Since the scheduler cannot accept it on
+            // a recovery/drain cycle, an eventual grant takes the poison path
+            // below and its following data phase is consumed harmlessly.
             banked_independent_response_poison_q <=
                 banked_independent_response_poison_q & ~gpr_read_valid;
 
@@ -2718,6 +3218,8 @@ module openrv64_backend_3p #(
                          banked_independent_held_state_pipe =
                              banked_independent_held_state_pipe + 1) begin
                         if (banked_independent_accept[
+                                banked_independent_held_state_pipe] &&
+                            !dispatch_pipe_squashed[
                                 banked_independent_held_state_pipe] &&
                             banked_independent_candidate_from_held[
                                 banked_independent_held_state_pipe] &&
@@ -2915,8 +3417,8 @@ module openrv64_backend_3p #(
                     banked_independent_survivor_pipe] &&
                 !banked_independent_pipe_fire[
                     banked_independent_survivor_pipe] &&
-                (state_id != exec_redirect_id) &&
-                !banked_id_is_younger(state_id, exec_redirect_id);
+                (state_id != redirect_id_o) &&
+                !banked_id_is_younger(state_id, redirect_id_o);
         end
     endgenerate
 
@@ -2990,13 +3492,13 @@ module openrv64_backend_3p #(
                     (banked_independent_response_owner_id_q[
                          banked_independent_state_port*
                          `OPENRV64_INSTR_ID_WIDTH +:
-                         `OPENRV64_INSTR_ID_WIDTH] == exec_redirect_id) ||
+                         `OPENRV64_INSTR_ID_WIDTH] == redirect_id_o) ||
                     banked_id_is_younger(
                         banked_independent_response_owner_id_q[
                             banked_independent_state_port*
                             `OPENRV64_INSTR_ID_WIDTH +:
                             `OPENRV64_INSTR_ID_WIDTH],
-                        exec_redirect_id))
+                        redirect_id_o))
                     banked_independent_response_owner_valid_q[
                         banked_independent_state_port] <= 1'b0;
             end
@@ -3036,7 +3538,9 @@ module openrv64_backend_3p #(
                 if (banked_independent_accept[
                         banked_independent_state_pipe]) begin
                     banked_independent_valid_q[
-                        banked_independent_state_pipe] <= 1'b1;
+                        banked_independent_state_pipe] <=
+                        !dispatch_pipe_squashed[
+                            banked_independent_state_pipe];
                     banked_independent_id_q[
                         banked_independent_state_pipe*
                         `OPENRV64_INSTR_ID_WIDTH +:
@@ -3161,6 +3665,8 @@ module openrv64_backend_3p #(
                  banked_independent_state_pipe =
                      banked_independent_state_pipe + 1) begin
                 if (banked_independent_accept[
+                        banked_independent_state_pipe] &&
+                    !dispatch_pipe_squashed[
                         banked_independent_state_pipe]) begin
                     banked_independent_state_rank =
                         banked_independent_candidate_group[
@@ -3254,22 +3760,22 @@ module openrv64_backend_3p #(
         banked_regload_lane_valid_q[0] &&
         !banked_regload_lane_fire[0] &&
         (banked_regload_lane_id_q[
-             0 +: `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+             0 +: `OPENRV64_INSTR_ID_WIDTH] != redirect_id_o) &&
         !banked_id_is_younger(
             banked_regload_lane_id_q[
                 0 +: `OPENRV64_INSTR_ID_WIDTH],
-            exec_redirect_id);
+            redirect_id_o);
     wire banked_regload_lane1_redirect_survivor =
         banked_regload_lane_valid_q[1] &&
         !banked_regload_lane_fire[1] &&
         (banked_regload_lane_id_q[
              `OPENRV64_INSTR_ID_WIDTH +:
-             `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+             `OPENRV64_INSTR_ID_WIDTH] != redirect_id_o) &&
         !banked_id_is_younger(
             banked_regload_lane_id_q[
                 `OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH],
-            exec_redirect_id);
+            redirect_id_o);
     wire [1:0] banked_regload_redirect_lane_survivor = {
         banked_regload_lane1_redirect_survivor,
         banked_regload_lane0_redirect_survivor
@@ -3282,21 +3788,21 @@ module openrv64_backend_3p #(
     wire banked_regload_pending_lane0_redirect_survivor =
         banked_regload_pending_lane_valid_q[0] &&
         (banked_regload_pending_lane_id_q[
-             0 +: `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+             0 +: `OPENRV64_INSTR_ID_WIDTH] != redirect_id_o) &&
         !banked_id_is_younger(
             banked_regload_pending_lane_id_q[
                 0 +: `OPENRV64_INSTR_ID_WIDTH],
-            exec_redirect_id);
+            redirect_id_o);
     wire banked_regload_pending_lane1_redirect_survivor =
         banked_regload_pending_lane_valid_q[1] &&
         (banked_regload_pending_lane_id_q[
              `OPENRV64_INSTR_ID_WIDTH +:
-             `OPENRV64_INSTR_ID_WIDTH] != exec_redirect_id) &&
+             `OPENRV64_INSTR_ID_WIDTH] != redirect_id_o) &&
         !banked_id_is_younger(
             banked_regload_pending_lane_id_q[
                 `OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH],
-            exec_redirect_id);
+            redirect_id_o);
     wire [1:0] banked_regload_pending_redirect_lane_survivor = {
         banked_regload_pending_lane1_redirect_survivor,
         banked_regload_pending_lane0_redirect_survivor
@@ -3333,14 +3839,14 @@ module openrv64_backend_3p #(
                     banked_regload_redirect_pipe] &&
                 !banked_regload_pipe_fire_mask[
                     banked_regload_redirect_pipe] &&
-                (active_id != exec_redirect_id) &&
-                !banked_id_is_younger(active_id, exec_redirect_id);
+                (active_id != redirect_id_o) &&
+                !banked_id_is_younger(active_id, redirect_id_o);
             assign banked_regload_pending_redirect_pipe_survivor[
                 banked_regload_redirect_pipe] =
                 banked_regload_pending_pipe_valid_q[
                     banked_regload_redirect_pipe] &&
-                (pending_id != exec_redirect_id) &&
-                !banked_id_is_younger(pending_id, exec_redirect_id);
+                (pending_id != redirect_id_o) &&
+                !banked_id_is_younger(pending_id, redirect_id_o);
         end
     endgenerate
 
@@ -3604,7 +4110,7 @@ module openrv64_backend_3p #(
     assign pipe_valid = (BANKED_GPR != 0) ?
         (banked_window_regload ? banked_independent_pipe_offer :
          banked_regload_pipe_offer_mask) :
-        dispatch_pipe_valid;
+        (dispatch_pipe_valid & ~dispatch_pipe_squashed);
     assign pipe_id = (BANKED_GPR != 0) ?
                      (banked_window_regload ? banked_independent_id_q :
                       banked_regload_issue_pipe_id) :
@@ -4463,6 +4969,7 @@ module openrv64_backend_3p #(
         .DEFER_EQ_BRANCH_PAIRING_3P(BANKED_GPR != 0),
         .ENABLE_ISSUE_WINDOW_3P(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW_3P(ENABLE_SPECULATION_WINDOW),
+        .ENABLE_ALU2_3P(ENABLE_ALU2),
         .DEFER_WINDOW_GPR_READ_3P(BANKED_GPR != 0),
         .MAX_WINDOW_ISSUE_LANES_3P((BANKED_GPR != 0) ? 3 : 4),
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
@@ -4540,6 +5047,7 @@ module openrv64_backend_3p #(
             ((BANKED_GPR != 0) ?
              {`OPENRV64_EXEC_PIPE_COUNT{1'b1}} : pipe_ready)),
         .pipe_candidate_valid_3p_o(dispatch_pipe_candidate_valid),
+        .pipe_squashed_3p_o(dispatch_pipe_squashed),
         .pipe_age_rank_3p_o(dispatch_pipe_age_rank),
         .forward_valid_3p_i(local_forward_valid),
         .forward_rd_addr_3p_i(local_forward_rd_addr),
@@ -4665,6 +5173,7 @@ module openrv64_backend_3p #(
         .BACKEND_CONFIG(`OPENRV64_BACKEND_3P),
         .RETIRE_SLOT_WIDTH_3P(SLOT_WIDTH), .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64ZBB_3P(ENABLE_RV64ZBB),
+        .ENABLE_ALU2_3P(ENABLE_ALU2),
         .ENABLE_LOCAL_FORWARDING_3P(
             (BANKED_GPR == 0) && (ENABLE_ISSUE_WINDOW == 0)),
         .ENABLE_SPECULATIVE_JALR_3P(
@@ -4674,6 +5183,9 @@ module openrv64_backend_3p #(
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),
         .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
         .ENABLE_COHERENT_ATOMICS_3P(ENABLE_COHERENT_ATOMICS),
+        .ENABLE_MEMORY_DISAMBIGUATION_3P(
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (ENABLE_SPECULATION_WINDOW != 0)),
         .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
         .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
         .CACHEABLE_BASE_3P(CACHEABLE_BASE),
@@ -4693,10 +5205,13 @@ module openrv64_backend_3p #(
             (speculative_window ||
              (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) &&
             squash_frontend_i),
+        .squash_inclusive_3p_i(memory_replay_valid),
         .squash_id_3p_i(redirect_id_o),
         .coherent_reservation_clear_3p_i(
             coherent_reservation_clear_i),
         .translation_bypass_3p_i(translation_bypass_i),
+        .inhibit_load_speculation_3p_i(
+            inhibit_load_speculation_i),
         .valid_i(1'b0), .flush_ex_mem_i(1'b0),
         .flush_mem_wb_i(1'b0), .pc_i(64'd0), .instr_i(32'd0),
         .rs1_addr_i(5'd0), .rs2_addr_i(5'd0), .rs1_data_i(64'd0),
@@ -4751,6 +5266,19 @@ module openrv64_backend_3p #(
         .async_store_fault_addr_3p_o(async_store_fault_addr),
         .async_store_fault_trace_3p_o(async_store_fault_trace),
         .async_store_fault_instr_3p_o(async_store_fault_instr),
+        .load_access_valid_3p_o(exec_load_access_valid),
+        .load_access_id_3p_o(exec_load_access_id),
+        .load_access_slot_3p_o(exec_load_access_slot),
+        .load_access_pc_3p_o(exec_load_access_pc),
+        .load_access_paddr_3p_o(exec_load_access_paddr),
+        .store_address_valid_3p_o(exec_store_address_valid),
+        .store_address_id_3p_o(exec_store_address_id),
+        .store_address_slot_3p_o(exec_store_address_slot),
+        .store_address_pc_3p_o(exec_store_address_pc),
+        .store_address_compressed_3p_o(
+            exec_store_address_compressed),
+        .store_address_paddr_3p_o(exec_store_address_paddr),
+        .store_address_cacheable_3p_o(exec_store_address_cacheable),
         .redirect_valid_o(exec_redirect_valid),
         .redirect_id_3p_o(exec_redirect_id),
         .redirect_slot_3p_o(exec_redirect_slot),
@@ -4820,6 +5348,7 @@ module openrv64_backend_3p #(
                (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) &&
               squash_frontend_i)) ||
             banked_deferred_pair_recovery),
+        .squash_inclusive_i(memory_replay_valid),
         .squash_id_i(redirect_id_o),
         .squash_slot_i(branch_slot_o),
         .alloc_valid_i(allocation_valid),
@@ -4941,15 +5470,23 @@ module openrv64_backend_3p #(
     // boundary.  Holding the normal retirement inputs for this cycle avoids
     // consuming a precise exception or hard-order operation underneath the
     // imprecise abort.
-    wire [2:0] retire_queue_valid = async_store_fault_pending_q ?
-                                    3'b000 : queue_retire_valid;
+    //
+    // A replaying store may be the first lane of a wider completed retirement
+    // group.  Hold the group for the registered replay cycle so no younger
+    // load commits on the same edge that it is being squashed.
+    // A redirect first invalidates the younger ROB suffix.  Hold retirement
+    // on that edge so no architectural commit races the cut; already-issued
+    // work may finish, but its ID/slot no longer matches a live ROB entry.
+    wire [2:0] retire_queue_valid =
+        (async_store_fault_pending_q || memory_replay_pending_q ||
+         squash_frontend_i) ? 3'b000 : queue_retire_valid;
     generate
         if (BANKED_GPR != 0) begin : g_banked_retire
             wire [1:0] banked_gpr_write;
             wire [2*PHYS_REG_ADDR_WIDTH-1:0] banked_gpr_write_addr;
             wire [2*`RV64_XLEN-1:0] banked_gpr_write_data;
-            wire [1:0] banked_free_valid;
-            wire [2*PHYS_REG_ADDR_WIDTH-1:0] banked_free_tag;
+            wire [2:0] banked_free_valid;
+            wire [3*PHYS_REG_ADDR_WIDTH-1:0] banked_free_tag;
 
             assign gpr_write =
                 (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
@@ -5025,9 +5562,9 @@ module openrv64_backend_3p #(
             assign rename_free_tag = banked_free_tag;
         end else begin : g_legacy_retire
             assign banked_retire_write_pair_conflict = 1'b0;
-            assign rename_free_valid = 2'b00;
+            assign rename_free_valid = 3'b000;
             assign rename_free_tag =
-                {2*PHYS_REG_ADDR_WIDTH{1'b0}};
+                {3*PHYS_REG_ADDR_WIDTH{1'b0}};
             openrv64_retire_3p #(
                 .PHYS_REG_COUNT(PHYS_REG_COUNT),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH),

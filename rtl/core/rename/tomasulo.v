@@ -7,9 +7,11 @@
 //
 // RAT updates happen when decode/dispatch allocation fires.  RRAT updates
 // happen only at architectural retirement.  Every live control allocation
-// may snapshot the post-allocation RAT and free bitmap in its ROB slot.  A
-// selective redirect restores that snapshot while retaining tags returned by
-// older retirement after the snapshot was taken.
+// may snapshot the RAT and free bitmap in its ROB slot.  Control/store cuts
+// are post-allocation; a replayable load may request a pre-allocation snapshot
+// so recovery can discard and re-rename the load itself.  A selective redirect
+// restores that snapshot while retaining tags returned by older retirement
+// after the snapshot was taken.
 //
 // Bitmap recovery combines the checkpoint free image, the current free state,
 // and every tag allocated after the checkpoint.  The allocation bitmap is
@@ -45,6 +47,7 @@ module openrv64_rename_tomasulo #(
     input  wire [LANES-1:0]                    destination_valid_i,
     input  wire [LANES*ARCH_ADDR_WIDTH-1:0]    destination_arch_i,
     output wire                                destination_ready_o,
+    output wire [LANES-1:0]                    destination_prefix_ready_o,
     output wire [LANES*PHYS_ADDR_WIDTH-1:0]    destination_new_phys_o,
     output wire [LANES*PHYS_ADDR_WIDTH-1:0]    destination_old_phys_o,
 
@@ -58,6 +61,7 @@ module openrv64_rename_tomasulo #(
     input  wire [COMMIT_PORTS*PHYS_ADDR_WIDTH-1:0] commit_phys_i,
 
     input  wire [LANES-1:0]                    checkpoint_valid_i,
+    input  wire [LANES-1:0]                    checkpoint_before_i,
     input  wire [LANES*CHECKPOINT_SLOT_WIDTH-1:0] checkpoint_slot_i,
     input  wire                                 recovery_valid_i,
     input  wire [CHECKPOINT_SLOT_WIDTH-1:0]     recovery_slot_i,
@@ -94,10 +98,15 @@ module openrv64_rename_tomasulo #(
     reg [LANES-1:0] allocation_found_r;
     reg [PHYS_REG_COUNT:0] free_offer_r;
     reg [PHYS_REG_COUNT:0] free_after_lane_r [0:LANES-1];
+    reg [PHYS_REG_COUNT:0] free_before_lane_r [0:LANES-1];
     reg [ARCH_REG_COUNT*PHYS_ADDR_WIDTH-1:0]
         rat_after_lane_r [0:LANES-1];
+    reg [ARCH_REG_COUNT*PHYS_ADDR_WIDTH-1:0]
+        rat_before_lane_r [0:LANES-1];
     reg [PHYS_ADDR_WIDTH-1:0] cursor_after_lane_r [0:LANES-1];
+    reg [PHYS_ADDR_WIDTH-1:0] cursor_before_lane_r [0:LANES-1];
     reg [PHYS_REG_COUNT:0] allocated_after_lane_r [0:LANES-1];
+    reg [PHYS_REG_COUNT:0] allocated_from_lane_r [0:LANES-1];
 
     integer lane;
     integer source;
@@ -152,6 +161,9 @@ module openrv64_rename_tomasulo #(
         // Select one free tag for every offered destination, in lane order.
         // The rotating cursor changes only after an accepted allocation.
         for (lane = 0; lane < LANES; lane = lane + 1) begin
+            free_before_lane_r[lane] = allocation_free_view;
+            rat_before_lane_r[lane] = allocation_rat_view;
+            cursor_before_lane_r[lane] = allocation_cursor_view;
             destination_arch = destination_arch_i[
                 lane*ARCH_ADDR_WIDTH +: ARCH_ADDR_WIDTH];
             mapped_phys = allocation_rat_view[
@@ -192,11 +204,14 @@ module openrv64_rename_tomasulo #(
             cursor_after_lane_r[lane] = allocation_cursor_view;
         end
 
-        // A checkpoint is post-rename for its own lane.  Destinations in
-        // later lanes of the same accepted bundle are already younger and
-        // therefore seed its allocation-since-checkpoint bitmap.
+        // A normal checkpoint is post-rename for its own lane, so only later
+        // destinations seed its allocation-since-checkpoint bitmap.  A load
+        // replay checkpoint is pre-rename and must also reclaim its own
+        // destination.
         for (lane = 0; lane < LANES; lane = lane + 1) begin
             allocated_after_lane_r[lane] =
+                {(PHYS_REG_COUNT + 1){1'b0}};
+            allocated_from_lane_r[lane] =
                 {(PHYS_REG_COUNT + 1){1'b0}};
             for (prior_lane = lane + 1; prior_lane < LANES;
                  prior_lane = prior_lane + 1) begin
@@ -204,6 +219,14 @@ module openrv64_rename_tomasulo #(
                     selected_phys = destination_new_phys_r[
                         prior_lane*PHYS_ADDR_WIDTH +: PHYS_ADDR_WIDTH];
                     allocated_after_lane_r[lane][selected_phys] = 1'b1;
+                end
+            end
+            for (prior_lane = lane; prior_lane < LANES;
+                 prior_lane = prior_lane + 1) begin
+                if (destination_valid_i[prior_lane]) begin
+                    selected_phys = destination_new_phys_r[
+                        prior_lane*PHYS_ADDR_WIDTH +: PHYS_ADDR_WIDTH];
+                    allocated_from_lane_r[lane][selected_phys] = 1'b1;
                 end
             end
         end
@@ -254,6 +277,18 @@ module openrv64_rename_tomasulo #(
     end
 
     assign destination_ready_o = &allocation_found_r;
+    assign destination_prefix_ready_o[0] = allocation_found_r[0];
+    genvar ready_lane;
+    generate
+        for (ready_lane = 1; ready_lane < LANES;
+             ready_lane = ready_lane + 1) begin : g_prefix_ready
+            assign destination_prefix_ready_o[ready_lane] =
+                destination_prefix_ready_o[ready_lane-1] &&
+                allocation_found_r[ready_lane];
+        end
+    endgenerate
+    wire destination_valid_ready =
+        &(~destination_valid_i | allocation_found_r);
     assign source_phys_o = source_phys_r;
     assign source_ready_o = source_ready_r;
     assign destination_new_phys_o = destination_new_phys_r;
@@ -369,7 +404,7 @@ module openrv64_rename_tomasulo #(
                 checkpoint_live_q[recovery_slot_i] <= 1'b1;
             end else begin
                 free_q <= free_offer_r;
-                if (destination_ready_o &&
+                if (destination_valid_ready &&
                     ((|destination_valid_i) || (|checkpoint_valid_i))) begin
                     // Every currently live checkpoint observes all newly
                     // allocated destinations as younger than its cut.
@@ -420,14 +455,25 @@ module openrv64_rename_tomasulo #(
                             checkpoint_slot = checkpoint_slot_i[
                                 checkpoint_lane*CHECKPOINT_SLOT_WIDTH +:
                                 CHECKPOINT_SLOT_WIDTH];
-                            checkpoint_rat_q[checkpoint_slot] <=
-                                rat_after_lane_r[checkpoint_lane];
-                            checkpoint_free_q[checkpoint_slot] <=
-                                free_after_lane_r[checkpoint_lane];
-                            checkpoint_cursor_q[checkpoint_slot] <=
-                                cursor_after_lane_r[checkpoint_lane];
-                            checkpoint_allocated_q[checkpoint_slot] <=
-                                allocated_after_lane_r[checkpoint_lane];
+                            if (checkpoint_before_i[checkpoint_lane]) begin
+                                checkpoint_rat_q[checkpoint_slot] <=
+                                    rat_before_lane_r[checkpoint_lane];
+                                checkpoint_free_q[checkpoint_slot] <=
+                                    free_before_lane_r[checkpoint_lane];
+                                checkpoint_cursor_q[checkpoint_slot] <=
+                                    cursor_before_lane_r[checkpoint_lane];
+                                checkpoint_allocated_q[checkpoint_slot] <=
+                                    allocated_from_lane_r[checkpoint_lane];
+                            end else begin
+                                checkpoint_rat_q[checkpoint_slot] <=
+                                    rat_after_lane_r[checkpoint_lane];
+                                checkpoint_free_q[checkpoint_slot] <=
+                                    free_after_lane_r[checkpoint_lane];
+                                checkpoint_cursor_q[checkpoint_slot] <=
+                                    cursor_after_lane_r[checkpoint_lane];
+                                checkpoint_allocated_q[checkpoint_slot] <=
+                                    allocated_after_lane_r[checkpoint_lane];
+                            end
                             checkpoint_live_q[checkpoint_slot] <= 1'b1;
                         end
                     end
@@ -441,7 +487,7 @@ module openrv64_rename_tomasulo #(
     integer check_free;
     always @(posedge clk) begin
         if (rst_n) begin
-            if ((|destination_valid_i) && !destination_ready_o)
+            if ((|destination_valid_i) && !destination_valid_ready)
                 $fatal(1,
                     "tomasulo rename fired without enough free physical tags");
             for (check_lane = 0; check_lane < LANES;
@@ -455,6 +501,8 @@ module openrv64_rename_tomasulo #(
             if (recovery_valid_i &&
                 !checkpoint_live_q[recovery_slot_i])
                 $fatal(1, "tomasulo recovery named a missing RAT checkpoint");
+            if (|(checkpoint_before_i & ~checkpoint_valid_i))
+                $fatal(1, "tomasulo pre-rename checkpoint was not valid");
             if (free_q[0])
                 $fatal(1, "tomasulo free bitmap exposed p0");
             for (check_free = 1; check_free <= PHYS_REG_COUNT;

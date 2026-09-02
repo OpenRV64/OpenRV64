@@ -33,6 +33,7 @@ module tb_bp_context #(
     logic [63:0] expected_redirect_target_q;
     integer prediction_count;
     integer correction_count;
+    logic tage_lookup_stall_q;
 
     assign mem_ready = mem_valid;
     assign mem_rdata = (mem_valid &&
@@ -132,7 +133,8 @@ module tb_bp_context #(
                     endcase
                 end
                 `OPENRV64_BP_BTFNT,
-                `OPENRV64_BP_BIMODAL: begin
+                `OPENRV64_BP_BIMODAL,
+                `OPENRV64_BP_TAGE_BTB: begin
                     case (pc)
                         64'h104: expected_prediction = 1'b1;
                         64'h10c,
@@ -204,6 +206,7 @@ module tb_bp_context #(
             expected_redirect_target_q <= 64'd0;
             prediction_count <= 0;
             correction_count <= 0;
+            tage_lookup_stall_q <= 1'b0;
         end else begin
             if (dut.u_core.hard_flush_redirect_req !==
                 expected_redirect_q) begin
@@ -251,10 +254,15 @@ module tb_bp_context #(
                 correction_count <= correction_count + 1;
             end
 
-            if (dut.u_core.bp_decode_stall) begin
+            if (dut.u_core.bp_decode_stall &&
+                (BP_TYPE != `OPENRV64_BP_TAGE_BTB)) begin
                 $fatal(1, "direct branch unexpectedly stalled in BP type %0d",
                        BP_TYPE);
             end
+            if ((BP_TYPE == `OPENRV64_BP_TAGE_BTB) &&
+                dut.u_core.bp_decode_stall && tage_lookup_stall_q)
+                $fatal(1, "BP9 synchronous table lookup exceeded one cycle");
+            tage_lookup_stall_q <= dut.u_core.bp_decode_stall;
 
             if (mem_valid && mem_write) begin
                 int lane;
@@ -288,7 +296,8 @@ module tb_bp_context #(
                           (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ||
                           (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB)) ? 4 :
                          (((BP_TYPE == `OPENRV64_BP_BTFNT) ||
-                           (BP_TYPE == `OPENRV64_BP_BIMODAL)) ? 3 : 2))) ||
+                           (BP_TYPE == `OPENRV64_BP_BIMODAL) ||
+                           (BP_TYPE == `OPENRV64_BP_TAGE_BTB)) ? 3 : 2))) ||
                     (PIPE_1P_DECODE_QUEUE && correction_count != 4)) begin
                     $fatal(1,
                            "BP type %0d summary mismatch: store=%0b predictions=%0d corrections=%0d",

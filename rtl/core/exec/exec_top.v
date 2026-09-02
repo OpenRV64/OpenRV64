@@ -15,6 +15,7 @@ module openrv64_exec_top #(
     parameter PIPE_MEM_WB = 1,
     parameter ENABLE_RV64M = 0,
     parameter ENABLE_RV64ZBB_3P = 1,
+    parameter integer ENABLE_ALU2_3P = 0,
     parameter ENABLE_FORWARDING = 0,
     parameter ENABLE_LOAD_FORWARDING = 0,
     parameter integer ENABLE_LOCAL_FORWARDING_3P = 1,
@@ -24,6 +25,7 @@ module openrv64_exec_top #(
     parameter integer LOAD_QUEUE_DEPTH_3P = 4,
     parameter integer STORE_QUEUE_DEPTH_3P = 4,
     parameter integer ENABLE_COHERENT_ATOMICS_3P = 0,
+    parameter integer ENABLE_MEMORY_DISAMBIGUATION_3P = 0,
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] STORE_FORWARD_SIZE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE_3P =
@@ -191,9 +193,11 @@ module openrv64_exec_top #(
 
     input  wire                         flush_3p_i,
     input  wire                         squash_younger_3p_i,
+    input  wire                         squash_inclusive_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_3p_i,
     input  wire                         coherent_reservation_clear_3p_i,
     input  wire                         translation_bypass_3p_i,
+    input  wire                         inhibit_load_speculation_3p_i,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_valid_3p_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] issue_ready_3p_o,
     output wire [1:0]                   base_alu_available_3p_o,
@@ -246,6 +250,18 @@ module openrv64_exec_top #(
     output wire [`RV64_REG_ADDR_WIDTH-1:0]
                                         load_assignment_rd_3p_o,
     output wire [2:0]                   load_assignment_size_3p_o,
+    output wire                         load_access_valid_3p_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] load_access_id_3p_o,
+    output wire [RETIRE_SLOT_WIDTH_3P-1:0] load_access_slot_3p_o,
+    output wire [`RV64_XLEN-1:0]        load_access_pc_3p_o,
+    output wire [`RV64_XLEN-1:0]        load_access_paddr_3p_o,
+    output wire                         store_address_valid_3p_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] store_address_id_3p_o,
+    output wire [RETIRE_SLOT_WIDTH_3P-1:0] store_address_slot_3p_o,
+    output wire [`RV64_XLEN-1:0]        store_address_pc_3p_o,
+    output wire                         store_address_compressed_3p_o,
+    output wire [`RV64_XLEN-1:0]        store_address_paddr_3p_o,
+    output wire                         store_address_cacheable_3p_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_3p_o,
     output wire [RETIRE_SLOT_WIDTH_3P-1:0] redirect_slot_3p_o
 );
@@ -314,6 +330,22 @@ module openrv64_exec_top #(
             assign load_assignment_rd_3p_o =
                 {`RV64_REG_ADDR_WIDTH{1'b0}};
             assign load_assignment_size_3p_o = 3'd0;
+            assign load_access_valid_3p_o = 1'b0;
+            assign load_access_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign load_access_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign load_access_pc_3p_o = {`RV64_XLEN{1'b0}};
+            assign load_access_paddr_3p_o = {`RV64_XLEN{1'b0}};
+            assign store_address_valid_3p_o = 1'b0;
+            assign store_address_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign store_address_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign store_address_pc_3p_o = {`RV64_XLEN{1'b0}};
+            assign store_address_compressed_3p_o = 1'b0;
+            assign store_address_paddr_3p_o = {`RV64_XLEN{1'b0}};
+            assign store_address_cacheable_3p_o = 1'b0;
             assign store_barrier_request_3p_o = 1'b0;
         end else if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_3p
             openrv64_exec_top_3p #(
@@ -321,6 +353,7 @@ module openrv64_exec_top #(
                 .PRODUCER_TAG_WIDTH(PRODUCER_TAG_WIDTH_3P),
                 .ENABLE_RV64M(ENABLE_RV64M),
                 .ENABLE_RV64ZBB(ENABLE_RV64ZBB_3P),
+                .ENABLE_ALU2(ENABLE_ALU2_3P),
                 .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING_3P),
                 .ENABLE_SPECULATIVE_JALR(ENABLE_SPECULATIVE_JALR_3P),
                 .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
@@ -329,6 +362,8 @@ module openrv64_exec_top #(
                 .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH_3P),
                 .ENABLE_COHERENT_ATOMICS(
                     ENABLE_COHERENT_ATOMICS_3P),
+                .ENABLE_MEMORY_DISAMBIGUATION(
+                    ENABLE_MEMORY_DISAMBIGUATION_3P),
                 .STORE_FORWARD_BASE(STORE_FORWARD_BASE),
                 .STORE_FORWARD_SIZE(STORE_FORWARD_SIZE),
                 .CACHEABLE_BASE(CACHEABLE_BASE_3P),
@@ -336,10 +371,13 @@ module openrv64_exec_top #(
             ) u_exec (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_3p_i),
                 .squash_younger_i(squash_younger_3p_i),
+                .squash_inclusive_i(squash_inclusive_3p_i),
                 .squash_id_i(squash_id_3p_i),
                 .coherent_reservation_clear_i(
                     coherent_reservation_clear_3p_i),
                 .translation_bypass_i(translation_bypass_3p_i),
+                .inhibit_load_speculation_i(
+                    inhibit_load_speculation_3p_i),
                 .issue_valid_i(issue_valid_3p_i),
                 .issue_ready_o(issue_ready_3p_o),
                 .base_alu_available_o(base_alu_available_3p_o),
@@ -379,6 +417,20 @@ module openrv64_exec_top #(
                 .load_assignment_slot_o(load_assignment_slot_3p_o),
                 .load_assignment_rd_o(load_assignment_rd_3p_o),
                 .load_assignment_size_o(load_assignment_size_3p_o),
+                .load_access_valid_o(load_access_valid_3p_o),
+                .load_access_id_o(load_access_id_3p_o),
+                .load_access_slot_o(load_access_slot_3p_o),
+                .load_access_pc_o(load_access_pc_3p_o),
+                .load_access_paddr_o(load_access_paddr_3p_o),
+                .store_address_valid_o(store_address_valid_3p_o),
+                .store_address_id_o(store_address_id_3p_o),
+                .store_address_slot_o(store_address_slot_3p_o),
+                .store_address_pc_o(store_address_pc_3p_o),
+                .store_address_compressed_o(
+                    store_address_compressed_3p_o),
+                .store_address_paddr_o(store_address_paddr_3p_o),
+                .store_address_cacheable_o(
+                    store_address_cacheable_3p_o),
                 .redirect_valid_o(redirect_valid_o),
                 .redirect_id_o(redirect_id_3p_o),
                 .redirect_slot_o(redirect_slot_3p_o),
@@ -580,6 +632,22 @@ module openrv64_exec_top #(
             assign load_assignment_rd_3p_o =
                 {`RV64_REG_ADDR_WIDTH{1'b0}};
             assign load_assignment_size_3p_o = 3'd0;
+            assign load_access_valid_3p_o = 1'b0;
+            assign load_access_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign load_access_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign load_access_pc_3p_o = {`RV64_XLEN{1'b0}};
+            assign load_access_paddr_3p_o = {`RV64_XLEN{1'b0}};
+            assign store_address_valid_3p_o = 1'b0;
+            assign store_address_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign store_address_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign store_address_pc_3p_o = {`RV64_XLEN{1'b0}};
+            assign store_address_compressed_3p_o = 1'b0;
+            assign store_address_paddr_3p_o = {`RV64_XLEN{1'b0}};
+            assign store_address_cacheable_3p_o = 1'b0;
             assign store_barrier_request_3p_o = 1'b0;
         end
     endgenerate

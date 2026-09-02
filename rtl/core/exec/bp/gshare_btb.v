@@ -31,6 +31,8 @@ module openrv64_exec_bp_gshare_btb #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_i,
+    input  wire                         recovery_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_id_i,
 
     input  wire                         lookup_valid_i,
     input  wire                         lookup_branch_i,
@@ -154,11 +156,19 @@ module openrv64_exec_bp_gshare_btb #(
     reg resolve_tag_match;
     reg [INFLIGHT_PTR_WIDTH-1:0] resolve_tag_index;
     reg [INFLIGHT_COUNT_WIDTH-1:0] squash_keep_count;
+    reg [INFLIGHT_COUNT_WIDTH-1:0] recovery_keep_count;
+    reg recovery_younger_found;
+    reg [INFLIGHT_PTR_WIDTH-1:0] recovery_younger_index;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_younger_id;
     integer search_index;
     always @* begin
         resolve_tag_match = 1'b0;
         resolve_tag_index = inflight_head_q;
         squash_keep_count = {INFLIGHT_COUNT_WIDTH{1'b0}};
+        recovery_keep_count = {INFLIGHT_COUNT_WIDTH{1'b0}};
+        recovery_younger_found = 1'b0;
+        recovery_younger_index = inflight_head_q;
+        recovery_younger_id = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         for (search_index = 0; search_index < INFLIGHT_DEPTH;
              search_index = search_index + 1) begin
             if (inflight_valid_q[search_index] &&
@@ -170,6 +180,19 @@ module openrv64_exec_bp_gshare_btb #(
             if (inflight_valid_q[search_index] &&
                 !id_is_younger(inflight_id_q[search_index], resolve_id_i))
                 squash_keep_count = squash_keep_count + 1'b1;
+            if (inflight_valid_q[search_index] &&
+                !id_is_younger(inflight_id_q[search_index], recovery_id_i))
+                recovery_keep_count = recovery_keep_count + 1'b1;
+            if (inflight_valid_q[search_index] &&
+                id_is_younger(inflight_id_q[search_index], recovery_id_i) &&
+                (!recovery_younger_found ||
+                 id_is_younger(recovery_younger_id,
+                               inflight_id_q[search_index]))) begin
+                recovery_younger_found = 1'b1;
+                recovery_younger_index =
+                    search_index[INFLIGHT_PTR_WIDTH-1:0];
+                recovery_younger_id = inflight_id_q[search_index];
+            end
         end
     end
     wire [INFLIGHT_PTR_WIDTH-1:0] resolve_index =
@@ -204,6 +227,8 @@ module openrv64_exec_bp_gshare_btb #(
     wire head_commit = (inflight_count_q != 0) &&
                        inflight_valid_q[inflight_head_q] &&
                        inflight_resolved_q[inflight_head_q];
+    wire recovery_head_commit = head_commit &&
+        !id_is_younger(inflight_id_q[inflight_head_q], recovery_id_i);
     wire [HISTORY_BITS-1:0] committed_head_history =
         {inflight_ghr_before_q[inflight_head_q][HISTORY_BITS-2:0],
          inflight_actual_taken_q[inflight_head_q]};
@@ -282,6 +307,33 @@ module openrv64_exec_bp_gshare_btb #(
                 end else begin
                     speculative_ghr_q <= committed_ghr_q;
                 end
+            end else if (recovery_i &&
+                         (ENABLE_TAGGED_RESOLUTION != 0)) begin
+                // A memory replay cut is an instruction ID, not necessarily
+                // a control record.  Keep the predictor prefix older than the
+                // cut and restore history from immediately before the oldest
+                // discarded control.
+                inflight_tail_q <= inflight_head_q + recovery_keep_count;
+                inflight_count_q <= recovery_keep_count -
+                    {{(INFLIGHT_COUNT_WIDTH-1){1'b0}},
+                     recovery_head_commit};
+                if (recovery_head_commit) begin
+                    inflight_valid_q[inflight_head_q] <= 1'b0;
+                    inflight_resolved_q[inflight_head_q] <= 1'b0;
+                    inflight_head_q <= inflight_head_q + 1'b1;
+                end
+                for (reset_index = 0; reset_index < INFLIGHT_DEPTH;
+                     reset_index = reset_index + 1) begin
+                    if (inflight_valid_q[reset_index] &&
+                        id_is_younger(inflight_id_q[reset_index],
+                                      recovery_id_i)) begin
+                        inflight_valid_q[reset_index] <= 1'b0;
+                        inflight_resolved_q[reset_index] <= 1'b0;
+                    end
+                end
+                if (recovery_younger_found)
+                    speculative_ghr_q <=
+                        inflight_ghr_before_q[recovery_younger_index];
             end else if (squash_i && resolve_has_record &&
                          (ENABLE_TAGGED_RESOLUTION != 0)) begin
                 // Keep the resolving branch and every older checkpoint.  New

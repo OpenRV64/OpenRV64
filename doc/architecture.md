@@ -197,6 +197,7 @@ The direction predictor is selected with `BP_TYPE`:
 | 6 | gshare + BTB | 256-entry global-history direction table, 256-entry tagged JALR target table, speculative history recovery, and RAS |
 | 7 | gshare-512 + BTB | Fixed 512-entry three-bit direction table with nine history bits; otherwise the mode-6 target and recovery machinery |
 | 8 | tournament + BTB | 2048-entry global PHT, 512-entry local-history table, 1024-entry local PHT, 512-entry chooser, mode-6 BTB/recovery, and RAS |
+| 9 | compact TAGE + BTB | 2048-entry base table plus four 512-entry tagged tables at 4, 12, 32, and 96 history bits; synchronous table and BTB reads, tagged recovery, and RAS |
 
 The public default is the conservative stall policy. The implemented bimodal
 defaults are 32 entries, three counter bits, and a four-entry update FIFO. The
@@ -248,7 +249,32 @@ components agree. When they disagree, a prediction is strong only when both
 the selected component and the chooser are strong. This confidence affects
 alternate-path fetching only when the frontend confidence gate is enabled.
 
-The predictor data arrays are reset-free and guarded by resettable valid
+Mode 9 is a compact four-component TAGE, not TAGE-SC-L.  The base predictor
+has 2048 two-bit counters.  Its four partially tagged tables each have 512
+three-bit counters, two usefulness bits, and tags of 8, 9, 10, and 11 bits.
+Their geometric history lengths are 4, 12, 32, and 96 outcomes.  The
+longest matching table provides the prediction; the next-longest match or
+base predictor supplies the alternate.  Weak newly allocated providers can
+use the alternate under control of a four-bit meta-counter.  A final
+misprediction allocates the shortest replaceable longer-history component,
+provider-versus-alternate disagreement trains usefulness, and incremental
+aging makes stale entries replaceable.  Tagged ordered checkpoints preserve
+the lookup-time indices, tags, counters, usefulness, history, and target for
+out-of-order resolution and selective squash recovery.
+
+The five direction payloads total 33,792 bits (4.125 KiB).  They use
+synchronous, reset-free one-read/one-write memories intended for FPGA block
+RAM inference.  Resettable valid vectors and usefulness state remain outside
+those payload memories.  The 256-entry tag-plus-64-bit-target BTB is
+synchronous as well.  Standalone generic XC7 mapping infers five `RAMB18E1`
+primitives for the direction payloads and three for that BTB.  A conditional
+branch or non-return indirect therefore exposes at least one lookup cycle in
+the current decode integration; direct jumps and RAS returns do not.  This
+latency is currently implemented as predictor allocation backpressure rather
+than an earlier, pipelined fetch lookup.  This is mapping evidence, not routed
+timing or whole-core fit evidence.
+
+The mode-8 predictor data arrays are reset-free and guarded by resettable valid
 vectors, so synthesis retains the large tables as memories. This is not yet a
 physical timing result. Mode 8's local-history read, local-PHT read, and final
 chooser mux form a serial lookup path in the current combinational frontend.

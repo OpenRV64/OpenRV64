@@ -12,19 +12,22 @@ module tb_rename_tomasulo;
     reg [LANES*2*ARCH_WIDTH-1:0] source_arch;
     wire [LANES*2*PHYS_WIDTH-1:0] source_phys;
     wire [LANES*2-1:0] source_ready;
+    reg [LANES-1:0] destination_request;
     reg [LANES-1:0] destination_valid;
     reg [LANES*ARCH_WIDTH-1:0] destination_arch;
     wire destination_ready;
+    wire [LANES-1:0] destination_prefix_ready;
     wire [LANES*PHYS_WIDTH-1:0] destination_new_phys;
     wire [LANES*PHYS_WIDTH-1:0] destination_old_phys;
-    reg [1:0] free_valid;
-    reg [2*PHYS_WIDTH-1:0] free_tag;
+    reg [2:0] free_valid;
+    reg [3*PHYS_WIDTH-1:0] free_tag;
     reg [2:0] write_valid;
     reg [3*PHYS_WIDTH-1:0] write_tag;
     reg [2:0] commit_valid;
     reg [3*ARCH_WIDTH-1:0] commit_arch;
     reg [3*PHYS_WIDTH-1:0] commit_phys;
     reg [2:0] checkpoint_valid;
+    reg [2:0] checkpoint_before;
     reg [3*4-1:0] checkpoint_slot;
     reg recovery_valid;
     reg [3:0] recovery_slot;
@@ -39,7 +42,7 @@ module tb_rename_tomasulo;
         .PHYS_REG_COUNT(63),
         .LANES(LANES),
         .SOURCES_PER_LANE(2),
-        .FREE_PORTS(2)
+        .FREE_PORTS(3)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -47,10 +50,11 @@ module tb_rename_tomasulo;
         .source_arch_i(source_arch),
         .source_phys_o(source_phys),
         .source_ready_o(source_ready),
-        .destination_request_i(destination_valid),
+        .destination_request_i(destination_request),
         .destination_valid_i(destination_valid),
         .destination_arch_i(destination_arch),
         .destination_ready_o(destination_ready),
+        .destination_prefix_ready_o(destination_prefix_ready),
         .destination_new_phys_o(destination_new_phys),
         .destination_old_phys_o(destination_old_phys),
         .free_valid_i(free_valid),
@@ -61,6 +65,7 @@ module tb_rename_tomasulo;
         .commit_arch_i(commit_arch),
         .commit_phys_i(commit_phys),
         .checkpoint_valid_i(checkpoint_valid),
+        .checkpoint_before_i(checkpoint_before),
         .checkpoint_slot_i(checkpoint_slot),
         .recovery_valid_i(recovery_valid),
         .recovery_slot_i(recovery_slot),
@@ -88,16 +93,18 @@ module tb_rename_tomasulo;
         rst_n = 1'b0;
         flush = 1'b0;
         source_arch = {LANES*2*ARCH_WIDTH{1'b0}};
+        destination_request = 3'b000;
         destination_valid = 3'b000;
         destination_arch = {LANES*ARCH_WIDTH{1'b0}};
-        free_valid = 2'b00;
-        free_tag = {2*PHYS_WIDTH{1'b0}};
+        free_valid = 3'b000;
+        free_tag = {3*PHYS_WIDTH{1'b0}};
         write_valid = 3'b000;
         write_tag = {3*PHYS_WIDTH{1'b0}};
         commit_valid = 3'b000;
         commit_arch = {3*ARCH_WIDTH{1'b0}};
         commit_phys = {3*PHYS_WIDTH{1'b0}};
         checkpoint_valid = 3'b000;
+        checkpoint_before = 3'b000;
         checkpoint_slot = 12'd0;
         recovery_valid = 1'b0;
         recovery_slot = 4'd0;
@@ -114,6 +121,7 @@ module tb_rename_tomasulo;
         // physical destinations while all x0 sources remain p0.
         source_arch = {5'd0, 5'd0, 5'd0, 5'd0, 5'd0, 5'd0};
         destination_arch = {5'd3, 5'd2, 5'd1};
+        destination_request = 3'b111;
         destination_valid = 3'b111;
         #1;
         if (!destination_ready ||
@@ -127,6 +135,7 @@ module tb_rename_tomasulo;
         // The lane-2 x4 WAW must return lane 0's p35 as its dead old mapping.
         source_arch = {5'd1, 5'd4, 5'd3, 5'd4, 5'd2, 5'd1};
         destination_arch = {5'd4, 5'd1, 5'd4};
+        destination_request = 3'b111;
         destination_valid = 3'b111;
         #1;
         if (destination_new_phys != {6'd37, 6'd36, 6'd35})
@@ -142,6 +151,7 @@ module tb_rename_tomasulo;
             fail("younger sources did not observe the correct issue-time RAT");
         tick();
 
+        destination_request = 3'b000;
         destination_valid = 3'b000;
         source_arch = {5'd0, 5'd0, 5'd0, 5'd0, 5'd4, 5'd1};
         #1;
@@ -159,8 +169,10 @@ module tb_rename_tomasulo;
         tick();
         checkpoint_valid = 3'b000;
         destination_arch = {5'd0, 5'd11, 5'd10};
+        destination_request = 3'b011;
         destination_valid = 3'b011;
         tick();
+        destination_request = 3'b000;
         destination_valid = 3'b000;
         if (free_count != 24)
             fail("wrong-path allocations did not consume two physical tags");
@@ -176,29 +188,61 @@ module tb_rename_tomasulo;
             (free_count != 26))
             fail("checkpoint recovery did not restore RAT and free bitmap");
 
+        // A replay checkpoint is taken before its own load is renamed.  It
+        // must reclaim both that lane's destination and younger destinations
+        // in the same accepted bundle.
+        destination_arch = {5'd0, 5'd13, 5'd12};
+        destination_request = 3'b011;
+        destination_valid = 3'b011;
+        checkpoint_valid = 3'b001;
+        checkpoint_before = 3'b001;
+        checkpoint_slot[0 +: 4] = 4'd6;
+        tick();
+        destination_request = 3'b000;
+        destination_valid = 3'b000;
+        checkpoint_valid = 3'b000;
+        checkpoint_before = 3'b000;
+        if (free_count != 24)
+            fail("pre-rename checkpoint bundle did not consume two tags");
+        recovery_slot = 4'd6;
+        recovery_valid = 1'b1;
+        tick();
+        recovery_valid = 1'b0;
+        source_arch[0 +: ARCH_WIDTH] = 5'd12;
+        source_arch[ARCH_WIDTH +: ARCH_WIDTH] = 5'd13;
+        #1;
+        if ((source_phys[0 +: PHYS_WIDTH] != 6'd12) ||
+            (source_phys[PHYS_WIDTH +: PHYS_WIDTH] != 6'd13) ||
+            (free_count != 26))
+            fail("pre-rename checkpoint did not discard its own bundle");
+
         $display("PASS: tomasulo rename instruction stream issued with ordered physical mappings");
 
-        // Retire the first issue group through the two-wide free interface.
-        // Its dead mappings are p1, p2, and p3.  They append behind the 26
-        // untouched initial free tags and must eventually become allocatable.
-        free_tag = {6'd2, 6'd1};
-        free_valid = 2'b11;
+        // Retire the first issue group through the three-wide free interface.
+        // Its dead mappings are p1, p2, and p3.  They become available to
+        // same-cycle allocation and remain allocatable after the edge.
+        free_tag = {6'd3, 6'd2, 6'd1};
+        free_valid = 3'b111;
+        destination_arch = {5'd14, 5'd13, 5'd12};
+        destination_request = 3'b111;
+        destination_valid = 3'b000;
+        #1;
+        if (!destination_ready ||
+            !dut.free_offer_r[1] || !dut.free_offer_r[2] ||
+            !dut.free_offer_r[3])
+            fail("three returned tags were not visible to same-cycle rename");
         tick();
-        if (free_count != 28)
-            fail("two-wide retirement did not return two old physical tags");
-
-        free_tag = {6'd0, 6'd3};
-        free_valid = 2'b01;
-        tick();
-        free_valid = 2'b00;
-        free_tag = {2*PHYS_WIDTH{1'b0}};
+        free_valid = 3'b000;
+        free_tag = {3*PHYS_WIDTH{1'b0}};
+        destination_request = 3'b000;
         if (free_count != 29)
-            fail("single-lane retirement did not return its old physical tag");
+            fail("three-wide retirement did not return three old physical tags");
 
         // Consume p38-p63 and then p1.  Repeated WAWs are intentional: every
         // issue remains live, so no other tags may enter the free list.
         source_arch = {LANES*2*ARCH_WIDTH{1'b0}};
         destination_arch = {5'd31, 5'd31, 5'd31};
+        destination_request = 3'b111;
         destination_valid = 3'b111;
         for (drain_group = 0; drain_group < 9;
              drain_group = drain_group + 1) begin
@@ -214,6 +258,7 @@ module tb_rename_tomasulo;
         // proves retirement is recycling physical tags, not merely increasing
         // an occupancy counter.
         destination_arch = {5'd0, 5'd30, 5'd30};
+        destination_request = 3'b011;
         destination_valid = 3'b011;
         #1;
         if (!destination_ready ||
@@ -221,6 +266,7 @@ module tb_rename_tomasulo;
             (destination_new_phys[1*PHYS_WIDTH +: PHYS_WIDTH] != 6'd3))
             fail("retired physical tags were not reused in FIFO order");
         tick();
+        destination_request = 3'b000;
         destination_valid = 3'b000;
         if (free_count != 0)
             fail("physical free list did not reach the expected empty state");
@@ -243,23 +289,27 @@ module tb_rename_tomasulo;
         tick();
         rst_n = 1'b1;
         destination_arch = {5'd0, 5'd0, 5'd1};
+        destination_request = 3'b001;
         destination_valid = 3'b001;
         tick();
+        destination_request = 3'b000;
         destination_valid = 3'b000;
         write_valid = 3'b001;
         write_tag[0 +: PHYS_WIDTH] = 6'd32;
         commit_valid = 3'b001;
         commit_arch[0 +: ARCH_WIDTH] = 5'd1;
         commit_phys[0 +: PHYS_WIDTH] = 6'd32;
-        free_valid = 2'b01;
+        free_valid = 3'b001;
         free_tag[0 +: PHYS_WIDTH] = 6'd1;
         tick();
         write_valid = 3'b000;
         commit_valid = 3'b000;
-        free_valid = 2'b00;
+        free_valid = 3'b000;
         destination_arch = {5'd0, 5'd0, 5'd1};
+        destination_request = 3'b001;
         destination_valid = 3'b001;
         tick();
+        destination_request = 3'b000;
         destination_valid = 3'b000;
         flush = 1'b1;
         tick();
@@ -272,6 +322,69 @@ module tb_rename_tomasulo;
             (committed_map[1*PHYS_WIDTH +: PHYS_WIDTH] != 6'd32) ||
             (free_count != 32))
             fail("full flush did not rebuild RAT/free state from the RRAT");
+
+        // Rename admission is an oldest-prefix transaction.  Exhaust the
+        // free pool to two tags, offer three writing lanes, and accept only
+        // the first two.  The unaccepted third lane must neither suppress the
+        // prefix nor enter the RAT/free/checkpoint state update.
+        rst_n = 1'b0;
+        destination_request = 3'b000;
+        destination_valid = 3'b000;
+        tick();
+        rst_n = 1'b1;
+        destination_arch = {5'd31, 5'd31, 5'd31};
+        destination_request = 3'b111;
+        destination_valid = 3'b111;
+        for (drain_group = 0; drain_group < 10;
+             drain_group = drain_group + 1)
+            tick();
+        destination_valid = 3'b000;
+        #1;
+        if (destination_ready ||
+            (destination_prefix_ready != 3'b011) ||
+            (free_count != 2))
+            fail("two-tag shortage did not expose a two-lane prefix");
+        destination_valid = 3'b011;
+        #1;
+        if ((destination_new_phys[0*PHYS_WIDTH +: PHYS_WIDTH] == 0) ||
+            (destination_new_phys[1*PHYS_WIDTH +: PHYS_WIDTH] == 0) ||
+            (destination_new_phys[2*PHYS_WIDTH +: PHYS_WIDTH] != 0))
+            fail("two-tag prefix did not assign exactly two destinations");
+        tick();
+        destination_request = 3'b000;
+        destination_valid = 3'b000;
+        if (free_count != 0)
+            fail("two-tag prefix did not consume exactly two tags");
+
+        // Repeat with one remaining tag.  This specifically covers the
+        // one-wide progress case which used to deadlock behind a three-wide
+        // writing offer.
+        rst_n = 1'b0;
+        tick();
+        rst_n = 1'b1;
+        destination_request = 3'b111;
+        destination_valid = 3'b111;
+        for (drain_group = 0; drain_group < 10;
+             drain_group = drain_group + 1)
+            tick();
+        destination_request = 3'b001;
+        destination_valid = 3'b001;
+        tick();
+        destination_request = 3'b111;
+        destination_valid = 3'b000;
+        #1;
+        if (destination_ready ||
+            (destination_prefix_ready != 3'b001) ||
+            (free_count != 1))
+            fail("one-tag shortage did not expose a one-lane prefix");
+        destination_valid = 3'b001;
+        tick();
+        destination_request = 3'b000;
+        destination_valid = 3'b000;
+        if (free_count != 0)
+            fail("one-tag prefix did not consume exactly one tag");
+
+        $display("PASS: tomasulo rename accepted partial oldest prefixes");
 
         $display("PASS: tomasulo retirement recycled dead physical mappings");
         $finish;

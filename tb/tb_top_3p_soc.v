@@ -254,6 +254,7 @@ module tb_top_3p_soc #(
     parameter integer RELAX_HAZARDS = 0,
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = 0,
+    parameter integer ORACLE_BRANCHES = 0,
     parameter integer BANKED_GPR = 0,
     parameter integer FPGA_GPR_LUTRAM = 0,
     parameter integer BANKED_GPR_READ_PORTS_PER_BANK = 2,
@@ -262,6 +263,7 @@ module tb_top_3p_soc #(
     parameter integer ISSUE_WINDOW_DEPTH = RETIRE_DEPTH,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
+    parameter integer ENABLE_ALU2 = 0,
     parameter integer ENABLE_PIPELINE_STATE_TRACE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_FENCE_L2_ACK = 1,
@@ -809,6 +811,7 @@ module tb_top_3p_soc #(
     integer cycles;
     integer max_cycles;
     integer retired;
+    integer timeout_snapshot_idx;
     integer progress_interval_cycles;
     integer progress_next_cycle;
     integer pipeline_trace_start_cycle;
@@ -853,6 +856,20 @@ module tb_top_3p_soc #(
     integer bp_ras_hits;
     integer bp_ras_misses;
     integer bp_ras_wrong_targets;
+    integer bp_tage_lookups;
+    integer bp_tage_provider_base;
+    integer bp_tage_provider_t0;
+    integer bp_tage_provider_t1;
+    integer bp_tage_provider_t2;
+    integer bp_tage_provider_t3;
+    integer bp_tage_use_alt;
+    integer bp_tage_trains;
+    integer bp_tage_train_mispredicts;
+    integer bp_tage_alloc_t0;
+    integer bp_tage_alloc_t1;
+    integer bp_tage_alloc_t2;
+    integer bp_tage_alloc_t3;
+    integer bp_tage_allocation_failures;
     integer jalr_resolutions;
     integer jalr_direction_corrections;
     integer jalr_target_corrections;
@@ -1503,6 +1520,20 @@ module tb_top_3p_soc #(
     integer lsu_outstanding_cycles;
     integer branch_resolutions;
     integer conditional_branch_resolutions;
+    localparam integer BRANCH_ORACLE_DEPTH = 65536;
+    reg [128:0] branch_oracle [0:BRANCH_ORACLE_DEPTH-1];
+    reg [63:0] branch_oracle_pc;
+    reg branch_oracle_taken;
+    reg [63:0] branch_oracle_target;
+    integer branch_oracle_consumed;
+    integer branch_oracle_retired;
+    integer branch_oracle_expected;
+    integer branch_oracle_extra_allocations;
+    integer branch_oracle_extra_retirements;
+    integer branch_oracle_corrections;
+    integer branch_oracle_rollbacks;
+    integer branch_oracle_records_rewound;
+    string branch_oracle_load_path;
     integer pipe_conflicts;
     integer pipe_conflicts_ex0;
     integer pipe_conflicts_ex1;
@@ -2459,31 +2490,49 @@ module tb_top_3p_soc #(
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_waw_shadowed_ready_count : {WINDOW_COUNT_WIDTH{1'b0}};
     wire [WINDOW_OPERAND_COUNT_WIDTH-1:0] trace_window_wakeup_operands =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_completion_wakeup_operand_count :
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_completion_wakeup_operand_count :
         {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
     wire [WINDOW_OPERAND_COUNT_WIDTH-1:0] trace_window_wakeup_ex0 =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_completion_wakeup_ex0_count :
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_completion_wakeup_ex0_count :
         {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
     wire [WINDOW_OPERAND_COUNT_WIDTH-1:0] trace_window_wakeup_ex1 =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_completion_wakeup_ex1_count :
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_completion_wakeup_ex1_count :
         {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
     wire [WINDOW_OPERAND_COUNT_WIDTH-1:0] trace_window_wakeup_mem0 =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_completion_wakeup_mem0_count :
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_completion_wakeup_mem0_count :
         {WINDOW_OPERAND_COUNT_WIDTH{1'b0}};
     wire [WINDOW_COUNT_WIDTH-1:0] trace_window_wakeup_entries =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_completion_wakeup_entry_count :
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_completion_wakeup_entry_count :
         {WINDOW_COUNT_WIDTH{1'b0}};
     wire [WINDOW_COUNT_WIDTH-1:0] trace_window_wakeup_eligible =
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) ?
+        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+            .trace_completion_wakeup_eligible_count :
         (ISSUE_WINDOW != 0) ?
         dut.u_backend.u_dispatch.g_3p.u_window
             .trace_completion_wakeup_eligible_count :
@@ -2672,6 +2721,7 @@ module tb_top_3p_soc #(
         .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .RENAME_MODE(RENAME_MODE),
+        .ENABLE_ALU2(ENABLE_ALU2),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BANKED_GPR(BANKED_GPR),
@@ -2728,7 +2778,8 @@ module tb_top_3p_soc #(
         .BP_GSHARE_COUNTER_BITS(3),
         .BP_BTB_ENTRIES(256),
         .BP_BTB_TAG_BITS(16),
-        .BP_INFLIGHT_DEPTH(16)
+        .BP_INFLIGHT_DEPTH(16),
+        .SIM_BRANCH_ORACLE(ORACLE_BRANCHES)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -2813,6 +2864,9 @@ module tb_top_3p_soc #(
         .irq_s_software(1'b0),
         .irq_s_timer(1'b0),
         .irq_s_external(1'b0),
+        .sim_branch_oracle_pc_i(branch_oracle_pc),
+        .sim_branch_oracle_taken_i(branch_oracle_taken),
+        .sim_branch_oracle_target_i(branch_oracle_target),
         .dbg_pc(dbg_pc),
         .dbg_instr(dbg_instr),
         .dbg_halted(dbg_halted)
@@ -4427,6 +4481,20 @@ module tb_top_3p_soc #(
         bp_ras_hits = 0;
         bp_ras_misses = 0;
         bp_ras_wrong_targets = 0;
+        bp_tage_lookups = 0;
+        bp_tage_provider_base = 0;
+        bp_tage_provider_t0 = 0;
+        bp_tage_provider_t1 = 0;
+        bp_tage_provider_t2 = 0;
+        bp_tage_provider_t3 = 0;
+        bp_tage_use_alt = 0;
+        bp_tage_trains = 0;
+        bp_tage_train_mispredicts = 0;
+        bp_tage_alloc_t0 = 0;
+        bp_tage_alloc_t1 = 0;
+        bp_tage_alloc_t2 = 0;
+        bp_tage_alloc_t3 = 0;
+        bp_tage_allocation_failures = 0;
         jalr_resolutions = 0;
         jalr_direction_corrections = 0;
         jalr_target_corrections = 0;
@@ -4966,6 +5034,17 @@ module tb_top_3p_soc #(
         lsu_outstanding_cycles = 0;
         branch_resolutions = 0;
         conditional_branch_resolutions = 0;
+        branch_oracle_pc = 64'd0;
+        branch_oracle_taken = 1'b0;
+        branch_oracle_target = 64'd0;
+        branch_oracle_consumed = 0;
+        branch_oracle_retired = 0;
+        branch_oracle_expected = 0;
+        branch_oracle_extra_allocations = 0;
+        branch_oracle_extra_retirements = 0;
+        branch_oracle_corrections = 0;
+        branch_oracle_rollbacks = 0;
+        branch_oracle_records_rewound = 0;
         pipe_conflicts = 0;
         pipe_conflicts_ex0 = 0;
         pipe_conflicts_ex1 = 0;
@@ -4989,6 +5068,25 @@ module tb_top_3p_soc #(
             expected_a0_valid = 1'b1;
         if ($value$plusargs("done_pc=%h", done_pc))
             done_pc_valid = 1'b1;
+        if (ORACLE_BRANCHES != 0) begin
+            if (!$value$plusargs("branch_oracle_load=%s",
+                                 branch_oracle_load_path))
+                $fatal(1,
+                       "oracle run requires +branch_oracle_load=<path>");
+            if (!$value$plusargs("branch_oracle_count=%d",
+                                 branch_oracle_expected) ||
+                (branch_oracle_expected <= 0) ||
+                (branch_oracle_expected > BRANCH_ORACLE_DEPTH))
+                $fatal(1,
+                       "oracle run requires a valid +branch_oracle_count");
+            $readmemh(branch_oracle_load_path, branch_oracle,
+                      0, branch_oracle_expected - 1);
+            branch_oracle_pc = branch_oracle[0][128:65];
+            branch_oracle_taken = branch_oracle[0][64];
+            branch_oracle_target = branch_oracle[0][63:0];
+            $display("BRANCH_ORACLE load=%0s records=%0d",
+                     branch_oracle_load_path, branch_oracle_expected);
+        end
         if ($value$plusargs("progress_cycles=%d",
                             progress_interval_cycles) &&
             (progress_interval_cycles > 0))
@@ -5061,6 +5159,47 @@ module tb_top_3p_soc #(
                     dut.backend_decode_valid, dut.backend_decode_ready,
                     dut.frontend_decode_enable);
             retired = retired + dut.backend_retire_count;
+            if (ORACLE_BRANCHES != 0) begin
+                if (dut.backend_retire_arch[0])
+                    retire_branch_oracle_record(
+                        dut.u_backend.queue_retire_result[
+                            0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            RETIRE_RESULT_PC_LSB +: 64],
+                        dut.u_backend.queue_retire_result[
+                            0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            RETIRE_RESULT_INSTR_LSB +: 32],
+                        dut.u_backend.queue_retire_result[
+                            0*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            265 +: 64]);
+                if (dut.backend_retire_arch[1])
+                    retire_branch_oracle_record(
+                        dut.u_backend.queue_retire_result[
+                            1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            RETIRE_RESULT_PC_LSB +: 64],
+                        dut.u_backend.queue_retire_result[
+                            1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            RETIRE_RESULT_INSTR_LSB +: 32],
+                        dut.u_backend.queue_retire_result[
+                            1*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            265 +: 64]);
+                if (dut.backend_retire_arch[2])
+                    retire_branch_oracle_record(
+                        dut.u_backend.queue_retire_result[
+                            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            RETIRE_RESULT_PC_LSB +: 64],
+                        dut.u_backend.queue_retire_result[
+                            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            RETIRE_RESULT_INSTR_LSB +: 32],
+                        dut.u_backend.queue_retire_result[
+                            2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                            265 +: 64]);
+
+                // A recovery invalidates speculative allocations, not retired
+                // oracle records.  Re-derive the next record from the ROB
+                // after its sequential squash update has completed.
+                if (dut.control_flush || dut.control_redirect)
+                    rewind_branch_oracle_to_live_rob();
+            end
             if ((progress_interval_cycles > 0) &&
                 ((cycles + 1) >= progress_next_cycle)) begin
                 $display(
@@ -6784,6 +6923,16 @@ module tb_top_3p_soc #(
             if (dut.branch_resolved && dut.branch_conditional)
                 conditional_branch_resolutions =
                     conditional_branch_resolutions + 1;
+            if ((ORACLE_BRANCHES != 0) &&
+                dut.u_backend.exec_redirect_valid &&
+                (dut.csr_priv_mode != `RV64_PRIV_M))
+                branch_oracle_corrections =
+                    branch_oracle_corrections + 1;
+            if ((ORACLE_BRANCHES != 0) &&
+                dut.sim_branch_oracle_allocate_q &&
+                !(dut.control_flush || dut.control_redirect))
+                consume_branch_oracle_record(
+                    dut.sim_branch_oracle_allocate_pc_q);
             if (trace_pipe_conflict) begin
                 pipe_conflicts = pipe_conflicts + 1;
                 case (trace_conflict_pipe)
@@ -6952,6 +7101,42 @@ module tb_top_3p_soc #(
                 bp_ras_misses = bp_ras_misses + 1;
             if (dut.u_bp.diag_ras_wrong_target)
                 bp_ras_wrong_targets = bp_ras_wrong_targets + 1;
+            if (dut.u_bp.diag_tage_lookup) begin
+                bp_tage_lookups = bp_tage_lookups + 1;
+                case (dut.u_bp.diag_tage_provider)
+                    3'd0: bp_tage_provider_base =
+                        bp_tage_provider_base + 1;
+                    3'd1: bp_tage_provider_t0 =
+                        bp_tage_provider_t0 + 1;
+                    3'd2: bp_tage_provider_t1 =
+                        bp_tage_provider_t1 + 1;
+                    3'd3: bp_tage_provider_t2 =
+                        bp_tage_provider_t2 + 1;
+                    3'd4: bp_tage_provider_t3 =
+                        bp_tage_provider_t3 + 1;
+                    default: begin
+                    end
+                endcase
+                if (dut.u_bp.diag_tage_use_alt)
+                    bp_tage_use_alt = bp_tage_use_alt + 1;
+            end
+            if (dut.u_bp.diag_tage_train) begin
+                bp_tage_trains = bp_tage_trains + 1;
+                if (dut.u_bp.diag_tage_train_mispredict)
+                    bp_tage_train_mispredicts =
+                        bp_tage_train_mispredicts + 1;
+                case (dut.u_bp.diag_tage_allocation)
+                    3'd1: bp_tage_alloc_t0 = bp_tage_alloc_t0 + 1;
+                    3'd2: bp_tage_alloc_t1 = bp_tage_alloc_t1 + 1;
+                    3'd3: bp_tage_alloc_t2 = bp_tage_alloc_t2 + 1;
+                    3'd4: bp_tage_alloc_t3 = bp_tage_alloc_t3 + 1;
+                    default: begin
+                    end
+                endcase
+                if (dut.u_bp.diag_tage_allocation_failed)
+                    bp_tage_allocation_failures =
+                        bp_tage_allocation_failures + 1;
+            end
             if (dut.branch_resolved &&
                 (`RV64_OPCODE(dut.branch_instr) == `RV64_OPCODE_JALR)) begin
                 jalr_resolutions = jalr_resolutions + 1;
@@ -7326,6 +7511,145 @@ module tb_top_3p_soc #(
         if (run_completed_q && fence_check_enabled_q)
             repeat (FENCE_RESPONSE_DELAY + 4096) @(posedge clk);
 
+        if (!run_completed_q && (BANKED_GPR != 0) &&
+            (ISSUE_WINDOW != 0) &&
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) begin
+            $display(
+                "PERF_ICX_L2_TIMEOUT_BACKEND cycles=%0d retired=%0d rob=%0d sched=%0d head_id=%0d head_slot=%0d head_valid=%0d head_complete=%0d queue_retire=%b decode_valid=%b decode_ready=%b alloc=%b",
+                cycles, retired, dut.u_backend.retire_occupancy_o,
+                dut.u_backend.dispatch_occupancy_o,
+                dut.u_backend.next_retire_id,
+                dut.u_backend.next_retire_slot,
+                dut.u_backend.u_retire_queue.valid_q[
+                    dut.u_backend.next_retire_slot],
+                dut.u_backend.u_retire_queue.complete_q[
+                    dut.u_backend.next_retire_slot],
+                dut.u_backend.queue_retire_valid,
+                dut.backend_decode_valid, dut.backend_decode_ready,
+                dut.u_backend.allocation_valid);
+            $display(
+                "PERF_ICX_L2_TIMEOUT_FRONTEND fetch_valid=%b fetch_ready=%b control=%b bp_fetch_stall=%0d bp_decode_stall=%0d decode_enable=%0d redirect=%0d memory_replay=%0d",
+                dut.fetch_decode_valid, dut.fetch_decode_ready,
+                dut.frontend_control_select, dut.bp_fetch_stall,
+                dut.bp_decode_stall, dut.frontend_decode_enable,
+                dut.control_redirect, dut.backend_memory_replay);
+            $display(
+                "PERF_ICX_L2_TIMEOUT_RECOVERY squash=%0d redirect_valid=%0d redirect_id=%0d replay_pending=%0d replay_valid=%0d branch_resolved=%0d barrier=%0d watches=%h checks=%0d violations=%0d collisions=%0d device=%0d replays=%0d",
+                dut.u_backend.squash_frontend_i,
+                dut.u_backend.redirect_valid_o,
+                dut.u_backend.redirect_id_o,
+                dut.u_backend.memory_replay_pending_q,
+                dut.u_backend.memory_replay_valid,
+                dut.u_backend.exec_branch_resolved,
+                dut.u_backend.barrier_active_o,
+                dut.u_backend.memory_load_watch_valid_q,
+                dut.u_backend.perf_memory_store_address_checks_q,
+                dut.u_backend.perf_memory_store_violations_q,
+                dut.u_backend.perf_memory_store_collisions_q,
+                dut.u_backend.perf_memory_store_device_replays_q,
+                dut.u_backend.perf_memory_replays_q);
+            $display(
+                "PERF_ICX_L2_TIMEOUT_REGREAD valid=%b ids=%h done=%b held_valid=%b held_req=%b owner_valid=%b poison=%b drain=%0d quiescent=%0d pipe_valid=%b pipe_ready=%b",
+                dut.u_backend.banked_independent_valid_q,
+                dut.u_backend.banked_independent_id_q,
+                dut.u_backend.banked_independent_operand_done_q,
+                dut.u_backend.banked_independent_held_valid_q,
+                dut.u_backend.banked_independent_held_req_q,
+                dut.u_backend.banked_independent_response_owner_valid_q,
+                dut.u_backend.banked_independent_response_poison_q,
+                dut.u_backend.banked_gpr_drain_q,
+                dut.u_backend.gpr_quiescent,
+                dut.u_backend.dispatch_pipe_valid,
+                dut.u_backend.pipe_ready);
+            for (timeout_snapshot_idx = 0;
+                 timeout_snapshot_idx < RETIRE_DEPTH;
+                 timeout_snapshot_idx = timeout_snapshot_idx + 1)
+                if (dut.u_backend.u_retire_queue.valid_q[
+                        timeout_snapshot_idx])
+                    $display(
+                        "PERF_ICX_L2_TIMEOUT_ROB slot=%0d id=%0d complete=%0d pc=%h instr=%h watch=%0d",
+                        timeout_snapshot_idx,
+                        dut.u_backend.u_retire_queue.id_q[
+                            timeout_snapshot_idx],
+                        dut.u_backend.u_retire_queue.complete_q[
+                            timeout_snapshot_idx],
+                        dut.u_backend.u_retire_records.alloc_q[
+                            timeout_snapshot_idx][
+                                `OPENRV64_RETIRE_ALLOC_PC_LSB +:
+                                `RV64_XLEN],
+                        dut.u_backend.u_retire_records.alloc_q[
+                            timeout_snapshot_idx][
+                                `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
+                                `RV64_INSTR_WIDTH],
+                        dut.u_backend.memory_load_watch_valid_q[
+                            timeout_snapshot_idx]);
+            for (timeout_snapshot_idx = 0;
+                 timeout_snapshot_idx < ISSUE_WINDOW_DEPTH;
+                 timeout_snapshot_idx = timeout_snapshot_idx + 1)
+                if (dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                        u_window.valid_q[timeout_snapshot_idx])
+                    $display(
+                        "PERF_ICX_L2_TIMEOUT_SCHED slot=%0d id=%0d rob_slot=%0d issued=%0d result=%0d instr=%h src_ready=%0d%0d src_prod=%0d:%0d/%0d:%0d",
+                        timeout_snapshot_idx,
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.id_q[timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.rob_slot_q[timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.issued_q[timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.result_ready_q[timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.payload_q[timeout_snapshot_idx][242 +:
+                                `RV64_INSTR_WIDTH],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.src1_ready_q[timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.src2_ready_q[timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.src1_producer_valid_q[
+                                timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.src1_tag_q[timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.src2_producer_valid_q[
+                                timeout_snapshot_idx],
+                        dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.
+                            u_window.src2_tag_q[timeout_snapshot_idx]);
+            for (timeout_snapshot_idx = 0; timeout_snapshot_idx < 4;
+                 timeout_snapshot_idx = timeout_snapshot_idx + 1) begin
+                if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                        load_valid_q[timeout_snapshot_idx])
+                    $display(
+                        "PERF_ICX_L2_TIMEOUT_LSQ_LOAD slot=%0d id=%0d killed=%0d xlate=%0d access=%0d guard=%0d",
+                        timeout_snapshot_idx,
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            load_id_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            load_killed_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            load_xlate_done_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            load_access_sent_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            load_guard_block_r[timeout_snapshot_idx]);
+                if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                        store_valid_q[timeout_snapshot_idx])
+                    $display(
+                        "PERF_ICX_L2_TIMEOUT_LSQ_STORE slot=%0d id=%0d killed=%0d xlate=%0d access=%0d result=%0d",
+                        timeout_snapshot_idx,
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            store_id_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            store_killed_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            store_xlate_done_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            store_access_sent_q[timeout_snapshot_idx],
+                        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                            store_result_sent_q[timeout_snapshot_idx]);
+            end
+        end
         if (!run_completed_q)
             $fatal(1,
                 "full-ICX workload timeout pc=%h instr=%h retired=%0d",
@@ -7504,13 +7828,13 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
             RENAME_MODE, PHYS_REG_COUNT,
-            ISSUE_WINDOW, SPECULATION_WINDOW,
+            ISSUE_WINDOW, SPECULATION_WINDOW, ENABLE_ALU2, ORACLE_BRANCHES,
             BANKED_GPR, BANKED_GPR_NUM_BANKS,
             BANKED_GPR_READ_PORTS_PER_BANK,
             `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
@@ -7748,6 +8072,15 @@ module tb_top_3p_soc #(
             bp_btb_wrong_targets, bp_ras_lookups, bp_ras_hits,
             bp_ras_misses, bp_ras_wrong_targets);
         $display(
+            "PERF_ICX_L2_BP_TAGE lookups=%0d provider_base=%0d provider_t0=%0d provider_t1=%0d provider_t2=%0d provider_t3=%0d use_alt=%0d trains=%0d train_mispredicts=%0d alloc_t0=%0d alloc_t1=%0d alloc_t2=%0d alloc_t3=%0d allocation_failures=%0d",
+            bp_tage_lookups, bp_tage_provider_base,
+            bp_tage_provider_t0, bp_tage_provider_t1,
+            bp_tage_provider_t2, bp_tage_provider_t3,
+            bp_tage_use_alt, bp_tage_trains,
+            bp_tage_train_mispredicts, bp_tage_alloc_t0,
+            bp_tage_alloc_t1, bp_tage_alloc_t2,
+            bp_tage_alloc_t3, bp_tage_allocation_failures);
+        $display(
             "PERF_ICX_L2_JALR_PREDICT resolutions=%0d direction_corrections=%0d target_corrections=%0d btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d resolve_with_younger_valid=%0d resolve_with_younger_completed=%0d resolve_younger_valid_entries=%0d resolve_younger_completed_entries=%0d",
             jalr_resolutions, jalr_direction_corrections,
             jalr_target_corrections, bp_btb_lookups, bp_btb_hits,
@@ -7855,6 +8188,13 @@ module tb_top_3p_soc #(
             issue_width_4,
             decode_width_0, decode_width_1, decode_width_2, decode_width_3,
             retire_width_0, retire_width_1, retire_width_2, retire_width_3);
+        $display(
+            "PERF_ICX_L2_ALU2 issues=%0d completion_wait_cycles=%0d mem0_completion_collision_cycles=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.perf_alu2_issues_q,
+            dut.u_backend.u_exec.g_3p.u_exec
+                .perf_alu2_completion_wait_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec
+                .perf_mem0_completion_collisions_q);
         $display(
             "PERF_ICX_L2_PIPE_DECODE total=%0d progress=%0d no_decode=%0d fetch_empty=%0d backend_held=%0d unaccounted=%0d",
             cycles, cycles - decode_width_0, decode_width_0,
@@ -8588,6 +8928,16 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_max_occupancy_q);
         $display(
+            "PERF_ICX_L2_RET_LOAD_INHIBIT intervals=%0d active_cycles=%0d blocked_cycles=%0d blocked_entry_cycles=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_inhibit_intervals_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_inhibit_active_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_inhibit_block_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_inhibit_block_entry_cycles_q);
+        $display(
             "PERF_ICX_L2_SPEC_LOAD_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_squashed_q,
@@ -8680,6 +9030,47 @@ module tb_top_3p_soc #(
                 .perf_store_flushed_q,
             dut.u_backend.perf_lsq_retired_untracked_q);
         $display(
+            "PERF_ICX_L2_MEMORY_DISAMBIG load_watches=%0d store_address_checks=%0d violations=%0d granule_collisions=%0d device_order_replays=%0d redirects=%0d",
+            dut.u_backend.perf_memory_load_watches_q,
+            dut.u_backend.perf_memory_store_address_checks_q,
+            dut.u_backend.perf_memory_store_violations_q,
+            dut.u_backend.perf_memory_store_collisions_q,
+            dut.u_backend.perf_memory_store_device_replays_q,
+            dut.u_backend.perf_memory_replays_q);
+        $display(
+            "PERF_ICX_L2_MEMORY_REPLAY_CUT preserved_entries=%0d distance_1=%0d distance_2=%0d distance_3_4=%0d distance_5_8=%0d distance_9_plus=%0d",
+            dut.u_backend.perf_memory_replay_preserved_entries_q,
+            dut.u_backend.perf_memory_replay_distance_1_q,
+            dut.u_backend.perf_memory_replay_distance_2_q,
+            dut.u_backend.perf_memory_replay_distance_3_4_q,
+            dut.u_backend.perf_memory_replay_distance_5_8_q,
+            dut.u_backend.perf_memory_replay_distance_9_plus_q);
+        $display(
+            "PERF_ICX_L2_MEMORY_REPLAY_CONTROL_WAIT cycles=%0d",
+            dut.u_backend.perf_memory_replay_control_wait_cycles_q);
+        if (ORACLE_BRANCHES != 0) begin
+            if (branch_oracle_consumed != branch_oracle_expected)
+                $fatal(1,
+                       "branch oracle consumed=%0d expected=%0d",
+                       branch_oracle_consumed,
+                       branch_oracle_expected);
+            if (branch_oracle_retired != branch_oracle_expected)
+                $fatal(1,
+                       "branch oracle retired=%0d expected=%0d",
+                       branch_oracle_retired,
+                       branch_oracle_expected);
+            $display(
+                "PERF_ICX_L2_BRANCH_ORACLE consumed=%0d retired=%0d resolutions=%0d extra_unresolved_allocations=%0d extra_retirements=%0d corrections=%0d rollbacks=%0d records_rewound=%0d",
+                branch_oracle_consumed,
+                branch_oracle_retired,
+                branch_resolutions,
+                branch_oracle_extra_allocations,
+                branch_oracle_extra_retirements,
+                branch_oracle_corrections,
+                branch_oracle_rollbacks,
+                branch_oracle_records_rewound);
+        end
+        $display(
             "PERF_ICX_L2_ATOMIC starts=%0d done=%0d active_cycles=%0d store_success=%0d store_failed=%0d home_sc_success=%0d home_sc_failed=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_atomic_starts_q,
@@ -8753,4 +9144,116 @@ module tb_top_3p_soc #(
             $fclose(l1d_prefetch_trace_fd);
         $finish;
     end
+
+    task automatic consume_branch_oracle_record;
+        input [63:0] allocation_pc;
+        begin
+            if (branch_oracle_consumed < branch_oracle_expected) begin
+                if (allocation_pc !==
+                    branch_oracle[branch_oracle_consumed][128:65])
+                    $fatal(1,
+                           "branch oracle desynchronized record=%0d allocation_pc=%h expected_pc=%h",
+                           branch_oracle_consumed, allocation_pc,
+                           branch_oracle[
+                               branch_oracle_consumed][128:65]);
+                branch_oracle_consumed = branch_oracle_consumed + 1;
+                if (branch_oracle_consumed < branch_oracle_expected) begin
+                    branch_oracle_pc =
+                        branch_oracle[branch_oracle_consumed][128:65];
+                    branch_oracle_taken =
+                        branch_oracle[branch_oracle_consumed][64];
+                    branch_oracle_target =
+                        branch_oracle[branch_oracle_consumed][63:0];
+                end else
+                    branch_oracle_pc = {64{1'b1}};
+            end else begin
+                branch_oracle_extra_allocations =
+                    branch_oracle_extra_allocations + 1;
+            end
+        end
+    endtask
+
+    task automatic retire_branch_oracle_record;
+        input [63:0] retire_pc;
+        input [31:0] retire_instr;
+        input [63:0] retire_next_pc;
+        reg retire_taken;
+        begin
+            if ((`RV64_OPCODE(retire_instr) == `RV64_OPCODE_BRANCH) ||
+                (`RV64_OPCODE(retire_instr) == `RV64_OPCODE_JAL) ||
+                (`RV64_OPCODE(retire_instr) == `RV64_OPCODE_JALR)) begin
+                if (branch_oracle_retired >= branch_oracle_expected) begin
+                    // The timer stops at the terminal M-mode handoff.  Its
+                    // following park-loop JAL is outside the captured stream.
+                    branch_oracle_extra_retirements =
+                        branch_oracle_extra_retirements + 1;
+                end else begin
+                    retire_taken = retire_next_pc != (retire_pc + 64'd4);
+                    if ((retire_pc !==
+                         branch_oracle[branch_oracle_retired][128:65]) ||
+                        (retire_taken !==
+                         branch_oracle[branch_oracle_retired][64]) ||
+                        (retire_next_pc !==
+                         branch_oracle[branch_oracle_retired][63:0]))
+                        $fatal(1,
+                               "branch oracle retirement mismatch record=%0d pc=%h/%h taken=%0d/%0d target=%h/%h",
+                               branch_oracle_retired, retire_pc,
+                               branch_oracle[branch_oracle_retired][128:65],
+                               retire_taken,
+                               branch_oracle[branch_oracle_retired][64],
+                               retire_next_pc,
+                               branch_oracle[branch_oracle_retired][63:0]);
+                    branch_oracle_retired = branch_oracle_retired + 1;
+                end
+            end
+        end
+    endtask
+
+    task automatic rewind_branch_oracle_to_live_rob;
+        integer scan_offset;
+        integer scan_slot;
+        integer scan_record;
+        integer old_consumed;
+        reg [63:0] scan_pc;
+        reg scan_control;
+        begin
+            old_consumed = branch_oracle_consumed;
+            scan_record = branch_oracle_retired;
+            for (scan_offset = 0; scan_offset < RETIRE_DEPTH;
+                 scan_offset = scan_offset + 1) begin
+                scan_slot = dut.u_backend.next_retire_slot + scan_offset;
+                if (scan_slot >= RETIRE_DEPTH)
+                    scan_slot = scan_slot - RETIRE_DEPTH;
+                scan_control =
+                    dut.u_backend.u_retire_records.alloc_q[scan_slot][
+                        `OPENRV64_RETIRE_ALLOC_BRANCH_BIT] ||
+                    dut.u_backend.u_retire_records.alloc_q[scan_slot][
+                        `OPENRV64_RETIRE_ALLOC_JUMP_BIT];
+                scan_pc = dut.u_backend.u_retire_records.alloc_q[scan_slot][
+                    `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
+                if (dut.u_backend.u_retire_queue.valid_q[scan_slot] &&
+                    scan_control &&
+                    (scan_record < branch_oracle_expected) &&
+                    (scan_pc === branch_oracle[scan_record][128:65]))
+                    scan_record = scan_record + 1;
+            end
+            branch_oracle_consumed = scan_record;
+            if (old_consumed > scan_record) begin
+                branch_oracle_rollbacks = branch_oracle_rollbacks + 1;
+                branch_oracle_records_rewound =
+                    branch_oracle_records_rewound +
+                    old_consumed - scan_record;
+            end
+            if (scan_record < branch_oracle_expected) begin
+                branch_oracle_pc = branch_oracle[scan_record][128:65];
+                branch_oracle_taken = branch_oracle[scan_record][64];
+                branch_oracle_target = branch_oracle[scan_record][63:0];
+            end else begin
+                branch_oracle_pc = {64{1'b1}};
+                branch_oracle_taken = 1'b0;
+                branch_oracle_target = 64'd0;
+            end
+        end
+    endtask
+
 endmodule

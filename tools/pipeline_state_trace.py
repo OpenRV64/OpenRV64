@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import bz2
 import csv
 import sys
 from collections import Counter
@@ -129,6 +130,15 @@ def select_row(row: Row, args: argparse.Namespace) -> bool:
     return True
 
 
+def open_trace(path: Path):
+    """Open plain CSV or bzip2 CSV without loading it into memory."""
+    with path.open("rb") as probe:
+        bzip2_magic = probe.read(3) == b"BZh"
+    if path.suffix.lower() == ".bz2" or bzip2_magic:
+        return bz2.open(path, mode="rt", newline="", encoding="utf-8")
+    return path.open(mode="r", newline="", encoding="utf-8")
+
+
 def validate_and_collect(
     path: Path, args: argparse.Namespace
 ) -> tuple[list[str], int]:
@@ -143,7 +153,7 @@ def validate_and_collect(
     last_cycle: int | None = None
     cycle_keys: set[tuple[int, int, int, int]] = set()
 
-    with path.open(newline="", encoding="utf-8") as source:
+    with open_trace(path) as source:
         reader = csv.DictReader(source)
         if reader.fieldnames is None:
             raise ValueError("trace has no CSV header")

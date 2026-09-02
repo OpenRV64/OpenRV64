@@ -20,6 +20,7 @@ module openrv64_exec_lsu #(
     parameter integer LSU_TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer COHERENT_ATOMICS = 0,
+    parameter integer ENABLE_MEMORY_DISAMBIGUATION = 0,
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE = {`RV64_XLEN{1'b0}}
 ) (
@@ -27,9 +28,11 @@ module openrv64_exec_lsu #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_younger_i,
+    input  wire                         squash_inclusive_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
     input  wire                         coherent_reservation_clear_i,
     input  wire                         translation_bypass_i,
+    input  wire                         inhibit_load_speculation_i,
 
     input  wire                         load_issue_valid_i,
     output wire                         load_issue_ready_o,
@@ -110,8 +113,46 @@ module openrv64_exec_lsu #(
     output wire                         mem_store_done_ready_o,
     input  wire [LSU_TAG_WIDTH-1:0]     mem_store_done_tag_i,
 
-    output wire                         store_pending_o
+    output wire                         store_pending_o,
+    output wire                         load_access_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] load_access_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0] load_access_slot_o,
+    output wire [`RV64_XLEN-1:0]        load_access_pc_o,
+    output wire [`RV64_XLEN-1:0]        load_access_paddr_o,
+    output wire                         store_address_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] store_address_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0] store_address_slot_o,
+    output wire [`RV64_XLEN-1:0]        store_address_pc_o,
+    output wire                         store_address_compressed_o,
+    output wire [`RV64_XLEN-1:0]        store_address_paddr_o,
+    output wire                         store_address_cacheable_o
 );
+
+    function automatic id_is_younger;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        reg [`OPENRV64_INSTR_ID_WIDTH-1:0] distance;
+        begin
+            distance = candidate - reference;
+            id_is_younger =
+                (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
+                !distance[`OPENRV64_INSTR_ID_WIDTH-1];
+        end
+    endfunction
+
+    // The LSQ's resident-entry squash cannot see an allocation made on the
+    // same edge as a redirect: its state loop observes the pre-edge valid
+    // bits.  Sink a killed issue at this ingress boundary instead.  Ready is
+    // forced high for the killed packet so the upstream output latch can be
+    // discarded without waiting for LSQ or misaligned-engine capacity.
+    wire load_issue_squashed = load_issue_valid_i && squash_younger_i &&
+        ((squash_inclusive_i && (load_issue_id_i == squash_id_i)) ||
+         id_is_younger(load_issue_id_i, squash_id_i));
+    wire store_issue_squashed = store_issue_valid_i && squash_younger_i &&
+        ((squash_inclusive_i && (store_issue_id_i == squash_id_i)) ||
+         id_is_younger(store_issue_id_i, squash_id_i));
+    wire load_issue_live = load_issue_valid_i && !load_issue_squashed;
+    wire store_issue_live = store_issue_valid_i && !store_issue_squashed;
 
     localparam integer I_PRIV = 2;
     localparam integer I_INSTR_PAGE_FAULT = 4;
@@ -324,10 +365,22 @@ module openrv64_exec_lsu #(
     wire lsq_result_access_fault;
     wire lsq_result_page_fault;
     wire lsq_result_store;
+    wire lsq_result_posted_store;
     wire lsq_load_alloc_ready;
     wire lsq_store_alloc_ready;
     wire lsq_store_pending;
     wire lsq_quiescent;
+    wire lsq_load_access_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lsq_load_access_id;
+    wire [RETIRE_SLOT_WIDTH-1:0] lsq_load_access_slot;
+    wire [LSQ_META_WIDTH-1:0] lsq_load_access_meta;
+    wire [`RV64_XLEN-1:0] lsq_load_access_paddr;
+    wire lsq_store_address_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lsq_store_address_id;
+    wire [RETIRE_SLOT_WIDTH-1:0] lsq_store_address_slot;
+    wire [LSQ_META_WIDTH-1:0] lsq_store_address_meta;
+    wire [`RV64_XLEN-1:0] lsq_store_address_paddr;
+    wire lsq_store_address_cacheable;
 
     wire atomic_start_valid;
     wire [LSU_TAG_WIDTH-1:0] atomic_start_tag;
@@ -422,10 +475,10 @@ module openrv64_exec_lsu #(
     wire [2:0] misaligned_size_q;
     wire [`RV64_XLEN-1:0] misaligned_wdata_q;
 
-    wire misaligned_load_accept = load_issue_valid_i &&
+    wire misaligned_load_accept = load_issue_live &&
                                   load_issue_ready_o &&
                                   load_requires_misaligned;
-    wire misaligned_store_accept = store_issue_valid_i &&
+    wire misaligned_store_accept = store_issue_live &&
                                    store_issue_ready_o &&
                                    store_requires_misaligned;
     wire misaligned_accept =
@@ -445,19 +498,19 @@ module openrv64_exec_lsu #(
     // ordered misaligned candidate.  Once pending is registered, existing
     // entries remain allocated but new LSQ launches are frozen until accepted
     // transactions drain and the component engine takes port ownership.
-    assign load_issue_ready_o =
+    assign load_issue_ready_o = load_issue_squashed ? 1'b1 :
         (misaligned_active || misaligned_pending_q) ? 1'b0 :
         misaligned_store_candidate ? 1'b0 :
         load_requires_misaligned ?
         load_order_match : lsq_load_alloc_ready;
-    assign store_issue_ready_o =
+    assign store_issue_ready_o = store_issue_squashed ? 1'b1 :
         (misaligned_active || misaligned_pending_q) ? 1'b0 :
         misaligned_load_candidate ? 1'b0 :
         store_requires_misaligned ?
         store_order_match : lsq_store_alloc_ready;
 
     assign load_assignment_valid_o =
-        load_issue_valid_i && load_issue_ready_o;
+        load_issue_live && load_issue_ready_o;
     assign load_assignment_id_o = load_issue_id_i;
     assign load_assignment_slot_o = load_issue_slot_i;
     assign load_assignment_rd_o =
@@ -503,6 +556,8 @@ module openrv64_exec_lsu #(
         .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .TAG_WIDTH(LSU_TAG_WIDTH),
+        .ALLOW_UNRESOLVED_STORE_SPECULATION(
+            ENABLE_MEMORY_DISAMBIGUATION),
         .CACHEABLE_BASE(CACHEABLE_BASE),
         .CACHEABLE_SIZE(CACHEABLE_SIZE)
     ) u_lsq (
@@ -510,9 +565,11 @@ module openrv64_exec_lsu #(
         .rst_n(rst_n),
         .flush_i(flush_i),
         .squash_younger_i(squash_younger_i),
+        .squash_inclusive_i(squash_inclusive_i),
         .squash_id_i(squash_id_i),
         .translation_bypass_i(translation_bypass_i),
-        .load_alloc_valid_i(load_issue_valid_i &&
+        .inhibit_load_speculation_i(inhibit_load_speculation_i),
+        .load_alloc_valid_i(load_issue_live &&
                             !load_requires_misaligned &&
                             !misaligned_store_candidate &&
                             !misaligned_active &&
@@ -527,7 +584,7 @@ module openrv64_exec_lsu #(
         .load_alloc_access_fault_i(1'b0),
         .load_alloc_vaddr_i(load_bus_addr),
         .load_alloc_size_i({1'b0, load_instr[13:12]}),
-        .store_alloc_valid_i(store_issue_valid_i &&
+        .store_alloc_valid_i(store_issue_live &&
                              !store_requires_misaligned &&
                              !misaligned_load_candidate &&
                              !misaligned_active &&
@@ -584,6 +641,17 @@ module openrv64_exec_lsu #(
         .req_size_o(lsq_req_size),
         .req_wdata_o(lsq_req_wdata),
         .req_wstrb_o(lsq_req_wstrb),
+        .load_access_valid_o(lsq_load_access_valid),
+        .load_access_id_o(lsq_load_access_id),
+        .load_access_slot_o(lsq_load_access_slot),
+        .load_access_meta_o(lsq_load_access_meta),
+        .load_access_paddr_o(lsq_load_access_paddr),
+        .store_address_valid_o(lsq_store_address_valid),
+        .store_address_id_o(lsq_store_address_id),
+        .store_address_slot_o(lsq_store_address_slot),
+        .store_address_meta_o(lsq_store_address_meta),
+        .store_address_paddr_o(lsq_store_address_paddr),
+        .store_address_cacheable_o(lsq_store_address_cacheable),
         .resp_valid_i(lsq_resp_valid),
         .resp_ready_o(lsq_resp_ready),
         .resp_tag_i(mem_resp_tag_i),
@@ -604,11 +672,19 @@ module openrv64_exec_lsu #(
         .result_access_fault_o(lsq_result_access_fault),
         .result_page_fault_o(lsq_result_page_fault),
         .result_store_o(lsq_result_store),
+        .result_posted_store_o(lsq_result_posted_store),
         .store_pending_o(lsq_store_pending),
         .quiescent_o(lsq_quiescent),
         .empty_o()
     );
 
+    assign load_access_valid_o = (ENABLE_MEMORY_DISAMBIGUATION != 0) &&
+                                 lsq_load_access_valid;
+    assign load_access_id_o = lsq_load_access_id;
+    assign load_access_slot_o = lsq_load_access_slot;
+    assign load_access_pc_o =
+        lsq_load_access_meta[LSQ_M_PC +: `RV64_XLEN];
+    assign load_access_paddr_o = lsq_load_access_paddr;
     generate
         if (ENABLE_ZICCLSM != 0) begin : g_zicclsm
             reg [`OPENRV64_INSTR_ID_WIDTH-1:0] id_q;
@@ -766,6 +842,53 @@ module openrv64_exec_lsu #(
             assign misaligned_wdata_q = {`RV64_XLEN{1'b0}};
         end
     endgenerate
+
+    // An address-unknown ordinary store may be crossed by younger cacheable
+    // loads in Tomasulo mode.  Naturally aligned stores report their physical
+    // address through the LSQ.  A Zicclsm store reports every translated
+    // component instead; comparing at 8-byte granularity covers every byte it
+    // may modify.  Translation-bypass components have no response phase, so
+    // report their accepted memory address phase.
+    wire misaligned_store_xlate_address_valid =
+        misaligned_active && misaligned_store_q &&
+        !misaligned_translation_bypass_q &&
+        xlate_resp_filtered_valid && misaligned_xlate_resp_ready &&
+        !xlate_resp_access_fault_i && !xlate_resp_page_fault_i;
+    wire misaligned_store_bypass_address_valid =
+        misaligned_active && misaligned_store_q &&
+        misaligned_translation_bypass_q &&
+        misaligned_mem_valid && misaligned_mem_ready &&
+        misaligned_mem_write;
+    wire misaligned_store_address_valid =
+        misaligned_store_xlate_address_valid ||
+        misaligned_store_bypass_address_valid;
+    wire [`RV64_XLEN-1:0] misaligned_store_address_paddr =
+        misaligned_store_xlate_address_valid ? xlate_resp_paddr_i :
+                                               misaligned_mem_addr;
+    wire [`RV64_XLEN-1:0] misaligned_store_address_offset =
+        misaligned_store_address_paddr - CACHEABLE_BASE;
+    wire misaligned_store_address_cacheable =
+        (CACHEABLE_SIZE != {`RV64_XLEN{1'b0}}) &&
+        (misaligned_store_address_offset < CACHEABLE_SIZE);
+
+    assign store_address_valid_o = (ENABLE_MEMORY_DISAMBIGUATION != 0) &&
+        (lsq_store_address_valid || misaligned_store_address_valid);
+    assign store_address_id_o = misaligned_store_address_valid ?
+        misaligned_id_q : lsq_store_address_id;
+    assign store_address_slot_o = misaligned_store_address_valid ?
+        misaligned_slot_q : lsq_store_address_slot;
+    assign store_address_pc_o = misaligned_store_address_valid ?
+        misaligned_meta_q[I_PC +: `RV64_XLEN] :
+        lsq_store_address_meta[LSQ_M_PC +: `RV64_XLEN];
+    assign store_address_compressed_o = misaligned_store_address_valid ?
+        (misaligned_meta_q[I_INSTR +: 2] != 2'b11) :
+        (lsq_store_address_meta[LSQ_M_INSTR +: 2] != 2'b11);
+    assign store_address_paddr_o = misaligned_store_address_valid ?
+        misaligned_store_address_paddr : lsq_store_address_paddr;
+    assign store_address_cacheable_o =
+        (ENABLE_MEMORY_DISAMBIGUATION != 0) &&
+        (misaligned_store_address_valid ?
+         misaligned_store_address_cacheable : lsq_store_address_cacheable);
 
 `ifndef SYNTHESIS
     always @(posedge clk) begin
@@ -1162,10 +1285,32 @@ module openrv64_exec_lsu #(
         {`RV64_XLEN{1'b0}}
     };
 
-    assign complete_valid_o = complete_valid_q;
-    assign complete_id_o = complete_id_q;
-    assign complete_slot_o = complete_slot_q;
-    assign complete_payload_o = complete_payload_q;
+    // An accepted cacheable posted store cannot report a precise fault after
+    // the request handshake.  Fall its completion through to the ROB instead
+    // of always paying this generic output register.  The LSQ retains the
+    // store guard and tag until L1D returns store_done.  If the ROB cannot
+    // accept the fall-through result, complete_valid_q remains its skid
+    // buffer.
+    //
+    // Keep the registered path during flush.  Accepted stores are
+    // irrevocable, while the ROB may be changing its live prefix on that
+    // edge.
+    wire posted_store_complete_bypass =
+        !flush_i && !complete_valid_q &&
+        !atomic_result_valid && !misaligned_result_valid &&
+        lsq_result_valid && lsq_result_store &&
+        lsq_result_posted_store;
+    wire posted_store_complete_bypass_fire =
+        posted_store_complete_bypass && complete_ready_i;
+
+    assign complete_valid_o = complete_valid_q ||
+                              posted_store_complete_bypass;
+    assign complete_id_o = posted_store_complete_bypass ?
+                           lsq_result_id : complete_id_q;
+    assign complete_slot_o = posted_store_complete_bypass ?
+                             lsq_result_slot : complete_slot_q;
+    assign complete_payload_o = posted_store_complete_bypass ?
+                                completion_data : complete_payload_q;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -1221,7 +1366,8 @@ module openrv64_exec_lsu #(
                 complete_slot_q <= misaligned_slot_q;
                 complete_payload_q <= completion_data;
                 complete_store_q <= 1'b1;
-            end else if (lsq_result_fire) begin
+            end else if (lsq_result_fire &&
+                         !posted_store_complete_bypass_fire) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= lsq_result_id;
                 complete_slot_q <= lsq_result_slot;

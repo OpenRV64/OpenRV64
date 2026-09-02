@@ -7,6 +7,8 @@ module tb_exec_bp_modes78;
     reg rst_n;
     reg flush;
     reg squash;
+    reg recovery;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_id;
     reg lookup_valid;
     reg lookup_branch;
     reg lookup_jump;
@@ -44,6 +46,7 @@ module tb_exec_bp_modes78;
         .INFLIGHT_DEPTH(4), .ENABLE_TAGGED_RESOLUTION(1)
     ) dut7 (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(squash),
+        .recovery_i(recovery), .recovery_id_i(recovery_id),
         .ras_context_flush_i(1'b0),
         .lookup_valid_i(lookup_valid), .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump), .lookup_indirect_i(lookup_indirect),
@@ -80,6 +83,7 @@ module tb_exec_bp_modes78;
         .INFLIGHT_DEPTH(4), .ENABLE_TAGGED_RESOLUTION(1)
     ) dut8 (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(squash),
+        .recovery_i(recovery), .recovery_id_i(recovery_id),
         .ras_context_flush_i(1'b0),
         .lookup_valid_i(lookup_valid), .lookup_branch_i(lookup_branch),
         .lookup_jump_i(lookup_jump), .lookup_indirect_i(lookup_indirect),
@@ -155,6 +159,8 @@ module tb_exec_bp_modes78;
         rst_n = 1'b0;
         flush = 1'b0;
         squash = 1'b0;
+        recovery = 1'b0;
+        recovery_id = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         lookup_valid = 1'b0;
         lookup_branch = 1'b0;
         lookup_jump = 1'b0;
@@ -259,6 +265,26 @@ module tb_exec_bp_modes78;
         if (dut8.g_tournament.u_tournament.inflight_count_q != 0 ||
             mode7_overflow || mode8_overflow)
             $fatal(1, "modes 7/8 did not drain cleanly");
+
+        // Recovery at a non-control ID can discard a resolved predictor head.
+        // That head is not part of the retained prefix and must not be
+        // subtracted from the zero keep count.
+        allocate_branch(10'd24, 64'h380);
+        resolve_valid = 1'b1;
+        resolve_branch_kind = 1'b1;
+        resolve_taken = 1'b0;
+        resolve_instr = 32'h0000_0063;
+        resolve_pc = 64'h380;
+        resolve_target = 64'h384;
+        resolve_id = 10'd24;
+        recovery = 1'b1;
+        recovery_id = 10'd23;
+        tick();
+        resolve_valid = 1'b0;
+        recovery = 1'b0;
+        if ((dut7.g_advanced.u_advanced.inflight_count_q != 0) ||
+            (dut8.g_tournament.u_tournament.inflight_count_q != 0))
+            $fatal(1, "modes 7/8 underflowed an all-discard recovery");
 
         // The tournament module owns a separate copy of the target machinery,
         // so validate it directly rather than relying on the mode-6 test.

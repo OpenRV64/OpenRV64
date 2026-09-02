@@ -152,6 +152,7 @@ module tb_exec_top_3p #(
         .RETIRE_SLOT_WIDTH(SLOT_WIDTH),
         .ENABLE_RV64M(1),
         .ENABLE_RV64ZBB(1),
+        .ENABLE_ALU2(1),
         .ENABLE_POSTED_STORES(0),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .CACHEABLE_BASE(64'h0),
@@ -161,9 +162,11 @@ module tb_exec_top_3p #(
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_younger_i(1'b0),
+        .squash_inclusive_i(1'b0),
         .squash_id_i({ID_WIDTH{1'b0}}),
         .coherent_reservation_clear_i(1'b0),
         .translation_bypass_i(1'b0),
+        .inhibit_load_speculation_i(1'b0),
         .issue_valid_i(issue_valid),
         .issue_ready_o(issue_ready),
         .issue_unsupported_o(issue_unsupported),
@@ -368,6 +371,111 @@ module tb_exec_top_3p #(
         repeat (3) tick();
         rst_n = 1'b1;
         tick();
+
+        // ALU2 is the writeback-capable alternate function of MEM0.  ADD/SUB
+        // are deliberately absent from this restricted experiment and must
+        // not be accepted on the lane.
+        packet = packet_base(64'd190, 64'h0f00, 32'h0050_8193);
+        packet[ISSUE_RS1 +: 5] = 5'd1;
+        packet[ISSUE_RS1_DATA +: 64] = 64'd7;
+        packet[ISSUE_IMM +: 64] = 64'd5;
+        packet[ISSUE_RD +: 5] = 5'd3;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(60);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd4;
+        issue_valid = 4'b0100;
+        #1;
+        if (issue_ready[2]) fail("restricted ALU2 accepted ADDI");
+        if (!issue_unsupported[2])
+            fail("restricted ALU2 did not reject ADDI");
+        issue_valid = 4'b0000;
+        tick();
+
+        // Its completion latch is elastic: consume one logical result while
+        // accepting the next shift on the same edge.
+        packet = packet_base(64'd191, 64'h0f04, 32'h0020_c1b3);
+        packet[ISSUE_RS1 +: 5] = 5'd1;
+        packet[ISSUE_RS2 +: 5] = 5'd2;
+        packet[ISSUE_RS1_DATA +: 64] = 64'hf0;
+        packet[ISSUE_RS2_DATA +: 64] = 64'h5a;
+        packet[ISSUE_RD +: 5] = 5'd3;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_XOR;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(60);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd4;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2]) fail("ALU2 XOR was not ready");
+        tick();
+        issue_valid = 4'b0000;
+        #1;
+        if (!complete_valid[2] ||
+            (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(60)) ||
+            (complete_payload[
+                 2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'haa))
+            fail("ALU2 XOR completion mismatch");
+
+        packet = packet_base(64'd192, 64'h0f08, 32'h0030_9213);
+        packet[ISSUE_RS1 +: 5] = 5'd1;
+        packet[ISSUE_RS1_DATA +: 64] = 64'd9;
+        packet[ISSUE_IMM +: 64] = 64'd3;
+        packet[ISSUE_RD +: 5] = 5'd4;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_SLL;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(61);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd5;
+        complete_ready = 3'b100;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2])
+            fail("ALU2 did not accept while prior result completed");
+        tick();
+        issue_valid = 4'b0000;
+        complete_ready = 3'b000;
+        #1;
+        if (!complete_valid[2] ||
+            (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(61)) ||
+            (complete_payload[
+                 2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] != 64'd72))
+            fail("ALU2 elastic shift completion mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
+
+        packet = packet_base(64'd193, 64'h0f0c, 32'h6020_d2b3);
+        packet[ISSUE_RS1 +: 5] = 5'd1;
+        packet[ISSUE_RS2 +: 5] = 5'd2;
+        packet[ISSUE_RS1_DATA +: 64] = 64'd1;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd1;
+        packet[ISSUE_RD +: 5] = 5'd5;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_ZBB;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ZBB_ROR;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[2*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[2*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(62);
+        issue_slot[2*SLOT_WIDTH +: SLOT_WIDTH] = 3'd6;
+        issue_valid = 4'b0100;
+        #1;
+        if (!issue_ready[2]) fail("ALU2 ROR was not ready");
+        tick();
+        issue_valid = 4'b0000;
+        #1;
+        if (!complete_valid[2] ||
+            (complete_id[2*ID_WIDTH +: ID_WIDTH] != ID_WIDTH'(62)) ||
+            (complete_payload[
+                 2*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'h8000_0000_0000_0000))
+            fail("ALU2 ROR completion mismatch");
+        complete_ready = 3'b100;
+        tick();
+        complete_ready = 3'b000;
 
         if (!ENABLE_ZICCLSM) begin
             // With the parameter disabled, ordinary misaligned accesses
@@ -1742,7 +1850,7 @@ module tb_exec_top_3p #(
         complete_ready = 3'b000;
         mem_xlate_auto_response = 1'b1;
 
-        $display("PASS: 3p local forwarding, fixed-EX0 M/Zbb, four-load/store-guard LSU, four-bit xlate generations, ordered component-serial Zicclsm, EX1 ordering, and irrevocable AMO");
+        $display("PASS: restricted 3p ALU2, local forwarding, fixed-EX0 M/Zbb, four-load/store-guard LSU, four-bit xlate generations, ordered component-serial Zicclsm, EX1 ordering, and irrevocable AMO");
         $finish;
     end
 

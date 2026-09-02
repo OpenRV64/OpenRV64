@@ -32,7 +32,9 @@ run/run run/cfg/coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-trace.cfg --foregro
 
 The runner places these files directly in `run/log/<run-id>/`:
 
-- `pipeline-state.csv`: the versioned raw stream.
+- `pipeline-state.csv.bz2`: the bzip2-compressed versioned stream.  After the
+  simulator closes the raw CSV, `pbzip2 -9` compresses it and removes the raw
+  input.  Failed simulations retain their partial raw CSV for diagnosis.
 - `pipeline-state-report.txt`: validator output, aggregate component/reason
   counts, and the first selected records.
 - the usual effective configuration, source hashes, dirty patch, build log,
@@ -222,13 +224,15 @@ The managed trace configuration runs the validator automatically.  It can
 also inspect an existing trace without loading the full CSV into memory:
 
 ```sh
-python3 tools/pipeline_state_trace.py run/log/<run-id>/pipeline-state.csv \
+python3 tools/pipeline_state_trace.py run/log/<run-id>/pipeline-state.csv.bz2 \
   --instruction 00001234 --rows 500
 ```
 
 Cycle-window selection is available with `--start-cycle N --cycles M`.
 Selection limits report rows only; validation and aggregate counts always scan
-the entire input.  The tool exits nonzero on a schema or identity violation.
+the entire input.  The reader detects bzip2 by `.bz2` suffix or `BZh` magic and
+still accepts uncompressed CSV.  The tool exits nonzero on a schema or identity
+violation.
 
 ## Current limitations
 

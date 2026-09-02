@@ -803,6 +803,8 @@ module openrv64_rv64_top_4pf #(
                   (ENABLE_SPECULATION_WINDOW == 0))),
         .squash_i(control_redirect &&
                   (ENABLE_SPECULATION_WINDOW != 0)),
+        .recovery_i(1'b0),
+        .recovery_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ras_context_flush_i(control_flush),
         .lookup_valid_i(bp_branch_present),
         .lookup_branch_i(bp_lookup_branch),

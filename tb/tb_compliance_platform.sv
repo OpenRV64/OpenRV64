@@ -145,6 +145,190 @@ module tb_compliance_platform #(
         if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_observe_3p
             assign observed_priv_mode =
                 dut.u_core.g_backend_3p.u_core_3p.u_csrs.priv_mode_q;
+
+            // A compliance timeout is otherwise only a last-retired PC.  Emit
+            // the retained backend ownership one cycle before the fatal so a
+            // lost scheduler, register-read, ROB, or LSQ transaction can be
+            // distinguished without a waveform-sized trace.
+            integer snapshot_idx;
+            always @(posedge clk) begin
+                if (core_rst_n && (cycle_count == (max_cycles - 1))) begin
+                    $display(
+                        "COMPLIANCE_3P_SNAPSHOT rob=%0d sched=%0d head_id=%0d head_slot=%0d head_valid=%0d head_complete=%0d queue_retire=%b decode_valid=%b decode_ready=%b alloc=%b",
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            retire_occupancy_o,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            dispatch_occupancy_o,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            next_retire_id,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            next_retire_slot,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            u_retire_queue.valid_q[
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    next_retire_slot],
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            u_retire_queue.complete_q[
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    next_retire_slot],
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            queue_retire_valid,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            decode_valid_i,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            decode_ready_o,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            allocation_valid);
+                    $display(
+                        "COMPLIANCE_3P_RECOVERY squash=%0d redirect_valid=%0d redirect_id=%0d redirect_slot=%0d replay_pending=%0d replay_valid=%0d branch_resolved=%0d barrier=%0d",
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            squash_frontend_i,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            redirect_valid_o,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            redirect_id_o,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            branch_slot_o,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            memory_replay_pending_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            memory_replay_valid,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            exec_branch_resolved,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            barrier_active_o);
+                    $display(
+                        "COMPLIANCE_3P_REGREAD valid=%b ids=%h done=%b held_valid=%b held_req=%b owner_valid=%b poison=%b pipe_valid=%b pipe_ready=%b trace_valid=%b trace_stall=%b",
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            banked_independent_valid_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            banked_independent_id_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            banked_independent_operand_done_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            banked_independent_held_valid_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            banked_independent_held_req_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            banked_independent_response_owner_valid_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            banked_independent_response_poison_q,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            dispatch_pipe_valid,
+                        dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                            pipe_ready,
+                        trace_valid, trace_stall);
+                    for (snapshot_idx = 0; snapshot_idx < RETIRE_DEPTH;
+                         snapshot_idx = snapshot_idx + 1) begin
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                u_retire_queue.valid_q[snapshot_idx])
+                            $display(
+                                "COMPLIANCE_3P_ROB slot=%0d id=%0d complete=%0d pc=%h instr=%h",
+                                snapshot_idx,
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_retire_queue.id_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_retire_queue.complete_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_retire_records.alloc_q[snapshot_idx]
+                                        [`OPENRV64_RETIRE_ALLOC_PC_LSB +:
+                                         `RV64_XLEN],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_retire_records.alloc_q[snapshot_idx]
+                                        [`OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
+                                         `RV64_INSTR_WIDTH]);
+                    end
+                    for (snapshot_idx = 0;
+                         snapshot_idx < ISSUE_WINDOW_DEPTH;
+                         snapshot_idx = snapshot_idx + 1) begin
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                    valid_q[snapshot_idx])
+                            $display(
+                                "COMPLIANCE_3P_SCHED slot=%0d id=%0d rob_slot=%0d issued=%0d result=%0d instr=%h src_ready=%0d%0d src_prod=%0d:%0d/%0d:%0d",
+                                snapshot_idx,
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        id_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        rob_slot_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        issued_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        result_ready_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        payload_q[snapshot_idx][242 +:
+                                            `RV64_INSTR_WIDTH],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        src1_ready_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        src2_ready_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        src1_producer_valid_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        src1_tag_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        src2_producer_valid_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_dispatch.g_3p.u_tomasulo_window.u_window.
+                                        src2_tag_q[snapshot_idx]);
+                    end
+                    for (snapshot_idx = 0; snapshot_idx < 4;
+                         snapshot_idx = snapshot_idx + 1) begin
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.
+                                g_3p.u_exec.u_lsu.u_lsq.
+                                    load_valid_q[snapshot_idx])
+                            $display(
+                                "COMPLIANCE_3P_LSQ_LOAD slot=%0d id=%0d killed=%0d xlate=%0d access=%0d guard=%0d",
+                                snapshot_idx,
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        load_id_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        load_killed_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        load_xlate_done_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        load_access_sent_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        load_guard_block_r[snapshot_idx]);
+                        if (dut.u_core.g_backend_3p.u_core_3p.u_backend.u_exec.
+                                g_3p.u_exec.u_lsu.u_lsq.
+                                    store_valid_q[snapshot_idx])
+                            $display(
+                                "COMPLIANCE_3P_LSQ_STORE slot=%0d id=%0d killed=%0d xlate=%0d access=%0d result=%0d",
+                                snapshot_idx,
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        store_id_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        store_killed_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        store_xlate_done_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        store_access_sent_q[snapshot_idx],
+                                dut.u_core.g_backend_3p.u_core_3p.u_backend.
+                                    u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                                        store_result_sent_q[snapshot_idx]);
+                    end
+                end
+            end
         end else begin : g_observe_1p
             assign observed_priv_mode =
                 dut.u_core.u_core.u_csrs.priv_mode_q;

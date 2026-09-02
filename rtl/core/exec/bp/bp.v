@@ -8,6 +8,7 @@
 `include "core/exec/bp/bimodal.v"
 `include "core/exec/bp/gshare_btb.v"
 `include "core/exec/bp/tournament_btb.v"
+`include "core/exec/bp/tage_btb.v"
 `include "core/exec/bp/debug/stub.v"
 `include "core/exec/bp/ras.v"
 `timescale 1ns/1ps
@@ -33,6 +34,22 @@ module openrv64_exec_bp #(
     parameter integer TOURNAMENT_LOCAL_COUNTER_BITS = 3,
     parameter integer TOURNAMENT_CHOOSER_ENTRIES = 512,
     parameter integer TOURNAMENT_CHOOSER_COUNTER_BITS = 2,
+    parameter integer TAGE_BASE_ENTRIES = 2048,
+    parameter integer TAGE_BASE_COUNTER_BITS = 2,
+    parameter integer TAGE_TABLE_ENTRIES = 512,
+    parameter integer TAGE_TABLE_COUNTER_BITS = 3,
+    parameter integer TAGE_USEFUL_BITS = 2,
+    parameter integer TAGE_HISTORY_BITS = 96,
+    parameter integer TAGE_HISTORY0_BITS = 4,
+    parameter integer TAGE_HISTORY1_BITS = 12,
+    parameter integer TAGE_HISTORY2_BITS = 32,
+    parameter integer TAGE_HISTORY3_BITS = 96,
+    parameter integer TAGE_TAG0_BITS = 8,
+    parameter integer TAGE_TAG1_BITS = 9,
+    parameter integer TAGE_TAG2_BITS = 10,
+    parameter integer TAGE_TAG3_BITS = 11,
+    parameter integer TAGE_USE_ALT_COUNTER_BITS = 4,
+    parameter integer TAGE_AGE_INTERVAL = 32768,
     parameter integer BTB_ENTRIES = 256,
     parameter integer BTB_TAG_BITS = 16,
     parameter integer INFLIGHT_DEPTH = 16,
@@ -42,6 +59,8 @@ module openrv64_exec_bp #(
     input  wire rst_n,
     input  wire flush_i,
     input  wire squash_i,
+    input  wire recovery_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_id_i,
     input  wire ras_context_flush_i,
 
     input  wire lookup_valid_i,
@@ -74,7 +93,8 @@ module openrv64_exec_bp #(
     output wire target_mispredict_o,
     output wire update_overflow_o,
     output wire fetch_stall_o,
-    output wire decode_stall_o
+    output wire decode_stall_o,
+    output wire inhibit_load_speculation_o
 );
 
     localparam BP_TYPE_VALID =
@@ -86,18 +106,20 @@ module openrv64_exec_bp #(
         (BP_TYPE == `OPENRV64_BP_BIMODAL) ||
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ||
-        (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB);
+        (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB) ||
+        (BP_TYPE == `OPENRV64_BP_TAGE_BTB);
 
     wire policy_stalls_all = !BP_TYPE_VALID ||
                              (BP_TYPE == `OPENRV64_BP_STALL);
     wire ras_prediction_valid_raw;
     wire [`RV64_XLEN-1:0] ras_prediction_target;
+    wire ras_inhibit_load_speculation;
     generate
         if (ENABLE_RAS != 0) begin : g_ras
             openrv64_exec_bp_ras #(.DEPTH(RAS_DEPTH)) u_ras (
                 .clk(clk), .rst_n(rst_n),
                 .flush_i(ras_context_flush_i),
-                .squash_i(flush_i || squash_i),
+                .squash_i(flush_i || squash_i || recovery_i),
                 .lookup_valid_i(lookup_valid_i),
                 .lookup_indirect_i(lookup_indirect_i),
                 .lookup_instr_i(lookup_instr_i),
@@ -106,13 +128,17 @@ module openrv64_exec_bp #(
                 .resolve_instr_i(resolve_instr_i),
                 .resolve_pc_i(resolve_pc_i),
                 .prediction_valid_o(ras_prediction_valid_raw),
-                .prediction_target_o(ras_prediction_target)
+                .prediction_target_o(ras_prediction_target),
+                .inhibit_load_speculation_o(
+                    ras_inhibit_load_speculation)
             );
         end else begin : g_no_ras
             assign ras_prediction_valid_raw = 1'b0;
             assign ras_prediction_target = {`RV64_XLEN{1'b0}};
+            assign ras_inhibit_load_speculation = 1'b0;
         end
     endgenerate
+    assign inhibit_load_speculation_o = ras_inhibit_load_speculation;
     wire ras_prediction_valid = !policy_stalls_all &&
                                 ras_prediction_valid_raw;
     reg unresolved_q;
@@ -135,6 +161,20 @@ module openrv64_exec_bp #(
     wire tournament_target_mispredict;
     wire tournament_allocation_stall;
     wire tournament_update_overflow;
+    wire tage_prediction_taken;
+    wire tage_prediction_weak;
+    wire tage_prediction_target_valid;
+    wire [`RV64_XLEN-1:0] tage_prediction_target;
+    wire tage_target_mispredict;
+    wire tage_allocation_stall;
+    wire tage_update_overflow;
+    wire [2:0] tage_lookup_provider;
+    wire [2:0] tage_lookup_alternate;
+    wire tage_lookup_use_alt;
+    wire tage_train_valid;
+    wire tage_train_mispredict;
+    wire [2:0] tage_train_allocation;
+    wire tage_train_allocation_failed;
 
     localparam integer SELECTED_GSHARE_ENTRIES =
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ? 512 :
@@ -160,6 +200,8 @@ module openrv64_exec_bp #(
             ) u_advanced (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_i(squash_i),
+                .recovery_i(recovery_i),
+                .recovery_id_i(recovery_id_i),
                 .lookup_valid_i(lookup_valid_i),
                 .lookup_branch_i(lookup_branch_i),
                 .lookup_jump_i(lookup_jump_i),
@@ -199,6 +241,86 @@ module openrv64_exec_bp #(
     endgenerate
 
     generate
+        if (BP_TYPE == `OPENRV64_BP_TAGE_BTB) begin : g_tage
+            openrv64_exec_bp_tage_btb #(
+                .BASE_ENTRIES(TAGE_BASE_ENTRIES),
+                .BASE_COUNTER_BITS(TAGE_BASE_COUNTER_BITS),
+                .TABLE_ENTRIES(TAGE_TABLE_ENTRIES),
+                .TABLE_COUNTER_BITS(TAGE_TABLE_COUNTER_BITS),
+                .USEFUL_BITS(TAGE_USEFUL_BITS),
+                .HISTORY_BITS(TAGE_HISTORY_BITS),
+                .HISTORY0_BITS(TAGE_HISTORY0_BITS),
+                .HISTORY1_BITS(TAGE_HISTORY1_BITS),
+                .HISTORY2_BITS(TAGE_HISTORY2_BITS),
+                .HISTORY3_BITS(TAGE_HISTORY3_BITS),
+                .TAG0_BITS(TAGE_TAG0_BITS),
+                .TAG1_BITS(TAGE_TAG1_BITS),
+                .TAG2_BITS(TAGE_TAG2_BITS),
+                .TAG3_BITS(TAGE_TAG3_BITS),
+                .USE_ALT_COUNTER_BITS(TAGE_USE_ALT_COUNTER_BITS),
+                .AGE_INTERVAL(TAGE_AGE_INTERVAL),
+                .BTB_ENTRIES(BTB_ENTRIES),
+                .BTB_TAG_BITS(BTB_TAG_BITS),
+                .INFLIGHT_DEPTH(INFLIGHT_DEPTH),
+                .ENABLE_TAGGED_RESOLUTION(ENABLE_TAGGED_RESOLUTION)
+            ) u_tage (
+                .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
+                .squash_i(squash_i),
+                .recovery_i(recovery_i),
+                .recovery_id_i(recovery_id_i),
+                .lookup_valid_i(lookup_valid_i),
+                .lookup_branch_i(lookup_branch_i),
+                .lookup_jump_i(lookup_jump_i),
+                .lookup_indirect_i(lookup_indirect_i),
+                .lookup_backward_i(lookup_backward_i),
+                .lookup_instr_i(lookup_instr_i),
+                .lookup_pc_i(lookup_pc_i),
+                .lookup_id_i(lookup_id_i),
+                .lookup_allocate_i(lookup_allocate_i),
+                .ras_prediction_valid_i(ras_prediction_valid),
+                .ras_prediction_target_i(ras_prediction_target),
+                .resolve_valid_i(resolve_valid_i),
+                .resolve_branch_i(resolve_branch_i),
+                .resolve_taken_i(resolve_taken_i),
+                .resolve_instr_i(resolve_instr_i),
+                .resolve_pc_i(resolve_pc_i),
+                .resolve_target_i(resolve_target_i),
+                .resolve_id_i(resolve_id_i),
+                .prediction_taken_o(tage_prediction_taken),
+                .prediction_weak_o(tage_prediction_weak),
+                .prediction_target_valid_o(tage_prediction_target_valid),
+                .prediction_target_o(tage_prediction_target),
+                .target_mispredict_o(tage_target_mispredict),
+                .allocation_stall_o(tage_allocation_stall),
+                .update_overflow_o(tage_update_overflow),
+                .diag_lookup_provider_o(tage_lookup_provider),
+                .diag_lookup_alternate_o(tage_lookup_alternate),
+                .diag_lookup_use_alt_o(tage_lookup_use_alt),
+                .diag_train_valid_o(tage_train_valid),
+                .diag_train_mispredict_o(tage_train_mispredict),
+                .diag_train_allocation_o(tage_train_allocation),
+                .diag_train_allocation_failed_o(
+                    tage_train_allocation_failed)
+            );
+        end else begin : g_no_tage
+            assign tage_prediction_taken = 1'b0;
+            assign tage_prediction_weak = 1'b0;
+            assign tage_prediction_target_valid = 1'b0;
+            assign tage_prediction_target = {`RV64_XLEN{1'b0}};
+            assign tage_target_mispredict = 1'b0;
+            assign tage_allocation_stall = 1'b0;
+            assign tage_update_overflow = 1'b0;
+            assign tage_lookup_provider = 3'd0;
+            assign tage_lookup_alternate = 3'd0;
+            assign tage_lookup_use_alt = 1'b0;
+            assign tage_train_valid = 1'b0;
+            assign tage_train_mispredict = 1'b0;
+            assign tage_train_allocation = 3'd0;
+            assign tage_train_allocation_failed = 1'b0;
+        end
+    endgenerate
+
+    generate
         if (BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB) begin : g_tournament
             openrv64_exec_bp_tournament_btb #(
                 .GLOBAL_PHT_ENTRIES(TOURNAMENT_GLOBAL_ENTRIES),
@@ -219,6 +341,8 @@ module openrv64_exec_bp #(
             ) u_tournament (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_i(squash_i),
+                .recovery_i(recovery_i),
+                .recovery_id_i(recovery_id_i),
                 .lookup_valid_i(lookup_valid_i),
                 .lookup_branch_i(lookup_branch_i),
                 .lookup_jump_i(lookup_jump_i),
@@ -332,41 +456,47 @@ module openrv64_exec_bp #(
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512);
     wire use_tournament = BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB;
-    wire use_table_predictor = use_advanced || use_tournament;
+    wire use_tage = BP_TYPE == `OPENRV64_BP_TAGE_BTB;
+    wire use_table_predictor = use_advanced || use_tournament || use_tage;
     wire selected_target_valid = use_advanced ?
         advanced_prediction_target_valid :
         (use_tournament ? tournament_prediction_target_valid :
-                          ras_prediction_valid);
+         (use_tage ? tage_prediction_target_valid :
+                     ras_prediction_valid));
     wire selected_allocation_stall = use_advanced ?
         advanced_allocation_stall :
-        (use_tournament ? tournament_allocation_stall : 1'b0);
+        (use_tournament ? tournament_allocation_stall :
+         (use_tage ? tage_allocation_stall : 1'b0));
     wire effective_lookup_requires_stall = lookup_valid_i &&
         (policy_stalls_all ||
          (lookup_indirect_i && !selected_target_valid));
     assign prediction_taken_o = use_advanced ? advanced_prediction_taken :
         (use_tournament ? tournament_prediction_taken :
-         (lookup_valid_i &&
-          (ras_prediction_valid ||
-           (!lookup_indirect_i && policy_prediction_taken))));
+         (use_tage ? tage_prediction_taken :
+          (lookup_valid_i &&
+           (ras_prediction_valid ||
+            (!lookup_indirect_i && policy_prediction_taken)))));
     assign prediction_weak_o = lookup_valid_i && lookup_branch_i &&
         (use_advanced ? advanced_prediction_weak :
          (use_tournament ? tournament_prediction_weak :
-                           policy_prediction_weak));
+          (use_tage ? tage_prediction_weak : policy_prediction_weak)));
     assign prediction_target_valid_o = use_advanced ?
         advanced_prediction_target_valid :
         (use_tournament ? tournament_prediction_target_valid :
-                          (lookup_valid_i && ras_prediction_valid));
+         (use_tage ? tage_prediction_target_valid :
+                     (lookup_valid_i && ras_prediction_valid)));
     assign prediction_target_o = use_advanced ?
         advanced_prediction_target :
         (use_tournament ? tournament_prediction_target :
-                          ras_prediction_target);
+         (use_tage ? tage_prediction_target : ras_prediction_target));
     assign update_overflow_o = use_advanced ? advanced_update_overflow :
         (use_tournament ? tournament_update_overflow :
-                          policy_update_overflow);
+         (use_tage ? tage_update_overflow : policy_update_overflow));
     assign target_mispredict_o = use_advanced ? advanced_target_mispredict :
         (use_tournament ? tournament_target_mispredict :
-         (resolve_valid_i && ras_outstanding_q && resolve_taken_i &&
-          (resolve_target_i != ras_outstanding_target_q)));
+         (use_tage ? tage_target_mispredict :
+          (resolve_valid_i && ras_outstanding_q && resolve_taken_i &&
+           (resolve_target_i != ras_outstanding_target_q))));
     assign fetch_stall_o = effective_lookup_requires_stall || unresolved_q ||
                            selected_allocation_stall;
     assign decode_stall_o = unresolved_q || selected_allocation_stall;
@@ -408,13 +538,23 @@ module openrv64_exec_bp #(
         diag_resolve_is_jalr && !diag_resolve_return;
     wire diag_ras_wrong_target = target_mispredict_o &&
         diag_resolve_return;
+    wire diag_tage_lookup = use_tage && lookup_allocate_i &&
+                            lookup_branch_i;
+    wire diag_tage_use_alt = use_tage && tage_lookup_use_alt;
+    wire diag_tage_train = use_tage && tage_train_valid;
+    wire diag_tage_train_mispredict = use_tage && tage_train_mispredict;
+    wire [2:0] diag_tage_provider = tage_lookup_provider;
+    wire [2:0] diag_tage_alternate = tage_lookup_alternate;
+    wire [2:0] diag_tage_allocation = tage_train_allocation;
+    wire diag_tage_allocation_failed = use_tage &&
+                                       tage_train_allocation_failed;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             unresolved_q <= 1'b0;
             ras_outstanding_q <= 1'b0;
             ras_outstanding_target_q <= {`RV64_XLEN{1'b0}};
-        end else if (flush_i || squash_i) begin
+        end else if (flush_i || squash_i || recovery_i) begin
             unresolved_q <= 1'b0;
             ras_outstanding_q <= 1'b0;
         end else begin

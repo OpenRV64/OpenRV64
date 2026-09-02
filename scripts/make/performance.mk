@@ -10,6 +10,7 @@ sim-top-axi-3p-bp:
 	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=6
 	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=7
 	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=8
+	$(MAKE) -B sim-top-axi-3p AXI_3P_BP_TYPE=9
 
 sim-top-axi-3p-perf: $(AXI_3P_PERF_MEMH)
 	$(MAKE) -B $(TOP_AXI_3P_SIM_BUILD) \

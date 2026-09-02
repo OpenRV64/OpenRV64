@@ -1522,10 +1522,12 @@ module openrv64_backend_4pf #(
                      (ENABLE_SPECULATION_WINDOW == 0) &&
                      squash_frontend_i)),
         .squash_younger_3p_i(speculative_window && squash_frontend_i),
+        .squash_inclusive_3p_i(1'b0),
         .squash_id_3p_i(exec_redirect_id),
         .coherent_reservation_clear_3p_i(
             coherent_reservation_clear_i),
         .translation_bypass_3p_i(translation_bypass_i),
+        .inhibit_load_speculation_3p_i(1'b0),
         .valid_i(1'b0), .flush_ex_mem_i(1'b0),
         .flush_mem_wb_i(1'b0), .pc_i(64'd0), .instr_i(32'd0),
         .rs1_addr_i(5'd0), .rs2_addr_i(5'd0), .rs1_data_i(64'd0),
@@ -1643,6 +1645,7 @@ module openrv64_backend_4pf #(
                   (ENABLE_SPECULATION_WINDOW == 0) &&
                   squash_frontend_i)),
         .squash_younger_i(speculative_window && squash_frontend_i),
+        .squash_inclusive_i(1'b0),
         .squash_id_i(exec_redirect_id),
         .squash_slot_i(exec_redirect_slot),
         .alloc_valid_i(allocation_valid),

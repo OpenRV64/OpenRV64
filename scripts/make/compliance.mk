@@ -107,4 +107,5 @@ compliance-act4-platform-3p-tomasulo-ddr3: \
 		"$(COMPLIANCE_ACT4_RV64IMA_ELF_ROOT)" \
 		--backend platform-3p-tomasulo-ddr3 --engine verilator \
 		--results-dir "$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_RESULTS_DIR)" \
-		--junit "$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_JUNIT)"
+		--junit "$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_JUNIT)" \
+		$(COMPLIANCE_PLATFORM_3P_TOMASULO_DDR3_ARGS)

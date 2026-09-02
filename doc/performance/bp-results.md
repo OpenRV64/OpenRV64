@@ -1,5 +1,51 @@
 # Branch-predictor results
 
+## Mode 9 compact TAGE bring-up
+
+Date: 2026-09-02
+
+Mode 9 adds a four-table compact TAGE with synchronous direction and target
+payload memories.  These source-matched 3P Tomasulo runs change only the
+predictor mode.  Both retire 52,589 instructions, halt with
+`a0=0x000000000a277880`, and pass the Sv39/L1/L2/banked-DDR3 test.
+
+| Mode | Predictor | Cycles | IPC | Direction corrections | Target corrections |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 8 | tournament + asynchronous BTB | **43,881** | **1.1984** | 1,433 | 36 |
+| 9 | compact TAGE + synchronous BTB | 45,245 | 1.1623 | **887** | **12** |
+
+Mode 9 removes 546 direction corrections (38.1%) and 24 target corrections
+(66.7%), but takes 1,364 more cycles (3.11%).  The current frontend exposes
+the synchronous read as decode allocation backpressure.  Consequently this
+result establishes useful accuracy, not a performance win.  The next design
+step is to launch the lookup before decode and carry its response with the
+fetch/decode record; simply increasing table capacity will not remove this
+measured latency cost.
+
+The BP9 run records 11,895 accepted conditional lookups and 10,786 ordered
+training events.  Providers were base/T0/T1/T2/T3 =
+6,545/2,324/2,114/790/122; the alternate was selected 80 times.  There were
+377 final conditional mispredictions, allocations T0/T1/T2/T3 =
+47/118/179/33, and zero allocation failures.  Lookup counts include
+wrong-path work and therefore exceed resolved training events.
+
+Generic XC7 mapping at the standalone predictor boundary infers eight
+`RAMB18E1` primitives: one base direction memory, four tagged direction
+memories, and three primitives for the 256-entry tag-plus-target BTB.  The
+same mapping reports 24,095 LUT primitives and 14,908 flip-flops.  The large
+payloads are in BRAM, but the remaining checkpoint, valid, usefulness, and
+update logic is still expensive.  This is neither routed timing nor evidence
+that BP9 currently fits the desired whole-core FPGA profile; see
+[`bp_stats.md`](../../rtl/core/exec/bp/bp_stats.md) for the exact standalone
+mapping boundary and limitations.
+
+Managed run records:
+
+- BP8: `coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T105451Z`
+- BP9: `coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-tage-20260902T105307Z`
+- focused BP9: `bp9-tage-focused-20260902T105754Z`
+- XC7 mapping: `fpga-xc7k480t-module-stats-20260902T105029Z`
+
 ## Modes 7 and 8 update
 
 Date: 2026-07-25

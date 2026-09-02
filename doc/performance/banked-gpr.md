@@ -1780,3 +1780,724 @@ latency is folded into the adjacent unissued or post-issue group.  Consequently
 `Execute/completion` means "released from the scheduler, non-memory, and not
 yet complete," not proven execution-unit latency.  The managed run is
 `coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T000143Z`.
+
+#### Speculative JALR release under Tomasulo
+
+JALR no longer requires the ROB head or retains a retirement-lifetime hard
+barrier when Tomasulo rename and the speculation window are both enabled.
+Legal, non-fetch-faulted JALRs may issue and resolve early.  Younger ALU and
+speculative-load work may cross them; younger stores, atomics, conditional
+branches, and JALRs remain ordered until the older indirect control resolves.
+Identity rename and non-speculative Tomasulo retain the strict policy.
+
+| Policy | Cycles | Retired | IPC | Jump head incomplete | Managed run |
+|---|---:|---:|---:|---:|---|
+| JALR held as persistent hard barrier | 68,386 | 52,589 | 0.7690 | 5,847 | `coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T000143Z` |
+| JALR speculative, selective replay | 52,527 | 52,589 | 1.0012 | 6 | `coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T034125Z` |
+
+This saves 15,859 cycles, or 23.2%.  Of 1,462 JALR releases, 1,461 occurred
+before the ROB head; the persistent-JALR barrier counter is zero.  At JALR
+execution resolution, 1,295 instances had younger valid ROB entries and 1,034
+had younger completed work.  The scheduler recorded 7,261 younger releases
+across an older unissued JALR.  Direction correction remained live for 155
+JALRs and target correction for one.
+
+The focused managed test
+`3p-banked-tomasulo-window-stream-20260902T034114Z` directly holds an older
+load at the ROB head and requires both the JALR to resolve before that head and
+a younger independent ALU instruction to enter execution.  It passed.  During
+review, the older-live-control reduction was also corrected to accumulate
+across the full age scan; a later completed control can no longer erase an
+earlier unresolved control and accidentally release a store.
+
+The source-matched timed-DDR3 platform ACT4 run
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T034330Z` passed all 93
+preserved RV64IMA tests, including `I-jalr-00`.
+
+The remaining 19,139 incomplete-head cycles are 14,373 memory processing,
+4,225 released non-memory execution/completion, and 541 still unissued.  This
+moves the dominant problem from control serialization to the memory path; the
+counts are pipeline attribution, not a causal decomposition of total runtime.
+
+#### Fetch alternate lookaside control
+
+The source-matched speculative-JALR profile was repeated with fetch alternate
+lookaside disabled (`CORE_3P_ICX_L2_MODE=0`).  This changes only the FAL mode;
+the Tomasulo, 64-entry ROB, 32-entry scheduler, 63-physical-register, Sv39,
+four-bank 2R1W GPR, and timed-DDR3 settings remain the same.
+
+| Counter | FAL on (`mode=3`) | FAL off (`mode=0`) | Off minus on |
+|---|---:|---:|---:|
+| Cycles | 52,527 | 52,503 | -24 (-0.046%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.0012 | 1.0016 | +0.0004 |
+| Lookaside restart hits | 639 | 0 | -639 |
+| Fetch-empty cycles | 5,262 | 5,396 | +134 |
+| Fetch refill-wait cycles | 5,102 | 5,229 | +127 |
+| Post-redirect empty cycles | 4,512 | 4,605 | +93 |
+| Post-redirect stalled events | 3,093 | 3,176 | +83 |
+| Decode progress cycles | 35,633 | 35,481 | -152 |
+| Issued operations | 66,156 | 66,072 | -84 |
+| Retire nonempty/no-retire cycles | 19,252 | 19,233 | -19 |
+
+FAL therefore has a measurable local recovery effect in this run: enabling it
+removes 93 post-redirect empty cycles.  It does not improve the end-to-end
+result; the FAL-off run is 24 cycles faster.  The run is deterministic, but
+the control change perturbs speculative decoding, wrong-path work, and cache
+timing, so the 24-cycle net result is not a clean estimate of FAL's isolated
+cost.  The defensible conclusion is that FAL is performance-neutral for this
+workload/configuration at the current measurement resolution, not that either
+mode is generally faster.
+
+The FAL-on run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T034125Z`; the passing
+FAL-off run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T041340Z`.
+
+#### One-cycle Tomasulo ALU completion wakeup
+
+Tomasulo ALU consumers now match live EX0/EX1 completion broadcasts by
+physical source tag.  For a one-cycle ALU producer, the intended cycle path is:
+
+| Cycle | Event |
+|---|---|
+| N | Producer enters an ALU execution pipe. |
+| N+1 | Producer completion data and physical tag are live.  A resident dependent ALU becomes ready and may be accepted into its register-request address phase with the forwarded operand. |
+| N+2 and later | The existing requester/output latch feeds the dependent to execution according to pipe availability. |
+
+The N+1 wakeup does not mark the physical register ready in rename.  New
+instructions admitted after the producer therefore continue to wait for the
+PRF write acknowledgement.  A consumer already resident in the scheduler
+captures the forwarded value and dynamic producer ID; if its requester cannot
+accept it in N+1, that captured operand remains valid for a later retry.  Flush
+and frontend squash suppress the broadcast.  Loads, stores, branches, jumps,
+system operations, and non-ALU consumers retain their existing behavior.
+
+The directed Tomasulo stream test denies all PRF write acknowledgements around
+an `addi` producer/dependent pair.  It requires the dependent address phase in
+exactly N+1, checks that the physical tag is still not ready, checks the
+forwarded value and producer ID, and then verifies retirement results after
+writeback is released.  Managed run
+`3p-banked-tomasulo-window-stream-20260902T044324Z` passed.
+
+The source-matched Sv39, timed-DDR3 profile result is:
+
+| Counter | Before | ALU wakeup | Delta |
+|---|---:|---:|---:|
+| Cycles | 52,527 | 52,366 | -161 (-0.31%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.0012 | 1.0043 | +0.0031 |
+| Register-read accept events | 61,374 | 49,578 | -11,796 |
+| Register-read accept cycles | 35,250 | 31,330 | -3,920 |
+| Read/write conflict events | 25,699 | 15,883 | -9,816 |
+| Read-bank conflict cycles | 1,035 | 790 | -245 |
+| Bank-conflict cycles | 3,829 | 3,450 | -379 |
+| Scheduler no-eligible cycles | 9,266 | 9,274 | +8 |
+| ROB nonempty/no-retire cycles | 19,252 | 19,091 | -161 |
+| Incomplete-head cycles | 19,139 | 18,978 | -161 |
+| Completed-behind-head cycles | 17,426 | 17,280 | -146 |
+
+The new run observed 12,478 forwarded-operand wakeups across 12,418 scheduler
+entries; 12,321 of those entries were eligible in the broadcast cycle.  The
+large reduction in PRF traffic and conflicts is real, but the end-to-end gain
+is only 161 cycles.  This profile is therefore not materially bound by ALU
+register-read latency.  The before-run wakeup counter was wired to the dormant
+identity-window instance and reported zero, so its event count is not a valid
+before/after comparison; the performance counters above other than wakeup
+events were already sampling the active Tomasulo path.
+
+The passing profile is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T045227Z`.  The
+source-matched timed-DDR3 ACT4 run
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T043729Z` passed all 93
+preserved RV64IMA tests.
+
+#### Tomasulo MEM0 load-completion wakeup
+
+The same physical-tagged path now accepts normal MEM0 load completions.  This
+is not an issue-plus-one prediction: load latency remains variable through the
+LSQ, translation, and cache/memory system.  Let C be the first cycle in which
+MEM0 presents its registered, exception-cleared completion.  A resident
+dependent ALU may enter its register-request address phase in C using the load
+value and dynamic producer ID, without waiting for the PRF write grant.  If the
+requester cannot accept it in C, the scheduler retains the value and producer
+ID for retry.
+
+Only opcode `LOAD` with a live ROB match, integer-register write intent, and no
+illegal/exception result is broadcast.  Stores and AMOs are excluded.  Rename
+continues to advertise the physical tag as unavailable until the PRF write is
+acknowledged.  Redirect recovery inhibits unrelated issue immediately and
+removes younger scheduler entries before retained wakeup state can be used.
+
+The directed load-use probe withholds every PRF write acknowledgement before
+returning the tagged load response.  It checks that the dependent `addi` is
+accepted in C, that its physical source remains unavailable in rename, and
+that data and producer ID match MEM0.  It then releases writeback and checks
+the retired result.  Managed run
+`3p-banked-tomasulo-window-stream-20260902T050151Z` passed.
+
+The source-matched A/B uses the identical Sv39/timed-DDR3 configuration.  The
+only functional RTL change between these two recorded inputs is the MEM0
+forward broadcast; the issue-window hash also changes because its explanatory
+comment was updated.
+
+| Counter | ALU only | ALU + load | Delta |
+|---|---:|---:|---:|
+| Cycles | 52,366 | 52,107 | -259 (-0.49%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.0043 | 1.0093 | +0.0050 |
+| MEM0 wakeup operands | 0 | 6,920 | +6,920 |
+| Total wakeup operands | 12,478 | 19,434 | +6,956 |
+| Register-read accept events | 49,578 | 43,226 | -6,352 |
+| Register-read accept cycles | 31,330 | 28,344 | -2,986 |
+| Read/write conflict events | 15,883 | 10,959 | -4,924 |
+| Read/write conflict cycles | 13,690 | 10,872 | -2,818 |
+| Read-bank conflict cycles | 790 | 144 | -646 |
+| Bank-conflict cycles | 3,450 | 2,998 | -452 |
+| Scheduler no-eligible cycles | 9,274 | 9,394 | +120 |
+| Rename blocked cycles | 7,087 | 6,790 | -297 |
+| ROB nonempty/no-retire cycles | 19,091 | 18,926 | -165 |
+| Incomplete-head cycles | 18,978 | 18,813 | -165 |
+| Completed-behind-head cycles | 17,280 | 17,118 | -162 |
+
+The load wakeup removes substantial PRF traffic but saves only another 259
+cycles.  Combined ALU and load completion wakeup is 420 cycles faster than the
+52,527-cycle pre-wakeup reference.  The dominant remaining retirement stalls
+are still memory processing and released non-memory completion latency, not
+the register read itself.  The passing profile is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T050217Z`.  The
+source-matched timed-DDR3 ACT4 run
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T050409Z` passed all 93
+preserved RV64IMA tests.
+
+#### Tomasulo loads past unresolved stores
+
+Normal cacheable loads may now issue before an older ordinary store has
+resolved its physical address.  This relaxation has two gates:
+
+1. The Tomasulo scheduler no longer treats an older unissued ordinary store as
+   a hard memory-order blocker for an otherwise eligible load.  AMOs, illegal
+   instructions, and instruction-fault cases are not replayable stores and
+   remain blockers.
+2. After translation, the LSQ launches the load only when it is cacheable.  A
+   known older store address blocks only when its physical address has the same
+   8-byte granule (`paddr[63:3]`).  Device loads, atomics, faulting stores, and
+   the ordered misaligned-load component engine retain conservative ordering.
+
+The safety mechanism is selective replay, not store-to-load forwarding.  Each
+launched load leaves its physical 8-byte granule and dynamic ID in its ROB
+slot.  When an older store address becomes known, the backend checks all
+younger surviving watches, including a load launched on the same cycle.  An
+8-byte-granule collision replays from the instruction after the store.  A
+non-cacheable store after a younger launched load conservatively causes the
+same replay.  Zicclsm misaligned stores publish every component address.  The
+replay target uses `PC+2` for a compressed store and `PC+4` otherwise.
+
+In-order retirement is part of the correctness argument: the younger load
+cannot commit before its older store has published an address.  Retirement is
+held for the registered replay cycle so a replaying lane-zero store cannot
+co-retire the younger load being discarded.  The replay redirect is not
+qualified by the live branch-resolution network; doing so formed a
+replay/recovery/execution combinational loop.  An older surviving branch may
+redirect later, while a younger branch is removed by the replay.
+
+The source-matched Sv39/timed-DDR3 CoreMark comparison across this feature
+series is:
+
+| Counter | Before store crossing | Relaxed loads | Delta |
+|---|---:|---:|---:|
+| Cycles | 52,107 | 43,881 | -8,226 (-15.79%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.0093 | 1.1984 | +0.1891 (+18.7%) |
+| Scheduler no-eligible cycles | 9,394 | 4,472 | -4,922 |
+| Unissued-entry cycles | 967,451 | 496,800 | -470,651 |
+| Memory-order-blocked entry cycles | 136,219 | 20,523 | -115,696 |
+| Rename-blocked cycles | 6,790 | 3,025 | -3,765 |
+| ROB nonempty/no-retire cycles | 18,926 | 12,922 | -6,004 |
+| Incomplete-head cycles | 18,813 | 12,608 | -6,205 |
+| Completed-behind-head cycles | 17,118 | 11,702 | -5,416 |
+| Head-load cycles | 7,142 | 3,192 | -3,950 |
+| Head-branch cycles | 1,970 | 411 | -1,559 |
+| Head-ALU cycles | 2,499 | 1,135 | -1,364 |
+| Head-store cycles | 7,196 | 7,863 | +667 |
+| Store-order wait cycles | 7,957 | 15,404 | +7,447 |
+
+The final run launched 12,703 watched loads and checked 3,252 store addresses.
+It detected 264 physical-granule collisions and issued 264 replay redirects;
+there were no device-order replays.  Of 13,320 load allocations, 13,254 were
+speculative candidates, 12,127 reached memory speculatively, and 10,379
+speculative loads retired.  The larger store-order-wait count is consistent
+with keeping more work in flight behind stores, but that aggregate counter is
+not proof of a new store bottleneck.
+
+The before run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T050217Z`; the passing
+relaxed run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T084912Z`.  The latter
+completed in 43,881 cycles despite a diagnostic 100,000-cycle timeout limit.
+The final source-matched ACT4 run
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T085135Z` passed all 93
+preserved RV64IMA tests.  Directed coverage passed in
+`3p-banked-tomasulo-window-stream-20260902T084858Z`, and the focused LSQ guard
+test passed in `lsq-store-guards-20260902T074428Z`.
+
+This establishes functional simulation coverage, not timing closure.  The
+store address now fans into up to 64 physical-granule comparisons plus age and
+reduction logic.  Synthesis and routed timing are still required before this
+path can be called timing-safe.
+
+#### Replay-aware branch oracle
+
+A simulation-only architectural branch oracle is available for the current
+64-ROB/32-scheduler Tomasulo profile.  A capture run converts the resident-state
+retirement trace into checked 129-bit `{pc, taken, next_pc}` records.  Replay
+overrides direction and target only when the frontend control PC matches the
+next record.  It disables the real predictor's training queue and associated
+backpressure, as the historical oracle did; this is an upper-bound experiment,
+not an implementable predictor configuration.
+
+The oracle has separate retired and speculative record positions.  After a
+branch correction, exception, or load/store-order replay, the speculative
+position is reconstructed from controls still live in the ROB.  This is
+required here: the relaxed-load profile generated 502 oracle rollbacks and
+rewound 2,544 speculative records.  A single monotonically advancing tape
+silently supplied wrong outcomes after replay and produced an incorrect
+CoreMark result.
+
+The final source-matched Sv39/timed-DDR3 comparison is:
+
+| Counter | BP8 baseline | Branch oracle | Delta |
+|---|---:|---:|---:|
+| Cycles | 43,881 | 42,585 | -1,296 (-2.95%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.1984 | 1.2349 | +0.0365 |
+| Frontend correction redirects | 1,433 | 968 | -465 |
+| Target corrections | 36 | 0 | -36 |
+| Post-redirect empty cycles | 4,028 | 3,066 | -962 |
+| ROB nonempty/no-retire cycles | 12,922 | 12,085 | -837 |
+| Incomplete-head cycles | 12,608 | 11,607 | -1,001 |
+| Scheduler no-eligible cycles | 4,472 | 6,425 | +1,953 |
+| Rename-blocked cycles | 3,025 | 8,072 | +5,047 |
+| Free-list-empty cycles | 3,233 | 8,374 | +5,141 |
+| Memory-order replay redirects | 264 | 504 | +240 |
+| Branch resolutions | 13,104 | 13,522 | +418 |
+
+The oracle consumed and retired all 12,696 checked architectural control
+records, produced the expected `a0`, and passed.  It still observed 462 EXU
+direction corrections.  Those are not failures of the recorded architectural
+outcomes: aggressive relaxed loads can initially execute a control with a
+transient value, then replay it after an older-store collision.  The oracle run
+doubled such collision replays from 264 to 504 and substantially increased
+physical-tag pressure.  Consequently the measured predictor upper bound is
+only 1,296 cycles on this profile; removing prediction mistakes exposes more
+memory speculation and rename congestion rather than yielding a clean additive
+branch-speedup number.
+
+The passing baseline is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T105125Z`; the passing
+oracle replay is
+`coremark-sv39-3p-tomasulo-oracle-ddr3-20260902T105655Z`.  Its source oracle was
+captured by
+`coremark-sv39-3p-tomasulo-oracle-capture-ddr3-20260902T101935Z`.
+
+#### Oracle with immediate L1I fills
+
+The Sv39-compatible fetch-memory isolation is the `+magic_l1i` testbench
+option.  It returns selected L1I line reads immediately from the backing image
+while their ordinary L2 requests drain as shadow traffic.  This is narrower
+than the core-only magic-memory fetch path, which bypasses translation and is
+therefore restricted to Bare mode.
+
+| Counter | Branch oracle | Oracle + `magic_l1i` | Delta |
+|---|---:|---:|---:|
+| Cycles | 42,585 | 42,372 | -213 (-0.50%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.2349 | 1.2411 | +0.0062 |
+| Fetch-empty cycles | 4,670 | 4,128 | -542 |
+| Fetch request-wait cycles | 115 | 1 | -114 |
+| Exposed L1I external-miss cycles | 648 | 40 | -608 |
+| Pending without external miss | 3,966 | 4,004 | +38 |
+| Post-redirect empty cycles | 3,066 | 2,766 | -300 |
+| No-decode cycles | 14,589 | 14,426 | -163 |
+| Backend-held decode cycles | 9,919 | 10,298 | +379 |
+
+The immediate path handled 34 L1I line reads.  It removes nearly all exposed
+external refill pressure but changes total runtime by only 213 cycles.  The
+remaining 4,004 fetch-empty cycles classified as pending without an external
+miss are inside the frontend/L1I request-response and redirect machinery; this
+experiment does not bypass those structures.  The result therefore rejects
+DDR3/L2/L1I-miss latency as a large explanation for the remaining runtime, but
+it is not a measurement of an ideal instruction-stream source.
+
+The passing traced run is
+`coremark-sv39-3p-tomasulo-oracle-magic-l1i-trace-ddr3-20260902T112605Z`.
+The source-matched oracle trace is
+`coremark-sv39-3p-tomasulo-oracle-trace-ddr3-20260902T110239Z`.
+
+#### Posted-store completion bypass
+
+An accepted ordinary cacheable store now falls through the LSU completion
+output directly into the ROB completion port.  This removes the generic LSU
+output-register cycle between the accepted L1D request and the ROB complete
+bit.  If the ROB completion port cannot accept the result, the existing output
+register remains the skid buffer.  The fall-through path is disabled during a
+redirect; an accepted irrevocable store is then retained by the established
+registered flush path.  The LSQ continues to retain the store tag and memory
+ordering guard until `store_done`.  Atomics, misaligned accesses, device
+accesses, translations, and fault results remain on their existing paths.
+Physical-register reclamation is unchanged and still occurs at retirement.
+
+The current Sv39/timed-DDR3 run passed with:
+
+| Counter | Earlier passing tree | Current tree | Delta |
+|---|---:|---:|---:|
+| Cycles | 43,881 | 42,914 | -967 (-2.20%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.1984 | 1.2255 | +0.0271 |
+| ROB nonempty/no-retire cycles | 12,922 | 11,774 | -1,148 |
+| Incomplete-head cycles | 12,608 | 11,440 | -1,168 |
+| Completed-behind-head cycles | 11,702 | 10,316 | -1,386 |
+| Head-store cycles | 7,863 | 6,010 | -1,853 |
+| Head-load cycles | 3,192 | 3,671 | +479 |
+| Head-ALU cycles | 1,135 | 1,340 | +205 |
+| Store-order wait cycles | 15,404 | 14,178 | -1,226 |
+| Rename-blocked cycles | 3,025 | 1,857 | -1,168 |
+| Memory-order replays | 264 | 279 | +15 |
+
+This table is not a bypass-only A/B.  The current tree also contains the
+paused partial destination-tag allocation work, while the earlier run does
+not.  A same-tree control with only the bypass forced off was attempted in
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T122956Z`, but it reached
+the completion PC after 44,067 cycles with the wrong result
+(`a0=0x72275180`, expected `0x0a277880`).  Consequently there is no valid
+source-matched control from which to assign the 967-cycle delta solely to this
+change.  The failed control also shows that the current speculative memory
+ordering behavior is timing-sensitive and needs separate diagnosis; the
+bypass must not be described as merely a performance optimization on this
+tree.
+
+The passing enabled run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T122736Z` (42,914 cycles,
+IPC 1.2255).  Final-source directed testing in
+`3p-banked-tomasulo-window-stream-20260902T123353Z` observes the accepted
+posted-store request and matching ROB completion fire in the same cycle.  The
+focused LSQ test `lsq-store-guards-20260902T121239Z` passed, and
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T121405Z` passed all 93
+preserved RV64IMA tests.
+
+This is functional simulation evidence only.  Verilator reports a
+combinational path through LSU completion acceptance, ROB/window state, rename,
+and back into the LSU result decision.  Synthesis and routed timing have not
+established that the new fall-through path is viable as written.
+
+#### Three-wide Tomasulo retirement
+
+The Tomasulo retirement path now accepts the complete three-entry ready prefix.
+All three architectural commits can update the RRAT and all three replaced
+physical mappings can return to rename in the same cycle.  The rename free-list
+instance therefore has three return ports, and returned tags are included in
+the combinational allocation view before the sequential free bitmap update.
+This keeps a full ROB from losing a cycle when retirement returns the only tags
+available to rename.  The legacy banked architectural-register path remains
+two-wide because it still has only two retirement write ports; lane 2 is
+enabled only when `BYPASS_GPR_WRITE` selects completion-time PRF writes.
+
+The source-matched Sv39/timed-DDR3 CoreMark comparison is:
+
+| Counter | Two-wide retire | Three-wide retire | Delta |
+|---|---:|---:|---:|
+| Cycles | 42,914 | 41,449 | -1,465 (-3.41%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.2255 | 1.2688 | +0.0433 |
+| Zero-retire cycles | 12,258 | 14,616 | +2,358 |
+| One-retire cycles | 8,723 | 11,012 | +2,289 |
+| Two-retire cycles | 21,933 | 5,886 | -16,047 |
+| Three-retire cycles | 0 | 9,935 | +9,935 |
+| Rename-blocked cycles | 1,857 | 1,021 | -836 |
+| Rename tag-blocked cycles | 1,844 | 1,008 | -836 |
+| Free-list-empty cycles | 5,353 | 2,056 | -3,297 |
+| ROB nonempty/no-retire cycles | 11,774 | 14,125 | +2,351 |
+| Incomplete-head cycles | 11,440 | 13,764 | +2,324 |
+| Store-order wait cycles | 14,178 | 9,382 | -4,796 |
+
+The higher zero-retire and incomplete-head counts are not evidence of a
+regression by themselves: three-wide bursts drain completed prefixes sooner,
+so the ROB reaches the next incomplete head earlier and spends fewer total
+cycles running.  The direct result is that 52,589 instructions retire in
+26,833 productive retirement cycles instead of 30,656, while tag starvation
+falls substantially.  The store-order counter also changes with the resulting
+execution schedule, so it should not be treated as an independently attributed
+4,796-cycle gain.
+
+The two-wide reference is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T122736Z`; the three-wide
+run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T124522Z`.  The latter
+passed with the expected result.  `rename-tomasulo-issue-20260902T124431Z`
+checks three simultaneous returns and same-cycle free-list visibility.
+`3p-banked-directed-20260902T124444Z` checks three ready Tomasulo lanes retire
+together while the legacy banked retry/write behavior remains intact.
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T124521Z` passed all 93
+preserved RV64IMA tests.
+
+This is functional simulation evidence.  Same-cycle tag reuse extends the
+retire-to-rename combinational path.  A likely timing-oriented successor is a
+small reclaim FIFO or registered three-tag return vector: retirement deposits
+up to three tags without consulting rename, and rename drains that buffer on
+the following cycle(s).  That costs at least one cycle of tag-reuse latency but
+removes the free-list allocation scan from the retirement feedback path.  No
+synthesis or routed timing result has yet established which implementation is
+better.
+
+#### Four-cycle post-RET load-speculation inhibit trial
+
+For the first trial, the RAS asserted a conservative LSU hint for four full
+cycles after a plain
+RET resolves.  While the hint is asserted, the LSQ restores the unresolved
+older-store guard: a cacheable load may not issue until every older store has
+completed address translation.  It does not globally stop loads.  Loads with
+no older store, and loads behind older stores whose non-colliding addresses are
+already known, retain the existing speculative behavior.  Reset and RAS
+context flush clear the interval; a resolved RET reloads it, including on the
+redirect caused by a mispredicted return.
+
+The source-matched Sv39/timed-DDR3 CoreMark result is:
+
+| Counter | Three-wide baseline | Four-cycle RET inhibit | Delta |
+|---|---:|---:|---:|
+| Cycles | 41,449 | 41,449 | 0 |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.2688 | 1.2688 | 0 |
+| Memory-order replays | 306 | 306 | 0 |
+| Inhibit intervals | n/a | 1,020 | n/a |
+| Inhibit active cycles | n/a | 3,602 | n/a |
+| Inhibit-blocked cycles | n/a | 0 | n/a |
+| Inhibit-blocked load-entry cycles | n/a | 0 | n/a |
+
+The interval count proves that returns triggered the new RAS output in this
+workload.  The zero blocked counters prove that no otherwise-issuable load was
+simultaneously behind an unresolved older store during those intervals.  The
+3,602 active cycles are less than four times the interval count because nearby
+returns reload an already-active counter and squashes can clear an unrelated
+interval.  Therefore this blind policy is functionally active but has no
+observable CoreMark effect, beneficial or harmful.  It is not evidence that a
+future collision-trained RAS bit will also be ineffective; that policy would
+select different intervals.
+
+The baseline is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T124522Z`; the instrumented
+run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T140147Z`, which passed
+with the expected result.  `ret-load-inhibit-focused-20260902T140132Z` checks
+the exact four-cycle RAS interval and a load blocked behind an unresolved older
+store, then checks that the load proceeds when the input is removed.
+`3p-banked-directed-20260902T135549Z` and
+`lsq-store-guards-20260902T135549Z` also passed.
+
+This is functional simulation evidence only.  No synthesis or routed timing
+measurement has been run for the added RAS-to-LSQ control path.
+
+#### Thirty-cycle post-RET load-speculation inhibit trial
+
+The default inhibit interval was then increased from four to thirty cycles
+without changing the trigger or LSQ policy.  This tests whether frontend and
+backend latency merely consumed the four-cycle interval before a relevant load
+reached LSQ access selection.
+
+| Counter | Four cycles | Thirty cycles | Delta |
+|---|---:|---:|---:|
+| CoreMark cycles | 41,449 | 41,449 | 0 |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.2688 | 1.2688 | 0 |
+| Memory-order replays | 306 | 306 | 0 |
+| Inhibit intervals | 1,020 | 868 | -152 |
+| Inhibit active cycles | 3,602 | 20,146 | +16,544 |
+| Inhibit-blocked cycles | 0 | 0 | 0 |
+| Inhibit-blocked load-entry cycles | 0 | 0 | 0 |
+
+The thirty-cycle signal was active for 48.6% of the run and still blocked no
+load.  The lower interval count is expected because the counter reports rising
+edges: another RET encountered while the interval is already active reloads
+the counter without beginning a second interval.  This rules out a merely
+too-short four-cycle timer for this CoreMark schedule.  It does not show that
+the guard is disconnected: the directed LSQ test forces the same input while a
+load is behind an unresolved older store and observes the load stall and later
+release.
+
+The thirty-cycle CoreMark run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T142423Z`; the exact
+thirty-cycle predictor and LSQ test is
+`ret-load-inhibit-focused-20260902T142414Z`.  Both passed.  The current default
+has subsequently been restored to four cycles.  This remains functional
+simulation evidence; no synthesis or routed timing result was produced.
+
+#### Load-inclusive selective memory replay
+
+Memory-order recovery no longer redirects from the older store and discards
+its entire younger suffix.  Each accepted speculative load records its ROB ID,
+slot, eight-byte granule, and PC.  When a subsequently resolved older store
+collides, the backend selects the oldest colliding younger load, redirects to
+that load's PC, and performs an inclusive squash at that load.  Instructions
+between the store and load survive; the load and every younger instruction are
+replayed.  This is a suffix cut, not dependency-cone replay: independent work
+younger than the offending load is still discarded.
+
+Loads now take a pre-instruction rename checkpoint so inclusive recovery also
+reclaims the load's destination physical register.  The ROB and LSQ use the
+same inclusive boundary.  The predictor accepts the arbitrary non-control cut,
+retains older speculative control records, discards younger records, and
+restores speculative history from the oldest discarded record.
+
+Two correctness cases required additional handling:
+
+- A memory replay is held while an older branch or jump remains incomplete.
+  Otherwise a same-cycle one-shot redirect from that older control can be lost
+  while the load suffix is preserved as if it were still on the right path.
+- Predictor recovery only consumes the resolved head when that head is on the
+  retained side of the cut.  Subtracting a simultaneously resolved but
+  discarded head from a zero-entry retained prefix underflowed the predictor
+  queue and eventually stopped fetch.
+
+The source-matched Sv39/timed-DDR3 CoreMark comparison is:
+
+| Counter | Store-suffix baseline | Load-inclusive cut | Delta |
+|---|---:|---:|---:|
+| Cycles | 41,449 | 40,816 | -633 (-1.53%) |
+| Retired | 52,589 | 52,589 | 0 |
+| IPC | 1.2688 | 1.2884 | +0.0196 |
+| Memory-replay redirects | 306 | 211 | -95 |
+
+The final run observed 12,839 speculative-load watches, 3,257 store-address
+checks, 285 granule collisions, and 211 emitted replay redirects.  Replay-cut
+selection preserved 1,812 ROB entries across 273 accepted or replacement cut
+candidates.  The selected load was five to eight instructions younger than the
+store for 204 candidates and at least nine instructions younger for 69; there
+were no distance-one through distance-four candidates.  These candidate
+counters intentionally do not equal emitted redirects because a pending replay
+may be replaced by an older colliding load before recovery is emitted.  Replay
+waited 264 cycles for an older incomplete control instruction.
+
+The passing full run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T155713Z`.  Focused
+predictor, rename, retire, and backend coverage passed in
+`ret-load-inhibit-focused-20260902T155640Z`.  The directed backend sequence
+puts independent ALU work between the store and colliding load and verifies
+that the ALU survives while the load and its dependent are replayed.  The
+rename and retire tests separately check pre-load checkpoint restoration and a
+modular inclusive ROB cut.  The final-source ACT4 run
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T155929Z` passed all 93
+preserved RV64IMA platform tests through timed DDR3.
+
+This is functional simulation evidence only.  The per-ROB load and incomplete
+control tracking adds state and replay-selection comparisons; synthesis and
+routed timing have not established the area or critical-path cost.
+
+#### Final-source normal, oracle, and oracle-plus-magic-L1I traces
+
+Full pipeline-state traces were regenerated after load-inclusive replay.  The
+oracle run uses the 12,696-record checked architectural branch stream from
+`coremark-sv39-3p-tomasulo-oracle-capture-ddr3-20260902T101935Z`; `magic_l1i`
+provides immediate Sv39-compatible L1I line fills while normal shadow traffic
+drains through the hierarchy.
+
+| Counter | Normal | Oracle | Oracle + magic L1I |
+|---|---:|---:|---:|
+| Cycles | 40,816 | 44,099 | 43,935 |
+| Retired | 52,589 | 52,589 | 52,589 |
+| IPC | 1.2884 | 1.1925 | 1.1970 |
+| Fetch-empty cycles | 4,813 | 4,481 | 3,937 |
+| Backend-held decode cycles | 3,883 | 5,149 | 5,624 |
+| ROB nonempty/no-retire cycles | 14,208 | 17,920 | 17,966 |
+| Rename-blocked cycles | 1,122 | 2,943 | 3,246 |
+| Free-list-empty cycles | 2,287 | 6,899 | 7,170 |
+| Speculative loads squashed by controls | 1,142 | 1,956 | 1,934 |
+| Memory-order collisions | 285 | 649 | 639 |
+| Memory-replay redirects | 211 | 637 | 629 |
+| Replay control-wait cycles | 264 | 509 | 492 |
+| Oracle EXU corrections | n/a | 610 | 606 |
+
+The oracle-only control proves that magic L1I is not the regression: it saves
+164 cycles and 544 fetch-empty cycles relative to the oracle.  The oracle
+itself is 3,283 cycles slower than BP8.
+
+This mode is not a monotonic perfect-prediction upper bound in the presence of
+speculative memory.  It places the final architectural oracle direction in the
+decoded instruction and removes real-predictor queue backpressure, but EX1
+still compares that prediction with the direction computed from the operands
+currently visible.  A load that read stale memory can therefore make EX1
+redirect away from the architecturally correct oracle path; the later
+older-store collision replays it back.  The current oracle run records 610 of
+these EXU corrections, while memory-replay redirects rise from 211 to 637.
+Removing predictor backpressure also admits more speculative work, increasing
+tag pressure and the number of loads exposed to unresolved stores.  The
+combined oracle experiment therefore does not isolate either prediction or
+frontend pressure cleanly.
+
+The passing normal run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-trace-20260902T205207Z`; its
+compressed trace contains 1,958,351 rows.  The current oracle-only control is
+`coremark-sv39-3p-tomasulo-oracle-trace-ddr3-20260902T212102Z`, with 2,318,460
+compressed trace rows.  The clean non-relaxed oracle-plus-magic rerun is
+`coremark-sv39-3p-tomasulo-oracle-magic-l1i-trace-ddr3-20260902T214608Z`; it
+exactly reproduces 43,935 cycles, 52,589 retired instructions, and 1.1970 IPC.
+Its compressed trace contains 2,348,506 rows.  All three generated a readable
+report and passed the trace consistency check.
+
+#### Opt-in MEM0 ALU2 experiment
+
+An experimental third integer lane can share MEM0's completion/writeback port.
+The LSU has fixed priority; once an ALU2 completion is exposed under downstream
+backpressure, the arbiter locks that source until handshake.  MEM0 completion
+continues to use the LSU/port-2 Tomasulo forwarding path.
+
+The initial broad lane accepted every base RV64I ALU operation.  It improved
+this source-matched Sv39/timed-DDR3 CoreMark extract by only 234 cycles while
+creating substantial MEM0 completion contention:
+
+| Configuration | Cycles | Retired | IPC | ALU2 issues | ALU2 wait cycles | MEM0 collision cycles |
+|---|---:|---:|---:|---:|---:|---:|
+| Default, ALU2 off | 40,816 | 52,589 | 1.2884 | 0 | 0 | 0 |
+| Broad base ALU2 | 40,582 | 52,589 | 1.2959 | 3,669 | 3,602 | 3,159 |
+| Restricted shift/rotate/logical ALU2 | 40,850 | 52,589 | 1.2874 | 389 | 413 | 362 |
+
+The broad result is a 0.57% cycle reduction.  After excluding add/sub,
+compare, LUI/AUIPC, M, and complex Zbb operations, the remaining lane is 34
+cycles slower than the default control.  The simulation is deterministic, so
+this is a small secondary scheduling/trajectory perturbation, not statistical
+noise; it is not evidence of a useful speedup.  Most of the broad lane's
+dynamic opportunity came from operations that the restricted lane
+intentionally does not implement.
+
+The restricted operation policy is shared between dispatch and execution in
+`rtl/core/decode/defs/alu2-defs.v`.  Its default feature defines enable base
+SLL/SRL/SRA/XOR/OR/AND and Zbb ROL/ROR/ANDN/ORN/XNOR, while add/sub, compare,
+and upper-immediate classes are disabled.  `ENABLE_ALU2` defaults to zero and
+is carried through dispatch and execution, allowing a default synthesis to
+prune the experimental lane.  The dedicated opt-in configuration is
+`run/cfg/coremark-sv39-3p-tomasulo-rob64-sched32-alu2-ddr3.cfg`.
+
+Runs:
+
+- Default-off final-source control:
+  `coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T225536Z`.
+- Broad base-ALU experiment:
+  `coremark-sv39-3p-tomasulo-rob64-sched32-alu2-ddr3-20260902T224317Z`.
+- Restricted experiment:
+  `coremark-sv39-3p-tomasulo-rob64-sched32-alu2-ddr3-20260902T225302Z`.
+- Restricted direct execution test, including ADDI rejection, elastic
+  XOR-to-shift issue, and 64-bit ROR:
+  `lsu-xlate-generation-3p-20260902T230021Z`.
+- Restricted Tomasulo stream, including an assertion that MEM0 never receives
+  a disabled ALU2 class and a two-rotate sequence that forces the younger Zbb
+  operation onto ALU2:
+  `3p-banked-tomasulo-window-stream-20260902T225956Z`.
+- Before the class restriction, the enabled broad implementation passed 93/93
+  ACT4 cases in
+  `compliance-act4-platform-3p-tomasulo-ddr3-20260902T222514Z`; this is not a
+  final-source ACT4 result for the restricted implementation.
+
+These are functional simulation results.  No synthesis, routed timing, or
+physical validation establishes the area or timing cost.  The experiment is
+retained but default-off pending improvements elsewhere in issue and memory
+completion throughput.  The underlying bank interfaces were not widened to
+8R4W as part of this experiment.

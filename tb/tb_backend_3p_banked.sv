@@ -2,7 +2,9 @@
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/isa/rv64-priv.v"
+`include "core/isa/rv64-zbb.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/decode/defs/alu2-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
 
@@ -18,7 +20,7 @@ module tb_backend_3p_banked #(
     localparam integer DCW = $clog2(
         (((ISSUE_WINDOW != 0) || (RENAME_MODE != 0)) ?
          SCHEDULER_DEPTH : 6) + 1);
-    localparam integer INSTRUCTION_COUNT = 27;
+    localparam integer INSTRUCTION_COUNT = 29;
     localparam integer PHYS_REG_COUNT = (RENAME_MODE != 0) ? 63 : 31;
     localparam integer PHYS_REG_ADDR_WIDTH =
         (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1);
@@ -26,6 +28,7 @@ module tb_backend_3p_banked #(
         `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + 2*PHYS_REG_ADDR_WIDTH;
 
     localparam integer I_PRIV = 2;
+    localparam integer I_MEM_WRITE = 15;
     localparam integer I_MEM_READ = 16;
     localparam integer I_JUMP = 13;
     localparam integer I_PREDICTED = 12;
@@ -36,6 +39,7 @@ module tb_backend_3p_banked #(
     localparam integer I_ALU_EXT = 32;
     localparam integer I_RD = 35;
     localparam integer I_IMM = 40;
+    localparam integer I_RS1_DATA = 168;
     localparam integer I_RS2 = 232;
     localparam integer I_RS1 = 237;
     localparam integer I_INSTR = 242;
@@ -46,6 +50,7 @@ module tb_backend_3p_banked #(
     reg rst_n;
     reg flush;
     reg squash;
+    reg inhibit_load_speculation;
     reg [2:0] decode_valid;
     wire [2:0] decode_ready;
     reg [3*IW-1:0] decode_payload;
@@ -60,7 +65,11 @@ module tb_backend_3p_banked #(
     wire mem_resp_ready;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag;
     wire [63:0] mem_addr;
+    wire mem_write;
     reg [63:0] mem_rdata;
+    reg mem_store_done_valid;
+    wire mem_store_done_ready;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_store_done_tag;
     wire mem_xlate_valid;
     wire [`OPENRV64_LSU_XLATE_TAG_WIDTH-1:0] mem_xlate_tag;
     wire [63:0] mem_xlate_vaddr;
@@ -70,6 +79,8 @@ module tb_backend_3p_banked #(
     reg [63:0] mem_xlate_resp_paddr_q;
     wire mem1_valid;
     wire redirect_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id;
+    wire [63:0] redirect_target;
     wire [2:0] retire_arch;
     wire [1:0] retire_count;
     wire exception;
@@ -103,10 +114,13 @@ module tb_backend_3p_banked #(
         .RELAX_HAZARDS(0),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
+        .ENABLE_ALU2(RENAME_MODE != 0),
         .RENAME_MODE(RENAME_MODE),
         .ISSUE_WINDOW_DEPTH(SCHEDULER_DEPTH),
         .BANKED_GPR(1),
-        .FPGA_GPR_LUTRAM(0)
+        .FPGA_GPR_LUTRAM(0),
+        .CACHEABLE_BASE(64'd0),
+        .CACHEABLE_SIZE(64'h1000)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -114,6 +128,7 @@ module tb_backend_3p_banked #(
         .squash_frontend_i(squash),
         .coherent_reservation_clear_i(1'b0),
         .translation_bypass_i(1'b1),
+        .inhibit_load_speculation_i(inhibit_load_speculation),
         .decode_valid_i(decode_valid),
         .decode_ready_o(decode_ready),
         .decode_payload_i(decode_payload),
@@ -142,14 +157,14 @@ module tb_backend_3p_banked #(
         .mem_resp_paddr_i(64'd0),
         .mem_error_i(1'b0),
         .mem_page_fault_i(1'b0),
-        .mem_store_done_valid_i(1'b0),
-        .mem_store_done_ready_o(),
-        .mem_store_done_tag_i({`OPENRV64_LSU_TAG_WIDTH{1'b0}}),
+        .mem_store_done_valid_i(mem_store_done_valid),
+        .mem_store_done_ready_o(mem_store_done_ready),
+        .mem_store_done_tag_i(mem_store_done_tag),
         .store_barrier_request_o(),
         .store_barrier_busy_i(1'b0),
         .mem_access_allowed_i(1'b1),
         .mem_lock_o(),
-        .mem_write_o(),
+        .mem_write_o(mem_write),
         .mem_addr_o(mem_addr),
         .mem_wdata_o(),
         .mem_wstrb_o(),
@@ -183,8 +198,8 @@ module tb_backend_3p_banked #(
         .irq_pending_i(1'b0),
         .irq_cause_i({`RV64_EXCEPT_CAUSE_WIDTH{1'b0}}),
         .redirect_valid_o(redirect_valid),
-        .redirect_id_o(),
-        .redirect_target_o(),
+        .redirect_id_o(redirect_id),
+        .redirect_target_o(redirect_target),
         .branch_resolved_o(),
         .branch_conditional_o(),
         .branch_taken_o(),
@@ -281,6 +296,26 @@ module tb_backend_3p_banked #(
         end
     endfunction
 
+    function automatic [IW-1:0] store_packet;
+        input [63:0] trace;
+        input [4:0] rs1;
+        input [4:0] rs2;
+        input [63:0] immediate;
+        reg [IW-1:0] packet;
+        begin
+            packet = base_packet(
+                trace,
+                {immediate[11:5], rs2, rs1, 3'b011,
+                 immediate[4:0], `RV64_OPCODE_STORE});
+            packet[I_RS1 +: 5] = rs1;
+            packet[I_RS2 +: 5] = rs2;
+            packet[I_IMM +: 64] = immediate;
+            packet[I_LSU_OP +: 5] = `RV64_LSU_OP_SD;
+            packet[I_MEM_WRITE] = 1'b1;
+            store_packet = packet;
+        end
+    endfunction
+
     function automatic [IW-1:0] addi_packet;
         input [63:0] trace;
         input [4:0] rs1;
@@ -373,6 +408,34 @@ module tb_backend_3p_banked #(
         end
     endfunction
 
+    function automatic [IW-1:0] zbb_rotate_packet;
+        input [63:0] trace;
+        input [4:0] rs1;
+        input [4:0] rs2;
+        input [4:0] rd;
+        input [`RV64_ALU_OP_WIDTH-1:0] operation;
+        input word_op;
+        reg [IW-1:0] packet;
+        reg [2:0] funct3;
+        reg [6:0] opcode;
+        begin
+            funct3 = (operation == `RV64_ALU_OP_ZBB_ROL) ?
+                `RV64_ZBB_FUNCT3_ROL : `RV64_ZBB_FUNCT3_ROR;
+            opcode = word_op ? `RV64_OPCODE_OP_32 : `RV64_OPCODE_OP;
+            packet = base_packet(
+                trace,
+                {`RV64_ZBB_FUNCT7_ROTATE, rs2, rs1, funct3, rd, opcode});
+            packet[I_RS1 +: 5] = rs1;
+            packet[I_RS2 +: 5] = rs2;
+            packet[I_RD +: 5] = rd;
+            packet[I_ALU_EXT +: 3] = `RV64_ALU_EXT_ZBB;
+            packet[I_ALU_OP +: 5] = operation;
+            packet[I_REG_WRITE] = 1'b1;
+            packet[9] = word_op;
+            zbb_rotate_packet = packet;
+        end
+    endfunction
+
     function automatic [IW-1:0] upper_packet;
         input [63:0] trace;
         input [4:0] rd;
@@ -430,6 +493,9 @@ module tb_backend_3p_banked #(
     reg saw_regload_address_issue_overlap;
     reg saw_back_to_back_issue;
     reg saw_base_alu_reroute;
+    reg saw_alu2_issue;
+    reg saw_alu2_zbb_rotate;
+    reg saw_alu2_forward;
     reg prior_cycle_issued;
     reg memory_probe_active;
     integer memory_probe_retired;
@@ -442,15 +508,31 @@ module tb_backend_3p_banked #(
     reg saw_jalr_resolve_before_head;
     reg saw_jalr_younger_issue;
     reg saw_jalr_resolve;
+    reg tomasulo_forward_probe_active;
+    reg saw_tomasulo_alu_forward_accept;
+    reg saw_tomasulo_alu_forward_without_writeback;
+    reg tomasulo_load_forward_probe_active;
+    reg saw_tomasulo_load_forward_accept;
+    reg saw_tomasulo_load_forward_without_writeback;
+    reg memory_replay_probe_active;
+    integer replay_store_component_count;
     integer jalr_probe_pipe;
+    integer forward_probe_pipe;
+    integer forward_probe_port;
     integer rename_monitor_lane;
+    integer monitor_cycle;
+    integer forward_producer_issue_cycle;
+    integer load_completion_cycle;
     wire [6:0] observed_rename_free_count;
+    wire [PHYS_REG_COUNT:0] observed_phys_ready;
 
     generate
         if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin :
                 g_observe_tomasulo
             assign observed_rename_free_count =
                 dut.u_dispatch.g_3p.g_tomasulo.rename_free_count;
+            assign observed_phys_ready =
+                dut.u_dispatch.g_3p.g_tomasulo.u_rename.phys_ready_q;
 
             reg [RETIRE_DEPTH-1:0] scheduler_slot_seen;
             reg [$clog2(RETIRE_DEPTH)-1:0]
@@ -536,11 +618,18 @@ module tb_backend_3p_banked #(
             end
         end else begin : g_observe_identity
             assign observed_rename_free_count = 7'd0;
+            assign observed_phys_ready =
+                {(PHYS_REG_COUNT + 1){1'b1}};
         end
     endgenerate
 
     always @(negedge clk) begin
-        if (rst_n) begin
+        if (!rst_n) begin
+            monitor_cycle = 0;
+            forward_producer_issue_cycle = -1;
+            load_completion_cycle = -1;
+        end else begin
+            monitor_cycle = monitor_cycle + 1;
             issue_count = issue_valid[0] + issue_valid[1] +
                           issue_valid[2] + issue_valid[3];
             if (issue_count > (((ISSUE_WINDOW != 0) ||
@@ -548,6 +637,46 @@ module tb_backend_3p_banked #(
                 fail("banked backend exceeded register-load issue width");
             if (issue_count == 2)
                 saw_two_wide_issue = 1'b1;
+            if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                issue_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
+                !dut.pipe_payload[
+                    `OPENRV64_EXEC_PIPE_MEM0*IW + I_MEM_READ] &&
+                !dut.pipe_payload[
+                    `OPENRV64_EXEC_PIPE_MEM0*IW + I_MEM_WRITE]) begin
+                if (!`OPENRV64_ALU2_OP_SUPPORTED(
+                        dut.pipe_payload[
+                            `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_EXT +: 3],
+                        dut.pipe_payload[
+                            `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_OP +: 5]))
+                    fail("dispatch routed a disabled operation to ALU2");
+                if ((dut.pipe_payload[
+                         `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_EXT +: 3] ==
+                     `RV64_ALU_EXT_BASE) &&
+                    ((dut.pipe_payload[
+                          `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_OP +: 5] ==
+                      `RV64_ALU_OP_ADD) ||
+                     (dut.pipe_payload[
+                          `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_OP +: 5] ==
+                      `RV64_ALU_OP_SUB)))
+                    fail("dispatch routed ADD/SUB to restricted ALU2");
+                saw_alu2_issue = 1'b1;
+                if ((dut.pipe_payload[
+                         `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_EXT +: 3] ==
+                     `RV64_ALU_EXT_ZBB) &&
+                    ((dut.pipe_payload[
+                          `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_OP +: 5] ==
+                      `RV64_ALU_OP_ZBB_ROL) ||
+                     (dut.pipe_payload[
+                          `OPENRV64_EXEC_PIPE_MEM0*IW + I_ALU_OP +: 5] ==
+                      `RV64_ALU_OP_ZBB_ROR)))
+                    saw_alu2_zbb_rotate = 1'b1;
+            end
+            if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                dut.tomasulo_alu2_forward_valid) begin
+                if (!dut.dispatch_completion_forward_valid[2])
+                    fail("ALU2 completion missed MEM0 forwarding path");
+                saw_alu2_forward = 1'b1;
+            end
             if ((issue_count != 0) && prior_cycle_issued)
                 saw_back_to_back_issue = 1'b1;
             prior_cycle_issued = (issue_count != 0);
@@ -558,8 +687,6 @@ module tb_backend_3p_banked #(
                 saw_base_alu_reroute = 1'b1;
             if (decode_valid == 3'b111 && decode_ready == 3'b111)
                 saw_three_wide_input = 1'b1;
-            if (retire_arch[2])
-                fail("banked backend retired a third lane");
             if (retire_count == 2)
                 saw_two_wide_retire = 1'b1;
 
@@ -580,6 +707,120 @@ module tb_backend_3p_banked #(
                 saw_jalr_resolve = 1'b1;
                 if (dut.exec_redirect_id != dut.ordered_head_id)
                     saw_jalr_resolve_before_head = 1'b1;
+            end
+
+            // Address-phase acceptance of trace 61 must use the exact live
+            // physical producer.  The directed probe below holds every PRF
+            // write ack low, so observing this proves scheduler wakeup is not
+            // accidentally coming from stored-tag readiness.
+            if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                tomasulo_forward_probe_active) begin
+                for (forward_probe_pipe = 0;
+                     forward_probe_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+                     forward_probe_pipe = forward_probe_pipe + 1) begin
+                    if (issue_valid[forward_probe_pipe] &&
+                        (dut.pipe_payload[
+                            forward_probe_pipe*IW + I_TRACE +: 64] ==
+                         64'd60))
+                        forward_producer_issue_cycle = monitor_cycle;
+                    if (dut.dispatch_pipe_valid[forward_probe_pipe] &&
+                        (dut.dispatch_pipe_payload[
+                            forward_probe_pipe*IW + I_TRACE +: 64] ==
+                         64'd61)) begin
+                        if (dut.dispatch_pipe_src1_producer_valid[
+                                forward_probe_pipe] !== 1'b1)
+                            fail("ALU dependent did not mark forwarded rs1");
+                        if (dut.dispatch_pipe_payload[
+                                forward_probe_pipe*IW + I_RS1_DATA +: 64]
+                            !== 64'd41)
+                            fail("ALU dependent captured wrong forward data");
+                        if (observed_phys_ready[
+                                dut.dispatch_pipe_src1_phys[
+                                    forward_probe_pipe*
+                                    PHYS_REG_ADDR_WIDTH +:
+                                    PHYS_REG_ADDR_WIDTH]] !== 1'b0)
+                            fail("ALU forward incorrectly required PRF ready");
+                        if (forward_producer_issue_cycle < 0)
+                            fail("ALU dependent preceded producer issue");
+                        if (monitor_cycle !=
+                            (forward_producer_issue_cycle + 1)) begin
+                            $display({"ALU forward timing producer=%0d ",
+                                      "dependent=%0d"},
+                                     forward_producer_issue_cycle,
+                                     monitor_cycle);
+                            fail("ALU dependent did not wake one cycle later");
+                        end
+                        saw_tomasulo_alu_forward_accept = 1'b1;
+                        for (forward_probe_port = 0;
+                             forward_probe_port < 2;
+                             forward_probe_port = forward_probe_port + 1) begin
+                            if (dut.tomasulo_alu_forward_valid[
+                                    forward_probe_port] &&
+                                !dut.completion_writeback_fire[
+                                    forward_probe_port] &&
+                                (dut.dispatch_pipe_src1_producer_id[
+                                    forward_probe_pipe*
+                                    `OPENRV64_INSTR_ID_WIDTH +:
+                                    `OPENRV64_INSTR_ID_WIDTH] ==
+                                 dut.complete_id[
+                                    forward_probe_port*
+                                    `OPENRV64_INSTR_ID_WIDTH +:
+                                    `OPENRV64_INSTR_ID_WIDTH]))
+                                saw_tomasulo_alu_forward_without_writeback =
+                                    1'b1;
+                        end
+                    end
+                end
+            end
+
+            // A load has variable issue-to-result latency.  Its dependent
+            // must nevertheless be accepted in the first cycle that MEM0's
+            // registered completion is live, even while the PRF write is
+            // denied.  Trace 28/29 is the directed load-use pair below.
+            if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                tomasulo_load_forward_probe_active) begin
+                if (dut.tomasulo_load_forward_valid &&
+                    (load_completion_cycle < 0))
+                    load_completion_cycle = monitor_cycle;
+                for (forward_probe_pipe = 0;
+                     forward_probe_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+                     forward_probe_pipe = forward_probe_pipe + 1) begin
+                    if (dut.dispatch_pipe_valid[forward_probe_pipe] &&
+                        (dut.dispatch_pipe_payload[
+                            forward_probe_pipe*IW + I_TRACE +: 64] ==
+                         64'd29)) begin
+                        if (!dut.tomasulo_load_forward_valid)
+                            fail("load dependent missed live MEM0 completion");
+                        if (dut.dispatch_pipe_src1_producer_valid[
+                                forward_probe_pipe] !== 1'b1)
+                            fail("load dependent did not mark forwarded rs1");
+                        if (dut.dispatch_pipe_payload[
+                                forward_probe_pipe*IW + I_RS1_DATA +: 64]
+                            !== 64'h1122_3344_5566_7788)
+                            fail("load dependent captured wrong forward data");
+                        if (observed_phys_ready[
+                                dut.dispatch_pipe_src1_phys[
+                                    forward_probe_pipe*
+                                    PHYS_REG_ADDR_WIDTH +:
+                                    PHYS_REG_ADDR_WIDTH]] !== 1'b0)
+                            fail("load forward incorrectly required PRF ready");
+                        if ((load_completion_cycle < 0) ||
+                            (monitor_cycle != load_completion_cycle))
+                            fail("load dependent did not wake with completion");
+                        if (dut.dispatch_pipe_src1_producer_id[
+                                forward_probe_pipe*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH] !=
+                            dut.complete_id[
+                                2*`OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH])
+                            fail("load dependent captured wrong producer ID");
+                        saw_tomasulo_load_forward_accept = 1'b1;
+                        if (!dut.completion_writeback_fire[2])
+                            saw_tomasulo_load_forward_without_writeback =
+                                1'b1;
+                    end
+                end
             end
 
             if ((retire_count != 0) && !memory_probe_active) begin
@@ -623,7 +864,8 @@ module tb_backend_3p_banked #(
             if (!memory_probe_active &&
                 (mem_valid || mem_xlate_valid || mem1_valid))
                 fail("non-memory instruction stream accessed memory");
-            if (redirect_valid || exception || halt || irq || mret || sret ||
+            if ((redirect_valid && !memory_replay_probe_active) ||
+                exception || halt || irq || mret || sret ||
                 fence_i || sfence_vma)
                 fail("non-control instruction stream raised a control event");
             if (write_busy[0])
@@ -686,11 +928,19 @@ module tb_backend_3p_banked #(
     reg [2:0] send_mask;
     reg [3:0] redirect_delayed_reads;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] probe_load_tag;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] replay_head_load_tag;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] replay_wrong_load_tag;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] replay_store_tag;
+    reg [63:0] replay_watch_count_before;
+    reg [63:0] replay_check_count_before;
+    reg [63:0] replay_violation_count_before;
+    reg [63:0] replay_count_before;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
         flush = 1'b0;
         squash = 1'b0;
+        inhibit_load_speculation = 1'b0;
         decode_valid = 3'b000;
         decode_payload = {3*IW{1'b0}};
         decode_uses_rs1 = 3'b000;
@@ -699,6 +949,8 @@ module tb_backend_3p_banked #(
         mem_resp_valid = 1'b0;
         mem_resp_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
         mem_rdata = 64'd0;
+        mem_store_done_valid = 1'b0;
+        mem_store_done_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
         retired_total = 0;
         saw_three_wide_input = 1'b0;
         saw_two_wide_issue = 1'b0;
@@ -712,6 +964,9 @@ module tb_backend_3p_banked #(
         saw_regload_address_issue_overlap = 1'b0;
         saw_back_to_back_issue = 1'b0;
         saw_base_alu_reroute = 1'b0;
+        saw_alu2_issue = 1'b0;
+        saw_alu2_zbb_rotate = 1'b0;
+        saw_alu2_forward = 1'b0;
         prior_cycle_issued = 1'b0;
         memory_probe_active = 1'b0;
         memory_probe_retired = 0;
@@ -724,6 +979,13 @@ module tb_backend_3p_banked #(
         saw_jalr_resolve_before_head = 1'b0;
         saw_jalr_younger_issue = 1'b0;
         saw_jalr_resolve = 1'b0;
+        tomasulo_forward_probe_active = 1'b0;
+        saw_tomasulo_alu_forward_accept = 1'b0;
+        saw_tomasulo_alu_forward_without_writeback = 1'b0;
+        tomasulo_load_forward_probe_active = 1'b0;
+        saw_tomasulo_load_forward_accept = 1'b0;
+        saw_tomasulo_load_forward_without_writeback = 1'b0;
+        memory_replay_probe_active = 1'b0;
 
         instruction_stream[0] = addi_packet(1, 0, 1, 64'd5, 1'b0);
         // p1 and p29 share four-bank bank 1.  These two independent leading
@@ -774,6 +1036,12 @@ module tb_backend_3p_banked #(
             26, 21, 29, 25, `RV64_ALU_OP_ADD, 1'b1);
         instruction_stream[26] = reg_packet(
             27, 29, 1, 26, `RV64_ALU_OP_SRA, 1'b1);
+        // Two simultaneously ready Zbb rotates reserve EX0 for the older
+        // operation and force the younger supported rotate onto ALU2.
+        instruction_stream[27] = zbb_rotate_packet(
+            28, 1, 1, 27, `RV64_ALU_OP_ZBB_ROR, 1'b0);
+        instruction_stream[28] = zbb_rotate_packet(
+            29, 2, 1, 28, `RV64_ALU_OP_ZBB_ROL, 1'b0);
 
         for (lane = 0; lane < INSTRUCTION_COUNT; lane = lane + 1) begin
             program_uses_rs1[lane] = 1'b1;
@@ -790,6 +1058,8 @@ module tb_backend_3p_banked #(
         program_uses_rs2[23] = 1'b1;
         program_uses_rs2[25] = 1'b1;
         program_uses_rs2[26] = 1'b1;
+        program_uses_rs2[27] = 1'b1;
+        program_uses_rs2[28] = 1'b1;
         program_uses_rs1[21] = 1'b0;
         program_uses_rs1[22] = 1'b0;
 
@@ -820,10 +1090,65 @@ module tb_backend_3p_banked #(
         expected_result[24] = 64'hffff_ffff_ffff_fffd;
         expected_result[25] = 64'h0000_0000_1234_4ffc;
         expected_result[26] = {64{1'b1}};
+        expected_result[27] = 64'h2800_0000_0000_0000;
+        expected_result[28] = 64'h0000_0000_0000_0120;
 
         repeat (4) tick();
         rst_n = 1'b1;
         tick();
+
+        // A younger register-load packet may already be resident at the
+        // backend output when an older branch redirects.  It is legal to
+        // handshake and discard that packet, but it must not allocate into
+        // the LSQ on the redirect edge: the LSQ resident-state squash sees
+        // only entries that existed before this edge.
+        if ((ISSUE_WINDOW != 0) &&
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) begin
+            dut.banked_independent_valid_q = 4'b0100;
+            dut.banked_independent_id_q = {40{1'b0}};
+            dut.banked_independent_id_q[
+                `OPENRV64_EXEC_PIPE_MEM0*10 +: 10] = 10'd84;
+            dut.banked_independent_slot_q = {4*4{1'b0}};
+            dut.banked_independent_slot_q[
+                `OPENRV64_EXEC_PIPE_MEM0*4 +: 4] = 4'd1;
+            dut.banked_independent_payload_q = {4*IW{1'b0}};
+            dut.banked_independent_payload_q[
+                `OPENRV64_EXEC_PIPE_MEM0*IW +: IW] =
+                load_packet(84, 0, 5, 0);
+            dut.banked_independent_operand_done_q = 8'b00110000;
+            force dut.u_exec.g_3p.u_exec.u_lsu.squash_younger_i = 1'b1;
+            force dut.u_exec.g_3p.u_exec.u_lsu.squash_inclusive_i = 1'b0;
+            force dut.u_exec.g_3p.u_exec.u_lsu.squash_id_i = 10'd81;
+            #1;
+            if (!issue_valid[`OPENRV64_EXEC_PIPE_MEM0] ||
+                !dut.pipe_ready[`OPENRV64_EXEC_PIPE_MEM0])
+                fail("redirected LSU packet was not consumable");
+            if (dut.u_exec.g_3p.u_exec.u_lsu.u_lsq.load_alloc_fire)
+                fail("redirected LSU packet allocated on squash edge");
+            tick();
+            release dut.u_exec.g_3p.u_exec.u_lsu.squash_younger_i;
+            release dut.u_exec.g_3p.u_exec.u_lsu.squash_inclusive_i;
+            release dut.u_exec.g_3p.u_exec.u_lsu.squash_id_i;
+            if (dut.banked_independent_valid_q != 4'b0000)
+                fail("redirected LSU output packet was not discarded");
+            if (!dut.u_exec.g_3p.u_exec.u_lsu.u_lsq.empty_o)
+                fail("redirected LSU packet escaped into the LSQ");
+
+            // Retirement is independently held on the live redirect edge.
+            // Do not clock this synthetic redirect: Tomasulo recovery requires
+            // a real rename checkpoint, which this local boundary probe does
+            // not construct.
+            force dut.queue_retire_valid = 3'b001;
+            squash = 1'b1;
+            #1;
+            if ((dut.queue_retire_accept != 3'b000) ||
+                (retire_arch != 3'b000))
+                fail("retirement was not frozen on redirect edge");
+            squash = 1'b0;
+            release dut.queue_retire_valid;
+            #1;
+            tick();
+        end
 
         // An accepted address can return while a redirect is being resolved.
         // Keep the older lane and its response, but discard the younger lane
@@ -880,6 +1205,44 @@ module tb_backend_3p_banked #(
             if (dut.banked_gpr_drain_q ||
                 (dut.banked_independent_valid_q != 4'b0000))
                 fail("selective-recovery probe did not flush cleanly");
+        end
+
+        // A bank-conflicted address phase remains a live ready/valid
+        // transaction even if recovery kills its scheduler candidate.  Force
+        // a retained request to gain its grant on the redirect edge.  The
+        // requester must keep it presented through ack, poison the following
+        // data phase, and hold issue drained until that response disappears.
+        if ((ISSUE_WINDOW != 0) &&
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) begin
+            dut.banked_independent_held_valid_q = 3'b001;
+            dut.banked_independent_held_req_q = 6'b000001;
+            dut.banked_independent_held_addr_q =
+                {6*PHYS_REG_ADDR_WIDTH{1'b0}};
+            dut.banked_independent_held_addr_q[0 +:
+                PHYS_REG_ADDR_WIDTH] = PHYS_REG_ADDR_WIDTH'(4);
+            dut.banked_independent_held_pipe_q = 6'b000000;
+            dut.banked_independent_held_id_q =
+                {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            dut.banked_independent_held_id_q[0 +:
+                `OPENRV64_INSTR_ID_WIDTH] = 10'd84;
+            flush = 1'b1;
+            #1;
+            if (!dut.gpr_read_req[0] || !dut.gpr_read_ack[0])
+                fail("redirect-edge held read did not remain through ack");
+            tick();
+            flush = 1'b0;
+            if (dut.banked_independent_held_valid_q[0] ||
+                !dut.banked_independent_response_poison_q[0] ||
+                !dut.gpr_read_valid[0])
+                fail("redirect-edge held read did not become poison response");
+            tick();
+            if (dut.banked_independent_response_poison_q[0] ||
+                dut.gpr_read_valid[0])
+                fail("redirect-edge poison response did not drain");
+            tick();
+            if (dut.banked_gpr_drain_q || !dut.gpr_quiescent)
+                fail("redirect-edge held read did not restore quiescence");
+            tick();
         end
 
         // Put four same-bank operands behind the two-slot bank interface.
@@ -1046,6 +1409,82 @@ module tb_backend_3p_banked #(
         if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
             !saw_scheduler_slot_reuse_before_retire)
             fail("scheduler slot was not reused before prior ROB retirement");
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            !saw_alu2_issue)
+            fail("renamed stream never issued an enabled operation on ALU2");
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            !saw_alu2_zbb_rotate)
+            fail("renamed stream never routed a Zbb rotate to ALU2");
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            !saw_alu2_forward)
+            fail("ALU2 never drove the MEM0 forwarding path");
+
+        // Keep the producer resident on its completion port by denying the
+        // PRF write.  Its dependent must nevertheless be accepted by the
+        // register-load address phase from the live completion one cycle
+        // after ALU issue.  Rename still advertises the physical tag as not
+        // ready until the forced write stall is released.
+        if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin
+            memory_probe_active = 1'b1;
+            memory_probe_retired = 0;
+            memory_probe_last_rd = 5'd0;
+            memory_probe_last_wdata = 64'd0;
+            tomasulo_forward_probe_active = 1'b1;
+            saw_tomasulo_alu_forward_accept = 1'b0;
+            saw_tomasulo_alu_forward_without_writeback = 1'b0;
+            forward_producer_issue_cycle = -1;
+            force dut.gpr_write_ack = 3'b000;
+
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                addi_packet(60, 0, 27, 64'd41, 1'b0);
+            decode_payload[IW +: IW] =
+                addi_packet(61, 27, 28, 64'd1, 1'b0);
+            decode_uses_rs1 = 3'b011;
+            decode_uses_rs2 = 3'b000;
+            decode_valid = 3'b011;
+            while (decode_ready[1:0] != 2'b11)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+
+            for (cycles = 0;
+                 (cycles < 30) && !saw_tomasulo_alu_forward_accept;
+                 cycles = cycles + 1)
+                tick();
+            if (!saw_tomasulo_alu_forward_accept)
+                fail("dependent ALU was not accepted from live completion");
+            if (!saw_tomasulo_alu_forward_without_writeback)
+                fail("dependent ALU waited for physical writeback ack");
+
+            release dut.gpr_write_ack;
+            for (cycles = 0;
+                 (cycles < 100) &&
+                 ((memory_probe_retired < 2) ||
+                  (dispatch_occupancy != 0) ||
+                  (retire_occupancy != 0));
+                 cycles = cycles + 1)
+                tick();
+            repeat (2) tick();
+            if ((memory_probe_retired != 2) ||
+                (memory_probe_last_rd != 5'd28) ||
+                (memory_probe_last_wdata != 64'd42)) begin
+                $display({"ALU forward retirement retired=%0d rd=%0d ",
+                          "data=%h dispatch=%0d retire=%0d free=%0d"},
+                         memory_probe_retired, memory_probe_last_rd,
+                         memory_probe_last_wdata, dispatch_occupancy,
+                         retire_occupancy, observed_rename_free_count);
+                fail("forwarded ALU dependency retired wrong result");
+            end
+            if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
+                (observed_rename_free_count != 32))
+                fail("ALU forwarding probe did not drain cleanly");
+            tomasulo_forward_probe_active = 1'b0;
+            memory_probe_active = 1'b0;
+            memory_probe_retired = 0;
+        end
 
         // Isolate the steering probe from the throughput/conflict coverage
         // above.  The normal ready signal is payload-qualified, so force only
@@ -1090,8 +1529,15 @@ module tb_backend_3p_banked #(
         // registered forwarding stage must supply it before retirement writes
         // x27.
         memory_probe_active = 1'b1;
+        memory_probe_retired = 0;
         memory_probe_last_rd = 5'd0;
         memory_probe_last_wdata = 64'd0;
+        if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin
+            tomasulo_load_forward_probe_active = 1'b1;
+            saw_tomasulo_load_forward_accept = 1'b0;
+            saw_tomasulo_load_forward_without_writeback = 1'b0;
+            load_completion_cycle = -1;
+        end
         decode_payload = {3*IW{1'b0}};
         decode_payload[0 +: IW] = load_packet(28, 0, 27, 64'h100);
         decode_payload[IW +: IW] =
@@ -1123,6 +1569,8 @@ module tb_backend_3p_banked #(
 
         mem_resp_tag = probe_load_tag;
         mem_rdata = 64'h1122_3344_5566_7788;
+        if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)
+            force dut.gpr_write_ack = 3'b000;
         mem_resp_valid = 1'b1;
         for (cycles = 0; (cycles < 20) && !mem_resp_ready;
              cycles = cycles + 1)
@@ -1131,6 +1579,18 @@ module tb_backend_3p_banked #(
             fail("MEM0 forwarding probe response was not accepted");
         tick();
         mem_resp_valid = 1'b0;
+
+        if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin
+            for (cycles = 0;
+                 (cycles < 20) && !saw_tomasulo_load_forward_accept;
+                 cycles = cycles + 1)
+                tick();
+            if (!saw_tomasulo_load_forward_accept)
+                fail("dependent ALU was not accepted from load completion");
+            if (!saw_tomasulo_load_forward_without_writeback)
+                fail("load dependent waited for physical writeback ack");
+            release dut.gpr_write_ack;
+        end
 
         for (cycles = 0;
              (cycles < 100) && ((memory_probe_retired < 2) ||
@@ -1150,6 +1610,7 @@ module tb_backend_3p_banked #(
         if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
             (write_busy != 0))
             fail("MEM0 forwarding probe did not drain cleanly");
+        tomasulo_load_forward_probe_active = 1'b0;
         memory_probe_active = 1'b0;
 
         // Tomasulo JALR is a recoverable speculative cut, not a retirement
@@ -1230,6 +1691,432 @@ module tb_backend_3p_banked #(
             if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
                 (write_busy != 0) || barrier_active)
                 fail("JALR speculation probe did not drain cleanly");
+            memory_probe_active = 1'b0;
+        end
+
+        // Let a younger load pass an older store whose address is still
+        // waiting on an outstanding load.  The younger load deliberately
+        // consumes stale data.  When the store's base wakes and translation
+        // resolves to the same physical 8-byte granule, selective recovery
+        // must preserve the store and independent ALU work between it and the
+        // violating load, discard that load and its executed dependent, and
+        // redirect to the load itself.
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (SPECULATION_WINDOW != 0)) begin
+            memory_probe_active = 1'b1;
+            memory_replay_probe_active = 1'b1;
+            memory_probe_retired = 0;
+            memory_probe_last_rd = 5'd0;
+            memory_probe_last_wdata = 64'd0;
+            replay_watch_count_before = dut.perf_memory_load_watches_q;
+            replay_check_count_before =
+                dut.perf_memory_store_address_checks_q;
+            replay_violation_count_before =
+                dut.perf_memory_store_violations_q;
+            replay_count_before = dut.perf_memory_replays_q;
+
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                load_packet(70, 0, 27, 64'h280);
+            decode_payload[IW +: IW] =
+                store_packet(71, 27, 0, 64'h0);
+            decode_payload[2*IW +: IW] =
+                addi_packet(72, 0, 29, 64'd99, 1'b0);
+            decode_uses_rs1 = 3'b111;
+            decode_uses_rs2 = 3'b010;
+            decode_valid = 3'b111;
+            while (decode_ready != 3'b111)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+            decode_uses_rs2 = 3'b000;
+
+            for (cycles = 0; (cycles < 40) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || mem_write || !mem_physical ||
+                (mem_addr != 64'h280))
+                fail("replay probe did not launch its oldest load first");
+            replay_head_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+
+            // The return-driven policy is intentionally narrower than a
+            // global load stop: it only restores the unresolved-store guard.
+            inhibit_load_speculation = 1'b1;
+            repeat (2) begin
+                #1;
+                if (mem_valid)
+                    fail("load passed unresolved store while inhibited");
+                tick();
+            end
+            inhibit_load_speculation = 1'b0;
+
+            decode_payload[0 +: IW] =
+                load_packet(73, 0, 28, 64'h200);
+            decode_payload[IW +: IW] =
+                addi_packet(74, 28, 30, 64'd1, 1'b0);
+            decode_uses_rs1 = 3'b011;
+            decode_valid = 3'b011;
+            while (decode_ready[1:0] != 2'b11)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+
+            for (cycles = 0; (cycles < 40) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || mem_write || !mem_physical ||
+                (mem_addr != 64'h200)) begin
+                $display({"memory replay bypass valid=%b write=%b addr=%h ",
+                          "dispatch=%0d retire=%0d issue=%b"},
+                         mem_valid, mem_write, mem_addr,
+                         dispatch_occupancy, retire_occupancy, issue_valid);
+                fail("younger load did not pass the address-blocked store");
+            end
+            replay_wrong_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+
+            mem_resp_tag = replay_wrong_load_tag;
+            mem_rdata = 64'h1111_1111_1111_1111;
+            mem_resp_valid = 1'b1;
+            for (cycles = 0; (cycles < 20) && !mem_resp_ready;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_resp_ready)
+                fail("speculative stale load response was not accepted");
+            tick();
+            mem_resp_valid = 1'b0;
+            // Give the stale load value time to wake and execute its younger
+            // dependent before the older store reveals the violation.
+            repeat (2) tick();
+
+            // Supplying the older producer wakes the store's address operand.
+            // Its now-successful translation must find the retained younger
+            // physical-load watch and request selective replay.
+            mem_resp_tag = replay_head_load_tag;
+            mem_rdata = 64'h200;
+            mem_resp_valid = 1'b1;
+            for (cycles = 0; (cycles < 20) && !mem_resp_ready;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_resp_ready)
+                fail("replay probe head-load response was not accepted");
+            tick();
+            mem_resp_valid = 1'b0;
+
+            for (cycles = 0; (cycles < 60) && !redirect_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!redirect_valid)
+                fail("physical store/load collision did not request replay");
+            if (redirect_target != (64'h1000 + (64'd73 << 2))) begin
+                $display("memory replay id=%0d target=%h",
+                         redirect_id, redirect_target);
+                fail("memory collision replay did not target the violating load");
+            end
+            if ((dut.perf_memory_store_address_checks_q !=
+                 replay_check_count_before + 1'b1) ||
+                (dut.perf_memory_store_violations_q !=
+                 replay_violation_count_before + 1'b1))
+                fail("memory replay event counters did not classify collision");
+
+            squash = 1'b1;
+            tick();
+            squash = 1'b0;
+
+            for (cycles = 0; (cycles < 60) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || !mem_write || !mem_physical ||
+                (mem_addr != 64'h200))
+                fail("selective replay did not preserve the older store");
+            replay_store_tag = mem_tag;
+            mem_ready = 1'b1;
+            #1;
+            if (!dut.u_exec.g_3p.u_exec.u_lsu
+                    .posted_store_complete_bypass ||
+                !dut.completion_fire[2] ||
+                (dut.complete_id[
+                    2*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH] !=
+                 dut.ordered_head_id)) begin
+                $display({"store bypass state bypass=%b qvalid=%b ",
+                          "lsqvalid=%b posted=%b ready=%b ",
+                          "complete=%b fire=%b id=%0d"},
+                         dut.u_exec.g_3p.u_exec.u_lsu
+                            .posted_store_complete_bypass,
+                         dut.u_exec.g_3p.u_exec.u_lsu.complete_valid_q,
+                         dut.u_exec.g_3p.u_exec.u_lsu.lsq_result_valid,
+                         dut.u_exec.g_3p.u_exec.u_lsu
+                            .lsq_result_posted_store,
+                         dut.u_exec.g_3p.u_exec.u_lsu.complete_ready_i,
+                         dut.complete_valid, dut.completion_fire,
+                         dut.complete_id[
+                            2*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH]);
+                fail("accepted posted store did not bypass to ROB completion");
+            end
+            tick();
+            mem_ready = 1'b0;
+
+            mem_store_done_tag = replay_store_tag;
+            mem_store_done_valid = 1'b1;
+            for (cycles = 0; (cycles < 20) && !mem_store_done_ready;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_store_done_ready)
+                fail("replay probe store-done tag was not accepted");
+            tick();
+            mem_store_done_valid = 1'b0;
+
+            // Model the refetch at the violating load and return the value
+            // written by the preserved store.  The original stale physical
+            // destination must not be architecturally visible.
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                load_packet(73, 0, 28, 64'h200);
+            decode_payload[IW +: IW] =
+                addi_packet(74, 28, 30, 64'd1, 1'b0);
+            decode_uses_rs1 = 3'b011;
+            decode_valid = 3'b011;
+            while (decode_ready[1:0] != 2'b11)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+
+            for (cycles = 0; (cycles < 40) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || mem_write || (mem_addr != 64'h200))
+                fail("replayed load did not relaunch after the store");
+            probe_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+            mem_resp_tag = probe_load_tag;
+            mem_rdata = 64'h0;
+            mem_resp_valid = 1'b1;
+            for (cycles = 0; (cycles < 20) && !mem_resp_ready;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_resp_ready)
+                fail("replayed load response was not accepted");
+            tick();
+            mem_resp_valid = 1'b0;
+
+            for (cycles = 0;
+                 (cycles < 120) &&
+                 ((memory_probe_retired < 5) ||
+                  (dispatch_occupancy != 0) ||
+                  (retire_occupancy != 0));
+                 cycles = cycles + 1)
+                tick();
+            repeat (2) tick();
+            if ((memory_probe_retired != 5) ||
+                (memory_probe_last_rd != 5'd30) ||
+                (memory_probe_last_wdata != 64'h1))
+                fail("memory replay retired stale or incomplete state");
+            if (dut.perf_memory_replays_q != replay_count_before + 1'b1)
+                fail("memory replay counter did not record redirect");
+            if (dut.perf_memory_load_watches_q <
+                replay_watch_count_before + 3)
+                fail("memory replay did not retain all physical load accesses");
+            if ((dut.perf_memory_replay_preserved_entries_q != 1) ||
+                (dut.perf_memory_replay_distance_2_q != 1))
+                fail("memory replay did not preserve the store-to-load gap");
+            if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
+                (write_busy != 0) || barrier_active)
+                fail("memory replay probe did not drain cleanly");
+            memory_replay_probe_active = 1'b0;
+            memory_probe_active = 1'b0;
+        end
+
+        // The same recovery contract must cover an address-blocked store
+        // later found to be misaligned.  Its component engine reports each
+        // accepted physical 8-byte granule; the component overlapping the
+        // speculative load must cause exactly one replay.
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (SPECULATION_WINDOW != 0)) begin
+            memory_probe_active = 1'b1;
+            memory_replay_probe_active = 1'b1;
+            memory_probe_retired = 0;
+            memory_probe_last_rd = 5'd0;
+            memory_probe_last_wdata = 64'd0;
+            replay_store_component_count = 0;
+            replay_watch_count_before = dut.perf_memory_load_watches_q;
+            replay_check_count_before =
+                dut.perf_memory_store_address_checks_q;
+            replay_violation_count_before =
+                dut.perf_memory_store_violations_q;
+            replay_count_before = dut.perf_memory_replays_q;
+
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                load_packet(73, 0, 27, 64'h300);
+            decode_payload[IW +: IW] =
+                store_packet(74, 27, 0, 64'h0);
+            decode_payload[2*IW +: IW] =
+                load_packet(75, 0, 28, 64'h208);
+            decode_uses_rs1 = 3'b111;
+            decode_uses_rs2 = 3'b010;
+            decode_valid = 3'b111;
+            while (decode_ready != 3'b111)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+            decode_uses_rs2 = 3'b000;
+
+            for (cycles = 0; (cycles < 40) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || mem_write || (mem_addr != 64'h300))
+                fail("misaligned replay probe did not launch base load");
+            replay_head_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+
+            for (cycles = 0; (cycles < 40) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || mem_write || (mem_addr != 64'h208))
+                fail("load did not pass address-unknown misaligned store");
+            replay_wrong_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+
+            mem_resp_tag = replay_wrong_load_tag;
+            mem_rdata = 64'h5555_5555_5555_5555;
+            mem_resp_valid = 1'b1;
+            while (!mem_resp_ready)
+                tick();
+            tick();
+            mem_resp_valid = 1'b0;
+
+            // Wake the store base with a deliberately misaligned address.
+            mem_resp_tag = replay_head_load_tag;
+            mem_rdata = 64'h203;
+            mem_resp_valid = 1'b1;
+            while (!mem_resp_ready)
+                tick();
+            tick();
+            mem_resp_valid = 1'b0;
+
+            // SD at 0x203 decomposes into 1B@203, 4B@204, 2B@208,
+            // and 1B@20a.  The third component first overlaps the watched
+            // 0x208 load granule.
+            for (replay_store_component_count = 0;
+                 replay_store_component_count < 4;
+                 replay_store_component_count =
+                    replay_store_component_count + 1) begin
+                for (cycles = 0; (cycles < 80) && !mem_valid;
+                     cycles = cycles + 1)
+                    tick();
+                if (!mem_valid || !mem_write)
+                    fail("misaligned replay store component did not launch");
+                case (replay_store_component_count)
+                    0: if (mem_addr != 64'h203)
+                           fail("wrong first misaligned store component");
+                    1: if (mem_addr != 64'h204)
+                           fail("wrong second misaligned store component");
+                    2: if (mem_addr != 64'h208)
+                           fail("wrong third misaligned store component");
+                    default: if (mem_addr != 64'h20a)
+                           fail("wrong fourth misaligned store component");
+                endcase
+                replay_store_tag = mem_tag;
+                mem_ready = 1'b1;
+                tick();
+                mem_ready = 1'b0;
+
+                if (replay_store_component_count == 2) begin
+                    if (!redirect_valid)
+                        fail("misaligned physical collision did not replay");
+                    if (redirect_target !=
+                        (64'h1000 + (64'd75 << 2)))
+                        fail("misaligned replay targeted wrong instruction");
+                    squash = 1'b1;
+                end else if (redirect_valid) begin
+                    fail("nonoverlapping misaligned component replayed load");
+                end
+
+                mem_store_done_tag = replay_store_tag;
+                mem_store_done_valid = 1'b1;
+                while (!mem_store_done_ready)
+                    tick();
+                tick();
+                mem_store_done_valid = 1'b0;
+                squash = 1'b0;
+            end
+
+            if ((dut.perf_memory_store_address_checks_q !=
+                 replay_check_count_before + 4) ||
+                (dut.perf_memory_store_violations_q !=
+                 replay_violation_count_before + 1) ||
+                (dut.perf_memory_replays_q != replay_count_before + 1))
+                fail("misaligned replay counters classified components wrong");
+
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                load_packet(75, 0, 28, 64'h208);
+            decode_uses_rs1 = 3'b001;
+            decode_valid = 3'b001;
+            while (!decode_ready[0])
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+
+            for (cycles = 0; (cycles < 40) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || mem_write || (mem_addr != 64'h208))
+                fail("load did not relaunch after misaligned store replay");
+            probe_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+            mem_resp_tag = probe_load_tag;
+            mem_rdata = 64'h0;
+            mem_resp_valid = 1'b1;
+            while (!mem_resp_ready)
+                tick();
+            tick();
+            mem_resp_valid = 1'b0;
+
+            for (cycles = 0;
+                 (cycles < 160) &&
+                 ((memory_probe_retired < 3) ||
+                  (dispatch_occupancy != 0) ||
+                  (retire_occupancy != 0));
+                 cycles = cycles + 1)
+                tick();
+            repeat (2) tick();
+            if ((memory_probe_retired != 3) ||
+                (memory_probe_last_rd != 5'd28) ||
+                (memory_probe_last_wdata != 64'h0))
+                fail("misaligned replay retired stale state");
+            if (dut.perf_memory_load_watches_q <
+                replay_watch_count_before + 3)
+                fail("misaligned replay lost physical load watches");
+            if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
+                (write_busy != 0) || barrier_active)
+                fail("misaligned replay probe did not drain cleanly");
+            memory_replay_probe_active = 1'b0;
             memory_probe_active = 1'b0;
         end
 

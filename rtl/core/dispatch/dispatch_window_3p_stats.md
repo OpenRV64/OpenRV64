@@ -6,6 +6,76 @@ Do not treat structural depth as physical timing.
 
 <!-- module-statistics-entries: newest-first -->
 
+<!-- module-statistics-entry:start id=fpga-xc7k480t-module-stats-window-identity32-20260902T051848Z:openrv64_dispatch_window_3p -->
+## 2026-09-02T05:18:52+00:00 — `fpga-xc7k480t-module-stats-window-identity32-20260902T051848Z`
+
+| Build field | Value |
+|---|---|
+| Status | **failed** |
+| Module | `openrv64_dispatch_window_3p` |
+| RTL source | `rtl/core/dispatch/dispatch_window_3p.v` |
+| Profile | `xc7k480t-3p-linux` — Standalone module-local XC7 mappings for the full single-hart 3P Linux profile. |
+| Synthesis boundary | This module is the standalone top; only logic below this boundary is flattened. |
+| Target | Generic Xilinx 7-series primitives (`xc7`); no part-specific placement or routing |
+| Git commit | `e360d89c53551354a10e50f35fd2ba54143a4a26` |
+| Worktree | `dirty` |
+| RTL input SHA-256 | `63428eadf2b3b3ec4f26949fe13730e341af0e384a875e4c78ec125edc9d6e90` |
+| Tool | `Yosys 0.66 (git sha1 86f2ddebc-dirty, g++ 16.1.1 -march=x86-64 -mtune=generic -O2 -fno-plt -fexceptions -fstack-clash-protection -fcf-protection -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=/build/yosys/src=/usr/src/debug/yosys -fPIC -O3) [startdir/yosys at makepkg]` |
+| Elapsed | 16190.1 s |
+| Build log | `build/fpga/xc7k480t/module-stats-window-identity32/dispatch_window_3p/yosys.log` |
+
+### Effective parameters
+
+| Parameter | Value |
+|---|---:|
+| `CACHEABLE_BASE` | `64'h0000000080000000` |
+| `CACHEABLE_SIZE` | `64'h00ffffff80000000` |
+| `COUNT_WIDTH` | `6` |
+| `DEFER_GPR_READ` | `1` |
+| `DEPTH` | `32` |
+| `ENABLE` | `1` |
+| `ENABLE_SPECULATION` | `1` |
+| `MAX_ISSUE_LANES` | `3` |
+| `PHYSICAL_RENAME` | `0` |
+| `PHYS_REG_ADDR_WIDTH` | `5` |
+| `RETIRE_SLOT_WIDTH` | `5` |
+
+### Failure
+
+```text
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_ex0' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_ex1' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_mem' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_mem2' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_ex0_admit' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_ex1_admit' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_mem_admit' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_mem2_admit' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_offset' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_slot' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\selected_idx' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\selected_mem_pipe' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\selected_mem2_pipe' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\selected_age_rank' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_ex0_rank' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_ex1_rank' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_mem_rank' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\select_mem2_rank' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\checked_next_mem' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_pipe_uses_rs1' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_pipe_uses_rs2' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1669$910745'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_wait_unissued_load_count' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_wait_unissued_other_count' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_wait_inflight_load_count' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_wait_inflight_other_count' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_wait_completed_count' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\trace_wait_missing_count' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\wait_idx' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+No latch inferred for signal `\openrv64_dispatch_window_3p.\wait_found' from process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+ERROR: Latch inferred for signal `\openrv64_dispatch_window_3p.\producer_idx' from always_comb process `\openrv64_dispatch_window_3p.$proc$/home/bill/src/openrv64/rtl/core/dispatch/dispatch_window_3p.v:1565$891864'.
+```
+
+<!-- module-statistics-entry:end id=fpga-xc7k480t-module-stats-window-identity32-20260902T051848Z:openrv64_dispatch_window_3p -->
 <!-- module-statistics-entry:start id=fpga-xc7k480t-module-stats-20260827T032508Z:openrv64_dispatch_window_3p -->
 ## 2026-08-27T03:25:09+00:00 — `fpga-xc7k480t-module-stats-20260827T032508Z`
 

@@ -188,11 +188,19 @@ sim-exec-br: $(EXEC_BR_SIM_BUILD)
 	vvp $(EXEC_BR_SIM_BUILD)
 
 sim-exec-bp: $(EXEC_BP_SIM_BUILD) $(EXEC_BP_GSHARE_BTB_SIM_BUILD) \
-	$(EXEC_BP_TAGGED_SPEC_SIM_BUILD) $(EXEC_BP_MODES78_SIM_BUILD)
+	$(EXEC_BP_TAGGED_SPEC_SIM_BUILD) $(EXEC_BP_MODES78_SIM_BUILD) \
+	$(EXEC_BP_TAGE_SIM_BUILD)
 	vvp $(EXEC_BP_SIM_BUILD)
 	vvp $(EXEC_BP_GSHARE_BTB_SIM_BUILD)
 	vvp $(EXEC_BP_TAGGED_SPEC_SIM_BUILD)
 	vvp $(EXEC_BP_MODES78_SIM_BUILD)
+	vvp $(EXEC_BP_TAGE_SIM_BUILD)
+
+sim-exec-bp-basic: $(EXEC_BP_SIM_BUILD)
+	vvp $(EXEC_BP_SIM_BUILD)
+
+sim-exec-bp-tage: $(EXEC_BP_TAGE_SIM_BUILD)
+	vvp $(EXEC_BP_TAGE_SIM_BUILD)
 
 sim-exec-fpu-rv64-fd: $(EXEC_FPU_RV64FD_SIM_BUILD) \
 		$(EXEC_FPU_RV64FD_COMPACT_MUL_SIM_BUILD)
@@ -242,7 +250,7 @@ sim-bp-context: sim-bp-context-always-branch sim-bp-context-no-predecode \
 	sim-bp-context-always-decline sim-bp-context-repeat-last \
 	sim-bp-context-btfnt sim-bp-context-bimodal \
 	sim-bp-context-gshare-btb sim-bp-context-gshare-btb-512 \
-	sim-bp-context-tournament-btb
+	sim-bp-context-tournament-btb sim-bp-context-tage-btb
 
 sim-bp-context-always-branch: $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
 	vvp $(BP_CONTEXT_ALWAYS_BRANCH_SIM_BUILD)
@@ -270,6 +278,13 @@ sim-bp-context-gshare-btb-512: $(BP_CONTEXT_GSHARE_BTB_512_SIM_BUILD)
 
 sim-bp-context-tournament-btb: $(BP_CONTEXT_TOURNAMENT_BTB_SIM_BUILD)
 	vvp $(BP_CONTEXT_TOURNAMENT_BTB_SIM_BUILD)
+
+sim-bp-context-tage-btb: $(BP_CONTEXT_TAGE_BTB_SIM_BUILD)
+	vvp $(BP_CONTEXT_TAGE_BTB_SIM_BUILD)
+
+sim-bp-context-tage-btb-nopredecode: \
+		$(BP_CONTEXT_TAGE_BTB_NOPREDECODE_SIM_BUILD)
+	vvp $(BP_CONTEXT_TAGE_BTB_NOPREDECODE_SIM_BUILD)
 
 sim-bp-context-fpga-queue: $(BP_CONTEXT_FPGA_QUEUE_SIM_BUILD)
 	vvp $(BP_CONTEXT_FPGA_QUEUE_SIM_BUILD)

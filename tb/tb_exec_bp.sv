@@ -59,6 +59,7 @@ module tb_exec_bp;
     logic ras4_decode;
     logic ras4_target_valid;
     logic [63:0] ras4_target;
+    logic ras4_load_inhibit;
     logic bimodal_prediction;
     logic bimodal_weak;
     logic bimodal_fetch;
@@ -71,6 +72,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
@@ -103,6 +105,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
@@ -135,6 +138,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
@@ -167,6 +171,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
@@ -199,6 +204,7 @@ module tb_exec_bp;
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch),
@@ -233,6 +239,7 @@ module tb_exec_bp;
         .RAS_DEPTH(4)
     ) u_btfnt_no_ras (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch), .lookup_jump_i(lookup_jump),
@@ -263,6 +270,7 @@ module tb_exec_bp;
         .RAS_DEPTH(4)
     ) u_btfnt_ras4 (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch), .lookup_jump_i(lookup_jump),
@@ -283,7 +291,8 @@ module tb_exec_bp;
         .prediction_taken_o(ras4_prediction),
         .prediction_target_valid_o(ras4_target_valid),
         .prediction_target_o(ras4_target), .target_mispredict_o(),
-        .fetch_stall_o(ras4_fetch), .decode_stall_o(ras4_decode)
+        .fetch_stall_o(ras4_fetch), .decode_stall_o(ras4_decode),
+        .inhibit_load_speculation_o(ras4_load_inhibit)
     );
 
     openrv64_exec_bp #(
@@ -294,6 +303,7 @@ module tb_exec_bp;
         .BIMODAL_UPDATE_DEPTH(4)
     ) u_bimodal (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(1'b0),
+        .recovery_i(1'b0), .recovery_id_i(10'd0),
         .ras_context_flush_i(ras_context_flush),
         .lookup_valid_i(lookup_valid),
         .lookup_branch_i(lookup_branch), .lookup_jump_i(lookup_jump),
@@ -553,6 +563,21 @@ module tb_exec_bp;
         @(posedge clk);
         @(negedge clk);
         clear_resolve();
+
+        // The resolved RET holds the conservative LSU hint for exactly four
+        // complete cycles.  The resolve edge itself loads the interval.
+        if (!ras4_load_inhibit)
+            $fatal(1, "resolved RET did not start load-speculation inhibit");
+        repeat (3) begin
+            @(posedge clk);
+            @(negedge clk);
+            if (!ras4_load_inhibit)
+                $fatal(1, "RET load-speculation inhibit ended early");
+        end
+        @(posedge clk);
+        @(negedge clk);
+        if (ras4_load_inhibit)
+            $fatal(1, "RET load-speculation inhibit exceeded four cycles");
 
         lookup_valid = 1'b1;
         lookup_jump = 1'b1;

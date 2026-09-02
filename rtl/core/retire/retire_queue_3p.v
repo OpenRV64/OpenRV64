@@ -12,6 +12,7 @@ module openrv64_retire_queue_3p #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_younger_i,
+    input  wire                         squash_inclusive_i,
     input  wire [ID_WIDTH-1:0]          squash_id_i,
     input  wire [INDEX_WIDTH-1:0]       squash_slot_i,
 
@@ -142,7 +143,9 @@ module openrv64_retire_queue_3p #(
                 complete_port*ID_WIDTH +: ID_WIDTH];
             assign complete_match_o[complete_port] =
                 (!squash_younger_i ||
-                 !id_is_younger(completion_id, squash_id_i)) &&
+                 (!(squash_inclusive_i &&
+                    (completion_id == squash_id_i)) &&
+                  !id_is_younger(completion_id, squash_id_i))) &&
                 valid_q[completion_slot] &&
                 (id_q[completion_slot] == completion_id);
             assign complete_accept_o[complete_port] =
@@ -156,7 +159,9 @@ module openrv64_retire_queue_3p #(
             assign extension_complete_accept_o =
                 extension_complete_valid_i &&
                 (!squash_younger_i ||
-                 !id_is_younger(extension_complete_id_i, squash_id_i)) &&
+                 (!(squash_inclusive_i &&
+                    (extension_complete_id_i == squash_id_i)) &&
+                  !id_is_younger(extension_complete_id_i, squash_id_i))) &&
                 valid_q[extension_complete_slot_i] &&
                 (id_q[extension_complete_slot_i] ==
                  extension_complete_id_i);
@@ -205,11 +210,15 @@ module openrv64_retire_queue_3p #(
         end
     endfunction
 
-    // A selective recovery names the live branch slot.  Live queue entries
-    // are contiguous in ring order, so the retained count is a slot distance;
-    // it does not require a depth-wide ID/validity scan.
-    wire [COUNT_WIDTH-1:0] squash_keep_count =
+    // A selective recovery names a live cut slot.  Branch cuts retain the
+    // named instruction; memory replay cuts discard the named load as well.
+    // Live queue entries are contiguous in ring order, so the retained count
+    // is a slot distance; it does not require a depth-wide ID/validity scan.
+    wire [COUNT_WIDTH-1:0] squash_keep_count_through =
         prefix_count_through(head_q, squash_slot_i);
+    wire [COUNT_WIDTH-1:0] squash_keep_count =
+        squash_keep_count_through -
+        {{(COUNT_WIDTH-1){1'b0}}, squash_inclusive_i};
 
     integer entry_idx;
     integer port_idx;
@@ -248,7 +257,8 @@ module openrv64_retire_queue_3p #(
             end
 
             if (squash_younger_i) begin
-                tail_q <= index_add(squash_slot_i, 2'd1);
+                tail_q <= squash_inclusive_i ? squash_slot_i :
+                    index_add(squash_slot_i, 2'd1);
                 count_q <= squash_keep_count - retire_count;
             end else begin
                 count_q <= count_q + alloc_fire_count - retire_count;
@@ -296,7 +306,9 @@ module openrv64_retire_queue_3p #(
                 for (entry_idx = 0; entry_idx < DEPTH;
                      entry_idx = entry_idx + 1) begin
                     if (valid_q[entry_idx] &&
-                        id_is_younger(id_q[entry_idx], squash_id_i)) begin
+                        ((squash_inclusive_i &&
+                          (id_q[entry_idx] == squash_id_i)) ||
+                         id_is_younger(id_q[entry_idx], squash_id_i))) begin
                         valid_q[entry_idx] <= 1'b0;
                         complete_q[entry_idx] <= 1'b0;
                     end
@@ -337,6 +349,13 @@ module openrv64_retire_queue_3p #(
                 (!valid_q[squash_slot_i] ||
                  (id_q[squash_slot_i] != squash_id_i)))
                 $fatal(1, "selective squash did not name a live queue entry");
+
+            if (squash_younger_i && (retire_count > squash_keep_count))
+                $fatal(1,
+                       "selective squash retired beyond retained prefix keep=%0d retire=%0d count=%0d head=%0d squash_slot=%0d squash_id=%0d retire_valid=%b retire_accept=%b retire_ids=%h",
+                       squash_keep_count, retire_count, count_q, head_q,
+                       squash_slot_i, squash_id_i, retire_valid_o,
+                       retire_accept_i, retire_id_o);
         end
     end
 `endif

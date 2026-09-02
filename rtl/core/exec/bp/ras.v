@@ -10,7 +10,11 @@
 module openrv64_exec_bp_ras #(
     parameter integer DEPTH = 8,
     parameter integer INDEX_WIDTH = $clog2(DEPTH),
-    parameter integer COUNT_WIDTH = $clog2(DEPTH + 1)
+    parameter integer COUNT_WIDTH = $clog2(DEPTH + 1),
+    parameter integer LOAD_SPECULATION_INHIBIT_CYCLES = 4,
+    parameter integer INHIBIT_COUNT_WIDTH =
+        (LOAD_SPECULATION_INHIBIT_CYCLES < 2) ? 1 :
+        $clog2(LOAD_SPECULATION_INHIBIT_CYCLES + 1)
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -27,13 +31,15 @@ module openrv64_exec_bp_ras #(
     input  wire [`RV64_XLEN-1:0]        resolve_pc_i,
 
     output wire                         prediction_valid_o,
-    output wire [`RV64_XLEN-1:0]        prediction_target_o
+    output wire [`RV64_XLEN-1:0]        prediction_target_o,
+    output wire                         inhibit_load_speculation_o
 );
 
     reg [`RV64_XLEN-1:0] stack_q [0:DEPTH-1];
     reg [INDEX_WIDTH-1:0] sp_q;
     reg [COUNT_WIDTH-1:0] count_q;
     reg [COUNT_WIDTH-1:0] pending_calls_q;
+    reg [INHIBIT_COUNT_WIDTH-1:0] inhibit_load_count_q;
 
     function automatic is_link_reg;
         input [`RV64_REG_ADDR_WIDTH-1:0] reg_addr;
@@ -69,11 +75,16 @@ module openrv64_exec_bp_ras #(
                        (!resolve_rd_link ||
                         (`RV64_RD(resolve_instr_i) !=
                          `RV64_RS1(resolve_instr_i)));
+    // Use the same architectural hint as lookup_return.  Coroutine pop/push
+    // JALRs update the stack but are not plain returns for this policy.
+    wire resolve_return = resolve_valid_i && resolve_is_jalr &&
+                          resolve_rs1_link && !resolve_rd_link;
 
     wire [INDEX_WIDTH-1:0] top_index = sp_q - 1'b1;
     assign prediction_valid_o = lookup_return && (count_q != 0) &&
                                 (pending_calls_q == 0);
     assign prediction_target_o = stack_q[top_index];
+    assign inhibit_load_speculation_o = |inhibit_load_count_q;
 
     wire pending_call_allocate = lookup_allocate_i && lookup_call;
     wire pending_call_resolve = resolve_push && (pending_calls_q != 0);
@@ -84,6 +95,7 @@ module openrv64_exec_bp_ras #(
             sp_q <= {INDEX_WIDTH{1'b0}};
             count_q <= {COUNT_WIDTH{1'b0}};
             pending_calls_q <= {COUNT_WIDTH{1'b0}};
+            inhibit_load_count_q <= {INHIBIT_COUNT_WIDTH{1'b0}};
             for (reset_index = 0; reset_index < DEPTH;
                  reset_index = reset_index + 1)
                 stack_q[reset_index] <= {`RV64_XLEN{1'b0}};
@@ -94,7 +106,19 @@ module openrv64_exec_bp_ras #(
             sp_q <= {INDEX_WIDTH{1'b0}};
             count_q <= {COUNT_WIDTH{1'b0}};
             pending_calls_q <= {COUNT_WIDTH{1'b0}};
+            inhibit_load_count_q <= {INHIBIT_COUNT_WIDTH{1'b0}};
         end else begin
+            // A resolved return starts a short conservative interval for the
+            // target stream.  It wins over squash because a mispredicted
+            // return redirects to exactly the stream that needs the guard.
+            // An unrelated squash invalidates a wrong-path interval.
+            if (resolve_return)
+                inhibit_load_count_q <= LOAD_SPECULATION_INHIBIT_CYCLES;
+            else if (squash_i)
+                inhibit_load_count_q <= {INHIBIT_COUNT_WIDTH{1'b0}};
+            else if (inhibit_load_count_q != 0)
+                inhibit_load_count_q <= inhibit_load_count_q - 1'b1;
+
             if (squash_i)
                 pending_calls_q <= {COUNT_WIDTH{1'b0}};
             else begin

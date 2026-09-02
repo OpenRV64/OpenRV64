@@ -8,7 +8,8 @@ module tb_lsq;
     localparam integer TAGW = `OPENRV64_LSU_TAG_WIDTH;
     localparam integer METAW = 8;
 
-    logic clk, rst_n, flush, squash_younger, translation_bypass;
+    logic clk, rst_n, flush, squash_younger, squash_inclusive;
+    logic translation_bypass;
     logic [IDW-1:0] squash_id;
     logic l_valid, l_immediate, l_input_fault;
     wire l_ready;
@@ -60,7 +61,8 @@ module tb_lsq;
     logic [TAGW-1:0] store_done_tag;
     wire store_done_ready;
     wire result_valid, result_access_fault, result_page_fault;
-    wire result_store, store_pending, quiescent, empty;
+    wire result_store, result_posted_store;
+    wire store_pending, quiescent, empty;
     logic result_ready;
     wire [IDW-1:0] result_id;
     wire [2:0] result_slot;
@@ -77,8 +79,10 @@ module tb_lsq;
         .CACHEABLE_SIZE(64'h1_0000)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
-        .squash_younger_i(squash_younger), .squash_id_i(squash_id),
+        .squash_younger_i(squash_younger),
+        .squash_inclusive_i(squash_inclusive), .squash_id_i(squash_id),
         .translation_bypass_i(translation_bypass),
+        .inhibit_load_speculation_i(1'b0),
         .load_alloc_valid_i(l_valid), .load_alloc_ready_o(l_ready),
         .load_alloc_id_i(l_id), .load_alloc_slot_i(l_slot),
         .load_alloc_meta_i(l_meta), .load_alloc_immediate_i(l_immediate),
@@ -133,7 +137,9 @@ module tb_lsq;
         .result_meta_o(result_meta), .result_rdata_o(result_rdata),
         .result_access_fault_o(result_access_fault),
         .result_page_fault_o(result_page_fault),
-        .result_store_o(result_store), .store_pending_o(store_pending),
+        .result_store_o(result_store),
+        .result_posted_store_o(result_posted_store),
+        .store_pending_o(store_pending),
         .quiescent_o(quiescent),
         .empty_o(empty)
     );
@@ -352,6 +358,13 @@ module tb_lsq;
                     result_rdata, data,
                     result_access_fault, result_page_fault,
                     access_fault, page_fault);
+            if (is_store && !access_fault && !page_fault &&
+                !result_posted_store)
+                $fatal(1,
+                    "accepted cacheable store result was not marked posted id=%0d",
+                    id);
+            if (!is_store && result_posted_store)
+                $fatal(1, "load result was marked posted id=%0d", id);
             result_ready = 1'b1;
             tick();
             result_ready = 1'b0;
@@ -392,7 +405,7 @@ module tb_lsq;
     reg [63:0] perf_block_before;
     initial begin
         clk = 0; rst_n = 0; flush = 0;
-        squash_younger = 0; squash_id = 0;
+        squash_younger = 0; squash_inclusive = 0; squash_id = 0;
         translation_bypass = 0;
         l_valid = 0; l_id = 0; l_slot = 0; l_meta = 0;
         l_immediate = 0; l_input_fault = 0; l_vaddr = 0; l_size = 0;
@@ -822,23 +835,26 @@ module tb_lsq;
 
         reset_dut();
 
-        // A cache-line guard is intentionally coarser than byte forwarding.
-        // Same-line disjoint words wait until the older store drains.
+        // A translated cacheable load may pass an older store before either
+        // reaches retirement when their exact physical 8-byte granules differ.
+        // Keeping both addresses in one line catches accidental cache-line or
+        // folded-hash blocking.
         translation_bypass = 1'b1;
         alloc_store(IDW'(4), 3'd4, 64'h7000, 3'd3,
                     64'h1111_2222_3333_4444, 8'hff);
         alloc_load(IDW'(5), 3'd5, 64'h7008, 3'd3);
         #1;
-        if (req_valid && !req_write)
-            $fatal(1, "same-line load passed store guard");
+        if (!req_valid || req_write || req_addr != 64'h7008)
+            $fatal(1,
+                "different-granule load did not pass before retire head");
+        take_req(1'b0, 64'h7008, lt);
+        respond_result(lt, 64'h7008, 64'h0123_4567_89ab_cdef,
+                       IDW'(5), 0, 64'h0123_4567_89ab_cdef);
         head_valid = 1'b1; head_id = IDW'(4); head_slot = 3'd4;
         take_req(1'b1, 64'h7000, st);
         take_result(IDW'(4), 1, 0, 0, 0);
         complete_store(st);
         head_valid = 1'b0;
-        take_req(1'b0, 64'h7008, lt);
-        respond_result(lt, 64'h7008, 64'h0123_4567_89ab_cdef,
-                       IDW'(5), 0, 64'h0123_4567_89ab_cdef);
         translation_bypass = 1'b0;
         flush = 1; tick(); flush = 0;
 
@@ -1031,7 +1047,7 @@ module tb_lsq;
         head_valid = 1'b0;
         req_ready = 1'b0;
 
-        $display("PASS: four-load table, hashed store guards, ordering, faults, and selective recovery");
+        $display("PASS: four-load table, exact 8-byte store guards, ordering, faults, and selective recovery");
         $finish;
     end
 

@@ -3,10 +3,13 @@
 `include "core/isa/rv64-i.v"
 `include "core/except/except-defs.v"
 
-// Banked retirement boundary.  At most two queue entries retire.  Different-
-// bank GPR writes issue together; a same-bank pair issues and retires its older
-// lane first so the younger entry slides to the head on the following cycle.
-// Unexpectedly withheld requests are retained in a retry skid.
+// Banked retirement boundary.  Direct architectural-GPR retirement remains
+// two-wide: different-bank writes issue together, while a same-bank pair
+// issues and retires its older lane first so the younger entry slides to the
+// head on the following cycle.  Tomasulo writes the PRF at completion and
+// therefore bypasses this write boundary; that mode may retire all three
+// queue lanes.  Unexpectedly withheld write requests are retained in a retry
+// skid.
 // The underlying retirement module still owns exceptions, CSRs, trace, and
 // architectural release; this wrapper only delays its acceptance boundary.
 module openrv64_retire_3p_banked #(
@@ -67,8 +70,8 @@ module openrv64_retire_3p_banked #(
     // tag when the lane retired on an exception.  Under identity rename
     // both tags equal rd; the free list saturates harmlessly until real
     // allocation pops it.
-    output wire [1:0]                   free_valid_o,
-    output wire [2*PHYS_REG_ADDR_WIDTH-1:0] free_tag_o,
+    output wire [2:0]                   free_valid_o,
+    output wire [3*PHYS_REG_ADDR_WIDTH-1:0] free_tag_o,
 
     output wire                         csr_write_o,
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
@@ -172,7 +175,7 @@ module openrv64_retire_3p_banked #(
 
     genvar free_lane;
     generate
-        for (free_lane = 0; free_lane < 2;
+        for (free_lane = 0; free_lane < 3;
              free_lane = free_lane + 1) begin : g_free
             wire lane_reg_write = queue_meta_i[
                 free_lane*META_WIDTH +
@@ -242,15 +245,14 @@ module openrv64_retire_3p_banked #(
     // included in write_mask_q and therefore must wait for the next group.
     // Without this mask the inner retire block can accept that late-ready
     // lane without ever writing its destination register.
-    wire [1:0] inner_queue_mask = write_active_q ? retire_mask_q : 2'b11;
-    wire [2:0] inner_queue_valid = {
-        1'b0, queue_valid_i[1:0] & inner_queue_mask
-    };
+    wire [2:0] inner_queue_mask = write_active_q ?
+        {1'b0, retire_mask_q} :
+        ((BYPASS_GPR_WRITE != 0) ? 3'b111 : 3'b011);
+    wire [2:0] inner_queue_valid = queue_valid_i & inner_queue_mask;
     wire [1:0] lane_write_ready = write_active_q ?
         {2{writes_complete}} : direct_lane_writes_complete;
-    wire [2:0] inner_extension_ready = {
-        1'b0,
-        extension_ready[1:0] & lane_write_ready
+    wire [2:0] inner_extension_ready = extension_ready & {
+        (BYPASS_GPR_WRITE != 0), lane_write_ready
     };
     wire [2:0] inner_extension_result_valid = extension_result_valid;
     wire [2:0] inner_extension_exception = extension_exception;
@@ -398,7 +400,7 @@ module openrv64_retire_3p_banked #(
 `ifndef SYNTHESIS
     always @(posedge clk) begin
         if (rst_n && !flush_i) begin
-            if (queue_accept_o[2])
+            if ((BYPASS_GPR_WRITE == 0) && queue_accept_o[2])
                 $fatal(1, "banked retirement accepted a third lane");
             if (write_active_q && (write_mask_q == 2'b00))
                 $fatal(1, "banked retirement has an empty write group");

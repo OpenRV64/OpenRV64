@@ -31,6 +31,18 @@ module tb_retire_3p_banked;
     wire [`RV64_FUNCT3_WIDTH-1:0] csr_op;
     wire [63:0] csr_wdata;
 
+    reg [2:0] rename_queue_valid;
+    reg [3*META_WIDTH-1:0] rename_queue_meta;
+    reg [3*RESULT_WIDTH-1:0] rename_queue_result;
+    reg [191:0] rename_queue_trace;
+    wire [2:0] rename_queue_accept;
+    wire [2:0] rename_retire_arch;
+    wire [1:0] rename_retire_count;
+    wire [2:0] rename_release_valid;
+    wire [1:0] rename_gpr_write;
+    wire [2:0] rename_free_valid;
+    wire [3*PHYS_WIDTH-1:0] rename_free_tag;
+
     openrv64_retire_3p_banked dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -68,6 +80,68 @@ module tb_retire_3p_banked;
         .csr_addr_o(csr_addr),
         .csr_op_o(csr_op),
         .csr_wdata_o(csr_wdata),
+        .exception_o(),
+        .halt_o(),
+        .irq_o(),
+        .mret_o(),
+        .sret_o(),
+        .fence_i_o(),
+        .sfence_vma_o(),
+        .cause_o(),
+        .pc_o(),
+        .next_pc_o(),
+        .tval_o(),
+        .trace_id_o(),
+        .instr_o(),
+        .trace_rd_o(),
+        .trace_wdata_o()
+    );
+
+    // Tomasulo writes physical destinations at execution completion.  Its
+    // retirement boundary therefore has no architectural GPR-write handshake
+    // and may consume all three ready ROB lanes while returning three old
+    // physical tags.
+    openrv64_retire_3p_banked #(
+        .BYPASS_GPR_WRITE(1)
+    ) rename_dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .flush_i(flush),
+        .queue_valid_i(rename_queue_valid),
+        .queue_meta_i(rename_queue_meta),
+        .queue_result_i(rename_queue_result),
+        .queue_trace_id_i(rename_queue_trace),
+        .queue_accept_o(rename_queue_accept),
+        .extension_ready_i(3'b111),
+        .extension_gpr_result_valid_i(3'b000),
+        .extension_gpr_result_i(192'd0),
+        .extension_exception_i(3'b000),
+        .extension_cause_i(
+            {3*`RV64_EXCEPT_CAUSE_WIDTH{1'b0}}),
+        .extension_tval_i(192'd0),
+        .csr_write_ready_i(1'b1),
+        .irq_pending_i(1'b0),
+        .irq_cause_i({`RV64_EXCEPT_CAUSE_WIDTH{1'b0}}),
+        .retire_arch_o(rename_retire_arch),
+        .retire_count_o(rename_retire_count),
+        .retire_hard_o(),
+        .release_valid_o(rename_release_valid),
+        .release_uses_rs1_o(),
+        .release_uses_rs2_o(),
+        .release_rs1_addr_o(),
+        .release_rs2_addr_o(),
+        .release_reg_write_o(),
+        .release_rd_addr_o(),
+        .gpr_write_o(rename_gpr_write),
+        .gpr_rd_addr_o(),
+        .gpr_rd_data_o(),
+        .gpr_write_ack_i(2'b00),
+        .free_valid_o(rename_free_valid),
+        .free_tag_o(rename_free_tag),
+        .csr_write_o(),
+        .csr_addr_o(),
+        .csr_op_o(),
+        .csr_wdata_o(),
         .exception_o(),
         .halt_o(),
         .irq_o(),
@@ -165,6 +239,31 @@ module tb_retire_3p_banked;
         end
     endtask
 
+    task automatic set_rename_lane;
+        input integer lane;
+        input [4:0] rd;
+        input [PHYS_WIDTH-1:0] new_phys;
+        input [PHYS_WIDTH-1:0] old_phys;
+        input [63:0] data;
+        reg [META_WIDTH-1:0] meta;
+        reg [RESULT_WIDTH-1:0] result_value;
+        begin
+            meta = {META_WIDTH{1'b0}};
+            result_value = {RESULT_WIDTH{1'b0}};
+            meta[`OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT] = 1'b1;
+            meta[`OPENRV64_RETIRE_ALLOC_RD_LSB +: 5] = rd;
+            meta[`OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +:
+                 PHYS_WIDTH] = new_phys;
+            meta[`OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB + PHYS_WIDTH +:
+                 PHYS_WIDTH] = old_phys;
+            result_value[`OPENRV64_RETIRE_RESULT_DATA_LSB +: 64] = data;
+            rename_queue_meta[lane*META_WIDTH +: META_WIDTH] = meta;
+            rename_queue_result[lane*RESULT_WIDTH +: RESULT_WIDTH] =
+                result_value;
+            rename_queue_trace[lane*64 +: 64] = lane + 64;
+        end
+    endtask
+
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -176,6 +275,10 @@ module tb_retire_3p_banked;
         extension_ready = 3'b111;
         gpr_write_valid = 2'b00;
         csr_write_ready = 1'b1;
+        rename_queue_valid = 3'b000;
+        rename_queue_meta = {3*META_WIDTH{1'b0}};
+        rename_queue_result = {3*RESULT_WIDTH{1'b0}};
+        rename_queue_trace = 192'd0;
 
         tick();
         tick();
@@ -431,7 +534,31 @@ module tb_retire_3p_banked;
         if (gpr_write != 2'b00 || dut.write_active_q)
             fail("redirected retirement write group did not drain");
 
-        $display("PASS: banked 3P retirement isolates late-ready lanes and holds ordered GPR/CSR transactions");
+        rename_queue_meta = {3*META_WIDTH{1'b0}};
+        rename_queue_result = {3*RESULT_WIDTH{1'b0}};
+        rename_queue_trace = 192'd0;
+        set_rename_lane(0, 5'd20, PHYS_WIDTH'(20), PHYS_WIDTH'(1),
+                        64'h2020);
+        set_rename_lane(1, 5'd21, PHYS_WIDTH'(21), PHYS_WIDTH'(2),
+                        64'h2121);
+        set_rename_lane(2, 5'd22, PHYS_WIDTH'(22), PHYS_WIDTH'(3),
+                        64'h2222);
+        rename_queue_valid = 3'b111;
+        #1;
+        if ((rename_queue_accept != 3'b111) ||
+            (rename_retire_arch != 3'b111) ||
+            (rename_retire_count != 2'd3) ||
+            (rename_release_valid != 3'b111))
+            fail("Tomasulo retirement did not consume three ready lanes");
+        if ((rename_gpr_write != 2'b00) ||
+            (rename_free_valid != 3'b111) ||
+            (rename_free_tag != {
+                PHYS_WIDTH'(3), PHYS_WIDTH'(2), PHYS_WIDTH'(1)}))
+            fail("Tomasulo three-wide retirement did not return old tags");
+        tick();
+        rename_queue_valid = 3'b000;
+
+        $display("PASS: banked 3P retirement isolates late-ready lanes, holds ordered GPR/CSR transactions, and retires Tomasulo three-wide");
         $finish;
     end
 

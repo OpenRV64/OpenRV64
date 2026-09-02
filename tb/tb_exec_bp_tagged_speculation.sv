@@ -7,6 +7,8 @@ module tb_exec_bp_tagged_speculation;
     reg rst_n;
     reg flush;
     reg squash;
+    reg recovery;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_id;
     reg lookup_valid;
     reg lookup_branch;
     reg lookup_backward;
@@ -30,6 +32,7 @@ module tb_exec_bp_tagged_speculation;
         .INFLIGHT_DEPTH(4), .ENABLE_TAGGED_RESOLUTION(1)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush), .squash_i(squash),
+        .recovery_i(recovery), .recovery_id_i(recovery_id),
         .ras_context_flush_i(1'b0),
         .lookup_valid_i(lookup_valid), .lookup_branch_i(lookup_branch),
         .lookup_jump_i(1'b0), .lookup_indirect_i(1'b0),
@@ -99,6 +102,8 @@ module tb_exec_bp_tagged_speculation;
         rst_n = 1'b0;
         flush = 1'b0;
         squash = 1'b0;
+        recovery = 1'b0;
+        recovery_id = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         lookup_valid = 1'b0;
         lookup_branch = 1'b0;
         lookup_backward = 1'b0;
@@ -152,7 +157,49 @@ module tb_exec_bp_tagged_speculation;
         if (dut.g_advanced.u_advanced.inflight_count_q != 2)
             $fatal(1, "tagged predictor misordered modular IDs at wrap");
 
-        $display("PASS: tagged predictor out-of-order resolve and selective rollback");
+        // An ordering replay can cut at a non-control instruction.  Keep the
+        // controls older than load ID 3 and discard only the younger ID 4.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocate_branch(10'd1, 64'h700);
+        allocate_branch(10'd2, 64'h800);
+        allocate_branch(10'd4, 64'h900);
+        recovery = 1'b1;
+        recovery_id = 10'd3;
+        tick();
+        recovery = 1'b0;
+        if (dut.g_advanced.u_advanced.inflight_count_q != 2)
+            $fatal(1, "arbitrary-ID recovery did not preserve predictor prefix");
+        resolve_branch(10'd2, 64'h800, 1'b1, 1'b0);
+        if (dut.g_advanced.u_advanced.inflight_count_q != 2)
+            $fatal(1, "preserved younger control no longer resolved by tag");
+        resolve_branch(10'd1, 64'h700, 1'b1, 1'b0);
+        repeat (2) tick();
+        if (dut.g_advanced.u_advanced.inflight_count_q != 0 || overflow)
+            $fatal(1, "arbitrary-ID recovery prefix did not drain cleanly");
+
+        // If every predictor record is younger than a non-control recovery
+        // cut, a simultaneous resolved head is discarded, not committed as
+        // part of the retained prefix.  Subtracting that discarded head from
+        // a zero keep count underflows the queue and eventually deadlocks
+        // fetch at a false full indication.
+        allocate_branch(10'd6, 64'ha00);
+        resolve_valid = 1'b1;
+        resolve_taken = 1'b1;
+        resolve_instr = 32'h0000_0063;
+        resolve_pc = 64'ha00;
+        resolve_target = 64'h9fc;
+        resolve_id = 10'd6;
+        recovery = 1'b1;
+        recovery_id = 10'd5;
+        tick();
+        resolve_valid = 1'b0;
+        recovery = 1'b0;
+        if (dut.g_advanced.u_advanced.inflight_count_q != 0)
+            $fatal(1, "discarded resolved head underflowed recovery count");
+
+        $display("PASS: tagged predictor branch and arbitrary-ID selective rollback");
         $finish;
     end
 endmodule

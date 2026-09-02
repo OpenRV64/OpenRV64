@@ -368,6 +368,11 @@ $(EXEC_BP_MODES78_SIM_BUILD): tb/tb_exec_bp_modes78.sv $(BP_SRC) $(BP_DEPS)
 	iverilog -g2012 -Wall -Irtl -o $(EXEC_BP_MODES78_SIM_BUILD) \
 		rtl/core/exec/bp/bp.v tb/tb_exec_bp_modes78.sv
 
+$(EXEC_BP_TAGE_SIM_BUILD): tb/tb_exec_bp_tage.sv $(BP_SRC) $(BP_DEPS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(EXEC_BP_TAGE_SIM_BUILD) \
+		rtl/core/exec/bp/bp.v tb/tb_exec_bp_tage.sv
+
 $(EXEC_FPU_RV64FD_SIM_BUILD): $(EXEC_FPU_RV64FD_SIM_SRCS) $(FPU_SRCS) \
 		$(FP_ISA_SRCS)
 	mkdir -p sim

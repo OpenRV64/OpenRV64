@@ -969,6 +969,8 @@ module openrv64_rv64_top #(
         .rst_n(rst_n),
         .flush_i(hard_flush_req),
         .squash_i(1'b0),
+        .recovery_i(1'b0),
+        .recovery_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ras_context_flush_i(hard_flush_trap_req ||
                              hard_flush_irq_req ||
                              hard_flush_mret_req ||
@@ -1268,9 +1270,9 @@ module openrv64_rv64_top #(
         .decode_uses_rs2_3p_i(3'b000),
         .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
         .allocation_ready_3p_i(1'b0),
-        .rename_free_valid_3p_i(2'b00),
+        .rename_free_valid_3p_i(3'b000),
         .rename_free_tag_3p_i(
-            {2*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
+            {3*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
         .rename_write_valid_3p_i(3'b000),
         .rename_write_tag_3p_i(
             {3*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
@@ -1465,9 +1467,11 @@ module openrv64_rv64_top #(
         .trace_store_wstrb_o(exec_trace_store_wstrb),
         .flush_3p_i(1'b0),
         .squash_younger_3p_i(1'b0),
+        .squash_inclusive_3p_i(1'b0),
         .squash_id_3p_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .coherent_reservation_clear_3p_i(1'b0),
         .translation_bypass_3p_i(1'b0),
+        .inhibit_load_speculation_3p_i(1'b0),
         .issue_valid_3p_i(
             {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
         .issue_id_3p_i(

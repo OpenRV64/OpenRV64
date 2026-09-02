@@ -9,16 +9,17 @@
 // compact transaction records needed to route translation, memory responses,
 // and completion state.  Every load slot may have translation or memory in
 // flight independently.  Stores retain independent guards until they complete
-// so a younger load cannot pass a possibly-aliasing write.  Cacheable guards
-// compare a folded cache-line hash; collisions conservatively stall.  This cut
-// does not forward store bytes to loads.
+// so a younger load cannot pass a possibly-aliasing write.  Once both physical
+// addresses are known, cacheable loads compare the exact containing 8-byte
+// granule against every older store.  This cut does not forward store bytes to
+// loads.
 module openrv64_lsq #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer META_WIDTH = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH,
     parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
-    parameter integer GUARD_HASH_WIDTH = 10,
+    parameter integer ALLOW_UNRESOLVED_STORE_SPECULATION = 0,
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE = {`RV64_XLEN{1'b0}},
     parameter integer TIMEOUT_CYCLES = 10000,
@@ -28,8 +29,10 @@ module openrv64_lsq #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_younger_i,
+    input  wire                         squash_inclusive_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
     input  wire                         translation_bypass_i,
+    input  wire                         inhibit_load_speculation_i,
 
     input  wire                         load_alloc_valid_i,
     output wire                         load_alloc_ready_o,
@@ -96,6 +99,21 @@ module openrv64_lsq #(
     output wire [`RV64_XLEN-1:0]        req_wdata_o,
     output wire [7:0]                   req_wstrb_o,
 
+    // Registered consumers may retain these address-phase events after the
+    // compact transaction slot itself completes.  They are used only by the
+    // Tomasulo memory-dependence replay tracker.
+    output wire                         load_access_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] load_access_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0] load_access_slot_o,
+    output wire [META_WIDTH-1:0]        load_access_meta_o,
+    output wire [`RV64_XLEN-1:0]        load_access_paddr_o,
+    output wire                         store_address_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] store_address_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0] store_address_slot_o,
+    output wire [META_WIDTH-1:0]        store_address_meta_o,
+    output wire [`RV64_XLEN-1:0]        store_address_paddr_o,
+    output wire                         store_address_cacheable_o,
+
     input  wire                         resp_valid_i,
     output wire                         resp_ready_o,
     input  wire [TAG_WIDTH-1:0]         resp_tag_i,
@@ -117,6 +135,7 @@ module openrv64_lsq #(
     output wire                         result_access_fault_o,
     output wire                         result_page_fault_o,
     output wire                         result_store_o,
+    output wire                         result_posted_store_o,
     output wire                         store_pending_o,
     output wire                         quiescent_o,
     output wire                         empty_o
@@ -131,19 +150,6 @@ module openrv64_lsq #(
             id_is_younger =
                 (distance != {`OPENRV64_INSTR_ID_WIDTH{1'b0}}) &&
                 !distance[`OPENRV64_INSTR_ID_WIDTH-1];
-        end
-    endfunction
-
-    function automatic [GUARD_HASH_WIDTH-1:0] cacheline_hash;
-        input [`RV64_XLEN-1:0] address;
-        integer hash_bit;
-        begin
-            cacheline_hash = {GUARD_HASH_WIDTH{1'b0}};
-            for (hash_bit = 6; hash_bit < `RV64_XLEN;
-                 hash_bit = hash_bit + 1)
-                cacheline_hash[(hash_bit-6) % GUARD_HASH_WIDTH] =
-                    cacheline_hash[(hash_bit-6) % GUARD_HASH_WIDTH] ^
-                    address[hash_bit];
         end
     endfunction
 
@@ -201,14 +207,9 @@ module openrv64_lsq #(
     reg [2:0] store_size_q [0:STORE_QUEUE_DEPTH-1];
     reg [`RV64_XLEN-1:0] store_wdata_q [0:STORE_QUEUE_DEPTH-1];
     reg [7:0] store_wstrb_q [0:STORE_QUEUE_DEPTH-1];
-    reg [GUARD_HASH_WIDTH-1:0]
-        store_guard_hash_q [0:STORE_QUEUE_DEPTH-1];
-
     wire load_xlate_fault [0:LOAD_QUEUE_DEPTH-1];
     wire load_cacheable [0:LOAD_QUEUE_DEPTH-1];
     wire load_order_match [0:LOAD_QUEUE_DEPTH-1];
-    wire [GUARD_HASH_WIDTH-1:0]
-        load_guard_hash [0:LOAD_QUEUE_DEPTH-1];
     genvar load_property_gen;
     generate
         for (load_property_gen = 0;
@@ -226,8 +227,6 @@ module openrv64_lsq #(
                 (ordered_head_id_i == load_id_q[load_property_gen]) &&
                 (ordered_head_slot_i ==
                  load_retire_q[load_property_gen]);
-            assign load_guard_hash[load_property_gen] =
-                cacheline_hash(load_paddr_q[load_property_gen]);
         end
     endgenerate
 
@@ -284,9 +283,11 @@ module openrv64_lsq #(
     // operation may be presented by another issue pipe in the same cycle as
     // the resolving branch and must still cross the allocation handshake.
     wire load_alloc_squashed = squash_younger_i &&
-        id_is_younger(load_alloc_id_i, squash_id_i);
+        ((squash_inclusive_i && (load_alloc_id_i == squash_id_i)) ||
+         id_is_younger(load_alloc_id_i, squash_id_i));
     wire store_alloc_squashed = squash_younger_i &&
-        id_is_younger(store_alloc_id_i, squash_id_i);
+        ((squash_inclusive_i && (store_alloc_id_i == squash_id_i)) ||
+         id_is_younger(store_alloc_id_i, squash_id_i));
     assign load_alloc_ready_o = load_free_found_r && !load_alloc_squashed;
     wire load_alloc_fire = load_alloc_valid_i && load_alloc_ready_o;
     assign store_alloc_ready_o = store_free_found_r && !store_alloc_squashed;
@@ -294,18 +295,30 @@ module openrv64_lsq #(
 
     // Each translated load probes only store guards older than itself.
     // Unknown store addresses block.  Device loads block behind every older
-    // store.  A hash hit blocks cacheable loads; a collision is deliberately
-    // a false stall.
+    // store.  Once both physical addresses are known, a cacheable load blocks
+    // only when it shares an 8-byte granule with an older store.  Naturally
+    // misaligned accesses never enter this table; exec_lsu sends them through
+    // the ordered component engine.
     integer load_guard_scan;
     integer guard_scan;
     reg load_guard_block_r [0:LOAD_QUEUE_DEPTH-1];
     reg load_has_older_store_r [0:LOAD_QUEUE_DEPTH-1];
+    reg load_guard_unresolved_block_r [0:LOAD_QUEUE_DEPTH-1];
+    reg load_guard_granule_block_r [0:LOAD_QUEUE_DEPTH-1];
+    reg load_guard_atomic_block_r [0:LOAD_QUEUE_DEPTH-1];
+    reg load_guard_fault_block_r [0:LOAD_QUEUE_DEPTH-1];
+    reg load_guard_device_block_r [0:LOAD_QUEUE_DEPTH-1];
     always @* begin
         for (load_guard_scan = 0;
              load_guard_scan < LOAD_QUEUE_DEPTH;
              load_guard_scan = load_guard_scan + 1) begin
             load_guard_block_r[load_guard_scan] = 1'b0;
             load_has_older_store_r[load_guard_scan] = 1'b0;
+            load_guard_unresolved_block_r[load_guard_scan] = 1'b0;
+            load_guard_granule_block_r[load_guard_scan] = 1'b0;
+            load_guard_atomic_block_r[load_guard_scan] = 1'b0;
+            load_guard_fault_block_r[load_guard_scan] = 1'b0;
+            load_guard_device_block_r[load_guard_scan] = 1'b0;
             if (load_valid_q[load_guard_scan] &&
                 !load_killed_q[load_guard_scan] &&
                 load_xlate_done_q[load_guard_scan] &&
@@ -317,13 +330,37 @@ module openrv64_lsq #(
                         id_is_younger(load_id_q[load_guard_scan],
                                       store_id_q[guard_scan])) begin
                         load_has_older_store_r[load_guard_scan] = 1'b1;
-                        if (store_atomic_q[guard_scan] ||
-                            !store_xlate_done_q[guard_scan] ||
-                            store_xlate_fault[guard_scan] ||
-                            !load_cacheable[load_guard_scan] ||
-                            (store_guard_hash_q[guard_scan] ==
-                             load_guard_hash[load_guard_scan]))
+                        if (store_atomic_q[guard_scan]) begin
                             load_guard_block_r[load_guard_scan] = 1'b1;
+                            load_guard_atomic_block_r[load_guard_scan] =
+                                1'b1;
+                        end else if (!load_cacheable[load_guard_scan]) begin
+                            // Never speculate a device access.  Unlike a
+                            // cacheable load, its read side effects cannot be
+                            // undone by a later store-address replay.
+                            load_guard_block_r[load_guard_scan] = 1'b1;
+                            load_guard_device_block_r[load_guard_scan] = 1'b1;
+                        end else if (!store_xlate_done_q[guard_scan]) begin
+                            if ((ALLOW_UNRESOLVED_STORE_SPECULATION == 0) ||
+                                inhibit_load_speculation_i) begin
+                                load_guard_block_r[load_guard_scan] = 1'b1;
+                                load_guard_unresolved_block_r[
+                                    load_guard_scan] = 1'b1;
+                            end
+                        end else if (store_xlate_fault[guard_scan]) begin
+                            load_guard_block_r[load_guard_scan] = 1'b1;
+                            load_guard_fault_block_r[load_guard_scan] = 1'b1;
+                        end else if (!store_cacheable[guard_scan]) begin
+                            load_guard_block_r[load_guard_scan] = 1'b1;
+                            load_guard_device_block_r[load_guard_scan] = 1'b1;
+                        end else if
+                            (store_paddr_q[guard_scan][`RV64_XLEN-1:3] ==
+                             load_paddr_q[load_guard_scan][`RV64_XLEN-1:3])
+                        begin
+                            load_guard_block_r[load_guard_scan] = 1'b1;
+                            load_guard_granule_block_r[load_guard_scan] =
+                                1'b1;
+                        end
                     end
                 end
             end
@@ -503,6 +540,11 @@ module openrv64_lsq #(
     assign req_wstrb_o = request_store_r ?
         store_wstrb_q[request_store_array_index] : 8'h00;
     wire req_fire = req_valid_o && req_ready_i;
+    assign load_access_valid_o = req_fire && !request_store_r;
+    assign load_access_id_o = load_id_q[request_load_array_index];
+    assign load_access_slot_o = load_retire_q[request_load_array_index];
+    assign load_access_meta_o = load_meta_q[request_load_array_index];
+    assign load_access_paddr_o = load_paddr_q[request_load_array_index];
 
     // Local results are immediate/fault completions and accepted cacheable
     // stores.  There is no local forwarded-load result in the guard-only cut.
@@ -523,7 +565,9 @@ module openrv64_lsq #(
             local_candidate_r = load_valid_q[local_scan] &&
                 !load_killed_q[local_scan] &&
                 !(squash_younger_i &&
-                  id_is_younger(load_id_q[local_scan], squash_id_i)) &&
+                  ((squash_inclusive_i &&
+                    (load_id_q[local_scan] == squash_id_i)) ||
+                   id_is_younger(load_id_q[local_scan], squash_id_i))) &&
                 (load_immediate_q[local_scan] ||
                  load_xlate_fault[local_scan]);
             if (local_candidate_r &&
@@ -541,7 +585,9 @@ module openrv64_lsq #(
                 store_valid_q[local_scan] &&
                 !store_killed_q[local_scan] &&
                 !(squash_younger_i &&
-                  id_is_younger(store_id_q[local_scan], squash_id_i)) &&
+                  ((squash_inclusive_i &&
+                    (store_id_q[local_scan] == squash_id_i)) ||
+                   id_is_younger(store_id_q[local_scan], squash_id_i))) &&
                 !store_atomic_q[local_scan] &&
                 (store_immediate_q[local_scan] ||
                  store_xlate_fault[local_scan] ||
@@ -595,6 +641,20 @@ module openrv64_lsq #(
         xlate_resp_matches_allocation;
     assign xlate_resp_ready_o = 1'b1;
     wire xlate_resp_fire = xlate_resp_valid_i && xlate_resp_is_expected;
+    wire store_address_from_allocation = xlate_resp_matches_allocation &&
+                                         xlate_alloc_select_store;
+    assign store_address_valid_o = xlate_resp_fire &&
+        xlate_resp_store_tag_valid && !xlate_resp_access_fault_i &&
+        !xlate_resp_page_fault_i;
+    assign store_address_id_o = store_address_from_allocation ?
+        store_alloc_id_i : store_id_q[xlate_resp_store_index];
+    assign store_address_slot_o = store_address_from_allocation ?
+        store_alloc_slot_i : store_retire_q[xlate_resp_store_index];
+    assign store_address_meta_o = store_address_from_allocation ?
+        store_alloc_meta_i : store_meta_q[xlate_resp_store_index];
+    assign store_address_paddr_o = xlate_resp_paddr_i;
+    assign store_address_cacheable_o =
+        address_cacheable(xlate_resp_paddr_i);
 
     wire resp_load_tag_valid = resp_tag_i < LOAD_QUEUE_DEPTH;
     wire [TAG_WIDTH-1:0] resp_load_index =
@@ -659,7 +719,9 @@ module openrv64_lsq #(
         posted_store_done_tag - LOAD_QUEUE_DEPTH;
 
     wire access_resp_squashed_now = resp_valid_i && resp_is_access &&
-        squash_younger_i && id_is_younger(resp_id, squash_id_i);
+        squash_younger_i &&
+        ((squash_inclusive_i && (resp_id == squash_id_i)) ||
+         id_is_younger(resp_id, squash_id_i));
     wire access_resp_result = resp_valid_i && resp_is_access &&
         !resp_slot_killed && !resp_is_posted_store &&
         !access_resp_squashed_now;
@@ -707,6 +769,7 @@ module openrv64_lsq #(
           !store_result_sent_q[local_store_array_index]) ||
          (req_fire && request_store_r &&
           (request_store_array_index == local_store_array_index)));
+    assign result_posted_store_o = result_is_posted_store;
     wire posted_store_result_fire = result_fire &&
                                     result_is_posted_store;
     wire posted_store_result_done_same = posted_store_result_fire &&
@@ -844,8 +907,6 @@ module openrv64_lsq #(
                 store_size_q[state_index] <= 3'd0;
                 store_wdata_q[state_index] <= {`RV64_XLEN{1'b0}};
                 store_wstrb_q[state_index] <= 8'h00;
-                store_guard_hash_q[state_index] <=
-                    {GUARD_HASH_WIDTH{1'b0}};
             end
         end else if (flush_i) begin
             // Full redirects cancel all loads.  ICX owns cancellation of
@@ -957,8 +1018,6 @@ module openrv64_lsq #(
                     store_alloc_wdata_i;
                 store_wstrb_q[store_free_array_index_r] <=
                     store_alloc_wstrb_i;
-                store_guard_hash_q[store_free_array_index_r] <=
-                    cacheline_hash(store_alloc_vaddr_i);
             end
             if (xlate_req_fire) begin
                 if (xlate_request_tag < LOAD_QUEUE_DEPTH)
@@ -994,8 +1053,6 @@ module openrv64_lsq #(
                         xlate_resp_page_fault_i;
                     store_paddr_q[xlate_resp_store_index] <=
                         xlate_resp_paddr_i;
-                    store_guard_hash_q[xlate_resp_store_index] <=
-                        cacheline_hash(xlate_resp_paddr_i);
                 end
             end
             if (resp_fire && resp_is_access && resp_slot_killed) begin
@@ -1058,8 +1115,10 @@ module openrv64_lsq #(
                 for (state_index = 0; state_index < LOAD_QUEUE_DEPTH;
                      state_index = state_index + 1) begin
                     if (load_valid_q[state_index] &&
-                        id_is_younger(load_id_q[state_index],
-                                      squash_id_i)) begin
+                        ((squash_inclusive_i &&
+                          (load_id_q[state_index] == squash_id_i)) ||
+                         id_is_younger(load_id_q[state_index],
+                                       squash_id_i))) begin
                         if (load_access_sent_q[state_index] &&
                             !(resp_fire && resp_load_tag_valid &&
                               (resp_load_index == state_index))) begin
@@ -1075,8 +1134,10 @@ module openrv64_lsq #(
                 for (state_index = 0; state_index < STORE_QUEUE_DEPTH;
                      state_index = state_index + 1) begin
                     if (store_valid_q[state_index] &&
-                        id_is_younger(store_id_q[state_index],
-                                      squash_id_i)) begin
+                        ((squash_inclusive_i &&
+                          (store_id_q[state_index] == squash_id_i)) ||
+                         id_is_younger(store_id_q[state_index],
+                                       squash_id_i))) begin
                         if (store_access_sent_q[state_index] &&
                             !((resp_fire && resp_store_tag_valid &&
                                (resp_store_index == state_index)) ||
@@ -1298,6 +1359,7 @@ module openrv64_lsq #(
     integer perf_load_valid_count_r;
     integer perf_load_spec_count_r;
     integer perf_load_block_count_r;
+    integer perf_load_inhibit_block_count_r;
     integer perf_load_squashed_count_r;
     integer perf_load_squashed_before_xlate_count_r;
     integer perf_load_squashed_xlate_inflight_count_r;
@@ -1315,6 +1377,7 @@ module openrv64_lsq #(
         perf_load_valid_count_r = 0;
         perf_load_spec_count_r = 0;
         perf_load_block_count_r = 0;
+        perf_load_inhibit_block_count_r = 0;
         perf_load_squashed_count_r = 0;
         perf_load_squashed_before_xlate_count_r = 0;
         perf_load_squashed_xlate_inflight_count_r = 0;
@@ -1341,9 +1404,21 @@ module openrv64_lsq #(
                     (load_cacheable[perf_scan] ||
                      load_order_match[perf_scan]))
                     perf_load_block_count_r = perf_load_block_count_r + 1;
+                if ((ALLOW_UNRESOLVED_STORE_SPECULATION != 0) &&
+                    inhibit_load_speculation_i &&
+                    load_guard_unresolved_block_r[perf_scan] &&
+                    !load_immediate_q[perf_scan] &&
+                    !load_input_access_fault_q[perf_scan] &&
+                    !load_access_sent_q[perf_scan] &&
+                    (load_cacheable[perf_scan] ||
+                     load_order_match[perf_scan]))
+                    perf_load_inhibit_block_count_r =
+                        perf_load_inhibit_block_count_r + 1;
             end
             if (squash_younger_i && load_valid_q[perf_scan] &&
-                id_is_younger(load_id_q[perf_scan], squash_id_i)) begin
+                ((squash_inclusive_i &&
+                  (load_id_q[perf_scan] == squash_id_i)) ||
+                 id_is_younger(load_id_q[perf_scan], squash_id_i))) begin
                 perf_load_squashed_count_r =
                     perf_load_squashed_count_r + 1;
                 if (load_access_sent_q[perf_scan])
@@ -1375,7 +1450,9 @@ module openrv64_lsq #(
                         perf_store_order_wait_count_r + 1;
             end
             if (squash_younger_i && store_valid_q[perf_scan] &&
-                id_is_younger(store_id_q[perf_scan], squash_id_i)) begin
+                ((squash_inclusive_i &&
+                  (store_id_q[perf_scan] == squash_id_i)) ||
+                 id_is_younger(store_id_q[perf_scan], squash_id_i))) begin
                 perf_store_squashed_count_r =
                     perf_store_squashed_count_r + 1;
                 if (store_access_sent_q[perf_scan])
@@ -1419,6 +1496,11 @@ module openrv64_lsq #(
     reg [63:0] perf_load_killed_responses_q;
     reg [63:0] perf_load_dependency_block_cycles_q;
     reg [63:0] perf_load_dependency_block_entry_cycles_q;
+    reg [63:0] perf_load_inhibit_intervals_q;
+    reg [63:0] perf_load_inhibit_active_cycles_q;
+    reg [63:0] perf_load_inhibit_block_cycles_q;
+    reg [63:0] perf_load_inhibit_block_entry_cycles_q;
+    reg perf_load_inhibit_prev_q;
     reg [63:0] perf_load_forward_ready_cycles_q;
     reg [63:0] perf_load_forward_ready_entry_cycles_q;
     reg [63:0] perf_load_occupancy_cycles_q;
@@ -1480,6 +1562,11 @@ module openrv64_lsq #(
             perf_load_killed_responses_q <= 0;
             perf_load_dependency_block_cycles_q <= 0;
             perf_load_dependency_block_entry_cycles_q <= 0;
+            perf_load_inhibit_intervals_q <= 0;
+            perf_load_inhibit_active_cycles_q <= 0;
+            perf_load_inhibit_block_cycles_q <= 0;
+            perf_load_inhibit_block_entry_cycles_q <= 0;
+            perf_load_inhibit_prev_q <= 1'b0;
             perf_load_forward_ready_cycles_q <= 0;
             perf_load_forward_ready_entry_cycles_q <= 0;
             perf_load_occupancy_cycles_q <= 0;
@@ -1589,6 +1676,22 @@ module openrv64_lsq #(
                     perf_load_dependency_block_entry_cycles_q +
                     perf_load_block_count_r;
             end
+            perf_load_inhibit_prev_q <= inhibit_load_speculation_i;
+            if (inhibit_load_speculation_i) begin
+                perf_load_inhibit_active_cycles_q <=
+                    perf_load_inhibit_active_cycles_q + 1'b1;
+                if (!perf_load_inhibit_prev_q)
+                    perf_load_inhibit_intervals_q <=
+                        perf_load_inhibit_intervals_q + 1'b1;
+            end
+            if (!atomic_active_i && !squash_younger_i && req_ready_i &&
+                (perf_load_inhibit_block_count_r != 0)) begin
+                perf_load_inhibit_block_cycles_q <=
+                    perf_load_inhibit_block_cycles_q + 1'b1;
+                perf_load_inhibit_block_entry_cycles_q <=
+                    perf_load_inhibit_block_entry_cycles_q +
+                    perf_load_inhibit_block_count_r;
+            end
             perf_load_occupancy_cycles_q <=
                 perf_load_occupancy_cycles_q + perf_load_valid_count_r;
             perf_load_spec_occupancy_cycles_q <=
@@ -1688,8 +1791,6 @@ module openrv64_lsq #(
             $fatal(1, "LSQ requires at least one store guard");
         if (DEPTH > (1 << TAG_WIDTH))
             $fatal(1, "LSQ tag namespace is too small");
-        if (GUARD_HASH_WIDTH < 1)
-            $fatal(1, "LSQ guard hash must contain at least one bit");
         if (TIMEOUT_CYCLES < 1)
             $fatal(1, "LSQ timeout must be positive");
     end
@@ -1717,13 +1818,17 @@ module openrv64_lsq #(
                         slot_timeout_age_q[timeout_index] + 1;
                     if (slot_timeout_age_q[timeout_index] >= TIMEOUT_CYCLES)
                         $fatal(1,
-                            "LSQ state %0d timed out id=%0d retire=%0d store=%b killed=%b xlate=%b access=%b block=%b order=%b head_valid=%b head_id=%0d head_slot=%0d squash=%b squash_id=%0d",
+                            "LSQ state %0d timed out id=%0d retire=%0d store=%b killed=%b xlate_sent=%b xlate_done=%b access=%b result=%b done=%b cacheable=%b block=%b order=%b head_valid=%b head_id=%0d head_slot=%0d squash=%b squash_id=%0d",
                             timeout_index, slot_id_q[timeout_index],
                             slot_retire_q[timeout_index],
                             slot_store_q[timeout_index],
                             slot_killed_q[timeout_index],
                             slot_xlate_sent_q[timeout_index],
+                            slot_xlate_done_q[timeout_index],
                             slot_access_sent_q[timeout_index],
+                            slot_store_result_sent_q[timeout_index],
+                            slot_access_done_q[timeout_index],
+                            slot_cacheable[timeout_index],
                             load_block_r[timeout_index],
                             slot_order_match[timeout_index],
                             ordered_head_valid_i, ordered_head_id_i,

@@ -51,6 +51,7 @@ module tb_dispatch_window_3p;
     wire [3*MW-1:0] allocation_meta;
     reg [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_valid;
+    wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_squashed;
     wire [`OPENRV64_EXEC_PIPE_COUNT*IDW-1:0] pipe_id;
     wire [`OPENRV64_EXEC_PIPE_COUNT*SW-1:0] pipe_slot;
     wire [`OPENRV64_EXEC_PIPE_COUNT*IW-1:0] pipe_payload;
@@ -92,12 +93,14 @@ module tb_dispatch_window_3p;
         .decode_uses_rs1_i(decode_uses_rs1),
         .decode_uses_rs2_i(decode_uses_rs2),
         .gpr_read_addr_o(gpr_read_addr), .gpr_read_data_i(gpr_read_data),
+        .physical_forward_valid_i(3'b000),
         .allocation_ready_i(allocation_ready),
         .allocation_id_i(allocation_id),
         .allocation_slot_i(allocation_slot),
         .allocation_valid_o(allocation_valid),
         .allocation_meta_o(allocation_meta),
         .pipe_ready_i(pipe_ready), .pipe_valid_o(pipe_valid),
+        .pipe_squashed_o(pipe_squashed),
         .pipe_id_o(pipe_id), .pipe_slot_o(pipe_slot),
         .pipe_payload_o(pipe_payload),
         .pipe_src1_producer_valid_o(pipe_src1_producer_valid),
@@ -329,13 +332,17 @@ module tb_dispatch_window_3p;
         squash_id = IDW'(20);
         squash = 1'b1;
         #1;
-        if (|decode_ready || |pipe_valid)
-            fail("redirect did not immediately inhibit dispatch and issue");
+        if (|decode_ready || (pipe_valid != 4'b0011) ||
+            (pipe_squashed != 4'b0010) ||
+            (pipe_id[0 +: IDW] != IDW'(20)) ||
+            (pipe_id[1*IDW +: IDW] != IDW'(21)))
+            fail("redirect did not flag only the younger issue candidate");
         tick();
         squash = 1'b0;
         #1;
-        if (queue_count != 3 || !write_busy[12] ||
-            |decode_ready || |pipe_valid)
+        if (queue_count != 3 || !write_busy[12] || |decode_ready ||
+            (pipe_valid != 4'b0001) || (pipe_squashed != 4'b0001) ||
+            (pipe_id[0 +: IDW] != IDW'(22)))
             fail("redirect edge did not hold state for recovery task");
         tick();
         if (queue_count != 1 || !write_busy[10] || write_busy[12])
@@ -616,12 +623,16 @@ module tb_dispatch_window_3p;
         squash_id = IDW'(0);
         squash = 1'b1;
         #1;
-        if (|pipe_valid)
-            fail("wraparound redirect did not inhibit issue immediately");
+        if ((pipe_valid != 4'b0011) || (pipe_squashed != 4'b0000) ||
+            (pipe_id[0*IDW +: IDW] != IDW'(1022)) ||
+            (pipe_id[1*IDW +: IDW] != IDW'(1023)))
+            fail("wraparound redirect did not issue only its older prefix");
         tick();
         squash_id = IDW'(1023);
         #1;
-        if (queue_count != 3 || |pipe_valid)
+        if (queue_count != 3 || (pipe_valid != 4'b0001) ||
+            (pipe_squashed != 4'b0001) ||
+            (pipe_id[0 +: IDW] != IDW'(0)))
             fail("first recovery cut changed state before cleanup cycle");
         tick();
         squash = 1'b0;

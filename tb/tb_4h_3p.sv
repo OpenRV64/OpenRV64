@@ -851,6 +851,9 @@ module tb_4h_3p #(
                 .irq_s_timer(1'b0),
                 .irq_s_external(
                     opensbi_mode && plic_seip[hart]),
+                .sim_branch_oracle_pc_i(64'd0),
+                .sim_branch_oracle_taken_i(1'b0),
+                .sim_branch_oracle_target_i(64'd0),
                 .dbg_pc(dbg_pc[hart*64 +: 64]),
                 .dbg_instr(dbg_instr[hart*32 +: 32]),
                 .dbg_halted(dbg_halted[hart]),

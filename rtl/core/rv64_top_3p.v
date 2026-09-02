@@ -40,6 +40,7 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_EQ_BRANCH_PAIRING = 1,
     parameter ENABLE_ISSUE_WINDOW = 0,
     parameter ENABLE_SPECULATION_WINDOW = 0,
+    parameter ENABLE_ALU2 = 0,
     parameter ENABLE_POSTED_STORES = 1,
     parameter ENABLE_ZICCLSM = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
@@ -112,7 +113,10 @@ module openrv64_rv64_top_3p #(
     parameter integer BP_GSHARE_COUNTER_BITS = 3,
     parameter integer BP_BTB_ENTRIES = 256,
     parameter integer BP_BTB_TAG_BITS = 16,
-    parameter integer BP_INFLIGHT_DEPTH = 16
+    parameter integer BP_INFLIGHT_DEPTH = 16,
+    // Simulation-only branch oracle.  The default-off parameter lets normal
+    // synthesis constant-fold the sideband and preserves the real predictor.
+    parameter integer SIM_BRANCH_ORACLE = 0
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -228,6 +232,9 @@ module openrv64_rv64_top_3p #(
     input  wire        irq_s_software,
     input  wire        irq_s_timer,
     input  wire        irq_s_external,
+    input  wire [63:0] sim_branch_oracle_pc_i,
+    input  wire        sim_branch_oracle_taken_i,
+    input  wire [63:0] sim_branch_oracle_target_i,
     output wire [63:0] dbg_pc,
     output wire [31:0] dbg_instr,
     output wire        dbg_halted,
@@ -261,6 +268,11 @@ module openrv64_rv64_top_3p #(
     reg wfi_sleep_q;
     wire backend_clock_enable_q;
     reg reset_pending_q;
+    // Stable, post-edge observation of the control accepted in this cycle.
+    // The testbench uses this to advance its oracle tape without racing the
+    // combinational prediction/redirect path.
+    reg sim_branch_oracle_allocate_q;
+    reg [63:0] sim_branch_oracle_allocate_pc_q;
     wire backend_clk;
     wire backend_island_active =
         (ENABLE_WFI_CLOCK_GATING == 0) || !wfi_sleep_q;
@@ -317,6 +329,7 @@ module openrv64_rv64_top_3p #(
     wire use_icx_bus = (BUS_CONFIG == `OPENRV64_BUS_AXI);
 
     wire backend_redirect;
+    wire backend_memory_replay;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] backend_redirect_id;
     wire [63:0] backend_redirect_target;
     wire branch_resolved;
@@ -401,6 +414,7 @@ module openrv64_rv64_top_3p #(
     wire [63:0] bp_prediction_target;
     wire bp_target_mispredict;
     wire bp_update_overflow;
+    wire inhibit_load_speculation;
     wire bp_predict_redirect;
     wire [63:0] bp_predict_target;
     wire [63:0] bp_direct_target;
@@ -434,11 +448,25 @@ module openrv64_rv64_top_3p #(
     // Temporary containment: treat every M-mode control as effectively
     // predicted not-taken.  Gating only the fetch redirect is incorrect;
     // branch resolution must see the same effective prediction.
-    wire bp_redirects_enabled = csr_priv_mode != `RV64_PRIV_M;
+    wire bp_oracle_mode = SIM_BRANCH_ORACLE != 0;
+    wire bp_oracle_match;
+    wire bp_redirects_enabled = bp_oracle_match ||
+                                (csr_priv_mode != `RV64_PRIV_M);
+    wire bp_prediction_taken_selected = bp_oracle_match ?
+        sim_branch_oracle_taken_i : bp_prediction_taken;
+    wire bp_prediction_weak_effective = bp_oracle_match ?
+        1'b0 : bp_prediction_weak;
     wire bp_prediction_taken_effective = bp_redirects_enabled &&
-                                         bp_prediction_taken;
+                                         bp_prediction_taken_selected;
     wire bp_target_mispredict_effective = bp_redirects_enabled &&
-                                           bp_target_mispredict;
+        !bp_oracle_mode && bp_target_mispredict;
+    // Oracle mode deliberately removes predictor bookkeeping capacity from
+    // the experiment.  Its architectural stream supplies direction/target,
+    // so filling the real predictor's finite resolution queue would measure
+    // that queue rather than the cost of imperfect prediction.  This matches
+    // the historical oracle experiment, which forced both stalls low.
+    wire bp_fetch_stall_effective = bp_oracle_mode ? 1'b0 : bp_fetch_stall;
+    wire bp_decode_stall_effective = bp_oracle_mode ? 1'b0 : bp_decode_stall;
     wire control_redirect = backend_redirect ||
                             bp_target_mispredict_effective;
 
@@ -526,7 +554,8 @@ module openrv64_rv64_top_3p #(
                 .restart_i(fetch3_restart),
                 .restart_pc_i(fetch3_restart_pc),
                 .invalidate_i(fetch3_invalidate),
-                .stall_i(bp_fetch_stall || translation_barrier_busy),
+                .stall_i(bp_fetch_stall_effective ||
+                         translation_barrier_busy),
                 .flush_i(backend_halt), .cancel_o(fetch3_cancel),
                 .cancel_stash_o(fetch3_cancel_stash),
                 .req_valid_o(fetch_pipe_req_valid),
@@ -798,6 +827,11 @@ module openrv64_rv64_top_3p #(
                                (|frontend_control_select) &&
                                !control_flush && !control_redirect &&
                                !halted_q && !wfi_sleep_q;
+    // Unexpected speculative controls retain the real predictor behavior and
+    // do not consume the architectural oracle tape.  This matters during
+    // M-mode setup and after non-branch replays.
+    assign bp_oracle_match = bp_oracle_mode && bp_branch_present &&
+                             (bp_selected_pc == sim_branch_oracle_pc_i);
     assign bp_predict_redirect = bp_branch_allocate &&
                                  bp_prediction_taken_effective;
 
@@ -805,8 +839,10 @@ module openrv64_rv64_top_3p #(
         .a_i(bp_selected_pc), .b_i(bp_selected_imm), .sub_i(1'b0),
         .result_o(bp_direct_target)
     );
-    assign bp_predict_target = bp_prediction_target_valid ?
-                               bp_prediction_target : bp_direct_target;
+    assign bp_predict_target = bp_oracle_match ?
+        sim_branch_oracle_target_i :
+        (bp_prediction_target_valid ? bp_prediction_target :
+                                      bp_direct_target);
 
     openrv64_exec_bp #(
         .BP_TYPE(BP_TYPE),
@@ -823,11 +859,17 @@ module openrv64_rv64_top_3p #(
         .ENABLE_TAGGED_RESOLUTION(ENABLE_SPECULATION_WINDOW)
     ) u_bp (
         .clk(clk), .rst_n(rst_n),
+        // A memory-order replay names the oldest colliding load.  The tagged
+        // predictor keeps older controls and discards only controls younger
+        // than that arbitrary instruction-ID cut.
         .flush_i(control_flush ||
                  (control_redirect &&
                   (ENABLE_SPECULATION_WINDOW == 0))),
         .squash_i(control_redirect &&
-                  (ENABLE_SPECULATION_WINDOW != 0)),
+                  (ENABLE_SPECULATION_WINDOW != 0) &&
+                  !backend_memory_replay),
+        .recovery_i(backend_memory_replay),
+        .recovery_id_i(backend_redirect_id),
         .ras_context_flush_i(control_flush),
         .lookup_valid_i(bp_branch_present),
         .lookup_branch_i(bp_lookup_branch),
@@ -837,8 +879,11 @@ module openrv64_rv64_top_3p #(
         .lookup_instr_i(bp_selected_instr),
         .lookup_pc_i(bp_selected_pc),
         .lookup_id_i(bp_selected_id),
-        .lookup_allocate_i(bp_branch_allocate),
-        .resolve_valid_i(branch_resolved),
+        // The real predictor is observational only in oracle mode.  Gating
+        // both sides avoids unmatched tagged resolutions after its queue
+        // would otherwise fill while its backpressure is intentionally off.
+        .lookup_allocate_i(bp_branch_allocate && !bp_oracle_mode),
+        .resolve_valid_i(branch_resolved && !bp_oracle_mode),
         .resolve_branch_i(branch_conditional),
         .resolve_taken_i(branch_taken),
         .resolve_instr_i(branch_instr), .resolve_pc_i(branch_pc),
@@ -855,7 +900,8 @@ module openrv64_rv64_top_3p #(
         .target_mispredict_o(bp_target_mispredict),
         .update_overflow_o(bp_update_overflow),
         .fetch_stall_o(bp_fetch_stall),
-        .decode_stall_o(bp_decode_stall)
+        .decode_stall_o(bp_decode_stall),
+        .inhibit_load_speculation_o(inhibit_load_speculation)
     );
 
     wire [2:0] bp_lane_prediction = frontend_control_select &
@@ -925,7 +971,7 @@ module openrv64_rv64_top_3p #(
     wire [2:0] backend_decode_ready;
     wire frontend_decode_enable = !control_flush && !control_redirect &&
                                   !halted_q && !wfi_sleep_q &&
-                                  !bp_decode_stall &&
+                                  !bp_decode_stall_effective &&
                                   !translation_barrier_busy;
     wire [2:0] backend_decode_valid = fetch_decode_valid &
         frontend_prefix_allow & {3{frontend_decode_enable}};
@@ -960,16 +1006,18 @@ module openrv64_rv64_top_3p #(
     // next-line prefetch, 2 = weak pairs without strong next-line prefetch.
     assign fetch_alt_pair_valid = icache_branch_hint_valid &&
                                   ((ENABLE_FETCH_ALT_CONFIDENCE_GATE == 0) ||
-                                   bp_prediction_weak);
+                                   bp_prediction_weak_effective);
     assign icache_prefetch_valid = fetch_alt_pair_valid;
-    assign icache_prefetch_taken_addr = bp_direct_target;
+    assign icache_prefetch_taken_addr =
+        (bp_oracle_match && bp_lookup_indirect) ?
+        sim_branch_oracle_target_i : bp_direct_target;
     assign icache_prefetch_fallthrough_addr = bp_selected_pc + 64'd4;
     assign icache_prefetch_predicted_addr =
-        bp_prediction_taken ? icache_prefetch_taken_addr :
-                              icache_prefetch_fallthrough_addr;
+        bp_prediction_taken_selected ? icache_prefetch_taken_addr :
+                                       icache_prefetch_fallthrough_addr;
     assign icache_prefetch_unpredicted_addr =
-        bp_prediction_taken ? icache_prefetch_fallthrough_addr :
-                              icache_prefetch_taken_addr;
+        bp_prediction_taken_selected ? icache_prefetch_fallthrough_addr :
+                                       icache_prefetch_taken_addr;
     assign icache_prefetch_predicted_next_line =
         {icache_prefetch_predicted_addr[63:6], 6'b000000} + 64'd64;
 
@@ -980,7 +1028,7 @@ module openrv64_rv64_top_3p #(
     assign l1i_high_confidence_hint =
         icache_branch_hint_valid &&
         (ENABLE_FETCH_ALT_CONFIDENCE_GATE == 1) &&
-        !bp_prediction_weak;
+        !bp_prediction_weak_effective;
     assign l1i_predicted_line_resident =
         icache_prefetch_predicted_addr[63:6] == bp_selected_pc[63:6];
     assign l1i_predicted_line_response =
@@ -1145,6 +1193,7 @@ module openrv64_rv64_top_3p #(
         .ENABLE_EQ_BRANCH_PAIRING(ENABLE_EQ_BRANCH_PAIRING),
         .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
+        .ENABLE_ALU2(ENABLE_ALU2),
         .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
@@ -1167,6 +1216,7 @@ module openrv64_rv64_top_3p #(
         .translation_bypass_i(
             (csr_data_priv_mode == `RV64_PRIV_M) ||
             (csr_satp_mode == `RV64_SATP_MODE_BARE)),
+        .inhibit_load_speculation_i(inhibit_load_speculation),
         .decode_valid_i(backend_decode_valid),
         .decode_ready_o(backend_decode_ready),
         .decode_payload_i(backend_decode_payload),
@@ -1233,6 +1283,7 @@ module openrv64_rv64_top_3p #(
         .redirect_valid_o(backend_redirect),
         .redirect_id_o(backend_redirect_id),
         .redirect_target_o(backend_redirect_target),
+        .redirect_memory_replay_o(backend_memory_replay),
         .branch_resolved_o(branch_resolved), .branch_taken_o(branch_taken),
         .branch_conditional_o(branch_conditional),
         .branch_id_o(branch_id), .branch_slot_o(branch_slot),
@@ -1957,8 +2008,14 @@ module openrv64_rv64_top_3p #(
             halted_q <= 1'b0;
             wfi_sleep_q <= 1'b0;
             reset_pending_q <= 1'b1;
+            sim_branch_oracle_allocate_q <= 1'b0;
+            sim_branch_oracle_allocate_pc_q <= 64'd0;
         end else begin
             reset_pending_q <= 1'b0;
+            sim_branch_oracle_allocate_q <=
+                bp_oracle_match && bp_branch_allocate;
+            if (bp_oracle_match && bp_branch_allocate)
+                sim_branch_oracle_allocate_pc_q <= bp_selected_pc;
             if (wfi_sleep_q) begin
                 if (csr_wfi_wake || l1d_probe_hit)
                     wfi_sleep_q <= 1'b0;

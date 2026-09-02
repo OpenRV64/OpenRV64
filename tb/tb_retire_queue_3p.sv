@@ -15,6 +15,7 @@ module tb_retire_queue_3p #(
     logic rst_n;
     logic flush;
     logic squash_younger;
+    logic squash_inclusive;
     logic [ID_WIDTH-1:0] squash_id;
     logic [INDEX_WIDTH-1:0] squash_slot;
     logic [2:0] alloc_valid;
@@ -61,6 +62,7 @@ module tb_retire_queue_3p #(
         .rst_n(rst_n),
         .flush_i(flush),
         .squash_younger_i(squash_younger),
+        .squash_inclusive_i(squash_inclusive),
         .squash_id_i(squash_id),
         .squash_slot_i(squash_slot),
         .alloc_valid_i(alloc_valid),
@@ -218,6 +220,7 @@ module tb_retire_queue_3p #(
         #1;
         flush = 1'b0;
         squash_younger = 1'b0;
+        squash_inclusive = 1'b0;
         squash_id = {ID_WIDTH{1'b0}};
         squash_slot = {INDEX_WIDTH{1'b0}};
         if (occupancy != 0)
@@ -469,6 +472,24 @@ module tb_retire_queue_3p #(
         squash_younger = 1'b0;
         if (occupancy != 2)
             $fatal(1, "modular squash misclassified entries across ID wrap");
+
+        // A memory replay names the violating load and removes that entry as
+        // well as its younger suffix.  The same modular comparison still
+        // preserves the strictly older prefix.
+        @(negedge clk);
+        squash_inclusive = 1'b1;
+        squash_younger = 1'b1;
+        squash_id = saved_id[1];
+        squash_slot = saved_slot[1];
+        @(posedge clk);
+        #1;
+        squash_younger = 1'b0;
+        squash_inclusive = 1'b0;
+        if (occupancy != 1)
+            $fatal(1, "inclusive recovery retained the named replay load");
+        complete_one(saved_id[1], saved_slot[1], 16'hdead);
+        if (retire_valid != 3'b000)
+            $fatal(1, "inclusive recovery accepted a stale load completion");
 
         $display("PASS: depth-%0d completion queue, retirement, and selective recovery",
                  DEPTH);
