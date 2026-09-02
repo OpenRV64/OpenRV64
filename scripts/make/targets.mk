@@ -116,7 +116,8 @@
 	sim-icx-coherent-protocol-2h sim-icx-coherent-protocol-4h \
 	sim-icx-4h-l1d-directory-l2
 .PHONY: sim-core-3p-magic sim-core-3p-magic-sweep sim-core-3p-icx-l2 \
-	sim-core-3p-icx-l2-vm sim-store-extension-sv39 \
+	sim-core-3p-icx-l2-vm check-core-3p-pipeline-state-trace \
+	sim-store-extension-sv39 \
 	sim-store-extension-sv39-suite
 .PHONY: sim-icx-l2 sim-icx-l2-sc-refill
 .PHONY: sim-genbus-axi sim-genbus-wb sim-genbus-wb-widths

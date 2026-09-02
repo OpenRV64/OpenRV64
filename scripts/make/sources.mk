@@ -126,7 +126,8 @@ STAGE_SRCS := rtl/core/stage/stage.v rtl/core/stage/elastic_buffer.v
 RETIRE_SRCS := rtl/core/retire/retire.v rtl/core/retire/retire_queue_3p.v \
 	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v \
 	rtl/core/retire/retire_3p_banked.v
-TRACE_SRCS := rtl/core/trace/trace-defs.v
+TRACE_SRCS := rtl/core/trace/trace-defs.v \
+	rtl/core/trace/tomasulo-trace-defs.v
 BACKEND_SRCS := rtl/core/backend/backend_3p.v
 CORE_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/rv64_top.v rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \

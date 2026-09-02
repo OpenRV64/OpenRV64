@@ -3,6 +3,9 @@
 `include "core/bus/bus-defs.v"
 `include "core/exec/bp/defs.v"
 `include "core/isa/rv64-priv.v"
+`include "core/isa/rv64-a.v"
+`include "core/isa/rv64-m.v"
+`include "core/trace/tomasulo-trace-defs.v"
 `include "soc/bus/mem_map.v"
 `include "complex/protocol/defs.v"
 `include "complex/bus/defs.v"
@@ -259,6 +262,7 @@ module tb_top_3p_soc #(
     parameter integer ISSUE_WINDOW_DEPTH = RETIRE_DEPTH,
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
+    parameter integer ENABLE_PIPELINE_STATE_TRACE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter integer M_MODE_PREFETCH_ENABLE = 0,
@@ -1228,6 +1232,26 @@ module tb_top_3p_soc #(
     integer retire_head_wait_jump;
     integer retire_head_wait_load;
     integer retire_head_wait_store;
+    localparam integer PERF_HEAD_CLASS_ALU = 0;
+    localparam integer PERF_HEAD_CLASS_MUL = 1;
+    localparam integer PERF_HEAD_CLASS_DIV = 2;
+    localparam integer PERF_HEAD_CLASS_BRANCH = 3;
+    localparam integer PERF_HEAD_CLASS_JUMP = 4;
+    localparam integer PERF_HEAD_CLASS_LOAD = 5;
+    localparam integer PERF_HEAD_CLASS_STORE = 6;
+    localparam integer PERF_HEAD_CLASS_ATOMIC = 7;
+    localparam integer PERF_HEAD_CLASS_SYSTEM = 8;
+    localparam integer PERF_HEAD_CLASS_FENCE = 9;
+    localparam integer PERF_HEAD_CLASS_UNKNOWN = 10;
+    localparam integer PERF_HEAD_CLASS_COUNT = 11;
+    integer retire_head_class_cycles [0:PERF_HEAD_CLASS_COUNT-1];
+    integer retire_head_class_unissued_cycles [0:PERF_HEAD_CLASS_COUNT-1];
+    integer retire_head_class_regload_cycles [0:PERF_HEAD_CLASS_COUNT-1];
+    integer retire_head_class_memory_cycles [0:PERF_HEAD_CLASS_COUNT-1];
+    integer retire_head_class_execute_cycles [0:PERF_HEAD_CLASS_COUNT-1];
+    integer retire_head_class_index;
+    integer retire_head_class_sum;
+    integer retire_head_class_state_sum;
     integer retire_head_mem_lsq_absent;
     integer retire_head_mem_absent_unissued;
     integer retire_head_mem_absent_issued;
@@ -1485,6 +1509,48 @@ module tb_top_3p_soc #(
     localparam integer PERF_OP_LOAD = 3;
     localparam integer PERF_OP_STORE = 4;
 
+    function automatic [3:0] perf_head_instr_class;
+        input [`RV64_INSTR_WIDTH-1:0] instr;
+        begin
+            case (`RV64_OPCODE(instr))
+                `RV64_OPCODE_BRANCH:
+                    perf_head_instr_class = PERF_HEAD_CLASS_BRANCH;
+                `RV64_OPCODE_JAL,
+                `RV64_OPCODE_JALR:
+                    perf_head_instr_class = PERF_HEAD_CLASS_JUMP;
+                `RV64_OPCODE_LOAD:
+                    perf_head_instr_class = PERF_HEAD_CLASS_LOAD;
+                `RV64_OPCODE_STORE:
+                    perf_head_instr_class = PERF_HEAD_CLASS_STORE;
+                `RV64_OPCODE_AMO:
+                    perf_head_instr_class = PERF_HEAD_CLASS_ATOMIC;
+                `RV64_OPCODE_SYSTEM:
+                    perf_head_instr_class = PERF_HEAD_CLASS_SYSTEM;
+                `RV64_OPCODE_MISC_MEM:
+                    perf_head_instr_class = PERF_HEAD_CLASS_FENCE;
+                `RV64_OPCODE_OP,
+                `RV64_OPCODE_OP_32: begin
+                    if (`RV64_FUNCT7(instr) == `RV64_M_FUNCT7) begin
+                        if (`RV64_FUNCT3(instr) <=
+                            `RV64_M_FUNCT3_MULHU)
+                            perf_head_instr_class = PERF_HEAD_CLASS_MUL;
+                        else
+                            perf_head_instr_class = PERF_HEAD_CLASS_DIV;
+                    end else begin
+                        perf_head_instr_class = PERF_HEAD_CLASS_ALU;
+                    end
+                end
+                `RV64_OPCODE_LUI,
+                `RV64_OPCODE_AUIPC,
+                `RV64_OPCODE_OP_IMM,
+                `RV64_OPCODE_OP_IMM_32:
+                    perf_head_instr_class = PERF_HEAD_CLASS_ALU;
+                default:
+                    perf_head_instr_class = PERF_HEAD_CLASS_UNKNOWN;
+            endcase
+        end
+    endfunction
+
     function automatic [2:0] perf_op_class;
         input [`OPENRV64_RETIRE_ALLOC_WIDTH-1:0] payload;
         begin
@@ -1526,6 +1592,11 @@ module tb_top_3p_soc #(
                 0 +: `OPENRV64_RETIRE_ALLOC_WIDTH];
     wire [2:0] trace_retire_head_op =
         perf_op_class(trace_retire_head_payload);
+    wire [`RV64_INSTR_WIDTH-1:0] trace_retire_head_instr =
+        trace_retire_head_payload[
+            `OPENRV64_RETIRE_ALLOC_INSTR_LSB +: `RV64_INSTR_WIDTH];
+    wire [3:0] trace_retire_head_class =
+        perf_head_instr_class(trace_retire_head_instr);
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] trace_retire_head_id =
         dut.u_backend.u_retire_queue.id_q[
             dut.u_backend.u_retire_queue.head_q];
@@ -2523,7 +2594,9 @@ module tb_top_3p_soc #(
             L1D_PREFETCH_DEMAND_RESERVE),
         .L1D_PREFETCH_PAGE_GATING(L1D_PREFETCH_PAGE_GATING),
         .ENABLE_MAGIC_MEMORY(1'b0),
-        .ENABLE_TRACE(1'b0),
+        // The resident-state trace reuses the existing dynamic trace-ID
+        // sideband.  Leave it absent from ordinary simulation builds.
+        .ENABLE_TRACE(ENABLE_PIPELINE_STATE_TRACE != 0),
         .ENABLE_FETCH_CAROUSEL(FETCH_CAROUSEL),
         .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
         .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
@@ -2628,6 +2701,8 @@ module tb_top_3p_soc #(
         .dbg_instr(dbg_instr),
         .dbg_halted(dbg_halted)
     );
+
+`include "tb/tb_top_3p_soc_tomasulo_trace.vh"
 
     openrv64_core_complex_nh #(
         .NUM_HARTS(1),
@@ -4582,6 +4657,21 @@ module tb_top_3p_soc #(
         retire_head_wait_jump = 0;
         retire_head_wait_load = 0;
         retire_head_wait_store = 0;
+        for (retire_head_class_index = 0;
+             retire_head_class_index < PERF_HEAD_CLASS_COUNT;
+             retire_head_class_index = retire_head_class_index + 1) begin
+            retire_head_class_cycles[retire_head_class_index] = 0;
+            retire_head_class_unissued_cycles[
+                retire_head_class_index] = 0;
+            retire_head_class_regload_cycles[
+                retire_head_class_index] = 0;
+            retire_head_class_memory_cycles[
+                retire_head_class_index] = 0;
+            retire_head_class_execute_cycles[
+                retire_head_class_index] = 0;
+        end
+        retire_head_class_sum = 0;
+        retire_head_class_state_sum = 0;
         retire_head_mem_lsq_absent = 0;
         retire_head_mem_absent_unissued = 0;
         retire_head_mem_absent_issued = 0;
@@ -5937,6 +6027,37 @@ module tb_top_3p_soc #(
                     if (dut.u_backend.completed_entry_valid != 0)
                         retire_completed_behind_head =
                             retire_completed_behind_head + 1;
+                    retire_head_class_cycles[
+                        trace_retire_head_class] =
+                        retire_head_class_cycles[
+                            trace_retire_head_class] + 1;
+                    if (trace_retire_head_regload_active ||
+                        trace_retire_head_regload_pending)
+                        retire_head_class_regload_cycles[
+                            trace_retire_head_class] =
+                            retire_head_class_regload_cycles[
+                                trace_retire_head_class] + 1;
+                    else if (trace_retire_head_window_valid &&
+                             !trace_retire_head_window_issued)
+                        retire_head_class_unissued_cycles[
+                            trace_retire_head_class] =
+                            retire_head_class_unissued_cycles[
+                                trace_retire_head_class] + 1;
+                    else if ((trace_retire_head_class ==
+                              PERF_HEAD_CLASS_LOAD) ||
+                             (trace_retire_head_class ==
+                              PERF_HEAD_CLASS_STORE) ||
+                             (trace_retire_head_class ==
+                              PERF_HEAD_CLASS_ATOMIC))
+                        retire_head_class_memory_cycles[
+                            trace_retire_head_class] =
+                            retire_head_class_memory_cycles[
+                                trace_retire_head_class] + 1;
+                    else
+                        retire_head_class_execute_cycles[
+                            trace_retire_head_class] =
+                            retire_head_class_execute_cycles[
+                                trace_retire_head_class] + 1;
                     case (trace_retire_head_op)
                         PERF_OP_BRANCH:
                             retire_head_wait_branch =
@@ -7851,6 +7972,29 @@ module tb_top_3p_soc #(
             branch_spec_correct_younger_completed,
             branch_spec_corrected_younger_completed,
             branch_spec_max_younger_issued);
+        retire_head_class_sum = 0;
+        retire_head_class_state_sum = 0;
+        for (retire_head_class_index = 0;
+             retire_head_class_index < PERF_HEAD_CLASS_COUNT;
+             retire_head_class_index = retire_head_class_index + 1) begin
+            retire_head_class_sum = retire_head_class_sum +
+                retire_head_class_cycles[retire_head_class_index];
+            retire_head_class_state_sum = retire_head_class_state_sum +
+                retire_head_class_unissued_cycles[
+                    retire_head_class_index] +
+                retire_head_class_regload_cycles[
+                    retire_head_class_index] +
+                retire_head_class_memory_cycles[
+                    retire_head_class_index] +
+                retire_head_class_execute_cycles[
+                    retire_head_class_index];
+        end
+        if (retire_head_class_sum != retire_head_incomplete)
+            $fatal(1,
+                "retire head instruction classes are not exclusive");
+        if (retire_head_class_state_sum != retire_head_incomplete)
+            $fatal(1,
+                "retire head class/state cross-tab is not exclusive");
         $display(
             "PERF_ICX_L2_RETIRE nonempty=%0d nonempty_no_retire=%0d head_incomplete=%0d completed_behind_head=%0d gpr_write_blocked=%0d",
             retire_nonempty, retire_nonempty_no_retire,
@@ -7883,6 +8027,71 @@ module tb_top_3p_soc #(
             retire_head_wait_store, retire_head_mem_lsq_absent,
             retire_head_mem_wait_xlate, retire_head_mem_wait_access,
             retire_head_mem_access_inflight);
+        $display(
+            "PERF_ICX_L2_RETIRE_HEAD_CLASS alu=%0d mul=%0d div=%0d branch=%0d jump=%0d load=%0d store=%0d atomic=%0d system=%0d fence=%0d unknown=%0d",
+            retire_head_class_cycles[PERF_HEAD_CLASS_ALU],
+            retire_head_class_cycles[PERF_HEAD_CLASS_MUL],
+            retire_head_class_cycles[PERF_HEAD_CLASS_DIV],
+            retire_head_class_cycles[PERF_HEAD_CLASS_BRANCH],
+            retire_head_class_cycles[PERF_HEAD_CLASS_JUMP],
+            retire_head_class_cycles[PERF_HEAD_CLASS_LOAD],
+            retire_head_class_cycles[PERF_HEAD_CLASS_STORE],
+            retire_head_class_cycles[PERF_HEAD_CLASS_ATOMIC],
+            retire_head_class_cycles[PERF_HEAD_CLASS_SYSTEM],
+            retire_head_class_cycles[PERF_HEAD_CLASS_FENCE],
+            retire_head_class_cycles[PERF_HEAD_CLASS_UNKNOWN]);
+        $display(
+            "PERF_ICX_L2_RETIRE_HEAD_CLASS_UNISSUED alu=%0d mul=%0d div=%0d branch=%0d jump=%0d load=%0d store=%0d atomic=%0d system=%0d fence=%0d unknown=%0d",
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_ALU],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_MUL],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_DIV],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_BRANCH],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_JUMP],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_LOAD],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_STORE],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_ATOMIC],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_SYSTEM],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_FENCE],
+            retire_head_class_unissued_cycles[PERF_HEAD_CLASS_UNKNOWN]);
+        $display(
+            "PERF_ICX_L2_RETIRE_HEAD_CLASS_REGLOAD alu=%0d mul=%0d div=%0d branch=%0d jump=%0d load=%0d store=%0d atomic=%0d system=%0d fence=%0d unknown=%0d",
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_ALU],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_MUL],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_DIV],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_BRANCH],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_JUMP],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_LOAD],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_STORE],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_ATOMIC],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_SYSTEM],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_FENCE],
+            retire_head_class_regload_cycles[PERF_HEAD_CLASS_UNKNOWN]);
+        $display(
+            "PERF_ICX_L2_RETIRE_HEAD_CLASS_MEMORY alu=%0d mul=%0d div=%0d branch=%0d jump=%0d load=%0d store=%0d atomic=%0d system=%0d fence=%0d unknown=%0d",
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_ALU],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_MUL],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_DIV],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_BRANCH],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_JUMP],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_LOAD],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_STORE],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_ATOMIC],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_SYSTEM],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_FENCE],
+            retire_head_class_memory_cycles[PERF_HEAD_CLASS_UNKNOWN]);
+        $display(
+            "PERF_ICX_L2_RETIRE_HEAD_CLASS_EXECUTE alu=%0d mul=%0d div=%0d branch=%0d jump=%0d load=%0d store=%0d atomic=%0d system=%0d fence=%0d unknown=%0d",
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_ALU],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_MUL],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_DIV],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_BRANCH],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_JUMP],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_LOAD],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_STORE],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_ATOMIC],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_SYSTEM],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_FENCE],
+            retire_head_class_execute_cycles[PERF_HEAD_CLASS_UNKNOWN]);
         $display(
             "PERF_ICX_L2_RETIRE_HEAD_ABSENT unissued=%0d issued=%0d result=%0d complete=%0d",
             retire_head_mem_absent_unissued,

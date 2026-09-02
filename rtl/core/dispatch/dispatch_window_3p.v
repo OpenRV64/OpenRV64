@@ -4,6 +4,7 @@
 `include "core/isa/rv64-a.v"
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/br-defs.v"
+`include "core/trace/tomasulo-trace-defs.v"
 
 // Optional producer-tagged three-pipe issue window.
 //
@@ -832,6 +833,16 @@ module openrv64_dispatch_window_3p #(
     reg [COUNT_WIDTH-1:0] trace_raw_block_count;
     reg [COUNT_WIDTH-1:0] trace_hard_block_count;
     reg [COUNT_WIDTH-1:0] trace_mem_order_block_count;
+    // Per-entry, simulation-visible causal state.  These arrays are not part
+    // of the architectural interface and have no functional fanout.  The SoC
+    // trace writer samples them through hierarchy so it can name the exact
+    // resident instruction that failed its issue transition.
+    reg [7:0] trace_entry_gate_reason [0:DEPTH-1];
+    reg [7:0] trace_entry_block_reason [0:DEPTH-1];
+    reg [7:0] trace_entry_pipe [0:DEPTH-1];
+    reg trace_entry_blocker_valid [0:DEPTH-1];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_entry_blocker_id [0:DEPTH-1];
     // Directed performance evidence for non-speculative read-only loads that
     // are younger than completed control still resident in the window.  The
     // candidate count is independent of the selected completed-control policy;
@@ -903,6 +914,21 @@ module openrv64_dispatch_window_3p #(
     reg older_completed_control;
     reg older_uncompleted_control;
     reg older_unresolved_conditional;
+    reg trace_older_unissued_hard_valid;
+    reg trace_older_persistent_hard_valid;
+    reg trace_older_unissued_mem_valid;
+    reg trace_older_live_control_valid;
+    reg trace_older_unresolved_conditional_valid;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_older_unissued_hard_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_older_persistent_hard_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_older_unissued_mem_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_older_live_control_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_older_unresolved_conditional_id;
 
     always_comb begin
         barrier_active_o = persistent_barrier_valid_q;
@@ -949,6 +975,26 @@ module openrv64_dispatch_window_3p #(
             older_completed_control = 1'b0;
             older_uncompleted_control = 1'b0;
             older_unresolved_conditional = 1'b0;
+            trace_older_unissued_hard_valid = 1'b0;
+            trace_older_persistent_hard_valid = 1'b0;
+            trace_older_unissued_mem_valid = 1'b0;
+            trace_older_live_control_valid = 1'b0;
+            trace_older_unresolved_conditional_valid = 1'b0;
+            trace_older_unissued_hard_id =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            trace_older_persistent_hard_id =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            trace_older_unissued_mem_id =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            trace_older_live_control_id =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            trace_older_unresolved_conditional_id =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            trace_entry_gate_reason[eligible_idx] =
+                `OPENRV64_TTRACE_REASON_NONE;
+            trace_entry_blocker_valid[eligible_idx] = 1'b0;
+            trace_entry_blocker_id[eligible_idx] =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             for (older_idx = 0; older_idx < DEPTH;
                  older_idx = older_idx + 1) begin
                 if (valid_q[older_idx] &&
@@ -957,15 +1003,47 @@ module openrv64_dispatch_window_3p #(
                     if (!issued_q[older_idx] &&
                         is_hard(payload_q[older_idx]) &&
                         !may_speculate_past_unissued_control(
-                            payload_q[older_idx]))
+                            payload_q[older_idx])) begin
                         older_unissued_hard = 1'b1;
-                    if (is_persistent_hard(payload_q[older_idx]))
+                        if (!trace_older_unissued_hard_valid ||
+                            id_is_younger(trace_older_unissued_hard_id,
+                                          id_q[older_idx])) begin
+                            trace_older_unissued_hard_valid = 1'b1;
+                            trace_older_unissued_hard_id = id_q[older_idx];
+                        end
+                    end
+                    if (is_persistent_hard(payload_q[older_idx])) begin
                         older_persistent_hard = 1'b1;
-                    if (!issued_q[older_idx] && is_mem(payload_q[older_idx]))
-                        older_unissued_mem = 1'b1;
+                        if (!trace_older_persistent_hard_valid ||
+                            id_is_younger(trace_older_persistent_hard_id,
+                                          id_q[older_idx])) begin
+                            trace_older_persistent_hard_valid = 1'b1;
+                            trace_older_persistent_hard_id = id_q[older_idx];
+                        end
+                    end
                     if (!issued_q[older_idx] &&
-                        is_early_conditional_branch(payload_q[older_idx]))
+                        is_mem(payload_q[older_idx])) begin
+                        older_unissued_mem = 1'b1;
+                        if (!trace_older_unissued_mem_valid ||
+                            id_is_younger(trace_older_unissued_mem_id,
+                                          id_q[older_idx])) begin
+                            trace_older_unissued_mem_valid = 1'b1;
+                            trace_older_unissued_mem_id = id_q[older_idx];
+                        end
+                    end
+                    if (!issued_q[older_idx] &&
+                        is_early_conditional_branch(
+                            payload_q[older_idx])) begin
                         older_unresolved_conditional = 1'b1;
+                        if (!trace_older_unresolved_conditional_valid ||
+                            id_is_younger(
+                                trace_older_unresolved_conditional_id,
+                                id_q[older_idx])) begin
+                            trace_older_unresolved_conditional_valid = 1'b1;
+                            trace_older_unresolved_conditional_id =
+                                id_q[older_idx];
+                        end
+                    end
                     if (!result_ready_q[older_idx] &&
                         is_early_conditional_branch(payload_q[older_idx])) begin
                         trace_unresolved_conditional_depth[eligible_idx] =
@@ -979,6 +1057,14 @@ module openrv64_dispatch_window_3p #(
                                 !result_ready_q[older_idx];
                         else
                             older_live_control = 1'b1;
+                        if ((!`OPENRV64_3P_RESULT_READY_CONTROL_RELEASE ||
+                             !result_ready_q[older_idx]) &&
+                            (!trace_older_live_control_valid ||
+                             id_is_younger(trace_older_live_control_id,
+                                           id_q[older_idx]))) begin
+                            trace_older_live_control_valid = 1'b1;
+                            trace_older_live_control_id = id_q[older_idx];
+                        end
                         if (result_ready_q[older_idx])
                             older_completed_control = 1'b1;
                         else
@@ -989,8 +1075,14 @@ module openrv64_dispatch_window_3p #(
 
             if (persistent_barrier_valid_q &&
                 id_is_younger(id_q[eligible_idx],
-                              persistent_barrier_id_q))
+                              persistent_barrier_id_q)) begin
                 older_persistent_hard = 1'b1;
+                if (!trace_older_persistent_hard_valid) begin
+                    trace_older_persistent_hard_valid = 1'b1;
+                    trace_older_persistent_hard_id =
+                        persistent_barrier_id_q;
+                end
+            end
 
             if (valid_q[eligible_idx] &&
                 is_persistent_hard(payload_q[eligible_idx]))
@@ -1032,6 +1124,90 @@ module openrv64_dispatch_window_3p #(
             end
             if (is_mem(payload_q[eligible_idx]) && older_unissued_mem)
                 eligible[eligible_idx] = 1'b0;
+
+            // Preserve the exact first gate for the resident entry.  Pipe
+            // selection and downstream readiness are appended after the
+            // selector below has produced its physical-pipe choices.
+            if (valid_q[eligible_idx] && !issued_q[eligible_idx]) begin
+                if (!src1_ready_now[eligible_idx] &&
+                    !src2_ready_now[eligible_idx]) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_BOTH_SOURCES_PENDING;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        src1_producer_valid_q[eligible_idx];
+                    trace_entry_blocker_id[eligible_idx] =
+                        src1_tag_q[eligible_idx];
+                end else if (!src1_ready_now[eligible_idx]) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_SRC1_PENDING;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        src1_producer_valid_q[eligible_idx];
+                    trace_entry_blocker_id[eligible_idx] =
+                        src1_tag_q[eligible_idx];
+                end else if (!src2_ready_now[eligible_idx]) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_SRC2_PENDING;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        src2_producer_valid_q[eligible_idx];
+                    trace_entry_blocker_id[eligible_idx] =
+                        src2_tag_q[eligible_idx];
+                end else if (recovery_inhibit) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_REDIRECT_SQUASH;
+                end else if (is_persistent_hard(payload_q[eligible_idx]) &&
+                             (id_q[eligible_idx] != next_retire_id_i)) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_RETIRE_HEAD_REQUIRED;
+                    trace_entry_blocker_valid[eligible_idx] = 1'b1;
+                    trace_entry_blocker_id[eligible_idx] = next_retire_id_i;
+                end else if (older_unissued_hard) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_OLDER_HARD;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        trace_older_unissued_hard_valid;
+                    trace_entry_blocker_id[eligible_idx] =
+                        trace_older_unissued_hard_id;
+                end else if (older_persistent_hard) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_PERSISTENT_BARRIER;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        trace_older_persistent_hard_valid;
+                    trace_entry_blocker_id[eligible_idx] =
+                        trace_older_persistent_hard_id;
+                end else if ((ENABLE_SPECULATION != 0) &&
+                             is_early_conditional_branch(
+                                 payload_q[eligible_idx]) &&
+                             older_unresolved_conditional) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_BRANCH_ORDER;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        trace_older_unresolved_conditional_valid;
+                    trace_entry_blocker_id[eligible_idx] =
+                        trace_older_unresolved_conditional_id;
+                end else if (is_mem(payload_q[eligible_idx]) &&
+                             older_live_control &&
+                             !is_speculative_load_candidate(
+                                 payload_q[eligible_idx],
+                                 src1_data_now[eligible_idx])) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_OLDER_CONTROL;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        trace_older_live_control_valid;
+                    trace_entry_blocker_id[eligible_idx] =
+                        trace_older_live_control_id;
+                end else if (is_mem(payload_q[eligible_idx]) &&
+                             older_unissued_mem) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_OLDER_MEMORY;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        trace_older_unissued_mem_valid;
+                    trace_entry_blocker_id[eligible_idx] =
+                        trace_older_unissued_mem_id;
+                end else if (!eligible[eligible_idx]) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_UNKNOWN;
+                end
+            end
 
             if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
                 src1_ready_now[eligible_idx] &&
@@ -1755,6 +1931,65 @@ module openrv64_dispatch_window_3p #(
             !(pipe_ready_i[selected_mem_pipe] &&
               pipe_ready_i[selected_mem2_pipe]))
             pipe_valid_o[selected_mem2_pipe] = 1'b0;
+    end
+
+    integer trace_reason_idx;
+    always @* begin
+        for (trace_reason_idx = 0; trace_reason_idx < DEPTH;
+             trace_reason_idx = trace_reason_idx + 1) begin
+            trace_entry_block_reason[trace_reason_idx] =
+                trace_entry_gate_reason[trace_reason_idx];
+            trace_entry_pipe[trace_reason_idx] =
+                `OPENRV64_TTRACE_PIPE_NONE;
+            if (valid_q[trace_reason_idx] &&
+                !issued_q[trace_reason_idx] &&
+                (trace_entry_gate_reason[trace_reason_idx] ==
+                 `OPENRV64_TTRACE_REASON_NONE)) begin
+                if (select_ex0_valid &&
+                    (select_ex0 == trace_reason_idx[SCHED_SLOT_WIDTH-1:0])) begin
+                    trace_entry_pipe[trace_reason_idx] = 8'd0;
+                    if (!select_ex0_admit)
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_ISSUE_WIDTH;
+                    else if (!pipe_valid_o[0] || !pipe_ready_i[0])
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_PIPE_BUSY;
+                end else if (select_ex1_valid &&
+                    (select_ex1 == trace_reason_idx[SCHED_SLOT_WIDTH-1:0])) begin
+                    trace_entry_pipe[trace_reason_idx] = 8'd1;
+                    if (!select_ex1_admit)
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_ISSUE_WIDTH;
+                    else if (!pipe_valid_o[1] || !pipe_ready_i[1])
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_PIPE_BUSY;
+                end else if (select_mem_valid &&
+                    (select_mem == trace_reason_idx[SCHED_SLOT_WIDTH-1:0])) begin
+                    trace_entry_pipe[trace_reason_idx] = selected_mem_pipe;
+                    if (!select_mem_admit)
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_ISSUE_WIDTH;
+                    else if (!pipe_valid_o[selected_mem_pipe] ||
+                             !pipe_ready_i[selected_mem_pipe])
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_PIPE_BUSY;
+                end else if (select_mem2_valid &&
+                    (select_mem2 ==
+                     trace_reason_idx[SCHED_SLOT_WIDTH-1:0])) begin
+                    trace_entry_pipe[trace_reason_idx] = selected_mem2_pipe;
+                    if (!select_mem2_admit)
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_ISSUE_WIDTH;
+                    else if (!pipe_valid_o[selected_mem2_pipe] ||
+                             !pipe_ready_i[selected_mem2_pipe])
+                        trace_entry_block_reason[trace_reason_idx] =
+                            `OPENRV64_TTRACE_REASON_PIPE_BUSY;
+                end else begin
+                    trace_entry_block_reason[trace_reason_idx] =
+                        `OPENRV64_TTRACE_REASON_PIPE_CONFLICT;
+                end
+            end
+        end
     end
 
     wire issue_ex0 = pipe_valid_o[0] && pipe_ready_i[0];

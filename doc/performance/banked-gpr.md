@@ -1746,3 +1746,37 @@ The platform ACT4 target now instantiates the geometry it already described:
 32/32 configuration.  All 93 preserved RV64IMA tests passed through L2 and
 timed DDR3 in
 `compliance-act4-platform-3p-tomasulo-ddr3-20260901T230726Z`.
+
+#### Incomplete retirement-head instruction classes
+
+The performance harness now decodes the instruction held at an incomplete ROB
+head into exclusive ALU, multiply, divide, branch, jump, load, store, atomic,
+system, fence, and unknown classes.  It also crosses each class with four
+exclusive state groups: still unissued in the scheduler, resident in the
+legacy register-load stage, post-issue memory processing, and post-issue
+execution/completion.  Simulation assertions require both the class total and
+the class/state total to equal the existing incomplete-head counter.
+
+The 64-ROB/32-scheduler Sv39 run produced:
+
+| Head instruction | Total blocked cycles | Unissued | Register-load | Memory | Execute/completion |
+|---|---:|---:|---:|---:|---:|
+| Load | 11,320 | 1,616 | 0 | 9,704 | 0 |
+| Store | 7,147 | 22 | 0 | 7,125 | 0 |
+| ALU | 6,962 | 1,813 | 0 | 0 | 5,149 |
+| Jump | 5,847 | 2,923 | 0 | 0 | 2,924 |
+| Branch | 1,954 | 13 | 0 | 0 | 1,941 |
+| System | 45 | 20 | 0 | 0 | 25 |
+| Multiply, divide, atomic, fence, unknown | 0 | 0 | 0 | 0 | 0 |
+| **Total** | **33,275** | **6,407** | **0** | **16,829** | **10,039** |
+
+Loads and stores account for 55.5% of incomplete-head cycles, but they are not
+the complete explanation.  ALU and control instructions account for another
+44.5%.  Jumps are split almost exactly between scheduler wait and post-issue
+wait, while branches are almost entirely post-issue.  The `Register-load`
+column observes only the retained legacy stage; the independent Tomasulo
+requesters do not retain a head-ID-visible address/data record, so their read
+latency is folded into the adjacent unissued or post-issue group.  Consequently
+`Execute/completion` means "released from the scheduler, non-memory, and not
+yet complete," not proven execution-unit latency.  The managed run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T000143Z`.

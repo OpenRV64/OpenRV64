@@ -935,6 +935,19 @@ module openrv64_rv64_top_3p #(
         {1'b0, frontend_decode_fire[0]} +
         {1'b0, frontend_decode_fire[1]} +
         {1'b0, frontend_decode_fire[2]};
+    // The fetch trace IDs are a rolling base for the currently presented
+    // prefix.  Ordinary partial consumption advances by the accepted count,
+    // which keeps an unaccepted lane's ID stable when it shifts down.  A
+    // fetch restart replaces the entire presented prefix, so consume every ID
+    // that was exposed even when only an older control lane was accepted.
+    // Otherwise a squashed frontend candidate's ID can be reused for an
+    // unrelated instruction at the restart target.
+    wire [1:0] frontend_presented_count =
+        {1'b0, fetch_decode_valid[0]} +
+        {1'b0, fetch_decode_valid[1]} +
+        {1'b0, fetch_decode_valid[2]};
+    wire [1:0] frontend_trace_id_count = fetch3_restart ?
+        frontend_presented_count : frontend_decode_count;
     assign bp_branch_allocate =
         |(frontend_decode_fire & frontend_control_select);
     // M-mode may prefetch decoded direct conditional-branch paths without
@@ -1967,9 +1980,9 @@ module openrv64_rv64_top_3p #(
 
             if (ENABLE_TRACE) begin
                 trace_cycle_q <= trace_cycle_q + 64'd1;
-                if (use_icx_bus && (frontend_decode_count != 0))
+                if (use_icx_bus && (frontend_trace_id_count != 0))
                     trace_next_id_q <= trace_next_id_q +
-                                       frontend_decode_count;
+                                       frontend_trace_id_count;
                 else if (!use_icx_bus && fetch_pc_valid)
                     trace_next_id_q <= trace_next_id_q +
                                        (pc_q[2] ? 64'd1 : 64'd2);

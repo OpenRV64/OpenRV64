@@ -133,9 +133,12 @@ module openrv64_exec_lsu #(
     localparam integer I_PC = 274;
     localparam integer I_TRACE = 338;
 
-    // The retirement slot already owns PC/instruction/trace/register-source
-    // identity.  LSQ state keeps only fields needed to route the transaction,
-    // format its result, and construct a precise exception.
+    // The retirement slot owns architectural source identity.  LSQ state
+    // keeps the fields needed to route the transaction, format its result,
+    // construct a precise exception, and preserve the optional trace ID while
+    // a posted store outlives its ROB entry.  When tracing is disabled the
+    // issue-payload trace field is constant zero and this storage optimizes
+    // away.
     localparam integer LSQ_M_PRIV = 0;
     localparam integer LSQ_M_INSTR_PAGE_FAULT = 2;
     localparam integer LSQ_M_INSTR_ACCESS_FAULT = 3;
@@ -149,7 +152,8 @@ module openrv64_exec_lsu #(
     localparam integer LSQ_M_RD = 15;
     localparam integer LSQ_M_INSTR = 20;
     localparam integer LSQ_M_PC = 52;
-    localparam integer LSQ_META_WIDTH = 116;
+    localparam integer LSQ_M_TRACE = 116;
+    localparam integer LSQ_META_WIDTH = 180;
 
     function automatic payload_is_atomic;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
@@ -461,6 +465,7 @@ module openrv64_exec_lsu #(
     assign load_assignment_size_o = {1'b0, load_instr[13:12]};
 
     wire [LSQ_META_WIDTH-1:0] load_lsq_meta = {
+        load_issue_payload_i[I_TRACE +: 64],
         load_issue_payload_i[I_PC +: `RV64_XLEN],
         load_issue_payload_i[I_INSTR +: `RV64_INSTR_WIDTH],
         load_issue_payload_i[I_RD +: `RV64_REG_ADDR_WIDTH],
@@ -476,6 +481,7 @@ module openrv64_exec_lsu #(
         load_issue_payload_i[I_PRIV +: `RV64_PRIV_WIDTH]
     };
     wire [LSQ_META_WIDTH-1:0] store_lsq_meta = {
+        store_issue_payload_i[I_TRACE +: 64],
         store_issue_payload_i[I_PC +: `RV64_XLEN],
         store_issue_payload_i[I_INSTR +: `RV64_INSTR_WIDTH],
         store_issue_payload_i[I_RD +: `RV64_REG_ADDR_WIDTH],
@@ -990,6 +996,8 @@ module openrv64_exec_lsu #(
             compact_completion_meta[LSQ_M_INSTR +: `RV64_INSTR_WIDTH];
         compact_completion_source_r[I_PC +: `RV64_XLEN] =
             compact_completion_meta[LSQ_M_PC +: `RV64_XLEN];
+        compact_completion_source_r[I_TRACE +: 64] =
+            compact_completion_meta[LSQ_M_TRACE +: 64];
         // Reuse the effective-address field as base+zero.  The LSU completion
         // decoder needs the address for misalignment and tval, not the
         // original operand decomposition.
